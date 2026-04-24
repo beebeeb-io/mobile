@@ -34,3 +34,8 @@ Same design tokens as web but converted to RGB (OKLCH not supported in React Nat
 ## Crypto
 
 Will consume `beebeeb-core` via UniFFI-generated Swift/Kotlin bindings. Crypto runs at native speed, not in JS.
+
+
+## Keep shared docs in sync
+
+When you add/change/remove endpoints, types, build commands, or dependencies: update the relevant skill file in `/home/guus/code/beebeeb.io/.claude/skills/` (beebeeb-api.md, beebeeb-designs.md, beebeeb-stack.md, beebeeb-dev.md). Other agents depend on these being accurate.
