@@ -1,0 +1,27 @@
+{
+  "expo": {
+    "name": "Beebeeb",
+    "slug": "beebeeb",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "splash": {
+      "backgroundColor": "#FAF8F5"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "io.beebeeb.app"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#FAF8F5"
+      },
+      "package": "io.beebeeb.app"
+    },
+    "plugins": [
+      "expo-secure-store"
+    ]
+  }
+}
