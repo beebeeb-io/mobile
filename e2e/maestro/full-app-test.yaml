@@ -1,0 +1,33 @@
+appId: io.beebeeb.app
+---
+- launchApp
+
+# Should be on Files tab (already logged in)
+- extendedWaitUntil:
+    visible: "Drive"
+    timeout: 10000
+- takeScreenshot: "01-files-drive"
+
+# Tap Shared tab (second tab)
+- tapOn:
+    point: "35%,97%"
+- takeScreenshot: "02-shared"
+
+# Tap Photos tab (third tab)
+- tapOn:
+    point: "60%,97%"
+- takeScreenshot: "03-photos"
+
+# Tap Settings tab (fourth tab)
+- tapOn:
+    point: "85%,97%"
+- takeScreenshot: "04-settings"
+
+# Scroll down in settings
+- scroll
+- takeScreenshot: "05-settings-scrolled"
+
+# Tap Files tab (first tab)
+- tapOn:
+    point: "12%,97%"
+- takeScreenshot: "06-files-final"

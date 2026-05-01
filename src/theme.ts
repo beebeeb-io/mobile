@@ -5,6 +5,27 @@
  * oklch() so we use hex values directly.
  */
 
+export const darkColors = {
+  paper: '#1c1a17',
+  paper2: '#141210',
+  line: '#2d2925',
+  line2: '#3d3930',
+  ink: '#f0ebe3',
+  ink2: '#c4bdb5',
+  ink3: '#8a847c',
+  ink4: '#5a5550',
+  amber: '#f5b800',
+  amberDeep: '#d4a017',
+  amberBg: '#2a2310',
+  green: '#4abe4a',
+  red: '#d84040',
+  darkBg: '#0C0C0D',
+  darkOverlay: 'rgba(20,20,22,0.9)',
+  transparent: 'transparent',
+  white: '#FFFFFF',
+  black: '#000000',
+} as const;
+
 export const colors = {
   // Warm off-white backgrounds
   paper: '#faf8f5',

@@ -1,0 +1,43 @@
+appId: io.beebeeb.app
+---
+- launchApp:
+    clearState: true
+
+- assertVisible: "Sign in"
+
+- tapOn:
+    id: "email-input"
+- inputText: "demo@beebeeb.io"
+
+- tapOn:
+    id: "password-input"
+- inputText: "demodemo12345678"
+
+- tapOn:
+    id: "sign-in-button"
+
+# Login navigates to recovery phrase (first-time onboarding)
+- extendedWaitUntil:
+    visible: "Your recovery phrase"
+    timeout: 15000
+
+- takeScreenshot: "01-recovery-phrase"
+
+# Skip onboarding
+- tapOn: "I'll do this later (not recommended)"
+
+# Now should be on main app
+- extendedWaitUntil:
+    visible: "Files"
+    timeout: 10000
+
+- takeScreenshot: "02-files-tab"
+
+- tapOn: "Shared"
+- takeScreenshot: "03-shared-tab"
+
+- tapOn: "Photos"
+- takeScreenshot: "04-photos-tab"
+
+- tapOn: "Settings"
+- takeScreenshot: "05-settings-tab"

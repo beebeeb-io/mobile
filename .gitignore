@@ -71,3 +71,5 @@ playwright-report/
 # Graphify local files (not committed)
 graphify-out/.graphify_root
 graphify-out/cache/
+e2e/
+*.png
