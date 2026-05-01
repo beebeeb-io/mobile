@@ -1,0 +1,11 @@
+{
+  "ios": {
+    "bundleIdentifier": "com.devidee.ios"
+  },
+  "extra": {
+    "eas": {
+      "projectId": "36f4f00d-2a23-49e3-a52d-313391367e4b"
+    }
+  },
+  "owner": "devidee"
+}

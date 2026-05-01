@@ -133,7 +133,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         // here — the Files app exposes folder creation through a separate
         // path that we'll implement once the /folder endpoint is wired in.
         if itemTemplate.contentType == .folder {
-          completionHandler(nil, [], false, NSFileProviderError(.featureNotSupported))
+          completionHandler(nil, [], false, NSError(domain: NSFileProviderErrorDomain, code: NSFileProviderError.noSuchItem.rawValue))
           return
         }
 
@@ -226,12 +226,8 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
       return progress
     }
 
-    // Pin toggle from the Files app surfaces here as a `contentPolicy` change.
-    if changedFields.contains(.contentPolicy) {
-      let pinned = (item.contentPolicy == .downloadEagerlyAndKeepDownloaded)
-      CacheManager.shared.setPinned(id: cached.id, pinned: pinned)
-      cached.isPinned = pinned
-    }
+    // Note: contentPolicy (downloadEagerlyAndKeepDownloaded) is macOS-only.
+    // On iOS, pinning is managed through our app's UI, not the Files app.
 
     if changedFields.contains(.filename) {
       let task = Task.detached {
