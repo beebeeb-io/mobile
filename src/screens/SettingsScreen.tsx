@@ -17,6 +17,7 @@ import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { colors, radii, spacing } from '../theme';
 import { useAuth } from '../lib/auth';
+import { useBackup } from '../lib/backup-context';
 import {
   getStorageUsage,
   getPreference,
@@ -30,7 +31,6 @@ import {
 import type { RootStackParamList } from '../App';
 
 const BIOMETRIC_PREF_KEY = 'beebeeb_biometric_lock';
-const CAMERA_BACKUP_KEY = 'beebeeb_camera_backup';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -182,8 +182,20 @@ type Nav = NativeStackNavigationProp<RootStackParamList>;
 export default function SettingsScreen() {
   const navigation = useNavigation<Nav>();
   const { user, signOut } = useAuth();
+  const {
+    isPhotoBackupEnabled,
+    isContactsBackupEnabled,
+    isCalendarBackupEnabled,
+    togglePhotoBackup,
+    toggleContactsBackup,
+    toggleCalendarBackup,
+    backupProgress,
+    lastBackupAt,
+    triggerBackupNow,
+  } = useBackup();
   const [usage, setUsage] = useState<StorageUsage | null>(null);
   const [loadingUsage, setLoadingUsage] = useState(true);
+  const [backingUp, setBackingUp] = useState(false);
 
   // Biometric lock preference
   const [biometricEnabled, setBiometricEnabled] = useState(false);
@@ -192,9 +204,6 @@ export default function SettingsScreen() {
 
   // Notifications preference (stored locally)
   const [notificationsEnabled, setNotificationsEnabled] = useState(false);
-
-  // Camera roll backup preference
-  const [cameraBackupEnabled, setCameraBackupEnabled] = useState(false);
 
   // Account — display name, subscription, region
   const [displayName, setDisplayNameState] = useState<string>('');
@@ -220,9 +229,6 @@ export default function SettingsScreen() {
 
       const stored = await SecureStore.getItemAsync(BIOMETRIC_PREF_KEY);
       setBiometricEnabled(stored === 'true');
-
-      const camStored = await SecureStore.getItemAsync(CAMERA_BACKUP_KEY);
-      setCameraBackupEnabled(camStored === 'true');
     } catch {
       // Biometrics unavailable on this device/platform
     } finally {
@@ -266,10 +272,14 @@ export default function SettingsScreen() {
     // Notification permission request would go here
   }, []);
 
-  const handleCameraBackupToggle = useCallback(async (enabled: boolean) => {
-    setCameraBackupEnabled(enabled);
-    await SecureStore.setItemAsync(CAMERA_BACKUP_KEY, enabled ? 'true' : 'false');
-  }, []);
+  const handleBackupNow = useCallback(async () => {
+    setBackingUp(true);
+    try {
+      await triggerBackupNow();
+    } finally {
+      setBackingUp(false);
+    }
+  }, [triggerBackupNow]);
 
   const handleEditDisplayName = useCallback(() => {
     Alert.prompt(
@@ -407,17 +417,55 @@ export default function SettingsScreen() {
           <View style={styles.card}>
             <ToggleRow
               label="Back up camera roll"
-              value={cameraBackupEnabled}
-              onValueChange={handleCameraBackupToggle}
+              value={isPhotoBackupEnabled}
+              onValueChange={() => togglePhotoBackup()}
             />
-            {cameraBackupEnabled && (
+            <RowDivider />
+            <ToggleRow
+              label="Back up contacts"
+              value={isContactsBackupEnabled}
+              onValueChange={() => toggleContactsBackup()}
+            />
+            <RowDivider />
+            <ToggleRow
+              label="Back up calendar"
+              value={isCalendarBackupEnabled}
+              onValueChange={() => toggleCalendarBackup()}
+            />
+            {(isPhotoBackupEnabled || isContactsBackupEnabled || isCalendarBackupEnabled) && (
               <>
                 <RowDivider />
-                <View style={styles.backupNote}>
-                  <Text style={styles.backupNoteText}>
-                    Camera backup will be available once native crypto bindings are integrated.
-                  </Text>
-                </View>
+                {backupProgress.inProgress > 0 && (
+                  <View style={styles.backupNote}>
+                    <ActivityIndicator size="small" color={colors.amber} style={{ marginRight: 8 }} />
+                    <Text style={styles.backupNoteText}>
+                      Backing up {backupProgress.inProgress} of {backupProgress.total} items...
+                    </Text>
+                  </View>
+                )}
+                {backupProgress.total > 0 && backupProgress.inProgress === 0 && (
+                  <View style={styles.backupNote}>
+                    <Text style={styles.backupNoteText}>
+                      {backupProgress.completed} of {backupProgress.total} items backed up
+                      {lastBackupAt ? ` · Last: ${new Date(lastBackupAt).toLocaleDateString()}` : ''}
+                    </Text>
+                  </View>
+                )}
+                <RowDivider />
+                <TouchableOpacity
+                  style={styles.row}
+                  activeOpacity={0.6}
+                  onPress={handleBackupNow}
+                  disabled={backingUp}
+                >
+                  {backingUp ? (
+                    <ActivityIndicator size="small" color={colors.amber} />
+                  ) : (
+                    <Text style={[styles.rowLabel, { color: colors.amber, fontWeight: '500' }]}>
+                      Back up now
+                    </Text>
+                  )}
+                </TouchableOpacity>
               </>
             )}
             <RowDivider />
@@ -656,6 +704,8 @@ const styles = StyleSheet.create({
 
   // Backup note
   backupNote: {
+    flexDirection: 'row',
+    alignItems: 'center',
     paddingHorizontal: 12,
     paddingVertical: 10,
   },
@@ -663,6 +713,7 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: colors.ink3,
     lineHeight: 17,
+    flex: 1,
   },
 
   // Footer

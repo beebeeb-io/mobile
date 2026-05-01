@@ -67,6 +67,49 @@ public class BeebeebCryptoModule: Module {
       try KeychainManager.setAccessControl(requireBiometric: require)
       return true
     }
+
+    // ── Backup management ──────────────────────────────────────────────
+
+    AsyncFunction("enablePhotoBackup") { (authToken: String) in
+      PhotoBackupManager.shared.enable(authToken: authToken)
+    }
+
+    AsyncFunction("disablePhotoBackup") { () in
+      PhotoBackupManager.shared.disable()
+    }
+
+    AsyncFunction("enableContactsBackup") { (authToken: String) in
+      ContactsBackupManager.shared.enable(authToken: authToken)
+    }
+
+    AsyncFunction("disableContactsBackup") { () in
+      ContactsBackupManager.shared.disable()
+    }
+
+    AsyncFunction("enableCalendarBackup") { (authToken: String) in
+      CalendarBackupManager.shared.enable(authToken: authToken)
+    }
+
+    AsyncFunction("disableCalendarBackup") { () in
+      CalendarBackupManager.shared.disable()
+    }
+
+    AsyncFunction("getBackupProgress") { () -> [String: Any] in
+      let p = PhotoBackupManager.shared.getProgress()
+      return [
+        "total": p.total,
+        "completed": p.completed,
+        "inProgress": p.inProgress,
+        "lastBackupAt": p.lastBackupAt as Any,
+      ]
+    }
+
+    AsyncFunction("triggerImmediateBackup") { (authToken: String) in
+      PhotoBackupManager.shared.enable(authToken: authToken)
+      PhotoBackupManager.shared.triggerImmediateBatch { _ in }
+      ContactsBackupManager.shared.enable(authToken: authToken)
+      CalendarBackupManager.shared.enable(authToken: authToken)
+    }
   }
 }
 
