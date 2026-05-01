@@ -11,6 +11,7 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import * as Haptics from 'expo-haptics';
 import * as LocalAuthentication from 'expo-local-authentication';
 import * as SecureStore from 'expo-secure-store';
 import Constants from 'expo-constants';
@@ -176,7 +177,10 @@ function ToggleRow({
       <Text style={{ flex: 1, fontSize: 14, fontWeight: '400' as const, color: c.ink }}>{label}</Text>
       <Switch
         value={value}
-        onValueChange={onValueChange}
+        onValueChange={(v) => {
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+          onValueChange(v);
+        }}
         disabled={disabled}
         trackColor={{ false: c.line, true: c.amber }}
         thumbColor={c.paper}
@@ -694,7 +698,10 @@ export default function SettingsScreen() {
                       },
                     ]}
                     activeOpacity={0.6}
-                    onPress={() => handleThemeChange(pref)}
+                    onPress={() => {
+                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                      handleThemeChange(pref);
+                    }}
                   >
                     <View style={{
                       width: 20, height: 20, borderRadius: 10, marginBottom: 4,
