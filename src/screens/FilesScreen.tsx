@@ -31,7 +31,7 @@ import { radii, spacing, shadows } from '../theme';
 import { useTheme } from '../lib/theme-context';
 import { useToast } from '../lib/toast-context';
 import SkeletonRow from '../components/SkeletonRow';
-import { listFiles, createFolder, deleteFile, renameFile, moveFile, uploadFile, downloadFile, friendlyError, getStorageUsage, createProofOfExistence } from '../lib/api';
+import { listFiles, createFolder, deleteFile, renameFile, moveFile, uploadFile, downloadFile, friendlyError, getStorageUsage, createProofOfExistence, storageLocation } from '../lib/api';
 import type { FileEntry, StorageUsage, ProofOfExistence } from '../lib/api';
 import type { RootStackParamList } from '../App';
 import { useCrypto } from '../lib/crypto-context';
@@ -310,11 +310,13 @@ const FileRowItem = React.memo(function FileRowItem({
           )}
         </View>
         <Text style={[styles.fileMeta, { color: c.ink3 }]}>
-          {item.is_folder
-            ? formatDate(item.updated_at)
-            : (sortOrder === 'size-desc' || sortOrder === 'size-asc')
-              ? formatSize(item.size_bytes)
-              : `${formatSize(item.size_bytes)}  ·  ${formatDate(item.updated_at)}`}
+          {(() => {
+            const loc = storageLocation(item.storage_pool_id);
+            const locSuffix = loc.shortCode ? `  ·  ${loc.shortCode}` : '';
+            if (item.is_folder) return `${formatDate(item.updated_at)}${locSuffix}`;
+            if (sortOrder === 'size-desc' || sortOrder === 'size-asc') return `${formatSize(item.size_bytes)}${locSuffix}`;
+            return `${formatSize(item.size_bytes)}  ·  ${formatDate(item.updated_at)}${locSuffix}`;
+          })()}
         </Text>
       </View>
       {!selectMode && <Text style={[styles.chevron, { color: c.ink4 }]}>{'›'}</Text>}
@@ -374,11 +376,13 @@ const FileGridItem = React.memo(function FileGridItem({
   const nameText = decryptedName ?? displayName(item);
   const isFolder = item.is_folder;
 
+  const loc = storageLocation(item.storage_pool_id);
+  const locSuffix = loc.shortCode ? ` · ${loc.shortCode}` : '';
   const metaText = isFolder
-    ? formatDate(item.updated_at)
+    ? `${formatDate(item.updated_at)}${locSuffix}`
     : (sortOrder === 'size-desc' || sortOrder === 'size-asc')
-      ? formatSize(item.size_bytes)
-      : `${formatSize(item.size_bytes)} · ${formatDate(item.updated_at)}`;
+      ? `${formatSize(item.size_bytes)}${locSuffix}`
+      : `${formatSize(item.size_bytes)} · ${formatDate(item.updated_at)}${locSuffix}`;
 
   return (
     <TouchableOpacity
@@ -1297,12 +1301,15 @@ export default function FilesScreen() {
     };
 
     const showDetails = () => {
+      const loc = storageLocation(item.storage_pool_id);
+      const storedIn = loc.flag ? `${loc.flag} ${loc.label}` : loc.label;
       const lines = item.is_folder
         ? [
             `Name:      ${name}`,
             `Type:      Folder`,
             `Created:   ${formatDate(item.created_at)}`,
             `Modified:  ${formatDate(item.updated_at)}`,
+            `Stored in: ${storedIn}`,
             `ID:        ${item.id.slice(0, 8)}`,
           ]
         : [
@@ -1311,6 +1318,7 @@ export default function FilesScreen() {
             `Size:      ${formatSize(item.size_bytes)}`,
             `Created:   ${formatDate(item.created_at)}`,
             `Modified:  ${formatDate(item.updated_at)}`,
+            `Stored in: ${storedIn}`,
             `ID:        ${item.id.slice(0, 8)}`,
           ];
       Alert.alert(item.is_folder ? 'Folder details' : 'File details', lines.join('\n'));
