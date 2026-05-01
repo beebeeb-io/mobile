@@ -64,7 +64,13 @@ export type RootStackParamList = {
   Signup: undefined;
   // Main app
   Tabs: undefined;
-  Preview: { fileId: string; fileName: string };
+  Preview: {
+    fileId: string;
+    fileName: string;
+    mimeType?: string;
+    sizeBytes?: number;
+    createdAt?: string;
+  };
 };
 
 const Tab = createBottomTabNavigator<TabParamList>();
