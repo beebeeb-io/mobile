@@ -25,6 +25,7 @@ import { spacing, type Colors } from '../theme';
 import { useAuth } from '../lib/auth';
 import { useBackup } from '../lib/backup-context';
 import { useTheme, type ThemeMode } from '../lib/theme-context';
+import { useToast } from '../lib/toast-context';
 import {
   getStorageUsage,
   getPreference,
@@ -590,6 +591,8 @@ export default function SettingsScreen() {
         style={layout.scroll}
         contentContainerStyle={layout.scrollContent}
         showsVerticalScrollIndicator={false}
+        keyboardDismissMode="on-drag"
+        keyboardShouldPersistTaps="handled"
         refreshControl={
           <RefreshControl
             refreshing={refreshing}

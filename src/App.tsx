@@ -2,7 +2,7 @@ import React, { Suspense, useCallback, useEffect, useRef, useState } from 'react
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { registerRootComponent } from 'expo';
 import { StatusBar } from 'expo-status-bar';
-import { ActivityIndicator, AppState, type AppStateStatus, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, AppState, type AppStateStatus, Keyboard, StyleSheet, View } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
 import { NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
@@ -236,6 +236,7 @@ function TabNavigator() {
     <Tab.Navigator
       screenListeners={{
         tabPress: () => {
+          Keyboard.dismiss();
           Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
         },
       }}

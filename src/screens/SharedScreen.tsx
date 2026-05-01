@@ -312,6 +312,7 @@ export default function SharedScreen() {
             />
           }
           contentContainerStyle={data.length === 0 ? styles.emptyList : undefined}
+          keyboardDismissMode="on-drag"
         />
       )}
     </View>
