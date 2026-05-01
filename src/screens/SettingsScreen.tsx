@@ -206,17 +206,26 @@ function SettingsRow({
 }
 
 function ToggleRow({
-  label, value, onValueChange, disabled, c,
+  label, subtitle, value, onValueChange, disabled, indent, c,
 }: {
   label: string;
+  subtitle?: string;
   value: boolean;
   onValueChange: (v: boolean) => void;
   disabled?: boolean;
+  indent?: boolean;
   c: C;
 }) {
   return (
-    <View style={layout.row}>
-      <Text style={{ flex: 1, fontSize: 14, fontWeight: '400' as const, color: c.ink }}>{label}</Text>
+    <View style={[layout.row, indent && { paddingLeft: 28 }]}>
+      <View style={{ flex: 1, paddingRight: 12 }}>
+        <Text style={{ fontSize: 14, fontWeight: '400' as const, color: c.ink }}>{label}</Text>
+        {subtitle && (
+          <Text style={{ fontSize: 11, color: c.ink3, marginTop: 2, lineHeight: 15 }}>
+            {subtitle}
+          </Text>
+        )}
+      </View>
       <Switch
         value={value}
         onValueChange={(v) => {
@@ -296,6 +305,12 @@ export default function SettingsScreen() {
     togglePhotoBackup,
     toggleContactsBackup,
     toggleCalendarBackup,
+    includeVideos,
+    wifiOnly,
+    backgroundUpload,
+    setIncludeVideos,
+    setWifiOnly,
+    setBackgroundUpload,
     backupProgress,
     lastBackupAt,
     triggerBackupNow,
@@ -932,6 +947,37 @@ export default function SettingsScreen() {
               onValueChange={() => togglePhotoBackup()}
               c={c}
             />
+            {isPhotoBackupEnabled && (
+              <>
+                <RowDivider c={c} />
+                <ToggleRow
+                  label="Include videos"
+                  subtitle="Include videos in the camera upload"
+                  value={includeVideos}
+                  onValueChange={setIncludeVideos}
+                  indent
+                  c={c}
+                />
+                <RowDivider c={c} />
+                <ToggleRow
+                  label="Wi-Fi only"
+                  subtitle="Only upload over Wi-Fi to save cellular data"
+                  value={wifiOnly}
+                  onValueChange={setWifiOnly}
+                  indent
+                  c={c}
+                />
+                <RowDivider c={c} />
+                <ToggleRow
+                  label="Background upload"
+                  subtitle="Allow uploads in the background. May increase battery usage."
+                  value={backgroundUpload}
+                  onValueChange={setBackgroundUpload}
+                  indent
+                  c={c}
+                />
+              </>
+            )}
             <RowDivider c={c} />
             <ToggleRow
               label="Back up contacts"
