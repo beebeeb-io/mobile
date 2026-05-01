@@ -1012,6 +1012,51 @@ export default function FilesScreen() {
     </ScrollView>
   );
 
+  // 3 most recently modified non-folder files — reuses the existing files array
+  const recentFiles = useMemo(() => (
+    files
+      .filter((f) => !f.is_folder)
+      .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime())
+      .slice(0, 3)
+  ), [files]);
+
+  const renderRecentSection = () => {
+    if (recentFiles.length === 0 || folderStack.length > 1 || selectMode || searchActive) return null;
+    return (
+      <View style={[styles.pinnedSection, { borderBottomColor: c.line }]}>
+        <Text style={[styles.pinnedLabel, { color: c.ink3 }]}>Recent</Text>
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.pinnedRow}
+        >
+          {recentFiles.map((item) => {
+            const category = fileCategory(item);
+            const name = decryptedNames[item.id] ?? displayName(item);
+            return (
+              <TouchableOpacity
+                key={item.id}
+                style={[styles.recentCard, { backgroundColor: c.paper2, borderColor: c.line }]}
+                onPress={() => openFile(item)}
+                activeOpacity={0.7}
+                accessibilityLabel={`Open recent file ${name}`}
+                accessibilityRole="button"
+              >
+                <FileIcon category={category} />
+                <Text style={[styles.recentName, { color: c.ink }]} numberOfLines={1}>
+                  {name}
+                </Text>
+                <Text style={[styles.recentDate, { color: c.ink4 }]} numberOfLines={1}>
+                  {formatDate(item.updated_at)}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </ScrollView>
+      </View>
+    );
+  };
+
   const renderPinnedSection = () => {
     if (pinnedFolders.length === 0 || selectMode || searchActive) return null;
     return (
@@ -1286,6 +1331,9 @@ export default function FilesScreen() {
       {/* Pinned folders */}
       {renderPinnedSection()}
 
+      {/* Recent files */}
+      {renderRecentSection()}
+
       {/* Content */}
       {error ? (
         renderError()
@@ -1409,6 +1457,9 @@ const styles = StyleSheet.create({
   pinnedRow: { paddingHorizontal: spacing.lg, gap: 8, paddingBottom: 10 },
   pinnedChip: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 10, paddingVertical: 6, borderRadius: radii.round, borderWidth: 1, maxWidth: 140 },
   pinnedChipText: { fontSize: 12, fontWeight: '600', flexShrink: 1 },
+  recentCard: { width: 120, borderRadius: radii.md, borderWidth: 1, padding: 10, gap: 6 },
+  recentName: { fontSize: 12, fontWeight: '500' },
+  recentDate: { fontSize: 10 },
 
   // Breadcrumbs
   breadcrumbScroll: { flexGrow: 0, paddingBottom: spacing.sm },
