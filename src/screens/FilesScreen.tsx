@@ -155,6 +155,9 @@ interface FileRowItemProps {
   onLongPress: (item: FileEntry) => void;
   onShare: (item: FileEntry) => void;
   onDelete: (item: FileEntry) => void;
+  selectMode: boolean;
+  isSelected: boolean;
+  onToggleSelect: (item: FileEntry) => void;
 }
 
 const FileRowItem = React.memo(function FileRowItem({
@@ -164,6 +167,9 @@ const FileRowItem = React.memo(function FileRowItem({
   onLongPress,
   onShare,
   onDelete,
+  selectMode,
+  isSelected,
+  onToggleSelect,
 }: FileRowItemProps) {
   const { colors: c } = useTheme();
   const swipeableRef = useRef<Swipeable>(null);
@@ -212,6 +218,48 @@ const FileRowItem = React.memo(function FileRowItem({
     </View>
   ), [c, item, onShare, onDelete]);
 
+  const rowContent = (
+    <TouchableOpacity
+      style={[styles.fileRow, { borderBottomColor: c.line, backgroundColor: c.paper }]}
+      activeOpacity={0.6}
+      onPress={() => selectMode ? onToggleSelect(item) : onPress(item)}
+      onLongPress={selectMode ? undefined : () => onLongPress(item)}
+      delayLongPress={400}
+    >
+      {selectMode && (
+        <View style={[
+          styles.checkbox,
+          { borderColor: isSelected ? c.amber : c.line2 },
+          isSelected && { backgroundColor: c.amber },
+        ]}>
+          {isSelected && <Ionicons name="checkmark" size={13} color="#fff" />}
+        </View>
+      )}
+      <FileIcon category={category} />
+      <View style={styles.fileInfo}>
+        <View style={styles.fileNameRow}>
+          {isEncryptedFallback && (
+            <Ionicons name="lock-closed" size={11} color={c.ink4} style={styles.lockIcon} />
+          )}
+          <Text
+            style={[styles.fileName, { color: c.ink }, isEncryptedFallback && styles.fileNameEncrypted]}
+            numberOfLines={1}
+          >
+            {nameText}
+          </Text>
+        </View>
+        <Text style={[styles.fileMeta, { color: c.ink3 }]}>
+          {item.is_folder
+            ? formatDate(item.updated_at)
+            : `${formatSize(item.size_bytes)}  ·  ${formatDate(item.updated_at)}`}
+        </Text>
+      </View>
+      {!selectMode && <Text style={[styles.chevron, { color: c.ink4 }]}>{'›'}</Text>}
+    </TouchableOpacity>
+  );
+
+  if (selectMode) return rowContent;
+
   return (
     <Swipeable
       ref={swipeableRef}
@@ -221,34 +269,7 @@ const FileRowItem = React.memo(function FileRowItem({
       overshootRight={false}
       rightThreshold={40}
     >
-      <TouchableOpacity
-        style={[styles.fileRow, { borderBottomColor: c.line, backgroundColor: c.paper }]}
-        activeOpacity={0.6}
-        onPress={() => onPress(item)}
-        onLongPress={() => onLongPress(item)}
-        delayLongPress={400}
-      >
-        <FileIcon category={category} />
-        <View style={styles.fileInfo}>
-          <View style={styles.fileNameRow}>
-            {isEncryptedFallback && (
-              <Ionicons name="lock-closed" size={11} color={c.ink4} style={styles.lockIcon} />
-            )}
-            <Text
-              style={[styles.fileName, { color: c.ink }, isEncryptedFallback && styles.fileNameEncrypted]}
-              numberOfLines={1}
-            >
-              {nameText}
-            </Text>
-          </View>
-          <Text style={[styles.fileMeta, { color: c.ink3 }]}>
-            {item.is_folder
-              ? formatDate(item.updated_at)
-              : `${formatSize(item.size_bytes)}  ·  ${formatDate(item.updated_at)}`}
-          </Text>
-        </View>
-        <Text style={[styles.chevron, { color: c.ink4 }]}>{'›'}</Text>
-      </TouchableOpacity>
+      {rowContent}
     </Swipeable>
   );
 });
@@ -331,6 +352,10 @@ export default function FilesScreen() {
 
   // Sort state
   const [sortOrder, setSortOrder] = useState<SortOrder>('date-desc');
+
+  // Multi-select state
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
   // Crypto
   const { isUnlocked, decryptMetadata } = useCrypto();
@@ -542,6 +567,135 @@ export default function FilesScreen() {
       );
     }
   }, []);
+
+  // ------------------------------------------------------------------
+  // Multi-select handlers
+  // ------------------------------------------------------------------
+
+  const enterSelectMode = useCallback((initialId?: string) => {
+    _openSwipeable?.close();
+    _openSwipeable = null;
+    setSelectMode(true);
+    setSelectedIds(initialId ? new Set([initialId]) : new Set());
+  }, []);
+
+  const exitSelectMode = useCallback(() => {
+    setSelectMode(false);
+    setSelectedIds(new Set());
+  }, []);
+
+  const toggleSelect = useCallback((item: FileEntry) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(item.id)) next.delete(item.id);
+      else next.add(item.id);
+      return next;
+    });
+  }, []);
+
+  const handleSelectAll = useCallback((allIds: string[]) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setSelectedIds((prev) =>
+      prev.size === allIds.length ? new Set() : new Set(allIds),
+    );
+  }, []);
+
+  const handleBatchTrash = useCallback(() => {
+    if (selectedIds.size === 0) return;
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    const count = selectedIds.size;
+    Alert.alert(
+      'Move to Trash',
+      `${count} item${count === 1 ? '' : 's'} will be moved to Trash.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Move to Trash',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              const ids = [...selectedIds];
+              await Promise.all(ids.map((id) => deleteFile(id)));
+              setFiles((prev) => prev.filter((f) => !selectedIds.has(f.id)));
+              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+              exitSelectMode();
+            } catch (err) {
+              Alert.alert('Error', friendlyError(err));
+            }
+          },
+        },
+      ],
+    );
+  }, [selectedIds, exitSelectMode]);
+
+  const handleBatchShare = useCallback(() => {
+    if (selectedIds.size === 0) return;
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    if (selectedIds.size > 1) {
+      Alert.alert('Share', 'Select one file to share.');
+      return;
+    }
+    const id = [...selectedIds][0]!;
+    const item = files.find((f) => f.id === id);
+    if (!item) return;
+    const name = decryptedNames[id] ?? displayName(item);
+    exitSelectMode();
+    navigation.navigate('ShareSheet', {
+      fileId: id,
+      fileName: name,
+      mimeType: item.mime_type ?? undefined,
+      sizeBytes: item.size_bytes,
+    });
+  }, [selectedIds, files, decryptedNames, exitSelectMode, navigation]);
+
+  const handleBatchMove = useCallback(async () => {
+    if (selectedIds.size === 0) return;
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    let folders: FileEntry[] = [];
+    try {
+      const all = await listFiles();
+      folders = all.filter((f) => f.is_folder && !selectedIds.has(f.id));
+    } catch {
+      Alert.alert('Error', 'Could not load folders.');
+      return;
+    }
+    const folderNames = folders.map((f) => decryptedNames[f.id] ?? displayName(f));
+    const moveOptions = ['Drive (root)', ...folderNames, 'Cancel'];
+    const moveCancelIdx = moveOptions.length - 1;
+
+    const doMove = async (targetId: string | null) => {
+      try {
+        const ids = [...selectedIds];
+        await Promise.all(ids.map((id) => moveFile(id, targetId)));
+        setFiles((prev) => prev.filter((f) => !selectedIds.has(f.id)));
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        exitSelectMode();
+      } catch (err) {
+        Alert.alert('Error', friendlyError(err));
+      }
+    };
+
+    if (Platform.OS === 'ios') {
+      ActionSheetIOS.showActionSheetWithOptions(
+        { title: 'Move to', options: moveOptions, cancelButtonIndex: moveCancelIdx },
+        (idx) => {
+          if (idx === moveCancelIdx) return;
+          if (idx === 0) void doMove(null);
+          else void doMove(folders[idx - 1]!.id);
+        },
+      );
+    } else {
+      Alert.alert('Move to', undefined, [
+        { text: 'Drive (root)', onPress: () => void doMove(null) },
+        ...folders.map((f, i) => ({
+          text: folderNames[i] ?? displayName(f),
+          onPress: () => void doMove(f.id),
+        })),
+        { text: 'Cancel', style: 'cancel' as const },
+      ]);
+    }
+  }, [selectedIds, decryptedNames, exitSelectMode]);
 
   const handleSearchToggle = useCallback(() => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -790,8 +944,11 @@ export default function FilesScreen() {
       onLongPress={handleLongPress}
       onShare={handleSwipeShare}
       onDelete={handleSwipeDelete}
+      selectMode={selectMode}
+      isSelected={selectedIds.has(item.id)}
+      onToggleSelect={toggleSelect}
     />
-  ), [decryptedNames, openFile, handleLongPress, handleSwipeShare, handleSwipeDelete]);
+  ), [decryptedNames, openFile, handleLongPress, handleSwipeShare, handleSwipeDelete, selectMode, selectedIds, toggleSelect]);
 
   const renderEmpty = () => {
     if (loading) return null;
@@ -833,49 +990,80 @@ export default function FilesScreen() {
   // Main render
   // ------------------------------------------------------------------
 
+  const allDisplayedIds = displayedFiles.map((f) => f.id);
+  const allSelected = selectedIds.size === allDisplayedIds.length && allDisplayedIds.length > 0;
+
   return (
     <View style={[styles.root, { paddingTop: insets.top, backgroundColor: c.paper }]}>
-      {/* Header */}
-      <View style={styles.header}>
-        {folderStack.length > 1 && !searchActive && (
+      {/* Header — select mode vs normal mode */}
+      {selectMode ? (
+        <View style={styles.header}>
+          <TouchableOpacity onPress={exitSelectMode} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+            <Text style={{ color: c.amberDeep, fontSize: 16, fontWeight: '500' }}>Cancel</Text>
+          </TouchableOpacity>
+          <Text style={[styles.selectTitle, { color: c.ink }]}>
+            {selectedIds.size === 0 ? 'Select items' : `${selectedIds.size} selected`}
+          </Text>
           <TouchableOpacity
-            style={[styles.backButton, { backgroundColor: c.paper2, borderColor: c.line }]}
-            onPress={() => navigateToBreadcrumb(folderStack.length - 2)}
+            onPress={() => handleSelectAll(allDisplayedIds)}
             hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
           >
-            <Text style={[styles.backButtonText, { color: c.ink2 }]}>{'‹'}</Text>
+            <Text style={{ color: c.amberDeep, fontSize: 13, fontWeight: '500' }}>
+              {allSelected ? 'Deselect All' : 'Select All'}
+            </Text>
           </TouchableOpacity>
-        )}
-        <Text style={[styles.title, { color: c.ink }]}>{currentFolder.name}</Text>
-        <View style={{ flex: 1 }} />
-        {!searchActive && (
+        </View>
+      ) : (
+        <View style={styles.header}>
+          {folderStack.length > 1 && !searchActive && (
+            <TouchableOpacity
+              style={[styles.backButton, { backgroundColor: c.paper2, borderColor: c.line }]}
+              onPress={() => navigateToBreadcrumb(folderStack.length - 2)}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            >
+              <Text style={[styles.backButtonText, { color: c.ink2 }]}>{'‹'}</Text>
+            </TouchableOpacity>
+          )}
+          <Text style={[styles.title, { color: c.ink }]}>{currentFolder.name}</Text>
+          <View style={{ flex: 1 }} />
+          {!searchActive && files.length > 0 && (
+            <TouchableOpacity
+              onPress={() => enterSelectMode()}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              style={styles.searchButton}
+            >
+              <Text style={{ color: c.ink2, fontSize: 13, fontWeight: '500' }}>Select</Text>
+            </TouchableOpacity>
+          )}
+          {!searchActive && (
+            <TouchableOpacity
+              onPress={handleSortPress}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              style={styles.searchButton}
+            >
+              <Ionicons
+                name="swap-vertical"
+                size={20}
+                color={sortOrder !== 'date-desc' ? c.amberDeep : c.ink2}
+              />
+            </TouchableOpacity>
+          )}
           <TouchableOpacity
-            onPress={handleSortPress}
+            onPress={handleSearchToggle}
             hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
             style={styles.searchButton}
           >
             <Ionicons
-              name="swap-vertical"
+              name={searchActive ? 'close' : 'search'}
               size={20}
-              color={sortOrder !== 'date-desc' ? c.amberDeep : c.ink2}
+              color={searchActive ? c.amberDeep : c.ink2}
             />
           </TouchableOpacity>
-        )}
-        <TouchableOpacity
-          onPress={handleSearchToggle}
-          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-          style={styles.searchButton}
-        >
-          <Ionicons
-            name={searchActive ? 'close' : 'search'}
-            size={20}
-            color={searchActive ? c.amberDeep : c.ink2}
-          />
-        </TouchableOpacity>
-      </View>
+        </View>
+      )}
 
       {/* Search bar — slides in below header when active */}
-      {searchActive && (
+      {searchActive && !selectMode && (
         <View style={styles.searchBar}>
           <TextInput
             ref={searchInputRef}
@@ -896,8 +1084,8 @@ export default function FilesScreen() {
         </View>
       )}
 
-      {/* Breadcrumbs (only show when navigated into a folder, not during search) */}
-      {folderStack.length > 1 && !searchActive && renderBreadcrumbs()}
+      {/* Breadcrumbs (only show when navigated into a folder, not during search or select) */}
+      {folderStack.length > 1 && !searchActive && !selectMode && renderBreadcrumbs()}
 
       {/* Content */}
       {error ? (
@@ -916,19 +1104,22 @@ export default function FilesScreen() {
           refreshControl={
             <RefreshControl
               refreshing={refreshing}
-              onRefresh={handleRefresh}
+              onRefresh={selectMode ? undefined : handleRefresh}
               tintColor={c.amber}
               colors={[c.amber]}
             />
           }
-          contentContainerStyle={displayedFiles.length === 0 ? styles.emptyList : undefined}
+          contentContainerStyle={[
+            displayedFiles.length === 0 ? styles.emptyList : undefined,
+            selectMode ? { paddingBottom: 80 + insets.bottom } : { paddingBottom: 80 + insets.bottom },
+          ]}
           removeClippedSubviews={true}
           windowSize={5}
         />
       )}
 
       {/* Inline upload progress (shown while a file is uploading) */}
-      {uploadingName && (
+      {uploadingName && !selectMode && (
         <View
           style={[
             styles.uploadBanner,
@@ -946,15 +1137,47 @@ export default function FilesScreen() {
         </View>
       )}
 
-      {/* Floating action button */}
-      <TouchableOpacity
-        style={[styles.fab, { bottom: 24 + insets.bottom, backgroundColor: c.amber }]}
-        activeOpacity={0.8}
-        onPress={handleFabPress}
-        disabled={!!uploadingName}
-      >
-        <Text style={[styles.fabText, { color: c.ink }]}>+</Text>
-      </TouchableOpacity>
+      {/* Batch action bar — shown in select mode */}
+      {selectMode && (
+        <View style={[styles.actionBar, { backgroundColor: c.paper, borderTopColor: c.line, paddingBottom: insets.bottom }]}>
+          <TouchableOpacity
+            style={styles.actionBarButton}
+            onPress={handleBatchShare}
+            disabled={selectedIds.size === 0}
+          >
+            <Ionicons name="share-outline" size={22} color={selectedIds.size === 0 ? c.ink4 : c.ink2} />
+            <Text style={[styles.actionBarLabel, { color: selectedIds.size === 0 ? c.ink4 : c.ink2 }]}>Share</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.actionBarButton}
+            onPress={() => void handleBatchMove()}
+            disabled={selectedIds.size === 0}
+          >
+            <Ionicons name="folder-outline" size={22} color={selectedIds.size === 0 ? c.ink4 : c.ink2} />
+            <Text style={[styles.actionBarLabel, { color: selectedIds.size === 0 ? c.ink4 : c.ink2 }]}>Move</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.actionBarButton}
+            onPress={handleBatchTrash}
+            disabled={selectedIds.size === 0}
+          >
+            <Ionicons name="trash-outline" size={22} color={selectedIds.size === 0 ? c.ink4 : c.red} />
+            <Text style={[styles.actionBarLabel, { color: selectedIds.size === 0 ? c.ink4 : c.red }]}>Trash</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
+      {/* Floating action button — hidden in select mode */}
+      {!selectMode && (
+        <TouchableOpacity
+          style={[styles.fab, { bottom: 24 + insets.bottom, backgroundColor: c.amber }]}
+          activeOpacity={0.8}
+          onPress={handleFabPress}
+          disabled={!!uploadingName}
+        >
+          <Text style={[styles.fabText, { color: c.ink }]}>+</Text>
+        </TouchableOpacity>
+      )}
     </View>
   );
 }
@@ -968,6 +1191,7 @@ const styles = StyleSheet.create({
 
   // Header
   header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: spacing.lg, paddingVertical: spacing.sm, gap: 8 },
+  selectTitle: { flex: 1, fontSize: 16, fontWeight: '600', textAlign: 'center' },
   backButton: { width: 30, height: 30, borderRadius: 15, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
   backButtonText: { fontSize: 20, fontWeight: '600', marginTop: -2 },
   title: { fontSize: 28, fontWeight: '700' },
@@ -986,6 +1210,12 @@ const styles = StyleSheet.create({
   swipeActions: { flexDirection: 'row' },
   swipeAction: { width: 72, alignItems: 'center', justifyContent: 'center', gap: 4 },
   swipeActionLabel: { color: '#fff', fontSize: 11, fontWeight: '600' },
+
+  // Multi-select
+  checkbox: { width: 22, height: 22, borderRadius: 11, borderWidth: 1.5, alignItems: 'center', justifyContent: 'center' },
+  actionBar: { position: 'absolute', bottom: 0, left: 0, right: 0, flexDirection: 'row', borderTopWidth: StyleSheet.hairlineWidth },
+  actionBarButton: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: 12, gap: 3 },
+  actionBarLabel: { fontSize: 10, fontWeight: '600' },
 
   // File list
   fileRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, paddingHorizontal: spacing.lg, borderBottomWidth: 1, gap: 12 },
@@ -1033,4 +1263,28 @@ const styles = StyleSheet.create({
     ...shadows.lg,
   },
   uploadBannerText: { fontSize: 13, flex: 1, fontWeight: '500' },
+  checkbox: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    borderWidth: 2,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 8,
+  },
+  actionBar: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    paddingVertical: 12,
+    borderTopWidth: 1,
+  },
+  actionBarButton: {
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 16,
+  },
+  actionBarLabel: {
+    fontSize: 11,
+    fontWeight: '500',
+  },
 });
