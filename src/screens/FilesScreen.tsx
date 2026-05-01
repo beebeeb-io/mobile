@@ -99,14 +99,16 @@ function fileCategory(entry: FileEntry): 'folder' | 'image' | 'pdf' | 'audio' | 
   return 'file';
 }
 
-const CATEGORY_LABELS: Record<string, string> = {
-  folder: 'DIR',
-  image: 'IMG',
-  pdf: 'PDF',
-  audio: 'AUD',
-  video: 'VID',
-  doc: 'DOC',
-  file: 'FILE',
+type IoniconName = React.ComponentProps<typeof Ionicons>['name'];
+
+const CATEGORY_ICONS: Record<string, IoniconName> = {
+  folder: 'folder',
+  image: 'image',
+  pdf: 'document-text',
+  audio: 'musical-notes',
+  video: 'videocam',
+  doc: 'document',
+  file: 'document-outline',
 };
 
 // ---------------------------------------------------------------------------
@@ -134,10 +136,10 @@ const FileIcon = React.memo(function FileIcon({ category }: { category: string }
     file: c.ink3,
   };
   const bg = CATEGORY_COLORS[category] ?? c.ink3;
-  const label = CATEGORY_LABELS[category] ?? 'FILE';
+  const icon: IoniconName = CATEGORY_ICONS[category] ?? 'document-outline';
   return (
     <View style={[styles.fileIcon, { backgroundColor: bg }]}>
-      <Text style={styles.fileIconText}>{label}</Text>
+      <Ionicons name={icon} size={16} color="#FFFFFF" />
     </View>
   );
 });
@@ -988,7 +990,6 @@ const styles = StyleSheet.create({
   // File list
   fileRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, paddingHorizontal: spacing.lg, borderBottomWidth: 1, gap: 12 },
   fileIcon: { width: 32, height: 32, borderRadius: radii.sm, alignItems: 'center', justifyContent: 'center' },
-  fileIconText: { color: '#FFFFFF', fontSize: 8, fontWeight: '700', letterSpacing: 0.3 },
   fileInfo: { flex: 1, minWidth: 0 },
   fileNameRow: { flexDirection: 'row', alignItems: 'center', gap: 4, minWidth: 0 },
   lockIcon: { flexShrink: 0 },

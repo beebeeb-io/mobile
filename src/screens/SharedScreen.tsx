@@ -52,16 +52,17 @@ function displayName(invite: ShareInvite): string {
   return raw;
 }
 
-/** Determine file type label from the invite. */
-function fileTypeLabel(invite: ShareInvite): string {
-  if (invite.is_folder || invite.is_folder_share) return 'DIR';
+type IoniconName = React.ComponentProps<typeof Ionicons>['name'];
+
+function fileTypeIcon(invite: ShareInvite): IoniconName {
+  if (invite.is_folder || invite.is_folder_share) return 'folder';
   const mime = invite.mime_type ?? '';
-  if (mime.startsWith('image/')) return 'IMG';
-  if (mime === 'application/pdf') return 'PDF';
-  if (mime.startsWith('audio/')) return 'AUD';
-  if (mime.startsWith('video/')) return 'VID';
-  if (mime.startsWith('text/') || mime.includes('document')) return 'DOC';
-  return 'FILE';
+  if (mime.startsWith('image/')) return 'image';
+  if (mime === 'application/pdf') return 'document-text';
+  if (mime.startsWith('audio/')) return 'musical-notes';
+  if (mime.startsWith('video/')) return 'videocam';
+  if (mime.startsWith('text/') || mime.includes('document')) return 'document';
+  return 'document-outline';
 }
 
 // ---------------------------------------------------------------------------
@@ -189,7 +190,7 @@ export default function SharedScreen() {
   const renderIncomingItem = ({ item }: { item: ShareInvite }) => (
     <View style={[styles.row, { borderBottomColor: c.line }]}>
       <View style={[styles.fileIcon, { backgroundColor: fileTypeColor(item) }]}>
-        <Text style={styles.fileIconText}>{fileTypeLabel(item)}</Text>
+        <Ionicons name={fileTypeIcon(item)} size={16} color="#FFFFFF" />
       </View>
       <View style={styles.rowInfo}>
         <Text style={[styles.rowName, { color: c.ink }]} numberOfLines={1}>{displayName(item)}</Text>
@@ -203,7 +204,7 @@ export default function SharedScreen() {
   const renderSentItem = ({ item }: { item: ShareInvite }) => (
     <View style={[styles.row, { borderBottomColor: c.line }]}>
       <View style={[styles.fileIcon, { backgroundColor: fileTypeColor(item) }]}>
-        <Text style={styles.fileIconText}>{fileTypeLabel(item)}</Text>
+        <Ionicons name={fileTypeIcon(item)} size={16} color="#FFFFFF" />
       </View>
       <View style={styles.rowInfo}>
         <Text style={[styles.rowName, { color: c.ink }]} numberOfLines={1}>{displayName(item)}</Text>
@@ -334,7 +335,6 @@ const styles = StyleSheet.create({
   // List rows
   row: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, paddingHorizontal: spacing.lg, borderBottomWidth: 1, gap: 12 },
   fileIcon: { width: 32, height: 32, borderRadius: radii.sm, alignItems: 'center', justifyContent: 'center' },
-  fileIconText: { color: '#FFFFFF', fontSize: 8, fontWeight: '700', letterSpacing: 0.3 },
   rowInfo: { flex: 1, minWidth: 0 },
   rowName: { fontSize: 14, fontWeight: '500' },
   rowMeta: { fontSize: 11, marginTop: 2 },
