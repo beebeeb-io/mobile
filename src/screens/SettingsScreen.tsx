@@ -3,6 +3,7 @@ import {
   ActivityIndicator,
   Alert,
   Linking,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   Switch,
@@ -240,6 +241,7 @@ export default function SettingsScreen() {
   const [usage, setUsage] = useState<StorageUsage | null>(null);
   const [loadingUsage, setLoadingUsage] = useState(true);
   const [backingUp, setBackingUp] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
   // Biometric lock
   const [biometricEnabled, setBiometricEnabled] = useState(false);
@@ -319,6 +321,20 @@ export default function SettingsScreen() {
     loadBiometricPrefs();
     loadAccountData();
     loadStorageRegionPref();
+  }, [fetchUsage, loadBiometricPrefs, loadAccountData, loadStorageRegionPref]);
+
+  const handleRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await Promise.all([
+        fetchUsage(),
+        loadBiometricPrefs(),
+        loadAccountData(),
+        loadStorageRegionPref(),
+      ]);
+    } finally {
+      setRefreshing(false);
+    }
   }, [fetchUsage, loadBiometricPrefs, loadAccountData, loadStorageRegionPref]);
 
   // ---------------------------------------------------------------------------
@@ -436,7 +452,19 @@ export default function SettingsScreen() {
         Settings
       </Text>
 
-      <ScrollView style={layout.scroll} contentContainerStyle={layout.scrollContent} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        style={layout.scroll}
+        contentContainerStyle={layout.scrollContent}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={handleRefresh}
+            tintColor={c.amber}
+            colors={[c.amber]}
+          />
+        }
+      >
 
         {/* ---- Account ---- */}
         <View style={layout.section}>
