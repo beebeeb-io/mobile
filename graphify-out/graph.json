@@ -9,16 +9,16 @@
       "source_file": "App.tsx",
       "source_location": "L1",
       "id": "app_tsx",
-      "community": 11,
+      "community": 12,
       "norm_label": "app.tsx"
     },
     {
       "label": "async()",
       "file_type": "code",
       "source_file": "App.tsx",
-      "source_location": "L382",
+      "source_location": "L383",
       "id": "src_app_async",
-      "community": 11,
+      "community": 12,
       "norm_label": "async()"
     },
     {
@@ -27,7 +27,7 @@
       "source_file": "theme.ts",
       "source_location": "L1",
       "id": "theme_ts",
-      "community": 18,
+      "community": 19,
       "norm_label": "theme.ts"
     },
     {
@@ -144,7 +144,7 @@
       "source_file": "screens/OnboardingScreen.tsx",
       "source_location": "L1",
       "id": "screens_onboardingscreen_tsx",
-      "community": 12,
+      "community": 13,
       "norm_label": "onboardingscreen.tsx"
     },
     {
@@ -153,7 +153,7 @@
       "source_file": "screens/OnboardingScreen.tsx",
       "source_location": "L46",
       "id": "screens_onboardingscreen_generatephrase",
-      "community": 12,
+      "community": 13,
       "norm_label": "generatephrase()"
     },
     {
@@ -162,7 +162,7 @@
       "source_file": "screens/SignupScreen.tsx",
       "source_location": "L1",
       "id": "screens_signupscreen_tsx",
-      "community": 0,
+      "community": 1,
       "norm_label": "signupscreen.tsx"
     },
     {
@@ -171,7 +171,7 @@
       "source_file": "screens/SignupScreen.tsx",
       "source_location": "L30",
       "id": "screens_signupscreen_validate",
-      "community": 0,
+      "community": 1,
       "norm_label": "validate()"
     },
     {
@@ -180,7 +180,7 @@
       "source_file": "screens/SignupScreen.tsx",
       "source_location": "L40",
       "id": "screens_signupscreen_handlesignup",
-      "community": 0,
+      "community": 1,
       "norm_label": "handlesignup()"
     },
     {
@@ -243,7 +243,7 @@
       "source_file": "screens/BiometricLockScreen.tsx",
       "source_location": "L1",
       "id": "screens_biometriclockscreen_tsx",
-      "community": 13,
+      "community": 14,
       "norm_label": "biometriclockscreen.tsx"
     },
     {
@@ -252,7 +252,7 @@
       "source_file": "screens/BiometricLockScreen.tsx",
       "source_location": "L18",
       "id": "screens_biometriclockscreen_faceidicon",
-      "community": 13,
+      "community": 14,
       "norm_label": "faceidicon()"
     },
     {
@@ -261,7 +261,7 @@
       "source_file": "screens/ShareSheetScreen.tsx",
       "source_location": "L1",
       "id": "screens_sharesheetscreen_tsx",
-      "community": 10,
+      "community": 11,
       "norm_label": "sharesheetscreen.tsx"
     },
     {
@@ -270,7 +270,7 @@
       "source_file": "screens/ShareSheetScreen.tsx",
       "source_location": "L30",
       "id": "screens_sharesheetscreen_formatsize",
-      "community": 10,
+      "community": 11,
       "norm_label": "formatsize()"
     },
     {
@@ -279,7 +279,7 @@
       "source_file": "screens/ShareSheetScreen.tsx",
       "source_location": "L38",
       "id": "screens_sharesheetscreen_filetypebadge",
-      "community": 10,
+      "community": 11,
       "norm_label": "filetypebadge()"
     },
     {
@@ -288,7 +288,7 @@
       "source_file": "screens/SharedViewScreen.tsx",
       "source_location": "L1",
       "id": "screens_sharedviewscreen_tsx",
-      "community": 19,
+      "community": 20,
       "norm_label": "sharedviewscreen.tsx"
     },
     {
@@ -394,7 +394,7 @@
       "label": "formatBytes()",
       "file_type": "code",
       "source_file": "screens/SettingsScreen.tsx",
-      "source_location": "L28",
+      "source_location": "L39",
       "id": "screens_settingsscreen_formatbytes",
       "community": 7,
       "norm_label": "formatbytes()"
@@ -403,7 +403,7 @@
       "label": "formatDate()",
       "file_type": "code",
       "source_file": "screens/SettingsScreen.tsx",
-      "source_location": "L36",
+      "source_location": "L47",
       "id": "screens_settingsscreen_formatdate",
       "community": 7,
       "norm_label": "formatdate()"
@@ -412,7 +412,7 @@
       "label": "userInitials()",
       "file_type": "code",
       "source_file": "screens/SettingsScreen.tsx",
-      "source_location": "L44",
+      "source_location": "L55",
       "id": "screens_settingsscreen_userinitials",
       "community": 7,
       "norm_label": "userinitials()"
@@ -421,10 +421,19 @@
       "label": "planLabel()",
       "file_type": "code",
       "source_file": "screens/SettingsScreen.tsx",
-      "source_location": "L53",
+      "source_location": "L64",
       "id": "screens_settingsscreen_planlabel",
       "community": 7,
       "norm_label": "planlabel()"
+    },
+    {
+      "label": "displayName()",
+      "file_type": "code",
+      "source_file": "screens/SettingsScreen.tsx",
+      "source_location": "L335",
+      "id": "screens_settingsscreen_displayname",
+      "community": 7,
+      "norm_label": "displayname()"
     },
     {
       "label": "LoginScreen.tsx",
@@ -432,7 +441,7 @@
       "source_file": "screens/LoginScreen.tsx",
       "source_location": "L1",
       "id": "screens_loginscreen_tsx",
-      "community": 0,
+      "community": 1,
       "norm_label": "loginscreen.tsx"
     },
     {
@@ -441,8 +450,44 @@
       "source_file": "screens/LoginScreen.tsx",
       "source_location": "L27",
       "id": "screens_loginscreen_handlelogin",
-      "community": 0,
+      "community": 1,
       "norm_label": "handlelogin()"
+    },
+    {
+      "label": "ErrorBoundary.tsx",
+      "file_type": "code",
+      "source_file": "components/ErrorBoundary.tsx",
+      "source_location": "L1",
+      "id": "components_errorboundary_tsx",
+      "community": 10,
+      "norm_label": "errorboundary.tsx"
+    },
+    {
+      "label": "constructor()",
+      "file_type": "code",
+      "source_file": "components/ErrorBoundary.tsx",
+      "source_location": "L15",
+      "id": "components_errorboundary_constructor",
+      "community": 10,
+      "norm_label": "constructor()"
+    },
+    {
+      "label": "getDerivedStateFromError()",
+      "file_type": "code",
+      "source_file": "components/ErrorBoundary.tsx",
+      "source_location": "L20",
+      "id": "components_errorboundary_getderivedstatefromerror",
+      "community": 10,
+      "norm_label": "getderivedstatefromerror()"
+    },
+    {
+      "label": "componentDidCatch()",
+      "file_type": "code",
+      "source_file": "components/ErrorBoundary.tsx",
+      "source_location": "L24",
+      "id": "components_errorboundary_componentdidcatch",
+      "community": 10,
+      "norm_label": "componentdidcatch()"
     },
     {
       "label": "api.ts",
@@ -477,7 +522,7 @@
       "source_file": "lib/api.ts",
       "source_location": "L63",
       "id": "lib_api_settoken",
-      "community": 0,
+      "community": 1,
       "norm_label": "settoken()"
     },
     {
@@ -486,7 +531,7 @@
       "source_file": "lib/api.ts",
       "source_location": "L68",
       "id": "lib_api_cleartoken",
-      "community": 15,
+      "community": 16,
       "norm_label": "cleartoken()"
     },
     {
@@ -504,7 +549,7 @@
       "source_file": "lib/api.ts",
       "source_location": "L82",
       "id": "lib_api_apierror",
-      "community": 14,
+      "community": 15,
       "norm_label": "apierror"
     },
     {
@@ -513,7 +558,7 @@
       "source_file": "lib/api.ts",
       "source_location": "L83",
       "id": "lib_api_apierror_constructor",
-      "community": 14,
+      "community": 15,
       "norm_label": ".constructor()"
     },
     {
@@ -522,7 +567,7 @@
       "source_file": "lib/api.ts",
       "source_location": "L90",
       "id": "lib_api_friendlyerror",
-      "community": 0,
+      "community": 1,
       "norm_label": "friendlyerror()"
     },
     {
@@ -540,7 +585,7 @@
       "source_file": "lib/api.ts",
       "source_location": "L115",
       "id": "lib_api_request",
-      "community": 1,
+      "community": 0,
       "norm_label": "request()"
     },
     {
@@ -549,7 +594,7 @@
       "source_file": "lib/api.ts",
       "source_location": "L168",
       "id": "lib_api_signup",
-      "community": 0,
+      "community": 1,
       "norm_label": "signup()"
     },
     {
@@ -558,7 +603,7 @@
       "source_file": "lib/api.ts",
       "source_location": "L174",
       "id": "lib_api_login",
-      "community": 0,
+      "community": 1,
       "norm_label": "login()"
     },
     {
@@ -567,7 +612,7 @@
       "source_file": "lib/api.ts",
       "source_location": "L180",
       "id": "lib_api_logout",
-      "community": 15,
+      "community": 16,
       "norm_label": "logout()"
     },
     {
@@ -576,14 +621,23 @@
       "source_file": "lib/api.ts",
       "source_location": "L185",
       "id": "lib_api_getme",
-      "community": 1,
+      "community": 0,
       "norm_label": "getme()"
+    },
+    {
+      "label": "createFolder()",
+      "file_type": "code",
+      "source_file": "lib/api.ts",
+      "source_location": "L208",
+      "id": "lib_api_createfolder",
+      "community": 0,
+      "norm_label": "createfolder()"
     },
     {
       "label": "listFiles()",
       "file_type": "code",
       "source_file": "lib/api.ts",
-      "source_location": "L208",
+      "source_location": "L215",
       "id": "lib_api_listfiles",
       "community": 2,
       "norm_label": "listfiles()"
@@ -592,16 +646,16 @@
       "label": "getFile()",
       "file_type": "code",
       "source_file": "lib/api.ts",
-      "source_location": "L218",
+      "source_location": "L225",
       "id": "lib_api_getfile",
-      "community": 1,
+      "community": 0,
       "norm_label": "getfile()"
     },
     {
       "label": "uploadFile()",
       "file_type": "code",
       "source_file": "lib/api.ts",
-      "source_location": "L222",
+      "source_location": "L229",
       "id": "lib_api_uploadfile",
       "community": 8,
       "norm_label": "uploadfile()"
@@ -610,7 +664,7 @@
       "label": "downloadFile()",
       "file_type": "code",
       "source_file": "lib/api.ts",
-      "source_location": "L245",
+      "source_location": "L252",
       "id": "lib_api_downloadfile",
       "community": 8,
       "norm_label": "downloadfile()"
@@ -619,43 +673,43 @@
       "label": "deleteFile()",
       "file_type": "code",
       "source_file": "lib/api.ts",
-      "source_location": "L256",
+      "source_location": "L263",
       "id": "lib_api_deletefile",
-      "community": 1,
+      "community": 0,
       "norm_label": "deletefile()"
     },
     {
       "label": "restoreFile()",
       "file_type": "code",
       "source_file": "lib/api.ts",
-      "source_location": "L260",
+      "source_location": "L267",
       "id": "lib_api_restorefile",
-      "community": 1,
+      "community": 0,
       "norm_label": "restorefile()"
     },
     {
       "label": "createShare()",
       "file_type": "code",
       "source_file": "lib/api.ts",
-      "source_location": "L276",
+      "source_location": "L283",
       "id": "lib_api_createshare",
-      "community": 2,
+      "community": 0,
       "norm_label": "createshare()"
     },
     {
       "label": "listMyShares()",
       "file_type": "code",
       "source_file": "lib/api.ts",
-      "source_location": "L283",
+      "source_location": "L290",
       "id": "lib_api_listmyshares",
-      "community": 1,
+      "community": 2,
       "norm_label": "listmyshares()"
     },
     {
       "label": "getIncomingInvites()",
       "file_type": "code",
       "source_file": "lib/api.ts",
-      "source_location": "L316",
+      "source_location": "L323",
       "id": "lib_api_getincominginvites",
       "community": 2,
       "norm_label": "getincominginvites()"
@@ -664,7 +718,7 @@
       "label": "getSentInvites()",
       "file_type": "code",
       "source_file": "lib/api.ts",
-      "source_location": "L321",
+      "source_location": "L328",
       "id": "lib_api_getsentinvites",
       "community": 2,
       "norm_label": "getsentinvites()"
@@ -673,25 +727,52 @@
       "label": "getStorageUsage()",
       "file_type": "code",
       "source_file": "lib/api.ts",
-      "source_location": "L336",
+      "source_location": "L343",
       "id": "lib_api_getstorageusage",
-      "community": 1,
+      "community": 0,
       "norm_label": "getstorageusage()"
+    },
+    {
+      "label": "getPreference()",
+      "file_type": "code",
+      "source_file": "lib/api.ts",
+      "source_location": "L351",
+      "id": "lib_api_getpreference",
+      "community": 2,
+      "norm_label": "getpreference()"
+    },
+    {
+      "label": "setPreference()",
+      "file_type": "code",
+      "source_file": "lib/api.ts",
+      "source_location": "L360",
+      "id": "lib_api_setpreference",
+      "community": 0,
+      "norm_label": "setpreference()"
+    },
+    {
+      "label": "getSubscription()",
+      "file_type": "code",
+      "source_file": "lib/api.ts",
+      "source_location": "L375",
+      "id": "lib_api_getsubscription",
+      "community": 2,
+      "norm_label": "getsubscription()"
     },
     {
       "label": "getRegion()",
       "file_type": "code",
       "source_file": "lib/api.ts",
-      "source_location": "L350",
+      "source_location": "L394",
       "id": "lib_api_getregion",
-      "community": 1,
+      "community": 0,
       "norm_label": "getregion()"
     },
     {
       "label": "getDownloadUrl()",
       "file_type": "code",
       "source_file": "lib/api.ts",
-      "source_location": "L359",
+      "source_location": "L403",
       "id": "lib_api_getdownloadurl",
       "community": 2,
       "norm_label": "getdownloadurl()"
@@ -702,7 +783,7 @@
       "source_file": "lib/useNetworkStatus.ts",
       "source_location": "L1",
       "id": "lib_usenetworkstatus_ts",
-      "community": 16,
+      "community": 17,
       "norm_label": "usenetworkstatus.ts"
     },
     {
@@ -711,7 +792,7 @@
       "source_file": "lib/useNetworkStatus.ts",
       "source_location": "L4",
       "id": "lib_usenetworkstatus_usenetworkstatus",
-      "community": 16,
+      "community": 17,
       "norm_label": "usenetworkstatus()"
     },
     {
@@ -720,7 +801,7 @@
       "source_file": "lib/auth.ts",
       "source_location": "L1",
       "id": "lib_auth_ts",
-      "community": 17,
+      "community": 18,
       "norm_label": "auth.ts"
     },
     {
@@ -729,7 +810,7 @@
       "source_file": "lib/auth.ts",
       "source_location": "L18",
       "id": "lib_auth_useauth",
-      "community": 17,
+      "community": 18,
       "norm_label": "useauth()"
     }
   ],
@@ -738,7 +819,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "App.tsx",
-      "source_location": "L382",
+      "source_location": "L383",
       "weight": 1.0,
       "_src": "app_tsx",
       "_tgt": "src_app_async",
@@ -1146,7 +1227,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "screens/SettingsScreen.tsx",
-      "source_location": "L159",
+      "source_location": "L170",
       "weight": 1.0,
       "_src": "screens_settingsscreen_tsx",
       "_tgt": "screens_settingsscreen_formatbytes",
@@ -1158,7 +1239,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "screens/SettingsScreen.tsx",
-      "source_location": "L36",
+      "source_location": "L47",
       "weight": 1.0,
       "_src": "screens_settingsscreen_tsx",
       "_tgt": "screens_settingsscreen_formatdate",
@@ -1170,7 +1251,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "screens/SettingsScreen.tsx",
-      "source_location": "L44",
+      "source_location": "L55",
       "weight": 1.0,
       "_src": "screens_settingsscreen_tsx",
       "_tgt": "screens_settingsscreen_userinitials",
@@ -1182,12 +1263,24 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "screens/SettingsScreen.tsx",
-      "source_location": "L53",
+      "source_location": "L64",
       "weight": 1.0,
       "_src": "screens_settingsscreen_tsx",
       "_tgt": "screens_settingsscreen_planlabel",
       "source": "screens_settingsscreen_tsx",
       "target": "screens_settingsscreen_planlabel",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "screens/SettingsScreen.tsx",
+      "source_location": "L335",
+      "weight": 1.0,
+      "_src": "screens_settingsscreen_tsx",
+      "_tgt": "screens_settingsscreen_displayname",
+      "source": "screens_settingsscreen_tsx",
+      "target": "screens_settingsscreen_displayname",
       "confidence_score": 1.0
     },
     {
@@ -1225,6 +1318,42 @@
       "_tgt": "lib_api_friendlyerror",
       "source": "screens_loginscreen_handlelogin",
       "target": "lib_api_friendlyerror"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "components/ErrorBoundary.tsx",
+      "source_location": "L15",
+      "weight": 1.0,
+      "_src": "components_errorboundary_tsx",
+      "_tgt": "components_errorboundary_constructor",
+      "source": "components_errorboundary_tsx",
+      "target": "components_errorboundary_constructor",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "components/ErrorBoundary.tsx",
+      "source_location": "L20",
+      "weight": 1.0,
+      "_src": "components_errorboundary_tsx",
+      "_tgt": "components_errorboundary_getderivedstatefromerror",
+      "source": "components_errorboundary_tsx",
+      "target": "components_errorboundary_getderivedstatefromerror",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "components/ErrorBoundary.tsx",
+      "source_location": "L24",
+      "weight": 1.0,
+      "_src": "components_errorboundary_tsx",
+      "_tgt": "components_errorboundary_componentdidcatch",
+      "source": "components_errorboundary_tsx",
+      "target": "components_errorboundary_componentdidcatch",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -1389,6 +1518,18 @@
       "source_location": "L208",
       "weight": 1.0,
       "_src": "lib_api_ts",
+      "_tgt": "lib_api_createfolder",
+      "source": "lib_api_ts",
+      "target": "lib_api_createfolder",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "lib/api.ts",
+      "source_location": "L215",
+      "weight": 1.0,
+      "_src": "lib_api_ts",
       "_tgt": "lib_api_listfiles",
       "source": "lib_api_ts",
       "target": "lib_api_listfiles",
@@ -1398,7 +1539,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "lib/api.ts",
-      "source_location": "L218",
+      "source_location": "L225",
       "weight": 1.0,
       "_src": "lib_api_ts",
       "_tgt": "lib_api_getfile",
@@ -1410,7 +1551,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "lib/api.ts",
-      "source_location": "L222",
+      "source_location": "L229",
       "weight": 1.0,
       "_src": "lib_api_ts",
       "_tgt": "lib_api_uploadfile",
@@ -1422,7 +1563,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "lib/api.ts",
-      "source_location": "L245",
+      "source_location": "L252",
       "weight": 1.0,
       "_src": "lib_api_ts",
       "_tgt": "lib_api_downloadfile",
@@ -1434,7 +1575,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "lib/api.ts",
-      "source_location": "L256",
+      "source_location": "L263",
       "weight": 1.0,
       "_src": "lib_api_ts",
       "_tgt": "lib_api_deletefile",
@@ -1446,7 +1587,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "lib/api.ts",
-      "source_location": "L260",
+      "source_location": "L267",
       "weight": 1.0,
       "_src": "lib_api_ts",
       "_tgt": "lib_api_restorefile",
@@ -1458,7 +1599,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "lib/api.ts",
-      "source_location": "L276",
+      "source_location": "L283",
       "weight": 1.0,
       "_src": "lib_api_ts",
       "_tgt": "lib_api_createshare",
@@ -1470,7 +1611,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "lib/api.ts",
-      "source_location": "L283",
+      "source_location": "L290",
       "weight": 1.0,
       "_src": "lib_api_ts",
       "_tgt": "lib_api_listmyshares",
@@ -1482,7 +1623,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "lib/api.ts",
-      "source_location": "L316",
+      "source_location": "L323",
       "weight": 1.0,
       "_src": "lib_api_ts",
       "_tgt": "lib_api_getincominginvites",
@@ -1494,7 +1635,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "lib/api.ts",
-      "source_location": "L321",
+      "source_location": "L328",
       "weight": 1.0,
       "_src": "lib_api_ts",
       "_tgt": "lib_api_getsentinvites",
@@ -1506,7 +1647,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "lib/api.ts",
-      "source_location": "L336",
+      "source_location": "L343",
       "weight": 1.0,
       "_src": "lib_api_ts",
       "_tgt": "lib_api_getstorageusage",
@@ -1518,7 +1659,43 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "lib/api.ts",
-      "source_location": "L350",
+      "source_location": "L351",
+      "weight": 1.0,
+      "_src": "lib_api_ts",
+      "_tgt": "lib_api_getpreference",
+      "source": "lib_api_ts",
+      "target": "lib_api_getpreference",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "lib/api.ts",
+      "source_location": "L360",
+      "weight": 1.0,
+      "_src": "lib_api_ts",
+      "_tgt": "lib_api_setpreference",
+      "source": "lib_api_ts",
+      "target": "lib_api_setpreference",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "lib/api.ts",
+      "source_location": "L375",
+      "weight": 1.0,
+      "_src": "lib_api_ts",
+      "_tgt": "lib_api_getsubscription",
+      "source": "lib_api_ts",
+      "target": "lib_api_getsubscription",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "lib/api.ts",
+      "source_location": "L394",
       "weight": 1.0,
       "_src": "lib_api_ts",
       "_tgt": "lib_api_getregion",
@@ -1530,7 +1707,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "lib/api.ts",
-      "source_location": "L359",
+      "source_location": "L403",
       "weight": 1.0,
       "_src": "lib_api_ts",
       "_tgt": "lib_api_getdownloadurl",
@@ -1566,7 +1743,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "lib/api.ts",
-      "source_location": "L226",
+      "source_location": "L233",
       "weight": 1.0,
       "_src": "lib_api_uploadfile",
       "_tgt": "lib_api_gettoken",
@@ -1578,7 +1755,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "lib/api.ts",
-      "source_location": "L246",
+      "source_location": "L253",
       "weight": 1.0,
       "_src": "lib_api_downloadfile",
       "_tgt": "lib_api_gettoken",
@@ -1686,7 +1863,19 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "lib/api.ts",
-      "source_location": "L219",
+      "source_location": "L209",
+      "weight": 1.0,
+      "_src": "lib_api_createfolder",
+      "_tgt": "lib_api_request",
+      "source": "lib_api_request",
+      "target": "lib_api_createfolder",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "calls",
+      "confidence": "EXTRACTED",
+      "source_file": "lib/api.ts",
+      "source_location": "L226",
       "weight": 1.0,
       "_src": "lib_api_getfile",
       "_tgt": "lib_api_request",
@@ -1698,7 +1887,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "lib/api.ts",
-      "source_location": "L257",
+      "source_location": "L264",
       "weight": 1.0,
       "_src": "lib_api_deletefile",
       "_tgt": "lib_api_request",
@@ -1710,7 +1899,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "lib/api.ts",
-      "source_location": "L261",
+      "source_location": "L268",
       "weight": 1.0,
       "_src": "lib_api_restorefile",
       "_tgt": "lib_api_request",
@@ -1722,7 +1911,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "lib/api.ts",
-      "source_location": "L280",
+      "source_location": "L287",
       "weight": 1.0,
       "_src": "lib_api_createshare",
       "_tgt": "lib_api_request",
@@ -1734,7 +1923,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "lib/api.ts",
-      "source_location": "L284",
+      "source_location": "L291",
       "weight": 1.0,
       "_src": "lib_api_listmyshares",
       "_tgt": "lib_api_request",
@@ -1746,7 +1935,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "lib/api.ts",
-      "source_location": "L337",
+      "source_location": "L344",
       "weight": 1.0,
       "_src": "lib_api_getstorageusage",
       "_tgt": "lib_api_request",
@@ -1758,7 +1947,19 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "lib/api.ts",
-      "source_location": "L351",
+      "source_location": "L361",
+      "weight": 1.0,
+      "_src": "lib_api_setpreference",
+      "_tgt": "lib_api_request",
+      "source": "lib_api_request",
+      "target": "lib_api_setpreference",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "calls",
+      "confidence": "EXTRACTED",
+      "source_file": "lib/api.ts",
+      "source_location": "L395",
       "weight": 1.0,
       "_src": "lib_api_getregion",
       "_tgt": "lib_api_request",
