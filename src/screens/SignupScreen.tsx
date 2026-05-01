@@ -142,6 +142,7 @@ export default function SignupScreen() {
           autoCorrect={false}
           autoComplete="email"
           returnKeyType="next"
+          blurOnSubmit={false}
           onSubmitEditing={() => passwordRef.current?.focus()}
           testID="email-input"
           editable={!loading}
@@ -160,6 +161,7 @@ export default function SignupScreen() {
           autoCapitalize="none"
           autoComplete="new-password"
           returnKeyType="next"
+          blurOnSubmit={false}
           onSubmitEditing={() => confirmPasswordRef.current?.focus()}
           testID="password-input"
           editable={!loading}
