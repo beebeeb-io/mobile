@@ -1,14 +1,16 @@
 /**
- * Local SQLite sync index for the device backup system.
+ * Local sync index for the device backup system.
  *
  * Tracks which local assets (photos, videos, contacts, calendar events) have
  * been uploaded to the user's encrypted Backups/ folder, so we can perform
  * incremental syncs without listing remote files every cycle.
  *
+ * Uses an in-memory store that works in Expo Go. For production dev builds
+ * with native modules, this can be swapped to expo-sqlite for persistence
+ * across app restarts.
+ *
  * See docs/specs/010-device-backup-system.md for the full design.
  */
-
-import * as SQLite from 'expo-sqlite';
 
 export type BackupAssetType = 'photo' | 'video' | 'contact' | 'calendar';
 export type BackupAssetStatus = 'pending' | 'uploading' | 'uploaded' | 'failed';
@@ -25,55 +27,19 @@ export interface BackupAsset {
   status: BackupAssetStatus;
 }
 
-const DB_NAME = 'beebeeb_backup.db';
+const store = new Map<string, BackupAsset>();
 
-let dbPromise: Promise<SQLite.SQLiteDatabase> | null = null;
-
-async function getDb(): Promise<SQLite.SQLiteDatabase> {
-  if (!dbPromise) {
-    dbPromise = (async () => {
-      const database = await SQLite.openDatabaseAsync(DB_NAME);
-      await database.execAsync(`
-        PRAGMA journal_mode = WAL;
-        CREATE TABLE IF NOT EXISTS backup_assets (
-          local_asset_id TEXT PRIMARY KEY NOT NULL,
-          remote_file_id TEXT,
-          remote_path TEXT,
-          content_hash TEXT NOT NULL,
-          file_size INTEGER NOT NULL,
-          created_at TEXT NOT NULL,
-          uploaded_at TEXT,
-          asset_type TEXT NOT NULL,
-          status TEXT NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_backup_assets_status ON backup_assets(status);
-        CREATE INDEX IF NOT EXISTS idx_backup_assets_asset_type ON backup_assets(asset_type);
-      `);
-      return database;
-    })();
-  }
-  return dbPromise;
-}
-
-export async function initDatabase(): Promise<void> {
-  await getDb();
-}
+export async function initDatabase(): Promise<void> {}
 
 export async function getAsset(localAssetId: string): Promise<BackupAsset | null> {
-  const db = await getDb();
-  const row = await db.getFirstAsync<BackupAsset>(
-    'SELECT * FROM backup_assets WHERE local_asset_id = ?',
-    [localAssetId]
-  );
-  return row ?? null;
+  return store.get(localAssetId) ?? null;
 }
 
 export async function upsertAsset(
   asset: Partial<BackupAsset> & { local_asset_id: string }
 ): Promise<void> {
-  const db = await getDb();
-  const existing = await getAsset(asset.local_asset_id);
-  const merged: BackupAsset = {
+  const existing = store.get(asset.local_asset_id);
+  store.set(asset.local_asset_id, {
     local_asset_id: asset.local_asset_id,
     remote_file_id: asset.remote_file_id ?? existing?.remote_file_id ?? null,
     remote_path: asset.remote_path ?? existing?.remote_path ?? null,
@@ -83,79 +49,49 @@ export async function upsertAsset(
     uploaded_at: asset.uploaded_at ?? existing?.uploaded_at ?? null,
     asset_type: asset.asset_type ?? existing?.asset_type ?? 'photo',
     status: asset.status ?? existing?.status ?? 'pending',
-  };
-  await db.runAsync(
-    `INSERT OR REPLACE INTO backup_assets
-     (local_asset_id, remote_file_id, remote_path, content_hash, file_size,
-      created_at, uploaded_at, asset_type, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      merged.local_asset_id,
-      merged.remote_file_id,
-      merged.remote_path,
-      merged.content_hash,
-      merged.file_size,
-      merged.created_at,
-      merged.uploaded_at,
-      merged.asset_type,
-      merged.status,
-    ]
-  );
+  });
 }
 
 export async function getPendingAssets(assetType?: BackupAssetType): Promise<BackupAsset[]> {
-  const db = await getDb();
-  if (assetType) {
-    return db.getAllAsync<BackupAsset>(
-      `SELECT * FROM backup_assets
-       WHERE status IN ('pending', 'failed') AND asset_type = ?
-       ORDER BY created_at ASC`,
-      [assetType]
-    );
+  const results: BackupAsset[] = [];
+  for (const a of store.values()) {
+    if (a.status === 'pending' || a.status === 'failed') {
+      if (!assetType || a.asset_type === assetType) results.push(a);
+    }
   }
-  return db.getAllAsync<BackupAsset>(
-    `SELECT * FROM backup_assets
-     WHERE status IN ('pending', 'failed')
-     ORDER BY created_at ASC`
-  );
+  return results.sort((a, b) => a.created_at.localeCompare(b.created_at));
 }
 
 export async function getUploadedCount(assetType: BackupAssetType): Promise<number> {
-  const db = await getDb();
-  const row = await db.getFirstAsync<{ count: number }>(
-    `SELECT COUNT(*) AS count FROM backup_assets
-     WHERE status = 'uploaded' AND asset_type = ?`,
-    [assetType]
-  );
-  return row?.count ?? 0;
+  let count = 0;
+  for (const a of store.values()) {
+    if (a.status === 'uploaded' && a.asset_type === assetType) count++;
+  }
+  return count;
 }
 
 export async function getTotalCount(assetType: BackupAssetType): Promise<number> {
-  const db = await getDb();
-  const row = await db.getFirstAsync<{ count: number }>(
-    'SELECT COUNT(*) AS count FROM backup_assets WHERE asset_type = ?',
-    [assetType]
-  );
-  return row?.count ?? 0;
+  let count = 0;
+  for (const a of store.values()) {
+    if (a.asset_type === assetType) count++;
+  }
+  return count;
 }
 
 export async function getTotalBytes(assetType: BackupAssetType): Promise<number> {
-  const db = await getDb();
-  const row = await db.getFirstAsync<{ total: number | null }>(
-    'SELECT SUM(file_size) AS total FROM backup_assets WHERE asset_type = ?',
-    [assetType]
-  );
-  return row?.total ?? 0;
+  let total = 0;
+  for (const a of store.values()) {
+    if (a.asset_type === assetType) total += a.file_size;
+  }
+  return total;
 }
 
 export async function getUploadedBytes(assetType: BackupAssetType): Promise<number> {
-  const db = await getDb();
-  const row = await db.getFirstAsync<{ total: number | null }>(
-    `SELECT SUM(file_size) AS total FROM backup_assets
-     WHERE status = 'uploaded' AND asset_type = ?`,
-    [assetType]
-  );
-  return row?.total ?? 0;
+  let total = 0;
+  for (const a of store.values()) {
+    if (a.status === 'uploaded' && a.asset_type === assetType) total += a.file_size;
+  }
+  return total;
 }
 
 export async function markUploaded(
@@ -163,40 +99,38 @@ export async function markUploaded(
   remoteFileId: string,
   remotePath: string
 ): Promise<void> {
-  const db = await getDb();
-  await db.runAsync(
-    `UPDATE backup_assets
-     SET status = 'uploaded', remote_file_id = ?, remote_path = ?, uploaded_at = ?
-     WHERE local_asset_id = ?`,
-    [remoteFileId, remotePath, new Date().toISOString(), localAssetId]
-  );
+  const asset = store.get(localAssetId);
+  if (asset) {
+    asset.status = 'uploaded';
+    asset.remote_file_id = remoteFileId;
+    asset.remote_path = remotePath;
+    asset.uploaded_at = new Date().toISOString();
+  }
 }
 
 export async function markFailed(localAssetId: string, _error?: string): Promise<void> {
-  const db = await getDb();
-  await db.runAsync(
-    `UPDATE backup_assets SET status = 'failed' WHERE local_asset_id = ?`,
-    [localAssetId]
-  );
+  const asset = store.get(localAssetId);
+  if (asset) asset.status = 'failed';
 }
 
 export async function markUploading(localAssetId: string): Promise<void> {
-  const db = await getDb();
-  await db.runAsync(
-    `UPDATE backup_assets SET status = 'uploading' WHERE local_asset_id = ?`,
-    [localAssetId]
-  );
+  const asset = store.get(localAssetId);
+  if (asset) asset.status = 'uploading';
 }
 
 export async function resetFailedAssets(): Promise<number> {
-  const db = await getDb();
-  const result = await db.runAsync(
-    `UPDATE backup_assets SET status = 'pending' WHERE status = 'failed'`
-  );
-  return result.changes ?? 0;
+  let count = 0;
+  for (const a of store.values()) {
+    if (a.status === 'failed') {
+      a.status = 'pending';
+      count++;
+    }
+  }
+  return count;
 }
 
 export async function clearAssets(assetType: BackupAssetType): Promise<void> {
-  const db = await getDb();
-  await db.runAsync('DELETE FROM backup_assets WHERE asset_type = ?', [assetType]);
+  for (const [key, a] of store) {
+    if (a.asset_type === assetType) store.delete(key);
+  }
 }
