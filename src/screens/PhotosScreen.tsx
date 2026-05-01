@@ -114,6 +114,9 @@ function FilterChips({
               { backgroundColor: c.paper2, borderColor: c.line },
               isActive && { backgroundColor: c.ink, borderColor: c.ink },
             ]}
+            accessibilityLabel={`${label} view${isActive ? ', selected' : ''}`}
+            accessibilityRole="tab"
+            accessibilityState={{ selected: isActive }}
           >
             <Text style={[
               styles.chipText,

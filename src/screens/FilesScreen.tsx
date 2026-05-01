@@ -225,6 +225,9 @@ const FileRowItem = React.memo(function FileRowItem({
       onPress={() => selectMode ? onToggleSelect(item) : onPress(item)}
       onLongPress={selectMode ? undefined : () => onLongPress(item)}
       delayLongPress={400}
+      accessibilityLabel={selectMode ? `${isSelected ? 'Deselect' : 'Select'} ${nameText}` : nameText}
+      accessibilityRole="button"
+      accessibilityState={selectMode ? { selected: isSelected } : undefined}
     >
       {selectMode && (
         <View style={[
@@ -1031,6 +1034,8 @@ export default function FilesScreen() {
               onPress={() => enterSelectMode()}
               hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
               style={styles.searchButton}
+              accessibilityLabel="Select files"
+              accessibilityRole="button"
             >
               <Text style={{ color: c.ink2, fontSize: 13, fontWeight: '500' }}>Select</Text>
             </TouchableOpacity>
@@ -1040,6 +1045,8 @@ export default function FilesScreen() {
               onPress={handleSortPress}
               hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
               style={styles.searchButton}
+              accessibilityLabel={`Sort files, current: ${SORT_LABELS[sortOrder]}`}
+              accessibilityRole="button"
             >
               <Ionicons
                 name="swap-vertical"
@@ -1052,6 +1059,8 @@ export default function FilesScreen() {
             onPress={handleSearchToggle}
             hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
             style={styles.searchButton}
+            accessibilityLabel={searchActive ? 'Close search' : 'Search files'}
+            accessibilityRole="button"
           >
             <Ionicons
               name={searchActive ? 'close' : 'search'}
@@ -1078,7 +1087,12 @@ export default function FilesScreen() {
             autoCorrect={false}
             clearButtonMode="while-editing"
           />
-          <TouchableOpacity onPress={handleSearchToggle} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+          <TouchableOpacity
+            onPress={handleSearchToggle}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            accessibilityLabel="Cancel search"
+            accessibilityRole="button"
+          >
             <Text style={{ color: c.amberDeep, fontSize: 14, fontWeight: '600' }}>Cancel</Text>
           </TouchableOpacity>
         </View>
@@ -1174,6 +1188,8 @@ export default function FilesScreen() {
           activeOpacity={0.8}
           onPress={handleFabPress}
           disabled={!!uploadingName}
+          accessibilityLabel="Add file or folder"
+          accessibilityRole="button"
         >
           <Text style={[styles.fabText, { color: c.ink }]}>+</Text>
         </TouchableOpacity>
