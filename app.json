@@ -48,7 +48,7 @@
     "plugins": [
       "expo-secure-store",
       "expo-local-authentication",
-      "./modules/beebeeb-crypto"
+      "./modules/beebeeb-crypto/app.plugin.js"
     ],
     "extra": {
       "eas": {
