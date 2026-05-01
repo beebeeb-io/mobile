@@ -269,6 +269,10 @@ export async function renameFile(id: string, newName: string): Promise<void> {
   await request('POST', `/api/v1/files/${id}/rename`, { name_encrypted: newName });
 }
 
+export async function moveFile(fileId: string, newParentId: string | null): Promise<void> {
+  await request('POST', `/api/v1/files/${fileId}/move`, { parent_id: newParentId });
+}
+
 export async function restoreFile(id: string): Promise<void> {
   await request('POST', `/api/v1/files/${id}/restore`);
 }
