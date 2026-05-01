@@ -1674,12 +1674,23 @@ export default function FilesScreen() {
     );
   }, [decryptedNames]);
 
+  // Long-press enters multi-select with the pressed row already selected,
+  // matching the runbook expectation. The previous ActionSheet (rename,
+  // pin, prove-existence, etc.) is reachable from the multi-select toolbar
+  // and via swipe; if more single-row actions need to come back, attach a
+  // discrete trigger (e.g. a tappable "..." chip) instead of overloading
+  // long-press.
+  const handleRowLongPress = useCallback((item: FileEntry) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    enterSelectMode(item.id);
+  }, [enterSelectMode]);
+
   const renderFileRow = useCallback(({ item }: { item: FileEntry }) => (
     <FileRowItem
       item={item}
       decryptedName={decryptedNames[item.id]}
       onPress={openFile}
-      onLongPress={handleLongPress}
+      onLongPress={handleRowLongPress}
       onShare={handleSwipeShare}
       onDelete={handleSwipeDelete}
       selectMode={selectMode}
@@ -1690,7 +1701,7 @@ export default function FilesScreen() {
       hasProof={!!proofs[item.id]}
       isShared={item.is_folder && (item.share_count ?? 0) > 0}
     />
-  ), [decryptedNames, openFile, handleLongPress, handleSwipeShare, handleSwipeDelete, selectMode, selectedIds, toggleSelect, sortOrder, offlineIds, proofs]);
+  ), [decryptedNames, openFile, handleRowLongPress, handleSwipeShare, handleSwipeDelete, selectMode, selectedIds, toggleSelect, sortOrder, offlineIds, proofs]);
 
   // Grid sizing — 3 columns, evenly spaced, responsive to screen width
   const GRID_COLUMNS = 3;
@@ -1706,7 +1717,7 @@ export default function FilesScreen() {
       item={item}
       decryptedName={decryptedNames[item.id]}
       onPress={openFile}
-      onLongPress={handleLongPress}
+      onLongPress={handleRowLongPress}
       selectMode={selectMode}
       isSelected={selectedIds.has(item.id)}
       onToggleSelect={toggleSelect}
@@ -1716,7 +1727,7 @@ export default function FilesScreen() {
       hasProof={!!proofs[item.id]}
       isShared={item.is_folder && (item.share_count ?? 0) > 0}
     />
-  ), [decryptedNames, openFile, handleLongPress, selectMode, selectedIds, toggleSelect, sortOrder, gridCardWidth, offlineIds, proofs]);
+  ), [decryptedNames, openFile, handleRowLongPress, selectMode, selectedIds, toggleSelect, sortOrder, gridCardWidth, offlineIds, proofs]);
 
   const renderEmpty = () => {
     if (loading) return null;
