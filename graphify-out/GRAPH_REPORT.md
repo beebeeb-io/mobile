@@ -1,7 +1,7 @@
 # Graph Report - mobile  (2026-05-01)
 
 ## Corpus Check
-- 10 files · ~10,127 words
+- 10 files · ~10,190 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
@@ -47,11 +47,11 @@ Nodes (7): friendlyError(), login(), setToken(), signup(), handleLogin(), handle
 
 ### Community 1 - "Community 1"
 Cohesion: 0.25
-Nodes (8): createShare(), deleteFile(), getFile(), getMe(), getStorageUsage(), listMyShares(), request(), restoreFile()
+Nodes (8): createShare(), deleteFile(), getFile(), getMe(), getRegion(), getStorageUsage(), listMyShares(), request()
 
 ### Community 4 - "Community 4"
 Cohesion: 0.33
-Nodes (1): getRegion()
+Nodes (1): restoreFile()
 
 ### Community 6 - "Community 6"
 Cohesion: 0.4
@@ -66,7 +66,7 @@ Cohesion: 1.0
 Nodes (2): clearToken(), logout()
 
 ## Knowledge Gaps
-- **Thin community `Community 4`** (6 nodes): `getIncomingInvites()`, `getRegion()`, `getSentInvites()`, `listFiles()`, `registerSessionExpiredHandler()`, `api.ts`
+- **Thin community `Community 4`** (6 nodes): `getIncomingInvites()`, `getSentInvites()`, `listFiles()`, `registerSessionExpiredHandler()`, `restoreFile()`, `api.ts`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
 - **Thin community `Community 10`** (2 nodes): `ApiError`, `.constructor()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
