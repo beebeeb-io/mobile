@@ -13,6 +13,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import { Swipeable } from 'react-native-gesture-handler';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
@@ -25,6 +26,9 @@ import { listFiles, createFolder, deleteFile, uploadFile, friendlyError } from '
 import type { FileEntry } from '../lib/api';
 import type { RootStackParamList } from '../App';
 import { useCrypto } from '../lib/crypto-context';
+
+// Tracks the currently open Swipeable so we can close it when another opens.
+let _openSwipeable: Swipeable | null = null;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -147,6 +151,8 @@ interface FileRowItemProps {
   decryptedName: string | undefined;
   onPress: (item: FileEntry) => void;
   onLongPress: (item: FileEntry) => void;
+  onShare: (item: FileEntry) => void;
+  onDelete: (item: FileEntry) => void;
 }
 
 const FileRowItem = React.memo(function FileRowItem({
@@ -154,40 +160,94 @@ const FileRowItem = React.memo(function FileRowItem({
   decryptedName,
   onPress,
   onLongPress,
+  onShare,
+  onDelete,
 }: FileRowItemProps) {
   const { colors: c } = useTheme();
+  const swipeableRef = useRef<Swipeable>(null);
   const category = fileCategory(item);
   const isEncryptedFallback = !decryptedName && !!item.name_encrypted?.startsWith('{');
   const nameText = decryptedName ?? displayName(item);
+
+  const handleSwipeOpen = useCallback((_dir: 'left' | 'right', swipeable: Swipeable) => {
+    if (_openSwipeable && _openSwipeable !== swipeable) {
+      _openSwipeable.close();
+    }
+    _openSwipeable = swipeable;
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+  }, []);
+
+  const handleSwipeClose = useCallback(() => {
+    if (_openSwipeable === swipeableRef.current) {
+      _openSwipeable = null;
+    }
+  }, []);
+
+  const renderRightActions = useCallback(() => (
+    <View style={styles.swipeActions}>
+      <TouchableOpacity
+        style={[styles.swipeAction, { backgroundColor: c.amber }]}
+        activeOpacity={0.8}
+        onPress={() => {
+          swipeableRef.current?.close();
+          onShare(item);
+        }}
+      >
+        <Ionicons name="share-outline" size={20} color="#fff" />
+        <Text style={styles.swipeActionLabel}>Share</Text>
+      </TouchableOpacity>
+      <TouchableOpacity
+        style={[styles.swipeAction, { backgroundColor: c.red }]}
+        activeOpacity={0.8}
+        onPress={() => {
+          swipeableRef.current?.close();
+          onDelete(item);
+        }}
+      >
+        <Ionicons name="trash-outline" size={20} color="#fff" />
+        <Text style={styles.swipeActionLabel}>Trash</Text>
+      </TouchableOpacity>
+    </View>
+  ), [c, item, onShare, onDelete]);
+
   return (
-    <TouchableOpacity
-      style={[styles.fileRow, { borderBottomColor: c.line }]}
-      activeOpacity={0.6}
-      onPress={() => onPress(item)}
-      onLongPress={() => onLongPress(item)}
-      delayLongPress={400}
+    <Swipeable
+      ref={swipeableRef}
+      renderRightActions={renderRightActions}
+      onSwipeableOpen={handleSwipeOpen}
+      onSwipeableClose={handleSwipeClose}
+      overshootRight={false}
+      rightThreshold={40}
     >
-      <FileIcon category={category} />
-      <View style={styles.fileInfo}>
-        <View style={styles.fileNameRow}>
-          {isEncryptedFallback && (
-            <Ionicons name="lock-closed" size={11} color={c.ink4} style={styles.lockIcon} />
-          )}
-          <Text
-            style={[styles.fileName, { color: c.ink }, isEncryptedFallback && styles.fileNameEncrypted]}
-            numberOfLines={1}
-          >
-            {nameText}
+      <TouchableOpacity
+        style={[styles.fileRow, { borderBottomColor: c.line, backgroundColor: c.paper }]}
+        activeOpacity={0.6}
+        onPress={() => onPress(item)}
+        onLongPress={() => onLongPress(item)}
+        delayLongPress={400}
+      >
+        <FileIcon category={category} />
+        <View style={styles.fileInfo}>
+          <View style={styles.fileNameRow}>
+            {isEncryptedFallback && (
+              <Ionicons name="lock-closed" size={11} color={c.ink4} style={styles.lockIcon} />
+            )}
+            <Text
+              style={[styles.fileName, { color: c.ink }, isEncryptedFallback && styles.fileNameEncrypted]}
+              numberOfLines={1}
+            >
+              {nameText}
+            </Text>
+          </View>
+          <Text style={[styles.fileMeta, { color: c.ink3 }]}>
+            {item.is_folder
+              ? formatDate(item.updated_at)
+              : `${formatSize(item.size_bytes)}  ·  ${formatDate(item.updated_at)}`}
           </Text>
         </View>
-        <Text style={[styles.fileMeta, { color: c.ink3 }]}>
-          {item.is_folder
-            ? formatDate(item.updated_at)
-            : `${formatSize(item.size_bytes)}  ·  ${formatDate(item.updated_at)}`}
-        </Text>
-      </View>
-      <Text style={[styles.chevron, { color: c.ink4 }]}>{'›'}</Text>
-    </TouchableOpacity>
+        <Text style={[styles.chevron, { color: c.ink4 }]}>{'›'}</Text>
+      </TouchableOpacity>
+    </Swipeable>
   );
 });
 
@@ -525,14 +585,49 @@ export default function FilesScreen() {
     </View>
   );
 
+  const handleSwipeShare = useCallback((item: FileEntry) => {
+    const name = decryptedNames[item.id] ?? displayName(item);
+    navigation.navigate('ShareSheet', {
+      fileId: item.id,
+      fileName: name,
+      mimeType: item.mime_type ?? undefined,
+      sizeBytes: item.size_bytes,
+    });
+  }, [navigation, decryptedNames]);
+
+  const handleSwipeDelete = useCallback((item: FileEntry) => {
+    const name = decryptedNames[item.id] ?? displayName(item);
+    Alert.alert(
+      'Move to Trash',
+      `"${name}" will be moved to Trash.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Move to Trash',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await deleteFile(item.id);
+              setFiles((prev) => prev.filter((f) => f.id !== item.id));
+            } catch (err) {
+              Alert.alert('Error', friendlyError(err));
+            }
+          },
+        },
+      ],
+    );
+  }, [decryptedNames]);
+
   const renderFileRow = useCallback(({ item }: { item: FileEntry }) => (
     <FileRowItem
       item={item}
       decryptedName={decryptedNames[item.id]}
       onPress={openFile}
       onLongPress={handleLongPress}
+      onShare={handleSwipeShare}
+      onDelete={handleSwipeDelete}
     />
-  ), [decryptedNames, openFile, handleLongPress]);
+  ), [decryptedNames, openFile, handleLongPress, handleSwipeShare, handleSwipeDelete]);
 
   const renderEmpty = () => {
     if (loading) return null;
@@ -709,6 +804,11 @@ const styles = StyleSheet.create({
   breadcrumbSep: { fontSize: 12, marginHorizontal: 4 },
   breadcrumbText: { fontSize: 12, fontWeight: '500' },
   breadcrumbTextActive: { fontWeight: '600' },
+
+  // Swipe actions
+  swipeActions: { flexDirection: 'row' },
+  swipeAction: { width: 72, alignItems: 'center', justifyContent: 'center', gap: 4 },
+  swipeActionLabel: { color: '#fff', fontSize: 11, fontWeight: '600' },
 
   // File list
   fileRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, paddingHorizontal: spacing.lg, borderBottomWidth: 1, gap: 12 },
