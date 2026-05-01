@@ -7,6 +7,7 @@ import {
   View,
 } from 'react-native';
 import * as LocalAuthentication from 'expo-local-authentication';
+import * as Haptics from 'expo-haptics';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { colors } from '../theme';
 
@@ -46,6 +47,7 @@ export default function BiometricLockScreen({ onUnlocked }: Props) {
         disableDeviceFallback: false,
       });
       if (result.success) {
+        await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         onUnlocked();
       } else if (result.error !== 'user_cancel' && result.error !== 'system_cancel') {
         setError('Authentication failed. Tap to try again.');

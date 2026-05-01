@@ -12,6 +12,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import * as Haptics from 'expo-haptics';
 import { colors, radii, spacing, shadows } from '../theme';
 import { listFiles, friendlyError } from '../lib/api';
 import type { FileEntry } from '../lib/api';
@@ -210,6 +211,7 @@ export default function FilesScreen() {
   );
 
   const handleRefresh = useCallback(() => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     fetchFiles(currentFolder.id, true);
   }, [currentFolder.id, fetchFiles]);
 

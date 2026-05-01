@@ -350,3 +350,12 @@ export interface Region {
 export async function getRegion(): Promise<Region> {
   return request<Region>('GET', '/api/v1/region', undefined, false);
 }
+
+// ---------------------------------------------------------------------------
+// Download helpers
+// ---------------------------------------------------------------------------
+
+/** Returns the authenticated download URL for use with expo-file-system. */
+export function getDownloadUrl(id: string): string {
+  return `${BASE_URL}/api/v1/files/${id}/download`;
+}

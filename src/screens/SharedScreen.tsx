@@ -8,6 +8,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import * as Haptics from 'expo-haptics';
 import { colors, radii, spacing } from '../theme';
 import { getIncomingInvites, getSentInvites, friendlyError } from '../lib/api';
 import type { ShareInvite } from '../lib/api';
@@ -216,7 +217,9 @@ export default function SharedScreen() {
   const loading = isIncoming ? incomingLoading : sentLoading;
   const refreshing = isIncoming ? incomingRefreshing : sentRefreshing;
   const error = isIncoming ? incomingError : sentError;
-  const onRefresh = isIncoming ? () => fetchIncoming(true) : () => fetchSent(true);
+  const onRefresh = isIncoming
+    ? () => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); fetchIncoming(true); }
+    : () => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); fetchSent(true); };
   const onRetry = isIncoming ? () => fetchIncoming() : () => fetchSent();
   const renderItem = isIncoming ? renderIncomingItem : renderSentItem;
   const emptyMessage = isIncoming

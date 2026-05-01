@@ -16,6 +16,7 @@ import { useAuth } from '../lib/auth';
 import { getStorageUsage, type StorageUsage } from '../lib/api';
 
 const BIOMETRIC_PREF_KEY = 'beebeeb_biometric_lock';
+const CAMERA_BACKUP_KEY = 'beebeeb_camera_backup';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -175,6 +176,9 @@ export default function SettingsScreen() {
   // Notifications preference (stored locally)
   const [notificationsEnabled, setNotificationsEnabled] = useState(false);
 
+  // Camera roll backup preference
+  const [cameraBackupEnabled, setCameraBackupEnabled] = useState(false);
+
   const fetchUsage = useCallback(async () => {
     try {
       const data = await getStorageUsage();
@@ -194,6 +198,9 @@ export default function SettingsScreen() {
 
       const stored = await SecureStore.getItemAsync(BIOMETRIC_PREF_KEY);
       setBiometricEnabled(stored === 'true');
+
+      const camStored = await SecureStore.getItemAsync(CAMERA_BACKUP_KEY);
+      setCameraBackupEnabled(camStored === 'true');
     } catch {
       // Biometrics unavailable on this device/platform
     } finally {
@@ -223,6 +230,11 @@ export default function SettingsScreen() {
   const handleNotificationsToggle = useCallback((enabled: boolean) => {
     setNotificationsEnabled(enabled);
     // Notification permission request would go here
+  }, []);
+
+  const handleCameraBackupToggle = useCallback(async (enabled: boolean) => {
+    setCameraBackupEnabled(enabled);
+    await SecureStore.setItemAsync(CAMERA_BACKUP_KEY, enabled ? 'true' : 'false');
   }, []);
 
   const handleSignOut = useCallback(() => {
@@ -317,6 +329,28 @@ export default function SettingsScreen() {
             <SettingsRow label="Change password" />
             <RowDivider />
             <SettingsRow label="Two-factor authentication" />
+          </View>
+        </View>
+
+        {/* ---- Backup ---- */}
+        <View style={styles.section}>
+          <SectionHeader title="Backup" />
+          <View style={styles.card}>
+            <ToggleRow
+              label="Back up camera roll"
+              value={cameraBackupEnabled}
+              onValueChange={handleCameraBackupToggle}
+            />
+            {cameraBackupEnabled && (
+              <>
+                <RowDivider />
+                <View style={styles.backupNote}>
+                  <Text style={styles.backupNoteText}>
+                    Camera backup will be available once native crypto bindings are integrated.
+                  </Text>
+                </View>
+              </>
+            )}
           </View>
         </View>
 
@@ -512,6 +546,17 @@ const styles = StyleSheet.create({
   storageBarLabel: {
     fontSize: 11,
     color: colors.ink3,
+  },
+
+  // Backup note
+  backupNote: {
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  backupNoteText: {
+    fontSize: 12,
+    color: colors.ink3,
+    lineHeight: 17,
   },
 
   // Footer
