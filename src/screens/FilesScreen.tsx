@@ -23,6 +23,7 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import * as Haptics from 'expo-haptics';
 import * as SecureStore from 'expo-secure-store';
 import * as DocumentPicker from 'expo-document-picker';
+import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 import * as MediaLibrary from 'expo-media-library';
@@ -53,8 +54,10 @@ function formatSize(bytes: number): string {
 }
 
 /** Format an ISO date string into a relative or short date. */
-function formatDate(iso: string): string {
+function formatDate(iso: string | null | undefined): string {
+  if (!iso) return 'just now';
   const date = new Date(iso);
+  if (isNaN(date.getTime())) return 'just now';
   const now = new Date();
   const diffMs = now.getTime() - date.getTime();
   const diffMins = Math.floor(diffMs / 60000);
@@ -752,27 +755,96 @@ export default function FilesScreen() {
     }
   }, [currentFolder.id, fetchFiles, showToast]);
 
+  const pickAndUploadPhotos = useCallback(async () => {
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert('Permission required', 'Allow photo library access to upload photos.');
+      return;
+    }
+
+    let picked: ImagePicker.ImagePickerResult;
+    try {
+      picked = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsMultipleSelection: true,
+        quality: 1,
+      });
+    } catch (err) {
+      Alert.alert('Error', friendlyError(err));
+      return;
+    }
+    if (picked.canceled || picked.assets.length === 0) return;
+
+    const total = picked.assets.length;
+    let successCount = 0;
+    for (let i = 0; i < total; i++) {
+      const asset = picked.assets[i]!;
+      const name = asset.fileName ?? `photo-${Date.now()}-${i}.jpg`;
+      setUploadingName(total > 1 ? `${name} (${i + 1}/${total})` : name);
+      setUploadProgress({ percent: 0, phase: 'Preparing...' });
+      try {
+        const response = await fetch(asset.uri);
+        const blob = await response.blob();
+        const uploaded = await uploadFile(
+          {
+            name_encrypted: name,
+            parent_id: currentFolder.id ?? undefined,
+            mime_type: asset.mimeType ?? 'image/jpeg',
+            size_bytes: asset.fileSize ?? blob.size,
+          },
+          blob,
+          (progress) => {
+            const percent = progress.bytesTotal > 0
+              ? Math.round((progress.bytesUploaded / progress.bytesTotal) * 100)
+              : 0;
+            const phase = progress.phase === 'preparing' ? 'Preparing...'
+              : progress.phase === 'finalizing' ? 'Finalizing...'
+              : `${percent}%`;
+            setUploadProgress({ percent, phase });
+          },
+        );
+        setFiles((prev) => [uploaded, ...prev]);
+        successCount += 1;
+      } catch (err) {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+        showToast({ type: 'error', message: `${name}: ${friendlyError(err)}` });
+      }
+    }
+    setUploadingName(null);
+    setUploadProgress(null);
+    if (successCount > 0) {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      showToast({
+        type: 'success',
+        message: successCount === 1 ? 'Photo uploaded' : `${successCount} photos uploaded`,
+      });
+      fetchFiles(currentFolder.id, true);
+    }
+  }, [currentFolder.id, fetchFiles, showToast]);
+
   const handleFabPress = useCallback(() => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     if (Platform.OS === 'ios') {
       ActionSheetIOS.showActionSheetWithOptions(
         {
-          options: ['Upload file', 'New folder', 'Cancel'],
-          cancelButtonIndex: 2,
+          options: ['Upload file', 'Upload photo', 'New folder', 'Cancel'],
+          cancelButtonIndex: 3,
         },
         (index) => {
           if (index === 0) pickAndUploadFile();
-          else if (index === 1) showNewFolderPrompt();
+          else if (index === 1) pickAndUploadPhotos();
+          else if (index === 2) showNewFolderPrompt();
         },
       );
     } else {
       Alert.alert('Add to Drive', undefined, [
         { text: 'Upload file', onPress: pickAndUploadFile },
+        { text: 'Upload photo', onPress: pickAndUploadPhotos },
         { text: 'New folder', onPress: showNewFolderPrompt },
         { text: 'Cancel', style: 'cancel' },
       ]);
     }
-  }, [pickAndUploadFile]);
+  }, [pickAndUploadFile, pickAndUploadPhotos]);
 
   const showNewFolderPrompt = useCallback(() => {
     if (Platform.OS === 'ios') {
@@ -784,7 +856,13 @@ export default function FilesScreen() {
           if (!trimmed) return;
           try {
             const folder = await createFolder(trimmed, currentFolder.id ?? undefined);
-            setFiles((prev) => [folder, ...prev]);
+            const now = new Date().toISOString();
+            const safe: FileEntry = {
+              ...folder,
+              created_at: folder.created_at ?? now,
+              updated_at: folder.updated_at ?? now,
+            };
+            setFiles((prev) => [safe, ...prev]);
           } catch (err) {
             Alert.alert('Error', friendlyError(err));
           }
@@ -1680,7 +1758,7 @@ export default function FilesScreen() {
               accessibilityLabel="Select files"
               accessibilityRole="button"
             >
-              <Text style={{ color: c.ink2, fontSize: 13, fontWeight: '500' }}>Select</Text>
+              <Ionicons name="checkmark-circle-outline" size={20} color={c.ink2} />
             </TouchableOpacity>
           )}
           {!searchActive && (
@@ -1851,7 +1929,7 @@ export default function FilesScreen() {
           style={[
             styles.uploadBanner,
             {
-              bottom: 24 + insets.bottom + 64,
+              bottom: 16 + insets.bottom + 64,
               backgroundColor: c.paper2,
               borderColor: c.line,
             },
@@ -1882,7 +1960,7 @@ export default function FilesScreen() {
           style={[
             styles.uploadBanner,
             {
-              bottom: 24 + insets.bottom + 64,
+              bottom: 16 + insets.bottom + 64,
               backgroundColor: c.paper2,
               borderColor: c.line,
             },
@@ -1928,7 +2006,7 @@ export default function FilesScreen() {
       {/* Floating action button — hidden in select mode */}
       {!selectMode && (
         <TouchableOpacity
-          style={[styles.fab, { bottom: 24 + insets.bottom, backgroundColor: c.amber }]}
+          style={[styles.fab, { bottom: 16 + insets.bottom, backgroundColor: c.amber }]}
           activeOpacity={0.8}
           onPress={handleFabPress}
           disabled={!!uploadingName}
@@ -2062,8 +2140,8 @@ const styles = StyleSheet.create({
   storageBannerText: { flex: 1, fontSize: 12, fontWeight: '500' },
   storageBannerHint: { fontSize: 12, fontWeight: '700' },
 
-  // FAB
-  fab: { position: 'absolute', right: 20, width: 52, height: 52, borderRadius: 26, alignItems: 'center', justifyContent: 'center', ...shadows.lg },
+  // FAB — standard iOS size 56x56
+  fab: { position: 'absolute', right: 20, width: 56, height: 56, borderRadius: 28, alignItems: 'center', justifyContent: 'center', ...shadows.lg },
   fabText: { fontSize: 28, fontWeight: '600', marginTop: -2 },
 
   // Upload progress banner
