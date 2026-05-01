@@ -18,7 +18,8 @@
         "keychain-access-groups": ["$(AppIdentifierPrefix)io.beebeeb.shared"]
       },
       "infoPlist": {
-        "NSFileProviderPresenceAuthorized": true
+        "NSFileProviderPresenceAuthorized": true,
+        "NSCameraUsageDescription": "Beebeeb scans the amber constellation pattern to pair a new device."
       }
     },
     "android": {
@@ -36,7 +37,13 @@
       "expo-secure-store",
       "expo-local-authentication",
       "./modules/beebeeb-crypto",
-      "@bacons/apple-targets"
+      "@bacons/apple-targets",
+      [
+        "react-native-vision-camera",
+        {
+          "cameraPermissionText": "Beebeeb scans the amber constellation pattern to pair a new device."
+        }
+      ]
     ]
   }
 }
