@@ -12,6 +12,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -59,15 +60,13 @@ function formatDate(iso: string): string {
 
 /**
  * Fallback display name for an encrypted filename when crypto is unavailable.
- * Shows a truncated version of the ciphertext so the user can still distinguish files.
+ * Returns a friendly label for JSON-encrypted names instead of raw ciphertext.
  */
 function displayName(entry: FileEntry): string {
   const raw = entry.name_encrypted;
   if (!raw) return entry.is_folder ? 'Untitled folder' : 'Untitled file';
-  // If it looks like base64/hex ciphertext, truncate for readability
-  if (raw.length > 32) {
-    return raw.slice(0, 24) + '...';
-  }
+  if (raw.startsWith('{')) return entry.is_folder ? 'Encrypted folder' : 'Encrypted file';
+  if (raw.length > 32) return raw.slice(0, 24) + '...';
   return raw;
 }
 
@@ -154,6 +153,8 @@ const FileRowItem = React.memo(function FileRowItem({
   onLongPress,
 }: FileRowItemProps) {
   const category = fileCategory(item);
+  const isEncryptedFallback = !decryptedName && !!item.name_encrypted?.startsWith('{');
+  const nameText = decryptedName ?? displayName(item);
   return (
     <TouchableOpacity
       style={styles.fileRow}
@@ -164,9 +165,17 @@ const FileRowItem = React.memo(function FileRowItem({
     >
       <FileIcon category={category} />
       <View style={styles.fileInfo}>
-        <Text style={styles.fileName} numberOfLines={1}>
-          {decryptedName ?? displayName(item)}
-        </Text>
+        <View style={styles.fileNameRow}>
+          {isEncryptedFallback && (
+            <Ionicons name="lock-closed" size={11} color={colors.ink4} style={styles.lockIcon} />
+          )}
+          <Text
+            style={[styles.fileName, isEncryptedFallback && styles.fileNameEncrypted]}
+            numberOfLines={1}
+          >
+            {nameText}
+          </Text>
+        </View>
         <Text style={styles.fileMeta}>
           {item.is_folder
             ? formatDate(item.updated_at)
@@ -707,10 +716,24 @@ const styles = StyleSheet.create({
     flex: 1,
     minWidth: 0,
   },
+  fileNameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    minWidth: 0,
+  },
+  lockIcon: {
+    flexShrink: 0,
+  },
   fileName: {
     fontSize: 14,
     fontWeight: '500',
     color: colors.ink,
+    flexShrink: 1,
+  },
+  fileNameEncrypted: {
+    color: colors.ink3,
+    fontStyle: 'italic',
   },
   fileMeta: {
     fontSize: 11,
