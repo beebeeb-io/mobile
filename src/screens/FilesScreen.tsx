@@ -1263,28 +1263,4 @@ const styles = StyleSheet.create({
     ...shadows.lg,
   },
   uploadBannerText: { fontSize: 13, flex: 1, fontWeight: '500' },
-  checkbox: {
-    width: 22,
-    height: 22,
-    borderRadius: 11,
-    borderWidth: 2,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 8,
-  },
-  actionBar: {
-    flexDirection: 'row',
-    justifyContent: 'space-around',
-    paddingVertical: 12,
-    borderTopWidth: 1,
-  },
-  actionBarButton: {
-    alignItems: 'center',
-    gap: 4,
-    paddingHorizontal: 16,
-  },
-  actionBarLabel: {
-    fontSize: 11,
-    fontWeight: '500',
-  },
 });
