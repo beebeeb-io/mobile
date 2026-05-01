@@ -357,7 +357,8 @@ export default function PhotosScreen() {
 
   const renderError = () => (
     <View style={styles.errorContainer}>
-      <Text style={[styles.errorText, { color: c.red }]}>{error}</Text>
+      <Ionicons name="cloud-offline-outline" size={48} color={c.ink3} />
+      <Text style={[styles.errorText, { color: c.ink2 }]}>{error}</Text>
       <TouchableOpacity style={[styles.retryButton, { backgroundColor: c.amber }]} onPress={() => fetchPhotos()}>
         <Text style={[styles.retryButtonText, { color: c.ink }]}>Retry</Text>
       </TouchableOpacity>
