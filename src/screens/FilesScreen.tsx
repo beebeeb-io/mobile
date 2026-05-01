@@ -23,6 +23,7 @@ import * as DocumentPicker from 'expo-document-picker';
 import { radii, spacing, shadows } from '../theme';
 import { useTheme } from '../lib/theme-context';
 import { useToast } from '../lib/toast-context';
+import SkeletonRow from '../components/SkeletonRow';
 import { listFiles, createFolder, deleteFile, renameFile, moveFile, uploadFile, friendlyError, getStorageUsage } from '../lib/api';
 import type { FileEntry, StorageUsage } from '../lib/api';
 import type { RootStackParamList } from '../App';
@@ -1167,9 +1168,8 @@ export default function FilesScreen() {
       {error ? (
         renderError()
       ) : loading && !refreshing ? (
-        <View style={styles.loadingContainer}>
-          <ActivityIndicator color={c.amber} size="large" />
-          <Text style={[styles.loadingText, { color: c.ink3 }]}>Loading files...</Text>
+        <View>
+          {[0, 1, 2, 3, 4].map((i) => <SkeletonRow key={i} />)}
         </View>
       ) : (
         <FlatList
