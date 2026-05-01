@@ -36,6 +36,7 @@ import BiometricLockScreen from './screens/BiometricLockScreen';
 import SharedViewScreen from './screens/SharedViewScreen';
 import OnboardingScreen from './screens/OnboardingScreen';
 import TrashScreen from './screens/TrashScreen';
+import ErrorBoundary from './components/ErrorBoundary';
 
 const ONBOARDING_KEY = 'beebeeb_onboarding_done';
 
@@ -402,4 +403,12 @@ export default function App() {
   );
 }
 
-registerRootComponent(App);
+function AppWithErrorBoundary() {
+  return (
+    <ErrorBoundary>
+      <App />
+    </ErrorBoundary>
+  );
+}
+
+registerRootComponent(AppWithErrorBoundary);

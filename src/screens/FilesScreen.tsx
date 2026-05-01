@@ -17,7 +17,7 @@ import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import * as Haptics from 'expo-haptics';
 import { colors, radii, spacing, shadows } from '../theme';
-import { listFiles, deleteFile, friendlyError } from '../lib/api';
+import { listFiles, createFolder, deleteFile, friendlyError } from '../lib/api';
 import type { FileEntry } from '../lib/api';
 import type { RootStackParamList } from '../App';
 
@@ -222,13 +222,63 @@ export default function FilesScreen() {
     fetchFiles(currentFolder.id, true);
   }, [currentFolder.id, fetchFiles]);
 
-  const handleUpload = useCallback(() => {
+  const handleFabPress = useCallback(() => {
+    if (Platform.OS === 'ios') {
+      ActionSheetIOS.showActionSheetWithOptions(
+        {
+          options: ['New folder', 'Upload file', 'Cancel'],
+          cancelButtonIndex: 2,
+        },
+        (index) => {
+          if (index === 0) showNewFolderPrompt();
+          else if (index === 1) showUploadAlert();
+        },
+      );
+    } else {
+      Alert.alert('Add to Drive', undefined, [
+        { text: 'New folder', onPress: showNewFolderPrompt },
+        { text: 'Upload file', onPress: showUploadAlert },
+        { text: 'Cancel', style: 'cancel' },
+      ]);
+    }
+  }, [currentFolder]);
+
+  const showUploadAlert = useCallback(() => {
     Alert.alert(
       'Upload',
-      'File upload will be available once crypto bindings are integrated.',
+      'File upload requires native crypto bindings (UniFFI) which are not yet integrated.',
       [{ text: 'OK' }],
     );
   }, []);
+
+  const showNewFolderPrompt = useCallback(() => {
+    if (Platform.OS === 'ios') {
+      Alert.prompt(
+        'New folder',
+        'Enter a name for the new folder',
+        async (name) => {
+          const trimmed = name?.trim();
+          if (!trimmed) return;
+          try {
+            const folder = await createFolder(trimmed, currentFolder.id ?? undefined);
+            setFiles((prev) => [folder, ...prev]);
+          } catch (err) {
+            Alert.alert('Error', friendlyError(err));
+          }
+        },
+        'plain-text',
+        '',
+        'default',
+      );
+    } else {
+      // Android: use a state-based modal (simple Alert without prompt)
+      Alert.alert(
+        'New folder',
+        'Folder creation prompt is iOS-only for now. Please use the iOS app.',
+        [{ text: 'OK' }],
+      );
+    }
+  }, [currentFolder.id]);
 
   const handleSearchToggle = useCallback(() => {
     setSearchActive((prev) => {
@@ -465,7 +515,7 @@ export default function FilesScreen() {
       <TouchableOpacity
         style={[styles.fab, { bottom: 24 + insets.bottom }]}
         activeOpacity={0.8}
-        onPress={handleUpload}
+        onPress={handleFabPress}
       >
         <Text style={styles.fabText}>+</Text>
       </TouchableOpacity>
