@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { registerRootComponent } from 'expo';
 import { StatusBar } from 'expo-status-bar';
 import { ActivityIndicator, AppState, type AppStateStatus, StyleSheet, View } from 'react-native';
@@ -27,26 +27,29 @@ import * as Haptics from 'expo-haptics';
 
 const BIOMETRIC_PREF_KEY = 'beebeeb_biometric_lock';
 
-// Screens
+// Eager screens — auth entry points and tab destinations (Tab navigator handles its own lazy mounting)
+import LoginScreen from './screens/LoginScreen';
+import SignupScreen from './screens/SignupScreen';
 import FilesScreen from './screens/FilesScreen';
 import SharedScreen from './screens/SharedScreen';
 import PhotosScreen from './screens/PhotosScreen';
 import SettingsScreen from './screens/SettingsScreen';
-import PreviewScreen from './screens/PreviewScreen';
-import ShareSheetScreen from './screens/ShareSheetScreen';
-import LoginScreen from './screens/LoginScreen';
-import SignupScreen from './screens/SignupScreen';
-import BiometricLockScreen from './screens/BiometricLockScreen';
-import SharedViewScreen from './screens/SharedViewScreen';
-import OnboardingScreen from './screens/OnboardingScreen';
-import TrashScreen from './screens/TrashScreen';
-import BackupGuidesScreen from './screens/BackupGuidesScreen';
-import RecoveryPhraseScreen from './screens/RecoveryPhraseScreen';
-import RecoveryPhraseVerifyScreen from './screens/RecoveryPhraseVerifyScreen';
-import DevicePairingScreen from './screens/DevicePairingScreen';
-import DevicePairingScanScreen from './screens/DevicePairingScanScreen';
-import DevicePairingShowScreen from './screens/DevicePairingShowScreen';
-import PairingConfirmScreen from './screens/PairingConfirmScreen';
+
+// Lazy stack/overlay screens — module evaluation is deferred until first navigation
+const PreviewScreen = React.lazy(() => import('./screens/PreviewScreen'));
+const ShareSheetScreen = React.lazy(() => import('./screens/ShareSheetScreen'));
+const SharedViewScreen = React.lazy(() => import('./screens/SharedViewScreen'));
+const TrashScreen = React.lazy(() => import('./screens/TrashScreen'));
+const BackupGuidesScreen = React.lazy(() => import('./screens/BackupGuidesScreen'));
+const RecoveryPhraseScreen = React.lazy(() => import('./screens/RecoveryPhraseScreen'));
+const RecoveryPhraseVerifyScreen = React.lazy(() => import('./screens/RecoveryPhraseVerifyScreen'));
+const DevicePairingScreen = React.lazy(() => import('./screens/DevicePairingScreen'));
+const DevicePairingScanScreen = React.lazy(() => import('./screens/DevicePairingScanScreen'));
+const DevicePairingShowScreen = React.lazy(() => import('./screens/DevicePairingShowScreen'));
+const PairingConfirmScreen = React.lazy(() => import('./screens/PairingConfirmScreen'));
+const BiometricLockScreen = React.lazy(() => import('./screens/BiometricLockScreen'));
+const OnboardingScreen = React.lazy(() => import('./screens/OnboardingScreen'));
+
 import ErrorBoundary from './components/ErrorBoundary';
 import { BackupProvider } from './lib/backup-context';
 
@@ -190,6 +193,19 @@ function TabIcon({ name, focused, color }: { name: string; focused: boolean; col
   const icons = TAB_ICON_NAMES[name];
   const iconName: IoniconName = icons ? (focused ? icons[0] : icons[1]) : 'ellipse-outline';
   return <Ionicons name={iconName} size={22} color={color} />;
+}
+
+// ---------------------------------------------------------------------------
+// Suspense fallback for lazy-loaded screens
+// ---------------------------------------------------------------------------
+
+function ScreenLoadingFallback() {
+  const { colors: c } = useTheme();
+  return (
+    <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: c.paper }}>
+      <ActivityIndicator color={c.ink3} />
+    </View>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -378,51 +394,53 @@ export default function App() {
       <CryptoProvider>
       <BackupProvider>
       <SafeAreaProvider>
-        <NavigationContainer linking={linking} onStateChange={handleNavigationStateChange}>
-          <Stack.Navigator screenOptions={{ headerShown: false }}>
-            {isAuthenticated ? (
-              <>
-                <Stack.Screen name="Tabs" component={TabNavigator} />
-                <Stack.Screen
-                  name="Preview"
-                  component={PreviewScreen}
-                  options={{ presentation: 'fullScreenModal', animation: 'slide_from_bottom' }}
-                />
-                <Stack.Screen
-                  name="ShareSheet"
-                  component={ShareSheetScreen}
-                  options={{
-                    presentation: 'transparentModal',
-                    animation: 'slide_from_bottom',
-                    contentStyle: { backgroundColor: 'transparent' },
-                  }}
-                />
-                <Stack.Screen
-                  name="SharedView"
-                  component={SharedViewScreen}
-                  options={{ presentation: 'modal', animation: 'slide_from_bottom' }}
-                />
-                <Stack.Screen name="Trash" component={TrashScreen} />
-                <Stack.Screen name="BackupGuides" component={BackupGuidesScreen} />
-                <Stack.Screen name="RecoveryPhrase" component={RecoveryPhraseScreen} />
-                <Stack.Screen name="RecoveryPhraseVerify" component={RecoveryPhraseVerifyScreen} />
-                <Stack.Screen name="DevicePairing" component={DevicePairingScreen} />
-                <Stack.Screen name="DevicePairingScan" component={DevicePairingScanScreen} />
-                <Stack.Screen name="DevicePairingShow" component={DevicePairingShowScreen} />
-                <Stack.Screen name="PairingConfirm" component={PairingConfirmScreen} />
-              </>
-            ) : (
-              <>
-                <Stack.Screen
-                  name="Login"
-                  component={LoginScreen}
-                  options={{ animationTypeForReplace: 'pop' }}
-                />
-                <Stack.Screen name="Signup" component={SignupScreen} />
-              </>
-            )}
-          </Stack.Navigator>
-        </NavigationContainer>
+        <Suspense fallback={<ScreenLoadingFallback />}>
+          <NavigationContainer linking={linking} onStateChange={handleNavigationStateChange}>
+            <Stack.Navigator screenOptions={{ headerShown: false }}>
+              {isAuthenticated ? (
+                <>
+                  <Stack.Screen name="Tabs" component={TabNavigator} />
+                  <Stack.Screen
+                    name="Preview"
+                    component={PreviewScreen}
+                    options={{ presentation: 'fullScreenModal', animation: 'slide_from_bottom' }}
+                  />
+                  <Stack.Screen
+                    name="ShareSheet"
+                    component={ShareSheetScreen}
+                    options={{
+                      presentation: 'transparentModal',
+                      animation: 'slide_from_bottom',
+                      contentStyle: { backgroundColor: 'transparent' },
+                    }}
+                  />
+                  <Stack.Screen
+                    name="SharedView"
+                    component={SharedViewScreen}
+                    options={{ presentation: 'modal', animation: 'slide_from_bottom' }}
+                  />
+                  <Stack.Screen name="Trash" component={TrashScreen} />
+                  <Stack.Screen name="BackupGuides" component={BackupGuidesScreen} />
+                  <Stack.Screen name="RecoveryPhrase" component={RecoveryPhraseScreen} />
+                  <Stack.Screen name="RecoveryPhraseVerify" component={RecoveryPhraseVerifyScreen} />
+                  <Stack.Screen name="DevicePairing" component={DevicePairingScreen} />
+                  <Stack.Screen name="DevicePairingScan" component={DevicePairingScanScreen} />
+                  <Stack.Screen name="DevicePairingShow" component={DevicePairingShowScreen} />
+                  <Stack.Screen name="PairingConfirm" component={PairingConfirmScreen} />
+                </>
+              ) : (
+                <>
+                  <Stack.Screen
+                    name="Login"
+                    component={LoginScreen}
+                    options={{ animationTypeForReplace: 'pop' }}
+                  />
+                  <Stack.Screen name="Signup" component={SignupScreen} />
+                </>
+              )}
+            </Stack.Navigator>
+          </NavigationContainer>
+        </Suspense>
 
         {/* Offline banner */}
         {!isConnected && <OfflineBanner />}
@@ -430,20 +448,24 @@ export default function App() {
         {/* Onboarding overlay — shown once after first signup */}
         {isAuthenticated && !onboardingDone && (
           <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: c.paper2 }}>
-            <OnboardingScreen
-              onComplete={async () => {
-                try {
-                  await SecureStore.setItemAsync(ONBOARDING_KEY, 'true');
-                } catch { /* web */ }
-                setOnboardingDone(true);
-              }}
-            />
+            <Suspense fallback={<ScreenLoadingFallback />}>
+              <OnboardingScreen
+                onComplete={async () => {
+                  try {
+                    await SecureStore.setItemAsync(ONBOARDING_KEY, 'true');
+                  } catch { /* web */ }
+                  setOnboardingDone(true);
+                }}
+              />
+            </Suspense>
           </View>
         )}
 
         {/* Biometric lock overlay — shown when app resumes from background */}
         {isAuthenticated && (
-          <BiometricGuard locked={locked} onUnlock={() => setLocked(false)} />
+          <Suspense fallback={null}>
+            <BiometricGuard locked={locked} onUnlock={() => setLocked(false)} />
+          </Suspense>
         )}
 
         <StatusBar style={resolved === 'dark' ? 'light' : 'dark'} />
