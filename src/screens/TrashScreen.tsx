@@ -53,14 +53,16 @@ function formatDate(iso: string): string {
   return `${month} ${day}, ${year}`;
 }
 
-function fileTypeBadge(entry: FileEntry): { label: string; color: string; defaultColor: string } {
-  if (entry.is_folder) return { label: 'DIR', color: '#b8860b', defaultColor: '#b8860b' };
+type IoniconName = React.ComponentProps<typeof Ionicons>['name'];
+
+function fileTypeBadge(entry: FileEntry): { icon: IoniconName; color: string } {
+  if (entry.is_folder) return { icon: 'folder', color: '#b8860b' };
   const mime = entry.mime_type ?? '';
-  if (mime.startsWith('image/')) return { label: 'IMG', color: '#f5b800', defaultColor: '#f5b800' };
-  if (mime === 'application/pdf') return { label: 'PDF', color: '#d84040', defaultColor: '#d84040' };
-  if (mime.startsWith('audio/')) return { label: 'AUD', color: '#4abe4a', defaultColor: '#4abe4a' };
-  if (mime.startsWith('video/')) return { label: 'VID', color: '#8a867f', defaultColor: '#8a867f' };
-  return { label: 'FILE', color: '#8a867f', defaultColor: '#8a867f' };
+  if (mime.startsWith('image/')) return { icon: 'image', color: '#f5b800' };
+  if (mime === 'application/pdf') return { icon: 'document-text', color: '#d84040' };
+  if (mime.startsWith('audio/')) return { icon: 'musical-notes', color: '#4abe4a' };
+  if (mime.startsWith('video/')) return { icon: 'videocam', color: '#8a867f' };
+  return { icon: 'document-outline', color: '#8a867f' };
 }
 
 function displayName(entry: FileEntry): string {
@@ -132,7 +134,7 @@ const TrashRow = React.memo(function TrashRow({ item, onRestore, onDelete }: Tra
     >
       <View style={[styles.row, { borderBottomColor: c.line, backgroundColor: c.paper }]}>
         <View style={[styles.rowIcon, { backgroundColor: badge.color }]}>
-          <Text style={styles.rowIconText}>{badge.label}</Text>
+          <Ionicons name={badge.icon} size={16} color="#FFFFFF" />
         </View>
         <View style={styles.rowInfo}>
           <Text style={[styles.rowName, { color: c.ink }]} numberOfLines={1}>
@@ -396,7 +398,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  rowIconText: { color: '#fff', fontSize: 8, fontWeight: '700', letterSpacing: 0.3 },
   rowInfo: { flex: 1, minWidth: 0 },
   rowName: { fontSize: 13, fontWeight: '500' },
   rowMeta: { fontSize: 11, marginTop: 2 },
