@@ -187,6 +187,13 @@ export async function getMe(): Promise<User> {
   return request<User>('GET', '/api/v1/auth/me');
 }
 
+export async function changePassword(currentPassword: string, newPassword: string): Promise<void> {
+  await request('POST', '/api/v1/auth/change-password', {
+    current_password: currentPassword,
+    new_password: newPassword,
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Files
 // ---------------------------------------------------------------------------
