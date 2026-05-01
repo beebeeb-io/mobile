@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link
-  href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500&display=swap"
+  href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;700&display=swap"
   rel="stylesheet"
 />
 <style>
@@ -15,10 +15,21 @@
     --amber: #f5b800;
     --amber-deep: #b8860b;
     --amber-soft: #fde8a8;
+    --amber-bg: #fef7e0;
     --paper: #faf8f5;
+    --paper2: #f5f2ed;
     --paper-warm: #f5efe4;
+    --line: #e6e0d6;
+    --line2: #d9d1c4;
     --ink: #2a2520;
+    --ink2: #5c564e;
+    --ink3: #7d7770;
+    --ink4: #a8a29c;
     --ink-soft: #5a4f44;
+    --green: #4abe4a;
+    --red: #d84040;
+    --blue-ios: #0a84ff;
+    --gray-ios: #8e8e93;
   }
 
   * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -31,7 +42,7 @@
     color: var(--ink);
   }
 
-  /* ---- Page chrome (the gallery view) ---- */
+  /* ---- Page chrome ---- */
   .gallery {
     padding: 48px 24px;
     display: flex;
@@ -39,18 +50,13 @@
     align-items: center;
     gap: 32px;
   }
-
   .gallery-header {
     color: var(--paper);
     text-align: center;
     max-width: 640px;
     margin-bottom: 24px;
   }
-  .gallery-header h1 {
-    font-size: 28px;
-    font-weight: 800;
-    letter-spacing: -0.02em;
-  }
+  .gallery-header h1 { font-size: 28px; font-weight: 800; letter-spacing: -0.02em; }
   .gallery-header p {
     margin-top: 8px;
     color: rgba(250, 248, 245, 0.6);
@@ -80,10 +86,7 @@
     color: var(--paper);
   }
 
-  /* ---- Slide canvas ---- */
-  /* Apple App Store iPhone 6.7" required size: exactly 1290 x 2796 px (portrait).
-     These dimensions are normative — do not change without checking Apple's
-     current screenshot specifications. */
+  /* ---- Slide canvas (1290 x 2796 — Apple App Store 6.7" required size) ---- */
   .slide {
     width: 1290px;
     height: 2796px;
@@ -95,7 +98,6 @@
     position: relative;
     overflow: hidden;
     flex-shrink: 0;
-    /* Scale down to fit gallery viewport on most monitors */
     transform-origin: top center;
     transform: scale(0.32);
     margin-bottom: calc(2796px * -0.68);
@@ -103,50 +105,35 @@
     border-radius: 64px;
   }
 
-  /* Slide-specific backgrounds */
-  .slide-1 {
-    background:
+  .slide-1 { background:
       radial-gradient(ellipse 90% 60% at 80% 0%, rgba(245, 184, 0, 0.28) 0%, transparent 60%),
       radial-gradient(ellipse 80% 50% at 10% 100%, rgba(245, 184, 0, 0.12) 0%, transparent 60%),
-      linear-gradient(180deg, #fdf7e8 0%, var(--paper) 100%);
-  }
-  .slide-2 {
-    background:
+      linear-gradient(180deg, #fdf7e8 0%, var(--paper) 100%); }
+  .slide-2 { background:
       radial-gradient(ellipse 70% 50% at 100% 0%, rgba(245, 184, 0, 0.22) 0%, transparent 55%),
-      linear-gradient(180deg, var(--paper) 0%, #f3ecdd 100%);
-  }
-  .slide-3 {
-    background:
+      linear-gradient(180deg, var(--paper) 0%, #f3ecdd 100%); }
+  .slide-3 { background:
       radial-gradient(ellipse 90% 70% at 50% 0%, rgba(245, 184, 0, 0.32) 0%, transparent 55%),
-      linear-gradient(180deg, #fdf2d4 0%, #f9ecc7 60%, #f5e4b3 100%);
-  }
-  .slide-4 {
-    background:
+      linear-gradient(180deg, #fdf2d4 0%, #f9ecc7 60%, #f5e4b3 100%); }
+  .slide-4 { background:
       radial-gradient(ellipse 60% 50% at 0% 100%, rgba(184, 134, 11, 0.18) 0%, transparent 55%),
       radial-gradient(ellipse 70% 50% at 100% 0%, rgba(245, 184, 0, 0.20) 0%, transparent 55%),
-      linear-gradient(180deg, var(--paper-warm) 0%, var(--paper) 100%);
-  }
-  .slide-5 {
-    background:
+      linear-gradient(180deg, var(--paper-warm) 0%, var(--paper) 100%); }
+  .slide-5 { background:
       radial-gradient(ellipse 90% 60% at 80% 100%, rgba(245, 184, 0, 0.18) 0%, transparent 55%),
       radial-gradient(ellipse 60% 40% at 10% 0%, rgba(245, 184, 0, 0.10) 0%, transparent 55%),
       linear-gradient(180deg, #1a1714 0%, #2a2520 100%);
-    color: var(--paper);
-  }
-  .slide-6 {
-    background:
+    color: var(--paper); }
+  .slide-6 { background:
       radial-gradient(ellipse 100% 80% at 50% 50%, rgba(245, 184, 0, 0.18) 0%, transparent 60%),
-      linear-gradient(180deg, #fdf7e8 0%, var(--paper) 60%, #f3ecdd 100%);
-  }
+      linear-gradient(180deg, #fdf7e8 0%, var(--paper) 60%, #f3ecdd 100%); }
 
-  /* ---- Slide content ---- */
   .slide-content {
     position: absolute;
     top: 0; left: 0; right: 0;
     padding: 180px 120px 0;
     text-align: center;
   }
-
   .eyebrow {
     display: inline-block;
     font-family: "JetBrains Mono", ui-monospace, monospace;
@@ -166,7 +153,6 @@
     border-color: rgba(245, 184, 0, 0.4);
     background: rgba(245, 184, 0, 0.08);
   }
-
   .headline {
     font-size: 138px;
     font-weight: 800;
@@ -178,7 +164,6 @@
   .slide-5 .headline { color: var(--paper); }
   .headline .accent { color: var(--amber-deep); }
   .slide-5 .headline .accent { color: var(--amber); }
-
   .subhead {
     font-size: 44px;
     font-weight: 400;
@@ -190,7 +175,10 @@
   }
   .slide-5 .subhead { color: rgba(250, 248, 245, 0.75); }
 
-  /* ---- Device frame ---- */
+  /* ---- iPhone 15 Pro frame ----
+     920px wide on a 1290px slide ≈ 71% canvas width.
+     Bezel 12px, outer corner 108px, inner corner 96px (108-12).
+     Dynamic Island 280×80, sits over a 110px status bar. */
   .device {
     position: absolute;
     left: 50%;
@@ -198,52 +186,61 @@
     transform: translateX(-50%);
     width: 920px;
     height: 1900px;
-    background: #0a0a0a;
-    border-radius: 96px;
-    padding: 18px;
+    background: linear-gradient(150deg, #2c2c2e 0%, #050505 60%, #1c1c1e 100%);
+    border-radius: 108px;
+    padding: 12px;
     box-shadow:
-      0 0 0 2px rgba(255, 255, 255, 0.04) inset,
+      0 0 0 1px rgba(255, 255, 255, 0.08) inset,
+      0 0 0 3px #1a1a1a,
+      0 0 0 4px rgba(255, 255, 255, 0.03),
       0 60px 140px rgba(42, 37, 32, 0.35),
       0 30px 60px rgba(42, 37, 32, 0.2);
   }
   .slide-5 .device {
     box-shadow:
-      0 0 0 2px rgba(255, 255, 255, 0.04) inset,
+      0 0 0 1px rgba(255, 255, 255, 0.1) inset,
+      0 0 0 3px #1a1a1a,
+      0 0 0 4px rgba(255, 255, 255, 0.04),
       0 60px 140px rgba(0, 0, 0, 0.6),
       0 30px 80px rgba(245, 184, 0, 0.12);
   }
-
   .device-screen {
     position: relative;
     width: 100%;
     height: 100%;
-    border-radius: 80px;
+    border-radius: 96px;
     overflow: hidden;
     background: var(--paper);
   }
-  .device-screen img {
-    display: block;
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
-    object-position: top center;
-  }
-
-  /* Dynamic Island */
   .device-island {
     position: absolute;
-    top: 32px;
+    top: 28px;
     left: 50%;
     transform: translateX(-50%);
-    width: 240px;
-    height: 60px;
+    width: 280px;
+    height: 80px;
     background: #000;
     border-radius: 999px;
-    z-index: 2;
+    z-index: 30;
+    pointer-events: none;
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.06) inset;
+  }
+  .device-home-indicator {
+    position: absolute;
+    bottom: 22px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 320px;
+    height: 12px;
+    background: rgba(0, 0, 0, 0.85);
+    border-radius: 6px;
+    z-index: 30;
     pointer-events: none;
   }
+  .mock.dark .device-home-indicator,
+  .slide-5 .device-home-indicator { background: rgba(255, 255, 255, 0.55); }
 
-  /* Footer mark on each slide */
+  /* ---- Brand mark ---- */
   .brand-mark {
     position: absolute;
     bottom: 56px;
@@ -257,7 +254,7 @@
     font-weight: 500;
     color: rgba(42, 37, 32, 0.45);
     letter-spacing: -0.01em;
-    z-index: 3;
+    z-index: 40;
   }
   .slide-5 .brand-mark { color: rgba(250, 248, 245, 0.4); }
   .brand-mark .dot {
@@ -268,25 +265,624 @@
     box-shadow: 0 0 16px rgba(245, 184, 0, 0.6);
   }
 
-  /* ---- Single-slide / capture mode ---- */
+  /* ---- Mock screen base ---- */
+  .mock {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    background: var(--paper);
+    color: var(--ink);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* iOS status bar (curls around Dynamic Island) */
+  .status-bar {
+    height: 110px;
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    padding: 56px 60px 0;
+    flex-shrink: 0;
+    z-index: 5;
+    color: var(--ink);
+  }
+  .mock.dark .status-bar { color: #e8e6e3; }
+  .status-bar .time {
+    font-size: 32px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+  }
+  .status-icons {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    height: 22px;
+  }
+
+  /* App header */
+  .app-header {
+    padding: 14px 36px 22px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-shrink: 0;
+  }
+  .app-title {
+    font-size: 64px;
+    font-weight: 800;
+    letter-spacing: -0.03em;
+    flex: 1;
+    color: var(--ink);
+  }
+  .mock.dark .app-title { color: #e8e6e3; }
+  .icon-btn {
+    width: 60px;
+    height: 60px;
+    border-radius: 50%;
+    background: var(--paper2);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--ink2);
+    flex-shrink: 0;
+  }
+
+  /* File row */
+  .file-row {
+    display: flex;
+    align-items: center;
+    gap: 22px;
+    padding: 22px 36px;
+    border-bottom: 1px solid var(--line);
+    background: var(--paper);
+  }
+  .file-icon {
+    width: 76px;
+    height: 76px;
+    border-radius: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    color: white;
+  }
+  .file-icon.folder { background: var(--amber-deep); }
+  .file-icon.image { background: var(--amber); color: var(--ink); }
+  .file-icon.pdf { background: var(--red); }
+  .file-icon.audio { background: var(--green); }
+  .file-icon.video { background: #5c564e; }
+  .file-icon.doc { background: #5c564e; }
+  .file-icon.zip { background: #7d7770; }
+  .file-info { flex: 1; min-width: 0; }
+  .file-name {
+    font-size: 30px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    color: var(--ink);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .file-meta {
+    font-size: 22px;
+    color: var(--ink3);
+    margin-top: 6px;
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+  }
+  .file-chevron { color: var(--ink4); font-size: 36px; line-height: 1; }
+
+  /* Section labels */
+  .section-label {
+    font-size: 22px;
+    font-weight: 700;
+    color: var(--ink3);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    padding: 18px 36px 10px;
+  }
+
+  /* Pinned chips */
+  .pinned-row {
+    display: flex;
+    gap: 16px;
+    padding: 0 36px 18px;
+    overflow: hidden;
+  }
+  .pinned-chip {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 14px 22px;
+    border-radius: 999px;
+    background: var(--amber-bg);
+    border: 1.5px solid var(--amber);
+    color: var(--amber-deep);
+    font-size: 22px;
+    font-weight: 600;
+    flex-shrink: 0;
+  }
+
+  /* Tab bar */
+  .tab-bar {
+    margin-top: auto;
+    display: flex;
+    background: var(--paper);
+    border-top: 1px solid var(--line);
+    padding-bottom: 64px;
+    flex-shrink: 0;
+    position: relative;
+    z-index: 4;
+  }
+  .tab-item {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    padding: 18px 0 12px;
+    color: var(--ink3);
+  }
+  .tab-item.active { color: var(--amber-deep); }
+  .tab-item .label {
+    font-size: 22px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+
+  /* Photos grid */
+  .photos-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 6px;
+    padding: 0 6px;
+  }
+  .photo-thumb { aspect-ratio: 1; border-radius: 10px; }
+
+  /* Backup banner */
+  .backup-banner {
+    margin: 0 36px 18px;
+    padding: 22px 26px;
+    background: var(--amber-bg);
+    border: 1.5px solid var(--amber);
+    border-radius: 20px;
+    display: flex;
+    align-items: center;
+    gap: 18px;
+  }
+  .backup-banner .pulse {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background: var(--amber);
+    box-shadow: 0 0 0 6px rgba(245, 184, 0, 0.2), 0 0 24px var(--amber);
+    flex-shrink: 0;
+  }
+  .backup-banner .text { flex: 1; }
+  .backup-banner .title {
+    font-size: 28px;
+    font-weight: 700;
+    color: var(--ink);
+    letter-spacing: -0.01em;
+  }
+  .backup-banner .subtitle {
+    font-size: 22px;
+    color: var(--ink-soft);
+    margin-top: 4px;
+    font-weight: 500;
+  }
+  .backup-banner .count {
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 36px;
+    font-weight: 700;
+    color: var(--amber-deep);
+    letter-spacing: -0.02em;
+  }
+
+  /* Bottom sheet (slide 3) */
+  .sheet-backdrop {
+    position: absolute;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 12;
+  }
+  .sheet {
+    position: absolute;
+    left: 0; right: 0; bottom: 0;
+    background: var(--paper);
+    border-radius: 36px 36px 0 0;
+    padding: 26px 36px 100px;
+    z-index: 13;
+    box-shadow: 0 -10px 40px rgba(0, 0, 0, 0.18);
+  }
+  .sheet-handle {
+    width: 80px;
+    height: 8px;
+    background: var(--line2);
+    border-radius: 999px;
+    margin: 0 auto 22px;
+  }
+  .sheet-title {
+    font-size: 38px;
+    font-weight: 800;
+    letter-spacing: -0.02em;
+  }
+  .sheet-subtitle {
+    font-size: 22px;
+    color: var(--ink-soft);
+    margin-top: 4px;
+    margin-bottom: 24px;
+    font-weight: 500;
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+  }
+  .form-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 18px 0;
+    border-bottom: 1px solid var(--line);
+    gap: 12px;
+  }
+  .form-row:last-of-type { border-bottom: none; }
+  .form-label {
+    font-size: 26px;
+    font-weight: 600;
+    color: var(--ink);
+  }
+  .form-meta {
+    font-size: 20px;
+    color: var(--ink3);
+    margin-top: 4px;
+    font-weight: 500;
+  }
+  .form-value {
+    font-size: 24px;
+    color: var(--ink2);
+    font-weight: 500;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .toggle {
+    width: 76px;
+    height: 44px;
+    border-radius: 22px;
+    background: var(--amber);
+    position: relative;
+    flex-shrink: 0;
+  }
+  .toggle::after {
+    content: '';
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    background: white;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25);
+  }
+  .toggle.off { background: #d9d1c4; }
+  .toggle.off::after { right: auto; left: 4px; }
+  .link-block {
+    margin-top: 22px;
+    padding: 22px 24px;
+    background: var(--paper2);
+    border: 1.5px dashed var(--amber);
+    border-radius: 16px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+  .link-block .url {
+    flex: 1;
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 22px;
+    font-weight: 500;
+    color: var(--ink);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .copy-btn {
+    background: var(--amber);
+    color: var(--ink);
+    padding: 12px 22px;
+    border-radius: 10px;
+    font-size: 22px;
+    font-weight: 700;
+    flex-shrink: 0;
+  }
+  .primary-btn {
+    margin-top: 22px;
+    width: 100%;
+    background: var(--amber);
+    color: var(--ink);
+    padding: 22px;
+    border-radius: 16px;
+    font-size: 28px;
+    font-weight: 700;
+    text-align: center;
+    letter-spacing: -0.01em;
+  }
+
+  /* Settings list (rounded grouped style) */
+  .settings-group {
+    margin: 0 36px 24px;
+    background: white;
+    border: 1px solid var(--line);
+    border-radius: 18px;
+    overflow: hidden;
+  }
+  .settings-row {
+    display: flex;
+    align-items: center;
+    gap: 18px;
+    padding: 20px 24px;
+    border-bottom: 1px solid var(--line);
+  }
+  .settings-row:last-child { border-bottom: none; }
+  .settings-icon {
+    width: 56px;
+    height: 56px;
+    border-radius: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    color: white;
+  }
+  .settings-text { flex: 1; }
+  .settings-text .title { font-size: 26px; font-weight: 600; color: var(--ink); }
+  .settings-text .subtitle {
+    font-size: 20px;
+    color: var(--ink3);
+    margin-top: 4px;
+    font-weight: 500;
+  }
+  .check-amber {
+    color: var(--amber-deep);
+    font-size: 36px;
+    font-weight: 700;
+  }
+  .country-tag {
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--amber-deep);
+    background: var(--amber-bg);
+    padding: 5px 11px;
+    border-radius: 6px;
+    letter-spacing: 0.06em;
+  }
+  .country-tag.muted {
+    color: var(--ink3);
+    background: var(--paper2);
+  }
+
+  /* Region picker rows */
+  .region-row {
+    display: flex;
+    align-items: center;
+    gap: 18px;
+    padding: 22px 24px;
+    border-bottom: 1px solid var(--line);
+    background: white;
+  }
+  .region-row.active { background: var(--amber-bg); }
+  .region-row:last-child { border-bottom: none; }
+  .region-radio {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    border: 2.5px solid var(--line2);
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .region-row.active .region-radio {
+    border-color: var(--amber);
+    background: var(--amber);
+  }
+  .region-row.active .region-radio::after {
+    content: '';
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: white;
+  }
+  .region-name { font-size: 26px; font-weight: 600; flex: 1; color: var(--ink); }
+  .region-meta {
+    font-size: 20px;
+    color: var(--ink3);
+    font-weight: 500;
+    text-align: right;
+  }
+  .region-row.active .region-meta { color: var(--amber-deep); }
+
+  /* iOS Files app integration */
+  .ios-mock { background: #f2f2f7; color: var(--ink); }
+  .ios-header {
+    padding: 6px 32px 8px;
+    flex-shrink: 0;
+  }
+  .ios-back {
+    font-size: 28px;
+    color: var(--blue-ios);
+    font-weight: 500;
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .ios-title {
+    font-size: 64px;
+    font-weight: 800;
+    letter-spacing: -0.03em;
+    color: var(--ink);
+  }
+  .ios-search {
+    margin: 14px 32px 22px;
+    height: 70px;
+    background: rgba(120, 120, 128, 0.16);
+    border-radius: 14px;
+    display: flex;
+    align-items: center;
+    padding: 0 18px;
+    gap: 12px;
+    color: var(--gray-ios);
+    font-size: 26px;
+    font-weight: 500;
+  }
+  .ios-section-label {
+    font-size: 22px;
+    font-weight: 600;
+    color: var(--gray-ios);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    padding: 8px 36px 8px;
+  }
+  .ios-list {
+    background: white;
+    margin: 0 32px 18px;
+    border-radius: 18px;
+    overflow: hidden;
+  }
+  .ios-row {
+    display: flex;
+    align-items: center;
+    gap: 18px;
+    padding: 18px 22px;
+    border-bottom: 1px solid #efeff0;
+  }
+  .ios-row:last-child { border-bottom: none; }
+  .ios-row.highlighted {
+    background: linear-gradient(90deg, var(--amber-bg) 0%, white 100%);
+    box-shadow: inset 4px 0 0 var(--amber);
+  }
+  .ios-icon {
+    width: 64px;
+    height: 64px;
+    border-radius: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    color: white;
+  }
+  .ios-icon.icloud { background: var(--blue-ios); }
+  .ios-icon.iphone { background: linear-gradient(160deg, #6c5ce7, #5436c2); }
+  .ios-icon.beebeeb { background: var(--amber); color: var(--ink); }
+  .ios-name { font-size: 28px; font-weight: 500; flex: 1; color: var(--ink); }
+  .ios-meta {
+    font-size: 20px;
+    color: var(--gray-ios);
+    font-weight: 500;
+    margin-right: 8px;
+  }
+  .ios-disclosure { color: var(--gray-ios); font-size: 28px; }
+  .ios-tab-bar {
+    margin-top: auto;
+    display: flex;
+    background: rgba(255, 255, 255, 0.92);
+    backdrop-filter: blur(20px);
+    border-top: 1px solid rgba(60, 60, 67, 0.18);
+    padding-bottom: 64px;
+    flex-shrink: 0;
+  }
+  .ios-tab-item {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    padding: 16px 0 8px;
+    color: var(--gray-ios);
+  }
+  .ios-tab-item.active { color: var(--blue-ios); }
+  .ios-tab-item .label { font-size: 20px; font-weight: 500; }
+
+  /* About card (slide 6) */
+  .about-card {
+    margin: 0 36px;
+    padding: 36px 32px 30px;
+    background: white;
+    border: 1px solid var(--line);
+    border-radius: 24px;
+    box-shadow: 0 6px 20px rgba(42, 37, 32, 0.05);
+  }
+  .about-mark {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    margin-bottom: 22px;
+  }
+  .about-mark .logo {
+    width: 56px;
+    height: 56px;
+    border-radius: 14px;
+    background: var(--amber);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--ink);
+    font-weight: 800;
+    font-size: 30px;
+    letter-spacing: -0.04em;
+  }
+  .about-mark .name {
+    font-size: 38px;
+    font-weight: 800;
+    letter-spacing: -0.025em;
+  }
+  .about-mark .version {
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 20px;
+    font-weight: 500;
+    color: var(--ink3);
+    margin-top: 4px;
+  }
+  .about-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    padding: 16px 0;
+    border-bottom: 1px solid var(--line);
+    gap: 18px;
+  }
+  .about-row:last-child { border-bottom: none; }
+  .about-label {
+    font-size: 22px;
+    font-weight: 500;
+    color: var(--ink-soft);
+  }
+  .about-value {
+    font-size: 22px;
+    font-weight: 600;
+    color: var(--ink);
+    text-align: right;
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    letter-spacing: -0.01em;
+  }
+
+  /* Capture / print */
   body.capture { background: #000; }
   body.capture .gallery-header { display: none; }
-  body.capture .gallery {
-    padding: 0;
-    gap: 0;
-  }
+  body.capture .gallery { padding: 0; gap: 0; }
   body.capture .slide {
     transform: none;
     margin-bottom: 0;
     box-shadow: none;
     border-radius: 0;
   }
-
-  /* When the URL hash targets a specific slide, hide the others in capture mode */
   body.capture .slide:not(:target) { display: none; }
   body.capture:not(:has(:target)) .slide { display: flex; }
 
-  /* Print: one slide per page at full size */
   @media print {
     @page { size: 1290px 2796px; margin: 0; }
     html, body { background: #fff; }
@@ -303,135 +899,780 @@
 </style>
 </head>
 <body>
-  <main class="gallery">
-    <header class="gallery-header">
-      <h1>Beebeeb — App Store mockups</h1>
-      <p>
-        Six slides rendered at exactly <strong>1290 × 2796 px</strong>, the Apple
-        App Store required size for the iPhone 6.7" display class (iPhone 15 Pro Max
-        / 16 Pro Max). Apple uses this size for all iPhone display sizes. Each slide
-        is scaled to 32% for in-page preview only — capture mode renders them at
-        full resolution.
+
+<!-- ================================================================
+     SVG sprite — icons used across mock screens.
+     Reusable via <svg><use href="#id"/></svg>.
+================================================================ -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <!-- Status bar: cellular signal -->
+    <symbol id="i-signal" viewBox="0 0 42 22">
+      <rect x="0" y="14" width="6" height="8" rx="1.5" fill="currentColor"/>
+      <rect x="11" y="10" width="6" height="12" rx="1.5" fill="currentColor"/>
+      <rect x="22" y="6" width="6" height="16" rx="1.5" fill="currentColor"/>
+      <rect x="33" y="0" width="6" height="22" rx="1.5" fill="currentColor"/>
+    </symbol>
+    <!-- Status bar: wifi -->
+    <symbol id="i-wifi" viewBox="0 0 32 22">
+      <path d="M16 18.5a2.5 2.5 0 1 1 0 5 2.5 2.5 0 0 1 0-5z" fill="currentColor"/>
+      <path d="M9.5 12.5a9 9 0 0 1 13 0l-2.7 2.7a5.2 5.2 0 0 0-7.6 0z" fill="currentColor"/>
+      <path d="M3 6.5a18 18 0 0 1 26 0l-2.7 2.7a14.2 14.2 0 0 0-20.6 0z" fill="currentColor"/>
+    </symbol>
+    <!-- Status bar: battery -->
+    <symbol id="i-battery" viewBox="0 0 50 22">
+      <rect x="0.5" y="0.5" width="44" height="21" rx="5" fill="none" stroke="currentColor" stroke-width="1.2" opacity="0.4"/>
+      <rect x="2.5" y="2.5" width="36" height="17" rx="3" fill="currentColor"/>
+      <rect x="46" y="7" width="3" height="8" rx="1" fill="currentColor" opacity="0.4"/>
+    </symbol>
+
+    <!-- File-type icons (white silhouette on colored square) -->
+    <symbol id="i-folder" viewBox="0 0 48 48">
+      <path d="M6 12a4 4 0 0 1 4-4h10l4 4h14a4 4 0 0 1 4 4v22a4 4 0 0 1-4 4H10a4 4 0 0 1-4-4V12z" fill="currentColor"/>
+    </symbol>
+    <symbol id="i-image" viewBox="0 0 48 48">
+      <rect x="6" y="8" width="36" height="32" rx="4" fill="currentColor"/>
+      <circle cx="16" cy="18" r="3" fill="rgba(0,0,0,0.25)"/>
+      <path d="M6 32l10-10 10 10 6-4 10 10v6H6z" fill="rgba(0,0,0,0.25)"/>
+    </symbol>
+    <symbol id="i-doc" viewBox="0 0 48 48">
+      <path d="M10 6h18l12 12v22a4 4 0 0 1-4 4H10a4 4 0 0 1-4-4V10a4 4 0 0 1 4-4z" fill="currentColor"/>
+      <path d="M28 6v10a2 2 0 0 0 2 2h10" fill="rgba(0,0,0,0.2)"/>
+      <rect x="14" y="26" width="20" height="2.5" rx="1" fill="rgba(0,0,0,0.3)"/>
+      <rect x="14" y="32" width="16" height="2.5" rx="1" fill="rgba(0,0,0,0.3)"/>
+    </symbol>
+    <symbol id="i-pdf" viewBox="0 0 48 48">
+      <path d="M10 6h18l12 12v22a4 4 0 0 1-4 4H10a4 4 0 0 1-4-4V10a4 4 0 0 1 4-4z" fill="currentColor"/>
+      <text x="24" y="34" text-anchor="middle" font-family="Inter" font-weight="800" font-size="13" fill="white">PDF</text>
+    </symbol>
+    <symbol id="i-zip" viewBox="0 0 48 48">
+      <path d="M10 6h18l12 12v22a4 4 0 0 1-4 4H10a4 4 0 0 1-4-4V10a4 4 0 0 1 4-4z" fill="currentColor"/>
+      <rect x="22" y="14" width="4" height="20" fill="rgba(0,0,0,0.3)"/>
+      <rect x="22" y="14" width="4" height="3" fill="white"/>
+      <rect x="22" y="20" width="4" height="3" fill="white"/>
+      <rect x="22" y="26" width="4" height="3" fill="white"/>
+    </symbol>
+    <symbol id="i-video" viewBox="0 0 48 48">
+      <rect x="6" y="14" width="28" height="20" rx="3" fill="currentColor"/>
+      <path d="M34 22l8-6v16l-8-6z" fill="currentColor"/>
+    </symbol>
+
+    <!-- App icons -->
+    <symbol id="i-search" viewBox="0 0 24 24">
+      <circle cx="11" cy="11" r="6.5" fill="none" stroke="currentColor" stroke-width="2"/>
+      <path d="M16 16l5 5" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="i-grid" viewBox="0 0 24 24">
+      <rect x="3.5" y="3.5" width="7" height="7" rx="1.5" fill="none" stroke="currentColor" stroke-width="2"/>
+      <rect x="13.5" y="3.5" width="7" height="7" rx="1.5" fill="none" stroke="currentColor" stroke-width="2"/>
+      <rect x="3.5" y="13.5" width="7" height="7" rx="1.5" fill="none" stroke="currentColor" stroke-width="2"/>
+      <rect x="13.5" y="13.5" width="7" height="7" rx="1.5" fill="none" stroke="currentColor" stroke-width="2"/>
+    </symbol>
+    <symbol id="i-sort" viewBox="0 0 24 24">
+      <path d="M7 3v18M3 7l4-4 4 4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M17 21V3M13 17l4 4 4-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="i-share" viewBox="0 0 24 24">
+      <path d="M12 3v14M7 8l5-5 5 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M5 13v6a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="i-lock" viewBox="0 0 24 24">
+      <rect x="4.5" y="10.5" width="15" height="11" rx="2.5" fill="none" stroke="currentColor" stroke-width="2"/>
+      <path d="M8 10.5V7a4 4 0 0 1 8 0v3.5" fill="none" stroke="currentColor" stroke-width="2"/>
+      <circle cx="12" cy="16" r="1.5" fill="currentColor"/>
+    </symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24">
+      <path d="M12 2l8 3v6c0 5-3.4 9.4-8 11-4.6-1.6-8-6-8-11V5l8-3z" fill="currentColor"/>
+      <path d="M8.5 12l2.5 2.5L16 9.5" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="i-fingerprint" viewBox="0 0 24 24">
+      <path d="M12 3a9 9 0 0 1 9 9c0 3-1 5.5-1 5.5M3 13.5C3 8 7 4 12 4c2.5 0 4.7 1 6.5 2.5M5.5 18c1.5-2 2.5-4.5 2.5-6 0-2.2 1.8-4 4-4s4 1.8 4 4c0 2 0 4-.5 6M9 21c1.5-3 1.5-6 1.5-9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="i-cloud" viewBox="0 0 24 24">
+      <path d="M7 18h10a4 4 0 0 0 0-8 6 6 0 0 0-11.5-2A4 4 0 0 0 7 18z" fill="currentColor"/>
+    </symbol>
+    <symbol id="i-globe" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/>
+      <ellipse cx="12" cy="12" rx="3.5" ry="9" fill="none" stroke="currentColor" stroke-width="2"/>
+      <path d="M3 12h18" stroke="currentColor" stroke-width="2"/>
+    </symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/>
+      <path d="M12 7v5l3.5 2" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="i-key" viewBox="0 0 24 24">
+      <circle cx="8" cy="14" r="4.5" fill="none" stroke="currentColor" stroke-width="2"/>
+      <path d="M11 12l9-9M16 7l3 3M14 9l3 3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="i-chevron-right" viewBox="0 0 24 24">
+      <path d="M9 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="i-chevron-left" viewBox="0 0 24 24">
+      <path d="M15 6l-6 6 6 6" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+
+    <!-- Tab bar icons -->
+    <symbol id="i-tab-files" viewBox="0 0 24 24">
+      <path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" fill="currentColor"/>
+    </symbol>
+    <symbol id="i-tab-share" viewBox="0 0 24 24">
+      <circle cx="6" cy="12" r="2.5" fill="currentColor"/>
+      <circle cx="18" cy="6" r="2.5" fill="currentColor"/>
+      <circle cx="18" cy="18" r="2.5" fill="currentColor"/>
+      <path d="M8 11l8-4M8 13l8 4" stroke="currentColor" stroke-width="1.8"/>
+    </symbol>
+    <symbol id="i-tab-photos" viewBox="0 0 24 24">
+      <rect x="3" y="5" width="18" height="14" rx="2.5" fill="currentColor"/>
+      <circle cx="8" cy="10" r="1.5" fill="rgba(255,255,255,0.6)"/>
+      <path d="M3 16l5-5 5 5 3-2 5 5v0H3z" fill="rgba(255,255,255,0.4)"/>
+    </symbol>
+    <symbol id="i-tab-settings" viewBox="0 0 24 24">
+      <path d="M12 2l1.6 3.2 3.5.5-2.5 2.5.6 3.5L12 10l-3.2 1.7.6-3.5L7 5.7l3.5-.5L12 2z" fill="none" stroke="currentColor" stroke-width="0"/>
+      <circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="2"/>
+      <path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5 5l2 2M17 17l2 2M5 19l2-2M17 7l2-2" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+    </symbol>
+  </defs>
+</svg>
+
+<main class="gallery">
+  <header class="gallery-header">
+    <h1>Beebeeb — App Store mockups</h1>
+    <p>
+      Six slides rendered at exactly <strong>1290 × 2796 px</strong>, the Apple
+      App Store required size for the iPhone 6.7" display class. Each slide is
+      scaled to 32% for in-page preview only — capture mode renders them at
+      full resolution.
+    </p>
+    <div class="controls">
+      <button onclick="document.body.classList.toggle('capture')">Toggle capture mode</button>
+      <button class="secondary" onclick="window.print()">Print to PDF</button>
+    </div>
+  </header>
+
+  <!-- ============================================================
+       Slide 1 — "Your files. Encrypted."
+       Files tab, populated drive (folders + files).
+  ============================================================ -->
+  <section id="slide-1" class="slide slide-1" style="width:1290px;height:2796px">
+    <div class="slide-content">
+      <span class="eyebrow">End-to-end encrypted</span>
+      <h2 class="headline">Your files.<br /><span class="accent">Encrypted.</span></h2>
+      <p class="subhead">
+        Every file. Every byte. Encrypted on your device before it ever leaves.
+        We can't read them. Neither can anyone else.
       </p>
-      <div class="controls">
-        <button onclick="document.body.classList.toggle('capture')">Toggle capture mode</button>
-        <button class="secondary" onclick="window.print()">Print to PDF</button>
-      </div>
-    </header>
-
-    <!-- Slide 1: Files / Drive -->
-    <section id="slide-1" class="slide slide-1" style="width:1290px;height:2796px">
-      <div class="slide-content">
-        <span class="eyebrow">End-to-end encrypted</span>
-        <h2 class="headline">Your files.<br /><span class="accent">Encrypted.</span></h2>
-        <p class="subhead">
-          Every file. Every byte. Encrypted on your device before it ever leaves.
-          We can't read them. Neither can anyone else.
-        </p>
-      </div>
-      <div class="device">
-        <div class="device-screen">
-          <div class="device-island"></div>
-          <img src="01-files-drive.png" alt="Files screen" />
+    </div>
+    <div class="device">
+      <div class="device-screen">
+        <div class="device-island"></div>
+        <div class="mock">
+          <!-- Status bar -->
+          <div class="status-bar">
+            <span class="time">9:41</span>
+            <div class="status-icons">
+              <svg width="42" height="22"><use href="#i-signal"/></svg>
+              <svg width="32" height="22"><use href="#i-wifi"/></svg>
+              <svg width="50" height="22"><use href="#i-battery"/></svg>
+            </div>
+          </div>
+          <!-- App header -->
+          <div class="app-header">
+            <span class="app-title">Drive</span>
+            <span class="icon-btn"><svg width="32" height="32"><use href="#i-grid"/></svg></span>
+            <span class="icon-btn"><svg width="32" height="32"><use href="#i-sort"/></svg></span>
+            <span class="icon-btn"><svg width="32" height="32"><use href="#i-search"/></svg></span>
+          </div>
+          <!-- Pinned -->
+          <div class="section-label">Pinned</div>
+          <div class="pinned-row">
+            <div class="pinned-chip"><svg width="22" height="22" style="color:var(--amber-deep)"><use href="#i-folder"/></svg>Documents</div>
+            <div class="pinned-chip"><svg width="22" height="22" style="color:var(--amber-deep)"><use href="#i-folder"/></svg>Work</div>
+            <div class="pinned-chip"><svg width="22" height="22" style="color:var(--amber-deep)"><use href="#i-folder"/></svg>Photos</div>
+          </div>
+          <!-- File list -->
+          <div class="file-row">
+            <div class="file-icon folder"><svg width="44" height="44"><use href="#i-folder"/></svg></div>
+            <div class="file-info">
+              <div class="file-name">Documents</div>
+              <div class="file-meta">42 items · 3 days ago</div>
+            </div>
+            <div class="file-chevron">›</div>
+          </div>
+          <div class="file-row">
+            <div class="file-icon folder"><svg width="44" height="44"><use href="#i-folder"/></svg></div>
+            <div class="file-info">
+              <div class="file-name">Photos</div>
+              <div class="file-meta">238 items · just now</div>
+            </div>
+            <div class="file-chevron">›</div>
+          </div>
+          <div class="file-row">
+            <div class="file-icon folder"><svg width="44" height="44"><use href="#i-folder"/></svg></div>
+            <div class="file-info">
+              <div class="file-name">Work</div>
+              <div class="file-meta">16 items · yesterday</div>
+            </div>
+            <div class="file-chevron">›</div>
+          </div>
+          <div class="file-row">
+            <div class="file-icon pdf"><svg width="44" height="44"><use href="#i-pdf"/></svg></div>
+            <div class="file-info">
+              <div class="file-name">taxes-2025.pdf</div>
+              <div class="file-meta">1.2 MB · 2h ago</div>
+            </div>
+            <div class="file-chevron">›</div>
+          </div>
+          <div class="file-row">
+            <div class="file-icon image"><svg width="44" height="44"><use href="#i-image"/></svg></div>
+            <div class="file-info">
+              <div class="file-name">vacation.jpg</div>
+              <div class="file-meta">4.7 MB · 5h ago</div>
+            </div>
+            <div class="file-chevron">›</div>
+          </div>
+          <div class="file-row">
+            <div class="file-icon pdf"><svg width="44" height="44"><use href="#i-pdf"/></svg></div>
+            <div class="file-info">
+              <div class="file-name">contract-signed.pdf</div>
+              <div class="file-meta">340 KB · yesterday</div>
+            </div>
+            <div class="file-chevron">›</div>
+          </div>
+          <div class="file-row">
+            <div class="file-icon image"><svg width="44" height="44"><use href="#i-image"/></svg></div>
+            <div class="file-info">
+              <div class="file-name">family-portrait.heic</div>
+              <div class="file-meta">3.1 MB · Apr 28</div>
+            </div>
+            <div class="file-chevron">›</div>
+          </div>
+          <div class="file-row">
+            <div class="file-icon doc"><svg width="44" height="44"><use href="#i-doc"/></svg></div>
+            <div class="file-info">
+              <div class="file-name">notes.md</div>
+              <div class="file-meta">12 KB · Apr 26</div>
+            </div>
+            <div class="file-chevron">›</div>
+          </div>
+          <div class="file-row">
+            <div class="file-icon zip"><svg width="44" height="44"><use href="#i-zip"/></svg></div>
+            <div class="file-info">
+              <div class="file-name">project-archive.zip</div>
+              <div class="file-meta">82.4 MB · Apr 22</div>
+            </div>
+            <div class="file-chevron">›</div>
+          </div>
+          <!-- Tab bar -->
+          <div class="tab-bar">
+            <div class="tab-item active">
+              <svg width="46" height="46"><use href="#i-tab-files"/></svg>
+              <span class="label">Files</span>
+            </div>
+            <div class="tab-item">
+              <svg width="46" height="46"><use href="#i-tab-share"/></svg>
+              <span class="label">Shared</span>
+            </div>
+            <div class="tab-item">
+              <svg width="46" height="46"><use href="#i-tab-photos"/></svg>
+              <span class="label">Photos</span>
+            </div>
+            <div class="tab-item">
+              <svg width="46" height="46"><use href="#i-tab-settings"/></svg>
+              <span class="label">Settings</span>
+            </div>
+          </div>
+          <div class="device-home-indicator"></div>
         </div>
       </div>
-      <div class="brand-mark"><span class="dot"></span>beebeeb</div>
-    </section>
+    </div>
+    <div class="brand-mark"><span class="dot"></span>beebeeb</div>
+  </section>
 
-    <!-- Slide 2: Shared -->
-    <section id="slide-2" class="slide slide-2" style="width:1290px;height:2796px">
-      <div class="slide-content">
-        <span class="eyebrow">Zero knowledge sharing</span>
-        <h2 class="headline">Share without<br /><span class="accent">compromise.</span></h2>
-        <p class="subhead">
-          Send a link. Set an expiry. Revoke anytime. The recipient decrypts —
-          our servers never see a thing.
-        </p>
-      </div>
-      <div class="device">
-        <div class="device-screen">
-          <div class="device-island"></div>
-          <img src="02-shared.png" alt="Shared screen" />
+  <!-- ============================================================
+       Slide 2 — "Back up everything."
+       Photos tab + auto-backup banner showing 238 photos.
+  ============================================================ -->
+  <section id="slide-2" class="slide slide-2" style="width:1290px;height:2796px">
+    <div class="slide-content">
+      <span class="eyebrow">Auto backup</span>
+      <h2 class="headline">Back up<br /><span class="accent">everything.</span></h2>
+      <p class="subhead">
+        The moments that matter, encrypted the moment they happen. Browse a
+        decade of memories without handing them over.
+      </p>
+    </div>
+    <div class="device">
+      <div class="device-screen">
+        <div class="device-island"></div>
+        <div class="mock">
+          <div class="status-bar">
+            <span class="time">9:41</span>
+            <div class="status-icons">
+              <svg width="42" height="22"><use href="#i-signal"/></svg>
+              <svg width="32" height="22"><use href="#i-wifi"/></svg>
+              <svg width="50" height="22"><use href="#i-battery"/></svg>
+            </div>
+          </div>
+          <div class="app-header">
+            <span class="app-title">Photos</span>
+            <span class="icon-btn"><svg width="32" height="32"><use href="#i-grid"/></svg></span>
+            <span class="icon-btn"><svg width="32" height="32"><use href="#i-search"/></svg></span>
+          </div>
+          <!-- Auto-backup banner -->
+          <div class="backup-banner">
+            <div class="pulse"></div>
+            <div class="text">
+              <div class="title">Auto-backup on</div>
+              <div class="subtitle">Encrypting in the background</div>
+            </div>
+            <div>
+              <div class="count">238</div>
+              <div class="subtitle" style="text-align:right">backed up</div>
+            </div>
+          </div>
+          <!-- Photos grid (4 cols × 9 rows = 36 thumbs, warm-toned) -->
+          <div class="photos-grid">
+            <div class="photo-thumb" style="background:linear-gradient(135deg,#f4dbb1,#c0a47d)"></div>
+            <div class="photo-thumb" style="background:linear-gradient(135deg,#d6a96b,#8b6f47)"></div>
+            <div class="photo-thumb" style="background:linear-gradient(160deg,#e8c489,#b08868)"></div>
+            <div class="photo-thumb" style="background:linear-gradient(135deg,#c89968,#806042)"></div>
+            <div class="photo-thumb" style="background:linear-gradient(135deg,#f5d893,#c2967c)"></div>
+            <div class="photo-thumb" style="background:linear-gradient(135deg,#d4a574,#9a7050)"></div>
+            <div class="photo-thumb" style="background:linear-gradient(160deg,#b89066,#5a4f44)"></div>
+            <div class="photo-thumb" style="background:linear-gradient(135deg,#d8b896,#a47551)"></div>
+            <div class="photo-thumb" style="background:linear-gradient(135deg,#c4a484,#7d7770)"></div>
+            <div class="photo-thumb" style="background:linear-gradient(135deg,#e8c489,#87664a)"></div>
+            <div class="photo-thumb" style="background:linear-gradient(160deg,#f4dbb1,#b08868)"></div>
+            <div class="photo-thumb" style="background:linear-gradient(135deg,#b09471,#3a2e22)"></div>
+            <div class="photo-thumb" style="background:linear-gradient(135deg,#ddc298,#8b6f47)"></div>
+            <div class="photo-thumb" style="background:linear-gradient(135deg,#c0a47d,#5a4f44)"></div>
+            <div class="photo-thumb" style="background:linear-gradient(135deg,#f5d893,#a47551)"></div>
+            <div class="photo-thumb" style="background:linear-gradient(160deg,#d6a96b,#806042)"></div>
+            <div class="photo-thumb" style="background:linear-gradient(135deg,#d4a574,#806042)"></div>
+            <div class="photo-thumb" style="background:linear-gradient(135deg,#c2967c,#5c564e)"></div>
+            <div class="photo-thumb" style="background:linear-gradient(135deg,#e8c489,#9a7050)"></div>
+            <div class="photo-thumb" style="background:linear-gradient(135deg,#b89066,#5a4f44)"></div>
+            <div class="photo-thumb" style="background:linear-gradient(160deg,#f4dbb1,#c89968)"></div>
+            <div class="photo-thumb" style="background:linear-gradient(135deg,#c4a484,#806042)"></div>
+            <div class="photo-thumb" style="background:linear-gradient(135deg,#d8b896,#7d7770)"></div>
+            <div class="photo-thumb" style="background:linear-gradient(135deg,#f5d893,#b08868)"></div>
+            <div class="photo-thumb" style="background:linear-gradient(135deg,#a47551,#3a2e22)"></div>
+            <div class="photo-thumb" style="background:linear-gradient(135deg,#ddc298,#9a7050)"></div>
+            <div class="photo-thumb" style="background:linear-gradient(160deg,#e8c489,#5a4f44)"></div>
+            <div class="photo-thumb" style="background:linear-gradient(135deg,#c2967c,#806042)"></div>
+            <div class="photo-thumb" style="background:linear-gradient(135deg,#d6a96b,#7d7770)"></div>
+            <div class="photo-thumb" style="background:linear-gradient(135deg,#f4dbb1,#a47551)"></div>
+            <div class="photo-thumb" style="background:linear-gradient(160deg,#b08868,#3a2e22)"></div>
+            <div class="photo-thumb" style="background:linear-gradient(135deg,#c4a484,#5c564e)"></div>
+            <div class="photo-thumb" style="background:linear-gradient(135deg,#d4a574,#87664a)"></div>
+            <div class="photo-thumb" style="background:linear-gradient(135deg,#f5d893,#9a7050)"></div>
+            <div class="photo-thumb" style="background:linear-gradient(135deg,#c89968,#5a4f44)"></div>
+            <div class="photo-thumb" style="background:linear-gradient(135deg,#ddc298,#806042)"></div>
+          </div>
+          <div class="tab-bar" style="margin-top:auto">
+            <div class="tab-item">
+              <svg width="46" height="46"><use href="#i-tab-files"/></svg>
+              <span class="label">Files</span>
+            </div>
+            <div class="tab-item">
+              <svg width="46" height="46"><use href="#i-tab-share"/></svg>
+              <span class="label">Shared</span>
+            </div>
+            <div class="tab-item active">
+              <svg width="46" height="46"><use href="#i-tab-photos"/></svg>
+              <span class="label">Photos</span>
+            </div>
+            <div class="tab-item">
+              <svg width="46" height="46"><use href="#i-tab-settings"/></svg>
+              <span class="label">Settings</span>
+            </div>
+          </div>
+          <div class="device-home-indicator"></div>
         </div>
       </div>
-      <div class="brand-mark"><span class="dot"></span>beebeeb</div>
-    </section>
+    </div>
+    <div class="brand-mark"><span class="dot"></span>beebeeb</div>
+  </section>
 
-    <!-- Slide 3: Photos -->
-    <section id="slide-3" class="slide slide-3" style="width:1290px;height:2796px">
-      <div class="slide-content">
-        <span class="eyebrow">Auto backup</span>
-        <h2 class="headline">Every photo.<br /><span class="accent">Backed up.</span></h2>
-        <p class="subhead">
-          The moments that matter, encrypted the moment they happen. Browse a
-          decade of memories without handing them over.
-        </p>
-      </div>
-      <div class="device">
-        <div class="device-screen">
-          <div class="device-island"></div>
-          <img src="03-photos.png" alt="Photos screen" />
+  <!-- ============================================================
+       Slide 3 — "Share without compromise."
+       Files tab with bottom sheet creating an encrypted link.
+  ============================================================ -->
+  <section id="slide-3" class="slide slide-3" style="width:1290px;height:2796px">
+    <div class="slide-content">
+      <span class="eyebrow">Zero-knowledge sharing</span>
+      <h2 class="headline">Share without<br /><span class="accent">compromise.</span></h2>
+      <p class="subhead">
+        Send a link. Set an expiry. Revoke anytime. The recipient decrypts —
+        our servers never see a thing.
+      </p>
+    </div>
+    <div class="device">
+      <div class="device-screen">
+        <div class="device-island"></div>
+        <div class="mock">
+          <div class="status-bar">
+            <span class="time">9:41</span>
+            <div class="status-icons">
+              <svg width="42" height="22"><use href="#i-signal"/></svg>
+              <svg width="32" height="22"><use href="#i-wifi"/></svg>
+              <svg width="50" height="22"><use href="#i-battery"/></svg>
+            </div>
+          </div>
+          <div class="app-header">
+            <span class="app-title">Drive</span>
+            <span class="icon-btn"><svg width="32" height="32"><use href="#i-search"/></svg></span>
+          </div>
+          <!-- Background files (partially obscured) -->
+          <div class="file-row" style="opacity:0.5">
+            <div class="file-icon folder"><svg width="44" height="44"><use href="#i-folder"/></svg></div>
+            <div class="file-info">
+              <div class="file-name">Documents</div>
+              <div class="file-meta">42 items</div>
+            </div>
+            <div class="file-chevron">›</div>
+          </div>
+          <div class="file-row" style="opacity:0.5">
+            <div class="file-icon zip"><svg width="44" height="44"><use href="#i-zip"/></svg></div>
+            <div class="file-info">
+              <div class="file-name">vacation-photos.zip</div>
+              <div class="file-meta">247 MB · just now</div>
+            </div>
+            <div class="file-chevron">›</div>
+          </div>
+          <!-- Sheet backdrop + sheet -->
+          <div class="sheet-backdrop"></div>
+          <div class="sheet">
+            <div class="sheet-handle"></div>
+            <h3 class="sheet-title">Share encrypted link</h3>
+            <p class="sheet-subtitle">vacation-photos.zip · 247 MB</p>
+            <div class="form-row">
+              <div>
+                <div class="form-label">Expires</div>
+                <div class="form-meta">Link stops working after</div>
+              </div>
+              <div class="form-value">In 7 days <svg width="22" height="22" style="color:var(--ink4)"><use href="#i-chevron-right"/></svg></div>
+            </div>
+            <div class="form-row">
+              <div>
+                <div class="form-label">Password protected</div>
+                <div class="form-meta">Recipient must enter passphrase</div>
+              </div>
+              <div class="toggle"></div>
+            </div>
+            <div class="form-row">
+              <div>
+                <div class="form-label">Download limit</div>
+                <div class="form-meta">After 5 downloads, link revokes</div>
+              </div>
+              <div class="form-value">5</div>
+            </div>
+            <div class="link-block">
+              <div class="url">https://beebeeb.io/s/9f3a7c2e#k=qY2…</div>
+              <div class="copy-btn">Copy</div>
+            </div>
+            <div class="primary-btn">Share encrypted link</div>
+          </div>
+          <div class="device-home-indicator"></div>
         </div>
       </div>
-      <div class="brand-mark"><span class="dot"></span>beebeeb</div>
-    </section>
+    </div>
+    <div class="brand-mark"><span class="dot"></span>beebeeb</div>
+  </section>
 
-    <!-- Slide 4: Settings / Privacy -->
-    <section id="slide-4" class="slide slide-4" style="width:1290px;height:2796px">
-      <div class="slide-content">
-        <span class="eyebrow">Your data, your rules</span>
-        <h2 class="headline">Privacy<br />you <span class="accent">control.</span></h2>
-        <p class="subhead">
-          Choose your region. Choose your keys. Choose what's backed up and what
-          isn't. The defaults respect you — the options answer to you.
-        </p>
-      </div>
-      <div class="device">
-        <div class="device-screen">
-          <div class="device-island"></div>
-          <img src="04-settings.png" alt="Settings screen" />
+  <!-- ============================================================
+       Slide 4 — "Privacy you control."
+       Settings: Privacy section + storage region picker.
+  ============================================================ -->
+  <section id="slide-4" class="slide slide-4" style="width:1290px;height:2796px">
+    <div class="slide-content">
+      <span class="eyebrow">Your data, your rules</span>
+      <h2 class="headline">Privacy<br />you <span class="accent">control.</span></h2>
+      <p class="subhead">
+        Choose your region. Choose your keys. Choose what's backed up and what
+        isn't. The defaults respect you — the options answer to you.
+      </p>
+    </div>
+    <div class="device">
+      <div class="device-screen">
+        <div class="device-island"></div>
+        <div class="mock">
+          <div class="status-bar">
+            <span class="time">9:41</span>
+            <div class="status-icons">
+              <svg width="42" height="22"><use href="#i-signal"/></svg>
+              <svg width="32" height="22"><use href="#i-wifi"/></svg>
+              <svg width="50" height="22"><use href="#i-battery"/></svg>
+            </div>
+          </div>
+          <div class="app-header">
+            <span class="app-title">Settings</span>
+          </div>
+          <!-- Privacy group -->
+          <div class="section-label">Security</div>
+          <div class="settings-group">
+            <div class="settings-row">
+              <div class="settings-icon" style="background:var(--amber-deep)"><svg width="32" height="32"><use href="#i-shield"/></svg></div>
+              <div class="settings-text">
+                <div class="title">End-to-end encryption</div>
+                <div class="subtitle">AES-256-GCM · Argon2id</div>
+              </div>
+              <div class="check-amber">✓</div>
+            </div>
+            <div class="settings-row">
+              <div class="settings-icon" style="background:#5c564e"><svg width="32" height="32"><use href="#i-fingerprint"/></svg></div>
+              <div class="settings-text">
+                <div class="title">Face ID lock</div>
+                <div class="subtitle">Required after 5 minutes</div>
+              </div>
+              <div class="toggle"></div>
+            </div>
+            <div class="settings-row">
+              <div class="settings-icon" style="background:#5c564e"><svg width="32" height="32"><use href="#i-key"/></svg></div>
+              <div class="settings-text">
+                <div class="title">Recovery key</div>
+                <div class="subtitle">Generated · stored only on device</div>
+              </div>
+              <svg width="28" height="28" style="color:var(--ink4)"><use href="#i-chevron-right"/></svg>
+            </div>
+          </div>
+          <!-- Storage region group -->
+          <div class="section-label">Data residency</div>
+          <div class="settings-group" style="padding:0">
+            <div class="region-row active">
+              <div class="region-radio"></div>
+              <div class="region-name">Frankfurt</div>
+              <span class="country-tag">DE</span>
+              <div class="region-meta">Hetzner · 12 ms</div>
+            </div>
+            <div class="region-row">
+              <div class="region-radio"></div>
+              <div class="region-name">Helsinki</div>
+              <span class="country-tag muted">FI</span>
+              <div class="region-meta">Hetzner · 38 ms</div>
+            </div>
+            <div class="region-row">
+              <div class="region-radio"></div>
+              <div class="region-name">Falkenstein</div>
+              <span class="country-tag muted">DE</span>
+              <div class="region-meta">Hetzner · 18 ms</div>
+            </div>
+          </div>
+          <div class="tab-bar">
+            <div class="tab-item">
+              <svg width="46" height="46"><use href="#i-tab-files"/></svg>
+              <span class="label">Files</span>
+            </div>
+            <div class="tab-item">
+              <svg width="46" height="46"><use href="#i-tab-share"/></svg>
+              <span class="label">Shared</span>
+            </div>
+            <div class="tab-item">
+              <svg width="46" height="46"><use href="#i-tab-photos"/></svg>
+              <span class="label">Photos</span>
+            </div>
+            <div class="tab-item active">
+              <svg width="46" height="46"><use href="#i-tab-settings"/></svg>
+              <span class="label">Settings</span>
+            </div>
+          </div>
+          <div class="device-home-indicator"></div>
         </div>
       </div>
-      <div class="brand-mark"><span class="dot"></span>beebeeb</div>
-    </section>
+    </div>
+    <div class="brand-mark"><span class="dot"></span>beebeeb</div>
+  </section>
 
-    <!-- Slide 5: Dark mode -->
-    <section id="slide-5" class="slide slide-5" style="width:1290px;height:2796px">
-      <div class="slide-content">
-        <span class="eyebrow">Looks good in the dark</span>
-        <h2 class="headline">Dark mode.<br /><span class="accent">Light conscience.</span></h2>
-        <p class="subhead">
-          Designed for late nights and long flights. The interface dims —
-          the encryption doesn't.
-        </p>
-      </div>
-      <div class="device">
-        <div class="device-screen">
-          <div class="device-island"></div>
-          <img src="05-settings-scrolled.png" alt="Settings, scrolled" />
+  <!-- ============================================================
+       Slide 5 — "Works everywhere."
+       iOS Files app with Beebeeb mounted alongside iCloud Drive.
+  ============================================================ -->
+  <section id="slide-5" class="slide slide-5" style="width:1290px;height:2796px">
+    <div class="slide-content">
+      <span class="eyebrow">File Provider integration</span>
+      <h2 class="headline">Works<br /><span class="accent">everywhere.</span></h2>
+      <p class="subhead">
+        Open in Pages, attach in Mail, save from Safari. Beebeeb shows up in
+        the iOS Files app — encrypted, native, and out of your way.
+      </p>
+    </div>
+    <div class="device">
+      <div class="device-screen">
+        <div class="device-island"></div>
+        <div class="mock ios-mock">
+          <div class="status-bar">
+            <span class="time">9:41</span>
+            <div class="status-icons">
+              <svg width="42" height="22"><use href="#i-signal"/></svg>
+              <svg width="32" height="22"><use href="#i-wifi"/></svg>
+              <svg width="50" height="22"><use href="#i-battery"/></svg>
+            </div>
+          </div>
+          <div class="ios-header">
+            <div class="ios-title">Browse</div>
+          </div>
+          <div class="ios-search">
+            <svg width="26" height="26" style="color:var(--gray-ios)"><use href="#i-search"/></svg>
+            Search
+          </div>
+          <div class="ios-section-label">Locations</div>
+          <div class="ios-list">
+            <div class="ios-row">
+              <div class="ios-icon icloud"><svg width="40" height="40"><use href="#i-cloud"/></svg></div>
+              <div class="ios-name">iCloud Drive</div>
+              <svg width="22" height="22" class="ios-disclosure"><use href="#i-chevron-right"/></svg>
+            </div>
+            <div class="ios-row">
+              <div class="ios-icon iphone"><svg width="36" height="36"><use href="#i-tab-files"/></svg></div>
+              <div class="ios-name">On My iPhone</div>
+              <svg width="22" height="22" class="ios-disclosure"><use href="#i-chevron-right"/></svg>
+            </div>
+            <div class="ios-row highlighted">
+              <div class="ios-icon beebeeb"><svg width="40" height="40" style="color:var(--ink)"><use href="#i-shield"/></svg></div>
+              <div class="ios-name" style="font-weight:700">Beebeeb</div>
+              <span class="ios-meta">Encrypted</span>
+              <svg width="22" height="22" class="ios-disclosure"><use href="#i-chevron-right"/></svg>
+            </div>
+          </div>
+          <div class="ios-section-label">Beebeeb</div>
+          <div class="ios-list">
+            <div class="ios-row">
+              <div class="ios-icon" style="background:var(--amber-deep)"><svg width="36" height="36"><use href="#i-folder"/></svg></div>
+              <div class="ios-name">Documents</div>
+              <span class="ios-meta">42 items</span>
+              <svg width="22" height="22" class="ios-disclosure"><use href="#i-chevron-right"/></svg>
+            </div>
+            <div class="ios-row">
+              <div class="ios-icon" style="background:var(--red)"><svg width="36" height="36"><use href="#i-pdf"/></svg></div>
+              <div class="ios-name">taxes-2025.pdf</div>
+              <span class="ios-meta">1.2 MB</span>
+              <svg width="22" height="22" class="ios-disclosure"><use href="#i-chevron-right"/></svg>
+            </div>
+            <div class="ios-row">
+              <div class="ios-icon" style="background:var(--amber);color:var(--ink)"><svg width="36" height="36"><use href="#i-image"/></svg></div>
+              <div class="ios-name">vacation.jpg</div>
+              <span class="ios-meta">4.7 MB</span>
+              <svg width="22" height="22" class="ios-disclosure"><use href="#i-chevron-right"/></svg>
+            </div>
+          </div>
+          <div class="ios-tab-bar">
+            <div class="ios-tab-item">
+              <svg width="36" height="36"><use href="#i-clock"/></svg>
+              <span class="label">Recents</span>
+            </div>
+            <div class="ios-tab-item">
+              <svg width="36" height="36"><use href="#i-tab-share"/></svg>
+              <span class="label">Shared</span>
+            </div>
+            <div class="ios-tab-item active">
+              <svg width="36" height="36"><use href="#i-tab-files"/></svg>
+              <span class="label">Browse</span>
+            </div>
+          </div>
+          <div class="device-home-indicator"></div>
         </div>
       </div>
-      <div class="brand-mark"><span class="dot"></span>beebeeb</div>
-    </section>
+    </div>
+    <div class="brand-mark"><span class="dot"></span>beebeeb</div>
+  </section>
 
-    <!-- Slide 6: Made in Europe -->
-    <section id="slide-6" class="slide slide-6" style="width:1290px;height:2796px">
-      <div class="slide-content">
-        <span class="eyebrow">Frankfurt · Hetzner</span>
-        <h2 class="headline">Made in<br /><span class="accent">Europe.</span></h2>
-        <p class="subhead">
-          Built and operated by Initlabs B.V., Wijchen, Netherlands.
-          Stored in Frankfurt. Governed by EU law.
-        </p>
-      </div>
-      <div class="device">
-        <div class="device-screen">
-          <div class="device-island"></div>
-          <img src="06-settings-bottom.png" alt="Settings — about" />
+  <!-- ============================================================
+       Slide 6 — "Made in Europe."
+       Settings · About card with Initlabs B.V. and storage location.
+  ============================================================ -->
+  <section id="slide-6" class="slide slide-6" style="width:1290px;height:2796px">
+    <div class="slide-content">
+      <span class="eyebrow">Frankfurt · Hetzner</span>
+      <h2 class="headline">Made in<br /><span class="accent">Europe.</span></h2>
+      <p class="subhead">
+        Built and operated by Initlabs B.V., Wijchen, Netherlands.
+        Stored in Frankfurt. Governed by EU law.
+      </p>
+    </div>
+    <div class="device">
+      <div class="device-screen">
+        <div class="device-island"></div>
+        <div class="mock">
+          <div class="status-bar">
+            <span class="time">9:41</span>
+            <div class="status-icons">
+              <svg width="42" height="22"><use href="#i-signal"/></svg>
+              <svg width="32" height="22"><use href="#i-wifi"/></svg>
+              <svg width="50" height="22"><use href="#i-battery"/></svg>
+            </div>
+          </div>
+          <div class="app-header">
+            <span class="app-title">About</span>
+          </div>
+          <div class="about-card">
+            <div class="about-mark">
+              <div class="logo">b</div>
+              <div>
+                <div class="name">beebeeb</div>
+                <div class="version">v1.0.0 · build 2410</div>
+              </div>
+            </div>
+            <div class="about-row">
+              <div class="about-label">Operator</div>
+              <div class="about-value">Initlabs B.V.</div>
+            </div>
+            <div class="about-row">
+              <div class="about-label">Address</div>
+              <div class="about-value">Wijchen, NL</div>
+            </div>
+            <div class="about-row">
+              <div class="about-label">KvK</div>
+              <div class="about-value">95157565</div>
+            </div>
+            <div class="about-row">
+              <div class="about-label">Storage region</div>
+              <div class="about-value">Frankfurt, DE</div>
+            </div>
+            <div class="about-row">
+              <div class="about-label">Provider</div>
+              <div class="about-value">Hetzner Online</div>
+            </div>
+            <div class="about-row">
+              <div class="about-label">Jurisdiction</div>
+              <div class="about-value">EU · GDPR</div>
+            </div>
+            <div class="about-row">
+              <div class="about-label">Encryption</div>
+              <div class="about-value">AES-256-GCM</div>
+            </div>
+            <div class="about-row">
+              <div class="about-label">Source</div>
+              <div class="about-value">Apache 2.0</div>
+            </div>
+          </div>
+          <div style="text-align:center;padding:28px 36px 0;font-family:'JetBrains Mono',monospace;font-size:22px;color:var(--ink3);font-weight:500;letter-spacing:-0.01em">
+            We can't read your files.<br />Neither can anyone else.
+          </div>
+          <div class="tab-bar">
+            <div class="tab-item">
+              <svg width="46" height="46"><use href="#i-tab-files"/></svg>
+              <span class="label">Files</span>
+            </div>
+            <div class="tab-item">
+              <svg width="46" height="46"><use href="#i-tab-share"/></svg>
+              <span class="label">Shared</span>
+            </div>
+            <div class="tab-item">
+              <svg width="46" height="46"><use href="#i-tab-photos"/></svg>
+              <span class="label">Photos</span>
+            </div>
+            <div class="tab-item active">
+              <svg width="46" height="46"><use href="#i-tab-settings"/></svg>
+              <span class="label">Settings</span>
+            </div>
+          </div>
+          <div class="device-home-indicator"></div>
         </div>
       </div>
-      <div class="brand-mark"><span class="dot"></span>beebeeb</div>
-    </section>
-  </main>
+    </div>
+    <div class="brand-mark"><span class="dot"></span>beebeeb</div>
+  </section>
+
+</main>
 </body>
 </html>
