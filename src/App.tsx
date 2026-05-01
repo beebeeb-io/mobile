@@ -12,6 +12,7 @@ import { Text } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from './theme';
 import { ThemeProvider, useTheme } from './lib/theme-context';
+import { ToastProvider } from './lib/toast-context';
 import { BBLogo } from './components/BBLogo';
 import {
   hasToken,
@@ -401,6 +402,7 @@ export default function App() {
       <CryptoProvider>
       <BackupProvider>
       <SafeAreaProvider>
+      <ToastProvider>
         <Suspense fallback={<ScreenLoadingFallback />}>
           <NavigationContainer linking={linking} onStateChange={handleNavigationStateChange}>
             <Stack.Navigator screenOptions={{ headerShown: false }}>
@@ -476,6 +478,7 @@ export default function App() {
         )}
 
         <StatusBar style={resolved === 'dark' ? 'light' : 'dark'} />
+      </ToastProvider>
       </SafeAreaProvider>
       </BackupProvider>
       </CryptoProvider>
