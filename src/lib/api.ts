@@ -96,7 +96,7 @@ export function friendlyError(err: unknown): string {
       // authenticated requests => "Session expired".
       return err.message || 'Session expired. Please sign in again.';
     }
-    if (err.status === 409) return 'An account with this email already exists.';
+    if (err.status === 409) return err.message || 'A resource with that name already exists.';
     if (err.status === 422) return err.message || 'Invalid input. Please check your details.';
     return err.message || 'Something went wrong. Please try again.';
   }
