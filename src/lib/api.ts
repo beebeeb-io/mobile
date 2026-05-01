@@ -269,6 +269,14 @@ export async function restoreFile(id: string): Promise<void> {
   await request('POST', `/api/v1/files/${id}/restore`);
 }
 
+export async function permanentDeleteFile(id: string): Promise<void> {
+  await request('DELETE', `/api/v1/files/${id}/permanent`);
+}
+
+export async function emptyTrash(): Promise<void> {
+  await request('POST', '/api/v1/files/trash/empty');
+}
+
 // ---------------------------------------------------------------------------
 // Shares
 // ---------------------------------------------------------------------------
