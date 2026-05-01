@@ -38,7 +38,13 @@ import SharedViewScreen from './screens/SharedViewScreen';
 import OnboardingScreen from './screens/OnboardingScreen';
 import TrashScreen from './screens/TrashScreen';
 import BackupGuidesScreen from './screens/BackupGuidesScreen';
+import RecoveryPhraseScreen from './screens/RecoveryPhraseScreen';
+import RecoveryPhraseVerifyScreen from './screens/RecoveryPhraseVerifyScreen';
+import DevicePairingScreen from './screens/DevicePairingScreen';
+import DevicePairingScanScreen from './screens/DevicePairingScanScreen';
+import DevicePairingShowScreen from './screens/DevicePairingShowScreen';
 import ErrorBoundary from './components/ErrorBoundary';
+import { BackupProvider } from './lib/backup-context';
 
 const ONBOARDING_KEY = 'beebeeb_onboarding_done';
 
@@ -76,6 +82,13 @@ export type RootStackParamList = {
   // Incoming share link: beebeeb://s/:token or https://beebeeb.io/s/:token
   SharedView: { token: string };
   BackupGuides: undefined;
+  // Auth / onboarding upgrade screens
+  RecoveryPhrase: { phrase?: string[] };
+  RecoveryPhraseVerify: { phrase: string[] };
+  // Device pairing (Amber Constellation)
+  DevicePairing: undefined;
+  DevicePairingScan: undefined;
+  DevicePairingShow: undefined;
 };
 
 // ---------------------------------------------------------------------------
@@ -337,6 +350,7 @@ export default function App() {
   return (
     <AuthContext.Provider value={{ user, refreshAuth, signOut }}>
       <CryptoProvider>
+      <BackupProvider>
       <SafeAreaProvider>
         <NavigationContainer linking={linking} onStateChange={handleNavigationStateChange}>
           <Stack.Navigator screenOptions={{ headerShown: false }}>
@@ -364,6 +378,11 @@ export default function App() {
                 />
                 <Stack.Screen name="Trash" component={TrashScreen} />
                 <Stack.Screen name="BackupGuides" component={BackupGuidesScreen} />
+                <Stack.Screen name="RecoveryPhrase" component={RecoveryPhraseScreen} />
+                <Stack.Screen name="RecoveryPhraseVerify" component={RecoveryPhraseVerifyScreen} />
+                <Stack.Screen name="DevicePairing" component={DevicePairingScreen} />
+                <Stack.Screen name="DevicePairingScan" component={DevicePairingScanScreen} />
+                <Stack.Screen name="DevicePairingShow" component={DevicePairingShowScreen} />
               </>
             ) : (
               <>
@@ -404,6 +423,7 @@ export default function App() {
 
         <StatusBar style="auto" />
       </SafeAreaProvider>
+      </BackupProvider>
       </CryptoProvider>
     </AuthContext.Provider>
   );
