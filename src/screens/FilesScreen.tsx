@@ -376,6 +376,9 @@ export default function FilesScreen() {
   // Upload state — shows an inline progress banner above the FAB
   const [uploadingName, setUploadingName] = useState<string | null>(null);
 
+  // Scroll shadow — appears when list is scrolled past top
+  const [isScrolled, setIsScrolled] = useState(false);
+
   // Decrypt filenames whenever the file list or unlock state changes
   useEffect(() => {
     if (!isUnlocked) {
@@ -1043,6 +1046,8 @@ export default function FilesScreen() {
 
   return (
     <View style={[styles.root, { paddingTop: insets.top, backgroundColor: c.paper }]}>
+      {/* Header area wrapper — shows bottom shadow when list is scrolled */}
+      <View style={[styles.headerArea, isScrolled && { borderBottomColor: c.line, borderBottomWidth: StyleSheet.hairlineWidth }]}>
       {/* Header — select mode vs normal mode */}
       {selectMode ? (
         <View style={styles.header}>
@@ -1186,6 +1191,7 @@ export default function FilesScreen() {
 
       {/* Breadcrumbs (only show when navigated into a folder, not during search or select) */}
       {folderStack.length > 1 && !searchActive && !selectMode && renderBreadcrumbs()}
+      </View>{/* end headerArea */}
 
       {/* Content */}
       {error ? (
@@ -1200,6 +1206,8 @@ export default function FilesScreen() {
           keyExtractor={(item) => item.id}
           renderItem={renderFileRow}
           ListEmptyComponent={renderEmpty}
+          onScroll={(e) => setIsScrolled(e.nativeEvent.contentOffset.y > 0)}
+          scrollEventThrottle={100}
           refreshControl={
             <RefreshControl
               refreshing={refreshing}
@@ -1292,6 +1300,7 @@ const styles = StyleSheet.create({
   root: { flex: 1 },
 
   // Header
+  headerArea: {},
   header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: spacing.lg, paddingVertical: spacing.sm, gap: 8 },
   selectTitle: { flex: 1, fontSize: 16, fontWeight: '600', textAlign: 'center' },
   backButton: { width: 30, height: 30, borderRadius: 15, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },

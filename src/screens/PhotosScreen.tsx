@@ -286,6 +286,7 @@ function AutoBackupBanner() {
 export default function PhotosScreen() {
   const insets = useSafeAreaInsets();
   const { colors: c } = useTheme();
+  const [isScrolled, setIsScrolled] = useState(false);
   const [photos, setPhotos] = useState<FileEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -367,19 +368,21 @@ export default function PhotosScreen() {
 
   return (
     <View style={[styles.root, { paddingTop: insets.top, backgroundColor: c.paper }]}>
-      {/* Header */}
-      <View style={styles.header}>
-        <Text style={[styles.title, { color: c.ink }]}>Photos</Text>
-        <View style={{ flex: 1 }} />
-        <View style={[styles.headerCircle, { backgroundColor: c.paper2, borderColor: c.line }]}>
-          <Text style={[styles.headerGlyph, { color: c.ink2 }]}>{'⦿'}</Text>
+      {/* Header area — bottom border appears when scrolled */}
+      <View style={[isScrolled && { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: c.line }]}>
+        <View style={styles.header}>
+          <Text style={[styles.title, { color: c.ink }]}>Photos</Text>
+          <View style={{ flex: 1 }} />
+          <View style={[styles.headerCircle, { backgroundColor: c.paper2, borderColor: c.line }]}>
+            <Text style={[styles.headerGlyph, { color: c.ink2 }]}>{'⦿'}</Text>
+          </View>
         </View>
-      </View>
 
-      <DevicePhotosBanner />
+        <DevicePhotosBanner />
 
-      <View style={styles.filterRow}>
-        <FilterChips active={filter} onChange={setFilter} />
+        <View style={styles.filterRow}>
+          <FilterChips active={filter} onChange={setFilter} />
+        </View>
       </View>
 
       {/* Content */}
@@ -406,6 +409,8 @@ export default function PhotosScreen() {
           }
           contentContainerStyle={groups.length === 0 ? styles.emptyList : undefined}
           ListFooterComponent={<View style={{ height: 12 }} />}
+          onScroll={(e) => setIsScrolled(e.nativeEvent.contentOffset.y > 0)}
+          scrollEventThrottle={100}
           removeClippedSubviews={true}
           windowSize={5}
           keyboardDismissMode="on-drag"
