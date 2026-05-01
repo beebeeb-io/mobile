@@ -126,7 +126,7 @@ interface BreadcrumbEntry {
 // File icon component
 // ---------------------------------------------------------------------------
 
-function FileIcon({ category }: { category: string }) {
+const FileIcon = React.memo(function FileIcon({ category }: { category: string }) {
   const bg = CATEGORY_COLORS[category] ?? colors.ink3;
   const label = CATEGORY_LABELS[category] ?? 'FILE';
   return (
@@ -134,7 +134,49 @@ function FileIcon({ category }: { category: string }) {
       <Text style={styles.fileIconText}>{label}</Text>
     </View>
   );
+});
+
+// ---------------------------------------------------------------------------
+// File row item (memoized to prevent unnecessary re-renders in FlatList)
+// ---------------------------------------------------------------------------
+
+interface FileRowItemProps {
+  item: FileEntry;
+  decryptedName: string | undefined;
+  onPress: (item: FileEntry) => void;
+  onLongPress: (item: FileEntry) => void;
 }
+
+const FileRowItem = React.memo(function FileRowItem({
+  item,
+  decryptedName,
+  onPress,
+  onLongPress,
+}: FileRowItemProps) {
+  const category = fileCategory(item);
+  return (
+    <TouchableOpacity
+      style={styles.fileRow}
+      activeOpacity={0.6}
+      onPress={() => onPress(item)}
+      onLongPress={() => onLongPress(item)}
+      delayLongPress={400}
+    >
+      <FileIcon category={category} />
+      <View style={styles.fileInfo}>
+        <Text style={styles.fileName} numberOfLines={1}>
+          {decryptedName ?? displayName(item)}
+        </Text>
+        <Text style={styles.fileMeta}>
+          {item.is_folder
+            ? formatDate(item.updated_at)
+            : `${formatSize(item.size_bytes)}  ·  ${formatDate(item.updated_at)}`}
+        </Text>
+      </View>
+      <Text style={styles.chevron}>{'›'}</Text>
+    </TouchableOpacity>
+  );
+});
 
 // ---------------------------------------------------------------------------
 // Screen
@@ -429,31 +471,14 @@ export default function FilesScreen() {
     </View>
   );
 
-  const renderFileRow = ({ item }: { item: FileEntry }) => {
-    const category = fileCategory(item);
-    return (
-      <TouchableOpacity
-        style={styles.fileRow}
-        activeOpacity={0.6}
-        onPress={() => openFile(item)}
-        onLongPress={() => handleLongPress(item)}
-        delayLongPress={400}
-      >
-        <FileIcon category={category} />
-        <View style={styles.fileInfo}>
-          <Text style={styles.fileName} numberOfLines={1}>
-            {decryptedNames[item.id] ?? displayName(item)}
-          </Text>
-          <Text style={styles.fileMeta}>
-            {item.is_folder
-              ? formatDate(item.updated_at)
-              : `${formatSize(item.size_bytes)}  ·  ${formatDate(item.updated_at)}`}
-          </Text>
-        </View>
-        <Text style={styles.chevron}>{'›'}</Text>
-      </TouchableOpacity>
-    );
-  };
+  const renderFileRow = useCallback(({ item }: { item: FileEntry }) => (
+    <FileRowItem
+      item={item}
+      decryptedName={decryptedNames[item.id]}
+      onPress={openFile}
+      onLongPress={handleLongPress}
+    />
+  ), [decryptedNames, openFile, handleLongPress]);
 
   const renderEmpty = () => {
     if (loading) return null;
@@ -549,6 +574,8 @@ export default function FilesScreen() {
             />
           }
           contentContainerStyle={displayedFiles.length === 0 ? styles.emptyList : undefined}
+          removeClippedSubviews={true}
+          windowSize={5}
         />
       )}
 
