@@ -17,9 +17,10 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import * as Haptics from 'expo-haptics';
+import * as DocumentPicker from 'expo-document-picker';
 import { radii, spacing, shadows } from '../theme';
 import { useTheme } from '../lib/theme-context';
-import { listFiles, createFolder, deleteFile, friendlyError } from '../lib/api';
+import { listFiles, createFolder, deleteFile, uploadFile, friendlyError } from '../lib/api';
 import type { FileEntry } from '../lib/api';
 import type { RootStackParamList } from '../App';
 import { useCrypto } from '../lib/crypto-context';
@@ -220,6 +221,9 @@ export default function FilesScreen() {
   const { isUnlocked, decryptMetadata } = useCrypto();
   const [decryptedNames, setDecryptedNames] = useState<Record<string, string>>({});
 
+  // Upload state — shows an inline progress banner above the FAB
+  const [uploadingName, setUploadingName] = useState<string | null>(null);
+
   // Decrypt filenames whenever the file list or unlock state changes
   useEffect(() => {
     if (!isUnlocked) {
@@ -311,37 +315,68 @@ export default function FilesScreen() {
     fetchFiles(currentFolder.id, true);
   }, [currentFolder.id, fetchFiles]);
 
+  const pickAndUploadFile = useCallback(async () => {
+    let picked: DocumentPicker.DocumentPickerResult;
+    try {
+      picked = await DocumentPicker.getDocumentAsync({
+        copyToCacheDirectory: true,
+        multiple: false,
+      });
+    } catch (err) {
+      Alert.alert('Error', friendlyError(err));
+      return;
+    }
+    if (picked.canceled || !picked.assets?.[0]) return;
+
+    const asset = picked.assets[0];
+    setUploadingName(asset.name);
+    try {
+      // Fetch the local URI into a Blob so it can be sent as a multipart chunk.
+      const response = await fetch(asset.uri);
+      const blob = await response.blob();
+      const uploaded = await uploadFile(
+        {
+          name_encrypted: asset.name,
+          parent_id: currentFolder.id ?? undefined,
+          mime_type: asset.mimeType ?? undefined,
+          size_bytes: asset.size ?? blob.size,
+        },
+        [blob],
+      );
+      // Optimistic insert; the next refresh will reconcile.
+      setFiles((prev) => [uploaded, ...prev]);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      // Refresh to pick up server-side updates (storage usage, ordering, etc).
+      fetchFiles(currentFolder.id, true);
+    } catch (err) {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      Alert.alert('Upload failed', friendlyError(err));
+    } finally {
+      setUploadingName(null);
+    }
+  }, [currentFolder.id, fetchFiles]);
+
   const handleFabPress = useCallback(() => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     if (Platform.OS === 'ios') {
       ActionSheetIOS.showActionSheetWithOptions(
         {
-          options: ['New folder', 'Upload file', 'Cancel'],
+          options: ['Upload file', 'New folder', 'Cancel'],
           cancelButtonIndex: 2,
         },
         (index) => {
-          if (index === 0) showNewFolderPrompt();
-          else if (index === 1) showUploadAlert();
+          if (index === 0) pickAndUploadFile();
+          else if (index === 1) showNewFolderPrompt();
         },
       );
     } else {
       Alert.alert('Add to Drive', undefined, [
+        { text: 'Upload file', onPress: pickAndUploadFile },
         { text: 'New folder', onPress: showNewFolderPrompt },
-        { text: 'Upload file', onPress: showUploadAlert },
         { text: 'Cancel', style: 'cancel' },
       ]);
     }
-  }, [currentFolder]);
-
-  const showUploadAlert = useCallback(() => {
-    const cryptoNote = isUnlocked
-      ? 'Vault unlocked — files will be encrypted before upload.'
-      : 'Unlock your vault first to enable encrypted uploads.';
-    Alert.alert(
-      'Upload',
-      `File upload requires a document picker integration (coming soon).\n\n${cryptoNote}`,
-      [{ text: 'OK' }],
-    );
-  }, [isUnlocked]);
+  }, [pickAndUploadFile]);
 
   const showNewFolderPrompt = useCallback(() => {
     if (Platform.OS === 'ios') {
@@ -592,11 +627,31 @@ export default function FilesScreen() {
         />
       )}
 
+      {/* Inline upload progress (shown while a file is uploading) */}
+      {uploadingName && (
+        <View
+          style={[
+            styles.uploadBanner,
+            {
+              bottom: 24 + insets.bottom + 64,
+              backgroundColor: c.paper2,
+              borderColor: c.line,
+            },
+          ]}
+        >
+          <ActivityIndicator color={c.amber} size="small" />
+          <Text style={[styles.uploadBannerText, { color: c.ink2 }]} numberOfLines={1}>
+            Uploading {uploadingName}...
+          </Text>
+        </View>
+      )}
+
       {/* Floating action button */}
       <TouchableOpacity
         style={[styles.fab, { bottom: 24 + insets.bottom, backgroundColor: c.amber }]}
         activeOpacity={0.8}
         onPress={handleFabPress}
+        disabled={!!uploadingName}
       >
         <Text style={[styles.fabText, { color: c.ink }]}>+</Text>
       </TouchableOpacity>
@@ -658,4 +713,20 @@ const styles = StyleSheet.create({
   // FAB
   fab: { position: 'absolute', right: 20, width: 52, height: 52, borderRadius: 26, alignItems: 'center', justifyContent: 'center', ...shadows.lg },
   fabText: { fontSize: 28, fontWeight: '600', marginTop: -2 },
+
+  // Upload progress banner
+  uploadBanner: {
+    position: 'absolute',
+    left: spacing.lg,
+    right: spacing.lg,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 10,
+    borderRadius: radii.md,
+    borderWidth: 1,
+    ...shadows.lg,
+  },
+  uploadBannerText: { fontSize: 13, flex: 1, fontWeight: '500' },
 });
