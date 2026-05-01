@@ -159,7 +159,7 @@ export default function LoginScreen() {
           testID="sign-in-button"
         >
           {loading ? (
-            <ActivityIndicator color={colors.paper} size="small" />
+            <ActivityIndicator color={c.paper} size="small" />
           ) : (
             <Text style={styles.buttonText}>Sign in</Text>
           )}

@@ -98,6 +98,7 @@ function FilterChips({
   active: Filter;
   onChange: (f: Filter) => void;
 }) {
+  const { colors: c } = useTheme();
   return (
     <View style={styles.chipRow}>
       {FILTERS.map((label) => {
@@ -107,9 +108,17 @@ function FilterChips({
             key={label}
             activeOpacity={0.7}
             onPress={() => onChange(label)}
-            style={[styles.chip, isActive && styles.chipActive]}
+            style={[
+              styles.chip,
+              { backgroundColor: c.paper2, borderColor: c.line },
+              isActive && { backgroundColor: c.ink, borderColor: c.ink },
+            ]}
           >
-            <Text style={[styles.chipText, isActive && styles.chipTextActive]}>
+            <Text style={[
+              styles.chipText,
+              { color: c.ink3 },
+              isActive && { color: c.paper, fontWeight: '600' },
+            ]}>
               {label}
             </Text>
           </TouchableOpacity>
@@ -132,11 +141,12 @@ const PhotoCell = React.memo(function PhotoCell({ seed }: { seed: number }) {
 // ---------------------------------------------------------------------------
 
 const GroupSection = React.memo(function GroupSection({ group, seedOffset }: { group: PhotoGroup; seedOffset: number }) {
+  const { colors: c } = useTheme();
   return (
     <View style={styles.section}>
       <View style={styles.sectionHeader}>
-        <Text style={styles.sectionLabel}>{group.label}</Text>
-        <Text style={styles.sectionCount}>
+        <Text style={[styles.sectionLabel, { color: c.ink }]}>{group.label}</Text>
+        <Text style={[styles.sectionCount, { color: c.ink3 }]}>
           {group.data.length} {group.data.length === 1 ? 'item' : 'items'}
         </Text>
       </View>
@@ -156,23 +166,24 @@ const GroupSection = React.memo(function GroupSection({ group, seedOffset }: { g
 function AutoBackupBanner() {
   const { isPhotoBackupEnabled, backupProgress, lastBackupAt } = useBackup();
   const isConnected = useNetworkStatus();
+  const { colors: c } = useTheme();
 
   if (!isPhotoBackupEnabled) {
     return (
-      <View style={styles.banner}>
-        <View style={styles.bannerDot} />
-        <Text style={styles.bannerText}>Auto-backup off</Text>
-        <Text style={styles.bannerHint}>Enable in Settings</Text>
+      <View style={[styles.banner, { backgroundColor: c.paper2, borderColor: c.line }]}>
+        <View style={[styles.bannerDot, { backgroundColor: c.ink4 }]} />
+        <Text style={[styles.bannerText, { color: c.ink2 }]}>Auto-backup off</Text>
+        <Text style={[styles.bannerHint, { color: c.ink3 }]}>Enable in Settings</Text>
       </View>
     );
   }
 
   if (!isConnected) {
     return (
-      <View style={styles.banner}>
-        <View style={styles.bannerDot} />
-        <Text style={styles.bannerText}>Backup paused</Text>
-        <Text style={styles.bannerHint}>No connection</Text>
+      <View style={[styles.banner, { backgroundColor: c.paper2, borderColor: c.line }]}>
+        <View style={[styles.bannerDot, { backgroundColor: c.ink4 }]} />
+        <Text style={[styles.bannerText, { color: c.ink2 }]}>Backup paused</Text>
+        <Text style={[styles.bannerHint, { color: c.ink3 }]}>No connection</Text>
       </View>
     );
   }
@@ -180,9 +191,9 @@ function AutoBackupBanner() {
   if (backupProgress.inProgress > 0) {
     const remaining = backupProgress.total - backupProgress.completed;
     return (
-      <View style={[styles.banner, styles.bannerActive]}>
-        <ActivityIndicator size="small" color={colors.green} style={{ marginRight: 2 }} />
-        <Text style={styles.bannerText}>
+      <View style={[styles.banner, styles.bannerActive, { backgroundColor: c.amberBg, borderColor: c.amber }]}>
+        <ActivityIndicator size="small" color={c.green} style={{ marginRight: 2 }} />
+        <Text style={[styles.bannerText, { color: c.ink }]}>
           Backing up {backupProgress.inProgress} of {remaining} remaining
         </Text>
       </View>
@@ -191,13 +202,13 @@ function AutoBackupBanner() {
 
   const allDone = backupProgress.total > 0 && backupProgress.completed === backupProgress.total;
   return (
-    <View style={[styles.banner, styles.bannerActive]}>
-      <View style={[styles.bannerDot, styles.bannerDotActive]} />
-      <Text style={styles.bannerText}>
+    <View style={[styles.banner, styles.bannerActive, { backgroundColor: c.amberBg, borderColor: c.amber }]}>
+      <View style={[styles.bannerDot, styles.bannerDotActive, { backgroundColor: c.green }]} />
+      <Text style={[styles.bannerText, { color: c.ink }]}>
         {allDone ? 'All photos backed up' : 'Auto-backup on'}
       </Text>
       {lastBackupAt && (
-        <Text style={styles.bannerHint}>
+        <Text style={[styles.bannerHint, { color: c.ink3 }]}>
           {new Date(lastBackupAt).toLocaleDateString()}
         </Text>
       )}
@@ -211,6 +222,7 @@ function AutoBackupBanner() {
 
 export default function PhotosScreen() {
   const insets = useSafeAreaInsets();
+  const { colors: c } = useTheme();
   const [photos, setPhotos] = useState<FileEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -270,10 +282,10 @@ export default function PhotosScreen() {
     return (
       <View style={styles.emptyContainer}>
         <View style={styles.emptyIconWrap}>
-          <Ionicons name="images-outline" size={48} color={colors.amberDeep} />
+          <Ionicons name="images-outline" size={48} color={c.amberDeep} />
         </View>
-        <Text style={styles.emptyTitle}>No photos yet</Text>
-        <Text style={styles.emptySubtitle}>
+        <Text style={[styles.emptyTitle, { color: c.ink2 }]}>No photos yet</Text>
+        <Text style={[styles.emptySubtitle, { color: c.ink3 }]}>
           Photos you upload — or back up automatically — will appear here. Encrypted on your device, never visible to us.
         </Text>
       </View>
@@ -282,21 +294,21 @@ export default function PhotosScreen() {
 
   const renderError = () => (
     <View style={styles.errorContainer}>
-      <Text style={styles.errorText}>{error}</Text>
-      <TouchableOpacity style={styles.retryButton} onPress={() => fetchPhotos()}>
-        <Text style={styles.retryButtonText}>Retry</Text>
+      <Text style={[styles.errorText, { color: c.red }]}>{error}</Text>
+      <TouchableOpacity style={[styles.retryButton, { backgroundColor: c.amber }]} onPress={() => fetchPhotos()}>
+        <Text style={[styles.retryButtonText, { color: c.ink }]}>Retry</Text>
       </TouchableOpacity>
     </View>
   );
 
   return (
-    <View style={[styles.root, { paddingTop: insets.top }]}>
+    <View style={[styles.root, { paddingTop: insets.top, backgroundColor: c.paper }]}>
       {/* Header */}
       <View style={styles.header}>
-        <Text style={styles.title}>Photos</Text>
+        <Text style={[styles.title, { color: c.ink }]}>Photos</Text>
         <View style={{ flex: 1 }} />
-        <View style={styles.headerCircle}>
-          <Text style={styles.headerGlyph}>{'⦿'}</Text>
+        <View style={[styles.headerCircle, { backgroundColor: c.paper2, borderColor: c.line }]}>
+          <Text style={[styles.headerGlyph, { color: c.ink2 }]}>{'⦿'}</Text>
         </View>
       </View>
 
@@ -309,8 +321,8 @@ export default function PhotosScreen() {
         renderError()
       ) : loading && !refreshing ? (
         <View style={styles.loadingContainer}>
-          <ActivityIndicator color={colors.amber} size="large" />
-          <Text style={styles.loadingText}>Loading photos...</Text>
+          <ActivityIndicator color={c.amber} size="large" />
+          <Text style={[styles.loadingText, { color: c.ink3 }]}>Loading photos...</Text>
         </View>
       ) : (
         <FlatList
@@ -322,8 +334,8 @@ export default function PhotosScreen() {
             <RefreshControl
               refreshing={refreshing}
               onRefresh={handleRefresh}
-              tintColor={colors.amber}
-              colors={[colors.amber]}
+              tintColor={c.amber}
+              colors={[c.amber]}
             />
           }
           contentContainerStyle={groups.length === 0 ? styles.emptyList : undefined}
@@ -343,202 +355,54 @@ export default function PhotosScreen() {
 // ---------------------------------------------------------------------------
 
 const styles = StyleSheet.create({
-  root: {
-    flex: 1,
-    backgroundColor: colors.paper,
-  },
+  root: { flex: 1 },
 
   // Header
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: spacing.lg,
-    paddingTop: 6,
-    paddingBottom: 4,
-    gap: 8,
-  },
-  title: {
-    fontSize: 28,
-    fontWeight: '700',
-    color: colors.ink,
-    letterSpacing: -0.5,
-  },
-  headerCircle: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
-    backgroundColor: colors.paper2,
-    borderWidth: 1,
-    borderColor: colors.line,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  headerGlyph: {
-    fontSize: 12,
-    color: colors.ink2,
-  },
+  header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: spacing.lg, paddingTop: 6, paddingBottom: 4, gap: 8 },
+  title: { fontSize: 28, fontWeight: '700', letterSpacing: -0.5 },
+  headerCircle: { width: 30, height: 30, borderRadius: 15, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
+  headerGlyph: { fontSize: 12 },
 
   // Filter chips
-  filterRow: {
-    paddingHorizontal: spacing.lg,
-    paddingTop: 8,
-    paddingBottom: 10,
-  },
-  chipRow: {
-    flexDirection: 'row',
-    gap: 6,
-  },
-  chip: {
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: radii.round,
-    backgroundColor: colors.paper2,
-    borderWidth: 1,
-    borderColor: colors.line,
-  },
-  chipActive: {
-    backgroundColor: colors.ink,
-    borderColor: colors.ink,
-  },
-  chipText: {
-    fontSize: 11,
-    color: colors.ink3,
-    fontWeight: '400',
-  },
-  chipTextActive: {
-    color: colors.paper,
-    fontWeight: '600',
-  },
+  filterRow: { paddingHorizontal: spacing.lg, paddingTop: 8, paddingBottom: 10 },
+  chipRow: { flexDirection: 'row', gap: 6 },
+  chip: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: radii.round, borderWidth: 1 },
+  chipActive: {},
+  chipText: { fontSize: 11, fontWeight: '400' },
+  chipTextActive: {},
 
   // Section (month group)
-  section: {
-    marginBottom: 12,
-  },
-  sectionHeader: {
-    flexDirection: 'row',
-    alignItems: 'baseline',
-    paddingHorizontal: spacing.lg,
-    paddingBottom: 6,
-    gap: 8,
-  },
-  sectionLabel: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: colors.ink,
-  },
-  sectionCount: {
-    fontSize: 10,
-    color: colors.ink3,
-  },
+  section: { marginBottom: 12 },
+  sectionHeader: { flexDirection: 'row', alignItems: 'baseline', paddingHorizontal: spacing.lg, paddingBottom: 6, gap: 8 },
+  sectionLabel: { fontSize: 13, fontWeight: '600' },
+  sectionCount: { fontSize: 10 },
 
   // Grid
-  grid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: GRID_GAP,
-  },
-  cell: {
-    width: CELL_SIZE,
-    height: CELL_SIZE,
-  },
+  grid: { flexDirection: 'row', flexWrap: 'wrap', gap: GRID_GAP },
+  cell: { width: CELL_SIZE, height: CELL_SIZE },
 
   // Loading state
-  loadingContainer: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 12,
-  },
-  loadingText: {
-    fontSize: 13,
-    color: colors.ink3,
-  },
+  loadingContainer: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12 },
+  loadingText: { fontSize: 13 },
 
   // Empty state
-  emptyList: {
-    flexGrow: 1,
-  },
-  emptyContainer: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: spacing.xl,
-    gap: 8,
-  },
-  emptyIconWrap: {
-    marginBottom: 8,
-    opacity: 0.85,
-  },
-  emptyTitle: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: colors.ink2,
-  },
-  emptySubtitle: {
-    fontSize: 13,
-    color: colors.ink3,
-    textAlign: 'center',
-    lineHeight: 18,
-  },
+  emptyList: { flexGrow: 1 },
+  emptyContainer: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: spacing.xl, gap: 8 },
+  emptyIconWrap: { marginBottom: 8, opacity: 0.85 },
+  emptyTitle: { fontSize: 16, fontWeight: '600' },
+  emptySubtitle: { fontSize: 13, textAlign: 'center', lineHeight: 18 },
 
   // Error state
-  errorContainer: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: spacing.xl,
-    gap: 16,
-  },
-  errorText: {
-    fontSize: 14,
-    color: colors.red,
-    textAlign: 'center',
-    lineHeight: 20,
-  },
-  retryButton: {
-    paddingHorizontal: 20,
-    paddingVertical: 10,
-    borderRadius: radii.md,
-    backgroundColor: colors.amber,
-  },
-  retryButtonText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: colors.ink,
-  },
+  errorContainer: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: spacing.xl, gap: 16 },
+  errorText: { fontSize: 14, textAlign: 'center', lineHeight: 20 },
+  retryButton: { paddingHorizontal: 20, paddingVertical: 10, borderRadius: radii.md },
+  retryButtonText: { fontSize: 14, fontWeight: '600' },
 
   // Auto-backup banner (sticky at bottom of tab content)
-  banner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: spacing.lg,
-    paddingVertical: 10,
-    backgroundColor: colors.amberBg,
-    borderTopWidth: 1,
-    borderTopColor: '#f0e3a8',
-    gap: 8,
-  },
-  bannerActive: {
-    backgroundColor: '#e8f7ec',
-    borderTopColor: '#b8dfc0',
-  },
-  bannerDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: colors.amberDeep,
-  },
-  bannerDotActive: {
-    backgroundColor: colors.green,
-  },
-  bannerText: {
-    fontSize: 11,
-    color: colors.ink2,
-    flex: 1,
-  },
-  bannerHint: {
-    fontSize: 10,
-    color: colors.amberDeep,
-    fontWeight: '600',
-  },
+  banner: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: spacing.lg, paddingVertical: 10, borderTopWidth: 1, gap: 8 },
+  bannerActive: {},
+  bannerDot: { width: 6, height: 6, borderRadius: 3 },
+  bannerDotActive: {},
+  bannerText: { fontSize: 11, flex: 1 },
+  bannerHint: { fontSize: 10, fontWeight: '600' },
 });

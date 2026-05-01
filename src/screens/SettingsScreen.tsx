@@ -10,6 +10,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import * as LocalAuthentication from 'expo-local-authentication';
 import * as SecureStore from 'expo-secure-store';
 import Constants from 'expo-constants';
@@ -40,11 +41,11 @@ type C = Colors;
 // Data residency regions
 // ---------------------------------------------------------------------------
 
-const REGIONS: ReadonlyArray<{ poolName: string; label: string; subtitle: string; available: boolean }> = [
-  { poolName: 'europe', label: 'Europe', subtitle: 'Auto-distribute', available: true },
-  { poolName: 'falkenstein-de', label: 'Falkenstein, DE', subtitle: 'Hetzner', available: true },
-  { poolName: 'helsinki-fin', label: 'Helsinki, FIN', subtitle: 'Hetzner', available: true },
-  { poolName: 'ede-nl', label: 'Ede, NL', subtitle: 'Beebeeb', available: false },
+const REGIONS: ReadonlyArray<{ poolName: string; label: string; subtitle: string; flag: string; available: boolean }> = [
+  { poolName: 'europe', label: 'Europe', subtitle: 'Auto-distribute', flag: '\u{1F6E1}️', available: true },
+  { poolName: 'falkenstein-de', label: 'Falkenstein, DE', subtitle: 'Hetzner', flag: '\u{1F1E9}\u{1F1EA}', available: true },
+  { poolName: 'helsinki-fin', label: 'Helsinki, FIN', subtitle: 'Hetzner', flag: '\u{1F1EB}\u{1F1EE}', available: true },
+  { poolName: 'ede-nl', label: 'Ede, NL', subtitle: 'Beebeeb', flag: '\u{1F1F3}\u{1F1F1}', available: false },
 ];
 
 // ---------------------------------------------------------------------------
@@ -506,6 +507,7 @@ export default function SettingsScreen() {
                   onPress={() => r.available && handleRegionChange(r.poolName)}
                   disabled={!r.available || savingRegion}
                 >
+                  <Text style={{ fontSize: 20 }}>{r.flag}</Text>
                   <View style={[
                     layout.regionRadio,
                     { borderColor: storageRegion === r.poolName && r.available ? c.amber : c.line2 },
@@ -537,12 +539,24 @@ export default function SettingsScreen() {
             ))}
 
             <RowDivider c={c} />
-            <ToggleRow
-              label="Force region"
-              value={storageRegionMode === 'force'}
-              onValueChange={(v) => handleRegionModeChange(v ? 'force' : 'preference')}
-              c={c}
-            />
+            <View style={layout.row}>
+              <View style={{ flex: 1 }}>
+                <Text style={{ fontSize: 14, fontWeight: '400' as const, color: c.ink }}>Force region</Text>
+                {storageRegionMode === 'force' && storageRegion !== 'europe' && (
+                  <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 4, gap: 4 }}>
+                    <Ionicons name="warning" size={12} color={c.amberDeep} />
+                    <Text style={{ fontSize: 11, color: c.amberDeep }}>Capacity limited</Text>
+                  </View>
+                )}
+              </View>
+              <Switch
+                value={storageRegionMode === 'force'}
+                onValueChange={(v) => handleRegionModeChange(v ? 'force' : 'preference')}
+                trackColor={{ false: c.line, true: c.amber }}
+                thumbColor={c.paper}
+                ios_backgroundColor={c.line}
+              />
+            </View>
           </View>
           <SectionNote
             text="New uploads go to your selected region. Existing files stay where they are. Need to migrate? Contact us."
