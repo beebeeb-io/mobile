@@ -36,6 +36,7 @@ import BiometricLockScreen from './screens/BiometricLockScreen';
 import SharedViewScreen from './screens/SharedViewScreen';
 import OnboardingScreen from './screens/OnboardingScreen';
 import TrashScreen from './screens/TrashScreen';
+import BackupGuidesScreen from './screens/BackupGuidesScreen';
 import ErrorBoundary from './components/ErrorBoundary';
 
 const ONBOARDING_KEY = 'beebeeb_onboarding_done';
@@ -73,6 +74,7 @@ export type RootStackParamList = {
   };
   // Incoming share link: beebeeb://s/:token or https://beebeeb.io/s/:token
   SharedView: { token: string };
+  BackupGuides: undefined;
 };
 
 // ---------------------------------------------------------------------------
@@ -359,6 +361,7 @@ export default function App() {
                   options={{ presentation: 'modal', animation: 'slide_from_bottom' }}
                 />
                 <Stack.Screen name="Trash" component={TrashScreen} />
+                <Stack.Screen name="BackupGuides" component={BackupGuidesScreen} />
               </>
             ) : (
               <>
