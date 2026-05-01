@@ -489,7 +489,14 @@ export default function SettingsScreen() {
   const handleSignOut = useCallback(() => {
     Alert.alert('Sign out', 'Are you sure you want to sign out?', [
       { text: 'Cancel', style: 'cancel' },
-      { text: 'Sign out', style: 'destructive', onPress: () => signOut() },
+      {
+        text: 'Sign out',
+        style: 'destructive',
+        onPress: () => {
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+          signOut();
+        },
+      },
     ]);
   }, [signOut]);
 
