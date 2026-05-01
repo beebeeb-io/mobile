@@ -17,6 +17,7 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import * as Haptics from 'expo-haptics';
 import { radii, spacing } from '../theme';
 import { useTheme } from '../lib/theme-context';
+import { useToast } from '../lib/toast-context';
 import {
   listFiles,
   restoreFile,
@@ -160,6 +161,7 @@ export default function TrashScreen() {
   const navigation = useNavigation<Nav>();
   const insets = useSafeAreaInsets();
   const { colors: c } = useTheme();
+  const { showToast } = useToast();
 
   const [files, setFiles] = useState<FileEntry[]>([]);
   const [loading, setLoading] = useState(true);
@@ -200,6 +202,7 @@ export default function TrashScreen() {
               await restoreFile(item.id);
               Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
               setFiles((prev) => prev.filter((f) => f.id !== item.id));
+              showToast({ type: 'success', message: `"${name}" restored to Drive` });
             } catch (err) {
               Alert.alert('Error', friendlyError(err));
             }
@@ -207,7 +210,7 @@ export default function TrashScreen() {
         },
       ],
     );
-  }, []);
+  }, [showToast]);
 
   const handleDelete = useCallback((item: FileEntry) => {
     const name = displayName(item);
@@ -224,6 +227,7 @@ export default function TrashScreen() {
               await permanentDeleteFile(item.id);
               Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
               setFiles((prev) => prev.filter((f) => f.id !== item.id));
+              showToast({ type: 'info', message: `"${name}" permanently deleted` });
             } catch (err) {
               Alert.alert('Error', friendlyError(err));
             }
@@ -231,7 +235,7 @@ export default function TrashScreen() {
         },
       ],
     );
-  }, []);
+  }, [showToast]);
 
   const handleEmptyTrash = useCallback(() => {
     if (files.length === 0) return;
@@ -249,6 +253,7 @@ export default function TrashScreen() {
               await emptyTrash();
               Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
               setFiles([]);
+              showToast({ type: 'success', message: 'Trash emptied' });
             } catch (err) {
               Alert.alert('Error', friendlyError(err));
             }
@@ -256,7 +261,7 @@ export default function TrashScreen() {
         },
       ],
     );
-  }, [files.length]);
+  }, [files.length, showToast]);
 
   const renderItem = useCallback(({ item }: { item: FileEntry }) => (
     <TrashRow item={item} onRestore={handleRestore} onDelete={handleDelete} />
