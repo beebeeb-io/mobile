@@ -1,76 +1,170 @@
-import React from 'react';
-import { ScrollView, StyleSheet, Switch, Text, TouchableOpacity, View } from 'react-native';
+import React, { useCallback, useEffect, useState } from 'react';
+import {
+  ActivityIndicator,
+  Alert,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from 'react-native';
 import { colors, radii, spacing } from '../theme';
+import { useAuth } from '../App';
+import { getStorageUsage, type StorageUsage } from '../lib/api';
 
 // ---------------------------------------------------------------------------
-// Settings data
+// Helpers
 // ---------------------------------------------------------------------------
 
-interface SettingsItem {
-  icon: string;
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(1024));
+  const val = bytes / Math.pow(1024, i);
+  return `${val < 10 ? val.toFixed(1) : Math.round(val)} ${units[i]}`;
+}
+
+function formatDate(iso: string): string {
+  const d = new Date(iso);
+  return d.toLocaleDateString('en-US', {
+    month: 'long',
+    year: 'numeric',
+  });
+}
+
+function userInitials(email: string): string {
+  const local = email.split('@')[0] ?? '';
+  const parts = local.split(/[._-]/);
+  if (parts.length >= 2) {
+    return (parts[0][0] + parts[1][0]).toUpperCase();
+  }
+  return local.slice(0, 2).toUpperCase();
+}
+
+function planLabel(name: string): string {
+  const map: Record<string, string> = {
+    free: 'Free',
+    personal: 'Personal',
+    team: 'Team',
+    business: 'Business',
+  };
+  return map[name.toLowerCase()] ?? name;
+}
+
+// ---------------------------------------------------------------------------
+// Section components
+// ---------------------------------------------------------------------------
+
+function SectionHeader({ title }: { title: string }) {
+  return <Text style={styles.sectionHeader}>{title}</Text>;
+}
+
+function SettingsRow({
+  label,
+  value,
+  onPress,
+  danger,
+  showChevron = true,
+}: {
   label: string;
-  sub?: string;
   value?: string;
-  hero?: boolean;
-  toggle?: boolean;
-  toggleOn?: boolean;
+  onPress?: () => void;
   danger?: boolean;
+  showChevron?: boolean;
+}) {
+  return (
+    <TouchableOpacity
+      style={styles.row}
+      activeOpacity={onPress ? 0.6 : 1}
+      onPress={onPress}
+      disabled={!onPress}
+    >
+      <Text style={[styles.rowLabel, danger && { color: colors.red }]}>
+        {label}
+      </Text>
+      <View style={styles.rowRight}>
+        {value != null && <Text style={styles.rowValue}>{value}</Text>}
+        {showChevron && !danger && (
+          <Text style={styles.chevron}>{'›'}</Text>
+        )}
+      </View>
+    </TouchableOpacity>
+  );
 }
 
-interface SettingsGroup {
-  label?: string;
-  items: SettingsItem[];
+function RowDivider() {
+  return <View style={styles.rowDivider} />;
 }
 
-const GROUPS: SettingsGroup[] = [
-  {
-    items: [
-      {
-        icon: '👤',
-        label: 'Isa Marchetti',
-        sub: 'isa@example.com · Team · 23.4 / 200 GB',
-        hero: true,
-      },
-    ],
-  },
-  {
-    label: 'Security',
-    items: [
-      { icon: '🔒', label: 'Biometrics', value: 'Face ID' },
-      { icon: '🛡️', label: 'Two-factor', value: 'Passkey + backup' },
-      { icon: '🔑', label: 'Recovery phrase', value: 'Exported 4 weeks ago' },
-      { icon: '☁️', label: 'Devices', value: '5' },
-      { icon: '🔒', label: 'Lock app on leave', value: 'Immediately' },
-    ],
-  },
-  {
-    label: 'Backup',
-    items: [
-      { icon: '🖼️', label: 'Camera roll', value: 'On · Wi-Fi only' },
-      { icon: '↑', label: 'Background upload', toggle: true, toggleOn: true },
-      { icon: '📁', label: 'Files app integration', toggle: true, toggleOn: true },
-    ],
-  },
-  {
-    label: 'App',
-    items: [
-      { icon: '⚙️', label: 'Appearance', value: 'System' },
-      { icon: '⭐', label: 'Language', value: 'English' },
-      { icon: '🕒', label: 'Clear local cache', value: '1.4 GB' },
-    ],
-  },
-  {
-    items: [
-      { icon: '🔒', label: 'Sign out', danger: true },
-    ],
-  },
-];
+// ---------------------------------------------------------------------------
+// Storage bar
+// ---------------------------------------------------------------------------
+
+function StorageBar({
+  usedBytes,
+  limitBytes,
+}: {
+  usedBytes: number;
+  limitBytes: number;
+}) {
+  const pct = limitBytes > 0 ? Math.min(usedBytes / limitBytes, 1) : 0;
+  const barColor = pct > 0.9 ? colors.red : pct > 0.75 ? colors.amberDeep : colors.amber;
+
+  return (
+    <View style={styles.storageBarContainer}>
+      <View style={styles.storageBarTrack}>
+        <View
+          style={[
+            styles.storageBarFill,
+            { width: `${Math.max(pct * 100, 1)}%`, backgroundColor: barColor },
+          ]}
+        />
+      </View>
+      <Text style={styles.storageBarLabel}>
+        {formatBytes(usedBytes)} of {formatBytes(limitBytes)} used
+      </Text>
+    </View>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Screen
 // ---------------------------------------------------------------------------
 
 export default function SettingsScreen() {
+  const { user, signOut } = useAuth();
+  const [usage, setUsage] = useState<StorageUsage | null>(null);
+  const [loadingUsage, setLoadingUsage] = useState(true);
+
+  const fetchUsage = useCallback(async () => {
+    try {
+      const data = await getStorageUsage();
+      setUsage(data);
+    } catch {
+      // Usage endpoint may not be available yet; show graceful fallback
+    } finally {
+      setLoadingUsage(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchUsage();
+  }, [fetchUsage]);
+
+  const handleSignOut = useCallback(() => {
+    Alert.alert('Sign out', 'Are you sure you want to sign out?', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Sign out',
+        style: 'destructive',
+        onPress: () => signOut(),
+      },
+    ]);
+  }, [signOut]);
+
+  const email = user?.email ?? '';
+  const initials = userInitials(email);
+
   return (
     <View style={styles.root}>
       <Text style={styles.title}>Settings</Text>
@@ -79,70 +173,103 @@ export default function SettingsScreen() {
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
       >
-        {GROUPS.map((group, gi) => (
-          <View key={gi} style={styles.group}>
-            {group.label && <Text style={styles.groupLabel}>{group.label}</Text>}
-            <View style={styles.card}>
-              {group.items.map((item, ii) => (
-                <TouchableOpacity
-                  key={ii}
-                  style={[
-                    styles.row,
-                    ii < group.items.length - 1 ? styles.rowBorder : undefined,
-                    item.hero ? styles.rowHero : undefined,
-                  ]}
-                  activeOpacity={0.6}
-                >
-                  {/* Icon */}
-                  {item.hero ? (
-                    <View style={styles.avatarCircle}>
-                      <Text style={styles.avatarText}>IM</Text>
-                    </View>
-                  ) : (
-                    <View style={styles.iconBox}>
-                      <Text style={[styles.iconEmoji, item.danger ? { color: colors.red } : undefined]}>
-                        {item.icon}
-                      </Text>
-                    </View>
-                  )}
-
-                  {/* Label + subtitle */}
-                  <View style={styles.labelCol}>
-                    <Text
-                      style={[
-                        styles.label,
-                        item.hero ? styles.labelHero : undefined,
-                        item.danger ? { color: colors.red } : undefined,
-                      ]}
-                    >
-                      {item.label}
-                    </Text>
-                    {item.sub && <Text style={styles.sub}>{item.sub}</Text>}
-                  </View>
-
-                  {/* Value / toggle / chevron */}
-                  {item.value && <Text style={styles.value}>{item.value}</Text>}
-                  {item.toggle && (
-                    <Switch
-                      value={item.toggleOn}
-                      trackColor={{ false: colors.line2, true: colors.amber }}
-                      thumbColor={colors.paper}
-                      style={{ transform: [{ scaleX: 0.8 }, { scaleY: 0.8 }] }}
-                    />
-                  )}
-                  {!item.toggle && !item.danger && (
-                    <Text style={styles.chevron}>{'›'}</Text>
-                  )}
-                </TouchableOpacity>
-              ))}
-            </View>
+        {/* ---- Account ---- */}
+        <View style={styles.section}>
+          <View style={styles.card}>
+            <TouchableOpacity style={styles.accountRow} activeOpacity={0.6}>
+              <View style={styles.avatarCircle}>
+                <Text style={styles.avatarText}>{initials}</Text>
+              </View>
+              <View style={styles.accountInfo}>
+                <Text style={styles.accountEmail} numberOfLines={1}>
+                  {email}
+                </Text>
+                {user?.created_at && (
+                  <Text style={styles.accountSub}>
+                    Member since {formatDate(user.created_at)}
+                  </Text>
+                )}
+              </View>
+              <Text style={styles.chevron}>{'›'}</Text>
+            </TouchableOpacity>
           </View>
-        ))}
+        </View>
 
-        {/* App version footer */}
+        {/* ---- Storage ---- */}
+        <View style={styles.section}>
+          <SectionHeader title="Storage" />
+          <View style={styles.card}>
+            {loadingUsage ? (
+              <View style={styles.loadingRow}>
+                <ActivityIndicator size="small" color={colors.ink4} />
+              </View>
+            ) : usage ? (
+              <>
+                <View style={styles.storageRow}>
+                  <StorageBar
+                    usedBytes={usage.used_bytes}
+                    limitBytes={usage.plan_limit_bytes}
+                  />
+                </View>
+                <RowDivider />
+                <SettingsRow
+                  label="Plan"
+                  value={planLabel(usage.plan_name)}
+                  showChevron={true}
+                />
+              </>
+            ) : (
+              <View style={styles.storageRow}>
+                <Text style={styles.rowValue}>Could not load storage info</Text>
+              </View>
+            )}
+          </View>
+        </View>
+
+        {/* ---- Security ---- */}
+        <View style={styles.section}>
+          <SectionHeader title="Security" />
+          <View style={styles.card}>
+            <SettingsRow label="Change password" />
+            <RowDivider />
+            <SettingsRow label="Two-factor authentication" />
+          </View>
+        </View>
+
+        {/* ---- About ---- */}
+        <View style={styles.section}>
+          <SectionHeader title="About" />
+          <View style={styles.card}>
+            <SettingsRow label="Version" value="1.0.0" showChevron={false} />
+            <RowDivider />
+            <SettingsRow label="Website" value="beebeeb.io" showChevron={false} />
+            <RowDivider />
+            <SettingsRow
+              label="Operator"
+              value="Initlabs B.V."
+              showChevron={false}
+            />
+          </View>
+        </View>
+
+        {/* ---- Sign out ---- */}
+        <View style={styles.section}>
+          <View style={styles.card}>
+            <SettingsRow
+              label="Sign out"
+              danger
+              showChevron={false}
+              onPress={handleSignOut}
+            />
+          </View>
+        </View>
+
+        {/* Footer */}
         <View style={styles.footer}>
-          <Text style={styles.footerVersion}>v1.2.0 {'·'} build 442</Text>
-          <Text style={styles.footerRegion}>beebeeb.io {'·'} Frankfurt</Text>
+          <Text style={styles.footerText}>
+            End-to-end encrypted. Zero knowledge.
+          </Text>
+          <Text style={styles.footerText}>Made in Europe.</Text>
         </View>
       </ScrollView>
     </View>
@@ -164,11 +291,11 @@ const styles = StyleSheet.create({
     paddingBottom: 10,
   },
   scroll: { flex: 1 },
-  scrollContent: { paddingHorizontal: 14, paddingBottom: 30 },
+  scrollContent: { paddingHorizontal: 14, paddingBottom: 40 },
 
-  // Group
-  group: { marginBottom: 14 },
-  groupLabel: {
+  // Section
+  section: { marginBottom: 14 },
+  sectionHeader: {
     fontSize: 10,
     fontWeight: '600',
     color: colors.ink3,
@@ -177,6 +304,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 6,
     marginBottom: 6,
   },
+
+  // Card
   card: {
     backgroundColor: colors.paper,
     borderRadius: 12,
@@ -185,51 +314,110 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
 
-  // Row
-  row: {
+  // Account hero row
+  accountRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 9,
+    paddingVertical: 12,
     paddingHorizontal: 12,
     gap: 10,
   },
-  rowHero: { paddingVertical: 12 },
-  rowBorder: { borderBottomWidth: 1, borderBottomColor: colors.line },
-
-  // Icon
   avatarCircle: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    backgroundColor: colors.amberDeep,
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: colors.ink,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  avatarText: { color: colors.paper, fontSize: 12, fontWeight: '700' },
-  iconBox: {
-    width: 22,
-    height: 22,
-    borderRadius: 5,
-    backgroundColor: colors.paper2,
-    borderWidth: 1,
-    borderColor: colors.line,
-    alignItems: 'center',
-    justifyContent: 'center',
+  avatarText: {
+    color: colors.amber,
+    fontSize: 13,
+    fontWeight: '700',
+    letterSpacing: -0.3,
   },
-  iconEmoji: { fontSize: 11 },
+  accountInfo: { flex: 1, minWidth: 0 },
+  accountEmail: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: colors.ink,
+  },
+  accountSub: {
+    fontSize: 11,
+    color: colors.ink3,
+    marginTop: 2,
+  },
 
-  // Label
-  labelCol: { flex: 1, minWidth: 0 },
-  label: { fontSize: 13, fontWeight: '500', color: colors.ink },
-  labelHero: { fontWeight: '600' },
-  sub: { fontSize: 10, color: colors.ink3, marginTop: 2 },
+  // Generic row
+  row: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 11,
+    paddingHorizontal: 12,
+  },
+  rowLabel: {
+    flex: 1,
+    fontSize: 14,
+    fontWeight: '400',
+    color: colors.ink,
+  },
+  rowRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  rowValue: {
+    fontSize: 13,
+    color: colors.ink3,
+  },
+  rowDivider: {
+    height: 1,
+    backgroundColor: colors.line,
+    marginLeft: 12,
+  },
+  chevron: {
+    fontSize: 18,
+    color: colors.ink4,
+    marginLeft: 2,
+  },
 
-  // Value
-  value: { fontSize: 11, color: colors.ink3 },
-  chevron: { fontSize: 16, color: colors.ink4 },
+  // Loading
+  loadingRow: {
+    paddingVertical: 18,
+    alignItems: 'center',
+  },
+
+  // Storage
+  storageRow: {
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+  },
+  storageBarContainer: {
+    gap: 6,
+  },
+  storageBarTrack: {
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: colors.line,
+    overflow: 'hidden',
+  },
+  storageBarFill: {
+    height: '100%',
+    borderRadius: 3,
+  },
+  storageBarLabel: {
+    fontSize: 11,
+    color: colors.ink3,
+  },
 
   // Footer
-  footer: { alignItems: 'center', paddingVertical: 10 },
-  footerVersion: { fontSize: 10, color: colors.ink4 },
-  footerRegion: { fontSize: 10, color: colors.amberDeep, marginTop: 2 },
+  footer: {
+    alignItems: 'center',
+    paddingVertical: 16,
+    gap: 2,
+  },
+  footerText: {
+    fontSize: 10,
+    color: colors.ink4,
+  },
 });
