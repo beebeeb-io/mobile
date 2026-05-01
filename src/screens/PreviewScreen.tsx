@@ -1,9 +1,10 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
   Image,
   Platform,
+  ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -17,6 +18,7 @@ import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 import * as Haptics from 'expo-haptics';
 import { WebView } from 'react-native-webview';
+import { useVideoPlayer, VideoView } from 'expo-video';
 import type { RootStackParamList } from '../App';
 import { colors, radii, shadows } from '../theme';
 import { useTheme } from '../lib/theme-context';
@@ -124,11 +126,29 @@ export default function PreviewScreen() {
   const [pdfLoading, setPdfLoading] = useState(false);
   const [pdfError, setPdfError] = useState<string | null>(null);
 
+  // Text / code inline preview state
+  const [textContent, setTextContent] = useState<string | null>(null);
+  const [textLoading, setTextLoading] = useState(false);
+  const [textError, setTextError] = useState<string | null>(null);
+
+  // Video inline preview state — `videoUri` is the on-disk decrypted file
+  // that the VideoView plays from; cleaned up on unmount / when changed.
+  const [videoUri, setVideoUri] = useState<string | null>(null);
+  const [videoLoading, setVideoLoading] = useState(false);
+  const [videoError, setVideoError] = useState<string | null>(null);
+  const tempVideoUriRef = useRef<string | null>(null);
+
   const { isUnlocked, decryptChunk } = useCrypto();
 
   const category = fileCategory(mimeType);
   const isImage = category === 'image';
   const isPdf = category === 'pdf';
+  const isVideo = !!mimeType && mimeType.startsWith('video/');
+  const isText =
+    !!mimeType &&
+    (mimeType.startsWith('text/') ||
+      mimeType === 'application/json' ||
+      mimeType === 'application/xml');
 
   // Theme-aware accent for non-image category badge
   const categoryAccent = (() => {
@@ -244,6 +264,83 @@ export default function PreviewScreen() {
       cancelled = true;
     };
   }, [isPdf, fetchAndDecrypt]);
+
+  // Auto-load text/code/JSON inline on mount — read decrypted file as UTF-8
+  useEffect(() => {
+    if (!isText) return;
+    if (Platform.OS === 'web') return;
+    let cancelled = false;
+    setTextLoading(true);
+    setTextError(null);
+    fetchAndDecrypt()
+      .then(async (uri) => {
+        const content = await FileSystem.readAsStringAsync(uri, {
+          encoding: FileSystem.EncodingType.UTF8,
+        });
+        if (!cancelled) setTextContent(content);
+      })
+      .catch((err) => {
+        if (!cancelled) setTextError(friendlyError(err));
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setTextLoading(false);
+          setDownloadProgress(0);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isText, fetchAndDecrypt]);
+
+  // Auto-load video on mount; track the on-disk URI so we can delete it on unmount
+  useEffect(() => {
+    if (!isVideo) return;
+    if (Platform.OS === 'web') return;
+    let cancelled = false;
+    setVideoLoading(true);
+    setVideoError(null);
+    fetchAndDecrypt()
+      .then((uri) => {
+        if (cancelled) {
+          // Screen already unmounted by the time the download completed —
+          // delete the file directly since the cleanup branch never sees it.
+          FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => {});
+          return;
+        }
+        tempVideoUriRef.current = uri;
+        setVideoUri(uri);
+      })
+      .catch((err) => {
+        if (!cancelled) setVideoError(friendlyError(err));
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setVideoLoading(false);
+          setDownloadProgress(0);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isVideo, fetchAndDecrypt]);
+
+  // Delete the temp video file when the screen unmounts.
+  useEffect(() => {
+    return () => {
+      const uri = tempVideoUriRef.current;
+      if (uri) {
+        FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => {});
+        tempVideoUriRef.current = null;
+      }
+    };
+  }, []);
+
+  // expo-video player — must be called unconditionally, but a null source
+  // keeps it idle until `videoUri` resolves.
+  const player = useVideoPlayer(videoUri, (p) => {
+    p.loop = false;
+  });
 
   const handleDownload = useCallback(async () => {
     if (Platform.OS === 'web') {
@@ -370,6 +467,75 @@ export default function PreviewScreen() {
                   : isUnlocked
                   ? 'Downloading and decrypting...'
                   : 'Unlock your vault to view this PDF.'}
+              </Text>
+            </View>
+          )
+        ) : isVideo ? (
+          videoUri ? (
+            <VideoView
+              player={player}
+              style={styles.video}
+              contentFit="contain"
+              nativeControls
+              allowsFullscreen
+              allowsPictureInPicture
+            />
+          ) : videoError ? (
+            <View style={styles.imageStatus}>
+              <Text style={[styles.imageStatusTitle, { color: colors.white }]}>
+                Couldn't load video
+              </Text>
+              <Text style={styles.imageStatusSub}>{videoError}</Text>
+            </View>
+          ) : (
+            <View style={styles.imageStatus}>
+              <ActivityIndicator color={c.amber} size="large" />
+              <Text style={styles.imageStatusSub}>
+                {videoLoading && downloadProgress > 0
+                  ? `Decrypting · ${Math.round(downloadProgress * 100)}%`
+                  : isUnlocked
+                  ? 'Downloading and decrypting...'
+                  : 'Unlock your vault to play this video.'}
+              </Text>
+            </View>
+          )
+        ) : isText ? (
+          textContent != null ? (
+            <ScrollView
+              style={[styles.codeScroll, { backgroundColor: colors.darkBg }]}
+              contentContainerStyle={styles.codeScrollContent}
+            >
+              <ScrollView horizontal contentContainerStyle={styles.codeHorizontal}>
+                <View style={styles.codeBlock}>
+                  {textContent.split('\n').map((line, i) => (
+                    <View key={i} style={styles.codeLine}>
+                      <Text style={[styles.codeLineNumber, { color: c.ink3 }]} selectable={false}>
+                        {String(i + 1).padStart(4, ' ')}
+                      </Text>
+                      <Text style={[styles.codeLineText, { color: c.ink }]} selectable>
+                        {line.length === 0 ? ' ' : line}
+                      </Text>
+                    </View>
+                  ))}
+                </View>
+              </ScrollView>
+            </ScrollView>
+          ) : textError ? (
+            <View style={styles.imageStatus}>
+              <Text style={[styles.imageStatusTitle, { color: colors.white }]}>
+                Couldn't load file
+              </Text>
+              <Text style={styles.imageStatusSub}>{textError}</Text>
+            </View>
+          ) : (
+            <View style={styles.imageStatus}>
+              <ActivityIndicator color={c.amber} size="large" />
+              <Text style={styles.imageStatusSub}>
+                {textLoading && downloadProgress > 0
+                  ? `Decrypting · ${Math.round(downloadProgress * 100)}%`
+                  : isUnlocked
+                  ? 'Downloading and decrypting...'
+                  : 'Unlock your vault to view this file.'}
               </Text>
             </View>
           )
@@ -549,6 +715,37 @@ const styles = StyleSheet.create({
 
   image: { width: '100%', height: '100%' },
   pdfWebView: { width: '100%', height: '100%' },
+  video: { width: '100%', height: '100%' },
+
+  // ---- Code / text viewer ----
+  codeScroll: { flex: 1, width: '100%', borderRadius: radii.md },
+  codeScrollContent: { flexGrow: 1 },
+  codeHorizontal: { flexGrow: 1, paddingVertical: 12 },
+  codeBlock: { paddingHorizontal: 12, minWidth: '100%' },
+  codeLine: { flexDirection: 'row', alignItems: 'flex-start' },
+  codeLineNumber: {
+    fontFamily: Platform.select({
+      ios: 'Menlo',
+      android: 'monospace',
+      default: 'monospace',
+    }),
+    fontSize: 11,
+    lineHeight: 18,
+    paddingRight: 12,
+    textAlign: 'right',
+    minWidth: 36,
+  },
+  codeLineText: {
+    fontFamily: Platform.select({
+      ios: 'Menlo',
+      android: 'monospace',
+      default: 'monospace',
+    }),
+    fontSize: 12,
+    lineHeight: 18,
+    flexShrink: 0,
+  },
+
   imageStatus: { alignItems: 'center', gap: 12 },
   imageStatusTitle: { fontSize: 16, fontWeight: '600' },
   imageStatusSub: {
