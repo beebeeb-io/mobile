@@ -490,7 +490,10 @@ export default function App() {
                   <Stack.Screen
                     name="Preview"
                     component={PreviewScreen}
-                    options={{ presentation: 'fullScreenModal', animation: 'slide_from_bottom' }}
+                    // 'modal' (not 'fullScreenModal') so iOS gives users the
+                    // native swipe-down-to-dismiss gesture — runbook expects
+                    // it and there's no PanResponder fallback inside Preview.
+                    options={{ presentation: 'modal', animation: 'slide_from_bottom' }}
                   />
                   <Stack.Screen
                     name="ShareSheet"
