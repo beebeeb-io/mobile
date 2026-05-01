@@ -11,6 +11,7 @@ import { Text } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from './theme';
 import { ThemeProvider, useTheme } from './lib/theme-context';
+import { BBLogo } from './components/BBLogo';
 import {
   hasToken,
   clearToken,
@@ -361,15 +362,8 @@ export default function App() {
     return (
       <SafeAreaProvider>
         <View style={{ flex: 1, backgroundColor: c.paper, alignItems: 'center', justifyContent: 'center' }}>
-          <View style={{
-            width: 48, height: 48, borderRadius: 12,
-            backgroundColor: c.ink, alignItems: 'center', justifyContent: 'center',
-            marginBottom: 16,
-          }}>
-            <Text style={{ color: c.amber, fontSize: 18, fontWeight: '800', letterSpacing: -0.5 }}>
-              bb
-            </Text>
-          </View>
+          <BBLogo size={48} />
+          <View style={{ height: 16 }} />
           <ActivityIndicator color={c.ink3} />
         </View>
         <StatusBar style={resolved === 'dark' ? 'light' : 'dark'} />
