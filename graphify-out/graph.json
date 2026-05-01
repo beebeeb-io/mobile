@@ -9,7 +9,7 @@
       "source_file": "App.tsx",
       "source_location": "L1",
       "id": "app_tsx",
-      "community": 13,
+      "community": 14,
       "norm_label": "app.tsx"
     },
     {
@@ -18,7 +18,7 @@
       "source_file": "theme.ts",
       "source_location": "L1",
       "id": "theme_ts",
-      "community": 14,
+      "community": 15,
       "norm_label": "theme.ts"
     },
     {
@@ -193,6 +193,24 @@
       "norm_label": "statusbadge()"
     },
     {
+      "label": "BiometricLockScreen.tsx",
+      "file_type": "code",
+      "source_file": "screens/BiometricLockScreen.tsx",
+      "source_location": "L1",
+      "id": "screens_biometriclockscreen_tsx",
+      "community": 10,
+      "norm_label": "biometriclockscreen.tsx"
+    },
+    {
+      "label": "FaceIdIcon()",
+      "file_type": "code",
+      "source_file": "screens/BiometricLockScreen.tsx",
+      "source_location": "L17",
+      "id": "screens_biometriclockscreen_faceidicon",
+      "community": 10,
+      "norm_label": "faceidicon()"
+    },
+    {
       "label": "ShareSheetScreen.tsx",
       "file_type": "code",
       "source_file": "screens/ShareSheetScreen.tsx",
@@ -268,7 +286,7 @@
       "label": "formatBytes()",
       "file_type": "code",
       "source_file": "screens/SettingsScreen.tsx",
-      "source_location": "L19",
+      "source_location": "L24",
       "id": "screens_settingsscreen_formatbytes",
       "community": 5,
       "norm_label": "formatbytes()"
@@ -277,7 +295,7 @@
       "label": "formatDate()",
       "file_type": "code",
       "source_file": "screens/SettingsScreen.tsx",
-      "source_location": "L27",
+      "source_location": "L32",
       "id": "screens_settingsscreen_formatdate",
       "community": 5,
       "norm_label": "formatdate()"
@@ -286,7 +304,7 @@
       "label": "userInitials()",
       "file_type": "code",
       "source_file": "screens/SettingsScreen.tsx",
-      "source_location": "L35",
+      "source_location": "L40",
       "id": "screens_settingsscreen_userinitials",
       "community": 5,
       "norm_label": "userinitials()"
@@ -295,7 +313,7 @@
       "label": "planLabel()",
       "file_type": "code",
       "source_file": "screens/SettingsScreen.tsx",
-      "source_location": "L44",
+      "source_location": "L49",
       "id": "screens_settingsscreen_planlabel",
       "community": 5,
       "norm_label": "planlabel()"
@@ -360,7 +378,7 @@
       "source_file": "lib/api.ts",
       "source_location": "L68",
       "id": "lib_api_cleartoken",
-      "community": 10,
+      "community": 12,
       "norm_label": "cleartoken()"
     },
     {
@@ -441,7 +459,7 @@
       "source_file": "lib/api.ts",
       "source_location": "L180",
       "id": "lib_api_logout",
-      "community": 10,
+      "community": 12,
       "norm_label": "logout()"
     },
     {
@@ -513,7 +531,7 @@
       "source_file": "lib/api.ts",
       "source_location": "L276",
       "id": "lib_api_createshare",
-      "community": 1,
+      "community": 4,
       "norm_label": "createshare()"
     },
     {
@@ -558,7 +576,7 @@
       "source_file": "lib/api.ts",
       "source_location": "L350",
       "id": "lib_api_getregion",
-      "community": 4,
+      "community": 1,
       "norm_label": "getregion()"
     },
     {
@@ -567,7 +585,7 @@
       "source_file": "lib/auth.ts",
       "source_location": "L1",
       "id": "lib_auth_ts",
-      "community": 12,
+      "community": 13,
       "norm_label": "auth.ts"
     },
     {
@@ -576,7 +594,7 @@
       "source_file": "lib/auth.ts",
       "source_location": "L18",
       "id": "lib_auth_useauth",
-      "community": 12,
+      "community": 13,
       "norm_label": "useauth()"
     }
   ],
@@ -800,6 +818,18 @@
     {
       "relation": "contains",
       "confidence": "EXTRACTED",
+      "source_file": "screens/BiometricLockScreen.tsx",
+      "source_location": "L17",
+      "weight": 1.0,
+      "_src": "screens_biometriclockscreen_tsx",
+      "_tgt": "screens_biometriclockscreen_faceidicon",
+      "source": "screens_biometriclockscreen_tsx",
+      "target": "screens_biometriclockscreen_faceidicon",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
       "source_file": "screens/ShareSheetScreen.tsx",
       "source_location": "L29",
       "weight": 1.0,
@@ -861,7 +891,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "screens/SettingsScreen.tsx",
-      "source_location": "L124",
+      "source_location": "L155",
       "weight": 1.0,
       "_src": "screens_settingsscreen_tsx",
       "_tgt": "screens_settingsscreen_formatbytes",
@@ -873,7 +903,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "screens/SettingsScreen.tsx",
-      "source_location": "L27",
+      "source_location": "L32",
       "weight": 1.0,
       "_src": "screens_settingsscreen_tsx",
       "_tgt": "screens_settingsscreen_formatdate",
@@ -885,7 +915,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "screens/SettingsScreen.tsx",
-      "source_location": "L35",
+      "source_location": "L40",
       "weight": 1.0,
       "_src": "screens_settingsscreen_tsx",
       "_tgt": "screens_settingsscreen_userinitials",
@@ -897,7 +927,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "screens/SettingsScreen.tsx",
-      "source_location": "L44",
+      "source_location": "L49",
       "weight": 1.0,
       "_src": "screens_settingsscreen_tsx",
       "_tgt": "screens_settingsscreen_planlabel",
