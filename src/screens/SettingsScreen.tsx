@@ -423,6 +423,18 @@ export default function SettingsScreen() {
     Linking.openURL('https://beebeeb.io/legal/terms');
   }, []);
 
+  const handleShowVersion = useCallback(() => {
+    const version = Constants.expoConfig?.version ?? '1.0.0';
+    Alert.alert(
+      `Beebeeb v${version}`,
+      '• End-to-end encrypted file storage\n• Camera roll backup\n• Dark mode support\n• File search and sort\n• Swipe actions\n• Biometric lock\n\nMade in Europe by Initlabs B.V.',
+    );
+  }, []);
+
+  const handleRateApp = useCallback(() => {
+    Alert.alert('Rate Beebeeb', 'Coming soon to the App Store.');
+  }, []);
+
   const handleSignOut = useCallback(() => {
     Alert.alert('Sign out', 'Are you sure you want to sign out?', [
       { text: 'Cancel', style: 'cancel' },
@@ -848,6 +860,7 @@ export default function SettingsScreen() {
               label="Version"
               value={`${Constants.expoConfig?.version ?? '1.0.0'} (${Constants.expoConfig?.ios?.buildNumber ?? Constants.expoConfig?.android?.versionCode ?? '1'})`}
               showChevron={false}
+              onPress={handleShowVersion}
               c={c}
             />
             <RowDivider c={c} />
@@ -867,6 +880,8 @@ export default function SettingsScreen() {
             <SettingsRow label="Privacy policy" onPress={handlePrivacyPolicy} c={c} />
             <RowDivider c={c} />
             <SettingsRow label="Terms of service" onPress={handleTerms} c={c} />
+            <RowDivider c={c} />
+            <SettingsRow label="Rate on App Store" onPress={handleRateApp} c={c} />
           </View>
         </View>
 
