@@ -11,6 +11,18 @@ const BASE_URL = 'http://localhost:3001';
 const TOKEN_KEY = 'beebeeb_session_token';
 
 // ---------------------------------------------------------------------------
+// Session-expired callback (registered by AuthProvider)
+// ---------------------------------------------------------------------------
+
+type SessionExpiredHandler = () => void;
+let onSessionExpired: SessionExpiredHandler | null = null;
+
+/** Register a callback invoked when the server returns 401 (token expired). */
+export function registerSessionExpiredHandler(fn: SessionExpiredHandler): void {
+  onSessionExpired = fn;
+}
+
+// ---------------------------------------------------------------------------
 // Token persistence
 // ---------------------------------------------------------------------------
 
@@ -32,15 +44,33 @@ export async function clearToken(): Promise<void> {
   await SecureStore.deleteItemAsync(TOKEN_KEY);
 }
 
+/** Fast check: is there a stored session token? */
+export async function hasToken(): Promise<boolean> {
+  return (await getToken()) !== null;
+}
+
 // ---------------------------------------------------------------------------
 // HTTP helpers
 // ---------------------------------------------------------------------------
 
-class ApiError extends Error {
+export class ApiError extends Error {
   constructor(public status: number, message: string) {
     super(message);
     this.name = 'ApiError';
   }
+}
+
+/** Return a human-friendly message for common API errors. */
+export function friendlyError(err: unknown): string {
+  if (err instanceof ApiError) {
+    if (err.status === 0) return 'Could not reach the server. Check your connection and try again.';
+    if (err.status === 401) return 'Session expired. Please sign in again.';
+    if (err.status === 409) return 'An account with this email already exists.';
+    if (err.status === 422) return err.message || 'Invalid input. Please check your details.';
+    return err.message || 'Something went wrong. Please try again.';
+  }
+  if (err instanceof TypeError) return 'Could not reach the server. Check your connection and try again.';
+  return 'Something went wrong. Please try again.';
 }
 
 async function headers(auth = true): Promise<Record<string, string>> {
@@ -58,14 +88,26 @@ async function request<T>(
   body?: unknown,
   auth = true,
 ): Promise<T> {
-  const res = await fetch(`${BASE_URL}${path}`, {
-    method,
-    headers: await headers(auth),
-    body: body ? JSON.stringify(body) : undefined,
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${BASE_URL}${path}`, {
+      method,
+      headers: await headers(auth),
+      body: body ? JSON.stringify(body) : undefined,
+    });
+  } catch (_err) {
+    throw new ApiError(0, 'Could not reach the server. Check your connection and try again.');
+  }
+
+  if (res.status === 401) {
+    await clearToken();
+    onSessionExpired?.();
+    throw new ApiError(401, 'Session expired');
+  }
+
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
-    throw new ApiError(res.status, err.error ?? res.statusText);
+    throw new ApiError(res.status, err.error ?? err.message ?? res.statusText);
   }
   return res.json() as Promise<T>;
 }
