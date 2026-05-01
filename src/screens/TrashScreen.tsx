@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -9,15 +9,28 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import { Swipeable } from 'react-native-gesture-handler';
+import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { colors, radii, spacing } from '../theme';
-import { listFiles, deleteFile, restoreFile, friendlyError } from '../lib/api';
+import * as Haptics from 'expo-haptics';
+import { radii, spacing } from '../theme';
+import { useTheme } from '../lib/theme-context';
+import {
+  listFiles,
+  restoreFile,
+  permanentDeleteFile,
+  emptyTrash,
+  friendlyError,
+} from '../lib/api';
 import type { FileEntry } from '../lib/api';
 import type { RootStackParamList } from '../App';
 
 type Nav = NativeStackNavigationProp<RootStackParamList>;
+
+// Tracks the currently open Swipeable so we can close it when another opens.
+let _openSwipeable: Swipeable | null = null;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -40,12 +53,102 @@ function formatDate(iso: string): string {
   return `${month} ${day}, ${year}`;
 }
 
+function fileTypeBadge(entry: FileEntry): { label: string; color: string; defaultColor: string } {
+  if (entry.is_folder) return { label: 'DIR', color: '#b8860b', defaultColor: '#b8860b' };
+  const mime = entry.mime_type ?? '';
+  if (mime.startsWith('image/')) return { label: 'IMG', color: '#f5b800', defaultColor: '#f5b800' };
+  if (mime === 'application/pdf') return { label: 'PDF', color: '#d84040', defaultColor: '#d84040' };
+  if (mime.startsWith('audio/')) return { label: 'AUD', color: '#4abe4a', defaultColor: '#4abe4a' };
+  if (mime.startsWith('video/')) return { label: 'VID', color: '#8a867f', defaultColor: '#8a867f' };
+  return { label: 'FILE', color: '#8a867f', defaultColor: '#8a867f' };
+}
+
 function displayName(entry: FileEntry): string {
   const raw = entry.name_encrypted;
   if (!raw) return entry.is_folder ? 'Untitled folder' : 'Untitled file';
+  if (raw.startsWith('{')) return entry.is_folder ? 'Encrypted folder' : 'Encrypted file';
   if (raw.length > 32) return raw.slice(0, 24) + '...';
   return raw;
 }
+
+// ---------------------------------------------------------------------------
+// Trash row (swipeable)
+// ---------------------------------------------------------------------------
+
+interface TrashRowProps {
+  item: FileEntry;
+  onRestore: (item: FileEntry) => void;
+  onDelete: (item: FileEntry) => void;
+}
+
+const TrashRow = React.memo(function TrashRow({ item, onRestore, onDelete }: TrashRowProps) {
+  const { colors: c } = useTheme();
+  const swipeableRef = useRef<Swipeable>(null);
+  const badge = fileTypeBadge(item);
+
+  const handleSwipeOpen = useCallback((_dir: 'left' | 'right', swipeable: Swipeable) => {
+    if (_openSwipeable && _openSwipeable !== swipeable) {
+      _openSwipeable.close();
+    }
+    _openSwipeable = swipeable;
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+  }, []);
+
+  const handleSwipeClose = useCallback(() => {
+    if (_openSwipeable === swipeableRef.current) {
+      _openSwipeable = null;
+    }
+  }, []);
+
+  const renderRightActions = useCallback(() => (
+    <View style={styles.swipeActions}>
+      <TouchableOpacity
+        style={[styles.swipeAction, { backgroundColor: c.green }]}
+        activeOpacity={0.8}
+        onPress={() => { swipeableRef.current?.close(); onRestore(item); }}
+      >
+        <Ionicons name="arrow-undo-outline" size={20} color="#fff" />
+        <Text style={styles.swipeActionLabel}>Restore</Text>
+      </TouchableOpacity>
+      <TouchableOpacity
+        style={[styles.swipeAction, { backgroundColor: c.red }]}
+        activeOpacity={0.8}
+        onPress={() => { swipeableRef.current?.close(); onDelete(item); }}
+      >
+        <Ionicons name="trash-outline" size={20} color="#fff" />
+        <Text style={styles.swipeActionLabel}>Delete</Text>
+      </TouchableOpacity>
+    </View>
+  ), [c, item, onRestore, onDelete]);
+
+  return (
+    <Swipeable
+      ref={swipeableRef}
+      renderRightActions={renderRightActions}
+      onSwipeableOpen={handleSwipeOpen}
+      onSwipeableClose={handleSwipeClose}
+      overshootRight={false}
+      rightThreshold={40}
+    >
+      <View style={[styles.row, { borderBottomColor: c.line, backgroundColor: c.paper }]}>
+        <View style={[styles.rowIcon, { backgroundColor: badge.color }]}>
+          <Text style={styles.rowIconText}>{badge.label}</Text>
+        </View>
+        <View style={styles.rowInfo}>
+          <Text style={[styles.rowName, { color: c.ink }]} numberOfLines={1}>
+            {displayName(item)}
+          </Text>
+          <Text style={[styles.rowMeta, { color: c.ink3 }]}>
+            {item.is_folder ? 'Folder' : formatSize(item.size_bytes)}
+            {'  ·  Deleted '}
+            {formatDate(item.updated_at)}
+          </Text>
+        </View>
+        <Ionicons name="chevron-back" size={14} color={c.ink4} style={{ opacity: 0.5 }} />
+      </View>
+    </Swipeable>
+  );
+});
 
 // ---------------------------------------------------------------------------
 // Screen
@@ -54,6 +157,7 @@ function displayName(entry: FileEntry): string {
 export default function TrashScreen() {
   const navigation = useNavigation<Nav>();
   const insets = useSafeAreaInsets();
+  const { colors: c } = useTheme();
 
   const [files, setFiles] = useState<FileEntry[]>([]);
   const [loading, setLoading] = useState(true);
@@ -81,9 +185,10 @@ export default function TrashScreen() {
   }, [fetchTrash]);
 
   const handleRestore = useCallback((item: FileEntry) => {
+    const name = displayName(item);
     Alert.alert(
-      'Restore file',
-      `"${displayName(item)}" will be restored to your Drive.`,
+      'Restore',
+      `"${name}" will be restored to your Drive.`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -91,6 +196,7 @@ export default function TrashScreen() {
           onPress: async () => {
             try {
               await restoreFile(item.id);
+              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
               setFiles((prev) => prev.filter((f) => f.id !== item.id));
             } catch (err) {
               Alert.alert('Error', friendlyError(err));
@@ -101,10 +207,11 @@ export default function TrashScreen() {
     );
   }, []);
 
-  const handleDeletePermanently = useCallback((item: FileEntry) => {
+  const handleDelete = useCallback((item: FileEntry) => {
+    const name = displayName(item);
     Alert.alert(
       'Delete permanently',
-      `"${displayName(item)}" will be deleted forever. This cannot be undone.`,
+      `"${name}" will be deleted forever. This cannot be undone.`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -112,7 +219,8 @@ export default function TrashScreen() {
           style: 'destructive',
           onPress: async () => {
             try {
-              await deleteFile(item.id);
+              await permanentDeleteFile(item.id);
+              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
               setFiles((prev) => prev.filter((f) => f.id !== item.id));
             } catch (err) {
               Alert.alert('Error', friendlyError(err));
@@ -123,44 +231,42 @@ export default function TrashScreen() {
     );
   }, []);
 
-  const renderItem = ({ item }: { item: FileEntry }) => (
-    <View style={styles.row}>
-      <View style={styles.rowIcon}>
-        <Text style={styles.rowIconText}>{item.is_folder ? 'DIR' : 'FILE'}</Text>
-      </View>
-      <View style={styles.rowInfo}>
-        <Text style={styles.rowName} numberOfLines={1}>{displayName(item)}</Text>
-        <Text style={styles.rowMeta}>
-          {item.is_folder ? 'Folder' : formatSize(item.size_bytes)}
-          {'  ·  '}
-          Deleted {formatDate(item.updated_at)}
-        </Text>
-      </View>
-      <View style={styles.rowActions}>
-        <TouchableOpacity
-          style={styles.restoreBtn}
-          onPress={() => handleRestore(item)}
-          activeOpacity={0.7}
-        >
-          <Text style={styles.restoreBtnText}>Restore</Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={styles.deleteBtn}
-          onPress={() => handleDeletePermanently(item)}
-          activeOpacity={0.7}
-        >
-          <Text style={styles.deleteBtnText}>Delete</Text>
-        </TouchableOpacity>
-      </View>
-    </View>
-  );
+  const handleEmptyTrash = useCallback(() => {
+    if (files.length === 0) return;
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    Alert.alert(
+      'Empty Trash',
+      `${files.length} item${files.length === 1 ? '' : 's'} will be permanently deleted. This cannot be undone.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Empty Trash',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await emptyTrash();
+              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+              setFiles([]);
+            } catch (err) {
+              Alert.alert('Error', friendlyError(err));
+            }
+          },
+        },
+      ],
+    );
+  }, [files.length]);
+
+  const renderItem = useCallback(({ item }: { item: FileEntry }) => (
+    <TrashRow item={item} onRestore={handleRestore} onDelete={handleDelete} />
+  ), [handleRestore, handleDelete]);
 
   const renderEmpty = () => {
     if (loading) return null;
     return (
       <View style={styles.emptyContainer}>
-        <Text style={styles.emptyTitle}>Trash is empty</Text>
-        <Text style={styles.emptySubtitle}>
+        <Ionicons name="trash-outline" size={48} color={c.ink4} style={{ marginBottom: 12, opacity: 0.5 }} />
+        <Text style={[styles.emptyTitle, { color: c.ink2 }]}>Trash is empty</Text>
+        <Text style={[styles.emptySubtitle, { color: c.ink3 }]}>
           Files you delete will appear here before being permanently removed.
         </Text>
       </View>
@@ -168,30 +274,51 @@ export default function TrashScreen() {
   };
 
   return (
-    <View style={[styles.root, { paddingTop: insets.top }]}>
+    <View style={[styles.root, { paddingTop: insets.top, backgroundColor: c.paper }]}>
       {/* Header */}
-      <View style={styles.header}>
+      <View style={[styles.header, { borderBottomColor: c.line }]}>
         <TouchableOpacity
-          style={styles.backButton}
+          style={[styles.backButton, { backgroundColor: c.paper2, borderColor: c.line }]}
           onPress={() => navigation.goBack()}
           hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
         >
-          <Text style={styles.backButtonText}>{'‹'}</Text>
+          <Text style={[styles.backButtonText, { color: c.ink2 }]}>{'‹'}</Text>
         </TouchableOpacity>
-        <Text style={styles.title}>Trash</Text>
+        <Text style={[styles.title, { color: c.ink }]}>Trash</Text>
+        <View style={{ flex: 1 }} />
+        {files.length > 0 && (
+          <TouchableOpacity
+            onPress={handleEmptyTrash}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          >
+            <Text style={[styles.emptyTrashBtn, { color: c.red }]}>Empty</Text>
+          </TouchableOpacity>
+        )}
       </View>
+
+      {/* Swipe hint — shown until first swipe */}
+      {files.length > 0 && !loading && (
+        <View style={[styles.hintBanner, { backgroundColor: c.paper2, borderBottomColor: c.line }]}>
+          <Text style={[styles.hintText, { color: c.ink3 }]}>
+            Swipe left to restore or permanently delete
+          </Text>
+        </View>
+      )}
 
       {/* Content */}
       {error ? (
         <View style={styles.errorContainer}>
-          <Text style={styles.errorText}>{error}</Text>
-          <TouchableOpacity style={styles.retryButton} onPress={() => fetchTrash()}>
-            <Text style={styles.retryButtonText}>Retry</Text>
+          <Text style={[styles.errorText, { color: c.red }]}>{error}</Text>
+          <TouchableOpacity
+            style={[styles.retryButton, { backgroundColor: c.amber }]}
+            onPress={() => fetchTrash()}
+          >
+            <Text style={[styles.retryButtonText, { color: c.ink }]}>Retry</Text>
           </TouchableOpacity>
         </View>
       ) : loading && !refreshing ? (
         <View style={styles.loadingContainer}>
-          <ActivityIndicator color={colors.amber} size="large" />
+          <ActivityIndicator color={c.amber} size="large" />
         </View>
       ) : (
         <FlatList
@@ -203,8 +330,8 @@ export default function TrashScreen() {
             <RefreshControl
               refreshing={refreshing}
               onRefresh={() => fetchTrash(true)}
-              tintColor={colors.amber}
-              colors={[colors.amber]}
+              tintColor={c.amber}
+              colors={[c.amber]}
             />
           }
           contentContainerStyle={files.length === 0 ? styles.emptyList : undefined}
@@ -219,7 +346,7 @@ export default function TrashScreen() {
 // ---------------------------------------------------------------------------
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: colors.paper },
+  root: { flex: 1 },
 
   header: {
     flexDirection: 'row',
@@ -227,19 +354,31 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.sm,
     gap: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
   },
   backButton: {
     width: 30,
     height: 30,
     borderRadius: 15,
-    backgroundColor: colors.paper2,
     borderWidth: 1,
-    borderColor: colors.line,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  backButtonText: { fontSize: 20, color: colors.ink2, fontWeight: '600', marginTop: -2 },
-  title: { fontSize: 22, fontWeight: '700', color: colors.ink },
+  backButtonText: { fontSize: 20, fontWeight: '600', marginTop: -2 },
+  title: { fontSize: 22, fontWeight: '700' },
+  emptyTrashBtn: { fontSize: 14, fontWeight: '600' },
+
+  hintBanner: {
+    paddingHorizontal: spacing.lg,
+    paddingVertical: 7,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  hintText: { fontSize: 11 },
+
+  // Swipe actions
+  swipeActions: { flexDirection: 'row' },
+  swipeAction: { width: 80, alignItems: 'center', justifyContent: 'center', gap: 4 },
+  swipeActionLabel: { color: '#fff', fontSize: 11, fontWeight: '600' },
 
   // Row
   row: {
@@ -247,39 +386,20 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingVertical: 12,
     paddingHorizontal: spacing.lg,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.line,
+    borderBottomWidth: StyleSheet.hairlineWidth,
     gap: 10,
   },
   rowIcon: {
     width: 32,
     height: 32,
     borderRadius: radii.sm,
-    backgroundColor: colors.ink3,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  rowIconText: { color: colors.paper, fontSize: 8, fontWeight: '700', letterSpacing: 0.3 },
+  rowIconText: { color: '#fff', fontSize: 8, fontWeight: '700', letterSpacing: 0.3 },
   rowInfo: { flex: 1, minWidth: 0 },
-  rowName: { fontSize: 13, fontWeight: '500', color: colors.ink },
-  rowMeta: { fontSize: 11, color: colors.ink3, marginTop: 2 },
-
-  rowActions: { flexDirection: 'row', gap: 6 },
-  restoreBtn: {
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: radii.sm,
-    backgroundColor: colors.amber,
-  },
-  restoreBtnText: { fontSize: 11, fontWeight: '600', color: colors.ink },
-  deleteBtn: {
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: radii.sm,
-    borderWidth: 1,
-    borderColor: colors.red,
-  },
-  deleteBtnText: { fontSize: 11, fontWeight: '600', color: colors.red },
+  rowName: { fontSize: 13, fontWeight: '500' },
+  rowMeta: { fontSize: 11, marginTop: 2 },
 
   // Loading
   loadingContainer: { flex: 1, alignItems: 'center', justifyContent: 'center' },
@@ -293,8 +413,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.xl,
     gap: 8,
   },
-  emptyTitle: { fontSize: 16, fontWeight: '600', color: colors.ink2 },
-  emptySubtitle: { fontSize: 13, color: colors.ink3, textAlign: 'center', lineHeight: 18 },
+  emptyTitle: { fontSize: 16, fontWeight: '600' },
+  emptySubtitle: { fontSize: 13, textAlign: 'center', lineHeight: 18 },
 
   // Error
   errorContainer: {
@@ -304,12 +424,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.xl,
     gap: 16,
   },
-  errorText: { fontSize: 14, color: colors.red, textAlign: 'center', lineHeight: 20 },
-  retryButton: {
-    paddingHorizontal: 20,
-    paddingVertical: 10,
-    borderRadius: radii.md,
-    backgroundColor: colors.amber,
-  },
-  retryButtonText: { fontSize: 14, fontWeight: '600', color: colors.ink },
+  errorText: { fontSize: 14, textAlign: 'center', lineHeight: 20 },
+  retryButton: { paddingHorizontal: 20, paddingVertical: 10, borderRadius: radii.md },
+  retryButtonText: { fontSize: 14, fontWeight: '600' },
 });
