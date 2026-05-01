@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActionSheetIOS,
   ActivityIndicator,
@@ -30,6 +30,7 @@ import { spacing, type Colors } from '../theme';
 import { useAuth } from '../lib/auth';
 import { useBackup } from '../lib/backup-context';
 import { useTheme, type ThemeMode } from '../lib/theme-context';
+import { useToast } from '../lib/toast-context';
 import {
   getStorageUsage,
   getPreference,
@@ -401,10 +402,15 @@ export default function SettingsScreen() {
     triggerBackupNow,
   } = useBackup();
 
+  const { showToast } = useToast();
+
   const [usage, setUsage] = useState<StorageUsage | null>(null);
   const [loadingUsage, setLoadingUsage] = useState(true);
   const [backingUp, setBackingUp] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  // Track which storage thresholds we've already alerted on this session, so
+  // refreshing the screen doesn't re-toast the same warning every time.
+  const lastQuotaAlertRef = useRef<number>(0);
 
   // Biometric lock
   const [biometricEnabled, setBiometricEnabled] = useState(false);
@@ -441,12 +447,31 @@ export default function SettingsScreen() {
     try {
       const data = await getStorageUsage();
       setUsage(data);
+
+      // Quota warning: toast once per session as the user crosses 75 / 90 / 100%.
+      // We only step *up*; recovering below a threshold doesn't reset (a single
+      // session reload is enough to re-arm). Plans with no limit are skipped.
+      const limit = data.plan_limit_bytes;
+      if (limit > 0) {
+        const ratio = data.used_bytes / limit;
+        const tier = ratio >= 1 ? 100 : ratio >= 0.9 ? 90 : ratio >= 0.75 ? 75 : 0;
+        if (tier > lastQuotaAlertRef.current) {
+          lastQuotaAlertRef.current = tier;
+          if (tier === 100) {
+            showToast({ type: 'error', message: 'Storage full — uploads will fail until you free space or upgrade.' });
+          } else if (tier === 90) {
+            showToast({ type: 'error', message: 'Storage 90% full — consider upgrading or clearing the trash.' });
+          } else if (tier === 75) {
+            showToast({ type: 'info', message: 'Storage 75% full.' });
+          }
+        }
+      }
     } catch {
       // Storage endpoint may not be available yet
     } finally {
       setLoadingUsage(false);
     }
-  }, []);
+  }, [showToast]);
 
   const loadBiometricPrefs = useCallback(async () => {
     try {
