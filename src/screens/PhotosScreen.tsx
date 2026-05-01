@@ -298,12 +298,21 @@ function AutoBackupBanner() {
 
   if (backupProgress.inProgress > 0) {
     const remaining = backupProgress.total - backupProgress.completed;
+    const ratio = backupProgress.total > 0
+      ? Math.min(1, Math.max(0, backupProgress.completed / backupProgress.total))
+      : 0;
     return (
-      <View style={[styles.banner, styles.bannerActive, { backgroundColor: c.amberBg, borderColor: c.amber }]}>
-        <ActivityIndicator size="small" color={c.green} style={{ marginRight: 2 }} />
-        <Text style={[styles.bannerText, { color: c.ink }]}>
-          Backing up {backupProgress.inProgress} of {remaining} remaining
-        </Text>
+      <View style={[styles.banner, styles.bannerActive, styles.bannerWithProgress, { backgroundColor: c.amberBg, borderColor: c.amber }]}>
+        <View style={styles.bannerHeaderRow}>
+          <ActivityIndicator size="small" color={c.green} style={{ marginRight: 2 }} />
+          <Text style={[styles.bannerText, { color: c.ink }]}>
+            Backing up {backupProgress.inProgress} of {remaining} remaining
+          </Text>
+          <Text style={[styles.bannerHint, { color: c.ink2 }]}>{Math.round(ratio * 100)}%</Text>
+        </View>
+        <View style={[styles.progressTrack, { backgroundColor: c.line }]}>
+          <View style={[styles.progressFill, { width: `${ratio * 100}%`, backgroundColor: c.amber }]} />
+        </View>
       </View>
     );
   }
@@ -532,10 +541,14 @@ const styles = StyleSheet.create({
   // Auto-backup banner (sticky at bottom of tab content)
   banner: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: spacing.lg, paddingVertical: 10, borderTopWidth: 1, gap: 8 },
   bannerActive: {},
+  bannerWithProgress: { flexDirection: 'column', alignItems: 'stretch', gap: 8 },
+  bannerHeaderRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   bannerDot: { width: 6, height: 6, borderRadius: 3 },
   bannerDotActive: {},
   bannerText: { fontSize: 11, flex: 1 },
   bannerHint: { fontSize: 10, fontWeight: '600' },
+  progressTrack: { height: 3, borderRadius: 2, overflow: 'hidden' },
+  progressFill: { height: '100%', borderRadius: 2 },
 
   // Device photos banner (top of screen, only when backup is enabled)
   deviceBanner: {
