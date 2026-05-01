@@ -17,7 +17,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import * as Haptics from 'expo-haptics';
-import { colors, radii, spacing, shadows } from '../theme';
+import { radii, spacing, shadows } from '../theme';
+import { useTheme } from '../lib/theme-context';
 import { listFiles, createFolder, deleteFile, friendlyError } from '../lib/api';
 import type { FileEntry } from '../lib/api';
 import type { RootStackParamList } from '../App';
@@ -102,16 +103,6 @@ const CATEGORY_LABELS: Record<string, string> = {
   file: 'FILE',
 };
 
-const CATEGORY_COLORS: Record<string, string> = {
-  folder: colors.amberDeep,
-  image: colors.amber,
-  pdf: colors.red,
-  audio: colors.green,
-  video: colors.ink2,
-  doc: colors.ink2,
-  file: colors.ink3,
-};
-
 // ---------------------------------------------------------------------------
 // Breadcrumb item
 // ---------------------------------------------------------------------------
@@ -126,7 +117,17 @@ interface BreadcrumbEntry {
 // ---------------------------------------------------------------------------
 
 const FileIcon = React.memo(function FileIcon({ category }: { category: string }) {
-  const bg = CATEGORY_COLORS[category] ?? colors.ink3;
+  const { colors: c } = useTheme();
+  const CATEGORY_COLORS: Record<string, string> = {
+    folder: c.amberDeep,
+    image: c.amber,
+    pdf: c.red,
+    audio: c.green,
+    video: c.ink2,
+    doc: c.ink2,
+    file: c.ink3,
+  };
+  const bg = CATEGORY_COLORS[category] ?? c.ink3;
   const label = CATEGORY_LABELS[category] ?? 'FILE';
   return (
     <View style={[styles.fileIcon, { backgroundColor: bg }]}>
@@ -152,12 +153,13 @@ const FileRowItem = React.memo(function FileRowItem({
   onPress,
   onLongPress,
 }: FileRowItemProps) {
+  const { colors: c } = useTheme();
   const category = fileCategory(item);
   const isEncryptedFallback = !decryptedName && !!item.name_encrypted?.startsWith('{');
   const nameText = decryptedName ?? displayName(item);
   return (
     <TouchableOpacity
-      style={styles.fileRow}
+      style={[styles.fileRow, { borderBottomColor: c.line }]}
       activeOpacity={0.6}
       onPress={() => onPress(item)}
       onLongPress={() => onLongPress(item)}
@@ -167,22 +169,22 @@ const FileRowItem = React.memo(function FileRowItem({
       <View style={styles.fileInfo}>
         <View style={styles.fileNameRow}>
           {isEncryptedFallback && (
-            <Ionicons name="lock-closed" size={11} color={colors.ink4} style={styles.lockIcon} />
+            <Ionicons name="lock-closed" size={11} color={c.ink4} style={styles.lockIcon} />
           )}
           <Text
-            style={[styles.fileName, isEncryptedFallback && styles.fileNameEncrypted]}
+            style={[styles.fileName, { color: c.ink }, isEncryptedFallback && styles.fileNameEncrypted]}
             numberOfLines={1}
           >
             {nameText}
           </Text>
         </View>
-        <Text style={styles.fileMeta}>
+        <Text style={[styles.fileMeta, { color: c.ink3 }]}>
           {item.is_folder
             ? formatDate(item.updated_at)
             : `${formatSize(item.size_bytes)}  ·  ${formatDate(item.updated_at)}`}
         </Text>
       </View>
-      <Text style={styles.chevron}>{'›'}</Text>
+      <Text style={[styles.chevron, { color: c.ink4 }]}>{'›'}</Text>
     </TouchableOpacity>
   );
 });
@@ -196,6 +198,7 @@ type Nav = NativeStackNavigationProp<RootStackParamList>;
 export default function FilesScreen() {
   const navigation = useNavigation<Nav>();
   const insets = useSafeAreaInsets();
+  const { colors: c } = useTheme();
 
   // Navigation state: stack of folders
   const [folderStack, setFolderStack] = useState<BreadcrumbEntry[]>([
@@ -458,7 +461,7 @@ export default function FilesScreen() {
         const isLast = index === folderStack.length - 1;
         return (
           <View key={entry.id ?? 'root'} style={styles.breadcrumbItem}>
-            {index > 0 && <Text style={styles.breadcrumbSep}>/</Text>}
+            {index > 0 && <Text style={[styles.breadcrumbSep, { color: c.ink4 }]}>/</Text>}
             <TouchableOpacity
               disabled={isLast}
               onPress={() => navigateToBreadcrumb(index)}
@@ -467,7 +470,8 @@ export default function FilesScreen() {
               <Text
                 style={[
                   styles.breadcrumbText,
-                  isLast && styles.breadcrumbTextActive,
+                  { color: c.amberDeep },
+                  isLast && [styles.breadcrumbTextActive, { color: c.ink2 }],
                 ]}
                 numberOfLines={1}
               >
@@ -493,8 +497,8 @@ export default function FilesScreen() {
     if (loading) return null;
     return (
       <View style={styles.emptyContainer}>
-        <Text style={styles.emptyTitle}>No files yet</Text>
-        <Text style={styles.emptySubtitle}>
+        <Text style={[styles.emptyTitle, { color: c.ink2 }]}>No files yet</Text>
+        <Text style={[styles.emptySubtitle, { color: c.ink3 }]}>
           {currentFolder.id === null
             ? 'Upload your first file to get started.'
             : 'This folder is empty.'}
@@ -505,12 +509,12 @@ export default function FilesScreen() {
 
   const renderError = () => (
     <View style={styles.errorContainer}>
-      <Text style={styles.errorText}>{error}</Text>
+      <Text style={[styles.errorText, { color: c.red }]}>{error}</Text>
       <TouchableOpacity
-        style={styles.retryButton}
+        style={[styles.retryButton, { backgroundColor: c.amber }]}
         onPress={() => fetchFiles(currentFolder.id)}
       >
-        <Text style={styles.retryButtonText}>Retry</Text>
+        <Text style={[styles.retryButtonText, { color: c.ink }]}>Retry</Text>
       </TouchableOpacity>
     </View>
   );
@@ -520,32 +524,32 @@ export default function FilesScreen() {
   // ------------------------------------------------------------------
 
   return (
-    <View style={[styles.root, { paddingTop: insets.top }]}>
+    <View style={[styles.root, { paddingTop: insets.top, backgroundColor: c.paper }]}>
       {/* Header */}
       <View style={styles.header}>
         {!searchActive && folderStack.length > 1 && (
           <TouchableOpacity
-            style={styles.backButton}
+            style={[styles.backButton, { backgroundColor: c.paper2, borderColor: c.line }]}
             onPress={() => navigateToBreadcrumb(folderStack.length - 2)}
             hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
           >
-            <Text style={styles.backButtonText}>{'‹'}</Text>
+            <Text style={[styles.backButtonText, { color: c.ink2 }]}>{'‹'}</Text>
           </TouchableOpacity>
         )}
         {searchActive ? (
           <TextInput
-            style={styles.searchInput}
+            style={[styles.searchInput, { backgroundColor: c.paper2, borderColor: c.line, color: c.ink }]}
             value={searchQuery}
             onChangeText={setSearchQuery}
             placeholder="Search files..."
-            placeholderTextColor={colors.ink4}
+            placeholderTextColor={c.ink4}
             autoFocus
             returnKeyType="search"
             autoCapitalize="none"
             autoCorrect={false}
           />
         ) : (
-          <Text style={styles.title}>{currentFolder.name}</Text>
+          <Text style={[styles.title, { color: c.ink }]}>{currentFolder.name}</Text>
         )}
         <View style={{ flex: 1 }} />
         <TouchableOpacity
@@ -553,7 +557,7 @@ export default function FilesScreen() {
           hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
           style={styles.searchButton}
         >
-          <Text style={styles.searchButtonText}>{searchActive ? '✕' : '⌕'}</Text>
+          <Text style={[styles.searchButtonText, { color: c.ink2 }]}>{searchActive ? '✕' : '⌕'}</Text>
         </TouchableOpacity>
       </View>
 
@@ -565,8 +569,8 @@ export default function FilesScreen() {
         renderError()
       ) : loading && !refreshing ? (
         <View style={styles.loadingContainer}>
-          <ActivityIndicator color={colors.amber} size="large" />
-          <Text style={styles.loadingText}>Loading files...</Text>
+          <ActivityIndicator color={c.amber} size="large" />
+          <Text style={[styles.loadingText, { color: c.ink3 }]}>Loading files...</Text>
         </View>
       ) : (
         <FlatList
@@ -578,8 +582,8 @@ export default function FilesScreen() {
             <RefreshControl
               refreshing={refreshing}
               onRefresh={handleRefresh}
-              tintColor={colors.amber}
-              colors={[colors.amber]}
+              tintColor={c.amber}
+              colors={[c.amber]}
             />
           }
           contentContainerStyle={displayedFiles.length === 0 ? styles.emptyList : undefined}
@@ -590,11 +594,11 @@ export default function FilesScreen() {
 
       {/* Floating action button */}
       <TouchableOpacity
-        style={[styles.fab, { bottom: 24 + insets.bottom }]}
+        style={[styles.fab, { bottom: 24 + insets.bottom, backgroundColor: c.amber }]}
         activeOpacity={0.8}
         onPress={handleFabPress}
       >
-        <Text style={styles.fabText}>+</Text>
+        <Text style={[styles.fabText, { color: c.ink }]}>+</Text>
       </TouchableOpacity>
     </View>
   );
@@ -605,223 +609,53 @@ export default function FilesScreen() {
 // ---------------------------------------------------------------------------
 
 const styles = StyleSheet.create({
-  root: {
-    flex: 1,
-    backgroundColor: colors.paper,
-  },
+  root: { flex: 1 },
 
   // Header
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.sm,
-    gap: 8,
-  },
-  backButton: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
-    backgroundColor: colors.paper2,
-    borderWidth: 1,
-    borderColor: colors.line,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  backButtonText: {
-    fontSize: 20,
-    color: colors.ink2,
-    fontWeight: '600',
-    marginTop: -2,
-  },
-  title: {
-    fontSize: 28,
-    fontWeight: '700',
-    color: colors.ink,
-  },
-  searchInput: {
-    flex: 1,
-    height: 36,
-    backgroundColor: colors.paper2,
-    borderRadius: radii.md,
-    paddingHorizontal: 12,
-    fontSize: 15,
-    color: colors.ink,
-    borderWidth: 1,
-    borderColor: colors.line,
-  },
-  searchButton: {
-    width: 32,
-    height: 32,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  searchButtonText: {
-    fontSize: 20,
-    color: colors.ink2,
-  },
+  header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: spacing.lg, paddingVertical: spacing.sm, gap: 8 },
+  backButton: { width: 30, height: 30, borderRadius: 15, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
+  backButtonText: { fontSize: 20, fontWeight: '600', marginTop: -2 },
+  title: { fontSize: 28, fontWeight: '700' },
+  searchInput: { flex: 1, height: 36, borderRadius: radii.md, paddingHorizontal: 12, fontSize: 15, borderWidth: 1 },
+  searchButton: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
+  searchButtonText: { fontSize: 20 },
 
   // Breadcrumbs
-  breadcrumbRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: spacing.lg,
-    paddingBottom: spacing.sm,
-    flexWrap: 'wrap',
-    gap: 2,
-  },
-  breadcrumbItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  breadcrumbSep: {
-    fontSize: 12,
-    color: colors.ink4,
-    marginHorizontal: 4,
-  },
-  breadcrumbText: {
-    fontSize: 12,
-    color: colors.amberDeep,
-    fontWeight: '500',
-  },
-  breadcrumbTextActive: {
-    color: colors.ink2,
-    fontWeight: '600',
-  },
+  breadcrumbRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: spacing.lg, paddingBottom: spacing.sm, flexWrap: 'wrap', gap: 2 },
+  breadcrumbItem: { flexDirection: 'row', alignItems: 'center' },
+  breadcrumbSep: { fontSize: 12, marginHorizontal: 4 },
+  breadcrumbText: { fontSize: 12, fontWeight: '500' },
+  breadcrumbTextActive: { fontWeight: '600' },
 
   // File list
-  fileRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 12,
-    paddingHorizontal: spacing.lg,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.line,
-    gap: 12,
-  },
-  fileIcon: {
-    width: 32,
-    height: 32,
-    borderRadius: radii.sm,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  fileIconText: {
-    color: colors.paper,
-    fontSize: 8,
-    fontWeight: '700',
-    letterSpacing: 0.3,
-  },
-  fileInfo: {
-    flex: 1,
-    minWidth: 0,
-  },
-  fileNameRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    minWidth: 0,
-  },
-  lockIcon: {
-    flexShrink: 0,
-  },
-  fileName: {
-    fontSize: 14,
-    fontWeight: '500',
-    color: colors.ink,
-    flexShrink: 1,
-  },
-  fileNameEncrypted: {
-    color: colors.ink3,
-    fontStyle: 'italic',
-  },
-  fileMeta: {
-    fontSize: 11,
-    color: colors.ink3,
-    marginTop: 2,
-  },
-  chevron: {
-    fontSize: 18,
-    color: colors.ink4,
-  },
+  fileRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, paddingHorizontal: spacing.lg, borderBottomWidth: 1, gap: 12 },
+  fileIcon: { width: 32, height: 32, borderRadius: radii.sm, alignItems: 'center', justifyContent: 'center' },
+  fileIconText: { color: '#FFFFFF', fontSize: 8, fontWeight: '700', letterSpacing: 0.3 },
+  fileInfo: { flex: 1, minWidth: 0 },
+  fileNameRow: { flexDirection: 'row', alignItems: 'center', gap: 4, minWidth: 0 },
+  lockIcon: { flexShrink: 0 },
+  fileName: { fontSize: 14, fontWeight: '500', flexShrink: 1 },
+  fileNameEncrypted: { fontStyle: 'italic' },
+  fileMeta: { fontSize: 11, marginTop: 2 },
+  chevron: { fontSize: 18 },
 
   // Loading state
-  loadingContainer: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 12,
-  },
-  loadingText: {
-    fontSize: 13,
-    color: colors.ink3,
-  },
+  loadingContainer: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12 },
+  loadingText: { fontSize: 13 },
 
   // Empty state
-  emptyList: {
-    flexGrow: 1,
-  },
-  emptyContainer: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: spacing.xl,
-    gap: 8,
-  },
-  emptyTitle: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: colors.ink2,
-  },
-  emptySubtitle: {
-    fontSize: 13,
-    color: colors.ink3,
-    textAlign: 'center',
-    lineHeight: 18,
-  },
+  emptyList: { flexGrow: 1 },
+  emptyContainer: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: spacing.xl, gap: 8 },
+  emptyTitle: { fontSize: 16, fontWeight: '600' },
+  emptySubtitle: { fontSize: 13, textAlign: 'center', lineHeight: 18 },
 
   // Error state
-  errorContainer: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: spacing.xl,
-    gap: 16,
-  },
-  errorText: {
-    fontSize: 14,
-    color: colors.red,
-    textAlign: 'center',
-    lineHeight: 20,
-  },
-  retryButton: {
-    paddingHorizontal: 20,
-    paddingVertical: 10,
-    borderRadius: radii.md,
-    backgroundColor: colors.amber,
-  },
-  retryButtonText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: colors.ink,
-  },
+  errorContainer: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: spacing.xl, gap: 16 },
+  errorText: { fontSize: 14, textAlign: 'center', lineHeight: 20 },
+  retryButton: { paddingHorizontal: 20, paddingVertical: 10, borderRadius: radii.md },
+  retryButtonText: { fontSize: 14, fontWeight: '600' },
 
   // FAB
-  fab: {
-    position: 'absolute',
-    right: 20,
-    width: 52,
-    height: 52,
-    borderRadius: 26,
-    backgroundColor: colors.amber,
-    alignItems: 'center',
-    justifyContent: 'center',
-    ...shadows.lg,
-  },
-  fabText: {
-    fontSize: 28,
-    fontWeight: '600',
-    color: colors.ink,
-    marginTop: -2,
-  },
+  fab: { position: 'absolute', right: 20, width: 52, height: 52, borderRadius: 26, alignItems: 'center', justifyContent: 'center', ...shadows.lg },
+  fabText: { fontSize: 28, fontWeight: '600', marginTop: -2 },
 });

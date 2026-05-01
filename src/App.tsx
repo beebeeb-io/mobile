@@ -10,6 +10,7 @@ import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-cont
 import { Text } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from './theme';
+import { ThemeProvider, useTheme } from './lib/theme-context';
 import {
   hasToken,
   clearToken,
@@ -117,14 +118,15 @@ const Stack = createNativeStackNavigator<RootStackParamList>();
 
 function OfflineBanner() {
   const insets = useSafeAreaInsets();
+  const { colors: c } = useTheme();
   return (
     <View style={[offlineStyles.banner, { top: insets.top + 8 }]}>
       <View style={offlineStyles.iconCircle}>
         <View style={offlineStyles.iconDot} />
       </View>
       <View style={offlineStyles.textBlock}>
-        <Text style={offlineStyles.title}>No connection</Text>
-        <Text style={offlineStyles.sub}>Working from your device · changes will sync when you're back</Text>
+        <Text style={[offlineStyles.title, { color: c.ink }]}>No connection</Text>
+        <Text style={[offlineStyles.sub, { color: c.ink3 }]}>Working from your device · changes will sync when you're back</Text>
       </View>
     </View>
   );
@@ -139,7 +141,7 @@ const offlineStyles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
-    backgroundColor: 'oklch(0.98 0.02 60)' as string,
+    backgroundColor: '#faf5e4',
     borderWidth: 1,
     borderColor: '#e2d5b0',
     borderRadius: 10,
@@ -218,6 +220,7 @@ function BiometricGuard({ locked, onUnlock }: { locked: boolean; onUnlock: () =>
 // ---------------------------------------------------------------------------
 
 function TabNavigator() {
+  const { colors: c } = useTheme();
   return (
     <Tab.Navigator
       screenListeners={{
@@ -228,11 +231,11 @@ function TabNavigator() {
       screenOptions={({ route }) => ({
         headerShown: false,
         tabBarIcon: ({ focused, color }) => <TabIcon name={route.name} focused={focused} color={color} />,
-        tabBarActiveTintColor: colors.ink,
-        tabBarInactiveTintColor: colors.ink4,
+        tabBarActiveTintColor: c.ink,
+        tabBarInactiveTintColor: c.ink4,
         tabBarStyle: {
-          backgroundColor: colors.paper,
-          borderTopColor: colors.line,
+          backgroundColor: c.paper,
+          borderTopColor: c.line,
           borderTopWidth: 1,
         },
         tabBarLabelStyle: {
@@ -254,6 +257,7 @@ function TabNavigator() {
 // ---------------------------------------------------------------------------
 
 export default function App() {
+  const { colors: c, resolved } = useTheme();
   const [user, setUser] = useState<User | null>(null);
   const [checking, setChecking] = useState(true);
 
@@ -356,19 +360,19 @@ export default function App() {
   if (checking) {
     return (
       <SafeAreaProvider>
-        <View style={{ flex: 1, backgroundColor: colors.paper, alignItems: 'center', justifyContent: 'center' }}>
+        <View style={{ flex: 1, backgroundColor: c.paper, alignItems: 'center', justifyContent: 'center' }}>
           <View style={{
             width: 48, height: 48, borderRadius: 12,
-            backgroundColor: colors.ink, alignItems: 'center', justifyContent: 'center',
+            backgroundColor: c.ink, alignItems: 'center', justifyContent: 'center',
             marginBottom: 16,
           }}>
-            <Text style={{ color: colors.amber, fontSize: 18, fontWeight: '800', letterSpacing: -0.5 }}>
+            <Text style={{ color: c.amber, fontSize: 18, fontWeight: '800', letterSpacing: -0.5 }}>
               bb
             </Text>
           </View>
-          <ActivityIndicator color={colors.ink3} />
+          <ActivityIndicator color={c.ink3} />
         </View>
-        <StatusBar style="auto" />
+        <StatusBar style={resolved === 'dark' ? 'light' : 'dark'} />
       </SafeAreaProvider>
     );
   }
@@ -431,7 +435,7 @@ export default function App() {
 
         {/* Onboarding overlay — shown once after first signup */}
         {isAuthenticated && !onboardingDone && (
-          <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: colors.paper2 }}>
+          <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: c.paper2 }}>
             <OnboardingScreen
               onComplete={async () => {
                 try {
@@ -448,7 +452,7 @@ export default function App() {
           <BiometricGuard locked={locked} onUnlock={() => setLocked(false)} />
         )}
 
-        <StatusBar style="auto" />
+        <StatusBar style={resolved === 'dark' ? 'light' : 'dark'} />
       </SafeAreaProvider>
       </BackupProvider>
       </CryptoProvider>
@@ -459,7 +463,9 @@ export default function App() {
 function AppWithErrorBoundary() {
   return (
     <ErrorBoundary>
-      <App />
+      <ThemeProvider>
+        <App />
+      </ThemeProvider>
     </ErrorBoundary>
   );
 }
