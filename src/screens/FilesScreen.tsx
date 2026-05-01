@@ -1188,6 +1188,7 @@ export default function FilesScreen() {
           ]}
           removeClippedSubviews={true}
           windowSize={5}
+          keyboardDismissMode="on-drag"
         />
       )}
 
