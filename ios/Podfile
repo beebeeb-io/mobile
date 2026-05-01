@@ -62,5 +62,22 @@ target 'Beebeeb' do
         end
       end
     end
+
+    # fmt's `consteval` requires C++20 immediate evaluation that Xcode's clang
+    # rejects when other pods compile against it as C++17. Downgrading to
+    # `constexpr` keeps the helpers usable in constant contexts without
+    # forcing immediate evaluation.
+    Dir.glob("#{installer.sandbox.root}/**/fmt/core.h").each do |file|
+      content = File.read(file)
+      if content.include?('consteval')
+        File.write(file, content.gsub('consteval', 'constexpr'))
+      end
+    end
+    Dir.glob("#{installer.sandbox.root}/**/fmt/format.h").each do |file|
+      content = File.read(file)
+      if content.include?('consteval')
+        File.write(file, content.gsub('consteval', 'constexpr'))
+      end
+    end
   end
 end
