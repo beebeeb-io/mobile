@@ -172,6 +172,8 @@ function SettingsRow({
       activeOpacity={onPress ? 0.6 : 1}
       onPress={onPress}
       disabled={!onPress}
+      accessibilityLabel={value ? `${label}, ${value}` : label}
+      accessibilityRole={onPress ? 'button' : 'text'}
     >
       <Text style={{ flex: 1, fontSize: 14, fontWeight: '400' as const, color: danger ? c.red : c.ink }}>
         {label}
@@ -672,6 +674,9 @@ export default function SettingsScreen() {
                   activeOpacity={r.available ? 0.6 : 1}
                   onPress={() => r.available && handleRegionChange(r.poolName)}
                   disabled={!r.available || savingRegion}
+                  accessibilityLabel={`${r.label}${!r.available ? ', coming soon' : storageRegion === r.poolName ? ', selected' : ''}`}
+                  accessibilityRole="radio"
+                  accessibilityState={{ checked: storageRegion === r.poolName, disabled: !r.available }}
                 >
                   <Text style={{ fontSize: 20 }}>{r.flag}</Text>
                   <View style={[
@@ -873,6 +878,9 @@ export default function SettingsScreen() {
                       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                       handleThemeChange(pref);
                     }}
+                    accessibilityLabel={`${label} theme${selected ? ', selected' : ''}`}
+                    accessibilityRole="radio"
+                    accessibilityState={{ checked: selected }}
                   >
                     <View style={{
                       width: 20, height: 20, borderRadius: 10, marginBottom: 4,
