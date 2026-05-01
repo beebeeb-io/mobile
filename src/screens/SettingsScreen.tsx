@@ -29,6 +29,8 @@ import {
   setPreference,
   getSubscription,
   getRegion,
+  changePassword,
+  friendlyError,
   type StorageUsage,
   type Subscription,
   type Region,
@@ -428,6 +430,77 @@ export default function SettingsScreen() {
     ]);
   }, [signOut]);
 
+  const handleChangePassword = useCallback(() => {
+    const submit = async (current: string, next: string) => {
+      try {
+        await changePassword(current, next);
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        Alert.alert('Password changed', 'Your password has been updated.');
+      } catch (err) {
+        Alert.alert('Could not change password', friendlyError(err));
+      }
+    };
+
+    const promptConfirm = (current: string, next: string) => {
+      Alert.prompt(
+        'Confirm new password',
+        'Re-enter your new password to confirm.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Save',
+            onPress: (confirm) => {
+              if ((confirm ?? '') !== next) {
+                Alert.alert('Passwords don’t match', 'Try again.');
+                return;
+              }
+              submit(current, next);
+            },
+          },
+        ],
+        'secure-text',
+      );
+    };
+
+    const promptNew = (current: string) => {
+      Alert.prompt(
+        'New password',
+        'At least 8 characters.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Next',
+            onPress: (next) => {
+              const value = next ?? '';
+              if (value.length < 8) {
+                Alert.alert('Password too short', 'Use at least 8 characters.');
+                return;
+              }
+              promptConfirm(current, value);
+            },
+          },
+        ],
+        'secure-text',
+      );
+    };
+
+    Alert.prompt(
+      'Current password',
+      'Enter your current password to continue.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Next',
+          onPress: (current) => {
+            if (!current) return;
+            promptNew(current);
+          },
+        },
+      ],
+      'secure-text',
+    );
+  }, []);
+
   // ---------------------------------------------------------------------------
   // Derived values
   // ---------------------------------------------------------------------------
@@ -619,7 +692,7 @@ export default function SettingsScreen() {
                 <RowDivider c={c} />
               </>
             )}
-            <SettingsRow label="Change password" c={c} />
+            <SettingsRow label="Change password" onPress={handleChangePassword} c={c} />
             <RowDivider c={c} />
             <SettingsRow label="Two-factor authentication" c={c} />
           </View>
