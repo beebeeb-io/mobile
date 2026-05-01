@@ -1,7 +1,8 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Image,
   Platform,
   StyleSheet,
   Text,
@@ -16,7 +17,8 @@ import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 import * as Haptics from 'expo-haptics';
 import type { RootStackParamList } from '../App';
-import { colors, radii, spacing, shadows } from '../theme';
+import { colors, radii, shadows } from '../theme';
+import { useTheme } from '../lib/theme-context';
 import { getToken, getDownloadUrl, friendlyError } from '../lib/api';
 import { useCrypto } from '../lib/crypto-context';
 
@@ -76,15 +78,6 @@ const CATEGORY_BADGE: Record<string, string> = {
   file: 'FILE',
 };
 
-const CATEGORY_COLORS: Record<string, string> = {
-  image: colors.amber,
-  pdf: colors.red,
-  audio: colors.green,
-  video: colors.ink2,
-  doc: colors.ink2,
-  file: colors.ink3,
-};
-
 // ---------------------------------------------------------------------------
 // Binary helpers
 // ---------------------------------------------------------------------------
@@ -114,19 +107,111 @@ export default function PreviewScreen() {
   const navigation = useNavigation<Nav>();
   const route = useRoute<PreviewRoute>();
   const insets = useSafeAreaInsets();
+  const { colors: c } = useTheme();
   const { fileId, fileName, mimeType, sizeBytes, createdAt } = route.params;
 
   const [downloading, setDownloading] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState(0);
+
+  // Image inline preview state
+  const [imageUri, setImageUri] = useState<string | null>(null);
+  const [imageLoading, setImageLoading] = useState(false);
+  const [imageError, setImageError] = useState<string | null>(null);
 
   const { isUnlocked, decryptChunk } = useCrypto();
 
   const category = fileCategory(mimeType);
   const isImage = category === 'image';
 
+  // Theme-aware accent for non-image category badge
+  const categoryAccent = (() => {
+    switch (category) {
+      case 'image': return c.amber;
+      case 'pdf': return c.red;
+      case 'audio': return c.green;
+      case 'video':
+      case 'doc': return c.ink2;
+      default: return c.ink3;
+    }
+  })();
+
   const handleClose = useCallback(() => {
     navigation.goBack();
   }, [navigation]);
+
+  /**
+   * Download the encrypted file to cache and decrypt it (when the vault is
+   * unlocked). Returns a local URI suitable for an <Image> source or sharing.
+   * Falls back to the encrypted URI if crypto is unavailable.
+   */
+  const fetchAndDecrypt = useCallback(async (): Promise<string> => {
+    const token = await getToken();
+    if (!token) throw new Error('Not signed in');
+
+    const safeName = fileName.replace(/[^a-zA-Z0-9._\-]/g, '_');
+    const encryptedUri = `${FileSystem.cacheDirectory}enc_${safeName}`;
+
+    const dl = FileSystem.createDownloadResumable(
+      getDownloadUrl(fileId),
+      encryptedUri,
+      { headers: { Authorization: `Bearer ${token}` } },
+      (p) => {
+        if (p.totalBytesExpectedToWrite > 0) {
+          setDownloadProgress(p.totalBytesWritten / p.totalBytesExpectedToWrite);
+        }
+      },
+    );
+
+    const result = await dl.downloadAsync();
+    if (!result) throw new Error('Download was interrupted.');
+
+    if (isUnlocked) {
+      try {
+        const encBase64 = await FileSystem.readAsStringAsync(result.uri, {
+          encoding: FileSystem.EncodingType.Base64,
+        });
+        const encBytes = base64ToUint8Array(encBase64);
+        if (encBytes.length > 12) {
+          const nonce = encBytes.slice(0, 12);
+          const ciphertext = encBytes.slice(12);
+          const decrypted = await decryptChunk(fileId, nonce, ciphertext);
+          const decUri = `${FileSystem.cacheDirectory}${safeName}`;
+          await FileSystem.writeAsStringAsync(decUri, uint8ArrayToBase64(decrypted), {
+            encoding: FileSystem.EncodingType.Base64,
+          });
+          return decUri;
+        }
+      } catch {
+        // Crypto unavailable (stubs not linked) or malformed data — fall through
+      }
+    }
+    return result.uri;
+  }, [fileId, fileName, isUnlocked, decryptChunk]);
+
+  // Auto-load images inline on mount
+  useEffect(() => {
+    if (!isImage) return;
+    if (Platform.OS === 'web') return;
+    let cancelled = false;
+    setImageLoading(true);
+    setImageError(null);
+    fetchAndDecrypt()
+      .then((uri) => {
+        if (!cancelled) setImageUri(uri);
+      })
+      .catch((err) => {
+        if (!cancelled) setImageError(friendlyError(err));
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setImageLoading(false);
+          setDownloadProgress(0);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isImage, fetchAndDecrypt]);
 
   const handleDownload = useCallback(async () => {
     if (Platform.OS === 'web') {
@@ -144,54 +229,8 @@ export default function PreviewScreen() {
         return;
       }
 
-      // Download encrypted file to cache
-      const safeName = fileName.replace(/[^a-zA-Z0-9._\-]/g, '_');
-      const encryptedUri = `${FileSystem.cacheDirectory}enc_${safeName}`;
-
-      const downloadResumable = FileSystem.createDownloadResumable(
-        getDownloadUrl(fileId),
-        encryptedUri,
-        { headers: { Authorization: `Bearer ${token}` } },
-        (progress) => {
-          if (progress.totalBytesExpectedToWrite > 0) {
-            setDownloadProgress(
-              progress.totalBytesWritten / progress.totalBytesExpectedToWrite,
-            );
-          }
-        },
-      );
-
-      const result = await downloadResumable.downloadAsync();
-      if (!result) {
-        throw new Error('Download was interrupted.');
-      }
-
+      const shareUri = await fetchAndDecrypt();
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-
-      // Attempt decryption when the vault is unlocked.
-      // Format: 12-byte nonce (AES-256-GCM) prepended to ciphertext.
-      // Falls back to sharing the encrypted file if crypto is unavailable.
-      let shareUri = result.uri;
-      if (isUnlocked) {
-        try {
-          const encBase64 = await FileSystem.readAsStringAsync(result.uri, {
-            encoding: FileSystem.EncodingType.Base64,
-          });
-          const encBytes = base64ToUint8Array(encBase64);
-          if (encBytes.length > 12) {
-            const nonce = encBytes.slice(0, 12);
-            const ciphertext = encBytes.slice(12);
-            const decrypted = await decryptChunk(fileId, nonce, ciphertext);
-            const decUri = `${FileSystem.cacheDirectory}${safeName}`;
-            await FileSystem.writeAsStringAsync(decUri, uint8ArrayToBase64(decrypted), {
-              encoding: FileSystem.EncodingType.Base64,
-            });
-            shareUri = decUri;
-          }
-        } catch {
-          // Crypto unavailable (stubs not linked) or malformed data — share encrypted
-        }
-      }
 
       const canShare = await Sharing.isAvailableAsync();
       if (canShare) {
@@ -209,7 +248,7 @@ export default function PreviewScreen() {
       setDownloading(false);
       setDownloadProgress(0);
     }
-  }, [fileId, fileName, mimeType, isUnlocked, decryptChunk]);
+  }, [fileName, mimeType, fetchAndDecrypt]);
 
   const handleShare = useCallback(async () => {
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -250,25 +289,35 @@ export default function PreviewScreen() {
       {/* ---- Preview area ---- */}
       <View style={styles.previewArea}>
         {isImage ? (
-          <View style={styles.imagePlaceholder}>
-            <View style={styles.imagePlaceholderIcon}>
-              <Text style={styles.imagePlaceholderIconText}>IMG</Text>
+          imageUri ? (
+            <Image
+              source={{ uri: imageUri }}
+              style={styles.image}
+              resizeMode="contain"
+              accessibilityLabel={fileName}
+            />
+          ) : imageError ? (
+            <View style={styles.imageStatus}>
+              <Text style={[styles.imageStatusTitle, { color: colors.white }]}>
+                Couldn't load image
+              </Text>
+              <Text style={styles.imageStatusSub}>{imageError}</Text>
             </View>
-            <Text style={styles.imagePlaceholderTitle}>Encrypted image</Text>
-            <Text style={styles.imagePlaceholderSub}>
-              {isUnlocked
-                ? 'Download to decrypt and view this image.'
-                : 'Unlock your vault to decrypt this file.'}
-            </Text>
-          </View>
+          ) : (
+            <View style={styles.imageStatus}>
+              <ActivityIndicator color={c.amber} size="large" />
+              <Text style={styles.imageStatusSub}>
+                {imageLoading && downloadProgress > 0
+                  ? `Decrypting · ${Math.round(downloadProgress * 100)}%`
+                  : isUnlocked
+                  ? 'Downloading and decrypting...'
+                  : 'Unlock your vault to view this image.'}
+              </Text>
+            </View>
+          )
         ) : (
           <View style={styles.genericPlaceholder}>
-            <View
-              style={[
-                styles.genericIcon,
-                { backgroundColor: CATEGORY_COLORS[category] ?? colors.ink3 },
-              ]}
-            >
+            <View style={[styles.genericIcon, { backgroundColor: categoryAccent }]}>
               <Text style={styles.genericIconText}>
                 {CATEGORY_BADGE[category] ?? 'FILE'}
               </Text>
@@ -284,40 +333,45 @@ export default function PreviewScreen() {
       </View>
 
       {/* ---- Metadata card ---- */}
-      <View style={[styles.metaCard, { paddingBottom: Math.max(insets.bottom, 16) + 56 }]}>
+      <View
+        style={[
+          styles.metaCard,
+          { backgroundColor: c.paper, paddingBottom: Math.max(insets.bottom, 16) + 56 },
+        ]}
+      >
         <View style={styles.metaSection}>
-          <Text style={styles.metaSectionTitle}>Details</Text>
+          <Text style={[styles.metaSectionTitle, { color: c.ink3 }]}>Details</Text>
 
           <View style={styles.metaRow}>
-            <Text style={styles.metaLabel}>Name</Text>
-            <Text style={styles.metaValue} numberOfLines={1}>{fileName}</Text>
+            <Text style={[styles.metaLabel, { color: c.ink3 }]}>Name</Text>
+            <Text style={[styles.metaValue, { color: c.ink }]} numberOfLines={1}>{fileName}</Text>
           </View>
 
           {mimeType ? (
             <View style={styles.metaRow}>
-              <Text style={styles.metaLabel}>Type</Text>
-              <Text style={styles.metaValue}>{mimeType}</Text>
+              <Text style={[styles.metaLabel, { color: c.ink3 }]}>Type</Text>
+              <Text style={[styles.metaValue, { color: c.ink }]}>{mimeType}</Text>
             </View>
           ) : null}
 
           {sizeBytes != null ? (
             <View style={styles.metaRow}>
-              <Text style={styles.metaLabel}>Size</Text>
-              <Text style={styles.metaValue}>{formatSize(sizeBytes)}</Text>
+              <Text style={[styles.metaLabel, { color: c.ink3 }]}>Size</Text>
+              <Text style={[styles.metaValue, { color: c.ink }]}>{formatSize(sizeBytes)}</Text>
             </View>
           ) : null}
 
           {createdAt ? (
             <View style={styles.metaRow}>
-              <Text style={styles.metaLabel}>Created</Text>
-              <Text style={styles.metaValue}>{formatDate(createdAt)}</Text>
+              <Text style={[styles.metaLabel, { color: c.ink3 }]}>Created</Text>
+              <Text style={[styles.metaValue, { color: c.ink }]}>{formatDate(createdAt)}</Text>
             </View>
           ) : null}
         </View>
 
-        <View style={styles.encryptionBadge}>
-          <View style={styles.encryptionDot} />
-          <Text style={styles.encryptionText}>
+        <View style={[styles.encryptionBadge, { borderTopColor: c.line }]}>
+          <View style={[styles.encryptionDot, { backgroundColor: c.amber }]} />
+          <Text style={[styles.encryptionText, { color: c.ink3 }]}>
             End-to-end encrypted · AES-256-GCM
           </Text>
         </View>
@@ -327,31 +381,42 @@ export default function PreviewScreen() {
       <View
         style={[
           styles.downloadBar,
-          { paddingBottom: Math.max(insets.bottom, 16) },
+          { backgroundColor: c.paper, paddingBottom: Math.max(insets.bottom, 16) },
         ]}
       >
         {downloading && downloadProgress > 0 && (
-          <View style={styles.progressTrack}>
-            <View style={[styles.progressFill, { width: `${downloadProgress * 100}%` }]} />
+          <View style={[styles.progressTrack, { backgroundColor: c.line }]}>
+            <View
+              style={[
+                styles.progressFill,
+                { width: `${downloadProgress * 100}%`, backgroundColor: c.amber },
+              ]}
+            />
           </View>
         )}
         <TouchableOpacity
-          style={[styles.downloadButton, downloading && styles.downloadButtonDisabled]}
+          style={[
+            styles.downloadButton,
+            { backgroundColor: c.amber },
+            downloading && styles.downloadButtonDisabled,
+          ]}
           activeOpacity={0.8}
           onPress={handleDownload}
           disabled={downloading}
         >
           {downloading ? (
             <View style={styles.downloadingRow}>
-              <ActivityIndicator size="small" color={colors.ink} />
-              <Text style={styles.downloadButtonText}>
+              <ActivityIndicator size="small" color={c.ink} />
+              <Text style={[styles.downloadButtonText, { color: c.ink }]}>
                 {downloadProgress > 0
                   ? `Downloading ${Math.round(downloadProgress * 100)}%`
                   : 'Downloading...'}
               </Text>
             </View>
           ) : (
-            <Text style={styles.downloadButtonText}>Download &amp; Open</Text>
+            <Text style={[styles.downloadButtonText, { color: c.ink }]}>
+              {isImage ? 'Save & Share' : 'Download & Open'}
+            </Text>
           )}
         </TouchableOpacity>
       </View>
@@ -424,26 +489,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
   },
 
-  imagePlaceholder: { alignItems: 'center', gap: 16 },
-  imagePlaceholderIcon: {
-    width: 80,
-    height: 80,
-    borderRadius: 20,
-    backgroundColor: colors.amber,
-    alignItems: 'center',
-    justifyContent: 'center',
-    opacity: 0.9,
-  },
-  imagePlaceholderIconText: {
-    fontSize: 18,
-    fontWeight: '800',
-    color: colors.ink,
-    letterSpacing: 0.5,
-  },
-  imagePlaceholderTitle: { fontSize: 18, fontWeight: '600', color: colors.white },
-  imagePlaceholderSub: {
+  image: { width: '100%', height: '100%' },
+  imageStatus: { alignItems: 'center', gap: 12 },
+  imageStatusTitle: { fontSize: 16, fontWeight: '600' },
+  imageStatusSub: {
     fontSize: 13,
-    color: 'rgba(255,255,255,0.5)',
+    color: 'rgba(255,255,255,0.6)',
     textAlign: 'center',
     lineHeight: 20,
   },
@@ -472,7 +523,6 @@ const styles = StyleSheet.create({
 
   // ---- Metadata card ----
   metaCard: {
-    backgroundColor: colors.paper,
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
     paddingHorizontal: 20,
@@ -482,7 +532,6 @@ const styles = StyleSheet.create({
   metaSectionTitle: {
     fontSize: 11,
     fontWeight: '600',
-    color: colors.ink3,
     textTransform: 'uppercase',
     letterSpacing: 0.8,
     marginBottom: 4,
@@ -492,11 +541,10 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
   },
-  metaLabel: { fontSize: 13, color: colors.ink3 },
+  metaLabel: { fontSize: 13 },
   metaValue: {
     fontSize: 13,
     fontWeight: '500',
-    color: colors.ink,
     maxWidth: '60%',
     textAlign: 'right',
   },
@@ -506,16 +554,14 @@ const styles = StyleSheet.create({
     marginTop: 16,
     paddingTop: 14,
     borderTopWidth: 1,
-    borderTopColor: colors.line,
     gap: 8,
   },
   encryptionDot: {
     width: 8,
     height: 8,
     borderRadius: 4,
-    backgroundColor: colors.amber,
   },
-  encryptionText: { fontSize: 12, color: colors.ink3, fontWeight: '500' },
+  encryptionText: { fontSize: 12, fontWeight: '500' },
 
   // ---- Download bar ----
   downloadBar: {
@@ -525,22 +571,18 @@ const styles = StyleSheet.create({
     right: 0,
     paddingHorizontal: 20,
     paddingTop: 12,
-    backgroundColor: colors.paper,
     gap: 8,
   },
   progressTrack: {
     height: 3,
     borderRadius: 2,
-    backgroundColor: colors.line,
     overflow: 'hidden',
   },
   progressFill: {
     height: '100%',
-    backgroundColor: colors.amber,
     borderRadius: 2,
   },
   downloadButton: {
-    backgroundColor: colors.amber,
     borderRadius: radii.lg,
     paddingVertical: 14,
     alignItems: 'center',
@@ -558,6 +600,5 @@ const styles = StyleSheet.create({
   downloadButtonText: {
     fontSize: 16,
     fontWeight: '700',
-    color: colors.ink,
   },
 });
