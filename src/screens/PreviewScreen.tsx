@@ -1,7 +1,8 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  FlatList,
   Image,
   Platform,
   ScrollView,
@@ -21,9 +22,17 @@ import { WebView } from 'react-native-webview';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import type { RootStackParamList } from '../App';
 import { colors, radii, shadows } from '../theme';
+import type { Colors } from '../theme';
 import { useTheme } from '../lib/theme-context';
 import { getToken, getDownloadUrl, friendlyError } from '../lib/api';
 import { useCrypto } from '../lib/crypto-context';
+
+// Office libs — loaded eagerly so Metro bundles them. Mammoth's `browser`
+// entry is a UMD bundle that avoids Node-only deps (fs, path) and works in RN.
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore — mammoth/mammoth.browser ships no .d.ts.
+import mammoth from 'mammoth/mammoth.browser';
+import * as XLSX from 'xlsx';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -50,33 +59,70 @@ function formatDate(iso: string): string {
   return `${month} ${day}, ${year} at ${hours}:${mins}`;
 }
 
-function fileCategory(
-  mimeType?: string,
-): 'image' | 'pdf' | 'audio' | 'video' | 'doc' | 'file' {
-  const mime = mimeType ?? '';
+type Category =
+  | 'image'
+  | 'pdf'
+  | 'audio'
+  | 'video'
+  | 'docx'
+  | 'spreadsheet'
+  | 'doc'
+  | 'file';
+
+function fileCategory(mimeType?: string, fileName?: string): Category {
+  const mime = (mimeType ?? '').toLowerCase();
+  const ext = (fileName ?? '').toLowerCase().split('.').pop() ?? '';
+
   if (mime.startsWith('image/')) return 'image';
-  if (mime === 'application/pdf') return 'pdf';
+  if (mime === 'application/pdf' || ext === 'pdf') return 'pdf';
   if (mime.startsWith('audio/')) return 'audio';
   if (mime.startsWith('video/')) return 'video';
-  if (mime.startsWith('text/') || mime.includes('document') || mime.includes('spreadsheet'))
-    return 'doc';
+
+  // DOCX (modern Word) — handled by mammoth. Legacy .doc is not supported.
+  if (
+    mime === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
+    ext === 'docx'
+  ) {
+    return 'docx';
+  }
+
+  // XLSX / CSV / other SheetJS-readable formats
+  if (
+    mime === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
+    mime === 'application/vnd.ms-excel' ||
+    mime.includes('spreadsheet') ||
+    mime === 'text/csv' ||
+    mime === 'application/csv' ||
+    ext === 'xlsx' ||
+    ext === 'xls' ||
+    ext === 'csv' ||
+    ext === 'tsv'
+  ) {
+    return 'spreadsheet';
+  }
+
+  if (mime.startsWith('text/') || mime.includes('document')) return 'doc';
   return 'file';
 }
 
-const CATEGORY_LABELS: Record<string, string> = {
+const CATEGORY_LABELS: Record<Category, string> = {
   image: 'Image',
   pdf: 'PDF Document',
   audio: 'Audio',
   video: 'Video',
+  docx: 'Word Document',
+  spreadsheet: 'Spreadsheet',
   doc: 'Document',
   file: 'File',
 };
 
-const CATEGORY_BADGE: Record<string, string> = {
+const CATEGORY_BADGE: Record<Category, string> = {
   image: 'IMG',
   pdf: 'PDF',
   audio: 'AUD',
   video: 'VID',
+  docx: 'DOCX',
+  spreadsheet: 'XLS',
   doc: 'DOC',
   file: 'FILE',
 };
@@ -102,6 +148,164 @@ function uint8ArrayToBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
+/**
+ * Read a (decrypted) file from the local filesystem and return its bytes.
+ * Used to feed mammoth/SheetJS, which both want an ArrayBuffer/Uint8Array.
+ */
+async function readFileAsArrayBuffer(uri: string): Promise<ArrayBuffer> {
+  const b64 = await FileSystem.readAsStringAsync(uri, {
+    encoding: FileSystem.EncodingType.Base64,
+  });
+  const bytes = base64ToUint8Array(b64);
+  // Slice the underlying buffer so the offset is 0 (mammoth/jszip rely on this).
+  return bytes.buffer.slice(
+    bytes.byteOffset,
+    bytes.byteOffset + bytes.byteLength,
+  ) as ArrayBuffer;
+}
+
+// ---------------------------------------------------------------------------
+// DOCX helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Wrap mammoth's HTML output with a Beebeeb-styled stylesheet so the WebView
+ * preview matches the app's brand (Inter sans, JetBrains Mono for code, warm
+ * paper background, amber accent for links).
+ */
+function buildDocxHtml(bodyHtml: string, c: Colors, isDark: boolean): string {
+  const bg = c.paper;
+  const ink = c.ink;
+  const ink3 = c.ink3;
+  const line = c.line;
+  const amber = c.amber;
+  const codeBg = c.paper2;
+
+  return `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=4" />
+  <style>
+    :root { color-scheme: ${isDark ? 'dark' : 'light'}; }
+    html, body { background: ${bg}; color: ${ink}; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', Roboto, sans-serif;
+      font-size: 16px;
+      line-height: 1.6;
+      padding: 24px 20px 96px;
+      -webkit-text-size-adjust: 100%;
+      word-wrap: break-word;
+      overflow-wrap: break-word;
+    }
+    h1, h2, h3, h4, h5, h6 {
+      font-weight: 700;
+      line-height: 1.25;
+      color: ${ink};
+      margin: 1.4em 0 0.6em;
+    }
+    h1 { font-size: 1.7em; }
+    h2 { font-size: 1.4em; }
+    h3 { font-size: 1.2em; }
+    h4, h5, h6 { font-size: 1em; }
+    p { margin: 0 0 1em; }
+    a { color: ${amber}; text-decoration: none; border-bottom: 1px solid ${amber}; }
+    ul, ol { padding-left: 1.4em; margin: 0 0 1em; }
+    li { margin: 0.25em 0; }
+    blockquote {
+      margin: 1em 0;
+      padding: 0.5em 1em;
+      border-left: 3px solid ${amber};
+      color: ${ink3};
+      background: ${codeBg};
+    }
+    code, pre, tt {
+      font-family: 'JetBrainsMono-Regular', 'JetBrains Mono', ui-monospace,
+                   SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.92em;
+    }
+    code { background: ${codeBg}; padding: 0.1em 0.35em; border-radius: 3px; }
+    pre {
+      background: ${codeBg};
+      padding: 12px 14px;
+      border-radius: 8px;
+      overflow-x: auto;
+    }
+    pre code { background: transparent; padding: 0; }
+    table {
+      border-collapse: collapse;
+      margin: 1em 0;
+      width: 100%;
+      font-size: 0.92em;
+    }
+    th, td {
+      border: 1px solid ${line};
+      padding: 8px 10px;
+      text-align: left;
+      vertical-align: top;
+    }
+    th { background: ${codeBg}; font-weight: 600; }
+    img {
+      max-width: 100%;
+      height: auto;
+      border-radius: 6px;
+      margin: 0.5em 0;
+    }
+    hr {
+      border: 0;
+      border-top: 1px solid ${line};
+      margin: 1.5em 0;
+    }
+  </style>
+</head>
+<body>
+${bodyHtml}
+</body>
+</html>`;
+}
+
+// ---------------------------------------------------------------------------
+// Spreadsheet helpers
+// ---------------------------------------------------------------------------
+
+interface SpreadsheetData {
+  sheetName: string;
+  sheetNames: string[];
+  rows: string[][]; // includes header at index 0
+  columnCount: number;
+}
+
+/**
+ * Parse the first sheet of an XLSX/CSV/etc. file. Returns rows as 2D string
+ * array with the header in row 0.
+ */
+function parseSpreadsheet(arrayBuffer: ArrayBuffer): SpreadsheetData {
+  const workbook = XLSX.read(new Uint8Array(arrayBuffer), { type: 'array' });
+  const sheetNames = workbook.SheetNames;
+  const sheetName = sheetNames[0] ?? '';
+  const sheet = sheetName ? workbook.Sheets[sheetName] : null;
+
+  if (!sheet) {
+    return { sheetName, sheetNames, rows: [], columnCount: 0 };
+  }
+
+  const aoa = XLSX.utils.sheet_to_json<unknown[]>(sheet, {
+    header: 1,
+    raw: false,
+    defval: '',
+    blankrows: false,
+  });
+
+  const rows = aoa.map((r) => r.map((cell) => (cell == null ? '' : String(cell))));
+  const columnCount = rows.reduce((max, r) => Math.max(max, r.length), 0);
+  // Pad rows so every row has the same width (FlatList rendering is simpler).
+  const padded = rows.map((r) =>
+    r.length === columnCount ? r : [...r, ...Array(columnCount - r.length).fill('')],
+  );
+
+  return { sheetName, sheetNames, rows: padded, columnCount };
+}
+
 // ---------------------------------------------------------------------------
 // Screen
 // ---------------------------------------------------------------------------
@@ -110,7 +314,7 @@ export default function PreviewScreen() {
   const navigation = useNavigation<Nav>();
   const route = useRoute<PreviewRoute>();
   const insets = useSafeAreaInsets();
-  const { colors: c } = useTheme();
+  const { colors: c, resolved } = useTheme();
   const { fileId, fileName, mimeType, sizeBytes, createdAt } = route.params;
 
   const [downloading, setDownloading] = useState(false);
@@ -138,13 +342,27 @@ export default function PreviewScreen() {
   const [videoError, setVideoError] = useState<string | null>(null);
   const tempVideoUriRef = useRef<string | null>(null);
 
+  // DOCX inline preview state
+  const [docxHtml, setDocxHtml] = useState<string | null>(null);
+  const [docxLoading, setDocxLoading] = useState(false);
+  const [docxError, setDocxError] = useState<string | null>(null);
+
+  // Spreadsheet inline preview state
+  const [sheetData, setSheetData] = useState<SpreadsheetData | null>(null);
+  const [sheetLoading, setSheetLoading] = useState(false);
+  const [sheetError, setSheetError] = useState<string | null>(null);
+
   const { isUnlocked, decryptChunk } = useCrypto();
 
-  const category = fileCategory(mimeType);
+  const category = fileCategory(mimeType, fileName);
   const isImage = category === 'image';
   const isPdf = category === 'pdf';
   const isVideo = !!mimeType && mimeType.startsWith('video/');
+  const isDocx = category === 'docx';
+  const isSpreadsheet = category === 'spreadsheet';
   const isText =
+    !isDocx &&
+    !isSpreadsheet &&
     !!mimeType &&
     (mimeType.startsWith('text/') ||
       mimeType === 'application/json' ||
@@ -157,7 +375,9 @@ export default function PreviewScreen() {
       case 'pdf': return c.red;
       case 'audio': return c.green;
       case 'video':
+      case 'docx':
       case 'doc': return c.ink2;
+      case 'spreadsheet': return c.green;
       default: return c.ink3;
     }
   })();
@@ -341,6 +561,78 @@ export default function PreviewScreen() {
   const player = useVideoPlayer(videoUri, (p) => {
     p.loop = false;
   });
+
+  // Auto-load DOCX inline — convert with mammoth, render styled HTML in WebView
+  useEffect(() => {
+    if (!isDocx) return;
+    if (Platform.OS === 'web') return;
+    let cancelled = false;
+    setDocxLoading(true);
+    setDocxError(null);
+    setDocxHtml(null);
+
+    (async () => {
+      try {
+        const uri = await fetchAndDecrypt();
+        if (cancelled) return;
+        const arrayBuffer = await readFileAsArrayBuffer(uri);
+        if (cancelled) return;
+        const result = await mammoth.convertToHtml({ arrayBuffer });
+        if (cancelled) return;
+        const body = (result?.value as string) ?? '';
+        setDocxHtml(body || '<p><em>This document is empty.</em></p>');
+      } catch (err) {
+        if (!cancelled) setDocxError(friendlyError(err));
+      } finally {
+        if (!cancelled) {
+          setDocxLoading(false);
+          setDownloadProgress(0);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isDocx, fetchAndDecrypt]);
+
+  // Auto-load spreadsheets inline — parse with SheetJS, render as a table
+  useEffect(() => {
+    if (!isSpreadsheet) return;
+    if (Platform.OS === 'web') return;
+    let cancelled = false;
+    setSheetLoading(true);
+    setSheetError(null);
+    setSheetData(null);
+
+    (async () => {
+      try {
+        const uri = await fetchAndDecrypt();
+        if (cancelled) return;
+        const arrayBuffer = await readFileAsArrayBuffer(uri);
+        if (cancelled) return;
+        const data = parseSpreadsheet(arrayBuffer);
+        if (!cancelled) setSheetData(data);
+      } catch (err) {
+        if (!cancelled) setSheetError(friendlyError(err));
+      } finally {
+        if (!cancelled) {
+          setSheetLoading(false);
+          setDownloadProgress(0);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isSpreadsheet, fetchAndDecrypt]);
+
+  // Wrap the mammoth HTML in our brand stylesheet whenever theme/content changes
+  const styledDocxHtml = useMemo(() => {
+    if (!docxHtml) return null;
+    return buildDocxHtml(docxHtml, c, resolved === 'dark');
+  }, [docxHtml, c, resolved]);
 
   const handleDownload = useCallback(async () => {
     if (Platform.OS === 'web') {
@@ -539,6 +831,55 @@ export default function PreviewScreen() {
               </Text>
             </View>
           )
+        ) : isDocx ? (
+          styledDocxHtml ? (
+            <WebView
+              originWhitelist={['*']}
+              source={{ html: styledDocxHtml }}
+              style={[styles.docxWebView, { backgroundColor: c.paper }]}
+              showsVerticalScrollIndicator
+            />
+          ) : docxError ? (
+            <View style={styles.imageStatus}>
+              <Text style={[styles.imageStatusTitle, { color: colors.white }]}>
+                Couldn't open document
+              </Text>
+              <Text style={styles.imageStatusSub}>{docxError}</Text>
+            </View>
+          ) : (
+            <View style={styles.imageStatus}>
+              <ActivityIndicator color={c.amber} size="large" />
+              <Text style={styles.imageStatusSub}>
+                {docxLoading && downloadProgress > 0
+                  ? `Decrypting · ${Math.round(downloadProgress * 100)}%`
+                  : isUnlocked
+                  ? 'Downloading and converting document...'
+                  : 'Unlock your vault to view this document.'}
+              </Text>
+            </View>
+          )
+        ) : isSpreadsheet ? (
+          sheetData ? (
+            <SpreadsheetTable data={sheetData} c={c} />
+          ) : sheetError ? (
+            <View style={styles.imageStatus}>
+              <Text style={[styles.imageStatusTitle, { color: colors.white }]}>
+                Couldn't open spreadsheet
+              </Text>
+              <Text style={styles.imageStatusSub}>{sheetError}</Text>
+            </View>
+          ) : (
+            <View style={styles.imageStatus}>
+              <ActivityIndicator color={c.amber} size="large" />
+              <Text style={styles.imageStatusSub}>
+                {sheetLoading && downloadProgress > 0
+                  ? `Decrypting · ${Math.round(downloadProgress * 100)}%`
+                  : isUnlocked
+                  ? 'Downloading and parsing spreadsheet...'
+                  : 'Unlock your vault to view this spreadsheet.'}
+              </Text>
+            </View>
+          )
         ) : (
           <View style={styles.genericPlaceholder}>
             <View style={[styles.genericIcon, { backgroundColor: categoryAccent }]}>
@@ -649,6 +990,144 @@ export default function PreviewScreen() {
 }
 
 // ---------------------------------------------------------------------------
+// Spreadsheet table component
+// ---------------------------------------------------------------------------
+
+const COL_WIDTH = 140;
+const ROW_HEIGHT = 36;
+const MAX_PREVIEW_ROWS = 1000;
+
+interface SpreadsheetTableProps {
+  data: SpreadsheetData;
+  c: Colors;
+}
+
+function SpreadsheetTable({ data, c }: SpreadsheetTableProps) {
+  const { rows, columnCount, sheetName, sheetNames } = data;
+
+  const headerRow = rows[0] ?? [];
+  const bodyRows = rows.slice(1, MAX_PREVIEW_ROWS + 1);
+  const truncated = rows.length - 1 > MAX_PREVIEW_ROWS;
+
+  if (rows.length === 0) {
+    return (
+      <View style={styles.imageStatus}>
+        <Text style={[styles.imageStatusTitle, { color: colors.white }]}>
+          Empty spreadsheet
+        </Text>
+        <Text style={styles.imageStatusSub}>
+          {sheetName ? `Sheet "${sheetName}" has no data.` : 'This file has no data.'}
+        </Text>
+      </View>
+    );
+  }
+
+  const totalWidth = Math.max(COL_WIDTH * columnCount, 1);
+
+  const renderRow = ({ item, index }: { item: string[]; index: number }) => {
+    const stripe = index % 2 === 0;
+    return (
+      <View
+        style={[
+          styles.sheetRow,
+          {
+            backgroundColor: stripe ? c.paper : c.paper2,
+            width: totalWidth,
+            borderBottomColor: c.line,
+          },
+        ]}
+      >
+        {Array.from({ length: columnCount }).map((_, ci) => (
+          <View
+            key={ci}
+            style={[styles.sheetCell, { width: COL_WIDTH, borderRightColor: c.line }]}
+          >
+            <Text
+              style={[styles.sheetCellText, { color: c.ink }]}
+              numberOfLines={1}
+              ellipsizeMode="tail"
+            >
+              {item[ci] ?? ''}
+            </Text>
+          </View>
+        ))}
+      </View>
+    );
+  };
+
+  return (
+    <View style={[styles.sheetContainer, { backgroundColor: c.paper }]}>
+      {sheetNames.length > 1 ? (
+        <View style={[styles.sheetTabs, { borderBottomColor: c.line }]}>
+          <Text style={[styles.sheetTabsText, { color: c.ink3 }]} numberOfLines={1}>
+            Showing: {sheetName}  ·  {sheetNames.length} sheets in file
+          </Text>
+        </View>
+      ) : null}
+
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator
+        contentContainerStyle={{ flexGrow: 1 }}
+      >
+        <View>
+          {/* Header row */}
+          <View
+            style={[
+              styles.sheetRow,
+              styles.sheetHeaderRow,
+              {
+                backgroundColor: c.paper2,
+                borderBottomColor: c.line,
+                width: totalWidth,
+              },
+            ]}
+          >
+            {Array.from({ length: columnCount }).map((_, ci) => (
+              <View
+                key={ci}
+                style={[styles.sheetCell, { width: COL_WIDTH, borderRightColor: c.line }]}
+              >
+                <Text
+                  style={[styles.sheetHeaderText, { color: c.ink }]}
+                  numberOfLines={1}
+                  ellipsizeMode="tail"
+                >
+                  {headerRow[ci] ?? ''}
+                </Text>
+              </View>
+            ))}
+          </View>
+
+          {/* Body rows */}
+          <FlatList
+            data={bodyRows}
+            keyExtractor={(_, i) => `row-${i}`}
+            renderItem={renderRow}
+            getItemLayout={(_, index) => ({
+              length: ROW_HEIGHT,
+              offset: ROW_HEIGHT * index,
+              index,
+            })}
+            initialNumToRender={30}
+            windowSize={11}
+            removeClippedSubviews
+          />
+        </View>
+      </ScrollView>
+
+      {truncated ? (
+        <View style={[styles.sheetFooter, { borderTopColor: c.line }]}>
+          <Text style={[styles.sheetFooterText, { color: c.ink3 }]}>
+            Showing first {MAX_PREVIEW_ROWS} rows of {rows.length - 1}. Download to see the full file.
+          </Text>
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Styles
 // ---------------------------------------------------------------------------
 
@@ -716,6 +1195,7 @@ const styles = StyleSheet.create({
   image: { width: '100%', height: '100%' },
   pdfWebView: { width: '100%', height: '100%' },
   video: { width: '100%', height: '100%' },
+  docxWebView: { width: '100%', height: '100%', borderRadius: radii.md },
 
   // ---- Code / text viewer ----
   codeScroll: { flex: 1, width: '100%', borderRadius: radii.md },
@@ -856,5 +1336,61 @@ const styles = StyleSheet.create({
   downloadButtonText: {
     fontSize: 16,
     fontWeight: '700',
+  },
+
+  // ---- Spreadsheet table ----
+  sheetContainer: {
+    flex: 1,
+    width: '100%',
+    borderRadius: radii.md,
+    overflow: 'hidden',
+  },
+  sheetTabs: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  sheetTabsText: {
+    fontSize: 11,
+    fontWeight: '500',
+  },
+  sheetRow: {
+    flexDirection: 'row',
+    height: ROW_HEIGHT,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  sheetHeaderRow: {
+    borderBottomWidth: 1,
+  },
+  sheetCell: {
+    paddingHorizontal: 8,
+    justifyContent: 'center',
+    borderRightWidth: StyleSheet.hairlineWidth,
+  },
+  sheetCellText: {
+    fontSize: 12,
+    fontFamily: Platform.select({
+      ios: 'Menlo',
+      android: 'monospace',
+      default: 'monospace',
+    }),
+  },
+  sheetHeaderText: {
+    fontSize: 12,
+    fontWeight: '700',
+    fontFamily: Platform.select({
+      ios: 'Menlo',
+      android: 'monospace',
+      default: 'monospace',
+    }),
+  },
+  sheetFooter: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderTopWidth: StyleSheet.hairlineWidth,
+  },
+  sheetFooterText: {
+    fontSize: 11,
+    fontStyle: 'italic',
   },
 });
