@@ -31,3 +31,48 @@ export interface OpaqueLoginFinishResult {
   /** Exported session key — used to derive the master key */
   sessionKey: Uint8Array
 }
+
+// ─── Amber Constellation ─────────────────────────────────────────────────────
+
+export interface ConstellationSessionInit {
+  /** 16 bytes — opaque session identifier embedded in the visual payload. */
+  sessionId: Uint8Array
+  /** 32 bytes — X25519 ephemeral public key, embedded in the payload. */
+  ephemeralPublicKey: Uint8Array
+  /** 32 bytes — X25519 ephemeral private key. Lives only in app memory. */
+  ephemeralPrivateKey: Uint8Array
+  /** 32 bytes — SHA-256(domain || code) sent to the server for verification. */
+  confirmCodeHash: Uint8Array
+  /** 6-digit decimal code displayed under the constellation. */
+  confirmCode: string
+  /** Encoded payload bytes. Pass back into constellationEncode for every frame. */
+  payload: Uint8Array
+  /** Unix-ms expiry. */
+  expiresAtUnixMs: number
+}
+
+export interface ConstellationNodeFrame {
+  /** 0 = outer ring, 1 = core. */
+  kind: number
+  x: number
+  y: number
+  z: number
+  /** 0..1, quantized to {0.10, 0.37, 0.63, 0.90}. */
+  brightness: number
+  pulsePhase: number
+}
+
+export interface ConstellationEdgeFrame {
+  fromIdx: number
+  toIdx: number
+  weight: number
+  flowSpeed: number
+}
+
+export interface ConstellationFrame {
+  frameIndex: number
+  seed: number
+  ringPhase: number
+  nodes: ConstellationNodeFrame[]
+  edges: ConstellationEdgeFrame[]
+}

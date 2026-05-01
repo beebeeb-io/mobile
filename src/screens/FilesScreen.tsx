@@ -32,8 +32,9 @@ import { radii, spacing, shadows } from '../theme';
 import { useTheme } from '../lib/theme-context';
 import { useToast } from '../lib/toast-context';
 import SkeletonRow from '../components/SkeletonRow';
-import { listFiles, createFolder, deleteFile, renameFile, moveFile, uploadFile, downloadFile, friendlyError, getStorageUsage, createProofOfExistence, storageLocation } from '../lib/api';
-import type { FileEntry, StorageUsage, ProofOfExistence } from '../lib/api';
+import PresenceAvatars from '../components/PresenceAvatars';
+import { listFiles, createFolder, deleteFile, renameFile, moveFile, uploadFile, downloadFile, friendlyError, getStorageUsage, createProofOfExistence, storageLocation, getFolderPresence } from '../lib/api';
+import type { FileEntry, StorageUsage, ProofOfExistence, PresenceUser } from '../lib/api';
 import type { RootStackParamList } from '../App';
 import { useCrypto } from '../lib/crypto-context';
 
@@ -198,6 +199,7 @@ interface FileRowItemProps {
   sortOrder: SortOrder;
   isOffline: boolean;
   hasProof: boolean;
+  isShared: boolean;
 }
 
 const FileRowItem = React.memo(function FileRowItem({
@@ -213,6 +215,7 @@ const FileRowItem = React.memo(function FileRowItem({
   sortOrder,
   isOffline,
   hasProof,
+  isShared,
 }: FileRowItemProps) {
   const { colors: c } = useTheme();
   const swipeableRef = useRef<Swipeable>(null);
@@ -293,6 +296,15 @@ const FileRowItem = React.memo(function FileRowItem({
           >
             {nameText}
           </Text>
+          {isShared && (
+            <Ionicons
+              name="people-outline"
+              size={12}
+              color={c.ink3}
+              style={styles.sharedBadge}
+              accessibilityLabel="Shared folder"
+            />
+          )}
           {isOffline && (
             <Ionicons
               name="cloud-done"
@@ -358,6 +370,7 @@ interface FileGridItemProps {
   cardWidth: number;
   isOffline: boolean;
   hasProof: boolean;
+  isShared: boolean;
 }
 
 const FileGridItem = React.memo(function FileGridItem({
@@ -372,6 +385,7 @@ const FileGridItem = React.memo(function FileGridItem({
   cardWidth,
   isOffline,
   hasProof,
+  isShared,
 }: FileGridItemProps) {
   const { colors: c } = useTheme();
   const category = fileCategory(item);
@@ -429,6 +443,15 @@ const FileGridItem = React.memo(function FileGridItem({
           >
             {nameText}
           </Text>
+          {isShared && (
+            <Ionicons
+              name="people-outline"
+              size={11}
+              color={c.ink3}
+              style={styles.sharedBadge}
+              accessibilityLabel="Shared folder"
+            />
+          )}
           {isOffline && (
             <Ionicons
               name="cloud-done"
@@ -554,6 +577,10 @@ export default function FilesScreen() {
   // creates proofs. The badge shows for files in this map.
   const [proofs, setProofs] = useState<Record<string, ProofOfExistence>>({});
 
+  // Presence — collaborators currently viewing the folder we're inside.
+  // Empty for the root view; only populated when navigated into a shared folder.
+  const [presence, setPresence] = useState<PresenceUser[]>([]);
+
   // Crypto
   const { isUnlocked, decryptMetadata } = useCrypto();
   const [decryptedNames, setDecryptedNames] = useState<Record<string, string>>({});
@@ -652,6 +679,20 @@ export default function FilesScreen() {
   useEffect(() => {
     fetchFiles(currentFolder.id);
   }, [currentFolder.id, fetchFiles]);
+
+  // Load presence for the current folder. The endpoint silently returns []
+  // when the folder isn't shared or the API doesn't exist yet.
+  useEffect(() => {
+    if (!currentFolder.id) {
+      setPresence([]);
+      return;
+    }
+    let cancelled = false;
+    getFolderPresence(currentFolder.id)
+      .then((users) => { if (!cancelled) setPresence(users); })
+      .catch(() => { if (!cancelled) setPresence([]); });
+    return () => { cancelled = true; };
+  }, [currentFolder.id]);
 
   // Storage usage — fetched once on mount, refreshed alongside pull-to-refresh
   const fetchUsage = useCallback(async () => {
@@ -1643,6 +1684,7 @@ export default function FilesScreen() {
       sortOrder={sortOrder}
       isOffline={offlineIds.has(item.id)}
       hasProof={!!proofs[item.id]}
+      isShared={item.is_folder && (item.share_count ?? 0) > 0}
     />
   ), [decryptedNames, openFile, handleLongPress, handleSwipeShare, handleSwipeDelete, selectMode, selectedIds, toggleSelect, sortOrder, offlineIds, proofs]);
 
@@ -1668,6 +1710,7 @@ export default function FilesScreen() {
       cardWidth={gridCardWidth}
       isOffline={offlineIds.has(item.id)}
       hasProof={!!proofs[item.id]}
+      isShared={item.is_folder && (item.share_count ?? 0) > 0}
     />
   ), [decryptedNames, openFile, handleLongPress, selectMode, selectedIds, toggleSelect, sortOrder, gridCardWidth, offlineIds, proofs]);
 
@@ -1749,6 +1792,11 @@ export default function FilesScreen() {
             </TouchableOpacity>
           )}
           <Text style={[styles.title, { color: c.ink }]}>{currentFolder.name}</Text>
+          {!searchActive && presence.length > 0 && (
+            <View style={styles.presenceWrap}>
+              <PresenceAvatars users={presence} />
+            </View>
+          )}
           <View style={{ flex: 1 }} />
           {!searchActive && files.length > 0 && (
             <TouchableOpacity
@@ -2159,4 +2207,6 @@ const styles = StyleSheet.create({
     ...shadows.lg,
   },
   uploadBannerText: { fontSize: 13, flex: 1, fontWeight: '500' },
+  sharedBadge: { marginLeft: 4 },
+  presenceWrap: { flexDirection: 'row', alignItems: 'center', marginRight: 8 },
 });

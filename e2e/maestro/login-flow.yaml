@@ -1,10 +1,34 @@
 appId: io.beebeeb.app
 ---
-- launchApp:
-    clearState: true
+- launchApp
 
-- assertVisible: "Sign in"
+# If already signed in, sign out first
+- runFlow:
+    when:
+      visible: "Drive"
+    commands:
+      # Go to Settings tab
+      - tapOn:
+          point: "85%,95%"
+      # Scroll to bottom where Sign out is
+      - scroll
+      - scroll
+      - scroll
+      # Tap Sign out (red text near bottom)
+      - tapOn: "Sign out"
+      # Confirm the alert
+      - tapOn:
+          text: "Sign out"
+          index: 1
 
+# Wait for login screen
+- extendedWaitUntil:
+    visible: "Sign in"
+    timeout: 15000
+
+- takeScreenshot: "login-01-signin-screen"
+
+# Enter credentials
 - tapOn:
     id: "email-input"
 - inputText: "demo@beebeeb.io"
@@ -16,28 +40,29 @@ appId: io.beebeeb.app
 - tapOn:
     id: "sign-in-button"
 
-# Login navigates to recovery phrase (first-time onboarding)
+# Handle recovery phrase onboarding if shown
+- runFlow:
+    when:
+      visible: "Your recovery phrase"
+    commands:
+      - tapOn: "I'll do this later (not recommended)"
+
+# Wait for main app
 - extendedWaitUntil:
-    visible: "Your recovery phrase"
+    visible: "Drive"
     timeout: 15000
 
-- takeScreenshot: "01-recovery-phrase"
+- takeScreenshot: "login-02-files-after-login"
 
-# Skip onboarding
-- tapOn: "I'll do this later (not recommended)"
+# Verify all tabs accessible
+- tapOn:
+    point: "35%,95%"
+- takeScreenshot: "login-03-shared"
 
-# Now should be on main app
-- extendedWaitUntil:
-    visible: "Files"
-    timeout: 10000
+- tapOn:
+    point: "60%,95%"
+- takeScreenshot: "login-04-photos"
 
-- takeScreenshot: "02-files-tab"
-
-- tapOn: "Shared"
-- takeScreenshot: "03-shared-tab"
-
-- tapOn: "Photos"
-- takeScreenshot: "04-photos-tab"
-
-- tapOn: "Settings"
-- takeScreenshot: "05-settings-tab"
+- tapOn:
+    point: "85%,95%"
+- takeScreenshot: "login-05-settings"

@@ -81,6 +81,7 @@
       "expo-media-library",
       "./modules/beebeeb-crypto/app.plugin.js",
       "./plugins/uniffi-bridge/withUniffiBridge.js",
+      "./plugins/share-extension/withShareExtension.js",
       "expo-video"
     ],
     "extra": {

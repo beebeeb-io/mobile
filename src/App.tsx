@@ -55,6 +55,8 @@ const OnboardingScreen = React.lazy(() => import('./screens/OnboardingScreen'));
 
 import ErrorBoundary from './components/ErrorBoundary';
 import { BackupProvider } from './lib/backup-context';
+import { processPendingShares } from '../plugins/share-extension/PendingSharesHandler';
+import { useToast } from './lib/toast-context';
 
 const ONBOARDING_KEY = 'beebeeb_onboarding_done';
 
@@ -200,6 +202,47 @@ function ScreenLoadingFallback() {
       <ActivityIndicator color={c.ink3} />
     </View>
   );
+}
+
+// ---------------------------------------------------------------------------
+// Share Extension dropbox drain — runs inside ToastProvider so we can toast
+// imported counts, and depends on `user` so we never upload while signed out.
+// ---------------------------------------------------------------------------
+
+function ShareSheetImporter({ enabled }: { enabled: boolean }) {
+  const { showToast } = useToast();
+  const enabledRef = useRef(enabled);
+  enabledRef.current = enabled;
+
+  const drain = useCallback(async () => {
+    if (!enabledRef.current) return;
+    try {
+      const result = await processPendingShares();
+      if (result.uploaded > 0) {
+        const noun = result.uploaded === 1 ? 'file' : 'files';
+        showToast({ type: 'success', message: `${result.uploaded} ${noun} imported from share sheet` });
+      }
+      if (result.failed > 0) {
+        showToast({ type: 'error', message: `${result.failed} share import${result.failed === 1 ? '' : 's'} failed` });
+      }
+    } catch {
+      // never let the importer crash the app
+    }
+  }, [showToast]);
+
+  // Drain on first render once enabled, then again on every foreground.
+  useEffect(() => {
+    if (enabled) drain();
+  }, [enabled, drain]);
+
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (next) => {
+      if (next === 'active') drain();
+    });
+    return () => sub.remove();
+  }, [drain]);
+
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -500,6 +543,9 @@ export default function App() {
             <BiometricGuard locked={locked} onUnlock={() => setLocked(false)} />
           </Suspense>
         )}
+
+        {/* Share Extension dropbox — uploads files dropped by BeebeebShare */}
+        <ShareSheetImporter enabled={isAuthenticated && !locked} />
 
         <StatusBar style={resolved === 'dark' ? 'light' : 'dark'} />
       </ToastProvider>
