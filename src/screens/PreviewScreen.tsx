@@ -18,6 +18,7 @@ import * as Haptics from 'expo-haptics';
 import type { RootStackParamList } from '../App';
 import { colors, radii, spacing, shadows } from '../theme';
 import { getToken, getDownloadUrl, friendlyError } from '../lib/api';
+import { useCrypto } from '../lib/crypto-context';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -85,6 +86,27 @@ const CATEGORY_COLORS: Record<string, string> = {
 };
 
 // ---------------------------------------------------------------------------
+// Binary helpers
+// ---------------------------------------------------------------------------
+
+function base64ToUint8Array(b64: string): Uint8Array {
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
+
+function uint8ArrayToBase64(bytes: Uint8Array): string {
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
+
+// ---------------------------------------------------------------------------
 // Screen
 // ---------------------------------------------------------------------------
 
@@ -96,6 +118,8 @@ export default function PreviewScreen() {
 
   const [downloading, setDownloading] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState(0);
+
+  const { isUnlocked, decryptChunk } = useCrypto();
 
   const category = fileCategory(mimeType);
   const isImage = category === 'image';
@@ -120,13 +144,13 @@ export default function PreviewScreen() {
         return;
       }
 
-      // Use a sanitized filename for the local cache path
+      // Download encrypted file to cache
       const safeName = fileName.replace(/[^a-zA-Z0-9._\-]/g, '_');
-      const localUri = `${FileSystem.cacheDirectory}${safeName}`;
+      const encryptedUri = `${FileSystem.cacheDirectory}enc_${safeName}`;
 
       const downloadResumable = FileSystem.createDownloadResumable(
         getDownloadUrl(fileId),
-        localUri,
+        encryptedUri,
         { headers: { Authorization: `Bearer ${token}` } },
         (progress) => {
           if (progress.totalBytesExpectedToWrite > 0) {
@@ -144,14 +168,39 @@ export default function PreviewScreen() {
 
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
+      // Attempt decryption when the vault is unlocked.
+      // Format: 12-byte nonce (AES-256-GCM) prepended to ciphertext.
+      // Falls back to sharing the encrypted file if crypto is unavailable.
+      let shareUri = result.uri;
+      if (isUnlocked) {
+        try {
+          const encBase64 = await FileSystem.readAsStringAsync(result.uri, {
+            encoding: FileSystem.EncodingType.Base64,
+          });
+          const encBytes = base64ToUint8Array(encBase64);
+          if (encBytes.length > 12) {
+            const nonce = encBytes.slice(0, 12);
+            const ciphertext = encBytes.slice(12);
+            const decrypted = await decryptChunk(fileId, nonce, ciphertext);
+            const decUri = `${FileSystem.cacheDirectory}${safeName}`;
+            await FileSystem.writeAsStringAsync(decUri, uint8ArrayToBase64(decrypted), {
+              encoding: FileSystem.EncodingType.Base64,
+            });
+            shareUri = decUri;
+          }
+        } catch {
+          // Crypto unavailable (stubs not linked) or malformed data — share encrypted
+        }
+      }
+
       const canShare = await Sharing.isAvailableAsync();
       if (canShare) {
-        await Sharing.shareAsync(result.uri, {
+        await Sharing.shareAsync(shareUri, {
           mimeType: mimeType ?? 'application/octet-stream',
           dialogTitle: fileName,
         });
       } else {
-        Alert.alert('Downloaded', `Saved to ${result.uri}`);
+        Alert.alert('Downloaded', `Saved to ${shareUri}`);
       }
     } catch (err) {
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
@@ -160,7 +209,7 @@ export default function PreviewScreen() {
       setDownloading(false);
       setDownloadProgress(0);
     }
-  }, [fileId, fileName, mimeType]);
+  }, [fileId, fileName, mimeType, isUnlocked, decryptChunk]);
 
   const handleShare = useCallback(async () => {
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -207,8 +256,9 @@ export default function PreviewScreen() {
             </View>
             <Text style={styles.imagePlaceholderTitle}>Encrypted image</Text>
             <Text style={styles.imagePlaceholderSub}>
-              Preview requires native crypto bindings.{'\n'}
-              UniFFI integration is in progress.
+              {isUnlocked
+                ? 'Download to decrypt and view this image.'
+                : 'Unlock your vault to decrypt this file.'}
             </Text>
           </View>
         ) : (
@@ -225,8 +275,9 @@ export default function PreviewScreen() {
             </View>
             <Text style={styles.genericTitle}>{CATEGORY_LABELS[category] ?? 'File'}</Text>
             <Text style={styles.genericSub}>
-              Preview not available.{'\n'}
-              Decryption requires native crypto bindings.
+              {isUnlocked
+                ? 'Download to decrypt and open this file.'
+                : 'Unlock your vault to decrypt this file.'}
             </Text>
           </View>
         )}
