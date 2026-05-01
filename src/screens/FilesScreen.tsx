@@ -22,8 +22,9 @@ import * as Haptics from 'expo-haptics';
 import * as DocumentPicker from 'expo-document-picker';
 import { radii, spacing, shadows } from '../theme';
 import { useTheme } from '../lib/theme-context';
-import { listFiles, createFolder, deleteFile, renameFile, moveFile, uploadFile, friendlyError } from '../lib/api';
-import type { FileEntry } from '../lib/api';
+import { useToast } from '../lib/toast-context';
+import { listFiles, createFolder, deleteFile, renameFile, moveFile, uploadFile, friendlyError, getStorageUsage } from '../lib/api';
+import type { FileEntry, StorageUsage } from '../lib/api';
 import type { RootStackParamList } from '../App';
 import { useCrypto } from '../lib/crypto-context';
 
@@ -335,6 +336,7 @@ export default function FilesScreen() {
   const navigation = useNavigation<Nav>();
   const insets = useSafeAreaInsets();
   const { colors: c } = useTheme();
+  const { showToast } = useToast();
 
   // Navigation state: stack of folders
   const [folderStack, setFolderStack] = useState<BreadcrumbEntry[]>([
@@ -347,6 +349,7 @@ export default function FilesScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [usage, setUsage] = useState<StorageUsage | null>(null);
 
   // Search state
   const [searchActive, setSearchActive] = useState(false);
@@ -415,6 +418,19 @@ export default function FilesScreen() {
   useEffect(() => {
     fetchFiles(currentFolder.id);
   }, [currentFolder.id, fetchFiles]);
+
+  // Storage usage — fetched once on mount, refreshed alongside pull-to-refresh
+  const fetchUsage = useCallback(async () => {
+    try {
+      setUsage(await getStorageUsage());
+    } catch {
+      // Endpoint may be unavailable in dev — silently skip the banner
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchUsage();
+  }, [fetchUsage]);
 
   // ------------------------------------------------------------------
   // Navigation handlers
@@ -486,6 +502,7 @@ export default function FilesScreen() {
       // Optimistic insert; the next refresh will reconcile.
       setFiles((prev) => [uploaded, ...prev]);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      showToast({ type: 'success', message: `"${asset.name}" uploaded` });
       // Refresh to pick up server-side updates (storage usage, ordering, etc).
       fetchFiles(currentFolder.id, true);
     } catch (err) {
@@ -1071,6 +1088,47 @@ export default function FilesScreen() {
           </TouchableOpacity>
         </View>
       )}
+
+      {/* Storage warning — shown when nearing or exceeding plan limit */}
+      {!selectMode && usage && usage.plan_limit_bytes > 0 && (() => {
+        const ratio = usage.used_bytes / usage.plan_limit_bytes;
+        if (ratio < 0.9) return null;
+        const isFull = ratio >= 1;
+        const message = isFull
+          ? 'Storage full — delete files or upgrade'
+          : `Storage almost full — ${formatSize(usage.used_bytes)} of ${formatSize(usage.plan_limit_bytes)} used`;
+        return (
+          <TouchableOpacity
+            activeOpacity={0.7}
+            onPress={() => Alert.alert(
+              isFull ? 'Storage full' : 'Storage almost full',
+              'Free up space by deleting files or upgrade your plan in Settings.',
+            )}
+            style={[
+              styles.storageBanner,
+              {
+                backgroundColor: isFull ? c.red : c.amberBg,
+                borderColor: isFull ? c.red : c.amber,
+              },
+            ]}
+          >
+            <Ionicons
+              name="warning-outline"
+              size={16}
+              color={isFull ? '#fff' : c.amberDeep}
+            />
+            <Text
+              style={[styles.storageBannerText, { color: isFull ? '#fff' : c.ink }]}
+              numberOfLines={1}
+            >
+              {message}
+            </Text>
+            <Text style={[styles.storageBannerHint, { color: isFull ? '#fff' : c.amberDeep }]}>
+              {isFull ? 'Upgrade' : 'Manage'}
+            </Text>
+          </TouchableOpacity>
+        );
+      })()}
 
       {/* Search bar — slides in below header when active */}
       {searchActive && !selectMode && (
