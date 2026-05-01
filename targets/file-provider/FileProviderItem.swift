@@ -69,11 +69,9 @@ final class FileProviderItem: NSObject, NSFileProviderItem {
     return [.allowsReading, .allowsWriting, .allowsRenaming, .allowsDeleting, .allowsReparenting]
   }
 
-  /// Default to lazy downloads; the user opts into "Keep Downloaded" via the
-  /// Files app, which flips `is_pinned` in the cache.
-  var contentPolicy: NSFileProviderContentPolicy {
-    cached.isPinned ? .downloadEagerlyAndKeepDownloaded : .downloadLazily
-  }
+  // Note: NSFileProviderContentPolicy (downloadEagerlyAndKeepDownloaded / downloadLazily)
+  // is macOS-only. On iOS, the system manages materialization automatically.
+  // Pinning is tracked in our local cache for our own UI purposes.
 
   // MARK: - Versioning
 

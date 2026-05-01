@@ -13,9 +13,14 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "io.beebeeb.app",
+      "appleTeamId": "R8352WDJJR",
       "entitlements": {
-        "com.apple.security.application-groups": ["group.io.beebeeb.shared"],
-        "keychain-access-groups": ["$(AppIdentifierPrefix)io.beebeeb.shared"]
+        "com.apple.security.application-groups": [
+          "group.io.beebeeb.shared"
+        ],
+        "keychain-access-groups": [
+          "$(AppIdentifierPrefix)io.beebeeb.shared"
+        ]
       },
       "infoPlist": {
         "NSFileProviderPresenceAuthorized": true,
@@ -27,7 +32,11 @@
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#1A1714"
       },
-      "package": "io.beebeeb.app"
+      "package": "io.beebeeb.app",
+      "permissions": [
+        "android.permission.USE_BIOMETRIC",
+        "android.permission.USE_FINGERPRINT"
+      ]
     },
     "web": {
       "bundler": "metro",
@@ -36,14 +45,12 @@
     "plugins": [
       "expo-secure-store",
       "expo-local-authentication",
-      "./modules/beebeeb-crypto",
-      "@bacons/apple-targets",
-      [
-        "react-native-vision-camera",
-        {
-          "cameraPermissionText": "Beebeeb scans the amber constellation pattern to pair a new device."
-        }
-      ]
-    ]
+      "./modules/beebeeb-crypto"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "6491ff3c-29b3-4b44-98de-34225fd666a6"
+      }
+    }
   }
 }
