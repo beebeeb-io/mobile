@@ -12,6 +12,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
+import * as MediaLibrary from 'expo-media-library';
 import { radii, spacing } from '../theme';
 import { useTheme } from '../lib/theme-context';
 import { listFiles, friendlyError } from '../lib/api';
@@ -158,6 +159,65 @@ const GroupSection = React.memo(function GroupSection({ group, seedOffset }: { g
     </View>
   );
 });
+
+// ---------------------------------------------------------------------------
+// Device photos banner — shows local-library count when backup is enabled
+// ---------------------------------------------------------------------------
+
+function DevicePhotosBanner() {
+  const { isPhotoBackupEnabled, backupProgress } = useBackup();
+  const { colors: c } = useTheme();
+  const [deviceCount, setDeviceCount] = useState<number | null>(null);
+  const [permissionDenied, setPermissionDenied] = useState(false);
+
+  useEffect(() => {
+    if (!isPhotoBackupEnabled) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const { status } = await MediaLibrary.requestPermissionsAsync();
+        if (status !== 'granted') {
+          if (!cancelled) setPermissionDenied(true);
+          return;
+        }
+        const { totalCount } = await MediaLibrary.getAssetsAsync({
+          mediaType: 'photo',
+          first: 0,
+        });
+        if (!cancelled) setDeviceCount(totalCount);
+      } catch {
+        // Media library unavailable (e.g. simulator without photos, web)
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isPhotoBackupEnabled]);
+
+  if (!isPhotoBackupEnabled) return null;
+  if (permissionDenied) {
+    return (
+      <View style={[styles.deviceBanner, { backgroundColor: c.paper2, borderColor: c.line }]}>
+        <Ionicons name="lock-closed-outline" size={14} color={c.ink3} />
+        <Text style={[styles.deviceBannerText, { color: c.ink2 }]}>Photo access denied</Text>
+        <Text style={[styles.deviceBannerHint, { color: c.ink3 }]}>Enable in iOS Settings</Text>
+      </View>
+    );
+  }
+  if (deviceCount === null) return null;
+
+  return (
+    <View style={[styles.deviceBanner, { backgroundColor: c.paper2, borderColor: c.line }]}>
+      <Ionicons name="phone-portrait-outline" size={14} color={c.ink3} />
+      <Text style={[styles.deviceBannerText, { color: c.ink2 }]}>
+        {deviceCount.toLocaleString()} {deviceCount === 1 ? 'photo' : 'photos'} on device
+      </Text>
+      <Text style={[styles.deviceBannerHint, { color: c.ink3 }]}>
+        {backupProgress.completed.toLocaleString()} backed up
+      </Text>
+    </View>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Auto-backup banner — shows real backup progress from BackupContext
@@ -312,6 +372,8 @@ export default function PhotosScreen() {
         </View>
       </View>
 
+      <DevicePhotosBanner />
+
       <View style={styles.filterRow}>
         <FilterChips active={filter} onChange={setFilter} />
       </View>
@@ -405,4 +467,19 @@ const styles = StyleSheet.create({
   bannerDotActive: {},
   bannerText: { fontSize: 11, flex: 1 },
   bannerHint: { fontSize: 10, fontWeight: '600' },
+
+  // Device photos banner (top of screen, only when backup is enabled)
+  deviceBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginHorizontal: spacing.lg,
+    marginBottom: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: radii.md,
+    borderWidth: 1,
+    gap: 8,
+  },
+  deviceBannerText: { fontSize: 12, flex: 1, fontWeight: '500' },
+  deviceBannerHint: { fontSize: 11, fontWeight: '600' },
 });
