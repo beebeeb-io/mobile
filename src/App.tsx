@@ -43,6 +43,7 @@ import RecoveryPhraseVerifyScreen from './screens/RecoveryPhraseVerifyScreen';
 import DevicePairingScreen from './screens/DevicePairingScreen';
 import DevicePairingScanScreen from './screens/DevicePairingScanScreen';
 import DevicePairingShowScreen from './screens/DevicePairingShowScreen';
+import PairingConfirmScreen from './screens/PairingConfirmScreen';
 import ErrorBoundary from './components/ErrorBoundary';
 import { BackupProvider } from './lib/backup-context';
 
@@ -89,6 +90,7 @@ export type RootStackParamList = {
   DevicePairing: undefined;
   DevicePairingScan: undefined;
   DevicePairingShow: undefined;
+  PairingConfirm: { progress: number; nodeCount: number };
 };
 
 // ---------------------------------------------------------------------------
@@ -407,6 +409,7 @@ export default function App() {
                 <Stack.Screen name="DevicePairing" component={DevicePairingScreen} />
                 <Stack.Screen name="DevicePairingScan" component={DevicePairingScanScreen} />
                 <Stack.Screen name="DevicePairingShow" component={DevicePairingShowScreen} />
+                <Stack.Screen name="PairingConfirm" component={PairingConfirmScreen} />
               </>
             ) : (
               <>
