@@ -1,44 +1,69 @@
 <p align="center">
-  <h3 align="center">Beebeeb Mobile</h3>
-  <p align="center">Beebeeb for iOS and Android — your encrypted vault in your pocket.</p>
+  <img src="https://beebeeb.io/icon.png" alt="Beebeeb" width="60" />
 </p>
+<h3 align="center">Beebeeb Mobile</h3>
+<p align="center">End-to-end encrypted cloud storage for iOS and Android.</p>
 
 <p align="center">
   <a href="https://github.com/beebeeb-io/mobile/blob/main/LICENSE"><img src="https://img.shields.io/github/license/beebeeb-io/mobile" alt="License"></a>
   <a href="https://github.com/beebeeb-io/mobile/actions"><img src="https://img.shields.io/github/actions/workflow/status/beebeeb-io/mobile/ci.yml?branch=main" alt="CI"></a>
-  <a href="https://github.com/beebeeb-io/mobile/graphs/contributors"><img src="https://img.shields.io/github/contributors/beebeeb-io/mobile" alt="Contributors"></a>
   <a href="https://github.com/beebeeb-io/mobile/stargazers"><img src="https://img.shields.io/github/stars/beebeeb-io/mobile" alt="Stars"></a>
-  <a href="https://github.com/beebeeb-io/mobile/issues"><img src="https://img.shields.io/github/issues/beebeeb-io/mobile" alt="Issues"></a>
 </p>
 
 ---
 
-## What is Beebeeb?
+> **In active development.** Core screens and navigation are implemented. Crypto integration (UniFFI) and camera backup are in progress.
 
-Beebeeb is end-to-end encrypted cloud storage. Your files are encrypted before they leave your device and can only be decrypted by you. The server never sees your data, your keys, or your plaintext.
+The [Beebeeb](https://beebeeb.io) mobile app -- browse, preview, and share your encrypted files from your phone. All encryption runs natively via UniFFI bindings to [beebeeb-core](https://github.com/beebeeb-io/core) (Swift on iOS, Kotlin on Android), not in JavaScript.
 
-This is the **mobile app** — Beebeeb on iOS and Android. Browse, preview, and share your encrypted files from your phone.
+Built and operated by [Initlabs B.V.](https://initlabs.nl), Wijchen, Netherlands.
 
-> Crypto will run natively via UniFFI bindings (Swift on iOS, Kotlin on Android) — not in JavaScript.
+## Features (planned and in progress)
+
+- **File browser** -- navigate folders, pinned folders, recent files
+- **Photos** -- date-grouped grid with camera backup indicator
+- **File preview** -- images and PDFs rendered natively
+- **Sharing** -- bottom sheet with link settings, permission controls
+- **Biometric lock** -- Face ID and fingerprint authentication
+- **Offline access** -- pinned files available without connectivity
+- **Push notifications** -- share invitations, sync status, storage alerts
 
 ## Tech stack
 
 | Layer | Technology |
-|-------|-----------|
+|---|---|
 | Framework | React Native |
 | Platform | Expo (managed workflow) |
 | Language | TypeScript |
 | Navigation | React Navigation 7 (bottom tabs + native stack) |
 | Secure storage | expo-secure-store |
-| Crypto (planned) | `beebeeb-core` via UniFFI (native speed) |
+| Crypto | [beebeeb-core](https://github.com/beebeeb-io/core) via UniFFI (native speed, not JS) |
 | Package manager | Bun |
 
 ## Platform support
 
 | Platform | Minimum version |
-|----------|----------------|
+|---|---|
 | iOS | 16+ |
 | Android | 12+ |
+
+## Architecture
+
+```mermaid
+graph TD
+    RN["React Native<br/>(TypeScript)"]
+    EXPO["Expo<br/>Managed workflow"]
+    UNIFFI["beebeeb-uniffi<br/>Swift + Kotlin bindings"]
+    CORE["beebeeb-core<br/>AES-256-GCM, OPAQUE, HKDF"]
+    API["Beebeeb API<br/>localhost:3001"]
+
+    RN --> EXPO
+    RN --> UNIFFI
+    RN --> API
+    UNIFFI --> CORE
+```
+
+Encryption runs at native speed through UniFFI-generated bindings. The React Native layer handles UI and API calls; all cryptographic operations are delegated to the Rust core compiled for each platform's architecture.
 
 ## Getting started
 
@@ -46,10 +71,10 @@ This is the **mobile app** — Beebeeb on iOS and Android. Browse, preview, and 
 
 - [Bun](https://bun.sh) (latest)
 - [Expo CLI](https://docs.expo.dev/get-started/installation/)
-- iOS Simulator (macOS) or Android emulator, or a physical device with [Expo Go](https://expo.dev/go)
-- The [Beebeeb API server](https://github.com/beebeeb-io/server) running at `http://localhost:3001`
+- iOS Simulator (macOS) or Android emulator, or a device with [Expo Go](https://expo.dev/go)
+- The [Beebeeb API server](https://github.com/beebeeb-io/server) running on `localhost:3001`
 
-### Clone, install, and run
+### Install and run
 
 ```sh
 git clone https://github.com/beebeeb-io/mobile.git
@@ -58,71 +83,74 @@ bun install
 bunx expo start
 ```
 
-From there, press `i` for iOS Simulator, `a` for Android emulator, or scan the QR code with Expo Go on your device.
+Press `i` for iOS Simulator, `a` for Android emulator, or scan the QR code with Expo Go.
 
 ### Platform-specific commands
 
 ```sh
-bunx expo start --ios       # Start on iOS Simulator
-bunx expo start --android   # Start on Android emulator
+bunx expo start --ios       # iOS Simulator
+bunx expo start --android   # Android emulator
 ```
 
 ## Project structure
 
 ```
 src/
-  App.tsx                   # Root component, navigation setup
-  api.ts                    # API client (same endpoints as web)
-  theme.ts                  # Design tokens (RGB, converted from web's OKLCH)
+  App.tsx               Root component, navigation setup
+  api.ts                API client (same endpoints as web)
+  theme.ts              Design tokens (RGB, converted from web's OKLCH)
   screens/
-    FilesScreen.tsx         # Files tab — pinned folders, recent files
-    SharedScreen.tsx        # Shared tab — files shared with you
-    PhotosScreen.tsx        # Photos tab — date grid, auto-backup indicator
-    SettingsScreen.tsx      # Settings tab — security, backup, app config
-    PreviewScreen.tsx       # File preview — PDF, images, with actions
-app.json                    # Expo configuration
-assets/                     # App icons and splash screen
+    FilesScreen.tsx      Files tab -- pinned folders, recent files
+    SharedScreen.tsx     Shared tab -- files shared with you
+    PhotosScreen.tsx     Photos tab -- date grid, auto-backup
+    SettingsScreen.tsx   Settings tab -- security, backup, config
+    PreviewScreen.tsx    File preview -- PDF, images, with actions
 ```
 
-## Screens
+## Current status
 
-- **Files** -- Pinned folders, recent files, folder navigation
-- **Shared** -- Files and folders shared with you
-- **Photos** -- Date-grouped photo grid with camera backup indicator
-- **Settings** -- Security, backup configuration, app preferences
-- **Preview** -- PDF and image preview with share/download actions
-- **Share sheet** -- Bottom sheet for link sharing with permission controls
-- **Biometric lock** -- Face ID / fingerprint authentication
-
-## Contributing
-
-Contributions are welcome. To get started:
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/your-feature`)
-3. Make your changes
-4. Ensure pre-commit hooks pass
-5. Open a pull request
-
-Please read [SECURITY.md](SECURITY.md) before submitting security-related changes.
+| Area | Status |
+|---|---|
+| Navigation and screens | Done |
+| Design tokens and theming | Done |
+| API client | Done |
+| UniFFI crypto integration | In progress |
+| Camera backup | Planned |
+| Share extension | Planned |
+| Offline mode | Planned |
 
 ## Security
 
-If you discover a security vulnerability, please report it responsibly. See [SECURITY.md](SECURITY.md) for details.
+Crypto will run natively on-device via UniFFI bindings to `beebeeb-core`. The server never has access to your keys or plaintext data.
 
-## License
+If you discover a security vulnerability, please email [security@beebeeb.io](mailto:security@beebeeb.io). We aim to acknowledge reports within 48 hours.
 
-This project is licensed under the [GNU Affero General Public License v3.0](LICENSE).
+## Contributing
 
-Copyright (C) 2025-2026 [Initlabs B.V.](https://initlabs.nl)
+Contributions are welcome.
+
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feat/your-feature`)
+3. Make your changes
+4. Ensure pre-commit hooks pass (secret scanning)
+5. Open a pull request against `main`
 
 ## Part of Beebeeb
 
 | Repository | Description |
-|-----------|-------------|
+|---|---|
+| [core](https://github.com/beebeeb-io/core) | Cryptographic core, shared types, sync engine |
+| [cli](https://github.com/beebeeb-io/cli) | `bb` -- CLI for encrypted cloud storage |
+| [desktop](https://github.com/beebeeb-io/desktop) | Desktop sync for macOS, Windows, Linux |
 | [web](https://github.com/beebeeb-io/web) | Web client |
-| [mobile](https://github.com/beebeeb-io/mobile) | iOS and Android app (you are here) |
-| [server](https://github.com/beebeeb-io/server) | API server |
-| [site](https://github.com/beebeeb-io/site) | Marketing website |
+| **[mobile](https://github.com/beebeeb-io/mobile)** | iOS and Android app (you are here) |
 
-[beebeeb.io](https://beebeeb.io)
+## License
+
+[GNU Affero General Public License v3.0](./LICENSE)
+
+Copyright (c) Initlabs B.V.
+
+---
+
+[beebeeb.io](https://beebeeb.io) -- [GitHub](https://github.com/beebeeb-io)
