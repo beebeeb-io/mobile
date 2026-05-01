@@ -20,6 +20,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import * as Haptics from 'expo-haptics';
+import * as SecureStore from 'expo-secure-store';
 import * as DocumentPicker from 'expo-document-picker';
 import { radii, spacing, shadows } from '../theme';
 import { useTheme } from '../lib/theme-context';
@@ -369,6 +370,9 @@ export default function FilesScreen() {
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
+  // Pinned folders
+  const [pinnedFolders, setPinnedFolders] = useState<{ id: string; name: string }[]>([]);
+
   // Crypto
   const { isUnlocked, decryptMetadata } = useCrypto();
   const [decryptedNames, setDecryptedNames] = useState<Record<string, string>>({});
@@ -399,6 +403,18 @@ export default function FilesScreen() {
       }),
     ).then(() => setDecryptedNames({ ...results }));
   }, [files, isUnlocked, decryptMetadata]);
+
+  // Load pinned folders from SecureStore on mount
+  useEffect(() => {
+    SecureStore.getItemAsync('beebeeb_pinned_folders')
+      .then((raw) => { if (raw) setPinnedFolders(JSON.parse(raw) as { id: string; name: string }[]); })
+      .catch(() => {});
+  }, []);
+
+  // Persist pinned folders whenever they change
+  useEffect(() => {
+    SecureStore.setItemAsync('beebeeb_pinned_folders', JSON.stringify(pinnedFolders)).catch(() => {});
+  }, [pinnedFolders]);
 
   // ------------------------------------------------------------------
   // Fetch files
@@ -735,10 +751,35 @@ export default function FilesScreen() {
     });
   }, []);
 
+  const navigateToPinned = useCallback((pf: { id: string; name: string }) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setSearchActive(false);
+    setSearchQuery('');
+    setFolderStack([{ id: null, name: 'Drive' }, { id: pf.id, name: pf.name }]);
+  }, []);
+
+  const togglePin = useCallback((item: FileEntry, name: string) => {
+    setPinnedFolders((prev) => {
+      const isPinned = prev.some((p) => p.id === item.id);
+      if (isPinned) {
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+        return prev.filter((p) => p.id !== item.id);
+      }
+      if (prev.length >= 5) {
+        Alert.alert('Max pins reached', 'You can pin up to 5 folders. Unpin one to add another.');
+        return prev;
+      }
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      return [...prev, { id: item.id, name }];
+    });
+  }, []);
+
   const handleLongPress = useCallback((item: FileEntry) => {
     const name = decryptedNames[item.id] ?? displayName(item);
+    const isPinned = pinnedFolders.some((p) => p.id === item.id);
+    const pinLabel = isPinned ? 'Unpin' : 'Pin to top';
     const options = item.is_folder
-      ? ['Rename', 'Open', 'Share', 'Move to...', 'Delete', 'Details', 'Cancel']
+      ? ['Rename', 'Open', 'Share', 'Move to...', 'Delete', pinLabel, 'Details', 'Cancel']
       : ['Rename', 'Preview', 'Share', 'Move to...', 'Move to Trash', 'Details', 'Cancel'];
     const destructiveIndex = 4;
     const cancelIndex = options.length - 1;
@@ -854,15 +895,30 @@ export default function FilesScreen() {
           ],
         );
       } else if (index === 5) {
+        if (item.is_folder) {
+          togglePin(item, name);
+        } else {
+          // Files: index 5 = Details
+          const lines = [
+            `Name:      ${name}`,
+            `Type:      ${item.mime_type ?? 'Unknown'}`,
+            `Size:      ${formatSize(item.size_bytes)}`,
+          ];
+          lines.push(`Created:   ${formatDate(item.created_at)}`);
+          lines.push(`Modified:  ${formatDate(item.updated_at)}`);
+          lines.push(`ID:        ${item.id.slice(0, 8)}`);
+          Alert.alert('File details', lines.join('\n'));
+        }
+      } else if (index === 6) {
+        // Folders only: index 6 = Details
         const lines = [
           `Name:      ${name}`,
-          `Type:      ${item.is_folder ? 'Folder' : (item.mime_type ?? 'Unknown')}`,
+          `Type:      Folder`,
+          `Created:   ${formatDate(item.created_at)}`,
+          `Modified:  ${formatDate(item.updated_at)}`,
+          `ID:        ${item.id.slice(0, 8)}`,
         ];
-        if (!item.is_folder) lines.push(`Size:      ${formatSize(item.size_bytes)}`);
-        lines.push(`Created:   ${formatDate(item.created_at)}`);
-        lines.push(`Modified:  ${formatDate(item.updated_at)}`);
-        lines.push(`ID:        ${item.id.slice(0, 8)}`);
-        Alert.alert('File details', lines.join('\n'));
+        Alert.alert('Folder details', lines.join('\n'));
       }
     };
 
@@ -877,17 +933,21 @@ export default function FilesScreen() {
         handleAction,
       );
     } else {
-      Alert.alert(name, undefined, [
+      const alertButtons: Parameters<typeof Alert.alert>[2] = [
         { text: options[0], onPress: () => handleAction(0) },
         { text: options[1], onPress: () => handleAction(1) },
         { text: options[2], onPress: () => handleAction(2) },
         { text: options[3], onPress: () => handleAction(3) },
         { text: options[4], style: 'destructive', onPress: () => handleAction(4) },
         { text: options[5], onPress: () => handleAction(5) },
-        { text: 'Cancel', style: 'cancel' },
-      ]);
+      ];
+      if (item.is_folder && options[6]) {
+        alertButtons.push({ text: options[6], onPress: () => handleAction(6) });
+      }
+      alertButtons.push({ text: 'Cancel', style: 'cancel' });
+      Alert.alert(name, undefined, alertButtons);
     }
-  }, [navigation, openFile, decryptedNames, showToast]);
+  }, [navigation, openFile, decryptedNames, showToast, pinnedFolders, togglePin]);
 
   // Filtered + sorted file list
   const displayedFiles = useMemo(() => {
@@ -951,6 +1011,36 @@ export default function FilesScreen() {
       })}
     </ScrollView>
   );
+
+  const renderPinnedSection = () => {
+    if (pinnedFolders.length === 0 || selectMode || searchActive) return null;
+    return (
+      <View style={[styles.pinnedSection, { borderBottomColor: c.line }]}>
+        <Text style={[styles.pinnedLabel, { color: c.ink3 }]}>Pinned</Text>
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.pinnedRow}
+        >
+          {pinnedFolders.map((pf) => (
+            <TouchableOpacity
+              key={pf.id}
+              style={[styles.pinnedChip, { borderColor: c.amber, backgroundColor: c.amberBg }]}
+              onPress={() => navigateToPinned(pf)}
+              activeOpacity={0.7}
+              accessibilityLabel={`Open pinned folder ${pf.name}`}
+              accessibilityRole="button"
+            >
+              <Ionicons name="folder" size={13} color={c.amberDeep} />
+              <Text style={[styles.pinnedChipText, { color: c.amberDeep }]} numberOfLines={1}>
+                {pf.name}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </ScrollView>
+      </View>
+    );
+  };
 
   const handleSwipeShare = useCallback((item: FileEntry) => {
     const name = decryptedNames[item.id] ?? displayName(item);
@@ -1193,6 +1283,9 @@ export default function FilesScreen() {
       {folderStack.length > 1 && !searchActive && !selectMode && renderBreadcrumbs()}
       </View>{/* end headerArea */}
 
+      {/* Pinned folders */}
+      {renderPinnedSection()}
+
       {/* Content */}
       {error ? (
         renderError()
@@ -1309,6 +1402,13 @@ const styles = StyleSheet.create({
   searchBar: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: spacing.lg, paddingBottom: spacing.sm, gap: 10 },
   searchInput: { flex: 1, height: 36, borderRadius: radii.md, paddingHorizontal: 12, fontSize: 15, borderWidth: 1 },
   searchButton: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
+
+  // Pinned folders
+  pinnedSection: { paddingTop: 8, paddingBottom: 4, borderBottomWidth: StyleSheet.hairlineWidth },
+  pinnedLabel: { fontSize: 10, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.5, paddingHorizontal: spacing.lg, marginBottom: 6 },
+  pinnedRow: { paddingHorizontal: spacing.lg, gap: 8, paddingBottom: 10 },
+  pinnedChip: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 10, paddingVertical: 6, borderRadius: radii.round, borderWidth: 1, maxWidth: 140 },
+  pinnedChipText: { fontSize: 12, fontWeight: '600', flexShrink: 1 },
 
   // Breadcrumbs
   breadcrumbScroll: { flexGrow: 0, paddingBottom: spacing.sm },
