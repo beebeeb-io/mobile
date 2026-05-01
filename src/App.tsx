@@ -1,7 +1,8 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { registerRootComponent } from 'expo';
 import { StatusBar } from 'expo-status-bar';
-import { ActivityIndicator, View } from 'react-native';
+import { ActivityIndicator, AppState, type AppStateStatus, View } from 'react-native';
+import * as SecureStore from 'expo-secure-store';
 import { NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
@@ -18,6 +19,8 @@ import {
 import type { User } from './lib/api';
 import { AuthContext } from './lib/auth';
 
+const BIOMETRIC_PREF_KEY = 'beebeeb_biometric_lock';
+
 // Screens
 import FilesScreen from './screens/FilesScreen';
 import SharedScreen from './screens/SharedScreen';
@@ -27,6 +30,7 @@ import PreviewScreen from './screens/PreviewScreen';
 import ShareSheetScreen from './screens/ShareSheetScreen';
 import LoginScreen from './screens/LoginScreen';
 import SignupScreen from './screens/SignupScreen';
+import BiometricLockScreen from './screens/BiometricLockScreen';
 
 // ---------------------------------------------------------------------------
 // Navigation types
@@ -121,6 +125,10 @@ export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [checking, setChecking] = useState(true);
 
+  // Biometric lock: show lock screen when app resumes from background
+  const [locked, setLocked] = useState(false);
+  const appStateRef = useRef<AppStateStatus>(AppState.currentState);
+
   const refreshAuth = useCallback(async () => {
     try {
       const me = await getMe();
@@ -163,6 +171,28 @@ export default function App() {
     registerSessionExpiredHandler(() => {
       setUser(null);
     });
+  }, []);
+
+  // Lock the app when it goes to background and biometric pref is on
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', async (nextState: AppStateStatus) => {
+      const prev = appStateRef.current;
+      appStateRef.current = nextState;
+      if (
+        (prev === 'background' || prev === 'inactive') &&
+        nextState === 'active'
+      ) {
+        try {
+          const pref = await SecureStore.getItemAsync(BIOMETRIC_PREF_KEY);
+          if (pref === 'true') {
+            setLocked(true);
+          }
+        } catch {
+          // SecureStore unavailable (e.g. web) — ignore
+        }
+      }
+    });
+    return () => subscription.remove();
   }, []);
 
   // Listen for successful login/signup from auth screens
@@ -234,6 +264,14 @@ export default function App() {
             )}
           </Stack.Navigator>
         </NavigationContainer>
+
+        {/* Biometric lock overlay — shown when app resumes from background */}
+        {isAuthenticated && locked && (
+          <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}>
+            <BiometricLockScreen onUnlocked={() => setLocked(false)} />
+          </View>
+        )}
+
         <StatusBar style="auto" />
       </SafeAreaProvider>
     </AuthContext.Provider>

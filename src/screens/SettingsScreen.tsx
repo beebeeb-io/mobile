@@ -4,24 +4,29 @@ import {
   Alert,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
   TouchableOpacity,
   View,
 } from 'react-native';
+import * as LocalAuthentication from 'expo-local-authentication';
+import * as SecureStore from 'expo-secure-store';
 import { colors, radii, spacing } from '../theme';
 import { useAuth } from '../lib/auth';
 import { getStorageUsage, type StorageUsage } from '../lib/api';
+
+const BIOMETRIC_PREF_KEY = 'beebeeb_biometric_lock';
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
 function formatBytes(bytes: number): string {
-  if (bytes === 0) return '0 B';
-  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(1024));
-  const val = bytes / Math.pow(1024, i);
-  return `${val < 10 ? val.toFixed(1) : Math.round(val)} ${units[i]}`;
+  if (bytes < 1_000) return `${bytes} B`;
+  if (bytes < 1_000_000) return `${(bytes / 1_000).toFixed(0)} KB`;
+  if (bytes < 1_000_000_000) return `${(bytes / 1_000_000).toFixed(0)} MB`;
+  if (bytes < 1_000_000_000_000) return `${(bytes / 1_000_000_000).toFixed(1)} GB`;
+  return `${(bytes / 1_000_000_000_000).toFixed(1)} TB`;
 }
 
 function formatDate(iso: string): string {
@@ -92,6 +97,32 @@ function SettingsRow({
   );
 }
 
+function ToggleRow({
+  label,
+  value,
+  onValueChange,
+  disabled,
+}: {
+  label: string;
+  value: boolean;
+  onValueChange: (v: boolean) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <View style={styles.row}>
+      <Text style={styles.rowLabel}>{label}</Text>
+      <Switch
+        value={value}
+        onValueChange={onValueChange}
+        disabled={disabled}
+        trackColor={{ false: colors.line, true: colors.amber }}
+        thumbColor={colors.paper}
+        ios_backgroundColor={colors.line}
+      />
+    </View>
+  );
+}
+
 function RowDivider() {
   return <View style={styles.rowDivider} />;
 }
@@ -136,6 +167,14 @@ export default function SettingsScreen() {
   const [usage, setUsage] = useState<StorageUsage | null>(null);
   const [loadingUsage, setLoadingUsage] = useState(true);
 
+  // Biometric lock preference
+  const [biometricEnabled, setBiometricEnabled] = useState(false);
+  const [biometricAvailable, setBiometricAvailable] = useState(false);
+  const [loadingBiometric, setLoadingBiometric] = useState(true);
+
+  // Notifications preference (stored locally)
+  const [notificationsEnabled, setNotificationsEnabled] = useState(false);
+
   const fetchUsage = useCallback(async () => {
     try {
       const data = await getStorageUsage();
@@ -147,9 +186,44 @@ export default function SettingsScreen() {
     }
   }, []);
 
+  const loadBiometricPrefs = useCallback(async () => {
+    try {
+      const supported = await LocalAuthentication.hasHardwareAsync();
+      const enrolled = await LocalAuthentication.isEnrolledAsync();
+      setBiometricAvailable(supported && enrolled);
+
+      const stored = await SecureStore.getItemAsync(BIOMETRIC_PREF_KEY);
+      setBiometricEnabled(stored === 'true');
+    } catch {
+      // Biometrics unavailable on this device/platform
+    } finally {
+      setLoadingBiometric(false);
+    }
+  }, []);
+
   useEffect(() => {
     fetchUsage();
-  }, [fetchUsage]);
+    loadBiometricPrefs();
+  }, [fetchUsage, loadBiometricPrefs]);
+
+  const handleBiometricToggle = useCallback(async (enabled: boolean) => {
+    if (enabled) {
+      // Verify biometrics work before enabling
+      const result = await LocalAuthentication.authenticateAsync({
+        promptMessage: 'Confirm your identity to enable Face ID lock',
+        cancelLabel: 'Cancel',
+        disableDeviceFallback: false,
+      });
+      if (!result.success) return;
+    }
+    setBiometricEnabled(enabled);
+    await SecureStore.setItemAsync(BIOMETRIC_PREF_KEY, enabled ? 'true' : 'false');
+  }, []);
+
+  const handleNotificationsToggle = useCallback((enabled: boolean) => {
+    setNotificationsEnabled(enabled);
+    // Notification permission request would go here
+  }, []);
 
   const handleSignOut = useCallback(() => {
     Alert.alert('Sign out', 'Are you sure you want to sign out?', [
@@ -230,9 +304,39 @@ export default function SettingsScreen() {
         <View style={styles.section}>
           <SectionHeader title="Security" />
           <View style={styles.card}>
+            {!loadingBiometric && biometricAvailable && (
+              <>
+                <ToggleRow
+                  label="Face ID lock"
+                  value={biometricEnabled}
+                  onValueChange={handleBiometricToggle}
+                />
+                <RowDivider />
+              </>
+            )}
             <SettingsRow label="Change password" />
             <RowDivider />
             <SettingsRow label="Two-factor authentication" />
+          </View>
+        </View>
+
+        {/* ---- Notifications ---- */}
+        <View style={styles.section}>
+          <SectionHeader title="Notifications" />
+          <View style={styles.card}>
+            <ToggleRow
+              label="Push notifications"
+              value={notificationsEnabled}
+              onValueChange={handleNotificationsToggle}
+            />
+          </View>
+        </View>
+
+        {/* ---- Appearance ---- */}
+        <View style={styles.section}>
+          <SectionHeader title="Appearance" />
+          <View style={styles.card}>
+            <SettingsRow label="Theme" value="System" showChevron={true} />
           </View>
         </View>
 
