@@ -13,6 +13,7 @@ import {
 import * as LocalAuthentication from 'expo-local-authentication';
 import * as SecureStore from 'expo-secure-store';
 import Constants from 'expo-constants';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { colors, radii, spacing } from '../theme';
@@ -181,6 +182,7 @@ type Nav = NativeStackNavigationProp<RootStackParamList>;
 
 export default function SettingsScreen() {
   const navigation = useNavigation<Nav>();
+  const insets = useSafeAreaInsets();
   const { user, signOut } = useAuth();
   const {
     isPhotoBackupEnabled,
@@ -327,7 +329,7 @@ export default function SettingsScreen() {
   const initials = userInitials(email);
 
   return (
-    <View style={styles.root}>
+    <View style={[styles.root, { paddingTop: insets.top }]}>
       <Text style={styles.title}>Settings</Text>
       <ScrollView
         style={styles.scroll}
