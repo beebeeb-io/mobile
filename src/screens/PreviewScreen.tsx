@@ -1616,13 +1616,6 @@ export default function PreviewScreen() {
             </View>
           ) : null}
         </View>
-
-        <View style={[styles.encryptionBadge, { borderTopColor: c.line }]}>
-          <View style={[styles.encryptionDot, { backgroundColor: c.amber }]} />
-          <Text style={[styles.encryptionText, { color: c.ink3 }]}>
-            End-to-end encrypted · AES-256-GCM
-          </Text>
-        </View>
       </View>
 
       {/* ---- Download bar ---- */}
@@ -2107,21 +2100,6 @@ const styles = StyleSheet.create({
     maxWidth: '60%',
     textAlign: 'right',
   },
-  encryptionBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginTop: 16,
-    paddingTop: 14,
-    borderTopWidth: 1,
-    gap: 8,
-  },
-  encryptionDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-  },
-  encryptionText: { fontSize: 12, fontWeight: '500' },
-
   // ---- Download bar ----
   downloadBar: {
     position: 'absolute',
