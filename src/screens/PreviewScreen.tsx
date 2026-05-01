@@ -16,6 +16,7 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 import * as Haptics from 'expo-haptics';
+import { WebView } from 'react-native-webview';
 import type { RootStackParamList } from '../App';
 import { colors, radii, shadows } from '../theme';
 import { useTheme } from '../lib/theme-context';
@@ -118,10 +119,16 @@ export default function PreviewScreen() {
   const [imageLoading, setImageLoading] = useState(false);
   const [imageError, setImageError] = useState<string | null>(null);
 
+  // PDF inline preview state
+  const [pdfUri, setPdfUri] = useState<string | null>(null);
+  const [pdfLoading, setPdfLoading] = useState(false);
+  const [pdfError, setPdfError] = useState<string | null>(null);
+
   const { isUnlocked, decryptChunk } = useCrypto();
 
   const category = fileCategory(mimeType);
   const isImage = category === 'image';
+  const isPdf = category === 'pdf';
 
   // Theme-aware accent for non-image category badge
   const categoryAccent = (() => {
@@ -212,6 +219,31 @@ export default function PreviewScreen() {
       cancelled = true;
     };
   }, [isImage, fetchAndDecrypt]);
+
+  // Auto-load PDFs inline on mount — WebView renders them natively on iOS
+  useEffect(() => {
+    if (!isPdf) return;
+    if (Platform.OS === 'web') return;
+    let cancelled = false;
+    setPdfLoading(true);
+    setPdfError(null);
+    fetchAndDecrypt()
+      .then((uri) => {
+        if (!cancelled) setPdfUri(uri);
+      })
+      .catch((err) => {
+        if (!cancelled) setPdfError(friendlyError(err));
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setPdfLoading(false);
+          setDownloadProgress(0);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isPdf, fetchAndDecrypt]);
 
   const handleDownload = useCallback(async () => {
     if (Platform.OS === 'web') {
@@ -312,6 +344,32 @@ export default function PreviewScreen() {
                   : isUnlocked
                   ? 'Downloading and decrypting...'
                   : 'Unlock your vault to view this image.'}
+              </Text>
+            </View>
+          )
+        ) : isPdf ? (
+          pdfUri ? (
+            <WebView
+              source={{ uri: pdfUri }}
+              style={[styles.pdfWebView, { backgroundColor: c.paper }]}
+              originWhitelist={['*']}
+            />
+          ) : pdfError ? (
+            <View style={styles.imageStatus}>
+              <Text style={[styles.imageStatusTitle, { color: colors.white }]}>
+                Couldn't load PDF
+              </Text>
+              <Text style={styles.imageStatusSub}>{pdfError}</Text>
+            </View>
+          ) : (
+            <View style={styles.imageStatus}>
+              <ActivityIndicator color={c.amber} size="large" />
+              <Text style={styles.imageStatusSub}>
+                {pdfLoading && downloadProgress > 0
+                  ? `Decrypting · ${Math.round(downloadProgress * 100)}%`
+                  : isUnlocked
+                  ? 'Downloading and decrypting...'
+                  : 'Unlock your vault to view this PDF.'}
               </Text>
             </View>
           )
@@ -490,6 +548,7 @@ const styles = StyleSheet.create({
   },
 
   image: { width: '100%', height: '100%' },
+  pdfWebView: { width: '100%', height: '100%' },
   imageStatus: { alignItems: 'center', gap: 12 },
   imageStatusTitle: { fontSize: 16, fontWeight: '600' },
   imageStatusSub: {
