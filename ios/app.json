@@ -1,11 +1,56 @@
 {
-  "ios": {
-    "bundleIdentifier": "com.devidee.ios"
-  },
-  "extra": {
-    "eas": {
-      "projectId": "36f4f00d-2a23-49e3-a52d-313391367e4b"
+  "expo": {
+    "name": "Beebeeb",
+    "slug": "beebeeb",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "splash": {
+      "backgroundColor": "#FAF8F5"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "io.beebeeb.app",
+      "appleTeamId": "R8352WDJJR",
+      "entitlements": {
+        "com.apple.security.application-groups": [
+          "group.io.beebeeb.shared"
+        ],
+        "keychain-access-groups": [
+          "$(AppIdentifierPrefix)io.beebeeb.shared"
+        ]
+      },
+      "infoPlist": {
+        "NSFileProviderPresenceAuthorized": true,
+        "NSCameraUsageDescription": "Beebeeb scans the amber constellation pattern to pair a new device."
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#1A1714"
+      },
+      "package": "io.beebeeb.app",
+      "permissions": [
+        "android.permission.USE_BIOMETRIC",
+        "android.permission.USE_FINGERPRINT"
+      ]
+    },
+    "web": {
+      "bundler": "metro",
+      "favicon": "./assets/icon.png"
+    },
+    "plugins": [
+      "expo-secure-store",
+      "expo-local-authentication",
+      "./modules/beebeeb-crypto"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "6491ff3c-29b3-4b44-98de-34225fd666a6"
+      }
     }
-  },
-  "owner": "devidee"
+  }
 }
