@@ -1,11 +1,11 @@
 # Graph Report - mobile  (2026-05-01)
 
 ## Corpus Check
-- 8048 files · ~7,460,641 words
+- 8050 files · ~7,461,447 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 9516 nodes · 9902 edges · 202 communities detected
+- 9520 nodes · 9904 edges · 201 communities detected
 - Extraction: 84% EXTRACTED · 16% INFERRED · 0% AMBIGUOUS · INFERRED: 1580 edges (avg confidence: 0.8)
 - Token cost: 0 input · 0 output
 
@@ -99,13 +99,13 @@
 - [[_COMMUNITY_Community 89|Community 89]]
 - [[_COMMUNITY_Community 90|Community 90]]
 - [[_COMMUNITY_Community 91|Community 91]]
-- [[_COMMUNITY_Community 92|Community 92]]
+- [[_COMMUNITY_Community 93|Community 93]]
 - [[_COMMUNITY_Community 94|Community 94]]
 - [[_COMMUNITY_Community 95|Community 95]]
 - [[_COMMUNITY_Community 96|Community 96]]
-- [[_COMMUNITY_Community 97|Community 97]]
+- [[_COMMUNITY_Community 99|Community 99]]
 - [[_COMMUNITY_Community 100|Community 100]]
-- [[_COMMUNITY_Community 101|Community 101]]
+- [[_COMMUNITY_Community 102|Community 102]]
 - [[_COMMUNITY_Community 103|Community 103]]
 - [[_COMMUNITY_Community 104|Community 104]]
 - [[_COMMUNITY_Community 105|Community 105]]
@@ -113,83 +113,82 @@
 - [[_COMMUNITY_Community 107|Community 107]]
 - [[_COMMUNITY_Community 108|Community 108]]
 - [[_COMMUNITY_Community 109|Community 109]]
-- [[_COMMUNITY_Community 110|Community 110]]
-- [[_COMMUNITY_Community 116|Community 116]]
-- [[_COMMUNITY_Community 119|Community 119]]
+- [[_COMMUNITY_Community 115|Community 115]]
+- [[_COMMUNITY_Community 118|Community 118]]
+- [[_COMMUNITY_Community 120|Community 120]]
 - [[_COMMUNITY_Community 121|Community 121]]
 - [[_COMMUNITY_Community 122|Community 122]]
 - [[_COMMUNITY_Community 123|Community 123]]
 - [[_COMMUNITY_Community 124|Community 124]]
 - [[_COMMUNITY_Community 125|Community 125]]
 - [[_COMMUNITY_Community 126|Community 126]]
-- [[_COMMUNITY_Community 127|Community 127]]
+- [[_COMMUNITY_Community 128|Community 128]]
 - [[_COMMUNITY_Community 129|Community 129]]
 - [[_COMMUNITY_Community 130|Community 130]]
-- [[_COMMUNITY_Community 131|Community 131]]
-- [[_COMMUNITY_Community 135|Community 135]]
-- [[_COMMUNITY_Community 138|Community 138]]
+- [[_COMMUNITY_Community 134|Community 134]]
+- [[_COMMUNITY_Community 137|Community 137]]
+- [[_COMMUNITY_Community 139|Community 139]]
 - [[_COMMUNITY_Community 140|Community 140]]
 - [[_COMMUNITY_Community 141|Community 141]]
-- [[_COMMUNITY_Community 142|Community 142]]
-- [[_COMMUNITY_Community 145|Community 145]]
-- [[_COMMUNITY_Community 148|Community 148]]
+- [[_COMMUNITY_Community 144|Community 144]]
+- [[_COMMUNITY_Community 147|Community 147]]
+- [[_COMMUNITY_Community 149|Community 149]]
 - [[_COMMUNITY_Community 150|Community 150]]
 - [[_COMMUNITY_Community 151|Community 151]]
 - [[_COMMUNITY_Community 152|Community 152]]
 - [[_COMMUNITY_Community 153|Community 153]]
 - [[_COMMUNITY_Community 154|Community 154]]
-- [[_COMMUNITY_Community 155|Community 155]]
-- [[_COMMUNITY_Community 163|Community 163]]
-- [[_COMMUNITY_Community 166|Community 166]]
+- [[_COMMUNITY_Community 162|Community 162]]
+- [[_COMMUNITY_Community 165|Community 165]]
+- [[_COMMUNITY_Community 167|Community 167]]
 - [[_COMMUNITY_Community 168|Community 168]]
 - [[_COMMUNITY_Community 169|Community 169]]
 - [[_COMMUNITY_Community 170|Community 170]]
-- [[_COMMUNITY_Community 171|Community 171]]
+- [[_COMMUNITY_Community 172|Community 172]]
 - [[_COMMUNITY_Community 173|Community 173]]
 - [[_COMMUNITY_Community 174|Community 174]]
 - [[_COMMUNITY_Community 175|Community 175]]
-- [[_COMMUNITY_Community 176|Community 176]]
+- [[_COMMUNITY_Community 177|Community 177]]
 - [[_COMMUNITY_Community 178|Community 178]]
 - [[_COMMUNITY_Community 179|Community 179]]
 - [[_COMMUNITY_Community 180|Community 180]]
 - [[_COMMUNITY_Community 181|Community 181]]
-- [[_COMMUNITY_Community 182|Community 182]]
-- [[_COMMUNITY_Community 184|Community 184]]
+- [[_COMMUNITY_Community 183|Community 183]]
+- [[_COMMUNITY_Community 193|Community 193]]
 - [[_COMMUNITY_Community 194|Community 194]]
-- [[_COMMUNITY_Community 195|Community 195]]
-- [[_COMMUNITY_Community 197|Community 197]]
+- [[_COMMUNITY_Community 196|Community 196]]
+- [[_COMMUNITY_Community 207|Community 207]]
 - [[_COMMUNITY_Community 208|Community 208]]
-- [[_COMMUNITY_Community 209|Community 209]]
-- [[_COMMUNITY_Community 211|Community 211]]
-- [[_COMMUNITY_Community 213|Community 213]]
+- [[_COMMUNITY_Community 210|Community 210]]
+- [[_COMMUNITY_Community 212|Community 212]]
+- [[_COMMUNITY_Community 214|Community 214]]
 - [[_COMMUNITY_Community 215|Community 215]]
 - [[_COMMUNITY_Community 216|Community 216]]
 - [[_COMMUNITY_Community 217|Community 217]]
 - [[_COMMUNITY_Community 218|Community 218]]
-- [[_COMMUNITY_Community 219|Community 219]]
-- [[_COMMUNITY_Community 221|Community 221]]
+- [[_COMMUNITY_Community 220|Community 220]]
+- [[_COMMUNITY_Community 222|Community 222]]
 - [[_COMMUNITY_Community 223|Community 223]]
 - [[_COMMUNITY_Community 224|Community 224]]
 - [[_COMMUNITY_Community 225|Community 225]]
 - [[_COMMUNITY_Community 226|Community 226]]
 - [[_COMMUNITY_Community 227|Community 227]]
-- [[_COMMUNITY_Community 228|Community 228]]
-- [[_COMMUNITY_Community 230|Community 230]]
-- [[_COMMUNITY_Community 232|Community 232]]
-- [[_COMMUNITY_Community 235|Community 235]]
+- [[_COMMUNITY_Community 229|Community 229]]
+- [[_COMMUNITY_Community 231|Community 231]]
+- [[_COMMUNITY_Community 234|Community 234]]
+- [[_COMMUNITY_Community 239|Community 239]]
 - [[_COMMUNITY_Community 240|Community 240]]
-- [[_COMMUNITY_Community 241|Community 241]]
+- [[_COMMUNITY_Community 242|Community 242]]
 - [[_COMMUNITY_Community 243|Community 243]]
 - [[_COMMUNITY_Community 244|Community 244]]
-- [[_COMMUNITY_Community 245|Community 245]]
+- [[_COMMUNITY_Community 246|Community 246]]
 - [[_COMMUNITY_Community 247|Community 247]]
-- [[_COMMUNITY_Community 248|Community 248]]
-- [[_COMMUNITY_Community 251|Community 251]]
-- [[_COMMUNITY_Community 253|Community 253]]
+- [[_COMMUNITY_Community 250|Community 250]]
+- [[_COMMUNITY_Community 252|Community 252]]
+- [[_COMMUNITY_Community 257|Community 257]]
 - [[_COMMUNITY_Community 258|Community 258]]
 - [[_COMMUNITY_Community 259|Community 259]]
 - [[_COMMUNITY_Community 260|Community 260]]
-- [[_COMMUNITY_Community 261|Community 261]]
 - [[_COMMUNITY_Community 443|Community 443]]
 - [[_COMMUNITY_Community 449|Community 449]]
 - [[_COMMUNITY_Community 450|Community 450]]
@@ -241,79 +240,79 @@
 
 ### Community 0 - "Community 0"
 Cohesion: 0.01
-Nodes (172): weak_ptr, facebook(), T(), facebook(), call(), callWithArgs(), callWithFunction(), callWithPriority() (+164 more)
+Nodes (171): weak_ptr, facebook(), T(), facebook(), call(), callWithArgs(), callWithFunction(), callWithPriority() (+163 more)
 
 ### Community 1 - "Community 1"
 Cohesion: 0.01
-Nodes (128): facebook(), folly(), folly(), makeGuard(), addressof(), addrof_ref, facebook(), BOOST_CORE_SWAP_NOEXCEPT_IF() (+120 more)
+Nodes (148): copy_n(), folly(), localtime(), on_12_hour(), on_12_hour_time(), on_24_hour(), on_24_hour_time(), on_abbr_month() (+140 more)
 
 ### Community 2 - "Community 2"
 Cohesion: 0.01
-Nodes (142): copy_n(), folly(), localtime(), on_12_hour(), on_12_hour_time(), on_24_hour(), on_24_hour_time(), on_abbr_month() (+134 more)
+Nodes (141): select_on_container_copy_construction(), small_vector_allocator, adaptive_pool, allocator, basic_string, deque, devector, flat_map (+133 more)
 
 ### Community 3 - "Community 3"
 Cohesion: 0.01
-Nodes (132): select_on_container_copy_construction(), small_vector_allocator, adaptive_pool, allocator, basic_string, deque, devector, flat_map (+124 more)
+Nodes (102): detail(), float(), folly(), FrameProcessorPlugin, floor(), round(), any_base_hook, any_member_hook (+94 more)
 
 ### Community 4 - "Community 4"
-Cohesion: 0.01
-Nodes (102): detail(), float(), folly(), FrameProcessorPlugin, floor(), round(), any_base_hook, any_member_hook (+94 more)
+Cohesion: 0.02
+Nodes (85): facebook(), toJs(), Codable, BOOST_NOEXCEPT(), Decodable, fastIpv4AppendToString(), fastIpV4ToBufferUnsafe(), fastIpv4ToString() (+77 more)
 
 ### Community 5 - "Community 5"
 Cohesion: 0.02
-Nodes (122): allocate_node(), BOOST_CATCH(), BOOST_TRY(), check_invariant_(), clear_(), construct_value(), copy_construct_from(), deallocate_node() (+114 more)
+Nodes (123): allocate_node(), BOOST_CATCH(), BOOST_TRY(), check_invariant_(), clear_(), construct_value(), copy_construct_from(), deallocate_node() (+115 more)
 
 ### Community 6 - "Community 6"
-Cohesion: 0.01
-Nodes (98): file_name(), function_name(), to_string(), impl(), mem_fn(), next(), facebook(), array_detail() (+90 more)
-
-### Community 7 - "Community 7"
 Cohesion: 0.02
 Nodes (137): begin(), end(), eraseImpl(), rbegin(), rend(), tmp(), at(), begin() (+129 more)
 
-### Community 8 - "Community 8"
+### Community 7 - "Community 7"
 Cohesion: 0.01
 Nodes (85): PodsDummy_DoubleConversion, PodsDummy_EXConstants, PodsDummy_EXJSONUtils, PodsDummy_EXManifests, PodsDummy_Expo, PodsDummy_ExpoAsset, PodsDummy_ExpoClipboard, PodsDummy_ExpoDocumentPicker (+77 more)
 
+### Community 8 - "Community 8"
+Cohesion: 0.02
+Nodes (85): MUTEX_NAMESPACE(), attach(), check_outside_range(), check_same_owner(), check_valid_range(), detach(), detach_equivalent_iterators(), safe_container (+77 more)
+
 ### Community 9 - "Community 9"
 Cohesion: 0.02
-Nodes (70): Codable, BOOST_NOEXCEPT(), fastIpv4AppendToString(), fastIpV4ToBufferUnsafe(), fastIpv4ToString(), fastIpv6AppendToString(), fastIpv6ToBufferUnsafe(), fastIpv6ToString() (+62 more)
+Nodes (106): size_(), at(), back(), D_destroy_range_a(), D_uninitialized_fill_n_a(), dataIsInternal(), dataIsInternalAndNotVT(), end() (+98 more)
 
 ### Community 10 - "Community 10"
 Cohesion: 0.02
-Nodes (110): size_(), at(), back(), D_destroy_range_a(), D_uninitialized_fill_n_a(), dataIsInternal(), dataIsInternalAndNotVT(), end() (+102 more)
+Nodes (70): facebook(), Allocator, CoreAllocatorGuard(), coreFree(), coreMalloc(), coreMallocFromGuard(), folly(), getSystemLocalityInfo() (+62 more)
 
 ### Community 11 - "Community 11"
-Cohesion: 0.02
-Nodes (71): facebook(), Allocator, CoreAllocatorGuard(), coreFree(), coreMalloc(), coreMallocFromGuard(), folly(), getSystemLocalityInfo() (+63 more)
-
-### Community 12 - "Community 12"
 Cohesion: 0.03
 Nodes (122): adaptive_merge(), adaptive_merge_combine_blocks(), adaptive_merge_final_merge(), adaptive_merge_impl(), adaptive_merge_n_keys_intbuf(), adaptive_merge_n_keys_with_external_keys(), adaptive_merge_n_keys_without_external_keys(), adaptive_sort_build_blocks() (+114 more)
 
-### Community 13 - "Community 13"
+### Community 12 - "Community 12"
 Cohesion: 0.02
-Nodes (57): MUTEX_NAMESPACE(), hardware_timestamp(), hardware_timestamp_measurement_stop(), bad_alloc(), BOOST_SYMBOL_VISIBLE, throw_out_of_range(), priv_throw_if_out_of_range(), TryWaitResult() (+49 more)
+Nodes (61): impl(), mem_fn(), next(), facebook(), array_detail(), detail(), EmplaceBack(), folly() (+53 more)
+
+### Community 13 - "Community 13"
+Cohesion: 0.03
+Nodes (72): check(), max(), min(), computeInsertCapacity(), folly(), makeGuard(), facebook(), facebook() (+64 more)
 
 ### Community 14 - "Community 14"
-Cohesion: 0.03
-Nodes (84): begin(), contains(), count(), end(), erase(), eraseInto(), eraseUnderlyingKey(), find() (+76 more)
+Cohesion: 0.02
+Nodes (72): T(), archive_constructed(), call(), const_pow(), generate(), generate_from_int(), generate_from_real(), generate_impl() (+64 more)
 
 ### Community 15 - "Community 15"
 Cohesion: 0.02
-Nodes (62): facebook(), T(), apply(), apply2(), integer_log2(), call(), const_pow(), generate() (+54 more)
+Nodes (35): file_name(), function_name(), to_string(), facebook(), facebook(), find_format_all_copy_impl(), find_format_all_impl(), find_format_all_impl2() (+27 more)
 
 ### Community 16 - "Community 16"
 Cohesion: 0.03
-Nodes (84): BignumDtoa(), BignumToFixed(), EstimatePower(), FixupMultiply10(), GenerateCountedDigits(), GenerateShortestDigits(), InitialScaledStartValues(), InitialScaledStartValuesNegativeExponentNegativePower() (+76 more)
+Nodes (85): begin(), contains(), count(), end(), erase(), eraseInto(), eraseUnderlyingKey(), find() (+77 more)
 
 ### Community 17 - "Community 17"
-Cohesion: 0.04
-Nodes (64): check(), max(), min(), computeInsertCapacity(), facebook(), facebook(), uint32_t(), folly() (+56 more)
+Cohesion: 0.03
+Nodes (85): BignumDtoa(), BignumToFixed(), EstimatePower(), FixupMultiply10(), GenerateCountedDigits(), GenerateShortestDigits(), InitialScaledStartValues(), InitialScaledStartValuesNegativeExponentNegativePower() (+77 more)
 
 ### Community 18 - "Community 18"
 Cohesion: 0.02
-Nodes (22): facebook(), find_format_all_copy_impl(), find_format_all_impl(), find_format_all_impl2(), find_format_copy_impl(), find_format_impl(), process_segment(), NativeModule() (+14 more)
+Nodes (45): AUX_WRAPPER_NAME(), folly(), contains(), count(), find(), flat_map, flat_multimap, insert_or_assign() (+37 more)
 
 ### Community 19 - "Community 19"
 Cohesion: 0.05
@@ -321,67 +320,67 @@ Nodes (71): array, array< T, 0 >, expo(), expo(), float32_t(), float64_t(), dyna
 
 ### Community 20 - "Community 20"
 Cohesion: 0.03
-Nodes (22): abort(), at(), back(), begin(), cend(), erase(), folly(), insert() (+14 more)
+Nodes (53): BOOST_CORE_SWAP_NOEXCEPT_IF(), facebook(), adl_swap(), swap(), apply(), apply2(), integer_log2(), swap_() (+45 more)
 
 ### Community 21 - "Community 21"
 Cohesion: 0.03
-Nodes (37): equal(), equal_impl(), operator(), broadcast(), facebook(), to_underlying(), hash(), operator() (+29 more)
+Nodes (22): abort(), at(), back(), begin(), cend(), erase(), folly(), insert() (+14 more)
 
 ### Community 22 - "Community 22"
 Cohesion: 0.03
-Nodes (41): accept(), bind_t, function_equal(), implementation, list0, list1, list2, list3 (+33 more)
+Nodes (43): folly(), facebook(), value(), common(), clear(), data(), dynamic_arg_list(), emplace() (+35 more)
 
 ### Community 23 - "Community 23"
 Cohesion: 0.03
-Nodes (30): is_iequal(), is_iless(), ierase_all(), ierase_all_copy(), ierase_first(), ierase_first_copy(), ierase_last(), ierase_last_copy() (+22 more)
+Nodes (37): equal(), equal_impl(), operator(), broadcast(), facebook(), to_underlying(), hash(), operator() (+29 more)
 
 ### Community 24 - "Community 24"
-Cohesion: 0.09
-Nodes (72): facebook(), enforce(), equal(), join(), parse_demangled_tag_name(), ptr_range_key(), ptr_range_mapped(), render() (+64 more)
+Cohesion: 0.03
+Nodes (41): accept(), bind_t, function_equal(), implementation, list0, list1, list2, list3 (+33 more)
 
 ### Community 25 - "Community 25"
 Cohesion: 0.03
-Nodes (35): folly(), common_slist_algorithms, stable_partition(), duplicates_iterator, advance(), bidirectional_iter_adaptor_base, dereference(), forward_iter_adaptor_base (+27 more)
+Nodes (30): is_iequal(), is_iless(), ierase_all(), ierase_all_copy(), ierase_first(), ierase_first_copy(), ierase_last(), ierase_last_copy() (+22 more)
 
 ### Community 26 - "Community 26"
-Cohesion: 0.04
-Nodes (36): toJs(), folly(), common(), key(), CreateObjectRecord(), Method(), Record(), type() (+28 more)
+Cohesion: 0.09
+Nodes (72): facebook(), enforce(), equal(), join(), parse_demangled_tag_name(), ptr_range_key(), ptr_range_mapped(), render() (+64 more)
 
 ### Community 27 - "Community 27"
+Cohesion: 0.03
+Nodes (35): folly(), common_slist_algorithms, stable_partition(), duplicates_iterator, advance(), bidirectional_iter_adaptor_base, dereference(), forward_iter_adaptor_base (+27 more)
+
+### Community 28 - "Community 28"
+Cohesion: 0.04
+Nodes (29): uint32_t(), bigint(), pow10(), pow2(), pow5(), shl(), shl_bits(), shl_limbs() (+21 more)
+
+### Community 29 - "Community 29"
+Cohesion: 0.04
+Nodes (33): buffered_file(), close(), descriptor(), flush(), closeNoInt(), filterCloseReturn(), folly(), getIOVecFor() (+25 more)
+
+### Community 30 - "Community 30"
+Cohesion: 0.05
+Nodes (47): chunkAllocSize(), computeCapacity(), final(), if(), kAllocIsAlwaysEqual(), header_holder(), BOOST_CATCH(), clear_() (+39 more)
+
+### Community 31 - "Community 31"
 Cohesion: 0.05
 Nodes (44): range, errnoStr(), folly(), invoke_strerror_r(), is_oddspace(), ltrimWhitespace(), prettyToDouble(), rtrimWhitespace() (+36 more)
 
-### Community 28 - "Community 28"
+### Community 32 - "Community 32"
 Cohesion: 0.05
 Nodes (47): constructor(), Super(), ApiError, base64ToUint8(), changePassword(), clearToken(), createFolder(), createShare() (+39 more)
 
-### Community 29 - "Community 29"
-Cohesion: 0.05
-Nodes (30): buffered_file(), close(), descriptor(), flush(), closeNoInt(), filterCloseReturn(), getIOVecFor(), throwIfWriteFileAtomicFailed() (+22 more)
-
-### Community 30 - "Community 30"
+### Community 33 - "Community 33"
 Cohesion: 0.03
 Nodes (61): SRWebSocket, -_addConsumerWithDataLengthcallbackreadToCurrentFrameunmaskBytes, -_addConsumerWithScannercallback, -_addConsumerWithScannercallbackdataLength, -assertOnWorkQueue, -automaticallyNotifiesObserversOfReadyState, -_checkHandshake, -_cleanupSelfReference (+53 more)
 
-### Community 31 - "Community 31"
+### Community 34 - "Community 34"
 Cohesion: 0.04
 Nodes (13): expand_backward_and_insert_nonempty_middle_alloc(), expand_backward_forward_and_insert_alloc(), expand_backward_forward_and_insert_alloc_move_backward(), expand_backward_forward_and_insert_alloc_move_forward(), expand_forward_and_insert_alloc(), expand_forward_and_insert_nonempty_middle_alloc(), move_backward(), offset_ptr (+5 more)
 
-### Community 32 - "Community 32"
-Cohesion: 0.05
-Nodes (36): BOOST_SYMBOL_VISIBLE, copy_from(), rethrow(), throw_exception(), throw_exception_assert_compatibility(), throw_with_location(), wrapexcept(), core_version_type() (+28 more)
-
-### Community 33 - "Community 33"
-Cohesion: 0.05
-Nodes (18): bigint(), pow10(), pow2(), pow5(), shl(), shl_bits(), shl_limbs(), begin() (+10 more)
-
-### Community 34 - "Community 34"
-Cohesion: 0.06
-Nodes (43): get(), create(), get_existing(), StaticSingletonManagerWithRttiImpl, contains(), elementsCapacity(), erase(), get() (+35 more)
-
 ### Community 35 - "Community 35"
-Cohesion: 0.06
-Nodes (37): chunkAllocSize(), computeCapacity(), final(), if(), kAllocIsAlwaysEqual(), header_holder(), BOOST_CATCH(), clear_() (+29 more)
+Cohesion: 0.04
+Nodes (26): hardware_timestamp(), hardware_timestamp_measurement_stop(), bad_alloc(), BOOST_SYMBOL_VISIBLE, throw_out_of_range(), priv_throw_if_out_of_range(), TryWaitResult(), BOOST_SYMBOL_VISIBLE (+18 more)
 
 ### Community 36 - "Community 36"
 Cohesion: 0.06
@@ -391,10 +390,6 @@ Nodes (31): Data(), emplace_equal(), emplace_hint_equal(), emplace_hint_unique()
          upper_bound() (+23 more)
 
 ### Community 37 - "Community 37"
-Cohesion: 0.06
-Nodes (22): facebook(), toJs(), Decodable, Error, ApiClient, ApiError, invalidResponse, notAuthenticated (+14 more)
-
-### Community 38 - "Community 38"
 Cohesion: 0.07
 Nodes (22): facebook(), facebook(), bigint(), adl_begin(), adl_end(), assign(), enable_if<
             mpl::not_<boost::is_base_and_derived<iterator_range_detail::iterator_range_tag, ForwardRange> >,
@@ -405,6 +400,10 @@ Nodes (22): facebook(), facebook(), bigint(), adl_begin(), adl_end(), assign(), 
             bool
         >::type
         operator==() (+14 more)
+
+### Community 38 - "Community 38"
+Cohesion: 0.09
+Nodes (28): get(), create(), get_existing(), StaticSingletonManagerWithRttiImpl, contains(), elementsCapacity(), erase(), get() (+20 more)
 
 ### Community 39 - "Community 39"
 Cohesion: 0.09
@@ -419,37 +418,36 @@ Cohesion: 0.1
 Nodes (23): awaitDone(), awaitDoneTryLock(), awaitPending(), clearPending(), combinedOp(), combiningPass(), combiningSession(), dedicatedCombining() (+15 more)
 
 ### Community 42 - "Community 42"
-Cohesion: 0.07
-Nodes (10): contains(), count(), emplace_hint(), find(), flat_map, flat_multimap, insert_or_assign(), pair<iterator, bool> insert_or_assign() (+2 more)
-
-### Community 43 - "Community 43"
 Cohesion: 0.06
 Nodes (14): basic_ios_all_saver, basic_ios_exception_saver, basic_ios_fill_saver, basic_ios_iostate_saver, basic_ios_locale_saver, basic_ios_rdbuf_saver, basic_ios_tie_saver, ios_all_word_saver (+6 more)
 
-### Community 44 - "Community 44"
+### Community 43 - "Community 43"
 Cohesion: 0.08
 Nodes (11): wcslen(), array_size(), boost_range_silence_warning(), is_same_address(), is_same_object(), str_end(), str_size(), as_literal() (+3 more)
 
-### Community 45 - "Community 45"
+### Community 44 - "Community 44"
 Cohesion: 0.08
 Nodes (18): A1, A2, A3, A4, A5, A6, A7, A8 (+10 more)
 
-### Community 46 - "Community 46"
+### Community 45 - "Community 45"
 Cohesion: 0.08
 Nodes (7): is_space(), trim(), trim_copy(), trim_left(), trim_left_copy(), trim_right(), trim_right_copy()
 
-### Community 47 - "Community 47"
+### Community 46 - "Community 46"
 Cohesion: 0.07
 Nodes (9): A1, A2, A3, A4, A5, A6, A7, A8 (+1 more)
+
+### Community 47 - "Community 47"
+Cohesion: 0.1
+Nodes (14): BOOST_SYMBOL_VISIBLE, copy_from(), rethrow(), throw_exception(), throw_exception_assert_compatibility(), throw_with_location(), wrapexcept(), core_version_type() (+6 more)
 
 ### Community 49 - "Community 49"
 Cohesion: 0.11
 Nodes (9): bitCount(), getNthLSBit(), getNthLSByte(), byteCount(), bytes(), getNthLSBit(), getNthLSByte(), getNthMSBit() (+1 more)
 
 ### Community 50 - "Community 50"
-Cohesion: 0.09
-Nodes (10): AUX_WRAPPER_NAME(), BOOST_NOEXCEPT(), reference_wrapper, components_bcc<typename remove_cv<T>::type,T,
-            ClassTypeTransform>(), transform_iterator, namespace(), BOOST_WORKAROUND(), range_begin() (+2 more)
+Cohesion: 0.11
+Nodes (9): facebook(), true_type(), assign_functor(), assign_functor_a(), assign_to(), assign_to_a(), function<BOOST_FUNCTION_PARTIAL_SPEC>, surfaceId() (+1 more)
 
 ### Community 51 - "Community 51"
 Cohesion: 0.09
@@ -508,122 +506,118 @@ Cohesion: 0.13
 Nodes (14): basic_ios_all_saver, basic_ios_exception_saver, basic_ios_fill_saver, basic_ios_iostate_saver, basic_ios_locale_saver, basic_ios_rdbuf_saver, basic_ios_tie_saver, ios_all_word_saver (+6 more)
 
 ### Community 67 - "Community 67"
-Cohesion: 0.13
-Nodes (6): default_init_construct_iterator, emplace_iterator, inplace_impl(), repeat_iterator, value_init_construct_iterator, value_type()
-
-### Community 68 - "Community 68"
 Cohesion: 0.16
 Nodes (4): copy_n_and_update(), priv_copy_some_and_update(), priv_uninitialized_copy_some_and_update(), uninitialized_copy_n_and_update()
 
-### Community 69 - "Community 69"
+### Community 68 - "Community 68"
 Cohesion: 0.14
 Nodes (3): binder1st, binder2nd, unary_negate
 
-### Community 70 - "Community 70"
+### Community 69 - "Community 69"
 Cohesion: 0.19
 Nodes (3): seed(), xor_combine, xor_combine_engine
 
-### Community 71 - "Community 71"
+### Community 70 - "Community 70"
 Cohesion: 0.19
 Nodes (3): additive_combine, additive_combine_engine, seed()
 
-### Community 72 - "Community 72"
+### Community 71 - "Community 71"
 Cohesion: 0.2
 Nodes (3): inversive_congruential, inversive_congruential_engine, seed()
 
-### Community 73 - "Community 73"
+### Community 72 - "Community 72"
 Cohesion: 0.2
 Nodes (5): check_params(), check_probabilities(), check_rates(), hyperexponential_distribution, param_type
 
-### Community 74 - "Community 74"
+### Community 73 - "Community 73"
 Cohesion: 0.32
 Nodes (13): endian32(), endian64(), FBxxHash64(), fetch32(), fetch64(), fetch8(), finalize(), h32bytes() (+5 more)
 
-### Community 75 - "Community 75"
+### Community 74 - "Community 74"
 Cohesion: 0.31
 Nodes (9): apply_bigskip(), fmodmulM61(), iterate_raw_vec(), mixmax_engine, modadd(), MULWU(), seed(), seed_uniquestream() (+1 more)
 
-### Community 76 - "Community 76"
+### Community 75 - "Community 75"
 Cohesion: 0.17
 Nodes (2): param_type, uniform_smallint
 
-### Community 77 - "Community 77"
+### Community 76 - "Community 76"
 Cohesion: 0.23
 Nodes (2): independent_bits_engine, seed()
 
-### Community 78 - "Community 78"
+### Community 77 - "Community 77"
 Cohesion: 0.17
 Nodes (2): normal_distribution, param_type
 
-### Community 79 - "Community 79"
+### Community 78 - "Community 78"
 Cohesion: 0.17
 Nodes (2): param_type, uniform_int_distribution
 
-### Community 80 - "Community 80"
+### Community 79 - "Community 79"
 Cohesion: 0.18
 Nodes (2): exponential_distribution, param_type
 
-### Community 81 - "Community 81"
+### Community 80 - "Community 80"
 Cohesion: 0.18
 Nodes (2): fisher_f_distribution, param_type
 
-### Community 82 - "Community 82"
+### Community 81 - "Community 81"
 Cohesion: 0.25
 Nodes (3): discard_block, discard_block_engine, seed()
 
-### Community 83 - "Community 83"
+### Community 82 - "Community 82"
 Cohesion: 0.18
 Nodes (2): param_type, weibull_distribution
 
-### Community 84 - "Community 84"
+### Community 83 - "Community 83"
 Cohesion: 0.18
 Nodes (2): bernoulli_distribution, param_type
 
-### Community 85 - "Community 85"
+### Community 84 - "Community 84"
 Cohesion: 0.18
 Nodes (2): param_type, piecewise_constant_distribution
 
-### Community 86 - "Community 86"
+### Community 85 - "Community 85"
 Cohesion: 0.18
 Nodes (2): extreme_value_distribution, param_type
 
-### Community 87 - "Community 87"
+### Community 86 - "Community 86"
 Cohesion: 0.18
 Nodes (2): non_central_chi_squared_distribution, param_type
 
-### Community 88 - "Community 88"
+### Community 87 - "Community 87"
 Cohesion: 0.18
 Nodes (2): param_type, student_t_distribution
 
-### Community 89 - "Community 89"
+### Community 88 - "Community 88"
 Cohesion: 0.18
 Nodes (2): param_type, uniform_on_sphere
 
-### Community 90 - "Community 90"
+### Community 89 - "Community 89"
 Cohesion: 0.18
 Nodes (2): beta_distribution, param_type
 
-### Community 91 - "Community 91"
+### Community 90 - "Community 90"
 Cohesion: 0.18
 Nodes (2): laplace_distribution, param_type
 
-### Community 92 - "Community 92"
+### Community 91 - "Community 91"
 Cohesion: 0.18
 Nodes (2): cauchy_distribution, param_type
 
-### Community 94 - "Community 94"
+### Community 93 - "Community 93"
 Cohesion: 0.25
 Nodes (6): Color(), colorComponentsFromHostPlatformColor(), getColorComponents(), HostPlatformColor(), hostPlatformColorFromComponents(), hostPlatformColorFromRGBA()
 
-### Community 95 - "Community 95"
+### Community 94 - "Community 94"
 Cohesion: 0.2
 Nodes (9): AppDelegate, -applicationcontinueUserActivityrestorationHandler, -applicationdidFailToRegisterForRemoteNotificationsWithError, -applicationdidFinishLaunchingWithOptions, -applicationdidReceiveRemoteNotificationfetchCompletionHandler, -applicationdidRegisterForRemoteNotificationsWithDeviceToken, -applicationopenURLoptions, -bundleURL (+1 more)
 
-### Community 96 - "Community 96"
+### Community 95 - "Community 95"
 Cohesion: 0.31
 Nodes (8): emulatedFutexWaitImpl(), emulatedFutexWake(), futexWaitImpl(), futexWakeImpl(), folly(), nativeFutexWaitImpl(), nativeFutexWake(), timeSpecFromTimePoint()
 
-### Community 97 - "Community 97"
+### Community 96 - "Community 96"
 Cohesion: 0.2
 Nodes (4): false_t, is_convertible, rv, boost::move_detail::if_c
          < ::boost::move_detail::is_class<T>::value
@@ -631,101 +625,105 @@ Nodes (4): false_t, is_convertible, rv, boost::move_detail::if_c
          , ::boost::move_detail::nat
          >::type()
 
-### Community 100 - "Community 100"
+### Community 99 - "Community 99"
 Cohesion: 0.22
 Nodes (2): grow_capacity_by(), folly()
 
-### Community 101 - "Community 101"
+### Community 100 - "Community 100"
 Cohesion: 0.22
 Nodes (5): get_impl, get_impl<0, tuple<Head, Values...> >, get_impl<I, tuple<Head, Values...> >, tuple, tuple<Head, Tail...>
 
-### Community 103 - "Community 103"
+### Community 102 - "Community 102"
 Cohesion: 0.25
 Nodes (6): tuple, tuple_element< I, boost::tuples::cons<H, T> >, tuple_element< I, boost::tuples::tuple<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10> >, tuple_size< boost::tuples::cons<H, T> >, tuple_size< boost::tuples::null_type >, tuple_size< boost::tuples::tuple<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10> >
 
-### Community 104 - "Community 104"
+### Community 103 - "Community 103"
 Cohesion: 0.32
 Nodes (4): get_node(), index_saver, save(), save_node()
 
-### Community 105 - "Community 105"
+### Community 104 - "Community 104"
 Cohesion: 0.29
 Nodes (4): algorithm, algorithm_base, execute(), get_node()
 
-### Community 106 - "Community 106"
+### Community 105 - "Community 105"
 Cohesion: 0.25
 Nodes (3): polynomial, polynomial_ops, reference
 
-### Community 107 - "Community 107"
+### Community 106 - "Community 106"
 Cohesion: 0.57
 Nodes (6): allocate(), deallocate(), obliterate(), reentrant_allocate(), reentrant_allocator_base(), reentrant_deallocate()
 
-### Community 108 - "Community 108"
+### Community 107 - "Community 107"
 Cohesion: 0.29
 Nodes (2): ModulesProvider, ExpoModulesProvider
 
-### Community 109 - "Community 109"
+### Community 108 - "Community 108"
 Cohesion: 0.48
 Nodes (4): BOOST_CONCEPT_USAGE(), ignore_unused_variable_warning(), require_boolean_expr(), test()
 
-### Community 110 - "Community 110"
+### Community 109 - "Community 109"
 Cohesion: 0.29
 Nodes (2): inverse, negate
 
-### Community 116 - "Community 116"
+### Community 115 - "Community 115"
 Cohesion: 0.29
 Nodes (1): MainApplication
 
-### Community 119 - "Community 119"
+### Community 118 - "Community 118"
 Cohesion: 0.53
 Nodes (4): json_pointer(), parse(), try_parse(), unescape()
 
-### Community 121 - "Community 121"
+### Community 120 - "Community 120"
 Cohesion: 0.33
 Nodes (1): reverse_iterator
 
-### Community 122 - "Community 122"
+### Community 121 - "Community 121"
 Cohesion: 0.33
 Nodes (1): typeinfo
 
-### Community 123 - "Community 123"
+### Community 122 - "Community 122"
 Cohesion: 0.33
 Nodes (2): new_allocator, new_allocator<void>
 
-### Community 124 - "Community 124"
+### Community 123 - "Community 123"
 Cohesion: 0.33
 Nodes (1): iterator_adaptor
 
-### Community 125 - "Community 125"
+### Community 124 - "Community 124"
 Cohesion: 0.4
 Nodes (2): list_iterator, nat
 
-### Community 126 - "Community 126"
+### Community 125 - "Community 125"
 Cohesion: 0.33
 Nodes (1): bidir_node_iterator
 
-### Community 127 - "Community 127"
+### Community 126 - "Community 126"
 Cohesion: 0.33
 Nodes (3): backward_compatible_uniform_01, new_uniform_01, uniform_01
 
-### Community 129 - "Community 129"
+### Community 128 - "Community 128"
 Cohesion: 0.33
 Nodes (5): SRRunLoopThread, -init, -main, -runLoop, -sharedThread
 
-### Community 130 - "Community 130"
+### Community 129 - "Community 129"
 Cohesion: 0.33
 Nodes (5): SRIOConsumerPool, -consumerWithScannerhandlerbytesNeededreadToCurrentFrameunmaskBytes, -init, -initWithBufferCapacity, -returnConsumer
 
-### Community 131 - "Community 131"
+### Community 130 - "Community 130"
 Cohesion: 0.33
 Nodes (1): MainActivity
 
-### Community 135 - "Community 135"
+### Community 134 - "Community 134"
 Cohesion: 0.5
 Nodes (2): unrollUntil(), unrollUntilImpl()
 
-### Community 138 - "Community 138"
+### Community 137 - "Community 137"
 Cohesion: 0.5
 Nodes (3): dropEmpty(), folly(), keepEmpty()
+
+### Community 139 - "Community 139"
+Cohesion: 0.4
+Nodes (2): lightweight_mutex, scoped_lock
 
 ### Community 140 - "Community 140"
 Cohesion: 0.4
@@ -735,141 +733,141 @@ Nodes (2): lightweight_mutex, scoped_lock
 Cohesion: 0.4
 Nodes (2): lightweight_mutex, scoped_lock
 
-### Community 142 - "Community 142"
-Cohesion: 0.4
-Nodes (2): lightweight_mutex, scoped_lock
-
-### Community 145 - "Community 145"
+### Community 144 - "Community 144"
 Cohesion: 0.4
 Nodes (4): has_const_time_erase, has_const_time_insert, has_native_replace, has_stable_iterators
 
-### Community 148 - "Community 148"
+### Community 147 - "Community 147"
 Cohesion: 0.4
 Nodes (2): default_init_construct_iterator, emplace_iterator
 
-### Community 150 - "Community 150"
+### Community 149 - "Community 149"
 Cohesion: 0.4
 Nodes (1): any_container_view
 
-### Community 151 - "Community 151"
+### Community 150 - "Community 150"
 Cohesion: 0.4
 Nodes (2): param_type, uniform_real
 
-### Community 152 - "Community 152"
+### Community 151 - "Community 151"
 Cohesion: 0.4
 Nodes (2): param_type, uniform_int
 
-### Community 153 - "Community 153"
+### Community 152 - "Community 152"
 Cohesion: 0.5
 Nodes (2): BOOST_WORKAROUND(), range_end()
 
-### Community 154 - "Community 154"
+### Community 153 - "Community 153"
 Cohesion: 0.4
 Nodes (1): base_from_member<MemberType&, UniqueID>
 
-### Community 155 - "Community 155"
+### Community 154 - "Community 154"
 Cohesion: 0.4
 Nodes (4): NSMutableURLRequest, -setSR_SSLPinnedCertificates, NSURLRequest, -SR_SSLPinnedCertificates
 
-### Community 163 - "Community 163"
+### Community 162 - "Community 162"
 Cohesion: 0.83
 Nodes (3): getTemporaryFilePathString(), getTemporaryFilePathStringWithoutTempDirectory(), getTemporaryFilePathStringWithTemporaryDirectory()
 
-### Community 166 - "Community 166"
+### Community 165 - "Community 165"
 Cohesion: 0.5
 Nodes (3): false_t, is_convertible, rv
 
-### Community 168 - "Community 168"
+### Community 167 - "Community 167"
 Cohesion: 0.5
 Nodes (3): alignment_dummy, boost_move_tt_is_assignable, boost_move_tt_is_constructible
 
-### Community 169 - "Community 169"
+### Community 168 - "Community 168"
 Cohesion: 0.5
 Nodes (1): nvp
 
-### Community 170 - "Community 170"
+### Community 169 - "Community 169"
 Cohesion: 0.5
 Nodes (3): has_const_time_erase< ::std::list<T,AllocT> >, has_const_time_insert< ::std::list<T,AllocT> >, has_stable_iterators< ::std::list<T,AllocT> >
 
-### Community 171 - "Community 171"
+### Community 170 - "Community 170"
 Cohesion: 0.5
 Nodes (3): has_const_time_erase< BOOST_STD_EXTENSION_NAMESPACE::slist<T,AllocT> >, has_const_time_insert< BOOST_STD_EXTENSION_NAMESPACE::slist<T,AllocT> >, has_stable_iterators< BOOST_STD_EXTENSION_NAMESPACE::slist<T,AllocT> >
 
-### Community 173 - "Community 173"
+### Community 172 - "Community 172"
 Cohesion: 0.5
 Nodes (1): find_format_store
 
-### Community 174 - "Community 174"
+### Community 173 - "Community 173"
 Cohesion: 0.83
 Nodes (3): BOOST_CONCEPT_USAGE(), interop_rand_access_constraints(), interop_single_pass_constraints()
 
-### Community 175 - "Community 175"
+### Community 174 - "Community 174"
 Cohesion: 0.67
 Nodes (2): destructor_impl(), ~generic_hook()
 
-### Community 176 - "Community 176"
+### Community 175 - "Community 175"
 Cohesion: 0.67
 Nodes (2): unbounded(), unbounded_helper
 
-### Community 178 - "Community 178"
+### Community 177 - "Community 177"
 Cohesion: 0.5
 Nodes (1): generator_seed_seq
 
-### Community 179 - "Community 179"
+### Community 178 - "Community 178"
 Cohesion: 0.83
 Nodes (3): muldiv(), muldivmod(), mulmod()
 
-### Community 180 - "Community 180"
+### Community 179 - "Community 179"
 Cohesion: 0.67
 Nodes (2): same_type(), SameTypeConcept
 
-### Community 181 - "Community 181"
+### Community 180 - "Community 180"
 Cohesion: 0.5
 Nodes (1): dm
 
-### Community 182 - "Community 182"
+### Community 181 - "Community 181"
 Cohesion: 0.67
 Nodes (2): GetStackTrace(), StacktracePowerPCDummyFunction()
 
-### Community 184 - "Community 184"
+### Community 183 - "Community 183"
 Cohesion: 0.5
 Nodes (2): SRIOConsumer(), -resetWithScannerhandlerbytesNeededreadToCurrentFrameunmaskBytes
 
-### Community 194 - "Community 194"
+### Community 193 - "Community 193"
 Cohesion: 0.5
 Nodes (2): ExpoAppDelegateSubscriber, BeebeebAppDelegate
 
-### Community 195 - "Community 195"
+### Community 194 - "Community 194"
 Cohesion: 0.5
 Nodes (2): BeebeebCryptoModule, NotLinkedException
 
-### Community 197 - "Community 197"
+### Community 196 - "Community 196"
 Cohesion: 0.67
 Nodes (2): AppGroupContainer, BeebeebConstants
 
-### Community 208 - "Community 208"
+### Community 207 - "Community 207"
 Cohesion: 0.67
 Nodes (2): numeric_limits<BOOST_LLT>, numeric_limits<BOOST_ULLT>
 
-### Community 209 - "Community 209"
+### Community 208 - "Community 208"
 Cohesion: 1.0
 Nodes (2): function_equal(), function_equal_impl()
 
-### Community 211 - "Community 211"
+### Community 210 - "Community 210"
 Cohesion: 0.67
 Nodes (1): destruct_n
 
-### Community 213 - "Community 213"
+### Community 212 - "Community 212"
 Cohesion: 0.67
 Nodes (1): ignore()
 
-### Community 215 - "Community 215"
+### Community 214 - "Community 214"
 Cohesion: 0.67
 Nodes (1): scoped_demangled_name
 
-### Community 216 - "Community 216"
+### Community 215 - "Community 215"
 Cohesion: 0.67
 Nodes (1): aligned_storage
+
+### Community 216 - "Community 216"
+Cohesion: 0.67
+Nodes (2): R, T
 
 ### Community 217 - "Community 217"
 Cohesion: 0.67
@@ -877,87 +875,87 @@ Nodes (2): R, T
 
 ### Community 218 - "Community 218"
 Cohesion: 0.67
-Nodes (2): R, T
-
-### Community 219 - "Community 219"
-Cohesion: 0.67
 Nodes (1): find_iterator_base
 
-### Community 221 - "Community 221"
+### Community 220 - "Community 220"
 Cohesion: 0.67
 Nodes (1): back_emplacer
 
-### Community 223 - "Community 223"
+### Community 222 - "Community 222"
 Cohesion: 0.67
 Nodes (1): linear_slist_algorithms
 
-### Community 224 - "Community 224"
+### Community 223 - "Community 223"
 Cohesion: 0.67
 Nodes (2): slist_base_hook, slist_member_hook
 
-### Community 225 - "Community 225"
+### Community 224 - "Community 224"
 Cohesion: 0.67
 Nodes (1): circular_slist_algorithms
 
-### Community 226 - "Community 226"
+### Community 225 - "Community 225"
 Cohesion: 1.0
 Nodes (2): BOOST_NOEXCEPT(), to_raw_pointer()
 
-### Community 227 - "Community 227"
+### Community 226 - "Community 226"
 Cohesion: 0.67
 Nodes (2): list_base_hook, list_member_hook
 
-### Community 228 - "Community 228"
+### Community 227 - "Community 227"
 Cohesion: 0.67
 Nodes (1): array_initializer
 
-### Community 230 - "Community 230"
+### Community 229 - "Community 229"
 Cohesion: 0.67
 Nodes (2): init_disposer, null_disposer
 
-### Community 232 - "Community 232"
+### Community 231 - "Community 231"
 Cohesion: 0.67
 Nodes (1): equal_to_value
 
-### Community 235 - "Community 235"
+### Community 234 - "Community 234"
 Cohesion: 0.67
 Nodes (1): exception_disposer
 
-### Community 240 - "Community 240"
+### Community 239 - "Community 239"
 Cohesion: 1.0
 Nodes (2): integer_log2(), integer_log2_impl()
 
-### Community 241 - "Community 241"
+### Community 240 - "Community 240"
 Cohesion: 0.67
 Nodes (1): scoped_bilock
 
-### Community 243 - "Community 243"
+### Community 242 - "Community 242"
 Cohesion: 0.67
 Nodes (1): random_number_generator
 
-### Community 244 - "Community 244"
+### Community 243 - "Community 243"
 Cohesion: 0.67
 Nodes (1): variate_generator
 
-### Community 245 - "Community 245"
+### Community 244 - "Community 244"
 Cohesion: 0.67
 Nodes (1): shuffle_output
 
-### Community 247 - "Community 247"
+### Community 246 - "Community 246"
 Cohesion: 1.0
 Nodes (2): generate_int_float_pair(), generate_one_digit()
 
-### Community 248 - "Community 248"
+### Community 247 - "Community 247"
 Cohesion: 0.67
 Nodes (1): uniform_int_float
 
-### Community 251 - "Community 251"
+### Community 250 - "Community 250"
 Cohesion: 0.67
 Nodes (2): iterator_range, sub_range
 
-### Community 253 - "Community 253"
+### Community 252 - "Community 252"
 Cohesion: 0.67
 Nodes (2): NSRunLoop, -SR_networkRunLoop
+
+### Community 257 - "Community 257"
+Cohesion: 0.67
+Nodes (1): facebook()
 
 ### Community 258 - "Community 258"
 Cohesion: 0.67
@@ -968,10 +966,6 @@ Cohesion: 0.67
 Nodes (1): facebook()
 
 ### Community 260 - "Community 260"
-Cohesion: 0.67
-Nodes (1): facebook()
-
-### Community 261 - "Community 261"
 Cohesion: 0.67
 Nodes (1): facebook()
 
@@ -1066,170 +1060,170 @@ Nodes (1): test_class
 ## Knowledge Gaps
 - **393 isolated node(s):** `BeebeebConstants`, `AppGroupContainer`, `notAuthenticated`, `invalidResponse`, `notFound` (+388 more)
   These have ≤1 connection - possible missing edges or undocumented components.
-- **Thin community `Community 76`** (12 nodes): `uniform_smallint.hpp`, `generate()`, `param_type`, `.BOOST_RANDOM_DETAIL_EQUALITY_OPERATOR()`, `.BOOST_RANDOM_DETAIL_ISTREAM_OPERATOR()`, `.BOOST_RANDOM_DETAIL_OSTREAM_OPERATOR()`, `.param_type()`, `uniform_smallint`, `.BOOST_RANDOM_DETAIL_EQUALITY_OPERATOR()`, `.BOOST_RANDOM_DETAIL_ISTREAM_OPERATOR()`, `.BOOST_RANDOM_DETAIL_OSTREAM_OPERATOR()`, `.uniform_smallint()`
+- **Thin community `Community 75`** (12 nodes): `uniform_smallint.hpp`, `generate()`, `param_type`, `.BOOST_RANDOM_DETAIL_EQUALITY_OPERATOR()`, `.BOOST_RANDOM_DETAIL_ISTREAM_OPERATOR()`, `.BOOST_RANDOM_DETAIL_OSTREAM_OPERATOR()`, `.param_type()`, `uniform_smallint`, `.BOOST_RANDOM_DETAIL_EQUALITY_OPERATOR()`, `.BOOST_RANDOM_DETAIL_ISTREAM_OPERATOR()`, `.BOOST_RANDOM_DETAIL_OSTREAM_OPERATOR()`, `.uniform_smallint()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 77`** (12 nodes): `independent_bits.hpp`, `generate()`, `independent_bits_engine`, `.BOOST_RANDOM_DETAIL_ARITHMETIC_CONSTRUCTOR()`, `.BOOST_RANDOM_DETAIL_ARITHMETIC_SEED()`, `.BOOST_RANDOM_DETAIL_EQUALITY_OPERATOR()`, `.BOOST_RANDOM_DETAIL_ISTREAM_OPERATOR()`, `.BOOST_RANDOM_DETAIL_OSTREAM_OPERATOR()`, `.BOOST_RANDOM_DETAIL_SEED_SEQ_CONSTRUCTOR()`, `.BOOST_RANDOM_DETAIL_SEED_SEQ_SEED()`, `.independent_bits_engine()`, `seed()`
+- **Thin community `Community 76`** (12 nodes): `independent_bits.hpp`, `generate()`, `independent_bits_engine`, `.BOOST_RANDOM_DETAIL_ARITHMETIC_CONSTRUCTOR()`, `.BOOST_RANDOM_DETAIL_ARITHMETIC_SEED()`, `.BOOST_RANDOM_DETAIL_EQUALITY_OPERATOR()`, `.BOOST_RANDOM_DETAIL_ISTREAM_OPERATOR()`, `.BOOST_RANDOM_DETAIL_OSTREAM_OPERATOR()`, `.BOOST_RANDOM_DETAIL_SEED_SEQ_CONSTRUCTOR()`, `.BOOST_RANDOM_DETAIL_SEED_SEQ_SEED()`, `.independent_bits_engine()`, `seed()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 78`** (12 nodes): `normal_distribution.hpp`, `generate_tail()`, `normal_distribution`, `.BOOST_RANDOM_DETAIL_EQUALITY_OPERATOR()`, `.BOOST_RANDOM_DETAIL_ISTREAM_OPERATOR()`, `.BOOST_RANDOM_DETAIL_OSTREAM_OPERATOR()`, `.normal_distribution()`, `param_type`, `.BOOST_RANDOM_DETAIL_EQUALITY_OPERATOR()`, `.BOOST_RANDOM_DETAIL_ISTREAM_OPERATOR()`, `.BOOST_RANDOM_DETAIL_OSTREAM_OPERATOR()`, `.param_type()`
+- **Thin community `Community 77`** (12 nodes): `normal_distribution.hpp`, `generate_tail()`, `normal_distribution`, `.BOOST_RANDOM_DETAIL_EQUALITY_OPERATOR()`, `.BOOST_RANDOM_DETAIL_ISTREAM_OPERATOR()`, `.BOOST_RANDOM_DETAIL_OSTREAM_OPERATOR()`, `.normal_distribution()`, `param_type`, `.BOOST_RANDOM_DETAIL_EQUALITY_OPERATOR()`, `.BOOST_RANDOM_DETAIL_ISTREAM_OPERATOR()`, `.BOOST_RANDOM_DETAIL_OSTREAM_OPERATOR()`, `.param_type()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 79`** (12 nodes): `uniform_int_distribution.hpp`, `generate_uniform_int()`, `param_type`, `.BOOST_RANDOM_DETAIL_EQUALITY_OPERATOR()`, `.BOOST_RANDOM_DETAIL_ISTREAM_OPERATOR()`, `.BOOST_RANDOM_DETAIL_OSTREAM_OPERATOR()`, `.param_type()`, `uniform_int_distribution`, `.BOOST_RANDOM_DETAIL_EQUALITY_OPERATOR()`, `.BOOST_RANDOM_DETAIL_ISTREAM_OPERATOR()`, `.BOOST_RANDOM_DETAIL_OSTREAM_OPERATOR()`, `.uniform_int_distribution()`
+- **Thin community `Community 78`** (12 nodes): `uniform_int_distribution.hpp`, `generate_uniform_int()`, `param_type`, `.BOOST_RANDOM_DETAIL_EQUALITY_OPERATOR()`, `.BOOST_RANDOM_DETAIL_ISTREAM_OPERATOR()`, `.BOOST_RANDOM_DETAIL_OSTREAM_OPERATOR()`, `.param_type()`, `uniform_int_distribution`, `.BOOST_RANDOM_DETAIL_EQUALITY_OPERATOR()`, `.BOOST_RANDOM_DETAIL_ISTREAM_OPERATOR()`, `.BOOST_RANDOM_DETAIL_OSTREAM_OPERATOR()`, `.uniform_int_distribution()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 80`** (11 nodes): `exponential_distribution.hpp`, `exponential_distribution`, `.BOOST_RANDOM_DETAIL_EQUALITY_OPERATOR()`, `.BOOST_RANDOM_DETAIL_ISTREAM_OPERATOR()`, `.BOOST_RANDOM_DETAIL_OSTREAM_OPERATOR()`, `.exponential_distribution()`, `param_type`, `.BOOST_RANDOM_DETAIL_EQUALITY_OPERATOR()`, `.BOOST_RANDOM_DETAIL_ISTREAM_OPERATOR()`, `.BOOST_RANDOM_DETAIL_OSTREAM_OPERATOR()`, `.param_type()`
+- **Thin community `Community 79`** (11 nodes): `exponential_distribution.hpp`, `exponential_distribution`, `.BOOST_RANDOM_DETAIL_EQUALITY_OPERATOR()`, `.BOOST_RANDOM_DETAIL_ISTREAM_OPERATOR()`, `.BOOST_RANDOM_DETAIL_OSTREAM_OPERATOR()`, `.exponential_distribution()`, `param_type`, `.BOOST_RANDOM_DETAIL_EQUALITY_OPERATOR()`, `.BOOST_RANDOM_DETAIL_ISTREAM_OPERATOR()`, `.BOOST_RANDOM_DETAIL_OSTREAM_OPERATOR()`, `.param_type()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 81`** (11 nodes): `fisher_f_distribution.hpp`, `fisher_f_distribution`, `.BOOST_RANDOM_DETAIL_EQUALITY_OPERATOR()`, `.BOOST_RANDOM_DETAIL_ISTREAM_OPERATOR()`, `.BOOST_RANDOM_DETAIL_OSTREAM_OPERATOR()`, `.fisher_f_distribution()`, `param_type`, `.BOOST_RANDOM_DETAIL_EQUALITY_OPERATOR()`, `.BOOST_RANDOM_DETAIL_ISTREAM_OPERATOR()`, `.BOOST_RANDOM_DETAIL_OSTREAM_OPERATOR()`, `.param_type()`
+- **Thin community `Community 80`** (11 nodes): `fisher_f_distribution.hpp`, `fisher_f_distribution`, `.BOOST_RANDOM_DETAIL_EQUALITY_OPERATOR()`, `.BOOST_RANDOM_DETAIL_ISTREAM_OPERATOR()`, `.BOOST_RANDOM_DETAIL_OSTREAM_OPERATOR()`, `.fisher_f_distribution()`, `param_type`, `.BOOST_RANDOM_DETAIL_EQUALITY_OPERATOR()`, `.BOOST_RANDOM_DETAIL_ISTREAM_OPERATOR()`, `.BOOST_RANDOM_DETAIL_OSTREAM_OPERATOR()`, `.param_type()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 83`** (11 nodes): `weibull_distribution.hpp`, `param_type`, `.BOOST_RANDOM_DETAIL_EQUALITY_OPERATOR()`, `.BOOST_RANDOM_DETAIL_ISTREAM_OPERATOR()`, `.BOOST_RANDOM_DETAIL_OSTREAM_OPERATOR()`, `.param_type()`, `weibull_distribution`, `.BOOST_RANDOM_DETAIL_EQUALITY_OPERATOR()`, `.BOOST_RANDOM_DETAIL_ISTREAM_OPERATOR()`, `.BOOST_RANDOM_DETAIL_OSTREAM_OPERATOR()`, `.weibull_distribution()`
+- **Thin community `Community 82`** (11 nodes): `weibull_distribution.hpp`, `param_type`, `.BOOST_RANDOM_DETAIL_EQUALITY_OPERATOR()`, `.BOOST_RANDOM_DETAIL_ISTREAM_OPERATOR()`, `.BOOST_RANDOM_DETAIL_OSTREAM_OPERATOR()`, `.param_type()`, `weibull_distribution`, `.BOOST_RANDOM_DETAIL_EQUALITY_OPERATOR()`, `.BOOST_RANDOM_DETAIL_ISTREAM_OPERATOR()`, `.BOOST_RANDOM_DETAIL_OSTREAM_OPERATOR()`, `.weibull_distribution()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 84`** (11 nodes): `bernoulli_distribution.hpp`, `bernoulli_distribution`, `.bernoulli_distribution()`, `.BOOST_RANDOM_DETAIL_EQUALITY_OPERATOR()`, `.BOOST_RANDOM_DETAIL_ISTREAM_OPERATOR()`, `.BOOST_RANDOM_DETAIL_OSTREAM_OPERATOR()`, `param_type`, `.BOOST_RANDOM_DETAIL_EQUALITY_OPERATOR()`, `.BOOST_RANDOM_DETAIL_ISTREAM_OPERATOR()`, `.BOOST_RANDOM_DETAIL_OSTREAM_OPERATOR()`, `.param_type()`
+- **Thin community `Community 83`** (11 nodes): `bernoulli_distribution.hpp`, `bernoulli_distribution`, `.bernoulli_distribution()`, `.BOOST_RANDOM_DETAIL_EQUALITY_OPERATOR()`, `.BOOST_RANDOM_DETAIL_ISTREAM_OPERATOR()`, `.BOOST_RANDOM_DETAIL_OSTREAM_OPERATOR()`, `param_type`, `.BOOST_RANDOM_DETAIL_EQUALITY_OPERATOR()`, `.BOOST_RANDOM_DETAIL_ISTREAM_OPERATOR()`, `.BOOST_RANDOM_DETAIL_OSTREAM_OPERATOR()`, `.param_type()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 85`** (11 nodes): `piecewise_constant_distribution.hpp`, `param_type`, `.BOOST_RANDOM_DETAIL_EQUALITY_OPERATOR()`, `.BOOST_RANDOM_DETAIL_ISTREAM_OPERATOR()`, `.BOOST_RANDOM_DETAIL_OSTREAM_OPERATOR()`, `.param_type()`, `piecewise_constant_distribution`, `.BOOST_RANDOM_DETAIL_EQUALITY_OPERATOR()`, `.BOOST_RANDOM_DETAIL_ISTREAM_OPERATOR()`, `.BOOST_RANDOM_DETAIL_OSTREAM_OPERATOR()`, `.piecewise_constant_distribution()`
+- **Thin community `Community 84`** (11 nodes): `piecewise_constant_distribution.hpp`, `param_type`, `.BOOST_RANDOM_DETAIL_EQUALITY_OPERATOR()`, `.BOOST_RANDOM_DETAIL_ISTREAM_OPERATOR()`, `.BOOST_RANDOM_DETAIL_OSTREAM_OPERATOR()`, `.param_type()`, `piecewise_constant_distribution`, `.BOOST_RANDOM_DETAIL_EQUALITY_OPERATOR()`, `.BOOST_RANDOM_DETAIL_ISTREAM_OPERATOR()`, `.BOOST_RANDOM_DETAIL_OSTREAM_OPERATOR()`, `.piecewise_constant_distribution()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 86`** (11 nodes): `extreme_value_distribution.hpp`, `extreme_value_distribution`, `.BOOST_RANDOM_DETAIL_EQUALITY_OPERATOR()`, `.BOOST_RANDOM_DETAIL_ISTREAM_OPERATOR()`, `.BOOST_RANDOM_DETAIL_OSTREAM_OPERATOR()`, `.extreme_value_distribution()`, `param_type`, `.BOOST_RANDOM_DETAIL_EQUALITY_OPERATOR()`, `.BOOST_RANDOM_DETAIL_ISTREAM_OPERATOR()`, `.BOOST_RANDOM_DETAIL_OSTREAM_OPERATOR()`, `.param_type()`
+- **Thin community `Community 85`** (11 nodes): `extreme_value_distribution.hpp`, `extreme_value_distribution`, `.BOOST_RANDOM_DETAIL_EQUALITY_OPERATOR()`, `.BOOST_RANDOM_DETAIL_ISTREAM_OPERATOR()`, `.BOOST_RANDOM_DETAIL_OSTREAM_OPERATOR()`, `.extreme_value_distribution()`, `param_type`, `.BOOST_RANDOM_DETAIL_EQUALITY_OPERATOR()`, `.BOOST_RANDOM_DETAIL_ISTREAM_OPERATOR()`, `.BOOST_RANDOM_DETAIL_OSTREAM_OPERATOR()`, `.param_type()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 87`** (11 nodes): `non_central_chi_squared_distribution.hpp`, `non_central_chi_squared_distribution`, `.BOOST_RANDOM_DETAIL_EQUALITY_OPERATOR()`, `.BOOST_RANDOM_DETAIL_ISTREAM_OPERATOR()`, `.BOOST_RANDOM_DETAIL_OSTREAM_OPERATOR()`, `.non_central_chi_squared_distribution()`, `param_type`, `.BOOST_RANDOM_DETAIL_EQUALITY_OPERATOR()`, `.BOOST_RANDOM_DETAIL_ISTREAM_OPERATOR()`, `.BOOST_RANDOM_DETAIL_OSTREAM_OPERATOR()`, `.param_type()`
+- **Thin community `Community 86`** (11 nodes): `non_central_chi_squared_distribution.hpp`, `non_central_chi_squared_distribution`, `.BOOST_RANDOM_DETAIL_EQUALITY_OPERATOR()`, `.BOOST_RANDOM_DETAIL_ISTREAM_OPERATOR()`, `.BOOST_RANDOM_DETAIL_OSTREAM_OPERATOR()`, `.non_central_chi_squared_distribution()`, `param_type`, `.BOOST_RANDOM_DETAIL_EQUALITY_OPERATOR()`, `.BOOST_RANDOM_DETAIL_ISTREAM_OPERATOR()`, `.BOOST_RANDOM_DETAIL_OSTREAM_OPERATOR()`, `.param_type()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 88`** (11 nodes): `student_t_distribution.hpp`, `param_type`, `.BOOST_RANDOM_DETAIL_EQUALITY_OPERATOR()`, `.BOOST_RANDOM_DETAIL_ISTREAM_OPERATOR()`, `.BOOST_RANDOM_DETAIL_OSTREAM_OPERATOR()`, `.param_type()`, `student_t_distribution`, `.BOOST_RANDOM_DETAIL_EQUALITY_OPERATOR()`, `.BOOST_RANDOM_DETAIL_ISTREAM_OPERATOR()`, `.BOOST_RANDOM_DETAIL_OSTREAM_OPERATOR()`, `.student_t_distribution()`
+- **Thin community `Community 87`** (11 nodes): `student_t_distribution.hpp`, `param_type`, `.BOOST_RANDOM_DETAIL_EQUALITY_OPERATOR()`, `.BOOST_RANDOM_DETAIL_ISTREAM_OPERATOR()`, `.BOOST_RANDOM_DETAIL_OSTREAM_OPERATOR()`, `.param_type()`, `student_t_distribution`, `.BOOST_RANDOM_DETAIL_EQUALITY_OPERATOR()`, `.BOOST_RANDOM_DETAIL_ISTREAM_OPERATOR()`, `.BOOST_RANDOM_DETAIL_OSTREAM_OPERATOR()`, `.student_t_distribution()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 89`** (11 nodes): `uniform_on_sphere.hpp`, `param_type`, `.BOOST_RANDOM_DETAIL_EQUALITY_OPERATOR()`, `.BOOST_RANDOM_DETAIL_ISTREAM_OPERATOR()`, `.BOOST_RANDOM_DETAIL_OSTREAM_OPERATOR()`, `.param_type()`, `uniform_on_sphere`, `.BOOST_RANDOM_DETAIL_EQUALITY_OPERATOR()`, `.BOOST_RANDOM_DETAIL_ISTREAM_OPERATOR()`, `.BOOST_RANDOM_DETAIL_OSTREAM_OPERATOR()`, `.uniform_on_sphere()`
+- **Thin community `Community 88`** (11 nodes): `uniform_on_sphere.hpp`, `param_type`, `.BOOST_RANDOM_DETAIL_EQUALITY_OPERATOR()`, `.BOOST_RANDOM_DETAIL_ISTREAM_OPERATOR()`, `.BOOST_RANDOM_DETAIL_OSTREAM_OPERATOR()`, `.param_type()`, `uniform_on_sphere`, `.BOOST_RANDOM_DETAIL_EQUALITY_OPERATOR()`, `.BOOST_RANDOM_DETAIL_ISTREAM_OPERATOR()`, `.BOOST_RANDOM_DETAIL_OSTREAM_OPERATOR()`, `.uniform_on_sphere()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 90`** (11 nodes): `beta_distribution.hpp`, `beta_distribution`, `.beta_distribution()`, `.BOOST_RANDOM_DETAIL_EQUALITY_OPERATOR()`, `.BOOST_RANDOM_DETAIL_ISTREAM_OPERATOR()`, `.BOOST_RANDOM_DETAIL_OSTREAM_OPERATOR()`, `param_type`, `.BOOST_RANDOM_DETAIL_EQUALITY_OPERATOR()`, `.BOOST_RANDOM_DETAIL_ISTREAM_OPERATOR()`, `.BOOST_RANDOM_DETAIL_OSTREAM_OPERATOR()`, `.param_type()`
+- **Thin community `Community 89`** (11 nodes): `beta_distribution.hpp`, `beta_distribution`, `.beta_distribution()`, `.BOOST_RANDOM_DETAIL_EQUALITY_OPERATOR()`, `.BOOST_RANDOM_DETAIL_ISTREAM_OPERATOR()`, `.BOOST_RANDOM_DETAIL_OSTREAM_OPERATOR()`, `param_type`, `.BOOST_RANDOM_DETAIL_EQUALITY_OPERATOR()`, `.BOOST_RANDOM_DETAIL_ISTREAM_OPERATOR()`, `.BOOST_RANDOM_DETAIL_OSTREAM_OPERATOR()`, `.param_type()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 91`** (11 nodes): `laplace_distribution.hpp`, `laplace_distribution`, `.BOOST_RANDOM_DETAIL_EQUALITY_OPERATOR()`, `.BOOST_RANDOM_DETAIL_ISTREAM_OPERATOR()`, `.BOOST_RANDOM_DETAIL_OSTREAM_OPERATOR()`, `.laplace_distribution()`, `param_type`, `.BOOST_RANDOM_DETAIL_EQUALITY_OPERATOR()`, `.BOOST_RANDOM_DETAIL_ISTREAM_OPERATOR()`, `.BOOST_RANDOM_DETAIL_OSTREAM_OPERATOR()`, `.param_type()`
+- **Thin community `Community 90`** (11 nodes): `laplace_distribution.hpp`, `laplace_distribution`, `.BOOST_RANDOM_DETAIL_EQUALITY_OPERATOR()`, `.BOOST_RANDOM_DETAIL_ISTREAM_OPERATOR()`, `.BOOST_RANDOM_DETAIL_OSTREAM_OPERATOR()`, `.laplace_distribution()`, `param_type`, `.BOOST_RANDOM_DETAIL_EQUALITY_OPERATOR()`, `.BOOST_RANDOM_DETAIL_ISTREAM_OPERATOR()`, `.BOOST_RANDOM_DETAIL_OSTREAM_OPERATOR()`, `.param_type()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 92`** (11 nodes): `cauchy_distribution.hpp`, `cauchy_distribution`, `.BOOST_RANDOM_DETAIL_EQUALITY_OPERATOR()`, `.BOOST_RANDOM_DETAIL_ISTREAM_OPERATOR()`, `.BOOST_RANDOM_DETAIL_OSTREAM_OPERATOR()`, `.cauchy_distribution()`, `param_type`, `.BOOST_RANDOM_DETAIL_EQUALITY_OPERATOR()`, `.BOOST_RANDOM_DETAIL_ISTREAM_OPERATOR()`, `.BOOST_RANDOM_DETAIL_OSTREAM_OPERATOR()`, `.param_type()`
+- **Thin community `Community 91`** (11 nodes): `cauchy_distribution.hpp`, `cauchy_distribution`, `.BOOST_RANDOM_DETAIL_EQUALITY_OPERATOR()`, `.BOOST_RANDOM_DETAIL_ISTREAM_OPERATOR()`, `.BOOST_RANDOM_DETAIL_OSTREAM_OPERATOR()`, `.cauchy_distribution()`, `param_type`, `.BOOST_RANDOM_DETAIL_EQUALITY_OPERATOR()`, `.BOOST_RANDOM_DETAIL_ISTREAM_OPERATOR()`, `.BOOST_RANDOM_DETAIL_OSTREAM_OPERATOR()`, `.param_type()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 100`** (9 nodes): `folly()`, `grow_capacity_by()`, `reserve_if_available()`, `detail()`, `folly()`, `prepareDelim()`, `toOrIgnore()`, `Reserve.h`, `String-inl.h`
+- **Thin community `Community 99`** (9 nodes): `folly()`, `grow_capacity_by()`, `reserve_if_available()`, `detail()`, `folly()`, `prepareDelim()`, `toOrIgnore()`, `Reserve.h`, `String-inl.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 108`** (7 nodes): `ExpoModulesProvider.swift`, `ModulesProvider`, `ExpoModulesProvider`, `.getAppCodeSignEntitlements()`, `.getAppDelegateSubscribers()`, `.getModuleClasses()`, `.getReactDelegateHandlers()`
+- **Thin community `Community 107`** (7 nodes): `ExpoModulesProvider.swift`, `ModulesProvider`, `ExpoModulesProvider`, `.getAppCodeSignEntitlements()`, `.getAppDelegateSubscribers()`, `.getModuleClasses()`, `.getReactDelegateHandlers()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 110`** (7 nodes): `antistable()`, `inverse`, `.inverse()`, `negate`, `.negate()`, `unantistable()`, `predicate.hpp`
+- **Thin community `Community 109`** (7 nodes): `antistable()`, `inverse`, `.inverse()`, `negate`, `.negate()`, `unantistable()`, `predicate.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 116`** (7 nodes): `MainApplication.kt`, `getJSMainModuleName()`, `getPackages()`, `getUseDeveloperSupport()`, `MainApplication`, `.onConfigurationChanged()`, `.onCreate()`
+- **Thin community `Community 115`** (7 nodes): `MainApplication.kt`, `getJSMainModuleName()`, `getPackages()`, `getUseDeveloperSupport()`, `MainApplication`, `.onConfigurationChanged()`, `.onCreate()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 121`** (6 nodes): `iterator_arrow_result()`, `make_reverse_iterator()`, `move_detail::enable_if_convertible<OtherIt, It, reverse_iterator &>::type
+- **Thin community `Community 120`** (6 nodes): `iterator_arrow_result()`, `make_reverse_iterator()`, `move_detail::enable_if_convertible<OtherIt, It, reverse_iterator &>::type
          operator=()`, `reverse_iterator`, `.reverse_iterator()`, `reverse_iterator.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 122`** (6 nodes): `core_typeid_()`, `core_typeid_lib_id()`, `demangled_name()`, `typeinfo`, `.typeinfo()`, `typeinfo.hpp`
+- **Thin community `Community 121`** (6 nodes): `core_typeid_()`, `core_typeid_lib_id()`, `demangled_name()`, `typeinfo`, `.typeinfo()`, `typeinfo.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 123`** (6 nodes): `new_allocator`, `.new_allocator()`, `new_allocator<void>`, `.new_allocator()`, `swap()`, `new_allocator.hpp`
+- **Thin community `Community 122`** (6 nodes): `new_allocator`, `.new_allocator()`, `new_allocator<void>`, `.new_allocator()`, `swap()`, `new_allocator.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 124`** (6 nodes): `iterator_adaptor.hpp`, `distance_to()`, `equal()`, `iterator_adaptor`, `iterator_adaptor_assert_traversal()`, `.iterator_adaptor()`
+- **Thin community `Community 123`** (6 nodes): `iterator_adaptor.hpp`, `distance_to()`, `equal()`, `iterator_adaptor`, `iterator_adaptor_assert_traversal()`, `.iterator_adaptor()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 125`** (6 nodes): `list_iterator`, `.get_value_traits()`, `.list_iterator()`, `.unconst()`, `nat`, `list_iterator.hpp`
+- **Thin community `Community 124`** (6 nodes): `list_iterator`, `.get_value_traits()`, `.list_iterator()`, `.unconst()`, `nat`, `list_iterator.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 126`** (6 nodes): `bidir_node_iterator`, `.bidir_node_iterator()`, `load()`, `save()`, `serialize()`, `bidir_node_iterator.hpp`
+- **Thin community `Community 125`** (6 nodes): `bidir_node_iterator`, `.bidir_node_iterator()`, `load()`, `save()`, `serialize()`, `bidir_node_iterator.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 131`** (6 nodes): `MainActivity.kt`, `MainActivity`, `.createReactActivityDelegate()`, `.getMainComponentName()`, `.invokeDefaultOnBackPressed()`, `.onCreate()`
+- **Thin community `Community 130`** (6 nodes): `MainActivity.kt`, `MainActivity`, `.createReactActivityDelegate()`, `.getMainComponentName()`, `.invokeDefaultOnBackPressed()`, `.onCreate()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 135`** (5 nodes): `detail()`, `FOLLY_GCC_DISABLE_WARNING()`, `unrollUntil()`, `unrollUntilImpl()`, `UnrollUtils.h`
+- **Thin community `Community 134`** (5 nodes): `detail()`, `FOLLY_GCC_DISABLE_WARNING()`, `unrollUntil()`, `unrollUntilImpl()`, `UnrollUtils.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 140`** (5 nodes): `lightweight_mutex`, `.lightweight_mutex()`, `scoped_lock`, `.scoped_lock()`, `lwm_win32_cs.hpp`
+- **Thin community `Community 139`** (5 nodes): `lightweight_mutex`, `.lightweight_mutex()`, `scoped_lock`, `.scoped_lock()`, `lwm_win32_cs.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 141`** (5 nodes): `lightweight_mutex`, `.lightweight_mutex()`, `scoped_lock`, `.scoped_lock()`, `lwm_pthreads.hpp`
+- **Thin community `Community 140`** (5 nodes): `lightweight_mutex`, `.lightweight_mutex()`, `scoped_lock`, `.scoped_lock()`, `lwm_pthreads.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 142`** (5 nodes): `lightweight_mutex`, `.lightweight_mutex()`, `scoped_lock`, `.scoped_lock()`, `lwm_std_mutex.hpp`
+- **Thin community `Community 141`** (5 nodes): `lightweight_mutex`, `.lightweight_mutex()`, `scoped_lock`, `.scoped_lock()`, `lwm_std_mutex.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 148`** (5 nodes): `assign_in_place()`, `construct_in_place()`, `default_init_construct_iterator`, `emplace_iterator`, `construct_in_place.hpp`
+- **Thin community `Community 147`** (5 nodes): `assign_in_place()`, `construct_in_place()`, `default_init_construct_iterator`, `emplace_iterator`, `construct_in_place.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 150`** (5 nodes): `any_container_view`, `begin_for()`, `end_for()`, `vtable_for()`, `any_container_view.hpp`
+- **Thin community `Community 149`** (5 nodes): `any_container_view`, `begin_for()`, `end_for()`, `vtable_for()`, `any_container_view.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 151`** (5 nodes): `uniform_real.hpp`, `param_type`, `.param_type()`, `uniform_real`, `.uniform_real()`
+- **Thin community `Community 150`** (5 nodes): `uniform_real.hpp`, `param_type`, `.param_type()`, `uniform_real`, `.uniform_real()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 152`** (5 nodes): `uniform_int.hpp`, `param_type`, `.param_type()`, `uniform_int`, `.uniform_int()`
+- **Thin community `Community 151`** (5 nodes): `uniform_int.hpp`, `param_type`, `.param_type()`, `uniform_int`, `.uniform_int()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 153`** (5 nodes): `end.hpp`, `BOOST_WORKAROUND()`, `range_end()`, `range_iterator<C>::type
+- **Thin community `Community 152`** (5 nodes): `end.hpp`, `BOOST_WORKAROUND()`, `range_end()`, `range_iterator<C>::type
         range_end()`, `range_iterator<const T>::type
         const_end()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 154`** (5 nodes): `base_from_member.hpp`, `base_from_member()`, `base_from_member<MemberType&, UniqueID>`, `.base_from_member()`, `BOOST_NOEXCEPT_IF()`
+- **Thin community `Community 153`** (5 nodes): `base_from_member.hpp`, `base_from_member()`, `base_from_member<MemberType&, UniqueID>`, `.base_from_member()`, `BOOST_NOEXCEPT_IF()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 169`** (4 nodes): `make_nvp()`, `nvp`, `.nvp()`, `nvp.hpp`
+- **Thin community `Community 168`** (4 nodes): `make_nvp()`, `nvp`, `.nvp()`, `nvp.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 173`** (4 nodes): `check_find_result()`, `find_format_store`, `.find_format_store()`, `find_format_store.hpp`
+- **Thin community `Community 172`** (4 nodes): `check_find_result()`, `find_format_store`, `.find_format_store()`, `find_format_store.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 175`** (4 nodes): `BOOST_NOEXCEPT()`, `destructor_impl()`, `~generic_hook()`, `generic_hook.hpp`
+- **Thin community `Community 174`** (4 nodes): `BOOST_NOEXCEPT()`, `destructor_impl()`, `~generic_hook()`, `generic_hook.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 176`** (4 nodes): `unbounded()`, `unbounded_helper`, `.unbounded_helper()`, `unbounded.hpp`
+- **Thin community `Community 175`** (4 nodes): `unbounded()`, `unbounded_helper`, `.unbounded_helper()`, `unbounded.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 178`** (4 nodes): `generate()`, `generator_seed_seq`, `.generator_seed_seq()`, `generator_seed_seq.hpp`
+- **Thin community `Community 177`** (4 nodes): `generate()`, `generator_seed_seq`, `.generator_seed_seq()`, `generator_seed_seq.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 180`** (4 nodes): `same_type()`, `SameTypeConcept`, `.BOOST_CONCEPT_USAGE()`, `misc_concept.hpp`
+- **Thin community `Community 179`** (4 nodes): `same_type()`, `SameTypeConcept`, `.BOOST_CONCEPT_USAGE()`, `misc_concept.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 181`** (4 nodes): `dm`, `.dm()`, `mem_fn()`, `mem_fn.hpp`
+- **Thin community `Community 180`** (4 nodes): `dm`, `.dm()`, `mem_fn()`, `mem_fn.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 182`** (4 nodes): `stacktrace_powerpc-inl.h`, `GetStackTrace()`, `NextStackFrame()`, `StacktracePowerPCDummyFunction()`
+- **Thin community `Community 181`** (4 nodes): `stacktrace_powerpc-inl.h`, `GetStackTrace()`, `NextStackFrame()`, `StacktracePowerPCDummyFunction()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 184`** (4 nodes): `SRIOConsumer()`, `-resetWithScannerhandlerbytesNeededreadToCurrentFrameunmaskBytes`, `SRIOConsumer.h`, `SRIOConsumer.m`
+- **Thin community `Community 183`** (4 nodes): `SRIOConsumer()`, `-resetWithScannerhandlerbytesNeededreadToCurrentFrameunmaskBytes`, `SRIOConsumer.h`, `SRIOConsumer.m`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 194`** (4 nodes): `ExpoAppDelegateSubscriber`, `BeebeebAppDelegate`, `.application()`, `BeebeebAppDelegate.swift`
+- **Thin community `Community 193`** (4 nodes): `ExpoAppDelegateSubscriber`, `BeebeebAppDelegate`, `.application()`, `BeebeebAppDelegate.swift`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 195`** (4 nodes): `BeebeebCryptoModule`, `.definition()`, `NotLinkedException`, `BeebeebCryptoModule.kt`
+- **Thin community `Community 194`** (4 nodes): `BeebeebCryptoModule`, `.definition()`, `NotLinkedException`, `BeebeebCryptoModule.kt`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 197`** (3 nodes): `AppGroupContainer`, `BeebeebConstants`, `Constants.swift`
+- **Thin community `Community 196`** (3 nodes): `AppGroupContainer`, `BeebeebConstants`, `Constants.swift`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 208`** (3 nodes): `numeric_limits<BOOST_LLT>`, `numeric_limits<BOOST_ULLT>`, `limits.hpp`
+- **Thin community `Community 207`** (3 nodes): `numeric_limits<BOOST_LLT>`, `numeric_limits<BOOST_ULLT>`, `limits.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 209`** (3 nodes): `function_equal()`, `function_equal_impl()`, `function_equal.hpp`
+- **Thin community `Community 208`** (3 nodes): `function_equal()`, `function_equal_impl()`, `function_equal.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 211`** (3 nodes): `destruct_n`, `.destruct_n()`, `destruct_n.hpp`
+- **Thin community `Community 210`** (3 nodes): `destruct_n`, `.destruct_n()`, `destruct_n.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 213`** (3 nodes): `ignore()`, `workaround.hpp`, `workaround.hpp`
+- **Thin community `Community 212`** (3 nodes): `ignore()`, `workaround.hpp`, `workaround.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 215`** (3 nodes): `scoped_demangled_name`, `.scoped_demangled_name()`, `demangle.hpp`
+- **Thin community `Community 214`** (3 nodes): `scoped_demangled_name`, `.scoped_demangled_name()`, `demangle.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 216`** (3 nodes): `aligned_storage.hpp`, `aligned_storage`, `.aligned_storage()`
+- **Thin community `Community 215`** (3 nodes): `aligned_storage.hpp`, `aligned_storage`, `.aligned_storage()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 217`** (3 nodes): `R`, `T`, `is_function_ptr_tester.hpp`
+- **Thin community `Community 216`** (3 nodes): `R`, `T`, `is_function_ptr_tester.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 218`** (3 nodes): `R`, `T`, `is_function_ptr_helper.hpp`
+- **Thin community `Community 217`** (3 nodes): `R`, `T`, `is_function_ptr_helper.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 219`** (3 nodes): `find_iterator_base`, `.BOOST_DEFAULTED_FUNCTION()`, `find_iterator.hpp`
+- **Thin community `Community 218`** (3 nodes): `find_iterator_base`, `.BOOST_DEFAULTED_FUNCTION()`, `find_iterator.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 221`** (3 nodes): `back_emplacer`, `.back_emplacer()`, `iterator.hpp`
+- **Thin community `Community 220`** (3 nodes): `back_emplacer`, `.back_emplacer()`, `iterator.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 223`** (3 nodes): `linear_slist_algorithms`, `size_t detach_and_dispose()`, `linear_slist_algorithms.hpp`
+- **Thin community `Community 222`** (3 nodes): `linear_slist_algorithms`, `size_t detach_and_dispose()`, `linear_slist_algorithms.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 224`** (3 nodes): `slist_base_hook`, `slist_member_hook`, `slist_hook.hpp`
+- **Thin community `Community 223`** (3 nodes): `slist_base_hook`, `slist_member_hook`, `slist_hook.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 225`** (3 nodes): `circular_slist_algorithms`, `size_t detach_and_dispose()`, `circular_slist_algorithms.hpp`
+- **Thin community `Community 224`** (3 nodes): `circular_slist_algorithms`, `size_t detach_and_dispose()`, `circular_slist_algorithms.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 226`** (3 nodes): `BOOST_NOEXCEPT()`, `to_raw_pointer()`, `pointer_traits.hpp`
+- **Thin community `Community 225`** (3 nodes): `BOOST_NOEXCEPT()`, `to_raw_pointer()`, `pointer_traits.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 227`** (3 nodes): `list_base_hook`, `list_member_hook`, `list_hook.hpp`
+- **Thin community `Community 226`** (3 nodes): `list_base_hook`, `list_member_hook`, `list_hook.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 228`** (3 nodes): `array_initializer`, `.array_initializer()`, `array_initializer.hpp`
+- **Thin community `Community 227`** (3 nodes): `array_initializer`, `.array_initializer()`, `array_initializer.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 230`** (3 nodes): `init_disposer`, `null_disposer`, `simple_disposers.hpp`
+- **Thin community `Community 229`** (3 nodes): `init_disposer`, `null_disposer`, `simple_disposers.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 232`** (3 nodes): `equal_to_value`, `.equal_to_value()`, `equal_to_value.hpp`
+- **Thin community `Community 231`** (3 nodes): `equal_to_value`, `.equal_to_value()`, `equal_to_value.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 235`** (3 nodes): `exception_disposer`, `.exception_disposer()`, `exception_disposer.hpp`
+- **Thin community `Community 234`** (3 nodes): `exception_disposer`, `.exception_disposer()`, `exception_disposer.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 240`** (3 nodes): `integer_log2()`, `integer_log2_impl()`, `integer_log2.hpp`
+- **Thin community `Community 239`** (3 nodes): `integer_log2()`, `integer_log2_impl()`, `integer_log2.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 241`** (3 nodes): `scoped_bilock`, `.scoped_bilock()`, `scoped_bilock.hpp`
+- **Thin community `Community 240`** (3 nodes): `scoped_bilock`, `.scoped_bilock()`, `scoped_bilock.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 243`** (3 nodes): `random_number_generator.hpp`, `random_number_generator`, `.random_number_generator()`
+- **Thin community `Community 242`** (3 nodes): `random_number_generator.hpp`, `random_number_generator`, `.random_number_generator()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 244`** (3 nodes): `variate_generator.hpp`, `variate_generator`, `.variate_generator()`
+- **Thin community `Community 243`** (3 nodes): `variate_generator.hpp`, `variate_generator`, `.variate_generator()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 245`** (3 nodes): `shuffle_output.hpp`, `shuffle_output`, `.shuffle_output()`
+- **Thin community `Community 244`** (3 nodes): `shuffle_output.hpp`, `shuffle_output`, `.shuffle_output()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 247`** (3 nodes): `generate_int_float_pair()`, `generate_one_digit()`, `int_float_pair.hpp`
+- **Thin community `Community 246`** (3 nodes): `generate_int_float_pair()`, `generate_one_digit()`, `int_float_pair.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 248`** (3 nodes): `uniform_int_float`, `.uniform_int_float()`, `uniform_int_float.hpp`
+- **Thin community `Community 247`** (3 nodes): `uniform_int_float`, `.uniform_int_float()`, `uniform_int_float.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 251`** (3 nodes): `range_fwd.hpp`, `iterator_range`, `sub_range`
+- **Thin community `Community 250`** (3 nodes): `range_fwd.hpp`, `iterator_range`, `sub_range`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 253`** (3 nodes): `NSRunLoop+SRWebSocket.m`, `NSRunLoop`, `-SR_networkRunLoop`
+- **Thin community `Community 252`** (3 nodes): `NSRunLoop+SRWebSocket.m`, `NSRunLoop`, `-SR_networkRunLoop`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 258`** (3 nodes): `JSIDynamic.h`, `JSIDynamic.h`, `facebook()`
+- **Thin community `Community 257`** (3 nodes): `JSIDynamic.h`, `JSIDynamic.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 259`** (3 nodes): `instrumentation.h`, `instrumentation.h`, `facebook()`
+- **Thin community `Community 258`** (3 nodes): `instrumentation.h`, `instrumentation.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 260`** (3 nodes): `threadsafe.h`, `threadsafe.h`, `facebook()`
+- **Thin community `Community 259`** (3 nodes): `threadsafe.h`, `threadsafe.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 261`** (3 nodes): `jsilib.h`, `jsilib.h`, `facebook()`
+- **Thin community `Community 260`** (3 nodes): `jsilib.h`, `jsilib.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
 - **Thin community `Community 443`** (2 nodes): `multi_index_container`, `multi_index_container_fwd.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
@@ -1279,11 +1273,11 @@ Nodes (1): test_class
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `move()` connect `Community 0` to `Community 1`, `Community 3`, `Community 5`, `Community 6`, `Community 7`, `Community 10`, `Community 11`, `Community 13`, `Community 14`, `Community 15`, `Community 18`, `Community 19`, `Community 20`, `Community 26`, `Community 31`, `Community 34`, `Community 35`, `Community 37`, `Community 38`?**
+- **Why does `move()` connect `Community 0` to `Community 2`, `Community 4`, `Community 5`, `Community 6`, `Community 8`, `Community 9`, `Community 10`, `Community 12`, `Community 13`, `Community 14`, `Community 15`, `Community 16`, `Community 18`, `Community 19`, `Community 20`, `Community 21`, `Community 22`, `Community 30`, `Community 34`, `Community 37`?**
   _High betweenness centrality (0.069) - this node is a cross-community bridge._
-- **Why does `decltype()` connect `Community 6` to `Community 0`, `Community 1`, `Community 32`, `Community 3`, `Community 5`, `Community 7`, `Community 9`, `Community 10`, `Community 15`, `Community 17`, `Community 19`?**
+- **Why does `decltype()` connect `Community 12` to `Community 0`, `Community 2`, `Community 4`, `Community 5`, `Community 6`, `Community 8`, `Community 13`, `Community 14`, `Community 19`, `Community 20`?**
   _High betweenness centrality (0.018) - this node is a cross-community bridge._
-- **Why does `Data` connect `Community 9` to `Community 8`, `Community 29`, `Community 37`, `Community 6`?**
+- **Why does `Data` connect `Community 4` to `Community 12`, `Community 29`, `Community 7`?**
   _High betweenness centrality (0.018) - this node is a cross-community bridge._
 - **Are the 187 inferred relationships involving `move()` (e.g. with `add()` and `addWithPriority()`) actually correct?**
   _`move()` has 187 INFERRED edges - model-reasoned connections that need verification._
