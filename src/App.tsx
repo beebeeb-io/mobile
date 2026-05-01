@@ -24,6 +24,7 @@ import SharedScreen from './screens/SharedScreen';
 import PhotosScreen from './screens/PhotosScreen';
 import SettingsScreen from './screens/SettingsScreen';
 import PreviewScreen from './screens/PreviewScreen';
+import ShareSheetScreen from './screens/ShareSheetScreen';
 import LoginScreen from './screens/LoginScreen';
 import SignupScreen from './screens/SignupScreen';
 
@@ -50,6 +51,12 @@ export type RootStackParamList = {
     mimeType?: string;
     sizeBytes?: number;
     createdAt?: string;
+  };
+  ShareSheet: {
+    fileId: string;
+    fileName: string;
+    mimeType?: string;
+    sizeBytes?: number;
   };
 };
 
@@ -204,6 +211,15 @@ export default function App() {
                   name="Preview"
                   component={PreviewScreen}
                   options={{ presentation: 'fullScreenModal', animation: 'slide_from_bottom' }}
+                />
+                <Stack.Screen
+                  name="ShareSheet"
+                  component={ShareSheetScreen}
+                  options={{
+                    presentation: 'transparentModal',
+                    animation: 'slide_from_bottom',
+                    contentStyle: { backgroundColor: 'transparent' },
+                  }}
                 />
               </>
             ) : (

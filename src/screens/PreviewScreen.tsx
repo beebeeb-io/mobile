@@ -3,6 +3,7 @@ import { Alert, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { RouteProp } from '@react-navigation/native';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../App';
 import { colors, radii, spacing, shadows } from '../theme';
 
@@ -11,6 +12,7 @@ import { colors, radii, spacing, shadows } from '../theme';
 // ---------------------------------------------------------------------------
 
 type PreviewRoute = RouteProp<RootStackParamList, 'Preview'>;
+type Nav = NativeStackNavigationProp<RootStackParamList>;
 
 /** Format bytes into a human-readable string. */
 function formatSize(bytes: number): string {
@@ -85,10 +87,10 @@ const CATEGORY_COLORS: Record<string, string> = {
 // ---------------------------------------------------------------------------
 
 export default function PreviewScreen() {
-  const navigation = useNavigation();
+  const navigation = useNavigation<Nav>();
   const route = useRoute<PreviewRoute>();
   const insets = useSafeAreaInsets();
-  const { fileName, mimeType, sizeBytes, createdAt } = route.params;
+  const { fileId, fileName, mimeType, sizeBytes, createdAt } = route.params;
 
   const category = fileCategory(mimeType);
   const isImage = category === 'image';
@@ -106,12 +108,8 @@ export default function PreviewScreen() {
   }, []);
 
   const handleShare = useCallback(() => {
-    Alert.alert(
-      'Share',
-      'Sharing will be available once crypto bindings are integrated.',
-      [{ text: 'OK' }],
-    );
-  }, []);
+    navigation.navigate('ShareSheet', { fileId, fileName, mimeType, sizeBytes });
+  }, [navigation, fileId, fileName, mimeType, sizeBytes]);
 
   return (
     <View style={[styles.root, { paddingTop: insets.top }]}>
