@@ -344,6 +344,41 @@ export async function initializeBackup(category: BackupCategory): Promise<void> 
   const info = await getDeviceInfo();
   const current = (await getDeviceManifest()) ?? buildDefaultManifest(info);
 
+  const categoryState: BackupCategoryState = {
+    ...current.backups[category],
+    enabled: true,
+  };
+
+  // Run the actual export. Done in JS via expo-contacts / expo-calendar so
+  // the backup happens without native modules. Camera roll is handled by a
+  // separate scanner — see BackupContext / BackupRunner.
+  if (category === 'contacts') {
+    try {
+      // Lazy import to avoid pulling expo-contacts into the camera_roll path.
+      const { exportContacts } = await import('./ContactsExporter');
+      const result = await exportContacts();
+      if (result.contactCount > 0) {
+        categoryState.contact_count = result.contactCount;
+        categoryState.items_synced = result.contactCount;
+        if (result.exported) categoryState.last_sync = new Date().toISOString();
+      }
+    } catch (err) {
+      console.warn('Contacts export failed:', err);
+    }
+  } else if (category === 'calendar') {
+    try {
+      const { exportCalendars } = await import('./CalendarExporter');
+      const result = await exportCalendars();
+      if (result.calendarCount > 0) {
+        categoryState.calendar_count = result.calendarCount;
+        categoryState.items_synced = result.eventCount;
+        if (result.exported) categoryState.last_sync = new Date().toISOString();
+      }
+    } catch (err) {
+      console.warn('Calendar export failed:', err);
+    }
+  }
+
   const next: DeviceManifest = {
     ...current,
     device_name: info.device_name,
@@ -352,10 +387,7 @@ export async function initializeBackup(category: BackupCategory): Promise<void> 
     app_version: info.app_version,
     backups: {
       ...current.backups,
-      [category]: {
-        ...current.backups[category],
-        enabled: true,
-      },
+      [category]: categoryState,
     },
   };
 
