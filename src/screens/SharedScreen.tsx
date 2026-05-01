@@ -58,6 +58,22 @@ function displayName(invite: ShareInvite): string {
   return raw;
 }
 
+function expiryLabel(expiresAt: string | null | undefined): string | null {
+  if (!expiresAt) return null;
+  const expires = new Date(expiresAt);
+  const now = new Date();
+  if (Number.isNaN(expires.getTime())) return null;
+  const diffMs = expires.getTime() - now.getTime();
+  if (diffMs <= 0) return 'Expired';
+  const diffMins = Math.floor(diffMs / 60_000);
+  if (diffMins < 60) return `Expires in ${diffMins}m`;
+  const diffHours = Math.floor(diffMins / 60);
+  if (diffHours < 48) return `Expires in ${diffHours}h`;
+  const diffDays = Math.floor(diffHours / 24);
+  if (diffDays < 14) return `Expires in ${diffDays}d`;
+  return `Expires ${formatDate(expiresAt)}`;
+}
+
 type IoniconName = React.ComponentProps<typeof Ionicons>['name'];
 
 function fileTypeIcon(invite: ShareInvite): IoniconName {
@@ -227,7 +243,9 @@ export default function SharedScreen() {
         <View style={styles.rowInfo}>
           <Text style={[styles.rowName, { color: c.ink }]} numberOfLines={1}>{displayName(item)}</Text>
           <Text style={[styles.rowMeta, { color: c.ink3 }]} numberOfLines={1}>
-            From {item.sender_email ?? 'unknown'}  ·  {formatDate(item.created_at)}
+            {[`From ${item.sender_email ?? 'unknown'}`, formatDate(item.created_at), expiryLabel(item.expires_at)]
+              .filter(Boolean)
+              .join('  ·  ')}
           </Text>
         </View>
       </TouchableOpacity>
@@ -248,7 +266,9 @@ export default function SharedScreen() {
       <View style={styles.rowInfo}>
         <Text style={[styles.rowName, { color: c.ink }]} numberOfLines={1}>{displayName(item)}</Text>
         <Text style={[styles.rowMeta, { color: c.ink3 }]} numberOfLines={1}>
-          To {item.recipient_email}  ·  {formatDate(item.created_at)}
+          {[`To ${item.recipient_email}`, formatDate(item.created_at), expiryLabel(item.expires_at)]
+            .filter(Boolean)
+            .join('  ·  ')}
         </Text>
       </View>
       <StatusBadge status={item.status} />
