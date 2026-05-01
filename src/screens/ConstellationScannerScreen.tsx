@@ -1,3 +1,4 @@
+import { BBLogo } from "../components/BBLogo";
 import React from 'react'
 import { StyleSheet, Text, View } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
@@ -8,7 +9,7 @@ export function ConstellationScannerScreen() {
     <SafeAreaView style={styles.container}>
       <View style={styles.content}>
         <View style={styles.iconCircle}>
-          <Text style={styles.iconText}>b</Text>
+          <BBLogo size={64} />
         </View>
         <Text style={styles.title}>Constellation Scanner</Text>
         <Text style={styles.subtitle}>

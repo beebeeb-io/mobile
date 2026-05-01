@@ -298,10 +298,11 @@ export default function App() {
           await clearToken();
         }
       }
-      // Check onboarding state
+      // Check onboarding state — only show for new signups, not existing logins
       try {
         const done = await SecureStore.getItemAsync(ONBOARDING_KEY);
-        setOnboardingDone(done === 'true');
+        // If key doesn't exist but user already has a token, they're an existing user — skip onboarding
+        setOnboardingDone(done === 'true' || tokenExists);
       } catch {
         setOnboardingDone(true); // assume done if SecureStore unavailable (web)
       }

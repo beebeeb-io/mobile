@@ -1,3 +1,4 @@
+import { BBLogo } from "../components/BBLogo";
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
@@ -70,7 +71,7 @@ export default function BiometricLockScreen({ onUnlocked }: Props) {
       <View style={styles.center}>
         {/* Logo */}
         <View style={styles.logo}>
-          <Text style={styles.logoText}>bb</Text>
+          <BBLogo size={48} />
         </View>
 
         <Text style={styles.title}>Beebeeb is locked</Text>

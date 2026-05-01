@@ -1,3 +1,4 @@
+import { BBLogo } from "../components/BBLogo";
 import React, { useState } from 'react';
 import {
   ActivityIndicator,
@@ -13,6 +14,7 @@ import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { colors, radii, spacing } from '../theme';
 import { login, opaqueLoginStart, opaqueLoginFinish, ApiError, friendlyError } from '../lib/api';
+import { useAuth } from '../lib/auth';
 import * as BeebeebCrypto from '../../modules/beebeeb-crypto';
 import type { RootStackParamList } from '../App';
 
@@ -22,6 +24,7 @@ type Nav = NativeStackNavigationProp<RootStackParamList>;
 
 export default function LoginScreen() {
   const navigation = useNavigation<Nav>();
+  const { refreshAuth } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -48,17 +51,15 @@ export default function LoginScreen() {
           // Native module not yet linked — ignore until xcframework is wired
         }
         // Token is stored by opaqueLoginFinish. App.tsx auth state will pick it up.
-      } catch (opaqueErr) {
-        // Fall back to legacy login when OPAQUE endpoints are not deployed yet
-        if (
-          opaqueErr instanceof ApiError &&
-          (opaqueErr.status === 404 || opaqueErr.status === 0)
-        ) {
-          await login(trimmedEmail, password);
-        } else {
-          throw opaqueErr;
-        }
+      } catch {
+        // Fall back to legacy login — OPAQUE may fail because:
+        // - native crypto module not linked yet (throws native error)
+        // - OPAQUE endpoints not deployed (404)
+        // - network issue (status 0)
+        await login(trimmedEmail, password);
       }
+      // Token stored — tell App to refresh auth state
+      await refreshAuth();
     } catch (err) {
       setError(friendlyError(err));
     } finally {
@@ -74,9 +75,7 @@ export default function LoginScreen() {
       <View style={styles.container}>
         {/* Logo / brand */}
         <View style={styles.brandRow}>
-          <View style={styles.logoMark}>
-            <Text style={styles.logoText}>bb</Text>
-          </View>
+          <BBLogo size={48} />
         </View>
 
         <Text style={styles.heading}>Sign in</Text>

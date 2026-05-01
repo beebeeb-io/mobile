@@ -1,3 +1,4 @@
+import { BBLogo } from "../components/BBLogo";
 import React, { useState } from 'react';
 import {
   ActivityIndicator,
@@ -108,9 +109,7 @@ export default function SignupScreen() {
       >
         {/* Logo / brand */}
         <View style={styles.brandRow}>
-          <View style={styles.logoMark}>
-            <Text style={styles.logoText}>bb</Text>
-          </View>
+          <BBLogo size={48} />
         </View>
 
         <Text style={styles.heading}>Create account</Text>
