@@ -11,6 +11,7 @@ import { useNavigation, useRoute, type RouteProp } from '@react-navigation/nativ
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { colors, radii, spacing } from '../theme';
+import { useTheme } from '../lib/theme-context';
 import type { RootStackParamList } from '../App';
 
 type Nav = NativeStackNavigationProp<RootStackParamList>;
@@ -43,6 +44,7 @@ export default function RecoveryPhraseScreen() {
   const navigation = useNavigation<Nav>();
   const route = useRoute<Route>();
   const insets = useSafeAreaInsets();
+  const { colors: c } = useTheme();
 
   const phrase = useMemo(
     () => route.params?.phrase ?? generatePlaceholderPhrase(),
@@ -77,7 +79,7 @@ export default function RecoveryPhraseScreen() {
         </Text>
 
         {/* Warning */}
-        <View style={styles.warning}>
+        <View style={[styles.warning, { backgroundColor: c.amberBg, borderColor: c.amber }]}>
           <View style={styles.warningBar} />
           <Text style={styles.warningText}>
             We cannot recover this. If you lose your device and this phrase, your data is gone permanently.
@@ -201,7 +203,7 @@ const styles = StyleSheet.create({
     alignItems: 'flex-start',
     backgroundColor: colors.amberBg,
     borderWidth: 1,
-    borderColor: '#f0d060',
+    borderColor: colors.amber,
     borderRadius: radii.md,
     paddingHorizontal: 12,
     paddingVertical: 10,

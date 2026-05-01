@@ -9,6 +9,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { colors, radii, spacing } from '../theme';
+import { useTheme } from '../lib/theme-context';
 
 // ---------------------------------------------------------------------------
 // 256-word BIP-39 inspired wordlist for placeholder phrases
@@ -67,6 +68,7 @@ interface Props {
 
 export default function OnboardingScreen({ onComplete }: Props) {
   const insets = useSafeAreaInsets();
+  const { colors: c } = useTheme();
   const phrase = useMemo(() => generatePhrase(), []);
   const [confirmed, setConfirmed] = useState(false);
   const [revealed, setRevealed] = useState(false);
@@ -91,7 +93,7 @@ export default function OnboardingScreen({ onComplete }: Props) {
         </Text>
 
         {/* Warning */}
-        <View style={styles.warning}>
+        <View style={[styles.warning, { backgroundColor: c.amberBg, borderColor: c.amber }]}>
           <View style={styles.warningDot} />
           <Text style={styles.warningText}>
             If you lose your device and this phrase, your data is gone forever. We cannot recover it.
@@ -219,9 +221,9 @@ const styles = StyleSheet.create({
   warning: {
     flexDirection: 'row',
     alignItems: 'flex-start',
-    backgroundColor: '#fff9e6',
+    backgroundColor: colors.amberBg,
     borderWidth: 1,
-    borderColor: '#f0d060',
+    borderColor: colors.amber,
     borderRadius: radii.md,
     paddingHorizontal: 12,
     paddingVertical: 10,
