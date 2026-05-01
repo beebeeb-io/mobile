@@ -88,8 +88,7 @@
       "./plugins/share-extension/withShareExtension.js",
       "expo-video",
       "expo-image-picker",
-      "expo-notifications",
-      "expo-sqlite"
+      "expo-notifications"
     ],
     "extra": {
       "eas": {
