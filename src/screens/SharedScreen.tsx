@@ -10,6 +10,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { radii, spacing } from '../theme';
 import { useTheme } from '../lib/theme-context';
 import { getIncomingInvites, getSentInvites, friendlyError } from '../lib/api';
@@ -104,6 +105,7 @@ type Tab = 'incoming' | 'sent';
 
 export default function SharedScreen() {
   const { colors: c } = useTheme();
+  const insets = useSafeAreaInsets();
   const [activeTab, setActiveTab] = useState<Tab>('incoming');
 
   // Incoming invites
@@ -251,7 +253,7 @@ export default function SharedScreen() {
   // ------------------------------------------------------------------
 
   return (
-    <View style={[styles.root, { backgroundColor: c.paper }]}>
+    <View style={[styles.root, { paddingTop: insets.top, backgroundColor: c.paper }]}>
       {/* Header */}
       <Text style={[styles.title, { color: c.ink }]}>Shared</Text>
 
