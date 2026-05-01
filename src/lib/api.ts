@@ -205,6 +205,13 @@ export interface ListFilesResponse {
   files: FileEntry[];
 }
 
+export async function createFolder(name: string, parentId?: string): Promise<FileEntry> {
+  return request<FileEntry>('POST', '/api/v1/files/folder', {
+    name_encrypted: name,
+    parent_id: parentId ?? null,
+  });
+}
+
 export async function listFiles(parentId?: string, trashed = false): Promise<FileEntry[]> {
   const params = new URLSearchParams();
   if (parentId) params.set('parent_id', parentId);
@@ -335,6 +342,43 @@ export interface StorageUsage {
 
 export async function getStorageUsage(): Promise<StorageUsage> {
   return request<StorageUsage>('GET', '/api/v1/files/usage');
+}
+
+// ---------------------------------------------------------------------------
+// Preferences
+// ---------------------------------------------------------------------------
+
+export async function getPreference(key: string): Promise<string | null> {
+  try {
+    const data = await request<{ key: string; value: string }>('GET', `/api/v1/preferences/${key}`);
+    return data.value ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export async function setPreference(key: string, value: string): Promise<void> {
+  await request('PUT', `/api/v1/preferences/${key}`, { value });
+}
+
+// ---------------------------------------------------------------------------
+// Billing / subscription
+// ---------------------------------------------------------------------------
+
+export interface Subscription {
+  plan: string;
+  billing_cycle: string | null;
+  status: string;
+  current_period_end: string | null;
+}
+
+export async function getSubscription(): Promise<Subscription | null> {
+  try {
+    const data = await request<{ subscription: Subscription | null }>('GET', '/api/v1/billing/subscription');
+    return data.subscription ?? null;
+  } catch {
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------

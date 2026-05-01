@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Linking,
   ScrollView,
   StyleSheet,
   Switch,
@@ -11,11 +12,21 @@ import {
 } from 'react-native';
 import * as LocalAuthentication from 'expo-local-authentication';
 import * as SecureStore from 'expo-secure-store';
+import Constants from 'expo-constants';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { colors, radii, spacing } from '../theme';
 import { useAuth } from '../lib/auth';
-import { getStorageUsage, type StorageUsage } from '../lib/api';
+import {
+  getStorageUsage,
+  getPreference,
+  setPreference,
+  getSubscription,
+  getRegion,
+  type StorageUsage,
+  type Subscription,
+  type Region,
+} from '../lib/api';
 import type { RootStackParamList } from '../App';
 
 const BIOMETRIC_PREF_KEY = 'beebeeb_biometric_lock';
@@ -185,6 +196,11 @@ export default function SettingsScreen() {
   // Camera roll backup preference
   const [cameraBackupEnabled, setCameraBackupEnabled] = useState(false);
 
+  // Account — display name, subscription, region
+  const [displayName, setDisplayNameState] = useState<string>('');
+  const [subscription, setSubscription] = useState<Subscription | null>(null);
+  const [region, setRegion] = useState<Region | null>(null);
+
   const fetchUsage = useCallback(async () => {
     try {
       const data = await getStorageUsage();
@@ -214,10 +230,22 @@ export default function SettingsScreen() {
     }
   }, []);
 
+  const loadAccountData = useCallback(async () => {
+    const [name, sub, reg] = await Promise.allSettled([
+      getPreference('display_name'),
+      getSubscription(),
+      getRegion(),
+    ]);
+    if (name.status === 'fulfilled' && name.value) setDisplayNameState(name.value);
+    if (sub.status === 'fulfilled') setSubscription(sub.value);
+    if (reg.status === 'fulfilled') setRegion(reg.value);
+  }, []);
+
   useEffect(() => {
     fetchUsage();
     loadBiometricPrefs();
-  }, [fetchUsage, loadBiometricPrefs]);
+    loadAccountData();
+  }, [fetchUsage, loadBiometricPrefs, loadAccountData]);
 
   const handleBiometricToggle = useCallback(async (enabled: boolean) => {
     if (enabled) {
@@ -241,6 +269,37 @@ export default function SettingsScreen() {
   const handleCameraBackupToggle = useCallback(async (enabled: boolean) => {
     setCameraBackupEnabled(enabled);
     await SecureStore.setItemAsync(CAMERA_BACKUP_KEY, enabled ? 'true' : 'false');
+  }, []);
+
+  const handleEditDisplayName = useCallback(() => {
+    Alert.prompt(
+      'Display name',
+      'This name is visible to people you share files with.',
+      async (name) => {
+        const trimmed = name?.trim();
+        if (trimmed === undefined) return;
+        setDisplayNameState(trimmed);
+        try {
+          await setPreference('display_name', trimmed);
+        } catch {
+          Alert.alert('Error', 'Could not save display name.');
+        }
+      },
+      'plain-text',
+      displayName,
+    );
+  }, [displayName]);
+
+  const handleManagePlan = useCallback(() => {
+    Linking.openURL('https://beebeeb.io/account/billing');
+  }, []);
+
+  const handlePrivacyPolicy = useCallback(() => {
+    Linking.openURL('https://beebeeb.io/legal/privacy');
+  }, []);
+
+  const handleTerms = useCallback(() => {
+    Linking.openURL('https://beebeeb.io/legal/terms');
   }, []);
 
   const handleSignOut = useCallback(() => {
@@ -268,12 +327,15 @@ export default function SettingsScreen() {
         {/* ---- Account ---- */}
         <View style={styles.section}>
           <View style={styles.card}>
-            <TouchableOpacity style={styles.accountRow} activeOpacity={0.6}>
+            <TouchableOpacity style={styles.accountRow} activeOpacity={0.6} onPress={handleEditDisplayName}>
               <View style={styles.avatarCircle}>
                 <Text style={styles.avatarText}>{initials}</Text>
               </View>
               <View style={styles.accountInfo}>
-                <Text style={styles.accountEmail} numberOfLines={1}>
+                {displayName ? (
+                  <Text style={styles.accountEmail} numberOfLines={1}>{displayName}</Text>
+                ) : null}
+                <Text style={[styles.accountEmail, displayName ? styles.accountEmailSub : null]} numberOfLines={1}>
                   {email}
                 </Text>
                 {user?.created_at && (
@@ -287,7 +349,7 @@ export default function SettingsScreen() {
           </View>
         </View>
 
-        {/* ---- Storage ---- */}
+        {/* ---- Storage + Plan ---- */}
         <View style={styles.section}>
           <SectionHeader title="Storage" />
           <View style={styles.card}>
@@ -306,7 +368,8 @@ export default function SettingsScreen() {
                 <RowDivider />
                 <SettingsRow
                   label="Plan"
-                  value={planLabel(usage.plan_name)}
+                  value={subscription ? planLabel(subscription.plan) : planLabel(usage.plan_name)}
+                  onPress={handleManagePlan}
                   showChevron={true}
                 />
               </>
@@ -392,15 +455,31 @@ export default function SettingsScreen() {
         <View style={styles.section}>
           <SectionHeader title="About" />
           <View style={styles.card}>
-            <SettingsRow label="Version" value="1.0.0" showChevron={false} />
-            <RowDivider />
-            <SettingsRow label="Website" value="beebeeb.io" showChevron={false} />
-            <RowDivider />
             <SettingsRow
-              label="Operator"
-              value="Initlabs B.V."
+              label="Version"
+              value={`${Constants.expoConfig?.version ?? '1.0.0'} (${Constants.expoConfig?.ios?.buildNumber ?? Constants.expoConfig?.android?.versionCode ?? '1'})`}
               showChevron={false}
             />
+            <RowDivider />
+            {region ? (
+              <>
+                <SettingsRow
+                  label="Storage location"
+                  value={`${region.region}. ${region.operator}.`}
+                  showChevron={false}
+                />
+                <RowDivider />
+              </>
+            ) : null}
+            <SettingsRow
+              label="Operator"
+              value="Initlabs B.V., Wijchen, Netherlands"
+              showChevron={false}
+            />
+            <RowDivider />
+            <SettingsRow label="Privacy policy" onPress={handlePrivacyPolicy} />
+            <RowDivider />
+            <SettingsRow label="Terms of service" onPress={handleTerms} />
           </View>
         </View>
 
@@ -418,10 +497,13 @@ export default function SettingsScreen() {
 
         {/* Footer */}
         <View style={styles.footer}>
-          <Text style={styles.footerText}>
-            End-to-end encrypted. Zero knowledge.
-          </Text>
+          <Text style={styles.footerText}>End-to-end encrypted. Zero knowledge.</Text>
           <Text style={styles.footerText}>Made in Europe.</Text>
+          {region && (
+            <Text style={styles.footerText}>
+              {`Stored in ${region.region}. ${region.operator}.`}
+            </Text>
+          )}
         </View>
       </ScrollView>
     </View>
@@ -493,6 +575,11 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
     color: colors.ink,
+  },
+  accountEmailSub: {
+    fontSize: 12,
+    fontWeight: '400',
+    color: colors.ink3,
   },
   accountSub: {
     fontSize: 11,
