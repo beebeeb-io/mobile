@@ -42,7 +42,7 @@ const SLIDES: Slide[] = [
     key: '3',
     icon: 'shield-checkmark',
     title: 'Made in Europe',
-    body: 'Operated by Initlabs B.V. from the Netherlands. Your data stays in Europe.',
+    body: 'Operated by Beebeeb.io from the Netherlands. Your data stays in Europe.',
   },
 ];
 

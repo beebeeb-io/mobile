@@ -606,7 +606,7 @@ export default function SettingsScreen() {
     const version = Constants.expoConfig?.version ?? '1.0.0';
     Alert.alert(
       `Beebeeb v${version}`,
-      '• End-to-end encrypted file storage\n• Camera roll backup\n• Dark mode support\n• File search and sort\n• Swipe actions\n• Biometric lock\n\nMade in Europe by Initlabs B.V.',
+      '• End-to-end encrypted file storage\n• Camera roll backup\n• Dark mode support\n• File search and sort\n• Swipe actions\n• Biometric lock\n\nMade in Europe by Beebeeb.io',
     );
   }, []);
 
@@ -1137,7 +1137,7 @@ export default function SettingsScreen() {
             <RowDivider c={c} />
             <SettingsRow
               label="Operated by"
-              value="Initlabs B.V., Wijchen, Netherlands"
+              value="Beebeeb.io, Netherlands"
               showChevron={false}
               c={c}
             />
@@ -1186,7 +1186,7 @@ export default function SettingsScreen() {
           {serverRegionLabel && (
             <Text style={{ fontSize: 10, color: c.ink4 }}>Stored in {serverRegionLabel}</Text>
           )}
-          <Text style={{ fontSize: 10, color: c.ink4 }}>Operated by Initlabs B.V., Wijchen, Netherlands.</Text>
+          <Text style={{ fontSize: 10, color: c.ink4 }}>Operated by Beebeeb.io, Netherlands.</Text>
         </View>
       </ScrollView>
     </View>

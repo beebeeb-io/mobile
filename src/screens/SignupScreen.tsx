@@ -255,7 +255,7 @@ export default function SignupScreen() {
         <View style={styles.regionRow}>
           <Text style={styles.regionText}>Stored in Falkenstein.</Text>
           <Text style={styles.regionText}>
-            Operated by Initlabs B.V., Wijchen, Netherlands.
+            Operated by Beebeeb.io, Netherlands.
           </Text>
         </View>
       </ScrollView>
