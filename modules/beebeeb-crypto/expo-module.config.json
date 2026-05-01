@@ -1,7 +1,7 @@
 {
   "platforms": ["apple", "android"],
   "apple": {
-    "modules": ["BeebeebCryptoModule"]
+    "modules": ["BeebeebCryptoModule", "ConstellationModule"]
   },
   "android": {
     "modules": ["expo.modules.beebeebcrypto.BeebeebCryptoModule"]
