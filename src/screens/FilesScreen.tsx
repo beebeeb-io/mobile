@@ -200,6 +200,9 @@ export default function FilesScreen() {
         navigation.navigate('Preview', {
           fileId: file.id,
           fileName: displayName(file),
+          mimeType: file.mime_type ?? undefined,
+          sizeBytes: file.size_bytes,
+          createdAt: file.created_at,
         });
       }
     },
