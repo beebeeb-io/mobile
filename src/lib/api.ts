@@ -249,6 +249,20 @@ export async function listMyShares(): Promise<Share[]> {
 }
 
 // ---------------------------------------------------------------------------
+// Storage usage
+// ---------------------------------------------------------------------------
+
+export interface StorageUsage {
+  used_bytes: number;
+  plan_limit_bytes: number;
+  plan_name: string;
+}
+
+export async function getStorageUsage(): Promise<StorageUsage> {
+  return request<StorageUsage>('GET', '/api/v1/files/usage');
+}
+
+// ---------------------------------------------------------------------------
 // System
 // ---------------------------------------------------------------------------
 
