@@ -1,9 +1,10 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActionSheetIOS,
   ActivityIndicator,
   Alert,
   FlatList,
+  LayoutAnimation,
   Platform,
   RefreshControl,
   StyleSheet,
@@ -216,6 +217,7 @@ export default function FilesScreen() {
   // Search state
   const [searchActive, setSearchActive] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const searchInputRef = useRef<TextInput>(null);
 
   // Crypto
   const { isUnlocked, decryptMetadata } = useCrypto();
@@ -283,6 +285,8 @@ export default function FilesScreen() {
   // ------------------------------------------------------------------
 
   const navigateToFolder = useCallback((folder: FileEntry) => {
+    setSearchActive(false);
+    setSearchQuery('');
     setFolderStack((prev) => [
       ...prev,
       { id: folder.id, name: decryptedNames[folder.id] ?? displayName(folder) },
@@ -408,6 +412,8 @@ export default function FilesScreen() {
   }, [currentFolder.id]);
 
   const handleSearchToggle = useCallback(() => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
     setSearchActive((prev) => {
       if (prev) setSearchQuery('');
       return !prev;
@@ -530,6 +536,16 @@ export default function FilesScreen() {
 
   const renderEmpty = () => {
     if (loading) return null;
+    if (searchQuery.trim()) {
+      return (
+        <View style={styles.emptyContainer}>
+          <Text style={[styles.emptyTitle, { color: c.ink2 }]}>No results</Text>
+          <Text style={[styles.emptySubtitle, { color: c.ink3 }]}>
+            Nothing matches "{searchQuery.trim()}"
+          </Text>
+        </View>
+      );
+    }
     return (
       <View style={styles.emptyContainer}>
         <Text style={[styles.emptyTitle, { color: c.ink2 }]}>No files yet</Text>
@@ -562,7 +578,7 @@ export default function FilesScreen() {
     <View style={[styles.root, { paddingTop: insets.top, backgroundColor: c.paper }]}>
       {/* Header */}
       <View style={styles.header}>
-        {!searchActive && folderStack.length > 1 && (
+        {folderStack.length > 1 && !searchActive && (
           <TouchableOpacity
             style={[styles.backButton, { backgroundColor: c.paper2, borderColor: c.line }]}
             onPress={() => navigateToBreadcrumb(folderStack.length - 2)}
@@ -571,33 +587,45 @@ export default function FilesScreen() {
             <Text style={[styles.backButtonText, { color: c.ink2 }]}>{'‹'}</Text>
           </TouchableOpacity>
         )}
-        {searchActive ? (
-          <TextInput
-            style={[styles.searchInput, { backgroundColor: c.paper2, borderColor: c.line, color: c.ink }]}
-            value={searchQuery}
-            onChangeText={setSearchQuery}
-            placeholder="Search files..."
-            placeholderTextColor={c.ink4}
-            autoFocus
-            returnKeyType="search"
-            autoCapitalize="none"
-            autoCorrect={false}
-          />
-        ) : (
-          <Text style={[styles.title, { color: c.ink }]}>{currentFolder.name}</Text>
-        )}
+        <Text style={[styles.title, { color: c.ink }]}>{currentFolder.name}</Text>
         <View style={{ flex: 1 }} />
         <TouchableOpacity
           onPress={handleSearchToggle}
           hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
           style={styles.searchButton}
         >
-          <Text style={[styles.searchButtonText, { color: c.ink2 }]}>{searchActive ? '✕' : '⌕'}</Text>
+          <Ionicons
+            name={searchActive ? 'close' : 'search'}
+            size={20}
+            color={searchActive ? c.amberDeep : c.ink2}
+          />
         </TouchableOpacity>
       </View>
 
-      {/* Breadcrumbs (only show when navigated into a folder) */}
-      {folderStack.length > 1 && renderBreadcrumbs()}
+      {/* Search bar — slides in below header when active */}
+      {searchActive && (
+        <View style={styles.searchBar}>
+          <TextInput
+            ref={searchInputRef}
+            style={[styles.searchInput, { backgroundColor: c.paper2, borderColor: c.line, color: c.ink }]}
+            value={searchQuery}
+            onChangeText={setSearchQuery}
+            placeholder="Search in this folder..."
+            placeholderTextColor={c.ink4}
+            autoFocus
+            returnKeyType="search"
+            autoCapitalize="none"
+            autoCorrect={false}
+            clearButtonMode="while-editing"
+          />
+          <TouchableOpacity onPress={handleSearchToggle} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+            <Text style={{ color: c.amberDeep, fontSize: 14, fontWeight: '600' }}>Cancel</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
+      {/* Breadcrumbs (only show when navigated into a folder, not during search) */}
+      {folderStack.length > 1 && !searchActive && renderBreadcrumbs()}
 
       {/* Content */}
       {error ? (
@@ -671,9 +699,9 @@ const styles = StyleSheet.create({
   backButton: { width: 30, height: 30, borderRadius: 15, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
   backButtonText: { fontSize: 20, fontWeight: '600', marginTop: -2 },
   title: { fontSize: 28, fontWeight: '700' },
+  searchBar: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: spacing.lg, paddingBottom: spacing.sm, gap: 10 },
   searchInput: { flex: 1, height: 36, borderRadius: radii.md, paddingHorizontal: 12, fontSize: 15, borderWidth: 1 },
   searchButton: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
-  searchButtonText: { fontSize: 20 },
 
   // Breadcrumbs
   breadcrumbRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: spacing.lg, paddingBottom: spacing.sm, flexWrap: 'wrap', gap: 2 },
