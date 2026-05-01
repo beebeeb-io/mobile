@@ -21,7 +21,13 @@ export default function DevicePairingScreen() {
     <View style={[styles.root, { paddingTop: insets.top, paddingBottom: insets.bottom }]}>
       {/* Header */}
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backButton} activeOpacity={0.7}>
+        <TouchableOpacity
+          onPress={() => navigation.goBack()}
+          style={styles.backButton}
+          activeOpacity={0.7}
+          accessibilityRole="button"
+          accessibilityLabel="Back"
+        >
           <View style={styles.backArrow} />
           <Text style={styles.backText}>Back</Text>
         </TouchableOpacity>
@@ -39,6 +45,9 @@ export default function DevicePairingScreen() {
           style={styles.card}
           onPress={() => navigation.navigate('DevicePairingScan')}
           activeOpacity={0.85}
+          accessibilityRole="button"
+          accessibilityLabel="Scan with this device"
+          accessibilityHint="Opens the camera to scan a pattern shown on another device"
         >
           <View style={[styles.cardIcon, styles.cardIconScan]}>
             {/* Camera outline */}
@@ -60,6 +69,9 @@ export default function DevicePairingScreen() {
           style={styles.card}
           onPress={() => navigation.navigate('DevicePairingShow')}
           activeOpacity={0.85}
+          accessibilityRole="button"
+          accessibilityLabel="Show on this device"
+          accessibilityHint="Displays a pattern for another device to scan"
         >
           <View style={[styles.cardIcon, styles.cardIconShow]}>
             {/* Globe outline */}

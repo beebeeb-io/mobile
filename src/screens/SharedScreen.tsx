@@ -294,7 +294,12 @@ export default function SharedScreen() {
     <View style={styles.errorContainer}>
       <Ionicons name="cloud-offline-outline" size={48} color={c.ink3} />
       <Text style={[styles.errorText, { color: c.ink2 }]}>{error}</Text>
-      <TouchableOpacity style={[styles.retryButton, { backgroundColor: c.amber }]} onPress={onRetry}>
+      <TouchableOpacity
+        style={[styles.retryButton, { backgroundColor: c.amber }]}
+        onPress={onRetry}
+        accessibilityRole="button"
+        accessibilityLabel="Retry"
+      >
         <Text style={[styles.retryButtonText, { color: c.ink }]}>Retry</Text>
       </TouchableOpacity>
     </View>
@@ -330,11 +335,14 @@ export default function SharedScreen() {
       <Text style={[styles.title, { color: c.ink }]}>Shared</Text>
 
       {/* Tabs */}
-      <View style={styles.tabBar}>
+      <View style={styles.tabBar} accessibilityRole="tablist">
         <TouchableOpacity
           style={[styles.tab, isIncoming && [styles.tabActive, { borderBottomColor: c.amber }]]}
           onPress={() => setActiveTab('incoming')}
           activeOpacity={0.7}
+          accessibilityRole="tab"
+          accessibilityState={{ selected: isIncoming }}
+          accessibilityLabel="Shared with me"
         >
           <Text style={[styles.tabText, { color: c.ink3 }, isIncoming && [styles.tabTextActive, { color: c.ink }]]}>
             Shared with me
@@ -344,6 +352,9 @@ export default function SharedScreen() {
           style={[styles.tab, !isIncoming && [styles.tabActive, { borderBottomColor: c.amber }]]}
           onPress={() => setActiveTab('sent')}
           activeOpacity={0.7}
+          accessibilityRole="tab"
+          accessibilityState={{ selected: !isIncoming }}
+          accessibilityLabel="Shared by me"
         >
           <Text style={[styles.tabText, { color: c.ink3 }, !isIncoming && [styles.tabTextActive, { color: c.ink }]]}>
             Shared by me

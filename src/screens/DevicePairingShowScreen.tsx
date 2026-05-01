@@ -23,6 +23,8 @@ export default function DevicePairingShowScreen() {
         onPress={() => navigation.goBack()}
         activeOpacity={0.7}
         hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+        accessibilityRole="button"
+        accessibilityLabel="Back"
       >
         <Text style={styles.backText}>Back</Text>
       </TouchableOpacity>
@@ -52,6 +54,8 @@ export default function DevicePairingShowScreen() {
           style={styles.cancelButton}
           onPress={() => navigation.goBack()}
           activeOpacity={0.7}
+          accessibilityRole="button"
+          accessibilityLabel="Cancel pairing"
         >
           <Text style={styles.cancelText}>Cancel</Text>
         </TouchableOpacity>
