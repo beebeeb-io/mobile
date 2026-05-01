@@ -22,7 +22,9 @@
           "$(AppIdentifierPrefix)io.beebeeb.shared"
         ]
       },
-      "associatedDomains": ["applinks:beebeeb.io"],
+      "associatedDomains": [
+        "applinks:beebeeb.io"
+      ],
       "infoPlist": {
         "NSFileProviderPresenceAuthorized": true,
         "NSCameraUsageDescription": "Beebeeb scans the amber constellation pattern to pair a new device.",
@@ -34,19 +36,25 @@
             "UIApplicationShortcutItemType": "io.beebeeb.upload",
             "UIApplicationShortcutItemTitle": "Upload File",
             "UIApplicationShortcutItemIconType": "UIApplicationShortcutIconTypeAdd",
-            "UIApplicationShortcutItemUserInfo": { "url": "beebeeb://upload" }
+            "UIApplicationShortcutItemUserInfo": {
+              "url": "beebeeb://upload"
+            }
           },
           {
             "UIApplicationShortcutItemType": "io.beebeeb.search",
             "UIApplicationShortcutItemTitle": "Search Files",
             "UIApplicationShortcutItemIconType": "UIApplicationShortcutIconTypeSearch",
-            "UIApplicationShortcutItemUserInfo": { "url": "beebeeb://search" }
+            "UIApplicationShortcutItemUserInfo": {
+              "url": "beebeeb://search"
+            }
           },
           {
             "UIApplicationShortcutItemType": "io.beebeeb.photos",
             "UIApplicationShortcutItemTitle": "Photos",
             "UIApplicationShortcutItemIconType": "UIApplicationShortcutIconTypeCapturePhoto",
-            "UIApplicationShortcutItemUserInfo": { "url": "beebeeb://photos" }
+            "UIApplicationShortcutItemUserInfo": {
+              "url": "beebeeb://photos"
+            }
           }
         ]
       }
@@ -72,7 +80,8 @@
       "expo-document-picker",
       "expo-media-library",
       "./modules/beebeeb-crypto/app.plugin.js",
-      "./plugins/uniffi-bridge/withUniffiBridge.js"
+      "./plugins/uniffi-bridge/withUniffiBridge.js",
+      "expo-video"
     ],
     "extra": {
       "eas": {
