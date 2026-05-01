@@ -20,6 +20,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import { useBottomTabBarHeight } from '@react-navigation/bottom-tabs';
 import * as Haptics from 'expo-haptics';
 import * as SecureStore from 'expo-secure-store';
 import * as DocumentPicker from 'expo-document-picker';
@@ -536,6 +537,9 @@ type Nav = NativeStackNavigationProp<RootStackParamList>;
 export default function FilesScreen() {
   const navigation = useNavigation<Nav>();
   const insets = useSafeAreaInsets();
+  // Bottom tab bar overlaps the FAB unless we offset by its real height
+  // (insets.bottom alone underestimates this on devices with a home bar).
+  const tabBarHeight = useBottomTabBarHeight();
   const { colors: c } = useTheme();
   const { showToast } = useToast();
 
@@ -2054,7 +2058,7 @@ export default function FilesScreen() {
       {/* Floating action button — hidden in select mode */}
       {!selectMode && (
         <TouchableOpacity
-          style={[styles.fab, { bottom: 16 + insets.bottom, backgroundColor: c.amber }]}
+          style={[styles.fab, { bottom: 16 + tabBarHeight, backgroundColor: c.amber }]}
           activeOpacity={0.8}
           onPress={handleFabPress}
           disabled={!!uploadingName}
