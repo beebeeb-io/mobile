@@ -6,10 +6,11 @@ import {
   RefreshControl,
   StyleSheet,
   Text,
+  TouchableOpacity,
   View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { colors, spacing } from '../theme';
+import { colors, radii, spacing } from '../theme';
 import { listFiles, friendlyError } from '../lib/api';
 import type { FileEntry } from '../lib/api';
 
@@ -17,101 +18,144 @@ import type { FileEntry } from '../lib/api';
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Check if a file has an image mime type. */
 function isImageFile(entry: FileEntry): boolean {
   const mime = entry.mime_type ?? '';
   return mime.startsWith('image/');
 }
 
-/** Warm-toned placeholder color based on index. */
-function placeholderColor(index: number): string {
-  const hues = [45, 30, 20, 55, 35, 50, 25, 40, 15, 60];
-  const sats = [60, 50, 70, 45, 65, 55, 40, 50, 58, 48];
-  const lights = [75, 60, 80, 68, 64, 78, 72, 66, 74, 62];
-  const h = hues[index % hues.length];
-  const s = sats[index % sats.length];
-  const l = lights[index % lights.length];
+/**
+ * Deterministic warm swatch — used as a placeholder until the encrypted
+ * thumbnail can be fetched and decrypted via the UniFFI core bindings.
+ * Mirrors the swatch logic in design/hifi/hifi-ios-app.jsx.
+ */
+function swatch(seed: number): string {
+  const hues = [55, 72, 28, 90, 42, 65, 18, 82];
+  const sats = [22, 28, 24, 32, 26, 30, 20, 28];
+  const lights = [78, 62, 84, 70, 66, 80, 72, 68];
+  const h = hues[seed % hues.length];
+  const s = sats[(seed * 7) % sats.length];
+  const l = lights[(seed * 3) % lights.length];
   return `hsl(${h}, ${s}%, ${l}%)`;
 }
 
-/** Group photos by relative date: Today, Yesterday, Earlier. */
 interface PhotoGroup {
-  title: string;
+  /** "September 2025" */
+  label: string;
+  /** Sortable key like "2025-09" */
+  key: string;
   data: FileEntry[];
 }
 
-function groupByDate(photos: FileEntry[]): PhotoGroup[] {
-  const now = new Date();
-  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const yesterdayStart = new Date(todayStart.getTime() - 86400000);
+const MONTH_NAMES = [
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December',
+];
 
-  const today: FileEntry[] = [];
-  const yesterday: FileEntry[] = [];
-  const earlier: FileEntry[] = [];
-
+function groupByMonth(photos: FileEntry[]): PhotoGroup[] {
+  const map = new Map<string, PhotoGroup>();
   for (const photo of photos) {
     const date = new Date(photo.created_at);
-    if (date >= todayStart) {
-      today.push(photo);
-    } else if (date >= yesterdayStart) {
-      yesterday.push(photo);
-    } else {
-      earlier.push(photo);
+    const year = date.getFullYear();
+    const month = date.getMonth();
+    const key = `${year}-${String(month + 1).padStart(2, '0')}`;
+    const label = `${MONTH_NAMES[month]} ${year}`;
+    let group = map.get(key);
+    if (!group) {
+      group = { label, key, data: [] };
+      map.set(key, group);
     }
+    group.data.push(photo);
   }
-
-  const groups: PhotoGroup[] = [];
-  if (today.length > 0) groups.push({ title: 'Today', data: today });
-  if (yesterday.length > 0) groups.push({ title: 'Yesterday', data: yesterday });
-  if (earlier.length > 0) groups.push({ title: 'Earlier', data: earlier });
-  return groups;
+  // Sort groups newest first
+  return Array.from(map.values()).sort((a, b) => (a.key < b.key ? 1 : -1));
 }
 
 // ---------------------------------------------------------------------------
-// Grid dimensions
+// Grid dimensions — 4 columns to match the iOS design
 // ---------------------------------------------------------------------------
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
 const GRID_GAP = 2;
-const COLS = 3;
+const COLS = 4;
 const CELL_SIZE = (SCREEN_WIDTH - GRID_GAP * (COLS - 1)) / COLS;
+
+// ---------------------------------------------------------------------------
+// Filter chips
+// ---------------------------------------------------------------------------
+
+type Filter = 'All' | 'Years' | 'Months' | 'Days';
+const FILTERS: Filter[] = ['All', 'Years', 'Months', 'Days'];
+
+function FilterChips({
+  active,
+  onChange,
+}: {
+  active: Filter;
+  onChange: (f: Filter) => void;
+}) {
+  return (
+    <View style={styles.chipRow}>
+      {FILTERS.map((label) => {
+        const isActive = label === active;
+        return (
+          <TouchableOpacity
+            key={label}
+            activeOpacity={0.7}
+            onPress={() => onChange(label)}
+            style={[styles.chip, isActive && styles.chipActive]}
+          >
+            <Text style={[styles.chipText, isActive && styles.chipTextActive]}>
+              {label}
+            </Text>
+          </TouchableOpacity>
+        );
+      })}
+    </View>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Photo cell
 // ---------------------------------------------------------------------------
 
-function PhotoCell({ index }: { index: number }) {
+function PhotoCell({ seed }: { seed: number }) {
+  return <View style={[styles.cell, { backgroundColor: swatch(seed) }]} />;
+}
+
+// ---------------------------------------------------------------------------
+// Group section: header + grid
+// ---------------------------------------------------------------------------
+
+function GroupSection({ group, seedOffset }: { group: PhotoGroup; seedOffset: number }) {
   return (
-    <View style={[styles.cell, { backgroundColor: placeholderColor(index) }]}>
-      {/* Camera icon placeholder — simple Unicode since no icon lib yet */}
-      <Text style={styles.cameraIcon}>{'\u{1F4F7}'}</Text>
+    <View style={styles.section}>
+      <View style={styles.sectionHeader}>
+        <Text style={styles.sectionLabel}>{group.label}</Text>
+        <Text style={styles.sectionCount}>
+          {group.data.length} {group.data.length === 1 ? 'item' : 'items'}
+        </Text>
+      </View>
+      <View style={styles.grid}>
+        {group.data.map((photo, i) => (
+          <PhotoCell key={photo.id} seed={seedOffset + i} />
+        ))}
+      </View>
     </View>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Group header
+// Auto-backup banner — honest state until the camera roll integration ships
 // ---------------------------------------------------------------------------
 
-function GroupHeader({ title, count }: { title: string; count: number }) {
+function AutoBackupBanner() {
   return (
-    <View style={styles.groupHeader}>
-      <Text style={styles.groupTitle}>{title}</Text>
-      <Text style={styles.groupCount}>{count}</Text>
-    </View>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Photo grid for a single group
-// ---------------------------------------------------------------------------
-
-function PhotoGrid({ photos, indexOffset }: { photos: FileEntry[]; indexOffset: number }) {
-  return (
-    <View style={styles.grid}>
-      {photos.map((photo, i) => (
-        <PhotoCell key={photo.id} index={indexOffset + i} />
-      ))}
+    <View style={styles.banner}>
+      <View style={styles.bannerDot} />
+      <Text style={styles.bannerText}>
+        Auto-backup off
+      </Text>
+      <Text style={styles.bannerHint}>Enable in Settings</Text>
     </View>
   );
 }
@@ -122,14 +166,11 @@ function PhotoGrid({ photos, indexOffset }: { photos: FileEntry[]; indexOffset: 
 
 export default function PhotosScreen() {
   const insets = useSafeAreaInsets();
-  const [allFiles, setAllFiles] = useState<FileEntry[]>([]);
+  const [photos, setPhotos] = useState<FileEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  // -----------------------------------------------------------------------
-  // Fetch all files and filter to images
-  // -----------------------------------------------------------------------
+  const [filter, setFilter] = useState<Filter>('Months');
 
   const fetchPhotos = useCallback(async (isRefresh = false) => {
     if (isRefresh) {
@@ -141,11 +182,10 @@ export default function PhotosScreen() {
 
     try {
       const result = await listFiles();
-      // Filter to image files only, sort by created_at descending (newest first)
       const images = result
         .filter(isImageFile)
         .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-      setAllFiles(images);
+      setPhotos(images);
     } catch (err) {
       setError(friendlyError(err));
     } finally {
@@ -162,57 +202,30 @@ export default function PhotosScreen() {
     fetchPhotos(true);
   }, [fetchPhotos]);
 
-  // -----------------------------------------------------------------------
-  // Group photos by date
-  // -----------------------------------------------------------------------
+  const groups = useMemo(() => groupByMonth(photos), [photos]);
 
-  const groups = useMemo(() => groupByDate(allFiles), [allFiles]);
-
-  // Build flat list items: mix of headers and grid sections
-  type ListItem =
-    | { type: 'header'; title: string; count: number; key: string }
-    | { type: 'grid'; photos: FileEntry[]; indexOffset: number; key: string };
-
-  const listData = useMemo(() => {
-    const items: ListItem[] = [];
-    let offset = 0;
-    for (const group of groups) {
-      items.push({
-        type: 'header',
-        title: group.title,
-        count: group.data.length,
-        key: `header-${group.title}`,
-      });
-      items.push({
-        type: 'grid',
-        photos: group.data,
-        indexOffset: offset,
-        key: `grid-${group.title}`,
-      });
-      offset += group.data.length;
+  // Compute seed offsets so swatch colors are stable across the whole screen
+  const groupOffsets = useMemo(() => {
+    const offsets: number[] = [];
+    let acc = 0;
+    for (const g of groups) {
+      offsets.push(acc);
+      acc += g.data.length;
     }
-    return items;
+    return offsets;
   }, [groups]);
 
-  // -----------------------------------------------------------------------
-  // Render
-  // -----------------------------------------------------------------------
-
-  const renderItem = ({ item }: { item: ListItem }) => {
-    if (item.type === 'header') {
-      return <GroupHeader title={item.title} count={item.count} />;
-    }
-    return <PhotoGrid photos={item.photos} indexOffset={item.indexOffset} />;
-  };
+  const renderGroup = ({ item, index }: { item: PhotoGroup; index: number }) => (
+    <GroupSection group={item} seedOffset={groupOffsets[index] ?? 0} />
+  );
 
   const renderEmpty = () => {
     if (loading) return null;
     return (
       <View style={styles.emptyContainer}>
-        <Text style={styles.emptyIcon}>{'\u{1F4F7}'}</Text>
         <Text style={styles.emptyTitle}>No photos yet</Text>
         <Text style={styles.emptySubtitle}>
-          Upload images to see them here.
+          Photos you upload — or back up automatically — will appear here. Encrypted on your device, never visible to us.
         </Text>
       </View>
     );
@@ -221,6 +234,9 @@ export default function PhotosScreen() {
   const renderError = () => (
     <View style={styles.errorContainer}>
       <Text style={styles.errorText}>{error}</Text>
+      <TouchableOpacity style={styles.retryButton} onPress={() => fetchPhotos()}>
+        <Text style={styles.retryButtonText}>Retry</Text>
+      </TouchableOpacity>
     </View>
   );
 
@@ -229,11 +245,14 @@ export default function PhotosScreen() {
       {/* Header */}
       <View style={styles.header}>
         <Text style={styles.title}>Photos</Text>
-        {allFiles.length > 0 && (
-          <Text style={styles.photoCount}>
-            {allFiles.length} {allFiles.length === 1 ? 'photo' : 'photos'}
-          </Text>
-        )}
+        <View style={{ flex: 1 }} />
+        <View style={styles.headerCircle}>
+          <Text style={styles.headerGlyph}>{'⦿'}</Text>
+        </View>
+      </View>
+
+      <View style={styles.filterRow}>
+        <FilterChips active={filter} onChange={setFilter} />
       </View>
 
       {/* Content */}
@@ -246,9 +265,9 @@ export default function PhotosScreen() {
         </View>
       ) : (
         <FlatList
-          data={listData}
-          keyExtractor={(item) => item.key}
-          renderItem={renderItem}
+          data={groups}
+          keyExtractor={(group) => group.key}
+          renderItem={renderGroup}
           ListEmptyComponent={renderEmpty}
           refreshControl={
             <RefreshControl
@@ -258,10 +277,12 @@ export default function PhotosScreen() {
               colors={[colors.amber]}
             />
           }
-          contentContainerStyle={listData.length === 0 ? styles.emptyList : undefined}
-          ListFooterComponent={<View style={{ height: 24 }} />}
+          contentContainerStyle={groups.length === 0 ? styles.emptyList : undefined}
+          ListFooterComponent={<View style={{ height: 12 }} />}
         />
       )}
+
+      <AutoBackupBanner />
     </View>
   );
 }
@@ -279,43 +300,87 @@ const styles = StyleSheet.create({
   // Header
   header: {
     flexDirection: 'row',
-    alignItems: 'baseline',
+    alignItems: 'center',
     paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.sm,
-    gap: 10,
+    paddingTop: 6,
+    paddingBottom: 4,
+    gap: 8,
   },
   title: {
     fontSize: 28,
     fontWeight: '700',
     color: colors.ink,
+    letterSpacing: -0.5,
   },
-  photoCount: {
-    fontSize: 13,
-    fontWeight: '500',
-    color: colors.ink3,
+  headerCircle: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: colors.paper2,
+    borderWidth: 1,
+    borderColor: colors.line,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  headerGlyph: {
+    fontSize: 12,
+    color: colors.ink2,
   },
 
-  // Group header
-  groupHeader: {
+  // Filter chips
+  filterRow: {
+    paddingHorizontal: spacing.lg,
+    paddingTop: 8,
+    paddingBottom: 10,
+  },
+  chipRow: {
+    flexDirection: 'row',
+    gap: 6,
+  },
+  chip: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: radii.round,
+    backgroundColor: colors.paper2,
+    borderWidth: 1,
+    borderColor: colors.line,
+  },
+  chipActive: {
+    backgroundColor: colors.ink,
+    borderColor: colors.ink,
+  },
+  chipText: {
+    fontSize: 11,
+    color: colors.ink3,
+    fontWeight: '400',
+  },
+  chipTextActive: {
+    color: colors.paper,
+    fontWeight: '600',
+  },
+
+  // Section (month group)
+  section: {
+    marginBottom: 12,
+  },
+  sectionHeader: {
     flexDirection: 'row',
     alignItems: 'baseline',
     paddingHorizontal: spacing.lg,
-    paddingTop: spacing.md,
     paddingBottom: 6,
     gap: 8,
   },
-  groupTitle: {
-    fontSize: 14,
+  sectionLabel: {
+    fontSize: 13,
     fontWeight: '600',
     color: colors.ink,
   },
-  groupCount: {
-    fontSize: 11,
-    fontWeight: '400',
+  sectionCount: {
+    fontSize: 10,
     color: colors.ink3,
   },
 
-  // Photo grid
+  // Grid
   grid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -324,12 +389,6 @@ const styles = StyleSheet.create({
   cell: {
     width: CELL_SIZE,
     height: CELL_SIZE,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  cameraIcon: {
-    fontSize: 20,
-    opacity: 0.3,
   },
 
   // Loading state
@@ -354,11 +413,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     paddingHorizontal: spacing.xl,
     gap: 8,
-  },
-  emptyIcon: {
-    fontSize: 40,
-    opacity: 0.3,
-    marginBottom: 8,
   },
   emptyTitle: {
     fontSize: 16,
@@ -385,5 +439,44 @@ const styles = StyleSheet.create({
     color: colors.red,
     textAlign: 'center',
     lineHeight: 20,
+  },
+  retryButton: {
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: radii.md,
+    backgroundColor: colors.amber,
+  },
+  retryButtonText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: colors.ink,
+  },
+
+  // Auto-backup banner (sticky at bottom of tab content)
+  banner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: spacing.lg,
+    paddingVertical: 10,
+    backgroundColor: colors.amberBg,
+    borderTopWidth: 1,
+    borderTopColor: '#f0e3a8',
+    gap: 8,
+  },
+  bannerDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: colors.amberDeep,
+  },
+  bannerText: {
+    fontSize: 11,
+    color: colors.ink2,
+    flex: 1,
+  },
+  bannerHint: {
+    fontSize: 10,
+    color: colors.amberDeep,
+    fontWeight: '600',
   },
 });
