@@ -17,7 +17,7 @@ import * as SecureStore from 'expo-secure-store';
 import Constants from 'expo-constants';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { colors, darkColors, spacing } from '../theme';
+import { colors, darkColors, spacing, type Colors } from '../theme';
 import { useAuth } from '../lib/auth';
 import { useBackup } from '../lib/backup-context';
 import {
@@ -37,7 +37,7 @@ const THEME_PREF_KEY = 'beebeeb_theme_pref';
 
 type ThemePreference = 'light' | 'dark' | 'system';
 type RegionMode = 'preference' | 'force';
-type C = typeof colors;
+type C = Colors;
 
 // ---------------------------------------------------------------------------
 // Data residency regions
@@ -260,7 +260,7 @@ export default function SettingsScreen() {
   const [themePreference, setThemePreference] = useState<ThemePreference>('system');
   const effectiveScheme = themePreference === 'system' ? (systemScheme ?? 'light') : themePreference;
   const isDark = effectiveScheme === 'dark';
-  const c = useMemo<C>(() => (isDark ? darkColors : colors), [isDark]);
+  const c: C = useMemo(() => (isDark ? darkColors : colors), [isDark]);
 
   // ---------------------------------------------------------------------------
   // Data loading

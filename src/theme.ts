@@ -60,6 +60,27 @@ export const colors = {
   black: '#000000',
 } as const;
 
+export type Colors = {
+  paper: string;
+  paper2: string;
+  line: string;
+  line2: string;
+  ink: string;
+  ink2: string;
+  ink3: string;
+  ink4: string;
+  amber: string;
+  amberDeep: string;
+  amberBg: string;
+  green: string;
+  red: string;
+  darkBg: string;
+  darkOverlay: string;
+  transparent: string;
+  white: string;
+  black: string;
+};
+
 export const fonts = {
   sans: 'System', // Maps to SF Pro on iOS, Roboto on Android
   mono: 'SpaceMono', // Fallback; JetBrains Mono via expo-font later
