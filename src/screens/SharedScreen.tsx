@@ -118,6 +118,7 @@ export default function SharedScreen() {
   const { colors: c } = useTheme();
   const insets = useSafeAreaInsets();
   const [activeTab, setActiveTab] = useState<Tab>('incoming');
+  const [isScrolled, setIsScrolled] = useState(false);
 
   // Incoming invites
   const [incoming, setIncoming] = useState<ShareInvite[]>([]);
@@ -266,7 +267,9 @@ export default function SharedScreen() {
 
   return (
     <View style={[styles.root, { paddingTop: insets.top, backgroundColor: c.paper }]}>
-      {/* Header */}
+      {/* Header area — bottom border appears when scrolled */}
+      <View style={[isScrolled && { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: c.line }]}>
+      {/* Title */}
       <Text style={[styles.title, { color: c.ink }]}>Shared</Text>
 
       {/* Tabs */}
@@ -290,6 +293,7 @@ export default function SharedScreen() {
           </Text>
         </TouchableOpacity>
       </View>
+      </View>{/* end header area */}
 
       {/* Content */}
       {error ? (
@@ -304,6 +308,8 @@ export default function SharedScreen() {
           keyExtractor={(item) => item.id}
           renderItem={renderItem}
           ListEmptyComponent={renderEmpty(emptyMessage, emptyIcon)}
+          onScroll={(e) => setIsScrolled(e.nativeEvent.contentOffset.y > 0)}
+          scrollEventThrottle={100}
           refreshControl={
             <RefreshControl
               refreshing={refreshing}
