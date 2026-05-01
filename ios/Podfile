@@ -14,7 +14,7 @@ install! 'cocoapods',
 prepare_react_native_project!
 
 target 'Beebeeb' do
-  use_expo_modules!(exclude: ['expo-dev-launcher', 'expo-dev-menu', 'expo-dev-menu-interface'])
+  use_expo_modules!
 
   if ENV['EXPO_USE_COMMUNITY_AUTOLINKING'] == '1'
     config_command = ['node', '-e', "process.argv=['', '', 'config'];require('@react-native-community/cli').run()"];
