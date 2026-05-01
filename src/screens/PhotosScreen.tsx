@@ -121,15 +121,15 @@ function FilterChips({
 // Photo cell
 // ---------------------------------------------------------------------------
 
-function PhotoCell({ seed }: { seed: number }) {
+const PhotoCell = React.memo(function PhotoCell({ seed }: { seed: number }) {
   return <View style={[styles.cell, { backgroundColor: swatch(seed) }]} />;
-}
+});
 
 // ---------------------------------------------------------------------------
 // Group section: header + grid
 // ---------------------------------------------------------------------------
 
-function GroupSection({ group, seedOffset }: { group: PhotoGroup; seedOffset: number }) {
+const GroupSection = React.memo(function GroupSection({ group, seedOffset }: { group: PhotoGroup; seedOffset: number }) {
   return (
     <View style={styles.section}>
       <View style={styles.sectionHeader}>
@@ -145,7 +145,7 @@ function GroupSection({ group, seedOffset }: { group: PhotoGroup; seedOffset: nu
       </View>
     </View>
   );
-}
+});
 
 // ---------------------------------------------------------------------------
 // Auto-backup banner — shows real backup progress from BackupContext
@@ -323,6 +323,8 @@ export default function PhotosScreen() {
           }
           contentContainerStyle={groups.length === 0 ? styles.emptyList : undefined}
           ListFooterComponent={<View style={{ height: 12 }} />}
+          removeClippedSubviews={true}
+          windowSize={5}
         />
       )}
 
