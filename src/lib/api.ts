@@ -315,6 +315,22 @@ export async function listMyShares(): Promise<Share[]> {
   return request<Share[]>('GET', '/api/v1/shares/mine');
 }
 
+export interface ShareInfo {
+  token: string;
+  file_name_encrypted?: string;
+  size_bytes?: number;
+  mime_type?: string | null;
+  sender_email?: string;
+  expires_at?: string | null;
+  passphrase_required?: boolean;
+  is_folder?: boolean;
+}
+
+/** Fetch public share metadata by token — no auth required. */
+export async function getShareByToken(token: string): Promise<ShareInfo> {
+  return request<ShareInfo>('GET', `/api/v1/shares/token/${token}`, undefined, false);
+}
+
 // ---------------------------------------------------------------------------
 // Share invites
 // ---------------------------------------------------------------------------

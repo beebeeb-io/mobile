@@ -22,6 +22,7 @@
           "$(AppIdentifierPrefix)io.beebeeb.shared"
         ]
       },
+      "associatedDomains": ["applinks:beebeeb.io"],
       "infoPlist": {
         "NSFileProviderPresenceAuthorized": true,
         "NSCameraUsageDescription": "Beebeeb scans the amber constellation pattern to pair a new device.",
