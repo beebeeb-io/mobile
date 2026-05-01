@@ -60,6 +60,11 @@ import type { RootStackParamList } from '../App';
 
 const BIOMETRIC_PREF_KEY = 'beebeeb_biometric_lock';
 const BIOMETRIC_DELAY_KEY = 'beebeeb_biometric_delay';
+// User-level override on top of the OS permission. If the user explicitly
+// toggles notifications OFF in our settings, we honour that even when iOS
+// still has permission granted — the OS permission is the *ceiling*, this
+// pref is the user's current intent within that ceiling.
+const NOTIFICATIONS_OPT_OUT_KEY = 'beebeeb_notifications_opt_out';
 
 interface BiometricDelayOption {
   label: string;
@@ -535,12 +540,23 @@ export default function SettingsScreen() {
     loadBiometricPrefs();
     loadAccountData();
     loadStorageRegionPref();
-    // Seed the push toggle from the OS — without this it always shows OFF on
-    // mount even when the user previously granted permission, then briefly
-    // flips ON if they tap to refresh.
-    Notifications.getPermissionsAsync()
-      .then(({ status }) => setNotificationsEnabled(status === 'granted'))
-      .catch(() => setNotificationsEnabled(false));
+    // Seed the push toggle from OS permission AND a user opt-out flag —
+    // OS permission alone overestimates ("granted" but user wants quiet),
+    // SecureStore alone underestimates (user toggled off in a past
+    // install but never re-evaluated against the OS state).
+    (async () => {
+      try {
+        const [{ status }, optOutRaw] = await Promise.all([
+          Notifications.getPermissionsAsync(),
+          SecureStore.getItemAsync(NOTIFICATIONS_OPT_OUT_KEY),
+        ]);
+        const granted = status === 'granted';
+        const optedOut = optOutRaw === 'true';
+        setNotificationsEnabled(granted && !optedOut);
+      } catch {
+        setNotificationsEnabled(false);
+      }
+    })();
   }, [fetchUsage, loadBiometricPrefs, loadAccountData, loadStorageRegionPref]);
 
   // -- Backup status: refresh whenever toggles flip or the worker reports progress
@@ -681,6 +697,14 @@ export default function SettingsScreen() {
       }
     }
     setNotificationsEnabled(enabled);
+    // Persist the user's intent so a fresh launch (or another tab focus)
+    // doesn't bounce the toggle back to "OS permission says yes" — we keep
+    // their explicit opt-out until they flip it on again here.
+    try {
+      await SecureStore.setItemAsync(NOTIFICATIONS_OPT_OUT_KEY, enabled ? 'false' : 'true');
+    } catch {
+      // SecureStore unavailable (web) — toggle remains in-memory only.
+    }
   }, []);
 
   const syncBackupCategory = useCallback(async (category: BackupCategory, enabling: boolean) => {
