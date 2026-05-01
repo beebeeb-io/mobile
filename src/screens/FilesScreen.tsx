@@ -22,7 +22,7 @@ import * as Haptics from 'expo-haptics';
 import * as DocumentPicker from 'expo-document-picker';
 import { radii, spacing, shadows } from '../theme';
 import { useTheme } from '../lib/theme-context';
-import { listFiles, createFolder, deleteFile, uploadFile, friendlyError } from '../lib/api';
+import { listFiles, createFolder, deleteFile, renameFile, uploadFile, friendlyError } from '../lib/api';
 import type { FileEntry } from '../lib/api';
 import type { RootStackParamList } from '../App';
 import { useCrypto } from '../lib/crypto-context';
@@ -553,22 +553,53 @@ export default function FilesScreen() {
   const handleLongPress = useCallback((item: FileEntry) => {
     const name = decryptedNames[item.id] ?? displayName(item);
     const options = item.is_folder
-      ? ['Open', 'Share', 'Delete', 'Cancel']
-      : ['Preview', 'Share', 'Move to Trash', 'Cancel'];
-    const destructiveIndex = item.is_folder ? 2 : 2;
+      ? ['Rename', 'Open', 'Share', 'Delete', 'Cancel']
+      : ['Rename', 'Preview', 'Share', 'Move to Trash', 'Cancel'];
+    const destructiveIndex = 3;
     const cancelIndex = options.length - 1;
+
+    const promptRename = () => {
+      Alert.prompt(
+        'Rename',
+        undefined,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Save',
+            onPress: async (input) => {
+              const next = (input ?? '').trim();
+              if (!next || next === name) return;
+              try {
+                await renameFile(item.id, next);
+                setFiles((prev) =>
+                  prev.map((f) => (f.id === item.id ? { ...f, name_encrypted: next } : f)),
+                );
+                setDecryptedNames((prev) => ({ ...prev, [item.id]: next }));
+                Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+              } catch (err) {
+                Alert.alert('Error', friendlyError(err));
+              }
+            },
+          },
+        ],
+        'plain-text',
+        name,
+      );
+    };
 
     const handleAction = (index: number) => {
       if (index === 0) {
-        openFile(item);
+        promptRename();
       } else if (index === 1) {
+        openFile(item);
+      } else if (index === 2) {
         navigation.navigate('ShareSheet', {
           fileId: item.id,
           fileName: name,
           mimeType: item.mime_type ?? undefined,
           sizeBytes: item.size_bytes,
         });
-      } else if (index === 2) {
+      } else if (index === 3) {
         Alert.alert(
           'Move to Trash',
           `"${name}" will be moved to Trash.`,
@@ -606,7 +637,8 @@ export default function FilesScreen() {
       Alert.alert(name, undefined, [
         { text: options[0], onPress: () => handleAction(0) },
         { text: options[1], onPress: () => handleAction(1) },
-        { text: options[2], style: 'destructive', onPress: () => handleAction(2) },
+        { text: options[2], onPress: () => handleAction(2) },
+        { text: options[3], style: 'destructive', onPress: () => handleAction(3) },
         { text: 'Cancel', style: 'cancel' },
       ]);
     }
