@@ -1024,97 +1024,138 @@ export default function FilesScreen() {
       }
     };
 
-    const handleAction = (index: number) => {
-      if (index === 0) {
-        promptRename();
-      } else if (index === 1) {
-        openFile(item);
-      } else if (index === 2) {
-        navigation.navigate('ShareSheet', {
-          fileId: item.id,
-          fileName: name,
-          mimeType: item.mime_type ?? undefined,
-          sizeBytes: item.size_bytes,
-        });
-      } else if (index === 3) {
-        // Files: Export... | Folders: Move to...
-        if (!item.is_folder) {
-          void promptExport();
-        } else {
-          void promptMove();
-        }
-      } else if (index === 4) {
-        // Files: Move to... | Folders: Delete
-        if (!item.is_folder) {
-          void promptMove();
-        } else {
-          Alert.alert(
-            'Delete folder',
-            `"${name}" will be deleted.`,
-            [
-              { text: 'Cancel', style: 'cancel' },
-              {
-                text: 'Delete',
-                style: 'destructive',
-                onPress: async () => {
-                  try {
-                    await deleteFile(item.id);
-                    setFiles((prev) => prev.filter((f) => f.id !== item.id));
-                    showToast({ type: 'info', message: `"${name}" moved to Trash` });
-                  } catch (err) {
-                    Alert.alert('Error', friendlyError(err));
-                  }
-                },
-              },
-            ],
-          );
-        }
-      } else if (index === 5) {
-        if (item.is_folder) {
-          togglePin(item, name);
-        } else {
-          // Files: Move to Trash
-          Alert.alert(
-            'Move to Trash',
-            `"${name}" will be moved to Trash.`,
-            [
-              { text: 'Cancel', style: 'cancel' },
-              {
-                text: 'Move to Trash',
-                style: 'destructive',
-                onPress: async () => {
-                  try {
-                    await deleteFile(item.id);
-                    setFiles((prev) => prev.filter((f) => f.id !== item.id));
-                    showToast({ type: 'info', message: `"${name}" moved to Trash` });
-                  } catch (err) {
-                    Alert.alert('Error', friendlyError(err));
-                  }
-                },
-              },
-            ],
-          );
-        }
-      } else if (index === 6) {
-        // Both files and folders: Details
-        const lines = item.is_folder
-          ? [
-              `Name:      ${name}`,
-              `Type:      Folder`,
-              `Created:   ${formatDate(item.created_at)}`,
-              `Modified:  ${formatDate(item.updated_at)}`,
-              `ID:        ${item.id.slice(0, 8)}`,
-            ]
-          : [
-              `Name:      ${name}`,
-              `Type:      ${item.mime_type ?? 'File'}`,
-              `Size:      ${formatSize(item.size_bytes)}`,
-              `Created:   ${formatDate(item.created_at)}`,
-              `Modified:  ${formatDate(item.updated_at)}`,
-              `ID:        ${item.id.slice(0, 8)}`,
-            ];
-        Alert.alert(item.is_folder ? 'Folder details' : 'File details', lines.join('\n'));
+    const saveToGallery = async () => {
+      const { status } = await MediaLibrary.requestPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert(
+          'Permission required',
+          'Allow photo library access to save images to Photos.',
+        );
+        return;
       }
+      const safeName = name.replace(/[^a-zA-Z0-9._()-]/g, '_');
+      const localUri = `${FileSystem.cacheDirectory}${safeName}`;
+      setExportingName(name);
+      try {
+        const res = await downloadFile(item.id);
+        const blob = await res.blob();
+        const base64 = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onloadend = () => {
+            const result = reader.result as string;
+            resolve(result.split(',')[1] ?? '');
+          };
+          reader.onerror = reject;
+          reader.readAsDataURL(blob);
+        });
+        await FileSystem.writeAsStringAsync(localUri, base64, {
+          encoding: FileSystem.EncodingType.Base64,
+        });
+        await MediaLibrary.saveToLibraryAsync(localUri);
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        showToast({ type: 'success', message: 'Saved to Photos' });
+      } catch (err) {
+        showToast({ type: 'error', message: `Save failed: ${friendlyError(err)}` });
+      } finally {
+        setExportingName(null);
+        FileSystem.deleteAsync(localUri, { idempotent: true }).catch(() => {});
+      }
+    };
+
+    const confirmDeleteFolder = () => {
+      Alert.alert(
+        'Delete folder',
+        `"${name}" will be deleted.`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Delete',
+            style: 'destructive',
+            onPress: async () => {
+              try {
+                await deleteFile(item.id);
+                setFiles((prev) => prev.filter((f) => f.id !== item.id));
+                showToast({ type: 'info', message: `"${name}" moved to Trash` });
+              } catch (err) {
+                Alert.alert('Error', friendlyError(err));
+              }
+            },
+          },
+        ],
+      );
+    };
+
+    const confirmMoveToTrash = () => {
+      Alert.alert(
+        'Move to Trash',
+        `"${name}" will be moved to Trash.`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Move to Trash',
+            style: 'destructive',
+            onPress: async () => {
+              try {
+                await deleteFile(item.id);
+                setFiles((prev) => prev.filter((f) => f.id !== item.id));
+                showToast({ type: 'info', message: `"${name}" moved to Trash` });
+              } catch (err) {
+                Alert.alert('Error', friendlyError(err));
+              }
+            },
+          },
+        ],
+      );
+    };
+
+    const showDetails = () => {
+      const lines = item.is_folder
+        ? [
+            `Name:      ${name}`,
+            `Type:      Folder`,
+            `Created:   ${formatDate(item.created_at)}`,
+            `Modified:  ${formatDate(item.updated_at)}`,
+            `ID:        ${item.id.slice(0, 8)}`,
+          ]
+        : [
+            `Name:      ${name}`,
+            `Type:      ${item.mime_type ?? 'File'}`,
+            `Size:      ${formatSize(item.size_bytes)}`,
+            `Created:   ${formatDate(item.created_at)}`,
+            `Modified:  ${formatDate(item.updated_at)}`,
+            `ID:        ${item.id.slice(0, 8)}`,
+          ];
+      Alert.alert(item.is_folder ? 'Folder details' : 'File details', lines.join('\n'));
+    };
+
+    const dispatchAction = (option: string) => {
+      switch (option) {
+        case 'Rename': promptRename(); return;
+        case 'Open':
+        case 'Preview': openFile(item); return;
+        case 'Share':
+          navigation.navigate('ShareSheet', {
+            fileId: item.id,
+            fileName: name,
+            mimeType: item.mime_type ?? undefined,
+            sizeBytes: item.size_bytes,
+          });
+          return;
+        case 'Export...': void promptExport(); return;
+        case 'Save to gallery': void saveToGallery(); return;
+        case 'Move to...': void promptMove(); return;
+        case 'Delete': confirmDeleteFolder(); return;
+        case 'Move to Trash': confirmMoveToTrash(); return;
+        case 'Pin to top':
+        case 'Unpin': togglePin(item, name); return;
+        case 'Details': showDetails(); return;
+      }
+    };
+
+    const handleAction = (index: number) => {
+      if (index === cancelIndex) return;
+      const option = options[index];
+      if (option) dispatchAction(option);
     };
 
     if (Platform.OS === 'ios') {
@@ -1128,17 +1169,14 @@ export default function FilesScreen() {
         handleAction,
       );
     } else {
-      // Both files and folders have 8 options (indices 0-6 + Cancel)
-      const alertButtons: Parameters<typeof Alert.alert>[2] = [
-        { text: options[0], onPress: () => handleAction(0) },
-        { text: options[1], onPress: () => handleAction(1) },
-        { text: options[2], onPress: () => handleAction(2) },
-        { text: options[3], onPress: () => handleAction(3) },
-        { text: options[4], style: 'destructive', onPress: () => handleAction(4) },
-        { text: options[5], onPress: () => handleAction(5) },
-        { text: options[6], onPress: () => handleAction(6) },
-        { text: 'Cancel', style: 'cancel' },
-      ];
+      const alertButtons: Parameters<typeof Alert.alert>[2] = options
+        .slice(0, cancelIndex)
+        .map((opt, i) => ({
+          text: opt,
+          style: (i === destructiveIndex ? 'destructive' : 'default') as 'destructive' | 'default',
+          onPress: () => dispatchAction(opt),
+        }));
+      alertButtons.push({ text: 'Cancel', style: 'cancel' as const });
       Alert.alert(name, undefined, alertButtons);
     }
   }, [navigation, openFile, decryptedNames, showToast, pinnedFolders, togglePin]);

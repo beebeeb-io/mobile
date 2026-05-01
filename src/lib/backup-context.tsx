@@ -16,6 +16,9 @@ import {
 const BACKUP_PHOTO_KEY = 'beebeeb_camera_backup';
 const BACKUP_CONTACTS_KEY = 'beebeeb_contacts_backup';
 const BACKUP_CALENDAR_KEY = 'beebeeb_calendar_backup';
+const BACKUP_INCLUDE_VIDEOS_KEY = 'beebeeb_camera_include_videos';
+const BACKUP_WIFI_ONLY_KEY = 'beebeeb_camera_wifi_only';
+const BACKUP_BG_UPLOAD_KEY = 'beebeeb_camera_bg_upload';
 const SESSION_TOKEN_KEY = 'beebeeb_session_token';
 
 interface BackupProgress {
@@ -31,6 +34,13 @@ export interface BackupContextValue {
   togglePhotoBackup: () => Promise<void>;
   toggleContactsBackup: () => Promise<void>;
   toggleCalendarBackup: () => Promise<void>;
+  // Camera backup options
+  includeVideos: boolean;
+  wifiOnly: boolean;
+  backgroundUpload: boolean;
+  setIncludeVideos: (value: boolean) => Promise<void>;
+  setWifiOnly: (value: boolean) => Promise<void>;
+  setBackgroundUpload: (value: boolean) => Promise<void>;
   backupProgress: BackupProgress;
   lastBackupAt: string | null;
   triggerBackupNow: () => Promise<void>;
@@ -46,6 +56,12 @@ export const BackupContext = createContext<BackupContextValue>({
   togglePhotoBackup: async () => {},
   toggleContactsBackup: async () => {},
   toggleCalendarBackup: async () => {},
+  includeVideos: true,
+  wifiOnly: false,
+  backgroundUpload: true,
+  setIncludeVideos: async () => {},
+  setWifiOnly: async () => {},
+  setBackgroundUpload: async () => {},
   backupProgress: { total: 0, completed: 0, inProgress: 0 },
   lastBackupAt: null,
   triggerBackupNow: async () => {},
@@ -68,6 +84,9 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
   const [isPhotoBackupEnabled, setIsPhotoBackupEnabled] = useState(false);
   const [isContactsBackupEnabled, setIsContactsBackupEnabled] = useState(false);
   const [isCalendarBackupEnabled, setIsCalendarBackupEnabled] = useState(false);
+  const [includeVideos, setIncludeVideosState] = useState(true);
+  const [wifiOnly, setWifiOnlyState] = useState(false);
+  const [backgroundUpload, setBackgroundUploadState] = useState(true);
   const [backupProgress, setBackupProgress] = useState<BackupProgress>({ total: 0, completed: 0, inProgress: 0 });
   const [lastBackupAt, setLastBackupAt] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -76,14 +95,21 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     (async () => {
       try {
-        const [photo, contacts, calendar] = await Promise.all([
+        const [photo, contacts, calendar, videos, wifi, bgUpload] = await Promise.all([
           SecureStore.getItemAsync(BACKUP_PHOTO_KEY),
           SecureStore.getItemAsync(BACKUP_CONTACTS_KEY),
           SecureStore.getItemAsync(BACKUP_CALENDAR_KEY),
+          SecureStore.getItemAsync(BACKUP_INCLUDE_VIDEOS_KEY),
+          SecureStore.getItemAsync(BACKUP_WIFI_ONLY_KEY),
+          SecureStore.getItemAsync(BACKUP_BG_UPLOAD_KEY),
         ]);
         setIsPhotoBackupEnabled(photo === 'true');
         setIsContactsBackupEnabled(contacts === 'true');
         setIsCalendarBackupEnabled(calendar === 'true');
+        // Defaults: videos on, wifi-only off, background on
+        if (videos !== null) setIncludeVideosState(videos === 'true');
+        if (wifi !== null) setWifiOnlyState(wifi === 'true');
+        if (bgUpload !== null) setBackgroundUploadState(bgUpload === 'true');
       } catch {
         // SecureStore unavailable (web / unit tests)
       }
@@ -166,6 +192,33 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
     }
   }, [isCalendarBackupEnabled]);
 
+  const setIncludeVideos = useCallback(async (value: boolean) => {
+    setIncludeVideosState(value);
+    try {
+      await SecureStore.setItemAsync(BACKUP_INCLUDE_VIDEOS_KEY, value ? 'true' : 'false');
+    } catch {
+      // SecureStore unavailable
+    }
+  }, []);
+
+  const setWifiOnly = useCallback(async (value: boolean) => {
+    setWifiOnlyState(value);
+    try {
+      await SecureStore.setItemAsync(BACKUP_WIFI_ONLY_KEY, value ? 'true' : 'false');
+    } catch {
+      // SecureStore unavailable
+    }
+  }, []);
+
+  const setBackgroundUpload = useCallback(async (value: boolean) => {
+    setBackgroundUploadState(value);
+    try {
+      await SecureStore.setItemAsync(BACKUP_BG_UPLOAD_KEY, value ? 'true' : 'false');
+    } catch {
+      // SecureStore unavailable
+    }
+  }, []);
+
   const triggerBackupNow = useCallback(async () => {
     try {
       const token = await getStoredToken();
@@ -185,6 +238,12 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
       togglePhotoBackup,
       toggleContactsBackup,
       toggleCalendarBackup,
+      includeVideos,
+      wifiOnly,
+      backgroundUpload,
+      setIncludeVideos,
+      setWifiOnly,
+      setBackgroundUpload,
       backupProgress,
       lastBackupAt,
       triggerBackupNow,
