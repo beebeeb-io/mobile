@@ -84217,19 +84217,19 @@
       "norm_label": "displayname()"
     },
     {
-      "label": "fileTypeLabel()",
+      "label": "fileTypeIcon()",
       "file_type": "code",
       "source_file": "src/screens/SharedScreen.tsx",
-      "source_location": "L56",
-      "id": "screens_sharedscreen_filetypelabel",
+      "source_location": "L57",
+      "id": "screens_sharedscreen_filetypeicon",
       "community": 52,
-      "norm_label": "filetypelabel()"
+      "norm_label": "filetypeicon()"
     },
     {
       "label": "StatusBadge()",
       "file_type": "code",
       "source_file": "src/screens/SharedScreen.tsx",
-      "source_location": "L77",
+      "source_location": "L78",
       "id": "screens_sharedscreen_statusbadge",
       "community": 52,
       "norm_label": "statusbadge()"
@@ -84238,7 +84238,7 @@
       "label": "fileTypeColor()",
       "file_type": "code",
       "source_file": "src/screens/SharedScreen.tsx",
-      "source_location": "L180",
+      "source_location": "L181",
       "id": "screens_sharedscreen_filetypecolor",
       "community": 52,
       "norm_label": "filetypecolor()"
@@ -202122,19 +202122,19 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src/screens/SharedScreen.tsx",
-      "source_location": "L56",
+      "source_location": "L57",
       "weight": 1.0,
       "_src": "src_screens_sharedscreen_tsx",
-      "_tgt": "screens_sharedscreen_filetypelabel",
+      "_tgt": "screens_sharedscreen_filetypeicon",
       "source": "src_screens_sharedscreen_tsx",
-      "target": "screens_sharedscreen_filetypelabel",
+      "target": "screens_sharedscreen_filetypeicon",
       "confidence_score": 1.0
     },
     {
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src/screens/SharedScreen.tsx",
-      "source_location": "L77",
+      "source_location": "L78",
       "weight": 1.0,
       "_src": "src_screens_sharedscreen_tsx",
       "_tgt": "screens_sharedscreen_statusbadge",
@@ -202146,7 +202146,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src/screens/SharedScreen.tsx",
-      "source_location": "L180",
+      "source_location": "L181",
       "weight": 1.0,
       "_src": "src_screens_sharedscreen_tsx",
       "_tgt": "screens_sharedscreen_filetypecolor",
