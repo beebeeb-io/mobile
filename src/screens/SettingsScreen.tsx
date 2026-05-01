@@ -31,6 +31,7 @@ import { useAuth } from '../lib/auth';
 import { useBackup } from '../lib/backup-context';
 import { useTheme, type ThemeMode } from '../lib/theme-context';
 import { useToast } from '../lib/toast-context';
+import { useNetworkStatus } from '../lib/useNetworkStatus';
 import {
   getStorageUsage,
   getPreference,
@@ -295,8 +296,19 @@ const EMPTY_CATEGORY_STATS: CategoryStats = {
   syncing: false,
 };
 
-function BackupCategoryStatus({ stats, c }: { stats: CategoryStats; c: C }) {
+function BackupCategoryStatus({ stats, paused, c }: { stats: CategoryStats; paused?: boolean; c: C }) {
   const { uploadedCount, totalCount, uploadedBytes, totalBytes, lastSyncAt, syncing } = stats;
+
+  if (paused && totalCount > uploadedCount) {
+    return (
+      <View style={{ paddingHorizontal: 12, paddingBottom: 10, paddingTop: 2, flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+        <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: c.ink4 }} />
+        <Text style={{ fontSize: 11, color: c.ink3, flex: 1 }}>
+          Paused · waiting for Wi-Fi · {totalCount - uploadedCount} remaining
+        </Text>
+      </View>
+    );
+  }
 
   if (totalCount === 0 && !lastSyncAt && !syncing) {
     return (
@@ -403,6 +415,12 @@ export default function SettingsScreen() {
   } = useBackup();
 
   const { showToast } = useToast();
+  const isOnline = useNetworkStatus();
+  // "Paused — waiting for Wi-Fi" only kicks in when the user explicitly opted
+  // to gate uploads on Wi-Fi *and* we're offline (or on cellular, once the
+  // hook differentiates). useNetworkStatus currently reports a binary
+  // online/offline; treat offline as paused for now.
+  const backupPaused = wifiOnly && !isOnline;
 
   const [usage, setUsage] = useState<StorageUsage | null>(null);
   const [loadingUsage, setLoadingUsage] = useState(true);
@@ -1147,7 +1165,7 @@ export default function SettingsScreen() {
               onValueChange={handleTogglePhotoBackup}
               c={c}
             />
-            {isPhotoBackupEnabled && <BackupCategoryStatus stats={photoStats} c={c} />}
+            {isPhotoBackupEnabled && <BackupCategoryStatus stats={photoStats} paused={backupPaused} c={c} />}
             {isPhotoBackupEnabled && (
               <>
                 <RowDivider c={c} />
@@ -1186,7 +1204,7 @@ export default function SettingsScreen() {
               onValueChange={handleToggleContactsBackup}
               c={c}
             />
-            {isContactsBackupEnabled && <BackupCategoryStatus stats={contactsStats} c={c} />}
+            {isContactsBackupEnabled && <BackupCategoryStatus stats={contactsStats} paused={backupPaused} c={c} />}
             <RowDivider c={c} />
             <ToggleRow
               label="Back up calendar"
@@ -1194,7 +1212,7 @@ export default function SettingsScreen() {
               onValueChange={handleToggleCalendarBackup}
               c={c}
             />
-            {isCalendarBackupEnabled && <BackupCategoryStatus stats={calendarStats} c={c} />}
+            {isCalendarBackupEnabled && <BackupCategoryStatus stats={calendarStats} paused={backupPaused} c={c} />}
             {(isPhotoBackupEnabled || isContactsBackupEnabled || isCalendarBackupEnabled) && (
               <>
                 <RowDivider c={c} />
