@@ -492,6 +492,12 @@ export default function SettingsScreen() {
     loadBiometricPrefs();
     loadAccountData();
     loadStorageRegionPref();
+    // Seed the push toggle from the OS — without this it always shows OFF on
+    // mount even when the user previously granted permission, then briefly
+    // flips ON if they tap to refresh.
+    Notifications.getPermissionsAsync()
+      .then(({ status }) => setNotificationsEnabled(status === 'granted'))
+      .catch(() => setNotificationsEnabled(false));
   }, [fetchUsage, loadBiometricPrefs, loadAccountData, loadStorageRegionPref]);
 
   // -- Backup status: refresh whenever toggles flip or the worker reports progress
