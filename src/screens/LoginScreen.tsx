@@ -26,7 +26,7 @@ type Nav = NativeStackNavigationProp<RootStackParamList>;
 export default function LoginScreen() {
   const navigation = useNavigation<Nav>();
   const { refreshAuth } = useAuth();
-  const { colors: c } = useTheme();
+  const { colors: c, resolved } = useTheme();
   const passwordRef = useRef<TextInput>(null);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -39,7 +39,7 @@ export default function LoginScreen() {
     brandRow: { alignItems: 'center', marginBottom: spacing.xl },
     heading: { fontSize: 24, fontWeight: '700', color: c.ink, textAlign: 'center', marginBottom: 4 },
     subheading: { fontSize: 13, color: c.ink3, textAlign: 'center', marginBottom: spacing.xl },
-    errorBanner: { backgroundColor: '#fef2f2', borderWidth: 1, borderColor: '#fecaca', borderRadius: radii.md, paddingVertical: spacing.sm, paddingHorizontal: spacing.md, marginBottom: spacing.lg },
+    errorBanner: { backgroundColor: resolved === 'dark' ? '#2d1515' : '#fef2f2', borderWidth: 1, borderColor: resolved === 'dark' ? '#5c2828' : '#fecaca', borderRadius: radii.md, paddingVertical: spacing.sm, paddingHorizontal: spacing.md, marginBottom: spacing.lg },
     errorText: { fontSize: 12, color: c.red, lineHeight: 17 },
     label: { fontSize: 12, fontWeight: '600', color: c.ink2, marginBottom: 4, marginTop: spacing.md },
     input: { height: 44, borderWidth: 1, borderColor: c.line, borderRadius: radii.md, paddingHorizontal: spacing.md, fontSize: 14, color: c.ink, backgroundColor: c.paper },
@@ -51,7 +51,7 @@ export default function LoginScreen() {
     footerLink: { fontSize: 13, color: c.amberDeep, fontWeight: '600' },
     regionRow: { alignItems: 'center', marginTop: spacing['2xl'] },
     regionText: { fontSize: 11, color: c.ink4 },
-  }), [c]);
+  }), [c, resolved]);
 
   async function handleLogin() {
     const trimmedEmail = email.trim().toLowerCase();

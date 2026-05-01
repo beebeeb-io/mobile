@@ -1,5 +1,5 @@
 import { BBLogo } from "../components/BBLogo";
-import React, { useRef, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -13,7 +13,8 @@ import {
 } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { colors, radii, spacing } from '../theme';
+import { radii, spacing } from '../theme';
+import { useTheme } from '../lib/theme-context';
 import { useAuth } from '../lib/auth';
 import {
   signup,
@@ -32,6 +33,7 @@ type Nav = NativeStackNavigationProp<RootStackParamList>;
 export default function SignupScreen() {
   const navigation = useNavigation<Nav>();
   const { refreshAuth } = useAuth();
+  const { colors: c, resolved } = useTheme();
   const passwordRef = useRef<TextInput>(null);
   const confirmPasswordRef = useRef<TextInput>(null);
   const [email, setEmail] = useState('');
@@ -40,6 +42,31 @@ export default function SignupScreen() {
   const [acknowledged, setAcknowledged] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+
+  const styles = useMemo(() => StyleSheet.create({
+    root: { flex: 1, backgroundColor: c.paper },
+    scrollContent: { flexGrow: 1, justifyContent: 'center', paddingHorizontal: spacing.xl, paddingVertical: 40 },
+    brandRow: { alignItems: 'center', marginBottom: spacing.xl },
+    heading: { fontSize: 24, fontWeight: '700', color: c.ink, textAlign: 'center', marginBottom: 4 },
+    subheading: { fontSize: 13, color: c.ink3, textAlign: 'center', marginBottom: spacing.xl },
+    errorBanner: { backgroundColor: resolved === 'dark' ? '#2d1515' : '#fef2f2', borderWidth: 1, borderColor: resolved === 'dark' ? '#5c2828' : '#fecaca', borderRadius: radii.md, paddingVertical: spacing.sm, paddingHorizontal: spacing.md, marginBottom: spacing.lg },
+    errorText: { fontSize: 12, color: c.red, lineHeight: 17 },
+    label: { fontSize: 12, fontWeight: '600', color: c.ink2, marginBottom: 4, marginTop: spacing.md },
+    input: { height: 44, borderWidth: 1, borderColor: c.line, borderRadius: radii.md, paddingHorizontal: spacing.md, fontSize: 14, color: c.ink, backgroundColor: c.paper },
+    checkRow: { flexDirection: 'row', alignItems: 'flex-start', marginTop: spacing.lg, gap: 10 },
+    checkbox: { width: 20, height: 20, borderRadius: 4, borderWidth: 1.5, borderColor: c.line2, backgroundColor: c.paper, alignItems: 'center', justifyContent: 'center', marginTop: 1 },
+    checkboxChecked: { backgroundColor: c.amber, borderColor: c.amber },
+    checkmark: { fontSize: 12, color: c.paper, fontWeight: '700' },
+    checkLabel: { flex: 1, fontSize: 12, color: c.ink2, lineHeight: 17 },
+    button: { height: 44, backgroundColor: c.ink, borderRadius: radii.md, alignItems: 'center', justifyContent: 'center', marginTop: spacing.xl },
+    buttonDisabled: { opacity: 0.6 },
+    buttonText: { color: c.paper, fontSize: 14, fontWeight: '600' },
+    footerRow: { flexDirection: 'row', justifyContent: 'center', marginTop: spacing.lg },
+    footerText: { fontSize: 13, color: c.ink3 },
+    footerLink: { fontSize: 13, color: c.amberDeep, fontWeight: '600' },
+    regionRow: { alignItems: 'center', marginTop: spacing['2xl'], gap: 2 },
+    regionText: { fontSize: 11, color: c.ink4, textAlign: 'center' },
+  }), [c, resolved]);
 
   function validate(): string | null {
     const trimmedEmail = email.trim().toLowerCase();
@@ -136,7 +163,7 @@ export default function SignupScreen() {
           value={email}
           onChangeText={setEmail}
           placeholder="you@example.com"
-          placeholderTextColor={colors.ink4}
+          placeholderTextColor={c.ink4}
           keyboardType="email-address"
           autoCapitalize="none"
           autoCorrect={false}
@@ -156,7 +183,7 @@ export default function SignupScreen() {
           value={password}
           onChangeText={setPassword}
           placeholder="At least 8 characters"
-          placeholderTextColor={colors.ink4}
+          placeholderTextColor={c.ink4}
           secureTextEntry
           autoCapitalize="none"
           autoComplete="new-password"
@@ -175,7 +202,7 @@ export default function SignupScreen() {
           value={confirmPassword}
           onChangeText={setConfirmPassword}
           placeholder="Repeat your password"
-          placeholderTextColor={colors.ink4}
+          placeholderTextColor={c.ink4}
           secureTextEntry
           autoCapitalize="none"
           autoComplete="new-password"
@@ -208,7 +235,7 @@ export default function SignupScreen() {
           disabled={loading}
         >
           {loading ? (
-            <ActivityIndicator color={colors.paper} size="small" />
+            <ActivityIndicator color={c.paper} size="small" />
           ) : (
             <Text style={styles.buttonText}>Create account</Text>
           )}
@@ -234,169 +261,3 @@ export default function SignupScreen() {
   );
 }
 
-// ---------------------------------------------------------------------------
-// Styles
-// ---------------------------------------------------------------------------
-
-const styles = StyleSheet.create({
-  root: {
-    flex: 1,
-    backgroundColor: colors.paper,
-  },
-  scrollContent: {
-    flexGrow: 1,
-    justifyContent: 'center',
-    paddingHorizontal: spacing.xl,
-    paddingVertical: 40,
-  },
-
-  // Brand
-  brandRow: {
-    alignItems: 'center',
-    marginBottom: spacing.xl,
-  },
-  logoMark: {
-    width: 48,
-    height: 48,
-    borderRadius: 12,
-    backgroundColor: colors.ink,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  logoText: {
-    color: colors.amber,
-    fontSize: 18,
-    fontWeight: '800',
-    letterSpacing: -0.5,
-  },
-
-  // Headings
-  heading: {
-    fontSize: 24,
-    fontWeight: '700',
-    color: colors.ink,
-    textAlign: 'center',
-    marginBottom: 4,
-  },
-  subheading: {
-    fontSize: 13,
-    color: colors.ink3,
-    textAlign: 'center',
-    marginBottom: spacing.xl,
-  },
-
-  // Error
-  errorBanner: {
-    backgroundColor: '#fef2f2',
-    borderWidth: 1,
-    borderColor: '#fecaca',
-    borderRadius: radii.md,
-    paddingVertical: spacing.sm,
-    paddingHorizontal: spacing.md,
-    marginBottom: spacing.lg,
-  },
-  errorText: {
-    fontSize: 12,
-    color: colors.red,
-    lineHeight: 17,
-  },
-
-  // Form
-  label: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: colors.ink2,
-    marginBottom: 4,
-    marginTop: spacing.md,
-  },
-  input: {
-    height: 44,
-    borderWidth: 1,
-    borderColor: colors.line,
-    borderRadius: radii.md,
-    paddingHorizontal: spacing.md,
-    fontSize: 14,
-    color: colors.ink,
-    backgroundColor: colors.paper,
-  },
-
-  // Checkbox
-  checkRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    marginTop: spacing.lg,
-    gap: 10,
-  },
-  checkbox: {
-    width: 20,
-    height: 20,
-    borderRadius: 4,
-    borderWidth: 1.5,
-    borderColor: colors.line2,
-    backgroundColor: colors.paper,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginTop: 1,
-  },
-  checkboxChecked: {
-    backgroundColor: colors.amber,
-    borderColor: colors.amber,
-  },
-  checkmark: {
-    fontSize: 12,
-    color: colors.paper,
-    fontWeight: '700',
-  },
-  checkLabel: {
-    flex: 1,
-    fontSize: 12,
-    color: colors.ink2,
-    lineHeight: 17,
-  },
-
-  // Button
-  button: {
-    height: 44,
-    backgroundColor: colors.ink,
-    borderRadius: radii.md,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginTop: spacing.xl,
-  },
-  buttonDisabled: {
-    opacity: 0.6,
-  },
-  buttonText: {
-    color: colors.paper,
-    fontSize: 14,
-    fontWeight: '600',
-  },
-
-  // Footer
-  footerRow: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    marginTop: spacing.lg,
-  },
-  footerText: {
-    fontSize: 13,
-    color: colors.ink3,
-  },
-  footerLink: {
-    fontSize: 13,
-    color: colors.amberDeep,
-    fontWeight: '600',
-  },
-
-  // Region
-  regionRow: {
-    alignItems: 'center',
-    marginTop: spacing['2xl'],
-    gap: 2,
-  },
-  regionText: {
-    fontSize: 11,
-    color: colors.ink4,
-    textAlign: 'center',
-  },
-});
