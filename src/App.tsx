@@ -112,7 +112,18 @@ const linking = {
   prefixes: ['beebeeb://', 'https://beebeeb.io', 'http://beebeeb.io'],
   config: {
     screens: {
-      Tabs: '',
+      Tabs: {
+        // Bare tab name → its tab. beebeeb://photos lands on Photos,
+        // beebeeb://shared on Shared, etc. Files keeps the empty path so
+        // a plain beebeeb:// (or app cold-launch) opens the default tab.
+        screens: {
+          Files: 'files',
+          Shared: 'shared',
+          Photos: 'photos',
+          Settings: 'settings',
+        },
+        path: '',
+      },
       SharedView: 's/:token',
     },
   },
