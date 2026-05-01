@@ -297,7 +297,7 @@ function TabNavigator() {
       screenOptions={({ route }) => ({
         headerShown: false,
         tabBarIcon: ({ focused, color }) => <TabIcon name={route.name} focused={focused} color={color} />,
-        tabBarActiveTintColor: c.ink,
+        tabBarActiveTintColor: c.amber,
         tabBarInactiveTintColor: c.ink4,
         tabBarStyle: {
           backgroundColor: c.paper,
