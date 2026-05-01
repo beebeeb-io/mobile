@@ -76,11 +76,11 @@ const REGIONS: ReadonlyArray<{ poolName: string; label: string; subtitle: string
 // Helpers
 // ---------------------------------------------------------------------------
 
-function formatBytes(bytes: number): string {
+function formatBytes(bytes: number, gbDecimals = 0): string {
   if (bytes < 1_000) return `${bytes} B`;
   if (bytes < 1_000_000) return `${(bytes / 1_000).toFixed(0)} KB`;
   if (bytes < 1_000_000_000) return `${(bytes / 1_000_000).toFixed(0)} MB`;
-  if (bytes < 1_000_000_000_000) return `${(bytes / 1_000_000_000).toFixed(0)} GB`;
+  if (bytes < 1_000_000_000_000) return `${(bytes / 1_000_000_000).toFixed(gbDecimals)} GB`;
   return `${(bytes / 1_000_000_000_000).toFixed(1)} TB`;
 }
 
@@ -157,25 +157,43 @@ function SectionNote({ text, c }: { text: string; c: C }) {
   );
 }
 
+type IoniconName = React.ComponentProps<typeof Ionicons>['name'];
+
 function SettingsRow({
-  label, value, onPress, danger, showChevron = true, c,
+  label, value, onPress, danger, showChevron = true, icon, c,
 }: {
   label: string;
   value?: string;
   onPress?: () => void;
   danger?: boolean;
   showChevron?: boolean;
+  icon?: IoniconName;
   c: C;
 }) {
+  const handlePress = onPress
+    ? () => {
+        Haptics.selectionAsync();
+        onPress();
+      }
+    : undefined;
+
   return (
     <TouchableOpacity
       style={layout.row}
       activeOpacity={onPress ? 0.6 : 1}
-      onPress={onPress}
+      onPress={handlePress}
       disabled={!onPress}
       accessibilityLabel={value ? `${label}, ${value}` : label}
       accessibilityRole={onPress ? 'button' : 'text'}
     >
+      {icon && (
+        <Ionicons
+          name={icon}
+          size={18}
+          color={danger ? c.red : c.ink3}
+          style={{ marginRight: 12, width: 20 }}
+        />
+      )}
       <Text style={{ flex: 1, fontSize: 14, fontWeight: '400' as const, color: danger ? c.red : c.ink }}>
         {label}
       </Text>
@@ -222,18 +240,40 @@ function RowDivider({ c }: { c: C }) {
 // Storage bar
 // ---------------------------------------------------------------------------
 
-function StorageBar({ usedBytes, limitBytes, c }: { usedBytes: number; limitBytes: number; c: C }) {
+function StorageBar({
+  usedBytes, limitBytes, c, showPercent = false, prominent = false,
+}: {
+  usedBytes: number;
+  limitBytes: number;
+  c: C;
+  showPercent?: boolean;
+  prominent?: boolean;
+}) {
   const pct = limitBytes > 0 ? Math.min(usedBytes / limitBytes, 1) : 0;
+  const pctNum = Math.round(pct * 100);
   const barColor = pct > 0.9 ? c.red : pct > 0.75 ? c.amberDeep : c.amber;
   const fillWidth = `${Math.max(pct * 100, 1)}%` as `${number}%`;
+  const barHeight = prominent ? 8 : 6;
+  const usedLabel = formatBytes(usedBytes, prominent ? 1 : 0);
+  const totalLabel = formatBytes(limitBytes, prominent ? 1 : 0);
 
   return (
     <View style={{ gap: 6 }}>
-      <View style={{ height: 6, borderRadius: 3, backgroundColor: c.line, overflow: 'hidden' }}>
-        <View style={{ height: '100%', borderRadius: 3, width: fillWidth, backgroundColor: barColor }} />
+      {showPercent && (
+        <View style={{ flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between' }}>
+          <Text style={{ fontSize: prominent ? 13 : 12, fontWeight: '600' as const, color: c.ink2 }}>
+            Storage
+          </Text>
+          <Text style={{ fontSize: prominent ? 13 : 12, fontWeight: '600' as const, color: barColor }}>
+            {pctNum}% used
+          </Text>
+        </View>
+      )}
+      <View style={{ height: barHeight, borderRadius: barHeight / 2, backgroundColor: c.line, overflow: 'hidden' }}>
+        <View style={{ height: '100%', borderRadius: barHeight / 2, width: fillWidth, backgroundColor: barColor }} />
       </View>
       <Text style={{ fontSize: 11, color: c.ink3 }}>
-        {formatBytes(usedBytes)} of {formatBytes(limitBytes)} used
+        {usedLabel} of {totalLabel} used
       </Text>
     </View>
   );
@@ -466,6 +506,45 @@ export default function SettingsScreen() {
     Linking.openURL('https://beebeeb.io/account/billing');
   }, []);
 
+  const handleUpgrade = useCallback(() => {
+    Haptics.selectionAsync();
+    Linking.openURL('https://beebeeb.io/pricing');
+  }, []);
+
+  const handleOfflineFiles = useCallback(() => {
+    Alert.alert(
+      'Available offline',
+      'Coming soon — offline files will be available in a future update.',
+    );
+  }, []);
+
+  const handleReportBug = useCallback(async () => {
+    const version = Constants.expoConfig?.version ?? '1.0.0';
+    const platformName = Platform.OS === 'ios' ? 'iOS' : Platform.OS === 'android' ? 'Android' : 'App';
+    const platformVersion = String(Platform.Version);
+    const deviceName = Constants.deviceName ?? `${platformName} device`;
+
+    const subject = `Bug Report — Beebeeb ${platformName} v${version}`;
+    const body =
+      `Please describe the issue:\n\n\n` +
+      `---\n` +
+      `App version: ${version}\n` +
+      `Device: ${deviceName}\n` +
+      `${platformName}: ${platformVersion}`;
+    const url = `mailto:support@beebeeb.io?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+
+    try {
+      const supported = await Linking.canOpenURL(url);
+      if (!supported) throw new Error('No email client available');
+      await Linking.openURL(url);
+    } catch {
+      Alert.alert(
+        'No email client',
+        'Please send your bug report to support@beebeeb.io.',
+      );
+    }
+  }, []);
+
   const handlePrivacyPolicy = useCallback(() => {
     Linking.openURL('https://beebeeb.io/legal/privacy');
   }, []);
@@ -577,9 +656,14 @@ export default function SettingsScreen() {
 
   const email = user?.email ?? '';
   const initials = userInitials(email);
-  const planName = subscription
-    ? planLabel(subscription.plan)
-    : usage ? planLabel(usage.plan_name) : null;
+  const planNameRaw = subscription?.plan ?? usage?.plan_name ?? null;
+  const planName = planNameRaw ? planLabel(planNameRaw) : null;
+  const isFreePlan = (planNameRaw ?? '').toLowerCase() === 'free';
+  const renewalDate = subscription?.current_period_end
+    ? new Date(subscription.current_period_end).toLocaleDateString('en-US', {
+        month: 'short', day: 'numeric', year: 'numeric',
+      })
+    : null;
   const serverRegionLabel = serverRegion ? `${serverRegion.region}. ${serverRegion.operator}.` : null;
 
   // ---------------------------------------------------------------------------
@@ -645,11 +729,60 @@ export default function SettingsScreen() {
             {planName && (
               <>
                 <RowDivider c={c} />
-                <SettingsRow label="Plan" value={planName} showChevron={false} c={c} />
+                <View style={layout.row}>
+                  <Ionicons
+                    name="star-outline"
+                    size={18}
+                    color={c.ink3}
+                    style={{ marginRight: 12, width: 20 }}
+                  />
+                  <View style={{ flex: 1 }}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                      <Text style={{ fontSize: 14, fontWeight: '400' as const, color: c.ink }}>
+                        Subscription
+                      </Text>
+                      <View style={{
+                        backgroundColor: c.amberBg,
+                        borderColor: c.amber,
+                        borderWidth: 1,
+                        paddingHorizontal: 7,
+                        paddingVertical: 1,
+                        borderRadius: 4,
+                      }}>
+                        <Text style={{ fontSize: 10, fontWeight: '700' as const, color: c.amberDeep, letterSpacing: 0.3 }}>
+                          {planName.toUpperCase()}
+                        </Text>
+                      </View>
+                    </View>
+                    {renewalDate && !isFreePlan && (
+                      <Text style={{ fontSize: 11, color: c.ink3, marginTop: 3 }}>
+                        Renews {renewalDate}
+                      </Text>
+                    )}
+                  </View>
+                  {isFreePlan && (
+                    <TouchableOpacity
+                      onPress={handleUpgrade}
+                      activeOpacity={0.7}
+                      accessibilityRole="button"
+                      accessibilityLabel="Upgrade plan"
+                      style={{
+                        backgroundColor: c.amber,
+                        paddingHorizontal: 12,
+                        paddingVertical: 6,
+                        borderRadius: 6,
+                      }}
+                    >
+                      <Text style={{ fontSize: 12, fontWeight: '700' as const, color: c.ink, letterSpacing: 0.2 }}>
+                        Upgrade
+                      </Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
               </>
             )}
             <RowDivider c={c} />
-            <SettingsRow label="Manage billing" onPress={handleManageBilling} c={c} />
+            <SettingsRow label="Manage billing" icon="card-outline" onPress={handleManageBilling} c={c} />
           </View>
         </View>
 
@@ -663,7 +796,12 @@ export default function SettingsScreen() {
               </View>
             ) : usage ? (
               <View style={layout.storageRow}>
-                <StorageBar usedBytes={usage.used_bytes} limitBytes={usage.plan_limit_bytes} c={c} />
+                <StorageBar
+                  usedBytes={usage.used_bytes}
+                  limitBytes={usage.plan_limit_bytes}
+                  showPercent
+                  c={c}
+                />
               </View>
             ) : (
               <View style={layout.storageRow}>
@@ -778,9 +916,9 @@ export default function SettingsScreen() {
                 <RowDivider c={c} />
               </>
             )}
-            <SettingsRow label="Change password" onPress={handleChangePassword} c={c} />
+            <SettingsRow label="Change password" icon="key-outline" onPress={handleChangePassword} c={c} />
             <RowDivider c={c} />
-            <SettingsRow label="Two-factor authentication" c={c} />
+            <SettingsRow label="Two-factor authentication" icon="shield-checkmark-outline" c={c} />
           </View>
         </View>
 
@@ -925,7 +1063,32 @@ export default function SettingsScreen() {
         <View style={layout.section}>
           <SectionHeader title="Files" c={c} />
           <View style={[layout.card, { backgroundColor: c.paper, borderColor: c.line }]}>
-            <SettingsRow label="Trash" onPress={() => navigation.navigate('Trash')} c={c} />
+            <SettingsRow
+              label="Trash"
+              icon="trash-outline"
+              onPress={() => navigation.navigate('Trash')}
+              c={c}
+            />
+            <RowDivider c={c} />
+            <SettingsRow
+              label="Available offline"
+              icon="cloud-download-outline"
+              onPress={handleOfflineFiles}
+              c={c}
+            />
+          </View>
+        </View>
+
+        {/* ---- Support ---- */}
+        <View style={layout.section}>
+          <SectionHeader title="Support" c={c} />
+          <View style={[layout.card, { backgroundColor: c.paper, borderColor: c.line }]}>
+            <SettingsRow
+              label="Report a problem"
+              icon="bug-outline"
+              onPress={handleReportBug}
+              c={c}
+            />
           </View>
         </View>
 
@@ -935,6 +1098,7 @@ export default function SettingsScreen() {
           <View style={[layout.card, { backgroundColor: c.paper, borderColor: c.line }]}>
             <SettingsRow
               label="Version"
+              icon="information-circle-outline"
               value={`${Constants.expoConfig?.version ?? '1.0.0'} (${Constants.expoConfig?.ios?.buildNumber ?? Constants.expoConfig?.android?.versionCode ?? '1'})`}
               showChevron={false}
               onPress={handleShowVersion}
@@ -954,20 +1118,59 @@ export default function SettingsScreen() {
               c={c}
             />
             <RowDivider c={c} />
-            <SettingsRow label="Privacy policy" onPress={handlePrivacyPolicy} c={c} />
+            <SettingsRow
+              label="Privacy policy"
+              icon="document-text-outline"
+              onPress={handlePrivacyPolicy}
+              c={c}
+            />
             <RowDivider c={c} />
-            <SettingsRow label="Terms of service" onPress={handleTerms} c={c} />
+            <SettingsRow
+              label="Terms of service"
+              icon="document-outline"
+              onPress={handleTerms}
+              c={c}
+            />
             <RowDivider c={c} />
-            <SettingsRow label="Rate on App Store" onPress={handleRateApp} c={c} />
+            <SettingsRow
+              label="Rate on App Store"
+              icon="star-half-outline"
+              onPress={handleRateApp}
+              c={c}
+            />
           </View>
         </View>
 
         {/* ---- Sign out ---- */}
         <View style={layout.section}>
           <View style={[layout.card, { backgroundColor: c.paper, borderColor: c.line }]}>
-            <SettingsRow label="Sign out" danger showChevron={false} onPress={handleSignOut} c={c} />
+            <SettingsRow
+              label="Sign out"
+              icon="log-out-outline"
+              danger
+              showChevron={false}
+              onPress={handleSignOut}
+              c={c}
+            />
           </View>
         </View>
+
+        {/* ---- Storage (prominent, bottom) ---- */}
+        {usage && (
+          <View style={layout.section}>
+            <View style={[layout.card, { backgroundColor: c.paper, borderColor: c.line }]}>
+              <View style={layout.storageRow}>
+                <StorageBar
+                  usedBytes={usage.used_bytes}
+                  limitBytes={usage.plan_limit_bytes}
+                  showPercent
+                  prominent
+                  c={c}
+                />
+              </View>
+            </View>
+          </View>
+        )}
 
         {/* Footer */}
         <View style={layout.footer}>
