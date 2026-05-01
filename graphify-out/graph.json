@@ -9,8 +9,17 @@
       "source_file": "App.tsx",
       "source_location": "L1",
       "id": "app_tsx",
-      "community": 15,
+      "community": 11,
       "norm_label": "app.tsx"
+    },
+    {
+      "label": "async()",
+      "file_type": "code",
+      "source_file": "App.tsx",
+      "source_location": "L382",
+      "id": "src_app_async",
+      "community": 11,
+      "norm_label": "async()"
     },
     {
       "label": "theme.ts",
@@ -18,7 +27,7 @@
       "source_file": "theme.ts",
       "source_location": "L1",
       "id": "theme_ts",
-      "community": 16,
+      "community": 18,
       "norm_label": "theme.ts"
     },
     {
@@ -88,7 +97,7 @@
       "label": "formatSize()",
       "file_type": "code",
       "source_file": "screens/FilesScreen.tsx",
-      "source_location": "L26",
+      "source_location": "L29",
       "id": "screens_filesscreen_formatsize",
       "community": 4,
       "norm_label": "formatsize()"
@@ -97,7 +106,7 @@
       "label": "formatDate()",
       "file_type": "code",
       "source_file": "screens/FilesScreen.tsx",
-      "source_location": "L35",
+      "source_location": "L38",
       "id": "screens_filesscreen_formatdate",
       "community": 4,
       "norm_label": "formatdate()"
@@ -106,7 +115,7 @@
       "label": "displayName()",
       "file_type": "code",
       "source_file": "screens/FilesScreen.tsx",
-      "source_location": "L61",
+      "source_location": "L64",
       "id": "screens_filesscreen_displayname",
       "community": 4,
       "norm_label": "displayname()"
@@ -115,7 +124,7 @@
       "label": "fileCategory()",
       "file_type": "code",
       "source_file": "screens/FilesScreen.tsx",
-      "source_location": "L72",
+      "source_location": "L75",
       "id": "screens_filesscreen_filecategory",
       "community": 4,
       "norm_label": "filecategory()"
@@ -124,10 +133,28 @@
       "label": "FileIcon()",
       "file_type": "code",
       "source_file": "screens/FilesScreen.tsx",
-      "source_location": "L116",
+      "source_location": "L119",
       "id": "screens_filesscreen_fileicon",
       "community": 4,
       "norm_label": "fileicon()"
+    },
+    {
+      "label": "OnboardingScreen.tsx",
+      "file_type": "code",
+      "source_file": "screens/OnboardingScreen.tsx",
+      "source_location": "L1",
+      "id": "screens_onboardingscreen_tsx",
+      "community": 12,
+      "norm_label": "onboardingscreen.tsx"
+    },
+    {
+      "label": "generatePhrase()",
+      "file_type": "code",
+      "source_file": "screens/OnboardingScreen.tsx",
+      "source_location": "L46",
+      "id": "screens_onboardingscreen_generatephrase",
+      "community": 12,
+      "norm_label": "generatephrase()"
     },
     {
       "label": "SignupScreen.tsx",
@@ -216,7 +243,7 @@
       "source_file": "screens/BiometricLockScreen.tsx",
       "source_location": "L1",
       "id": "screens_biometriclockscreen_tsx",
-      "community": 10,
+      "community": 13,
       "norm_label": "biometriclockscreen.tsx"
     },
     {
@@ -225,7 +252,7 @@
       "source_file": "screens/BiometricLockScreen.tsx",
       "source_location": "L18",
       "id": "screens_biometriclockscreen_faceidicon",
-      "community": 10,
+      "community": 13,
       "norm_label": "faceidicon()"
     },
     {
@@ -234,7 +261,7 @@
       "source_file": "screens/ShareSheetScreen.tsx",
       "source_location": "L1",
       "id": "screens_sharesheetscreen_tsx",
-      "community": 9,
+      "community": 10,
       "norm_label": "sharesheetscreen.tsx"
     },
     {
@@ -243,7 +270,7 @@
       "source_file": "screens/ShareSheetScreen.tsx",
       "source_location": "L30",
       "id": "screens_sharesheetscreen_formatsize",
-      "community": 9,
+      "community": 10,
       "norm_label": "formatsize()"
     },
     {
@@ -252,7 +279,7 @@
       "source_file": "screens/ShareSheetScreen.tsx",
       "source_location": "L38",
       "id": "screens_sharesheetscreen_filetypebadge",
-      "community": 9,
+      "community": 10,
       "norm_label": "filetypebadge()"
     },
     {
@@ -261,7 +288,7 @@
       "source_file": "screens/SharedViewScreen.tsx",
       "source_location": "L1",
       "id": "screens_sharedviewscreen_tsx",
-      "community": 17,
+      "community": 19,
       "norm_label": "sharedviewscreen.tsx"
     },
     {
@@ -270,7 +297,7 @@
       "source_file": "screens/PreviewScreen.tsx",
       "source_location": "L1",
       "id": "screens_previewscreen_tsx",
-      "community": 8,
+      "community": 9,
       "norm_label": "previewscreen.tsx"
     },
     {
@@ -279,7 +306,7 @@
       "source_file": "screens/PreviewScreen.tsx",
       "source_location": "L29",
       "id": "screens_previewscreen_formatsize",
-      "community": 8,
+      "community": 9,
       "norm_label": "formatsize()"
     },
     {
@@ -288,7 +315,7 @@
       "source_file": "screens/PreviewScreen.tsx",
       "source_location": "L37",
       "id": "screens_previewscreen_formatdate",
-      "community": 8,
+      "community": 9,
       "norm_label": "formatdate()"
     },
     {
@@ -297,8 +324,62 @@
       "source_file": "screens/PreviewScreen.tsx",
       "source_location": "L47",
       "id": "screens_previewscreen_filecategory",
-      "community": 8,
+      "community": 9,
       "norm_label": "filecategory()"
+    },
+    {
+      "label": "TrashScreen.tsx",
+      "file_type": "code",
+      "source_file": "screens/TrashScreen.tsx",
+      "source_location": "L1",
+      "id": "screens_trashscreen_tsx",
+      "community": 6,
+      "norm_label": "trashscreen.tsx"
+    },
+    {
+      "label": "formatSize()",
+      "file_type": "code",
+      "source_file": "screens/TrashScreen.tsx",
+      "source_location": "L26",
+      "id": "screens_trashscreen_formatsize",
+      "community": 6,
+      "norm_label": "formatsize()"
+    },
+    {
+      "label": "formatDate()",
+      "file_type": "code",
+      "source_file": "screens/TrashScreen.tsx",
+      "source_location": "L33",
+      "id": "screens_trashscreen_formatdate",
+      "community": 6,
+      "norm_label": "formatdate()"
+    },
+    {
+      "label": "displayName()",
+      "file_type": "code",
+      "source_file": "screens/TrashScreen.tsx",
+      "source_location": "L43",
+      "id": "screens_trashscreen_displayname",
+      "community": 6,
+      "norm_label": "displayname()"
+    },
+    {
+      "label": "renderItem()",
+      "file_type": "code",
+      "source_file": "screens/TrashScreen.tsx",
+      "source_location": "L126",
+      "id": "screens_trashscreen_renderitem",
+      "community": 6,
+      "norm_label": "renderitem()"
+    },
+    {
+      "label": "renderEmpty()",
+      "file_type": "code",
+      "source_file": "screens/TrashScreen.tsx",
+      "source_location": "L158",
+      "id": "screens_trashscreen_renderempty",
+      "community": 6,
+      "norm_label": "renderempty()"
     },
     {
       "label": "SettingsScreen.tsx",
@@ -306,43 +387,43 @@
       "source_file": "screens/SettingsScreen.tsx",
       "source_location": "L1",
       "id": "screens_settingsscreen_tsx",
-      "community": 6,
+      "community": 7,
       "norm_label": "settingsscreen.tsx"
     },
     {
       "label": "formatBytes()",
       "file_type": "code",
       "source_file": "screens/SettingsScreen.tsx",
-      "source_location": "L25",
+      "source_location": "L28",
       "id": "screens_settingsscreen_formatbytes",
-      "community": 6,
+      "community": 7,
       "norm_label": "formatbytes()"
     },
     {
       "label": "formatDate()",
       "file_type": "code",
       "source_file": "screens/SettingsScreen.tsx",
-      "source_location": "L33",
+      "source_location": "L36",
       "id": "screens_settingsscreen_formatdate",
-      "community": 6,
+      "community": 7,
       "norm_label": "formatdate()"
     },
     {
       "label": "userInitials()",
       "file_type": "code",
       "source_file": "screens/SettingsScreen.tsx",
-      "source_location": "L41",
+      "source_location": "L44",
       "id": "screens_settingsscreen_userinitials",
-      "community": 6,
+      "community": 7,
       "norm_label": "userinitials()"
     },
     {
       "label": "planLabel()",
       "file_type": "code",
       "source_file": "screens/SettingsScreen.tsx",
-      "source_location": "L50",
+      "source_location": "L53",
       "id": "screens_settingsscreen_planlabel",
-      "community": 6,
+      "community": 7,
       "norm_label": "planlabel()"
     },
     {
@@ -387,7 +468,7 @@
       "source_file": "lib/api.ts",
       "source_location": "L57",
       "id": "lib_api_gettoken",
-      "community": 7,
+      "community": 8,
       "norm_label": "gettoken()"
     },
     {
@@ -405,7 +486,7 @@
       "source_file": "lib/api.ts",
       "source_location": "L68",
       "id": "lib_api_cleartoken",
-      "community": 12,
+      "community": 15,
       "norm_label": "cleartoken()"
     },
     {
@@ -414,7 +495,7 @@
       "source_file": "lib/api.ts",
       "source_location": "L74",
       "id": "lib_api_hastoken",
-      "community": 7,
+      "community": 8,
       "norm_label": "hastoken()"
     },
     {
@@ -423,7 +504,7 @@
       "source_file": "lib/api.ts",
       "source_location": "L82",
       "id": "lib_api_apierror",
-      "community": 11,
+      "community": 14,
       "norm_label": "apierror"
     },
     {
@@ -432,7 +513,7 @@
       "source_file": "lib/api.ts",
       "source_location": "L83",
       "id": "lib_api_apierror_constructor",
-      "community": 11,
+      "community": 14,
       "norm_label": ".constructor()"
     },
     {
@@ -450,7 +531,7 @@
       "source_file": "lib/api.ts",
       "source_location": "L106",
       "id": "lib_api_headers",
-      "community": 7,
+      "community": 8,
       "norm_label": "headers()"
     },
     {
@@ -486,7 +567,7 @@
       "source_file": "lib/api.ts",
       "source_location": "L180",
       "id": "lib_api_logout",
-      "community": 12,
+      "community": 15,
       "norm_label": "logout()"
     },
     {
@@ -522,7 +603,7 @@
       "source_file": "lib/api.ts",
       "source_location": "L222",
       "id": "lib_api_uploadfile",
-      "community": 7,
+      "community": 8,
       "norm_label": "uploadfile()"
     },
     {
@@ -531,7 +612,7 @@
       "source_file": "lib/api.ts",
       "source_location": "L245",
       "id": "lib_api_downloadfile",
-      "community": 7,
+      "community": 8,
       "norm_label": "downloadfile()"
     },
     {
@@ -558,7 +639,7 @@
       "source_file": "lib/api.ts",
       "source_location": "L276",
       "id": "lib_api_createshare",
-      "community": 1,
+      "community": 2,
       "norm_label": "createshare()"
     },
     {
@@ -594,7 +675,7 @@
       "source_file": "lib/api.ts",
       "source_location": "L336",
       "id": "lib_api_getstorageusage",
-      "community": 2,
+      "community": 1,
       "norm_label": "getstorageusage()"
     },
     {
@@ -621,7 +702,7 @@
       "source_file": "lib/useNetworkStatus.ts",
       "source_location": "L1",
       "id": "lib_usenetworkstatus_ts",
-      "community": 13,
+      "community": 16,
       "norm_label": "usenetworkstatus.ts"
     },
     {
@@ -630,7 +711,7 @@
       "source_file": "lib/useNetworkStatus.ts",
       "source_location": "L4",
       "id": "lib_usenetworkstatus_usenetworkstatus",
-      "community": 13,
+      "community": 16,
       "norm_label": "usenetworkstatus()"
     },
     {
@@ -639,7 +720,7 @@
       "source_file": "lib/auth.ts",
       "source_location": "L1",
       "id": "lib_auth_ts",
-      "community": 14,
+      "community": 17,
       "norm_label": "auth.ts"
     },
     {
@@ -648,11 +729,23 @@
       "source_file": "lib/auth.ts",
       "source_location": "L18",
       "id": "lib_auth_useauth",
-      "community": 14,
+      "community": 17,
       "norm_label": "useauth()"
     }
   ],
   "links": [
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "App.tsx",
+      "source_location": "L382",
+      "weight": 1.0,
+      "_src": "app_tsx",
+      "_tgt": "src_app_async",
+      "source": "app_tsx",
+      "target": "src_app_async",
+      "confidence_score": 1.0
+    },
     {
       "relation": "contains",
       "confidence": "EXTRACTED",
@@ -717,7 +810,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "screens/FilesScreen.tsx",
-      "source_location": "L26",
+      "source_location": "L29",
       "weight": 1.0,
       "_src": "screens_filesscreen_tsx",
       "_tgt": "screens_filesscreen_formatsize",
@@ -729,7 +822,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "screens/FilesScreen.tsx",
-      "source_location": "L35",
+      "source_location": "L38",
       "weight": 1.0,
       "_src": "screens_filesscreen_tsx",
       "_tgt": "screens_filesscreen_formatdate",
@@ -741,7 +834,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "screens/FilesScreen.tsx",
-      "source_location": "L61",
+      "source_location": "L64",
       "weight": 1.0,
       "_src": "screens_filesscreen_tsx",
       "_tgt": "screens_filesscreen_displayname",
@@ -753,7 +846,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "screens/FilesScreen.tsx",
-      "source_location": "L72",
+      "source_location": "L75",
       "weight": 1.0,
       "_src": "screens_filesscreen_tsx",
       "_tgt": "screens_filesscreen_filecategory",
@@ -765,12 +858,24 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "screens/FilesScreen.tsx",
-      "source_location": "L116",
+      "source_location": "L119",
       "weight": 1.0,
       "_src": "screens_filesscreen_tsx",
       "_tgt": "screens_filesscreen_fileicon",
       "source": "screens_filesscreen_tsx",
       "target": "screens_filesscreen_fileicon",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "screens/OnboardingScreen.tsx",
+      "source_location": "L46",
+      "weight": 1.0,
+      "_src": "screens_onboardingscreen_tsx",
+      "_tgt": "screens_onboardingscreen_generatephrase",
+      "source": "screens_onboardingscreen_tsx",
+      "target": "screens_onboardingscreen_generatephrase",
       "confidence_score": 1.0
     },
     {
@@ -968,8 +1073,80 @@
     {
       "relation": "contains",
       "confidence": "EXTRACTED",
+      "source_file": "screens/TrashScreen.tsx",
+      "source_location": "L26",
+      "weight": 1.0,
+      "_src": "screens_trashscreen_tsx",
+      "_tgt": "screens_trashscreen_formatsize",
+      "source": "screens_trashscreen_tsx",
+      "target": "screens_trashscreen_formatsize",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "screens/TrashScreen.tsx",
+      "source_location": "L33",
+      "weight": 1.0,
+      "_src": "screens_trashscreen_tsx",
+      "_tgt": "screens_trashscreen_formatdate",
+      "source": "screens_trashscreen_tsx",
+      "target": "screens_trashscreen_formatdate",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "screens/TrashScreen.tsx",
+      "source_location": "L43",
+      "weight": 1.0,
+      "_src": "screens_trashscreen_tsx",
+      "_tgt": "screens_trashscreen_displayname",
+      "source": "screens_trashscreen_tsx",
+      "target": "screens_trashscreen_displayname",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "screens/TrashScreen.tsx",
+      "source_location": "L126",
+      "weight": 1.0,
+      "_src": "screens_trashscreen_tsx",
+      "_tgt": "screens_trashscreen_renderitem",
+      "source": "screens_trashscreen_tsx",
+      "target": "screens_trashscreen_renderitem",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "screens/TrashScreen.tsx",
+      "source_location": "L158",
+      "weight": 1.0,
+      "_src": "screens_trashscreen_tsx",
+      "_tgt": "screens_trashscreen_renderempty",
+      "source": "screens_trashscreen_tsx",
+      "target": "screens_trashscreen_renderempty",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "calls",
+      "confidence": "EXTRACTED",
+      "source_file": "screens/TrashScreen.tsx",
+      "source_location": "L134",
+      "weight": 1.0,
+      "_src": "screens_trashscreen_renderitem",
+      "_tgt": "screens_trashscreen_formatsize",
+      "source": "screens_trashscreen_formatsize",
+      "target": "screens_trashscreen_renderitem",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
       "source_file": "screens/SettingsScreen.tsx",
-      "source_location": "L156",
+      "source_location": "L159",
       "weight": 1.0,
       "_src": "screens_settingsscreen_tsx",
       "_tgt": "screens_settingsscreen_formatbytes",
@@ -981,7 +1158,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "screens/SettingsScreen.tsx",
-      "source_location": "L33",
+      "source_location": "L36",
       "weight": 1.0,
       "_src": "screens_settingsscreen_tsx",
       "_tgt": "screens_settingsscreen_formatdate",
@@ -993,7 +1170,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "screens/SettingsScreen.tsx",
-      "source_location": "L41",
+      "source_location": "L44",
       "weight": 1.0,
       "_src": "screens_settingsscreen_tsx",
       "_tgt": "screens_settingsscreen_userinitials",
@@ -1005,7 +1182,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "screens/SettingsScreen.tsx",
-      "source_location": "L50",
+      "source_location": "L53",
       "weight": 1.0,
       "_src": "screens_settingsscreen_tsx",
       "_tgt": "screens_settingsscreen_planlabel",
