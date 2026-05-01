@@ -1,0 +1,428 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Beebeeb — App Store Mockups</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link
+  href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500&display=swap"
+  rel="stylesheet"
+/>
+<style>
+  :root {
+    --amber: #f5b800;
+    --amber-deep: #b8860b;
+    --amber-soft: #fde8a8;
+    --paper: #faf8f5;
+    --paper-warm: #f5efe4;
+    --ink: #2a2520;
+    --ink-soft: #5a4f44;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html, body {
+    background: #1a1714;
+    font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    color: var(--ink);
+  }
+
+  /* ---- Page chrome (the gallery view) ---- */
+  .gallery {
+    padding: 48px 24px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 32px;
+  }
+
+  .gallery-header {
+    color: var(--paper);
+    text-align: center;
+    max-width: 640px;
+    margin-bottom: 24px;
+  }
+  .gallery-header h1 {
+    font-size: 28px;
+    font-weight: 800;
+    letter-spacing: -0.02em;
+  }
+  .gallery-header p {
+    margin-top: 8px;
+    color: rgba(250, 248, 245, 0.6);
+    font-size: 14px;
+    line-height: 1.5;
+  }
+  .gallery-header .controls {
+    margin-top: 16px;
+    display: flex;
+    gap: 8px;
+    justify-content: center;
+  }
+  .gallery-header button {
+    background: var(--amber);
+    color: var(--ink);
+    border: none;
+    padding: 10px 18px;
+    font-family: inherit;
+    font-weight: 600;
+    font-size: 13px;
+    border-radius: 999px;
+    cursor: pointer;
+    letter-spacing: -0.01em;
+  }
+  .gallery-header button.secondary {
+    background: rgba(250, 248, 245, 0.1);
+    color: var(--paper);
+  }
+
+  /* ---- Slide canvas ---- */
+  /* App Store iPhone 6.7" / 6.9" reference: 1290 x 2796 */
+  .slide {
+    width: 1290px;
+    height: 2796px;
+    position: relative;
+    overflow: hidden;
+    flex-shrink: 0;
+    /* Scale down to fit gallery viewport on most monitors */
+    transform-origin: top center;
+    transform: scale(0.32);
+    margin-bottom: calc(2796px * -0.68);
+    box-shadow: 0 40px 120px rgba(0, 0, 0, 0.5);
+    border-radius: 64px;
+  }
+
+  /* Slide-specific backgrounds */
+  .slide-1 {
+    background:
+      radial-gradient(ellipse 90% 60% at 80% 0%, rgba(245, 184, 0, 0.28) 0%, transparent 60%),
+      radial-gradient(ellipse 80% 50% at 10% 100%, rgba(245, 184, 0, 0.12) 0%, transparent 60%),
+      linear-gradient(180deg, #fdf7e8 0%, var(--paper) 100%);
+  }
+  .slide-2 {
+    background:
+      radial-gradient(ellipse 70% 50% at 100% 0%, rgba(245, 184, 0, 0.22) 0%, transparent 55%),
+      linear-gradient(180deg, var(--paper) 0%, #f3ecdd 100%);
+  }
+  .slide-3 {
+    background:
+      radial-gradient(ellipse 90% 70% at 50% 0%, rgba(245, 184, 0, 0.32) 0%, transparent 55%),
+      linear-gradient(180deg, #fdf2d4 0%, #f9ecc7 60%, #f5e4b3 100%);
+  }
+  .slide-4 {
+    background:
+      radial-gradient(ellipse 60% 50% at 0% 100%, rgba(184, 134, 11, 0.18) 0%, transparent 55%),
+      radial-gradient(ellipse 70% 50% at 100% 0%, rgba(245, 184, 0, 0.20) 0%, transparent 55%),
+      linear-gradient(180deg, var(--paper-warm) 0%, var(--paper) 100%);
+  }
+  .slide-5 {
+    background:
+      radial-gradient(ellipse 90% 60% at 80% 100%, rgba(245, 184, 0, 0.18) 0%, transparent 55%),
+      radial-gradient(ellipse 60% 40% at 10% 0%, rgba(245, 184, 0, 0.10) 0%, transparent 55%),
+      linear-gradient(180deg, #1a1714 0%, #2a2520 100%);
+    color: var(--paper);
+  }
+  .slide-6 {
+    background:
+      radial-gradient(ellipse 100% 80% at 50% 50%, rgba(245, 184, 0, 0.18) 0%, transparent 60%),
+      linear-gradient(180deg, #fdf7e8 0%, var(--paper) 60%, #f3ecdd 100%);
+  }
+
+  /* ---- Slide content ---- */
+  .slide-content {
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    padding: 180px 120px 0;
+    text-align: center;
+  }
+
+  .eyebrow {
+    display: inline-block;
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 26px;
+    font-weight: 500;
+    color: var(--amber-deep);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    margin-bottom: 32px;
+    padding: 12px 28px;
+    border: 2px solid rgba(184, 134, 11, 0.35);
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.4);
+  }
+  .slide-5 .eyebrow {
+    color: var(--amber);
+    border-color: rgba(245, 184, 0, 0.4);
+    background: rgba(245, 184, 0, 0.08);
+  }
+
+  .headline {
+    font-size: 138px;
+    font-weight: 800;
+    line-height: 0.95;
+    letter-spacing: -0.045em;
+    color: var(--ink);
+    margin-bottom: 36px;
+  }
+  .slide-5 .headline { color: var(--paper); }
+  .headline .accent { color: var(--amber-deep); }
+  .slide-5 .headline .accent { color: var(--amber); }
+
+  .subhead {
+    font-size: 44px;
+    font-weight: 400;
+    line-height: 1.3;
+    letter-spacing: -0.015em;
+    color: var(--ink-soft);
+    max-width: 1000px;
+    margin: 0 auto;
+  }
+  .slide-5 .subhead { color: rgba(250, 248, 245, 0.75); }
+
+  /* ---- Device frame ---- */
+  .device {
+    position: absolute;
+    left: 50%;
+    bottom: -120px;
+    transform: translateX(-50%);
+    width: 920px;
+    height: 1900px;
+    background: #0a0a0a;
+    border-radius: 96px;
+    padding: 18px;
+    box-shadow:
+      0 0 0 2px rgba(255, 255, 255, 0.04) inset,
+      0 60px 140px rgba(42, 37, 32, 0.35),
+      0 30px 60px rgba(42, 37, 32, 0.2);
+  }
+  .slide-5 .device {
+    box-shadow:
+      0 0 0 2px rgba(255, 255, 255, 0.04) inset,
+      0 60px 140px rgba(0, 0, 0, 0.6),
+      0 30px 80px rgba(245, 184, 0, 0.12);
+  }
+
+  .device-screen {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    border-radius: 80px;
+    overflow: hidden;
+    background: var(--paper);
+  }
+  .device-screen img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    object-position: top center;
+  }
+
+  /* Dynamic Island */
+  .device-island {
+    position: absolute;
+    top: 32px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 240px;
+    height: 60px;
+    background: #000;
+    border-radius: 999px;
+    z-index: 2;
+    pointer-events: none;
+  }
+
+  /* Footer mark on each slide */
+  .brand-mark {
+    position: absolute;
+    bottom: 56px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 22px;
+    font-weight: 500;
+    color: rgba(42, 37, 32, 0.45);
+    letter-spacing: -0.01em;
+    z-index: 3;
+  }
+  .slide-5 .brand-mark { color: rgba(250, 248, 245, 0.4); }
+  .brand-mark .dot {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: var(--amber);
+    box-shadow: 0 0 16px rgba(245, 184, 0, 0.6);
+  }
+
+  /* ---- Single-slide / capture mode ---- */
+  body.capture { background: #000; }
+  body.capture .gallery-header { display: none; }
+  body.capture .gallery {
+    padding: 0;
+    gap: 0;
+  }
+  body.capture .slide {
+    transform: none;
+    margin-bottom: 0;
+    box-shadow: none;
+    border-radius: 0;
+  }
+
+  /* When the URL hash targets a specific slide, hide the others in capture mode */
+  body.capture .slide:not(:target) { display: none; }
+  body.capture:not(:has(:target)) .slide { display: flex; }
+
+  /* Print: one slide per page at full size */
+  @media print {
+    @page { size: 1290px 2796px; margin: 0; }
+    html, body { background: #fff; }
+    .gallery-header { display: none; }
+    .gallery { padding: 0; gap: 0; }
+    .slide {
+      transform: none;
+      margin: 0;
+      box-shadow: none;
+      border-radius: 0;
+      page-break-after: always;
+    }
+  }
+</style>
+</head>
+<body>
+  <main class="gallery">
+    <header class="gallery-header">
+      <h1>Beebeeb — App Store mockups</h1>
+      <p>
+        Six 1290 × 2796 slides at iPhone 6.9" reference size. Each slide is rendered
+        full-resolution and scaled down for preview. Use the buttons below to capture
+        them at exact App Store dimensions.
+      </p>
+      <div class="controls">
+        <button onclick="document.body.classList.toggle('capture')">Toggle capture mode</button>
+        <button class="secondary" onclick="window.print()">Print to PDF</button>
+      </div>
+    </header>
+
+    <!-- Slide 1: Files / Drive -->
+    <section id="slide-1" class="slide slide-1">
+      <div class="slide-content">
+        <span class="eyebrow">End-to-end encrypted</span>
+        <h2 class="headline">Your files.<br /><span class="accent">Encrypted.</span></h2>
+        <p class="subhead">
+          Every file. Every byte. Encrypted on your device before it ever leaves.
+          We can't read them. Neither can anyone else.
+        </p>
+      </div>
+      <div class="device">
+        <div class="device-screen">
+          <div class="device-island"></div>
+          <img src="01-files-drive.png" alt="Files screen" />
+        </div>
+      </div>
+      <div class="brand-mark"><span class="dot"></span>beebeeb</div>
+    </section>
+
+    <!-- Slide 2: Shared -->
+    <section id="slide-2" class="slide slide-2">
+      <div class="slide-content">
+        <span class="eyebrow">Zero knowledge sharing</span>
+        <h2 class="headline">Share without<br /><span class="accent">compromise.</span></h2>
+        <p class="subhead">
+          Send a link. Set an expiry. Revoke anytime. The recipient decrypts —
+          our servers never see a thing.
+        </p>
+      </div>
+      <div class="device">
+        <div class="device-screen">
+          <div class="device-island"></div>
+          <img src="02-shared.png" alt="Shared screen" />
+        </div>
+      </div>
+      <div class="brand-mark"><span class="dot"></span>beebeeb</div>
+    </section>
+
+    <!-- Slide 3: Photos -->
+    <section id="slide-3" class="slide slide-3">
+      <div class="slide-content">
+        <span class="eyebrow">Auto backup</span>
+        <h2 class="headline">Every photo.<br /><span class="accent">Backed up.</span></h2>
+        <p class="subhead">
+          The moments that matter, encrypted the moment they happen. Browse a
+          decade of memories without handing them over.
+        </p>
+      </div>
+      <div class="device">
+        <div class="device-screen">
+          <div class="device-island"></div>
+          <img src="03-photos.png" alt="Photos screen" />
+        </div>
+      </div>
+      <div class="brand-mark"><span class="dot"></span>beebeeb</div>
+    </section>
+
+    <!-- Slide 4: Settings / Privacy -->
+    <section id="slide-4" class="slide slide-4">
+      <div class="slide-content">
+        <span class="eyebrow">Your data, your rules</span>
+        <h2 class="headline">Privacy<br />you <span class="accent">control.</span></h2>
+        <p class="subhead">
+          Choose your region. Choose your keys. Choose what's backed up and what
+          isn't. The defaults respect you — the options answer to you.
+        </p>
+      </div>
+      <div class="device">
+        <div class="device-screen">
+          <div class="device-island"></div>
+          <img src="04-settings.png" alt="Settings screen" />
+        </div>
+      </div>
+      <div class="brand-mark"><span class="dot"></span>beebeeb</div>
+    </section>
+
+    <!-- Slide 5: Dark mode -->
+    <section id="slide-5" class="slide slide-5">
+      <div class="slide-content">
+        <span class="eyebrow">Looks good in the dark</span>
+        <h2 class="headline">Dark mode.<br /><span class="accent">Light conscience.</span></h2>
+        <p class="subhead">
+          Designed for late nights and long flights. The interface dims —
+          the encryption doesn't.
+        </p>
+      </div>
+      <div class="device">
+        <div class="device-screen">
+          <div class="device-island"></div>
+          <img src="05-settings-scrolled.png" alt="Settings, scrolled" />
+        </div>
+      </div>
+      <div class="brand-mark"><span class="dot"></span>beebeeb</div>
+    </section>
+
+    <!-- Slide 6: Made in Europe -->
+    <section id="slide-6" class="slide slide-6">
+      <div class="slide-content">
+        <span class="eyebrow">Frankfurt · Hetzner</span>
+        <h2 class="headline">Made in<br /><span class="accent">Europe.</span></h2>
+        <p class="subhead">
+          Built and operated by Initlabs B.V., Wijchen, Netherlands.
+          Stored in Frankfurt. Governed by EU law.
+        </p>
+      </div>
+      <div class="device">
+        <div class="device-screen">
+          <div class="device-island"></div>
+          <img src="06-settings-bottom.png" alt="Settings — about" />
+        </div>
+      </div>
+      <div class="brand-mark"><span class="dot"></span>beebeeb</div>
+    </section>
+  </main>
+</body>
+</html>
