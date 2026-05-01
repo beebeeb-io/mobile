@@ -22,11 +22,13 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import * as Haptics from 'expo-haptics';
 import * as SecureStore from 'expo-secure-store';
 import * as DocumentPicker from 'expo-document-picker';
+import * as FileSystem from 'expo-file-system';
+import * as Sharing from 'expo-sharing';
 import { radii, spacing, shadows } from '../theme';
 import { useTheme } from '../lib/theme-context';
 import { useToast } from '../lib/toast-context';
 import SkeletonRow from '../components/SkeletonRow';
-import { listFiles, createFolder, deleteFile, renameFile, moveFile, uploadFile, friendlyError, getStorageUsage } from '../lib/api';
+import { listFiles, createFolder, deleteFile, renameFile, moveFile, uploadFile, downloadFile, friendlyError, getStorageUsage } from '../lib/api';
 import type { FileEntry, StorageUsage } from '../lib/api';
 import type { RootStackParamList } from '../App';
 import { useCrypto } from '../lib/crypto-context';
@@ -379,6 +381,9 @@ export default function FilesScreen() {
 
   // Upload state — shows an inline progress banner above the FAB
   const [uploadingName, setUploadingName] = useState<string | null>(null);
+
+  // Export state — shows banner while downloading for native share sheet
+  const [exportingName, setExportingName] = useState<string | null>(null);
 
   // Scroll shadow — appears when list is scrolled past top
   const [isScrolled, setIsScrolled] = useState(false);
@@ -780,8 +785,9 @@ export default function FilesScreen() {
     const pinLabel = isPinned ? 'Unpin' : 'Pin to top';
     const options = item.is_folder
       ? ['Rename', 'Open', 'Share', 'Move to...', 'Delete', pinLabel, 'Details', 'Cancel']
-      : ['Rename', 'Preview', 'Share', 'Move to...', 'Move to Trash', 'Details', 'Cancel'];
-    const destructiveIndex = 4;
+      : ['Rename', 'Preview', 'Share', 'Export...', 'Move to...', 'Move to Trash', 'Details', 'Cancel'];
+    // Folders: Delete at 4 | Files: Move to Trash at 5
+    const destructiveIndex = item.is_folder ? 4 : 5;
     const cancelIndex = options.length - 1;
 
     const promptRename = () => {
@@ -859,6 +865,39 @@ export default function FilesScreen() {
       }
     };
 
+    const promptExport = async () => {
+      const safeName = name.replace(/[^a-zA-Z0-9._()-]/g, '_');
+      const localUri = `${FileSystem.cacheDirectory}${safeName}`;
+      setExportingName(name);
+      try {
+        const res = await downloadFile(item.id);
+        const blob = await res.blob();
+        const base64 = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onloadend = () => {
+            const result = reader.result as string;
+            resolve(result.split(',')[1] ?? '');
+          };
+          reader.onerror = reject;
+          reader.readAsDataURL(blob);
+        });
+        await FileSystem.writeAsStringAsync(localUri, base64, {
+          encoding: FileSystem.EncodingType.Base64,
+        });
+        await Sharing.shareAsync(localUri, {
+          mimeType: item.mime_type ?? 'application/octet-stream',
+          UTI: item.mime_type ?? 'public.data',
+          dialogTitle: `Export "${name}"`,
+        });
+      } catch (err) {
+        showToast({ type: 'error', message: `Export failed: ${friendlyError(err)}` });
+      } finally {
+        setExportingName(null);
+        // Clean up temp file (best-effort)
+        FileSystem.deleteAsync(localUri, { idempotent: true }).catch(() => {});
+      }
+    };
+
     const handleAction = (index: number) => {
       if (index === 0) {
         promptRename();
@@ -872,53 +911,83 @@ export default function FilesScreen() {
           sizeBytes: item.size_bytes,
         });
       } else if (index === 3) {
-        void promptMove();
+        // Files: Export... | Folders: Move to...
+        if (!item.is_folder) {
+          void promptExport();
+        } else {
+          void promptMove();
+        }
       } else if (index === 4) {
-        Alert.alert(
-          item.is_folder ? 'Delete folder' : 'Move to Trash',
-          `"${name}" will be ${item.is_folder ? 'deleted' : 'moved to Trash'}.`,
-          [
-            { text: 'Cancel', style: 'cancel' },
-            {
-              text: item.is_folder ? 'Delete' : 'Move to Trash',
-              style: 'destructive',
-              onPress: async () => {
-                try {
-                  await deleteFile(item.id);
-                  setFiles((prev) => prev.filter((f) => f.id !== item.id));
-                  showToast({ type: 'info', message: `"${name}" moved to Trash` });
-                } catch (err) {
-                  Alert.alert('Error', friendlyError(err));
-                }
+        // Files: Move to... | Folders: Delete
+        if (!item.is_folder) {
+          void promptMove();
+        } else {
+          Alert.alert(
+            'Delete folder',
+            `"${name}" will be deleted.`,
+            [
+              { text: 'Cancel', style: 'cancel' },
+              {
+                text: 'Delete',
+                style: 'destructive',
+                onPress: async () => {
+                  try {
+                    await deleteFile(item.id);
+                    setFiles((prev) => prev.filter((f) => f.id !== item.id));
+                    showToast({ type: 'info', message: `"${name}" moved to Trash` });
+                  } catch (err) {
+                    Alert.alert('Error', friendlyError(err));
+                  }
+                },
               },
-            },
-          ],
-        );
+            ],
+          );
+        }
       } else if (index === 5) {
         if (item.is_folder) {
           togglePin(item, name);
         } else {
-          // Files: index 5 = Details
-          const lines = [
-            `Name:      ${name}`,
-            `Type:      ${item.mime_type ?? 'Unknown'}`,
-            `Size:      ${formatSize(item.size_bytes)}`,
-          ];
-          lines.push(`Created:   ${formatDate(item.created_at)}`);
-          lines.push(`Modified:  ${formatDate(item.updated_at)}`);
-          lines.push(`ID:        ${item.id.slice(0, 8)}`);
-          Alert.alert('File details', lines.join('\n'));
+          // Files: Move to Trash
+          Alert.alert(
+            'Move to Trash',
+            `"${name}" will be moved to Trash.`,
+            [
+              { text: 'Cancel', style: 'cancel' },
+              {
+                text: 'Move to Trash',
+                style: 'destructive',
+                onPress: async () => {
+                  try {
+                    await deleteFile(item.id);
+                    setFiles((prev) => prev.filter((f) => f.id !== item.id));
+                    showToast({ type: 'info', message: `"${name}" moved to Trash` });
+                  } catch (err) {
+                    Alert.alert('Error', friendlyError(err));
+                  }
+                },
+              },
+            ],
+          );
         }
       } else if (index === 6) {
-        // Folders only: index 6 = Details
-        const lines = [
-          `Name:      ${name}`,
-          `Type:      Folder`,
-          `Created:   ${formatDate(item.created_at)}`,
-          `Modified:  ${formatDate(item.updated_at)}`,
-          `ID:        ${item.id.slice(0, 8)}`,
-        ];
-        Alert.alert('Folder details', lines.join('\n'));
+        // Both files and folders: Details
+        const lines = item.is_folder
+          ? [
+              `Name:      ${name}`,
+              `Type:      Folder`,
+              `Created:   ${formatDate(item.created_at)}`,
+              `Modified:  ${formatDate(item.updated_at)}`,
+              `ID:        ${item.id.slice(0, 8)}`,
+            ]
+          : [
+              `Name:      ${name}`,
+              `Type:      ${item.mime_type ?? 'File'}`,
+              `Size:      ${formatSize(item.size_bytes)}`,
+              `Created:   ${formatDate(item.created_at)}`,
+              `Modified:  ${formatDate(item.updated_at)}`,
+              `ID:        ${item.id.slice(0, 8)}`,
+            ];
+        Alert.alert(item.is_folder ? 'Folder details' : 'File details', lines.join('\n'));
       }
     };
 
@@ -933,6 +1002,7 @@ export default function FilesScreen() {
         handleAction,
       );
     } else {
+      // Both files and folders have 8 options (indices 0-6 + Cancel)
       const alertButtons: Parameters<typeof Alert.alert>[2] = [
         { text: options[0], onPress: () => handleAction(0) },
         { text: options[1], onPress: () => handleAction(1) },
@@ -940,11 +1010,9 @@ export default function FilesScreen() {
         { text: options[3], onPress: () => handleAction(3) },
         { text: options[4], style: 'destructive', onPress: () => handleAction(4) },
         { text: options[5], onPress: () => handleAction(5) },
+        { text: options[6], onPress: () => handleAction(6) },
+        { text: 'Cancel', style: 'cancel' },
       ];
-      if (item.is_folder && options[6]) {
-        alertButtons.push({ text: options[6], onPress: () => handleAction(6) });
-      }
-      alertButtons.push({ text: 'Cancel', style: 'cancel' });
       Alert.alert(name, undefined, alertButtons);
     }
   }, [navigation, openFile, decryptedNames, showToast, pinnedFolders, togglePin]);
@@ -1382,6 +1450,25 @@ export default function FilesScreen() {
           <ActivityIndicator color={c.amber} size="small" />
           <Text style={[styles.uploadBannerText, { color: c.ink2 }]} numberOfLines={1}>
             Uploading {uploadingName}...
+          </Text>
+        </View>
+      )}
+
+      {/* Inline export progress (shown while downloading for native share sheet) */}
+      {exportingName && !selectMode && (
+        <View
+          style={[
+            styles.uploadBanner,
+            {
+              bottom: 24 + insets.bottom + 64,
+              backgroundColor: c.paper2,
+              borderColor: c.line,
+            },
+          ]}
+        >
+          <ActivityIndicator color={c.amber} size="small" />
+          <Text style={[styles.uploadBannerText, { color: c.ink2 }]} numberOfLines={1}>
+            Exporting {exportingName}...
           </Text>
         </View>
       )}
