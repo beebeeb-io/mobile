@@ -27,6 +27,7 @@ import { useNetworkStatus } from './lib/useNetworkStatus';
 import * as Haptics from 'expo-haptics';
 
 const BIOMETRIC_PREF_KEY = 'beebeeb_biometric_lock';
+const BIOMETRIC_DELAY_KEY = 'beebeeb_biometric_delay';
 
 // Eager screens — auth entry points and tab destinations (Tab navigator handles its own lazy mounting)
 import LoginScreen from './screens/LoginScreen';
@@ -273,6 +274,7 @@ export default function App() {
   // Biometric lock: show lock screen when app resumes from background
   const [locked, setLocked] = useState(false);
   const appStateRef = useRef<AppStateStatus>(AppState.currentState);
+  const backgroundAtRef = useRef<number | null>(null);
 
   // Onboarding: shown once after first signup
   const [onboardingDone, setOnboardingDone] = useState(true); // true by default, corrected in startup
@@ -332,18 +334,31 @@ export default function App() {
     });
   }, []);
 
-  // Lock the app when it goes to background and biometric pref is on
+  // Lock the app when it goes to background and biometric pref is on.
+  // The user-configurable delay (BIOMETRIC_DELAY_KEY, in ms) lets a quick
+  // app-switcher peek skip the lock — only background longer than `delay`
+  // triggers Face ID on resume.
   useEffect(() => {
     const subscription = AppState.addEventListener('change', async (nextState: AppStateStatus) => {
       const prev = appStateRef.current;
       appStateRef.current = nextState;
-      if (
-        (prev === 'background' || prev === 'inactive') &&
-        nextState === 'active'
-      ) {
+
+      if (nextState === 'background' || nextState === 'inactive') {
+        if (backgroundAtRef.current == null) {
+          backgroundAtRef.current = Date.now();
+        }
+        return;
+      }
+
+      if ((prev === 'background' || prev === 'inactive') && nextState === 'active') {
+        const elapsed = backgroundAtRef.current != null ? Date.now() - backgroundAtRef.current : 0;
+        backgroundAtRef.current = null;
         try {
           const pref = await SecureStore.getItemAsync(BIOMETRIC_PREF_KEY);
-          if (pref === 'true') {
+          if (pref !== 'true') return;
+          const delayRaw = await SecureStore.getItemAsync(BIOMETRIC_DELAY_KEY);
+          const delay = delayRaw ? parseInt(delayRaw, 10) : 0;
+          if (elapsed > delay) {
             setLocked(true);
           }
         } catch {
