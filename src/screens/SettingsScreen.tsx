@@ -420,6 +420,11 @@ export default function SettingsScreen() {
                 </View>
               </>
             )}
+            <RowDivider />
+            <SettingsRow
+              label="Back up your apps"
+              onPress={() => navigation.navigate('BackupGuides')}
+            />
           </View>
         </View>
 
