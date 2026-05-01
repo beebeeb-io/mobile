@@ -252,6 +252,54 @@ const FileRowItem = React.memo(function FileRowItem({
 });
 
 // ---------------------------------------------------------------------------
+// Sort
+// ---------------------------------------------------------------------------
+
+type SortOrder = 'date-desc' | 'date-asc' | 'name-asc' | 'name-desc' | 'size-desc' | 'size-asc';
+
+const SORT_LABELS: Record<SortOrder, string> = {
+  'date-desc': 'Newest first',
+  'date-asc': 'Oldest first',
+  'name-asc': 'Name (A → Z)',
+  'name-desc': 'Name (Z → A)',
+  'size-desc': 'Largest first',
+  'size-asc': 'Smallest first',
+};
+
+const SORT_ORDER: SortOrder[] = ['name-asc', 'name-desc', 'date-desc', 'date-asc', 'size-desc', 'size-asc'];
+
+function applySortOrder(
+  list: FileEntry[],
+  order: SortOrder,
+  decryptedNames: Record<string, string>,
+): FileEntry[] {
+  return [...list].sort((a, b) => {
+    // Folders always float to the top regardless of sort order
+    if (a.is_folder !== b.is_folder) return a.is_folder ? -1 : 1;
+    switch (order) {
+      case 'name-asc': {
+        const na = (decryptedNames[a.id] ?? a.name_encrypted ?? '').toLowerCase();
+        const nb = (decryptedNames[b.id] ?? b.name_encrypted ?? '').toLowerCase();
+        return na.localeCompare(nb);
+      }
+      case 'name-desc': {
+        const na = (decryptedNames[a.id] ?? a.name_encrypted ?? '').toLowerCase();
+        const nb = (decryptedNames[b.id] ?? b.name_encrypted ?? '').toLowerCase();
+        return nb.localeCompare(na);
+      }
+      case 'date-asc':
+        return new Date(a.updated_at).getTime() - new Date(b.updated_at).getTime();
+      case 'date-desc':
+        return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime();
+      case 'size-desc':
+        return (b.size_bytes ?? 0) - (a.size_bytes ?? 0);
+      case 'size-asc':
+        return (a.size_bytes ?? 0) - (b.size_bytes ?? 0);
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Screen
 // ---------------------------------------------------------------------------
 
@@ -278,6 +326,9 @@ export default function FilesScreen() {
   const [searchActive, setSearchActive] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const searchInputRef = useRef<TextInput>(null);
+
+  // Sort state
+  const [sortOrder, setSortOrder] = useState<SortOrder>('date-desc');
 
   // Crypto
   const { isUnlocked, decryptMetadata } = useCrypto();
@@ -321,11 +372,6 @@ export default function FilesScreen() {
 
     try {
       const result = await listFiles(parentId ?? undefined);
-      // Sort: folders first, then by updated_at descending
-      result.sort((a, b) => {
-        if (a.is_folder !== b.is_folder) return a.is_folder ? -1 : 1;
-        return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime();
-      });
       setFiles(result);
     } catch (err) {
       setError(friendlyError(err));
@@ -471,6 +517,30 @@ export default function FilesScreen() {
     }
   }, [currentFolder.id]);
 
+  const handleSortPress = useCallback(() => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    const options = [...SORT_ORDER.map((o) => SORT_LABELS[o]), 'Cancel'];
+    const cancelIndex = options.length - 1;
+    if (Platform.OS === 'ios') {
+      ActionSheetIOS.showActionSheetWithOptions(
+        { title: 'Sort by', options, cancelButtonIndex: cancelIndex },
+        (index) => {
+          const order = SORT_ORDER[index];
+          if (order) setSortOrder(order);
+        },
+      );
+    } else {
+      Alert.alert(
+        'Sort by',
+        undefined,
+        [
+          ...SORT_ORDER.map((o) => ({ text: SORT_LABELS[o], onPress: () => setSortOrder(o) })),
+          { text: 'Cancel', style: 'cancel' as const },
+        ],
+      );
+    }
+  }, []);
+
   const handleSearchToggle = useCallback(() => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
@@ -542,15 +612,18 @@ export default function FilesScreen() {
     }
   }, [navigation, openFile, decryptedNames]);
 
-  // Filtered file list for search
+  // Filtered + sorted file list
   const displayedFiles = useMemo(() => {
-    if (!searchQuery.trim()) return files;
-    const q = searchQuery.toLowerCase();
-    return files.filter((f) => {
-      const name = decryptedNames[f.id] ?? displayName(f);
-      return name.toLowerCase().includes(q);
-    });
-  }, [files, searchQuery, decryptedNames]);
+    let result = files;
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase();
+      result = result.filter((f) => {
+        const name = decryptedNames[f.id] ?? displayName(f);
+        return name.toLowerCase().includes(q);
+      });
+    }
+    return applySortOrder(result, sortOrder, decryptedNames);
+  }, [files, searchQuery, decryptedNames, sortOrder]);
 
   // ------------------------------------------------------------------
   // Render helpers
@@ -684,6 +757,19 @@ export default function FilesScreen() {
         )}
         <Text style={[styles.title, { color: c.ink }]}>{currentFolder.name}</Text>
         <View style={{ flex: 1 }} />
+        {!searchActive && (
+          <TouchableOpacity
+            onPress={handleSortPress}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            style={styles.searchButton}
+          >
+            <Ionicons
+              name="swap-vertical"
+              size={20}
+              color={sortOrder !== 'date-desc' ? c.amberDeep : c.ink2}
+            />
+          </TouchableOpacity>
+        )}
         <TouchableOpacity
           onPress={handleSearchToggle}
           hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
