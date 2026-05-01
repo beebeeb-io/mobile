@@ -20,6 +20,8 @@ import * as Sharing from 'expo-sharing';
 import * as Haptics from 'expo-haptics';
 import { WebView } from 'react-native-webview';
 import { useVideoPlayer, VideoView } from 'expo-video';
+import { Ionicons } from '@expo/vector-icons';
+import JSZip from 'jszip';
 import type { RootStackParamList } from '../App';
 import { colors, radii, shadows } from '../theme';
 import type { Colors } from '../theme';
@@ -101,6 +103,7 @@ type Category =
   | 'docx'
   | 'spreadsheet'
   | 'html'
+  | 'zip'
   | 'doc'
   | 'file';
 
@@ -118,6 +121,16 @@ function fileCategory(mimeType?: string, fileName?: string): Category {
   // HTML before generic text — needs WebView (with source-toggle), not the
   // monospace text viewer.
   if (mime === 'text/html' || ext === 'html' || ext === 'htm') return 'html';
+
+  // ZIP archives — list contents with JSZip (no extraction yet)
+  if (
+    mime === 'application/zip' ||
+    mime === 'application/x-zip-compressed' ||
+    mime === 'application/x-zip' ||
+    ext === 'zip'
+  ) {
+    return 'zip';
+  }
 
   // DOCX (modern Word) — handled by mammoth. Legacy .doc is not supported.
   if (
@@ -155,6 +168,7 @@ const CATEGORY_LABELS: Record<Category, string> = {
   docx: 'Word Document',
   spreadsheet: 'Spreadsheet',
   html: 'Web Page',
+  zip: 'ZIP Archive',
   doc: 'Document',
   file: 'File',
 };
@@ -168,6 +182,7 @@ const CATEGORY_BADGE: Record<Category, string> = {
   docx: 'DOCX',
   spreadsheet: 'XLS',
   html: 'HTML',
+  zip: 'ZIP',
   doc: 'DOC',
   file: 'FILE',
 };
@@ -385,6 +400,313 @@ function parseSpreadsheet(arrayBuffer: ArrayBuffer): SpreadsheetData {
 }
 
 // ---------------------------------------------------------------------------
+// ZIP helpers
+// ---------------------------------------------------------------------------
+
+interface ZipEntry {
+  /** Path inside the archive (e.g. "src/foo.ts") */
+  path: string;
+  /** Display name (last segment of path) */
+  name: string;
+  /** True for directories (JSZip flags these explicitly) */
+  isFolder: boolean;
+  /** Uncompressed size in bytes (best-effort — JSZip exposes this on `_data`) */
+  uncompressedSize: number;
+  /** Modified date if present in the archive */
+  modifiedAt: Date | null;
+  /** Lowercase extension, used for icon mapping */
+  ext: string;
+}
+
+interface ZipSummary {
+  entries: ZipEntry[];
+  fileCount: number;
+  folderCount: number;
+  totalUncompressed: number;
+}
+
+/**
+ * Read a ZIP archive into a flat list of entries plus summary stats.
+ * Sorted: folders first (alphabetical), then files (alphabetical) — easiest
+ * for users to scan a tree at a glance.
+ */
+async function parseZip(arrayBuffer: ArrayBuffer): Promise<ZipSummary> {
+  const zip = await JSZip.loadAsync(arrayBuffer);
+  const entries: ZipEntry[] = [];
+  let fileCount = 0;
+  let folderCount = 0;
+  let totalUncompressed = 0;
+
+  Object.keys(zip.files).forEach((path) => {
+    const f = zip.files[path];
+    // Strip trailing slash for directory display
+    const cleanPath = f.dir ? path.replace(/\/$/, '') : path;
+    const segments = cleanPath.split('/');
+    const name = segments[segments.length - 1] || cleanPath;
+    const ext = f.dir ? '' : (name.toLowerCase().split('.').pop() ?? '');
+
+    // JSZip exposes uncompressed size on `_data.uncompressedSize` for files
+    // we haven't decompressed yet. Fall back to 0 if missing.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const internalData = (f as any)._data as
+      | { uncompressedSize?: number }
+      | undefined;
+    const uncompressedSize = f.dir ? 0 : internalData?.uncompressedSize ?? 0;
+
+    if (f.dir) {
+      folderCount += 1;
+    } else {
+      fileCount += 1;
+      totalUncompressed += uncompressedSize;
+    }
+
+    entries.push({
+      path: cleanPath,
+      name,
+      isFolder: !!f.dir,
+      uncompressedSize,
+      modifiedAt: f.date ?? null,
+      ext,
+    });
+  });
+
+  // Folders first, then alphabetical within each group
+  entries.sort((a, b) => {
+    if (a.isFolder !== b.isFolder) return a.isFolder ? -1 : 1;
+    return a.path.localeCompare(b.path);
+  });
+
+  return { entries, fileCount, folderCount, totalUncompressed };
+}
+
+type IoniconName = React.ComponentProps<typeof Ionicons>['name'];
+
+/** Map a file extension to a sensible Ionicons name. Mirrors FilesScreen. */
+function zipEntryIcon(entry: ZipEntry): IoniconName {
+  if (entry.isFolder) return 'folder';
+  const ext = entry.ext;
+  if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'heic', 'svg', 'bmp', 'tiff'].includes(ext)) {
+    return 'image';
+  }
+  if (ext === 'pdf') return 'document-text';
+  if (['mp3', 'wav', 'ogg', 'flac', 'm4a', 'aac'].includes(ext)) return 'musical-notes';
+  if (['mp4', 'mov', 'webm', 'mkv', 'avi'].includes(ext)) return 'videocam';
+  if (['doc', 'docx', 'odt', 'rtf'].includes(ext)) return 'document';
+  if (['xls', 'xlsx', 'csv', 'ods', 'tsv'].includes(ext)) return 'grid';
+  if (['zip', 'tar', 'gz', 'bz2', '7z', 'rar'].includes(ext)) return 'file-tray-stacked';
+  if (
+    [
+      'js', 'jsx', 'ts', 'tsx', 'py', 'rs', 'go', 'java', 'kt', 'swift',
+      'c', 'cpp', 'h', 'hpp', 'cs', 'rb', 'php', 'sh', 'bash', 'json',
+      'xml', 'html', 'htm', 'css', 'scss', 'yaml', 'yml', 'toml', 'md',
+    ].includes(ext)
+  ) {
+    return 'code-slash';
+  }
+  return 'document-outline';
+}
+
+// ---------------------------------------------------------------------------
+// Code highlighting helpers
+// ---------------------------------------------------------------------------
+
+// Atom One Dark theme — matches our dark preview chrome and is the same
+// scheme VS Code's "One Dark Pro" / Atom's default editor uses. Inlined so
+// the WebView can render without external network requests.
+const ATOM_ONE_DARK_CSS = 'pre code.hljs{display:block;overflow-x:auto;padding:1em}code.hljs{padding:3px 5px}.hljs{color:#abb2bf;background:#282c34}.hljs-comment,.hljs-quote{color:#5c6370;font-style:italic}.hljs-doctag,.hljs-formula,.hljs-keyword{color:#c678dd}.hljs-deletion,.hljs-name,.hljs-section,.hljs-selector-tag,.hljs-subst{color:#e06c75}.hljs-literal{color:#56b6c2}.hljs-addition,.hljs-attribute,.hljs-meta .hljs-string,.hljs-regexp,.hljs-string{color:#98c379}.hljs-attr,.hljs-number,.hljs-selector-attr,.hljs-selector-class,.hljs-selector-pseudo,.hljs-template-variable,.hljs-type,.hljs-variable{color:#d19a66}.hljs-bullet,.hljs-link,.hljs-meta,.hljs-selector-id,.hljs-symbol,.hljs-title{color:#61aeee}.hljs-built_in,.hljs-class .hljs-title,.hljs-title.class_{color:#e6c07b}.hljs-emphasis{font-style:italic}.hljs-strong{font-weight:700}.hljs-link{text-decoration:underline}';
+
+const EXT_TO_HLJS: Record<string, string> = {
+  js: 'javascript', mjs: 'javascript', cjs: 'javascript', jsx: 'javascript',
+  ts: 'typescript', tsx: 'typescript',
+  py: 'python', pyw: 'python',
+  rs: 'rust',
+  go: 'go',
+  swift: 'swift',
+  java: 'java', kt: 'java',
+  html: 'xml', htm: 'xml', xhtml: 'xml', xml: 'xml',
+  css: 'css', scss: 'css', less: 'css',
+  json: 'json',
+  md: 'markdown', markdown: 'markdown',
+  yaml: 'yaml', yml: 'yaml',
+  sh: 'bash', bash: 'bash', zsh: 'bash',
+  sql: 'sql',
+};
+
+const MIME_TO_HLJS: Record<string, string> = {
+  'text/javascript': 'javascript',
+  'application/javascript': 'javascript',
+  'text/typescript': 'typescript',
+  'application/typescript': 'typescript',
+  'text/x-typescript': 'typescript',
+  'text/x-python': 'python',
+  'application/x-python-code': 'python',
+  'text/x-rust': 'rust',
+  'text/x-go': 'go',
+  'text/x-swift': 'swift',
+  'text/x-java': 'java',
+  'text/x-java-source': 'java',
+  'text/html': 'xml',
+  'text/css': 'css',
+  'application/json': 'json',
+  'text/markdown': 'markdown',
+  'text/x-markdown': 'markdown',
+  'text/yaml': 'yaml',
+  'application/yaml': 'yaml',
+  'application/x-yaml': 'yaml',
+  'application/x-sh': 'bash',
+  'text/x-sh': 'bash',
+  'application/sql': 'sql',
+  'text/x-sql': 'sql',
+  'text/xml': 'xml',
+  'application/xml': 'xml',
+};
+
+const LANGUAGE_LABELS: Record<string, string> = {
+  javascript: 'JavaScript',
+  typescript: 'TypeScript',
+  python: 'Python',
+  rust: 'Rust',
+  go: 'Go',
+  swift: 'Swift',
+  java: 'Java',
+  xml: 'XML',
+  css: 'CSS',
+  json: 'JSON',
+  markdown: 'Markdown',
+  yaml: 'YAML',
+  bash: 'Bash',
+  sql: 'SQL',
+  plaintext: 'Plain text',
+};
+
+function detectCodeLanguage(mimeType?: string, fileName?: string): string {
+  const ext = (fileName ?? '').toLowerCase().split('.').pop() ?? '';
+  if (ext && EXT_TO_HLJS[ext]) return EXT_TO_HLJS[ext];
+  const mime = (mimeType ?? '').toLowerCase();
+  if (MIME_TO_HLJS[mime]) return MIME_TO_HLJS[mime];
+  return 'plaintext';
+}
+
+/** Display label for the language badge — shows "HTML" for .html/.htm, "XML" otherwise. */
+function languageDisplayLabel(hljsId: string, fileName?: string): string {
+  if (hljsId === 'xml') {
+    const ext = (fileName ?? '').toLowerCase().split('.').pop() ?? '';
+    if (ext === 'html' || ext === 'htm' || ext === 'xhtml') return 'HTML';
+    return 'XML';
+  }
+  return LANGUAGE_LABELS[hljsId] ?? hljsId.toUpperCase();
+}
+
+function escapeHtmlText(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+/**
+ * Wrap each line of `highlight.js` output in a `<div class="line">` so the
+ * WebView can show line numbers via flexbox. Tokens that span multiple lines
+ * (multi-line strings, JSDoc, etc.) emit `<span>` tags that cross `\n`; we
+ * close them at the end of each line and reopen them on the next so the
+ * per-line wrapper produces well-formed HTML.
+ */
+function wrapHighlightedLines(highlighted: string, totalDigits: number): string {
+  const open: string[] = [];
+  let buf = '';
+  const lines: string[] = [];
+  let i = 0;
+  while (i < highlighted.length) {
+    const ch = highlighted[i];
+    if (ch === '<') {
+      const end = highlighted.indexOf('>', i);
+      if (end === -1) {
+        buf += highlighted.slice(i);
+        break;
+      }
+      const tag = highlighted.slice(i, end + 1);
+      buf += tag;
+      if (tag.startsWith('</')) {
+        if (open.length > 0) open.pop();
+      } else if (!tag.endsWith('/>')) {
+        open.push(tag);
+      }
+      i = end + 1;
+    } else if (ch === '\n') {
+      const closing = open.map(() => '</span>').join('');
+      lines.push(buf + closing);
+      buf = open.join('');
+      i++;
+    } else {
+      buf += ch;
+      i++;
+    }
+  }
+  lines.push(buf);
+
+  return lines
+    .map((line, idx) => {
+      const lineNum = String(idx + 1).padStart(totalDigits, ' ');
+      const content = line.length === 0 ? ' ' : line;
+      return `<div class="line"><span class="lineno">${lineNum}</span><span class="lc">${content}</span></div>`;
+    })
+    .join('');
+}
+
+function buildCodeHtml(code: string, language: string): string {
+  let highlighted: string;
+  try {
+    if (language !== 'plaintext' && hljs.getLanguage(language)) {
+      highlighted = hljs.highlight(code, { language, ignoreIllegals: true }).value;
+    } else {
+      highlighted = escapeHtmlText(code);
+    }
+  } catch {
+    highlighted = escapeHtmlText(code);
+  }
+
+  const lineCount = code.split('\n').length;
+  const totalDigits = Math.max(2, String(lineCount).length);
+  const wrapped = wrapHighlightedLines(highlighted, totalDigits);
+
+  return `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=4" />
+  <style>
+    ${ATOM_ONE_DARK_CSS}
+    html, body { margin: 0; padding: 0; background: #282c34; color: #abb2bf; }
+    body {
+      font-family: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+      font-size: 12px;
+      line-height: 1.6;
+      -webkit-text-size-adjust: 100%;
+    }
+    .code { padding: 12px 0 32px; }
+    .line { display: flex; align-items: flex-start; padding: 0 16px; min-height: 19.2px; }
+    .lineno {
+      color: #4b5263;
+      min-width: ${totalDigits + 1}ch;
+      text-align: right;
+      padding-right: 16px;
+      user-select: none;
+      flex-shrink: 0;
+    }
+    .lc {
+      white-space: pre;
+      flex: 1 1 auto;
+    }
+    ::selection { background: rgba(82, 139, 255, 0.35); }
+  </style>
+</head>
+<body>
+  <div class="code hljs">${wrapped}</div>
+</body>
+</html>`;
+}
+
+// ---------------------------------------------------------------------------
 // Screen
 // ---------------------------------------------------------------------------
 
@@ -441,6 +763,11 @@ export default function PreviewScreen() {
   const [htmlError, setHtmlError] = useState<string | null>(null);
   const [htmlShowSource, setHtmlShowSource] = useState(false);
 
+  // ZIP archive listing state
+  const [zipSummary, setZipSummary] = useState<ZipSummary | null>(null);
+  const [zipLoading, setZipLoading] = useState(false);
+  const [zipError, setZipError] = useState<string | null>(null);
+
   const { isUnlocked, decryptChunk } = useCrypto();
 
   const category = fileCategory(mimeType, fileName);
@@ -451,15 +778,32 @@ export default function PreviewScreen() {
   const isDocx = category === 'docx';
   const isSpreadsheet = category === 'spreadsheet';
   const isHtml = category === 'html';
+  const isZip = category === 'zip';
   const isText =
     !isDocx &&
     !isSpreadsheet &&
     !isSvg &&
     !isHtml &&
+    !isZip &&
     !!mimeType &&
     (mimeType.startsWith('text/') ||
       mimeType === 'application/json' ||
       mimeType === 'application/xml');
+
+  // Code highlighting — language id + display label come from the filename
+  // and mime; the highlighted HTML is rebuilt only when the loaded text changes.
+  const codeLanguage = useMemo(
+    () => detectCodeLanguage(mimeType, fileName),
+    [mimeType, fileName],
+  );
+  const codeLanguageLabel = useMemo(
+    () => languageDisplayLabel(codeLanguage, fileName),
+    [codeLanguage, fileName],
+  );
+  const codeHtml = useMemo(() => {
+    if (!isText || textContent == null) return null;
+    return buildCodeHtml(textContent, codeLanguage);
+  }, [isText, textContent, codeLanguage]);
 
   // Theme-aware accent for non-image category badge
   const categoryAccent = (() => {
@@ -473,6 +817,7 @@ export default function PreviewScreen() {
       case 'doc': return c.ink2;
       case 'spreadsheet': return c.green;
       case 'html': return c.amber;
+      case 'zip': return c.amberDeep;
       default: return c.ink3;
     }
   })();
@@ -799,6 +1144,38 @@ export default function PreviewScreen() {
     return buildSvgHtml(svgContent);
   }, [svgContent]);
 
+  // Auto-load ZIP archives — read as bytes, parse contents with JSZip, render as a list
+  useEffect(() => {
+    if (!isZip) return;
+    if (Platform.OS === 'web') return;
+    let cancelled = false;
+    setZipLoading(true);
+    setZipError(null);
+    setZipSummary(null);
+
+    (async () => {
+      try {
+        const uri = await fetchAndDecrypt();
+        if (cancelled) return;
+        const arrayBuffer = await readFileAsArrayBuffer(uri);
+        if (cancelled) return;
+        const summary = await parseZip(arrayBuffer);
+        if (!cancelled) setZipSummary(summary);
+      } catch (err) {
+        if (!cancelled) setZipError(friendlyError(err));
+      } finally {
+        if (!cancelled) {
+          setZipLoading(false);
+          setDownloadProgress(0);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isZip, fetchAndDecrypt]);
+
   const handleDownload = useCallback(async () => {
     if (Platform.OS === 'web') {
       Alert.alert('Not available', 'File download is only available on iOS and Android.');
@@ -857,10 +1234,17 @@ export default function PreviewScreen() {
           <Text style={styles.headerTitle} numberOfLines={1}>
             {fileName}
           </Text>
-          <Text style={styles.headerSub}>
-            {CATEGORY_LABELS[category] ?? 'File'}
-            {sizeBytes != null ? `  ·  ${formatSize(sizeBytes)}` : ''}
-          </Text>
+          <View style={styles.headerSubRow}>
+            <Text style={styles.headerSub}>
+              {CATEGORY_LABELS[category] ?? 'File'}
+              {sizeBytes != null ? `  ·  ${formatSize(sizeBytes)}` : ''}
+            </Text>
+            {isText && codeLanguage !== 'plaintext' && (
+              <View style={styles.langBadge}>
+                <Text style={styles.langBadgeText}>{codeLanguageLabel}</Text>
+              </View>
+            )}
+          </View>
         </View>
 
         <TouchableOpacity
@@ -986,26 +1370,14 @@ export default function PreviewScreen() {
             </View>
           )
         ) : isText ? (
-          textContent != null ? (
-            <ScrollView
-              style={[styles.codeScroll, { backgroundColor: colors.darkBg }]}
-              contentContainerStyle={styles.codeScrollContent}
-            >
-              <ScrollView horizontal contentContainerStyle={styles.codeHorizontal}>
-                <View style={styles.codeBlock}>
-                  {textContent.split('\n').map((line, i) => (
-                    <View key={i} style={styles.codeLine}>
-                      <Text style={[styles.codeLineNumber, { color: c.ink3 }]} selectable={false}>
-                        {String(i + 1).padStart(4, ' ')}
-                      </Text>
-                      <Text style={[styles.codeLineText, { color: c.ink }]} selectable>
-                        {line.length === 0 ? ' ' : line}
-                      </Text>
-                    </View>
-                  ))}
-                </View>
-              </ScrollView>
-            </ScrollView>
+          codeHtml ? (
+            <WebView
+              source={{ html: codeHtml }}
+              style={[styles.codeWebView, { backgroundColor: '#282c34' }]}
+              originWhitelist={['*']}
+              showsHorizontalScrollIndicator
+              showsVerticalScrollIndicator
+            />
           ) : textError ? (
             <View style={styles.imageStatus}>
               <Text style={[styles.imageStatusTitle, { color: colors.white }]}>
@@ -1461,6 +1833,32 @@ const styles = StyleSheet.create({
     color: 'rgba(255,255,255,0.5)',
     marginTop: 2,
   },
+  headerSubRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 2,
+  },
+  langBadge: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+    backgroundColor: 'rgba(245, 184, 0, 0.18)',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(245, 184, 0, 0.5)',
+  },
+  langBadgeText: {
+    fontSize: 9,
+    fontWeight: '700',
+    letterSpacing: 0.6,
+    color: '#F5B800',
+    textTransform: 'uppercase',
+    fontFamily: Platform.select({
+      ios: 'Menlo',
+      android: 'monospace',
+      default: 'monospace',
+    }),
+  },
   headerAction: {
     paddingHorizontal: 12,
     paddingVertical: 6,
@@ -1509,6 +1907,7 @@ const styles = StyleSheet.create({
   htmlWebView: { flex: 1, width: '100%' },
 
   // ---- Code / text viewer ----
+  codeWebView: { flex: 1, width: '100%', borderRadius: radii.md, overflow: 'hidden' },
   codeScroll: { flex: 1, width: '100%', borderRadius: radii.md },
   codeScrollContent: { flexGrow: 1 },
   codeHorizontal: { flexGrow: 1, paddingVertical: 12 },
