@@ -12,7 +12,8 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
-import { colors, radii, spacing } from '../theme';
+import { radii, spacing } from '../theme';
+import { useTheme } from '../lib/theme-context';
 import { listFiles, friendlyError } from '../lib/api';
 import type { FileEntry } from '../lib/api';
 import { useBackup } from '../lib/backup-context';

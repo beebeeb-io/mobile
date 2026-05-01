@@ -1,15 +1,13 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
-  Appearance,
   Linking,
   ScrollView,
   StyleSheet,
   Switch,
   Text,
   TouchableOpacity,
-  useColorScheme,
   View,
 } from 'react-native';
 import * as LocalAuthentication from 'expo-local-authentication';
@@ -17,9 +15,10 @@ import * as SecureStore from 'expo-secure-store';
 import Constants from 'expo-constants';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { colors, darkColors, spacing, type Colors } from '../theme';
+import { spacing, type Colors } from '../theme';
 import { useAuth } from '../lib/auth';
 import { useBackup } from '../lib/backup-context';
+import { useTheme, type ThemeMode } from '../lib/theme-context';
 import {
   getStorageUsage,
   getPreference,
@@ -33,9 +32,7 @@ import {
 import type { RootStackParamList } from '../App';
 
 const BIOMETRIC_PREF_KEY = 'beebeeb_biometric_lock';
-const THEME_PREF_KEY = 'beebeeb_theme_pref';
 
-type ThemePreference = 'light' | 'dark' | 'system';
 type RegionMode = 'preference' | 'force';
 type C = Colors;
 
@@ -255,12 +252,8 @@ export default function SettingsScreen() {
   const [storageRegionMode, setStorageRegionMode] = useState<RegionMode>('preference');
   const [savingRegion, setSavingRegion] = useState(false);
 
-  // Theme
-  const systemScheme = useColorScheme();
-  const [themePreference, setThemePreference] = useState<ThemePreference>('system');
-  const effectiveScheme = themePreference === 'system' ? (systemScheme ?? 'light') : themePreference;
-  const isDark = effectiveScheme === 'dark';
-  const c: C = useMemo(() => (isDark ? darkColors : colors), [isDark]);
+  // Theme — sourced from global ThemeContext
+  const { colors: c, mode: themePreference, setMode: handleThemeChange } = useTheme();
 
   // ---------------------------------------------------------------------------
   // Data loading
@@ -314,23 +307,12 @@ export default function SettingsScreen() {
     }
   }, []);
 
-  const loadThemePreference = useCallback(async () => {
-    const stored = await SecureStore.getItemAsync(THEME_PREF_KEY);
-    if (stored === 'light' || stored === 'dark' || stored === 'system') {
-      setThemePreference(stored);
-      if (Appearance.setColorScheme) {
-        Appearance.setColorScheme(stored === 'system' ? null : stored);
-      }
-    }
-  }, []);
-
   useEffect(() => {
     fetchUsage();
     loadBiometricPrefs();
     loadAccountData();
     loadStorageRegionPref();
-    loadThemePreference();
-  }, [fetchUsage, loadBiometricPrefs, loadAccountData, loadStorageRegionPref, loadThemePreference]);
+  }, [fetchUsage, loadBiometricPrefs, loadAccountData, loadStorageRegionPref]);
 
   // ---------------------------------------------------------------------------
   // Handlers
@@ -403,14 +385,6 @@ export default function SettingsScreen() {
       // Best-effort
     }
   }, [storageRegion]);
-
-  const handleThemeChange = useCallback(async (pref: ThemePreference) => {
-    setThemePreference(pref);
-    if (Appearance.setColorScheme) {
-      Appearance.setColorScheme(pref === 'system' ? null : pref);
-    }
-    await SecureStore.setItemAsync(THEME_PREF_KEY, pref);
-  }, []);
 
   const handleManageBilling = useCallback(() => {
     Linking.openURL('https://beebeeb.io/account/billing');
@@ -690,7 +664,7 @@ export default function SettingsScreen() {
           <SectionHeader title="Appearance" c={c} />
           <View style={[layout.card, { backgroundColor: c.paper, borderColor: c.line }]}>
             <View style={layout.themeOptions}>
-              {(['light', 'dark', 'system'] as ThemePreference[]).map((pref) => {
+              {(['light', 'dark', 'system'] as ThemeMode[]).map((pref) => {
                 const selected = themePreference === pref;
                 const label = pref === 'light' ? 'Light' : pref === 'dark' ? 'Dark' : 'System';
                 return (

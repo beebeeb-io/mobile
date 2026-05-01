@@ -10,7 +10,8 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
-import { colors, radii, spacing } from '../theme';
+import { radii, spacing } from '../theme';
+import { useTheme } from '../lib/theme-context';
 import { getIncomingInvites, getSentInvites, friendlyError } from '../lib/api';
 import type { ShareInvite } from '../lib/api';
 
@@ -62,32 +63,31 @@ function fileTypeLabel(invite: ShareInvite): string {
   return 'FILE';
 }
 
-function fileTypeColor(invite: ShareInvite): string {
-  if (invite.is_folder || invite.is_folder_share) return colors.amberDeep;
-  const mime = invite.mime_type ?? '';
-  if (mime.startsWith('image/')) return colors.amber;
-  if (mime === 'application/pdf') return colors.red;
-  if (mime.startsWith('audio/')) return colors.green;
-  return colors.ink3;
-}
-
 // ---------------------------------------------------------------------------
 // Status badge
 // ---------------------------------------------------------------------------
 
 const STATUS_STYLES: Record<string, { bg: string; text: string; label: string }> = {
-  pending: { bg: colors.amberBg, text: colors.amberDeep, label: 'Pending' },
   claimed: { bg: '#e8f4fd', text: '#1a73e8', label: 'Claimed' },
   approved: { bg: '#e6f7e6', text: '#2d7d2d', label: 'Approved' },
-  denied: { bg: '#fde8e8', text: colors.red, label: 'Denied' },
-  expired: { bg: colors.paper2, text: colors.ink3, label: 'Expired' },
+  denied: { bg: '#fde8e8', text: '#d84040', label: 'Denied' },
 };
 
 function StatusBadge({ status }: { status: string }) {
-  const s = STATUS_STYLES[status] ?? STATUS_STYLES.pending;
+  const { colors: c } = useTheme();
+  const bg = status === 'pending' ? c.amberBg : (STATUS_STYLES[status]?.bg ?? c.amberBg);
+  const text = status === 'pending' ? c.amberDeep : (STATUS_STYLES[status]?.text ?? c.amberDeep);
+  const label = status === 'pending' ? 'Pending' : (STATUS_STYLES[status]?.label ?? status);
+  if (status === 'expired') {
+    return (
+      <View style={[styles.badge, { backgroundColor: c.paper2 }]}>
+        <Text style={[styles.badgeText, { color: c.ink3 }]}>Expired</Text>
+      </View>
+    );
+  }
   return (
-    <View style={[styles.badge, { backgroundColor: s.bg }]}>
-      <Text style={[styles.badgeText, { color: s.text }]}>{s.label}</Text>
+    <View style={[styles.badge, { backgroundColor: bg }]}>
+      <Text style={[styles.badgeText, { color: text }]}>{label}</Text>
     </View>
   );
 }
@@ -103,6 +103,7 @@ type Tab = 'incoming' | 'sent';
 // ---------------------------------------------------------------------------
 
 export default function SharedScreen() {
+  const { colors: c } = useTheme();
   const [activeTab, setActiveTab] = useState<Tab>('incoming');
 
   // Incoming invites
@@ -165,14 +166,23 @@ export default function SharedScreen() {
   // Render helpers
   // ------------------------------------------------------------------
 
+  const fileTypeColor = (invite: ShareInvite): string => {
+    if (invite.is_folder || invite.is_folder_share) return c.amberDeep;
+    const mime = invite.mime_type ?? '';
+    if (mime.startsWith('image/')) return c.amber;
+    if (mime === 'application/pdf') return c.red;
+    if (mime.startsWith('audio/')) return c.green;
+    return c.ink3;
+  };
+
   const renderIncomingItem = ({ item }: { item: ShareInvite }) => (
-    <View style={styles.row}>
+    <View style={[styles.row, { borderBottomColor: c.line }]}>
       <View style={[styles.fileIcon, { backgroundColor: fileTypeColor(item) }]}>
         <Text style={styles.fileIconText}>{fileTypeLabel(item)}</Text>
       </View>
       <View style={styles.rowInfo}>
-        <Text style={styles.rowName} numberOfLines={1}>{displayName(item)}</Text>
-        <Text style={styles.rowMeta} numberOfLines={1}>
+        <Text style={[styles.rowName, { color: c.ink }]} numberOfLines={1}>{displayName(item)}</Text>
+        <Text style={[styles.rowMeta, { color: c.ink3 }]} numberOfLines={1}>
           From {item.sender_email ?? 'unknown'}  ·  {formatDate(item.created_at)}
         </Text>
       </View>
@@ -180,13 +190,13 @@ export default function SharedScreen() {
   );
 
   const renderSentItem = ({ item }: { item: ShareInvite }) => (
-    <View style={styles.row}>
+    <View style={[styles.row, { borderBottomColor: c.line }]}>
       <View style={[styles.fileIcon, { backgroundColor: fileTypeColor(item) }]}>
         <Text style={styles.fileIconText}>{fileTypeLabel(item)}</Text>
       </View>
       <View style={styles.rowInfo}>
-        <Text style={styles.rowName} numberOfLines={1}>{displayName(item)}</Text>
-        <Text style={styles.rowMeta} numberOfLines={1}>
+        <Text style={[styles.rowName, { color: c.ink }]} numberOfLines={1}>{displayName(item)}</Text>
+        <Text style={[styles.rowMeta, { color: c.ink3 }]} numberOfLines={1}>
           To {item.recipient_email}  ·  {formatDate(item.created_at)}
         </Text>
       </View>
@@ -200,10 +210,10 @@ export default function SharedScreen() {
   ) => () => (
     <View style={styles.emptyContainer}>
       <View style={styles.emptyIconWrap}>
-        <Ionicons name={icon} size={44} color={colors.amberDeep} />
+        <Ionicons name={icon} size={44} color={c.amberDeep} />
       </View>
-      <Text style={styles.emptyTitle}>{message}</Text>
-      <Text style={styles.emptyBody}>
+      <Text style={[styles.emptyTitle, { color: c.ink2 }]}>{message}</Text>
+      <Text style={[styles.emptyBody, { color: c.ink3 }]}>
         End-to-end encrypted — the server never sees your data.
       </Text>
     </View>
@@ -211,9 +221,9 @@ export default function SharedScreen() {
 
   const renderError = (error: string, onRetry: () => void) => (
     <View style={styles.errorContainer}>
-      <Text style={styles.errorText}>{error}</Text>
-      <TouchableOpacity style={styles.retryButton} onPress={onRetry}>
-        <Text style={styles.retryButtonText}>Retry</Text>
+      <Text style={[styles.errorText, { color: c.red }]}>{error}</Text>
+      <TouchableOpacity style={[styles.retryButton, { backgroundColor: c.amber }]} onPress={onRetry}>
+        <Text style={[styles.retryButtonText, { color: c.ink }]}>Retry</Text>
       </TouchableOpacity>
     </View>
   );
@@ -241,27 +251,27 @@ export default function SharedScreen() {
   // ------------------------------------------------------------------
 
   return (
-    <View style={styles.root}>
+    <View style={[styles.root, { backgroundColor: c.paper }]}>
       {/* Header */}
-      <Text style={styles.title}>Shared</Text>
+      <Text style={[styles.title, { color: c.ink }]}>Shared</Text>
 
       {/* Tabs */}
       <View style={styles.tabBar}>
         <TouchableOpacity
-          style={[styles.tab, isIncoming && styles.tabActive]}
+          style={[styles.tab, isIncoming && [styles.tabActive, { borderBottomColor: c.amber }]]}
           onPress={() => setActiveTab('incoming')}
           activeOpacity={0.7}
         >
-          <Text style={[styles.tabText, isIncoming && styles.tabTextActive]}>
+          <Text style={[styles.tabText, { color: c.ink3 }, isIncoming && [styles.tabTextActive, { color: c.ink }]]}>
             Shared with me
           </Text>
         </TouchableOpacity>
         <TouchableOpacity
-          style={[styles.tab, !isIncoming && styles.tabActive]}
+          style={[styles.tab, !isIncoming && [styles.tabActive, { borderBottomColor: c.amber }]]}
           onPress={() => setActiveTab('sent')}
           activeOpacity={0.7}
         >
-          <Text style={[styles.tabText, !isIncoming && styles.tabTextActive]}>
+          <Text style={[styles.tabText, { color: c.ink3 }, !isIncoming && [styles.tabTextActive, { color: c.ink }]]}>
             Shared by me
           </Text>
         </TouchableOpacity>
@@ -272,7 +282,7 @@ export default function SharedScreen() {
         renderError(error, onRetry)
       ) : loading && !refreshing ? (
         <View style={styles.loadingContainer}>
-          <ActivityIndicator color={colors.amber} size="large" />
+          <ActivityIndicator color={c.amber} size="large" />
         </View>
       ) : (
         <FlatList
@@ -284,8 +294,8 @@ export default function SharedScreen() {
             <RefreshControl
               refreshing={refreshing}
               onRefresh={onRefresh}
-              tintColor={colors.amber}
-              colors={[colors.amber]}
+              tintColor={c.amber}
+              colors={[c.amber]}
             />
           }
           contentContainerStyle={data.length === 0 ? styles.emptyList : undefined}
@@ -300,152 +310,41 @@ export default function SharedScreen() {
 // ---------------------------------------------------------------------------
 
 const styles = StyleSheet.create({
-  root: {
-    flex: 1,
-    backgroundColor: colors.paper,
-  },
-  title: {
-    fontSize: 24,
-    fontWeight: '700',
-    color: colors.ink,
-    paddingHorizontal: spacing.lg,
-    paddingTop: 6,
-    paddingBottom: 4,
-  },
+  root: { flex: 1 },
+  title: { fontSize: 24, fontWeight: '700', paddingHorizontal: spacing.lg, paddingTop: 6, paddingBottom: 4 },
 
   // Tab bar
-  tabBar: {
-    flexDirection: 'row',
-    paddingHorizontal: spacing.lg,
-    paddingBottom: spacing.sm,
-    gap: 4,
-  },
-  tab: {
-    flex: 1,
-    paddingVertical: 10,
-    alignItems: 'center',
-    borderBottomWidth: 2,
-    borderBottomColor: 'transparent',
-  },
-  tabActive: {
-    borderBottomColor: colors.amber,
-  },
-  tabText: {
-    fontSize: 14,
-    fontWeight: '500',
-    color: colors.ink3,
-  },
-  tabTextActive: {
-    color: colors.ink,
-    fontWeight: '600',
-  },
+  tabBar: { flexDirection: 'row', paddingHorizontal: spacing.lg, paddingBottom: spacing.sm, gap: 4 },
+  tab: { flex: 1, paddingVertical: 10, alignItems: 'center', borderBottomWidth: 2, borderBottomColor: 'transparent' },
+  tabActive: { borderBottomColor: 'transparent' },
+  tabText: { fontSize: 14, fontWeight: '500' },
+  tabTextActive: { fontWeight: '600' },
 
   // List rows
-  row: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 12,
-    paddingHorizontal: spacing.lg,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.line,
-    gap: 12,
-  },
-  fileIcon: {
-    width: 32,
-    height: 32,
-    borderRadius: radii.sm,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  fileIconText: {
-    color: colors.paper,
-    fontSize: 8,
-    fontWeight: '700',
-    letterSpacing: 0.3,
-  },
-  rowInfo: {
-    flex: 1,
-    minWidth: 0,
-  },
-  rowName: {
-    fontSize: 14,
-    fontWeight: '500',
-    color: colors.ink,
-  },
-  rowMeta: {
-    fontSize: 11,
-    color: colors.ink3,
-    marginTop: 2,
-  },
+  row: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, paddingHorizontal: spacing.lg, borderBottomWidth: 1, gap: 12 },
+  fileIcon: { width: 32, height: 32, borderRadius: radii.sm, alignItems: 'center', justifyContent: 'center' },
+  fileIconText: { color: '#FFFFFF', fontSize: 8, fontWeight: '700', letterSpacing: 0.3 },
+  rowInfo: { flex: 1, minWidth: 0 },
+  rowName: { fontSize: 14, fontWeight: '500' },
+  rowMeta: { fontSize: 11, marginTop: 2 },
 
   // Status badge
-  badge: {
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: radii.sm,
-  },
-  badgeText: {
-    fontSize: 11,
-    fontWeight: '600',
-  },
+  badge: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: radii.sm },
+  badgeText: { fontSize: 11, fontWeight: '600' },
 
   // Loading
-  loadingContainer: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
+  loadingContainer: { flex: 1, alignItems: 'center', justifyContent: 'center' },
 
   // Empty
-  emptyList: {
-    flexGrow: 1,
-  },
-  emptyContainer: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 40,
-    gap: 8,
-  },
-  emptyIconWrap: {
-    marginBottom: 8,
-    opacity: 0.85,
-  },
-  emptyTitle: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: colors.ink2,
-  },
-  emptyBody: {
-    fontSize: 13,
-    color: colors.ink3,
-    textAlign: 'center',
-    lineHeight: 20,
-  },
+  emptyList: { flexGrow: 1 },
+  emptyContainer: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 40, gap: 8 },
+  emptyIconWrap: { marginBottom: 8, opacity: 0.85 },
+  emptyTitle: { fontSize: 16, fontWeight: '600' },
+  emptyBody: { fontSize: 13, textAlign: 'center', lineHeight: 20 },
 
   // Error
-  errorContainer: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: spacing.xl,
-    gap: 16,
-  },
-  errorText: {
-    fontSize: 14,
-    color: colors.red,
-    textAlign: 'center',
-    lineHeight: 20,
-  },
-  retryButton: {
-    paddingHorizontal: 20,
-    paddingVertical: 10,
-    borderRadius: radii.md,
-    backgroundColor: colors.amber,
-  },
-  retryButtonText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: colors.ink,
-  },
+  errorContainer: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: spacing.xl, gap: 16 },
+  errorText: { fontSize: 14, textAlign: 'center', lineHeight: 20 },
+  retryButton: { paddingHorizontal: 20, paddingVertical: 10, borderRadius: radii.md },
+  retryButtonText: { fontSize: 14, fontWeight: '600' },
 });
