@@ -1,4 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import type { RootStackParamList } from '../App';
 import {
   ActivityIndicator,
   Dimensions,
@@ -137,15 +139,39 @@ function FilterChips({
 // Photo cell
 // ---------------------------------------------------------------------------
 
-const PhotoCell = React.memo(function PhotoCell({ seed }: { seed: number }) {
-  return <View style={[styles.cell, { backgroundColor: swatch(seed) }]} />;
+const PhotoCell = React.memo(function PhotoCell({
+  seed,
+  onPress,
+  accessibilityLabel,
+}: {
+  seed: number;
+  onPress?: () => void;
+  accessibilityLabel: string;
+}) {
+  return (
+    <TouchableOpacity
+      activeOpacity={0.7}
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel}
+      style={[styles.cell, { backgroundColor: swatch(seed) }]}
+    />
+  );
 });
 
 // ---------------------------------------------------------------------------
 // Group section: header + grid
 // ---------------------------------------------------------------------------
 
-const GroupSection = React.memo(function GroupSection({ group, seedOffset }: { group: PhotoGroup; seedOffset: number }) {
+const GroupSection = React.memo(function GroupSection({
+  group,
+  seedOffset,
+  onOpenPhoto,
+}: {
+  group: PhotoGroup;
+  seedOffset: number;
+  onOpenPhoto: (entry: FileEntry) => void;
+}) {
   const { colors: c } = useTheme();
   return (
     <View style={styles.section}>
@@ -157,7 +183,12 @@ const GroupSection = React.memo(function GroupSection({ group, seedOffset }: { g
       </View>
       <View style={styles.grid}>
         {group.data.map((photo, i) => (
-          <PhotoCell key={photo.id} seed={seedOffset + i} />
+          <PhotoCell
+            key={photo.id}
+            seed={seedOffset + i}
+            accessibilityLabel={`Photo from ${group.label}`}
+            onPress={() => onOpenPhoto(photo)}
+          />
         ))}
       </View>
     </View>
@@ -300,12 +331,27 @@ function AutoBackupBanner() {
 export default function PhotosScreen() {
   const insets = useSafeAreaInsets();
   const { colors: c } = useTheme();
+  const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const [isScrolled, setIsScrolled] = useState(false);
   const [photos, setPhotos] = useState<FileEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<Filter>('Months');
+
+  const openPhoto = useCallback(
+    (entry: FileEntry) => {
+      Haptics.selectionAsync();
+      navigation.navigate('Preview', {
+        fileId: entry.id,
+        fileName: entry.name_encrypted ?? 'Photo',
+        mimeType: entry.mime_type ?? undefined,
+        sizeBytes: entry.size_bytes ?? undefined,
+        createdAt: entry.created_at,
+      });
+    },
+    [navigation],
+  );
 
   const fetchPhotos = useCallback(async (isRefresh = false) => {
     if (isRefresh) {
@@ -352,7 +398,11 @@ export default function PhotosScreen() {
   }, [groups]);
 
   const renderGroup = ({ item, index }: { item: PhotoGroup; index: number }) => (
-    <GroupSection group={item} seedOffset={groupOffsets[index] ?? 0} />
+    <GroupSection
+      group={item}
+      seedOffset={groupOffsets[index] ?? 0}
+      onOpenPhoto={openPhoto}
+    />
   );
 
   const renderEmpty = () => {
