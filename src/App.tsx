@@ -1,11 +1,20 @@
-import React from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import { StatusBar } from 'expo-status-bar';
+import { ActivityIndicator, View } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { Text } from 'react-native';
 import { colors } from './theme';
+import {
+  hasToken,
+  clearToken,
+  getMe,
+  logout,
+  registerSessionExpiredHandler,
+} from './lib/api';
+import type { User } from './lib/api';
 
 // Screens
 import FilesScreen from './screens/FilesScreen';
@@ -13,6 +22,30 @@ import SharedScreen from './screens/SharedScreen';
 import PhotosScreen from './screens/PhotosScreen';
 import SettingsScreen from './screens/SettingsScreen';
 import PreviewScreen from './screens/PreviewScreen';
+import LoginScreen from './screens/LoginScreen';
+import SignupScreen from './screens/SignupScreen';
+
+// ---------------------------------------------------------------------------
+// Auth context
+// ---------------------------------------------------------------------------
+
+interface AuthContextValue {
+  user: User | null;
+  /** Call after successful login/signup to refresh auth state. */
+  refreshAuth: () => Promise<void>;
+  /** Sign out — clears token and resets state. */
+  signOut: () => Promise<void>;
+}
+
+const AuthContext = createContext<AuthContextValue>({
+  user: null,
+  refreshAuth: async () => {},
+  signOut: async () => {},
+});
+
+export function useAuth(): AuthContextValue {
+  return useContext(AuthContext);
+}
 
 // ---------------------------------------------------------------------------
 // Navigation types
@@ -26,6 +59,10 @@ export type TabParamList = {
 };
 
 export type RootStackParamList = {
+  // Auth screens
+  Login: undefined;
+  Signup: undefined;
+  // Main app
   Tabs: undefined;
   Preview: { fileId: string; fileName: string };
 };
@@ -38,9 +75,9 @@ const Stack = createNativeStackNavigator<RootStackParamList>();
 // ---------------------------------------------------------------------------
 
 const TAB_ICONS: Record<string, string> = {
-  Files: '📁',
-  Shared: '👥',
-  Photos: '🖼️',
+  Files: '\u{1F4C1}',
+  Shared: '\u{1F465}',
+  Photos: '\u{1F5BC}️',
   Settings: '⚙️',
 };
 
@@ -71,7 +108,7 @@ function TabNavigator() {
         },
         tabBarLabelStyle: {
           fontSize: 9.5,
-          fontWeight: '500',
+          fontWeight: '500' as const,
         },
       })}
     >
@@ -84,23 +121,119 @@ function TabNavigator() {
 }
 
 // ---------------------------------------------------------------------------
-// Root Stack (tabs + modal screens)
+// Root App
 // ---------------------------------------------------------------------------
 
 export default function App() {
+  const [user, setUser] = useState<User | null>(null);
+  const [checking, setChecking] = useState(true);
+
+  const refreshAuth = useCallback(async () => {
+    try {
+      const me = await getMe();
+      setUser(me);
+    } catch {
+      // Token invalid or expired — stay on login
+      await clearToken();
+      setUser(null);
+    }
+  }, []);
+
+  const signOut = useCallback(async () => {
+    try {
+      await logout();
+    } catch {
+      await clearToken();
+    }
+    setUser(null);
+  }, []);
+
+  // On mount: check for an existing session
+  useEffect(() => {
+    (async () => {
+      const tokenExists = await hasToken();
+      if (tokenExists) {
+        // Validate the token by calling /auth/me
+        try {
+          const me = await getMe();
+          setUser(me);
+        } catch {
+          await clearToken();
+        }
+      }
+      setChecking(false);
+    })();
+  }, []);
+
+  // Register session-expired handler so 401s auto-sign-out
+  useEffect(() => {
+    registerSessionExpiredHandler(() => {
+      setUser(null);
+    });
+  }, []);
+
+  // Listen for successful login/signup from auth screens
+  // by polling the token after navigation events
+  const handleNavigationStateChange = useCallback(async () => {
+    if (!user) {
+      const tokenExists = await hasToken();
+      if (tokenExists) {
+        await refreshAuth();
+      }
+    }
+  }, [user, refreshAuth]);
+
+  // Loading splash while checking auth
+  if (checking) {
+    return (
+      <SafeAreaProvider>
+        <View style={{ flex: 1, backgroundColor: colors.paper, alignItems: 'center', justifyContent: 'center' }}>
+          <View style={{
+            width: 48, height: 48, borderRadius: 12,
+            backgroundColor: colors.ink, alignItems: 'center', justifyContent: 'center',
+            marginBottom: 16,
+          }}>
+            <Text style={{ color: colors.amber, fontSize: 18, fontWeight: '800', letterSpacing: -0.5 }}>
+              bb
+            </Text>
+          </View>
+          <ActivityIndicator color={colors.ink3} />
+        </View>
+        <StatusBar style="auto" />
+      </SafeAreaProvider>
+    );
+  }
+
+  const isAuthenticated = user !== null;
+
   return (
-    <SafeAreaProvider>
-      <NavigationContainer>
-        <Stack.Navigator screenOptions={{ headerShown: false }}>
-          <Stack.Screen name="Tabs" component={TabNavigator} />
-          <Stack.Screen
-            name="Preview"
-            component={PreviewScreen}
-            options={{ presentation: 'fullScreenModal', animation: 'slide_from_bottom' }}
-          />
-        </Stack.Navigator>
-      </NavigationContainer>
-      <StatusBar style="auto" />
-    </SafeAreaProvider>
+    <AuthContext.Provider value={{ user, refreshAuth, signOut }}>
+      <SafeAreaProvider>
+        <NavigationContainer onStateChange={handleNavigationStateChange}>
+          <Stack.Navigator screenOptions={{ headerShown: false }}>
+            {isAuthenticated ? (
+              <>
+                <Stack.Screen name="Tabs" component={TabNavigator} />
+                <Stack.Screen
+                  name="Preview"
+                  component={PreviewScreen}
+                  options={{ presentation: 'fullScreenModal', animation: 'slide_from_bottom' }}
+                />
+              </>
+            ) : (
+              <>
+                <Stack.Screen
+                  name="Login"
+                  component={LoginScreen}
+                  options={{ animationTypeForReplace: 'pop' }}
+                />
+                <Stack.Screen name="Signup" component={SignupScreen} />
+              </>
+            )}
+          </Stack.Navigator>
+        </NavigationContainer>
+        <StatusBar style="auto" />
+      </SafeAreaProvider>
+    </AuthContext.Provider>
   );
 }
