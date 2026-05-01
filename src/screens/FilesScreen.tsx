@@ -5,7 +5,9 @@ import {
   Alert,
   Dimensions,
   FlatList,
+  KeyboardAvoidingView,
   LayoutAnimation,
+  Modal,
   Platform,
   RefreshControl,
   ScrollView,
@@ -593,6 +595,12 @@ export default function FilesScreen() {
   const [uploadingName, setUploadingName] = useState<string | null>(null);
   const [uploadProgress, setUploadProgress] = useState<{ percent: number; phase: string } | null>(null);
 
+  // New-folder modal (Android — Alert.prompt is iOS-only). Drives a small
+  // controlled Modal further down in the render tree.
+  const [newFolderOpen, setNewFolderOpen] = useState(false);
+  const [newFolderName, setNewFolderName] = useState('');
+  const [creatingFolder, setCreatingFolder] = useState(false);
+
   // Export state — shows banner while downloading for native share sheet
   const [exportingName, setExportingName] = useState<string | null>(null);
 
@@ -891,40 +899,57 @@ export default function FilesScreen() {
     }
   }, [pickAndUploadFile, pickAndUploadPhotos]);
 
+  const submitNewFolder = useCallback(async (rawName: string) => {
+    const trimmed = rawName.trim();
+    if (!trimmed) return;
+    try {
+      const folder = await createFolder(trimmed, currentFolder.id ?? undefined);
+      const now = new Date().toISOString();
+      const safe: FileEntry = {
+        ...folder,
+        created_at: folder.created_at ?? now,
+        updated_at: folder.updated_at ?? now,
+      };
+      setFiles((prev) => [safe, ...prev]);
+    } catch (err) {
+      Alert.alert('Error', friendlyError(err));
+    }
+  }, [currentFolder.id]);
+
   const showNewFolderPrompt = useCallback(() => {
     if (Platform.OS === 'ios') {
       Alert.prompt(
         'New folder',
         'Enter a name for the new folder',
-        async (name) => {
-          const trimmed = name?.trim();
-          if (!trimmed) return;
-          try {
-            const folder = await createFolder(trimmed, currentFolder.id ?? undefined);
-            const now = new Date().toISOString();
-            const safe: FileEntry = {
-              ...folder,
-              created_at: folder.created_at ?? now,
-              updated_at: folder.updated_at ?? now,
-            };
-            setFiles((prev) => [safe, ...prev]);
-          } catch (err) {
-            Alert.alert('Error', friendlyError(err));
-          }
+        (name) => {
+          if (name) void submitNewFolder(name);
         },
         'plain-text',
         '',
         'default',
       );
     } else {
-      // Android: use a state-based modal (simple Alert without prompt)
-      Alert.alert(
-        'New folder',
-        'Folder creation prompt is iOS-only for now. Please use the iOS app.',
-        [{ text: 'OK' }],
-      );
+      // Android: Alert.prompt isn't supported, so drive a controlled Modal
+      // with a TextInput. State lives at the screen level so the modal
+      // re-renders cleanly and we can disable the action while creating.
+      setNewFolderName('');
+      setCreatingFolder(false);
+      setNewFolderOpen(true);
     }
-  }, [currentFolder.id]);
+  }, [submitNewFolder]);
+
+  const confirmNewFolderModal = useCallback(async () => {
+    const trimmed = newFolderName.trim();
+    if (!trimmed) return;
+    setCreatingFolder(true);
+    try {
+      await submitNewFolder(trimmed);
+      setNewFolderOpen(false);
+      setNewFolderName('');
+    } finally {
+      setCreatingFolder(false);
+    }
+  }, [newFolderName, submitNewFolder]);
 
   const handleSortPress = useCallback(() => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -2079,6 +2104,62 @@ export default function FilesScreen() {
           <Text style={[styles.fabText, { color: c.ink }]}>+</Text>
         </TouchableOpacity>
       )}
+
+      {/* Android new-folder modal — Alert.prompt is iOS-only. */}
+      <Modal
+        visible={newFolderOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setNewFolderOpen(false)}
+      >
+        <KeyboardAvoidingView
+          style={styles.modalOverlay}
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        >
+          <TouchableOpacity
+            activeOpacity={1}
+            style={styles.modalBackdrop}
+            onPress={() => !creatingFolder && setNewFolderOpen(false)}
+          />
+          <View style={[styles.modalCard, { backgroundColor: c.paper, borderColor: c.line }]}>
+            <Text style={[styles.modalTitle, { color: c.ink }]}>New folder</Text>
+            <Text style={[styles.modalBody, { color: c.ink3 }]}>Enter a name for the new folder.</Text>
+            <TextInput
+              value={newFolderName}
+              onChangeText={setNewFolderName}
+              placeholder="Folder name"
+              placeholderTextColor={c.ink4}
+              autoFocus
+              autoCapitalize="sentences"
+              returnKeyType="done"
+              onSubmitEditing={() => void confirmNewFolderModal()}
+              editable={!creatingFolder}
+              style={[styles.modalInput, { color: c.ink, borderColor: c.line2, backgroundColor: c.paper2 }]}
+              accessibilityLabel="Folder name"
+            />
+            <View style={styles.modalActions}>
+              <TouchableOpacity
+                style={styles.modalSecondary}
+                onPress={() => setNewFolderOpen(false)}
+                disabled={creatingFolder}
+                accessibilityRole="button"
+                accessibilityLabel="Cancel"
+              >
+                <Text style={[styles.modalSecondaryText, { color: c.ink2 }]}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.modalPrimary, { backgroundColor: c.amber, opacity: !newFolderName.trim() || creatingFolder ? 0.5 : 1 }]}
+                onPress={() => void confirmNewFolderModal()}
+                disabled={!newFolderName.trim() || creatingFolder}
+                accessibilityRole="button"
+                accessibilityLabel="Create folder"
+              >
+                <Text style={[styles.modalPrimaryText, { color: c.ink }]}>{creatingFolder ? 'Creating…' : 'Create'}</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
     </View>
   );
 }
@@ -2224,4 +2305,31 @@ const styles = StyleSheet.create({
   uploadBannerText: { fontSize: 13, flex: 1, fontWeight: '500' },
   sharedBadge: { marginLeft: 4 },
   presenceWrap: { flexDirection: 'row', alignItems: 'center', marginRight: 8 },
+
+  // Android new-folder modal
+  modalOverlay: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 24 },
+  modalBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.4)' },
+  modalCard: {
+    width: '100%',
+    maxWidth: 360,
+    borderRadius: radii.lg,
+    borderWidth: 1,
+    padding: 20,
+    gap: 12,
+    ...shadows.lg,
+  },
+  modalTitle: { fontSize: 17, fontWeight: '600' },
+  modalBody: { fontSize: 13 },
+  modalInput: {
+    borderWidth: 1,
+    borderRadius: radii.md,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 16,
+  },
+  modalActions: { flexDirection: 'row', justifyContent: 'flex-end', alignItems: 'center', gap: 12, marginTop: 4 },
+  modalSecondary: { paddingVertical: 8, paddingHorizontal: 12 },
+  modalSecondaryText: { fontSize: 15, fontWeight: '500' },
+  modalPrimary: { paddingVertical: 8, paddingHorizontal: 16, borderRadius: radii.md },
+  modalPrimaryText: { fontSize: 15, fontWeight: '600' },
 });
