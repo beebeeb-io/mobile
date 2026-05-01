@@ -908,7 +908,7 @@ export default function FilesScreen() {
     const pinLabel = isPinned ? 'Unpin' : 'Pin to top';
     const isImage = !item.is_folder && (item.mime_type ?? '').startsWith('image/');
     const fileOptions = ['Rename', 'Preview', 'Share', 'Export...'];
-    if (isImage) fileOptions.push('Save to gallery');
+    if (isImage) fileOptions.push('Save to Photos');
     fileOptions.push('Move to...', 'Move to Trash', 'Details');
     const options = item.is_folder
       ? ['Rename', 'Open', 'Share', 'Move to...', 'Delete', pinLabel, 'Details', 'Cancel']
@@ -1142,7 +1142,7 @@ export default function FilesScreen() {
           });
           return;
         case 'Export...': void promptExport(); return;
-        case 'Save to gallery': void saveToGallery(); return;
+        case 'Save to Photos': void saveToGallery(); return;
         case 'Move to...': void promptMove(); return;
         case 'Delete': confirmDeleteFolder(); return;
         case 'Move to Trash': confirmMoveToTrash(); return;
