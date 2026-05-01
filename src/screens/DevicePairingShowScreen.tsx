@@ -1,9 +1,11 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { WebView } from 'react-native-webview';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { colors, radii, spacing } from '../theme';
+import { darkColors, spacing } from '../theme';
+import { generateConstellationHTML } from '../lib/constellation-renderer';
 import type { RootStackParamList } from '../App';
 
 type Nav = NativeStackNavigationProp<RootStackParamList>;
@@ -12,54 +14,96 @@ export default function DevicePairingShowScreen() {
   const navigation = useNavigation<Nav>();
   const insets = useSafeAreaInsets();
 
+  const html = useMemo(() => generateConstellationHTML(), []);
+
   return (
     <View style={[styles.root, { paddingTop: insets.top, paddingBottom: insets.bottom }]}>
-      <TouchableOpacity style={styles.backRow} onPress={() => navigation.goBack()} activeOpacity={0.7}>
+      <TouchableOpacity
+        style={styles.backRow}
+        onPress={() => navigation.goBack()}
+        activeOpacity={0.7}
+        hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+      >
         <Text style={styles.backText}>Back</Text>
       </TouchableOpacity>
-      <View style={styles.body}>
-        <View style={styles.patternFrame}>
-          {/* Placeholder for animated pairing pattern */}
-          <View style={styles.patternInner} />
-        </View>
-        <Text style={styles.label}>Pairing pattern</Text>
-        <Text style={styles.sub}>
-          This pattern will be displayed here once Amber Constellation{'\n'}(Plan 03) is implemented.
-        </Text>
+
+      <View style={styles.constellation}>
+        <WebView
+          source={{ html }}
+          style={styles.webview}
+          containerStyle={styles.webviewContainer}
+          javaScriptEnabled
+          scrollEnabled={false}
+          bounces={false}
+          allowsInlineMediaPlayback
+          mediaPlaybackRequiresUserAction={false}
+          originWhitelist={['*']}
+          androidLayerType="hardware"
+          setSupportMultipleWindows={false}
+          overScrollMode="never"
+          showsHorizontalScrollIndicator={false}
+          showsVerticalScrollIndicator={false}
+        />
+      </View>
+
+      <View style={styles.footer}>
+        <Text style={styles.status}>Waiting for another device…</Text>
+        <TouchableOpacity
+          style={styles.cancelButton}
+          onPress={() => navigation.goBack()}
+          activeOpacity={0.7}
+        >
+          <Text style={styles.cancelText}>Cancel</Text>
+        </TouchableOpacity>
       </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: colors.paper },
-  backRow: { paddingHorizontal: spacing.lg, paddingVertical: spacing.md },
-  backText: { fontSize: 14, color: colors.ink3 },
-  body: {
+  root: {
     flex: 1,
+    backgroundColor: darkColors.darkBg,
+  },
+  backRow: {
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.md,
+  },
+  backText: {
+    fontSize: 14,
+    color: darkColors.ink2,
+  },
+  constellation: {
+    flex: 1,
+    backgroundColor: darkColors.darkBg,
+  },
+  webview: {
+    flex: 1,
+    backgroundColor: darkColors.darkBg,
+  },
+  webviewContainer: {
+    backgroundColor: darkColors.darkBg,
+  },
+  footer: {
     alignItems: 'center',
-    justifyContent: 'center',
     paddingHorizontal: spacing.xl,
+    paddingTop: spacing.lg,
+    paddingBottom: spacing.lg,
   },
-  patternFrame: {
-    width: 200,
-    height: 200,
-    borderRadius: radii.lg,
-    borderWidth: 1.5,
-    borderColor: colors.line2,
-    backgroundColor: colors.paper2,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: spacing.xl,
+  status: {
+    fontSize: 14,
+    color: darkColors.ink2,
+    letterSpacing: 0.3,
+    marginBottom: spacing.lg,
   },
-  patternInner: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    borderWidth: 2,
-    borderColor: colors.line2,
-    backgroundColor: colors.paper,
+  cancelButton: {
+    paddingHorizontal: spacing.xl,
+    paddingVertical: spacing.md,
   },
-  label: { fontSize: 15, fontWeight: '600', color: colors.ink, marginBottom: 6 },
-  sub: { fontSize: 12, color: colors.ink4, textAlign: 'center', lineHeight: 18 },
+  cancelText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: darkColors.amber,
+    letterSpacing: 0.5,
+  },
 });
