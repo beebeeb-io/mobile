@@ -1319,6 +1319,21 @@ const styles = StyleSheet.create({
   retryButton: { paddingHorizontal: 20, paddingVertical: 10, borderRadius: radii.md },
   retryButtonText: { fontSize: 14, fontWeight: '600' },
 
+  // Storage warning banner
+  storageBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginHorizontal: spacing.lg,
+    marginBottom: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    borderRadius: radii.md,
+    borderWidth: 1,
+    gap: 8,
+  },
+  storageBannerText: { flex: 1, fontSize: 12, fontWeight: '500' },
+  storageBannerHint: { fontSize: 12, fontWeight: '700' },
+
   // FAB
   fab: { position: 'absolute', right: 20, width: 52, height: 52, borderRadius: 26, alignItems: 'center', justifyContent: 'center', ...shadows.lg },
   fabText: { fontSize: 28, fontWeight: '600', marginTop: -2 },
