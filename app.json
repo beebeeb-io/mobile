@@ -89,7 +89,8 @@
       "expo-video",
       "expo-image-picker",
       "expo-notifications",
-      "expo-store-review"
+      "expo-store-review",
+      "expo-sqlite"
     ],
     "extra": {
       "eas": {
