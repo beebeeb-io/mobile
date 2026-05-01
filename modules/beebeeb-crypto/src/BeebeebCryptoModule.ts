@@ -1,4 +1,19 @@
-import { requireNativeModule } from 'expo'
+let mod: any = null;
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export default requireNativeModule('BeebeebCrypto') as any
+try {
+  const { requireNativeModule } = require('expo');
+  mod = requireNativeModule('BeebeebCrypto');
+} catch {
+  mod = new Proxy({}, {
+    get: (_target, prop) => {
+      if (typeof prop === 'string') {
+        return (..._args: any[]) => {
+          throw new Error(`BeebeebCrypto native module not available — cannot call ${prop}`);
+        };
+      }
+      return undefined;
+    },
+  });
+}
+
+export default mod as any;
