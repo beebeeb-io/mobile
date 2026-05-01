@@ -12,15 +12,15 @@ PODS:
     - ExpoModulesCore
   - ExpoClipboard (7.0.1):
     - ExpoModulesCore
-  - ExpoFileSystem (55.0.17):
+  - ExpoFileSystem (18.0.12):
     - ExpoModulesCore
   - ExpoFont (13.0.4):
     - ExpoModulesCore
-  - ExpoHaptics (55.0.14):
+  - ExpoHaptics (14.0.1):
     - ExpoModulesCore
   - ExpoKeepAwake (14.0.3):
     - ExpoModulesCore
-  - ExpoLocalAuthentication (55.0.13):
+  - ExpoLocalAuthentication (15.0.2):
     - ExpoModulesCore
   - ExpoModulesCore (2.2.3):
     - DoubleConversion
@@ -45,11 +45,11 @@ PODS:
     - ReactCommon/turbomodule/bridging
     - ReactCommon/turbomodule/core
     - Yoga
-  - ExpoNetwork (55.0.13):
+  - ExpoNetwork (7.0.5):
     - ExpoModulesCore
   - ExpoSecureStore (14.0.1):
     - ExpoModulesCore
-  - ExpoSharing (55.0.18):
+  - ExpoSharing (13.0.1):
     - ExpoModulesCore
   - EXUpdatesInterface (55.1.6):
     - ExpoModulesCore
@@ -1338,27 +1338,8 @@ PODS:
     - ReactCommon/turbomodule/bridging
     - ReactCommon/turbomodule/core
     - Yoga
-  - react-native-netinfo (12.0.1):
-    - DoubleConversion
-    - glog
-    - hermes-engine
-    - RCT-Folly (= 2024.10.14.00)
-    - RCTRequired
-    - RCTTypeSafety
+  - react-native-netinfo (11.4.1):
     - React-Core
-    - React-debug
-    - React-Fabric
-    - React-featureflags
-    - React-graphics
-    - React-ImageManager
-    - React-NativeModulesApple
-    - React-RCTFabric
-    - React-rendererdebug
-    - React-utils
-    - ReactCodegen
-    - ReactCommon/turbomodule/bridging
-    - ReactCommon/turbomodule/core
-    - Yoga
   - react-native-safe-area-context (4.12.0):
     - DoubleConversion
     - glog
@@ -2014,15 +1995,15 @@ SPEC CHECKSUMS:
   Expo: 4bb70893882e6382b41d1e910d7226c6a1b85f0a
   ExpoAsset: 48386d40d53a8c1738929b3ed509bcad595b5516
   ExpoClipboard: 44fd1c8959ee8f6175d059dc011b154c9709a969
-  ExpoFileSystem: a0e4a5a09c9c4f84338289b273a172609452dec9
+  ExpoFileSystem: 42d363d3b96f9afab980dcef60d5657a4443c655
   ExpoFont: f354e926f8feae5e831ec8087f36652b44a0b188
-  ExpoHaptics: 679f09dc37d5981e619bc197732007a3334e80b8
+  ExpoHaptics: 8d199b2f33245ea85289ff6c954c7ee7c00a5b5d
   ExpoKeepAwake: b0171a73665bfcefcfcc311742a72a956e6aa680
-  ExpoLocalAuthentication: bdf67eef520f5eb22b105d139b9cb48aa994b071
+  ExpoLocalAuthentication: eb2be9c7bcdc68e9434d4be4bb5aa5cf7943e816
   ExpoModulesCore: c25d77625038b1968ea1afefc719862c0d8dd993
-  ExpoNetwork: aec041c4e9cb5a30cb4da32b2e315bcca6a7c2e4
+  ExpoNetwork: 16083eb5ed34ce1c8e916fb6292fdb6e9daac0ca
   ExpoSecureStore: 9a3665d7161dd1031be386e278bffd623658f316
-  ExpoSharing: 5acc9d78894386d31b862b12ed1cebe7dce74e68
+  ExpoSharing: 849a5ce9985c22598c16ec027e32969be8062e8e
   EXUpdatesInterface: 4c11f4d1594526258f14d09817dc407acbf24e3b
   fast_float: 06eeec4fe712a76acc9376682e4808b05ce978b6
   FBLazyVector: 7605ea4810e0e10ae4815292433c09bf4324ba45
@@ -2058,7 +2039,7 @@ SPEC CHECKSUMS:
   React-logger: c4052eb941cca9a097ef01b59543a656dc088559
   React-Mapbuffer: 33546a3ebefbccb8770c33a1f8a5554fa96a54de
   React-microtasksnativemodule: d80ff86c8902872d397d9622f1a97aadcc12cead
-  react-native-netinfo: 34b579039ac48c585cf30f14e02e65473d8120aa
+  react-native-netinfo: cec9c4e86083cb5b6aba0e0711f563e2fbbff187
   react-native-safe-area-context: cd916088cac5300c3266876218377518987b995e
   React-nativeconfig: 8efdb1ef1e9158c77098a93085438f7e7b463678
   React-NativeModulesApple: cebca2e5320a3d66e123cade23bd90a167ffce5e
@@ -2091,6 +2072,6 @@ SPEC CHECKSUMS:
   SocketRocket: d4aabe649be1e368d1318fdf28a022d714d65748
   Yoga: feb4910aba9742cfedc059e2b2902e22ffe9954a
 
-PODFILE CHECKSUM: fb9721ff5fceb49877c3799c8240fc6d54bbe02b
+PODFILE CHECKSUM: eae6dfc6e76c33bd6a5594efd0b5dbe7d79a085b
 
 COCOAPODS: 1.16.2
