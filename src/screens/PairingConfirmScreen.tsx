@@ -20,7 +20,13 @@ export default function PairingConfirmScreen() {
 
   return (
     <View style={[styles.root, { paddingTop: insets.top, paddingBottom: insets.bottom }]}>
-      <TouchableOpacity style={styles.backRow} onPress={() => navigation.goBack()} activeOpacity={0.7}>
+      <TouchableOpacity
+        style={styles.backRow}
+        onPress={() => navigation.goBack()}
+        activeOpacity={0.7}
+        accessibilityRole="button"
+        accessibilityLabel="Back"
+      >
         <Text style={styles.backText}>Back</Text>
       </TouchableOpacity>
       <View style={styles.body}>
