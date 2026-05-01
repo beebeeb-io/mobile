@@ -373,9 +373,6 @@ export default function PhotosScreen() {
         <View style={styles.header}>
           <Text style={[styles.title, { color: c.ink }]}>Photos</Text>
           <View style={{ flex: 1 }} />
-          <View style={[styles.headerCircle, { backgroundColor: c.paper2, borderColor: c.line }]}>
-            <Text style={[styles.headerGlyph, { color: c.ink2 }]}>{'⦿'}</Text>
-          </View>
         </View>
 
         <DevicePhotosBanner />
@@ -432,8 +429,6 @@ const styles = StyleSheet.create({
   // Header
   header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: spacing.lg, paddingTop: 6, paddingBottom: 4, gap: 8 },
   title: { fontSize: 28, fontWeight: '700', letterSpacing: -0.5 },
-  headerCircle: { width: 30, height: 30, borderRadius: 15, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
-  headerGlyph: { fontSize: 12 },
 
   // Filter chips
   filterRow: { paddingHorizontal: spacing.lg, paddingTop: 8, paddingBottom: 10 },
