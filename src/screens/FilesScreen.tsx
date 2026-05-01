@@ -20,7 +20,8 @@ import {
 import { Swipeable } from 'react-native-gesture-handler';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useRoute } from '@react-navigation/native';
+import type { RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useBottomTabBarHeight } from '@react-navigation/bottom-tabs';
 import * as Haptics from 'expo-haptics';
@@ -38,7 +39,7 @@ import SkeletonRow from '../components/SkeletonRow';
 import PresenceAvatars from '../components/PresenceAvatars';
 import { listFiles, createFolder, deleteFile, renameFile, moveFile, uploadFile, downloadFile, friendlyError, getStorageUsage, createProofOfExistence, storageLocation, getFolderPresence } from '../lib/api';
 import type { FileEntry, StorageUsage, ProofOfExistence, PresenceUser } from '../lib/api';
-import type { RootStackParamList } from '../App';
+import type { RootStackParamList, TabParamList } from '../App';
 import { useCrypto } from '../lib/crypto-context';
 
 // Tracks the currently open Swipeable so we can close it when another opens.
@@ -553,6 +554,7 @@ type Nav = NativeStackNavigationProp<RootStackParamList>;
 
 export default function FilesScreen() {
   const navigation = useNavigation<Nav>();
+  const route = useRoute<RouteProp<TabParamList, 'Files'>>();
   const insets = useSafeAreaInsets();
   // Bottom tab bar overlaps the FAB unless we offset by its real height
   // (insets.bottom alone underestimates this on devices with a home bar).
@@ -913,6 +915,22 @@ export default function FilesScreen() {
       ]);
     }
   }, [pickAndUploadFile, pickAndUploadPhotos]);
+
+  // Quick action / deep-link landing: route.params.action is set by the App
+  // shortcut handler (beebeeb://upload, beebeeb://search). Trigger the right
+  // surface and clear the param so subsequent focuses don't re-fire it.
+  useEffect(() => {
+    const action = route.params?.action;
+    if (!action) return;
+    navigation.setParams({ action: undefined });
+    if (action === 'upload') {
+      pickAndUploadFile();
+    } else if (action === 'search') {
+      // Tiny delay so the input has mounted before we focus, otherwise the
+      // keyboard sometimes drops on iOS cold-launch.
+      setTimeout(() => searchInputRef.current?.focus(), 50);
+    }
+  }, [route.params?.action, navigation, pickAndUploadFile]);
 
   const submitNewFolder = useCallback(async (rawName: string) => {
     const trimmed = rawName.trim();

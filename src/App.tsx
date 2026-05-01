@@ -4,7 +4,7 @@ import { registerRootComponent } from 'expo';
 import { StatusBar } from 'expo-status-bar';
 import { ActivityIndicator, AppState, type AppStateStatus, Keyboard, Linking, StyleSheet, View } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
-import { NavigationContainer } from '@react-navigation/native';
+import { NavigationContainer, createNavigationContainerRef } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -65,7 +65,10 @@ const ONBOARDING_KEY = 'beebeeb_onboarding_done';
 // ---------------------------------------------------------------------------
 
 export type TabParamList = {
-  Files: undefined;
+  // `action` lets deep links / quick actions ask Files to do something on
+  // arrival (`'upload'` opens the picker, `'search'` focuses the search bar).
+  // FilesScreen consumes & clears the param so the action only fires once.
+  Files: { action?: 'upload' | 'search' } | undefined;
   Shared: undefined;
   Photos: undefined;
   Settings: undefined;
@@ -116,6 +119,8 @@ const linking = {
         // Bare tab name → its tab. beebeeb://photos lands on Photos,
         // beebeeb://shared on Shared, etc. Files keeps the empty path so
         // a plain beebeeb:// (or app cold-launch) opens the default tab.
+        // beebeeb://upload and beebeeb://search are intercepted in
+        // handleShortcutURL below so they can pass an `action` param.
         screens: {
           Files: 'files',
           Shared: 'shared',
@@ -131,6 +136,10 @@ const linking = {
 
 const Tab = createBottomTabNavigator<TabParamList>();
 const Stack = createNativeStackNavigator<RootStackParamList>();
+
+// Module-level nav ref so non-component code (deep-link handler / quick
+// action listener) can dispatch navigation without a hook.
+const navigationRef = createNavigationContainerRef<RootStackParamList>();
 
 // ---------------------------------------------------------------------------
 // Offline banner
@@ -425,22 +434,33 @@ export default function App() {
     return () => subscription.remove();
   }, []);
 
-  // Handle Home Screen Quick Actions (3D Touch / Haptic Touch shortcuts)
-  // `beebeeb://photos` is handled by React Navigation's linking config above.
-  // `beebeeb://upload` and `beebeeb://search` require native glue code to read
-  // UIApplicationShortcutItemUserInfo and open the URL — this handler is ready
-  // for when that native code is wired (e.g. via a custom Expo config plugin).
+  // Handle Home Screen Quick Actions (3D Touch / Haptic Touch shortcuts).
+  // beebeeb://photos / shared / settings are handled by React Navigation's
+  // linking config; beebeeb://upload and beebeeb://search bypass it so they
+  // can pass an `action` param into Files (the screen reads + clears it).
   useEffect(() => {
     const handleShortcutURL = (url: string | null) => {
       if (!url) return;
-      // beebeeb://upload → navigate to Files tab (user can then tap +)
-      // beebeeb://search → navigate to Files tab (user can then tap search)
-      // beebeeb://photos → handled automatically by the linking config
-      if (url === 'beebeeb://upload' || url === 'beebeeb://search') {
-        // Both actions land on the Files tab; the specific trigger (upload/search)
-        // would need a deeplink state passed to FilesScreen via route params.
-        // For now, just ensure the user lands on Files.
-      }
+      let action: 'upload' | 'search' | null = null;
+      if (url === 'beebeeb://upload') action = 'upload';
+      else if (url === 'beebeeb://search') action = 'search';
+      if (!action) return;
+      const dispatch = () => {
+        if (!navigationRef.isReady()) return;
+        // The Tabs route's deep-nested signature isn't easy to express in
+        // RootStackParamList without leaking nav internals; the runtime
+        // shape `{ screen, params }` is what react-navigation expects, and
+        // navigationRef.navigate is permissive at runtime.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (navigationRef.navigate as any)('Tabs', {
+          screen: 'Files',
+          params: { action },
+        });
+      };
+      // Cold-launch URLs may arrive before the container is mounted; retry
+      // once on the next tick if so.
+      if (navigationRef.isReady()) dispatch();
+      else setTimeout(dispatch, 0);
     };
 
     Linking.getInitialURL().then(handleShortcutURL).catch(() => {});
@@ -482,7 +502,7 @@ export default function App() {
       <SafeAreaProvider>
       <ToastProvider>
         <Suspense fallback={<ScreenLoadingFallback />}>
-          <NavigationContainer linking={linking} onStateChange={handleNavigationStateChange}>
+          <NavigationContainer ref={navigationRef} linking={linking} onStateChange={handleNavigationStateChange}>
             <Stack.Navigator screenOptions={{ headerShown: false }}>
               {isAuthenticated ? (
                 <>
