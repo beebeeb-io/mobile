@@ -8,6 +8,7 @@ import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Text } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { colors } from './theme';
 import {
   hasToken,
@@ -170,22 +171,22 @@ const offlineStyles = StyleSheet.create({
 });
 
 // ---------------------------------------------------------------------------
-// Simple text-based tab icon (avoids icon library dep for now)
+// Tab icon using Ionicons (SF Symbols on iOS)
 // ---------------------------------------------------------------------------
 
-const TAB_ICONS: Record<string, string> = {
-  Files: '\u{1F4C1}',
-  Shared: '\u{1F465}',
-  Photos: '\u{1F5BC}️',
-  Settings: '⚙️',
+type IoniconName = React.ComponentProps<typeof Ionicons>['name'];
+
+const TAB_ICON_NAMES: Record<string, [IoniconName, IoniconName]> = {
+  Files: ['folder', 'folder-outline'],
+  Shared: ['people', 'people-outline'],
+  Photos: ['images', 'images-outline'],
+  Settings: ['settings', 'settings-outline'],
 };
 
-function TabIcon({ name, focused }: { name: string; focused: boolean }) {
-  return (
-    <Text style={{ fontSize: 18, opacity: focused ? 1 : 0.5 }}>
-      {TAB_ICONS[name] ?? '?'}
-    </Text>
-  );
+function TabIcon({ name, focused, color }: { name: string; focused: boolean; color: string }) {
+  const icons = TAB_ICON_NAMES[name];
+  const iconName: IoniconName = icons ? (focused ? icons[0] : icons[1]) : 'ellipse-outline';
+  return <Ionicons name={iconName} size={22} color={color} />;
 }
 
 // ---------------------------------------------------------------------------
@@ -226,7 +227,7 @@ function TabNavigator() {
       }}
       screenOptions={({ route }) => ({
         headerShown: false,
-        tabBarIcon: ({ focused }) => <TabIcon name={route.name} focused={focused} />,
+        tabBarIcon: ({ focused, color }) => <TabIcon name={route.name} focused={focused} color={color} />,
         tabBarActiveTintColor: colors.ink,
         tabBarInactiveTintColor: colors.ink4,
         tabBarStyle: {
