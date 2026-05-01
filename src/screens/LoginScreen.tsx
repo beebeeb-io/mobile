@@ -1,5 +1,5 @@
 import { BBLogo } from "../components/BBLogo";
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -25,6 +25,7 @@ type Nav = NativeStackNavigationProp<RootStackParamList>;
 export default function LoginScreen() {
   const navigation = useNavigation<Nav>();
   const { refreshAuth } = useAuth();
+  const passwordRef = useRef<TextInput>(null);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -103,12 +104,15 @@ export default function LoginScreen() {
           autoCorrect={false}
           autoComplete="email"
           returnKeyType="next"
+          onSubmitEditing={() => passwordRef.current?.focus()}
+          testID="email-input"
           editable={!loading}
         />
 
         {/* Password */}
         <Text style={styles.label}>Password</Text>
         <TextInput
+          ref={passwordRef}
           style={styles.input}
           value={password}
           onChangeText={setPassword}
@@ -119,6 +123,7 @@ export default function LoginScreen() {
           autoComplete="password"
           returnKeyType="go"
           onSubmitEditing={handleLogin}
+          testID="password-input"
           editable={!loading}
         />
 
@@ -128,6 +133,8 @@ export default function LoginScreen() {
           onPress={handleLogin}
           activeOpacity={0.8}
           disabled={loading}
+          accessibilityLabel="Sign in"
+          testID="sign-in-button"
         >
           {loading ? (
             <ActivityIndicator color={colors.paper} size="small" />
