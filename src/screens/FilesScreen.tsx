@@ -22,7 +22,7 @@ import * as Haptics from 'expo-haptics';
 import * as DocumentPicker from 'expo-document-picker';
 import { radii, spacing, shadows } from '../theme';
 import { useTheme } from '../lib/theme-context';
-import { listFiles, createFolder, deleteFile, renameFile, uploadFile, friendlyError } from '../lib/api';
+import { listFiles, createFolder, deleteFile, renameFile, moveFile, uploadFile, friendlyError } from '../lib/api';
 import type { FileEntry } from '../lib/api';
 import type { RootStackParamList } from '../App';
 import { useCrypto } from '../lib/crypto-context';
@@ -553,8 +553,8 @@ export default function FilesScreen() {
   const handleLongPress = useCallback((item: FileEntry) => {
     const name = decryptedNames[item.id] ?? displayName(item);
     const options = item.is_folder
-      ? ['Rename', 'Open', 'Share', 'Delete', 'Cancel']
-      : ['Rename', 'Preview', 'Share', 'Move to Trash', 'Cancel'];
+      ? ['Rename', 'Open', 'Share', 'Delete', 'Details', 'Cancel']
+      : ['Rename', 'Preview', 'Share', 'Move to Trash', 'Details', 'Cancel'];
     const destructiveIndex = 3;
     const cancelIndex = options.length - 1;
 
@@ -619,6 +619,18 @@ export default function FilesScreen() {
             },
           ],
         );
+      } else if (index === 4) {
+        const lines = [
+          `Name:      ${name}`,
+          `Type:      ${item.is_folder ? 'Folder' : (item.mime_type ?? 'Unknown')}`,
+        ];
+        if (!item.is_folder) {
+          lines.push(`Size:      ${formatSize(item.size_bytes)}`);
+        }
+        lines.push(`Created:   ${formatDate(item.created_at)}`);
+        lines.push(`Modified:  ${formatDate(item.updated_at)}`);
+        lines.push(`ID:        ${item.id.slice(0, 8)}`);
+        Alert.alert('File details', lines.join('\n'));
       }
     };
 
@@ -639,6 +651,7 @@ export default function FilesScreen() {
         { text: options[1], onPress: () => handleAction(1) },
         { text: options[2], onPress: () => handleAction(2) },
         { text: options[3], style: 'destructive', onPress: () => handleAction(3) },
+        { text: options[4], onPress: () => handleAction(4) },
         { text: 'Cancel', style: 'cancel' },
       ]);
     }
