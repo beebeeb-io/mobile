@@ -20,6 +20,7 @@ import { colors, radii, spacing, shadows } from '../theme';
 import { listFiles, createFolder, deleteFile, friendlyError } from '../lib/api';
 import type { FileEntry } from '../lib/api';
 import type { RootStackParamList } from '../App';
+import { useCrypto } from '../lib/crypto-context';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -57,9 +58,8 @@ function formatDate(iso: string): string {
 }
 
 /**
- * Display name for an encrypted filename.
- * Until UniFFI crypto bindings land, we show a truncated version of the
- * encrypted name so the user can still distinguish files.
+ * Fallback display name for an encrypted filename when crypto is unavailable.
+ * Shows a truncated version of the ciphertext so the user can still distinguish files.
  */
 function displayName(entry: FileEntry): string {
   const raw = entry.name_encrypted;
@@ -69,6 +69,16 @@ function displayName(entry: FileEntry): string {
     return raw.slice(0, 24) + '...';
   }
   return raw;
+}
+
+/** Decode a base64 string to a Uint8Array. */
+function base64ToUint8Array(b64: string): Uint8Array {
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
 }
 
 /** Determine a file type category from the mime type. */
@@ -152,6 +162,31 @@ export default function FilesScreen() {
   const [searchActive, setSearchActive] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
 
+  // Crypto
+  const { isUnlocked, decryptMetadata } = useCrypto();
+  const [decryptedNames, setDecryptedNames] = useState<Record<string, string>>({});
+
+  // Decrypt filenames whenever the file list or unlock state changes
+  useEffect(() => {
+    if (!isUnlocked) {
+      setDecryptedNames({});
+      return;
+    }
+    const results: Record<string, string> = {};
+    Promise.all(
+      files.map(async (file) => {
+        try {
+          const parsed = JSON.parse(file.name_encrypted) as { nonce: string; ciphertext: string };
+          const nonce = base64ToUint8Array(parsed.nonce);
+          const ct = base64ToUint8Array(parsed.ciphertext);
+          results[file.id] = await decryptMetadata(file.id, nonce, ct);
+        } catch {
+          // Not JSON-encrypted or crypto unavailable — fall back to truncated raw name
+        }
+      }),
+    ).then(() => setDecryptedNames({ ...results }));
+  }, [files, isUnlocked, decryptMetadata]);
+
   // ------------------------------------------------------------------
   // Fetch files
   // ------------------------------------------------------------------
@@ -192,9 +227,9 @@ export default function FilesScreen() {
   const navigateToFolder = useCallback((folder: FileEntry) => {
     setFolderStack((prev) => [
       ...prev,
-      { id: folder.id, name: displayName(folder) },
+      { id: folder.id, name: decryptedNames[folder.id] ?? displayName(folder) },
     ]);
-  }, []);
+  }, [decryptedNames]);
 
   const navigateToBreadcrumb = useCallback((index: number) => {
     setFolderStack((prev) => prev.slice(0, index + 1));
@@ -207,14 +242,14 @@ export default function FilesScreen() {
       } else {
         navigation.navigate('Preview', {
           fileId: file.id,
-          fileName: displayName(file),
+          fileName: decryptedNames[file.id] ?? displayName(file),
           mimeType: file.mime_type ?? undefined,
           sizeBytes: file.size_bytes,
           createdAt: file.created_at,
         });
       }
     },
-    [navigateToFolder, navigation],
+    [navigateToFolder, navigation, decryptedNames],
   );
 
   const handleRefresh = useCallback(() => {
@@ -244,12 +279,15 @@ export default function FilesScreen() {
   }, [currentFolder]);
 
   const showUploadAlert = useCallback(() => {
+    const cryptoNote = isUnlocked
+      ? 'Vault unlocked — files will be encrypted before upload.'
+      : 'Unlock your vault first to enable encrypted uploads.';
     Alert.alert(
       'Upload',
-      'File upload requires native crypto bindings (UniFFI) which are not yet integrated.',
+      `File upload requires a document picker integration (coming soon).\n\n${cryptoNote}`,
       [{ text: 'OK' }],
     );
-  }, []);
+  }, [isUnlocked]);
 
   const showNewFolderPrompt = useCallback(() => {
     if (Platform.OS === 'ios') {
@@ -288,7 +326,7 @@ export default function FilesScreen() {
   }, []);
 
   const handleLongPress = useCallback((item: FileEntry) => {
-    const name = displayName(item);
+    const name = decryptedNames[item.id] ?? displayName(item);
     const options = item.is_folder
       ? ['Open', 'Share', 'Delete', 'Cancel']
       : ['Preview', 'Share', 'Move to Trash', 'Cancel'];
@@ -347,14 +385,17 @@ export default function FilesScreen() {
         { text: 'Cancel', style: 'cancel' },
       ]);
     }
-  }, [navigation, openFile]);
+  }, [navigation, openFile, decryptedNames]);
 
   // Filtered file list for search
   const displayedFiles = useMemo(() => {
     if (!searchQuery.trim()) return files;
     const q = searchQuery.toLowerCase();
-    return files.filter((f) => displayName(f).toLowerCase().includes(q));
-  }, [files, searchQuery]);
+    return files.filter((f) => {
+      const name = decryptedNames[f.id] ?? displayName(f);
+      return name.toLowerCase().includes(q);
+    });
+  }, [files, searchQuery, decryptedNames]);
 
   // ------------------------------------------------------------------
   // Render helpers
@@ -401,7 +442,7 @@ export default function FilesScreen() {
         <FileIcon category={category} />
         <View style={styles.fileInfo}>
           <Text style={styles.fileName} numberOfLines={1}>
-            {displayName(item)}
+            {decryptedNames[item.id] ?? displayName(item)}
           </Text>
           <Text style={styles.fileMeta}>
             {item.is_folder
