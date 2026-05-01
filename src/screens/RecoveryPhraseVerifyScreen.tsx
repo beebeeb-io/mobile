@@ -33,9 +33,34 @@ export default function RecoveryPhraseVerifyScreen() {
   const navigation = useNavigation<Nav>();
   const route = useRoute<Route>();
   const insets = useSafeAreaInsets();
+  const { colors: c, resolved } = useTheme();
 
   const { phrase } = route.params;
   const positions = useMemo(() => pickVerifyPositions(phrase.length), [phrase.length]);
+
+  const styles = useMemo(() => StyleSheet.create({
+    root: { flex: 1, backgroundColor: c.paper },
+    content: { paddingHorizontal: spacing.xl },
+    logoRow: { alignItems: 'center', marginBottom: 22 },
+    logo: { width: 44, height: 44, borderRadius: 12, backgroundColor: c.ink, alignItems: 'center', justifyContent: 'center' },
+    logoText: { color: c.amber, fontSize: 16, fontWeight: '800', letterSpacing: -0.5 },
+    heading: { fontSize: 22, fontWeight: '700', color: c.ink, textAlign: 'center', letterSpacing: -0.3, marginBottom: 6 },
+    subheading: { fontSize: 13, color: c.ink3, textAlign: 'center', lineHeight: 19, marginBottom: 24 },
+    errorBanner: { backgroundColor: resolved === 'dark' ? '#2d1515' : '#fef2f2', borderWidth: 1, borderColor: resolved === 'dark' ? '#5c2828' : '#fecaca', borderRadius: radii.md, paddingVertical: spacing.sm, paddingHorizontal: spacing.md, marginBottom: spacing.lg },
+    errorText: { fontSize: 12, color: c.red, lineHeight: 17 },
+    inputsCard: { backgroundColor: c.paper, borderRadius: radii.lg, borderWidth: 1, borderColor: c.line, marginBottom: 24, overflow: 'hidden' },
+    inputRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 12 },
+    inputRowBorder: { borderBottomWidth: 1, borderBottomColor: c.line },
+    posLabel: { width: 28, height: 28, borderRadius: radii.sm, backgroundColor: c.paper2, alignItems: 'center', justifyContent: 'center', marginRight: 12 },
+    posNumber: { fontSize: 12, fontWeight: '700', color: c.ink3 },
+    input: { flex: 1, height: 36, fontSize: 14, color: c.ink, fontFamily: 'SpaceMono' },
+    inputError: { color: c.red },
+    button: { backgroundColor: c.ink, borderRadius: radii.md, paddingVertical: 15, alignItems: 'center', marginBottom: 14 },
+    buttonDisabled: { opacity: 0.4 },
+    buttonText: { fontSize: 15, fontWeight: '700', color: c.amber },
+    backRow: { alignItems: 'center', paddingVertical: 4 },
+    backText: { fontSize: 13, color: c.ink4 },
+  }), [c, resolved]);
 
   const [answers, setAnswers] = useState<string[]>(['', '', '']);
   const [error, setError] = useState<string | null>(null);
@@ -104,7 +129,7 @@ export default function RecoveryPhraseVerifyScreen() {
                 value={answers[i]}
                 onChangeText={(v) => setAnswer(i, v)}
                 placeholder={`Word #${pos + 1}`}
-                placeholderTextColor={colors.ink4}
+                placeholderTextColor={c.ink4}
                 autoCapitalize="none"
                 autoCorrect={false}
                 returnKeyType={i < positions.length - 1 ? 'next' : 'done'}
@@ -136,95 +161,3 @@ export default function RecoveryPhraseVerifyScreen() {
   );
 }
 
-const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: colors.paper },
-  content: { paddingHorizontal: spacing.xl },
-
-  logoRow: { alignItems: 'center', marginBottom: 22 },
-  logo: {
-    width: 44,
-    height: 44,
-    borderRadius: 12,
-    backgroundColor: colors.ink,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  logoText: { color: colors.amber, fontSize: 16, fontWeight: '800', letterSpacing: -0.5 },
-
-  heading: {
-    fontSize: 22,
-    fontWeight: '700',
-    color: colors.ink,
-    textAlign: 'center',
-    letterSpacing: -0.3,
-    marginBottom: 6,
-  },
-  subheading: {
-    fontSize: 13,
-    color: colors.ink3,
-    textAlign: 'center',
-    lineHeight: 19,
-    marginBottom: 24,
-  },
-
-  errorBanner: {
-    backgroundColor: '#fef2f2',
-    borderWidth: 1,
-    borderColor: '#fecaca',
-    borderRadius: radii.md,
-    paddingVertical: spacing.sm,
-    paddingHorizontal: spacing.md,
-    marginBottom: spacing.lg,
-  },
-  errorText: { fontSize: 12, color: colors.red, lineHeight: 17 },
-
-  inputsCard: {
-    backgroundColor: colors.paper,
-    borderRadius: radii.lg,
-    borderWidth: 1,
-    borderColor: colors.line,
-    marginBottom: 24,
-    overflow: 'hidden',
-  },
-  inputRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-  },
-  inputRowBorder: {
-    borderBottomWidth: 1,
-    borderBottomColor: colors.line,
-  },
-  posLabel: {
-    width: 28,
-    height: 28,
-    borderRadius: radii.sm,
-    backgroundColor: colors.paper2,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 12,
-  },
-  posNumber: { fontSize: 12, fontWeight: '700', color: colors.ink3 },
-  input: {
-    flex: 1,
-    height: 36,
-    fontSize: 14,
-    color: colors.ink,
-    fontFamily: 'SpaceMono',
-  },
-  inputError: { color: colors.red },
-
-  button: {
-    backgroundColor: colors.ink,
-    borderRadius: radii.md,
-    paddingVertical: 15,
-    alignItems: 'center',
-    marginBottom: 14,
-  },
-  buttonDisabled: { opacity: 0.4 },
-  buttonText: { fontSize: 15, fontWeight: '700', color: colors.amber },
-
-  backRow: { alignItems: 'center', paddingVertical: 4 },
-  backText: { fontSize: 13, color: colors.ink4 },
-});
