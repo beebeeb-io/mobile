@@ -16,6 +16,7 @@ import { radii, spacing } from '../theme';
 import { login, opaqueLoginStart, opaqueLoginFinish, friendlyError } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { useTheme } from '../lib/theme-context';
+import * as Haptics from 'expo-haptics';
 import * as BeebeebCrypto from '../../modules/beebeeb-crypto';
 import type { RootStackParamList } from '../App';
 
@@ -85,6 +86,7 @@ export default function LoginScreen() {
       await refreshAuth();
     } catch (err) {
       setError(friendlyError(err));
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
     } finally {
       setLoading(false);
     }

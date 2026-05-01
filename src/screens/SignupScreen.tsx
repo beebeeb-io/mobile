@@ -16,6 +16,7 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { radii, spacing } from '../theme';
 import { useTheme } from '../lib/theme-context';
 import { useAuth } from '../lib/auth';
+import * as Haptics from 'expo-haptics';
 import {
   signup,
   opaqueRegistrationStart,
@@ -124,6 +125,7 @@ export default function SignupScreen() {
       }
     } catch (err) {
       setError(friendlyError(err));
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
     } finally {
       setLoading(false);
     }

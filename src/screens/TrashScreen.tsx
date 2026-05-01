@@ -224,8 +224,8 @@ export default function TrashScreen() {
           style: 'destructive',
           onPress: async () => {
             try {
+              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
               await permanentDeleteFile(item.id);
-              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
               setFiles((prev) => prev.filter((f) => f.id !== item.id));
               showToast({ type: 'info', message: `"${name}" permanently deleted` });
             } catch (err) {
@@ -250,8 +250,8 @@ export default function TrashScreen() {
           style: 'destructive',
           onPress: async () => {
             try {
+              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
               await emptyTrash();
-              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
               setFiles([]);
               showToast({ type: 'success', message: 'Trash emptied' });
             } catch (err) {
