@@ -9,7 +9,7 @@ import {
   View,
 } from 'react-native';
 import { colors, radii, spacing } from '../theme';
-import { useAuth } from '../App';
+import { useAuth } from '../lib/auth';
 import { getStorageUsage, type StorageUsage } from '../lib/api';
 
 // ---------------------------------------------------------------------------
