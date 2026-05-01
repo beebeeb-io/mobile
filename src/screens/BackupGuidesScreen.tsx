@@ -11,7 +11,8 @@ import {
 } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { colors, radii, spacing } from '../theme';
+import { radii, spacing } from '../theme';
+import type { Colors } from '../theme';
 import { useTheme } from '../lib/theme-context';
 import { guides as initialGuides, type BackupGuide } from '../lib/backup-guides';
 import type { RootStackParamList } from '../App';
@@ -24,16 +25,19 @@ const DIFFICULTY_LABEL: Record<BackupGuide['difficulty'], string> = {
   manual: 'Manual',
 };
 
-const DIFFICULTY_LIGHT: Record<BackupGuide['difficulty'], { bg: string; text: string }> = {
-  easy: { bg: '#e8f9e8', text: colors.green },
-  medium: { bg: colors.amberBg, text: colors.amberDeep },
-  manual: { bg: colors.paper2, text: colors.ink3 },
-};
-const DIFFICULTY_DARK: Record<BackupGuide['difficulty'], { bg: string; text: string }> = {
-  easy: { bg: 'rgba(74,190,74,0.12)', text: colors.green },
-  medium: { bg: '#302808', text: '#f5b800' },
-  manual: { bg: '#27272c', text: '#8a867f' },
-};
+function difficultyTheme(c: Colors, dark: boolean): Record<BackupGuide['difficulty'], { bg: string; text: string }> {
+  return dark
+    ? {
+        easy: { bg: 'rgba(74,190,74,0.12)', text: c.green },
+        medium: { bg: '#302808', text: '#f5b800' },
+        manual: { bg: '#27272c', text: '#8a867f' },
+      }
+    : {
+        easy: { bg: '#e8f9e8', text: c.green },
+        medium: { bg: c.amberBg, text: c.amberDeep },
+        manual: { bg: c.paper2, text: c.ink3 },
+      };
+}
 
 // Deterministic background color per initials so each app has a consistent tint
 const INITIALS_BG = [
@@ -54,8 +58,8 @@ function initialsColor(index: number): string {
 // ---------------------------------------------------------------------------
 
 function DifficultyBadge({ difficulty }: { difficulty: BackupGuide['difficulty'] }) {
-  const { resolved } = useTheme();
-  const dc = (resolved === 'dark' ? DIFFICULTY_DARK : DIFFICULTY_LIGHT)[difficulty];
+  const { resolved, colors: c } = useTheme();
+  const dc = difficultyTheme(c, resolved === 'dark')[difficulty];
   return (
     <View style={[styles.badge, { backgroundColor: dc.bg }]}>
       <Text style={[styles.badgeText, { color: dc.text }]}>{DIFFICULTY_LABEL[difficulty]}</Text>
@@ -69,17 +73,19 @@ function GuideCard({
   expanded,
   onToggle,
   onUpvote,
+  c,
 }: {
   guide: BackupGuide;
   index: number;
   expanded: boolean;
   onToggle: () => void;
   onUpvote: () => void;
+  c: Colors;
 }) {
   const bg = initialsColor(index);
 
   return (
-    <View style={styles.card}>
+    <View style={[styles.card, { backgroundColor: c.paper, borderColor: c.line }]}>
       <TouchableOpacity
         style={styles.cardHeader}
         activeOpacity={0.7}
@@ -88,45 +94,45 @@ function GuideCard({
         accessibilityLabel={`${guide.appName} backup guide, ${DIFFICULTY_LABEL[guide.difficulty]}`}
       >
         <View style={[styles.appIcon, { backgroundColor: bg }]}>
-          <Text style={styles.appIconText}>{guide.appInitials}</Text>
+          <Text style={[styles.appIconText, { color: c.ink2 }]}>{guide.appInitials}</Text>
         </View>
 
         <View style={styles.cardHeaderInfo}>
-          <Text style={styles.appName}>{guide.appName}</Text>
+          <Text style={[styles.appName, { color: c.ink }]}>{guide.appName}</Text>
           <View style={styles.cardMeta}>
             <DifficultyBadge difficulty={guide.difficulty} />
-            <Text style={styles.stepCount}>{guide.steps.length} steps</Text>
+            <Text style={[styles.stepCount, { color: c.ink3 }]}>{guide.steps.length} steps</Text>
           </View>
         </View>
 
         <View style={styles.cardHeaderRight}>
           <TouchableOpacity
-            style={styles.upvoteBtn}
+            style={[styles.upvoteBtn, { borderColor: c.line }]}
             activeOpacity={0.7}
             onPress={onUpvote}
             accessibilityLabel={`Upvote ${guide.appName}`}
           >
-            <Text style={styles.upvoteArrow}>^</Text>
-            <Text style={styles.upvoteCount}>{guide.upvotes}</Text>
+            <Text style={[styles.upvoteArrow, { color: c.ink3 }]}>^</Text>
+            <Text style={[styles.upvoteCount, { color: c.ink2 }]}>{guide.upvotes}</Text>
           </TouchableOpacity>
-          <Text style={[styles.chevron, expanded && styles.chevronOpen]}>{'›'}</Text>
+          <Text style={[styles.chevron, expanded && styles.chevronOpen, { color: c.ink4 }]}>{'›'}</Text>
         </View>
       </TouchableOpacity>
 
       {expanded && (
         <View style={styles.cardBody}>
-          <View style={styles.divider} />
+          <View style={[styles.divider, { backgroundColor: c.line }]} />
           {guide.steps.map((step, i) => (
             <View key={i} style={styles.step}>
-              <View style={styles.stepNumber}>
-                <Text style={styles.stepNumberText}>{i + 1}</Text>
+              <View style={[styles.stepNumber, { backgroundColor: c.amberBg }]}>
+                <Text style={[styles.stepNumberText, { color: c.amberDeep }]}>{i + 1}</Text>
               </View>
-              <Text style={styles.stepText}>{step}</Text>
+              <Text style={[styles.stepText, { color: c.ink2 }]}>{step}</Text>
             </View>
           ))}
           {guide.note && (
-            <View style={styles.noteBox}>
-              <Text style={styles.noteText}>{guide.note}</Text>
+            <View style={[styles.noteBox, { backgroundColor: c.paper2 }]}>
+              <Text style={[styles.noteText, { color: c.ink3 }]}>{guide.note}</Text>
             </View>
           )}
         </View>
@@ -141,6 +147,7 @@ function GuideCard({
 
 export default function BackupGuidesScreen() {
   const navigation = useNavigation<Nav>();
+  const { colors: c } = useTheme();
   const [guideList, setGuideList] = useState(initialGuides);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [requestApp, setRequestApp] = useState('');
@@ -167,17 +174,18 @@ export default function BackupGuidesScreen() {
   }, []);
 
   return (
-    <View style={styles.root}>
+    <View style={[styles.root, { backgroundColor: c.paper2 }]}>
       {/* Header */}
       <View style={styles.header}>
         <TouchableOpacity
           style={styles.backBtn}
           onPress={() => navigation.goBack()}
+          accessibilityRole="button"
           accessibilityLabel="Go back"
         >
-          <Text style={styles.backBtnText}>{'‹'}</Text>
+          <Text style={[styles.backBtnText, { color: c.ink }]}>{'‹'}</Text>
         </TouchableOpacity>
-        <Text style={styles.title}>Back up your apps</Text>
+        <Text style={[styles.title, { color: c.ink }]}>Back up your apps</Text>
       </View>
 
       <FlatList
@@ -186,7 +194,7 @@ export default function BackupGuidesScreen() {
         contentContainerStyle={styles.listContent}
         showsVerticalScrollIndicator={false}
         ListHeaderComponent={
-          <Text style={styles.subtitle}>
+          <Text style={[styles.subtitle, { color: c.ink3 }]}>
             Step-by-step guides to save your data from other apps to Beebeeb.
           </Text>
         }
@@ -197,22 +205,23 @@ export default function BackupGuidesScreen() {
             expanded={expandedId === item.id}
             onToggle={() => handleToggle(item.id)}
             onUpvote={() => handleUpvote(item.id)}
+            c={c}
           />
         )}
         ItemSeparatorComponent={() => <View style={styles.separator} />}
         ListFooterComponent={
           <View>
             {/* Request section */}
-            <View style={styles.requestSection}>
-              <Text style={styles.requestHeading}>Don't see your app?</Text>
-              <Text style={styles.requestSub}>
+            <View style={[styles.requestSection, { backgroundColor: c.paper, borderColor: c.line }]}>
+              <Text style={[styles.requestHeading, { color: c.ink }]}>Don't see your app?</Text>
+              <Text style={[styles.requestSub, { color: c.ink3 }]}>
                 Request a guide and vote for it on the roadmap.
               </Text>
               <View style={styles.requestRow}>
                 <TextInput
-                  style={styles.requestInput}
+                  style={[styles.requestInput, { backgroundColor: c.paper2, borderColor: c.line, color: c.ink }]}
                   placeholder="App name"
-                  placeholderTextColor={colors.ink4}
+                  placeholderTextColor={c.ink4}
                   value={requestApp}
                   onChangeText={setRequestApp}
                   returnKeyType="send"
@@ -221,12 +230,14 @@ export default function BackupGuidesScreen() {
                 <Pressable
                   style={({ pressed }) => [
                     styles.requestSubmit,
+                    { backgroundColor: c.ink },
                     pressed && styles.requestSubmitPressed,
                   ]}
                   onPress={handleRequest}
+                  accessibilityRole="button"
                   accessibilityLabel="Submit app request"
                 >
-                  <Text style={styles.requestSubmitText}>Request</Text>
+                  <Text style={[styles.requestSubmitText, { color: c.paper }]}>Request</Text>
                 </Pressable>
               </View>
             </View>
@@ -239,8 +250,8 @@ export default function BackupGuidesScreen() {
               accessibilityRole="link"
               accessibilityLabel="View full roadmap"
             >
-              <Text style={styles.roadmapLinkText}>View full roadmap</Text>
-              <Text style={styles.roadmapLinkArrow}>{'›'}</Text>
+              <Text style={[styles.roadmapLinkText, { color: c.amberDeep }]}>View full roadmap</Text>
+              <Text style={[styles.roadmapLinkArrow, { color: c.amberDeep }]}>{'›'}</Text>
             </TouchableOpacity>
           </View>
         }
@@ -254,7 +265,7 @@ export default function BackupGuidesScreen() {
 // ---------------------------------------------------------------------------
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: colors.paper2 },
+  root: { flex: 1 },
 
   header: {
     flexDirection: 'row',
@@ -270,18 +281,15 @@ const styles = StyleSheet.create({
   },
   backBtnText: {
     fontSize: 28,
-    color: colors.ink,
     lineHeight: 32,
   },
   title: {
     fontSize: 24,
     fontWeight: '700',
-    color: colors.ink,
   },
 
   subtitle: {
     fontSize: 13,
-    color: colors.ink3,
     lineHeight: 19,
     paddingHorizontal: 2,
     marginBottom: spacing.lg,
@@ -297,10 +305,8 @@ const styles = StyleSheet.create({
 
   // Card
   card: {
-    backgroundColor: colors.paper,
     borderRadius: radii.lg,
     borderWidth: 1,
-    borderColor: colors.line,
     overflow: 'hidden',
   },
   cardHeader: {
@@ -319,14 +325,12 @@ const styles = StyleSheet.create({
   appIconText: {
     fontSize: 11,
     fontWeight: '700',
-    color: colors.ink2,
     letterSpacing: 0.2,
   },
   cardHeaderInfo: { flex: 1, gap: 4 },
   appName: {
     fontSize: 14,
     fontWeight: '600',
-    color: colors.ink,
   },
   cardMeta: {
     flexDirection: 'row',
@@ -335,7 +339,6 @@ const styles = StyleSheet.create({
   },
   stepCount: {
     fontSize: 11,
-    color: colors.ink3,
   },
   cardHeaderRight: {
     flexDirection: 'row',
@@ -361,25 +364,21 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
     borderRadius: radii.sm,
     borderWidth: 1,
-    borderColor: colors.line,
     minWidth: 34,
   },
   upvoteArrow: {
     fontSize: 10,
     fontWeight: '700',
-    color: colors.ink3,
     lineHeight: 12,
   },
   upvoteCount: {
     fontSize: 10,
     fontWeight: '600',
-    color: colors.ink2,
     lineHeight: 13,
   },
 
   chevron: {
     fontSize: 20,
-    color: colors.ink4,
     transform: [{ rotate: '0deg' }],
   },
   chevronOpen: {
@@ -393,7 +392,6 @@ const styles = StyleSheet.create({
   },
   divider: {
     height: 1,
-    backgroundColor: colors.line,
     marginBottom: 12,
   },
   step: {
@@ -405,7 +403,6 @@ const styles = StyleSheet.create({
     width: 20,
     height: 20,
     borderRadius: 10,
-    backgroundColor: colors.amberBg,
     alignItems: 'center',
     justifyContent: 'center',
     marginTop: 1,
@@ -414,44 +411,36 @@ const styles = StyleSheet.create({
   stepNumberText: {
     fontSize: 10,
     fontWeight: '700',
-    color: colors.amberDeep,
   },
   stepText: {
     flex: 1,
     fontSize: 13,
-    color: colors.ink2,
     lineHeight: 19,
   },
   noteBox: {
-    backgroundColor: colors.paper2,
     borderRadius: radii.sm,
     padding: 10,
     marginTop: 4,
   },
   noteText: {
     fontSize: 12,
-    color: colors.ink3,
     lineHeight: 17,
   },
 
   // Request section
   requestSection: {
     marginTop: 24,
-    backgroundColor: colors.paper,
     borderRadius: radii.lg,
     borderWidth: 1,
-    borderColor: colors.line,
     padding: 14,
   },
   requestHeading: {
     fontSize: 14,
     fontWeight: '600',
-    color: colors.ink,
     marginBottom: 4,
   },
   requestSub: {
     fontSize: 12,
-    color: colors.ink3,
     marginBottom: 12,
     lineHeight: 17,
   },
@@ -462,18 +451,14 @@ const styles = StyleSheet.create({
   requestInput: {
     flex: 1,
     height: 38,
-    backgroundColor: colors.paper2,
     borderRadius: radii.md,
     borderWidth: 1,
-    borderColor: colors.line,
     paddingHorizontal: 10,
     fontSize: 13,
-    color: colors.ink,
   },
   requestSubmit: {
     height: 38,
     paddingHorizontal: 14,
-    backgroundColor: colors.ink,
     borderRadius: radii.md,
     alignItems: 'center',
     justifyContent: 'center',
@@ -484,7 +469,6 @@ const styles = StyleSheet.create({
   requestSubmitText: {
     fontSize: 13,
     fontWeight: '600',
-    color: colors.paper,
   },
 
   // Roadmap link
@@ -498,11 +482,9 @@ const styles = StyleSheet.create({
   },
   roadmapLinkText: {
     fontSize: 13,
-    color: colors.amberDeep,
     fontWeight: '500',
   },
   roadmapLinkArrow: {
     fontSize: 16,
-    color: colors.amberDeep,
   },
 });
