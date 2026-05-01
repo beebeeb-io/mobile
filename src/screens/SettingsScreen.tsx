@@ -40,6 +40,20 @@ import {
   type Subscription,
   type Region,
 } from '../lib/api';
+import {
+  initDatabase as initBackupDb,
+  getUploadedCount,
+  getTotalCount,
+  getUploadedBytes,
+  getTotalBytes,
+} from '../services/BackupDatabase';
+import {
+  initializeBackup,
+  disableBackup,
+  getDeviceManifest,
+  type BackupCategory,
+  type DeviceManifest,
+} from '../services/BackupService';
 import type { RootStackParamList } from '../App';
 
 const BIOMETRIC_PREF_KEY = 'beebeeb_biometric_lock';
@@ -96,6 +110,20 @@ function userInitials(email: string): string {
   const parts = local.split(/[._-]/);
   if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
   return local.slice(0, 2).toUpperCase();
+}
+
+function timeAgo(iso: string): string {
+  const ms = Date.now() - new Date(iso).getTime();
+  if (ms < 0) return 'just now';
+  const sec = Math.floor(ms / 1000);
+  if (sec < 60) return 'just now';
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min} min ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}h ago`;
+  const day = Math.floor(hr / 24);
+  if (day < 30) return `${day}d ago`;
+  return new Date(iso).toLocaleDateString();
 }
 
 function planLabel(name: string): string {
@@ -247,6 +275,60 @@ function RowDivider({ c }: { c: C }) {
   return <View style={{ height: 1, backgroundColor: c.line, marginLeft: 12 }} />;
 }
 
+interface CategoryStats {
+  uploadedCount: number;
+  totalCount: number;
+  uploadedBytes: number;
+  totalBytes: number;
+  lastSyncAt: string | null;
+  syncing: boolean;
+}
+
+const EMPTY_CATEGORY_STATS: CategoryStats = {
+  uploadedCount: 0,
+  totalCount: 0,
+  uploadedBytes: 0,
+  totalBytes: 0,
+  lastSyncAt: null,
+  syncing: false,
+};
+
+function BackupCategoryStatus({ stats, c }: { stats: CategoryStats; c: C }) {
+  const { uploadedCount, totalCount, uploadedBytes, totalBytes, lastSyncAt, syncing } = stats;
+
+  if (totalCount === 0 && !lastSyncAt && !syncing) {
+    return (
+      <View style={{ paddingHorizontal: 12, paddingBottom: 10, paddingTop: 2 }}>
+        <Text style={{ fontSize: 11, color: c.ink3 }}>Waiting for first scan…</Text>
+      </View>
+    );
+  }
+
+  const pct = totalCount > 0 ? Math.min(uploadedCount / totalCount, 1) : 0;
+  const fillWidth = `${Math.max(pct * 100, 1)}%` as `${number}%`;
+  const showBar = syncing && totalCount > 0;
+
+  let line: string;
+  if (syncing) {
+    line = `${uploadedCount} / ${totalCount} items · ${formatBytes(uploadedBytes)} / ${formatBytes(totalBytes)}`;
+  } else if (lastSyncAt) {
+    line = `Last backup: ${timeAgo(lastSyncAt)} · ${uploadedCount} items · ${formatBytes(uploadedBytes)}`;
+  } else {
+    line = `${uploadedCount} of ${totalCount} items backed up`;
+  }
+
+  return (
+    <View style={{ paddingHorizontal: 12, paddingBottom: 10, paddingTop: 2, gap: 6 }}>
+      {showBar && (
+        <View style={{ height: 4, borderRadius: 2, backgroundColor: c.line2, overflow: 'hidden' }}>
+          <View style={{ height: '100%', width: fillWidth, backgroundColor: c.amber, borderRadius: 2 }} />
+        </View>
+      )}
+      <Text style={{ fontSize: 11, color: c.ink3 }}>{line}</Text>
+    </View>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Storage bar
 // ---------------------------------------------------------------------------
@@ -342,6 +424,11 @@ export default function SettingsScreen() {
   const [storageRegionMode, setStorageRegionMode] = useState<RegionMode>('preference');
   const [savingRegion, setSavingRegion] = useState(false);
 
+  // Backup per-category stats (sourced from BackupDatabase + .device.json manifest)
+  const [photoStats, setPhotoStats] = useState<CategoryStats>(EMPTY_CATEGORY_STATS);
+  const [contactsStats, setContactsStats] = useState<CategoryStats>(EMPTY_CATEGORY_STATS);
+  const [calendarStats, setCalendarStats] = useState<CategoryStats>(EMPTY_CATEGORY_STATS);
+
   // Theme — sourced from global ThemeContext
   const { colors: c, mode: themePreference, setMode: handleThemeChange } = useTheme();
 
@@ -405,6 +492,75 @@ export default function SettingsScreen() {
     loadAccountData();
     loadStorageRegionPref();
   }, [fetchUsage, loadBiometricPrefs, loadAccountData, loadStorageRegionPref]);
+
+  // -- Backup status: refresh whenever toggles flip or the worker reports progress
+  const syncing = backupProgress.inProgress > 0;
+
+  const refreshBackupStats = useCallback(async () => {
+    try {
+      await initBackupDb();
+    } catch {
+      return;
+    }
+
+    let manifest: DeviceManifest | null = null;
+    try {
+      manifest = await getDeviceManifest();
+    } catch {
+      // Manifest may be unreachable (no network, never initialized); fall back to local-only stats
+    }
+
+    const [
+      photoUploaded, videoUploaded, photoTotal, videoTotal,
+      photoUpBytes, videoUpBytes, photoTotalBytes, videoTotalBytes,
+      contactUploaded, contactTotal, contactUpBytes, contactTotalBytes,
+      calUploaded, calTotal, calUpBytes, calTotalBytes,
+    ] = await Promise.all([
+      getUploadedCount('photo'), getUploadedCount('video'),
+      getTotalCount('photo'), getTotalCount('video'),
+      getUploadedBytes('photo'), getUploadedBytes('video'),
+      getTotalBytes('photo'), getTotalBytes('video'),
+      getUploadedCount('contact'), getTotalCount('contact'),
+      getUploadedBytes('contact'), getTotalBytes('contact'),
+      getUploadedCount('calendar'), getTotalCount('calendar'),
+      getUploadedBytes('calendar'), getTotalBytes('calendar'),
+    ]);
+
+    setPhotoStats({
+      uploadedCount: photoUploaded + videoUploaded,
+      totalCount: photoTotal + videoTotal,
+      uploadedBytes: photoUpBytes + videoUpBytes,
+      totalBytes: photoTotalBytes + videoTotalBytes,
+      lastSyncAt: manifest?.backups.camera_roll.last_sync ?? null,
+      syncing,
+    });
+    setContactsStats({
+      uploadedCount: contactUploaded,
+      totalCount: contactTotal,
+      uploadedBytes: contactUpBytes,
+      totalBytes: contactTotalBytes,
+      lastSyncAt: manifest?.backups.contacts.last_sync ?? null,
+      syncing,
+    });
+    setCalendarStats({
+      uploadedCount: calUploaded,
+      totalCount: calTotal,
+      uploadedBytes: calUpBytes,
+      totalBytes: calTotalBytes,
+      lastSyncAt: manifest?.backups.calendar.last_sync ?? null,
+      syncing,
+    });
+  }, [syncing]);
+
+  useEffect(() => {
+    refreshBackupStats();
+  }, [
+    refreshBackupStats,
+    isPhotoBackupEnabled,
+    isContactsBackupEnabled,
+    isCalendarBackupEnabled,
+    backupProgress.completed,
+  ]);
 
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -477,8 +633,24 @@ export default function SettingsScreen() {
     setNotificationsEnabled(enabled);
   }, []);
 
+  const syncBackupCategory = useCallback(async (category: BackupCategory, enabling: boolean) => {
+    try {
+      if (enabling) {
+        await initializeBackup(category);
+      } else {
+        await disableBackup(category);
+      }
+    } catch (err) {
+      // Folder/manifest write failed (offline, permission, etc.). Local toggle stays;
+      // the manifest will reconverge on the next successful run.
+      console.warn(`Failed to ${enabling ? 'initialize' : 'disable'} backup for ${category}:`, err);
+    }
+    refreshBackupStats();
+  }, [refreshBackupStats]);
+
   const handleTogglePhotoBackup = useCallback(async () => {
-    if (!isPhotoBackupEnabled) {
+    const enabling = !isPhotoBackupEnabled;
+    if (enabling) {
       const { status } = await MediaLibrary.requestPermissionsAsync();
       if (status !== 'granted') {
         Alert.alert(
@@ -489,10 +661,12 @@ export default function SettingsScreen() {
       }
     }
     await togglePhotoBackup();
-  }, [isPhotoBackupEnabled, togglePhotoBackup]);
+    await syncBackupCategory('camera_roll', enabling);
+  }, [isPhotoBackupEnabled, togglePhotoBackup, syncBackupCategory]);
 
   const handleToggleContactsBackup = useCallback(async () => {
-    if (!isContactsBackupEnabled) {
+    const enabling = !isContactsBackupEnabled;
+    if (enabling) {
       const { status } = await Contacts.requestPermissionsAsync();
       if (status !== 'granted') {
         Alert.alert(
@@ -503,10 +677,12 @@ export default function SettingsScreen() {
       }
     }
     await toggleContactsBackup();
-  }, [isContactsBackupEnabled, toggleContactsBackup]);
+    await syncBackupCategory('contacts', enabling);
+  }, [isContactsBackupEnabled, toggleContactsBackup, syncBackupCategory]);
 
   const handleToggleCalendarBackup = useCallback(async () => {
-    if (!isCalendarBackupEnabled) {
+    const enabling = !isCalendarBackupEnabled;
+    if (enabling) {
       const { status } = await Calendar.requestCalendarPermissionsAsync();
       if (status !== 'granted') {
         Alert.alert(
@@ -517,7 +693,8 @@ export default function SettingsScreen() {
       }
     }
     await toggleCalendarBackup();
-  }, [isCalendarBackupEnabled, toggleCalendarBackup]);
+    await syncBackupCategory('calendar', enabling);
+  }, [isCalendarBackupEnabled, toggleCalendarBackup, syncBackupCategory]);
 
   const handleStoragePress = useCallback(() => {
     if (!usage) return;
@@ -931,6 +1108,7 @@ export default function SettingsScreen() {
               onValueChange={handleTogglePhotoBackup}
               c={c}
             />
+            {isPhotoBackupEnabled && <BackupCategoryStatus stats={photoStats} c={c} />}
             {isPhotoBackupEnabled && (
               <>
                 <RowDivider c={c} />
@@ -969,6 +1147,7 @@ export default function SettingsScreen() {
               onValueChange={handleToggleContactsBackup}
               c={c}
             />
+            {isContactsBackupEnabled && <BackupCategoryStatus stats={contactsStats} c={c} />}
             <RowDivider c={c} />
             <ToggleRow
               label="Back up calendar"
@@ -976,6 +1155,7 @@ export default function SettingsScreen() {
               onValueChange={handleToggleCalendarBackup}
               c={c}
             />
+            {isCalendarBackupEnabled && <BackupCategoryStatus stats={calendarStats} c={c} />}
             {(isPhotoBackupEnabled || isContactsBackupEnabled || isCalendarBackupEnabled) && (
               <>
                 <RowDivider c={c} />
