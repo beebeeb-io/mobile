@@ -30,6 +30,10 @@
         "NSCameraUsageDescription": "Beebeeb scans the amber constellation pattern to pair a new device.",
         "NSPhotoLibraryUsageDescription": "Beebeeb backs up your photos with end-to-end encryption.",
         "NSPhotoLibraryAddUsageDescription": "Beebeeb saves downloaded photos to your library.",
+        "NSCalendarsUsageDescription": "Beebeeb backs up your calendar with end-to-end encryption.",
+        "NSCalendarsFullAccessUsageDescription": "Beebeeb backs up your calendar with end-to-end encryption.",
+        "NSRemindersUsageDescription": "Beebeeb backs up your reminders with end-to-end encryption.",
+        "NSContactsUsageDescription": "Beebeeb backs up your contacts with end-to-end encryption.",
         "ITSAppUsesNonExemptEncryption": false,
         "UIApplicationShortcutItems": [
           {
@@ -82,7 +86,10 @@
       "./modules/beebeeb-crypto/app.plugin.js",
       "./plugins/uniffi-bridge/withUniffiBridge.js",
       "./plugins/share-extension/withShareExtension.js",
-      "expo-video"
+      "expo-video",
+      "expo-image-picker",
+      "expo-notifications",
+      "expo-store-review"
     ],
     "extra": {
       "eas": {
