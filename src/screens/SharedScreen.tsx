@@ -332,7 +332,7 @@ export default function SharedScreen() {
 
 const styles = StyleSheet.create({
   root: { flex: 1 },
-  title: { fontSize: 24, fontWeight: '700', paddingHorizontal: spacing.lg, paddingTop: 6, paddingBottom: 4 },
+  title: { fontSize: 28, fontWeight: '700', paddingHorizontal: spacing.lg, paddingTop: 6, paddingBottom: 4 },
 
   // Tab bar
   tabBar: { flexDirection: 'row', paddingHorizontal: spacing.lg, paddingBottom: spacing.sm, gap: 4 },

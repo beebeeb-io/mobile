@@ -659,7 +659,7 @@ export default function SettingsScreen() {
   return (
     <View style={[layout.root, { backgroundColor: c.paper2 }]}>
       <Text style={{
-        fontSize: 24, fontWeight: '700' as const, color: c.ink,
+        fontSize: 28, fontWeight: '700' as const, color: c.ink,
         paddingHorizontal: spacing.lg, paddingTop: insets.top + 6, paddingBottom: 10,
       }}>
         Settings
