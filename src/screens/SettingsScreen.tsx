@@ -65,9 +65,10 @@ interface BiometricDelayOption {
 }
 const BIOMETRIC_DELAY_OPTIONS: BiometricDelayOption[] = [
   { label: 'Immediately', ms: 0 },
-  { label: '30 seconds', ms: 30_000 },
   { label: '1 minute', ms: 60_000 },
   { label: '5 minutes', ms: 300_000 },
+  { label: '15 minutes', ms: 900_000 },
+  { label: '1 hour', ms: 3_600_000 },
 ];
 
 function biometricDelayLabel(ms: number): string {
