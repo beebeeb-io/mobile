@@ -1,5 +1,5 @@
 import { BBLogo } from "../components/BBLogo";
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -14,6 +14,7 @@ import {
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { colors, radii, spacing } from '../theme';
+import { useAuth } from '../lib/auth';
 import {
   signup,
   opaqueRegistrationStart,
@@ -30,6 +31,9 @@ type Nav = NativeStackNavigationProp<RootStackParamList>;
 
 export default function SignupScreen() {
   const navigation = useNavigation<Nav>();
+  const { refreshAuth } = useAuth();
+  const passwordRef = useRef<TextInput>(null);
+  const confirmPasswordRef = useRef<TextInput>(null);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -71,7 +75,7 @@ export default function SignupScreen() {
           (opaqueErr.status === 404 || opaqueErr.status === 0)
         ) {
           await signup(trimmedEmail, password);
-          // Legacy path complete — no recovery phrase flow
+          await refreshAuth();
           return;
         }
         throw opaqueErr;
@@ -87,7 +91,8 @@ export default function SignupScreen() {
         } catch {
           // Native module not yet linked — proceed without phrase storage
         }
-        // Navigate to RecoveryPhraseScreen (token stored, auth state picks it up after)
+        // Refresh auth state so the authenticated stack is available before navigating
+        await refreshAuth();
         navigation.navigate('RecoveryPhrase', { phrase: phrase.length > 0 ? phrase : undefined });
       }
     } catch (err) {
@@ -137,12 +142,15 @@ export default function SignupScreen() {
           autoCorrect={false}
           autoComplete="email"
           returnKeyType="next"
+          onSubmitEditing={() => passwordRef.current?.focus()}
+          testID="email-input"
           editable={!loading}
         />
 
         {/* Password */}
         <Text style={styles.label}>Password</Text>
         <TextInput
+          ref={passwordRef}
           style={styles.input}
           value={password}
           onChangeText={setPassword}
@@ -152,12 +160,15 @@ export default function SignupScreen() {
           autoCapitalize="none"
           autoComplete="new-password"
           returnKeyType="next"
+          onSubmitEditing={() => confirmPasswordRef.current?.focus()}
+          testID="password-input"
           editable={!loading}
         />
 
         {/* Confirm password */}
         <Text style={styles.label}>Confirm password</Text>
         <TextInput
+          ref={confirmPasswordRef}
           style={styles.input}
           value={confirmPassword}
           onChangeText={setConfirmPassword}
@@ -168,6 +179,7 @@ export default function SignupScreen() {
           autoComplete="new-password"
           returnKeyType="go"
           onSubmitEditing={handleSignup}
+          testID="confirm-password-input"
           editable={!loading}
         />
 
