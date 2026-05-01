@@ -161,6 +161,7 @@ interface FileRowItemProps {
   selectMode: boolean;
   isSelected: boolean;
   onToggleSelect: (item: FileEntry) => void;
+  sortOrder: SortOrder;
 }
 
 const FileRowItem = React.memo(function FileRowItem({
@@ -173,6 +174,7 @@ const FileRowItem = React.memo(function FileRowItem({
   selectMode,
   isSelected,
   onToggleSelect,
+  sortOrder,
 }: FileRowItemProps) {
   const { colors: c } = useTheme();
   const swipeableRef = useRef<Swipeable>(null);
@@ -257,7 +259,9 @@ const FileRowItem = React.memo(function FileRowItem({
         <Text style={[styles.fileMeta, { color: c.ink3 }]}>
           {item.is_folder
             ? formatDate(item.updated_at)
-            : `${formatSize(item.size_bytes)}  ·  ${formatDate(item.updated_at)}`}
+            : (sortOrder === 'size-desc' || sortOrder === 'size-asc')
+              ? formatSize(item.size_bytes)
+              : `${formatSize(item.size_bytes)}  ·  ${formatDate(item.updated_at)}`}
         </Text>
       </View>
       {!selectMode && <Text style={[styles.chevron, { color: c.ink4 }]}>{'›'}</Text>}
@@ -989,8 +993,9 @@ export default function FilesScreen() {
       selectMode={selectMode}
       isSelected={selectedIds.has(item.id)}
       onToggleSelect={toggleSelect}
+      sortOrder={sortOrder}
     />
-  ), [decryptedNames, openFile, handleLongPress, handleSwipeShare, handleSwipeDelete, selectMode, selectedIds, toggleSelect]);
+  ), [decryptedNames, openFile, handleLongPress, handleSwipeShare, handleSwipeDelete, selectMode, selectedIds, toggleSelect, sortOrder]);
 
   const renderEmpty = () => {
     if (loading) return null;
