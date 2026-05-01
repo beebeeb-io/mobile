@@ -5,7 +5,7 @@
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
-    "userInterfaceStyle": "light",
+    "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "splash": {
       "backgroundColor": "#FAF8F5"
@@ -16,17 +16,17 @@
       "appleTeamId": "R8352WDJJR",
       "entitlements": {
         "com.apple.security.application-groups": [
-          "group.io.beebeeb.shared",
           "group.io.beebeeb.shared"
         ],
         "keychain-access-groups": [
-          "$(AppIdentifierPrefix)io.beebeeb.shared",
           "$(AppIdentifierPrefix)io.beebeeb.shared"
         ]
       },
       "infoPlist": {
         "NSFileProviderPresenceAuthorized": true,
         "NSCameraUsageDescription": "Beebeeb scans the amber constellation pattern to pair a new device.",
+        "NSPhotoLibraryUsageDescription": "Beebeeb backs up your photos with end-to-end encryption.",
+        "NSPhotoLibraryAddUsageDescription": "Beebeeb saves downloaded photos to your library.",
         "ITSAppUsesNonExemptEncryption": false
       }
     },
@@ -48,6 +48,7 @@
     "plugins": [
       "expo-secure-store",
       "expo-local-authentication",
+      "expo-document-picker",
       "./modules/beebeeb-crypto/app.plugin.js"
     ],
     "extra": {
