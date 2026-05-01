@@ -34,6 +34,10 @@ import LoginScreen from './screens/LoginScreen';
 import SignupScreen from './screens/SignupScreen';
 import BiometricLockScreen from './screens/BiometricLockScreen';
 import SharedViewScreen from './screens/SharedViewScreen';
+import OnboardingScreen from './screens/OnboardingScreen';
+import TrashScreen from './screens/TrashScreen';
+
+const ONBOARDING_KEY = 'beebeeb_onboarding_done';
 
 // ---------------------------------------------------------------------------
 // Navigation types
@@ -52,6 +56,7 @@ export type RootStackParamList = {
   Signup: undefined;
   // Main app
   Tabs: undefined;
+  Trash: undefined;
   Preview: {
     fileId: string;
     fileName: string;
@@ -212,6 +217,9 @@ export default function App() {
   const [locked, setLocked] = useState(false);
   const appStateRef = useRef<AppStateStatus>(AppState.currentState);
 
+  // Onboarding: shown once after first signup
+  const [onboardingDone, setOnboardingDone] = useState(true); // true by default, corrected in startup
+
   const isConnected = useNetworkStatus();
 
   const refreshAuth = useCallback(async () => {
@@ -247,6 +255,14 @@ export default function App() {
           await clearToken();
         }
       }
+      // Check onboarding state
+      try {
+        const done = await SecureStore.getItemAsync(ONBOARDING_KEY);
+        setOnboardingDone(done === 'true');
+      } catch {
+        setOnboardingDone(true); // assume done if SecureStore unavailable (web)
+      }
+
       setChecking(false);
     })();
   }, []);
@@ -341,6 +357,7 @@ export default function App() {
                   component={SharedViewScreen}
                   options={{ presentation: 'modal', animation: 'slide_from_bottom' }}
                 />
+                <Stack.Screen name="Trash" component={TrashScreen} />
               </>
             ) : (
               <>
@@ -357,6 +374,20 @@ export default function App() {
 
         {/* Offline banner */}
         {!isConnected && <OfflineBanner />}
+
+        {/* Onboarding overlay — shown once after first signup */}
+        {isAuthenticated && !onboardingDone && (
+          <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: colors.paper2 }}>
+            <OnboardingScreen
+              onComplete={async () => {
+                try {
+                  await SecureStore.setItemAsync(ONBOARDING_KEY, 'true');
+                } catch { /* web */ }
+                setOnboardingDone(true);
+              }}
+            />
+          </View>
+        )}
 
         {/* Biometric lock overlay — shown when app resumes from background */}
         {isAuthenticated && locked && (

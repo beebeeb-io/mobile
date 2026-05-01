@@ -16,15 +16,18 @@
     },
     "android": {
       "adaptiveIcon": {
-        "backgroundColor": "#FAF8F5"
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#1A1714"
       },
       "package": "io.beebeeb.app"
     },
     "web": {
-      "bundler": "metro"
+      "bundler": "metro",
+      "favicon": "./assets/icon.png"
     },
     "plugins": [
-      "expo-secure-store"
+      "expo-secure-store",
+      "expo-local-authentication"
     ]
   }
 }

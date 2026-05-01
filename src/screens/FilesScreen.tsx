@@ -1,11 +1,14 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
+  ActionSheetIOS,
   ActivityIndicator,
   Alert,
   FlatList,
+  Platform,
   RefreshControl,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
@@ -14,7 +17,7 @@ import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import * as Haptics from 'expo-haptics';
 import { colors, radii, spacing, shadows } from '../theme';
-import { listFiles, friendlyError } from '../lib/api';
+import { listFiles, deleteFile, friendlyError } from '../lib/api';
 import type { FileEntry } from '../lib/api';
 import type { RootStackParamList } from '../App';
 
@@ -145,6 +148,10 @@ export default function FilesScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Search state
+  const [searchActive, setSearchActive] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+
   // ------------------------------------------------------------------
   // Fetch files
   // ------------------------------------------------------------------
@@ -223,6 +230,82 @@ export default function FilesScreen() {
     );
   }, []);
 
+  const handleSearchToggle = useCallback(() => {
+    setSearchActive((prev) => {
+      if (prev) setSearchQuery('');
+      return !prev;
+    });
+  }, []);
+
+  const handleLongPress = useCallback((item: FileEntry) => {
+    const name = displayName(item);
+    const options = item.is_folder
+      ? ['Open', 'Share', 'Delete', 'Cancel']
+      : ['Preview', 'Share', 'Move to Trash', 'Cancel'];
+    const destructiveIndex = item.is_folder ? 2 : 2;
+    const cancelIndex = options.length - 1;
+
+    const handleAction = (index: number) => {
+      if (index === 0) {
+        openFile(item);
+      } else if (index === 1) {
+        navigation.navigate('ShareSheet', {
+          fileId: item.id,
+          fileName: name,
+          mimeType: item.mime_type ?? undefined,
+          sizeBytes: item.size_bytes,
+        });
+      } else if (index === 2) {
+        Alert.alert(
+          'Move to Trash',
+          `"${name}" will be moved to Trash.`,
+          [
+            { text: 'Cancel', style: 'cancel' },
+            {
+              text: 'Move to Trash',
+              style: 'destructive',
+              onPress: async () => {
+                try {
+                  await deleteFile(item.id);
+                  setFiles((prev) => prev.filter((f) => f.id !== item.id));
+                } catch (err) {
+                  Alert.alert('Error', friendlyError(err));
+                }
+              },
+            },
+          ],
+        );
+      }
+    };
+
+    if (Platform.OS === 'ios') {
+      ActionSheetIOS.showActionSheetWithOptions(
+        {
+          title: name,
+          options,
+          destructiveButtonIndex: destructiveIndex,
+          cancelButtonIndex: cancelIndex,
+        },
+        handleAction,
+      );
+    } else {
+      // Android / web: use Alert with buttons
+      Alert.alert(name, undefined, [
+        { text: options[0], onPress: () => handleAction(0) },
+        { text: options[1], onPress: () => handleAction(1) },
+        { text: options[2], style: 'destructive', onPress: () => handleAction(2) },
+        { text: 'Cancel', style: 'cancel' },
+      ]);
+    }
+  }, [navigation, openFile]);
+
+  // Filtered file list for search
+  const displayedFiles = useMemo(() => {
+    if (!searchQuery.trim()) return files;
+    const q = searchQuery.toLowerCase();
+    return files.filter((f) => displayName(f).toLowerCase().includes(q));
+  }, [files, searchQuery]);
+
   // ------------------------------------------------------------------
   // Render helpers
   // ------------------------------------------------------------------
@@ -262,6 +345,8 @@ export default function FilesScreen() {
         style={styles.fileRow}
         activeOpacity={0.6}
         onPress={() => openFile(item)}
+        onLongPress={() => handleLongPress(item)}
+        delayLongPress={400}
       >
         <FileIcon category={category} />
         <View style={styles.fileInfo}>
@@ -313,7 +398,7 @@ export default function FilesScreen() {
     <View style={[styles.root, { paddingTop: insets.top }]}>
       {/* Header */}
       <View style={styles.header}>
-        {folderStack.length > 1 && (
+        {!searchActive && folderStack.length > 1 && (
           <TouchableOpacity
             style={styles.backButton}
             onPress={() => navigateToBreadcrumb(folderStack.length - 2)}
@@ -322,8 +407,29 @@ export default function FilesScreen() {
             <Text style={styles.backButtonText}>{'‹'}</Text>
           </TouchableOpacity>
         )}
-        <Text style={styles.title}>{currentFolder.name}</Text>
+        {searchActive ? (
+          <TextInput
+            style={styles.searchInput}
+            value={searchQuery}
+            onChangeText={setSearchQuery}
+            placeholder="Search files..."
+            placeholderTextColor={colors.ink4}
+            autoFocus
+            returnKeyType="search"
+            autoCapitalize="none"
+            autoCorrect={false}
+          />
+        ) : (
+          <Text style={styles.title}>{currentFolder.name}</Text>
+        )}
         <View style={{ flex: 1 }} />
+        <TouchableOpacity
+          onPress={handleSearchToggle}
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          style={styles.searchButton}
+        >
+          <Text style={styles.searchButtonText}>{searchActive ? '✕' : '⌕'}</Text>
+        </TouchableOpacity>
       </View>
 
       {/* Breadcrumbs (only show when navigated into a folder) */}
@@ -339,7 +445,7 @@ export default function FilesScreen() {
         </View>
       ) : (
         <FlatList
-          data={files}
+          data={displayedFiles}
           keyExtractor={(item) => item.id}
           renderItem={renderFileRow}
           ListEmptyComponent={renderEmpty}
@@ -351,7 +457,7 @@ export default function FilesScreen() {
               colors={[colors.amber]}
             />
           }
-          contentContainerStyle={files.length === 0 ? styles.emptyList : undefined}
+          contentContainerStyle={displayedFiles.length === 0 ? styles.emptyList : undefined}
         />
       )}
 
@@ -405,6 +511,27 @@ const styles = StyleSheet.create({
     fontSize: 28,
     fontWeight: '700',
     color: colors.ink,
+  },
+  searchInput: {
+    flex: 1,
+    height: 36,
+    backgroundColor: colors.paper2,
+    borderRadius: radii.md,
+    paddingHorizontal: 12,
+    fontSize: 15,
+    color: colors.ink,
+    borderWidth: 1,
+    borderColor: colors.line,
+  },
+  searchButton: {
+    width: 32,
+    height: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  searchButtonText: {
+    fontSize: 20,
+    color: colors.ink2,
   },
 
   // Breadcrumbs
