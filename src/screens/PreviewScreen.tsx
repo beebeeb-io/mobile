@@ -867,6 +867,11 @@ export default function PreviewScreen() {
 
     if (isUnlocked) {
       try {
+        // TODO(crypto-link): this single nonce/ciphertext slice only works for
+        // simple uploads (api.ts uploadFileSimple). Chunked uploads write one
+        // (nonce(12) + ciphertext) record per chunk, so once decryptChunk is
+        // wired we need to walk chunk_count boundaries instead of slicing once.
+        // Leaving the simple-path call so the wiring is in place.
         const encBase64 = await FileSystem.readAsStringAsync(result.uri, {
           encoding: FileSystem.EncodingType.Base64,
         });
