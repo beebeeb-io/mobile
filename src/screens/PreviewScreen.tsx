@@ -34,6 +34,39 @@ import { useCrypto } from '../lib/crypto-context';
 import mammoth from 'mammoth/mammoth.browser';
 import * as XLSX from 'xlsx';
 
+// Syntax highlighting — modular import + register only the languages we ship,
+// so the bundle stays small (~50 KB instead of ~700 KB for all 197 languages).
+import hljs from 'highlight.js/lib/core';
+import hljsBash from 'highlight.js/lib/languages/bash';
+import hljsCss from 'highlight.js/lib/languages/css';
+import hljsGo from 'highlight.js/lib/languages/go';
+import hljsJava from 'highlight.js/lib/languages/java';
+import hljsJavascript from 'highlight.js/lib/languages/javascript';
+import hljsJson from 'highlight.js/lib/languages/json';
+import hljsMarkdown from 'highlight.js/lib/languages/markdown';
+import hljsPython from 'highlight.js/lib/languages/python';
+import hljsRust from 'highlight.js/lib/languages/rust';
+import hljsSql from 'highlight.js/lib/languages/sql';
+import hljsSwift from 'highlight.js/lib/languages/swift';
+import hljsTypescript from 'highlight.js/lib/languages/typescript';
+import hljsXml from 'highlight.js/lib/languages/xml';
+import hljsYaml from 'highlight.js/lib/languages/yaml';
+
+hljs.registerLanguage('bash', hljsBash);
+hljs.registerLanguage('css', hljsCss);
+hljs.registerLanguage('go', hljsGo);
+hljs.registerLanguage('java', hljsJava);
+hljs.registerLanguage('javascript', hljsJavascript);
+hljs.registerLanguage('json', hljsJson);
+hljs.registerLanguage('markdown', hljsMarkdown);
+hljs.registerLanguage('python', hljsPython);
+hljs.registerLanguage('rust', hljsRust);
+hljs.registerLanguage('sql', hljsSql);
+hljs.registerLanguage('swift', hljsSwift);
+hljs.registerLanguage('typescript', hljsTypescript);
+hljs.registerLanguage('xml', hljsXml);
+hljs.registerLanguage('yaml', hljsYaml);
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -61,11 +94,13 @@ function formatDate(iso: string): string {
 
 type Category =
   | 'image'
+  | 'svg'
   | 'pdf'
   | 'audio'
   | 'video'
   | 'docx'
   | 'spreadsheet'
+  | 'html'
   | 'doc'
   | 'file';
 
@@ -73,10 +108,16 @@ function fileCategory(mimeType?: string, fileName?: string): Category {
   const mime = (mimeType ?? '').toLowerCase();
   const ext = (fileName ?? '').toLowerCase().split('.').pop() ?? '';
 
+  // SVG before generic image — needs WebView, not <Image>, for proper render
+  if (mime === 'image/svg+xml' || ext === 'svg') return 'svg';
   if (mime.startsWith('image/')) return 'image';
   if (mime === 'application/pdf' || ext === 'pdf') return 'pdf';
   if (mime.startsWith('audio/')) return 'audio';
   if (mime.startsWith('video/')) return 'video';
+
+  // HTML before generic text — needs WebView (with source-toggle), not the
+  // monospace text viewer.
+  if (mime === 'text/html' || ext === 'html' || ext === 'htm') return 'html';
 
   // DOCX (modern Word) — handled by mammoth. Legacy .doc is not supported.
   if (
@@ -107,22 +148,26 @@ function fileCategory(mimeType?: string, fileName?: string): Category {
 
 const CATEGORY_LABELS: Record<Category, string> = {
   image: 'Image',
+  svg: 'SVG Image',
   pdf: 'PDF Document',
   audio: 'Audio',
   video: 'Video',
   docx: 'Word Document',
   spreadsheet: 'Spreadsheet',
+  html: 'Web Page',
   doc: 'Document',
   file: 'File',
 };
 
 const CATEGORY_BADGE: Record<Category, string> = {
   image: 'IMG',
+  svg: 'SVG',
   pdf: 'PDF',
   audio: 'AUD',
   video: 'VID',
   docx: 'DOCX',
   spreadsheet: 'XLS',
+  html: 'HTML',
   doc: 'DOC',
   file: 'FILE',
 };
@@ -265,6 +310,39 @@ ${bodyHtml}
 }
 
 // ---------------------------------------------------------------------------
+// SVG helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Wrap a raw SVG string in a minimal HTML document so the WebView renders it
+ * centered on a clean white background (SVGs often rely on white for contrast,
+ * and our dark preview backdrop would hide white-on-transparent strokes).
+ */
+function buildSvgHtml(svg: string): string {
+  return `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=8" />
+  <style>
+    html, body { margin: 0; padding: 0; height: 100%; background: #ffffff; }
+    body {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+      box-sizing: border-box;
+    }
+    svg { max-width: 100%; max-height: 100%; height: auto; width: auto; }
+  </style>
+</head>
+<body>
+${svg}
+</body>
+</html>`;
+}
+
+// ---------------------------------------------------------------------------
 // Spreadsheet helpers
 // ---------------------------------------------------------------------------
 
@@ -352,17 +430,32 @@ export default function PreviewScreen() {
   const [sheetLoading, setSheetLoading] = useState(false);
   const [sheetError, setSheetError] = useState<string | null>(null);
 
+  // SVG inline preview state — wrapped in a tiny HTML doc and shown in WebView
+  const [svgContent, setSvgContent] = useState<string | null>(null);
+  const [svgLoading, setSvgLoading] = useState(false);
+  const [svgError, setSvgError] = useState<string | null>(null);
+
+  // HTML inline preview state — toggled between rendered view and raw source
+  const [htmlContent, setHtmlContent] = useState<string | null>(null);
+  const [htmlLoading, setHtmlLoading] = useState(false);
+  const [htmlError, setHtmlError] = useState<string | null>(null);
+  const [htmlShowSource, setHtmlShowSource] = useState(false);
+
   const { isUnlocked, decryptChunk } = useCrypto();
 
   const category = fileCategory(mimeType, fileName);
   const isImage = category === 'image';
+  const isSvg = category === 'svg';
   const isPdf = category === 'pdf';
   const isVideo = !!mimeType && mimeType.startsWith('video/');
   const isDocx = category === 'docx';
   const isSpreadsheet = category === 'spreadsheet';
+  const isHtml = category === 'html';
   const isText =
     !isDocx &&
     !isSpreadsheet &&
+    !isSvg &&
+    !isHtml &&
     !!mimeType &&
     (mimeType.startsWith('text/') ||
       mimeType === 'application/json' ||
@@ -371,13 +464,15 @@ export default function PreviewScreen() {
   // Theme-aware accent for non-image category badge
   const categoryAccent = (() => {
     switch (category) {
-      case 'image': return c.amber;
+      case 'image':
+      case 'svg': return c.amber;
       case 'pdf': return c.red;
       case 'audio': return c.green;
       case 'video':
       case 'docx':
       case 'doc': return c.ink2;
       case 'spreadsheet': return c.green;
+      case 'html': return c.amber;
       default: return c.ink3;
     }
   })();
@@ -634,6 +729,76 @@ export default function PreviewScreen() {
     return buildDocxHtml(docxHtml, c, resolved === 'dark');
   }, [docxHtml, c, resolved]);
 
+  // Auto-load SVGs inline — read as UTF-8, wrap in an HTML doc, show in WebView
+  useEffect(() => {
+    if (!isSvg) return;
+    if (Platform.OS === 'web') return;
+    let cancelled = false;
+    setSvgLoading(true);
+    setSvgError(null);
+    setSvgContent(null);
+
+    fetchAndDecrypt()
+      .then(async (uri) => {
+        const content = await FileSystem.readAsStringAsync(uri, {
+          encoding: FileSystem.EncodingType.UTF8,
+        });
+        if (!cancelled) setSvgContent(content);
+      })
+      .catch((err) => {
+        if (!cancelled) setSvgError(friendlyError(err));
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setSvgLoading(false);
+          setDownloadProgress(0);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isSvg, fetchAndDecrypt]);
+
+  // Auto-load HTML files — read as UTF-8 string, render or show source on toggle
+  useEffect(() => {
+    if (!isHtml) return;
+    if (Platform.OS === 'web') return;
+    let cancelled = false;
+    setHtmlLoading(true);
+    setHtmlError(null);
+    setHtmlContent(null);
+    // Always start in rendered mode for a fresh file
+    setHtmlShowSource(false);
+
+    fetchAndDecrypt()
+      .then(async (uri) => {
+        const content = await FileSystem.readAsStringAsync(uri, {
+          encoding: FileSystem.EncodingType.UTF8,
+        });
+        if (!cancelled) setHtmlContent(content);
+      })
+      .catch((err) => {
+        if (!cancelled) setHtmlError(friendlyError(err));
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setHtmlLoading(false);
+          setDownloadProgress(0);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isHtml, fetchAndDecrypt]);
+
+  // Wrap the SVG content in a minimal HTML doc whenever the SVG changes
+  const wrappedSvgHtml = useMemo(() => {
+    if (!svgContent) return null;
+    return buildSvgHtml(svgContent);
+  }, [svgContent]);
+
   const handleDownload = useCallback(async () => {
     if (Platform.OS === 'web') {
       Alert.alert('Not available', 'File download is only available on iOS and Android.');
@@ -733,6 +898,35 @@ export default function PreviewScreen() {
                   : isUnlocked
                   ? 'Downloading and decrypting...'
                   : 'Unlock your vault to view this image.'}
+              </Text>
+            </View>
+          )
+        ) : isSvg ? (
+          wrappedSvgHtml ? (
+            <WebView
+              originWhitelist={['*']}
+              source={{ html: wrappedSvgHtml }}
+              style={styles.svgWebView}
+              scalesPageToFit
+              showsHorizontalScrollIndicator={false}
+              showsVerticalScrollIndicator={false}
+            />
+          ) : svgError ? (
+            <View style={styles.imageStatus}>
+              <Text style={[styles.imageStatusTitle, { color: colors.white }]}>
+                Couldn't load SVG
+              </Text>
+              <Text style={styles.imageStatusSub}>{svgError}</Text>
+            </View>
+          ) : (
+            <View style={styles.imageStatus}>
+              <ActivityIndicator color={c.amber} size="large" />
+              <Text style={styles.imageStatusSub}>
+                {svgLoading && downloadProgress > 0
+                  ? `Decrypting · ${Math.round(downloadProgress * 100)}%`
+                  : isUnlocked
+                  ? 'Downloading and decrypting...'
+                  : 'Unlock your vault to view this SVG.'}
               </Text>
             </View>
           )
@@ -877,6 +1071,101 @@ export default function PreviewScreen() {
                   : isUnlocked
                   ? 'Downloading and parsing spreadsheet...'
                   : 'Unlock your vault to view this spreadsheet.'}
+              </Text>
+            </View>
+          )
+        ) : isHtml ? (
+          htmlContent != null ? (
+            <View style={styles.htmlContainer}>
+              {/* Toggle: rendered ↔ source. Sticky bar on top of the view. */}
+              <View style={[styles.htmlToggleBar, { borderBottomColor: c.line, backgroundColor: c.paper }]}>
+                <TouchableOpacity
+                  onPress={() => setHtmlShowSource(false)}
+                  style={[
+                    styles.htmlToggleButton,
+                    !htmlShowSource && { backgroundColor: c.amber },
+                  ]}
+                  activeOpacity={0.7}
+                  accessibilityLabel="Show rendered HTML"
+                >
+                  <Text
+                    style={[
+                      styles.htmlToggleText,
+                      { color: !htmlShowSource ? c.ink : c.ink3 },
+                    ]}
+                  >
+                    Rendered
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={() => setHtmlShowSource(true)}
+                  style={[
+                    styles.htmlToggleButton,
+                    htmlShowSource && { backgroundColor: c.amber },
+                  ]}
+                  activeOpacity={0.7}
+                  accessibilityLabel="Show HTML source"
+                >
+                  <Text
+                    style={[
+                      styles.htmlToggleText,
+                      { color: htmlShowSource ? c.ink : c.ink3 },
+                    ]}
+                  >
+                    Source
+                  </Text>
+                </TouchableOpacity>
+              </View>
+
+              {htmlShowSource ? (
+                <ScrollView
+                  style={[styles.codeScroll, { backgroundColor: colors.darkBg, borderRadius: 0 }]}
+                  contentContainerStyle={styles.codeScrollContent}
+                >
+                  <ScrollView horizontal contentContainerStyle={styles.codeHorizontal}>
+                    <View style={styles.codeBlock}>
+                      {htmlContent.split('\n').map((line, i) => (
+                        <View key={i} style={styles.codeLine}>
+                          <Text style={[styles.codeLineNumber, { color: c.ink3 }]} selectable={false}>
+                            {String(i + 1).padStart(4, ' ')}
+                          </Text>
+                          <Text style={[styles.codeLineText, { color: c.ink }]} selectable>
+                            {line.length === 0 ? ' ' : line}
+                          </Text>
+                        </View>
+                      ))}
+                    </View>
+                  </ScrollView>
+                </ScrollView>
+              ) : (
+                <WebView
+                  originWhitelist={['*']}
+                  source={{ html: htmlContent }}
+                  style={[styles.htmlWebView, { backgroundColor: c.paper }]}
+                  // Sandbox: keep external network requests off so encrypted
+                  // assets can't accidentally leak through embedded URLs.
+                  // (HTML may include <img src="https://..."> tags.)
+                  javaScriptEnabled={false}
+                  domStorageEnabled={false}
+                />
+              )}
+            </View>
+          ) : htmlError ? (
+            <View style={styles.imageStatus}>
+              <Text style={[styles.imageStatusTitle, { color: colors.white }]}>
+                Couldn't load page
+              </Text>
+              <Text style={styles.imageStatusSub}>{htmlError}</Text>
+            </View>
+          ) : (
+            <View style={styles.imageStatus}>
+              <ActivityIndicator color={c.amber} size="large" />
+              <Text style={styles.imageStatusSub}>
+                {htmlLoading && downloadProgress > 0
+                  ? `Decrypting · ${Math.round(downloadProgress * 100)}%`
+                  : isUnlocked
+                  ? 'Downloading and decrypting...'
+                  : 'Unlock your vault to view this page.'}
               </Text>
             </View>
           )
@@ -1196,6 +1485,28 @@ const styles = StyleSheet.create({
   pdfWebView: { width: '100%', height: '100%' },
   video: { width: '100%', height: '100%' },
   docxWebView: { width: '100%', height: '100%', borderRadius: radii.md },
+  svgWebView: { width: '100%', height: '100%', backgroundColor: '#ffffff', borderRadius: radii.md },
+
+  // ---- HTML viewer ----
+  htmlContainer: { flex: 1, width: '100%', borderRadius: radii.md, overflow: 'hidden' },
+  htmlToggleBar: {
+    flexDirection: 'row',
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    gap: 6,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  htmlToggleButton: {
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    borderRadius: radii.md,
+  },
+  htmlToggleText: {
+    fontSize: 12,
+    fontWeight: '600',
+    letterSpacing: 0.3,
+  },
+  htmlWebView: { flex: 1, width: '100%' },
 
   // ---- Code / text viewer ----
   codeScroll: { flex: 1, width: '100%', borderRadius: radii.md },
