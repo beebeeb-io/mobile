@@ -12,7 +12,14 @@
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "io.beebeeb.app"
+      "bundleIdentifier": "io.beebeeb.app",
+      "entitlements": {
+        "com.apple.security.application-groups": ["group.io.beebeeb.shared"],
+        "keychain-access-groups": ["$(AppIdentifierPrefix)io.beebeeb.shared"]
+      },
+      "infoPlist": {
+        "NSFileProviderPresenceAuthorized": true
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -28,7 +35,8 @@
     "plugins": [
       "expo-secure-store",
       "expo-local-authentication",
-      "./modules/beebeeb-crypto"
+      "./modules/beebeeb-crypto",
+      "@bacons/apple-targets"
     ]
   }
 }
