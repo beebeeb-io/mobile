@@ -19,6 +19,7 @@ import type { RouteProp } from '@react-navigation/native';
 import type { RootStackParamList } from '../App';
 import { radii, spacing, shadows } from '../theme';
 import { useTheme } from '../lib/theme-context';
+import { useToast } from '../lib/toast-context';
 import { createShare, friendlyError } from '../lib/api';
 import type { Share as ShareLink } from '../lib/api';
 
@@ -91,6 +92,7 @@ export default function ShareSheetScreen() {
   const [share, setShare] = useState<ShareLink | null>(null);
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { showToast } = useToast();
 
   const badge = makeFileTypeBadge(mimeType, c);
 
@@ -161,8 +163,9 @@ export default function ShareSheetScreen() {
     await Clipboard.setStringAsync(share.url);
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setCopied(true);
+    showToast({ type: 'success', message: 'Link copied to clipboard' });
     setTimeout(() => setCopied(false), 2000);
-  }, [share]);
+  }, [share, showToast]);
 
   return (
     <KeyboardAvoidingView

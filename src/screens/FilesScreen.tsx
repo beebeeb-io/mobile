@@ -752,6 +752,7 @@ export default function FilesScreen() {
                 );
                 setDecryptedNames((prev) => ({ ...prev, [item.id]: next }));
                 Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                showToast({ type: 'success', message: `Renamed to "${next}"` });
               } catch (err) {
                 Alert.alert('Error', friendlyError(err));
               }
@@ -776,11 +777,12 @@ export default function FilesScreen() {
       const moveOptions = ['Drive (root)', ...folderNames, 'Cancel'];
       const moveCancelIdx = moveOptions.length - 1;
 
-      const doMove = async (targetId: string | null) => {
+      const doMove = async (targetId: string | null, targetName?: string) => {
         try {
           await moveFile(item.id, targetId);
           setFiles((prev) => prev.filter((f) => f.id !== item.id));
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+          showToast({ type: 'success', message: `Moved to ${targetName ?? 'Drive'}` });
         } catch (err) {
           Alert.alert('Error', friendlyError(err));
         }
@@ -791,16 +793,16 @@ export default function FilesScreen() {
           { title: 'Move to', options: moveOptions, cancelButtonIndex: moveCancelIdx },
           (idx) => {
             if (idx === moveCancelIdx) return;
-            if (idx === 0) void doMove(null);
-            else void doMove(folders[idx - 1]!.id);
+            if (idx === 0) void doMove(null, 'Drive');
+            else { const fn = folderNames[idx - 1]; void doMove(folders[idx - 1]!.id, fn); }
           },
         );
       } else {
         Alert.alert('Move to', undefined, [
-          { text: 'Drive (root)', onPress: () => void doMove(null) },
+          { text: 'Drive (root)', onPress: () => void doMove(null, 'Drive') },
           ...folders.map((f, i) => ({
             text: folderNames[i] ?? displayName(f),
-            onPress: () => void doMove(f.id),
+            onPress: () => void doMove(f.id, folderNames[i]),
           })),
           { text: 'Cancel', style: 'cancel' as const },
         ]);
@@ -834,6 +836,7 @@ export default function FilesScreen() {
                 try {
                   await deleteFile(item.id);
                   setFiles((prev) => prev.filter((f) => f.id !== item.id));
+                  showToast({ type: 'info', message: `"${name}" moved to Trash` });
                 } catch (err) {
                   Alert.alert('Error', friendlyError(err));
                 }
@@ -875,7 +878,7 @@ export default function FilesScreen() {
         { text: 'Cancel', style: 'cancel' },
       ]);
     }
-  }, [navigation, openFile, decryptedNames]);
+  }, [navigation, openFile, decryptedNames, showToast]);
 
   // Filtered + sorted file list
   const displayedFiles = useMemo(() => {

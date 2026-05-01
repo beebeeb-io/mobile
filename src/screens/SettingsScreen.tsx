@@ -287,6 +287,7 @@ export default function SettingsScreen() {
 
   // Theme — sourced from global ThemeContext
   const { colors: c, mode: themePreference, setMode: handleThemeChange } = useTheme();
+  const { showToast } = useToast();
 
   // ---------------------------------------------------------------------------
   // Data loading
@@ -497,7 +498,7 @@ export default function SettingsScreen() {
       try {
         await changePassword(current, next);
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-        Alert.alert('Password changed', 'Your password has been updated.');
+        showToast({ type: 'success', message: 'Password changed' });
       } catch (err) {
         Alert.alert('Could not change password', friendlyError(err));
       }
