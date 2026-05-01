@@ -1,53 +1,79 @@
 import ExpoModulesCore
+import Foundation
 
-// Placeholder module. All functions throw NotLinkedError until BeebeebCore.xcframework
-// is built (repos/core/build-ios.sh) and linked via the app.plugin.js config plugin.
+// All crypto runs through `BeebeebCryptoBridge`, which wraps the UniFFI
+// bindings shipped in `BeebeebCore.xcframework` (linked via the
+// `withUniffiBridge` config plugin).
 public class BeebeebCryptoModule: Module {
   public func definition() -> ModuleDefinition {
     Name("BeebeebCrypto")
 
     AsyncFunction("generateRecoveryPhrase") { () throws -> [String: Any] in
-      throw NotLinkedError()
+      let result = try generateRecoveryPhrase()
+      return [
+        "phrase": result.phrase,
+        "masterKey": result.masterKey,
+      ]
     }
 
-    AsyncFunction("recoverFromPhrase") { (_: String) throws -> [String: Any] in
-      throw NotLinkedError()
+    AsyncFunction("recoverFromPhrase") { (phrase: String) throws -> [String: Any] in
+      let masterKey = try recoverFromPhrase(phrase: phrase)
+      return ["masterKey": masterKey]
     }
 
-    AsyncFunction("encryptChunk") { (_: Data, _: Data) throws -> [String: Any] in
-      throw NotLinkedError()
+    AsyncFunction("encryptChunk") { (key: Data, plaintext: Data) throws -> [String: Any] in
+      let result = try BeebeebCryptoBridge.encryptChunk(key: key, plaintext: plaintext)
+      return [
+        "nonce": result.nonce,
+        "ciphertext": result.ciphertext,
+      ]
     }
 
-    AsyncFunction("decryptChunk") { (_: Data, _: Data, _: Data) throws -> Data in
-      throw NotLinkedError()
+    AsyncFunction("decryptChunk") { (key: Data, nonce: Data, ciphertext: Data) throws -> Data in
+      try BeebeebCryptoBridge.decryptChunk(key: key, nonce: nonce, ciphertext: ciphertext)
     }
 
-    AsyncFunction("encryptMetadata") { (_: Data, _: String) throws -> [String: Any] in
-      throw NotLinkedError()
+    AsyncFunction("encryptMetadata") { (key: Data, metadata: String) throws -> [String: Any] in
+      let result = try BeebeebCryptoBridge.encryptMetadata(key: key, metadata: metadata)
+      return [
+        "nonce": result.nonce,
+        "ciphertext": result.ciphertext,
+      ]
     }
 
-    AsyncFunction("decryptMetadata") { (_: Data, _: Data, _: Data) throws -> String in
-      throw NotLinkedError()
+    AsyncFunction("decryptMetadata") { (key: Data, nonce: Data, ciphertext: Data) throws -> String in
+      try BeebeebCryptoBridge.decryptMetadata(key: key, nonce: nonce, ciphertext: ciphertext)
     }
 
-    AsyncFunction("opaqueRegistrationStart") { (_: String, _: String) throws -> [String: Any] in
-      throw NotLinkedError()
+    AsyncFunction("opaqueRegistrationStart") { (_ username: String, password: String) throws -> [String: Any] in
+      let result = try opaqueRegistrationStart(password: Data(password.utf8))
+      return [
+        "state": result.state,
+        "message": result.message,
+      ]
     }
 
-    AsyncFunction("opaqueRegistrationFinish") { (_: Data, _: Data) throws -> [String: Any] in
-      throw NotLinkedError()
+    AsyncFunction("opaqueRegistrationFinish") { (state: Data, serverMessage: Data) throws -> [String: Any] in
+      // The current JS contract drops the password between start/finish; the UniFFI
+      // surface still requires it. Plumbing the password through the JS layer is
+      // tracked separately.
+      throw OpaquePasswordMissingError()
     }
 
-    AsyncFunction("opaqueLoginStart") { (_: String) throws -> [String: Any] in
-      throw NotLinkedError()
+    AsyncFunction("opaqueLoginStart") { (username: String) throws -> [String: Any] in
+      let result = try opaqueLoginStart(password: Data(username.utf8))
+      return [
+        "state": result.state,
+        "message": result.message,
+      ]
     }
 
-    AsyncFunction("opaqueLoginFinish") { (_: Data, _: Data) throws -> [String: Any] in
-      throw NotLinkedError()
+    AsyncFunction("opaqueLoginFinish") { (state: Data, serverMessage: Data) throws -> [String: Any] in
+      throw OpaquePasswordMissingError()
     }
 
-    AsyncFunction("deriveFileKey") { (_: Data, _: String) throws -> Data in
-      throw NotLinkedError()
+    AsyncFunction("deriveFileKey") { (masterKey: Data, fileId: String) throws -> Data in
+      try BeebeebCryptoBridge.deriveFileKey(masterKey: masterKey, fileId: fileId)
     }
 
     AsyncFunction("storeKeyInKeychain") { (masterKeyBytes: Data, label: String) throws in
@@ -113,8 +139,8 @@ public class BeebeebCryptoModule: Module {
   }
 }
 
-private struct NotLinkedError: LocalizedError {
+private struct OpaquePasswordMissingError: LocalizedError {
   var errorDescription: String? {
-    "BeebeebCore.xcframework not linked — run repos/core/build-ios.sh first"
+    "OPAQUE finish requires the password — JS-side signature needs to be updated to forward it."
   }
 }

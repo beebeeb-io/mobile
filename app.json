@@ -71,7 +71,8 @@
       "expo-local-authentication",
       "expo-document-picker",
       "expo-media-library",
-      "./modules/beebeeb-crypto/app.plugin.js"
+      "./modules/beebeeb-crypto/app.plugin.js",
+      "./plugins/uniffi-bridge/withUniffiBridge.js"
     ],
     "extra": {
       "eas": {
