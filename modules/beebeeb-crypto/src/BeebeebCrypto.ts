@@ -165,3 +165,49 @@ export async function deleteKeyFromKeychain(): Promise<boolean> {
 export async function setRequireBiometric(require: boolean): Promise<boolean> {
   return BeebeebCryptoModule.setRequireBiometric(require)
 }
+
+// ─── Backup management ──────────────────────────────────────────────────────
+
+export interface NativeBackupProgress {
+  total: number
+  completed: number
+  inProgress: number
+  lastBackupAt: string | null
+}
+
+/** Start camera roll backup. Registers PHPhotoLibrary observer and schedules BGProcessingTask. */
+export async function enablePhotoBackup(authToken: string): Promise<void> {
+  return BeebeebCryptoModule.enablePhotoBackup(authToken)
+}
+
+export async function disablePhotoBackup(): Promise<void> {
+  return BeebeebCryptoModule.disablePhotoBackup()
+}
+
+/** Start contacts backup. Requests CNContactStore access and uploads an encrypted vCard. */
+export async function enableContactsBackup(authToken: string): Promise<void> {
+  return BeebeebCryptoModule.enableContactsBackup(authToken)
+}
+
+export async function disableContactsBackup(): Promise<void> {
+  return BeebeebCryptoModule.disableContactsBackup()
+}
+
+/** Start calendar backup. Requests EKEventStore access and uploads an encrypted iCal. */
+export async function enableCalendarBackup(authToken: string): Promise<void> {
+  return BeebeebCryptoModule.enableCalendarBackup(authToken)
+}
+
+export async function disableCalendarBackup(): Promise<void> {
+  return BeebeebCryptoModule.disableCalendarBackup()
+}
+
+/** Returns live backup queue statistics from the on-device SQLite store. */
+export async function getBackupProgress(): Promise<NativeBackupProgress> {
+  return BeebeebCryptoModule.getBackupProgress()
+}
+
+/** Trigger an immediate batch (up to 50 items) without waiting for BGProcessingTask. */
+export async function triggerImmediateBackup(authToken: string): Promise<void> {
+  return BeebeebCryptoModule.triggerImmediateBackup(authToken)
+}

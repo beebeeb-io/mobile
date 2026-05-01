@@ -10,13 +10,12 @@ import {
   View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import * as SecureStore from 'expo-secure-store';
 import * as Haptics from 'expo-haptics';
 import { colors, radii, spacing } from '../theme';
 import { listFiles, friendlyError } from '../lib/api';
 import type { FileEntry } from '../lib/api';
-
-const CAMERA_BACKUP_KEY = 'beebeeb_camera_backup';
+import { useBackup } from '../lib/backup-context';
+import { useNetworkStatus } from '../lib/useNetworkStatus';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -149,26 +148,57 @@ function GroupSection({ group, seedOffset }: { group: PhotoGroup; seedOffset: nu
 }
 
 // ---------------------------------------------------------------------------
-// Auto-backup banner — reads the camera backup preference
+// Auto-backup banner — shows real backup progress from BackupContext
 // ---------------------------------------------------------------------------
 
 function AutoBackupBanner() {
-  const [backupEnabled, setBackupEnabled] = useState(false);
+  const { isPhotoBackupEnabled, backupProgress, lastBackupAt } = useBackup();
+  const isConnected = useNetworkStatus();
 
-  useEffect(() => {
-    SecureStore.getItemAsync(CAMERA_BACKUP_KEY).then((val) => {
-      setBackupEnabled(val === 'true');
-    }).catch(() => {});
-  }, []);
+  if (!isPhotoBackupEnabled) {
+    return (
+      <View style={styles.banner}>
+        <View style={styles.bannerDot} />
+        <Text style={styles.bannerText}>Auto-backup off</Text>
+        <Text style={styles.bannerHint}>Enable in Settings</Text>
+      </View>
+    );
+  }
 
+  if (!isConnected) {
+    return (
+      <View style={styles.banner}>
+        <View style={styles.bannerDot} />
+        <Text style={styles.bannerText}>Backup paused</Text>
+        <Text style={styles.bannerHint}>No connection</Text>
+      </View>
+    );
+  }
+
+  if (backupProgress.inProgress > 0) {
+    const remaining = backupProgress.total - backupProgress.completed;
+    return (
+      <View style={[styles.banner, styles.bannerActive]}>
+        <ActivityIndicator size="small" color={colors.green} style={{ marginRight: 2 }} />
+        <Text style={styles.bannerText}>
+          Backing up {backupProgress.inProgress} of {remaining} remaining
+        </Text>
+      </View>
+    );
+  }
+
+  const allDone = backupProgress.total > 0 && backupProgress.completed === backupProgress.total;
   return (
-    <View style={[styles.banner, backupEnabled && styles.bannerActive]}>
-      <View style={[styles.bannerDot, backupEnabled && styles.bannerDotActive]} />
+    <View style={[styles.banner, styles.bannerActive]}>
+      <View style={[styles.bannerDot, styles.bannerDotActive]} />
       <Text style={styles.bannerText}>
-        {backupEnabled ? 'Auto-backup on' : 'Auto-backup off'}
+        {allDone ? 'All photos backed up' : 'Auto-backup on'}
       </Text>
-      {!backupEnabled && <Text style={styles.bannerHint}>Enable in Settings</Text>}
-      {backupEnabled && <Text style={styles.bannerHint}>Waiting for crypto bindings</Text>}
+      {lastBackupAt && (
+        <Text style={styles.bannerHint}>
+          {new Date(lastBackupAt).toLocaleDateString()}
+        </Text>
+      )}
     </View>
   );
 }
