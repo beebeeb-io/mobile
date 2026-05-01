@@ -1,4 +1,5 @@
 import React, { Suspense, useCallback, useEffect, useRef, useState } from 'react';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { registerRootComponent } from 'expo';
 import { StatusBar } from 'expo-status-bar';
 import { ActivityIndicator, AppState, type AppStateStatus, StyleSheet, View } from 'react-native';
@@ -469,11 +470,13 @@ export default function App() {
 
 function AppWithErrorBoundary() {
   return (
-    <ErrorBoundary>
-      <ThemeProvider>
-        <App />
-      </ThemeProvider>
-    </ErrorBoundary>
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <ErrorBoundary>
+        <ThemeProvider>
+          <App />
+        </ThemeProvider>
+      </ErrorBoundary>
+    </GestureHandlerRootView>
   );
 }
 
