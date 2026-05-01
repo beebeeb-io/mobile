@@ -10,12 +10,17 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
+import { useNavigation } from '@react-navigation/native';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { radii, spacing } from '../theme';
 import { useTheme } from '../lib/theme-context';
 import SkeletonRow from '../components/SkeletonRow';
 import { getIncomingInvites, getSentInvites, friendlyError } from '../lib/api';
 import type { ShareInvite } from '../lib/api';
+import type { RootStackParamList } from '../App';
+
+type Nav = NativeStackNavigationProp<RootStackParamList>;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -117,6 +122,7 @@ type Tab = 'incoming' | 'sent';
 export default function SharedScreen() {
   const { colors: c } = useTheme();
   const insets = useSafeAreaInsets();
+  const navigation = useNavigation<Nav>();
   const [activeTab, setActiveTab] = useState<Tab>('incoming');
   const [isScrolled, setIsScrolled] = useState(false);
 
@@ -189,22 +195,53 @@ export default function SharedScreen() {
     return c.ink3;
   };
 
-  const renderIncomingItem = ({ item }: { item: ShareInvite }) => (
-    <View style={[styles.row, { borderBottomColor: c.line }]}>
-      <View style={[styles.fileIcon, { backgroundColor: fileTypeColor(item) }]}>
-        <Ionicons name={fileTypeIcon(item)} size={16} color="#FFFFFF" />
-      </View>
-      <View style={styles.rowInfo}>
-        <Text style={[styles.rowName, { color: c.ink }]} numberOfLines={1}>{displayName(item)}</Text>
-        <Text style={[styles.rowMeta, { color: c.ink3 }]} numberOfLines={1}>
-          From {item.sender_email ?? 'unknown'}  ·  {formatDate(item.created_at)}
-        </Text>
-      </View>
-    </View>
+  const openInvitePreview = useCallback(
+    (item: ShareInvite) => {
+      Haptics.selectionAsync();
+      navigation.navigate('Preview', {
+        fileId: item.file_id,
+        fileName: item.file_name_encrypted ?? (item.is_folder || item.is_folder_share ? 'Shared folder' : 'Shared file'),
+        mimeType: item.mime_type,
+        sizeBytes: item.size_bytes,
+        createdAt: item.created_at,
+      });
+    },
+    [navigation],
   );
 
+  const renderIncomingItem = ({ item }: { item: ShareInvite }) => {
+    // Pending/expired/revoked invites have no download access yet — leave them
+    // visually tappable but a no-op until the sender approves.
+    const tappable = item.status === 'approved';
+    return (
+      <TouchableOpacity
+        activeOpacity={tappable ? 0.6 : 1}
+        onPress={tappable ? () => openInvitePreview(item) : undefined}
+        accessibilityRole="button"
+        accessibilityLabel={`Shared file ${displayName(item)} from ${item.sender_email ?? 'unknown'}`}
+        style={[styles.row, { borderBottomColor: c.line }]}
+      >
+        <View style={[styles.fileIcon, { backgroundColor: fileTypeColor(item) }]}>
+          <Ionicons name={fileTypeIcon(item)} size={16} color="#FFFFFF" />
+        </View>
+        <View style={styles.rowInfo}>
+          <Text style={[styles.rowName, { color: c.ink }]} numberOfLines={1}>{displayName(item)}</Text>
+          <Text style={[styles.rowMeta, { color: c.ink3 }]} numberOfLines={1}>
+            From {item.sender_email ?? 'unknown'}  ·  {formatDate(item.created_at)}
+          </Text>
+        </View>
+      </TouchableOpacity>
+    );
+  };
+
   const renderSentItem = ({ item }: { item: ShareInvite }) => (
-    <View style={[styles.row, { borderBottomColor: c.line }]}>
+    <TouchableOpacity
+      activeOpacity={0.6}
+      onPress={() => openInvitePreview(item)}
+      accessibilityRole="button"
+      accessibilityLabel={`Sent file ${displayName(item)} to ${item.recipient_email}`}
+      style={[styles.row, { borderBottomColor: c.line }]}
+    >
       <View style={[styles.fileIcon, { backgroundColor: fileTypeColor(item) }]}>
         <Ionicons name={fileTypeIcon(item)} size={16} color="#FFFFFF" />
       </View>
@@ -215,7 +252,7 @@ export default function SharedScreen() {
         </Text>
       </View>
       <StatusBadge status={item.status} />
-    </View>
+    </TouchableOpacity>
   );
 
   const renderEmpty = (
