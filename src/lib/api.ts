@@ -234,16 +234,39 @@ export async function getFile(id: string): Promise<FileEntry> {
   return request<FileEntry>('GET', `/api/v1/files/${id}`);
 }
 
+const CHUNK_SIZE = 4 * 1024 * 1024; // 4 MB per chunk
+const SIMPLE_UPLOAD_THRESHOLD = 5 * 1024 * 1024; // 5 MB — below this, use simple upload
+
+export interface UploadProgress {
+  phase: 'preparing' | 'uploading' | 'finalizing';
+  chunksTotal: number;
+  chunksUploaded: number;
+  bytesTotal: number;
+  bytesUploaded: number;
+}
+
 export async function uploadFile(
   metadata: { name_encrypted: string; parent_id?: string; mime_type?: string; size_bytes: number },
-  chunks: Blob[],
+  fileBlob: Blob,
+  onProgress?: (progress: UploadProgress) => void,
 ): Promise<FileEntry> {
+  if (fileBlob.size <= SIMPLE_UPLOAD_THRESHOLD) {
+    return uploadFileSimple(metadata, fileBlob, onProgress);
+  }
+  return uploadFileChunked(metadata, fileBlob, onProgress);
+}
+
+async function uploadFileSimple(
+  metadata: { name_encrypted: string; parent_id?: string; mime_type?: string; size_bytes: number },
+  fileBlob: Blob,
+  onProgress?: (progress: UploadProgress) => void,
+): Promise<FileEntry> {
+  onProgress?.({ phase: 'uploading', chunksTotal: 1, chunksUploaded: 0, bytesTotal: fileBlob.size, bytesUploaded: 0 });
+
   const token = await getToken();
   const form = new FormData();
   form.append('metadata', JSON.stringify(metadata));
-  chunks.forEach((chunk, i) => {
-    form.append(`chunk_${i}`, chunk);
-  });
+  form.append('chunk_0', fileBlob);
 
   const res = await fetch(`${BASE_URL}/api/v1/files/upload`, {
     method: 'POST',
@@ -254,7 +277,78 @@ export async function uploadFile(
     const err = await res.json().catch(() => ({ error: res.statusText }));
     throw new ApiError(res.status, err.error ?? res.statusText);
   }
+
+  onProgress?.({ phase: 'finalizing', chunksTotal: 1, chunksUploaded: 1, bytesTotal: fileBlob.size, bytesUploaded: fileBlob.size });
   return res.json() as Promise<FileEntry>;
+}
+
+async function uploadFileChunked(
+  metadata: { name_encrypted: string; parent_id?: string; mime_type?: string; size_bytes: number },
+  fileBlob: Blob,
+  onProgress?: (progress: UploadProgress) => void,
+): Promise<FileEntry> {
+  const token = await getToken();
+  const totalSize = fileBlob.size;
+  const chunkCount = Math.ceil(totalSize / CHUNK_SIZE);
+
+  onProgress?.({ phase: 'preparing', chunksTotal: chunkCount, chunksUploaded: 0, bytesTotal: totalSize, bytesUploaded: 0 });
+
+  // Step 1: Init upload — server creates the file record
+  const initRes = await fetch(`${BASE_URL}/api/v1/files/upload/init`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      name_encrypted: metadata.name_encrypted,
+      parent_id: metadata.parent_id ?? null,
+      mime_type: metadata.mime_type ?? null,
+      size_bytes: metadata.size_bytes,
+      chunk_count: chunkCount,
+    }),
+  });
+  if (!initRes.ok) {
+    const err = await initRes.json().catch(() => ({ error: initRes.statusText }));
+    throw new ApiError(initRes.status, err.error ?? err.message ?? initRes.statusText);
+  }
+  const { file_id } = (await initRes.json()) as { file_id: string; chunk_count: number };
+
+  // Step 2: Upload each chunk sequentially
+  for (let i = 0; i < chunkCount; i++) {
+    const start = i * CHUNK_SIZE;
+    const end = Math.min(start + CHUNK_SIZE, totalSize);
+    const chunk = fileBlob.slice(start, end);
+
+    const chunkRes = await fetch(`${BASE_URL}/api/v1/files/${file_id}/chunks/${i}`, {
+      method: 'PUT',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/octet-stream' },
+      body: chunk,
+    });
+    if (!chunkRes.ok) {
+      const err = await chunkRes.json().catch(() => ({ error: chunkRes.statusText }));
+      throw new ApiError(chunkRes.status, err.error ?? `Chunk ${i} upload failed`);
+    }
+
+    onProgress?.({
+      phase: 'uploading',
+      chunksTotal: chunkCount,
+      chunksUploaded: i + 1,
+      bytesTotal: totalSize,
+      bytesUploaded: end,
+    });
+  }
+
+  // Step 3: Complete upload — server finalizes the file
+  onProgress?.({ phase: 'finalizing', chunksTotal: chunkCount, chunksUploaded: chunkCount, bytesTotal: totalSize, bytesUploaded: totalSize });
+
+  const completeRes = await fetch(`${BASE_URL}/api/v1/files/${file_id}/upload/complete`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  });
+  if (!completeRes.ok) {
+    const err = await completeRes.json().catch(() => ({ error: completeRes.statusText }));
+    throw new ApiError(completeRes.status, err.error ?? 'Failed to finalize upload');
+  }
+  return completeRes.json() as Promise<FileEntry>;
 }
 
 export async function downloadFile(id: string): Promise<Response> {
