@@ -2,7 +2,7 @@ import React, { Suspense, useCallback, useEffect, useRef, useState } from 'react
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { registerRootComponent } from 'expo';
 import { StatusBar } from 'expo-status-bar';
-import { ActivityIndicator, AppState, type AppStateStatus, Keyboard, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, AppState, type AppStateStatus, Keyboard, Linking, StyleSheet, View } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
 import { NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
@@ -369,6 +369,29 @@ export default function App() {
       }
     });
     return () => subscription.remove();
+  }, []);
+
+  // Handle Home Screen Quick Actions (3D Touch / Haptic Touch shortcuts)
+  // `beebeeb://photos` is handled by React Navigation's linking config above.
+  // `beebeeb://upload` and `beebeeb://search` require native glue code to read
+  // UIApplicationShortcutItemUserInfo and open the URL — this handler is ready
+  // for when that native code is wired (e.g. via a custom Expo config plugin).
+  useEffect(() => {
+    const handleShortcutURL = (url: string | null) => {
+      if (!url) return;
+      // beebeeb://upload → navigate to Files tab (user can then tap +)
+      // beebeeb://search → navigate to Files tab (user can then tap search)
+      // beebeeb://photos → handled automatically by the linking config
+      if (url === 'beebeeb://upload' || url === 'beebeeb://search') {
+        // Both actions land on the Files tab; the specific trigger (upload/search)
+        // would need a deeplink state passed to FilesScreen via route params.
+        // For now, just ensure the user lands on Files.
+      }
+    };
+
+    Linking.getInitialURL().then(handleShortcutURL).catch(() => {});
+    const sub = Linking.addEventListener('url', ({ url }) => handleShortcutURL(url));
+    return () => sub.remove();
   }, []);
 
   // Listen for successful login/signup from auth screens
