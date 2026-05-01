@@ -265,6 +265,10 @@ export async function deleteFile(id: string): Promise<void> {
   await request('DELETE', `/api/v1/files/${id}`);
 }
 
+export async function renameFile(id: string, newName: string): Promise<void> {
+  await request('POST', `/api/v1/files/${id}/rename`, { name_encrypted: newName });
+}
+
 export async function restoreFile(id: string): Promise<void> {
   await request('POST', `/api/v1/files/${id}/restore`);
 }
