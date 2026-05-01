@@ -1,0 +1,37 @@
+appId: io.beebeeb.app
+---
+- launchApp:
+    clearState: true
+
+# Wait for login screen
+- extendedWaitUntil:
+    visible: "Sign in"
+    timeout: 15000
+
+- takeScreenshot: "login-01-initial"
+
+# Enter credentials
+- tapOn:
+    id: "email-input"
+- inputText: "demo@beebeeb.io"
+
+- tapOn:
+    id: "password-input"
+- inputText: "demodemo12345678"
+
+- tapOn:
+    id: "sign-in-button"
+
+# Handle recovery phrase onboarding (first-time login)
+- extendedWaitUntil:
+    visible: "Your recovery phrase"
+    timeout: 15000
+
+- tapOn: "I'll do this later (not recommended)"
+
+# Assert Drive is visible after login
+- extendedWaitUntil:
+    visible: "Drive"
+    timeout: 10000
+
+- takeScreenshot: "login-02-drive-logged-in"

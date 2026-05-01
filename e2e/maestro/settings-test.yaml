@@ -1,0 +1,28 @@
+appId: io.beebeeb.app
+---
+- launchApp
+
+# Should be on Files tab (already logged in)
+- extendedWaitUntil:
+    visible: "Drive"
+    timeout: 10000
+
+# Navigate to Settings tab
+- tapOn:
+    point: "85%,97%"
+
+- extendedWaitUntil:
+    visible: "Settings"
+    timeout: 5000
+
+- takeScreenshot: "settings-01-top"
+
+# Scroll down to reveal more settings
+- scroll
+
+- takeScreenshot: "settings-02-mid-about"
+
+# Scroll down more to reveal data residency / legal links
+- scroll
+
+- takeScreenshot: "settings-03-bottom-legal"

@@ -1,0 +1,5 @@
+appId: io.beebeeb.app
+---
+- runFlow: login-test.yaml
+- runFlow: create-folder-test.yaml
+- runFlow: settings-test.yaml

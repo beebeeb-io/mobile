@@ -1,0 +1,21 @@
+appId: io.beebeeb.app
+---
+- launchApp
+
+# Should be on Files tab (already logged in)
+- extendedWaitUntil:
+    visible: "Drive"
+    timeout: 10000
+
+- takeScreenshot: "folder-01-drive"
+
+# Tap the FAB (+) button at bottom right
+- tapOn:
+    point: "87%,87%"
+
+# Assert folder creation dialog appears
+- extendedWaitUntil:
+    visible: "New folder"
+    timeout: 5000
+
+- takeScreenshot: "folder-02-create-dialog"

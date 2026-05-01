@@ -1,0 +1,21 @@
+appId: io.beebeeb.app
+---
+- launchApp:
+    clearState: true
+
+# Wait for login screen
+- extendedWaitUntil:
+    visible: "Sign in"
+    timeout: 15000
+
+- takeScreenshot: "signup-01-login-screen"
+
+# Tap "Create account" to go to signup
+- tapOn: "Create account"
+
+# Assert signup screen is visible
+- extendedWaitUntil:
+    visible: "Create account"
+    timeout: 10000
+
+- takeScreenshot: "signup-02-signup-screen"
