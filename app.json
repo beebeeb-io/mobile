@@ -49,6 +49,7 @@
       "expo-secure-store",
       "expo-local-authentication",
       "expo-document-picker",
+      "expo-media-library",
       "./modules/beebeeb-crypto/app.plugin.js"
     ],
     "extra": {
