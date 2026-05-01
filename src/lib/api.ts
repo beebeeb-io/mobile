@@ -90,7 +90,11 @@ export class ApiError extends Error {
 export function friendlyError(err: unknown): string {
   if (err instanceof ApiError) {
     if (err.status === 0) return 'Could not reach the server. Check your connection and try again.';
-    if (err.status === 401) return 'Session expired. Please sign in again.';
+    if (err.status === 401) {
+      // The message is set by the caller's path: login/signup => "Wrong email or password",
+      // authenticated requests => "Session expired".
+      return err.message || 'Session expired. Please sign in again.';
+    }
     if (err.status === 409) return 'An account with this email already exists.';
     if (err.status === 422) return err.message || 'Invalid input. Please check your details.';
     return err.message || 'Something went wrong. Please try again.';
@@ -126,9 +130,15 @@ async function request<T>(
   }
 
   if (res.status === 401) {
-    await clearToken();
-    onSessionExpired?.();
-    throw new ApiError(401, 'Session expired');
+    // Only treat 401s on authenticated calls as session expiry — a 401 from
+    // /auth/login or /auth/signup means "wrong credentials" and should NOT
+    // trigger sign-out.
+    if (auth) {
+      await clearToken();
+      onSessionExpired?.();
+      throw new ApiError(401, 'Session expired');
+    }
+    throw new ApiError(401, 'Wrong email or password.');
   }
 
   if (!res.ok) {
