@@ -153,7 +153,7 @@ export default function LoginScreen() {
 
         {/* Region */}
         <View style={styles.regionRow}>
-          <Text style={styles.regionText}>Stored in Frankfurt. Hetzner.</Text>
+          <Text style={styles.regionText}>Stored in Falkenstein.</Text>
         </View>
       </View>
     </KeyboardAvoidingView>
