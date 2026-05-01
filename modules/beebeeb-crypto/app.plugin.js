@@ -1,17 +1,50 @@
 // Config plugin for beebeeb-crypto.
 //
-// Phase 1 (current): registers the module; xcframework not yet linked.
+// Phase 1 (current): registers the module and adds Info.plist keys for background
+//   processing (camera/contacts/calendar backup) and permission usage descriptions.
 // Phase 2: once repos/core/build-ios.sh produces BeebeebCore.xcframework,
-//   this plugin will use withXcodeProject to embed it in the iOS target and
-//   set SWIFT_VERSION = 5.0.
-//
-// Android: the .so files are bundled via the standard jniLibs mechanism;
-//   no config-plugin changes needed there.
+//   this plugin will use withXcodeProject to embed it in the iOS target.
 
-const { createRunOncePlugin } = require('@expo/config-plugins')
+const { withInfoPlist, createRunOncePlugin } = require('@expo/config-plugins')
 
 const withBeebeebCrypto = (config) => {
-  // TODO (phase 2): withXcodeProject → embed BeebeebCore.xcframework
+  config = withInfoPlist(config, (config) => {
+    const plist = config.modResults
+
+    // Background modes required for BGProcessingTask (camera backup).
+    if (!Array.isArray(plist.UIBackgroundModes)) plist.UIBackgroundModes = []
+    if (!plist.UIBackgroundModes.includes('fetch')) plist.UIBackgroundModes.push('fetch')
+    if (!plist.UIBackgroundModes.includes('processing')) plist.UIBackgroundModes.push('processing')
+
+    // Register the BGProcessingTask identifier with the system.
+    if (!Array.isArray(plist.BGTaskSchedulerPermittedIdentifiers)) {
+      plist.BGTaskSchedulerPermittedIdentifiers = []
+    }
+    if (!plist.BGTaskSchedulerPermittedIdentifiers.includes('io.beebeeb.app.photo-backup')) {
+      plist.BGTaskSchedulerPermittedIdentifiers.push('io.beebeeb.app.photo-backup')
+    }
+
+    // Permission usage descriptions — only set if not already provided.
+    if (!plist.NSPhotoLibraryUsageDescription) {
+      plist.NSPhotoLibraryUsageDescription =
+        'Beebeeb backs up your photos to your encrypted vault.'
+    }
+    if (!plist.NSContactsUsageDescription) {
+      plist.NSContactsUsageDescription =
+        'Beebeeb encrypts and backs up your contacts to your vault.'
+    }
+    if (!plist.NSCalendarsUsageDescription) {
+      plist.NSCalendarsUsageDescription =
+        'Beebeeb encrypts and backs up your calendar events to your vault.'
+    }
+    if (!plist.NSCalendarsFullAccessUsageDescription) {
+      plist.NSCalendarsFullAccessUsageDescription =
+        'Beebeeb encrypts and backs up your calendar events to your vault.'
+    }
+
+    return config
+  })
+
   return config
 }
 
