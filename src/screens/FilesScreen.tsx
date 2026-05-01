@@ -381,6 +381,7 @@ export default function FilesScreen() {
 
   // Upload state — shows an inline progress banner above the FAB
   const [uploadingName, setUploadingName] = useState<string | null>(null);
+  const [uploadProgress, setUploadProgress] = useState<{ percent: number; phase: string } | null>(null);
 
   // Export state — shows banner while downloading for native share sheet
   const [exportingName, setExportingName] = useState<string | null>(null);
@@ -516,8 +517,8 @@ export default function FilesScreen() {
 
     const asset = picked.assets[0];
     setUploadingName(asset.name);
+    setUploadProgress({ percent: 0, phase: 'Preparing...' });
     try {
-      // Fetch the local URI into a Blob so it can be sent as a multipart chunk.
       const response = await fetch(asset.uri);
       const blob = await response.blob();
       const uploaded = await uploadFile(
@@ -527,21 +528,29 @@ export default function FilesScreen() {
           mime_type: asset.mimeType ?? undefined,
           size_bytes: asset.size ?? blob.size,
         },
-        [blob],
+        blob,
+        (progress) => {
+          const percent = progress.bytesTotal > 0
+            ? Math.round((progress.bytesUploaded / progress.bytesTotal) * 100)
+            : 0;
+          const phase = progress.phase === 'preparing' ? 'Preparing...'
+            : progress.phase === 'finalizing' ? 'Finalizing...'
+            : `${percent}%`;
+          setUploadProgress({ percent, phase });
+        },
       );
-      // Optimistic insert; the next refresh will reconcile.
       setFiles((prev) => [uploaded, ...prev]);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       showToast({ type: 'success', message: `"${asset.name}" uploaded` });
-      // Refresh to pick up server-side updates (storage usage, ordering, etc).
       fetchFiles(currentFolder.id, true);
     } catch (err) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      Alert.alert('Upload failed', friendlyError(err));
+      showToast({ type: 'error', message: `Upload failed: ${friendlyError(err)}` });
     } finally {
       setUploadingName(null);
+      setUploadProgress(null);
     }
-  }, [currentFolder.id, fetchFiles]);
+  }, [currentFolder.id, fetchFiles, showToast]);
 
   const handleFabPress = useCallback(() => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -1448,9 +1457,21 @@ export default function FilesScreen() {
           ]}
         >
           <ActivityIndicator color={c.amber} size="small" />
-          <Text style={[styles.uploadBannerText, { color: c.ink2 }]} numberOfLines={1}>
-            Uploading {uploadingName}...
-          </Text>
+          <View style={{ flex: 1 }}>
+            <Text style={[styles.uploadBannerText, { color: c.ink2 }]} numberOfLines={1}>
+              {uploadingName}
+            </Text>
+            {uploadProgress && (
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 3 }}>
+                <View style={{ flex: 1, height: 3, borderRadius: 1.5, backgroundColor: c.line, overflow: 'hidden' }}>
+                  <View style={{ height: '100%', width: `${uploadProgress.percent}%` as `${number}%`, backgroundColor: c.amber, borderRadius: 1.5 }} />
+                </View>
+                <Text style={{ fontSize: 10, color: c.ink3, minWidth: 50 }}>
+                  {uploadProgress.phase}
+                </Text>
+              </View>
+            )}
+          </View>
         </View>
       )}
 
