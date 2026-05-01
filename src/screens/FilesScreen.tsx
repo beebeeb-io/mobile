@@ -7,6 +7,7 @@ import {
   LayoutAnimation,
   Platform,
   RefreshControl,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -899,22 +900,39 @@ export default function FilesScreen() {
   // ------------------------------------------------------------------
 
   const renderBreadcrumbs = () => (
-    <View style={styles.breadcrumbRow}>
+    <ScrollView
+      horizontal
+      showsHorizontalScrollIndicator={false}
+      style={styles.breadcrumbScroll}
+      contentContainerStyle={styles.breadcrumbRow}
+    >
       {folderStack.map((entry, index) => {
         const isLast = index === folderStack.length - 1;
         return (
           <View key={entry.id ?? 'root'} style={styles.breadcrumbItem}>
-            {index > 0 && <Text style={[styles.breadcrumbSep, { color: c.ink4 }]}>/</Text>}
+            {index > 0 && (
+              <Ionicons
+                name="chevron-forward"
+                size={12}
+                color={c.ink4}
+                style={styles.breadcrumbChevron}
+              />
+            )}
             <TouchableOpacity
               disabled={isLast}
-              onPress={() => navigateToBreadcrumb(index)}
+              onPress={() => {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                navigateToBreadcrumb(index);
+              }}
               hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
+              accessibilityLabel={`Navigate to ${entry.name}`}
+              accessibilityRole="button"
             >
               <Text
                 style={[
                   styles.breadcrumbText,
                   { color: c.amberDeep },
-                  isLast && [styles.breadcrumbTextActive, { color: c.ink2 }],
+                  isLast && { color: c.ink, fontWeight: '600' },
                 ]}
                 numberOfLines={1}
               >
@@ -924,7 +942,7 @@ export default function FilesScreen() {
           </View>
         );
       })}
-    </View>
+    </ScrollView>
   );
 
   const handleSwipeShare = useCallback((item: FileEntry) => {
@@ -1279,11 +1297,11 @@ const styles = StyleSheet.create({
   searchButton: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
 
   // Breadcrumbs
-  breadcrumbRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: spacing.lg, paddingBottom: spacing.sm, flexWrap: 'wrap', gap: 2 },
+  breadcrumbScroll: { flexGrow: 0, paddingBottom: spacing.sm },
+  breadcrumbRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: spacing.lg, gap: 2 },
   breadcrumbItem: { flexDirection: 'row', alignItems: 'center' },
-  breadcrumbSep: { fontSize: 12, marginHorizontal: 4 },
+  breadcrumbChevron: { marginHorizontal: 2 },
   breadcrumbText: { fontSize: 12, fontWeight: '500' },
-  breadcrumbTextActive: { fontWeight: '600' },
 
   // Swipe actions
   swipeActions: { flexDirection: 'row' },
