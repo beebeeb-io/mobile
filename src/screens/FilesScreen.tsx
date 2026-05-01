@@ -3,6 +3,7 @@ import {
   ActionSheetIOS,
   ActivityIndicator,
   Alert,
+  Dimensions,
   FlatList,
   LayoutAnimation,
   Platform,
@@ -24,6 +25,7 @@ import * as SecureStore from 'expo-secure-store';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
+import * as MediaLibrary from 'expo-media-library';
 import { radii, spacing, shadows } from '../theme';
 import { useTheme } from '../lib/theme-context';
 import { useToast } from '../lib/toast-context';
@@ -130,7 +132,7 @@ interface BreadcrumbEntry {
 // File icon component
 // ---------------------------------------------------------------------------
 
-const FileIcon = React.memo(function FileIcon({ category }: { category: string }) {
+const FileIcon = React.memo(function FileIcon({ category, size = 32 }: { category: string; size?: number }) {
   const { colors: c } = useTheme();
   const CATEGORY_COLORS: Record<string, string> = {
     folder: c.amberDeep,
@@ -143,9 +145,11 @@ const FileIcon = React.memo(function FileIcon({ category }: { category: string }
   };
   const bg = CATEGORY_COLORS[category] ?? c.ink3;
   const icon: IoniconName = CATEGORY_ICONS[category] ?? 'document-outline';
+  const iconSize = Math.round(size * 0.5);
+  const borderRadius = size >= 48 ? radii.lg : size >= 40 ? radii.md : radii.sm;
   return (
-    <View style={[styles.fileIcon, { backgroundColor: bg }]}>
-      <Ionicons name={icon} size={16} color="#FFFFFF" />
+    <View style={[styles.fileIcon, { backgroundColor: bg, width: size, height: size, borderRadius }]}>
+      <Ionicons name={icon} size={iconSize} color="#FFFFFF" />
     </View>
   );
 });
@@ -288,6 +292,96 @@ const FileRowItem = React.memo(function FileRowItem({
 });
 
 // ---------------------------------------------------------------------------
+// File grid item (memoized)
+// ---------------------------------------------------------------------------
+
+interface FileGridItemProps {
+  item: FileEntry;
+  decryptedName: string | undefined;
+  onPress: (item: FileEntry) => void;
+  onLongPress: (item: FileEntry) => void;
+  selectMode: boolean;
+  isSelected: boolean;
+  onToggleSelect: (item: FileEntry) => void;
+  sortOrder: SortOrder;
+  cardWidth: number;
+}
+
+const FileGridItem = React.memo(function FileGridItem({
+  item,
+  decryptedName,
+  onPress,
+  onLongPress,
+  selectMode,
+  isSelected,
+  onToggleSelect,
+  sortOrder,
+  cardWidth,
+}: FileGridItemProps) {
+  const { colors: c } = useTheme();
+  const category = fileCategory(item);
+  const isEncryptedFallback = !decryptedName && !!item.name_encrypted?.startsWith('{');
+  const nameText = decryptedName ?? displayName(item);
+  const isFolder = item.is_folder;
+
+  const metaText = isFolder
+    ? formatDate(item.updated_at)
+    : (sortOrder === 'size-desc' || sortOrder === 'size-asc')
+      ? formatSize(item.size_bytes)
+      : `${formatSize(item.size_bytes)} · ${formatDate(item.updated_at)}`;
+
+  return (
+    <TouchableOpacity
+      style={[
+        styles.gridCard,
+        {
+          width: cardWidth,
+          backgroundColor: isFolder ? c.amberBg : c.paper,
+          borderColor: isSelected ? c.amber : c.line,
+          borderWidth: isSelected ? 2 : StyleSheet.hairlineWidth,
+        },
+        shadows.sm,
+      ]}
+      activeOpacity={0.7}
+      onPress={() => selectMode ? onToggleSelect(item) : onPress(item)}
+      onLongPress={selectMode ? undefined : () => onLongPress(item)}
+      delayLongPress={400}
+      accessibilityLabel={selectMode ? `${isSelected ? 'Deselect' : 'Select'} ${nameText}` : nameText}
+      accessibilityRole="button"
+      accessibilityState={selectMode ? { selected: isSelected } : undefined}
+    >
+      {selectMode && (
+        <View style={[
+          styles.gridCheckbox,
+          { borderColor: isSelected ? c.amber : c.line2, backgroundColor: isSelected ? c.amber : c.paper },
+        ]}>
+          {isSelected && <Ionicons name="checkmark" size={12} color="#fff" />}
+        </View>
+      )}
+      <View style={styles.gridIconWrap}>
+        <FileIcon category={category} size={isFolder ? 56 : 48} />
+      </View>
+      <View style={styles.gridTextWrap}>
+        <View style={styles.gridNameRow}>
+          {isEncryptedFallback && (
+            <Ionicons name="lock-closed" size={10} color={c.ink4} style={styles.lockIcon} />
+          )}
+          <Text
+            style={[styles.gridName, { color: c.ink }, isEncryptedFallback && styles.fileNameEncrypted]}
+            numberOfLines={2}
+          >
+            {nameText}
+          </Text>
+        </View>
+        <Text style={[styles.gridMeta, { color: c.ink3 }]} numberOfLines={1}>
+          {metaText}
+        </Text>
+      </View>
+    </TouchableOpacity>
+  );
+});
+
+// ---------------------------------------------------------------------------
 // Sort
 // ---------------------------------------------------------------------------
 
@@ -368,6 +462,9 @@ export default function FilesScreen() {
   // Sort state
   const [sortOrder, setSortOrder] = useState<SortOrder>('date-desc');
 
+  // View mode (list / grid) — persisted in SecureStore
+  const [viewMode, setViewMode] = useState<'list' | 'grid'>('list');
+
   // Multi-select state
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -421,6 +518,23 @@ export default function FilesScreen() {
   useEffect(() => {
     SecureStore.setItemAsync('beebeeb_pinned_folders', JSON.stringify(pinnedFolders)).catch(() => {});
   }, [pinnedFolders]);
+
+  // Load persisted view mode on mount
+  useEffect(() => {
+    SecureStore.getItemAsync('beebeeb_view_mode')
+      .then((raw) => { if (raw === 'grid' || raw === 'list') setViewMode(raw); })
+      .catch(() => {});
+  }, []);
+
+  const toggleViewMode = useCallback(() => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    setViewMode((prev) => {
+      const next = prev === 'list' ? 'grid' : 'list';
+      SecureStore.setItemAsync('beebeeb_view_mode', next).catch(() => {});
+      return next;
+    });
+  }, []);
 
   // ------------------------------------------------------------------
   // Fetch files
@@ -792,11 +906,14 @@ export default function FilesScreen() {
     const name = decryptedNames[item.id] ?? displayName(item);
     const isPinned = pinnedFolders.some((p) => p.id === item.id);
     const pinLabel = isPinned ? 'Unpin' : 'Pin to top';
+    const isImage = !item.is_folder && (item.mime_type ?? '').startsWith('image/');
+    const fileOptions = ['Rename', 'Preview', 'Share', 'Export...'];
+    if (isImage) fileOptions.push('Save to gallery');
+    fileOptions.push('Move to...', 'Move to Trash', 'Details');
     const options = item.is_folder
       ? ['Rename', 'Open', 'Share', 'Move to...', 'Delete', pinLabel, 'Details', 'Cancel']
-      : ['Rename', 'Preview', 'Share', 'Export...', 'Move to...', 'Move to Trash', 'Details', 'Cancel'];
-    // Folders: Delete at 4 | Files: Move to Trash at 5
-    const destructiveIndex = item.is_folder ? 4 : 5;
+      : [...fileOptions, 'Cancel'];
+    const destructiveIndex = options.indexOf(item.is_folder ? 'Delete' : 'Move to Trash');
     const cancelIndex = options.length - 1;
 
     const promptRename = () => {
@@ -1212,6 +1329,29 @@ export default function FilesScreen() {
     />
   ), [decryptedNames, openFile, handleLongPress, handleSwipeShare, handleSwipeDelete, selectMode, selectedIds, toggleSelect, sortOrder]);
 
+  // Grid sizing — 3 columns, evenly spaced, responsive to screen width
+  const GRID_COLUMNS = 3;
+  const GRID_GAP = 10;
+  const screenWidth = Dimensions.get('window').width;
+  const gridCardWidth = useMemo(() => {
+    const totalGutter = spacing.lg * 2 + GRID_GAP * (GRID_COLUMNS - 1);
+    return Math.floor((screenWidth - totalGutter) / GRID_COLUMNS);
+  }, [screenWidth]);
+
+  const renderFileGrid = useCallback(({ item }: { item: FileEntry }) => (
+    <FileGridItem
+      item={item}
+      decryptedName={decryptedNames[item.id]}
+      onPress={openFile}
+      onLongPress={handleLongPress}
+      selectMode={selectMode}
+      isSelected={selectedIds.has(item.id)}
+      onToggleSelect={toggleSelect}
+      sortOrder={sortOrder}
+      cardWidth={gridCardWidth}
+    />
+  ), [decryptedNames, openFile, handleLongPress, selectMode, selectedIds, toggleSelect, sortOrder, gridCardWidth]);
+
   const renderEmpty = () => {
     if (loading) return null;
     if (searchQuery.trim()) {
@@ -1300,6 +1440,21 @@ export default function FilesScreen() {
               accessibilityRole="button"
             >
               <Text style={{ color: c.ink2, fontSize: 13, fontWeight: '500' }}>Select</Text>
+            </TouchableOpacity>
+          )}
+          {!searchActive && (
+            <TouchableOpacity
+              onPress={toggleViewMode}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              style={styles.searchButton}
+              accessibilityLabel={`Switch to ${viewMode === 'list' ? 'grid' : 'list'} view`}
+              accessibilityRole="button"
+            >
+              <Ionicons
+                name={viewMode === 'list' ? 'grid-outline' : 'list-outline'}
+                size={20}
+                color={c.ink2}
+              />
             </TouchableOpacity>
           )}
           {!searchActive && (
@@ -1420,9 +1575,13 @@ export default function FilesScreen() {
         </View>
       ) : (
         <FlatList
+          // FlatList does not allow numColumns to change at runtime — remount with a key
+          key={viewMode}
           data={displayedFiles}
           keyExtractor={(item) => item.id}
-          renderItem={renderFileRow}
+          renderItem={viewMode === 'grid' ? renderFileGrid : renderFileRow}
+          numColumns={viewMode === 'grid' ? GRID_COLUMNS : 1}
+          columnWrapperStyle={viewMode === 'grid' ? styles.gridRow : undefined}
           ListEmptyComponent={renderEmpty}
           onScroll={(e) => setIsScrolled(e.nativeEvent.contentOffset.y > 0)}
           scrollEventThrottle={100}
@@ -1436,7 +1595,8 @@ export default function FilesScreen() {
           }
           contentContainerStyle={[
             displayedFiles.length === 0 ? styles.emptyList : undefined,
-            selectMode ? { paddingBottom: 80 + insets.bottom } : { paddingBottom: 80 + insets.bottom },
+            viewMode === 'grid' ? styles.gridContent : undefined,
+            { paddingBottom: 80 + insets.bottom },
           ]}
           removeClippedSubviews={true}
           windowSize={5}
@@ -1589,7 +1749,7 @@ const styles = StyleSheet.create({
 
   // File list
   fileRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, paddingHorizontal: spacing.lg, borderBottomWidth: 1, gap: 12 },
-  fileIcon: { width: 32, height: 32, borderRadius: radii.sm, alignItems: 'center', justifyContent: 'center' },
+  fileIcon: { alignItems: 'center', justifyContent: 'center' },
   fileInfo: { flex: 1, minWidth: 0 },
   fileNameRow: { flexDirection: 'row', alignItems: 'center', gap: 4, minWidth: 0 },
   lockIcon: { flexShrink: 0 },
@@ -1597,6 +1757,36 @@ const styles = StyleSheet.create({
   fileNameEncrypted: { fontStyle: 'italic' },
   fileMeta: { fontSize: 11, marginTop: 2 },
   chevron: { fontSize: 18 },
+
+  // File grid
+  gridContent: { paddingHorizontal: spacing.lg, paddingTop: 12 },
+  gridRow: { gap: 10, marginBottom: 10 },
+  gridCard: {
+    borderRadius: radii.lg,
+    paddingVertical: 14,
+    paddingHorizontal: 10,
+    alignItems: 'center',
+    gap: 10,
+    minHeight: 130,
+    position: 'relative',
+  },
+  gridIconWrap: { alignItems: 'center', justifyContent: 'center', paddingTop: 4 },
+  gridTextWrap: { width: '100%', alignItems: 'center', gap: 2 },
+  gridNameRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 3, justifyContent: 'center' },
+  gridName: { fontSize: 12, fontWeight: '600', textAlign: 'center', lineHeight: 15 },
+  gridMeta: { fontSize: 10, textAlign: 'center' },
+  gridCheckbox: {
+    position: 'absolute',
+    top: 6,
+    right: 6,
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    borderWidth: 1.5,
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 1,
+  },
 
   // Loading state
   loadingContainer: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12 },
