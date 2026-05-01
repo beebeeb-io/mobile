@@ -26,12 +26,13 @@ import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 import * as MediaLibrary from 'expo-media-library';
+import * as Clipboard from 'expo-clipboard';
 import { radii, spacing, shadows } from '../theme';
 import { useTheme } from '../lib/theme-context';
 import { useToast } from '../lib/toast-context';
 import SkeletonRow from '../components/SkeletonRow';
-import { listFiles, createFolder, deleteFile, renameFile, moveFile, uploadFile, downloadFile, friendlyError, getStorageUsage } from '../lib/api';
-import type { FileEntry, StorageUsage } from '../lib/api';
+import { listFiles, createFolder, deleteFile, renameFile, moveFile, uploadFile, downloadFile, friendlyError, getStorageUsage, createProofOfExistence } from '../lib/api';
+import type { FileEntry, StorageUsage, ProofOfExistence } from '../lib/api';
 import type { RootStackParamList } from '../App';
 import { useCrypto } from '../lib/crypto-context';
 
@@ -169,6 +170,7 @@ interface FileRowItemProps {
   isSelected: boolean;
   onToggleSelect: (item: FileEntry) => void;
   sortOrder: SortOrder;
+  hasProof: boolean;
 }
 
 const FileRowItem = React.memo(function FileRowItem({
@@ -182,6 +184,7 @@ const FileRowItem = React.memo(function FileRowItem({
   isSelected,
   onToggleSelect,
   sortOrder,
+  hasProof,
 }: FileRowItemProps) {
   const { colors: c } = useTheme();
   const swipeableRef = useRef<Swipeable>(null);
@@ -262,6 +265,15 @@ const FileRowItem = React.memo(function FileRowItem({
           >
             {nameText}
           </Text>
+          {hasProof && (
+            <Ionicons
+              name="shield-checkmark"
+              size={11}
+              color={c.amberDeep}
+              style={styles.proofBadge}
+              accessibilityLabel="Proof of existence"
+            />
+          )}
         </View>
         <Text style={[styles.fileMeta, { color: c.ink3 }]}>
           {item.is_folder
@@ -305,6 +317,7 @@ interface FileGridItemProps {
   onToggleSelect: (item: FileEntry) => void;
   sortOrder: SortOrder;
   cardWidth: number;
+  hasProof: boolean;
 }
 
 const FileGridItem = React.memo(function FileGridItem({
@@ -317,6 +330,7 @@ const FileGridItem = React.memo(function FileGridItem({
   onToggleSelect,
   sortOrder,
   cardWidth,
+  hasProof,
 }: FileGridItemProps) {
   const { colors: c } = useTheme();
   const category = fileCategory(item);
@@ -372,6 +386,15 @@ const FileGridItem = React.memo(function FileGridItem({
           >
             {nameText}
           </Text>
+          {hasProof && (
+            <Ionicons
+              name="shield-checkmark"
+              size={10}
+              color={c.amberDeep}
+              style={styles.proofBadge}
+              accessibilityLabel="Proof of existence"
+            />
+          )}
         </View>
         <Text style={[styles.gridMeta, { color: c.ink3 }]} numberOfLines={1}>
           {metaText}
@@ -471,6 +494,10 @@ export default function FilesScreen() {
 
   // Pinned folders
   const [pinnedFolders, setPinnedFolders] = useState<{ id: string; name: string }[]>([]);
+
+  // Proof of existence — fileId → proof. In-memory only; populated as the user
+  // creates proofs. The badge shows for files in this map.
+  const [proofs, setProofs] = useState<Record<string, ProofOfExistence>>({});
 
   // Crypto
   const { isUnlocked, decryptMetadata } = useCrypto();
@@ -909,7 +936,7 @@ export default function FilesScreen() {
     const isImage = !item.is_folder && (item.mime_type ?? '').startsWith('image/');
     const fileOptions = ['Rename', 'Preview', 'Share', 'Export...'];
     if (isImage) fileOptions.push('Save to Photos');
-    fileOptions.push('Move to...', 'Move to Trash', 'Details');
+    fileOptions.push('Move to...', 'Prove existence', 'Move to Trash', 'Details');
     const options = item.is_folder
       ? ['Rename', 'Open', 'Share', 'Move to...', 'Delete', pinLabel, 'Details', 'Cancel']
       : [...fileOptions, 'Cancel'];
@@ -1108,6 +1135,58 @@ export default function FilesScreen() {
       );
     };
 
+    const showProof = (proof: ProofOfExistence) => {
+      const formatted = [
+        'Beebeeb Proof of Existence',
+        `File: ${name}`,
+        `SHA-256: ${proof.hash}`,
+        `Timestamp: ${proof.timestamp}`,
+        `Proof ID: ${proof.proofId}`,
+        `Verify: https://beebeeb.io/verify/${proof.proofId}`,
+      ].join('\n');
+      const summary = [
+        `Hash: ${proof.hash.slice(0, 16)}…`,
+        `Timestamp: ${proof.timestamp}`,
+        `Proof ID: ${proof.proofId}`,
+      ].join('\n\n');
+      Alert.alert(
+        'Proof of existence',
+        summary,
+        [
+          {
+            text: 'Copy proof',
+            onPress: async () => {
+              try {
+                await Clipboard.setStringAsync(formatted);
+                showToast({ type: 'success', message: 'Proof copied' });
+              } catch (err) {
+                showToast({ type: 'error', message: friendlyError(err) });
+              }
+            },
+          },
+          { text: 'Done', style: 'cancel' },
+        ],
+      );
+    };
+
+    const promptProveExistence = async () => {
+      const existing = proofs[item.id];
+      if (existing) {
+        showProof(existing);
+        return;
+      }
+      try {
+        const proof = await createProofOfExistence(item.id);
+        setProofs((prev) => ({ ...prev, [item.id]: proof }));
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        showToast({ type: 'success', message: 'Proof created' });
+        showProof(proof);
+      } catch (err) {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+        Alert.alert('Could not create proof', friendlyError(err));
+      }
+    };
+
     const showDetails = () => {
       const lines = item.is_folder
         ? [
@@ -1144,6 +1223,7 @@ export default function FilesScreen() {
         case 'Export...': void promptExport(); return;
         case 'Save to Photos': void saveToGallery(); return;
         case 'Move to...': void promptMove(); return;
+        case 'Prove existence': void promptProveExistence(); return;
         case 'Delete': confirmDeleteFolder(); return;
         case 'Move to Trash': confirmMoveToTrash(); return;
         case 'Pin to top':
@@ -1179,7 +1259,7 @@ export default function FilesScreen() {
       alertButtons.push({ text: 'Cancel', style: 'cancel' as const });
       Alert.alert(name, undefined, alertButtons);
     }
-  }, [navigation, openFile, decryptedNames, showToast, pinnedFolders, togglePin]);
+  }, [navigation, openFile, decryptedNames, showToast, pinnedFolders, togglePin, proofs]);
 
   // Filtered + sorted file list
   const displayedFiles = useMemo(() => {
@@ -1364,8 +1444,9 @@ export default function FilesScreen() {
       isSelected={selectedIds.has(item.id)}
       onToggleSelect={toggleSelect}
       sortOrder={sortOrder}
+      hasProof={!!proofs[item.id]}
     />
-  ), [decryptedNames, openFile, handleLongPress, handleSwipeShare, handleSwipeDelete, selectMode, selectedIds, toggleSelect, sortOrder]);
+  ), [decryptedNames, openFile, handleLongPress, handleSwipeShare, handleSwipeDelete, selectMode, selectedIds, toggleSelect, sortOrder, proofs]);
 
   // Grid sizing — 3 columns, evenly spaced, responsive to screen width
   const GRID_COLUMNS = 3;
@@ -1387,8 +1468,9 @@ export default function FilesScreen() {
       onToggleSelect={toggleSelect}
       sortOrder={sortOrder}
       cardWidth={gridCardWidth}
+      hasProof={!!proofs[item.id]}
     />
-  ), [decryptedNames, openFile, handleLongPress, selectMode, selectedIds, toggleSelect, sortOrder, gridCardWidth]);
+  ), [decryptedNames, openFile, handleLongPress, selectMode, selectedIds, toggleSelect, sortOrder, gridCardWidth, proofs]);
 
   const renderEmpty = () => {
     if (loading) return null;
@@ -1791,6 +1873,7 @@ const styles = StyleSheet.create({
   fileInfo: { flex: 1, minWidth: 0 },
   fileNameRow: { flexDirection: 'row', alignItems: 'center', gap: 4, minWidth: 0 },
   lockIcon: { flexShrink: 0 },
+  proofBadge: { flexShrink: 0, marginLeft: 2 },
   fileName: { fontSize: 14, fontWeight: '500', flexShrink: 1 },
   fileNameEncrypted: { fontStyle: 'italic' },
   fileMeta: { fontSize: 11, marginTop: 2 },
