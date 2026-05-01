@@ -1,4 +1,4 @@
-import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { registerRootComponent } from 'expo';
 import { StatusBar } from 'expo-status-bar';
 import { ActivityIndicator, View } from 'react-native';
@@ -16,6 +16,7 @@ import {
   registerSessionExpiredHandler,
 } from './lib/api';
 import type { User } from './lib/api';
+import { AuthContext } from './lib/auth';
 
 // Screens
 import FilesScreen from './screens/FilesScreen';
@@ -25,28 +26,6 @@ import SettingsScreen from './screens/SettingsScreen';
 import PreviewScreen from './screens/PreviewScreen';
 import LoginScreen from './screens/LoginScreen';
 import SignupScreen from './screens/SignupScreen';
-
-// ---------------------------------------------------------------------------
-// Auth context
-// ---------------------------------------------------------------------------
-
-interface AuthContextValue {
-  user: User | null;
-  /** Call after successful login/signup to refresh auth state. */
-  refreshAuth: () => Promise<void>;
-  /** Sign out — clears token and resets state. */
-  signOut: () => Promise<void>;
-}
-
-const AuthContext = createContext<AuthContextValue>({
-  user: null,
-  refreshAuth: async () => {},
-  signOut: async () => {},
-});
-
-export function useAuth(): AuthContextValue {
-  return useContext(AuthContext);
-}
 
 // ---------------------------------------------------------------------------
 // Navigation types
