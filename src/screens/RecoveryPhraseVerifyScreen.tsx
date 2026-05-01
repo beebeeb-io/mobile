@@ -1,3 +1,4 @@
+import { BBLogo } from "../components/BBLogo";
 import React, { useMemo, useState } from 'react';
 import {
   KeyboardAvoidingView,
@@ -74,7 +75,7 @@ export default function RecoveryPhraseVerifyScreen() {
         {/* Logo */}
         <View style={styles.logoRow}>
           <View style={styles.logo}>
-            <Text style={styles.logoText}>bb</Text>
+            <BBLogo size={48} />
           </View>
         </View>
 

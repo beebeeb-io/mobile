@@ -9,7 +9,7 @@ import * as SecureStore from 'expo-secure-store';
 import { Platform } from 'react-native';
 import * as BeebeebCrypto from '../../modules/beebeeb-crypto';
 
-const BASE_URL = 'http://localhost:3001';
+const BASE_URL = Platform.OS === 'web' ? 'http://localhost:3001' : 'http://10.100.0.55:3001';
 const TOKEN_KEY = 'beebeeb_session_token';
 
 // expo-secure-store has no web implementation — fall back to localStorage so
