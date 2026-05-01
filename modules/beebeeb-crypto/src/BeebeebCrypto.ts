@@ -142,7 +142,26 @@ export async function storeKeyInKeychain(key: Uint8Array, label: string): Promis
 
 /**
  * Load a key from the platform secure enclave. Returns null if not found.
+ * Triggers a biometric or passcode prompt if the SE access control requires it.
  */
 export async function loadKeyFromKeychain(label: string): Promise<Uint8Array | null> {
   return BeebeebCryptoModule.loadKeyFromKeychain(label)
+}
+
+/**
+ * Delete the Secure Enclave wrapping key and all wrapped key blobs. Irreversible.
+ * Use during sign-out or account deletion.
+ */
+export async function deleteKeyFromKeychain(): Promise<boolean> {
+  return BeebeebCryptoModule.deleteKeyFromKeychain()
+}
+
+/**
+ * Switch the SE wrapping key between .devicePasscode (background OK) and
+ * .biometryAny (foreground only). Re-wraps the stored master key under a new SE key
+ * with the updated access control. Requires the user to authenticate with the current
+ * policy before the switch takes effect.
+ */
+export async function setRequireBiometric(require: boolean): Promise<boolean> {
+  return BeebeebCryptoModule.setRequireBiometric(require)
 }
