@@ -9,7 +9,7 @@
       "source_file": "App.tsx",
       "source_location": "L1",
       "id": "app_tsx",
-      "community": 12,
+      "community": 13,
       "norm_label": "app.tsx"
     },
     {
@@ -18,7 +18,7 @@
       "source_file": "theme.ts",
       "source_location": "L1",
       "id": "theme_ts",
-      "community": 13,
+      "community": 14,
       "norm_label": "theme.ts"
     },
     {
@@ -193,6 +193,33 @@
       "norm_label": "statusbadge()"
     },
     {
+      "label": "ShareSheetScreen.tsx",
+      "file_type": "code",
+      "source_file": "screens/ShareSheetScreen.tsx",
+      "source_location": "L1",
+      "id": "screens_sharesheetscreen_tsx",
+      "community": 9,
+      "norm_label": "sharesheetscreen.tsx"
+    },
+    {
+      "label": "formatSize()",
+      "file_type": "code",
+      "source_file": "screens/ShareSheetScreen.tsx",
+      "source_location": "L29",
+      "id": "screens_sharesheetscreen_formatsize",
+      "community": 9,
+      "norm_label": "formatsize()"
+    },
+    {
+      "label": "fileTypeBadge()",
+      "file_type": "code",
+      "source_file": "screens/ShareSheetScreen.tsx",
+      "source_location": "L37",
+      "id": "screens_sharesheetscreen_filetypebadge",
+      "community": 9,
+      "norm_label": "filetypebadge()"
+    },
+    {
       "label": "PreviewScreen.tsx",
       "file_type": "code",
       "source_file": "screens/PreviewScreen.tsx",
@@ -205,7 +232,7 @@
       "label": "formatSize()",
       "file_type": "code",
       "source_file": "screens/PreviewScreen.tsx",
-      "source_location": "L16",
+      "source_location": "L18",
       "id": "screens_previewscreen_formatsize",
       "community": 8,
       "norm_label": "formatsize()"
@@ -214,7 +241,7 @@
       "label": "formatDate()",
       "file_type": "code",
       "source_file": "screens/PreviewScreen.tsx",
-      "source_location": "L25",
+      "source_location": "L27",
       "id": "screens_previewscreen_formatdate",
       "community": 8,
       "norm_label": "formatdate()"
@@ -223,7 +250,7 @@
       "label": "fileCategory()",
       "file_type": "code",
       "source_file": "screens/PreviewScreen.tsx",
-      "source_location": "L36",
+      "source_location": "L38",
       "id": "screens_previewscreen_filecategory",
       "community": 8,
       "norm_label": "filecategory()"
@@ -351,7 +378,7 @@
       "source_file": "lib/api.ts",
       "source_location": "L82",
       "id": "lib_api_apierror",
-      "community": 9,
+      "community": 11,
       "norm_label": "apierror"
     },
     {
@@ -360,7 +387,7 @@
       "source_file": "lib/api.ts",
       "source_location": "L83",
       "id": "lib_api_apierror_constructor",
-      "community": 9,
+      "community": 11,
       "norm_label": ".constructor()"
     },
     {
@@ -495,7 +522,7 @@
       "source_file": "lib/api.ts",
       "source_location": "L283",
       "id": "lib_api_listmyshares",
-      "community": 4,
+      "community": 1,
       "norm_label": "listmyshares()"
     },
     {
@@ -531,7 +558,7 @@
       "source_file": "lib/api.ts",
       "source_location": "L350",
       "id": "lib_api_getregion",
-      "community": 1,
+      "community": 4,
       "norm_label": "getregion()"
     },
     {
@@ -540,7 +567,7 @@
       "source_file": "lib/auth.ts",
       "source_location": "L1",
       "id": "lib_auth_ts",
-      "community": 11,
+      "community": 12,
       "norm_label": "auth.ts"
     },
     {
@@ -549,7 +576,7 @@
       "source_file": "lib/auth.ts",
       "source_location": "L18",
       "id": "lib_auth_useauth",
-      "community": 11,
+      "community": 12,
       "norm_label": "useauth()"
     }
   ],
@@ -773,8 +800,32 @@
     {
       "relation": "contains",
       "confidence": "EXTRACTED",
+      "source_file": "screens/ShareSheetScreen.tsx",
+      "source_location": "L29",
+      "weight": 1.0,
+      "_src": "screens_sharesheetscreen_tsx",
+      "_tgt": "screens_sharesheetscreen_formatsize",
+      "source": "screens_sharesheetscreen_tsx",
+      "target": "screens_sharesheetscreen_formatsize",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "screens/ShareSheetScreen.tsx",
+      "source_location": "L37",
+      "weight": 1.0,
+      "_src": "screens_sharesheetscreen_tsx",
+      "_tgt": "screens_sharesheetscreen_filetypebadge",
+      "source": "screens_sharesheetscreen_tsx",
+      "target": "screens_sharesheetscreen_filetypebadge",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
       "source_file": "screens/PreviewScreen.tsx",
-      "source_location": "L16",
+      "source_location": "L18",
       "weight": 1.0,
       "_src": "screens_previewscreen_tsx",
       "_tgt": "screens_previewscreen_formatsize",
@@ -786,7 +837,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "screens/PreviewScreen.tsx",
-      "source_location": "L25",
+      "source_location": "L27",
       "weight": 1.0,
       "_src": "screens_previewscreen_tsx",
       "_tgt": "screens_previewscreen_formatdate",
@@ -798,7 +849,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "screens/PreviewScreen.tsx",
-      "source_location": "L36",
+      "source_location": "L38",
       "weight": 1.0,
       "_src": "screens_previewscreen_tsx",
       "_tgt": "screens_previewscreen_filecategory",
