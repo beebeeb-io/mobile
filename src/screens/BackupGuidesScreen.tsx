@@ -27,7 +27,7 @@ const DIFFICULTY_LABEL: Record<BackupGuide['difficulty'], string> = {
 const DIFFICULTY_LIGHT: Record<BackupGuide['difficulty'], { bg: string; text: string }> = {
   easy: { bg: '#e8f9e8', text: colors.green },
   medium: { bg: colors.amberBg, text: colors.amberDeep },
-  manual: { bg: '#f0eeeb', text: colors.ink3 },
+  manual: { bg: colors.paper2, text: colors.ink3 },
 };
 const DIFFICULTY_DARK: Record<BackupGuide['difficulty'], { bg: string; text: string }> = {
   easy: { bg: 'rgba(74,190,74,0.12)', text: colors.green },
