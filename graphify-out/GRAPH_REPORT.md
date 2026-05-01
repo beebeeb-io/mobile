@@ -1,11 +1,11 @@
 # Graph Report - mobile  (2026-05-01)
 
 ## Corpus Check
-- 15 files · ~13,540 words
+- 17 files · ~16,683 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 72 nodes · 80 edges · 6 communities detected
+- 81 nodes · 88 edges · 7 communities detected
 - Extraction: 95% EXTRACTED · 5% INFERRED · 0% AMBIGUOUS · INFERRED: 4 edges (avg confidence: 0.8)
 - Token cost: 0 input · 0 output
 
@@ -13,9 +13,10 @@
 - [[_COMMUNITY_Community 0|Community 0]]
 - [[_COMMUNITY_Community 1|Community 1]]
 - [[_COMMUNITY_Community 2|Community 2]]
-- [[_COMMUNITY_Community 7|Community 7]]
-- [[_COMMUNITY_Community 11|Community 11]]
-- [[_COMMUNITY_Community 12|Community 12]]
+- [[_COMMUNITY_Community 6|Community 6]]
+- [[_COMMUNITY_Community 8|Community 8]]
+- [[_COMMUNITY_Community 14|Community 14]]
+- [[_COMMUNITY_Community 15|Community 15]]
 
 ## God Nodes (most connected - your core abstractions)
 1. `request()` - 12 edges
@@ -47,39 +48,45 @@ Nodes (7): friendlyError(), login(), setToken(), signup(), handleLogin(), handle
 
 ### Community 1 - "Community 1"
 Cohesion: 0.25
-Nodes (8): createShare(), deleteFile(), getFile(), getMe(), getRegion(), listMyShares(), request(), restoreFile()
+Nodes (8): deleteFile(), getFile(), getMe(), getRegion(), getStorageUsage(), listMyShares(), request(), restoreFile()
 
 ### Community 2 - "Community 2"
 Cohesion: 0.29
-Nodes (1): getStorageUsage()
+Nodes (1): createShare()
 
-### Community 7 - "Community 7"
+### Community 6 - "Community 6"
+Cohesion: 0.4
+Nodes (2): formatSize(), renderItem()
+
+### Community 8 - "Community 8"
 Cohesion: 0.4
 Nodes (5): downloadFile(), getToken(), hasToken(), headers(), uploadFile()
 
-### Community 11 - "Community 11"
+### Community 14 - "Community 14"
 Cohesion: 1.0
 Nodes (1): ApiError
 
-### Community 12 - "Community 12"
+### Community 15 - "Community 15"
 Cohesion: 1.0
 Nodes (2): clearToken(), logout()
 
 ## Knowledge Gaps
-- **Thin community `Community 2`** (7 nodes): `getDownloadUrl()`, `getIncomingInvites()`, `getSentInvites()`, `getStorageUsage()`, `listFiles()`, `registerSessionExpiredHandler()`, `api.ts`
+- **Thin community `Community 2`** (7 nodes): `createShare()`, `getDownloadUrl()`, `getIncomingInvites()`, `getSentInvites()`, `listFiles()`, `registerSessionExpiredHandler()`, `api.ts`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 11`** (2 nodes): `ApiError`, `.constructor()`
+- **Thin community `Community 6`** (6 nodes): `displayName()`, `formatDate()`, `formatSize()`, `renderEmpty()`, `renderItem()`, `TrashScreen.tsx`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 12`** (2 nodes): `clearToken()`, `logout()`
+- **Thin community `Community 14`** (2 nodes): `ApiError`, `.constructor()`
+  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
+- **Thin community `Community 15`** (2 nodes): `clearToken()`, `logout()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
 - **Why does `friendlyError()` connect `Community 0` to `Community 2`?**
-  _High betweenness centrality (0.028) - this node is a cross-community bridge._
+  _High betweenness centrality (0.022) - this node is a cross-community bridge._
 - **Why does `signup()` connect `Community 0` to `Community 2`?**
-  _High betweenness centrality (0.016) - this node is a cross-community bridge._
+  _High betweenness centrality (0.013) - this node is a cross-community bridge._
 - **Are the 2 inferred relationships involving `handleSignup()` (e.g. with `signup()` and `friendlyError()`) actually correct?**
   _`handleSignup()` has 2 INFERRED edges - model-reasoned connections that need verification._
 - **Are the 2 inferred relationships involving `handleLogin()` (e.g. with `login()` and `friendlyError()`) actually correct?**
