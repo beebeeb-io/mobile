@@ -9,6 +9,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
 import { colors, radii, spacing } from '../theme';
@@ -267,6 +268,9 @@ export default function PhotosScreen() {
     if (loading) return null;
     return (
       <View style={styles.emptyContainer}>
+        <View style={styles.emptyIconWrap}>
+          <Ionicons name="images-outline" size={48} color={colors.amberDeep} />
+        </View>
         <Text style={styles.emptyTitle}>No photos yet</Text>
         <Text style={styles.emptySubtitle}>
           Photos you upload — or back up automatically — will appear here. Encrypted on your device, never visible to us.
@@ -459,6 +463,10 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     paddingHorizontal: spacing.xl,
     gap: 8,
+  },
+  emptyIconWrap: {
+    marginBottom: 8,
+    opacity: 0.85,
   },
   emptyTitle: {
     fontSize: 16,

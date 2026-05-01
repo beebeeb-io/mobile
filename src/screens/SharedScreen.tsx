@@ -8,6 +8,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { colors, radii, spacing } from '../theme';
 import { getIncomingInvites, getSentInvites, friendlyError } from '../lib/api';
@@ -193,11 +194,17 @@ export default function SharedScreen() {
     </View>
   );
 
-  const renderEmpty = (message: string) => () => (
+  const renderEmpty = (
+    message: string,
+    icon: React.ComponentProps<typeof Ionicons>['name'],
+  ) => () => (
     <View style={styles.emptyContainer}>
+      <View style={styles.emptyIconWrap}>
+        <Ionicons name={icon} size={44} color={colors.amberDeep} />
+      </View>
       <Text style={styles.emptyTitle}>{message}</Text>
       <Text style={styles.emptyBody}>
-        End-to-end encrypted -- the server never sees your data.
+        End-to-end encrypted — the server never sees your data.
       </Text>
     </View>
   );
@@ -223,8 +230,11 @@ export default function SharedScreen() {
   const onRetry = isIncoming ? () => fetchIncoming() : () => fetchSent();
   const renderItem = isIncoming ? renderIncomingItem : renderSentItem;
   const emptyMessage = isIncoming
-    ? 'Nothing shared with you yet'
-    : "You haven't shared any files yet";
+    ? 'No shared files yet'
+    : 'Nothing sent yet';
+  const emptyIcon: React.ComponentProps<typeof Ionicons>['name'] = isIncoming
+    ? 'people-outline'
+    : 'share-outline';
 
   // ------------------------------------------------------------------
   // Main render
@@ -269,7 +279,7 @@ export default function SharedScreen() {
           data={data}
           keyExtractor={(item) => item.id}
           renderItem={renderItem}
-          ListEmptyComponent={renderEmpty(emptyMessage)}
+          ListEmptyComponent={renderEmpty(emptyMessage, emptyIcon)}
           refreshControl={
             <RefreshControl
               refreshing={refreshing}
@@ -396,6 +406,10 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     paddingHorizontal: 40,
     gap: 8,
+  },
+  emptyIconWrap: {
+    marginBottom: 8,
+    opacity: 0.85,
   },
   emptyTitle: {
     fontSize: 16,
