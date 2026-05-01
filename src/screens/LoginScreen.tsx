@@ -12,8 +12,11 @@ import {
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { colors, radii, spacing } from '../theme';
-import { login, friendlyError } from '../lib/api';
+import { login, opaqueLoginStart, opaqueLoginFinish, ApiError, friendlyError } from '../lib/api';
+import * as BeebeebCrypto from '../../modules/beebeeb-crypto';
 import type { RootStackParamList } from '../App';
+
+const MASTER_KEY_LABEL = 'io.beebeeb.master-key';
 
 type Nav = NativeStackNavigationProp<RootStackParamList>;
 
@@ -34,8 +37,28 @@ export default function LoginScreen() {
     setError(null);
     setLoading(true);
     try {
-      await login(trimmedEmail, password);
-      // Token is stored by api.login(). App.tsx auth state will pick it up.
+      // Attempt OPAQUE login (3-round flow)
+      try {
+        const { state, serverMessage } = await opaqueLoginStart(trimmedEmail);
+        const { masterKey } = await opaqueLoginFinish(trimmedEmail, state, serverMessage);
+        // Store master key in Secure Enclave for biometric unlock on future opens
+        try {
+          await BeebeebCrypto.storeKeyInKeychain(masterKey, MASTER_KEY_LABEL);
+        } catch {
+          // Native module not yet linked — ignore until xcframework is wired
+        }
+        // Token is stored by opaqueLoginFinish. App.tsx auth state will pick it up.
+      } catch (opaqueErr) {
+        // Fall back to legacy login when OPAQUE endpoints are not deployed yet
+        if (
+          opaqueErr instanceof ApiError &&
+          (opaqueErr.status === 404 || opaqueErr.status === 0)
+        ) {
+          await login(trimmedEmail, password);
+        } else {
+          throw opaqueErr;
+        }
+      }
     } catch (err) {
       setError(friendlyError(err));
     } finally {

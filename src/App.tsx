@@ -18,7 +18,7 @@ import {
 } from './lib/api';
 import type { User } from './lib/api';
 import { AuthContext } from './lib/auth';
-import { CryptoProvider } from './lib/crypto-context';
+import { CryptoProvider, useCrypto } from './lib/crypto-context';
 import { useNetworkStatus } from './lib/useNetworkStatus';
 import * as Haptics from 'expo-haptics';
 
@@ -183,6 +183,30 @@ function TabIcon({ name, focused }: { name: string; focused: boolean }) {
     <Text style={{ fontSize: 18, opacity: focused ? 1 : 0.5 }}>
       {TAB_ICONS[name] ?? '?'}
     </Text>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Biometric guard — lives inside CryptoProvider so it can call useCrypto()
+// ---------------------------------------------------------------------------
+
+function BiometricGuard({ locked, onUnlock }: { locked: boolean; onUnlock: () => void }) {
+  const crypto = useCrypto();
+
+  async function handleUnlocked() {
+    try {
+      await crypto.unlock();
+    } catch {
+      // Key not in keychain yet (e.g. legacy account before OPAQUE) — just unlock the screen
+    }
+    onUnlock();
+  }
+
+  if (!locked) return null;
+  return (
+    <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}>
+      <BiometricLockScreen onUnlocked={handleUnlocked} />
+    </View>
   );
 }
 
@@ -415,10 +439,8 @@ export default function App() {
         )}
 
         {/* Biometric lock overlay — shown when app resumes from background */}
-        {isAuthenticated && locked && (
-          <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}>
-            <BiometricLockScreen onUnlocked={() => setLocked(false)} />
-          </View>
+        {isAuthenticated && (
+          <BiometricGuard locked={locked} onUnlock={() => setLocked(false)} />
         )}
 
         <StatusBar style="auto" />

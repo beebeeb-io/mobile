@@ -7,6 +7,7 @@
 
 import * as SecureStore from 'expo-secure-store';
 import { Platform } from 'react-native';
+import * as BeebeebCrypto from '../../modules/beebeeb-crypto';
 
 const BASE_URL = 'http://localhost:3001';
 const TOKEN_KEY = 'beebeeb_session_token';
@@ -402,4 +403,119 @@ export async function getRegion(): Promise<Region> {
 /** Returns the authenticated download URL for use with expo-file-system. */
 export function getDownloadUrl(id: string): string {
   return `${BASE_URL}/api/v1/files/${id}/download`;
+}
+
+// ---------------------------------------------------------------------------
+// Base64 helpers for binary transport
+// ---------------------------------------------------------------------------
+
+function uint8ToBase64(bytes: Uint8Array): string {
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
+
+function base64ToUint8(b64: string): Uint8Array {
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
+
+// ---------------------------------------------------------------------------
+// OPAQUE authentication
+// ---------------------------------------------------------------------------
+
+export interface OpaqueLoginStartResult {
+  state: Uint8Array;
+  serverMessage: Uint8Array;
+}
+
+export interface OpaqueLoginResult {
+  sessionToken: string;
+  masterKey: Uint8Array;
+}
+
+export interface OpaqueRegistrationStartResult {
+  state: Uint8Array;
+  serverMessage: Uint8Array;
+}
+
+/**
+ * Round 1 of OPAQUE login.
+ * Throws ApiError with status 404 when server does not support OPAQUE — caller
+ * should fall back to the legacy /auth/login endpoint.
+ */
+export async function opaqueLoginStart(email: string): Promise<OpaqueLoginStartResult> {
+  const { state, message } = await BeebeebCrypto.opaqueLoginStart(email);
+  const data = await request<{ server_message: string }>(
+    'POST',
+    '/api/v1/auth/opaque/login-start',
+    { email, client_message: uint8ToBase64(message) },
+    false,
+  );
+  return { state, serverMessage: base64ToUint8(data.server_message) };
+}
+
+/**
+ * Round 2 of OPAQUE login.
+ * Returns the session token and the derived master key (sessionKey from OPAQUE).
+ */
+export async function opaqueLoginFinish(
+  email: string,
+  state: Uint8Array,
+  serverMessage: Uint8Array,
+): Promise<OpaqueLoginResult> {
+  const { sessionKey } = await BeebeebCrypto.opaqueLoginFinish(state, serverMessage);
+  const data = await request<{ session_token: string }>(
+    'POST',
+    '/api/v1/auth/opaque/login-finish',
+    { email, session_key: uint8ToBase64(sessionKey) },
+    false,
+  );
+  await setToken(data.session_token);
+  return { sessionToken: data.session_token, masterKey: sessionKey };
+}
+
+/**
+ * Round 1 of OPAQUE registration.
+ * Throws ApiError with status 404 when server does not support OPAQUE — caller
+ * should fall back to the legacy /auth/signup endpoint.
+ */
+export async function opaqueRegistrationStart(
+  email: string,
+  password: string,
+): Promise<OpaqueRegistrationStartResult> {
+  const { state, message } = await BeebeebCrypto.opaqueRegistrationStart(email, password);
+  const data = await request<{ server_message: string }>(
+    'POST',
+    '/api/v1/auth/opaque/register-start',
+    { email, client_message: uint8ToBase64(message) },
+    false,
+  );
+  return { state, serverMessage: base64ToUint8(data.server_message) };
+}
+
+/**
+ * Round 2 of OPAQUE registration.
+ * Uploads the credential record to the server and returns the session token.
+ */
+export async function opaqueRegistrationFinish(
+  email: string,
+  state: Uint8Array,
+  serverMessage: Uint8Array,
+): Promise<{ sessionToken: string }> {
+  const { record } = await BeebeebCrypto.opaqueRegistrationFinish(state, serverMessage);
+  const data = await request<{ session_token: string }>(
+    'POST',
+    '/api/v1/auth/opaque/register-finish',
+    { email, record: uint8ToBase64(record) },
+    false,
+  );
+  await setToken(data.session_token);
+  return { sessionToken: data.session_token };
 }

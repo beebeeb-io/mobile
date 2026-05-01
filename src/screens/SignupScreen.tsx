@@ -13,8 +13,17 @@ import {
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { colors, radii, spacing } from '../theme';
-import { signup, friendlyError } from '../lib/api';
+import {
+  signup,
+  opaqueRegistrationStart,
+  opaqueRegistrationFinish,
+  ApiError,
+  friendlyError,
+} from '../lib/api';
+import * as BeebeebCrypto from '../../modules/beebeeb-crypto';
 import type { RootStackParamList } from '../App';
+
+const MASTER_KEY_LABEL = 'io.beebeeb.master-key';
 
 type Nav = NativeStackNavigationProp<RootStackParamList>;
 
@@ -44,11 +53,42 @@ export default function SignupScreen() {
       return;
     }
 
+    const trimmedEmail = email.trim().toLowerCase();
     setError(null);
     setLoading(true);
     try {
-      await signup(email.trim().toLowerCase(), password);
-      // Token is stored by api.signup(). App.tsx auth state will pick it up.
+      // Attempt OPAQUE registration (3-round flow)
+      let opaqueDone = false;
+      try {
+        const { state, serverMessage } = await opaqueRegistrationStart(trimmedEmail, password);
+        await opaqueRegistrationFinish(trimmedEmail, state, serverMessage);
+        opaqueDone = true;
+      } catch (opaqueErr) {
+        // Fall back to legacy signup when OPAQUE endpoints are not deployed yet
+        if (
+          opaqueErr instanceof ApiError &&
+          (opaqueErr.status === 404 || opaqueErr.status === 0)
+        ) {
+          await signup(trimmedEmail, password);
+          // Legacy path complete — no recovery phrase flow
+          return;
+        }
+        throw opaqueErr;
+      }
+
+      if (opaqueDone) {
+        // Generate recovery phrase and derive master key from it
+        let phrase: string[] = [];
+        try {
+          const result = await BeebeebCrypto.generateRecoveryPhrase();
+          phrase = result.phrase.split(' ');
+          await BeebeebCrypto.storeKeyInKeychain(result.masterKey, MASTER_KEY_LABEL);
+        } catch {
+          // Native module not yet linked — proceed without phrase storage
+        }
+        // Navigate to RecoveryPhraseScreen (token stored, auth state picks it up after)
+        navigation.navigate('RecoveryPhrase', { phrase: phrase.length > 0 ? phrase : undefined });
+      }
     } catch (err) {
       setError(friendlyError(err));
     } finally {
