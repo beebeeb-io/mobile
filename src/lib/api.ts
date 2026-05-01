@@ -207,6 +207,33 @@ export interface FileEntry {
   chunk_count: number;
   created_at: string;
   updated_at: string;
+  storage_pool_id?: string | null;
+}
+
+/**
+ * Map a storage pool ID to a human-readable physical location.
+ * Beebeeb stores files across multiple European data centers — users
+ * can see exactly where each file lives.
+ */
+export interface StorageLocation {
+  label: string;
+  flag: string;
+  shortCode: string;
+}
+
+export function storageLocation(poolId: string | null | undefined): StorageLocation {
+  switch (poolId) {
+    case 'hetzner-fsn':
+    case 'fsn1':
+    case 'falkenstein':
+      return { label: 'Falkenstein, DE', flag: '🇩🇪', shortCode: 'DE' };
+    case 'hetzner-hel':
+    case 'hel1':
+    case 'helsinki':
+      return { label: 'Helsinki, FIN', flag: '🇫🇮', shortCode: 'FIN' };
+    default:
+      return { label: 'Europe', flag: '', shortCode: '' };
+  }
 }
 
 export interface ListFilesResponse {
