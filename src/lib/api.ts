@@ -387,33 +387,6 @@ export async function emptyTrash(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Proof of Existence
-// ---------------------------------------------------------------------------
-
-/**
- * A timestamp-verifiable proof that a specific file existed at a specific moment,
- * without revealing the file's content. The server stores `hash` (SHA-256 of the
- * encrypted blob) + `timestamp`; anyone with the `proofId` can verify both later.
- */
-export interface ProofOfExistence {
-  hash: string;
-  timestamp: string;
-  proofId: string;
-}
-
-export async function createProofOfExistence(fileId: string): Promise<ProofOfExistence> {
-  return request<ProofOfExistence>('POST', `/api/v1/files/${fileId}/proof`);
-}
-
-export async function getProofOfExistence(fileId: string): Promise<ProofOfExistence | null> {
-  try {
-    return await request<ProofOfExistence>('GET', `/api/v1/files/${fileId}/proof`);
-  } catch {
-    return null;
-  }
-}
-
-// ---------------------------------------------------------------------------
 // Shares
 // ---------------------------------------------------------------------------
 
