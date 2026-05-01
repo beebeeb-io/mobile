@@ -835,12 +835,22 @@ export default function PreviewScreen() {
     const token = await getToken();
     if (!token) throw new Error('Not signed in');
 
+    // Keep the original extension on the cache filename — RN's <Image>,
+    // expo-video, and the WebView pick the decoder from the URI suffix.
     const safeName = fileName.replace(/[^a-zA-Z0-9._\-]/g, '_');
-    const encryptedUri = `${FileSystem.cacheDirectory}enc_${safeName}`;
+    const cacheUri = `${FileSystem.cacheDirectory}${fileId}_${safeName}`;
+
+    // Remove any stale copy so a previous failed download (e.g. a JSON error
+    // body that 401'd) can't masquerade as a valid file.
+    try {
+      await FileSystem.deleteAsync(cacheUri, { idempotent: true });
+    } catch {
+      // Best-effort — proceed even if the path can't be cleared.
+    }
 
     const dl = FileSystem.createDownloadResumable(
       getDownloadUrl(fileId),
-      encryptedUri,
+      cacheUri,
       { headers: { Authorization: `Bearer ${token}` } },
       (p) => {
         if (p.totalBytesExpectedToWrite > 0) {
@@ -851,6 +861,9 @@ export default function PreviewScreen() {
 
     const result = await dl.downloadAsync();
     if (!result) throw new Error('Download was interrupted.');
+    if (result.status >= 400) {
+      throw new Error(`Download failed (HTTP ${result.status})`);
+    }
 
     if (isUnlocked) {
       try {
@@ -862,14 +875,16 @@ export default function PreviewScreen() {
           const nonce = encBytes.slice(0, 12);
           const ciphertext = encBytes.slice(12);
           const decrypted = await decryptChunk(fileId, nonce, ciphertext);
-          const decUri = `${FileSystem.cacheDirectory}${safeName}`;
+          const decUri = `${FileSystem.cacheDirectory}dec_${fileId}_${safeName}`;
           await FileSystem.writeAsStringAsync(decUri, uint8ArrayToBase64(decrypted), {
             encoding: FileSystem.EncodingType.Base64,
           });
           return decUri;
         }
       } catch {
-        // Crypto unavailable (stubs not linked) or malformed data — fall through
+        // Crypto stubs aren't linked yet, so decryptChunk rejects with NOT_LINKED.
+        // Files are stored as plaintext on the server during the stub phase, so
+        // the downloaded bytes are directly usable as-is.
       }
     }
     return result.uri;
