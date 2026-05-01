@@ -120,6 +120,29 @@ const CATEGORY_ICONS: Record<string, IoniconName> = {
 };
 
 // ---------------------------------------------------------------------------
+// Offline files
+// ---------------------------------------------------------------------------
+
+interface OfflineFile {
+  fileId: string;
+  fileName: string;
+  savedAt: string;
+}
+
+const OFFLINE_KEY = 'beebeeb_offline_files';
+const OFFLINE_DIR = `${FileSystem.documentDirectory}offline/`;
+
+async function readOfflineList(): Promise<OfflineFile[]> {
+  const raw = await SecureStore.getItemAsync(OFFLINE_KEY);
+  if (!raw) return [];
+  try { return JSON.parse(raw) as OfflineFile[]; } catch { return []; }
+}
+
+async function writeOfflineList(list: OfflineFile[]): Promise<void> {
+  await SecureStore.setItemAsync(OFFLINE_KEY, JSON.stringify(list));
+}
+
+// ---------------------------------------------------------------------------
 // Breadcrumb item
 // ---------------------------------------------------------------------------
 
@@ -169,6 +192,7 @@ interface FileRowItemProps {
   isSelected: boolean;
   onToggleSelect: (item: FileEntry) => void;
   sortOrder: SortOrder;
+  isOffline: boolean;
 }
 
 const FileRowItem = React.memo(function FileRowItem({
@@ -182,6 +206,7 @@ const FileRowItem = React.memo(function FileRowItem({
   isSelected,
   onToggleSelect,
   sortOrder,
+  isOffline,
 }: FileRowItemProps) {
   const { colors: c } = useTheme();
   const swipeableRef = useRef<Swipeable>(null);
@@ -262,6 +287,15 @@ const FileRowItem = React.memo(function FileRowItem({
           >
             {nameText}
           </Text>
+          {isOffline && (
+            <Ionicons
+              name="cloud-done"
+              size={11}
+              color={c.amberDeep}
+              style={styles.offlineBadge}
+              accessibilityLabel="Available offline"
+            />
+          )}
         </View>
         <Text style={[styles.fileMeta, { color: c.ink3 }]}>
           {item.is_folder
@@ -305,6 +339,7 @@ interface FileGridItemProps {
   onToggleSelect: (item: FileEntry) => void;
   sortOrder: SortOrder;
   cardWidth: number;
+  isOffline: boolean;
 }
 
 const FileGridItem = React.memo(function FileGridItem({
@@ -317,6 +352,7 @@ const FileGridItem = React.memo(function FileGridItem({
   onToggleSelect,
   sortOrder,
   cardWidth,
+  isOffline,
 }: FileGridItemProps) {
   const { colors: c } = useTheme();
   const category = fileCategory(item);
@@ -372,6 +408,15 @@ const FileGridItem = React.memo(function FileGridItem({
           >
             {nameText}
           </Text>
+          {isOffline && (
+            <Ionicons
+              name="cloud-done"
+              size={10}
+              color={c.amberDeep}
+              style={styles.offlineBadge}
+              accessibilityLabel="Available offline"
+            />
+          )}
         </View>
         <Text style={[styles.gridMeta, { color: c.ink3 }]} numberOfLines={1}>
           {metaText}
@@ -472,6 +517,9 @@ export default function FilesScreen() {
   // Pinned folders
   const [pinnedFolders, setPinnedFolders] = useState<{ id: string; name: string }[]>([]);
 
+  // Files saved for offline use — driven by the SecureStore-backed manifest.
+  const [offlineIds, setOfflineIds] = useState<Set<string>>(new Set());
+
   // Crypto
   const { isUnlocked, decryptMetadata } = useCrypto();
   const [decryptedNames, setDecryptedNames] = useState<Record<string, string>>({});
@@ -511,6 +559,13 @@ export default function FilesScreen() {
   useEffect(() => {
     SecureStore.getItemAsync('beebeeb_pinned_folders')
       .then((raw) => { if (raw) setPinnedFolders(JSON.parse(raw) as { id: string; name: string }[]); })
+      .catch(() => {});
+  }, []);
+
+  // Load the offline-files manifest on mount
+  useEffect(() => {
+    readOfflineList()
+      .then((list) => setOfflineIds(new Set(list.map((f) => f.fileId))))
       .catch(() => {});
   }, []);
 
@@ -902,14 +957,68 @@ export default function FilesScreen() {
     });
   }, []);
 
+  const toggleOffline = useCallback(async (item: FileEntry, fileName: string) => {
+    const path = `${OFFLINE_DIR}${item.id}`;
+    const wasOffline = offlineIds.has(item.id);
+
+    if (wasOffline) {
+      try {
+        await FileSystem.deleteAsync(path, { idempotent: true });
+        const next = (await readOfflineList()).filter((f) => f.fileId !== item.id);
+        await writeOfflineList(next);
+        setOfflineIds(new Set(next.map((f) => f.fileId)));
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        showToast({ type: 'info', message: 'Removed from offline' });
+      } catch (err) {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+        showToast({ type: 'error', message: friendlyError(err) });
+      }
+      return;
+    }
+
+    try {
+      const dirInfo = await FileSystem.getInfoAsync(OFFLINE_DIR);
+      if (!dirInfo.exists) {
+        await FileSystem.makeDirectoryAsync(OFFLINE_DIR, { intermediates: true });
+      }
+      const res = await downloadFile(item.id);
+      const blob = await res.blob();
+      const base64 = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          const result = reader.result as string;
+          resolve(result.split(',')[1] ?? '');
+        };
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
+      });
+      await FileSystem.writeAsStringAsync(path, base64, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+      const filtered = (await readOfflineList()).filter((f) => f.fileId !== item.id);
+      const next = [...filtered, { fileId: item.id, fileName, savedAt: new Date().toISOString() }];
+      await writeOfflineList(next);
+      setOfflineIds(new Set(next.map((f) => f.fileId)));
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      showToast({ type: 'success', message: 'Available offline' });
+    } catch (err) {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      // Best-effort cleanup: drop a partial file if the write failed mid-way
+      FileSystem.deleteAsync(path, { idempotent: true }).catch(() => {});
+      showToast({ type: 'error', message: `Could not save: ${friendlyError(err)}` });
+    }
+  }, [offlineIds, showToast]);
+
   const handleLongPress = useCallback((item: FileEntry) => {
     const name = decryptedNames[item.id] ?? displayName(item);
     const isPinned = pinnedFolders.some((p) => p.id === item.id);
     const pinLabel = isPinned ? 'Unpin' : 'Pin to top';
     const isImage = !item.is_folder && (item.mime_type ?? '').startsWith('image/');
+    const isOffline = offlineIds.has(item.id);
+    const offlineLabel = isOffline ? 'Remove offline' : 'Make available offline';
     const fileOptions = ['Rename', 'Preview', 'Share', 'Export...'];
     if (isImage) fileOptions.push('Save to Photos');
-    fileOptions.push('Move to...', 'Move to Trash', 'Details');
+    fileOptions.push('Move to...', offlineLabel, 'Move to Trash', 'Details');
     const options = item.is_folder
       ? ['Rename', 'Open', 'Share', 'Move to...', 'Delete', pinLabel, 'Details', 'Cancel']
       : [...fileOptions, 'Cancel'];
@@ -1144,6 +1253,8 @@ export default function FilesScreen() {
         case 'Export...': void promptExport(); return;
         case 'Save to Photos': void saveToGallery(); return;
         case 'Move to...': void promptMove(); return;
+        case 'Make available offline':
+        case 'Remove offline': void toggleOffline(item, name); return;
         case 'Delete': confirmDeleteFolder(); return;
         case 'Move to Trash': confirmMoveToTrash(); return;
         case 'Pin to top':
@@ -1179,7 +1290,7 @@ export default function FilesScreen() {
       alertButtons.push({ text: 'Cancel', style: 'cancel' as const });
       Alert.alert(name, undefined, alertButtons);
     }
-  }, [navigation, openFile, decryptedNames, showToast, pinnedFolders, togglePin]);
+  }, [navigation, openFile, decryptedNames, showToast, pinnedFolders, togglePin, offlineIds, toggleOffline]);
 
   // Filtered + sorted file list
   const displayedFiles = useMemo(() => {
@@ -1364,8 +1475,9 @@ export default function FilesScreen() {
       isSelected={selectedIds.has(item.id)}
       onToggleSelect={toggleSelect}
       sortOrder={sortOrder}
+      isOffline={offlineIds.has(item.id)}
     />
-  ), [decryptedNames, openFile, handleLongPress, handleSwipeShare, handleSwipeDelete, selectMode, selectedIds, toggleSelect, sortOrder]);
+  ), [decryptedNames, openFile, handleLongPress, handleSwipeShare, handleSwipeDelete, selectMode, selectedIds, toggleSelect, sortOrder, offlineIds]);
 
   // Grid sizing — 3 columns, evenly spaced, responsive to screen width
   const GRID_COLUMNS = 3;
@@ -1387,8 +1499,9 @@ export default function FilesScreen() {
       onToggleSelect={toggleSelect}
       sortOrder={sortOrder}
       cardWidth={gridCardWidth}
+      isOffline={offlineIds.has(item.id)}
     />
-  ), [decryptedNames, openFile, handleLongPress, selectMode, selectedIds, toggleSelect, sortOrder, gridCardWidth]);
+  ), [decryptedNames, openFile, handleLongPress, selectMode, selectedIds, toggleSelect, sortOrder, gridCardWidth, offlineIds]);
 
   const renderEmpty = () => {
     if (loading) return null;
@@ -1791,6 +1904,7 @@ const styles = StyleSheet.create({
   fileInfo: { flex: 1, minWidth: 0 },
   fileNameRow: { flexDirection: 'row', alignItems: 'center', gap: 4, minWidth: 0 },
   lockIcon: { flexShrink: 0 },
+  offlineBadge: { flexShrink: 0, marginLeft: 2 },
   fileName: { fontSize: 14, fontWeight: '500', flexShrink: 1 },
   fileNameEncrypted: { fontStyle: 'italic' },
   fileMeta: { fontSize: 11, marginTop: 2 },
