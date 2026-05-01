@@ -1,6 +1,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import * as SecureStore from 'expo-secure-store';
 import { Platform } from 'react-native';
+import NetInfo from '@react-native-community/netinfo';
 import {
   enablePhotoBackup,
   disablePhotoBackup,
@@ -222,13 +223,26 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
   const triggerBackupNow = useCallback(async () => {
     try {
       const token = await getStoredToken();
-      if (token && Platform.OS !== 'web') {
-        await triggerImmediateBackup(token);
+      if (!token || Platform.OS === 'web') return;
+
+      // wifiOnly opt-in: refuse to start a manual backup over cellular or
+      // when offline. The native worker will eventually take over scheduling
+      // (and read this same SecureStore flag itself), but until then this
+      // JS-side gate is the only thing honouring the user's choice.
+      if (wifiOnly) {
+        const net = await NetInfo.fetch();
+        const onWifi = net.type === 'wifi' && net.isConnected !== false;
+        if (!onWifi) {
+          console.warn('[backup] triggerBackupNow blocked: wifiOnly=true and not on Wi-Fi');
+          return;
+        }
       }
+
+      await triggerImmediateBackup(token);
     } catch {
       // Native module not linked yet
     }
-  }, []);
+  }, [wifiOnly]);
 
   return (
     <BackupContext.Provider value={{
