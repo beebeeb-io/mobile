@@ -553,9 +553,9 @@ export default function FilesScreen() {
   const handleLongPress = useCallback((item: FileEntry) => {
     const name = decryptedNames[item.id] ?? displayName(item);
     const options = item.is_folder
-      ? ['Rename', 'Open', 'Share', 'Delete', 'Details', 'Cancel']
-      : ['Rename', 'Preview', 'Share', 'Move to Trash', 'Details', 'Cancel'];
-    const destructiveIndex = 3;
+      ? ['Rename', 'Open', 'Share', 'Move to...', 'Delete', 'Details', 'Cancel']
+      : ['Rename', 'Preview', 'Share', 'Move to...', 'Move to Trash', 'Details', 'Cancel'];
+    const destructiveIndex = 4;
     const cancelIndex = options.length - 1;
 
     const promptRename = () => {
@@ -587,6 +587,50 @@ export default function FilesScreen() {
       );
     };
 
+    const promptMove = async () => {
+      let folders: FileEntry[] = [];
+      try {
+        const all = await listFiles();
+        folders = all.filter((f) => f.is_folder && f.id !== item.id);
+      } catch {
+        Alert.alert('Error', 'Could not load folders.');
+        return;
+      }
+      const folderNames = folders.map((f) => decryptedNames[f.id] ?? displayName(f));
+      const moveOptions = ['Drive (root)', ...folderNames, 'Cancel'];
+      const moveCancelIdx = moveOptions.length - 1;
+
+      const doMove = async (targetId: string | null) => {
+        try {
+          await moveFile(item.id, targetId);
+          setFiles((prev) => prev.filter((f) => f.id !== item.id));
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        } catch (err) {
+          Alert.alert('Error', friendlyError(err));
+        }
+      };
+
+      if (Platform.OS === 'ios') {
+        ActionSheetIOS.showActionSheetWithOptions(
+          { title: 'Move to', options: moveOptions, cancelButtonIndex: moveCancelIdx },
+          (idx) => {
+            if (idx === moveCancelIdx) return;
+            if (idx === 0) void doMove(null);
+            else void doMove(folders[idx - 1]!.id);
+          },
+        );
+      } else {
+        Alert.alert('Move to', undefined, [
+          { text: 'Drive (root)', onPress: () => void doMove(null) },
+          ...folders.map((f, i) => ({
+            text: folderNames[i] ?? displayName(f),
+            onPress: () => void doMove(f.id),
+          })),
+          { text: 'Cancel', style: 'cancel' as const },
+        ]);
+      }
+    };
+
     const handleAction = (index: number) => {
       if (index === 0) {
         promptRename();
@@ -600,13 +644,15 @@ export default function FilesScreen() {
           sizeBytes: item.size_bytes,
         });
       } else if (index === 3) {
+        void promptMove();
+      } else if (index === 4) {
         Alert.alert(
-          'Move to Trash',
-          `"${name}" will be moved to Trash.`,
+          item.is_folder ? 'Delete folder' : 'Move to Trash',
+          `"${name}" will be ${item.is_folder ? 'deleted' : 'moved to Trash'}.`,
           [
             { text: 'Cancel', style: 'cancel' },
             {
-              text: 'Move to Trash',
+              text: item.is_folder ? 'Delete' : 'Move to Trash',
               style: 'destructive',
               onPress: async () => {
                 try {
@@ -619,14 +665,12 @@ export default function FilesScreen() {
             },
           ],
         );
-      } else if (index === 4) {
+      } else if (index === 5) {
         const lines = [
           `Name:      ${name}`,
           `Type:      ${item.is_folder ? 'Folder' : (item.mime_type ?? 'Unknown')}`,
         ];
-        if (!item.is_folder) {
-          lines.push(`Size:      ${formatSize(item.size_bytes)}`);
-        }
+        if (!item.is_folder) lines.push(`Size:      ${formatSize(item.size_bytes)}`);
         lines.push(`Created:   ${formatDate(item.created_at)}`);
         lines.push(`Modified:  ${formatDate(item.updated_at)}`);
         lines.push(`ID:        ${item.id.slice(0, 8)}`);
@@ -645,13 +689,13 @@ export default function FilesScreen() {
         handleAction,
       );
     } else {
-      // Android / web: use Alert with buttons
       Alert.alert(name, undefined, [
         { text: options[0], onPress: () => handleAction(0) },
         { text: options[1], onPress: () => handleAction(1) },
         { text: options[2], onPress: () => handleAction(2) },
-        { text: options[3], style: 'destructive', onPress: () => handleAction(3) },
-        { text: options[4], onPress: () => handleAction(4) },
+        { text: options[3], onPress: () => handleAction(3) },
+        { text: options[4], style: 'destructive', onPress: () => handleAction(4) },
+        { text: options[5], onPress: () => handleAction(5) },
         { text: 'Cancel', style: 'cancel' },
       ]);
     }
