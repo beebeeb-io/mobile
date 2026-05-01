@@ -18,6 +18,7 @@ import {
 } from './lib/api';
 import type { User } from './lib/api';
 import { AuthContext } from './lib/auth';
+import { CryptoProvider } from './lib/crypto-context';
 import { useNetworkStatus } from './lib/useNetworkStatus';
 import * as Haptics from 'expo-haptics';
 
@@ -335,6 +336,7 @@ export default function App() {
 
   return (
     <AuthContext.Provider value={{ user, refreshAuth, signOut }}>
+      <CryptoProvider>
       <SafeAreaProvider>
         <NavigationContainer linking={linking} onStateChange={handleNavigationStateChange}>
           <Stack.Navigator screenOptions={{ headerShown: false }}>
@@ -402,6 +404,7 @@ export default function App() {
 
         <StatusBar style="auto" />
       </SafeAreaProvider>
+      </CryptoProvider>
     </AuthContext.Provider>
   );
 }

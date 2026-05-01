@@ -1,0 +1,9 @@
+{
+  "platforms": ["apple", "android"],
+  "apple": {
+    "modules": ["BeebeebCryptoModule"]
+  },
+  "android": {
+    "modules": ["expo.modules.beebeebcrypto.BeebeebCryptoModule"]
+  }
+}

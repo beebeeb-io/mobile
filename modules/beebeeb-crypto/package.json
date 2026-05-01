@@ -1,0 +1,13 @@
+{
+  "name": "beebeeb-crypto",
+  "version": "1.0.0",
+  "description": "Beebeeb crypto native module — wraps UniFFI Rust bindings",
+  "main": "index.ts",
+  "exports": {
+    ".": "./index.ts"
+  },
+  "peerDependencies": {
+    "expo": "*",
+    "expo-modules-core": "*"
+  }
+}
