@@ -1,12 +1,12 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { registerRootComponent } from 'expo';
 import { StatusBar } from 'expo-status-bar';
-import { ActivityIndicator, AppState, type AppStateStatus, View } from 'react-native';
+import { ActivityIndicator, AppState, type AppStateStatus, StyleSheet, View } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
 import { NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
-import { SafeAreaProvider } from 'react-native-safe-area-context';
+import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Text } from 'react-native';
 import { colors } from './theme';
 import {
@@ -18,6 +18,8 @@ import {
 } from './lib/api';
 import type { User } from './lib/api';
 import { AuthContext } from './lib/auth';
+import { useNetworkStatus } from './lib/useNetworkStatus';
+import * as Haptics from 'expo-haptics';
 
 const BIOMETRIC_PREF_KEY = 'beebeeb_biometric_lock';
 
@@ -31,6 +33,7 @@ import ShareSheetScreen from './screens/ShareSheetScreen';
 import LoginScreen from './screens/LoginScreen';
 import SignupScreen from './screens/SignupScreen';
 import BiometricLockScreen from './screens/BiometricLockScreen';
+import SharedViewScreen from './screens/SharedViewScreen';
 
 // ---------------------------------------------------------------------------
 // Navigation types
@@ -62,10 +65,85 @@ export type RootStackParamList = {
     mimeType?: string;
     sizeBytes?: number;
   };
+  // Incoming share link: beebeeb://s/:token or https://beebeeb.io/s/:token
+  SharedView: { token: string };
+};
+
+// ---------------------------------------------------------------------------
+// Deep linking configuration
+// ---------------------------------------------------------------------------
+
+const linking = {
+  prefixes: ['beebeeb://', 'https://beebeeb.io', 'http://beebeeb.io'],
+  config: {
+    screens: {
+      Tabs: '',
+      SharedView: 's/:token',
+    },
+  },
 };
 
 const Tab = createBottomTabNavigator<TabParamList>();
 const Stack = createNativeStackNavigator<RootStackParamList>();
+
+// ---------------------------------------------------------------------------
+// Offline banner
+// ---------------------------------------------------------------------------
+
+function OfflineBanner() {
+  const insets = useSafeAreaInsets();
+  return (
+    <View style={[offlineStyles.banner, { top: insets.top + 8 }]}>
+      <View style={offlineStyles.iconCircle}>
+        <View style={offlineStyles.iconDot} />
+      </View>
+      <View style={offlineStyles.textBlock}>
+        <Text style={offlineStyles.title}>No connection</Text>
+        <Text style={offlineStyles.sub}>Working from your device · changes will sync when you're back</Text>
+      </View>
+    </View>
+  );
+}
+
+const offlineStyles = StyleSheet.create({
+  banner: {
+    position: 'absolute',
+    left: 16,
+    right: 16,
+    zIndex: 999,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    backgroundColor: 'oklch(0.98 0.02 60)' as string,
+    borderWidth: 1,
+    borderColor: '#e2d5b0',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 6,
+    elevation: 4,
+  },
+  iconCircle: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: '#e8d9a0',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  iconDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#8a6d20',
+  },
+  textBlock: { flex: 1 },
+  title: { fontSize: 12, fontWeight: '600', color: colors.ink },
+  sub: { fontSize: 10.5, color: colors.ink3, marginTop: 1 },
+});
 
 // ---------------------------------------------------------------------------
 // Simple text-based tab icon (avoids icon library dep for now)
@@ -93,6 +171,11 @@ function TabIcon({ name, focused }: { name: string; focused: boolean }) {
 function TabNavigator() {
   return (
     <Tab.Navigator
+      screenListeners={{
+        tabPress: () => {
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+        },
+      }}
       screenOptions={({ route }) => ({
         headerShown: false,
         tabBarIcon: ({ focused }) => <TabIcon name={route.name} focused={focused} />,
@@ -128,6 +211,8 @@ export default function App() {
   // Biometric lock: show lock screen when app resumes from background
   const [locked, setLocked] = useState(false);
   const appStateRef = useRef<AppStateStatus>(AppState.currentState);
+
+  const isConnected = useNetworkStatus();
 
   const refreshAuth = useCallback(async () => {
     try {
@@ -232,7 +317,7 @@ export default function App() {
   return (
     <AuthContext.Provider value={{ user, refreshAuth, signOut }}>
       <SafeAreaProvider>
-        <NavigationContainer onStateChange={handleNavigationStateChange}>
+        <NavigationContainer linking={linking} onStateChange={handleNavigationStateChange}>
           <Stack.Navigator screenOptions={{ headerShown: false }}>
             {isAuthenticated ? (
               <>
@@ -251,6 +336,11 @@ export default function App() {
                     contentStyle: { backgroundColor: 'transparent' },
                   }}
                 />
+                <Stack.Screen
+                  name="SharedView"
+                  component={SharedViewScreen}
+                  options={{ presentation: 'modal', animation: 'slide_from_bottom' }}
+                />
               </>
             ) : (
               <>
@@ -264,6 +354,9 @@ export default function App() {
             )}
           </Stack.Navigator>
         </NavigationContainer>
+
+        {/* Offline banner */}
+        {!isConnected && <OfflineBanner />}
 
         {/* Biometric lock overlay — shown when app resumes from background */}
         {isAuthenticated && locked && (

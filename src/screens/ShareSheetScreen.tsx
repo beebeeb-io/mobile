@@ -14,6 +14,7 @@ import {
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Clipboard from 'expo-clipboard';
+import * as Haptics from 'expo-haptics';
 import type { RouteProp } from '@react-navigation/native';
 import type { RootStackParamList } from '../App';
 import { colors, radii, spacing, shadows } from '../theme';
@@ -96,6 +97,7 @@ export default function ShareSheetScreen() {
   }, [navigation]);
 
   const handleCreate = useCallback(async () => {
+    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     setCreating(true);
     setError(null);
     try {
@@ -105,8 +107,10 @@ export default function ShareSheetScreen() {
         passphrase: passphrase.trim() || undefined,
       });
       setShare(result);
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } catch (err) {
       setError(friendlyError(err));
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
     } finally {
       setCreating(false);
     }
@@ -115,6 +119,7 @@ export default function ShareSheetScreen() {
   const handleCopy = useCallback(async () => {
     if (!share) return;
     await Clipboard.setStringAsync(share.url);
+    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   }, [share]);

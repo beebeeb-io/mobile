@@ -10,9 +10,13 @@ import {
   View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import * as SecureStore from 'expo-secure-store';
+import * as Haptics from 'expo-haptics';
 import { colors, radii, spacing } from '../theme';
 import { listFiles, friendlyError } from '../lib/api';
 import type { FileEntry } from '../lib/api';
+
+const CAMERA_BACKUP_KEY = 'beebeeb_camera_backup';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -145,17 +149,26 @@ function GroupSection({ group, seedOffset }: { group: PhotoGroup; seedOffset: nu
 }
 
 // ---------------------------------------------------------------------------
-// Auto-backup banner — honest state until the camera roll integration ships
+// Auto-backup banner — reads the camera backup preference
 // ---------------------------------------------------------------------------
 
 function AutoBackupBanner() {
+  const [backupEnabled, setBackupEnabled] = useState(false);
+
+  useEffect(() => {
+    SecureStore.getItemAsync(CAMERA_BACKUP_KEY).then((val) => {
+      setBackupEnabled(val === 'true');
+    }).catch(() => {});
+  }, []);
+
   return (
-    <View style={styles.banner}>
-      <View style={styles.bannerDot} />
+    <View style={[styles.banner, backupEnabled && styles.bannerActive]}>
+      <View style={[styles.bannerDot, backupEnabled && styles.bannerDotActive]} />
       <Text style={styles.bannerText}>
-        Auto-backup off
+        {backupEnabled ? 'Auto-backup on' : 'Auto-backup off'}
       </Text>
-      <Text style={styles.bannerHint}>Enable in Settings</Text>
+      {!backupEnabled && <Text style={styles.bannerHint}>Enable in Settings</Text>}
+      {backupEnabled && <Text style={styles.bannerHint}>Waiting for crypto bindings</Text>}
     </View>
   );
 }
@@ -199,6 +212,7 @@ export default function PhotosScreen() {
   }, [fetchPhotos]);
 
   const handleRefresh = useCallback(() => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     fetchPhotos(true);
   }, [fetchPhotos]);
 
@@ -463,11 +477,18 @@ const styles = StyleSheet.create({
     borderTopColor: '#f0e3a8',
     gap: 8,
   },
+  bannerActive: {
+    backgroundColor: '#e8f7ec',
+    borderTopColor: '#b8dfc0',
+  },
   bannerDot: {
     width: 6,
     height: 6,
     borderRadius: 3,
     backgroundColor: colors.amberDeep,
+  },
+  bannerDotActive: {
+    backgroundColor: colors.green,
   },
   bannerText: {
     fontSize: 11,

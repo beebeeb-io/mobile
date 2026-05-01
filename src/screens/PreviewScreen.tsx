@@ -1,11 +1,23 @@
-import React, { useCallback } from 'react';
-import { Alert, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import React, { useCallback, useState } from 'react';
+import {
+  ActivityIndicator,
+  Alert,
+  Platform,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from 'react-native';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import * as FileSystem from 'expo-file-system/legacy';
+import * as Sharing from 'expo-sharing';
+import * as Haptics from 'expo-haptics';
 import type { RootStackParamList } from '../App';
 import { colors, radii, spacing, shadows } from '../theme';
+import { getToken, getDownloadUrl, friendlyError } from '../lib/api';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -14,16 +26,14 @@ import { colors, radii, spacing, shadows } from '../theme';
 type PreviewRoute = RouteProp<RootStackParamList, 'Preview'>;
 type Nav = NativeStackNavigationProp<RootStackParamList>;
 
-/** Format bytes into a human-readable string. */
 function formatSize(bytes: number): string {
-  if (bytes === 0) return '0 B';
-  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(1024));
-  const val = bytes / Math.pow(1024, i);
-  return `${val < 10 ? val.toFixed(1) : Math.round(val)} ${units[i]}`;
+  if (bytes < 1_000) return `${bytes} B`;
+  if (bytes < 1_000_000) return `${(bytes / 1_000).toFixed(0)} KB`;
+  if (bytes < 1_000_000_000) return `${(bytes / 1_000_000).toFixed(0)} MB`;
+  if (bytes < 1_000_000_000_000) return `${(bytes / 1_000_000_000).toFixed(1)} GB`;
+  return `${(bytes / 1_000_000_000_000).toFixed(1)} TB`;
 }
 
-/** Format an ISO date string to a readable date. */
 function formatDate(iso: string): string {
   const d = new Date(iso);
   const month = d.toLocaleString('en', { month: 'short' });
@@ -34,7 +44,6 @@ function formatDate(iso: string): string {
   return `${month} ${day}, ${year} at ${hours}:${mins}`;
 }
 
-/** Determine a file type category from the mime type. */
 function fileCategory(
   mimeType?: string,
 ): 'image' | 'pdf' | 'audio' | 'video' | 'doc' | 'file' {
@@ -43,16 +52,11 @@ function fileCategory(
   if (mime === 'application/pdf') return 'pdf';
   if (mime.startsWith('audio/')) return 'audio';
   if (mime.startsWith('video/')) return 'video';
-  if (
-    mime.startsWith('text/') ||
-    mime.includes('document') ||
-    mime.includes('spreadsheet')
-  )
+  if (mime.startsWith('text/') || mime.includes('document') || mime.includes('spreadsheet'))
     return 'doc';
   return 'file';
 }
 
-/** Human-readable label for a file category. */
 const CATEGORY_LABELS: Record<string, string> = {
   image: 'Image',
   pdf: 'PDF Document',
@@ -62,7 +66,6 @@ const CATEGORY_LABELS: Record<string, string> = {
   file: 'File',
 };
 
-/** Short label for the file type icon badge. */
 const CATEGORY_BADGE: Record<string, string> = {
   image: 'IMG',
   pdf: 'PDF',
@@ -72,7 +75,6 @@ const CATEGORY_BADGE: Record<string, string> = {
   file: 'FILE',
 };
 
-/** Background color for the category icon. */
 const CATEGORY_COLORS: Record<string, string> = {
   image: colors.amber,
   pdf: colors.red,
@@ -92,6 +94,9 @@ export default function PreviewScreen() {
   const insets = useSafeAreaInsets();
   const { fileId, fileName, mimeType, sizeBytes, createdAt } = route.params;
 
+  const [downloading, setDownloading] = useState(false);
+  const [downloadProgress, setDownloadProgress] = useState(0);
+
   const category = fileCategory(mimeType);
   const isImage = category === 'image';
 
@@ -99,15 +104,66 @@ export default function PreviewScreen() {
     navigation.goBack();
   }, [navigation]);
 
-  const handleDownload = useCallback(() => {
-    Alert.alert(
-      'Decryption required',
-      'File download requires crypto bindings (UniFFI) which are not yet integrated. The file is stored encrypted on the server.',
-      [{ text: 'OK' }],
-    );
-  }, []);
+  const handleDownload = useCallback(async () => {
+    if (Platform.OS === 'web') {
+      Alert.alert('Not available', 'File download is only available on iOS and Android.');
+      return;
+    }
 
-  const handleShare = useCallback(() => {
+    setDownloading(true);
+    setDownloadProgress(0);
+
+    try {
+      const token = await getToken();
+      if (!token) {
+        Alert.alert('Not signed in', 'Please sign in to download files.');
+        return;
+      }
+
+      // Use a sanitized filename for the local cache path
+      const safeName = fileName.replace(/[^a-zA-Z0-9._\-]/g, '_');
+      const localUri = `${FileSystem.cacheDirectory}${safeName}`;
+
+      const downloadResumable = FileSystem.createDownloadResumable(
+        getDownloadUrl(fileId),
+        localUri,
+        { headers: { Authorization: `Bearer ${token}` } },
+        (progress) => {
+          if (progress.totalBytesExpectedToWrite > 0) {
+            setDownloadProgress(
+              progress.totalBytesWritten / progress.totalBytesExpectedToWrite,
+            );
+          }
+        },
+      );
+
+      const result = await downloadResumable.downloadAsync();
+      if (!result) {
+        throw new Error('Download was interrupted.');
+      }
+
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+
+      const canShare = await Sharing.isAvailableAsync();
+      if (canShare) {
+        await Sharing.shareAsync(result.uri, {
+          mimeType: mimeType ?? 'application/octet-stream',
+          dialogTitle: fileName,
+        });
+      } else {
+        Alert.alert('Downloaded', `Saved to ${result.uri}`);
+      }
+    } catch (err) {
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      Alert.alert('Download failed', friendlyError(err));
+    } finally {
+      setDownloading(false);
+      setDownloadProgress(0);
+    }
+  }, [fileId, fileName, mimeType]);
+
+  const handleShare = useCallback(async () => {
+    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     navigation.navigate('ShareSheet', { fileId, fileName, mimeType, sizeBytes });
   }, [navigation, fileId, fileName, mimeType, sizeBytes]);
 
@@ -120,7 +176,7 @@ export default function PreviewScreen() {
           style={styles.closeButton}
           hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
         >
-          <Text style={styles.closeIcon}>{'x'}</Text>
+          <Text style={styles.closeIcon}>{'×'}</Text>
         </TouchableOpacity>
 
         <View style={styles.headerCenter}>
@@ -145,21 +201,17 @@ export default function PreviewScreen() {
       {/* ---- Preview area ---- */}
       <View style={styles.previewArea}>
         {isImage ? (
-          /* Image placeholder with message */
           <View style={styles.imagePlaceholder}>
             <View style={styles.imagePlaceholderIcon}>
               <Text style={styles.imagePlaceholderIconText}>IMG</Text>
             </View>
-            <Text style={styles.imagePlaceholderTitle}>
-              Encrypted image
-            </Text>
+            <Text style={styles.imagePlaceholderTitle}>Encrypted image</Text>
             <Text style={styles.imagePlaceholderSub}>
               Preview requires native crypto bindings.{'\n'}
               UniFFI integration is in progress.
             </Text>
           </View>
         ) : (
-          /* Generic file type placeholder */
           <View style={styles.genericPlaceholder}>
             <View
               style={[
@@ -171,9 +223,7 @@ export default function PreviewScreen() {
                 {CATEGORY_BADGE[category] ?? 'FILE'}
               </Text>
             </View>
-            <Text style={styles.genericTitle}>
-              {CATEGORY_LABELS[category] ?? 'File'}
-            </Text>
+            <Text style={styles.genericTitle}>{CATEGORY_LABELS[category] ?? 'File'}</Text>
             <Text style={styles.genericSub}>
               Preview not available.{'\n'}
               Decryption requires native crypto bindings.
@@ -184,15 +234,12 @@ export default function PreviewScreen() {
 
       {/* ---- Metadata card ---- */}
       <View style={[styles.metaCard, { paddingBottom: Math.max(insets.bottom, 16) + 56 }]}>
-        {/* File info rows */}
         <View style={styles.metaSection}>
           <Text style={styles.metaSectionTitle}>Details</Text>
 
           <View style={styles.metaRow}>
             <Text style={styles.metaLabel}>Name</Text>
-            <Text style={styles.metaValue} numberOfLines={1}>
-              {fileName}
-            </Text>
+            <Text style={styles.metaValue} numberOfLines={1}>{fileName}</Text>
           </View>
 
           {mimeType ? (
@@ -217,7 +264,6 @@ export default function PreviewScreen() {
           ) : null}
         </View>
 
-        {/* Encryption badge */}
         <View style={styles.encryptionBadge}>
           <View style={styles.encryptionDot} />
           <Text style={styles.encryptionText}>
@@ -226,19 +272,36 @@ export default function PreviewScreen() {
         </View>
       </View>
 
-      {/* ---- Download button ---- */}
+      {/* ---- Download bar ---- */}
       <View
         style={[
           styles.downloadBar,
           { paddingBottom: Math.max(insets.bottom, 16) },
         ]}
       >
+        {downloading && downloadProgress > 0 && (
+          <View style={styles.progressTrack}>
+            <View style={[styles.progressFill, { width: `${downloadProgress * 100}%` }]} />
+          </View>
+        )}
         <TouchableOpacity
-          style={styles.downloadButton}
+          style={[styles.downloadButton, downloading && styles.downloadButtonDisabled]}
           activeOpacity={0.8}
           onPress={handleDownload}
+          disabled={downloading}
         >
-          <Text style={styles.downloadButtonText}>Download</Text>
+          {downloading ? (
+            <View style={styles.downloadingRow}>
+              <ActivityIndicator size="small" color={colors.ink} />
+              <Text style={styles.downloadButtonText}>
+                {downloadProgress > 0
+                  ? `Downloading ${Math.round(downloadProgress * 100)}%`
+                  : 'Downloading...'}
+              </Text>
+            </View>
+          ) : (
+            <Text style={styles.downloadButtonText}>Download &amp; Open</Text>
+          )}
         </TouchableOpacity>
       </View>
     </View>
@@ -272,8 +335,8 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   closeIcon: {
-    fontSize: 14,
-    fontWeight: '600',
+    fontSize: 18,
+    fontWeight: '400',
     color: colors.white,
   },
   headerCenter: {
@@ -310,11 +373,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
   },
 
-  // Image placeholder
-  imagePlaceholder: {
-    alignItems: 'center',
-    gap: 16,
-  },
+  imagePlaceholder: { alignItems: 'center', gap: 16 },
   imagePlaceholderIcon: {
     width: 80,
     height: 80,
@@ -330,11 +389,7 @@ const styles = StyleSheet.create({
     color: colors.ink,
     letterSpacing: 0.5,
   },
-  imagePlaceholderTitle: {
-    fontSize: 18,
-    fontWeight: '600',
-    color: colors.white,
-  },
+  imagePlaceholderTitle: { fontSize: 18, fontWeight: '600', color: colors.white },
   imagePlaceholderSub: {
     fontSize: 13,
     color: 'rgba(255,255,255,0.5)',
@@ -342,11 +397,7 @@ const styles = StyleSheet.create({
     lineHeight: 20,
   },
 
-  // Generic placeholder
-  genericPlaceholder: {
-    alignItems: 'center',
-    gap: 16,
-  },
+  genericPlaceholder: { alignItems: 'center', gap: 16 },
   genericIcon: {
     width: 72,
     height: 72,
@@ -360,11 +411,7 @@ const styles = StyleSheet.create({
     color: colors.white,
     letterSpacing: 0.5,
   },
-  genericTitle: {
-    fontSize: 18,
-    fontWeight: '600',
-    color: colors.white,
-  },
+  genericTitle: { fontSize: 18, fontWeight: '600', color: colors.white },
   genericSub: {
     fontSize: 13,
     color: 'rgba(255,255,255,0.5)',
@@ -380,9 +427,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingTop: 20,
   },
-  metaSection: {
-    gap: 10,
-  },
+  metaSection: { gap: 10 },
   metaSectionTitle: {
     fontSize: 11,
     fontWeight: '600',
@@ -396,10 +441,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
   },
-  metaLabel: {
-    fontSize: 13,
-    color: colors.ink3,
-  },
+  metaLabel: { fontSize: 13, color: colors.ink3 },
   metaValue: {
     fontSize: 13,
     fontWeight: '500',
@@ -407,8 +449,6 @@ const styles = StyleSheet.create({
     maxWidth: '60%',
     textAlign: 'right',
   },
-
-  // Encryption badge
   encryptionBadge: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -424,11 +464,7 @@ const styles = StyleSheet.create({
     borderRadius: 4,
     backgroundColor: colors.amber,
   },
-  encryptionText: {
-    fontSize: 12,
-    color: colors.ink3,
-    fontWeight: '500',
-  },
+  encryptionText: { fontSize: 12, color: colors.ink3, fontWeight: '500' },
 
   // ---- Download bar ----
   downloadBar: {
@@ -439,6 +475,18 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingTop: 12,
     backgroundColor: colors.paper,
+    gap: 8,
+  },
+  progressTrack: {
+    height: 3,
+    borderRadius: 2,
+    backgroundColor: colors.line,
+    overflow: 'hidden',
+  },
+  progressFill: {
+    height: '100%',
+    backgroundColor: colors.amber,
+    borderRadius: 2,
   },
   downloadButton: {
     backgroundColor: colors.amber,
@@ -447,6 +495,14 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     ...shadows.md,
+  },
+  downloadButtonDisabled: {
+    opacity: 0.7,
+  },
+  downloadingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
   },
   downloadButtonText: {
     fontSize: 16,
