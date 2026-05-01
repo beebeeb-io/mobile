@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -17,7 +17,8 @@ import * as Clipboard from 'expo-clipboard';
 import * as Haptics from 'expo-haptics';
 import type { RouteProp } from '@react-navigation/native';
 import type { RootStackParamList } from '../App';
-import { colors, radii, spacing, shadows } from '../theme';
+import { radii, spacing, shadows } from '../theme';
+import { useTheme } from '../lib/theme-context';
 import { createShare, friendlyError } from '../lib/api';
 import type { Share as ShareLink } from '../lib/api';
 
@@ -35,14 +36,14 @@ function formatSize(bytes: number): string {
   return `${val < 10 ? val.toFixed(1) : Math.round(val)} ${units[i]}`;
 }
 
-function fileTypeBadge(mime?: string): { label: string; color: string } {
+function makeFileTypeBadge(mime: string | undefined, c: ReturnType<typeof useTheme>['colors']): { label: string; color: string } {
   const m = mime ?? '';
-  if (m.startsWith('image/')) return { label: 'IMG', color: colors.amber };
-  if (m === 'application/pdf') return { label: 'PDF', color: colors.red };
-  if (m.startsWith('audio/')) return { label: 'AUD', color: colors.green };
-  if (m.startsWith('video/')) return { label: 'VID', color: colors.ink2 };
-  if (m.startsWith('text/') || m.includes('document')) return { label: 'DOC', color: colors.ink2 };
-  return { label: 'FILE', color: colors.ink3 };
+  if (m.startsWith('image/')) return { label: 'IMG', color: c.amber };
+  if (m === 'application/pdf') return { label: 'PDF', color: c.red };
+  if (m.startsWith('audio/')) return { label: 'AUD', color: c.green };
+  if (m.startsWith('video/')) return { label: 'VID', color: c.ink2 };
+  if (m.startsWith('text/') || m.includes('document')) return { label: 'DOC', color: c.ink2 };
+  return { label: 'FILE', color: c.ink3 };
 }
 
 // ---------------------------------------------------------------------------
@@ -80,6 +81,7 @@ export default function ShareSheetScreen() {
   const navigation = useNavigation();
   const route = useRoute<ShareRoute>();
   const insets = useSafeAreaInsets();
+  const { colors: c, resolved } = useTheme();
   const { fileId, fileName, mimeType, sizeBytes } = route.params;
 
   const [expiry, setExpiry] = useState<ExpiryOption>(EXPIRY_OPTIONS[1]);
@@ -90,7 +92,45 @@ export default function ShareSheetScreen() {
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const badge = fileTypeBadge(mimeType);
+  const badge = makeFileTypeBadge(mimeType, c);
+
+  const styles = useMemo(() => StyleSheet.create({
+    root: { flex: 1, backgroundColor: 'transparent', justifyContent: 'flex-end' },
+    backdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.35)' },
+    sheet: { backgroundColor: c.paper, borderTopLeftRadius: 20, borderTopRightRadius: 20, paddingHorizontal: spacing.lg, paddingTop: 12, maxHeight: '85%', ...shadows.lg },
+    handle: { width: 36, height: 4, borderRadius: 2, backgroundColor: c.line2, alignSelf: 'center', marginBottom: 14 },
+    fileRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 16 },
+    fileIcon: { width: 36, height: 36, borderRadius: radii.md, alignItems: 'center', justifyContent: 'center' },
+    fileIconText: { color: '#FFFFFF', fontSize: 9, fontWeight: '700', letterSpacing: 0.4 },
+    fileInfo: { flex: 1, minWidth: 0 },
+    fileName: { fontSize: 14, fontWeight: '600', color: c.ink },
+    fileMeta: { fontSize: 11, color: c.ink3, marginTop: 2 },
+    scroll: { maxHeight: 460 },
+    scrollContent: { paddingBottom: 8 },
+    sectionLabel: { fontSize: 11, fontWeight: '600', color: c.ink3, textTransform: 'uppercase', letterSpacing: 0.6, marginTop: 8, marginBottom: 8 },
+    chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 6 },
+    chip: { paddingHorizontal: 12, paddingVertical: 7, borderRadius: radii.round, backgroundColor: c.paper2, borderWidth: 1, borderColor: c.line },
+    chipActive: { backgroundColor: c.ink, borderColor: c.ink },
+    chipText: { fontSize: 12, color: c.ink3 },
+    chipTextActive: { color: c.paper, fontWeight: '600' },
+    input: { height: 42, borderWidth: 1, borderColor: c.line, borderRadius: radii.md, paddingHorizontal: spacing.md, fontSize: 14, color: c.ink, backgroundColor: c.paper },
+    hint: { fontSize: 11, color: c.ink3, marginTop: 6, lineHeight: 15 },
+    errorBanner: { backgroundColor: resolved === 'dark' ? '#2d1515' : '#fef2f2', borderWidth: 1, borderColor: resolved === 'dark' ? '#5c2828' : '#fecaca', borderRadius: radii.md, paddingVertical: spacing.sm, paddingHorizontal: spacing.md, marginTop: spacing.lg },
+    errorText: { fontSize: 12, color: c.red, lineHeight: 17 },
+    createButton: { height: 46, backgroundColor: c.amber, borderRadius: radii.md, alignItems: 'center', justifyContent: 'center', marginTop: spacing.xl },
+    buttonDisabled: { opacity: 0.6 },
+    createButtonText: { fontSize: 14, fontWeight: '700', color: c.ink },
+    fineprint: { fontSize: 11, color: c.ink4, textAlign: 'center', marginTop: 12, lineHeight: 16 },
+    successCard: { paddingTop: 8 },
+    urlBox: { flexDirection: 'row', alignItems: 'center', backgroundColor: c.paper2, borderWidth: 1, borderColor: c.line, borderRadius: radii.md, paddingLeft: 12, paddingRight: 6, paddingVertical: 6, gap: 8 },
+    urlText: { flex: 1, fontSize: 12, color: c.ink, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
+    copyButton: { paddingHorizontal: 12, paddingVertical: 7, backgroundColor: c.ink, borderRadius: radii.sm },
+    copyButtonText: { fontSize: 12, fontWeight: '600', color: c.amber },
+    successDetails: { marginTop: 10, gap: 4 },
+    successHint: { fontSize: 12, color: c.ink3 },
+    doneButton: { height: 44, backgroundColor: c.ink, borderRadius: radii.md, alignItems: 'center', justifyContent: 'center', marginTop: spacing.xl },
+    doneButtonText: { fontSize: 14, fontWeight: '600', color: c.paper },
+  }), [c, resolved]);
 
   const handleClose = useCallback(() => {
     navigation.goBack();
@@ -241,7 +281,7 @@ export default function ShareSheetScreen() {
               value={passphrase}
               onChangeText={setPassphrase}
               placeholder="Leave empty to skip"
-              placeholderTextColor={colors.ink4}
+              placeholderTextColor={c.ink4}
               secureTextEntry
               autoCapitalize="none"
               autoCorrect={false}
@@ -264,7 +304,7 @@ export default function ShareSheetScreen() {
               disabled={creating}
             >
               {creating ? (
-                <ActivityIndicator color={colors.ink} size="small" />
+                <ActivityIndicator color={c.ink} size="small" />
               ) : (
                 <Text style={styles.createButtonText}>Create encrypted link</Text>
               )}
@@ -280,225 +320,3 @@ export default function ShareSheetScreen() {
   );
 }
 
-// ---------------------------------------------------------------------------
-// Styles
-// ---------------------------------------------------------------------------
-
-const styles = StyleSheet.create({
-  root: {
-    flex: 1,
-    backgroundColor: 'transparent',
-    justifyContent: 'flex-end',
-  },
-  backdrop: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0,0,0,0.35)',
-  },
-  sheet: {
-    backgroundColor: colors.paper,
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    paddingHorizontal: spacing.lg,
-    paddingTop: 12,
-    maxHeight: '85%',
-    ...shadows.lg,
-  },
-  handle: {
-    width: 36,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: colors.line2,
-    alignSelf: 'center',
-    marginBottom: 14,
-  },
-
-  // File row
-  fileRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    marginBottom: 16,
-  },
-  fileIcon: {
-    width: 36,
-    height: 36,
-    borderRadius: radii.md,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  fileIconText: {
-    color: colors.paper,
-    fontSize: 9,
-    fontWeight: '700',
-    letterSpacing: 0.4,
-  },
-  fileInfo: {
-    flex: 1,
-    minWidth: 0,
-  },
-  fileName: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: colors.ink,
-  },
-  fileMeta: {
-    fontSize: 11,
-    color: colors.ink3,
-    marginTop: 2,
-  },
-
-  // Scroll content
-  scroll: { maxHeight: 460 },
-  scrollContent: { paddingBottom: 8 },
-
-  // Section
-  sectionLabel: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: colors.ink3,
-    textTransform: 'uppercase',
-    letterSpacing: 0.6,
-    marginTop: 8,
-    marginBottom: 8,
-  },
-  chipRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 6,
-    marginBottom: 6,
-  },
-  chip: {
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    borderRadius: radii.round,
-    backgroundColor: colors.paper2,
-    borderWidth: 1,
-    borderColor: colors.line,
-  },
-  chipActive: {
-    backgroundColor: colors.ink,
-    borderColor: colors.ink,
-  },
-  chipText: {
-    fontSize: 12,
-    color: colors.ink3,
-  },
-  chipTextActive: {
-    color: colors.paper,
-    fontWeight: '600',
-  },
-
-  // Input
-  input: {
-    height: 42,
-    borderWidth: 1,
-    borderColor: colors.line,
-    borderRadius: radii.md,
-    paddingHorizontal: spacing.md,
-    fontSize: 14,
-    color: colors.ink,
-    backgroundColor: colors.paper,
-  },
-  hint: {
-    fontSize: 11,
-    color: colors.ink3,
-    marginTop: 6,
-    lineHeight: 15,
-  },
-
-  // Error
-  errorBanner: {
-    backgroundColor: '#fef2f2',
-    borderWidth: 1,
-    borderColor: '#fecaca',
-    borderRadius: radii.md,
-    paddingVertical: spacing.sm,
-    paddingHorizontal: spacing.md,
-    marginTop: spacing.lg,
-  },
-  errorText: {
-    fontSize: 12,
-    color: colors.red,
-    lineHeight: 17,
-  },
-
-  // Create button
-  createButton: {
-    height: 46,
-    backgroundColor: colors.amber,
-    borderRadius: radii.md,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginTop: spacing.xl,
-  },
-  buttonDisabled: {
-    opacity: 0.6,
-  },
-  createButtonText: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: colors.ink,
-  },
-  fineprint: {
-    fontSize: 11,
-    color: colors.ink4,
-    textAlign: 'center',
-    marginTop: 12,
-    lineHeight: 16,
-  },
-
-  // Success state
-  successCard: {
-    paddingTop: 8,
-  },
-  urlBox: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: colors.paper2,
-    borderWidth: 1,
-    borderColor: colors.line,
-    borderRadius: radii.md,
-    paddingLeft: 12,
-    paddingRight: 6,
-    paddingVertical: 6,
-    gap: 8,
-  },
-  urlText: {
-    flex: 1,
-    fontSize: 12,
-    color: colors.ink,
-    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
-  },
-  copyButton: {
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    backgroundColor: colors.ink,
-    borderRadius: radii.sm,
-  },
-  copyButtonText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: colors.amber,
-  },
-  successDetails: {
-    marginTop: 10,
-    gap: 4,
-  },
-  successHint: {
-    fontSize: 12,
-    color: colors.ink3,
-  },
-  doneButton: {
-    height: 44,
-    backgroundColor: colors.ink,
-    borderRadius: radii.md,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginTop: spacing.xl,
-  },
-  doneButtonText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: colors.paper,
-  },
-});
