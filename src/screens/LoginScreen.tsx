@@ -126,6 +126,7 @@ export default function LoginScreen() {
           autoCorrect={false}
           autoComplete="email"
           returnKeyType="next"
+          blurOnSubmit={false}
           onSubmitEditing={() => passwordRef.current?.focus()}
           testID="email-input"
           editable={!loading}
