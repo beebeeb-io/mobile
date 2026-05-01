@@ -124,9 +124,9 @@ function OfflineBanner() {
   const insets = useSafeAreaInsets();
   const { colors: c } = useTheme();
   return (
-    <View style={[offlineStyles.banner, { top: insets.top + 8 }]}>
-      <View style={offlineStyles.iconCircle}>
-        <View style={offlineStyles.iconDot} />
+    <View style={[offlineStyles.banner, { top: insets.top + 8, backgroundColor: c.amberBg, borderColor: c.line }]}>
+      <View style={[offlineStyles.iconCircle, { backgroundColor: c.line2 }]}>
+        <Ionicons name="cloud-offline-outline" size={14} color={c.amberDeep} />
       </View>
       <View style={offlineStyles.textBlock}>
         <Text style={[offlineStyles.title, { color: c.ink }]}>No connection</Text>
@@ -145,9 +145,7 @@ const offlineStyles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
-    backgroundColor: '#faf5e4',
     borderWidth: 1,
-    borderColor: '#e2d5b0',
     borderRadius: 10,
     paddingHorizontal: 12,
     paddingVertical: 10,
@@ -161,19 +159,12 @@ const offlineStyles = StyleSheet.create({
     width: 28,
     height: 28,
     borderRadius: 14,
-    backgroundColor: '#e8d9a0',
     alignItems: 'center',
     justifyContent: 'center',
   },
-  iconDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: '#8a6d20',
-  },
   textBlock: { flex: 1 },
-  title: { fontSize: 12, fontWeight: '600', color: colors.ink },
-  sub: { fontSize: 10.5, color: colors.ink3, marginTop: 1 },
+  title: { fontSize: 12, fontWeight: '600' },
+  sub: { fontSize: 10.5, marginTop: 1 },
 });
 
 // ---------------------------------------------------------------------------
