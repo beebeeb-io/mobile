@@ -50,12 +50,22 @@ public class BeebeebCryptoModule: Module {
       throw NotLinkedError()
     }
 
-    AsyncFunction("storeKeyInKeychain") { (_: Data, _: String) throws in
-      throw NotLinkedError()
+    AsyncFunction("storeKeyInKeychain") { (masterKeyBytes: Data, label: String) throws in
+      try KeychainManager.store(masterKeyBytes: masterKeyBytes, label: label)
     }
 
-    AsyncFunction("loadKeyFromKeychain") { (_: String) throws -> Data? in
-      throw NotLinkedError()
+    AsyncFunction("loadKeyFromKeychain") { (label: String) throws -> Data? in
+      try KeychainManager.load(label: label)
+    }
+
+    AsyncFunction("deleteKeyFromKeychain") { () throws -> Bool in
+      KeychainManager.delete()
+      return true
+    }
+
+    AsyncFunction("setRequireBiometric") { (require: Bool) throws -> Bool in
+      try KeychainManager.setAccessControl(requireBiometric: require)
+      return true
     }
   }
 }
