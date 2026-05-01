@@ -13,6 +13,7 @@ import * as Haptics from 'expo-haptics';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { radii, spacing } from '../theme';
 import { useTheme } from '../lib/theme-context';
+import SkeletonRow from '../components/SkeletonRow';
 import { getIncomingInvites, getSentInvites, friendlyError } from '../lib/api';
 import type { ShareInvite } from '../lib/api';
 
@@ -294,8 +295,8 @@ export default function SharedScreen() {
       {error ? (
         renderError(error, onRetry)
       ) : loading && !refreshing ? (
-        <View style={styles.loadingContainer}>
-          <ActivityIndicator color={c.amber} size="large" />
+        <View>
+          {[0, 1, 2].map((i) => <SkeletonRow key={i} />)}
         </View>
       ) : (
         <FlatList
