@@ -136,6 +136,25 @@ public class BeebeebCryptoModule: Module {
       ContactsBackupManager.shared.enable(authToken: authToken)
       CalendarBackupManager.shared.enable(authToken: authToken)
     }
+
+    // ── Share Extension: pending shares dropped by BeebeebShare ────────
+    //
+    // The iOS Share Extension writes files into the App Group container at
+    // group.io.beebeeb.shared/IncomingShares/. The main app picks them up
+    // here, copies each into its own sandbox so the JS side can fetch a
+    // file:// URI, and removes the App Group copy on `consume`.
+
+    AsyncFunction("listPendingShares") { () throws -> [[String: Any]] in
+      try PendingSharesAccess.list()
+    }
+
+    AsyncFunction("consumePendingShare") { (id: String) throws -> [String: Any] in
+      try PendingSharesAccess.consume(id: id)
+    }
+
+    AsyncFunction("clearAllPendingShares") { () throws -> Int in
+      try PendingSharesAccess.clearAll()
+    }
   }
 }
 

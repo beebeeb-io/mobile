@@ -208,6 +208,8 @@ export interface FileEntry {
   created_at: string;
   updated_at: string;
   storage_pool_id?: string | null;
+  /** Active share count — populated by the server when shares exist on the entry. */
+  share_count?: number;
 }
 
 /**
@@ -516,6 +518,25 @@ export async function getIncomingInvites(): Promise<ShareInvite[]> {
 export async function getSentInvites(): Promise<ShareInvite[]> {
   const data = await request<{ invites: ShareInvite[] }>('GET', '/api/v1/shares/invites/sent');
   return data.invites ?? [];
+}
+
+// ---------------------------------------------------------------------------
+// Folder presence (collaborators currently viewing a folder)
+// ---------------------------------------------------------------------------
+
+export interface PresenceUser {
+  id: string;
+  email: string;
+  initials: string;
+}
+
+/**
+ * Returns the list of users currently active in a shared folder.
+ * The endpoint is best-effort — returns an empty list if it is unavailable
+ * (e.g. server has not been upgraded yet, or the folder is not shared).
+ */
+export async function getFolderPresence(folderId: string): Promise<PresenceUser[]> {
+  return request<PresenceUser[]>('GET', `/api/v1/files/${folderId}/presence`).catch(() => []);
 }
 
 // ---------------------------------------------------------------------------

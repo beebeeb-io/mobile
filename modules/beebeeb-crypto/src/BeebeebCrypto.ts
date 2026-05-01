@@ -11,6 +11,8 @@
 
 import BeebeebCryptoModule from './BeebeebCryptoModule'
 import type {
+  ConstellationFrame,
+  ConstellationSessionInit,
   EncryptedData,
   MasterKeyResult,
   OpaqueLoginFinishResult,
@@ -210,4 +212,68 @@ export async function getBackupProgress(): Promise<NativeBackupProgress> {
 /** Trigger an immediate batch (up to 50 items) without waiting for BGProcessingTask. */
 export async function triggerImmediateBackup(authToken: string): Promise<void> {
   return BeebeebCryptoModule.triggerImmediateBackup(authToken)
+}
+
+// ─── Share Extension dropbox (iOS only) ─────────────────────────────────────
+//
+// The Share Extension drops files into the App Group container and the main
+// app picks them up here. Android share-target intents are a separate flow.
+
+export interface PendingShareSummary {
+  /** UUID assigned by the extension when the share landed. */
+  id: string
+  /** User-facing filename, e.g. "IMG_1234.jpg". */
+  filename: string
+  /** MIME type if the extension could detect one. */
+  mimeType?: string
+  sizeBytes: number
+  /** Unix epoch seconds when the share was saved. */
+  timestamp: number
+  /** "image" | "video" | "file" | "url" | "text" | "data" */
+  kind: string
+}
+
+export interface PendingShareResource extends PendingShareSummary {
+  /** file:// URI inside the main-app sandbox, ready for `fetch().blob()`. */
+  uri: string
+}
+
+/** List the pending shares currently in the App Group dropbox. iOS only. */
+export async function listPendingShares(): Promise<PendingShareSummary[]> {
+  return BeebeebCryptoModule.listPendingShares()
+}
+
+/** Move a single share from the App Group into the main-app sandbox. iOS only. */
+export async function consumePendingShare(id: string): Promise<PendingShareResource> {
+  return BeebeebCryptoModule.consumePendingShare(id)
+}
+
+/** Wipe the App Group dropbox. Returns the number of files removed. iOS only. */
+export async function clearAllPendingShares(): Promise<number> {
+  return BeebeebCryptoModule.clearAllPendingShares()
+}
+
+// ─── Amber Constellation — display side ─────────────────────────────────────
+
+/**
+ * Initialise a new pairing session: derives an ephemeral X25519 keypair, the
+ * 6-digit confirmation code, and the encoded payload that gets transmitted via
+ * the visual constellation. Defaults to a 5-minute expiry.
+ */
+export async function constellationNewSession(
+  expiresInSecs = 300,
+): Promise<ConstellationSessionInit> {
+  return BeebeebCryptoModule.constellationNewSession(expiresInSecs)
+}
+
+/**
+ * Encode the next frame for a given pairing payload. Returns deterministic
+ * node positions and quantized brightness values that the renderer applies.
+ * Call this every ~200ms (5 fps data rate) advancing `frameIndex` each tick.
+ */
+export async function constellationEncode(
+  payload: Uint8Array,
+  frameIndex: number,
+): Promise<ConstellationFrame> {
+  return BeebeebCryptoModule.constellationEncode(payload, frameIndex)
 }

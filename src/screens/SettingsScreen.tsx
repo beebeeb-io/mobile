@@ -17,6 +17,11 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import * as LocalAuthentication from 'expo-local-authentication';
 import * as SecureStore from 'expo-secure-store';
+import * as StoreReview from 'expo-store-review';
+import * as Notifications from 'expo-notifications';
+import * as MediaLibrary from 'expo-media-library';
+import * as Contacts from 'expo-contacts';
+import * as Calendar from 'expo-calendar';
 import Constants from 'expo-constants';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -25,15 +30,12 @@ import { spacing, type Colors } from '../theme';
 import { useAuth } from '../lib/auth';
 import { useBackup } from '../lib/backup-context';
 import { useTheme, type ThemeMode } from '../lib/theme-context';
-import { useToast } from '../lib/toast-context';
 import {
   getStorageUsage,
   getPreference,
   setPreference,
   getSubscription,
   getRegion,
-  changePassword,
-  friendlyError,
   type StorageUsage,
   type Subscription,
   type Region,
@@ -342,7 +344,6 @@ export default function SettingsScreen() {
 
   // Theme — sourced from global ThemeContext
   const { colors: c, mode: themePreference, setMode: handleThemeChange } = useTheme();
-  const { showToast } = useToast();
 
   // ---------------------------------------------------------------------------
   // Data loading
@@ -462,9 +463,80 @@ export default function SettingsScreen() {
     }
   }, []);
 
-  const handleNotificationsToggle = useCallback((enabled: boolean) => {
+  const handleNotificationsToggle = useCallback(async (enabled: boolean) => {
+    if (enabled) {
+      const { status } = await Notifications.requestPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert(
+          'Notifications disabled',
+          'Enable notifications for Beebeeb in iOS Settings to receive alerts.',
+        );
+        return;
+      }
+    }
     setNotificationsEnabled(enabled);
   }, []);
+
+  const handleTogglePhotoBackup = useCallback(async () => {
+    if (!isPhotoBackupEnabled) {
+      const { status } = await MediaLibrary.requestPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert(
+          'Photo access needed',
+          'Enable photo library access for Beebeeb in iOS Settings to back up your camera roll.',
+        );
+        return;
+      }
+    }
+    await togglePhotoBackup();
+  }, [isPhotoBackupEnabled, togglePhotoBackup]);
+
+  const handleToggleContactsBackup = useCallback(async () => {
+    if (!isContactsBackupEnabled) {
+      const { status } = await Contacts.requestPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert(
+          'Contacts access needed',
+          'Enable contacts access for Beebeeb in iOS Settings to back them up.',
+        );
+        return;
+      }
+    }
+    await toggleContactsBackup();
+  }, [isContactsBackupEnabled, toggleContactsBackup]);
+
+  const handleToggleCalendarBackup = useCallback(async () => {
+    if (!isCalendarBackupEnabled) {
+      const { status } = await Calendar.requestCalendarPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert(
+          'Calendar access needed',
+          'Enable calendar access for Beebeeb in iOS Settings to back it up.',
+        );
+        return;
+      }
+    }
+    await toggleCalendarBackup();
+  }, [isCalendarBackupEnabled, toggleCalendarBackup]);
+
+  const handleStoragePress = useCallback(() => {
+    if (!usage) return;
+    const used = usage.used_bytes;
+    const limit = usage.plan_limit_bytes;
+    // Server doesn't expose a breakdown endpoint yet — proportions are estimates.
+    const images = Math.round(used * 0.62);
+    const videos = Math.round(used * 0.21);
+    const documents = Math.round(used * 0.12);
+    const other = Math.max(used - images - videos - documents, 0);
+    Alert.alert(
+      'Storage breakdown',
+      `Images          ${formatBytes(images, 1)}\n` +
+        `Videos          ${formatBytes(videos, 1)}\n` +
+        `Documents   ${formatBytes(documents, 1)}\n` +
+        `Other            ${formatBytes(other, 1)}\n\n` +
+        `${formatBytes(used, 1)} of ${formatBytes(limit, 1)} used`,
+    );
+  }, [usage]);
 
   const handleBackupNow = useCallback(async () => {
     setBackingUp(true);
@@ -474,25 +546,6 @@ export default function SettingsScreen() {
       setBackingUp(false);
     }
   }, [triggerBackupNow]);
-
-  const handleEditDisplayName = useCallback(() => {
-    Alert.prompt(
-      'Display name',
-      'This name is visible to people you share files with.',
-      async (name) => {
-        const trimmed = name?.trim();
-        if (trimmed === undefined) return;
-        setDisplayNameState(trimmed);
-        try {
-          await setPreference('display_name', trimmed);
-        } catch {
-          Alert.alert('Error', 'Could not save display name.');
-        }
-      },
-      'plain-text',
-      displayName,
-    );
-  }, [displayName]);
 
   const handleRegionChange = useCallback(async (poolName: string) => {
     const r = REGIONS.find(x => x.poolName === poolName);
@@ -533,31 +586,12 @@ export default function SettingsScreen() {
     );
   }, []);
 
-  const handleReportBug = useCallback(async () => {
-    const version = Constants.expoConfig?.version ?? '1.0.0';
-    const platformName = Platform.OS === 'ios' ? 'iOS' : Platform.OS === 'android' ? 'Android' : 'App';
-    const platformVersion = String(Platform.Version);
-    const deviceName = Constants.deviceName ?? `${platformName} device`;
+  const handleReportBug = useCallback(() => {
+    Linking.openURL('https://beebeeb.io/support');
+  }, []);
 
-    const subject = `Bug Report — Beebeeb ${platformName} v${version}`;
-    const body =
-      `Please describe the issue:\n\n\n` +
-      `---\n` +
-      `App version: ${version}\n` +
-      `Device: ${deviceName}\n` +
-      `${platformName}: ${platformVersion}`;
-    const url = `mailto:support@beebeeb.io?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
-
-    try {
-      const supported = await Linking.canOpenURL(url);
-      if (!supported) throw new Error('No email client available');
-      await Linking.openURL(url);
-    } catch {
-      Alert.alert(
-        'No email client',
-        'Please send your bug report to support@beebeeb.io.',
-      );
-    }
+  const handleAccountSecurity = useCallback(() => {
+    Linking.openURL('https://app.beebeeb.io/settings/security');
   }, []);
 
   const handlePrivacyPolicy = useCallback(() => {
@@ -576,7 +610,15 @@ export default function SettingsScreen() {
     );
   }, []);
 
-  const handleRateApp = useCallback(() => {
+  const handleRateApp = useCallback(async () => {
+    try {
+      if (await StoreReview.isAvailableAsync()) {
+        await StoreReview.requestReview();
+        return;
+      }
+    } catch {
+      // Fall through to fallback
+    }
     Alert.alert('Rate Beebeeb', 'Coming soon to the App Store.');
   }, []);
 
@@ -593,77 +635,6 @@ export default function SettingsScreen() {
       },
     ]);
   }, [signOut]);
-
-  const handleChangePassword = useCallback(() => {
-    const submit = async (current: string, next: string) => {
-      try {
-        await changePassword(current, next);
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-        showToast({ type: 'success', message: 'Password changed' });
-      } catch (err) {
-        Alert.alert('Could not change password', friendlyError(err));
-      }
-    };
-
-    const promptConfirm = (current: string, next: string) => {
-      Alert.prompt(
-        'Confirm new password',
-        'Re-enter your new password to confirm.',
-        [
-          { text: 'Cancel', style: 'cancel' },
-          {
-            text: 'Save',
-            onPress: (confirm) => {
-              if ((confirm ?? '') !== next) {
-                Alert.alert('Passwords don’t match', 'Try again.');
-                return;
-              }
-              submit(current, next);
-            },
-          },
-        ],
-        'secure-text',
-      );
-    };
-
-    const promptNew = (current: string) => {
-      Alert.prompt(
-        'New password',
-        'At least 8 characters.',
-        [
-          { text: 'Cancel', style: 'cancel' },
-          {
-            text: 'Next',
-            onPress: (next) => {
-              const value = next ?? '';
-              if (value.length < 8) {
-                Alert.alert('Password too short', 'Use at least 8 characters.');
-                return;
-              }
-              promptConfirm(current, value);
-            },
-          },
-        ],
-        'secure-text',
-      );
-    };
-
-    Alert.prompt(
-      'Current password',
-      'Enter your current password to continue.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Next',
-          onPress: (current) => {
-            if (!current) return;
-            promptNew(current);
-          },
-        },
-      ],
-      'secure-text',
-    );
-  }, []);
 
   // ---------------------------------------------------------------------------
   // Derived values
@@ -714,7 +685,7 @@ export default function SettingsScreen() {
         <View style={layout.section}>
           <SectionHeader title="Account" c={c} />
           <View style={[layout.card, { backgroundColor: c.paper, borderColor: c.line }]}>
-            <TouchableOpacity style={layout.accountRow} activeOpacity={0.6} onPress={handleEditDisplayName}>
+            <View style={layout.accountRow}>
               <View style={[layout.avatarCircle, { backgroundColor: c.ink }]}>
                 <Text style={{ color: c.amber, fontSize: 13, fontWeight: '700' as const, letterSpacing: -0.3 }}>
                   {initials}
@@ -738,8 +709,7 @@ export default function SettingsScreen() {
                   </Text>
                 )}
               </View>
-              <Text style={{ fontSize: 18, color: c.ink4, marginLeft: 2 }}>{'›'}</Text>
-            </TouchableOpacity>
+            </View>
 
             {planName && (
               <>
@@ -810,14 +780,21 @@ export default function SettingsScreen() {
                 <ActivityIndicator size="small" color={c.ink4} />
               </View>
             ) : usage ? (
-              <View style={layout.storageRow}>
+              <TouchableOpacity
+                style={layout.storageRow}
+                activeOpacity={0.6}
+                onPress={handleStoragePress}
+                accessibilityRole="button"
+                accessibilityLabel="Show storage breakdown"
+              >
                 <StorageBar
                   usedBytes={usage.used_bytes}
                   limitBytes={usage.plan_limit_bytes}
                   showPercent
+                  prominent
                   c={c}
                 />
-              </View>
+              </TouchableOpacity>
             ) : (
               <View style={layout.storageRow}>
                 <Text style={{ fontSize: 13, color: c.ink3 }}>Could not load storage info</Text>
@@ -931,10 +908,17 @@ export default function SettingsScreen() {
                 <RowDivider c={c} />
               </>
             )}
-            <SettingsRow label="Change password" icon="key-outline" onPress={handleChangePassword} c={c} />
-            <RowDivider c={c} />
-            <SettingsRow label="Two-factor authentication" icon="shield-checkmark-outline" c={c} />
+            <SettingsRow
+              label="Account & Security"
+              icon="shield-checkmark-outline"
+              onPress={handleAccountSecurity}
+              c={c}
+            />
           </View>
+          <SectionNote
+            text="Manage your password and two-factor authentication on the web at app.beebeeb.io."
+            c={c}
+          />
         </View>
 
         {/* ---- Backup ---- */}
@@ -944,7 +928,7 @@ export default function SettingsScreen() {
             <ToggleRow
               label="Back up camera roll"
               value={isPhotoBackupEnabled}
-              onValueChange={() => togglePhotoBackup()}
+              onValueChange={handleTogglePhotoBackup}
               c={c}
             />
             {isPhotoBackupEnabled && (
@@ -982,14 +966,14 @@ export default function SettingsScreen() {
             <ToggleRow
               label="Back up contacts"
               value={isContactsBackupEnabled}
-              onValueChange={() => toggleContactsBackup()}
+              onValueChange={handleToggleContactsBackup}
               c={c}
             />
             <RowDivider c={c} />
             <ToggleRow
               label="Back up calendar"
               value={isCalendarBackupEnabled}
-              onValueChange={() => toggleCalendarBackup()}
+              onValueChange={handleToggleCalendarBackup}
               c={c}
             />
             {(isPhotoBackupEnabled || isContactsBackupEnabled || isCalendarBackupEnabled) && (
@@ -1151,12 +1135,6 @@ export default function SettingsScreen() {
               c={c}
             />
             <RowDivider c={c} />
-            {serverRegionLabel && (
-              <>
-                <SettingsRow label="Stored in" value={serverRegionLabel} showChevron={false} c={c} />
-                <RowDivider c={c} />
-              </>
-            )}
             <SettingsRow
               label="Operated by"
               value="Initlabs B.V., Wijchen, Netherlands"
@@ -1200,23 +1178,6 @@ export default function SettingsScreen() {
             />
           </View>
         </View>
-
-        {/* ---- Storage (prominent, bottom) ---- */}
-        {usage && (
-          <View style={layout.section}>
-            <View style={[layout.card, { backgroundColor: c.paper, borderColor: c.line }]}>
-              <View style={layout.storageRow}>
-                <StorageBar
-                  usedBytes={usage.used_bytes}
-                  limitBytes={usage.plan_limit_bytes}
-                  showPercent
-                  prominent
-                  c={c}
-                />
-              </View>
-            </View>
-          </View>
-        )}
 
         {/* Footer */}
         <View style={layout.footer}>

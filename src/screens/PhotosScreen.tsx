@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useNavigation } from '@react-navigation/native';
 import * as Haptics from 'expo-haptics';
 import * as MediaLibrary from 'expo-media-library';
 import { radii, spacing } from '../theme';
@@ -230,13 +231,26 @@ function AutoBackupBanner() {
   const { isPhotoBackupEnabled, backupProgress, lastBackupAt } = useBackup();
   const isConnected = useNetworkStatus();
   const { colors: c } = useTheme();
+  const navigation = useNavigation<{ navigate: (name: string) => void }>();
 
   if (!isPhotoBackupEnabled) {
     return (
       <View style={[styles.banner, { backgroundColor: c.paper2, borderColor: c.line }]}>
         <View style={[styles.bannerDot, { backgroundColor: c.ink4 }]} />
         <Text style={[styles.bannerText, { color: c.ink2 }]}>Auto-backup off</Text>
-        <Text style={[styles.bannerHint, { color: c.ink3 }]}>Enable in Settings</Text>
+        <TouchableOpacity
+          activeOpacity={0.6}
+          onPress={() => {
+            Haptics.selectionAsync();
+            navigation.navigate('Settings');
+          }}
+          accessibilityRole="link"
+          accessibilityLabel="Enable auto-backup in Settings"
+        >
+          <Text style={[styles.bannerHint, { color: c.amberDeep, textDecorationLine: 'underline' }]}>
+            Enable in Settings
+          </Text>
+        </TouchableOpacity>
       </View>
     );
   }

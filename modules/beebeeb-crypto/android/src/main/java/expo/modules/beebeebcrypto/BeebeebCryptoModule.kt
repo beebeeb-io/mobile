@@ -35,6 +35,12 @@ class BeebeebCryptoModule : Module() {
     AsyncFunction("storeKeyInKeychain") { _: ByteArray, _: String -> throw NotLinkedException() }
 
     AsyncFunction("loadKeyFromKeychain") { _: String -> throw NotLinkedException() }
+
+    // Share Extension is iOS-only. Android receives shared content through
+    // Intent filters declared in the manifest, which is a separate flow.
+    AsyncFunction("listPendingShares") { -> emptyList<Map<String, Any?>>() }
+    AsyncFunction("consumePendingShare") { _: String -> throw NotLinkedException() }
+    AsyncFunction("clearAllPendingShares") { -> 0 }
   }
 }
 
