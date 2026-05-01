@@ -240,7 +240,28 @@ const FileRowItem = React.memo(function FileRowItem({
     }
   }, []);
 
+  // Right side (revealed by swiping right-to-left) is the destructive
+  // Trash action; left side (swiping left-to-right) is the constructive
+  // Share action — matches iOS Mail / Files conventions and the runbook.
   const renderRightActions = useCallback(() => (
+    <View style={styles.swipeActions}>
+      <TouchableOpacity
+        style={[styles.swipeAction, { backgroundColor: c.red }]}
+        activeOpacity={0.8}
+        onPress={() => {
+          swipeableRef.current?.close();
+          onDelete(item);
+        }}
+        accessibilityRole="button"
+        accessibilityLabel={`Move ${nameText} to trash`}
+      >
+        <Ionicons name="trash-outline" size={20} color="#fff" />
+        <Text style={styles.swipeActionLabel}>Trash</Text>
+      </TouchableOpacity>
+    </View>
+  ), [c.red, item, onDelete, nameText]);
+
+  const renderLeftActions = useCallback(() => (
     <View style={styles.swipeActions}>
       <TouchableOpacity
         style={[styles.swipeAction, { backgroundColor: c.amber }]}
@@ -249,23 +270,14 @@ const FileRowItem = React.memo(function FileRowItem({
           swipeableRef.current?.close();
           onShare(item);
         }}
+        accessibilityRole="button"
+        accessibilityLabel={`Share ${nameText}`}
       >
         <Ionicons name="share-outline" size={20} color="#fff" />
         <Text style={styles.swipeActionLabel}>Share</Text>
       </TouchableOpacity>
-      <TouchableOpacity
-        style={[styles.swipeAction, { backgroundColor: c.red }]}
-        activeOpacity={0.8}
-        onPress={() => {
-          swipeableRef.current?.close();
-          onDelete(item);
-        }}
-      >
-        <Ionicons name="trash-outline" size={20} color="#fff" />
-        <Text style={styles.swipeActionLabel}>Trash</Text>
-      </TouchableOpacity>
     </View>
-  ), [c, item, onShare, onDelete]);
+  ), [c.amber, item, onShare, nameText]);
 
   const rowContent = (
     <TouchableOpacity
@@ -346,10 +358,13 @@ const FileRowItem = React.memo(function FileRowItem({
   return (
     <Swipeable
       ref={swipeableRef}
+      renderLeftActions={renderLeftActions}
       renderRightActions={renderRightActions}
       onSwipeableOpen={handleSwipeOpen}
       onSwipeableClose={handleSwipeClose}
+      overshootLeft={false}
       overshootRight={false}
+      leftThreshold={40}
       rightThreshold={40}
     >
       {rowContent}
