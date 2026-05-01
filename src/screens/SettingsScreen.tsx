@@ -11,9 +11,12 @@ import {
 } from 'react-native';
 import * as LocalAuthentication from 'expo-local-authentication';
 import * as SecureStore from 'expo-secure-store';
+import { useNavigation } from '@react-navigation/native';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { colors, radii, spacing } from '../theme';
 import { useAuth } from '../lib/auth';
 import { getStorageUsage, type StorageUsage } from '../lib/api';
+import type { RootStackParamList } from '../App';
 
 const BIOMETRIC_PREF_KEY = 'beebeeb_biometric_lock';
 const CAMERA_BACKUP_KEY = 'beebeeb_camera_backup';
@@ -163,7 +166,10 @@ function StorageBar({
 // Screen
 // ---------------------------------------------------------------------------
 
+type Nav = NativeStackNavigationProp<RootStackParamList>;
+
 export default function SettingsScreen() {
+  const navigation = useNavigation<Nav>();
   const { user, signOut } = useAuth();
   const [usage, setUsage] = useState<StorageUsage | null>(null);
   const [loadingUsage, setLoadingUsage] = useState(true);
@@ -371,6 +377,14 @@ export default function SettingsScreen() {
           <SectionHeader title="Appearance" />
           <View style={styles.card}>
             <SettingsRow label="Theme" value="System" showChevron={true} />
+          </View>
+        </View>
+
+        {/* ---- Files ---- */}
+        <View style={styles.section}>
+          <SectionHeader title="Files" />
+          <View style={styles.card}>
+            <SettingsRow label="Trash" onPress={() => navigation.navigate('Trash')} />
           </View>
         </View>
 
