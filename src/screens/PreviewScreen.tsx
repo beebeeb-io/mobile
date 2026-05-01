@@ -1541,6 +1541,28 @@ export default function PreviewScreen() {
               </Text>
             </View>
           )
+        ) : isZip ? (
+          zipSummary ? (
+            <ZipContents summary={zipSummary} c={c} />
+          ) : zipError ? (
+            <View style={styles.imageStatus}>
+              <Text style={[styles.imageStatusTitle, { color: colors.white }]}>
+                Couldn't open archive
+              </Text>
+              <Text style={styles.imageStatusSub}>{zipError}</Text>
+            </View>
+          ) : (
+            <View style={styles.imageStatus}>
+              <ActivityIndicator color={c.amber} size="large" />
+              <Text style={styles.imageStatusSub}>
+                {zipLoading && downloadProgress > 0
+                  ? `Decrypting · ${Math.round(downloadProgress * 100)}%`
+                  : isUnlocked
+                  ? 'Downloading and reading archive...'
+                  : 'Unlock your vault to inspect this archive.'}
+              </Text>
+            </View>
+          )
         ) : (
           <View style={styles.genericPlaceholder}>
             <View style={[styles.genericIcon, { backgroundColor: categoryAccent }]}>
@@ -1784,6 +1806,97 @@ function SpreadsheetTable({ data, c }: SpreadsheetTableProps) {
           </Text>
         </View>
       ) : null}
+    </View>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// ZIP archive contents component
+// ---------------------------------------------------------------------------
+
+interface ZipContentsProps {
+  summary: ZipSummary;
+  c: Colors;
+}
+
+function formatZipSize(bytes: number): string {
+  if (bytes < 1_000) return `${bytes} B`;
+  if (bytes < 1_000_000) return `${(bytes / 1_000).toFixed(0)} KB`;
+  if (bytes < 1_000_000_000) return `${(bytes / 1_000_000).toFixed(1)} MB`;
+  return `${(bytes / 1_000_000_000).toFixed(1)} GB`;
+}
+
+function formatZipDate(d: Date | null): string | null {
+  if (!d || isNaN(d.getTime())) return null;
+  const month = d.toLocaleString('en', { month: 'short' });
+  const day = d.getDate();
+  const year = d.getFullYear();
+  return `${month} ${day}, ${year}`;
+}
+
+function ZipContents({ summary, c }: ZipContentsProps) {
+  const { entries, fileCount, folderCount, totalUncompressed } = summary;
+
+  const renderRow = ({ item }: { item: ZipEntry }) => {
+    const iconBg = item.isFolder ? c.amberDeep : c.ink3;
+    const iconName = zipEntryIcon(item);
+    const dateLabel = formatZipDate(item.modifiedAt);
+
+    return (
+      <View style={[styles.zipRow, { borderBottomColor: c.line }]}>
+        <View style={[styles.zipIcon, { backgroundColor: iconBg }]}>
+          <Ionicons name={iconName} size={16} color="#FFFFFF" />
+        </View>
+        <View style={styles.zipRowText}>
+          <Text style={[styles.zipRowName, { color: c.ink }]} numberOfLines={1}>
+            {item.path || item.name}
+          </Text>
+          <Text style={[styles.zipRowMeta, { color: c.ink3 }]} numberOfLines={1}>
+            {item.isFolder
+              ? 'Folder'
+              : `${formatZipSize(item.uncompressedSize)}${dateLabel ? `  ·  ${dateLabel}` : ''}`}
+          </Text>
+        </View>
+      </View>
+    );
+  };
+
+  return (
+    <View style={[styles.zipContainer, { backgroundColor: c.paper }]}>
+      <View style={[styles.zipHeader, { borderBottomColor: c.line }]}>
+        <View style={styles.zipHeaderRow}>
+          <Text style={[styles.zipHeaderTitle, { color: c.ink }]}>
+            {fileCount} {fileCount === 1 ? 'file' : 'files'}
+            {folderCount > 0
+              ? `  ·  ${folderCount} ${folderCount === 1 ? 'folder' : 'folders'}`
+              : ''}
+          </Text>
+          <Text style={[styles.zipHeaderSize, { color: c.ink3 }]}>
+            {formatZipSize(totalUncompressed)} uncompressed
+          </Text>
+        </View>
+        <Text style={[styles.zipHeaderHint, { color: c.ink3 }]}>
+          Read-only listing · download the archive to extract files.
+        </Text>
+      </View>
+
+      {entries.length === 0 ? (
+        <View style={styles.imageStatus}>
+          <Text style={[styles.imageStatusTitle, { color: colors.white }]}>
+            Empty archive
+          </Text>
+          <Text style={styles.imageStatusSub}>This ZIP contains no files.</Text>
+        </View>
+      ) : (
+        <FlatList
+          data={entries}
+          keyExtractor={(item, i) => `${i}-${item.path}`}
+          renderItem={renderRow}
+          initialNumToRender={20}
+          windowSize={11}
+          removeClippedSubviews
+        />
+      )}
     </View>
   );
 }
@@ -2102,5 +2215,64 @@ const styles = StyleSheet.create({
   sheetFooterText: {
     fontSize: 11,
     fontStyle: 'italic',
+  },
+
+  // ---- ZIP archive listing ----
+  zipContainer: {
+    flex: 1,
+    width: '100%',
+    borderRadius: radii.md,
+    overflow: 'hidden',
+  },
+  zipHeader: {
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    gap: 4,
+  },
+  zipHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 12,
+  },
+  zipHeaderTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  zipHeaderSize: {
+    fontSize: 12,
+    fontWeight: '500',
+  },
+  zipHeaderHint: {
+    fontSize: 11,
+    fontStyle: 'italic',
+  },
+  zipRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    gap: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  zipIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: radii.sm,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  zipRowText: {
+    flex: 1,
+    minWidth: 0,
+  },
+  zipRowName: {
+    fontSize: 13,
+    fontWeight: '500',
+  },
+  zipRowMeta: {
+    fontSize: 11,
+    marginTop: 2,
   },
 });
