@@ -1091,6 +1091,13 @@ export default function SettingsScreen() {
               onPress={handleAccountSecurity}
               c={c}
             />
+            <RowDivider c={c} />
+            <SettingsRow
+              label="Add a device"
+              icon="phone-portrait-outline"
+              onPress={() => navigation.navigate('DevicePairing')}
+              c={c}
+            />
           </View>
           <SectionNote
             text="Manage your password and two-factor authentication on the web at app.beebeeb.io."
