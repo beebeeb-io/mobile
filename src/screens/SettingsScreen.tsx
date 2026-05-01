@@ -1,8 +1,10 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
+  ActionSheetIOS,
   ActivityIndicator,
   Alert,
   Linking,
+  Platform,
   RefreshControl,
   ScrollView,
   StyleSheet,
@@ -38,6 +40,22 @@ import {
 import type { RootStackParamList } from '../App';
 
 const BIOMETRIC_PREF_KEY = 'beebeeb_biometric_lock';
+const BIOMETRIC_DELAY_KEY = 'beebeeb_biometric_delay';
+
+interface BiometricDelayOption {
+  label: string;
+  ms: number;
+}
+const BIOMETRIC_DELAY_OPTIONS: BiometricDelayOption[] = [
+  { label: 'Immediately', ms: 0 },
+  { label: '30 seconds', ms: 30_000 },
+  { label: '1 minute', ms: 60_000 },
+  { label: '5 minutes', ms: 300_000 },
+];
+
+function biometricDelayLabel(ms: number): string {
+  return BIOMETRIC_DELAY_OPTIONS.find((o) => o.ms === ms)?.label ?? 'Immediately';
+}
 
 type RegionMode = 'preference' | 'force';
 type C = Colors;
@@ -249,6 +267,7 @@ export default function SettingsScreen() {
   const [biometricEnabled, setBiometricEnabled] = useState(false);
   const [biometricAvailable, setBiometricAvailable] = useState(false);
   const [loadingBiometric, setLoadingBiometric] = useState(true);
+  const [biometricDelayMs, setBiometricDelayMs] = useState(0);
 
   // Notifications
   const [notificationsEnabled, setNotificationsEnabled] = useState(false);
@@ -288,6 +307,8 @@ export default function SettingsScreen() {
       setBiometricAvailable(supported && enrolled);
       const stored = await SecureStore.getItemAsync(BIOMETRIC_PREF_KEY);
       setBiometricEnabled(stored === 'true');
+      const delayRaw = await SecureStore.getItemAsync(BIOMETRIC_DELAY_KEY);
+      setBiometricDelayMs(delayRaw ? parseInt(delayRaw, 10) : 0);
     } catch {
       // Biometrics unavailable on this device
     } finally {
@@ -354,6 +375,32 @@ export default function SettingsScreen() {
     }
     setBiometricEnabled(enabled);
     await SecureStore.setItemAsync(BIOMETRIC_PREF_KEY, enabled ? 'true' : 'false');
+  }, []);
+
+  const handleBiometricDelayPress = useCallback(() => {
+    const apply = async (ms: number) => {
+      setBiometricDelayMs(ms);
+      await SecureStore.setItemAsync(BIOMETRIC_DELAY_KEY, String(ms));
+      Haptics.selectionAsync();
+    };
+    const labels = BIOMETRIC_DELAY_OPTIONS.map((o) => o.label);
+    if (Platform.OS === 'ios') {
+      ActionSheetIOS.showActionSheetWithOptions(
+        {
+          title: 'Lock after',
+          options: [...labels, 'Cancel'],
+          cancelButtonIndex: labels.length,
+        },
+        (index) => {
+          if (index < labels.length) apply(BIOMETRIC_DELAY_OPTIONS[index].ms);
+        },
+      );
+    } else {
+      Alert.alert('Lock after', undefined, [
+        ...BIOMETRIC_DELAY_OPTIONS.map((o) => ({ text: o.label, onPress: () => apply(o.ms) })),
+        { text: 'Cancel', style: 'cancel' as const },
+      ]);
+    }
   }, []);
 
   const handleNotificationsToggle = useCallback((enabled: boolean) => {
@@ -701,6 +748,17 @@ export default function SettingsScreen() {
                   onValueChange={handleBiometricToggle}
                   c={c}
                 />
+                {biometricEnabled && (
+                  <>
+                    <RowDivider c={c} />
+                    <SettingsRow
+                      label="Lock after"
+                      value={biometricDelayLabel(biometricDelayMs)}
+                      onPress={handleBiometricDelayPress}
+                      c={c}
+                    />
+                  </>
+                )}
                 <RowDivider c={c} />
               </>
             )}
