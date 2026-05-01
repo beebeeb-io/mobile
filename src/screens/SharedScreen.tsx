@@ -68,17 +68,16 @@ function fileTypeLabel(invite: ShareInvite): string {
 // Status badge
 // ---------------------------------------------------------------------------
 
-const STATUS_STYLES: Record<string, { bg: string; text: string; label: string }> = {
-  claimed: { bg: '#e8f4fd', text: '#1a73e8', label: 'Claimed' },
-  approved: { bg: '#e6f7e6', text: '#2d7d2d', label: 'Approved' },
-  denied: { bg: '#fde8e8', text: '#d84040', label: 'Denied' },
+const STATUS_INFO: Record<string, { label: string; text: string; lightBg: string; darkBg: string }> = {
+  claimed:  { label: 'Claimed',  text: '#1a73e8', lightBg: '#e8f4fd', darkBg: 'rgba(26,115,232,0.15)' },
+  approved: { label: 'Approved', text: '#2d7d2d', lightBg: '#e6f7e6', darkBg: 'rgba(45,125,45,0.15)' },
+  denied:   { label: 'Denied',   text: '#d84040', lightBg: '#fde8e8', darkBg: 'rgba(216,64,64,0.12)' },
 };
 
 function StatusBadge({ status }: { status: string }) {
-  const { colors: c } = useTheme();
-  const bg = status === 'pending' ? c.amberBg : (STATUS_STYLES[status]?.bg ?? c.amberBg);
-  const text = status === 'pending' ? c.amberDeep : (STATUS_STYLES[status]?.text ?? c.amberDeep);
-  const label = status === 'pending' ? 'Pending' : (STATUS_STYLES[status]?.label ?? status);
+  const { colors: c, resolved } = useTheme();
+  const isDark = resolved === 'dark';
+
   if (status === 'expired') {
     return (
       <View style={[styles.badge, { backgroundColor: c.paper2 }]}>
@@ -86,9 +85,19 @@ function StatusBadge({ status }: { status: string }) {
       </View>
     );
   }
+  if (status === 'pending') {
+    return (
+      <View style={[styles.badge, { backgroundColor: c.amberBg }]}>
+        <Text style={[styles.badgeText, { color: c.amberDeep }]}>Pending</Text>
+      </View>
+    );
+  }
+  const info = STATUS_INFO[status];
+  if (!info) return null;
+  const bg = isDark ? info.darkBg : info.lightBg;
   return (
     <View style={[styles.badge, { backgroundColor: bg }]}>
-      <Text style={[styles.badgeText, { color: text }]}>{label}</Text>
+      <Text style={[styles.badgeText, { color: info.text }]}>{info.label}</Text>
     </View>
   );
 }

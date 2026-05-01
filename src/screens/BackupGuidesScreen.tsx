@@ -12,6 +12,7 @@ import {
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { colors, radii, spacing } from '../theme';
+import { useTheme } from '../lib/theme-context';
 import { guides as initialGuides, type BackupGuide } from '../lib/backup-guides';
 import type { RootStackParamList } from '../App';
 
@@ -23,10 +24,15 @@ const DIFFICULTY_LABEL: Record<BackupGuide['difficulty'], string> = {
   manual: 'Manual',
 };
 
-const DIFFICULTY_COLORS: Record<BackupGuide['difficulty'], { bg: string; text: string }> = {
+const DIFFICULTY_LIGHT: Record<BackupGuide['difficulty'], { bg: string; text: string }> = {
   easy: { bg: '#e8f9e8', text: colors.green },
   medium: { bg: colors.amberBg, text: colors.amberDeep },
   manual: { bg: '#f0eeeb', text: colors.ink3 },
+};
+const DIFFICULTY_DARK: Record<BackupGuide['difficulty'], { bg: string; text: string }> = {
+  easy: { bg: 'rgba(74,190,74,0.12)', text: colors.green },
+  medium: { bg: '#302808', text: '#f5b800' },
+  manual: { bg: '#27272c', text: '#8a867f' },
 };
 
 // Deterministic background color per initials so each app has a consistent tint
@@ -48,10 +54,11 @@ function initialsColor(index: number): string {
 // ---------------------------------------------------------------------------
 
 function DifficultyBadge({ difficulty }: { difficulty: BackupGuide['difficulty'] }) {
-  const c = DIFFICULTY_COLORS[difficulty];
+  const { resolved } = useTheme();
+  const dc = (resolved === 'dark' ? DIFFICULTY_DARK : DIFFICULTY_LIGHT)[difficulty];
   return (
-    <View style={[styles.badge, { backgroundColor: c.bg }]}>
-      <Text style={[styles.badgeText, { color: c.text }]}>{DIFFICULTY_LABEL[difficulty]}</Text>
+    <View style={[styles.badge, { backgroundColor: dc.bg }]}>
+      <Text style={[styles.badgeText, { color: dc.text }]}>{DIFFICULTY_LABEL[difficulty]}</Text>
     </View>
   );
 }
