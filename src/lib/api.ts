@@ -433,8 +433,14 @@ export async function permanentDeleteFile(id: string, confirmToken?: string): Pr
   );
 }
 
-export async function emptyTrash(): Promise<void> {
-  await request('POST', '/api/v1/files/trash/empty');
+export async function emptyTrash(confirmToken?: string): Promise<void> {
+  await request(
+    'POST',
+    '/api/v1/files/trash/empty',
+    undefined,
+    true,
+    confirmToken ? { 'X-Confirm-Token': confirmToken } : undefined,
+  );
 }
 
 // ---------------------------------------------------------------------------
