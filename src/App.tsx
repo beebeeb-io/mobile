@@ -54,6 +54,7 @@ const BiometricLockScreen = React.lazy(() => import('./screens/BiometricLockScre
 const OnboardingScreen = React.lazy(() => import('./screens/OnboardingScreen'));
 
 import ErrorBoundary from './components/ErrorBoundary';
+import ConfirmActionPrompt from './components/ConfirmActionPrompt';
 import { BackupProvider } from './lib/backup-context';
 import { processPendingShares } from '../plugins/share-extension/PendingSharesHandler';
 import { useToast } from './lib/toast-context';
@@ -580,6 +581,9 @@ export default function App() {
 
         {/* Share Extension dropbox — uploads files dropped by BeebeebShare */}
         <ShareSheetImporter enabled={isAuthenticated && !locked} />
+
+        {/* Android-only password prompt for step-up re-auth (no-op on iOS) */}
+        <ConfirmActionPrompt />
 
         <StatusBar style={resolved === 'dark' ? 'light' : 'dark'} />
       </ToastProvider>
