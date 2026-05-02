@@ -269,7 +269,7 @@ export function ConstellationScannerScreen() {
                   <Text style={styles.primaryButtonText}>Continue</Text>
                 </TouchableOpacity>
                 <Text style={styles.disclaimer}>
-                  Encrypted relay via Frankfurt. Deleted after pickup.
+                  Encrypted relay via Falkenstein. Deleted after pickup.
                 </Text>
               </>
             )}

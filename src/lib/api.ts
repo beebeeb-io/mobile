@@ -305,7 +305,7 @@ export function storageLocation(poolId: string | null | undefined): StorageLocat
  */
 export interface TrustLocation {
   region: string; // "Europe"
-  city: string; // "Frankfurt"
+  city: string; // "Falkenstein"
   provider: string; // "Hetzner"
 }
 
@@ -319,12 +319,9 @@ export function trustLocation(poolId: string | null | undefined): TrustLocation 
     case 'hel1':
     case 'helsinki':
       return { region: 'Europe', city: 'Helsinki', provider: 'Hetzner' };
-    case 'hetzner-fra':
-    case 'frankfurt':
-      return { region: 'Europe', city: 'Frankfurt', provider: 'Hetzner' };
     default:
-      // Until storage pools are wired through, default to Frankfurt.
-      return { region: 'Europe', city: 'Frankfurt', provider: 'Hetzner' };
+      // Until storage pools are wired through, default to Falkenstein.
+      return { region: 'Europe', city: 'Falkenstein', provider: 'Hetzner' };
   }
 }
 
