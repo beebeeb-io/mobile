@@ -10,7 +10,7 @@
  */
 
 import { Alert, Platform } from 'react-native';
-import { confirmAction, friendlyError } from './api';
+import { confirmAction, friendlyError, IncorrectPasswordError } from './api';
 
 let androidPrompter: ((title: string, message: string) => Promise<string | null>) | null = null;
 
@@ -43,7 +43,9 @@ async function promptForPassword(title: string, message: string): Promise<string
 
 /**
  * Prompt the user to re-enter their password, exchange it for a confirmation
- * token, and return the token. Returns `null` on cancel or any error.
+ * token, and return the token. Returns `null` on cancel or any non-recoverable
+ * error. On wrong password, re-prompts so the user can correct a typo without
+ * having to re-trigger the destructive action.
  */
 export async function requestConfirmation(opts?: {
   title?: string;
@@ -52,14 +54,23 @@ export async function requestConfirmation(opts?: {
   const title = opts?.title ?? 'Confirm with password';
   const message = opts?.message ?? 'Re-enter your password to authorize this action.';
 
-  const password = await promptForPassword(title, message);
-  if (!password) return null;
+  let promptMessage = message;
+  // Loop on incorrect password; cancel/other errors break out.
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const password = await promptForPassword(title, promptMessage);
+    if (!password) return null;
 
-  try {
-    const { confirmation_token } = await confirmAction(password);
-    return confirmation_token;
-  } catch (err) {
-    Alert.alert('Confirmation failed', friendlyError(err));
-    return null;
+    try {
+      const { confirmation_token } = await confirmAction(password);
+      return confirmation_token;
+    } catch (err) {
+      if (err instanceof IncorrectPasswordError) {
+        promptMessage = 'Incorrect password. Please try again.';
+        continue;
+      }
+      Alert.alert('Confirmation failed', friendlyError(err));
+      return null;
+    }
   }
 }
