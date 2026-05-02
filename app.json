@@ -87,6 +87,7 @@
       "./plugins/uniffi-bridge/withUniffiBridge.js",
       "./plugins/share-extension/withShareExtension.js",
       "./plugins/fmt-patch/withFmtPatch.js",
+      "./plugins/shortcut-bridge/withShortcutBridge.js",
       "expo-video",
       "expo-image-picker",
       "expo-notifications"
