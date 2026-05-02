@@ -255,9 +255,14 @@ export default function TrashScreen() {
           text: 'Empty Trash',
           style: 'destructive',
           onPress: async () => {
+            const token = await requestConfirmation({
+              title: 'Confirm empty trash',
+              message: `Re-enter your password to permanently delete ${files.length} item${files.length === 1 ? '' : 's'}.`,
+            });
+            if (!token) return;
             try {
               Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-              await emptyTrash();
+              await emptyTrash(token);
               setFiles([]);
               showToast({ type: 'success', message: 'Trash emptied' });
             } catch (err) {
