@@ -1,0 +1,45 @@
+appId: io.beebeeb.app
+---
+- launchApp
+
+# Make sure we're signed in (Files tab visible)
+- extendedWaitUntil:
+    visible: "Drive"
+    timeout: 15000
+
+# Navigate to Shared tab
+- tapOn:
+    point: "35%,95%"
+
+# Two segmented tabs — "Shared with me" / "Shared by me"
+- extendedWaitUntil:
+    visible: "Shared with me"
+    timeout: 5000
+
+- assertVisible: "Shared with me"
+- assertVisible: "Shared by me"
+
+- takeScreenshot: "share-01-incoming"
+
+# Switch to "Shared by me"
+- tapOn: "Shared by me"
+
+- extendedWaitUntil:
+    visible: "Shared by me"
+    timeout: 5000
+
+- takeScreenshot: "share-02-outgoing"
+
+# Back to "Shared with me" and try to tap the first row if any items exist.
+- tapOn: "Shared with me"
+
+- extendedWaitUntil:
+    visible: "Shared with me"
+    timeout: 5000
+
+# Optional: tap the first list row by coordinate. If the demo account has no
+# inbound shares, this falls on the empty-state copy and is harmless.
+- tapOn:
+    point: "50%,35%"
+
+- takeScreenshot: "share-03-after-tap"

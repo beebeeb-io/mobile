@@ -3,3 +3,8 @@ appId: io.beebeeb.app
 - runFlow: login-test.yaml
 - runFlow: create-folder-test.yaml
 - runFlow: settings-test.yaml
+- runFlow: device-pairing-test.yaml
+- runFlow: backup-settings-test.yaml
+- runFlow: file-preview-test.yaml
+- runFlow: share-test.yaml
+- runFlow: deep-link-test.yaml

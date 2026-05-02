@@ -1,0 +1,60 @@
+appId: io.beebeeb.app
+---
+- launchApp
+
+# Should be on Files tab (already logged in)
+- extendedWaitUntil:
+    visible: "Drive"
+    timeout: 15000
+
+# Navigate to Settings tab
+- tapOn:
+    point: "85%,95%"
+
+- extendedWaitUntil:
+    visible: "Settings"
+    timeout: 5000
+
+# Scroll until "Add a device" row appears under Account & Security
+- scrollUntilVisible:
+    element:
+      text: "Add a device"
+    direction: DOWN
+    timeout: 10000
+
+- takeScreenshot: "device-pairing-01-settings-row"
+
+- tapOn: "Add a device"
+
+# DevicePairingScreen: two cards — "Scan with this device" and "Show on this device"
+- extendedWaitUntil:
+    visible: "Show on this device"
+    timeout: 5000
+
+- takeScreenshot: "device-pairing-02-pairing-options"
+
+# Open the Show flow → Amber Constellation WebView renders the pattern
+- tapOn: "Show on this device"
+
+# Wait for the show screen to render. The header label is the same.
+- extendedWaitUntil:
+    visible: "Show on this device"
+    timeout: 8000
+
+- takeScreenshot: "device-pairing-03-constellation"
+
+# Back to DevicePairingScreen
+- tapOn: "Back"
+
+- extendedWaitUntil:
+    visible: "Add a device"
+    timeout: 5000
+
+# Back to Settings
+- tapOn: "Back"
+
+- extendedWaitUntil:
+    visible: "Settings"
+    timeout: 5000
+
+- takeScreenshot: "device-pairing-04-back-in-settings"
