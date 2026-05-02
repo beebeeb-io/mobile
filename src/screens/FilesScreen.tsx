@@ -1380,7 +1380,7 @@ export default function FilesScreen() {
     const isImage = !item.is_folder && (item.mime_type ?? '').startsWith('image/');
     const isOffline = offlineIds.has(item.id);
     const offlineLabel = isOffline ? 'Remove offline' : 'Make available offline';
-    const fileOptions = ['Rename', 'Preview', 'Share', 'Export...'];
+    const fileOptions = ['Rename', 'Preview', 'Share', 'Send via Constellation', 'Export...'];
     if (isImage) fileOptions.push('Save to Photos');
     fileOptions.push('Move to...', offlineLabel, 'Prove existence', 'Move to Trash', 'Details');
     const options = item.is_folder
@@ -1668,6 +1668,12 @@ export default function FilesScreen() {
             fileName: name,
             mimeType: item.mime_type ?? undefined,
             sizeBytes: item.size_bytes,
+          });
+          return;
+        case 'Send via Constellation':
+          navigation.navigate('ConstellationSend', {
+            fileId: item.id,
+            fileName: name,
           });
           return;
         case 'Export...': void promptExport(); return;

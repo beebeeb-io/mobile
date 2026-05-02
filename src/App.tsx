@@ -51,6 +51,7 @@ const DevicePairingScreen = React.lazy(() => import('./screens/DevicePairingScre
 const DevicePairingScanScreen = React.lazy(() => import('./screens/DevicePairingScanScreen'));
 const DevicePairingShowScreen = React.lazy(() => import('./screens/DevicePairingShowScreen'));
 const PairingConfirmScreen = React.lazy(() => import('./screens/PairingConfirmScreen'));
+const ConstellationSendScreen = React.lazy(() => import('./screens/ConstellationSendScreen'));
 const BiometricLockScreen = React.lazy(() => import('./screens/BiometricLockScreen'));
 const OnboardingScreen = React.lazy(() => import('./screens/OnboardingScreen'));
 
@@ -107,6 +108,8 @@ export type RootStackParamList = {
   DevicePairingScan: undefined;
   DevicePairingShow: undefined;
   PairingConfirm: { progress: number; nodeCount: number };
+  // Constellation peer transfer — sender flow.
+  ConstellationSend: { fileId: string; fileName: string };
 };
 
 // ---------------------------------------------------------------------------
@@ -540,6 +543,11 @@ export default function App() {
                   <Stack.Screen name="DevicePairingScan" component={DevicePairingScanScreen} />
                   <Stack.Screen name="DevicePairingShow" component={DevicePairingShowScreen} />
                   <Stack.Screen name="PairingConfirm" component={PairingConfirmScreen} />
+                  <Stack.Screen
+                    name="ConstellationSend"
+                    component={ConstellationSendScreen}
+                    options={{ presentation: 'modal', animation: 'slide_from_bottom' }}
+                  />
                 </>
               ) : (
                 <>
