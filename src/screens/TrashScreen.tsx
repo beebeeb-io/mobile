@@ -26,6 +26,7 @@ import {
   friendlyError,
 } from '../lib/api';
 import type { FileEntry } from '../lib/api';
+import { requestConfirmation } from '../lib/confirm-action';
 import type { RootStackParamList } from '../App';
 
 type Nav = NativeStackNavigationProp<RootStackParamList>;
@@ -223,9 +224,14 @@ export default function TrashScreen() {
           text: 'Delete permanently',
           style: 'destructive',
           onPress: async () => {
+            const token = await requestConfirmation({
+              title: 'Confirm permanent delete',
+              message: `Re-enter your password to permanently delete "${name}".`,
+            });
+            if (!token) return;
             try {
               Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-              await permanentDeleteFile(item.id);
+              await permanentDeleteFile(item.id, token);
               setFiles((prev) => prev.filter((f) => f.id !== item.id));
               showToast({ type: 'info', message: `"${name}" permanently deleted` });
             } catch (err) {

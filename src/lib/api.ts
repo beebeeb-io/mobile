@@ -104,12 +104,13 @@ export function friendlyError(err: unknown): string {
   return 'Something went wrong. Please try again.';
 }
 
-async function headers(auth = true): Promise<Record<string, string>> {
+async function headers(auth = true, extra?: Record<string, string>): Promise<Record<string, string>> {
   const h: Record<string, string> = { 'Content-Type': 'application/json' };
   if (auth) {
     const token = await getToken();
     if (token) h['Authorization'] = `Bearer ${token}`;
   }
+  if (extra) Object.assign(h, extra);
   return h;
 }
 
@@ -118,12 +119,13 @@ async function request<T>(
   path: string,
   body?: unknown,
   auth = true,
+  extraHeaders?: Record<string, string>,
 ): Promise<T> {
   let res: Response;
   try {
     res = await fetch(`${BASE_URL}${path}`, {
       method,
-      headers: await headers(auth),
+      headers: await headers(auth, extraHeaders),
       body: body ? JSON.stringify(body) : undefined,
     });
   } catch (_err) {
@@ -192,6 +194,20 @@ export async function changePassword(currentPassword: string, newPassword: strin
     current_password: currentPassword,
     new_password: newPassword,
   });
+}
+
+export interface ConfirmActionResponse {
+  confirmation_token: string;
+  expires_at: string;
+}
+
+/**
+ * Step-up re-auth: exchange the user's password for a short-lived
+ * confirmation token. Destructive endpoints require it via the
+ * X-Confirm-Token header.
+ */
+export async function confirmAction(password: string): Promise<ConfirmActionResponse> {
+  return request<ConfirmActionResponse>('POST', '/api/v1/auth/confirm', { password });
 }
 
 // ---------------------------------------------------------------------------
@@ -407,8 +423,14 @@ export async function restoreFile(id: string): Promise<void> {
   await request('POST', `/api/v1/files/${id}/restore`);
 }
 
-export async function permanentDeleteFile(id: string): Promise<void> {
-  await request('DELETE', `/api/v1/files/${id}/permanent`);
+export async function permanentDeleteFile(id: string, confirmToken?: string): Promise<void> {
+  await request(
+    'DELETE',
+    `/api/v1/files/${id}/permanent`,
+    undefined,
+    true,
+    confirmToken ? { 'X-Confirm-Token': confirmToken } : undefined,
+  );
 }
 
 export async function emptyTrash(): Promise<void> {
