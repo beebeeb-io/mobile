@@ -86,6 +86,7 @@
       "./modules/beebeeb-crypto/app.plugin.js",
       "./plugins/uniffi-bridge/withUniffiBridge.js",
       "./plugins/share-extension/withShareExtension.js",
+      "./plugins/fmt-patch/withFmtPatch.js",
       "expo-video",
       "expo-image-picker",
       "expo-notifications"
