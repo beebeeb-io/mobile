@@ -16,9 +16,17 @@
  * manifest; the upload/scan workers live in separate modules.
  */
 
-import * as Device from 'expo-device';
 import * as SecureStore from 'expo-secure-store';
 import { Platform } from 'react-native';
+
+let Device: { deviceName: string | null; modelName: string | null; osName: string | null; osVersion: string | null } = {
+  deviceName: null, modelName: null, osName: null, osVersion: null,
+};
+try {
+  Device = require('expo-device');
+} catch {
+  // expo-device not available in Expo Go — use defaults
+}
 import {
   createFolder,
   deleteFile,
