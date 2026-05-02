@@ -1,0 +1,46 @@
+appId: io.beebeeb.app
+---
+- launchApp
+
+# Should be on Files tab (already logged in)
+- extendedWaitUntil:
+    visible: "Drive"
+    timeout: 15000
+
+# Navigate to Settings tab
+- tapOn:
+    point: "85%,95%"
+
+- extendedWaitUntil:
+    visible: "Settings"
+    timeout: 5000
+
+# Scroll to the Backup section
+- scrollUntilVisible:
+    element:
+      text: "Backup"
+    direction: DOWN
+    timeout: 10000
+
+- takeScreenshot: "backup-01-section-header"
+
+# All three backup categories must be present
+- assertVisible: "Back up camera roll"
+
+- scrollUntilVisible:
+    element:
+      text: "Back up contacts"
+    direction: DOWN
+    timeout: 5000
+
+- assertVisible: "Back up contacts"
+
+- scrollUntilVisible:
+    element:
+      text: "Back up calendar"
+    direction: DOWN
+    timeout: 5000
+
+- assertVisible: "Back up calendar"
+
+- takeScreenshot: "backup-02-toggles"

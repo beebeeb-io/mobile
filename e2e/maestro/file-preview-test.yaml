@@ -1,0 +1,47 @@
+appId: io.beebeeb.app
+---
+- launchApp
+
+# Make sure we're on the Files tab and signed in
+- tapOn:
+    point: "12%,95%"
+
+- extendedWaitUntil:
+    visible: "Drive"
+    timeout: 15000
+
+- takeScreenshot: "preview-01-files-list"
+
+# The first file/folder row sits below the storage card and search header.
+# In the demo account a "Welcome.pdf" lives at the root — tap it if visible,
+# otherwise fall back to the first row by coordinate.
+- runFlow:
+    when:
+      visible: "Welcome.pdf"
+    commands:
+      - tapOn: "Welcome.pdf"
+
+- runFlow:
+    when:
+      notVisible: "Welcome.pdf"
+    commands:
+      # Tap the first row in the list (below the storage / search header)
+      - tapOn:
+          point: "50%,40%"
+
+# Preview header shows a × close button at the top-left and the filename
+# centered. Wait for the close affordance to be present.
+- extendedWaitUntil:
+    visible: "×"
+    timeout: 10000
+
+- takeScreenshot: "preview-02-open"
+
+# Close preview via the × in the top-left
+- tapOn: "×"
+
+- extendedWaitUntil:
+    visible: "Drive"
+    timeout: 5000
+
+- takeScreenshot: "preview-03-back-on-files"
