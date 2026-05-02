@@ -6,7 +6,8 @@
  * concatenation to emit the vCard.
  */
 
-import * as Contacts from 'expo-contacts';
+let Contacts: any = null;
+try { Contacts = require('expo-contacts'); } catch {}
 import * as SecureStore from 'expo-secure-store';
 import { Platform } from 'react-native';
 import { deleteFile, listFiles, uploadFile, type FileEntry } from '../lib/api';
@@ -106,7 +107,7 @@ function addressType(label: string | undefined): string {
 // vCard emission
 // ---------------------------------------------------------------------------
 
-function contactToVCard(c: Contacts.Contact): string {
+function contactToVCard(c: any): string {
   const lines: string[] = [];
   lines.push('BEGIN:VCARD');
   lines.push('VERSION:3.0');
