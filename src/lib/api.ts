@@ -12,6 +12,11 @@ import * as BeebeebCrypto from '../../modules/beebeeb-crypto';
 const BASE_URL = Platform.OS === 'web' ? 'http://localhost:3001' : 'http://10.100.0.55:3001';
 const TOKEN_KEY = 'beebeeb_session_token';
 
+/** Base URL for raw fetch / SSE callers that bypass `request()`. */
+export function getApiUrl(): string {
+  return BASE_URL;
+}
+
 // expo-secure-store has no web implementation — fall back to localStorage so
 // the dev preview works in a browser. Native targets always use SecureStore.
 const tokenStore = {
@@ -823,4 +828,82 @@ export async function opaqueRegistrationFinish(
   );
   await setToken(data.session_token);
   return { sessionToken: data.session_token };
+}
+
+// ---------------------------------------------------------------------------
+// Sync engine (CRDT op log + SSE)
+// Spec: docs/superpowers/specs/2026-05-02-crdt-sync-engine-design.md
+// ---------------------------------------------------------------------------
+
+export interface SyncNode {
+  id: string;
+  name_encrypted: string;
+  parent_id: string | null;
+  is_folder: boolean;
+  size_bytes: number;
+  mime_type: string | null;
+  content_hash: string | null;
+  version_number: number;
+  has_thumbnail: boolean;
+  storage_pool_id: string | null;
+  is_trashed: boolean;
+  is_starred: boolean;
+  chunk_count?: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SyncOp {
+  seq_id: number;
+  op_type: string;
+  client_op_id?: string;
+  payload: Record<string, unknown>;
+  device_id?: string;
+  created_at: string;
+}
+
+export interface SyncSnapshot {
+  seq_id: number;
+  nodes: SyncNode[];
+}
+
+export interface SubmittedSyncOp {
+  client_op_id: string;
+  op_type: string;
+  payload: Record<string, unknown>;
+  device_id?: string;
+}
+
+export interface SyncOpsResult {
+  applied: { seq_id: number; client_op_id: string }[];
+  rejected: {
+    client_op_id: string;
+    reason: string;
+    winning_op?: { op_type: string; payload: Record<string, unknown> };
+  }[];
+}
+
+export interface StreamTokenResponse {
+  stream_token: string;
+  expires_at: string;
+}
+
+export async function getSnapshot(): Promise<SyncSnapshot> {
+  return request<SyncSnapshot>('GET', '/api/v1/sync/snapshot');
+}
+
+export async function getSyncOps(since: number): Promise<SyncOp[]> {
+  const data = await request<{ ops: SyncOp[] }>(
+    'GET',
+    `/api/v1/sync/ops?since=${encodeURIComponent(String(since))}`,
+  );
+  return data.ops ?? [];
+}
+
+export async function submitSyncOps(ops: SubmittedSyncOp[]): Promise<SyncOpsResult> {
+  return request<SyncOpsResult>('POST', '/api/v1/sync/ops', { ops });
+}
+
+export async function getStreamToken(): Promise<StreamTokenResponse> {
+  return request<StreamTokenResponse>('POST', '/api/v1/sync/stream-token');
 }

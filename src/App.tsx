@@ -24,6 +24,7 @@ import {
 import type { User } from './lib/api';
 import { AuthContext } from './lib/auth';
 import { CryptoProvider, useCrypto } from './lib/crypto-context';
+import { SyncProvider } from './lib/sync-context';
 import { useNetworkStatus } from './lib/useNetworkStatus';
 import * as Haptics from 'expo-haptics';
 
@@ -499,6 +500,7 @@ export default function App() {
   return (
     <AuthContext.Provider value={{ user, refreshAuth, signOut }}>
       <CryptoProvider>
+      <SyncProvider>
       <BackupProvider>
       <SafeAreaProvider>
       <ToastProvider>
@@ -589,6 +591,7 @@ export default function App() {
       </ToastProvider>
       </SafeAreaProvider>
       </BackupProvider>
+      </SyncProvider>
       </CryptoProvider>
     </AuthContext.Provider>
   );
