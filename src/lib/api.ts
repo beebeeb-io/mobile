@@ -201,13 +201,53 @@ export interface ConfirmActionResponse {
   expires_at: string;
 }
 
+/** Thrown when /auth/confirm rejects the password — distinct from session expiry. */
+export class IncorrectPasswordError extends Error {
+  constructor() {
+    super('Incorrect password');
+    this.name = 'IncorrectPasswordError';
+  }
+}
+
 /**
  * Step-up re-auth: exchange the user's password for a short-lived
  * confirmation token. Destructive endpoints require it via the
  * X-Confirm-Token header.
+ *
+ * Uses a direct fetch (not `request()`) because a 401 here means
+ * "wrong password," not "session expired" — we must NOT clear the token
+ * or trigger sign-out. A typo on step-up should let the user retry.
  */
 export async function confirmAction(password: string): Promise<ConfirmActionResponse> {
-  return request<ConfirmActionResponse>('POST', '/api/v1/auth/confirm', { password });
+  const token = await getToken();
+  if (!token) {
+    // No session at all — surface as session expiry through the normal path.
+    onSessionExpired?.();
+    throw new ApiError(401, 'Session expired');
+  }
+
+  let res: Response;
+  try {
+    res = await fetch(`${BASE_URL}/api/v1/auth/confirm`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ password }),
+    });
+  } catch (_err) {
+    throw new ApiError(0, 'Could not reach the server. Check your connection and try again.');
+  }
+
+  if (res.status === 401) {
+    throw new IncorrectPasswordError();
+  }
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new ApiError(res.status, err.error ?? err.message ?? res.statusText);
+  }
+  return res.json() as Promise<ConfirmActionResponse>;
 }
 
 // ---------------------------------------------------------------------------
