@@ -470,6 +470,26 @@ async function uploadFileChunked(
   return completeRes.json() as Promise<FileEntry>;
 }
 
+/**
+ * Upload a thumbnail blob for a file. Server caps payloads at 512KB.
+ * Best-effort: callers should fire-and-forget so a failed thumbnail
+ * never blocks the upload success flow.
+ */
+export async function uploadThumbnail(fileId: string, blob: Blob): Promise<void> {
+  const token = await getToken();
+  const res = await fetch(`${BASE_URL}/api/v1/files/${fileId}/thumbnail`, {
+    method: 'PUT',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/octet-stream',
+    },
+    body: blob,
+  });
+  if (!res.ok) {
+    throw new ApiError(res.status, `Thumbnail upload failed (HTTP ${res.status})`);
+  }
+}
+
 export async function downloadFile(id: string): Promise<Response> {
   const token = await getToken();
   const res = await fetch(`${BASE_URL}/api/v1/files/${id}/download`, {

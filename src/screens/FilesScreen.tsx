@@ -39,6 +39,7 @@ import SkeletonRow from '../components/SkeletonRow';
 import PresenceAvatars from '../components/PresenceAvatars';
 import TrustDetailsSheet from '../components/TrustDetailsSheet';
 import { listFiles, createFolder, deleteFile, renameFile, moveFile, uploadFile, downloadFile, friendlyError, getStorageUsage, createProofOfExistence, storageLocation, trustLocation, getFolderPresence } from '../lib/api';
+import { generateAndUploadThumbnail } from '../lib/thumbnail';
 import type { FileEntry, StorageUsage, ProofOfExistence, PresenceUser, SyncNode } from '../lib/api';
 import type { RootStackParamList, TabParamList } from '../App';
 import { useCrypto } from '../lib/crypto-context';
@@ -951,6 +952,8 @@ export default function FilesScreen() {
       const finalLoc = trustLocation(uploaded.storage_pool_id);
       setUpload({ fileName: asset.name, stage: 'done', percent: 100, city: finalLoc.city, region: finalLoc.region });
       setFiles((prev) => [uploaded, ...prev]);
+      // Fire-and-forget: generate + upload a 256px thumbnail for image files.
+      void generateAndUploadThumbnail(uploaded.id, asset.uri, asset.mimeType ?? null);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       showToast({ type: 'success', message: `"${asset.name}" stored in ${finalLoc.city}` });
       fetchFiles(currentFolder.id, true);
@@ -1022,6 +1025,8 @@ export default function FilesScreen() {
         );
         lastLoc = trustLocation(uploaded.storage_pool_id);
         setFiles((prev) => [uploaded, ...prev]);
+        // Fire-and-forget: image picker only returns images, so always thumbnail.
+        void generateAndUploadThumbnail(uploaded.id, asset.uri, asset.mimeType ?? 'image/jpeg');
         successCount += 1;
       } catch (err) {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
