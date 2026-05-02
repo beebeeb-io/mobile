@@ -294,6 +294,35 @@ export function storageLocation(poolId: string | null | undefined): StorageLocat
   }
 }
 
+/**
+ * Trust-display location for the encryption details panel.
+ * Always names the city + provider — the brand voice rule.
+ */
+export interface TrustLocation {
+  region: string; // "Europe"
+  city: string; // "Frankfurt"
+  provider: string; // "Hetzner"
+}
+
+export function trustLocation(poolId: string | null | undefined): TrustLocation {
+  switch (poolId) {
+    case 'hetzner-fsn':
+    case 'fsn1':
+    case 'falkenstein':
+      return { region: 'Europe', city: 'Falkenstein', provider: 'Hetzner' };
+    case 'hetzner-hel':
+    case 'hel1':
+    case 'helsinki':
+      return { region: 'Europe', city: 'Helsinki', provider: 'Hetzner' };
+    case 'hetzner-fra':
+    case 'frankfurt':
+      return { region: 'Europe', city: 'Frankfurt', provider: 'Hetzner' };
+    default:
+      // Until storage pools are wired through, default to Frankfurt.
+      return { region: 'Europe', city: 'Frankfurt', provider: 'Hetzner' };
+  }
+}
+
 export interface ListFilesResponse {
   files: FileEntry[];
 }

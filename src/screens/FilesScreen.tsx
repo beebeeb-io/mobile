@@ -32,12 +32,13 @@ import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 import * as MediaLibrary from 'expo-media-library';
 import * as Clipboard from 'expo-clipboard';
-import { radii, spacing, shadows } from '../theme';
+import { fonts, radii, spacing, shadows } from '../theme';
 import { useTheme } from '../lib/theme-context';
 import { useToast } from '../lib/toast-context';
 import SkeletonRow from '../components/SkeletonRow';
 import PresenceAvatars from '../components/PresenceAvatars';
-import { listFiles, createFolder, deleteFile, renameFile, moveFile, uploadFile, downloadFile, friendlyError, getStorageUsage, createProofOfExistence, storageLocation, getFolderPresence } from '../lib/api';
+import TrustDetailsSheet from '../components/TrustDetailsSheet';
+import { listFiles, createFolder, deleteFile, renameFile, moveFile, uploadFile, downloadFile, friendlyError, getStorageUsage, createProofOfExistence, storageLocation, trustLocation, getFolderPresence } from '../lib/api';
 import type { FileEntry, StorageUsage, ProofOfExistence, PresenceUser } from '../lib/api';
 import type { RootStackParamList, TabParamList } from '../App';
 import { useCrypto } from '../lib/crypto-context';
@@ -187,6 +188,44 @@ const FileIcon = React.memo(function FileIcon({ category, size = 32 }: { categor
 });
 
 // ---------------------------------------------------------------------------
+// Upload stage row — one line + progress bar in the trust upload banner
+// ---------------------------------------------------------------------------
+
+interface UploadStageRowProps {
+  index: 1 | 2 | 3;
+  label: string;
+  done: boolean;
+  active: boolean;
+  percent: number;
+  barColor: string;
+  showCheck?: boolean;
+  c: ReturnType<typeof useTheme>['colors'];
+}
+
+function UploadStageRow({ index, label, done, active, percent, barColor, showCheck, c }: UploadStageRowProps) {
+  const labelColor = done ? c.ink2 : active ? c.ink : c.ink4;
+  const numColor = done || active ? c.ink2 : c.ink4;
+  const trackColor = c.line;
+  const fillPct = Math.max(0, Math.min(100, percent));
+  return (
+    <View style={{ gap: 3 }}>
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+        <Text style={{ fontFamily: fonts.mono, fontSize: 10, color: numColor, width: 16 }}>
+          {`0${index}`}
+        </Text>
+        <Text style={{ flex: 1, fontSize: 12, fontWeight: active || done ? '600' : '400', color: labelColor }} numberOfLines={1}>
+          {label}
+        </Text>
+        {showCheck && <Ionicons name="checkmark-circle" size={14} color={c.amber} />}
+      </View>
+      <View style={{ height: 3, borderRadius: 1.5, backgroundColor: trackColor, overflow: 'hidden', marginLeft: 22 }}>
+        <View style={{ height: '100%', width: `${fillPct}%` as `${number}%`, backgroundColor: barColor, borderRadius: 1.5 }} />
+      </View>
+    </View>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // File row item (memoized to prevent unnecessary re-renders in FlatList)
 // ---------------------------------------------------------------------------
 
@@ -197,6 +236,7 @@ interface FileRowItemProps {
   onLongPress: (item: FileEntry) => void;
   onShare: (item: FileEntry) => void;
   onDelete: (item: FileEntry) => void;
+  onTrustPress: (item: FileEntry) => void;
   selectMode: boolean;
   isSelected: boolean;
   onToggleSelect: (item: FileEntry) => void;
@@ -213,6 +253,7 @@ const FileRowItem = React.memo(function FileRowItem({
   onLongPress,
   onShare,
   onDelete,
+  onTrustPress,
   selectMode,
   isSelected,
   onToggleSelect,
@@ -349,7 +390,23 @@ const FileRowItem = React.memo(function FileRowItem({
             return `${formatSize(item.size_bytes)}  ·  ${formatDate(item.updated_at)}${locSuffix}`;
           })()}
         </Text>
+        {!item.is_folder && (
+          <Text style={[styles.cryptoMeta, { color: c.ink4 }]} numberOfLines={1}>
+            {`AES-256-GCM · ${trustLocation(item.storage_pool_id).region} · ${trustLocation(item.storage_pool_id).city}`}
+          </Text>
+        )}
       </View>
+      {!selectMode && !item.is_folder && (
+        <TouchableOpacity
+          onPress={() => onTrustPress(item)}
+          hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}
+          style={styles.trustLock}
+          accessibilityRole="button"
+          accessibilityLabel={`Encryption details for ${nameText}`}
+        >
+          <Ionicons name="lock-closed" size={13} color={c.amberDeep} />
+        </TouchableOpacity>
+      )}
       {!selectMode && <Text style={[styles.chevron, { color: c.ink4 }]}>{'›'}</Text>}
     </TouchableOpacity>
   );
@@ -382,6 +439,7 @@ interface FileGridItemProps {
   decryptedName: string | undefined;
   onPress: (item: FileEntry) => void;
   onLongPress: (item: FileEntry) => void;
+  onTrustPress: (item: FileEntry) => void;
   selectMode: boolean;
   isSelected: boolean;
   onToggleSelect: (item: FileEntry) => void;
@@ -397,6 +455,7 @@ const FileGridItem = React.memo(function FileGridItem({
   decryptedName,
   onPress,
   onLongPress,
+  onTrustPress,
   selectMode,
   isSelected,
   onToggleSelect,
@@ -493,7 +552,23 @@ const FileGridItem = React.memo(function FileGridItem({
         <Text style={[styles.gridMeta, { color: c.ink3 }]} numberOfLines={1}>
           {metaText}
         </Text>
+        {!isFolder && (
+          <Text style={[styles.cryptoMetaGrid, { color: c.ink4 }]} numberOfLines={1}>
+            {`AES-256-GCM · ${trustLocation(item.storage_pool_id).city}`}
+          </Text>
+        )}
       </View>
+      {!selectMode && !isFolder && (
+        <TouchableOpacity
+          onPress={() => onTrustPress(item)}
+          hitSlop={{ top: 6, right: 6, bottom: 6, left: 6 }}
+          style={styles.gridTrustLock}
+          accessibilityRole="button"
+          accessibilityLabel={`Encryption details for ${nameText}`}
+        >
+          <Ionicons name="lock-closed" size={11} color={c.amberDeep} />
+        </TouchableOpacity>
+      )}
     </TouchableOpacity>
   );
 });
@@ -608,9 +683,28 @@ export default function FilesScreen() {
   const { isUnlocked, decryptMetadata } = useCrypto();
   const [decryptedNames, setDecryptedNames] = useState<Record<string, string>>({});
 
-  // Upload state — shows an inline progress banner above the FAB
-  const [uploadingName, setUploadingName] = useState<string | null>(null);
-  const [uploadProgress, setUploadProgress] = useState<{ percent: number; phase: string } | null>(null);
+  // Upload state — drives the 3-stage trust banner above the FAB.
+  // stage 1 = encrypting · stage 2 = uploading · stage 3 = storing/done.
+  type UploadStage = 1 | 2 | 3 | 'done';
+  const [upload, setUpload] = useState<{
+    fileName: string;
+    stage: UploadStage;
+    percent: number;
+    city: string;
+    region: string;
+  } | null>(null);
+  const uploadingName = upload?.fileName ?? null;
+
+  // Trust details sheet — opened by tapping the lock icon on a row/grid cell.
+  const [trustFile, setTrustFile] = useState<FileEntry | null>(null);
+  const openTrust = useCallback((file: FileEntry) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setTrustFile(file);
+  }, []);
+  const closeTrust = useCallback(() => setTrustFile(null), []);
+  const trustFileName = trustFile
+    ? (decryptedNames[trustFile.id] ?? displayName(trustFile))
+    : '';
 
   // New-folder modal (Android — Alert.prompt is iOS-only). Drives a small
   // controlled Modal further down in the render tree.
@@ -789,8 +883,8 @@ export default function FilesScreen() {
     if (picked.canceled || !picked.assets?.[0]) return;
 
     const asset = picked.assets[0];
-    setUploadingName(asset.name);
-    setUploadProgress({ percent: 0, phase: 'Preparing...' });
+    const loc = trustLocation(undefined);
+    setUpload({ fileName: asset.name, stage: 1, percent: 30, city: loc.city, region: loc.region });
     try {
       const response = await fetch(asset.uri);
       const blob = await response.blob();
@@ -806,22 +900,30 @@ export default function FilesScreen() {
           const percent = progress.bytesTotal > 0
             ? Math.round((progress.bytesUploaded / progress.bytesTotal) * 100)
             : 0;
-          const phase = progress.phase === 'preparing' ? 'Preparing...'
-            : progress.phase === 'finalizing' ? 'Finalizing...'
-            : `${percent}%`;
-          setUploadProgress({ percent, phase });
+          setUpload((prev) => {
+            const base = prev ?? { fileName: asset.name, stage: 1 as UploadStage, percent: 0, city: loc.city, region: loc.region };
+            if (progress.phase === 'preparing') {
+              return { ...base, stage: 1, percent: Math.max(percent, 30) };
+            }
+            if (progress.phase === 'finalizing') {
+              return { ...base, stage: 3, percent: 60 };
+            }
+            return { ...base, stage: 2, percent };
+          });
         },
       );
+      const finalLoc = trustLocation(uploaded.storage_pool_id);
+      setUpload({ fileName: asset.name, stage: 'done', percent: 100, city: finalLoc.city, region: finalLoc.region });
       setFiles((prev) => [uploaded, ...prev]);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      showToast({ type: 'success', message: `"${asset.name}" uploaded` });
+      showToast({ type: 'success', message: `"${asset.name}" stored in ${finalLoc.city}` });
       fetchFiles(currentFolder.id, true);
+      // Hold the "Stored · Key stayed here" flash briefly before clearing.
+      setTimeout(() => setUpload((cur) => (cur && cur.stage === 'done' ? null : cur)), 1800);
     } catch (err) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       showToast({ type: 'error', message: `Upload failed: ${friendlyError(err)}` });
-    } finally {
-      setUploadingName(null);
-      setUploadProgress(null);
+      setUpload(null);
     }
   }, [currentFolder.id, fetchFiles, showToast]);
 
@@ -847,11 +949,14 @@ export default function FilesScreen() {
 
     const total = picked.assets.length;
     let successCount = 0;
+    let lastLoc = trustLocation(undefined);
+    let lastName = '';
     for (let i = 0; i < total; i++) {
       const asset = picked.assets[i]!;
       const name = asset.fileName ?? `photo-${Date.now()}-${i}.jpg`;
-      setUploadingName(total > 1 ? `${name} (${i + 1}/${total})` : name);
-      setUploadProgress({ percent: 0, phase: 'Preparing...' });
+      const display = total > 1 ? `${name} (${i + 1}/${total})` : name;
+      lastName = display;
+      setUpload({ fileName: display, stage: 1, percent: 30, city: lastLoc.city, region: lastLoc.region });
       try {
         const response = await fetch(asset.uri);
         const blob = await response.blob();
@@ -867,12 +972,19 @@ export default function FilesScreen() {
             const percent = progress.bytesTotal > 0
               ? Math.round((progress.bytesUploaded / progress.bytesTotal) * 100)
               : 0;
-            const phase = progress.phase === 'preparing' ? 'Preparing...'
-              : progress.phase === 'finalizing' ? 'Finalizing...'
-              : `${percent}%`;
-            setUploadProgress({ percent, phase });
+            setUpload((prev) => {
+              const base = prev ?? { fileName: display, stage: 1 as UploadStage, percent: 0, city: lastLoc.city, region: lastLoc.region };
+              if (progress.phase === 'preparing') {
+                return { ...base, stage: 1, percent: Math.max(percent, 30) };
+              }
+              if (progress.phase === 'finalizing') {
+                return { ...base, stage: 3, percent: 60 };
+              }
+              return { ...base, stage: 2, percent };
+            });
           },
         );
+        lastLoc = trustLocation(uploaded.storage_pool_id);
         setFiles((prev) => [uploaded, ...prev]);
         successCount += 1;
       } catch (err) {
@@ -880,15 +992,19 @@ export default function FilesScreen() {
         showToast({ type: 'error', message: `${name}: ${friendlyError(err)}` });
       }
     }
-    setUploadingName(null);
-    setUploadProgress(null);
     if (successCount > 0) {
+      setUpload({ fileName: lastName, stage: 'done', percent: 100, city: lastLoc.city, region: lastLoc.region });
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       showToast({
         type: 'success',
-        message: successCount === 1 ? 'Photo uploaded' : `${successCount} photos uploaded`,
+        message: successCount === 1
+          ? `Photo stored in ${lastLoc.city}`
+          : `${successCount} photos stored in ${lastLoc.city}`,
       });
       fetchFiles(currentFolder.id, true);
+      setTimeout(() => setUpload((cur) => (cur && cur.stage === 'done' ? null : cur)), 1800);
+    } else {
+      setUpload(null);
     }
   }, [currentFolder.id, fetchFiles, showToast]);
 
@@ -1751,6 +1867,7 @@ export default function FilesScreen() {
       onLongPress={handleRowLongPress}
       onShare={handleSwipeShare}
       onDelete={handleSwipeDelete}
+      onTrustPress={openTrust}
       selectMode={selectMode}
       isSelected={selectedIds.has(item.id)}
       onToggleSelect={toggleSelect}
@@ -1759,7 +1876,7 @@ export default function FilesScreen() {
       hasProof={!!proofs[item.id]}
       isShared={item.is_folder && (item.share_count ?? 0) > 0}
     />
-  ), [decryptedNames, openFile, handleRowLongPress, handleSwipeShare, handleSwipeDelete, selectMode, selectedIds, toggleSelect, sortOrder, offlineIds, proofs]);
+  ), [decryptedNames, openFile, handleRowLongPress, handleSwipeShare, handleSwipeDelete, openTrust, selectMode, selectedIds, toggleSelect, sortOrder, offlineIds, proofs]);
 
   // Grid sizing — 3 columns, evenly spaced, responsive to screen width
   const GRID_COLUMNS = 3;
@@ -1776,6 +1893,7 @@ export default function FilesScreen() {
       decryptedName={decryptedNames[item.id]}
       onPress={openFile}
       onLongPress={handleRowLongPress}
+      onTrustPress={openTrust}
       selectMode={selectMode}
       isSelected={selectedIds.has(item.id)}
       onToggleSelect={toggleSelect}
@@ -1785,7 +1903,7 @@ export default function FilesScreen() {
       hasProof={!!proofs[item.id]}
       isShared={item.is_folder && (item.share_count ?? 0) > 0}
     />
-  ), [decryptedNames, openFile, handleRowLongPress, selectMode, selectedIds, toggleSelect, sortOrder, gridCardWidth, offlineIds, proofs]);
+  ), [decryptedNames, openFile, handleRowLongPress, openTrust, selectMode, selectedIds, toggleSelect, sortOrder, gridCardWidth, offlineIds, proofs]);
 
   const renderEmpty = () => {
     if (loading) return null;
@@ -2044,33 +2162,55 @@ export default function FilesScreen() {
         />
       )}
 
-      {/* Inline upload progress (shown while a file is uploading) */}
-      {uploadingName && !selectMode && (
+      {/* Inline 3-stage trust upload banner (encrypt → upload → stored) */}
+      {upload && !selectMode && (
         <View
           style={[
             styles.uploadBanner,
             {
               bottom: 16 + insets.bottom + 64,
               backgroundColor: c.paper2,
-              borderColor: c.line,
+              borderColor: upload.stage === 'done' ? c.amber : c.line,
             },
           ]}
         >
-          <ActivityIndicator color={c.amber} size="small" />
-          <View style={{ flex: 1 }}>
-            <Text style={[styles.uploadBannerText, { color: c.ink2 }]} numberOfLines={1}>
-              {uploadingName}
+          <View style={{ flex: 1, gap: 8 }}>
+            <Text style={[styles.uploadFileName, { color: c.ink3 }]} numberOfLines={1}>
+              {upload.fileName}
             </Text>
-            {uploadProgress && (
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 3 }}>
-                <View style={{ flex: 1, height: 3, borderRadius: 1.5, backgroundColor: c.line, overflow: 'hidden' }}>
-                  <View style={{ height: '100%', width: `${uploadProgress.percent}%` as `${number}%`, backgroundColor: c.amber, borderRadius: 1.5 }} />
-                </View>
-                <Text style={{ fontSize: 10, color: c.ink3, minWidth: 50 }}>
-                  {uploadProgress.phase}
-                </Text>
-              </View>
-            )}
+
+            <UploadStageRow
+              index={1}
+              label="Encrypting on your device..."
+              done={upload.stage !== 1}
+              active={upload.stage === 1}
+              percent={upload.stage === 1 ? upload.percent : 100}
+              barColor={c.amber}
+              c={c}
+            />
+            <UploadStageRow
+              index={2}
+              label={`Uploading ciphertext to ${upload.city}`}
+              done={upload.stage === 3 || upload.stage === 'done'}
+              active={upload.stage === 2}
+              percent={upload.stage === 2 ? upload.percent : (upload.stage === 1 ? 0 : 100)}
+              barColor={c.ink3}
+              c={c}
+            />
+            <UploadStageRow
+              index={3}
+              label={
+                upload.stage === 'done'
+                  ? `Stored in ${upload.region} · ${upload.city} · Key stayed here`
+                  : `Storing in ${upload.region} · ${upload.city}...`
+              }
+              done={upload.stage === 'done'}
+              active={upload.stage === 3}
+              percent={upload.stage === 'done' ? 100 : upload.stage === 3 ? upload.percent : 0}
+              barColor={c.amber}
+              showCheck={upload.stage === 'done'}
+              c={c}
+            />
           </View>
         </View>
       )}
@@ -2193,6 +2333,13 @@ export default function FilesScreen() {
           </View>
         </KeyboardAvoidingView>
       </Modal>
+
+      {/* Trust details bottom sheet — opened from the lock icon on a file row */}
+      <TrustDetailsSheet
+        file={trustFile}
+        fileName={trustFileName}
+        onClose={closeTrust}
+      />
     </View>
   );
 }
@@ -2254,6 +2401,14 @@ const styles = StyleSheet.create({
   fileName: { fontSize: 14, fontWeight: '500', flexShrink: 1 },
   fileNameEncrypted: { fontStyle: 'italic' },
   fileMeta: { fontSize: 11, marginTop: 2 },
+  cryptoMeta: { fontFamily: fonts.mono, fontSize: 10, marginTop: 1, letterSpacing: 0.2 },
+  trustLock: {
+    width: 28,
+    height: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 4,
+  },
   chevron: { fontSize: 18 },
 
   // File grid
@@ -2273,6 +2428,18 @@ const styles = StyleSheet.create({
   gridNameRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 3, justifyContent: 'center' },
   gridName: { fontSize: 12, fontWeight: '600', textAlign: 'center', lineHeight: 15 },
   gridMeta: { fontSize: 10, textAlign: 'center' },
+  cryptoMetaGrid: { fontFamily: fonts.mono, fontSize: 9, textAlign: 'center', marginTop: 1, letterSpacing: 0.2 },
+  gridTrustLock: {
+    position: 'absolute',
+    top: 6,
+    left: 6,
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 1,
+  },
   gridCheckbox: {
     position: 'absolute',
     top: 6,
@@ -2336,6 +2503,7 @@ const styles = StyleSheet.create({
     ...shadows.lg,
   },
   uploadBannerText: { fontSize: 13, flex: 1, fontWeight: '500' },
+  uploadFileName: { fontSize: 11, fontWeight: '500' },
   sharedBadge: { marginLeft: 4 },
   presenceWrap: { flexDirection: 'row', alignItems: 'center', marginRight: 8 },
 
