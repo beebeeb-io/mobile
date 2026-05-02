@@ -2,4 +2,10 @@
   <string name="app_name">Beebeeb</string>
   <string name="expo_splash_screen_resize_mode" translatable="false">contain</string>
   <string name="expo_splash_screen_status_bar_translucent" translatable="false">false</string>
+  <string name="shortcut_upload">Upload</string>
+  <string name="shortcut_upload_long">Upload File</string>
+  <string name="shortcut_search">Search</string>
+  <string name="shortcut_search_long">Search Files</string>
+  <string name="shortcut_photos">Photos</string>
+  <string name="shortcut_photos_long">Photos</string>
 </resources>
