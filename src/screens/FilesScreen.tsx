@@ -39,9 +39,10 @@ import SkeletonRow from '../components/SkeletonRow';
 import PresenceAvatars from '../components/PresenceAvatars';
 import TrustDetailsSheet from '../components/TrustDetailsSheet';
 import { listFiles, createFolder, deleteFile, renameFile, moveFile, uploadFile, downloadFile, friendlyError, getStorageUsage, createProofOfExistence, storageLocation, trustLocation, getFolderPresence } from '../lib/api';
-import type { FileEntry, StorageUsage, ProofOfExistence, PresenceUser } from '../lib/api';
+import type { FileEntry, StorageUsage, ProofOfExistence, PresenceUser, SyncNode } from '../lib/api';
 import type { RootStackParamList, TabParamList } from '../App';
 import { useCrypto } from '../lib/crypto-context';
+import { useSync } from '../lib/sync-context';
 
 // Tracks the currently open Swipeable so we can close it when another opens.
 let _openSwipeable: Swipeable | null = null;
@@ -103,6 +104,25 @@ function base64ToUint8Array(b64: string): Uint8Array {
     bytes[i] = binary.charCodeAt(i);
   }
   return bytes;
+}
+
+/**
+ * Project a SyncNode (CRDT tree node) onto the FileEntry shape the rest of
+ * the screen consumes. Both shapes already share most fields — this is a
+ * narrowing pick so we can swap data sources without changing the UI.
+ */
+function syncNodeToFileEntry(node: SyncNode): FileEntry {
+  return {
+    id: node.id,
+    name_encrypted: node.name_encrypted,
+    mime_type: node.mime_type,
+    size_bytes: node.size_bytes,
+    is_folder: node.is_folder,
+    chunk_count: node.chunk_count ?? 1,
+    created_at: node.created_at,
+    updated_at: node.updated_at,
+    storage_pool_id: node.storage_pool_id,
+  };
 }
 
 /** Determine a file type category from the mime type. */
@@ -683,6 +703,10 @@ export default function FilesScreen() {
   const { isUnlocked, decryptMetadata } = useCrypto();
   const [decryptedNames, setDecryptedNames] = useState<Record<string, string>>({});
 
+  // CRDT sync — when ready, the file list derives from the in-memory tree
+  // and stays live (SSE pushes). Until then we fall back to listFiles().
+  const sync = useSync();
+
   // Upload state — drives the 3-stage trust banner above the FAB.
   // stage 1 = encrypting · stage 2 = uploading · stage 3 = storing/done.
   type UploadStage = 1 | 2 | 3 | 'done';
@@ -798,10 +822,22 @@ export default function FilesScreen() {
     }
   }, []);
 
-  // Fetch on mount and when folder changes
+  // Fetch on mount and when folder changes. When the CRDT sync engine is
+  // ready, derive the list from the in-memory tree instead of hitting
+  // /api/v1/files — that path stays as a fallback (server too old, or
+  // sync still booting).
   useEffect(() => {
+    if (sync.ready) {
+      const nodes = sync.children(currentFolder.id);
+      setFiles(nodes.filter((n) => !n.is_trashed).map(syncNodeToFileEntry));
+      setLoading(false);
+      setError(null);
+      return;
+    }
     fetchFiles(currentFolder.id);
-  }, [currentFolder.id, fetchFiles]);
+    // sync.treeVersion bumps on every op — re-derive without re-fetching.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentFolder.id, fetchFiles, sync.ready, sync.treeVersion]);
 
   // Load presence for the current folder. The endpoint silently returns []
   // when the folder isn't shared or the API doesn't exist yet.
