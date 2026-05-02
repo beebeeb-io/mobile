@@ -22,6 +22,7 @@ import { listFiles, friendlyError } from '../lib/api';
 import type { FileEntry } from '../lib/api';
 import { useBackup } from '../lib/backup-context';
 import { useNetworkStatus } from '../lib/useNetworkStatus';
+import { ThumbnailImage } from '../components/ThumbnailImage';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -33,9 +34,8 @@ function isImageFile(entry: FileEntry): boolean {
 }
 
 /**
- * Deterministic warm swatch — used as a placeholder until the encrypted
- * thumbnail can be fetched and decrypted via the UniFFI core bindings.
- * Mirrors the swatch logic in design/hifi/hifi-ios-app.jsx.
+ * Deterministic warm swatch — used as a load-time placeholder behind each
+ * thumbnail so the grid never shows blank cells while images are streaming in.
  */
 function swatch(seed: number): string {
   const hues = [55, 72, 28, 90, 42, 65, 18, 82];
@@ -140,10 +140,12 @@ function FilterChips({
 // ---------------------------------------------------------------------------
 
 const PhotoCell = React.memo(function PhotoCell({
+  fileId,
   seed,
   onPress,
   accessibilityLabel,
 }: {
+  fileId: string;
   seed: number;
   onPress?: () => void;
   accessibilityLabel: string;
@@ -154,8 +156,15 @@ const PhotoCell = React.memo(function PhotoCell({
       onPress={onPress}
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel}
-      style={[styles.cell, { backgroundColor: swatch(seed) }]}
-    />
+      style={styles.cell}
+    >
+      <ThumbnailImage
+        fileId={fileId}
+        placeholderColor={swatch(seed)}
+        style={StyleSheet.absoluteFill}
+        accessibilityLabel={accessibilityLabel}
+      />
+    </TouchableOpacity>
   );
 });
 
@@ -185,6 +194,7 @@ const GroupSection = React.memo(function GroupSection({
         {group.data.map((photo, i) => (
           <PhotoCell
             key={photo.id}
+            fileId={photo.id}
             seed={seedOffset + i}
             accessibilityLabel={`Photo from ${group.label}`}
             onPress={() => onOpenPhoto(photo)}
