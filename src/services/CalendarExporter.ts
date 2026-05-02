@@ -6,7 +6,8 @@
  * concatenation to emit RFC 5545 iCalendar.
  */
 
-import * as Calendar from 'expo-calendar';
+let Calendar: any = null;
+try { Calendar = require('expo-calendar'); } catch {}
 import * as SecureStore from 'expo-secure-store';
 import { Platform } from 'react-native';
 import { deleteFile, listFiles, uploadFile, type FileEntry } from '../lib/api';
@@ -81,7 +82,7 @@ function formatDateOnly(input: string | Date): string {
 // VEVENT emission
 // ---------------------------------------------------------------------------
 
-function eventToVEvent(ev: Calendar.Event, dtstamp: string): string[] {
+function eventToVEvent(ev: any, dtstamp: string): string[] {
   const lines: string[] = [];
   emit('BEGIN:VEVENT', lines);
 
@@ -107,7 +108,7 @@ function eventToVEvent(ev: Calendar.Event, dtstamp: string): string[] {
   return lines;
 }
 
-function buildIcs(calendarTitle: string, events: Calendar.Event[]): string {
+function buildIcs(calendarTitle: string, events: any[]): string {
   const lines: string[] = [];
   const dtstamp = formatUtc(new Date());
 

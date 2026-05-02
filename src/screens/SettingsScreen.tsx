@@ -15,14 +15,23 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
-import * as LocalAuthentication from 'expo-local-authentication';
 import * as SecureStore from 'expo-secure-store';
-import * as StoreReview from 'expo-store-review';
-import * as Notifications from 'expo-notifications';
-import * as MediaLibrary from 'expo-media-library';
-import * as Contacts from 'expo-contacts';
-import * as Calendar from 'expo-calendar';
-import Constants from 'expo-constants';
+
+let LocalAuthentication: any = { hasHardwareAsync: async () => false, authenticateAsync: async () => ({ success: false }), isEnrolledAsync: async () => false };
+let StoreReview: any = { requestReview: async () => {} };
+let Notifications: any = { getPermissionsAsync: async () => ({ status: 'undetermined' }), requestPermissionsAsync: async () => ({ status: 'undetermined' }) };
+let MediaLibrary: any = { requestPermissionsAsync: async () => ({ status: 'undetermined' }) };
+let Contacts: any = { requestPermissionsAsync: async () => ({ status: 'undetermined' }) };
+let Calendar: any = { requestPermissionsAsync: async () => ({ status: 'undetermined' }) };
+let Constants: any = { expoConfig: null };
+
+try { LocalAuthentication = require('expo-local-authentication'); } catch {}
+try { StoreReview = require('expo-store-review'); } catch {}
+try { Notifications = require('expo-notifications'); } catch {}
+try { MediaLibrary = require('expo-media-library'); } catch {}
+try { Contacts = require('expo-contacts'); } catch {}
+try { Calendar = require('expo-calendar'); } catch {}
+try { Constants = require('expo-constants'); } catch {}
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
