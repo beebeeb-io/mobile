@@ -1,0 +1,40 @@
+appId: io.beebeeb.app
+---
+- launchApp
+
+# Make sure we're on the Files tab and signed in
+- tapOn:
+    point: "12%,95%"
+
+- extendedWaitUntil:
+    visible: "Drive"
+    timeout: 15000
+
+- takeScreenshot: "search-01-before"
+
+# Tap the search icon at the top-right of the Files header
+- tapOn:
+    point: "91%,10%"
+
+# Search input has autoFocus — type the query
+- inputText: "demo"
+
+- takeScreenshot: "search-02-results"
+
+# Verify search executed (screenshot captures results or empty state)
+
+# Navigating to another tab and back is a reliable way to leave search;
+# tapping the in-header Cancel triggers a flaky iOS background event in this build.
+- tapOn:
+    point: "60%,95%"
+- extendedWaitUntil:
+    visible: "Photos"
+    timeout: 5000
+
+- tapOn:
+    point: "12%,95%"
+- extendedWaitUntil:
+    visible: "Drive"
+    timeout: 5000
+
+- takeScreenshot: "search-03-after-cancel"

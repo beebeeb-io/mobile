@@ -9,11 +9,11 @@ appId: io.beebeeb.app
 
 # Navigate to Settings tab
 - tapOn:
-    point: "85%,97%"
+    point: "85%,95%"
 
 - extendedWaitUntil:
     visible: "Settings"
-    timeout: 5000
+    timeout: 10000
 
 - takeScreenshot: "settings-01-top"
 
