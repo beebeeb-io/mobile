@@ -28,6 +28,7 @@ import type { Colors } from '../theme';
 import { useTheme } from '../lib/theme-context';
 import { getToken, getDownloadUrl, friendlyError } from '../lib/api';
 import { useCrypto } from '../lib/crypto-context';
+import * as BeebeebCrypto from '../../modules/beebeeb-crypto';
 
 // Office libs — loaded eagerly so Metro bundles them. Mammoth's `browser`
 // entry is a UMD bundle that avoids Node-only deps (fs, path) and works in RN.
@@ -715,7 +716,7 @@ export default function PreviewScreen() {
   const route = useRoute<PreviewRoute>();
   const insets = useSafeAreaInsets();
   const { colors: c, resolved } = useTheme();
-  const { fileId, fileName, mimeType, sizeBytes, createdAt } = route.params;
+  const { fileId, fileName, mimeType, sizeBytes, createdAt, chunkCount } = route.params;
 
   const [downloading, setDownloading] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState(0);
@@ -866,34 +867,33 @@ export default function PreviewScreen() {
     }
 
     if (isUnlocked) {
-      try {
-        // TODO(crypto-link): this single nonce/ciphertext slice only works for
-        // simple uploads (api.ts uploadFileSimple). Chunked uploads write one
-        // (nonce(12) + ciphertext) record per chunk, so once decryptChunk is
-        // wired we need to walk chunk_count boundaries instead of slicing once.
-        // Leaving the simple-path call so the wiring is in place.
-        const encBase64 = await FileSystem.readAsStringAsync(result.uri, {
-          encoding: FileSystem.EncodingType.Base64,
-        });
-        const encBytes = base64ToUint8Array(encBase64);
-        if (encBytes.length > 12) {
-          const nonce = encBytes.slice(0, 12);
-          const ciphertext = encBytes.slice(12);
-          const decrypted = await decryptChunk(fileId, nonce, ciphertext);
-          const decUri = `${FileSystem.cacheDirectory}dec_${fileId}_${safeName}`;
-          await FileSystem.writeAsStringAsync(decUri, uint8ArrayToBase64(decrypted), {
-            encoding: FileSystem.EncodingType.Base64,
-          });
-          return decUri;
-        }
-      } catch {
-        // Crypto stubs aren't linked yet, so decryptChunk rejects with NOT_LINKED.
-        // Files are stored as plaintext on the server during the stub phase, so
-        // the downloaded bytes are directly usable as-is.
+      if (!BeebeebCrypto.isNativeAvailable) {
+        throw new Error('Preview requires a dev client build with native crypto.');
       }
+      if ((chunkCount ?? 1) > 1) {
+        throw new Error('Multi-chunk file preview is not yet supported.');
+      }
+      // Single-chunk decryption: the file body is `nonce(12) || ciphertext`.
+      // Multi-chunk uploads use the same record layout per chunk, but stitching
+      // them back together is a separate (un-shipped) feature.
+      const encBase64 = await FileSystem.readAsStringAsync(result.uri, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+      const encBytes = base64ToUint8Array(encBase64);
+      if (encBytes.length <= 12) {
+        throw new Error('Encrypted file is too small to decrypt.');
+      }
+      const nonce = encBytes.slice(0, 12);
+      const ciphertext = encBytes.slice(12);
+      const decrypted = await decryptChunk(fileId, nonce, ciphertext);
+      const decUri = `${FileSystem.cacheDirectory}dec_${fileId}_${safeName}`;
+      await FileSystem.writeAsStringAsync(decUri, uint8ArrayToBase64(decrypted), {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+      return decUri;
     }
     return result.uri;
-  }, [fileId, fileName, isUnlocked, decryptChunk]);
+  }, [fileId, fileName, isUnlocked, decryptChunk, chunkCount]);
 
   // Auto-load images inline on mount
   useEffect(() => {

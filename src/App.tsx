@@ -90,6 +90,8 @@ export type RootStackParamList = {
     mimeType?: string;
     sizeBytes?: number;
     createdAt?: string;
+    /** Number of encrypted chunks. Multi-chunk files (>1) can't be previewed yet. */
+    chunkCount?: number;
   };
   ShareSheet: {
     fileId: string;

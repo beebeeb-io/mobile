@@ -220,6 +220,7 @@ export default function SharedScreen() {
         mimeType: item.mime_type,
         sizeBytes: item.size_bytes,
         createdAt: item.created_at,
+        chunkCount: item.chunk_count,
       });
     },
     [navigation],
