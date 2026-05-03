@@ -9,8 +9,10 @@
  * underlying upload. Callers should not await the result.
  */
 
-import * as ImageManipulator from 'expo-image-manipulator';
 import { uploadThumbnail } from './api';
+
+let ImageManipulator: typeof import('expo-image-manipulator') | null = null;
+try { ImageManipulator = require('expo-image-manipulator'); } catch {}
 
 const THUMB_WIDTH = 256;
 const THUMB_QUALITY = 0.7;
@@ -28,6 +30,7 @@ export function isImageMime(mimeType: string | null | undefined): boolean {
  */
 export async function generateThumbnail(sourceUri: string): Promise<Blob | null> {
   try {
+    if (!ImageManipulator) return null;
     const result = await ImageManipulator.manipulateAsync(
       sourceUri,
       [{ resize: { width: THUMB_WIDTH } }],
