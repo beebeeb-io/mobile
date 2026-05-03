@@ -5,11 +5,27 @@
  * All file data is encrypted ciphertext -- the server never sees plaintext.
  */
 
+import Constants from 'expo-constants';
 import * as SecureStore from 'expo-secure-store';
 import { Platform } from 'react-native';
 import * as BeebeebCrypto from '../../modules/beebeeb-crypto';
 
-const BASE_URL = Platform.OS === 'web' ? 'http://localhost:3001' : 'http://10.100.0.55:3001';
+// Dev defaults per platform. Override at build time with EXPO_PUBLIC_API_URL
+// or via expoConfig.extra.apiUrl (e.g. through eas.json env or app.config.ts).
+// - iOS simulator + web reach the host via `localhost`.
+// - Android emulator reaches the host via the special 10.0.2.2 loopback.
+// - Physical devices need EXPO_PUBLIC_API_URL set to the LAN URL of the API.
+function resolveBaseUrl(): string {
+  const configured =
+    (Constants.expoConfig?.extra as { apiUrl?: string } | undefined)?.apiUrl ??
+    process.env.EXPO_PUBLIC_API_URL;
+  if (configured) return configured;
+
+  if (Platform.OS === 'android') return 'http://10.0.2.2:3001';
+  return 'http://localhost:3001';
+}
+
+const BASE_URL = resolveBaseUrl();
 const TOKEN_KEY = 'beebeeb_session_token';
 
 /** Base URL for raw fetch / SSE callers that bypass `request()`. */
