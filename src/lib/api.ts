@@ -788,13 +788,31 @@ export interface OpaqueRegistrationStartResult {
   serverMessage: Uint8Array;
 }
 
+/** Sentinel thrown when OPAQUE can't run because the native crypto module is absent. */
+export class NativeCryptoUnavailableError extends Error {
+  readonly code = 'NATIVE_CRYPTO_UNAVAILABLE' as const;
+  constructor(method: string) {
+    super(`Native crypto module not available — cannot run ${method}. Use plain auth fallback.`);
+    this.name = 'NativeCryptoUnavailableError';
+  }
+}
+
 /**
  * Round 1 of OPAQUE login.
  * Throws ApiError with status 404 when server does not support OPAQUE — caller
  * should fall back to the legacy /auth/login endpoint.
+ * Throws NativeCryptoUnavailableError when running in Expo Go without the
+ * native module — caller should fall back to plain login().
  */
 export async function opaqueLoginStart(email: string): Promise<OpaqueLoginStartResult> {
-  const { state, message } = await BeebeebCrypto.opaqueLoginStart(email);
+  if (!BeebeebCrypto.isNativeAvailable) throw new NativeCryptoUnavailableError('opaqueLoginStart');
+  let state: Uint8Array;
+  let message: Uint8Array;
+  try {
+    ({ state, message } = await BeebeebCrypto.opaqueLoginStart(email));
+  } catch {
+    throw new NativeCryptoUnavailableError('opaqueLoginStart');
+  }
   const data = await request<{ server_message: string }>(
     'POST',
     '/api/v1/auth/opaque/login-start',
@@ -813,7 +831,13 @@ export async function opaqueLoginFinish(
   state: Uint8Array,
   serverMessage: Uint8Array,
 ): Promise<OpaqueLoginResult> {
-  const { sessionKey } = await BeebeebCrypto.opaqueLoginFinish(state, serverMessage);
+  if (!BeebeebCrypto.isNativeAvailable) throw new NativeCryptoUnavailableError('opaqueLoginFinish');
+  let sessionKey: Uint8Array;
+  try {
+    ({ sessionKey } = await BeebeebCrypto.opaqueLoginFinish(state, serverMessage));
+  } catch {
+    throw new NativeCryptoUnavailableError('opaqueLoginFinish');
+  }
   const data = await request<{ session_token: string }>(
     'POST',
     '/api/v1/auth/opaque/login-finish',
@@ -828,12 +852,21 @@ export async function opaqueLoginFinish(
  * Round 1 of OPAQUE registration.
  * Throws ApiError with status 404 when server does not support OPAQUE — caller
  * should fall back to the legacy /auth/signup endpoint.
+ * Throws NativeCryptoUnavailableError when running in Expo Go without the
+ * native module — caller should fall back to plain signup().
  */
 export async function opaqueRegistrationStart(
   email: string,
   password: string,
 ): Promise<OpaqueRegistrationStartResult> {
-  const { state, message } = await BeebeebCrypto.opaqueRegistrationStart(email, password);
+  if (!BeebeebCrypto.isNativeAvailable) throw new NativeCryptoUnavailableError('opaqueRegistrationStart');
+  let state: Uint8Array;
+  let message: Uint8Array;
+  try {
+    ({ state, message } = await BeebeebCrypto.opaqueRegistrationStart(email, password));
+  } catch {
+    throw new NativeCryptoUnavailableError('opaqueRegistrationStart');
+  }
   const data = await request<{ server_message: string }>(
     'POST',
     '/api/v1/auth/opaque/register-start',
@@ -852,7 +885,13 @@ export async function opaqueRegistrationFinish(
   state: Uint8Array,
   serverMessage: Uint8Array,
 ): Promise<{ sessionToken: string }> {
-  const { record } = await BeebeebCrypto.opaqueRegistrationFinish(state, serverMessage);
+  if (!BeebeebCrypto.isNativeAvailable) throw new NativeCryptoUnavailableError('opaqueRegistrationFinish');
+  let record: Uint8Array;
+  try {
+    ({ record } = await BeebeebCrypto.opaqueRegistrationFinish(state, serverMessage));
+  } catch {
+    throw new NativeCryptoUnavailableError('opaqueRegistrationFinish');
+  }
   const data = await request<{ session_token: string }>(
     'POST',
     '/api/v1/auth/opaque/register-finish',
