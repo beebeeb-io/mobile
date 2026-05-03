@@ -895,6 +895,7 @@ export default function FilesScreen() {
           mimeType: file.mime_type ?? undefined,
           sizeBytes: file.size_bytes,
           createdAt: file.created_at,
+          chunkCount: file.chunk_count,
         });
       }
     },

@@ -367,6 +367,7 @@ export default function PhotosScreen() {
         mimeType: entry.mime_type ?? undefined,
         sizeBytes: entry.size_bytes ?? undefined,
         createdAt: entry.created_at,
+        chunkCount: entry.chunk_count,
       });
     },
     [navigation],
