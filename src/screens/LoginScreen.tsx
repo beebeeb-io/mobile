@@ -64,22 +64,26 @@ export default function LoginScreen() {
     setError(null);
     setLoading(true);
     try {
-      // Attempt OPAQUE login (3-round flow)
-      try {
-        const { state, serverMessage } = await opaqueLoginStart(trimmedEmail);
-        const { masterKey } = await opaqueLoginFinish(trimmedEmail, state, serverMessage);
-        // Store master key in Secure Enclave for biometric unlock on future opens
+      // Attempt OPAQUE login (3-round flow). When the native crypto module is
+      // missing (Expo Go) or the OPAQUE endpoints aren't deployed, fall back to
+      // plain /auth/login which uses Argon2 server-side.
+      if (BeebeebCrypto.isNativeAvailable) {
         try {
-          await BeebeebCrypto.storeKeyInKeychain(masterKey, MASTER_KEY_LABEL);
+          const { state, serverMessage } = await opaqueLoginStart(trimmedEmail);
+          const { masterKey } = await opaqueLoginFinish(trimmedEmail, state, serverMessage);
+          // Best-effort: stash master key in Secure Enclave for biometric unlock.
+          try {
+            await BeebeebCrypto.storeKeyInKeychain(masterKey, MASTER_KEY_LABEL);
+          } catch {
+            // Keychain unavailable — login still succeeded.
+          }
+          // Token is stored by opaqueLoginFinish. App.tsx auth state will pick it up.
         } catch {
-          // Native module not yet linked — ignore until xcframework is wired
+          // OPAQUE failed — fall back to plain login. Wrong-password errors will
+          // surface from the plain endpoint just the same.
+          await login(trimmedEmail, password);
         }
-        // Token is stored by opaqueLoginFinish. App.tsx auth state will pick it up.
-      } catch {
-        // Fall back to legacy login — OPAQUE may fail because:
-        // - native crypto module not linked yet (throws native error)
-        // - OPAQUE endpoints not deployed (404)
-        // - network issue (status 0)
+      } else {
         await login(trimmedEmail, password);
       }
       // Token stored — tell App to refresh auth state

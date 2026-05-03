@@ -22,6 +22,7 @@ import {
   opaqueRegistrationStart,
   opaqueRegistrationFinish,
   ApiError,
+  NativeCryptoUnavailableError,
   friendlyError,
 } from '../lib/api';
 import * as BeebeebCrypto from '../../modules/beebeeb-crypto';
@@ -97,11 +98,14 @@ export default function SignupScreen() {
         await opaqueRegistrationFinish(trimmedEmail, state, serverMessage);
         opaqueDone = true;
       } catch (opaqueErr) {
-        // Fall back to legacy signup when OPAQUE endpoints are not deployed yet
-        if (
-          opaqueErr instanceof ApiError &&
-          (opaqueErr.status === 404 || opaqueErr.status === 0)
-        ) {
+        // Fall back to plain /auth/signup when OPAQUE can't run:
+        //  - native crypto module not linked (Expo Go) → NativeCryptoUnavailableError
+        //  - OPAQUE endpoints not deployed → ApiError 404
+        //  - network unreachable → ApiError 0
+        const canFallback =
+          opaqueErr instanceof NativeCryptoUnavailableError ||
+          (opaqueErr instanceof ApiError && (opaqueErr.status === 404 || opaqueErr.status === 0));
+        if (canFallback) {
           await signup(trimmedEmail, password);
           await refreshAuth();
           return;
@@ -110,14 +114,23 @@ export default function SignupScreen() {
       }
 
       if (opaqueDone) {
-        // Generate recovery phrase and derive master key from it
+        // Generate recovery phrase and derive master key from it. The native
+        // module is required here — if it's missing we just skip phrase storage
+        // and let RecoveryPhraseScreen explain the situation.
         let phrase: string[] = [];
-        try {
-          const result = await BeebeebCrypto.generateRecoveryPhrase();
-          phrase = result.phrase.split(' ');
-          await BeebeebCrypto.storeKeyInKeychain(result.masterKey, MASTER_KEY_LABEL);
-        } catch {
-          // Native module not yet linked — proceed without phrase storage
+        if (BeebeebCrypto.isNativeAvailable) {
+          try {
+            const result = await BeebeebCrypto.generateRecoveryPhrase();
+            phrase = result.phrase.split(' ');
+            try {
+              await BeebeebCrypto.storeKeyInKeychain(result.masterKey, MASTER_KEY_LABEL);
+            } catch {
+              // Keychain unavailable — phrase still shown to the user, master key
+              // will need to be re-derived on next login.
+            }
+          } catch {
+            // generateRecoveryPhrase threw despite the flag — proceed without phrase.
+          }
         }
         // Refresh auth state so the authenticated stack is available before navigating
         await refreshAuth();

@@ -9,7 +9,7 @@
  * handles the JS↔native conversion without base64 overhead.
  */
 
-import BeebeebCryptoModule from './BeebeebCryptoModule'
+import BeebeebCryptoModule, { isNativeAvailable as nativeFlag } from './BeebeebCryptoModule'
 import type {
   ConstellationFrame,
   ConstellationSessionInit,
@@ -20,6 +20,14 @@ import type {
   OpaqueStartResult,
   RecoveryPhraseResult,
 } from './BeebeebCrypto.types'
+
+/**
+ * True when the native BeebeebCrypto module is linked. False in Expo Go (or any
+ * build that didn't include the xcframework / .so), where every method on the
+ * module would throw. Check this before invoking crypto and fall back to the
+ * plain-auth / preview-disabled paths instead of catching the throw.
+ */
+export const isNativeAvailable: boolean = nativeFlag
 
 // ─── Key generation & recovery ──────────────────────────────────────────────
 

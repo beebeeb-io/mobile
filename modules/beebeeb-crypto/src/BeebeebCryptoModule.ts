@@ -11,10 +11,12 @@
  */
 
 let mod: any = null;
+let nativeAvailable = false;
 
 try {
   const { requireNativeModule } = require('expo');
   mod = requireNativeModule('BeebeebCrypto');
+  nativeAvailable = true;
 } catch {
   mod = new Proxy({}, {
     get: (_target, prop) => {
@@ -27,5 +29,13 @@ try {
     },
   });
 }
+
+/**
+ * True when the real native module is linked. False in Expo Go or any
+ * environment using the Proxy stub. Use this to short-circuit calls and
+ * fall back to plain (non-E2E) auth/preview paths instead of catching
+ * the throw from the stub.
+ */
+export const isNativeAvailable: boolean = nativeAvailable;
 
 export default mod as any;
