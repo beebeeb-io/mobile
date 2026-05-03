@@ -1,5 +1,5 @@
 import { BBLogo } from "../components/BBLogo";
-import React, { useMemo, useState } from 'react';
+import React, { useState } from 'react';
 import {
   ScrollView,
   StyleSheet,
@@ -17,40 +17,18 @@ import type { RootStackParamList } from '../App';
 type Nav = NativeStackNavigationProp<RootStackParamList>;
 type Route = RouteProp<RootStackParamList, 'RecoveryPhrase'>;
 
-// BIP-39 subset — placeholder until crypto module provides the real phrase
-const WORDLIST = [
-  'abandon','ability','able','about','above','absent','absorb','abstract',
-  'absurd','abuse','access','accident','account','accuse','achieve','acid',
-  'acoustic','acquire','across','actor','adapt','add','addict','address',
-  'adjust','admit','adult','advance','advice','aerobic','afford','afraid',
-  'again','agent','agree','ahead','aim','air','airport','aisle',
-  'album','alert','alien','all','alley','allow','almost','alone',
-  'alpha','already','also','alter','always','amateur','amazing','among',
-  'amount','amused','analyst','anchor','ancient','anger','angle','angry',
-  'animal','ankle','announce','annual','another','answer','antenna','antique',
-  'anxiety','apart','apology','appear','apple','approve','april','arch',
-  'arctic','arena','argue','arm','armor','army','around','arrange',
-  'arrest','arrive','arrow','art','artefact','artist','aspect','assist',
-  'asset','atlas','atom','attack','attend','attitude','attract','auction',
-];
-
-function generatePlaceholderPhrase(): string[] {
-  return Array.from({ length: 12 }, () =>
-    WORDLIST[Math.floor(Math.random() * WORDLIST.length)]
-  );
-}
-
 export default function RecoveryPhraseScreen() {
   const navigation = useNavigation<Nav>();
   const route = useRoute<Route>();
   const insets = useSafeAreaInsets();
   const { colors: c } = useTheme();
 
-  const phrase = useMemo(
-    () => route.params?.phrase ?? generatePlaceholderPhrase(),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    []
-  );
+  // The phrase is generated in SignupScreen via the native crypto module and
+  // passed in via navigation params. If it's missing, the native module is not
+  // linked (e.g. running in Expo Go) — never substitute fake words, since users
+  // would write them down and lose access to their real recovery material.
+  const phrase = route.params?.phrase ?? [];
+  const phraseUnavailable = phrase.length === 0;
 
   const [revealed, setRevealed] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
@@ -88,7 +66,16 @@ export default function RecoveryPhraseScreen() {
 
         {/* Phrase card */}
         <View style={styles.phraseCard}>
-          {revealed ? (
+          {phraseUnavailable ? (
+            <View style={styles.unavailableArea}>
+              <Text style={styles.unavailableTitle}>Recovery phrase not available</Text>
+              <Text style={styles.unavailableBody}>
+                Recovery phrase generation requires the native crypto module. This build appears to
+                be running without it (e.g. Expo Go). Use a development build or production build to
+                complete recovery setup.
+              </Text>
+            </View>
+          ) : revealed ? (
             <View style={styles.grid}>
               {phrase.map((word, i) => (
                 <View key={i} style={styles.wordCell}>
@@ -127,7 +114,7 @@ export default function RecoveryPhraseScreen() {
           )}
         </View>
 
-        {revealed && (
+        {revealed && !phraseUnavailable && (
           <Text style={styles.copyWarning}>
             Write these down. Never screenshot or copy to clipboard.
           </Text>
@@ -138,26 +125,26 @@ export default function RecoveryPhraseScreen() {
           style={styles.checkRow}
           onPress={() => setConfirmed(!confirmed)}
           activeOpacity={0.7}
-          disabled={!revealed}
+          disabled={!revealed || phraseUnavailable}
         >
           <View style={[
             styles.checkbox,
             confirmed && styles.checkboxChecked,
-            !revealed && styles.checkboxMuted,
+            (!revealed || phraseUnavailable) && styles.checkboxMuted,
           ]}>
             {confirmed && <Text style={styles.checkmark}>✓</Text>}
           </View>
-          <Text style={[styles.checkLabel, !revealed && styles.checkLabelMuted]}>
+          <Text style={[styles.checkLabel, (!revealed || phraseUnavailable) && styles.checkLabelMuted]}>
             I've written down my recovery phrase and stored it safely.
           </Text>
         </TouchableOpacity>
 
         {/* Continue */}
         <TouchableOpacity
-          style={[styles.button, (!confirmed || !revealed) && styles.buttonDisabled]}
+          style={[styles.button, (!confirmed || !revealed || phraseUnavailable) && styles.buttonDisabled]}
           onPress={handleContinue}
           activeOpacity={0.8}
-          disabled={!confirmed || !revealed}
+          disabled={!confirmed || !revealed || phraseUnavailable}
         >
           <Text style={styles.buttonText}>Verify my phrase</Text>
         </TouchableOpacity>
@@ -295,6 +282,25 @@ const styles = StyleSheet.create({
   },
   revealLabel: { fontSize: 14, fontWeight: '600', color: colors.ink },
   revealSub: { fontSize: 11, color: colors.ink3 },
+
+  unavailableArea: {
+    paddingVertical: 28,
+    paddingHorizontal: 18,
+    alignItems: 'center',
+    gap: 6,
+  },
+  unavailableTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: colors.ink,
+    textAlign: 'center',
+  },
+  unavailableBody: {
+    fontSize: 12,
+    color: colors.ink3,
+    textAlign: 'center',
+    lineHeight: 17,
+  },
 
   copyWarning: {
     fontSize: 11,
