@@ -1,6 +1,7 @@
 import { BBLogo } from "../components/BBLogo";
 import React, { useState } from 'react';
 import {
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
@@ -70,9 +71,13 @@ export default function RecoveryPhraseScreen() {
             <View style={styles.unavailableArea}>
               <Text style={styles.unavailableTitle}>Recovery phrase not available</Text>
               <Text style={styles.unavailableBody}>
-                Recovery phrase generation requires the native crypto module. This build appears to
-                be running without it (e.g. Expo Go). Use a development build or production build to
-                complete recovery setup.
+                Recovery phrase generation requires the native crypto module. Build with{' '}
+                <Text style={styles.codeInline}>npx expo run:ios</Text> (or{' '}
+                <Text style={styles.codeInline}>run:android</Text>) for full encryption.
+              </Text>
+              <Text style={styles.unavailableBody}>
+                Your account currently uses server-side password authentication — you can sign in
+                normally, but end-to-end encryption is disabled until the native module is linked.
               </Text>
             </View>
           ) : revealed ? (
@@ -296,10 +301,17 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   unavailableBody: {
-    fontSize: 12,
+    fontSize: 13,
     color: colors.ink3,
     textAlign: 'center',
-    lineHeight: 17,
+    lineHeight: 18,
+    paddingHorizontal: spacing.md,
+    marginTop: 6,
+  },
+  codeInline: {
+    fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' }),
+    fontSize: 12,
+    color: colors.ink2,
   },
 
   copyWarning: {
