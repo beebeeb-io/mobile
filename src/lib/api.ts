@@ -414,6 +414,90 @@ async function uploadFileSimple(
   return res.json() as Promise<FileEntry>;
 }
 
+/**
+ * Encrypted chunked upload.
+ *
+ * Differs from the plain `uploadFileChunked` in two ways:
+ * 1. Sends a client-generated `file_id` to the init endpoint so the server
+ *    stores that UUID. The caller encrypts every chunk with a key derived from
+ *    that UUID — the server must return the same ID so decryption works later.
+ * 2. Accepts pre-encrypted binary chunks (nonce || ciphertext, each as
+ *    Uint8Array) rather than plain Blob slices.
+ *
+ * `sizeBytes` must be the total **ciphertext** size, not the plaintext size.
+ * For AES-256-GCM the overhead is deterministic: 12 (nonce) + 16 (auth tag)
+ * = 28 bytes per chunk, so `ciphertextSize = plaintextSize + chunkCount × 28`.
+ */
+export async function uploadEncryptedChunked(params: {
+  fileId: string                // client-generated UUID, sent to server
+  nameEncrypted: string         // JSON {nonce:b64, ciphertext:b64}
+  parentId?: string
+  mimeType?: string
+  sizeBytes: number             // total ciphertext size
+  chunkCount: number
+  onProgress?: (p: UploadProgress) => void
+  /** Called once per chunk index — must return nonce||ciphertext bytes */
+  readEncryptedChunk: (index: number) => Promise<Uint8Array>
+}): Promise<FileEntry> {
+  const { fileId, nameEncrypted, parentId, mimeType, sizeBytes, chunkCount, onProgress, readEncryptedChunk } = params
+  const token = await getToken()
+
+  onProgress?.({ phase: 'preparing', chunksTotal: chunkCount, chunksUploaded: 0, bytesTotal: sizeBytes, bytesUploaded: 0 })
+
+  // ── Step 1: Init — register the file with the client-supplied file_id ──
+  const initRes = await fetch(`${BASE_URL}/api/v1/files/upload/init`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      file_id: fileId,
+      name_encrypted: nameEncrypted,
+      parent_id: parentId ?? null,
+      mime_type: mimeType ?? null,
+      size_bytes: sizeBytes,
+      chunk_count: chunkCount,
+    }),
+  })
+  if (!initRes.ok) {
+    const err = await initRes.json().catch(() => ({ error: initRes.statusText }))
+    throw new ApiError(initRes.status, (err as { error?: string }).error ?? initRes.statusText)
+  }
+  const { file_id: serverFileId } = (await initRes.json()) as { file_id: string }
+
+  // ── Step 2: Upload each encrypted chunk sequentially ───────────────────
+  let bytesUploaded = 0
+  for (let i = 0; i < chunkCount; i++) {
+    const encBytes = await readEncryptedChunk(i)
+
+    const chunkRes = await fetch(`${BASE_URL}/api/v1/files/${serverFileId}/chunks/${i}`, {
+      method: 'PUT',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/octet-stream' },
+      // Blob wrapping is the safest way to pass binary data to React Native's fetch
+      body: new Blob([encBytes], { type: 'application/octet-stream' }),
+    })
+    if (!chunkRes.ok) {
+      const err = await chunkRes.json().catch(() => ({ error: chunkRes.statusText }))
+      throw new ApiError(chunkRes.status, (err as { error?: string }).error ?? `Chunk ${i} failed`)
+    }
+
+    bytesUploaded += encBytes.length
+    onProgress?.({ phase: 'uploading', chunksTotal: chunkCount, chunksUploaded: i + 1, bytesTotal: sizeBytes, bytesUploaded })
+  }
+
+  // ── Step 3: Complete ───────────────────────────────────────────────────
+  onProgress?.({ phase: 'finalizing', chunksTotal: chunkCount, chunksUploaded: chunkCount, bytesTotal: sizeBytes, bytesUploaded: sizeBytes })
+
+  const completeRes = await fetch(`${BASE_URL}/api/v1/files/${serverFileId}/upload/complete`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  })
+  if (!completeRes.ok) {
+    const err = await completeRes.json().catch(() => ({ error: completeRes.statusText }))
+    throw new ApiError(completeRes.status, (err as { error?: string }).error ?? 'Finalize failed')
+  }
+  return completeRes.json() as Promise<FileEntry>
+}
+
 async function uploadFileChunked(
   metadata: { name_encrypted: string; parent_id?: string; mime_type?: string; size_bytes: number },
   fileBlob: Blob,
