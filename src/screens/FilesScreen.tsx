@@ -43,6 +43,7 @@ import { generateAndUploadThumbnail } from '../lib/thumbnail';
 import type { FileEntry, StorageUsage, ProofOfExistence, PresenceUser, SyncNode } from '../lib/api';
 import type { RootStackParamList, TabParamList } from '../App';
 import { useCrypto } from '../lib/crypto-context';
+import { encryptedUpload, generateFileId } from '../lib/encrypted-upload';
 import { useSync } from '../lib/sync-context';
 
 // Tracks the currently open Swipeable so we can close it when another opens.
@@ -701,7 +702,7 @@ export default function FilesScreen() {
   const [presence, setPresence] = useState<PresenceUser[]>([]);
 
   // Crypto
-  const { isUnlocked, decryptMetadata } = useCrypto();
+  const { isUnlocked, decryptMetadata, encryptChunk, encryptMetadata } = useCrypto();
   const [decryptedNames, setDecryptedNames] = useState<Record<string, string>>({});
 
   // CRDT sync — when ready, the file list derives from the in-memory tree
@@ -924,17 +925,16 @@ export default function FilesScreen() {
     const loc = trustLocation(undefined);
     setUpload({ fileName: asset.name, stage: 1, percent: 30, city: loc.city, region: loc.region });
     try {
-      const response = await fetch(asset.uri);
-      const blob = await response.blob();
-      const uploaded = await uploadFile(
-        {
-          name_encrypted: asset.name,
-          parent_id: currentFolder.id ?? undefined,
-          mime_type: asset.mimeType ?? undefined,
-          size_bytes: asset.size ?? blob.size,
-        },
-        blob,
-        (progress) => {
+      const fileId = generateFileId();
+      const uploaded = await encryptedUpload({
+        fileId,
+        uri: asset.uri,
+        name: asset.name,
+        parentId: currentFolder.id ?? undefined,
+        mimeType: asset.mimeType ?? undefined,
+        encryptChunkFn: encryptChunk,
+        encryptMetadataFn: encryptMetadata,
+        onProgress: (progress) => {
           const percent = progress.bytesTotal > 0
             ? Math.round((progress.bytesUploaded / progress.bytesTotal) * 100)
             : 0;
@@ -949,7 +949,7 @@ export default function FilesScreen() {
             return { ...base, stage: 2, percent };
           });
         },
-      );
+      });
       const finalLoc = trustLocation(uploaded.storage_pool_id);
       setUpload({ fileName: asset.name, stage: 'done', percent: 100, city: finalLoc.city, region: finalLoc.region });
       setFiles((prev) => [uploaded, ...prev]);
@@ -998,17 +998,16 @@ export default function FilesScreen() {
       lastName = display;
       setUpload({ fileName: display, stage: 1, percent: 30, city: lastLoc.city, region: lastLoc.region });
       try {
-        const response = await fetch(asset.uri);
-        const blob = await response.blob();
-        const uploaded = await uploadFile(
-          {
-            name_encrypted: name,
-            parent_id: currentFolder.id ?? undefined,
-            mime_type: asset.mimeType ?? 'image/jpeg',
-            size_bytes: asset.fileSize ?? blob.size,
-          },
-          blob,
-          (progress) => {
+        const fileId = generateFileId();
+        const uploaded = await encryptedUpload({
+          fileId,
+          uri: asset.uri,
+          name,
+          parentId: currentFolder.id ?? undefined,
+          mimeType: asset.mimeType ?? 'image/jpeg',
+          encryptChunkFn: encryptChunk,
+          encryptMetadataFn: encryptMetadata,
+          onProgress: (progress) => {
             const percent = progress.bytesTotal > 0
               ? Math.round((progress.bytesUploaded / progress.bytesTotal) * 100)
               : 0;
@@ -1023,7 +1022,7 @@ export default function FilesScreen() {
               return { ...base, stage: 2, percent };
             });
           },
-        );
+        });
         lastLoc = trustLocation(uploaded.storage_pool_id);
         setFiles((prev) => [uploaded, ...prev]);
         // Fire-and-forget: image picker only returns images, so always thumbnail.
