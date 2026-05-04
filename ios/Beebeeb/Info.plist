@@ -46,24 +46,72 @@
     <key>NSAppTransportSecurity</key>
     <dict>
       <key>NSAllowsArbitraryLoads</key>
-      <true/>
+      <false/>
       <key>NSAllowsLocalNetworking</key>
       <true/>
     </dict>
     <key>NSCalendarsFullAccessUsageDescription</key>
-    <string>Beebeeb encrypts and backs up your calendar events to your vault.</string>
+    <string>Beebeeb backs up your calendar with end-to-end encryption.</string>
     <key>NSCalendarsUsageDescription</key>
-    <string>Beebeeb encrypts and backs up your calendar events to your vault.</string>
+    <string>Beebeeb backs up your calendar with end-to-end encryption.</string>
     <key>NSCameraUsageDescription</key>
     <string>Beebeeb scans the amber constellation pattern to pair a new device.</string>
     <key>NSContactsUsageDescription</key>
-    <string>Beebeeb encrypts and backs up your contacts to your vault.</string>
+    <string>Beebeeb backs up your contacts with end-to-end encryption.</string>
     <key>NSFaceIDUsageDescription</key>
     <string>Allow $(PRODUCT_NAME) to use Face ID</string>
     <key>NSFileProviderPresenceAuthorized</key>
     <true/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Allow $(PRODUCT_NAME) to access your microphone</string>
+    <key>NSPhotoLibraryAddUsageDescription</key>
+    <string>Beebeeb saves downloaded photos to your library.</string>
     <key>NSPhotoLibraryUsageDescription</key>
-    <string>Beebeeb backs up your photos to your encrypted vault.</string>
+    <string>Beebeeb backs up your photos with end-to-end encryption.</string>
+    <key>NSRemindersUsageDescription</key>
+    <string>Beebeeb backs up your reminders with end-to-end encryption.</string>
+    <key>UIApplicationShortcutItems</key>
+    <array>
+      <dict>
+        <key>UIApplicationShortcutItemType</key>
+        <string>io.beebeeb.upload</string>
+        <key>UIApplicationShortcutItemTitle</key>
+        <string>Upload File</string>
+        <key>UIApplicationShortcutItemIconType</key>
+        <string>UIApplicationShortcutIconTypeAdd</string>
+        <key>UIApplicationShortcutItemUserInfo</key>
+        <dict>
+          <key>url</key>
+          <string>beebeeb://upload</string>
+        </dict>
+      </dict>
+      <dict>
+        <key>UIApplicationShortcutItemType</key>
+        <string>io.beebeeb.search</string>
+        <key>UIApplicationShortcutItemTitle</key>
+        <string>Search Files</string>
+        <key>UIApplicationShortcutItemIconType</key>
+        <string>UIApplicationShortcutIconTypeSearch</string>
+        <key>UIApplicationShortcutItemUserInfo</key>
+        <dict>
+          <key>url</key>
+          <string>beebeeb://search</string>
+        </dict>
+      </dict>
+      <dict>
+        <key>UIApplicationShortcutItemType</key>
+        <string>io.beebeeb.photos</string>
+        <key>UIApplicationShortcutItemTitle</key>
+        <string>Photos</string>
+        <key>UIApplicationShortcutItemIconType</key>
+        <string>UIApplicationShortcutIconTypeCapturePhoto</string>
+        <key>UIApplicationShortcutItemUserInfo</key>
+        <dict>
+          <key>url</key>
+          <string>beebeeb://photos</string>
+        </dict>
+      </dict>
+    </array>
     <key>UIBackgroundModes</key>
     <array>
       <string>fetch</string>
@@ -92,7 +140,7 @@
       <string>UIInterfaceOrientationLandscapeRight</string>
     </array>
     <key>UIUserInterfaceStyle</key>
-    <string>Light</string>
+    <string>Automatic</string>
     <key>UIViewControllerBasedStatusBarAppearance</key>
     <false/>
   </dict>
