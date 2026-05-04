@@ -59,4 +59,20 @@
   return [super application:application didReceiveRemoteNotification:userInfo fetchCompletionHandler:completionHandler];
 }
 
+
+// @beebeeb-shortcut-bridge
+- (void)application:(UIApplication *)application performActionForShortcutItem:(UIApplicationShortcutItem *)shortcutItem completionHandler:(void (^)(BOOL succeeded))completionHandler
+{
+  NSString *urlString = shortcutItem.userInfo[@"url"];
+  if (urlString.length > 0) {
+    NSURL *url = [NSURL URLWithString:urlString];
+    if (url != nil) {
+      BOOL handled = [RCTLinkingManager application:application openURL:url options:@{}];
+      completionHandler(handled);
+      return;
+    }
+  }
+  completionHandler(NO);
+}
+
 @end

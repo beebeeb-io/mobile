@@ -22,7 +22,7 @@
           "$(AppIdentifierPrefix)io.beebeeb.shared"
         ]
       },
-      "associatedDomains": [
+      "_associatedDomains_disabled_for_free_signing": [
         "applinks:beebeeb.io"
       ],
       "infoPlist": {
@@ -89,8 +89,7 @@
       "./plugins/fmt-patch/withFmtPatch.js",
       "./plugins/shortcut-bridge/withShortcutBridge.js",
       "expo-video",
-      "expo-image-picker",
-      "expo-notifications"
+      "expo-image-picker"
     ],
     "extra": {
       "eas": {

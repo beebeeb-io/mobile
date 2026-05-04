@@ -45,6 +45,18 @@ target 'Beebeeb' do
   )
 
   post_install do |installer|
+    # @beebeeb-uniffi-bridge — give the BeebeebCrypto pod target compile-time access to the
+    # BeebeebCore xcframework's modulemap so `import beebeeb_uniffiFFI` resolves.
+    installer.pods_project.targets.each do |t|
+      next unless ['BeebeebCrypto', 'beebeeb-crypto'].include?(t.name)
+      t.build_configurations.each do |c|
+        c.build_settings['FRAMEWORK_SEARCH_PATHS'] ||= ['$(inherited)']
+        ['$(PODS_ROOT)/..', '$(PROJECT_DIR)/..'].each do |sp|
+          c.build_settings['FRAMEWORK_SEARCH_PATHS'] << sp unless c.build_settings['FRAMEWORK_SEARCH_PATHS'].include?(sp)
+        end
+      end
+    end
+
     react_native_post_install(
       installer,
       config[:reactNativePath],
@@ -59,14 +71,8 @@ target 'Beebeeb' do
       target_installation_result.resource_bundle_targets.each do |resource_bundle_target|
         resource_bundle_target.build_configurations.each do |config|
           config.build_settings['CODE_SIGNING_ALLOWED'] = 'NO'
-        end
-      end
-    end
 
-    # fmt's `consteval` requires C++20 immediate evaluation that Xcode's clang
-    # rejects when other pods compile against it as C++17. Downgrading to
-    # `constexpr` keeps the helpers usable in constant contexts without
-    # forcing immediate evaluation.
+    # @beebeeb-fmt-patch — fmt consteval → constexpr for Xcode compatibility
     Dir.glob("#{installer.sandbox.root}/**/fmt/core.h").each do |file|
       content = File.read(file)
       if content.include?('consteval')
@@ -77,6 +83,9 @@ target 'Beebeeb' do
       content = File.read(file)
       if content.include?('consteval')
         File.write(file, content.gsub('consteval', 'constexpr'))
+      end
+    end
+        end
       end
     end
   end
