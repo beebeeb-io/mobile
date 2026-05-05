@@ -82,8 +82,19 @@ export type Colors = {
 };
 
 export const fonts = {
-  sans: 'System', // Maps to SF Pro on iOS, Roboto on Android
-  mono: 'SpaceMono', // Fallback; JetBrains Mono via expo-font later
+  /**
+   * SF Pro (iOS) / Roboto (Android) — intentional native feel.
+   * Inter is the web brand font; mobile uses the platform sans to avoid
+   * having to bundle a 300 KB font for something users already have.
+   */
+  sans: 'System',
+  /**
+   * JetBrains Mono — brand spec font for code / machine text.
+   * Font files live in assets/fonts/. Load via expo-font in App.tsx.
+   * Install: `bun add @expo-google-fonts/jetbrains-mono` (includes TTFs).
+   * Falls back to system monospace when the font hasn't loaded yet.
+   */
+  mono: 'JetBrainsMono-Regular',
 } as const;
 
 export const spacing = {

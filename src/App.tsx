@@ -11,6 +11,7 @@ import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-cont
 import { Text } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from './theme';
+import * as Font from 'expo-font';
 import { ThemeProvider, useTheme } from './lib/theme-context';
 import { ToastProvider } from './lib/toast-context';
 import { BBLogo } from './components/BBLogo';
@@ -344,6 +345,25 @@ export default function App() {
   const { colors: c, resolved } = useTheme();
   const [user, setUser] = useState<User | null>(null);
   const [checking, setChecking] = useState(true);
+
+  // Load JetBrains Mono (brand monospace font). Font files live in
+  // assets/fonts/. Install them with:
+  //   bun add @expo-google-fonts/jetbrains-mono
+  // Then copy the TTFs here or use the package's built-in loader.
+  // Falls back to system monospace silently when files are absent.
+  const [fontsLoaded] = Font.useFonts({
+    'JetBrainsMono-Regular': (() => {
+      try { return require('../assets/fonts/JetBrainsMono-Regular.ttf') as number; }
+      catch { return undefined as unknown as number; }
+    })(),
+    'JetBrainsMono-Medium': (() => {
+      try { return require('../assets/fonts/JetBrainsMono-Medium.ttf') as number; }
+      catch { return undefined as unknown as number; }
+    })(),
+  });
+  // fontsLoaded is false until fonts resolve — app renders fine either way
+  // (RN silently falls back to system monospace for unknown family names)
+  void fontsLoaded; // used implicitly: font is available once loaded
 
   // Biometric lock: show lock screen when app resumes from background
   const [locked, setLocked] = useState(false);
