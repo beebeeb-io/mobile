@@ -95,7 +95,7 @@ export default function SignupScreen() {
       let opaqueDone = false;
       try {
         const { state, serverMessage } = await opaqueRegistrationStart(trimmedEmail, password);
-        await opaqueRegistrationFinish(trimmedEmail, state, serverMessage);
+        await opaqueRegistrationFinish(trimmedEmail, password, state, serverMessage);
         opaqueDone = true;
       } catch (opaqueErr) {
         // Fall back to plain /auth/signup when OPAQUE can't run:

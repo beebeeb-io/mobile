@@ -69,8 +69,8 @@ export default function LoginScreen() {
       // plain /auth/login which uses Argon2 server-side.
       if (BeebeebCrypto.isNativeAvailable) {
         try {
-          const { state, serverMessage } = await opaqueLoginStart(trimmedEmail);
-          const { masterKey } = await opaqueLoginFinish(trimmedEmail, state, serverMessage);
+          const { state, serverMessage } = await opaqueLoginStart(trimmedEmail, password);
+          const { masterKey } = await opaqueLoginFinish(trimmedEmail, password, state, serverMessage);
           // Best-effort: stash master key in Secure Enclave for biometric unlock.
           try {
             await BeebeebCrypto.storeKeyInKeychain(masterKey, MASTER_KEY_LABEL);

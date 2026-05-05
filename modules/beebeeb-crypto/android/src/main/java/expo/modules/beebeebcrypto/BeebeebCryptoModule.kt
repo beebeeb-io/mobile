@@ -24,11 +24,11 @@ class BeebeebCryptoModule : Module() {
 
     AsyncFunction("opaqueRegistrationStart") { _: String, _: String -> throw NotLinkedException() }
 
-    AsyncFunction("opaqueRegistrationFinish") { _: ByteArray, _: ByteArray -> throw NotLinkedException() }
+    AsyncFunction("opaqueRegistrationFinish") { _: ByteArray, _: ByteArray, _: String -> throw NotLinkedException() }
 
-    AsyncFunction("opaqueLoginStart") { _: String -> throw NotLinkedException() }
+    AsyncFunction("opaqueLoginStart") { _: String, _: String -> throw NotLinkedException() }
 
-    AsyncFunction("opaqueLoginFinish") { _: ByteArray, _: ByteArray -> throw NotLinkedException() }
+    AsyncFunction("opaqueLoginFinish") { _: ByteArray, _: ByteArray, _: String -> throw NotLinkedException() }
 
     AsyncFunction("deriveFileKey") { _: ByteArray, _: String -> throw NotLinkedException() }
 
