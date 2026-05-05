@@ -542,10 +542,10 @@ export default function App() {
       <CryptoProvider>
       <SyncProvider>
       <BackupProvider>
-      {/* Wire JS-side photo backup: foreground trigger + Wi-Fi gate */}
-      <PhotoBackupBridge />
       <SafeAreaProvider>
       <ToastProvider>
+        {/* Wire JS-side photo backup: foreground trigger + Wi-Fi reconnect + toast */}
+        <PhotoBackupBridge />
         <Suspense fallback={<ScreenLoadingFallback />}>
           <NavigationContainer ref={navigationRef} linking={linking} onStateChange={handleNavigationStateChange}>
             <Stack.Navigator screenOptions={{ headerShown: false }}>

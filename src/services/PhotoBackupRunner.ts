@@ -2,13 +2,13 @@
  * PhotoBackupRunner — JS-side foreground photo backup.
  *
  * Flow per session:
- *   1. Enumerate assets from MediaLibrary sorted ASCENDING (oldest first),
- *      starting after `createdAfterTs` (the last checkpoint timestamp).
- *      This means each session only sees assets that haven't been processed yet.
- *   2. Check server: which identifiers still need backup? (server-side dedup)
- *   3. For each un-backed asset: getAssetInfoAsync → encryptedUpload → mark
- *      → call onCheckpoint(asset.creationTime) for per-photo persistence
- *   4. Report progress via onProgress callback
+ *   1. Enumerate assets from MediaLibrary (ascending, oldest first)
+ *      starting after the checkpoint timestamp (Day 2 resume).
+ *   2. Batch-check server for which identifiers still need backup.
+ *   3. Upload-loop with adaptive batch sizing:
+ *        - Probe the first PROBE_SIZE uploads to measure throughput (B/s)
+ *        - Adjust session limit: Fast Wi-Fi → 200 · Normal → 50 · Slow → 25
+ *   4. Per-photo checkpoint + progress reported every 5 uploads.
  *
  * Wi-Fi gate and checkpoint I/O are handled by the caller (PhotoBackupBridge).
  * MVP: foreground only — no BGProcessingTask / BGAppRefreshTask.
@@ -16,7 +16,7 @@
 
 import NetInfo from '@react-native-community/netinfo';
 
-// ─── MediaLibrary lazy import (unavailable on web) ────────────────────────────
+// ─── MediaLibrary lazy import ─────────────────────────────────────────────────
 
 type MLAsset = {
   id: string;
@@ -30,16 +30,7 @@ type MLAsset = {
   height: number;
 };
 
-type MLAssetInfo = MLAsset & {
-  localUri?: string;
-};
-
-type MLPageResult = {
-  assets: MLAsset[];
-  hasNextPage: boolean;
-  endCursor: string;
-  totalCount: number;
-};
+type MLAssetInfo = MLAsset & { localUri?: string };
 
 type MLLib = {
   getAssetsAsync: (opts: {
@@ -48,72 +39,88 @@ type MLLib = {
     mediaType: string[];
     after?: string;
     createdAfter?: number;
-  }) => Promise<MLPageResult>;
+  }) => Promise<{ assets: MLAsset[]; hasNextPage: boolean; endCursor: string; totalCount: number }>;
   getAssetInfoAsync: (asset: { id: string }) => Promise<MLAssetInfo>;
   SortBy: { creationTime: unknown };
   MediaType: { photo: string; video: string };
 };
 
 let MediaLibrary: MLLib | null = null;
-try {
-  MediaLibrary = require('expo-media-library') as MLLib;
-} catch {
-  // expo-media-library not available (e.g. web preview)
-}
+try { MediaLibrary = require('expo-media-library') as MLLib; } catch { /* web */ }
 
 // ─── Project imports ──────────────────────────────────────────────────────────
 
 import type { EncryptedData } from '../../modules/beebeeb-crypto';
+import type { UploadProgress } from '../lib/api';
 import { encryptedUpload, generateFileId } from '../lib/encrypted-upload';
-import {
-  photoBackupCheck,
-  photoBackupMark,
-  createFolder,
-  listFiles,
-} from '../lib/api';
+import { photoBackupCheck, photoBackupMark, createFolder, listFiles } from '../lib/api';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-/** Maximum assets to upload per foreground session (battery guard). */
-const SESSION_UPLOAD_LIMIT = 50;
 /** Assets to enumerate per getAssetsAsync page. */
 const ENUMERATE_PAGE = 200;
-/** Assets to include in a single check-batch request. */
+/** Assets to check against server in one batch. */
 const CHECK_BATCH = 200;
-/** Folder name in the user's vault where photos are stored. */
+/** Number of uploads before we measure throughput and set the adaptive limit. */
+const PROBE_SIZE = 3;
+/** Default session upload limit (used until after the probe). */
+const LIMIT_NORMAL = 50;
+/** Session limit for fast connections (> 5 MB/s). */
+const LIMIT_FAST = 200;
+/** Session limit for slow connections (< 1 MB/s). */
+const LIMIT_SLOW = 25;
+/** Throughput thresholds in bytes/sec. */
+const FAST_THRESHOLD = 5 * 1024 * 1024;
+const SLOW_THRESHOLD = 1 * 1024 * 1024;
+/** Report progress every N successful uploads to reduce UI churn. */
+const PROGRESS_REPORT_EVERY = 5;
+/** Photos folder name at vault root. */
 const PHOTOS_FOLDER_NAME = 'Photos';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
+export interface PhotoProgressInfo {
+  uploaded: number;
+  /** Current adaptive session limit (may grow after probe). */
+  total: number;
+  /** Bytes/sec measured over this session. 0 before any data flows. */
+  throughputBps: number;
+  /** Estimated seconds remaining. null when not enough data yet. */
+  etaSeconds: number | null;
+}
+
 export interface PhotoBackupRunnerOpts {
   encryptChunkFn: (fileId: string, plaintext: Uint8Array) => Promise<EncryptedData>;
   encryptMetadataFn: (fileId: string, metadata: string) => Promise<EncryptedData>;
-  /** Include video assets in addition to photos. */
   includeVideos: boolean;
   /**
-   * Only include assets created after this Unix timestamp (seconds).
-   * Null means "process all assets" (first-ever backup or explicit reset).
+   * Only process assets created after this Unix timestamp (seconds).
+   * Null → process everything (first ever backup, or explicit reset).
    */
   createdAfterTs: number | null;
-  /** Called after each successful upload with (uploaded, totalInBatch). */
-  onProgress?: (uploaded: number, total: number) => void;
-  /**
-   * Called after EACH successful upload with the asset's creationTime (seconds).
-   * The caller should persist this so the next session can use `createdAfterTs`.
-   */
+  /** Called every PROGRESS_REPORT_EVERY uploads and on completion. */
+  onProgress?: (info: PhotoProgressInfo) => void;
+  /** Called after each successful upload — caller persists the checkpoint. */
   onCheckpoint?: (creationTimeSecs: number) => void;
-  /** Abort the session early (e.g. app goes to background mid-session). */
   signal?: AbortSignal;
 }
 
 export interface PhotoBackupResult {
   uploaded: number;
   failed: number;
-  /** Assets that needed backup but were beyond the session limit. */
+  /** Assets beyond the adaptive session limit — need another session. */
   remaining: number;
+  /** Final measured throughput in bytes/sec. */
+  throughputBps: number;
 }
 
-// ─── Folder helpers ───────────────────────────────────────────────────────────
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function computeAdaptiveLimit(throughputBps: number): number {
+  if (throughputBps >= FAST_THRESHOLD) return LIMIT_FAST;
+  if (throughputBps >= SLOW_THRESHOLD) return LIMIT_NORMAL;
+  return LIMIT_SLOW;
+}
 
 let cachedPhotosFolderId: string | null = null;
 
@@ -126,35 +133,29 @@ async function ensurePhotosFolder(): Promise<string> {
   return id;
 }
 
+function formatEtaSeconds(secs: number): string {
+  if (secs < 60) return '< 1 min';
+  const mins = Math.ceil(secs / 60);
+  return `~${mins} min`;
+}
+// Exported for use in SettingsScreen
+export { formatEtaSeconds };
+
 // ─── Main runner ──────────────────────────────────────────────────────────────
 
-/**
- * Run a single foreground backup session.
- *
- * Processes assets in ascending creation-time order (oldest first) so that
- * the checkpoint always advances forward. If the session limit (50) is
- * reached, `result.remaining` is non-zero, meaning a subsequent session
- * will continue where this one left off.
- *
- * Returns a summary of what happened.
- * Does nothing (returns zeros) when MediaLibrary is unavailable.
- */
 export async function runPhotoBackupSession(
   opts: PhotoBackupRunnerOpts,
 ): Promise<PhotoBackupResult> {
-  const result: PhotoBackupResult = { uploaded: 0, failed: 0, remaining: 0 };
+  const result: PhotoBackupResult = { uploaded: 0, failed: 0, remaining: 0, throughputBps: 0 };
 
   if (!MediaLibrary) {
-    console.warn('[PhotoBackupRunner] expo-media-library not available — skipping session');
+    console.warn('[PhotoBackupRunner] expo-media-library not available');
     return result;
   }
 
-  const {
-    encryptChunkFn, encryptMetadataFn, includeVideos,
-    createdAfterTs, onProgress, onCheckpoint, signal,
-  } = opts;
+  const { encryptChunkFn, encryptMetadataFn, includeVideos, createdAfterTs, onProgress, onCheckpoint, signal } = opts;
 
-  // ── 1. Enumerate assets oldest-first, starting after the checkpoint ──────
+  // ── 1. Enumerate assets (oldest-first for checkpoint-based resume) ────────
   const mediaTypes: string[] = [MediaLibrary.MediaType.photo];
   if (includeVideos) mediaTypes.push(MediaLibrary.MediaType.video);
 
@@ -164,17 +165,13 @@ export async function runPhotoBackupSession(
 
   while (hasMore && allAssets.length < CHECK_BATCH) {
     if (signal?.aborted) return result;
-
     const page = await MediaLibrary.getAssetsAsync({
       first: ENUMERATE_PAGE,
-      // Ascending (oldest first) — correct for checkpoint-based resume
-      sortBy: [MediaLibrary.SortBy.creationTime],
+      sortBy: [MediaLibrary.SortBy.creationTime], // ascending (oldest first)
       mediaType: mediaTypes,
       ...(cursor ? { after: cursor } : {}),
-      // Only fetch assets newer than the last checkpoint
       ...(createdAfterTs != null ? { createdAfter: createdAfterTs } : {}),
     });
-
     allAssets = allAssets.concat(page.assets);
     hasMore = page.hasNextPage;
     cursor = page.endCursor;
@@ -182,49 +179,52 @@ export async function runPhotoBackupSession(
 
   if (allAssets.length === 0) return result;
 
-  // ── 2. Check server: which identifiers need backup? ───────────────────────
+  // ── 2. Check server: which identifiers still need backup? ─────────────────
   if (signal?.aborted) return result;
 
   const identifiers = allAssets.map((a) => a.id);
-  let needsBackup: string[] = identifiers; // fallback if endpoint unavailable
-
+  let needsBackup: string[] = identifiers;
   try {
-    const checkResult = await photoBackupCheck(identifiers);
-    needsBackup = checkResult.needs_backup;
+    const r = await photoBackupCheck(identifiers);
+    needsBackup = r.needs_backup;
   } catch (err) {
-    console.warn('[PhotoBackupRunner] check endpoint unavailable; backing up all:', err);
-    // Continue — server will deduplicate on file_id
+    console.warn('[PhotoBackupRunner] check endpoint unavailable, backing up all:', err);
   }
 
   if (needsBackup.length === 0) return result;
 
   const needsSet = new Set(needsBackup);
   const toUpload = allAssets.filter((a) => needsSet.has(a.id));
-  const sessionBatch = toUpload.slice(0, SESSION_UPLOAD_LIMIT);
-  result.remaining = Math.max(0, toUpload.length - SESSION_UPLOAD_LIMIT);
 
-  // ── 3. Ensure /Photos folder ──────────────────────────────────────────────
+  // ── 3. Ensure Photos folder ────────────────────────────────────────────────
   if (signal?.aborted) return result;
-
   let photosFolderId: string | undefined;
   try {
     photosFolderId = await ensurePhotosFolder();
   } catch (err) {
     console.warn('[PhotoBackupRunner] could not ensure Photos folder:', err);
-    // Continue — files will land at root
   }
 
-  const total = sessionBatch.length;
-  onProgress?.(0, total);
+  // ── 4. Adaptive upload loop ────────────────────────────────────────────────
+  //
+  // `adaptiveLimit` starts at LIMIT_NORMAL (50). After PROBE_SIZE uploads we
+  // compute throughput and adjust it up or down. The loop stops at either
+  // toUpload.length or adaptiveLimit, whichever comes first.
+  //
+  let adaptiveLimit = LIMIT_NORMAL;
+  let bytesThisSession = 0;
+  const sessionStartMs = Date.now();
+  let lastProgressAt = 0;  // index of last progress report
 
-  // ── 4. Upload loop — one at a time, skip failures, checkpoint every success
-  for (let i = 0; i < sessionBatch.length; i++) {
+  // Initial progress report
+  onProgress?.({ uploaded: 0, total: adaptiveLimit, throughputBps: 0, etaSeconds: null });
+
+  for (let i = 0; i < toUpload.length && result.uploaded < adaptiveLimit; i++) {
     if (signal?.aborted) break;
 
-    const asset = sessionBatch[i];
+    const asset = toUpload[i];
 
     try {
-      // Resolve ph:// → file:// URI
       const info = await MediaLibrary.getAssetInfoAsync(asset);
       const uri = info.localUri ?? info.uri;
       if (!uri || !uri.startsWith('file://')) {
@@ -234,34 +234,69 @@ export async function runPhotoBackupSession(
       }
 
       const fileId = generateFileId();
-      const mimeType = asset.mediaType === 'video' ? 'video/mp4' : 'image/jpeg';
+      let fileBytesUploaded = 0;
 
       await encryptedUpload({
         fileId,
         uri,
         name: asset.filename,
         parentId: photosFolderId,
-        mimeType,
+        mimeType: asset.mediaType === 'video' ? 'video/mp4' : 'image/jpeg',
         encryptChunkFn,
         encryptMetadataFn,
+        onProgress: (p: UploadProgress) => {
+          fileBytesUploaded = p.bytesUploaded;
+        },
       });
 
       await photoBackupMark(asset.id, fileId);
 
+      bytesThisSession += fileBytesUploaded;
       result.uploaded++;
-      onProgress?.(result.uploaded, total);
 
-      // Per-photo checkpoint — persist immediately so a kill doesn't lose work
+      // Per-photo checkpoint — fire-and-forget
       if (asset.creationTime) {
         onCheckpoint?.(asset.creationTime);
+      }
+
+      // After the probe phase: measure throughput and tune the limit
+      if (result.uploaded === PROBE_SIZE) {
+        const elapsedSecs = (Date.now() - sessionStartMs) / 1000;
+        const probeThroughput = elapsedSecs > 0 ? bytesThisSession / elapsedSecs : 0;
+        adaptiveLimit = computeAdaptiveLimit(probeThroughput);
+        console.log(
+          `[PhotoBackupRunner] probe: ${(probeThroughput / 1024 / 1024).toFixed(2)} MB/s → limit=${adaptiveLimit}`,
+        );
+      }
+
+      // Report progress every PROGRESS_REPORT_EVERY uploads (or at the end)
+      const isLast = result.uploaded >= adaptiveLimit || i === toUpload.length - 1;
+      if (result.uploaded - lastProgressAt >= PROGRESS_REPORT_EVERY || isLast) {
+        lastProgressAt = result.uploaded;
+        const elapsedSecs = Math.max((Date.now() - sessionStartMs) / 1000, 0.001);
+        const throughputBps = bytesThisSession / elapsedSecs;
+        let etaSeconds: number | null = null;
+        if (throughputBps > 0 && bytesThisSession > 0) {
+          const avgBytesPerFile = bytesThisSession / result.uploaded;
+          const remaining = Math.max(adaptiveLimit - result.uploaded, 0);
+          etaSeconds = (remaining * avgBytesPerFile) / throughputBps;
+        }
+        result.throughputBps = throughputBps;
+        onProgress?.({ uploaded: result.uploaded, total: adaptiveLimit, throughputBps, etaSeconds });
       }
     } catch (err) {
       if (signal?.aborted) break;
       console.warn('[PhotoBackupRunner] failed to backup', asset.filename, ':', err);
       result.failed++;
-      // Continue with next asset — one failure must not block the rest
     }
   }
+
+  // Count remaining (beyond adaptive limit)
+  result.remaining = Math.max(0, toUpload.length - result.uploaded - result.failed);
+
+  // Final throughput
+  const totalElapsedSecs = Math.max((Date.now() - sessionStartMs) / 1000, 0.001);
+  result.throughputBps = bytesThisSession > 0 ? bytesThisSession / totalElapsedSecs : 0;
 
   return result;
 }
