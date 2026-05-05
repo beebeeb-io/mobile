@@ -101,10 +101,11 @@ export function PhotoBackupBridge(): null {
         createdAfterTs,
         signal: ctrl.signal,
 
-        onProgress: ({ uploaded, total, throughputBps, etaSeconds }) => {
+        onProgress: ({ uploaded, total, throughputBps, etaSeconds, currentFileName, currentFileSizeBytes }) => {
           uploadedThisSession = uploaded;
           stateRef.current.reportPhotoProgress(
             uploaded, total, failedThisSession, true, throughputBps, etaSeconds,
+            currentFileName, currentFileSizeBytes,
           );
         },
 

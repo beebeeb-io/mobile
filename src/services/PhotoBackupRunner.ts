@@ -76,6 +76,12 @@ const SLOW_THRESHOLD = 1 * 1024 * 1024;
 const PROGRESS_REPORT_EVERY = 5;
 /** Photos folder name at vault root. */
 const PHOTOS_FOLDER_NAME = 'Photos';
+/**
+ * Maximum ciphertext bytes per foreground session.
+ * Prevents a single session from uploading unlimited video data.
+ * 2 GB ≈ ~400 photos or ~10 min of 4K video — generous but bounded.
+ */
+const SESSION_MAX_BYTES = 2 * 1024 * 1024 * 1024;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -87,6 +93,14 @@ export interface PhotoProgressInfo {
   throughputBps: number;
   /** Estimated seconds remaining. null when not enough data yet. */
   etaSeconds: number | null;
+  /** Filename of the asset currently being uploaded. */
+  currentFileName: string;
+  /**
+   * Ciphertext size of the current file in bytes.
+   * Available after the first onProgress callback from encryptedUpload.
+   * 0 when unknown (e.g. first report before any data flows).
+   */
+  currentFileSizeBytes: number;
 }
 
 export interface PhotoBackupRunnerOpts {
@@ -140,6 +154,34 @@ function formatEtaSeconds(secs: number): string {
 }
 // Exported for use in SettingsScreen
 export { formatEtaSeconds };
+
+/**
+ * Detect MIME type from filename extension + MediaLibrary mediaType.
+ * Falls back to `image/jpeg` for unknown photos, `video/mp4` for unknown videos.
+ */
+function detectMimeType(filename: string, mediaType: string): string {
+  const ext = filename.split('.').pop()?.toLowerCase() ?? '';
+  const VIDEO_MIME: Record<string, string> = {
+    mp4: 'video/mp4',
+    mov: 'video/quicktime',
+    m4v: 'video/x-m4v',
+    avi: 'video/avi',
+    mkv: 'video/x-matroska',
+    webm: 'video/webm',
+    '3gp': 'video/3gpp',
+  };
+  const IMAGE_MIME: Record<string, string> = {
+    jpg: 'image/jpeg', jpeg: 'image/jpeg',
+    png: 'image/png',
+    gif: 'image/gif',
+    webp: 'image/webp',
+    heic: 'image/heic', heif: 'image/heif',
+    avif: 'image/avif',
+    tiff: 'image/tiff', tif: 'image/tiff',
+  };
+  if (mediaType === 'video') return VIDEO_MIME[ext] ?? 'video/mp4';
+  return IMAGE_MIME[ext] ?? 'image/jpeg';
+}
 
 // ─── Main runner ──────────────────────────────────────────────────────────────
 
@@ -208,19 +250,31 @@ export async function runPhotoBackupSession(
   // ── 4. Adaptive upload loop ────────────────────────────────────────────────
   //
   // `adaptiveLimit` starts at LIMIT_NORMAL (50). After PROBE_SIZE uploads we
-  // compute throughput and adjust it up or down. The loop stops at either
-  // toUpload.length or adaptiveLimit, whichever comes first.
+  // compute throughput and adjust it up or down. The loop stops at whichever
+  // comes first: toUpload.length, adaptiveLimit, or SESSION_MAX_BYTES.
+  //
+  // Videos can be 4+ GB each — the byte cap prevents runaway foreground uploads.
+  // The streaming upload (encryptedUpload) reads one 4 MB chunk at a time so
+  // memory usage is O(chunk_size) regardless of video size.
   //
   let adaptiveLimit = LIMIT_NORMAL;
   let bytesThisSession = 0;
   const sessionStartMs = Date.now();
-  let lastProgressAt = 0;  // index of last progress report
+  let lastProgressAt = 0;  // uploaded count at last progress report
+  let currentFileName = '';
+  let currentFileSizeBytes = 0;
 
   // Initial progress report
-  onProgress?.({ uploaded: 0, total: adaptiveLimit, throughputBps: 0, etaSeconds: null });
+  onProgress?.({ uploaded: 0, total: adaptiveLimit, throughputBps: 0, etaSeconds: null, currentFileName: '', currentFileSizeBytes: 0 });
 
   for (let i = 0; i < toUpload.length && result.uploaded < adaptiveLimit; i++) {
     if (signal?.aborted) break;
+
+    // Byte cap: stop before uploading the next file if we'd exceed the session limit
+    if (bytesThisSession >= SESSION_MAX_BYTES) {
+      console.log(`[PhotoBackupRunner] session byte cap reached (${(bytesThisSession / 1024 / 1024).toFixed(0)} MB)`);
+      break;
+    }
 
     const asset = toUpload[i];
 
@@ -234,24 +288,30 @@ export async function runPhotoBackupSession(
       }
 
       const fileId = generateFileId();
+      let fileBytesTotal = 0;
       let fileBytesUploaded = 0;
+
+      currentFileName = asset.filename;
+      currentFileSizeBytes = 0;
 
       await encryptedUpload({
         fileId,
         uri,
         name: asset.filename,
         parentId: photosFolderId,
-        mimeType: asset.mediaType === 'video' ? 'video/mp4' : 'image/jpeg',
+        mimeType: detectMimeType(asset.filename, asset.mediaType),
         encryptChunkFn,
         encryptMetadataFn,
         onProgress: (p: UploadProgress) => {
+          fileBytesTotal = p.bytesTotal;
           fileBytesUploaded = p.bytesUploaded;
+          currentFileSizeBytes = fileBytesTotal;
         },
       });
 
       await photoBackupMark(asset.id, fileId);
 
-      bytesThisSession += fileBytesUploaded;
+      bytesThisSession += fileBytesUploaded || fileBytesTotal;
       result.uploaded++;
 
       // Per-photo checkpoint — fire-and-forget
@@ -282,7 +342,11 @@ export async function runPhotoBackupSession(
           etaSeconds = (remaining * avgBytesPerFile) / throughputBps;
         }
         result.throughputBps = throughputBps;
-        onProgress?.({ uploaded: result.uploaded, total: adaptiveLimit, throughputBps, etaSeconds });
+        onProgress?.({
+          uploaded: result.uploaded, total: adaptiveLimit,
+          throughputBps, etaSeconds,
+          currentFileName, currentFileSizeBytes,
+        });
       }
     } catch (err) {
       if (signal?.aborted) break;

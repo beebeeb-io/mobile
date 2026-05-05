@@ -35,6 +35,8 @@ export interface PhotoSessionProgress {
   failed: number;
   throughputBps: number;
   etaSeconds: number | null;
+  currentFileName: string;
+  currentFileSizeBytes: number;
 }
 
 export interface PhotoSessionResult {
@@ -68,6 +70,7 @@ export interface BackupContextValue {
   reportPhotoProgress: (
     uploaded: number, total: number, failed: number, running: boolean,
     throughputBps?: number, etaSeconds?: number | null,
+    currentFileName?: string, currentFileSizeBytes?: number,
   ) => void;
   /**
    * Monotonically incrementing counter. PhotoBackupBridge watches this and
@@ -79,7 +82,7 @@ export interface BackupContextValue {
   toggleBackup: () => Promise<void>;
 }
 
-const EMPTY_SESSION: PhotoSessionProgress = { running: false, uploaded: 0, total: 0, failed: 0, throughputBps: 0, etaSeconds: null };
+const EMPTY_SESSION: PhotoSessionProgress = { running: false, uploaded: 0, total: 0, failed: 0, throughputBps: 0, etaSeconds: null, currentFileName: '', currentFileSizeBytes: 0 };
 
 export const BackupContext = createContext<BackupContextValue>({
   isPhotoBackupEnabled: false,
@@ -135,8 +138,9 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
   const reportPhotoProgress = useCallback((
     uploaded: number, total: number, failed: number, running: boolean,
     throughputBps = 0, etaSeconds: number | null = null,
+    currentFileName = '', currentFileSizeBytes = 0,
   ) => {
-    setPhotoSessionProgress({ running, uploaded, total, failed, throughputBps, etaSeconds });
+    setPhotoSessionProgress({ running, uploaded, total, failed, throughputBps, etaSeconds, currentFileName, currentFileSizeBytes });
     if (!running && (uploaded > 0 || failed > 0)) {
       setLastPhotoSession({ uploaded, failed });
     }
