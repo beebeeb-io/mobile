@@ -33,6 +33,8 @@ export interface PhotoSessionProgress {
   uploaded: number;
   total: number;
   failed: number;
+  throughputBps: number;
+  etaSeconds: number | null;
 }
 
 export interface PhotoSessionResult {
@@ -63,7 +65,10 @@ export interface BackupContextValue {
   /** Result of the most recently completed JS backup session, or null. */
   lastPhotoSession: PhotoSessionResult | null;
   /** Called by PhotoBackupBridge to report live + completed session state. */
-  reportPhotoProgress: (uploaded: number, total: number, failed: number, running: boolean) => void;
+  reportPhotoProgress: (
+    uploaded: number, total: number, failed: number, running: boolean,
+    throughputBps?: number, etaSeconds?: number | null,
+  ) => void;
   /**
    * Monotonically incrementing counter. PhotoBackupBridge watches this and
    * starts a new session whenever it changes. triggerBackupNow increments it.
@@ -74,7 +79,7 @@ export interface BackupContextValue {
   toggleBackup: () => Promise<void>;
 }
 
-const EMPTY_SESSION: PhotoSessionProgress = { running: false, uploaded: 0, total: 0, failed: 0 };
+const EMPTY_SESSION: PhotoSessionProgress = { running: false, uploaded: 0, total: 0, failed: 0, throughputBps: 0, etaSeconds: null };
 
 export const BackupContext = createContext<BackupContextValue>({
   isPhotoBackupEnabled: false,
@@ -129,8 +134,9 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
 
   const reportPhotoProgress = useCallback((
     uploaded: number, total: number, failed: number, running: boolean,
+    throughputBps = 0, etaSeconds: number | null = null,
   ) => {
-    setPhotoSessionProgress({ running, uploaded, total, failed });
+    setPhotoSessionProgress({ running, uploaded, total, failed, throughputBps, etaSeconds });
     if (!running && (uploaded > 0 || failed > 0)) {
       setLastPhotoSession({ uploaded, failed });
     }

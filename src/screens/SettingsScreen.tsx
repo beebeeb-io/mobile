@@ -55,6 +55,7 @@ import {
   type PhotoBackupStats,
 } from '../lib/api';
 import { readLastSessionAt } from '../services/PhotoBackupCheckpoint';
+import { formatEtaSeconds } from '../services/PhotoBackupRunner';
 import {
   initDatabase as initBackupDb,
   getUploadedCount,
@@ -772,7 +773,14 @@ export default function SettingsScreen() {
       if (status !== 'granted') {
         Alert.alert(
           'Photo access needed',
-          'Enable photo library access for Beebeeb in iOS Settings to back up your camera roll.',
+          'Beebeeb needs access to your photo library to back up your camera roll. Open Settings and enable "Photos" access.',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            {
+              text: 'Open Settings',
+              onPress: () => { void Linking.openSettings(); },
+            },
+          ],
         );
         return;
       }
@@ -1317,7 +1325,11 @@ export default function SettingsScreen() {
                   <View style={layout.backupNote}>
                     <ActivityIndicator size="small" color={c.amber} style={{ marginRight: 8 }} />
                     <Text style={{ fontSize: 12, color: c.ink3, lineHeight: 17, flex: 1 }}>
-                      Backing up... {photoSessionProgress.uploaded}/{photoSessionProgress.total} this session
+                      {'Backing up... '}
+                      {photoSessionProgress.uploaded}/{photoSessionProgress.total}
+                      {photoSessionProgress.etaSeconds != null
+                        ? ` · ${formatEtaSeconds(photoSessionProgress.etaSeconds)} remaining`
+                        : ''}
                     </Text>
                   </View>
                 )}

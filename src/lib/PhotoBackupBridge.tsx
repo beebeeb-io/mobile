@@ -1,29 +1,23 @@
 /**
  * PhotoBackupBridge — render-less component that connects CryptoContext,
- * BackupContext, and the JS-side photo backup runner.
+ * BackupContext, ToastContext, and the JS-side photo backup runner.
  *
- * Triggers a backup session:
- *   - On mount (first launch after login)
- *   - On every background → active transition (foreground resume)
- *   - Whenever BackupContext.photoBackupForceCount increments
- *     (triggered by "Back up now" and the manual retry button)
+ * Must be mounted inside <CryptoProvider>, <BackupProvider>, AND <ToastProvider>.
  *
- * Each session:
- *   1. Reads the last checkpoint timestamp from SecureStore
- *   2. Passes it to runPhotoBackupSession so only new photos are processed
- *   3. Writes per-photo checkpoints as each upload succeeds
- *   4. Reports live progress to BackupContext
- *   5. Writes the last-session timestamp on completion
+ * Triggers a backup session on:
+ *   1. Mount (first launch after login)
+ *   2. Every background → active AppState transition
+ *   3. NetInfo: Wi-Fi connection established (for wifiOnly users)
+ *   4. photoBackupForceCount change ("Back up now" / retry)
  */
 
 import { useCallback, useEffect, useRef } from 'react';
 import { AppState, type AppStateStatus } from 'react-native';
+import NetInfo from '@react-native-community/netinfo';
 import { useCrypto } from './crypto-context';
 import { useBackup } from './backup-context';
-import {
-  runPhotoBackupSession,
-  isOnWifi,
-} from '../services/PhotoBackupRunner';
+import { useToast } from './toast-context';
+import { runPhotoBackupSession, isOnWifi } from '../services/PhotoBackupRunner';
 import {
   readLastBackedUpTimestamp,
   writeLastBackedUpTimestamp,
@@ -39,13 +33,12 @@ export function PhotoBackupBridge(): null {
     photoBackupForceCount,
     reportPhotoProgress,
   } = useBackup();
+  const { showToast } = useToast();
 
-  // Guard against concurrent sessions
   const runningRef = useRef(false);
   const abortRef = useRef<AbortController | null>(null);
 
-  // Keep a stable ref to all the values the session needs, so the AppState
-  // handler (registered once) always reads the latest without re-registering.
+  // Stable ref: always reflects current render's values without re-registering effects
   const stateRef = useRef({
     isUnlocked,
     isPhotoBackupEnabled,
@@ -54,8 +47,8 @@ export function PhotoBackupBridge(): null {
     encryptChunk,
     encryptMetadata,
     reportPhotoProgress,
+    showToast,
   });
-  // Sync ref on every render — no re-registration needed
   useEffect(() => {
     stateRef.current = {
       isUnlocked,
@@ -65,8 +58,11 @@ export function PhotoBackupBridge(): null {
       encryptChunk,
       encryptMetadata,
       reportPhotoProgress,
+      showToast,
     };
   });
+
+  // ── Core session logic ─────────────────────────────────────────────────────
 
   const maybeStartSession = useCallback(async () => {
     const s = stateRef.current;
@@ -76,11 +72,10 @@ export function PhotoBackupBridge(): null {
       return;
     }
 
-    // Wi-Fi gate
     if (s.wifiOnly) {
       const onWifi = await isOnWifi();
       if (!onWifi) {
-        console.log('[PhotoBackupBridge] wifiOnly=true and not on Wi-Fi — deferring session');
+        console.log('[PhotoBackupBridge] wifiOnly=true and not on Wi-Fi — deferring');
         return;
       }
     }
@@ -89,12 +84,11 @@ export function PhotoBackupBridge(): null {
     const ctrl = new AbortController();
     abortRef.current = ctrl;
 
-    // Read checkpoint before starting — only process newer assets
     const createdAfterTs = await readLastBackedUpTimestamp();
     console.log('[PhotoBackupBridge] starting session, checkpoint:', createdAfterTs);
 
-    // Mark session as running in context
-    s.reportPhotoProgress(0, 0, 0, true);
+    // Mark running
+    stateRef.current.reportPhotoProgress(0, 0, 0, true, 0, null);
 
     let uploadedThisSession = 0;
     let failedThisSession = 0;
@@ -107,15 +101,15 @@ export function PhotoBackupBridge(): null {
         createdAfterTs,
         signal: ctrl.signal,
 
-        onProgress: (uploaded, total) => {
+        onProgress: ({ uploaded, total, throughputBps, etaSeconds }) => {
           uploadedThisSession = uploaded;
-          // Report live progress to the context so Settings screen updates
-          stateRef.current.reportPhotoProgress(uploaded, total, failedThisSession, true);
+          stateRef.current.reportPhotoProgress(
+            uploaded, total, failedThisSession, true, throughputBps, etaSeconds,
+          );
         },
 
-        onCheckpoint: (creationTimeSecs) => {
-          // Per-photo checkpoint — fire-and-forget, don't block the upload loop
-          void writeLastBackedUpTimestamp(creationTimeSecs);
+        onCheckpoint: (ts) => {
+          void writeLastBackedUpTimestamp(ts);
         },
       });
 
@@ -123,11 +117,21 @@ export function PhotoBackupBridge(): null {
       failedThisSession = result.failed;
 
       console.log(
-        `[PhotoBackupBridge] session complete: ${result.uploaded} uploaded, ` +
+        `[PhotoBackupBridge] session done: ${result.uploaded} uploaded, ` +
         `${result.failed} failed, ${result.remaining} remaining`,
       );
 
-      // Write last-session timestamp for the Settings "Last: X ago" display
+      // Toast (only when app is foregrounded — bridge is mounted, so we're active)
+      if (result.uploaded > 0) {
+        const label = result.uploaded === 1 ? '1 photo backed up' : `${result.uploaded} photos backed up`;
+        stateRef.current.showToast({ type: 'success', message: label });
+      } else if (result.failed > 0) {
+        stateRef.current.showToast({
+          type: 'error',
+          message: `${result.failed} photo${result.failed !== 1 ? 's' : ''} failed to back up`,
+        });
+      }
+
       await writeLastSessionAt(new Date().toISOString());
     } catch (err) {
       if (err instanceof Error && err.name !== 'AbortError') {
@@ -136,42 +140,50 @@ export function PhotoBackupBridge(): null {
     } finally {
       runningRef.current = false;
       abortRef.current = null;
-      // Report final state — running: false
       stateRef.current.reportPhotoProgress(
-        uploadedThisSession, uploadedThisSession + failedThisSession,
-        failedThisSession, false,
+        uploadedThisSession,
+        uploadedThisSession + failedThisSession,
+        failedThisSession,
+        false,
+        0,
+        null,
       );
     }
-  }, []); // stable — reads from stateRef
+  }, []); // stable — reads stateRef
 
-  // ── AppState: trigger on every foreground transition ────────────────────
+  // ── AppState: trigger on every foreground transition ────────────────────────
   useEffect(() => {
     const appStateRef = { current: AppState.currentState };
-
-    const subscription = AppState.addEventListener(
-      'change',
-      (nextState: AppStateStatus) => {
-        const prev = appStateRef.current;
-        appStateRef.current = nextState;
-        if (
-          (prev === 'background' || prev === 'inactive') &&
-          nextState === 'active'
-        ) {
-          void maybeStartSession();
-        }
-      },
-    );
-
-    // Trigger on mount (first foreground after login)
-    void maybeStartSession();
-
+    const sub = AppState.addEventListener('change', (next: AppStateStatus) => {
+      const prev = appStateRef.current;
+      appStateRef.current = next;
+      if ((prev === 'background' || prev === 'inactive') && next === 'active') {
+        void maybeStartSession();
+      }
+    });
+    void maybeStartSession(); // initial mount trigger
     return () => {
-      subscription.remove();
+      sub.remove();
       abortRef.current?.abort();
     };
   }, [maybeStartSession]);
 
-  // ── Force trigger: "Back up now" / retry button ──────────────────────────
+  // ── NetInfo: automatically resume when Wi-Fi reconnects (wifiOnly users) ──
+  useEffect(() => {
+    const unsubscribe = NetInfo.addEventListener((state) => {
+      if (
+        state.type === 'wifi' &&
+        state.isConnected !== false &&
+        stateRef.current.wifiOnly
+      ) {
+        console.log('[PhotoBackupBridge] Wi-Fi reconnected — triggering session');
+        void maybeStartSession();
+      }
+    });
+    return unsubscribe;
+  }, [maybeStartSession]);
+
+  // ── Force trigger: "Back up now" / retry button ────────────────────────────
   useEffect(() => {
     if (photoBackupForceCount > 0) {
       void maybeStartSession();
