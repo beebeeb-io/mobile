@@ -154,6 +154,65 @@ const CATEGORY_ICONS: Record<string, IoniconName> = {
 };
 
 // ---------------------------------------------------------------------------
+// Duplicate-file conflict helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Return a unique filename by appending (1), (2), … until there's no
+ * collision with `existingNames` (lowercased names of files in the folder).
+ */
+function getUniqueMobileName(name: string, existingNames: ReadonlySet<string>): string {
+  const dot = name.lastIndexOf('.');
+  const base = dot > 0 ? name.slice(0, dot) : name;
+  const ext  = dot > 0 ? name.slice(dot) : '';
+  let n = 1;
+  let candidate = name;
+  while (existingNames.has(candidate.toLowerCase())) {
+    candidate = `${base} (${n})${ext}`;
+    n++;
+  }
+  return candidate;
+}
+
+type ConflictChoice =
+  | { action: 'replace'; existingId: string }
+  | { action: 'keep-both'; finalName: string }
+  | { action: 'cancel' };
+
+/**
+ * Show a native Alert dialog asking the user what to do when a filename
+ * already exists in the current folder.
+ * Returns a Promise that resolves with the user's choice.
+ */
+function promptFileConflict(
+  filename: string,
+  existingId: string,
+  uniqueName: string,
+): Promise<ConflictChoice> {
+  return new Promise((resolve) => {
+    Alert.alert(
+      `"${filename}" already exists`,
+      'What would you like to do?',
+      [
+        {
+          text: 'Replace',
+          onPress: () => resolve({ action: 'replace', existingId }),
+        },
+        {
+          text: 'Keep both',
+          onPress: () => resolve({ action: 'keep-both', finalName: uniqueName }),
+        },
+        {
+          text: 'Cancel',
+          style: 'cancel',
+          onPress: () => resolve({ action: 'cancel' }),
+        },
+      ],
+    );
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Offline files
 // ---------------------------------------------------------------------------
 
@@ -708,6 +767,29 @@ export default function FilesScreen() {
   const { isUnlocked, decryptMetadata, encryptChunk, encryptMetadata } = useCrypto();
   const [decryptedNames, setDecryptedNames] = useState<Record<string, string>>({});
 
+  /** Find a non-folder file in the current folder whose decrypted name matches `filename`. */
+  const findConflict = useCallback((filename: string): FileEntry | null => {
+    if (!isUnlocked || Object.keys(decryptedNames).length === 0) return null;
+    const lower = filename.toLowerCase();
+    for (const f of files) {
+      if (f.is_folder) continue;
+      const decrypted = decryptedNames[f.id];
+      if (decrypted?.toLowerCase() === lower) return f;
+    }
+    return null;
+  }, [files, decryptedNames, isUnlocked]);
+
+  /** Set of lowercased decrypted names of non-folder files in the current folder. */
+  const folderFileNames = useCallback((): Set<string> => {
+    const set = new Set<string>();
+    for (const f of files) {
+      if (f.is_folder) continue;
+      const name = decryptedNames[f.id];
+      if (name) set.add(name.toLowerCase());
+    }
+    return set;
+  }, [files, decryptedNames]);
+
   // CRDT sync — when ready, the file list derives from the in-memory tree
   // and stays live (SSE pushes). Until then we fall back to listFiles().
   const sync = useSync();
@@ -933,14 +1015,32 @@ export default function FilesScreen() {
     if (picked.canceled || !picked.assets?.[0]) return;
 
     const asset = picked.assets[0];
+
+    // ── Conflict check ────────────────────────────────────────────────────
+    let uploadFileId = generateFileId();   // new UUID by default
+    let uploadFileName = asset.name;       // original name by default
+
+    const existingFile = findConflict(asset.name);
+    if (existingFile) {
+      const uniqueName = getUniqueMobileName(asset.name, folderFileNames());
+      const choice = await promptFileConflict(asset.name, existingFile.id, uniqueName);
+      if (choice.action === 'cancel') return;
+      if (choice.action === 'replace') {
+        // Reuse existing file ID → server auto-creates a version
+        uploadFileId = existingFile.id;
+      } else {
+        // Keep both: upload under the suffixed name with a fresh ID
+        uploadFileName = choice.finalName;
+      }
+    }
+
     const loc = trustLocation(undefined);
-    setUpload({ fileName: asset.name, stage: 1, percent: 30, city: loc.city, region: loc.region });
+    setUpload({ fileName: uploadFileName, stage: 1, percent: 30, city: loc.city, region: loc.region });
     try {
-      const fileId = generateFileId();
       const uploaded = await encryptedUpload({
-        fileId,
+        fileId: uploadFileId,
         uri: asset.uri,
-        name: asset.name,
+        name: uploadFileName,
         parentId: currentFolder.id ?? undefined,
         mimeType: asset.mimeType ?? undefined,
         encryptChunkFn: encryptChunk,
@@ -962,12 +1062,12 @@ export default function FilesScreen() {
         },
       });
       const finalLoc = trustLocation(uploaded.storage_pool_id);
-      setUpload({ fileName: asset.name, stage: 'done', percent: 100, city: finalLoc.city, region: finalLoc.region });
+      setUpload({ fileName: uploadFileName, stage: 'done', percent: 100, city: finalLoc.city, region: finalLoc.region });
       setFiles((prev) => [uploaded, ...prev]);
       // Fire-and-forget: generate + upload a 256px thumbnail for image files.
       void generateAndUploadThumbnail(uploaded.id, asset.uri, asset.mimeType ?? null);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      showToast({ type: 'success', message: `"${asset.name}" stored in ${finalLoc.city}` });
+      showToast({ type: 'success', message: `"${uploadFileName}" stored in ${finalLoc.city}` });
       fetchFiles(currentFolder.id, true);
       // Hold the "Stored · Key stayed here" flash briefly before clearing.
       setTimeout(() => setUpload((cur) => (cur && cur.stage === 'done' ? null : cur)), 1800);
@@ -976,7 +1076,7 @@ export default function FilesScreen() {
       showToast({ type: 'error', message: `Upload failed: ${friendlyError(err)}` });
       setUpload(null);
     }
-  }, [currentFolder.id, fetchFiles, phraseVerified, showToast]);
+  }, [currentFolder.id, fetchFiles, phraseVerified, showToast, findConflict, folderFileNames, encryptChunk, encryptMetadata]);
 
   const pickAndUploadPhotos = useCallback(async () => {
     if (!phraseVerified) {
@@ -1010,9 +1110,19 @@ export default function FilesScreen() {
     let successCount = 0;
     let lastLoc = trustLocation(undefined);
     let lastName = '';
+    // Track names already used in this batch to avoid duplicate suffixes
+    const usedInBatch = new Set<string>();
     for (let i = 0; i < total; i++) {
       const asset = picked.assets[i]!;
-      const name = asset.fileName ?? `photo-${Date.now()}-${i}.jpg`;
+      const rawName = asset.fileName ?? `photo-${Date.now()}-${i}.jpg`;
+      // Silent conflict resolution for batch photo uploads — always "keep both",
+      // no prompts (the user selected multiple photos and expects them all uploaded).
+      const conflict = findConflict(rawName);
+      const name = conflict
+        ? getUniqueMobileName(rawName, new Set([...folderFileNames(), ...usedInBatch]))
+        : rawName;
+      usedInBatch.add(name.toLowerCase());
+
       const display = total > 1 ? `${name} (${i + 1}/${total})` : name;
       lastName = display;
       setUpload({ fileName: display, stage: 1, percent: 30, city: lastLoc.city, region: lastLoc.region });
@@ -1066,7 +1176,7 @@ export default function FilesScreen() {
     } else {
       setUpload(null);
     }
-  }, [currentFolder.id, fetchFiles, phraseVerified, showToast]);
+  }, [currentFolder.id, fetchFiles, phraseVerified, showToast, findConflict, folderFileNames, encryptChunk, encryptMetadata]);
 
   const handleFabPress = useCallback(() => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
