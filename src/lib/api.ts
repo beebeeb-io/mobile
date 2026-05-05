@@ -707,6 +707,12 @@ export interface ShareInfo {
   expires_at?: string | null;
   passphrase_required?: boolean;
   is_folder?: boolean;
+  /**
+   * True when the share was created in double-encrypted mode.
+   * The #key= fragment in the URL holds K_c (not the file key directly).
+   * The server stores an opaque wrapped_file_key blob.
+   */
+  double_encrypted?: boolean;
 }
 
 /** Fetch public share metadata by token — no auth required. */

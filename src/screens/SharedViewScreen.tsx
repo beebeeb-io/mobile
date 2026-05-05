@@ -16,6 +16,7 @@ import { radii, spacing } from '../theme';
 import { useTheme } from '../lib/theme-context';
 import { getShareByToken, friendlyError } from '../lib/api';
 import type { ShareInfo } from '../lib/api';
+import { consumeShareKey } from '../lib/share-key-store';
 import type { RootStackParamList } from '../App';
 
 type SharedViewRoute = RouteProp<RootStackParamList, 'SharedView'>;
@@ -89,6 +90,9 @@ export default function SharedViewScreen() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<ShareInfo | null>(null);
+  // Captured from the #key= URL fragment (stored before React Navigation
+  // strips it). Available only when the user arrives via a deep link.
+  const [shareKey] = useState<string | null>(() => consumeShareKey(token));
 
   useEffect(() => {
     let cancelled = false;
@@ -111,9 +115,12 @@ export default function SharedViewScreen() {
   }, [navigation]);
 
   const handleOpenInBrowser = useCallback(() => {
-    const url = `https://beebeeb.io/s/${token}`;
+    // Include the #key= fragment when available so double-encrypted shares
+    // open correctly in Safari (the web app reads the key from the fragment).
+    const base = `https://app.beebeeb.io/s/${token}`;
+    const url = shareKey ? `${base}#key=${encodeURIComponent(shareKey)}` : base;
     Linking.openURL(url).catch(() => {});
-  }, [token]);
+  }, [token, shareKey]);
 
   const iconName = fileTypeIcon(info?.mime_type, info?.is_folder);
   const iconBg = fileTypeBg(info?.mime_type, info?.is_folder, c);
@@ -209,10 +216,18 @@ export default function SharedViewScreen() {
             </View>
           </View>
 
-          {/* Encryption badge */}
-          <View style={[styles.encBadge, { backgroundColor: c.amberBg, borderColor: c.amber }]}>
-            <View style={[styles.encDot, { backgroundColor: c.amber }]} />
-            <Text style={[styles.encText, { color: c.amberDeep }]}>End-to-end encrypted · AES-256-GCM</Text>
+          {/* Encryption badges */}
+          <View style={{ gap: 6, alignItems: 'center' }}>
+            <View style={[styles.encBadge, { backgroundColor: c.amberBg, borderColor: c.amber }]}>
+              <View style={[styles.encDot, { backgroundColor: c.amber }]} />
+              <Text style={[styles.encText, { color: c.amberDeep }]}>End-to-end encrypted · AES-256-GCM</Text>
+            </View>
+            {info.double_encrypted && (
+              <View style={[styles.encBadge, { backgroundColor: c.amberBg, borderColor: c.amber }]}>
+                <Ionicons name="shield-checkmark" size={12} color={c.amberDeep} />
+                <Text style={[styles.encText, { color: c.amberDeep }]}>Double encrypted</Text>
+              </View>
+            )}
           </View>
 
           {/* CTA */}
@@ -226,7 +241,9 @@ export default function SharedViewScreen() {
           </TouchableOpacity>
 
           <Text style={[styles.footnote, { color: c.ink4 }]}>
-            Native in-app decryption requires crypto bindings (coming soon).
+            {info.double_encrypted && !shareKey
+              ? 'Double-encrypted share: use the original full link (with #key=…) to open in your browser.'
+              : 'Native in-app decryption coming soon.'}
           </Text>
         </View>
       ) : null}
