@@ -34,7 +34,7 @@ type Nav = NativeStackNavigationProp<RootStackParamList>;
 
 export default function SignupScreen() {
   const navigation = useNavigation<Nav>();
-  const { refreshAuth } = useAuth();
+  const { refreshAuth, skipOnboarding } = useAuth();
   const { colors: c, resolved } = useTheme();
   const passwordRef = useRef<TextInput>(null);
   const confirmPasswordRef = useRef<TextInput>(null);
@@ -132,6 +132,9 @@ export default function SignupScreen() {
             // generateRecoveryPhrase threw despite the flag — proceed without phrase.
           }
         }
+        // Dismiss onboarding overlay + mark phrase as pending before refreshAuth
+        // so the phrase screens are visible (not covered by the welcome overlay).
+        skipOnboarding();
         // Refresh auth state so the authenticated stack is available before navigating
         await refreshAuth();
         navigation.navigate('RecoveryPhrase', { phrase: phrase.length > 0 ? phrase : undefined });

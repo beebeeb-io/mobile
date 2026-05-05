@@ -62,6 +62,7 @@ import { processPendingShares } from '../plugins/share-extension/PendingSharesHa
 import { useToast } from './lib/toast-context';
 
 const ONBOARDING_KEY = 'beebeeb_onboarding_done';
+const PHRASE_VERIFIED_KEY = 'beebeeb_phrase_verified';
 
 // ---------------------------------------------------------------------------
 // Navigation types
@@ -350,6 +351,9 @@ export default function App() {
 
   // Onboarding: shown once after first signup
   const [onboardingDone, setOnboardingDone] = useState(true); // true by default, corrected in startup
+  // Phrase verification: false until the user types back their recovery words.
+  // Defaults to true so existing (pre-phrase-flow) users are unaffected.
+  const [phraseVerified, setPhraseVerified] = useState(true);
 
   const isConnected = useNetworkStatus();
 
@@ -393,6 +397,17 @@ export default function App() {
         setOnboardingDone(done === 'true' || tokenExists);
       } catch {
         setOnboardingDone(true); // assume done if SecureStore unavailable (web)
+      }
+
+      // Check phrase verification state — only applies to new OPAQUE signups.
+      // Existing users who pre-date the phrase flow are treated as verified.
+      try {
+        const phraseKey = await SecureStore.getItemAsync(PHRASE_VERIFIED_KEY);
+        // 'pending' means signup set the flag but verification wasn't completed.
+        // Absent key (legacy user) or 'verified' both mean verified = true.
+        setPhraseVerified(phraseKey !== 'pending');
+      } catch {
+        setPhraseVerified(true);
       }
 
       setChecking(false);
@@ -475,6 +490,25 @@ export default function App() {
     return () => sub.remove();
   }, []);
 
+  // Called from SignupScreen when OPAQUE registration succeeds and the
+  // recovery-phrase flow is about to start. Prevents the onboarding welcome
+  // overlay from covering RecoveryPhraseScreen and marks phrase as pending so
+  // uploads are gated until the user verifies their words.
+  const skipOnboarding = useCallback(() => {
+    setOnboardingDone(true);
+    setPhraseVerified(false);
+    SecureStore.setItemAsync(ONBOARDING_KEY, 'true').catch(() => {});
+    SecureStore.setItemAsync(PHRASE_VERIFIED_KEY, 'pending').catch(() => {});
+  }, []);
+
+  // Called from RecoveryPhraseVerifyScreen on successful word verification.
+  const markPhraseVerified = useCallback(async () => {
+    try {
+      await SecureStore.setItemAsync(PHRASE_VERIFIED_KEY, 'verified');
+    } catch { /* SecureStore unavailable (web) */ }
+    setPhraseVerified(true);
+  }, []);
+
   // Listen for successful login/signup from auth screens
   // by polling the token after navigation events
   const handleNavigationStateChange = useCallback(async () => {
@@ -503,7 +537,7 @@ export default function App() {
   const isAuthenticated = user !== null;
 
   return (
-    <AuthContext.Provider value={{ user, refreshAuth, signOut }}>
+    <AuthContext.Provider value={{ user, refreshAuth, signOut, phraseVerified, skipOnboarding, markPhraseVerified }}>
       <CryptoProvider>
       <SyncProvider>
       <BackupProvider>
@@ -539,8 +573,16 @@ export default function App() {
                   />
                   <Stack.Screen name="Trash" component={TrashScreen} />
                   <Stack.Screen name="BackupGuides" component={BackupGuidesScreen} />
-                  <Stack.Screen name="RecoveryPhrase" component={RecoveryPhraseScreen} />
-                  <Stack.Screen name="RecoveryPhraseVerify" component={RecoveryPhraseVerifyScreen} />
+                  <Stack.Screen
+                    name="RecoveryPhrase"
+                    component={RecoveryPhraseScreen}
+                    options={{ gestureEnabled: false }}
+                  />
+                  <Stack.Screen
+                    name="RecoveryPhraseVerify"
+                    component={RecoveryPhraseVerifyScreen}
+                    options={{ gestureEnabled: false }}
+                  />
                   <Stack.Screen name="DevicePairing" component={DevicePairingScreen} />
                   <Stack.Screen name="DevicePairingScan" component={DevicePairingScanScreen} />
                   <Stack.Screen name="DevicePairingShow" component={DevicePairingShowScreen} />
