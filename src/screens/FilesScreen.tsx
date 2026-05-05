@@ -764,7 +764,7 @@ export default function FilesScreen() {
   const [presence, setPresence] = useState<PresenceUser[]>([]);
 
   // Crypto
-  const { isUnlocked, decryptMetadata, encryptChunk, encryptMetadata } = useCrypto();
+  const { isUnlocked, unlockAttempted, decryptMetadata, encryptChunk, encryptMetadata } = useCrypto();
   const [decryptedNames, setDecryptedNames] = useState<Record<string, string>>({});
 
   /** Find a non-folder file in the current folder whose decrypted name matches `filename`. */
@@ -829,7 +829,9 @@ export default function FilesScreen() {
   // Scroll shadow — appears when list is scrolled past top
   const [isScrolled, setIsScrolled] = useState(false);
 
-  // Decrypt filenames whenever the file list or unlock state changes
+  // Decrypt filenames whenever the file list or unlock state changes.
+  // Re-runs automatically when isUnlocked transitions false→true so the
+  // startup race (files fetched before key is in memory) heals itself.
   useEffect(() => {
     if (!isUnlocked) {
       setDecryptedNames({});
@@ -839,12 +841,16 @@ export default function FilesScreen() {
     Promise.all(
       files.map(async (file) => {
         try {
-          const parsed = JSON.parse(file.name_encrypted) as { nonce: string; ciphertext: string };
+          const raw = file.name_encrypted ?? '';
+          if (!raw.startsWith('{')) return; // not JSON-encrypted — displayName() handles it
+          const parsed = JSON.parse(raw) as { nonce: string; ciphertext: string };
           const nonce = base64ToUint8Array(parsed.nonce);
           const ct = base64ToUint8Array(parsed.ciphertext);
-          results[file.id] = await decryptMetadata(file.id, nonce, ct);
+          const plaintext = await decryptMetadata(file.id, nonce, ct);
+          results[file.id] = plaintext;
         } catch {
-          // Not JSON-encrypted or crypto unavailable — fall back to truncated raw name
+          // Decryption failure — leave results[file.id] unset so displayName()
+          // renders "Encrypted file" rather than raw ciphertext.
         }
       }),
     ).then(() => setDecryptedNames({ ...results }));
@@ -913,7 +919,19 @@ export default function FilesScreen() {
   // ready, derive the list from the in-memory tree instead of hitting
   // /api/v1/files — that path stays as a fallback (server too old, or
   // sync still booting).
+  //
+  // Guard: wait for the vault unlock attempt to settle before fetching.
+  // This prevents the brief "Encrypted file" flash that occurs when files
+  // arrive before the master key is loaded from the Secure Enclave.
+  // BiometricGuard triggers the auto-unlock on startup; unlockAttempted
+  // becomes true once it completes (success or failure).
   useEffect(() => {
+    if (!unlockAttempted) {
+      // Keep the skeleton visible while the keychain lookup is in flight
+      setLoading(true);
+      return;
+    }
+
     if (sync.ready) {
       const nodes = sync.children(currentFolder.id);
       setFiles(nodes.filter((n) => !n.is_trashed).map(syncNodeToFileEntry));
@@ -924,7 +942,7 @@ export default function FilesScreen() {
     fetchFiles(currentFolder.id);
     // sync.treeVersion bumps on every op — re-derive without re-fetching.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentFolder.id, fetchFiles, sync.ready, sync.treeVersion]);
+  }, [currentFolder.id, fetchFiles, unlockAttempted, sync.ready, sync.treeVersion]);
 
   // Load presence for the current folder. The endpoint silently returns []
   // when the folder isn't shared or the API doesn't exist yet.

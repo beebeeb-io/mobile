@@ -16,6 +16,12 @@ const MASTER_KEY_LABEL = 'io.beebeeb.master-key'
 interface CryptoContextValue {
   isUnlocked: boolean
   /**
+   * True once the first unlock() call has completed — success OR failure.
+   * Screens can use this to distinguish "vault still initialising" from
+   * "vault is open" / "vault is locked with no key available".
+   */
+  unlockAttempted: boolean
+  /**
    * Unlock the vault.
    * - With phrase: derives the master key from a recovery phrase and stores it
    *   in the secure enclave for future unlocks.
@@ -40,6 +46,9 @@ const CryptoContext = createContext<CryptoContextValue | null>(null)
 
 export function CryptoProvider({ children }: { children: React.ReactNode }) {
   const [isUnlocked, setIsUnlocked] = useState(false)
+  // True once the first unlock() attempt has settled (success or failure).
+  // Used by FilesScreen to distinguish "still loading key" from "locked".
+  const [unlockAttempted, setUnlockAttempted] = useState(false)
   // masterKeyRef holds key material in memory while the vault is open.
   // Never store in React state to avoid accidental serialisation.
   const masterKeyRef = useRef<Uint8Array | null>(null)
@@ -47,20 +56,26 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
   const unlock = useCallback(async (phrase?: string) => {
     let masterKey: Uint8Array
 
-    if (phrase) {
-      const result = await recoverFromPhrase(phrase)
-      masterKey = result.masterKey
-      await storeKeyInKeychain(masterKey, MASTER_KEY_LABEL)
-    } else {
-      const stored = await loadKeyFromKeychain(MASTER_KEY_LABEL)
-      if (!stored) {
-        throw new Error('No master key in keychain — provide a recovery phrase to restore')
+    try {
+      if (phrase) {
+        const result = await recoverFromPhrase(phrase)
+        masterKey = result.masterKey
+        await storeKeyInKeychain(masterKey, MASTER_KEY_LABEL)
+      } else {
+        const stored = await loadKeyFromKeychain(MASTER_KEY_LABEL)
+        if (!stored) {
+          throw new Error('No master key in keychain — provide a recovery phrase to restore')
+        }
+        masterKey = stored
       }
-      masterKey = stored
-    }
 
-    masterKeyRef.current = masterKey
-    setIsUnlocked(true)
+      masterKeyRef.current = masterKey
+      setIsUnlocked(true)
+    } finally {
+      // Mark the attempt as done regardless of outcome so screens waiting
+      // on this flag can proceed (showing "Encrypted file" fallback if needed).
+      setUnlockAttempted(true)
+    }
   }, [])
 
   const lock = useCallback(() => {
@@ -125,6 +140,7 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
     <CryptoContext.Provider
       value={{
         isUnlocked,
+        unlockAttempted,
         unlock,
         lock,
         encryptChunk: encryptChunkFn,
