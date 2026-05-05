@@ -291,6 +291,19 @@ function ShareSheetImporter({ enabled }: { enabled: boolean }) {
 function BiometricGuard({ locked, onUnlock }: { locked: boolean; onUnlock: () => void }) {
   const crypto = useCrypto();
 
+  // On startup the app is never locked (locked=false) but the vault's master key
+  // hasn't been loaded into memory yet.  Attempt a silent keychain unlock so
+  // FilesScreen can decrypt filenames without waiting for a biometric prompt.
+  // Errors are swallowed: a missing key (fresh install, legacy login) leaves the
+  // vault locked and FilesScreen falls back to "Encrypted file" placeholders.
+  useEffect(() => {
+    if (!locked && !crypto.isUnlocked) {
+      crypto.unlock().catch(() => {});
+    }
+    // Only re-run when the lock state transitions (background→foreground lock/unlock)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [locked]);
+
   async function handleUnlocked() {
     try {
       await crypto.unlock();
