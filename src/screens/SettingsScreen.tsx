@@ -907,13 +907,13 @@ export default function SettingsScreen() {
   }, [storageRegion]);
 
   const handleManageBilling = useCallback(() => {
-    Linking.openURL('https://beebeeb.io/account/billing');
-  }, []);
+    navigation.navigate('Storage');
+  }, [navigation]);
 
   const handleUpgrade = useCallback(() => {
     Haptics.selectionAsync();
-    Linking.openURL('https://beebeeb.io/pricing');
-  }, []);
+    navigation.navigate('Storage');
+  }, [navigation]);
 
   const handleOfflineFiles = useCallback(() => {
     Alert.alert(
@@ -1558,6 +1558,19 @@ export default function SettingsScreen() {
                 );
               })}
             </View>
+          </View>
+        </View>
+
+        {/* ---- Storage & Plan ---- */}
+        <View style={layout.section}>
+          <SectionHeader title="Storage & Plan" c={c} />
+          <View style={[layout.card, { backgroundColor: c.paper, borderColor: c.line }]}>
+            <SettingsRow
+              label="Storage & Plan"
+              icon="cloud-outline"
+              onPress={() => navigation.navigate('Storage')}
+              c={c}
+            />
           </View>
         </View>
 

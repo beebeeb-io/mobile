@@ -1212,3 +1212,46 @@ export async function freezeAccount(): Promise<{ frozen: boolean }> {
 export async function unfreezeAccount(): Promise<{ frozen: boolean }> {
   return request<{ frozen: boolean }>('POST', '/api/v1/me/unfreeze');
 }
+
+// ─── Plans + billing checkout ─────────────────────────────────────────────────
+
+export interface Plan {
+  id: string;
+  name: string;
+  price_eur: number;
+  price_yearly_eur: number;
+  storage_bytes: number;
+  storage_label: string;
+  features: string[];
+  is_active?: boolean;
+}
+
+/** GET /api/v1/billing/plans */
+export async function getPlans(): Promise<Plan[]> {
+  try {
+    const data = await request<{ plans?: Plan[] } | Plan[]>('GET', '/api/v1/billing/plans');
+    if (Array.isArray(data)) return data;
+    if (Array.isArray((data as { plans?: Plan[] }).plans)) return (data as { plans: Plan[] }).plans;
+    return [];
+  } catch {
+    return [];
+  }
+}
+
+/** POST /api/v1/billing/checkout — starts a Stripe Checkout session */
+export async function createCheckoutSession(params: {
+  plan: string;
+  billing_cycle: 'monthly' | 'yearly';
+  seats?: number;
+}): Promise<{ url: string }> {
+  return request<{ url: string }>('POST', '/api/v1/billing/checkout', params);
+}
+
+/** POST /api/v1/billing/portal — opens Stripe Customer Portal */
+export async function createPortalSession(): Promise<{ url: string } | null> {
+  try {
+    return await request<{ url: string }>('POST', '/api/v1/billing/portal');
+  } catch {
+    return null;
+  }
+}
