@@ -1122,3 +1122,40 @@ export interface PhotoBackupStats {
 export async function photoBackupStats(): Promise<PhotoBackupStats> {
   return request<PhotoBackupStats>('GET', '/api/v1/files/photo-backup/stats');
 }
+
+// ─── Push notification registration ──────────────────────────────────────────
+
+/** POST /api/v1/notifications/register-device */
+export async function registerDeviceToken(params: {
+  token: string;
+  platform: 'ios' | 'android';
+  device_id: string;
+}): Promise<void> {
+  await request<void>('POST', '/api/v1/notifications/register-device', params);
+}
+
+/** DELETE /api/v1/notifications/unregister-device */
+export async function unregisterDeviceToken(): Promise<void> {
+  await request<void>('DELETE', '/api/v1/notifications/unregister-device');
+}
+
+// ─── Notification preferences ─────────────────────────────────────────────────
+
+export interface MobileNotificationPreferences {
+  share_received: boolean;
+  storage_warning: boolean;
+  new_device_login: boolean;
+  backup_complete: boolean;
+}
+
+/** GET /api/v1/notifications/preferences */
+export async function getNotificationPreferences(): Promise<MobileNotificationPreferences> {
+  return request<MobileNotificationPreferences>('GET', '/api/v1/notifications/preferences');
+}
+
+/** PUT /api/v1/notifications/preferences */
+export async function setNotificationPreferences(
+  prefs: MobileNotificationPreferences,
+): Promise<MobileNotificationPreferences> {
+  return request<MobileNotificationPreferences>('PUT', '/api/v1/notifications/preferences', prefs);
+}
