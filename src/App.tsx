@@ -28,6 +28,7 @@ import { AuthContext } from './lib/auth';
 import { CryptoProvider, useCrypto } from './lib/crypto-context';
 import { SyncProvider } from './lib/sync-context';
 import { useNetworkStatus } from './lib/useNetworkStatus';
+import { setPendingShareKey } from './lib/share-key-store';
 import * as Haptics from 'expo-haptics';
 
 const BIOMETRIC_PREF_KEY = 'beebeeb_biometric_lock';
@@ -516,6 +517,29 @@ export default function App() {
 
     Linking.getInitialURL().then(handleShortcutURL).catch(() => {});
     const sub = Linking.addEventListener('url', ({ url }) => handleShortcutURL(url));
+    return () => sub.remove();
+  }, []);
+
+  // Capture #key= fragments from share URLs before React Navigation routing
+  // strips the hash. The fragment is stored in share-key-store.ts and consumed
+  // by SharedViewScreen on mount so the "Download in browser" CTA can open the
+  // full URL (including key) in Safari.
+  useEffect(() => {
+    function captureShareFragment(url: string | null): void {
+      if (!url) return;
+      const hashIdx = url.indexOf('#');
+      if (hashIdx === -1) return;
+      const fragment = url.slice(hashIdx + 1);
+      const params = new URLSearchParams(fragment);
+      const shareKey = params.get('key');
+      if (!shareKey) return;
+      const tokenMatch = /\/s\/([^/?#]+)/.exec(url);
+      if (tokenMatch) {
+        setPendingShareKey(tokenMatch[1], shareKey);
+      }
+    }
+    Linking.getInitialURL().then(captureShareFragment).catch(() => {});
+    const sub = Linking.addEventListener('url', ({ url }) => captureShareFragment(url));
     return () => sub.remove();
   }, []);
 
