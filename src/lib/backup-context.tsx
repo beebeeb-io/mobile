@@ -28,6 +28,18 @@ interface BackupProgress {
   inProgress: number;
 }
 
+export interface PhotoSessionProgress {
+  running: boolean;
+  uploaded: number;
+  total: number;
+  failed: number;
+}
+
+export interface PhotoSessionResult {
+  uploaded: number;
+  failed: number;
+}
+
 export interface BackupContextValue {
   isPhotoBackupEnabled: boolean;
   isContactsBackupEnabled: boolean;
@@ -45,10 +57,24 @@ export interface BackupContextValue {
   backupProgress: BackupProgress;
   lastBackupAt: string | null;
   triggerBackupNow: () => Promise<void>;
+  // JS-side photo backup session state
+  /** Live progress of the current JS foreground backup session. */
+  photoSessionProgress: PhotoSessionProgress;
+  /** Result of the most recently completed JS backup session, or null. */
+  lastPhotoSession: PhotoSessionResult | null;
+  /** Called by PhotoBackupBridge to report live + completed session state. */
+  reportPhotoProgress: (uploaded: number, total: number, failed: number, running: boolean) => void;
+  /**
+   * Monotonically incrementing counter. PhotoBackupBridge watches this and
+   * starts a new session whenever it changes. triggerBackupNow increments it.
+   */
+  photoBackupForceCount: number;
   // Legacy alias for components that used the old API
   isBackupEnabled: boolean;
   toggleBackup: () => Promise<void>;
 }
+
+const EMPTY_SESSION: PhotoSessionProgress = { running: false, uploaded: 0, total: 0, failed: 0 };
 
 export const BackupContext = createContext<BackupContextValue>({
   isPhotoBackupEnabled: false,
@@ -66,6 +92,10 @@ export const BackupContext = createContext<BackupContextValue>({
   backupProgress: { total: 0, completed: 0, inProgress: 0 },
   lastBackupAt: null,
   triggerBackupNow: async () => {},
+  photoSessionProgress: EMPTY_SESSION,
+  lastPhotoSession: null,
+  reportPhotoProgress: () => {},
+  photoBackupForceCount: 0,
   isBackupEnabled: false,
   toggleBackup: async () => {},
 });
@@ -91,6 +121,20 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
   const [backupProgress, setBackupProgress] = useState<BackupProgress>({ total: 0, completed: 0, inProgress: 0 });
   const [lastBackupAt, setLastBackupAt] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // JS-side photo backup session state
+  const [photoSessionProgress, setPhotoSessionProgress] = useState<PhotoSessionProgress>(EMPTY_SESSION);
+  const [lastPhotoSession, setLastPhotoSession] = useState<PhotoSessionResult | null>(null);
+  const [photoBackupForceCount, setPhotoBackupForceCount] = useState(0);
+
+  const reportPhotoProgress = useCallback((
+    uploaded: number, total: number, failed: number, running: boolean,
+  ) => {
+    setPhotoSessionProgress({ running, uploaded, total, failed });
+    if (!running && (uploaded > 0 || failed > 0)) {
+      setLastPhotoSession({ uploaded, failed });
+    }
+  }, []);
 
   // Load persisted preferences on mount
   useEffect(() => {
@@ -221,6 +265,9 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const triggerBackupNow = useCallback(async () => {
+    // Increment force counter — PhotoBackupBridge watches this and starts a JS session
+    setPhotoBackupForceCount((c) => c + 1);
+
     try {
       const token = await getStoredToken();
       if (!token || Platform.OS === 'web') return;
@@ -261,6 +308,10 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
       backupProgress,
       lastBackupAt,
       triggerBackupNow,
+      photoSessionProgress,
+      lastPhotoSession,
+      reportPhotoProgress,
+      photoBackupForceCount,
       // Legacy alias
       isBackupEnabled: isPhotoBackupEnabled,
       toggleBackup: togglePhotoBackup,
