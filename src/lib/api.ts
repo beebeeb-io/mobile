@@ -1255,3 +1255,30 @@ export async function createPortalSession(): Promise<{ url: string } | null> {
     return null;
   }
 }
+
+// ─── Data residency (task 0051) ───────────────────────────────────────────────
+
+export interface AvailableRegion {
+  continent: string;
+  display_name: string;
+  city: string;
+  provider: string;
+  is_default: boolean;
+}
+
+/** GET /api/v1/me/region — user's preferred region + available list */
+export async function getUserRegion(): Promise<{
+  preferred_region: string | null;
+  regions: AvailableRegion[];
+}> {
+  return request<{ preferred_region: string | null; regions: AvailableRegion[] }>(
+    'GET', '/api/v1/me/region',
+  );
+}
+
+/** PUT /api/v1/me/region — set preferred region */
+export async function setUserRegion(continent: string): Promise<{ preferred_region: string }> {
+  return request<{ preferred_region: string }>(
+    'PUT', '/api/v1/me/region', { continent },
+  );
+}
