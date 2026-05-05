@@ -53,23 +53,22 @@ public class BeebeebCryptoModule: Module {
       ]
     }
 
-    AsyncFunction("opaqueRegistrationFinish") { (state: Data, serverMessage: Data) throws -> [String: Any] in
-      // The current JS contract drops the password between start/finish; the UniFFI
-      // surface still requires it. Plumbing the password through the JS layer is
-      // tracked separately.
-      throw OpaquePasswordMissingError()
+    AsyncFunction("opaqueRegistrationFinish") { (state: Data, serverMessage: Data, password: String) throws -> [String: Any] in
+      let record = try opaqueRegistrationFinish(clientState: state, password: Data(password.utf8), serverResponse: serverMessage)
+      return ["record": record]
     }
 
-    AsyncFunction("opaqueLoginStart") { (username: String) throws -> [String: Any] in
-      let result = try opaqueLoginStart(password: Data(username.utf8))
+    AsyncFunction("opaqueLoginStart") { (username: String, password: String) throws -> [String: Any] in
+      let result = try opaqueLoginStart(password: Data(password.utf8))
       return [
         "state": result.state,
         "message": result.message,
       ]
     }
 
-    AsyncFunction("opaqueLoginFinish") { (state: Data, serverMessage: Data) throws -> [String: Any] in
-      throw OpaquePasswordMissingError()
+    AsyncFunction("opaqueLoginFinish") { (state: Data, serverMessage: Data, password: String) throws -> [String: Any] in
+      let result = try opaqueLoginFinish(clientState: state, password: Data(password.utf8), serverResponse: serverMessage)
+      return ["sessionKey": result.sessionKey]
     }
 
     AsyncFunction("deriveFileKey") { (masterKey: Data, fileId: String) throws -> Data in
@@ -158,8 +157,3 @@ public class BeebeebCryptoModule: Module {
   }
 }
 
-private struct OpaquePasswordMissingError: LocalizedError {
-  var errorDescription: String? {
-    "OPAQUE finish requires the password — JS-side signature needs to be updated to forward it."
-  }
-}

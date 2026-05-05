@@ -888,12 +888,12 @@ export class NativeCryptoUnavailableError extends Error {
  * Throws NativeCryptoUnavailableError when running in Expo Go without the
  * native module — caller should fall back to plain login().
  */
-export async function opaqueLoginStart(email: string): Promise<OpaqueLoginStartResult> {
+export async function opaqueLoginStart(email: string, password: string): Promise<OpaqueLoginStartResult> {
   if (!BeebeebCrypto.isNativeAvailable) throw new NativeCryptoUnavailableError('opaqueLoginStart');
   let state: Uint8Array;
   let message: Uint8Array;
   try {
-    ({ state, message } = await BeebeebCrypto.opaqueLoginStart(email));
+    ({ state, message } = await BeebeebCrypto.opaqueLoginStart(email, password));
   } catch {
     throw new NativeCryptoUnavailableError('opaqueLoginStart');
   }
@@ -912,13 +912,14 @@ export async function opaqueLoginStart(email: string): Promise<OpaqueLoginStartR
  */
 export async function opaqueLoginFinish(
   email: string,
+  password: string,
   state: Uint8Array,
   serverMessage: Uint8Array,
 ): Promise<OpaqueLoginResult> {
   if (!BeebeebCrypto.isNativeAvailable) throw new NativeCryptoUnavailableError('opaqueLoginFinish');
   let sessionKey: Uint8Array;
   try {
-    ({ sessionKey } = await BeebeebCrypto.opaqueLoginFinish(state, serverMessage));
+    ({ sessionKey } = await BeebeebCrypto.opaqueLoginFinish(state, serverMessage, password));
   } catch {
     throw new NativeCryptoUnavailableError('opaqueLoginFinish');
   }
@@ -966,13 +967,14 @@ export async function opaqueRegistrationStart(
  */
 export async function opaqueRegistrationFinish(
   email: string,
+  password: string,
   state: Uint8Array,
   serverMessage: Uint8Array,
 ): Promise<{ sessionToken: string }> {
   if (!BeebeebCrypto.isNativeAvailable) throw new NativeCryptoUnavailableError('opaqueRegistrationFinish');
   let record: Uint8Array;
   try {
-    ({ record } = await BeebeebCrypto.opaqueRegistrationFinish(state, serverMessage));
+    ({ record } = await BeebeebCrypto.opaqueRegistrationFinish(state, serverMessage, password));
   } catch {
     throw new NativeCryptoUnavailableError('opaqueRegistrationFinish');
   }

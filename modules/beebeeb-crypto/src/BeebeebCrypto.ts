@@ -104,31 +104,36 @@ export async function opaqueRegistrationStart(
 /**
  * Finish OPAQUE registration (client side).
  * `serverMessage` comes from the server's response. Upload `record` to complete.
+ * `password` must be the same password passed to opaqueRegistrationStart.
  */
 export async function opaqueRegistrationFinish(
   state: Uint8Array,
   serverMessage: Uint8Array,
+  password: string,
 ): Promise<OpaqueRegistrationFinishResult> {
-  return BeebeebCryptoModule.opaqueRegistrationFinish(state, serverMessage)
+  return BeebeebCryptoModule.opaqueRegistrationFinish(state, serverMessage, password)
 }
 
 /**
  * Start OPAQUE login (client side).
  * Send `message` to POST /auth/opaque/login/start, then call loginFinish.
+ * `password` is required by the OPAQUE OPRF — it must be forwarded to loginFinish too.
  */
-export async function opaqueLoginStart(username: string): Promise<OpaqueStartResult> {
-  return BeebeebCryptoModule.opaqueLoginStart(username)
+export async function opaqueLoginStart(username: string, password: string): Promise<OpaqueStartResult> {
+  return BeebeebCryptoModule.opaqueLoginStart(username, password)
 }
 
 /**
  * Finish OPAQUE login (client side).
  * `sessionKey` is the shared secret — use it to derive/decrypt the master key.
+ * `password` must be the same password passed to opaqueLoginStart.
  */
 export async function opaqueLoginFinish(
   state: Uint8Array,
   serverMessage: Uint8Array,
+  password: string,
 ): Promise<OpaqueLoginFinishResult> {
-  return BeebeebCryptoModule.opaqueLoginFinish(state, serverMessage)
+  return BeebeebCryptoModule.opaqueLoginFinish(state, serverMessage, password)
 }
 
 // ─── Key derivation ──────────────────────────────────────────────────────────
