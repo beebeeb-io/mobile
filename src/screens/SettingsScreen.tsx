@@ -1561,6 +1561,19 @@ export default function SettingsScreen() {
           </View>
         </View>
 
+        {/* ---- Privacy ---- */}
+        <View style={layout.section}>
+          <SectionHeader title="Privacy" c={c} />
+          <View style={[layout.card, { backgroundColor: c.paper, borderColor: c.line }]}>
+            <SettingsRow
+              label="Privacy settings"
+              icon="shield-outline"
+              onPress={() => navigation.navigate('Privacy')}
+              c={c}
+            />
+          </View>
+        </View>
+
         {/* ---- Files ---- */}
         <View style={layout.section}>
           <SectionHeader title="Files" c={c} />

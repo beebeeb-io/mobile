@@ -55,6 +55,7 @@ const ShareSheetScreen = React.lazy(() => import('./screens/ShareSheetScreen'));
 const SharedViewScreen = React.lazy(() => import('./screens/SharedViewScreen'));
 const TrashScreen = React.lazy(() => import('./screens/TrashScreen'));
 const BackupGuidesScreen = React.lazy(() => import('./screens/BackupGuidesScreen'));
+const PrivacyScreen = React.lazy(() => import('./screens/PrivacyScreen'));
 const RecoveryPhraseScreen = React.lazy(() => import('./screens/RecoveryPhraseScreen'));
 const RecoveryPhraseVerifyScreen = React.lazy(() => import('./screens/RecoveryPhraseVerifyScreen'));
 const DevicePairingScreen = React.lazy(() => import('./screens/DevicePairingScreen'));
@@ -117,6 +118,7 @@ export type RootStackParamList = {
   // Auth / onboarding upgrade screens
   RecoveryPhrase: { phrase?: string[] };
   RecoveryPhraseVerify: { phrase: string[] };
+  Privacy: undefined;
   // Device pairing (Amber Constellation)
   DevicePairing: undefined;
   DevicePairingScan: undefined;
@@ -663,6 +665,7 @@ export default function App() {
                   />
                   <Stack.Screen name="Trash" component={TrashScreen} />
                   <Stack.Screen name="BackupGuides" component={BackupGuidesScreen} />
+                  <Stack.Screen name="Privacy" component={PrivacyScreen} options={{ headerShown: false }} />
                   <Stack.Screen
                     name="RecoveryPhrase"
                     component={RecoveryPhraseScreen}
