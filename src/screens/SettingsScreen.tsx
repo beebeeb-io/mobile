@@ -48,10 +48,13 @@ import {
   setPreference,
   getSubscription,
   getRegion,
+  photoBackupStats,
   type StorageUsage,
   type Subscription,
   type Region,
+  type PhotoBackupStats,
 } from '../lib/api';
+import { readLastSessionAt } from '../services/PhotoBackupCheckpoint';
 import {
   initDatabase as initBackupDb,
   getUploadedCount,
@@ -427,6 +430,8 @@ export default function SettingsScreen() {
     backupProgress,
     lastBackupAt,
     triggerBackupNow,
+    photoSessionProgress,
+    lastPhotoSession,
   } = useBackup();
 
   const { showToast } = useToast();
@@ -469,6 +474,10 @@ export default function SettingsScreen() {
   const [photoStats, setPhotoStats] = useState<CategoryStats>(EMPTY_CATEGORY_STATS);
   const [contactsStats, setContactsStats] = useState<CategoryStats>(EMPTY_CATEGORY_STATS);
   const [calendarStats, setCalendarStats] = useState<CategoryStats>(EMPTY_CATEGORY_STATS);
+
+  // Server-side all-time photo backup stats + last-session timestamp
+  const [serverPhotoStats, setServerPhotoStats] = useState<PhotoBackupStats | null>(null);
+  const [lastSessionAt, setLastSessionAt] = useState<string | null>(null);
 
   // Theme — sourced from global ThemeContext
   const { colors: c, mode: themePreference, setMode: handleThemeChange } = useTheme();
@@ -546,11 +555,26 @@ export default function SettingsScreen() {
     }
   }, []);
 
+  // Fetch server-side photo backup stats + last-session checkpoint
+  const fetchPhotoBackupStats = useCallback(async () => {
+    try {
+      const [stats, sessionAt] = await Promise.all([
+        photoBackupStats(),
+        readLastSessionAt(),
+      ]);
+      setServerPhotoStats(stats);
+      setLastSessionAt(sessionAt);
+    } catch {
+      // Endpoint may not be deployed yet — ignore
+    }
+  }, []);
+
   useEffect(() => {
     fetchUsage();
     loadBiometricPrefs();
     loadAccountData();
     loadStorageRegionPref();
+    if (isPhotoBackupEnabled) fetchPhotoBackupStats();
     // Seed the push toggle from OS permission AND a user opt-out flag —
     // OS permission alone overestimates ("granted" but user wants quiet),
     // SecureStore alone underestimates (user toggled off in a past
@@ -568,7 +592,14 @@ export default function SettingsScreen() {
         setNotificationsEnabled(false);
       }
     })();
-  }, [fetchUsage, loadBiometricPrefs, loadAccountData, loadStorageRegionPref]);
+  }, [fetchUsage, loadBiometricPrefs, loadAccountData, loadStorageRegionPref, isPhotoBackupEnabled, fetchPhotoBackupStats]);
+
+  // Refresh server stats whenever a JS session completes
+  useEffect(() => {
+    if (isPhotoBackupEnabled && !photoSessionProgress.running) {
+      void fetchPhotoBackupStats();
+    }
+  }, [isPhotoBackupEnabled, photoSessionProgress.running, fetchPhotoBackupStats]);
 
   // -- Backup status: refresh whenever toggles flip or the worker reports progress
   const syncing = backupProgress.inProgress > 0;
@@ -647,11 +678,12 @@ export default function SettingsScreen() {
         loadBiometricPrefs(),
         loadAccountData(),
         loadStorageRegionPref(),
+        isPhotoBackupEnabled ? fetchPhotoBackupStats() : Promise.resolve(),
       ]);
     } finally {
       setRefreshing(false);
     }
-  }, [fetchUsage, loadBiometricPrefs, loadAccountData, loadStorageRegionPref]);
+  }, [fetchUsage, loadBiometricPrefs, loadAccountData, loadStorageRegionPref, isPhotoBackupEnabled, fetchPhotoBackupStats]);
 
   // ---------------------------------------------------------------------------
   // Handlers
@@ -1279,7 +1311,27 @@ export default function SettingsScreen() {
             {(isPhotoBackupEnabled || isContactsBackupEnabled || isCalendarBackupEnabled) && (
               <>
                 <RowDivider c={c} />
-                {backupProgress.inProgress > 0 && (
+
+                {/* ── JS-side live session progress ── */}
+                {photoSessionProgress.running && photoSessionProgress.total > 0 && (
+                  <View style={layout.backupNote}>
+                    <ActivityIndicator size="small" color={c.amber} style={{ marginRight: 8 }} />
+                    <Text style={{ fontSize: 12, color: c.ink3, lineHeight: 17, flex: 1 }}>
+                      Backing up... {photoSessionProgress.uploaded}/{photoSessionProgress.total} this session
+                    </Text>
+                  </View>
+                )}
+                {photoSessionProgress.running && photoSessionProgress.total === 0 && (
+                  <View style={layout.backupNote}>
+                    <ActivityIndicator size="small" color={c.amber} style={{ marginRight: 8 }} />
+                    <Text style={{ fontSize: 12, color: c.ink3, lineHeight: 17, flex: 1 }}>
+                      Scanning for new photos...
+                    </Text>
+                  </View>
+                )}
+
+                {/* ── Native backup progress (fallback when JS session not running) ── */}
+                {!photoSessionProgress.running && backupProgress.inProgress > 0 && (
                   <View style={layout.backupNote}>
                     <ActivityIndicator size="small" color={c.amber} style={{ marginRight: 8 }} />
                     <Text style={{ fontSize: 12, color: c.ink3, lineHeight: 17, flex: 1 }}>
@@ -1287,22 +1339,47 @@ export default function SettingsScreen() {
                     </Text>
                   </View>
                 )}
-                {backupProgress.total > 0 && backupProgress.inProgress === 0 && (
+
+                {/* ── End-of-session result with retry ── */}
+                {!photoSessionProgress.running && lastPhotoSession && (
+                  <View style={[layout.backupNote, { flexDirection: 'column', alignItems: 'flex-start', gap: 6 }]}>
+                    <Text style={{ fontSize: 12, color: c.ink3, lineHeight: 17 }}>
+                      {lastPhotoSession.uploaded} backed up
+                      {lastPhotoSession.failed > 0 ? `, ${lastPhotoSession.failed} failed` : ''}
+                      {lastSessionAt ? ` · ${timeAgo(lastSessionAt)}` : ''}
+                    </Text>
+                    {lastPhotoSession.failed > 0 && (
+                      <TouchableOpacity
+                        activeOpacity={0.6}
+                        onPress={handleBackupNow}
+                        disabled={backingUp}
+                      >
+                        <Text style={{ fontSize: 12, color: c.amber, fontWeight: '500' as const }}>
+                          {backingUp ? 'Retrying…' : 'Retry failed'}
+                        </Text>
+                      </TouchableOpacity>
+                    )}
+                  </View>
+                )}
+
+                {/* ── Server all-time stats when idle ── */}
+                {!photoSessionProgress.running && !lastPhotoSession && serverPhotoStats && (
                   <View style={layout.backupNote}>
                     <Text style={{ fontSize: 12, color: c.ink3, lineHeight: 17, flex: 1 }}>
-                      {backupProgress.completed} of {backupProgress.total} items backed up
-                      {lastBackupAt ? ` · Last: ${new Date(lastBackupAt).toLocaleDateString()}` : ''}
+                      {serverPhotoStats.backed_up.toLocaleString()} photo{serverPhotoStats.backed_up !== 1 ? 's' : ''} backed up
+                      {lastSessionAt ? ` · Last: ${timeAgo(lastSessionAt)}` : ''}
                     </Text>
                   </View>
                 )}
+
                 <RowDivider c={c} />
                 <TouchableOpacity
                   style={layout.row}
                   activeOpacity={0.6}
                   onPress={handleBackupNow}
-                  disabled={backingUp}
+                  disabled={backingUp || photoSessionProgress.running}
                 >
-                  {backingUp ? (
+                  {backingUp || photoSessionProgress.running ? (
                     <ActivityIndicator size="small" color={c.amber} />
                   ) : (
                     <Text style={{ fontSize: 14, color: c.amber, fontWeight: '500' as const }}>
