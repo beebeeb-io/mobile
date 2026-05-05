@@ -30,6 +30,13 @@ import { SyncProvider } from './lib/sync-context';
 import { useNetworkStatus } from './lib/useNetworkStatus';
 import { setPendingShareKey } from './lib/share-key-store';
 import * as Haptics from 'expo-haptics';
+import * as Notifications from 'expo-notifications';
+import {
+  setupNotificationHandler,
+  registerForPushNotifications,
+  unregisterPushToken,
+  handleNotificationTap,
+} from './lib/push-notifications';
 
 const BIOMETRIC_PREF_KEY = 'beebeeb_biometric_lock';
 const BIOMETRIC_DELAY_KEY = 'beebeeb_biometric_delay';
@@ -152,6 +159,9 @@ const Stack = createNativeStackNavigator<RootStackParamList>();
 // Module-level nav ref so non-component code (deep-link handler / quick
 // action listener) can dispatch navigation without a hook.
 const navigationRef = createNavigationContainerRef<RootStackParamList>();
+
+// Configure in-foreground notification display before any component mounts.
+setupNotificationHandler();
 
 // ---------------------------------------------------------------------------
 // Offline banner
@@ -404,6 +414,8 @@ export default function App() {
     try {
       const me = await getMe();
       setUser(me);
+      // Register push token once the user is authenticated.
+      void registerForPushNotifications();
     } catch {
       // Token invalid or expired — stay on login
       await clearToken();
@@ -411,7 +423,17 @@ export default function App() {
     }
   }, []);
 
+  // Handle notification taps — deep-link to the relevant screen.
+  useEffect(() => {
+    const sub = Notifications.addNotificationResponseReceivedListener((response) => {
+      handleNotificationTap(response, navigationRef);
+    });
+    return () => sub.remove();
+  }, []);
+
   const signOut = useCallback(async () => {
+    // Remove the push token before clearing the session.
+    void unregisterPushToken();
     try {
       await logout();
     } catch {

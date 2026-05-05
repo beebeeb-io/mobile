@@ -49,10 +49,13 @@ import {
   getSubscription,
   getRegion,
   photoBackupStats,
+  getNotificationPreferences,
+  setNotificationPreferences,
   type StorageUsage,
   type Subscription,
   type Region,
   type PhotoBackupStats,
+  type MobileNotificationPreferences,
 } from '../lib/api';
 import { readLastSessionAt } from '../services/PhotoBackupCheckpoint';
 import { formatEtaSeconds } from '../services/PhotoBackupRunner';
@@ -459,6 +462,13 @@ export default function SettingsScreen() {
 
   // Notifications
   const [notificationsEnabled, setNotificationsEnabled] = useState(false);
+  const [notifPrefs, setNotifPrefs] = useState<MobileNotificationPreferences>({
+    share_received: true,
+    storage_warning: true,
+    new_device_login: true,
+    backup_complete: false,
+  });
+  const [notifPrefsLoading, setNotifPrefsLoading] = useState(false);
 
   // Account
   const [displayName, setDisplayNameState] = useState<string>('');
@@ -588,7 +598,16 @@ export default function SettingsScreen() {
         ]);
         const granted = status === 'granted';
         const optedOut = optOutRaw === 'true';
-        setNotificationsEnabled(granted && !optedOut);
+        const enabled = granted && !optedOut;
+        setNotificationsEnabled(enabled);
+        // Load per-category preferences from server when notifications are on.
+        if (enabled) {
+          setNotifPrefsLoading(true);
+          getNotificationPreferences()
+            .then(setNotifPrefs)
+            .catch(() => {/* use defaults */})
+            .finally(() => setNotifPrefsLoading(false));
+        }
       } catch {
         setNotificationsEnabled(false);
       }
@@ -750,6 +769,21 @@ export default function SettingsScreen() {
       // SecureStore unavailable (web) — toggle remains in-memory only.
     }
   }, []);
+
+  const handleNotifPrefToggle = useCallback(
+    async (key: keyof MobileNotificationPreferences, value: boolean) => {
+      const next = { ...notifPrefs, [key]: value };
+      setNotifPrefs(next);
+      try {
+        const saved = await setNotificationPreferences(next);
+        setNotifPrefs(saved);
+      } catch {
+        // Roll back on failure
+        setNotifPrefs(notifPrefs);
+      }
+    },
+    [notifPrefs],
+  );
 
   const syncBackupCategory = useCallback(async (category: BackupCategory, enabling: boolean) => {
     try {
@@ -1424,12 +1458,51 @@ export default function SettingsScreen() {
         <View style={layout.section}>
           <SectionHeader title="Notifications" c={c} />
           <View style={[layout.card, { backgroundColor: c.paper, borderColor: c.line }]}>
+            {/* Master OS permission toggle */}
             <ToggleRow
               label="Push notifications"
               value={notificationsEnabled}
               onValueChange={handleNotificationsToggle}
               c={c}
             />
+            {/* Per-category preferences — only shown when push is enabled */}
+            {notificationsEnabled && (
+              <>
+                <View style={{ height: 1, backgroundColor: c.line }} />
+                <ToggleRow
+                  label="Share received"
+                  subtitle="When someone shares a file with you"
+                  value={notifPrefs.share_received}
+                  onValueChange={(v) => void handleNotifPrefToggle('share_received', v)}
+                  disabled={notifPrefsLoading}
+                  c={c}
+                />
+                <ToggleRow
+                  label="Storage warnings"
+                  subtitle="When you reach 80% or 100% of your quota"
+                  value={notifPrefs.storage_warning}
+                  onValueChange={(v) => void handleNotifPrefToggle('storage_warning', v)}
+                  disabled={notifPrefsLoading}
+                  c={c}
+                />
+                <ToggleRow
+                  label="New device sign-in"
+                  subtitle="Security alert when a new device accesses your account"
+                  value={notifPrefs.new_device_login}
+                  onValueChange={(v) => void handleNotifPrefToggle('new_device_login', v)}
+                  disabled={notifPrefsLoading}
+                  c={c}
+                />
+                <ToggleRow
+                  label="Backup complete"
+                  subtitle="When photo backup finishes"
+                  value={notifPrefs.backup_complete}
+                  onValueChange={(v) => void handleNotifPrefToggle('backup_complete', v)}
+                  disabled={notifPrefsLoading}
+                  c={c}
+                />
+              </>
+            )}
           </View>
         </View>
 
