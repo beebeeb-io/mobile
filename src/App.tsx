@@ -10,6 +10,7 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Text } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { Icon } from './components/Icon';
 import { colors } from './theme';
 import * as Font from 'expo-font';
 import { ThemeProvider, useTheme } from './lib/theme-context';
@@ -203,22 +204,29 @@ const offlineStyles = StyleSheet.create({
 });
 
 // ---------------------------------------------------------------------------
-// Tab icon using Ionicons (SF Symbols on iOS)
+// Tab icon — Beebeeb Icon component (Feather stroke style, matches web)
 // ---------------------------------------------------------------------------
 
-type IoniconName = React.ComponentProps<typeof Ionicons>['name'];
+import type { IconName } from './components/Icon';
 
-const TAB_ICON_NAMES: Record<string, [IoniconName, IoniconName]> = {
-  Files: ['folder', 'folder-outline'],
-  Shared: ['people', 'people-outline'],
-  Photos: ['images', 'images-outline'],
-  Settings: ['settings', 'settings-outline'],
+const TAB_ICON_MAP: Record<string, IconName> = {
+  Files:    'folder',
+  Shared:   'share',
+  Photos:   'image',
+  Settings: 'settings',
 };
 
 function TabIcon({ name, focused, color }: { name: string; focused: boolean; color: string }) {
-  const icons = TAB_ICON_NAMES[name];
-  const iconName: IoniconName = icons ? (focused ? icons[0] : icons[1]) : 'ellipse-outline';
-  return <Ionicons name={iconName} size={22} color={color} />;
+  const iconName = TAB_ICON_MAP[name] ?? 'file';
+  // Feather doesn't have filled variants; increase strokeWidth on focus for visual weight
+  return (
+    <Icon
+      name={iconName}
+      size={22}
+      color={color}
+      style={{ opacity: focused ? 1 : 0.7 }}
+    />
+  );
 }
 
 // ---------------------------------------------------------------------------
