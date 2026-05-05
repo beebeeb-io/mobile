@@ -28,6 +28,12 @@ interface CryptoContextValue {
   decryptChunk: (fileId: string, nonce: Uint8Array, ct: Uint8Array) => Promise<Uint8Array>
   encryptMetadata: (fileId: string, metadata: string) => Promise<EncryptedData>
   decryptMetadata: (fileId: string, nonce: Uint8Array, ct: Uint8Array) => Promise<string>
+  /**
+   * Derive and return the raw 32-byte file key for a given fileId.
+   * Used for ZK share creation where we need to wrap the key client-side.
+   * Throws if vault is locked.
+   */
+  getFileKeyBytes: (fileId: string) => Promise<Uint8Array>
 }
 
 const CryptoContext = createContext<CryptoContextValue | null>(null)
@@ -107,6 +113,14 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
     [],
   )
 
+  const getFileKeyBytesFn = useCallback(
+    async (fileId: string): Promise<Uint8Array> => {
+      return deriveFileKey(requireKey(), fileId)
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  )
+
   return (
     <CryptoContext.Provider
       value={{
@@ -117,6 +131,7 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
         decryptChunk: decryptChunkFn,
         encryptMetadata: encryptMetadataFn,
         decryptMetadata: decryptMetadataFn,
+        getFileKeyBytes: getFileKeyBytesFn,
       }}
     >
       {children}
