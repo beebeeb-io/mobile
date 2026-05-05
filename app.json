@@ -22,8 +22,9 @@
           "$(AppIdentifierPrefix)io.beebeeb.shared"
         ]
       },
-      "_associatedDomains_disabled_for_free_signing": [
-        "applinks:beebeeb.io"
+      "associatedDomains": [
+        "applinks:beebeeb.io",
+        "applinks:app.beebeeb.io"
       ],
       "infoPlist": {
         "NSFileProviderPresenceAuthorized": true,
