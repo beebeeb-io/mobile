@@ -671,11 +671,25 @@ export interface Share {
   url: string;
   expires_at: string | null;
   max_opens: number | null;
+  /** True when the share was created in double-encrypted mode. */
+  double_encrypted?: boolean;
+}
+
+export interface ShareCreateOpts {
+  expires_in_hours?: number;
+  max_opens?: number;
+  passphrase?: string;
+  /**
+   * Double-encrypted mode: base64(nonce(12) || AES-256-GCM-ciphertext(48)) = 80 chars.
+   * When set, the server stores this opaque blob. The client key K_c lives only in
+   * the URL fragment (#key=…) and is never sent to the server.
+   */
+  wrapped_file_key?: string;
 }
 
 export async function createShare(
   fileId: string,
-  opts?: { expires_in_hours?: number; max_opens?: number; passphrase?: string },
+  opts?: ShareCreateOpts,
 ): Promise<Share> {
   return request<Share>('POST', '/api/v1/shares', { file_id: fileId, ...opts });
 }
