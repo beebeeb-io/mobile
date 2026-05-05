@@ -1065,3 +1065,40 @@ export async function submitSyncOps(ops: SubmittedSyncOp[]): Promise<SyncOpsResu
 export async function getStreamToken(): Promise<StreamTokenResponse> {
   return request<StreamTokenResponse>('POST', '/api/v1/sync/stream-token');
 }
+
+// ---------------------------------------------------------------------------
+// Photo backup
+// ---------------------------------------------------------------------------
+
+/** Ask the server which of these local identifiers have NOT been backed up yet. */
+export async function photoBackupCheck(
+  identifiers: string[],
+): Promise<{ needs_backup: string[] }> {
+  return request<{ needs_backup: string[] }>(
+    'POST',
+    '/api/v1/files/photo-backup/check',
+    { identifiers },
+  );
+}
+
+/** Mark a local asset as successfully backed up and link it to the uploaded file. */
+export async function photoBackupMark(
+  identifier: string,
+  fileId: string,
+): Promise<void> {
+  await request<void>(
+    'POST',
+    '/api/v1/files/photo-backup/mark',
+    { identifier, file_id: fileId },
+  );
+}
+
+export interface PhotoBackupStats {
+  backed_up: number;
+  total_estimated: number;
+}
+
+/** Get overall photo-backup progress stats for the current user. */
+export async function photoBackupStats(): Promise<PhotoBackupStats> {
+  return request<PhotoBackupStats>('GET', '/api/v1/files/photo-backup/stats');
+}
