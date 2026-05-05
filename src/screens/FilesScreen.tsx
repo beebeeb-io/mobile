@@ -43,6 +43,7 @@ import { generateAndUploadThumbnail } from '../lib/thumbnail';
 import type { FileEntry, StorageUsage, ProofOfExistence, PresenceUser, SyncNode } from '../lib/api';
 import type { RootStackParamList, TabParamList } from '../App';
 import { useCrypto } from '../lib/crypto-context';
+import { useAuth } from '../lib/auth';
 import { encryptedUpload, generateFileId } from '../lib/encrypted-upload';
 import { useSync } from '../lib/sync-context';
 
@@ -658,6 +659,7 @@ export default function FilesScreen() {
   const tabBarHeight = useBottomTabBarHeight();
   const { colors: c } = useTheme();
   const { showToast } = useToast();
+  const { phraseVerified } = useAuth();
 
   // Navigation state: stack of folders
   const [folderStack, setFolderStack] = useState<BreadcrumbEntry[]>([
@@ -909,6 +911,14 @@ export default function FilesScreen() {
   }, [currentFolder.id, fetchFiles]);
 
   const pickAndUploadFile = useCallback(async () => {
+    if (!phraseVerified) {
+      Alert.alert(
+        'Save your recovery phrase first',
+        'Verify your recovery phrase before uploading. Go to Settings → Security to complete verification.',
+        [{ text: 'OK' }],
+      );
+      return;
+    }
     let picked: DocumentPicker.DocumentPickerResult;
     try {
       picked = await DocumentPicker.getDocumentAsync({
@@ -965,9 +975,17 @@ export default function FilesScreen() {
       showToast({ type: 'error', message: `Upload failed: ${friendlyError(err)}` });
       setUpload(null);
     }
-  }, [currentFolder.id, fetchFiles, showToast]);
+  }, [currentFolder.id, fetchFiles, phraseVerified, showToast]);
 
   const pickAndUploadPhotos = useCallback(async () => {
+    if (!phraseVerified) {
+      Alert.alert(
+        'Save your recovery phrase first',
+        'Verify your recovery phrase before uploading. Go to Settings → Security to complete verification.',
+        [{ text: 'OK' }],
+      );
+      return;
+    }
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (status !== 'granted') {
       Alert.alert('Permission required', 'Allow photo library access to upload photos.');
@@ -1047,7 +1065,7 @@ export default function FilesScreen() {
     } else {
       setUpload(null);
     }
-  }, [currentFolder.id, fetchFiles, showToast]);
+  }, [currentFolder.id, fetchFiles, phraseVerified, showToast]);
 
   const handleFabPress = useCallback(() => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);

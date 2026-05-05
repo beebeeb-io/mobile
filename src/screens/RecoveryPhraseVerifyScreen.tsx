@@ -15,6 +15,7 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { radii, spacing } from '../theme';
 import { useTheme } from '../lib/theme-context';
+import { useAuth } from '../lib/auth';
 import type { RootStackParamList } from '../App';
 
 type Nav = NativeStackNavigationProp<RootStackParamList>;
@@ -35,6 +36,7 @@ export default function RecoveryPhraseVerifyScreen() {
   const insets = useSafeAreaInsets();
   const { colors: c, resolved } = useTheme();
 
+  const { markPhraseVerified } = useAuth();
   const { phrase } = route.params;
   const positions = useMemo(() => pickVerifyPositions(phrase.length), [phrase.length]);
 
@@ -74,7 +76,7 @@ export default function RecoveryPhraseVerifyScreen() {
     if (error) setError(null);
   }
 
-  function handleVerify() {
+  async function handleVerify() {
     const allCorrect = positions.every(
       (pos, i) => answers[i] === phrase[pos].toLowerCase()
     );
@@ -82,6 +84,7 @@ export default function RecoveryPhraseVerifyScreen() {
       setError("One or more words don't match. Check your phrase and try again.");
       return;
     }
+    await markPhraseVerified();
     navigation.navigate('Tabs');
   }
 
@@ -141,14 +144,14 @@ export default function RecoveryPhraseVerifyScreen() {
         {/* Verify button */}
         <TouchableOpacity
           style={[styles.button, answers.some((a) => !a) && styles.buttonDisabled]}
-          onPress={handleVerify}
+          onPress={() => { void handleVerify(); }}
           activeOpacity={0.8}
           disabled={answers.some((a) => !a)}
         >
           <Text style={styles.buttonText}>Confirm and continue</Text>
         </TouchableOpacity>
 
-        {/* Back */}
+        {/* Back to phrase — allowed, so user can re-read the words */}
         <TouchableOpacity
           style={styles.backRow}
           onPress={() => navigation.goBack()}
