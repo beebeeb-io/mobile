@@ -51,11 +51,14 @@ import {
   photoBackupStats,
   getNotificationPreferences,
   setNotificationPreferences,
+  getUserRegion,
+  setUserRegion,
   type StorageUsage,
   type Subscription,
   type Region,
   type PhotoBackupStats,
   type MobileNotificationPreferences,
+  type AvailableRegion,
 } from '../lib/api';
 import { readLastSessionAt } from '../services/PhotoBackupCheckpoint';
 import { formatEtaSeconds } from '../services/PhotoBackupRunner';
@@ -480,6 +483,8 @@ export default function SettingsScreen() {
   const [recoveryPdfLoading, setRecoveryPdfLoading] = useState(false);
   const [storageRegionMode, setStorageRegionMode] = useState<RegionMode>('preference');
   const [savingRegion, setSavingRegion] = useState(false);
+  /** Dynamic regions from /api/v1/me/region — replaces hardcoded REGIONS when available */
+  const [apiRegions, setApiRegions] = useState<AvailableRegion[] | null>(null);
 
   // Backup per-category stats (sourced from BackupDatabase + .device.json manifest)
   const [photoStats, setPhotoStats] = useState<CategoryStats>(EMPTY_CATEGORY_STATS);
@@ -555,6 +560,15 @@ export default function SettingsScreen() {
   }, []);
 
   const loadStorageRegionPref = useCallback(async () => {
+    // Try the new /api/v1/me/region endpoint first; fall back to stored preference
+    try {
+      const data = await getUserRegion();
+      setApiRegions(data.regions);
+      if (data.preferred_region) setStorageRegion(data.preferred_region);
+      return;
+    } catch {
+      // Endpoint not deployed yet — fall through to stored preference
+    }
     const raw = await getPreference('storage_region');
     if (!raw) return;
     try {
@@ -884,18 +898,29 @@ export default function SettingsScreen() {
   }, [triggerBackupNow]);
 
   const handleRegionChange = useCallback(async (poolName: string) => {
-    const r = REGIONS.find(x => x.poolName === poolName);
-    if (!r?.available) return;
+    // If API regions are loaded, validate against them; otherwise check hardcoded list
+    if (apiRegions !== null) {
+      if (!apiRegions.find(r => r.continent === poolName)) return;
+    } else {
+      const r = REGIONS.find(x => x.poolName === poolName);
+      if (!r?.available) return;
+    }
     setStorageRegion(poolName);
     setSavingRegion(true);
     try {
-      await setPreference('storage_region', JSON.stringify({ pool_name: poolName, mode: storageRegionMode }));
+      if (apiRegions !== null) {
+        // Use new server endpoint when API regions are loaded
+        await setUserRegion(poolName);
+      } else {
+        // Fall back to stored preference
+        await setPreference('storage_region', JSON.stringify({ pool_name: poolName, mode: storageRegionMode }));
+      }
     } catch {
       // Best-effort; local state updated
     } finally {
       setSavingRegion(false);
     }
-  }, [storageRegionMode]);
+  }, [storageRegionMode, apiRegions]);
 
   const handleRegionModeChange = useCallback(async (mode: RegionMode) => {
     setStorageRegionMode(mode);
@@ -1164,48 +1189,101 @@ export default function SettingsScreen() {
         <View style={layout.section}>
           <SectionHeader title="Data residency" c={c} />
           <View style={[layout.card, { backgroundColor: c.paper, borderColor: c.line }]}>
-            {REGIONS.map((r, i) => (
-              <React.Fragment key={r.poolName}>
-                {i > 0 && <RowDivider c={c} />}
-                <TouchableOpacity
-                  style={layout.regionOption}
-                  activeOpacity={r.available ? 0.6 : 1}
-                  onPress={() => r.available && handleRegionChange(r.poolName)}
-                  disabled={!r.available || savingRegion}
-                  accessibilityLabel={`${r.label}${!r.available ? ', coming soon' : storageRegion === r.poolName ? ', selected' : ''}`}
-                  accessibilityRole="radio"
-                  accessibilityState={{ checked: storageRegion === r.poolName, disabled: !r.available }}
-                >
-                  <Text style={{ fontSize: 20 }}>{r.flag}</Text>
-                  <View style={[
-                    layout.regionRadio,
-                    { borderColor: storageRegion === r.poolName && r.available ? c.amber : c.line2 },
-                  ]}>
-                    {storageRegion === r.poolName && r.available && (
-                      <View style={[layout.regionRadioDot, { backgroundColor: c.amber }]} />
+            {/* API regions when loaded — dynamic from /api/v1/me/region */}
+            {apiRegions !== null
+              ? apiRegions.map((r, i) => {
+                  const isSelected = storageRegion === r.continent;
+                  return (
+                    <React.Fragment key={r.continent}>
+                      {i > 0 && <RowDivider c={c} />}
+                      <TouchableOpacity
+                        style={layout.regionOption}
+                        activeOpacity={0.6}
+                        onPress={() => void handleRegionChange(r.continent)}
+                        disabled={savingRegion || apiRegions.length <= 1}
+                        accessibilityLabel={`${r.display_name}${isSelected ? ', selected' : ''}`}
+                        accessibilityRole="radio"
+                        accessibilityState={{ checked: isSelected }}
+                      >
+                        <View style={[
+                          layout.regionRadio,
+                          { borderColor: isSelected ? c.amber : c.line2 },
+                        ]}>
+                          {isSelected && (
+                            <View style={[layout.regionRadioDot, { backgroundColor: c.amber }]} />
+                          )}
+                        </View>
+                        <View style={layout.regionInfo}>
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                            <Text style={{ fontSize: 14, color: c.ink, fontWeight: '400' as const }}>
+                              {r.display_name}
+                            </Text>
+                            {r.is_default && (
+                              <Text style={{
+                                fontSize: 10, color: c.ink4, fontWeight: '500' as const,
+                                paddingHorizontal: 5, paddingVertical: 1,
+                                borderRadius: 4, borderWidth: 1, borderColor: c.line2,
+                                overflow: 'hidden' as const,
+                              }}>
+                                Default
+                              </Text>
+                            )}
+                          </View>
+                          <Text style={{ fontSize: 11, color: c.ink3, marginTop: 1 }}>
+                            {r.city} · {r.provider}
+                          </Text>
+                        </View>
+                        {isSelected && (
+                          <Ionicons name="checkmark" size={16} color={c.amber} />
+                        )}
+                      </TouchableOpacity>
+                    </React.Fragment>
+                  );
+                })
+              /* Fallback: hardcoded REGIONS while API endpoint isn't deployed */
+              : REGIONS.map((r, i) => (
+                <React.Fragment key={r.poolName}>
+                  {i > 0 && <RowDivider c={c} />}
+                  <TouchableOpacity
+                    style={layout.regionOption}
+                    activeOpacity={r.available ? 0.6 : 1}
+                    onPress={() => r.available && void handleRegionChange(r.poolName)}
+                    disabled={!r.available || savingRegion}
+                    accessibilityLabel={`${r.label}${!r.available ? ', coming soon' : storageRegion === r.poolName ? ', selected' : ''}`}
+                    accessibilityRole="radio"
+                    accessibilityState={{ checked: storageRegion === r.poolName, disabled: !r.available }}
+                  >
+                    <Text style={{ fontSize: 20 }}>{r.flag}</Text>
+                    <View style={[
+                      layout.regionRadio,
+                      { borderColor: storageRegion === r.poolName && r.available ? c.amber : c.line2 },
+                    ]}>
+                      {storageRegion === r.poolName && r.available && (
+                        <View style={[layout.regionRadioDot, { backgroundColor: c.amber }]} />
+                      )}
+                    </View>
+                    <View style={layout.regionInfo}>
+                      <Text style={{ fontSize: 14, color: r.available ? c.ink : c.ink4, fontWeight: '400' as const }}>
+                        {r.label}
+                      </Text>
+                      <Text style={{ fontSize: 11, color: c.ink3, marginTop: 1 }}>
+                        {r.subtitle}{!r.available ? ' · Coming soon' : ''}
+                      </Text>
+                    </View>
+                    {!r.available && (
+                      <Text style={{
+                        fontSize: 10, color: c.ink4, fontWeight: '500' as const,
+                        paddingHorizontal: 6, paddingVertical: 2,
+                        borderRadius: 4, borderWidth: 1, borderColor: c.line2,
+                        overflow: 'hidden' as const,
+                      }}>
+                        Soon
+                      </Text>
                     )}
-                  </View>
-                  <View style={layout.regionInfo}>
-                    <Text style={{ fontSize: 14, color: r.available ? c.ink : c.ink4, fontWeight: '400' as const }}>
-                      {r.label}
-                    </Text>
-                    <Text style={{ fontSize: 11, color: c.ink3, marginTop: 1 }}>
-                      {r.subtitle}{!r.available ? ' · Coming soon' : ''}
-                    </Text>
-                  </View>
-                  {!r.available && (
-                    <Text style={{
-                      fontSize: 10, color: c.ink4, fontWeight: '500' as const,
-                      paddingHorizontal: 6, paddingVertical: 2,
-                      borderRadius: 4, borderWidth: 1, borderColor: c.line2,
-                      overflow: 'hidden' as const,
-                    }}>
-                      Soon
-                    </Text>
-                  )}
-                </TouchableOpacity>
-              </React.Fragment>
-            ))}
+                  </TouchableOpacity>
+                </React.Fragment>
+              ))
+            }
 
             <RowDivider c={c} />
             <View style={layout.row}>
