@@ -25,6 +25,7 @@ import {
   NativeCryptoUnavailableError,
   friendlyError,
 } from '../lib/api';
+import * as SecureStore from 'expo-secure-store';
 import * as BeebeebCrypto from '../../modules/beebeeb-crypto';
 import type { RootStackParamList } from '../App';
 
@@ -128,6 +129,9 @@ export default function SignupScreen() {
               // Keychain unavailable — phrase still shown to the user, master key
               // will need to be re-derived on next login.
             }
+            // Store the phrase so the Settings screen can offer re-printing the
+            // recovery kit PDF later. SecureStore is backed by the OS keychain.
+            await SecureStore.setItemAsync('beebeeb_recovery_phrase', result.phrase).catch(() => {})
           } catch {
             // generateRecoveryPhrase threw despite the flag — proceed without phrase.
           }
