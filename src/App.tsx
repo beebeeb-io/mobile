@@ -58,6 +58,7 @@ const OnboardingScreen = React.lazy(() => import('./screens/OnboardingScreen'));
 import ErrorBoundary from './components/ErrorBoundary';
 import ConfirmActionPrompt from './components/ConfirmActionPrompt';
 import { BackupProvider } from './lib/backup-context';
+import { PhotoBackupBridge } from './lib/PhotoBackupBridge';
 import { processPendingShares } from '../plugins/share-extension/PendingSharesHandler';
 import { useToast } from './lib/toast-context';
 
@@ -541,6 +542,8 @@ export default function App() {
       <CryptoProvider>
       <SyncProvider>
       <BackupProvider>
+      {/* Wire JS-side photo backup: foreground trigger + Wi-Fi gate */}
+      <PhotoBackupBridge />
       <SafeAreaProvider>
       <ToastProvider>
         <Suspense fallback={<ScreenLoadingFallback />}>
