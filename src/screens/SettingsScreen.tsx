@@ -35,7 +35,7 @@ try { Constants = require('expo-constants'); } catch {}
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { spacing, type Colors } from '../theme';
+import { fonts, spacing, type Colors } from '../theme';
 import { useAuth } from '../lib/auth';
 import { generateRecoveryKitPDF } from '../lib/recovery-kit-pdf';
 import { useBackup } from '../lib/backup-context';
@@ -1273,8 +1273,8 @@ export default function SettingsScreen() {
               <>
                 <RowDivider c={c} />
                 <ToggleRow
-                  label="Include videos"
-                  subtitle="Include videos in the camera upload"
+                  label="Photos and videos"
+                  subtitle="Back up videos in addition to photos. Videos can be large — backed up over Wi-Fi only."
                   value={includeVideos}
                   onValueChange={setIncludeVideos}
                   indent
@@ -1322,15 +1322,25 @@ export default function SettingsScreen() {
 
                 {/* ── JS-side live session progress ── */}
                 {photoSessionProgress.running && photoSessionProgress.total > 0 && (
-                  <View style={layout.backupNote}>
-                    <ActivityIndicator size="small" color={c.amber} style={{ marginRight: 8 }} />
-                    <Text style={{ fontSize: 12, color: c.ink3, lineHeight: 17, flex: 1 }}>
-                      {'Backing up... '}
-                      {photoSessionProgress.uploaded}/{photoSessionProgress.total}
-                      {photoSessionProgress.etaSeconds != null
-                        ? ` · ${formatEtaSeconds(photoSessionProgress.etaSeconds)} remaining`
-                        : ''}
-                    </Text>
+                  <View style={{ paddingHorizontal: 12, paddingBottom: 10, paddingTop: 2, gap: 4 }}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                      <ActivityIndicator size="small" color={c.amber} />
+                      <Text style={{ fontSize: 12, color: c.ink3, lineHeight: 17, flex: 1 }}>
+                        {'Backing up... '}
+                        {photoSessionProgress.uploaded}/{photoSessionProgress.total}
+                        {photoSessionProgress.etaSeconds != null
+                          ? ` · ${formatEtaSeconds(photoSessionProgress.etaSeconds)} remaining`
+                          : ''}
+                      </Text>
+                    </View>
+                    {photoSessionProgress.currentFileName ? (
+                      <Text style={{ fontSize: 11, color: c.ink4, fontFamily: fonts.mono }} numberOfLines={1} ellipsizeMode="middle">
+                        {photoSessionProgress.currentFileName}
+                        {photoSessionProgress.currentFileSizeBytes > 0
+                          ? ` · ${formatBytes(photoSessionProgress.currentFileSizeBytes)}`
+                          : ''}
+                      </Text>
+                    ) : null}
                   </View>
                 )}
                 {photoSessionProgress.running && photoSessionProgress.total === 0 && (
