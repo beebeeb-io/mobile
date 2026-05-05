@@ -19,6 +19,7 @@ import {
 } from 'react-native';
 import { Swipeable } from 'react-native-gesture-handler';
 import { Ionicons } from '@expo/vector-icons';
+import { Icon } from '../components/Icon';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import type { RouteProp } from '@react-navigation/native';
@@ -320,7 +321,7 @@ const FileRowItem = React.memo(function FileRowItem({
         accessibilityRole="button"
         accessibilityLabel={`Move ${nameText} to trash`}
       >
-        <Ionicons name="trash-outline" size={20} color="#fff" />
+        <Icon name="trash" size={20} color="#fff" />
         <Text style={styles.swipeActionLabel}>Trash</Text>
       </TouchableOpacity>
     </View>
@@ -338,7 +339,7 @@ const FileRowItem = React.memo(function FileRowItem({
         accessibilityRole="button"
         accessibilityLabel={`Share ${nameText}`}
       >
-        <Ionicons name="share-outline" size={20} color="#fff" />
+        <Icon name="share" size={20} color="#fff" />
         <Text style={styles.swipeActionLabel}>Share</Text>
       </TouchableOpacity>
     </View>
@@ -361,14 +362,14 @@ const FileRowItem = React.memo(function FileRowItem({
           { borderColor: isSelected ? c.amber : c.line2 },
           isSelected && { backgroundColor: c.amber },
         ]}>
-          {isSelected && <Ionicons name="checkmark" size={13} color="#fff" />}
+          {isSelected && <Icon name="check" size={13} color="#fff" />}
         </View>
       )}
       <FileIcon category={category} />
       <View style={styles.fileInfo}>
         <View style={styles.fileNameRow}>
           {isEncryptedFallback && (
-            <Ionicons name="lock-closed" size={11} color={c.ink4} style={styles.lockIcon} />
+            <Icon name="lock" size={11} color={c.ink4} style={styles.lockIcon} />
           )}
           <Text
             style={[styles.fileName, { color: c.ink }, isEncryptedFallback && styles.fileNameEncrypted]}
@@ -427,7 +428,7 @@ const FileRowItem = React.memo(function FileRowItem({
           accessibilityRole="button"
           accessibilityLabel={`Encryption details for ${nameText}`}
         >
-          <Ionicons name="lock-closed" size={13} color={c.amberDeep} />
+          <Icon name="lock" size={13} color={c.amberDeep} />
         </TouchableOpacity>
       )}
       {!selectMode && <Text style={[styles.chevron, { color: c.ink4 }]}>{'›'}</Text>}
@@ -527,7 +528,7 @@ const FileGridItem = React.memo(function FileGridItem({
           styles.gridCheckbox,
           { borderColor: isSelected ? c.amber : c.line2, backgroundColor: isSelected ? c.amber : c.paper },
         ]}>
-          {isSelected && <Ionicons name="checkmark" size={12} color="#fff" />}
+          {isSelected && <Icon name="check" size={12} color="#fff" />}
         </View>
       )}
       <View style={styles.gridIconWrap}>
@@ -536,7 +537,7 @@ const FileGridItem = React.memo(function FileGridItem({
       <View style={styles.gridTextWrap}>
         <View style={styles.gridNameRow}>
           {isEncryptedFallback && (
-            <Ionicons name="lock-closed" size={10} color={c.ink4} style={styles.lockIcon} />
+            <Icon name="lock" size={10} color={c.ink4} style={styles.lockIcon} />
           )}
           <Text
             style={[styles.gridName, { color: c.ink }, isEncryptedFallback && styles.fileNameEncrypted]}
@@ -589,7 +590,7 @@ const FileGridItem = React.memo(function FileGridItem({
           accessibilityRole="button"
           accessibilityLabel={`Encryption details for ${nameText}`}
         >
-          <Ionicons name="lock-closed" size={11} color={c.amberDeep} />
+          <Icon name="lock" size={11} color={c.amberDeep} />
         </TouchableOpacity>
       )}
     </TouchableOpacity>
@@ -1869,7 +1870,7 @@ export default function FilesScreen() {
               accessibilityLabel={`Open pinned folder ${pf.name}`}
               accessibilityRole="button"
             >
-              <Ionicons name="folder" size={13} color={c.amberDeep} />
+              <Icon name="folder" size={13} color={c.amberDeep} />
               <Text style={[styles.pinnedChipText, { color: c.amberDeep }]} numberOfLines={1}>
                 {pf.name}
               </Text>
@@ -2307,7 +2308,7 @@ export default function FilesScreen() {
             onPress={handleBatchShare}
             disabled={selectedIds.size === 0}
           >
-            <Ionicons name="share-outline" size={22} color={selectedIds.size === 0 ? c.ink4 : c.ink2} />
+            <Icon name="share" size={22} color={selectedIds.size === 0 ? c.ink4 : c.ink2} />
             <Text style={[styles.actionBarLabel, { color: selectedIds.size === 0 ? c.ink4 : c.ink2 }]}>Share</Text>
           </TouchableOpacity>
           <TouchableOpacity
@@ -2315,7 +2316,7 @@ export default function FilesScreen() {
             onPress={() => void handleBatchMove()}
             disabled={selectedIds.size === 0}
           >
-            <Ionicons name="folder-outline" size={22} color={selectedIds.size === 0 ? c.ink4 : c.ink2} />
+            <Icon name="folder" size={22} color={selectedIds.size === 0 ? c.ink4 : c.ink2} />
             <Text style={[styles.actionBarLabel, { color: selectedIds.size === 0 ? c.ink4 : c.ink2 }]}>Move</Text>
           </TouchableOpacity>
           <TouchableOpacity
@@ -2323,7 +2324,7 @@ export default function FilesScreen() {
             onPress={handleBatchTrash}
             disabled={selectedIds.size === 0}
           >
-            <Ionicons name="trash-outline" size={22} color={selectedIds.size === 0 ? c.ink4 : c.red} />
+            <Icon name="trash" size={22} color={selectedIds.size === 0 ? c.ink4 : c.red} />
             <Text style={[styles.actionBarLabel, { color: selectedIds.size === 0 ? c.ink4 : c.red }]}>Trash</Text>
           </TouchableOpacity>
         </View>
