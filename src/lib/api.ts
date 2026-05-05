@@ -1159,3 +1159,56 @@ export async function setNotificationPreferences(
 ): Promise<MobileNotificationPreferences> {
   return request<MobileNotificationPreferences>('PUT', '/api/v1/notifications/preferences', prefs);
 }
+
+// ─── Privacy / DSAR (spec 025) ────────────────────────────────────────────────
+
+export interface TrackingPreference {
+  tracking_opted_in: boolean;
+  opted_in_at: string | null;
+  opted_out_at: string | null;
+}
+
+/** GET /api/v1/me/tracking */
+export async function getTrackingPreference(): Promise<TrackingPreference> {
+  return request<TrackingPreference>('GET', '/api/v1/me/tracking');
+}
+
+/** PUT /api/v1/me/tracking */
+export async function setTrackingPreference(optedIn: boolean): Promise<TrackingPreference> {
+  return request<TrackingPreference>('PUT', '/api/v1/me/tracking', { opted_in: optedIn });
+}
+
+export interface DataExportRequest {
+  export_id: string;
+  status: string;
+  estimated_seconds?: number;
+}
+
+export interface DataExportStatus {
+  export_id: string;
+  status: string;
+  file_count?: number;
+  total_bytes?: number;
+  download_url?: string;
+  expires_at?: string;
+}
+
+/** POST /api/v1/me/data-export */
+export async function requestDataExport(): Promise<DataExportRequest> {
+  return request<DataExportRequest>('POST', '/api/v1/me/data-export');
+}
+
+/** GET /api/v1/me/data-export/:id */
+export async function getDataExportStatus(exportId: string): Promise<DataExportStatus> {
+  return request<DataExportStatus>('GET', `/api/v1/me/data-export/${exportId}`);
+}
+
+/** POST /api/v1/me/freeze */
+export async function freezeAccount(): Promise<{ frozen: boolean }> {
+  return request<{ frozen: boolean }>('POST', '/api/v1/me/freeze');
+}
+
+/** POST /api/v1/me/unfreeze */
+export async function unfreezeAccount(): Promise<{ frozen: boolean }> {
+  return request<{ frozen: boolean }>('POST', '/api/v1/me/unfreeze');
+}
