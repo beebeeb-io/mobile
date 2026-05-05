@@ -37,6 +37,7 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { spacing, type Colors } from '../theme';
 import { useAuth } from '../lib/auth';
+import { generateRecoveryKitPDF } from '../lib/recovery-kit-pdf';
 import { useBackup } from '../lib/backup-context';
 import { useTheme, type ThemeMode } from '../lib/theme-context';
 import { useToast } from '../lib/toast-context';
@@ -460,6 +461,7 @@ export default function SettingsScreen() {
 
   // Data residency preference
   const [storageRegion, setStorageRegion] = useState<string>('europe');
+  const [recoveryPdfLoading, setRecoveryPdfLoading] = useState(false);
   const [storageRegionMode, setStorageRegionMode] = useState<RegionMode>('preference');
   const [savingRegion, setSavingRegion] = useState(false);
 
@@ -854,6 +856,27 @@ export default function SettingsScreen() {
     Linking.openURL('https://app.beebeeb.io/settings/security');
   }, []);
 
+  const handleDownloadRecoveryKit = useCallback(async () => {
+    if (recoveryPdfLoading) return;
+    setRecoveryPdfLoading(true);
+    try {
+      // Load the phrase stored in SecureStore at signup
+      const stored = await SecureStore.getItemAsync('beebeeb_recovery_phrase');
+      if (!stored) {
+        Alert.alert(
+          'Recovery kit unavailable',
+          'The recovery phrase is not stored on this device. If you set up your account on another device, generate the PDF there, or use the web app at app.beebeeb.io.',
+        );
+        return;
+      }
+      await generateRecoveryKitPDF(stored, user?.email ?? '');
+    } catch {
+      Alert.alert('Could not generate PDF', 'Please try again.');
+    } finally {
+      setRecoveryPdfLoading(false);
+    }
+  }, [recoveryPdfLoading, user?.email]);
+
   const handlePrivacyPolicy = useCallback(() => {
     Linking.openURL('https://beebeeb.io/legal/privacy');
   }, []);
@@ -1172,6 +1195,13 @@ export default function SettingsScreen() {
               label="Account & Security"
               icon="shield-checkmark-outline"
               onPress={handleAccountSecurity}
+              c={c}
+            />
+            <RowDivider c={c} />
+            <SettingsRow
+              label={recoveryPdfLoading ? 'Preparing PDF…' : 'Download Recovery Kit'}
+              icon="document-text-outline"
+              onPress={() => { void handleDownloadRecoveryKit(); }}
               c={c}
             />
             <RowDivider c={c} />

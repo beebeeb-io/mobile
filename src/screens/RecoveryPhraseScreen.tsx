@@ -13,6 +13,8 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { colors, radii, spacing } from '../theme';
 import { useTheme } from '../lib/theme-context';
+import { useAuth } from '../lib/auth';
+import { generateRecoveryKitPDF } from '../lib/recovery-kit-pdf';
 import type { RootStackParamList } from '../App';
 
 type Nav = NativeStackNavigationProp<RootStackParamList>;
@@ -23,6 +25,7 @@ export default function RecoveryPhraseScreen() {
   const route = useRoute<Route>();
   const insets = useSafeAreaInsets();
   const { colors: c } = useTheme();
+  const { user } = useAuth();
 
   // The phrase is generated in SignupScreen via the native crypto module and
   // passed in via navigation params. If it's missing, the native module is not
@@ -33,6 +36,19 @@ export default function RecoveryPhraseScreen() {
 
   const [revealed, setRevealed] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
+  const [savingPdf, setSavingPdf] = useState(false);
+
+  async function handleSavePdf() {
+    if (savingPdf || phraseUnavailable) return;
+    setSavingPdf(true);
+    try {
+      await generateRecoveryKitPDF(phrase.join(' '), user?.email ?? '');
+    } catch {
+      // Share sheet dismissed or PDF generation failed — silent is fine
+    } finally {
+      setSavingPdf(false);
+    }
+  }
 
   function handleContinue() {
     navigation.navigate('RecoveryPhraseVerify', { phrase });
@@ -143,6 +159,20 @@ export default function RecoveryPhraseScreen() {
             I've written down my recovery phrase and stored it safely.
           </Text>
         </TouchableOpacity>
+
+        {/* Save as PDF — shown when phrase is visible and revealed */}
+        {revealed && !phraseUnavailable && (
+          <TouchableOpacity
+            style={[styles.pdfButton, savingPdf && styles.buttonDisabled]}
+            onPress={() => { void handleSavePdf(); }}
+            activeOpacity={0.8}
+            disabled={savingPdf}
+          >
+            <Text style={styles.pdfButtonText}>
+              {savingPdf ? 'Preparing PDF…' : 'Save as PDF'}
+            </Text>
+          </TouchableOpacity>
+        )}
 
         {/* Continue */}
         <TouchableOpacity
@@ -345,6 +375,14 @@ const styles = StyleSheet.create({
   checkLabel: { flex: 1, fontSize: 13, color: colors.ink2, lineHeight: 18 },
   checkLabelMuted: { opacity: 0.4 },
 
+  pdfButton: {
+    backgroundColor: colors.amber,
+    borderRadius: radii.md,
+    paddingVertical: 12,
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  pdfButtonText: { fontSize: 14, fontWeight: '600', color: colors.ink },
   button: {
     backgroundColor: colors.ink,
     borderRadius: radii.md,
