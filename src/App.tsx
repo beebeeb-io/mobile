@@ -21,6 +21,7 @@ import {
   clearToken,
   getMe,
   logout,
+  getStorageUsage,
   registerSessionExpiredHandler,
 } from './lib/api';
 import type { User } from './lib/api';
@@ -56,6 +57,7 @@ const SharedViewScreen = React.lazy(() => import('./screens/SharedViewScreen'));
 const TrashScreen = React.lazy(() => import('./screens/TrashScreen'));
 const BackupGuidesScreen = React.lazy(() => import('./screens/BackupGuidesScreen'));
 const PrivacyScreen = React.lazy(() => import('./screens/PrivacyScreen'));
+const StorageScreen = React.lazy(() => import('./screens/StorageScreen'));
 const RecoveryPhraseScreen = React.lazy(() => import('./screens/RecoveryPhraseScreen'));
 const RecoveryPhraseVerifyScreen = React.lazy(() => import('./screens/RecoveryPhraseVerifyScreen'));
 const DevicePairingScreen = React.lazy(() => import('./screens/DevicePairingScreen'));
@@ -119,6 +121,7 @@ export type RootStackParamList = {
   RecoveryPhrase: { phrase?: string[] };
   RecoveryPhraseVerify: { phrase: string[] };
   Privacy: undefined;
+  Storage: undefined;
   // Device pairing (Amber Constellation)
   DevicePairing: undefined;
   DevicePairingScan: undefined;
@@ -339,6 +342,14 @@ function BiometricGuard({ locked, onUnlock }: { locked: boolean; onUnlock: () =>
 
 function TabNavigator() {
   const { colors: c } = useTheme();
+  // Check storage on mount — show badge on Settings tab when >= 80% full
+  const [storageWarning, setStorageWarning] = useState(false);
+  useEffect(() => {
+    getStorageUsage()
+      .then(u => { if (u.plan_limit_bytes > 0) setStorageWarning(u.used_bytes / u.plan_limit_bytes >= 0.8); })
+      .catch(() => {});
+  }, []);
+
   return (
     <Tab.Navigator
       screenListeners={{
@@ -366,7 +377,14 @@ function TabNavigator() {
       <Tab.Screen name="Files" component={FilesScreen} />
       <Tab.Screen name="Shared" component={SharedScreen} />
       <Tab.Screen name="Photos" component={PhotosScreen} />
-      <Tab.Screen name="Settings" component={SettingsScreen} />
+      <Tab.Screen
+        name="Settings"
+        component={SettingsScreen}
+        options={storageWarning ? {
+          tabBarBadge: '!',
+          tabBarBadgeStyle: { backgroundColor: c.amberDeep, fontSize: 9 },
+        } : undefined}
+      />
     </Tab.Navigator>
   );
 }
@@ -666,6 +684,7 @@ export default function App() {
                   <Stack.Screen name="Trash" component={TrashScreen} />
                   <Stack.Screen name="BackupGuides" component={BackupGuidesScreen} />
                   <Stack.Screen name="Privacy" component={PrivacyScreen} options={{ headerShown: false }} />
+                  <Stack.Screen name="Storage" component={StorageScreen} options={{ headerShown: false }} />
                   <Stack.Screen
                     name="RecoveryPhrase"
                     component={RecoveryPhraseScreen}
