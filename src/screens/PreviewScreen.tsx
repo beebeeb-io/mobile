@@ -29,6 +29,11 @@ import { useTheme } from '../lib/theme-context';
 import { getToken, getDownloadUrl, friendlyError } from '../lib/api';
 import { useCrypto } from '../lib/crypto-context';
 import * as BeebeebCrypto from '../../modules/beebeeb-crypto';
+import {
+  decryptEncryptedBytes,
+  inferChunkCountFromEncryptedSize,
+  readHeaderInt,
+} from '../lib/encrypted-download';
 
 // Office libs — loaded eagerly so Metro bundles them. Mammoth's `browser`
 // entry is a UMD bundle that avoids Node-only deps (fs, path) and works in RN.
@@ -769,7 +774,7 @@ export default function PreviewScreen() {
   const [zipLoading, setZipLoading] = useState(false);
   const [zipError, setZipError] = useState<string | null>(null);
 
-  const { isUnlocked, decryptChunk } = useCrypto();
+  const { isUnlocked, getFileKeyBytes } = useCrypto();
 
   const category = fileCategory(mimeType, fileName);
   const isImage = category === 'image';
@@ -870,22 +875,38 @@ export default function PreviewScreen() {
       if (!BeebeebCrypto.isNativeAvailable) {
         throw new Error('Preview requires a dev client build with native crypto.');
       }
-      if ((chunkCount ?? 1) > 1) {
-        throw new Error('Multi-chunk file preview is not yet supported.');
-      }
-      // Single-chunk decryption: the file body is `nonce(12) || ciphertext`.
-      // Multi-chunk uploads use the same record layout per chunk, but stitching
-      // them back together is a separate (un-shipped) feature.
+
+      // Read the encrypted body off disk. expo-file-system exposes the
+      // response headers on the result so we can prefer the server's
+      // authoritative X-Chunk-Count / X-Original-Size over local metadata.
       const encBase64 = await FileSystem.readAsStringAsync(result.uri, {
         encoding: FileSystem.EncodingType.Base64,
       });
       const encBytes = base64ToUint8Array(encBase64);
-      if (encBytes.length <= 12) {
-        throw new Error('Encrypted file is too small to decrypt.');
+
+      // Resolve plaintext size: prefer the X-Original-Size header (the server
+      // stores the canonical value), then the route-param `sizeBytes`, then
+      // fall back to the encrypted length minus a single-chunk overhead.
+      const headerOriginalSize = readHeaderInt(result.headers, 'X-Original-Size');
+      const effectiveSize = headerOriginalSize ?? sizeBytes ?? encBytes.length - 28;
+      if (effectiveSize <= 0) {
+        throw new Error('Could not determine plaintext size for decryption.');
       }
-      const nonce = encBytes.slice(0, 12);
-      const ciphertext = encBytes.slice(12);
-      const decrypted = await decryptChunk(fileId, nonce, ciphertext);
+
+      // Resolve chunk count: header → route param → byte-math inference.
+      const headerChunkCount = readHeaderInt(result.headers, 'X-Chunk-Count');
+      const inferred = inferChunkCountFromEncryptedSize(encBytes.length, effectiveSize);
+      const effectiveChunkCount = headerChunkCount ?? chunkCount ?? inferred ?? 1;
+
+      // Derive the per-file key once and reuse it across chunks.
+      const fileKey = await getFileKeyBytes(fileId);
+      const decrypted = await decryptEncryptedBytes(
+        fileKey,
+        encBytes,
+        effectiveChunkCount,
+        effectiveSize,
+      );
+
       const decUri = `${FileSystem.cacheDirectory}dec_${fileId}_${safeName}`;
       await FileSystem.writeAsStringAsync(decUri, uint8ArrayToBase64(decrypted), {
         encoding: FileSystem.EncodingType.Base64,
@@ -893,7 +914,7 @@ export default function PreviewScreen() {
       return decUri;
     }
     return result.uri;
-  }, [fileId, fileName, isUnlocked, decryptChunk, chunkCount]);
+  }, [fileId, fileName, isUnlocked, getFileKeyBytes, chunkCount, sizeBytes]);
 
   // Auto-load images inline on mount
   useEffect(() => {
