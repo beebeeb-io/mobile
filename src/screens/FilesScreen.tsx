@@ -47,6 +47,7 @@ import { useCrypto } from '../lib/crypto-context';
 import { useAuth } from '../lib/auth';
 import { encryptedUpload, generateFileId } from '../lib/encrypted-upload';
 import { useSync } from '../lib/sync-context';
+import { useSearchIndex } from '../lib/use-search-index';
 
 // Tracks the currently open Swipeable so we can close it when another opens.
 let _openSwipeable: Swipeable | null = null;
@@ -794,6 +795,11 @@ export default function FilesScreen() {
   // and stays live (SSE pushes). Until then we fall back to listFiles().
   const sync = useSync();
 
+  // Encrypted search index — fetched on unlock, queried on every keystroke
+  // when the search bar is open. Powers the "in your vault" results hint
+  // below the search bar; also kept in sync after upload + delete.
+  const { search: searchVault, indexFile, unindexFile } = useSearchIndex();
+
   // Upload state — drives the 3-stage trust banner above the FAB.
   // stage 1 = encrypting · stage 2 = uploading · stage 3 = storing/done.
   type UploadStage = 1 | 2 | 3 | 'done';
@@ -1082,6 +1088,19 @@ export default function FilesScreen() {
       const finalLoc = trustLocation(uploaded.storage_pool_id);
       setUpload({ fileName: uploadFileName, stage: 'done', percent: 100, city: finalLoc.city, region: finalLoc.region });
       setFiles((prev) => [uploaded, ...prev]);
+      // Add to the encrypted search index so the new file is searchable
+      // across the whole vault from the very next keystroke.
+      indexFile(uploaded.id, {
+        name: uploadFileName,
+        path: uploadFileName,
+        type: asset.mimeType ?? '',
+        size: uploaded.size_bytes ?? 0,
+        parent: currentFolder.id ?? null,
+        starred: false,
+        created: new Date().toISOString(),
+        modified: new Date().toISOString(),
+        tags: [],
+      });
       // Fire-and-forget: generate + upload a 256px thumbnail for image files.
       void generateAndUploadThumbnail(uploaded.id, asset.uri, asset.mimeType ?? null);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -1362,6 +1381,7 @@ export default function FilesScreen() {
               const ids = [...selectedIds];
               await Promise.all(ids.map((id) => deleteFile(id)));
               setFiles((prev) => prev.filter((f) => !selectedIds.has(f.id)));
+              for (const id of ids) unindexFile(id);
               Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
               exitSelectMode();
             } catch (err) {
@@ -1371,7 +1391,7 @@ export default function FilesScreen() {
         },
       ],
     );
-  }, [selectedIds, exitSelectMode]);
+  }, [selectedIds, exitSelectMode, unindexFile]);
 
   const handleBatchShare = useCallback(() => {
     if (selectedIds.size === 0) return;
@@ -1700,6 +1720,7 @@ export default function FilesScreen() {
               try {
                 await deleteFile(item.id);
                 setFiles((prev) => prev.filter((f) => f.id !== item.id));
+                unindexFile(item.id);
                 showToast({ type: 'info', message: `"${name}" moved to Trash` });
               } catch (err) {
                 Alert.alert('Error', friendlyError(err));
@@ -1723,6 +1744,7 @@ export default function FilesScreen() {
               try {
                 await deleteFile(item.id);
                 setFiles((prev) => prev.filter((f) => f.id !== item.id));
+                unindexFile(item.id);
                 showToast({ type: 'info', message: `"${name}" moved to Trash` });
               } catch (err) {
                 Alert.alert('Error', friendlyError(err));
@@ -2033,6 +2055,7 @@ export default function FilesScreen() {
             try {
               await deleteFile(item.id);
               setFiles((prev) => prev.filter((f) => f.id !== item.id));
+              unindexFile(item.id);
             } catch (err) {
               Alert.alert('Error', friendlyError(err));
             }
@@ -2040,7 +2063,7 @@ export default function FilesScreen() {
         },
       ],
     );
-  }, [decryptedNames]);
+  }, [decryptedNames, unindexFile]);
 
   // Long-press enters multi-select with the pressed row already selected,
   // matching the runbook expectation. The previous ActionSheet (rename,
@@ -2283,29 +2306,51 @@ export default function FilesScreen() {
 
       {/* Search bar — slides in below header when active */}
       {searchActive && !selectMode && (
-        <View style={styles.searchBar}>
-          <TextInput
-            ref={searchInputRef}
-            style={[styles.searchInput, { backgroundColor: c.paper2, borderColor: c.line, color: c.ink }]}
-            value={searchQuery}
-            onChangeText={setSearchQuery}
-            placeholder="Search in this folder..."
-            placeholderTextColor={c.ink4}
-            autoFocus
-            returnKeyType="search"
-            autoCapitalize="none"
-            autoCorrect={false}
-            clearButtonMode="while-editing"
-          />
-          <TouchableOpacity
-            onPress={handleSearchToggle}
-            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-            accessibilityLabel="Cancel search"
-            accessibilityRole="button"
-          >
-            <Text style={{ color: c.amberDeep, fontSize: 14, fontWeight: '600' }}>Cancel</Text>
-          </TouchableOpacity>
-        </View>
+        <>
+          <View style={styles.searchBar}>
+            <TextInput
+              ref={searchInputRef}
+              style={[styles.searchInput, { backgroundColor: c.paper2, borderColor: c.line, color: c.ink }]}
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+              placeholder="Search in this folder..."
+              placeholderTextColor={c.ink4}
+              autoFocus
+              returnKeyType="search"
+              autoCapitalize="none"
+              autoCorrect={false}
+              clearButtonMode="while-editing"
+            />
+            <TouchableOpacity
+              onPress={handleSearchToggle}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              accessibilityLabel="Cancel search"
+              accessibilityRole="button"
+            >
+              <Text style={{ color: c.amberDeep, fontSize: 14, fontWeight: '600' }}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+          {/* Vault-wide search hint — surfaces matches outside the current
+              folder so users know there's more to find than the local
+              filter shows. Falls back silently when the index isn't
+              loaded yet (vault still locked) or when there are no extra
+              matches. */}
+          {(() => {
+            const q = searchQuery.trim()
+            if (!q) return null
+            const vaultMatches = searchVault(q)
+            const inFolderIds = new Set(files.map((f) => f.id))
+            const elsewhere = vaultMatches.filter((m) => !inFolderIds.has(m.id)).length
+            if (elsewhere === 0) return null
+            return (
+              <View style={{ paddingHorizontal: 16, paddingBottom: 8 }}>
+                <Text style={{ color: c.ink3, fontSize: 12 }}>
+                  {elsewhere} match{elsewhere === 1 ? '' : 'es'} elsewhere in your vault
+                </Text>
+              </View>
+            )
+          })()}
+        </>
       )}
 
       {/* Breadcrumbs (only show when navigated into a folder, not during search or select) */}
