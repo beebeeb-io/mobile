@@ -40,6 +40,12 @@ interface CryptoContextValue {
    * Throws if vault is locked.
    */
   getFileKeyBytes: (fileId: string) => Promise<Uint8Array>
+  /**
+   * Derive the search-index encryption key from the master key, using the
+   * same HKDF info string the web client uses (`beebeeb-search-index`) so
+   * the same key derivation produces the same key on both platforms.
+   */
+  getIndexKey: () => Promise<Uint8Array>
 }
 
 const CryptoContext = createContext<CryptoContextValue | null>(null)
@@ -136,6 +142,20 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
     [],
   )
 
+  // The web client derives its search-index key with HKDF-SHA-256 over the
+  // master key with `info = "beebeeb-search-index"`. `deriveFileKey` is the
+  // same HKDF construction with `info = fileId`, so passing the literal
+  // info string produces the same key bytes the web side uses. This is what
+  // lets a vault's index round-trip between web and mobile if both clients
+  // ever load it.
+  const getIndexKeyFn = useCallback(
+    async (): Promise<Uint8Array> => {
+      return deriveFileKey(requireKey(), 'beebeeb-search-index')
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  )
+
   return (
     <CryptoContext.Provider
       value={{
@@ -148,6 +168,7 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
         encryptMetadata: encryptMetadataFn,
         decryptMetadata: decryptMetadataFn,
         getFileKeyBytes: getFileKeyBytesFn,
+        getIndexKey: getIndexKeyFn,
       }}
     >
       {children}
