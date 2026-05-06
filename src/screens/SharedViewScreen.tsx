@@ -12,11 +12,18 @@ import { useNavigation, useRoute } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import * as FileSystem from 'expo-file-system';
+import * as Sharing from 'expo-sharing';
 import { radii, spacing } from '../theme';
 import { useTheme } from '../lib/theme-context';
-import { getShareByToken, friendlyError } from '../lib/api';
+import { downloadSharedFileBlob, getShareByToken, friendlyError } from '../lib/api';
 import type { ShareInfo } from '../lib/api';
 import { consumeShareKey } from '../lib/share-key-store';
+import {
+  decryptEncryptedBytes,
+  inferChunkCountFromEncryptedSize,
+} from '../lib/encrypted-download';
+import * as BeebeebCrypto from '../../modules/beebeeb-crypto';
 import type { RootStackParamList } from '../App';
 
 type SharedViewRoute = RouteProp<RootStackParamList, 'SharedView'>;
@@ -77,6 +84,50 @@ function displayFileName(info: ShareInfo): string {
 }
 
 // ---------------------------------------------------------------------------
+// Binary helpers
+// ---------------------------------------------------------------------------
+
+function base64ToUint8Array(b64: string): Uint8Array {
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
+
+function uint8ArrayToBase64(bytes: Uint8Array): string {
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
+
+/**
+ * Decode a key from the URL #key= fragment. The web client emits base64url
+ * (URL-safe, unpadded) for double-encrypted shares but standard base64 for
+ * legacy links — accept both by normalizing to base64.
+ */
+function fragmentKeyToBytes(key: string): Uint8Array {
+  let normalized = key.replace(/-/g, '+').replace(/_/g, '/');
+  // Re-add padding if it was stripped (base64url convention).
+  const pad = normalized.length % 4;
+  if (pad === 2) normalized += '==';
+  else if (pad === 3) normalized += '=';
+  return base64ToUint8Array(normalized);
+}
+
+/** Sanitise the saved file's basename so it survives the fs cache path. */
+function safeBasename(name: string | undefined, fallback: string): string {
+  const raw = (name ?? fallback).trim();
+  const cleaned = raw.replace(/[^\w.\-]+/g, '_');
+  if (cleaned.length === 0) return fallback;
+  if (cleaned.length > 64) return cleaned.slice(0, 64);
+  return cleaned;
+}
+
+// ---------------------------------------------------------------------------
 // Screen
 // ---------------------------------------------------------------------------
 
@@ -93,6 +144,11 @@ export default function SharedViewScreen() {
   // Captured from the #key= URL fragment (stored before React Navigation
   // strips it). Available only when the user arrives via a deep link.
   const [shareKey] = useState<string | null>(() => consumeShareKey(token));
+
+  // Decryption state — driven by the "Decrypt & save" button.
+  const [decrypting, setDecrypting] = useState(false);
+  const [decryptError, setDecryptError] = useState<string | null>(null);
+  const [decryptedUri, setDecryptedUri] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -121,6 +177,122 @@ export default function SharedViewScreen() {
     const url = shareKey ? `${base}#key=${encodeURIComponent(shareKey)}` : base;
     Linking.openURL(url).catch(() => {});
   }, [token, shareKey]);
+
+  /**
+   * Download the encrypted blob, derive the file key (unwrapping K_c → file
+   * key for double-encrypted shares), decrypt the chunks natively, write the
+   * plaintext to the cache directory, then hand it to the system share sheet
+   * so the user can save it locally or pass it to another app.
+   */
+  const handleDecrypt = useCallback(async (): Promise<void> => {
+    if (!info) return;
+    if (!shareKey) {
+      setDecryptError('Share key missing from link.');
+      return;
+    }
+    if (!BeebeebCrypto.isNativeAvailable) {
+      setDecryptError('Decryption requires a dev client build with native crypto.');
+      return;
+    }
+
+    setDecrypting(true);
+    setDecryptError(null);
+
+    try {
+      const { encryptedBytes, chunkCount, chunkSize, originalSize } =
+        await downloadSharedFileBlob(token);
+
+      // 1. Resolve the per-file AES-256-GCM key.
+      let fileKey: Uint8Array;
+      const kcBytes = fragmentKeyToBytes(shareKey);
+
+      if (info.double_encrypted) {
+        if (!info.wrapped_file_key) {
+          throw new Error('Double-encrypted share is missing its wrapped key.');
+        }
+        // wrapped_file_key = base64( nonce(12) || ciphertext(file_key + GCM tag) )
+        const wrapped = base64ToUint8Array(info.wrapped_file_key);
+        if (wrapped.length < 13) {
+          throw new Error('Wrapped key blob is too small to decrypt.');
+        }
+        const nonce = wrapped.slice(0, 12);
+        const ciphertext = wrapped.slice(12);
+        fileKey = await BeebeebCrypto.decryptChunk(kcBytes, nonce, ciphertext);
+      } else {
+        // Standard share: the URL fragment IS the file key.
+        fileKey = kcBytes;
+      }
+
+      // 2. Resolve canonical chunk metadata. Prefer authoritative server
+      // headers, fall back to the share-info `chunk_count`, then to byte-math
+      // inference (same precedence the PreviewScreen uses for owned files).
+      const effectiveOriginalSize =
+        originalSize ?? info.size_bytes ?? encryptedBytes.length - 28;
+      if (effectiveOriginalSize <= 0) {
+        throw new Error('Could not determine plaintext size for decryption.');
+      }
+
+      const inferred = inferChunkCountFromEncryptedSize(
+        encryptedBytes.length,
+        effectiveOriginalSize,
+      );
+      const effectiveChunkCount =
+        chunkCount ?? info.chunk_count ?? inferred ?? 1;
+      const effectiveChunkSize =
+        chunkSize && chunkSize > 0 ? chunkSize : undefined;
+
+      // 3. Decrypt natively — runs through the JSI bridge to the AES-GCM
+      // implementation in beebeeb-core.
+      const decrypted = await decryptEncryptedBytes(
+        fileKey,
+        encryptedBytes,
+        effectiveChunkCount,
+        effectiveOriginalSize,
+        effectiveChunkSize,
+      );
+
+      // 4. Persist plaintext to the cache directory so the system share sheet
+      // can hand it off to other apps (Files / Photos / Mail).
+      const baseName = safeBasename(info.file_name_encrypted, `shared_${token}`);
+      const decUri = `${FileSystem.cacheDirectory}shared_${token}_${baseName}`;
+      try {
+        await FileSystem.deleteAsync(decUri, { idempotent: true });
+      } catch {
+        // Best-effort — continue regardless.
+      }
+      await FileSystem.writeAsStringAsync(decUri, uint8ArrayToBase64(decrypted), {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+      setDecryptedUri(decUri);
+
+      // 5. Try the share sheet immediately so the user can save / open it.
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(decUri, {
+          mimeType: info.mime_type ?? 'application/octet-stream',
+          dialogTitle: baseName,
+        });
+      }
+    } catch (e) {
+      setDecryptError(e instanceof Error ? e.message : 'Decryption failed.');
+    } finally {
+      setDecrypting(false);
+    }
+  }, [info, shareKey, token]);
+
+  /** Re-open the share sheet for an already-decrypted file. */
+  const handleOpenDecrypted = useCallback(async (): Promise<void> => {
+    if (!decryptedUri) return;
+    try {
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(decryptedUri, {
+          mimeType: info?.mime_type ?? 'application/octet-stream',
+          dialogTitle: info?.file_name_encrypted,
+        });
+      }
+    } catch {
+      // Share sheet dismissal is not an error worth surfacing.
+    }
+  }, [decryptedUri, info]);
 
   const iconName = fileTypeIcon(info?.mime_type, info?.is_folder);
   const iconBg = fileTypeBg(info?.mime_type, info?.is_folder, c);
@@ -230,21 +402,72 @@ export default function SharedViewScreen() {
             )}
           </View>
 
-          {/* CTA */}
+          {/* CTA — primary action depends on whether we can decrypt natively */}
+          {!info.is_folder && shareKey ? (
+            decryptedUri ? (
+              <TouchableOpacity
+                style={[styles.primaryBtn, { backgroundColor: c.ink }]}
+                onPress={handleOpenDecrypted}
+                activeOpacity={0.8}
+              >
+                <Ionicons name="checkmark-circle" size={18} color={c.amber} />
+                <Text style={[styles.primaryBtnText, { color: c.amber }]}>
+                  Share or save
+                </Text>
+              </TouchableOpacity>
+            ) : (
+              <TouchableOpacity
+                style={[
+                  styles.primaryBtn,
+                  {
+                    backgroundColor: decrypting ? c.line2 : c.ink,
+                    opacity: decrypting ? 0.6 : 1,
+                  },
+                ]}
+                onPress={handleDecrypt}
+                disabled={decrypting}
+                activeOpacity={0.8}
+              >
+                <Ionicons
+                  name={decrypting ? 'hourglass-outline' : 'key-outline'}
+                  size={18}
+                  color={c.amber}
+                />
+                <Text style={[styles.primaryBtnText, { color: c.amber }]}>
+                  {decrypting ? 'Decrypting...' : 'Decrypt & save'}
+                </Text>
+              </TouchableOpacity>
+            )
+          ) : null}
+
+          {/* Secondary: open in browser. Always available as a fallback. */}
           <TouchableOpacity
-            style={[styles.primaryBtn, { backgroundColor: c.ink }]}
+            style={[styles.secondaryBtn, { borderColor: c.line, backgroundColor: c.paper }]}
             onPress={handleOpenInBrowser}
             activeOpacity={0.8}
           >
-            <Ionicons name="download-outline" size={18} color={c.amber} />
-            <Text style={[styles.primaryBtnText, { color: c.amber }]}>Download in browser</Text>
+            <Ionicons name="open-outline" size={16} color={c.ink2} />
+            <Text style={[styles.secondaryBtnText, { color: c.ink2 }]}>
+              Open in browser
+            </Text>
           </TouchableOpacity>
 
-          <Text style={[styles.footnote, { color: c.ink4 }]}>
-            {info.double_encrypted && !shareKey
-              ? 'Double-encrypted share: use the original full link (with #key=…) to open in your browser.'
-              : 'Native in-app decryption coming soon.'}
-          </Text>
+          {decryptError ? (
+            <Text style={[styles.footnote, { color: c.red }]}>{decryptError}</Text>
+          ) : info.is_folder ? (
+            <Text style={[styles.footnote, { color: c.ink4 }]}>
+              Folder shares open in your browser.
+            </Text>
+          ) : !shareKey ? (
+            <Text style={[styles.footnote, { color: c.ink4 }]}>
+              Open the original full link (with #key=…) to decrypt this share on
+              this device.
+            </Text>
+          ) : decryptedUri ? (
+            <Text style={[styles.footnote, { color: c.ink4 }]}>
+              Decrypted on-device. The plaintext never reached our servers.
+            </Text>
+          ) : null}
         </View>
       ) : null}
     </View>
@@ -349,6 +572,19 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   primaryBtnText: { fontSize: 15, fontWeight: '700' },
+
+  secondaryBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 24,
+    paddingVertical: 11,
+    borderRadius: radii.md,
+    borderWidth: 1,
+    width: '100%',
+    justifyContent: 'center',
+  },
+  secondaryBtnText: { fontSize: 14, fontWeight: '600' },
 
   footnote: { fontSize: 11, textAlign: 'center', lineHeight: 16 },
 });
