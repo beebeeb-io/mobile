@@ -8,16 +8,9 @@
  *   total encrypted size  = sum over chunks of (plaintext_len + 28)
  *
  * The uploader splits the file into chunks of `CHUNK_SIZE` plaintext bytes
- * (last chunk = remainder). The downloader needs the same constant to
- * reconstruct chunk boundaries from the concatenated ciphertext stream the
- * server returns.
- *
- * NOTE on cross-platform interop: this client uses 4 MiB chunks. The web
- * client uses 1 MiB. The server doesn't expose the per-chunk size on the
- * download endpoint (only X-Chunk-Count + X-Original-Size), so a file
- * uploaded by web cannot currently be decrypted here, and vice versa.
- * Resolving that requires either a uniform CHUNK_SIZE across clients or a
- * new X-Chunk-Size response header. Tracked separately.
+ * (last chunk = remainder). The downloader prefers the server's X-Chunk-Size
+ * response header so previews keep working for files uploaded with a different
+ * historical chunk size.
  */
 
 import {
@@ -77,15 +70,20 @@ export function readHeaderInt(
  * @param encrypted     The full encrypted body as the server returned it.
  * @param chunkCount    Number of chunks the file was split into at upload.
  * @param sizeBytes     Original plaintext file size in bytes.
+ * @param chunkSize     Plaintext chunk size used at upload.
  */
 export async function decryptEncryptedBytes(
   fileKey: Uint8Array,
   encrypted: Uint8Array,
   chunkCount: number,
   sizeBytes: number,
+  chunkSize = CHUNK_SIZE,
 ): Promise<Uint8Array> {
   if (chunkCount < 1) {
     throw new Error(`Invalid chunkCount: ${chunkCount}`)
+  }
+  if (chunkSize < 1) {
+    throw new Error(`Invalid chunkSize: ${chunkSize}`)
   }
 
   const decryptedParts: Uint8Array[] = []
@@ -97,9 +95,9 @@ export async function decryptEncryptedBytes(
     if (chunkCount === 1) {
       plaintextSize = sizeBytes
     } else if (isLast) {
-      plaintextSize = sizeBytes - i * CHUNK_SIZE
+      plaintextSize = sizeBytes - i * chunkSize
     } else {
-      plaintextSize = CHUNK_SIZE
+      plaintextSize = chunkSize
     }
 
     const encryptedChunkSize = NONCE_LENGTH + plaintextSize + GCM_TAG_LENGTH

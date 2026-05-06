@@ -878,7 +878,7 @@ export default function PreviewScreen() {
 
       // Read the encrypted body off disk. expo-file-system exposes the
       // response headers on the result so we can prefer the server's
-      // authoritative X-Chunk-Count / X-Original-Size over local metadata.
+      // authoritative chunk metadata over local route params.
       const encBase64 = await FileSystem.readAsStringAsync(result.uri, {
         encoding: FileSystem.EncodingType.Base64,
       });
@@ -895,8 +895,12 @@ export default function PreviewScreen() {
 
       // Resolve chunk count: header → route param → byte-math inference.
       const headerChunkCount = readHeaderInt(result.headers, 'X-Chunk-Count');
+      const headerChunkSize = readHeaderInt(result.headers, 'X-Chunk-Size');
       const inferred = inferChunkCountFromEncryptedSize(encBytes.length, effectiveSize);
       const effectiveChunkCount = headerChunkCount ?? chunkCount ?? inferred ?? 1;
+      const effectiveChunkSize = headerChunkSize && headerChunkSize > 0
+        ? headerChunkSize
+        : undefined;
 
       // Derive the per-file key once and reuse it across chunks.
       const fileKey = await getFileKeyBytes(fileId);
@@ -905,6 +909,7 @@ export default function PreviewScreen() {
         encBytes,
         effectiveChunkCount,
         effectiveSize,
+        effectiveChunkSize,
       );
 
       const decUri = `${FileSystem.cacheDirectory}dec_${fileId}_${safeName}`;
