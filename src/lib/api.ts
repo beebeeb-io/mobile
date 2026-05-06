@@ -713,11 +713,70 @@ export interface ShareInfo {
    * The server stores an opaque wrapped_file_key blob.
    */
   double_encrypted?: boolean;
+  /**
+   * Base64-encoded wrapped file key (60 bytes: 12-byte AES-GCM nonce ||
+   * 48-byte ciphertext). Only present when `double_encrypted` is true —
+   * the recipient unwraps it with K_c (from the URL fragment) to recover
+   * the actual file key.
+   */
+  wrapped_file_key?: string;
+  /** Number of encrypted chunks the file was split into at upload. */
+  chunk_count?: number;
 }
 
 /** Fetch public share metadata by token — no auth required. */
 export async function getShareByToken(token: string): Promise<ShareInfo> {
   return request<ShareInfo>('GET', `/api/v1/shares/token/${token}`, undefined, false);
+}
+
+/**
+ * Download the raw encrypted bytes of a shared file. Public endpoint — no
+ * auth header required. The optional passphrase is forwarded as
+ * `X-Share-Passphrase` for passphrase-protected shares.
+ *
+ * Returns the encrypted body plus authoritative chunk metadata from the
+ * response headers. Callers feed these into `decryptEncryptedBytes` along
+ * with the file key derived from the share's URL fragment.
+ */
+export async function downloadSharedFileBlob(
+  token: string,
+  passphrase?: string,
+): Promise<{
+  encryptedBytes: Uint8Array;
+  chunkCount: number | null;
+  chunkSize: number | null;
+  originalSize: number | null;
+}> {
+  const headers: Record<string, string> = {};
+  if (passphrase) headers['X-Share-Passphrase'] = passphrase;
+
+  let res: Response;
+  try {
+    res = await fetch(`${BASE_URL}/api/v1/shares/${token}/download`, { headers });
+  } catch (_err) {
+    throw new ApiError(0, 'Could not reach the server. Check your connection and try again.');
+  }
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new ApiError(res.status, err.error ?? err.message ?? `Share download failed: ${res.status}`);
+  }
+
+  const arrayBuf = await res.arrayBuffer();
+  const encryptedBytes = new Uint8Array(arrayBuf);
+
+  const parseHeaderInt = (name: string): number | null => {
+    const v = res.headers.get(name);
+    if (!v) return null;
+    const n = parseInt(v, 10);
+    return Number.isFinite(n) && n >= 0 ? n : null;
+  };
+
+  return {
+    encryptedBytes,
+    chunkCount: parseHeaderInt('X-Chunk-Count'),
+    chunkSize: parseHeaderInt('X-Chunk-Size'),
+    originalSize: parseHeaderInt('X-Original-Size'),
+  };
 }
 
 // ---------------------------------------------------------------------------
