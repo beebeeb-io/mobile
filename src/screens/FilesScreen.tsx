@@ -48,6 +48,7 @@ import { useAuth } from '../lib/auth';
 import { encryptedUpload, generateFileId } from '../lib/encrypted-upload';
 import { useSync } from '../lib/sync-context';
 import { useSearchIndex } from '../lib/use-search-index';
+import type { SearchIndexEntry, SearchResult } from '../lib/search-index';
 
 // Tracks the currently open Swipeable so we can close it when another opens.
 let _openSwipeable: Swipeable | null = null;
@@ -99,6 +100,34 @@ function displayName(entry: FileEntry): string {
   if (raw.startsWith('{')) return entry.is_folder ? 'Encrypted folder' : 'Encrypted file';
   if (raw.length > 32) return raw.slice(0, 24) + '...';
   return raw;
+}
+
+function toSearchIndexEntry(file: FileEntry, name: string, parent: string | null): SearchIndexEntry {
+  return {
+    name,
+    path: name,
+    type: file.is_folder ? 'folder' : (file.mime_type ?? ''),
+    size: file.size_bytes ?? 0,
+    parent,
+    starred: false,
+    created: file.created_at,
+    modified: file.updated_at,
+    tags: [],
+  };
+}
+
+function searchResultToFileEntry(result: SearchResult): FileEntry {
+  const isFolder = result.entry.type === 'folder';
+  return {
+    id: result.id,
+    name_encrypted: result.entry.name,
+    mime_type: isFolder ? null : (result.entry.type || null),
+    size_bytes: result.entry.size,
+    is_folder: isFolder,
+    chunk_count: 0,
+    created_at: result.entry.created,
+    updated_at: result.entry.modified,
+  };
 }
 
 /** Decode a base64 string to a Uint8Array. */
@@ -797,8 +826,8 @@ export default function FilesScreen() {
 
   // Encrypted search index — fetched on unlock, queried on every keystroke
   // when the search bar is open. Powers the "in your vault" results hint
-  // below the search bar; also kept in sync after upload + delete.
-  const { search: searchVault, indexFile, unindexFile } = useSearchIndex();
+  // below the search bar; also kept in sync after create, rename, move, and delete.
+  const { ready: searchIndexReady, search: searchVault, indexFile, unindexFile } = useSearchIndex();
 
   // Upload state — drives the 3-stage trust banner above the FAB.
   // stage 1 = encrypting · stage 2 = uploading · stage 3 = storing/done.
@@ -1090,17 +1119,7 @@ export default function FilesScreen() {
       setFiles((prev) => [uploaded, ...prev]);
       // Add to the encrypted search index so the new file is searchable
       // across the whole vault from the very next keystroke.
-      indexFile(uploaded.id, {
-        name: uploadFileName,
-        path: uploadFileName,
-        type: asset.mimeType ?? '',
-        size: uploaded.size_bytes ?? 0,
-        parent: currentFolder.id ?? null,
-        starred: false,
-        created: new Date().toISOString(),
-        modified: new Date().toISOString(),
-        tags: [],
-      });
+      indexFile(uploaded.id, toSearchIndexEntry(uploaded, uploadFileName, currentFolder.id));
       // Fire-and-forget: generate + upload a 256px thumbnail for image files.
       void generateAndUploadThumbnail(uploaded.id, asset.uri, asset.mimeType ?? null);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -1113,7 +1132,7 @@ export default function FilesScreen() {
       showToast({ type: 'error', message: `Upload failed: ${friendlyError(err)}` });
       setUpload(null);
     }
-  }, [currentFolder.id, fetchFiles, phraseVerified, showToast, findConflict, folderFileNames, encryptChunk, encryptMetadata]);
+  }, [currentFolder.id, fetchFiles, phraseVerified, showToast, findConflict, folderFileNames, encryptChunk, encryptMetadata, indexFile]);
 
   const pickAndUploadPhotos = useCallback(async () => {
     if (!phraseVerified) {
@@ -1191,6 +1210,7 @@ export default function FilesScreen() {
         });
         lastLoc = trustLocation(uploaded.storage_pool_id);
         setFiles((prev) => [uploaded, ...prev]);
+        indexFile(uploaded.id, toSearchIndexEntry(uploaded, name, currentFolder.id));
         // Fire-and-forget: image picker only returns images, so always thumbnail.
         void generateAndUploadThumbnail(uploaded.id, asset.uri, asset.mimeType ?? 'image/jpeg');
         successCount += 1;
@@ -1213,7 +1233,7 @@ export default function FilesScreen() {
     } else {
       setUpload(null);
     }
-  }, [currentFolder.id, fetchFiles, phraseVerified, showToast, findConflict, folderFileNames, encryptChunk, encryptMetadata]);
+  }, [currentFolder.id, fetchFiles, phraseVerified, showToast, findConflict, folderFileNames, encryptChunk, encryptMetadata, indexFile]);
 
   const handleFabPress = useCallback(() => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -1267,10 +1287,11 @@ export default function FilesScreen() {
         updated_at: folder.updated_at ?? now,
       };
       setFiles((prev) => [safe, ...prev]);
+      indexFile(safe.id, toSearchIndexEntry(safe, trimmed, currentFolder.id));
     } catch (err) {
       Alert.alert('Error', friendlyError(err));
     }
-  }, [currentFolder.id]);
+  }, [currentFolder.id, indexFile]);
 
   const showNewFolderPrompt = useCallback(() => {
     if (Platform.OS === 'ios') {
@@ -1432,6 +1453,11 @@ export default function FilesScreen() {
       try {
         const ids = [...selectedIds];
         await Promise.all(ids.map((id) => moveFile(id, targetId)));
+        for (const id of ids) {
+          const moved = files.find((f) => f.id === id);
+          if (!moved) continue;
+          indexFile(id, toSearchIndexEntry(moved, decryptedNames[id] ?? displayName(moved), targetId));
+        }
         setFiles((prev) => prev.filter((f) => !selectedIds.has(f.id)));
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         exitSelectMode();
@@ -1459,7 +1485,7 @@ export default function FilesScreen() {
         { text: 'Cancel', style: 'cancel' as const },
       ]);
     }
-  }, [selectedIds, decryptedNames, exitSelectMode]);
+  }, [selectedIds, files, decryptedNames, exitSelectMode, indexFile]);
 
   const handleSearchToggle = useCallback(() => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -1575,9 +1601,18 @@ export default function FilesScreen() {
               try {
                 await renameFile(item.id, next);
                 setFiles((prev) =>
-                  prev.map((f) => (f.id === item.id ? { ...f, name_encrypted: next } : f)),
+                  prev.map((f) => (
+                    f.id === item.id
+                      ? { ...f, name_encrypted: next, updated_at: new Date().toISOString() }
+                      : f
+                  )),
                 );
                 setDecryptedNames((prev) => ({ ...prev, [item.id]: next }));
+                indexFile(item.id, toSearchIndexEntry(
+                  { ...item, name_encrypted: next, updated_at: new Date().toISOString() },
+                  next,
+                  currentFolder.id,
+                ));
                 Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
                 showToast({ type: 'success', message: `Renamed to "${next}"` });
               } catch (err) {
@@ -1607,6 +1642,7 @@ export default function FilesScreen() {
       const doMove = async (targetId: string | null, targetName?: string) => {
         try {
           await moveFile(item.id, targetId);
+          indexFile(item.id, toSearchIndexEntry(item, name, targetId));
           setFiles((prev) => prev.filter((f) => f.id !== item.id));
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
           showToast({ type: 'success', message: `Moved to ${targetName ?? 'Drive'}` });
@@ -1891,20 +1927,47 @@ export default function FilesScreen() {
       alertButtons.push({ text: 'Cancel', style: 'cancel' as const });
       Alert.alert(name, undefined, alertButtons);
     }
-  }, [navigation, openFile, decryptedNames, showToast, pinnedFolders, togglePin, offlineIds, toggleOffline, proofs]);
+  }, [
+    navigation,
+    openFile,
+    decryptedNames,
+    showToast,
+    pinnedFolders,
+    togglePin,
+    offlineIds,
+    toggleOffline,
+    proofs,
+    currentFolder.id,
+    indexFile,
+    unindexFile,
+  ]);
 
   // Filtered + sorted file list
+  const vaultSearchMatches = useMemo(() => {
+    const query = searchQuery.trim();
+    if (!query) return [];
+    return searchVault(query);
+  }, [searchQuery, searchVault, searchIndexReady]);
+
   const displayedFiles = useMemo(() => {
     let result = files;
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase();
-      result = result.filter((f) => {
+      const seen = new Set<string>();
+      const vaultResults = vaultSearchMatches.map((match) => {
+        seen.add(match.id);
+        return searchResultToFileEntry(match);
+      });
+      const localFallback = files.filter((f) => {
+        if (seen.has(f.id)) return false;
         const name = decryptedNames[f.id] ?? displayName(f);
         return name.toLowerCase().includes(q);
       });
+      if (vaultResults.length > 0) return [...vaultResults, ...localFallback];
+      result = localFallback;
     }
     return applySortOrder(result, sortOrder, decryptedNames);
-  }, [files, searchQuery, decryptedNames, sortOrder]);
+  }, [files, searchQuery, decryptedNames, sortOrder, vaultSearchMatches]);
 
   // ------------------------------------------------------------------
   // Render helpers
@@ -2313,7 +2376,7 @@ export default function FilesScreen() {
               style={[styles.searchInput, { backgroundColor: c.paper2, borderColor: c.line, color: c.ink }]}
               value={searchQuery}
               onChangeText={setSearchQuery}
-              placeholder="Search in this folder..."
+              placeholder="Search your vault..."
               placeholderTextColor={c.ink4}
               autoFocus
               returnKeyType="search"
@@ -2338,9 +2401,8 @@ export default function FilesScreen() {
           {(() => {
             const q = searchQuery.trim()
             if (!q) return null
-            const vaultMatches = searchVault(q)
             const inFolderIds = new Set(files.map((f) => f.id))
-            const elsewhere = vaultMatches.filter((m) => !inFolderIds.has(m.id)).length
+            const elsewhere = vaultSearchMatches.filter((m) => !inFolderIds.has(m.id)).length
             if (elsewhere === 0) return null
             return (
               <View style={{ paddingHorizontal: 16, paddingBottom: 8 }}>
