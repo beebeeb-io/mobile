@@ -3,6 +3,7 @@ import React, { useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
+  Linking,
   Platform,
   ScrollView,
   StyleSheet,
@@ -69,6 +70,8 @@ export default function SignupScreen() {
     footerLink: { fontSize: 13, color: c.amberDeep, fontWeight: '600' },
     regionRow: { alignItems: 'center', marginTop: spacing['2xl'], gap: 2 },
     regionText: { fontSize: 11, color: c.ink4, textAlign: 'center' },
+    legalText: { fontSize: 11, textAlign: 'center', marginTop: 12, lineHeight: 16, paddingHorizontal: spacing.md },
+    legalLink: { color: c.amber, textDecorationLine: 'underline' },
   }), [c, resolved]);
 
   function validate(): string | null {
@@ -270,6 +273,25 @@ export default function SignupScreen() {
             <Text style={styles.footerLink}>Sign in</Text>
           </TouchableOpacity>
         </View>
+
+        {/* Legal — GDPR Article 13 */}
+        <Text style={[styles.legalText, { color: c.ink3 }]}>
+          By creating an account, you agree to our{' '}
+          <Text
+            style={styles.legalLink}
+            onPress={() => Linking.openURL('https://beebeeb.io/terms').catch(() => {})}
+          >
+            Terms of Service
+          </Text>
+          {' '}and{' '}
+          <Text
+            style={styles.legalLink}
+            onPress={() => Linking.openURL('https://beebeeb.io/privacy').catch(() => {})}
+          >
+            Privacy Policy
+          </Text>
+          . Your data is processed by Initlabs B.V. under GDPR.
+        </Text>
 
         {/* Region + legal */}
         <View style={styles.regionRow}>
