@@ -135,6 +135,7 @@ export default function LoginScreen() {
           blurOnSubmit={false}
           onSubmitEditing={() => passwordRef.current?.focus()}
           testID="email-input"
+          accessibilityLabel="Login email field"
           editable={!loading}
         />
 
@@ -153,6 +154,7 @@ export default function LoginScreen() {
           returnKeyType="go"
           onSubmitEditing={handleLogin}
           testID="password-input"
+          accessibilityLabel="Login password field"
           editable={!loading}
         />
 
@@ -175,7 +177,12 @@ export default function LoginScreen() {
         {/* Signup link */}
         <View style={styles.footerRow}>
           <Text style={styles.footerText}>No account yet? </Text>
-          <TouchableOpacity onPress={() => navigation.navigate('Signup')} disabled={loading}>
+          <TouchableOpacity
+            onPress={() => navigation.navigate('Signup')}
+            disabled={loading}
+            accessibilityLabel="Open create account"
+            testID="create-account-link"
+          >
             <Text style={styles.footerLink}>Create account</Text>
           </TouchableOpacity>
         </View>
@@ -188,4 +195,3 @@ export default function LoginScreen() {
     </KeyboardAvoidingView>
   );
 }
-

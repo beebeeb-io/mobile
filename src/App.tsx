@@ -1,4 +1,4 @@
-import React, { Suspense, useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { registerRootComponent } from 'expo';
 import { StatusBar } from 'expo-status-bar';
@@ -64,23 +64,20 @@ import SharedScreen from './screens/SharedScreen';
 import PhotosScreen from './screens/PhotosScreen';
 import SettingsScreen from './screens/SettingsScreen';
 
-// Lazy stack/overlay screens — module evaluation is deferred until first navigation
-const PreviewScreen = React.lazy(() => import('./screens/PreviewScreen'));
-const ShareSheetScreen = React.lazy(() => import('./screens/ShareSheetScreen'));
-const SharedViewScreen = React.lazy(() => import('./screens/SharedViewScreen'));
-const TrashScreen = React.lazy(() => import('./screens/TrashScreen'));
-const BackupGuidesScreen = React.lazy(() => import('./screens/BackupGuidesScreen'));
-const PrivacyScreen = React.lazy(() => import('./screens/PrivacyScreen'));
-const StorageScreen = React.lazy(() => import('./screens/StorageScreen'));
-const RecoveryPhraseScreen = React.lazy(() => import('./screens/RecoveryPhraseScreen'));
-const RecoveryPhraseVerifyScreen = React.lazy(() => import('./screens/RecoveryPhraseVerifyScreen'));
-const DevicePairingScreen = React.lazy(() => import('./screens/DevicePairingScreen'));
-const DevicePairingScanScreen = React.lazy(() => import('./screens/DevicePairingScanScreen'));
-const DevicePairingShowScreen = React.lazy(() => import('./screens/DevicePairingShowScreen'));
-const PairingConfirmScreen = React.lazy(() => import('./screens/PairingConfirmScreen'));
-const ConstellationSendScreen = React.lazy(() => import('./screens/ConstellationSendScreen'));
-const BiometricLockScreen = React.lazy(() => import('./screens/BiometricLockScreen'));
-const OnboardingScreen = React.lazy(() => import('./screens/OnboardingScreen'));
+import PreviewScreen from './screens/PreviewScreen';
+import ShareSheetScreen from './screens/ShareSheetScreen';
+import SharedViewScreen from './screens/SharedViewScreen';
+import TrashScreen from './screens/TrashScreen';
+import BackupGuidesScreen from './screens/BackupGuidesScreen';
+import PrivacyScreen from './screens/PrivacyScreen';
+import StorageScreen from './screens/StorageScreen';
+import RecoveryPhraseScreen from './screens/RecoveryPhraseScreen';
+import RecoveryPhraseVerifyScreen from './screens/RecoveryPhraseVerifyScreen';
+import DevicePairingScreen from './screens/DevicePairingScreen';
+import DevicePairingShowScreen from './screens/DevicePairingShowScreen';
+import PairingConfirmScreen from './screens/PairingConfirmScreen';
+import BiometricLockScreen from './screens/BiometricLockScreen';
+import OnboardingScreen from './screens/OnboardingScreen';
 
 import ErrorBoundary from './components/ErrorBoundary';
 import ConfirmActionPrompt from './components/ConfirmActionPrompt';
@@ -175,6 +172,22 @@ const linking = {
 const Tab = createBottomTabNavigator<TabParamList>();
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
+function ConstellationSendUnavailableScreen() {
+  return (
+    <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 }}>
+      <Text style={{ textAlign: 'center' }}>Constellation transfer is not available in this build.</Text>
+    </View>
+  );
+}
+
+function DevicePairingScanUnavailableScreen() {
+  return (
+    <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 }}>
+      <Text style={{ textAlign: 'center' }}>Device-pairing scan is not available in this build.</Text>
+    </View>
+  );
+}
+
 // Module-level nav ref so non-component code (deep-link handler / quick
 // action listener) can dispatch navigation without a hook.
 const navigationRef = createNavigationContainerRef<RootStackParamList>();
@@ -256,19 +269,6 @@ function TabIcon({ name, focused, color }: { name: string; focused: boolean; col
       color={color}
       style={{ opacity: focused ? 1 : 0.7 }}
     />
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Suspense fallback for lazy-loaded screens
-// ---------------------------------------------------------------------------
-
-function ScreenLoadingFallback() {
-  const { colors: c } = useTheme();
-  return (
-    <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: c.paper }}>
-      <ActivityIndicator color={c.ink3} />
-    </View>
   );
 }
 
@@ -653,8 +653,7 @@ export default function App() {
       <ToastProvider>
         {/* Wire JS-side photo backup: foreground trigger + Wi-Fi reconnect + toast */}
         <PhotoBackupBridge />
-        <Suspense fallback={<ScreenLoadingFallback />}>
-          <NavigationContainer ref={navigationRef} linking={linking} onStateChange={handleNavigationStateChange}>
+        <NavigationContainer ref={navigationRef} linking={linking} onStateChange={handleNavigationStateChange}>
             <Stack.Navigator screenOptions={{ headerShown: false }}>
               {isAuthenticated ? (
                 <>
@@ -696,12 +695,12 @@ export default function App() {
                     options={{ gestureEnabled: false }}
                   />
                   <Stack.Screen name="DevicePairing" component={DevicePairingScreen} />
-                  <Stack.Screen name="DevicePairingScan" component={DevicePairingScanScreen} />
+                  <Stack.Screen name="DevicePairingScan" component={DevicePairingScanUnavailableScreen} />
                   <Stack.Screen name="DevicePairingShow" component={DevicePairingShowScreen} />
                   <Stack.Screen name="PairingConfirm" component={PairingConfirmScreen} />
                   <Stack.Screen
                     name="ConstellationSend"
-                    component={ConstellationSendScreen}
+                    component={ConstellationSendUnavailableScreen}
                     options={{ presentation: 'modal', animation: 'slide_from_bottom' }}
                   />
                 </>
@@ -716,8 +715,7 @@ export default function App() {
                 </>
               )}
             </Stack.Navigator>
-          </NavigationContainer>
-        </Suspense>
+        </NavigationContainer>
 
         {/* Offline banner */}
         {!isConnected && <OfflineBanner />}
@@ -725,24 +723,20 @@ export default function App() {
         {/* Onboarding overlay — shown once after first signup */}
         {isAuthenticated && !onboardingDone && (
           <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: c.paper2 }}>
-            <Suspense fallback={<ScreenLoadingFallback />}>
-              <OnboardingScreen
-                onComplete={async () => {
-                  try {
-                    await SecureStore.setItemAsync(ONBOARDING_KEY, 'true');
-                  } catch { /* web */ }
-                  setOnboardingDone(true);
-                }}
-              />
-            </Suspense>
+            <OnboardingScreen
+              onComplete={async () => {
+                try {
+                  await SecureStore.setItemAsync(ONBOARDING_KEY, 'true');
+                } catch { /* web */ }
+                setOnboardingDone(true);
+              }}
+            />
           </View>
         )}
 
         {/* Biometric lock overlay — shown when app resumes from background */}
         {isAuthenticated && (
-          <Suspense fallback={null}>
-            <BiometricGuard locked={locked} onUnlock={() => setLocked(false)} />
-          </Suspense>
+          <BiometricGuard locked={locked} onUnlock={() => setLocked(false)} />
         )}
 
         {/* Share Extension dropbox — uploads files dropped by BeebeebShare */}

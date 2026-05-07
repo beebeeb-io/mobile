@@ -197,6 +197,7 @@ export default function SignupScreen() {
           blurOnSubmit={false}
           onSubmitEditing={() => passwordRef.current?.focus()}
           testID="email-input"
+          accessibilityLabel="Signup email field"
           editable={!loading}
         />
 
@@ -216,6 +217,7 @@ export default function SignupScreen() {
           blurOnSubmit={false}
           onSubmitEditing={() => confirmPasswordRef.current?.focus()}
           testID="password-input"
+          accessibilityLabel="Signup password field"
           editable={!loading}
         />
 
@@ -234,6 +236,7 @@ export default function SignupScreen() {
           returnKeyType="go"
           onSubmitEditing={handleSignup}
           testID="confirm-password-input"
+          accessibilityLabel="Signup confirm password field"
           editable={!loading}
         />
 
@@ -243,6 +246,10 @@ export default function SignupScreen() {
           onPress={() => setAcknowledged(!acknowledged)}
           activeOpacity={0.7}
           disabled={loading}
+          accessibilityLabel="Acknowledge recovery warning"
+          accessibilityRole="checkbox"
+          accessibilityState={{ checked: acknowledged }}
+          testID="recovery-warning-checkbox"
         >
           <View style={[styles.checkbox, acknowledged && styles.checkboxChecked]}>
             {acknowledged && <Text style={styles.checkmark}>{'✓'}</Text>}
@@ -258,6 +265,8 @@ export default function SignupScreen() {
           onPress={handleSignup}
           activeOpacity={0.8}
           disabled={loading}
+          accessibilityLabel="Submit create account"
+          testID="create-account-button"
         >
           {loading ? (
             <ActivityIndicator color={c.paper} size="small" />
@@ -269,7 +278,12 @@ export default function SignupScreen() {
         {/* Login link */}
         <View style={styles.footerRow}>
           <Text style={styles.footerText}>Already have an account? </Text>
-          <TouchableOpacity onPress={() => navigation.goBack()} disabled={loading}>
+          <TouchableOpacity
+            onPress={() => navigation.goBack()}
+            disabled={loading}
+            accessibilityLabel="Sign in"
+            testID="sign-in-link"
+          >
             <Text style={styles.footerLink}>Sign in</Text>
           </TouchableOpacity>
         </View>
@@ -304,4 +318,3 @@ export default function SignupScreen() {
     </KeyboardAvoidingView>
   );
 }
-
