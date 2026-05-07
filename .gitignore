@@ -20,9 +20,12 @@ build/
 *.key
 *.p12
 *.pfx
+*.mobileprovision
 *.jks
 *.keystore
 *.secret
+credentials
+credentials/
 id_rsa
 id_ed25519
 credentials.json
@@ -73,3 +76,5 @@ graphify-out/.graphify_root
 graphify-out/cache/
 e2e/
 *.png
+# Google Play service account key (secret — do not commit)
+google-service-account.json

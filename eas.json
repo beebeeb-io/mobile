@@ -12,12 +12,18 @@
       "distribution": "internal",
       "ios": {
         "image": "latest"
+      },
+      "android": {
+        "buildType": "apk"
       }
     },
     "production": {
       "autoIncrement": true,
       "ios": {
         "image": "latest"
+      },
+      "android": {
+        "buildType": "aab"
       }
     }
   },
@@ -25,6 +31,10 @@
     "production": {
       "ios": {
         "ascAppId": "6766666400"
+      },
+      "android": {
+        "serviceAccountKeyPath": "./google-service-account.json",
+        "track": "internal"
       }
     }
   }
