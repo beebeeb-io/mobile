@@ -1578,7 +1578,10 @@ export default function FilesScreen() {
     const isImage = !item.is_folder && (item.mime_type ?? '').startsWith('image/');
     const isOffline = offlineIds.has(item.id);
     const offlineLabel = isOffline ? 'Remove offline' : 'Make available offline';
-    const fileOptions = ['Rename', 'Preview', 'Share', 'Send via Constellation', 'Export...'];
+    // 'Send via Constellation' is intentionally hidden — Constellation crypto is v1 mock
+    // (random bytes instead of real X25519 ECDH). Re-enable when real per-transfer
+    // encryption is implemented. See task 0093.
+    const fileOptions = ['Rename', 'Preview', 'Share', 'Export...'];
     if (isImage) fileOptions.push('Save to Photos');
     fileOptions.push('Move to...', offlineLabel, 'Prove existence', 'Move to Trash', 'Details');
     const options = item.is_folder
@@ -1881,10 +1884,9 @@ export default function FilesScreen() {
           });
           return;
         case 'Send via Constellation':
-          navigation.navigate('ConstellationSend', {
-            fileId: item.id,
-            fileName: name,
-          });
+          // Safety net — Constellation crypto is v1 mock (random bytes instead of
+          // real X25519 ECDH). Hidden from the action menu until real per-transfer
+          // encryption is implemented. See task 0093.
           return;
         case 'Export...': void promptExport(); return;
         case 'Save to Photos': void saveToGallery(); return;
