@@ -1003,7 +1003,7 @@ export async function opaqueLoginStart(email: string, password: string): Promise
   }
   const data = await request<{ server_message: string }>(
     'POST',
-    '/api/v1/auth/opaque/login-start',
+    '/api/v1/opaque/login-start',
     { email, client_message: uint8ToBase64(message) },
     false,
   );
@@ -1029,7 +1029,7 @@ export async function opaqueLoginFinish(
   }
   const data = await request<{ session_token: string }>(
     'POST',
-    '/api/v1/auth/opaque/login-finish',
+    '/api/v1/opaque/login-finish',
     { email, session_key: uint8ToBase64(sessionKey) },
     false,
   );
@@ -1058,7 +1058,7 @@ export async function opaqueRegistrationStart(
   }
   const data = await request<{ server_message: string }>(
     'POST',
-    '/api/v1/auth/opaque/register-start',
+    '/api/v1/opaque/register-start',
     { email, client_message: uint8ToBase64(message) },
     false,
   );
@@ -1084,7 +1084,7 @@ export async function opaqueRegistrationFinish(
   }
   const data = await request<{ session_token: string }>(
     'POST',
-    '/api/v1/auth/opaque/register-finish',
+    '/api/v1/opaque/register-finish',
     { email, record: uint8ToBase64(record) },
     false,
   );
@@ -1345,7 +1345,8 @@ export async function createPortalSession(): Promise<{ url: string } | null> {
 export interface AvailableRegion {
   continent: string;
   display_name: string;
-  city: string;
+  city?: string;
+  example_city?: string;
   provider: string;
   is_default: boolean;
 }
@@ -1353,9 +1354,9 @@ export interface AvailableRegion {
 /** GET /api/v1/me/region — user's preferred region + available list */
 export async function getUserRegion(): Promise<{
   preferred_region: string | null;
-  regions: AvailableRegion[];
+  available_regions: AvailableRegion[];
 }> {
-  return request<{ preferred_region: string | null; regions: AvailableRegion[] }>(
+  return request<{ preferred_region: string | null; available_regions: AvailableRegion[] }>(
     'GET', '/api/v1/me/region',
   );
 }
@@ -1363,6 +1364,6 @@ export async function getUserRegion(): Promise<{
 /** PUT /api/v1/me/region — set preferred region */
 export async function setUserRegion(continent: string): Promise<{ preferred_region: string }> {
   return request<{ preferred_region: string }>(
-    'PUT', '/api/v1/me/region', { continent },
+    'PUT', '/api/v1/me/region', { preferred_region: continent },
   );
 }

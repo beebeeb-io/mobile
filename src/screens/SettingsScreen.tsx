@@ -563,7 +563,7 @@ export default function SettingsScreen() {
     // Try the new /api/v1/me/region endpoint first; fall back to stored preference
     try {
       const data = await getUserRegion();
-      setApiRegions(data.regions);
+      setApiRegions(Array.isArray(data.available_regions) ? data.available_regions : []);
       if (data.preferred_region) setStorageRegion(data.preferred_region);
       return;
     } catch {
@@ -1230,7 +1230,7 @@ export default function SettingsScreen() {
                             )}
                           </View>
                           <Text style={{ fontSize: 11, color: c.ink3, marginTop: 1 }}>
-                            {r.city} · {r.provider}
+                            {r.example_city ?? r.city ?? r.continent} · {r.provider}
                           </Text>
                         </View>
                         {isSelected && (
