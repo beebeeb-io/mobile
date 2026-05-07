@@ -42,6 +42,20 @@ import {
 const BIOMETRIC_PREF_KEY = 'beebeeb_biometric_lock';
 const BIOMETRIC_DELAY_KEY = 'beebeeb_biometric_delay';
 
+const optionalFontAssets: Record<string, number> = {};
+
+try {
+  optionalFontAssets['JetBrainsMono-Regular'] = require('../assets/fonts/JetBrainsMono-Regular.ttf') as number;
+} catch {
+  // Optional brand font is not committed in all builds; React Native falls back to the platform monospace.
+}
+
+try {
+  optionalFontAssets['JetBrainsMono-Medium'] = require('../assets/fonts/JetBrainsMono-Medium.ttf') as number;
+} catch {
+  // Optional brand font is not committed in all builds; React Native falls back to the platform monospace.
+}
+
 // Eager screens — auth entry points and tab destinations (Tab navigator handles its own lazy mounting)
 import LoginScreen from './screens/LoginScreen';
 import SignupScreen from './screens/SignupScreen';
@@ -398,21 +412,7 @@ export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [checking, setChecking] = useState(true);
 
-  // Load JetBrains Mono (brand monospace font). Font files live in
-  // assets/fonts/. Install them with:
-  //   bun add @expo-google-fonts/jetbrains-mono
-  // Then copy the TTFs here or use the package's built-in loader.
-  // Falls back to system monospace silently when files are absent.
-  const [fontsLoaded] = Font.useFonts({
-    'JetBrainsMono-Regular': (() => {
-      try { return require('../assets/fonts/JetBrainsMono-Regular.ttf') as number; }
-      catch { return undefined as unknown as number; }
-    })(),
-    'JetBrainsMono-Medium': (() => {
-      try { return require('../assets/fonts/JetBrainsMono-Medium.ttf') as number; }
-      catch { return undefined as unknown as number; }
-    })(),
-  });
+  const [fontsLoaded] = Font.useFonts(optionalFontAssets);
   // fontsLoaded is false until fonts resolve — app renders fine either way
   // (RN silently falls back to system monospace for unknown family names)
   void fontsLoaded; // used implicitly: font is available once loaded
