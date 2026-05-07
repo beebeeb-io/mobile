@@ -10,7 +10,12 @@
  */
 
 import { Alert, Platform } from 'react-native';
-import { confirmAction, friendlyError, IncorrectPasswordError } from './api';
+import {
+  confirmAction,
+  friendlyError,
+  IncorrectPasswordError,
+  SessionTooOldForConfirmationError,
+} from './api';
 
 let androidPrompter: ((title: string, message: string) => Promise<string | null>) | null = null;
 
@@ -68,6 +73,13 @@ export async function requestConfirmation(opts?: {
       if (err instanceof IncorrectPasswordError) {
         promptMessage = 'Incorrect password. Please try again.';
         continue;
+      }
+      if (err instanceof SessionTooOldForConfirmationError) {
+        Alert.alert(
+          'Please log out and back in',
+          'For security, this action requires a fresh login. Your data is safe.',
+        );
+        return null;
       }
       Alert.alert('Confirmation failed', friendlyError(err));
       return null;

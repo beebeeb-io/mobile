@@ -231,6 +231,21 @@ export class IncorrectPasswordError extends Error {
 }
 
 /**
+ * Thrown by `confirmAction` when the server rejects step-up because the
+ * current session is too old (>15 min for OPAQUE-only accounts). Re-typing
+ * the password cannot fix this — the user must log out and log back in to
+ * mint a fresh session before retrying the destructive action.
+ */
+export class SessionTooOldForConfirmationError extends Error {
+  constructor(
+    message = 'For security, please log out and log back in before performing this action.',
+  ) {
+    super(message);
+    this.name = 'SessionTooOldForConfirmationError';
+  }
+}
+
+/**
  * Step-up re-auth: exchange the user's password for a short-lived
  * confirmation token. Destructive endpoints require it via the
  * X-Confirm-Token header.
@@ -262,6 +277,16 @@ export async function confirmAction(password: string): Promise<ConfirmActionResp
   }
 
   if (res.status === 401) {
+    // Two distinct 401s are possible here:
+    //   - "session_too_old_for_confirmation": session is OK but older than the
+    //     step-up freshness window — re-typing the password cannot fix it.
+    //   - everything else: the password was wrong.
+    const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    if (body.error === 'session_too_old_for_confirmation') {
+      throw new SessionTooOldForConfirmationError(
+        (body.message as string | undefined) ?? undefined,
+      );
+    }
     throw new IncorrectPasswordError();
   }
   if (!res.ok) {
