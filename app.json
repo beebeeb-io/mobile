@@ -38,6 +38,11 @@
         "NSRemindersUsageDescription": "Beebeeb backs up your reminders with end-to-end encryption.",
         "NSContactsUsageDescription": "Beebeeb backs up your contacts with end-to-end encryption.",
         "ITSAppUsesNonExemptEncryption": false,
+        "UIBackgroundModes": [
+          "fetch",
+          "processing",
+          "remote-notification"
+        ],
         "UIApplicationShortcutItems": [
           {
             "UIApplicationShortcutItemType": "io.beebeeb.upload",

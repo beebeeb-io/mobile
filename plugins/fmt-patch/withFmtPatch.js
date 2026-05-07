@@ -2,7 +2,7 @@ const { withDangerousMod } = require('@expo/config-plugins');
 const fs = require('fs');
 const path = require('path');
 
-// Patches Pods/.../fmt/{core,format}.h after `pod install` so that fmt's
+// Patches Pods/.../fmt/{base,core,format,format-inl}.h after `pod install` so that fmt's
 // `consteval` helpers compile under Xcode's clang (which evaluates them as
 // C++17). Without this, every clean prebuild needs a manual edit before
 // `pod install` succeeds.
@@ -19,13 +19,7 @@ module.exports = function withFmtPatch(config) {
 
       const patchCode = `
     # @beebeeb-fmt-patch — fmt consteval → constexpr for Xcode compatibility
-    Dir.glob("#{installer.sandbox.root}/**/fmt/core.h").each do |file|
-      content = File.read(file)
-      if content.include?('consteval')
-        File.write(file, content.gsub('consteval', 'constexpr'))
-      end
-    end
-    Dir.glob("#{installer.sandbox.root}/**/fmt/format.h").each do |file|
+    Dir.glob("#{installer.sandbox.root}/**/fmt/{base,core,format,format-inl}.h").each do |file|
       content = File.read(file)
       if content.include?('consteval')
         File.write(file, content.gsub('consteval', 'constexpr'))
