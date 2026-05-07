@@ -66,7 +66,7 @@ ios/Pods/
 android/.gradle/
 android/app/build/
 
-# Playwright MCP captures (logs, snapshots) — ignored repo-wide
+# Playwright MCP captures (logs, snapshots) - ignored repo-wide
 .playwright-mcp/
 test-results/
 playwright-report/
@@ -76,9 +76,8 @@ graphify-out/.graphify_root
 graphify-out/cache/
 e2e/
 *.png
+
+# App icons required by EAS Build and App Store Connect.
 !assets/icon.png
 !assets/adaptive-icon.png
 !ios/Beebeeb/Images.xcassets/AppIcon.appiconset/*.png
-
-# Google Play service account key (secret — do not commit)
-google-service-account.json
