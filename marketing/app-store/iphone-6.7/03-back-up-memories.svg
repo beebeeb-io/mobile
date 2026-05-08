@@ -1,0 +1,135 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1290" height="2796" viewBox="0 0 1290 2796">
+  <style>
+    .font { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Inter", Arial, sans-serif; }
+    .mono { font-family: "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace; }
+    text { dominant-baseline: hanging; }
+  </style>
+  
+    <defs>
+      <radialGradient id="bgGlow" cx="50%" cy="12%" r="70%">
+        <stop offset="0%" stop-color="#F5B800" stop-opacity="0.34"/>
+        <stop offset="48%" stop-color="#F5B800" stop-opacity="0.11"/>
+        <stop offset="100%" stop-color="#1A1714" stop-opacity="0"/>
+      </radialGradient>
+      <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="#191511"/>
+        <stop offset="58%" stop-color="#1A1714"/>
+        <stop offset="100%" stop-color="#0E0C0A"/>
+      </linearGradient>
+      <filter id="shadow" x="-30%" y="-20%" width="160%" height="160%">
+        <feDropShadow dx="0" dy="48" stdDeviation="52" flood-color="#000" flood-opacity="0.42"/>
+      </filter>
+      <filter id="softShadow" x="-30%" y="-30%" width="160%" height="160%">
+        <feDropShadow dx="0" dy="18" stdDeviation="20" flood-color="#000" flood-opacity="0.22"/>
+      </filter>
+    </defs>
+    <rect width="1290" height="2796" fill="url(#bg)"/>
+    <rect width="1290" height="2796" fill="url(#bgGlow)"/>
+    <circle cx="1109.4" cy="223.68" r="335.40000000000003" fill="#F5B800" opacity="0.09"/>
+    <circle cx="129" cy="2460.48" r="283.8" fill="#F5B800" opacity="0.07"/>
+
+    
+    <rect x="440" y="150" width="410" height="57.39999999999999" rx="28" fill="#F5B800" opacity="0.16" stroke="#F5B800" stroke-opacity="0.54" stroke-width="2"/>
+    <text class="font" x="645" y="163.44" text-anchor="middle" font-size="28" font-weight="800" fill="#F5B800" letter-spacing="2">CAMERA ROLL BACKUP</text>
+  
+    
+    <text class="font" x="645" y="276" text-anchor="middle" font-size="138" font-weight="900" fill="#FAF8F5" letter-spacing="-3">Back up your</text>
+  
+    <text class="font" x="645" y="411.24" text-anchor="middle" font-size="138" font-weight="900" fill="#F5B800" letter-spacing="-3">memories</text>
+  
+    
+    <text class="font" x="645" y="586" text-anchor="middle" font-size="42" font-weight="500" fill="#EDE5D8" opacity="0.84">Photos are encrypted on device and backed up</text>
+  
+    <text class="font" x="645" y="639.76" text-anchor="middle" font-size="42" font-weight="500" fill="#EDE5D8" opacity="0.84">automatically, with no real user data shown</text>
+  
+    <text class="font" x="645" y="693.52" text-anchor="middle" font-size="42" font-weight="500" fill="#EDE5D8" opacity="0.84">here.</text>
+  
+
+    
+    <g filter="url(#shadow)">
+      <rect x="235" y="860" width="820" height="1780" rx="98.39999999999999" fill="#050505"/>
+      <rect x="244.84" y="869.84" width="800.32" height="1760.32" rx="90.52799999999999" fill="#1F1F20"/>
+      <rect x="257.96" y="882.96" width="774.08" height="1734.08" rx="74.78399999999999" fill="#FAF8F5"/>
+      <clipPath id="screenClip235860820">
+        <rect x="257.96" y="882.96" width="774.08" height="1734.08" rx="74.78399999999999"/>
+      </clipPath>
+      <g clip-path="url(#screenClip235860820)">
+        <g transform="translate(257.96 882.96) scale(1.800186046511628 1.8606008583690987)">
+          
+    <rect width="430" height="932" fill="#FAF8F5"/>
+    
+    <rect x="0" y="0" width="430" height="66" fill="transparent"/>
+    <text class="font" x="40" y="25" font-size="15" font-weight="700" fill="#2A2520">9:41</text>
+    <g fill="#2A2520" opacity="0.92">
+      <rect x="322" y="27" width="4" height="10" rx="1"/><rect x="329" y="23" width="4" height="14" rx="1"/><rect x="336" y="19" width="4" height="18" rx="1"/>
+      <path d="M353 32 q12 -12 24 0 l-4 4 q-8 -8 -16 0z"/><circle cx="365" cy="39" r="3"/>
+      <rect x="386" y="24" width="25" height="13" rx="3" fill="none" stroke="#2A2520" stroke-width="1.5"/><rect x="389" y="27" width="17" height="7" rx="2"/><rect x="413" y="28" width="2.5" height="5" rx="1"/>
+    </g>
+  
+    
+    <g>
+      <text class="font" x="26" y="78" font-size="30" font-weight="850" fill="#2A2520">Photos</text>
+      
+    <circle cx="382" cy="92" r="15" fill="#F5B800" stroke="#F5B800"/>
+  
+    <circle cx="340" cy="92" r="15" fill="#F2EDE5" stroke="#E6E0D6"/>
+  
+    </g>
+  
+    <rect x="26" y="126" width="378" height="66" rx="22" fill="#FEF4CF" stroke="#FDE8A8"/>
+    <circle cx="58" cy="159" r="10" fill="#31A24C"/><path d="M52 159 l5 5 l10 -13" stroke="#fff" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <text class="font" x="82" y="143" font-size="14" font-weight="850" fill="#2A2520">4,210 photos backed up</text>
+    <text class="font" x="82" y="165" font-size="12" font-weight="700" fill="#B8860B">All caught up · encrypted on device</text>
+    
+      <rect x="26" y="204" width="62" height="30" rx="15" fill="#2A2520" stroke="#2A2520"/>
+      <text class="font" x="57" y="212" text-anchor="middle" font-size="12" font-weight="800" fill="#FAF8F5">All</text>
+    
+      <rect x="98" y="204" width="62" height="30" rx="15" fill="#F2EDE5" stroke="#E6E0D6"/>
+      <text class="font" x="129" y="212" text-anchor="middle" font-size="12" font-weight="800" fill="#7D7770">Years</text>
+    
+      <rect x="170" y="204" width="62" height="30" rx="15" fill="#F2EDE5" stroke="#E6E0D6"/>
+      <text class="font" x="201" y="212" text-anchor="middle" font-size="12" font-weight="800" fill="#7D7770">Months</text>
+    
+      <rect x="242" y="204" width="62" height="30" rx="15" fill="#F2EDE5" stroke="#E6E0D6"/>
+      <text class="font" x="273" y="212" text-anchor="middle" font-size="12" font-weight="800" fill="#7D7770">Days</text>
+    
+    <text class="font" x="26" y="252" font-size="14" font-weight="850" fill="#2A2520">May 2026</text>
+    <rect x="26" y="220" width="91" height="91" rx="8" fill="#F1C783"/><path d="M30 286 q28 -34 57 0" stroke="#fff" stroke-opacity="0.16" stroke-width="18" fill="none"/><rect x="121" y="220" width="91" height="91" rx="8" fill="#9F7A55"/><path d="M125 286 q28 -34 57 0" stroke="#fff" stroke-opacity="0.16" stroke-width="18" fill="none"/><rect x="216" y="220" width="91" height="91" rx="8" fill="#D8B08A"/><path d="M220 286 q28 -34 57 0" stroke="#fff" stroke-opacity="0.16" stroke-width="18" fill="none"/><rect x="311" y="220" width="91" height="91" rx="8" fill="#6F5F4D"/><path d="M315 286 q28 -34 57 0" stroke="#fff" stroke-opacity="0.16" stroke-width="18" fill="none"/><rect x="26" y="315" width="91" height="91" rx="8" fill="#E2D4B8"/><path d="M30 381 q28 -34 57 0" stroke="#fff" stroke-opacity="0.16" stroke-width="18" fill="none"/><rect x="121" y="315" width="91" height="91" rx="8" fill="#C99050"/><path d="M125 381 q28 -34 57 0" stroke="#fff" stroke-opacity="0.16" stroke-width="18" fill="none"/><rect x="216" y="315" width="91" height="91" rx="8" fill="#AD8A68"/><path d="M220 381 q28 -34 57 0" stroke="#fff" stroke-opacity="0.16" stroke-width="18" fill="none"/><rect x="311" y="315" width="91" height="91" rx="8" fill="#594538"/><path d="M315 381 q28 -34 57 0" stroke="#fff" stroke-opacity="0.16" stroke-width="18" fill="none"/><rect x="26" y="410" width="91" height="91" rx="8" fill="#F1C783"/><path d="M30 476 q28 -34 57 0" stroke="#fff" stroke-opacity="0.16" stroke-width="18" fill="none"/><rect x="121" y="410" width="91" height="91" rx="8" fill="#9F7A55"/><path d="M125 476 q28 -34 57 0" stroke="#fff" stroke-opacity="0.16" stroke-width="18" fill="none"/><rect x="216" y="410" width="91" height="91" rx="8" fill="#D8B08A"/><path d="M220 476 q28 -34 57 0" stroke="#fff" stroke-opacity="0.16" stroke-width="18" fill="none"/><rect x="311" y="410" width="91" height="91" rx="8" fill="#6F5F4D"/><path d="M315 476 q28 -34 57 0" stroke="#fff" stroke-opacity="0.16" stroke-width="18" fill="none"/><rect x="26" y="505" width="91" height="91" rx="8" fill="#E2D4B8"/><path d="M30 571 q28 -34 57 0" stroke="#fff" stroke-opacity="0.16" stroke-width="18" fill="none"/><rect x="121" y="505" width="91" height="91" rx="8" fill="#C99050"/><path d="M125 571 q28 -34 57 0" stroke="#fff" stroke-opacity="0.16" stroke-width="18" fill="none"/><rect x="216" y="505" width="91" height="91" rx="8" fill="#AD8A68"/><path d="M220 571 q28 -34 57 0" stroke="#fff" stroke-opacity="0.16" stroke-width="18" fill="none"/><rect x="311" y="505" width="91" height="91" rx="8" fill="#594538"/><path d="M315 571 q28 -34 57 0" stroke="#fff" stroke-opacity="0.16" stroke-width="18" fill="none"/><rect x="26" y="600" width="91" height="91" rx="8" fill="#F1C783"/><path d="M30 666 q28 -34 57 0" stroke="#fff" stroke-opacity="0.16" stroke-width="18" fill="none"/><rect x="121" y="600" width="91" height="91" rx="8" fill="#9F7A55"/><path d="M125 666 q28 -34 57 0" stroke="#fff" stroke-opacity="0.16" stroke-width="18" fill="none"/><rect x="216" y="600" width="91" height="91" rx="8" fill="#D8B08A"/><path d="M220 666 q28 -34 57 0" stroke="#fff" stroke-opacity="0.16" stroke-width="18" fill="none"/><rect x="311" y="600" width="91" height="91" rx="8" fill="#6F5F4D"/><path d="M315 666 q28 -34 57 0" stroke="#fff" stroke-opacity="0.16" stroke-width="18" fill="none"/><rect x="26" y="695" width="91" height="91" rx="8" fill="#E2D4B8"/><path d="M30 761 q28 -34 57 0" stroke="#fff" stroke-opacity="0.16" stroke-width="18" fill="none"/><rect x="121" y="695" width="91" height="91" rx="8" fill="#C99050"/><path d="M125 761 q28 -34 57 0" stroke="#fff" stroke-opacity="0.16" stroke-width="18" fill="none"/><rect x="216" y="695" width="91" height="91" rx="8" fill="#AD8A68"/><path d="M220 761 q28 -34 57 0" stroke="#fff" stroke-opacity="0.16" stroke-width="18" fill="none"/><rect x="311" y="695" width="91" height="91" rx="8" fill="#594538"/><path d="M315 761 q28 -34 57 0" stroke="#fff" stroke-opacity="0.16" stroke-width="18" fill="none"/><rect x="26" y="790" width="91" height="91" rx="8" fill="#F1C783"/><path d="M30 856 q28 -34 57 0" stroke="#fff" stroke-opacity="0.16" stroke-width="18" fill="none"/><rect x="121" y="790" width="91" height="91" rx="8" fill="#9F7A55"/><path d="M125 856 q28 -34 57 0" stroke="#fff" stroke-opacity="0.16" stroke-width="18" fill="none"/><rect x="216" y="790" width="91" height="91" rx="8" fill="#D8B08A"/><path d="M220 856 q28 -34 57 0" stroke="#fff" stroke-opacity="0.16" stroke-width="18" fill="none"/><rect x="311" y="790" width="91" height="91" rx="8" fill="#6F5F4D"/><path d="M315 856 q28 -34 57 0" stroke="#fff" stroke-opacity="0.16" stroke-width="18" fill="none"/><rect x="26" y="885" width="91" height="91" rx="8" fill="#E2D4B8"/><path d="M30 951 q28 -34 57 0" stroke="#fff" stroke-opacity="0.16" stroke-width="18" fill="none"/><rect x="121" y="885" width="91" height="91" rx="8" fill="#C99050"/><path d="M125 951 q28 -34 57 0" stroke="#fff" stroke-opacity="0.16" stroke-width="18" fill="none"/><rect x="216" y="885" width="91" height="91" rx="8" fill="#AD8A68"/><path d="M220 951 q28 -34 57 0" stroke="#fff" stroke-opacity="0.16" stroke-width="18" fill="none"/><rect x="311" y="885" width="91" height="91" rx="8" fill="#594538"/><path d="M315 951 q28 -34 57 0" stroke="#fff" stroke-opacity="0.16" stroke-width="18" fill="none"/>
+    
+    <rect x="0" y="840" width="430" height="92" fill="#FAF8F5" stroke="#E6E0D6"/>
+    
+        <g transform="translate(30 852)" fill="none" stroke="#A8A29C" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M10 15 h28 v22 h-28z M14 12 h11 l4 5 h9"/>
+        </g>
+        <text class="font" x="54" y="896" text-anchor="middle" font-size="11" font-weight="600" fill="#A8A29C">Files</text>
+      
+        <g transform="translate(137.5 852)" fill="none" stroke="#A8A29C" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M14 22 a6 6 0 1 0 0.1 0 M29 22 a6 6 0 1 0 0.1 0 M8 39 q16 -13 32 0"/>
+        </g>
+        <text class="font" x="161.5" y="896" text-anchor="middle" font-size="11" font-weight="600" fill="#A8A29C">Shared</text>
+      
+        <g transform="translate(245 852)" fill="none" stroke="#2A2520" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M10 12 h28 v26 h-28z M15 32 l8 -9 6 6 4 -5 5 8"/>
+        </g>
+        <text class="font" x="269" y="896" text-anchor="middle" font-size="11" font-weight="800" fill="#2A2520">Photos</text>
+      
+        <g transform="translate(352.5 852)" fill="none" stroke="#A8A29C" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M24 18 a6 6 0 1 0 0.1 0 M24 8 v5 M24 35 v5 M8 24 h5 M35 24 h5"/>
+        </g>
+        <text class="font" x="376.5" y="896" text-anchor="middle" font-size="11" font-weight="600" fill="#A8A29C">Settings</text>
+      
+  
+  
+        </g>
+      </g>
+      <rect x="522" y="902.64" width="246" height="69.7" rx="35.26" fill="#000"/>
+      <rect x="522" y="2589.16" width="246" height="9.84" rx="4.92" fill="#000" opacity="0.74"/>
+    </g>
+  
+    
+    <circle cx="541.4" cy="2740" r="11.76" fill="#F5B800"/>
+    <text class="mono" x="566.6" y="2726" font-size="28" font-weight="700" fill="#FAF8F5" opacity="0.72">beebeeb</text>
+  
+  
+</svg>
