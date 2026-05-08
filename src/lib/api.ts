@@ -998,8 +998,9 @@ export async function opaqueLoginStart(email: string, password: string): Promise
   let message: Uint8Array;
   try {
     ({ state, message } = await BeebeebCrypto.opaqueLoginStart(email, password));
-  } catch {
-    throw new NativeCryptoUnavailableError('opaqueLoginStart');
+  } catch (err) {
+    if (!BeebeebCrypto.isNativeAvailable) throw new NativeCryptoUnavailableError('opaqueLoginStart');
+    throw err;
   }
   const data = await request<{ server_message: string }>(
     'POST',
@@ -1024,8 +1025,9 @@ export async function opaqueLoginFinish(
   let sessionKey: Uint8Array;
   try {
     ({ sessionKey } = await BeebeebCrypto.opaqueLoginFinish(state, serverMessage, password));
-  } catch {
-    throw new NativeCryptoUnavailableError('opaqueLoginFinish');
+  } catch (err) {
+    if (!BeebeebCrypto.isNativeAvailable) throw new NativeCryptoUnavailableError('opaqueLoginFinish');
+    throw err;
   }
   const data = await request<{ session_token: string }>(
     'POST',
@@ -1053,8 +1055,9 @@ export async function opaqueRegistrationStart(
   let message: Uint8Array;
   try {
     ({ state, message } = await BeebeebCrypto.opaqueRegistrationStart(email, password));
-  } catch {
-    throw new NativeCryptoUnavailableError('opaqueRegistrationStart');
+  } catch (err) {
+    if (!BeebeebCrypto.isNativeAvailable) throw new NativeCryptoUnavailableError('opaqueRegistrationStart');
+    throw err;
   }
   const data = await request<{ server_message: string }>(
     'POST',
@@ -1079,8 +1082,9 @@ export async function opaqueRegistrationFinish(
   let record: Uint8Array;
   try {
     ({ record } = await BeebeebCrypto.opaqueRegistrationFinish(state, serverMessage, password));
-  } catch {
-    throw new NativeCryptoUnavailableError('opaqueRegistrationFinish');
+  } catch (err) {
+    if (!BeebeebCrypto.isNativeAvailable) throw new NativeCryptoUnavailableError('opaqueRegistrationFinish');
+    throw err;
   }
   const data = await request<{ session_token: string }>(
     'POST',

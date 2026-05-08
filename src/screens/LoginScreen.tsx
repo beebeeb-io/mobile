@@ -13,8 +13,16 @@ import {
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { radii, spacing } from '../theme';
-import { login, opaqueLoginStart, opaqueLoginFinish, friendlyError } from '../lib/api';
+import {
+  login,
+  opaqueLoginStart,
+  opaqueLoginFinish,
+  friendlyError,
+  ApiError,
+  NativeCryptoUnavailableError,
+} from '../lib/api';
 import { useAuth } from '../lib/auth';
+import { useCrypto } from '../lib/crypto-context';
 import { useTheme } from '../lib/theme-context';
 import * as Haptics from 'expo-haptics';
 import * as BeebeebCrypto from '../../modules/beebeeb-crypto';
@@ -27,6 +35,7 @@ type Nav = NativeStackNavigationProp<RootStackParamList>;
 export default function LoginScreen() {
   const navigation = useNavigation<Nav>();
   const { refreshAuth } = useAuth();
+  const crypto = useCrypto();
   const { colors: c, resolved } = useTheme();
   const passwordRef = useRef<TextInput>(null);
   const [email, setEmail] = useState('');
@@ -74,13 +83,18 @@ export default function LoginScreen() {
           // Best-effort: stash master key in Secure Enclave for biometric unlock.
           try {
             await BeebeebCrypto.storeKeyInKeychain(masterKey, MASTER_KEY_LABEL);
+            await crypto.unlock();
           } catch {
             // Keychain unavailable — login still succeeded.
           }
           // Token is stored by opaqueLoginFinish. App.tsx auth state will pick it up.
-        } catch {
-          // OPAQUE failed — fall back to plain login. Wrong-password errors will
-          // surface from the plain endpoint just the same.
+        } catch (opaqueErr) {
+          const canFallback =
+            opaqueErr instanceof NativeCryptoUnavailableError ||
+            (opaqueErr instanceof ApiError && (opaqueErr.status === 404 || opaqueErr.status === 0));
+          if (!canFallback) throw opaqueErr;
+          // Fall back only when OPAQUE cannot run in this environment or the
+          // endpoint is unavailable; native OPAQUE failures must stay visible.
           await login(trimmedEmail, password);
         }
       } else {
