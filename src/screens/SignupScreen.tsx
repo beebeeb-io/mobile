@@ -17,6 +17,7 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { radii, spacing } from '../theme';
 import { useTheme } from '../lib/theme-context';
 import { useAuth } from '../lib/auth';
+import { useCrypto } from '../lib/crypto-context';
 import * as Haptics from 'expo-haptics';
 import {
   signup,
@@ -37,6 +38,7 @@ type Nav = NativeStackNavigationProp<RootStackParamList>;
 export default function SignupScreen() {
   const navigation = useNavigation<Nav>();
   const { refreshAuth, skipOnboarding } = useAuth();
+  const crypto = useCrypto();
   const { colors: c, resolved } = useTheme();
   const passwordRef = useRef<TextInput>(null);
   const confirmPasswordRef = useRef<TextInput>(null);
@@ -128,6 +130,7 @@ export default function SignupScreen() {
             phrase = result.phrase.split(' ');
             try {
               await BeebeebCrypto.storeKeyInKeychain(result.masterKey, MASTER_KEY_LABEL);
+              await crypto.unlock();
             } catch {
               // Keychain unavailable — phrase still shown to the user, master key
               // will need to be re-derived on next login.
