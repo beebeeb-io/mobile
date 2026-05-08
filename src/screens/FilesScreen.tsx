@@ -838,6 +838,9 @@ export default function FilesScreen() {
     percent: number;
     city: string;
     region: string;
+    chunksUploaded?: number;
+    chunksTotal?: number;
+    chunkSizeBytes?: number;
   } | null>(null);
   const uploadingName = upload?.fileName ?? null;
 
@@ -1072,6 +1075,7 @@ export default function FilesScreen() {
     // ── Conflict check ────────────────────────────────────────────────────
     let uploadFileId = generateFileId();   // new UUID by default
     let uploadFileName = asset.name;       // original name by default
+    let v2InitNameEncrypted: string | undefined;
 
     const existingFile = findConflict(asset.name);
     if (existingFile) {
@@ -1081,6 +1085,7 @@ export default function FilesScreen() {
       if (choice.action === 'replace') {
         // Reuse existing file ID → server auto-creates a version
         uploadFileId = existingFile.id;
+        v2InitNameEncrypted = existingFile.name_encrypted;
       } else {
         // Keep both: upload under the suffixed name with a fresh ID
         uploadFileName = choice.finalName;
@@ -1096,6 +1101,7 @@ export default function FilesScreen() {
         name: uploadFileName,
         parentId: currentFolder.id ?? undefined,
         mimeType: asset.mimeType ?? undefined,
+        v2InitNameEncrypted,
         encryptChunkFn: encryptChunk,
         encryptMetadataFn: encryptMetadata,
         onProgress: (progress) => {
@@ -1105,12 +1111,12 @@ export default function FilesScreen() {
           setUpload((prev) => {
             const base = prev ?? { fileName: asset.name, stage: 1 as UploadStage, percent: 0, city: loc.city, region: loc.region };
             if (progress.phase === 'preparing') {
-              return { ...base, stage: 1, percent: Math.max(percent, 30) };
+              return { ...base, stage: 1, percent: Math.max(percent, 30), chunksUploaded: progress.chunksUploaded, chunksTotal: progress.chunksTotal, chunkSizeBytes: progress.chunkSizeBytes };
             }
             if (progress.phase === 'finalizing') {
-              return { ...base, stage: 3, percent: 60 };
+              return { ...base, stage: 3, percent: 60, chunksUploaded: progress.chunksUploaded, chunksTotal: progress.chunksTotal, chunkSizeBytes: progress.chunkSizeBytes };
             }
-            return { ...base, stage: 2, percent };
+            return { ...base, stage: 2, percent, chunksUploaded: progress.chunksUploaded, chunksTotal: progress.chunksTotal, chunkSizeBytes: progress.chunkSizeBytes };
           });
         },
       });
@@ -1199,12 +1205,12 @@ export default function FilesScreen() {
             setUpload((prev) => {
               const base = prev ?? { fileName: display, stage: 1 as UploadStage, percent: 0, city: lastLoc.city, region: lastLoc.region };
               if (progress.phase === 'preparing') {
-                return { ...base, stage: 1, percent: Math.max(percent, 30) };
+                return { ...base, stage: 1, percent: Math.max(percent, 30), chunksUploaded: progress.chunksUploaded, chunksTotal: progress.chunksTotal, chunkSizeBytes: progress.chunkSizeBytes };
               }
               if (progress.phase === 'finalizing') {
-                return { ...base, stage: 3, percent: 60 };
+                return { ...base, stage: 3, percent: 60, chunksUploaded: progress.chunksUploaded, chunksTotal: progress.chunksTotal, chunkSizeBytes: progress.chunkSizeBytes };
               }
-              return { ...base, stage: 2, percent };
+              return { ...base, stage: 2, percent, chunksUploaded: progress.chunksUploaded, chunksTotal: progress.chunksTotal, chunkSizeBytes: progress.chunkSizeBytes };
             });
           },
         });
@@ -2493,7 +2499,11 @@ export default function FilesScreen() {
             />
             <UploadStageRow
               index={2}
-              label={`Uploading ciphertext to ${upload.city}`}
+              label={
+                upload.chunksTotal && upload.chunkSizeBytes
+                  ? `Uploading ${upload.chunksUploaded ?? 0} / ${upload.chunksTotal} chunks · chunk size ${formatSize(upload.chunkSizeBytes)}`
+                  : `Uploading ciphertext to ${upload.city}`
+              }
               done={upload.stage === 3 || upload.stage === 'done'}
               active={upload.stage === 2}
               percent={upload.stage === 2 ? upload.percent : (upload.stage === 1 ? 0 : 100)}

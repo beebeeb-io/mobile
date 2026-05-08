@@ -1,7 +1,7 @@
 /**
  * Streaming encrypted upload for the Beebeeb mobile client.
  *
- * Reads the file one 4 MB chunk at a time via expo-file-system to avoid
+ * Reads the file one negotiated chunk at a time via expo-file-system to avoid
  * loading the whole file into memory (which would OOM on large videos).
  * Each chunk is AES-256-GCM encrypted and sent immediately after reading —
  * at most one plaintext + one ciphertext chunk live in memory at once.
@@ -24,12 +24,6 @@ import type { EncryptedData } from '../../modules/beebeeb-crypto'
 import { uploadEncryptedChunked } from './api'
 import type { FileEntry, UploadProgress } from './api'
 
-// Must match server CHUNK_SIZE and web client CHUNK_SIZE (both are 4 MiB)
-const CHUNK_SIZE = 4 * 1024 * 1024
-
-// AES-256-GCM per-chunk overhead: 12-byte nonce + 16-byte auth tag
-const AES_GCM_OVERHEAD = 28
-
 export interface EncryptedUploadOptions {
   /** Client-generated UUID v4 — used for key derivation AND stored by server. */
   fileId: string
@@ -39,6 +33,8 @@ export interface EncryptedUploadOptions {
   name: string
   parentId?: string
   mimeType?: string
+  /** Existing encrypted name to let v2 replacement uploads bind to the current file row. */
+  v2InitNameEncrypted?: string
   encryptChunkFn: (fileId: string, plaintext: Uint8Array) => Promise<EncryptedData>
   encryptMetadataFn: (fileId: string, metadata: string) => Promise<EncryptedData>
   onProgress?: (p: UploadProgress) => void
@@ -69,6 +65,14 @@ function combineNonceCiphertext(enc: EncryptedData): Uint8Array {
   return out
 }
 
+function hashResumeKey(input: string): string {
+  let hash = 5381
+  for (let i = 0; i < input.length; i++) {
+    hash = ((hash << 5) + hash) ^ input.charCodeAt(i)
+  }
+  return (hash >>> 0).toString(36)
+}
+
 /**
  * Generate a UUID v4 for the file_id.
  * Uses crypto.randomUUID() (Hermes ≥ 0.75 / RN 0.76+) with a manual fallback.
@@ -91,12 +95,12 @@ export function generateFileId(): string {
  * Perform an end-to-end encrypted upload of a file identified by its local URI.
  *
  * Streaming: reads and encrypts one chunk at a time — memory footprint is
- * O(CHUNK_SIZE) regardless of file size.
+ * O(chunk_size_bytes) regardless of file size.
  */
 export async function encryptedUpload(opts: EncryptedUploadOptions): Promise<FileEntry> {
   const {
     fileId, uri, name, parentId, mimeType,
-    encryptChunkFn, encryptMetadataFn, onProgress,
+    v2InitNameEncrypted, encryptChunkFn, encryptMetadataFn, onProgress,
   } = opts
 
   // ── 1. Get file size ────────────────────────────────────────────────────
@@ -105,29 +109,27 @@ export async function encryptedUpload(opts: EncryptedUploadOptions): Promise<Fil
   // Expo types: size is on FileInfo when { size: true } is passed
   const plaintextSize: number = (info as FileSystem.FileInfo & { size?: number }).size ?? 0
 
-  // ── 2. Deterministic ciphertext-size calculation ─────────────────────────
-  // AES-GCM adds a fixed 28-byte overhead per chunk (12 nonce + 16 auth tag).
-  // No need to encrypt upfront — this lets us send size_bytes in the init call.
-  const chunkCount = Math.max(1, Math.ceil(plaintextSize / CHUNK_SIZE))
-  const ciphertextSize = plaintextSize + chunkCount * AES_GCM_OVERHEAD
+  const nameEncryptedForFileId = async (targetFileId: string): Promise<string> => {
+    const encName = await encryptMetadataFn(targetFileId, name)
+    return JSON.stringify({
+      nonce: uint8ArrayToB64(encName.nonce),
+      ciphertext: uint8ArrayToB64(encName.ciphertext),
+    })
+  }
 
-  // ── 3. Encrypt filename ──────────────────────────────────────────────────
-  const encName = await encryptMetadataFn(fileId, name)
-  const nameEncrypted = JSON.stringify({
-    nonce: uint8ArrayToB64(encName.nonce),
-    ciphertext: uint8ArrayToB64(encName.ciphertext),
-  })
-
-  // ── 4. Stream: read one chunk, encrypt it, hand back to uploader ─────────
+  // ── 2. Stream: read one negotiated chunk, encrypt it, hand back to uploader
   //
   // `readEncryptedChunk` is called by `uploadEncryptedChunked` per-chunk in
-  // sequence. Each call reads CHUNK_SIZE bytes from the file at the correct
+  // sequence. Each call reads chunk_size_bytes from the file at the correct
   // position, encrypts them, and returns the nonce||ciphertext wire bytes.
-  // At most one plaintext chunk (4 MB) + one ciphertext chunk (4 MB + 28 B)
-  // are in memory at any point.
-  const readEncryptedChunk = async (index: number): Promise<Uint8Array> => {
-    const position = index * CHUNK_SIZE
-    const length = Math.min(CHUNK_SIZE, plaintextSize - position)
+  // At most one plaintext chunk + one ciphertext chunk are in memory at once.
+  const readEncryptedChunk = async (
+    index: number,
+    chunkSizeBytes: number,
+    effectiveFileId: string,
+  ): Promise<Uint8Array> => {
+    const position = index * chunkSizeBytes
+    const length = Math.min(chunkSizeBytes, plaintextSize - position)
 
     let plaintext: Uint8Array
     if (length <= 0) {
@@ -142,18 +144,27 @@ export async function encryptedUpload(opts: EncryptedUploadOptions): Promise<Fil
       plaintext = b64ToUint8Array(b64)
     }
 
-    const enc = await encryptChunkFn(fileId, plaintext)
+    const enc = await encryptChunkFn(effectiveFileId, plaintext)
     return combineNonceCiphertext(enc)
   }
 
-  // ── 5. Init → upload chunks → complete ──────────────────────────────────
+  // ── 3. Init → upload chunks → complete ──────────────────────────────────
+  const resumeKey = hashResumeKey([
+    parentId ?? 'root',
+    uri,
+    name,
+    mimeType ?? '',
+    plaintextSize,
+  ].join('\n'))
+
   return uploadEncryptedChunked({
     fileId,
-    nameEncrypted,
+    nameEncrypted: nameEncryptedForFileId,
+    v2InitNameEncrypted,
     parentId,
     mimeType,
-    sizeBytes: ciphertextSize,
-    chunkCount,
+    plaintextSizeBytes: plaintextSize,
+    resumeKey,
     onProgress,
     readEncryptedChunk,
   })
