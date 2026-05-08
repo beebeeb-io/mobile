@@ -648,7 +648,7 @@ export async function uploadEncryptedChunked(params: {
   if (protocol === 'v2') {
     const finalNameEncrypted = await resolveNameEncrypted(serverFileId)
     if (finalNameEncrypted !== initialNameEncrypted) {
-      await request('POST', `/api/v1/files/${serverFileId}/rename`, { name_encrypted: finalNameEncrypted })
+      await request('PATCH', `/api/v1/files/${serverFileId}`, { name_encrypted: finalNameEncrypted })
       completed.name_encrypted = finalNameEncrypted
     }
   }
@@ -841,11 +841,11 @@ export async function deleteFile(id: string): Promise<void> {
 }
 
 export async function renameFile(id: string, newName: string): Promise<void> {
-  await request('POST', `/api/v1/files/${id}/rename`, { name_encrypted: newName });
+  await request('PATCH', `/api/v1/files/${id}`, { name_encrypted: newName });
 }
 
 export async function moveFile(fileId: string, newParentId: string | null): Promise<void> {
-  await request('POST', `/api/v1/files/${fileId}/move`, { parent_id: newParentId });
+  await request('PATCH', `/api/v1/files/${fileId}`, { parent_id: newParentId });
 }
 
 export async function restoreFile(id: string): Promise<void> {
