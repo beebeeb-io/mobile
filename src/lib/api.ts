@@ -391,7 +391,8 @@ export async function getFile(id: string): Promise<FileEntry> {
   return request<FileEntry>('GET', `/api/v1/files/${id}`);
 }
 
-const CHUNK_SIZE = 4 * 1024 * 1024; // 4 MB per chunk
+const CHUNK_SIZE = 4 * 1024 * 1024; // Legacy upload chunk size
+const MOBILE_UPLOAD_CHUNK_SIZE_CAP_BYTES = 16 * 1024 * 1024;
 const SIMPLE_UPLOAD_THRESHOLD = 5 * 1024 * 1024; // 5 MB — below this, use simple upload
 
 export interface UploadProgress {
@@ -400,6 +401,9 @@ export interface UploadProgress {
   chunksUploaded: number;
   bytesTotal: number;
   bytesUploaded: number;
+  chunkSizeBytes?: number;
+  uploadSessionId?: string;
+  protocol?: 'v1' | 'v2';
 }
 
 export async function uploadFile(
@@ -443,9 +447,8 @@ async function uploadFileSimple(
  * Encrypted chunked upload.
  *
  * Differs from the plain `uploadFileChunked` in two ways:
- * 1. Sends a client-generated `file_id` to the init endpoint so the server
- *    stores that UUID. The caller encrypts every chunk with a key derived from
- *    that UUID — the server must return the same ID so decryption works later.
+ * 1. Negotiates the upload session/chunk size with storage-v2 when available,
+ *    then falls back to the legacy client-planned upload endpoints.
  * 2. Accepts pre-encrypted binary chunks (nonce || ciphertext, each as
  *    Uint8Array) rather than plain Blob slices.
  *
@@ -455,45 +458,134 @@ async function uploadFileSimple(
  */
 export async function uploadEncryptedChunked(params: {
   fileId: string                // client-generated UUID, sent to server
-  nameEncrypted: string         // JSON {nonce:b64, ciphertext:b64}
+  nameEncrypted: string | ((fileId: string) => Promise<string>) // JSON {nonce:b64, ciphertext:b64}
+  v2InitNameEncrypted?: string  // Existing encrypted name for replacement uploads
   parentId?: string
   mimeType?: string
-  sizeBytes: number             // total ciphertext size
-  chunkCount: number
+  plaintextSizeBytes: number
+  resumeKey?: string
   onProgress?: (p: UploadProgress) => void
   /** Called once per chunk index — must return nonce||ciphertext bytes */
-  readEncryptedChunk: (index: number) => Promise<Uint8Array>
+  readEncryptedChunk: (index: number, chunkSizeBytes: number, fileId: string) => Promise<Uint8Array>
 }): Promise<FileEntry> {
-  const { fileId, nameEncrypted, parentId, mimeType, sizeBytes, chunkCount, onProgress, readEncryptedChunk } = params
+  const {
+    fileId,
+    nameEncrypted,
+    v2InitNameEncrypted,
+    parentId,
+    mimeType,
+    plaintextSizeBytes,
+    resumeKey,
+    onProgress,
+    readEncryptedChunk,
+  } = params
   const token = await getToken()
+  const resolveNameEncrypted = async (id: string) =>
+    typeof nameEncrypted === 'function' ? nameEncrypted(id) : nameEncrypted
 
-  onProgress?.({ phase: 'preparing', chunksTotal: chunkCount, chunksUploaded: 0, bytesTotal: sizeBytes, bytesUploaded: 0 })
+  let protocol: 'v1' | 'v2' = 'v1'
+  let serverFileId = fileId
+  let uploadSessionId: string | undefined
+  let chunkSizeBytes = CHUNK_SIZE
+  let chunkCount = Math.max(1, Math.ceil(plaintextSizeBytes / CHUNK_SIZE))
+  let startChunkIndex = 0
+  let initialNameEncrypted = v2InitNameEncrypted ?? await resolveNameEncrypted(fileId)
 
-  // ── Step 1: Init — register the file with the client-supplied file_id ──
-  const initRes = await fetch(`${BASE_URL}/api/v1/files/upload/init`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      file_id: fileId,
-      name_encrypted: nameEncrypted,
-      parent_id: parentId ?? null,
-      mime_type: mimeType ?? null,
-      size_bytes: sizeBytes,
-      chunk_count: chunkCount,
-    }),
-  })
-  if (!initRes.ok) {
-    const err = await initRes.json().catch(() => ({ error: initRes.statusText }))
-    throw new ApiError(initRes.status, (err as { error?: string }).error ?? initRes.statusText)
+  const resumeState = resumeKey ? await loadUploadResumeState(resumeKey) : null
+  if (
+    resumeState?.protocol === 'v2' &&
+    resumeState.plaintextSizeBytes === plaintextSizeBytes &&
+    resumeState.parentId === (parentId ?? null) &&
+    resumeState.mimeType === (mimeType ?? null)
+  ) {
+    protocol = 'v2'
+    serverFileId = resumeState.fileId
+    uploadSessionId = resumeState.uploadSessionId ?? undefined
+    chunkSizeBytes = resumeState.chunkSizeBytes
+    chunkCount = resumeState.chunkCount
+    startChunkIndex = Math.min(resumeState.lastUploadedChunkIndex + 1, chunkCount)
+  } else {
+    const v2Init = await initUploadV2({
+      token,
+      fileName: initialNameEncrypted,
+      fileSizeBytes: plaintextSizeBytes,
+      parentId,
+      mimeType,
+    })
+    if (v2Init) {
+      protocol = 'v2'
+      serverFileId = v2Init.file_id
+      uploadSessionId = v2Init.upload_session_id
+      chunkSizeBytes = v2Init.chunk_size_bytes
+      chunkCount = v2Init.chunk_count
+
+      if (chunkSizeBytes <= 0 || chunkSizeBytes > MOBILE_UPLOAD_CHUNK_SIZE_CAP_BYTES) {
+        protocol = 'v1'
+        serverFileId = fileId
+        uploadSessionId = undefined
+        chunkSizeBytes = CHUNK_SIZE
+        chunkCount = Math.max(1, Math.ceil(plaintextSizeBytes / CHUNK_SIZE))
+      }
+    }
   }
-  const { file_id: serverFileId } = (await initRes.json()) as { file_id: string }
+
+  const sizeBytes = plaintextSizeBytes + chunkCount * 28
+
+  onProgress?.({
+    phase: 'preparing',
+    chunksTotal: chunkCount,
+    chunksUploaded: startChunkIndex,
+    bytesTotal: sizeBytes,
+    bytesUploaded: estimateUploadedBytes(startChunkIndex, chunkSizeBytes, plaintextSizeBytes),
+    chunkSizeBytes,
+    uploadSessionId,
+    protocol,
+  })
+
+  // ── Step 1: Init — register the file/upload session ────────────────────
+  if (protocol === 'v1') {
+    initialNameEncrypted = await resolveNameEncrypted(fileId)
+    const initRes = await fetch(`${BASE_URL}/api/v1/files/upload/init`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        file_id: fileId,
+        name_encrypted: initialNameEncrypted,
+        parent_id: parentId ?? null,
+        mime_type: mimeType ?? null,
+        size_bytes: sizeBytes,
+        chunk_count: chunkCount,
+      }),
+    })
+    if (!initRes.ok) {
+      const err = await initRes.json().catch(() => ({ error: initRes.statusText }))
+      throw new ApiError(initRes.status, (err as { error?: string }).error ?? initRes.statusText)
+    }
+    const init = (await initRes.json()) as { file_id: string }
+    serverFileId = init.file_id
+  }
+
+  await saveUploadResumeState(resumeKey, {
+    protocol,
+    fileId: serverFileId,
+    uploadSessionId: uploadSessionId ?? null,
+    chunkSizeBytes,
+    chunkCount,
+    plaintextSizeBytes,
+    parentId: parentId ?? null,
+    mimeType: mimeType ?? null,
+    lastUploadedChunkIndex: startChunkIndex - 1,
+  })
 
   // ── Step 2: Upload each encrypted chunk sequentially ───────────────────
-  let bytesUploaded = 0
-  for (let i = 0; i < chunkCount; i++) {
-    const encBytes = await readEncryptedChunk(i)
+  let bytesUploaded = estimateUploadedBytes(startChunkIndex, chunkSizeBytes, plaintextSizeBytes)
+  for (let i = startChunkIndex; i < chunkCount; i++) {
+    const encBytes = await readEncryptedChunk(i, chunkSizeBytes, serverFileId)
 
-    const chunkRes = await fetch(`${BASE_URL}/api/v1/files/${serverFileId}/chunks/${i}`, {
+    const chunkPath = protocol === 'v2' && uploadSessionId
+      ? `/api/v1/uploads/${uploadSessionId}/chunks/${i}`
+      : `/api/v1/files/${serverFileId}/chunks/${i}`
+    const chunkRes = await fetch(`${BASE_URL}${chunkPath}`, {
       method: 'PUT',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/octet-stream' },
       // Blob wrapping is the safest way to pass binary data to React Native's fetch
@@ -505,13 +597,45 @@ export async function uploadEncryptedChunked(params: {
     }
 
     bytesUploaded += encBytes.length
-    onProgress?.({ phase: 'uploading', chunksTotal: chunkCount, chunksUploaded: i + 1, bytesTotal: sizeBytes, bytesUploaded })
+    await saveUploadResumeState(resumeKey, {
+      protocol,
+      fileId: serverFileId,
+      uploadSessionId: uploadSessionId ?? null,
+      chunkSizeBytes,
+      chunkCount,
+      plaintextSizeBytes,
+      parentId: parentId ?? null,
+      mimeType: mimeType ?? null,
+      lastUploadedChunkIndex: i,
+    })
+    onProgress?.({
+      phase: 'uploading',
+      chunksTotal: chunkCount,
+      chunksUploaded: i + 1,
+      bytesTotal: sizeBytes,
+      bytesUploaded,
+      chunkSizeBytes,
+      uploadSessionId,
+      protocol,
+    })
   }
 
   // ── Step 3: Complete ───────────────────────────────────────────────────
-  onProgress?.({ phase: 'finalizing', chunksTotal: chunkCount, chunksUploaded: chunkCount, bytesTotal: sizeBytes, bytesUploaded: sizeBytes })
+  onProgress?.({
+    phase: 'finalizing',
+    chunksTotal: chunkCount,
+    chunksUploaded: chunkCount,
+    bytesTotal: sizeBytes,
+    bytesUploaded: sizeBytes,
+    chunkSizeBytes,
+    uploadSessionId,
+    protocol,
+  })
 
-  const completeRes = await fetch(`${BASE_URL}/api/v1/files/${serverFileId}/upload/complete`, {
+  const completePath = protocol === 'v2' && uploadSessionId
+    ? `/api/v1/uploads/${uploadSessionId}/complete`
+    : `/api/v1/files/${serverFileId}/upload/complete`
+  const completeRes = await fetch(`${BASE_URL}${completePath}`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({}),
@@ -520,7 +644,96 @@ export async function uploadEncryptedChunked(params: {
     const err = await completeRes.json().catch(() => ({ error: completeRes.statusText }))
     throw new ApiError(completeRes.status, (err as { error?: string }).error ?? 'Finalize failed')
   }
-  return completeRes.json() as Promise<FileEntry>
+  const completed = await completeRes.json() as FileEntry
+  if (protocol === 'v2') {
+    const finalNameEncrypted = await resolveNameEncrypted(serverFileId)
+    if (finalNameEncrypted !== initialNameEncrypted) {
+      await request('POST', `/api/v1/files/${serverFileId}/rename`, { name_encrypted: finalNameEncrypted })
+      completed.name_encrypted = finalNameEncrypted
+    }
+  }
+  await clearUploadResumeState(resumeKey)
+  return completed
+}
+
+interface UploadV2InitResponse {
+  file_id: string;
+  upload_session_id: string;
+  chunk_size_bytes: number;
+  chunk_count: number;
+}
+
+async function initUploadV2(params: {
+  token: string | null;
+  fileName: string;
+  fileSizeBytes: number;
+  parentId?: string;
+  mimeType?: string;
+}): Promise<UploadV2InitResponse | null> {
+  const res = await fetch(`${BASE_URL}/api/v1/uploads/init`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${params.token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      file_name: params.fileName,
+      file_size_bytes: params.fileSizeBytes,
+      parent_id: params.parentId ?? null,
+      mime_type: params.mimeType ?? null,
+      profile: 'mobile',
+    }),
+  })
+  if (res.status === 404 || res.status === 405) return null
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }))
+    throw new ApiError(res.status, (err as { error?: string }).error ?? res.statusText)
+  }
+  const data = await res.json() as UploadV2InitResponse
+  return {
+    file_id: data.file_id,
+    upload_session_id: data.upload_session_id,
+    chunk_size_bytes: data.chunk_size_bytes,
+    chunk_count: data.chunk_count,
+  }
+}
+
+interface UploadResumeState {
+  protocol: 'v1' | 'v2';
+  fileId: string;
+  uploadSessionId: string | null;
+  chunkSizeBytes: number;
+  chunkCount: number;
+  plaintextSizeBytes: number;
+  parentId: string | null;
+  mimeType: string | null;
+  lastUploadedChunkIndex: number;
+}
+
+const uploadResumeStoreKey = (resumeKey: string) => `beebeeb_upload_resume:${resumeKey}`
+
+async function loadUploadResumeState(resumeKey: string): Promise<UploadResumeState | null> {
+  const raw = await tokenStore.get(uploadResumeStoreKey(resumeKey))
+  if (!raw) return null
+  try {
+    return JSON.parse(raw) as UploadResumeState
+  } catch {
+    await tokenStore.remove(uploadResumeStoreKey(resumeKey))
+    return null
+  }
+}
+
+async function saveUploadResumeState(resumeKey: string | undefined, state: UploadResumeState): Promise<void> {
+  if (!resumeKey) return
+  await tokenStore.set(uploadResumeStoreKey(resumeKey), JSON.stringify(state))
+}
+
+async function clearUploadResumeState(resumeKey: string | undefined): Promise<void> {
+  if (!resumeKey) return
+  await tokenStore.remove(uploadResumeStoreKey(resumeKey))
+}
+
+function estimateUploadedBytes(chunksUploaded: number, chunkSizeBytes: number, plaintextSizeBytes: number): number {
+  if (chunksUploaded <= 0) return 0
+  const plaintextUploaded = Math.min(plaintextSizeBytes, chunksUploaded * chunkSizeBytes)
+  return plaintextUploaded + chunksUploaded * 28
 }
 
 async function uploadFileChunked(
