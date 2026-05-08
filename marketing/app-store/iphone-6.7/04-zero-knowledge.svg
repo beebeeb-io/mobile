@@ -1,0 +1,106 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1290" height="2796" viewBox="0 0 1290 2796">
+  <style>
+    .font { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Inter", Arial, sans-serif; }
+    .mono { font-family: "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace; }
+    text { dominant-baseline: hanging; }
+  </style>
+  
+    <defs>
+      <radialGradient id="bgGlow" cx="50%" cy="12%" r="70%">
+        <stop offset="0%" stop-color="#F5B800" stop-opacity="0.34"/>
+        <stop offset="48%" stop-color="#F5B800" stop-opacity="0.11"/>
+        <stop offset="100%" stop-color="#1A1714" stop-opacity="0"/>
+      </radialGradient>
+      <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="#191511"/>
+        <stop offset="58%" stop-color="#1A1714"/>
+        <stop offset="100%" stop-color="#0E0C0A"/>
+      </linearGradient>
+      <filter id="shadow" x="-30%" y="-20%" width="160%" height="160%">
+        <feDropShadow dx="0" dy="48" stdDeviation="52" flood-color="#000" flood-opacity="0.42"/>
+      </filter>
+      <filter id="softShadow" x="-30%" y="-30%" width="160%" height="160%">
+        <feDropShadow dx="0" dy="18" stdDeviation="20" flood-color="#000" flood-opacity="0.22"/>
+      </filter>
+    </defs>
+    <rect width="1290" height="2796" fill="url(#bg)"/>
+    <rect width="1290" height="2796" fill="url(#bgGlow)"/>
+    <circle cx="1109.4" cy="223.68" r="335.40000000000003" fill="#F5B800" opacity="0.09"/>
+    <circle cx="129" cy="2460.48" r="283.8" fill="#F5B800" opacity="0.07"/>
+
+    
+    <rect x="423.24" y="150" width="443.52000000000004" height="57.39999999999999" rx="28" fill="#F5B800" opacity="0.16" stroke="#F5B800" stroke-opacity="0.54" stroke-width="2"/>
+    <text class="font" x="645" y="163.44" text-anchor="middle" font-size="28" font-weight="800" fill="#F5B800" letter-spacing="2">ZERO-KNOWLEDGE BY DESIGN</text>
+  
+    
+    <text class="font" x="645" y="276" text-anchor="middle" font-size="138" font-weight="900" fill="#FAF8F5" letter-spacing="-3">Decrypted in</text>
+  
+    <text class="font" x="645" y="411.24" text-anchor="middle" font-size="138" font-weight="900" fill="#F5B800" letter-spacing="-3">your browser</text>
+  
+    
+    <text class="font" x="645" y="586" text-anchor="middle" font-size="42" font-weight="500" fill="#EDE5D8" opacity="0.84">Glassbox share preview shows exactly what</text>
+  
+    <text class="font" x="645" y="639.76" text-anchor="middle" font-size="42" font-weight="500" fill="#EDE5D8" opacity="0.84">decrypts locally, including a visible hex</text>
+  
+    <text class="font" x="645" y="693.52" text-anchor="middle" font-size="42" font-weight="500" fill="#EDE5D8" opacity="0.84">dump mode.</text>
+  
+
+    
+    <g filter="url(#shadow)">
+      <rect x="235" y="860" width="820" height="1780" rx="98.39999999999999" fill="#050505"/>
+      <rect x="244.84" y="869.84" width="800.32" height="1760.32" rx="90.52799999999999" fill="#1F1F20"/>
+      <rect x="257.96" y="882.96" width="774.08" height="1734.08" rx="74.78399999999999" fill="#FAF8F5"/>
+      <clipPath id="screenClip235860820">
+        <rect x="257.96" y="882.96" width="774.08" height="1734.08" rx="74.78399999999999"/>
+      </clipPath>
+      <g clip-path="url(#screenClip235860820)">
+        <g transform="translate(257.96 882.96) scale(1.800186046511628 1.8606008583690987)">
+          
+    <rect width="430" height="932" fill="#101010"/>
+    
+    <rect x="0" y="0" width="430" height="66" fill="transparent"/>
+    <text class="font" x="40" y="25" font-size="15" font-weight="700" fill="#FAF8F5">9:41</text>
+    <g fill="#FAF8F5" opacity="0.92">
+      <rect x="322" y="27" width="4" height="10" rx="1"/><rect x="329" y="23" width="4" height="14" rx="1"/><rect x="336" y="19" width="4" height="18" rx="1"/>
+      <path d="M353 32 q12 -12 24 0 l-4 4 q-8 -8 -16 0z"/><circle cx="365" cy="39" r="3"/>
+      <rect x="386" y="24" width="25" height="13" rx="3" fill="none" stroke="#FAF8F5" stroke-width="1.5"/><rect x="389" y="27" width="17" height="7" rx="2"/><rect x="413" y="28" width="2.5" height="5" rx="1"/>
+    </g>
+  
+    <rect x="24" y="86" width="382" height="760" rx="26" fill="#171412" stroke="#2E2923"/>
+    <rect x="44" y="112" width="342" height="58" rx="18" fill="#FEF4CF" stroke="#F5B800"/>
+    <circle cx="70" cy="141" r="10" fill="#31A24C"/><path d="M64 141 l5 5 l10 -13" stroke="#fff" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <text class="font" x="92" y="126" font-size="14" font-weight="900" fill="#2A2520">Decrypted in your browser</text>
+    <text class="font" x="92" y="149" font-size="11" font-weight="750" fill="#5C564E">Key fragment never touched our server</text>
+    <text class="font" x="44" y="202" font-size="28" font-weight="900" fill="#FAF8F5">Contract_2026.pdf</text>
+    <text class="font" x="44" y="240" font-size="13" font-weight="700" fill="#A8A29C">1.8 MB · shared by Ava Demo · expires in 7 days</text>
+    <rect x="44" y="292" width="342" height="162" rx="18" fill="#FAF8F5"/>
+    <text class="font" x="70" y="320" font-size="16" font-weight="900" fill="#2A2520">Preview</text>
+    <rect x="70" y="354" width="210" height="8" rx="4" fill="#D4C8B7"/>
+    <rect x="70" y="378" width="260" height="8" rx="4" fill="#E6E0D6"/>
+    <rect x="70" y="402" width="188" height="8" rx="4" fill="#E6E0D6"/>
+    <rect x="70" y="432" width="92" height="7" rx="4" fill="#F5B800"/>
+    <text class="font" x="44" y="498" font-size="12" font-weight="900" fill="#F5B800" letter-spacing="1">GLASSBOX</text>
+    <rect x="44" y="530" width="342" height="190" rx="18" fill="#0A0A0A" stroke="#35302A"/>
+    <text class="mono" x="62" y="550" font-size="11" font-weight="700" fill="#FDE8A8">00000000  25 50 44 46 2d 31 2e 37  0a 25 e2 e3 cf d3 0a 31</text>
+    <text class="mono" x="62" y="576" font-size="11" font-weight="700" fill="#B8B0A4">00000010  20 30 20 6f 62 6a 0a 3c  3c 2f 54 79 70 65 2f 43</text>
+    <text class="mono" x="62" y="602" font-size="11" font-weight="700" fill="#B8B0A4">00000020  61 74 61 6c 6f 67 2f 50  61 67 65 73 20 32 20 30</text>
+    <text class="mono" x="62" y="628" font-size="11" font-weight="700" fill="#B8B0A4">00000030  20 52 3e 3e 0a 65 6e 64  6f 62 6a 0a 32 20 30 20</text>
+    <rect x="278" y="674" width="86" height="28" rx="14" fill="#F5B800"/>
+    <circle cx="348" cy="688" r="11" fill="#2A2520"/>
+    <text class="font" x="238" y="681" text-anchor="end" font-size="12" font-weight="850" fill="#FAF8F5">Hex dump</text>
+    <rect x="44" y="752" width="342" height="52" rx="16" fill="#F5B800"/>
+    <text class="font" x="215" y="767" text-anchor="middle" font-size="15" font-weight="900" fill="#2A2520">Save decrypted file</text>
+  
+        </g>
+      </g>
+      <rect x="522" y="902.64" width="246" height="69.7" rx="35.26" fill="#000"/>
+      <rect x="522" y="2589.16" width="246" height="9.84" rx="4.92" fill="#000" opacity="0.74"/>
+    </g>
+  
+    
+    <circle cx="541.4" cy="2740" r="11.76" fill="#F5B800"/>
+    <text class="mono" x="566.6" y="2726" font-size="28" font-weight="700" fill="#FAF8F5" opacity="0.72">beebeeb</text>
+  
+  
+</svg>

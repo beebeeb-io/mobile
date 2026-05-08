@@ -1,0 +1,74 @@
+[
+  {
+    "target": "iphone-6.7",
+    "size": "1290x2796",
+    "png": "marketing/app-store/iphone-6.7/01-files-encrypted.png",
+    "svg": "marketing/app-store/iphone-6.7/01-files-encrypted.svg"
+  },
+  {
+    "target": "iphone-6.7",
+    "size": "1290x2796",
+    "png": "marketing/app-store/iphone-6.7/02-share-without-compromising.png",
+    "svg": "marketing/app-store/iphone-6.7/02-share-without-compromising.svg"
+  },
+  {
+    "target": "iphone-6.7",
+    "size": "1290x2796",
+    "png": "marketing/app-store/iphone-6.7/03-back-up-memories.png",
+    "svg": "marketing/app-store/iphone-6.7/03-back-up-memories.svg"
+  },
+  {
+    "target": "iphone-6.7",
+    "size": "1290x2796",
+    "png": "marketing/app-store/iphone-6.7/04-zero-knowledge.png",
+    "svg": "marketing/app-store/iphone-6.7/04-zero-knowledge.svg"
+  },
+  {
+    "target": "iphone-6.7",
+    "size": "1290x2796",
+    "png": "marketing/app-store/iphone-6.7/05-works-everywhere.png",
+    "svg": "marketing/app-store/iphone-6.7/05-works-everywhere.svg"
+  },
+  {
+    "target": "iphone-6.7",
+    "size": "1290x2796",
+    "png": "marketing/app-store/iphone-6.7/06-made-in-europe.png",
+    "svg": "marketing/app-store/iphone-6.7/06-made-in-europe.svg"
+  },
+  {
+    "target": "iphone-5.5",
+    "size": "1242x2208",
+    "png": "marketing/app-store/iphone-5.5/01-files-encrypted.png",
+    "svg": "marketing/app-store/iphone-5.5/01-files-encrypted.svg"
+  },
+  {
+    "target": "iphone-5.5",
+    "size": "1242x2208",
+    "png": "marketing/app-store/iphone-5.5/02-share-without-compromising.png",
+    "svg": "marketing/app-store/iphone-5.5/02-share-without-compromising.svg"
+  },
+  {
+    "target": "iphone-5.5",
+    "size": "1242x2208",
+    "png": "marketing/app-store/iphone-5.5/03-back-up-memories.png",
+    "svg": "marketing/app-store/iphone-5.5/03-back-up-memories.svg"
+  },
+  {
+    "target": "iphone-5.5",
+    "size": "1242x2208",
+    "png": "marketing/app-store/iphone-5.5/04-zero-knowledge.png",
+    "svg": "marketing/app-store/iphone-5.5/04-zero-knowledge.svg"
+  },
+  {
+    "target": "iphone-5.5",
+    "size": "1242x2208",
+    "png": "marketing/app-store/iphone-5.5/05-works-everywhere.png",
+    "svg": "marketing/app-store/iphone-5.5/05-works-everywhere.svg"
+  },
+  {
+    "target": "iphone-5.5",
+    "size": "1242x2208",
+    "png": "marketing/app-store/iphone-5.5/06-made-in-europe.png",
+    "svg": "marketing/app-store/iphone-5.5/06-made-in-europe.svg"
+  }
+]
