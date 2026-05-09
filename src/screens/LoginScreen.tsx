@@ -2,8 +2,7 @@ import { BBLogo } from "../components/BBLogo";
 import React, { useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  KeyboardAvoidingView,
-  Platform,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -23,7 +22,6 @@ import {
 } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { useTheme } from '../lib/theme-context';
-import { useKeyboardLayoutAnimation } from '../lib/useKeyboardLayoutAnimation';
 import * as Haptics from 'expo-haptics';
 import * as BeebeebCrypto from '../../modules/beebeeb-crypto';
 import type { RootStackParamList } from '../App';
@@ -34,7 +32,6 @@ export default function LoginScreen() {
   const navigation = useNavigation<Nav>();
   const { refreshAuth } = useAuth();
   const { colors: c, resolved } = useTheme();
-  useKeyboardLayoutAnimation();
   const passwordRef = useRef<TextInput>(null);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -43,7 +40,7 @@ export default function LoginScreen() {
 
   const styles = useMemo(() => StyleSheet.create({
     root: { flex: 1, backgroundColor: c.paper },
-    container: { flex: 1, justifyContent: 'center', paddingHorizontal: spacing.xl, paddingBottom: 40 },
+    scrollContent: { flexGrow: 1, justifyContent: 'center', paddingHorizontal: spacing.xl, paddingVertical: 40 },
     brandRow: { alignItems: 'center', marginBottom: spacing.xl },
     heading: { fontSize: 24, fontWeight: '700', color: c.ink, textAlign: 'center', marginBottom: 4 },
     subheading: { fontSize: 13, color: c.ink3, textAlign: 'center', marginBottom: spacing.xl },
@@ -101,11 +98,15 @@ export default function LoginScreen() {
   }
 
   return (
-    <KeyboardAvoidingView
+    <ScrollView
       style={styles.root}
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      contentContainerStyle={styles.scrollContent}
+      automaticallyAdjustKeyboardInsets
+      keyboardShouldPersistTaps="handled"
+      keyboardDismissMode="interactive"
+      showsVerticalScrollIndicator={false}
     >
-      <View style={styles.container}>
+      <View>
         {/* Logo / brand */}
         <View style={styles.brandRow}>
           <BBLogo size={48} />
@@ -198,6 +199,6 @@ export default function LoginScreen() {
           <Text style={styles.regionText}>Stored in Europe.</Text>
         </View>
       </View>
-    </KeyboardAvoidingView>
+    </ScrollView>
   );
 }
