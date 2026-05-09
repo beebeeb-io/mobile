@@ -27,6 +27,7 @@ import {
 } from '../lib/api';
 import type { FileEntry } from '../lib/api';
 import { requestConfirmation } from '../lib/confirm-action';
+import { useCrypto } from '../lib/crypto-context';
 import type { RootStackParamList } from '../App';
 
 type Nav = NativeStackNavigationProp<RootStackParamList>;
@@ -75,17 +76,40 @@ function displayName(entry: FileEntry): string {
   return raw;
 }
 
+function base64ToUint8Array(b64: string): Uint8Array {
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
+
+function parseDecryptedMetadata(plaintext: string): string {
+  try {
+    const metadata = JSON.parse(plaintext) as { name?: unknown };
+    if (metadata && typeof metadata === 'object' && typeof metadata.name === 'string') {
+      const name = metadata.name.trim();
+      if (name) return name;
+    }
+  } catch {
+    // Legacy metadata format: plaintext is the bare filename.
+  }
+  return plaintext || '';
+}
+
 // ---------------------------------------------------------------------------
 // Trash row (swipeable)
 // ---------------------------------------------------------------------------
 
 interface TrashRowProps {
   item: FileEntry;
+  decryptedName: string | null;
   onRestore: (item: FileEntry) => void;
   onDelete: (item: FileEntry) => void;
 }
 
-const TrashRow = React.memo(function TrashRow({ item, onRestore, onDelete }: TrashRowProps) {
+const TrashRow = React.memo(function TrashRow({ item, decryptedName, onRestore, onDelete }: TrashRowProps) {
   const { colors: c } = useTheme();
   const swipeableRef = useRef<Swipeable>(null);
   const badge = fileTypeBadge(item);
@@ -140,7 +164,7 @@ const TrashRow = React.memo(function TrashRow({ item, onRestore, onDelete }: Tra
         </View>
         <View style={styles.rowInfo}>
           <Text style={[styles.rowName, { color: c.ink }]} numberOfLines={1}>
-            {displayName(item)}
+            {decryptedName ?? displayName(item)}
           </Text>
           <Text style={[styles.rowMeta, { color: c.ink3 }]}>
             {item.is_folder ? 'Folder' : formatSize(item.size_bytes)}
@@ -164,10 +188,50 @@ export default function TrashScreen() {
   const { colors: c } = useTheme();
   const { showToast } = useToast();
 
+  const { isUnlocked, decryptMetadata } = useCrypto();
+
   const [files, setFiles] = useState<FileEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [decryptedNames, setDecryptedNames] = useState<Record<string, string>>({});
+
+  // Decrypt filenames once both the file list and the vault key are ready.
+  // Mirrors the FilesScreen pattern so trash rows show real names instead of
+  // the "Encrypted file" placeholder.
+  useEffect(() => {
+    if (!isUnlocked) {
+      setDecryptedNames({});
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      const results: Record<string, string> = {};
+      await Promise.all(
+        files.map(async (file) => {
+          try {
+            const raw = file.name_encrypted ?? '';
+            if (!raw.startsWith('{')) return;
+            const parsed = JSON.parse(raw) as { nonce: string; ciphertext: string };
+            const nonce = base64ToUint8Array(parsed.nonce);
+            const ct = base64ToUint8Array(parsed.ciphertext);
+            const plaintext = await decryptMetadata(file.id, nonce, ct);
+            const name = parseDecryptedMetadata(plaintext);
+            if (name) results[file.id] = name;
+          } catch {
+            // Leave unset so displayName() renders the "Encrypted file" fallback.
+          }
+        }),
+      );
+      if (!cancelled) setDecryptedNames(results);
+    })();
+    return () => { cancelled = true; };
+  }, [files, isUnlocked, decryptMetadata]);
+
+  const nameFor = useCallback(
+    (item: FileEntry) => decryptedNames[item.id] ?? displayName(item),
+    [decryptedNames],
+  );
 
   const fetchTrash = useCallback(async (isRefresh = false) => {
     if (isRefresh) setRefreshing(true);
@@ -190,7 +254,7 @@ export default function TrashScreen() {
   }, [fetchTrash]);
 
   const handleRestore = useCallback((item: FileEntry) => {
-    const name = displayName(item);
+    const name = nameFor(item);
     Alert.alert(
       'Restore',
       `"${name}" will be restored to your Drive.`,
@@ -211,10 +275,10 @@ export default function TrashScreen() {
         },
       ],
     );
-  }, [showToast]);
+  }, [showToast, nameFor]);
 
   const handleDelete = useCallback((item: FileEntry) => {
-    const name = displayName(item);
+    const name = nameFor(item);
     Alert.alert(
       'Delete permanently',
       `"${name}" will be deleted forever. This cannot be undone.`,
@@ -226,7 +290,7 @@ export default function TrashScreen() {
           onPress: async () => {
             const token = await requestConfirmation({
               title: 'Confirm permanent delete',
-              message: `Re-enter your password to permanently delete "${name}".`,
+              message: 'Re-enter your Beebeeb password to permanently delete this item. This cannot be undone.',
             });
             if (!token) return;
             try {
@@ -241,7 +305,7 @@ export default function TrashScreen() {
         },
       ],
     );
-  }, [showToast]);
+  }, [showToast, nameFor]);
 
   const handleEmptyTrash = useCallback(() => {
     if (files.length === 0) return;
@@ -257,7 +321,7 @@ export default function TrashScreen() {
           onPress: async () => {
             const token = await requestConfirmation({
               title: 'Confirm empty trash',
-              message: `Re-enter your password to permanently delete ${files.length} item${files.length === 1 ? '' : 's'}.`,
+              message: `Re-enter your Beebeeb password to permanently delete ${files.length} item${files.length === 1 ? '' : 's'}. This cannot be undone.`,
             });
             if (!token) return;
             try {
@@ -275,8 +339,13 @@ export default function TrashScreen() {
   }, [files.length, showToast]);
 
   const renderItem = useCallback(({ item }: { item: FileEntry }) => (
-    <TrashRow item={item} onRestore={handleRestore} onDelete={handleDelete} />
-  ), [handleRestore, handleDelete]);
+    <TrashRow
+      item={item}
+      decryptedName={decryptedNames[item.id] ?? null}
+      onRestore={handleRestore}
+      onDelete={handleDelete}
+    />
+  ), [decryptedNames, handleRestore, handleDelete]);
 
   const renderEmpty = () => {
     if (loading) return null;
