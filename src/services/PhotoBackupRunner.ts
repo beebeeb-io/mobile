@@ -75,7 +75,7 @@ const SLOW_THRESHOLD = 1 * 1024 * 1024;
 /** Report progress every N successful uploads to reduce UI churn. */
 const PROGRESS_REPORT_EVERY = 5;
 /** Photos folder name at vault root. */
-const PHOTOS_FOLDER_NAME = 'Photos';
+export const PHOTOS_FOLDER_NAME = 'Photos';
 /**
  * Maximum ciphertext bytes per foreground session.
  * Prevents a single session from uploading unlimited video data.
