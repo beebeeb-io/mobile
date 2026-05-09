@@ -11,9 +11,9 @@ EXPO_PUBLIC_API_URL=https://api.beebeeb.io npx expo start --dev-client --host lo
 **Goal:** verify a new beta user can create an account, understands the recovery warning, and sees Europe-focused positioning.
 
 1. Open the app on a clean install.
-2. Confirm sign-in footer says `Stored in Falkenstein.`
+2. Confirm sign-in footer says `Stored in Europe.`
 3. Tap `Create account`.
-4. Confirm signup footer says `Stored in Falkenstein.` and `Operated by Beebeeb.io, Netherlands.`
+4. Confirm signup footer says `Stored in Europe.` and `Operated by Beebeeb.io, Netherlands.`
 5. Create a unique test user.
 6. Acknowledge the recovery warning.
 7. Verify the recovery phrase flow appears and can be completed.
@@ -66,9 +66,9 @@ EXPO_PUBLIC_API_URL=https://api.beebeeb.io npx expo start --dev-client --host lo
 1. Open `Settings`.
 2. Verify account email and storage usage render.
 3. Open privacy/GDPR tools.
-4. Open storage/region surfaces and verify Europe/Germany/Falkenstein copy where present.
+4. Open storage/region surfaces and verify Europe, Falkenstein, Helsinki, and Ede copy where present.
 5. Toggle notification settings and verify no crash.
 
 ## Known External Caveat
 
-Push delivery may still depend on final Firebase/APNs setup. The app should not crash when notification permissions are requested, but end-to-end delivery may remain incomplete until task `0095` is finished.
+Push delivery uses Expo Push Service. The app should not crash when notification permissions are requested; end-to-end delivery still requires a real development/TestFlight device with push credentials available through EAS.

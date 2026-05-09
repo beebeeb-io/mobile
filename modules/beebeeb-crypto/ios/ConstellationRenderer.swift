@@ -157,7 +157,7 @@ public class ConstellationView: ExpoView {
     for _ in 0..<kMaxEdges {
       // Unit-height cylinder — height set dynamically via geometry or scale
       let cylinder = SCNCylinder(radius: 0.008, height: 1.0)
-      cylinder.segmentCount = 4
+      cylinder.radialSegmentCount = 4
 
       let mat = SCNMaterial()
       mat.lightingModel = .physicallyBased
@@ -256,7 +256,7 @@ public class ConstellationView: ExpoView {
 
   // MARK: - Frame application
 
-  public func updateFrame(_ frame: ConstellationFrameData) {
+  func updateFrame(_ frame: ConstellationFrameData) {
     DispatchQueue.main.async { [weak self] in
       self?.applyFrame(frame)
       self?.sceneView.rendersContinuously = false

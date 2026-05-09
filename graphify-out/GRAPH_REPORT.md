@@ -1,12 +1,12 @@
 # Graph Report - mobile  (2026-05-08)
 
 ## Corpus Check
-- 8703 files · ~8,749,305 words
+- 8704 files · ~8,749,781 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 13653 nodes · 17740 edges · 272 communities detected
-- Extraction: 82% EXTRACTED · 18% INFERRED · 0% AMBIGUOUS · INFERRED: 3157 edges (avg confidence: 0.8)
+- 13659 nodes · 17749 edges · 272 communities detected
+- Extraction: 82% EXTRACTED · 18% INFERRED · 0% AMBIGUOUS · INFERRED: 3158 edges (avg confidence: 0.8)
 - Token cost: 0 input · 0 output
 
 ## Community Hubs (Navigation)
@@ -293,9 +293,11 @@
 7. `around()` - 46 edges
 8. `decltype()` - 42 edges
 9. `String` - 39 edges
-10. `request()` - 39 edges
+10. `void()` - 38 edges
 
 ## Surprising Connections (you probably didn't know these)
+- `ToString()` --calls--> `String`  [INFERRED]
+  ios/Pods/glog/src/logging.cc → modules/beebeeb-crypto/ios/ContactsBackupManager.swift
 - `String` --calls--> `groupByMonth()`  [INFERRED]
   modules/beebeeb-crypto/ios/ContactsBackupManager.swift → src/screens/PhotosScreen.tsx
 - `uniffiTraitInterfaceCall()` --calls--> `String`  [INFERRED]
@@ -304,150 +306,148 @@
   ios/Beebeeb/beebeeb_uniffi.swift → modules/beebeeb-crypto/ios/ContactsBackupManager.swift
 - `_data_()` --calls--> `Data`  [INFERRED]
   ios/Pods/RCT-Folly/folly/Poly.h → modules/beebeeb-crypto/ios/PhotoBackupManager.swift
-- `folly()` --calls--> `Data`  [INFERRED]
-  ios/Pods/RCT-Folly/folly/Poly-inl.h → modules/beebeeb-crypto/ios/PhotoBackupManager.swift
 
 ## Communities
 
 ### Community 0 - "Community 0"
 Cohesion: 0.01
-Nodes (240): file_name(), function_name(), to_string(), impl(), mem_fn(), next(), facebook(), select_on_container_copy_construction() (+232 more)
+Nodes (245): weak_ptr, facebook(), T(), facebook(), call(), callWithArgs(), callWithFunction(), callWithPriority() (+237 more)
 
 ### Community 1 - "Community 1"
 Cohesion: 0.01
-Nodes (249): weak_ptr, facebook(), T(), facebook(), call(), callWithArgs(), callWithFunction(), callWithPriority() (+241 more)
+Nodes (241): impl(), mem_fn(), next(), facebook(), select_on_container_copy_construction(), small_vector_allocator, array_detail(), adaptive_pool (+233 more)
 
 ### Community 2 - "Community 2"
 Cohesion: 0.01
-Nodes (261): allocate_node(), BOOST_CATCH(), BOOST_TRY(), check_invariant_(), clear_(), construct_value(), copy_construct_from(), deallocate_node() (+253 more)
+Nodes (373): DivRound(), VP8LFastLog2(), VP8LFastSLog2(), VP8LNearLosslessBits(), VP8LPrefixEncode(), VP8LPrefixEncodeBits(), VP8LPrefixEncodeBitsNoLUT(), VP8LPrefixEncodeNoLUT() (+365 more)
 
 ### Community 3 - "Community 3"
-Cohesion: 0.02
-Nodes (281): AllocateAlphaPlane(), ALPHDecode(), ALPHDelete(), ALPHInit(), ALPHNew(), VP8DecompressAlphaRows(), WebPDeallocateAlphaMemory(), AllocateBuffer() (+273 more)
+Cohesion: 0.01
+Nodes (325): AllocateAlphaPlane(), ALPHDecode(), ALPHDelete(), ALPHInit(), ALPHNew(), VP8DecompressAlphaRows(), WebPDeallocateAlphaMemory(), AllocateBuffer() (+317 more)
 
 ### Community 4 - "Community 4"
 Cohesion: 0.01
-Nodes (134): NSLock, UniffiHandleMap, ShareConstants, ShareManifest, ShareViewController, array, array< T, 0 >, Codable (+126 more)
+Nodes (133): NSLock, UniffiHandleMap, ShareConstants, ShareManifest, ShareViewController, array, array< T, 0 >, Codable (+125 more)
 
 ### Community 5 - "Community 5"
 Cohesion: 0.01
-Nodes (48): wcslen(), scoped_demangled_name, facebook(), array_size(), boost_range_silence_warning(), is_same_address(), is_same_object(), str_end() (+40 more)
+Nodes (167): wcslen(), copy_n(), array_size(), boost_range_silence_warning(), is_same_address(), is_same_object(), str_end(), str_size() (+159 more)
 
 ### Community 6 - "Community 6"
-Cohesion: 0.02
-Nodes (265): DivRound(), VP8LFastLog2(), VP8LNearLosslessBits(), VP8LPrefixEncode(), VP8LPrefixEncodeBits(), VP8LPrefixEncodeBitsNoLUT(), VP8LPrefixEncodeNoLUT(), VP8LSubPixels() (+257 more)
-
-### Community 7 - "Community 7"
 Cohesion: 0.01
 Nodes (155): SDImageWebPCoder, -animatedImageData, -animatedImageDurationAtIndex, -animatedImageFrameAtIndex, -animatedImageFrameCount, -animatedImageLoopCount, -canDecodeFromData, -canEncodeToFormat (+147 more)
 
+### Community 7 - "Community 7"
+Cohesion: 0.01
+Nodes (182): bytesToBase64(), handleDownload(), constructor(), Super(), ApiError, base64ToUint8(), changePassword(), clearToken() (+174 more)
+
 ### Community 8 - "Community 8"
 Cohesion: 0.01
-Nodes (158): copy_n(), folly(), localtime(), on_12_hour(), on_12_hour_time(), on_24_hour(), on_24_hour_time(), on_abbr_month() (+150 more)
+Nodes (37): scoped_demangled_name, facebook(), dropEmpty(), folly(), keepEmpty(), CheckSlowModel(), GetCPUInfo(), x86CPUInfo() (+29 more)
 
 ### Community 9 - "Community 9"
-Cohesion: 0.01
-Nodes (183): bytesToBase64(), handleDownload(), constructor(), BeebeebCryptoModule, Super(), ApiError, base64ToUint8(), changePassword() (+175 more)
+Cohesion: 0.02
+Nodes (160): ApplyAlphaMultiply4444_C(), ApplyAlphaMultiply_16b_C(), dither_hi(), dither_lo(), GetScale(), MakeARGB32(), WebPInitAlphaProcessingMIPSdspR2(), Mult() (+152 more)
 
 ### Community 10 - "Community 10"
-Cohesion: 0.01
-Nodes (141): folly(), folly(), contains(), count(), emplace_hint(), find(), flat_map, flat_multimap (+133 more)
+Cohesion: 0.02
+Nodes (141): allocate_node(), BOOST_CATCH(), BOOST_TRY(), check_invariant_(), clear_(), construct_value(), copy_construct_from(), deallocate_node() (+133 more)
 
 ### Community 11 - "Community 11"
 Cohesion: 0.02
-Nodes (232): GetResidualCost_C(), GetResidualCost_MIPS32(), VP8EncDspCostInitMIPS32(), GetResidualCost_MIPSdspR2(), VP8EncDspCostInitMIPSdspR2(), GetResidualCost_NEON(), VP8EncDspCostInitNEON(), GetResidualCost_SSE2() (+224 more)
+Nodes (192): ParseVP8X(), AccumulateSSE_SSE2(), HorizontalAdd16b_SSE2(), HorizontalAdd32b_SSE2(), SSIMGet_SSE2(), SubtractAndSquare_SSE2(), VP8SSIMDspInitSSE2(), SSIMCalculation() (+184 more)
 
 ### Community 12 - "Community 12"
 Cohesion: 0.02
-Nodes (197): EmitYUV(), ApplyDecoderOptions(), AccumulateSSE_SSE2(), HorizontalAdd16b_SSE2(), HorizontalAdd32b_SSE2(), SSIMGet_SSE2(), SubtractAndSquare_SSE2(), VP8SSIMDspInitSSE2() (+189 more)
+Nodes (140): begin(), end(), eraseImpl(), rbegin(), rend(), at(), begin(), contains() (+132 more)
 
 ### Community 13 - "Community 13"
 Cohesion: 0.02
-Nodes (134): size_(), begin(), end(), eraseImpl(), folly(), rbegin(), rend(), tmp() (+126 more)
+Nodes (127): size_(), tmp(), at(), back(), computeInsertCapacity(), D_destroy_range_a(), D_uninitialized_fill_n_a(), dataIsInternal() (+119 more)
 
 ### Community 14 - "Community 14"
 Cohesion: 0.02
-Nodes (120): AnyObject, computeRecoveryCheck(), createReader(), createWriter(), CryptoError, Decryption, Encryption, InvalidInput (+112 more)
+Nodes (118): AnyObject, computeRecoveryCheck(), createReader(), createWriter(), CryptoError, Decryption, Encryption, InvalidInput (+110 more)
 
 ### Community 15 - "Community 15"
 Cohesion: 0.02
-Nodes (145): TransformWHT_NEON(), clip_8b(), clip_max(), CollectHistogram_C(), Copy(), Copy16x8_C(), Copy4x4_C(), DC4() (+137 more)
+Nodes (130): check(), max(), min(), facebook(), facebook(), uint32_t(), folly(), AddBignum() (+122 more)
 
 ### Community 16 - "Community 16"
 Cohesion: 0.02
-Nodes (86): folly(), push_back(), A, allocate(), allocation_command(), assign(), back_ptr(), BOOST_NOEXCEPT_OR_NOTHROW() (+78 more)
+Nodes (106): Allocator, CoreAllocatorGuard(), coreFree(), coreMalloc(), coreMallocFromGuard(), folly(), getSystemLocalityInfo(), parseLeadingNumber() (+98 more)
 
 ### Community 17 - "Community 17"
-Cohesion: 0.03
-Nodes (129): adaptive_merge(), adaptive_merge_combine_blocks(), adaptive_merge_final_merge(), adaptive_merge_impl(), adaptive_merge_n_keys_intbuf(), adaptive_merge_n_keys_with_external_keys(), adaptive_merge_n_keys_without_external_keys(), adaptive_sort_build_blocks() (+121 more)
+Cohesion: 0.01
+Nodes (70): AUX_WRAPPER_NAME(), facebook(), folly(), folly(), contains(), count(), emplace_hint(), find() (+62 more)
 
 ### Community 18 - "Community 18"
 Cohesion: 0.03
-Nodes (113): check(), max(), min(), facebook(), facebook(), folly(), AddBignum(), AddUInt64() (+105 more)
+Nodes (141): GetResidualCost_C(), GetResidualCost_MIPS32(), VP8EncDspCostInitMIPS32(), GetResidualCost_MIPSdspR2(), VP8EncDspCostInitMIPSdspR2(), GetResidualCost_NEON(), VP8EncDspCostInitNEON(), GetResidualCost_SSE2() (+133 more)
 
 ### Community 19 - "Community 19"
-Cohesion: 0.03
-Nodes (111): EmitSampledRGB(), VP8L32bToPlanar_SSE41(), VP8PlanarTo24b_SSE41(), Clip8(), YuvToArgb(), YuvToBgr(), YuvToBgra(), YuvToRgb() (+103 more)
+Cohesion: 0.02
+Nodes (78): a(), push_back(), A, allocate(), allocation_command(), assign(), back_ptr(), BOOST_NOEXCEPT_OR_NOTHROW() (+70 more)
 
 ### Community 20 - "Community 20"
-Cohesion: 0.02
-Nodes (106): EmitRows(), VP8L32bToPlanar_SSE2(), VP8PlanarTo24b_SSE2(), AddSubtractComponentFull(), AddSubtractComponentHalf(), Average2(), Average3(), Average4() (+98 more)
+Cohesion: 0.03
+Nodes (123): adaptive_merge(), adaptive_merge_combine_blocks(), adaptive_merge_final_merge(), adaptive_merge_impl(), adaptive_merge_n_keys_intbuf(), adaptive_merge_n_keys_with_external_keys(), adaptive_merge_n_keys_without_external_keys(), adaptive_sort_build_blocks() (+115 more)
 
 ### Community 21 - "Community 21"
 Cohesion: 0.02
-Nodes (100): clip_8b(), DC16_C(), DC16NoLeft_C(), DC16NoTop_C(), DC16NoTopLeft_C(), DC8uv_C(), DC8uvNoLeft_C(), DC8uvNoTop_C() (+92 more)
+Nodes (84): T(), apply(), apply2(), integer_log2(), call(), const_pow(), generate(), generate_from_int() (+76 more)
 
 ### Community 22 - "Community 22"
-Cohesion: 0.03
-Nodes (90): Allocator, CoreAllocatorGuard(), coreFree(), coreMalloc(), coreMallocFromGuard(), folly(), get(), getSystemLocalityInfo() (+82 more)
+Cohesion: 0.02
+Nodes (107): ApplyInverseTransforms(), EmitRows(), VP8L32bToPlanar_SSE2(), VP8PlanarTo24b_SSE2(), AddSubtractComponentFull(), AddSubtractComponentHalf(), Average2(), Average3() (+99 more)
 
 ### Community 23 - "Community 23"
-Cohesion: 0.04
-Nodes (108): VP8HorizontalAdd8b(), VP8Transpose_2_4x4_16b(), ComplexMask_SSE2(), DC16_SSE2(), DC16NoLeft_SSE2(), DC16NoTop_SSE2(), DC16NoTopLeft_SSE2(), DC8uv_SSE2() (+100 more)
+Cohesion: 0.02
+Nodes (78): MUTEX_NAMESPACE(), BOOST_SYMBOL_VISIBLE, copy_from(), rethrow(), throw_exception(), throw_exception_assert_compatibility(), throw_with_location(), wrapexcept() (+70 more)
 
 ### Community 24 - "Community 24"
-Cohesion: 0.03
-Nodes (85): facebook(), BignumDtoa(), BignumToFixed(), EstimatePower(), FixupMultiply10(), GenerateCountedDigits(), GenerateShortestDigits(), InitialScaledStartValues() (+77 more)
+Cohesion: 0.02
+Nodes (106): clip_8b(), clip_max(), CollectHistogram_C(), Copy(), Copy16x8_C(), Copy4x4_C(), DC4(), DCMode() (+98 more)
 
 ### Community 25 - "Community 25"
 Cohesion: 0.02
-Nodes (36): floor(), binomial_distribution, generate(), param_type, read(), chi_squared_distribution, param_type, read() (+28 more)
+Nodes (100): clip_8b(), DC16_C(), DC16NoLeft_C(), DC16NoTop_C(), DC16NoTopLeft_C(), DC8uv_C(), DC8uvNoLeft_C(), DC8uvNoTop_C() (+92 more)
 
 ### Community 26 - "Community 26"
-Cohesion: 0.02
-Nodes (56): T(), range, call(), const_pow(), generate(), generate_from_int(), generate_from_real(), generate_impl() (+48 more)
+Cohesion: 0.03
+Nodes (117): VP8HorizontalAdd8b(), VP8Transpose_2_4x4_16b(), VP8InitClipTables(), VP8DspInitMIPS32(), VP8DspInitMIPSdspR2(), VP8DspInitMSA(), VP8DspInitNEON(), ComplexMask_SSE2() (+109 more)
 
 ### Community 27 - "Community 27"
-Cohesion: 0.05
-Nodes (98): facebook(), enforce(), equal(), join(), parse_demangled_tag_name(), ptr_range_key(), ptr_range_mapped(), render() (+90 more)
+Cohesion: 0.02
+Nodes (40): FrameProcessorPlugin, floor(), ConstellationFrameProcessorPlugin, binomial_distribution, generate(), param_type, read(), chi_squared_distribution (+32 more)
 
 ### Community 28 - "Community 28"
 Cohesion: 0.03
-Nodes (58): VP8InitClipTables(), abs_mips32(), do_filter2(), do_filter4(), do_filter6(), FilterLoop24(), FilterLoop26(), hev() (+50 more)
+Nodes (84): facebook(), BignumDtoa(), BignumToFixed(), EstimatePower(), FixupMultiply10(), GenerateCountedDigits(), GenerateShortestDigits(), InitialScaledStartValues() (+76 more)
 
 ### Community 29 - "Community 29"
-Cohesion: 0.03
-Nodes (50): MUTEX_NAMESPACE(), hardware_timestamp(), hardware_timestamp_measurement_stop(), bad_alloc(), BOOST_SYMBOL_VISIBLE, throw_out_of_range(), priv_throw_if_out_of_range(), lightweight_mutex (+42 more)
+Cohesion: 0.05
+Nodes (99): facebook(), enforce(), equal(), join(), parse_demangled_tag_name(), ptr_range_key(), ptr_range_mapped(), render() (+91 more)
 
 ### Community 30 - "Community 30"
-Cohesion: 0.04
-Nodes (75): WebPIDecode(), BlendChannelNonPremult(), BlendPixelNonPremult(), BlendPixelPremult(), BlendPixelRowNonPremult(), BlendPixelRowPremult(), ChannelwiseMultiply(), CopyCanvas() (+67 more)
+Cohesion: 0.02
+Nodes (29): file_name(), function_name(), to_string(), facebook(), facebook(), find_format_all_copy_impl(), find_format_all_impl(), find_format_all_impl2() (+21 more)
 
 ### Community 31 - "Community 31"
-Cohesion: 0.03
-Nodes (37): equal(), equal_impl(), operator(), broadcast(), facebook(), to_underlying(), hash(), operator() (+29 more)
+Cohesion: 0.04
+Nodes (75): range, errnoStr(), folly(), invoke_strerror_r(), is_oddspace(), ltrimWhitespace(), rtrimWhitespace(), stringAppendfImpl() (+67 more)
 
 ### Community 32 - "Community 32"
-Cohesion: 0.02
-Nodes (15): facebook(), find_format_all_copy_impl(), find_format_all_impl(), find_format_all_impl2(), find_format_copy_impl(), find_format_impl(), process_segment(), NativeModule() (+7 more)
+Cohesion: 0.05
+Nodes (75): BlendChannelNonPremult(), BlendPixelNonPremult(), BlendPixelPremult(), BlendPixelRowNonPremult(), BlendPixelRowPremult(), ChannelwiseMultiply(), CopyCanvas(), DefaultDecoderOptions() (+67 more)
 
 ### Community 33 - "Community 33"
-Cohesion: 0.04
-Nodes (31): CachedItem, CacheManager, to_bool(), accept(), bind(), cmsgFirstHrd(), cmsgNextHrd(), connect() (+23 more)
+Cohesion: 0.03
+Nodes (23): abort(), at(), back(), begin(), cend(), erase(), folly(), insert() (+15 more)
 
 ### Community 34 - "Community 34"
-Cohesion: 0.04
-Nodes (56): VP8LFastSLog2(), ColorTransformDelta(), CombinedShannonEntropy_C(), GetCombinedEntropyUnrefined_C(), GetEntropyUnrefined_C(), GetEntropyUnrefinedHelper(), FastLog2Slow_MIPS32(), GetCombinedEntropyUnrefined_MIPS32() (+48 more)
+Cohesion: 0.03
+Nodes (37): equal(), equal_impl(), operator(), broadcast(), facebook(), to_underlying(), hash(), operator() (+29 more)
 
 ### Community 35 - "Community 35"
 Cohesion: 0.03
@@ -455,84 +455,68 @@ Nodes (41): accept(), bind_t, function_equal(), implementation, list0, list1, li
 
 ### Community 36 - "Community 36"
 Cohesion: 0.03
-Nodes (25): common_slist_algorithms, stable_partition(), obj_scope_guard_impl0, obj_scope_guard_impl1, obj_scope_guard_impl2, obj_scope_guard_impl3, safe_execute(), scope_guard_impl0 (+17 more)
-
-### Community 37 - "Community 37"
-Cohesion: 0.03
 Nodes (29): is_iequal(), is_iless(), ierase_all(), ierase_all_copy(), ierase_first(), ierase_first_copy(), ierase_last(), ierase_last_copy() (+21 more)
 
-### Community 38 - "Community 38"
+### Community 37 - "Community 37"
 Cohesion: 0.06
 Nodes (65): Add4x4_NEON(), ApplyFilter2_NEON(), ApplyFilter2NoFlip_NEON(), ApplyFilter4_NEON(), ApplyFilter6_NEON(), ConvertU8ToS16_NEON(), DC16_NEON(), DC16NoLeft_NEON() (+57 more)
+
+### Community 38 - "Community 38"
+Cohesion: 0.03
+Nodes (35): folly(), common_slist_algorithms, stable_partition(), duplicates_iterator, advance(), bidirectional_iter_adaptor_base, dereference(), forward_iter_adaptor_base (+27 more)
 
 ### Community 39 - "Community 39"
 Cohesion: 0.07
 Nodes (66): expo(), expo(), float32_t(), float64_t(), after(), all_after(), all_before(), around() (+58 more)
 
 ### Community 40 - "Community 40"
-Cohesion: 0.03
-Nodes (12): abort(), flushStderr(), safe_assert_terminate(), safe_assert_terminate_v(), writeStderr(), to_ascii_decimal(), fromRawValue(), fromRawValue() (+4 more)
-
-### Community 41 - "Community 41"
-Cohesion: 0.04
-Nodes (36): toJs(), folly(), common(), key(), CreateObjectRecord(), Method(), Record(), type() (+28 more)
-
-### Community 42 - "Community 42"
-Cohesion: 0.05
-Nodes (48): chunkAllocSize(), computeCapacity(), final(), if(), kAllocIsAlwaysEqual(), header_holder(), BOOST_CATCH(), clear_() (+40 more)
-
-### Community 43 - "Community 43"
 Cohesion: 0.05
 Nodes (60): DoGradientFilter_C(), DoHorizontalFilter_C(), DoVerticalFilter_C(), GradientFilter_C(), GradientPredictor_C(), GradientUnfilter_C(), HorizontalFilter_C(), HorizontalUnfilter_C() (+52 more)
 
-### Community 44 - "Community 44"
+### Community 41 - "Community 41"
+Cohesion: 0.05
+Nodes (47): chunkAllocSize(), computeCapacity(), final(), if(), kAllocIsAlwaysEqual(), header_holder(), BOOST_CATCH(), clear_() (+39 more)
+
+### Community 42 - "Community 42"
 Cohesion: 0.03
 Nodes (61): SRWebSocket, -_addConsumerWithDataLengthcallbackreadToCurrentFrameunmaskBytes, -_addConsumerWithScannercallback, -_addConsumerWithScannercallbackdataLength, -assertOnWorkQueue, -automaticallyNotifiesObserversOfReadyState, -_checkHandshake, -_cleanupSelfReference (+53 more)
 
-### Community 45 - "Community 45"
+### Community 43 - "Community 43"
 Cohesion: 0.03
 Nodes (60): SDImageCache, -applicationDidEnterBackground, -applicationWillTerminate, -_archivedDataWithImageforKey, -cachePathForKey, -calculateSizeWithCompletionBlock, -clearDiskOnCompletion, -clearMemory (+52 more)
 
-### Community 46 - "Community 46"
-Cohesion: 0.07
-Nodes (49): errnoStr(), folly(), invoke_strerror_r(), is_oddspace(), ltrimWhitespace(), prettyToDouble(), rtrimWhitespace(), stringAppendfImpl() (+41 more)
+### Community 44 - "Community 44"
+Cohesion: 0.04
+Nodes (26): hardware_timestamp(), hardware_timestamp_measurement_stop(), bad_alloc(), BOOST_SYMBOL_VISIBLE, throw_out_of_range(), priv_throw_if_out_of_range(), TryWaitResult(), BOOST_SYMBOL_VISIBLE (+18 more)
 
-### Community 47 - "Community 47"
-Cohesion: 0.05
-Nodes (35): BOOST_SYMBOL_VISIBLE, copy_from(), rethrow(), throw_exception(), throw_exception_assert_compatibility(), throw_with_location(), wrapexcept(), throwSystemError() (+27 more)
-
-### Community 48 - "Community 48"
-Cohesion: 0.05
-Nodes (17): pow10(), pow2(), pow5(), shl(), shl_bits(), shl_limbs(), begin(), end() (+9 more)
-
-### Community 49 - "Community 49"
+### Community 45 - "Community 45"
 Cohesion: 0.06
 Nodes (31): Data(), emplace_equal(), emplace_hint_equal(), emplace_hint_unique(), emplace_unique(), enable_if_transparent<key_compare, K, bool>::type
          contains(), enable_if_transparent<key_compare, K, const_iterator>::type
          lower_bound(), enable_if_transparent<key_compare, K,const_iterator>::type
          upper_bound() (+23 more)
 
-### Community 50 - "Community 50"
+### Community 46 - "Community 46"
 Cohesion: 0.04
 Nodes (47): SDAnimatedImageFrameProvider, -animatedImageData, -animatedImageDurationAtIndex, -animatedImageFrameAtIndex, -animatedImageFrameCount, -animatedImageLoopCount, -hash, -initWithProvidertransformer (+39 more)
 
-### Community 51 - "Community 51"
-Cohesion: 0.08
-Nodes (37): Sub3(), ExportRowExpand_MIPS32(), ExportRowShrink_MIPS32(), ImportRowExpand_MIPS32(), ImportRowShrink_MIPS32(), WebPRescalerDspInitMIPS32(), ExportRowExpand_MIPSdspR2(), ExportRowShrink_MIPSdspR2() (+29 more)
-
-### Community 52 - "Community 52"
+### Community 47 - "Community 47"
 Cohesion: 0.05
 Nodes (42): SDImageBaseTransformer, -init, -transformedImageWithImageforKey, -transformerKey, SDImageBlurTransformer, -transformedImageWithImageforKey, -transformerKey, -transformerWithRadius (+34 more)
 
-### Community 53 - "Community 53"
+### Community 48 - "Community 48"
+Cohesion: 0.09
+Nodes (39): TransformWHT_NEON(), AccumulateSSE16_NEON(), Add4x4_NEON(), CollectHistogram_NEON(), ConvertU8ToS16_NEON(), DCMode_NEON(), DiffU8ToS16_NEON(), Disto16x16_NEON() (+31 more)
+
+### Community 49 - "Community 49"
 Cohesion: 0.05
 Nodes (41): SDWebImageDownloader, -cancelAllDownloads, -canRequestImageForURL, -canRequestImageForURLoptionscontext, -createDownloaderOperationWithUrloptionscontext, -currentDownloadCount, -dealloc, -downloadImageWithURLcompleted (+33 more)
 
-### Community 54 - "Community 54"
+### Community 50 - "Community 50"
 Cohesion: 0.05
 Nodes (30): A1, A2, A3, A4, A5, A6, A7, A8 (+22 more)
 
-### Community 55 - "Community 55"
+### Community 51 - "Community 51"
 Cohesion: 0.07
 Nodes (22): facebook(), facebook(), bigint(), adl_begin(), adl_end(), assign(), enable_if<
             mpl::not_<boost::is_base_and_derived<iterator_range_detail::iterator_range_tag, ForwardRange> >,
@@ -544,65 +528,81 @@ Nodes (22): facebook(), facebook(), bigint(), adl_begin(), adl_end(), assign(), 
         >::type
         operator==() (+14 more)
 
-### Community 56 - "Community 56"
+### Community 52 - "Community 52"
+Cohesion: 0.06
+Nodes (10): HFilter16i(), HFilterVertEdge16i(), SimpleHFilter16(), SimpleHFilter16i(), SimpleVFilter16(), SimpleVFilter16i(), TransformOne(), TransformTwo() (+2 more)
+
+### Community 53 - "Community 53"
 Cohesion: 0.05
 Nodes (38): SDAnimatedImage, -animatedImageData, -animatedImageDurationAtIndex, -animatedImageFormat, -animatedImageFrameAtIndex, -animatedImageFrameCount, -animatedImageLoopCount, -encodeWithCoder (+30 more)
 
-### Community 57 - "Community 57"
+### Community 54 - "Community 54"
+Cohesion: 0.09
+Nodes (28): get(), create(), get_existing(), StaticSingletonManagerWithRttiImpl, contains(), elementsCapacity(), erase(), get() (+20 more)
+
+### Community 55 - "Community 55"
 Cohesion: 0.06
 Nodes (34): SDImageIOAnimatedCoder, -animatedImageData, -animatedImageDurationAtIndex, -animatedImageFrameAtIndex, -animatedImageFrameCount, -animatedImageLoopCount, -animatedImageUTType, -canDecodeFromData (+26 more)
 
-### Community 58 - "Community 58"
+### Community 56 - "Community 56"
 Cohesion: 0.06
 Nodes (16): SkeletonRow(), useAuth(), SyncProvider(), useTheme(), DifficultyBadge(), difficultyTheme(), DevicePairingScreen(), PairingConfirmScreen() (+8 more)
 
-### Community 59 - "Community 59"
+### Community 57 - "Community 57"
 Cohesion: 0.09
 Nodes (5): seed(), subtract_with_carry, subtract_with_carry_01, subtract_with_carry_01_engine, subtract_with_carry_engine
 
-### Community 60 - "Community 60"
-Cohesion: 0.08
-Nodes (15): ApplyAlphaMultiply4444_C(), ApplyAlphaMultiply_16b_C(), dither_hi(), dither_lo(), GetScale(), MakeARGB32(), Mult(), multiply() (+7 more)
-
-### Community 61 - "Community 61"
+### Community 58 - "Community 58"
 Cohesion: 0.06
 Nodes (32): SDWebImageCombinedOperation, -cancel, -isCancelled, SDWebImageManager, -cacheKeyForURL, -cacheKeyForURLcontext, -callCacheProcessForOperationurloptionscontextprogresscompleted, -callCompletionBlockForOperationcompletionerrorqueueurl (+24 more)
 
-### Community 62 - "Community 62"
-Cohesion: 0.1
-Nodes (23): awaitDone(), awaitDoneTryLock(), awaitPending(), clearPending(), combinedOp(), combiningPass(), combiningSession(), dedicatedCombining() (+15 more)
-
-### Community 63 - "Community 63"
-Cohesion: 0.09
-Nodes (19): convertRawProp(), toMapBuffer(), toString(), formatTimestamp(), copysign(), isfinite(), isinf(), isnan() (+11 more)
-
-### Community 64 - "Community 64"
+### Community 59 - "Community 59"
 Cohesion: 0.06
 Nodes (14): basic_ios_all_saver, basic_ios_exception_saver, basic_ios_fill_saver, basic_ios_iostate_saver, basic_ios_locale_saver, basic_ios_rdbuf_saver, basic_ios_tie_saver, ios_all_word_saver (+6 more)
 
-### Community 65 - "Community 65"
+### Community 60 - "Community 60"
+Cohesion: 0.09
+Nodes (19): convertRawProp(), toMapBuffer(), toString(), formatTimestamp(), copysign(), isfinite(), isinf(), isnan() (+11 more)
+
+### Community 61 - "Community 61"
+Cohesion: 0.1
+Nodes (5): lagged_fibonacci, lagged_fibonacci_01, lagged_fibonacci_01_engine, lagged_fibonacci_engine, seed()
+
+### Community 62 - "Community 62"
 Cohesion: 0.08
 Nodes (7): is_space(), trim(), trim_copy(), trim_left(), trim_left_copy(), trim_right(), trim_right_copy()
 
-### Community 66 - "Community 66"
+### Community 63 - "Community 63"
 Cohesion: 0.07
 Nodes (9): A1, A2, A3, A4, A5, A6, A7, A8 (+1 more)
 
-### Community 67 - "Community 67"
+### Community 64 - "Community 64"
 Cohesion: 0.07
 Nodes (27): SDAnimatedImageRep, SDImageCoderHelper, -animatedImageWithFrames, -CGImageContainsAlpha, -CGImageCreateDecoded, -CGImageCreateDecodedorientation, -CGImageCreateScaledsize, -CGImageIsHardwareSupported (+19 more)
 
-### Community 68 - "Community 68"
+### Community 65 - "Community 65"
 Cohesion: 0.07
 Nodes (27): UIButton, -sd_backgroundImageOperationKeyForState, -sd_backgroundImageURLForState, -sd_cancelBackgroundImageLoadForState, -sd_cancelImageLoadForState, -sd_currentBackgroundImageURL, -sd_currentImageURL, -sd_imageOperationKeyForState (+19 more)
 
-### Community 69 - "Community 69"
+### Community 66 - "Community 66"
+Cohesion: 0.11
+Nodes (16): FilterLoop24(), FilterLoop26(), HFilter16(), HFilter16i(), HFilter8(), HFilter8i(), SimpleHFilter16(), SimpleHFilter16i() (+8 more)
+
+### Community 67 - "Community 67"
 Cohesion: 0.08
 Nodes (25): SDCallbackQueue, SDWebImagePrefetcher, -addRunningToken, -callCompletionBlockForToken, -callProgressBlockForTokenimageURL, -cancelPrefetching, -countOfRunningTokens, -delegateQueue (+17 more)
 
-### Community 70 - "Community 70"
+### Community 68 - "Community 68"
+Cohesion: 0.18
+Nodes (19): lightweight_mutex, scoped_lock, ChangeState(), End(), Execute(), Launch(), pthread_cond_destroy(), pthread_cond_init() (+11 more)
+
+### Community 69 - "Community 69"
 Cohesion: 0.08
 Nodes (24): SDImageCachesManager, -addCache, -caches, -clearWithCacheTypecompletion, -concurrentClearWithCacheTypecompletionenumeratoroperation, -concurrentContainsImageForKeycacheTypecompletionenumeratoroperation, -concurrentQueryImageForKeyoptionscontextcacheTypecompletionenumeratoroperation, -concurrentRemoveImageForKeycacheTypecompletionenumeratoroperation (+16 more)
+
+### Community 70 - "Community 70"
+Cohesion: 0.18
+Nodes (23): abs_mips32(), do_filter2(), do_filter4(), do_filter6(), FilterLoop24(), FilterLoop26(), hev(), HFilter16() (+15 more)
 
 ### Community 71 - "Community 71"
 Cohesion: 0.08
@@ -613,61 +613,60 @@ Cohesion: 0.11
 Nodes (9): bitCount(), getNthLSBit(), getNthLSByte(), byteCount(), bytes(), getNthLSBit(), getNthLSByte(), getNthMSBit() (+1 more)
 
 ### Community 73 - "Community 73"
-Cohesion: 0.09
-Nodes (10): AUX_WRAPPER_NAME(), BOOST_NOEXCEPT(), reference_wrapper, components_bcc<typename remove_cv<T>::type,T,
-            ClassTypeTransform>(), transform_iterator, namespace(), BOOST_WORKAROUND(), range_begin() (+2 more)
-
-### Community 74 - "Community 74"
 Cohesion: 0.14
 Nodes (17): clip(), SharpYuvFilterRow_C(), SharpYuvInitDsp(), SharpYuvUpdateY_C(), clip_NEON(), InitSharpYuvNEON(), SharpYuvFilterRow16_NEON(), SharpYuvFilterRow32_NEON() (+9 more)
 
-### Community 75 - "Community 75"
+### Community 74 - "Community 74"
 Cohesion: 0.09
 Nodes (21): SDAnimatedImagePlayer, -calculateMaxBufferCountWithFrame, -clearFrameBuffer, -dealloc, -defaultRunLoopMode, -displayDidRefresh, -displayLink, -handleFrameChange (+13 more)
 
-### Community 76 - "Community 76"
+### Community 75 - "Community 75"
 Cohesion: 0.13
 Nodes (9): allocationAttempt(), find(), folly(), IndexType(), keyValue(), oneIn64(), rand64(), randBool() (+1 more)
 
-### Community 77 - "Community 77"
+### Community 76 - "Community 76"
 Cohesion: 0.1
 Nodes (19): SRProxyConnect, -_configureProxy, -dealloc, -_dequeueInput, -_didConnect, -_failWithError, -_fetchPACwithProxySettings, -_initializeStreams (+11 more)
 
-### Community 78 - "Community 78"
+### Community 77 - "Community 77"
 Cohesion: 0.1
 Nodes (19): SDWebImageActivityIndicator, -commonInit, -grayIndicator, -grayLargeIndicator, -init, -largeIndicator, -mediumIndicator, -startAnimatingIndicator (+11 more)
 
-### Community 79 - "Community 79"
+### Community 78 - "Community 78"
 Cohesion: 0.11
 Nodes (18): gcd_evaluator, integer_traits, integer_traits< bool >, integer_traits<  ::boost::long_long_type>, integer_traits<  ::boost::ulong_long_type >, integer_traits< char >, integer_traits< int >, integer_traits<__int64> (+10 more)
+
+### Community 79 - "Community 79"
+Cohesion: 0.13
+Nodes (10): is_high_surrogate(), is_surrogate(), u16_to_u32_iterator, u32_to_u16_iterator, u32_to_u8_iterator, u8_to_u32_iterator, utf16_output_iterator, utf8_byte_count() (+2 more)
 
 ### Community 80 - "Community 80"
 Cohesion: 0.13
 Nodes (10): is_high_surrogate(), is_surrogate(), u16_to_u32_iterator, u32_to_u16_iterator, u32_to_u8_iterator, u8_to_u32_iterator, utf16_output_iterator, utf8_byte_count() (+2 more)
 
 ### Community 81 - "Community 81"
-Cohesion: 0.13
-Nodes (10): is_high_surrogate(), is_surrogate(), u16_to_u32_iterator, u32_to_u16_iterator, u32_to_u8_iterator, u8_to_u32_iterator, utf16_output_iterator, utf8_byte_count() (+2 more)
-
-### Community 82 - "Community 82"
 Cohesion: 0.11
 Nodes (18): SDDiskCache, -cachePathForKey, -cachePathForKeyinPath, -commonInit, -containsDataForKey, -createDirectory, -dataForKey, -extendedDataForKey (+10 more)
 
-### Community 83 - "Community 83"
+### Community 82 - "Community 82"
 Cohesion: 0.11
 Nodes (18): UIView, -sd_cancelCurrentImageLoad, -sd_cancelLatestImageLoad, -sd_imageIndicator, -sd_imageProgress, -sd_imageTransition, -sd_imageURL, -sd_internalSetImageWithURLplaceholderImageoptionscontextsetImageBlockprogresscompleted (+10 more)
 
-### Community 84 - "Community 84"
+### Community 83 - "Community 83"
 Cohesion: 0.11
 Nodes (17): integer_traits, integer_traits_base, integer_traits<bool>, integer_traits< ::boost::long_long_type>, integer_traits< ::boost::ulong_long_type>, integer_traits<char>, integer_traits<int>, integer_traits< __int64> (+9 more)
 
-### Community 85 - "Community 85"
+### Community 84 - "Community 84"
 Cohesion: 0.11
 Nodes (17): SDWeakProxy, -class, -conformsToProtocol, -debugDescription, -description, -forwardingTargetForSelector, -forwardInvocation, -hash (+9 more)
 
-### Community 86 - "Community 86"
+### Community 85 - "Community 85"
 Cohesion: 0.12
 Nodes (7): allocator_multialloc_chain_node_deallocator, allocator_node_destroyer, allocator_node_destroyer_and_chain_builder, null_scoped_destructor, scoped_destructor, scoped_node_destructor, value_destructor
+
+### Community 86 - "Community 86"
+Cohesion: 0.18
+Nodes (4): linear_congruential, linear_congruential_engine, rand48, seed()
 
 ### Community 88 - "Community 88"
 Cohesion: 0.12
@@ -1637,12 +1636,12 @@ Nodes (1): NSOperation
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `move()` connect `Community 1` to `Community 0`, `Community 32`, `Community 2`, `Community 5`, `Community 39`, `Community 41`, `Community 10`, `Community 42`, `Community 13`, `Community 47`, `Community 16`, `Community 22`, `Community 55`?**
+- **Why does `move()` connect `Community 0` to `Community 1`, `Community 33`, `Community 39`, `Community 8`, `Community 41`, `Community 10`, `Community 12`, `Community 13`, `Community 16`, `Community 17`, `Community 19`, `Community 51`, `Community 21`, `Community 23`, `Community 30`?**
   _High betweenness centrality (0.064) - this node is a cross-community bridge._
-- **Why does `String` connect `Community 4` to `Community 33`, `Community 1`, `Community 7`, `Community 8`, `Community 39`, `Community 41`, `Community 9`, `Community 14`, `Community 46`, `Community 22`, `Community 58`, `Community 63`?**
-  _High betweenness centrality (0.034) - this node is a cross-community bridge._
-- **Why does `FileProviderItem` connect `Community 7` to `Community 54`?**
-  _High betweenness centrality (0.025) - this node is a cross-community bridge._
+- **Why does `String` connect `Community 4` to `Community 0`, `Community 1`, `Community 5`, `Community 6`, `Community 39`, `Community 7`, `Community 14`, `Community 16`, `Community 56`, `Community 60`, `Community 31`?**
+  _High betweenness centrality (0.033) - this node is a cross-community bridge._
+- **Why does `FileProviderItem` connect `Community 6` to `Community 50`?**
+  _High betweenness centrality (0.030) - this node is a cross-community bridge._
 - **Are the 187 inferred relationships involving `move()` (e.g. with `add()` and `addWithPriority()`) actually correct?**
   _`move()` has 187 INFERRED edges - model-reasoned connections that need verification._
 - **Are the 80 inferred relationships involving `WebPSafeFree()` (e.g. with `ChunkDelete()` and `MuxImageDelete()`) actually correct?**

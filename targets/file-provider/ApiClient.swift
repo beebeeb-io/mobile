@@ -57,6 +57,7 @@ final class ApiClient {
     let size_bytes: Int
     let chunk_count: Int
     let created_at: String?
+    let updated_at: String?
   }
 
   // MARK: - Endpoints
@@ -106,6 +107,27 @@ final class ApiClient {
     let (data, response) = try await session.data(for: request)
     try validate(response)
     return try JSONDecoder().decode(UploadResponseDto.self, from: data)
+  }
+
+  /// Patch encrypted metadata for a file. The server route accepts rename and
+  /// move in the same request, which matches iOS Files edit semantics.
+  func patchFile(fileId: String, nameEncrypted: String? = nil, parentId: String? = nil) async throws -> FileEntryDto {
+    let url = baseUrl.appendingPathComponent("/api/v1/files/\(fileId)")
+    var request = try authedRequest(url: url, method: "PATCH")
+    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+    var body: [String: Any] = [:]
+    if let nameEncrypted { body["name_encrypted"] = nameEncrypted }
+    if let parentId {
+      body["parent_id"] = parentId
+    } else {
+      body["parent_id"] = NSNull()
+    }
+    request.httpBody = try JSONSerialization.data(withJSONObject: body, options: [])
+
+    let (data, response) = try await session.data(for: request)
+    try validate(response)
+    return try JSONDecoder().decode(FileEntryDto.self, from: data)
   }
 
   /// Soft-delete (trash) a file.

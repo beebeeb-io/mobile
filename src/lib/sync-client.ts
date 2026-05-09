@@ -266,6 +266,13 @@ export class SyncClient {
           for (const op of ops) {
             await this.applyRemoteOp(op);
           }
+          // The mobile tree is in-memory only. SecureStore can preserve
+          // lastSeq across reinstalls/relaunches, so a catch-up with no ops
+          // may otherwise mark an empty tree as ready.
+          if (this.tree.size === 0) {
+            const snap = await getSnapshot();
+            this.applySnapshot(snap);
+          }
         } catch (err) {
           // Catch-up failed — fall back to full snapshot to recover.
           console.warn('[SyncClient] catch-up failed, fetching snapshot', err);
