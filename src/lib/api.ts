@@ -123,6 +123,10 @@ export function friendlyError(err: unknown): string {
     }
     if (err.status === 409) return err.message || 'A resource with that name already exists.';
     if (err.status === 422) return err.message || 'Invalid input. Please check your details.';
+    // 503 = service-side unavailability (storage pools, DB, S3 backend). Server emits
+    // "all storage pools are full or unavailable" for the StorageUnavailable variant;
+    // either way, the user just needs to retry shortly.
+    if (err.status === 503) return 'Storage is temporarily unavailable. Please try again in a moment.';
     return err.message || 'Something went wrong. Please try again.';
   }
   if (err instanceof TypeError) return 'Could not reach the server. Check your connection and try again.';
