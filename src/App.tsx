@@ -27,6 +27,7 @@ import {
 import type { User } from './lib/api';
 import { AuthContext } from './lib/auth';
 import { CryptoProvider, useCrypto } from './lib/crypto-context';
+import { markUnlocked, wasRecentlyUnlocked } from './lib/lock-state';
 import { SyncProvider } from './lib/sync-context';
 import { useNetworkStatus } from './lib/useNetworkStatus';
 import { setPendingShareKey } from './lib/share-key-store';
@@ -544,16 +545,27 @@ export default function App() {
       const prev = appStateRef.current;
       appStateRef.current = nextState;
 
-      if (nextState === 'background' || nextState === 'inactive') {
+      // Only `background` resets the timer. `inactive` is fired by the system
+      // for incidental events (notification panel pull, biometric prompts,
+      // share sheet, app switcher peek) and must not be treated as the user
+      // leaving the app. Without this distinction the Face ID prompt itself
+      // produces an inactive→active cycle that re-locks immediately.
+      if (nextState === 'background') {
         if (backgroundAtRef.current == null) {
           backgroundAtRef.current = Date.now();
         }
         return;
       }
 
-      if ((prev === 'background' || prev === 'inactive') && nextState === 'active') {
+      if (prev === 'background' && nextState === 'active') {
         const elapsed = backgroundAtRef.current != null ? Date.now() - backgroundAtRef.current : 0;
         backgroundAtRef.current = null;
+
+        // Recently authenticated? The system briefly backgrounds the app
+        // around the Face ID prompt and again right after enabling the
+        // setting. Skip the lock so we don't bounce the user.
+        if (wasRecentlyUnlocked()) return;
+
         try {
           const pref = await SecureStore.getItemAsync(BIOMETRIC_PREF_KEY);
           if (pref !== 'true') return;
@@ -771,7 +783,7 @@ export default function App() {
 
         {/* Biometric lock overlay — shown when app resumes from background */}
         {isAuthenticated && (
-          <BiometricGuard locked={locked} onUnlock={() => setLocked(false)} />
+          <BiometricGuard locked={locked} onUnlock={() => { markUnlocked(); setLocked(false); }} />
         )}
 
         {/* Share Extension dropbox — uploads files dropped by BeebeebShare */}
