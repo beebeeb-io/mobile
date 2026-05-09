@@ -51,6 +51,7 @@ import {
   setNotificationPreferences,
   getUserRegion,
   setUserRegion,
+  requestDataExport,
   type StorageUsage,
   type Subscription,
   type Region,
@@ -974,6 +975,21 @@ export default function SettingsScreen() {
     Linking.openURL('https://beebeeb.io/privacy');
   }, []);
 
+  const handleDownloadMyData = useCallback(async () => {
+    try {
+      await requestDataExport();
+      Alert.alert(
+        'Export requested',
+        "We'll prepare your data export and send a download link to your email address.",
+      );
+    } catch {
+      Alert.alert(
+        'Not available',
+        'Data export is not available right now. Try again later.',
+      );
+    }
+  }, []);
+
   const handleTerms = useCallback(() => {
     Linking.openURL('https://beebeeb.io/terms');
   }, []);
@@ -1668,6 +1684,13 @@ export default function SettingsScreen() {
               label="Privacy settings"
               icon="shield-outline"
               onPress={() => navigation.navigate('Privacy')}
+              c={c}
+            />
+            <RowDivider c={c} />
+            <SettingsRow
+              label="Download my data"
+              icon="download-outline"
+              onPress={() => { void handleDownloadMyData(); }}
               c={c}
             />
           </View>

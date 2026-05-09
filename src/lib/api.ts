@@ -1636,3 +1636,4 @@ export async function setUserRegion(continent: string): Promise<{ preferred_regi
     'PUT', '/api/v1/me/region', { preferred_region: continent },
   );
 }
+
