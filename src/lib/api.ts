@@ -319,6 +319,9 @@ export interface FileEntry {
   created_at: string;
   updated_at: string;
   storage_pool_id?: string | null;
+  /** Parent folder ID — null when the entry lives at the root. Populated by
+   * /api/v1/files/all-images so the Photos screen can tag iOS-backup origin. */
+  parent_id?: string | null;
   /** Active share count — populated by the server when shares exist on the entry. */
   share_count?: number;
 }
@@ -378,6 +381,16 @@ export async function listFiles(parentId?: string, trashed = false): Promise<Fil
 
 export async function getFile(id: string): Promise<FileEntry> {
   return request<FileEntry>('GET', `/api/v1/files/${id}`);
+}
+
+/**
+ * GET /api/v1/files/all-images — every non-trashed image owned by the user
+ * across every folder, sorted newest first. Each entry includes `parent_id`
+ * so the caller can tag origin (iOS auto-backup vs. uploaded elsewhere).
+ */
+export async function getAllImages(): Promise<FileEntry[]> {
+  const data = await request<ListFilesResponse>('GET', '/api/v1/files/all-images');
+  return data.files;
 }
 
 const CHUNK_SIZE = 4 * 1024 * 1024; // Legacy upload chunk size

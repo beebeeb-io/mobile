@@ -18,11 +18,12 @@ import * as Haptics from 'expo-haptics';
 import * as MediaLibrary from 'expo-media-library';
 import { radii, spacing } from '../theme';
 import { useTheme } from '../lib/theme-context';
-import { listFiles, friendlyError } from '../lib/api';
+import { getAllImages, listFiles, friendlyError } from '../lib/api';
 import type { FileEntry } from '../lib/api';
 import { useBackup } from '../lib/backup-context';
 import { useNetworkStatus } from '../lib/useNetworkStatus';
 import { ThumbnailImage } from '../components/ThumbnailImage';
+import { PHOTOS_FOLDER_NAME } from '../services/PhotoBackupRunner';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -142,14 +143,17 @@ function FilterChips({
 const PhotoCell = React.memo(function PhotoCell({
   fileId,
   seed,
+  isFromBackup,
   onPress,
   accessibilityLabel,
 }: {
   fileId: string;
   seed: number;
+  isFromBackup: boolean;
   onPress?: () => void;
   accessibilityLabel: string;
 }) {
+  const { colors: c } = useTheme();
   return (
     <TouchableOpacity
       activeOpacity={0.7}
@@ -164,6 +168,11 @@ const PhotoCell = React.memo(function PhotoCell({
         style={StyleSheet.absoluteFill}
         accessibilityLabel={accessibilityLabel}
       />
+      {isFromBackup && (
+        <View style={[styles.originBadge, { backgroundColor: c.amber }]}>
+          <Ionicons name="camera" size={10} color={c.ink} />
+        </View>
+      )}
     </TouchableOpacity>
   );
 });
@@ -175,10 +184,12 @@ const PhotoCell = React.memo(function PhotoCell({
 const GroupSection = React.memo(function GroupSection({
   group,
   seedOffset,
+  photosFolderId,
   onOpenPhoto,
 }: {
   group: PhotoGroup;
   seedOffset: number;
+  photosFolderId: string | null;
   onOpenPhoto: (entry: FileEntry) => void;
 }) {
   const { colors: c } = useTheme();
@@ -196,6 +207,7 @@ const GroupSection = React.memo(function GroupSection({
             key={photo.id}
             fileId={photo.id}
             seed={seedOffset + i}
+            isFromBackup={photosFolderId !== null && photo.parent_id === photosFolderId}
             accessibilityLabel={`Photo from ${group.label}`}
             onPress={() => onOpenPhoto(photo)}
           />
@@ -353,6 +365,7 @@ export default function PhotosScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const [isScrolled, setIsScrolled] = useState(false);
   const [photos, setPhotos] = useState<FileEntry[]>([]);
+  const [photosFolderId, setPhotosFolderId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -382,8 +395,21 @@ export default function PhotosScreen() {
     setError(null);
 
     try {
-      const result = await listFiles();
-      const images = result
+      // The Photos folder is created by PhotoBackupRunner with a plaintext
+      // name_encrypted ('Photos') so we can identify it without decryption.
+      // listFiles() at root + getAllImages() are independent reads; run both
+      // in parallel.
+      const [rootEntries, allImages] = await Promise.all([
+        listFiles().catch(() => [] as FileEntry[]),
+        getAllImages(),
+      ]);
+      const photosFolder = rootEntries.find(
+        (f) => f.is_folder && f.name_encrypted === PHOTOS_FOLDER_NAME,
+      );
+      setPhotosFolderId(photosFolder?.id ?? null);
+      // Server already returns image-only, sorted newest first, but defend
+      // against future changes by re-applying both invariants here.
+      const images = allImages
         .filter(isImageFile)
         .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
       setPhotos(images);
@@ -421,6 +447,7 @@ export default function PhotosScreen() {
     <GroupSection
       group={item}
       seedOffset={groupOffsets[index] ?? 0}
+      photosFolderId={photosFolderId}
       onOpenPhoto={openPhoto}
     />
   );
@@ -531,6 +558,18 @@ const styles = StyleSheet.create({
   // Grid
   grid: { flexDirection: 'row', flexWrap: 'wrap', gap: GRID_GAP },
   cell: { width: CELL_SIZE, height: CELL_SIZE },
+
+  // Origin badge — small camera chip overlaid on iOS-backup photos
+  originBadge: {
+    position: 'absolute',
+    bottom: 4,
+    right: 4,
+    width: 16,
+    height: 16,
+    borderRadius: 4,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
 
   // Loading state
   loadingContainer: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12 },
