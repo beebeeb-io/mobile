@@ -932,10 +932,6 @@ export default function SettingsScreen() {
     }
   }, [storageRegion]);
 
-  const handleManageBilling = useCallback(() => {
-    navigation.navigate('Storage');
-  }, [navigation]);
-
   const handleUpgrade = useCallback(() => {
     Haptics.selectionAsync();
     navigation.navigate('Storage');
@@ -1139,8 +1135,6 @@ export default function SettingsScreen() {
                 </View>
               </>
             )}
-            <RowDivider c={c} />
-            <SettingsRow label="Manage billing" icon="card-outline" onPress={handleManageBilling} c={c} />
           </View>
         </View>
 
@@ -1173,6 +1167,19 @@ export default function SettingsScreen() {
                 <Text style={{ fontSize: 13, color: c.ink3 }}>Could not load storage info</Text>
               </View>
             )}
+          </View>
+        </View>
+
+        {/* ---- Storage & Plan ---- */}
+        <View style={layout.section}>
+          <SectionHeader title="Storage & Plan" c={c} />
+          <View style={[layout.card, { backgroundColor: c.paper, borderColor: c.line }]}>
+            <SettingsRow
+              label="Storage & Plan"
+              icon="cloud-outline"
+              onPress={() => navigation.navigate('Storage')}
+              c={c}
+            />
           </View>
         </View>
 
@@ -1639,19 +1646,6 @@ export default function SettingsScreen() {
                 );
               })}
             </View>
-          </View>
-        </View>
-
-        {/* ---- Storage & Plan ---- */}
-        <View style={layout.section}>
-          <SectionHeader title="Storage & Plan" c={c} />
-          <View style={[layout.card, { backgroundColor: c.paper, borderColor: c.line }]}>
-            <SettingsRow
-              label="Storage & Plan"
-              icon="cloud-outline"
-              onPress={() => navigation.navigate('Storage')}
-              c={c}
-            />
           </View>
         </View>
 
