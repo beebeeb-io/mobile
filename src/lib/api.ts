@@ -555,7 +555,9 @@ export async function uploadEncryptedChunked(params: {
         name_encrypted: initialNameEncrypted,
         parent_id: parentId ?? null,
         mime_type: mimeType ?? null,
-        size_bytes: sizeBytes,
+        // Server expects PLAINTEXT size — `sizeBytes` (= plaintext + chunkCount*28)
+        // is only used for progress reporting (total encrypted bytes in flight).
+        size_bytes: plaintextSizeBytes,
         chunk_count: chunkCount,
       }),
     })
