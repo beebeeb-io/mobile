@@ -43,15 +43,26 @@ function formatBytes(bytes: number): string {
 }
 
 function planLabel(slug: string): string {
+  // Server is migrating personal -> basic and data_hoarder -> business; the
+  // legacy keys map to the new labels so a live response carrying an old slug
+  // still renders correctly.
   const map: Record<string, string> = {
-    free: 'Free', personal: 'Personal', pro: 'Pro',
-    data_hoarder: 'Data Hoarder', team: 'Team', business: 'Business',
+    free: 'Free',
+    basic: 'Basic', personal: 'Basic',
+    pro: 'Pro',
+    business: 'Business', data_hoarder: 'Business',
+    team: 'Team',
   };
   return map[slug.toLowerCase()] ?? slug;
 }
 
 const UPGRADE_CHAIN: Record<string, string> = {
-  free: 'personal', personal: 'pro', pro: 'data_hoarder',
+  free: 'basic',
+  basic: 'pro',
+  pro: 'business',
+  // Legacy slug aliases.
+  personal: 'pro',
+  data_hoarder: 'business',
 };
 
 // ── Layout ────────────────────────────────────────────────────────────────────
@@ -481,7 +492,7 @@ export default function StorageScreen() {
               >
                 <Text style={{ fontSize: 15, fontWeight: '700', color: c.ink }}>View plans</Text>
                 <Text style={{ fontSize: 12, color: c.ink, opacity: 0.75 }}>
-                  Personal · Pro · Data Hoarder
+                  Basic · Pro · Business
                 </Text>
               </TouchableOpacity>
             </View>

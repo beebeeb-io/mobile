@@ -159,11 +159,16 @@ function timeAgo(iso: string): string {
 }
 
 function planLabel(name: string): string {
+  // Server is migrating personal -> basic and data_hoarder -> business; the
+  // legacy keys are aliased to the new labels for the duration of the rename.
   const map: Record<string, string> = {
     free: 'Free',
-    personal: 'Personal',
-    team: 'Team',
+    basic: 'Basic',
+    personal: 'Basic',
+    pro: 'Pro',
     business: 'Business',
+    data_hoarder: 'Business',
+    team: 'Team',
   };
   return map[name.toLowerCase()] ?? name;
 }
