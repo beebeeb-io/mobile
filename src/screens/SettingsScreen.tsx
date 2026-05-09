@@ -1278,23 +1278,27 @@ export default function SettingsScreen() {
               ))
             }
 
-            <RowDivider c={c} />
-            <View style={layout.row}>
-              <View style={{ flex: 1 }}>
-                <Text style={{ fontSize: 14, fontWeight: '400' as const, color: c.ink }}>Force region</Text>
-                {storageRegionMode === 'force' && storageRegion !== 'europe' && (
-                  <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 4, gap: 4 }}>
-                    <Ionicons name="warning" size={12} color={c.amberDeep} />
-                    <Text style={{ fontSize: 11, color: c.amberDeep }}>Capacity limited</Text>
+            {storageRegion !== 'europe' && (
+              <>
+                <RowDivider c={c} />
+                <View style={layout.row}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ fontSize: 14, fontWeight: '400' as const, color: c.ink }}>Force region</Text>
+                    {storageRegionMode === 'force' && (
+                      <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 4, gap: 4 }}>
+                        <Ionicons name="warning" size={12} color={c.amberDeep} />
+                        <Text style={{ fontSize: 11, color: c.amberDeep }}>Capacity limited</Text>
+                      </View>
+                    )}
                   </View>
-                )}
-              </View>
-              <NativeSwitch
-                value={storageRegionMode === 'force'}
-                onValueChange={(v) => handleRegionModeChange(v ? 'force' : 'preference')}
-                colors={c}
-              />
-            </View>
+                  <NativeSwitch
+                    value={storageRegionMode === 'force'}
+                    onValueChange={(v) => handleRegionModeChange(v ? 'force' : 'preference')}
+                    colors={c}
+                  />
+                </View>
+              </>
+            )}
           </View>
           <SectionNote
             text="New uploads go to your selected region. Existing files stay where they are. Need to migrate? Contact us."
