@@ -11,6 +11,8 @@ import * as LocalAuthentication from 'expo-local-authentication';
 import * as Haptics from 'expo-haptics';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { colors } from '../theme';
+import { requestConfirmation } from '../lib/confirm-action';
+import { markUnlocked } from '../lib/lock-state';
 
 interface Props {
   onUnlocked: () => void;
@@ -42,13 +44,18 @@ export default function BiometricLockScreen({ onUnlocked }: Props) {
     setError(null);
     setAuthenticating(true);
     try {
+      // disableDeviceFallback: true keeps iOS from offering the device passcode
+      // sheet on a Face ID failure. That sheet drops the app into `inactive`
+      // long enough to confuse the AppState lock-trigger; the in-app password
+      // button below is the explicit fallback path instead.
       const result = await LocalAuthentication.authenticateAsync({
         promptMessage: 'Unlock Beebeeb',
         cancelLabel: 'Cancel',
-        disableDeviceFallback: false,
+        disableDeviceFallback: true,
       });
       if (result.success) {
         await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        markUnlocked();
         onUnlocked();
       } else if (result.error !== 'user_cancel' && result.error !== 'system_cancel') {
         setError('Authentication failed. Tap to try again.');
@@ -58,6 +65,16 @@ export default function BiometricLockScreen({ onUnlocked }: Props) {
     } finally {
       setAuthenticating(false);
     }
+  }, [onUnlocked]);
+
+  const unlockWithPassword = useCallback(async () => {
+    const token = await requestConfirmation({
+      title: 'Use your Beebeeb password',
+      message: 'Enter your password to unlock Beebeeb on this device.',
+    });
+    if (!token) return;
+    markUnlocked();
+    onUnlocked();
   }, [onUnlocked]);
 
   // Auto-trigger on mount
@@ -113,6 +130,14 @@ export default function BiometricLockScreen({ onUnlocked }: Props) {
             try again
           </Text>
         </Text>
+        <TouchableOpacity
+          onPress={unlockWithPassword}
+          accessibilityRole="button"
+          accessibilityLabel="Use Beebeeb password"
+          style={styles.passwordButton}
+        >
+          <Text style={styles.passwordButtonText}>Use Beebeeb password</Text>
+        </TouchableOpacity>
       </View>
     </View>
   );
@@ -254,5 +279,19 @@ const styles = StyleSheet.create({
   footerLink: {
     color: colors.amberDeep,
     fontWeight: '500',
+  },
+  passwordButton: {
+    marginTop: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 18,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: colors.line,
+    backgroundColor: colors.paper,
+  },
+  passwordButtonText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: colors.ink,
   },
 });

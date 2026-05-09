@@ -76,6 +76,7 @@ import {
 } from '../services/BackupService';
 import type { RootStackParamList } from '../App';
 import { NativeSwitch } from '../components/NativeSwitch';
+import { markUnlocked } from '../lib/lock-state';
 import { NOTIFICATIONS_OPT_OUT_KEY, registerForPushNotifications, unregisterPushToken } from '../lib/push-notifications';
 
 const BIOMETRIC_PREF_KEY = 'beebeeb_biometric_lock';
@@ -729,9 +730,14 @@ export default function SettingsScreen() {
       const result = await LocalAuthentication.authenticateAsync({
         promptMessage: 'Confirm your identity to enable Face ID lock',
         cancelLabel: 'Cancel',
-        disableDeviceFallback: false,
+        disableDeviceFallback: true,
       });
       if (!result.success) return;
+      // The system biometric sheet briefly backgrounds Beebeeb. Without this
+      // grace stamp the AppState listener would interpret the resume as a
+      // background→active transition and immediately push the lock screen,
+      // even though the user just authenticated.
+      markUnlocked();
     }
     setBiometricEnabled(enabled);
     await SecureStore.setItemAsync(BIOMETRIC_PREF_KEY, enabled ? 'true' : 'false');
