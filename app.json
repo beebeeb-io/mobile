@@ -88,6 +88,7 @@
     },
     "plugins": [
       "expo-secure-store",
+      "expo-notifications",
       "expo-local-authentication",
       "expo-document-picker",
       "expo-media-library",

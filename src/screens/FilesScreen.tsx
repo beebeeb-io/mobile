@@ -39,7 +39,7 @@ import { useToast } from '../lib/toast-context';
 import SkeletonRow from '../components/SkeletonRow';
 import PresenceAvatars from '../components/PresenceAvatars';
 import TrustDetailsSheet from '../components/TrustDetailsSheet';
-import { listFiles, createFolder, deleteFile, renameFile, moveFile, uploadFile, downloadFile, friendlyError, getStorageUsage, createProofOfExistence, storageLocation, trustLocation, getFolderPresence } from '../lib/api';
+import { ApiError, listFiles, createFolder, deleteFile, renameFile, moveFile, uploadFile, downloadFile, friendlyError, getStorageUsage, createProofOfExistence, storageLocation, trustLocation, getFolderPresence, getUploadStatus } from '../lib/api';
 import { generateAndUploadThumbnail } from '../lib/thumbnail';
 import type { FileEntry, StorageUsage, ProofOfExistence, PresenceUser, SyncNode } from '../lib/api';
 import type { RootStackParamList, TabParamList } from '../App';
@@ -102,6 +102,43 @@ function displayName(entry: FileEntry): string {
   return raw;
 }
 
+function guessMimeTypeFromName(name: string): string | null {
+  const ext = name.toLowerCase().split('.').pop();
+  switch (ext) {
+    case 'jpg':
+    case 'jpeg':
+      return 'image/jpeg';
+    case 'png':
+      return 'image/png';
+    case 'gif':
+      return 'image/gif';
+    case 'webp':
+      return 'image/webp';
+    case 'svg':
+      return 'image/svg+xml';
+    case 'pdf':
+      return 'application/pdf';
+    case 'zip':
+      return 'application/zip';
+    case '3mf':
+      return 'model/3mf';
+    case 'txt':
+    case 'md':
+      return 'text/plain';
+    case 'csv':
+      return 'text/csv';
+    case 'html':
+    case 'htm':
+      return 'text/html';
+    case 'docx':
+      return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+    case 'xlsx':
+      return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+    default:
+      return null;
+  }
+}
+
 function toSearchIndexEntry(file: FileEntry, name: string, parent: string | null): SearchIndexEntry {
   return {
     name,
@@ -140,6 +177,39 @@ function base64ToUint8Array(b64: string): Uint8Array {
   return bytes;
 }
 
+function uint8ArrayToBase64(bytes: Uint8Array): string {
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
+
+function encryptedMetadataToJson(enc: { nonce: Uint8Array; ciphertext: Uint8Array }): string {
+  return JSON.stringify({
+    nonce: uint8ArrayToBase64(enc.nonce),
+    ciphertext: uint8ArrayToBase64(enc.ciphertext),
+  });
+}
+
+function parseDecryptedMetadata(plaintext: string): { name: string; mimeType: string | null } {
+  try {
+    const metadata = JSON.parse(plaintext) as { name?: unknown; mime_type?: unknown };
+    if (metadata && typeof metadata === 'object' && typeof metadata.name === 'string') {
+      const name = metadata.name.trim();
+      if (name) {
+        return {
+          name,
+          mimeType: typeof metadata.mime_type === 'string' ? metadata.mime_type : null,
+        };
+      }
+    }
+  } catch {
+    // Legacy metadata format: plaintext is the bare filename.
+  }
+  return { name: plaintext || 'Encrypted file', mimeType: null };
+}
+
 /**
  * Project a SyncNode (CRDT tree node) onto the FileEntry shape the rest of
  * the screen consumes. Both shapes already share most fields — this is a
@@ -152,6 +222,7 @@ function syncNodeToFileEntry(node: SyncNode): FileEntry {
     mime_type: node.mime_type,
     size_bytes: node.size_bytes,
     is_folder: node.is_folder,
+    is_uploading: node.is_uploading,
     chunk_count: node.chunk_count ?? 1,
     created_at: node.created_at,
     updated_at: node.updated_at,
@@ -380,6 +451,7 @@ const FileRowItem = React.memo(function FileRowItem({
   const category = fileCategory(item);
   const isEncryptedFallback = !decryptedName && !!item.name_encrypted?.startsWith('{');
   const nameText = decryptedName ?? displayName(item);
+  const isPendingUpload = !item.is_folder && item.is_uploading === true;
 
   const handleSwipeOpen = useCallback((_dir: 'left' | 'right', swipeable: Swipeable) => {
     if (_openSwipeable && _openSwipeable !== swipeable) {
@@ -441,7 +513,7 @@ const FileRowItem = React.memo(function FileRowItem({
       onPress={() => selectMode ? onToggleSelect(item) : onPress(item)}
       onLongPress={selectMode ? undefined : () => onLongPress(item)}
       delayLongPress={400}
-      accessibilityLabel={selectMode ? `${isSelected ? 'Deselect' : 'Select'} ${nameText}` : nameText}
+      accessibilityLabel={selectMode ? `${isSelected ? 'Deselect' : 'Select'} ${nameText}` : `${nameText}${isPendingUpload ? ', upload pending' : ''}`}
       accessibilityRole="button"
       accessibilityState={selectMode ? { selected: isSelected } : undefined}
     >
@@ -499,17 +571,20 @@ const FileRowItem = React.memo(function FileRowItem({
             const loc = storageLocation(item.storage_pool_id);
             const locSuffix = loc.shortCode ? `  ·  ${loc.shortCode}` : '';
             if (item.is_folder) return `${formatDate(item.updated_at)}${locSuffix}`;
+            if (isPendingUpload) return `Upload pending  ·  ${formatSize(item.size_bytes)}${locSuffix}`;
             if (sortOrder === 'size-desc' || sortOrder === 'size-asc') return `${formatSize(item.size_bytes)}${locSuffix}`;
             return `${formatSize(item.size_bytes)}  ·  ${formatDate(item.updated_at)}${locSuffix}`;
           })()}
         </Text>
         {!item.is_folder && (
           <Text style={[styles.cryptoMeta, { color: c.ink4 }]} numberOfLines={1}>
-            {`AES-256-GCM · ${trustLocation(item.storage_pool_id).region} · ${trustLocation(item.storage_pool_id).city}`}
+            {isPendingUpload
+              ? 'Waiting for encrypted chunks'
+              : `AES-256-GCM · ${trustLocation(item.storage_pool_id).region} · ${trustLocation(item.storage_pool_id).city}`}
           </Text>
         )}
       </View>
-      {!selectMode && !item.is_folder && (
+      {!selectMode && !item.is_folder && !isPendingUpload && (
         <TouchableOpacity
           onPress={() => onTrustPress(item)}
           hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}
@@ -583,11 +658,14 @@ const FileGridItem = React.memo(function FileGridItem({
   const isEncryptedFallback = !decryptedName && !!item.name_encrypted?.startsWith('{');
   const nameText = decryptedName ?? displayName(item);
   const isFolder = item.is_folder;
+  const isPendingUpload = !isFolder && item.is_uploading === true;
 
   const loc = storageLocation(item.storage_pool_id);
   const locSuffix = loc.shortCode ? ` · ${loc.shortCode}` : '';
   const metaText = isFolder
     ? `${formatDate(item.updated_at)}${locSuffix}`
+    : isPendingUpload
+      ? `Upload pending · ${formatSize(item.size_bytes)}${locSuffix}`
     : (sortOrder === 'size-desc' || sortOrder === 'size-asc')
       ? `${formatSize(item.size_bytes)}${locSuffix}`
       : `${formatSize(item.size_bytes)} · ${formatDate(item.updated_at)}${locSuffix}`;
@@ -608,7 +686,7 @@ const FileGridItem = React.memo(function FileGridItem({
       onPress={() => selectMode ? onToggleSelect(item) : onPress(item)}
       onLongPress={selectMode ? undefined : () => onLongPress(item)}
       delayLongPress={400}
-      accessibilityLabel={selectMode ? `${isSelected ? 'Deselect' : 'Select'} ${nameText}` : nameText}
+      accessibilityLabel={selectMode ? `${isSelected ? 'Deselect' : 'Select'} ${nameText}` : `${nameText}${isPendingUpload ? ', upload pending' : ''}`}
       accessibilityRole="button"
       accessibilityState={selectMode ? { selected: isSelected } : undefined}
     >
@@ -667,11 +745,11 @@ const FileGridItem = React.memo(function FileGridItem({
         </Text>
         {!isFolder && (
           <Text style={[styles.cryptoMetaGrid, { color: c.ink4 }]} numberOfLines={1}>
-            {`AES-256-GCM · ${trustLocation(item.storage_pool_id).city}`}
+            {isPendingUpload ? 'Waiting for chunks' : `AES-256-GCM · ${trustLocation(item.storage_pool_id).city}`}
           </Text>
         )}
       </View>
-      {!selectMode && !isFolder && (
+      {!selectMode && !isFolder && !isPendingUpload && (
         <TouchableOpacity
           onPress={() => onTrustPress(item)}
           hitSlop={{ top: 6, right: 6, bottom: 6, left: 6 }}
@@ -796,6 +874,7 @@ export default function FilesScreen() {
   // Crypto
   const { isUnlocked, unlockAttempted, decryptMetadata, encryptChunk, encryptMetadata } = useCrypto();
   const [decryptedNames, setDecryptedNames] = useState<Record<string, string>>({});
+  const [decryptedMimeTypes, setDecryptedMimeTypes] = useState<Record<string, string | null>>({});
 
   /** Find a non-folder file in the current folder whose decrypted name matches `filename`. */
   const findConflict = useCallback((filename: string): FileEntry | null => {
@@ -854,6 +933,14 @@ export default function FilesScreen() {
   const trustFileName = trustFile
     ? (decryptedNames[trustFile.id] ?? displayName(trustFile))
     : '';
+  const mimeTypeFor = useCallback((file: FileEntry): string | null => {
+    const name = decryptedNames[file.id] ?? displayName(file);
+    return decryptedMimeTypes[file.id] ?? file.mime_type ?? guessMimeTypeFromName(name);
+  }, [decryptedMimeTypes, decryptedNames]);
+  const withDecryptedMime = useCallback((file: FileEntry): FileEntry => {
+    const mimeType = mimeTypeFor(file);
+    return mimeType === file.mime_type ? file : { ...file, mime_type: mimeType };
+  }, [mimeTypeFor]);
 
   // New-folder modal (Android — Alert.prompt is iOS-only). Drives a small
   // controlled Modal further down in the render tree.
@@ -873,9 +960,11 @@ export default function FilesScreen() {
   useEffect(() => {
     if (!isUnlocked) {
       setDecryptedNames({});
+      setDecryptedMimeTypes({});
       return;
     }
     const results: Record<string, string> = {};
+    const mimeResults: Record<string, string | null> = {};
     Promise.all(
       files.map(async (file) => {
         try {
@@ -885,13 +974,18 @@ export default function FilesScreen() {
           const nonce = base64ToUint8Array(parsed.nonce);
           const ct = base64ToUint8Array(parsed.ciphertext);
           const plaintext = await decryptMetadata(file.id, nonce, ct);
-          results[file.id] = plaintext;
+          const metadata = parseDecryptedMetadata(plaintext);
+          results[file.id] = metadata.name;
+          mimeResults[file.id] = metadata.mimeType;
         } catch {
           // Decryption failure — leave results[file.id] unset so displayName()
           // renders "Encrypted file" rather than raw ciphertext.
         }
       }),
-    ).then(() => setDecryptedNames({ ...results }));
+    ).then(() => {
+      setDecryptedNames({ ...results });
+      setDecryptedMimeTypes({ ...mimeResults });
+    });
   }, [files, isUnlocked, decryptMetadata]);
 
   // Load pinned folders from SecureStore on mount
@@ -1026,22 +1120,50 @@ export default function FilesScreen() {
     setFolderStack((prev) => prev.slice(0, index + 1));
   }, []);
 
+  const ensureFileReady = useCallback(async (file: FileEntry): Promise<boolean> => {
+    if (file.is_folder) return true;
+    if (file.is_uploading === true) {
+      showToast({ type: 'info', message: 'Upload is still pending. Finish or retry the upload before opening this file.' });
+      return false;
+    }
+    if (file.is_uploading === false) return true;
+
+    try {
+      const status = await getUploadStatus(file.id);
+      if (status.is_uploading) {
+        const uploaded = status.uploaded_chunks.length;
+        showToast({
+          type: 'info',
+          message: `Upload is still pending (${uploaded}/${status.chunk_count} chunks stored).`,
+        });
+        return false;
+      }
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 400 && /upload already completed/i.test(err.message)) {
+        return true;
+      }
+      return true;
+    }
+    return true;
+  }, [showToast]);
+
   const openFile = useCallback(
-    (file: FileEntry) => {
+    async (file: FileEntry) => {
       if (file.is_folder) {
         navigateToFolder(file);
       } else {
+        if (!(await ensureFileReady(file))) return;
         navigation.navigate('Preview', {
           fileId: file.id,
           fileName: decryptedNames[file.id] ?? displayName(file),
-          mimeType: file.mime_type ?? undefined,
+          mimeType: mimeTypeFor(file) ?? undefined,
           sizeBytes: file.size_bytes,
           createdAt: file.created_at,
           chunkCount: file.chunk_count,
         });
       }
     },
-    [navigateToFolder, navigation, decryptedNames],
+    [navigateToFolder, navigation, decryptedNames, mimeTypeFor, ensureFileReady],
   );
 
   const handleRefresh = useCallback(() => {
@@ -1285,7 +1407,14 @@ export default function FilesScreen() {
     const trimmed = rawName.trim();
     if (!trimmed) return;
     try {
-      const folder = await createFolder(trimmed, currentFolder.id ?? undefined);
+      if (!isUnlocked) {
+        Alert.alert('Vault is locked', 'Unlock the vault before creating folders.');
+        return;
+      }
+      const folderId = generateFileId();
+      const encName = await encryptMetadata(folderId, trimmed);
+      const nameEncrypted = encryptedMetadataToJson(encName);
+      const folder = await createFolder(nameEncrypted, currentFolder.id ?? undefined, folderId);
       const now = new Date().toISOString();
       const safe: FileEntry = {
         ...folder,
@@ -1293,11 +1422,12 @@ export default function FilesScreen() {
         updated_at: folder.updated_at ?? now,
       };
       setFiles((prev) => [safe, ...prev]);
+      setDecryptedNames((prev) => ({ ...prev, [safe.id]: trimmed }));
       indexFile(safe.id, toSearchIndexEntry(safe, trimmed, currentFolder.id));
     } catch (err) {
       Alert.alert('Error', friendlyError(err));
     }
-  }, [currentFolder.id, indexFile]);
+  }, [currentFolder.id, encryptMetadata, indexFile, isUnlocked]);
 
   const showNewFolderPrompt = useCallback(() => {
     if (Platform.OS === 'ios') {
@@ -1431,14 +1561,17 @@ export default function FilesScreen() {
     const item = files.find((f) => f.id === id);
     if (!item) return;
     const name = decryptedNames[id] ?? displayName(item);
-    exitSelectMode();
-    navigation.navigate('ShareSheet', {
-      fileId: id,
-      fileName: name,
-      mimeType: item.mime_type ?? undefined,
-      sizeBytes: item.size_bytes,
-    });
-  }, [selectedIds, files, decryptedNames, exitSelectMode, navigation]);
+    void (async () => {
+      if (!(await ensureFileReady(item))) return;
+      exitSelectMode();
+      navigation.navigate('ShareSheet', {
+        fileId: id,
+        fileName: name,
+        mimeType: mimeTypeFor(item) ?? undefined,
+        sizeBytes: item.size_bytes,
+      });
+    })();
+  }, [selectedIds, files, decryptedNames, exitSelectMode, navigation, mimeTypeFor, ensureFileReady]);
 
   const handleBatchMove = useCallback(async () => {
     if (selectedIds.size === 0) return;
@@ -1544,6 +1677,8 @@ export default function FilesScreen() {
       return;
     }
 
+    if (!(await ensureFileReady(item))) return;
+
     try {
       const dirInfo = await FileSystem.getInfoAsync(OFFLINE_DIR);
       if (!dirInfo.exists) {
@@ -1575,13 +1710,14 @@ export default function FilesScreen() {
       FileSystem.deleteAsync(path, { idempotent: true }).catch(() => {});
       showToast({ type: 'error', message: `Could not save: ${friendlyError(err)}` });
     }
-  }, [offlineIds, showToast]);
+  }, [offlineIds, showToast, ensureFileReady]);
 
   const handleLongPress = useCallback((item: FileEntry) => {
     const name = decryptedNames[item.id] ?? displayName(item);
+    const itemMimeType = mimeTypeFor(item);
     const isPinned = pinnedFolders.some((p) => p.id === item.id);
     const pinLabel = isPinned ? 'Unpin' : 'Pin to top';
-    const isImage = !item.is_folder && (item.mime_type ?? '').startsWith('image/');
+    const isImage = !item.is_folder && (itemMimeType ?? '').startsWith('image/');
     const isOffline = offlineIds.has(item.id);
     const offlineLabel = isOffline ? 'Remove offline' : 'Make available offline';
     // 'Send via Constellation' is intentionally hidden — Constellation crypto is v1 mock
@@ -1608,17 +1744,19 @@ export default function FilesScreen() {
               const next = (input ?? '').trim();
               if (!next || next === name) return;
               try {
-                await renameFile(item.id, next);
+                const encName = await encryptMetadata(item.id, next);
+                const nameEncrypted = encryptedMetadataToJson(encName);
+                await renameFile(item.id, nameEncrypted);
                 setFiles((prev) =>
                   prev.map((f) => (
                     f.id === item.id
-                      ? { ...f, name_encrypted: next, updated_at: new Date().toISOString() }
+                      ? { ...f, name_encrypted: nameEncrypted, updated_at: new Date().toISOString() }
                       : f
                   )),
                 );
                 setDecryptedNames((prev) => ({ ...prev, [item.id]: next }));
                 indexFile(item.id, toSearchIndexEntry(
-                  { ...item, name_encrypted: next, updated_at: new Date().toISOString() },
+                  { ...item, name_encrypted: nameEncrypted, updated_at: new Date().toISOString() },
                   next,
                   currentFolder.id,
                 ));
@@ -1682,6 +1820,7 @@ export default function FilesScreen() {
     };
 
     const promptExport = async () => {
+      if (!(await ensureFileReady(item))) return;
       const safeName = name.replace(/[^a-zA-Z0-9._()-]/g, '_');
       const localUri = `${FileSystem.cacheDirectory}${safeName}`;
       setExportingName(name);
@@ -1701,8 +1840,8 @@ export default function FilesScreen() {
           encoding: FileSystem.EncodingType.Base64,
         });
         await Sharing.shareAsync(localUri, {
-          mimeType: item.mime_type ?? 'application/octet-stream',
-          UTI: item.mime_type ?? 'public.data',
+          mimeType: itemMimeType ?? 'application/octet-stream',
+          UTI: itemMimeType ?? 'public.data',
           dialogTitle: `Export "${name}"`,
         });
       } catch (err) {
@@ -1715,6 +1854,7 @@ export default function FilesScreen() {
     };
 
     const saveToGallery = async () => {
+      if (!(await ensureFileReady(item))) return;
       const { status } = await MediaLibrary.requestPermissionsAsync();
       if (status !== 'granted') {
         Alert.alert(
@@ -1835,6 +1975,7 @@ export default function FilesScreen() {
     };
 
     const promptProveExistence = async () => {
+      if (!(await ensureFileReady(item))) return;
       const existing = proofs[item.id];
       if (existing) {
         showProof(existing);
@@ -1866,7 +2007,7 @@ export default function FilesScreen() {
           ]
         : [
             `Name:      ${name}`,
-            `Type:      ${item.mime_type ?? 'File'}`,
+            `Type:      ${itemMimeType ?? 'File'}`,
             `Size:      ${formatSize(item.size_bytes)}`,
             `Created:   ${formatDate(item.created_at)}`,
             `Modified:  ${formatDate(item.updated_at)}`,
@@ -1882,12 +2023,15 @@ export default function FilesScreen() {
         case 'Open':
         case 'Preview': openFile(item); return;
         case 'Share':
-          navigation.navigate('ShareSheet', {
-            fileId: item.id,
-            fileName: name,
-            mimeType: item.mime_type ?? undefined,
-            sizeBytes: item.size_bytes,
-          });
+          void (async () => {
+            if (!(await ensureFileReady(item))) return;
+            navigation.navigate('ShareSheet', {
+              fileId: item.id,
+              fileName: name,
+              mimeType: itemMimeType ?? undefined,
+              sizeBytes: item.size_bytes,
+            });
+          })();
           return;
         case 'Send via Constellation':
           // Safety net — Constellation crypto is v1 mock (random bytes instead of
@@ -1948,6 +2092,9 @@ export default function FilesScreen() {
     currentFolder.id,
     indexFile,
     unindexFile,
+    encryptMetadata,
+    mimeTypeFor,
+    ensureFileReady,
   ]);
 
   // Filtered + sorted file list
@@ -2046,7 +2193,8 @@ export default function FilesScreen() {
           contentContainerStyle={styles.pinnedRow}
         >
           {recentFiles.map((item) => {
-            const category = fileCategory(item);
+            const effectiveItem = withDecryptedMime(item);
+            const category = fileCategory(effectiveItem);
             const name = decryptedNames[item.id] ?? displayName(item);
             return (
               <TouchableOpacity
@@ -2104,13 +2252,16 @@ export default function FilesScreen() {
 
   const handleSwipeShare = useCallback((item: FileEntry) => {
     const name = decryptedNames[item.id] ?? displayName(item);
-    navigation.navigate('ShareSheet', {
-      fileId: item.id,
-      fileName: name,
-      mimeType: item.mime_type ?? undefined,
-      sizeBytes: item.size_bytes,
-    });
-  }, [navigation, decryptedNames]);
+    void (async () => {
+      if (!(await ensureFileReady(item))) return;
+      navigation.navigate('ShareSheet', {
+        fileId: item.id,
+        fileName: name,
+        mimeType: mimeTypeFor(item) ?? undefined,
+        sizeBytes: item.size_bytes,
+      });
+    })();
+  }, [navigation, decryptedNames, mimeTypeFor, ensureFileReady]);
 
   const handleSwipeDelete = useCallback((item: FileEntry) => {
     const name = decryptedNames[item.id] ?? displayName(item);
@@ -2149,7 +2300,7 @@ export default function FilesScreen() {
 
   const renderFileRow = useCallback(({ item }: { item: FileEntry }) => (
     <FileRowItem
-      item={item}
+      item={withDecryptedMime(item)}
       decryptedName={decryptedNames[item.id]}
       onPress={openFile}
       onLongPress={handleRowLongPress}
@@ -2164,7 +2315,7 @@ export default function FilesScreen() {
       hasProof={!!proofs[item.id]}
       isShared={item.is_folder && (item.share_count ?? 0) > 0}
     />
-  ), [decryptedNames, openFile, handleRowLongPress, handleSwipeShare, handleSwipeDelete, openTrust, selectMode, selectedIds, toggleSelect, sortOrder, offlineIds, proofs]);
+  ), [decryptedNames, withDecryptedMime, openFile, handleRowLongPress, handleSwipeShare, handleSwipeDelete, openTrust, selectMode, selectedIds, toggleSelect, sortOrder, offlineIds, proofs]);
 
   // Grid sizing — 3 columns, evenly spaced, responsive to screen width
   const GRID_COLUMNS = 3;
@@ -2177,7 +2328,7 @@ export default function FilesScreen() {
 
   const renderFileGrid = useCallback(({ item }: { item: FileEntry }) => (
     <FileGridItem
-      item={item}
+      item={withDecryptedMime(item)}
       decryptedName={decryptedNames[item.id]}
       onPress={openFile}
       onLongPress={handleRowLongPress}
@@ -2191,7 +2342,7 @@ export default function FilesScreen() {
       hasProof={!!proofs[item.id]}
       isShared={item.is_folder && (item.share_count ?? 0) > 0}
     />
-  ), [decryptedNames, openFile, handleRowLongPress, openTrust, selectMode, selectedIds, toggleSelect, sortOrder, gridCardWidth, offlineIds, proofs]);
+  ), [decryptedNames, withDecryptedMime, openFile, handleRowLongPress, openTrust, selectMode, selectedIds, toggleSelect, sortOrder, gridCardWidth, offlineIds, proofs]);
 
   const renderEmpty = () => {
     if (loading) return null;

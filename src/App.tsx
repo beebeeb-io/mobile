@@ -32,6 +32,7 @@ import { useNetworkStatus } from './lib/useNetworkStatus';
 import { setPendingShareKey } from './lib/share-key-store';
 import * as Haptics from 'expo-haptics';
 import * as Notifications from 'expo-notifications';
+import * as BeebeebCrypto from '../modules/beebeeb-crypto';
 import {
   setupNotificationHandler,
   registerForPushNotifications,
@@ -73,6 +74,7 @@ import PrivacyScreen from './screens/PrivacyScreen';
 import StorageScreen from './screens/StorageScreen';
 import RecoveryPhraseScreen from './screens/RecoveryPhraseScreen';
 import RecoveryPhraseVerifyScreen from './screens/RecoveryPhraseVerifyScreen';
+import RecoveryUnlockScreen from './screens/RecoveryUnlockScreen';
 import DevicePairingScreen from './screens/DevicePairingScreen';
 import DevicePairingShowScreen from './screens/DevicePairingShowScreen';
 import PairingConfirmScreen from './screens/PairingConfirmScreen';
@@ -88,6 +90,7 @@ import { useToast } from './lib/toast-context';
 
 const ONBOARDING_KEY = 'beebeeb_onboarding_done';
 const PHRASE_VERIFIED_KEY = 'beebeeb_phrase_verified';
+const MASTER_KEY_CHECK_LABEL = 'io.beebeeb.master-key-check';
 
 // ---------------------------------------------------------------------------
 // Navigation types
@@ -131,6 +134,7 @@ export type RootStackParamList = {
   // Auth / onboarding upgrade screens
   RecoveryPhrase: { phrase?: string[] };
   RecoveryPhraseVerify: { phrase: string[] };
+  RecoveryUnlock: undefined;
   Privacy: undefined;
   Storage: undefined;
   // Device pairing (Amber Constellation)
@@ -350,6 +354,28 @@ function BiometricGuard({ locked, onUnlock }: { locked: boolean; onUnlock: () =>
   );
 }
 
+function VaultRecoveryGate({ enabled }: { enabled: boolean }) {
+  const crypto = useCrypto();
+
+  useEffect(() => {
+    if (!enabled || !crypto.unlockAttempted || crypto.isUnlocked) return;
+    if (!navigationRef.isReady()) return;
+
+    const currentRoute = navigationRef.getCurrentRoute()?.name;
+    if (
+      currentRoute === 'RecoveryUnlock' ||
+      currentRoute === 'RecoveryPhrase' ||
+      currentRoute === 'RecoveryPhraseVerify'
+    ) {
+      return;
+    }
+
+    navigationRef.navigate('RecoveryUnlock');
+  }, [enabled, crypto.unlockAttempted, crypto.isUnlocked]);
+
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // Tab Navigator
 // ---------------------------------------------------------------------------
@@ -459,6 +485,8 @@ export default function App() {
     } catch {
       await clearToken();
     }
+    await BeebeebCrypto.deleteKeyFromKeychain().catch(() => false);
+    await SecureStore.deleteItemAsync(MASTER_KEY_CHECK_LABEL).catch(() => {});
     setUser(null);
   }, []);
 
@@ -475,11 +503,12 @@ export default function App() {
           await clearToken();
         }
       }
-      // Check onboarding state — only show for new signups, not existing logins
+      // Check onboarding state. A fresh install with no token should not show
+      // onboarding immediately after an existing user signs in; signup owns its
+      // recovery phrase flow explicitly.
       try {
         const done = await SecureStore.getItemAsync(ONBOARDING_KEY);
-        // If key doesn't exist but user already has a token, they're an existing user — skip onboarding
-        setOnboardingDone(done === 'true' || tokenExists);
+        setOnboardingDone(done !== 'false' || tokenExists);
       } catch {
         setOnboardingDone(true); // assume done if SecureStore unavailable (web)
       }
@@ -646,7 +675,7 @@ export default function App() {
 
   return (
     <AuthContext.Provider value={{ user, refreshAuth, signOut, phraseVerified, skipOnboarding, markPhraseVerified }}>
-      <CryptoProvider>
+      <CryptoProvider key={user?.user_id ?? 'signed-out'}>
       <SyncProvider>
       <BackupProvider>
       <SafeAreaProvider>
@@ -654,10 +683,16 @@ export default function App() {
         {/* Wire JS-side photo backup: foreground trigger + Wi-Fi reconnect + toast */}
         <PhotoBackupBridge />
         <NavigationContainer ref={navigationRef} linking={linking} onStateChange={handleNavigationStateChange}>
+            <VaultRecoveryGate enabled={isAuthenticated} />
             <Stack.Navigator screenOptions={{ headerShown: false }}>
               {isAuthenticated ? (
                 <>
                   <Stack.Screen name="Tabs" component={TabNavigator} />
+                  <Stack.Screen
+                    name="RecoveryUnlock"
+                    component={RecoveryUnlockScreen}
+                    options={{ gestureEnabled: false }}
+                  />
                   <Stack.Screen
                     name="Preview"
                     component={PreviewScreen}

@@ -18,6 +18,7 @@ import { radii, spacing } from '../theme';
 import { useTheme } from '../lib/theme-context';
 import { useAuth } from '../lib/auth';
 import { useCrypto } from '../lib/crypto-context';
+import { useKeyboardLayoutAnimation } from '../lib/useKeyboardLayoutAnimation';
 import * as Haptics from 'expo-haptics';
 import {
   signup,
@@ -27,11 +28,8 @@ import {
   NativeCryptoUnavailableError,
   friendlyError,
 } from '../lib/api';
-import * as SecureStore from 'expo-secure-store';
 import * as BeebeebCrypto from '../../modules/beebeeb-crypto';
 import type { RootStackParamList } from '../App';
-
-const MASTER_KEY_LABEL = 'io.beebeeb.master-key';
 
 type Nav = NativeStackNavigationProp<RootStackParamList>;
 
@@ -40,6 +38,7 @@ export default function SignupScreen() {
   const { refreshAuth, skipOnboarding } = useAuth();
   const crypto = useCrypto();
   const { colors: c, resolved } = useTheme();
+  useKeyboardLayoutAnimation();
   const passwordRef = useRef<TextInput>(null);
   const confirmPasswordRef = useRef<TextInput>(null);
   const [email, setEmail] = useState('');
@@ -99,9 +98,29 @@ export default function SignupScreen() {
     try {
       // Attempt OPAQUE registration (3-round flow)
       let opaqueDone = false;
+      let phrase: string[] = [];
       try {
         const { state, serverMessage } = await opaqueRegistrationStart(trimmedEmail, password);
-        await opaqueRegistrationFinish(trimmedEmail, password, state, serverMessage);
+        const recovery = await BeebeebCrypto.generateRecoveryPhrase();
+        phrase = recovery.phrase.split(' ');
+        const [recoveryCheck, x25519PublicKey] = await Promise.all([
+          BeebeebCrypto.computeRecoveryCheck(recovery.masterKey),
+          BeebeebCrypto.deriveX25519PublicKey(recovery.masterKey),
+        ]);
+        await opaqueRegistrationFinish(
+          trimmedEmail,
+          password,
+          state,
+          serverMessage,
+          recoveryCheck,
+          x25519PublicKey,
+        );
+        try {
+          await crypto.unlock(recovery.phrase);
+        } catch {
+          // Keychain unavailable — phrase is still shown once so the user can
+          // provision this device on the next login.
+        }
         opaqueDone = true;
       } catch (opaqueErr) {
         // Fall back to plain /auth/signup when OPAQUE can't run:
@@ -120,28 +139,6 @@ export default function SignupScreen() {
       }
 
       if (opaqueDone) {
-        // Generate recovery phrase and derive master key from it. The native
-        // module is required here — if it's missing we just skip phrase storage
-        // and let RecoveryPhraseScreen explain the situation.
-        let phrase: string[] = [];
-        if (BeebeebCrypto.isNativeAvailable) {
-          try {
-            const result = await BeebeebCrypto.generateRecoveryPhrase();
-            phrase = result.phrase.split(' ');
-            try {
-              await BeebeebCrypto.storeKeyInKeychain(result.masterKey, MASTER_KEY_LABEL);
-              await crypto.unlock();
-            } catch {
-              // Keychain unavailable — phrase still shown to the user, master key
-              // will need to be re-derived on next login.
-            }
-            // Store the phrase so the Settings screen can offer re-printing the
-            // recovery kit PDF later. SecureStore is backed by the OS keychain.
-            await SecureStore.setItemAsync('beebeeb_recovery_phrase', result.phrase).catch(() => {})
-          } catch {
-            // generateRecoveryPhrase threw despite the flag — proceed without phrase.
-          }
-        }
         // Dismiss onboarding overlay + mark phrase as pending before refreshAuth
         // so the phrase screens are visible (not covered by the welcome overlay).
         skipOnboarding();
@@ -196,6 +193,7 @@ export default function SignupScreen() {
           autoCapitalize="none"
           autoCorrect={false}
           autoComplete="email"
+          textContentType="username"
           returnKeyType="next"
           blurOnSubmit={false}
           onSubmitEditing={() => passwordRef.current?.focus()}
@@ -216,6 +214,8 @@ export default function SignupScreen() {
           secureTextEntry
           autoCapitalize="none"
           autoComplete="new-password"
+          textContentType="newPassword"
+          passwordRules="minlength: 8;"
           returnKeyType="next"
           blurOnSubmit={false}
           onSubmitEditing={() => confirmPasswordRef.current?.focus()}
@@ -236,6 +236,8 @@ export default function SignupScreen() {
           secureTextEntry
           autoCapitalize="none"
           autoComplete="new-password"
+          textContentType="newPassword"
+          passwordRules="minlength: 8;"
           returnKeyType="go"
           onSubmitEditing={handleSignup}
           testID="confirm-password-input"
@@ -312,7 +314,7 @@ export default function SignupScreen() {
 
         {/* Region + legal */}
         <View style={styles.regionRow}>
-          <Text style={styles.regionText}>Stored in Falkenstein.</Text>
+          <Text style={styles.regionText}>Stored in Europe.</Text>
           <Text style={styles.regionText}>
             Operated by Beebeeb.io, Netherlands.
           </Text>

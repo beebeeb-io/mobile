@@ -164,12 +164,12 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
           ? nil
           : parentRaw
 
-        let metadataDict: [String: Any] = [
+        var metadataDict: [String: Any] = [
           "name_encrypted": nameEncrypted,
-          "parent_id": parentId as Any,
           "mime_type": itemTemplate.contentType?.preferredMIMEType ?? "application/octet-stream",
           "size_bytes": plaintext.count,
         ]
+        metadataDict["parent_id"] = parentId ?? NSNull()
         let metadataJson = try JSONSerialization.data(withJSONObject: metadataDict, options: [])
 
         let response = try await ApiClient.shared.uploadEncrypted(
@@ -208,7 +208,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
     return progress
   }
 
-  // MARK: - Modify (rename / move / pin toggle)
+  // MARK: - Modify (rename / move / content update)
 
   func modifyItem(
     _ item: NSFileProviderItem,
@@ -219,7 +219,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
     request: NSFileProviderRequest,
     completionHandler: @escaping (NSFileProviderItem?, NSFileProviderItemFields, Bool, Error?) -> Void
   ) -> Progress {
-    let progress = Progress(totalUnitCount: 1)
+    let progress = Progress(totalUnitCount: 100)
 
     guard var cached = CacheManager.shared.item(id: item.itemIdentifier.rawValue) else {
       completionHandler(nil, [], false, NSFileProviderError(.noSuchItem))
@@ -229,49 +229,95 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
     // Note: contentPolicy (downloadEagerlyAndKeepDownloaded) is macOS-only.
     // On iOS, pinning is managed through our app's UI, not the Files app.
 
-    if changedFields.contains(.filename) {
-      let task = Task.detached {
-        do {
-          let masterKey = try CryptoBridge.loadMasterKeyHandle()
-          let nameEncrypted = try CryptoBridge.encryptFilename(
+    let task = Task.detached {
+      do {
+        let masterKey = try CryptoBridge.loadMasterKeyHandle()
+        progress.completedUnitCount = 15
+
+        var nextName = cached.nameDecrypted
+        var nextNameEncrypted = cached.nameEncrypted
+        var nextParentId = cached.parentId
+        var nextSizeBytes = cached.sizeBytes
+        var nextUpdatedAt = ISO8601DateFormatter().string(from: Date())
+
+        if changedFields.contains(.filename) {
+          nextName = item.filename
+          nextNameEncrypted = try CryptoBridge.encryptFilename(
             masterKeyHandle: masterKey,
             fileId: cached.id,
             filename: item.filename
           )
-          // TODO: PATCH /api/v1/files/:id with the new name_encrypted once the
-          // endpoint is exposed to mobile (web client uses /pages already).
-          // For now we update the local cache so the Files app sees the new
-          // name immediately; the next API refresh reconciles.
-          let renamed = CachedItem(
-            id: cached.id,
-            parentId: cached.parentId,
-            nameEncrypted: nameEncrypted,
-            nameDecrypted: item.filename,
-            mimeType: cached.mimeType,
-            sizeBytes: cached.sizeBytes,
-            isFolder: cached.isFolder,
-            isPinned: cached.isPinned,
-            hasThumbnail: cached.hasThumbnail,
-            thumbnailData: cached.thumbnailData,
-            thumbnailNonce: cached.thumbnailNonce,
-            createdAt: cached.createdAt,
-            updatedAt: ISO8601DateFormatter().string(from: Date()),
-            syncAnchor: Int64(Date().timeIntervalSince1970 * 1000),
-            isMaterialized: cached.isMaterialized
-          )
-          CacheManager.shared.upsert(renamed)
-          completionHandler(FileProviderItem(cached: renamed), [], false, nil)
-        } catch {
-          NSLog("[Beebeeb] modifyItem(rename) failed: \(error)")
-          completionHandler(nil, [], false, Self.mapError(error))
         }
-      }
-      progress.cancellationHandler = { task.cancel() }
-      return progress
-    }
+        if changedFields.contains(.parentItemIdentifier) {
+          let parentRaw = item.parentItemIdentifier.rawValue
+          nextParentId = (parentRaw == NSFileProviderItemIdentifier.rootContainer.rawValue)
+            ? nil
+            : parentRaw
+        }
+        progress.completedUnitCount = 30
 
-    completionHandler(FileProviderItem(cached: cached), [], false, nil)
-    progress.completedUnitCount = 1
+        if changedFields.contains(.contents), let newContents {
+          let plaintext = try Data(contentsOf: newContents)
+          let encryptedChunk = try CryptoBridge.encryptChunkForUpload(
+            masterKeyHandle: masterKey,
+            fileId: cached.id,
+            plaintext: plaintext
+          )
+          var metadataDict: [String: Any] = [
+            "file_id": cached.id,
+            "name_encrypted": nextNameEncrypted,
+            "mime_type": item.contentType?.preferredMIMEType ?? cached.mimeType ?? "application/octet-stream",
+            "size_bytes": plaintext.count,
+          ]
+          metadataDict["parent_id"] = nextParentId ?? NSNull()
+          let metadataJson = try JSONSerialization.data(withJSONObject: metadataDict, options: [])
+          let response = try await ApiClient.shared.uploadEncrypted(
+            metadataJson: metadataJson,
+            chunks: [encryptedChunk]
+          )
+          nextSizeBytes = response.size_bytes
+          nextNameEncrypted = response.name_encrypted ?? nextNameEncrypted
+          nextUpdatedAt = response.updated_at ?? response.created_at ?? nextUpdatedAt
+          progress.completedUnitCount = 80
+        }
+
+        if changedFields.contains(.filename) || changedFields.contains(.parentItemIdentifier) {
+          let patched = try await ApiClient.shared.patchFile(
+            fileId: cached.id,
+            nameEncrypted: nextNameEncrypted,
+            parentId: nextParentId
+          )
+          nextNameEncrypted = patched.name_encrypted ?? nextNameEncrypted
+          nextParentId = patched.parent_id
+          nextUpdatedAt = patched.updated_at ?? nextUpdatedAt
+        }
+
+        let updated = CachedItem(
+          id: cached.id,
+          parentId: nextParentId,
+          nameEncrypted: nextNameEncrypted,
+          nameDecrypted: nextName,
+          mimeType: item.contentType?.preferredMIMEType ?? cached.mimeType,
+          sizeBytes: nextSizeBytes,
+          isFolder: cached.isFolder,
+          isPinned: cached.isPinned,
+          hasThumbnail: cached.hasThumbnail,
+          thumbnailData: cached.thumbnailData,
+          thumbnailNonce: cached.thumbnailNonce,
+          createdAt: cached.createdAt,
+          updatedAt: nextUpdatedAt,
+          syncAnchor: Int64(Date().timeIntervalSince1970 * 1000),
+          isMaterialized: changedFields.contains(.contents) ? false : cached.isMaterialized
+        )
+        CacheManager.shared.upsert(updated)
+        progress.completedUnitCount = 100
+        completionHandler(FileProviderItem(cached: updated), [], false, nil)
+      } catch {
+        NSLog("[Beebeeb] modifyItem failed: \(error)")
+        completionHandler(nil, [], false, Self.mapError(error))
+      }
+    }
+    progress.cancellationHandler = { task.cancel() }
     return progress
   }
 

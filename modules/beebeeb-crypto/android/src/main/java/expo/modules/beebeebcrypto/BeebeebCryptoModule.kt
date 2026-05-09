@@ -14,6 +14,12 @@ class BeebeebCryptoModule : Module() {
 
     AsyncFunction("recoverFromPhrase") { _: String -> throw NotLinkedException() }
 
+    AsyncFunction("computeRecoveryCheck") { _: ByteArray -> throw NotLinkedException() }
+
+    AsyncFunction("deriveX25519Private") { _: ByteArray -> throw NotLinkedException() }
+
+    AsyncFunction("deriveX25519Public") { _: ByteArray -> throw NotLinkedException() }
+
     AsyncFunction("encryptChunk") { _: ByteArray, _: ByteArray -> throw NotLinkedException() }
 
     AsyncFunction("decryptChunk") { _: ByteArray, _: ByteArray, _: ByteArray -> throw NotLinkedException() }
@@ -24,17 +30,23 @@ class BeebeebCryptoModule : Module() {
 
     AsyncFunction("opaqueRegistrationStart") { _: String, _: String -> throw NotLinkedException() }
 
-    AsyncFunction("opaqueRegistrationFinish") { _: ByteArray, _: ByteArray, _: String -> throw NotLinkedException() }
+    AsyncFunction("opaqueRegistrationFinish") { _: String, _: String, _: String -> throw NotLinkedException() }
 
     AsyncFunction("opaqueLoginStart") { _: String, _: String -> throw NotLinkedException() }
 
-    AsyncFunction("opaqueLoginFinish") { _: ByteArray, _: ByteArray, _: String -> throw NotLinkedException() }
+    AsyncFunction("opaqueLoginFinish") { _: String, _: String, _: String -> throw NotLinkedException() }
 
     AsyncFunction("deriveFileKey") { _: ByteArray, _: String -> throw NotLinkedException() }
 
     AsyncFunction("storeKeyInKeychain") { _: ByteArray, _: String -> throw NotLinkedException() }
 
     AsyncFunction("loadKeyFromKeychain") { _: String -> throw NotLinkedException() }
+
+    AsyncFunction("deleteKeyFromKeychain") { -> throw NotLinkedException() }
+
+    AsyncFunction("setRequireBiometric") { _: Boolean -> throw NotLinkedException() }
+
+    AsyncFunction("mirrorSessionToAppGroup") { _: String?, _: String? -> true }
 
     // Share Extension is iOS-only. Android receives shared content through
     // Intent filters declared in the manifest, which is a separate flow.

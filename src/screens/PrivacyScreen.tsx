@@ -17,7 +17,6 @@ import {
   Platform,
   ScrollView,
   StyleSheet,
-  Switch,
   Text,
   TouchableOpacity,
   View,
@@ -28,6 +27,7 @@ import { useNavigation } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../lib/theme-context';
 import { fonts, spacing, type Colors } from '../theme';
+import { NativeSwitch } from '../components/NativeSwitch';
 import {
   getTrackingPreference,
   setTrackingPreference,
@@ -187,12 +187,10 @@ function ActivityTrackingRow({ c }: { c: C }) {
       {loading ? (
         <ActivityIndicator size="small" color={c.amber} />
       ) : (
-        <Switch
+        <NativeSwitch
           value={optedIn}
           onValueChange={handleToggle}
-          trackColor={{ false: c.line, true: c.amber }}
-          thumbColor={c.paper}
-          ios_backgroundColor={c.line}
+          colors={c}
         />
       )}
     </View>

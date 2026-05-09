@@ -26,13 +26,12 @@ import type { RootStackParamList } from '../App';
 import { colors, radii, shadows } from '../theme';
 import type { Colors } from '../theme';
 import { useTheme } from '../lib/theme-context';
-import { getToken, getDownloadUrl, friendlyError } from '../lib/api';
+import { ApiError, getToken, getDownloadUrl, friendlyError } from '../lib/api';
 import { useCrypto } from '../lib/crypto-context';
 import * as BeebeebCrypto from '../../modules/beebeeb-crypto';
 import {
   decryptEncryptedBytes,
   inferChunkCountFromEncryptedSize,
-  readHeaderInt,
 } from '../lib/encrypted-download';
 
 // Office libs — loaded eagerly so Metro bundles them. Mammoth's `browser`
@@ -119,10 +118,15 @@ function fileCategory(mimeType?: string, fileName?: string): Category {
 
   // SVG before generic image — needs WebView, not <Image>, for proper render
   if (mime === 'image/svg+xml' || ext === 'svg') return 'svg';
-  if (mime.startsWith('image/')) return 'image';
+  if (
+    mime.startsWith('image/') ||
+    ['jpg', 'jpeg', 'png', 'gif', 'webp', 'heic', 'heif'].includes(ext)
+  ) {
+    return 'image';
+  }
   if (mime === 'application/pdf' || ext === 'pdf') return 'pdf';
-  if (mime.startsWith('audio/')) return 'audio';
-  if (mime.startsWith('video/')) return 'video';
+  if (mime.startsWith('audio/') || ['mp3', 'm4a', 'aac', 'wav', 'flac', 'ogg'].includes(ext)) return 'audio';
+  if (mime.startsWith('video/') || ['mp4', 'mov', 'm4v', 'webm'].includes(ext)) return 'video';
 
   // HTML before generic text — needs WebView (with source-toggle), not the
   // monospace text viewer.
@@ -212,6 +216,26 @@ function uint8ArrayToBase64(bytes: Uint8Array): string {
     binary += String.fromCharCode(bytes[i]);
   }
   return btoa(binary);
+}
+
+function responseHeaderInt(headers: Headers, key: string): number | null {
+  const value = headers.get(key);
+  if (!value) return null;
+  const n = Number.parseInt(value, 10);
+  return Number.isFinite(n) && n >= 0 ? n : null;
+}
+
+async function errorMessageFromResponse(res: Response): Promise<string> {
+  const text = await res.text().catch(() => '');
+  if (!text) return res.statusText || `HTTP ${res.status}`;
+  try {
+    const body = JSON.parse(text) as { error?: unknown; message?: unknown };
+    if (typeof body.error === 'string') return body.error;
+    if (typeof body.message === 'string') return body.message;
+  } catch {
+    // Plain text error body.
+  }
+  return text;
 }
 
 /**
@@ -854,48 +878,35 @@ export default function PreviewScreen() {
       // Best-effort — proceed even if the path can't be cleared.
     }
 
-    const dl = FileSystem.createDownloadResumable(
-      getDownloadUrl(fileId),
-      cacheUri,
-      { headers: { Authorization: `Bearer ${token}` } },
-      (p) => {
-        if (p.totalBytesExpectedToWrite > 0) {
-          setDownloadProgress(p.totalBytesWritten / p.totalBytesExpectedToWrite);
-        }
-      },
-    );
-
-    const result = await dl.downloadAsync();
-    if (!result) throw new Error('Download was interrupted.');
-    if (result.status >= 400) {
-      throw new Error(`Download failed (HTTP ${result.status})`);
+    const res = await fetch(getDownloadUrl(fileId), {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) {
+      throw new ApiError(res.status, await errorMessageFromResponse(res));
     }
+    const encBytes = new Uint8Array(await res.arrayBuffer());
+    await FileSystem.writeAsStringAsync(cacheUri, uint8ArrayToBase64(encBytes), {
+      encoding: FileSystem.EncodingType.Base64,
+    });
+    setDownloadProgress(1);
 
     if (isUnlocked) {
       if (!BeebeebCrypto.isNativeAvailable) {
         throw new Error('Preview requires a dev client build with native crypto.');
       }
 
-      // Read the encrypted body off disk. expo-file-system exposes the
-      // response headers on the result so we can prefer the server's
-      // authoritative chunk metadata over local route params.
-      const encBase64 = await FileSystem.readAsStringAsync(result.uri, {
-        encoding: FileSystem.EncodingType.Base64,
-      });
-      const encBytes = base64ToUint8Array(encBase64);
-
       // Resolve plaintext size: prefer the X-Original-Size header (the server
       // stores the canonical value), then the route-param `sizeBytes`, then
       // fall back to the encrypted length minus a single-chunk overhead.
-      const headerOriginalSize = readHeaderInt(result.headers, 'X-Original-Size');
+      const headerOriginalSize = responseHeaderInt(res.headers, 'X-Original-Size');
       const effectiveSize = headerOriginalSize ?? sizeBytes ?? encBytes.length - 28;
       if (effectiveSize <= 0) {
         throw new Error('Could not determine plaintext size for decryption.');
       }
 
       // Resolve chunk count: header → route param → byte-math inference.
-      const headerChunkCount = readHeaderInt(result.headers, 'X-Chunk-Count');
-      const headerChunkSize = readHeaderInt(result.headers, 'X-Chunk-Size');
+      const headerChunkCount = responseHeaderInt(res.headers, 'X-Chunk-Count');
+      const headerChunkSize = responseHeaderInt(res.headers, 'X-Chunk-Size');
       const inferred = inferChunkCountFromEncryptedSize(encBytes.length, effectiveSize);
       const effectiveChunkCount = headerChunkCount ?? chunkCount ?? inferred ?? 1;
       const effectiveChunkSize = headerChunkSize && headerChunkSize > 0
@@ -918,7 +929,7 @@ export default function PreviewScreen() {
       });
       return decUri;
     }
-    return result.uri;
+    return cacheUri;
   }, [fileId, fileName, isUnlocked, getFileKeyBytes, chunkCount, sizeBytes]);
 
   // Auto-load images inline on mount

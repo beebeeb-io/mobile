@@ -56,7 +56,7 @@ const SLIDES = [
     eyebrow: 'European storage',
     headline: ['Made in', 'Europe'],
     accentLine: 1,
-    subhead: 'Built by Initlabs B.V. Stored in Falkenstein, Germany on Hetzner infrastructure.',
+    subhead: 'Built by Initlabs B.V. Stored in Falkenstein, Germany',
     screen: europeScreen,
   },
 ];
@@ -437,12 +437,12 @@ function europeScreen() {
       return `<circle cx="${78 + Math.cos(a) * 17}" cy="${178 + Math.sin(a) * 12}" r="1.8" fill="${C.amber}"/>`;
     }).join('')}
     <text class="font" x="124" y="154" font-size="18" font-weight="900" fill="${C.paper}">European storage</text>
-    <text class="font" x="124" y="185" font-size="13" font-weight="700" fill="${C.paper}" opacity="0.76">Falkenstein, Germany · Hetzner</text>
+    <text class="font" x="124" y="185" font-size="13" font-weight="700" fill="${C.paper}" opacity="0.76">Falkenstein, Germany</text>
     <text class="font" x="124" y="214" font-size="12" font-weight="800" fill="${C.amber}">EU jurisdiction context</text>
     <text class="font" x="26" y="286" font-size="12" font-weight="900" fill="${C.ink3}" letter-spacing="1">DATA RESIDENCY</text>
     <rect x="26" y="318" width="378" height="216" rx="22" fill="#fff" stroke="${C.line}"/>
-    ${regionRow(48, 344, 'Falkenstein', 'Germany · Hetzner', true)}
-    ${regionRow(48, 410, 'Helsinki', 'Finland · Hetzner', false)}
+    ${regionRow(48, 344, 'Falkenstein', 'Germany', true)}
+    ${regionRow(48, 410, 'Helsinki', 'Finland', false)}
     ${regionRow(48, 476, 'Frankfurt', 'Germany · reserve pool', false)}
     <text class="font" x="26" y="570" font-size="12" font-weight="900" fill="${C.ink3}" letter-spacing="1">ACCOUNT</text>
     <rect x="26" y="602" width="378" height="184" rx="22" fill="#fff" stroke="${C.line}"/>

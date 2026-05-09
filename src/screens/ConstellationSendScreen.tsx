@@ -269,7 +269,7 @@ export default function ConstellationSendScreen() {
               </View>
             )}
             <Text style={styles.disclaimer}>
-              Encrypted relay via Falkenstein. Deleted after pickup.
+              Encrypted relay in Europe. Deleted after pickup.
             </Text>
           </>
         )}

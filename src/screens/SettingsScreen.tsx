@@ -8,7 +8,6 @@ import {
   RefreshControl,
   ScrollView,
   StyleSheet,
-  Switch,
   Text,
   TouchableOpacity,
   View,
@@ -37,7 +36,6 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { fonts, spacing, type Colors } from '../theme';
 import { useAuth } from '../lib/auth';
-import { generateRecoveryKitPDF } from '../lib/recovery-kit-pdf';
 import { useBackup } from '../lib/backup-context';
 import { useTheme, type ThemeMode } from '../lib/theme-context';
 import { useToast } from '../lib/toast-context';
@@ -77,6 +75,8 @@ import {
   type DeviceManifest,
 } from '../services/BackupService';
 import type { RootStackParamList } from '../App';
+import { NativeSwitch } from '../components/NativeSwitch';
+import { NOTIFICATIONS_OPT_OUT_KEY, registerForPushNotifications, unregisterPushToken } from '../lib/push-notifications';
 
 const BIOMETRIC_PREF_KEY = 'beebeeb_biometric_lock';
 const BIOMETRIC_DELAY_KEY = 'beebeeb_biometric_delay';
@@ -84,8 +84,6 @@ const BIOMETRIC_DELAY_KEY = 'beebeeb_biometric_delay';
 // toggles notifications OFF in our settings, we honour that even when iOS
 // still has permission granted — the OS permission is the *ceiling*, this
 // pref is the user's current intent within that ceiling.
-const NOTIFICATIONS_OPT_OUT_KEY = 'beebeeb_notifications_opt_out';
-
 interface BiometricDelayOption {
   label: string;
   ms: number;
@@ -102,6 +100,11 @@ function biometricDelayLabel(ms: number): string {
   return BIOMETRIC_DELAY_OPTIONS.find((o) => o.ms === ms)?.label ?? 'Immediately';
 }
 
+function regionDisplayName(region: string): string {
+  if (region.toLowerCase() === 'europe') return 'Europe';
+  return region;
+}
+
 type RegionMode = 'preference' | 'force';
 type C = Colors;
 
@@ -110,10 +113,10 @@ type C = Colors;
 // ---------------------------------------------------------------------------
 
 const REGIONS: ReadonlyArray<{ poolName: string; label: string; subtitle: string; flag: string; available: boolean }> = [
-  { poolName: 'europe', label: 'Europe', subtitle: 'Auto-distribute', flag: '\u{1F6E1}️', available: true },
-  { poolName: 'falkenstein-de', label: 'Falkenstein, DE', subtitle: 'Hetzner', flag: '\u{1F1E9}\u{1F1EA}', available: true },
-  { poolName: 'helsinki-fin', label: 'Helsinki, FIN', subtitle: 'Hetzner', flag: '\u{1F1EB}\u{1F1EE}', available: true },
-  { poolName: 'ede-nl', label: 'Ede, NL', subtitle: 'Beebeeb', flag: '\u{1F1F3}\u{1F1F1}', available: false },
+  { poolName: 'europe', label: 'Europe', subtitle: 'Anywhere in Europe', flag: '\u{1F6E1}️', available: true },
+  { poolName: 'falkenstein-de', label: 'Falkenstein', subtitle: 'Preference or force', flag: '\u{1F1E9}\u{1F1EA}', available: true },
+  { poolName: 'helsinki-fi', label: 'Helsinki', subtitle: 'Preference or force', flag: '\u{1F1EB}\u{1F1EE}', available: false },
+  { poolName: 'ede-nl', label: 'Ede', subtitle: 'Preference or force', flag: '\u{1F1F3}\u{1F1F1}', available: false },
 ];
 
 // ---------------------------------------------------------------------------
@@ -284,16 +287,14 @@ function ToggleRow({
           </Text>
         )}
       </View>
-      <Switch
+      <NativeSwitch
         value={value}
         onValueChange={(v) => {
           Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
           onValueChange(v);
         }}
         disabled={disabled}
-        trackColor={{ false: c.line, true: c.amber }}
-        thumbColor={c.paper}
-        ios_backgroundColor={c.line}
+        colors={c}
       />
     </View>
   );
@@ -466,6 +467,7 @@ export default function SettingsScreen() {
   // Notifications
   const [notificationsEnabled, setNotificationsEnabled] = useState(false);
   const [notifPrefs, setNotifPrefs] = useState<MobileNotificationPreferences>({
+    file_updated: true,
     share_received: true,
     storage_warning: true,
     new_device_login: true,
@@ -480,7 +482,6 @@ export default function SettingsScreen() {
 
   // Data residency preference
   const [storageRegion, setStorageRegion] = useState<string>('europe');
-  const [recoveryPdfLoading, setRecoveryPdfLoading] = useState(false);
   const [storageRegionMode, setStorageRegionMode] = useState<RegionMode>('preference');
   const [savingRegion, setSavingRegion] = useState(false);
   /** Dynamic regions from /api/v1/me/region — replaces hardcoded REGIONS when available */
@@ -563,7 +564,7 @@ export default function SettingsScreen() {
     // Try the new /api/v1/me/region endpoint first; fall back to stored preference
     try {
       const data = await getUserRegion();
-      setApiRegions(Array.isArray(data.available_regions) ? data.available_regions : []);
+      setApiRegions(null);
       if (data.preferred_region) setStorageRegion(data.preferred_region);
       return;
     } catch {
@@ -782,6 +783,16 @@ export default function SettingsScreen() {
     } catch {
       // SecureStore unavailable (web) — toggle remains in-memory only.
     }
+    if (enabled) {
+      void registerForPushNotifications();
+      setNotifPrefsLoading(true);
+      getNotificationPreferences()
+        .then(setNotifPrefs)
+        .catch(() => {/* keep defaults */})
+        .finally(() => setNotifPrefsLoading(false));
+    } else {
+      void unregisterPushToken();
+    }
   }, []);
 
   const handleNotifPrefToggle = useCallback(
@@ -898,25 +909,15 @@ export default function SettingsScreen() {
   }, [triggerBackupNow]);
 
   const handleRegionChange = useCallback(async (poolName: string) => {
-    // If API regions are loaded, validate against them; otherwise check hardcoded list
-    if (apiRegions !== null) {
-      if (!apiRegions.find(r => r.continent === poolName)) return;
-    } else {
-      const r = REGIONS.find(x => x.poolName === poolName);
-      if (!r?.available) return;
-    }
+    const r = REGIONS.find(x => x.poolName === poolName);
+    if (!r?.available) return;
     setStorageRegion(poolName);
     setSavingRegion(true);
     try {
-      if (apiRegions !== null) {
-        // Use new server endpoint when API regions are loaded
-        await setUserRegion(poolName);
-      } else {
-        // Fall back to stored preference
-        await setPreference('storage_region', JSON.stringify({ pool_name: poolName, mode: storageRegionMode }));
-      }
+      await setUserRegion(poolName);
+      await setPreference('storage_region', JSON.stringify({ pool_name: poolName, mode: storageRegionMode }));
     } catch {
-      // Best-effort; local state updated
+      await setPreference('storage_region', JSON.stringify({ pool_name: poolName, mode: storageRegionMode })).catch(() => {});
     } finally {
       setSavingRegion(false);
     }
@@ -956,32 +957,22 @@ export default function SettingsScreen() {
   }, []);
 
   const handleDownloadRecoveryKit = useCallback(async () => {
-    if (recoveryPdfLoading) return;
-    setRecoveryPdfLoading(true);
-    try {
-      // Load the phrase stored in SecureStore at signup
-      const stored = await SecureStore.getItemAsync('beebeeb_recovery_phrase');
-      if (!stored) {
-        Alert.alert(
-          'Recovery kit unavailable',
-          'The recovery phrase is not stored on this device. If you set up your account on another device, generate the PDF there, or use the web app at app.beebeeb.io.',
-        );
-        return;
-      }
-      await generateRecoveryKitPDF(stored, user?.email ?? '');
-    } catch {
-      Alert.alert('Could not generate PDF', 'Please try again.');
-    } finally {
-      setRecoveryPdfLoading(false);
-    }
-  }, [recoveryPdfLoading, user?.email]);
+    Alert.alert(
+      'Recovery kit unavailable',
+      'Your recovery phrase is shown once during account setup and is not stored on this device. Use the copy you saved offline.',
+    );
+  }, []);
 
   const handlePrivacyPolicy = useCallback(() => {
-    Linking.openURL('https://beebeeb.io/legal/privacy');
+    Linking.openURL('https://beebeeb.io/privacy');
   }, []);
 
   const handleTerms = useCallback(() => {
-    Linking.openURL('https://beebeeb.io/legal/terms');
+    Linking.openURL('https://beebeeb.io/terms');
+  }, []);
+
+  const handleAcceptableUse = useCallback(() => {
+    Linking.openURL('https://beebeeb.io/aup');
   }, []);
 
   const handleShowVersion = useCallback(() => {
@@ -1032,7 +1023,7 @@ export default function SettingsScreen() {
         month: 'short', day: 'numeric', year: 'numeric',
       })
     : null;
-  const serverRegionLabel = serverRegion ? `${serverRegion.region}. ${serverRegion.operator}.` : null;
+  const serverRegionLabel = serverRegion?.region ? regionDisplayName(serverRegion.region) : null;
 
   // ---------------------------------------------------------------------------
   // Render
@@ -1230,7 +1221,9 @@ export default function SettingsScreen() {
                             )}
                           </View>
                           <Text style={{ fontSize: 11, color: c.ink3, marginTop: 1 }}>
-                            {r.example_city ?? r.city ?? r.continent} · {r.provider}
+                            {r.continent === 'europe'
+                              ? 'Anywhere in Europe'
+                              : (r.example_city ?? r.city ?? 'Preference or force')}
                           </Text>
                         </View>
                         {isSelected && (
@@ -1296,12 +1289,10 @@ export default function SettingsScreen() {
                   </View>
                 )}
               </View>
-              <Switch
+              <NativeSwitch
                 value={storageRegionMode === 'force'}
                 onValueChange={(v) => handleRegionModeChange(v ? 'force' : 'preference')}
-                trackColor={{ false: c.line, true: c.amber }}
-                thumbColor={c.paper}
-                ios_backgroundColor={c.line}
+                colors={c}
               />
             </View>
           </View>
@@ -1351,7 +1342,7 @@ export default function SettingsScreen() {
             />
             <RowDivider c={c} />
             <SettingsRow
-              label={recoveryPdfLoading ? 'Preparing PDF…' : 'Download Recovery Kit'}
+              label="Recovery phrase"
               icon="document-text-outline"
               onPress={() => { void handleDownloadRecoveryKit(); }}
               c={c}
@@ -1548,6 +1539,14 @@ export default function SettingsScreen() {
               <>
                 <View style={{ height: 1, backgroundColor: c.line }} />
                 <ToggleRow
+                  label="File updates"
+                  subtitle="When a file changes from another device"
+                  value={notifPrefs.file_updated}
+                  onValueChange={(v) => void handleNotifPrefToggle('file_updated', v)}
+                  disabled={notifPrefsLoading}
+                  c={c}
+                />
+                <ToggleRow
                   label="Share received"
                   subtitle="When someone shares a file with you"
                   value={notifPrefs.share_received}
@@ -1719,6 +1718,14 @@ export default function SettingsScreen() {
             />
             <RowDivider c={c} />
             <SettingsRow
+              label="Source code"
+              value="GitHub"
+              icon="code-slash-outline"
+              onPress={() => { void Linking.openURL('https://github.com/beebeeb-io/mobile'); }}
+              c={c}
+            />
+            <RowDivider c={c} />
+            <SettingsRow
               label="Privacy policy"
               icon="document-text-outline"
               onPress={handlePrivacyPolicy}
@@ -1729,6 +1736,13 @@ export default function SettingsScreen() {
               label="Terms of service"
               icon="document-outline"
               onPress={handleTerms}
+              c={c}
+            />
+            <RowDivider c={c} />
+            <SettingsRow
+              label="Acceptable use policy"
+              icon="document-outline"
+              onPress={handleAcceptableUse}
               c={c}
             />
             <RowDivider c={c} />
@@ -1758,6 +1772,7 @@ export default function SettingsScreen() {
         {/* Footer */}
         <View style={layout.footer}>
           <Text style={{ fontSize: 10, color: c.ink4 }}>End-to-end encrypted. Zero knowledge.</Text>
+          <Text style={{ fontSize: 10, color: c.ink4 }}>Open-source client.</Text>
           <Text style={{ fontSize: 10, color: c.ink4 }}>Made in Europe.</Text>
           {serverRegionLabel && (
             <Text style={{ fontSize: 10, color: c.ink4 }}>Stored in {serverRegionLabel}</Text>

@@ -6,8 +6,13 @@
 import { Platform } from 'react-native';
 import * as Device from 'expo-device';
 import * as Notifications from 'expo-notifications';
+import Constants from 'expo-constants';
+import * as SecureStore from 'expo-secure-store';
 import type { NavigationContainerRef } from '@react-navigation/native';
 import { registerDeviceToken, unregisterDeviceToken } from './api';
+
+export const NOTIFICATIONS_OPT_OUT_KEY = 'beebeeb_notifications_opt_out';
+const PUSH_DEVICE_ID_KEY = 'beebeeb_push_device_id';
 
 // ── Notification handler ──────────────────────────────────────────────────────
 
@@ -34,11 +39,26 @@ export function setupNotificationHandler(): void {
  * Safe to call on every login — the server is idempotent on the token.
  * Silently no-ops on simulator (Device.isDevice === false).
  */
+async function getPushDeviceId(): Promise<string> {
+  const existing = await SecureStore.getItemAsync(PUSH_DEVICE_ID_KEY).catch(() => null);
+  if (existing) return existing;
+  const generated = `${Platform.OS}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  await SecureStore.setItemAsync(PUSH_DEVICE_ID_KEY, generated).catch(() => {});
+  return generated;
+}
+
+function getProjectId(): string | undefined {
+  return Constants.expoConfig?.extra?.eas?.projectId ?? Constants.easConfig?.projectId;
+}
+
 export async function registerForPushNotifications(): Promise<void> {
   // Skip in simulator / web — push tokens don't exist there.
   if (!Device.isDevice) return;
 
   try {
+    const optedOut = await SecureStore.getItemAsync(NOTIFICATIONS_OPT_OUT_KEY).catch(() => null);
+    if (optedOut === 'true') return;
+
     const { status: existing } = await Notifications.getPermissionsAsync();
     let final = existing;
 
@@ -52,11 +72,13 @@ export async function registerForPushNotifications(): Promise<void> {
       return;
     }
 
-    const tokenData = await Notifications.getExpoPushTokenAsync();
+    const projectId = getProjectId();
+    if (!projectId) return;
+
+    const tokenData = await Notifications.getExpoPushTokenAsync({ projectId });
     const token = tokenData.data;
 
-    const deviceId =
-      Device.deviceName ?? Device.modelName ?? Device.osInternalBuildId ?? 'unknown';
+    const deviceId = await getPushDeviceId();
 
     await registerDeviceToken({
       token,
@@ -74,7 +96,8 @@ export async function registerForPushNotifications(): Promise<void> {
  */
 export async function unregisterPushToken(): Promise<void> {
   try {
-    await unregisterDeviceToken();
+    const deviceId = await getPushDeviceId();
+    await unregisterDeviceToken(deviceId);
   } catch {
     // Non-fatal.
   }
@@ -83,6 +106,7 @@ export async function unregisterPushToken(): Promise<void> {
 // ── Deep-link routing on notification tap ─────────────────────────────────────
 
 type NotificationCategory =
+  | 'file_updated'
   | 'share_received'
   | 'storage_warning'
   | 'new_device_login'
@@ -107,6 +131,10 @@ export function handleNotificationTap(
   const nav = navigationRef.navigate as any;
 
   switch (category) {
+    case 'file_updated':
+      nav('Tabs', { screen: 'Files' });
+      break;
+
     case 'share_received':
       nav('Tabs', { screen: 'Shared' });
       break;

@@ -109,8 +109,10 @@ export async function encryptedUpload(opts: EncryptedUploadOptions): Promise<Fil
   // Expo types: size is on FileInfo when { size: true } is passed
   const plaintextSize: number = (info as FileSystem.FileInfo & { size?: number }).size ?? 0
 
+  const metadataPlain = JSON.stringify({ name, mime_type: mimeType ?? null })
+
   const nameEncryptedForFileId = async (targetFileId: string): Promise<string> => {
-    const encName = await encryptMetadataFn(targetFileId, name)
+    const encName = await encryptMetadataFn(targetFileId, metadataPlain)
     return JSON.stringify({
       nonce: uint8ArrayToB64(encName.nonce),
       ciphertext: uint8ArrayToB64(encName.ciphertext),
@@ -162,7 +164,7 @@ export async function encryptedUpload(opts: EncryptedUploadOptions): Promise<Fil
     nameEncrypted: nameEncryptedForFileId,
     v2InitNameEncrypted,
     parentId,
-    mimeType,
+    mimeType: undefined,
     plaintextSizeBytes: plaintextSize,
     resumeKey,
     onProgress,

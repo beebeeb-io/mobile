@@ -22,21 +22,19 @@ import {
   NativeCryptoUnavailableError,
 } from '../lib/api';
 import { useAuth } from '../lib/auth';
-import { useCrypto } from '../lib/crypto-context';
 import { useTheme } from '../lib/theme-context';
+import { useKeyboardLayoutAnimation } from '../lib/useKeyboardLayoutAnimation';
 import * as Haptics from 'expo-haptics';
 import * as BeebeebCrypto from '../../modules/beebeeb-crypto';
 import type { RootStackParamList } from '../App';
-
-const MASTER_KEY_LABEL = 'io.beebeeb.master-key';
 
 type Nav = NativeStackNavigationProp<RootStackParamList>;
 
 export default function LoginScreen() {
   const navigation = useNavigation<Nav>();
   const { refreshAuth } = useAuth();
-  const crypto = useCrypto();
   const { colors: c, resolved } = useTheme();
+  useKeyboardLayoutAnimation();
   const passwordRef = useRef<TextInput>(null);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -73,28 +71,20 @@ export default function LoginScreen() {
     setError(null);
     setLoading(true);
     try {
-      // Attempt OPAQUE login (3-round flow). When the native crypto module is
-      // missing (Expo Go) or the OPAQUE endpoints aren't deployed, fall back to
-      // plain /auth/login which uses Argon2 server-side.
+      // Match the web app: try OPAQUE first, then fall back to legacy
+      // Argon2 login. A 401 can mean either wrong credentials or "this account
+      // is not OPAQUE-enrolled yet"; the legacy path gives older accounts the
+      // same chance to sign in as web.
       if (BeebeebCrypto.isNativeAvailable) {
         try {
-          const { state, serverMessage } = await opaqueLoginStart(trimmedEmail, password);
-          const { masterKey } = await opaqueLoginFinish(trimmedEmail, password, state, serverMessage);
-          // Best-effort: stash master key in Secure Enclave for biometric unlock.
-          try {
-            await BeebeebCrypto.storeKeyInKeychain(masterKey, MASTER_KEY_LABEL);
-            await crypto.unlock();
-          } catch {
-            // Keychain unavailable — login still succeeded.
-          }
+          const { state, serverMessage, serverState } = await opaqueLoginStart(trimmedEmail, password);
+          await opaqueLoginFinish(trimmedEmail, password, state, serverMessage, serverState);
           // Token is stored by opaqueLoginFinish. App.tsx auth state will pick it up.
         } catch (opaqueErr) {
           const canFallback =
             opaqueErr instanceof NativeCryptoUnavailableError ||
-            (opaqueErr instanceof ApiError && (opaqueErr.status === 404 || opaqueErr.status === 0));
+            opaqueErr instanceof ApiError;
           if (!canFallback) throw opaqueErr;
-          // Fall back only when OPAQUE cannot run in this environment or the
-          // endpoint is unavailable; native OPAQUE failures must stay visible.
           await login(trimmedEmail, password);
         }
       } else {
@@ -145,6 +135,7 @@ export default function LoginScreen() {
           autoCapitalize="none"
           autoCorrect={false}
           autoComplete="email"
+          textContentType="username"
           returnKeyType="next"
           blurOnSubmit={false}
           onSubmitEditing={() => passwordRef.current?.focus()}
@@ -165,6 +156,7 @@ export default function LoginScreen() {
           secureTextEntry
           autoCapitalize="none"
           autoComplete="password"
+          textContentType="password"
           returnKeyType="go"
           onSubmitEditing={handleLogin}
           testID="password-input"
@@ -203,7 +195,7 @@ export default function LoginScreen() {
 
         {/* Region */}
         <View style={styles.regionRow}>
-          <Text style={styles.regionText}>Stored in Falkenstein.</Text>
+          <Text style={styles.regionText}>Stored in Europe.</Text>
         </View>
       </View>
     </KeyboardAvoidingView>

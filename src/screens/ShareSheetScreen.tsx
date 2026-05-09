@@ -6,7 +6,6 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
-  Switch,
   Text,
   TextInput,
   TouchableOpacity,
@@ -21,6 +20,8 @@ import type { RootStackParamList } from '../App';
 import { radii, spacing, shadows } from '../theme';
 import { useTheme } from '../lib/theme-context';
 import { useToast } from '../lib/toast-context';
+import { useKeyboardLayoutAnimation } from '../lib/useKeyboardLayoutAnimation';
+import { NativeSwitch } from '../components/NativeSwitch';
 import { createShare, friendlyError } from '../lib/api';
 import type { Share as ShareLink } from '../lib/api';
 import { useCrypto } from '../lib/crypto-context';
@@ -119,6 +120,7 @@ export default function ShareSheetScreen() {
   const { colors: c, resolved } = useTheme();
   const { fileId, fileName, mimeType, sizeBytes } = route.params;
   const { getFileKeyBytes, isUnlocked } = useCrypto();
+  useKeyboardLayoutAnimation();
 
   const [expiry, setExpiry] = useState<ExpiryOption>(EXPIRY_OPTIONS[1]);
   const [opens, setOpens] = useState<OpensOption>(OPENS_OPTIONS[0]);
@@ -413,15 +415,13 @@ export default function ShareSheetScreen() {
                   </View>
                 )}
               </View>
-              <Switch
+              <NativeSwitch
                 value={doubleEncrypted}
                 onValueChange={(v) => {
                   Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                   setDoubleEncrypted(v);
                 }}
-                trackColor={{ false: c.line, true: c.amber }}
-                thumbColor={c.paper}
-                ios_backgroundColor={c.line}
+                colors={c}
               />
             </View>
 

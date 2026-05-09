@@ -5,8 +5,8 @@
  * are stubs until BeebeebCore.xcframework / .so files are linked — they throw
  * "NOT_LINKED" errors at runtime until then.
  *
- * Binary data is exchanged as Uint8Array. With newArchEnabled (JSI), the bridge
- * handles the JS↔native conversion without base64 overhead.
+ * Most binary data is exchanged as Uint8Array. OPAQUE messages use base64 at
+ * the native boundary so auth bytes are preserved exactly across the bridge.
  */
 
 import BeebeebCryptoModule, { isNativeAvailable as nativeFlag } from './BeebeebCryptoModule'
@@ -29,6 +29,27 @@ import type {
  */
 export const isNativeAvailable: boolean = nativeFlag
 
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = ''
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i])
+  }
+  return btoa(binary)
+}
+
+function base64ToBytes(value: string): Uint8Array {
+  const binary = atob(value)
+  const bytes = new Uint8Array(binary.length)
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i)
+  }
+  return bytes
+}
+
+function coerceBytes(value: Uint8Array | string): Uint8Array {
+  return typeof value === 'string' ? base64ToBytes(value) : value
+}
+
 // ─── Key generation & recovery ──────────────────────────────────────────────
 
 /**
@@ -36,7 +57,11 @@ export const isNativeAvailable: boolean = nativeFlag
  * The phrase must be shown to the user exactly once and never stored on-device.
  */
 export async function generateRecoveryPhrase(): Promise<RecoveryPhraseResult> {
-  return BeebeebCryptoModule.generateRecoveryPhrase()
+  const result = await BeebeebCryptoModule.generateRecoveryPhrase()
+  return {
+    phrase: result.phrase,
+    masterKey: coerceBytes(result.masterKey),
+  }
 }
 
 /**
@@ -44,7 +69,26 @@ export async function generateRecoveryPhrase(): Promise<RecoveryPhraseResult> {
  * Use this during onboarding when restoring from a backup.
  */
 export async function recoverFromPhrase(phrase: string): Promise<MasterKeyResult> {
-  return BeebeebCryptoModule.recoverFromPhrase(phrase)
+  const result = await BeebeebCryptoModule.recoverFromPhrase(phrase)
+  return { masterKey: coerceBytes(result.masterKey) }
+}
+
+/**
+ * Compute the server-verifiable recovery check for a master key.
+ * Sent during account setup so server-side phrase recovery can verify the
+ * mnemonic without learning the master key or phrase.
+ */
+export async function computeRecoveryCheck(masterKey: Uint8Array): Promise<Uint8Array> {
+  return BeebeebCryptoModule.computeRecoveryCheck(masterKey)
+}
+
+/**
+ * Derive the Curve25519 public key associated with the vault master key.
+ * Used by the server for sharing identity metadata.
+ */
+export async function deriveX25519PublicKey(masterKey: Uint8Array): Promise<Uint8Array> {
+  const privateKey = await BeebeebCryptoModule.deriveX25519Private(masterKey)
+  return BeebeebCryptoModule.deriveX25519Public(privateKey)
 }
 
 // ─── File encryption ─────────────────────────────────────────────────────────
@@ -98,7 +142,11 @@ export async function opaqueRegistrationStart(
   username: string,
   password: string,
 ): Promise<OpaqueStartResult> {
-  return BeebeebCryptoModule.opaqueRegistrationStart(username, password)
+  const result = await BeebeebCryptoModule.opaqueRegistrationStart(username, password)
+  return {
+    state: coerceBytes(result.state),
+    message: coerceBytes(result.message),
+  }
 }
 
 /**
@@ -111,7 +159,12 @@ export async function opaqueRegistrationFinish(
   serverMessage: Uint8Array,
   password: string,
 ): Promise<OpaqueRegistrationFinishResult> {
-  return BeebeebCryptoModule.opaqueRegistrationFinish(state, serverMessage, password)
+  const result = await BeebeebCryptoModule.opaqueRegistrationFinish(
+    bytesToBase64(state),
+    bytesToBase64(serverMessage),
+    password,
+  )
+  return { record: coerceBytes(result.record) }
 }
 
 /**
@@ -120,7 +173,11 @@ export async function opaqueRegistrationFinish(
  * `password` is required by the OPAQUE OPRF — it must be forwarded to loginFinish too.
  */
 export async function opaqueLoginStart(username: string, password: string): Promise<OpaqueStartResult> {
-  return BeebeebCryptoModule.opaqueLoginStart(username, password)
+  const result = await BeebeebCryptoModule.opaqueLoginStart(username, password)
+  return {
+    state: coerceBytes(result.state),
+    message: coerceBytes(result.message),
+  }
 }
 
 /**
@@ -133,7 +190,16 @@ export async function opaqueLoginFinish(
   serverMessage: Uint8Array,
   password: string,
 ): Promise<OpaqueLoginFinishResult> {
-  return BeebeebCryptoModule.opaqueLoginFinish(state, serverMessage, password)
+  const result = await BeebeebCryptoModule.opaqueLoginFinish(
+    bytesToBase64(state),
+    bytesToBase64(serverMessage),
+    password,
+  )
+  return {
+    message: coerceBytes(result.message),
+    sessionKey: coerceBytes(result.sessionKey),
+    exportKey: coerceBytes(result.exportKey),
+  }
 }
 
 // ─── Key derivation ──────────────────────────────────────────────────────────
@@ -179,6 +245,18 @@ export async function deleteKeyFromKeychain(): Promise<boolean> {
  */
 export async function setRequireBiometric(require: boolean): Promise<boolean> {
   return BeebeebCryptoModule.setRequireBiometric(require)
+}
+
+/**
+ * Mirror auth state into the iOS App Group so the File Provider can upload,
+ * download, and update encrypted files from the system Files app.
+ */
+export async function mirrorSessionToAppGroup(
+  token: string | null,
+  baseUrl: string,
+): Promise<boolean> {
+  if (typeof BeebeebCryptoModule.mirrorSessionToAppGroup !== 'function') return false
+  return BeebeebCryptoModule.mirrorSessionToAppGroup(token, baseUrl)
 }
 
 // ─── Backup management ──────────────────────────────────────────────────────

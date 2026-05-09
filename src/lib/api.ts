@@ -10,19 +10,21 @@ import * as SecureStore from 'expo-secure-store';
 import { Platform } from 'react-native';
 import * as BeebeebCrypto from '../../modules/beebeeb-crypto';
 
-// Dev defaults per platform. Override at build time with EXPO_PUBLIC_API_URL
-// or via expoConfig.extra.apiUrl (e.g. through eas.json env or app.config.ts).
-// - iOS simulator + web reach the host via `localhost`.
-// - Android emulator reaches the host via the special 10.0.2.2 loopback.
-// - Physical devices need EXPO_PUBLIC_API_URL set to the LAN URL of the API.
+// API target. Override at build time with EXPO_PUBLIC_API_URL or via
+// expoConfig.extra.apiUrl (e.g. through eas.json env or app.config.ts).
+// Development builds default to a local API; release/TestFlight builds default
+// to production so they never silently point at localhost.
 function resolveBaseUrl(): string {
   const configured =
     (Constants.expoConfig?.extra as { apiUrl?: string } | undefined)?.apiUrl ??
     process.env.EXPO_PUBLIC_API_URL;
   if (configured) return configured;
 
-  if (Platform.OS === 'android') return 'http://10.0.2.2:3001';
-  return 'http://localhost:3001';
+  if (__DEV__) {
+    if (Platform.OS === 'android') return 'http://10.0.2.2:3001';
+    return 'http://localhost:3001';
+  }
+  return 'https://api.beebeeb.io';
 }
 
 const BASE_URL = resolveBaseUrl();
@@ -85,11 +87,13 @@ export async function getToken(): Promise<string | null> {
 export async function setToken(token: string): Promise<void> {
   cachedToken = token;
   await tokenStore.set(TOKEN_KEY, token);
+  await BeebeebCrypto.mirrorSessionToAppGroup(token, BASE_URL).catch(() => false);
 }
 
 export async function clearToken(): Promise<void> {
   cachedToken = null;
   await tokenStore.remove(TOKEN_KEY);
+  await BeebeebCrypto.mirrorSessionToAppGroup(null, BASE_URL).catch(() => false);
 }
 
 /** Fast check: is there a stored session token? */
@@ -306,6 +310,7 @@ export interface FileEntry {
   mime_type: string | null;
   size_bytes: number;
   is_folder: boolean;
+  is_uploading?: boolean;
   chunk_count: number;
   created_at: string;
   updated_at: string;
@@ -326,18 +331,8 @@ export interface StorageLocation {
 }
 
 export function storageLocation(poolId: string | null | undefined): StorageLocation {
-  switch (poolId) {
-    case 'hetzner-fsn':
-    case 'fsn1':
-    case 'falkenstein':
-      return { label: 'Falkenstein, DE', flag: '🇩🇪', shortCode: 'DE' };
-    case 'hetzner-hel':
-    case 'hel1':
-    case 'helsinki':
-      return { label: 'Helsinki, FIN', flag: '🇫🇮', shortCode: 'FIN' };
-    default:
-      return { label: 'Europe', flag: '', shortCode: '' };
-  }
+  if (!poolId) return { label: 'Europe', flag: '', shortCode: '' };
+  return { label: 'Europe', flag: '', shortCode: '' };
 }
 
 /**
@@ -346,34 +341,24 @@ export function storageLocation(poolId: string | null | undefined): StorageLocat
  */
 export interface TrustLocation {
   region: string; // "Europe"
-  city: string; // "Falkenstein"
-  provider: string; // "Hetzner"
+  city: string;
+  provider: string;
 }
 
 export function trustLocation(poolId: string | null | undefined): TrustLocation {
-  switch (poolId) {
-    case 'hetzner-fsn':
-    case 'fsn1':
-    case 'falkenstein':
-      return { region: 'Europe', city: 'Falkenstein', provider: 'Hetzner' };
-    case 'hetzner-hel':
-    case 'hel1':
-    case 'helsinki':
-      return { region: 'Europe', city: 'Helsinki', provider: 'Hetzner' };
-    default:
-      // Until storage pools are wired through, default to Falkenstein.
-      return { region: 'Europe', city: 'Falkenstein', provider: 'Hetzner' };
-  }
+  if (!poolId) return { region: 'Europe', city: 'EU region', provider: 'Beebeeb network' };
+  return { region: 'Europe', city: 'EU region', provider: 'Beebeeb network' };
 }
 
 export interface ListFilesResponse {
   files: FileEntry[];
 }
 
-export async function createFolder(name: string, parentId?: string): Promise<FileEntry> {
+export async function createFolder(name: string, parentId?: string, folderId?: string): Promise<FileEntry> {
   return request<FileEntry>('POST', '/api/v1/files/folder', {
     name_encrypted: name,
     parent_id: parentId ?? null,
+    folder_id: folderId,
   });
 }
 
@@ -1177,11 +1162,11 @@ function base64ToUint8(b64: string): Uint8Array {
 export interface OpaqueLoginStartResult {
   state: Uint8Array;
   serverMessage: Uint8Array;
+  serverState: string;
 }
 
 export interface OpaqueLoginResult {
   sessionToken: string;
-  masterKey: Uint8Array;
 }
 
 export interface OpaqueRegistrationStartResult {
@@ -1215,41 +1200,61 @@ export async function opaqueLoginStart(email: string, password: string): Promise
     if (!BeebeebCrypto.isNativeAvailable) throw new NativeCryptoUnavailableError('opaqueLoginStart');
     throw err;
   }
-  const data = await request<{ server_message: string }>(
-    'POST',
-    '/api/v1/opaque/login-start',
-    { email, client_message: uint8ToBase64(message) },
-    false,
-  );
-  return { state, serverMessage: base64ToUint8(data.server_message) };
+  let data: { server_message: string; server_state: string };
+  try {
+    data = await request<{ server_message: string; server_state: string }>(
+      'POST',
+      '/api/v1/opaque/login-start',
+      { email, client_message: uint8ToBase64(message) },
+      false,
+    );
+  } catch (err) {
+    throw err;
+  }
+  return {
+    state,
+    serverMessage: base64ToUint8(data.server_message),
+    serverState: data.server_state,
+  };
 }
 
 /**
  * Round 2 of OPAQUE login.
- * Returns the session token and the derived master key (sessionKey from OPAQUE).
+ * Returns the session token. The OPAQUE session key is not the vault key;
+ * the vault key must come from the 12-word recovery phrase or keychain.
  */
 export async function opaqueLoginFinish(
   email: string,
   password: string,
   state: Uint8Array,
   serverMessage: Uint8Array,
+  serverState: string,
 ): Promise<OpaqueLoginResult> {
   if (!BeebeebCrypto.isNativeAvailable) throw new NativeCryptoUnavailableError('opaqueLoginFinish');
-  let sessionKey: Uint8Array;
+  let message: Uint8Array;
   try {
-    ({ sessionKey } = await BeebeebCrypto.opaqueLoginFinish(state, serverMessage, password));
+    ({ message } = await BeebeebCrypto.opaqueLoginFinish(state, serverMessage, password));
   } catch (err) {
     if (!BeebeebCrypto.isNativeAvailable) throw new NativeCryptoUnavailableError('opaqueLoginFinish');
     throw err;
   }
-  const data = await request<{ session_token: string }>(
-    'POST',
-    '/api/v1/opaque/login-finish',
-    { email, session_key: uint8ToBase64(sessionKey) },
-    false,
-  );
+  let data: { session_token: string };
+  try {
+    data = await request<{ session_token: string }>(
+      'POST',
+      '/api/v1/opaque/login-finish',
+      {
+        email,
+        client_message: uint8ToBase64(message),
+        server_state: serverState,
+      },
+      false,
+    );
+  } catch (err) {
+    throw err;
+  }
   await setToken(data.session_token);
-  return { sessionToken: data.session_token, masterKey: sessionKey };
+  return { sessionToken: data.session_token };
 }
 
 /**
@@ -1290,6 +1295,8 @@ export async function opaqueRegistrationFinish(
   password: string,
   state: Uint8Array,
   serverMessage: Uint8Array,
+  recoveryCheck?: Uint8Array,
+  x25519PublicKey?: Uint8Array,
 ): Promise<{ sessionToken: string }> {
   if (!BeebeebCrypto.isNativeAvailable) throw new NativeCryptoUnavailableError('opaqueRegistrationFinish');
   let record: Uint8Array;
@@ -1302,7 +1309,12 @@ export async function opaqueRegistrationFinish(
   const data = await request<{ session_token: string }>(
     'POST',
     '/api/v1/opaque/register-finish',
-    { email, record: uint8ToBase64(record) },
+    {
+      email,
+      client_message: uint8ToBase64(record),
+      ...(recoveryCheck ? { recovery_check: uint8ToBase64(recoveryCheck) } : {}),
+      ...(x25519PublicKey ? { x25519_public_key: uint8ToBase64(x25519PublicKey) } : {}),
+    },
     false,
   );
   await setToken(data.session_token);
@@ -1319,6 +1331,7 @@ export interface SyncNode {
   name_encrypted: string;
   parent_id: string | null;
   is_folder: boolean;
+  is_uploading?: boolean;
   size_bytes: number;
   mime_type: string | null;
   content_hash: string | null;
@@ -1387,6 +1400,18 @@ export async function getStreamToken(): Promise<StreamTokenResponse> {
   return request<StreamTokenResponse>('POST', '/api/v1/sync/stream-token');
 }
 
+export interface UploadStatus {
+  file_id: string;
+  chunk_count: number;
+  uploaded_chunks: number[];
+  missing_chunks: number[];
+  is_uploading: boolean;
+}
+
+export async function getUploadStatus(fileId: string): Promise<UploadStatus> {
+  return request<UploadStatus>('GET', `/api/v1/files/${encodeURIComponent(fileId)}/upload/status`);
+}
+
 // ---------------------------------------------------------------------------
 // Photo backup
 // ---------------------------------------------------------------------------
@@ -1436,13 +1461,14 @@ export async function registerDeviceToken(params: {
 }
 
 /** DELETE /api/v1/notifications/unregister-device */
-export async function unregisterDeviceToken(): Promise<void> {
-  await request<void>('DELETE', '/api/v1/notifications/unregister-device');
+export async function unregisterDeviceToken(deviceId: string): Promise<void> {
+  await request<void>('DELETE', '/api/v1/notifications/unregister-device', { device_id: deviceId });
 }
 
 // ─── Notification preferences ─────────────────────────────────────────────────
 
 export interface MobileNotificationPreferences {
+  file_updated: boolean;
   share_received: boolean;
   storage_warning: boolean;
   new_device_login: boolean;
@@ -1451,14 +1477,23 @@ export interface MobileNotificationPreferences {
 
 /** GET /api/v1/notifications/preferences */
 export async function getNotificationPreferences(): Promise<MobileNotificationPreferences> {
-  return request<MobileNotificationPreferences>('GET', '/api/v1/notifications/preferences');
+  const response = await request<MobileNotificationPreferences | { preferences: MobileNotificationPreferences }>(
+    'GET',
+    '/api/v1/notifications/preferences',
+  );
+  return 'preferences' in response ? response.preferences : response;
 }
 
 /** PUT /api/v1/notifications/preferences */
 export async function setNotificationPreferences(
   prefs: MobileNotificationPreferences,
 ): Promise<MobileNotificationPreferences> {
-  return request<MobileNotificationPreferences>('PUT', '/api/v1/notifications/preferences', prefs);
+  const response = await request<MobileNotificationPreferences | { preferences: MobileNotificationPreferences }>(
+    'PUT',
+    '/api/v1/notifications/preferences',
+    prefs,
+  );
+  return 'preferences' in response ? response.preferences : response;
 }
 
 // ─── Privacy / DSAR (spec 025) ────────────────────────────────────────────────

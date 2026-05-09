@@ -28,8 +28,12 @@ export interface OpaqueRegistrationFinishResult {
 }
 
 export interface OpaqueLoginFinishResult {
-  /** Exported session key — used to derive the master key */
+  /** Client finish message to send to the server */
+  message: Uint8Array
+  /** Shared OPAQUE session key. Authentication only; not the vault key. */
   sessionKey: Uint8Array
+  /** OPAQUE export key, reserved for future credential wrapping. */
+  exportKey: Uint8Array
 }
 
 // ─── Amber Constellation ─────────────────────────────────────────────────────

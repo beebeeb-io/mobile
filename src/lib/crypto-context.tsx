@@ -1,5 +1,7 @@
 import React, { createContext, useCallback, useContext, useRef, useState } from 'react'
+import * as SecureStore from 'expo-secure-store'
 import {
+  computeRecoveryCheck,
   deriveFileKey,
   decryptChunk,
   decryptMetadata,
@@ -12,6 +14,46 @@ import {
 import type { EncryptedData } from '../../modules/beebeeb-crypto'
 
 const MASTER_KEY_LABEL = 'io.beebeeb.master-key'
+const MASTER_KEY_CHECK_LABEL = 'io.beebeeb.master-key-check'
+
+function uint8ToBase64(bytes: Uint8Array): string {
+  let binary = ''
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i])
+  return btoa(binary)
+}
+
+function base64ToUint8(b64: string): Uint8Array {
+  const binary = atob(b64)
+  const bytes = new Uint8Array(binary.length)
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+  return bytes
+}
+
+function constantTimeEqual(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false
+  let diff = 0
+  for (let i = 0; i < a.length; i++) diff |= a[i] ^ b[i]
+  return diff === 0
+}
+
+async function storeMasterKey(masterKey: Uint8Array): Promise<void> {
+  await storeKeyInKeychain(masterKey, MASTER_KEY_LABEL)
+  const check = await computeRecoveryCheck(masterKey)
+  await SecureStore.setItemAsync(MASTER_KEY_CHECK_LABEL, uint8ToBase64(check))
+}
+
+async function loadVerifiedMasterKey(): Promise<Uint8Array | null> {
+  const [stored, checkB64] = await Promise.all([
+    loadKeyFromKeychain(MASTER_KEY_LABEL),
+    SecureStore.getItemAsync(MASTER_KEY_CHECK_LABEL).catch(() => null),
+  ])
+  if (!stored || !checkB64) return null
+
+  const expected = base64ToUint8(checkB64)
+  const actual = await computeRecoveryCheck(stored)
+  if (!constantTimeEqual(actual, expected)) return null
+  return stored
+}
 
 interface CryptoContextValue {
   isUnlocked: boolean
@@ -66,9 +108,8 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
       if (phrase) {
         const result = await recoverFromPhrase(phrase)
         masterKey = result.masterKey
-        await storeKeyInKeychain(masterKey, MASTER_KEY_LABEL)
       } else {
-        const stored = await loadKeyFromKeychain(MASTER_KEY_LABEL)
+        const stored = await loadVerifiedMasterKey()
         if (!stored) {
           throw new Error('No master key in keychain — provide a recovery phrase to restore')
         }
@@ -77,6 +118,13 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
 
       masterKeyRef.current = masterKey
       setIsUnlocked(true)
+      if (phrase) {
+        // Web unlocks the vault once the mnemonic derives the master key; local
+        // persistence is an optimization for future launches. Keep the same
+        // behavior on mobile so a keychain/Secure Enclave persistence failure
+        // does not get reported as an invalid recovery phrase.
+        storeMasterKey(masterKey).catch(() => {})
+      }
     } finally {
       // Mark the attempt as done regardless of outcome so screens waiting
       // on this flag can proceed (showing "Encrypted file" fallback if needed).

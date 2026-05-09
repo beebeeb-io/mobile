@@ -1,6 +1,17 @@
 import ExpoModulesCore
 import Foundation
 
+private func decodeBase64(_ value: String, field: String) throws -> Data {
+  guard let data = Data(base64Encoded: value) else {
+    throw NSError(
+      domain: "BeebeebCrypto",
+      code: 1,
+      userInfo: [NSLocalizedDescriptionKey: "Invalid base64 for \(field)"]
+    )
+  }
+  return data
+}
+
 // All crypto runs through `BeebeebCryptoBridge`, which wraps the UniFFI
 // bindings shipped in `BeebeebCore.xcframework` (linked via the
 // `withUniffiBridge` config plugin).
@@ -19,6 +30,18 @@ public class BeebeebCryptoModule: Module {
     AsyncFunction("recoverFromPhrase") { (phrase: String) throws -> [String: Any] in
       let masterKey = try recoverFromPhrase(phrase: phrase)
       return ["masterKey": masterKey]
+    }
+
+    AsyncFunction("computeRecoveryCheck") { (masterKey: Data) throws -> Data in
+      try computeRecoveryCheck(masterKey: masterKey)
+    }
+
+    AsyncFunction("deriveX25519Private") { (masterKey: Data) throws -> Data in
+      try deriveX25519Private(masterKey: masterKey)
+    }
+
+    AsyncFunction("deriveX25519Public") { (privateKey: Data) throws -> Data in
+      try deriveX25519Public(privateKey: privateKey)
     }
 
     AsyncFunction("encryptChunk") { (key: Data, plaintext: Data) throws -> [String: Any] in
@@ -48,27 +71,35 @@ public class BeebeebCryptoModule: Module {
     AsyncFunction("opaqueRegistrationStart") { (_ username: String, password: String) throws -> [String: Any] in
       let result = try opaqueRegistrationStart(password: Data(password.utf8))
       return [
-        "state": result.state,
-        "message": result.message,
+        "state": result.state.base64EncodedString(),
+        "message": result.message.base64EncodedString(),
       ]
     }
 
-    AsyncFunction("opaqueRegistrationFinish") { (state: Data, serverMessage: Data, password: String) throws -> [String: Any] in
-      let record = try opaqueRegistrationFinish(clientState: state, password: Data(password.utf8), serverResponse: serverMessage)
-      return ["record": record]
+    AsyncFunction("opaqueRegistrationFinish") { (state: String, serverMessage: String, password: String) throws -> [String: Any] in
+      let stateData = try decodeBase64(state, field: "state")
+      let serverMessageData = try decodeBase64(serverMessage, field: "serverMessage")
+      let record = try opaqueRegistrationFinish(clientState: stateData, password: Data(password.utf8), serverResponse: serverMessageData)
+      return ["record": record.base64EncodedString()]
     }
 
     AsyncFunction("opaqueLoginStart") { (username: String, password: String) throws -> [String: Any] in
       let result = try opaqueLoginStart(password: Data(password.utf8))
       return [
-        "state": result.state,
-        "message": result.message,
+        "state": result.state.base64EncodedString(),
+        "message": result.message.base64EncodedString(),
       ]
     }
 
-    AsyncFunction("opaqueLoginFinish") { (state: Data, serverMessage: Data, password: String) throws -> [String: Any] in
-      let result = try opaqueLoginFinish(clientState: state, password: Data(password.utf8), serverResponse: serverMessage)
-      return ["sessionKey": result.sessionKey]
+    AsyncFunction("opaqueLoginFinish") { (state: String, serverMessage: String, password: String) throws -> [String: Any] in
+      let stateData = try decodeBase64(state, field: "state")
+      let serverMessageData = try decodeBase64(serverMessage, field: "serverMessage")
+      let result = try opaqueLoginFinish(clientState: stateData, password: Data(password.utf8), serverResponse: serverMessageData)
+      return [
+        "message": result.message.base64EncodedString(),
+        "sessionKey": result.sessionKey.base64EncodedString(),
+        "exportKey": result.exportKey.base64EncodedString(),
+      ]
     }
 
     AsyncFunction("deriveFileKey") { (masterKey: Data, fileId: String) throws -> Data in
@@ -90,6 +121,22 @@ public class BeebeebCryptoModule: Module {
 
     AsyncFunction("setRequireBiometric") { (require: Bool) throws -> Bool in
       try KeychainManager.setAccessControl(requireBiometric: require)
+      return true
+    }
+
+    AsyncFunction("mirrorSessionToAppGroup") { (token: String?, baseUrl: String?) -> Bool in
+      guard let defaults = UserDefaults(suiteName: "group.io.beebeeb.shared") else {
+        return false
+      }
+      if let token, !token.isEmpty {
+        defaults.set(token, forKey: "io.beebeeb.sessionToken")
+      } else {
+        defaults.removeObject(forKey: "io.beebeeb.sessionToken")
+      }
+      if let baseUrl, !baseUrl.isEmpty {
+        defaults.set(baseUrl, forKey: "io.beebeeb.apiBaseUrl")
+      }
+      defaults.synchronize()
       return true
     }
 
@@ -156,4 +203,3 @@ public class BeebeebCryptoModule: Module {
     }
   }
 }
-
