@@ -324,6 +324,9 @@ export interface FileEntry {
   parent_id?: string | null;
   /** Active share count — populated by the server when shares exist on the entry. */
   share_count?: number;
+  /** True when a thumbnail blob has been uploaded for this file. */
+  has_thumbnail?: boolean;
+  is_starred?: boolean;
 }
 
 /**
@@ -807,6 +810,11 @@ async function uploadFileChunked(
     throw new ApiError(completeRes.status, err.error ?? 'Failed to finalize upload');
   }
   return completeRes.json() as Promise<FileEntry>;
+}
+
+/** Returns the authenticated thumbnail endpoint URL for a file. */
+export function thumbnailUrl(fileId: string): string {
+  return `${BASE_URL}/api/v1/files/${fileId}/thumbnail`;
 }
 
 /**
