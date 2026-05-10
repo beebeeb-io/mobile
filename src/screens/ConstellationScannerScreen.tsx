@@ -1,11 +1,8 @@
 /**
  * Constellation receive screen.
  *
- * Camera-based scanning isn't wired up yet (the original stub noted that
- * react-native-vision-camera needs a newer Xcode) so this screen implements
- * the manual-fallback path: the receiver types the 6-digit code shown on the
- * sender's device, joins the session, verifies the SAS, then downloads + saves
- * the file.
+ * Receiver side of the peer-transfer flow. The camera path scans the QR code
+ * shown by the sender; the manual 6-digit code remains as the fallback.
  *
  * Flow:
  *   1. Receiver enters the 6-digit code from the sender's screen.
@@ -35,6 +32,10 @@ import * as Haptics from 'expo-haptics';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { darkColors, fonts, spacing } from '../theme';
+import { useAuth } from '../lib/auth';
+import { useCrypto } from '../lib/crypto-context';
+import { encryptedUpload, generateFileId } from '../lib/encrypted-upload';
+import { useToast } from '../lib/toast-context';
 import {
   ackTransfer,
   bytesToBase64,
@@ -50,6 +51,15 @@ import type { RootStackParamList } from '../App';
 
 type Nav = NativeStackNavigationProp<RootStackParamList>;
 
+type CameraPermissionState = 'checking' | 'granted' | 'denied' | 'unavailable';
+type ExpoCameraModule = {
+  CameraView?: React.ComponentType<Record<string, unknown>>;
+  Camera?: {
+    requestCameraPermissionsAsync?: () => Promise<{ status?: string; granted?: boolean }>;
+  };
+  requestCameraPermissionsAsync?: () => Promise<{ status?: string; granted?: boolean }>;
+};
+
 type Phase =
   | 'idle'        // initial — show the code input
   | 'joining'     // POST /join in flight
@@ -63,9 +73,14 @@ const POLL_INTERVAL_MS = 2_000;
 
 export function ConstellationScannerScreen() {
   const navigation = useNavigation<Nav>();
+  const { user } = useAuth();
+  const crypto = useCrypto();
+  const { showToast } = useToast();
   const [phase, setPhase] = useState<Phase>('idle');
   const [errorText, setErrorText] = useState<string | null>(null);
   const [codeInput, setCodeInput] = useState('');
+  const [cameraPermission, setCameraPermission] = useState<CameraPermissionState>('checking');
+  const [savingToVault, setSavingToVault] = useState(false);
 
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [senderPk, setSenderPk] = useState<string | null>(null);
@@ -74,10 +89,41 @@ export function ConstellationScannerScreen() {
 
   const [savedUri, setSavedUri] = useState<string | null>(null);
   const [savedMime, setSavedMime] = useState<string | null>(null);
+  const [savedFileName, setSavedFileName] = useState<string | null>(null);
 
   // Mirrors sessionId for the polling timer; lets the closure observe the
   // current session without rebinding every state change.
   const activeSessionRef = useRef<string | null>(null);
+  const scannedRef = useRef(false);
+  const cameraModule = useMemo(() => loadExpoCameraModule(), []);
+  const CameraView = cameraModule?.CameraView ?? null;
+
+  useEffect(() => {
+    if (!cameraModule) {
+      setCameraPermission('unavailable');
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      const requestPermission =
+        cameraModule.requestCameraPermissionsAsync ??
+        cameraModule.Camera?.requestCameraPermissionsAsync;
+      if (!requestPermission) {
+        setCameraPermission('unavailable');
+        return;
+      }
+      try {
+        const res = await requestPermission();
+        if (cancelled) return;
+        setCameraPermission(res.granted || res.status === 'granted' ? 'granted' : 'denied');
+      } catch {
+        if (!cancelled) setCameraPermission('denied');
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [cameraModule]);
 
   // Best-effort cleanup of the temp file on unmount.
   useEffect(() => {
@@ -89,8 +135,8 @@ export function ConstellationScannerScreen() {
   // ──────────────────────────────────────────────────────────────────────────
   // Code submission — kicks off the join handshake.
   // ──────────────────────────────────────────────────────────────────────────
-  const handleSubmitCode = useCallback(async () => {
-    const code = codeInput.replace(/\D/g, '');
+  const joinWithFallbackCode = useCallback(async (rawCode: string) => {
+    const code = rawCode.replace(/\D/g, '');
     if (code.length !== 6) {
       Alert.alert('Enter the 6-digit code', 'It\'s shown on the other device.');
       return;
@@ -113,7 +159,23 @@ export function ConstellationScannerScreen() {
       setErrorText(friendlyError(err));
       setPhase('error');
     }
-  }, [codeInput]);
+  }, []);
+
+  const handleSubmitCode = useCallback(async () => {
+    await joinWithFallbackCode(codeInput);
+  }, [codeInput, joinWithFallbackCode]);
+
+  const handleBarcodeScanned = useCallback((event: { data?: string }) => {
+    if (phase !== 'idle' || scannedRef.current) return;
+    const code = extractConstellationFallbackCode(event.data ?? '');
+    if (!code) {
+      showToast({ type: 'error', message: 'That QR code is not a Constellation transfer.' });
+      return;
+    }
+    scannedRef.current = true;
+    setCodeInput(code);
+    void joinWithFallbackCode(code);
+  }, [joinWithFallbackCode, phase, showToast]);
 
   // ──────────────────────────────────────────────────────────────────────────
   // Status polling while waiting for sender approval + upload.
@@ -129,6 +191,9 @@ export function ConstellationScannerScreen() {
         if (status.status === 'cancelled' || status.status === 'expired') {
           setPhase('cancelled');
           return;
+        }
+        if (status.file_name_hint) {
+          setSavedFileName(safeTransferFileName(status.file_name_hint));
         }
         if (status.status === 'ready' || (status.blob_size != null && status.blob_size > 0)) {
           setPhase('receiving');
@@ -166,7 +231,7 @@ export function ConstellationScannerScreen() {
         // transfer AES-GCM lands we'll decrypt here with the derived
         // transfer_key before saving.
         const bytes = new Uint8Array(buf);
-        const fileName = `beebeeb-transfer-${bytesToHex(randomBytes(4))}.enc`;
+        const fileName = savedFileName ?? `beebeeb-transfer-${bytesToHex(randomBytes(4))}.enc`;
         const localUri = `${FileSystem.cacheDirectory}${fileName}`;
         const base64 = bytesToBase64(bytes);
         await FileSystem.writeAsStringAsync(localUri, base64, {
@@ -176,6 +241,7 @@ export function ConstellationScannerScreen() {
         if (cancelled) return;
         setSavedUri(localUri);
         setSavedMime('application/octet-stream');
+        setSavedFileName(fileName);
 
         // ACK so the server can drop the blob. Best-effort — if it fails the
         // server's expiry sweep cleans up after 24h.
@@ -192,7 +258,7 @@ export function ConstellationScannerScreen() {
     return () => {
       cancelled = true;
     };
-  }, [phase, sessionId, downloadToken]);
+  }, [phase, sessionId, downloadToken, savedFileName]);
 
   const handleSave = useCallback(async () => {
     if (!savedUri) return;
@@ -211,6 +277,50 @@ export function ConstellationScannerScreen() {
       Alert.alert('Could not save', friendlyError(err));
     }
   }, [savedUri, savedMime]);
+
+  const handleSaveToVault = useCallback(async () => {
+    if (!savedUri || savingToVault) return;
+    if (!user) {
+      showToast({ type: 'info', message: 'Sign in to save this file to your vault.' });
+      navigation.navigate('Login', { returnTo: 'DevicePairingScan' });
+      return;
+    }
+    if (!crypto.isUnlocked) {
+      showToast({ type: 'error', message: 'Unlock your vault before saving this file.' });
+      navigation.navigate('RecoveryUnlock');
+      return;
+    }
+
+    setSavingToVault(true);
+    try {
+      await encryptedUpload({
+        fileId: generateFileId(),
+        uri: savedUri,
+        name: savedFileName ?? 'beebeeb-transfer.enc',
+        mimeType: savedMime ?? 'application/octet-stream',
+        encryptChunkFn: crypto.encryptChunk,
+        encryptMetadataFn: crypto.encryptMetadata,
+      });
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      showToast({ type: 'success', message: 'Saved to your vault' });
+    } catch (err) {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      showToast({ type: 'error', message: friendlyError(err) });
+    } finally {
+      setSavingToVault(false);
+    }
+  }, [
+    crypto.encryptChunk,
+    crypto.encryptMetadata,
+    crypto.isUnlocked,
+    navigation,
+    savedFileName,
+    savedMime,
+    savedUri,
+    savingToVault,
+    showToast,
+    user,
+  ]);
 
   const handleClose = useCallback(() => {
     navigation.goBack();
@@ -242,9 +352,34 @@ export function ConstellationScannerScreen() {
               <>
                 <Text style={styles.title}>Receive a file</Text>
                 <Text style={styles.subtitle}>
-                  Scan a constellation to receive a file.
-                  Camera scanning will be available in the next build.
+                  Scan the QR code on the sender's screen, or enter the 6-digit code.
                 </Text>
+                <View style={styles.cameraWrap}>
+                  {cameraPermission === 'granted' && CameraView ? (
+                    <>
+                      <CameraView
+                        style={styles.camera}
+                        facing="back"
+                        barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
+                        onBarcodeScanned={phase === 'idle' ? handleBarcodeScanned : undefined}
+                      />
+                      <View style={styles.scanningBadge}>
+                        <ActivityIndicator color={darkColors.amber} size="small" />
+                        <Text style={styles.scanningText}>Scanning...</Text>
+                      </View>
+                    </>
+                  ) : (
+                    <View style={styles.cameraFallback}>
+                      <Text style={styles.cameraFallbackText}>
+                        {cameraPermission === 'denied'
+                          ? 'Camera permission is off. Enter the code manually below.'
+                          : cameraPermission === 'unavailable'
+                            ? 'Camera scanning is unavailable in this build. Enter the code manually below.'
+                            : 'Requesting camera access...'}
+                      </Text>
+                    </View>
+                  )}
+                </View>
                 <Text style={styles.sectionLabel}>Enter code manually</Text>
                 <TextInput
                   style={styles.codeInput}
@@ -309,12 +444,23 @@ export function ConstellationScannerScreen() {
                   Server copy is being deleted.
                 </Text>
                 <TouchableOpacity
-                  style={styles.primaryButton}
+                  style={[styles.primaryButton, savingToVault && styles.primaryButtonDisabled]}
+                  onPress={handleSaveToVault}
+                  activeOpacity={0.8}
+                  disabled={savingToVault}
+                  accessibilityRole="button"
+                >
+                  <Text style={styles.primaryButtonText}>
+                    {savingToVault ? 'Saving...' : 'Save to my Beebeeb'}
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.outlineButton}
                   onPress={handleSave}
                   activeOpacity={0.8}
                   accessibilityRole="button"
                 >
-                  <Text style={styles.primaryButtonText}>Save to device</Text>
+                  <Text style={styles.outlineButtonText}>Save to device</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
                   style={styles.outlineButton}
@@ -364,6 +510,53 @@ export function ConstellationScannerScreen() {
 }
 
 export default ConstellationScannerScreen;
+
+function loadExpoCameraModule(): ExpoCameraModule | null {
+  try {
+    // Optional until `expo-camera` is present in the native build.
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    return require('expo-camera') as ExpoCameraModule;
+  } catch {
+    return null;
+  }
+}
+
+function extractConstellationFallbackCode(data: string): string | null {
+  const trimmed = data.trim();
+  if (/^\d{6}$/.test(trimmed)) return trimmed;
+
+  try {
+    const parsed = JSON.parse(trimmed) as {
+      code?: unknown;
+      fallback_code?: unknown;
+      fallbackCode?: unknown;
+    };
+    const raw = parsed.fallback_code ?? parsed.fallbackCode ?? parsed.code;
+    if (typeof raw === 'string' && /^\d{6}$/.test(raw)) return raw;
+  } catch {
+    // Not JSON; try URL parsing below.
+  }
+
+  try {
+    const url = new URL(trimmed);
+    const raw = url.searchParams.get('code') ?? url.searchParams.get('fallback_code');
+    if (raw && /^\d{6}$/.test(raw)) return raw;
+  } catch {
+    // Not a URL.
+  }
+
+  const digits = trimmed.replace(/\D/g, '');
+  return digits.length === 6 ? digits : null;
+}
+
+function safeTransferFileName(input: string): string {
+  const name = input
+    .split(/[\\/]/)
+    .pop()
+    ?.replace(/[^\w.\-() ]/g, '_')
+    .trim();
+  return name || 'beebeeb-transfer.enc';
+}
 
 const styles = StyleSheet.create({
   root: {
@@ -418,6 +611,48 @@ const styles = StyleSheet.create({
     letterSpacing: 0.5,
     textTransform: 'uppercase',
     marginTop: spacing.md,
+  },
+  cameraWrap: {
+    width: '100%',
+    maxWidth: 340,
+    height: 220,
+    borderRadius: 16,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: darkColors.line2,
+    backgroundColor: darkColors.black,
+  },
+  camera: {
+    flex: 1,
+  },
+  cameraFallback: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: spacing.lg,
+  },
+  cameraFallbackText: {
+    fontSize: 13,
+    color: darkColors.ink2,
+    textAlign: 'center',
+    lineHeight: 19,
+  },
+  scanningBadge: {
+    position: 'absolute',
+    left: spacing.md,
+    bottom: spacing.md,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    backgroundColor: 'rgba(12, 12, 13, 0.78)',
+    borderRadius: 999,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+  },
+  scanningText: {
+    fontSize: 12,
+    color: darkColors.ink,
+    fontWeight: '600',
   },
   codeInput: {
     fontSize: 32,

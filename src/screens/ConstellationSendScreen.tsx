@@ -34,6 +34,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
 import { darkColors, fonts, spacing } from '../theme';
 import { generateConstellationHTML } from '../lib/constellation-renderer';
+import { createQrMatrix } from '../lib/qr-code';
 import {
   approveTransfer,
   bytesToBase64,
@@ -165,6 +166,11 @@ export default function ConstellationSendScreen() {
     return deriveSasWords(sessionId, senderPk, receiverPk);
   }, [sessionId, senderPk, receiverPk]);
 
+  const fallbackQr = useMemo(() => {
+    if (!fallbackCode) return null;
+    return createQrMatrix(fallbackCode);
+  }, [fallbackCode]);
+
   // ──────────────────────────────────────────────────────────────────────────
   // Approve handler — runs the upload pipeline.
   //
@@ -264,6 +270,7 @@ export default function ConstellationSendScreen() {
             <Text style={styles.status}>Waiting for someone to scan…</Text>
             {fallbackCode && (
               <View style={styles.codeWrap}>
+                {fallbackQr && <QrCode matrix={fallbackQr} />}
                 <Text style={styles.codeLabel}>Or enter code on the other device</Text>
                 <Text style={styles.codeText}>{formatCode(fallbackCode)}</Text>
               </View>
@@ -359,6 +366,23 @@ export default function ConstellationSendScreen() {
   );
 }
 
+function QrCode({ matrix }: { matrix: Array<Array<0 | 1>> }) {
+  return (
+    <View style={styles.qrOuter} accessibilityLabel="Constellation transfer QR code">
+      {matrix.map((row, y) => (
+        <View key={`row-${y}`} style={styles.qrRow}>
+          {row.map((cell, x) => (
+            <View
+              key={`${x}-${y}`}
+              style={[styles.qrCell, cell === 1 && styles.qrCellDark]}
+            />
+          ))}
+        </View>
+      ))}
+    </View>
+  );
+}
+
 /** Insert a thin space in the middle of a 6-digit code for readability. */
 function formatCode(code: string): string {
   if (code.length !== 6) return code;
@@ -420,6 +444,22 @@ const styles = StyleSheet.create({
   codeWrap: {
     alignItems: 'center',
     marginBottom: spacing.md,
+  },
+  qrOuter: {
+    backgroundColor: '#FFFFFF',
+    padding: 8,
+    marginBottom: spacing.sm,
+  },
+  qrRow: {
+    flexDirection: 'row',
+  },
+  qrCell: {
+    width: 4,
+    height: 4,
+    backgroundColor: '#FFFFFF',
+  },
+  qrCellDark: {
+    backgroundColor: '#000000',
   },
   codeLabel: {
     fontSize: 11,

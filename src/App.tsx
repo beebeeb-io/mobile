@@ -76,8 +76,10 @@ import StorageScreen from './screens/StorageScreen';
 import RecoveryPhraseVerifyScreen from './screens/RecoveryPhraseVerifyScreen';
 import RecoveryUnlockScreen from './screens/RecoveryUnlockScreen';
 import DevicePairingScreen from './screens/DevicePairingScreen';
+import DevicePairingScanScreen from './screens/DevicePairingScanScreen';
 import DevicePairingShowScreen from './screens/DevicePairingShowScreen';
 import PairingConfirmScreen from './screens/PairingConfirmScreen';
+import ConstellationSendScreen from './screens/ConstellationSendScreen';
 import BiometricLockScreen from './screens/BiometricLockScreen';
 import OnboardingScreen from './screens/OnboardingScreen';
 
@@ -108,7 +110,7 @@ export type TabParamList = {
 
 export type RootStackParamList = {
   // Auth screens
-  Login: undefined;
+  Login: { returnTo?: 'DevicePairingScan' } | undefined;
   Signup: undefined;
   // Main app
   Tabs: undefined;
@@ -175,22 +177,6 @@ const linking = {
 
 const Tab = createBottomTabNavigator<TabParamList>();
 const Stack = createNativeStackNavigator<RootStackParamList>();
-
-function ConstellationSendUnavailableScreen() {
-  return (
-    <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 }}>
-      <Text style={{ textAlign: 'center' }}>Constellation transfer is not available in this build.</Text>
-    </View>
-  );
-}
-
-function DevicePairingScanUnavailableScreen() {
-  return (
-    <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 }}>
-      <Text style={{ textAlign: 'center' }}>Device-pairing scan is not available in this build.</Text>
-    </View>
-  );
-}
 
 // Module-level nav ref so non-component code (deep-link handler / quick
 // action listener) can dispatch navigation without a hook.
@@ -740,12 +726,12 @@ export default function App() {
                     options={{ gestureEnabled: false }}
                   />
                   <Stack.Screen name="DevicePairing" component={DevicePairingScreen} />
-                  <Stack.Screen name="DevicePairingScan" component={DevicePairingScanUnavailableScreen} />
+                  <Stack.Screen name="DevicePairingScan" component={DevicePairingScanScreen} />
                   <Stack.Screen name="DevicePairingShow" component={DevicePairingShowScreen} />
                   <Stack.Screen name="PairingConfirm" component={PairingConfirmScreen} />
                   <Stack.Screen
                     name="ConstellationSend"
-                    component={ConstellationSendUnavailableScreen}
+                    component={ConstellationSendScreen}
                     options={{ presentation: 'modal', animation: 'slide_from_bottom' }}
                   />
                 </>
