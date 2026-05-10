@@ -1,4 +1,6 @@
 import React, { createContext, useCallback, useContext, useRef, useState } from 'react'
+import * as Device from 'expo-device'
+import * as FileSystem from 'expo-file-system'
 import * as SecureStore from 'expo-secure-store'
 import {
   computeRecoveryCheck,
@@ -19,6 +21,11 @@ const MASTER_KEY_CHECK_LABEL = 'io.beebeeb.master-key-check'
 // older devices). SecureStore uses the software Keychain which is still
 // protected by the device passcode but lacks SE hardware binding.
 const MASTER_KEY_FALLBACK_LABEL = 'io.beebeeb.master-key.fallback'
+export const SIMULATOR_MASTER_KEY_FILE = `${FileSystem.documentDirectory ?? ''}beebeeb-simulator-master-key.txt`
+
+function usesSoftwareVaultFallback(): boolean {
+  return !Device.isDevice || Device.modelName?.toLowerCase().includes('simulator') === true || __DEV__
+}
 
 function uint8ToBase64(bytes: Uint8Array): string {
   let binary = ''
@@ -41,47 +48,60 @@ function constantTimeEqual(a: Uint8Array, b: Uint8Array): boolean {
 }
 
 async function storeMasterKey(masterKey: Uint8Array): Promise<void> {
+  const encoded = uint8ToBase64(masterKey)
+  const softwareFallbackRuntime = usesSoftwareVaultFallback()
   let seStored = false
-  try {
-    await storeKeyInKeychain(masterKey, MASTER_KEY_LABEL)
-    seStored = true
-  } catch {
-    // Secure Enclave unavailable (simulator / old device) — fall through to
-    // SecureStore which uses the software Keychain protected by device passcode.
+  if (!softwareFallbackRuntime) {
+    try {
+      await storeKeyInKeychain(masterKey, MASTER_KEY_LABEL)
+      seStored = true
+    } catch {
+      // Secure Enclave unavailable — fall through to software fallback.
+    }
   }
-  if (!seStored) {
-    await SecureStore.setItemAsync(MASTER_KEY_FALLBACK_LABEL, uint8ToBase64(masterKey))
+  const useSoftwareFallback = !seStored || softwareFallbackRuntime
+  if (useSoftwareFallback) {
+    await SecureStore.setItemAsync(MASTER_KEY_FALLBACK_LABEL, encoded)
+  }
+  if (useSoftwareFallback && FileSystem.documentDirectory) {
+    await FileSystem.writeAsStringAsync(SIMULATOR_MASTER_KEY_FILE, encoded)
   }
   const check = await computeRecoveryCheck(masterKey)
   await SecureStore.setItemAsync(MASTER_KEY_CHECK_LABEL, uint8ToBase64(check))
 }
 
 async function loadVerifiedMasterKey(): Promise<Uint8Array | null> {
-  let stored: Uint8Array | null = null
-
-  // Primary: Secure Enclave-wrapped key (real devices)
-  try {
-    const seKey = await loadKeyFromKeychain(MASTER_KEY_LABEL)
-    if (seKey) stored = seKey
-  } catch {
-    // SE unavailable — try fallback below
-  }
-
-  // Fallback: SecureStore (simulator, SE failure)
-  if (!stored) {
-    const raw = await SecureStore.getItemAsync(MASTER_KEY_FALLBACK_LABEL).catch(() => null)
-    if (raw) stored = base64ToUint8(raw)
-  }
-
-  if (!stored) return null
-
   const checkB64 = await SecureStore.getItemAsync(MASTER_KEY_CHECK_LABEL).catch(() => null)
   if (!checkB64) return null
 
   const expected = base64ToUint8(checkB64)
-  const actual = await computeRecoveryCheck(stored)
-  if (!constantTimeEqual(actual, expected)) return null
-  return stored
+  const verify = async (candidate: Uint8Array | null): Promise<Uint8Array | null> => {
+    if (!candidate) return null
+    const actual = await computeRecoveryCheck(candidate)
+    return constantTimeEqual(actual, expected) ? candidate : null
+  }
+
+  // Primary: Secure Enclave-wrapped key (real devices)
+  if (!usesSoftwareVaultFallback()) {
+    try {
+      const verified = await verify(await loadKeyFromKeychain(MASTER_KEY_LABEL))
+      if (verified) return verified
+    } catch {
+      // SE unavailable — try fallback below
+    }
+  }
+
+  // Fallback: SecureStore (simulator, or SE failure on older/unavailable devices)
+  const raw = await SecureStore.getItemAsync(MASTER_KEY_FALLBACK_LABEL).catch(() => null)
+  const secureStoreFallback = await verify(raw ? base64ToUint8(raw) : null)
+  if (secureStoreFallback) return secureStoreFallback
+
+  if (usesSoftwareVaultFallback() && FileSystem.documentDirectory) {
+    const fileRaw = await FileSystem.readAsStringAsync(SIMULATOR_MASTER_KEY_FILE).catch(() => null)
+    return verify(fileRaw ? base64ToUint8(fileRaw) : null)
+  }
+
+  return null
 }
 
 interface CryptoContextValue {
@@ -145,8 +165,6 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
         masterKey = stored
       }
 
-      masterKeyRef.current = masterKey
-      setIsUnlocked(true)
       if (phrase) {
         // Persist before reporting phrase unlock as complete. The iOS
         // simulator falls back to SecureStore because Secure Enclave is not
@@ -154,6 +172,8 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
         // the recovery phrase again.
         await storeMasterKey(masterKey)
       }
+      masterKeyRef.current = masterKey
+      setIsUnlocked(true)
     } finally {
       // Mark the attempt as done regardless of outcome so screens waiting
       // on this flag can proceed (showing "Encrypted file" fallback if needed).
