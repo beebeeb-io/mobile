@@ -2,6 +2,29 @@
 
 Beebeeb for iOS and Android. React Native + Expo.
 
+## iOS builds — always build locally on macOS (free)
+
+**Never use `eas build` without `--local` when working on a macOS device.**
+EAS cloud builds cost credits. Local builds are free and just as fast on Apple Silicon.
+
+```bash
+# Build locally (free — runs on this Mac, ~10-15 min)
+eas build --platform ios --profile production --local --output ./build/beebeeb.ipa
+
+# Submit to TestFlight (always free)
+eas submit --platform ios --path ./build/beebeeb.ipa
+
+# Or combine: build + submit in one step
+eas build --platform ios --profile production --local --output ./build/beebeeb.ipa && \
+  eas submit --platform ios --path ./build/beebeeb.ipa
+```
+
+Prerequisites (must be installed):
+- `fastlane` — `brew install fastlane` ✓ already installed
+- `xcbeautify` — `brew install xcbeautify` (cleaner build logs)
+
+Exception: CI/CD environments without Xcode must use cloud builds.
+
 ## Stack
 
 React Native + Expo (managed workflow) + TypeScript. Package manager: **bun**.
