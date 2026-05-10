@@ -1284,6 +1284,7 @@ export default function FilesScreen() {
       // Hold the "Stored · Key stayed here" flash briefly before clearing.
       setTimeout(() => setUpload((cur) => (cur && cur.stage === 'done' ? null : cur)), 1800);
     } catch (err) {
+      console.error('[Upload error doc]', err instanceof Error ? err.message : String(err), err instanceof Error ? err.stack : '');
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       showToast({ type: 'error', message: `Upload failed: ${friendlyError(err)}` });
       setUpload(null);
@@ -1371,6 +1372,7 @@ export default function FilesScreen() {
         void generateAndUploadThumbnail(uploaded.id, asset.uri, asset.mimeType ?? 'image/jpeg', getFileKeyBytes);
         successCount += 1;
       } catch (err) {
+        console.error('[Upload error]', err instanceof Error ? err.message : String(err), err instanceof Error ? err.stack : '');
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
         showToast({ type: 'error', message: `${name}: ${friendlyError(err)}` });
       }
