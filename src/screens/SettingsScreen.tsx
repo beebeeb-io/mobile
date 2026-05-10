@@ -1401,6 +1401,13 @@ export default function SettingsScreen() {
               onPress={() => navigation.navigate('DevicePairing')}
               c={c}
             />
+            <RowDivider c={c} />
+            <SettingsRow
+              label="Siri & Shortcuts"
+              icon="mic-outline"
+              onPress={() => { void Linking.openSettings(); }}
+              c={c}
+            />
           </View>
           <SectionNote
             text="Manage your password on the web at app.beebeeb.io."

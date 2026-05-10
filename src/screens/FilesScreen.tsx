@@ -52,6 +52,7 @@ import { encryptedUpload, generateFileId } from '../lib/encrypted-upload';
 import { useSync } from '../lib/sync-context';
 import { useSearchIndex } from '../lib/use-search-index';
 import type { SearchIndexEntry, SearchResult } from '../lib/search-index';
+import { donateSiriShortcut } from '../lib/siri-shortcuts';
 
 // Tracks the currently open Swipeable so we can close it when another opens.
 let _openSwipeable: Swipeable | null = null;
@@ -1567,6 +1568,7 @@ export default function FilesScreen() {
       // Fire-and-forget: generate + upload a 256px thumbnail for image files.
       void generateAndUploadThumbnail(uploaded.id, asset.uri, asset.mimeType ?? null, getFileKeyBytes);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      donateSiriShortcut('upload');
       showToast({ type: 'success', message: `"${uploadFileName}" stored in ${finalLoc.city}` });
       fetchFiles(currentFolder.id, true);
       // Hold the "Stored · Key stayed here" flash briefly before clearing.
@@ -1666,6 +1668,7 @@ export default function FilesScreen() {
     if (successCount > 0) {
       setUpload({ fileName: lastName, stage: 'done', percent: 100, city: lastLoc.city, region: lastLoc.region });
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      donateSiriShortcut('upload');
       showToast({
         type: 'success',
         message: successCount === 1
@@ -1965,7 +1968,8 @@ export default function FilesScreen() {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
     setSearchActive((prev) => {
-      if (prev) setSearchQuery('');
+      if (!prev) donateSiriShortcut('search');
+      else setSearchQuery('');
       return !prev;
     });
   }, []);
