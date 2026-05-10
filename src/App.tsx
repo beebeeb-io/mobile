@@ -73,7 +73,6 @@ import TrashScreen from './screens/TrashScreen';
 import BackupGuidesScreen from './screens/BackupGuidesScreen';
 import PrivacyScreen from './screens/PrivacyScreen';
 import StorageScreen from './screens/StorageScreen';
-import RecoveryPhraseScreen from './screens/RecoveryPhraseScreen';
 import RecoveryPhraseVerifyScreen from './screens/RecoveryPhraseVerifyScreen';
 import RecoveryUnlockScreen from './screens/RecoveryUnlockScreen';
 import DevicePairingScreen from './screens/DevicePairingScreen';
@@ -640,9 +639,8 @@ export default function App() {
   }, []);
 
   // Called from SignupScreen when OPAQUE registration succeeds and the
-  // recovery-phrase flow is about to start. Prevents the onboarding welcome
-  // overlay from covering RecoveryPhraseScreen and marks phrase as pending so
-  // uploads are gated until the user verifies their words.
+  // recovery-phrase onboarding is about to start. Prevents the welcome overlay
+  // from covering the phrase flow and marks phrase verification as pending.
   const skipOnboarding = useCallback(() => {
     setOnboardingDone(true);
     setPhraseVerified(false);
@@ -733,7 +731,7 @@ export default function App() {
                   <Stack.Screen name="Storage" component={StorageScreen} options={{ headerShown: false }} />
                   <Stack.Screen
                     name="RecoveryPhrase"
-                    component={RecoveryPhraseScreen}
+                    component={OnboardingScreen}
                     options={{ gestureEnabled: false }}
                   />
                   <Stack.Screen
