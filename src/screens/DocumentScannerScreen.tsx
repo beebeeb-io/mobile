@@ -10,8 +10,6 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { CameraView, useCameraPermissions } from 'expo-camera';
-import type { CameraCapturedPicture } from 'expo-camera';
 import * as FileSystem from 'expo-file-system';
 import * as Haptics from 'expo-haptics';
 import { useNavigation, useRoute } from '@react-navigation/native';
@@ -30,7 +28,49 @@ import { fonts, radii, shadows, spacing } from '../theme';
 
 type Nav = NativeStackNavigationProp<RootStackParamList>;
 type Route = RouteProp<RootStackParamList, 'DocumentScanner'>;
-type CameraRef = InstanceType<typeof CameraView>;
+
+type CameraCapturedPicture = {
+  uri: string;
+  base64?: string;
+  width: number;
+  height: number;
+};
+
+type CameraRef = {
+  takePictureAsync(options: {
+    base64: boolean;
+    imageType: 'jpg';
+    quality: number;
+    skipProcessing: boolean;
+  }): Promise<CameraCapturedPicture>;
+};
+
+type CameraPermission = {
+  granted: boolean;
+  canAskAgain: boolean;
+} | null;
+
+type CameraModule = {
+  CameraView: React.ComponentType<{
+    ref?: React.Ref<CameraRef>;
+    style?: object;
+    facing: 'back';
+    onCameraReady: () => void;
+  }>;
+  useCameraPermissions: () => [CameraPermission, () => Promise<CameraPermission>];
+};
+
+let cachedCameraModule: CameraModule | null | undefined;
+
+function getCameraModule(): CameraModule | null {
+  if (cachedCameraModule !== undefined) return cachedCameraModule;
+  try {
+    cachedCameraModule = require('expo-camera') as CameraModule;
+  } catch {
+    cachedCameraModule = null;
+  }
+  return cachedCameraModule;
+}
 
 interface CapturePage {
   uri: string;
@@ -81,6 +121,40 @@ function scannedPdfName(): string {
 }
 
 export default function DocumentScannerScreen() {
+  const camera = getCameraModule();
+  if (!camera) return <DocumentScannerUnavailable />;
+  return <DocumentScannerCameraScreen camera={camera} />;
+}
+
+function DocumentScannerUnavailable() {
+  const navigation = useNavigation<Nav>();
+  const { colors: c } = useTheme();
+
+  return (
+    <View style={[styles.root, { backgroundColor: c.paper }]}>
+      <View style={styles.unavailableContent}>
+        <TouchableOpacity
+          onPress={() => navigation.goBack()}
+          style={[styles.iconButton, { backgroundColor: c.paper2, borderColor: c.line }]}
+          accessibilityRole="button"
+          accessibilityLabel="Close scanner"
+        >
+          <Ionicons name="close" size={20} color={c.ink2} />
+        </TouchableOpacity>
+        <View style={styles.permissionState}>
+          <Ionicons name="camera-outline" size={32} color={c.ink3} />
+          <Text style={[styles.permissionTitle, { color: c.ink }]}>Scanner unavailable</Text>
+          <Text style={[styles.permissionCopy, { color: c.ink3 }]}>
+            This build is missing the native camera module required to scan documents.
+          </Text>
+        </View>
+      </View>
+    </View>
+  );
+}
+
+function DocumentScannerCameraScreen({ camera }: { camera: CameraModule }) {
+  const { CameraView, useCameraPermissions } = camera;
   const navigation = useNavigation<Nav>();
   const route = useRoute<Route>();
   const { colors: c } = useTheme();
@@ -329,6 +403,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.lg,
     paddingTop: spacing.lg,
     paddingBottom: spacing.xl,
+    gap: spacing.lg,
+  },
+  unavailableContent: {
+    flex: 1,
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.lg,
     gap: spacing.lg,
   },
   headerRow: {
