@@ -1551,7 +1551,7 @@ export default function SettingsScreen() {
                 {!photoSessionProgress.running && !lastPhotoSession && serverPhotoStats && (
                   <View style={layout.backupNote}>
                     <Text style={{ fontSize: 12, color: c.ink3, lineHeight: 17, flex: 1 }}>
-                      {serverPhotoStats.backed_up.toLocaleString()} photo{serverPhotoStats.backed_up !== 1 ? 's' : ''} backed up
+                      {(serverPhotoStats.backed_up ?? 0).toLocaleString()} photo{serverPhotoStats.backed_up !== 1 ? 's' : ''} backed up
                       {lastSessionAt ? ` · Last: ${timeAgo(lastSessionAt)}` : ''}
                     </Text>
                   </View>
