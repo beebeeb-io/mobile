@@ -461,6 +461,8 @@ export default function SettingsScreen() {
   const [usage, setUsage] = useState<StorageUsage | null>(null);
   const [loadingUsage, setLoadingUsage] = useState(true);
   const [backingUp, setBackingUp] = useState(false);
+  const [backingUpContacts, setBackingUpContacts] = useState(false);
+  const [backingUpCalendar, setBackingUpCalendar] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   // Track which storage thresholds we've already alerted on this session, so
   // refreshing the screen doesn't re-toast the same warning every time.
@@ -921,6 +923,30 @@ export default function SettingsScreen() {
       setBackingUp(false);
     }
   }, [triggerBackupNow]);
+
+  const handleBackupContactsNow = useCallback(async () => {
+    setBackingUpContacts(true);
+    try {
+      await initializeBackup('contacts');
+      refreshBackupStats();
+    } catch (err) {
+      console.warn('[SettingsScreen] contacts backup failed:', err);
+    } finally {
+      setBackingUpContacts(false);
+    }
+  }, [refreshBackupStats]);
+
+  const handleBackupCalendarNow = useCallback(async () => {
+    setBackingUpCalendar(true);
+    try {
+      await initializeBackup('calendar');
+      refreshBackupStats();
+    } catch (err) {
+      console.warn('[SettingsScreen] calendar backup failed:', err);
+    } finally {
+      setBackingUpCalendar(false);
+    }
+  }, [refreshBackupStats]);
 
   const handleRegionChange = useCallback(async (poolName: string) => {
     const r = REGIONS.find(x => x.poolName === poolName);
@@ -1457,27 +1483,10 @@ export default function SettingsScreen() {
                 />
               </>
             )}
-            <RowDivider c={c} />
-            <ToggleRow
-              label="Back up contacts"
-              value={isContactsBackupEnabled}
-              onValueChange={handleToggleContactsBackup}
-              c={c}
-            />
-            {isContactsBackupEnabled && <BackupCategoryStatus stats={contactsStats} paused={backupPaused} c={c} />}
-            <RowDivider c={c} />
-            <ToggleRow
-              label="Back up calendar"
-              value={isCalendarBackupEnabled}
-              onValueChange={handleToggleCalendarBackup}
-              c={c}
-            />
-            {isCalendarBackupEnabled && <BackupCategoryStatus stats={calendarStats} paused={backupPaused} c={c} />}
-            {(isPhotoBackupEnabled || isContactsBackupEnabled || isCalendarBackupEnabled) && (
+            {/* ── Camera roll: "Backup now" + live progress ── */}
+            {isPhotoBackupEnabled && (
               <>
-                <RowDivider c={c} />
-
-                {/* ── JS-side live session progress ── */}
+                {/* JS-side live session progress */}
                 {photoSessionProgress.running && photoSessionProgress.total > 0 && (
                   <View style={{ paddingHorizontal: 12, paddingBottom: 10, paddingTop: 2, gap: 4 }}>
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
@@ -1508,8 +1517,7 @@ export default function SettingsScreen() {
                     </Text>
                   </View>
                 )}
-
-                {/* ── Native backup progress (fallback when JS session not running) ── */}
+                {/* Native backup progress (fallback when JS session not running) */}
                 {!photoSessionProgress.running && backupProgress.inProgress > 0 && (
                   <View style={layout.backupNote}>
                     <ActivityIndicator size="small" color={c.amber} style={{ marginRight: 8 }} />
@@ -1518,8 +1526,7 @@ export default function SettingsScreen() {
                     </Text>
                   </View>
                 )}
-
-                {/* ── End-of-session result with retry ── */}
+                {/* End-of-session result with retry */}
                 {!photoSessionProgress.running && lastPhotoSession && (
                   <View style={[layout.backupNote, { flexDirection: 'column', alignItems: 'flex-start', gap: 6 }]}>
                     <Text style={{ fontSize: 12, color: c.ink3, lineHeight: 17 }}>
@@ -1540,8 +1547,7 @@ export default function SettingsScreen() {
                     )}
                   </View>
                 )}
-
-                {/* ── Server all-time stats when idle ── */}
+                {/* Server all-time stats when idle */}
                 {!photoSessionProgress.running && !lastPhotoSession && serverPhotoStats && (
                   <View style={layout.backupNote}>
                     <Text style={{ fontSize: 12, color: c.ink3, lineHeight: 17, flex: 1 }}>
@@ -1550,15 +1556,74 @@ export default function SettingsScreen() {
                     </Text>
                   </View>
                 )}
-
                 <RowDivider c={c} />
                 <TouchableOpacity
                   style={layout.row}
                   activeOpacity={0.6}
                   onPress={handleBackupNow}
                   disabled={backingUp || photoSessionProgress.running}
+                  accessibilityLabel="Back up camera roll now"
+                  accessibilityRole="button"
                 >
                   {backingUp || photoSessionProgress.running ? (
+                    <ActivityIndicator size="small" color={c.amber} />
+                  ) : (
+                    <Text style={{ fontSize: 14, color: c.amber, fontWeight: '500' as const }}>
+                      Back up now
+                    </Text>
+                  )}
+                </TouchableOpacity>
+              </>
+            )}
+            <RowDivider c={c} />
+            <ToggleRow
+              label="Back up contacts"
+              value={isContactsBackupEnabled}
+              onValueChange={handleToggleContactsBackup}
+              c={c}
+            />
+            {isContactsBackupEnabled && <BackupCategoryStatus stats={contactsStats} paused={backupPaused} c={c} />}
+            {isContactsBackupEnabled && (
+              <>
+                <RowDivider c={c} />
+                <TouchableOpacity
+                  style={layout.row}
+                  activeOpacity={0.6}
+                  onPress={handleBackupContactsNow}
+                  disabled={backingUpContacts}
+                  accessibilityLabel="Back up contacts now"
+                  accessibilityRole="button"
+                >
+                  {backingUpContacts ? (
+                    <ActivityIndicator size="small" color={c.amber} />
+                  ) : (
+                    <Text style={{ fontSize: 14, color: c.amber, fontWeight: '500' as const }}>
+                      Back up now
+                    </Text>
+                  )}
+                </TouchableOpacity>
+              </>
+            )}
+            <RowDivider c={c} />
+            <ToggleRow
+              label="Back up calendar"
+              value={isCalendarBackupEnabled}
+              onValueChange={handleToggleCalendarBackup}
+              c={c}
+            />
+            {isCalendarBackupEnabled && <BackupCategoryStatus stats={calendarStats} paused={backupPaused} c={c} />}
+            {isCalendarBackupEnabled && (
+              <>
+                <RowDivider c={c} />
+                <TouchableOpacity
+                  style={layout.row}
+                  activeOpacity={0.6}
+                  onPress={handleBackupCalendarNow}
+                  disabled={backingUpCalendar}
+                  accessibilityLabel="Back up calendar now"
+                  accessibilityRole="button"
+                >
+                  {backingUpCalendar ? (
                     <ActivityIndicator size="small" color={c.amber} />
                   ) : (
                     <Text style={{ fontSize: 14, color: c.amber, fontWeight: '500' as const }}>
