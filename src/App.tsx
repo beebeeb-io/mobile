@@ -82,6 +82,7 @@ import PairingConfirmScreen from './screens/PairingConfirmScreen';
 import ConstellationSendScreen from './screens/ConstellationSendScreen';
 import BiometricLockScreen from './screens/BiometricLockScreen';
 import OnboardingScreen from './screens/OnboardingScreen';
+import DocumentScannerScreen from './screens/DocumentScannerScreen';
 
 import ErrorBoundary from './components/ErrorBoundary';
 import ConfirmActionPrompt from './components/ConfirmActionPrompt';
@@ -146,6 +147,8 @@ export type RootStackParamList = {
   PairingConfirm: { progress: number; nodeCount: number };
   // Constellation peer transfer — sender flow.
   ConstellationSend: { fileId: string; fileName: string };
+  DocumentScanner: { parentId?: string } | undefined;
+  TwoFactorSetup: undefined;
 };
 
 // ---------------------------------------------------------------------------
@@ -732,6 +735,11 @@ export default function App() {
                   <Stack.Screen
                     name="ConstellationSend"
                     component={ConstellationSendScreen}
+                    options={{ presentation: 'modal', animation: 'slide_from_bottom' }}
+                  />
+                  <Stack.Screen
+                    name="DocumentScanner"
+                    component={DocumentScannerScreen}
                     options={{ presentation: 'modal', animation: 'slide_from_bottom' }}
                   />
                 </>
