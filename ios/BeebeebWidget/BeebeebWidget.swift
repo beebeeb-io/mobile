@@ -35,16 +35,54 @@ struct Provider: TimelineProvider {
     }
 }
 
+private let amberColor = Color(red: 0.96, green: 0.72, blue: 0.0)
+
 struct BeebeebWidgetView: View {
     let entry: BeebeebEntry
+    @Environment(\.widgetFamily) var widgetFamily
+
+    var usedBytes: Int64 { entry.data?.storageUsed ?? 0 }
+    var quotaBytes: Int64 { entry.data?.storageTotal ?? 1 }
+    var usedFraction: Double { Double(usedBytes) / Double(max(quotaBytes, 1)) }
+
     var body: some View {
+#if os(iOS)
+        if #available(iOSApplicationExtension 16.0, *) {
+            switch widgetFamily {
+            case .accessoryCircular:
+                Gauge(value: usedFraction) {
+                    Image(systemName: "lock.fill")
+                        .foregroundColor(amberColor)
+                } currentValueLabel: {
+                    Text("\(Int(usedFraction * 100))%")
+                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                }
+                .gaugeStyle(.accessoryCircular)
+                .tint(amberColor)
+
+            case .accessoryInline:
+                Text("\(formatBytes(usedBytes)) / \(formatBytes(quotaBytes))")
+                    .font(.system(.caption2, design: .monospaced))
+
+            default:
+                homeScreenView
+            }
+        } else {
+            homeScreenView
+        }
+#else
+        homeScreenView
+#endif
+    }
+
+    var homeScreenView: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("beebeeb").font(.system(size: 11, weight: .bold)).foregroundColor(Color(red: 0.82, green: 0.63, blue: 0.12))
+            Text("beebeeb").font(.system(size: 11, weight: .bold)).foregroundColor(amberColor)
             if let d = entry.data {
                 let pct = d.storageTotal > 0 ? Double(d.storageUsed) / Double(d.storageTotal) : 0
                 Gauge(value: pct) { EmptyView() }
                     .gaugeStyle(.accessoryLinearCapacity)
-                    .tint(Color(red: 0.82, green: 0.63, blue: 0.12))
+                    .tint(amberColor)
                 Text(formatBytes(d.storageUsed) + " of " + formatBytes(d.storageTotal))
                     .font(.system(size: 10)).foregroundColor(.secondary)
             } else {
@@ -55,6 +93,7 @@ struct BeebeebWidgetView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .containerBackground(.fill, for: .widget)
     }
+
     func formatBytes(_ bytes: Int64) -> String {
         if bytes < 1_000_000_000 { return String(format: "%.0f MB", Double(bytes) / 1_000_000) }
         return String(format: "%.1f GB", Double(bytes) / 1_000_000_000)
@@ -69,6 +108,15 @@ struct BeebeebWidget: Widget {
         }
         .configurationDisplayName("Beebeeb Storage")
         .description("Shows your vault storage usage.")
-        .supportedFamilies([.systemSmall, .systemMedium])
+        .supportedFamilies(supportedWidgetFamilies)
+    }
+
+    var supportedWidgetFamilies: [WidgetFamily] {
+#if os(iOS)
+        if #available(iOSApplicationExtension 16.0, *) {
+            return [.systemSmall, .systemMedium, .accessoryCircular, .accessoryInline]
+        }
+#endif
+        return [.systemSmall, .systemMedium]
     }
 }
