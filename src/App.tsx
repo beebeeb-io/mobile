@@ -95,6 +95,7 @@ import { useToast } from './lib/toast-context';
 const ONBOARDING_KEY = 'beebeeb_onboarding_done';
 const PHRASE_VERIFIED_KEY = 'beebeeb_phrase_verified';
 const MASTER_KEY_CHECK_LABEL = 'io.beebeeb.master-key-check';
+const MASTER_KEY_FALLBACK_LABEL = 'io.beebeeb.master-key.fallback';
 
 // ---------------------------------------------------------------------------
 // Navigation types
@@ -478,6 +479,7 @@ export default function App() {
     }
     await BeebeebCrypto.deleteKeyFromKeychain().catch(() => false);
     await SecureStore.deleteItemAsync(MASTER_KEY_CHECK_LABEL).catch(() => {});
+    await SecureStore.deleteItemAsync(MASTER_KEY_FALLBACK_LABEL).catch(() => {});
     setUser(null);
   }, []);
 

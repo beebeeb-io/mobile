@@ -148,9 +148,11 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
       masterKeyRef.current = masterKey
       setIsUnlocked(true)
       if (phrase) {
-        // Persist for future launches (Face ID / passcode unlock).
-        // Fire-and-forget so a storage hiccup never surfaces as a bad phrase.
-        storeMasterKey(masterKey).catch(e => console.warn('[crypto] storeMasterKey failed:', e))
+        // Persist before reporting phrase unlock as complete. The iOS
+        // simulator falls back to SecureStore because Secure Enclave is not
+        // available; if this races with a dev reload the next launch asks for
+        // the recovery phrase again.
+        await storeMasterKey(masterKey)
       }
     } finally {
       // Mark the attempt as done regardless of outcome so screens waiting
