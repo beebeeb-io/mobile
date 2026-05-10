@@ -13,17 +13,13 @@ import { useNavigation, useRoute } from '@react-navigation/native';
 import type { NativeStackNavigationProp, NativeStackScreenProps } from '@react-navigation/native-stack';
 import { radii, spacing } from '../theme';
 import {
-  login,
   opaqueLoginStart,
   opaqueLoginFinish,
   friendlyError,
-  ApiError,
-  NativeCryptoUnavailableError,
 } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { useTheme } from '../lib/theme-context';
 import * as Haptics from 'expo-haptics';
-import * as BeebeebCrypto from '../../modules/beebeeb-crypto';
 import type { RootStackParamList } from '../App';
 
 type Nav = NativeStackNavigationProp<RootStackParamList>;
@@ -70,25 +66,11 @@ export default function LoginScreen() {
     setError(null);
     setLoading(true);
     try {
-      // Match the web app: try OPAQUE first, then fall back to legacy
-      // Argon2 login. A 401 can mean either wrong credentials or "this account
-      // is not OPAQUE-enrolled yet"; the legacy path gives older accounts the
-      // same chance to sign in as web.
-      if (BeebeebCrypto.isNativeAvailable) {
-        try {
-          const { state, serverMessage, serverState } = await opaqueLoginStart(trimmedEmail, password);
-          await opaqueLoginFinish(trimmedEmail, password, state, serverMessage, serverState);
-          // Token is stored by opaqueLoginFinish. App.tsx auth state will pick it up.
-        } catch (opaqueErr) {
-          const canFallback =
-            opaqueErr instanceof NativeCryptoUnavailableError ||
-            opaqueErr instanceof ApiError;
-          if (!canFallback) throw opaqueErr;
-          await login(trimmedEmail, password);
-        }
-      } else {
-        await login(trimmedEmail, password);
-      }
+      // OPAQUE login — no fallback to password-based auth.
+      // If OPAQUE fails the error is surfaced to the user.
+      const { state, serverMessage, serverState } = await opaqueLoginStart(trimmedEmail, password);
+      await opaqueLoginFinish(trimmedEmail, password, state, serverMessage, serverState);
+      // Token is stored by opaqueLoginFinish. App.tsx auth state will pick it up.
       // Token stored — tell App to refresh auth state
       await refreshAuth();
       if (route.params?.returnTo === 'DevicePairingScan') {

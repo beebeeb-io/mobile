@@ -21,11 +21,8 @@ import { useCrypto } from '../lib/crypto-context';
 import { useKeyboardLayoutAnimation } from '../lib/useKeyboardLayoutAnimation';
 import * as Haptics from 'expo-haptics';
 import {
-  signup,
   opaqueRegistrationStart,
   opaqueRegistrationFinish,
-  ApiError,
-  NativeCryptoUnavailableError,
   friendlyError,
 } from '../lib/api';
 import * as BeebeebCrypto from '../../modules/beebeeb-crypto';
@@ -123,32 +120,7 @@ export default function SignupScreen() {
         }
         opaqueDone = true;
       } catch (opaqueErr) {
-        // Fall back to plain /auth/signup when OPAQUE can't run:
-        //  - native crypto module not linked (Expo Go) → NativeCryptoUnavailableError
-        //  - OPAQUE endpoints not deployed → ApiError 404
-        //  - network unreachable → ApiError 0
-        const canFallback =
-          opaqueErr instanceof NativeCryptoUnavailableError ||
-          (opaqueErr instanceof ApiError && (opaqueErr.status === 404 || opaqueErr.status === 0));
-        if (canFallback) {
-          await signup(trimmedEmail, password);
-          if (opaqueErr instanceof NativeCryptoUnavailableError) {
-            await refreshAuth();
-            return;
-          }
-
-          const recovery = await BeebeebCrypto.generateRecoveryPhrase();
-          phrase = recovery.phrase.split(' ');
-          try {
-            await crypto.unlock(recovery.phrase);
-          } catch {
-            // Keychain unavailable — phrase is still shown once so the user can
-            // provision this device on the next login.
-          }
-          opaqueDone = true;
-        } else {
-          throw opaqueErr;
-        }
+        throw opaqueErr;
       }
 
       if (opaqueDone) {
