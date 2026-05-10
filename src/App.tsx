@@ -102,9 +102,10 @@ const MASTER_KEY_CHECK_LABEL = 'io.beebeeb.master-key-check';
 
 export type TabParamList = {
   // `action` lets deep links / quick actions ask Files to do something on
-  // arrival (`'upload'` opens the picker, `'search'` focuses the search bar).
+  // arrival (`'upload'` opens the picker, `'search'` focuses the search bar,
+  // `'scan'` opens document scanner, `'recent'` shows last-24h filter).
   // FilesScreen consumes & clears the param so the action only fires once.
-  Files: { action?: 'upload' | 'search' } | undefined;
+  Files: { action?: 'upload' | 'search' | 'scan' | 'recent' } | undefined;
   Shared: undefined;
   Photos: undefined;
   Settings: undefined;
@@ -578,9 +579,11 @@ export default function App() {
   useEffect(() => {
     const handleShortcutURL = (url: string | null) => {
       if (!url) return;
-      let action: 'upload' | 'search' | null = null;
+      let action: 'upload' | 'search' | 'scan' | 'recent' | null = null;
       if (url === 'beebeeb://upload') action = 'upload';
       else if (url === 'beebeeb://search') action = 'search';
+      else if (url === 'beebeeb://scan') action = 'scan';
+      else if (url === 'beebeeb://recent') action = 'recent';
       if (!action) return;
       const dispatch = () => {
         if (!navigationRef.isReady()) return;
