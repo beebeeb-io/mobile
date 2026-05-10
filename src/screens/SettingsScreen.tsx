@@ -40,6 +40,7 @@ import { useBackup } from '../lib/backup-context';
 import { useTheme, type ThemeMode } from '../lib/theme-context';
 import { useToast } from '../lib/toast-context';
 import { useNetworkStatus } from '../lib/useNetworkStatus';
+import { writeWidgetData } from '../utils/widgetData';
 import {
   getStorageUsage,
   getPreference,
@@ -514,6 +515,7 @@ export default function SettingsScreen() {
     try {
       const data = await getStorageUsage();
       setUsage(data);
+      void writeWidgetData({ storageUsed: data.used_bytes, storageTotal: data.plan_limit_bytes, recentFiles: [] });
 
       // Quota warning: toast once per session as the user crosses 75 / 90 / 100%.
       // We only step *up*; recovering below a threshold doesn't reset (a single
