@@ -1375,6 +1375,13 @@ export default function SettingsScreen() {
               </>
             )}
             <SettingsRow
+              label="Two-Factor Authentication"
+              icon="lock-closed-outline"
+              onPress={() => navigation.navigate('TwoFactorSetup')}
+              c={c}
+            />
+            <RowDivider c={c} />
+            <SettingsRow
               label="Account & Security"
               icon="shield-checkmark-outline"
               onPress={handleAccountSecurity}
@@ -1396,7 +1403,7 @@ export default function SettingsScreen() {
             />
           </View>
           <SectionNote
-            text="Manage your password and two-factor authentication on the web at app.beebeeb.io."
+            text="Manage your password on the web at app.beebeeb.io."
             c={c}
           />
         </View>

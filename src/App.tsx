@@ -83,6 +83,7 @@ import ConstellationSendScreen from './screens/ConstellationSendScreen';
 import BiometricLockScreen from './screens/BiometricLockScreen';
 import OnboardingScreen from './screens/OnboardingScreen';
 import DocumentScannerScreen from './screens/DocumentScannerScreen';
+import TwoFactorSetupScreen from './screens/TwoFactorSetupScreen';
 
 import ErrorBoundary from './components/ErrorBoundary';
 import ConfirmActionPrompt from './components/ConfirmActionPrompt';
@@ -741,6 +742,11 @@ export default function App() {
                     name="DocumentScanner"
                     component={DocumentScannerScreen}
                     options={{ presentation: 'modal', animation: 'slide_from_bottom' }}
+                  />
+                  <Stack.Screen
+                    name="TwoFactorSetup"
+                    component={TwoFactorSetupScreen}
+                    options={{ title: 'Two-Factor Authentication', headerShown: false }}
                   />
                 </>
               ) : (
