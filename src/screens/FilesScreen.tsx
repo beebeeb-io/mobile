@@ -40,7 +40,7 @@ import { useToast } from '../lib/toast-context';
 import SkeletonRow from '../components/SkeletonRow';
 import PresenceAvatars from '../components/PresenceAvatars';
 import TrustDetailsSheet from '../components/TrustDetailsSheet';
-import { ApiError, listFiles, createFolder, deleteFile, renameFile, moveFile, uploadFile, downloadFile, friendlyError, getStorageUsage, createProofOfExistence, storageLocation, trustLocation, getFolderPresence, getUploadStatus } from '../lib/api';
+import { ApiError, listFiles, createFolder, deleteFile, renameFile, moveFile, uploadFile, downloadFile, friendlyError, getStorageUsage, createProofOfExistence, storageLocation, trustLocation, getFolderPresence, getUploadStatus, getApiUrl, getToken } from '../lib/api';
 import { generateAndUploadThumbnail, fetchDecryptedThumbnailUri } from '../lib/thumbnail';
 import type { FileEntry, StorageUsage, ProofOfExistence, PresenceUser, SyncNode } from '../lib/api';
 import type { RootStackParamList, TabParamList } from '../App';
@@ -104,17 +104,11 @@ function displayName(entry: FileEntry): string {
 }
 
 function guessMimeTypeFromName(name: string): string | null {
+  const imageMimeType = imageMimeTypeFromName(name);
+  if (imageMimeType) return imageMimeType;
+
   const ext = name.toLowerCase().split('.').pop();
   switch (ext) {
-    case 'jpg':
-    case 'jpeg':
-      return 'image/jpeg';
-    case 'png':
-      return 'image/png';
-    case 'gif':
-      return 'image/gif';
-    case 'webp':
-      return 'image/webp';
     case 'svg':
       return 'image/svg+xml';
     case 'pdf':
@@ -138,6 +132,42 @@ function guessMimeTypeFromName(name: string): string | null {
     default:
       return null;
   }
+}
+
+function imageMimeTypeFromName(name: string): string | null {
+  const ext = name.toLowerCase().split('.').pop();
+  switch (ext) {
+    case 'jpg':
+    case 'jpeg':
+      return 'image/jpeg';
+    case 'png':
+      return 'image/png';
+    case 'heic':
+      return 'image/heic';
+    case 'gif':
+      return 'image/gif';
+    case 'webp':
+      return 'image/webp';
+    case 'bmp':
+      return 'image/bmp';
+    case 'tif':
+    case 'tiff':
+      return 'image/tiff';
+    default:
+      return null;
+  }
+}
+
+async function patchFileMimeType(fileId: string, mimeType: string): Promise<void> {
+  const token = await getToken();
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const res = await fetch(`${getApiUrl()}/api/v1/files/${fileId}`, {
+    method: 'PATCH',
+    headers,
+    body: JSON.stringify({ mime_type: mimeType }),
+  });
+  if (!res.ok) throw new Error('Failed to patch file mime type');
 }
 
 function toSearchIndexEntry(file: FileEntry, name: string, parent: string | null): SearchIndexEntry {
@@ -903,6 +933,7 @@ export default function FilesScreen() {
   const { isUnlocked, unlockAttempted, decryptMetadata, encryptChunk, encryptMetadata, getFileKeyBytes } = useCrypto();
   const [decryptedNames, setDecryptedNames] = useState<Record<string, string>>({});
   const [decryptedMimeTypes, setDecryptedMimeTypes] = useState<Record<string, string | null>>({});
+  const patchedMimeTypeIdsRef = useRef<Set<string>>(new Set());
 
   /** Find a non-folder file in the current folder whose decrypted name matches `filename`. */
   const findConflict = useCallback((filename: string): FileEntry | null => {
@@ -1011,6 +1042,19 @@ export default function FilesScreen() {
         }
       }),
     ).then(() => {
+      for (const file of files) {
+        if (file.is_folder || file.mime_type != null) continue;
+        const decryptedName = results[file.id];
+        if (!decryptedName) continue;
+        const imageMimeType = imageMimeTypeFromName(decryptedName);
+        if (!imageMimeType) continue;
+        mimeResults[file.id] = mimeResults[file.id] ?? imageMimeType;
+        if (patchedMimeTypeIdsRef.current.has(file.id)) continue;
+        patchedMimeTypeIdsRef.current.add(file.id);
+        void patchFileMimeType(file.id, imageMimeType).catch(() => {
+          patchedMimeTypeIdsRef.current.delete(file.id);
+        });
+      }
       setDecryptedNames({ ...results });
       setDecryptedMimeTypes({ ...mimeResults });
     });
@@ -1284,7 +1328,6 @@ export default function FilesScreen() {
       // Hold the "Stored · Key stayed here" flash briefly before clearing.
       setTimeout(() => setUpload((cur) => (cur && cur.stage === 'done' ? null : cur)), 1800);
     } catch (err) {
-      console.error('[Upload error doc]', err instanceof Error ? err.message : String(err), err instanceof Error ? err.stack : '');
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       showToast({ type: 'error', message: `Upload failed: ${friendlyError(err)}` });
       setUpload(null);
@@ -1372,7 +1415,6 @@ export default function FilesScreen() {
         void generateAndUploadThumbnail(uploaded.id, asset.uri, asset.mimeType ?? 'image/jpeg', getFileKeyBytes);
         successCount += 1;
       } catch (err) {
-        console.error('[Upload error]', err instanceof Error ? err.message : String(err), err instanceof Error ? err.stack : '');
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
         showToast({ type: 'error', message: `${name}: ${friendlyError(err)}` });
       }
