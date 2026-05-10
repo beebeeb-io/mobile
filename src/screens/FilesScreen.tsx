@@ -40,8 +40,8 @@ import { useToast } from '../lib/toast-context';
 import SkeletonRow from '../components/SkeletonRow';
 import PresenceAvatars from '../components/PresenceAvatars';
 import TrustDetailsSheet from '../components/TrustDetailsSheet';
-import { ApiError, listFiles, createFolder, deleteFile, renameFile, moveFile, uploadFile, downloadFile, friendlyError, getStorageUsage, createProofOfExistence, storageLocation, trustLocation, getFolderPresence, getUploadStatus, getToken, thumbnailUrl } from '../lib/api';
-import { generateAndUploadThumbnail } from '../lib/thumbnail';
+import { ApiError, listFiles, createFolder, deleteFile, renameFile, moveFile, uploadFile, downloadFile, friendlyError, getStorageUsage, createProofOfExistence, storageLocation, trustLocation, getFolderPresence, getUploadStatus } from '../lib/api';
+import { generateAndUploadThumbnail, fetchDecryptedThumbnailUri } from '../lib/thumbnail';
 import type { FileEntry, StorageUsage, ProofOfExistence, PresenceUser, SyncNode } from '../lib/api';
 import type { RootStackParamList, TabParamList } from '../App';
 import { useCrypto } from '../lib/crypto-context';
@@ -350,38 +350,26 @@ interface BreadcrumbEntry {
 // File icon component
 // ---------------------------------------------------------------------------
 
-// In-memory cache: fileId → local file URI for thumbnails
-const thumbCache = new Map<string, string>();
-
-function useThumbnailUri(fileId: string | undefined, hasThumbnail: boolean | undefined): string | null {
-  const [uri, setUri] = useState<string | null>(() => (fileId && thumbCache.get(fileId)) ?? null);
-  useEffect(() => {
-    if (!fileId || !hasThumbnail) return;
-    if (thumbCache.has(fileId)) { setUri(thumbCache.get(fileId)!); return; }
-    let cancelled = false;
-    (async () => {
-      try {
-        const token = await getToken();
-        if (!token || cancelled) return;
-        const dest = `${FileSystem.cacheDirectory}thumb_${fileId}.jpg`;
-        const info = await FileSystem.getInfoAsync(dest);
-        if (info.exists) { thumbCache.set(fileId, dest); if (!cancelled) setUri(dest); return; }
-        const res = await FileSystem.downloadAsync(thumbnailUrl(fileId), dest, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        if (res.status === 200 && !cancelled) { thumbCache.set(fileId, res.uri); setUri(res.uri); }
-      } catch { /* thumbnail failure is non-fatal */ }
-    })();
-    return () => { cancelled = true; };
-  }, [fileId, hasThumbnail]);
-  return uri;
-}
-
 const FileIcon = React.memo(function FileIcon({
   category, size = 32, fileId, hasThumbnail,
 }: { category: string; size?: number; fileId?: string; hasThumbnail?: boolean }) {
   const { colors: c } = useTheme();
-  const thumbUri = useThumbnailUri(fileId, hasThumbnail);
+  const { getFileKeyBytes } = useCrypto();
+  const [thumbUri, setThumbUri] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!fileId || !hasThumbnail) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const fileKey = await getFileKeyBytes(fileId);
+        if (!fileKey || cancelled) return;
+        const uri = await fetchDecryptedThumbnailUri(fileId, fileKey);
+        if (uri && !cancelled) setThumbUri(uri);
+      } catch { /* non-fatal */ }
+    })();
+    return () => { cancelled = true; };
+  }, [fileId, hasThumbnail, getFileKeyBytes]);
   const CATEGORY_COLORS: Record<string, string> = {
     folder: c.amberDeep,
     image: c.amber,
@@ -912,7 +900,7 @@ export default function FilesScreen() {
   const [presence, setPresence] = useState<PresenceUser[]>([]);
 
   // Crypto
-  const { isUnlocked, unlockAttempted, decryptMetadata, encryptChunk, encryptMetadata } = useCrypto();
+  const { isUnlocked, unlockAttempted, decryptMetadata, encryptChunk, encryptMetadata, getFileKeyBytes } = useCrypto();
   const [decryptedNames, setDecryptedNames] = useState<Record<string, string>>({});
   const [decryptedMimeTypes, setDecryptedMimeTypes] = useState<Record<string, string | null>>({});
 
@@ -1289,7 +1277,7 @@ export default function FilesScreen() {
       // across the whole vault from the very next keystroke.
       indexFile(uploaded.id, toSearchIndexEntry(uploaded, uploadFileName, currentFolder.id));
       // Fire-and-forget: generate + upload a 256px thumbnail for image files.
-      void generateAndUploadThumbnail(uploaded.id, asset.uri, asset.mimeType ?? null);
+      void generateAndUploadThumbnail(uploaded.id, asset.uri, asset.mimeType ?? null, getFileKeyBytes);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       showToast({ type: 'success', message: `"${uploadFileName}" stored in ${finalLoc.city}` });
       fetchFiles(currentFolder.id, true);
@@ -1380,7 +1368,7 @@ export default function FilesScreen() {
         setFiles((prev) => [uploaded, ...prev]);
         indexFile(uploaded.id, toSearchIndexEntry(uploaded, name, currentFolder.id));
         // Fire-and-forget: image picker only returns images, so always thumbnail.
-        void generateAndUploadThumbnail(uploaded.id, asset.uri, asset.mimeType ?? 'image/jpeg');
+        void generateAndUploadThumbnail(uploaded.id, asset.uri, asset.mimeType ?? 'image/jpeg', getFileKeyBytes);
         successCount += 1;
       } catch (err) {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
