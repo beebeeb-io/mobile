@@ -22,7 +22,7 @@ import { Swipeable } from 'react-native-gesture-handler';
 import { Ionicons } from '@expo/vector-icons';
 import { Icon } from '../components/Icon';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useNavigation, useRoute } from '@react-navigation/native';
+import { useFocusEffect, useNavigation, useRoute } from '@react-navigation/native';
 import type { RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useBottomTabBarHeight } from '@react-navigation/bottom-tabs';
@@ -1366,24 +1366,26 @@ export default function FilesScreen() {
   // arrive before the master key is loaded from the Secure Enclave.
   // BiometricGuard triggers the auto-unlock on startup; unlockAttempted
   // becomes true once it completes (success or failure).
-  useEffect(() => {
-    if (!unlockAttempted) {
-      // Keep the skeleton visible while the keychain lookup is in flight
-      setLoading(true);
-      return;
-    }
+  useFocusEffect(
+    useCallback(() => {
+      if (!unlockAttempted) {
+        // Keep the skeleton visible while the keychain lookup is in flight
+        setLoading(true);
+        return;
+      }
 
-    if (sync.ready) {
-      const nodes = sync.children(currentFolder.id);
-      setFiles(nodes.filter((n) => !n.is_trashed).map(syncNodeToFileEntry));
-      setLoading(false);
-      setError(null);
-      return;
-    }
-    fetchFiles(currentFolder.id);
-    // sync.treeVersion bumps on every op — re-derive without re-fetching.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentFolder.id, fetchFiles, unlockAttempted, sync.ready, sync.treeVersion]);
+      if (sync.ready) {
+        const nodes = sync.children(currentFolder.id);
+        setFiles(nodes.filter((n) => !n.is_trashed).map(syncNodeToFileEntry));
+        setLoading(false);
+        setError(null);
+        return;
+      }
+      fetchFiles(currentFolder.id);
+      // sync.treeVersion bumps on every op — re-derive without re-fetching.
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [currentFolder.id, fetchFiles, unlockAttempted, sync.ready, sync.treeVersion])
+  );
 
   // Load presence for the current folder. The endpoint silently returns []
   // when the folder isn't shared or the API doesn't exist yet.
