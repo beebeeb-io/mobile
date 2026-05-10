@@ -164,7 +164,7 @@ export async function encryptedUpload(opts: EncryptedUploadOptions): Promise<Fil
     nameEncrypted: nameEncryptedForFileId,
     v2InitNameEncrypted,
     parentId,
-    mimeType: undefined,
+    mimeType: mimeType ?? undefined,
     plaintextSizeBytes: plaintextSize,
     resumeKey,
     onProgress,
