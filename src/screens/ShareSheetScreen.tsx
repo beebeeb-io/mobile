@@ -66,6 +66,18 @@ function toBase64url(bytes: Uint8Array): string {
   return toBase64(bytes).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
+function secureRandomBytes(length: number): Uint8Array {
+  const bytes = new Uint8Array(length);
+  const cryptoApi = (globalThis as {
+    crypto?: { getRandomValues?: (array: Uint8Array) => Uint8Array };
+  }).crypto;
+  if (!cryptoApi?.getRandomValues) {
+    throw new Error('Secure random generator unavailable on this device.');
+  }
+  cryptoApi.getRandomValues(bytes);
+  return bytes;
+}
+
 /**
  * Wrap a file key under a client-generated share key (AES-256-GCM via WASM).
  * Output format: nonce(12) || ciphertext(48) = 60 bytes.
@@ -206,8 +218,7 @@ export default function ShareSheetScreen() {
         const fileKey = await getFileKeyBytes(fileId);
 
         // 2. Generate client key K_c (stays in device + URL fragment only)
-        const clientKey = new Uint8Array(32);
-        crypto.getRandomValues(clientKey);
+        const clientKey = secureRandomBytes(32);
 
         // 3. Wrap fileKey under K_c using AES-256-GCM (WASM encryptChunk)
         const wrapped = await wrapFileKeyForShare(clientKey, fileKey);
