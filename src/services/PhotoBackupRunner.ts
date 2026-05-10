@@ -15,6 +15,7 @@
  */
 
 import NetInfo from '@react-native-community/netinfo';
+import * as SecureStore from 'expo-secure-store';
 
 // ─── MediaLibrary lazy import ─────────────────────────────────────────────────
 
@@ -136,15 +137,43 @@ function computeAdaptiveLimit(throughputBps: number): number {
   return LIMIT_SLOW;
 }
 
+const PHOTOS_FOLDER_ID_KEY = 'beebeeb_photos_folder_id';
 let cachedPhotosFolderId: string | null = null;
 
-async function ensurePhotosFolder(): Promise<string> {
+/** Encode EncryptedData to the JSON wire format the server stores and web decodes. */
+function encryptedDataToJson(enc: EncryptedData): string {
+  function uint8ToBase64(bytes: Uint8Array): string {
+    let s = '';
+    for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+    return btoa(s);
+  }
+  return JSON.stringify({
+    nonce: uint8ToBase64(enc.nonce),
+    ciphertext: uint8ToBase64(enc.ciphertext),
+  });
+}
+
+async function ensurePhotosFolder(
+  encryptMetadataFn: (fileId: string, metadata: string) => Promise<EncryptedData>,
+): Promise<string> {
+  // 1. In-memory cache (fast path within a session)
   if (cachedPhotosFolderId) return cachedPhotosFolderId;
-  const files = await listFiles(undefined);
-  const existing = files.find((f) => f.is_folder && f.name_encrypted === PHOTOS_FOLDER_NAME);
-  const id = existing ? existing.id : (await createFolder(PHOTOS_FOLDER_NAME, undefined)).id;
-  cachedPhotosFolderId = id;
-  return id;
+  // 2. Persistent cache across sessions (SecureStore)
+  const stored = await SecureStore.getItemAsync(PHOTOS_FOLDER_ID_KEY).catch(() => null);
+  if (stored) {
+    cachedPhotosFolderId = stored;
+    return stored;
+  }
+  // 3. Create with a properly-encrypted name in JSON {nonce, ciphertext} format.
+  // The client-generated folderId is passed to the server so the server record
+  // is addressable by this ID from the first request.
+  const folderId = generateFileId();
+  const enc = await encryptMetadataFn(folderId, PHOTOS_FOLDER_NAME);
+  const nameEncrypted = encryptedDataToJson(enc);
+  const folder = await createFolder(nameEncrypted, undefined, folderId);
+  cachedPhotosFolderId = folder.id;
+  await SecureStore.setItemAsync(PHOTOS_FOLDER_ID_KEY, folder.id).catch(() => {});
+  return folder.id;
 }
 
 function formatEtaSeconds(secs: number): string {
@@ -242,7 +271,7 @@ export async function runPhotoBackupSession(
   if (signal?.aborted) return result;
   let photosFolderId: string | undefined;
   try {
-    photosFolderId = await ensurePhotosFolder();
+    photosFolderId = await ensurePhotosFolder(encryptMetadataFn);
   } catch (err) {
     console.warn('[PhotoBackupRunner] could not ensure Photos folder:', err);
   }
