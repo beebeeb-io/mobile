@@ -132,10 +132,23 @@ export default function SignupScreen() {
           (opaqueErr instanceof ApiError && (opaqueErr.status === 404 || opaqueErr.status === 0));
         if (canFallback) {
           await signup(trimmedEmail, password);
-          await refreshAuth();
-          return;
+          if (opaqueErr instanceof NativeCryptoUnavailableError) {
+            await refreshAuth();
+            return;
+          }
+
+          const recovery = await BeebeebCrypto.generateRecoveryPhrase();
+          phrase = recovery.phrase.split(' ');
+          try {
+            await crypto.unlock(recovery.phrase);
+          } catch {
+            // Keychain unavailable — phrase is still shown once so the user can
+            // provision this device on the next login.
+          }
+          opaqueDone = true;
+        } else {
+          throw opaqueErr;
         }
-        throw opaqueErr;
       }
 
       if (opaqueDone) {
@@ -144,7 +157,9 @@ export default function SignupScreen() {
         skipOnboarding();
         // Refresh auth state so the authenticated stack is available before navigating
         await refreshAuth();
-        navigation.navigate('RecoveryPhrase', { phrase: phrase.length > 0 ? phrase : undefined });
+        setTimeout(() => {
+          navigation.navigate('RecoveryPhrase', { phrase: phrase.length > 0 ? phrase : undefined });
+        }, 0);
       }
     } catch (err) {
       setError(friendlyError(err));

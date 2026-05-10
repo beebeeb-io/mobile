@@ -82,6 +82,7 @@ import PairingConfirmScreen from './screens/PairingConfirmScreen';
 import ConstellationSendScreen from './screens/ConstellationSendScreen';
 import BiometricLockScreen from './screens/BiometricLockScreen';
 import OnboardingScreen from './screens/OnboardingScreen';
+import DocumentScannerScreen from './screens/DocumentScannerScreen';
 import TwoFactorSetupScreen from './screens/TwoFactorSetupScreen';
 
 import ErrorBoundary from './components/ErrorBoundary';
@@ -264,11 +265,6 @@ function TabIcon({ name, focused, color }: { name: string; focused: boolean; col
       style={{ opacity: focused ? 1 : 0.7 }}
     />
   );
-}
-
-function DocumentScannerRoute() {
-  const Screen = require('./screens/DocumentScannerScreen').default as React.ComponentType;
-  return <Screen />;
 }
 
 // ---------------------------------------------------------------------------
@@ -747,7 +743,7 @@ export default function App() {
                   />
                   <Stack.Screen
                     name="DocumentScanner"
-                    component={DocumentScannerRoute}
+                    component={DocumentScannerScreen}
                     options={{ presentation: 'modal', animation: 'slide_from_bottom' }}
                   />
                   <Stack.Screen

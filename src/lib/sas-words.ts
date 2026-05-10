@@ -48,8 +48,6 @@ export const SAS_WORDS: readonly string[] = [
   'shore', 'silk', 'silver', 'sky', 'slate', 'snow', 'sonic', 'spark',
   'spire', 'spruce', 'stag', 'star', 'stone', 'storm', 'summit', 'sunset',
   'swallow', 'swan', 'tide', 'tiger', 'topaz', 'torch', 'tower', 'trail',
-  'tulip', 'tundra', 'valley', 'velvet', 'vine', 'violet', 'vista', 'volcano',
-  'walnut', 'water', 'wave', 'whale', 'wheat', 'wild', 'willow', 'wolf',
 ];
 
 if (SAS_WORDS.length !== 256) {
