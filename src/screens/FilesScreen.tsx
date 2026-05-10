@@ -28,7 +28,9 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useBottomTabBarHeight } from '@react-navigation/bottom-tabs';
 import * as Haptics from 'expo-haptics';
 import * as SecureStore from 'expo-secure-store';
+import * as LocalAuthentication from 'expo-local-authentication';
 import * as DocumentPicker from 'expo-document-picker';
+import { isFileLocked, lockFile, unlockFile } from '../lib/file-locks';
 import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
@@ -925,6 +927,10 @@ export default function FilesScreen() {
   // creates proofs. The badge shows for files in this map.
   const [proofs, setProofs] = useState<Record<string, ProofOfExistence>>({});
 
+  // Per-file Face ID locks — set of file/folder IDs that require an extra
+  // biometric confirmation before opening. Persisted in SecureStore via file-locks.ts.
+  const [lockedFileIds, setLockedFileIds] = useState<Set<string>>(new Set());
+
   // Presence — collaborators currently viewing the folder we're inside.
   // Empty for the root view; only populated when navigated into a shared folder.
   const [presence, setPresence] = useState<PresenceUser[]>([]);
@@ -1435,29 +1441,43 @@ export default function FilesScreen() {
     }
   }, [currentFolder.id, fetchFiles, phraseVerified, showToast, findConflict, folderFileNames, encryptChunk, encryptMetadata, indexFile]);
 
+  const openDocumentScanner = useCallback(() => {
+    if (!phraseVerified) {
+      Alert.alert(
+        'Save your recovery phrase first',
+        'Verify your recovery phrase before scanning documents. Go to Settings → Security to complete verification.',
+        [{ text: 'OK' }],
+      );
+      return;
+    }
+    navigation.navigate('DocumentScanner', { parentId: currentFolder.id ?? undefined });
+  }, [currentFolder.id, navigation, phraseVerified]);
+
   const handleFabPress = useCallback(() => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     if (Platform.OS === 'ios') {
       ActionSheetIOS.showActionSheetWithOptions(
         {
-          options: ['Upload file', 'Upload photo', 'New folder', 'Cancel'],
-          cancelButtonIndex: 3,
+          options: ['Upload file', 'Upload photo', 'Scan document', 'New folder', 'Cancel'],
+          cancelButtonIndex: 4,
         },
         (index) => {
           if (index === 0) pickAndUploadFile();
           else if (index === 1) pickAndUploadPhotos();
-          else if (index === 2) showNewFolderPrompt();
+          else if (index === 2) openDocumentScanner();
+          else if (index === 3) showNewFolderPrompt();
         },
       );
     } else {
       Alert.alert('Add to Drive', undefined, [
         { text: 'Upload file', onPress: pickAndUploadFile },
         { text: 'Upload photo', onPress: pickAndUploadPhotos },
+        { text: 'Scan document', onPress: openDocumentScanner },
         { text: 'New folder', onPress: showNewFolderPrompt },
         { text: 'Cancel', style: 'cancel' },
       ]);
     }
-  }, [pickAndUploadFile, pickAndUploadPhotos]);
+  }, [openDocumentScanner, pickAndUploadFile, pickAndUploadPhotos]);
 
   // Quick action / deep-link landing: route.params.action is set by the App
   // shortcut handler (beebeeb://upload, beebeeb://search). Trigger the right
