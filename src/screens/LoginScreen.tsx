@@ -9,8 +9,8 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { useNavigation } from '@react-navigation/native';
-import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import { useNavigation, useRoute } from '@react-navigation/native';
+import type { NativeStackNavigationProp, NativeStackScreenProps } from '@react-navigation/native-stack';
 import { radii, spacing } from '../theme';
 import {
   login,
@@ -27,9 +27,11 @@ import * as BeebeebCrypto from '../../modules/beebeeb-crypto';
 import type { RootStackParamList } from '../App';
 
 type Nav = NativeStackNavigationProp<RootStackParamList>;
+type RouteProps = NativeStackScreenProps<RootStackParamList, 'Login'>['route'];
 
 export default function LoginScreen() {
   const navigation = useNavigation<Nav>();
+  const route = useRoute<RouteProps>();
   const { refreshAuth } = useAuth();
   const { colors: c, resolved } = useTheme();
   const passwordRef = useRef<TextInput>(null);
@@ -89,6 +91,9 @@ export default function LoginScreen() {
       }
       // Token stored — tell App to refresh auth state
       await refreshAuth();
+      if (route.params?.returnTo === 'DevicePairingScan') {
+        setTimeout(() => navigation.navigate('DevicePairingScan'), 0);
+      }
     } catch (err) {
       setError(friendlyError(err));
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
