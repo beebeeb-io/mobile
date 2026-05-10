@@ -416,7 +416,7 @@ export default function TrashScreen() {
           refreshControl={
             <RefreshControl
               refreshing={refreshing}
-              onRefresh={() => fetchTrash(true)}
+              onRefresh={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); fetchTrash(true); }}
               tintColor={c.amber}
               colors={[c.amber]}
             />
