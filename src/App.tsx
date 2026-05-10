@@ -4,6 +4,7 @@ import { registerRootComponent } from 'expo';
 import { StatusBar } from 'expo-status-bar';
 import { ActivityIndicator, AppState, type AppStateStatus, Keyboard, Linking, StyleSheet, View } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
+import * as FileSystem from 'expo-file-system';
 import { NavigationContainer, createNavigationContainerRef } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
@@ -26,7 +27,7 @@ import {
 } from './lib/api';
 import type { User } from './lib/api';
 import { AuthContext } from './lib/auth';
-import { CryptoProvider, useCrypto } from './lib/crypto-context';
+import { CryptoProvider, SIMULATOR_MASTER_KEY_FILE, useCrypto } from './lib/crypto-context';
 import { markUnlocked, wasRecentlyUnlocked } from './lib/lock-state';
 import { SyncProvider } from './lib/sync-context';
 import { useNetworkStatus } from './lib/useNetworkStatus';
@@ -480,6 +481,7 @@ export default function App() {
     await BeebeebCrypto.deleteKeyFromKeychain().catch(() => false);
     await SecureStore.deleteItemAsync(MASTER_KEY_CHECK_LABEL).catch(() => {});
     await SecureStore.deleteItemAsync(MASTER_KEY_FALLBACK_LABEL).catch(() => {});
+    await FileSystem.deleteAsync(SIMULATOR_MASTER_KEY_FILE, { idempotent: true }).catch(() => {});
     setUser(null);
   }, []);
 

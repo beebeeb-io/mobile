@@ -79,7 +79,7 @@ export async function recoverFromPhrase(phrase: string): Promise<MasterKeyResult
  * mnemonic without learning the master key or phrase.
  */
 export async function computeRecoveryCheck(masterKey: Uint8Array): Promise<Uint8Array> {
-  return BeebeebCryptoModule.computeRecoveryCheck(masterKey)
+  return coerceBytes(await BeebeebCryptoModule.computeRecoveryCheck(masterKey))
 }
 
 /**
@@ -87,8 +87,8 @@ export async function computeRecoveryCheck(masterKey: Uint8Array): Promise<Uint8
  * Used by the server for sharing identity metadata.
  */
 export async function deriveX25519PublicKey(masterKey: Uint8Array): Promise<Uint8Array> {
-  const privateKey = await BeebeebCryptoModule.deriveX25519Private(masterKey)
-  return BeebeebCryptoModule.deriveX25519Public(privateKey)
+  const privateKey = coerceBytes(await BeebeebCryptoModule.deriveX25519Private(masterKey))
+  return coerceBytes(await BeebeebCryptoModule.deriveX25519Public(privateKey))
 }
 
 // ─── File encryption ─────────────────────────────────────────────────────────
@@ -98,7 +98,11 @@ export async function deriveX25519PublicKey(masterKey: Uint8Array): Promise<Uint
  * Returns the nonce and ciphertext; both must be stored alongside the file.
  */
 export async function encryptChunk(key: Uint8Array, plaintext: Uint8Array): Promise<EncryptedData> {
-  return BeebeebCryptoModule.encryptChunk(key, plaintext)
+  const result = await BeebeebCryptoModule.encryptChunk(key, plaintext)
+  return {
+    nonce: coerceBytes(result.nonce),
+    ciphertext: coerceBytes(result.ciphertext),
+  }
 }
 
 /**
@@ -109,7 +113,7 @@ export async function decryptChunk(
   nonce: Uint8Array,
   ciphertext: Uint8Array,
 ): Promise<Uint8Array> {
-  return BeebeebCryptoModule.decryptChunk(key, nonce, ciphertext)
+  return coerceBytes(await BeebeebCryptoModule.decryptChunk(key, nonce, ciphertext))
 }
 
 // ─── Metadata encryption ─────────────────────────────────────────────────────
@@ -118,7 +122,11 @@ export async function decryptChunk(
  * Encrypt file metadata (name, size, MIME type) as a JSON string.
  */
 export async function encryptMetadata(key: Uint8Array, metadata: string): Promise<EncryptedData> {
-  return BeebeebCryptoModule.encryptMetadata(key, metadata)
+  const result = await BeebeebCryptoModule.encryptMetadata(key, metadata)
+  return {
+    nonce: coerceBytes(result.nonce),
+    ciphertext: coerceBytes(result.ciphertext),
+  }
 }
 
 /**
@@ -209,7 +217,7 @@ export async function opaqueLoginFinish(
  * Uses HKDF-SHA256. The same master key + fileId always yields the same file key.
  */
 export async function deriveFileKey(masterKey: Uint8Array, fileId: string): Promise<Uint8Array> {
-  return BeebeebCryptoModule.deriveFileKey(masterKey, fileId)
+  return coerceBytes(await BeebeebCryptoModule.deriveFileKey(masterKey, fileId))
 }
 
 // ─── Keychain ────────────────────────────────────────────────────────────────
@@ -226,7 +234,8 @@ export async function storeKeyInKeychain(key: Uint8Array, label: string): Promis
  * Triggers a biometric or passcode prompt if the SE access control requires it.
  */
 export async function loadKeyFromKeychain(label: string): Promise<Uint8Array | null> {
-  return BeebeebCryptoModule.loadKeyFromKeychain(label)
+  const key = await BeebeebCryptoModule.loadKeyFromKeychain(label)
+  return key ? coerceBytes(key) : null
 }
 
 /**
