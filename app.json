@@ -53,19 +53,19 @@
             }
           },
           {
-            "UIApplicationShortcutItemType": "io.beebeeb.search",
-            "UIApplicationShortcutItemTitle": "Search Files",
-            "UIApplicationShortcutItemIconType": "UIApplicationShortcutIconTypeSearch",
+            "UIApplicationShortcutItemType": "io.beebeeb.scan",
+            "UIApplicationShortcutItemTitle": "Scan Document",
+            "UIApplicationShortcutItemIconType": "UIApplicationShortcutIconTypeCompose",
             "UIApplicationShortcutItemUserInfo": {
-              "url": "beebeeb://search"
+              "url": "beebeeb://scan"
             }
           },
           {
-            "UIApplicationShortcutItemType": "io.beebeeb.photos",
-            "UIApplicationShortcutItemTitle": "Photos",
-            "UIApplicationShortcutItemIconType": "UIApplicationShortcutIconTypeCapturePhoto",
+            "UIApplicationShortcutItemType": "io.beebeeb.recent",
+            "UIApplicationShortcutItemTitle": "Recent Files",
+            "UIApplicationShortcutItemIconType": "UIApplicationShortcutIconTypeTime",
             "UIApplicationShortcutItemUserInfo": {
-              "url": "beebeeb://photos"
+              "url": "beebeeb://recent"
             }
           }
         ]

@@ -893,6 +893,202 @@ function applySortOrder(
 }
 
 // ---------------------------------------------------------------------------
+// ProofDetailModal — full-screen modal showing a proof of existence
+// ---------------------------------------------------------------------------
+
+interface ProofDetailModalProps {
+  proof: ProofOfExistence;
+  fileName: string;
+  onClose: () => void;
+  showToast: (opts: { type: 'success' | 'error'; message: string }) => void;
+}
+
+function ProofDetailModal({ proof, fileName, onClose, showToast }: ProofDetailModalProps) {
+  const { colors: c } = useTheme();
+  const insets = useSafeAreaInsets();
+  const [sharing, setSharing] = useState(false);
+
+  // ISO timestamp + formatted local time
+  const isoTime = proof.timestamp;
+  const localTime = (() => {
+    try {
+      return new Date(isoTime).toLocaleString(undefined, {
+        year: 'numeric', month: 'long', day: 'numeric',
+        hour: '2-digit', minute: '2-digit', second: '2-digit',
+        timeZoneName: 'short',
+      });
+    } catch {
+      return isoTime;
+    }
+  })();
+
+  const proofText = [
+    'Beebeeb Proof of Existence',
+    '',
+    `File: ${fileName}`,
+    `SHA-256: ${proof.hash}`,
+    `Timestamp (ISO 8601): ${isoTime}`,
+    `Timestamp (local): ${localTime}`,
+    `Proof ID: ${proof.proofId}`,
+    '',
+    'Proof stored on Beebeeb servers. This timestamp proves the file existed at this moment.',
+    `Verify: https://beebeeb.io/verify/${proof.proofId}`,
+  ].join('\n');
+
+  const handleShare = async () => {
+    setSharing(true);
+    try {
+      if (await Sharing.isAvailableAsync()) {
+        // Write to a temp .txt file so the share sheet treats it as a document
+        const tmpPath = `${FileSystem.cacheDirectory}beebeeb-proof-${proof.proofId.slice(0, 8)}.txt`;
+        await FileSystem.writeAsStringAsync(tmpPath, proofText, { encoding: FileSystem.EncodingType.UTF8 });
+        await Sharing.shareAsync(tmpPath, {
+          mimeType: 'text/plain',
+          dialogTitle: 'Share proof',
+          UTI: 'public.plain-text',
+        });
+        FileSystem.deleteAsync(tmpPath, { idempotent: true }).catch(() => {});
+      } else {
+        // Fallback: copy to clipboard
+        await Clipboard.setStringAsync(proofText);
+        showToast({ type: 'success', message: 'Proof copied to clipboard' });
+      }
+    } catch {
+      showToast({ type: 'error', message: 'Could not share proof' });
+    } finally {
+      setSharing(false);
+    }
+  };
+
+  return (
+    <View style={[proofStyles.root, { backgroundColor: c.paper }]}>
+      {/* Header */}
+      <View style={[proofStyles.header, { borderBottomColor: c.line, paddingTop: insets.top + 16 }]}>
+        <View style={{ flex: 1 }}>
+          <Text style={[proofStyles.title, { color: c.ink }]}>Proof of existence</Text>
+          <Text style={[proofStyles.subtitle, { color: c.ink3 }]} numberOfLines={1}>{fileName}</Text>
+        </View>
+        <TouchableOpacity onPress={onClose} accessibilityLabel="Close" style={proofStyles.closeBtn}>
+          <Ionicons name="close" size={22} color={c.ink2} />
+        </TouchableOpacity>
+      </View>
+
+      <ScrollView
+        style={proofStyles.scroll}
+        contentContainerStyle={[proofStyles.scrollContent, { paddingBottom: insets.bottom + 120 }]}
+      >
+        {/* SHA-256 hash */}
+        <View style={[proofStyles.field, { borderColor: c.line, backgroundColor: c.paper2 }]}>
+          <Text style={[proofStyles.fieldLabel, { color: c.ink3 }]}>SHA-256 hash</Text>
+          <Text style={[proofStyles.hashText, { color: c.ink, borderColor: c.line }]} selectable>
+            {proof.hash}
+          </Text>
+        </View>
+
+        {/* Timestamps */}
+        <View style={[proofStyles.field, { borderColor: c.line, backgroundColor: c.paper2 }]}>
+          <Text style={[proofStyles.fieldLabel, { color: c.ink3 }]}>Timestamp</Text>
+          <Text style={[proofStyles.monoText, { color: c.ink }]} selectable>{isoTime}</Text>
+          <Text style={[proofStyles.localTime, { color: c.ink2 }]}>{localTime}</Text>
+        </View>
+
+        {/* Proof ID */}
+        <View style={[proofStyles.field, { borderColor: c.line, backgroundColor: c.paper2 }]}>
+          <Text style={[proofStyles.fieldLabel, { color: c.ink3 }]}>Proof ID</Text>
+          <Text style={[proofStyles.monoText, { color: c.ink }]} selectable>{proof.proofId}</Text>
+        </View>
+
+        {/* Explanation */}
+        <View style={[proofStyles.notice, { borderColor: c.amberDeep, backgroundColor: c.amberBg }]}>
+          <Ionicons name="shield-checkmark-outline" size={16} color={c.amberDeep} />
+          <Text style={[proofStyles.noticeText, { color: c.ink2 }]}>
+            Proof stored on Beebeeb servers. This timestamp proves the file existed at this moment.
+          </Text>
+        </View>
+      </ScrollView>
+
+      {/* Footer with Share button */}
+      <View style={[proofStyles.footer, { borderTopColor: c.line, paddingBottom: insets.bottom || 16, backgroundColor: c.paper }]}>
+        <TouchableOpacity
+          style={[proofStyles.shareBtn, { backgroundColor: c.amber, opacity: sharing ? 0.6 : 1 }]}
+          onPress={() => void handleShare()}
+          disabled={sharing}
+          accessibilityRole="button"
+          accessibilityLabel="Share proof"
+        >
+          {sharing ? (
+            <ActivityIndicator color={c.ink} size="small" />
+          ) : (
+            <Ionicons name="share-outline" size={16} color={c.ink} />
+          )}
+          <Text style={[proofStyles.shareBtnText, { color: c.ink }]}>
+            {sharing ? 'Preparing…' : 'Share proof'}
+          </Text>
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+}
+
+const proofStyles = StyleSheet.create({
+  root: { flex: 1 },
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: spacing.lg,
+    paddingBottom: spacing.md,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    gap: 8,
+  },
+  title: { fontSize: 20, fontWeight: '700' },
+  subtitle: { fontSize: 12, marginTop: 2 },
+  closeBtn: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
+  scroll: { flex: 1 },
+  scrollContent: { padding: spacing.lg, gap: spacing.md },
+  field: {
+    borderWidth: 1,
+    borderRadius: radii.md,
+    padding: spacing.md,
+    gap: 6,
+  },
+  fieldLabel: { fontSize: 11, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.5 },
+  hashText: {
+    fontFamily: fonts.mono,
+    fontSize: 10,
+    lineHeight: 15,
+    padding: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: radii.sm,
+    marginTop: 2,
+  },
+  monoText: { fontFamily: fonts.mono, fontSize: 12, lineHeight: 17 },
+  localTime: { fontSize: 12, lineHeight: 17, marginTop: 2 },
+  notice: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+    borderWidth: 1,
+    borderRadius: radii.md,
+    padding: spacing.md,
+  },
+  noticeText: { flex: 1, fontSize: 13, lineHeight: 18 },
+  footer: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.md,
+  },
+  shareBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 14,
+    borderRadius: radii.md,
+    gap: 8,
+  },
+  shareBtnText: { fontSize: 15, fontWeight: '600' },
+});
+
+// ---------------------------------------------------------------------------
 // Screen
 // ---------------------------------------------------------------------------
 
@@ -946,6 +1142,13 @@ export default function FilesScreen() {
   // Proof of existence — fileId → proof. In-memory only; populated as the user
   // creates proofs. The badge shows for files in this map.
   const [proofs, setProofs] = useState<Record<string, ProofOfExistence>>({});
+
+  // Proof modal — null when closed, populated when showing a created proof.
+  const [proofModal, setProofModal] = useState<{ proof: ProofOfExistence; name: string } | null>(null);
+
+  // Recent filter — true when the "Recent Files" quick action is active.
+  // Filters the file list to files modified in the last 24 hours.
+  const [recentFilterActive, setRecentFilterActive] = useState(false);
 
   // Per-file Face ID locks — set of file/folder IDs that require an extra
   // biometric confirmation before opening. Persisted in SecureStore via file-locks.ts.
@@ -1515,8 +1718,9 @@ export default function FilesScreen() {
   }, [openDocumentScanner, pickAndUploadFile, pickAndUploadPhotos]);
 
   // Quick action / deep-link landing: route.params.action is set by the App
-  // shortcut handler (beebeeb://upload, beebeeb://search). Trigger the right
-  // surface and clear the param so subsequent focuses don't re-fire it.
+  // shortcut handler (beebeeb://upload, beebeeb://search, beebeeb://scan,
+  // beebeeb://recent). Trigger the right surface and clear the param so
+  // subsequent focuses don't re-fire it.
   useEffect(() => {
     const action = route.params?.action;
     if (!action) return;
@@ -1527,8 +1731,12 @@ export default function FilesScreen() {
       // Tiny delay so the input has mounted before we focus, otherwise the
       // keyboard sometimes drops on iOS cold-launch.
       setTimeout(() => searchInputRef.current?.focus(), 50);
+    } else if (action === 'scan') {
+      openDocumentScanner();
+    } else if (action === 'recent') {
+      setRecentFilterActive(true);
     }
-  }, [route.params?.action, navigation, pickAndUploadFile]);
+  }, [route.params?.action, navigation, pickAndUploadFile, openDocumentScanner]);
 
   const submitNewFolder = useCallback(async (rawName: string) => {
     const trimmed = rawName.trim();
@@ -1854,7 +2062,7 @@ export default function FilesScreen() {
     // encryption is implemented. See task 0093.
     const fileOptions = ['Rename', 'Preview', 'Share', 'Export...'];
     if (isImage) fileOptions.push('Save to Photos');
-    fileOptions.push('Move to...', offlineLabel, 'Prove existence', lockLabel, 'Move to Trash', 'Details');
+    fileOptions.push('Move to...', offlineLabel, 'Create proof', lockLabel, 'Move to Trash', 'Details');
     const options = item.is_folder
       ? ['Rename', 'Open', 'Share', 'Move to...', 'Delete', pinLabel, lockLabel, 'Details', 'Cancel']
       : [...fileOptions, 'Cancel'];
@@ -2070,37 +2278,7 @@ export default function FilesScreen() {
     };
 
     const showProof = (proof: ProofOfExistence) => {
-      const formatted = [
-        'Beebeeb Proof of Existence',
-        `File: ${name}`,
-        `SHA-256: ${proof.hash}`,
-        `Timestamp: ${proof.timestamp}`,
-        `Proof ID: ${proof.proofId}`,
-        `Verify: https://beebeeb.io/verify/${proof.proofId}`,
-      ].join('\n');
-      const summary = [
-        `Hash: ${proof.hash.slice(0, 16)}…`,
-        `Timestamp: ${proof.timestamp}`,
-        `Proof ID: ${proof.proofId}`,
-      ].join('\n\n');
-      Alert.alert(
-        'Proof of existence',
-        summary,
-        [
-          {
-            text: 'Copy proof',
-            onPress: async () => {
-              try {
-                await Clipboard.setStringAsync(formatted);
-                showToast({ type: 'success', message: 'Proof copied' });
-              } catch (err) {
-                showToast({ type: 'error', message: friendlyError(err) });
-              }
-            },
-          },
-          { text: 'Done', style: 'cancel' },
-        ],
-      );
+      setProofModal({ proof, name });
     };
 
     const promptProveExistence = async () => {
@@ -2172,7 +2350,7 @@ export default function FilesScreen() {
         case 'Move to...': void promptMove(); return;
         case 'Make available offline':
         case 'Remove offline': void toggleOffline(item, name); return;
-        case 'Prove existence': void promptProveExistence(); return;
+        case 'Create proof': void promptProveExistence(); return;
         case 'Delete': confirmDeleteFolder(); return;
         case 'Move to Trash': confirmMoveToTrash(); return;
         case 'Pin to top':
@@ -2261,6 +2439,10 @@ export default function FilesScreen() {
 
   const displayedFiles = useMemo(() => {
     let result = files;
+    if (recentFilterActive) {
+      const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+      result = result.filter((f) => !f.is_folder && new Date(f.updated_at).getTime() >= cutoff);
+    }
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase();
       const seen = new Set<string>();
@@ -2277,7 +2459,7 @@ export default function FilesScreen() {
       result = localFallback;
     }
     return applySortOrder(result, sortOrder, decryptedNames);
-  }, [files, searchQuery, decryptedNames, sortOrder, vaultSearchMatches]);
+  }, [files, searchQuery, decryptedNames, sortOrder, vaultSearchMatches, recentFilterActive]);
 
   // ------------------------------------------------------------------
   // Render helpers
@@ -2741,6 +2923,17 @@ export default function FilesScreen() {
       {/* Recent files */}
       {renderRecentSection()}
 
+      {/* Recent filter banner — shown when the "Recent Files" quick action is active */}
+      {recentFilterActive && (
+        <View style={[styles.recentFilterBanner, { backgroundColor: c.amberBg, borderColor: c.amberDeep }]}>
+          <Ionicons name="time-outline" size={14} color={c.amberDeep} />
+          <Text style={[styles.recentFilterText, { color: c.amberDeep }]}>Showing files from the last 24 hours</Text>
+          <TouchableOpacity onPress={() => setRecentFilterActive(false)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+            <Ionicons name="close-circle" size={16} color={c.amberDeep} />
+          </TouchableOpacity>
+        </View>
+      )}
+
       {/* Content */}
       {error ? (
         renderError()
@@ -2961,6 +3154,23 @@ export default function FilesScreen() {
         fileName={trustFileName}
         onClose={closeTrust}
       />
+
+      {/* Proof of existence modal */}
+      <Modal
+        visible={proofModal !== null}
+        animationType="slide"
+        presentationStyle={Platform.OS === 'ios' ? 'pageSheet' : 'fullScreen'}
+        onRequestClose={() => setProofModal(null)}
+      >
+        {proofModal && (
+          <ProofDetailModal
+            proof={proofModal.proof}
+            fileName={proofModal.name}
+            onClose={() => setProofModal(null)}
+            showToast={showToast}
+          />
+        )}
+      </Modal>
     </View>
   );
 }
@@ -3155,4 +3365,18 @@ const styles = StyleSheet.create({
   modalSecondaryText: { fontSize: 15, fontWeight: '500' },
   modalPrimary: { paddingVertical: 8, paddingHorizontal: 16, borderRadius: radii.md },
   modalPrimaryText: { fontSize: 15, fontWeight: '600' },
+
+  // Recent filter banner
+  recentFilterBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginHorizontal: spacing.lg,
+    marginBottom: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    borderRadius: radii.md,
+    borderWidth: 1,
+  },
+  recentFilterText: { flex: 1, fontSize: 12, fontWeight: '500' },
 });
