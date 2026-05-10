@@ -99,12 +99,19 @@ export async function fetchDecryptedThumbnailUri(
     if (!res.ok) return null;
 
     const encryptedBytes = new Uint8Array(await res.arrayBuffer());
-    if (encryptedBytes.length < 13) return null;
+    if (encryptedBytes.length < 4) return null;
 
-    const nonce = encryptedBytes.slice(0, 12);
-    const ciphertext = encryptedBytes.slice(12);
-
-    const plainBytes = await decryptChunk(fileKey, nonce, ciphertext);
+    // Detect unencrypted legacy thumbnails (plain JPEG starts with FF D8 FF).
+    // These were uploaded by old mobile code that didn't encrypt thumbnails.
+    let plainBytes: Uint8Array;
+    if (encryptedBytes[0] === 0xFF && encryptedBytes[1] === 0xD8 && encryptedBytes[2] === 0xFF) {
+      plainBytes = encryptedBytes;
+    } else {
+      if (encryptedBytes.length < 13) return null;
+      const nonce = encryptedBytes.slice(0, 12);
+      const ciphertext = encryptedBytes.slice(12);
+      plainBytes = await decryptChunk(fileKey, nonce, ciphertext);
+    }
 
     // Write decrypted JPEG to local cache so <Image> can read it.
     const dest = `${FileSystem.cacheDirectory}thumb_${fileId}.jpg`;
