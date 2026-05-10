@@ -33,6 +33,7 @@ import {
 } from '../lib/api';
 
 type C = Colors;
+type BillingCycle = 'monthly' | 'yearly';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -232,12 +233,14 @@ function PlanCard({
 }: {
   plan: Plan;
   currentPlanSlug: string;
-  onUpgrade: (planId: string) => void;
+  onUpgrade: (planId: string, billingCycle: BillingCycle) => void;
   upgrading: string | null;
   c: C;
 }) {
   const isCurrent = plan.id === currentPlanSlug;
-  const isLoading = upgrading === plan.id;
+  const monthlyKey = `${plan.id}:monthly`;
+  const yearlyKey = `${plan.id}:yearly`;
+  const hasYearly = plan.price_yearly_eur > 0;
 
   return (
     <View style={{
@@ -273,35 +276,61 @@ function PlanCard({
         </Text>
       )}
 
-      {/* Upgrade button */}
+      {/* Upgrade buttons */}
       {!isCurrent && (
-        <TouchableOpacity
-          activeOpacity={0.8}
-          disabled={!!upgrading}
-          onPress={() => { Haptics.selectionAsync(); onUpgrade(plan.id); }}
-          style={{
-            backgroundColor: c.amber,
-            borderRadius: 8,
-            paddingVertical: 9,
-            alignItems: 'center',
-            justifyContent: 'center',
-            flexDirection: 'row',
-            gap: 6,
-            marginTop: 2,
-          }}
-          accessibilityRole="button"
-          accessibilityLabel={`Upgrade to ${plan.name}`}
-        >
-          {isLoading
-            ? <ActivityIndicator size="small" color={c.ink} />
-            : <>
-                <Text style={{ fontSize: 13, fontWeight: '700', color: c.ink }}>
-                  Upgrade to {plan.name}
-                </Text>
-                <Ionicons name="chevron-forward" size={14} color={c.ink} />
-              </>
-          }
-        </TouchableOpacity>
+        <View style={{ flexDirection: 'row', gap: 8, marginTop: 2 }}>
+          <TouchableOpacity
+            activeOpacity={0.8}
+            disabled={!!upgrading}
+            onPress={() => { Haptics.selectionAsync(); onUpgrade(plan.id, 'monthly'); }}
+            style={{
+              flex: 1,
+              backgroundColor: c.paper2,
+              borderColor: c.line,
+              borderWidth: 1,
+              borderRadius: 8,
+              paddingVertical: 9,
+              alignItems: 'center',
+              justifyContent: 'center',
+              flexDirection: 'row',
+              gap: 6,
+            }}
+            accessibilityRole="button"
+            accessibilityLabel={`Upgrade to ${plan.name} monthly`}
+          >
+            {upgrading === monthlyKey
+              ? <ActivityIndicator size="small" color={c.amber} />
+              : <Text style={{ fontSize: 13, fontWeight: '700', color: c.ink }}>Monthly</Text>
+            }
+          </TouchableOpacity>
+          {hasYearly && (
+            <TouchableOpacity
+              activeOpacity={0.8}
+              disabled={!!upgrading}
+              onPress={() => { Haptics.selectionAsync(); onUpgrade(plan.id, 'yearly'); }}
+              style={{
+                flex: 1,
+                backgroundColor: c.amber,
+                borderRadius: 8,
+                paddingVertical: 9,
+                alignItems: 'center',
+                justifyContent: 'center',
+                flexDirection: 'row',
+                gap: 6,
+              }}
+              accessibilityRole="button"
+              accessibilityLabel={`Upgrade to ${plan.name} yearly`}
+            >
+              {upgrading === yearlyKey
+                ? <ActivityIndicator size="small" color={c.ink} />
+                : <>
+                    <Text style={{ fontSize: 13, fontWeight: '700', color: c.ink }}>Yearly</Text>
+                    <Ionicons name="chevron-forward" size={14} color={c.ink} />
+                  </>
+              }
+            </TouchableOpacity>
+          )}
+        </View>
       )}
 
       {isCurrent && (
@@ -350,12 +379,12 @@ export default function StorageScreen() {
   const isFree = currentPlanSlug.toLowerCase() === 'free';
 
   // Upgrade: open Stripe Checkout in system browser
-  const handleUpgrade = useCallback(async (planId: string) => {
-    setUpgrading(planId);
+  const handleUpgrade = useCallback(async (planId: string, billingCycle: BillingCycle) => {
+    setUpgrading(`${planId}:${billingCycle}`);
     try {
       const { url } = await createCheckoutSession({
         plan: planId,
-        billing_cycle: 'yearly',
+        billing_cycle: billingCycle,
         seats: 1,
       });
       await Linking.openURL(url);
