@@ -1647,3 +1647,26 @@ export async function setUserRegion(continent: string): Promise<{ preferred_regi
   );
 }
 
+// ─── TOTP 2FA ─────────────────────────────────────────────────────────────────
+
+export interface TotpSetup {
+  secret: string;
+  qr_uri: string;
+  backup_codes: string[];
+}
+
+/** POST /api/v1/auth/2fa/setup — generate secret + backup codes */
+export async function setupTotp(): Promise<TotpSetup> {
+  return request<TotpSetup>('POST', '/api/v1/auth/2fa/setup');
+}
+
+/** POST /api/v1/auth/2fa/enable — verify code and activate TOTP */
+export async function enableTotp(code: string): Promise<void> {
+  await request('POST', '/api/v1/auth/2fa/enable', { code });
+}
+
+/** POST /api/v1/auth/2fa/disable — verify code and remove TOTP */
+export async function disableTotp(code: string): Promise<void> {
+  await request('POST', '/api/v1/auth/2fa/disable', { code });
+}
+
