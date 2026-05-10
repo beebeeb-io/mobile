@@ -21,6 +21,17 @@ const THUMB_QUALITY = 0.7;
 
 const IMAGE_MIME_PREFIX = 'image/';
 
+function bytesToBlob(bytes: Uint8Array): Blob {
+  const copy = bytes.slice();
+  return new Blob([copy.buffer as ArrayBuffer], { type: 'application/octet-stream' });
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary);
+}
+
 export function isImageMime(mimeType: string | null | undefined): boolean {
   return !!mimeType && mimeType.startsWith(IMAGE_MIME_PREFIX);
 }
@@ -68,7 +79,7 @@ export async function generateAndUploadThumbnail(
     wire.set(nonce, 0);
     wire.set(ciphertext, nonce.length);
 
-    await uploadThumbnail(fileId, new Blob([wire]));
+    await uploadThumbnail(fileId, bytesToBlob(wire));
   } catch {
     // Best-effort — swallow.
   }
@@ -88,6 +99,12 @@ export async function fetchDecryptedThumbnailUri(
   fileKey: Uint8Array,
 ): Promise<string | null> {
   if (thumbCache.has(fileId)) return thumbCache.get(fileId)!;
+  const dest = `${FileSystem.cacheDirectory}thumb_${fileId}.jpg`;
+  const cached = await FileSystem.getInfoAsync(dest);
+  if (cached.exists && cached.size && cached.size > 0) {
+    thumbCache.set(fileId, dest);
+    return dest;
+  }
 
   try {
     const token = await getToken();
@@ -114,8 +131,7 @@ export async function fetchDecryptedThumbnailUri(
     }
 
     // Write decrypted JPEG to local cache so <Image> can read it.
-    const dest = `${FileSystem.cacheDirectory}thumb_${fileId}.jpg`;
-    const b64 = btoa(String.fromCharCode(...plainBytes));
+    const b64 = bytesToBase64(plainBytes);
     await FileSystem.writeAsStringAsync(dest, b64, { encoding: EncodingType.Base64 });
 
     thumbCache.set(fileId, dest);

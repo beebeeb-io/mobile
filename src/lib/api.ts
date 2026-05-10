@@ -400,6 +400,11 @@ const CHUNK_SIZE = 4 * 1024 * 1024; // Legacy upload chunk size
 const MOBILE_UPLOAD_CHUNK_SIZE_CAP_BYTES = 16 * 1024 * 1024;
 const SIMPLE_UPLOAD_THRESHOLD = 5 * 1024 * 1024; // 5 MB — below this, use simple upload
 
+function bytesToBlob(bytes: Uint8Array): Blob {
+  const copy = bytes.slice();
+  return new Blob([copy.buffer as ArrayBuffer], { type: 'application/octet-stream' });
+}
+
 export interface UploadProgress {
   phase: 'preparing' | 'uploading' | 'finalizing';
   chunksTotal: number;
@@ -596,7 +601,7 @@ export async function uploadEncryptedChunked(params: {
       method: 'PUT',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/octet-stream' },
       // Blob wrapping is the safest way to pass binary data to React Native's fetch
-      body: new Blob([encBytes], { type: 'application/octet-stream' }),
+      body: bytesToBlob(encBytes),
     })
     if (!chunkRes.ok) {
       const err = await chunkRes.json().catch(() => ({ error: chunkRes.statusText }))
@@ -1669,4 +1674,3 @@ export async function enableTotp(code: string): Promise<void> {
 export async function disableTotp(code: string): Promise<void> {
   await request('POST', '/api/v1/auth/2fa/disable', { code });
 }
-

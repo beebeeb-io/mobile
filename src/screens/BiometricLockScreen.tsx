@@ -124,20 +124,19 @@ export default function BiometricLockScreen({ onUnlocked }: Props) {
             <Text style={styles.errorText}>{error}</Text>
           </TouchableOpacity>
         )}
-        <Text style={styles.footerText}>
-          Or{' '}
-          <Text style={styles.footerLink} onPress={authenticate}>
-            try again
-          </Text>
+        <Text style={styles.footerText} onPress={authenticate}>
+          Try Face ID again
         </Text>
-        <TouchableOpacity
-          onPress={unlockWithPassword}
-          accessibilityRole="button"
-          accessibilityLabel="Use Beebeeb password"
-          style={styles.passwordButton}
-        >
-          <Text style={styles.passwordButtonText}>Use Beebeeb password</Text>
-        </TouchableOpacity>
+        {error && (
+          <TouchableOpacity
+            onPress={unlockWithPassword}
+            accessibilityRole="button"
+            accessibilityLabel="Use Beebeeb password"
+            style={styles.passwordButton}
+          >
+            <Text style={styles.passwordButtonText}>Use Beebeeb password</Text>
+          </TouchableOpacity>
+        )}
       </View>
     </View>
   );

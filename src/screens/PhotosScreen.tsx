@@ -142,12 +142,14 @@ function FilterChips({
 
 const PhotoCell = React.memo(function PhotoCell({
   fileId,
+  hasThumbnail,
   seed,
   isFromBackup,
   onPress,
   accessibilityLabel,
 }: {
   fileId: string;
+  hasThumbnail?: boolean;
   seed: number;
   isFromBackup: boolean;
   onPress?: () => void;
@@ -164,6 +166,7 @@ const PhotoCell = React.memo(function PhotoCell({
     >
       <ThumbnailImage
         fileId={fileId}
+        hasThumbnail={hasThumbnail}
         placeholderColor={swatch(seed)}
         style={StyleSheet.absoluteFill}
         accessibilityLabel={accessibilityLabel}
@@ -206,6 +209,7 @@ const GroupSection = React.memo(function GroupSection({
           <PhotoCell
             key={photo.id}
             fileId={photo.id}
+            hasThumbnail={photo.has_thumbnail}
             seed={seedOffset + i}
             isFromBackup={photosFolderId !== null && photo.parent_id === photosFolderId}
             accessibilityLabel={`Photo from ${group.label}`}

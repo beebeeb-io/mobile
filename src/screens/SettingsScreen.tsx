@@ -1541,7 +1541,7 @@ export default function SettingsScreen() {
                         disabled={backingUp}
                       >
                         <Text style={{ fontSize: 12, color: c.amber, fontWeight: '500' as const }}>
-                          {backingUp ? 'Retrying…' : 'Retry failed'}
+                          {backingUp ? 'Retrying…' : 'Retry camera roll backup'}
                         </Text>
                       </TouchableOpacity>
                     )}
@@ -1569,7 +1569,7 @@ export default function SettingsScreen() {
                     <ActivityIndicator size="small" color={c.amber} />
                   ) : (
                     <Text style={{ fontSize: 14, color: c.amber, fontWeight: '500' as const }}>
-                      Back up now
+                      Back up camera roll now
                     </Text>
                   )}
                 </TouchableOpacity>
@@ -1598,7 +1598,7 @@ export default function SettingsScreen() {
                     <ActivityIndicator size="small" color={c.amber} />
                   ) : (
                     <Text style={{ fontSize: 14, color: c.amber, fontWeight: '500' as const }}>
-                      Back up now
+                      Back up contacts now
                     </Text>
                   )}
                 </TouchableOpacity>
@@ -1627,7 +1627,7 @@ export default function SettingsScreen() {
                     <ActivityIndicator size="small" color={c.amber} />
                   ) : (
                     <Text style={{ fontSize: 14, color: c.amber, fontWeight: '500' as const }}>
-                      Back up now
+                      Back up calendar now
                     </Text>
                   )}
                 </TouchableOpacity>
