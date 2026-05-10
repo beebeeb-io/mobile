@@ -6,10 +6,12 @@ export interface PdfImagePage {
 
 type PdfChunk = string | Uint8Array;
 
-const encoder = new TextEncoder();
-
 function ascii(input: string): Uint8Array {
-  return encoder.encode(input);
+  const bytes = new Uint8Array(input.length);
+  for (let i = 0; i < input.length; i++) {
+    bytes[i] = input.charCodeAt(i) & 0xff;
+  }
+  return bytes;
 }
 
 function byteLength(chunk: PdfChunk): number {
