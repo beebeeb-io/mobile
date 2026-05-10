@@ -95,6 +95,7 @@
       "./modules/beebeeb-crypto/app.plugin.js",
       "./plugins/uniffi-bridge/withUniffiBridge.js",
       "./plugins/share-extension/withShareExtension.js",
+      "./plugins/withWidget",
       "./plugins/fmt-patch/withFmtPatch.js",
       "./plugins/shortcut-bridge/withShortcutBridge.js",
       "expo-video",
