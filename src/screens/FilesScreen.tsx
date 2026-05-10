@@ -5,6 +5,7 @@ import {
   Alert,
   Dimensions,
   FlatList,
+  Image,
   KeyboardAvoidingView,
   LayoutAnimation,
   Modal,
@@ -39,7 +40,7 @@ import { useToast } from '../lib/toast-context';
 import SkeletonRow from '../components/SkeletonRow';
 import PresenceAvatars from '../components/PresenceAvatars';
 import TrustDetailsSheet from '../components/TrustDetailsSheet';
-import { ApiError, listFiles, createFolder, deleteFile, renameFile, moveFile, uploadFile, downloadFile, friendlyError, getStorageUsage, createProofOfExistence, storageLocation, trustLocation, getFolderPresence, getUploadStatus } from '../lib/api';
+import { ApiError, listFiles, createFolder, deleteFile, renameFile, moveFile, uploadFile, downloadFile, friendlyError, getStorageUsage, createProofOfExistence, storageLocation, trustLocation, getFolderPresence, getUploadStatus, getToken, thumbnailUrl } from '../lib/api';
 import { generateAndUploadThumbnail } from '../lib/thumbnail';
 import type { FileEntry, StorageUsage, ProofOfExistence, PresenceUser, SyncNode } from '../lib/api';
 import type { RootStackParamList, TabParamList } from '../App';
@@ -349,8 +350,38 @@ interface BreadcrumbEntry {
 // File icon component
 // ---------------------------------------------------------------------------
 
-const FileIcon = React.memo(function FileIcon({ category, size = 32 }: { category: string; size?: number }) {
+// In-memory cache: fileId → local file URI for thumbnails
+const thumbCache = new Map<string, string>();
+
+function useThumbnailUri(fileId: string | undefined, hasThumbnail: boolean | undefined): string | null {
+  const [uri, setUri] = useState<string | null>(() => (fileId && thumbCache.get(fileId)) ?? null);
+  useEffect(() => {
+    if (!fileId || !hasThumbnail) return;
+    if (thumbCache.has(fileId)) { setUri(thumbCache.get(fileId)!); return; }
+    let cancelled = false;
+    (async () => {
+      try {
+        const token = await getToken();
+        if (!token || cancelled) return;
+        const dest = `${FileSystem.cacheDirectory}thumb_${fileId}.jpg`;
+        const info = await FileSystem.getInfoAsync(dest);
+        if (info.exists) { thumbCache.set(fileId, dest); if (!cancelled) setUri(dest); return; }
+        const res = await FileSystem.downloadAsync(thumbnailUrl(fileId), dest, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (res.status === 200 && !cancelled) { thumbCache.set(fileId, res.uri); setUri(res.uri); }
+      } catch { /* thumbnail failure is non-fatal */ }
+    })();
+    return () => { cancelled = true; };
+  }, [fileId, hasThumbnail]);
+  return uri;
+}
+
+const FileIcon = React.memo(function FileIcon({
+  category, size = 32, fileId, hasThumbnail,
+}: { category: string; size?: number; fileId?: string; hasThumbnail?: boolean }) {
   const { colors: c } = useTheme();
+  const thumbUri = useThumbnailUri(fileId, hasThumbnail);
   const CATEGORY_COLORS: Record<string, string> = {
     folder: c.amberDeep,
     image: c.amber,
@@ -364,6 +395,15 @@ const FileIcon = React.memo(function FileIcon({ category, size = 32 }: { categor
   const icon: IoniconName = CATEGORY_ICONS[category] ?? 'document-outline';
   const iconSize = Math.round(size * 0.5);
   const borderRadius = size >= 48 ? radii.lg : size >= 40 ? radii.md : radii.sm;
+  if (thumbUri) {
+    return (
+      <Image
+        source={{ uri: thumbUri }}
+        style={[styles.fileIcon, { width: size, height: size, borderRadius }]}
+        resizeMode="cover"
+      />
+    );
+  }
   return (
     <View style={[styles.fileIcon, { backgroundColor: bg, width: size, height: size, borderRadius }]}>
       <Ionicons name={icon} size={iconSize} color="#FFFFFF" />
@@ -526,7 +566,7 @@ const FileRowItem = React.memo(function FileRowItem({
           {isSelected && <Icon name="check" size={13} color="#fff" />}
         </View>
       )}
-      <FileIcon category={category} />
+      <FileIcon category={category} fileId={item.id} hasThumbnail={item.has_thumbnail} />
       <View style={styles.fileInfo}>
         <View style={styles.fileNameRow}>
           {isEncryptedFallback && (
@@ -699,7 +739,7 @@ const FileGridItem = React.memo(function FileGridItem({
         </View>
       )}
       <View style={styles.gridIconWrap}>
-        <FileIcon category={category} size={isFolder ? 56 : 48} />
+        <FileIcon category={category} size={isFolder ? 56 : 48} fileId={item.id} hasThumbnail={item.has_thumbnail} />
       </View>
       <View style={styles.gridTextWrap}>
         <View style={styles.gridNameRow}>
@@ -2205,7 +2245,7 @@ export default function FilesScreen() {
                 accessibilityLabel={`Open recent file ${name}`}
                 accessibilityRole="button"
               >
-                <FileIcon category={category} />
+                <FileIcon category={category} fileId={item.id} hasThumbnail={item.has_thumbnail} />
                 <Text style={[styles.recentName, { color: c.ink }]} numberOfLines={1}>
                   {name}
                 </Text>
