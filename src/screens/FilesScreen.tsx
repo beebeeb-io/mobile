@@ -488,6 +488,7 @@ interface FileRowItemProps {
   isOffline: boolean;
   hasProof: boolean;
   isShared: boolean;
+  isLocked: boolean;
 }
 
 const FileRowItem = React.memo(function FileRowItem({
@@ -505,6 +506,7 @@ const FileRowItem = React.memo(function FileRowItem({
   isOffline,
   hasProof,
   isShared,
+  isLocked,
 }: FileRowItemProps) {
   const { colors: c } = useTheme();
   const swipeableRef = useRef<Swipeable>(null);
@@ -625,6 +627,14 @@ const FileRowItem = React.memo(function FileRowItem({
               accessibilityLabel="Proof of existence"
             />
           )}
+          {isLocked && (
+            <Icon
+              name="lock"
+              size={11}
+              color={c.ink3}
+              style={styles.lockedBadge}
+            />
+          )}
         </View>
         <Text style={[styles.fileMeta, { color: c.ink3 }]}>
           {(() => {
@@ -696,6 +706,7 @@ interface FileGridItemProps {
   isOffline: boolean;
   hasProof: boolean;
   isShared: boolean;
+  isLocked: boolean;
 }
 
 const FileGridItem = React.memo(function FileGridItem({
@@ -712,6 +723,7 @@ const FileGridItem = React.memo(function FileGridItem({
   isOffline,
   hasProof,
   isShared,
+  isLocked,
 }: FileGridItemProps) {
   const { colors: c } = useTheme();
   const category = fileCategory(item);
@@ -797,6 +809,14 @@ const FileGridItem = React.memo(function FileGridItem({
               color={c.amberDeep}
               style={styles.proofBadge}
               accessibilityLabel="Proof of existence"
+            />
+          )}
+          {isLocked && (
+            <Icon
+              name="lock"
+              size={10}
+              color={c.ink3}
+              style={styles.lockedBadge}
             />
           )}
         </View>
@@ -1080,6 +1100,13 @@ export default function FilesScreen() {
       .catch(() => {});
   }, []);
 
+  // Load per-file lock state on mount
+  useEffect(() => {
+    SecureStore.getItemAsync('beebeeb.locked_files')
+      .then((raw) => { if (raw) setLockedFileIds(new Set(JSON.parse(raw) as string[])); })
+      .catch(() => {});
+  }, []);
+
   // Persist pinned folders whenever they change
   useEffect(() => {
     SecureStore.setItemAsync('beebeeb_pinned_folders', JSON.stringify(pinnedFolders)).catch(() => {});
@@ -1227,6 +1254,14 @@ export default function FilesScreen() {
 
   const openFile = useCallback(
     async (file: FileEntry) => {
+      // Per-file Face ID lock check — applies to both files and folders.
+      if (await isFileLocked(file.id)) {
+        const result = await LocalAuthentication.authenticateAsync({
+          promptMessage: 'Authenticate to open this file',
+          disableDeviceFallback: true,
+        });
+        if (!result.success) return;
+      }
       if (file.is_folder) {
         navigateToFolder(file);
       } else {
@@ -1812,14 +1847,16 @@ export default function FilesScreen() {
     const isImage = !item.is_folder && (itemMimeType ?? '').startsWith('image/');
     const isOffline = offlineIds.has(item.id);
     const offlineLabel = isOffline ? 'Remove offline' : 'Make available offline';
+    const isLocked = lockedFileIds.has(item.id);
+    const lockLabel = isLocked ? 'Unlock file' : 'Lock file';
     // 'Send via Constellation' is intentionally hidden — Constellation crypto is v1 mock
     // (random bytes instead of real X25519 ECDH). Re-enable when real per-transfer
     // encryption is implemented. See task 0093.
     const fileOptions = ['Rename', 'Preview', 'Share', 'Export...'];
     if (isImage) fileOptions.push('Save to Photos');
-    fileOptions.push('Move to...', offlineLabel, 'Prove existence', 'Move to Trash', 'Details');
+    fileOptions.push('Move to...', offlineLabel, 'Prove existence', lockLabel, 'Move to Trash', 'Details');
     const options = item.is_folder
-      ? ['Rename', 'Open', 'Share', 'Move to...', 'Delete', pinLabel, 'Details', 'Cancel']
+      ? ['Rename', 'Open', 'Share', 'Move to...', 'Delete', pinLabel, lockLabel, 'Details', 'Cancel']
       : [...fileOptions, 'Cancel'];
     const destructiveIndex = options.indexOf(item.is_folder ? 'Delete' : 'Move to Trash');
     const cancelIndex = options.length - 1;
@@ -2140,6 +2177,31 @@ export default function FilesScreen() {
         case 'Move to Trash': confirmMoveToTrash(); return;
         case 'Pin to top':
         case 'Unpin': togglePin(item, name); return;
+        case 'Lock file':
+          void (async () => {
+            await lockFile(item.id);
+            setLockedFileIds((prev) => new Set([...prev, item.id]));
+            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+            showToast({ type: 'success', message: `"${name}" is now locked` });
+          })();
+          return;
+        case 'Unlock file':
+          void (async () => {
+            const result = await LocalAuthentication.authenticateAsync({
+              promptMessage: 'Authenticate to unlock this file',
+              disableDeviceFallback: true,
+            });
+            if (!result.success) return;
+            await unlockFile(item.id);
+            setLockedFileIds((prev) => {
+              const next = new Set(prev);
+              next.delete(item.id);
+              return next;
+            });
+            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+            showToast({ type: 'success', message: `"${name}" is now unlocked` });
+          })();
+          return;
         case 'Details': showDetails(); return;
       }
     };
@@ -2181,6 +2243,7 @@ export default function FilesScreen() {
     offlineIds,
     toggleOffline,
     proofs,
+    lockedFileIds,
     currentFolder.id,
     indexFile,
     unindexFile,
@@ -2395,7 +2458,7 @@ export default function FilesScreen() {
       item={withDecryptedMime(item)}
       decryptedName={decryptedNames[item.id]}
       onPress={openFile}
-      onLongPress={handleRowLongPress}
+      onLongPress={handleLongPress}
       onShare={handleSwipeShare}
       onDelete={handleSwipeDelete}
       onTrustPress={openTrust}
@@ -2406,8 +2469,9 @@ export default function FilesScreen() {
       isOffline={offlineIds.has(item.id)}
       hasProof={!!proofs[item.id]}
       isShared={item.is_folder && (item.share_count ?? 0) > 0}
+      isLocked={lockedFileIds.has(item.id)}
     />
-  ), [decryptedNames, withDecryptedMime, openFile, handleRowLongPress, handleSwipeShare, handleSwipeDelete, openTrust, selectMode, selectedIds, toggleSelect, sortOrder, offlineIds, proofs]);
+  ), [decryptedNames, withDecryptedMime, openFile, handleLongPress, handleSwipeShare, handleSwipeDelete, openTrust, selectMode, selectedIds, toggleSelect, sortOrder, offlineIds, proofs, lockedFileIds]);
 
   // Grid sizing — 3 columns, evenly spaced, responsive to screen width
   const GRID_COLUMNS = 3;
@@ -2423,7 +2487,7 @@ export default function FilesScreen() {
       item={withDecryptedMime(item)}
       decryptedName={decryptedNames[item.id]}
       onPress={openFile}
-      onLongPress={handleRowLongPress}
+      onLongPress={handleLongPress}
       onTrustPress={openTrust}
       selectMode={selectMode}
       isSelected={selectedIds.has(item.id)}
@@ -2433,8 +2497,9 @@ export default function FilesScreen() {
       isOffline={offlineIds.has(item.id)}
       hasProof={!!proofs[item.id]}
       isShared={item.is_folder && (item.share_count ?? 0) > 0}
+      isLocked={lockedFileIds.has(item.id)}
     />
-  ), [decryptedNames, withDecryptedMime, openFile, handleRowLongPress, openTrust, selectMode, selectedIds, toggleSelect, sortOrder, gridCardWidth, offlineIds, proofs]);
+  ), [decryptedNames, withDecryptedMime, openFile, handleLongPress, openTrust, selectMode, selectedIds, toggleSelect, sortOrder, gridCardWidth, offlineIds, proofs, lockedFileIds]);
 
   const renderEmpty = () => {
     if (loading) return null;
@@ -2954,6 +3019,7 @@ const styles = StyleSheet.create({
   lockIcon: { flexShrink: 0 },
   offlineBadge: { flexShrink: 0, marginLeft: 2 },
   proofBadge: { flexShrink: 0, marginLeft: 2 },
+  lockedBadge: { flexShrink: 0, marginLeft: 2 },
   fileName: { fontSize: 14, fontWeight: '500', flexShrink: 1 },
   fileNameEncrypted: { fontStyle: 'italic' },
   fileMeta: { fontSize: 11, marginTop: 2 },
