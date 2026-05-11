@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../App';
 import {
@@ -21,8 +21,10 @@ import { useTheme } from '../lib/theme-context';
 import { getAllImages, friendlyError } from '../lib/api';
 import type { FileEntry } from '../lib/api';
 import { useBackup } from '../lib/backup-context';
+import { useCrypto } from '../lib/crypto-context';
 import { useNetworkStatus } from '../lib/useNetworkStatus';
 import { ThumbnailImage } from '../components/ThumbnailImage';
+import { prefetchDecryptedThumbnails, pruneThumbnailCache } from '../lib/thumbnail';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -87,6 +89,24 @@ const SCREEN_WIDTH = Dimensions.get('window').width;
 const GRID_GAP = 2;
 const COLS = 4;
 const CELL_SIZE = (SCREEN_WIDTH - GRID_GAP * (COLS - 1)) / COLS;
+const ACTIVE_THUMBNAIL_LIMIT = 80;
+
+function collectThumbnailIds(groups: PhotoGroup[], visibleIndexes: number[]): Set<string> {
+  if (groups.length === 0) return new Set();
+  const indexes = visibleIndexes.length > 0 ? visibleIndexes : [0];
+  const min = Math.max(0, Math.min(...indexes) - 1);
+  const max = Math.min(groups.length - 1, Math.max(...indexes) + 1);
+  const ids: string[] = [];
+
+  for (let groupIndex = min; groupIndex <= max && ids.length < ACTIVE_THUMBNAIL_LIMIT; groupIndex++) {
+    for (const photo of groups[groupIndex]?.data ?? []) {
+      if (photo.has_thumbnail) ids.push(photo.id);
+      if (ids.length >= ACTIVE_THUMBNAIL_LIMIT) break;
+    }
+  }
+
+  return new Set(ids);
+}
 
 // ---------------------------------------------------------------------------
 // Filter chips
@@ -142,6 +162,7 @@ function FilterChips({
 const PhotoCell = React.memo(function PhotoCell({
   fileId,
   hasThumbnail,
+  loadThumbnail,
   seed,
   isFromBackup,
   onPress,
@@ -149,6 +170,7 @@ const PhotoCell = React.memo(function PhotoCell({
 }: {
   fileId: string;
   hasThumbnail?: boolean;
+  loadThumbnail: boolean;
   seed: number;
   isFromBackup: boolean;
   onPress?: () => void;
@@ -166,6 +188,7 @@ const PhotoCell = React.memo(function PhotoCell({
       <ThumbnailImage
         fileId={fileId}
         hasThumbnail={hasThumbnail}
+        loadThumbnail={loadThumbnail}
         placeholderColor={swatch(seed)}
         style={StyleSheet.absoluteFill}
         accessibilityLabel={accessibilityLabel}
@@ -187,11 +210,13 @@ const GroupSection = React.memo(function GroupSection({
   group,
   seedOffset,
   photosFolderId,
+  activeThumbnailIds,
   onOpenPhoto,
 }: {
   group: PhotoGroup;
   seedOffset: number;
   photosFolderId: string | null;
+  activeThumbnailIds: Set<string>;
   onOpenPhoto: (entry: FileEntry) => void;
 }) {
   const { colors: c } = useTheme();
@@ -209,6 +234,7 @@ const GroupSection = React.memo(function GroupSection({
             key={photo.id}
             fileId={photo.id}
             hasThumbnail={photo.has_thumbnail}
+            loadThumbnail={activeThumbnailIds.has(photo.id)}
             seed={seedOffset + i}
             isFromBackup={photosFolderId !== null && photo.parent_id === photosFolderId}
             accessibilityLabel={`Photo from ${group.label}`}
@@ -365,6 +391,7 @@ function AutoBackupBanner() {
 export default function PhotosScreen() {
   const insets = useSafeAreaInsets();
   const { colors: c } = useTheme();
+  const { getFileKeyBytes } = useCrypto();
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const [isScrolled, setIsScrolled] = useState(false);
   const [photos, setPhotos] = useState<FileEntry[]>([]);
@@ -373,6 +400,9 @@ export default function PhotosScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<Filter>('Months');
+  const [activeThumbnailIds, setActiveThumbnailIds] = useState<Set<string>>(() => new Set());
+  const groupsRef = useRef<PhotoGroup[]>([]);
+  const viewabilityConfig = useRef({ itemVisiblePercentThreshold: 10 }).current;
 
   const openPhoto = useCallback(
     (entry: FileEntry) => {
@@ -406,6 +436,7 @@ export default function PhotosScreen() {
         .filter(isImageFile)
         .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
       setPhotos(images);
+      void pruneThumbnailCache();
     } catch (err) {
       setError(friendlyError(err));
     } finally {
@@ -425,6 +456,17 @@ export default function PhotosScreen() {
 
   const groups = useMemo(() => groupByMonth(photos), [photos]);
 
+  useEffect(() => {
+    groupsRef.current = groups;
+    setActiveThumbnailIds(collectThumbnailIds(groups, [0]));
+  }, [groups]);
+
+  useEffect(() => {
+    const ids = Array.from(activeThumbnailIds);
+    if (ids.length === 0) return;
+    void prefetchDecryptedThumbnails(ids, getFileKeyBytes);
+  }, [activeThumbnailIds, getFileKeyBytes]);
+
   // Compute seed offsets so swatch colors are stable across the whole screen
   const groupOffsets = useMemo(() => {
     const offsets: number[] = [];
@@ -441,9 +483,17 @@ export default function PhotosScreen() {
       group={item}
       seedOffset={groupOffsets[index] ?? 0}
       photosFolderId={photosFolderId}
+      activeThumbnailIds={activeThumbnailIds}
       onOpenPhoto={openPhoto}
     />
   );
+
+  const handleViewableItemsChanged = useRef((info: { viewableItems: Array<{ index: number | null }> }) => {
+    const indexes = info.viewableItems
+      .map((item) => item.index)
+      .filter((index): index is number => typeof index === 'number');
+    setActiveThumbnailIds(collectThumbnailIds(groupsRef.current, indexes));
+  }).current;
 
   const renderEmpty = () => {
     if (loading) return null;
@@ -499,6 +549,8 @@ export default function PhotosScreen() {
           data={groups}
           keyExtractor={(group) => group.key}
           renderItem={renderGroup}
+          onViewableItemsChanged={handleViewableItemsChanged}
+          viewabilityConfig={viewabilityConfig}
           ListEmptyComponent={renderEmpty}
           refreshControl={
             <RefreshControl

@@ -9,6 +9,8 @@ interface Props {
   hasThumbnail?: boolean;
   /** Background shown while the image is loading or if it fails. */
   placeholderColor: string;
+  /** False keeps the placeholder visible without starting a network fetch. */
+  loadThumbnail?: boolean;
   style?: StyleProp<ViewStyle>;
   accessibilityLabel?: string;
 }
@@ -17,6 +19,7 @@ export const ThumbnailImage = React.memo(function ThumbnailImage({
   fileId,
   hasThumbnail = true,
   placeholderColor,
+  loadThumbnail = true,
   style,
   accessibilityLabel,
 }: Props) {
@@ -29,7 +32,7 @@ export const ThumbnailImage = React.memo(function ThumbnailImage({
     cancelledRef.current = false;
     setUri(null);
     setFailed(false);
-    if (!hasThumbnail) {
+    if (!hasThumbnail || !loadThumbnail) {
       setFailed(true);
       return () => {
         cancelledRef.current = true;
@@ -49,7 +52,7 @@ export const ThumbnailImage = React.memo(function ThumbnailImage({
     return () => {
       cancelledRef.current = true;
     };
-  }, [fileId, getFileKeyBytes, hasThumbnail]);
+  }, [fileId, getFileKeyBytes, hasThumbnail, loadThumbnail]);
 
   return (
     <View
