@@ -3,12 +3,20 @@ package expo.modules.beebeebcrypto
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 import expo.modules.kotlin.exception.CodedException
+import java.security.SecureRandom
 
 // Placeholder module. All functions throw NotLinkedException until the Android
 // .so files are built (repos/core/build-android.sh) and bundled into the APK.
 class BeebeebCryptoModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("BeebeebCrypto")
+
+    AsyncFunction("generateRandomBytes") { length: Int ->
+      if (length <= 0 || length > 4096) {
+        throw CodedException("INVALID_LENGTH", "Invalid random byte length", null)
+      }
+      ByteArray(length).also { SecureRandom().nextBytes(it) }
+    }
 
     AsyncFunction("generateRecoveryPhrase") { -> throw NotLinkedException() }
 

@@ -27,7 +27,7 @@ import type { Share as ShareLink } from '../lib/api';
 import { useCrypto } from '../lib/crypto-context';
 import {
   encryptChunk,
-  decryptChunk,
+  generateRandomBytes,
 } from '../../modules/beebeeb-crypto';
 
 type ShareRoute = RouteProp<RootStackParamList, 'ShareSheet'>;
@@ -64,18 +64,6 @@ function toBase64(bytes: Uint8Array): string {
 /** URL-safe base64 (no +, /, or padding) — safe to embed in #key= fragment. */
 function toBase64url(bytes: Uint8Array): string {
   return toBase64(bytes).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
-
-function secureRandomBytes(length: number): Uint8Array {
-  const bytes = new Uint8Array(length);
-  const cryptoApi = (globalThis as {
-    crypto?: { getRandomValues?: (array: Uint8Array) => Uint8Array };
-  }).crypto;
-  if (!cryptoApi?.getRandomValues) {
-    throw new Error('Secure random generator unavailable on this device.');
-  }
-  cryptoApi.getRandomValues(bytes);
-  return bytes;
 }
 
 /**
@@ -207,30 +195,35 @@ export default function ShareSheetScreen() {
 
     try {
       let wrappedFileKey: string | undefined;
-      let clientKeyUrl: string | undefined;
+      let keyForUrl: string;
+
+      if (!isUnlocked) {
+        setError('Vault is locked. Unlock it to create a share.');
+        return;
+      }
+
+      const fileKey = await getFileKeyBytes(fileId);
 
       if (doubleEncrypted) {
-        if (!isUnlocked) {
-          setError('Vault is locked. Unlock it to create a double-encrypted share.');
-          return;
-        }
-        // 1. Get the raw file key bytes
-        const fileKey = await getFileKeyBytes(fileId);
+        // Generate client key K_c (stays in device + URL fragment only)
+        const clientKey = await generateRandomBytes(32);
 
-        // 2. Generate client key K_c (stays in device + URL fragment only)
-        const clientKey = secureRandomBytes(32);
-
-        // 3. Wrap fileKey under K_c using AES-256-GCM (WASM encryptChunk)
+        // Wrap fileKey under K_c using AES-256-GCM (WASM encryptChunk)
         const wrapped = await wrapFileKeyForShare(clientKey, fileKey);
 
         // Zero the raw file key immediately after wrapping
         fileKey.fill(0);
 
         wrappedFileKey = toBase64(wrapped);
-        clientKeyUrl = toBase64url(clientKey);
+        keyForUrl = toBase64url(clientKey);
 
-        // Zero client key — it's now in clientKeyUrl string (JS engine manages that)
+        // Zero client key — it's now in keyForUrl string (JS engine manages that)
         clientKey.fill(0);
+      } else {
+        // Standard shares match the web client: the URL fragment carries the
+        // actual file key, which is never sent to the server.
+        keyForUrl = toBase64(fileKey);
+        fileKey.fill(0);
       }
 
       const result = await createShare(fileId, {
@@ -242,12 +235,11 @@ export default function ShareSheetScreen() {
 
       setShare(result);
 
-      if (doubleEncrypted && clientKeyUrl) {
-        // Build the share URL locally — fragment is never sent to server
-        setLocalShareUrl(`${APP_URL}/s/${result.token}#key=${clientKeyUrl}`);
-      } else {
-        setLocalShareUrl(null);
-      }
+      // Build the share URL locally so the fragment is always the client-side
+      // decryption material. The server response fragment carries its internal
+      // share key and must not be copied for standard mobile shares.
+      const shareBase = result.url?.split('#')[0] || `${APP_URL}/s/${result.token}`;
+      setLocalShareUrl(`${shareBase}#key=${encodeURIComponent(keyForUrl)}`);
 
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } catch (err) {
@@ -258,9 +250,8 @@ export default function ShareSheetScreen() {
     }
   }, [fileId, expiry, opens, passphrase, doubleEncrypted, isUnlocked, getFileKeyBytes]);
 
-  // The URL shown and copied:
-  // double-encrypted → localShareUrl (fragment = K_c, server never sees it)
-  // standard         → share.url from server
+  // The URL shown and copied is built locally so the fragment always contains
+  // client-held decryption material: file key for standard, K_c for double.
   const displayUrl = localShareUrl ?? share?.url ?? '';
 
   const handleCopy = useCallback(async () => {
@@ -302,7 +293,7 @@ export default function ShareSheetScreen() {
           <View style={styles.successCard}>
             <View style={styles.successHeaderRow}>
               <Text style={styles.successTitle}>Encrypted link</Text>
-              {(share.double_encrypted || localShareUrl) && (
+              {share.double_encrypted && (
                 <View style={styles.zkBadge}>
                   <Text style={styles.zkBadgeText}>DOUBLE ENCRYPTED</Text>
                 </View>
@@ -331,7 +322,7 @@ export default function ShareSheetScreen() {
                   {share.max_opens === 1 ? 'One-time' : `Up to ${share.max_opens} opens`}
                 </Text>
               )}
-              {(share.double_encrypted || localShareUrl) && (
+              {share.double_encrypted && (
                 <Text style={styles.successHint}>
                   Only someone with the exact link can decrypt this file. Even Beebeeb cannot read it.
                 </Text>
