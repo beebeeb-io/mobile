@@ -17,7 +17,7 @@ export interface AuthContextValue {
    * recovery-phrase flow. Marks phrase as pending (gates upload) and dismisses
    * the onboarding welcome overlay so it doesn't cover the phrase screens.
    */
-  skipOnboarding: () => void;
+  skipOnboarding: (phrase?: string[]) => void;
   /** Called after the user successfully enters all verification words. */
   markPhraseVerified: () => Promise<void>;
 }

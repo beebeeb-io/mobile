@@ -126,12 +126,9 @@ export default function SignupScreen() {
       if (opaqueDone) {
         // Dismiss onboarding overlay + mark phrase as pending before refreshAuth
         // so the phrase screens are visible (not covered by the welcome overlay).
-        skipOnboarding();
+        skipOnboarding(phrase);
         // Refresh auth state so the authenticated stack is available before navigating
         await refreshAuth();
-        setTimeout(() => {
-          navigation.navigate('RecoveryPhrase', { phrase: phrase.length > 0 ? phrase : undefined });
-        }, 0);
       }
     } catch (err) {
       setError(friendlyError(err));
