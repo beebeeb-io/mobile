@@ -61,13 +61,5 @@
     "ts-jest": "^29.4.9",
     "typescript": "~5.3.3"
   },
-  "private": true,
-  "expo": {
-    "autolinking": {
-      "exclude": [
-        "expo-calendar",
-        "expo-contacts"
-      ]
-    }
-  }
+  "private": true
 }

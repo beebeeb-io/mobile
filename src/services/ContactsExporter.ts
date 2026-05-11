@@ -23,6 +23,10 @@ export interface ContactsExportResult {
   reason?: 'unchanged' | 'no_permission' | 'empty';
 }
 
+function permissionGranted(permission: { status?: string; granted?: boolean } | null | undefined): boolean {
+  return permission?.granted === true || permission?.status === 'granted';
+}
+
 // ---------------------------------------------------------------------------
 // vCard 3.0 escaping — RFC 2426 §4
 // ---------------------------------------------------------------------------
@@ -208,8 +212,12 @@ async function findFile(parentId: string, name: string): Promise<FileEntry | nul
 }
 
 export async function exportContacts(): Promise<ContactsExportResult> {
+  if (!Contacts || typeof Contacts.getPermissionsAsync !== 'function') {
+    return { exported: false, contactCount: 0, reason: 'no_permission' };
+  }
+
   const perm = await Contacts.getPermissionsAsync();
-  if (perm.status !== 'granted') {
+  if (!permissionGranted(perm)) {
     return { exported: false, contactCount: 0, reason: 'no_permission' };
   }
 

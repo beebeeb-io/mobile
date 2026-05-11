@@ -20,8 +20,14 @@ let LocalAuthentication: any = { hasHardwareAsync: async () => false, authentica
 let StoreReview: any = { requestReview: async () => {} };
 let Notifications: any = { getPermissionsAsync: async () => ({ status: 'undetermined' }), requestPermissionsAsync: async () => ({ status: 'undetermined' }) };
 let MediaLibrary: any = { requestPermissionsAsync: async () => ({ status: 'undetermined' }) };
-let Contacts: any = { requestPermissionsAsync: async () => ({ status: 'undetermined' }) };
-let Calendar: any = { requestPermissionsAsync: async () => ({ status: 'undetermined' }) };
+let Contacts: any = {
+  getPermissionsAsync: async () => ({ status: 'undetermined', granted: false }),
+  requestPermissionsAsync: async () => ({ status: 'undetermined', granted: false }),
+};
+let Calendar: any = {
+  getCalendarPermissionsAsync: async () => ({ status: 'undetermined', granted: false }),
+  requestCalendarPermissionsAsync: async () => ({ status: 'undetermined', granted: false }),
+};
 let Constants: any = { expoConfig: null };
 
 try { LocalAuthentication = require('expo-local-authentication'); } catch {}
@@ -111,6 +117,11 @@ function regionDisplayName(region: string): string {
 type RegionMode = 'preference' | 'force';
 type C = Colors;
 
+interface NativePermissionResponse {
+  status?: string;
+  granted?: boolean;
+}
+
 // ---------------------------------------------------------------------------
 // Data residency regions
 // ---------------------------------------------------------------------------
@@ -173,6 +184,37 @@ function planLabel(name: string): string {
     team: 'Team',
   };
   return map[name.toLowerCase()] ?? name;
+}
+
+function permissionGranted(permission: NativePermissionResponse | null | undefined): boolean {
+  return permission?.granted === true || permission?.status === 'granted';
+}
+
+async function ensureContactsPermission(): Promise<boolean> {
+  const current = typeof Contacts.getPermissionsAsync === 'function'
+    ? await Contacts.getPermissionsAsync()
+    : null;
+  if (permissionGranted(current)) return true;
+
+  const requested = typeof Contacts.requestPermissionsAsync === 'function'
+    ? await Contacts.requestPermissionsAsync()
+    : null;
+  return permissionGranted(requested);
+}
+
+async function ensureCalendarPermission(): Promise<boolean> {
+  const getPermission = Calendar.getCalendarPermissionsAsync ?? Calendar.getPermissionsAsync;
+  const requestPermission = Calendar.requestCalendarPermissionsAsync ?? Calendar.requestPermissionsAsync;
+
+  const current = typeof getPermission === 'function'
+    ? await getPermission()
+    : null;
+  if (permissionGranted(current)) return true;
+
+  const requested = typeof requestPermission === 'function'
+    ? await requestPermission()
+    : null;
+  return permissionGranted(requested);
 }
 
 // ---------------------------------------------------------------------------
@@ -877,11 +919,18 @@ export default function SettingsScreen() {
   const handleToggleContactsBackup = useCallback(async () => {
     const enabling = !isContactsBackupEnabled;
     if (enabling) {
-      const { status } = await Contacts.requestPermissionsAsync();
-      if (status !== 'granted') {
+      const granted = await ensureContactsPermission();
+      if (!granted) {
         Alert.alert(
           'Contacts access needed',
           'Enable contacts access for Beebeeb in iOS Settings to back them up.',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            {
+              text: 'Open Settings',
+              onPress: () => { void Linking.openSettings(); },
+            },
+          ],
         );
         return;
       }
@@ -893,11 +942,18 @@ export default function SettingsScreen() {
   const handleToggleCalendarBackup = useCallback(async () => {
     const enabling = !isCalendarBackupEnabled;
     if (enabling) {
-      const { status } = await Calendar.requestCalendarPermissionsAsync();
-      if (status !== 'granted') {
+      const granted = await ensureCalendarPermission();
+      if (!granted) {
         Alert.alert(
           'Calendar access needed',
           'Enable calendar access for Beebeeb in iOS Settings to back it up.',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            {
+              text: 'Open Settings',
+              onPress: () => { void Linking.openSettings(); },
+            },
+          ],
         );
         return;
       }

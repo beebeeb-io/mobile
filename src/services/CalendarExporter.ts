@@ -25,6 +25,10 @@ export interface CalendarExportResult {
   reason?: 'no_permission' | 'no_calendars';
 }
 
+function permissionGranted(permission: { status?: string; granted?: boolean } | null | undefined): boolean {
+  return permission?.granted === true || permission?.status === 'granted';
+}
+
 // ---------------------------------------------------------------------------
 // iCalendar escaping — RFC 5545 §3.3.11
 // ---------------------------------------------------------------------------
@@ -178,8 +182,13 @@ async function findFile(parentId: string, name: string): Promise<FileEntry | nul
 }
 
 export async function exportCalendars(): Promise<CalendarExportResult> {
-  const perm = await Calendar.getCalendarPermissionsAsync();
-  if (perm.status !== 'granted') {
+  const getPermission = Calendar?.getCalendarPermissionsAsync ?? Calendar?.getPermissionsAsync;
+  if (typeof getPermission !== 'function') {
+    return { exported: false, calendarCount: 0, eventCount: 0, reason: 'no_permission' };
+  }
+
+  const perm = await getPermission();
+  if (!permissionGranted(perm)) {
     return { exported: false, calendarCount: 0, eventCount: 0, reason: 'no_permission' };
   }
 

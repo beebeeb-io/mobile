@@ -36,6 +36,7 @@
         "NSCalendarsUsageDescription": "Beebeeb backs up your calendar with end-to-end encryption.",
         "NSCalendarsFullAccessUsageDescription": "Beebeeb backs up your calendar with end-to-end encryption.",
         "NSRemindersUsageDescription": "Beebeeb backs up your reminders with end-to-end encryption.",
+        "NSRemindersFullAccessUsageDescription": "Beebeeb backs up your reminders with end-to-end encryption.",
         "NSContactsUsageDescription": "Beebeeb backs up your contacts with end-to-end encryption.",
         "ITSAppUsesNonExemptEncryption": false,
         "NSUserActivityTypes": [
