@@ -270,6 +270,9 @@ function syncNodeToFileEntry(node: SyncNode): FileEntry {
     created_at: node.created_at,
     updated_at: node.updated_at,
     storage_pool_id: node.storage_pool_id,
+    parent_id: node.parent_id,
+    has_thumbnail: node.has_thumbnail,
+    is_starred: node.is_starred,
   };
 }
 

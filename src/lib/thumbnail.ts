@@ -27,24 +27,31 @@ function bytesToBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
+function base64ToBytes(b64: string): Uint8Array {
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
 export function isImageMime(mimeType: string | null | undefined): boolean {
   return !!mimeType && mimeType.startsWith(IMAGE_MIME_PREFIX);
 }
 
 /**
  * Resize an image at `sourceUri` down to a 256-px-wide JPEG and
- * return its blob. Returns null if the source can't be processed.
+ * return its bytes. Returns null if the source can't be processed.
  */
-export async function generateThumbnail(sourceUri: string): Promise<Blob | null> {
+export async function generateThumbnail(sourceUri: string): Promise<Uint8Array | null> {
   try {
     if (!ImageManipulator) return null;
     const result = await ImageManipulator.manipulateAsync(
       sourceUri,
       [{ resize: { width: THUMB_WIDTH } }],
-      { compress: THUMB_QUALITY, format: ImageManipulator.SaveFormat.JPEG },
+      { compress: THUMB_QUALITY, format: ImageManipulator.SaveFormat.JPEG, base64: true },
     );
-    const res = await fetch(result.uri);
-    return await res.blob();
+    if (!result.base64) return null;
+    return base64ToBytes(result.base64);
   } catch {
     return null;
   }
@@ -65,9 +72,8 @@ export async function generateAndUploadThumbnail(
     const thumb = await generateThumbnail(sourceUri);
     if (!thumb) return;
 
-    const plainBytes = new Uint8Array(await thumb.arrayBuffer());
     const fileKey = await getFileKeyBytes(fileId);
-    const { nonce, ciphertext } = await encryptChunk(fileKey, plainBytes);
+    const { nonce, ciphertext } = await encryptChunk(fileKey, thumb);
 
     // Wire format: nonce(12) || ciphertext — matches the web client.
     const wire = new Uint8Array(nonce.length + ciphertext.length);
