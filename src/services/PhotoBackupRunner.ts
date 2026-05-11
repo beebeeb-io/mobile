@@ -323,7 +323,7 @@ export async function runPhotoBackupSession(
       currentFileName = asset.filename;
       currentFileSizeBytes = 0;
 
-      await encryptedUpload({
+      const uploaded = await encryptedUpload({
         fileId,
         uri,
         name: asset.filename,
@@ -338,7 +338,7 @@ export async function runPhotoBackupSession(
         },
       });
 
-      await photoBackupMark(asset.id, fileId);
+      await photoBackupMark(asset.id, uploaded.id);
 
       bytesThisSession += fileBytesUploaded || fileBytesTotal;
       result.uploaded++;

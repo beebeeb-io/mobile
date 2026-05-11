@@ -1509,18 +1509,33 @@ export async function photoBackupMark(
   await request<void>(
     'POST',
     '/api/v1/files/photo-backup/mark',
-    { identifier, file_id: fileId },
+    { local_identifier: identifier, file_id: fileId },
   );
 }
 
 export interface PhotoBackupStats {
   backed_up: number;
   total_estimated: number;
+  last_backup_at?: string | null;
+  total_size_bytes?: number;
 }
 
 /** Get overall photo-backup progress stats for the current user. */
 export async function photoBackupStats(): Promise<PhotoBackupStats> {
-  return request<PhotoBackupStats>('GET', '/api/v1/files/photo-backup/stats');
+  const data = await request<{
+    total_backed_up?: number;
+    backed_up?: number;
+    total_estimated?: number;
+    last_backup_at?: string | null;
+    total_size_bytes?: number;
+  }>('GET', '/api/v1/files/photo-backup/stats');
+
+  return {
+    backed_up: data.backed_up ?? data.total_backed_up ?? 0,
+    total_estimated: data.total_estimated ?? 0,
+    last_backup_at: data.last_backup_at,
+    total_size_bytes: data.total_size_bytes,
+  };
 }
 
 // ─── Push notification registration ──────────────────────────────────────────
