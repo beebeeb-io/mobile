@@ -1,5 +1,6 @@
 import ExpoModulesCore
 import Foundation
+import Security
 
 private func decodeBase64(_ value: String, field: String) throws -> Data {
   guard let data = Data(base64Encoded: value) else {
@@ -18,6 +19,27 @@ private func decodeBase64(_ value: String, field: String) throws -> Data {
 public class BeebeebCryptoModule: Module {
   public func definition() -> ModuleDefinition {
     Name("BeebeebCrypto")
+
+    AsyncFunction("generateRandomBytes") { (length: Int) throws -> Data in
+      guard length > 0, length <= 4096 else {
+        throw NSError(
+          domain: "BeebeebCrypto",
+          code: 2,
+          userInfo: [NSLocalizedDescriptionKey: "Invalid random byte length"]
+        )
+      }
+
+      var bytes = [UInt8](repeating: 0, count: length)
+      let status = SecRandomCopyBytes(kSecRandomDefault, length, &bytes)
+      guard status == errSecSuccess else {
+        throw NSError(
+          domain: "BeebeebCrypto",
+          code: Int(status),
+          userInfo: [NSLocalizedDescriptionKey: "Secure random generator failed"]
+        )
+      }
+      return Data(bytes)
+    }
 
     AsyncFunction("generateRecoveryPhrase") { () throws -> [String: Any] in
       let result = try generateRecoveryPhrase()

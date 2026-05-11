@@ -64,6 +64,10 @@ export async function generateRecoveryPhrase(): Promise<RecoveryPhraseResult> {
   }
 }
 
+export async function generateRandomBytes(length: number): Promise<Uint8Array> {
+  return coerceBytes(await BeebeebCryptoModule.generateRandomBytes(length))
+}
+
 /**
  * Derive the master key from an existing recovery phrase.
  * Use this during onboarding when restoring from a backup.
