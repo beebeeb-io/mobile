@@ -32,6 +32,8 @@ import {
   deleteFile,
   downloadFile,
   listFiles,
+  moveFile,
+  renameFile,
   uploadFile,
   type FileEntry,
 } from '../lib/api';
@@ -54,6 +56,8 @@ export interface BackupCategoryState {
   contact_count?: number;
   // Calendar specific
   calendar_count?: number;
+  // Files/folders moved from pre-category backup layouts.
+  legacy_items_migrated?: number;
 }
 
 export interface DeviceManifest {
@@ -173,6 +177,7 @@ interface FolderCache {
   rootId?: string;
   deviceId?: string;
   categoryIds?: Partial<Record<BackupCategory, string>>;
+  legacyMigration?: Partial<Record<BackupCategory, number>> & { completedAt?: string };
 }
 
 async function readFolderCache(): Promise<FolderCache> {
@@ -187,6 +192,30 @@ async function readFolderCache(): Promise<FolderCache> {
 
 async function writeFolderCache(cache: FolderCache): Promise<void> {
   await storeSet(FOLDER_CACHE_KEY, JSON.stringify(cache));
+}
+
+function mergeLegacyMigration(
+  manifest: DeviceManifest,
+  migration?: FolderCache['legacyMigration'],
+): DeviceManifest {
+  if (!migration) return manifest;
+  return {
+    ...manifest,
+    backups: {
+      camera_roll: {
+        ...manifest.backups.camera_roll,
+        legacy_items_migrated: migration.camera_roll ?? manifest.backups.camera_roll.legacy_items_migrated,
+      },
+      contacts: {
+        ...manifest.backups.contacts,
+        legacy_items_migrated: migration.contacts ?? manifest.backups.contacts.legacy_items_migrated,
+      },
+      calendar: {
+        ...manifest.backups.calendar,
+        legacy_items_migrated: migration.calendar ?? manifest.backups.calendar.legacy_items_migrated,
+      },
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -205,13 +234,76 @@ async function ensureFolder(parentId: string | undefined, name: string): Promise
   return created.id;
 }
 
+async function moveLegacyItem(item: FileEntry, parentId: string, name?: string): Promise<boolean> {
+  try {
+    await moveFile(item.id, parentId);
+    if (name && item.name_encrypted !== name) {
+      await renameFile(item.id, name);
+    }
+    return true;
+  } catch (err) {
+    console.warn('[BackupService] legacy backup migration failed:', item.name_encrypted, err);
+    return false;
+  }
+}
+
+async function migrateLegacyRootBackups(
+  cache: FolderCache,
+  categoryIds: Record<BackupCategory, string>,
+): Promise<FolderCache> {
+  if (cache.legacyMigration?.completedAt) return cache;
+
+  const summary: Record<BackupCategory, number> = {
+    camera_roll: 0,
+    contacts: 0,
+    calendar: 0,
+  };
+
+  let rootChildren: FileEntry[];
+  try {
+    rootChildren = await listFiles(undefined);
+  } catch (err) {
+    console.warn('[BackupService] could not inspect root for legacy backups:', err);
+    return cache;
+  }
+
+  const legacyPhotosFolder = rootChildren.find((f) => f.is_folder && f.name_encrypted === 'Photos');
+  if (legacyPhotosFolder && await moveLegacyItem(legacyPhotosFolder, categoryIds.camera_roll, 'Photos (legacy)')) {
+    summary.camera_roll += 1;
+  }
+
+  const legacyContacts = rootChildren.filter((f) => !f.is_folder && f.name_encrypted === 'contacts.vcf');
+  for (const item of legacyContacts) {
+    if (await moveLegacyItem(item, categoryIds.contacts, 'contacts.legacy.vcf')) {
+      summary.contacts += 1;
+    }
+  }
+
+  const legacyCalendars = rootChildren.filter((f) => !f.is_folder && f.name_encrypted === 'calendar.ics');
+  for (const item of legacyCalendars) {
+    if (await moveLegacyItem(item, categoryIds.calendar, 'calendar.legacy.ics')) {
+      summary.calendar += 1;
+    }
+  }
+
+  return {
+    ...cache,
+    legacyMigration: {
+      completedAt: new Date().toISOString(),
+      camera_roll: summary.camera_roll,
+      contacts: summary.contacts,
+      calendar: summary.calendar,
+    },
+  };
+}
+
 /** Ensure `Backups/{deviceName}/{category}/` exists. Returns the device folder
  *  ID and the category folder ID. Caches results in SecureStore so subsequent
  *  calls skip the round-trips. */
 export async function ensureBackupFolders(
   category: BackupCategory,
 ): Promise<{ deviceFolderId: string; categoryFolderId: string }> {
-  const cache = await readFolderCache();
+  let cache = await readFolderCache();
 
   let rootId = cache.rootId;
   rootId = await ensureFolder(undefined, ROOT_FOLDER_NAME);
@@ -224,10 +316,25 @@ export async function ensureBackupFolders(
   let categoryFolderId = cache.categoryIds?.[category];
   categoryFolderId = await ensureFolder(deviceFolderId, categoryFolderName);
 
+  const categoryIds: Record<BackupCategory, string> = {
+    camera_roll: category === 'camera_roll'
+      ? categoryFolderId
+      : await ensureFolder(deviceFolderId, CATEGORY_FOLDERS.camera_roll),
+    contacts: category === 'contacts'
+      ? categoryFolderId
+      : await ensureFolder(deviceFolderId, CATEGORY_FOLDERS.contacts),
+    calendar: category === 'calendar'
+      ? categoryFolderId
+      : await ensureFolder(deviceFolderId, CATEGORY_FOLDERS.calendar),
+  };
+
+  cache = await migrateLegacyRootBackups(cache, categoryIds);
+
   await writeFolderCache({
+    ...cache,
     rootId,
     deviceId: deviceFolderId,
-    categoryIds: { ...(cache.categoryIds ?? {}), [category]: categoryFolderId },
+    categoryIds,
   });
 
   return { deviceFolderId, categoryFolderId };
@@ -285,8 +392,8 @@ async function ensureDeviceFolderId(): Promise<string> {
 }
 
 export async function getDeviceManifest(): Promise<DeviceManifest | null> {
+  const deviceFolderId = await ensureDeviceFolderId();
   const cache = await readFolderCache();
-  const deviceFolderId = cache.deviceId ?? (await ensureDeviceFolderId());
 
   const manifestFile = await findManifestFile(deviceFolderId);
   if (!manifestFile) return null;
@@ -294,7 +401,7 @@ export async function getDeviceManifest(): Promise<DeviceManifest | null> {
   const res = await downloadFile(manifestFile.id);
   const text = await res.text();
   try {
-    return JSON.parse(text) as DeviceManifest;
+    return mergeLegacyMigration(JSON.parse(text) as DeviceManifest, cache.legacyMigration);
   } catch {
     return null;
   }
@@ -323,7 +430,11 @@ async function writeManifest(manifest: DeviceManifest, deviceFolderId: string): 
 export async function updateDeviceManifest(updates: Partial<DeviceManifest>): Promise<void> {
   const deviceFolderId = await ensureDeviceFolderId();
 
-  const current = (await getDeviceManifest()) ?? buildDefaultManifest(await getDeviceInfo());
+  const cache = await readFolderCache();
+  const current = (await getDeviceManifest()) ?? mergeLegacyMigration(
+    buildDefaultManifest(await getDeviceInfo()),
+    cache.legacyMigration,
+  );
   const next: DeviceManifest = {
     ...current,
     ...updates,
@@ -344,7 +455,11 @@ export async function initializeBackup(category: BackupCategory): Promise<void> 
   const { deviceFolderId } = await ensureBackupFolders(category);
 
   const info = await getDeviceInfo();
-  const current = (await getDeviceManifest()) ?? buildDefaultManifest(info);
+  const cache = await readFolderCache();
+  const current = (await getDeviceManifest()) ?? mergeLegacyMigration(
+    buildDefaultManifest(info),
+    cache.legacyMigration,
+  );
 
   const categoryState: BackupCategoryState = {
     ...current.backups[category],

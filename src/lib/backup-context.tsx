@@ -158,9 +158,14 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
         setIsContactsBackupEnabled(contacts === 'true');
         setIsCalendarBackupEnabled(calendar === 'true');
         if (Platform.OS !== 'web') {
-          if (photo !== 'true') await disablePhotoBackup();
-          if (contacts !== 'true') await disableContactsBackup();
-          if (calendar !== 'true') await disableCalendarBackup();
+          // Foreground JS workers own all category backup paths. Always stop
+          // legacy native managers so stale registrations cannot upload into
+          // old root-level folders or run Contacts/Calendar out of band.
+          await Promise.allSettled([
+            disablePhotoBackup(),
+            disableContactsBackup(),
+            disableCalendarBackup(),
+          ]);
         }
         // Defaults: videos on, wifi-only off, background on
         if (videos !== null) setIncludeVideosState(videos === 'true');
