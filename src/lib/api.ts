@@ -7,6 +7,7 @@
 
 import Constants from 'expo-constants';
 import * as SecureStore from 'expo-secure-store';
+import * as FileSystem from 'expo-file-system';
 import { Platform } from 'react-native';
 import * as BeebeebCrypto from '../../modules/beebeeb-crypto';
 
@@ -407,6 +408,47 @@ function bytesToBlob(bytes: Uint8Array): Blob {
   return new Blob([copy.buffer as ArrayBuffer], { type: 'application/octet-stream' });
 }
 
+async function putBinaryBytes(url: string, token: string | null, bytes: Uint8Array): Promise<{
+  ok: boolean;
+  status: number;
+  error: () => Promise<{ error?: string }>;
+}> {
+  const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/octet-stream' };
+  if (Platform.OS !== 'web' && FileSystem.cacheDirectory) {
+    const chunkUri = `${FileSystem.cacheDirectory}beebeeb-upload-${Date.now()}-${Math.random().toString(36).slice(2)}.bin`;
+    try {
+      await FileSystem.writeAsStringAsync(chunkUri, uint8ToBase64(bytes), {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+      const res = await FileSystem.uploadAsync(url, chunkUri, {
+        httpMethod: 'PUT',
+        headers,
+        uploadType: FileSystem.FileSystemUploadType.BINARY_CONTENT,
+      });
+      return {
+        ok: res.status >= 200 && res.status < 300,
+        status: res.status,
+        error: async () => {
+          try { return JSON.parse(res.body) as { error?: string }; } catch { return { error: res.body }; }
+        },
+      };
+    } finally {
+      FileSystem.deleteAsync(chunkUri, { idempotent: true }).catch(() => {});
+    }
+  }
+
+  const res = await fetch(url, {
+    method: 'PUT',
+    headers,
+    body: bytesToBlob(bytes),
+  });
+  return {
+    ok: res.ok,
+    status: res.status,
+    error: async () => res.json().catch(() => ({ error: res.statusText })),
+  };
+}
+
 export interface UploadProgress {
   phase: 'preparing' | 'uploading' | 'finalizing';
   chunksTotal: number;
@@ -599,14 +641,9 @@ export async function uploadEncryptedChunked(params: {
     const chunkPath = protocol === 'v2' && uploadSessionId
       ? `/api/v1/uploads/${uploadSessionId}/chunks/${i}`
       : `/api/v1/files/${serverFileId}/chunks/${i}`
-    const chunkRes = await fetch(`${BASE_URL}${chunkPath}`, {
-      method: 'PUT',
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/octet-stream' },
-      // Blob wrapping is the safest way to pass binary data to React Native's fetch
-      body: bytesToBlob(encBytes),
-    })
+    const chunkRes = await putBinaryBytes(`${BASE_URL}${chunkPath}`, token, encBytes)
     if (!chunkRes.ok) {
-      const err = await chunkRes.json().catch(() => ({ error: chunkRes.statusText }))
+      const err = await chunkRes.error()
       throw new ApiError(chunkRes.status, (err as { error?: string }).error ?? `Chunk ${i} failed`)
     }
 
@@ -839,16 +876,9 @@ export function thumbnailUrl(fileId: string): string {
  * Best-effort: callers should fire-and-forget so a failed thumbnail
  * never blocks the upload success flow.
  */
-export async function uploadThumbnail(fileId: string, blob: Blob): Promise<void> {
+export async function uploadThumbnail(fileId: string, bytes: Uint8Array): Promise<void> {
   const token = await getToken();
-  const res = await fetch(`${BASE_URL}/api/v1/files/${fileId}/thumbnail`, {
-    method: 'PUT',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/octet-stream',
-    },
-    body: blob,
-  });
+  const res = await putBinaryBytes(`${BASE_URL}/api/v1/files/${fileId}/thumbnail`, token, bytes);
   if (!res.ok) {
     throw new ApiError(res.status, `Thumbnail upload failed (HTTP ${res.status})`);
   }
