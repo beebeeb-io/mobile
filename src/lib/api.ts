@@ -579,7 +579,7 @@ export async function uploadEncryptedChunked(params: {
     serverFileId = init.file_id
   }
 
-  await saveUploadResumeState(resumeKey, {
+  saveUploadResumeStateSoon(resumeKey, {
     protocol,
     fileId: serverFileId,
     uploadSessionId: uploadSessionId ?? null,
@@ -611,7 +611,7 @@ export async function uploadEncryptedChunked(params: {
     }
 
     bytesUploaded += encBytes.length
-    await saveUploadResumeState(resumeKey, {
+    saveUploadResumeStateSoon(resumeKey, {
       protocol,
       fileId: serverFileId,
       uploadSessionId: uploadSessionId ?? null,
@@ -666,7 +666,7 @@ export async function uploadEncryptedChunked(params: {
       completed.name_encrypted = finalNameEncrypted
     }
   }
-  await clearUploadResumeState(resumeKey)
+  clearUploadResumeStateSoon(resumeKey)
   return completed
 }
 
@@ -693,6 +693,8 @@ async function initUploadV2(params: {
       parent_id: params.parentId ?? null,
       mime_type: params.mimeType ?? null,
       profile: 'mobile',
+      chunk_size_bytes: CHUNK_SIZE,
+      chunk_count: Math.max(1, Math.ceil(params.fileSizeBytes / CHUNK_SIZE)),
     }),
   })
   if (res.status === 404 || res.status === 405) return null
@@ -721,7 +723,7 @@ interface UploadResumeState {
   lastUploadedChunkIndex: number;
 }
 
-const uploadResumeStoreKey = (resumeKey: string) => `beebeeb_upload_resume:${resumeKey}`
+const uploadResumeStoreKey = (resumeKey: string) => `beebeeb_upload_resume_${resumeKey}`
 
 async function loadUploadResumeState(resumeKey: string): Promise<UploadResumeState | null> {
   const raw = await tokenStore.get(uploadResumeStoreKey(resumeKey))
@@ -742,6 +744,14 @@ async function saveUploadResumeState(resumeKey: string | undefined, state: Uploa
 async function clearUploadResumeState(resumeKey: string | undefined): Promise<void> {
   if (!resumeKey) return
   await tokenStore.remove(uploadResumeStoreKey(resumeKey))
+}
+
+function saveUploadResumeStateSoon(resumeKey: string | undefined, state: UploadResumeState): void {
+  void saveUploadResumeState(resumeKey, state).catch(() => {})
+}
+
+function clearUploadResumeStateSoon(resumeKey: string | undefined): void {
+  void clearUploadResumeState(resumeKey).catch(() => {})
 }
 
 function estimateUploadedBytes(chunksUploaded: number, chunkSizeBytes: number, plaintextSizeBytes: number): number {

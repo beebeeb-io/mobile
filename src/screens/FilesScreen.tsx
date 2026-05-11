@@ -94,6 +94,15 @@ function formatDate(iso: string | null | undefined): string {
   return `${month} ${day}, ${year}`;
 }
 
+async function copyPhotoAssetToUploadCache(sourceUri: string, fileId: string, name: string): Promise<string> {
+  if (!FileSystem.cacheDirectory) return sourceUri;
+  const safeName = name.replace(/[^a-zA-Z0-9._()-]/g, '_');
+  const targetUri = `${FileSystem.cacheDirectory}upload-${fileId}-${safeName || 'photo.jpg'}`;
+  await FileSystem.deleteAsync(targetUri, { idempotent: true }).catch(() => {});
+  await FileSystem.copyAsync({ from: sourceUri, to: targetUri });
+  return targetUri;
+}
+
 /**
  * Fallback display name for an encrypted filename when crypto is unavailable.
  * Returns a friendly label for JSON-encrypted names instead of raw ciphertext.
@@ -1632,9 +1641,10 @@ export default function FilesScreen() {
       setUpload({ fileName: display, stage: 1, percent: 30, city: lastLoc.city, region: lastLoc.region });
       try {
         const fileId = generateFileId();
+        const uploadUri = await copyPhotoAssetToUploadCache(asset.uri, fileId, name);
         const uploaded = await encryptedUpload({
           fileId,
-          uri: asset.uri,
+          uri: uploadUri,
           name,
           parentId: currentFolder.id ?? undefined,
           mimeType: asset.mimeType ?? 'image/jpeg',
@@ -1660,11 +1670,11 @@ export default function FilesScreen() {
         setFiles((prev) => [uploaded, ...prev]);
         indexFile(uploaded.id, toSearchIndexEntry(uploaded, name, currentFolder.id));
         // Fire-and-forget: image picker only returns images, so always thumbnail.
-        void generateAndUploadThumbnail(uploaded.id, asset.uri, asset.mimeType ?? 'image/jpeg', getFileKeyBytes);
+        void generateAndUploadThumbnail(uploaded.id, uploadUri, asset.mimeType ?? 'image/jpeg', getFileKeyBytes);
         successCount += 1;
       } catch (err) {
-        console.error('[UPLOAD] Error type:', typeof err, err instanceof Error ? err.constructor.name : 'unknown');
-        console.error('[UPLOAD] Error message:', err instanceof Error ? err.message : String(err));
+        console.warn('[UPLOAD] Error type:', typeof err, err instanceof Error ? err.constructor.name : 'unknown');
+        console.warn('[UPLOAD] Error message:', err instanceof Error ? err.message : String(err));
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
         showToast({ type: 'error', message: `${name}: ${friendlyError(err)}` });
       }
