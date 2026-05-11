@@ -1663,6 +1663,8 @@ export default function FilesScreen() {
         void generateAndUploadThumbnail(uploaded.id, asset.uri, asset.mimeType ?? 'image/jpeg', getFileKeyBytes);
         successCount += 1;
       } catch (err) {
+        console.error('[UPLOAD] Error type:', typeof err, err instanceof Error ? err.constructor.name : 'unknown');
+        console.error('[UPLOAD] Error message:', err instanceof Error ? err.message : String(err));
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
         showToast({ type: 'error', message: `${name}: ${friendlyError(err)}` });
       }
