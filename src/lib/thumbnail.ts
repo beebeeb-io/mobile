@@ -18,6 +18,8 @@ try { ImageManipulator = require('expo-image-manipulator'); } catch {}
 
 const THUMB_WIDTH = 256;
 const THUMB_QUALITY = 0.7;
+const MAX_THUMB_CACHE_ITEMS = 200;
+const PREFETCH_CONCURRENCY = 4;
 
 const IMAGE_MIME_PREFIX = 'image/';
 
@@ -86,8 +88,55 @@ export async function generateAndUploadThumbnail(
   }
 }
 
-// In-memory cache: fileId → local temp file URI
+// In-memory cache: fileId → local temp file URI. Disk cache is bounded by
+// pruneThumbnailCache(); callers trigger it after list refreshes.
 const thumbCache = new Map<string, string>();
+const inflight = new Map<string, Promise<string | null>>();
+
+function thumbPath(fileId: string): string | null {
+  if (!FileSystem.cacheDirectory) return null;
+  return `${FileSystem.cacheDirectory}thumb_${fileId}.jpg`;
+}
+
+async function cachedThumbnailUri(fileId: string): Promise<string | null> {
+  const memory = thumbCache.get(fileId);
+  if (memory) return memory;
+  const dest = thumbPath(fileId);
+  if (!dest) return null;
+  const cached = await FileSystem.getInfoAsync(dest);
+  if (cached.exists && cached.size && cached.size > 0) {
+    thumbCache.set(fileId, dest);
+    return dest;
+  }
+  return null;
+}
+
+export async function pruneThumbnailCache(maxItems = MAX_THUMB_CACHE_ITEMS): Promise<void> {
+  if (!FileSystem.cacheDirectory) return;
+  try {
+    const names = await FileSystem.readDirectoryAsync(FileSystem.cacheDirectory);
+    const thumbs = names.filter((name) => /^thumb_[^/]+\.jpg$/.test(name));
+    if (thumbs.length <= maxItems) return;
+
+    const infos = await Promise.all(thumbs.map(async (name) => {
+      const uri = `${FileSystem.cacheDirectory}${name}`;
+      const info = await FileSystem.getInfoAsync(uri);
+      const mtime = info.exists && 'modificationTime' in info && typeof info.modificationTime === 'number'
+        ? info.modificationTime
+        : 0;
+      return { name, uri, mtime };
+    }));
+
+    infos.sort((a, b) => a.mtime - b.mtime);
+    const toDelete = infos.slice(0, Math.max(0, infos.length - maxItems));
+    for (const item of toDelete) {
+      await FileSystem.deleteAsync(item.uri, { idempotent: true }).catch(() => {});
+      thumbCache.delete(item.name.replace(/^thumb_/, '').replace(/\.jpg$/, ''));
+    }
+  } catch {
+    // Cache pruning is best-effort; failure must not affect the photo grid.
+  }
+}
 
 /**
  * Download, decrypt, and cache a thumbnail for display.
@@ -99,15 +148,15 @@ export async function fetchDecryptedThumbnailUri(
   fileId: string,
   fileKey: Uint8Array,
 ): Promise<string | null> {
-  if (thumbCache.has(fileId)) return thumbCache.get(fileId)!;
-  const dest = `${FileSystem.cacheDirectory}thumb_${fileId}.jpg`;
-  const cached = await FileSystem.getInfoAsync(dest);
-  if (cached.exists && cached.size && cached.size > 0) {
-    thumbCache.set(fileId, dest);
-    return dest;
-  }
+  const cached = await cachedThumbnailUri(fileId);
+  if (cached) return cached;
 
-  try {
+  const dest = thumbPath(fileId);
+  if (!dest) return null;
+  const pending = inflight.get(fileId);
+  if (pending) return pending;
+
+  const fetchPromise = (async () => {
     const token = await getToken();
     if (!token) return null;
 
@@ -123,7 +172,9 @@ export async function fetchDecryptedThumbnailUri(
     // These were uploaded by old mobile code that didn't encrypt thumbnails.
     let plainBytes: Uint8Array;
     if (encryptedBytes[0] === 0xFF && encryptedBytes[1] === 0xD8 && encryptedBytes[2] === 0xFF) {
-      plainBytes = encryptedBytes;
+      await FileSystem.deleteAsync(dest, { idempotent: true }).catch(() => {});
+      thumbCache.delete(fileId);
+      return null;
     } else {
       if (encryptedBytes.length < 13) return null;
       const nonce = encryptedBytes.slice(0, 12);
@@ -137,7 +188,37 @@ export async function fetchDecryptedThumbnailUri(
 
     thumbCache.set(fileId, dest);
     return dest;
+  })();
+
+  inflight.set(fileId, fetchPromise);
+  try {
+    return await fetchPromise;
   } catch {
     return null;
+  } finally {
+    inflight.delete(fileId);
   }
+}
+
+export async function prefetchDecryptedThumbnails(
+  fileIds: string[],
+  getFileKeyBytes: (fileId: string) => Promise<Uint8Array>,
+): Promise<void> {
+  const unique = Array.from(new Set(fileIds)).slice(0, MAX_THUMB_CACHE_ITEMS);
+  let cursor = 0;
+
+  async function worker(): Promise<void> {
+    while (cursor < unique.length) {
+      const fileId = unique[cursor++];
+      if (!fileId || await cachedThumbnailUri(fileId)) continue;
+      try {
+        const fileKey = await getFileKeyBytes(fileId);
+        await fetchDecryptedThumbnailUri(fileId, fileKey);
+      } catch {
+        // Prefetch is opportunistic; visible cells can retry on demand.
+      }
+    }
+  }
+
+  await Promise.all(Array.from({ length: Math.min(PREFETCH_CONCURRENCY, unique.length) }, () => worker()));
 }
