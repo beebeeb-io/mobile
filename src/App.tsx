@@ -276,19 +276,31 @@ function TabIcon({ name, focused, color }: { name: string; focused: boolean; col
 
 function ShareSheetImporter({ enabled }: { enabled: boolean }) {
   const { showToast } = useToast();
+  const { isUnlocked, encryptChunk, encryptMetadata } = useCrypto();
   const enabledRef = useRef(enabled);
+  const cryptoRef = useRef({ isUnlocked, encryptChunk, encryptMetadata });
   enabledRef.current = enabled;
+  cryptoRef.current = { isUnlocked, encryptChunk, encryptMetadata };
 
   const drain = useCallback(async () => {
     if (!enabledRef.current) return;
     try {
-      const result = await processPendingShares();
+      const crypto = cryptoRef.current;
+      const result = await processPendingShares({
+        vaultUnlocked: crypto.isUnlocked,
+        encryptChunkFn: crypto.encryptChunk,
+        encryptMetadataFn: crypto.encryptMetadata,
+      });
       if (result.uploaded > 0) {
         const noun = result.uploaded === 1 ? 'file' : 'files';
         showToast({ type: 'success', message: `${result.uploaded} ${noun} imported from share sheet` });
       }
       if (result.failed > 0) {
         showToast({ type: 'error', message: `${result.failed} share import${result.failed === 1 ? '' : 's'} failed` });
+      }
+      if (result.skipped > 0 && !crypto.isUnlocked) {
+        const noun = result.skipped === 1 ? 'file' : 'files';
+        showToast({ type: 'info', message: `Unlock Beebeeb to import ${result.skipped} shared ${noun}` });
       }
     } catch {
       // never let the importer crash the app

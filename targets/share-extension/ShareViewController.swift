@@ -5,21 +5,14 @@ import UniformTypeIdentifiers
 ///
 /// Flow:
 /// 1. Show minimal "Saving to Beebeeb..." UI with amber progress bar
-/// 2. For each shared item: copy to App Group container → attempt encryption
-///    (falls back to plaintext staging if beebeeb-core not yet linked)
-/// 3. Write upload manifest to App Group container
-/// 4. Create background URLSession upload tasks (iOS continues after extension dismisses)
-/// 5. Call completeRequest — extension is torn down, uploads continue in background
-/// 6. Main app picks up completed uploads on next launch via URLSession delegate callbacks
+/// 2. For each shared item: copy to App Group container
+/// 3. Write an import manifest to App Group container
+/// 4. Call completeRequest — the main app encrypts and uploads after vault unlock
 final class ShareViewController: UIViewController {
 
     // MARK: - Constants
 
     private static let appGroup = "group.io.beebeeb.shared"
-    private static let bgSessionID = "io.beebeeb.app.shareExt.bgUpload"
-    private static let defaultApiBaseURL = "http://localhost:3001"
-    private static let userDefaultsApiBaseURLKey = "io.beebeeb.apiBaseUrl"
-    private static let userDefaultsSessionTokenKey = "io.beebeeb.sessionToken"
 
     // MARK: - UI
 
@@ -62,7 +55,7 @@ final class ShareViewController: UIViewController {
 
     private let subtitleLabel: UILabel = {
         let l = UILabel()
-        l.text = "Encrypting..."
+        l.text = "Open Beebeeb to encrypt and upload."
         l.font = UIFont.systemFont(ofSize: 14)
         l.textColor = UIColor(red: 0.420, green: 0.380, blue: 0.341, alpha: 1)
         l.translatesAutoresizingMaskIntoConstraints = false
@@ -367,38 +360,7 @@ final class ShareViewController: UIViewController {
             try? encoded.write(to: queueURL)
         }
 
-        // Read server base URL and session token from shared UserDefaults (main app writes on login)
-        let sharedDefaults = UserDefaults(suiteName: Self.appGroup)
-        let baseURL = sharedDefaults?.string(forKey: Self.userDefaultsApiBaseURLKey) ?? Self.defaultApiBaseURL
-
-        // Background URLSession — iOS continues tasks after extension is dismissed
-        let config = URLSessionConfiguration.background(withIdentifier: Self.bgSessionID)
-        config.sharedContainerIdentifier = Self.appGroup
-        let session = URLSession(configuration: config, delegate: nil, delegateQueue: nil)
-
-        for upload in uploads {
-            guard let endpoint = URL(string: "\(baseURL)/api/v1/files/upload/\(upload.fileID)") else {
-                continue
-            }
-            var request = URLRequest(url: endpoint)
-            request.httpMethod = "PUT"
-            request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
-            request.setValue(upload.encryptedName, forHTTPHeaderField: "X-Encrypted-Filename")
-            request.setValue(upload.originalName, forHTTPHeaderField: "X-Original-Filename")
-            request.setValue(upload.encrypted ? "true" : "false", forHTTPHeaderField: "X-Encrypted")
-            request.setValue(String(upload.size), forHTTPHeaderField: "Content-Length")
-
-            // Add auth token from shared UserDefaults (main app mirrors it from SecureStore on login)
-            if let token = sharedDefaults?.string(forKey: Self.userDefaultsSessionTokenKey) {
-                request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-            }
-
-            let task = session.uploadTask(with: request, fromFile: upload.stagedURL)
-            task.resume()
-        }
-
-        session.finishTasksAndInvalidate()
-        finish(subtitle: "Saved. Uploading in background.")
+        finish(subtitle: "Saved. Open Beebeeb to encrypt and upload.")
     }
 
     // MARK: - Completion
