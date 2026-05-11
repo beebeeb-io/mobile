@@ -37,6 +37,7 @@ import {
   uploadFile,
   type FileEntry,
 } from '../lib/api';
+import type { BackupEncryptors as ContactsBackupEncryptors } from './ContactsExporter';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -89,6 +90,8 @@ export interface BackupProgress {
   lastSyncAt?: string;
   error?: string;
 }
+
+export type BackupEncryptors = ContactsBackupEncryptors;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -447,11 +450,44 @@ export async function updateDeviceManifest(updates: Partial<DeviceManifest>): Pr
   await writeManifest(next, deviceFolderId);
 }
 
+export async function updateBackupCategoryState(
+  category: BackupCategory,
+  updates: Partial<BackupCategoryState>,
+): Promise<void> {
+  const { deviceFolderId } = await ensureBackupFolders(category);
+  const info = await getDeviceInfo();
+  const cache = await readFolderCache();
+  const current = (await getDeviceManifest()) ?? mergeLegacyMigration(
+    buildDefaultManifest(info),
+    cache.legacyMigration,
+  );
+
+  const next: DeviceManifest = {
+    ...current,
+    device_name: info.device_name,
+    device_model: info.device_model,
+    os_version: info.os_version,
+    app_version: info.app_version,
+    backups: {
+      ...current.backups,
+      [category]: {
+        ...current.backups[category],
+        ...updates,
+      },
+    },
+  };
+
+  await writeManifest(next, deviceFolderId);
+}
+
 // ---------------------------------------------------------------------------
 // Lifecycle: enable / disable a backup category
 // ---------------------------------------------------------------------------
 
-export async function initializeBackup(category: BackupCategory): Promise<void> {
+export async function initializeBackup(
+  category: BackupCategory,
+  encryption?: BackupEncryptors,
+): Promise<void> {
   const { deviceFolderId } = await ensureBackupFolders(category);
 
   const info = await getDeviceInfo();
@@ -470,26 +506,28 @@ export async function initializeBackup(category: BackupCategory): Promise<void> 
   // the backup happens without native modules. Camera roll is handled by a
   // separate scanner — see BackupContext / BackupRunner.
   if (category === 'contacts') {
+    if (!encryption) throw new Error('Backup encryption unavailable');
     try {
       // Lazy import to avoid pulling expo-contacts into the camera_roll path.
       const { exportContacts } = await import('./ContactsExporter');
-      const result = await exportContacts();
-      if (result.contactCount > 0) {
+      const result = await exportContacts(encryption);
+      if (result.reason !== 'no_permission') {
         categoryState.contact_count = result.contactCount;
         categoryState.items_synced = result.contactCount;
-        if (result.exported) categoryState.last_sync = new Date().toISOString();
+        categoryState.last_sync = new Date().toISOString();
       }
     } catch (err) {
       console.warn('Contacts export failed:', err);
     }
   } else if (category === 'calendar') {
+    if (!encryption) throw new Error('Backup encryption unavailable');
     try {
       const { exportCalendars } = await import('./CalendarExporter');
-      const result = await exportCalendars();
-      if (result.calendarCount > 0) {
+      const result = await exportCalendars(encryption);
+      if (result.reason !== 'no_permission') {
         categoryState.calendar_count = result.calendarCount;
         categoryState.items_synced = result.eventCount;
-        if (result.exported) categoryState.last_sync = new Date().toISOString();
+        categoryState.last_sync = new Date().toISOString();
       }
     } catch (err) {
       console.warn('Calendar export failed:', err);

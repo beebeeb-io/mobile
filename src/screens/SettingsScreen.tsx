@@ -43,6 +43,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { fonts, spacing, type Colors } from '../theme';
 import { useAuth } from '../lib/auth';
 import { useBackup } from '../lib/backup-context';
+import { useCrypto } from '../lib/crypto-context';
 import { useTheme, type ThemeMode } from '../lib/theme-context';
 import { useToast } from '../lib/toast-context';
 import { useNetworkStatus } from '../lib/useNetworkStatus';
@@ -79,6 +80,7 @@ import {
   initializeBackup,
   disableBackup,
   getDeviceManifest,
+  updateBackupCategoryState,
   type BackupCategory,
   type DeviceManifest,
 } from '../services/BackupService';
@@ -498,6 +500,7 @@ export default function SettingsScreen() {
     photoSessionProgress,
     lastPhotoSession,
   } = useBackup();
+  const { encryptChunk, encryptMetadata } = useCrypto();
 
   const { showToast } = useToast();
   const isOnline = useNetworkStatus();
@@ -881,7 +884,10 @@ export default function SettingsScreen() {
   const syncBackupCategory = useCallback(async (category: BackupCategory, enabling: boolean) => {
     try {
       if (enabling) {
-        await initializeBackup(category);
+        await initializeBackup(category, {
+          encryptChunkFn: encryptChunk,
+          encryptMetadataFn: encryptMetadata,
+        });
       } else {
         await disableBackup(category);
       }
@@ -891,7 +897,7 @@ export default function SettingsScreen() {
       console.warn(`Failed to ${enabling ? 'initialize' : 'disable'} backup for ${category}:`, err);
     }
     refreshBackupStats();
-  }, [refreshBackupStats]);
+  }, [encryptChunk, encryptMetadata, refreshBackupStats]);
 
   const handleTogglePhotoBackup = useCallback(async () => {
     const enabling = !isPhotoBackupEnabled;
@@ -962,6 +968,42 @@ export default function SettingsScreen() {
     await syncBackupCategory('calendar', enabling);
   }, [isCalendarBackupEnabled, toggleCalendarBackup, syncBackupCategory]);
 
+  const handleIncludeVideosChange = useCallback(async (value: boolean) => {
+    await setIncludeVideos(value);
+    void updateBackupCategoryState('camera_roll', {
+      enabled: isPhotoBackupEnabled,
+      include_videos: value,
+      wifi_only: wifiOnly,
+      background_enabled: backgroundUpload,
+    }).then(refreshBackupStats).catch((err) => {
+      console.warn('[SettingsScreen] camera-roll option sync failed:', err);
+    });
+  }, [backgroundUpload, isPhotoBackupEnabled, refreshBackupStats, setIncludeVideos, wifiOnly]);
+
+  const handleWifiOnlyChange = useCallback(async (value: boolean) => {
+    await setWifiOnly(value);
+    void updateBackupCategoryState('camera_roll', {
+      enabled: isPhotoBackupEnabled,
+      include_videos: includeVideos,
+      wifi_only: value,
+      background_enabled: backgroundUpload,
+    }).then(refreshBackupStats).catch((err) => {
+      console.warn('[SettingsScreen] camera-roll option sync failed:', err);
+    });
+  }, [backgroundUpload, includeVideos, isPhotoBackupEnabled, refreshBackupStats, setWifiOnly]);
+
+  const handleBackgroundUploadChange = useCallback(async (value: boolean) => {
+    await setBackgroundUpload(value);
+    void updateBackupCategoryState('camera_roll', {
+      enabled: isPhotoBackupEnabled,
+      include_videos: includeVideos,
+      wifi_only: wifiOnly,
+      background_enabled: value,
+    }).then(refreshBackupStats).catch((err) => {
+      console.warn('[SettingsScreen] camera-roll option sync failed:', err);
+    });
+  }, [includeVideos, isPhotoBackupEnabled, refreshBackupStats, setBackgroundUpload, wifiOnly]);
+
   const handleStoragePress = useCallback(() => {
     if (!usage) return;
     const used = usage.used_bytes;
@@ -993,26 +1035,32 @@ export default function SettingsScreen() {
   const handleBackupContactsNow = useCallback(async () => {
     setBackingUpContacts(true);
     try {
-      await initializeBackup('contacts');
+      await initializeBackup('contacts', {
+        encryptChunkFn: encryptChunk,
+        encryptMetadataFn: encryptMetadata,
+      });
       refreshBackupStats();
     } catch (err) {
       console.warn('[SettingsScreen] contacts backup failed:', err);
     } finally {
       setBackingUpContacts(false);
     }
-  }, [refreshBackupStats]);
+  }, [encryptChunk, encryptMetadata, refreshBackupStats]);
 
   const handleBackupCalendarNow = useCallback(async () => {
     setBackingUpCalendar(true);
     try {
-      await initializeBackup('calendar');
+      await initializeBackup('calendar', {
+        encryptChunkFn: encryptChunk,
+        encryptMetadataFn: encryptMetadata,
+      });
       refreshBackupStats();
     } catch (err) {
       console.warn('[SettingsScreen] calendar backup failed:', err);
     } finally {
       setBackingUpCalendar(false);
     }
-  }, [refreshBackupStats]);
+  }, [encryptChunk, encryptMetadata, refreshBackupStats]);
 
   const handleRegionChange = useCallback(async (poolName: string) => {
     const r = REGIONS.find(x => x.poolName === poolName);
@@ -1525,7 +1573,7 @@ export default function SettingsScreen() {
                   label="Photos and videos"
                   subtitle="Back up videos in addition to photos. Videos can be large — backed up over Wi-Fi only."
                   value={includeVideos}
-                  onValueChange={setIncludeVideos}
+                  onValueChange={handleIncludeVideosChange}
                   indent
                   c={c}
                 />
@@ -1534,7 +1582,7 @@ export default function SettingsScreen() {
                   label="Wi-Fi only"
                   subtitle="Only upload over Wi-Fi to save cellular data"
                   value={wifiOnly}
-                  onValueChange={setWifiOnly}
+                  onValueChange={handleWifiOnlyChange}
                   indent
                   c={c}
                 />
@@ -1543,7 +1591,7 @@ export default function SettingsScreen() {
                   label="Background upload"
                   subtitle="Allow uploads in the background. May increase battery usage."
                   value={backgroundUpload}
-                  onValueChange={setBackgroundUpload}
+                  onValueChange={handleBackgroundUploadChange}
                   indent
                   c={c}
                 />
