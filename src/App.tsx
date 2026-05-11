@@ -446,6 +446,8 @@ export default function App() {
   // Phrase verification: false until the user types back their recovery words.
   // Defaults to true so existing (pre-phrase-flow) users are unaffected.
   const [phraseVerified, setPhraseVerified] = useState(true);
+  const [pendingRecoveryPhrase, setPendingRecoveryPhrase] = useState<string[] | null>(null);
+  const [navReady, setNavReady] = useState(false);
 
   const isConnected = useNetworkStatus();
 
@@ -638,9 +640,10 @@ export default function App() {
   // Called from SignupScreen when OPAQUE registration succeeds and the
   // recovery-phrase onboarding is about to start. Prevents the welcome overlay
   // from covering the phrase flow and marks phrase verification as pending.
-  const skipOnboarding = useCallback(() => {
+  const skipOnboarding = useCallback((phrase?: string[]) => {
     setOnboardingDone(true);
     setPhraseVerified(false);
+    setPendingRecoveryPhrase(phrase && phrase.length > 0 ? phrase : null);
     SecureStore.setItemAsync(ONBOARDING_KEY, 'true').catch(() => {});
     SecureStore.setItemAsync(PHRASE_VERIFIED_KEY, 'pending').catch(() => {});
   }, []);
@@ -651,7 +654,27 @@ export default function App() {
       await SecureStore.setItemAsync(PHRASE_VERIFIED_KEY, 'verified');
     } catch { /* SecureStore unavailable (web) */ }
     setPhraseVerified(true);
+    setPendingRecoveryPhrase(null);
   }, []);
+
+  const isAuthenticated = user !== null;
+
+  useEffect(() => {
+    if (!isAuthenticated || phraseVerified || !pendingRecoveryPhrase || !navReady) return;
+    let attempts = 0;
+    const interval = setInterval(() => {
+      attempts += 1;
+      if (!navigationRef.isReady()) return;
+      const route = navigationRef.getCurrentRoute()?.name;
+      if (route === 'RecoveryPhrase' || route === 'RecoveryPhraseVerify') {
+        clearInterval(interval);
+        return;
+      }
+      navigationRef.navigate('RecoveryPhrase', { phrase: pendingRecoveryPhrase });
+      if (attempts >= 10) clearInterval(interval);
+    }, 250);
+    return () => clearInterval(interval);
+  }, [isAuthenticated, navReady, pendingRecoveryPhrase, phraseVerified]);
 
   // Listen for successful login/signup from auth screens
   // by polling the token after navigation events
@@ -678,8 +701,6 @@ export default function App() {
     );
   }
 
-  const isAuthenticated = user !== null;
-
   return (
     <AuthContext.Provider value={{ user, refreshAuth, signOut, phraseVerified, skipOnboarding, markPhraseVerified }}>
       <CryptoProvider key={user?.user_id ?? 'signed-out'}>
@@ -689,7 +710,12 @@ export default function App() {
       <ToastProvider>
         {/* Wire JS-side photo backup: foreground trigger + Wi-Fi reconnect + toast */}
         <PhotoBackupBridge />
-        <NavigationContainer ref={navigationRef} linking={linking} onStateChange={handleNavigationStateChange}>
+        <NavigationContainer
+          ref={navigationRef}
+          linking={linking}
+          onReady={() => setNavReady(true)}
+          onStateChange={handleNavigationStateChange}
+        >
             <VaultRecoveryGate enabled={isAuthenticated} />
             <Stack.Navigator screenOptions={{ headerShown: false }}>
               {isAuthenticated ? (
