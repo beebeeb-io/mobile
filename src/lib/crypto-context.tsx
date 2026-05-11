@@ -190,7 +190,7 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
   }, [])
 
   const requireKey = (): Uint8Array => {
-    if (!masterKeyRef.current) throw new Error('Vault is locked — call unlock() first')
+    if (!masterKeyRef.current) throw new Error('Vault is locked. Please lock and unlock the app, then try uploading again.')
     return masterKeyRef.current
   }
 

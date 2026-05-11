@@ -131,6 +131,7 @@ export function friendlyError(err: unknown): string {
     return err.message || 'Something went wrong. Please try again.';
   }
   if (err instanceof TypeError) return 'Could not reach the server. Check your connection and try again.';
+  if (err instanceof Error) return err.message || 'Something went wrong. Please try again.';
   return 'Something went wrong. Please try again.';
 }
 
