@@ -15,10 +15,11 @@ import {
   clearAllPendingShares,
   consumePendingShare,
   listPendingShares,
+  type EncryptedData,
   type PendingShareResource,
   type PendingShareSummary,
 } from '../../modules/beebeeb-crypto'
-import { uploadFile } from '../../src/lib/api'
+import { encryptedUpload, generateFileId } from '../../src/lib/encrypted-upload'
 
 export type { PendingShareResource, PendingShareSummary }
 
@@ -26,6 +27,13 @@ export interface ProcessResult {
   uploaded: number
   failed: number
   skipped: number
+}
+
+export interface ProcessPendingSharesOptions {
+  vaultUnlocked: boolean
+  encryptChunkFn: (fileId: string, plaintext: Uint8Array) => Promise<EncryptedData>
+  encryptMetadataFn: (fileId: string, metadata: string) => Promise<EncryptedData>
+  onItemUploaded?: (item: PendingShareResource) => void
 }
 
 const NOOP: ProcessResult = { uploaded: 0, failed: 0, skipped: 0 }
@@ -46,13 +54,11 @@ export async function getPendingSharesCount(): Promise<number> {
 }
 
 /**
- * Drain the dropbox. The caller is responsible for ensuring the user is
- * authenticated — when called with an unauthenticated session every upload
- * will fail and the shares stay queued until next time.
+ * Drain the dropbox. The caller must provide an unlocked vault and the normal
+ * encryption functions. If the vault is locked, leave every share in the App
+ * Group so it can be imported after unlock instead of leaking plaintext.
  */
-export async function processPendingShares(opts?: {
-  onItemUploaded?: (item: PendingShareResource) => void
-}): Promise<ProcessResult> {
+export async function processPendingShares(opts: ProcessPendingSharesOptions): Promise<ProcessResult> {
   if (Platform.OS !== 'ios') return NOOP
 
   let pending: PendingShareSummary[]
@@ -62,6 +68,10 @@ export async function processPendingShares(opts?: {
     return NOOP
   }
   if (pending.length === 0) return NOOP
+
+  if (!opts.vaultUnlocked) {
+    return { uploaded: 0, failed: 0, skipped: pending.length }
+  }
 
   const result: ProcessResult = { uploaded: 0, failed: 0, skipped: 0 }
 
@@ -75,16 +85,14 @@ export async function processPendingShares(opts?: {
     }
 
     try {
-      const response = await fetch(resource.uri)
-      const blob = await response.blob()
-      await uploadFile(
-        {
-          name_encrypted: resource.filename,
-          mime_type: resource.mimeType,
-          size_bytes: resource.sizeBytes || blob.size,
-        },
-        blob,
-      )
+      await encryptedUpload({
+        fileId: generateFileId(),
+        uri: resource.uri,
+        name: resource.filename,
+        mimeType: resource.mimeType,
+        encryptChunkFn: opts.encryptChunkFn,
+        encryptMetadataFn: opts.encryptMetadataFn,
+      })
       result.uploaded += 1
       opts?.onItemUploaded?.(resource)
     } catch {

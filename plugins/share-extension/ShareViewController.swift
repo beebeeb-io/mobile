@@ -94,7 +94,7 @@ class ShareViewController: UIViewController {
         card.addSubview(titleLabel)
 
         subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
-        subtitleLabel.text = "Encrypted on your device before upload"
+        subtitleLabel.text = "Open Beebeeb to encrypt and upload"
         subtitleLabel.font = .systemFont(ofSize: 13, weight: .regular)
         subtitleLabel.textColor = ShareConstants.ink3
         subtitleLabel.textAlignment = .center
@@ -139,7 +139,7 @@ class ShareViewController: UIViewController {
 
         let noun = count == 1 ? "file" : "files"
         titleLabel.text = "Saved to Beebeeb"
-        subtitleLabel.text = "\(count) \(noun) waiting · open Beebeeb to upload"
+        subtitleLabel.text = "\(count) \(noun) waiting · open Beebeeb to encrypt"
     }
 
     private func showFailure(_ message: String) {
