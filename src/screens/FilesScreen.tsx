@@ -276,6 +276,21 @@ function syncNodeToFileEntry(node: SyncNode): FileEntry {
   };
 }
 
+function uniqueFileEntries(entries: FileEntry[]): FileEntry[] {
+  const seen = new Set<string>();
+  const unique: FileEntry[] = [];
+  for (const entry of entries) {
+    if (seen.has(entry.id)) continue;
+    seen.add(entry.id);
+    unique.push(entry);
+  }
+  return unique;
+}
+
+function upsertFileEntry(entries: FileEntry[], entry: FileEntry): FileEntry[] {
+  return [entry, ...entries.filter((current) => current.id !== entry.id)];
+}
+
 /** Determine a file type category from the mime type. */
 function fileCategory(entry: FileEntry): 'folder' | 'image' | 'pdf' | 'audio' | 'video' | 'doc' | 'file' {
   if (entry.is_folder) return 'folder';
@@ -1359,7 +1374,7 @@ export default function FilesScreen() {
 
     try {
       const result = await listFiles(parentId ?? undefined);
-      setFiles(result);
+      setFiles(uniqueFileEntries(result));
     } catch (err) {
       setError(friendlyError(err));
     } finally {
@@ -1388,7 +1403,7 @@ export default function FilesScreen() {
 
       if (sync.ready) {
         const nodes = sync.children(currentFolder.id);
-        setFiles(nodes.filter((n) => !n.is_trashed).map(syncNodeToFileEntry));
+        setFiles(uniqueFileEntries(nodes.filter((n) => !n.is_trashed).map(syncNodeToFileEntry)));
         setLoading(false);
         setError(null);
         return;
@@ -1575,7 +1590,7 @@ export default function FilesScreen() {
       });
       const finalLoc = trustLocation(uploaded.storage_pool_id);
       setUpload({ fileName: uploadFileName, stage: 'done', percent: 100, city: finalLoc.city, region: finalLoc.region });
-      setFiles((prev) => [uploaded, ...prev]);
+      setFiles((prev) => upsertFileEntry(prev, uploaded));
       // Add to the encrypted search index so the new file is searchable
       // across the whole vault from the very next keystroke.
       indexFile(uploaded.id, toSearchIndexEntry(uploaded, uploadFileName, currentFolder.id));
@@ -1670,7 +1685,7 @@ export default function FilesScreen() {
           },
         });
         lastLoc = trustLocation(uploaded.storage_pool_id);
-        setFiles((prev) => [uploaded, ...prev]);
+        setFiles((prev) => upsertFileEntry(prev, uploaded));
         indexFile(uploaded.id, toSearchIndexEntry(uploaded, name, currentFolder.id));
         // Fire-and-forget: image picker only returns images, so always thumbnail.
         void generateAndUploadThumbnail(uploaded.id, uploadUri, asset.mimeType ?? 'image/jpeg', getFileKeyBytes);
@@ -1776,7 +1791,7 @@ export default function FilesScreen() {
         created_at: folder.created_at ?? now,
         updated_at: folder.updated_at ?? now,
       };
-      setFiles((prev) => [safe, ...prev]);
+      setFiles((prev) => upsertFileEntry(prev, safe));
       setDecryptedNames((prev) => ({ ...prev, [safe.id]: trimmed }));
       indexFile(safe.id, toSearchIndexEntry(safe, trimmed, currentFolder.id));
     } catch (err) {
@@ -2459,7 +2474,7 @@ export default function FilesScreen() {
   }, [searchQuery, searchVault, searchIndexReady]);
 
   const displayedFiles = useMemo(() => {
-    let result = files;
+    let result = uniqueFileEntries(files);
     if (recentFilterActive) {
       const cutoff = Date.now() - 24 * 60 * 60 * 1000;
       result = result.filter((f) => !f.is_folder && new Date(f.updated_at).getTime() >= cutoff);
@@ -2471,12 +2486,12 @@ export default function FilesScreen() {
         seen.add(match.id);
         return searchResultToFileEntry(match);
       });
-      const localFallback = files.filter((f) => {
+      const localFallback = result.filter((f) => {
         if (seen.has(f.id)) return false;
         const name = decryptedNames[f.id] ?? displayName(f);
         return name.toLowerCase().includes(q);
       });
-      if (vaultResults.length > 0) return [...vaultResults, ...localFallback];
+      if (vaultResults.length > 0) return uniqueFileEntries([...vaultResults, ...localFallback]);
       result = localFallback;
     }
     return applySortOrder(result, sortOrder, decryptedNames);
@@ -2534,7 +2549,7 @@ export default function FilesScreen() {
 
   // 3 most recently modified non-folder files — reuses the existing files array
   const recentFiles = useMemo(() => (
-    files
+    uniqueFileEntries(files)
       .filter((f) => !f.is_folder)
       .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime())
       .slice(0, 3)
