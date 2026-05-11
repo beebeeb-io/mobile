@@ -21,11 +21,6 @@ const THUMB_QUALITY = 0.7;
 
 const IMAGE_MIME_PREFIX = 'image/';
 
-function bytesToBlob(bytes: Uint8Array): Blob {
-  const copy = bytes.slice();
-  return new Blob([copy.buffer as ArrayBuffer], { type: 'application/octet-stream' });
-}
-
 function bytesToBase64(bytes: Uint8Array): string {
   let binary = '';
   for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
@@ -79,7 +74,7 @@ export async function generateAndUploadThumbnail(
     wire.set(nonce, 0);
     wire.set(ciphertext, nonce.length);
 
-    await uploadThumbnail(fileId, bytesToBlob(wire));
+    await uploadThumbnail(fileId, wire);
   } catch {
     // Best-effort — swallow.
   }
