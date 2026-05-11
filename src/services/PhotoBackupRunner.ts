@@ -15,7 +15,6 @@
  */
 
 import NetInfo from '@react-native-community/netinfo';
-import * as SecureStore from 'expo-secure-store';
 
 // ─── MediaLibrary lazy import ─────────────────────────────────────────────────
 
@@ -54,7 +53,8 @@ try { MediaLibrary = require('expo-media-library') as MLLib; } catch { /* web */
 import type { EncryptedData } from '../../modules/beebeeb-crypto';
 import type { UploadProgress } from '../lib/api';
 import { encryptedUpload, generateFileId } from '../lib/encrypted-upload';
-import { photoBackupCheck, photoBackupMark, createFolder, listFiles } from '../lib/api';
+import { photoBackupCheck, photoBackupMark } from '../lib/api';
+import { ensureBackupFolders } from './BackupService';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -75,8 +75,6 @@ const FAST_THRESHOLD = 5 * 1024 * 1024;
 const SLOW_THRESHOLD = 1 * 1024 * 1024;
 /** Report progress every N successful uploads to reduce UI churn. */
 const PROGRESS_REPORT_EVERY = 5;
-/** Photos folder name at vault root. */
-export const PHOTOS_FOLDER_NAME = 'Photos';
 /**
  * Maximum ciphertext bytes per foreground session.
  * Prevents a single session from uploading unlimited video data.
@@ -135,45 +133,6 @@ function computeAdaptiveLimit(throughputBps: number): number {
   if (throughputBps >= FAST_THRESHOLD) return LIMIT_FAST;
   if (throughputBps >= SLOW_THRESHOLD) return LIMIT_NORMAL;
   return LIMIT_SLOW;
-}
-
-const PHOTOS_FOLDER_ID_KEY = 'beebeeb_photos_folder_id';
-let cachedPhotosFolderId: string | null = null;
-
-/** Encode EncryptedData to the JSON wire format the server stores and web decodes. */
-function encryptedDataToJson(enc: EncryptedData): string {
-  function uint8ToBase64(bytes: Uint8Array): string {
-    let s = '';
-    for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
-    return btoa(s);
-  }
-  return JSON.stringify({
-    nonce: uint8ToBase64(enc.nonce),
-    ciphertext: uint8ToBase64(enc.ciphertext),
-  });
-}
-
-async function ensurePhotosFolder(
-  encryptMetadataFn: (fileId: string, metadata: string) => Promise<EncryptedData>,
-): Promise<string> {
-  // 1. In-memory cache (fast path within a session)
-  if (cachedPhotosFolderId) return cachedPhotosFolderId;
-  // 2. Persistent cache across sessions (SecureStore)
-  const stored = await SecureStore.getItemAsync(PHOTOS_FOLDER_ID_KEY).catch(() => null);
-  if (stored) {
-    cachedPhotosFolderId = stored;
-    return stored;
-  }
-  // 3. Create with a properly-encrypted name in JSON {nonce, ciphertext} format.
-  // The client-generated folderId is passed to the server so the server record
-  // is addressable by this ID from the first request.
-  const folderId = generateFileId();
-  const enc = await encryptMetadataFn(folderId, PHOTOS_FOLDER_NAME);
-  const nameEncrypted = encryptedDataToJson(enc);
-  const folder = await createFolder(nameEncrypted, undefined, folderId);
-  cachedPhotosFolderId = folder.id;
-  await SecureStore.setItemAsync(PHOTOS_FOLDER_ID_KEY, folder.id).catch(() => {});
-  return folder.id;
 }
 
 function formatEtaSeconds(secs: number): string {
@@ -267,13 +226,16 @@ export async function runPhotoBackupSession(
   const needsSet = new Set(needsBackup);
   const toUpload = allAssets.filter((a) => needsSet.has(a.id));
 
-  // ── 3. Ensure Photos folder ────────────────────────────────────────────────
+  // ── 3. Ensure Backups/{device}/Camera Roll folder ─────────────────────────
   if (signal?.aborted) return result;
-  let photosFolderId: string | undefined;
+  let cameraRollFolderId: string;
   try {
-    photosFolderId = await ensurePhotosFolder(encryptMetadataFn);
+    const folders = await ensureBackupFolders('camera_roll');
+    cameraRollFolderId = folders.categoryFolderId;
   } catch (err) {
-    console.warn('[PhotoBackupRunner] could not ensure Photos folder:', err);
+    console.warn('[PhotoBackupRunner] could not ensure Camera Roll backup folder:', err);
+    result.failed = toUpload.length;
+    return result;
   }
 
   // ── 4. Adaptive upload loop ────────────────────────────────────────────────
@@ -327,7 +289,7 @@ export async function runPhotoBackupSession(
         fileId,
         uri,
         name: asset.filename,
-        parentId: photosFolderId,
+        parentId: cameraRollFolderId,
         mimeType: detectMimeType(asset.filename, asset.mediaType),
         encryptChunkFn,
         encryptMetadataFn,

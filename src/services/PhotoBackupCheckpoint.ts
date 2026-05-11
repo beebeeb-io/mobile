@@ -3,8 +3,9 @@
  * creation timestamp so the runner can skip already-processed assets
  * across app kills and foreground/background cycles.
  *
- * Stored as a Unix timestamp in **seconds** (MediaLibrary creationTime
- * uses seconds, not ms). Null means "never backed up — process everything".
+ * Stored as a Unix timestamp in **milliseconds**. Expo MediaLibrary accepts
+ * numeric `createdAfter` values in milliseconds. Null means "never backed up
+ * — process everything".
  */
 
 import { Platform } from 'react-native';
@@ -39,18 +40,21 @@ async function storeSet(key: string, value: string): Promise<void> {
 }
 
 /**
- * Read the Unix timestamp (seconds) of the last successfully backed-up
+ * Read the Unix timestamp (milliseconds) of the last successfully backed-up
  * asset. Returns null if no backup has ever completed.
  */
 export async function readLastBackedUpTimestamp(): Promise<number | null> {
   const raw = await storeGet(CHECKPOINT_KEY);
   if (!raw) return null;
   const n = parseFloat(raw);
-  return isFinite(n) ? n : null;
+  if (!isFinite(n)) return null;
+  // Older builds documented this as seconds. Normalize those values to Expo's
+  // millisecond API shape without disturbing existing millisecond checkpoints.
+  return n < 1_000_000_000_000 ? n * 1000 : n;
 }
 
 /**
- * Write the Unix timestamp (seconds) of an asset that was just backed up.
+ * Write the Unix timestamp (milliseconds) of an asset that was just backed up.
  * Only writes if `ts` is strictly greater than the stored value, so
  * out-of-order calls (unlikely but possible) don't regress the checkpoint.
  */

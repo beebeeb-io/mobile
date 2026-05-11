@@ -179,8 +179,6 @@ public class BeebeebCryptoModule: Module {
     AsyncFunction("triggerImmediateBackup") { (authToken: String) in
       PhotoBackupManager.shared.enable(authToken: authToken)
       PhotoBackupManager.shared.triggerImmediateBatch { _ in }
-      ContactsBackupManager.shared.enable(authToken: authToken)
-      CalendarBackupManager.shared.enable(authToken: authToken)
     }
 
     // ── Share Extension: pending shares dropped by BeebeebShare ────────

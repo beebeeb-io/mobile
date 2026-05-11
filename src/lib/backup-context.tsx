@@ -3,14 +3,10 @@ import * as SecureStore from 'expo-secure-store';
 import { Platform } from 'react-native';
 import NetInfo from '@react-native-community/netinfo';
 import {
-  enablePhotoBackup,
   disablePhotoBackup,
-  enableContactsBackup,
   disableContactsBackup,
-  enableCalendarBackup,
   disableCalendarBackup,
   getBackupProgress,
-  triggerImmediateBackup,
   type NativeBackupProgress,
 } from '../../modules/beebeeb-crypto';
 
@@ -161,6 +157,11 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
         setIsPhotoBackupEnabled(photo === 'true');
         setIsContactsBackupEnabled(contacts === 'true');
         setIsCalendarBackupEnabled(calendar === 'true');
+        if (Platform.OS !== 'web') {
+          if (photo !== 'true') await disablePhotoBackup();
+          if (contacts !== 'true') await disableContactsBackup();
+          if (calendar !== 'true') await disableCalendarBackup();
+        }
         // Defaults: videos on, wifi-only off, background on
         if (videos !== null) setIncludeVideosState(videos === 'true');
         if (wifi !== null) setWifiOnlyState(wifi === 'true');
@@ -198,10 +199,7 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
     try {
       await SecureStore.setItemAsync(BACKUP_PHOTO_KEY, next ? 'true' : 'false');
       if (Platform.OS !== 'web') {
-        if (next) {
-          const token = await getStoredToken();
-          if (token) await enablePhotoBackup(token);
-        } else {
+        if (!next) {
           await disablePhotoBackup();
           setBackupProgress({ total: 0, completed: 0, inProgress: 0 });
         }
@@ -217,10 +215,7 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
     try {
       await SecureStore.setItemAsync(BACKUP_CONTACTS_KEY, next ? 'true' : 'false');
       if (Platform.OS !== 'web') {
-        if (next) {
-          const token = await getStoredToken();
-          if (token) await enableContactsBackup(token);
-        } else {
+        if (!next) {
           await disableContactsBackup();
         }
       }
@@ -235,10 +230,7 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
     try {
       await SecureStore.setItemAsync(BACKUP_CALENDAR_KEY, next ? 'true' : 'false');
       if (Platform.OS !== 'web') {
-        if (next) {
-          const token = await getStoredToken();
-          if (token) await enableCalendarBackup(token);
-        } else {
+        if (!next) {
           await disableCalendarBackup();
         }
       }
@@ -275,17 +267,9 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const triggerBackupNow = useCallback(async () => {
-    // Increment force counter — PhotoBackupBridge watches this and starts a JS session
-    setPhotoBackupForceCount((c) => c + 1);
-
     try {
-      const token = await getStoredToken();
-      if (!token || Platform.OS === 'web') return;
-
       // wifiOnly opt-in: refuse to start a manual backup over cellular or
-      // when offline. The native worker will eventually take over scheduling
-      // (and read this same SecureStore flag itself), but until then this
-      // JS-side gate is the only thing honouring the user's choice.
+      // when offline.
       if (wifiOnly) {
         const net = await NetInfo.fetch();
         const onWifi = net.type === 'wifi' && net.isConnected !== false;
@@ -295,9 +279,13 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
         }
       }
 
-      await triggerImmediateBackup(token);
+      // Increment force counter — PhotoBackupBridge watches this and starts a
+      // JS foreground camera-roll session. Do not call the native
+      // triggerImmediateBackup bridge here; it enables Contacts/Calendar
+      // managers regardless of the user's toggles.
+      setPhotoBackupForceCount((c) => c + 1);
     } catch {
-      // Native module not linked yet
+      // NetInfo unavailable — leave the existing session state unchanged.
     }
   }, [wifiOnly]);
 
