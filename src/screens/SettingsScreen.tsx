@@ -319,6 +319,7 @@ interface CategoryStats {
   totalBytes: number;
   lastSyncAt: string | null;
   syncing: boolean;
+  legacyCount: number;
 }
 
 const EMPTY_CATEGORY_STATS: CategoryStats = {
@@ -328,10 +329,11 @@ const EMPTY_CATEGORY_STATS: CategoryStats = {
   totalBytes: 0,
   lastSyncAt: null,
   syncing: false,
+  legacyCount: 0,
 };
 
 function BackupCategoryStatus({ stats, paused, c }: { stats: CategoryStats; paused?: boolean; c: C }) {
-  const { uploadedCount, totalCount, uploadedBytes, totalBytes, lastSyncAt, syncing } = stats;
+  const { uploadedCount, totalCount, uploadedBytes, totalBytes, lastSyncAt, syncing, legacyCount } = stats;
 
   if (paused && totalCount > uploadedCount) {
     return (
@@ -344,7 +346,7 @@ function BackupCategoryStatus({ stats, paused, c }: { stats: CategoryStats; paus
     );
   }
 
-  if (totalCount === 0 && !lastSyncAt && !syncing) {
+  if (totalCount === 0 && !lastSyncAt && !syncing && legacyCount === 0) {
     return (
       <View style={{ paddingHorizontal: 12, paddingBottom: 10, paddingTop: 2 }}>
         <Text style={{ fontSize: 11, color: c.ink3 }}>Waiting for first scan…</Text>
@@ -361,8 +363,13 @@ function BackupCategoryStatus({ stats, paused, c }: { stats: CategoryStats; paus
     line = `${uploadedCount} / ${totalCount} items · ${formatBytes(uploadedBytes)} / ${formatBytes(totalBytes)}`;
   } else if (lastSyncAt) {
     line = `Last backup: ${timeAgo(lastSyncAt)} · ${uploadedCount} items · ${formatBytes(uploadedBytes)}`;
+  } else if (legacyCount > 0) {
+    line = `${legacyCount} legacy item${legacyCount === 1 ? '' : 's'} migrated from the old backup layout`;
   } else {
     line = `${uploadedCount} of ${totalCount} items backed up`;
+  }
+  if (legacyCount > 0 && lastSyncAt) {
+    line += ` · ${legacyCount} legacy item${legacyCount === 1 ? '' : 's'} migrated`;
   }
 
   return (
@@ -687,6 +694,7 @@ export default function SettingsScreen() {
       totalBytes: photoTotalBytes + videoTotalBytes,
       lastSyncAt: manifest?.backups.camera_roll.last_sync ?? null,
       syncing,
+      legacyCount: manifest?.backups.camera_roll.legacy_items_migrated ?? 0,
     });
     setContactsStats({
       uploadedCount: contactUploaded,
@@ -695,6 +703,7 @@ export default function SettingsScreen() {
       totalBytes: contactTotalBytes,
       lastSyncAt: manifest?.backups.contacts.last_sync ?? null,
       syncing,
+      legacyCount: manifest?.backups.contacts.legacy_items_migrated ?? 0,
     });
     setCalendarStats({
       uploadedCount: calUploaded,
@@ -703,6 +712,7 @@ export default function SettingsScreen() {
       totalBytes: calTotalBytes,
       lastSyncAt: manifest?.backups.calendar.last_sync ?? null,
       syncing,
+      legacyCount: manifest?.backups.calendar.legacy_items_migrated ?? 0,
     });
   }, [syncing]);
 
