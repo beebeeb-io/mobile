@@ -116,6 +116,10 @@ function regionDisplayName(region: string): string {
   return region;
 }
 
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : 'Please try again.';
+}
+
 type RegionMode = 'preference' | 'force';
 type C = Colors;
 
@@ -1033,6 +1037,21 @@ export default function SettingsScreen() {
   }, [triggerBackupNow]);
 
   const handleBackupContactsNow = useCallback(async () => {
+    const granted = await ensureContactsPermission();
+    if (!granted) {
+      Alert.alert(
+        'Contacts access needed',
+        'Enable contacts access for Beebeeb in iOS Settings to back them up.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Open Settings',
+            onPress: () => { void Linking.openSettings(); },
+          },
+        ],
+      );
+      return;
+    }
     setBackingUpContacts(true);
     try {
       await initializeBackup('contacts', {
@@ -1040,14 +1059,31 @@ export default function SettingsScreen() {
         encryptMetadataFn: encryptMetadata,
       });
       refreshBackupStats();
+      showToast({ type: 'success', message: 'Contacts backup checked' });
     } catch (err) {
       console.warn('[SettingsScreen] contacts backup failed:', err);
+      Alert.alert('Contacts backup failed', errorMessage(err));
     } finally {
       setBackingUpContacts(false);
     }
-  }, [encryptChunk, encryptMetadata, refreshBackupStats]);
+  }, [encryptChunk, encryptMetadata, refreshBackupStats, showToast]);
 
   const handleBackupCalendarNow = useCallback(async () => {
+    const granted = await ensureCalendarPermission();
+    if (!granted) {
+      Alert.alert(
+        'Calendar access needed',
+        'Enable calendar access for Beebeeb in iOS Settings to back it up.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Open Settings',
+            onPress: () => { void Linking.openSettings(); },
+          },
+        ],
+      );
+      return;
+    }
     setBackingUpCalendar(true);
     try {
       await initializeBackup('calendar', {
@@ -1055,12 +1091,14 @@ export default function SettingsScreen() {
         encryptMetadataFn: encryptMetadata,
       });
       refreshBackupStats();
+      showToast({ type: 'success', message: 'Calendar backup checked' });
     } catch (err) {
       console.warn('[SettingsScreen] calendar backup failed:', err);
+      Alert.alert('Calendar backup failed', errorMessage(err));
     } finally {
       setBackingUpCalendar(false);
     }
-  }, [encryptChunk, encryptMetadata, refreshBackupStats]);
+  }, [encryptChunk, encryptMetadata, refreshBackupStats, showToast]);
 
   const handleRegionChange = useCallback(async (poolName: string) => {
     const r = REGIONS.find(x => x.poolName === poolName);
