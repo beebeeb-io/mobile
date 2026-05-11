@@ -18,12 +18,11 @@ import * as Haptics from 'expo-haptics';
 import * as MediaLibrary from 'expo-media-library';
 import { radii, spacing } from '../theme';
 import { useTheme } from '../lib/theme-context';
-import { getAllImages, listFiles, friendlyError } from '../lib/api';
+import { getAllImages, friendlyError } from '../lib/api';
 import type { FileEntry } from '../lib/api';
 import { useBackup } from '../lib/backup-context';
 import { useNetworkStatus } from '../lib/useNetworkStatus';
 import { ThumbnailImage } from '../components/ThumbnailImage';
-import { PHOTOS_FOLDER_NAME } from '../services/PhotoBackupRunner';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -399,18 +398,8 @@ export default function PhotosScreen() {
     setError(null);
 
     try {
-      // The Photos folder is created by PhotoBackupRunner with a plaintext
-      // name_encrypted ('Photos') so we can identify it without decryption.
-      // listFiles() at root + getAllImages() are independent reads; run both
-      // in parallel.
-      const [rootEntries, allImages] = await Promise.all([
-        listFiles().catch(() => [] as FileEntry[]),
-        getAllImages(),
-      ]);
-      const photosFolder = rootEntries.find(
-        (f) => f.is_folder && f.name_encrypted === PHOTOS_FOLDER_NAME,
-      );
-      setPhotosFolderId(photosFolder?.id ?? null);
+      const allImages = await getAllImages();
+      setPhotosFolderId(null);
       // Server already returns image-only, sorted newest first, but defend
       // against future changes by re-applying both invariants here.
       const images = allImages

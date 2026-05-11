@@ -214,21 +214,15 @@ export async function ensureBackupFolders(
   const cache = await readFolderCache();
 
   let rootId = cache.rootId;
-  if (!rootId) {
-    rootId = await ensureFolder(undefined, ROOT_FOLDER_NAME);
-  }
+  rootId = await ensureFolder(undefined, ROOT_FOLDER_NAME);
 
   let deviceFolderId = cache.deviceId;
-  if (!deviceFolderId) {
-    const info = await getDeviceInfo();
-    deviceFolderId = await ensureFolder(rootId, info.device_name);
-  }
+  const info = await getDeviceInfo();
+  deviceFolderId = await ensureFolder(rootId, info.device_name);
 
   const categoryFolderName = CATEGORY_FOLDERS[category];
   let categoryFolderId = cache.categoryIds?.[category];
-  if (!categoryFolderId) {
-    categoryFolderId = await ensureFolder(deviceFolderId, categoryFolderName);
-  }
+  categoryFolderId = await ensureFolder(deviceFolderId, categoryFolderName);
 
   await writeFolderCache({
     rootId,
