@@ -8,13 +8,22 @@
 
 let Contacts: any = null;
 try { Contacts = require('expo-contacts'); } catch {}
+import * as FileSystem from 'expo-file-system';
 import * as SecureStore from 'expo-secure-store';
 import { Platform } from 'react-native';
-import { deleteFile, listFiles, uploadFile, type FileEntry } from '../lib/api';
+import type { EncryptedData } from '../../modules/beebeeb-crypto';
+import { deleteFile, listFiles, type FileEntry } from '../lib/api';
+import { encryptedUpload, generateFileId } from '../lib/encrypted-upload';
 import { ensureBackupFolders } from './BackupService';
 
 const CONTACTS_FILENAME = 'contacts.vcf';
 const LAST_HASH_KEY = 'beebeeb_contacts_last_hash';
+const LAST_FILE_ID_KEY = 'beebeeb_contacts_file_id';
+
+export interface BackupEncryptors {
+  encryptChunkFn: (fileId: string, plaintext: Uint8Array) => Promise<EncryptedData>;
+  encryptMetadataFn: (fileId: string, metadata: string) => Promise<EncryptedData>;
+}
 
 export interface ContactsExportResult {
   exported: boolean;
@@ -211,7 +220,7 @@ async function findFile(parentId: string, name: string): Promise<FileEntry | nul
   return children.find((f) => !f.is_folder && f.name_encrypted === name) ?? null;
 }
 
-export async function exportContacts(): Promise<ContactsExportResult> {
+export async function exportContacts(encryption: BackupEncryptors): Promise<ContactsExportResult> {
   if (!Contacts || typeof Contacts.getPermissionsAsync !== 'function') {
     return { exported: false, contactCount: 0, reason: 'no_permission' };
   }
@@ -253,24 +262,37 @@ export async function exportContacts(): Promise<ContactsExportResult> {
 
   const { categoryFolderId } = await ensureBackupFolders('contacts');
 
-  // Replace any existing contacts.vcf so the latest export is authoritative.
+  const previousFileId = await SecureStore.getItemAsync(LAST_FILE_ID_KEY);
+  if (previousFileId) {
+    await deleteFile(previousFileId).catch(() => {});
+  }
+
+  // Replace any legacy plaintext-name contacts.vcf so the latest export is authoritative.
   const existing = await findFile(categoryFolderId, CONTACTS_FILENAME);
   if (existing) {
     await deleteFile(existing.id);
   }
 
-  const blob = new Blob([vcards], { type: 'text/vcard' });
-  const uploaded = await uploadFile(
-    {
-      name_encrypted: CONTACTS_FILENAME,
-      parent_id: categoryFolderId,
-      mime_type: 'text/vcard',
-      size_bytes: blob.size,
-    },
-    blob,
-  );
+  if (!FileSystem.cacheDirectory) throw new Error('File cache unavailable');
+  const fileId = generateFileId();
+  const uri = `${FileSystem.cacheDirectory}contacts_${fileId}.vcf`;
+  await FileSystem.writeAsStringAsync(uri, vcards);
+  let uploaded: FileEntry;
+  try {
+    uploaded = await encryptedUpload({
+      fileId,
+      uri,
+      name: CONTACTS_FILENAME,
+      parentId: categoryFolderId,
+      mimeType: 'text/vcard',
+      ...encryption,
+    });
+  } finally {
+    await FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => {});
+  }
 
   await setLastHash(hash);
+  await SecureStore.setItemAsync(LAST_FILE_ID_KEY, uploaded.id);
 
   return { exported: true, contactCount: data.length, fileId: uploaded.id };
 }

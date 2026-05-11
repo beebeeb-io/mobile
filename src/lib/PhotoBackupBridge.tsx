@@ -23,6 +23,7 @@ import {
   writeLastBackedUpTimestamp,
   writeLastSessionAt,
 } from '../services/PhotoBackupCheckpoint';
+import { updateBackupCategoryState } from '../services/BackupService';
 
 export function PhotoBackupBridge(): null {
   const { isUnlocked, encryptChunk, encryptMetadata, getFileKeyBytes } = useCrypto();
@@ -30,6 +31,7 @@ export function PhotoBackupBridge(): null {
     isPhotoBackupEnabled,
     includeVideos,
     wifiOnly,
+    backgroundUpload,
     photoBackupForceCount,
     reportPhotoProgress,
   } = useBackup();
@@ -44,6 +46,7 @@ export function PhotoBackupBridge(): null {
     isPhotoBackupEnabled,
     includeVideos,
     wifiOnly,
+    backgroundUpload,
     encryptChunk,
     encryptMetadata,
     getFileKeyBytes,
@@ -56,6 +59,7 @@ export function PhotoBackupBridge(): null {
       isPhotoBackupEnabled,
       includeVideos,
       wifiOnly,
+      backgroundUpload,
       encryptChunk,
       encryptMetadata,
       getFileKeyBytes,
@@ -136,7 +140,17 @@ export function PhotoBackupBridge(): null {
         });
       }
 
-      await writeLastSessionAt(new Date().toISOString());
+      const sessionAt = new Date().toISOString();
+      await writeLastSessionAt(sessionAt);
+      await updateBackupCategoryState('camera_roll', {
+        enabled: true,
+        last_sync: sessionAt,
+        include_videos: s.includeVideos,
+        wifi_only: s.wifiOnly,
+        background_enabled: s.backgroundUpload,
+      }).catch((err) => {
+        console.warn('[PhotoBackupBridge] could not update camera-roll manifest:', err);
+      });
     } catch (err) {
       if (err instanceof Error && err.name !== 'AbortError') {
         console.warn('[PhotoBackupBridge] session error:', err);

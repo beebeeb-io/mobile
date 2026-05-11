@@ -8,15 +8,24 @@
 
 let Calendar: any = null;
 try { Calendar = require('expo-calendar'); } catch {}
+import * as FileSystem from 'expo-file-system';
 import * as SecureStore from 'expo-secure-store';
 import { Platform } from 'react-native';
-import { deleteFile, listFiles, uploadFile, type FileEntry } from '../lib/api';
+import type { EncryptedData } from '../../modules/beebeeb-crypto';
+import { deleteFile, listFiles, type FileEntry } from '../lib/api';
+import { encryptedUpload, generateFileId } from '../lib/encrypted-upload';
 import { ensureBackupFolders } from './BackupService';
 
 const PRODID = '-//Beebeeb//Mobile Backup//EN';
 const WINDOW_PAST_DAYS = 365;
 const WINDOW_FUTURE_DAYS = 365;
 const LAST_HASH_KEY_PREFIX = 'beebeeb_calendar_last_hash:';
+const LAST_FILE_ID_KEY_PREFIX = 'beebeeb_calendar_file_id:';
+
+export interface BackupEncryptors {
+  encryptChunkFn: (fileId: string, plaintext: Uint8Array) => Promise<EncryptedData>;
+  encryptMetadataFn: (fileId: string, metadata: string) => Promise<EncryptedData>;
+}
 
 export interface CalendarExportResult {
   exported: boolean;
@@ -181,7 +190,7 @@ async function findFile(parentId: string, name: string): Promise<FileEntry | nul
   return children.find((f) => !f.is_folder && f.name_encrypted === name) ?? null;
 }
 
-export async function exportCalendars(): Promise<CalendarExportResult> {
+export async function exportCalendars(encryption: BackupEncryptors): Promise<CalendarExportResult> {
   const getPermission = Calendar?.getCalendarPermissionsAsync ?? Calendar?.getPermissionsAsync;
   if (typeof getPermission !== 'function') {
     return { exported: false, calendarCount: 0, eventCount: 0, reason: 'no_permission' };
@@ -217,23 +226,36 @@ export async function exportCalendars(): Promise<CalendarExportResult> {
     if (previous === hash) continue;
 
     const filename = safeFilename(cal.title);
+    const previousFileId = await SecureStore.getItemAsync(`${LAST_FILE_ID_KEY_PREFIX}${cal.id}`);
+    if (previousFileId) {
+      await deleteFile(previousFileId).catch(() => {});
+    }
+
     const existing = await findFile(categoryFolderId, filename);
     if (existing) {
       await deleteFile(existing.id);
     }
 
-    const blob = new Blob([ics], { type: 'text/calendar' });
-    await uploadFile(
-      {
-        name_encrypted: filename,
-        parent_id: categoryFolderId,
-        mime_type: 'text/calendar',
-        size_bytes: blob.size,
-      },
-      blob,
-    );
+    if (!FileSystem.cacheDirectory) throw new Error('File cache unavailable');
+    const fileId = generateFileId();
+    const uri = `${FileSystem.cacheDirectory}calendar_${fileId}.ics`;
+    let uploaded: FileEntry;
+    await FileSystem.writeAsStringAsync(uri, ics);
+    try {
+      uploaded = await encryptedUpload({
+        fileId,
+        uri,
+        name: filename,
+        parentId: categoryFolderId,
+        mimeType: 'text/calendar',
+        ...encryption,
+      });
+    } finally {
+      await FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => {});
+    }
 
     await setLastHash(cal.id, hash);
+    await SecureStore.setItemAsync(`${LAST_FILE_ID_KEY_PREFIX}${cal.id}`, uploaded.id);
     exportedAny = true;
   }
 
