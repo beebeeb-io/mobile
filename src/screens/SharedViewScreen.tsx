@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Linking,
@@ -118,6 +118,18 @@ function fragmentKeyToBytes(key: string): Uint8Array {
   return base64ToUint8Array(normalized);
 }
 
+function splitShareTokenParam(rawToken: string): { token: string; shareKey: string | null } {
+  const hashIndex = rawToken.indexOf('#');
+  if (hashIndex < 0) {
+    return { token: rawToken, shareKey: null };
+  }
+
+  const token = rawToken.slice(0, hashIndex);
+  const hash = rawToken.slice(hashIndex + 1);
+  const key = new URLSearchParams(hash).get('key');
+  return { token, shareKey: key ? decodeURIComponent(key) : null };
+}
+
 /** Sanitise the saved file's basename so it survives the fs cache path. */
 function safeBasename(name: string | undefined, fallback: string): string {
   const raw = (name ?? fallback).trim();
@@ -136,14 +148,18 @@ export default function SharedViewScreen() {
   const route = useRoute<SharedViewRoute>();
   const insets = useSafeAreaInsets();
   const { colors: c } = useTheme();
-  const { token } = route.params;
+  const rawToken = route.params.token;
+  const { token, shareKey: routeShareKey } = useMemo(
+    () => splitShareTokenParam(rawToken),
+    [rawToken],
+  );
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<ShareInfo | null>(null);
   // Captured from the #key= URL fragment (stored before React Navigation
   // strips it). Available only when the user arrives via a deep link.
-  const [shareKey] = useState<string | null>(() => consumeShareKey(token));
+  const [shareKey] = useState<string | null>(() => routeShareKey ?? consumeShareKey(token));
 
   // Decryption state — driven by the "Decrypt & save" button.
   const [decrypting, setDecrypting] = useState(false);

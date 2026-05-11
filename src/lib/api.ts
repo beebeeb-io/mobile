@@ -1023,7 +1023,7 @@ export interface ShareInfo {
 
 /** Fetch public share metadata by token — no auth required. */
 export async function getShareByToken(token: string): Promise<ShareInfo> {
-  return request<ShareInfo>('GET', `/api/v1/shares/token/${token}`, undefined, false);
+  return request<ShareInfo>('GET', `/api/v1/shares/${token}`, undefined, false);
 }
 
 /**
