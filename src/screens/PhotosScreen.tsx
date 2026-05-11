@@ -24,7 +24,11 @@ import { useBackup } from '../lib/backup-context';
 import { useCrypto } from '../lib/crypto-context';
 import { useNetworkStatus } from '../lib/useNetworkStatus';
 import { ThumbnailImage } from '../components/ThumbnailImage';
-import { prefetchDecryptedThumbnails, pruneThumbnailCache } from '../lib/thumbnail';
+import {
+  ensureThumbnailForImage,
+  prefetchDecryptedThumbnails,
+  pruneThumbnailCache,
+} from '../lib/thumbnail';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -101,6 +105,23 @@ function collectThumbnailIds(groups: PhotoGroup[], visibleIndexes: number[]): Se
   for (let groupIndex = min; groupIndex <= max && ids.length < ACTIVE_THUMBNAIL_LIMIT; groupIndex++) {
     for (const photo of groups[groupIndex]?.data ?? []) {
       if (photo.has_thumbnail) ids.push(photo.id);
+      if (ids.length >= ACTIVE_THUMBNAIL_LIMIT) break;
+    }
+  }
+
+  return new Set(ids);
+}
+
+function collectVisiblePhotoIds(groups: PhotoGroup[], visibleIndexes: number[]): Set<string> {
+  if (groups.length === 0) return new Set();
+  const indexes = visibleIndexes.length > 0 ? visibleIndexes : [0];
+  const min = Math.max(0, Math.min(...indexes) - 1);
+  const max = Math.min(groups.length - 1, Math.max(...indexes) + 1);
+  const ids: string[] = [];
+
+  for (let groupIndex = min; groupIndex <= max && ids.length < ACTIVE_THUMBNAIL_LIMIT; groupIndex++) {
+    for (const photo of groups[groupIndex]?.data ?? []) {
+      ids.push(photo.id);
       if (ids.length >= ACTIVE_THUMBNAIL_LIMIT) break;
     }
   }
@@ -401,6 +422,7 @@ export default function PhotosScreen() {
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<Filter>('Months');
   const [activeThumbnailIds, setActiveThumbnailIds] = useState<Set<string>>(() => new Set());
+  const [activePhotoIds, setActivePhotoIds] = useState<Set<string>>(() => new Set());
   const groupsRef = useRef<PhotoGroup[]>([]);
   const viewabilityConfig = useRef({ itemVisiblePercentThreshold: 10 }).current;
 
@@ -459,6 +481,7 @@ export default function PhotosScreen() {
   useEffect(() => {
     groupsRef.current = groups;
     setActiveThumbnailIds(collectThumbnailIds(groups, [0]));
+    setActivePhotoIds(collectVisiblePhotoIds(groups, [0]));
   }, [groups]);
 
   useEffect(() => {
@@ -466,6 +489,33 @@ export default function PhotosScreen() {
     if (ids.length === 0) return;
     void prefetchDecryptedThumbnails(ids, getFileKeyBytes);
   }, [activeThumbnailIds, getFileKeyBytes]);
+
+  useEffect(() => {
+    const missing = photos.filter((photo) => activePhotoIds.has(photo.id) && !photo.has_thumbnail).slice(0, 8);
+    if (missing.length === 0) return;
+    let cancelled = false;
+    void (async () => {
+      for (const photo of missing) {
+        const repaired = await ensureThumbnailForImage(
+          photo.id,
+          photo.name_encrypted,
+          photo.size_bytes,
+          photo.chunk_count,
+          photo.mime_type,
+          getFileKeyBytes,
+        );
+        if (cancelled) return;
+        if (repaired) {
+          setPhotos((prev) => prev.map((item) => (
+            item.id === photo.id ? { ...item, has_thumbnail: true } : item
+          )));
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [activePhotoIds, getFileKeyBytes, photos]);
 
   // Compute seed offsets so swatch colors are stable across the whole screen
   const groupOffsets = useMemo(() => {
@@ -493,6 +543,7 @@ export default function PhotosScreen() {
       .map((item) => item.index)
       .filter((index): index is number => typeof index === 'number');
     setActiveThumbnailIds(collectThumbnailIds(groupsRef.current, indexes));
+    setActivePhotoIds(collectVisiblePhotoIds(groupsRef.current, indexes));
   }).current;
 
   const renderEmpty = () => {

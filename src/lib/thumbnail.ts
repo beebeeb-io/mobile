@@ -8,10 +8,14 @@
  * underlying upload. Callers should not await the result.
  */
 
-import { uploadThumbnail, getToken, thumbnailUrl } from './api';
+import { uploadThumbnail, downloadFile, getToken, thumbnailUrl } from './api';
 import { encryptChunk, decryptChunk } from '../../modules/beebeeb-crypto';
 import * as FileSystem from 'expo-file-system';
 import { EncodingType } from 'expo-file-system';
+import {
+  decryptEncryptedBytes,
+  inferChunkCountFromEncryptedSize,
+} from './encrypted-download';
 
 let ImageManipulator: typeof import('expo-image-manipulator') | null = null;
 try { ImageManipulator = require('expo-image-manipulator'); } catch {}
@@ -88,10 +92,99 @@ export async function generateAndUploadThumbnail(
   }
 }
 
+function responseHeaderInt(headers: Headers, key: string): number | null {
+  const value = headers.get(key) ?? headers.get(key.toLowerCase());
+  if (!value) return null;
+  const n = Number.parseInt(value, 10);
+  return Number.isFinite(n) && n >= 0 ? n : null;
+}
+
+/**
+ * Best-effort repair for image files that predate thumbnail generation.
+ * Only call this for visible/recent items: it downloads the full encrypted
+ * image, decrypts it locally, creates the normal encrypted thumbnail, uploads
+ * that thumbnail, then leaves the visible cell to fetch the small thumbnail.
+ */
+export async function ensureThumbnailForImage(
+  fileId: string,
+  fileName: string | null | undefined,
+  sizeBytes: number | null | undefined,
+  chunkCount: number | null | undefined,
+  mimeType: string | null | undefined,
+  getFileKeyBytes: (fileId: string) => Promise<Uint8Array>,
+): Promise<boolean> {
+  if (!isImageMime(mimeType)) return false;
+  const pending = repairInflight.get(fileId);
+  if (pending) return pending;
+
+  const repairPromise = (async () => {
+    if (!FileSystem.cacheDirectory) return false;
+    let sourceUri: string | null = null;
+    try {
+      const res = await downloadFile(fileId);
+      const encryptedBytes = new Uint8Array(await res.arrayBuffer());
+      const effectiveSize =
+        responseHeaderInt(res.headers, 'X-Original-Size') ?? sizeBytes ?? encryptedBytes.length - 28;
+      if (effectiveSize <= 0) return false;
+
+      const headerChunkCount = responseHeaderInt(res.headers, 'X-Chunk-Count');
+      const headerChunkSize = responseHeaderInt(res.headers, 'X-Chunk-Size');
+      const inferred = inferChunkCountFromEncryptedSize(encryptedBytes.length, effectiveSize);
+      const effectiveChunkCount = headerChunkCount ?? chunkCount ?? inferred ?? 1;
+      const effectiveChunkSize = headerChunkSize && headerChunkSize > 0 ? headerChunkSize : undefined;
+
+      const fileKey = await getFileKeyBytes(fileId);
+      const plaintext = await decryptEncryptedBytes(
+        fileKey,
+        encryptedBytes,
+        effectiveChunkCount,
+        effectiveSize,
+        effectiveChunkSize,
+      );
+
+      const mime = mimeType ?? '';
+      const ext = mime.includes('png') ? 'png'
+        : mime.includes('webp') ? 'webp'
+          : mime.includes('heic') || mime.includes('heif') ? 'heic'
+            : 'jpg';
+      const safeName = (fileName ?? fileId).replace(/[^a-zA-Z0-9._()-]/g, '_').slice(0, 64);
+      sourceUri = `${FileSystem.cacheDirectory}thumb_source_${fileId}_${safeName || 'image'}.${ext}`;
+      await FileSystem.writeAsStringAsync(sourceUri, bytesToBase64(plaintext), {
+        encoding: EncodingType.Base64,
+      });
+
+      const thumb = await generateThumbnail(sourceUri);
+      if (!thumb) return false;
+
+      const { nonce, ciphertext } = await encryptChunk(fileKey, thumb);
+      const wire = new Uint8Array(nonce.length + ciphertext.length);
+      wire.set(nonce, 0);
+      wire.set(ciphertext, nonce.length);
+
+      await uploadThumbnail(fileId, wire);
+      return true;
+    } catch {
+      return false;
+    } finally {
+      if (sourceUri) {
+        await FileSystem.deleteAsync(sourceUri, { idempotent: true }).catch(() => {});
+      }
+    }
+  })();
+
+  repairInflight.set(fileId, repairPromise);
+  try {
+    return await repairPromise;
+  } finally {
+    repairInflight.delete(fileId);
+  }
+}
+
 // In-memory cache: fileId → local temp file URI. Disk cache is bounded by
 // pruneThumbnailCache(); callers trigger it after list refreshes.
 const thumbCache = new Map<string, string>();
 const inflight = new Map<string, Promise<string | null>>();
+const repairInflight = new Map<string, Promise<boolean>>();
 
 function thumbPath(fileId: string): string | null {
   if (!FileSystem.cacheDirectory) return null;
