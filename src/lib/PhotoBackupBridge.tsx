@@ -25,7 +25,7 @@ import {
 } from '../services/PhotoBackupCheckpoint';
 
 export function PhotoBackupBridge(): null {
-  const { isUnlocked, encryptChunk, encryptMetadata } = useCrypto();
+  const { isUnlocked, encryptChunk, encryptMetadata, getFileKeyBytes } = useCrypto();
   const {
     isPhotoBackupEnabled,
     includeVideos,
@@ -46,6 +46,7 @@ export function PhotoBackupBridge(): null {
     wifiOnly,
     encryptChunk,
     encryptMetadata,
+    getFileKeyBytes,
     reportPhotoProgress,
     showToast,
   });
@@ -57,6 +58,7 @@ export function PhotoBackupBridge(): null {
       wifiOnly,
       encryptChunk,
       encryptMetadata,
+      getFileKeyBytes,
       reportPhotoProgress,
       showToast,
     };
@@ -97,6 +99,7 @@ export function PhotoBackupBridge(): null {
       const result = await runPhotoBackupSession({
         encryptChunkFn: s.encryptChunk,
         encryptMetadataFn: s.encryptMetadata,
+        getFileKeyBytes: s.getFileKeyBytes,
         includeVideos: s.includeVideos,
         createdAfterTs,
         signal: ctrl.signal,

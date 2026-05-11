@@ -55,6 +55,7 @@ import type { UploadProgress } from '../lib/api';
 import { encryptedUpload, generateFileId } from '../lib/encrypted-upload';
 import { photoBackupCheck, photoBackupMark } from '../lib/api';
 import { ensureBackupFolders } from './BackupService';
+import { generateAndUploadThumbnail } from '../lib/thumbnail';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -105,6 +106,7 @@ export interface PhotoProgressInfo {
 export interface PhotoBackupRunnerOpts {
   encryptChunkFn: (fileId: string, plaintext: Uint8Array) => Promise<EncryptedData>;
   encryptMetadataFn: (fileId: string, metadata: string) => Promise<EncryptedData>;
+  getFileKeyBytes: (fileId: string) => Promise<Uint8Array>;
   includeVideos: boolean;
   /**
    * Only process assets created after this Unix timestamp (seconds).
@@ -183,7 +185,7 @@ export async function runPhotoBackupSession(
     return result;
   }
 
-  const { encryptChunkFn, encryptMetadataFn, includeVideos, createdAfterTs, onProgress, onCheckpoint, signal } = opts;
+  const { encryptChunkFn, encryptMetadataFn, getFileKeyBytes, includeVideos, createdAfterTs, onProgress, onCheckpoint, signal } = opts;
 
   // ── 1. Enumerate assets (oldest-first for checkpoint-based resume) ────────
   const mediaTypes: string[] = [MediaLibrary.MediaType.photo];
@@ -300,6 +302,7 @@ export async function runPhotoBackupSession(
         },
       });
 
+      void generateAndUploadThumbnail(uploaded.id, uri, detectMimeType(asset.filename, asset.mediaType), getFileKeyBytes);
       await photoBackupMark(asset.id, uploaded.id);
 
       bytesThisSession += fileBytesUploaded || fileBytesTotal;
