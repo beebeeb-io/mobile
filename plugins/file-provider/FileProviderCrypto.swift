@@ -11,6 +11,7 @@ private let kWrappedKeyService = "io.beebeeb.masterkey"
 private let kSEKeyTag = "io.beebeeb.sekey".data(using: .utf8)!
 private let kECIESAlgorithm = SecKeyAlgorithm.eciesEncryptionCofactorVariableIVX963SHA256AESGCM
 private let kChunkSize = 4 * 1024 * 1024
+private let kSimulatorFileProviderMasterKeyKey = "io.beebeeb.simulatorFileProviderMasterKey"
 
 class FileProviderCrypto {
     private var masterKeyHandle: MasterKeyHandle?
@@ -23,12 +24,22 @@ class FileProviderCrypto {
 
     private func loadMasterKey() {
         do {
-            guard let keyData = try readWrappedMasterKey(label: kMasterKeyLabel) else {
-                logger.warning("No extension-readable master key found — crypto operations will fail until App Group keychain sharing is wired")
+            if let keyData = try readWrappedMasterKey(label: kMasterKeyLabel) {
+                masterKeyHandle = try MasterKeyHandle.fromKeychainBytes(bytes: keyData)
+                logger.info("Master key loaded from shared keychain")
                 return
             }
-            masterKeyHandle = try MasterKeyHandle.fromKeychainBytes(bytes: keyData)
-            logger.info("Master key loaded from shared keychain")
+
+            #if DEBUG && targetEnvironment(simulator)
+            if let keyData = readSimulatorMasterKeyFallback() {
+                masterKeyHandle = try MasterKeyHandle.fromKeychainBytes(bytes: keyData)
+                logger.info("Master key loaded from DEBUG simulator App Group fallback")
+                return
+            }
+            #endif
+
+            logger.warning("No extension-readable master key found — crypto operations will fail until App Group keychain sharing is wired")
+            return
         } catch {
             logger.error("Failed to load master key: \(error.localizedDescription)")
         }
@@ -217,6 +228,19 @@ class FileProviderCrypto {
         }
         return plaintext as Data
     }
+
+    #if DEBUG && targetEnvironment(simulator)
+    private func readSimulatorMasterKeyFallback() -> Data? {
+        guard
+            let encoded = UserDefaults(suiteName: kAppGroup)?.string(forKey: kSimulatorFileProviderMasterKeyKey),
+            let data = Data(base64Encoded: encoded),
+            data.count == 32
+        else {
+            return nil
+        }
+        return data
+    }
+    #endif
 
     private func findSEKey() -> SecKey? {
         var query: [CFString: Any] = [

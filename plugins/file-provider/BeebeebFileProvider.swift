@@ -3,6 +3,7 @@ import UniformTypeIdentifiers
 import os.log
 
 private let logger = Logger(subsystem: "io.beebeeb.app.file-provider", category: "FileProvider")
+private let trashContainerIdentifier = NSFileProviderItemIdentifier("NSFileProviderTrashContainerItemIdentifier")
 
 class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
     let domain: NSFileProviderDomain
@@ -36,7 +37,7 @@ class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                 completionHandler(item, nil)
             } catch {
                 logger.error("item(for:) failed: \(error.localizedDescription)")
-                completionHandler(nil, error)
+                completionHandler(nil, fileProviderError(error))
             }
             progress.completedUnitCount = 1
         }
@@ -54,14 +55,30 @@ class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
 
         if containerItemIdentifier == .rootContainer {
             return FileProviderEnumerator(
-                parentId: nil,
+                scope: .root,
+                apiClient: apiClient,
+                crypto: cryptoClient
+            )
+        }
+
+        if containerItemIdentifier == .workingSet {
+            return FileProviderEnumerator(
+                scope: .workingSet,
+                apiClient: apiClient,
+                crypto: cryptoClient
+            )
+        }
+
+        if containerItemIdentifier == trashContainerIdentifier {
+            return FileProviderEnumerator(
+                scope: .empty("trash"),
                 apiClient: apiClient,
                 crypto: cryptoClient
             )
         }
 
         return FileProviderEnumerator(
-            parentId: containerItemIdentifier.rawValue,
+            scope: .folder(containerItemIdentifier.rawValue),
             apiClient: apiClient,
             crypto: cryptoClient
         )
@@ -95,7 +112,8 @@ class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                 )
                 progress.completedUnitCount = 90
 
-                let tempDir = NSFileProviderManager.default.documentStorageURL
+                let tempDir = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("BeebeebFileProvider", isDirectory: true)
                     .appendingPathComponent(itemIdentifier.rawValue, isDirectory: true)
                 try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
 
@@ -111,7 +129,7 @@ class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                 completionHandler(tempFile, item, nil)
             } catch {
                 logger.error("fetchContents failed: \(error.localizedDescription)")
-                completionHandler(nil, nil, error)
+                completionHandler(nil, nil, fileProviderError(error))
             }
         }
 
@@ -191,7 +209,7 @@ class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                 }
             } catch {
                 logger.error("createItem failed: \(error.localizedDescription)")
-                completionHandler(nil, [], false, error)
+                completionHandler(nil, [], false, fileProviderError(error))
             }
         }
 
@@ -246,7 +264,7 @@ class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                 completionHandler(updatedItem, [], false, nil)
             } catch {
                 logger.error("modifyItem failed: \(error.localizedDescription)")
-                completionHandler(nil, [], false, error)
+                completionHandler(nil, [], false, fileProviderError(error))
             }
         }
 
@@ -270,7 +288,7 @@ class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                 completionHandler(nil)
             } catch {
                 logger.error("deleteItem failed: \(error.localizedDescription)")
-                completionHandler(error)
+                completionHandler(fileProviderError(error))
             }
             progress.completedUnitCount = 1
         }
@@ -283,6 +301,9 @@ class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
     private func fetchItem(identifier: NSFileProviderItemIdentifier) async throws -> FileProviderItem {
         if identifier == .rootContainer {
             return FileProviderItem.rootContainer
+        }
+        if identifier == trashContainerIdentifier {
+            throw FileProviderAPIError.notFound
         }
         let metadata = try await apiClient.getFileMetadata(fileId: identifier.rawValue)
         return FileProviderItem(metadata: metadata, crypto: cryptoClient)
