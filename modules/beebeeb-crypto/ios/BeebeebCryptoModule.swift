@@ -86,6 +86,18 @@ private func signalFileProviderEnumerator(
 }
 
 @available(iOS 16.0, *)
+private func signalBeebeebFileProviderEnumerators() async {
+  let domain = beebeebFileProviderDomain()
+  let domains = (try? await getFileProviderDomains()) ?? []
+  guard domains.contains(where: { $0.identifier == domain.identifier }) else {
+    return
+  }
+
+  _ = await signalFileProviderEnumerator(domain: domain, itemIdentifier: .rootContainer)
+  _ = await signalFileProviderEnumerator(domain: domain, itemIdentifier: .workingSet)
+}
+
+@available(iOS 16.0, *)
 private func fileProviderDomainStatus(
   domain: NSFileProviderDomain,
   registered: Bool,
@@ -544,28 +556,37 @@ public class BeebeebCryptoModule: Module {
       fileProviderPrivacyState()
     }
 
-    AsyncFunction("setFileProviderAuthRequired") { (required: Bool) -> [String: Any] in
+    AsyncFunction("setFileProviderAuthRequired") { (required: Bool) async -> [String: Any] in
       let defaults = sharedDefaults()
       defaults?.set(required, forKey: fileProviderAuthRequiredKey)
       if required {
         defaults?.set(0, forKey: fileProviderUnlockedUntilKey)
       }
       defaults?.synchronize()
+      if #available(iOS 16.0, *) {
+        await signalBeebeebFileProviderEnumerators()
+      }
       return fileProviderPrivacyState(defaults: defaults)
     }
 
-    AsyncFunction("unlockFileProviderAccess") { () -> [String: Any] in
+    AsyncFunction("unlockFileProviderAccess") { () async -> [String: Any] in
       let defaults = sharedDefaults()
       let unlockedUntilMs = (Date().timeIntervalSince1970 + Double(fileProviderUnlockWindowSeconds)) * 1000
       defaults?.set(unlockedUntilMs, forKey: fileProviderUnlockedUntilKey)
       defaults?.synchronize()
+      if #available(iOS 16.0, *) {
+        await signalBeebeebFileProviderEnumerators()
+      }
       return fileProviderPrivacyState(defaults: defaults)
     }
 
-    AsyncFunction("lockFileProviderAccess") { () -> [String: Any] in
+    AsyncFunction("lockFileProviderAccess") { () async -> [String: Any] in
       let defaults = sharedDefaults()
       _ = clearFileProviderSharedState(defaults: defaults)
       defaults?.synchronize()
+      if #available(iOS 16.0, *) {
+        await signalBeebeebFileProviderEnumerators()
+      }
       return fileProviderPrivacyState(defaults: defaults)
     }
 

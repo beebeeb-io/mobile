@@ -140,6 +140,9 @@ class FileProviderCrypto {
     // MARK: - Shared Keychain Access
 
     private func fileKey(for fileId: String) throws -> FileKeyHandle {
+        if masterKeyHandle == nil {
+            loadMasterKey()
+        }
         guard let mk = masterKeyHandle else {
             throw FileProviderCryptoError.noMasterKey
         }
