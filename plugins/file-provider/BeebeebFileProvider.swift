@@ -1,4 +1,5 @@
 import FileProvider
+import UniformTypeIdentifiers
 import os.log
 
 private let logger = Logger(subsystem: "io.beebeeb.app.file-provider", category: "FileProvider")
@@ -80,29 +81,30 @@ class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
             do {
                 logger.info("fetchContents for: \(itemIdentifier.rawValue)")
 
-                // Download encrypted chunks from server
-                let encryptedData = try await apiClient.downloadFile(fileId: itemIdentifier.rawValue)
+                let metadata = try await apiClient.getFileMetadata(fileId: itemIdentifier.rawValue)
+                progress.completedUnitCount = 20
+
+                let encryptedFile = try await apiClient.downloadFile(fileId: itemIdentifier.rawValue)
                 progress.completedUnitCount = 60
 
-                // Decrypt using the file key derived from master key
                 let plaintext = try cryptoClient.decryptFile(
                     fileId: itemIdentifier.rawValue,
-                    encryptedChunks: encryptedData
+                    encryptedFile: encryptedFile,
+                    plaintextSize: metadata.sizeBytes,
+                    metadataChunkCount: metadata.chunkCount
                 )
                 progress.completedUnitCount = 90
 
-                // Write plaintext to a temporary file
                 let tempDir = NSFileProviderManager.default.documentStorageURL
                     .appendingPathComponent(itemIdentifier.rawValue, isDirectory: true)
                 try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
 
-                let metadata = try await apiClient.getFileMetadata(fileId: itemIdentifier.rawValue)
                 let fileName = cryptoClient.decryptFilename(
                     fileId: itemIdentifier.rawValue,
                     encrypted: metadata.nameEncrypted
                 ) ?? "file"
-                let tempFile = tempDir.appendingPathComponent(fileName)
-                try plaintext.write(to: tempFile)
+                let tempFile = tempDir.appendingPathComponent(safeFilename(fileName), isDirectory: false)
+                try plaintext.write(to: tempFile, options: [.atomic, .completeFileProtection])
                 progress.completedUnitCount = 100
 
                 let item = FileProviderItem(metadata: metadata, crypto: cryptoClient)
@@ -131,17 +133,19 @@ class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         Task {
             do {
                 if itemTemplate.contentType == .folder {
-                    // Create folder
+                    let folderId = UUID().uuidString.lowercased()
                     let parentId = itemTemplate.parentItemIdentifier == .rootContainer
                         ? nil
                         : itemTemplate.parentItemIdentifier.rawValue
 
                     let encryptedName = try cryptoClient.encryptFilename(
-                        parentId: parentId,
-                        name: itemTemplate.filename
+                        fileId: folderId,
+                        name: itemTemplate.filename,
+                        mimeType: nil
                     )
 
                     let metadata = try await apiClient.createFolder(
+                        folderId: folderId,
                         nameEncrypted: encryptedName,
                         parentId: parentId
                     )
@@ -150,7 +154,7 @@ class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                     let item = FileProviderItem(metadata: metadata, crypto: cryptoClient)
                     completionHandler(item, [], false, nil)
                 } else if let fileURL = url {
-                    // Upload file — read, encrypt, upload
+                    let fileId = UUID().uuidString.lowercased()
                     let parentId = itemTemplate.parentItemIdentifier == .rootContainer
                         ? nil
                         : itemTemplate.parentItemIdentifier.rawValue
@@ -159,19 +163,19 @@ class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                     progress.completedUnitCount = 10
 
                     let encryptedName = try cryptoClient.encryptFilename(
-                        parentId: parentId,
-                        name: itemTemplate.filename
+                        fileId: fileId,
+                        name: itemTemplate.filename,
+                        mimeType: itemTemplate.contentType?.preferredMIMEType
                     )
 
-                    // Encrypt the file content
                     let encrypted = try cryptoClient.encryptFile(
-                        parentId: parentId,
+                        fileId: fileId,
                         plaintext: plaintext
                     )
                     progress.completedUnitCount = 50
 
-                    // Upload to server
-                    let metadata = try await apiClient.uploadFile(
+                    let metadata = try await apiClient.uploadEncryptedFile(
+                        fileId: fileId,
                         nameEncrypted: encryptedName,
                         parentId: parentId,
                         mimeType: itemTemplate.contentType?.preferredMIMEType,
@@ -211,27 +215,18 @@ class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
             do {
                 let fileId = item.itemIdentifier.rawValue
 
+                if changedFields.contains(.contents) {
+                    throw FileProviderAPIError.unsupportedOperation("File Provider content replacement is not enabled until the server replacement-upload contract is wired.")
+                }
+
                 // Handle rename
                 if changedFields.contains(.filename) {
                     let encryptedName = try cryptoClient.encryptFilename(
-                        parentId: item.parentItemIdentifier == .rootContainer ? nil : item.parentItemIdentifier.rawValue,
-                        name: item.filename
+                        fileId: fileId,
+                        name: item.filename,
+                        mimeType: item.contentType?.preferredMIMEType
                     )
                     try await apiClient.renameFile(fileId: fileId, nameEncrypted: encryptedName)
-                }
-
-                // Handle content update (re-encrypt and re-upload)
-                if changedFields.contains(.contents), let fileURL = newContents {
-                    let plaintext = try Data(contentsOf: fileURL)
-                    let encrypted = try cryptoClient.encryptFile(
-                        parentId: item.parentItemIdentifier == .rootContainer ? nil : item.parentItemIdentifier.rawValue,
-                        plaintext: plaintext
-                    )
-                    try await apiClient.updateFileContent(
-                        fileId: fileId,
-                        sizeBytes: Int64(plaintext.count),
-                        encryptedChunks: encrypted
-                    )
                 }
 
                 // Handle move
@@ -291,5 +286,14 @@ class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         }
         let metadata = try await apiClient.getFileMetadata(fileId: identifier.rawValue)
         return FileProviderItem(metadata: metadata, crypto: cryptoClient)
+    }
+
+    private func safeFilename(_ value: String) -> String {
+        let invalid = CharacterSet(charactersIn: "/:\\")
+            .union(.newlines)
+            .union(.controlCharacters)
+        let components = value.components(separatedBy: invalid).filter { !$0.isEmpty }
+        let cleaned = components.joined(separator: "-").trimmingCharacters(in: .whitespacesAndNewlines)
+        return cleaned.isEmpty ? "file" : cleaned
     }
 }

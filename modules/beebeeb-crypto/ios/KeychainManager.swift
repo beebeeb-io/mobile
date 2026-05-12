@@ -39,9 +39,9 @@ final class KeychainManager {
   private static let wrappedKeyService = "io.beebeeb.masterkey"
   private static let eciesAlgorithm = SecKeyAlgorithm.eciesEncryptionCofactorVariableIVX963SHA256AESGCM
 
-  // Set to "<TEAM_ID>.io.beebeeb.shared" once App Groups entitlement is provisioned.
-  // nil means items are scoped to the main app only (safe for development).
-  private static let accessGroup: String? = nil
+  // Shared with the File Provider extension through the keychain-access-groups
+  // entitlement. App Groups and keychain access groups are separate concepts.
+  private static let accessGroup: String? = "R8352WDJJR.io.beebeeb.shared"
 
   // Persisted across launches in UserDefaults (not sensitive — it's just a policy flag).
   private static var requiresBiometric: Bool {
@@ -100,20 +100,27 @@ final class KeychainManager {
     if let group = accessGroup { query[kSecAttrAccessGroup] = group }
 
     var result: CFTypeRef?
-    let status = SecItemCopyMatching(query as CFDictionary, &result)
+    var status = SecItemCopyMatching(query as CFDictionary, &result)
+    if status == errSecItemNotFound, accessGroup != nil {
+      query.removeValue(forKey: kSecAttrAccessGroup)
+      status = SecItemCopyMatching(query as CFDictionary, &result)
+    }
     guard status == errSecSuccess else {
       if status == errSecItemNotFound { return nil }
       throw KeychainError.readError(status)
     }
     guard let wrapped = result as? Data else { return nil }
 
-    guard let seKey = findSEKey() else {
+    guard let seKey = findSEKey() ?? findLegacySEKey() else {
       throw KeychainError.seKeyNotFound
     }
 
     var cfErr: Unmanaged<CFError>?
     guard let plaintext = SecKeyCreateDecryptedData(seKey, eciesAlgorithm, wrapped as CFData, &cfErr) else {
       throw KeychainError.decryptionFailed
+    }
+    if query[kSecAttrAccessGroup] == nil, accessGroup != nil {
+      try? store(masterKeyBytes: plaintext as Data, label: label)
     }
     return plaintext as Data
   }
@@ -235,6 +242,18 @@ final class KeychainManager {
   }
 
   private static func findSEKey() -> SecKey? {
+    var query: [CFString: Any] = [
+      kSecClass: kSecClassKey,
+      kSecAttrKeyType: kSecAttrKeyTypeECSECPrimeRandom,
+      kSecAttrApplicationTag: seKeyTag,
+      kSecAttrTokenID: kSecAttrTokenIDSecureEnclave,
+      kSecReturnRef: true,
+    ]
+    if let group = accessGroup { query[kSecAttrAccessGroup] = group }
+    return findSEKey(query: query)
+  }
+
+  private static func findLegacySEKey() -> SecKey? {
     let query: [CFString: Any] = [
       kSecClass: kSecClassKey,
       kSecAttrKeyType: kSecAttrKeyTypeECSECPrimeRandom,
@@ -242,6 +261,10 @@ final class KeychainManager {
       kSecAttrTokenID: kSecAttrTokenIDSecureEnclave,
       kSecReturnRef: true,
     ]
+    return findSEKey(query: query)
+  }
+
+  private static func findSEKey(query: [CFString: Any]) -> SecKey? {
     var result: CFTypeRef?
     guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
           let obj = result else {
@@ -266,7 +289,7 @@ final class KeychainManager {
       throw KeychainError.seKeyGenerationFailed
     }
 
-    let attributes: [CFString: Any] = [
+    var attributes: [CFString: Any] = [
       kSecAttrKeyType: kSecAttrKeyTypeECSECPrimeRandom,
       kSecAttrKeySizeInBits: 256,
       kSecAttrTokenID: kSecAttrTokenIDSecureEnclave,
@@ -276,6 +299,7 @@ final class KeychainManager {
         kSecAttrAccessControl: access,
       ] as [CFString: Any],
     ]
+    if let group = accessGroup { attributes[kSecAttrAccessGroup] = group }
 
     var cfErr: Unmanaged<CFError>?
     guard let key = SecKeyCreateRandomKey(attributes as CFDictionary, &cfErr) else {
@@ -295,13 +319,20 @@ final class KeychainManager {
   }
 
   private static func deleteSEKey() {
-    let query: [CFString: Any] = [
+    var query: [CFString: Any] = [
       kSecClass: kSecClassKey,
       kSecAttrKeyType: kSecAttrKeyTypeECSECPrimeRandom,
       kSecAttrApplicationTag: seKeyTag,
       kSecAttrTokenID: kSecAttrTokenIDSecureEnclave,
     ]
+    if let group = accessGroup { query[kSecAttrAccessGroup] = group }
     SecItemDelete(query as CFDictionary)
+
+    if accessGroup != nil {
+      var legacyQuery = query
+      legacyQuery.removeValue(forKey: kSecAttrAccessGroup)
+      SecItemDelete(legacyQuery as CFDictionary)
+    }
   }
 
   private static func deleteWrappedItems() {
@@ -311,5 +342,10 @@ final class KeychainManager {
     ]
     if let group = accessGroup { query[kSecAttrAccessGroup] = group }
     SecItemDelete(query as CFDictionary)
+
+    if accessGroup != nil {
+      query.removeValue(forKey: kSecAttrAccessGroup)
+      SecItemDelete(query as CFDictionary)
+    }
   }
 }

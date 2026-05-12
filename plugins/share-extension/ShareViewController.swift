@@ -1,5 +1,4 @@
 import UIKit
-import MobileCoreServices
 import UniformTypeIdentifiers
 
 // MARK: - Constants
@@ -319,12 +318,6 @@ class ShareViewController: UIViewController {
 
     private func mimeType(forPathExtension ext: String) -> String? {
         guard !ext.isEmpty else { return nil }
-        if #available(iOS 14.0, *) {
-            return UTType(filenameExtension: ext)?.preferredMIMEType
-        }
-        guard let uti = UTTypeCreatePreferredIdentifierForTag(
-            kUTTagClassFilenameExtension, ext as CFString, nil
-        )?.takeRetainedValue() else { return nil }
-        return UTTypeCopyPreferredTagWithClass(uti, kUTTagClassMIMEType)?.takeRetainedValue() as String?
+        return UTType(filenameExtension: ext)?.preferredMIMEType
     }
 }

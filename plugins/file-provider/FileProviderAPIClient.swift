@@ -4,35 +4,28 @@ import os.log
 private let logger = Logger(subsystem: "io.beebeeb.app.file-provider", category: "APIClient")
 
 private let kAppGroup = "group.io.beebeeb.shared"
-private let kTokenLabel = "io.beebeeb.session-token"
+private let kSharedSessionTokenKey = "io.beebeeb.sessionToken"
+private let kSharedAPIBaseURLKey = "io.beebeeb.apiBaseUrl"
+private let kFallbackAPIBaseURL = "https://api.beebeeb.io"
 
 class FileProviderAPIClient {
-    private let baseURL: String
+    private let baseURL: URL
     private let session: URLSession
 
     init() {
-        // Read server URL from shared App Group UserDefaults, or use default
         let defaults = UserDefaults(suiteName: kAppGroup)
-        self.baseURL = defaults?.string(forKey: "api_base_url") ?? "https://api.beebeeb.io"
+        let rawBaseURL = defaults?.string(forKey: kSharedAPIBaseURLKey) ?? kFallbackAPIBaseURL
+        self.baseURL = URL(string: rawBaseURL) ?? URL(string: kFallbackAPIBaseURL)!
         self.session = URLSession(configuration: .default)
     }
 
     // MARK: - Auth
 
     private func authToken() throws -> String {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrLabel as String: kTokenLabel,
-            kSecAttrAccessGroup as String: kAppGroup,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne,
-        ]
-
-        var result: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
-
-        guard status == errSecSuccess, let data = result as? Data,
-              let token = String(data: data, encoding: .utf8) else {
+        guard
+            let token = UserDefaults(suiteName: kAppGroup)?.string(forKey: kSharedSessionTokenKey),
+            !token.isEmpty
+        else {
             throw FileProviderAPIError.notAuthenticated
         }
 
@@ -47,16 +40,49 @@ class FileProviderAPIClient {
         return request
     }
 
+    private func filesURL(pathComponents: [String] = [], queryItems: [URLQueryItem] = []) throws -> URL {
+        var url = baseURL
+            .appendingPathComponent("api")
+            .appendingPathComponent("v1")
+            .appendingPathComponent("files")
+
+        for component in pathComponents {
+            url.appendPathComponent(component)
+        }
+
+        if !queryItems.isEmpty {
+            guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+                throw FileProviderAPIError.invalidURL
+            }
+            components.queryItems = queryItems
+            guard let resolved = components.url else {
+                throw FileProviderAPIError.invalidURL
+            }
+            return resolved
+        }
+
+        return url
+    }
+
+    private func uploadsURL(pathComponents: [String] = []) -> URL {
+        var url = baseURL
+            .appendingPathComponent("api")
+            .appendingPathComponent("v1")
+            .appendingPathComponent("uploads")
+        for component in pathComponents {
+            url.appendPathComponent(component)
+        }
+        return url
+    }
+
     // MARK: - Files API
 
     func listFiles(parentId: String?) async throws -> [FileMetadata] {
-        var urlString = "\(baseURL)/api/v1/files"
+        var queryItems: [URLQueryItem] = []
         if let pid = parentId {
-            urlString += "?parent_id=\(pid)"
+            queryItems.append(URLQueryItem(name: "parent_id", value: pid))
         }
-        guard let url = URL(string: urlString) else {
-            throw FileProviderAPIError.invalidURL
-        }
+        let url = try filesURL(queryItems: queryItems)
 
         let request = try authorizedRequest(url: url)
         let (data, response) = try await session.data(for: request)
@@ -72,9 +98,7 @@ class FileProviderAPIClient {
     }
 
     func getFileMetadata(fileId: String) async throws -> FileMetadata {
-        guard let url = URL(string: "\(baseURL)/api/v1/files/\(fileId)") else {
-            throw FileProviderAPIError.invalidURL
-        }
+        let url = try filesURL(pathComponents: [fileId])
 
         let request = try authorizedRequest(url: url)
         let (data, response) = try await session.data(for: request)
@@ -83,48 +107,30 @@ class FileProviderAPIClient {
         return try JSONDecoder().decode(FileMetadata.self, from: data)
     }
 
-    func downloadFile(fileId: String) async throws -> [Data] {
-        guard let url = URL(string: "\(baseURL)/api/v1/files/\(fileId)/download") else {
-            throw FileProviderAPIError.invalidURL
-        }
+    func downloadFile(fileId: String) async throws -> DownloadedEncryptedFile {
+        let url = try filesURL(pathComponents: [fileId, "download"])
 
         let request = try authorizedRequest(url: url)
         let (data, response) = try await session.data(for: request)
         try validateResponse(response)
 
-        // The server returns chunks concatenated — we need to parse them
-        // Each chunk is prefixed with its length as a 4-byte big-endian integer
-        // For single-chunk files, it's just the raw encrypted data
         let httpResponse = response as? HTTPURLResponse
         let chunkCount = Int(httpResponse?.value(forHTTPHeaderField: "X-Chunk-Count") ?? "1") ?? 1
-
-        if chunkCount == 1 {
-            return [data]
-        }
-
-        // Multi-chunk: split by the chunk size header
-        var chunks: [Data] = []
-        var offset = 0
-        while offset < data.count && chunks.count < chunkCount {
-            let remaining = data.count - offset
-            let chunkSize = min(remaining, 4 * 1024 * 1024 + 28) // 4MB + nonce + tag overhead
-            chunks.append(data.subdata(in: offset..<(offset + chunkSize))  )
-            offset += chunkSize
-        }
-
-        return chunks
+        let chunkSize = Int(httpResponse?.value(forHTTPHeaderField: "X-Chunk-Size") ?? "") ?? kDefaultPlaintextChunkSize
+        return DownloadedEncryptedFile(data: data, chunkCount: max(1, chunkCount), chunkSize: max(1, chunkSize))
     }
 
-    func createFolder(nameEncrypted: String, parentId: String?) async throws -> FileMetadata {
-        guard let url = URL(string: "\(baseURL)/api/v1/files/folder") else {
-            throw FileProviderAPIError.invalidURL
-        }
+    func createFolder(folderId: String, nameEncrypted: String, parentId: String?) async throws -> FileMetadata {
+        let url = try filesURL(pathComponents: ["folder"])
 
         var request = try authorizedRequest(url: url, method: "POST")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
-        var body: [String: Any] = ["name_encrypted": nameEncrypted]
-        if let pid = parentId { body["parent_id"] = pid }
+        let body: [String: Any] = [
+            "folder_id": folderId,
+            "name_encrypted": nameEncrypted,
+            "parent_id": parentId as Any? ?? NSNull(),
+        ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         let (data, response) = try await session.data(for: request)
@@ -133,61 +139,61 @@ class FileProviderAPIClient {
         return try JSONDecoder().decode(FileMetadata.self, from: data)
     }
 
-    func uploadFile(
+    func uploadEncryptedFile(
+        fileId: String,
         nameEncrypted: String,
         parentId: String?,
         mimeType: String?,
         sizeBytes: Int64,
         encryptedChunks: [Data]
     ) async throws -> FileMetadata {
-        guard let url = URL(string: "\(baseURL)/api/v1/files/upload") else {
-            throw FileProviderAPIError.invalidURL
-        }
-
-        let boundary = "Boundary-\(UUID().uuidString)"
-        var request = try authorizedRequest(url: url, method: "POST")
-        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-
-        var body = Data()
-
-        // Metadata part
-        var metadata: [String: Any] = [
+        let initURL = try filesURL(pathComponents: ["upload", "init"])
+        var initRequest = try authorizedRequest(url: initURL, method: "POST")
+        initRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        initRequest.httpBody = try JSONSerialization.data(withJSONObject: [
+            "file_id": fileId,
             "name_encrypted": nameEncrypted,
+            "parent_id": parentId as Any? ?? NSNull(),
+            "mime_type": mimeType as Any? ?? NSNull(),
             "size_bytes": sizeBytes,
-        ]
-        if let pid = parentId { metadata["parent_id"] = pid }
-        if let mime = mimeType { metadata["mime_type"] = mime }
+            "chunk_count": encryptedChunks.count,
+        ])
 
-        let metadataJson = try JSONSerialization.data(withJSONObject: metadata)
-        body.append("--\(boundary)\r\n".data(using: .utf8)!)
-        body.append("Content-Disposition: form-data; name=\"metadata\"\r\n\r\n".data(using: .utf8)!)
-        body.append(metadataJson)
-        body.append("\r\n".data(using: .utf8)!)
+        let (initData, initResponse) = try await session.data(for: initRequest)
+        try validateResponse(initResponse)
 
-        // Chunk parts
-        for (i, chunk) in encryptedChunks.enumerated() {
-            body.append("--\(boundary)\r\n".data(using: .utf8)!)
-            body.append("Content-Disposition: form-data; name=\"chunk_\(i)\"; filename=\"chunk_\(i)\"\r\n".data(using: .utf8)!)
-            body.append("Content-Type: application/octet-stream\r\n\r\n".data(using: .utf8)!)
-            body.append(chunk)
-            body.append("\r\n".data(using: .utf8)!)
+        struct InitResponse: Codable {
+            let fileId: String
+
+            enum CodingKeys: String, CodingKey {
+                case fileId = "file_id"
+            }
+        }
+        let serverFileId = try JSONDecoder().decode(InitResponse.self, from: initData).fileId
+
+        for (index, chunk) in encryptedChunks.enumerated() {
+            let chunkURL = try filesURL(pathComponents: [serverFileId, "chunks", String(index)])
+            var chunkRequest = try authorizedRequest(url: chunkURL, method: "PUT")
+            chunkRequest.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+            chunkRequest.httpBody = chunk
+            let (_, chunkResponse) = try await session.data(for: chunkRequest)
+            try validateResponse(chunkResponse)
         }
 
-        body.append("--\(boundary)--\r\n".data(using: .utf8)!)
-        request.httpBody = body
-
-        let (data, response) = try await session.data(for: request)
-        try validateResponse(response)
+        let completeURL = try filesURL(pathComponents: [serverFileId, "upload", "complete"])
+        var completeRequest = try authorizedRequest(url: completeURL, method: "POST")
+        completeRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        completeRequest.httpBody = Data("{}".utf8)
+        let (data, completeResponse) = try await session.data(for: completeRequest)
+        try validateResponse(completeResponse)
 
         return try JSONDecoder().decode(FileMetadata.self, from: data)
     }
 
     func renameFile(fileId: String, nameEncrypted: String) async throws {
-        guard let url = URL(string: "\(baseURL)/api/v1/files/\(fileId)/rename") else {
-            throw FileProviderAPIError.invalidURL
-        }
+        let url = try filesURL(pathComponents: [fileId])
 
-        var request = try authorizedRequest(url: url, method: "POST")
+        var request = try authorizedRequest(url: url, method: "PATCH")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: ["name_encrypted": nameEncrypted])
 
@@ -196,28 +202,23 @@ class FileProviderAPIClient {
     }
 
     func moveFile(fileId: String, newParentId: String?) async throws {
-        guard let url = URL(string: "\(baseURL)/api/v1/files/\(fileId)/move") else {
-            throw FileProviderAPIError.invalidURL
-        }
+        let url = try filesURL(pathComponents: [fileId])
 
-        var request = try authorizedRequest(url: url, method: "POST")
+        var request = try authorizedRequest(url: url, method: "PATCH")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONSerialization.data(withJSONObject: ["parent_id": newParentId as Any])
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["parent_id": newParentId as Any? ?? NSNull()])
 
         let (_, response) = try await session.data(for: request)
         try validateResponse(response)
     }
 
     func updateFileContent(fileId: String, sizeBytes: Int64, encryptedChunks: [Data]) async throws {
-        // Re-upload as a new version — delete old then upload new
-        // For now, use the simple upload endpoint
-        logger.info("updateFileContent for \(fileId) — \(encryptedChunks.count) chunks")
+        logger.info("updateFileContent unsupported for \(fileId) — \(encryptedChunks.count) chunks, \(sizeBytes) bytes")
+        throw FileProviderAPIError.unsupportedOperation("Replacing an existing file's encrypted chunk set requires a server replacement/upload-session contract.")
     }
 
     func deleteFile(fileId: String) async throws {
-        guard let url = URL(string: "\(baseURL)/api/v1/files/\(fileId)") else {
-            throw FileProviderAPIError.invalidURL
-        }
+        let url = try filesURL(pathComponents: [fileId])
 
         let request = try authorizedRequest(url: url, method: "DELETE")
         let (_, response) = try await session.data(for: request)
@@ -258,6 +259,7 @@ enum FileProviderAPIError: Error, LocalizedError {
     case invalidResponse
     case fileTooLarge
     case quotaExceeded
+    case unsupportedOperation(String)
     case serverError(statusCode: Int)
 
     var errorDescription: String? {
@@ -276,8 +278,18 @@ enum FileProviderAPIError: Error, LocalizedError {
             return "File exceeds your plan's size limit."
         case .quotaExceeded:
             return "Storage quota exceeded. Upgrade for more space."
+        case .unsupportedOperation(let message):
+            return message
         case .serverError(let code):
             return "Server error (\(code))."
         }
     }
 }
+
+struct DownloadedEncryptedFile {
+    let data: Data
+    let chunkCount: Int
+    let chunkSize: Int
+}
+
+let kDefaultPlaintextChunkSize = 4 * 1024 * 1024

@@ -248,6 +248,10 @@ public class BeebeebCryptoModule: Module {
       try PendingSharesAccess.consume(id: id)
     }
 
+    AsyncFunction("acknowledgePendingShare") { (id: String) throws -> Bool in
+      try PendingSharesAccess.acknowledge(id: id)
+    }
+
     AsyncFunction("clearAllPendingShares") { () throws -> Int in
       try PendingSharesAccess.clearAll()
     }
