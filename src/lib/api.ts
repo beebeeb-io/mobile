@@ -321,6 +321,7 @@ export interface FileEntry {
   chunk_count: number;
   created_at: string;
   updated_at: string;
+  version_number?: number;
   storage_pool_id?: string | null;
   /** Parent folder ID — null when the entry lives at the root. Populated by
    * /api/v1/files/all-images so the Photos screen can tag iOS-backup origin. */
