@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Nothing yet.
+
+### Changed
+- Nothing yet.
+
+### Fixed
+- Nothing yet.
+
+### Removed
+- Nothing yet.
+
+### Security
+- Nothing yet.
+
 ## [1.0.0] - 2026-05-13
 
 ### Added
@@ -16,6 +31,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Share extension for uploading from other apps
 - Home screen widgets for storage usage and recent files
 - Push notifications for share invites and storage alerts
+
+### Changed
+- Nothing yet.
+
+### Fixed
+- Nothing yet.
+
+### Removed
+- Nothing yet.
 
 ### Security
 - Encryption keys stored in device keychain with biometric access policy
