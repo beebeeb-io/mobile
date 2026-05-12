@@ -239,7 +239,7 @@ export default function ShareSheetScreen() {
       // Build the share URL locally so the fragment is always the client-side
       // decryption material. The server response fragment carries its internal
       // share key and must not be copied for standard mobile shares.
-      const shareBase = result.url?.split('#')[0] || `${APP_URL}/s/${result.token}`;
+      const shareBase = `${APP_URL}/s/${result.token}`;
       setLocalShareUrl(`${shareBase}#key=${encodeURIComponent(keyForUrl)}`);
 
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
