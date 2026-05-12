@@ -1,7 +1,7 @@
 # Graph Report - mobile  (2026-05-12)
 
 ## Corpus Check
-- 9490 files · ~8,974,766 words
+- 9490 files · ~8,974,950 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
@@ -460,10 +460,10 @@
 ## Surprising Connections (you probably didn't know these)
 - `ToString()` --calls--> `String`  [INFERRED]
   ios/Pods/glog/src/logging.cc → modules/beebeeb-crypto/ios/PhotoBackupManager.swift
-- `groupByMonth()` --calls--> `String`  [INFERRED]
-  src/screens/PhotosScreen.tsx → modules/beebeeb-crypto/ios/PhotoBackupManager.swift
-- `scannedPdfName()` --calls--> `String`  [INFERRED]
-  src/screens/DocumentScannerScreen.tsx → modules/beebeeb-crypto/ios/PhotoBackupManager.swift
+- `String` --calls--> `groupByMonth()`  [INFERRED]
+  modules/beebeeb-crypto/ios/PhotoBackupManager.swift → src/screens/PhotosScreen.tsx
+- `String` --calls--> `scannedPdfName()`  [INFERRED]
+  modules/beebeeb-crypto/ios/PhotoBackupManager.swift → src/screens/DocumentScannerScreen.tsx
 - `processPendingShares()` --calls--> `consumePendingShare()`  [INFERRED]
   plugins/share-extension/PendingSharesHandler.ts → modules/beebeeb-crypto/src/BeebeebCrypto.ts
 - `uniffiTraitInterfaceCall()` --calls--> `String`  [INFERRED]
