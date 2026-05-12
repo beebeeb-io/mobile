@@ -29,6 +29,17 @@ final class PhotoBackupManager: NSObject {
     set { UserDefaults.standard.set(newValue, forKey: "io.beebeeb.backupToken") }
   }
 
+  var parentFolderId: String? {
+    get { UserDefaults.standard.string(forKey: "io.beebeeb.photoBackupParentFolderId") }
+    set {
+      if let newValue, !newValue.isEmpty {
+        UserDefaults.standard.set(newValue, forKey: "io.beebeeb.photoBackupParentFolderId")
+      } else {
+        UserDefaults.standard.removeObject(forKey: "io.beebeeb.photoBackupParentFolderId")
+      }
+    }
+  }
+
   private override init() {
     super.init()
     dbQueue.sync { self.openDatabase(); self.createTables() }
@@ -71,6 +82,10 @@ final class PhotoBackupManager: NSObject {
     storedAuthToken = nil
     PHPhotoLibrary.shared().unregisterChangeObserver(self)
     BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: Self.bgTaskIdentifier)
+  }
+
+  func configure(parentFolderId: String?) {
+    self.parentFolderId = parentFolderId
   }
 
   // MARK: - BGProcessingTask
@@ -301,20 +316,13 @@ final class PhotoBackupManager: NSObject {
         return
       }
 
-      // Attempt encryption — wrapped in try/catch; BeebeebCore.xcframework not yet linked.
-      var encryptedData = data
-      if let masterKey = try? KeychainManager.load(label: "master") {
-        // TODO: derive file key and encrypt via Rust (deriveFileKey + encryptChunk) when xcframework is linked
-        _ = masterKey
-      }
-
       let mimeType = self.mimeType(for: uti ?? "public.jpeg")
       let ext = self.fileExtension(for: uti ?? "public.jpeg")
       let fileName = "\(UUID().uuidString).\(ext)"
 
       self.uploadFile(
         localIdentifier: asset.localIdentifier,
-        data: encryptedData,
+        data: data,
         fileName: fileName,
         mimeType: mimeType,
         token: token,
@@ -324,62 +332,33 @@ final class PhotoBackupManager: NSObject {
   }
 
   private func uploadFile(localIdentifier: String, data: Data, fileName: String, mimeType: String, token: String, completion: @escaping (Bool) -> Void) {
-    guard let url = URL(string: "\(serverBaseURL)/api/v1/files/upload") else {
-      dbQueue.async {
-        guard let db = self.db else { return }
-        self.updateStatus(db: db, localIdentifier: localIdentifier, status: "failed", error: "Invalid server URL")
-      }
-      completion(false)
-      return
-    }
-
-    let boundary = "beebeeb-\(UUID().uuidString)"
-    var request = URLRequest(url: url)
-    request.httpMethod = "POST"
-    request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-    request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-
-    var body = Data()
-    let crlf = "\r\n"
-    let metadataJSON = """
-    {"name_encrypted":"\(fileName)","mime_type":"\(mimeType)","size_bytes":\(data.count)}
-    """
-
-    body += "--\(boundary)\(crlf)".utf8Data
-    body += "Content-Disposition: form-data; name=\"metadata\"\(crlf)\(crlf)".utf8Data
-    body += metadataJSON.data(using: .utf8)!
-    body += crlf.utf8Data
-
-    body += "--\(boundary)\(crlf)".utf8Data
-    body += "Content-Disposition: form-data; name=\"chunk_0\"; filename=\"\(fileName)\"\(crlf)".utf8Data
-    body += "Content-Type: \(mimeType)\(crlf)\(crlf)".utf8Data
-    body += data
-    body += crlf.utf8Data
-
-    body += "--\(boundary)--\(crlf)".utf8Data
-
-    let tmpURL = FileManager.default.temporaryDirectory.appendingPathComponent(fileName)
-    do {
-      try body.write(to: tmpURL)
-    } catch {
-      dbQueue.async {
-        guard let db = self.db else { return }
-        self.updateStatus(db: db, localIdentifier: localIdentifier, status: "failed", error: error.localizedDescription)
-      }
-      completion(false)
-      return
-    }
-
     dbQueue.async {
       guard let db = self.db else { return }
       self.updateStatus(db: db, localIdentifier: localIdentifier, status: "uploading")
     }
 
-    let session = backgroundSession ?? URLSession.shared
-    let task = session.uploadTask(with: request, fromFile: tmpURL)
-    task.taskDescription = localIdentifier
-    task.resume()
-    completion(true)
+    NativeEncryptedBackupUploader.shared.upload(
+      plaintext: data,
+      fileName: fileName,
+      mimeType: mimeType,
+      parentFolderId: parentFolderId,
+      authToken: token,
+      serverBaseURL: serverBaseURL
+    ) { [weak self] result in
+      guard let self else { completion(false); return }
+      self.dbQueue.async {
+        guard let db = self.db else { return }
+        switch result {
+        case .success(let fileId):
+          self.updateStatus(db: db, localIdentifier: localIdentifier, status: "done", fileId: fileId)
+          self.setState(key: "last_backup_at", value: ISO8601DateFormatter().string(from: Date()))
+          completion(true)
+        case .failure(let error):
+          self.updateStatus(db: db, localIdentifier: localIdentifier, status: "failed", error: error.localizedDescription)
+          completion(false)
+        }
+      }
+    }
   }
 
   // MARK: - MIME / extension helpers

@@ -152,17 +152,34 @@ public class BeebeebCryptoModule: Module {
       }
       if let token, !token.isEmpty {
         defaults.set(token, forKey: "io.beebeeb.sessionToken")
+        UserDefaults.standard.set(token, forKey: "io.beebeeb.backupToken")
       } else {
         defaults.removeObject(forKey: "io.beebeeb.sessionToken")
+        UserDefaults.standard.removeObject(forKey: "io.beebeeb.backupToken")
       }
       if let baseUrl, !baseUrl.isEmpty {
         defaults.set(baseUrl, forKey: "io.beebeeb.apiBaseUrl")
+        UserDefaults.standard.set(baseUrl, forKey: "io.beebeeb.serverURL")
       }
       defaults.synchronize()
+      UserDefaults.standard.synchronize()
       return true
     }
 
     // ── Backup management ──────────────────────────────────────────────
+
+    AsyncFunction("configureBackupFolder") { (category: String, parentFolderId: String?) in
+      switch category {
+      case "camera_roll":
+        PhotoBackupManager.shared.configure(parentFolderId: parentFolderId)
+      case "contacts":
+        ContactsBackupManager.shared.configure(parentFolderId: parentFolderId)
+      case "calendar":
+        CalendarBackupManager.shared.configure(parentFolderId: parentFolderId)
+      default:
+        break
+      }
+    }
 
     AsyncFunction("enablePhotoBackup") { (authToken: String) in
       PhotoBackupManager.shared.enable(authToken: authToken)
@@ -173,7 +190,11 @@ public class BeebeebCryptoModule: Module {
     }
 
     AsyncFunction("enableContactsBackup") { (authToken: String) in
-      ContactsBackupManager.shared.enable(authToken: authToken)
+      ContactsBackupManager.shared.enable(authToken: authToken, runNow: true)
+    }
+
+    AsyncFunction("resumeContactsBackup") { (authToken: String) in
+      ContactsBackupManager.shared.enable(authToken: authToken, runNow: false)
     }
 
     AsyncFunction("disableContactsBackup") { () in
@@ -181,7 +202,11 @@ public class BeebeebCryptoModule: Module {
     }
 
     AsyncFunction("enableCalendarBackup") { (authToken: String) in
-      CalendarBackupManager.shared.enable(authToken: authToken)
+      CalendarBackupManager.shared.enable(authToken: authToken, runNow: true)
+    }
+
+    AsyncFunction("resumeCalendarBackup") { (authToken: String) in
+      CalendarBackupManager.shared.enable(authToken: authToken, runNow: false)
     }
 
     AsyncFunction("disableCalendarBackup") { () in

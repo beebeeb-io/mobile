@@ -281,6 +281,14 @@ export interface NativeBackupProgress {
   lastBackupAt: string | null
 }
 
+export type NativeBackupCategory = 'camera_roll' | 'contacts' | 'calendar'
+
+/** Set the server folder native backup workers should upload new items into. */
+export async function configureBackupFolder(category: NativeBackupCategory, parentFolderId: string | null): Promise<void> {
+  if (typeof BeebeebCryptoModule.configureBackupFolder !== 'function') return
+  return BeebeebCryptoModule.configureBackupFolder(category, parentFolderId)
+}
+
 /** Start camera roll backup. Registers PHPhotoLibrary observer and schedules BGProcessingTask. */
 export async function enablePhotoBackup(authToken: string): Promise<void> {
   return BeebeebCryptoModule.enablePhotoBackup(authToken)
@@ -295,6 +303,14 @@ export async function enableContactsBackup(authToken: string): Promise<void> {
   return BeebeebCryptoModule.enableContactsBackup(authToken)
 }
 
+/** Resume contacts backup observers without forcing an immediate export. */
+export async function resumeContactsBackup(authToken: string): Promise<void> {
+  if (typeof BeebeebCryptoModule.resumeContactsBackup !== 'function') {
+    return BeebeebCryptoModule.enableContactsBackup(authToken)
+  }
+  return BeebeebCryptoModule.resumeContactsBackup(authToken)
+}
+
 export async function disableContactsBackup(): Promise<void> {
   return BeebeebCryptoModule.disableContactsBackup()
 }
@@ -302,6 +318,14 @@ export async function disableContactsBackup(): Promise<void> {
 /** Start calendar backup. Requests EKEventStore access and uploads an encrypted iCal. */
 export async function enableCalendarBackup(authToken: string): Promise<void> {
   return BeebeebCryptoModule.enableCalendarBackup(authToken)
+}
+
+/** Resume calendar backup observers without forcing an immediate export. */
+export async function resumeCalendarBackup(authToken: string): Promise<void> {
+  if (typeof BeebeebCryptoModule.resumeCalendarBackup !== 'function') {
+    return BeebeebCryptoModule.enableCalendarBackup(authToken)
+  }
+  return BeebeebCryptoModule.resumeCalendarBackup(authToken)
 }
 
 export async function disableCalendarBackup(): Promise<void> {

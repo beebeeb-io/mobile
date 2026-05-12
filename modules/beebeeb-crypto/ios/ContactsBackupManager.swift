@@ -1,10 +1,21 @@
 import Foundation
 import Contacts
+import CryptoKit
 
 final class ContactsBackupManager {
   static let shared = ContactsBackupManager()
 
   private var authToken: String?
+  private var parentFolderId: String? {
+    get { UserDefaults.standard.string(forKey: "io.beebeeb.contactsBackupParentFolderId") }
+    set {
+      if let newValue, !newValue.isEmpty {
+        UserDefaults.standard.set(newValue, forKey: "io.beebeeb.contactsBackupParentFolderId")
+      } else {
+        UserDefaults.standard.removeObject(forKey: "io.beebeeb.contactsBackupParentFolderId")
+      }
+    }
+  }
 
   private var serverBaseURL: String {
     UserDefaults.standard.string(forKey: "io.beebeeb.serverURL") ?? "http://localhost:3001"
@@ -21,16 +32,22 @@ final class ContactsBackupManager {
     }
   }
 
-  func enable(authToken: String) {
+  func enable(authToken: String, runNow: Bool = true) {
     self.authToken = authToken
     CNContactStore().requestAccess(for: .contacts) { [weak self] granted, _ in
       guard granted else { return }
-      self?.backup()
+      if runNow {
+        self?.backup()
+      }
     }
   }
 
   func disable() {
     authToken = nil
+  }
+
+  func configure(parentFolderId: String?) {
+    self.parentFolderId = parentFolderId
   }
 
   func backup() {
@@ -39,6 +56,7 @@ final class ContactsBackupManager {
       guard let self else { return }
       do {
         let vCardData = try self.exportContacts()
+        guard self.shouldUpload(data: vCardData, stateKey: "io.beebeeb.contactsBackupLastHash") else { return }
         self.upload(data: vCardData, fileName: "contacts.vcf", mimeType: "text/vcard", token: token)
       } catch {
         // Contact export failed — permissions not granted or empty contacts
@@ -57,35 +75,25 @@ final class ContactsBackupManager {
     return try CNContactVCardSerialization.data(with: contacts)
   }
 
-  private func upload(data: Data, fileName: String, mimeType: String, token: String) {
-    // Attempt encryption — wrapped; BeebeebCore.xcframework not yet linked.
-    var encryptedData = data
-    if let masterKey = try? KeychainManager.load(label: "master") {
-      _ = masterKey // TODO: encrypt via Rust when xcframework is linked
-    }
-
-    guard let url = URL(string: "\(serverBaseURL)/api/v1/files/upload") else { return }
-    let boundary = "beebeeb-\(UUID().uuidString)"
-    var request = URLRequest(url: url)
-    request.httpMethod = "POST"
-    request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-    request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-
-    let crlf = "\r\n"
-    let metadataJSON = """
-    {"name_encrypted":"\(fileName)","mime_type":"\(mimeType)","size_bytes":\(encryptedData.count)}
-    """
-    var body = Data()
-    body.append("--\(boundary)\(crlf)Content-Disposition: form-data; name=\"metadata\"\(crlf)\(crlf)\(metadataJSON)\(crlf)".utf8Data)
-    body.append("--\(boundary)\(crlf)Content-Disposition: form-data; name=\"chunk_0\"; filename=\"\(fileName)\"\(crlf)Content-Type: \(mimeType)\(crlf)\(crlf)".utf8Data)
-    body.append(encryptedData)
-    body.append("\(crlf)--\(boundary)--\(crlf)".utf8Data)
-    request.httpBody = body
-
-    URLSession.shared.dataTask(with: request) { _, _, _ in }.resume()
+  private func shouldUpload(data: Data, stateKey: String) -> Bool {
+    let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    guard UserDefaults.standard.string(forKey: stateKey) != digest else { return false }
+    UserDefaults.standard.set(digest, forKey: stateKey)
+    return true
   }
-}
 
-private extension String {
-  var utf8Data: Data { data(using: .utf8) ?? Data() }
+  private func upload(data: Data, fileName: String, mimeType: String, token: String) {
+    NativeEncryptedBackupUploader.shared.upload(
+      plaintext: data,
+      fileName: fileName,
+      mimeType: mimeType,
+      parentFolderId: parentFolderId,
+      authToken: token,
+      serverBaseURL: serverBaseURL
+    ) { result in
+      if case .failure(let error) = result {
+        NSLog("[BeebeebBackup] contacts upload failed: \(error.localizedDescription)")
+      }
+    }
+  }
 }

@@ -43,10 +43,15 @@ enum BeebeebCryptoBridge {
     /// and reconstruct a `MasterKeyHandle`. Returns `nil` if no key is stored.
     /// May trigger a biometric/passcode prompt if SE access control requires it.
     static func loadMasterKey() throws -> MasterKeyHandle? {
-        guard let bytes = try KeychainManager.load(label: kMasterKeyLabel) else {
-            return nil
+        if let bytes = try KeychainManager.load(label: kMasterKeyLabel) {
+            return try MasterKeyHandle.fromKeychainBytes(bytes: bytes)
         }
-        return try MasterKeyHandle.fromKeychainBytes(bytes: bytes)
+        #if targetEnvironment(simulator)
+        if let bytes = loadSimulatorFallbackMasterKey() {
+            return try MasterKeyHandle.fromKeychainBytes(bytes: bytes)
+        }
+        #endif
+        return nil
     }
 
     /// Same as `loadMasterKey()` but throws `BridgeError.noMasterKey` if no key
@@ -77,4 +82,17 @@ enum BeebeebCryptoBridge {
     static func decryptMetadata(key: Data, nonce: Data, ciphertext: Data) throws -> String {
         return try _uniffiDecryptMetadata(key, nonce, ciphertext)
     }
+
+    #if targetEnvironment(simulator)
+    private static func loadSimulatorFallbackMasterKey() -> Data? {
+        guard let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
+            return nil
+        }
+        let url = documents.appendingPathComponent("beebeeb-simulator-master-key.txt")
+        guard let encoded = try? String(contentsOf: url, encoding: .utf8) else {
+            return nil
+        }
+        return Data(base64Encoded: encoded.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+    #endif
 }

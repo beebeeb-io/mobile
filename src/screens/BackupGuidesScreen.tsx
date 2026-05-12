@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { radii, spacing } from '../theme';
 import type { Colors } from '../theme';
 import { useTheme } from '../lib/theme-context';
@@ -148,6 +149,7 @@ function GuideCard({
 export default function BackupGuidesScreen() {
   const navigation = useNavigation<Nav>();
   const { colors: c } = useTheme();
+  const insets = useSafeAreaInsets();
   const [guideList, setGuideList] = useState(initialGuides);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [requestApp, setRequestApp] = useState('');
@@ -176,7 +178,7 @@ export default function BackupGuidesScreen() {
   return (
     <View style={[styles.root, { backgroundColor: c.paper2 }]}>
       {/* Header */}
-      <View style={styles.header}>
+      <View style={[styles.header, { paddingTop: Math.max(insets.top + 8, 18) }]}>
         <TouchableOpacity
           style={styles.backBtn}
           onPress={() => navigation.goBack()}
@@ -271,21 +273,25 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: spacing.lg,
-    paddingTop: 12,
-    paddingBottom: 4,
-    gap: 8,
+    paddingBottom: 8,
+    gap: 12,
   },
   backBtn: {
-    paddingRight: 8,
-    paddingVertical: 4,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   backBtnText: {
     fontSize: 28,
-    lineHeight: 32,
+    lineHeight: 30,
   },
   title: {
+    flex: 1,
     fontSize: 24,
     fontWeight: '700',
+    lineHeight: 30,
   },
 
   subtitle: {
@@ -297,7 +303,7 @@ const styles = StyleSheet.create({
 
   listContent: {
     paddingHorizontal: 14,
-    paddingTop: spacing.md,
+    paddingTop: spacing.sm,
     paddingBottom: 48,
   },
 

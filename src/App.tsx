@@ -89,7 +89,6 @@ import TwoFactorSetupScreen from './screens/TwoFactorSetupScreen';
 import ErrorBoundary from './components/ErrorBoundary';
 import ConfirmActionPrompt from './components/ConfirmActionPrompt';
 import { BackupProvider } from './lib/backup-context';
-import { PhotoBackupBridge } from './lib/PhotoBackupBridge';
 import { processPendingShares } from '../plugins/share-extension/PendingSharesHandler';
 import { useToast } from './lib/toast-context';
 
@@ -720,8 +719,6 @@ export default function App() {
       <BackupProvider>
       <SafeAreaProvider>
       <ToastProvider>
-        {/* Wire JS-side photo backup: foreground trigger + Wi-Fi reconnect + toast */}
-        <PhotoBackupBridge />
         <NavigationContainer
           ref={navigationRef}
           linking={linking}
