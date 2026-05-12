@@ -58,6 +58,15 @@ export interface FileProviderDomainInfo {
   isBeebeeb: boolean
 }
 
+export interface FileProviderPrivacyState {
+  supported: boolean
+  showInFiles: boolean
+  requireDeviceAuth: boolean
+  unlockedUntilMs: number
+  unlockWindowSeconds: number
+  locked: boolean
+}
+
 // ─── Amber Constellation ─────────────────────────────────────────────────────
 
 export interface ConstellationSessionInit {

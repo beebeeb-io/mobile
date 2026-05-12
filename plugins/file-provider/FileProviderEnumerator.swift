@@ -43,6 +43,7 @@ class FileProviderEnumerator: NSObject, NSFileProviderEnumerator {
     ) {
         Task {
             do {
+                try validateFileProviderAccess()
                 logger.info("Enumerating items for: \(self.scope.logLabel)")
                 let files: [FileMetadata]
                 switch scope {
@@ -59,6 +60,11 @@ class FileProviderEnumerator: NSObject, NSFileProviderEnumerator {
                 observer.didEnumerate(items)
                 observer.finishEnumerating(upTo: nil)
             } catch {
+                if case FileProviderAPIError.fileProviderLocked = error, case .root = self.scope {
+                    observer.didEnumerate([LockedFileProviderItem()])
+                    observer.finishEnumerating(upTo: nil)
+                    return
+                }
                 logger.error("enumerateItems failed: \(error.localizedDescription)")
                 observer.finishEnumeratingWithError(fileProviderError(error))
             }

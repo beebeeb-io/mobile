@@ -102,3 +102,34 @@ class FileProviderItem: NSObject, NSFileProviderItem {
         return NSFileProviderItemVersion(contentVersion: contentVersion, metadataVersion: contentVersion)
     }
 }
+
+final class LockedFileProviderItem: NSObject, NSFileProviderItem {
+    var itemIdentifier: NSFileProviderItemIdentifier {
+        NSFileProviderItemIdentifier("__beebeeb_files_locked__")
+    }
+
+    var parentItemIdentifier: NSFileProviderItemIdentifier {
+        .rootContainer
+    }
+
+    var capabilities: NSFileProviderItemCapabilities {
+        []
+    }
+
+    var filename: String {
+        "Open Beebeeb to unlock Files access"
+    }
+
+    var contentType: UTType {
+        .data
+    }
+
+    var documentSize: NSNumber? {
+        0
+    }
+
+    var itemVersion: NSFileProviderItemVersion {
+        let version = Data("locked-v1".utf8)
+        return NSFileProviderItemVersion(contentVersion: version, metadataVersion: version)
+    }
+}

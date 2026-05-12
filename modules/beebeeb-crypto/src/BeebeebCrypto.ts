@@ -16,6 +16,7 @@ import type {
   EncryptedData,
   FileProviderDomainInfo,
   FileProviderDomainRegistrationResult,
+  FileProviderPrivacyState,
   MasterKeyResult,
   OpaqueLoginFinishResult,
   OpaqueRegistrationFinishResult,
@@ -322,6 +323,77 @@ export async function registerFileProviderDomain(): Promise<FileProviderDomainRe
 export async function listFileProviderDomains(): Promise<FileProviderDomainInfo[]> {
   if (typeof BeebeebCryptoModule.listFileProviderDomains !== 'function') return []
   return BeebeebCryptoModule.listFileProviderDomains()
+}
+
+/** Remove the Beebeeb File Provider domain and revoke any active Files access window. */
+export async function unregisterFileProviderDomain(): Promise<FileProviderDomainRegistrationResult> {
+  if (typeof BeebeebCryptoModule.unregisterFileProviderDomain !== 'function') {
+    return {
+      supported: false,
+      identifier: 'io.beebeeb.files',
+      displayName: 'Beebeeb',
+      registered: false,
+      added: false,
+      removedBeforeAdd: false,
+      domainCount: 0,
+      rootEnumerationSignaled: false,
+      workingSetEnumerationSignaled: false,
+    }
+  }
+  return BeebeebCryptoModule.unregisterFileProviderDomain()
+}
+
+/** Show or hide Beebeeb under iOS Files.app Locations. */
+export async function setFileProviderEnabled(enabled: boolean): Promise<FileProviderDomainRegistrationResult> {
+  if (typeof BeebeebCryptoModule.setFileProviderEnabled !== 'function') {
+    return {
+      supported: false,
+      identifier: 'io.beebeeb.files',
+      displayName: 'Beebeeb',
+      registered: false,
+      added: false,
+      removedBeforeAdd: false,
+      domainCount: 0,
+      rootEnumerationSignaled: false,
+      workingSetEnumerationSignaled: false,
+    }
+  }
+  return BeebeebCryptoModule.setFileProviderEnabled(enabled)
+}
+
+export async function getFileProviderPrivacyState(): Promise<FileProviderPrivacyState> {
+  if (typeof BeebeebCryptoModule.getFileProviderPrivacyState !== 'function') {
+    return {
+      supported: false,
+      showInFiles: false,
+      requireDeviceAuth: true,
+      unlockedUntilMs: 0,
+      unlockWindowSeconds: 300,
+      locked: true,
+    }
+  }
+  return BeebeebCryptoModule.getFileProviderPrivacyState()
+}
+
+export async function setFileProviderAuthRequired(required: boolean): Promise<FileProviderPrivacyState> {
+  if (typeof BeebeebCryptoModule.setFileProviderAuthRequired !== 'function') {
+    return getFileProviderPrivacyState()
+  }
+  return BeebeebCryptoModule.setFileProviderAuthRequired(required)
+}
+
+export async function unlockFileProviderAccess(): Promise<FileProviderPrivacyState> {
+  if (typeof BeebeebCryptoModule.unlockFileProviderAccess !== 'function') {
+    return getFileProviderPrivacyState()
+  }
+  return BeebeebCryptoModule.unlockFileProviderAccess()
+}
+
+export async function lockFileProviderAccess(): Promise<FileProviderPrivacyState> {
+  if (typeof BeebeebCryptoModule.lockFileProviderAccess !== 'function') {
+    return getFileProviderPrivacyState()
+  }
+  return BeebeebCryptoModule.lockFileProviderAccess()
 }
 
 /**

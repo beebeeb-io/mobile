@@ -33,6 +33,9 @@ class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
 
         Task {
             do {
+                if identifier != .rootContainer {
+                    try validateFileProviderAccess()
+                }
                 let item = try await fetchItem(identifier: identifier)
                 completionHandler(item, nil)
             } catch {
@@ -97,6 +100,7 @@ class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         Task {
             do {
                 logger.info("fetchContents for: \(itemIdentifier.rawValue)")
+                try validateFileProviderAccess()
 
                 let metadata = try await apiClient.getFileMetadata(fileId: itemIdentifier.rawValue)
                 progress.completedUnitCount = 20
@@ -150,6 +154,7 @@ class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
 
         Task {
             do {
+                try validateFileProviderAccess()
                 if itemTemplate.contentType == .folder {
                     let folderId = UUID().uuidString.lowercased()
                     let parentId = itemTemplate.parentItemIdentifier == .rootContainer
@@ -231,6 +236,7 @@ class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
 
         Task {
             do {
+                try validateFileProviderAccess()
                 let fileId = item.itemIdentifier.rawValue
 
                 if changedFields.contains(.contents) {
@@ -284,6 +290,7 @@ class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
 
         Task {
             do {
+                try validateFileProviderAccess()
                 try await apiClient.deleteFile(fileId: identifier.rawValue)
                 completionHandler(nil)
             } catch {

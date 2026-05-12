@@ -6,9 +6,18 @@ export type DeviceOwnerAuthResult =
   | { ok: true; method: 'biometric' | 'device_passcode' | 'device_owner'; platform: 'ios' | 'android' }
   | { ok: false; reason: 'cancelled' | 'unavailable' | 'failed'; message: string };
 
+interface DeviceOwnerAuthMessages {
+  unavailable?: string;
+  cancelled?: string;
+  failed?: string;
+}
+
 const CANCEL_ERRORS = new Set(['user_cancel', 'system_cancel', 'app_cancel']);
 
-export async function requestDeviceOwnerAuth(promptMessage: string): Promise<DeviceOwnerAuthResult> {
+export async function requestDeviceOwnerAuth(
+  promptMessage: string,
+  messages: DeviceOwnerAuthMessages = {},
+): Promise<DeviceOwnerAuthResult> {
   const platform = Platform.OS === 'android' ? 'android' : 'ios';
 
   let level = LocalAuthentication.SecurityLevel.NONE;
@@ -30,7 +39,7 @@ export async function requestDeviceOwnerAuth(promptMessage: string): Promise<Dev
     return {
       ok: false,
       reason: 'unavailable',
-      message: 'Set up Face ID or a device passcode before permanently deleting files.',
+      message: messages.unavailable ?? 'Set up Face ID or a device passcode before permanently deleting files.',
     };
   }
 
@@ -45,15 +54,15 @@ export async function requestDeviceOwnerAuth(promptMessage: string): Promise<Dev
 
     if (!result.success) {
       if (CANCEL_ERRORS.has(result.error)) {
-        return { ok: false, reason: 'cancelled', message: 'Authentication cancelled. Nothing was deleted.' };
+        return { ok: false, reason: 'cancelled', message: messages.cancelled ?? 'Authentication cancelled. Nothing was deleted.' };
       }
-      return { ok: false, reason: 'failed', message: 'Authentication failed. Nothing was deleted.' };
+      return { ok: false, reason: 'failed', message: messages.failed ?? 'Authentication failed. Nothing was deleted.' };
     }
   } catch {
     return {
       ok: false,
       reason: 'failed',
-      message: 'Could not complete device authentication. Nothing was deleted.',
+      message: messages.failed ?? 'Could not complete device authentication. Nothing was deleted.',
     };
   }
 
