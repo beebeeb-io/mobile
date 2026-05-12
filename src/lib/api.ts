@@ -30,6 +30,7 @@ function resolveBaseUrl(): string {
 
 const BASE_URL = resolveBaseUrl();
 const TOKEN_KEY = 'beebeeb_session_token';
+const DEVICE_CONFIRMATION_SECRET_KEY = 'beebeeb_device_confirmation_secret';
 
 export type ApiEnvironmentKind = 'local' | 'production' | 'custom';
 
@@ -113,6 +114,7 @@ export function registerSessionExpiredHandler(fn: SessionExpiredHandler): void {
 // ---------------------------------------------------------------------------
 
 let cachedToken: string | null = null;
+let cachedDeviceConfirmationSecret: string | null | undefined;
 
 export async function getToken(): Promise<string | null> {
   if (cachedToken) return cachedToken;
@@ -128,13 +130,31 @@ export async function setToken(token: string): Promise<void> {
 
 export async function clearToken(): Promise<void> {
   cachedToken = null;
+  cachedDeviceConfirmationSecret = null;
   await tokenStore.remove(TOKEN_KEY);
+  await tokenStore.remove(DEVICE_CONFIRMATION_SECRET_KEY);
   await BeebeebCrypto.mirrorSessionToAppGroup(null, BASE_URL).catch(() => false);
 }
 
 /** Fast check: is there a stored session token? */
 export async function hasToken(): Promise<boolean> {
   return (await getToken()) !== null;
+}
+
+async function getDeviceConfirmationSecret(): Promise<string | null> {
+  if (cachedDeviceConfirmationSecret !== undefined) return cachedDeviceConfirmationSecret;
+  cachedDeviceConfirmationSecret = await tokenStore.get(DEVICE_CONFIRMATION_SECRET_KEY);
+  return cachedDeviceConfirmationSecret;
+}
+
+async function setSessionCredentials(token: string, deviceConfirmationSecret?: string): Promise<void> {
+  await setToken(token);
+  cachedDeviceConfirmationSecret = deviceConfirmationSecret ?? null;
+  if (deviceConfirmationSecret) {
+    await tokenStore.set(DEVICE_CONFIRMATION_SECRET_KEY, deviceConfirmationSecret);
+  } else {
+    await tokenStore.remove(DEVICE_CONFIRMATION_SECRET_KEY);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -179,6 +199,12 @@ async function headers(auth = true, extra?: Record<string, string>): Promise<Rec
   }
   if (extra) Object.assign(h, extra);
   return h;
+}
+
+function mobileClientHeaders(): Record<string, string> | undefined {
+  if (Platform.OS === 'ios') return { 'X-Beebeeb-Client': 'mobile-ios' };
+  if (Platform.OS === 'android') return { 'X-Beebeeb-Client': 'mobile-android' };
+  return undefined;
 }
 
 async function request<T>(
@@ -226,6 +252,7 @@ export interface AuthResponse {
   user_id: string;
   session_token: string;
   salt: string;
+  device_confirmation_secret?: string;
 }
 
 export interface User {
@@ -236,14 +263,14 @@ export interface User {
 }
 
 export async function signup(email: string, password: string): Promise<AuthResponse> {
-  const data = await request<AuthResponse>('POST', '/api/v1/auth/signup', { email, password }, false);
-  await setToken(data.session_token);
+  const data = await request<AuthResponse>('POST', '/api/v1/auth/signup', { email, password }, false, mobileClientHeaders());
+  await setSessionCredentials(data.session_token, data.device_confirmation_secret);
   return data;
 }
 
 export async function login(email: string, password: string): Promise<AuthResponse> {
-  const data = await request<AuthResponse>('POST', '/api/v1/auth/login', { email, password }, false);
-  await setToken(data.session_token);
+  const data = await request<AuthResponse>('POST', '/api/v1/auth/login', { email, password }, false, mobileClientHeaders());
+  await setSessionCredentials(data.session_token, data.device_confirmation_secret);
   return data;
 }
 
@@ -348,11 +375,18 @@ export async function confirmDeviceOwnerAction(params: {
   platform: 'ios' | 'android';
   method: DeviceOwnerConfirmationMethod;
 }): Promise<ConfirmActionResponse> {
+  const deviceConfirmationSecret = await getDeviceConfirmationSecret();
+  if (!deviceConfirmationSecret) {
+    throw new ApiError(403, 'Sign in again once to enable device confirmation for Trash.');
+  }
   const client = params.platform === 'ios' ? 'mobile-ios' : 'mobile-android';
   return request<ConfirmActionResponse>(
     'POST',
     '/api/v1/auth/confirm-device-owner',
-    params,
+    {
+      ...params,
+      device_confirmation_secret: deviceConfirmationSecret,
+    },
     true,
     { 'X-Beebeeb-Client': client },
   );
@@ -1354,9 +1388,9 @@ export async function opaqueLoginFinish(
     if (!BeebeebCrypto.isNativeAvailable) throw new NativeCryptoUnavailableError('opaqueLoginFinish');
     throw err;
   }
-  let data: { session_token: string };
+  let data: { session_token: string; device_confirmation_secret?: string };
   try {
-    data = await request<{ session_token: string }>(
+    data = await request<{ session_token: string; device_confirmation_secret?: string }>(
       'POST',
       '/api/v1/opaque/login-finish',
       {
@@ -1365,11 +1399,12 @@ export async function opaqueLoginFinish(
         server_state: serverState,
       },
       false,
+      mobileClientHeaders(),
     );
   } catch (err) {
     throw err;
   }
-  await setToken(data.session_token);
+  await setSessionCredentials(data.session_token, data.device_confirmation_secret);
   return { sessionToken: data.session_token };
 }
 
@@ -1422,7 +1457,7 @@ export async function opaqueRegistrationFinish(
     if (!BeebeebCrypto.isNativeAvailable) throw new NativeCryptoUnavailableError('opaqueRegistrationFinish');
     throw err;
   }
-  const data = await request<{ session_token: string }>(
+  const data = await request<{ session_token: string; device_confirmation_secret?: string }>(
     'POST',
     '/api/v1/opaque/register-finish',
     {
@@ -1432,8 +1467,9 @@ export async function opaqueRegistrationFinish(
       ...(x25519PublicKey ? { x25519_public_key: uint8ToBase64(x25519PublicKey) } : {}),
     },
     false,
+    mobileClientHeaders(),
   );
-  await setToken(data.session_token);
+  await setSessionCredentials(data.session_token, data.device_confirmation_secret);
   return { sessionToken: data.session_token };
 }
 
