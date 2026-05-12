@@ -55,10 +55,11 @@ function formatTimestamp(iso: string | null | undefined): string {
 
 function formatSize(bytes: number): string {
   if (bytes === 0) return '0 B';
-  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(1024));
-  const v = bytes / Math.pow(1024, i);
-  return `${v < 10 ? v.toFixed(1) : Math.round(v)} ${units[i]}`;
+  if (bytes < 1_000) return `${bytes} B`;
+  if (bytes < 1_000_000) return `${Math.round(bytes / 1_000)} KB`;
+  if (bytes < 1_000_000_000) return `${Math.round(bytes / 1_000_000)} MB`;
+  if (bytes < 1_000_000_000_000) return `${(bytes / 1_000_000_000).toFixed(1)} GB`;
+  return `${(bytes / 1_000_000_000_000).toFixed(1)} TB`;
 }
 
 interface RowProps {

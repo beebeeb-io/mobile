@@ -61,13 +61,14 @@ let _openSwipeable: Swipeable | null = null;
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Format bytes into a human-readable string. */
+/** Format bytes into a human-readable string (SI: 1 KB = 1,000 bytes). */
 function formatSize(bytes: number): string {
   if (bytes === 0) return '0 B';
-  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(1024));
-  const val = bytes / Math.pow(1024, i);
-  return `${val < 10 ? val.toFixed(1) : Math.round(val)} ${units[i]}`;
+  if (bytes < 1_000) return `${bytes} B`;
+  if (bytes < 1_000_000) return `${Math.round(bytes / 1_000)} KB`;
+  if (bytes < 1_000_000_000) return `${Math.round(bytes / 1_000_000)} MB`;
+  if (bytes < 1_000_000_000_000) return `${(bytes / 1_000_000_000).toFixed(1)} GB`;
+  return `${(bytes / 1_000_000_000_000).toFixed(1)} TB`;
 }
 
 /** Format an ISO date string into a relative or short date. */
@@ -1253,6 +1254,26 @@ export default function FilesScreen() {
     const name = decryptedNames[file.id] ?? displayName(file);
     return decryptedMimeTypes[file.id] ?? file.mime_type ?? guessMimeTypeFromName(name);
   }, [decryptedMimeTypes, decryptedNames]);
+  const shouldAutoVersionUpload = useCallback((
+    existingFile: FileEntry,
+    incomingName: string,
+    incomingMimeType: string | null | undefined,
+    incomingSizeBytes: number | null | undefined,
+  ): boolean => {
+    const existingName = decryptedNames[existingFile.id] ?? displayName(existingFile);
+    const existingMimeType = mimeTypeFor(existingFile) ?? guessMimeTypeFromName(existingName);
+    const resolvedIncomingMimeType = incomingMimeType ?? guessMimeTypeFromName(incomingName);
+    const sameType =
+      !existingMimeType ||
+      !resolvedIncomingMimeType ||
+      existingMimeType.toLowerCase() === resolvedIncomingMimeType.toLowerCase();
+    if (!sameType) return false;
+
+    // Mobile does not have a stable hash for all picker assets yet. Size is the
+    // cheap signal we have; when the picker omits size, prefer versioning over
+    // creating "name (1)" duplicates for same-name, same-type uploads.
+    return incomingSizeBytes == null || existingFile.size_bytes !== incomingSizeBytes;
+  }, [decryptedNames, mimeTypeFor]);
   const withDecryptedMime = useCallback((file: FileEntry): FileEntry => {
     const mimeType = mimeTypeFor(file);
     return mimeType === file.mime_type ? file : { ...file, mime_type: mimeType };
@@ -1547,16 +1568,21 @@ export default function FilesScreen() {
 
     const existingFile = findConflict(asset.name);
     if (existingFile) {
-      const uniqueName = getUniqueMobileName(asset.name, folderFileNames());
-      const choice = await promptFileConflict(asset.name, existingFile.id, uniqueName);
-      if (choice.action === 'cancel') return;
-      if (choice.action === 'replace') {
-        // Reuse existing file ID → server auto-creates a version
+      if (shouldAutoVersionUpload(existingFile, asset.name, asset.mimeType, asset.size)) {
         uploadFileId = existingFile.id;
         v2InitNameEncrypted = existingFile.name_encrypted;
       } else {
-        // Keep both: upload under the suffixed name with a fresh ID
-        uploadFileName = choice.finalName;
+        const uniqueName = getUniqueMobileName(asset.name, folderFileNames());
+        const choice = await promptFileConflict(asset.name, existingFile.id, uniqueName);
+        if (choice.action === 'cancel') return;
+        if (choice.action === 'replace') {
+          // Reuse existing file ID → server auto-creates a version
+          uploadFileId = existingFile.id;
+          v2InitNameEncrypted = existingFile.name_encrypted;
+        } else {
+          // Keep both: upload under the suffixed name with a fresh ID
+          uploadFileName = choice.finalName;
+        }
       }
     }
 
@@ -1607,7 +1633,7 @@ export default function FilesScreen() {
       showToast({ type: 'error', message: `Upload failed: ${friendlyError(err)}` });
       setUpload(null);
     }
-  }, [currentFolder.id, fetchFiles, phraseVerified, showToast, findConflict, folderFileNames, encryptChunk, encryptMetadata, indexFile]);
+  }, [currentFolder.id, fetchFiles, phraseVerified, showToast, findConflict, shouldAutoVersionUpload, folderFileNames, encryptChunk, encryptMetadata, indexFile]);
 
   const pickAndUploadPhotos = useCallback(async () => {
     if (!phraseVerified) {
@@ -1646,10 +1672,16 @@ export default function FilesScreen() {
     for (let i = 0; i < total; i++) {
       const asset = picked.assets[i]!;
       const rawName = asset.fileName ?? `photo-${Date.now()}-${i}.jpg`;
-      // Silent conflict resolution for batch photo uploads — always "keep both",
-      // no prompts (the user selected multiple photos and expects them all uploaded).
       const conflict = findConflict(rawName);
-      const name = conflict
+      const shouldVersion = !!conflict && shouldAutoVersionUpload(
+        conflict,
+        rawName,
+        asset.mimeType ?? 'image/jpeg',
+        asset.fileSize,
+      );
+      // Batch photo uploads stay silent. Same-name, same-type changed files
+      // become versions; unresolved collisions still keep both with a suffix.
+      const name = conflict && !shouldVersion
         ? getUniqueMobileName(rawName, new Set([...folderFileNames(), ...usedInBatch]))
         : rawName;
       usedInBatch.add(name.toLowerCase());
@@ -1658,7 +1690,8 @@ export default function FilesScreen() {
       lastName = display;
       setUpload({ fileName: display, stage: 1, percent: 30, city: lastLoc.city, region: lastLoc.region });
       try {
-        const fileId = generateFileId();
+        const fileId = shouldVersion && conflict ? conflict.id : generateFileId();
+        const v2InitNameEncrypted = shouldVersion && conflict ? conflict.name_encrypted : undefined;
         const uploadUri = await copyPhotoAssetToUploadCache(asset.uri, fileId, name);
         const uploaded = await encryptedUpload({
           fileId,
@@ -1666,6 +1699,7 @@ export default function FilesScreen() {
           name,
           parentId: currentFolder.id ?? undefined,
           mimeType: asset.mimeType ?? 'image/jpeg',
+          v2InitNameEncrypted,
           encryptChunkFn: encryptChunk,
           encryptMetadataFn: encryptMetadata,
           onProgress: (progress) => {
@@ -1712,7 +1746,7 @@ export default function FilesScreen() {
     } else {
       setUpload(null);
     }
-  }, [currentFolder.id, fetchFiles, phraseVerified, showToast, findConflict, folderFileNames, encryptChunk, encryptMetadata, indexFile]);
+  }, [currentFolder.id, fetchFiles, phraseVerified, showToast, findConflict, shouldAutoVersionUpload, folderFileNames, encryptChunk, encryptMetadata, indexFile]);
 
   const openDocumentScanner = useCallback(() => {
     if (!phraseVerified) {
