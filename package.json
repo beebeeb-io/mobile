@@ -1,6 +1,14 @@
 {
   "name": "beebeeb-mobile",
   "version": "1.0.0",
+  "description": "End-to-end encrypted cloud storage for iOS and Android",
+  "license": "AGPL-3.0-or-later",
+  "author": "Initlabs B.V.",
+  "homepage": "https://beebeeb.io",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/beebeeb-io/mobile.git"
+  },
   "main": "src/App.tsx",
   "scripts": {
     "start": "expo start",
