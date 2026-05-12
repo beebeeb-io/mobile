@@ -947,6 +947,10 @@ export default function SettingsScreen() {
         }
         return;
       }
+      const token = await getToken();
+      if (token) {
+        await BeebeebCrypto.mirrorSessionToAppGroup(token, getApiUrl()).catch(() => false);
+      }
       const state = await BeebeebCrypto.unlockFileProviderAccess();
       setFileProviderLocked(state.locked);
       setFileProviderUnlockWindowSeconds(state.unlockWindowSeconds);

@@ -281,17 +281,17 @@ export async function replaceKeychainAccessControl(
  */
 export async function mirrorSessionToAppGroup(
   token: string | null,
-  baseUrl: string,
+  baseUrl: string | null,
 ): Promise<boolean> {
   if (typeof BeebeebCryptoModule.mirrorSessionToAppGroup !== 'function') return false
   return BeebeebCryptoModule.mirrorSessionToAppGroup(token, baseUrl)
 }
 
 /**
- * DEBUG simulator-only mirror for the File Provider extension. The simulator
- * cannot use the app's Secure Enclave path, so local Files.app QA needs the
- * software fallback key in the shared App Group. Native release builds return
- * false and do not persist anything here.
+ * Legacy cleanup shim. Older debug simulator builds mirrored the raw master key
+ * into App Group defaults for File Provider QA. Current builds never persist
+ * raw vault keys in App Group storage; native iOS removes any stale value and
+ * returns false.
  */
 export async function mirrorSimulatorFileProviderMasterKey(masterKeyBase64: string | null): Promise<boolean> {
   if (typeof BeebeebCryptoModule.mirrorSimulatorFileProviderMasterKey !== 'function') return false

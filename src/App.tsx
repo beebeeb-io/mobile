@@ -91,8 +91,9 @@ import TwoFactorSetupScreen from './screens/TwoFactorSetupScreen';
 import ErrorBoundary from './components/ErrorBoundary';
 import ConfirmActionPrompt from './components/ConfirmActionPrompt';
 import { BackupProvider } from './lib/backup-context';
-import { processPendingShares } from '../plugins/share-extension/PendingSharesHandler';
+import { discardAllPendingShares, processPendingShares } from '../plugins/share-extension/PendingSharesHandler';
 import { useToast } from './lib/toast-context';
+import { clearWidgetData } from './utils/widgetData';
 
 const ONBOARDING_KEY = 'beebeeb_onboarding_done';
 const PHRASE_VERIFIED_KEY = 'beebeeb_phrase_verified';
@@ -351,6 +352,10 @@ function BiometricGuard({ locked, onUnlock }: { locked: boolean; onUnlock: () =>
     } catch {
       // Key not in keychain yet (e.g. legacy account before OPAQUE) — just unlock the screen
     }
+    const token = await getToken().catch(() => null);
+    if (token) {
+      await BeebeebCrypto.mirrorSessionToAppGroup(token, getApiUrl()).catch(() => false);
+    }
     await BeebeebCrypto.unlockFileProviderAccess().catch(() => null);
     onUnlock();
   }
@@ -546,7 +551,10 @@ export default function App() {
     }
     await BeebeebCrypto.deleteKeyFromKeychain().catch(() => false);
     await BeebeebCrypto.unregisterFileProviderDomain().catch(() => null);
-    await BeebeebCrypto.mirrorSessionToAppGroup(null, getApiUrl()).catch(() => false);
+    await BeebeebCrypto.mirrorSessionToAppGroup(null, null).catch(() => false);
+    await BeebeebCrypto.mirrorSimulatorFileProviderMasterKey(null).catch(() => false);
+    await discardAllPendingShares().catch(() => 0);
+    await clearWidgetData().catch(() => {});
     await SecureStore.deleteItemAsync(MASTER_KEY_CHECK_LABEL).catch(() => {});
     await SecureStore.deleteItemAsync(MASTER_KEY_FALLBACK_LABEL).catch(() => {});
     await FileSystem.deleteAsync(SIMULATOR_MASTER_KEY_FILE, { idempotent: true }).catch(() => {});
