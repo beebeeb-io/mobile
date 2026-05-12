@@ -14,6 +14,8 @@ import type {
   ConstellationFrame,
   ConstellationSessionInit,
   EncryptedData,
+  FileProviderDomainInfo,
+  FileProviderDomainRegistrationResult,
   MasterKeyResult,
   OpaqueLoginFinishResult,
   OpaqueRegistrationFinishResult,
@@ -282,6 +284,54 @@ export async function mirrorSessionToAppGroup(
 ): Promise<boolean> {
   if (typeof BeebeebCryptoModule.mirrorSessionToAppGroup !== 'function') return false
   return BeebeebCryptoModule.mirrorSessionToAppGroup(token, baseUrl)
+}
+
+/**
+ * Register the app's iOS File Provider domain so Beebeeb appears under
+ * Files.app Locations. The native implementation is idempotent.
+ */
+export async function registerFileProviderDomain(): Promise<FileProviderDomainRegistrationResult> {
+  if (typeof BeebeebCryptoModule.registerFileProviderDomain !== 'function') {
+    return {
+      supported: false,
+      identifier: 'io.beebeeb.files',
+      displayName: 'Beebeeb',
+      registered: false,
+      added: false,
+      removedBeforeAdd: false,
+      domainCount: 0,
+      rootEnumerationSignaled: false,
+      workingSetEnumerationSignaled: false,
+    }
+  }
+  return BeebeebCryptoModule.registerFileProviderDomain()
+}
+
+/** List registered File Provider domains. Intended for QA/debug tooling. */
+export async function listFileProviderDomains(): Promise<FileProviderDomainInfo[]> {
+  if (typeof BeebeebCryptoModule.listFileProviderDomains !== 'function') return []
+  return BeebeebCryptoModule.listFileProviderDomains()
+}
+
+/**
+ * Remove and re-add the Beebeeb File Provider domain. Intended for QA/debug
+ * resets when Files.app state is stale.
+ */
+export async function resetFileProviderDomain(): Promise<FileProviderDomainRegistrationResult> {
+  if (typeof BeebeebCryptoModule.resetFileProviderDomain !== 'function') {
+    return {
+      supported: false,
+      identifier: 'io.beebeeb.files',
+      displayName: 'Beebeeb',
+      registered: false,
+      added: false,
+      removedBeforeAdd: false,
+      domainCount: 0,
+      rootEnumerationSignaled: false,
+      workingSetEnumerationSignaled: false,
+    }
+  }
+  return BeebeebCryptoModule.resetFileProviderDomain()
 }
 
 // ─── Backup management ──────────────────────────────────────────────────────

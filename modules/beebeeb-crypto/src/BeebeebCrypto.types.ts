@@ -36,6 +36,28 @@ export interface OpaqueLoginFinishResult {
   exportKey: Uint8Array
 }
 
+// ─── iOS File Provider domain registration ─────────────────────────────────
+
+export interface FileProviderDomainRegistrationResult {
+  supported: boolean
+  identifier: string
+  displayName: string
+  registered: boolean
+  added: boolean
+  removedBeforeAdd: boolean
+  domainCount: number
+  rootEnumerationSignaled: boolean
+  workingSetEnumerationSignaled: boolean
+  rootEnumerationError?: string | null
+  workingSetEnumerationError?: string | null
+}
+
+export interface FileProviderDomainInfo {
+  identifier: string
+  displayName: string
+  isBeebeeb: boolean
+}
+
 // ─── Amber Constellation ─────────────────────────────────────────────────────
 
 export interface ConstellationSessionInit {

@@ -1,6 +1,10 @@
 import ExpoModulesCore
 import Foundation
+import FileProvider
 import Security
+
+private let fileProviderDomainIdentifier = NSFileProviderDomainIdentifier("io.beebeeb.files")
+private let fileProviderDisplayName = "Beebeeb"
 
 private func decodeBase64(_ value: String, field: String) throws -> Data {
   guard let data = Data(base64Encoded: value) else {
@@ -11,6 +15,91 @@ private func decodeBase64(_ value: String, field: String) throws -> Data {
     )
   }
   return data
+}
+
+@available(iOS 16.0, *)
+private func beebeebFileProviderDomain() -> NSFileProviderDomain {
+  NSFileProviderDomain(identifier: fileProviderDomainIdentifier, displayName: fileProviderDisplayName)
+}
+
+@available(iOS 16.0, *)
+private func getFileProviderDomains() async throws -> [NSFileProviderDomain] {
+  try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<[NSFileProviderDomain], Error>) in
+    NSFileProviderManager.getDomainsWithCompletionHandler { domains, error in
+      if let error {
+        continuation.resume(throwing: error)
+      } else {
+        continuation.resume(returning: domains)
+      }
+    }
+  }
+}
+
+@available(iOS 16.0, *)
+private func addFileProviderDomain(_ domain: NSFileProviderDomain) async throws {
+  try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+    NSFileProviderManager.add(domain) { error in
+      if let error {
+        continuation.resume(throwing: error)
+      } else {
+        continuation.resume(returning: ())
+      }
+    }
+  }
+}
+
+@available(iOS 16.0, *)
+private func removeFileProviderDomain(_ domain: NSFileProviderDomain) async throws {
+  try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+    NSFileProviderManager.remove(domain) { error in
+      if let error {
+        continuation.resume(throwing: error)
+      } else {
+        continuation.resume(returning: ())
+      }
+    }
+  }
+}
+
+@available(iOS 16.0, *)
+private func signalFileProviderEnumerator(
+  domain: NSFileProviderDomain,
+  itemIdentifier: NSFileProviderItemIdentifier
+) async -> String? {
+  guard let manager = NSFileProviderManager(for: domain) else {
+    return "File Provider manager unavailable"
+  }
+
+  return await withCheckedContinuation { (continuation: CheckedContinuation<String?, Never>) in
+    manager.signalEnumerator(for: itemIdentifier) { error in
+      continuation.resume(returning: error?.localizedDescription)
+    }
+  }
+}
+
+@available(iOS 16.0, *)
+private func fileProviderDomainStatus(
+  domain: NSFileProviderDomain,
+  registered: Bool,
+  added: Bool,
+  removedBeforeAdd: Bool = false,
+  domainCount: Int,
+  rootEnumerationError: String? = nil,
+  workingSetEnumerationError: String? = nil
+) -> [String: Any] {
+  [
+    "supported": true,
+    "identifier": domain.identifier.rawValue,
+    "displayName": domain.displayName,
+    "registered": registered,
+    "added": added,
+    "removedBeforeAdd": removedBeforeAdd,
+    "domainCount": domainCount,
+    "rootEnumerationSignaled": rootEnumerationError == nil,
+    "workingSetEnumerationSignaled": workingSetEnumerationError == nil,
+    "rootEnumerationError": rootEnumerationError ?? NSNull(),
+    "workingSetEnumerationError": workingSetEnumerationError ?? NSNull(),
+  ]
 }
 
 // All crypto runs through `BeebeebCryptoBridge`, which wraps the UniFFI
@@ -169,6 +258,95 @@ public class BeebeebCryptoModule: Module {
       defaults.synchronize()
       UserDefaults.standard.synchronize()
       return true
+    }
+
+    AsyncFunction("registerFileProviderDomain") { () async throws -> [String: Any] in
+      guard #available(iOS 16.0, *) else {
+        return [
+          "supported": false,
+          "identifier": fileProviderDomainIdentifier.rawValue,
+          "displayName": fileProviderDisplayName,
+          "registered": false,
+          "added": false,
+          "removedBeforeAdd": false,
+          "domainCount": 0,
+          "rootEnumerationSignaled": false,
+          "workingSetEnumerationSignaled": false,
+        ]
+      }
+
+      let domain = beebeebFileProviderDomain()
+      let domainsBefore = try await getFileProviderDomains()
+      let existed = domainsBefore.contains { $0.identifier == domain.identifier }
+      if !existed {
+        try await addFileProviderDomain(domain)
+      }
+
+      let rootError = await signalFileProviderEnumerator(domain: domain, itemIdentifier: .rootContainer)
+      let workingSetError = await signalFileProviderEnumerator(domain: domain, itemIdentifier: .workingSet)
+      let domainsAfter = try await getFileProviderDomains()
+
+      return fileProviderDomainStatus(
+        domain: domain,
+        registered: true,
+        added: !existed,
+        domainCount: domainsAfter.count,
+        rootEnumerationError: rootError,
+        workingSetEnumerationError: workingSetError
+      )
+    }
+
+    AsyncFunction("listFileProviderDomains") { () async throws -> [[String: Any]] in
+      guard #available(iOS 16.0, *) else {
+        return []
+      }
+
+      let domains = try await getFileProviderDomains()
+      return domains.map { domain in
+        [
+          "identifier": domain.identifier.rawValue,
+          "displayName": domain.displayName,
+          "isBeebeeb": domain.identifier == fileProviderDomainIdentifier,
+        ]
+      }
+    }
+
+    AsyncFunction("resetFileProviderDomain") { () async throws -> [String: Any] in
+      guard #available(iOS 16.0, *) else {
+        return [
+          "supported": false,
+          "identifier": fileProviderDomainIdentifier.rawValue,
+          "displayName": fileProviderDisplayName,
+          "registered": false,
+          "added": false,
+          "removedBeforeAdd": false,
+          "domainCount": 0,
+          "rootEnumerationSignaled": false,
+          "workingSetEnumerationSignaled": false,
+        ]
+      }
+
+      let domain = beebeebFileProviderDomain()
+      let domainsBefore = try await getFileProviderDomains()
+      let existed = domainsBefore.contains { $0.identifier == domain.identifier }
+      if existed {
+        try await removeFileProviderDomain(domain)
+      }
+      try await addFileProviderDomain(domain)
+
+      let rootError = await signalFileProviderEnumerator(domain: domain, itemIdentifier: .rootContainer)
+      let workingSetError = await signalFileProviderEnumerator(domain: domain, itemIdentifier: .workingSet)
+      let domainsAfter = try await getFileProviderDomains()
+
+      return fileProviderDomainStatus(
+        domain: domain,
+        registered: true,
+        added: true,
+        removedBeforeAdd: existed,
+        domainCount: domainsAfter.count,
+        rootEnumerationError: rootError,
+        workingSetEnumerationError: workingSetError
+      )
     }
 
     // ── Backup management ──────────────────────────────────────────────
