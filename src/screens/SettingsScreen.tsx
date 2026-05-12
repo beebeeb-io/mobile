@@ -43,6 +43,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { fonts, spacing, type Colors } from '../theme';
 import { useAuth } from '../lib/auth';
 import { useBackup } from '../lib/backup-context';
+import { useCrypto } from '../lib/crypto-context';
 import { useTheme, type ThemeMode } from '../lib/theme-context';
 import { useToast } from '../lib/toast-context';
 import { useNetworkStatus } from '../lib/useNetworkStatus';
@@ -491,6 +492,7 @@ export default function SettingsScreen() {
   const navigation = useNavigation<Nav>();
   const insets = useSafeAreaInsets();
   const { user, signOut } = useAuth();
+  const crypto = useCrypto();
   const {
     isPhotoBackupEnabled,
     isContactsBackupEnabled,
@@ -812,9 +814,18 @@ export default function SettingsScreen() {
       // even though the user just authenticated.
       markUnlocked();
     }
+    try {
+      await crypto.setBiometricRequirement(enabled);
+    } catch {
+      Alert.alert(
+        'Face ID setup failed',
+        'Unlock Beebeeb with your recovery phrase and try again. The local vault must be open before changing Face ID protection.',
+      );
+      return;
+    }
     setBiometricEnabled(enabled);
     await SecureStore.setItemAsync(BIOMETRIC_PREF_KEY, enabled ? 'true' : 'false');
-  }, []);
+  }, [crypto]);
 
   const handleBiometricDelayPress = useCallback(() => {
     const apply = async (ms: number) => {

@@ -261,6 +261,18 @@ export async function setRequireBiometric(require: boolean): Promise<boolean> {
 }
 
 /**
+ * Switch the SE wrapping key using the already-unlocked master key.
+ * This avoids prompting under the old access policy during Settings changes.
+ */
+export async function replaceKeychainAccessControl(
+  require: boolean,
+  key: Uint8Array,
+  label: string,
+): Promise<boolean> {
+  return BeebeebCryptoModule.replaceKeychainAccessControl(require, key, label)
+}
+
+/**
  * Mirror auth state into the iOS App Group so the File Provider can upload,
  * download, and update encrypted files from the system Files app.
  */
