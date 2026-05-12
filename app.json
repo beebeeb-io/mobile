@@ -110,6 +110,7 @@
       "expo-image-picker"
     ],
     "extra": {
+      "apiUrl": "https://api.beebeeb.io",
       "eas": {
         "projectId": "e8891cb5-44d2-493c-ba4b-4581a78ca198"
       }

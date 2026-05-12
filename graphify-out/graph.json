@@ -330366,8 +330366,8 @@
       "source_file": "modules/beebeeb-crypto/ios/PendingSharesAccess.swift",
       "source_location": "L195",
       "weight": 1.0,
-      "_src": "ios_pendingsharesaccess_pendingsharesaccess_payloadurl",
-      "_tgt": "fbreactnativespec_fbreactnativespec_url",
+      "_src": "fbreactnativespec_fbreactnativespec_url",
+      "_tgt": "ios_pendingsharesaccess_pendingsharesaccess_payloadurl",
       "source": "fbreactnativespec_fbreactnativespec_url",
       "target": "ios_pendingsharesaccess_pendingsharesaccess_payloadurl"
     },
@@ -342822,8 +342822,8 @@
       "source_file": "ios/BeebeebWidget/BeebeebWidget.swift",
       "source_location": "L110",
       "weight": 1.0,
-      "_src": "beebeebwidget_beebeebwidget_view_beebeebwidgetbackground",
-      "_tgt": "graphics_boxshadow_color",
+      "_src": "graphics_boxshadow_color",
+      "_tgt": "beebeebwidget_beebeebwidget_view_beebeebwidgetbackground",
       "source": "graphics_boxshadow_color",
       "target": "beebeebwidget_beebeebwidget_view_beebeebwidgetbackground"
     },
@@ -356910,8 +356910,8 @@
       "source_file": "modules/beebeeb-crypto/ios/ConstellationRenderer.swift",
       "source_location": "L37",
       "weight": 1.0,
-      "_src": "ios_constellationrenderer_constellationmodule_definition",
-      "_tgt": "beebeebwidget_beebeebwidget_view",
+      "_src": "beebeebwidget_beebeebwidget_view",
+      "_tgt": "ios_constellationrenderer_constellationmodule_definition",
       "source": "beebeebwidget_beebeebwidget_view",
       "target": "ios_constellationrenderer_constellationmodule_definition"
     },
