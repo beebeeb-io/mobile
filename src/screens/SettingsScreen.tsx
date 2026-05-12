@@ -71,6 +71,8 @@ import {
 } from '../lib/api';
 import { readLastSessionAt } from '../services/PhotoBackupCheckpoint';
 import { formatEtaSeconds } from '../services/PhotoBackupRunner';
+import { exportContacts } from '../services/ContactsExporter';
+import { exportCalendars } from '../services/CalendarExporter';
 import {
   initDatabase as initBackupDb,
   getUploadedCount,
@@ -91,11 +93,6 @@ import type { RootStackParamList } from '../App';
 import { NativeSwitch } from '../components/NativeSwitch';
 import { markUnlocked } from '../lib/lock-state';
 import { NOTIFICATIONS_OPT_OUT_KEY, registerForPushNotifications, unregisterPushToken } from '../lib/push-notifications';
-import {
-  configureBackupFolder,
-  enableContactsBackup,
-  enableCalendarBackup,
-} from '../../modules/beebeeb-crypto';
 
 const BIOMETRIC_PREF_KEY = 'beebeeb_biometric_lock';
 const BIOMETRIC_DELAY_KEY = 'beebeeb_biometric_delay';
@@ -1071,18 +1068,29 @@ export default function SettingsScreen() {
       await initializeBackup('contacts');
       const token = await getToken();
       if (!token) throw new Error('Session expired');
-      const { categoryFolderId } = await ensureBackupFolders('contacts');
-      await configureBackupFolder('contacts', categoryFolderId);
-      await enableContactsBackup(token);
-      refreshBackupStats();
-      showToast({ type: 'success', message: 'Contacts backup started' });
+      const result = await exportContacts({
+        encryptChunkFn: crypto.encryptChunk,
+        encryptMetadataFn: crypto.encryptMetadata,
+      });
+      const timestamp = new Date().toISOString();
+      await updateBackupCategoryState('contacts', {
+        enabled: true,
+        last_sync: timestamp,
+        items_synced: result.contactCount,
+        contact_count: result.contactCount,
+      });
+      await refreshBackupStats();
+      const message = result.exported
+        ? `Contacts backed up · ${result.contactCount} contact${result.contactCount === 1 ? '' : 's'}`
+        : `Contacts checked · ${result.contactCount} contact${result.contactCount === 1 ? '' : 's'} unchanged`;
+      showToast({ type: 'success', message });
     } catch (err) {
       console.warn('[SettingsScreen] contacts backup failed:', err);
       Alert.alert('Contacts backup failed', errorMessage(err));
     } finally {
       setBackingUpContacts(false);
     }
-  }, [refreshBackupStats, showToast]);
+  }, [crypto.encryptChunk, crypto.encryptMetadata, refreshBackupStats, showToast]);
 
   const handleBackupCalendarNow = useCallback(async () => {
     const granted = await ensureCalendarPermission();
@@ -1105,18 +1113,29 @@ export default function SettingsScreen() {
       await initializeBackup('calendar');
       const token = await getToken();
       if (!token) throw new Error('Session expired');
-      const { categoryFolderId } = await ensureBackupFolders('calendar');
-      await configureBackupFolder('calendar', categoryFolderId);
-      await enableCalendarBackup(token);
-      refreshBackupStats();
-      showToast({ type: 'success', message: 'Calendar backup started' });
+      const result = await exportCalendars({
+        encryptChunkFn: crypto.encryptChunk,
+        encryptMetadataFn: crypto.encryptMetadata,
+      });
+      const timestamp = new Date().toISOString();
+      await updateBackupCategoryState('calendar', {
+        enabled: true,
+        last_sync: timestamp,
+        items_synced: result.eventCount,
+        calendar_count: result.calendarCount,
+      });
+      await refreshBackupStats();
+      const message = result.exported
+        ? `Calendar backed up · ${result.eventCount} event${result.eventCount === 1 ? '' : 's'}`
+        : `Calendar checked · ${result.calendarCount} calendar${result.calendarCount === 1 ? '' : 's'}`;
+      showToast({ type: 'success', message });
     } catch (err) {
       console.warn('[SettingsScreen] calendar backup failed:', err);
       Alert.alert('Calendar backup failed', errorMessage(err));
     } finally {
       setBackingUpCalendar(false);
     }
-  }, [refreshBackupStats, showToast]);
+  }, [crypto.encryptChunk, crypto.encryptMetadata, refreshBackupStats, showToast]);
 
   const handleRegionChange = useCallback(async (poolName: string) => {
     const r = REGIONS.find(x => x.poolName === poolName);
