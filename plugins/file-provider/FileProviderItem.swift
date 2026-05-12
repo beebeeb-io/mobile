@@ -76,7 +76,7 @@ class FileProviderItem: NSObject, NSFileProviderItem {
             ?? (meta.isFolder ? "Encrypted folder" : "Encrypted file")
     }
 
-    var contentType: UTType? {
+    var contentType: UTType {
         if isRoot || metadata?.isFolder == true { return .folder }
         guard let mime = metadata?.mimeType else { return .data }
         return UTType(mimeType: mime) ?? .data

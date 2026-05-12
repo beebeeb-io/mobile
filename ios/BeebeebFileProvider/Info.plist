@@ -9,7 +9,7 @@
   <key>CFBundleExecutable</key>
   <string>$(EXECUTABLE_NAME)</string>
   <key>CFBundleIdentifier</key>
-  <string>io.beebeeb.app.share</string>
+  <string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>
@@ -17,31 +17,17 @@
   <key>CFBundlePackageType</key>
   <string>XPC!</string>
   <key>CFBundleShortVersionString</key>
-  <string>1.0.0</string>
+  <string>$(MARKETING_VERSION)</string>
   <key>CFBundleVersion</key>
-  <string>1</string>
+  <string>$(CURRENT_PROJECT_VERSION)</string>
   <key>NSExtension</key>
   <dict>
-    <key>NSExtensionAttributes</key>
-    <dict>
-      <key>NSExtensionActivationRule</key>
-      <dict>
-        <key>NSExtensionActivationSupportsImageWithMaxCount</key>
-        <integer>20</integer>
-        <key>NSExtensionActivationSupportsMovieWithMaxCount</key>
-        <integer>5</integer>
-        <key>NSExtensionActivationSupportsFileWithMaxCount</key>
-        <integer>20</integer>
-        <key>NSExtensionActivationSupportsWebURLWithMaxCount</key>
-        <integer>1</integer>
-        <key>NSExtensionActivationSupportsText</key>
-        <true/>
-      </dict>
-    </dict>
+    <key>NSExtensionFileProviderDocumentGroup</key>
+    <string>group.io.beebeeb.shared</string>
     <key>NSExtensionPointIdentifier</key>
-    <string>com.apple.share-services</string>
+    <string>com.apple.fileprovider-nonui</string>
     <key>NSExtensionPrincipalClass</key>
-    <string>$(PRODUCT_MODULE_NAME).ShareViewController</string>
+    <string>$(PRODUCT_MODULE_NAME).FileProviderExtension</string>
   </dict>
 </dict>
 </plist>

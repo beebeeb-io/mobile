@@ -91,12 +91,27 @@ struct BeebeebWidgetView: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .containerBackground(.fill, for: .widget)
+        .beebeebWidgetBackground()
     }
 
     func formatBytes(_ bytes: Int64) -> String {
         if bytes < 1_000_000_000 { return String(format: "%.0f MB", Double(bytes) / 1_000_000) }
         return String(format: "%.1f GB", Double(bytes) / 1_000_000_000)
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func beebeebWidgetBackground() -> some View {
+#if os(iOS)
+        if #available(iOSApplicationExtension 17.0, *) {
+            self.containerBackground(.fill, for: .widget)
+        } else {
+            self.background(Color(.systemBackground))
+        }
+#else
+        self
+#endif
     }
 }
 

@@ -6,12 +6,13 @@
  * App Group container. On every cold start and foreground transition the
  * main app calls `processPendingShares()`, which reads the dropbox, copies
  * each file into the main-app sandbox, runs it through the standard
- * upload flow, and removes both copies on success.
+ * upload flow, and acknowledges the App Group copy only on success.
  */
 
 import { Platform } from 'react-native'
 import * as FileSystem from 'expo-file-system'
 import {
+  acknowledgePendingShare,
   clearAllPendingShares,
   consumePendingShare,
   listPendingShares,
@@ -94,13 +95,17 @@ export async function processPendingShares(opts: ProcessPendingSharesOptions): P
         encryptMetadataFn: opts.encryptMetadataFn,
       })
       result.uploaded += 1
+      try {
+        await acknowledgePendingShare(summary.id)
+      } catch {
+        // Upload succeeded, but the share may be retried if native cleanup fails.
+      }
       opts?.onItemUploaded?.(resource)
     } catch {
       result.failed += 1
     } finally {
-      // Always discard the staged copy — on failure, the share is gone
-      // from the dropbox already (consume removed it) so we'd otherwise
-      // leak the file. Re-queueing on failure is a future enhancement.
+      // Always discard the main-app staging copy. The App Group original is
+      // acknowledged only after upload, so failed imports remain retryable.
       try {
         await FileSystem.deleteAsync(resource.uri, { idempotent: true })
       } catch {

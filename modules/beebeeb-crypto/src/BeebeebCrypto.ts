@@ -388,6 +388,11 @@ export async function consumePendingShare(id: string): Promise<PendingShareResou
   return BeebeebCryptoModule.consumePendingShare(id)
 }
 
+/** Remove one pending share from the App Group after a successful upload. iOS only. */
+export async function acknowledgePendingShare(id: string): Promise<boolean> {
+  return BeebeebCryptoModule.acknowledgePendingShare(id)
+}
+
 /** Wipe the App Group dropbox. Returns the number of files removed. iOS only. */
 export async function clearAllPendingShares(): Promise<number> {
   return BeebeebCryptoModule.clearAllPendingShares()
