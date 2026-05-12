@@ -3,12 +3,20 @@ import * as SecureStore from 'expo-secure-store';
 import { Platform } from 'react-native';
 import NetInfo from '@react-native-community/netinfo';
 import {
+  configureBackupFolder,
   disablePhotoBackup,
   disableContactsBackup,
   disableCalendarBackup,
+  enablePhotoBackup,
+  enableContactsBackup,
+  enableCalendarBackup,
+  resumeContactsBackup,
+  resumeCalendarBackup,
   getBackupProgress,
+  triggerImmediateBackup,
   type NativeBackupProgress,
 } from '../../modules/beebeeb-crypto';
+import { ensureBackupFolders, type BackupCategory } from '../services/BackupService';
 
 const BACKUP_PHOTO_KEY = 'beebeeb_camera_backup';
 const BACKUP_CONTACTS_KEY = 'beebeeb_contacts_backup';
@@ -57,20 +65,19 @@ export interface BackupContextValue {
   backupProgress: BackupProgress;
   lastBackupAt: string | null;
   triggerBackupNow: () => Promise<void>;
-  // JS-side photo backup session state
-  /** Live progress of the current JS foreground backup session. */
+  // Photo backup session state kept for legacy UI surfaces.
+  /** Live progress of the current foreground backup session. */
   photoSessionProgress: PhotoSessionProgress;
-  /** Result of the most recently completed JS backup session, or null. */
+  /** Result of the most recently completed backup session, or null. */
   lastPhotoSession: PhotoSessionResult | null;
-  /** Called by PhotoBackupBridge to report live + completed session state. */
+  /** Called by backup runners to report live + completed session state. */
   reportPhotoProgress: (
     uploaded: number, total: number, failed: number, running: boolean,
     throughputBps?: number, etaSeconds?: number | null,
     currentFileName?: string, currentFileSizeBytes?: number,
   ) => void;
   /**
-   * Monotonically incrementing counter. PhotoBackupBridge watches this and
-   * starts a new session whenever it changes. triggerBackupNow increments it.
+   * Legacy compatibility counter for older camera-roll runner surfaces.
    */
   photoBackupForceCount: number;
   // Legacy alias for components that used the old API
@@ -142,6 +149,31 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  const enableNativeBackup = useCallback(async (category: BackupCategory, options: { runNow?: boolean } = {}) => {
+    if (Platform.OS === 'web') return;
+    const token = await getStoredToken();
+    if (!token) return;
+
+    const { categoryFolderId } = await ensureBackupFolders(category);
+    await configureBackupFolder(category, categoryFolderId);
+
+    if (category === 'camera_roll') {
+      await enablePhotoBackup(token);
+    } else if (category === 'contacts') {
+      if (options.runNow === false) {
+        await resumeContactsBackup(token);
+      } else {
+        await enableContactsBackup(token);
+      }
+    } else {
+      if (options.runNow === false) {
+        await resumeCalendarBackup(token);
+      } else {
+        await enableCalendarBackup(token);
+      }
+    }
+  }, []);
+
   // Load persisted preferences on mount
   useEffect(() => {
     (async () => {
@@ -157,25 +189,18 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
         setIsPhotoBackupEnabled(photo === 'true');
         setIsContactsBackupEnabled(contacts === 'true');
         setIsCalendarBackupEnabled(calendar === 'true');
-        if (Platform.OS !== 'web') {
-          // Foreground JS workers own all category backup paths. Always stop
-          // legacy native managers so stale registrations cannot upload into
-          // old root-level folders or run Contacts/Calendar out of band.
-          await Promise.allSettled([
-            disablePhotoBackup(),
-            disableContactsBackup(),
-            disableCalendarBackup(),
-          ]);
-        }
         // Defaults: videos on, wifi-only off, background on
         if (videos !== null) setIncludeVideosState(videos === 'true');
         if (wifi !== null) setWifiOnlyState(wifi === 'true');
         if (bgUpload !== null) setBackgroundUploadState(bgUpload === 'true');
+        if (photo === 'true') void enableNativeBackup('camera_roll', { runNow: false });
+        if (contacts === 'true') void enableNativeBackup('contacts', { runNow: false });
+        if (calendar === 'true') void enableNativeBackup('calendar', { runNow: false });
       } catch {
         // SecureStore unavailable (web / unit tests)
       }
     })();
-  }, []);
+  }, [enableNativeBackup]);
 
   // Poll native backup progress every 5 s when photo backup is enabled
   useEffect(() => {
@@ -204,15 +229,18 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
     try {
       await SecureStore.setItemAsync(BACKUP_PHOTO_KEY, next ? 'true' : 'false');
       if (Platform.OS !== 'web') {
-        if (!next) {
+        if (next) {
+          await enableNativeBackup('camera_roll');
+        } else {
           await disablePhotoBackup();
+          await configureBackupFolder('camera_roll', null);
           setBackupProgress({ total: 0, completed: 0, inProgress: 0 });
         }
       }
     } catch {
       // Native module not linked yet
     }
-  }, [isPhotoBackupEnabled]);
+  }, [enableNativeBackup, isPhotoBackupEnabled]);
 
   const toggleContactsBackup = useCallback(async () => {
     const next = !isContactsBackupEnabled;
@@ -220,14 +248,17 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
     try {
       await SecureStore.setItemAsync(BACKUP_CONTACTS_KEY, next ? 'true' : 'false');
       if (Platform.OS !== 'web') {
-        if (!next) {
+        if (next) {
+          await enableNativeBackup('contacts');
+        } else {
           await disableContactsBackup();
+          await configureBackupFolder('contacts', null);
         }
       }
     } catch {
       // Native module not linked yet
     }
-  }, [isContactsBackupEnabled]);
+  }, [enableNativeBackup, isContactsBackupEnabled]);
 
   const toggleCalendarBackup = useCallback(async () => {
     const next = !isCalendarBackupEnabled;
@@ -235,14 +266,17 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
     try {
       await SecureStore.setItemAsync(BACKUP_CALENDAR_KEY, next ? 'true' : 'false');
       if (Platform.OS !== 'web') {
-        if (!next) {
+        if (next) {
+          await enableNativeBackup('calendar');
+        } else {
           await disableCalendarBackup();
+          await configureBackupFolder('calendar', null);
         }
       }
     } catch {
       // Native module not linked yet
     }
-  }, [isCalendarBackupEnabled]);
+  }, [enableNativeBackup, isCalendarBackupEnabled]);
 
   const setIncludeVideos = useCallback(async (value: boolean) => {
     setIncludeVideosState(value);
@@ -284,11 +318,17 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
         }
       }
 
-      // Increment force counter — PhotoBackupBridge watches this and starts a
-      // JS foreground camera-roll session. Do not call the native
-      // triggerImmediateBackup bridge here; it enables Contacts/Calendar
-      // managers regardless of the user's toggles.
-      setPhotoBackupForceCount((c) => c + 1);
+      if (Platform.OS === 'web') {
+        setPhotoBackupForceCount((c) => c + 1);
+        return;
+      }
+
+      const token = await getStoredToken();
+      if (!token) return;
+      const { categoryFolderId } = await ensureBackupFolders('camera_roll');
+      await configureBackupFolder('camera_roll', categoryFolderId);
+      await triggerImmediateBackup(token);
+      setLastBackupAt(new Date().toISOString());
     } catch {
       // NetInfo unavailable — leave the existing session state unchanged.
     }

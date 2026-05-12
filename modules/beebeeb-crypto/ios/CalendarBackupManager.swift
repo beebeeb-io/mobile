@@ -1,11 +1,22 @@
 import Foundation
 import EventKit
+import CryptoKit
 
 final class CalendarBackupManager {
   static let shared = CalendarBackupManager()
 
   private let store = EKEventStore()
   private var authToken: String?
+  private var parentFolderId: String? {
+    get { UserDefaults.standard.string(forKey: "io.beebeeb.calendarBackupParentFolderId") }
+    set {
+      if let newValue, !newValue.isEmpty {
+        UserDefaults.standard.set(newValue, forKey: "io.beebeeb.calendarBackupParentFolderId")
+      } else {
+        UserDefaults.standard.removeObject(forKey: "io.beebeeb.calendarBackupParentFolderId")
+      }
+    }
+  }
 
   private var serverBaseURL: String {
     UserDefaults.standard.string(forKey: "io.beebeeb.serverURL") ?? "http://localhost:3001"
@@ -13,13 +24,17 @@ final class CalendarBackupManager {
 
   private init() {}
 
-  func enable(authToken: String) {
+  func enable(authToken: String, runNow: Bool = true) {
     self.authToken = authToken
-    requestAccessAndBackup()
+    requestAccessAndBackup(runNow: runNow)
   }
 
   func disable() {
     authToken = nil
+  }
+
+  func configure(parentFolderId: String?) {
+    self.parentFolderId = parentFolderId
   }
 
   func backup() {
@@ -28,20 +43,25 @@ final class CalendarBackupManager {
       guard let self else { return }
       let ical = self.exportICal()
       guard let data = ical.data(using: .utf8) else { return }
+      guard self.shouldUpload(data: data, stateKey: "io.beebeeb.calendarBackupLastHash") else { return }
       self.upload(data: data, token: token)
     }
   }
 
-  private func requestAccessAndBackup() {
+  private func requestAccessAndBackup(runNow: Bool) {
     if #available(iOS 17.0, *) {
       store.requestFullAccessToEvents { [weak self] granted, _ in
         guard granted else { return }
-        self?.backup()
+        if runNow {
+          self?.backup()
+        }
       }
     } else {
       store.requestAccess(to: .event) { [weak self] granted, _ in
         guard granted else { return }
-        self?.backup()
+        if runNow {
+          self?.backup()
+        }
       }
     }
   }
@@ -93,6 +113,13 @@ final class CalendarBackupManager {
     return lines.joined(separator: "\r\n")
   }
 
+  private func shouldUpload(data: Data, stateKey: String) -> Bool {
+    let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    guard UserDefaults.standard.string(forKey: stateKey) != digest else { return false }
+    UserDefaults.standard.set(digest, forKey: stateKey)
+    return true
+  }
+
   private func icalEscape(_ s: String) -> String {
     s.replacingOccurrences(of: "\\", with: "\\\\")
      .replacingOccurrences(of: "\n", with: "\\n")
@@ -101,43 +128,19 @@ final class CalendarBackupManager {
   }
 
   private func upload(data: Data, token: String) {
-    // Attempt encryption — wrapped; BeebeebCore.xcframework not yet linked.
-    var encryptedData = data
-    if let masterKey = try? KeychainManager.load(label: "master") {
-      _ = masterKey // TODO: encrypt via Rust when xcframework is linked
-    }
-
     let fileName = "calendar.ics"
     let mimeType = "text/calendar"
-    guard let url = URL(string: "\(serverBaseURL)/api/v1/files/upload") else { return }
-
-    let boundary = "beebeeb-\(UUID().uuidString)"
-    var request = URLRequest(url: url)
-    request.httpMethod = "POST"
-    request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-    request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-
-    let crlf = "\r\n"
-    let metadataJSON = """
-    {"name_encrypted":"\(fileName)","mime_type":"\(mimeType)","size_bytes":\(encryptedData.count)}
-    """
-    var body = Data()
-    body.append("--\(boundary)\(crlf)Content-Disposition: form-data; name=\"metadata\"\(crlf)\(crlf)\(metadataJSON)\(crlf)".utf8Data)
-    body.append("--\(boundary)\(crlf)Content-Disposition: form-data; name=\"chunk_0\"; filename=\"\(fileName)\"\(crlf)Content-Type: \(mimeType)\(crlf)\(crlf)".utf8Data)
-    body.append(encryptedData)
-    body.append("\(crlf)--\(boundary)--\(crlf)".utf8Data)
-    request.httpBody = body
-
-    URLSession.shared.dataTask(with: request) { _, _, _ in }.resume()
-  }
-}
-
-private extension String {
-  var utf8Data: Data { data(using: .utf8) ?? Data() }
-}
-
-private extension Data {
-  mutating func append(_ string: String) {
-    if let d = string.data(using: .utf8) { append(d) }
+    NativeEncryptedBackupUploader.shared.upload(
+      plaintext: data,
+      fileName: fileName,
+      mimeType: mimeType,
+      parentFolderId: parentFolderId,
+      authToken: token,
+      serverBaseURL: serverBaseURL
+    ) { result in
+      if case .failure(let error) = result {
+        NSLog("[BeebeebBackup] calendar upload failed: \(error.localizedDescription)")
+      }
+    }
   }
 }

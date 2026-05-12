@@ -43,7 +43,6 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { fonts, spacing, type Colors } from '../theme';
 import { useAuth } from '../lib/auth';
 import { useBackup } from '../lib/backup-context';
-import { useCrypto } from '../lib/crypto-context';
 import { useTheme, type ThemeMode } from '../lib/theme-context';
 import { useToast } from '../lib/toast-context';
 import { useNetworkStatus } from '../lib/useNetworkStatus';
@@ -57,6 +56,7 @@ import {
   photoBackupStats,
   getNotificationPreferences,
   setNotificationPreferences,
+  getToken,
   getUserRegion,
   setUserRegion,
   requestDataExport,
@@ -79,6 +79,7 @@ import {
 import {
   initializeBackup,
   disableBackup,
+  ensureBackupFolders,
   getDeviceManifest,
   updateBackupCategoryState,
   type BackupCategory,
@@ -88,6 +89,11 @@ import type { RootStackParamList } from '../App';
 import { NativeSwitch } from '../components/NativeSwitch';
 import { markUnlocked } from '../lib/lock-state';
 import { NOTIFICATIONS_OPT_OUT_KEY, registerForPushNotifications, unregisterPushToken } from '../lib/push-notifications';
+import {
+  configureBackupFolder,
+  enableContactsBackup,
+  enableCalendarBackup,
+} from '../../modules/beebeeb-crypto';
 
 const BIOMETRIC_PREF_KEY = 'beebeeb_biometric_lock';
 const BIOMETRIC_DELAY_KEY = 'beebeeb_biometric_delay';
@@ -504,8 +510,6 @@ export default function SettingsScreen() {
     photoSessionProgress,
     lastPhotoSession,
   } = useBackup();
-  const { encryptChunk, encryptMetadata } = useCrypto();
-
   const { showToast } = useToast();
   const isOnline = useNetworkStatus();
   // "Paused — waiting for Wi-Fi" only kicks in when the user explicitly opted
@@ -888,10 +892,7 @@ export default function SettingsScreen() {
   const syncBackupCategory = useCallback(async (category: BackupCategory, enabling: boolean) => {
     try {
       if (enabling) {
-        await initializeBackup(category, {
-          encryptChunkFn: encryptChunk,
-          encryptMetadataFn: encryptMetadata,
-        });
+        await initializeBackup(category);
       } else {
         await disableBackup(category);
       }
@@ -901,7 +902,7 @@ export default function SettingsScreen() {
       console.warn(`Failed to ${enabling ? 'initialize' : 'disable'} backup for ${category}:`, err);
     }
     refreshBackupStats();
-  }, [encryptChunk, encryptMetadata, refreshBackupStats]);
+  }, [refreshBackupStats]);
 
   const handleTogglePhotoBackup = useCallback(async () => {
     const enabling = !isPhotoBackupEnabled;
@@ -1054,19 +1055,21 @@ export default function SettingsScreen() {
     }
     setBackingUpContacts(true);
     try {
-      await initializeBackup('contacts', {
-        encryptChunkFn: encryptChunk,
-        encryptMetadataFn: encryptMetadata,
-      });
+      await initializeBackup('contacts');
+      const token = await getToken();
+      if (!token) throw new Error('Session expired');
+      const { categoryFolderId } = await ensureBackupFolders('contacts');
+      await configureBackupFolder('contacts', categoryFolderId);
+      await enableContactsBackup(token);
       refreshBackupStats();
-      showToast({ type: 'success', message: 'Contacts backup checked' });
+      showToast({ type: 'success', message: 'Contacts backup started' });
     } catch (err) {
       console.warn('[SettingsScreen] contacts backup failed:', err);
       Alert.alert('Contacts backup failed', errorMessage(err));
     } finally {
       setBackingUpContacts(false);
     }
-  }, [encryptChunk, encryptMetadata, refreshBackupStats, showToast]);
+  }, [refreshBackupStats, showToast]);
 
   const handleBackupCalendarNow = useCallback(async () => {
     const granted = await ensureCalendarPermission();
@@ -1086,19 +1089,21 @@ export default function SettingsScreen() {
     }
     setBackingUpCalendar(true);
     try {
-      await initializeBackup('calendar', {
-        encryptChunkFn: encryptChunk,
-        encryptMetadataFn: encryptMetadata,
-      });
+      await initializeBackup('calendar');
+      const token = await getToken();
+      if (!token) throw new Error('Session expired');
+      const { categoryFolderId } = await ensureBackupFolders('calendar');
+      await configureBackupFolder('calendar', categoryFolderId);
+      await enableCalendarBackup(token);
       refreshBackupStats();
-      showToast({ type: 'success', message: 'Calendar backup checked' });
+      showToast({ type: 'success', message: 'Calendar backup started' });
     } catch (err) {
       console.warn('[SettingsScreen] calendar backup failed:', err);
       Alert.alert('Calendar backup failed', errorMessage(err));
     } finally {
       setBackingUpCalendar(false);
     }
-  }, [encryptChunk, encryptMetadata, refreshBackupStats, showToast]);
+  }, [refreshBackupStats, showToast]);
 
   const handleRegionChange = useCallback(async (poolName: string) => {
     const r = REGIONS.find(x => x.poolName === poolName);

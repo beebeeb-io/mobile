@@ -486,7 +486,7 @@ export async function updateBackupCategoryState(
 
 export async function initializeBackup(
   category: BackupCategory,
-  encryption?: BackupEncryptors,
+  _encryption?: BackupEncryptors,
 ): Promise<void> {
   const { deviceFolderId } = await ensureBackupFolders(category);
 
@@ -501,38 +501,6 @@ export async function initializeBackup(
     ...current.backups[category],
     enabled: true,
   };
-
-  // Run the actual export. Done in JS via expo-contacts / expo-calendar so
-  // the backup happens without native modules. Camera roll is handled by a
-  // separate scanner — see BackupContext / BackupRunner.
-  if (category === 'contacts') {
-    if (!encryption) throw new Error('Backup encryption unavailable');
-    try {
-      // Lazy import to avoid pulling expo-contacts into the camera_roll path.
-      const { exportContacts } = await import('./ContactsExporter');
-      const result = await exportContacts(encryption);
-      if (result.reason !== 'no_permission') {
-        categoryState.contact_count = result.contactCount;
-        categoryState.items_synced = result.contactCount;
-        categoryState.last_sync = new Date().toISOString();
-      }
-    } catch (err) {
-      console.warn('Contacts export failed:', err);
-    }
-  } else if (category === 'calendar') {
-    if (!encryption) throw new Error('Backup encryption unavailable');
-    try {
-      const { exportCalendars } = await import('./CalendarExporter');
-      const result = await exportCalendars(encryption);
-      if (result.reason !== 'no_permission') {
-        categoryState.calendar_count = result.calendarCount;
-        categoryState.items_synced = result.eventCount;
-        categoryState.last_sync = new Date().toISOString();
-      }
-    } catch (err) {
-      console.warn('Calendar export failed:', err);
-    }
-  }
 
   const next: DeviceManifest = {
     ...current,
