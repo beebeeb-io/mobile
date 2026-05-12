@@ -459,6 +459,8 @@ function withFileProvider(config) {
   <dict>
     <key>NSExtensionFileProviderDocumentGroup</key>
     <string>${APP_GROUP}</string>
+    <key>NSExtensionFileProviderSupportsEnumeration</key>
+    <true/>
     <key>NSExtensionPointIdentifier</key>
     <string>com.apple.fileprovider-nonui</string>
     <key>NSExtensionPrincipalClass</key>
