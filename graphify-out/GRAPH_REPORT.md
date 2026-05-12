@@ -1,12 +1,12 @@
 # Graph Report - mobile  (2026-05-13)
 
 ## Corpus Check
-- 9491 files · ~8,981,527 words
+- 9491 files · ~8,981,815 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 15564 nodes · 19887 edges · 436 communities detected
-- Extraction: 83% EXTRACTED · 17% INFERRED · 0% AMBIGUOUS · INFERRED: 3342 edges (avg confidence: 0.8)
+- 15567 nodes · 19898 edges · 436 communities detected
+- Extraction: 83% EXTRACTED · 17% INFERRED · 0% AMBIGUOUS · INFERRED: 3346 edges (avg confidence: 0.8)
 - Token cost: 0 input · 0 output
 
 ## Community Hubs (Navigation)
@@ -105,7 +105,7 @@
 - [[_COMMUNITY_Community 92|Community 92]]
 - [[_COMMUNITY_Community 93|Community 93]]
 - [[_COMMUNITY_Community 94|Community 94]]
-- [[_COMMUNITY_Community 96|Community 96]]
+- [[_COMMUNITY_Community 95|Community 95]]
 - [[_COMMUNITY_Community 97|Community 97]]
 - [[_COMMUNITY_Community 98|Community 98]]
 - [[_COMMUNITY_Community 99|Community 99]]
@@ -452,11 +452,11 @@
 2. `WebPSafeFree()` - 84 edges
 3. `WebPSafeMalloc()` - 62 edges
 4. `SRWebSocket` - 61 edges
-5. `String` - 58 edges
+5. `String` - 60 edges
 6. `SDImageCache` - 57 edges
 7. `comp()` - 50 edges
-8. `around()` - 46 edges
-9. `Data` - 46 edges
+8. `Data` - 47 edges
+9. `around()` - 46 edges
 10. `decltype()` - 42 edges
 
 ## Surprising Connections (you probably didn't know these)
@@ -475,212 +475,208 @@
 
 ### Community 0 - "Community 0"
 Cohesion: 0.01
-Nodes (253): weak_ptr, facebook(), T(), facebook(), call(), callWithArgs(), callWithFunction(), callWithPriority() (+245 more)
+Nodes (243): weak_ptr, facebook(), T(), facebook(), call(), callWithArgs(), callWithFunction(), callWithPriority() (+235 more)
 
 ### Community 1 - "Community 1"
 Cohesion: 0.01
-Nodes (290): BeebeebWidgetView, allocate_node(), BOOST_CATCH(), BOOST_TRY(), check_invariant_(), clear_(), construct_value(), copy_construct_from() (+282 more)
+Nodes (233): file_name(), function_name(), to_string(), impl(), UniffiHandleMap, mem_fn(), next(), facebook() (+225 more)
 
 ### Community 2 - "Community 2"
 Cohesion: 0.01
-Nodes (369): AllocateAlphaPlane(), ALPHDecode(), ALPHDelete(), ALPHInit(), ALPHNew(), VP8DecompressAlphaRows(), WebPDeallocateAlphaMemory(), AllocateBuffer() (+361 more)
+Nodes (370): AllocateAlphaPlane(), ALPHDecode(), ALPHDelete(), ALPHInit(), ALPHNew(), VP8DecompressAlphaRows(), WebPDeallocateAlphaMemory(), AllocateBuffer() (+362 more)
 
 ### Community 3 - "Community 3"
 Cohesion: 0.01
-Nodes (204): file_name(), function_name(), to_string(), impl(), mem_fn(), next(), facebook(), array_detail() (+196 more)
+Nodes (180): NSLock, ShareConstants, ShareManifest, ShareViewController, BeebeebEntry, BeebeebWidget, Provider, RecentFile (+172 more)
 
 ### Community 4 - "Community 4"
 Cohesion: 0.01
-Nodes (171): NSLock, ShareConstants, ShareManifest, ShareViewController, BeebeebEntry, BeebeebWidget, Provider, RecentFile (+163 more)
+Nodes (231): AnyObject, computeRecoveryCheck(), createReader(), createWriter(), CryptoError, Decryption, Encryption, InvalidInput (+223 more)
 
 ### Community 5 - "Community 5"
 Cohesion: 0.01
-Nodes (181): wcslen(), folly(), abort(), access, copy_n(), array_size(), boost_range_silence_warning(), is_same_address() (+173 more)
+Nodes (249): bytesToBase64(), handleDownload(), constructor(), addFileProviderDomain(), BeebeebCryptoModule, beebeebFileProviderDomain(), clearFileProviderSharedState(), decodeBase64() (+241 more)
 
 ### Community 6 - "Community 6"
-Cohesion: 0.01
-Nodes (227): AnyObject, computeRecoveryCheck(), createReader(), createWriter(), CryptoError, Decryption, Encryption, InvalidInput (+219 more)
+Cohesion: 0.02
+Nodes (311): DivRound(), VP8LFastLog2(), VP8LPrefixEncode(), VP8LPrefixEncodeBits(), VP8LPrefixEncodeBitsNoLUT(), VP8LPrefixEncodeNoLUT(), VP8LSubPixels(), VP8LSubSampleSize() (+303 more)
 
 ### Community 7 - "Community 7"
 Cohesion: 0.01
-Nodes (250): bytesToBase64(), handleDownload(), constructor(), addFileProviderDomain(), BeebeebCryptoModule, beebeebFileProviderDomain(), clearFileProviderSharedState(), decodeBase64() (+242 more)
+Nodes (168): folly(), copy_n(), folly(), merge(), clear(), localtime(), on_12_hour(), on_12_hour_time() (+160 more)
 
 ### Community 8 - "Community 8"
-Cohesion: 0.02
-Nodes (314): DivRound(), VP8LFastLog2(), VP8LPrefixEncode(), VP8LPrefixEncodeBits(), VP8LPrefixEncodeBitsNoLUT(), VP8LPrefixEncodeNoLUT(), VP8LSubPixels(), VP8LSubSampleSize() (+306 more)
+Cohesion: 0.01
+Nodes (191): PodsDummy_BeebeebCrypto, SDImageWebPCoder, -animatedImageData, -animatedImageDurationAtIndex, -animatedImageFrameAtIndex, -animatedImageFrameCount, -animatedImageLoopCount, -canDecodeFromData (+183 more)
 
 ### Community 9 - "Community 9"
 Cohesion: 0.01
-Nodes (159): AUX_WRAPPER_NAME(), facebook(), folly(), folly(), makeGuard(), addressof(), addrof_ref, BOOST_CORE_SWAP_NOEXCEPT_IF() (+151 more)
+Nodes (188): size_(), begin(), end(), eraseImpl(), folly(), rbegin(), rend(), tmp() (+180 more)
 
 ### Community 10 - "Community 10"
 Cohesion: 0.01
-Nodes (51): scoped_demangled_name, facebook(), dropEmpty(), folly(), keepEmpty(), CheckSlowModel(), GetCPUInfo(), x86CPUInfo() (+43 more)
+Nodes (48): wcslen(), scoped_demangled_name, facebook(), array_size(), boost_range_silence_warning(), is_same_address(), is_same_object(), str_end() (+40 more)
 
 ### Community 11 - "Community 11"
 Cohesion: 0.01
-Nodes (149): PodsDummy_BeebeebCrypto, SDWebImageDownloaderOperation, -addHandlersForProgresscompleted, -addHandlersForProgresscompleteddecodeOptions, -callCompletionBlocksWithError, -callCompletionBlocksWithImageimageDataerrorfinished, -callCompletionBlockWithTokenimageimageDataerrorfinished, -cancel (+141 more)
+Nodes (111): AUX_WRAPPER_NAME(), folly(), folly(), contains(), count(), emplace_hint(), find(), flat_map (+103 more)
 
 ### Community 12 - "Community 12"
 Cohesion: 0.02
-Nodes (194): AccumulateSSE_SSE2(), HorizontalAdd16b_SSE2(), HorizontalAdd32b_SSE2(), SSIMGet_SSE2(), SubtractAndSquare_SSE2(), VP8SSIMDspInitSSE2(), SSIMCalculation(), SSIMGet_C() (+186 more)
+Nodes (193): AccumulateSSE_SSE2(), HorizontalAdd16b_SSE2(), HorizontalAdd32b_SSE2(), SSIMGet_SSE2(), SubtractAndSquare_SSE2(), VP8SSIMDspInitSSE2(), SSIMCalculation(), SSIMGet_C() (+185 more)
 
 ### Community 13 - "Community 13"
 Cohesion: 0.02
-Nodes (169): size_(), at(), back(), computeInsertCapacity(), D_destroy_range_a(), D_uninitialized_fill_n_a(), dataIsInternal(), dataIsInternalAndNotVT() (+161 more)
+Nodes (131): allocate_node(), BOOST_CATCH(), BOOST_TRY(), check_invariant_(), clear_(), construct_value(), copy_construct_from(), deallocate_node() (+123 more)
 
 ### Community 14 - "Community 14"
 Cohesion: 0.02
-Nodes (130): check(), max(), min(), facebook(), facebook(), uint32_t(), folly(), AddBignum() (+122 more)
+Nodes (141): at(), begin(), contains(), count(), emplace_hint(), end(), erase(), find() (+133 more)
 
 ### Community 15 - "Community 15"
 Cohesion: 0.02
-Nodes (126): AddSubtractComponentFull(), AddSubtractComponentHalf(), Average2(), Average3(), Average4(), ClampedAddSubtractFull(), ClampedAddSubtractHalf(), Clip255() (+118 more)
+Nodes (141): VP8L32bToPlanar_SSE2(), VP8PlanarTo24b_SSE2(), AddSubtractComponentFull(), AddSubtractComponentHalf(), Average2(), Average3(), Average4(), ClampedAddSubtractFull() (+133 more)
 
 ### Community 16 - "Community 16"
 Cohesion: 0.02
-Nodes (144): EmitSampledRGB(), VP8L32bToPlanar_SSE2(), VP8PlanarTo24b_SSE2(), VP8L32bToPlanar_SSE41(), VP8PlanarTo24b_SSE41(), ConvertBGRAToRGB_SSE2(), Clip8(), YuvToArgb() (+136 more)
+Nodes (128): BeebeebWidgetView, View, check(), max(), min(), facebook(), facebook(), folly() (+120 more)
 
 ### Community 17 - "Community 17"
 Cohesion: 0.02
-Nodes (145): TransformWHT_NEON(), clip_8b(), clip_max(), CollectHistogram_C(), Copy(), Copy16x8_C(), Copy4x4_C(), DC4() (+137 more)
+Nodes (143): EmitSampledRGB(), VP8L32bToPlanar_SSE41(), VP8PlanarTo24b_SSE41(), Clip8(), WebPInitUpsamplersMSA(), YuvToArgb(), YuvToBgr(), YuvToBgra() (+135 more)
 
 ### Community 18 - "Community 18"
 Cohesion: 0.02
-Nodes (118): UniffiHandleMap, facebook(), toJs(), archive_constructed(), clip_8b(), DC16_C(), DC16NoLeft_C(), DC16NoTop_C() (+110 more)
+Nodes (145): TransformWHT_NEON(), clip_8b(), clip_max(), CollectHistogram_C(), Copy(), Copy16x8_C(), Copy4x4_C(), DC4() (+137 more)
 
 ### Community 19 - "Community 19"
-Cohesion: 0.03
-Nodes (127): adaptive_merge(), adaptive_merge_combine_blocks(), adaptive_merge_final_merge(), adaptive_merge_impl(), adaptive_merge_n_keys_intbuf(), adaptive_merge_n_keys_with_external_keys(), adaptive_merge_n_keys_without_external_keys(), adaptive_sort_build_blocks() (+119 more)
+Cohesion: 0.02
+Nodes (118): facebook(), toJs(), archive_constructed(), clip_8b(), DC16_C(), DC16NoLeft_C(), DC16NoTop_C(), DC16NoTopLeft_C() (+110 more)
 
 ### Community 20 - "Community 20"
-Cohesion: 0.03
-Nodes (142): GetResidualCost_C(), GetResidualCost_MIPS32(), VP8EncDspCostInitMIPS32(), GetResidualCost_MIPSdspR2(), VP8EncDspCostInitMIPSdspR2(), GetResidualCost_NEON(), VP8EncDspCostInitNEON(), GetResidualCost_SSE2() (+134 more)
+Cohesion: 0.01
+Nodes (62): MUTEX_NAMESPACE(), hardware_timestamp(), hardware_timestamp_measurement_stop(), abort(), bad_alloc(), BOOST_SYMBOL_VISIBLE, throw_out_of_range(), priv_throw_if_out_of_range() (+54 more)
 
 ### Community 21 - "Community 21"
 Cohesion: 0.03
-Nodes (113): VP8InitClipTables(), abs_mips32(), do_filter2(), do_filter4(), do_filter6(), FilterLoop24(), FilterLoop26(), hev() (+105 more)
+Nodes (142): GetResidualCost_C(), GetResidualCost_MIPS32(), VP8EncDspCostInitMIPS32(), GetResidualCost_MIPSdspR2(), VP8EncDspCostInitMIPSdspR2(), GetResidualCost_NEON(), VP8EncDspCostInitNEON(), GetResidualCost_SSE2() (+134 more)
 
 ### Community 22 - "Community 22"
 Cohesion: 0.03
-Nodes (83): Allocator, CoreAllocatorGuard(), coreFree(), coreMalloc(), coreMallocFromGuard(), folly(), getSystemLocalityInfo(), parseLeadingNumber() (+75 more)
+Nodes (105): toJs(), folly(), facebook(), value(), expo(), common(), expo(), float32_t() (+97 more)
 
 ### Community 23 - "Community 23"
-Cohesion: 0.02
-Nodes (39): floor(), binomial_distribution, generate(), param_type, read(), chi_squared_distribution, param_type, read() (+31 more)
+Cohesion: 0.03
+Nodes (120): adaptive_merge(), adaptive_merge_combine_blocks(), adaptive_merge_final_merge(), adaptive_merge_impl(), adaptive_merge_n_keys_intbuf(), adaptive_merge_n_keys_with_external_keys(), adaptive_merge_n_keys_without_external_keys(), adaptive_sort_build_blocks() (+112 more)
 
 ### Community 24 - "Community 24"
-Cohesion: 0.04
-Nodes (108): VP8HorizontalAdd8b(), VP8Transpose_2_4x4_16b(), ComplexMask_SSE2(), DC16_SSE2(), DC16NoLeft_SSE2(), DC16NoTop_SSE2(), DC16NoTopLeft_SSE2(), DC8uv_SSE2() (+100 more)
+Cohesion: 0.02
+Nodes (41): detail(), floor(), round(), binomial_distribution, generate(), param_type, read(), chi_squared_distribution (+33 more)
 
 ### Community 25 - "Community 25"
-Cohesion: 0.05
-Nodes (98): facebook(), enforce(), equal(), join(), parse_demangled_tag_name(), ptr_range_key(), ptr_range_mapped(), render() (+90 more)
+Cohesion: 0.03
+Nodes (84): Allocator, CoreAllocatorGuard(), coreFree(), coreMalloc(), coreMallocFromGuard(), folly(), getSystemLocalityInfo(), parseLeadingNumber() (+76 more)
 
 ### Community 26 - "Community 26"
-Cohesion: 0.04
-Nodes (82): BignumDtoa(), BignumToFixed(), EstimatePower(), FixupMultiply10(), GenerateCountedDigits(), GenerateShortestDigits(), InitialScaledStartValues(), InitialScaledStartValuesNegativeExponentNegativePower() (+74 more)
+Cohesion: 0.03
+Nodes (87): facebook(), BignumDtoa(), BignumToFixed(), EstimatePower(), FixupMultiply10(), GenerateCountedDigits(), GenerateShortestDigits(), InitialScaledStartValues() (+79 more)
 
 ### Community 27 - "Community 27"
 Cohesion: 0.04
-Nodes (79): get(), range, create(), get_existing(), StaticSingletonManagerWithRttiImpl, contains(), elementsCapacity(), erase() (+71 more)
+Nodes (108): VP8HorizontalAdd8b(), VP8Transpose_2_4x4_16b(), ComplexMask_SSE2(), DC16_SSE2(), DC16NoLeft_SSE2(), DC16NoTop_SSE2(), DC16NoTopLeft_SSE2(), DC8uv_SSE2() (+100 more)
 
 ### Community 28 - "Community 28"
-Cohesion: 0.03
-Nodes (66): facebook(), apply(), apply2(), integer_log2(), generate_error, make_tuple(), non_storeable_type, tie() (+58 more)
+Cohesion: 0.02
+Nodes (56): T(), range, call(), const_pow(), generate(), generate_from_int(), generate_from_real(), generate_impl() (+48 more)
 
 ### Community 29 - "Community 29"
-Cohesion: 0.03
-Nodes (52): check, has_member_size_impl, buffered_file(), close(), descriptor(), flush(), checkAdvanceToNextSubmap(), increment() (+44 more)
+Cohesion: 0.05
+Nodes (98): facebook(), enforce(), equal(), join(), parse_demangled_tag_name(), ptr_range_key(), ptr_range_mapped(), render() (+90 more)
 
 ### Community 30 - "Community 30"
 Cohesion: 0.03
-Nodes (50): MUTEX_NAMESPACE(), hardware_timestamp(), hardware_timestamp_measurement_stop(), bad_alloc(), BOOST_SYMBOL_VISIBLE, throw_out_of_range(), priv_throw_if_out_of_range(), lightweight_mutex (+42 more)
+Nodes (63): BOOST_SYMBOL_VISIBLE, copy_from(), rethrow(), throw_exception(), throw_exception_assert_compatibility(), throw_with_location(), wrapexcept(), core_version_type() (+55 more)
 
 ### Community 31 - "Community 31"
 Cohesion: 0.03
-Nodes (37): equal(), equal_impl(), operator(), broadcast(), facebook(), to_underlying(), hash(), operator() (+29 more)
+Nodes (58): VP8InitClipTables(), abs_mips32(), do_filter2(), do_filter4(), do_filter6(), FilterLoop24(), FilterLoop26(), hev() (+50 more)
 
 ### Community 32 - "Community 32"
+Cohesion: 0.03
+Nodes (37): equal(), equal_impl(), operator(), broadcast(), facebook(), to_underlying(), hash(), operator() (+29 more)
+
+### Community 33 - "Community 33"
 Cohesion: 0.02
 Nodes (16): facebook(), find_format_all_copy_impl(), find_format_all_impl(), find_format_all_impl2(), find_format_copy_impl(), find_format_impl(), process_segment(), NativeModule() (+8 more)
 
-### Community 33 - "Community 33"
-Cohesion: 0.04
-Nodes (55): VP8LFastSLog2(), ColorTransformDelta(), CombinedShannonEntropy_C(), GetCombinedEntropyUnrefined_C(), GetEntropyUnrefined_C(), GetEntropyUnrefinedHelper(), FastLog2Slow_MIPS32(), GetCombinedEntropyUnrefined_MIPS32() (+47 more)
-
 ### Community 34 - "Community 34"
-Cohesion: 0.03
-Nodes (41): accept(), bind_t, function_equal(), implementation, list0, list1, list2, list3 (+33 more)
+Cohesion: 0.04
+Nodes (59): VP8LFastSLog2(), ColorTransformDelta(), CombinedShannonEntropy_C(), FastLog2Slow_C(), FastSLog2Slow_C(), GetCombinedEntropyUnrefined_C(), GetEntropyUnrefined_C(), GetEntropyUnrefinedHelper() (+51 more)
 
 ### Community 35 - "Community 35"
 Cohesion: 0.03
-Nodes (30): is_iequal(), is_iless(), ierase_all(), ierase_all_copy(), ierase_first(), ierase_first_copy(), ierase_last(), ierase_last_copy() (+22 more)
+Nodes (41): accept(), bind_t, function_equal(), implementation, list0, list1, list2, list3 (+33 more)
 
 ### Community 36 - "Community 36"
 Cohesion: 0.03
-Nodes (35): folly(), common_slist_algorithms, stable_partition(), duplicates_iterator, advance(), bidirectional_iter_adaptor_base, dereference(), forward_iter_adaptor_base (+27 more)
+Nodes (30): is_iequal(), is_iless(), ierase_all(), ierase_all_copy(), ierase_first(), ierase_first_copy(), ierase_last(), ierase_last_copy() (+22 more)
 
 ### Community 37 - "Community 37"
-Cohesion: 0.05
-Nodes (48): chunkAllocSize(), computeCapacity(), final(), if(), kAllocIsAlwaysEqual(), header_holder(), BOOST_CATCH(), clear_() (+40 more)
+Cohesion: 0.06
+Nodes (65): Add4x4_NEON(), ApplyFilter2_NEON(), ApplyFilter2NoFlip_NEON(), ApplyFilter4_NEON(), ApplyFilter6_NEON(), ConvertU8ToS16_NEON(), DC16_NEON(), DC16NoLeft_NEON() (+57 more)
 
 ### Community 38 - "Community 38"
 Cohesion: 0.05
-Nodes (60): DoGradientFilter_C(), DoHorizontalFilter_C(), DoVerticalFilter_C(), GradientFilter_C(), GradientPredictor_C(), GradientUnfilter_C(), HorizontalFilter_C(), HorizontalUnfilter_C() (+52 more)
+Nodes (48): chunkAllocSize(), computeCapacity(), final(), if(), kAllocIsAlwaysEqual(), header_holder(), BOOST_CATCH(), clear_() (+40 more)
 
 ### Community 39 - "Community 39"
-Cohesion: 0.03
-Nodes (61): SRWebSocket, -_addConsumerWithDataLengthcallbackreadToCurrentFrameunmaskBytes, -_addConsumerWithScannercallback, -_addConsumerWithScannercallbackdataLength, -assertOnWorkQueue, -automaticallyNotifiesObserversOfReadyState, -_checkHandshake, -_cleanupSelfReference (+53 more)
+Cohesion: 0.05
+Nodes (60): DoGradientFilter_C(), DoHorizontalFilter_C(), DoVerticalFilter_C(), GradientFilter_C(), GradientPredictor_C(), GradientUnfilter_C(), HorizontalFilter_C(), HorizontalUnfilter_C() (+52 more)
 
 ### Community 40 - "Community 40"
 Cohesion: 0.03
-Nodes (60): SDImageCache, -applicationDidEnterBackground, -applicationWillTerminate, -_archivedDataWithImageforKey, -cachePathForKey, -calculateSizeWithCompletionBlock, -clearDiskOnCompletion, -clearMemory (+52 more)
+Nodes (61): SRWebSocket, -_addConsumerWithDataLengthcallbackreadToCurrentFrameunmaskBytes, -_addConsumerWithScannercallback, -_addConsumerWithScannercallbackdataLength, -assertOnWorkQueue, -automaticallyNotifiesObserversOfReadyState, -_checkHandshake, -_cleanupSelfReference (+53 more)
 
 ### Community 41 - "Community 41"
-Cohesion: 0.05
-Nodes (36): BOOST_SYMBOL_VISIBLE, copy_from(), rethrow(), throw_exception(), throw_exception_assert_compatibility(), throw_with_location(), wrapexcept(), core_version_type() (+28 more)
+Cohesion: 0.03
+Nodes (60): SDImageCache, -applicationDidEnterBackground, -applicationWillTerminate, -_archivedDataWithImageforKey, -cachePathForKey, -calculateSizeWithCompletionBlock, -clearDiskOnCompletion, -clearMemory (+52 more)
 
 ### Community 42 - "Community 42"
+Cohesion: 0.07
+Nodes (49): errnoStr(), folly(), invoke_strerror_r(), is_oddspace(), ltrimWhitespace(), prettyToDouble(), rtrimWhitespace(), stringAppendfImpl() (+41 more)
+
+### Community 43 - "Community 43"
 Cohesion: 0.04
 Nodes (26): SkeletonRow(), useAuth(), useCrypto(), PhotoBackupBridge(), SyncProvider(), useTheme(), useToast(), useSearchIndex() (+18 more)
 
-### Community 43 - "Community 43"
+### Community 44 - "Community 44"
+Cohesion: 0.05
+Nodes (35): A1, A2, A3, A4, A5, A6, A7, A8 (+27 more)
+
+### Community 45 - "Community 45"
 Cohesion: 0.06
 Nodes (31): Data(), emplace_equal(), emplace_hint_equal(), emplace_hint_unique(), emplace_unique(), enable_if_transparent<key_compare, K, bool>::type
          contains(), enable_if_transparent<key_compare, K, const_iterator>::type
          lower_bound(), enable_if_transparent<key_compare, K,const_iterator>::type
          upper_bound() (+23 more)
 
-### Community 44 - "Community 44"
+### Community 46 - "Community 46"
 Cohesion: 0.04
 Nodes (47): SDAnimatedImageFrameProvider, -animatedImageData, -animatedImageDurationAtIndex, -animatedImageFrameAtIndex, -animatedImageFrameCount, -animatedImageLoopCount, -hash, -initWithProvidertransformer (+39 more)
 
-### Community 45 - "Community 45"
+### Community 47 - "Community 47"
 Cohesion: 0.05
 Nodes (33): select_on_container_copy_construction(), small_vector_allocator, adaptive_pool, allocator, basic_string, deque, devector, flat_map (+25 more)
 
-### Community 46 - "Community 46"
-Cohesion: 0.08
-Nodes (36): ExportRowExpand_MIPS32(), ExportRowShrink_MIPS32(), ImportRowExpand_MIPS32(), ImportRowShrink_MIPS32(), WebPRescalerDspInitMIPS32(), ExportRowExpand_MIPSdspR2(), ExportRowShrink_MIPSdspR2(), WebPRescalerDspInitMIPSdspR2() (+28 more)
-
-### Community 47 - "Community 47"
+### Community 48 - "Community 48"
 Cohesion: 0.05
 Nodes (42): SDImageBaseTransformer, -init, -transformedImageWithImageforKey, -transformerKey, SDImageBlurTransformer, -transformedImageWithImageforKey, -transformerKey, -transformerWithRadius (+34 more)
 
-### Community 48 - "Community 48"
+### Community 49 - "Community 49"
 Cohesion: 0.05
 Nodes (41): SDWebImageDownloader, -cancelAllDownloads, -canRequestImageForURL, -canRequestImageForURLoptionscontext, -createDownloaderOperationWithUrloptionscontext, -currentDownloadCount, -dealloc, -downloadImageWithURLcompleted (+33 more)
 
-### Community 49 - "Community 49"
-Cohesion: 0.06
-Nodes (29): A1, A2, A3, A4, A5, A6, A7, A8 (+21 more)
-
 ### Community 50 - "Community 50"
-Cohesion: 0.09
-Nodes (26): appendCodePointToUtf8(), codePointToUtf8(), codePointToUtf8Impl(), utf8ToCodePoint(), buildExtraAsciiToEscapeBitmap(), Context, decodeUnicodeEscape(), error() (+18 more)
-
-### Community 51 - "Community 51"
 Cohesion: 0.07
 Nodes (22): facebook(), facebook(), bigint(), adl_begin(), adl_end(), assign(), enable_if<
             mpl::not_<boost::is_base_and_derived<iterator_range_detail::iterator_range_tag, ForwardRange> >,
@@ -692,205 +688,209 @@ Nodes (22): facebook(), facebook(), bigint(), adl_begin(), adl_end(), assign(), 
         >::type
         operator==() (+14 more)
 
-### Community 52 - "Community 52"
-Cohesion: 0.06
-Nodes (10): HFilter16i(), HFilterVertEdge16i(), SimpleHFilter16(), SimpleHFilter16i(), SimpleVFilter16(), SimpleVFilter16i(), TransformOne(), TransformTwo() (+2 more)
-
-### Community 53 - "Community 53"
+### Community 51 - "Community 51"
 Cohesion: 0.05
 Nodes (38): SDAnimatedImage, -animatedImageData, -animatedImageDurationAtIndex, -animatedImageFormat, -animatedImageFrameAtIndex, -animatedImageFrameCount, -animatedImageLoopCount, -encodeWithCoder (+30 more)
 
-### Community 54 - "Community 54"
+### Community 52 - "Community 52"
+Cohesion: 0.09
+Nodes (28): get(), create(), get_existing(), StaticSingletonManagerWithRttiImpl, contains(), elementsCapacity(), erase(), get() (+20 more)
+
+### Community 53 - "Community 53"
 Cohesion: 0.05
 Nodes (36): ZXCapture, -actionForLayerforKey, -back, -binary, -captureOutputdidOutputSampleBufferfromConnection, -createRotatedImagedegrees, -dealloc, -decodeImage (+28 more)
 
-### Community 55 - "Community 55"
-Cohesion: 0.06
-Nodes (34): SDImageIOAnimatedCoder, -animatedImageData, -animatedImageDurationAtIndex, -animatedImageFrameAtIndex, -animatedImageFrameCount, -animatedImageLoopCount, -animatedImageUTType, -canDecodeFromData (+26 more)
+### Community 54 - "Community 54"
+Cohesion: 0.08
+Nodes (21): array, array< T, 0 >, dynamic(), folly(), index(), construct(), appendBits(), asciiBytes() (+13 more)
 
-### Community 56 - "Community 56"
+### Community 55 - "Community 55"
 Cohesion: 0.09
 Nodes (5): seed(), subtract_with_carry, subtract_with_carry_01, subtract_with_carry_01_engine, subtract_with_carry_engine
 
-### Community 57 - "Community 57"
+### Community 56 - "Community 56"
 Cohesion: 0.08
 Nodes (15): ApplyAlphaMultiply4444_C(), ApplyAlphaMultiply_16b_C(), dither_hi(), dither_lo(), GetScale(), MakeARGB32(), Mult(), multiply() (+7 more)
 
-### Community 58 - "Community 58"
+### Community 57 - "Community 57"
 Cohesion: 0.06
 Nodes (32): SDWebImageCombinedOperation, -cancel, -isCancelled, SDWebImageManager, -cacheKeyForURL, -cacheKeyForURLcontext, -callCacheProcessForOperationurloptionscontextprogresscompleted, -callCompletionBlockForOperationcompletionerrorqueueurl (+24 more)
 
+### Community 58 - "Community 58"
+Cohesion: 0.1
+Nodes (23): awaitDone(), awaitDoneTryLock(), awaitPending(), clearPending(), combinedOp(), combiningPass(), combiningSession(), dedicatedCombining() (+15 more)
+
 ### Community 59 - "Community 59"
-Cohesion: 0.07
-Nodes (29): SDImageWebPCoder, -animatedImageData, -animatedImageDurationAtIndex, -animatedImageFrameAtIndex, -animatedImageFrameCount, -animatedImageLoopCount, -canDecodeFromData, -canEncodeToFormat (+21 more)
+Cohesion: 0.06
+Nodes (14): basic_ios_all_saver, basic_ios_exception_saver, basic_ios_fill_saver, basic_ios_iostate_saver, basic_ios_locale_saver, basic_ios_rdbuf_saver, basic_ios_tie_saver, ios_all_word_saver (+6 more)
 
 ### Community 60 - "Community 60"
 Cohesion: 0.09
-Nodes (18): convertRawProp(), toMapBuffer(), toString(), formatTimestamp(), copysign(), isfinite(), isinf(), isnan() (+10 more)
+Nodes (19): convertRawProp(), toMapBuffer(), toString(), formatTimestamp(), copysign(), isfinite(), isinf(), isnan() (+11 more)
 
 ### Community 61 - "Community 61"
+Cohesion: 0.09
+Nodes (11): obj_scope_guard_impl0, obj_scope_guard_impl1, obj_scope_guard_impl2, obj_scope_guard_impl3, safe_execute(), scope_guard_impl0, scope_guard_impl1, scope_guard_impl2 (+3 more)
+
+### Community 62 - "Community 62"
 Cohesion: 0.07
 Nodes (28): ZXBitArray, -appendBit, -appendBitArray, -appendBitsnumBits, -bitArray, -clear, -copyWithZone, -dealloc (+20 more)
 
-### Community 62 - "Community 62"
+### Community 63 - "Community 63"
 Cohesion: 0.1
 Nodes (5): lagged_fibonacci, lagged_fibonacci_01, lagged_fibonacci_01_engine, lagged_fibonacci_engine, seed()
 
-### Community 63 - "Community 63"
+### Community 64 - "Community 64"
 Cohesion: 0.08
 Nodes (7): is_space(), trim(), trim_copy(), trim_left(), trim_left_copy(), trim_right(), trim_right_copy()
 
-### Community 64 - "Community 64"
+### Community 65 - "Community 65"
 Cohesion: 0.07
 Nodes (9): A1, A2, A3, A4, A5, A6, A7, A8 (+1 more)
 
-### Community 65 - "Community 65"
+### Community 66 - "Community 66"
 Cohesion: 0.07
 Nodes (27): SDAnimatedImageRep, SDImageCoderHelper, -animatedImageWithFrames, -CGImageContainsAlpha, -CGImageCreateDecoded, -CGImageCreateDecodedorientation, -CGImageCreateScaledsize, -CGImageIsHardwareSupported (+19 more)
 
-### Community 66 - "Community 66"
+### Community 67 - "Community 67"
 Cohesion: 0.07
 Nodes (27): UIButton, -sd_backgroundImageOperationKeyForState, -sd_backgroundImageURLForState, -sd_cancelBackgroundImageLoadForState, -sd_cancelImageLoadForState, -sd_currentBackgroundImageURL, -sd_currentImageURL, -sd_imageOperationKeyForState (+19 more)
 
-### Community 67 - "Community 67"
+### Community 68 - "Community 68"
 Cohesion: 0.07
 Nodes (26): ZXPDF417ScanningDecoder, -adjustBoundingBoxrowIndicatorColumnerror, -adjustCodewordCountbarcodeMatrix, -adjustCodewordStartColumnminColumnmaxColumnleftToRightcodewordStartColumnimageRow, -barcodeMetadatarightRowIndicatorColumn, -bitCountForCodeword, -checkCodewordSkewminCodewordWidthmaxCodewordWidth, -codewordBucketNumber (+18 more)
 
-### Community 68 - "Community 68"
+### Community 69 - "Community 69"
 Cohesion: 0.08
 Nodes (25): ZXBitMatrix, -bottomRightOnBit, -clear, -copyWithZone, -dealloc, -description, -descriptionWithSetStringunsetString, -descriptionWithSetStringunsetStringlineSeparator (+17 more)
 
-### Community 69 - "Community 69"
+### Community 70 - "Community 70"
 Cohesion: 0.08
 Nodes (25): SDCallbackQueue, SDWebImagePrefetcher, -addRunningToken, -callCompletionBlockForToken, -callProgressBlockForTokenimageURL, -cancelPrefetching, -countOfRunningTokens, -delegateQueue (+17 more)
-
-### Community 70 - "Community 70"
-Cohesion: 0.13
-Nodes (17): array, array< T, 0 >, appendBits(), asciiBytes(), blankMatrix(), blankReserved(), buildDataCodewords(), createQrMatrix() (+9 more)
 
 ### Community 71 - "Community 71"
 Cohesion: 0.08
 Nodes (24): SDImageCachesManager, -addCache, -caches, -clearWithCacheTypecompletion, -concurrentClearWithCacheTypecompletionenumeratoroperation, -concurrentContainsImageForKeycacheTypecompletionenumeratoroperation, -concurrentQueryImageForKeyoptionscontextcacheTypecompletionenumeratoroperation, -concurrentRemoveImageForKeycacheTypecompletionenumeratoroperation (+16 more)
 
 ### Community 72 - "Community 72"
+Cohesion: 0.1
+Nodes (10): facebook(), true_type(), assign_functor(), assign_functor_a(), assign_to(), assign_to_a(), else(), function<BOOST_FUNCTION_PARTIAL_SPEC> (+2 more)
+
+### Community 73 - "Community 73"
 Cohesion: 0.08
 Nodes (23): NSButton, -sd_cancelCurrentAlternateImageLoad, -sd_cancelCurrentImageLoad, -sd_currentAlternateImageURL, -sd_currentImageURL, -sd_setAlternateImageWithURL, -sd_setAlternateImageWithURLcompleted, -sd_setAlternateImageWithURLplaceholderImage (+15 more)
 
-### Community 73 - "Community 73"
+### Community 74 - "Community 74"
+Cohesion: 0.11
+Nodes (9): base64ToUint8Array(), buildCodeHtml(), escapeHtmlText(), extensionForMime(), isEncryptedMetadataName(), previewCacheName(), previewDisplayName(), readFileAsArrayBuffer() (+1 more)
+
+### Community 75 - "Community 75"
 Cohesion: 0.11
 Nodes (9): bitCount(), getNthLSBit(), getNthLSByte(), byteCount(), bytes(), getNthLSBit(), getNthLSByte(), getNthMSBit() (+1 more)
 
-### Community 74 - "Community 74"
-Cohesion: 0.14
-Nodes (17): clip(), SharpYuvFilterRow_C(), SharpYuvInitDsp(), SharpYuvUpdateY_C(), clip_NEON(), InitSharpYuvNEON(), SharpYuvFilterRow16_NEON(), SharpYuvFilterRow32_NEON() (+9 more)
-
-### Community 75 - "Community 75"
+### Community 76 - "Community 76"
 Cohesion: 0.09
 Nodes (21): ZXRSSExpandedReader, -adjustOddEvenCounts, -checkChecksum, -checkRows, -checkRowscurrent, -constructResulterror, -decodeDataCharacterpatternisOddPatternleftChar, -decodeRow2pairsrowerror (+13 more)
 
-### Community 76 - "Community 76"
+### Community 77 - "Community 77"
 Cohesion: 0.09
 Nodes (21): SDAnimatedImagePlayer, -calculateMaxBufferCountWithFrame, -clearFrameBuffer, -dealloc, -defaultRunLoopMode, -displayDidRefresh, -displayLink, -handleFrameChange (+13 more)
 
-### Community 77 - "Community 77"
+### Community 78 - "Community 78"
 Cohesion: 0.1
 Nodes (19): ZXRSSExpandedGeneralAppIdDecoder, -decodeAllCodesinitialPositionerror, -decodeAlphanumeric, -decodeGeneralPurposeFieldremaining, -decodeIsoIec646, -decodeNumeric, -extractNumericValueFromBitArraybits, -extractNumericValueFromBitArrayposbits (+11 more)
 
-### Community 78 - "Community 78"
+### Community 79 - "Community 79"
 Cohesion: 0.1
 Nodes (19): ZXResultParser, -appendKeyValueresult, -countPrecedingBackslashespos, -findFirstEscape, -initialize, -isStringOfDigitslength, -isSubstringOfDigitsoffsetlength, -massagedText (+11 more)
 
-### Community 79 - "Community 79"
+### Community 80 - "Community 80"
+Cohesion: 0.13
+Nodes (9): allocationAttempt(), find(), folly(), IndexType(), keyValue(), oneIn64(), rand64(), randBool() (+1 more)
+
+### Community 81 - "Community 81"
 Cohesion: 0.1
 Nodes (19): SRProxyConnect, -_configureProxy, -dealloc, -_dequeueInput, -_didConnect, -_failWithError, -_fetchPACwithProxySettings, -_initializeStreams (+11 more)
 
-### Community 80 - "Community 80"
+### Community 82 - "Community 82"
 Cohesion: 0.1
 Nodes (19): SDWebImageActivityIndicator, -commonInit, -grayIndicator, -grayLargeIndicator, -init, -largeIndicator, -mediumIndicator, -startAnimatingIndicator (+11 more)
 
-### Community 81 - "Community 81"
+### Community 83 - "Community 83"
 Cohesion: 0.11
 Nodes (18): ZXGenericGF, -addOrSubtractb, -AztecData10, -AztecData12, -AztecData6, -AztecData8, -AztecParam, -buildMonomialcoefficient (+10 more)
 
-### Community 82 - "Community 82"
+### Community 84 - "Community 84"
 Cohesion: 0.11
 Nodes (18): ZXCGImageLuminanceSource, -calculateRedgreenblue, -createImageFromBuffer, -createImageFromBufferlefttopwidthheight, -croptopwidthheight, -dealloc, -initializeWithImagelefttopwidthheight, -initWithBuffer (+10 more)
 
-### Community 83 - "Community 83"
+### Community 85 - "Community 85"
 Cohesion: 0.11
 Nodes (18): gcd_evaluator, integer_traits, integer_traits< bool >, integer_traits<  ::boost::long_long_type>, integer_traits<  ::boost::ulong_long_type >, integer_traits< char >, integer_traits< int >, integer_traits<__int64> (+10 more)
 
-### Community 84 - "Community 84"
-Cohesion: 0.13
-Nodes (10): is_high_surrogate(), is_surrogate(), u16_to_u32_iterator, u32_to_u16_iterator, u32_to_u8_iterator, u8_to_u32_iterator, utf16_output_iterator, utf8_byte_count() (+2 more)
-
-### Community 85 - "Community 85"
-Cohesion: 0.13
-Nodes (10): is_high_surrogate(), is_surrogate(), u16_to_u32_iterator, u32_to_u16_iterator, u32_to_u8_iterator, u8_to_u32_iterator, utf16_output_iterator, utf8_byte_count() (+2 more)
-
 ### Community 86 - "Community 86"
-Cohesion: 0.11
-Nodes (18): SDDiskCache, -cachePathForKey, -cachePathForKeyinPath, -commonInit, -containsDataForKey, -createDirectory, -dataForKey, -extendedDataForKey (+10 more)
+Cohesion: 0.13
+Nodes (10): is_high_surrogate(), is_surrogate(), u16_to_u32_iterator, u32_to_u16_iterator, u32_to_u8_iterator, u8_to_u32_iterator, utf16_output_iterator, utf8_byte_count() (+2 more)
 
 ### Community 87 - "Community 87"
-Cohesion: 0.11
-Nodes (18): UIView, -sd_cancelCurrentImageLoad, -sd_cancelLatestImageLoad, -sd_imageIndicator, -sd_imageProgress, -sd_imageTransition, -sd_imageURL, -sd_internalSetImageWithURLplaceholderImageoptionscontextsetImageBlockprogresscompleted (+10 more)
+Cohesion: 0.13
+Nodes (10): is_high_surrogate(), is_surrogate(), u16_to_u32_iterator, u32_to_u16_iterator, u32_to_u8_iterator, u8_to_u32_iterator, utf16_output_iterator, utf8_byte_count() (+2 more)
 
 ### Community 88 - "Community 88"
 Cohesion: 0.11
-Nodes (17): ZXPDF417HighLevelEncoder, -bytesForMessageencoding, -determineConsecutiveBinaryCountstartposencodingerror, -determineConsecutiveDigitCountstartpos, -determineConsecutiveTextCountstartpos, -encodeBinarystartposcountstartmodebuffer, -encodeHighLevelcompactionencodingerror, -encodeNumericstartposcountbuffer (+9 more)
+Nodes (18): SDDiskCache, -cachePathForKey, -cachePathForKeyinPath, -commonInit, -containsDataForKey, -createDirectory, -dataForKey, -extendedDataForKey (+10 more)
 
 ### Community 89 - "Community 89"
 Cohesion: 0.11
-Nodes (17): ZXPDF417DetectionResult, -adjustIndicatorColumnRowNumbers, -adjustRowNumberIfValidinvalidRowCountscodeword, -adjustRowNumberotherCodeword, -adjustRowNumbers, -adjustRowNumbersByRow, -adjustRowNumberscodewordsRowcodewords, -adjustRowNumbersFromBothRI (+9 more)
+Nodes (18): UIView, -sd_cancelCurrentImageLoad, -sd_cancelLatestImageLoad, -sd_imageIndicator, -sd_imageProgress, -sd_imageTransition, -sd_imageURL, -sd_internalSetImageWithURLplaceholderImageoptionscontextsetImageBlockprogresscompleted (+10 more)
 
 ### Community 90 - "Community 90"
 Cohesion: 0.11
-Nodes (17): integer_traits, integer_traits_base, integer_traits<bool>, integer_traits< ::boost::long_long_type>, integer_traits< ::boost::ulong_long_type>, integer_traits<char>, integer_traits<int>, integer_traits< __int64> (+9 more)
+Nodes (17): ZXPDF417HighLevelEncoder, -bytesForMessageencoding, -determineConsecutiveBinaryCountstartposencodingerror, -determineConsecutiveDigitCountstartpos, -determineConsecutiveTextCountstartpos, -encodeBinarystartposcountstartmodebuffer, -encodeHighLevelcompactionencodingerror, -encodeNumericstartposcountbuffer (+9 more)
 
 ### Community 91 - "Community 91"
 Cohesion: 0.11
-Nodes (17): SDWeakProxy, -class, -conformsToProtocol, -debugDescription, -description, -forwardingTargetForSelector, -forwardInvocation, -hash (+9 more)
+Nodes (17): ZXPDF417DetectionResult, -adjustIndicatorColumnRowNumbers, -adjustRowNumberIfValidinvalidRowCountscodeword, -adjustRowNumberotherCodeword, -adjustRowNumbers, -adjustRowNumbersByRow, -adjustRowNumberscodewordsRowcodewords, -adjustRowNumbersFromBothRI (+9 more)
 
 ### Community 92 - "Community 92"
+Cohesion: 0.11
+Nodes (17): integer_traits, integer_traits_base, integer_traits<bool>, integer_traits< ::boost::long_long_type>, integer_traits< ::boost::ulong_long_type>, integer_traits<char>, integer_traits<int>, integer_traits< __int64> (+9 more)
+
+### Community 93 - "Community 93"
+Cohesion: 0.11
+Nodes (17): SDWeakProxy, -class, -conformsToProtocol, -debugDescription, -description, -forwardingTargetForSelector, -forwardInvocation, -hash (+9 more)
+
+### Community 94 - "Community 94"
 Cohesion: 0.39
 Nodes (14): addCommented(), ensureBuildFile(), ensureBuildPhase(), ensureExtensionBuildConfigurations(), ensureExtensionWiring(), ensureFileReference(), ensureGroup(), ensureProductReference() (+6 more)
 
-### Community 93 - "Community 93"
+### Community 95 - "Community 95"
 Cohesion: 0.12
 Nodes (7): allocator_multialloc_chain_node_deallocator, allocator_node_destroyer, allocator_node_destroyer_and_chain_builder, null_scoped_destructor, scoped_destructor, scoped_node_destructor, value_destructor
 
-### Community 94 - "Community 94"
-Cohesion: 0.18
-Nodes (4): linear_congruential, linear_congruential_engine, rand48, seed()
-
-### Community 96 - "Community 96"
+### Community 97 - "Community 97"
 Cohesion: 0.12
 Nodes (16): SDWebImageTransition, -curlDownTransition, -curlDownTransitionWithDuration, -curlUpTransition, -curlUpTransitionWithDuration, -fadeTransition, -fadeTransitionWithDuration, -flipFromBottomTransition (+8 more)
 
-### Community 97 - "Community 97"
+### Community 98 - "Community 98"
 Cohesion: 0.18
 Nodes (3): linear_feedback_shift, linear_feedback_shift_engine, seed()
 
-### Community 98 - "Community 98"
+### Community 99 - "Community 99"
 Cohesion: 0.12
 Nodes (15): SDImageFramePool, -currentFrameCount, -dealloc, -didReceiveMemoryWarning, -frameAtIndex, -init, -initialize, -prefetchFrameAtIndex (+7 more)
 
-### Community 99 - "Community 99"
+### Community 100 - "Community 100"
 Cohesion: 0.25
 Nodes (15): clearAssets(), getAsset(), getDb(), getPendingAssets(), getTotalBytes(), getTotalCount(), getUploadedBytes(), getUploadedCount() (+7 more)
 
-### Community 100 - "Community 100"
+### Community 101 - "Community 101"
 Cohesion: 0.13
 Nodes (14): ZXModulusPoly, -add, -coefficient, -degree, -description, -divide, -evaluateAt, -initWithFieldcoefficients (+6 more)
 
-### Community 101 - "Community 101"
+### Community 102 - "Community 102"
 Cohesion: 0.13
 Nodes (14): ZXUPCEANReader, -barcodeFormat, -checkChecksumerror, -checkStandardUPCEANChecksum, -decodeDigitcountersrowOffsetpatternTypeerror, -decodeEndendStarterror, -decodeMiddlestartRangeresulterror, -decodeRowrowhintserror (+6 more)
-
-### Community 102 - "Community 102"
-Cohesion: 0.2
-Nodes (8): asT(), compare(), contains(), erase(), merge(), push(), update(), folly()
 
 ### Community 103 - "Community 103"
 Cohesion: 0.13
@@ -1353,12 +1353,12 @@ Cohesion: 0.25
 Nodes (7): SDCallbackQueue, -async, -currentQueue, -globalQueue, -initWithDispatchQueue, -mainQueue, -sync
 
 ### Community 221 - "Community 221"
-Cohesion: 0.25
-Nodes (2): setPendingShareKey(), captureShareFragment()
-
-### Community 222 - "Community 222"
 Cohesion: 0.29
 Nodes (2): hashWords(), pickVerifyPositions()
+
+### Community 222 - "Community 222"
+Cohesion: 0.25
+Nodes (2): setPendingShareKey(), captureShareFragment()
 
 ### Community 223 - "Community 223"
 Cohesion: 0.43
@@ -2233,7 +2233,7 @@ Cohesion: 1.0
 Nodes (1): NSOperation
 
 ## Knowledge Gaps
-- **2253 isolated node(s):** `BeebeebConstants`, `AppGroupContainer`, `notAuthenticated`, `invalidResponse`, `notFound` (+2248 more)
+- **2256 isolated node(s):** `BeebeebConstants`, `AppGroupContainer`, `notAuthenticated`, `invalidResponse`, `notFound` (+2251 more)
   These have ≤1 connection - possible missing edges or undocumented components.
 - **Thin community `Community 129`** (12 nodes): `uniform_smallint.hpp`, `generate()`, `param_type`, `.BOOST_RANDOM_DETAIL_EQUALITY_OPERATOR()`, `.BOOST_RANDOM_DETAIL_ISTREAM_OPERATOR()`, `.BOOST_RANDOM_DETAIL_OSTREAM_OPERATOR()`, `.param_type()`, `uniform_smallint`, `.BOOST_RANDOM_DETAIL_EQUALITY_OPERATOR()`, `.BOOST_RANDOM_DETAIL_ISTREAM_OPERATOR()`, `.BOOST_RANDOM_DETAIL_OSTREAM_OPERATOR()`, `.uniform_smallint()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
@@ -2271,9 +2271,9 @@ Nodes (1): NSOperation
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
 - **Thin community `Community 194`** (9 nodes): `folly()`, `grow_capacity_by()`, `reserve_if_available()`, `detail()`, `folly()`, `prepareDelim()`, `toOrIgnore()`, `Reserve.h`, `String-inl.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 221`** (8 nodes): `consumeShareKey()`, `setPendingShareKey()`, `async()`, `captureShareFragment()`, `handleShortcutURL()`, `handleUnlocked()`, `App.tsx`, `share-key-store.ts`
+- **Thin community `Community 221`** (8 nodes): `handleConfirm()`, `handleCopyWords()`, `handleGoToVault()`, `hashWords()`, `normalizeWords()`, `pickVerifyPositions()`, `setAnswer()`, `OnboardingScreen.tsx`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 222`** (8 nodes): `handleConfirm()`, `handleCopyWords()`, `handleGoToVault()`, `hashWords()`, `normalizeWords()`, `pickVerifyPositions()`, `setAnswer()`, `OnboardingScreen.tsx`
+- **Thin community `Community 222`** (8 nodes): `consumeShareKey()`, `setPendingShareKey()`, `async()`, `captureShareFragment()`, `handleShortcutURL()`, `handleUnlocked()`, `App.tsx`, `share-key-store.ts`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
 - **Thin community `Community 239`** (7 nodes): `ExpoModulesProvider.swift`, `ModulesProvider`, `ExpoModulesProvider`, `.getAppCodeSignEntitlements()`, `.getAppDelegateSubscribers()`, `.getModuleClasses()`, `.getReactDelegateHandlers()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
@@ -2508,12 +2508,12 @@ Nodes (1): NSOperation
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `move()` connect `Community 0` to `Community 32`, `Community 1`, `Community 3`, `Community 37`, `Community 5`, `Community 9`, `Community 10`, `Community 13`, `Community 18`, `Community 51`, `Community 22`, `Community 28`, `Community 29`?**
-  _High betweenness centrality (0.052) - this node is a cross-community bridge._
-- **Why does `String` connect `Community 4` to `Community 0`, `Community 1`, `Community 3`, `Community 5`, `Community 6`, `Community 7`, `Community 42`, `Community 11`, `Community 13`, `Community 22`, `Community 27`, `Community 60`, `Community 29`?**
-  _High betweenness centrality (0.021) - this node is a cross-community bridge._
-- **Why does `comp()` connect `Community 19` to `Community 0`, `Community 1`, `Community 35`, `Community 5`, `Community 22`?**
-  _High betweenness centrality (0.020) - this node is a cross-community bridge._
+- **Why does `move()` connect `Community 0` to `Community 1`, `Community 33`, `Community 38`, `Community 7`, `Community 9`, `Community 10`, `Community 11`, `Community 13`, `Community 14`, `Community 50`, `Community 19`, `Community 22`, `Community 54`, `Community 25`, `Community 30`?**
+  _High betweenness centrality (0.045) - this node is a cross-community bridge._
+- **Why does `String` connect `Community 3` to `Community 0`, `Community 1`, `Community 4`, `Community 5`, `Community 7`, `Community 42`, `Community 43`, `Community 74`, `Community 13`, `Community 16`, `Community 22`, `Community 25`, `Community 60`?**
+  _High betweenness centrality (0.023) - this node is a cross-community bridge._
+- **Why does `ones()` connect `Community 19` to `Community 24`, `Community 35`, `Community 13`, `Community 7`?**
+  _High betweenness centrality (0.023) - this node is a cross-community bridge._
 - **Are the 187 inferred relationships involving `move()` (e.g. with `add()` and `addWithPriority()`) actually correct?**
   _`move()` has 187 INFERRED edges - model-reasoned connections that need verification._
 - **Are the 80 inferred relationships involving `WebPSafeFree()` (e.g. with `ChunkDelete()` and `MuxImageDelete()`) actually correct?**
@@ -2521,4 +2521,4 @@ _Questions this graph is uniquely positioned to answer:_
 - **Are the 57 inferred relationships involving `WebPSafeMalloc()` (e.g. with `WebPMuxCreateInternal()` and `SynthesizeBitstream()`) actually correct?**
   _`WebPSafeMalloc()` has 57 INFERRED edges - model-reasoned connections that need verification._
 - **What connects `BeebeebConstants`, `AppGroupContainer`, `notAuthenticated` to the rest of the system?**
-  _2253 weakly-connected nodes found - possible documentation gaps or missing edges._
+  _2256 weakly-connected nodes found - possible documentation gaps or missing edges._

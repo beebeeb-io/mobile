@@ -11,6 +11,7 @@ struct FileMetadata: Codable {
     let createdAt: String
     let updatedAt: String
     let chunkCount: Int?
+    let versionNumber: Int?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -22,6 +23,7 @@ struct FileMetadata: Codable {
         case createdAt = "created_at"
         case updatedAt = "updated_at"
         case chunkCount = "chunk_count"
+        case versionNumber = "version_number"
     }
 }
 
@@ -98,8 +100,9 @@ class FileProviderItem: NSObject, NSFileProviderItem {
     }
 
     var itemVersion: NSFileProviderItemVersion {
-        let contentVersion = (metadata?.updatedAt ?? "v1").data(using: .utf8) ?? Data()
-        return NSFileProviderItemVersion(contentVersion: contentVersion, metadataVersion: contentVersion)
+        let contentVersion = "v\(metadata?.versionNumber ?? 1)".data(using: .utf8) ?? Data()
+        let metadataVersion = (metadata?.updatedAt ?? "v1").data(using: .utf8) ?? contentVersion
+        return NSFileProviderItemVersion(contentVersion: contentVersion, metadataVersion: metadataVersion)
     }
 }
 

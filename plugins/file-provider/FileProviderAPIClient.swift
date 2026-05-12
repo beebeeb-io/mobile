@@ -270,9 +270,62 @@ class FileProviderAPIClient {
         try validateResponse(response)
     }
 
-    func updateFileContent(fileId: String, sizeBytes: Int64, encryptedChunks: [Data]) async throws {
-        logger.info("updateFileContent unsupported for \(fileId) — \(encryptedChunks.count) chunks, \(sizeBytes) bytes")
-        throw FileProviderAPIError.unsupportedOperation("Replacing an existing file's encrypted chunk set requires a server replacement/upload-session contract.")
+    func updateFileContent(
+        fileId: String,
+        sizeBytes: Int64,
+        encryptedChunks: [Data],
+        baseVersionNumber: Int?
+    ) async throws -> FileMetadata {
+        let existing = try await getFileMetadata(fileId: fileId)
+
+        let initURL = uploadsURL(pathComponents: ["init"])
+        var initRequest = try authorizedRequest(url: initURL, method: "POST")
+        initRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        var initBody: [String: Any] = [
+            "file_id": fileId,
+            "file_name": existing.nameEncrypted,
+            "file_size_bytes": sizeBytes,
+            "mime_type": existing.mimeType as Any? ?? NSNull(),
+            "parent_id": existing.parentId as Any? ?? NSNull(),
+            "profile": "mobile",
+            "chunk_size_bytes": kDefaultPlaintextChunkSize,
+            "chunk_count": encryptedChunks.count,
+        ]
+        initBody["base_version_number"] = baseVersionNumber as Any? ?? NSNull()
+        initRequest.httpBody = try JSONSerialization.data(withJSONObject: initBody)
+
+        let (initData, initResponse) = try await session.data(for: initRequest)
+        try validateResponse(initResponse)
+
+        struct InitResponse: Codable {
+            let fileId: String
+            let uploadSessionId: String
+
+            enum CodingKeys: String, CodingKey {
+                case fileId = "file_id"
+                case uploadSessionId = "upload_session_id"
+            }
+        }
+        let initResult = try JSONDecoder().decode(InitResponse.self, from: initData)
+
+        for (index, chunk) in encryptedChunks.enumerated() {
+            let chunkURL = uploadsURL(pathComponents: [initResult.uploadSessionId, "chunks", String(index)])
+            var chunkRequest = try authorizedRequest(url: chunkURL, method: "PUT")
+            chunkRequest.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+            chunkRequest.httpBody = chunk
+            let (_, chunkResponse) = try await session.data(for: chunkRequest)
+            try validateResponse(chunkResponse)
+        }
+
+        let completeURL = uploadsURL(pathComponents: [initResult.uploadSessionId, "complete"])
+        var completeRequest = try authorizedRequest(url: completeURL, method: "POST")
+        completeRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        completeRequest.httpBody = Data("{}".utf8)
+        let (_, completeResponse) = try await session.data(for: completeRequest)
+        try validateResponse(completeResponse)
+
+        return try await getFileMetadata(fileId: initResult.fileId)
     }
 
     func deleteFile(fileId: String) async throws {
@@ -299,6 +352,8 @@ class FileProviderAPIClient {
             throw FileProviderAPIError.forbidden
         case 404:
             throw FileProviderAPIError.notFound
+        case 409:
+            throw FileProviderAPIError.conflict
         case 413:
             throw FileProviderAPIError.fileTooLarge
         case 507:
@@ -319,6 +374,7 @@ enum FileProviderAPIError: Error, LocalizedError {
     case quotaExceeded
     case fileProviderDisabled
     case fileProviderLocked
+    case conflict
     case unsupportedOperation(String)
     case serverError(statusCode: Int)
 
@@ -342,6 +398,8 @@ enum FileProviderAPIError: Error, LocalizedError {
             return "Beebeeb is hidden from Files. Open Beebeeb Settings to show it again."
         case .fileProviderLocked:
             return "Beebeeb is locked. Open Beebeeb and unlock Files access."
+        case .conflict:
+            return "This file changed while Files was editing it. Reload the file and try again."
         case .unsupportedOperation(let message):
             return message
         case .serverError(let code):
@@ -369,6 +427,15 @@ func fileProviderError(_ error: Error) -> Error {
             return NSFileProviderError(.providerNotFound)
         case .notFound:
             return NSFileProviderError(.noSuchItem)
+        case .conflict:
+            if #available(iOS 26.0, *) {
+                return NSFileProviderError(.localVersionConflictingWithServer)
+            }
+            return NSError(
+                domain: NSCocoaErrorDomain,
+                code: NSFileWriteUnknownError,
+                userInfo: [NSLocalizedDescriptionKey: description]
+            )
         case .quotaExceeded:
             return NSFileProviderError(.insufficientQuota)
         case .forbidden:
