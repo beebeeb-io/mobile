@@ -12,6 +12,7 @@ import {
   StyleSheet,
   Text,
   TouchableOpacity,
+  useWindowDimensions,
   View,
 } from 'react-native';
 import type { GestureResponderEvent } from 'react-native';
@@ -30,7 +31,7 @@ import type { RootStackParamList } from '../App';
 import { colors, radii, shadows } from '../theme';
 import type { Colors } from '../theme';
 import { useTheme } from '../lib/theme-context';
-import { ApiError, getToken, getDownloadUrl, friendlyError } from '../lib/api';
+import { ApiError, getToken, getDownloadUrl, friendlyError, trustLocation } from '../lib/api';
 import { useCrypto } from '../lib/crypto-context';
 import * as BeebeebCrypto from '../../modules/beebeeb-crypto';
 import {
@@ -239,7 +240,7 @@ const CATEGORY_BADGE: Record<Category, string> = {
   file: 'FILE',
 };
 
-const MEDIA_DETAILS_EXPANDED_HEIGHT = 318;
+const MEDIA_DETAILS_MIN_EXPANDED_HEIGHT = 360;
 const MEDIA_DETAILS_COLLAPSED_HEIGHT = 116;
 
 // ---------------------------------------------------------------------------
@@ -789,11 +790,22 @@ export default function PreviewScreen() {
   const navigation = useNavigation<Nav>();
   const route = useRoute<PreviewRoute>();
   const insets = useSafeAreaInsets();
+  const { height: windowHeight } = useWindowDimensions();
   const { colors: c, resolved } = useTheme();
-  const { fileId, fileName, mimeType, sizeBytes, createdAt, chunkCount } = route.params;
+  const {
+    fileId,
+    fileName,
+    mimeType,
+    sizeBytes,
+    createdAt,
+    chunkCount,
+    versionNumber,
+    storagePoolId,
+  } = route.params;
 
   const [downloading, setDownloading] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState(0);
+  const [exportStatus, setExportStatus] = useState<string | null>(null);
 
   // Image inline preview state
   const [imageUri, setImageUri] = useState<string | null>(null);
@@ -910,6 +922,7 @@ export default function PreviewScreen() {
   })();
 
   const mediaDetailsRows = useMemo(() => {
+    const storage = trustLocation(storagePoolId);
     const rows: Array<{ label: string; value: string }> = [
       { label: 'Name', value: previewFileName },
       { label: 'Kind', value: CATEGORY_LABELS[category] ?? 'File' },
@@ -917,9 +930,25 @@ export default function PreviewScreen() {
     if (mimeType) rows.push({ label: 'Type', value: mimeType });
     if (sizeBytes != null) rows.push({ label: 'Size', value: formatSize(sizeBytes) });
     if (createdAt) rows.push({ label: 'Created', value: formatDate(createdAt) });
+    if (versionNumber != null) rows.push({ label: 'Version', value: `v${versionNumber}` });
     if (chunkCount != null) rows.push({ label: 'Chunks', value: String(chunkCount) });
+    rows.push({
+      label: 'Encryption',
+      value: isUnlocked ? 'Decrypted on this device' : 'Client-side encrypted',
+    });
+    rows.push({ label: 'Storage', value: `${storage.region} · ${storage.city}` });
     return rows;
-  }, [category, chunkCount, createdAt, mimeType, previewFileName, sizeBytes]);
+  }, [
+    category,
+    chunkCount,
+    createdAt,
+    isUnlocked,
+    mimeType,
+    previewFileName,
+    sizeBytes,
+    storagePoolId,
+    versionNumber,
+  ]);
 
   useEffect(() => {
     Animated.spring(mediaDetailsAnim, {
@@ -963,10 +992,16 @@ export default function PreviewScreen() {
     }
   }, []);
 
+  const mediaDetailsSafeBottom = Math.max(insets.bottom, 16);
+  const mediaDetailsExpandedHeight = Math.min(
+    Math.max(MEDIA_DETAILS_MIN_EXPANDED_HEIGHT, Math.round(windowHeight * 0.54)),
+    Math.max(MEDIA_DETAILS_MIN_EXPANDED_HEIGHT, windowHeight - insets.top - 84),
+  );
+  const mediaDetailsCollapsedVisibleHeight = MEDIA_DETAILS_COLLAPSED_HEIGHT + mediaDetailsSafeBottom;
   const mediaDetailsTranslateY = mediaDetailsAnim.interpolate({
     inputRange: [0, 1],
     outputRange: [
-      MEDIA_DETAILS_EXPANDED_HEIGHT - MEDIA_DETAILS_COLLAPSED_HEIGHT,
+      mediaDetailsExpandedHeight - mediaDetailsCollapsedVisibleHeight,
       0,
     ],
   });
@@ -1049,6 +1084,13 @@ export default function PreviewScreen() {
     }
     return cacheUri;
   }, [cacheFileName, fileId, isUnlocked, getFileKeyBytes, chunkCount, sizeBytes]);
+
+  const getExportUri = useCallback(async (): Promise<{ uri: string; reusedPreview: boolean }> => {
+    if (isImage && imageUri) return { uri: imageUri, reusedPreview: true };
+    if (isVideo && videoUri) return { uri: videoUri, reusedPreview: true };
+    if (isPdf && pdfUri) return { uri: pdfUri, reusedPreview: true };
+    return { uri: await fetchAndDecrypt(), reusedPreview: false };
+  }, [fetchAndDecrypt, imageUri, isImage, isPdf, isVideo, pdfUri, videoUri]);
 
   // Auto-load images inline on mount
   useEffect(() => {
@@ -1359,6 +1401,7 @@ export default function PreviewScreen() {
 
     setDownloading(true);
     setDownloadProgress(0);
+    setExportStatus('Preparing export options...');
 
     try {
       const token = await getToken();
@@ -1367,11 +1410,18 @@ export default function PreviewScreen() {
         return;
       }
 
-      const shareUri = await fetchAndDecrypt();
+      setExportStatus('Preparing a decrypted copy on this device...');
+      const { uri: shareUri, reusedPreview } = await getExportUri();
+      setExportStatus(
+        reusedPreview
+          ? 'Using the decrypted preview already on this device...'
+          : 'Decrypting locally before export...',
+      );
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
       const canShare = await Sharing.isAvailableAsync();
       if (canShare) {
+        setExportStatus('Opening iOS export options...');
         await Sharing.shareAsync(shareUri, {
           mimeType: mimeType ?? 'application/octet-stream',
           dialogTitle: previewFileName,
@@ -1385,8 +1435,9 @@ export default function PreviewScreen() {
     } finally {
       setDownloading(false);
       setDownloadProgress(0);
+      setExportStatus(null);
     }
-  }, [previewFileName, mimeType, fetchAndDecrypt]);
+  }, [previewFileName, mimeType, getExportUri]);
 
   const handleShare = useCallback(async () => {
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -1417,14 +1468,20 @@ export default function PreviewScreen() {
             onPress={handleShare}
             style={styles.mediaIconButton}
             hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
-            accessibilityLabel="Share file"
+            accessibilityLabel="Share Beebeeb link"
           >
-            <Ionicons name="share-outline" size={19} color={colors.white} />
+            <Ionicons name="link-outline" size={19} color={colors.white} />
           </TouchableOpacity>
         </View>
 
         <Pressable
-          style={[styles.mediaStage, { paddingTop: insets.top + 64, paddingBottom: MEDIA_DETAILS_COLLAPSED_HEIGHT + Math.max(insets.bottom, 16) }]}
+          style={[
+            styles.mediaStage,
+            {
+              paddingTop: insets.top + 64,
+              paddingBottom: mediaDetailsCollapsedVisibleHeight,
+            },
+          ]}
           onPress={() => setMediaDetailsOpen(false)}
         >
           {isImage ? (
@@ -1484,8 +1541,8 @@ export default function PreviewScreen() {
           style={[
             styles.mediaDetailsSheet,
             {
-              height: MEDIA_DETAILS_EXPANDED_HEIGHT + Math.max(insets.bottom, 16),
-              paddingBottom: Math.max(insets.bottom, 16),
+              height: mediaDetailsExpandedHeight,
+              paddingBottom: mediaDetailsSafeBottom,
               transform: [{ translateY: mediaDetailsTranslateY }],
             },
           ]}
@@ -1522,10 +1579,10 @@ export default function PreviewScreen() {
               onPress={handleShare}
               activeOpacity={0.8}
               accessibilityRole="button"
-              accessibilityLabel="Share file"
+              accessibilityLabel="Share Beebeeb link"
             >
-              <Ionicons name="share-outline" size={19} color={colors.white} />
-              <Text style={styles.mediaActionText}>Share</Text>
+              <Ionicons name="link-outline" size={19} color={colors.white} />
+              <Text style={styles.mediaActionText}>Share link</Text>
             </TouchableOpacity>
             <TouchableOpacity
               style={[styles.mediaActionButton, downloading && styles.downloadButtonDisabled]}
@@ -1533,16 +1590,23 @@ export default function PreviewScreen() {
               activeOpacity={0.8}
               disabled={downloading}
               accessibilityRole="button"
-              accessibilityLabel={isImage ? 'Save and share image' : 'Download and open video'}
+              accessibilityLabel="Export to another app"
             >
               {downloading ? (
                 <ActivityIndicator size="small" color={colors.white} />
               ) : (
-                <Ionicons name={isImage ? 'download-outline' : 'open-outline'} size={19} color={colors.white} />
+                <Ionicons name="share-outline" size={19} color={colors.white} />
               )}
-              <Text style={styles.mediaActionText}>{isImage ? 'Save' : 'Open'}</Text>
+              <Text style={styles.mediaActionText}>Export</Text>
             </TouchableOpacity>
           </View>
+
+          {downloading && exportStatus && (
+            <View style={styles.mediaExportStatus}>
+              <Ionicons name="lock-closed-outline" size={14} color="rgba(255,255,255,0.64)" />
+              <Text style={styles.mediaExportStatusText} numberOfLines={2}>{exportStatus}</Text>
+            </View>
+          )}
 
           {downloading && downloadProgress > 0 && (
             <View style={styles.mediaProgressTrack}>
@@ -1550,14 +1614,21 @@ export default function PreviewScreen() {
             </View>
           )}
 
-          <View style={styles.mediaDetailsRows}>
-            {mediaDetailsRows.map((row) => (
-              <View key={row.label} style={styles.mediaDetailsRow}>
-                <Text style={styles.mediaDetailsLabel}>{row.label}</Text>
-                <Text style={styles.mediaDetailsValue} numberOfLines={2}>{row.value}</Text>
-              </View>
-            ))}
-          </View>
+          <ScrollView
+            style={styles.mediaDetailsScroll}
+            contentContainerStyle={styles.mediaDetailsScrollContent}
+            showsVerticalScrollIndicator={false}
+            bounces={false}
+          >
+            <View style={styles.mediaDetailsRows}>
+              {mediaDetailsRows.map((row) => (
+                <View key={row.label} style={styles.mediaDetailsRow}>
+                  <Text style={styles.mediaDetailsLabel}>{row.label}</Text>
+                  <Text style={styles.mediaDetailsValue} numberOfLines={2}>{row.value}</Text>
+                </View>
+              ))}
+            </View>
+          </ScrollView>
         </Animated.View>
       </View>
     );
@@ -1994,14 +2065,16 @@ export default function PreviewScreen() {
             <View style={styles.downloadingRow}>
               <ActivityIndicator size="small" color={c.ink} />
               <Text style={[styles.downloadButtonText, { color: c.ink }]}>
-                {downloadProgress > 0
+                {exportStatus
+                  ? exportStatus
+                  : downloadProgress > 0
                   ? `Downloading ${Math.round(downloadProgress * 100)}%`
                   : 'Downloading...'}
               </Text>
             </View>
           ) : (
             <Text style={[styles.downloadButtonText, { color: c.ink }]}>
-              {isImage ? 'Save & Share' : 'Download & Open'}
+              Export
             </Text>
           )}
         </TouchableOpacity>
@@ -2368,6 +2441,24 @@ const styles = StyleSheet.create({
     lineHeight: 18,
     fontWeight: '700',
   },
+  mediaExportStatus: {
+    minHeight: 34,
+    marginTop: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: 'rgba(255,255,255,0.08)',
+  },
+  mediaExportStatusText: {
+    flex: 1,
+    color: 'rgba(255,255,255,0.64)',
+    fontSize: 11,
+    lineHeight: 15,
+    fontWeight: '600',
+  },
   mediaProgressTrack: {
     height: 3,
     marginTop: 10,
@@ -2380,8 +2471,14 @@ const styles = StyleSheet.create({
     borderRadius: 2,
     backgroundColor: colors.amber,
   },
+  mediaDetailsScroll: {
+    flex: 1,
+    marginTop: 14,
+  },
+  mediaDetailsScrollContent: {
+    paddingBottom: 10,
+  },
   mediaDetailsRows: {
-    marginTop: 16,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: 'rgba(255,255,255,0.12)',
   },

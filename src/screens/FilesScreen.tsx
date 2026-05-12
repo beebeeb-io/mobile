@@ -1527,6 +1527,8 @@ export default function FilesScreen() {
           sizeBytes: file.size_bytes,
           createdAt: file.created_at,
           chunkCount: file.chunk_count,
+          versionNumber: file.version_number,
+          storagePoolId: file.storage_pool_id ?? null,
         });
       }
     },

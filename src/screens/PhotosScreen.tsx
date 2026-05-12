@@ -436,6 +436,8 @@ export default function PhotosScreen() {
         sizeBytes: entry.size_bytes ?? undefined,
         createdAt: entry.created_at,
         chunkCount: entry.chunk_count,
+        versionNumber: entry.version_number,
+        storagePoolId: entry.storage_pool_id ?? null,
       });
     },
     [navigation],
