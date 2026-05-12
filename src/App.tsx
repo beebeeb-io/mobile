@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { registerRootComponent } from 'expo';
 import { StatusBar } from 'expo-status-bar';
-import { ActivityIndicator, AppState, type AppStateStatus, Keyboard, Linking, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, AppState, type AppStateStatus, Keyboard, Linking, Platform, StyleSheet, View } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
 import * as FileSystem from 'expo-file-system';
 import { NavigationContainer, createNavigationContainerRef } from '@react-navigation/native';
@@ -20,7 +20,9 @@ import { BBLogo } from './components/BBLogo';
 import {
   hasToken,
   clearToken,
+  getApiUrl,
   getMe,
+  getToken,
   logout,
   getStorageUsage,
   registerSessionExpiredHandler,
@@ -382,6 +384,54 @@ function VaultRecoveryGate({ enabled }: { enabled: boolean }) {
   return null;
 }
 
+function FileProviderDomainRegistrar({ enabled }: { enabled: boolean }) {
+  const crypto = useCrypto();
+  const registeringRef = useRef(false);
+  const registeredRef = useRef(false);
+
+  const register = useCallback(async () => {
+    if (Platform.OS !== 'ios' || !enabled || !crypto.isUnlocked) return;
+    if (registeringRef.current || registeredRef.current) return;
+
+    registeringRef.current = true;
+    try {
+      const token = await getToken();
+      if (!token) return;
+      await BeebeebCrypto.mirrorSessionToAppGroup(token, getApiUrl()).catch(() => false);
+      const result = await BeebeebCrypto.registerFileProviderDomain();
+      registeredRef.current = result.registered;
+      if (__DEV__) {
+        console.log('[FileProvider] domain registration', result);
+      }
+    } catch (error) {
+      if (__DEV__) {
+        console.warn('[FileProvider] domain registration failed', error);
+      }
+    } finally {
+      registeringRef.current = false;
+    }
+  }, [enabled, crypto.isUnlocked]);
+
+  useEffect(() => {
+    registeredRef.current = false;
+  }, [enabled]);
+
+  useEffect(() => {
+    void register();
+  }, [register]);
+
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (next) => {
+      if (next === 'active') {
+        void register();
+      }
+    });
+    return () => sub.remove();
+  }, [register]);
+
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // Tab Navigator
 // ---------------------------------------------------------------------------
@@ -728,6 +778,7 @@ export default function App() {
           onStateChange={handleNavigationStateChange}
         >
             <VaultRecoveryGate enabled={isAuthenticated} />
+            <FileProviderDomainRegistrar enabled={isAuthenticated && !locked} />
             <Stack.Navigator screenOptions={{ headerShown: false }}>
               {isAuthenticated ? (
                 <>

@@ -56,6 +56,36 @@ class BeebeebCryptoModule : Module() {
 
     AsyncFunction("mirrorSessionToAppGroup") { _: String?, _: String? -> true }
 
+    AsyncFunction("registerFileProviderDomain") { ->
+      mapOf(
+        "supported" to false,
+        "identifier" to "io.beebeeb.files",
+        "displayName" to "Beebeeb",
+        "registered" to false,
+        "added" to false,
+        "removedBeforeAdd" to false,
+        "domainCount" to 0,
+        "rootEnumerationSignaled" to false,
+        "workingSetEnumerationSignaled" to false,
+      )
+    }
+
+    AsyncFunction("listFileProviderDomains") { -> emptyList<Map<String, Any?>>() }
+
+    AsyncFunction("resetFileProviderDomain") { ->
+      mapOf(
+        "supported" to false,
+        "identifier" to "io.beebeeb.files",
+        "displayName" to "Beebeeb",
+        "registered" to false,
+        "added" to false,
+        "removedBeforeAdd" to false,
+        "domainCount" to 0,
+        "rootEnumerationSignaled" to false,
+        "workingSetEnumerationSignaled" to false,
+      )
+    }
+
     // Share Extension is iOS-only. Android receives shared content through
     // Intent filters declared in the manifest, which is a separate flow.
     AsyncFunction("listPendingShares") { -> emptyList<Map<String, Any?>>() }
