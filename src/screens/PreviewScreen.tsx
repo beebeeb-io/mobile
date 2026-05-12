@@ -2,15 +2,19 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ActivityIndicator,
   Alert,
+  Animated,
   FlatList,
   Image,
+  PanResponder,
   Platform,
+  Pressable,
   ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
 } from 'react-native';
+import type { GestureResponderEvent } from 'react-native';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { RouteProp } from '@react-navigation/native';
@@ -97,6 +101,44 @@ function formatDate(iso: string): string {
   const hours = d.getHours().toString().padStart(2, '0');
   const mins = d.getMinutes().toString().padStart(2, '0');
   return `${month} ${day}, ${year} at ${hours}:${mins}`;
+}
+
+function isEncryptedMetadataName(name: string): boolean {
+  return name.trim().startsWith('{');
+}
+
+function extensionForMime(mimeType?: string, category?: Category): string {
+  const mime = (mimeType ?? '').toLowerCase();
+  if (mime === 'image/jpeg') return '.jpg';
+  if (mime === 'image/png') return '.png';
+  if (mime === 'image/webp') return '.webp';
+  if (mime === 'image/gif') return '.gif';
+  if (mime === 'image/heic') return '.heic';
+  if (mime === 'image/heif') return '.heif';
+  if (mime === 'video/mp4') return '.mp4';
+  if (mime === 'video/quicktime') return '.mov';
+  if (mime === 'video/x-m4v') return '.m4v';
+  if (mime === 'video/webm') return '.webm';
+  if (category === 'image') return '.jpg';
+  if (category === 'video') return '.mp4';
+  return '';
+}
+
+function previewDisplayName(fileName: string, category: Category): string {
+  if (!isEncryptedMetadataName(fileName)) return fileName;
+  if (category === 'image') return 'Photo';
+  if (category === 'video') return 'Video';
+  return 'Encrypted file';
+}
+
+function previewCacheName(fileName: string, mimeType: string | undefined, category: Category): string {
+  const displayName = previewDisplayName(fileName, category);
+  let safeName = displayName.replace(/[^a-zA-Z0-9._\-]/g, '_');
+  if (!safeName) safeName = category === 'image' ? 'Photo' : 'Preview';
+  if (!/\.[a-zA-Z0-9]{2,5}$/.test(safeName)) {
+    safeName += extensionForMime(mimeType, category);
+  }
+  return safeName;
 }
 
 type Category =
@@ -196,6 +238,9 @@ const CATEGORY_BADGE: Record<Category, string> = {
   doc: 'DOC',
   file: 'FILE',
 };
+
+const MEDIA_DETAILS_EXPANDED_HEIGHT = 318;
+const MEDIA_DETAILS_COLLAPSED_HEIGHT = 116;
 
 // ---------------------------------------------------------------------------
 // Binary helpers
@@ -771,6 +816,9 @@ export default function PreviewScreen() {
   const [videoLoading, setVideoLoading] = useState(false);
   const [videoError, setVideoError] = useState<string | null>(null);
   const tempVideoUriRef = useRef<string | null>(null);
+  const [mediaDetailsOpen, setMediaDetailsOpen] = useState(false);
+  const mediaDetailsAnim = useRef(new Animated.Value(0)).current;
+  const mediaDetailsTouchStartY = useRef<number | null>(null);
 
   // DOCX inline preview state
   const [docxHtml, setDocxHtml] = useState<string | null>(null);
@@ -805,6 +853,7 @@ export default function PreviewScreen() {
   const isSvg = category === 'svg';
   const isPdf = category === 'pdf';
   const isVideo = !!mimeType && mimeType.startsWith('video/');
+  const isMediaPreview = isImage || isVideo;
   const isDocx = category === 'docx';
   const isSpreadsheet = category === 'spreadsheet';
   const isHtml = category === 'html';
@@ -819,6 +868,14 @@ export default function PreviewScreen() {
     (mimeType.startsWith('text/') ||
       mimeType === 'application/json' ||
       mimeType === 'application/xml');
+  const previewFileName = useMemo(
+    () => previewDisplayName(fileName, category),
+    [category, fileName],
+  );
+  const cacheFileName = useMemo(
+    () => previewCacheName(fileName, mimeType, category),
+    [category, fileName, mimeType],
+  );
 
   // Code highlighting — language id + display label come from the filename
   // and mime; the highlighted HTML is rebuilt only when the loaded text changes.
@@ -852,6 +909,68 @@ export default function PreviewScreen() {
     }
   })();
 
+  const mediaDetailsRows = useMemo(() => {
+    const rows: Array<{ label: string; value: string }> = [
+      { label: 'Name', value: previewFileName },
+      { label: 'Kind', value: CATEGORY_LABELS[category] ?? 'File' },
+    ];
+    if (mimeType) rows.push({ label: 'Type', value: mimeType });
+    if (sizeBytes != null) rows.push({ label: 'Size', value: formatSize(sizeBytes) });
+    if (createdAt) rows.push({ label: 'Created', value: formatDate(createdAt) });
+    if (chunkCount != null) rows.push({ label: 'Chunks', value: String(chunkCount) });
+    return rows;
+  }, [category, chunkCount, createdAt, mimeType, previewFileName, sizeBytes]);
+
+  useEffect(() => {
+    Animated.spring(mediaDetailsAnim, {
+      toValue: mediaDetailsOpen ? 1 : 0,
+      damping: 24,
+      stiffness: 220,
+      mass: 0.9,
+      useNativeDriver: true,
+    }).start();
+  }, [mediaDetailsAnim, mediaDetailsOpen]);
+
+  const mediaDetailsPanResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onMoveShouldSetPanResponder: (_evt, gesture) => Math.abs(gesture.dy) > 12 && Math.abs(gesture.dy) > Math.abs(gesture.dx),
+        onPanResponderRelease: (_evt, gesture) => {
+          if (gesture.dy < -28 || gesture.vy < -0.6) {
+            setMediaDetailsOpen(true);
+          } else if (gesture.dy > 28 || gesture.vy > 0.6) {
+            setMediaDetailsOpen(false);
+          }
+        },
+      }),
+    [],
+  );
+
+  const handleMediaDetailsTouchStart = useCallback((event: GestureResponderEvent) => {
+    mediaDetailsTouchStartY.current = event.nativeEvent.pageY;
+  }, []);
+
+  const handleMediaDetailsTouchEnd = useCallback((event: GestureResponderEvent) => {
+    const startY = mediaDetailsTouchStartY.current;
+    mediaDetailsTouchStartY.current = null;
+    if (startY == null) return;
+
+    const deltaY = event.nativeEvent.pageY - startY;
+    if (deltaY < -24) {
+      setMediaDetailsOpen(true);
+    } else if (deltaY > 24) {
+      setMediaDetailsOpen(false);
+    }
+  }, []);
+
+  const mediaDetailsTranslateY = mediaDetailsAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [
+      MEDIA_DETAILS_EXPANDED_HEIGHT - MEDIA_DETAILS_COLLAPSED_HEIGHT,
+      0,
+    ],
+  });
+
   const handleClose = useCallback(() => {
     navigation.goBack();
   }, [navigation]);
@@ -867,8 +986,7 @@ export default function PreviewScreen() {
 
     // Keep the original extension on the cache filename — RN's <Image>,
     // expo-video, and the WebView pick the decoder from the URI suffix.
-    const safeName = fileName.replace(/[^a-zA-Z0-9._\-]/g, '_');
-    const cacheUri = `${FileSystem.cacheDirectory}${fileId}_${safeName}`;
+    const cacheUri = `${FileSystem.cacheDirectory}${fileId}_${cacheFileName}`;
 
     // Remove any stale copy so a previous failed download (e.g. a JSON error
     // body that 401'd) can't masquerade as a valid file.
@@ -923,14 +1041,14 @@ export default function PreviewScreen() {
         effectiveChunkSize,
       );
 
-      const decUri = `${FileSystem.cacheDirectory}dec_${fileId}_${safeName}`;
+      const decUri = `${FileSystem.cacheDirectory}dec_${fileId}_${cacheFileName}`;
       await FileSystem.writeAsStringAsync(decUri, uint8ArrayToBase64(decrypted), {
         encoding: FileSystem.EncodingType.Base64,
       });
       return decUri;
     }
     return cacheUri;
-  }, [fileId, fileName, isUnlocked, getFileKeyBytes, chunkCount, sizeBytes]);
+  }, [cacheFileName, fileId, isUnlocked, getFileKeyBytes, chunkCount, sizeBytes]);
 
   // Auto-load images inline on mount
   useEffect(() => {
@@ -1256,7 +1374,7 @@ export default function PreviewScreen() {
       if (canShare) {
         await Sharing.shareAsync(shareUri, {
           mimeType: mimeType ?? 'application/octet-stream',
-          dialogTitle: fileName,
+          dialogTitle: previewFileName,
         });
       } else {
         Alert.alert('Downloaded', `Saved to ${shareUri}`);
@@ -1268,12 +1386,182 @@ export default function PreviewScreen() {
       setDownloading(false);
       setDownloadProgress(0);
     }
-  }, [fileName, mimeType, fetchAndDecrypt]);
+  }, [previewFileName, mimeType, fetchAndDecrypt]);
 
   const handleShare = useCallback(async () => {
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    navigation.navigate('ShareSheet', { fileId, fileName, mimeType, sizeBytes });
-  }, [navigation, fileId, fileName, mimeType, sizeBytes]);
+    navigation.navigate('ShareSheet', { fileId, fileName: previewFileName, mimeType, sizeBytes });
+  }, [navigation, fileId, previewFileName, mimeType, sizeBytes]);
+
+  if (isMediaPreview) {
+    return (
+      <View style={styles.mediaRoot}>
+        <View style={[styles.mediaHeader, { paddingTop: insets.top + 8 }]}>
+          <TouchableOpacity
+            onPress={handleClose}
+            style={styles.mediaIconButton}
+            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+            accessibilityLabel="Close preview"
+          >
+            <Ionicons name="chevron-down" size={22} color={colors.white} />
+          </TouchableOpacity>
+
+          <View style={styles.mediaHeaderText}>
+            <Text style={styles.mediaHeaderTitle} numberOfLines={1}>{previewFileName}</Text>
+            <Text style={styles.mediaHeaderSubtitle} numberOfLines={1}>
+              {CATEGORY_LABELS[category]}{sizeBytes != null ? ` · ${formatSize(sizeBytes)}` : ''}
+            </Text>
+          </View>
+
+          <TouchableOpacity
+            onPress={handleShare}
+            style={styles.mediaIconButton}
+            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+            accessibilityLabel="Share file"
+          >
+            <Ionicons name="share-outline" size={19} color={colors.white} />
+          </TouchableOpacity>
+        </View>
+
+        <Pressable
+          style={[styles.mediaStage, { paddingTop: insets.top + 64, paddingBottom: MEDIA_DETAILS_COLLAPSED_HEIGHT + Math.max(insets.bottom, 16) }]}
+          onPress={() => setMediaDetailsOpen(false)}
+        >
+          {isImage ? (
+            imageUri ? (
+              <Image
+                source={{ uri: imageUri }}
+                style={styles.mediaImage}
+                resizeMode="contain"
+                accessibilityLabel={previewFileName}
+              />
+            ) : imageError ? (
+              <View style={styles.imageStatus}>
+                <Text style={[styles.imageStatusTitle, { color: colors.white }]}>Couldn't load image</Text>
+                <Text style={styles.imageStatusSub}>{imageError}</Text>
+              </View>
+            ) : (
+              <View style={styles.imageStatus}>
+                <ActivityIndicator color={c.amber} size="large" />
+                <Text style={styles.imageStatusSub}>
+                  {imageLoading && downloadProgress > 0
+                    ? `Decrypting · ${Math.round(downloadProgress * 100)}%`
+                    : isUnlocked
+                    ? 'Downloading and decrypting...'
+                    : 'Unlock your vault to view this image.'}
+                </Text>
+              </View>
+            )
+          ) : videoUri ? (
+            <VideoView
+              player={player}
+              style={styles.mediaVideo}
+              contentFit="contain"
+              nativeControls
+              allowsFullscreen
+              allowsPictureInPicture
+            />
+          ) : videoError ? (
+            <View style={styles.imageStatus}>
+              <Text style={[styles.imageStatusTitle, { color: colors.white }]}>Couldn't load video</Text>
+              <Text style={styles.imageStatusSub}>{videoError}</Text>
+            </View>
+          ) : (
+            <View style={styles.imageStatus}>
+              <ActivityIndicator color={c.amber} size="large" />
+              <Text style={styles.imageStatusSub}>
+                {videoLoading && downloadProgress > 0
+                  ? `Decrypting · ${Math.round(downloadProgress * 100)}%`
+                  : isUnlocked
+                  ? 'Downloading and decrypting...'
+                  : 'Unlock your vault to play this video.'}
+              </Text>
+            </View>
+          )}
+        </Pressable>
+
+        <Animated.View
+          style={[
+            styles.mediaDetailsSheet,
+            {
+              height: MEDIA_DETAILS_EXPANDED_HEIGHT + Math.max(insets.bottom, 16),
+              paddingBottom: Math.max(insets.bottom, 16),
+              transform: [{ translateY: mediaDetailsTranslateY }],
+            },
+          ]}
+          {...mediaDetailsPanResponder.panHandlers}
+        >
+          <TouchableOpacity
+            activeOpacity={0.8}
+            onPress={() => setMediaDetailsOpen((open) => !open)}
+            onPressIn={handleMediaDetailsTouchStart}
+            onPressOut={handleMediaDetailsTouchEnd}
+            style={styles.mediaDetailsHandle}
+            accessibilityRole="button"
+            accessibilityLabel={mediaDetailsOpen ? 'Hide file details' : 'Show file details'}
+          >
+            <View style={styles.mediaGrabber} />
+            <View style={styles.mediaDetailsSummary}>
+              <View style={styles.mediaDetailsSummaryText}>
+                <Text style={styles.mediaDetailsTitle}>Details</Text>
+                <Text style={styles.mediaDetailsSubtitle} numberOfLines={1}>
+                  Swipe up for metadata
+                </Text>
+              </View>
+              <Ionicons
+                name={mediaDetailsOpen ? 'chevron-down' : 'chevron-up'}
+                size={18}
+                color="rgba(255,255,255,0.72)"
+              />
+            </View>
+          </TouchableOpacity>
+
+          <View style={styles.mediaActionsRow}>
+            <TouchableOpacity
+              style={styles.mediaActionButton}
+              onPress={handleShare}
+              activeOpacity={0.8}
+              accessibilityRole="button"
+              accessibilityLabel="Share file"
+            >
+              <Ionicons name="share-outline" size={19} color={colors.white} />
+              <Text style={styles.mediaActionText}>Share</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.mediaActionButton, downloading && styles.downloadButtonDisabled]}
+              onPress={handleDownload}
+              activeOpacity={0.8}
+              disabled={downloading}
+              accessibilityRole="button"
+              accessibilityLabel={isImage ? 'Save and share image' : 'Download and open video'}
+            >
+              {downloading ? (
+                <ActivityIndicator size="small" color={colors.white} />
+              ) : (
+                <Ionicons name={isImage ? 'download-outline' : 'open-outline'} size={19} color={colors.white} />
+              )}
+              <Text style={styles.mediaActionText}>{isImage ? 'Save' : 'Open'}</Text>
+            </TouchableOpacity>
+          </View>
+
+          {downloading && downloadProgress > 0 && (
+            <View style={styles.mediaProgressTrack}>
+              <View style={[styles.mediaProgressFill, { width: `${downloadProgress * 100}%` }]} />
+            </View>
+          )}
+
+          <View style={styles.mediaDetailsRows}>
+            {mediaDetailsRows.map((row) => (
+              <View key={row.label} style={styles.mediaDetailsRow}>
+                <Text style={styles.mediaDetailsLabel}>{row.label}</Text>
+                <Text style={styles.mediaDetailsValue} numberOfLines={2}>{row.value}</Text>
+              </View>
+            ))}
+          </View>
+        </Animated.View>
+      </View>
+    );
+  }
 
   return (
     <View style={[styles.root, { paddingTop: insets.top }]}>
@@ -1289,7 +1577,7 @@ export default function PreviewScreen() {
 
         <View style={styles.headerCenter}>
           <Text style={styles.headerTitle} numberOfLines={1}>
-            {fileName}
+            {previewFileName}
           </Text>
           <View style={styles.headerSubRow}>
             <Text style={styles.headerSub}>
@@ -1321,7 +1609,7 @@ export default function PreviewScreen() {
               source={{ uri: imageUri }}
               style={styles.image}
               resizeMode="contain"
-              accessibilityLabel={fileName}
+              accessibilityLabel={previewFileName}
             />
           ) : imageError ? (
             <View style={styles.imageStatus}>
@@ -1649,7 +1937,7 @@ export default function PreviewScreen() {
 
           <View style={styles.metaRow}>
             <Text style={[styles.metaLabel, { color: c.ink3 }]}>Name</Text>
-            <Text style={[styles.metaValue, { color: c.ink }]} numberOfLines={1}>{fileName}</Text>
+            <Text style={[styles.metaValue, { color: c.ink }]} numberOfLines={1}>{previewFileName}</Text>
           </View>
 
           {mimeType ? (
@@ -1956,6 +2244,172 @@ function ZipContents({ summary, c }: ZipContentsProps) {
 // ---------------------------------------------------------------------------
 
 const styles = StyleSheet.create({
+  mediaRoot: {
+    flex: 1,
+    backgroundColor: '#020203',
+  },
+  mediaHeader: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    top: 0,
+    zIndex: 20,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 14,
+    paddingBottom: 12,
+    gap: 12,
+    backgroundColor: 'rgba(2,2,3,0.72)',
+  },
+  mediaIconButton: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.11)',
+  },
+  mediaHeaderText: {
+    flex: 1,
+    minWidth: 0,
+    alignItems: 'center',
+  },
+  mediaHeaderTitle: {
+    maxWidth: '100%',
+    color: colors.white,
+    fontSize: 14,
+    lineHeight: 18,
+    fontWeight: '700',
+  },
+  mediaHeaderSubtitle: {
+    maxWidth: '100%',
+    marginTop: 2,
+    color: 'rgba(255,255,255,0.58)',
+    fontSize: 11,
+    lineHeight: 14,
+  },
+  mediaStage: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  mediaImage: {
+    width: '100%',
+    height: '100%',
+  },
+  mediaVideo: {
+    width: '100%',
+    height: '100%',
+  },
+  mediaDetailsSheet: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 30,
+    paddingHorizontal: 16,
+    paddingTop: 8,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    backgroundColor: 'rgba(22,22,24,0.96)',
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.12)',
+  },
+  mediaDetailsHandle: {
+    minHeight: 48,
+  },
+  mediaGrabber: {
+    alignSelf: 'center',
+    width: 38,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: 'rgba(255,255,255,0.25)',
+    marginBottom: 10,
+  },
+  mediaDetailsSummary: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  mediaDetailsSummaryText: {
+    flex: 1,
+    minWidth: 0,
+  },
+  mediaDetailsTitle: {
+    color: colors.white,
+    fontSize: 16,
+    lineHeight: 20,
+    fontWeight: '700',
+  },
+  mediaDetailsSubtitle: {
+    marginTop: 2,
+    color: 'rgba(255,255,255,0.52)',
+    fontSize: 12,
+    lineHeight: 16,
+  },
+  mediaActionsRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 12,
+  },
+  mediaActionButton: {
+    flex: 1,
+    minHeight: 46,
+    borderRadius: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: 'rgba(255,255,255,0.12)',
+  },
+  mediaActionText: {
+    color: colors.white,
+    fontSize: 14,
+    lineHeight: 18,
+    fontWeight: '700',
+  },
+  mediaProgressTrack: {
+    height: 3,
+    marginTop: 10,
+    borderRadius: 2,
+    overflow: 'hidden',
+    backgroundColor: 'rgba(255,255,255,0.16)',
+  },
+  mediaProgressFill: {
+    height: '100%',
+    borderRadius: 2,
+    backgroundColor: colors.amber,
+  },
+  mediaDetailsRows: {
+    marginTop: 16,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: 'rgba(255,255,255,0.12)',
+  },
+  mediaDetailsRow: {
+    minHeight: 38,
+    paddingVertical: 8,
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 18,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(255,255,255,0.08)',
+  },
+  mediaDetailsLabel: {
+    color: 'rgba(255,255,255,0.48)',
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: '600',
+  },
+  mediaDetailsValue: {
+    flex: 1,
+    color: colors.white,
+    fontSize: 12,
+    lineHeight: 16,
+    textAlign: 'right',
+    fontWeight: '600',
+  },
+
   root: {
     flex: 1,
     backgroundColor: colors.darkBg,
