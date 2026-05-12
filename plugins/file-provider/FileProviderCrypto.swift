@@ -4,14 +4,12 @@ import os.log
 
 private let logger = Logger(subsystem: "io.beebeeb.app.file-provider", category: "Crypto")
 
-private let kAppGroup = "group.io.beebeeb.shared"
 private let kKeychainAccessGroup = "R8352WDJJR.io.beebeeb.shared"
 private let kMasterKeyLabel = "io.beebeeb.master-key"
 private let kWrappedKeyService = "io.beebeeb.masterkey"
 private let kSEKeyTag = "io.beebeeb.sekey".data(using: .utf8)!
 private let kECIESAlgorithm = SecKeyAlgorithm.eciesEncryptionCofactorVariableIVX963SHA256AESGCM
 private let kChunkSize = 4 * 1024 * 1024
-private let kSimulatorFileProviderMasterKeyKey = "io.beebeeb.simulatorFileProviderMasterKey"
 
 class FileProviderCrypto {
     private var masterKeyHandle: MasterKeyHandle?
@@ -29,14 +27,6 @@ class FileProviderCrypto {
                 logger.info("Master key loaded from shared keychain")
                 return
             }
-
-            #if DEBUG && targetEnvironment(simulator)
-            if let keyData = readSimulatorMasterKeyFallback() {
-                masterKeyHandle = try MasterKeyHandle.fromKeychainBytes(bytes: keyData)
-                logger.info("Master key loaded from DEBUG simulator App Group fallback")
-                return
-            }
-            #endif
 
             logger.warning("No extension-readable master key found — crypto operations will fail until App Group keychain sharing is wired")
             return
@@ -231,19 +221,6 @@ class FileProviderCrypto {
         }
         return plaintext as Data
     }
-
-    #if DEBUG && targetEnvironment(simulator)
-    private func readSimulatorMasterKeyFallback() -> Data? {
-        guard
-            let encoded = UserDefaults(suiteName: kAppGroup)?.string(forKey: kSimulatorFileProviderMasterKeyKey),
-            let data = Data(base64Encoded: encoded),
-            data.count == 32
-        else {
-            return nil
-        }
-        return data
-    }
-    #endif
 
     private func findSEKey() -> SecKey? {
         var query: [CFString: Any] = [

@@ -133,7 +133,7 @@ export async function clearToken(): Promise<void> {
   cachedDeviceConfirmationSecret = null;
   await tokenStore.remove(TOKEN_KEY);
   await tokenStore.remove(DEVICE_CONFIRMATION_SECRET_KEY);
-  await BeebeebCrypto.mirrorSessionToAppGroup(null, BASE_URL).catch(() => false);
+  await BeebeebCrypto.mirrorSessionToAppGroup(null, null).catch(() => false);
 }
 
 /** Fast check: is there a stored session token? */

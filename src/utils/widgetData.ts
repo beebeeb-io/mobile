@@ -42,3 +42,19 @@ export async function writeWidgetData(data: WidgetData): Promise<void> {
     // Best-effort: widget data must never block settings or storage loading.
   }
 }
+
+export async function clearWidgetData(): Promise<void> {
+  if (Platform.OS !== 'ios') return
+
+  try {
+    const groupDirectory = Paths.appleSharedContainers[APP_GROUP]
+    if (!groupDirectory?.exists) return
+
+    const file = new File(groupDirectory, WIDGET_DATA_FILE)
+    if (file.exists) {
+      file.delete()
+    }
+  } catch {
+    // Best-effort: sign-out cleanup must continue even if WidgetKit storage is unavailable.
+  }
+}

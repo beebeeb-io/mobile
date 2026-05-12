@@ -9,6 +9,8 @@ private let fileProviderDomainSchemaKey = "io.beebeeb.fileProviderDomainSchema"
 private let fileProviderDomainSchemaVersion = "replicated-v2"
 private let appGroupIdentifier = "group.io.beebeeb.shared"
 private let simulatorFileProviderMasterKeyKey = "io.beebeeb.simulatorFileProviderMasterKey"
+private let sharedSessionTokenKey = "io.beebeeb.sessionToken"
+private let sharedAPIBaseURLKey = "io.beebeeb.apiBaseUrl"
 private let fileProviderEnabledKey = "io.beebeeb.fileProvider.enabled"
 private let fileProviderAuthRequiredKey = "io.beebeeb.fileProvider.requireDeviceAuth"
 private let fileProviderUnlockedUntilKey = "io.beebeeb.fileProvider.unlockedUntilMs"
@@ -136,6 +138,9 @@ private func sharedBoolDefaultTrue(_ defaults: UserDefaults?, key: String) -> Bo
 
 private func clearFileProviderSharedState(defaults: UserDefaults?) -> Int {
   defaults?.set(0, forKey: fileProviderUnlockedUntilKey)
+  defaults?.removeObject(forKey: sharedSessionTokenKey)
+  defaults?.removeObject(forKey: sharedAPIBaseURLKey)
+  defaults?.removeObject(forKey: simulatorFileProviderMasterKeyKey)
 
   var removed = 0
   let fileManager = FileManager.default
@@ -310,15 +315,17 @@ public class BeebeebCryptoModule: Module {
         return false
       }
       if let token, !token.isEmpty {
-        defaults.set(token, forKey: "io.beebeeb.sessionToken")
+        defaults.set(token, forKey: sharedSessionTokenKey)
         UserDefaults.standard.set(token, forKey: "io.beebeeb.backupToken")
       } else {
-        defaults.removeObject(forKey: "io.beebeeb.sessionToken")
+        defaults.removeObject(forKey: sharedSessionTokenKey)
         UserDefaults.standard.removeObject(forKey: "io.beebeeb.backupToken")
       }
       if let baseUrl, !baseUrl.isEmpty {
-        defaults.set(baseUrl, forKey: "io.beebeeb.apiBaseUrl")
+        defaults.set(baseUrl, forKey: sharedAPIBaseURLKey)
         UserDefaults.standard.set(baseUrl, forKey: "io.beebeeb.serverURL")
+      } else {
+        defaults.removeObject(forKey: sharedAPIBaseURLKey)
       }
       defaults.synchronize()
       UserDefaults.standard.synchronize()
@@ -326,20 +333,13 @@ public class BeebeebCryptoModule: Module {
     }
 
     AsyncFunction("mirrorSimulatorFileProviderMasterKey") { (masterKeyBase64: String?) -> Bool in
-      #if DEBUG && targetEnvironment(simulator)
       guard let defaults = sharedDefaults() else {
         return false
       }
-      if let masterKeyBase64, !masterKeyBase64.isEmpty {
-        defaults.set(masterKeyBase64, forKey: simulatorFileProviderMasterKeyKey)
-      } else {
-        defaults.removeObject(forKey: simulatorFileProviderMasterKeyKey)
-      }
+      _ = masterKeyBase64
+      defaults.removeObject(forKey: simulatorFileProviderMasterKeyKey)
       defaults.synchronize()
-      return true
-      #else
       return false
-      #endif
     }
 
     AsyncFunction("registerFileProviderDomain") { () async throws -> [String: Any] in
