@@ -3,7 +3,15 @@
 Run these against the live API:
 
 ```sh
-EXPO_PUBLIC_API_URL=https://api.beebeeb.io npx expo start --dev-client --host localhost --clear
+bunx expo start --dev-client --host localhost --clear
+```
+
+The checked-in simulator/dev-client default targets `https://api.beebeeb.io`. Confirm this in `Settings` -> `About` by checking `API environment` and the `API target` URL, or in runtime logs for `[Beebeeb] API environment: Production (https://api.beebeeb.io)`.
+
+Only use local API mode when intentionally testing against a local server:
+
+```sh
+EXPO_PUBLIC_API_URL=http://localhost:3001 bunx expo start --dev-client --host localhost --clear
 ```
 
 ## Scenario 1 — Fresh Signup and European Positioning
