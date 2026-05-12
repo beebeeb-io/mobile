@@ -56,6 +56,8 @@ class BeebeebCryptoModule : Module() {
 
     AsyncFunction("mirrorSessionToAppGroup") { _: String?, _: String? -> true }
 
+    AsyncFunction("mirrorSimulatorFileProviderMasterKey") { _: String? -> false }
+
     AsyncFunction("registerFileProviderDomain") { ->
       mapOf(
         "supported" to false,

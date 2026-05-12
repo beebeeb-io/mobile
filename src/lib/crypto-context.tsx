@@ -11,6 +11,7 @@ import {
   encryptChunk,
   encryptMetadata,
   loadKeyFromKeychain,
+  mirrorSimulatorFileProviderMasterKey,
   recoverFromPhrase,
   replaceKeychainAccessControl,
   storeKeyInKeychain,
@@ -178,6 +179,9 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
         // available; if this races with a dev reload the next launch asks for
         // the recovery phrase again.
         await storeMasterKey(masterKey)
+      }
+      if (Platform.OS === 'ios' && usesSoftwareVaultFallback()) {
+        await mirrorSimulatorFileProviderMasterKey(uint8ToBase64(masterKey)).catch(() => false)
       }
       masterKeyRef.current = masterKey
       setIsUnlocked(true)

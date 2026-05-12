@@ -5,6 +5,10 @@ import Security
 
 private let fileProviderDomainIdentifier = NSFileProviderDomainIdentifier("io.beebeeb.files")
 private let fileProviderDisplayName = "Beebeeb"
+private let fileProviderDomainSchemaKey = "io.beebeeb.fileProviderDomainSchema"
+private let fileProviderDomainSchemaVersion = "replicated-v1"
+private let appGroupIdentifier = "group.io.beebeeb.shared"
+private let simulatorFileProviderMasterKeyKey = "io.beebeeb.simulatorFileProviderMasterKey"
 
 private func decodeBase64(_ value: String, field: String) throws -> Data {
   guard let data = Data(base64Encoded: value) else {
@@ -100,6 +104,10 @@ private func fileProviderDomainStatus(
     "rootEnumerationError": rootEnumerationError ?? NSNull(),
     "workingSetEnumerationError": workingSetEnumerationError ?? NSNull(),
   ]
+}
+
+private func sharedDefaults() -> UserDefaults? {
+  UserDefaults(suiteName: appGroupIdentifier)
 }
 
 // All crypto runs through `BeebeebCryptoBridge`, which wraps the UniFFI
@@ -260,6 +268,23 @@ public class BeebeebCryptoModule: Module {
       return true
     }
 
+    AsyncFunction("mirrorSimulatorFileProviderMasterKey") { (masterKeyBase64: String?) -> Bool in
+      #if DEBUG && targetEnvironment(simulator)
+      guard let defaults = sharedDefaults() else {
+        return false
+      }
+      if let masterKeyBase64, !masterKeyBase64.isEmpty {
+        defaults.set(masterKeyBase64, forKey: simulatorFileProviderMasterKeyKey)
+      } else {
+        defaults.removeObject(forKey: simulatorFileProviderMasterKeyKey)
+      }
+      defaults.synchronize()
+      return true
+      #else
+      return false
+      #endif
+    }
+
     AsyncFunction("registerFileProviderDomain") { () async throws -> [String: Any] in
       guard #available(iOS 16.0, *) else {
         return [
@@ -278,9 +303,16 @@ public class BeebeebCryptoModule: Module {
       let domain = beebeebFileProviderDomain()
       let domainsBefore = try await getFileProviderDomains()
       let existed = domainsBefore.contains { $0.identifier == domain.identifier }
-      if !existed {
+      let defaults = sharedDefaults()
+      let needsLegacyMigration = existed && defaults?.string(forKey: fileProviderDomainSchemaKey) != fileProviderDomainSchemaVersion
+      if needsLegacyMigration {
+        try await removeFileProviderDomain(domain)
+      }
+      if !existed || needsLegacyMigration {
         try await addFileProviderDomain(domain)
       }
+      defaults?.set(fileProviderDomainSchemaVersion, forKey: fileProviderDomainSchemaKey)
+      defaults?.synchronize()
 
       let rootError = await signalFileProviderEnumerator(domain: domain, itemIdentifier: .rootContainer)
       let workingSetError = await signalFileProviderEnumerator(domain: domain, itemIdentifier: .workingSet)
@@ -289,7 +321,8 @@ public class BeebeebCryptoModule: Module {
       return fileProviderDomainStatus(
         domain: domain,
         registered: true,
-        added: !existed,
+        added: !existed || needsLegacyMigration,
+        removedBeforeAdd: needsLegacyMigration,
         domainCount: domainsAfter.count,
         rootEnumerationError: rootError,
         workingSetEnumerationError: workingSetError
@@ -333,6 +366,9 @@ public class BeebeebCryptoModule: Module {
         try await removeFileProviderDomain(domain)
       }
       try await addFileProviderDomain(domain)
+      let defaults = sharedDefaults()
+      defaults?.set(fileProviderDomainSchemaVersion, forKey: fileProviderDomainSchemaKey)
+      defaults?.synchronize()
 
       let rootError = await signalFileProviderEnumerator(domain: domain, itemIdentifier: .rootContainer)
       let workingSetError = await signalFileProviderEnumerator(domain: domain, itemIdentifier: .workingSet)

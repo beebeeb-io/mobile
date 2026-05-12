@@ -1,3 +1,4 @@
+import FileProvider
 import Foundation
 import os.log
 
@@ -82,6 +83,7 @@ class FileProviderAPIClient {
         if let pid = parentId {
             queryItems.append(URLQueryItem(name: "parent_id", value: pid))
         }
+        queryItems.append(URLQueryItem(name: "limit", value: "500"))
         let url = try filesURL(queryItems: queryItems)
 
         let request = try authorizedRequest(url: url)
@@ -95,6 +97,23 @@ class FileProviderAPIClient {
         let decoder = JSONDecoder()
         let result = try decoder.decode(FilesResponse.self, from: data)
         return result.files
+    }
+
+    func listWorkingSet() async throws -> [FileMetadata] {
+        let url = try filesURL(queryItems: [
+            URLQueryItem(name: "recent", value: "true"),
+            URLQueryItem(name: "limit", value: "500"),
+        ])
+
+        let request = try authorizedRequest(url: url)
+        let (data, response) = try await session.data(for: request)
+        try validateResponse(response)
+
+        struct FilesResponse: Codable {
+            let files: [FileMetadata]
+        }
+
+        return try JSONDecoder().decode(FilesResponse.self, from: data).files
     }
 
     func getFileMetadata(fileId: String) async throws -> FileMetadata {
@@ -293,3 +312,56 @@ struct DownloadedEncryptedFile {
 }
 
 let kDefaultPlaintextChunkSize = 4 * 1024 * 1024
+
+func fileProviderError(_ error: Error) -> Error {
+    let description = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+
+    if let apiError = error as? FileProviderAPIError {
+        switch apiError {
+        case .notAuthenticated:
+            return NSFileProviderError(.notAuthenticated)
+        case .notFound:
+            return NSFileProviderError(.noSuchItem)
+        case .quotaExceeded:
+            return NSFileProviderError(.insufficientQuota)
+        case .forbidden:
+            return NSError(
+                domain: NSCocoaErrorDomain,
+                code: NSUserCancelledError,
+                userInfo: [NSLocalizedDescriptionKey: description]
+            )
+        case .fileTooLarge, .unsupportedOperation:
+            return NSError(
+                domain: NSCocoaErrorDomain,
+                code: NSFeatureUnsupportedError,
+                userInfo: [NSLocalizedDescriptionKey: description]
+            )
+        case .invalidURL, .invalidResponse, .serverError:
+            return NSFileProviderError(.serverUnreachable)
+        }
+    }
+
+    if let cryptoError = error as? FileProviderCryptoError {
+        switch cryptoError {
+        case .noMasterKey:
+            return NSFileProviderError(.notAuthenticated)
+        case .invalidChunkFormat, .invalidMetadataFormat, .keychainReadFailed, .keychainDecryptFailed:
+            return NSError(
+                domain: NSCocoaErrorDomain,
+                code: NSFileReadCorruptFileError,
+                userInfo: [NSLocalizedDescriptionKey: description]
+            )
+        }
+    }
+
+    if let urlError = error as? URLError {
+        switch urlError.code {
+        case .notConnectedToInternet, .networkConnectionLost, .cannotConnectToHost, .cannotFindHost, .timedOut:
+            return NSFileProviderError(.serverUnreachable)
+        default:
+            break
+        }
+    }
+
+    return error
+}

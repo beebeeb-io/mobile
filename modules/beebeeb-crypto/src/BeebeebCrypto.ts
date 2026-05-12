@@ -287,6 +287,17 @@ export async function mirrorSessionToAppGroup(
 }
 
 /**
+ * DEBUG simulator-only mirror for the File Provider extension. The simulator
+ * cannot use the app's Secure Enclave path, so local Files.app QA needs the
+ * software fallback key in the shared App Group. Native release builds return
+ * false and do not persist anything here.
+ */
+export async function mirrorSimulatorFileProviderMasterKey(masterKeyBase64: string | null): Promise<boolean> {
+  if (typeof BeebeebCryptoModule.mirrorSimulatorFileProviderMasterKey !== 'function') return false
+  return BeebeebCryptoModule.mirrorSimulatorFileProviderMasterKey(masterKeyBase64)
+}
+
+/**
  * Register the app's iOS File Provider domain so Beebeeb appears under
  * Files.app Locations. The native implementation is idempotent.
  */
