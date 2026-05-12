@@ -2,6 +2,7 @@ import React, { createContext, useCallback, useContext, useRef, useState } from 
 import * as Device from 'expo-device'
 import * as FileSystem from 'expo-file-system'
 import * as SecureStore from 'expo-secure-store'
+import { Platform } from 'react-native'
 import {
   computeRecoveryCheck,
   deriveFileKey,
@@ -11,6 +12,7 @@ import {
   encryptMetadata,
   loadKeyFromKeychain,
   recoverFromPhrase,
+  replaceKeychainAccessControl,
   storeKeyInKeychain,
 } from '../../modules/beebeeb-crypto'
 import type { EncryptedData } from '../../modules/beebeeb-crypto'
@@ -137,6 +139,11 @@ interface CryptoContextValue {
    * the same key derivation produces the same key on both platforms.
    */
   getIndexKey: () => Promise<Uint8Array>
+  /**
+   * Persist whether the Secure Enclave wrapping key should require biometrics
+   * instead of the device passcode. Requires the vault to already be unlocked.
+   */
+  setBiometricRequirement: (require: boolean) => Promise<void>
 }
 
 const CryptoContext = createContext<CryptoContextValue | null>(null)
@@ -253,6 +260,15 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
     [],
   )
 
+  const setBiometricRequirementFn = useCallback(
+    async (require: boolean): Promise<void> => {
+      if (Platform.OS !== 'ios' || usesSoftwareVaultFallback()) return
+      await replaceKeychainAccessControl(require, requireKey(), MASTER_KEY_LABEL)
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  )
+
   return (
     <CryptoContext.Provider
       value={{
@@ -266,6 +282,7 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
         decryptMetadata: decryptMetadataFn,
         getFileKeyBytes: getFileKeyBytesFn,
         getIndexKey: getIndexKeyFn,
+        setBiometricRequirement: setBiometricRequirementFn,
       }}
     >
       {children}

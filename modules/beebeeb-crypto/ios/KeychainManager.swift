@@ -122,20 +122,8 @@ final class KeychainManager {
 
   /// Remove the SE wrapping key and all wrapped key blobs. Irreversible.
   static func delete() {
-    let seQuery: [CFString: Any] = [
-      kSecClass: kSecClassKey,
-      kSecAttrKeyType: kSecAttrKeyTypeECSECPrimeRandom,
-      kSecAttrApplicationTag: seKeyTag,
-      kSecAttrTokenID: kSecAttrTokenIDSecureEnclave,
-    ]
-    SecItemDelete(seQuery as CFDictionary)
-
-    var wrappedQuery: [CFString: Any] = [
-      kSecClass: kSecClassGenericPassword,
-      kSecAttrService: wrappedKeyService,
-    ]
-    if let group = accessGroup { wrappedQuery[kSecAttrAccessGroup] = group }
-    SecItemDelete(wrappedQuery as CFDictionary)
+    deleteSEKey()
+    deleteWrappedItems()
   }
 
   // MARK: - Access control toggle
@@ -213,6 +201,32 @@ final class KeychainManager {
     }
   }
 
+  /// Switch access control using the already-unlocked master key.
+  ///
+  /// The JS layer keeps the master key in memory only while the vault is open.
+  /// When the user enables Face ID from Settings, using that plaintext avoids
+  /// one extra prompt under the old device-passcode policy.
+  static func replaceAccessControl(requireBiometric: Bool, masterKeyBytes: Data, label: String) throws {
+    guard masterKeyBytes.count == 32 else {
+      throw KeychainError.invalidMasterKeySize
+    }
+
+    let previousPolicy = requiresBiometric
+    deleteSEKey()
+    deleteWrappedItems()
+    requiresBiometric = requireBiometric
+
+    do {
+      try store(masterKeyBytes: masterKeyBytes, label: label)
+    } catch {
+      deleteSEKey()
+      deleteWrappedItems()
+      requiresBiometric = previousPolicy
+      try? store(masterKeyBytes: masterKeyBytes, label: label)
+      throw error
+    }
+  }
+
   // MARK: - Private helpers
 
   private static func getOrCreateSEKey() throws -> SecKey {
@@ -275,6 +289,25 @@ final class KeychainManager {
       kSecClass: kSecClassGenericPassword,
       kSecAttrService: wrappedKeyService,
       kSecAttrAccount: account,
+    ]
+    if let group = accessGroup { query[kSecAttrAccessGroup] = group }
+    SecItemDelete(query as CFDictionary)
+  }
+
+  private static func deleteSEKey() {
+    let query: [CFString: Any] = [
+      kSecClass: kSecClassKey,
+      kSecAttrKeyType: kSecAttrKeyTypeECSECPrimeRandom,
+      kSecAttrApplicationTag: seKeyTag,
+      kSecAttrTokenID: kSecAttrTokenIDSecureEnclave,
+    ]
+    SecItemDelete(query as CFDictionary)
+  }
+
+  private static func deleteWrappedItems() {
+    var query: [CFString: Any] = [
+      kSecClass: kSecClassGenericPassword,
+      kSecAttrService: wrappedKeyService,
     ]
     if let group = accessGroup { query[kSecAttrAccessGroup] = group }
     SecItemDelete(query as CFDictionary)

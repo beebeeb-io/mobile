@@ -146,6 +146,11 @@ public class BeebeebCryptoModule: Module {
       return true
     }
 
+    AsyncFunction("replaceKeychainAccessControl") { (require: Bool, masterKeyBytes: Data, label: String) throws -> Bool in
+      try KeychainManager.replaceAccessControl(requireBiometric: require, masterKeyBytes: masterKeyBytes, label: label)
+      return true
+    }
+
     AsyncFunction("mirrorSessionToAppGroup") { (token: String?, baseUrl: String?) -> Bool in
       guard let defaults = UserDefaults(suiteName: "group.io.beebeeb.shared") else {
         return false
