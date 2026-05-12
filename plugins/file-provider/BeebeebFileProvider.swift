@@ -240,7 +240,25 @@ class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                 let fileId = item.itemIdentifier.rawValue
 
                 if changedFields.contains(.contents) {
-                    throw FileProviderAPIError.unsupportedOperation("File Provider content replacement is not enabled until the server replacement-upload contract is wired.")
+                    guard let newContents else {
+                        throw FileProviderAPIError.notFound
+                    }
+                    let plaintext = try Data(contentsOf: newContents)
+                    progress.completedUnitCount = 10
+
+                    let encrypted = try cryptoClient.encryptFile(
+                        fileId: fileId,
+                        plaintext: plaintext
+                    )
+                    progress.completedUnitCount = 50
+
+                    _ = try await apiClient.updateFileContent(
+                        fileId: fileId,
+                        sizeBytes: Int64(plaintext.count),
+                        encryptedChunks: encrypted,
+                        baseVersionNumber: Self.versionNumber(from: version)
+                    )
+                    progress.completedUnitCount = 80
                 }
 
                 // Handle rename
@@ -323,5 +341,15 @@ class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         let components = value.components(separatedBy: invalid).filter { !$0.isEmpty }
         let cleaned = components.joined(separator: "-").trimmingCharacters(in: .whitespacesAndNewlines)
         return cleaned.isEmpty ? "file" : cleaned
+    }
+
+    private static func versionNumber(from version: NSFileProviderItemVersion) -> Int? {
+        guard let raw = String(data: version.contentVersion, encoding: .utf8) else {
+            return nil
+        }
+        if raw.hasPrefix("v") {
+            return Int(raw.dropFirst())
+        }
+        return Int(raw)
     }
 }
