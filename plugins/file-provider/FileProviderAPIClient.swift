@@ -7,7 +7,11 @@ private let logger = Logger(subsystem: "io.beebeeb.app.file-provider", category:
 private let kAppGroup = "group.io.beebeeb.shared"
 private let kSharedSessionTokenKey = "io.beebeeb.sessionToken"
 private let kSharedAPIBaseURLKey = "io.beebeeb.apiBaseUrl"
+#if DEBUG && targetEnvironment(simulator)
+private let kFallbackAPIBaseURL = "http://localhost:3001"
+#else
 private let kFallbackAPIBaseURL = "https://api.beebeeb.io"
+#endif
 private let kFileProviderEnabledKey = "io.beebeeb.fileProvider.enabled"
 private let kFileProviderAuthRequiredKey = "io.beebeeb.fileProvider.requireDeviceAuth"
 private let kFileProviderUnlockedUntilKey = "io.beebeeb.fileProvider.unlockedUntilMs"
@@ -49,13 +53,9 @@ func validateFileProviderAccess() throws {
 }
 
 class FileProviderAPIClient {
-    private let baseURL: URL
     private let session: URLSession
 
     init() {
-        let defaults = UserDefaults(suiteName: kAppGroup)
-        let rawBaseURL = defaults?.string(forKey: kSharedAPIBaseURLKey) ?? kFallbackAPIBaseURL
-        self.baseURL = URL(string: rawBaseURL) ?? URL(string: kFallbackAPIBaseURL)!
         self.session = URLSession(configuration: .default)
     }
 
@@ -80,8 +80,13 @@ class FileProviderAPIClient {
         return request
     }
 
+    private func currentBaseURL() -> URL {
+        let rawBaseURL = UserDefaults(suiteName: kAppGroup)?.string(forKey: kSharedAPIBaseURLKey) ?? kFallbackAPIBaseURL
+        return URL(string: rawBaseURL) ?? URL(string: kFallbackAPIBaseURL)!
+    }
+
     private func filesURL(pathComponents: [String] = [], queryItems: [URLQueryItem] = []) throws -> URL {
-        var url = baseURL
+        var url = currentBaseURL()
             .appendingPathComponent("api")
             .appendingPathComponent("v1")
             .appendingPathComponent("files")
@@ -105,7 +110,7 @@ class FileProviderAPIClient {
     }
 
     private func uploadsURL(pathComponents: [String] = []) -> URL {
-        var url = baseURL
+        var url = currentBaseURL()
             .appendingPathComponent("api")
             .appendingPathComponent("v1")
             .appendingPathComponent("uploads")
