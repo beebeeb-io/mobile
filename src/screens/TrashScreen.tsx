@@ -22,11 +22,11 @@ import {
   listFiles,
   restoreFile,
   permanentDeleteFile,
-  emptyTrash,
+  confirmDeviceOwnerAction,
   friendlyError,
 } from '../lib/api';
 import type { FileEntry } from '../lib/api';
-import { requestConfirmation } from '../lib/confirm-action';
+import { requestDeviceOwnerAuth } from '../lib/device-owner-auth';
 import { useCrypto } from '../lib/crypto-context';
 import type { RootStackParamList } from '../App';
 
@@ -288,14 +288,18 @@ export default function TrashScreen() {
           text: 'Delete permanently',
           style: 'destructive',
           onPress: async () => {
-            const token = await requestConfirmation({
-              title: 'Confirm permanent delete',
-              message: 'Re-enter your Beebeeb password to permanently delete this item. This cannot be undone.',
-            });
-            if (!token) return;
+            const auth = await requestDeviceOwnerAuth('Authenticate to permanently delete this item');
+            if (!auth.ok) {
+              showToast({ type: auth.reason === 'cancelled' ? 'info' : 'error', message: auth.message });
+              return;
+            }
             try {
+              const { confirmation_token } = await confirmDeviceOwnerAction({
+                platform: auth.platform,
+                method: auth.method,
+              });
               Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-              await permanentDeleteFile(item.id, token);
+              await permanentDeleteFile(item.id, confirmation_token);
               setFiles((prev) => prev.filter((f) => f.id !== item.id));
               showToast({ type: 'info', message: `"${name}" permanently deleted` });
             } catch (err) {
@@ -309,26 +313,41 @@ export default function TrashScreen() {
 
   const handleEmptyTrash = useCallback(() => {
     if (files.length === 0) return;
+    const items = files;
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     Alert.alert(
       'Empty Trash',
-      `${files.length} item${files.length === 1 ? '' : 's'} will be permanently deleted. This cannot be undone.`,
+      `${items.length} item${items.length === 1 ? '' : 's'} will be permanently deleted. This cannot be undone.`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
           text: 'Empty Trash',
           style: 'destructive',
           onPress: async () => {
-            const token = await requestConfirmation({
-              title: 'Confirm empty trash',
-              message: `Re-enter your Beebeeb password to permanently delete ${files.length} item${files.length === 1 ? '' : 's'}. This cannot be undone.`,
-            });
-            if (!token) return;
+            const auth = await requestDeviceOwnerAuth('Authenticate to empty Trash');
+            if (!auth.ok) {
+              showToast({ type: auth.reason === 'cancelled' ? 'info' : 'error', message: auth.message });
+              return;
+            }
             try {
               Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-              await emptyTrash(token);
-              setFiles([]);
-              showToast({ type: 'success', message: 'Trash emptied' });
+              const deletedIds: string[] = [];
+              for (const file of items) {
+                const { confirmation_token } = await confirmDeviceOwnerAction({
+                  platform: auth.platform,
+                  method: auth.method,
+                });
+                await permanentDeleteFile(file.id, confirmation_token);
+                deletedIds.push(file.id);
+              }
+              const deleted = new Set(deletedIds);
+              setFiles((prev) => prev.filter((file) => !deleted.has(file.id)));
+              showToast({
+                type: 'success',
+                message: deletedIds.length === items.length
+                  ? 'Trash emptied'
+                  : `${deletedIds.length} item${deletedIds.length === 1 ? '' : 's'} permanently deleted`,
+              });
             } catch (err) {
               Alert.alert('Error', friendlyError(err));
             }
@@ -336,7 +355,7 @@ export default function TrashScreen() {
         },
       ],
     );
-  }, [files.length, showToast]);
+  }, [files, showToast]);
 
   const renderItem = useCallback(({ item }: { item: FileEntry }) => (
     <TrashRow

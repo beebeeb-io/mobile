@@ -342,6 +342,22 @@ export async function confirmAction(password: string): Promise<ConfirmActionResp
   return res.json() as Promise<ConfirmActionResponse>;
 }
 
+export type DeviceOwnerConfirmationMethod = 'biometric' | 'device_passcode' | 'device_owner';
+
+export async function confirmDeviceOwnerAction(params: {
+  platform: 'ios' | 'android';
+  method: DeviceOwnerConfirmationMethod;
+}): Promise<ConfirmActionResponse> {
+  const client = params.platform === 'ios' ? 'mobile-ios' : 'mobile-android';
+  return request<ConfirmActionResponse>(
+    'POST',
+    '/api/v1/auth/confirm-device-owner',
+    params,
+    true,
+    { 'X-Beebeeb-Client': client },
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Files
 // ---------------------------------------------------------------------------
@@ -951,16 +967,6 @@ export async function permanentDeleteFile(id: string, confirmToken?: string): Pr
   await request(
     'DELETE',
     `/api/v1/files/${id}/permanent`,
-    undefined,
-    true,
-    confirmToken ? { 'X-Confirm-Token': confirmToken } : undefined,
-  );
-}
-
-export async function emptyTrash(confirmToken?: string): Promise<void> {
-  await request(
-    'POST',
-    '/api/v1/files/trash/empty',
     undefined,
     true,
     confirmToken ? { 'X-Confirm-Token': confirmToken } : undefined,
