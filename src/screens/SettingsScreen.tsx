@@ -61,6 +61,7 @@ import {
   getUserRegion,
   setUserRegion,
   requestDataExport,
+  getApiEnvironment,
   type StorageUsage,
   type Subscription,
   type Region,
@@ -514,6 +515,7 @@ export default function SettingsScreen() {
   } = useBackup();
   const { showToast } = useToast();
   const isOnline = useNetworkStatus();
+  const apiEnvironment = getApiEnvironment();
   // "Paused — waiting for Wi-Fi" only kicks in when the user explicitly opted
   // to gate uploads on Wi-Fi *and* we're offline (or on cellular, once the
   // hook differentiates). useNetworkStatus currently reports a binary
@@ -1992,6 +1994,14 @@ export default function SettingsScreen() {
             />
             <RowDivider c={c} />
             <SettingsRow
+              label="API environment"
+              icon="server-outline"
+              value={apiEnvironment.label}
+              showChevron={false}
+              c={c}
+            />
+            <RowDivider c={c} />
+            <SettingsRow
               label="Operated by"
               value="Beebeeb.io, Netherlands"
               showChevron={false}
@@ -2034,6 +2044,7 @@ export default function SettingsScreen() {
               c={c}
             />
           </View>
+          <SectionNote text={`API target: ${apiEnvironment.baseUrl}`} c={c} />
         </View>
 
         {/* ---- Sign out ---- */}

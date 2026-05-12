@@ -1,7 +1,7 @@
 /**
  * Beebeeb API client.
  *
- * Talks to the Rust backend at localhost:3001 in dev.
+ * Talks to the configured Rust backend.
  * All file data is encrypted ciphertext -- the server never sees plaintext.
  */
 
@@ -31,9 +31,44 @@ function resolveBaseUrl(): string {
 const BASE_URL = resolveBaseUrl();
 const TOKEN_KEY = 'beebeeb_session_token';
 
+export type ApiEnvironmentKind = 'local' | 'production' | 'custom';
+
+export interface ApiEnvironment {
+  kind: ApiEnvironmentKind;
+  label: string;
+  baseUrl: string;
+}
+
+function describeApiEnvironment(baseUrl: string): ApiEnvironment {
+  if (
+    baseUrl === 'http://localhost:3001' ||
+    baseUrl === 'http://127.0.0.1:3001' ||
+    baseUrl === 'http://10.0.2.2:3001'
+  ) {
+    return { kind: 'local', label: 'Local', baseUrl };
+  }
+
+  if (baseUrl === 'https://api.beebeeb.io') {
+    return { kind: 'production', label: 'Production', baseUrl };
+  }
+
+  return { kind: 'custom', label: 'Custom', baseUrl };
+}
+
+const API_ENVIRONMENT = describeApiEnvironment(BASE_URL);
+
+console.info(
+  `[Beebeeb] API environment: ${API_ENVIRONMENT.label} (${API_ENVIRONMENT.baseUrl})`,
+);
+
 /** Base URL for raw fetch / SSE callers that bypass `request()`. */
 export function getApiUrl(): string {
   return BASE_URL;
+}
+
+/** Runtime API environment for QA/debug surfaces. */
+export function getApiEnvironment(): ApiEnvironment {
+  return API_ENVIRONMENT;
 }
 
 // expo-secure-store has no web implementation — fall back to localStorage so

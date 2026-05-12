@@ -55,7 +55,7 @@ graph TD
     EXPO["Expo<br/>Managed workflow"]
     UNIFFI["beebeeb-uniffi<br/>Swift + Kotlin bindings"]
     CORE["beebeeb-core<br/>AES-256-GCM, OPAQUE, HKDF"]
-    API["Beebeeb API<br/>localhost:3001"]
+    API["Beebeeb API<br/>api.beebeeb.io or localhost:3001"]
 
     RN --> EXPO
     RN --> UNIFFI
@@ -72,7 +72,7 @@ Encryption runs at native speed through UniFFI-generated bindings. The React Nat
 - [Bun](https://bun.sh) (latest)
 - [Expo CLI](https://docs.expo.dev/get-started/installation/)
 - iOS Simulator (macOS) or Android emulator, or a device with [Expo Go](https://expo.dev/go)
-- The [Beebeeb API server](https://github.com/beebeeb-io/server) running on `localhost:3001`
+- The [Beebeeb API server](https://github.com/beebeeb-io/server), either production at `https://api.beebeeb.io` or a local server on `localhost:3001`
 
 ### Install and run
 
@@ -84,6 +84,24 @@ bunx expo start
 ```
 
 Press `i` for iOS Simulator, `a` for Android emulator, or scan the QR code with Expo Go.
+
+### API environment
+
+The checked-in simulator/dev-client default is `https://api.beebeeb.io` via `app.json` `expo.extra.apiUrl`, so XcodeBuildMCP and local QA builds target the production API unless `EXPO_PUBLIC_API_URL` is set. The active target is shown in `Settings` -> `About` as `API environment`, with the full URL below it, and is also logged at runtime as `[Beebeeb] API environment: ...`.
+
+Use production API mode for beta-account QA:
+
+```sh
+bunx expo start --dev-client --host localhost --clear
+```
+
+Use local API mode only when intentionally testing against a local server:
+
+```sh
+EXPO_PUBLIC_API_URL=http://localhost:3001 bunx expo start --dev-client --host localhost --clear
+```
+
+For Android emulator local API mode, use `EXPO_PUBLIC_API_URL=http://10.0.2.2:3001`.
 
 ### Platform-specific commands
 
