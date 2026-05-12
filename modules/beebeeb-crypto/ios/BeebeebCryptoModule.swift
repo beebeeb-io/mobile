@@ -6,9 +6,13 @@ import Security
 private let fileProviderDomainIdentifier = NSFileProviderDomainIdentifier("io.beebeeb.files")
 private let fileProviderDisplayName = "Beebeeb"
 private let fileProviderDomainSchemaKey = "io.beebeeb.fileProviderDomainSchema"
-private let fileProviderDomainSchemaVersion = "replicated-v1"
+private let fileProviderDomainSchemaVersion = "replicated-v2"
 private let appGroupIdentifier = "group.io.beebeeb.shared"
 private let simulatorFileProviderMasterKeyKey = "io.beebeeb.simulatorFileProviderMasterKey"
+private let fileProviderEnabledKey = "io.beebeeb.fileProvider.enabled"
+private let fileProviderAuthRequiredKey = "io.beebeeb.fileProvider.requireDeviceAuth"
+private let fileProviderUnlockedUntilKey = "io.beebeeb.fileProvider.unlockedUntilMs"
+private let fileProviderUnlockWindowSeconds = 300
 
 private func decodeBase64(_ value: String, field: String) throws -> Data {
   guard let data = Data(base64Encoded: value) else {
@@ -108,6 +112,47 @@ private func fileProviderDomainStatus(
 
 private func sharedDefaults() -> UserDefaults? {
   UserDefaults(suiteName: appGroupIdentifier)
+}
+
+private func sharedBoolDefaultTrue(_ defaults: UserDefaults?, key: String) -> Bool {
+  guard let defaults else { return true }
+  if defaults.object(forKey: key) == nil {
+    return true
+  }
+  return defaults.bool(forKey: key)
+}
+
+private func clearFileProviderSharedState(defaults: UserDefaults?) -> Int {
+  defaults?.set(0, forKey: fileProviderUnlockedUntilKey)
+
+  var removed = 0
+  let fileManager = FileManager.default
+  if let container = fileManager.containerURL(forSecurityApplicationGroupIdentifier: appGroupIdentifier) {
+    for name in ["BeebeebFileProvider", "FileProviderCache", "file-provider-cache.sqlite"] {
+      let url = container.appendingPathComponent(name)
+      if fileManager.fileExists(atPath: url.path) {
+        try? fileManager.removeItem(at: url)
+        removed += 1
+      }
+    }
+  }
+  return removed
+}
+
+private func fileProviderPrivacyState(defaults: UserDefaults? = sharedDefaults()) -> [String: Any] {
+  let showInFiles = sharedBoolDefaultTrue(defaults, key: fileProviderEnabledKey)
+  let requireDeviceAuth = sharedBoolDefaultTrue(defaults, key: fileProviderAuthRequiredKey)
+  let unlockedUntilMs = defaults?.double(forKey: fileProviderUnlockedUntilKey) ?? 0
+  let locked = requireDeviceAuth && unlockedUntilMs <= Date().timeIntervalSince1970 * 1000
+
+  return [
+    "supported": true,
+    "showInFiles": showInFiles,
+    "requireDeviceAuth": requireDeviceAuth,
+    "unlockedUntilMs": unlockedUntilMs,
+    "unlockWindowSeconds": fileProviderUnlockWindowSeconds,
+    "locked": locked,
+  ]
 }
 
 // All crypto runs through `BeebeebCryptoBridge`, which wraps the UniFFI
@@ -304,6 +349,22 @@ public class BeebeebCryptoModule: Module {
       let domainsBefore = try await getFileProviderDomains()
       let existed = domainsBefore.contains { $0.identifier == domain.identifier }
       let defaults = sharedDefaults()
+      guard sharedBoolDefaultTrue(defaults, key: fileProviderEnabledKey) else {
+        if existed {
+          try await removeFileProviderDomain(domain)
+        }
+        _ = clearFileProviderSharedState(defaults: defaults)
+        defaults?.synchronize()
+        let domainsAfter = try await getFileProviderDomains()
+        return fileProviderDomainStatus(
+          domain: domain,
+          registered: false,
+          added: false,
+          removedBeforeAdd: existed,
+          domainCount: domainsAfter.count
+        )
+      }
+
       let needsLegacyMigration = existed && defaults?.string(forKey: fileProviderDomainSchemaKey) != fileProviderDomainSchemaVersion
       if needsLegacyMigration {
         try await removeFileProviderDomain(domain)
@@ -383,6 +444,129 @@ public class BeebeebCryptoModule: Module {
         rootEnumerationError: rootError,
         workingSetEnumerationError: workingSetError
       )
+    }
+
+    AsyncFunction("unregisterFileProviderDomain") { () async throws -> [String: Any] in
+      guard #available(iOS 16.0, *) else {
+        return [
+          "supported": false,
+          "identifier": fileProviderDomainIdentifier.rawValue,
+          "displayName": fileProviderDisplayName,
+          "registered": false,
+          "added": false,
+          "removedBeforeAdd": false,
+          "domainCount": 0,
+          "rootEnumerationSignaled": false,
+          "workingSetEnumerationSignaled": false,
+        ]
+      }
+
+      let domain = beebeebFileProviderDomain()
+      let domainsBefore = try await getFileProviderDomains()
+      let existed = domainsBefore.contains { $0.identifier == domain.identifier }
+      if existed {
+        try await removeFileProviderDomain(domain)
+      }
+      let defaults = sharedDefaults()
+      _ = clearFileProviderSharedState(defaults: defaults)
+      defaults?.synchronize()
+      let domainsAfter = try await getFileProviderDomains()
+
+      return fileProviderDomainStatus(
+        domain: domain,
+        registered: false,
+        added: false,
+        removedBeforeAdd: existed,
+        domainCount: domainsAfter.count
+      )
+    }
+
+    AsyncFunction("setFileProviderEnabled") { (enabled: Bool) async throws -> [String: Any] in
+      let defaults = sharedDefaults()
+      defaults?.set(enabled, forKey: fileProviderEnabledKey)
+      if !enabled {
+        _ = clearFileProviderSharedState(defaults: defaults)
+      }
+      defaults?.synchronize()
+
+      guard #available(iOS 16.0, *) else {
+        return [
+          "supported": false,
+          "identifier": fileProviderDomainIdentifier.rawValue,
+          "displayName": fileProviderDisplayName,
+          "registered": false,
+          "added": false,
+          "removedBeforeAdd": false,
+          "domainCount": 0,
+          "rootEnumerationSignaled": false,
+          "workingSetEnumerationSignaled": false,
+        ]
+      }
+
+      let domain = beebeebFileProviderDomain()
+      let domainsBefore = try await getFileProviderDomains()
+      let existed = domainsBefore.contains { $0.identifier == domain.identifier }
+
+      if enabled {
+        if !existed {
+          try await addFileProviderDomain(domain)
+        }
+        defaults?.set(fileProviderDomainSchemaVersion, forKey: fileProviderDomainSchemaKey)
+        defaults?.synchronize()
+
+        let rootError = await signalFileProviderEnumerator(domain: domain, itemIdentifier: .rootContainer)
+        let workingSetError = await signalFileProviderEnumerator(domain: domain, itemIdentifier: .workingSet)
+        let domainsAfter = try await getFileProviderDomains()
+        return fileProviderDomainStatus(
+          domain: domain,
+          registered: true,
+          added: !existed,
+          domainCount: domainsAfter.count,
+          rootEnumerationError: rootError,
+          workingSetEnumerationError: workingSetError
+        )
+      }
+
+      if existed {
+        try await removeFileProviderDomain(domain)
+      }
+      let domainsAfter = try await getFileProviderDomains()
+      return fileProviderDomainStatus(
+        domain: domain,
+        registered: false,
+        added: false,
+        removedBeforeAdd: existed,
+        domainCount: domainsAfter.count
+      )
+    }
+
+    AsyncFunction("getFileProviderPrivacyState") { () -> [String: Any] in
+      fileProviderPrivacyState()
+    }
+
+    AsyncFunction("setFileProviderAuthRequired") { (required: Bool) -> [String: Any] in
+      let defaults = sharedDefaults()
+      defaults?.set(required, forKey: fileProviderAuthRequiredKey)
+      if required {
+        defaults?.set(0, forKey: fileProviderUnlockedUntilKey)
+      }
+      defaults?.synchronize()
+      return fileProviderPrivacyState(defaults: defaults)
+    }
+
+    AsyncFunction("unlockFileProviderAccess") { () -> [String: Any] in
+      let defaults = sharedDefaults()
+      let unlockedUntilMs = (Date().timeIntervalSince1970 + Double(fileProviderUnlockWindowSeconds)) * 1000
+      defaults?.set(unlockedUntilMs, forKey: fileProviderUnlockedUntilKey)
+      defaults?.synchronize()
+      return fileProviderPrivacyState(defaults: defaults)
+    }
+
+    AsyncFunction("lockFileProviderAccess") { () -> [String: Any] in
+      let defaults = sharedDefaults()
+      _ = clearFileProviderSharedState(defaults: defaults)
+      defaults?.synchronize()
+      return fileProviderPrivacyState(defaults: defaults)
     }
 
     // ── Backup management ──────────────────────────────────────────────

@@ -8,6 +8,45 @@ private let kAppGroup = "group.io.beebeeb.shared"
 private let kSharedSessionTokenKey = "io.beebeeb.sessionToken"
 private let kSharedAPIBaseURLKey = "io.beebeeb.apiBaseUrl"
 private let kFallbackAPIBaseURL = "https://api.beebeeb.io"
+private let kFileProviderEnabledKey = "io.beebeeb.fileProvider.enabled"
+private let kFileProviderAuthRequiredKey = "io.beebeeb.fileProvider.requireDeviceAuth"
+private let kFileProviderUnlockedUntilKey = "io.beebeeb.fileProvider.unlockedUntilMs"
+
+private func sharedDefaults() -> UserDefaults? {
+    UserDefaults(suiteName: kAppGroup)
+}
+
+private func boolDefaultTrue(_ defaults: UserDefaults?, key: String) -> Bool {
+    guard let defaults else { return true }
+    if defaults.object(forKey: key) == nil {
+        return true
+    }
+    return defaults.bool(forKey: key)
+}
+
+func clearFileProviderTemporaryFiles() {
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent("BeebeebFileProvider", isDirectory: true)
+    try? FileManager.default.removeItem(at: url)
+}
+
+func validateFileProviderAccess() throws {
+    let defaults = sharedDefaults()
+    guard boolDefaultTrue(defaults, key: kFileProviderEnabledKey) else {
+        clearFileProviderTemporaryFiles()
+        throw FileProviderAPIError.fileProviderDisabled
+    }
+
+    guard boolDefaultTrue(defaults, key: kFileProviderAuthRequiredKey) else {
+        return
+    }
+
+    let nowMs = Date().timeIntervalSince1970 * 1000
+    let unlockedUntilMs = defaults?.double(forKey: kFileProviderUnlockedUntilKey) ?? 0
+    guard unlockedUntilMs > nowMs else {
+        clearFileProviderTemporaryFiles()
+        throw FileProviderAPIError.fileProviderLocked
+    }
+}
 
 class FileProviderAPIClient {
     private let baseURL: URL
@@ -278,6 +317,8 @@ enum FileProviderAPIError: Error, LocalizedError {
     case invalidResponse
     case fileTooLarge
     case quotaExceeded
+    case fileProviderDisabled
+    case fileProviderLocked
     case unsupportedOperation(String)
     case serverError(statusCode: Int)
 
@@ -297,6 +338,10 @@ enum FileProviderAPIError: Error, LocalizedError {
             return "File exceeds your plan's size limit."
         case .quotaExceeded:
             return "Storage quota exceeded. Upgrade for more space."
+        case .fileProviderDisabled:
+            return "Beebeeb is hidden from Files. Open Beebeeb Settings to show it again."
+        case .fileProviderLocked:
+            return "Beebeeb is locked. Open Beebeeb and unlock Files access."
         case .unsupportedOperation(let message):
             return message
         case .serverError(let code):
@@ -318,8 +363,10 @@ func fileProviderError(_ error: Error) -> Error {
 
     if let apiError = error as? FileProviderAPIError {
         switch apiError {
-        case .notAuthenticated:
+        case .notAuthenticated, .fileProviderLocked:
             return NSFileProviderError(.notAuthenticated)
+        case .fileProviderDisabled:
+            return NSFileProviderError(.providerNotFound)
         case .notFound:
             return NSFileProviderError(.noSuchItem)
         case .quotaExceeded:

@@ -58,6 +58,7 @@ import {
   getNotificationPreferences,
   setNotificationPreferences,
   getToken,
+  getApiUrl,
   getUserRegion,
   setUserRegion,
   requestDataExport,
@@ -92,7 +93,9 @@ import {
 import type { RootStackParamList } from '../App';
 import { NativeSwitch } from '../components/NativeSwitch';
 import { markUnlocked } from '../lib/lock-state';
+import { requestDeviceOwnerAuth } from '../lib/device-owner-auth';
 import { NOTIFICATIONS_OPT_OUT_KEY, registerForPushNotifications, unregisterPushToken } from '../lib/push-notifications';
+import * as BeebeebCrypto from '../../modules/beebeeb-crypto';
 
 const BIOMETRIC_PREF_KEY = 'beebeeb_biometric_lock';
 const BIOMETRIC_DELAY_KEY = 'beebeeb_biometric_delay';
@@ -535,6 +538,15 @@ export default function SettingsScreen() {
   const [loadingBiometric, setLoadingBiometric] = useState(true);
   const [biometricDelayMs, setBiometricDelayMs] = useState(0);
 
+  // iOS Files.app integration
+  const [fileProviderSupported, setFileProviderSupported] = useState(Platform.OS === 'ios');
+  const [fileProviderShowInFiles, setFileProviderShowInFiles] = useState(Platform.OS === 'ios');
+  const [fileProviderRequireAuth, setFileProviderRequireAuth] = useState(true);
+  const [fileProviderLocked, setFileProviderLocked] = useState(true);
+  const [fileProviderUnlockWindowSeconds, setFileProviderUnlockWindowSeconds] = useState(300);
+  const [loadingFileProvider, setLoadingFileProvider] = useState(Platform.OS === 'ios');
+  const [unlockingFileProvider, setUnlockingFileProvider] = useState(false);
+
   // Notifications
   const [notificationsEnabled, setNotificationsEnabled] = useState(false);
   const [notifPrefs, setNotifPrefs] = useState<MobileNotificationPreferences>({
@@ -621,6 +633,26 @@ export default function SettingsScreen() {
     }
   }, []);
 
+  const loadFileProviderPrefs = useCallback(async () => {
+    if (Platform.OS !== 'ios') {
+      setFileProviderSupported(false);
+      setLoadingFileProvider(false);
+      return;
+    }
+    try {
+      const state = await BeebeebCrypto.getFileProviderPrivacyState();
+      setFileProviderSupported(state.supported);
+      setFileProviderShowInFiles(state.showInFiles);
+      setFileProviderRequireAuth(state.requireDeviceAuth);
+      setFileProviderLocked(state.locked);
+      setFileProviderUnlockWindowSeconds(state.unlockWindowSeconds);
+    } catch {
+      setFileProviderSupported(false);
+    } finally {
+      setLoadingFileProvider(false);
+    }
+  }, []);
+
   const loadAccountData = useCallback(async () => {
     const [name, sub, reg] = await Promise.allSettled([
       getPreference('display_name'),
@@ -670,6 +702,7 @@ export default function SettingsScreen() {
   useEffect(() => {
     fetchUsage();
     loadBiometricPrefs();
+    loadFileProviderPrefs();
     loadAccountData();
     loadStorageRegionPref();
     if (isPhotoBackupEnabled) fetchPhotoBackupStats();
@@ -699,7 +732,7 @@ export default function SettingsScreen() {
         setNotificationsEnabled(false);
       }
     })();
-  }, [fetchUsage, loadBiometricPrefs, loadAccountData, loadStorageRegionPref, isPhotoBackupEnabled, fetchPhotoBackupStats]);
+  }, [fetchUsage, loadBiometricPrefs, loadFileProviderPrefs, loadAccountData, loadStorageRegionPref, isPhotoBackupEnabled, fetchPhotoBackupStats]);
 
   // Refresh server stats whenever a JS session completes
   useEffect(() => {
@@ -786,6 +819,7 @@ export default function SettingsScreen() {
       await Promise.all([
         fetchUsage(),
         loadBiometricPrefs(),
+        loadFileProviderPrefs(),
         loadAccountData(),
         loadStorageRegionPref(),
         isPhotoBackupEnabled ? fetchPhotoBackupStats() : Promise.resolve(),
@@ -793,7 +827,7 @@ export default function SettingsScreen() {
     } finally {
       setRefreshing(false);
     }
-  }, [fetchUsage, loadBiometricPrefs, loadAccountData, loadStorageRegionPref, isPhotoBackupEnabled, fetchPhotoBackupStats]);
+  }, [fetchUsage, loadBiometricPrefs, loadFileProviderPrefs, loadAccountData, loadStorageRegionPref, isPhotoBackupEnabled, fetchPhotoBackupStats]);
 
   // ---------------------------------------------------------------------------
   // Handlers
@@ -851,6 +885,78 @@ export default function SettingsScreen() {
       ]);
     }
   }, []);
+
+  const handleFileProviderShowToggle = useCallback(async (enabled: boolean) => {
+    const previous = fileProviderShowInFiles;
+    setFileProviderShowInFiles(enabled);
+    setLoadingFileProvider(true);
+    try {
+      if (enabled) {
+        const token = await getToken();
+        if (token) {
+          await BeebeebCrypto.mirrorSessionToAppGroup(token, getApiUrl()).catch(() => false);
+        }
+      }
+      const result = await BeebeebCrypto.setFileProviderEnabled(enabled);
+      setFileProviderSupported(result.supported);
+      setFileProviderShowInFiles(enabled && result.registered);
+      if (!enabled) {
+        setFileProviderLocked(true);
+      }
+      showToast({
+        type: result.registered || !enabled ? 'success' : 'info',
+        message: enabled && result.registered
+          ? 'Beebeeb is visible in Files'
+          : enabled
+            ? 'Files integration is unavailable on this device'
+            : 'Beebeeb is hidden from Files',
+      });
+    } catch (err) {
+      setFileProviderShowInFiles(previous);
+      Alert.alert('Files setting failed', errorMessage(err));
+    } finally {
+      setLoadingFileProvider(false);
+    }
+  }, [fileProviderShowInFiles, showToast]);
+
+  const handleFileProviderAuthToggle = useCallback(async (required: boolean) => {
+    const previous = fileProviderRequireAuth;
+    setFileProviderRequireAuth(required);
+    try {
+      const state = await BeebeebCrypto.setFileProviderAuthRequired(required);
+      setFileProviderRequireAuth(state.requireDeviceAuth);
+      setFileProviderLocked(state.locked);
+      setFileProviderUnlockWindowSeconds(state.unlockWindowSeconds);
+    } catch (err) {
+      setFileProviderRequireAuth(previous);
+      Alert.alert('Files lock setting failed', errorMessage(err));
+    }
+  }, [fileProviderRequireAuth]);
+
+  const handleUnlockFileProviderAccess = useCallback(async () => {
+    setUnlockingFileProvider(true);
+    try {
+      const auth = await requestDeviceOwnerAuth('Unlock Beebeeb in Files', {
+        unavailable: 'Set up Face ID or an iPhone passcode before unlocking Beebeeb in Files.',
+        cancelled: 'Authentication cancelled. Beebeeb stays locked in Files.',
+        failed: 'Authentication failed. Beebeeb stays locked in Files.',
+      });
+      if (!auth.ok) {
+        if (auth.reason !== 'cancelled') {
+          Alert.alert('Files access locked', auth.message);
+        }
+        return;
+      }
+      const state = await BeebeebCrypto.unlockFileProviderAccess();
+      setFileProviderLocked(state.locked);
+      setFileProviderUnlockWindowSeconds(state.unlockWindowSeconds);
+      showToast({ type: 'success', message: `Files access unlocked for ${Math.round(state.unlockWindowSeconds / 60)} minutes` });
+    } catch (err) {
+      Alert.alert('Files unlock failed', errorMessage(err));
+    } finally {
+      setUnlockingFileProvider(false);
+    }
+  }, [showToast]);
 
   const handleNotificationsToggle = useCallback(async (enabled: boolean) => {
     if (enabled) {
@@ -1584,6 +1690,48 @@ export default function SettingsScreen() {
                       onPress={handleBiometricDelayPress}
                       c={c}
                     />
+                  </>
+                )}
+                <RowDivider c={c} />
+              </>
+            )}
+            {fileProviderSupported && (
+              <>
+                <ToggleRow
+                  label="Show Beebeeb in Files"
+                  subtitle="Adds Beebeeb to iOS Files locations."
+                  value={fileProviderShowInFiles}
+                  onValueChange={handleFileProviderShowToggle}
+                  disabled={loadingFileProvider}
+                  c={c}
+                />
+                {fileProviderShowInFiles && (
+                  <>
+                    <RowDivider c={c} />
+                    <ToggleRow
+                      label="Require Face ID or passcode"
+                      subtitle="Files stays locked until Beebeeb grants a short access window."
+                      value={fileProviderRequireAuth}
+                      onValueChange={handleFileProviderAuthToggle}
+                      disabled={loadingFileProvider}
+                      c={c}
+                    />
+                    {fileProviderRequireAuth && (
+                      <>
+                        <RowDivider c={c} />
+                        <SettingsRow
+                          label="Unlock Files access"
+                          value={unlockingFileProvider
+                            ? 'Unlocking...'
+                            : fileProviderLocked
+                              ? `${Math.round(fileProviderUnlockWindowSeconds / 60)} min`
+                              : 'Unlocked'}
+                          icon="folder-open-outline"
+                          onPress={unlockingFileProvider ? undefined : handleUnlockFileProviderAccess}
+                          c={c}
+                        />
+                      </>
+                    )}
                   </>
                 )}
                 <RowDivider c={c} />

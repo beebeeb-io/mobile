@@ -74,6 +74,78 @@ class BeebeebCryptoModule : Module() {
 
     AsyncFunction("listFileProviderDomains") { -> emptyList<Map<String, Any?>>() }
 
+    AsyncFunction("unregisterFileProviderDomain") { ->
+      mapOf(
+        "supported" to false,
+        "identifier" to "io.beebeeb.files",
+        "displayName" to "Beebeeb",
+        "registered" to false,
+        "added" to false,
+        "removedBeforeAdd" to false,
+        "domainCount" to 0,
+        "rootEnumerationSignaled" to false,
+        "workingSetEnumerationSignaled" to false,
+      )
+    }
+
+    AsyncFunction("setFileProviderEnabled") { _: Boolean ->
+      mapOf(
+        "supported" to false,
+        "identifier" to "io.beebeeb.files",
+        "displayName" to "Beebeeb",
+        "registered" to false,
+        "added" to false,
+        "removedBeforeAdd" to false,
+        "domainCount" to 0,
+        "rootEnumerationSignaled" to false,
+        "workingSetEnumerationSignaled" to false,
+      )
+    }
+
+    AsyncFunction("getFileProviderPrivacyState") { ->
+      mapOf(
+        "supported" to false,
+        "showInFiles" to false,
+        "requireDeviceAuth" to true,
+        "unlockedUntilMs" to 0,
+        "unlockWindowSeconds" to 300,
+        "locked" to true,
+      )
+    }
+
+    AsyncFunction("setFileProviderAuthRequired") { _: Boolean ->
+      mapOf(
+        "supported" to false,
+        "showInFiles" to false,
+        "requireDeviceAuth" to true,
+        "unlockedUntilMs" to 0,
+        "unlockWindowSeconds" to 300,
+        "locked" to true,
+      )
+    }
+
+    AsyncFunction("unlockFileProviderAccess") { ->
+      mapOf(
+        "supported" to false,
+        "showInFiles" to false,
+        "requireDeviceAuth" to true,
+        "unlockedUntilMs" to 0,
+        "unlockWindowSeconds" to 300,
+        "locked" to true,
+      )
+    }
+
+    AsyncFunction("lockFileProviderAccess") { ->
+      mapOf(
+        "supported" to false,
+        "showInFiles" to false,
+        "requireDeviceAuth" to true,
+        "unlockedUntilMs" to 0,
+        "unlockWindowSeconds" to 300,
+        "locked" to true,
+      )
+    }
+
     AsyncFunction("resetFileProviderDomain") { ->
       mapOf(
         "supported" to false,

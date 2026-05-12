@@ -351,6 +351,7 @@ function BiometricGuard({ locked, onUnlock }: { locked: boolean; onUnlock: () =>
     } catch {
       // Key not in keychain yet (e.g. legacy account before OPAQUE) — just unlock the screen
     }
+    await BeebeebCrypto.unlockFileProviderAccess().catch(() => null);
     onUnlock();
   }
 
@@ -544,11 +545,19 @@ export default function App() {
       await clearToken();
     }
     await BeebeebCrypto.deleteKeyFromKeychain().catch(() => false);
+    await BeebeebCrypto.unregisterFileProviderDomain().catch(() => null);
+    await BeebeebCrypto.mirrorSessionToAppGroup(null, getApiUrl()).catch(() => false);
     await SecureStore.deleteItemAsync(MASTER_KEY_CHECK_LABEL).catch(() => {});
     await SecureStore.deleteItemAsync(MASTER_KEY_FALLBACK_LABEL).catch(() => {});
     await FileSystem.deleteAsync(SIMULATOR_MASTER_KEY_FILE, { idempotent: true }).catch(() => {});
     setUser(null);
   }, []);
+
+  useEffect(() => {
+    if (locked || !user) {
+      void BeebeebCrypto.lockFileProviderAccess().catch(() => null);
+    }
+  }, [locked, user]);
 
   // On mount: check for an existing session
   useEffect(() => {
