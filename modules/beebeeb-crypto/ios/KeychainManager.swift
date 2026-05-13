@@ -37,6 +37,9 @@ final class KeychainManager {
 
   private static let seKeyTag = "io.beebeeb.sekey".data(using: .utf8)!
   private static let wrappedKeyService = "io.beebeeb.masterkey"
+  #if DEBUG && targetEnvironment(simulator)
+  private static let simulatorSoftwareKeyService = "io.beebeeb.masterkey.simulator-software"
+  #endif
   private static let eciesAlgorithm = SecKeyAlgorithm.eciesEncryptionCofactorVariableIVX963SHA256AESGCM
 
   // Shared with the File Provider extension through the keychain-access-groups
@@ -57,6 +60,11 @@ final class KeychainManager {
     guard masterKeyBytes.count == 32 else {
       throw KeychainError.invalidMasterKeySize
     }
+
+    #if DEBUG && targetEnvironment(simulator)
+    try storeSimulatorSoftwareKey(masterKeyBytes: masterKeyBytes, label: label)
+    return
+    #endif
 
     let seKey = try getOrCreateSEKey()
     guard let publicKey = SecKeyCopyPublicKey(seKey) else {
@@ -90,6 +98,12 @@ final class KeychainManager {
   /// Decrypt and return the master key. Returns nil if no key is stored.
   /// Triggers biometric/passcode prompt if the SE access control requires it.
   static func load(label: String) throws -> Data? {
+    #if DEBUG && targetEnvironment(simulator)
+    if let simulatorKey = try loadSimulatorSoftwareKey(label: label) {
+      return simulatorKey
+    }
+    #endif
+
     var query: [CFString: Any] = [
       kSecClass: kSecClassGenericPassword,
       kSecAttrService: wrappedKeyService,
@@ -131,6 +145,9 @@ final class KeychainManager {
   static func delete() {
     deleteSEKey()
     deleteWrappedItems()
+    #if DEBUG && targetEnvironment(simulator)
+    deleteSimulatorSoftwareKeys()
+    #endif
   }
 
   // MARK: - Access control toggle
@@ -348,4 +365,53 @@ final class KeychainManager {
       SecItemDelete(query as CFDictionary)
     }
   }
+
+  #if DEBUG && targetEnvironment(simulator)
+  private static func simulatorSoftwareKeyQuery(label: String? = nil) -> [CFString: Any] {
+    var query: [CFString: Any] = [
+      kSecClass: kSecClassGenericPassword,
+      kSecAttrService: simulatorSoftwareKeyService,
+    ]
+    if let label {
+      query[kSecAttrAccount] = label
+    }
+    if let group = accessGroup {
+      query[kSecAttrAccessGroup] = group
+    }
+    return query
+  }
+
+  private static func storeSimulatorSoftwareKey(masterKeyBytes: Data, label: String) throws {
+    var attrs = simulatorSoftwareKeyQuery(label: label)
+    SecItemDelete(attrs as CFDictionary)
+
+    attrs[kSecAttrAccessible] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+    attrs[kSecValueData] = masterKeyBytes
+
+    let status = SecItemAdd(attrs as CFDictionary, nil)
+    guard status == errSecSuccess else {
+      throw KeychainError.writeError(status)
+    }
+  }
+
+  private static func loadSimulatorSoftwareKey(label: String) throws -> Data? {
+    var query = simulatorSoftwareKeyQuery(label: label)
+    query[kSecReturnData] = true
+    query[kSecMatchLimit] = kSecMatchLimitOne
+
+    var result: CFTypeRef?
+    let status = SecItemCopyMatching(query as CFDictionary, &result)
+    if status == errSecItemNotFound {
+      return nil
+    }
+    guard status == errSecSuccess else {
+      throw KeychainError.readError(status)
+    }
+    return result as? Data
+  }
+
+  private static func deleteSimulatorSoftwareKeys() {
+    SecItemDelete(simulatorSoftwareKeyQuery() as CFDictionary)
+  }
+  #endif
 }

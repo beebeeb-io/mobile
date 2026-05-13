@@ -7,6 +7,9 @@ private let logger = Logger(subsystem: "io.beebeeb.app.file-provider", category:
 private let kKeychainAccessGroup = "R8352WDJJR.io.beebeeb.shared"
 private let kMasterKeyLabel = "io.beebeeb.master-key"
 private let kWrappedKeyService = "io.beebeeb.masterkey"
+#if DEBUG && targetEnvironment(simulator)
+private let kSimulatorSoftwareKeyService = "io.beebeeb.masterkey.simulator-software"
+#endif
 private let kSEKeyTag = "io.beebeeb.sekey".data(using: .utf8)!
 private let kECIESAlgorithm = SecKeyAlgorithm.eciesEncryptionCofactorVariableIVX963SHA256AESGCM
 private let kChunkSize = 4 * 1024 * 1024
@@ -27,12 +30,28 @@ class FileProviderCrypto {
                 logger.info("Master key loaded from shared keychain")
                 return
             }
-
-            logger.warning("No extension-readable master key found — crypto operations will fail until App Group keychain sharing is wired")
-            return
         } catch {
+            #if DEBUG && targetEnvironment(simulator)
+            logger.warning("Shared Secure Enclave master key unavailable on simulator: \(error.localizedDescription)")
+            #else
             logger.error("Failed to load master key: \(error.localizedDescription)")
+            return
+            #endif
         }
+
+        #if DEBUG && targetEnvironment(simulator)
+        do {
+            if let keyData = try readSimulatorSoftwareMasterKey(label: kMasterKeyLabel) {
+                masterKeyHandle = try MasterKeyHandle.fromKeychainBytes(bytes: keyData)
+                logger.info("Master key loaded from DEBUG simulator shared software keychain")
+                return
+            }
+        } catch {
+            logger.error("Failed to load simulator software master key: \(error.localizedDescription)")
+        }
+        #endif
+
+        logger.warning("No extension-readable master key found — crypto operations will fail until App Group keychain sharing is wired")
     }
 
     // MARK: - Filename Encryption/Decryption
@@ -221,6 +240,29 @@ class FileProviderCrypto {
         }
         return plaintext as Data
     }
+
+    #if DEBUG && targetEnvironment(simulator)
+    private func readSimulatorSoftwareMasterKey(label: String) throws -> Data? {
+        var query: [CFString: Any] = [
+            kSecClass: kSecClassGenericPassword,
+            kSecAttrService: kSimulatorSoftwareKeyService,
+            kSecAttrAccount: label,
+            kSecReturnData: true,
+            kSecMatchLimit: kSecMatchLimitOne,
+        ]
+        addAppGroupKeychainAccessGroupIfConfigured(to: &query)
+
+        var result: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        if status == errSecItemNotFound {
+            return nil
+        }
+        guard status == errSecSuccess, let keyData = result as? Data else {
+            throw FileProviderCryptoError.keychainReadFailed(status)
+        }
+        return keyData
+    }
+    #endif
 
     private func findSEKey() -> SecKey? {
         var query: [CFString: Any] = [

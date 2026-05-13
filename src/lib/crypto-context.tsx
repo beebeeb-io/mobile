@@ -52,16 +52,14 @@ function constantTimeEqual(a: Uint8Array, b: Uint8Array): boolean {
 async function storeMasterKey(masterKey: Uint8Array): Promise<void> {
   const encoded = uint8ToBase64(masterKey)
   const softwareFallbackRuntime = usesSoftwareVaultFallback()
-  let seStored = false
-  if (!softwareFallbackRuntime) {
-    try {
-      await storeKeyInKeychain(masterKey, MASTER_KEY_LABEL)
-      seStored = true
-    } catch {
-      // Secure Enclave unavailable — fall through to software fallback.
-    }
+  let nativeKeychainStored = false
+  try {
+    await storeKeyInKeychain(masterKey, MASTER_KEY_LABEL)
+    nativeKeychainStored = true
+  } catch {
+    // Secure Enclave unavailable — fall through to software fallback.
   }
-  const useSoftwareFallback = !seStored || softwareFallbackRuntime
+  const useSoftwareFallback = !nativeKeychainStored || softwareFallbackRuntime
   if (useSoftwareFallback) {
     await SecureStore.setItemAsync(MASTER_KEY_FALLBACK_LABEL, encoded)
   }
