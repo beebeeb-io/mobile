@@ -20,12 +20,79 @@ private func sharedDefaults() -> UserDefaults? {
     UserDefaults(suiteName: kAppGroup)
 }
 
+private func appGroupPreferencesURL() -> URL? {
+    FileManager.default
+        .containerURL(forSecurityApplicationGroupIdentifier: kAppGroup)?
+        .appendingPathComponent("Library", isDirectory: true)
+        .appendingPathComponent("Preferences", isDirectory: true)
+        .appendingPathComponent("\(kAppGroup).plist", isDirectory: false)
+}
+
+#if DEBUG && targetEnvironment(simulator)
+private func rawAppGroupPreferences() -> [String: Any] {
+    guard
+        let url = appGroupPreferencesURL(),
+        let data = try? Data(contentsOf: url),
+        let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil),
+        let values = plist as? [String: Any]
+    else {
+        return [:]
+    }
+    return values
+}
+#endif
+
+private func appGroupObject(_ defaults: UserDefaults?, key: String) -> Any? {
+#if DEBUG && targetEnvironment(simulator)
+    if let rawValue = rawAppGroupPreferences()[key] {
+        return rawValue
+    }
+#endif
+    return defaults?.object(forKey: key)
+}
+
+private func appGroupString(_ defaults: UserDefaults?, key: String) -> String? {
+    if let value = appGroupObject(defaults, key: key) as? String {
+        return value
+    }
+    return defaults?.string(forKey: key)
+}
+
+private func appGroupBool(_ defaults: UserDefaults?, key: String) -> Bool? {
+    switch appGroupObject(defaults, key: key) {
+    case let value as Bool:
+        return value
+    case let value as NSNumber:
+        return value.boolValue
+    case let value as String:
+        return ["true", "1", "yes"].contains(value.lowercased())
+    default:
+        return nil
+    }
+}
+
+private func appGroupDouble(_ defaults: UserDefaults?, key: String) -> Double {
+    switch appGroupObject(defaults, key: key) {
+    case let value as Double:
+        return value
+    case let value as Int:
+        return Double(value)
+    case let value as Int64:
+        return Double(value)
+    case let value as NSNumber:
+        return value.doubleValue
+    case let value as String:
+        return Double(value) ?? 0
+    default:
+        return defaults?.double(forKey: key) ?? 0
+    }
+}
+
 private func boolDefaultTrue(_ defaults: UserDefaults?, key: String) -> Bool {
-    guard let defaults else { return true }
-    if defaults.object(forKey: key) == nil {
+    guard let value = appGroupBool(defaults, key: key) else {
         return true
     }
-    return defaults.bool(forKey: key)
+    return value
 }
 
 func clearFileProviderTemporaryFiles() {
@@ -35,17 +102,20 @@ func clearFileProviderTemporaryFiles() {
 
 func validateFileProviderAccess() throws {
     let defaults = sharedDefaults()
-    guard boolDefaultTrue(defaults, key: kFileProviderEnabledKey) else {
+    let isEnabled = boolDefaultTrue(defaults, key: kFileProviderEnabledKey)
+    guard isEnabled else {
         clearFileProviderTemporaryFiles()
         throw FileProviderAPIError.fileProviderDisabled
     }
 
-    guard boolDefaultTrue(defaults, key: kFileProviderAuthRequiredKey) else {
+    let requiresAuth = boolDefaultTrue(defaults, key: kFileProviderAuthRequiredKey)
+    guard requiresAuth else {
         return
     }
 
     let nowMs = Date().timeIntervalSince1970 * 1000
-    let unlockedUntilMs = defaults?.double(forKey: kFileProviderUnlockedUntilKey) ?? 0
+    let unlockedUntilMs = appGroupDouble(defaults, key: kFileProviderUnlockedUntilKey)
+    logger.info("File Provider access state enabled=\(isEnabled), requiresAuth=\(requiresAuth), unlockedUntilMs=\(unlockedUntilMs), nowMs=\(nowMs)")
     guard unlockedUntilMs > nowMs else {
         clearFileProviderTemporaryFiles()
         throw FileProviderAPIError.fileProviderLocked
@@ -63,7 +133,7 @@ class FileProviderAPIClient {
 
     private func authToken() throws -> String {
         guard
-            let token = UserDefaults(suiteName: kAppGroup)?.string(forKey: kSharedSessionTokenKey),
+            let token = appGroupString(UserDefaults(suiteName: kAppGroup), key: kSharedSessionTokenKey),
             !token.isEmpty
         else {
             throw FileProviderAPIError.notAuthenticated
@@ -81,7 +151,7 @@ class FileProviderAPIClient {
     }
 
     private func currentBaseURL() -> URL {
-        let rawBaseURL = UserDefaults(suiteName: kAppGroup)?.string(forKey: kSharedAPIBaseURLKey) ?? kFallbackAPIBaseURL
+        let rawBaseURL = appGroupString(UserDefaults(suiteName: kAppGroup), key: kSharedAPIBaseURLKey) ?? kFallbackAPIBaseURL
         return URL(string: rawBaseURL) ?? URL(string: kFallbackAPIBaseURL)!
     }
 

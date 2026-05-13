@@ -6,7 +6,7 @@ import Security
 private let fileProviderDomainIdentifier = NSFileProviderDomainIdentifier("io.beebeeb.files")
 private let fileProviderDisplayName = "Beebeeb"
 private let fileProviderDomainSchemaKey = "io.beebeeb.fileProviderDomainSchema"
-private let fileProviderDomainSchemaVersion = "replicated-v2"
+private let fileProviderDomainSchemaVersion = "replicated-v3"
 private let appGroupIdentifier = "group.io.beebeeb.shared"
 private let simulatorFileProviderMasterKeyKey = "io.beebeeb.simulatorFileProviderMasterKey"
 private let sharedSessionTokenKey = "io.beebeeb.sessionToken"
@@ -14,6 +14,7 @@ private let sharedAPIBaseURLKey = "io.beebeeb.apiBaseUrl"
 private let fileProviderEnabledKey = "io.beebeeb.fileProvider.enabled"
 private let fileProviderAuthRequiredKey = "io.beebeeb.fileProvider.requireDeviceAuth"
 private let fileProviderUnlockedUntilKey = "io.beebeeb.fileProvider.unlockedUntilMs"
+private let fileProviderEnumeratorStatePrefix = "io.beebeeb.fileProvider.enumerator."
 private let fileProviderUnlockWindowSeconds = 300
 
 private func decodeBase64(_ value: String, field: String) throws -> Data {
@@ -141,6 +142,14 @@ private func clearFileProviderSharedState(defaults: UserDefaults?) -> Int {
   defaults?.removeObject(forKey: sharedSessionTokenKey)
   defaults?.removeObject(forKey: sharedAPIBaseURLKey)
   defaults?.removeObject(forKey: simulatorFileProviderMasterKeyKey)
+  let removed = clearFileProviderCacheState(defaults: defaults)
+  return removed
+}
+
+private func clearFileProviderCacheState(defaults: UserDefaults?) -> Int {
+  defaults?.dictionaryRepresentation().keys
+    .filter { $0.hasPrefix(fileProviderEnumeratorStatePrefix) }
+    .forEach { defaults?.removeObject(forKey: $0) }
 
   var removed = 0
   let fileManager = FileManager.default
@@ -380,6 +389,7 @@ public class BeebeebCryptoModule: Module {
       let needsLegacyMigration = existed && defaults?.string(forKey: fileProviderDomainSchemaKey) != fileProviderDomainSchemaVersion
       if needsLegacyMigration {
         try await removeFileProviderDomain(domain)
+        _ = clearFileProviderCacheState(defaults: defaults)
       }
       if !existed || needsLegacyMigration {
         try await addFileProviderDomain(domain)
@@ -438,6 +448,7 @@ public class BeebeebCryptoModule: Module {
       if existed {
         try await removeFileProviderDomain(domain)
       }
+      _ = clearFileProviderCacheState(defaults: sharedDefaults())
       try await addFileProviderDomain(domain)
       let defaults = sharedDefaults()
       defaults?.set(fileProviderDomainSchemaVersion, forKey: fileProviderDomainSchemaKey)
