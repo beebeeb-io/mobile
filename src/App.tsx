@@ -356,7 +356,6 @@ function BiometricGuard({ locked, onUnlock }: { locked: boolean; onUnlock: () =>
     if (token) {
       await BeebeebCrypto.mirrorSessionToAppGroup(token, getApiUrl()).catch(() => false);
     }
-    await BeebeebCrypto.unlockFileProviderAccess().catch(() => null);
     onUnlock();
   }
 
@@ -550,7 +549,7 @@ export default function App() {
       await clearToken();
     }
     await BeebeebCrypto.deleteKeyFromKeychain().catch(() => false);
-    await BeebeebCrypto.unregisterFileProviderDomain().catch(() => null);
+    await BeebeebCrypto.removeFileProviderAccess().catch(() => null);
     await BeebeebCrypto.mirrorSessionToAppGroup(null, null).catch(() => false);
     await BeebeebCrypto.mirrorSimulatorFileProviderMasterKey(null).catch(() => false);
     await discardAllPendingShares().catch(() => 0);
@@ -560,12 +559,6 @@ export default function App() {
     await FileSystem.deleteAsync(SIMULATOR_MASTER_KEY_FILE, { idempotent: true }).catch(() => {});
     setUser(null);
   }, []);
-
-  useEffect(() => {
-    if (locked || !user) {
-      void BeebeebCrypto.lockFileProviderAccess().catch(() => null);
-    }
-  }, [locked, user]);
 
   // On mount: check for an existing session
   useEffect(() => {

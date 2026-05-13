@@ -1,6 +1,8 @@
 import { BBLogo } from "../components/BBLogo";
 import React, { useMemo, useState } from 'react';
 import {
+  ActivityIndicator,
+  Alert,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
@@ -17,11 +19,13 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { fonts, radii, spacing } from '../theme';
 import { useTheme } from '../lib/theme-context';
 import { useAuth } from '../lib/auth';
+import { mountTrustedFileProvider } from '../lib/file-provider-mount';
+import { useToast } from '../lib/toast-context';
 import type { RootStackParamList } from '../App';
 
 type Nav = NativeStackNavigationProp<RootStackParamList>;
 type Route = RouteProp<RootStackParamList, 'RecoveryPhrase'>;
-type Step = 'phrase' | 'verify' | 'done';
+type Step = 'phrase' | 'verify' | 'files' | 'done';
 
 interface Props {
   route?: Route;
@@ -65,6 +69,7 @@ export default function OnboardingScreen({ route, navigation, phrase: phraseProp
   const insets = useSafeAreaInsets();
   const { colors: c, resolved } = useTheme();
   const { markPhraseVerified } = useAuth();
+  const { showToast } = useToast();
   const words = useMemo(
     () => normalizeWords(phraseProp ?? route?.params?.phrase),
     [phraseProp, route?.params?.phrase],
@@ -73,6 +78,7 @@ export default function OnboardingScreen({ route, navigation, phrase: phraseProp
   const [step, setStep] = useState<Step>('phrase');
   const [answers, setAnswers] = useState<string[]>(['', '', '']);
   const [copied, setCopied] = useState(false);
+  const [mountingFiles, setMountingFiles] = useState(false);
   const phraseReady = words.length === 12;
 
   const styles = useMemo(() => StyleSheet.create({
@@ -291,9 +297,14 @@ export default function OnboardingScreen({ route, navigation, phrase: phraseProp
       fontSize: 28,
       fontWeight: '900',
     },
+    filesMarkText: {
+      color: c.amberDeep,
+      fontSize: 13,
+      fontWeight: '900',
+    },
   }), [c, insets.bottom, insets.top, resolved]);
 
-  const stepNumber = step === 'phrase' ? 1 : step === 'verify' ? 2 : 3;
+  const stepNumber = step === 'phrase' ? 1 : step === 'verify' ? 2 : step === 'files' ? 3 : 4;
   const normalizedAnswers = answers.map((answer) => answer.trim().toLowerCase());
   const correctAnswers = verifyPositions.map(
     (position, index) => normalizedAnswers[index] === words[position]?.toLowerCase(),
@@ -318,7 +329,28 @@ export default function OnboardingScreen({ route, navigation, phrase: phraseProp
   async function handleConfirm() {
     if (!allCorrect) return;
     await markPhraseVerified();
+    if (Platform.OS === 'ios') {
+      setStep('files');
+      return;
+    }
     setStep('done');
+  }
+
+  async function handleMountFiles() {
+    setMountingFiles(true);
+    try {
+      const result = await mountTrustedFileProvider();
+      if (!result.supported || !result.registered) {
+        Alert.alert('Files unavailable', 'Beebeeb could not be mounted in Files on this device. You can try again later in Settings.');
+        return;
+      }
+      showToast({ type: 'success', message: 'Beebeeb is mounted in Files' });
+      setStep('done');
+    } catch (err) {
+      Alert.alert('Files mount failed', err instanceof Error ? err.message : 'Try again later from Settings.');
+    } finally {
+      setMountingFiles(false);
+    }
   }
 
   function handleGoToVault() {
@@ -343,8 +375,8 @@ export default function OnboardingScreen({ route, navigation, phrase: phraseProp
           <View style={styles.logoWrap}>
             <BBLogo size={48} />
           </View>
-          <View style={styles.progress} accessibilityLabel={`Step ${stepNumber} of 3`}>
-            {[1, 2, 3].map((item) => (
+          <View style={styles.progress} accessibilityLabel={`Step ${stepNumber} of 4`}>
+            {[1, 2, 3, 4].map((item) => (
               <View
                 key={item}
                 style={[
@@ -353,7 +385,7 @@ export default function OnboardingScreen({ route, navigation, phrase: phraseProp
                 ]}
               />
             ))}
-            <Text style={styles.progressText}>{stepNumber} / 3</Text>
+            <Text style={styles.progressText}>{stepNumber} / 4</Text>
           </View>
         </View>
 
@@ -493,6 +525,53 @@ export default function OnboardingScreen({ route, navigation, phrase: phraseProp
                 accessibilityRole="button"
               >
                 <Text style={styles.secondaryButtonText}>Back to recovery phrase</Text>
+              </TouchableOpacity>
+            </View>
+          </>
+        )}
+
+        {step === 'files' && (
+          <>
+            <Text style={styles.eyebrow}>Files access</Text>
+            <Text style={styles.heading}>Mount Beebeeb in Files</Text>
+            <Text style={styles.body}>
+              Add Beebeeb to iOS Files on this trusted iPhone. Anyone who can unlock this iPhone can access the mounted Files location until you remove access in Settings.
+            </Text>
+
+            <View style={styles.doneCard}>
+              <View style={styles.doneMark}>
+                <Text style={styles.filesMarkText}>Files</Text>
+              </View>
+              <Text style={[styles.heading, { textAlign: 'center' }]}>Enable Files access</Text>
+              <Text style={[styles.body, { textAlign: 'center', marginBottom: 0 }]}>
+                iOS will ask for Face ID or your iPhone passcode once before mounting Beebeeb in Files.
+              </Text>
+            </View>
+
+            <View style={styles.spacer} />
+            <View style={styles.buttonStack}>
+              <TouchableOpacity
+                style={[styles.button, styles.primaryButton, mountingFiles && styles.buttonDisabled]}
+                onPress={() => { void handleMountFiles(); }}
+                activeOpacity={0.82}
+                disabled={mountingFiles}
+                accessibilityRole="button"
+                accessibilityState={{ disabled: mountingFiles }}
+              >
+                {mountingFiles ? (
+                  <ActivityIndicator color={c.ink} />
+                ) : (
+                  <Text style={styles.buttonText}>Enable Files access</Text>
+                )}
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.button, styles.secondaryButton]}
+                onPress={() => setStep('done')}
+                activeOpacity={0.78}
+                accessibilityRole="button"
+                disabled={mountingFiles}
+              >
+                <Text style={styles.secondaryButtonText}>Not now</Text>
               </TouchableOpacity>
             </View>
           </>
