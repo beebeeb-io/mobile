@@ -161,11 +161,9 @@ class FileProviderCrypto {
     private func decryptMetadataString(fileId: String, encrypted: String) throws -> String {
         guard
             let jsonData = encrypted.data(using: .utf8),
-            let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: String],
-            let nonceB64 = json["nonce"] ?? json["n"],
-            let ciphertextB64 = json["ciphertext"] ?? json["c"],
-            let nonce = Data(base64Encoded: nonceB64),
-            let ciphertext = Data(base64Encoded: ciphertextB64)
+            let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
+            let nonce = encryptedPayloadBytes(from: json["nonce"] ?? json["n"]),
+            let ciphertext = encryptedPayloadBytes(from: json["ciphertext"] ?? json["c"])
         else {
             return encrypted
         }
@@ -200,15 +198,45 @@ class FileProviderCrypto {
     }
 
     private func encryptedPayloadJSON(_ encrypted: EncryptedData) throws -> String {
-        let payload: [String: String] = [
-            "nonce": encrypted.nonce.base64EncodedString(),
-            "ciphertext": encrypted.ciphertext.base64EncodedString(),
+        let payload: [String: Any] = [
+            "cipher_suite": encrypted.cipherSuite,
+            "nonce": encrypted.nonce.map(Int.init),
+            "ciphertext": encrypted.ciphertext.map(Int.init),
         ]
         let data = try JSONSerialization.data(withJSONObject: payload)
         guard let value = String(data: data, encoding: .utf8) else {
             throw FileProviderCryptoError.invalidMetadataFormat
         }
         return value
+    }
+
+    private func encryptedPayloadBytes(from value: Any?) -> Data? {
+        if let encoded = value as? String {
+            return Data(base64Encoded: encoded)
+        }
+
+        guard let bytes = value as? [Any] else {
+            return nil
+        }
+
+        var data = Data()
+        data.reserveCapacity(bytes.count)
+        for byte in bytes {
+            let value: Int?
+            if let intValue = byte as? Int {
+                value = intValue
+            } else if let number = byte as? NSNumber {
+                value = number.intValue
+            } else {
+                value = nil
+            }
+
+            guard let value, (0...255).contains(value) else {
+                return nil
+            }
+            data.append(UInt8(value))
+        }
+        return data
     }
 
     private func readWrappedMasterKey(label: String) throws -> Data? {
