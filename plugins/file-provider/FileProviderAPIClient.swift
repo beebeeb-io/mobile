@@ -13,6 +13,7 @@ private let kFallbackAPIBaseURL = "http://localhost:3001"
 private let kFallbackAPIBaseURL = "https://api.beebeeb.io"
 #endif
 private let kFileProviderEnabledKey = "io.beebeeb.fileProvider.enabled"
+private let kFileProviderTrustedMountKey = "io.beebeeb.fileProvider.trustedMountEnabled"
 private let kFileProviderAuthRequiredKey = "io.beebeeb.fileProvider.requireDeviceAuth"
 private let kFileProviderUnlockedUntilKey = "io.beebeeb.fileProvider.unlockedUntilMs"
 
@@ -103,23 +104,13 @@ func clearFileProviderTemporaryFiles() {
 func validateFileProviderAccess() throws {
     let defaults = sharedDefaults()
     let isEnabled = boolDefaultTrue(defaults, key: kFileProviderEnabledKey)
-    guard isEnabled else {
+    let trustedMountEnabled = appGroupBool(defaults, key: kFileProviderTrustedMountKey) ?? false
+    guard isEnabled, trustedMountEnabled else {
         clearFileProviderTemporaryFiles()
         throw FileProviderAPIError.fileProviderDisabled
     }
-
-    let requiresAuth = boolDefaultTrue(defaults, key: kFileProviderAuthRequiredKey)
-    guard requiresAuth else {
-        return
-    }
-
-    let nowMs = Date().timeIntervalSince1970 * 1000
-    let unlockedUntilMs = appGroupDouble(defaults, key: kFileProviderUnlockedUntilKey)
-    logger.info("File Provider access state enabled=\(isEnabled), requiresAuth=\(requiresAuth), unlockedUntilMs=\(unlockedUntilMs), nowMs=\(nowMs)")
-    guard unlockedUntilMs > nowMs else {
-        clearFileProviderTemporaryFiles()
-        throw FileProviderAPIError.fileProviderLocked
-    }
+    let legacyUnlockedUntilMs = appGroupDouble(defaults, key: kFileProviderUnlockedUntilKey)
+    logger.info("File Provider trusted mount state enabled=\(isEnabled), trustedMountEnabled=\(trustedMountEnabled), legacyUnlockedUntilMs=\(legacyUnlockedUntilMs)")
 }
 
 class FileProviderAPIClient {
@@ -470,9 +461,9 @@ enum FileProviderAPIError: Error, LocalizedError {
         case .quotaExceeded:
             return "Storage quota exceeded. Upgrade for more space."
         case .fileProviderDisabled:
-            return "Beebeeb is hidden from Files. Open Beebeeb Settings to show it again."
+            return "Beebeeb is not mounted in Files. Open Beebeeb Settings to mount it on this iPhone."
         case .fileProviderLocked:
-            return "Beebeeb is locked. Open Beebeeb and unlock Files access."
+            return "Beebeeb is not mounted in Files. Open Beebeeb Settings to mount it on this iPhone."
         case .conflict:
             return "This file changed while Files was editing it. Reload the file and try again."
         case .unsupportedOperation(let message):

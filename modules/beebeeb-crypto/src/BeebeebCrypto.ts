@@ -366,13 +366,41 @@ export async function getFileProviderPrivacyState(): Promise<FileProviderPrivacy
     return {
       supported: false,
       showInFiles: false,
+      trustedMountEnabled: false,
+      mounted: false,
       requireDeviceAuth: true,
       unlockedUntilMs: 0,
-      unlockWindowSeconds: 300,
+      unlockWindowSeconds: 0,
       locked: true,
     }
   }
   return BeebeebCryptoModule.getFileProviderPrivacyState()
+}
+
+/** Mount Beebeeb as a trusted iOS Files location. Device-owner auth happens before this call. */
+export async function mountFileProviderAccess(): Promise<FileProviderDomainRegistrationResult> {
+  if (typeof BeebeebCryptoModule.mountFileProviderAccess !== 'function') {
+    return {
+      supported: false,
+      identifier: 'io.beebeeb.files',
+      displayName: 'Beebeeb',
+      registered: false,
+      added: false,
+      removedBeforeAdd: false,
+      domainCount: 0,
+      rootEnumerationSignaled: false,
+      workingSetEnumerationSignaled: false,
+    }
+  }
+  return BeebeebCryptoModule.mountFileProviderAccess()
+}
+
+/** Remove the trusted iOS Files mount and revoke all File Provider shared state. */
+export async function removeFileProviderAccess(): Promise<FileProviderDomainRegistrationResult> {
+  if (typeof BeebeebCryptoModule.removeFileProviderAccess !== 'function') {
+    return unregisterFileProviderDomain()
+  }
+  return BeebeebCryptoModule.removeFileProviderAccess()
 }
 
 export async function setFileProviderAuthRequired(required: boolean): Promise<FileProviderPrivacyState> {

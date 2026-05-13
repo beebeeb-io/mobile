@@ -61,6 +61,8 @@ export interface FileProviderDomainInfo {
 export interface FileProviderPrivacyState {
   supported: boolean
   showInFiles: boolean
+  trustedMountEnabled: boolean
+  mounted: boolean
   requireDeviceAuth: boolean
   unlockedUntilMs: number
   unlockWindowSeconds: number
