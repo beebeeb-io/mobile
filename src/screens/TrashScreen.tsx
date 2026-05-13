@@ -28,6 +28,7 @@ import {
 import type { FileEntry } from '../lib/api';
 import { requestDeviceOwnerAuth } from '../lib/device-owner-auth';
 import { useCrypto } from '../lib/crypto-context';
+import { encryptedMetadataPayloadToBytes } from '../lib/encrypted-metadata';
 import type { RootStackParamList } from '../App';
 
 type Nav = NativeStackNavigationProp<RootStackParamList>;
@@ -74,15 +75,6 @@ function displayName(entry: FileEntry): string {
   if (raw.startsWith('{')) return entry.is_folder ? 'Encrypted folder' : 'Encrypted file';
   if (raw.length > 32) return raw.slice(0, 24) + '...';
   return raw;
-}
-
-function base64ToUint8Array(b64: string): Uint8Array {
-  const binary = atob(b64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i);
-  }
-  return bytes;
 }
 
 function parseDecryptedMetadata(plaintext: string): string {
@@ -212,10 +204,9 @@ export default function TrashScreen() {
           try {
             const raw = file.name_encrypted ?? '';
             if (!raw.startsWith('{')) return;
-            const parsed = JSON.parse(raw) as { nonce: string; ciphertext: string };
-            const nonce = base64ToUint8Array(parsed.nonce);
-            const ct = base64ToUint8Array(parsed.ciphertext);
-            const plaintext = await decryptMetadata(file.id, nonce, ct);
+            const payload = encryptedMetadataPayloadToBytes(raw);
+            if (!payload) return;
+            const plaintext = await decryptMetadata(file.id, payload.nonce, payload.ciphertext);
             const name = parseDecryptedMetadata(plaintext);
             if (name) results[file.id] = name;
           } catch {

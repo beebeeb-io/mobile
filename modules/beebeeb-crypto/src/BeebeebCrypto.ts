@@ -107,6 +107,7 @@ export async function deriveX25519PublicKey(masterKey: Uint8Array): Promise<Uint
 export async function encryptChunk(key: Uint8Array, plaintext: Uint8Array): Promise<EncryptedData> {
   const result = await BeebeebCryptoModule.encryptChunk(key, plaintext)
   return {
+    cipherSuite: result.cipherSuite,
     nonce: coerceBytes(result.nonce),
     ciphertext: coerceBytes(result.ciphertext),
   }
@@ -131,6 +132,7 @@ export async function decryptChunk(
 export async function encryptMetadata(key: Uint8Array, metadata: string): Promise<EncryptedData> {
   const result = await BeebeebCryptoModule.encryptMetadata(key, metadata)
   return {
+    cipherSuite: result.cipherSuite,
     nonce: coerceBytes(result.nonce),
     ciphertext: coerceBytes(result.ciphertext),
   }

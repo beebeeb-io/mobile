@@ -2,6 +2,7 @@
 // Native side: Data (Swift) / ByteArray (Kotlin).
 
 export interface EncryptedData {
+  cipherSuite: string
   nonce: Uint8Array
   ciphertext: Uint8Array
 }

@@ -110,9 +110,10 @@ final class NativeEncryptedBackupUploader {
   }
 
   private func encryptedPayloadJSON(_ encrypted: EncryptedData) throws -> String {
-    let payload = [
-      "nonce": encrypted.nonce.base64EncodedString(),
-      "ciphertext": encrypted.ciphertext.base64EncodedString(),
+    let payload: [String: Any] = [
+      "cipher_suite": encrypted.cipherSuite,
+      "nonce": encrypted.nonce.map(Int.init),
+      "ciphertext": encrypted.ciphertext.map(Int.init),
     ]
     guard let data = try? JSONSerialization.data(withJSONObject: payload, options: []),
           let json = String(data: data, encoding: .utf8) else {

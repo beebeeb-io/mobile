@@ -296,6 +296,7 @@ public class BeebeebCryptoModule: Module {
     AsyncFunction("encryptChunk") { (key: Data, plaintext: Data) throws -> [String: Any] in
       let result = try BeebeebCryptoBridge.encryptChunk(key: key, plaintext: plaintext)
       return [
+        "cipherSuite": result.cipherSuite,
         "nonce": result.nonce,
         "ciphertext": result.ciphertext,
       ]
@@ -308,6 +309,7 @@ public class BeebeebCryptoModule: Module {
     AsyncFunction("encryptMetadata") { (key: Data, metadata: String) throws -> [String: Any] in
       let result = try BeebeebCryptoBridge.encryptMetadata(key: key, metadata: metadata)
       return [
+        "cipherSuite": result.cipherSuite,
         "nonce": result.nonce,
         "ciphertext": result.ciphertext,
       ]
