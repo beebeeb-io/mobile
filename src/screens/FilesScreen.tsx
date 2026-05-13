@@ -47,6 +47,7 @@ import { generateAndUploadThumbnail, fetchDecryptedThumbnailUri } from '../lib/t
 import type { FileEntry, StorageUsage, ProofOfExistence, PresenceUser, SyncNode } from '../lib/api';
 import type { RootStackParamList, TabParamList } from '../App';
 import { useCrypto } from '../lib/crypto-context';
+import { encryptedMetadataPayloadToBytes, encryptedMetadataToJson } from '../lib/encrypted-metadata';
 import { useAuth } from '../lib/auth';
 import { encryptedUpload, generateFileId } from '../lib/encrypted-upload';
 import { useSync } from '../lib/sync-context';
@@ -209,31 +210,6 @@ function searchResultToFileEntry(result: SearchResult): FileEntry {
     created_at: result.entry.created,
     updated_at: result.entry.modified,
   };
-}
-
-/** Decode a base64 string to a Uint8Array. */
-function base64ToUint8Array(b64: string): Uint8Array {
-  const binary = atob(b64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i);
-  }
-  return bytes;
-}
-
-function uint8ArrayToBase64(bytes: Uint8Array): string {
-  let binary = '';
-  for (let i = 0; i < bytes.length; i++) {
-    binary += String.fromCharCode(bytes[i]);
-  }
-  return btoa(binary);
-}
-
-function encryptedMetadataToJson(enc: { nonce: Uint8Array; ciphertext: Uint8Array }): string {
-  return JSON.stringify({
-    nonce: uint8ArrayToBase64(enc.nonce),
-    ciphertext: uint8ArrayToBase64(enc.ciphertext),
-  });
 }
 
 function parseDecryptedMetadata(plaintext: string): { name: string; mimeType: string | null } {
@@ -1307,10 +1283,9 @@ export default function FilesScreen() {
         try {
           const raw = file.name_encrypted ?? '';
           if (!raw.startsWith('{')) return; // not JSON-encrypted — displayName() handles it
-          const parsed = JSON.parse(raw) as { nonce: string; ciphertext: string };
-          const nonce = base64ToUint8Array(parsed.nonce);
-          const ct = base64ToUint8Array(parsed.ciphertext);
-          const plaintext = await decryptMetadata(file.id, nonce, ct);
+          const payload = encryptedMetadataPayloadToBytes(raw);
+          if (!payload) return;
+          const plaintext = await decryptMetadata(file.id, payload.nonce, payload.ciphertext);
           const metadata = parseDecryptedMetadata(plaintext);
           results[file.id] = metadata.name;
           mimeResults[file.id] = metadata.mimeType;

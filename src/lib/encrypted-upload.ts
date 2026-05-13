@@ -6,8 +6,8 @@
  * Each chunk is AES-256-GCM encrypted and sent immediately after reading —
  * at most one plaintext + one ciphertext chunk live in memory at once.
  *
- * Wire format matches the web client:
- *   name_encrypted → JSON { nonce: base64, ciphertext: base64 }
+ * Wire format matches beebeeb-core:
+ *   name_encrypted → JSON { cipher_suite, nonce: byte[], ciphertext: byte[] }
  *   each chunk     → raw binary: nonce (12 bytes) || ciphertext
  *
  * The caller must supply a client-generated `fileId` (UUID v4). The same ID
@@ -23,6 +23,7 @@ import * as FileSystem from 'expo-file-system'
 import type { EncryptedData } from '../../modules/beebeeb-crypto'
 import { uploadEncryptedChunked } from './api'
 import type { FileEntry, UploadProgress } from './api'
+import { encryptedMetadataToJson } from './encrypted-metadata'
 
 export interface EncryptedUploadOptions {
   /** Client-generated UUID v4 — used for key derivation AND stored by server. */
@@ -48,13 +49,6 @@ function b64ToUint8Array(b64: string): Uint8Array {
   const bytes = new Uint8Array(binaryStr.length)
   for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i)
   return bytes
-}
-
-/** Encode Uint8Array to base64 (for name_encrypted JSON). */
-function uint8ArrayToB64(arr: Uint8Array): string {
-  let s = ''
-  for (let i = 0; i < arr.length; i++) s += String.fromCharCode(arr[i])
-  return btoa(s)
 }
 
 /** Produce the wire-format binary for a chunk: nonce || ciphertext. */
@@ -113,10 +107,7 @@ export async function encryptedUpload(opts: EncryptedUploadOptions): Promise<Fil
 
   const nameEncryptedForFileId = async (targetFileId: string): Promise<string> => {
     const encName = await encryptMetadataFn(targetFileId, metadataPlain)
-    return JSON.stringify({
-      nonce: uint8ArrayToB64(encName.nonce),
-      ciphertext: uint8ArrayToB64(encName.ciphertext),
-    })
+    return encryptedMetadataToJson(encName)
   }
 
   // ── 2. Stream: read one negotiated chunk, encrypt it, hand back to uploader

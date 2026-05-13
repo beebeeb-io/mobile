@@ -598,7 +598,7 @@ async function uploadFileSimple(
  */
 export async function uploadEncryptedChunked(params: {
   fileId: string                // client-generated UUID, sent to server
-  nameEncrypted: string | ((fileId: string) => Promise<string>) // JSON {nonce:b64, ciphertext:b64}
+  nameEncrypted: string | ((fileId: string) => Promise<string>) // JSON {cipher_suite, nonce: byte[], ciphertext: byte[]}
   v2InitNameEncrypted?: string  // Existing encrypted name for replacement uploads
   parentId?: string
   mimeType?: string
