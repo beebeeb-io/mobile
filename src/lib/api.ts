@@ -487,7 +487,13 @@ export async function getAllImages(): Promise<FileEntry[]> {
   return data.files;
 }
 
-const CHUNK_SIZE = 4 * 1024 * 1024; // Legacy upload chunk size
+/**
+ * Legacy 4 MB fallback — used as the initial chunk size before v2 protocol
+ * negotiation. The server's v2 init response provides the actual chunk size
+ * from the adaptive ladder (beebeeb-types::plan_chunks). This constant only
+ * applies when v2 negotiation fails or is unavailable.
+ */
+const CHUNK_SIZE = 4 * 1024 * 1024;
 const MOBILE_UPLOAD_CHUNK_SIZE_CAP_BYTES = 16 * 1024 * 1024;
 const SIMPLE_UPLOAD_THRESHOLD = 5 * 1024 * 1024; // 5 MB — below this, use simple upload
 

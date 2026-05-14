@@ -7,17 +7,21 @@
  *   per chunk on the wire = nonce(12) || ciphertext(plaintext_len + 16-byte GCM tag)
  *   total encrypted size  = sum over chunks of (plaintext_len + 28)
  *
- * The uploader splits the file into chunks of `CHUNK_SIZE` plaintext bytes
- * (last chunk = remainder). The downloader prefers the server's X-Chunk-Size
- * response header so previews keep working for files uploaded with a different
- * historical chunk size.
+ * Chunk sizes are now dynamic (adaptive ladder in beebeeb-types). The
+ * downloader uses the server's X-Chunk-Size response header to determine
+ * the correct chunk size for decryption — this handles files uploaded with
+ * any historical or adaptive chunk size.
  */
 
 import {
   decryptChunk as nativeDecryptChunk,
 } from '../../modules/beebeeb-crypto'
 
-// Must match `CHUNK_SIZE` in encrypted-upload.ts.
+/**
+ * Legacy 4 MB fallback — only used when the server does not provide an
+ * X-Chunk-Size header (pre-v2 files). New uploads negotiate chunk size
+ * dynamically via the storage-v2 protocol.
+ */
 export const CHUNK_SIZE = 4 * 1024 * 1024
 
 // AES-256-GCM: 12-byte nonce, 16-byte auth tag — 28 bytes per chunk.
