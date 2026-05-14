@@ -5,6 +5,7 @@ import {
   Platform,
   Pressable,
   ScrollView,
+  Share,
   StyleSheet,
   Text,
   TextInput,
@@ -181,8 +182,11 @@ export default function ShareSheetScreen() {
     copyButtonText: { fontSize: 12, fontWeight: '600', color: c.amber },
     successDetails: { marginTop: 10, gap: 4 },
     successHint: { fontSize: 12, color: c.ink3 },
-    doneButton: { height: 44, backgroundColor: c.ink, borderRadius: radii.md, alignItems: 'center', justifyContent: 'center', marginTop: spacing.xl },
-    doneButtonText: { fontSize: 14, fontWeight: '600', color: c.paper },
+    buttonRow: { flexDirection: 'row', gap: 10, marginTop: spacing.xl },
+    shareButton: { flex: 1, height: 44, backgroundColor: c.amber, borderRadius: radii.md, alignItems: 'center', justifyContent: 'center' },
+    shareButtonText: { fontSize: 14, fontWeight: '700', color: c.ink },
+    doneButton: { flex: 1, height: 44, backgroundColor: 'transparent', borderRadius: radii.md, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: c.line },
+    doneButtonText: { fontSize: 14, fontWeight: '600', color: c.ink3 },
   }), [c, resolved]);
 
   const handleClose = useCallback(() => {
@@ -264,6 +268,16 @@ export default function ShareSheetScreen() {
     setTimeout(() => setCopied(false), 2000);
   }, [displayUrl, showToast]);
 
+  const handleShare = useCallback(async () => {
+    if (!displayUrl) return;
+    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    try {
+      await Share.share({ url: displayUrl, message: displayUrl });
+    } catch {
+      // User cancelled or share failed — no action needed
+    }
+  }, [displayUrl]);
+
   return (
     <KeyboardAvoidingView
       style={styles.root}
@@ -330,13 +344,22 @@ export default function ShareSheetScreen() {
               )}
             </View>
 
-            <TouchableOpacity
-              style={styles.doneButton}
-              onPress={handleClose}
-              activeOpacity={0.8}
-            >
-              <Text style={styles.doneButtonText}>Done</Text>
-            </TouchableOpacity>
+            <View style={styles.buttonRow}>
+              <TouchableOpacity
+                style={styles.shareButton}
+                onPress={handleShare}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.shareButtonText}>Share</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.doneButton}
+                onPress={handleClose}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.doneButtonText}>Done</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         ) : (
           /* ---- Configure share settings ---- */
