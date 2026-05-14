@@ -27,8 +27,31 @@ final class NativeEncryptedBackupUploader {
 
   private let session: URLSession
 
+  /// Cached master key handle — loaded once per batch to avoid repeated
+  /// keychain access (and Face ID prompts when biometric policy is active).
+  private var cachedMasterKey: MasterKeyHandle?
+  private let keyLock = NSLock()
+
   init(session: URLSession = .shared) {
     self.session = session
+  }
+
+  /// Load the master key once and cache it for the duration of the batch.
+  /// Thread-safe via keyLock.
+  private func getMasterKey() throws -> MasterKeyHandle {
+    keyLock.lock()
+    defer { keyLock.unlock() }
+    if let cached = cachedMasterKey { return cached }
+    let key = try BeebeebCryptoBridge.requireMasterKey()
+    cachedMasterKey = key
+    return key
+  }
+
+  /// Clear the cached master key (e.g. on sign-out).
+  func clearCachedKey() {
+    keyLock.lock()
+    defer { keyLock.unlock() }
+    cachedMasterKey = nil
   }
 
   func upload(
@@ -43,7 +66,7 @@ final class NativeEncryptedBackupUploader {
     DispatchQueue.global(qos: .utility).async {
       do {
         let fileId = UUID().uuidString.lowercased()
-        let masterKey = try BeebeebCryptoBridge.requireMasterKey()
+        let masterKey = try self.getMasterKey()
         let nameEncrypted = try masterKey.encryptName(fileId: fileId, filename: fileName, mimeType: mimeType)
         let fileKey = try masterKey.deriveFileKey(fileId: Data(fileId.utf8))
         let chunkCount = max(1, Int(ceil(Double(plaintext.count) / Double(nativeBackupChunkSize))))

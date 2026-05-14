@@ -14,6 +14,7 @@ import { Platform } from 'react-native';
 import type { EncryptedData } from '../../modules/beebeeb-crypto';
 import { deleteFile, listFiles, type FileEntry } from '../lib/api';
 import { encryptedUpload, generateFileId } from '../lib/encrypted-upload';
+import { encryptedMetadataPayloadToBytes } from '../lib/encrypted-metadata';
 import { ensureBackupFolders } from './BackupService';
 
 const PRODID = '-//Beebeeb//Mobile Backup//EN';
@@ -25,6 +26,7 @@ const LAST_FILE_ID_KEY_PREFIX = 'beebeeb_calendar_file_id:';
 export interface BackupEncryptors {
   encryptChunkFn: (fileId: string, plaintext: Uint8Array) => Promise<EncryptedData>;
   encryptMetadataFn: (fileId: string, metadata: string) => Promise<EncryptedData>;
+  decryptMetadataFn: (fileId: string, nonce: Uint8Array, ciphertext: Uint8Array) => Promise<string>;
 }
 
 export interface CalendarExportResult {
@@ -185,9 +187,33 @@ async function setLastHash(calendarId: string, hash: string): Promise<void> {
 // Public API
 // ---------------------------------------------------------------------------
 
-async function findFile(parentId: string, name: string): Promise<FileEntry | null> {
+async function decryptFileName(
+  entry: FileEntry,
+  decryptMetadataFn: BackupEncryptors['decryptMetadataFn'],
+): Promise<string | null> {
+  const parsed = encryptedMetadataPayloadToBytes(entry.name_encrypted);
+  if (!parsed) return entry.name_encrypted; // legacy plaintext
+  try {
+    const json = await decryptMetadataFn(entry.id, parsed.nonce, parsed.ciphertext);
+    const metadata = JSON.parse(json) as { name?: string };
+    return metadata.name ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function findFile(
+  parentId: string,
+  name: string,
+  decryptMetadataFn: BackupEncryptors['decryptMetadataFn'],
+): Promise<FileEntry | null> {
   const children = await listFiles(parentId);
-  return children.find((f) => !f.is_folder && f.name_encrypted === name) ?? null;
+  for (const f of children) {
+    if (f.is_folder) continue;
+    const decrypted = await decryptFileName(f, decryptMetadataFn);
+    if (decrypted === name) return f;
+  }
+  return null;
 }
 
 export async function exportCalendars(encryption: BackupEncryptors): Promise<CalendarExportResult> {
@@ -231,7 +257,7 @@ export async function exportCalendars(encryption: BackupEncryptors): Promise<Cal
       await deleteFile(previousFileId).catch(() => {});
     }
 
-    const existing = await findFile(categoryFolderId, filename);
+    const existing = await findFile(categoryFolderId, filename, encryption.decryptMetadataFn);
     if (existing) {
       await deleteFile(existing.id);
     }

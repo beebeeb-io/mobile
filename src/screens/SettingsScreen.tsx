@@ -1124,6 +1124,7 @@ export default function SettingsScreen() {
       const result = await exportContacts({
         encryptChunkFn: crypto.encryptChunk,
         encryptMetadataFn: crypto.encryptMetadata,
+        decryptMetadataFn: crypto.decryptMetadata,
       });
       const timestamp = new Date().toISOString();
       await updateBackupCategoryState('contacts', {
@@ -1143,7 +1144,7 @@ export default function SettingsScreen() {
     } finally {
       setBackingUpContacts(false);
     }
-  }, [crypto.encryptChunk, crypto.encryptMetadata, refreshBackupStats, showToast]);
+  }, [crypto.encryptChunk, crypto.encryptMetadata, crypto.decryptMetadata, refreshBackupStats, showToast]);
 
   const handleBackupCalendarNow = useCallback(async () => {
     const granted = await ensureCalendarPermission();
@@ -1169,6 +1170,7 @@ export default function SettingsScreen() {
       const result = await exportCalendars({
         encryptChunkFn: crypto.encryptChunk,
         encryptMetadataFn: crypto.encryptMetadata,
+        decryptMetadataFn: crypto.decryptMetadata,
       });
       const timestamp = new Date().toISOString();
       await updateBackupCategoryState('calendar', {
@@ -1188,7 +1190,7 @@ export default function SettingsScreen() {
     } finally {
       setBackingUpCalendar(false);
     }
-  }, [crypto.encryptChunk, crypto.encryptMetadata, refreshBackupStats, showToast]);
+  }, [crypto.encryptChunk, crypto.encryptMetadata, crypto.decryptMetadata, refreshBackupStats, showToast]);
 
   const handleRegionChange = useCallback(async (poolName: string) => {
     const r = REGIONS.find(x => x.poolName === poolName);

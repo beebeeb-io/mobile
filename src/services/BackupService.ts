@@ -37,6 +37,9 @@ import {
   uploadFile,
   type FileEntry,
 } from '../lib/api';
+import type { EncryptedData } from '../../modules/beebeeb-crypto';
+import { encryptedMetadataToJson, encryptedMetadataPayloadToBytes } from '../lib/encrypted-metadata';
+import { generateFileId } from '../lib/encrypted-upload';
 import type { BackupEncryptors as ContactsBackupEncryptors } from './ContactsExporter';
 
 // ---------------------------------------------------------------------------
@@ -92,6 +95,33 @@ export interface BackupProgress {
 }
 
 export type BackupEncryptors = ContactsBackupEncryptors;
+
+/** Encryption functions needed by the backup folder machinery. */
+export interface BackupEncryption {
+  encryptMetadataFn: (fileId: string, metadata: string) => Promise<EncryptedData>;
+  decryptMetadataFn: (fileId: string, nonce: Uint8Array, ciphertext: Uint8Array) => Promise<string>;
+}
+
+// Module-level encryption handle set by callers via setBackupEncryption().
+// This avoids threading encryption through every internal helper while still
+// ensuring all folder/file operations go through the crypto context.
+let _encryption: BackupEncryption | null = null;
+
+/**
+ * Register the crypto functions that BackupService uses to encrypt/decrypt
+ * folder and file names. Must be called once after the vault is unlocked and
+ * before any ensureBackupFolders / manifest operations.
+ */
+export function setBackupEncryption(enc: BackupEncryption | null): void {
+  _encryption = enc;
+}
+
+function requireEncryption(): BackupEncryption {
+  if (!_encryption) {
+    throw new Error('[BackupService] Encryption not configured — call setBackupEncryption() after vault unlock');
+  }
+  return _encryption;
+}
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -222,30 +252,81 @@ function mergeLegacyMigration(
 }
 
 // ---------------------------------------------------------------------------
+// Name encryption helpers
+// ---------------------------------------------------------------------------
+
+/** Encrypt a folder name into the canonical JSON envelope the server expects. */
+async function encryptFolderName(folderId: string, name: string): Promise<string> {
+  const enc = requireEncryption();
+  const metadataPlain = JSON.stringify({ name, mime_type: null });
+  const encrypted = await enc.encryptMetadataFn(folderId, metadataPlain);
+  return encryptedMetadataToJson(encrypted);
+}
+
+/** Encrypt a file name into the canonical JSON envelope the server expects. */
+async function encryptFileName(fileId: string, name: string, mimeType?: string): Promise<string> {
+  const enc = requireEncryption();
+  const metadataPlain = JSON.stringify({ name, mime_type: mimeType ?? null });
+  const encrypted = await enc.encryptMetadataFn(fileId, metadataPlain);
+  return encryptedMetadataToJson(encrypted);
+}
+
+/**
+ * Decrypt a name_encrypted value to its plaintext name. Returns null if the
+ * value is not a valid encrypted envelope (legacy plaintext).
+ */
+async function decryptName(entry: FileEntry): Promise<string | null> {
+  const enc = requireEncryption();
+  const parsed = encryptedMetadataPayloadToBytes(entry.name_encrypted);
+  if (!parsed) {
+    // Legacy plaintext name — return as-is for backward compat during migration
+    return entry.name_encrypted;
+  }
+  try {
+    const metadataJson = await enc.decryptMetadataFn(entry.id, parsed.nonce, parsed.ciphertext);
+    const metadata = JSON.parse(metadataJson) as { name?: string };
+    return metadata.name ?? null;
+  } catch {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Folder management
 // ---------------------------------------------------------------------------
 
 async function findChildFolder(parentId: string | undefined, name: string): Promise<FileEntry | null> {
   const children = await listFiles(parentId);
-  return children.find((f) => f.is_folder && f.name_encrypted === name) ?? null;
+  for (const f of children) {
+    if (!f.is_folder) continue;
+    const decrypted = await decryptName(f);
+    if (decrypted === name) return f;
+  }
+  return null;
 }
 
 async function ensureFolder(parentId: string | undefined, name: string): Promise<string> {
   const existing = await findChildFolder(parentId, name);
   if (existing) return existing.id;
-  const created = await createFolder(name, parentId);
+  const folderId = generateFileId();
+  const nameEncrypted = await encryptFolderName(folderId, name);
+  const created = await createFolder(nameEncrypted, parentId, folderId);
   return created.id;
 }
 
-async function moveLegacyItem(item: FileEntry, parentId: string, name?: string): Promise<boolean> {
+async function moveLegacyItem(item: FileEntry, parentId: string, newPlaintextName?: string): Promise<boolean> {
   try {
     await moveFile(item.id, parentId);
-    if (name && item.name_encrypted !== name) {
-      await renameFile(item.id, name);
+    if (newPlaintextName) {
+      const decrypted = await decryptName(item);
+      if (decrypted !== newPlaintextName) {
+        const nameEncrypted = await encryptFileName(item.id, newPlaintextName);
+        await renameFile(item.id, nameEncrypted);
+      }
     }
     return true;
   } catch (err) {
-    console.warn('[BackupService] legacy backup migration failed:', item.name_encrypted, err);
+    console.warn('[BackupService] legacy backup migration failed:', err);
     return false;
   }
 }
@@ -270,22 +351,23 @@ async function migrateLegacyRootBackups(
     return cache;
   }
 
-  const legacyPhotosFolder = rootChildren.find((f) => f.is_folder && f.name_encrypted === 'Photos');
-  if (legacyPhotosFolder && await moveLegacyItem(legacyPhotosFolder, categoryIds.camera_roll, 'Photos (legacy)')) {
-    summary.camera_roll += 1;
-  }
-
-  const legacyContacts = rootChildren.filter((f) => !f.is_folder && f.name_encrypted === 'contacts.vcf');
-  for (const item of legacyContacts) {
-    if (await moveLegacyItem(item, categoryIds.contacts, 'contacts.legacy.vcf')) {
-      summary.contacts += 1;
+  // Decrypt names for comparison — legacy items may have plaintext or encrypted names
+  for (const f of rootChildren) {
+    const decrypted = await decryptName(f);
+    if (f.is_folder && decrypted === 'Photos') {
+      if (await moveLegacyItem(f, categoryIds.camera_roll, 'Photos (legacy)')) {
+        summary.camera_roll += 1;
+      }
     }
-  }
-
-  const legacyCalendars = rootChildren.filter((f) => !f.is_folder && f.name_encrypted === 'calendar.ics');
-  for (const item of legacyCalendars) {
-    if (await moveLegacyItem(item, categoryIds.calendar, 'calendar.legacy.ics')) {
-      summary.calendar += 1;
+    if (!f.is_folder && decrypted === 'contacts.vcf') {
+      if (await moveLegacyItem(f, categoryIds.contacts, 'contacts.legacy.vcf')) {
+        summary.contacts += 1;
+      }
+    }
+    if (!f.is_folder && decrypted === 'calendar.ics') {
+      if (await moveLegacyItem(f, categoryIds.calendar, 'calendar.legacy.ics')) {
+        summary.calendar += 1;
+      }
     }
   }
 
@@ -384,7 +466,12 @@ function buildDefaultManifest(info: DeviceInfo): DeviceManifest {
 
 async function findManifestFile(deviceFolderId: string): Promise<FileEntry | null> {
   const children = await listFiles(deviceFolderId);
-  return children.find((f) => !f.is_folder && f.name_encrypted === MANIFEST_FILENAME) ?? null;
+  for (const f of children) {
+    if (f.is_folder) continue;
+    const decrypted = await decryptName(f);
+    if (decrypted === MANIFEST_FILENAME) return f;
+  }
+  return null;
 }
 
 async function ensureDeviceFolderId(): Promise<string> {
@@ -419,11 +506,14 @@ async function writeManifest(manifest: DeviceManifest, deviceFolderId: string): 
     await deleteFile(existing.id);
   }
 
+  const fileId = generateFileId();
+  const nameEncrypted = await encryptFileName(fileId, MANIFEST_FILENAME, 'application/json');
+
   await uploadFile(
     {
-      name_encrypted: MANIFEST_FILENAME,
+      name_encrypted: nameEncrypted,
       parent_id: deviceFolderId,
-      mime_type: 'application/json',
+      mime_type: null as unknown as string,
       size_bytes: blob.size,
     },
     blob,
