@@ -1,4 +1,4 @@
-import React, { createContext, useCallback, useContext, useRef, useState } from 'react'
+import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
 import * as Device from 'expo-device'
 import * as FileSystem from 'expo-file-system'
 import * as SecureStore from 'expo-secure-store'
@@ -16,6 +16,7 @@ import {
   storeKeyInKeychain,
 } from '../../modules/beebeeb-crypto'
 import type { EncryptedData } from '../../modules/beebeeb-crypto'
+import { setBackupEncryption } from '../services/BackupService'
 
 const MASTER_KEY_LABEL = 'io.beebeeb.master-key'
 const MASTER_KEY_CHECK_LABEL = 'io.beebeeb.master-key-check'
@@ -277,6 +278,19 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
   )
+
+  // Keep BackupService in sync with vault state so folder creation/lookup
+  // always encrypts/decrypts names through the crypto context.
+  useEffect(() => {
+    if (isUnlocked) {
+      setBackupEncryption({
+        encryptMetadataFn: encryptMetadataFn,
+        decryptMetadataFn: decryptMetadataFn,
+      })
+    } else {
+      setBackupEncryption(null)
+    }
+  }, [isUnlocked, encryptMetadataFn, decryptMetadataFn])
 
   return (
     <CryptoContext.Provider
