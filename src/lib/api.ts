@@ -602,6 +602,7 @@ export async function uploadEncryptedChunked(params: {
   v2InitNameEncrypted?: string  // Existing encrypted name for replacement uploads
   parentId?: string
   mimeType?: string
+  isMedia?: boolean
   plaintextSizeBytes: number
   resumeKey?: string
   onProgress?: (p: UploadProgress) => void
@@ -614,6 +615,7 @@ export async function uploadEncryptedChunked(params: {
     v2InitNameEncrypted,
     parentId,
     mimeType,
+    isMedia,
     plaintextSizeBytes,
     resumeKey,
     onProgress,
@@ -650,7 +652,7 @@ export async function uploadEncryptedChunked(params: {
       fileName: initialNameEncrypted,
       fileSizeBytes: plaintextSizeBytes,
       parentId,
-      mimeType,
+      isMedia,
     })
     if (v2Init) {
       protocol = 'v2'
@@ -692,7 +694,9 @@ export async function uploadEncryptedChunked(params: {
         file_id: fileId,
         name_encrypted: initialNameEncrypted,
         parent_id: parentId ?? null,
-        mime_type: mimeType ?? null,
+        // MIME type is encrypted inside name_encrypted — never sent in plaintext
+        mime_type: null,
+        is_media: isMedia ?? false,
         // Server expects PLAINTEXT size — `sizeBytes` (= plaintext + chunkCount*28)
         // is only used for progress reporting (total encrypted bytes in flight).
         size_bytes: plaintextSizeBytes,
@@ -805,7 +809,7 @@ async function initUploadV2(params: {
   fileName: string;
   fileSizeBytes: number;
   parentId?: string;
-  mimeType?: string;
+  isMedia?: boolean;
 }): Promise<UploadV2InitResponse | null> {
   const res = await fetch(`${BASE_URL}/api/v1/uploads/init`, {
     method: 'POST',
@@ -814,7 +818,9 @@ async function initUploadV2(params: {
       file_name: params.fileName,
       file_size_bytes: params.fileSizeBytes,
       parent_id: params.parentId ?? null,
-      mime_type: params.mimeType ?? null,
+      // MIME type is encrypted inside name — never sent in plaintext
+      mime_type: null,
+      is_media: params.isMedia ?? false,
       profile: 'mobile',
       chunk_size_bytes: CHUNK_SIZE,
       chunk_count: Math.max(1, Math.ceil(params.fileSizeBytes / CHUNK_SIZE)),
