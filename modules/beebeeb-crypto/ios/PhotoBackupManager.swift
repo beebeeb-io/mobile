@@ -316,9 +316,9 @@ final class PhotoBackupManager: NSObject {
         return
       }
 
-      let mimeType = self.mimeType(for: uti ?? "public.jpeg")
-      let ext = self.fileExtension(for: uti ?? "public.jpeg")
-      let fileName = "\(UUID().uuidString).\(ext)"
+      let fallbackExt = self.fileExtension(for: uti ?? "public.jpeg")
+      let fileName = "\(UUID().uuidString).\(fallbackExt)"
+      let mimeType = guessMimeType(filename: fileName) ?? self.mimeType(for: uti ?? "public.jpeg")
 
       self.uploadFile(
         localIdentifier: asset.localIdentifier,

@@ -57,9 +57,9 @@ class FileProviderCrypto {
     // MARK: - Filename Encryption/Decryption
 
     func decryptFilename(fileId: String, encrypted: String) -> String? {
+        guard let mk = masterKeyHandle else { return nil }
         do {
-            let metadata = try decryptMetadataString(fileId: fileId, encrypted: encrypted)
-            return displayName(fromMetadata: metadata) ?? metadata
+            return try mk.decryptName(fileId: fileId, nameEncrypted: encrypted)
         } catch {
             logger.error("decryptFilename failed for \(fileId): \(error.localizedDescription)")
             return nil
@@ -67,9 +67,8 @@ class FileProviderCrypto {
     }
 
     func encryptFilename(fileId: String, name: String, mimeType: String?) throws -> String {
-        let metadata = metadataJSON(name: name, mimeType: mimeType)
-        let encrypted = try fileKey(for: fileId).encryptMetadata(metadata: metadata)
-        return try encryptedPayloadJSON(encrypted)
+        guard let mk = masterKeyHandle else { throw FileProviderCryptoError.noMasterKey }
+        return try mk.encryptName(fileId: fileId, filename: name, mimeType: mimeType)
     }
 
     // MARK: - File Content Encryption/Decryption
@@ -156,87 +155,6 @@ class FileProviderCrypto {
             throw FileProviderCryptoError.noMasterKey
         }
         return try mk.deriveFileKey(fileId: Data(fileId.utf8))
-    }
-
-    private func decryptMetadataString(fileId: String, encrypted: String) throws -> String {
-        guard
-            let jsonData = encrypted.data(using: .utf8),
-            let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
-            let nonce = encryptedPayloadBytes(from: json["nonce"] ?? json["n"]),
-            let ciphertext = encryptedPayloadBytes(from: json["ciphertext"] ?? json["c"])
-        else {
-            return encrypted
-        }
-
-        return try fileKey(for: fileId).decryptMetadata(nonce: nonce, ciphertext: ciphertext)
-    }
-
-    private func displayName(fromMetadata metadata: String) -> String? {
-        guard
-            let data = metadata.data(using: .utf8),
-            let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-            let name = object["name"] as? String,
-            !name.isEmpty
-        else {
-            return nil
-        }
-        return name
-    }
-
-    private func metadataJSON(name: String, mimeType: String?) -> String {
-        let object: [String: Any] = [
-            "name": name,
-            "mime_type": mimeType as Any? ?? NSNull(),
-        ]
-        guard
-            let data = try? JSONSerialization.data(withJSONObject: object),
-            let value = String(data: data, encoding: .utf8)
-        else {
-            return name
-        }
-        return value
-    }
-
-    private func encryptedPayloadJSON(_ encrypted: EncryptedData) throws -> String {
-        let payload: [String: Any] = [
-            "cipher_suite": encrypted.cipherSuite,
-            "nonce": encrypted.nonce.map(Int.init),
-            "ciphertext": encrypted.ciphertext.map(Int.init),
-        ]
-        let data = try JSONSerialization.data(withJSONObject: payload)
-        guard let value = String(data: data, encoding: .utf8) else {
-            throw FileProviderCryptoError.invalidMetadataFormat
-        }
-        return value
-    }
-
-    private func encryptedPayloadBytes(from value: Any?) -> Data? {
-        if let encoded = value as? String {
-            return Data(base64Encoded: encoded)
-        }
-
-        guard let bytes = value as? [Any] else {
-            return nil
-        }
-
-        var data = Data()
-        data.reserveCapacity(bytes.count)
-        for byte in bytes {
-            let value: Int?
-            if let intValue = byte as? Int {
-                value = intValue
-            } else if let number = byte as? NSNumber {
-                value = number.intValue
-            } else {
-                value = nil
-            }
-
-            guard let value, (0...255).contains(value) else {
-                return nil
-            }
-            data.append(UInt8(value))
-        }
-        return data
     }
 
     private func readWrappedMasterKey(label: String) throws -> Data? {

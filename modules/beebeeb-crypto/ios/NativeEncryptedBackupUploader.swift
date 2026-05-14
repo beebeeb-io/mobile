@@ -44,10 +44,8 @@ final class NativeEncryptedBackupUploader {
       do {
         let fileId = UUID().uuidString.lowercased()
         let masterKey = try BeebeebCryptoBridge.requireMasterKey()
+        let nameEncrypted = try masterKey.encryptName(fileId: fileId, filename: fileName, mimeType: mimeType)
         let fileKey = try masterKey.deriveFileKey(fileId: Data(fileId.utf8))
-        let metadataPlain = try self.metadataJSON(fileName: fileName, mimeType: mimeType)
-        let encryptedMetadata = try fileKey.encryptMetadata(metadata: metadataPlain)
-        let nameEncrypted = try self.encryptedPayloadJSON(encryptedMetadata)
         let chunkCount = max(1, Int(ceil(Double(plaintext.count) / Double(nativeBackupChunkSize))))
 
         try self.initUpload(
@@ -99,29 +97,6 @@ final class NativeEncryptedBackupUploader {
     }
   }
 
-  private func metadataJSON(fileName: String, mimeType: String) throws -> String {
-    let metadata: [String: Any] = ["name": fileName, "mime_type": mimeType]
-    guard JSONSerialization.isValidJSONObject(metadata),
-          let data = try? JSONSerialization.data(withJSONObject: metadata, options: []),
-          let json = String(data: data, encoding: .utf8) else {
-      throw NativeEncryptedBackupUploadError.jsonEncoding
-    }
-    return json
-  }
-
-  private func encryptedPayloadJSON(_ encrypted: EncryptedData) throws -> String {
-    let payload: [String: Any] = [
-      "cipher_suite": encrypted.cipherSuite,
-      "nonce": encrypted.nonce.map(Int.init),
-      "ciphertext": encrypted.ciphertext.map(Int.init),
-    ]
-    guard let data = try? JSONSerialization.data(withJSONObject: payload, options: []),
-          let json = String(data: data, encoding: .utf8) else {
-      throw NativeEncryptedBackupUploadError.jsonEncoding
-    }
-    return json
-  }
-
   private func initUpload(
     fileId: String,
     nameEncrypted: String,
@@ -137,11 +112,13 @@ final class NativeEncryptedBackupUploader {
       throw NativeEncryptedBackupUploadError.invalidBaseURL
     }
 
+    let isMediaFlag = isMedia(mimeType: mimeType)
     let body: [String: Any] = [
       "file_id": fileId,
       "name_encrypted": nameEncrypted,
       "parent_id": parentFolderId as Any? ?? NSNull(),
-      "mime_type": mimeType,
+      "mime_type": NSNull(),
+      "is_media": isMediaFlag,
       "size_bytes": plaintextSize,
       "chunk_count": chunkCount,
     ]
