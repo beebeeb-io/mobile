@@ -565,12 +565,20 @@ export default function App() {
     (async () => {
       const tokenExists = await hasToken();
       if (tokenExists) {
-        // Validate the token by calling /auth/me
+        // Validate the token — 10s timeout so the app doesn't hang on the
+        // loading screen when the server is unreachable.
         try {
-          const me = await getMe();
+          const me = await Promise.race([
+            getMe(),
+            new Promise<never>((_, reject) =>
+              setTimeout(() => reject(new Error('timeout')), 10_000)
+            ),
+          ]);
           setUser(me);
         } catch {
-          await clearToken();
+          // Token invalid, expired, or server unreachable — fall through.
+          // Don't clear the token on timeout so the session resumes when
+          // connectivity returns.
         }
       }
       // Check onboarding state. A fresh install with no token should not show
