@@ -419,6 +419,94 @@ fileprivate final class UniffiHandleMap<T>: @unchecked Sendable {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterUInt8: FfiConverterPrimitive {
+    typealias FfiType = UInt8
+    typealias SwiftType = UInt8
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> UInt8 {
+        return try lift(readInt(&buf))
+    }
+
+    public static func write(_ value: UInt8, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterUInt32: FfiConverterPrimitive {
+    typealias FfiType = UInt32
+    typealias SwiftType = UInt32
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> UInt32 {
+        return try lift(readInt(&buf))
+    }
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterUInt64: FfiConverterPrimitive {
+    typealias FfiType = UInt64
+    typealias SwiftType = UInt64
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> UInt64 {
+        return try lift(readInt(&buf))
+    }
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterFloat: FfiConverterPrimitive {
+    typealias FfiType = Float
+    typealias SwiftType = Float
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Float {
+        return try lift(readFloat(&buf))
+    }
+
+    public static func write(_ value: Float, into buf: inout [UInt8]) {
+        writeFloat(&buf, lower(value))
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterBool : FfiConverter {
+    typealias FfiType = Int8
+    typealias SwiftType = Bool
+
+    public static func lift(_ value: Int8) throws -> Bool {
+        return value != 0
+    }
+
+    public static func lower(_ value: Bool) -> Int8 {
+        return value ? 1 : 0
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Bool {
+        return try lift(readInt(&buf))
+    }
+
+    public static func write(_ value: Bool, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterString: FfiConverter {
     typealias SwiftType = String
     typealias FfiType = RustBuffer
@@ -474,6 +562,183 @@ fileprivate struct FfiConverterData: FfiConverterRustBuffer {
         writeBytes(&buf, value)
     }
 }
+
+
+
+
+/**
+ * Stateful decoder handle.
+ */
+public protocol ConstellationDecoderHandleProtocol: AnyObject, Sendable {
+    
+    func framesIngested()  -> UInt32
+    
+    /**
+     * Feed one observed frame. Returns the recovered payload when the
+     * codeword is complete, otherwise `None`.
+     */
+    func ingestFrame(observations: [ObservedNodeDto])  -> ConstellationPayloadDto?
+    
+    func progress()  -> Float
+    
+    func reset() 
+    
+    func shardsCollected()  -> UInt32
+    
+}
+/**
+ * Stateful decoder handle.
+ */
+open class ConstellationDecoderHandle: ConstellationDecoderHandleProtocol, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_beebeeb_uniffi_fn_clone_constellationdecoderhandle(self.handle, $0) }
+    }
+public convenience init() {
+    let handle =
+        try! rustCall() {
+    uniffi_beebeeb_uniffi_fn_constructor_constellationdecoderhandle_new($0
+    )
+}
+    self.init(unsafeFromHandle: handle)
+}
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_beebeeb_uniffi_fn_free_constellationdecoderhandle(handle, $0) }
+    }
+
+    
+
+    
+open func framesIngested() -> UInt32  {
+    return try!  FfiConverterUInt32.lift(try! rustCall() {
+    uniffi_beebeeb_uniffi_fn_method_constellationdecoderhandle_frames_ingested(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+    
+    /**
+     * Feed one observed frame. Returns the recovered payload when the
+     * codeword is complete, otherwise `None`.
+     */
+open func ingestFrame(observations: [ObservedNodeDto]) -> ConstellationPayloadDto?  {
+    return try!  FfiConverterOptionTypeConstellationPayloadDto.lift(try! rustCall() {
+    uniffi_beebeeb_uniffi_fn_method_constellationdecoderhandle_ingest_frame(
+            self.uniffiCloneHandle(),
+        FfiConverterSequenceTypeObservedNodeDto.lower(observations),$0
+    )
+})
+}
+    
+open func progress() -> Float  {
+    return try!  FfiConverterFloat.lift(try! rustCall() {
+    uniffi_beebeeb_uniffi_fn_method_constellationdecoderhandle_progress(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+    
+open func reset()  {try! rustCall() {
+    uniffi_beebeeb_uniffi_fn_method_constellationdecoderhandle_reset(
+            self.uniffiCloneHandle(),$0
+    )
+}
+}
+    
+open func shardsCollected() -> UInt32  {
+    return try!  FfiConverterUInt32.lift(try! rustCall() {
+    uniffi_beebeeb_uniffi_fn_method_constellationdecoderhandle_shards_collected(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+    
+
+    
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeConstellationDecoderHandle: FfiConverter {
+    typealias FfiType = UInt64
+    typealias SwiftType = ConstellationDecoderHandle
+
+    public static func lift(_ handle: UInt64) throws -> ConstellationDecoderHandle {
+        return ConstellationDecoderHandle(unsafeFromHandle: handle)
+    }
+
+    public static func lower(_ value: ConstellationDecoderHandle) -> UInt64 {
+        return value.uniffiCloneHandle()
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ConstellationDecoderHandle {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: ConstellationDecoderHandle, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeConstellationDecoderHandle_lift(_ handle: UInt64) throws -> ConstellationDecoderHandle {
+    return try FfiConverterTypeConstellationDecoderHandle.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeConstellationDecoderHandle_lower(_ value: ConstellationDecoderHandle) -> UInt64 {
+    return FfiConverterTypeConstellationDecoderHandle.lower(value)
+}
+
+
 
 
 
@@ -648,6 +913,16 @@ public protocol MasterKeyHandleProtocol: AnyObject, Sendable {
     func computeRecoveryCheck() throws  -> Data
     
     /**
+     * Decrypt a `name_encrypted` envelope using the handle's master key.
+     */
+    func decryptName(fileId: String, nameEncrypted: String) throws  -> String
+    
+    /**
+     * Decrypt a `name_encrypted` envelope and return both filename and MIME type.
+     */
+    func decryptNameWithMime(fileId: String, nameEncrypted: String) throws  -> DecryptedNameWithMime
+    
+    /**
      * Derive a FileKeyHandle for the given file ID.
      */
     func deriveFileKey(fileId: Data) throws  -> FileKeyHandle
@@ -656,6 +931,11 @@ public protocol MasterKeyHandleProtocol: AnyObject, Sendable {
      * Derive the X25519 secret scalar from the master key. Returns 32 bytes.
      */
     func deriveX25519Private() throws  -> Data
+    
+    /**
+     * Encrypt a filename + optional MIME type using the handle's master key.
+     */
+    func encryptName(fileId: String, filename: String, mimeType: String?) throws  -> String
     
     /**
      * Export the raw 32-byte key for writing to the OS keychain.
@@ -755,6 +1035,32 @@ open func computeRecoveryCheck()throws  -> Data  {
 }
     
     /**
+     * Decrypt a `name_encrypted` envelope using the handle's master key.
+     */
+open func decryptName(fileId: String, nameEncrypted: String)throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
+    uniffi_beebeeb_uniffi_fn_method_masterkeyhandle_decrypt_name(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(fileId),
+        FfiConverterString.lower(nameEncrypted),$0
+    )
+})
+}
+    
+    /**
+     * Decrypt a `name_encrypted` envelope and return both filename and MIME type.
+     */
+open func decryptNameWithMime(fileId: String, nameEncrypted: String)throws  -> DecryptedNameWithMime  {
+    return try  FfiConverterTypeDecryptedNameWithMime_lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
+    uniffi_beebeeb_uniffi_fn_method_masterkeyhandle_decrypt_name_with_mime(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(fileId),
+        FfiConverterString.lower(nameEncrypted),$0
+    )
+})
+}
+    
+    /**
      * Derive a FileKeyHandle for the given file ID.
      */
 open func deriveFileKey(fileId: Data)throws  -> FileKeyHandle  {
@@ -773,6 +1079,20 @@ open func deriveX25519Private()throws  -> Data  {
     return try  FfiConverterData.lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
     uniffi_beebeeb_uniffi_fn_method_masterkeyhandle_derive_x25519_private(
             self.uniffiCloneHandle(),$0
+    )
+})
+}
+    
+    /**
+     * Encrypt a filename + optional MIME type using the handle's master key.
+     */
+open func encryptName(fileId: String, filename: String, mimeType: String?)throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
+    uniffi_beebeeb_uniffi_fn_method_masterkeyhandle_encrypt_name(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(fileId),
+        FfiConverterString.lower(filename),
+        FfiConverterOptionString.lower(mimeType),$0
     )
 })
 }
@@ -835,6 +1155,385 @@ public func FfiConverterTypeMasterKeyHandle_lower(_ value: MasterKeyHandle) -> U
 }
 
 
+
+
+public struct ConstellationEdgeDto: Equatable, Hashable {
+    public var fromIdx: UInt32
+    public var toIdx: UInt32
+    public var weight: Float
+    public var flowSpeed: Float
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(fromIdx: UInt32, toIdx: UInt32, weight: Float, flowSpeed: Float) {
+        self.fromIdx = fromIdx
+        self.toIdx = toIdx
+        self.weight = weight
+        self.flowSpeed = flowSpeed
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension ConstellationEdgeDto: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeConstellationEdgeDto: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ConstellationEdgeDto {
+        return
+            try ConstellationEdgeDto(
+                fromIdx: FfiConverterUInt32.read(from: &buf), 
+                toIdx: FfiConverterUInt32.read(from: &buf), 
+                weight: FfiConverterFloat.read(from: &buf), 
+                flowSpeed: FfiConverterFloat.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: ConstellationEdgeDto, into buf: inout [UInt8]) {
+        FfiConverterUInt32.write(value.fromIdx, into: &buf)
+        FfiConverterUInt32.write(value.toIdx, into: &buf)
+        FfiConverterFloat.write(value.weight, into: &buf)
+        FfiConverterFloat.write(value.flowSpeed, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeConstellationEdgeDto_lift(_ buf: RustBuffer) throws -> ConstellationEdgeDto {
+    return try FfiConverterTypeConstellationEdgeDto.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeConstellationEdgeDto_lower(_ value: ConstellationEdgeDto) -> RustBuffer {
+    return FfiConverterTypeConstellationEdgeDto.lower(value)
+}
+
+
+public struct ConstellationFrameDto: Equatable, Hashable {
+    public var frameIndex: UInt32
+    public var seed: UInt64
+    public var nodes: [ConstellationNodeDto]
+    public var edges: [ConstellationEdgeDto]
+    public var ringPhase: Float
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(frameIndex: UInt32, seed: UInt64, nodes: [ConstellationNodeDto], edges: [ConstellationEdgeDto], ringPhase: Float) {
+        self.frameIndex = frameIndex
+        self.seed = seed
+        self.nodes = nodes
+        self.edges = edges
+        self.ringPhase = ringPhase
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension ConstellationFrameDto: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeConstellationFrameDto: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ConstellationFrameDto {
+        return
+            try ConstellationFrameDto(
+                frameIndex: FfiConverterUInt32.read(from: &buf), 
+                seed: FfiConverterUInt64.read(from: &buf), 
+                nodes: FfiConverterSequenceTypeConstellationNodeDto.read(from: &buf), 
+                edges: FfiConverterSequenceTypeConstellationEdgeDto.read(from: &buf), 
+                ringPhase: FfiConverterFloat.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: ConstellationFrameDto, into buf: inout [UInt8]) {
+        FfiConverterUInt32.write(value.frameIndex, into: &buf)
+        FfiConverterUInt64.write(value.seed, into: &buf)
+        FfiConverterSequenceTypeConstellationNodeDto.write(value.nodes, into: &buf)
+        FfiConverterSequenceTypeConstellationEdgeDto.write(value.edges, into: &buf)
+        FfiConverterFloat.write(value.ringPhase, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeConstellationFrameDto_lift(_ buf: RustBuffer) throws -> ConstellationFrameDto {
+    return try FfiConverterTypeConstellationFrameDto.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeConstellationFrameDto_lower(_ value: ConstellationFrameDto) -> RustBuffer {
+    return FfiConverterTypeConstellationFrameDto.lower(value)
+}
+
+
+public struct ConstellationNodeDto: Equatable, Hashable {
+    public var kind: UInt8
+    public var x: Float
+    public var y: Float
+    public var z: Float
+    public var brightness: Float
+    public var pulsePhase: Float
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(kind: UInt8, x: Float, y: Float, z: Float, brightness: Float, pulsePhase: Float) {
+        self.kind = kind
+        self.x = x
+        self.y = y
+        self.z = z
+        self.brightness = brightness
+        self.pulsePhase = pulsePhase
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension ConstellationNodeDto: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeConstellationNodeDto: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ConstellationNodeDto {
+        return
+            try ConstellationNodeDto(
+                kind: FfiConverterUInt8.read(from: &buf), 
+                x: FfiConverterFloat.read(from: &buf), 
+                y: FfiConverterFloat.read(from: &buf), 
+                z: FfiConverterFloat.read(from: &buf), 
+                brightness: FfiConverterFloat.read(from: &buf), 
+                pulsePhase: FfiConverterFloat.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: ConstellationNodeDto, into buf: inout [UInt8]) {
+        FfiConverterUInt8.write(value.kind, into: &buf)
+        FfiConverterFloat.write(value.x, into: &buf)
+        FfiConverterFloat.write(value.y, into: &buf)
+        FfiConverterFloat.write(value.z, into: &buf)
+        FfiConverterFloat.write(value.brightness, into: &buf)
+        FfiConverterFloat.write(value.pulsePhase, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeConstellationNodeDto_lift(_ buf: RustBuffer) throws -> ConstellationNodeDto {
+    return try FfiConverterTypeConstellationNodeDto.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeConstellationNodeDto_lower(_ value: ConstellationNodeDto) -> RustBuffer {
+    return FfiConverterTypeConstellationNodeDto.lower(value)
+}
+
+
+public struct ConstellationPayloadDto: Equatable, Hashable {
+    public var sessionId: Data
+    public var ephemeralPubkey: Data
+    public var nonce: Data
+    public var expiresAtUnixMs: UInt64
+    public var confirmCodeHash: Data
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(sessionId: Data, ephemeralPubkey: Data, nonce: Data, expiresAtUnixMs: UInt64, confirmCodeHash: Data) {
+        self.sessionId = sessionId
+        self.ephemeralPubkey = ephemeralPubkey
+        self.nonce = nonce
+        self.expiresAtUnixMs = expiresAtUnixMs
+        self.confirmCodeHash = confirmCodeHash
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension ConstellationPayloadDto: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeConstellationPayloadDto: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ConstellationPayloadDto {
+        return
+            try ConstellationPayloadDto(
+                sessionId: FfiConverterData.read(from: &buf), 
+                ephemeralPubkey: FfiConverterData.read(from: &buf), 
+                nonce: FfiConverterData.read(from: &buf), 
+                expiresAtUnixMs: FfiConverterUInt64.read(from: &buf), 
+                confirmCodeHash: FfiConverterData.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: ConstellationPayloadDto, into buf: inout [UInt8]) {
+        FfiConverterData.write(value.sessionId, into: &buf)
+        FfiConverterData.write(value.ephemeralPubkey, into: &buf)
+        FfiConverterData.write(value.nonce, into: &buf)
+        FfiConverterUInt64.write(value.expiresAtUnixMs, into: &buf)
+        FfiConverterData.write(value.confirmCodeHash, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeConstellationPayloadDto_lift(_ buf: RustBuffer) throws -> ConstellationPayloadDto {
+    return try FfiConverterTypeConstellationPayloadDto.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeConstellationPayloadDto_lower(_ value: ConstellationPayloadDto) -> RustBuffer {
+    return FfiConverterTypeConstellationPayloadDto.lower(value)
+}
+
+
+public struct ConstellationSessionInitDto: Equatable, Hashable {
+    public var payload: ConstellationPayloadDto
+    public var confirmCode: String
+    public var ephemeralPrivate: Data
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(payload: ConstellationPayloadDto, confirmCode: String, ephemeralPrivate: Data) {
+        self.payload = payload
+        self.confirmCode = confirmCode
+        self.ephemeralPrivate = ephemeralPrivate
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension ConstellationSessionInitDto: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeConstellationSessionInitDto: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ConstellationSessionInitDto {
+        return
+            try ConstellationSessionInitDto(
+                payload: FfiConverterTypeConstellationPayloadDto.read(from: &buf), 
+                confirmCode: FfiConverterString.read(from: &buf), 
+                ephemeralPrivate: FfiConverterData.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: ConstellationSessionInitDto, into buf: inout [UInt8]) {
+        FfiConverterTypeConstellationPayloadDto.write(value.payload, into: &buf)
+        FfiConverterString.write(value.confirmCode, into: &buf)
+        FfiConverterData.write(value.ephemeralPrivate, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeConstellationSessionInitDto_lift(_ buf: RustBuffer) throws -> ConstellationSessionInitDto {
+    return try FfiConverterTypeConstellationSessionInitDto.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeConstellationSessionInitDto_lower(_ value: ConstellationSessionInitDto) -> RustBuffer {
+    return FfiConverterTypeConstellationSessionInitDto.lower(value)
+}
+
+
+/**
+ * Result of decrypting a name_encrypted blob with MIME type.
+ */
+public struct DecryptedNameWithMime: Equatable, Hashable {
+    public var name: String
+    public var mimeType: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(name: String, mimeType: String?) {
+        self.name = name
+        self.mimeType = mimeType
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension DecryptedNameWithMime: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeDecryptedNameWithMime: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> DecryptedNameWithMime {
+        return
+            try DecryptedNameWithMime(
+                name: FfiConverterString.read(from: &buf), 
+                mimeType: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: DecryptedNameWithMime, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.name, into: &buf)
+        FfiConverterOptionString.write(value.mimeType, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeDecryptedNameWithMime_lift(_ buf: RustBuffer) throws -> DecryptedNameWithMime {
+    return try FfiConverterTypeDecryptedNameWithMime.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeDecryptedNameWithMime_lower(_ value: DecryptedNameWithMime) -> RustBuffer {
+    return FfiConverterTypeDecryptedNameWithMime.lower(value)
+}
 
 
 /**
@@ -949,6 +1648,64 @@ public func FfiConverterTypeMasterKeyResult_lift(_ buf: RustBuffer) throws -> Ma
 #endif
 public func FfiConverterTypeMasterKeyResult_lower(_ value: MasterKeyResult) -> RustBuffer {
     return FfiConverterTypeMasterKeyResult.lower(value)
+}
+
+
+public struct ObservedNodeDto: Equatable, Hashable {
+    public var idx: UInt32
+    public var brightness: Float
+    public var confidence: Float
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(idx: UInt32, brightness: Float, confidence: Float) {
+        self.idx = idx
+        self.brightness = brightness
+        self.confidence = confidence
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension ObservedNodeDto: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeObservedNodeDto: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ObservedNodeDto {
+        return
+            try ObservedNodeDto(
+                idx: FfiConverterUInt32.read(from: &buf), 
+                brightness: FfiConverterFloat.read(from: &buf), 
+                confidence: FfiConverterFloat.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: ObservedNodeDto, into buf: inout [UInt8]) {
+        FfiConverterUInt32.write(value.idx, into: &buf)
+        FfiConverterFloat.write(value.brightness, into: &buf)
+        FfiConverterFloat.write(value.confidence, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeObservedNodeDto_lift(_ buf: RustBuffer) throws -> ObservedNodeDto {
+    return try FfiConverterTypeObservedNodeDto.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeObservedNodeDto_lower(_ value: ObservedNodeDto) -> RustBuffer {
+    return FfiConverterTypeObservedNodeDto.lower(value)
 }
 
 
@@ -1141,6 +1898,9 @@ public enum CryptoError: Swift.Error, Equatable, Hashable, Foundation.LocalizedE
     )
     case Opaque(detail: String
     )
+    case Cancelled
+    case Io(detail: String
+    )
 
     
 
@@ -1184,6 +1944,10 @@ public struct FfiConverterTypeCryptoError: FfiConverterRustBuffer {
         case 6: return .Opaque(
             detail: try FfiConverterString.read(from: &buf)
             )
+        case 7: return .Cancelled
+        case 8: return .Io(
+            detail: try FfiConverterString.read(from: &buf)
+            )
 
          default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -1223,6 +1987,15 @@ public struct FfiConverterTypeCryptoError: FfiConverterRustBuffer {
             writeInt(&buf, Int32(6))
             FfiConverterString.write(detail, into: &buf)
             
+        
+        case .Cancelled:
+            writeInt(&buf, Int32(7))
+        
+        
+        case let .Io(detail):
+            writeInt(&buf, Int32(8))
+            FfiConverterString.write(detail, into: &buf)
+            
         }
     }
 }
@@ -1241,6 +2014,129 @@ public func FfiConverterTypeCryptoError_lift(_ buf: RustBuffer) throws -> Crypto
 public func FfiConverterTypeCryptoError_lower(_ value: CryptoError) -> RustBuffer {
     return FfiConverterTypeCryptoError.lower(value)
 }
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionString: FfiConverterRustBuffer {
+    typealias SwiftType = String?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterString.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterString.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeConstellationPayloadDto: FfiConverterRustBuffer {
+    typealias SwiftType = ConstellationPayloadDto?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeConstellationPayloadDto.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeConstellationPayloadDto.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeConstellationEdgeDto: FfiConverterRustBuffer {
+    typealias SwiftType = [ConstellationEdgeDto]
+
+    public static func write(_ value: [ConstellationEdgeDto], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeConstellationEdgeDto.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [ConstellationEdgeDto] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [ConstellationEdgeDto]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeConstellationEdgeDto.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeConstellationNodeDto: FfiConverterRustBuffer {
+    typealias SwiftType = [ConstellationNodeDto]
+
+    public static func write(_ value: [ConstellationNodeDto], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeConstellationNodeDto.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [ConstellationNodeDto] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [ConstellationNodeDto]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeConstellationNodeDto.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeObservedNodeDto: FfiConverterRustBuffer {
+    typealias SwiftType = [ObservedNodeDto]
+
+    public static func write(_ value: [ObservedNodeDto], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeObservedNodeDto.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [ObservedNodeDto] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [ObservedNodeDto]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeObservedNodeDto.read(from: &buf))
+        }
+        return seq
+    }
+}
 /**
  * Compute a recovery check value from a master key. Returns 32-byte check value.
  * This is stored server-side so we can verify a recovery phrase produces the
@@ -1250,6 +2146,38 @@ public func computeRecoveryCheck(masterKey: Data)throws  -> Data  {
     return try  FfiConverterData.lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
     uniffi_beebeeb_uniffi_fn_func_compute_recovery_check(
         FfiConverterData.lower(masterKey),$0
+    )
+})
+}
+/**
+ * Encode `payload` into the visualisation frame at `frame_index`.
+ */
+public func constellationEncode(payload: ConstellationPayloadDto, frameIndex: UInt32)throws  -> ConstellationFrameDto  {
+    return try  FfiConverterTypeConstellationFrameDto_lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
+    uniffi_beebeeb_uniffi_fn_func_constellation_encode(
+        FfiConverterTypeConstellationPayloadDto_lower(payload),
+        FfiConverterUInt32.lower(frameIndex),$0
+    )
+})
+}
+/**
+ * Generate a fresh pairing session (display side).
+ */
+public func constellationNewSession(expiresInSecs: UInt32) -> ConstellationSessionInitDto  {
+    return try!  FfiConverterTypeConstellationSessionInitDto_lift(try! rustCall() {
+    uniffi_beebeeb_uniffi_fn_func_constellation_new_session(
+        FfiConverterUInt32.lower(expiresInSecs),$0
+    )
+})
+}
+/**
+ * Constant-time verify a 6-digit code against a payload.
+ */
+public func constellationVerifyCode(payload: ConstellationPayloadDto, code: String) -> Bool  {
+    return try!  FfiConverterBool.lift(try! rustCall() {
+    uniffi_beebeeb_uniffi_fn_func_constellation_verify_code(
+        FfiConverterTypeConstellationPayloadDto_lower(payload),
+        FfiConverterString.lower(code),$0
     )
 })
 }
@@ -1274,6 +2202,32 @@ public func decryptMetadata(key: Data, nonce: Data, ciphertext: Data)throws  -> 
         FfiConverterData.lower(key),
         FfiConverterData.lower(nonce),
         FfiConverterData.lower(ciphertext),$0
+    )
+})
+}
+/**
+ * Decrypt a `name_encrypted` JSON envelope back to a plaintext filename.
+ * Handles both new format (`{"name":"...","mime_type":"..."}`) and legacy bare strings.
+ */
+public func decryptName(masterKey: Data, fileId: String, nameEncrypted: String)throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
+    uniffi_beebeeb_uniffi_fn_func_decrypt_name(
+        FfiConverterData.lower(masterKey),
+        FfiConverterString.lower(fileId),
+        FfiConverterString.lower(nameEncrypted),$0
+    )
+})
+}
+/**
+ * Decrypt a `name_encrypted` JSON envelope and return both the filename and
+ * the MIME type (if present in the encrypted payload).
+ */
+public func decryptNameWithMime(masterKey: Data, fileId: String, nameEncrypted: String)throws  -> DecryptedNameWithMime  {
+    return try  FfiConverterTypeDecryptedNameWithMime_lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
+    uniffi_beebeeb_uniffi_fn_func_decrypt_name_with_mime(
+        FfiConverterData.lower(masterKey),
+        FfiConverterString.lower(fileId),
+        FfiConverterString.lower(nameEncrypted),$0
     )
 })
 }
@@ -1356,12 +2310,48 @@ public func encryptMetadata(key: Data, metadata: String)throws  -> EncryptedData
 })
 }
 /**
+ * Encrypt a filename + optional MIME type into the canonical JSON envelope.
+ * The result is a JSON string containing cipher_suite, nonce, and ciphertext.
+ */
+public func encryptName(masterKey: Data, fileId: String, filename: String, mimeType: String?)throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
+    uniffi_beebeeb_uniffi_fn_func_encrypt_name(
+        FfiConverterData.lower(masterKey),
+        FfiConverterString.lower(fileId),
+        FfiConverterString.lower(filename),
+        FfiConverterOptionString.lower(mimeType),$0
+    )
+})
+}
+/**
  * Generate a new 12-word BIP39 recovery phrase and the corresponding master
  * key. The phrase IS the master secret.
  */
 public func generateRecoveryPhrase()throws  -> RecoveryPhraseResult  {
     return try  FfiConverterTypeRecoveryPhraseResult_lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
     uniffi_beebeeb_uniffi_fn_func_generate_recovery_phrase($0
+    )
+})
+}
+/**
+ * Guess the MIME type from a filename extension.
+ * Returns `None` for unknown extensions.
+ */
+public func guessMimeType(filename: String) -> String?  {
+    return try!  FfiConverterOptionString.lift(try! rustCall() {
+    uniffi_beebeeb_uniffi_fn_func_guess_mime_type(
+        FfiConverterString.lower(filename),$0
+    )
+})
+}
+/**
+ * Returns `true` if the given MIME type represents media (image or video).
+ * Single source of truth for all clients.
+ */
+public func isMedia(mimeType: String?) -> Bool  {
+    return try!  FfiConverterBool.lift(try! rustCall() {
+    uniffi_beebeeb_uniffi_fn_func_is_media(
+        FfiConverterOptionString.lower(mimeType),$0
     )
 })
 }
@@ -1455,10 +2445,25 @@ private let initializationResult: InitializationResult = {
     if (uniffi_beebeeb_uniffi_checksum_func_compute_recovery_check() != 28278) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_beebeeb_uniffi_checksum_func_constellation_encode() != 55630) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_func_constellation_new_session() != 21938) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_func_constellation_verify_code() != 40191) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_beebeeb_uniffi_checksum_func_decrypt_chunk() != 1418) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_beebeeb_uniffi_checksum_func_decrypt_metadata() != 59510) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_func_decrypt_name() != 9592) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_func_decrypt_name_with_mime() != 47898) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_beebeeb_uniffi_checksum_func_derive_file_key() != 7047) {
@@ -1482,7 +2487,16 @@ private let initializationResult: InitializationResult = {
     if (uniffi_beebeeb_uniffi_checksum_func_encrypt_metadata() != 360) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_beebeeb_uniffi_checksum_func_encrypt_name() != 54015) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_beebeeb_uniffi_checksum_func_generate_recovery_phrase() != 56821) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_func_guess_mime_type() != 41583) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_func_is_media() != 46056) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_beebeeb_uniffi_checksum_func_opaque_login_finish() != 15751) {
@@ -1503,6 +2517,21 @@ private let initializationResult: InitializationResult = {
     if (uniffi_beebeeb_uniffi_checksum_func_x25519_shared_secret() != 52845) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_beebeeb_uniffi_checksum_method_constellationdecoderhandle_frames_ingested() != 10893) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_method_constellationdecoderhandle_ingest_frame() != 7606) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_method_constellationdecoderhandle_progress() != 18899) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_method_constellationdecoderhandle_reset() != 57183) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_method_constellationdecoderhandle_shards_collected() != 56364) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_beebeeb_uniffi_checksum_method_filekeyhandle_decrypt_chunk() != 50441) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -1518,13 +2547,25 @@ private let initializationResult: InitializationResult = {
     if (uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_compute_recovery_check() != 4155) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_decrypt_name() != 40318) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_decrypt_name_with_mime() != 23459) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_derive_file_key() != 1679) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_derive_x25519_private() != 61634) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_encrypt_name() != 53513) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_export_for_keychain() != 50366) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_constructor_constellationdecoderhandle_new() != 21598) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_beebeeb_uniffi_checksum_constructor_masterkeyhandle_from_keychain_bytes() != 25584) {
