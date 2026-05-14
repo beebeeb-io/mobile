@@ -76,7 +76,8 @@
             }
           }
         ]
-      }
+      },
+      "buildNumber": "46"
     },
     "android": {
       "adaptiveIcon": {
