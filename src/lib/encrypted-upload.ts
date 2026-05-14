@@ -24,6 +24,7 @@ import type { EncryptedData } from '../../modules/beebeeb-crypto'
 import { uploadEncryptedChunked } from './api'
 import type { FileEntry, UploadProgress } from './api'
 import { encryptedMetadataToJson } from './encrypted-metadata'
+import { isMedia } from './media'
 
 export interface EncryptedUploadOptions {
   /** Client-generated UUID v4 — used for key derivation AND stored by server. */
@@ -152,9 +153,7 @@ export async function encryptedUpload(opts: EncryptedUploadOptions): Promise<Fil
 
   // MIME type is now encrypted inside name_encrypted — never sent in plaintext.
   // Only `is_media` (a boolean) is sent so the server can index media files.
-  const isMedia = mimeType
-    ? mimeType.startsWith('image/') || mimeType.startsWith('video/')
-    : false
+  const mediaFlag = isMedia(mimeType)
 
   return uploadEncryptedChunked({
     fileId,
@@ -162,7 +161,7 @@ export async function encryptedUpload(opts: EncryptedUploadOptions): Promise<Fil
     v2InitNameEncrypted,
     parentId,
     mimeType: undefined,
-    isMedia,
+    isMedia: mediaFlag,
     plaintextSizeBytes: plaintextSize,
     resumeKey,
     onProgress,

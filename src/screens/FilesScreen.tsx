@@ -43,6 +43,7 @@ import SkeletonRow from '../components/SkeletonRow';
 import PresenceAvatars from '../components/PresenceAvatars';
 import TrustDetailsSheet from '../components/TrustDetailsSheet';
 import { ApiError, listFiles, createFolder, deleteFile, renameFile, moveFile, uploadFile, downloadFile, friendlyError, getStorageUsage, createProofOfExistence, storageLocation, trustLocation, getFolderPresence, getUploadStatus, getApiUrl, getToken } from '../lib/api';
+import { guessMimeType, fileCategory as fileCategoryFromMime } from '../lib/media';
 import { generateAndUploadThumbnail, fetchDecryptedThumbnailUri } from '../lib/thumbnail';
 import type { FileEntry, StorageUsage, ProofOfExistence, PresenceUser, SyncNode } from '../lib/api';
 import type { RootStackParamList, TabParamList } from '../App';
@@ -117,77 +118,6 @@ function displayName(entry: FileEntry): string {
   return raw;
 }
 
-// TODO: Replace with beebeeb-core `guess_mime_type` via UniFFI native module
-// once the xcframework is rebuilt with the new bindings.
-function guessMimeTypeFromName(name: string): string | null {
-  const imageMimeType = imageMimeTypeFromName(name);
-  if (imageMimeType) return imageMimeType;
-
-  const ext = name.toLowerCase().split('.').pop();
-  switch (ext) {
-    case 'svg':
-      return 'image/svg+xml';
-    case 'pdf':
-      return 'application/pdf';
-    case 'zip':
-      return 'application/zip';
-    case '3mf':
-      return 'model/3mf';
-    case 'txt':
-    case 'md':
-      return 'text/plain';
-    case 'csv':
-      return 'text/csv';
-    case 'html':
-    case 'htm':
-      return 'text/html';
-    case 'docx':
-      return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
-    case 'xlsx':
-      return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
-    default:
-      return null;
-  }
-}
-
-// TODO: Replace with beebeeb-core `guess_mime_type` + `is_media` via UniFFI native module
-function imageMimeTypeFromName(name: string): string | null {
-  const ext = name.toLowerCase().split('.').pop();
-  switch (ext) {
-    case 'jpg':
-    case 'jpeg':
-      return 'image/jpeg';
-    case 'png':
-      return 'image/png';
-    case 'heic':
-      return 'image/heic';
-    case 'gif':
-      return 'image/gif';
-    case 'webp':
-      return 'image/webp';
-    case 'bmp':
-      return 'image/bmp';
-    case 'tif':
-    case 'tiff':
-      return 'image/tiff';
-    default:
-      return null;
-  }
-}
-
-// TODO: Remove once MIME type is always encrypted in name_encrypted — the server
-// no longer needs a plaintext MIME type column, so this PATCH becomes unnecessary.
-async function patchFileMimeType(fileId: string, mimeType: string): Promise<void> {
-  const token = await getToken();
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  if (token) headers.Authorization = `Bearer ${token}`;
-  const res = await fetch(`${getApiUrl()}/api/v1/files/${fileId}`, {
-    method: 'PATCH',
-    headers,
-    body: JSON.stringify({ mime_type: mimeType }),
-  });
-  if (!res.ok) throw new Error('Failed to patch file mime type');
-}
 
 function toSearchIndexEntry(file: FileEntry, name: string, parent: string | null): SearchIndexEntry {
   return {
@@ -273,18 +203,9 @@ function upsertFileEntry(entries: FileEntry[], entry: FileEntry): FileEntry[] {
   return [entry, ...entries.filter((current) => current.id !== entry.id)];
 }
 
-// TODO: Replace MIME-based classification with beebeeb-core `is_media` / `guess_mime_type`
-// via UniFFI native module once xcframework is rebuilt.
 /** Determine a file type category from the mime type. */
 function fileCategory(entry: FileEntry): 'folder' | 'image' | 'pdf' | 'audio' | 'video' | 'doc' | 'file' {
-  if (entry.is_folder) return 'folder';
-  const mime = entry.mime_type ?? '';
-  if (mime.startsWith('image/')) return 'image';
-  if (mime === 'application/pdf') return 'pdf';
-  if (mime.startsWith('audio/')) return 'audio';
-  if (mime.startsWith('video/')) return 'video';
-  if (mime.startsWith('text/') || mime.includes('document') || mime.includes('spreadsheet')) return 'doc';
-  return 'file';
+  return fileCategoryFromMime(entry.mime_type, entry.is_folder);
 }
 
 type IoniconName = React.ComponentProps<typeof Ionicons>['name'];
@@ -1174,7 +1095,6 @@ export default function FilesScreen() {
   const { isUnlocked, unlockAttempted, decryptMetadata, encryptChunk, encryptMetadata, getFileKeyBytes } = useCrypto();
   const [decryptedNames, setDecryptedNames] = useState<Record<string, string>>({});
   const [decryptedMimeTypes, setDecryptedMimeTypes] = useState<Record<string, string | null>>({});
-  const patchedMimeTypeIdsRef = useRef<Set<string>>(new Set());
 
   /** Find a non-folder file in the current folder whose decrypted name matches `filename`. */
   const findConflict = useCallback((filename: string): FileEntry | null => {
@@ -1235,7 +1155,7 @@ export default function FilesScreen() {
     : '';
   const mimeTypeFor = useCallback((file: FileEntry): string | null => {
     const name = decryptedNames[file.id] ?? displayName(file);
-    return decryptedMimeTypes[file.id] ?? file.mime_type ?? guessMimeTypeFromName(name);
+    return decryptedMimeTypes[file.id] ?? file.mime_type ?? guessMimeType(name);
   }, [decryptedMimeTypes, decryptedNames]);
   const shouldAutoVersionUpload = useCallback((
     existingFile: FileEntry,
@@ -1244,8 +1164,8 @@ export default function FilesScreen() {
     incomingSizeBytes: number | null | undefined,
   ): boolean => {
     const existingName = decryptedNames[existingFile.id] ?? displayName(existingFile);
-    const existingMimeType = mimeTypeFor(existingFile) ?? guessMimeTypeFromName(existingName);
-    const resolvedIncomingMimeType = incomingMimeType ?? guessMimeTypeFromName(incomingName);
+    const existingMimeType = mimeTypeFor(existingFile) ?? guessMimeType(existingName);
+    const resolvedIncomingMimeType = incomingMimeType ?? guessMimeType(incomingName);
     const sameType =
       !existingMimeType ||
       !resolvedIncomingMimeType ||
@@ -1302,18 +1222,16 @@ export default function FilesScreen() {
         }
       }),
     ).then(() => {
+      // Enrich local MIME type map from decrypted filenames when the server
+      // row has no mime_type (MIME is now encrypted inside the metadata blob).
       for (const file of files) {
         if (file.is_folder || file.mime_type != null) continue;
         const decryptedName = results[file.id];
         if (!decryptedName) continue;
-        const imageMimeType = imageMimeTypeFromName(decryptedName);
-        if (!imageMimeType) continue;
-        mimeResults[file.id] = mimeResults[file.id] ?? imageMimeType;
-        if (patchedMimeTypeIdsRef.current.has(file.id)) continue;
-        patchedMimeTypeIdsRef.current.add(file.id);
-        void patchFileMimeType(file.id, imageMimeType).catch(() => {
-          patchedMimeTypeIdsRef.current.delete(file.id);
-        });
+        const guessed = guessMimeType(decryptedName);
+        if (guessed) {
+          mimeResults[file.id] = mimeResults[file.id] ?? guessed;
+        }
       }
       setDecryptedNames({ ...results });
       setDecryptedMimeTypes({ ...mimeResults });
