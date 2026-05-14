@@ -56,6 +56,7 @@ import { encryptedUpload, generateFileId } from '../lib/encrypted-upload';
 import { photoBackupCheck, photoBackupMark } from '../lib/api';
 import { ensureBackupFolders } from './BackupService';
 import { generateAndUploadThumbnail } from '../lib/thumbnail';
+import { detectMediaMimeType } from '../lib/media';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -145,33 +146,6 @@ function formatEtaSeconds(secs: number): string {
 // Exported for use in SettingsScreen
 export { formatEtaSeconds };
 
-/**
- * Detect MIME type from filename extension + MediaLibrary mediaType.
- * Falls back to `image/jpeg` for unknown photos, `video/mp4` for unknown videos.
- */
-function detectMimeType(filename: string, mediaType: string): string {
-  const ext = filename.split('.').pop()?.toLowerCase() ?? '';
-  const VIDEO_MIME: Record<string, string> = {
-    mp4: 'video/mp4',
-    mov: 'video/quicktime',
-    m4v: 'video/x-m4v',
-    avi: 'video/avi',
-    mkv: 'video/x-matroska',
-    webm: 'video/webm',
-    '3gp': 'video/3gpp',
-  };
-  const IMAGE_MIME: Record<string, string> = {
-    jpg: 'image/jpeg', jpeg: 'image/jpeg',
-    png: 'image/png',
-    gif: 'image/gif',
-    webp: 'image/webp',
-    heic: 'image/heic', heif: 'image/heif',
-    avif: 'image/avif',
-    tiff: 'image/tiff', tif: 'image/tiff',
-  };
-  if (mediaType === 'video') return VIDEO_MIME[ext] ?? 'video/mp4';
-  return IMAGE_MIME[ext] ?? 'image/jpeg';
-}
 
 // ─── Main runner ──────────────────────────────────────────────────────────────
 
@@ -292,7 +266,7 @@ export async function runPhotoBackupSession(
         uri,
         name: asset.filename,
         parentId: cameraRollFolderId,
-        mimeType: detectMimeType(asset.filename, asset.mediaType),
+        mimeType: detectMediaMimeType(asset.filename, asset.mediaType),
         encryptChunkFn,
         encryptMetadataFn,
         onProgress: (p: UploadProgress) => {
@@ -302,7 +276,7 @@ export async function runPhotoBackupSession(
         },
       });
 
-      void generateAndUploadThumbnail(uploaded.id, uri, detectMimeType(asset.filename, asset.mediaType), getFileKeyBytes);
+      void generateAndUploadThumbnail(uploaded.id, uri, detectMediaMimeType(asset.filename, asset.mediaType), getFileKeyBytes);
       await photoBackupMark(asset.id, uploaded.id);
 
       bytesThisSession += fileBytesUploaded || fileBytesTotal;
