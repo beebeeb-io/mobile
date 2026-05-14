@@ -90,6 +90,7 @@ import TwoFactorSetupScreen from './screens/TwoFactorSetupScreen';
 
 import ErrorBoundary from './components/ErrorBoundary';
 import ConfirmActionPrompt from './components/ConfirmActionPrompt';
+import { DiagnosticPanel, LAST_CONNECTED_KEY } from './components/DiagnosticPanel';
 import { BackupProvider } from './lib/backup-context';
 import { discardAllPendingShares, processPendingShares } from '../plugins/share-extension/PendingSharesHandler';
 import { useToast } from './lib/toast-context';
@@ -500,6 +501,7 @@ export default function App() {
   const [checking, setChecking] = useState(true);
   const [loadingStatus, setLoadingStatus] = useState('');
   const [loadingFailed, setLoadingFailed] = useState(false);
+  const [showDiagnostics, setShowDiagnostics] = useState(false);
 
   const [fontsLoaded] = Font.useFonts(optionalFontAssets);
   // fontsLoaded is false until fonts resolve — app renders fine either way
@@ -525,6 +527,7 @@ export default function App() {
     try {
       const me = await getMe();
       setUser(me);
+      SecureStore.setItemAsync(LAST_CONNECTED_KEY, new Date().toISOString()).catch(() => {});
       // Register push token once the user is authenticated.
       void registerForPushNotifications();
     } catch {
@@ -562,71 +565,98 @@ export default function App() {
     setUser(null);
   }, []);
 
+  // Retry getMe() up to 3 times with backoff before giving up
+  const retryGetMe = useCallback(async (): Promise<User | null> => {
+    const delays = [1000, 3000, 5000];
+    for (const delay of delays) {
+      try {
+        return await Promise.race([
+          getMe(),
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error('timeout')), 10_000),
+          ),
+        ]);
+      } catch {
+        await new Promise(r => setTimeout(r, delay));
+      }
+    }
+    return null; // all retries failed
+  }, []);
+
+  // Shared preferences loader — called from runStartup and also when
+  // diagnostics are on screen so prefs are ready when the user retries.
+  const loadPreferences = useCallback(async (tokenExists: boolean) => {
+    // Check onboarding state. A fresh install with no token should not show
+    // onboarding immediately after an existing user signs in; signup owns its
+    // recovery phrase flow explicitly.
+    try {
+      const done = await SecureStore.getItemAsync(ONBOARDING_KEY);
+      setOnboardingDone(done !== 'false' || tokenExists);
+    } catch {
+      setOnboardingDone(true); // assume done if SecureStore unavailable (web)
+    }
+
+    // Check phrase verification state — only applies to new OPAQUE signups.
+    // Existing users who pre-date the phrase flow are treated as verified.
+    try {
+      const phraseKey = await SecureStore.getItemAsync(PHRASE_VERIFIED_KEY);
+      // 'pending' means signup set the flag but verification wasn't completed.
+      // Absent key (legacy user) or 'verified' both mean verified = true.
+      setPhraseVerified(phraseKey !== 'pending');
+    } catch {
+      setPhraseVerified(true);
+    }
+  }, []);
+
+  // Full startup flow — extracted so the diagnostic panel's Retry can rerun it
+  const runStartup = useCallback(async () => {
+    setShowDiagnostics(false);
+    setLoadingFailed(false);
+    setLoadingStatus('');
+    setChecking(true);
+
+    let slowTimer: ReturnType<typeof setTimeout> | undefined;
+    let needsDiagnostics = false;
+
+    const tokenExists = await hasToken();
+    if (tokenExists) {
+      setLoadingStatus('Contacting server...');
+      slowTimer = setTimeout(() => setLoadingStatus('Taking longer than usual...'), 5_000);
+
+      const me = await retryGetMe();
+      clearTimeout(slowTimer);
+
+      if (me) {
+        setLoadingStatus('Unlocking vault...');
+        setUser(me);
+        SecureStore.setItemAsync(LAST_CONNECTED_KEY, new Date().toISOString()).catch(() => {});
+      } else {
+        // All retries exhausted — show diagnostics
+        needsDiagnostics = true;
+        setLoadingStatus('');
+        setShowDiagnostics(true);
+      }
+    }
+
+    // When diagnostics are showing, keep the splash screen visible — don't
+    // fall through to the auth/main navigator until the user retries or
+    // chooses to sign in.
+    if (needsDiagnostics) {
+      // Still load preferences in the background so they're ready on retry
+      void loadPreferences(tokenExists);
+      return;
+    }
+
+    setLoadingStatus('Loading preferences...');
+    await loadPreferences(tokenExists);
+
+    setChecking(false);
+  }, [retryGetMe, loadPreferences]);
+
   // On mount: check for an existing session
   useEffect(() => {
-    let slowTimer: ReturnType<typeof setTimeout>;
-    let failTimer: ReturnType<typeof setTimeout>;
-
-    (async () => {
-      const tokenExists = await hasToken();
-      if (tokenExists) {
-        setLoadingStatus('Contacting server...');
-
-        slowTimer = setTimeout(() => setLoadingStatus('Taking longer than usual...'), 5_000);
-        failTimer = setTimeout(() => {
-          setLoadingStatus('');
-          setLoadingFailed(true);
-        }, 15_000);
-
-        try {
-          const me = await Promise.race([
-            getMe(),
-            new Promise<never>((_, reject) =>
-              setTimeout(() => reject(new Error('timeout')), 15_000)
-            ),
-          ]);
-          setLoadingStatus('Unlocking vault...');
-          setUser(me);
-        } catch {
-          // Token invalid, expired, or server unreachable — fall through.
-          // Don't clear the token on timeout so the session resumes when
-          // connectivity returns.
-        }
-      }
-
-      clearTimeout(slowTimer);
-      clearTimeout(failTimer);
-
-      setLoadingStatus('Loading preferences...');
-
-      // Check onboarding state. A fresh install with no token should not show
-      // onboarding immediately after an existing user signs in; signup owns its
-      // recovery phrase flow explicitly.
-      try {
-        const done = await SecureStore.getItemAsync(ONBOARDING_KEY);
-        setOnboardingDone(done !== 'false' || tokenExists);
-      } catch {
-        setOnboardingDone(true); // assume done if SecureStore unavailable (web)
-      }
-
-      // Check phrase verification state — only applies to new OPAQUE signups.
-      // Existing users who pre-date the phrase flow are treated as verified.
-      try {
-        const phraseKey = await SecureStore.getItemAsync(PHRASE_VERIFIED_KEY);
-        // 'pending' means signup set the flag but verification wasn't completed.
-        // Absent key (legacy user) or 'verified' both mean verified = true.
-        setPhraseVerified(phraseKey !== 'pending');
-      } catch {
-        setPhraseVerified(true);
-      }
-
-      setChecking(false);
-    })();
-
-    return () => {
-      clearTimeout(slowTimer!);
-      clearTimeout(failTimer!);
-    };
+    void runStartup();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Register session-expired handler so 401s auto-sign-out
@@ -791,29 +821,42 @@ export default function App() {
     }
   }, [user, refreshAuth]);
 
-  // Loading splash while checking auth
-  if (checking) {
+  // Loading splash while checking auth, or diagnostic panel when server is unreachable
+  if (checking || showDiagnostics) {
     return (
       <SafeAreaProvider>
-        <View style={{ flex: 1, backgroundColor: c.paper, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 32 }}>
+        <View style={{ flex: 1, backgroundColor: c.paper, alignItems: 'center', justifyContent: 'center', paddingHorizontal: showDiagnostics ? 0 : 32 }}>
           <BBLogo size={48} />
           <View style={{ height: 20 }} />
-          {!loadingFailed && <ActivityIndicator color={c.ink3} />}
-          {loadingStatus ? (
-            <Text style={{ color: c.ink3, fontSize: 13, marginTop: 12, textAlign: 'center' }}>
-              {loadingStatus}
-            </Text>
-          ) : null}
-          {loadingFailed ? (
-            <View style={{ alignItems: 'center', marginTop: 8 }}>
-              <Text style={{ color: c.red, fontSize: 14, fontWeight: '600', textAlign: 'center' }}>
-                Something went wrong
-              </Text>
-              <Text style={{ color: c.ink3, fontSize: 13, marginTop: 6, textAlign: 'center', lineHeight: 18 }}>
-                We couldn't reach our servers.{'\n'}Check status.beebeeb.io for updates.
-              </Text>
-            </View>
-          ) : null}
+          {showDiagnostics ? (
+            <DiagnosticPanel
+              onRetry={() => void runStartup()}
+              onSignIn={() => {
+                setShowDiagnostics(false);
+                setChecking(false);
+                setUser(null);
+              }}
+            />
+          ) : (
+            <>
+              {!loadingFailed && <ActivityIndicator color={c.ink3} />}
+              {loadingStatus ? (
+                <Text style={{ color: c.ink3, fontSize: 13, marginTop: 12, textAlign: 'center' }}>
+                  {loadingStatus}
+                </Text>
+              ) : null}
+              {loadingFailed ? (
+                <View style={{ alignItems: 'center', marginTop: 8 }}>
+                  <Text style={{ color: c.red, fontSize: 14, fontWeight: '600', textAlign: 'center' }}>
+                    Something went wrong
+                  </Text>
+                  <Text style={{ color: c.ink3, fontSize: 13, marginTop: 6, textAlign: 'center', lineHeight: 18 }}>
+                    We couldn't reach our servers.{'\n'}Check status.beebeeb.io for updates.
+                  </Text>
+                </View>
+              ) : null}
+            </>
+          )}
         </View>
         <StatusBar style={resolved === 'dark' ? 'light' : 'dark'} />
       </SafeAreaProvider>
