@@ -416,6 +416,8 @@ export interface FileEntry {
   /** True when a thumbnail blob has been uploaded for this file. */
   has_thumbnail?: boolean;
   is_starred?: boolean;
+  /** True when the file is an image or video (set at upload time). */
+  is_media?: boolean;
 }
 
 /**

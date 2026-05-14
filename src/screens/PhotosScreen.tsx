@@ -20,6 +20,7 @@ import { radii, spacing } from '../theme';
 import { useTheme } from '../lib/theme-context';
 import { getAllImages, friendlyError } from '../lib/api';
 import type { FileEntry } from '../lib/api';
+import { guessMimeType, isMedia } from '../lib/media';
 import { useBackup } from '../lib/backup-context';
 import { useCrypto } from '../lib/crypto-context';
 import { useNetworkStatus } from '../lib/useNetworkStatus';
@@ -35,8 +36,14 @@ import {
 // ---------------------------------------------------------------------------
 
 function isImageFile(entry: FileEntry): boolean {
+  // Server-provided MIME type (pre-encryption files)
   const mime = entry.mime_type ?? '';
-  return mime.startsWith('image/');
+  if (mime.startsWith('image/')) return true;
+  // Newer uploads set is_media at upload time (MIME is encrypted/null)
+  if (entry.is_media) return true;
+  // Last resort: guess from the encrypted filename's extension
+  if (entry.name_encrypted && isMedia(guessMimeType(entry.name_encrypted))) return true;
+  return false;
 }
 
 /**
