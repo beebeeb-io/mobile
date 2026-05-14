@@ -89,14 +89,20 @@ class FileProviderItem: NSObject, NSFileProviderItem {
         return NSNumber(value: size)
     }
 
+    private static let dateFormatter: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+
     var creationDate: Date? {
         guard let dateStr = metadata?.createdAt else { return nil }
-        return ISO8601DateFormatter().date(from: dateStr)
+        return Self.dateFormatter.date(from: dateStr)
     }
 
     var contentModificationDate: Date? {
         guard let dateStr = metadata?.updatedAt else { return nil }
-        return ISO8601DateFormatter().date(from: dateStr)
+        return Self.dateFormatter.date(from: dateStr)
     }
 
     var itemVersion: NSFileProviderItemVersion {
