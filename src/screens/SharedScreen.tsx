@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
-  ActivityIndicator,
   FlatList,
   RefreshControl,
   StyleSheet,
@@ -16,8 +15,11 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { radii, spacing } from '../theme';
 import { useTheme } from '../lib/theme-context';
 import SkeletonRow from '../components/SkeletonRow';
-import { getIncomingInvites, getSentInvites, friendlyError } from '../lib/api';
-import type { ShareInvite } from '../lib/api';
+import { useCrypto } from '../lib/crypto-context';
+import { encryptedMetadataPayloadToBytes } from '../lib/encrypted-metadata';
+import { guessMimeType } from '../lib/media';
+import { getIncomingInvites, listMyShares, friendlyError } from '../lib/api';
+import type { ShareInvite, MyShareLink } from '../lib/api';
 import type { RootStackParamList } from '../App';
 
 type Nav = NativeStackNavigationProp<RootStackParamList>;
@@ -47,15 +49,45 @@ function formatDate(iso: string): string {
   return `${month} ${day}, ${year}`;
 }
 
-/**
- * Display name for an encrypted filename.
- * Until UniFFI crypto bindings land, show a truncated version.
- */
-function displayName(invite: ShareInvite): string {
+/** Display name for an invite's encrypted filename (fallback when crypto unavailable). */
+function displayInviteName(invite: ShareInvite): string {
   const raw = invite.file_name_encrypted;
   if (!raw) return invite.is_folder ? 'Shared folder' : 'Shared file';
+  if (raw.startsWith('{')) return invite.is_folder ? 'Encrypted folder' : 'Encrypted file';
   if (raw.length > 28) return raw.slice(0, 24) + '...';
   return raw;
+}
+
+/** Display name for a share link's encrypted filename (fallback when crypto unavailable). */
+function displayShareLinkName(link: MyShareLink): string {
+  const raw = link.file.name_encrypted;
+  if (!raw) return 'Shared file';
+  if (raw.startsWith('{')) return 'Encrypted file';
+  if (raw.length > 28) return raw.slice(0, 24) + '...';
+  return raw;
+}
+
+/**
+ * Parse decrypted metadata JSON into a display name and optional MIME type.
+ * Decrypted metadata is either `{"name":"file.jpg","mime_type":"image/jpeg"}`
+ * or a bare filename string (legacy format).
+ */
+function parseDecryptedMetadata(plaintext: string): { name: string; mimeType: string | null } {
+  try {
+    const metadata = JSON.parse(plaintext) as { name?: unknown; mime_type?: unknown };
+    if (metadata && typeof metadata === 'object' && typeof metadata.name === 'string') {
+      const name = metadata.name.trim();
+      if (name) {
+        return {
+          name,
+          mimeType: typeof metadata.mime_type === 'string' ? metadata.mime_type : null,
+        };
+      }
+    }
+  } catch {
+    // Legacy metadata format: plaintext is the bare filename.
+  }
+  return { name: plaintext || 'Shared file', mimeType: null };
 }
 
 function expiryLabel(expiresAt: string | null | undefined): string | null {
@@ -76,28 +108,39 @@ function expiryLabel(expiresAt: string | null | undefined): string | null {
 
 type IoniconName = React.ComponentProps<typeof Ionicons>['name'];
 
-function fileTypeIcon(invite: ShareInvite): IoniconName {
-  if (invite.is_folder || invite.is_folder_share) return 'folder';
-  const mime = invite.mime_type ?? '';
-  if (mime.startsWith('image/')) return 'image';
-  if (mime === 'application/pdf') return 'document-text';
-  if (mime.startsWith('audio/')) return 'musical-notes';
-  if (mime.startsWith('video/')) return 'videocam';
-  if (mime.startsWith('text/') || mime.includes('document')) return 'document';
+function mimeIcon(mime: string | null | undefined): IoniconName {
+  const m = mime ?? '';
+  if (m.startsWith('image/')) return 'image';
+  if (m === 'application/pdf') return 'document-text';
+  if (m.startsWith('audio/')) return 'musical-notes';
+  if (m.startsWith('video/')) return 'videocam';
+  if (m.startsWith('text/') || m.includes('document')) return 'document';
   return 'document-outline';
 }
 
+function fileTypeIconForInvite(invite: ShareInvite): IoniconName {
+  if (invite.is_folder || invite.is_folder_share) return 'folder';
+  return mimeIcon(invite.mime_type);
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
 // ---------------------------------------------------------------------------
-// Status badge
+// Status badges
 // ---------------------------------------------------------------------------
 
-const STATUS_INFO: Record<string, { label: string; text: string; lightBg: string; darkBg: string }> = {
+const INVITE_STATUS_INFO: Record<string, { label: string; text: string; lightBg: string; darkBg: string }> = {
   claimed:  { label: 'Claimed',  text: '#1a73e8', lightBg: '#e8f4fd', darkBg: 'rgba(26,115,232,0.15)' },
   approved: { label: 'Approved', text: '#2d7d2d', lightBg: '#e6f7e6', darkBg: 'rgba(45,125,45,0.15)' },
   denied:   { label: 'Denied',   text: '#d84040', lightBg: '#fde8e8', darkBg: 'rgba(216,64,64,0.12)' },
 };
 
-function StatusBadge({ status }: { status: string }) {
+function InviteStatusBadge({ status }: { status: string }) {
   const { colors: c, resolved } = useTheme();
   const isDark = resolved === 'dark';
 
@@ -115,7 +158,7 @@ function StatusBadge({ status }: { status: string }) {
       </View>
     );
   }
-  const info = STATUS_INFO[status];
+  const info = INVITE_STATUS_INFO[status];
   if (!info) return null;
   const bg = isDark ? info.darkBg : info.lightBg;
   return (
@@ -125,11 +168,42 @@ function StatusBadge({ status }: { status: string }) {
   );
 }
 
+function ShareLinkBadge({ link }: { link: MyShareLink }) {
+  const { colors: c, resolved } = useTheme();
+  const isDark = resolved === 'dark';
+
+  if (link.revoked) {
+    return (
+      <View style={[styles.badge, { backgroundColor: isDark ? 'rgba(216,64,64,0.12)' : '#fde8e8' }]}>
+        <Text style={[styles.badgeText, { color: '#d84040' }]}>Revoked</Text>
+      </View>
+    );
+  }
+
+  // Check if expired
+  if (link.expires_at) {
+    const expires = new Date(link.expires_at);
+    if (!Number.isNaN(expires.getTime()) && expires.getTime() <= Date.now()) {
+      return (
+        <View style={[styles.badge, { backgroundColor: c.paper2 }]}>
+          <Text style={[styles.badgeText, { color: c.ink3 }]}>Expired</Text>
+        </View>
+      );
+    }
+  }
+
+  return (
+    <View style={[styles.badge, { backgroundColor: isDark ? 'rgba(45,125,45,0.15)' : '#e6f7e6' }]}>
+      <Text style={[styles.badgeText, { color: '#2d7d2d' }]}>Active</Text>
+    </View>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Tab type
 // ---------------------------------------------------------------------------
 
-type Tab = 'incoming' | 'sent';
+type Tab = 'incoming' | 'links';
 
 // ---------------------------------------------------------------------------
 // Screen
@@ -139,8 +213,11 @@ export default function SharedScreen() {
   const { colors: c } = useTheme();
   const insets = useSafeAreaInsets();
   const navigation = useNavigation<Nav>();
-  const [activeTab, setActiveTab] = useState<Tab>('incoming');
+  const [activeTab, setActiveTab] = useState<Tab>('links');
   const [isScrolled, setIsScrolled] = useState(false);
+
+  // Crypto — for decrypting share link filenames
+  const { isUnlocked, decryptMetadata } = useCrypto();
 
   // Incoming invites
   const [incoming, setIncoming] = useState<ShareInvite[]>([]);
@@ -148,11 +225,13 @@ export default function SharedScreen() {
   const [incomingRefreshing, setIncomingRefreshing] = useState(false);
   const [incomingError, setIncomingError] = useState<string | null>(null);
 
-  // Sent invites
-  const [sent, setSent] = useState<ShareInvite[]>([]);
-  const [sentLoading, setSentLoading] = useState(true);
-  const [sentRefreshing, setSentRefreshing] = useState(false);
-  const [sentError, setSentError] = useState<string | null>(null);
+  // My share links
+  const [links, setLinks] = useState<MyShareLink[]>([]);
+  const [linksLoading, setLinksLoading] = useState(true);
+  const [linksRefreshing, setLinksRefreshing] = useState(false);
+  const [linksError, setLinksError] = useState<string | null>(null);
+  const [decryptedLinkNames, setDecryptedLinkNames] = useState<Record<string, string>>({});
+  const [decryptedLinkMimes, setDecryptedLinkMimes] = useState<Record<string, string | null>>({});
 
   // ------------------------------------------------------------------
   // Fetch functions
@@ -175,40 +254,97 @@ export default function SharedScreen() {
     }
   }, []);
 
-  const fetchSent = useCallback(async (isRefresh = false) => {
-    if (isRefresh) setSentRefreshing(true);
-    else setSentLoading(true);
-    setSentError(null);
+  const fetchLinks = useCallback(async (isRefresh = false) => {
+    if (isRefresh) setLinksRefreshing(true);
+    else setLinksLoading(true);
+    setLinksError(null);
 
     try {
-      const result = await getSentInvites();
+      const result = await listMyShares();
       result.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-      setSent(result);
+      setLinks(result);
     } catch (err) {
-      setSentError(friendlyError(err));
+      setLinksError(friendlyError(err));
     } finally {
-      setSentLoading(false);
-      setSentRefreshing(false);
+      setLinksLoading(false);
+      setLinksRefreshing(false);
     }
   }, []);
 
   // Fetch both on mount
   useEffect(() => {
     fetchIncoming();
-    fetchSent();
-  }, [fetchIncoming, fetchSent]);
+    fetchLinks();
+  }, [fetchIncoming, fetchLinks]);
+
+  // Decrypt share link filenames when links or unlock state changes
+  useEffect(() => {
+    if (!isUnlocked || links.length === 0) {
+      if (!isUnlocked) {
+        setDecryptedLinkNames({});
+        setDecryptedLinkMimes({});
+      }
+      return;
+    }
+    const names: Record<string, string> = {};
+    const mimes: Record<string, string | null> = {};
+    Promise.all(
+      links.map(async (link) => {
+        try {
+          const raw = link.file.name_encrypted ?? '';
+          if (!raw.startsWith('{')) {
+            // Legacy unencrypted name — use directly
+            if (raw) names[link.id] = raw;
+            return;
+          }
+          const payload = encryptedMetadataPayloadToBytes(raw);
+          if (!payload) return;
+          const plaintext = await decryptMetadata(link.file_id, payload.nonce, payload.ciphertext);
+          const metadata = parseDecryptedMetadata(plaintext);
+          names[link.id] = metadata.name;
+          mimes[link.id] = metadata.mimeType;
+        } catch {
+          // Decryption failure — displayShareLinkName() handles the fallback
+        }
+      }),
+    ).then(() => {
+      // Enrich MIME types from decrypted filenames when server row has no MIME
+      for (const link of links) {
+        if (link.file.mime_type != null) continue;
+        const name = names[link.id];
+        if (!name) continue;
+        const guessed = guessMimeType(name);
+        if (guessed) mimes[link.id] = mimes[link.id] ?? guessed;
+      }
+      setDecryptedLinkNames({ ...names });
+      setDecryptedLinkMimes({ ...mimes });
+    });
+  }, [links, isUnlocked, decryptMetadata]);
 
   // ------------------------------------------------------------------
   // Render helpers
   // ------------------------------------------------------------------
 
-  const fileTypeColor = (invite: ShareInvite): string => {
+  const inviteMimeColor = (invite: ShareInvite): string => {
     if (invite.is_folder || invite.is_folder_share) return c.amberDeep;
     const mime = invite.mime_type ?? '';
     if (mime.startsWith('image/')) return c.amber;
     if (mime === 'application/pdf') return c.red;
     if (mime.startsWith('audio/')) return c.green;
     return c.ink3;
+  };
+
+  const linkMimeColor = (link: MyShareLink): string => {
+    const mime = decryptedLinkMimes[link.id] ?? link.file.mime_type ?? '';
+    if (mime.startsWith('image/')) return c.amber;
+    if (mime === 'application/pdf') return c.red;
+    if (mime.startsWith('audio/')) return c.green;
+    return c.ink3;
+  };
+
+  const linkIcon = (link: MyShareLink): IoniconName => {
+    const mime = decryptedLinkMimes[link.id] ?? link.file.mime_type;
+    return mimeIcon(mime);
   };
 
   const openInvitePreview = useCallback(
@@ -226,55 +362,83 @@ export default function SharedScreen() {
     [navigation],
   );
 
+  const openShareLinkPreview = useCallback(
+    (link: MyShareLink) => {
+      Haptics.selectionAsync();
+      const name = decryptedLinkNames[link.id] ?? displayShareLinkName(link);
+      const mime = decryptedLinkMimes[link.id] ?? link.file.mime_type ?? undefined;
+      navigation.navigate('Preview', {
+        fileId: link.file_id,
+        fileName: name,
+        mimeType: mime,
+        sizeBytes: link.file.size_bytes,
+        createdAt: link.created_at,
+      });
+    },
+    [navigation, decryptedLinkNames, decryptedLinkMimes],
+  );
+
   const renderIncomingItem = ({ item }: { item: ShareInvite }) => {
-    // Pending/expired/revoked invites have no download access yet — leave them
-    // visually tappable but a no-op until the sender approves.
     const tappable = item.status === 'approved';
     return (
       <TouchableOpacity
         activeOpacity={tappable ? 0.6 : 1}
         onPress={tappable ? () => openInvitePreview(item) : undefined}
         accessibilityRole="button"
-        accessibilityLabel={`Shared file ${displayName(item)} from ${item.sender_email ?? 'unknown'}`}
+        accessibilityLabel={`Shared file ${displayInviteName(item)} from ${item.sender_email ?? 'unknown'}`}
         style={[styles.row, { borderBottomColor: c.line }]}
       >
-        <View style={[styles.fileIcon, { backgroundColor: fileTypeColor(item) }]}>
-          <Ionicons name={fileTypeIcon(item)} size={16} color="#FFFFFF" />
+        <View style={[styles.fileIcon, { backgroundColor: inviteMimeColor(item) }]}>
+          <Ionicons name={fileTypeIconForInvite(item)} size={16} color="#FFFFFF" />
         </View>
         <View style={styles.rowInfo}>
-          <Text style={[styles.rowName, { color: c.ink }]} numberOfLines={1}>{displayName(item)}</Text>
+          <Text style={[styles.rowName, { color: c.ink }]} numberOfLines={1}>{displayInviteName(item)}</Text>
           <Text style={[styles.rowMeta, { color: c.ink3 }]} numberOfLines={1}>
             {[`From ${item.sender_email ?? 'unknown'}`, formatDate(item.created_at), expiryLabel(item.expires_at)]
               .filter(Boolean)
               .join('  ·  ')}
           </Text>
         </View>
+        <InviteStatusBadge status={item.status} />
       </TouchableOpacity>
     );
   };
 
-  const renderSentItem = ({ item }: { item: ShareInvite }) => (
-    <TouchableOpacity
-      activeOpacity={0.6}
-      onPress={() => openInvitePreview(item)}
-      accessibilityRole="button"
-      accessibilityLabel={`Sent file ${displayName(item)} to ${item.recipient_email}`}
-      style={[styles.row, { borderBottomColor: c.line }]}
-    >
-      <View style={[styles.fileIcon, { backgroundColor: fileTypeColor(item) }]}>
-        <Ionicons name={fileTypeIcon(item)} size={16} color="#FFFFFF" />
-      </View>
-      <View style={styles.rowInfo}>
-        <Text style={[styles.rowName, { color: c.ink }]} numberOfLines={1}>{displayName(item)}</Text>
-        <Text style={[styles.rowMeta, { color: c.ink3 }]} numberOfLines={1}>
-          {[`To ${item.recipient_email}`, formatDate(item.created_at), expiryLabel(item.expires_at)]
-            .filter(Boolean)
-            .join('  ·  ')}
-        </Text>
-      </View>
-      <StatusBadge status={item.status} />
-    </TouchableOpacity>
-  );
+  const renderLinkItem = ({ item }: { item: MyShareLink }) => {
+    const name = decryptedLinkNames[item.id] ?? displayShareLinkName(item);
+    const stats: string[] = [];
+    if (item.open_count > 0) stats.push(`${item.open_count} view${item.open_count !== 1 ? 's' : ''}`);
+    if (item.download_count > 0) stats.push(`${item.download_count} download${item.download_count !== 1 ? 's' : ''}`);
+    const expiry = expiryLabel(item.expires_at);
+
+    const metaParts = [
+      formatBytes(item.file.size_bytes),
+      formatDate(item.created_at),
+      ...stats,
+      expiry,
+    ].filter(Boolean);
+
+    return (
+      <TouchableOpacity
+        activeOpacity={item.revoked ? 1 : 0.6}
+        onPress={item.revoked ? undefined : () => openShareLinkPreview(item)}
+        accessibilityRole="button"
+        accessibilityLabel={`Share link for ${name}`}
+        style={[styles.row, { borderBottomColor: c.line }, item.revoked && { opacity: 0.55 }]}
+      >
+        <View style={[styles.fileIcon, { backgroundColor: linkMimeColor(item) }]}>
+          <Ionicons name={linkIcon(item)} size={16} color="#FFFFFF" />
+        </View>
+        <View style={styles.rowInfo}>
+          <Text style={[styles.rowName, { color: c.ink }]} numberOfLines={1}>{name}</Text>
+          <Text style={[styles.rowMeta, { color: c.ink3 }]} numberOfLines={1}>
+            {metaParts.join('  ·  ')}
+          </Text>
+        </View>
+        <ShareLinkBadge link={item} />
+      </TouchableOpacity>
+    );
+  };
 
   const renderEmpty = (
     message: string,
@@ -308,35 +472,42 @@ export default function SharedScreen() {
 
   // Current tab data
   const isIncoming = activeTab === 'incoming';
-  const data = isIncoming ? incoming : sent;
-  const loading = isIncoming ? incomingLoading : sentLoading;
-  const refreshing = isIncoming ? incomingRefreshing : sentRefreshing;
-  const error = isIncoming ? incomingError : sentError;
-  const onRefresh = isIncoming
-    ? () => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); fetchIncoming(true); }
-    : () => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); fetchSent(true); };
-  const onRetry = isIncoming ? () => fetchIncoming() : () => fetchSent();
-  const renderItem = isIncoming ? renderIncomingItem : renderSentItem;
-  const emptyMessage = isIncoming
-    ? 'No shared files yet'
-    : 'Nothing sent yet';
-  const emptyIcon: React.ComponentProps<typeof Ionicons>['name'] = isIncoming
-    ? 'people-outline'
-    : 'share-outline';
 
   // ------------------------------------------------------------------
   // Main render
   // ------------------------------------------------------------------
 
+  const currentError = isIncoming ? incomingError : linksError;
+  const currentLoading = isIncoming
+    ? (incomingLoading && !incomingRefreshing)
+    : (linksLoading && !linksRefreshing);
+  const currentRefreshing = isIncoming ? incomingRefreshing : linksRefreshing;
+  const onRefresh = isIncoming
+    ? () => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); fetchIncoming(true); }
+    : () => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); fetchLinks(true); };
+  const onRetry = isIncoming ? () => fetchIncoming() : () => fetchLinks();
+
   return (
     <View style={[styles.root, { paddingTop: insets.top, backgroundColor: c.paper }]}>
-      {/* Header area — bottom border appears when scrolled */}
+      {/* Header area */}
       <View style={[isScrolled && { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: c.line }]}>
       {/* Title */}
       <Text style={[styles.title, { color: c.ink }]}>Shared</Text>
 
       {/* Tabs */}
       <View style={styles.tabBar} accessibilityRole="tablist">
+        <TouchableOpacity
+          style={[styles.tab, !isIncoming && [styles.tabActive, { borderBottomColor: c.amber }]]}
+          onPress={() => setActiveTab('links')}
+          activeOpacity={0.7}
+          accessibilityRole="tab"
+          accessibilityState={{ selected: !isIncoming }}
+          accessibilityLabel="My links"
+        >
+          <Text style={[styles.tabText, { color: c.ink3 }, !isIncoming && [styles.tabTextActive, { color: c.ink }]]}>
+            My links
+          </Text>
+        </TouchableOpacity>
         <TouchableOpacity
           style={[styles.tab, isIncoming && [styles.tabActive, { borderBottomColor: c.amber }]]}
           onPress={() => setActiveTab('incoming')}
@@ -349,45 +520,52 @@ export default function SharedScreen() {
             Shared with me
           </Text>
         </TouchableOpacity>
-        <TouchableOpacity
-          style={[styles.tab, !isIncoming && [styles.tabActive, { borderBottomColor: c.amber }]]}
-          onPress={() => setActiveTab('sent')}
-          activeOpacity={0.7}
-          accessibilityRole="tab"
-          accessibilityState={{ selected: !isIncoming }}
-          accessibilityLabel="Shared by me"
-        >
-          <Text style={[styles.tabText, { color: c.ink3 }, !isIncoming && [styles.tabTextActive, { color: c.ink }]]}>
-            Shared by me
-          </Text>
-        </TouchableOpacity>
       </View>
       </View>{/* end header area */}
 
       {/* Content */}
-      {error ? (
-        renderError(error, onRetry)
-      ) : loading && !refreshing ? (
+      {currentError ? (
+        renderError(currentError, onRetry)
+      ) : currentLoading ? (
         <View>
           {[0, 1, 2].map((i) => <SkeletonRow key={i} />)}
         </View>
-      ) : (
+      ) : isIncoming ? (
         <FlatList
-          data={data}
+          data={incoming}
           keyExtractor={(item) => item.id}
-          renderItem={renderItem}
-          ListEmptyComponent={renderEmpty(emptyMessage, emptyIcon)}
+          renderItem={renderIncomingItem}
+          ListEmptyComponent={renderEmpty('No shared files yet', 'people-outline')}
           onScroll={(e) => setIsScrolled(e.nativeEvent.contentOffset.y > 0)}
           scrollEventThrottle={100}
           refreshControl={
             <RefreshControl
-              refreshing={refreshing}
+              refreshing={incomingRefreshing}
               onRefresh={onRefresh}
               tintColor={c.amber}
               colors={[c.amber]}
             />
           }
-          contentContainerStyle={data.length === 0 ? styles.emptyList : undefined}
+          contentContainerStyle={incoming.length === 0 ? styles.emptyList : undefined}
+          keyboardDismissMode="on-drag"
+        />
+      ) : (
+        <FlatList
+          data={links}
+          keyExtractor={(item) => item.id}
+          renderItem={renderLinkItem}
+          ListEmptyComponent={renderEmpty('No share links yet', 'link-outline')}
+          onScroll={(e) => setIsScrolled(e.nativeEvent.contentOffset.y > 0)}
+          scrollEventThrottle={100}
+          refreshControl={
+            <RefreshControl
+              refreshing={linksRefreshing}
+              onRefresh={onRefresh}
+              tintColor={c.amber}
+              colors={[c.amber]}
+            />
+          }
+          contentContainerStyle={links.length === 0 ? styles.emptyList : undefined}
           keyboardDismissMode="on-drag"
         />
       )}

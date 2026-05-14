@@ -1062,6 +1062,27 @@ export interface Share {
   double_encrypted?: boolean;
 }
 
+/** Rich share link item returned by `GET /api/v1/shares/mine`. */
+export interface MyShareLink {
+  id: string;
+  file_id: string;
+  token: string;
+  url: string;
+  expires_at: string | null;
+  max_opens: number | null;
+  open_count: number;
+  download_count: number;
+  last_opened_at: string | null;
+  has_passphrase: boolean;
+  revoked: boolean;
+  created_at: string;
+  file: {
+    name_encrypted: string;
+    size_bytes: number;
+    mime_type: string | null;
+  };
+}
+
 export interface ShareCreateOpts {
   expires_in_hours?: number;
   max_opens?: number;
@@ -1081,8 +1102,9 @@ export async function createShare(
   return request<Share>('POST', '/api/v1/shares', { file_id: fileId, ...opts });
 }
 
-export async function listMyShares(): Promise<Share[]> {
-  return request<Share[]>('GET', '/api/v1/shares/mine');
+export async function listMyShares(): Promise<MyShareLink[]> {
+  const data = await request<{ shares: MyShareLink[] }>('GET', '/api/v1/shares/mine');
+  return data.shares ?? [];
 }
 
 export interface ShareInfo {
