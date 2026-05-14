@@ -498,6 +498,8 @@ export default function App() {
   const { colors: c, resolved } = useTheme();
   const [user, setUser] = useState<User | null>(null);
   const [checking, setChecking] = useState(true);
+  const [loadingStatus, setLoadingStatus] = useState('');
+  const [loadingFailed, setLoadingFailed] = useState(false);
 
   const [fontsLoaded] = Font.useFonts(optionalFontAssets);
   // fontsLoaded is false until fonts resolve — app renders fine either way
@@ -562,18 +564,28 @@ export default function App() {
 
   // On mount: check for an existing session
   useEffect(() => {
+    let slowTimer: ReturnType<typeof setTimeout>;
+    let failTimer: ReturnType<typeof setTimeout>;
+
     (async () => {
       const tokenExists = await hasToken();
       if (tokenExists) {
-        // Validate the token — 10s timeout so the app doesn't hang on the
-        // loading screen when the server is unreachable.
+        setLoadingStatus('Contacting server...');
+
+        slowTimer = setTimeout(() => setLoadingStatus('Taking longer than usual...'), 5_000);
+        failTimer = setTimeout(() => {
+          setLoadingStatus('');
+          setLoadingFailed(true);
+        }, 15_000);
+
         try {
           const me = await Promise.race([
             getMe(),
             new Promise<never>((_, reject) =>
-              setTimeout(() => reject(new Error('timeout')), 10_000)
+              setTimeout(() => reject(new Error('timeout')), 15_000)
             ),
           ]);
+          setLoadingStatus('Unlocking vault...');
           setUser(me);
         } catch {
           // Token invalid, expired, or server unreachable — fall through.
@@ -581,6 +593,12 @@ export default function App() {
           // connectivity returns.
         }
       }
+
+      clearTimeout(slowTimer);
+      clearTimeout(failTimer);
+
+      setLoadingStatus('Loading preferences...');
+
       // Check onboarding state. A fresh install with no token should not show
       // onboarding immediately after an existing user signs in; signup owns its
       // recovery phrase flow explicitly.
@@ -604,6 +622,11 @@ export default function App() {
 
       setChecking(false);
     })();
+
+    return () => {
+      clearTimeout(slowTimer!);
+      clearTimeout(failTimer!);
+    };
   }, []);
 
   // Register session-expired handler so 401s auto-sign-out
@@ -772,10 +795,25 @@ export default function App() {
   if (checking) {
     return (
       <SafeAreaProvider>
-        <View style={{ flex: 1, backgroundColor: c.paper, alignItems: 'center', justifyContent: 'center' }}>
+        <View style={{ flex: 1, backgroundColor: c.paper, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 32 }}>
           <BBLogo size={48} />
-          <View style={{ height: 16 }} />
-          <ActivityIndicator color={c.ink3} />
+          <View style={{ height: 20 }} />
+          {!loadingFailed && <ActivityIndicator color={c.ink3} />}
+          {loadingStatus ? (
+            <Text style={{ color: c.ink3, fontSize: 13, marginTop: 12, textAlign: 'center' }}>
+              {loadingStatus}
+            </Text>
+          ) : null}
+          {loadingFailed ? (
+            <View style={{ alignItems: 'center', marginTop: 8 }}>
+              <Text style={{ color: c.red, fontSize: 14, fontWeight: '600', textAlign: 'center' }}>
+                Something went wrong
+              </Text>
+              <Text style={{ color: c.ink3, fontSize: 13, marginTop: 6, textAlign: 'center', lineHeight: 18 }}>
+                We couldn't reach our servers.{'\n'}Check status.beebeeb.io for updates.
+              </Text>
+            </View>
+          ) : null}
         </View>
         <StatusBar style={resolved === 'dark' ? 'light' : 'dark'} />
       </SafeAreaProvider>
