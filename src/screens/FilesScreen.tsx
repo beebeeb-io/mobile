@@ -117,6 +117,8 @@ function displayName(entry: FileEntry): string {
   return raw;
 }
 
+// TODO: Replace with beebeeb-core `guess_mime_type` via UniFFI native module
+// once the xcframework is rebuilt with the new bindings.
 function guessMimeTypeFromName(name: string): string | null {
   const imageMimeType = imageMimeTypeFromName(name);
   if (imageMimeType) return imageMimeType;
@@ -148,6 +150,7 @@ function guessMimeTypeFromName(name: string): string | null {
   }
 }
 
+// TODO: Replace with beebeeb-core `guess_mime_type` + `is_media` via UniFFI native module
 function imageMimeTypeFromName(name: string): string | null {
   const ext = name.toLowerCase().split('.').pop();
   switch (ext) {
@@ -172,6 +175,8 @@ function imageMimeTypeFromName(name: string): string | null {
   }
 }
 
+// TODO: Remove once MIME type is always encrypted in name_encrypted — the server
+// no longer needs a plaintext MIME type column, so this PATCH becomes unnecessary.
 async function patchFileMimeType(fileId: string, mimeType: string): Promise<void> {
   const token = await getToken();
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
@@ -268,6 +273,8 @@ function upsertFileEntry(entries: FileEntry[], entry: FileEntry): FileEntry[] {
   return [entry, ...entries.filter((current) => current.id !== entry.id)];
 }
 
+// TODO: Replace MIME-based classification with beebeeb-core `is_media` / `guess_mime_type`
+// via UniFFI native module once xcframework is rebuilt.
 /** Determine a file type category from the mime type. */
 function fileCategory(entry: FileEntry): 'folder' | 'image' | 'pdf' | 'audio' | 'video' | 'doc' | 'file' {
   if (entry.is_folder) return 'folder';

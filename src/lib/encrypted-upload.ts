@@ -150,12 +150,19 @@ export async function encryptedUpload(opts: EncryptedUploadOptions): Promise<Fil
     plaintextSize,
   ].join('\n'))
 
+  // MIME type is now encrypted inside name_encrypted — never sent in plaintext.
+  // Only `is_media` (a boolean) is sent so the server can index media files.
+  const isMedia = mimeType
+    ? mimeType.startsWith('image/') || mimeType.startsWith('video/')
+    : false
+
   return uploadEncryptedChunked({
     fileId,
     nameEncrypted: nameEncryptedForFileId,
     v2InitNameEncrypted,
     parentId,
-    mimeType: mimeType ?? undefined,
+    mimeType: undefined,
+    isMedia,
     plaintextSizeBytes: plaintextSize,
     resumeKey,
     onProgress,
