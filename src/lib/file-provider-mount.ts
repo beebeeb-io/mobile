@@ -3,6 +3,7 @@ import * as BeebeebCrypto from '../../modules/beebeeb-crypto';
 import type { FileProviderDomainRegistrationResult } from '../../modules/beebeeb-crypto/src/BeebeebCrypto.types';
 import { getApiUrl, getToken } from './api';
 import { requestDeviceOwnerAuth } from './device-owner-auth';
+import { wasRecentlyUnlocked } from './lock-state';
 
 export async function mountTrustedFileProvider(): Promise<FileProviderDomainRegistrationResult> {
   if (Platform.OS !== 'ios') {
@@ -19,13 +20,18 @@ export async function mountTrustedFileProvider(): Promise<FileProviderDomainRegi
     };
   }
 
-  const auth = await requestDeviceOwnerAuth('Mount Beebeeb in Files', {
-    unavailable: 'Set up Face ID or an iPhone passcode before mounting Beebeeb in Files.',
-    cancelled: 'Authentication cancelled. Beebeeb was not mounted in Files.',
-    failed: 'Authentication failed. Beebeeb was not mounted in Files.',
-  });
-  if (!auth.ok) {
-    throw new Error(auth.message);
+  // Skip the device-owner auth prompt if the user just authenticated via
+  // BiometricLockScreen. Without this guard, returning from background could
+  // trigger a second Face ID prompt when the File Provider mount runs.
+  if (!wasRecentlyUnlocked()) {
+    const auth = await requestDeviceOwnerAuth('Mount Beebeeb in Files', {
+      unavailable: 'Set up Face ID or an iPhone passcode before mounting Beebeeb in Files.',
+      cancelled: 'Authentication cancelled. Beebeeb was not mounted in Files.',
+      failed: 'Authentication failed. Beebeeb was not mounted in Files.',
+    });
+    if (!auth.ok) {
+      throw new Error(auth.message);
+    }
   }
 
   const token = await getToken();
