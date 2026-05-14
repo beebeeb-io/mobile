@@ -156,6 +156,17 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
   const masterKeyRef = useRef<Uint8Array | null>(null)
 
   const unlock = useCallback(async (phrase?: string) => {
+    // If the vault is already open and no recovery phrase was given, skip the
+    // redundant keychain load. On devices with biometric-protected Secure
+    // Enclave keys, loadKeyFromKeychain triggers a Face ID prompt — calling
+    // unlock() again after BiometricLockScreen already authenticated would
+    // surface a second, unnecessary Face ID dialog.
+    if (!phrase && masterKeyRef.current) {
+      setIsUnlocked(true)
+      setUnlockAttempted(true)
+      return
+    }
+
     let masterKey: Uint8Array
 
     try {
