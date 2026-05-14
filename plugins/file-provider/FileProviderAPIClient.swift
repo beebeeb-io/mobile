@@ -274,11 +274,13 @@ class FileProviderAPIClient {
         let initURL = try filesURL(pathComponents: ["upload", "init"])
         var initRequest = try authorizedRequest(url: initURL, method: "POST")
         initRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let isMediaFlag = isMedia(mimeType: mimeType)
         initRequest.httpBody = try JSONSerialization.data(withJSONObject: [
             "file_id": fileId,
             "name_encrypted": nameEncrypted,
             "parent_id": parentId as Any? ?? NSNull(),
-            "mime_type": mimeType as Any? ?? NSNull(),
+            "mime_type": NSNull(),
+            "is_media": isMediaFlag,
             "size_bytes": sizeBytes,
             "chunk_count": encryptedChunks.count,
         ])
