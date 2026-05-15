@@ -133,6 +133,11 @@ interface CryptoContextValue {
    */
   getFileKeyBytes: (fileId: string) => Promise<Uint8Array>
   /**
+   * Return a copy of the in-memory master key for key-agreement operations.
+   * Throws if vault is locked.
+   */
+  getMasterKeyBytes: () => Uint8Array
+  /**
    * Derive the search-index encryption key from the master key, using the
    * same HKDF info string the web client uses (`beebeeb-search-index`) so
    * the same key derivation produces the same key on both platforms.
@@ -256,6 +261,14 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
     [],
   )
 
+  const getMasterKeyBytesFn = useCallback(
+    (): Uint8Array => {
+      return new Uint8Array(requireKey())
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  )
+
   // The web client derives its search-index key with HKDF-SHA-256 over the
   // master key with `info = "beebeeb-search-index"`. `deriveFileKey` is the
   // same HKDF construction with `info = fileId`, so passing the literal
@@ -304,6 +317,7 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
         encryptMetadata: encryptMetadataFn,
         decryptMetadata: decryptMetadataFn,
         getFileKeyBytes: getFileKeyBytesFn,
+        getMasterKeyBytes: getMasterKeyBytesFn,
         getIndexKey: getIndexKeyFn,
         setBiometricRequirement: setBiometricRequirementFn,
       }}

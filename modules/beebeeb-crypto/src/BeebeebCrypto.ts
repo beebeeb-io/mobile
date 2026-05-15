@@ -98,6 +98,24 @@ export async function deriveX25519PublicKey(masterKey: Uint8Array): Promise<Uint
   return coerceBytes(await BeebeebCryptoModule.deriveX25519Public(privateKey))
 }
 
+export async function deriveX25519Private(masterKey: Uint8Array): Promise<Uint8Array> {
+  return coerceBytes(await BeebeebCryptoModule.deriveX25519Private(masterKey))
+}
+
+export async function x25519SharedSecret(
+  myPrivate: Uint8Array,
+  theirPublic: Uint8Array,
+): Promise<Uint8Array> {
+  return coerceBytes(await BeebeebCryptoModule.x25519SharedSecret(myPrivate, theirPublic))
+}
+
+export async function deriveShareKey(
+  sharedSecret: Uint8Array,
+  fileId: Uint8Array,
+): Promise<Uint8Array> {
+  return coerceBytes(await BeebeebCryptoModule.deriveShareKey(sharedSecret, fileId))
+}
+
 // ─── File encryption ─────────────────────────────────────────────────────────
 
 /**

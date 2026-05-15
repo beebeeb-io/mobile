@@ -23,12 +23,15 @@ import { useTheme } from '../lib/theme-context';
 import { useToast } from '../lib/toast-context';
 import { useKeyboardLayoutAnimation } from '../lib/useKeyboardLayoutAnimation';
 import { NativeSwitch } from '../components/NativeSwitch';
-import { createShare, friendlyError } from '../lib/api';
+import { approveInvite, createInvite, createShare, friendlyError, resolveSharingContact } from '../lib/api';
 import type { Share as ShareLink } from '../lib/api';
 import { useCrypto } from '../lib/crypto-context';
 import {
+  deriveShareKey,
+  deriveX25519Private,
   encryptChunk,
   generateRandomBytes,
+  x25519SharedSecret,
 } from '../../modules/beebeeb-crypto';
 
 type ShareRoute = RouteProp<RootStackParamList, 'ShareSheet'>;
@@ -63,9 +66,26 @@ function toBase64(bytes: Uint8Array): string {
   return btoa(s);
 }
 
+function fromBase64(value: string): Uint8Array {
+  const binary = atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
 /** URL-safe base64 (no +, /, or padding) — safe to embed in #key= fragment. */
 function toBase64url(bytes: Uint8Array): string {
   return toBase64(bytes).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function isEmail(value: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+}
+
+function asciiBytes(value: string): Uint8Array {
+  const bytes = new Uint8Array(value.length);
+  for (let i = 0; i < value.length; i++) bytes[i] = value.charCodeAt(i) & 0xff;
+  return bytes;
 }
 
 /**
@@ -79,6 +99,31 @@ async function wrapFileKeyForShare(clientKey: Uint8Array, fileKey: Uint8Array): 
   result.set(enc.nonce, 0);
   result.set(enc.ciphertext, enc.nonce.length);
   return result;
+}
+
+async function encryptFileKeyForRecipient(
+  masterKey: Uint8Array,
+  recipientPublicKey: Uint8Array,
+  fileId: string,
+  fileKey: Uint8Array,
+): Promise<Uint8Array> {
+  let privateKey: Uint8Array | null = null;
+  let sharedSecret: Uint8Array | null = null;
+  let shareKey: Uint8Array | null = null;
+  try {
+    privateKey = await deriveX25519Private(masterKey);
+    sharedSecret = await x25519SharedSecret(privateKey, recipientPublicKey);
+    shareKey = await deriveShareKey(sharedSecret, asciiBytes(fileId));
+    const enc = await encryptChunk(shareKey, fileKey);
+    const result = new Uint8Array(enc.nonce.length + enc.ciphertext.length);
+    result.set(enc.nonce, 0);
+    result.set(enc.ciphertext, enc.nonce.length);
+    return result;
+  } finally {
+    privateKey?.fill(0);
+    sharedSecret?.fill(0);
+    shareKey?.fill(0);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -121,13 +166,16 @@ export default function ShareSheetScreen() {
   const insets = useSafeAreaInsets();
   const { colors: c, resolved } = useTheme();
   const { fileId, fileName, mimeType, sizeBytes } = route.params;
-  const { getFileKeyBytes, isUnlocked } = useCrypto();
+  const { getFileKeyBytes, getMasterKeyBytes, isUnlocked } = useCrypto();
   useKeyboardLayoutAnimation();
 
   const [expiry, setExpiry] = useState<ExpiryOption>(EXPIRY_OPTIONS[1]);
   const [opens, setOpens] = useState<OpensOption>(OPENS_OPTIONS[0]);
   const [passphrase, setPassphrase] = useState('');
   const [doubleEncrypted, setDoubleEncrypted] = useState(false);
+  const [mode, setMode] = useState<'link' | 'person'>('link');
+  const [recipient, setRecipient] = useState('');
+  const [inviteSentTo, setInviteSentTo] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [share, setShare] = useState<ShareLink | null>(null);
   // For double-encrypted shares, we build the URL locally and store it here.
@@ -158,6 +206,11 @@ export default function ShareSheetScreen() {
     chipActive: { backgroundColor: c.ink, borderColor: c.ink },
     chipText: { fontSize: 12, color: c.ink3 },
     chipTextActive: { color: c.paper, fontWeight: '600' },
+    modeRow: { flexDirection: 'row', backgroundColor: c.paper2, borderRadius: radii.md, padding: 3, marginBottom: 12 },
+    modeButton: { flex: 1, height: 36, borderRadius: radii.sm, alignItems: 'center', justifyContent: 'center' },
+    modeButtonActive: { backgroundColor: c.paper, borderWidth: 1, borderColor: c.line },
+    modeText: { fontSize: 13, fontWeight: '600', color: c.ink3 },
+    modeTextActive: { color: c.ink },
     input: { height: 42, borderWidth: 1, borderColor: c.line, borderRadius: radii.md, paddingHorizontal: spacing.md, fontSize: 14, color: c.ink, backgroundColor: c.paper },
     hint: { fontSize: 11, color: c.ink3, marginTop: 6, lineHeight: 15 },
     // Double-encrypted toggle
@@ -197,6 +250,7 @@ export default function ShareSheetScreen() {
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     setCreating(true);
     setError(null);
+    setInviteSentTo(null);
 
     try {
       let wrappedFileKey: string | undefined;
@@ -254,6 +308,60 @@ export default function ShareSheetScreen() {
       setCreating(false);
     }
   }, [fileId, expiry, opens, passphrase, doubleEncrypted, isUnlocked, getFileKeyBytes]);
+
+  const handleCreateInvite = useCallback(async () => {
+    const raw = recipient.trim();
+    if (!raw) {
+      setError('Enter an email address.');
+      return;
+    }
+
+    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    setCreating(true);
+    setError(null);
+    setInviteSentTo(null);
+
+    try {
+      let recipientEmail = raw.toLowerCase();
+      let label = recipientEmail;
+
+      if (!isEmail(raw)) {
+        const contact = await resolveSharingContact(raw);
+        if (!contact) {
+          setError('Use an email address to invite someone new.');
+          return;
+        }
+        recipientEmail = contact.email.toLowerCase();
+        label = contact.username ? `@${contact.username} · ${contact.email}` : contact.email;
+      }
+
+      const result = await createInvite(fileId, recipientEmail);
+      if (result.recipient_public_key && result.status === 'claimed') {
+        const masterKey = getMasterKeyBytes();
+        const fileKey = await getFileKeyBytes(fileId);
+        try {
+          const wrappedFileKey = await encryptFileKeyForRecipient(
+            masterKey,
+            fromBase64(result.recipient_public_key),
+            fileId,
+            fileKey,
+          );
+          await approveInvite(result.invite_id, toBase64(wrappedFileKey));
+          wrappedFileKey.fill(0);
+        } finally {
+          masterKey.fill(0);
+          fileKey.fill(0);
+        }
+      }
+      setInviteSentTo(label);
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch (err) {
+      setError(friendlyError(err));
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+    } finally {
+      setCreating(false);
+    }
+  }, [fileId, recipient, getFileKeyBytes, getMasterKeyBytes]);
 
   // The URL shown and copied is built locally so the fragment always contains
   // client-held decryption material: file key for standard, K_c for double.
@@ -361,6 +469,27 @@ export default function ShareSheetScreen() {
               </TouchableOpacity>
             </View>
           </View>
+        ) : inviteSentTo ? (
+          <View style={styles.successCard}>
+            <View style={styles.successHeaderRow}>
+              <Text style={styles.successTitle}>Invite sent</Text>
+            </View>
+            <View style={styles.successDetails}>
+              <Text style={styles.successHint}>
+                {inviteSentTo} can accept this share from their Beebeeb account.
+              </Text>
+            </View>
+
+            <View style={styles.buttonRow}>
+              <TouchableOpacity
+                style={styles.doneButton}
+                onPress={handleClose}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.doneButtonText}>Done</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
         ) : (
           /* ---- Configure share settings ---- */
           <ScrollView
@@ -369,87 +498,141 @@ export default function ShareSheetScreen() {
             keyboardShouldPersistTaps="handled"
             showsVerticalScrollIndicator={false}
           >
-            {/* Expiry */}
-            <Text style={styles.sectionLabel}>Expires</Text>
-            <View style={styles.chipRow}>
-              {EXPIRY_OPTIONS.map((opt) => {
-                const active = opt.hours === expiry.hours;
-                return (
-                  <TouchableOpacity
-                    key={opt.label}
-                    style={[styles.chip, active && styles.chipActive]}
-                    onPress={() => setExpiry(opt)}
-                    activeOpacity={0.7}
-                  >
-                    <Text style={[styles.chipText, active && styles.chipTextActive]}>
-                      {opt.label}
-                    </Text>
-                  </TouchableOpacity>
-                );
-              })}
-            </View>
-
-            {/* Max opens */}
-            <Text style={styles.sectionLabel}>Max opens</Text>
-            <View style={styles.chipRow}>
-              {OPENS_OPTIONS.map((opt) => {
-                const active = opt.value === opens.value;
-                return (
-                  <TouchableOpacity
-                    key={opt.label}
-                    style={[styles.chip, active && styles.chipActive]}
-                    onPress={() => setOpens(opt)}
-                    activeOpacity={0.7}
-                  >
-                    <Text style={[styles.chipText, active && styles.chipTextActive]}>
-                      {opt.label}
-                    </Text>
-                  </TouchableOpacity>
-                );
-              })}
-            </View>
-
-            {/* Passphrase */}
-            <Text style={styles.sectionLabel}>Passphrase (optional)</Text>
-            <TextInput
-              style={styles.input}
-              value={passphrase}
-              onChangeText={setPassphrase}
-              placeholder="Leave empty to skip"
-              placeholderTextColor={c.ink4}
-              secureTextEntry
-              autoCapitalize="none"
-              autoCorrect={false}
-              editable={!creating}
-            />
-            <Text style={styles.hint}>
-              Recipients will be asked for this before opening the file.
-            </Text>
-
-            {/* Double-encrypted toggle */}
-            <View style={styles.toggleRow}>
-              <View style={styles.toggleInfo}>
-                <Text style={styles.toggleLabel}>Double encrypted</Text>
-                <Text style={styles.toggleSub}>
-                  {doubleEncrypted
-                    ? 'Even Beebeeb cannot decrypt this link. Only someone with the exact URL can access the file.'
-                    : 'Standard: Beebeeb holds a wrapped copy for revocation. Enable for full client-side control.'}
-                </Text>
-                {doubleEncrypted && (
-                  <View style={styles.zkBadge}>
-                    <Text style={styles.zkBadgeText}>ACTIVE</Text>
-                  </View>
-                )}
-              </View>
-              <NativeSwitch
-                value={doubleEncrypted}
-                onValueChange={(v) => {
-                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                  setDoubleEncrypted(v);
+            <View style={styles.modeRow} accessibilityRole="tablist">
+              <TouchableOpacity
+                style={[styles.modeButton, mode === 'link' && styles.modeButtonActive]}
+                onPress={() => {
+                  setMode('link');
+                  setError(null);
                 }}
-                colors={c}
-              />
+                activeOpacity={0.8}
+                accessibilityRole="tab"
+                accessibilityState={{ selected: mode === 'link' }}
+              >
+                <Text style={[styles.modeText, mode === 'link' && styles.modeTextActive]}>
+                  Link
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.modeButton, mode === 'person' && styles.modeButtonActive]}
+                onPress={() => {
+                  setMode('person');
+                  setError(null);
+                }}
+                activeOpacity={0.8}
+                accessibilityRole="tab"
+                accessibilityState={{ selected: mode === 'person' }}
+              >
+                <Text style={[styles.modeText, mode === 'person' && styles.modeTextActive]}>
+                  Person
+                </Text>
+              </TouchableOpacity>
             </View>
+
+            {mode === 'link' ? (
+              <>
+                {/* Expiry */}
+                <Text style={styles.sectionLabel}>Expires</Text>
+                <View style={styles.chipRow}>
+                  {EXPIRY_OPTIONS.map((opt) => {
+                    const active = opt.hours === expiry.hours;
+                    return (
+                      <TouchableOpacity
+                        key={opt.label}
+                        style={[styles.chip, active && styles.chipActive]}
+                        onPress={() => setExpiry(opt)}
+                        activeOpacity={0.7}
+                      >
+                        <Text style={[styles.chipText, active && styles.chipTextActive]}>
+                          {opt.label}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+
+                {/* Max opens */}
+                <Text style={styles.sectionLabel}>Max opens</Text>
+                <View style={styles.chipRow}>
+                  {OPENS_OPTIONS.map((opt) => {
+                    const active = opt.value === opens.value;
+                    return (
+                      <TouchableOpacity
+                        key={opt.label}
+                        style={[styles.chip, active && styles.chipActive]}
+                        onPress={() => setOpens(opt)}
+                        activeOpacity={0.7}
+                      >
+                        <Text style={[styles.chipText, active && styles.chipTextActive]}>
+                          {opt.label}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+
+                {/* Passphrase */}
+                <Text style={styles.sectionLabel}>Passphrase (optional)</Text>
+                <TextInput
+                  style={styles.input}
+                  value={passphrase}
+                  onChangeText={setPassphrase}
+                  placeholder="Leave empty to skip"
+                  placeholderTextColor={c.ink4}
+                  secureTextEntry
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  editable={!creating}
+                />
+                <Text style={styles.hint}>
+                  Recipients will be asked for this before opening the file.
+                </Text>
+
+                {/* Double-encrypted toggle */}
+                <View style={styles.toggleRow}>
+                  <View style={styles.toggleInfo}>
+                    <Text style={styles.toggleLabel}>Double encrypted</Text>
+                    <Text style={styles.toggleSub}>
+                      {doubleEncrypted
+                        ? 'Even Beebeeb cannot decrypt this link. Only someone with the exact URL can access the file.'
+                        : 'Standard: Beebeeb holds a wrapped copy for revocation. Enable for full client-side control.'}
+                    </Text>
+                    {doubleEncrypted && (
+                      <View style={styles.zkBadge}>
+                        <Text style={styles.zkBadgeText}>ACTIVE</Text>
+                      </View>
+                    )}
+                  </View>
+                  <NativeSwitch
+                    value={doubleEncrypted}
+                    onValueChange={(v) => {
+                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                      setDoubleEncrypted(v);
+                    }}
+                    colors={c}
+                  />
+                </View>
+              </>
+            ) : (
+              <>
+                <Text style={styles.sectionLabel}>Recipient</Text>
+                <TextInput
+                  style={styles.input}
+                  value={recipient}
+                  onChangeText={setRecipient}
+                  placeholder="email@example.com or @handle"
+                  placeholderTextColor={c.ink4}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  keyboardType="email-address"
+                  textContentType="emailAddress"
+                  editable={!creating}
+                />
+                <Text style={styles.hint}>
+                  Handles resolve only for people you already share with.
+                </Text>
+              </>
+            )}
 
             {error && (
               <View style={styles.errorBanner}>
@@ -459,21 +642,25 @@ export default function ShareSheetScreen() {
 
             <TouchableOpacity
               style={[styles.createButton, creating && styles.buttonDisabled]}
-              onPress={handleCreate}
+              onPress={mode === 'link' ? handleCreate : handleCreateInvite}
               activeOpacity={0.8}
               disabled={creating}
             >
               {creating ? (
                 <ActivityIndicator color={c.ink} size="small" />
               ) : (
-                <Text style={styles.createButtonText}>Create encrypted link</Text>
+                <Text style={styles.createButtonText}>
+                  {mode === 'link' ? 'Create encrypted link' : 'Send invite'}
+                </Text>
               )}
             </TouchableOpacity>
 
             <Text style={styles.fineprint}>
-              {doubleEncrypted
-                ? 'Key generated on your device — the server stores an opaque blob and cannot decrypt.'
-                : 'The link gives access to a key wrapped for the recipient. We never see the file.'}
+              {mode === 'link'
+                ? doubleEncrypted
+                  ? 'Key generated on your device — the server stores an opaque blob and cannot decrypt.'
+                  : 'The link gives access to a key wrapped for the recipient. We never see the file.'
+                : 'Email invites appear as pending until the recipient can accept them.'}
             </Text>
           </ScrollView>
         )}

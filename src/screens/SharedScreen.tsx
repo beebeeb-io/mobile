@@ -18,7 +18,7 @@ import SkeletonRow from '../components/SkeletonRow';
 import { useCrypto } from '../lib/crypto-context';
 import { encryptedMetadataPayloadToBytes } from '../lib/encrypted-metadata';
 import { guessMimeType } from '../lib/media';
-import { getIncomingInvites, listMyShares, friendlyError } from '../lib/api';
+import { getIncomingInvites, getSentInvites, listMyShares, friendlyError } from '../lib/api';
 import type { ShareInvite, MyShareLink } from '../lib/api';
 import type { RootStackParamList } from '../App';
 
@@ -203,7 +203,13 @@ function ShareLinkBadge({ link }: { link: MyShareLink }) {
 // Tab type
 // ---------------------------------------------------------------------------
 
-type Tab = 'incoming' | 'links';
+type Tab = 'incoming' | 'sent' | 'pending' | 'links';
+type InviteDirection = 'incoming' | 'sent';
+
+interface InviteListItem {
+  invite: ShareInvite;
+  direction: InviteDirection;
+}
 
 // ---------------------------------------------------------------------------
 // Screen
@@ -213,7 +219,7 @@ export default function SharedScreen() {
   const { colors: c } = useTheme();
   const insets = useSafeAreaInsets();
   const navigation = useNavigation<Nav>();
-  const [activeTab, setActiveTab] = useState<Tab>('links');
+  const [activeTab, setActiveTab] = useState<Tab>('incoming');
   const [isScrolled, setIsScrolled] = useState(false);
 
   // Crypto — for decrypting share link filenames
@@ -224,6 +230,12 @@ export default function SharedScreen() {
   const [incomingLoading, setIncomingLoading] = useState(true);
   const [incomingRefreshing, setIncomingRefreshing] = useState(false);
   const [incomingError, setIncomingError] = useState<string | null>(null);
+
+  // Sent invites
+  const [sent, setSent] = useState<ShareInvite[]>([]);
+  const [sentLoading, setSentLoading] = useState(true);
+  const [sentRefreshing, setSentRefreshing] = useState(false);
+  const [sentError, setSentError] = useState<string | null>(null);
 
   // My share links
   const [links, setLinks] = useState<MyShareLink[]>([]);
@@ -271,11 +283,29 @@ export default function SharedScreen() {
     }
   }, []);
 
+  const fetchSent = useCallback(async (isRefresh = false) => {
+    if (isRefresh) setSentRefreshing(true);
+    else setSentLoading(true);
+    setSentError(null);
+
+    try {
+      const result = await getSentInvites();
+      result.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+      setSent(result);
+    } catch (err) {
+      setSentError(friendlyError(err));
+    } finally {
+      setSentLoading(false);
+      setSentRefreshing(false);
+    }
+  }, []);
+
   useFocusEffect(
     useCallback(() => {
       fetchIncoming();
+      fetchSent();
       fetchLinks();
-    }, [fetchIncoming, fetchLinks])
+    }, [fetchIncoming, fetchSent, fetchLinks])
   );
 
   // Decrypt share link filenames when links or unlock state changes
@@ -379,14 +409,17 @@ export default function SharedScreen() {
     [navigation, decryptedLinkNames, decryptedLinkMimes],
   );
 
-  const renderIncomingItem = ({ item }: { item: ShareInvite }) => {
+  const renderInviteRow = (item: ShareInvite, direction: InviteDirection) => {
     const tappable = item.status === 'approved';
+    const peer = direction === 'incoming'
+      ? `From ${item.sender_email ?? 'unknown'}`
+      : `To ${item.recipient_email}`;
     return (
       <TouchableOpacity
         activeOpacity={tappable ? 0.6 : 1}
         onPress={tappable ? () => openInvitePreview(item) : undefined}
         accessibilityRole="button"
-        accessibilityLabel={`Shared file ${displayInviteName(item)} from ${item.sender_email ?? 'unknown'}`}
+        accessibilityLabel={`Shared file ${displayInviteName(item)} ${peer}`}
         style={[styles.row, { borderBottomColor: c.line }]}
       >
         <View style={[styles.fileIcon, { backgroundColor: inviteMimeColor(item) }]}>
@@ -395,7 +428,7 @@ export default function SharedScreen() {
         <View style={styles.rowInfo}>
           <Text style={[styles.rowName, { color: c.ink }]} numberOfLines={1}>{displayInviteName(item)}</Text>
           <Text style={[styles.rowMeta, { color: c.ink3 }]} numberOfLines={1}>
-            {[`From ${item.sender_email ?? 'unknown'}`, formatDate(item.created_at), expiryLabel(item.expires_at)]
+            {[peer, formatDate(item.created_at), expiryLabel(item.expires_at)]
               .filter(Boolean)
               .join('  ·  ')}
           </Text>
@@ -404,6 +437,10 @@ export default function SharedScreen() {
       </TouchableOpacity>
     );
   };
+
+  const renderIncomingItem = ({ item }: { item: ShareInvite }) => renderInviteRow(item, 'incoming');
+  const renderSentItem = ({ item }: { item: ShareInvite }) => renderInviteRow(item, 'sent');
+  const renderPendingItem = ({ item }: { item: InviteListItem }) => renderInviteRow(item.invite, item.direction);
 
   const renderLinkItem = ({ item }: { item: MyShareLink }) => {
     const name = decryptedLinkNames[item.id] ?? displayShareLinkName(item);
@@ -471,22 +508,62 @@ export default function SharedScreen() {
     </View>
   );
 
-  // Current tab data
-  const isIncoming = activeTab === 'incoming';
+  const incomingApproved = incoming.filter((item) => item.status === 'approved');
+  const sentApproved = sent.filter((item) => item.status === 'approved');
+  const pendingInvites: InviteListItem[] = [
+    ...incoming
+      .filter((item) => item.status !== 'approved')
+      .map((invite) => ({ invite, direction: 'incoming' as const })),
+    ...sent
+      .filter((item) => item.status !== 'approved')
+      .map((invite) => ({ invite, direction: 'sent' as const })),
+  ].sort((a, b) => new Date(b.invite.created_at).getTime() - new Date(a.invite.created_at).getTime());
 
   // ------------------------------------------------------------------
   // Main render
   // ------------------------------------------------------------------
 
-  const currentError = isIncoming ? incomingError : linksError;
-  const currentLoading = isIncoming
-    ? (incomingLoading && !incomingRefreshing)
-    : (linksLoading && !linksRefreshing);
-  const currentRefreshing = isIncoming ? incomingRefreshing : linksRefreshing;
-  const onRefresh = isIncoming
-    ? () => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); fetchIncoming(true); }
-    : () => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); fetchLinks(true); };
-  const onRetry = isIncoming ? () => fetchIncoming() : () => fetchLinks();
+  const currentError =
+    activeTab === 'links' ? linksError
+    : activeTab === 'sent' ? sentError
+    : activeTab === 'pending' ? incomingError ?? sentError
+    : incomingError;
+  const currentLoading =
+    activeTab === 'links' ? (linksLoading && !linksRefreshing)
+    : activeTab === 'sent' ? (sentLoading && !sentRefreshing)
+    : activeTab === 'pending'
+      ? ((incomingLoading && !incomingRefreshing) || (sentLoading && !sentRefreshing))
+      : (incomingLoading && !incomingRefreshing);
+  const currentRefreshing =
+    activeTab === 'links' ? linksRefreshing
+    : activeTab === 'sent' ? sentRefreshing
+    : activeTab === 'pending' ? (incomingRefreshing || sentRefreshing)
+    : incomingRefreshing;
+  const onRefresh = () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    if (activeTab === 'links') {
+      fetchLinks(true);
+    } else if (activeTab === 'sent') {
+      fetchSent(true);
+    } else if (activeTab === 'pending') {
+      fetchIncoming(true);
+      fetchSent(true);
+    } else {
+      fetchIncoming(true);
+    }
+  };
+  const onRetry = () => {
+    if (activeTab === 'links') {
+      fetchLinks();
+    } else if (activeTab === 'sent') {
+      fetchSent();
+    } else if (activeTab === 'pending') {
+      fetchIncoming();
+      fetchSent();
+    } else {
+      fetchIncoming();
+    }
+  };
 
   return (
     <View style={[styles.root, { paddingTop: insets.top, backgroundColor: c.paper }]}>
@@ -497,30 +574,29 @@ export default function SharedScreen() {
 
       {/* Tabs */}
       <View style={styles.tabBar} accessibilityRole="tablist">
-        <TouchableOpacity
-          style={[styles.tab, !isIncoming && [styles.tabActive, { borderBottomColor: c.amber }]]}
-          onPress={() => setActiveTab('links')}
-          activeOpacity={0.7}
-          accessibilityRole="tab"
-          accessibilityState={{ selected: !isIncoming }}
-          accessibilityLabel="My links"
-        >
-          <Text style={[styles.tabText, { color: c.ink3 }, !isIncoming && [styles.tabTextActive, { color: c.ink }]]}>
-            My links
-          </Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[styles.tab, isIncoming && [styles.tabActive, { borderBottomColor: c.amber }]]}
-          onPress={() => setActiveTab('incoming')}
-          activeOpacity={0.7}
-          accessibilityRole="tab"
-          accessibilityState={{ selected: isIncoming }}
-          accessibilityLabel="Shared with me"
-        >
-          <Text style={[styles.tabText, { color: c.ink3 }, isIncoming && [styles.tabTextActive, { color: c.ink }]]}>
-            Shared with me
-          </Text>
-        </TouchableOpacity>
+        {[
+          { id: 'incoming' as const, label: 'Shared with me' },
+          { id: 'sent' as const, label: 'Shared by me' },
+          { id: 'pending' as const, label: 'Pending' },
+          { id: 'links' as const, label: 'My links' },
+        ].map((tab) => {
+          const active = activeTab === tab.id;
+          return (
+            <TouchableOpacity
+              key={tab.id}
+              style={[styles.tab, active && [styles.tabActive, { borderBottomColor: c.amber }]]}
+              onPress={() => setActiveTab(tab.id)}
+              activeOpacity={0.7}
+              accessibilityRole="tab"
+              accessibilityState={{ selected: active }}
+              accessibilityLabel={tab.label}
+            >
+              <Text style={[styles.tabText, { color: c.ink3 }, active && [styles.tabTextActive, { color: c.ink }]]}>
+                {tab.label}
+              </Text>
+            </TouchableOpacity>
+          );
+        })}
       </View>
       </View>{/* end header area */}
 
@@ -531,9 +607,9 @@ export default function SharedScreen() {
         <View>
           {[0, 1, 2].map((i) => <SkeletonRow key={i} />)}
         </View>
-      ) : isIncoming ? (
+      ) : activeTab === 'incoming' ? (
         <FlatList
-          data={incoming}
+          data={incomingApproved}
           keyExtractor={(item) => item.id}
           renderItem={renderIncomingItem}
           ListEmptyComponent={renderEmpty('No shared files yet', 'people-outline')}
@@ -547,7 +623,45 @@ export default function SharedScreen() {
               colors={[c.amber]}
             />
           }
-          contentContainerStyle={incoming.length === 0 ? styles.emptyList : undefined}
+          contentContainerStyle={incomingApproved.length === 0 ? styles.emptyList : undefined}
+          keyboardDismissMode="on-drag"
+        />
+      ) : activeTab === 'sent' ? (
+        <FlatList
+          data={sentApproved}
+          keyExtractor={(item) => item.id}
+          renderItem={renderSentItem}
+          ListEmptyComponent={renderEmpty('No approved sent shares yet', 'send-outline')}
+          onScroll={(e) => setIsScrolled(e.nativeEvent.contentOffset.y > 0)}
+          scrollEventThrottle={100}
+          refreshControl={
+            <RefreshControl
+              refreshing={currentRefreshing}
+              onRefresh={onRefresh}
+              tintColor={c.amber}
+              colors={[c.amber]}
+            />
+          }
+          contentContainerStyle={sentApproved.length === 0 ? styles.emptyList : undefined}
+          keyboardDismissMode="on-drag"
+        />
+      ) : activeTab === 'pending' ? (
+        <FlatList
+          data={pendingInvites}
+          keyExtractor={(item) => `${item.direction}-${item.invite.id}`}
+          renderItem={renderPendingItem}
+          ListEmptyComponent={renderEmpty('No pending shares', 'time-outline')}
+          onScroll={(e) => setIsScrolled(e.nativeEvent.contentOffset.y > 0)}
+          scrollEventThrottle={100}
+          refreshControl={
+            <RefreshControl
+              refreshing={currentRefreshing}
+              onRefresh={onRefresh}
+              tintColor={c.amber}
+              colors={[c.amber]}
+            />
+          }
+          contentContainerStyle={pendingInvites.length === 0 ? styles.emptyList : undefined}
           keyboardDismissMode="on-drag"
         />
       ) : (
@@ -583,10 +697,10 @@ const styles = StyleSheet.create({
   title: { fontSize: 28, fontWeight: '700', paddingHorizontal: spacing.lg, paddingTop: 6, paddingBottom: 4 },
 
   // Tab bar
-  tabBar: { flexDirection: 'row', paddingHorizontal: spacing.lg, paddingBottom: spacing.sm, gap: 4 },
-  tab: { flex: 1, paddingVertical: 10, alignItems: 'center', borderBottomWidth: 2, borderBottomColor: 'transparent' },
+  tabBar: { flexDirection: 'row', flexWrap: 'wrap', paddingHorizontal: spacing.lg, paddingBottom: spacing.sm, gap: 4 },
+  tab: { width: '48%', flexGrow: 1, paddingVertical: 10, alignItems: 'center', borderBottomWidth: 2, borderBottomColor: 'transparent' },
   tabActive: { borderBottomColor: 'transparent' },
-  tabText: { fontSize: 14, fontWeight: '500' },
+  tabText: { fontSize: 12, fontWeight: '500' },
   tabTextActive: { fontWeight: '600' },
 
   // List rows
