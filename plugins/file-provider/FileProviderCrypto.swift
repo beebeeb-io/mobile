@@ -57,6 +57,9 @@ class FileProviderCrypto {
     // MARK: - Filename Encryption/Decryption
 
     func decryptFilename(fileId: String, encrypted: String) -> String? {
+        if masterKeyHandle == nil {
+            loadMasterKey()
+        }
         guard let mk = masterKeyHandle else { return nil }
         do {
             return try mk.decryptName(fileId: fileId, nameEncrypted: encrypted)
@@ -67,6 +70,9 @@ class FileProviderCrypto {
     }
 
     func encryptFilename(fileId: String, name: String, mimeType: String?) throws -> String {
+        if masterKeyHandle == nil {
+            loadMasterKey()
+        }
         guard let mk = masterKeyHandle else { throw FileProviderCryptoError.noMasterKey }
         return try mk.encryptName(fileId: fileId, filename: name, mimeType: mimeType)
     }

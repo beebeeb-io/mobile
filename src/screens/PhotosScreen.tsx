@@ -13,7 +13,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useNavigation } from '@react-navigation/native';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import * as Haptics from 'expo-haptics';
 import * as MediaLibrary from 'expo-media-library';
 import { radii, spacing } from '../theme';
@@ -476,9 +476,11 @@ export default function PhotosScreen() {
     }
   }, []);
 
-  useEffect(() => {
-    fetchPhotos();
-  }, [fetchPhotos]);
+  useFocusEffect(
+    useCallback(() => {
+      fetchPhotos();
+    }, [fetchPhotos])
+  );
 
   const handleRefresh = useCallback(() => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);

@@ -116,12 +116,31 @@ function extensionForMime(mimeType?: string, category?: Category): string {
   if (mime === 'image/gif') return '.gif';
   if (mime === 'image/heic') return '.heic';
   if (mime === 'image/heif') return '.heif';
+  if (mime === 'image/svg+xml') return '.svg';
   if (mime === 'video/mp4') return '.mp4';
   if (mime === 'video/quicktime') return '.mov';
   if (mime === 'video/x-m4v') return '.m4v';
   if (mime === 'video/webm') return '.webm';
+  if (mime === 'application/pdf') return '.pdf';
+  if (mime === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') return '.docx';
+  if (mime === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet') return '.xlsx';
+  if (mime === 'application/vnd.ms-excel') return '.xls';
+  if (mime === 'text/csv') return '.csv';
+  if (mime === 'text/html') return '.html';
+  if (mime === 'text/plain') return '.txt';
+  if (mime === 'application/json') return '.json';
+  if (mime === 'application/xml' || mime === 'text/xml') return '.xml';
+  if (mime === 'application/zip') return '.zip';
+  if (mime.startsWith('audio/')) return '.mp3';
   if (category === 'image') return '.jpg';
   if (category === 'video') return '.mp4';
+  if (category === 'pdf') return '.pdf';
+  if (category === 'audio') return '.mp3';
+  if (category === 'docx') return '.docx';
+  if (category === 'spreadsheet') return '.xlsx';
+  if (category === 'html') return '.html';
+  if (category === 'zip') return '.zip';
+  if (category === 'doc') return '.txt';
   return '';
 }
 
@@ -923,10 +942,12 @@ export default function PreviewScreen() {
 
   const mediaDetailsRows = useMemo(() => {
     const storage = trustLocation(storagePoolId);
+    const ext = previewFileName.includes('.') ? previewFileName.split('.').pop()?.toUpperCase() : null;
     const rows: Array<{ label: string; value: string }> = [
       { label: 'Name', value: previewFileName },
       { label: 'Kind', value: CATEGORY_LABELS[category] ?? 'File' },
     ];
+    if (ext) rows.push({ label: 'Format', value: `.${ext}` });
     if (mimeType) rows.push({ label: 'Type', value: mimeType });
     if (sizeBytes != null) rows.push({ label: 'Size', value: formatSize(sizeBytes) });
     if (createdAt) rows.push({ label: 'Created', value: formatDate(createdAt) });
