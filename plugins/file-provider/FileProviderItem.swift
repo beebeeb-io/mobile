@@ -80,8 +80,14 @@ class FileProviderItem: NSObject, NSFileProviderItem {
 
     var contentType: UTType {
         if isRoot || metadata?.isFolder == true { return .folder }
-        guard let mime = metadata?.mimeType else { return .data }
-        return UTType(mimeType: mime) ?? .data
+        if let mime = metadata?.mimeType, let ut = UTType(mimeType: mime) {
+            return ut
+        }
+        let ext = (filename as NSString).pathExtension.lowercased()
+        if !ext.isEmpty, let ut = UTType(filenameExtension: ext) {
+            return ut
+        }
+        return .data
     }
 
     var documentSize: NSNumber? {

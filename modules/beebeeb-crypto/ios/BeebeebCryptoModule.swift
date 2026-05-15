@@ -687,8 +687,15 @@ public class BeebeebCryptoModule: Module {
     }
 
     AsyncFunction("triggerImmediateBackup") { (authToken: String) in
-      PhotoBackupManager.shared.enable(authToken: authToken)
-      PhotoBackupManager.shared.triggerImmediateBatch { _ in }
+      let mgr = PhotoBackupManager.shared
+      // Wait for enable() to finish authorization + asset enumeration
+      // before triggering the batch, otherwise the queue is empty.
+      let semaphore = DispatchSemaphore(value: 0)
+      mgr.enable(authToken: authToken) {
+        semaphore.signal()
+      }
+      _ = semaphore.wait(timeout: .now() + 30)
+      mgr.triggerImmediateBatch { _ in }
     }
 
     // ── Share Extension: pending shares dropped by BeebeebShare ────────

@@ -9,7 +9,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
-import { useNavigation } from '@react-navigation/native';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { radii, spacing } from '../theme';
@@ -271,11 +271,12 @@ export default function SharedScreen() {
     }
   }, []);
 
-  // Fetch both on mount
-  useEffect(() => {
-    fetchIncoming();
-    fetchLinks();
-  }, [fetchIncoming, fetchLinks]);
+  useFocusEffect(
+    useCallback(() => {
+      fetchIncoming();
+      fetchLinks();
+    }, [fetchIncoming, fetchLinks])
+  );
 
   // Decrypt share link filenames when links or unlock state changes
   useEffect(() => {

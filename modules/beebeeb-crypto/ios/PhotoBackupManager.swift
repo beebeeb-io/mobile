@@ -62,17 +62,23 @@ final class PhotoBackupManager: NSObject {
 
   // MARK: - Enable / Disable
 
-  func enable(authToken: String) {
+  func enable(authToken: String, completion: (() -> Void)? = nil) {
     storedAuthToken = authToken
     PHPhotoLibrary.requestAuthorization(for: .readWrite) { [weak self] status in
-      guard let self, status == .authorized || status == .limited else { return }
+      guard let self, status == .authorized || status == .limited else {
+        completion?()
+        return
+      }
       let options = PHFetchOptions()
       options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
       let result = PHAsset.fetchAssets(with: .image, options: options)
       self.currentFetchResult = result
       var assets: [PHAsset] = []
       result.enumerateObjects { asset, _, _ in assets.append(asset) }
-      self.dbQueue.async { self.insertPending(assets: assets) }
+      self.dbQueue.async {
+        self.insertPending(assets: assets)
+        completion?()
+      }
       PHPhotoLibrary.shared().register(self)
       self.scheduleNextBackup()
     }

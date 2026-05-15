@@ -529,7 +529,7 @@ const FileRowItem = React.memo(function FileRowItem({
           )}
           <Text
             style={[styles.fileName, { color: c.ink }, isEncryptedFallback && styles.fileNameEncrypted]}
-            numberOfLines={1}
+            numberOfLines={2}
           >
             {nameText}
           </Text>

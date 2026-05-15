@@ -256,7 +256,7 @@ export async function exportContacts(encryption: BackupEncryptors): Promise<Cont
     return { exported: false, contactCount: 0, reason: 'no_permission' };
   }
 
-  const { data } = await Contacts.getContactsAsync({
+  const result = await Contacts.getContactsAsync({
     fields: [
       Contacts.Fields.Name,
       Contacts.Fields.FirstName,
@@ -273,8 +273,9 @@ export async function exportContacts(encryption: BackupEncryptors): Promise<Cont
       Contacts.Fields.Note,
     ],
   });
+  const data = result?.data;
 
-  if (data.length === 0) {
+  if (!data || data.length === 0) {
     return { exported: false, contactCount: 0, reason: 'empty' };
   }
 

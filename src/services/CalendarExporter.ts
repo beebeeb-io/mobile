@@ -20,8 +20,8 @@ import { ensureBackupFolders } from './BackupService';
 const PRODID = '-//Beebeeb//Mobile Backup//EN';
 const WINDOW_PAST_DAYS = 365;
 const WINDOW_FUTURE_DAYS = 365;
-const LAST_HASH_KEY_PREFIX = 'beebeeb_calendar_last_hash:';
-const LAST_FILE_ID_KEY_PREFIX = 'beebeeb_calendar_file_id:';
+const LAST_HASH_KEY_PREFIX = 'beebeeb_calendar_last_hash_';
+const LAST_FILE_ID_KEY_PREFIX = 'beebeeb_calendar_file_id_';
 
 export interface BackupEncryptors {
   encryptChunkFn: (fileId: string, plaintext: Uint8Array) => Promise<EncryptedData>;
