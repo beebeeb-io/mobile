@@ -866,10 +866,10 @@ export default function App() {
   return (
     <AuthContext.Provider value={{ user, refreshAuth, signOut, phraseVerified, skipOnboarding, markPhraseVerified }}>
       <CryptoProvider key={user?.user_id ?? 'signed-out'}>
-      <SyncProvider>
-      <BackupProvider>
       <SafeAreaProvider>
+      <SyncProvider>
       <ToastProvider>
+      <BackupProvider>
         <NavigationContainer
           ref={navigationRef}
           linking={linking}
@@ -985,10 +985,10 @@ export default function App() {
         <ConfirmActionPrompt />
 
         <StatusBar style={resolved === 'dark' ? 'light' : 'dark'} />
-      </ToastProvider>
-      </SafeAreaProvider>
       </BackupProvider>
+      </ToastProvider>
       </SyncProvider>
+      </SafeAreaProvider>
       </CryptoProvider>
     </AuthContext.Provider>
   );

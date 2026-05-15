@@ -203,6 +203,10 @@ function upsertFileEntry(entries: FileEntry[], entry: FileEntry): FileEntry[] {
   return [entry, ...entries.filter((current) => current.id !== entry.id)];
 }
 
+function folderCacheKey(parentId: string | null): string {
+  return parentId ?? 'root';
+}
+
 /** Determine a file type category from the mime type. */
 function fileCategory(entry: FileEntry): 'folder' | 'image' | 'pdf' | 'audio' | 'video' | 'doc' | 'file' {
   return fileCategoryFromMime(entry.mime_type, entry.is_folder);
@@ -1046,6 +1050,9 @@ export default function FilesScreen() {
 
   // Data state
   const [files, setFiles] = useState<FileEntry[]>([]);
+  const folderFilesCacheRef = useRef<Record<string, FileEntry[]>>({});
+  const filesFolderKeyRef = useRef(folderCacheKey(currentFolder.id));
+  const filesCountRef = useRef(0);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -1281,12 +1288,44 @@ export default function FilesScreen() {
     });
   }, []);
 
+  useEffect(() => {
+    filesCountRef.current = files.length;
+    if (filesFolderKeyRef.current !== folderCacheKey(currentFolder.id)) return;
+    if (files.length === 0) return;
+    folderFilesCacheRef.current[folderCacheKey(currentFolder.id)] = files;
+  }, [currentFolder.id, files]);
+
+  const applyFilesForFolder = useCallback((
+    parentId: string | null,
+    nextFiles: FileEntry[],
+    options: { preserveCachedOnEmpty?: boolean } = {},
+  ) => {
+    const unique = uniqueFileEntries(nextFiles);
+    const cacheKey = folderCacheKey(parentId);
+    filesFolderKeyRef.current = cacheKey;
+    if (unique.length > 0) {
+      folderFilesCacheRef.current[cacheKey] = unique;
+      setFiles(unique);
+      return;
+    }
+
+    const cached = folderFilesCacheRef.current[cacheKey];
+    if (options.preserveCachedOnEmpty && cached && cached.length > 0) {
+      setFiles(cached);
+      return;
+    }
+
+    delete folderFilesCacheRef.current[cacheKey];
+    setFiles([]);
+  }, []);
+
   // ------------------------------------------------------------------
   // Fetch files
   // ------------------------------------------------------------------
 
   const fetchFiles = useCallback(async (parentId: string | null, isRefresh = false) => {
-    if (isRefresh) {
+    const hasVisibleFiles = filesCountRef.current > 0;
+    if (isRefresh || hasVisibleFiles) {
       setRefreshing(true);
     } else {
       setLoading(true);
@@ -1295,14 +1334,14 @@ export default function FilesScreen() {
 
     try {
       const result = await listFiles(parentId ?? undefined);
-      setFiles(uniqueFileEntries(result));
+      applyFilesForFolder(parentId, result, { preserveCachedOnEmpty: !isRefresh });
     } catch (err) {
       setError(friendlyError(err));
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
-  }, []);
+  }, [applyFilesForFolder]);
 
   // Fetch on mount and when folder changes. When the CRDT sync engine is
   // ready, derive the list from the in-memory tree instead of hitting
@@ -1324,7 +1363,11 @@ export default function FilesScreen() {
 
       if (sync.ready) {
         const nodes = sync.children(currentFolder.id);
-        setFiles(uniqueFileEntries(nodes.filter((n) => !n.is_trashed).map(syncNodeToFileEntry)));
+        applyFilesForFolder(
+          currentFolder.id,
+          nodes.filter((n) => !n.is_trashed).map(syncNodeToFileEntry),
+          { preserveCachedOnEmpty: true },
+        );
         setLoading(false);
         setError(null);
         return;

@@ -1,8 +1,8 @@
 /**
  * PhotoBackupBridge — render-less component that connects CryptoContext,
- * BackupContext, ToastContext, and the JS-side photo backup runner.
+ * BackupContext state, optional ToastContext, and the JS-side photo backup runner.
  *
- * Must be mounted inside <CryptoProvider>, <BackupProvider>, AND <ToastProvider>.
+ * Must be mounted inside <CryptoProvider> and <BackupProvider>.
  *
  * Triggers a backup session on:
  *   1. Mount (first launch after login)
@@ -15,7 +15,7 @@ import { useCallback, useEffect, useRef } from 'react';
 import { AppState, type AppStateStatus } from 'react-native';
 import NetInfo from '@react-native-community/netinfo';
 import { useCrypto } from './crypto-context';
-import { useBackup } from './backup-context';
+import type { BackupContextValue } from './backup-context';
 import { useToast } from './toast-context';
 import { runPhotoBackupSession, isOnWifi } from '../services/PhotoBackupRunner';
 import {
@@ -25,7 +25,19 @@ import {
 } from '../services/PhotoBackupCheckpoint';
 import { updateBackupCategoryState } from '../services/BackupService';
 
-export function PhotoBackupBridge(): null {
+interface PhotoBackupBridgeProps {
+  backup: Pick<
+    BackupContextValue,
+    | 'isPhotoBackupEnabled'
+    | 'includeVideos'
+    | 'wifiOnly'
+    | 'backgroundUpload'
+    | 'photoBackupForceCount'
+    | 'reportPhotoProgress'
+  >;
+}
+
+export function PhotoBackupBridge({ backup }: PhotoBackupBridgeProps): null {
   const { isUnlocked, encryptChunk, encryptMetadata, getFileKeyBytes } = useCrypto();
   const {
     isPhotoBackupEnabled,
@@ -34,7 +46,7 @@ export function PhotoBackupBridge(): null {
     backgroundUpload,
     photoBackupForceCount,
     reportPhotoProgress,
-  } = useBackup();
+  } = backup;
   const { showToast } = useToast();
 
   const runningRef = useRef(false);
@@ -77,16 +89,17 @@ export function PhotoBackupBridge(): null {
       console.log('[PhotoBackupBridge] session already running — skipping trigger');
       return;
     }
+    runningRef.current = true;
 
     if (s.wifiOnly) {
       const onWifi = await isOnWifi();
       if (!onWifi) {
+        runningRef.current = false;
         console.log('[PhotoBackupBridge] wifiOnly=true and not on Wi-Fi — deferring');
         return;
       }
     }
 
-    runningRef.current = true;
     const ctrl = new AbortController();
     abortRef.current = ctrl;
 
@@ -170,6 +183,12 @@ export function PhotoBackupBridge(): null {
   }, []); // stable — reads stateRef
 
   // ── AppState: trigger on every foreground transition ────────────────────────
+  useEffect(() => {
+    if (isUnlocked && isPhotoBackupEnabled) {
+      void maybeStartSession();
+    }
+  }, [isUnlocked, isPhotoBackupEnabled, maybeStartSession]);
+
   useEffect(() => {
     const appStateRef = { current: AppState.currentState };
     const sub = AppState.addEventListener('change', (next: AppStateStatus) => {

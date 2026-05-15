@@ -18,9 +18,9 @@ import * as Haptics from 'expo-haptics';
 import * as MediaLibrary from 'expo-media-library';
 import { radii, spacing } from '../theme';
 import { useTheme } from '../lib/theme-context';
-import { getAllImages, friendlyError } from '../lib/api';
+import { getAllImages, friendlyError, getApiUrl, getToken } from '../lib/api';
 import type { FileEntry } from '../lib/api';
-import { guessMimeType, isMedia } from '../lib/media';
+import { guessMimeType } from '../lib/media';
 import { useBackup } from '../lib/backup-context';
 import { useCrypto } from '../lib/crypto-context';
 import { useNetworkStatus } from '../lib/useNetworkStatus';
@@ -35,15 +35,82 @@ import {
 // Helpers
 // ---------------------------------------------------------------------------
 
+type MediaEntry = FileEntry & {
+  category?: string | null;
+  file_category?: string | null;
+  media_type?: string | null;
+  name?: string | null;
+  file_name?: string | null;
+  mime?: string | null;
+};
+
+function stringField(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function mediaCategory(entry: MediaEntry): string {
+  return (
+    stringField(entry.category) ??
+    stringField(entry.file_category) ??
+    stringField(entry.media_type) ??
+    ''
+  ).toLowerCase();
+}
+
+function filenameCandidates(entry: MediaEntry): string[] {
+  return [
+    stringField(entry.name),
+    stringField(entry.file_name),
+    stringField(entry.name_encrypted),
+  ].filter((value): value is string => !!value && !value.startsWith('{'));
+}
+
+function photoMimeType(entry: FileEntry): string | null {
+  const mediaEntry = entry as MediaEntry;
+  const mime = (entry.mime_type ?? mediaEntry.mime ?? '').toLowerCase();
+  if (mime.startsWith('image/')) return entry.mime_type ?? mediaEntry.mime ?? 'image/jpeg';
+  if (mime.startsWith('video/')) return null;
+
+  const category = mediaCategory(mediaEntry);
+  if (category === 'image' || category === 'photo') return 'image/jpeg';
+  if (category === 'video') return null;
+
+  for (const name of filenameCandidates(mediaEntry)) {
+    const guessed = guessMimeType(name);
+    if (guessed?.startsWith('image/')) return guessed;
+    if (guessed?.startsWith('video/')) return null;
+  }
+
+  return entry.is_media ? 'image/jpeg' : null;
+}
+
 function isImageFile(entry: FileEntry): boolean {
-  // Server-provided MIME type (pre-encryption files)
-  const mime = entry.mime_type ?? '';
-  if (mime.startsWith('image/')) return true;
-  // Newer uploads set is_media at upload time (MIME is encrypted/null)
-  if (entry.is_media) return true;
-  // Last resort: guess from the encrypted filename's extension
-  if (entry.name_encrypted && isMedia(guessMimeType(entry.name_encrypted))) return true;
-  return false;
+  return photoMimeType(entry) !== null;
+}
+
+async function getMediaFiles(): Promise<FileEntry[] | null> {
+  const token = await getToken();
+  const res = await fetch(`${getApiUrl()}/api/v1/files/media`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+  });
+
+  if (res.status === 404 || res.status === 405) return null;
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({ error: res.statusText }));
+    const message = typeof body === 'object' && body !== null && 'error' in body
+      ? String((body as { error?: unknown }).error ?? res.statusText)
+      : res.statusText;
+    throw new Error(message);
+  }
+
+  const data = await res.json() as { files?: FileEntry[] };
+  return Array.isArray(data.files) ? data.files : [];
+}
+
+async function getPhotoCandidates(): Promise<FileEntry[]> {
+  const mediaFiles = await getMediaFiles();
+  if (mediaFiles) return mediaFiles;
+  return getAllImages();
 }
 
 /**
@@ -423,6 +490,8 @@ export default function PhotosScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const [isScrolled, setIsScrolled] = useState(false);
   const [photos, setPhotos] = useState<FileEntry[]>([]);
+  const photosCacheRef = useRef<FileEntry[]>([]);
+  const photosCountRef = useRef(0);
   const [photosFolderId, setPhotosFolderId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -439,7 +508,7 @@ export default function PhotosScreen() {
       navigation.navigate('Preview', {
         fileId: entry.id,
         fileName: entry.name_encrypted ?? 'Photo',
-        mimeType: entry.mime_type ?? undefined,
+        mimeType: photoMimeType(entry) ?? undefined,
         sizeBytes: entry.size_bytes ?? undefined,
         createdAt: entry.created_at,
         chunkCount: entry.chunk_count,
@@ -451,7 +520,8 @@ export default function PhotosScreen() {
   );
 
   const fetchPhotos = useCallback(async (isRefresh = false) => {
-    if (isRefresh) {
+    const hasVisiblePhotos = photosCountRef.current > 0;
+    if (isRefresh || hasVisiblePhotos) {
       setRefreshing(true);
     } else {
       setLoading(true);
@@ -459,14 +529,22 @@ export default function PhotosScreen() {
     setError(null);
 
     try {
-      const allImages = await getAllImages();
+      const allImages = await getPhotoCandidates();
       setPhotosFolderId(null);
-      // Server already returns image-only, sorted newest first, but defend
+      // Server usually returns image/media rows sorted newest first, but defend
       // against future changes by re-applying both invariants here.
       const images = allImages
         .filter(isImageFile)
         .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-      setPhotos(images);
+      if (images.length > 0) {
+        photosCacheRef.current = images;
+        setPhotos(images);
+      } else if (!isRefresh && photosCacheRef.current.length > 0) {
+        setPhotos(photosCacheRef.current);
+      } else {
+        photosCacheRef.current = [];
+        setPhotos([]);
+      }
       void pruneThumbnailCache();
     } catch (err) {
       setError(friendlyError(err));
@@ -488,6 +566,11 @@ export default function PhotosScreen() {
   }, [fetchPhotos]);
 
   const groups = useMemo(() => groupByMonth(photos), [photos]);
+
+  useEffect(() => {
+    photosCountRef.current = photos.length;
+    if (photos.length > 0) photosCacheRef.current = photos;
+  }, [photos]);
 
   useEffect(() => {
     groupsRef.current = groups;

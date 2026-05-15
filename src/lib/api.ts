@@ -1323,14 +1323,23 @@ export async function setPreference(key: string, value: string): Promise<void> {
 export interface Subscription {
   plan: string;
   billing_cycle: string | null;
+  seats?: number;
+  region?: string;
   status: string;
   current_period_end: string | null;
+  is_mock?: boolean;
+  stripe_configured?: boolean;
+  quota_bytes?: number;
+  used_bytes?: number;
 }
 
 export async function getSubscription(): Promise<Subscription | null> {
   try {
-    const data = await request<{ subscription: Subscription | null }>('GET', '/api/v1/billing/subscription');
-    return data.subscription ?? null;
+    const data = await request<{ subscription?: Subscription | null } | Subscription>('GET', '/api/v1/billing/subscription');
+    if (Object.prototype.hasOwnProperty.call(data, 'subscription')) {
+      return (data as { subscription?: Subscription | null }).subscription ?? null;
+    }
+    return data as Subscription;
   } catch {
     return null;
   }
@@ -1760,6 +1769,7 @@ export interface DataExportRequest {
   export_id: string;
   status: string;
   estimated_seconds?: number;
+  download_url?: string;
 }
 
 export interface DataExportStatus {
@@ -1773,12 +1783,19 @@ export interface DataExportStatus {
 
 /** POST /api/v1/me/data-export */
 export async function requestDataExport(): Promise<DataExportRequest> {
-  return request<DataExportRequest>('POST', '/api/v1/me/data-export');
+  return normalizeDataExportUrl(await request<DataExportRequest>('POST', '/api/v1/me/data-export'));
 }
 
 /** GET /api/v1/me/data-export/:id */
 export async function getDataExportStatus(exportId: string): Promise<DataExportStatus> {
-  return request<DataExportStatus>('GET', `/api/v1/me/data-export/${exportId}`);
+  return normalizeDataExportUrl(await request<DataExportStatus>('GET', `/api/v1/me/data-export/${exportId}`));
+}
+
+function normalizeDataExportUrl<T extends { download_url?: string }>(data: T): T {
+  if (data.download_url && !data.download_url.startsWith('http')) {
+    return { ...data, download_url: `${BASE_URL}${data.download_url}` };
+  }
+  return data;
 }
 
 /** POST /api/v1/me/freeze */
@@ -1796,6 +1813,7 @@ export async function unfreezeAccount(): Promise<{ frozen: boolean }> {
 export interface Plan {
   id: string;
   name: string;
+  stripe_product_id?: string | null;
   price_eur: number;
   price_yearly_eur: number;
   storage_bytes: number;

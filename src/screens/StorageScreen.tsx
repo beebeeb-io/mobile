@@ -27,6 +27,7 @@ import {
   getPlans,
   createCheckoutSession,
   createPortalSession,
+  ApiError,
   type StorageUsage,
   type Subscription,
   type Plan,
@@ -229,12 +230,13 @@ function CurrentPlanCard({
 // ── Plan upgrade card ─────────────────────────────────────────────────────────
 
 function PlanCard({
-  plan, currentPlanSlug, onUpgrade, upgrading, c,
+  plan, currentPlanSlug, onUpgrade, upgrading, billingUnavailable, c,
 }: {
   plan: Plan;
   currentPlanSlug: string;
   onUpgrade: (planId: string, billingCycle: BillingCycle) => void;
   upgrading: string | null;
+  billingUnavailable: boolean;
   c: C;
 }) {
   const isCurrent = plan.id === currentPlanSlug;
@@ -281,7 +283,7 @@ function PlanCard({
         <View style={{ flexDirection: 'row', gap: 8, marginTop: 2 }}>
           <TouchableOpacity
             activeOpacity={0.8}
-            disabled={!!upgrading}
+            disabled={!!upgrading || billingUnavailable}
             onPress={() => { Haptics.selectionAsync(); onUpgrade(plan.id, 'monthly'); }}
             style={{
               flex: 1,
@@ -297,20 +299,23 @@ function PlanCard({
             }}
             accessibilityRole="button"
             accessibilityLabel={`Upgrade to ${plan.name} monthly`}
+            accessibilityState={{ disabled: !!upgrading || billingUnavailable }}
           >
             {upgrading === monthlyKey
               ? <ActivityIndicator size="small" color={c.amber} />
-              : <Text style={{ fontSize: 13, fontWeight: '700', color: c.ink }}>Monthly</Text>
+              : <Text style={{ fontSize: 13, fontWeight: '700', color: billingUnavailable ? c.ink3 : c.ink }}>Monthly</Text>
             }
           </TouchableOpacity>
           {hasYearly && (
             <TouchableOpacity
               activeOpacity={0.8}
-              disabled={!!upgrading}
+              disabled={!!upgrading || billingUnavailable}
               onPress={() => { Haptics.selectionAsync(); onUpgrade(plan.id, 'yearly'); }}
               style={{
                 flex: 1,
-                backgroundColor: c.amber,
+                backgroundColor: billingUnavailable ? c.paper2 : c.amber,
+                borderColor: billingUnavailable ? c.line : c.amber,
+                borderWidth: billingUnavailable ? 1 : 0,
                 borderRadius: 8,
                 paddingVertical: 9,
                 alignItems: 'center',
@@ -320,17 +325,24 @@ function PlanCard({
               }}
               accessibilityRole="button"
               accessibilityLabel={`Upgrade to ${plan.name} yearly`}
+              accessibilityState={{ disabled: !!upgrading || billingUnavailable }}
             >
               {upgrading === yearlyKey
                 ? <ActivityIndicator size="small" color={c.ink} />
                 : <>
-                    <Text style={{ fontSize: 13, fontWeight: '700', color: c.ink }}>Yearly</Text>
-                    <Ionicons name="chevron-forward" size={14} color={c.ink} />
+                    <Text style={{ fontSize: 13, fontWeight: '700', color: billingUnavailable ? c.ink3 : c.ink }}>Yearly</Text>
+                    <Ionicons name="chevron-forward" size={14} color={billingUnavailable ? c.ink3 : c.ink} />
                   </>
               }
             </TouchableOpacity>
           )}
         </View>
+      )}
+
+      {!isCurrent && billingUnavailable && (
+        <Text style={{ fontSize: 11, color: c.ink3, lineHeight: 15 }}>
+          Plan changes are not available in this app environment. Use the web app for billing changes.
+        </Text>
       )}
 
       {isCurrent && (
@@ -377,6 +389,7 @@ export default function StorageScreen() {
 
   const currentPlanSlug = subscription?.plan ?? usage?.plan_name ?? 'free';
   const isFree = currentPlanSlug.toLowerCase() === 'free';
+  const billingUnavailable = subscription?.stripe_configured === false;
 
   // Upgrade: open Stripe Checkout in system browser
   const handleUpgrade = useCallback(async (planId: string, billingCycle: BillingCycle) => {
@@ -389,12 +402,18 @@ export default function StorageScreen() {
       });
       await Linking.openURL(url);
     } catch (err) {
+      const setupUnavailable =
+        err instanceof ApiError &&
+        (err.message.toLowerCase().includes('stripe not configured') ||
+          err.message.toLowerCase().includes('no live price'));
       Alert.alert(
-        'Could not start checkout',
-        'Payment setup requires the billing system to be configured. Try again or visit app.beebeeb.io.',
+        setupUnavailable ? 'Billing changes unavailable' : 'Could not start checkout',
+        setupUnavailable
+          ? 'Your current storage and plan are shown here. Billing changes are handled on the web while payment setup is unavailable in this environment.'
+          : 'We could not start checkout from the app. Open the web app to manage billing.',
         [
           { text: 'Cancel', style: 'cancel' },
-          { text: 'Open web app', onPress: () => Linking.openURL('https://app.beebeeb.io/billing').catch(() => {}) },
+          { text: 'Open web app', onPress: () => Linking.openURL('https://app.beebeeb.io/settings/billing').catch(() => {}) },
         ],
       );
     } finally {
@@ -494,12 +513,15 @@ export default function StorageScreen() {
                     currentPlanSlug={currentPlanSlug}
                     onUpgrade={handleUpgrade}
                     upgrading={upgrading}
+                    billingUnavailable={billingUnavailable}
                     c={c}
                   />
                 ))}
               </View>
               <Text style={[layout.noteText, { color: c.ink3, marginTop: 8 }]}>
-                Prices in EUR. Annual billing includes a discount. You will be redirected to Stripe Checkout in your browser.
+                {billingUnavailable
+                  ? 'Prices in EUR. Billing changes are available on the web while payment setup is unavailable here.'
+                  : 'Prices in EUR. Annual billing includes a discount. You will be redirected to Stripe Checkout in your browser.'}
               </Text>
             </View>
           )}
