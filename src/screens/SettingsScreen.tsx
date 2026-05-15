@@ -60,7 +60,6 @@ import {
   getToken,
   getUserRegion,
   setUserRegion,
-  requestDataExport,
   getApiEnvironment,
   type StorageUsage,
   type Subscription,
@@ -98,6 +97,10 @@ import * as BeebeebCrypto from '../../modules/beebeeb-crypto';
 
 const BIOMETRIC_PREF_KEY = 'beebeeb_biometric_lock';
 const BIOMETRIC_DELAY_KEY = 'beebeeb_biometric_delay';
+const CONTACTS_LAST_SCAN_KEY = 'beebeeb_contacts_last_scan_at';
+const CALENDAR_LAST_SCAN_KEY = 'beebeeb_calendar_last_scan_at';
+const CONTACTS_LAST_SCAN_COUNT_KEY = 'beebeeb_contacts_last_scan_count';
+const CALENDAR_LAST_SCAN_COUNT_KEY = 'beebeeb_calendar_last_scan_count';
 // User-level override on top of the OS permission. If the user explicitly
 // toggles notifications OFF in our settings, we honour that even when iOS
 // still has permission granted — the OS permission is the *ceiling*, this
@@ -284,10 +287,11 @@ function SectionNote({ text, c }: { text: string; c: C }) {
 type IoniconName = React.ComponentProps<typeof Ionicons>['name'];
 
 function SettingsRow({
-  label, value, onPress, danger, showChevron = true, icon, c,
+  label, value, badge, onPress, danger, showChevron = true, icon, c,
 }: {
   label: string;
   value?: string;
+  badge?: string;
   onPress?: () => void;
   danger?: boolean;
   showChevron?: boolean;
@@ -322,6 +326,20 @@ function SettingsRow({
         {label}
       </Text>
       <View style={layout.rowRight}>
+        {badge != null && (
+          <View style={{
+            borderRadius: 5,
+            backgroundColor: c.paper2,
+            borderWidth: 1,
+            borderColor: c.line,
+            paddingHorizontal: 6,
+            paddingVertical: 2,
+          }}>
+            <Text style={{ fontSize: 10, fontWeight: '600' as const, color: c.ink3 }}>
+              {badge}
+            </Text>
+          </View>
+        )}
         {value != null && <Text style={{ fontSize: 13, color: c.ink3 }}>{value}</Text>}
         {showChevron && !danger && <Text style={{ fontSize: 18, color: c.ink4, marginLeft: 2 }}>{'›'}</Text>}
       </View>
@@ -375,6 +393,7 @@ interface CategoryStats {
   lastSyncAt: string | null;
   syncing: boolean;
   legacyCount: number;
+  hasScanned: boolean;
 }
 
 const EMPTY_CATEGORY_STATS: CategoryStats = {
@@ -385,10 +404,11 @@ const EMPTY_CATEGORY_STATS: CategoryStats = {
   lastSyncAt: null,
   syncing: false,
   legacyCount: 0,
+  hasScanned: false,
 };
 
 function BackupCategoryStatus({ stats, paused, c }: { stats: CategoryStats; paused?: boolean; c: C }) {
-  const { uploadedCount, totalCount, uploadedBytes, totalBytes, lastSyncAt, syncing, legacyCount } = stats;
+  const { uploadedCount, totalCount, uploadedBytes, totalBytes, lastSyncAt, syncing, legacyCount, hasScanned } = stats;
 
   if (paused && totalCount > uploadedCount) {
     return (
@@ -401,7 +421,15 @@ function BackupCategoryStatus({ stats, paused, c }: { stats: CategoryStats; paus
     );
   }
 
-  if (totalCount === 0 && !lastSyncAt && !syncing && legacyCount === 0) {
+  if (syncing && totalCount === 0) {
+    return (
+      <View style={{ paddingHorizontal: 12, paddingBottom: 10, paddingTop: 2 }}>
+        <Text style={{ fontSize: 11, color: c.ink3 }}>Scanning...</Text>
+      </View>
+    );
+  }
+
+  if (totalCount === 0 && !lastSyncAt && !syncing && legacyCount === 0 && !hasScanned) {
     return (
       <View style={{ paddingHorizontal: 12, paddingBottom: 10, paddingTop: 2 }}>
         <Text style={{ fontSize: 11, color: c.ink3 }}>Waiting for first scan…</Text>
@@ -418,6 +446,8 @@ function BackupCategoryStatus({ stats, paused, c }: { stats: CategoryStats; paus
     line = `${uploadedCount} / ${totalCount} items · ${formatBytes(uploadedBytes)} / ${formatBytes(totalBytes)}`;
   } else if (lastSyncAt) {
     line = `Last backup: ${timeAgo(lastSyncAt)} · ${uploadedCount} items · ${formatBytes(uploadedBytes)}`;
+  } else if (hasScanned && totalCount === 0) {
+    line = 'Last scan found no items to back up';
   } else if (legacyCount > 0) {
     line = `${legacyCount} legacy item${legacyCount === 1 ? '' : 's'} migrated from the old backup layout`;
   } else {
@@ -574,6 +604,10 @@ export default function SettingsScreen() {
   // Server-side all-time photo backup stats + last-session timestamp
   const [serverPhotoStats, setServerPhotoStats] = useState<PhotoBackupStats | null>(null);
   const [lastSessionAt, setLastSessionAt] = useState<string | null>(null);
+  const [contactsLastSessionAt, setContactsLastSessionAt] = useState<string | null>(null);
+  const [calendarLastSessionAt, setCalendarLastSessionAt] = useState<string | null>(null);
+  const [contactsLastSessionCount, setContactsLastSessionCount] = useState(0);
+  const [calendarLastSessionCount, setCalendarLastSessionCount] = useState(0);
 
   // Theme — sourced from global ThemeContext
   const { colors: c, mode: themePreference, setMode: handleThemeChange } = useTheme();
@@ -699,6 +733,14 @@ export default function SettingsScreen() {
     loadAccountData();
     loadStorageRegionPref();
     if (isPhotoBackupEnabled) fetchPhotoBackupStats();
+    SecureStore.getItemAsync(CONTACTS_LAST_SCAN_KEY).then(setContactsLastSessionAt).catch(() => {});
+    SecureStore.getItemAsync(CALENDAR_LAST_SCAN_KEY).then(setCalendarLastSessionAt).catch(() => {});
+    SecureStore.getItemAsync(CONTACTS_LAST_SCAN_COUNT_KEY)
+      .then((value) => { setContactsLastSessionCount(value ? parseInt(value, 10) || 0 : 0); })
+      .catch(() => {});
+    SecureStore.getItemAsync(CALENDAR_LAST_SCAN_COUNT_KEY)
+      .then((value) => { setCalendarLastSessionCount(value ? parseInt(value, 10) || 0 : 0); })
+      .catch(() => {});
     // Seed the push toggle from OS permission AND a user opt-out flag —
     // OS permission alone overestimates ("granted" but user wants quiet),
     // SecureStore alone underestimates (user toggled off in a past
@@ -767,34 +809,47 @@ export default function SettingsScreen() {
       getUploadedBytes('calendar'), getTotalBytes('calendar'),
     ]);
 
+    const localPhotoUploaded = photoUploaded + videoUploaded;
+    const localPhotoTotal = photoTotal + videoTotal;
+    const serverPhotoBackedUp = serverPhotoStats?.backed_up ?? 0;
+    const serverPhotoTotal = serverPhotoStats?.total_estimated ?? 0;
+    const photoLastSyncAt = manifest?.backups.camera_roll.last_sync
+      ?? serverPhotoStats?.last_backup_at
+      ?? lastSessionAt
+      ?? null;
     setPhotoStats({
-      uploadedCount: photoUploaded + videoUploaded,
-      totalCount: photoTotal + videoTotal,
-      uploadedBytes: photoUpBytes + videoUpBytes,
-      totalBytes: photoTotalBytes + videoTotalBytes,
-      lastSyncAt: manifest?.backups.camera_roll.last_sync ?? null,
+      uploadedCount: Math.max(localPhotoUploaded, serverPhotoBackedUp),
+      totalCount: Math.max(localPhotoTotal, serverPhotoTotal, serverPhotoBackedUp),
+      uploadedBytes: Math.max(photoUpBytes + videoUpBytes, serverPhotoStats?.total_size_bytes ?? 0),
+      totalBytes: Math.max(photoTotalBytes + videoTotalBytes, serverPhotoStats?.total_size_bytes ?? 0),
+      lastSyncAt: photoLastSyncAt,
       syncing,
       legacyCount: manifest?.backups.camera_roll.legacy_items_migrated ?? 0,
+      hasScanned: photoLastSyncAt != null || serverPhotoBackedUp > 0,
     });
+    const contactsLastSyncAt = manifest?.backups.contacts.last_sync ?? contactsLastSessionAt ?? null;
+    const calendarLastSyncAt = manifest?.backups.calendar.last_sync ?? calendarLastSessionAt ?? null;
     setContactsStats({
-      uploadedCount: contactUploaded,
-      totalCount: contactTotal,
+      uploadedCount: Math.max(contactUploaded, contactsLastSessionCount),
+      totalCount: Math.max(contactTotal, contactsLastSessionCount),
       uploadedBytes: contactUpBytes,
       totalBytes: contactTotalBytes,
-      lastSyncAt: manifest?.backups.contacts.last_sync ?? null,
+      lastSyncAt: contactsLastSyncAt,
       syncing,
       legacyCount: manifest?.backups.contacts.legacy_items_migrated ?? 0,
+      hasScanned: contactsLastSyncAt != null,
     });
     setCalendarStats({
-      uploadedCount: calUploaded,
-      totalCount: calTotal,
+      uploadedCount: Math.max(calUploaded, calendarLastSessionCount),
+      totalCount: Math.max(calTotal, calendarLastSessionCount),
       uploadedBytes: calUpBytes,
       totalBytes: calTotalBytes,
-      lastSyncAt: manifest?.backups.calendar.last_sync ?? null,
+      lastSyncAt: calendarLastSyncAt,
       syncing,
       legacyCount: manifest?.backups.calendar.legacy_items_migrated ?? 0,
+      hasScanned: calendarLastSyncAt != null,
     });
-  }, [syncing]);
+  }, [syncing, lastSessionAt, serverPhotoStats, contactsLastSessionAt, calendarLastSessionAt, contactsLastSessionCount, calendarLastSessionCount]);
 
   useEffect(() => {
     refreshBackupStats();
@@ -1117,6 +1172,7 @@ export default function SettingsScreen() {
       return;
     }
     setBackingUpContacts(true);
+    setContactsStats((prev) => ({ ...prev, syncing: true }));
     try {
       await initializeBackup('contacts');
       const token = await getToken();
@@ -1133,7 +1189,19 @@ export default function SettingsScreen() {
         items_synced: result.contactCount,
         contact_count: result.contactCount,
       });
+      setContactsLastSessionAt(timestamp);
+      setContactsLastSessionCount(result.contactCount);
+      await SecureStore.setItemAsync(CONTACTS_LAST_SCAN_KEY, timestamp).catch(() => {});
+      await SecureStore.setItemAsync(CONTACTS_LAST_SCAN_COUNT_KEY, String(result.contactCount)).catch(() => {});
       await refreshBackupStats();
+      setContactsStats((prev) => ({
+        ...prev,
+        uploadedCount: result.contactCount,
+        totalCount: Math.max(prev.totalCount, result.contactCount),
+        lastSyncAt: timestamp,
+        syncing: false,
+        hasScanned: true,
+      }));
       const message = result.exported
         ? `Contacts backed up · ${result.contactCount} contact${result.contactCount === 1 ? '' : 's'}`
         : `Contacts checked · ${result.contactCount} contact${result.contactCount === 1 ? '' : 's'} unchanged`;
@@ -1143,6 +1211,7 @@ export default function SettingsScreen() {
       Alert.alert('Contacts backup failed', errorMessage(err));
     } finally {
       setBackingUpContacts(false);
+      setContactsStats((prev) => ({ ...prev, syncing: false }));
     }
   }, [crypto.encryptChunk, crypto.encryptMetadata, crypto.decryptMetadata, refreshBackupStats, showToast]);
 
@@ -1163,6 +1232,7 @@ export default function SettingsScreen() {
       return;
     }
     setBackingUpCalendar(true);
+    setCalendarStats((prev) => ({ ...prev, syncing: true }));
     try {
       await initializeBackup('calendar');
       const token = await getToken();
@@ -1179,7 +1249,19 @@ export default function SettingsScreen() {
         items_synced: result.eventCount,
         calendar_count: result.calendarCount,
       });
+      setCalendarLastSessionAt(timestamp);
+      setCalendarLastSessionCount(result.eventCount);
+      await SecureStore.setItemAsync(CALENDAR_LAST_SCAN_KEY, timestamp).catch(() => {});
+      await SecureStore.setItemAsync(CALENDAR_LAST_SCAN_COUNT_KEY, String(result.eventCount)).catch(() => {});
       await refreshBackupStats();
+      setCalendarStats((prev) => ({
+        ...prev,
+        uploadedCount: result.eventCount,
+        totalCount: Math.max(prev.totalCount, result.eventCount),
+        lastSyncAt: timestamp,
+        syncing: false,
+        hasScanned: true,
+      }));
       const message = result.exported
         ? `Calendar backed up · ${result.eventCount} event${result.eventCount === 1 ? '' : 's'}`
         : `Calendar checked · ${result.calendarCount} calendar${result.calendarCount === 1 ? '' : 's'}`;
@@ -1189,6 +1271,7 @@ export default function SettingsScreen() {
       Alert.alert('Calendar backup failed', errorMessage(err));
     } finally {
       setBackingUpCalendar(false);
+      setCalendarStats((prev) => ({ ...prev, syncing: false }));
     }
   }, [crypto.encryptChunk, crypto.encryptMetadata, crypto.decryptMetadata, refreshBackupStats, showToast]);
 
@@ -1221,13 +1304,6 @@ export default function SettingsScreen() {
     navigation.navigate('Storage');
   }, [navigation]);
 
-  const handleOfflineFiles = useCallback(() => {
-    Alert.alert(
-      'Available offline',
-      'Coming soon — offline files will be available in a future update.',
-    );
-  }, []);
-
   const handleReportBug = useCallback(() => {
     Linking.openURL('https://beebeeb.io/support');
   }, []);
@@ -1245,21 +1321,6 @@ export default function SettingsScreen() {
 
   const handlePrivacyPolicy = useCallback(() => {
     Linking.openURL('https://beebeeb.io/privacy');
-  }, []);
-
-  const handleDownloadMyData = useCallback(async () => {
-    try {
-      await requestDataExport();
-      Alert.alert(
-        'Export requested',
-        "We'll prepare your data export and send a download link to your email address.",
-      );
-    } catch {
-      Alert.alert(
-        'Not available',
-        'Data export is not available right now. Try again later.',
-      );
-    }
   }, []);
 
   const handleTerms = useCallback(() => {
@@ -2040,7 +2101,8 @@ export default function SettingsScreen() {
             <SettingsRow
               label="Download my data"
               icon="download-outline"
-              onPress={() => { void handleDownloadMyData(); }}
+              badge="Coming soon"
+              showChevron={false}
               c={c}
             />
           </View>
@@ -2060,7 +2122,8 @@ export default function SettingsScreen() {
             <SettingsRow
               label="Available offline"
               icon="cloud-download-outline"
-              onPress={handleOfflineFiles}
+              badge="Coming soon"
+              showChevron={false}
               c={c}
             />
           </View>

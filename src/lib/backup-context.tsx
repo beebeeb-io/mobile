@@ -13,10 +13,10 @@ import {
   resumeContactsBackup,
   resumeCalendarBackup,
   getBackupProgress,
-  triggerImmediateBackup,
   type NativeBackupProgress,
 } from '../../modules/beebeeb-crypto';
 import { ensureBackupFolders, type BackupCategory } from '../services/BackupService';
+import { PhotoBackupBridge } from './PhotoBackupBridge';
 
 const BACKUP_PHOTO_KEY = 'beebeeb_camera_backup';
 const BACKUP_CONTACTS_KEY = 'beebeeb_contacts_backup';
@@ -231,6 +231,7 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
       if (Platform.OS !== 'web') {
         if (next) {
           await enableNativeBackup('camera_roll');
+          setPhotoBackupForceCount((c) => c + 1);
         } else {
           await disablePhotoBackup();
           await configureBackupFolder('camera_roll', null);
@@ -325,41 +326,48 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
 
       const token = await getStoredToken();
       if (!token) return;
-      const { categoryFolderId } = await ensureBackupFolders('camera_roll');
-      await configureBackupFolder('camera_roll', categoryFolderId);
-      await triggerImmediateBackup(token);
-      setLastBackupAt(new Date().toISOString());
-    } catch {
-      // NetInfo unavailable — leave the existing session state unchanged.
+      try {
+        const { categoryFolderId } = await ensureBackupFolders('camera_roll');
+        await configureBackupFolder('camera_roll', categoryFolderId);
+        await enablePhotoBackup(token);
+      } catch (err) {
+        console.warn('[backup] native photo backup warm-up failed:', err);
+      }
+      setPhotoBackupForceCount((c) => c + 1);
+    } catch (err) {
+      console.warn('[backup] triggerBackupNow failed:', err);
     }
   }, [wifiOnly]);
 
+  const value: BackupContextValue = {
+    isPhotoBackupEnabled,
+    isContactsBackupEnabled,
+    isCalendarBackupEnabled,
+    togglePhotoBackup,
+    toggleContactsBackup,
+    toggleCalendarBackup,
+    includeVideos,
+    wifiOnly,
+    backgroundUpload,
+    setIncludeVideos,
+    setWifiOnly,
+    setBackgroundUpload,
+    backupProgress,
+    lastBackupAt,
+    triggerBackupNow,
+    photoSessionProgress,
+    lastPhotoSession,
+    reportPhotoProgress,
+    photoBackupForceCount,
+    // Legacy alias
+    isBackupEnabled: isPhotoBackupEnabled,
+    toggleBackup: togglePhotoBackup,
+  };
+
   return (
-    <BackupContext.Provider value={{
-      isPhotoBackupEnabled,
-      isContactsBackupEnabled,
-      isCalendarBackupEnabled,
-      togglePhotoBackup,
-      toggleContactsBackup,
-      toggleCalendarBackup,
-      includeVideos,
-      wifiOnly,
-      backgroundUpload,
-      setIncludeVideos,
-      setWifiOnly,
-      setBackgroundUpload,
-      backupProgress,
-      lastBackupAt,
-      triggerBackupNow,
-      photoSessionProgress,
-      lastPhotoSession,
-      reportPhotoProgress,
-      photoBackupForceCount,
-      // Legacy alias
-      isBackupEnabled: isPhotoBackupEnabled,
-      toggleBackup: togglePhotoBackup,
-    }}>
+    <BackupContext.Provider value={value}>
       {children}
+      <PhotoBackupBridge backup={value} />
     </BackupContext.Provider>
   );
 }

@@ -259,7 +259,7 @@ function DataExportRow({ c }: { c: C }) {
               ? 'Export failed — tap to retry'
               : isPolling
                 ? 'Building your export...'
-                : 'Files are exported encrypted'
+                : 'Account data export as a JSON ZIP'
         }
         icon="cloud-download-outline"
         disabled={requesting || isPolling}
@@ -388,7 +388,7 @@ export default function PrivacyScreen() {
             <DataExportRow c={c} />
           </View>
           <SectionNote
-            text="Files are exported encrypted. Use your recovery phrase to decrypt them. One export per day. GDPR Article 15."
+            text="Exports account data, file metadata, shares, activity, and settings as a JSON ZIP. Stored file contents are not included. One export per day."
             c={c}
           />
         </View>

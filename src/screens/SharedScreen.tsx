@@ -518,6 +518,12 @@ export default function SharedScreen() {
       .filter((item) => item.status !== 'approved')
       .map((invite) => ({ invite, direction: 'sent' as const })),
   ].sort((a, b) => new Date(b.invite.created_at).getTime() - new Date(a.invite.created_at).getTime());
+  const tabs = [
+    { id: 'incoming' as const, label: 'Shared with me', count: incomingApproved.length },
+    { id: 'sent' as const, label: 'Shared by me', count: sentApproved.length },
+    { id: 'pending' as const, label: 'Pending', count: pendingInvites.length },
+    { id: 'links' as const, label: 'My links', count: links.length },
+  ];
 
   // ------------------------------------------------------------------
   // Main render
@@ -574,12 +580,7 @@ export default function SharedScreen() {
 
       {/* Tabs */}
       <View style={styles.tabBar} accessibilityRole="tablist">
-        {[
-          { id: 'incoming' as const, label: 'Shared with me' },
-          { id: 'sent' as const, label: 'Shared by me' },
-          { id: 'pending' as const, label: 'Pending' },
-          { id: 'links' as const, label: 'My links' },
-        ].map((tab) => {
+        {tabs.map((tab) => {
           const active = activeTab === tab.id;
           return (
             <TouchableOpacity
@@ -589,11 +590,23 @@ export default function SharedScreen() {
               activeOpacity={0.7}
               accessibilityRole="tab"
               accessibilityState={{ selected: active }}
-              accessibilityLabel={tab.label}
+              accessibilityLabel={`${tab.label}, ${tab.count} item${tab.count === 1 ? '' : 's'}`}
             >
-              <Text style={[styles.tabText, { color: c.ink3 }, active && [styles.tabTextActive, { color: c.ink }]]}>
-                {tab.label}
-              </Text>
+              <View style={styles.tabContent}>
+                <Text
+                  style={[styles.tabText, { color: c.ink3 }, active && [styles.tabTextActive, { color: c.ink }]]}
+                  numberOfLines={1}
+                  adjustsFontSizeToFit
+                  minimumFontScale={0.86}
+                >
+                  {tab.label}
+                </Text>
+                <View style={[styles.tabCountBadge, { backgroundColor: active ? c.amberBg : c.paper2 }]}>
+                  <Text style={[styles.tabCountText, { color: active ? c.amberDeep : c.ink3 }]} numberOfLines={1}>
+                    {tab.count}
+                  </Text>
+                </View>
+              </View>
             </TouchableOpacity>
           );
         })}
@@ -700,8 +713,11 @@ const styles = StyleSheet.create({
   tabBar: { flexDirection: 'row', flexWrap: 'wrap', paddingHorizontal: spacing.lg, paddingBottom: spacing.sm, gap: 4 },
   tab: { width: '48%', flexGrow: 1, paddingVertical: 10, alignItems: 'center', borderBottomWidth: 2, borderBottomColor: 'transparent' },
   tabActive: { borderBottomColor: 'transparent' },
-  tabText: { fontSize: 12, fontWeight: '500' },
+  tabContent: { width: '100%', paddingHorizontal: 6, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 },
+  tabText: { flexShrink: 1, fontSize: 12, fontWeight: '500' },
   tabTextActive: { fontWeight: '600' },
+  tabCountBadge: { minWidth: 22, height: 20, paddingHorizontal: 6, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
+  tabCountText: { fontSize: 11, fontWeight: '700' },
 
   // List rows
   row: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, paddingHorizontal: spacing.lg, borderBottomWidth: 1, gap: 12 },
