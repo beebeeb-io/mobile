@@ -1107,6 +1107,22 @@ export async function listMyShares(): Promise<MyShareLink[]> {
   return data.shares ?? [];
 }
 
+export interface SharingContact {
+  user_id: string;
+  email: string;
+  username?: string | null;
+  display_name?: string | null;
+  x25519_public_key?: string | null;
+}
+
+export async function resolveSharingContact(query: string): Promise<SharingContact | null> {
+  const data = await request<{ contact: SharingContact | null }>(
+    'GET',
+    `/api/v1/contacts/resolve?query=${encodeURIComponent(query)}`,
+  );
+  return data.contact ?? null;
+}
+
 export interface ShareInfo {
   token: string;
   file_name_encrypted?: string;
@@ -1215,6 +1231,29 @@ export interface ShareInvite {
   is_folder_share?: boolean;
   encrypted_folder_key?: string;
   encrypted_owner_folder_key?: string;
+}
+
+export interface CreateInviteResponse {
+  invite_id: string;
+  status: string;
+  recipient_public_key?: string | null;
+  is_folder_share?: boolean;
+}
+
+export async function createInvite(
+  fileId: string,
+  recipientEmail: string,
+): Promise<CreateInviteResponse> {
+  return request<CreateInviteResponse>('POST', '/api/v1/shares/invites', {
+    file_id: fileId,
+    recipient_email: recipientEmail,
+  });
+}
+
+export async function approveInvite(inviteId: string, encryptedFileKey: string): Promise<void> {
+  await request('POST', `/api/v1/shares/invites/${inviteId}/approve`, {
+    encrypted_file_key: encryptedFileKey,
+  });
 }
 
 export async function getIncomingInvites(): Promise<ShareInvite[]> {

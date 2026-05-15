@@ -28,6 +28,10 @@ class BeebeebCryptoModule : Module() {
 
     AsyncFunction("deriveX25519Public") { _: ByteArray -> throw NotLinkedException() }
 
+    AsyncFunction("x25519SharedSecret") { _: ByteArray, _: ByteArray -> throw NotLinkedException() }
+
+    AsyncFunction("deriveShareKey") { _: ByteArray, _: ByteArray -> throw NotLinkedException() }
+
     AsyncFunction("encryptChunk") { _: ByteArray, _: ByteArray -> throw NotLinkedException() }
 
     AsyncFunction("decryptChunk") { _: ByteArray, _: ByteArray, _: ByteArray -> throw NotLinkedException() }

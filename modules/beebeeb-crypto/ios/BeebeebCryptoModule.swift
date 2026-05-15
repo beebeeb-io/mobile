@@ -302,6 +302,14 @@ public class BeebeebCryptoModule: Module {
       try deriveX25519Public(privateKey: privateKey)
     }
 
+    AsyncFunction("x25519SharedSecret") { (myPrivate: Data, theirPublic: Data) throws -> Data in
+      try x25519SharedSecret(myPrivate: myPrivate, theirPublic: theirPublic)
+    }
+
+    AsyncFunction("deriveShareKey") { (sharedSecret: Data, fileId: Data) throws -> Data in
+      try deriveShareKey(sharedSecret: sharedSecret, fileId: fileId)
+    }
+
     AsyncFunction("encryptChunk") { (key: Data, plaintext: Data) throws -> [String: Any] in
       let result = try BeebeebCryptoBridge.encryptChunk(key: key, plaintext: plaintext)
       return [
