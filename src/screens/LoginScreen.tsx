@@ -20,6 +20,7 @@ import {
 import { useAuth } from '../lib/auth';
 import { useTheme } from '../lib/theme-context';
 import * as Haptics from 'expo-haptics';
+import { markUnlocked } from '../lib/lock-state';
 import type { RootStackParamList } from '../App';
 
 type Nav = NativeStackNavigationProp<RootStackParamList>;
@@ -71,6 +72,7 @@ export default function LoginScreen() {
       const { state, serverMessage, serverState } = await opaqueLoginStart(trimmedEmail, password);
       await opaqueLoginFinish(trimmedEmail, password, state, serverMessage, serverState);
       // Token is stored by opaqueLoginFinish. App.tsx auth state will pick it up.
+      markUnlocked();
       // Token stored — tell App to refresh auth state
       await refreshAuth();
       if (route.params?.returnTo === 'DevicePairingScan') {
