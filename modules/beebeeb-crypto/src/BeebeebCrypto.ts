@@ -149,6 +149,15 @@ export async function decryptMetadata(
   return BeebeebCryptoModule.decryptMetadata(key, nonce, ciphertext)
 }
 
+export async function renderPdfFirstPage(
+  inputUri: string,
+  outputUri: string,
+  maxDimension = 1600,
+): Promise<string | null> {
+  if (typeof BeebeebCryptoModule.renderPdfFirstPage !== 'function') return null
+  return BeebeebCryptoModule.renderPdfFirstPage(inputUri, outputUri, maxDimension)
+}
+
 // ─── OPAQUE authentication ───────────────────────────────────────────────────
 
 /**
