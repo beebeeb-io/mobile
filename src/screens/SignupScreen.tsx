@@ -26,6 +26,7 @@ import {
   friendlyError,
 } from '../lib/api';
 import * as BeebeebCrypto from '../../modules/beebeeb-crypto';
+import { markUnlocked } from '../lib/lock-state';
 import type { RootStackParamList } from '../App';
 
 type Nav = NativeStackNavigationProp<RootStackParamList>;
@@ -124,6 +125,7 @@ export default function SignupScreen() {
       }
 
       if (opaqueDone) {
+        markUnlocked();
         // Dismiss onboarding overlay + mark phrase as pending before refreshAuth
         // so the phrase screens are visible (not covered by the welcome overlay).
         skipOnboarding(phrase);
