@@ -47,7 +47,7 @@ export async function requestDeviceOwnerAuth(
     const result = await LocalAuthentication.authenticateAsync({
       promptMessage,
       cancelLabel: 'Cancel',
-      disableDeviceFallback: true,
+      disableDeviceFallback: false,
     });
 
     if (!result.success) {

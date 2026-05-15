@@ -1,7 +1,9 @@
 import ExpoModulesCore
 import Foundation
 import FileProvider
+import PDFKit
 import Security
+import UIKit
 
 private let fileProviderDomainIdentifier = NSFileProviderDomainIdentifier("io.beebeeb.files")
 private let fileProviderDisplayName = "Beebeeb"
@@ -26,6 +28,13 @@ private func decodeBase64(_ value: String, field: String) throws -> Data {
     )
   }
   return data
+}
+
+private func fileURL(fromURI uri: String) -> URL {
+  if let url = URL(string: uri), url.isFileURL {
+    return url
+  }
+  return URL(fileURLWithPath: uri)
 }
 
 @available(iOS 16.0, *)
@@ -317,6 +326,50 @@ public class BeebeebCryptoModule: Module {
 
     AsyncFunction("decryptMetadata") { (key: Data, nonce: Data, ciphertext: Data) throws -> String in
       try BeebeebCryptoBridge.decryptMetadata(key: key, nonce: nonce, ciphertext: ciphertext)
+    }
+
+    AsyncFunction("renderPdfFirstPage") { (inputUri: String, outputUri: String, maxDimension: Double) throws -> String? in
+      let inputURL = fileURL(fromURI: inputUri)
+      let outputURL = fileURL(fromURI: outputUri)
+
+      guard let document = PDFDocument(url: inputURL), let page = document.page(at: 0) else {
+        return nil
+      }
+
+      let pageBounds = page.bounds(for: .mediaBox)
+      guard pageBounds.width > 0, pageBounds.height > 0 else {
+        return nil
+      }
+
+      let safeMaxDimension = max(320, min(maxDimension, 2400))
+      let scale = min(safeMaxDimension / pageBounds.width, safeMaxDimension / pageBounds.height)
+      let outputSize = CGSize(width: pageBounds.width * scale, height: pageBounds.height * scale)
+
+      let format = UIGraphicsImageRendererFormat()
+      format.scale = 1
+      format.opaque = true
+      let renderer = UIGraphicsImageRenderer(size: outputSize, format: format)
+      let image = renderer.image { context in
+        UIColor.white.setFill()
+        context.fill(CGRect(origin: .zero, size: outputSize))
+        context.cgContext.saveGState()
+        context.cgContext.translateBy(x: 0, y: outputSize.height)
+        context.cgContext.scaleBy(x: scale, y: -scale)
+        context.cgContext.translateBy(x: -pageBounds.origin.x, y: -pageBounds.origin.y)
+        page.draw(with: .mediaBox, to: context.cgContext)
+        context.cgContext.restoreGState()
+      }
+
+      guard let data = image.pngData() else {
+        return nil
+      }
+
+      try FileManager.default.createDirectory(
+        at: outputURL.deletingLastPathComponent(),
+        withIntermediateDirectories: true
+      )
+      try data.write(to: outputURL, options: .atomic)
+      return outputURL.absoluteString
     }
 
     AsyncFunction("opaqueRegistrationStart") { (_ username: String, password: String) throws -> [String: Any] in

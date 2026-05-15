@@ -833,6 +833,7 @@ export default function PreviewScreen() {
 
   // PDF inline preview state
   const [pdfUri, setPdfUri] = useState<string | null>(null);
+  const [pdfImageUri, setPdfImageUri] = useState<string | null>(null);
   const [pdfLoading, setPdfLoading] = useState(false);
   const [pdfError, setPdfError] = useState<string | null>(null);
 
@@ -907,6 +908,10 @@ export default function PreviewScreen() {
     () => previewCacheName(fileName, mimeType, category),
     [category, fileName, mimeType],
   );
+  const fileFormat = useMemo(() => {
+    const ext = previewFileName.includes('.') ? previewFileName.split('.').pop() : null;
+    return ext ? `.${ext.toUpperCase()}` : null;
+  }, [previewFileName]);
 
   // Code highlighting — language id + display label come from the filename
   // and mime; the highlighted HTML is rebuilt only when the loaded text changes.
@@ -942,12 +947,11 @@ export default function PreviewScreen() {
 
   const mediaDetailsRows = useMemo(() => {
     const storage = trustLocation(storagePoolId);
-    const ext = previewFileName.includes('.') ? previewFileName.split('.').pop()?.toUpperCase() : null;
     const rows: Array<{ label: string; value: string }> = [
       { label: 'Name', value: previewFileName },
       { label: 'Kind', value: CATEGORY_LABELS[category] ?? 'File' },
     ];
-    if (ext) rows.push({ label: 'Format', value: `.${ext}` });
+    if (fileFormat) rows.push({ label: 'Format', value: fileFormat });
     if (mimeType) rows.push({ label: 'Type', value: mimeType });
     if (sizeBytes != null) rows.push({ label: 'Size', value: formatSize(sizeBytes) });
     if (createdAt) rows.push({ label: 'Created', value: formatDate(createdAt) });
@@ -963,6 +967,7 @@ export default function PreviewScreen() {
     category,
     chunkCount,
     createdAt,
+    fileFormat,
     isUnlocked,
     mimeType,
     previewFileName,
@@ -1138,16 +1143,26 @@ export default function PreviewScreen() {
     };
   }, [isImage, fetchAndDecrypt]);
 
-  // Auto-load PDFs inline on mount — WebView renders them natively on iOS
+  // Auto-load PDFs inline on mount.
   useEffect(() => {
     if (!isPdf) return;
     if (Platform.OS === 'web') return;
     let cancelled = false;
     setPdfLoading(true);
     setPdfError(null);
+    setPdfUri(null);
+    setPdfImageUri(null);
     fetchAndDecrypt()
-      .then((uri) => {
-        if (!cancelled) setPdfUri(uri);
+      .then(async (uri) => {
+        let imageUri: string | null = null;
+        if (Platform.OS === 'ios' && BeebeebCrypto.isNativeAvailable) {
+          const outputUri = `${FileSystem.cacheDirectory}pdf_${fileId}_page1.png`;
+          imageUri = await BeebeebCrypto.renderPdfFirstPage(uri, outputUri, 1600).catch(() => null);
+        }
+        if (!cancelled) {
+          setPdfUri(uri);
+          setPdfImageUri(imageUri);
+        }
       })
       .catch((err) => {
         if (!cancelled) setPdfError(friendlyError(err));
@@ -1752,11 +1767,19 @@ export default function PreviewScreen() {
             </View>
           )
         ) : isPdf ? (
-          pdfUri ? (
+          pdfImageUri ? (
+            <Image
+              source={{ uri: pdfImageUri }}
+              style={styles.pdfImage}
+              resizeMode="contain"
+              accessibilityLabel={previewFileName}
+            />
+          ) : pdfUri ? (
             <WebView
               source={{ uri: pdfUri }}
               style={[styles.pdfWebView, { backgroundColor: c.paper }]}
               originWhitelist={['*']}
+              allowingReadAccessToURL={FileSystem.cacheDirectory ?? undefined}
             />
           ) : pdfError ? (
             <View style={styles.imageStatus}>
@@ -2031,6 +2054,13 @@ export default function PreviewScreen() {
             <Text style={[styles.metaLabel, { color: c.ink3 }]}>Name</Text>
             <Text style={[styles.metaValue, { color: c.ink }]} numberOfLines={1}>{previewFileName}</Text>
           </View>
+
+          {fileFormat ? (
+            <View style={styles.metaRow}>
+              <Text style={[styles.metaLabel, { color: c.ink3 }]}>Format</Text>
+              <Text style={[styles.metaValue, { color: c.ink }]}>{fileFormat}</Text>
+            </View>
+          ) : null}
 
           {mimeType ? (
             <View style={styles.metaRow}>
@@ -2616,6 +2646,7 @@ const styles = StyleSheet.create({
 
   image: { width: '100%', height: '100%' },
   pdfWebView: { width: '100%', height: '100%' },
+  pdfImage: { width: '100%', height: '100%' },
   video: { width: '100%', height: '100%' },
   docxWebView: { width: '100%', height: '100%', borderRadius: radii.md },
   svgWebView: { width: '100%', height: '100%', backgroundColor: '#ffffff', borderRadius: radii.md },

@@ -22,6 +22,7 @@ const WINDOW_PAST_DAYS = 365;
 const WINDOW_FUTURE_DAYS = 365;
 const LAST_HASH_KEY_PREFIX = 'beebeeb_calendar_last_hash_';
 const LAST_FILE_ID_KEY_PREFIX = 'beebeeb_calendar_file_id_';
+const SECURE_STORE_SAFE_KEY_CHAR = /^[A-Za-z0-9._-]$/;
 
 export interface BackupEncryptors {
   encryptChunkFn: (fileId: string, plaintext: Uint8Array) => Promise<EncryptedData>;
@@ -166,8 +167,18 @@ function djb2(str: string): string {
   return (hash >>> 0).toString(16);
 }
 
+function secureStoreCalendarKey(prefix: string, calendarId: string): string {
+  const suffix = Array.from(calendarId)
+    .map((ch) => {
+      if (SECURE_STORE_SAFE_KEY_CHAR.test(ch)) return ch;
+      return `_${ch.codePointAt(0)?.toString(16) ?? '0'}_`;
+    })
+    .join('');
+  return prefix + suffix;
+}
+
 async function getLastHash(calendarId: string): Promise<string | null> {
-  const key = LAST_HASH_KEY_PREFIX + calendarId;
+  const key = secureStoreCalendarKey(LAST_HASH_KEY_PREFIX, calendarId);
   if (Platform.OS === 'web') {
     return typeof window === 'undefined' ? null : window.localStorage.getItem(key);
   }
@@ -175,7 +186,7 @@ async function getLastHash(calendarId: string): Promise<string | null> {
 }
 
 async function setLastHash(calendarId: string, hash: string): Promise<void> {
-  const key = LAST_HASH_KEY_PREFIX + calendarId;
+  const key = secureStoreCalendarKey(LAST_HASH_KEY_PREFIX, calendarId);
   if (Platform.OS === 'web') {
     if (typeof window !== 'undefined') window.localStorage.setItem(key, hash);
     return;
@@ -252,7 +263,8 @@ export async function exportCalendars(encryption: BackupEncryptors): Promise<Cal
     if (previous === hash) continue;
 
     const filename = safeFilename(cal.title);
-    const previousFileId = await SecureStore.getItemAsync(`${LAST_FILE_ID_KEY_PREFIX}${cal.id}`);
+    const lastFileIdKey = secureStoreCalendarKey(LAST_FILE_ID_KEY_PREFIX, cal.id);
+    const previousFileId = await SecureStore.getItemAsync(lastFileIdKey);
     if (previousFileId) {
       await deleteFile(previousFileId).catch(() => {});
     }
@@ -281,7 +293,7 @@ export async function exportCalendars(encryption: BackupEncryptors): Promise<Cal
     }
 
     await setLastHash(cal.id, hash);
-    await SecureStore.setItemAsync(`${LAST_FILE_ID_KEY_PREFIX}${cal.id}`, uploaded.id);
+    await SecureStore.setItemAsync(lastFileIdKey, uploaded.id);
     exportedAny = true;
   }
 

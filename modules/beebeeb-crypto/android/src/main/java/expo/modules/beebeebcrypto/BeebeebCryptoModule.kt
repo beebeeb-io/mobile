@@ -36,6 +36,8 @@ class BeebeebCryptoModule : Module() {
 
     AsyncFunction("decryptMetadata") { _: ByteArray, _: ByteArray, _: ByteArray -> throw NotLinkedException() }
 
+    AsyncFunction("renderPdfFirstPage") { _: String, _: String, _: Double -> null }
+
     AsyncFunction("opaqueRegistrationStart") { _: String, _: String -> throw NotLinkedException() }
 
     AsyncFunction("opaqueRegistrationFinish") { _: String, _: String, _: String -> throw NotLinkedException() }
