@@ -113,12 +113,19 @@ export function PhotoBackupBridge({ backup }: PhotoBackupBridgeProps): null {
 
         const fileId = generateFileId();
 
+        // Convert asset.creationTime (seconds since epoch) to ISO 8601 so the
+        // server stores the photo's original date instead of the upload time.
+        const createdAt = asset.creationTime
+          ? new Date(asset.creationTime * 1000).toISOString()
+          : undefined;
+
         const uploaded = await encryptedUpload({
           fileId,
           uri,
           name: asset.filename,
           parentId: cameraRollFolderId,
           mimeType: detectMediaMimeType(asset.filename, asset.mediaType),
+          createdAt,
           encryptChunkFn: s.encryptChunk,
           encryptMetadataFn: s.encryptMetadata,
           onProgress: (_p: UploadProgress) => {
