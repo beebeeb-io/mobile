@@ -22,7 +22,7 @@ try { ImageManipulator = require('expo-image-manipulator'); } catch {}
 
 const THUMB_WIDTH = 256;
 const THUMB_QUALITY = 0.7;
-const MAX_THUMB_CACHE_ITEMS = 200;
+const MAX_THUMB_CACHE_ITEMS = 15000;
 const PREFETCH_CONCURRENCY = 4;
 
 const IMAGE_MIME_PREFIX = 'image/';
@@ -65,6 +65,8 @@ export async function generateThumbnail(sourceUri: string): Promise<Uint8Array |
 
 /**
  * Generate a thumbnail, encrypt it with the file key, and upload it.
+ * Also caches the plaintext thumbnail locally so the Photos grid can display
+ * it immediately without a server round-trip.
  * Fire-and-forget: never throws, never blocks the caller's success flow.
  */
 export async function generateAndUploadThumbnail(
@@ -78,6 +80,14 @@ export async function generateAndUploadThumbnail(
     const thumb = await generateThumbnail(sourceUri);
     if (!thumb) return;
 
+    // Cache the plaintext thumbnail locally for instant display in the grid
+    const dest = thumbPath(fileId);
+    if (dest) {
+      const b64 = bytesToBase64(thumb);
+      await FileSystem.writeAsStringAsync(dest, b64, { encoding: EncodingType.Base64 });
+      thumbCache.set(fileId, dest);
+    }
+
     const fileKey = await getFileKeyBytes(fileId);
     const { nonce, ciphertext } = await encryptChunk(fileKey, thumb);
 
@@ -89,6 +99,35 @@ export async function generateAndUploadThumbnail(
     await uploadThumbnail(fileId, wire);
   } catch {
     // Best-effort — swallow.
+  }
+}
+
+/**
+ * Generate a thumbnail from a local camera-roll URI and cache it locally.
+ * This avoids a server download+decrypt for photos that already exist on device.
+ * Returns the cached thumbnail URI, or null on failure.
+ */
+export async function cacheLocalThumbnail(
+  fileId: string,
+  localUri: string,
+): Promise<string | null> {
+  try {
+    const dest = thumbPath(fileId);
+    if (!dest) return null;
+
+    // Already cached?
+    const existing = await cachedThumbnailUri(fileId);
+    if (existing) return existing;
+
+    const thumb = await generateThumbnail(localUri);
+    if (!thumb) return null;
+
+    const b64 = bytesToBase64(thumb);
+    await FileSystem.writeAsStringAsync(dest, b64, { encoding: EncodingType.Base64 });
+    thumbCache.set(fileId, dest);
+    return dest;
+  } catch {
+    return null;
   }
 }
 

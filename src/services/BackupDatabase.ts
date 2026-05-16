@@ -418,6 +418,23 @@ export async function getAllUploadedIds(): Promise<Set<string>> {
   return new Set(rows.map((r) => r.local_asset_id));
 }
 
+/**
+ * Build a map from remote_file_id → local_asset_id for all uploaded/orphaned
+ * backup assets. Used by the Photos grid to resolve camera-roll thumbnails.
+ */
+export async function getRemoteToLocalMap(): Promise<Map<string, string>> {
+  const db = await getDb();
+  const rows = await db.getAllAsync<{ remote_file_id: string; local_asset_id: string }>(
+    `SELECT remote_file_id, local_asset_id FROM backup_assets
+      WHERE status IN ('uploaded', 'orphaned') AND remote_file_id IS NOT NULL`,
+  );
+  const map = new Map<string, string>();
+  for (const row of rows) {
+    map.set(row.remote_file_id, row.local_asset_id);
+  }
+  return map;
+}
+
 export async function getRecentActivity(
   days: number = 7,
 ): Promise<{ date: string; count: number; bytes: number }[]> {

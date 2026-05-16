@@ -30,6 +30,7 @@ import {
   prefetchDecryptedThumbnails,
   pruneThumbnailCache,
 } from '../lib/thumbnail';
+import { getRemoteToLocalMap } from '../services/BackupDatabase';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -167,7 +168,7 @@ const SCREEN_WIDTH = Dimensions.get('window').width;
 const GRID_GAP = 2;
 const COLS = 4;
 const CELL_SIZE = (SCREEN_WIDTH - GRID_GAP * (COLS - 1)) / COLS;
-const ACTIVE_THUMBNAIL_LIMIT = 80;
+const ACTIVE_THUMBNAIL_LIMIT = 500;
 
 function collectThumbnailIds(groups: PhotoGroup[], visibleIndexes: number[]): Set<string> {
   if (groups.length === 0) return new Set();
@@ -260,6 +261,7 @@ const PhotoCell = React.memo(function PhotoCell({
   loadThumbnail,
   seed,
   isFromBackup,
+  localAssetUri,
   onPress,
   accessibilityLabel,
 }: {
@@ -268,6 +270,7 @@ const PhotoCell = React.memo(function PhotoCell({
   loadThumbnail: boolean;
   seed: number;
   isFromBackup: boolean;
+  localAssetUri?: string | null;
   onPress?: () => void;
   accessibilityLabel: string;
 }) {
@@ -284,6 +287,7 @@ const PhotoCell = React.memo(function PhotoCell({
         fileId={fileId}
         hasThumbnail={hasThumbnail}
         loadThumbnail={loadThumbnail}
+        localAssetUri={localAssetUri}
         placeholderColor={swatch(seed)}
         style={StyleSheet.absoluteFill}
         accessibilityLabel={accessibilityLabel}
@@ -306,12 +310,14 @@ const GroupSection = React.memo(function GroupSection({
   seedOffset,
   photosFolderId,
   activeThumbnailIds,
+  localAssetMap,
   onOpenPhoto,
 }: {
   group: PhotoGroup;
   seedOffset: number;
   photosFolderId: string | null;
   activeThumbnailIds: Set<string>;
+  localAssetMap: Map<string, string>;
   onOpenPhoto: (entry: FileEntry) => void;
 }) {
   const { colors: c } = useTheme();
@@ -324,18 +330,24 @@ const GroupSection = React.memo(function GroupSection({
         </Text>
       </View>
       <View style={styles.grid}>
-        {group.data.map((photo, i) => (
-          <PhotoCell
-            key={photo.id}
-            fileId={photo.id}
-            hasThumbnail={photo.has_thumbnail}
-            loadThumbnail={activeThumbnailIds.has(photo.id)}
-            seed={seedOffset + i}
-            isFromBackup={photosFolderId !== null && photo.parent_id === photosFolderId}
-            accessibilityLabel={`Photo from ${group.label}`}
-            onPress={() => onOpenPhoto(photo)}
-          />
-        ))}
+        {group.data.map((photo, i) => {
+          // If this photo was backed up from camera roll, use its local asset URI
+          const localId = localAssetMap.get(photo.id);
+          const localAssetUri = localId ? `ph://${localId}` : null;
+          return (
+            <PhotoCell
+              key={photo.id}
+              fileId={photo.id}
+              hasThumbnail={photo.has_thumbnail}
+              loadThumbnail={activeThumbnailIds.has(photo.id)}
+              seed={seedOffset + i}
+              isFromBackup={photosFolderId !== null && photo.parent_id === photosFolderId}
+              localAssetUri={localAssetUri}
+              accessibilityLabel={`Photo from ${group.label}`}
+              onPress={() => onOpenPhoto(photo)}
+            />
+          );
+        })}
       </View>
     </View>
   );
@@ -499,6 +511,7 @@ export default function PhotosScreen() {
   const [filter, setFilter] = useState<Filter>('Months');
   const [activeThumbnailIds, setActiveThumbnailIds] = useState<Set<string>>(() => new Set());
   const [activePhotoIds, setActivePhotoIds] = useState<Set<string>>(() => new Set());
+  const [localAssetMap, setLocalAssetMap] = useState<Map<string, string>>(new Map());
   const groupsRef = useRef<PhotoGroup[]>([]);
   const viewabilityConfig = useRef({ itemVisiblePercentThreshold: 10 }).current;
 
@@ -546,6 +559,9 @@ export default function PhotosScreen() {
         setPhotos([]);
       }
       void pruneThumbnailCache();
+
+      // Build the remote_file_id → local_asset_id map for camera roll thumbnails
+      void getRemoteToLocalMap().then((map) => setLocalAssetMap(map)).catch(() => {});
     } catch (err) {
       setError(friendlyError(err));
     } finally {
@@ -628,6 +644,7 @@ export default function PhotosScreen() {
       seedOffset={groupOffsets[index] ?? 0}
       photosFolderId={photosFolderId}
       activeThumbnailIds={activeThumbnailIds}
+      localAssetMap={localAssetMap}
       onOpenPhoto={openPhoto}
     />
   );
