@@ -85,6 +85,8 @@ import {
   updateBackupCategoryState,
   getDeletionBehavior,
   setDeletionBehavior,
+  getKeepVaultUnlocked,
+  setKeepVaultUnlocked,
   type BackupCategory,
   type DeviceManifest,
 } from '../services/BackupService';
@@ -612,6 +614,9 @@ export default function SettingsScreen() {
   // Deletion preference
   const [deletionBehavior, setDeletionBehaviorState] = useState<'keep' | 'trash'>('keep');
 
+  // Keep vault unlocked for background backup
+  const [keepVaultUnlocked, setKeepVaultUnlockedState] = useState(false);
+
   const [contactsLastSessionAt, setContactsLastSessionAt] = useState<string | null>(null);
   const [calendarLastSessionAt, setCalendarLastSessionAt] = useState<string | null>(null);
   const [contactsLastSessionCount, setContactsLastSessionCount] = useState(0);
@@ -730,6 +735,16 @@ export default function SettingsScreen() {
     }
   }, []);
 
+  // Load keep-vault-unlocked preference
+  const loadKeepVaultUnlocked = useCallback(async () => {
+    try {
+      const enabled = await getKeepVaultUnlocked();
+      setKeepVaultUnlockedState(enabled);
+    } catch {
+      // Default to false
+    }
+  }, []);
+
   // Refresh camera roll status from BackupDatabase + MediaLibrary
   const refreshCameraRollStatus = useCallback(async () => {
     try {
@@ -761,6 +776,7 @@ export default function SettingsScreen() {
     if (isPhotoBackupEnabled) {
       void refreshCameraRollStatus();
       void loadDeletionBehavior();
+      void loadKeepVaultUnlocked();
     }
     SecureStore.getItemAsync(CONTACTS_LAST_SCAN_KEY).then(setContactsLastSessionAt).catch(() => {});
     SecureStore.getItemAsync(CALENDAR_LAST_SCAN_KEY).then(setCalendarLastSessionAt).catch(() => {});
@@ -796,7 +812,7 @@ export default function SettingsScreen() {
         setNotificationsEnabled(false);
       }
     })();
-  }, [fetchUsage, loadBiometricPrefs, loadFileProviderPrefs, loadAccountData, loadStorageRegionPref, isPhotoBackupEnabled, refreshCameraRollStatus, loadDeletionBehavior]);
+  }, [fetchUsage, loadBiometricPrefs, loadFileProviderPrefs, loadAccountData, loadStorageRegionPref, isPhotoBackupEnabled, refreshCameraRollStatus, loadDeletionBehavior, loadKeepVaultUnlocked]);
 
   // Refresh camera roll status whenever a JS session completes
   useEffect(() => {
@@ -1186,6 +1202,15 @@ export default function SettingsScreen() {
       await setDeletionBehavior(behavior);
     } catch (err) {
       console.warn('[SettingsScreen] failed to save deletion preference:', err);
+    }
+  }, []);
+
+  const handleKeepVaultUnlockedChange = useCallback(async (value: boolean) => {
+    setKeepVaultUnlockedState(value);
+    try {
+      await setKeepVaultUnlocked(value);
+    } catch (err) {
+      console.warn('[SettingsScreen] failed to save keep-vault-unlocked preference:', err);
     }
   }, []);
 
@@ -1948,6 +1973,16 @@ export default function SettingsScreen() {
                       subtitle="Allow uploads in the background. May increase battery usage."
                       value={backgroundUpload}
                       onValueChange={handleBackgroundUploadChange}
+                      indent
+                      c={c}
+                    />
+                    {/* Keep vault unlocked for backup */}
+                    <RowDivider c={c} />
+                    <ToggleRow
+                      label="Keep vault unlocked for backup"
+                      subtitle="Your encryption key stays securely on this device so backups continue in the background."
+                      value={keepVaultUnlocked}
+                      onValueChange={handleKeepVaultUnlockedChange}
                       indent
                       c={c}
                     />

@@ -52,7 +52,7 @@ interface PhotoBackupBridgeProps {
 }
 
 export function PhotoBackupBridge({ backup }: PhotoBackupBridgeProps): null {
-  const { isUnlocked, encryptChunk, encryptMetadata, getFileKeyBytes } = useCrypto();
+  const { isUnlocked, encryptChunk, encryptMetadata, getFileKeyBytes, tryBackgroundUnlock } = useCrypto();
   const {
     isPhotoBackupEnabled,
     includeVideos,
@@ -346,8 +346,19 @@ export function PhotoBackupBridge({ backup }: PhotoBackupBridgeProps): null {
       void Notifications.cancelScheduledNotificationAsync(BACKUP_REMINDER_IDENTIFIER).catch(() => {});
       void startSync();
     } else if (!isUnlocked && isPhotoBackupEnabled) {
-      // Vault locked but backup enabled — check for pending work
-      void scheduleBackupReminder();
+      // Vault locked but backup enabled — try background unlock first,
+      // fall back to notification reminder if the setting is off or unlock fails.
+      void (async () => {
+        const unlocked = await tryBackgroundUnlock();
+        if (unlocked) {
+          // tryBackgroundUnlock sets isUnlocked=true, which will re-trigger
+          // this effect and enter the branch above. No need to call startSync
+          // here — the state change will handle it.
+          console.log('[PhotoBackupBridge] background unlock succeeded — sync will start on next render');
+        } else {
+          void scheduleBackupReminder();
+        }
+      })();
     }
 
     return () => {
@@ -357,7 +368,7 @@ export function PhotoBackupBridge({ backup }: PhotoBackupBridgeProps): null {
       }
       abortRef.current?.abort();
     };
-  }, [isUnlocked, isPhotoBackupEnabled, startSync]);
+  }, [isUnlocked, isPhotoBackupEnabled, startSync, tryBackgroundUnlock]);
 
   // ── AppState: trigger on every foreground transition ────────────────────────
   useEffect(() => {

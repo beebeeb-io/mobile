@@ -16,7 +16,7 @@ import {
   storeKeyInKeychain,
 } from '../../modules/beebeeb-crypto'
 import type { EncryptedData } from '../../modules/beebeeb-crypto'
-import { setBackupEncryption } from '../services/BackupService'
+import { setBackupEncryption, getKeepVaultUnlocked } from '../services/BackupService'
 
 const MASTER_KEY_LABEL = 'io.beebeeb.master-key'
 const MASTER_KEY_CHECK_LABEL = 'io.beebeeb.master-key-check'
@@ -148,6 +148,16 @@ interface CryptoContextValue {
    * instead of the device passcode. Requires the vault to already be unlocked.
    */
   setBiometricRequirement: (require: boolean) => Promise<void>
+  /**
+   * Attempt to unlock the vault from the Keychain without user interaction.
+   * Used by the backup bridge when the vault is locked but the user has opted
+   * in to "keep vault unlocked for backup". Returns true if the vault was
+   * successfully unlocked, false otherwise (setting disabled, no key in
+   * Keychain, verification failed).
+   *
+   * Safe to call when already unlocked — returns true immediately.
+   */
+  tryBackgroundUnlock: () => Promise<boolean>
 }
 
 const CryptoContext = createContext<CryptoContextValue | null>(null)
@@ -292,6 +302,26 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
     [],
   )
 
+  const tryBackgroundUnlockFn = useCallback(async (): Promise<boolean> => {
+    // Already unlocked — nothing to do
+    if (masterKeyRef.current) return true
+
+    try {
+      const enabled = await getKeepVaultUnlocked()
+      if (!enabled) return false
+
+      const key = await loadVerifiedMasterKey()
+      if (!key) return false
+
+      masterKeyRef.current = key
+      setIsUnlocked(true)
+      setUnlockAttempted(true)
+      return true
+    } catch {
+      return false
+    }
+  }, [])
+
   // Keep BackupService in sync with vault state so folder creation/lookup
   // always encrypts/decrypts names through the crypto context.
   useEffect(() => {
@@ -320,6 +350,7 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
         getMasterKeyBytes: getMasterKeyBytesFn,
         getIndexKey: getIndexKeyFn,
         setBiometricRequirement: setBiometricRequirementFn,
+        tryBackgroundUnlock: tryBackgroundUnlockFn,
       }}
     >
       {children}
