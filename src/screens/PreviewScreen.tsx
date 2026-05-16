@@ -2036,96 +2036,24 @@ export default function PreviewScreen() {
         )}
       </View>
 
-      {/* ---- Metadata card ---- */}
-      <View
-        style={[
-          styles.metaCard,
-          { backgroundColor: c.paper, paddingBottom: Math.max(insets.bottom, 16) + 56 },
+      {/* ---- Details sheet (handle-only, pull up to expand) ---- */}
+      <DetailsSheet
+        filename={previewFileName}
+        kind={CATEGORY_LABELS[category] ?? 'File'}
+        size={sizeBytes != null ? formatSize(sizeBytes) : 'Unknown'}
+        created={createdAt ? formatDate(createdAt) : undefined}
+        extraInfo={[
+          ...(fileFormat ? [{ label: 'Format', value: fileFormat }] : []),
+          ...(mimeType ? [{ label: 'Type', value: mimeType }] : []),
         ]}
-      >
-        <View style={styles.metaSection}>
-          <Text style={[styles.metaSectionTitle, { color: c.ink3 }]}>Details</Text>
-
-          <View style={styles.metaRow}>
-            <Text style={[styles.metaLabel, { color: c.ink3 }]}>Name</Text>
-            <Text style={[styles.metaValue, { color: c.ink }]} numberOfLines={1}>{previewFileName}</Text>
-          </View>
-
-          {fileFormat ? (
-            <View style={styles.metaRow}>
-              <Text style={[styles.metaLabel, { color: c.ink3 }]}>Format</Text>
-              <Text style={[styles.metaValue, { color: c.ink }]}>{fileFormat}</Text>
-            </View>
-          ) : null}
-
-          {mimeType ? (
-            <View style={styles.metaRow}>
-              <Text style={[styles.metaLabel, { color: c.ink3 }]}>Type</Text>
-              <Text style={[styles.metaValue, { color: c.ink }]}>{mimeType}</Text>
-            </View>
-          ) : null}
-
-          {sizeBytes != null ? (
-            <View style={styles.metaRow}>
-              <Text style={[styles.metaLabel, { color: c.ink3 }]}>Size</Text>
-              <Text style={[styles.metaValue, { color: c.ink }]}>{formatSize(sizeBytes)}</Text>
-            </View>
-          ) : null}
-
-          {createdAt ? (
-            <View style={styles.metaRow}>
-              <Text style={[styles.metaLabel, { color: c.ink3 }]}>Created</Text>
-              <Text style={[styles.metaValue, { color: c.ink }]}>{formatDate(createdAt)}</Text>
-            </View>
-          ) : null}
-        </View>
-      </View>
-
-      {/* ---- Download bar ---- */}
-      <View
-        style={[
-          styles.downloadBar,
-          { backgroundColor: c.paper, paddingBottom: Math.max(insets.bottom, 16) },
-        ]}
-      >
-        {downloading && downloadProgress > 0 && (
-          <View style={[styles.progressTrack, { backgroundColor: c.line }]}>
-            <View
-              style={[
-                styles.progressFill,
-                { width: `${downloadProgress * 100}%`, backgroundColor: c.amber },
-              ]}
-            />
-          </View>
-        )}
-        <TouchableOpacity
-          style={[
-            styles.downloadButton,
-            { backgroundColor: c.amber },
-            downloading && styles.downloadButtonDisabled,
-          ]}
-          activeOpacity={0.8}
-          onPress={handleDownload}
-          disabled={downloading}
-        >
-          {downloading ? (
-            <View style={styles.downloadingRow}>
-              <ActivityIndicator size="small" color={c.ink} />
-              <Text style={[styles.downloadButtonText, { color: c.ink }]}>
-                {exportStatus
-                  ? exportStatus
-                  : downloadProgress > 0
-                  ? `Downloading ${Math.round(downloadProgress * 100)}%`
-                  : 'Downloading...'}
-              </Text>
-            </View>
-          ) : (
-            <Text style={[styles.downloadButtonText, { color: c.ink }]}>
-              Export
-            </Text>
-          )}
-        </TouchableOpacity>
-      </View>
+        storageLocation={(() => {
+          const storage = trustLocation(storagePoolId);
+          return `${storage.region} · ${storage.city}`;
+        })()}
+        onShare={handleShare}
+        onDownload={handleDownload}
+        downloading={downloading}
+      />
     </View>
   );
 }
