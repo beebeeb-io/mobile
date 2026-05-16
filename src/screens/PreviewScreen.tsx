@@ -2,20 +2,16 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ActivityIndicator,
   Alert,
-  Animated,
   FlatList,
   Image,
-  PanResponder,
   Platform,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
-  useWindowDimensions,
   View,
 } from 'react-native';
-import type { GestureResponderEvent } from 'react-native';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { RouteProp } from '@react-navigation/native';
@@ -38,6 +34,11 @@ import {
   decryptEncryptedBytes,
   inferChunkCountFromEncryptedSize,
 } from '../lib/encrypted-download';
+import { decryptToTempFile } from '../lib/native-decrypt';
+import { PdfRenderer } from '../components/preview/PdfRenderer';
+import { DetailsSheet } from '../components/preview/DetailsSheet';
+import { ArchiveRenderer } from '../components/preview/ArchiveRenderer';
+import { PptxRenderer } from '../components/preview/PptxRenderer';
 
 // Office libs — loaded eagerly so Metro bundles them. Mammoth's `browser`
 // entry is a UMD bundle that avoids Node-only deps (fs, path) and works in RN.
@@ -168,9 +169,11 @@ type Category =
   | 'audio'
   | 'video'
   | 'docx'
+  | 'pptx'
   | 'spreadsheet'
   | 'html'
   | 'zip'
+  | 'archive'
   | 'doc'
   | 'file';
 
@@ -202,6 +205,26 @@ function fileCategory(mimeType?: string, fileName?: string): Category {
     ext === 'zip'
   ) {
     return 'zip';
+  }
+
+  // TAR / GZ / TGZ archives — handled by ArchiveRenderer
+  if (
+    mime === 'application/x-tar' ||
+    mime === 'application/gzip' ||
+    mime === 'application/x-gzip' ||
+    ext === 'tar' ||
+    ext === 'gz' ||
+    ext === 'tgz'
+  ) {
+    return 'archive';
+  }
+
+  // PPTX (PowerPoint) — text-only slide viewer
+  if (
+    mime === 'application/vnd.openxmlformats-officedocument.presentationml.presentation' ||
+    ext === 'pptx'
+  ) {
+    return 'pptx';
   }
 
   // DOCX (modern Word) — handled by mammoth. Legacy .doc is not supported.
@@ -238,9 +261,11 @@ const CATEGORY_LABELS: Record<Category, string> = {
   audio: 'Audio',
   video: 'Video',
   docx: 'Word Document',
+  pptx: 'PowerPoint',
   spreadsheet: 'Spreadsheet',
   html: 'Web Page',
   zip: 'ZIP Archive',
+  archive: 'Archive',
   doc: 'Document',
   file: 'File',
 };
@@ -252,15 +277,16 @@ const CATEGORY_BADGE: Record<Category, string> = {
   audio: 'AUD',
   video: 'VID',
   docx: 'DOCX',
+  pptx: 'PPTX',
   spreadsheet: 'XLS',
   html: 'HTML',
   zip: 'ZIP',
+  archive: 'ARC',
   doc: 'DOC',
   file: 'FILE',
 };
 
-const MEDIA_DETAILS_MIN_EXPANDED_HEIGHT = 360;
-const MEDIA_DETAILS_COLLAPSED_HEIGHT = 116;
+// (Media details sheet dimensions removed — now handled by DetailsSheet component)
 
 // ---------------------------------------------------------------------------
 // Binary helpers
@@ -809,7 +835,6 @@ export default function PreviewScreen() {
   const navigation = useNavigation<Nav>();
   const route = useRoute<PreviewRoute>();
   const insets = useSafeAreaInsets();
-  const { height: windowHeight } = useWindowDimensions();
   const { colors: c, resolved } = useTheme();
   const {
     fileId,
@@ -831,9 +856,8 @@ export default function PreviewScreen() {
   const [imageLoading, setImageLoading] = useState(false);
   const [imageError, setImageError] = useState<string | null>(null);
 
-  // PDF inline preview state
+  // PDF inline preview state — uses PdfRenderer with native react-native-pdf
   const [pdfUri, setPdfUri] = useState<string | null>(null);
-  const [pdfImageUri, setPdfImageUri] = useState<string | null>(null);
   const [pdfLoading, setPdfLoading] = useState(false);
   const [pdfError, setPdfError] = useState<string | null>(null);
 
@@ -848,9 +872,6 @@ export default function PreviewScreen() {
   const [videoLoading, setVideoLoading] = useState(false);
   const [videoError, setVideoError] = useState<string | null>(null);
   const tempVideoUriRef = useRef<string | null>(null);
-  const [mediaDetailsOpen, setMediaDetailsOpen] = useState(false);
-  const mediaDetailsAnim = useRef(new Animated.Value(0)).current;
-  const mediaDetailsTouchStartY = useRef<number | null>(null);
 
   // DOCX inline preview state
   const [docxHtml, setDocxHtml] = useState<string | null>(null);
@@ -878,6 +899,16 @@ export default function PreviewScreen() {
   const [zipLoading, setZipLoading] = useState(false);
   const [zipError, setZipError] = useState<string | null>(null);
 
+  // Archive (TAR/GZ/TGZ) state — uses ArchiveRenderer component
+  const [archiveData, setArchiveData] = useState<ArrayBuffer | null>(null);
+  const [archiveLoading, setArchiveLoading] = useState(false);
+  const [archiveError, setArchiveError] = useState<string | null>(null);
+
+  // PPTX state — uses PptxRenderer component
+  const [pptxData, setPptxData] = useState<ArrayBuffer | null>(null);
+  const [pptxLoading, setPptxLoading] = useState(false);
+  const [pptxError, setPptxError] = useState<string | null>(null);
+
   const { isUnlocked, getFileKeyBytes } = useCrypto();
 
   const category = fileCategory(mimeType, fileName);
@@ -885,6 +916,8 @@ export default function PreviewScreen() {
   const isSvg = category === 'svg';
   const isPdf = category === 'pdf';
   const isVideo = !!mimeType && mimeType.startsWith('video/');
+  const isArchive = category === 'archive';
+  const isPptx = category === 'pptx';
   const isMediaPreview = isImage || isVideo;
   const isDocx = category === 'docx';
   const isSpreadsheet = category === 'spreadsheet';
@@ -896,6 +929,8 @@ export default function PreviewScreen() {
     !isSvg &&
     !isHtml &&
     !isZip &&
+    !isArchive &&
+    !isPptx &&
     !!mimeType &&
     (mimeType.startsWith('text/') ||
       mimeType === 'application/json' ||
@@ -937,10 +972,12 @@ export default function PreviewScreen() {
       case 'audio': return c.green;
       case 'video':
       case 'docx':
+      case 'pptx':
       case 'doc': return c.ink2;
       case 'spreadsheet': return c.green;
       case 'html': return c.amber;
-      case 'zip': return c.amberDeep;
+      case 'zip':
+      case 'archive': return c.amberDeep;
       default: return c.ink3;
     }
   })();
@@ -975,62 +1012,6 @@ export default function PreviewScreen() {
     storagePoolId,
     versionNumber,
   ]);
-
-  useEffect(() => {
-    Animated.spring(mediaDetailsAnim, {
-      toValue: mediaDetailsOpen ? 1 : 0,
-      damping: 24,
-      stiffness: 220,
-      mass: 0.9,
-      useNativeDriver: true,
-    }).start();
-  }, [mediaDetailsAnim, mediaDetailsOpen]);
-
-  const mediaDetailsPanResponder = useMemo(
-    () =>
-      PanResponder.create({
-        onMoveShouldSetPanResponder: (_evt, gesture) => Math.abs(gesture.dy) > 12 && Math.abs(gesture.dy) > Math.abs(gesture.dx),
-        onPanResponderRelease: (_evt, gesture) => {
-          if (gesture.dy < -28 || gesture.vy < -0.6) {
-            setMediaDetailsOpen(true);
-          } else if (gesture.dy > 28 || gesture.vy > 0.6) {
-            setMediaDetailsOpen(false);
-          }
-        },
-      }),
-    [],
-  );
-
-  const handleMediaDetailsTouchStart = useCallback((event: GestureResponderEvent) => {
-    mediaDetailsTouchStartY.current = event.nativeEvent.pageY;
-  }, []);
-
-  const handleMediaDetailsTouchEnd = useCallback((event: GestureResponderEvent) => {
-    const startY = mediaDetailsTouchStartY.current;
-    mediaDetailsTouchStartY.current = null;
-    if (startY == null) return;
-
-    const deltaY = event.nativeEvent.pageY - startY;
-    if (deltaY < -24) {
-      setMediaDetailsOpen(true);
-    } else if (deltaY > 24) {
-      setMediaDetailsOpen(false);
-    }
-  }, []);
-
-  const mediaDetailsSafeBottom = Math.max(insets.bottom, 16);
-  const mediaDetailsExpandedHeight = Math.min(
-    Math.max(MEDIA_DETAILS_MIN_EXPANDED_HEIGHT, Math.round(windowHeight * 0.54)),
-    Math.max(MEDIA_DETAILS_MIN_EXPANDED_HEIGHT, windowHeight - insets.top - 84),
-  );
-  const mediaDetailsCollapsedVisibleHeight = MEDIA_DETAILS_COLLAPSED_HEIGHT + mediaDetailsSafeBottom;
-  const mediaDetailsTranslateY = mediaDetailsAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: [
-      mediaDetailsExpandedHeight - mediaDetailsCollapsedVisibleHeight,
-      0,
-    ],
-  });
 
   const handleClose = useCallback(() => {
     navigation.goBack();
@@ -1143,40 +1124,37 @@ export default function PreviewScreen() {
     };
   }, [isImage, fetchAndDecrypt]);
 
-  // Auto-load PDFs inline on mount.
+  // Auto-load PDFs inline on mount — uses native decrypt + PdfRenderer.
   useEffect(() => {
     if (!isPdf) return;
     if (Platform.OS === 'web') return;
+    if (!isUnlocked) return;
     let cancelled = false;
     setPdfLoading(true);
     setPdfError(null);
     setPdfUri(null);
-    setPdfImageUri(null);
-    fetchAndDecrypt()
-      .then(async (uri) => {
-        let imageUri: string | null = null;
-        if (Platform.OS === 'ios' && BeebeebCrypto.isNativeAvailable) {
-          const outputUri = `${FileSystem.cacheDirectory}pdf_${fileId}_page1.png`;
-          imageUri = await BeebeebCrypto.renderPdfFirstPage(uri, outputUri, 1600).catch(() => null);
-        }
+
+    (async () => {
+      try {
+        const fileKey = await getFileKeyBytes(fileId);
+        const tempPath = await decryptToTempFile(fileId, fileKey, 'pdf', sizeBytes, chunkCount);
         if (!cancelled) {
-          setPdfUri(uri);
-          setPdfImageUri(imageUri);
+          setPdfUri(tempPath);
         }
-      })
-      .catch((err) => {
+      } catch (err) {
         if (!cancelled) setPdfError(friendlyError(err));
-      })
-      .finally(() => {
+      } finally {
         if (!cancelled) {
           setPdfLoading(false);
           setDownloadProgress(0);
         }
-      });
+      }
+    })();
+
     return () => {
       cancelled = true;
     };
-  }, [isPdf, fetchAndDecrypt]);
+  }, [isPdf, isUnlocked, fileId, getFileKeyBytes, sizeBytes, chunkCount]);
 
   // Auto-load text/code/JSON inline on mount — read decrypted file as UTF-8
   useEffect(() => {
@@ -1429,6 +1407,66 @@ export default function PreviewScreen() {
     };
   }, [isZip, fetchAndDecrypt]);
 
+  // Auto-load TAR/GZ/TGZ archives — decrypt and read as bytes for ArchiveRenderer
+  useEffect(() => {
+    if (!isArchive) return;
+    if (Platform.OS === 'web') return;
+    let cancelled = false;
+    setArchiveLoading(true);
+    setArchiveError(null);
+    setArchiveData(null);
+
+    (async () => {
+      try {
+        const uri = await fetchAndDecrypt();
+        if (cancelled) return;
+        const arrayBuffer = await readFileAsArrayBuffer(uri);
+        if (!cancelled) setArchiveData(arrayBuffer);
+      } catch (err) {
+        if (!cancelled) setArchiveError(friendlyError(err));
+      } finally {
+        if (!cancelled) {
+          setArchiveLoading(false);
+          setDownloadProgress(0);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isArchive, fetchAndDecrypt]);
+
+  // Auto-load PPTX — decrypt and read as bytes for PptxRenderer
+  useEffect(() => {
+    if (!isPptx) return;
+    if (Platform.OS === 'web') return;
+    let cancelled = false;
+    setPptxLoading(true);
+    setPptxError(null);
+    setPptxData(null);
+
+    (async () => {
+      try {
+        const uri = await fetchAndDecrypt();
+        if (cancelled) return;
+        const arrayBuffer = await readFileAsArrayBuffer(uri);
+        if (!cancelled) setPptxData(arrayBuffer);
+      } catch (err) {
+        if (!cancelled) setPptxError(friendlyError(err));
+      } finally {
+        if (!cancelled) {
+          setPptxLoading(false);
+          setDownloadProgress(0);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isPptx, fetchAndDecrypt]);
+
   const handleDownload = useCallback(async () => {
     if (Platform.OS === 'web') {
       Alert.alert('Not available', 'File download is only available on iOS and Android.');
@@ -1515,10 +1553,9 @@ export default function PreviewScreen() {
             styles.mediaStage,
             {
               paddingTop: insets.top + 64,
-              paddingBottom: mediaDetailsCollapsedVisibleHeight,
+              paddingBottom: 24 + Math.max(insets.bottom, 16),
             },
           ]}
-          onPress={() => setMediaDetailsOpen(false)}
         >
           {isImage ? (
             imageUri ? (
@@ -1573,99 +1610,22 @@ export default function PreviewScreen() {
           )}
         </Pressable>
 
-        <Animated.View
-          style={[
-            styles.mediaDetailsSheet,
-            {
-              height: mediaDetailsExpandedHeight,
-              paddingBottom: mediaDetailsSafeBottom,
-              transform: [{ translateY: mediaDetailsTranslateY }],
-            },
-          ]}
-          {...mediaDetailsPanResponder.panHandlers}
-        >
-          <TouchableOpacity
-            activeOpacity={0.8}
-            onPress={() => setMediaDetailsOpen((open) => !open)}
-            onPressIn={handleMediaDetailsTouchStart}
-            onPressOut={handleMediaDetailsTouchEnd}
-            style={styles.mediaDetailsHandle}
-            accessibilityRole="button"
-            accessibilityLabel={mediaDetailsOpen ? 'Hide file details' : 'Show file details'}
-          >
-            <View style={styles.mediaGrabber} />
-            <View style={styles.mediaDetailsSummary}>
-              <View style={styles.mediaDetailsSummaryText}>
-                <Text style={styles.mediaDetailsTitle}>Details</Text>
-                <Text style={styles.mediaDetailsSubtitle} numberOfLines={1}>
-                  Swipe up for metadata
-                </Text>
-              </View>
-              <Ionicons
-                name={mediaDetailsOpen ? 'chevron-down' : 'chevron-up'}
-                size={18}
-                color="rgba(255,255,255,0.72)"
-              />
-            </View>
-          </TouchableOpacity>
-
-          <View style={styles.mediaActionsRow}>
-            <TouchableOpacity
-              style={styles.mediaActionButton}
-              onPress={handleShare}
-              activeOpacity={0.8}
-              accessibilityRole="button"
-              accessibilityLabel="Share Beebeeb link"
-            >
-              <Ionicons name="link-outline" size={19} color={colors.white} />
-              <Text style={styles.mediaActionText}>Share link</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.mediaActionButton, downloading && styles.downloadButtonDisabled]}
-              onPress={handleDownload}
-              activeOpacity={0.8}
-              disabled={downloading}
-              accessibilityRole="button"
-              accessibilityLabel="Export to another app"
-            >
-              {downloading ? (
-                <ActivityIndicator size="small" color={colors.white} />
-              ) : (
-                <Ionicons name="share-outline" size={19} color={colors.white} />
-              )}
-              <Text style={styles.mediaActionText}>Export</Text>
-            </TouchableOpacity>
-          </View>
-
-          {downloading && exportStatus && (
-            <View style={styles.mediaExportStatus}>
-              <Ionicons name="lock-closed-outline" size={14} color="rgba(255,255,255,0.64)" />
-              <Text style={styles.mediaExportStatusText} numberOfLines={2}>{exportStatus}</Text>
-            </View>
-          )}
-
-          {downloading && downloadProgress > 0 && (
-            <View style={styles.mediaProgressTrack}>
-              <View style={[styles.mediaProgressFill, { width: `${downloadProgress * 100}%` }]} />
-            </View>
-          )}
-
-          <ScrollView
-            style={styles.mediaDetailsScroll}
-            contentContainerStyle={styles.mediaDetailsScrollContent}
-            showsVerticalScrollIndicator={false}
-            bounces={false}
-          >
-            <View style={styles.mediaDetailsRows}>
-              {mediaDetailsRows.map((row) => (
-                <View key={row.label} style={styles.mediaDetailsRow}>
-                  <Text style={styles.mediaDetailsLabel}>{row.label}</Text>
-                  <Text style={styles.mediaDetailsValue} numberOfLines={2}>{row.value}</Text>
-                </View>
-              ))}
-            </View>
-          </ScrollView>
-        </Animated.View>
+        <DetailsSheet
+          filename={previewFileName}
+          kind={CATEGORY_LABELS[category] ?? 'File'}
+          size={sizeBytes != null ? formatSize(sizeBytes) : 'Unknown'}
+          created={createdAt ? formatDate(createdAt) : undefined}
+          extraInfo={mediaDetailsRows
+            .filter((r) => !['Name', 'Kind', 'Size', 'Created'].includes(r.label))
+            .map((r) => ({ label: r.label, value: r.value }))}
+          storageLocation={(() => {
+            const storage = trustLocation(storagePoolId);
+            return `${storage.region} · ${storage.city}`;
+          })()}
+          onShare={handleShare}
+          onDownload={handleDownload}
+          downloading={downloading}
+        />
       </View>
     );
   }
@@ -1767,20 +1727,8 @@ export default function PreviewScreen() {
             </View>
           )
         ) : isPdf ? (
-          pdfImageUri ? (
-            <Image
-              source={{ uri: pdfImageUri }}
-              style={styles.pdfImage}
-              resizeMode="contain"
-              accessibilityLabel={previewFileName}
-            />
-          ) : pdfUri ? (
-            <WebView
-              source={{ uri: pdfUri }}
-              style={[styles.pdfWebView, { backgroundColor: c.paper }]}
-              originWhitelist={['*']}
-              allowingReadAccessToURL={FileSystem.cacheDirectory ?? undefined}
-            />
+          pdfUri ? (
+            <PdfRenderer filePath={pdfUri} />
           ) : pdfError ? (
             <View style={styles.imageStatus}>
               <Text style={[styles.imageStatusTitle, { color: colors.white }]}>
@@ -2020,6 +1968,54 @@ export default function PreviewScreen() {
                   : isUnlocked
                   ? 'Downloading and reading archive...'
                   : 'Unlock your vault to inspect this archive.'}
+              </Text>
+            </View>
+          )
+        ) : isArchive ? (
+          archiveData ? (
+            <ArchiveRenderer
+              data={archiveData}
+              extension={(fileName ?? '').toLowerCase().split('.').pop() ?? 'tar'}
+              colors={c}
+            />
+          ) : archiveError ? (
+            <View style={styles.imageStatus}>
+              <Text style={[styles.imageStatusTitle, { color: colors.white }]}>
+                Couldn't open archive
+              </Text>
+              <Text style={styles.imageStatusSub}>{archiveError}</Text>
+            </View>
+          ) : (
+            <View style={styles.imageStatus}>
+              <ActivityIndicator color={c.amber} size="large" />
+              <Text style={styles.imageStatusSub}>
+                {archiveLoading && downloadProgress > 0
+                  ? `Decrypting · ${Math.round(downloadProgress * 100)}%`
+                  : isUnlocked
+                  ? 'Downloading and reading archive...'
+                  : 'Unlock your vault to inspect this archive.'}
+              </Text>
+            </View>
+          )
+        ) : isPptx ? (
+          pptxData ? (
+            <PptxRenderer data={pptxData} colors={c} />
+          ) : pptxError ? (
+            <View style={styles.imageStatus}>
+              <Text style={[styles.imageStatusTitle, { color: colors.white }]}>
+                Couldn't open presentation
+              </Text>
+              <Text style={styles.imageStatusSub}>{pptxError}</Text>
+            </View>
+          ) : (
+            <View style={styles.imageStatus}>
+              <ActivityIndicator color={c.amber} size="large" />
+              <Text style={styles.imageStatusSub}>
+                {pptxLoading && downloadProgress > 0
+                  ? `Decrypting · ${Math.round(downloadProgress * 100)}%`
+                  : isUnlocked
+                  ? 'Downloading and extracting slides...'
+                  : 'Unlock your vault to view this presentation.'}
               </Text>
             </View>
           )
@@ -2425,138 +2421,7 @@ const styles = StyleSheet.create({
     width: '100%',
     height: '100%',
   },
-  mediaDetailsSheet: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    bottom: 0,
-    zIndex: 30,
-    paddingHorizontal: 16,
-    paddingTop: 8,
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    backgroundColor: 'rgba(22,22,24,0.96)',
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(255,255,255,0.12)',
-  },
-  mediaDetailsHandle: {
-    minHeight: 48,
-  },
-  mediaGrabber: {
-    alignSelf: 'center',
-    width: 38,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: 'rgba(255,255,255,0.25)',
-    marginBottom: 10,
-  },
-  mediaDetailsSummary: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-  },
-  mediaDetailsSummaryText: {
-    flex: 1,
-    minWidth: 0,
-  },
-  mediaDetailsTitle: {
-    color: colors.white,
-    fontSize: 16,
-    lineHeight: 20,
-    fontWeight: '700',
-  },
-  mediaDetailsSubtitle: {
-    marginTop: 2,
-    color: 'rgba(255,255,255,0.52)',
-    fontSize: 12,
-    lineHeight: 16,
-  },
-  mediaActionsRow: {
-    flexDirection: 'row',
-    gap: 10,
-    marginTop: 12,
-  },
-  mediaActionButton: {
-    flex: 1,
-    minHeight: 46,
-    borderRadius: 14,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    backgroundColor: 'rgba(255,255,255,0.12)',
-  },
-  mediaActionText: {
-    color: colors.white,
-    fontSize: 14,
-    lineHeight: 18,
-    fontWeight: '700',
-  },
-  mediaExportStatus: {
-    minHeight: 34,
-    marginTop: 10,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    borderRadius: 12,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    backgroundColor: 'rgba(255,255,255,0.08)',
-  },
-  mediaExportStatusText: {
-    flex: 1,
-    color: 'rgba(255,255,255,0.64)',
-    fontSize: 11,
-    lineHeight: 15,
-    fontWeight: '600',
-  },
-  mediaProgressTrack: {
-    height: 3,
-    marginTop: 10,
-    borderRadius: 2,
-    overflow: 'hidden',
-    backgroundColor: 'rgba(255,255,255,0.16)',
-  },
-  mediaProgressFill: {
-    height: '100%',
-    borderRadius: 2,
-    backgroundColor: colors.amber,
-  },
-  mediaDetailsScroll: {
-    flex: 1,
-    marginTop: 14,
-  },
-  mediaDetailsScrollContent: {
-    paddingBottom: 10,
-  },
-  mediaDetailsRows: {
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: 'rgba(255,255,255,0.12)',
-  },
-  mediaDetailsRow: {
-    minHeight: 38,
-    paddingVertical: 8,
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    justifyContent: 'space-between',
-    gap: 18,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: 'rgba(255,255,255,0.08)',
-  },
-  mediaDetailsLabel: {
-    color: 'rgba(255,255,255,0.48)',
-    fontSize: 12,
-    lineHeight: 16,
-    fontWeight: '600',
-  },
-  mediaDetailsValue: {
-    flex: 1,
-    color: colors.white,
-    fontSize: 12,
-    lineHeight: 16,
-    textAlign: 'right',
-    fontWeight: '600',
-  },
+  // (Media details sheet styles removed — now handled by DetailsSheet component)
 
   root: {
     flex: 1,
@@ -2645,8 +2510,6 @@ const styles = StyleSheet.create({
   },
 
   image: { width: '100%', height: '100%' },
-  pdfWebView: { width: '100%', height: '100%' },
-  pdfImage: { width: '100%', height: '100%' },
   video: { width: '100%', height: '100%' },
   docxWebView: { width: '100%', height: '100%', borderRadius: radii.md },
   svgWebView: { width: '100%', height: '100%', backgroundColor: '#ffffff', borderRadius: radii.md },
