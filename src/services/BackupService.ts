@@ -150,7 +150,11 @@ async function storeGet(key: string): Promise<string | null> {
   if (Platform.OS === 'web') {
     return typeof window === 'undefined' ? null : window.localStorage.getItem(key);
   }
-  return SecureStore.getItemAsync(key);
+  try {
+    return await SecureStore.getItemAsync(key);
+  } catch {
+    return null;
+  }
 }
 
 async function storeSet(key: string, value: string): Promise<void> {
@@ -158,7 +162,11 @@ async function storeSet(key: string, value: string): Promise<void> {
     if (typeof window !== 'undefined') window.localStorage.setItem(key, value);
     return;
   }
-  await SecureStore.setItemAsync(key, value);
+  try {
+    await SecureStore.setItemAsync(key, value);
+  } catch {
+    // SecureStore fails in background/locked state — non-critical for backup state
+  }
 }
 
 // ---------------------------------------------------------------------------
