@@ -37,6 +37,12 @@ export interface EncryptedUploadOptions {
   mimeType?: string
   /** Existing encrypted name to let v2 replacement uploads bind to the current file row. */
   v2InitNameEncrypted?: string
+  /**
+   * Original creation date of the file (ISO 8601 string).
+   * Used for camera roll backups so the server stores the photo's real date
+   * instead of the upload timestamp.
+   */
+  createdAt?: string
   encryptChunkFn: (fileId: string, plaintext: Uint8Array) => Promise<EncryptedData>
   encryptMetadataFn: (fileId: string, metadata: string) => Promise<EncryptedData>
   onProgress?: (p: UploadProgress) => void
@@ -94,7 +100,7 @@ export function generateFileId(): string {
  */
 export async function encryptedUpload(opts: EncryptedUploadOptions): Promise<FileEntry> {
   const {
-    fileId, uri, name, parentId, mimeType,
+    fileId, uri, name, parentId, mimeType, createdAt,
     v2InitNameEncrypted, encryptChunkFn, encryptMetadataFn, onProgress,
   } = opts
 
@@ -162,6 +168,7 @@ export async function encryptedUpload(opts: EncryptedUploadOptions): Promise<Fil
     parentId,
     mimeType: undefined,
     isMedia: mediaFlag,
+    createdAt,
     plaintextSizeBytes: plaintextSize,
     resumeKey,
     onProgress,

@@ -611,6 +611,8 @@ export async function uploadEncryptedChunked(params: {
   parentId?: string
   mimeType?: string
   isMedia?: boolean
+  /** Original creation date (ISO 8601) for camera roll backups. */
+  createdAt?: string
   plaintextSizeBytes: number
   resumeKey?: string
   onProgress?: (p: UploadProgress) => void
@@ -624,6 +626,7 @@ export async function uploadEncryptedChunked(params: {
     parentId,
     mimeType,
     isMedia,
+    createdAt,
     plaintextSizeBytes,
     resumeKey,
     onProgress,
@@ -661,6 +664,7 @@ export async function uploadEncryptedChunked(params: {
       fileSizeBytes: plaintextSizeBytes,
       parentId,
       isMedia,
+      createdAt,
     })
     if (v2Init) {
       protocol = 'v2'
@@ -709,6 +713,7 @@ export async function uploadEncryptedChunked(params: {
         // is only used for progress reporting (total encrypted bytes in flight).
         size_bytes: plaintextSizeBytes,
         chunk_count: chunkCount,
+        created_at: createdAt ?? null,
       }),
     })
     if (!initRes.ok) {
@@ -818,6 +823,7 @@ async function initUploadV2(params: {
   fileSizeBytes: number;
   parentId?: string;
   isMedia?: boolean;
+  createdAt?: string;
 }): Promise<UploadV2InitResponse | null> {
   const res = await fetch(`${BASE_URL}/api/v1/uploads/init`, {
     method: 'POST',
@@ -832,6 +838,7 @@ async function initUploadV2(params: {
       profile: 'mobile',
       chunk_size_bytes: CHUNK_SIZE,
       chunk_count: Math.max(1, Math.ceil(params.fileSizeBytes / CHUNK_SIZE)),
+      created_at: params.createdAt ?? null,
     }),
   })
   if (res.status === 404 || res.status === 405) return null
