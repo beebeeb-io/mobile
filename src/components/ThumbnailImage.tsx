@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Image, StyleSheet, View } from 'react-native';
 import type { StyleProp, ViewStyle } from 'react-native';
 import { useCrypto } from '../lib/crypto-context';
-import { fetchDecryptedThumbnailUri } from '../lib/thumbnail';
+import { cacheLocalThumbnail, fetchDecryptedThumbnailUri } from '../lib/thumbnail';
 
 interface Props {
   fileId: string;
@@ -11,6 +11,12 @@ interface Props {
   placeholderColor: string;
   /** False keeps the placeholder visible without starting a network fetch. */
   loadThumbnail?: boolean;
+  /**
+   * Local camera-roll URI for this photo (when it exists on device from backup).
+   * If provided, the component generates a thumbnail from this local file
+   * instead of downloading+decrypting from the server.
+   */
+  localAssetUri?: string | null;
   style?: StyleProp<ViewStyle>;
   accessibilityLabel?: string;
 }
@@ -20,6 +26,7 @@ export const ThumbnailImage = React.memo(function ThumbnailImage({
   hasThumbnail = true,
   placeholderColor,
   loadThumbnail = true,
+  localAssetUri,
   style,
   accessibilityLabel,
 }: Props) {
@@ -32,7 +39,45 @@ export const ThumbnailImage = React.memo(function ThumbnailImage({
     cancelledRef.current = false;
     setUri(null);
     setFailed(false);
-    if (!hasThumbnail || !loadThumbnail) {
+    if (!loadThumbnail) {
+      setFailed(true);
+      return () => {
+        cancelledRef.current = true;
+      };
+    }
+
+    // Priority 1: Use local camera-roll asset for thumbnail (no server call)
+    if (localAssetUri) {
+      cacheLocalThumbnail(fileId, localAssetUri)
+        .then((cachedUri) => {
+          if (cancelledRef.current) return;
+          if (cachedUri) {
+            setUri(cachedUri);
+          } else {
+            // Local generation failed — fall back to server fetch if has_thumbnail
+            if (hasThumbnail) {
+              return getFileKeyBytes(fileId)
+                .then((fileKey) => fetchDecryptedThumbnailUri(fileId, fileKey))
+                .then((serverUri) => {
+                  if (!cancelledRef.current) {
+                    if (serverUri) setUri(serverUri);
+                    else setFailed(true);
+                  }
+                });
+            }
+            setFailed(true);
+          }
+        })
+        .catch(() => {
+          if (!cancelledRef.current) setFailed(true);
+        });
+      return () => {
+        cancelledRef.current = true;
+      };
+    }
+
+    // Priority 2: Fetch encrypted thumbnail from server
+    if (!hasThumbnail) {
       setFailed(true);
       return () => {
         cancelledRef.current = true;
@@ -52,7 +97,7 @@ export const ThumbnailImage = React.memo(function ThumbnailImage({
     return () => {
       cancelledRef.current = true;
     };
-  }, [fileId, getFileKeyBytes, hasThumbnail, loadThumbnail]);
+  }, [fileId, getFileKeyBytes, hasThumbnail, loadThumbnail, localAssetUri]);
 
   return (
     <View
