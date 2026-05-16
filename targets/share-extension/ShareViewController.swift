@@ -1,400 +1,748 @@
 import UIKit
 import UniformTypeIdentifiers
 
-/// Custom Share Extension view controller for "Save to Beebeeb".
+/// Share Extension view controller for "Save to Beebeeb".
 ///
 /// Flow:
-/// 1. Show minimal "Saving to Beebeeb..." UI with amber progress bar
-/// 2. For each shared item: copy to App Group container
-/// 3. Write an import manifest to App Group container
-/// 4. Call completeRequest — the main app encrypts and uploads after vault unlock
+/// 1. Load master key via SharedKeychain (triggers Face ID if needed)
+/// 2. If no key → show "Unlock Beebeeb to save files" + OK button → dismiss
+/// 3. If no session token → show "Sign in to Beebeeb first" + OK button → dismiss
+/// 4. Fetch top-level folders from API
+/// 5. Show file preview + folder picker (recents + all folders)
+/// 6. On Save → encrypt (or stage) → upload → show result → dismiss
 final class ShareViewController: UIViewController {
 
     // MARK: - Constants
 
     private static let appGroup = "group.io.beebeeb.shared"
+    private static let recentFoldersKey = "beebeeb_share_recent_folders"
+    private static let sessionTokenKey = "beebeeb_session_token"
+    private static let apiUrlKey = "beebeeb_api_url"
+    private static let defaultApiUrl = "https://api.beebeeb.io"
 
-    // MARK: - UI
+    // MARK: - Colors (dark theme)
 
-    private let backdropView: UIView = {
-        let v = UIView()
-        v.backgroundColor = UIColor.black.withAlphaComponent(0.4)
-        v.translatesAutoresizingMaskIntoConstraints = false
-        return v
-    }()
+    private static let bgColor = UIColor(red: 0.102, green: 0.090, blue: 0.078, alpha: 1)        // #1A1714
+    private static let cardColor = UIColor(red: 0.141, green: 0.125, blue: 0.110, alpha: 1)       // #241F1C
+    private static let surfaceColor = UIColor(red: 0.180, green: 0.160, blue: 0.141, alpha: 1)    // #2E2924
+    private static let amberColor = UIColor(red: 0.851, green: 0.467, blue: 0.024, alpha: 1)      // #D97706
+    private static let textPrimary = UIColor.white
+    private static let textSecondary = UIColor(white: 0.6, alpha: 1)
+    private static let textTertiary = UIColor(white: 0.4, alpha: 1)
 
-    private let card: UIView = {
-        let v = UIView()
-        v.backgroundColor = UIColor(red: 0.980, green: 0.973, blue: 0.961, alpha: 1)  // FAF8F5
-        v.layer.cornerRadius = 20
-        v.layer.shadowColor = UIColor.black.cgColor
-        v.layer.shadowOpacity = 0.12
-        v.layer.shadowRadius = 24
-        v.layer.shadowOffset = CGSize(width: 0, height: 8)
-        v.translatesAutoresizingMaskIntoConstraints = false
-        return v
-    }()
+    // MARK: - State
 
-    private let logoMark: UIView = {
-        // Amber rounded square — placeholder for Beebeeb logo mark
-        let v = UIView()
-        v.backgroundColor = UIColor(red: 0.851, green: 0.467, blue: 0.047, alpha: 1)  // D97706
-        v.layer.cornerRadius = 10
-        v.translatesAutoresizingMaskIntoConstraints = false
-        return v
-    }()
+    private var masterKey: Data?
+    private var sessionToken: String?
+    private var apiUrl: String = defaultApiUrl
+    private var folders: [FolderFetcher.Folder] = []
+    private var recentFolders: [RecentFolder] = []
+    private var selectedFolderId: String? = nil
+    private var fileName: String = "File"
+    private var fileSize: Int64 = 0
+    private var fileData: Data?
 
-    private let titleLabel: UILabel = {
-        let l = UILabel()
-        l.text = "Saving to Beebeeb"
-        l.font = UIFont.systemFont(ofSize: 17, weight: .semibold)
-        l.textColor = UIColor(red: 0.102, green: 0.090, blue: 0.082, alpha: 1)  // 1A1714
-        l.translatesAutoresizingMaskIntoConstraints = false
-        return l
-    }()
+    // MARK: - UI Elements
 
-    private let subtitleLabel: UILabel = {
-        let l = UILabel()
-        l.text = "Open Beebeeb to encrypt and upload."
-        l.font = UIFont.systemFont(ofSize: 14)
-        l.textColor = UIColor(red: 0.420, green: 0.380, blue: 0.341, alpha: 1)
-        l.translatesAutoresizingMaskIntoConstraints = false
-        return l
-    }()
+    private let containerView = UIView()
+    private let headerView = UIView()
+    private let fileIconView = UIView()
+    private let fileNameLabel = UILabel()
+    private let fileSizeLabel = UILabel()
+    private let tableView = UITableView(frame: .zero, style: .grouped)
+    private let bottomBar = UIView()
+    private let cancelButton = UIButton(type: .system)
+    private let saveButton = UIButton(type: .system)
+    private let progressOverlay = UIView()
+    private let progressBar = UIView()
+    private let progressFill = UIView()
+    private let progressLabel = UILabel()
 
-    private let progressTrack: UIView = {
-        let v = UIView()
-        v.backgroundColor = UIColor(red: 0.925, green: 0.910, blue: 0.886, alpha: 1)
-        v.layer.cornerRadius = 3
-        v.clipsToBounds = true
-        v.translatesAutoresizingMaskIntoConstraints = false
-        return v
-    }()
-
-    private let progressFill: UIView = {
-        let v = UIView()
-        v.backgroundColor = UIColor(red: 0.851, green: 0.467, blue: 0.047, alpha: 1)  // D97706 amber
-        v.layer.cornerRadius = 3
-        v.translatesAutoresizingMaskIntoConstraints = false
-        return v
-    }()
-
-    private var progressFillLeading: NSLayoutConstraint?
-    private var progressFillWidth: NSLayoutConstraint?
+    private var progressFillWidthConstraint: NSLayoutConstraint?
 
     // MARK: - Lifecycle
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        setupUI()
+        view.backgroundColor = UIColor.black.withAlphaComponent(0.5)
+        loadSharedConfig()
+        setupContainerUI()
     }
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
-        startIndeterminateProgress()
-        processSharedItems()
+        performSetup()
     }
 
-    // MARK: - UI setup
+    // MARK: - Setup
 
-    private func setupUI() {
-        view.backgroundColor = .clear
+    private func loadSharedConfig() {
+        let defaults = UserDefaults(suiteName: Self.appGroup)
+        sessionToken = defaults?.string(forKey: Self.sessionTokenKey)
+        if let url = defaults?.string(forKey: Self.apiUrlKey), !url.isEmpty {
+            apiUrl = url
+        }
+        loadRecentFolders()
+    }
 
-        view.addSubview(backdropView)
-        view.addSubview(card)
-        card.addSubview(logoMark)
-        card.addSubview(titleLabel)
-        card.addSubview(subtitleLabel)
-        card.addSubview(progressTrack)
-        progressTrack.addSubview(progressFill)
+    private func performSetup() {
+        // Step 1: Check for master key (triggers Face ID if needed)
+        masterKey = SharedKeychain.loadMasterKey()
 
-        progressFillLeading = progressFill.leadingAnchor.constraint(equalTo: progressTrack.leadingAnchor)
-        progressFillWidth = progressFill.widthAnchor.constraint(equalTo: progressTrack.widthAnchor, multiplier: 0.35)
+        guard masterKey != nil else {
+            showError("Unlock Beebeeb to save files")
+            return
+        }
+
+        // Step 2: Check for session token
+        guard let token = sessionToken, !token.isEmpty else {
+            showError("Sign in to Beebeeb first")
+            return
+        }
+
+        // Step 3: Extract shared content
+        extractSharedContent { [weak self] success in
+            guard let self = self, success else {
+                self?.showError("Could not read shared content")
+                return
+            }
+
+            // Step 4: Fetch folders and show picker
+            self.fetchFolders(token: token)
+        }
+    }
+
+    // MARK: - Content Extraction
+
+    private func extractSharedContent(completion: @escaping (Bool) -> Void) {
+        guard let items = extensionContext?.inputItems as? [NSExtensionItem],
+              let firstItem = items.first,
+              let provider = firstItem.attachments?.first else {
+            completion(false)
+            return
+        }
+
+        let typeOrder: [UTType] = [.image, .movie, .pdf, .data, .url, .plainText]
+
+        func tryLoad(index: Int) {
+            guard index < typeOrder.count else {
+                completion(false)
+                return
+            }
+            let type = typeOrder[index]
+            if provider.hasItemConformingToTypeIdentifier(type.identifier) {
+                loadProvider(provider, typeID: type.identifier, completion: completion)
+            } else {
+                tryLoad(index: index + 1)
+            }
+        }
+
+        tryLoad(index: 0)
+    }
+
+    private func loadProvider(_ provider: NSItemProvider, typeID: String, completion: @escaping (Bool) -> Void) {
+        if typeID == UTType.url.identifier {
+            provider.loadItem(forTypeIdentifier: typeID, options: nil) { [weak self] item, _ in
+                guard let self = self, let url = item as? URL else {
+                    DispatchQueue.main.async { completion(false) }
+                    return
+                }
+                let content = url.absoluteString.data(using: .utf8) ?? Data()
+                self.fileName = (url.host ?? "bookmark") + ".url"
+                self.fileSize = Int64(content.count)
+                self.fileData = content
+                DispatchQueue.main.async {
+                    self.updateFilePreview()
+                    completion(true)
+                }
+            }
+        } else if typeID == UTType.plainText.identifier {
+            provider.loadItem(forTypeIdentifier: typeID, options: nil) { [weak self] item, _ in
+                guard let self = self, let text = item as? String else {
+                    DispatchQueue.main.async { completion(false) }
+                    return
+                }
+                let data = text.data(using: .utf8) ?? Data()
+                self.fileName = "shared-\(Int(Date().timeIntervalSince1970)).txt"
+                self.fileSize = Int64(data.count)
+                self.fileData = data
+                DispatchQueue.main.async {
+                    self.updateFilePreview()
+                    completion(true)
+                }
+            }
+        } else {
+            provider.loadFileRepresentation(forTypeIdentifier: typeID) { [weak self] url, error in
+                guard let self = self, let url = url else {
+                    DispatchQueue.main.async { completion(false) }
+                    return
+                }
+                // File URL is only valid in this callback — read immediately
+                do {
+                    let data = try Data(contentsOf: url)
+                    self.fileName = url.lastPathComponent
+                    self.fileSize = Int64(data.count)
+                    self.fileData = data
+                    DispatchQueue.main.async {
+                        self.updateFilePreview()
+                        completion(true)
+                    }
+                } catch {
+                    DispatchQueue.main.async { completion(false) }
+                }
+            }
+        }
+    }
+
+    // MARK: - Folder Fetching
+
+    private func fetchFolders(token: String) {
+        Task {
+            let fetcher = FolderFetcher(sessionToken: token, apiUrl: apiUrl)
+            do {
+                let fetched = try await fetcher.fetchTopLevelFolders()
+                await MainActor.run {
+                    self.folders = fetched
+                    self.selectDefaultFolder()
+                    self.showFolderPicker()
+                }
+            } catch {
+                await MainActor.run {
+                    // Show picker anyway with just recents (or empty)
+                    self.selectDefaultFolder()
+                    self.showFolderPicker()
+                }
+            }
+        }
+    }
+
+    private func selectDefaultFolder() {
+        if let recent = recentFolders.first {
+            selectedFolderId = recent.id
+        } else if let first = folders.first {
+            selectedFolderId = first.id
+        }
+        // nil = root (All Files)
+    }
+
+    // MARK: - UI Setup
+
+    private func setupContainerUI() {
+        containerView.backgroundColor = Self.bgColor
+        containerView.layer.cornerRadius = 16
+        containerView.layer.maskedCorners = [.layerMinXMinYCorner, .layerMaxXMinYCorner]
+        containerView.clipsToBounds = true
+        containerView.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(containerView)
 
         NSLayoutConstraint.activate([
-            backdropView.topAnchor.constraint(equalTo: view.topAnchor),
-            backdropView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            backdropView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            backdropView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            containerView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            containerView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            containerView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            containerView.heightAnchor.constraint(equalTo: view.heightAnchor, multiplier: 0.65),
+        ])
 
-            card.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            card.centerYAnchor.constraint(equalTo: view.centerYAnchor),
-            card.widthAnchor.constraint(equalToConstant: 300),
+        setupHeader()
+        setupTableView()
+        setupBottomBar()
+        setupProgressOverlay()
+    }
 
-            logoMark.topAnchor.constraint(equalTo: card.topAnchor, constant: 24),
-            logoMark.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 24),
-            logoMark.widthAnchor.constraint(equalToConstant: 36),
-            logoMark.heightAnchor.constraint(equalToConstant: 36),
+    private func setupHeader() {
+        headerView.translatesAutoresizingMaskIntoConstraints = false
+        containerView.addSubview(headerView)
 
-            titleLabel.centerYAnchor.constraint(equalTo: logoMark.centerYAnchor),
-            titleLabel.leadingAnchor.constraint(equalTo: logoMark.trailingAnchor, constant: 12),
-            titleLabel.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -24),
+        // File icon
+        fileIconView.backgroundColor = Self.surfaceColor
+        fileIconView.layer.cornerRadius = 8
+        fileIconView.translatesAutoresizingMaskIntoConstraints = false
+        headerView.addSubview(fileIconView)
 
-            subtitleLabel.topAnchor.constraint(equalTo: logoMark.bottomAnchor, constant: 16),
-            subtitleLabel.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 24),
-            subtitleLabel.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -24),
+        let iconLabel = UILabel()
+        iconLabel.text = "F"
+        iconLabel.font = UIFont.systemFont(ofSize: 16, weight: .bold)
+        iconLabel.textColor = Self.amberColor
+        iconLabel.textAlignment = .center
+        iconLabel.translatesAutoresizingMaskIntoConstraints = false
+        fileIconView.addSubview(iconLabel)
 
-            progressTrack.topAnchor.constraint(equalTo: subtitleLabel.bottomAnchor, constant: 12),
-            progressTrack.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 24),
-            progressTrack.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -24),
-            progressTrack.heightAnchor.constraint(equalToConstant: 6),
-            progressTrack.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -24),
+        // File name
+        fileNameLabel.text = fileName
+        fileNameLabel.font = UIFont.systemFont(ofSize: 16, weight: .semibold)
+        fileNameLabel.textColor = Self.textPrimary
+        fileNameLabel.lineBreakMode = .byTruncatingMiddle
+        fileNameLabel.translatesAutoresizingMaskIntoConstraints = false
+        headerView.addSubview(fileNameLabel)
 
-            progressFill.topAnchor.constraint(equalTo: progressTrack.topAnchor),
-            progressFill.bottomAnchor.constraint(equalTo: progressTrack.bottomAnchor),
-            progressFillLeading!,
-            progressFillWidth!,
+        // File size
+        fileSizeLabel.text = formatFileSize(fileSize)
+        fileSizeLabel.font = UIFont.systemFont(ofSize: 13)
+        fileSizeLabel.textColor = Self.textSecondary
+        fileSizeLabel.translatesAutoresizingMaskIntoConstraints = false
+        headerView.addSubview(fileSizeLabel)
+
+        NSLayoutConstraint.activate([
+            headerView.topAnchor.constraint(equalTo: containerView.topAnchor),
+            headerView.leadingAnchor.constraint(equalTo: containerView.leadingAnchor),
+            headerView.trailingAnchor.constraint(equalTo: containerView.trailingAnchor),
+            headerView.heightAnchor.constraint(equalToConstant: 72),
+
+            fileIconView.leadingAnchor.constraint(equalTo: headerView.leadingAnchor, constant: 20),
+            fileIconView.centerYAnchor.constraint(equalTo: headerView.centerYAnchor),
+            fileIconView.widthAnchor.constraint(equalToConstant: 40),
+            fileIconView.heightAnchor.constraint(equalToConstant: 40),
+
+            iconLabel.centerXAnchor.constraint(equalTo: fileIconView.centerXAnchor),
+            iconLabel.centerYAnchor.constraint(equalTo: fileIconView.centerYAnchor),
+
+            fileNameLabel.leadingAnchor.constraint(equalTo: fileIconView.trailingAnchor, constant: 12),
+            fileNameLabel.trailingAnchor.constraint(equalTo: headerView.trailingAnchor, constant: -20),
+            fileNameLabel.topAnchor.constraint(equalTo: headerView.topAnchor, constant: 18),
+
+            fileSizeLabel.leadingAnchor.constraint(equalTo: fileNameLabel.leadingAnchor),
+            fileSizeLabel.topAnchor.constraint(equalTo: fileNameLabel.bottomAnchor, constant: 2),
         ])
     }
 
-    private func startIndeterminateProgress() {
-        view.layoutIfNeeded()
-        let trackWidth = progressTrack.bounds.width
-        let fillWidth = trackWidth * 0.35
+    private func setupTableView() {
+        tableView.backgroundColor = .clear
+        tableView.separatorStyle = .none
+        tableView.delegate = self
+        tableView.dataSource = self
+        tableView.register(FolderCell.self, forCellReuseIdentifier: FolderCell.reuseID)
+        tableView.translatesAutoresizingMaskIntoConstraints = false
+        tableView.isHidden = true
+        containerView.addSubview(tableView)
 
-        UIView.animate(
-            withDuration: 0.9,
-            delay: 0,
-            options: [.repeat, .autoreverse, .curveEaseInOut]
-        ) {
-            self.progressFillLeading?.constant = trackWidth - fillWidth
-            self.view.layoutIfNeeded()
-        }
+        NSLayoutConstraint.activate([
+            tableView.topAnchor.constraint(equalTo: headerView.bottomAnchor),
+            tableView.leadingAnchor.constraint(equalTo: containerView.leadingAnchor),
+            tableView.trailingAnchor.constraint(equalTo: containerView.trailingAnchor),
+            tableView.bottomAnchor.constraint(equalTo: containerView.bottomAnchor, constant: -60),
+        ])
     }
 
-    // MARK: - Process shared items
+    private func setupBottomBar() {
+        bottomBar.backgroundColor = Self.cardColor
+        bottomBar.translatesAutoresizingMaskIntoConstraints = false
+        containerView.addSubview(bottomBar)
 
-    private func processSharedItems() {
-        guard let items = extensionContext?.inputItems as? [NSExtensionItem] else {
-            finish(subtitle: "Nothing to save.")
-            return
-        }
+        cancelButton.setTitle("Cancel", for: .normal)
+        cancelButton.setTitleColor(Self.textSecondary, for: .normal)
+        cancelButton.titleLabel?.font = UIFont.systemFont(ofSize: 16, weight: .medium)
+        cancelButton.addTarget(self, action: #selector(cancelTapped), for: .touchUpInside)
+        cancelButton.translatesAutoresizingMaskIntoConstraints = false
+        bottomBar.addSubview(cancelButton)
 
-        let masterKey = SharedKeychain.loadMasterKey()
-        let group = DispatchGroup()
-        var pendingUploads: [PendingUpload] = []
-        let lock = NSLock()
+        saveButton.setTitle("Save", for: .normal)
+        saveButton.setTitleColor(Self.bgColor, for: .normal)
+        saveButton.backgroundColor = Self.amberColor
+        saveButton.titleLabel?.font = UIFont.systemFont(ofSize: 16, weight: .semibold)
+        saveButton.layer.cornerRadius = 8
+        saveButton.translatesAutoresizingMaskIntoConstraints = false
+        saveButton.addTarget(self, action: #selector(saveTapped), for: .touchUpInside)
+        bottomBar.addSubview(saveButton)
 
-        for item in items {
-            for provider in item.attachments ?? [] {
-                group.enter()
-                handle(provider: provider, masterKey: masterKey) { upload in
-                    if let upload = upload {
-                        lock.lock()
-                        pendingUploads.append(upload)
-                        lock.unlock()
-                    }
-                    group.leave()
-                }
-            }
-        }
+        bottomBar.isHidden = true
 
-        group.notify(queue: .global(qos: .userInitiated)) {
-            guard !pendingUploads.isEmpty else {
-                self.finish(subtitle: "Could not read shared files.")
-                return
-            }
-            self.enqueueUploads(pendingUploads)
-        }
+        NSLayoutConstraint.activate([
+            bottomBar.leadingAnchor.constraint(equalTo: containerView.leadingAnchor),
+            bottomBar.trailingAnchor.constraint(equalTo: containerView.trailingAnchor),
+            bottomBar.bottomAnchor.constraint(equalTo: containerView.bottomAnchor),
+            bottomBar.heightAnchor.constraint(equalToConstant: 60),
+
+            cancelButton.leadingAnchor.constraint(equalTo: bottomBar.leadingAnchor, constant: 20),
+            cancelButton.centerYAnchor.constraint(equalTo: bottomBar.centerYAnchor),
+
+            saveButton.trailingAnchor.constraint(equalTo: bottomBar.trailingAnchor, constant: -20),
+            saveButton.centerYAnchor.constraint(equalTo: bottomBar.centerYAnchor),
+            saveButton.widthAnchor.constraint(equalToConstant: 80),
+            saveButton.heightAnchor.constraint(equalToConstant: 36),
+        ])
     }
 
-    // MARK: - Content type handlers
+    private func setupProgressOverlay() {
+        progressOverlay.backgroundColor = Self.bgColor
+        progressOverlay.isHidden = true
+        progressOverlay.translatesAutoresizingMaskIntoConstraints = false
+        containerView.addSubview(progressOverlay)
 
-    private func handle(provider: NSItemProvider, masterKey: Data?, completion: @escaping (PendingUpload?) -> Void) {
-        if provider.hasItemConformingToTypeIdentifier(UTType.image.identifier) {
-            loadFileRepresentation(provider: provider, typeID: UTType.image.identifier, masterKey: masterKey, completion: completion)
-        } else if provider.hasItemConformingToTypeIdentifier(UTType.movie.identifier) {
-            loadFileRepresentation(provider: provider, typeID: UTType.movie.identifier, masterKey: masterKey, completion: completion)
-        } else if provider.hasItemConformingToTypeIdentifier(UTType.url.identifier) {
-            loadURL(provider: provider, masterKey: masterKey, completion: completion)
-        } else if provider.hasItemConformingToTypeIdentifier(UTType.plainText.identifier) {
-            loadText(provider: provider, masterKey: masterKey, completion: completion)
-        } else if provider.hasItemConformingToTypeIdentifier(UTType.data.identifier) {
-            loadFileRepresentation(provider: provider, typeID: UTType.data.identifier, masterKey: masterKey, completion: completion)
-        } else {
-            completion(nil)
-        }
+        progressBar.backgroundColor = Self.surfaceColor
+        progressBar.layer.cornerRadius = 3
+        progressBar.clipsToBounds = true
+        progressBar.translatesAutoresizingMaskIntoConstraints = false
+        progressOverlay.addSubview(progressBar)
+
+        progressFill.backgroundColor = Self.amberColor
+        progressFill.layer.cornerRadius = 3
+        progressFill.translatesAutoresizingMaskIntoConstraints = false
+        progressBar.addSubview(progressFill)
+
+        progressLabel.text = "Saving..."
+        progressLabel.font = UIFont.systemFont(ofSize: 15, weight: .medium)
+        progressLabel.textColor = Self.textPrimary
+        progressLabel.textAlignment = .center
+        progressLabel.translatesAutoresizingMaskIntoConstraints = false
+        progressOverlay.addSubview(progressLabel)
+
+        progressFillWidthConstraint = progressFill.widthAnchor.constraint(equalToConstant: 0)
+
+        NSLayoutConstraint.activate([
+            progressOverlay.topAnchor.constraint(equalTo: headerView.bottomAnchor),
+            progressOverlay.leadingAnchor.constraint(equalTo: containerView.leadingAnchor),
+            progressOverlay.trailingAnchor.constraint(equalTo: containerView.trailingAnchor),
+            progressOverlay.bottomAnchor.constraint(equalTo: containerView.bottomAnchor),
+
+            progressLabel.centerXAnchor.constraint(equalTo: progressOverlay.centerXAnchor),
+            progressLabel.centerYAnchor.constraint(equalTo: progressOverlay.centerYAnchor, constant: -20),
+
+            progressBar.topAnchor.constraint(equalTo: progressLabel.bottomAnchor, constant: 16),
+            progressBar.leadingAnchor.constraint(equalTo: progressOverlay.leadingAnchor, constant: 40),
+            progressBar.trailingAnchor.constraint(equalTo: progressOverlay.trailingAnchor, constant: -40),
+            progressBar.heightAnchor.constraint(equalToConstant: 6),
+
+            progressFill.topAnchor.constraint(equalTo: progressBar.topAnchor),
+            progressFill.bottomAnchor.constraint(equalTo: progressBar.bottomAnchor),
+            progressFill.leadingAnchor.constraint(equalTo: progressBar.leadingAnchor),
+            progressFillWidthConstraint!,
+        ])
     }
 
-    private func loadFileRepresentation(
-        provider: NSItemProvider,
-        typeID: String,
-        masterKey: Data?,
-        completion: @escaping (PendingUpload?) -> Void
-    ) {
-        provider.loadFileRepresentation(forTypeIdentifier: typeID) { url, error in
-            guard let url = url else {
-                completion(nil)
-                return
-            }
-            // loadFileRepresentation URL is only valid inside this block — copy immediately
-            let tmpURL = FileManager.default.temporaryDirectory
-                .appendingPathComponent(UUID().uuidString)
-                .appendingPathExtension(url.pathExtension)
-            do {
-                try FileManager.default.copyItem(at: url, to: tmpURL)
-                self.stageFile(at: tmpURL, originalName: url.lastPathComponent, masterKey: masterKey, completion: completion)
-            } catch {
-                completion(nil)
-            }
-        }
-    }
+    // MARK: - Show States
 
-    private func loadURL(provider: NSItemProvider, masterKey: Data?, completion: @escaping (PendingUpload?) -> Void) {
-        provider.loadItem(forTypeIdentifier: UTType.url.identifier, options: nil) { item, _ in
-            guard let url = item as? URL else {
-                completion(nil)
-                return
-            }
-            let content = url.absoluteString.data(using: .utf8) ?? Data()
-            let filename = (url.host ?? "bookmark") + ".url"
-            let tmpURL = FileManager.default.temporaryDirectory.appendingPathComponent(filename)
-            do {
-                try content.write(to: tmpURL)
-                self.stageFile(at: tmpURL, originalName: filename, masterKey: masterKey, completion: completion)
-            } catch {
-                completion(nil)
-            }
-        }
-    }
-
-    private func loadText(provider: NSItemProvider, masterKey: Data?, completion: @escaping (PendingUpload?) -> Void) {
-        provider.loadItem(forTypeIdentifier: UTType.plainText.identifier, options: nil) { item, _ in
-            guard let text = item as? String, let data = text.data(using: .utf8) else {
-                completion(nil)
-                return
-            }
-            let filename = "shared-\(Int(Date().timeIntervalSince1970)).txt"
-            let tmpURL = FileManager.default.temporaryDirectory.appendingPathComponent(filename)
-            do {
-                try data.write(to: tmpURL)
-                self.stageFile(at: tmpURL, originalName: filename, masterKey: masterKey, completion: completion)
-            } catch {
-                completion(nil)
-            }
-        }
-    }
-
-    // MARK: - Encrypt + stage
-
-    private func stageFile(
-        at srcURL: URL,
-        originalName: String,
-        masterKey: Data?,
-        completion: @escaping (PendingUpload?) -> Void
-    ) {
-        guard let containerURL = FileManager.default.containerURL(
-            forSecurityApplicationGroupIdentifier: Self.appGroup
-        ) else {
-            // App Group not provisioned — stage in process temp dir as fallback
-            let upload = PendingUpload(
-                fileID: UUID().uuidString,
-                originalName: originalName,
-                encryptedName: originalName,
-                stagedURL: srcURL,
-                encrypted: false,
-                size: (try? srcURL.resourceValues(forKeys: [.fileSizeKey]))?.fileSize.map { Int64($0) } ?? 0
-            )
-            completion(upload)
-            return
-        }
-
-        let fileID = UUID().uuidString
-        let pendingDir = containerURL.appendingPathComponent("pending-uploads", isDirectory: true)
-        try? FileManager.default.createDirectory(at: pendingDir, withIntermediateDirectories: true)
-        let destURL = pendingDir.appendingPathComponent(fileID)
-
-        do {
-            let rawData = try Data(contentsOf: srcURL)
-            var stagedData = rawData
-            var encryptedName = originalName
-            var encrypted = false
-
-            if let key = masterKey {
-                // Attempt encryption — throws NotLinkedError until xcframework is linked
-                do {
-                    stagedData = try BeebeebCryptoShim.encrypt(data: rawData, masterKey: key, fileID: fileID)
-                    encryptedName = try BeebeebCryptoShim.encryptFilename(originalName, masterKey: key, fileID: fileID)
-                    encrypted = true
-                } catch {
-                    // Crypto stubs not yet linked — fall through to plaintext staging
-                    // Main app will re-encrypt on next launch before committing to server
-                }
-            }
-
-            try stagedData.write(to: destURL)
-            try? FileManager.default.removeItem(at: srcURL)
-
-            completion(PendingUpload(
-                fileID: fileID,
-                originalName: originalName,
-                encryptedName: encryptedName,
-                stagedURL: destURL,
-                encrypted: encrypted,
-                size: Int64(stagedData.count)
-            ))
-        } catch {
-            completion(nil)
-        }
-    }
-
-    // MARK: - Upload queue + background URLSession
-
-    private func enqueueUploads(_ uploads: [PendingUpload]) {
-        guard let containerURL = FileManager.default.containerURL(
-            forSecurityApplicationGroupIdentifier: Self.appGroup
-        ) else {
-            finish(subtitle: "Saved locally.")
-            return
-        }
-
-        // Persist upload manifest — main app reads this on launch to track/retry
-        let queueURL = containerURL.appendingPathComponent("upload-queue.json")
-        var existing: [PendingUpload] = []
-        if let data = try? Data(contentsOf: queueURL),
-           let decoded = try? JSONDecoder().decode([PendingUpload].self, from: data) {
-            existing = decoded
-        }
-        existing.append(contentsOf: uploads)
-        if let encoded = try? JSONEncoder().encode(existing) {
-            try? encoded.write(to: queueURL)
-        }
-
-        finish(subtitle: "Saved. Open Beebeeb to encrypt and upload.")
-    }
-
-    // MARK: - Completion
-
-    private func finish(subtitle: String) {
+    private func showError(_ message: String) {
         DispatchQueue.main.async {
-            self.subtitleLabel.text = subtitle
-            // Stop indeterminate animation, show full bar
-            self.progressFill.layer.removeAllAnimations()
-            self.progressFillLeading?.constant = 0
-            UIView.animate(withDuration: 0.25) {
-                self.progressFillWidth = self.progressFill.widthAnchor.constraint(
-                    equalTo: self.progressTrack.widthAnchor, multiplier: 1.0
-                )
-                self.view.layoutIfNeeded()
-            }
+            self.tableView.isHidden = true
+            self.bottomBar.isHidden = true
 
-            UIView.animate(withDuration: 0.3, delay: 0.8, options: .curveEaseIn) {
-                self.card.alpha = 0
-                self.backdropView.alpha = 0
-            } completion: { _ in
-                self.extensionContext?.completeRequest(returningItems: nil)
+            let errorLabel = UILabel()
+            errorLabel.text = message
+            errorLabel.font = UIFont.systemFont(ofSize: 16, weight: .medium)
+            errorLabel.textColor = Self.textPrimary
+            errorLabel.textAlignment = .center
+            errorLabel.numberOfLines = 0
+            errorLabel.translatesAutoresizingMaskIntoConstraints = false
+            self.containerView.addSubview(errorLabel)
+
+            let okButton = UIButton(type: .system)
+            okButton.setTitle("OK", for: .normal)
+            okButton.setTitleColor(Self.amberColor, for: .normal)
+            okButton.titleLabel?.font = UIFont.systemFont(ofSize: 16, weight: .semibold)
+            okButton.addTarget(self, action: #selector(self.cancelTapped), for: .touchUpInside)
+            okButton.translatesAutoresizingMaskIntoConstraints = false
+            self.containerView.addSubview(okButton)
+
+            NSLayoutConstraint.activate([
+                errorLabel.centerXAnchor.constraint(equalTo: self.containerView.centerXAnchor),
+                errorLabel.centerYAnchor.constraint(equalTo: self.containerView.centerYAnchor, constant: -20),
+                errorLabel.leadingAnchor.constraint(equalTo: self.containerView.leadingAnchor, constant: 32),
+                errorLabel.trailingAnchor.constraint(equalTo: self.containerView.trailingAnchor, constant: -32),
+
+                okButton.centerXAnchor.constraint(equalTo: self.containerView.centerXAnchor),
+                okButton.topAnchor.constraint(equalTo: errorLabel.bottomAnchor, constant: 20),
+            ])
+        }
+    }
+
+    private func showFolderPicker() {
+        tableView.isHidden = false
+        bottomBar.isHidden = false
+        tableView.reloadData()
+    }
+
+    private func showProgress() {
+        tableView.isHidden = true
+        bottomBar.isHidden = true
+        progressOverlay.isHidden = false
+    }
+
+    private func updateProgress(fraction: Float, message: String) {
+        DispatchQueue.main.async {
+            self.progressLabel.text = message
+            let barWidth = self.progressBar.bounds.width
+            self.progressFillWidthConstraint?.constant = CGFloat(fraction) * barWidth
+            UIView.animate(withDuration: 0.2) {
+                self.progressOverlay.layoutIfNeeded()
             }
         }
+    }
+
+    private func updateFilePreview() {
+        fileNameLabel.text = fileName
+        fileSizeLabel.text = formatFileSize(fileSize)
+    }
+
+    // MARK: - Actions
+
+    @objc private func cancelTapped() {
+        extensionContext?.cancelRequest(withError: NSError(
+            domain: "io.beebeeb.share", code: 0,
+            userInfo: [NSLocalizedDescriptionKey: "User cancelled"]
+        ))
+    }
+
+    @objc private func saveTapped() {
+        guard let data = fileData, let key = masterKey else {
+            showError("Could not read file")
+            return
+        }
+
+        guard let token = sessionToken, !token.isEmpty else {
+            showError("Sign in to Beebeeb first")
+            return
+        }
+
+        showProgress()
+
+        Task {
+            let uploader = ShareUploader(apiUrl: apiUrl, sessionToken: token, masterKey: key)
+
+            do {
+                let result = try await uploader.upload(
+                    fileData: data,
+                    fileName: fileName,
+                    parentId: selectedFolderId,
+                    onProgress: { [weak self] fraction, message in
+                        self?.updateProgress(fraction: fraction, message: message)
+                    }
+                )
+
+                await MainActor.run {
+                    // Update recents
+                    self.saveRecentFolder()
+
+                    switch result {
+                    case .uploaded:
+                        self.showCompletion(message: "Saved")
+                    case .staged:
+                        self.showCompletion(message: "Saved. Open Beebeeb to encrypt and upload.")
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    // Try to stage as fallback on any error
+                    self.stageFallback(data: data, fileName: self.fileName, parentId: self.selectedFolderId)
+                    self.showCompletion(message: "Saved locally. Will upload when online.")
+                }
+            }
+        }
+    }
+
+    private func stageFallback(data: Data, fileName: String, parentId: String?) {
+        guard let key = masterKey else { return }
+        let uploader = ShareUploader(apiUrl: apiUrl, sessionToken: sessionToken ?? "", masterKey: key)
+        // Fire and forget — best effort staging
+        Task {
+            _ = try? await uploader.upload(
+                fileData: data,
+                fileName: fileName,
+                parentId: parentId,
+                onProgress: { _, _ in }
+            )
+        }
+    }
+
+    private func showCompletion(message: String) {
+        progressLabel.text = message
+        progressFillWidthConstraint?.constant = progressBar.bounds.width
+        UIView.animate(withDuration: 0.25) {
+            self.progressOverlay.layoutIfNeeded()
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            self.extensionContext?.completeRequest(returningItems: nil)
+        }
+    }
+
+    // MARK: - Recents
+
+    private func loadRecentFolders() {
+        let defaults = UserDefaults(suiteName: Self.appGroup)
+        guard let data = defaults?.data(forKey: Self.recentFoldersKey),
+              let recents = try? JSONDecoder().decode([RecentFolder].self, from: data) else {
+            return
+        }
+        recentFolders = recents
+    }
+
+    private func saveRecentFolder() {
+        guard let folderId = selectedFolderId else { return }
+
+        // Find display name for this folder
+        let displayName: String
+        if let recent = recentFolders.first(where: { $0.id == folderId }) {
+            displayName = recent.name
+        } else if let folder = folders.first(where: { $0.id == folderId }) {
+            displayName = folder.displayName
+        } else {
+            displayName = "Folder"
+        }
+
+        // Remove existing entry for this folder, add to front
+        var recents = recentFolders.filter { $0.id != folderId }
+        recents.insert(RecentFolder(id: folderId, name: displayName), at: 0)
+
+        // Keep max 3
+        if recents.count > 3 {
+            recents = Array(recents.prefix(3))
+        }
+
+        recentFolders = recents
+        let defaults = UserDefaults(suiteName: Self.appGroup)
+        if let encoded = try? JSONEncoder().encode(recents) {
+            defaults?.set(encoded, forKey: Self.recentFoldersKey)
+        }
+    }
+
+    // MARK: - Helpers
+
+    private func formatFileSize(_ bytes: Int64) -> String {
+        if bytes < 1024 { return "\(bytes) B" }
+        if bytes < 1024 * 1024 { return String(format: "%.1f KB", Double(bytes) / 1024) }
+        if bytes < 1024 * 1024 * 1024 { return String(format: "%.1f MB", Double(bytes) / (1024 * 1024)) }
+        return String(format: "%.1f GB", Double(bytes) / (1024 * 1024 * 1024))
     }
 }
 
-// MARK: - PendingUpload model
+// MARK: - UITableViewDelegate & DataSource
 
-struct PendingUpload: Codable {
-    let fileID: String
-    let originalName: String
-    let encryptedName: String
-    let stagedURL: URL
-    let encrypted: Bool
-    let size: Int64
+extension ShareViewController: UITableViewDelegate, UITableViewDataSource {
+
+    /// Section 0 = RECENT (if any), Section 1 = FOLDERS
+    func numberOfSections(in tableView: UITableView) -> Int {
+        return recentFolders.isEmpty ? 1 : 2
+    }
+
+    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+        if !recentFolders.isEmpty && section == 0 {
+            return recentFolders.count
+        }
+        return folders.count
+    }
+
+    func tableView(_ tableView: UITableView, viewForHeaderInSection section: Int) -> UIView? {
+        let header = UIView()
+        let label = UILabel()
+        label.font = UIFont.systemFont(ofSize: 12, weight: .semibold)
+        label.textColor = Self.textTertiary
+
+        if !recentFolders.isEmpty && section == 0 {
+            label.text = "RECENT"
+        } else {
+            label.text = "FOLDERS"
+        }
+
+        label.translatesAutoresizingMaskIntoConstraints = false
+        header.addSubview(label)
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: 20),
+            label.bottomAnchor.constraint(equalTo: header.bottomAnchor, constant: -4),
+        ])
+        return header
+    }
+
+    func tableView(_ tableView: UITableView, heightForHeaderInSection section: Int) -> CGFloat {
+        return 32
+    }
+
+    func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let cell = tableView.dequeueReusableCell(withIdentifier: FolderCell.reuseID, for: indexPath) as! FolderCell
+
+        let folderId: String
+        let folderName: String
+
+        if !recentFolders.isEmpty && indexPath.section == 0 {
+            let recent = recentFolders[indexPath.row]
+            folderId = recent.id
+            folderName = recent.name
+        } else {
+            let folder = folders[indexPath.row]
+            folderId = folder.id
+            folderName = folder.displayName
+        }
+
+        let isSelected = folderId == selectedFolderId
+        cell.configure(name: folderName, isSelected: isSelected)
+        return cell
+    }
+
+    func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        tableView.deselectRow(at: indexPath, animated: true)
+
+        if !recentFolders.isEmpty && indexPath.section == 0 {
+            selectedFolderId = recentFolders[indexPath.row].id
+        } else {
+            selectedFolderId = folders[indexPath.row].id
+        }
+
+        tableView.reloadData()
+    }
+
+    func tableView(_ tableView: UITableView, heightForRowAt indexPath: IndexPath) -> CGFloat {
+        return 48
+    }
+}
+
+// MARK: - FolderCell
+
+private final class FolderCell: UITableViewCell {
+    static let reuseID = "FolderCell"
+
+    private let folderIcon = UILabel()
+    private let nameLabel = UILabel()
+    private let checkmark = UILabel()
+
+    override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
+        super.init(style: style, reuseIdentifier: reuseIdentifier)
+        setupCell()
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    private func setupCell() {
+        backgroundColor = .clear
+        selectionStyle = .none
+
+        folderIcon.text = "\u{1F4C1}"
+        folderIcon.font = UIFont.systemFont(ofSize: 18)
+        folderIcon.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(folderIcon)
+
+        nameLabel.font = UIFont.systemFont(ofSize: 15, weight: .regular)
+        nameLabel.textColor = .white
+        nameLabel.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(nameLabel)
+
+        checkmark.text = "\u{2713}"
+        checkmark.font = UIFont.systemFont(ofSize: 16, weight: .bold)
+        checkmark.textColor = UIColor(red: 0.851, green: 0.467, blue: 0.024, alpha: 1)
+        checkmark.isHidden = true
+        checkmark.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(checkmark)
+
+        NSLayoutConstraint.activate([
+            folderIcon.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 20),
+            folderIcon.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
+
+            nameLabel.leadingAnchor.constraint(equalTo: folderIcon.trailingAnchor, constant: 10),
+            nameLabel.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
+            nameLabel.trailingAnchor.constraint(equalTo: checkmark.leadingAnchor, constant: -10),
+
+            checkmark.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20),
+            checkmark.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
+        ])
+    }
+
+    func configure(name: String, isSelected: Bool) {
+        nameLabel.text = name
+        checkmark.isHidden = !isSelected
+        nameLabel.textColor = isSelected ? .white : UIColor(white: 0.8, alpha: 1)
+    }
+}
+
+// MARK: - RecentFolder model
+
+struct RecentFolder: Codable {
+    let id: String
+    let name: String
 }
