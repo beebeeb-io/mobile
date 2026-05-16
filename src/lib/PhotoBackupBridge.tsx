@@ -14,6 +14,7 @@
 
 import { useCallback, useEffect, useRef } from 'react';
 import { AppState, type AppStateStatus } from 'react-native';
+import * as Notifications from 'expo-notifications';
 import NetInfo from '@react-native-community/netinfo';
 import { useCrypto } from './crypto-context';
 import type { BackupContextValue } from './backup-context';
@@ -33,6 +34,10 @@ import { generateAndUploadThumbnail } from './thumbnail';
 import { detectMediaMimeType } from './media';
 import { getStatusCounts } from '../services/BackupDatabase';
 import type { UploadProgress } from './api';
+
+const BACKUP_REMINDER_IDENTIFIER = 'backup-pending-reminder';
+const REMINDER_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+let lastReminderSentAt = 0;
 
 interface PhotoBackupBridgeProps {
   backup: Pick<
@@ -337,15 +342,18 @@ export function PhotoBackupBridge({ backup }: PhotoBackupBridgeProps): null {
 
   useEffect(() => {
     if (isUnlocked && isPhotoBackupEnabled) {
+      // Vault unlocked — cancel any pending reminder and start syncing
+      void Notifications.cancelScheduledNotificationAsync(BACKUP_REMINDER_IDENTIFIER).catch(() => {});
       void startSync();
+    } else if (!isUnlocked && isPhotoBackupEnabled) {
+      // Vault locked but backup enabled — check for pending work
+      void scheduleBackupReminder();
     }
 
     return () => {
-      // Cleanup on unmount or when backup is disabled
       if (listenerActiveRef.current) {
         stopEventListener();
         listenerActiveRef.current = false;
-        console.log('[PhotoBackupBridge] event listener stopped');
       }
       abortRef.current?.abort();
     };
@@ -380,6 +388,35 @@ export function PhotoBackupBridge({ backup }: PhotoBackupBridgeProps): null {
     });
     return unsubscribe;
   }, [startSync]);
+
+  // ── Backup reminder when vault locks with pending work ─────────────────────
+
+  async function scheduleBackupReminder(): Promise<void> {
+    try {
+      if (Date.now() - lastReminderSentAt < REMINDER_COOLDOWN_MS) return;
+
+      const counts = await getStatusCounts();
+      const pending = (counts.pending_upload ?? 0) + (counts.pending_reupload ?? 0);
+      if (pending === 0) return;
+
+      await Notifications.cancelScheduledNotificationAsync(BACKUP_REMINDER_IDENTIFIER).catch(() => {});
+      await Notifications.scheduleNotificationAsync({
+        identifier: BACKUP_REMINDER_IDENTIFIER,
+        content: {
+          title: 'Photos waiting to back up',
+          body: `${pending} ${pending === 1 ? 'photo' : 'photos'} waiting to back up. Open Beebeeb to continue.`,
+          sound: false,
+        },
+        trigger: {
+          type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL,
+          seconds: 3600,
+        },
+      });
+      lastReminderSentAt = Date.now();
+    } catch {
+      // Non-critical
+    }
+  }
 
   // ── Force trigger: "Back up now" / retry button ────────────────────────────
   useEffect(() => {
