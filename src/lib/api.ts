@@ -1700,6 +1700,33 @@ export async function photoBackupStats(): Promise<PhotoBackupStats> {
   };
 }
 
+/**
+ * Fetch all backed-up local identifiers, paginated (1000 per page).
+ * Client diffs against local camera roll — replaces batch checking.
+ */
+export async function photoBackupListIds(): Promise<Set<string>> {
+  const allIds = new Set<string>();
+  let cursor: string | undefined;
+
+  while (true) {
+    const params = new URLSearchParams({ limit: '1000' });
+    if (cursor) params.set('cursor', cursor);
+
+    const data = await request<{
+      ids: string[];
+      has_more: boolean;
+      next_cursor: string | null;
+    }>('GET', `/api/v1/files/photo-backup/ids?${params}`);
+
+    for (const id of data.ids) allIds.add(id);
+
+    if (!data.has_more || !data.next_cursor) break;
+    cursor = data.next_cursor;
+  }
+
+  return allIds;
+}
+
 // ─── Push notification registration ──────────────────────────────────────────
 
 /** POST /api/v1/notifications/register-device */
