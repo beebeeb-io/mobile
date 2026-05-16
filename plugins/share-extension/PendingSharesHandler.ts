@@ -3,14 +3,20 @@
  *
  * The Share Extension lives in a separate process and can't talk to React
  * Native — it just writes file payloads + JSON manifests into the shared
- * App Group container. On every cold start and foreground transition the
- * main app calls `processPendingShares()`, which reads the dropbox, copies
- * each file into the main-app sandbox, runs it through the standard
- * upload flow, and acknowledges the App Group copy only on success.
+ * App Group container (IncomingShares/ directory). On every cold start and
+ * foreground transition the main app calls `processPendingShares()`, which
+ * reads the dropbox, copies each file into the main-app sandbox, runs it
+ * through the standard encrypted upload flow, and acknowledges the App Group
+ * copy only on success.
+ *
+ * The redesigned Share Extension (v2) also stores a parent-folder mapping
+ * as a JSON file in the App Group container (`share-parent-map.json`) so
+ * files are uploaded to the folder the user selected in the extension's picker.
  */
 
 import { Platform } from 'react-native'
 import * as FileSystem from 'expo-file-system'
+import { File, Paths } from 'expo-file-system/next'
 import {
   acknowledgePendingShare,
   clearAllPendingShares,
@@ -23,6 +29,9 @@ import {
 import { encryptedUpload, generateFileId } from '../../src/lib/encrypted-upload'
 
 export type { PendingShareResource, PendingShareSummary }
+
+const APP_GROUP = 'group.io.beebeeb.shared'
+const PARENT_MAP_FILE = 'share-parent-map.json'
 
 export interface ProcessResult {
   uploaded: number
@@ -74,7 +83,12 @@ export async function processPendingShares(opts: ProcessPendingSharesOptions): P
     return { uploaded: 0, failed: 0, skipped: pending.length }
   }
 
+  // Read the parent-folder mapping from the App Group container.
+  // The share extension writes this so we know where to upload each file.
+  const parentMap = readParentMap()
+
   const result: ProcessResult = { uploaded: 0, failed: 0, skipped: 0 }
+  const uploadedIds: string[] = []
 
   for (const summary of pending) {
     let resource: PendingShareResource
@@ -86,15 +100,20 @@ export async function processPendingShares(opts: ProcessPendingSharesOptions): P
     }
 
     try {
+      // Look up the target folder from the parent map
+      const parentId = parentMap[summary.id] ?? undefined
+
       await encryptedUpload({
         fileId: generateFileId(),
         uri: resource.uri,
         name: resource.filename,
+        parentId,
         mimeType: resource.mimeType,
         encryptChunkFn: opts.encryptChunkFn,
         encryptMetadataFn: opts.encryptMetadataFn,
       })
       result.uploaded += 1
+      uploadedIds.push(summary.id)
       try {
         await acknowledgePendingShare(summary.id)
       } catch {
@@ -114,7 +133,60 @@ export async function processPendingShares(opts: ProcessPendingSharesOptions): P
     }
   }
 
+  // Clean up processed entries from the parent map
+  if (uploadedIds.length > 0) {
+    cleanParentMap(parentMap, uploadedIds)
+  }
+
   return result
+}
+
+/**
+ * Read the parent-folder mapping from the App Group container.
+ * The share extension writes `share-parent-map.json` with format: { [shareId]: folderId }
+ */
+function readParentMap(): Record<string, string> {
+  try {
+    const groupDirectory = Paths.appleSharedContainers[APP_GROUP]
+    if (!groupDirectory?.exists) return {}
+
+    const file = new File(groupDirectory, PARENT_MAP_FILE)
+    if (!file.exists) return {}
+
+    const content = file.text()
+    if (!content) return {}
+    return JSON.parse(content) as Record<string, string>
+  } catch {
+    return {}
+  }
+}
+
+/**
+ * Remove uploaded entries from the parent map and persist back.
+ */
+function cleanParentMap(
+  currentMap: Record<string, string>,
+  uploadedIds: string[],
+): void {
+  try {
+    const groupDirectory = Paths.appleSharedContainers[APP_GROUP]
+    if (!groupDirectory?.exists) return
+
+    const cleaned = { ...currentMap }
+    for (const id of uploadedIds) {
+      delete cleaned[id]
+    }
+
+    const file = new File(groupDirectory, PARENT_MAP_FILE)
+    if (Object.keys(cleaned).length === 0) {
+      if (file.exists) file.delete()
+    } else {
+      if (!file.exists) file.create()
+      file.write(JSON.stringify(cleaned))
+    }
+  } catch {
+    // best-effort
+  }
 }
 
 /**
@@ -124,7 +196,18 @@ export async function processPendingShares(opts: ProcessPendingSharesOptions): P
 export async function discardAllPendingShares(): Promise<number> {
   if (Platform.OS !== 'ios') return 0
   try {
-    return await clearAllPendingShares()
+    const count = await clearAllPendingShares()
+    // Also clear the parent map
+    try {
+      const groupDirectory = Paths.appleSharedContainers[APP_GROUP]
+      if (groupDirectory?.exists) {
+        const file = new File(groupDirectory, PARENT_MAP_FILE)
+        if (file.exists) file.delete()
+      }
+    } catch {
+      // best-effort
+    }
+    return count
   } catch {
     return 0
   }
