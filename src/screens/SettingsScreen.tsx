@@ -54,7 +54,6 @@ import {
   setPreference,
   getSubscription,
   getRegion,
-  photoBackupStats,
   getNotificationPreferences,
   setNotificationPreferences,
   getToken,
@@ -64,12 +63,9 @@ import {
   type StorageUsage,
   type Subscription,
   type Region,
-  type PhotoBackupStats,
   type MobileNotificationPreferences,
   type AvailableRegion,
 } from '../lib/api';
-import { readLastSessionAt } from '../services/PhotoBackupCheckpoint';
-import { formatEtaSeconds } from '../services/PhotoBackupRunner';
 import { exportContacts } from '../services/ContactsExporter';
 import { exportCalendars } from '../services/CalendarExporter';
 import {
@@ -78,6 +74,8 @@ import {
   getTotalCount,
   getUploadedBytes,
   getTotalBytes,
+  getStatusCounts,
+  getTotalUploadedBytes,
 } from '../services/BackupDatabase';
 import {
   initializeBackup,
@@ -85,6 +83,8 @@ import {
   ensureBackupFolders,
   getDeviceManifest,
   updateBackupCategoryState,
+  getDeletionBehavior,
+  setDeletionBehavior,
   type BackupCategory,
   type DeviceManifest,
 } from '../services/BackupService';
@@ -601,9 +601,17 @@ export default function SettingsScreen() {
   const [contactsStats, setContactsStats] = useState<CategoryStats>(EMPTY_CATEGORY_STATS);
   const [calendarStats, setCalendarStats] = useState<CategoryStats>(EMPTY_CATEGORY_STATS);
 
-  // Server-side all-time photo backup stats + last-session timestamp
-  const [serverPhotoStats, setServerPhotoStats] = useState<PhotoBackupStats | null>(null);
-  const [lastSessionAt, setLastSessionAt] = useState<string | null>(null);
+  // Camera roll status (from BackupDatabase getStatusCounts + getTotalUploadedBytes)
+  const [cameraRollStatusCounts, setCameraRollStatusCounts] = useState<Record<string, number>>({});
+  const [cameraRollTotalBytes, setCameraRollTotalBytes] = useState(0);
+  const [cameraRollTotalCount, setCameraRollTotalCount] = useState(0);
+
+  // Advanced backup section toggle
+  const [advancedExpanded, setAdvancedExpanded] = useState(false);
+
+  // Deletion preference
+  const [deletionBehavior, setDeletionBehaviorState] = useState<'keep' | 'trash'>('keep');
+
   const [contactsLastSessionAt, setContactsLastSessionAt] = useState<string | null>(null);
   const [calendarLastSessionAt, setCalendarLastSessionAt] = useState<string | null>(null);
   const [contactsLastSessionCount, setContactsLastSessionCount] = useState(0);
@@ -712,17 +720,35 @@ export default function SettingsScreen() {
     }
   }, []);
 
-  // Fetch server-side photo backup stats + last-session checkpoint
-  const fetchPhotoBackupStats = useCallback(async () => {
+  // Load deletion behavior preference
+  const loadDeletionBehavior = useCallback(async () => {
     try {
-      const [stats, sessionAt] = await Promise.all([
-        photoBackupStats(),
-        readLastSessionAt(),
-      ]);
-      setServerPhotoStats(stats);
-      setLastSessionAt(sessionAt);
+      const behavior = await getDeletionBehavior();
+      setDeletionBehaviorState(behavior);
     } catch {
-      // Endpoint may not be deployed yet — ignore
+      // Default to 'keep'
+    }
+  }, []);
+
+  // Refresh camera roll status from BackupDatabase + MediaLibrary
+  const refreshCameraRollStatus = useCallback(async () => {
+    try {
+      const [counts, totalBytes] = await Promise.all([
+        getStatusCounts(),
+        getTotalUploadedBytes(),
+      ]);
+      setCameraRollStatusCounts(counts);
+      setCameraRollTotalBytes(totalBytes);
+
+      // Get total count from MediaLibrary
+      try {
+        const result = await MediaLibrary.getAssetsAsync({ first: 0 });
+        setCameraRollTotalCount(result?.totalCount ?? 0);
+      } catch {
+        // MediaLibrary may not be available
+      }
+    } catch {
+      // Database may not be initialized yet
     }
   }, []);
 
@@ -732,7 +758,10 @@ export default function SettingsScreen() {
     loadFileProviderPrefs();
     loadAccountData();
     loadStorageRegionPref();
-    if (isPhotoBackupEnabled) fetchPhotoBackupStats();
+    if (isPhotoBackupEnabled) {
+      void refreshCameraRollStatus();
+      void loadDeletionBehavior();
+    }
     SecureStore.getItemAsync(CONTACTS_LAST_SCAN_KEY).then(setContactsLastSessionAt).catch(() => {});
     SecureStore.getItemAsync(CALENDAR_LAST_SCAN_KEY).then(setCalendarLastSessionAt).catch(() => {});
     SecureStore.getItemAsync(CONTACTS_LAST_SCAN_COUNT_KEY)
@@ -767,14 +796,14 @@ export default function SettingsScreen() {
         setNotificationsEnabled(false);
       }
     })();
-  }, [fetchUsage, loadBiometricPrefs, loadFileProviderPrefs, loadAccountData, loadStorageRegionPref, isPhotoBackupEnabled, fetchPhotoBackupStats]);
+  }, [fetchUsage, loadBiometricPrefs, loadFileProviderPrefs, loadAccountData, loadStorageRegionPref, isPhotoBackupEnabled, refreshCameraRollStatus, loadDeletionBehavior]);
 
-  // Refresh server stats whenever a JS session completes
+  // Refresh camera roll status whenever a JS session completes
   useEffect(() => {
     if (isPhotoBackupEnabled && !photoSessionProgress.running) {
-      void fetchPhotoBackupStats();
+      void refreshCameraRollStatus();
     }
-  }, [isPhotoBackupEnabled, photoSessionProgress.running, fetchPhotoBackupStats]);
+  }, [isPhotoBackupEnabled, photoSessionProgress.running, refreshCameraRollStatus]);
 
   // -- Backup status: refresh whenever toggles flip or the worker reports progress
   const syncing = backupProgress.inProgress > 0;
@@ -811,21 +840,16 @@ export default function SettingsScreen() {
 
     const localPhotoUploaded = photoUploaded + videoUploaded;
     const localPhotoTotal = photoTotal + videoTotal;
-    const serverPhotoBackedUp = serverPhotoStats?.backed_up ?? 0;
-    const serverPhotoTotal = serverPhotoStats?.total_estimated ?? 0;
-    const photoLastSyncAt = manifest?.backups.camera_roll.last_sync
-      ?? serverPhotoStats?.last_backup_at
-      ?? lastSessionAt
-      ?? null;
+    const photoLastSyncAt = manifest?.backups.camera_roll.last_sync ?? null;
     setPhotoStats({
-      uploadedCount: Math.max(localPhotoUploaded, serverPhotoBackedUp),
-      totalCount: Math.max(localPhotoTotal, serverPhotoTotal, serverPhotoBackedUp),
-      uploadedBytes: Math.max(photoUpBytes + videoUpBytes, serverPhotoStats?.total_size_bytes ?? 0),
-      totalBytes: Math.max(photoTotalBytes + videoTotalBytes, serverPhotoStats?.total_size_bytes ?? 0),
+      uploadedCount: localPhotoUploaded,
+      totalCount: localPhotoTotal,
+      uploadedBytes: photoUpBytes + videoUpBytes,
+      totalBytes: photoTotalBytes + videoTotalBytes,
       lastSyncAt: photoLastSyncAt,
       syncing,
       legacyCount: manifest?.backups.camera_roll.legacy_items_migrated ?? 0,
-      hasScanned: photoLastSyncAt != null || serverPhotoBackedUp > 0,
+      hasScanned: photoLastSyncAt != null || localPhotoUploaded > 0,
     });
     const contactsLastSyncAt = manifest?.backups.contacts.last_sync ?? contactsLastSessionAt ?? null;
     const calendarLastSyncAt = manifest?.backups.calendar.last_sync ?? calendarLastSessionAt ?? null;
@@ -849,7 +873,7 @@ export default function SettingsScreen() {
       legacyCount: manifest?.backups.calendar.legacy_items_migrated ?? 0,
       hasScanned: calendarLastSyncAt != null,
     });
-  }, [syncing, lastSessionAt, serverPhotoStats, contactsLastSessionAt, calendarLastSessionAt, contactsLastSessionCount, calendarLastSessionCount]);
+  }, [syncing, contactsLastSessionAt, calendarLastSessionAt, contactsLastSessionCount, calendarLastSessionCount]);
 
   useEffect(() => {
     refreshBackupStats();
@@ -870,12 +894,12 @@ export default function SettingsScreen() {
         loadFileProviderPrefs(),
         loadAccountData(),
         loadStorageRegionPref(),
-        isPhotoBackupEnabled ? fetchPhotoBackupStats() : Promise.resolve(),
+        isPhotoBackupEnabled ? refreshCameraRollStatus() : Promise.resolve(),
       ]);
     } finally {
       setRefreshing(false);
     }
-  }, [fetchUsage, loadBiometricPrefs, loadFileProviderPrefs, loadAccountData, loadStorageRegionPref, isPhotoBackupEnabled, fetchPhotoBackupStats]);
+  }, [fetchUsage, loadBiometricPrefs, loadFileProviderPrefs, loadAccountData, loadStorageRegionPref, isPhotoBackupEnabled, refreshCameraRollStatus]);
 
   // ---------------------------------------------------------------------------
   // Handlers
@@ -1152,8 +1176,18 @@ export default function SettingsScreen() {
       await triggerBackupNow();
     } finally {
       setBackingUp(false);
+      void refreshCameraRollStatus();
     }
-  }, [triggerBackupNow]);
+  }, [triggerBackupNow, refreshCameraRollStatus]);
+
+  const handleDeletionBehaviorChange = useCallback(async (behavior: 'keep' | 'trash') => {
+    setDeletionBehaviorState(behavior);
+    try {
+      await setDeletionBehavior(behavior);
+    } catch (err) {
+      console.warn('[SettingsScreen] failed to save deletion preference:', err);
+    }
+  }, []);
 
   const handleBackupContactsNow = useCallback(async () => {
     const granted = await ensureContactsPermission();
@@ -1781,128 +1815,178 @@ export default function SettingsScreen() {
               onValueChange={handleTogglePhotoBackup}
               c={c}
             />
-            {isPhotoBackupEnabled && <BackupCategoryStatus stats={photoStats} paused={backupPaused} c={c} />}
+            {/* ── Camera roll status line ── */}
+            {isPhotoBackupEnabled && (() => {
+              const backedUp = (cameraRollStatusCounts['uploaded'] ?? 0) + (cameraRollStatusCounts['orphaned'] ?? 0);
+              const totalPhotos = cameraRollTotalCount;
+              const isRunning = photoSessionProgress.running || backupProgress.inProgress > 0;
+
+              if (backupPaused) {
+                return (
+                  <View style={{ paddingHorizontal: 12, paddingBottom: 10, paddingTop: 2, flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                    <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: c.ink4 }} />
+                    <Text style={{ fontSize: 11, color: c.ink3, flex: 1 }}>
+                      Paused -- waiting for Wi-Fi
+                    </Text>
+                  </View>
+                );
+              }
+
+              if (isRunning) {
+                return (
+                  <View style={{ paddingHorizontal: 12, paddingBottom: 10, paddingTop: 2, flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                    <ActivityIndicator size="small" color={c.amber} />
+                    <Text style={{ fontSize: 11, color: c.ink3, flex: 1 }}>
+                      {photoSessionProgress.running && photoSessionProgress.total > 0
+                        ? `Backing up... ${photoSessionProgress.uploaded}/${photoSessionProgress.total}`
+                        : `Backing up ${backupProgress.inProgress} of ${backupProgress.total} items...`}
+                    </Text>
+                  </View>
+                );
+              }
+
+              if (totalPhotos > 0 || backedUp > 0) {
+                return (
+                  <View style={{ paddingHorizontal: 12, paddingBottom: 10, paddingTop: 2 }}>
+                    <Text style={{ fontSize: 11, color: c.ink3 }}>
+                      {backedUp.toLocaleString()} of {totalPhotos.toLocaleString()} photos{' '}
+                      {cameraRollTotalBytes > 0 ? `· ${formatBytes(cameraRollTotalBytes)}` : ''}
+                    </Text>
+                  </View>
+                );
+              }
+
+              return (
+                <View style={{ paddingHorizontal: 12, paddingBottom: 10, paddingTop: 2 }}>
+                  <Text style={{ fontSize: 11, color: c.ink3 }}>Waiting for first scan...</Text>
+                </View>
+              );
+            })()}
+            {/* ── Camera roll: expandable Advanced section ── */}
             {isPhotoBackupEnabled && (
               <>
-                <RowDivider c={c} />
-                <ToggleRow
-                  label="Photos and videos"
-                  subtitle="Back up videos in addition to photos. Videos can be large — backed up over Wi-Fi only."
-                  value={includeVideos}
-                  onValueChange={handleIncludeVideosChange}
-                  indent
-                  c={c}
-                />
-                <RowDivider c={c} />
-                <ToggleRow
-                  label="Wi-Fi only"
-                  subtitle="Only upload over Wi-Fi to save cellular data"
-                  value={wifiOnly}
-                  onValueChange={handleWifiOnlyChange}
-                  indent
-                  c={c}
-                />
-                <RowDivider c={c} />
-                <ToggleRow
-                  label="Background upload"
-                  subtitle="Allow uploads in the background. May increase battery usage."
-                  value={backgroundUpload}
-                  onValueChange={handleBackgroundUploadChange}
-                  indent
-                  c={c}
-                />
-              </>
-            )}
-            {/* ── Camera roll: "Backup now" + live progress ── */}
-            {isPhotoBackupEnabled && (
-              <>
-                {/* JS-side live session progress */}
-                {photoSessionProgress.running && photoSessionProgress.total > 0 && (
-                  <View style={{ paddingHorizontal: 12, paddingBottom: 10, paddingTop: 2, gap: 4 }}>
-                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                      <ActivityIndicator size="small" color={c.amber} />
-                      <Text style={{ fontSize: 12, color: c.ink3, lineHeight: 17, flex: 1 }}>
-                        {'Backing up... '}
-                        {photoSessionProgress.uploaded}/{photoSessionProgress.total}
-                        {photoSessionProgress.etaSeconds != null
-                          ? ` · ${formatEtaSeconds(photoSessionProgress.etaSeconds)} remaining`
-                          : ''}
-                      </Text>
-                    </View>
-                    {photoSessionProgress.currentFileName ? (
-                      <Text style={{ fontSize: 11, color: c.ink4, fontFamily: fonts.mono }} numberOfLines={1} ellipsizeMode="middle">
-                        {photoSessionProgress.currentFileName}
-                        {photoSessionProgress.currentFileSizeBytes > 0
-                          ? ` · ${formatBytes(photoSessionProgress.currentFileSizeBytes)}`
-                          : ''}
-                      </Text>
-                    ) : null}
-                  </View>
-                )}
-                {photoSessionProgress.running && photoSessionProgress.total === 0 && (
-                  <View style={layout.backupNote}>
-                    <ActivityIndicator size="small" color={c.amber} style={{ marginRight: 8 }} />
-                    <Text style={{ fontSize: 12, color: c.ink3, lineHeight: 17, flex: 1 }}>
-                      Scanning for new photos...
-                    </Text>
-                  </View>
-                )}
-                {/* Native backup progress (fallback when JS session not running) */}
-                {!photoSessionProgress.running && backupProgress.inProgress > 0 && (
-                  <View style={layout.backupNote}>
-                    <ActivityIndicator size="small" color={c.amber} style={{ marginRight: 8 }} />
-                    <Text style={{ fontSize: 12, color: c.ink3, lineHeight: 17, flex: 1 }}>
-                      Backing up {backupProgress.inProgress} of {backupProgress.total} items...
-                    </Text>
-                  </View>
-                )}
-                {/* End-of-session result with retry */}
-                {!photoSessionProgress.running && lastPhotoSession && (
-                  <View style={[layout.backupNote, { flexDirection: 'column', alignItems: 'flex-start', gap: 6 }]}>
-                    <Text style={{ fontSize: 12, color: c.ink3, lineHeight: 17 }}>
-                      {lastPhotoSession.uploaded} backed up
-                      {lastPhotoSession.failed > 0 ? `, ${lastPhotoSession.failed} failed` : ''}
-                      {lastSessionAt ? ` · ${timeAgo(lastSessionAt)}` : ''}
-                    </Text>
-                    {lastPhotoSession.failed > 0 && (
-                      <TouchableOpacity
-                        activeOpacity={0.6}
-                        onPress={handleBackupNow}
-                        disabled={backingUp}
-                      >
-                        <Text style={{ fontSize: 12, color: c.amber, fontWeight: '500' as const }}>
-                          {backingUp ? 'Retrying…' : 'Retry camera roll backup'}
-                        </Text>
-                      </TouchableOpacity>
-                    )}
-                  </View>
-                )}
-                {/* Server all-time stats when idle */}
-                {!photoSessionProgress.running && !lastPhotoSession && serverPhotoStats && (
-                  <View style={layout.backupNote}>
-                    <Text style={{ fontSize: 12, color: c.ink3, lineHeight: 17, flex: 1 }}>
-                      {(serverPhotoStats.backed_up ?? 0).toLocaleString()} photo{serverPhotoStats.backed_up !== 1 ? 's' : ''} backed up
-                      {lastSessionAt ? ` · Last: ${timeAgo(lastSessionAt)}` : ''}
-                    </Text>
-                  </View>
-                )}
                 <RowDivider c={c} />
                 <TouchableOpacity
                   style={layout.row}
                   activeOpacity={0.6}
-                  onPress={handleBackupNow}
-                  disabled={backingUp || photoSessionProgress.running}
-                  accessibilityLabel="Back up camera roll now"
+                  onPress={() => setAdvancedExpanded((prev) => !prev)}
+                  accessibilityLabel={advancedExpanded ? 'Collapse advanced backup options' : 'Expand advanced backup options'}
                   accessibilityRole="button"
                 >
-                  {backingUp || photoSessionProgress.running ? (
-                    <ActivityIndicator size="small" color={c.amber} />
-                  ) : (
-                    <Text style={{ fontSize: 14, color: c.amber, fontWeight: '500' as const }}>
-                      Back up camera roll now
-                    </Text>
-                  )}
+                  <Ionicons
+                    name={advancedExpanded ? 'chevron-down' : 'chevron-forward'}
+                    size={14}
+                    color={c.ink3}
+                    style={{ marginRight: 8 }}
+                  />
+                  <Text style={{ flex: 1, fontSize: 14, fontWeight: '400' as const, color: c.ink }}>
+                    Advanced
+                  </Text>
                 </TouchableOpacity>
+                {advancedExpanded && (
+                  <>
+                    {/* Back up now button */}
+                    <RowDivider c={c} />
+                    <TouchableOpacity
+                      style={[layout.row, { paddingLeft: 28 }]}
+                      activeOpacity={0.6}
+                      onPress={handleBackupNow}
+                      disabled={backingUp || photoSessionProgress.running}
+                      accessibilityLabel="Back up camera roll now"
+                      accessibilityRole="button"
+                    >
+                      {backingUp || photoSessionProgress.running ? (
+                        <ActivityIndicator size="small" color={c.amber} />
+                      ) : (
+                        <Text style={{ fontSize: 14, color: c.amber, fontWeight: '500' as const }}>
+                          Back up now
+                        </Text>
+                      )}
+                    </TouchableOpacity>
+                    {/* Pause / Resume button */}
+                    {lastPhotoSession && lastPhotoSession.failed > 0 && (
+                      <>
+                        <RowDivider c={c} />
+                        <TouchableOpacity
+                          style={[layout.row, { paddingLeft: 28 }]}
+                          activeOpacity={0.6}
+                          onPress={handleBackupNow}
+                          disabled={backingUp}
+                          accessibilityLabel="Retry failed backup"
+                          accessibilityRole="button"
+                        >
+                          <Text style={{ fontSize: 14, color: c.amber, fontWeight: '500' as const }}>
+                            {backingUp ? 'Retrying...' : 'Retry failed items'}
+                          </Text>
+                        </TouchableOpacity>
+                      </>
+                    )}
+                    {/* Photos and videos toggle */}
+                    <RowDivider c={c} />
+                    <ToggleRow
+                      label="Photos and videos"
+                      subtitle="Back up videos in addition to photos. Videos can be large -- backed up over Wi-Fi only."
+                      value={includeVideos}
+                      onValueChange={handleIncludeVideosChange}
+                      indent
+                      c={c}
+                    />
+                    {/* Wi-Fi only toggle */}
+                    <RowDivider c={c} />
+                    <ToggleRow
+                      label="Wi-Fi only"
+                      subtitle="Only upload over Wi-Fi to save cellular data"
+                      value={wifiOnly}
+                      onValueChange={handleWifiOnlyChange}
+                      indent
+                      c={c}
+                    />
+                    {/* Background upload toggle */}
+                    <RowDivider c={c} />
+                    <ToggleRow
+                      label="Background upload"
+                      subtitle="Allow uploads in the background. May increase battery usage."
+                      value={backgroundUpload}
+                      onValueChange={handleBackgroundUploadChange}
+                      indent
+                      c={c}
+                    />
+                    {/* Deletion preference */}
+                    <RowDivider c={c} />
+                    <View style={{ paddingHorizontal: 12, paddingVertical: 10, paddingLeft: 28 }}>
+                      <Text style={{ fontSize: 13, fontWeight: '400' as const, color: c.ink, marginBottom: 8 }}>
+                        When removed from device
+                      </Text>
+                      <TouchableOpacity
+                        style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 4 }}
+                        activeOpacity={0.6}
+                        onPress={() => void handleDeletionBehaviorChange('keep')}
+                      >
+                        <View style={[layout.regionRadio, { borderColor: deletionBehavior === 'keep' ? c.amber : c.ink4 }]}>
+                          {deletionBehavior === 'keep' && <View style={[layout.regionRadioDot, { backgroundColor: c.amber }]} />}
+                        </View>
+                        <Text style={{ fontSize: 13, color: c.ink }}>Keep in cloud</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 4, marginTop: 4 }}
+                        activeOpacity={0.6}
+                        onPress={() => void handleDeletionBehaviorChange('trash')}
+                      >
+                        <View style={[layout.regionRadio, { borderColor: deletionBehavior === 'trash' ? c.amber : c.ink4 }]}>
+                          {deletionBehavior === 'trash' && <View style={[layout.regionRadioDot, { backgroundColor: c.amber }]} />}
+                        </View>
+                        <Text style={{ fontSize: 13, color: c.ink }}>Move to Beebeeb trash</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </>
+                )}
+                {/* Backup insights link */}
+                <RowDivider c={c} />
+                <SettingsRow
+                  label="Backup insights"
+                  onPress={() => navigation.navigate('BackupInsights')}
+                  c={c}
+                />
               </>
             )}
             <RowDivider c={c} />

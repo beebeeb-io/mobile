@@ -12,7 +12,7 @@
  * the project dependencies and works in Expo Go as well as dev clients.
  *
  * Public surface is unchanged from the in-memory version so call sites in
- * `BackupService.ts` and `PhotoBackupRunner.ts` keep working with no edits.
+ * `BackupService.ts` and `PhotoSyncEngine.ts` keep working with no edits.
  *
  * See docs/specs/010-device-backup-system.md for the full design.
  */
