@@ -72,6 +72,7 @@ export interface DeviceManifest {
   os_version: string;
   app_version: string;
   created_at: string;
+  deletion_behavior?: 'keep' | 'trash';
   backups: {
     camera_roll: BackupCategoryState;
     contacts: BackupCategoryState;
@@ -626,4 +627,26 @@ export async function disableBackup(category: BackupCategory): Promise<void> {
   };
 
   await writeManifest(next, deviceFolderId);
+}
+
+// ---------------------------------------------------------------------------
+// Deletion behavior preference
+// ---------------------------------------------------------------------------
+
+/**
+ * Read the user's deletion behavior preference from the device manifest.
+ * Defaults to 'keep' (keep server copy when photo is removed from camera roll).
+ */
+export async function getDeletionBehavior(): Promise<'keep' | 'trash'> {
+  const manifest = await getDeviceManifest();
+  return manifest?.deletion_behavior ?? 'keep';
+}
+
+/**
+ * Persist the user's deletion behavior preference to the device manifest.
+ *   - 'keep'  — when a photo is deleted from the camera roll, the server copy remains
+ *   - 'trash' — when a photo is deleted from the camera roll, queue server copy for deletion
+ */
+export async function setDeletionBehavior(behavior: 'keep' | 'trash'): Promise<void> {
+  await updateDeviceManifest({ deletion_behavior: behavior });
 }
