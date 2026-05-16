@@ -7,7 +7,13 @@ const EXTENSION_BUNDLE_ID = 'io.beebeeb.app.share';
 const APP_GROUP = 'group.io.beebeeb.shared';
 const PRINCIPAL_CLASS = 'ShareViewController';
 
-const SOURCE_FILES = ['ShareViewController.swift'];
+const SOURCE_FILES = [
+  'ShareViewController.swift',
+  'BeebeebCryptoShim.swift',
+  'ShareUploader.swift',
+  'SharedKeychain.swift',
+  'FolderFetcher.swift',
+];
 
 function withShareExtension(config) {
   // Step 1: ensure the main-app Info.plist tells iOS the share UI looks
@@ -25,14 +31,21 @@ function withShareExtension(config) {
     const projectRoot = config.modRequest.projectRoot;
     const iosDir = config.modRequest.platformProjectRoot;
     const extDir = path.join(iosDir, targetName);
-    const srcDir = path.resolve(projectRoot, 'plugins/share-extension');
+    // Source files live in targets/share-extension/ (source of truth)
+    // with fallback to plugins/share-extension/ for ShareViewController.swift
+    const srcDir = path.resolve(projectRoot, 'targets/share-extension');
+    const pluginSrcDir = path.resolve(projectRoot, 'plugins/share-extension');
 
     if (!fs.existsSync(extDir)) {
       fs.mkdirSync(extDir, { recursive: true });
     }
 
     for (const file of SOURCE_FILES) {
-      const src = path.join(srcDir, file);
+      // Check targets/share-extension/ first, then plugins/share-extension/
+      let src = path.join(srcDir, file);
+      if (!fs.existsSync(src)) {
+        src = path.join(pluginSrcDir, file);
+      }
       const dst = path.join(extDir, file);
       if (fs.existsSync(src)) {
         fs.copyFileSync(src, dst);

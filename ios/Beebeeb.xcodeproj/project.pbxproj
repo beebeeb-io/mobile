@@ -27,6 +27,12 @@
 		BEEBEE000000000000000026 /* BeebeebCore.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = DB9E8601A0574FC294891B72 /* BeebeebCore.xcframework */; };
 		BEEBEE000000000000000120 /* ShareViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEEBEE000000000000000110 /* ShareViewController.swift */; };
 		BEEBEE000000000000000121 /* BeebeebShare.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = BEEBEE000000000000000101 /* BeebeebShare.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		BEEBEE000000000000000122 /* BeebeebCryptoShim.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEEBEE000000000000000113 /* BeebeebCryptoShim.swift */; };
+		BEEBEE000000000000000123 /* ShareUploader.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEEBEE000000000000000114 /* ShareUploader.swift */; };
+		BEEBEE000000000000000124 /* SharedKeychain.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEEBEE000000000000000115 /* SharedKeychain.swift */; };
+		BEEBEE000000000000000125 /* FolderFetcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEEBEE000000000000000116 /* FolderFetcher.swift */; };
+		BEEBEE000000000000000126 /* beebeeb_uniffi.swift in Sources */ = {isa = PBXBuildFile; fileRef = 37EFB2142B2E4DC5ACA0EAC5 /* beebeeb_uniffi.swift */; };
+		BEEBEE000000000000000127 /* BeebeebCore.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = DB9E8601A0574FC294891B72 /* BeebeebCore.xcframework */; };
 		BEEBEE000000000000000220 /* BeebeebWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEEBEE000000000000000210 /* BeebeebWidget.swift */; };
 		BEEBEE000000000000000221 /* BeebeebWidget.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = BEEBEE000000000000000201 /* BeebeebWidget.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		E83845F60A174F628F826745 /* BeebeebCore.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = DB9E8601A0574FC294891B72 /* BeebeebCore.xcframework */; };
@@ -98,6 +104,10 @@
 		BEEBEE000000000000000110 /* ShareViewController.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = ShareViewController.swift; path = BeebeebShare/ShareViewController.swift; sourceTree = "<group>"; };
 		BEEBEE000000000000000111 /* Info.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = Info.plist; path = BeebeebShare/Info.plist; sourceTree = "<group>"; };
 		BEEBEE000000000000000112 /* BeebeebShare.entitlements */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.entitlements; name = BeebeebShare.entitlements; path = BeebeebShare/BeebeebShare.entitlements; sourceTree = "<group>"; };
+		BEEBEE000000000000000113 /* BeebeebCryptoShim.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = BeebeebCryptoShim.swift; path = BeebeebShare/BeebeebCryptoShim.swift; sourceTree = "<group>"; };
+		BEEBEE000000000000000114 /* ShareUploader.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = ShareUploader.swift; path = BeebeebShare/ShareUploader.swift; sourceTree = "<group>"; };
+		BEEBEE000000000000000115 /* SharedKeychain.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = SharedKeychain.swift; path = BeebeebShare/SharedKeychain.swift; sourceTree = "<group>"; };
+		BEEBEE000000000000000116 /* FolderFetcher.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = FolderFetcher.swift; path = BeebeebShare/FolderFetcher.swift; sourceTree = "<group>"; };
 		BEEBEE000000000000000201 /* BeebeebWidget.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = BeebeebWidget.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		BEEBEE000000000000000210 /* BeebeebWidget.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = BeebeebWidget.swift; path = BeebeebWidget/BeebeebWidget.swift; sourceTree = "<group>"; };
 		BEEBEE000000000000000211 /* Info.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = Info.plist; path = BeebeebWidget/Info.plist; sourceTree = "<group>"; };
@@ -131,6 +141,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				BEEBEE000000000000000127 /* BeebeebCore.xcframework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -244,6 +255,10 @@
 			isa = PBXGroup;
 			children = (
 				BEEBEE000000000000000110 /* ShareViewController.swift */,
+				BEEBEE000000000000000113 /* BeebeebCryptoShim.swift */,
+				BEEBEE000000000000000114 /* ShareUploader.swift */,
+				BEEBEE000000000000000115 /* SharedKeychain.swift */,
+				BEEBEE000000000000000116 /* FolderFetcher.swift */,
 				BEEBEE000000000000000111 /* Info.plist */,
 				BEEBEE000000000000000112 /* BeebeebShare.entitlements */,
 			);
@@ -593,6 +608,11 @@
 			buildActionMask = 2147483647;
 			files = (
 				BEEBEE000000000000000120 /* ShareViewController.swift in Sources */,
+				BEEBEE000000000000000122 /* BeebeebCryptoShim.swift in Sources */,
+				BEEBEE000000000000000123 /* ShareUploader.swift in Sources */,
+				BEEBEE000000000000000124 /* SharedKeychain.swift in Sources */,
+				BEEBEE000000000000000125 /* FolderFetcher.swift in Sources */,
+				BEEBEE000000000000000126 /* beebeeb_uniffi.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -879,15 +899,22 @@
 				CODE_SIGN_ENTITLEMENTS = BeebeebShare/BeebeebShare.entitlements;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = R8352WDJJR;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)",
+				);
 				GCC_PREPROCESSOR_DEFINITIONS = (
 					"DEBUG=1",
 					"$(inherited)",
 				);
+				"HEADER_SEARCH_PATHS[sdk=iphonesimulator*]" = "$(inherited) \"$(PROJECT_DIR)/BeebeebCore.xcframework/ios-arm64_x86_64-simulator/Headers\"";
+				"HEADER_SEARCH_PATHS[sdk=iphoneos*]" = "$(inherited) \"$(PROJECT_DIR)/BeebeebCore.xcframework/ios-arm64/Headers\"";
 				INFOPLIST_FILE = BeebeebShare/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks";
 				MARKETING_VERSION = 1.0.0;
-				OTHER_SWIFT_FLAGS = "$(inherited) -D EXPO_CONFIGURATION_DEBUG";
+				"OTHER_SWIFT_FLAGS[sdk=iphonesimulator*]" = "$(inherited) -D EXPO_CONFIGURATION_DEBUG -Xcc -fmodule-map-file=\"$(PROJECT_DIR)/BeebeebCore.xcframework/ios-arm64_x86_64-simulator/Headers/module.modulemap\"";
+				"OTHER_SWIFT_FLAGS[sdk=iphoneos*]" = "$(inherited) -D EXPO_CONFIGURATION_DEBUG -Xcc -fmodule-map-file=\"$(PROJECT_DIR)/BeebeebCore.xcframework/ios-arm64/Headers/module.modulemap\"";
 				PRODUCT_BUNDLE_IDENTIFIER = io.beebeeb.app.share;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
@@ -906,11 +933,18 @@
 				CODE_SIGN_ENTITLEMENTS = BeebeebShare/BeebeebShare.entitlements;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = R8352WDJJR;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)",
+				);
+				"HEADER_SEARCH_PATHS[sdk=iphonesimulator*]" = "$(inherited) \"$(PROJECT_DIR)/BeebeebCore.xcframework/ios-arm64_x86_64-simulator/Headers\"";
+				"HEADER_SEARCH_PATHS[sdk=iphoneos*]" = "$(inherited) \"$(PROJECT_DIR)/BeebeebCore.xcframework/ios-arm64/Headers\"";
 				INFOPLIST_FILE = BeebeebShare/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks";
 				MARKETING_VERSION = 1.0.0;
-				OTHER_SWIFT_FLAGS = "$(inherited) -D EXPO_CONFIGURATION_RELEASE";
+				"OTHER_SWIFT_FLAGS[sdk=iphonesimulator*]" = "$(inherited) -D EXPO_CONFIGURATION_RELEASE -Xcc -fmodule-map-file=\"$(PROJECT_DIR)/BeebeebCore.xcframework/ios-arm64_x86_64-simulator/Headers/module.modulemap\"";
+				"OTHER_SWIFT_FLAGS[sdk=iphoneos*]" = "$(inherited) -D EXPO_CONFIGURATION_RELEASE -Xcc -fmodule-map-file=\"$(PROJECT_DIR)/BeebeebCore.xcframework/ios-arm64/Headers/module.modulemap\"";
 				PRODUCT_BUNDLE_IDENTIFIER = io.beebeeb.app.share;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
