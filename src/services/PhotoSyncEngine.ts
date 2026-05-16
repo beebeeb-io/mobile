@@ -26,7 +26,7 @@ import {
   getStatusCounts,
   type BackupAssetType,
 } from './BackupDatabase';
-import { photoBackupCheck, photoBackupMark } from '../lib/api';
+import { photoBackupCheck, photoBackupMark, photoBackupListIds } from '../lib/api';
 
 const ENUMERATE_PAGE = 200;
 const CHECK_BATCH = 200;
@@ -255,25 +255,14 @@ export async function fullReconciliation(callbacks: SyncEngineCallbacks): Promis
     endCursor = page.endCursor;
   }
 
-  // 2. Batch-check server for which need backup
-  const idList = Array.from(allAssetIds.keys());
-  const needsUpload = new Set<string>();
+  // 2. Fetch all backed-up IDs from server in one paginated call
+  const serverBackedUp = await photoBackupListIds();
 
-  for (let i = 0; i < idList.length; i += CHECK_BATCH) {
-    if (callbacks.signal?.aborted) return;
-    const chunk = idList.slice(i, i + CHECK_BATCH);
-    const result = await photoBackupCheck(chunk);
-    for (const id of result.needs_backup) needsUpload.add(id);
-  }
-
-  // 3. Queue uploads for assets not already pending
+  // 3. Queue uploads for assets not on server and not already pending locally
   const alreadyTracked = await getAllUploadedIds();
-  for (const id of needsUpload) {
-    if (!alreadyTracked.has(id)) {
-      const info = allAssetIds.get(id);
-      if (info) {
-        await upsertPendingUpload(id, info.type, 0, info.time);
-      }
+  for (const [id, info] of allAssetIds) {
+    if (!serverBackedUp.has(id) && !alreadyTracked.has(id)) {
+      await upsertPendingUpload(id, info.type, 0, info.time);
     }
   }
 
