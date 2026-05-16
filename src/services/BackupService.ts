@@ -73,6 +73,7 @@ export interface DeviceManifest {
   app_version: string;
   created_at: string;
   deletion_behavior?: 'keep' | 'trash';
+  keep_vault_unlocked?: boolean;
   backups: {
     camera_roll: BackupCategoryState;
     contacts: BackupCategoryState;
@@ -657,4 +658,26 @@ export async function getDeletionBehavior(): Promise<'keep' | 'trash'> {
  */
 export async function setDeletionBehavior(behavior: 'keep' | 'trash'): Promise<void> {
   await updateDeviceManifest({ deletion_behavior: behavior });
+}
+
+// ---------------------------------------------------------------------------
+// Keep vault unlocked for background backup
+// ---------------------------------------------------------------------------
+
+/**
+ * Read the user's "keep vault unlocked for backup" preference.
+ * When enabled, the backup bridge can re-load the master key from the iOS
+ * Keychain without user interaction so uploads continue in the background.
+ * Defaults to false.
+ */
+export async function getKeepVaultUnlocked(): Promise<boolean> {
+  const manifest = await getDeviceManifest();
+  return manifest?.keep_vault_unlocked ?? false;
+}
+
+/**
+ * Persist the user's "keep vault unlocked for backup" preference.
+ */
+export async function setKeepVaultUnlocked(enabled: boolean): Promise<void> {
+  await updateDeviceManifest({ keep_vault_unlocked: enabled });
 }
