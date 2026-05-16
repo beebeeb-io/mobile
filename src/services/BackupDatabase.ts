@@ -295,3 +295,139 @@ export async function clearAssets(assetType: BackupAssetType): Promise<void> {
     [assetType],
   );
 }
+
+// ─── Sync queue queries (v2) ──────────────────────────────────────────────────
+
+export async function getPendingUploads(
+  limit: number = 10,
+): Promise<BackupAsset[]> {
+  const db = await getDb();
+  return db.getAllAsync<BackupAsset>(
+    `SELECT * FROM backup_assets
+      WHERE status IN ('pending_upload', 'pending_reupload')
+      ORDER BY created_at ASC LIMIT ?`,
+    [limit],
+  );
+}
+
+export async function getPendingDeletes(): Promise<BackupAsset[]> {
+  const db = await getDb();
+  return db.getAllAsync<BackupAsset>(
+    `SELECT * FROM backup_assets WHERE status = 'pending_delete'`,
+  );
+}
+
+export async function getFailedAssets(): Promise<BackupAsset[]> {
+  const db = await getDb();
+  return db.getAllAsync<BackupAsset>(
+    `SELECT * FROM backup_assets WHERE status = 'failed'`,
+  );
+}
+
+export async function getStatusCounts(): Promise<
+  Record<BackupAssetStatus, number>
+> {
+  const db = await getDb();
+  const rows = await db.getAllAsync<{ status: string; count: number }>(
+    `SELECT status, COUNT(*) as count FROM backup_assets GROUP BY status`,
+  );
+  const counts: Record<string, number> = {};
+  for (const row of rows) counts[row.status] = row.count;
+  return counts as Record<BackupAssetStatus, number>;
+}
+
+export async function getTotalUploadedBytes(): Promise<number> {
+  const db = await getDb();
+  const row = await db.getFirstAsync<{ total: number }>(
+    `SELECT COALESCE(SUM(file_size), 0) as total FROM backup_assets WHERE status = 'uploaded'`,
+  );
+  return row?.total ?? 0;
+}
+
+export async function upsertPendingUpload(
+  localId: string,
+  assetType: BackupAssetType,
+  sizeBytes: number,
+  creationAt: number,
+): Promise<void> {
+  const db = await getDb();
+  const now = Date.now();
+  await db.runAsync(
+    `INSERT INTO backup_assets (local_asset_id, status, asset_type, file_size, created_at, queued_at, content_hash)
+     VALUES (?, 'pending_upload', ?, ?, ?, ?, '')
+     ON CONFLICT(local_asset_id) DO UPDATE SET
+       status = CASE WHEN status IN ('failed', 'orphaned') THEN 'pending_upload' ELSE status END,
+       queued_at = CASE WHEN status IN ('failed', 'orphaned') THEN ? ELSE queued_at END`,
+    [localId, assetType, sizeBytes, String(creationAt), now, now],
+  );
+}
+
+export async function markUploadComplete(
+  localId: string,
+  fileId: string,
+): Promise<void> {
+  const db = await getDb();
+  await db.runAsync(
+    `UPDATE backup_assets SET status = 'uploaded', remote_file_id = ?, uploaded_at = ?, error_message = NULL, retry_count = 0 WHERE local_asset_id = ?`,
+    [fileId, new Date().toISOString(), localId],
+  );
+}
+
+export async function markPendingDelete(localId: string): Promise<void> {
+  const db = await getDb();
+  await db.runAsync(
+    `UPDATE backup_assets SET status = 'pending_delete', queued_at = ? WHERE local_asset_id = ? AND status = 'uploaded'`,
+    [Date.now(), localId],
+  );
+}
+
+export async function markOrphaned(localId: string): Promise<void> {
+  const db = await getDb();
+  await db.runAsync(
+    `UPDATE backup_assets SET status = 'orphaned' WHERE local_asset_id = ? AND status = 'uploaded'`,
+    [localId],
+  );
+}
+
+export async function removePendingDelete(localId: string): Promise<void> {
+  const db = await getDb();
+  await db.runAsync(
+    `DELETE FROM backup_assets WHERE local_asset_id = ? AND status = 'pending_delete'`,
+    [localId],
+  );
+}
+
+export async function retryAllFailed(): Promise<number> {
+  const db = await getDb();
+  const result = await db.runAsync(
+    `UPDATE backup_assets SET status = 'pending_upload', retry_count = 0, error_message = NULL WHERE status = 'failed'`,
+  );
+  return result.changes;
+}
+
+export async function clearAllData(): Promise<void> {
+  const db = await getDb();
+  await db.runAsync(`DELETE FROM backup_assets`);
+}
+
+export async function getAllUploadedIds(): Promise<Set<string>> {
+  const db = await getDb();
+  const rows = await db.getAllAsync<{ local_asset_id: string }>(
+    `SELECT local_asset_id FROM backup_assets WHERE status IN ('uploaded', 'orphaned')`,
+  );
+  return new Set(rows.map((r) => r.local_asset_id));
+}
+
+export async function getRecentActivity(
+  days: number = 7,
+): Promise<{ date: string; count: number; bytes: number }[]> {
+  const db = await getDb();
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - days);
+  return db.getAllAsync<{ date: string; count: number; bytes: number }>(
+    `SELECT DATE(uploaded_at) as date, COUNT(*) as count, SUM(file_size) as bytes
+     FROM backup_assets WHERE status = 'uploaded' AND uploaded_at >= ?
+     GROUP BY DATE(uploaded_at) ORDER BY date DESC`,
+    [cutoff.toISOString()],
+  );
+}
