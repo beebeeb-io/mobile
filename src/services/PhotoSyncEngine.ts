@@ -110,10 +110,29 @@ export function stopEventListener(): void {
 
 // ─── Upload Processor ────────────────────────────────────────────────────────
 
+const UPLOAD_DELAY_MS = 600; // ~100 uploads per minute max
+const RATE_LIMIT_BACKOFF_MS = 60_000;
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isRateLimitError(err: unknown): number | null {
+  if (err instanceof Error) {
+    const msg = err.message.toLowerCase();
+    if (msg.includes('rate_limit') || msg.includes('429') || msg.includes('too many')) {
+      const match = msg.match(/retry.after.*?(\d+)/i);
+      return match ? Number(match[1]) * 1000 : RATE_LIMIT_BACKOFF_MS;
+    }
+  }
+  return null;
+}
+
 export async function processUploads(callbacks: SyncEngineCallbacks): Promise<number> {
   if (processingUpload) return 0;
   processingUpload = true;
   let totalUploaded = 0;
+  let consecutiveFailures = 0;
 
   try {
     while (true) {
@@ -128,7 +147,6 @@ export async function processUploads(callbacks: SyncEngineCallbacks): Promise<nu
         try {
           await markUploading(row.local_asset_id);
 
-          // Read the actual asset from MediaLibrary
           const asset = await MediaLibrary.getAssetInfoAsync(row.local_asset_id);
           if (!asset) {
             await markFailed(row.local_asset_id, 'Asset no longer exists in camera roll');
@@ -139,9 +157,29 @@ export async function processUploads(callbacks: SyncEngineCallbacks): Promise<nu
           await photoBackupMark(row.local_asset_id, fileId);
           await markUploadComplete(row.local_asset_id, fileId);
           totalUploaded++;
+          consecutiveFailures = 0;
+
+          // Pace uploads to avoid rate limiting
+          await delay(UPLOAD_DELAY_MS);
         } catch (err) {
-          const msg = err instanceof Error ? err.message : 'Unknown error';
-          await markFailed(row.local_asset_id, msg);
+          const rateLimitWait = isRateLimitError(err);
+          if (rateLimitWait !== null) {
+            // Rate limited — back off before retrying
+            // Don't mark as failed, revert to pending so it retries
+            await markFailed(row.local_asset_id, 'rate_limited');
+            await delay(rateLimitWait);
+            consecutiveFailures++;
+          } else {
+            const msg = err instanceof Error ? err.message : 'Unknown error';
+            await markFailed(row.local_asset_id, msg);
+            consecutiveFailures++;
+          }
+
+          // If we get 5+ consecutive failures, back off for a minute
+          if (consecutiveFailures >= 5) {
+            await delay(RATE_LIMIT_BACKOFF_MS);
+            consecutiveFailures = 0;
+          }
         }
 
         if (callbacks.onProgress) {
