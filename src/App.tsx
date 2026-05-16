@@ -87,6 +87,7 @@ import BiometricLockScreen from './screens/BiometricLockScreen';
 import OnboardingScreen from './screens/OnboardingScreen';
 import DocumentScannerScreen from './screens/DocumentScannerScreen';
 import TwoFactorSetupScreen from './screens/TwoFactorSetupScreen';
+import BackupInsightsScreen from './screens/BackupInsightsScreen';
 
 import ErrorBoundary from './components/ErrorBoundary';
 import ConfirmActionPrompt from './components/ConfirmActionPrompt';
@@ -158,6 +159,7 @@ export type RootStackParamList = {
   ConstellationSend: { fileId: string; fileName: string };
   DocumentScanner: { parentId?: string } | undefined;
   TwoFactorSetup: undefined;
+  BackupInsights: undefined;
 };
 
 // ---------------------------------------------------------------------------
@@ -941,6 +943,11 @@ export default function App() {
                     name="TwoFactorSetup"
                     component={TwoFactorSetupScreen}
                     options={{ title: 'Two-Factor Authentication', headerShown: false }}
+                  />
+                  <Stack.Screen
+                    name="BackupInsights"
+                    component={BackupInsightsScreen}
+                    options={{ headerShown: false }}
                   />
                 </>
               ) : (
