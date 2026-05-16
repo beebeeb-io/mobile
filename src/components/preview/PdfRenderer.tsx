@@ -6,7 +6,7 @@
  */
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Animated, Dimensions, StyleSheet, Text, View } from 'react-native';
+import { Animated, StyleSheet, Text, View } from 'react-native';
 import Pdf from 'react-native-pdf';
 import { fonts } from '../../theme';
 import { useTheme } from '../../lib/theme-context';
@@ -21,7 +21,6 @@ export function PdfRenderer({ filePath }: PdfRendererProps) {
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(0);
   const { colors } = useTheme();
-  const { width } = Dimensions.get('window');
 
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -54,10 +53,10 @@ export function PdfRenderer({ filePath }: PdfRendererProps) {
     <View style={styles.container}>
       <Pdf
         source={{ uri: filePath }}
-        style={[styles.pdf, { width }]}
+        style={styles.pdf}
         enablePaging={false}
         horizontal={false}
-        fitPolicy={2}
+        fitPolicy={0}
         spacing={8}
         enableAntialiasing
         onLoadComplete={(numberOfPages) => {
