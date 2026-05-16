@@ -20,7 +20,14 @@
 import * as SQLite from 'expo-sqlite';
 
 export type BackupAssetType = 'photo' | 'video' | 'contact' | 'calendar';
-export type BackupAssetStatus = 'pending' | 'uploading' | 'uploaded' | 'failed';
+export type BackupAssetStatus =
+  | 'pending_upload'
+  | 'uploading'
+  | 'uploaded'
+  | 'pending_delete'
+  | 'pending_reupload'
+  | 'orphaned'
+  | 'failed';
 
 export interface BackupAsset {
   local_asset_id: string;
@@ -32,6 +39,10 @@ export interface BackupAsset {
   uploaded_at: string | null;
   asset_type: BackupAssetType;
   status: BackupAssetStatus;
+  queued_at: number | null;
+  last_attempt_at: number | null;
+  retry_count: number;
+  error_message: string | null;
 }
 
 const DB_NAME = 'beebeeb-backup.db';
@@ -70,6 +81,27 @@ async function openAndMigrate(): Promise<SQLite.SQLiteDatabase> {
     CREATE INDEX IF NOT EXISTS idx_backup_assets_created_at
       ON backup_assets(created_at);
   `);
+
+  // Migration: add columns for sync queue (v2)
+  await db.execAsync(`
+    ALTER TABLE backup_assets ADD COLUMN queued_at INTEGER;
+  `).catch(() => {});  // ignore if already exists
+  await db.execAsync(`
+    ALTER TABLE backup_assets ADD COLUMN last_attempt_at INTEGER;
+  `).catch(() => {});
+  await db.execAsync(`
+    ALTER TABLE backup_assets ADD COLUMN retry_count INTEGER DEFAULT 0;
+  `).catch(() => {});
+  await db.execAsync(`
+    ALTER TABLE backup_assets ADD COLUMN error_message TEXT;
+  `).catch(() => {});
+
+  // Migrate old status values to new enum
+  await db.execAsync(`
+    UPDATE backup_assets SET status = 'pending_upload' WHERE status = 'pending';
+    UPDATE backup_assets SET status = 'uploaded' WHERE status = 'uploading';
+  `);
+
   return db;
 }
 
@@ -107,7 +139,11 @@ export async function upsertAsset(
       asset.created_at ?? existing?.created_at ?? new Date().toISOString(),
     uploaded_at: asset.uploaded_at ?? existing?.uploaded_at ?? null,
     asset_type: asset.asset_type ?? existing?.asset_type ?? 'photo',
-    status: asset.status ?? existing?.status ?? 'pending',
+    status: asset.status ?? existing?.status ?? 'pending_upload',
+    queued_at: asset.queued_at ?? existing?.queued_at ?? null,
+    last_attempt_at: asset.last_attempt_at ?? existing?.last_attempt_at ?? null,
+    retry_count: asset.retry_count ?? existing?.retry_count ?? 0,
+    error_message: asset.error_message ?? existing?.error_message ?? null,
   };
 
   await db.runAsync(
@@ -145,14 +181,14 @@ export async function getPendingAssets(
   const rows = assetType
     ? await db.getAllAsync<BackupAsset>(
         `SELECT * FROM backup_assets
-          WHERE status IN ('pending','failed')
+          WHERE status IN ('pending_upload','pending_reupload','failed')
             AND asset_type = ?
           ORDER BY created_at ASC`,
         [assetType],
       )
     : await db.getAllAsync<BackupAsset>(
         `SELECT * FROM backup_assets
-          WHERE status IN ('pending','failed')
+          WHERE status IN ('pending_upload','pending_reupload','failed')
           ORDER BY created_at ASC`,
       );
   return rows;
@@ -227,27 +263,27 @@ export async function markUploaded(
 
 export async function markFailed(
   localAssetId: string,
-  _error?: string,
+  error?: string,
 ): Promise<void> {
   const db = await getDb();
   await db.runAsync(
-    `UPDATE backup_assets SET status = 'failed' WHERE local_asset_id = ?`,
-    [localAssetId],
+    `UPDATE backup_assets SET status = 'failed', error_message = ?, retry_count = COALESCE(retry_count, 0) + 1, last_attempt_at = ? WHERE local_asset_id = ?`,
+    [error ?? null, Date.now(), localAssetId],
   );
 }
 
 export async function markUploading(localAssetId: string): Promise<void> {
   const db = await getDb();
   await db.runAsync(
-    `UPDATE backup_assets SET status = 'uploading' WHERE local_asset_id = ?`,
-    [localAssetId],
+    `UPDATE backup_assets SET status = 'uploading', last_attempt_at = ? WHERE local_asset_id = ?`,
+    [Date.now(), localAssetId],
   );
 }
 
 export async function resetFailedAssets(): Promise<number> {
   const db = await getDb();
   const result = await db.runAsync(
-    `UPDATE backup_assets SET status = 'pending' WHERE status = 'failed'`,
+    `UPDATE backup_assets SET status = 'pending_upload' WHERE status = 'failed'`,
   );
   return result.changes;
 }
