@@ -113,10 +113,13 @@ export function PhotoBackupBridge({ backup }: PhotoBackupBridgeProps): null {
 
         const fileId = generateFileId();
 
-        // Convert asset.creationTime (seconds since epoch) to ISO 8601 so the
-        // server stores the photo's original date instead of the upload time.
-        const createdAt = asset.creationTime
-          ? new Date(asset.creationTime * 1000).toISOString()
+        // creationTime may be seconds or milliseconds depending on Expo API path.
+        // Normalize: if > 1e12, already ms; otherwise convert from seconds.
+        const creationMs = asset.creationTime
+          ? (asset.creationTime > 1e12 ? asset.creationTime : asset.creationTime * 1000)
+          : 0;
+        const createdAt = creationMs > 0
+          ? new Date(creationMs).toISOString()
           : undefined;
 
         const uploaded = await encryptedUpload({
