@@ -11,7 +11,7 @@
  */
 
 import * as MediaLibrary from 'expo-media-library';
-import * as SecureStore from 'expo-secure-store';
+import * as SQLite from 'expo-sqlite';
 import {
   upsertPendingUpload,
   markUploading,
@@ -252,23 +252,63 @@ export async function fullReconciliation(callbacks: SyncEngineCallbacks): Promis
     }
   }
 
-  // 5. Store scan timestamp
-  await SecureStore.setItemAsync(LAST_FULL_SCAN_KEY, String(Date.now()));
+  // 5. Store scan timestamp in SQLite (not SecureStore — works in background)
+  await setSyncMeta(LAST_FULL_SCAN_KEY, String(Date.now()));
 
   // 6. Process queued work
   await processUploads(callbacks);
   await processDeletes(callbacks);
 }
 
+// ─── SQLite key-value for sync metadata (background-safe) ────────────────────
+
+const SYNC_META_DB_NAME = 'beebeeb-backup.db';
+
+async function getSyncMetaDb(): Promise<SQLite.SQLiteDatabase> {
+  const db = await SQLite.openDatabaseAsync(SYNC_META_DB_NAME);
+  await db.execAsync(`
+    CREATE TABLE IF NOT EXISTS sync_meta (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
+  `);
+  return db;
+}
+
+async function getSyncMeta(key: string): Promise<string | null> {
+  try {
+    const db = await getSyncMetaDb();
+    const row = await db.getFirstAsync<{ value: string }>(
+      'SELECT value FROM sync_meta WHERE key = ?',
+      [key],
+    );
+    return row?.value ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function setSyncMeta(key: string, value: string): Promise<void> {
+  try {
+    const db = await getSyncMetaDb();
+    await db.runAsync(
+      'INSERT INTO sync_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = ?',
+      [key, value, value],
+    );
+  } catch {
+    // Non-critical — next scan will just run slightly early
+  }
+}
+
 // ─── Scheduling helpers ──────────────────────────────────────────────────────
 
 export async function needsFullScan(): Promise<boolean> {
-  const lastScan = await SecureStore.getItemAsync(LAST_FULL_SCAN_KEY);
+  const lastScan = await getSyncMeta(LAST_FULL_SCAN_KEY);
   if (!lastScan) return true;
   return Date.now() - Number(lastScan) > FULL_SCAN_INTERVAL_MS;
 }
 
 export async function getLastFullScanAt(): Promise<number | null> {
-  const val = await SecureStore.getItemAsync(LAST_FULL_SCAN_KEY);
+  const val = await getSyncMeta(LAST_FULL_SCAN_KEY);
   return val ? Number(val) : null;
 }
