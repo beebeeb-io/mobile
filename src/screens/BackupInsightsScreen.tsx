@@ -379,11 +379,8 @@ export default function BackupInsightsScreen() {
             setResyncing(true);
             try {
               await clearAllData();
+              await backup.triggerBackupNow();
               await loadData();
-              Alert.alert(
-                'Resync started',
-                'Backup state cleared. A full reconciliation will run on the next sync cycle.',
-              );
             } catch {
               Alert.alert('Error', 'Could not start resync.');
             } finally {
