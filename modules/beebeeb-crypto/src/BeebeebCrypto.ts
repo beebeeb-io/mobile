@@ -474,6 +474,37 @@ export async function resetFileProviderDomain(): Promise<FileProviderDomainRegis
   return BeebeebCryptoModule.resetFileProviderDomain()
 }
 
+// ─── File Provider cache pre-population ─────────────────────────────────────
+
+/**
+ * Entry shape accepted by `syncFileProviderCache`. The main app decrypts
+ * filenames on the JS side and pushes them into the shared SQLite cache so
+ * the File Provider extension can display real names without needing the
+ * BeebeebCore xcframework.
+ */
+export interface FileProviderCacheEntry {
+  id: string
+  parent_id?: string | null
+  name_encrypted?: string | null
+  name_decrypted?: string | null
+  mime_type?: string | null
+  size_bytes?: number
+  is_folder?: boolean
+  created_at?: string | null
+  updated_at?: string | null
+}
+
+/**
+ * Write pre-decrypted file entries to the shared App Group SQLite cache.
+ * Returns the number of rows written. iOS only; no-op on Android.
+ */
+export async function syncFileProviderCache(
+  entries: FileProviderCacheEntry[],
+): Promise<number> {
+  if (typeof BeebeebCryptoModule.syncFileProviderCache !== 'function') return 0
+  return BeebeebCryptoModule.syncFileProviderCache(entries)
+}
+
 // ─── Backup management ──────────────────────────────────────────────────────
 
 export interface NativeBackupProgress {
