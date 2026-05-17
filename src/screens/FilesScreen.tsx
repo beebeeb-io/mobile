@@ -114,7 +114,7 @@ async function copyPhotoAssetToUploadCache(sourceUri: string, fileId: string, na
 function displayName(entry: FileEntry): string {
   const raw = entry.name_encrypted;
   if (!raw) return entry.is_folder ? 'Untitled folder' : 'Untitled file';
-  if (raw.startsWith('{')) return entry.is_folder ? 'Encrypted folder' : 'Encrypted file';
+  if (raw.startsWith('{')) return '';
   if (raw.length > 32) return raw.slice(0, 24) + '...';
   return raw;
 }
@@ -529,15 +529,16 @@ const FileRowItem = React.memo(function FileRowItem({
       <FileIcon category={category} fileId={item.id} hasThumbnail={item.has_thumbnail} />
       <View style={styles.fileInfo}>
         <View style={styles.fileNameRow}>
-          {isEncryptedFallback && (
-            <Icon name="lock" size={11} color={c.ink4} style={styles.lockIcon} />
+          {isEncryptedFallback ? (
+            <View style={{ height: 14, width: 100 + (item.id.charCodeAt(0) % 100), borderRadius: 4, backgroundColor: c.line }} />
+          ) : (
+            <Text
+              style={[styles.fileName, { color: c.ink }]}
+              numberOfLines={2}
+            >
+              {nameText}
+            </Text>
           )}
-          <Text
-            style={[styles.fileName, { color: c.ink }, isEncryptedFallback && styles.fileNameEncrypted]}
-            numberOfLines={2}
-          >
-            {nameText}
-          </Text>
           {isShared && (
             <Ionicons
               name="people-outline"
@@ -713,15 +714,16 @@ const FileGridItem = React.memo(function FileGridItem({
       </View>
       <View style={styles.gridTextWrap}>
         <View style={styles.gridNameRow}>
-          {isEncryptedFallback && (
-            <Icon name="lock" size={10} color={c.ink4} style={styles.lockIcon} />
+          {isEncryptedFallback ? (
+            <View style={{ height: 12, width: 60 + (item.id.charCodeAt(0) % 40), borderRadius: 3, backgroundColor: c.line }} />
+          ) : (
+            <Text
+              style={[styles.gridName, { color: c.ink }]}
+              numberOfLines={2}
+            >
+              {nameText}
+            </Text>
           )}
-          <Text
-            style={[styles.gridName, { color: c.ink }, isEncryptedFallback && styles.fileNameEncrypted]}
-            numberOfLines={2}
-          >
-            {nameText}
-          </Text>
           {isShared && (
             <Ionicons
               name="people-outline"
@@ -2562,9 +2564,13 @@ export default function FilesScreen() {
                 accessibilityRole="button"
               >
                 <FileIcon category={category} fileId={item.id} hasThumbnail={item.has_thumbnail} />
-                <Text style={[styles.recentName, { color: c.ink }]} numberOfLines={1}>
-                  {name}
-                </Text>
+                {name ? (
+                  <Text style={[styles.recentName, { color: c.ink }]} numberOfLines={1}>
+                    {name}
+                  </Text>
+                ) : (
+                  <View style={{ height: 12, width: 80, borderRadius: 3, backgroundColor: c.line, marginTop: 4 }} />
+                )}
                 <Text style={[styles.recentDate, { color: c.ink4 }]} numberOfLines={1}>
                   {formatDate(item.updated_at)}
                 </Text>
