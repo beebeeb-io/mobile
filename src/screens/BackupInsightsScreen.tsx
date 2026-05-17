@@ -42,6 +42,7 @@ import {
   getLastFullScanAt,
 } from '../services/PhotoSyncEngine';
 import { useBackup } from '../lib/backup-context';
+import NetInfo from '@react-native-community/netinfo';
 
 let MediaLibrary: { getAssetsAsync: (opts: { first: number; mediaType?: string[] }) => Promise<{ totalCount: number }>; MediaType?: { photo: string; video: string } } = {
   getAssetsAsync: async () => ({ totalCount: 0 }),
@@ -240,13 +241,17 @@ function StatusDot({
   status,
   c,
 }: {
-  status: 'syncing' | 'idle' | 'paused';
+  status: 'syncing' | 'idle' | 'paused' | 'waiting_wifi';
   c: C;
 }) {
   const dotColor =
-    status === 'syncing' ? c.amber : status === 'idle' ? c.green : c.ink4;
+    status === 'syncing' ? c.amber :
+    status === 'waiting_wifi' ? c.ink3 :
+    status === 'idle' ? c.green : c.ink4;
   const label =
-    status === 'syncing' ? 'Syncing' : status === 'idle' ? 'Idle' : 'Paused';
+    status === 'syncing' ? 'Syncing' :
+    status === 'waiting_wifi' ? 'Waiting for Wi-Fi' :
+    status === 'idle' ? 'Idle' : 'Paused';
 
   return (
     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
@@ -357,8 +362,18 @@ export default function BackupInsightsScreen() {
     (data?.counts.uploaded ?? 0) + (data?.counts.orphaned ?? 0);
   const failedCount = data?.counts.failed ?? 0;
 
-  const syncStatus: 'syncing' | 'idle' | 'paused' =
-    pendingCount > 0 ? 'syncing' : 'idle';
+  const [networkType, setNetworkType] = useState<string | null>(null);
+  useEffect(() => {
+    let mounted = true;
+    NetInfo.fetch().then(state => { if (mounted) setNetworkType(state.type); });
+    const unsub = NetInfo.addEventListener(state => { if (mounted) setNetworkType(state.type); });
+    return () => { mounted = false; unsub(); };
+  }, []);
+
+  const waitingForWifi = backup.wifiOnly && networkType !== 'wifi' && pendingCount > 0;
+
+  const syncStatus: 'syncing' | 'idle' | 'paused' | 'waiting_wifi' =
+    waitingForWifi ? 'waiting_wifi' : pendingCount > 0 ? 'syncing' : 'idle';
 
   // Next scheduled scan
   const nextScanMs = data?.lastScanAt
