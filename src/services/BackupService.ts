@@ -16,6 +16,7 @@
  * manifest; the upload/scan workers live in separate modules.
  */
 
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SecureStore from 'expo-secure-store';
 import { Platform } from 'react-native';
 
@@ -664,20 +665,39 @@ export async function setDeletionBehavior(behavior: 'keep' | 'trash'): Promise<v
 // Keep vault unlocked for background backup
 // ---------------------------------------------------------------------------
 
+const KEEP_VAULT_UNLOCKED_KEY = 'bb_keep_vault_unlocked';
+
 /**
  * Read the user's "keep vault unlocked for backup" preference.
  * When enabled, the backup bridge can re-load the master key from the iOS
  * Keychain without user interaction so uploads continue in the background.
- * Defaults to false.
+ *
+ * Stored in AsyncStorage (always readable, even when vault is locked) to
+ * break the circular dependency: tryBackgroundUnlock() needs this value
+ * BEFORE the vault is unlocked, but the encrypted manifest requires unlock.
  */
 export async function getKeepVaultUnlocked(): Promise<boolean> {
-  const manifest = await getDeviceManifest();
-  return manifest?.keep_vault_unlocked ?? false;
+  try {
+    const value = await AsyncStorage.getItem(KEEP_VAULT_UNLOCKED_KEY);
+    return value === 'true';
+  } catch {
+    return false;
+  }
 }
 
 /**
  * Persist the user's "keep vault unlocked for backup" preference.
+ * Writes to AsyncStorage first (source of truth, always readable), then
+ * best-effort updates the encrypted manifest for cross-device sync.
  */
 export async function setKeepVaultUnlocked(enabled: boolean): Promise<void> {
-  await updateDeviceManifest({ keep_vault_unlocked: enabled });
+  // Always write to local storage (readable when vault is locked)
+  await AsyncStorage.setItem(KEEP_VAULT_UNLOCKED_KEY, enabled ? 'true' : 'false');
+
+  // Also write to manifest if encryption is available (for cross-device sync)
+  try {
+    await updateDeviceManifest({ keep_vault_unlocked: enabled });
+  } catch {
+    // Manifest update is best-effort — local storage is the source of truth
+  }
 }
