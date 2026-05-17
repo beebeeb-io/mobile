@@ -122,6 +122,12 @@ export function PhotoBackupBridge({ backup }: PhotoBackupBridgeProps): null {
           ? new Date(creationMs).toISOString()
           : undefined;
 
+        // Track timing for throughput calculation
+        const uploadStart = Date.now();
+
+        // Snapshot status counts for progress reporting
+        const statusCounts = await getStatusCounts();
+
         const uploaded = await encryptedUpload({
           fileId,
           uri,
@@ -131,8 +137,20 @@ export function PhotoBackupBridge({ backup }: PhotoBackupBridgeProps): null {
           createdAt,
           encryptChunkFn: s.encryptChunk,
           encryptMetadataFn: s.encryptMetadata,
-          onProgress: (_p: UploadProgress) => {
-            // Progress is reported via onProgress callback on the engine level
+          onProgress: (p: UploadProgress) => {
+            const elapsed = (Date.now() - uploadStart) / 1000;
+            const throughputBps = elapsed > 0 ? p.bytesUploaded / elapsed : 0;
+            const uploadedCount = (statusCounts.uploaded ?? 0) + (statusCounts.orphaned ?? 0);
+            const pending = (statusCounts.pending_upload ?? 0) + (statusCounts.pending_reupload ?? 0);
+            const failedCount = statusCounts.failed ?? 0;
+            const totalCount = uploadedCount + pending + failedCount + (statusCounts.uploading ?? 0);
+            s.reportPhotoProgress(
+              uploadedCount, totalCount, failedCount, true,
+              throughputBps, null,
+              asset.filename || '', p.bytesTotal,
+              p.bytesUploaded, p.bytesTotal,
+              p.chunksUploaded, p.chunksTotal,
+            );
           },
         });
 
