@@ -31,6 +31,7 @@ import {
   pruneThumbnailCache,
 } from '../lib/thumbnail';
 import { getRemoteToLocalMap } from '../services/BackupDatabase';
+import { encryptedMetadataPayloadToBytes } from '../lib/encrypted-metadata';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -87,6 +88,23 @@ function photoMimeType(entry: FileEntry): string | null {
 
 function isImageFile(entry: FileEntry): boolean {
   return photoMimeType(entry) !== null;
+}
+
+/**
+ * Parse the decrypted metadata plaintext. The server may store the filename as
+ * a bare string (legacy) or as `{"name":"...", "mime_type":"..."}` (current).
+ */
+function parseDecryptedPhotoName(plaintext: string): string {
+  try {
+    const metadata = JSON.parse(plaintext) as { name?: unknown };
+    if (metadata && typeof metadata === 'object' && typeof metadata.name === 'string') {
+      const name = metadata.name.trim();
+      if (name) return name;
+    }
+  } catch {
+    // Legacy format: plaintext is the bare filename.
+  }
+  return plaintext || 'Photo';
 }
 
 async function getMediaFiles(): Promise<FileEntry[] | null> {
@@ -264,6 +282,7 @@ const PhotoCell = React.memo(function PhotoCell({
   localAssetUri,
   onPress,
   accessibilityLabel,
+  filename,
 }: {
   fileId: string;
   hasThumbnail?: boolean;
@@ -273,6 +292,7 @@ const PhotoCell = React.memo(function PhotoCell({
   localAssetUri?: string | null;
   onPress?: () => void;
   accessibilityLabel: string;
+  filename?: string | null;
 }) {
   const { colors: c } = useTheme();
   return (
@@ -280,7 +300,7 @@ const PhotoCell = React.memo(function PhotoCell({
       activeOpacity={0.7}
       onPress={onPress}
       accessibilityRole="button"
-      accessibilityLabel={accessibilityLabel}
+      accessibilityLabel={filename ? `Photo: ${filename}` : accessibilityLabel}
       style={styles.cell}
     >
       <ThumbnailImage
@@ -290,8 +310,15 @@ const PhotoCell = React.memo(function PhotoCell({
         localAssetUri={localAssetUri}
         placeholderColor={swatch(seed)}
         style={StyleSheet.absoluteFill}
-        accessibilityLabel={accessibilityLabel}
+        accessibilityLabel={filename ? `Photo: ${filename}` : accessibilityLabel}
       />
+      {filename ? (
+        <View style={styles.filenameOverlay}>
+          <Text style={styles.filenameText} numberOfLines={1}>
+            {filename}
+          </Text>
+        </View>
+      ) : null}
       {isFromBackup && (
         <View style={[styles.originBadge, { backgroundColor: c.amber }]}>
           <Ionicons name="camera" size={10} color={c.ink} />
@@ -311,6 +338,7 @@ const GroupSection = React.memo(function GroupSection({
   photosFolderId,
   activeThumbnailIds,
   localAssetMap,
+  decryptedNames,
   onOpenPhoto,
 }: {
   group: PhotoGroup;
@@ -318,6 +346,7 @@ const GroupSection = React.memo(function GroupSection({
   photosFolderId: string | null;
   activeThumbnailIds: Set<string>;
   localAssetMap: Map<string, string>;
+  decryptedNames: Record<string, string>;
   onOpenPhoto: (entry: FileEntry) => void;
 }) {
   const { colors: c } = useTheme();
@@ -343,7 +372,8 @@ const GroupSection = React.memo(function GroupSection({
               seed={seedOffset + i}
               isFromBackup={photosFolderId !== null && photo.parent_id === photosFolderId}
               localAssetUri={localAssetUri}
-              accessibilityLabel={`Photo from ${group.label}`}
+              filename={decryptedNames[photo.id] ?? null}
+              accessibilityLabel={decryptedNames[photo.id] ? `Photo: ${decryptedNames[photo.id]}` : `Photo from ${group.label}`}
               onPress={() => onOpenPhoto(photo)}
             />
           );
@@ -498,7 +528,7 @@ function AutoBackupBanner() {
 export default function PhotosScreen() {
   const insets = useSafeAreaInsets();
   const { colors: c } = useTheme();
-  const { getFileKeyBytes } = useCrypto();
+  const { getFileKeyBytes, isUnlocked, decryptMetadata } = useCrypto();
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const [isScrolled, setIsScrolled] = useState(false);
   const [photos, setPhotos] = useState<FileEntry[]>([]);
@@ -512,15 +542,47 @@ export default function PhotosScreen() {
   const [activeThumbnailIds, setActiveThumbnailIds] = useState<Set<string>>(() => new Set());
   const [activePhotoIds, setActivePhotoIds] = useState<Set<string>>(() => new Set());
   const [localAssetMap, setLocalAssetMap] = useState<Map<string, string>>(new Map());
+  const [decryptedNames, setDecryptedNames] = useState<Record<string, string>>({});
   const groupsRef = useRef<PhotoGroup[]>([]);
   const viewabilityConfig = useRef({ itemVisiblePercentThreshold: 10 }).current;
+
+  // Decrypt filenames for visible photos. Re-runs when photos change or vault unlocks.
+  useEffect(() => {
+    if (!isUnlocked) {
+      setDecryptedNames({});
+      return;
+    }
+    const results: Record<string, string> = {};
+    let cancelled = false;
+    Promise.all(
+      photos.map(async (photo) => {
+        try {
+          const raw = photo.name_encrypted ?? '';
+          if (!raw.startsWith('{')) {
+            // Not JSON-encrypted — use the raw value if it looks like a filename
+            if (raw && raw.length < 200) results[photo.id] = raw;
+            return;
+          }
+          const payload = encryptedMetadataPayloadToBytes(raw);
+          if (!payload) return;
+          const plaintext = await decryptMetadata(photo.id, payload.nonce, payload.ciphertext);
+          results[photo.id] = parseDecryptedPhotoName(plaintext);
+        } catch {
+          // Decryption failure — leave unset
+        }
+      }),
+    ).then(() => {
+      if (!cancelled) setDecryptedNames({ ...results });
+    });
+    return () => { cancelled = true; };
+  }, [photos, isUnlocked, decryptMetadata]);
 
   const openPhoto = useCallback(
     (entry: FileEntry) => {
       Haptics.selectionAsync();
       navigation.navigate('Preview', {
         fileId: entry.id,
-        fileName: entry.name_encrypted ?? 'Photo',
+        fileName: decryptedNames[entry.id] ?? entry.name_encrypted ?? 'Photo',
         mimeType: photoMimeType(entry) ?? undefined,
         sizeBytes: entry.size_bytes ?? undefined,
         createdAt: entry.created_at,
@@ -529,7 +591,7 @@ export default function PhotosScreen() {
         storagePoolId: entry.storage_pool_id ?? null,
       });
     },
-    [navigation],
+    [navigation, decryptedNames],
   );
 
   const fetchPhotos = useCallback(async (isRefresh = false) => {
@@ -645,6 +707,7 @@ export default function PhotosScreen() {
       photosFolderId={photosFolderId}
       activeThumbnailIds={activeThumbnailIds}
       localAssetMap={localAssetMap}
+      decryptedNames={decryptedNames}
       onOpenPhoto={openPhoto}
     />
   );
@@ -765,6 +828,23 @@ const styles = StyleSheet.create({
   // Grid
   grid: { flexDirection: 'row', flexWrap: 'wrap', gap: GRID_GAP },
   cell: { width: CELL_SIZE, height: CELL_SIZE },
+
+  // Filename overlay — subtle label at bottom of each thumbnail
+  filenameOverlay: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    paddingHorizontal: 3,
+    paddingVertical: 2,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+  },
+  filenameText: {
+    fontSize: 8,
+    fontFamily: 'JetBrains Mono',
+    color: 'rgba(255,255,255,0.85)',
+    lineHeight: 10,
+  },
 
   // Origin badge — small camera chip overlaid on iOS-backup photos
   originBadge: {
