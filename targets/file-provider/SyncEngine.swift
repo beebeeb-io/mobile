@@ -20,29 +20,18 @@ enum SyncEngine {
       return
     }
 
-    // Decrypt filenames lazily — only items missing a cached `name_decrypted`.
-    // Loading the master key is expensive (Keychain + ECIES), so we do it
-    // once per refresh and only if at least one row needs work.
+    // The main app pre-populates decrypted names via syncFileProviderCache().
+    // We never load the master key here — that would trigger Face ID from
+    // the extension process. If a name isn't decrypted yet, show the fallback
+    // until the main app syncs it.
     let cached = CacheManager.shared.children(parent: parentId)
     let cachedById = Dictionary(uniqueKeysWithValues: cached.map { ($0.id, $0) })
 
     var rowsToUpsert: [CachedItem] = []
-    var masterKey: Any?
 
     for dto in entries {
       let prior = cachedById[dto.id]
-      var nameDecrypted = prior?.nameDecrypted
-
-      if nameDecrypted == nil, let nameEncrypted = dto.name_encrypted {
-        if masterKey == nil { masterKey = try? CryptoBridge.loadMasterKeyHandle() }
-        if let mkh = masterKey {
-          nameDecrypted = try? CryptoBridge.decryptFilename(
-            masterKeyHandle: mkh,
-            fileId: dto.id,
-            nameEncrypted: nameEncrypted
-          )
-        }
-      }
+      let nameDecrypted = prior?.nameDecrypted
 
       let item = CachedItem(
         id: dto.id,
