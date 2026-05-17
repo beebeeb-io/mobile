@@ -41,6 +41,10 @@ export interface PhotoSessionProgress {
   etaSeconds: number | null;
   currentFileName: string;
   currentFileSizeBytes: number;
+  currentBytesUploaded: number;
+  currentBytesTotal: number;
+  currentChunk: number;
+  totalChunks: number;
 }
 
 export interface PhotoSessionResult {
@@ -75,6 +79,8 @@ export interface BackupContextValue {
     uploaded: number, total: number, failed: number, running: boolean,
     throughputBps?: number, etaSeconds?: number | null,
     currentFileName?: string, currentFileSizeBytes?: number,
+    currentBytesUploaded?: number, currentBytesTotal?: number,
+    currentChunk?: number, totalChunks?: number,
   ) => void;
   /**
    * Legacy compatibility counter for older camera-roll runner surfaces.
@@ -85,7 +91,7 @@ export interface BackupContextValue {
   toggleBackup: () => Promise<void>;
 }
 
-const EMPTY_SESSION: PhotoSessionProgress = { running: false, uploaded: 0, total: 0, failed: 0, throughputBps: 0, etaSeconds: null, currentFileName: '', currentFileSizeBytes: 0 };
+const EMPTY_SESSION: PhotoSessionProgress = { running: false, uploaded: 0, total: 0, failed: 0, throughputBps: 0, etaSeconds: null, currentFileName: '', currentFileSizeBytes: 0, currentBytesUploaded: 0, currentBytesTotal: 0, currentChunk: 0, totalChunks: 0 };
 
 export const BackupContext = createContext<BackupContextValue>({
   isPhotoBackupEnabled: false,
@@ -142,8 +148,10 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
     uploaded: number, total: number, failed: number, running: boolean,
     throughputBps = 0, etaSeconds: number | null = null,
     currentFileName = '', currentFileSizeBytes = 0,
+    currentBytesUploaded = 0, currentBytesTotal = 0,
+    currentChunk = 0, totalChunks = 0,
   ) => {
-    setPhotoSessionProgress({ running, uploaded, total, failed, throughputBps, etaSeconds, currentFileName, currentFileSizeBytes });
+    setPhotoSessionProgress({ running, uploaded, total, failed, throughputBps, etaSeconds, currentFileName, currentFileSizeBytes, currentBytesUploaded, currentBytesTotal, currentChunk, totalChunks });
     if (!running && (uploaded > 0 || failed > 0)) {
       setLastPhotoSession({ uploaded, failed });
     }
