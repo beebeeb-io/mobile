@@ -2258,6 +2258,13 @@ export default function SettingsScreen() {
               onPress={handleReportBug}
               c={c}
             />
+            <RowDivider c={c} />
+            <SettingsRow
+              label="Speed test"
+              icon="speedometer-outline"
+              onPress={() => navigation.navigate('Speedtest')}
+              c={c}
+            />
           </View>
         </View>
 
