@@ -35,8 +35,13 @@ final class FileProviderItem: NSObject, NSFileProviderItem {
 
   var filename: String {
     if let decrypted = cached.nameDecrypted, !decrypted.isEmpty { return decrypted }
-    // While we wait for decryption to populate, show a stable placeholder.
-    // The system will refetch the item once we signal a working set update.
+    // If the encrypted name is not JSON (legacy plaintext), use it directly.
+    if let raw = cached.nameEncrypted, !raw.isEmpty, !raw.hasPrefix("{") {
+      return raw
+    }
+    // While we wait for the main app to populate name_decrypted via
+    // syncFileProviderCache, show a stable placeholder. The system will
+    // refetch the item once we signal a working set update.
     return cached.isFolder ? "Folder" : "Encrypted file"
   }
 

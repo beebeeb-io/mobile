@@ -3,6 +3,7 @@ import Foundation
 import FileProvider
 import PDFKit
 import Security
+import SQLite3
 import UIKit
 
 private let fileProviderDomainIdentifier = NSFileProviderDomainIdentifier("io.beebeeb.files")
@@ -688,6 +689,118 @@ public class BeebeebCryptoModule: Module {
         await signalBeebeebFileProviderEnumerators()
       }
       return fileProviderPrivacyState(defaults: defaults)
+    }
+
+    // ── File Provider cache pre-population ──────────────────────────────
+    //
+    // The File Provider extension cannot decrypt filenames when BeebeebCore
+    // xcframework is not linked to the extension target. As a workaround the
+    // main app decrypts names on the JS side and writes them to the shared
+    // SQLite cache here.
+
+    AsyncFunction("syncFileProviderCache") { (entries: [[String: Any]]) -> Int in
+      guard let containerUrl = FileManager.default.containerURL(
+        forSecurityApplicationGroupIdentifier: appGroupIdentifier
+      ) else {
+        return 0
+      }
+      let dbPath = containerUrl.appendingPathComponent("file-provider-cache.sqlite").path
+      var db: OpaquePointer?
+      guard sqlite3_open_v2(
+        dbPath,
+        &db,
+        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX,
+        nil
+      ) == SQLITE_OK, let db else {
+        sqlite3_close(db)
+        return 0
+      }
+      defer { sqlite3_close(db) }
+
+      // Ensure the table exists (idempotent)
+      let createSql = """
+      CREATE TABLE IF NOT EXISTS file_cache (
+        id TEXT PRIMARY KEY,
+        parent_id TEXT,
+        name_encrypted TEXT,
+        name_decrypted TEXT,
+        mime_type TEXT,
+        size_bytes INTEGER NOT NULL DEFAULT 0,
+        is_folder INTEGER NOT NULL DEFAULT 0,
+        is_pinned INTEGER NOT NULL DEFAULT 0,
+        has_thumbnail INTEGER NOT NULL DEFAULT 0,
+        thumbnail_data BLOB,
+        thumbnail_nonce BLOB,
+        created_at TEXT,
+        updated_at TEXT,
+        sync_anchor INTEGER NOT NULL DEFAULT 0,
+        is_materialized INTEGER NOT NULL DEFAULT 0
+      );
+      """
+      sqlite3_exec(db, createSql, nil, nil, nil)
+
+      let upsertSql = """
+      INSERT INTO file_cache(
+        id, parent_id, name_encrypted, name_decrypted, mime_type, size_bytes,
+        is_folder, is_pinned, has_thumbnail, created_at, updated_at, sync_anchor, is_materialized
+      ) VALUES(?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, 0)
+      ON CONFLICT(id) DO UPDATE SET
+        parent_id = excluded.parent_id,
+        name_encrypted = excluded.name_encrypted,
+        name_decrypted = COALESCE(excluded.name_decrypted, file_cache.name_decrypted),
+        mime_type = excluded.mime_type,
+        size_bytes = excluded.size_bytes,
+        is_folder = excluded.is_folder,
+        created_at = excluded.created_at,
+        updated_at = excluded.updated_at,
+        sync_anchor = excluded.sync_anchor;
+      """
+
+      sqlite3_exec(db, "BEGIN", nil, nil, nil)
+      var count = 0
+      let now = Int64(Date().timeIntervalSince1970 * 1000)
+      let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+
+      for entry in entries {
+        guard let id = entry["id"] as? String else { continue }
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, upsertSql, -1, &stmt, nil) == SQLITE_OK else { continue }
+        defer { sqlite3_finalize(stmt) }
+
+        sqlite3_bind_text(stmt, 1, (id as NSString).utf8String, -1, transient)
+        if let parentId = entry["parent_id"] as? String {
+          sqlite3_bind_text(stmt, 2, (parentId as NSString).utf8String, -1, transient)
+        } else { sqlite3_bind_null(stmt, 2) }
+        if let nameEnc = entry["name_encrypted"] as? String {
+          sqlite3_bind_text(stmt, 3, (nameEnc as NSString).utf8String, -1, transient)
+        } else { sqlite3_bind_null(stmt, 3) }
+        if let nameDec = entry["name_decrypted"] as? String, !nameDec.isEmpty {
+          sqlite3_bind_text(stmt, 4, (nameDec as NSString).utf8String, -1, transient)
+        } else { sqlite3_bind_null(stmt, 4) }
+        if let mime = entry["mime_type"] as? String {
+          sqlite3_bind_text(stmt, 5, (mime as NSString).utf8String, -1, transient)
+        } else { sqlite3_bind_null(stmt, 5) }
+        sqlite3_bind_int64(stmt, 6, Int64(entry["size_bytes"] as? Int ?? 0))
+        sqlite3_bind_int(stmt, 7, (entry["is_folder"] as? Bool ?? false) ? 1 : 0)
+        if let createdAt = entry["created_at"] as? String {
+          sqlite3_bind_text(stmt, 8, (createdAt as NSString).utf8String, -1, transient)
+        } else { sqlite3_bind_null(stmt, 8) }
+        if let updatedAt = entry["updated_at"] as? String {
+          sqlite3_bind_text(stmt, 9, (updatedAt as NSString).utf8String, -1, transient)
+        } else { sqlite3_bind_null(stmt, 9) }
+        sqlite3_bind_int64(stmt, 10, now)
+
+        if sqlite3_step(stmt) == SQLITE_DONE { count += 1 }
+      }
+      sqlite3_exec(db, "COMMIT", nil, nil, nil)
+
+      // Signal the File Provider to re-enumerate so it picks up fresh names.
+      if #available(iOS 16.0, *), count > 0 {
+        let domain = beebeebFileProviderDomain()
+        NSFileProviderManager(for: domain)?.signalEnumerator(for: .workingSet) { _ in }
+      }
+
+      return count
     }
 
     // ── Backup management ──────────────────────────────────────────────

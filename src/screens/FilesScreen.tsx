@@ -49,6 +49,7 @@ import type { FileEntry, StorageUsage, ProofOfExistence, PresenceUser, SyncNode 
 import type { RootStackParamList, TabParamList } from '../App';
 import { useCrypto } from '../lib/crypto-context';
 import { encryptedMetadataPayloadToBytes, encryptedMetadataToJson } from '../lib/encrypted-metadata';
+import { syncDecryptedEntriesToFileProvider } from '../lib/file-provider-mount';
 import { useAuth } from '../lib/auth';
 import { encryptedUpload, generateFileId } from '../lib/encrypted-upload';
 import { useSync } from '../lib/sync-context';
@@ -1242,6 +1243,9 @@ export default function FilesScreen() {
       }
       setDecryptedNames({ ...results });
       setDecryptedMimeTypes({ ...mimeResults });
+      // Push decrypted names to the File Provider cache so the iOS Files app
+      // shows real filenames instead of "Encrypted file".
+      void syncDecryptedEntriesToFileProvider(files, results).catch(() => {});
     });
   }, [files, isUnlocked, decryptMetadata]);
 
