@@ -24,6 +24,7 @@ import {
   getPendingDeletes,
   getAllUploadedIds,
   getStatusCounts,
+  type BackupAsset,
   type BackupAssetType,
 } from './BackupDatabase';
 import { photoBackupCheck, photoBackupMark, photoBackupListIds } from '../lib/api';
@@ -31,7 +32,9 @@ import type { BackupFileStatus } from '../lib/backup-context';
 
 const ENUMERATE_PAGE = 200;
 const CHECK_BATCH = 200;
-const UPLOAD_BATCH = 10;
+const MAX_ENCRYPT_CONCURRENT = 9;
+const MAX_UPLOAD_CONCURRENT = 3;
+const UPLOAD_BATCH = 30; // fetch more since concurrent pipeline processes faster
 const LAST_FULL_SCAN_KEY = 'backup_last_full_scan_at';
 const FULL_SCAN_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
@@ -111,8 +114,14 @@ export function stopEventListener(): void {
 }
 
 // ─── Upload Processor ────────────────────────────────────────────────────────
+//
+// Producer-consumer pipeline with concurrent uploads:
+//   [Camera Roll] → [Encrypt Workers x9] → [Encrypted Queue (max 9)] → [Upload Workers x3] → [Done]
+//
+// Server allows 1000 req/min for file routes. Previous 600ms serial pacing
+// limited to ~100 uploads/min. This pipeline runs 3 concurrent uploads with a
+// 9-deep encrypt/validate queue, limited only by network speed.
 
-const UPLOAD_DELAY_MS = 600; // ~100 uploads per minute max
 const RATE_LIMIT_BACKOFF_MS = 60_000;
 
 function delay(ms: number): Promise<void> {
@@ -130,23 +139,19 @@ function isRateLimitError(err: unknown): number | null {
   return null;
 }
 
-const VALIDATE_CONCURRENCY = 10;
-
 export async function processUploads(callbacks: SyncEngineCallbacks): Promise<number> {
   if (processingUpload) return 0;
   processingUpload = true;
   let totalUploaded = 0;
-  let consecutiveFailures = 0;
 
   try {
     while (true) {
       if (callbacks.signal?.aborted) break;
 
-      // Fetch a larger batch to allow parallel validation
-      const batch = await getPendingUploads(20);
+      const batch = await getPendingUploads(UPLOAD_BATCH);
       if (batch.length === 0) break;
 
-      // ── Phase 1: Validate & fetch assets in parallel (up to 10 concurrent) ──
+      // ── Status tracking for UI ──
 
       const fileStatuses = new Map<string, BackupFileStatus>();
       for (const row of batch) {
@@ -160,17 +165,48 @@ export async function processUploads(callbacks: SyncEngineCallbacks): Promise<nu
       }
       callbacks.onQueueUpdate?.([...fileStatuses.values()]);
 
-      const validatedQueue: Array<{ row: typeof batch[0]; asset: MediaLibrary.Asset }> = [];
-      let validateIndex = 0;
+      // ── Encrypted queue: validated assets ready for upload ──
 
-      const validateWorker = async () => {
-        while (validateIndex < batch.length) {
-          if (callbacks.signal?.aborted) break;
-          const idx = validateIndex++;
+      type ValidatedItem = { row: BackupAsset; asset: MediaLibrary.Asset };
+      const encryptedQueue: ValidatedItem[] = [];
+      let encryptIndex = 0;
+      let encryptDone = false;
+      let consecutiveFailures = 0;
+
+      // Promise-based signaling so upload workers wake when items arrive
+      let resolveQueueWait: (() => void) | null = null;
+      function signalQueue() {
+        if (resolveQueueWait) { resolveQueueWait(); resolveQueueWait = null; }
+      }
+      function waitForQueue(): Promise<void> {
+        if (encryptedQueue.length > 0 || encryptDone) return Promise.resolve();
+        return new Promise<void>(r => { resolveQueueWait = r; });
+      }
+
+      // ── Encrypt/validate workers ──
+      // Validate assets and fetch MediaLibrary info concurrently.
+      // Keep the encrypted queue at most MAX_ENCRYPT_CONCURRENT deep.
+
+      const encryptWorker = async () => {
+        while (true) {
+          if (callbacks.signal?.aborted) return;
+
+          // Back-pressure: wait if queue is full
+          if (encryptedQueue.length >= MAX_ENCRYPT_CONCURRENT) {
+            await new Promise<void>(r => setTimeout(r, 50));
+            continue;
+          }
+
+          const idx = encryptIndex++;
+          if (idx >= batch.length) return; // no more to validate
+
           const row = batch[idx];
           const status = fileStatuses.get(row.local_asset_id);
 
           try {
+            if (status) { status.status = 'encrypting'; status.progress = 0; }
+            callbacks.onQueueUpdate?.([...fileStatuses.values()]);
+
             await markUploading(row.local_asset_id);
             const asset = await MediaLibrary.getAssetInfoAsync(row.local_asset_id);
             if (!asset) {
@@ -180,14 +216,16 @@ export async function processUploads(callbacks: SyncEngineCallbacks): Promise<nu
               continue;
             }
 
-            // Asset validated — mark as queued for upload
+            // Asset validated — mark as queued, push into encrypted queue
             if (status) {
               status.filename = asset.filename || status.filename;
               status.status = 'queued';
               status.progress = 100;
             }
             callbacks.onQueueUpdate?.([...fileStatuses.values()]);
-            validatedQueue.push({ row, asset });
+
+            encryptedQueue.push({ row, asset });
+            signalQueue();
           } catch (e) {
             const msg = e instanceof Error ? e.message : 'Unknown error';
             await markFailed(row.local_asset_id, msg);
@@ -197,58 +235,80 @@ export async function processUploads(callbacks: SyncEngineCallbacks): Promise<nu
         }
       };
 
-      const workers = Array.from(
-        { length: Math.min(VALIDATE_CONCURRENCY, batch.length) },
-        () => validateWorker(),
-      );
-      await Promise.all(workers);
+      // ── Upload workers ──
+      // Pull from the encrypted queue and upload concurrently.
 
-      // ── Phase 2: Upload sequentially with 600ms rate limiting ──
+      const uploadWorker = async () => {
+        while (true) {
+          if (callbacks.signal?.aborted) return;
 
-      for (const item of validatedQueue) {
-        if (callbacks.signal?.aborted) break;
+          await waitForQueue();
 
-        const status = fileStatuses.get(item.row.local_asset_id);
-        if (status) { status.status = 'uploading'; status.progress = 0; }
-        callbacks.onQueueUpdate?.([...fileStatuses.values()]);
-
-        try {
-          const { fileId } = await callbacks.encryptAndUpload(item.asset);
-          await photoBackupMark(item.row.local_asset_id, fileId);
-          await markUploadComplete(item.row.local_asset_id, fileId);
-          if (status) { status.status = 'done'; status.progress = 100; }
-          totalUploaded++;
-          consecutiveFailures = 0;
-        } catch (err) {
-          const rateLimitWait = isRateLimitError(err);
-          if (rateLimitWait !== null) {
-            await markFailed(item.row.local_asset_id, 'rate_limited');
-            if (status) { status.status = 'failed'; }
-            await delay(rateLimitWait);
-            consecutiveFailures++;
-          } else {
-            const msg = err instanceof Error ? err.message : 'Unknown error';
-            await markFailed(item.row.local_asset_id, msg);
-            if (status) { status.status = 'failed'; }
-            consecutiveFailures++;
+          const item = encryptedQueue.shift();
+          if (!item) {
+            if (encryptDone) return; // all items processed
+            continue;
           }
 
-          if (consecutiveFailures >= 5) {
-            await delay(RATE_LIMIT_BACKOFF_MS);
+          const status = fileStatuses.get(item.row.local_asset_id);
+          if (status) { status.status = 'uploading'; status.progress = 0; }
+          callbacks.onQueueUpdate?.([...fileStatuses.values()]);
+
+          try {
+            const { fileId } = await callbacks.encryptAndUpload(item.asset);
+            await photoBackupMark(item.row.local_asset_id, fileId);
+            await markUploadComplete(item.row.local_asset_id, fileId);
+            if (status) { status.status = 'done'; status.progress = 100; }
+            totalUploaded++;
             consecutiveFailures = 0;
+          } catch (err) {
+            const rateLimitWait = isRateLimitError(err);
+            if (rateLimitWait !== null) {
+              await markFailed(item.row.local_asset_id, 'rate_limited');
+              if (status) { status.status = 'failed'; }
+              // Rate limited — pause ALL upload workers briefly
+              await delay(rateLimitWait);
+              consecutiveFailures++;
+            } else {
+              const msg = err instanceof Error ? err.message : 'Unknown error';
+              await markFailed(item.row.local_asset_id, msg);
+              if (status) { status.status = 'failed'; }
+              consecutiveFailures++;
+            }
+
+            if (consecutiveFailures >= 5) {
+              await delay(RATE_LIMIT_BACKOFF_MS);
+              consecutiveFailures = 0;
+            }
+          }
+
+          callbacks.onQueueUpdate?.([...fileStatuses.values()]);
+
+          if (callbacks.onProgress) {
+            const counts = await getStatusCounts();
+            callbacks.onProgress(counts);
           }
         }
+      };
 
-        callbacks.onQueueUpdate?.([...fileStatuses.values()]);
+      // Start encrypt workers (up to 9, but no more than batch size)
+      const encryptWorkers = Array.from(
+        { length: Math.min(MAX_ENCRYPT_CONCURRENT, batch.length) },
+        () => encryptWorker(),
+      );
+      // Start upload workers (up to 3, but no more than batch size)
+      const uploadWorkers = Array.from(
+        { length: Math.min(MAX_UPLOAD_CONCURRENT, batch.length) },
+        () => uploadWorker(),
+      );
 
-        if (callbacks.onProgress) {
-          const counts = await getStatusCounts();
-          callbacks.onProgress(counts);
-        }
+      // Wait for all encrypt workers to finish producing
+      await Promise.all(encryptWorkers);
+      encryptDone = true;
+      signalQueue(); // wake any upload workers blocked on empty queue
 
-        // Pace uploads to avoid rate limiting
-        await delay(UPLOAD_DELAY_MS);
-      }
+      // Wait for all upload workers to finish consuming
+      await Promise.all(uploadWorkers);
 
       // Clear the queue display after batch completes
       callbacks.onQueueUpdate?.([]);

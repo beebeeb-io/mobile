@@ -345,12 +345,13 @@ export default function BackupInsightsScreen() {
     void loadData();
   }, [loadData]);
 
-  // Poll data refresh every 10 seconds while backup is running
+  // Poll data refresh while backup is running — 5s when active queue, 10s otherwise
   useEffect(() => {
     if (!photoSessionProgress?.running) return;
-    const interval = setInterval(loadData, 10_000);
+    const intervalMs = backupQueue.length > 0 ? 5_000 : 10_000;
+    const interval = setInterval(loadData, intervalMs);
     return () => clearInterval(interval);
-  }, [photoSessionProgress?.running, loadData]);
+  }, [photoSessionProgress?.running, backupQueue.length > 0, loadData]);
 
   // ── Determine sync state ───────────────────────────────────────────────────
 
