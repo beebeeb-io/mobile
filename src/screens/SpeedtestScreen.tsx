@@ -237,42 +237,63 @@ export default function SpeedtestScreen() {
           detail: 'Vault locked -- unlock to benchmark',
         });
       } else {
-        // Encrypt 10 MB in 1 MB chunks (the native module operates on chunks)
-        const CHUNK_SIZE = 1 * 1024 * 1024; // 1 MB
-        const TOTAL_MB = 10;
-        const testChunk = new Uint8Array(CHUNK_SIZE);
-        // Fill a small portion with random data; the rest being zero is fine
-        // for benchmarking crypto throughput.
-        for (let i = 0; i < Math.min(1024, CHUNK_SIZE); i++) {
-          testChunk[i] = Math.floor(Math.random() * 256);
-        }
-
-        // Use a synthetic file ID for the benchmark key derivation
+        // Benchmark with realistic mobile chunk sizes from core's dynamic ladder:
+        //   <= 64 MB file → 4 MB chunks
+        //   <= 1 GB file  → 8 MB chunks
+        //   <= 10 GB file → 16 MB chunks (mobile cap)
+        const MIB = 1024 * 1024;
+        const chunkSizes = [
+          { size: 4 * MIB, label: '4 MB' },
+          { size: 8 * MIB, label: '8 MB' },
+          { size: 16 * MIB, label: '16 MB' },
+        ];
         const benchFileId = 'speedtest-benchmark-00000000';
 
-        // Encrypt
-        const encStart = performance.now();
-        const encResults: { nonce: Uint8Array; ciphertext: Uint8Array }[] = [];
-        for (let i = 0; i < TOTAL_MB; i++) {
-          const enc = await crypto.encryptChunk(benchFileId, testChunk);
-          encResults.push(enc);
-        }
-        const encElapsed = (performance.now() - encStart) / 1000;
+        let totalEncBytes = 0;
+        let totalEncTime = 0;
+        let totalDecBytes = 0;
+        let totalDecTime = 0;
+        const perSize: string[] = [];
 
-        // Decrypt
-        const decStart = performance.now();
-        for (const { nonce, ciphertext } of encResults) {
-          await crypto.decryptChunk(benchFileId, nonce, ciphertext);
-        }
-        const decElapsed = (performance.now() - decStart) / 1000;
+        for (const { size, label } of chunkSizes) {
+          setEncryption({ state: 'running', value: `Testing ${label} chunks...` });
+          const testChunk = new Uint8Array(size);
+          for (let i = 0; i < Math.min(4096, size); i++) {
+            testChunk[i] = Math.floor(Math.random() * 256);
+          }
 
-        const encMBps = encElapsed > 0 ? formatMBps((TOTAL_MB * CHUNK_SIZE) / encElapsed) : '--';
-        const decMBps = decElapsed > 0 ? formatMBps((TOTAL_MB * CHUNK_SIZE) / decElapsed) : '--';
+          // 2 rounds per chunk size
+          const encStart = performance.now();
+          const encResults: { nonce: Uint8Array; ciphertext: Uint8Array }[] = [];
+          for (let i = 0; i < 2; i++) {
+            const enc = await crypto.encryptChunk(benchFileId, testChunk);
+            encResults.push(enc);
+          }
+          const encMs = performance.now() - encStart;
+
+          const decStart = performance.now();
+          for (const { nonce, ciphertext } of encResults) {
+            await crypto.decryptChunk(benchFileId, nonce, ciphertext);
+          }
+          const decMs = performance.now() - decStart;
+
+          const encBps = encMs > 0 ? (2 * size) / (encMs / 1000) : 0;
+          const decBps = decMs > 0 ? (2 * size) / (decMs / 1000) : 0;
+          perSize.push(`${label}: ${formatMBps(encBps)}/${formatMBps(decBps)}`);
+
+          totalEncBytes += 2 * size;
+          totalEncTime += encMs;
+          totalDecBytes += 2 * size;
+          totalDecTime += decMs;
+        }
+
+        const avgEncMBps = totalEncTime > 0 ? formatMBps(totalEncBytes / (totalEncTime / 1000)) : '--';
+        const avgDecMBps = totalDecTime > 0 ? formatMBps(totalDecBytes / (totalDecTime / 1000)) : '--';
 
         setEncryption({
           state: 'done',
-          value: `${encMBps} MB/s`,
-          detail: `AES-256-GCM · encrypt ${encMBps} / decrypt ${decMBps} MB/s`,
+          value: `${avgEncMBps} MB/s`,
+          detail: `AES-256-GCM · enc ${avgEncMBps} / dec ${avgDecMBps}\n${perSize.join(' · ')}`,
         });
       }
     } catch {
