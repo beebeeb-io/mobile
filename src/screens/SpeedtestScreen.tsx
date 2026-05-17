@@ -246,6 +246,7 @@ export default function SpeedtestScreen() {
           { size: 4 * MIB, label: '4 MB' },
           { size: 8 * MIB, label: '8 MB' },
           { size: 16 * MIB, label: '16 MB' },
+          { size: 64 * MIB, label: '64 MB' },
         ];
         const benchFileId = 'speedtest-benchmark-00000000';
 
