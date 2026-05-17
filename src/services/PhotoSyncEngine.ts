@@ -27,6 +27,7 @@ import {
   type BackupAssetType,
 } from './BackupDatabase';
 import { photoBackupCheck, photoBackupMark, photoBackupListIds } from '../lib/api';
+import type { BackupFileStatus } from '../lib/backup-context';
 
 const ENUMERATE_PAGE = 200;
 const CHECK_BATCH = 200;
@@ -41,6 +42,7 @@ export interface SyncEngineCallbacks {
   deleteServerFile: (fileId: string) => Promise<void>;
   getDeletionBehavior: () => DeletionBehavior;
   onProgress?: (counts: Record<string, number>) => void;
+  onQueueUpdate?: (queue: BackupFileStatus[]) => void;
   signal?: AbortSignal;
 }
 
@@ -128,6 +130,8 @@ function isRateLimitError(err: unknown): number | null {
   return null;
 }
 
+const VALIDATE_CONCURRENCY = 10;
+
 export async function processUploads(callbacks: SyncEngineCallbacks): Promise<number> {
   if (processingUpload) return 0;
   processingUpload = true;
@@ -138,55 +142,116 @@ export async function processUploads(callbacks: SyncEngineCallbacks): Promise<nu
     while (true) {
       if (callbacks.signal?.aborted) break;
 
-      const batch = await getPendingUploads(UPLOAD_BATCH);
+      // Fetch a larger batch to allow parallel validation
+      const batch = await getPendingUploads(20);
       if (batch.length === 0) break;
 
+      // ── Phase 1: Validate & fetch assets in parallel (up to 10 concurrent) ──
+
+      const fileStatuses = new Map<string, BackupFileStatus>();
       for (const row of batch) {
+        fileStatuses.set(row.local_asset_id, {
+          assetId: row.local_asset_id,
+          filename: row.local_asset_id,
+          sizeBytes: row.file_size || 0,
+          status: 'encrypting',
+          progress: 0,
+        });
+      }
+      callbacks.onQueueUpdate?.([...fileStatuses.values()]);
+
+      const validatedQueue: Array<{ row: typeof batch[0]; asset: MediaLibrary.Asset }> = [];
+      let validateIndex = 0;
+
+      const validateWorker = async () => {
+        while (validateIndex < batch.length) {
+          if (callbacks.signal?.aborted) break;
+          const idx = validateIndex++;
+          const row = batch[idx];
+          const status = fileStatuses.get(row.local_asset_id);
+
+          try {
+            await markUploading(row.local_asset_id);
+            const asset = await MediaLibrary.getAssetInfoAsync(row.local_asset_id);
+            if (!asset) {
+              await markFailed(row.local_asset_id, 'Asset no longer exists in camera roll');
+              if (status) { status.status = 'failed'; }
+              callbacks.onQueueUpdate?.([...fileStatuses.values()]);
+              continue;
+            }
+
+            // Asset validated — mark as queued for upload
+            if (status) {
+              status.filename = asset.filename || status.filename;
+              status.status = 'queued';
+              status.progress = 100;
+            }
+            callbacks.onQueueUpdate?.([...fileStatuses.values()]);
+            validatedQueue.push({ row, asset });
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : 'Unknown error';
+            await markFailed(row.local_asset_id, msg);
+            if (status) { status.status = 'failed'; }
+            callbacks.onQueueUpdate?.([...fileStatuses.values()]);
+          }
+        }
+      };
+
+      const workers = Array.from(
+        { length: Math.min(VALIDATE_CONCURRENCY, batch.length) },
+        () => validateWorker(),
+      );
+      await Promise.all(workers);
+
+      // ── Phase 2: Upload sequentially with 600ms rate limiting ──
+
+      for (const item of validatedQueue) {
         if (callbacks.signal?.aborted) break;
 
+        const status = fileStatuses.get(item.row.local_asset_id);
+        if (status) { status.status = 'uploading'; status.progress = 0; }
+        callbacks.onQueueUpdate?.([...fileStatuses.values()]);
+
         try {
-          await markUploading(row.local_asset_id);
-
-          const asset = await MediaLibrary.getAssetInfoAsync(row.local_asset_id);
-          if (!asset) {
-            await markFailed(row.local_asset_id, 'Asset no longer exists in camera roll');
-            continue;
-          }
-
-          const { fileId } = await callbacks.encryptAndUpload(asset);
-          await photoBackupMark(row.local_asset_id, fileId);
-          await markUploadComplete(row.local_asset_id, fileId);
+          const { fileId } = await callbacks.encryptAndUpload(item.asset);
+          await photoBackupMark(item.row.local_asset_id, fileId);
+          await markUploadComplete(item.row.local_asset_id, fileId);
+          if (status) { status.status = 'done'; status.progress = 100; }
           totalUploaded++;
           consecutiveFailures = 0;
-
-          // Pace uploads to avoid rate limiting
-          await delay(UPLOAD_DELAY_MS);
         } catch (err) {
           const rateLimitWait = isRateLimitError(err);
           if (rateLimitWait !== null) {
-            // Rate limited — back off before retrying
-            // Don't mark as failed, revert to pending so it retries
-            await markFailed(row.local_asset_id, 'rate_limited');
+            await markFailed(item.row.local_asset_id, 'rate_limited');
+            if (status) { status.status = 'failed'; }
             await delay(rateLimitWait);
             consecutiveFailures++;
           } else {
             const msg = err instanceof Error ? err.message : 'Unknown error';
-            await markFailed(row.local_asset_id, msg);
+            await markFailed(item.row.local_asset_id, msg);
+            if (status) { status.status = 'failed'; }
             consecutiveFailures++;
           }
 
-          // If we get 5+ consecutive failures, back off for a minute
           if (consecutiveFailures >= 5) {
             await delay(RATE_LIMIT_BACKOFF_MS);
             consecutiveFailures = 0;
           }
         }
 
+        callbacks.onQueueUpdate?.([...fileStatuses.values()]);
+
         if (callbacks.onProgress) {
           const counts = await getStatusCounts();
           callbacks.onProgress(counts);
         }
+
+        // Pace uploads to avoid rate limiting
+        await delay(UPLOAD_DELAY_MS);
       }
+
+      // Clear the queue display after batch completes
+      callbacks.onQueueUpdate?.([]);
     }
   } finally {
     processingUpload = false;

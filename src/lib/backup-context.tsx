@@ -52,6 +52,14 @@ export interface PhotoSessionResult {
   failed: number;
 }
 
+export interface BackupFileStatus {
+  assetId: string;
+  filename: string;
+  sizeBytes: number;
+  status: 'encrypting' | 'queued' | 'uploading' | 'done' | 'failed';
+  progress: number; // 0-100
+}
+
 export interface BackupContextValue {
   isPhotoBackupEnabled: boolean;
   isContactsBackupEnabled: boolean;
@@ -86,6 +94,10 @@ export interface BackupContextValue {
    * Legacy compatibility counter for older camera-roll runner surfaces.
    */
   photoBackupForceCount: number;
+  /** Per-file status queue for the parallel backup pipeline. */
+  backupQueue: BackupFileStatus[];
+  /** Called by the sync engine to report per-file status updates. */
+  reportBackupQueue: (queue: BackupFileStatus[]) => void;
   // Legacy alias for components that used the old API
   isBackupEnabled: boolean;
   toggleBackup: () => Promise<void>;
@@ -113,6 +125,8 @@ export const BackupContext = createContext<BackupContextValue>({
   lastPhotoSession: null,
   reportPhotoProgress: () => {},
   photoBackupForceCount: 0,
+  backupQueue: [],
+  reportBackupQueue: () => {},
   isBackupEnabled: false,
   toggleBackup: async () => {},
 });
@@ -143,6 +157,11 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
   const [photoSessionProgress, setPhotoSessionProgress] = useState<PhotoSessionProgress>(EMPTY_SESSION);
   const [lastPhotoSession, setLastPhotoSession] = useState<PhotoSessionResult | null>(null);
   const [photoBackupForceCount, setPhotoBackupForceCount] = useState(0);
+  const [backupQueue, setBackupQueue] = useState<BackupFileStatus[]>([]);
+
+  const reportBackupQueue = useCallback((queue: BackupFileStatus[]) => {
+    setBackupQueue(queue);
+  }, []);
 
   const reportPhotoProgress = useCallback((
     uploaded: number, total: number, failed: number, running: boolean,
@@ -367,6 +386,8 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
     lastPhotoSession,
     reportPhotoProgress,
     photoBackupForceCount,
+    backupQueue,
+    reportBackupQueue,
     // Legacy alias
     isBackupEnabled: isPhotoBackupEnabled,
     toggleBackup: togglePhotoBackup,

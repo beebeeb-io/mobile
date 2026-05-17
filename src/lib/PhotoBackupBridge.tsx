@@ -48,6 +48,7 @@ interface PhotoBackupBridgeProps {
     | 'backgroundUpload'
     | 'photoBackupForceCount'
     | 'reportPhotoProgress'
+    | 'reportBackupQueue'
   >;
 }
 
@@ -60,6 +61,7 @@ export function PhotoBackupBridge({ backup }: PhotoBackupBridgeProps): null {
     backgroundUpload,
     photoBackupForceCount,
     reportPhotoProgress,
+    reportBackupQueue,
   } = backup;
   const { showToast } = useToast();
 
@@ -77,6 +79,7 @@ export function PhotoBackupBridge({ backup }: PhotoBackupBridgeProps): null {
     encryptMetadata,
     getFileKeyBytes,
     reportPhotoProgress,
+    reportBackupQueue,
     showToast,
   });
   useEffect(() => {
@@ -90,6 +93,7 @@ export function PhotoBackupBridge({ backup }: PhotoBackupBridgeProps): null {
       encryptMetadata,
       getFileKeyBytes,
       reportPhotoProgress,
+      reportBackupQueue,
       showToast,
     };
   });
@@ -186,6 +190,10 @@ export function PhotoBackupBridge({ backup }: PhotoBackupBridgeProps): null {
         stateRef.current.reportPhotoProgress(
           uploaded, total, failed, isRunning, 0, null,
         );
+      },
+
+      onQueueUpdate: (queue) => {
+        stateRef.current.reportBackupQueue(queue);
       },
 
       signal: ctrl.signal,
