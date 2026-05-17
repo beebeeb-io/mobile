@@ -10,7 +10,7 @@
  *   5. ACTIONS — full resync, clear failed, export log
  */
 
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -39,10 +39,7 @@ import {
   type BackupAssetStatus,
 } from '../services/BackupDatabase';
 import {
-  fullReconciliation,
   getLastFullScanAt,
-  processUploads,
-  type SyncEngineCallbacks,
 } from '../services/PhotoSyncEngine';
 import { useBackup } from '../lib/backup-context';
 
@@ -65,12 +62,6 @@ function formatBytes(bytes: number): string {
   return `${(bytes / 1_000_000_000_000).toFixed(1)} TB`;
 }
 
-function formatSpeed(bps: number): string {
-  if (bps <= 0) return '—';
-  if (bps < 1_024 * 1_024) return `${(bps / 1_024).toFixed(0)} KB/s`;
-  return `${(bps / (1_024 * 1_024)).toFixed(1)} MB/s`;
-}
-
 function timeAgo(ms: number): string {
   const elapsed = Date.now() - ms;
   if (elapsed < 0) return 'just now';
@@ -90,6 +81,17 @@ function formatTimeRemaining(ms: number): string {
   const min = Math.floor((ms % 3_600_000) / 60_000);
   if (hr > 0) return `${hr}h ${min}m`;
   return `${min}m`;
+}
+
+function fileStatusColor(status: string, c: C): string {
+  switch (status) {
+    case 'encrypting': return c.amber;
+    case 'queued': return c.ink3;
+    case 'uploading': return c.amber;
+    case 'done': return c.green;
+    case 'failed': return c.red;
+    default: return c.ink3;
+  }
 }
 
 function formatDateLabel(dateStr: string): string {
@@ -280,7 +282,7 @@ export default function BackupInsightsScreen() {
   const insets = useSafeAreaInsets();
   const backup = useBackup();
 
-  const { photoSessionProgress } = backup;
+  const { photoSessionProgress, backupQueue } = backup;
 
   const [data, setData] = useState<InsightsData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -288,14 +290,6 @@ export default function BackupInsightsScreen() {
   const [resyncing, setResyncing] = useState(false);
   const [clearing, setClearing] = useState(false);
   const [exporting, setExporting] = useState(false);
-
-  // Completed uploads log
-  const [completedUploads, setCompletedUploads] = useState<Array<{
-    name: string;
-    size: number;
-    timestamp: number;
-  }>>([]);
-  const lastFileRef = useRef<string>('');
 
   const loadData = useCallback(async () => {
     try {
@@ -345,20 +339,6 @@ export default function BackupInsightsScreen() {
   useEffect(() => {
     void loadData();
   }, [loadData]);
-
-  // Track completed uploads: when the current file name changes, log the previous one
-  useEffect(() => {
-    const p = photoSessionProgress;
-    if (!p?.currentFileName || p.currentFileName === lastFileRef.current) return;
-    if (lastFileRef.current) {
-      setCompletedUploads(prev => [{
-        name: lastFileRef.current,
-        size: p.currentFileSizeBytes || 0,
-        timestamp: Date.now(),
-      }, ...prev].slice(0, 50));
-    }
-    lastFileRef.current = p.currentFileName;
-  }, [photoSessionProgress?.currentFileName]);
 
   // Poll data refresh every 10 seconds while backup is running
   useEffect(() => {
@@ -567,109 +547,54 @@ export default function BackupInsightsScreen() {
         >
           <View style={{ height: 16 }} />
 
-          {/* ── CURRENTLY UPLOADING card ──────────────────────────────── */}
-          {photoSessionProgress?.running && photoSessionProgress.currentFileName ? (
+          {/* ── ACTIVE QUEUE card ─────────────────────────────────────── */}
+          {backupQueue.length > 0 && (
             <View style={layout.section}>
-              <SectionHeader title="Currently Uploading" c={c} />
+              <SectionHeader title="Active" c={c} />
               <View
                 style={[
                   layout.card,
                   { backgroundColor: c.paper2, borderColor: c.line },
                 ]}
               >
-                <View style={{ padding: 14, gap: 8 }}>
-                  <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-                    <Text
-                      style={{ flex: 1, fontSize: 13, color: c.ink, marginRight: 8 }}
-                      numberOfLines={1}
-                      ellipsizeMode="middle"
-                    >
-                      {photoSessionProgress.currentFileName}
-                    </Text>
-                    <Text
-                      style={{
-                        fontSize: 12,
-                        color: c.ink2,
-                        fontFamily: fonts.mono,
-                      }}
-                    >
-                      {formatBytes(photoSessionProgress.currentBytesUploaded || 0)} / {formatBytes(photoSessionProgress.currentFileSizeBytes || 0)}
-                    </Text>
-                  </View>
-                  {/* Progress bar */}
-                  <View
-                    style={{
-                      height: 4,
-                      borderRadius: 2,
-                      backgroundColor: c.line,
-                      overflow: 'hidden',
-                    }}
-                  >
+                {backupQueue
+                  .filter(f => f.status !== 'done')
+                  .slice(0, 15)
+                  .map((file, i) => (
                     <View
-                      style={{
-                        height: '100%',
-                        borderRadius: 2,
-                        backgroundColor: c.amber,
-                        width: `${Math.min(100, ((photoSessionProgress.currentBytesUploaded || 0) / Math.max(1, photoSessionProgress.currentFileSizeBytes || 1)) * 100)}%` as `${number}%`,
-                      }}
-                    />
-                  </View>
-                  <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-                    <Text style={{ fontSize: 11, color: c.ink3 }}>
-                      {formatSpeed(photoSessionProgress.throughputBps || 0)}
-                    </Text>
-                    <Text
-                      style={{
-                        fontSize: 11,
-                        color: c.ink3,
-                        fontFamily: fonts.mono,
-                      }}
+                      key={file.assetId}
+                      style={[
+                        layout.row,
+                        i > 0 && { borderTopWidth: 1, borderTopColor: c.line },
+                      ]}
                     >
-                      Chunk {photoSessionProgress.currentChunk || 0}/{photoSessionProgress.totalChunks || 0}
-                    </Text>
-                  </View>
-                </View>
-              </View>
-            </View>
-          ) : null}
-
-          {/* ── UPLOAD LOG card ───────────────────────────────────────── */}
-          {completedUploads.length > 0 && (
-            <View style={layout.section}>
-              <SectionHeader title="Upload Log" c={c} />
-              <View
-                style={[
-                  layout.card,
-                  { backgroundColor: c.paper2, borderColor: c.line },
-                ]}
-              >
-                {completedUploads.slice(0, 20).map((item, i) => (
-                  <React.Fragment key={`${item.timestamp}-${i}`}>
-                    {i > 0 && <Divider c={c} />}
-                    <View style={layout.row}>
-                      <Text
-                        style={{
-                          flex: 1,
-                          fontSize: 12,
-                          color: c.ink2,
-                        }}
-                        numberOfLines={1}
-                        ellipsizeMode="middle"
-                      >
-                        {item.name}
-                      </Text>
-                      <Text
-                        style={{
-                          fontSize: 11,
-                          color: c.ink3,
-                          fontFamily: fonts.mono,
-                        }}
-                      >
-                        {formatBytes(item.size)}
-                      </Text>
+                      <View style={{ flex: 1 }}>
+                        <Text
+                          style={[{ fontFamily: fonts.mono, fontSize: 12, color: c.ink }]}
+                          numberOfLines={1}
+                          ellipsizeMode="middle"
+                        >
+                          {file.filename}
+                        </Text>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 4 }}>
+                          <Text style={[{ fontFamily: fonts.mono, fontSize: 10, color: fileStatusColor(file.status, c) }]}>
+                            {file.status === 'encrypting' ? `Encrypting ${file.progress}%` :
+                             file.status === 'queued' ? 'Ready to upload' :
+                             file.status === 'uploading' ? `Uploading ${file.progress}%` :
+                             file.status === 'failed' ? 'Failed' : 'Done'}
+                          </Text>
+                          <Text style={[{ fontFamily: fonts.mono, fontSize: 10, color: c.ink3 }]}>
+                            {formatBytes(file.sizeBytes)}
+                          </Text>
+                        </View>
+                      </View>
+                      {(file.status === 'encrypting' || file.status === 'uploading') && (
+                        <View style={{ width: 40, height: 4, borderRadius: 2, backgroundColor: c.line, overflow: 'hidden' }}>
+                          <View style={{ height: '100%', width: `${file.progress}%` as `${number}%`, backgroundColor: c.amber, borderRadius: 2 }} />
+                        </View>
+                      )}
                     </View>
-                  </React.Fragment>
-                ))}
+                  ))}
               </View>
             </View>
           )}
