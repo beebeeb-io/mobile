@@ -88,6 +88,7 @@ import OnboardingScreen from './screens/OnboardingScreen';
 import DocumentScannerScreen from './screens/DocumentScannerScreen';
 import TwoFactorSetupScreen from './screens/TwoFactorSetupScreen';
 import BackupInsightsScreen from './screens/BackupInsightsScreen';
+import SpeedtestScreen from './screens/SpeedtestScreen';
 
 import ErrorBoundary from './components/ErrorBoundary';
 import ConfirmActionPrompt from './components/ConfirmActionPrompt';
@@ -160,6 +161,7 @@ export type RootStackParamList = {
   DocumentScanner: { parentId?: string } | undefined;
   TwoFactorSetup: undefined;
   BackupInsights: undefined;
+  Speedtest: undefined;
 };
 
 // ---------------------------------------------------------------------------
@@ -947,6 +949,11 @@ export default function App() {
                   <Stack.Screen
                     name="BackupInsights"
                     component={BackupInsightsScreen}
+                    options={{ headerShown: false }}
+                  />
+                  <Stack.Screen
+                    name="Speedtest"
+                    component={SpeedtestScreen}
                     options={{ headerShown: false }}
                   />
                 </>
