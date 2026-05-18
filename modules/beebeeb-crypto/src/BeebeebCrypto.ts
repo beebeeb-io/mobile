@@ -256,6 +256,107 @@ export async function deriveFileKey(masterKey: Uint8Array, fileId: string): Prom
   return coerceBytes(await BeebeebCryptoModule.deriveFileKey(masterKey, fileId))
 }
 
+// ─── Opaque handle-based crypto ─────────────────────────────────────────────
+//
+// These functions accept a numeric handle ID instead of raw key bytes.
+// The handle resolves to a MasterKeyHandle in native memory. Raw key
+// material never crosses the JS bridge.
+
+/**
+ * Load a key from the keychain and return an opaque numeric handle ID.
+ * The real key bytes stay in native memory; JS only sees the handle.
+ * Returns null if no key is stored.
+ */
+export async function loadKeyFromKeychainAsHandle(label: string): Promise<number | null> {
+  if (typeof BeebeebCryptoModule.loadKeyFromKeychainAsHandle !== 'function') return null
+  return BeebeebCryptoModule.loadKeyFromKeychainAsHandle(label)
+}
+
+/**
+ * Encrypt a file chunk using the master key handle. Derives the file key
+ * internally in native code — no raw key bytes cross the bridge.
+ */
+export async function handleEncryptChunk(
+  handleId: number,
+  fileId: string,
+  plaintext: Uint8Array,
+): Promise<EncryptedData> {
+  const result = await BeebeebCryptoModule.handleEncryptChunk(handleId, fileId, plaintext)
+  return {
+    cipherSuite: result.cipherSuite,
+    nonce: coerceBytes(result.nonce),
+    ciphertext: coerceBytes(result.ciphertext),
+  }
+}
+
+/**
+ * Decrypt a file chunk using the master key handle.
+ */
+export async function handleDecryptChunk(
+  handleId: number,
+  fileId: string,
+  nonce: Uint8Array,
+  ciphertext: Uint8Array,
+): Promise<Uint8Array> {
+  return coerceBytes(
+    await BeebeebCryptoModule.handleDecryptChunk(handleId, fileId, nonce, ciphertext),
+  )
+}
+
+/**
+ * Encrypt file metadata using the master key handle.
+ */
+export async function handleEncryptMetadata(
+  handleId: number,
+  fileId: string,
+  metadata: string,
+): Promise<EncryptedData> {
+  const result = await BeebeebCryptoModule.handleEncryptMetadata(handleId, fileId, metadata)
+  return {
+    cipherSuite: result.cipherSuite,
+    nonce: coerceBytes(result.nonce),
+    ciphertext: coerceBytes(result.ciphertext),
+  }
+}
+
+/**
+ * Decrypt file metadata using the master key handle.
+ */
+export async function handleDecryptMetadata(
+  handleId: number,
+  fileId: string,
+  nonce: Uint8Array,
+  ciphertext: Uint8Array,
+): Promise<string> {
+  return BeebeebCryptoModule.handleDecryptMetadata(handleId, fileId, nonce, ciphertext)
+}
+
+/**
+ * Derive the X25519 private key from the master key handle. Used for
+ * key-agreement during share creation. Returns raw bytes because the
+ * caller needs them for the X25519 shared secret computation.
+ */
+export async function handleDeriveX25519Private(handleId: number): Promise<Uint8Array> {
+  return coerceBytes(await BeebeebCryptoModule.handleDeriveX25519Private(handleId))
+}
+
+/**
+ * Compute the recovery check value from a master key handle.
+ * Used to verify the handle matches the expected key.
+ */
+export async function handleComputeRecoveryCheck(handleId: number): Promise<Uint8Array> {
+  return coerceBytes(await BeebeebCryptoModule.handleComputeRecoveryCheck(handleId))
+}
+
+/**
+ * Release a master key handle from native memory. Call this when
+ * locking the vault to ensure key material is freed.
+ */
+export async function releaseHandle(handleId: number): Promise<void> {
+  if (typeof BeebeebCryptoModule.releaseHandle !== 'function') return
+  return BeebeebCryptoModule.releaseHandle(handleId)
+}
+
 // ─── Keychain ────────────────────────────────────────────────────────────────
 
 /**

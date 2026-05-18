@@ -28,7 +28,6 @@ import type { Share as ShareLink } from '../lib/api';
 import { useCrypto } from '../lib/crypto-context';
 import {
   deriveShareKey,
-  deriveX25519Private,
   encryptChunk,
   generateRandomBytes,
   x25519SharedSecret,
@@ -102,7 +101,7 @@ async function wrapFileKeyForShare(clientKey: Uint8Array, fileKey: Uint8Array): 
 }
 
 async function encryptFileKeyForRecipient(
-  masterKey: Uint8Array,
+  derivePrivateKey: () => Promise<Uint8Array>,
   recipientPublicKey: Uint8Array,
   fileId: string,
   fileKey: Uint8Array,
@@ -111,7 +110,7 @@ async function encryptFileKeyForRecipient(
   let sharedSecret: Uint8Array | null = null;
   let shareKey: Uint8Array | null = null;
   try {
-    privateKey = await deriveX25519Private(masterKey);
+    privateKey = await derivePrivateKey();
     sharedSecret = await x25519SharedSecret(privateKey, recipientPublicKey);
     shareKey = await deriveShareKey(sharedSecret, asciiBytes(fileId));
     const enc = await encryptChunk(shareKey, fileKey);
@@ -166,7 +165,7 @@ export default function ShareSheetScreen() {
   const insets = useSafeAreaInsets();
   const { colors: c, resolved } = useTheme();
   const { fileId, fileName, mimeType, sizeBytes } = route.params;
-  const { getFileKeyBytes, getMasterKeyBytes, isUnlocked } = useCrypto();
+  const { getFileKeyBytes, deriveX25519PrivateFromHandle, isUnlocked } = useCrypto();
   useKeyboardLayoutAnimation();
 
   const [expiry, setExpiry] = useState<ExpiryOption>(EXPIRY_OPTIONS[1]);
@@ -337,11 +336,10 @@ export default function ShareSheetScreen() {
 
       const result = await createInvite(fileId, recipientEmail);
       if (result.recipient_public_key && result.status === 'claimed') {
-        const masterKey = getMasterKeyBytes();
         const fileKey = await getFileKeyBytes(fileId);
         try {
           const wrappedFileKey = await encryptFileKeyForRecipient(
-            masterKey,
+            deriveX25519PrivateFromHandle,
             fromBase64(result.recipient_public_key),
             fileId,
             fileKey,
@@ -349,7 +347,6 @@ export default function ShareSheetScreen() {
           await approveInvite(result.invite_id, toBase64(wrappedFileKey));
           wrappedFileKey.fill(0);
         } finally {
-          masterKey.fill(0);
           fileKey.fill(0);
         }
       }
@@ -361,7 +358,7 @@ export default function ShareSheetScreen() {
     } finally {
       setCreating(false);
     }
-  }, [fileId, recipient, getFileKeyBytes, getMasterKeyBytes]);
+  }, [fileId, recipient, getFileKeyBytes, deriveX25519PrivateFromHandle]);
 
   // The URL shown and copied is built locally so the fragment always contains
   // client-held decryption material: file key for standard, K_c for double.

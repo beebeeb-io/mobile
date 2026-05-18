@@ -14,7 +14,7 @@ import {
   recordVerification,
 } from './BackupDatabase';
 import { downloadFile } from '../lib/api';
-import { decryptChunk, deriveFileKey } from '../../modules/beebeeb-crypto';
+import { handleDecryptChunk } from '../../modules/beebeeb-crypto';
 
 let uploadsSinceLastVerify = 0;
 
@@ -51,13 +51,15 @@ function hasValidImageHeader(data: Uint8Array): boolean {
 
 // ── Verification logic ──────────────────────────────────────────────────────
 
-interface VerifyDeps {
-  getMasterKey: () => Uint8Array | null;
+export interface VerifyDeps {
+  /** Return the opaque native master key handle ID, or null if vault is locked. */
+  getMasterKeyHandleId: () => number | null;
 }
 
 /**
- * Verify a single random backed-up file. Downloads, decrypts chunk 0, and
- * checks for valid image magic bytes. Returns true if verification passed.
+ * Verify a single random backed-up file. Downloads, decrypts chunk 0 via the
+ * native handle (no raw key bytes in JS), and checks for valid image magic bytes.
+ * Returns true if verification passed.
  */
 async function verifySingleFile(deps: VerifyDeps): Promise<boolean> {
   const asset = await getRandomUploadedAsset();
@@ -66,8 +68,8 @@ async function verifySingleFile(deps: VerifyDeps): Promise<boolean> {
     return true;
   }
 
-  const masterKey = deps.getMasterKey();
-  if (!masterKey) {
+  const handleId = deps.getMasterKeyHandleId();
+  if (handleId == null) {
     // Vault locked — skip silently
     return true;
   }
@@ -83,7 +85,8 @@ async function verifySingleFile(deps: VerifyDeps): Promise<boolean> {
       return false;
     }
 
-    // Derive file key and decrypt
+    // Derive file key and decrypt via the opaque handle — no raw key
+    // bytes cross the JS bridge.
     // The encrypted chunk format is: nonce (12 bytes) || ciphertext
     const NONCE_SIZE = 12;
     if (encryptedData.length <= NONCE_SIZE) {
@@ -93,8 +96,7 @@ async function verifySingleFile(deps: VerifyDeps): Promise<boolean> {
 
     const nonce = encryptedData.slice(0, NONCE_SIZE);
     const ciphertext = encryptedData.slice(NONCE_SIZE);
-    const fileKey = await deriveFileKey(masterKey, asset.remote_file_id);
-    const decrypted = await decryptChunk(fileKey, nonce, ciphertext);
+    const decrypted = await handleDecryptChunk(handleId, asset.remote_file_id, nonce, ciphertext);
 
     if (!decrypted || decrypted.length === 0) {
       await recordVerification(asset.remote_file_id, false, 'Decryption returned empty data', encryptedData.length);

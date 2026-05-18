@@ -255,6 +255,34 @@ private func removeMountedFileProviderDomain(defaults: UserDefaults?) async thro
 // bindings shipped in `BeebeebCore.xcframework` (linked via the
 // `withUniffiBridge` config plugin).
 public class BeebeebCryptoModule: Module {
+  // ── Opaque master key handle registry ──────────────────────────────────
+  //
+  // JS holds only a numeric handle ID. All crypto operations pass the handle
+  // to native, which resolves it to the real MasterKeyHandle. Raw key bytes
+  // never cross the bridge after initial keychain load.
+  private var masterKeyHandles: [Int: MasterKeyHandle] = [:]
+  private var nextHandleId: Int = 1
+
+  /// Store a MasterKeyHandle and return its opaque numeric ID.
+  private func storeHandle(_ handle: MasterKeyHandle) -> Int {
+    let id = nextHandleId
+    nextHandleId += 1
+    masterKeyHandles[id] = handle
+    return id
+  }
+
+  /// Retrieve a MasterKeyHandle by its opaque ID.
+  private func getHandle(_ id: Int) throws -> MasterKeyHandle {
+    guard let handle = masterKeyHandles[id] else {
+      throw NSError(
+        domain: "BeebeebCrypto",
+        code: 1,
+        userInfo: [NSLocalizedDescriptionKey: "Invalid master key handle ID: \(id)"]
+      )
+    }
+    return handle
+  }
+
   public func definition() -> ModuleDefinition {
     Name("BeebeebCrypto")
 
@@ -420,12 +448,83 @@ public class BeebeebCryptoModule: Module {
       try BeebeebCryptoBridge.deriveFileKey(masterKey: masterKey, fileId: fileId)
     }
 
+    // ── Handle-based crypto operations ─────────────────────────────────
+    //
+    // These accept an opaque handle ID from JS instead of raw key bytes.
+    // The handle is resolved to the real MasterKeyHandle on the native
+    // side; raw key material never crosses the bridge.
+
+    AsyncFunction("handleEncryptChunk") { [self] (handleId: Int, fileId: String, plaintext: Data) throws -> [String: Any] in
+      let master = try self.getHandle(handleId)
+      let fk = try master.deriveFileKey(fileId: Data(fileId.utf8))
+      let enc = try fk.encryptChunk(plaintext: plaintext)
+      return [
+        "cipherSuite": enc.cipherSuite,
+        "nonce": enc.nonce,
+        "ciphertext": enc.ciphertext,
+      ]
+    }
+
+    AsyncFunction("handleDecryptChunk") { [self] (handleId: Int, fileId: String, nonce: Data, ciphertext: Data) throws -> Data in
+      let master = try self.getHandle(handleId)
+      let fk = try master.deriveFileKey(fileId: Data(fileId.utf8))
+      return try fk.decryptChunk(nonce: nonce, ciphertext: ciphertext)
+    }
+
+    AsyncFunction("handleEncryptMetadata") { [self] (handleId: Int, fileId: String, metadata: String) throws -> [String: Any] in
+      let master = try self.getHandle(handleId)
+      let fk = try master.deriveFileKey(fileId: Data(fileId.utf8))
+      let enc = try fk.encryptMetadata(metadata: metadata)
+      return [
+        "cipherSuite": enc.cipherSuite,
+        "nonce": enc.nonce,
+        "ciphertext": enc.ciphertext,
+      ]
+    }
+
+    AsyncFunction("handleDecryptMetadata") { [self] (handleId: Int, fileId: String, nonce: Data, ciphertext: Data) throws -> String in
+      let master = try self.getHandle(handleId)
+      let fk = try master.deriveFileKey(fileId: Data(fileId.utf8))
+      return try fk.decryptMetadata(nonce: nonce, ciphertext: ciphertext)
+    }
+
+    AsyncFunction("handleDeriveX25519Private") { [self] (handleId: Int) throws -> Data in
+      let master = try self.getHandle(handleId)
+      return try master.deriveX25519Private()
+    }
+
+    AsyncFunction("handleComputeRecoveryCheck") { [self] (handleId: Int) throws -> Data in
+      let master = try self.getHandle(handleId)
+      return try master.computeRecoveryCheck()
+    }
+
+    AsyncFunction("releaseHandle") { [self] (handleId: Int) in
+      self.masterKeyHandles.removeValue(forKey: handleId)
+    }
+
     AsyncFunction("storeKeyInKeychain") { (masterKeyBytes: Data, label: String) throws in
       try KeychainManager.store(masterKeyBytes: masterKeyBytes, label: label)
     }
 
     AsyncFunction("loadKeyFromKeychain") { (label: String) throws -> Data? in
       try KeychainManager.load(label: label)
+    }
+
+    // ── Opaque handle-based keychain load ──────────────────────────────
+    //
+    // Returns an opaque numeric handle ID instead of raw key bytes.
+    // The real MasterKeyHandle stays in native memory; JS never sees
+    // the key material.
+
+    AsyncFunction("loadKeyFromKeychainAsHandle") { [self] (label: String) throws -> Int? in
+      guard let keyData = try KeychainManager.load(label: label) else { return nil }
+      let handle = try MasterKeyHandle.fromKeychainBytes(bytes: keyData)
+      // Zero the raw bytes now that the handle owns the key
+      var mutableData = keyData
+      mutableData.withUnsafeMutableBytes { ptr in
+        if let base = ptr.baseAddress { memset(base, 0, ptr.count) }
+      }
+      return self.storeHandle(handle)
     }
 
     AsyncFunction("deleteKeyFromKeychain") { () throws -> Bool in

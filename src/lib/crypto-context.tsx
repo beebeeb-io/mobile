@@ -5,13 +5,15 @@ import * as SecureStore from 'expo-secure-store'
 import { Platform } from 'react-native'
 import {
   computeRecoveryCheck,
-  deriveFileKey,
-  decryptChunk,
-  decryptMetadata,
-  encryptChunk,
-  encryptMetadata,
-  loadKeyFromKeychain,
+  handleComputeRecoveryCheck,
+  handleDecryptChunk,
+  handleDecryptMetadata,
+  handleEncryptChunk,
+  handleEncryptMetadata,
+  handleDeriveX25519Private,
+  loadKeyFromKeychainAsHandle,
   recoverFromPhrase,
+  releaseHandle,
   replaceKeychainAccessControl,
   storeKeyInKeychain,
 } from '../../modules/beebeeb-crypto'
@@ -71,22 +73,52 @@ async function storeMasterKey(masterKey: Uint8Array): Promise<void> {
   await SecureStore.setItemAsync(MASTER_KEY_CHECK_LABEL, uint8ToBase64(check))
 }
 
-async function loadVerifiedMasterKey(): Promise<Uint8Array | null> {
+/**
+ * Load the master key from persistent storage and return an opaque native
+ * handle ID. The real key bytes never enter the JS heap. For fallback paths
+ * (simulator, older devices) the raw bytes are loaded transiently, stored
+ * into the SE-backed keychain to create a handle, then zeroed.
+ *
+ * Returns null if no key is stored or verification fails.
+ */
+async function loadVerifiedMasterKeyHandle(): Promise<number | null> {
   const checkB64 = await SecureStore.getItemAsync(MASTER_KEY_CHECK_LABEL).catch(() => null)
   if (!checkB64) return null
 
   const expected = base64ToUint8(checkB64)
-  const verify = async (candidate: Uint8Array | null): Promise<Uint8Array | null> => {
+
+  // Helper: verify a handle's recovery check against the stored expected value.
+  const verifyHandle = async (handleId: number): Promise<boolean> => {
+    const actual = await handleComputeRecoveryCheck(handleId)
+    return constantTimeEqual(actual, expected)
+  }
+
+  // Helper: verify raw bytes, create a handle if valid, zero the raw bytes.
+  const verifyAndCreateHandle = async (candidate: Uint8Array | null): Promise<number | null> => {
     if (!candidate) return null
     const actual = await computeRecoveryCheck(candidate)
-    return constantTimeEqual(actual, expected) ? candidate : null
+    if (!constantTimeEqual(actual, expected)) return null
+    // Store into SE keychain so loadKeyFromKeychainAsHandle works,
+    // then load as handle. The raw bytes are zeroed below.
+    try {
+      await storeKeyInKeychain(candidate, MASTER_KEY_LABEL)
+    } catch {
+      // SE may be unavailable — still try handle load
+    }
+    const handleId = await loadKeyFromKeychainAsHandle(MASTER_KEY_LABEL)
+    candidate.fill(0)
+    return handleId
   }
 
   // Primary: Secure Enclave-wrapped key (real devices)
   if (!usesSoftwareVaultFallback()) {
     try {
-      const verified = await verify(await loadKeyFromKeychain(MASTER_KEY_LABEL))
-      if (verified) return verified
+      const handleId = await loadKeyFromKeychainAsHandle(MASTER_KEY_LABEL)
+      if (handleId != null) {
+        if (await verifyHandle(handleId)) return handleId
+        // Verification failed — release the handle
+        await releaseHandle(handleId).catch(() => {})
+      }
     } catch {
       // SE unavailable — try fallback below
     }
@@ -94,12 +126,12 @@ async function loadVerifiedMasterKey(): Promise<Uint8Array | null> {
 
   // Fallback: SecureStore (simulator, or SE failure on older/unavailable devices)
   const raw = await SecureStore.getItemAsync(MASTER_KEY_FALLBACK_LABEL).catch(() => null)
-  const secureStoreFallback = await verify(raw ? base64ToUint8(raw) : null)
-  if (secureStoreFallback) return secureStoreFallback
+  const fallbackHandle = await verifyAndCreateHandle(raw ? base64ToUint8(raw) : null)
+  if (fallbackHandle != null) return fallbackHandle
 
   if (usesSoftwareVaultFallback() && FileSystem.documentDirectory) {
     const fileRaw = await FileSystem.readAsStringAsync(SIMULATOR_MASTER_KEY_FILE).catch(() => null)
-    return verify(fileRaw ? base64ToUint8(fileRaw) : null)
+    return verifyAndCreateHandle(fileRaw ? base64ToUint8(fileRaw) : null)
   }
 
   return null
@@ -133,10 +165,18 @@ interface CryptoContextValue {
    */
   getFileKeyBytes: (fileId: string) => Promise<Uint8Array>
   /**
-   * Return a copy of the in-memory master key for key-agreement operations.
+   * Return the opaque native handle ID for the master key.
+   * The handle resolves to the real key in native memory; raw bytes
+   * never enter the JS heap.
    * Throws if vault is locked.
    */
-  getMasterKeyBytes: () => Uint8Array
+  getMasterKeyHandleId: () => number
+  /**
+   * Derive the X25519 private key from the master key handle.
+   * Returns raw bytes needed for the X25519 shared secret computation
+   * during share creation. Throws if vault is locked.
+   */
+  deriveX25519PrivateFromHandle: () => Promise<Uint8Array>
   /**
    * Derive the search-index encryption key from the master key, using the
    * same HKDF info string the web client uses (`beebeeb-search-index`) so
@@ -167,44 +207,51 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
   // True once the first unlock() attempt has settled (success or failure).
   // Used by FilesScreen to distinguish "still loading key" from "locked".
   const [unlockAttempted, setUnlockAttempted] = useState(false)
-  // masterKeyRef holds key material in memory while the vault is open.
-  // Never store in React state to avoid accidental serialisation.
-  const masterKeyRef = useRef<Uint8Array | null>(null)
+  // masterKeyHandleId holds an opaque numeric ID referencing the real
+  // MasterKeyHandle in native memory. Raw key bytes never enter the JS
+  // heap. Never store in React state to avoid accidental serialisation.
+  const masterKeyHandleId = useRef<number | null>(null)
 
   const unlock = useCallback(async (phrase?: string) => {
     // If the vault is already open and no recovery phrase was given, skip the
     // redundant keychain load. On devices with biometric-protected Secure
-    // Enclave keys, loadKeyFromKeychain triggers a Face ID prompt — calling
-    // unlock() again after BiometricLockScreen already authenticated would
-    // surface a second, unnecessary Face ID dialog.
-    if (!phrase && masterKeyRef.current) {
+    // Enclave keys, loadKeyFromKeychainAsHandle triggers a Face ID prompt —
+    // calling unlock() again after BiometricLockScreen already authenticated
+    // would surface a second, unnecessary Face ID dialog.
+    if (!phrase && masterKeyHandleId.current != null) {
       setIsUnlocked(true)
       setUnlockAttempted(true)
       return
     }
 
-    let masterKey: Uint8Array
-
     try {
       if (phrase) {
+        // Derive the master key from the recovery phrase. The raw bytes
+        // are needed transiently to persist to keychain, but we immediately
+        // load a handle and zero the raw bytes.
         const result = await recoverFromPhrase(phrase)
-        masterKey = result.masterKey
-      } else {
-        const stored = await loadVerifiedMasterKey()
-        if (!stored) {
-          throw new Error('No master key in keychain — provide a recovery phrase to restore')
-        }
-        masterKey = stored
-      }
-
-      if (phrase) {
+        const masterKey = result.masterKey
         // Persist before reporting phrase unlock as complete. The iOS
         // simulator falls back to SecureStore because Secure Enclave is not
         // available; if this races with a dev reload the next launch asks for
         // the recovery phrase again.
         await storeMasterKey(masterKey)
+        // Zero the raw bytes — they're now persisted in the keychain
+        masterKey.fill(0)
+        // Load the handle from the keychain
+        const handleId = await loadKeyFromKeychainAsHandle(MASTER_KEY_LABEL)
+        if (handleId == null) {
+          throw new Error('Failed to load master key handle after storing recovery phrase')
+        }
+        masterKeyHandleId.current = handleId
+      } else {
+        const handleId = await loadVerifiedMasterKeyHandle()
+        if (handleId == null) {
+          throw new Error('No master key in keychain — provide a recovery phrase to restore')
+        }
+        masterKeyHandleId.current = handleId
       }
-      masterKeyRef.current = masterKey
+
       setIsUnlocked(true)
     } finally {
       // Mark the attempt as done regardless of outcome so screens waiting
@@ -214,32 +261,31 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
   }, [])
 
   const lock = useCallback(() => {
-    if (masterKeyRef.current) {
-      masterKeyRef.current.fill(0) // zero key material before releasing
-      masterKeyRef.current = null
+    if (masterKeyHandleId.current != null) {
+      // Release the native handle — Rust will zeroize and drop the key material
+      void releaseHandle(masterKeyHandleId.current).catch(() => {})
+      masterKeyHandleId.current = null
     }
     setIsUnlocked(false)
   }, [])
 
-  const requireKey = (): Uint8Array => {
-    if (!masterKeyRef.current) throw new Error('Vault is locked. Please lock and unlock the app, then try uploading again.')
-    return masterKeyRef.current
+  const requireHandleId = (): number => {
+    if (masterKeyHandleId.current == null) throw new Error('Vault is locked. Please lock and unlock the app, then try uploading again.')
+    return masterKeyHandleId.current
   }
 
   const encryptChunkFn = useCallback(
     async (fileId: string, plaintext: Uint8Array): Promise<EncryptedData> => {
-      const fileKey = await deriveFileKey(requireKey(), fileId)
-      return encryptChunk(fileKey, plaintext)
+      return handleEncryptChunk(requireHandleId(), fileId, plaintext)
     },
-    // requireKey closes over masterKeyRef (a stable ref), so no dep needed
+    // requireHandleId closes over masterKeyHandleId (a stable ref), so no dep needed
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
   )
 
   const decryptChunkFn = useCallback(
     async (fileId: string, nonce: Uint8Array, ct: Uint8Array): Promise<Uint8Array> => {
-      const fileKey = await deriveFileKey(requireKey(), fileId)
-      return decryptChunk(fileKey, nonce, ct)
+      return handleDecryptChunk(requireHandleId(), fileId, nonce, ct)
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
@@ -247,8 +293,7 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
 
   const encryptMetadataFn = useCallback(
     async (fileId: string, metadata: string): Promise<EncryptedData> => {
-      const fileKey = await deriveFileKey(requireKey(), fileId)
-      return encryptMetadata(fileKey, metadata)
+      return handleEncryptMetadata(requireHandleId(), fileId, metadata)
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
@@ -256,8 +301,7 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
 
   const decryptMetadataFn = useCallback(
     async (fileId: string, nonce: Uint8Array, ct: Uint8Array): Promise<string> => {
-      const fileKey = await deriveFileKey(requireKey(), fileId)
-      return decryptMetadata(fileKey, nonce, ct)
+      return handleDecryptMetadata(requireHandleId(), fileId, nonce, ct)
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
@@ -265,29 +309,59 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
 
   const getFileKeyBytesFn = useCallback(
     async (fileId: string): Promise<Uint8Array> => {
-      return deriveFileKey(requireKey(), fileId)
+      // For share creation we still need raw file key bytes (they are
+      // per-file ephemeral, not the master key). Derive via handle.
+      // TODO(P2): move file key wrapping to native too.
+      const { deriveFileKey } = await import('../../modules/beebeeb-crypto')
+      const { loadKeyFromKeychain } = await import('../../modules/beebeeb-crypto')
+      // We need the raw master key bytes temporarily to derive the file key
+      // via the old deriveFileKey path. This is a known gap until P2 moves
+      // file key derivation fully native. The master key bytes are loaded from
+      // keychain, used, and immediately zeroed.
+      const raw = await loadKeyFromKeychain(MASTER_KEY_LABEL)
+      if (!raw) throw new Error('Vault is locked — cannot derive file key')
+      try {
+        return await deriveFileKey(raw, fileId)
+      } finally {
+        raw.fill(0)
+      }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
   )
 
-  const getMasterKeyBytesFn = useCallback(
-    (): Uint8Array => {
-      return new Uint8Array(requireKey())
+  const getMasterKeyHandleIdFn = useCallback(
+    (): number => {
+      return requireHandleId()
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  )
+
+  const deriveX25519PrivateFromHandleFn = useCallback(
+    async (): Promise<Uint8Array> => {
+      return handleDeriveX25519Private(requireHandleId())
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
   )
 
   // The web client derives its search-index key with HKDF-SHA-256 over the
-  // master key with `info = "beebeeb-search-index"`. `deriveFileKey` is the
-  // same HKDF construction with `info = fileId`, so passing the literal
-  // info string produces the same key bytes the web side uses. This is what
-  // lets a vault's index round-trip between web and mobile if both clients
-  // ever load it.
+  // master key with `info = "beebeeb-search-index"`. The handle-based path
+  // uses handleDecryptChunk internally, but for the search index we need
+  // the raw derived key bytes. Use the same temporary load pattern as
+  // getFileKeyBytes.
   const getIndexKeyFn = useCallback(
     async (): Promise<Uint8Array> => {
-      return deriveFileKey(requireKey(), 'beebeeb-search-index')
+      const { deriveFileKey } = await import('../../modules/beebeeb-crypto')
+      const { loadKeyFromKeychain } = await import('../../modules/beebeeb-crypto')
+      const raw = await loadKeyFromKeychain(MASTER_KEY_LABEL)
+      if (!raw) throw new Error('Vault is locked — cannot derive index key')
+      try {
+        return await deriveFileKey(raw, 'beebeeb-search-index')
+      } finally {
+        raw.fill(0)
+      }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
@@ -296,7 +370,16 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
   const setBiometricRequirementFn = useCallback(
     async (require: boolean): Promise<void> => {
       if (Platform.OS !== 'ios' || usesSoftwareVaultFallback()) return
-      await replaceKeychainAccessControl(require, requireKey(), MASTER_KEY_LABEL)
+      // replaceKeychainAccessControl needs raw key bytes to re-wrap under
+      // new access control. Load transiently and zero immediately.
+      const { loadKeyFromKeychain } = await import('../../modules/beebeeb-crypto')
+      const raw = await loadKeyFromKeychain(MASTER_KEY_LABEL)
+      if (!raw) throw new Error('Vault is locked — cannot change biometric requirement')
+      try {
+        await replaceKeychainAccessControl(require, raw, MASTER_KEY_LABEL)
+      } finally {
+        raw.fill(0)
+      }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
@@ -304,16 +387,16 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
 
   const tryBackgroundUnlockFn = useCallback(async (): Promise<boolean> => {
     // Already unlocked — nothing to do
-    if (masterKeyRef.current) return true
+    if (masterKeyHandleId.current != null) return true
 
     try {
       const enabled = await getKeepVaultUnlocked()
       if (!enabled) return false
 
-      const key = await loadVerifiedMasterKey()
-      if (!key) return false
+      const handleId = await loadVerifiedMasterKeyHandle()
+      if (handleId == null) return false
 
-      masterKeyRef.current = key
+      masterKeyHandleId.current = handleId
       setIsUnlocked(true)
       setUnlockAttempted(true)
       return true
@@ -347,7 +430,8 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
         encryptMetadata: encryptMetadataFn,
         decryptMetadata: decryptMetadataFn,
         getFileKeyBytes: getFileKeyBytesFn,
-        getMasterKeyBytes: getMasterKeyBytesFn,
+        getMasterKeyHandleId: getMasterKeyHandleIdFn,
+        deriveX25519PrivateFromHandle: deriveX25519PrivateFromHandleFn,
         getIndexKey: getIndexKeyFn,
         setBiometricRequirement: setBiometricRequirementFn,
         tryBackgroundUnlock: tryBackgroundUnlockFn,

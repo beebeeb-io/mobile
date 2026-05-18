@@ -53,8 +53,8 @@ export interface SyncEngineCallbacks {
   onProgress?: (counts: Record<string, number>) => void;
   onQueueUpdate?: (queue: BackupFileStatus[]) => void;
   signal?: AbortSignal;
-  /** Returns the master key bytes, or null if vault is locked. Used for backup verification. */
-  getMasterKey?: () => Uint8Array | null;
+  /** Returns the opaque native master key handle ID, or null if vault is locked. Used for backup verification. */
+  getMasterKeyHandleId?: () => number | null;
 }
 
 let listenerSubscription: MediaLibrary.Subscription | null = null;
@@ -295,8 +295,8 @@ export async function processUploads(callbacks: SyncEngineCallbacks): Promise<nu
             consecutiveFailures = 0;
 
             // Periodic backup integrity verification (every 100 uploads)
-            if (callbacks.getMasterKey) {
-              void maybeVerify({ getMasterKey: callbacks.getMasterKey }).catch(() => {});
+            if (callbacks.getMasterKeyHandleId) {
+              void maybeVerify({ getMasterKeyHandleId: callbacks.getMasterKeyHandleId }).catch(() => {});
             }
           } catch (err) {
             const rateLimitWait = isRateLimitError(err);

@@ -55,7 +55,7 @@ interface PhotoBackupBridgeProps {
 }
 
 export function PhotoBackupBridge({ backup }: PhotoBackupBridgeProps): null {
-  const { isUnlocked, encryptChunk, encryptMetadata, getFileKeyBytes, getMasterKeyBytes, tryBackgroundUnlock } = useCrypto();
+  const { isUnlocked, encryptChunk, encryptMetadata, getFileKeyBytes, getMasterKeyHandleId, tryBackgroundUnlock } = useCrypto();
   const {
     isPhotoBackupEnabled,
     includeVideos,
@@ -80,7 +80,7 @@ export function PhotoBackupBridge({ backup }: PhotoBackupBridgeProps): null {
     encryptChunk,
     encryptMetadata,
     getFileKeyBytes,
-    getMasterKeyBytes,
+    getMasterKeyHandleId,
     reportPhotoProgress,
     reportBackupQueue,
     showToast,
@@ -95,7 +95,7 @@ export function PhotoBackupBridge({ backup }: PhotoBackupBridgeProps): null {
       encryptChunk,
       encryptMetadata,
       getFileKeyBytes,
-      getMasterKeyBytes,
+      getMasterKeyHandleId,
       reportPhotoProgress,
       reportBackupQueue,
       showToast,
@@ -209,9 +209,9 @@ export function PhotoBackupBridge({ backup }: PhotoBackupBridgeProps): null {
         stateRef.current.reportBackupQueue(queue);
       },
 
-      getMasterKey: () => {
+      getMasterKeyHandleId: () => {
         try {
-          return stateRef.current.getMasterKeyBytes();
+          return stateRef.current.getMasterKeyHandleId();
         } catch {
           return null;
         }

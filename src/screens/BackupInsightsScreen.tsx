@@ -293,7 +293,7 @@ export default function BackupInsightsScreen() {
   const backup = useBackup();
 
   const { photoSessionProgress, backupQueue } = backup;
-  const { getMasterKeyBytes } = useCrypto();
+  const { getMasterKeyHandleId } = useCrypto();
 
   const [data, setData] = useState<InsightsData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -469,8 +469,8 @@ export default function BackupInsightsScreen() {
     setVerifying(true);
     try {
       const deps = {
-        getMasterKey: (): Uint8Array | null => {
-          try { return getMasterKeyBytes(); } catch { return null; }
+        getMasterKeyHandleId: (): number | null => {
+          try { return getMasterKeyHandleId(); } catch { return null; }
         },
       };
       const result = await verifyNow(deps, 5);
@@ -484,7 +484,7 @@ export default function BackupInsightsScreen() {
     } finally {
       setVerifying(false);
     }
-  }, [getMasterKeyBytes, loadData]);
+  }, [getMasterKeyHandleId, loadData]);
 
   const handleExportLog = useCallback(async () => {
     setExporting(true);
