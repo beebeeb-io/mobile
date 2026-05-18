@@ -30,7 +30,7 @@ export const ThumbnailImage = React.memo(function ThumbnailImage({
   style,
   accessibilityLabel,
 }: Props) {
-  const { getFileKeyBytes } = useCrypto();
+  const { getFileKeyBytes, isUnlocked } = useCrypto();
   const [uri, setUri] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
   const cancelledRef = useRef(false);
@@ -41,6 +41,16 @@ export const ThumbnailImage = React.memo(function ThumbnailImage({
     setFailed(false);
     if (!loadThumbnail) {
       setFailed(true);
+      return () => {
+        cancelledRef.current = true;
+      };
+    }
+
+    // Wait for the vault to unlock before attempting any decryption.
+    // Without this guard, thumbnails that mount while the vault is still
+    // locked permanently show the placeholder because the effect never
+    // re-runs — isUnlocked is now a dependency so it retries on unlock.
+    if (!isUnlocked) {
       return () => {
         cancelledRef.current = true;
       };
@@ -97,7 +107,7 @@ export const ThumbnailImage = React.memo(function ThumbnailImage({
     return () => {
       cancelledRef.current = true;
     };
-  }, [fileId, getFileKeyBytes, hasThumbnail, loadThumbnail, localAssetUri]);
+  }, [fileId, getFileKeyBytes, hasThumbnail, isUnlocked, loadThumbnail, localAssetUri]);
 
   return (
     <View
