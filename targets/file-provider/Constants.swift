@@ -16,6 +16,10 @@ enum BeebeebConstants {
   /// Keychain service used by `KeychainManager.store`/`load`.
   static let keychainService = "io.beebeeb.masterkey"
 
+  /// Keychain service for the extension-specific wrapped master key blob.
+  /// Uses a `.devicePasscode` SE key so extensions can decrypt without Face ID.
+  static let keychainServiceExt = "io.beebeeb.masterkey.ext"
+
   /// Keychain account label for the wrapped master key.
   static let masterKeyLabel = "primary"
 

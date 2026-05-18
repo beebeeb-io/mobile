@@ -36,7 +36,9 @@ final class KeychainManager {
   // MARK: - Constants
 
   private static let seKeyTag = "io.beebeeb.sekey".data(using: .utf8)!
+  private static let seKeyTagExt = "io.beebeeb.sekey.ext".data(using: .utf8)!
   private static let wrappedKeyService = "io.beebeeb.masterkey"
+  private static let wrappedKeyServiceExt = "io.beebeeb.masterkey.ext"
   #if DEBUG && targetEnvironment(simulator)
   private static let simulatorSoftwareKeyService = "io.beebeeb.masterkey.simulator-software"
   #endif
@@ -66,6 +68,7 @@ final class KeychainManager {
     return
     #endif
 
+    // --- Primary SE key (biometric or passcode, per user preference) ---
     let seKey = try getOrCreateSEKey()
     guard let publicKey = SecKeyCopyPublicKey(seKey) else {
       throw KeychainError.seKeyNotFound
@@ -91,6 +94,33 @@ final class KeychainManager {
     guard status == errSecSuccess else {
       throw KeychainError.writeError(status)
     }
+
+    // --- Extension SE key (.devicePasscode always — no biometric prompt from extensions) ---
+    storeExtensionWrappedKey(masterKeyBytes: masterKeyBytes, label: label)
+  }
+
+  /// Encrypt the master key under the extension SE key and persist alongside
+  /// the primary blob. Best-effort: failure here does not block the main store
+  /// because the primary key is already safely written. Extensions fall back to
+  /// the primary key when the extension blob is absent.
+  private static func storeExtensionWrappedKey(masterKeyBytes: Data, label: String) {
+    guard let extSEKey = try? getOrCreateExtensionSEKey(),
+          let extPublicKey = SecKeyCopyPublicKey(extSEKey) else { return }
+
+    var cfErr: Unmanaged<CFError>?
+    guard let extWrapped = SecKeyCreateEncryptedData(extPublicKey, eciesAlgorithm, masterKeyBytes as CFData, &cfErr) else { return }
+
+    deleteWrappedItem(account: label, service: wrappedKeyServiceExt)
+
+    var extAttrs: [CFString: Any] = [
+      kSecClass: kSecClassGenericPassword,
+      kSecAttrService: wrappedKeyServiceExt,
+      kSecAttrAccount: label,
+      kSecAttrAccessible: kSecAttrAccessibleAfterFirstUnlock,
+      kSecValueData: extWrapped as Data,
+    ]
+    if let group = accessGroup { extAttrs[kSecAttrAccessGroup] = group }
+    SecItemAdd(extAttrs as CFDictionary, nil)
   }
 
   // MARK: - Load
@@ -191,22 +221,19 @@ final class KeychainManager {
       }
     }
 
-    // Delete old SE key
-    let seQuery: [CFString: Any] = [
-      kSecClass: kSecClassKey,
-      kSecAttrKeyType: kSecAttrKeyTypeECSECPrimeRandom,
-      kSecAttrApplicationTag: seKeyTag,
-      kSecAttrTokenID: kSecAttrTokenIDSecureEnclave,
-    ]
-    SecItemDelete(seQuery as CFDictionary)
+    // Delete old primary SE key
+    deleteSEKey(tag: seKeyTag)
 
-    // Generate new SE key with updated access control
-    let newSEKey = try generateSEKey()
+    // Generate new primary SE key with updated access control
+    let newFlags: SecAccessControlCreateFlags = requireBiometric
+      ? [.privateKeyUsage, .biometryAny]
+      : [.privateKeyUsage, .devicePasscode]
+    let newSEKey = try generateSEKey(tag: seKeyTag, flags: newFlags)
     guard let newPublicKey = SecKeyCopyPublicKey(newSEKey) else {
       throw KeychainError.seKeyNotFound
     }
 
-    // Re-wrap each master key under the new SE key
+    // Re-wrap each master key under the new primary SE key
     for item in plaintexts {
       var cfErr: Unmanaged<CFError>?
       guard let rewrapped = SecKeyCreateEncryptedData(newPublicKey, eciesAlgorithm, item.data as CFData, &cfErr) else {
@@ -222,6 +249,18 @@ final class KeychainManager {
       ]
       if let group = accessGroup { attrs[kSecAttrAccessGroup] = group }
       SecItemAdd(attrs as CFDictionary, nil)
+    }
+
+    // Manage extension key: create when biometric ON, delete when OFF.
+    // When biometric is OFF the primary key already uses .devicePasscode,
+    // so extensions can use the primary key directly — no need for the ext copy.
+    if requireBiometric {
+      for item in plaintexts {
+        storeExtensionWrappedKey(masterKeyBytes: item.data, label: item.account)
+      }
+    } else {
+      deleteSEKey(tag: seKeyTagExt)
+      deleteWrappedItems(service: wrappedKeyServiceExt)
     }
   }
 
@@ -255,14 +294,26 @@ final class KeychainManager {
 
   private static func getOrCreateSEKey() throws -> SecKey {
     if let existing = findSEKey() { return existing }
-    return try generateSEKey()
+    let flags: SecAccessControlCreateFlags = requiresBiometric
+      ? [.privateKeyUsage, .biometryAny]
+      : [.privateKeyUsage, .devicePasscode]
+    return try generateSEKey(tag: seKeyTag, flags: flags)
+  }
+
+  private static func getOrCreateExtensionSEKey() throws -> SecKey {
+    if let existing = findSEKey(tag: seKeyTagExt) { return existing }
+    return try generateSEKey(tag: seKeyTagExt, flags: [.privateKeyUsage, .devicePasscode])
   }
 
   private static func findSEKey() -> SecKey? {
+    return findSEKey(tag: seKeyTag)
+  }
+
+  private static func findSEKey(tag: Data) -> SecKey? {
     var query: [CFString: Any] = [
       kSecClass: kSecClassKey,
       kSecAttrKeyType: kSecAttrKeyTypeECSECPrimeRandom,
-      kSecAttrApplicationTag: seKeyTag,
+      kSecAttrApplicationTag: tag,
       kSecAttrTokenID: kSecAttrTokenIDSecureEnclave,
       kSecReturnRef: true,
     ]
@@ -292,11 +343,8 @@ final class KeychainManager {
     return unsafeBitCast(obj, to: SecKey.self)
   }
 
-  private static func generateSEKey() throws -> SecKey {
-    let flags: SecAccessControlCreateFlags = requiresBiometric
-      ? [.privateKeyUsage, .biometryAny]
-      : [.privateKeyUsage, .devicePasscode]
-
+  /// Generate a Secure Enclave P-256 key with the given tag and access control flags.
+  private static func generateSEKey(tag: Data, flags: SecAccessControlCreateFlags) throws -> SecKey {
     guard let access = SecAccessControlCreateWithFlags(
       kCFAllocatorDefault,
       kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
@@ -312,7 +360,7 @@ final class KeychainManager {
       kSecAttrTokenID: kSecAttrTokenIDSecureEnclave,
       kSecPrivateKeyAttrs: [
         kSecAttrIsPermanent: true,
-        kSecAttrApplicationTag: seKeyTag,
+        kSecAttrApplicationTag: tag,
         kSecAttrAccessControl: access,
       ] as [CFString: Any],
     ]
@@ -325,10 +373,10 @@ final class KeychainManager {
     return key
   }
 
-  private static func deleteWrappedItem(account: String) {
+  private static func deleteWrappedItem(account: String, service: String = wrappedKeyService) {
     var query: [CFString: Any] = [
       kSecClass: kSecClassGenericPassword,
-      kSecAttrService: wrappedKeyService,
+      kSecAttrService: service,
       kSecAttrAccount: account,
     ]
     if let group = accessGroup { query[kSecAttrAccessGroup] = group }
@@ -336,10 +384,15 @@ final class KeychainManager {
   }
 
   private static func deleteSEKey() {
+    deleteSEKey(tag: seKeyTag)
+    deleteSEKey(tag: seKeyTagExt)
+  }
+
+  private static func deleteSEKey(tag: Data) {
     var query: [CFString: Any] = [
       kSecClass: kSecClassKey,
       kSecAttrKeyType: kSecAttrKeyTypeECSECPrimeRandom,
-      kSecAttrApplicationTag: seKeyTag,
+      kSecAttrApplicationTag: tag,
       kSecAttrTokenID: kSecAttrTokenIDSecureEnclave,
     ]
     if let group = accessGroup { query[kSecAttrAccessGroup] = group }
@@ -353,9 +406,14 @@ final class KeychainManager {
   }
 
   private static func deleteWrappedItems() {
+    deleteWrappedItems(service: wrappedKeyService)
+    deleteWrappedItems(service: wrappedKeyServiceExt)
+  }
+
+  private static func deleteWrappedItems(service: String) {
     var query: [CFString: Any] = [
       kSecClass: kSecClassGenericPassword,
-      kSecAttrService: wrappedKeyService,
+      kSecAttrService: service,
     ]
     if let group = accessGroup { query[kSecAttrAccessGroup] = group }
     SecItemDelete(query as CFDictionary)
