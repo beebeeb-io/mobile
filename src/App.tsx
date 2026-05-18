@@ -37,6 +37,7 @@ import { setPendingShareKey } from './lib/share-key-store';
 import * as Haptics from 'expo-haptics';
 import * as Notifications from 'expo-notifications';
 import * as BeebeebCrypto from '../modules/beebeeb-crypto';
+import { populateFileProviderCache } from './lib/file-provider-mount';
 import {
   setupNotificationHandler,
   registerForPushNotifications,
@@ -338,16 +339,20 @@ function ShareSheetImporter({ enabled }: { enabled: boolean }) {
 function BiometricGuard({ locked, onUnlock }: { locked: boolean; onUnlock: () => void }) {
   const crypto = useCrypto();
 
-  // On startup the app is never locked (locked=false) but the vault's master key
-  // hasn't been loaded into memory yet.  Attempt a silent keychain unlock so
-  // FilesScreen can decrypt filenames without waiting for a biometric prompt.
-  // Errors are swallowed: a missing key (fresh install, legacy login) leaves the
-  // vault locked and FilesScreen falls back to "Encrypted file" placeholders.
+  // When biometric lock is active, BiometricLockScreen handles both the Face ID
+  // prompt AND the vault unlock via handleUnlocked(). Do NOT also call
+  // crypto.unlock() here — that would trigger a second Face ID from the SE key.
+  // Only attempt a silent unlock when biometric lock is OFF.
   useEffect(() => {
     if (!locked && !crypto.isUnlocked) {
-      crypto.unlock().catch(() => {});
+      // Check if biometric lock is enabled — if so, skip the silent unlock
+      // because BiometricLockScreen will handle it on foreground return.
+      SecureStore.getItemAsync(BIOMETRIC_PREF_KEY).then((val) => {
+        if (val !== 'true') {
+          crypto.unlock().catch(() => {});
+        }
+      }).catch(() => {});
     }
-    // Only re-run when the lock state transitions (background→foreground lock/unlock)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [locked]);
 
@@ -361,6 +366,9 @@ function BiometricGuard({ locked, onUnlock }: { locked: boolean; onUnlock: () =>
     if (token) {
       await BeebeebCrypto.mirrorSessionToAppGroup(token, getApiUrl()).catch(() => false);
     }
+    // Pre-populate FileProvider cache with decrypted names so iOS Files
+    // shows real names immediately without needing to open the Files tab first.
+    populateFileProviderCache(crypto.decryptMetadata).catch(() => {});
     onUnlock();
   }
 
