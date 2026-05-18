@@ -31,7 +31,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
   /// extension lifecycle. Subsequent calls reuse the in-memory handle.
   private func masterKey() throws -> MasterKeyHandle {
     if let key = cachedMasterKey { return key }
-    let key = try self.masterKey()
+    let key = try CryptoBridge.loadMasterKeyHandle()
     cachedMasterKey = key
     return key
   }
