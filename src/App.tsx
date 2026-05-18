@@ -339,19 +339,19 @@ function ShareSheetImporter({ enabled }: { enabled: boolean }) {
 function BiometricGuard({ locked, onUnlock }: { locked: boolean; onUnlock: () => void }) {
   const crypto = useCrypto();
 
-  // When biometric lock is active, BiometricLockScreen handles both the Face ID
-  // prompt AND the vault unlock via handleUnlocked(). Do NOT also call
-  // crypto.unlock() here — that would trigger a second Face ID from the SE key.
-  // Only attempt a silent unlock when biometric lock is OFF.
+  // Attempt a silent vault unlock when the biometric lock overlay is NOT
+  // showing. When biometric lock is active (`locked === true`),
+  // BiometricLockScreen handles both the Face ID prompt AND the vault
+  // unlock via handleUnlocked(), so we skip here to avoid a duplicate
+  // Secure Enclave prompt.
+  //
+  // On cold launch `locked` starts as `false` regardless of the biometric
+  // preference. We MUST call crypto.unlock() here so the vault opens and
+  // `unlockAttempted` becomes true — otherwise FilesScreen stays on the
+  // skeleton forever because nothing ever sets `unlockAttempted`.
   useEffect(() => {
     if (!locked && !crypto.isUnlocked) {
-      // Check if biometric lock is enabled — if so, skip the silent unlock
-      // because BiometricLockScreen will handle it on foreground return.
-      SecureStore.getItemAsync(BIOMETRIC_PREF_KEY).then((val) => {
-        if (val !== 'true') {
-          crypto.unlock().catch(() => {});
-        }
-      }).catch(() => {});
+      crypto.unlock().catch(() => {});
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [locked]);
