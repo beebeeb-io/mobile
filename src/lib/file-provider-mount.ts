@@ -104,31 +104,45 @@ export async function populateFileProviderCache(
 ): Promise<number> {
   if (Platform.OS !== 'ios') return 0;
   try {
-    const rootFiles = await listFiles();
-    const decryptedNames: Record<string, string> = {};
+    let totalSynced = 0;
+    const allFiles: FileEntry[] = [];
+    const allNames: Record<string, string> = {};
 
-    await Promise.all(
-      rootFiles.map(async (file) => {
-        try {
-          const raw = file.name_encrypted ?? '';
-          if (!raw.startsWith('{')) {
-            if (raw && raw.length < 200) decryptedNames[file.id] = raw;
-            return;
+    // BFS through all folders to populate the entire tree
+    const queue: (string | undefined)[] = [undefined]; // start with root
+    while (queue.length > 0) {
+      const parentId = queue.shift();
+      try {
+        const files = await listFiles(parentId);
+        for (const file of files) {
+          allFiles.push(file);
+          try {
+            const raw = file.name_encrypted ?? '';
+            if (!raw.startsWith('{')) {
+              if (raw && raw.length < 200) allNames[file.id] = raw;
+            } else {
+              const payload = encryptedMetadataPayloadToBytes(raw);
+              if (payload) {
+                const plaintext = await decryptMetadata(file.id, payload.nonce, payload.ciphertext);
+                const name = parseDecryptedName(plaintext);
+                if (name) allNames[file.id] = name;
+              }
+            }
+          } catch {
+            // skip individual decrypt failures
           }
-          const payload = encryptedMetadataPayloadToBytes(raw);
-          if (!payload) return;
-          const plaintext = await decryptMetadata(file.id, payload.nonce, payload.ciphertext);
-          const name = parseDecryptedName(plaintext);
-          if (name) decryptedNames[file.id] = name;
-        } catch {
-          // Decryption failure for this entry — skip
+          if (file.is_folder) {
+            queue.push(file.id);
+          }
         }
-      }),
-    );
+      } catch {
+        // skip folders that fail to list
+      }
+    }
 
-    return syncDecryptedEntriesToFileProvider(rootFiles, decryptedNames);
+    totalSynced = await syncDecryptedEntriesToFileProvider(allFiles, allNames);
+    return totalSynced;
   } catch {
-    // Network or API failure — non-fatal, the cache still has old data
     return 0;
   }
 }
