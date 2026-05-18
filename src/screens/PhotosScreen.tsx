@@ -577,23 +577,6 @@ export default function PhotosScreen() {
     return () => { cancelled = true; };
   }, [photos, isUnlocked, decryptMetadata]);
 
-  const openPhoto = useCallback(
-    (entry: FileEntry) => {
-      Haptics.selectionAsync();
-      navigation.navigate('Preview', {
-        fileId: entry.id,
-        fileName: decryptedNames[entry.id] ?? entry.name_encrypted ?? 'Photo',
-        mimeType: photoMimeType(entry) ?? undefined,
-        sizeBytes: entry.size_bytes ?? undefined,
-        createdAt: entry.created_at,
-        chunkCount: entry.chunk_count,
-        versionNumber: entry.version_number,
-        storagePoolId: entry.storage_pool_id ?? null,
-      });
-    },
-    [navigation, decryptedNames],
-  );
-
   const fetchPhotos = useCallback(async (isRefresh = false) => {
     const hasVisiblePhotos = photosCountRef.current > 0;
     if (isRefresh || hasVisiblePhotos) {
@@ -644,6 +627,42 @@ export default function PhotosScreen() {
   }, [fetchPhotos]);
 
   const groups = useMemo(() => groupByMonth(photos), [photos]);
+
+  // Build a flat list of all photos in display order (newest first, grouped by month)
+  const flatPhotos = useMemo(() => groups.flatMap((g) => g.data), [groups]);
+
+  const openPhoto = useCallback(
+    (entry: FileEntry) => {
+      Haptics.selectionAsync();
+      const index = flatPhotos.findIndex((p) => p.id === entry.id);
+      // Serialize photo list for swipe navigation — only the fields PreviewScreen needs
+      const photoListJson = JSON.stringify(
+        flatPhotos.map((p) => ({
+          id: p.id,
+          name_encrypted: p.name_encrypted,
+          mime_type: p.mime_type,
+          size_bytes: p.size_bytes,
+          created_at: p.created_at,
+          chunk_count: p.chunk_count,
+          version_number: p.version_number,
+          storage_pool_id: p.storage_pool_id ?? null,
+        })),
+      );
+      navigation.navigate('Preview', {
+        fileId: entry.id,
+        fileName: decryptedNames[entry.id] ?? entry.name_encrypted ?? 'Photo',
+        mimeType: photoMimeType(entry) ?? undefined,
+        sizeBytes: entry.size_bytes ?? undefined,
+        createdAt: entry.created_at,
+        chunkCount: entry.chunk_count,
+        versionNumber: entry.version_number,
+        storagePoolId: entry.storage_pool_id ?? null,
+        photoListJson,
+        initialPhotoIndex: index >= 0 ? index : 0,
+      });
+    },
+    [navigation, decryptedNames, flatPhotos],
+  );
 
   useEffect(() => {
     photosCountRef.current = photos.length;

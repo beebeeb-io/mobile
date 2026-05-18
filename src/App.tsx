@@ -136,6 +136,10 @@ export type RootStackParamList = {
     storagePoolId?: string | null;
     /** Number of encrypted chunks. Multi-chunk files (>1) can't be previewed yet. */
     chunkCount?: number;
+    /** Serialised JSON array of photo entries for swipe navigation from PhotosScreen. */
+    photoListJson?: string;
+    /** Index of the tapped photo within the photoList. */
+    initialPhotoIndex?: number;
   };
   ShareSheet: {
     fileId: string;

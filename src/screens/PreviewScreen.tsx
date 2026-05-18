@@ -1314,8 +1314,8 @@ export default function PreviewScreen() {
 
     (async () => {
       try {
-        const fileKey = await getFileKeyBytes(fileId);
-        const tempPath = await decryptToTempFile(fileId, fileKey, 'pdf', sizeBytes, chunkCount);
+        const fileKey = await getFileKeyBytes(currentFileId);
+        const tempPath = await decryptToTempFile(currentFileId, fileKey, 'pdf', currentSizeBytes, currentChunkCount);
         if (!cancelled) {
           setPdfUri(tempPath);
         }
@@ -1332,7 +1332,7 @@ export default function PreviewScreen() {
     return () => {
       cancelled = true;
     };
-  }, [isPdf, isUnlocked, fileId, getFileKeyBytes, sizeBytes, chunkCount]);
+  }, [isPdf, isUnlocked, currentFileId, getFileKeyBytes, currentSizeBytes, currentChunkCount]);
 
   // Auto-load text/code/JSON inline on mount — read decrypted file as UTF-8
   useEffect(() => {
@@ -1696,7 +1696,41 @@ export default function PreviewScreen() {
     navigation.navigate('ShareSheet', { fileId: currentFileId, fileName: previewFileName, mimeType: currentMimeType, sizeBytes: currentSizeBytes });
   }, [navigation, currentFileId, previewFileName, currentMimeType, currentSizeBytes]);
 
+  // Swipe pager: only render the active page + 1 neighbor on each side
+  const handlePagerScroll = useCallback(
+    (e: { nativeEvent: { contentOffset: { x: number } } }) => {
+      const index = Math.round(e.nativeEvent.contentOffset.x / SCREEN_WIDTH);
+      if (index >= 0 && index < photoList.length && index !== currentPhotoIndex) {
+        setCurrentPhotoIndex(index);
+      }
+    },
+    [photoList.length, currentPhotoIndex],
+  );
+
+  const pagerGetItemLayout = useCallback(
+    (_data: unknown, index: number) => ({
+      length: SCREEN_WIDTH,
+      offset: SCREEN_WIDTH * index,
+      index,
+    }),
+    [],
+  );
+
+  const renderPhotoPage = useCallback(
+    ({ item, index }: { item: PhotoPageEntry; index: number }) => (
+      <PhotoPage
+        entry={item}
+        isActive={Math.abs(index - currentPhotoIndex) <= 1}
+        width={SCREEN_WIDTH}
+      />
+    ),
+    [currentPhotoIndex],
+  );
+
   if (isMediaPreview) {
+    // When a photo list is provided, show a horizontal swipeable pager
+    const showPager = hasSwipe && isImage;
+
     return (
       <View style={styles.mediaRoot}>
         <View style={[styles.mediaHeader, { paddingTop: insets.top + 8 }]}>
@@ -1712,7 +1746,10 @@ export default function PreviewScreen() {
           <View style={styles.mediaHeaderText}>
             <Text style={styles.mediaHeaderTitle} numberOfLines={1}>{previewFileName}</Text>
             <Text style={styles.mediaHeaderSubtitle} numberOfLines={1}>
-              {CATEGORY_LABELS[category]}{sizeBytes != null ? ` · ${formatSize(sizeBytes)}` : ''}
+              {showPager
+                ? `${currentPhotoIndex + 1} of ${photoList.length}`
+                : `${CATEGORY_LABELS[category]}${currentSizeBytes != null ? ` · ${formatSize(currentSizeBytes)}` : ''}`
+              }
             </Text>
           </View>
 
@@ -1726,78 +1763,107 @@ export default function PreviewScreen() {
           </TouchableOpacity>
         </View>
 
-        <Pressable
-          style={[
-            styles.mediaStage,
-            {
-              paddingTop: insets.top + 64,
-              paddingBottom: 24 + Math.max(insets.bottom, 16),
-            },
-          ]}
-        >
-          {isImage ? (
-            imageUri ? (
-              <Image
-                source={{ uri: imageUri }}
-                style={styles.mediaImage}
-                resizeMode="contain"
-                accessibilityLabel={previewFileName}
+        {showPager ? (
+          <View
+            style={[
+              styles.mediaStage,
+              {
+                paddingTop: insets.top + 64,
+                paddingBottom: 24 + Math.max(insets.bottom, 16),
+              },
+            ]}
+          >
+            <FlatList
+              ref={pagerRef}
+              data={photoList}
+              horizontal
+              pagingEnabled
+              initialScrollIndex={initialPhotoIndex ?? 0}
+              getItemLayout={pagerGetItemLayout}
+              keyExtractor={(item) => item.id}
+              renderItem={renderPhotoPage}
+              showsHorizontalScrollIndicator={false}
+              onMomentumScrollEnd={handlePagerScroll}
+              windowSize={3}
+              maxToRenderPerBatch={3}
+              removeClippedSubviews
+              style={{ flex: 1 }}
+            />
+          </View>
+        ) : (
+          <Pressable
+            style={[
+              styles.mediaStage,
+              {
+                paddingTop: insets.top + 64,
+                paddingBottom: 24 + Math.max(insets.bottom, 16),
+              },
+            ]}
+          >
+            {isImage ? (
+              imageUri ? (
+                <Image
+                  source={{ uri: imageUri }}
+                  style={styles.mediaImage}
+                  resizeMode="contain"
+                  accessibilityLabel={previewFileName}
+                />
+              ) : imageError ? (
+                <View style={styles.imageStatus}>
+                  <Text style={[styles.imageStatusTitle, { color: colors.white }]}>Couldn't load image</Text>
+                  <Text style={styles.imageStatusSub}>{imageError}</Text>
+                </View>
+              ) : (
+                <View style={styles.imageStatus}>
+                  <ActivityIndicator color={c.amber} size="large" />
+                  <Text style={styles.imageStatusSub}>
+                    {imageLoading && downloadProgress > 0
+                      ? `Decrypting · ${Math.round(downloadProgress * 100)}%`
+                      : isUnlocked
+                      ? 'Downloading and decrypting...'
+                      : 'Unlock your vault to view this image.'}
+                  </Text>
+                </View>
+              )
+            ) : videoUri ? (
+              <VideoView
+                player={player}
+                style={styles.mediaVideo}
+                contentFit="contain"
+                nativeControls
+                allowsFullscreen
+                allowsPictureInPicture
               />
-            ) : imageError ? (
+            ) : videoError ? (
               <View style={styles.imageStatus}>
-                <Text style={[styles.imageStatusTitle, { color: colors.white }]}>Couldn't load image</Text>
-                <Text style={styles.imageStatusSub}>{imageError}</Text>
+                <Text style={[styles.imageStatusTitle, { color: colors.white }]}>Couldn't load video</Text>
+                <Text style={styles.imageStatusSub}>{videoError}</Text>
               </View>
             ) : (
               <View style={styles.imageStatus}>
                 <ActivityIndicator color={c.amber} size="large" />
                 <Text style={styles.imageStatusSub}>
-                  {imageLoading && downloadProgress > 0
+                  {videoLoading && downloadProgress > 0
                     ? `Decrypting · ${Math.round(downloadProgress * 100)}%`
                     : isUnlocked
                     ? 'Downloading and decrypting...'
-                    : 'Unlock your vault to view this image.'}
+                    : 'Unlock your vault to play this video.'}
                 </Text>
               </View>
-            )
-          ) : videoUri ? (
-            <VideoView
-              player={player}
-              style={styles.mediaVideo}
-              contentFit="contain"
-              nativeControls
-              allowsFullscreen
-              allowsPictureInPicture
-            />
-          ) : videoError ? (
-            <View style={styles.imageStatus}>
-              <Text style={[styles.imageStatusTitle, { color: colors.white }]}>Couldn't load video</Text>
-              <Text style={styles.imageStatusSub}>{videoError}</Text>
-            </View>
-          ) : (
-            <View style={styles.imageStatus}>
-              <ActivityIndicator color={c.amber} size="large" />
-              <Text style={styles.imageStatusSub}>
-                {videoLoading && downloadProgress > 0
-                  ? `Decrypting · ${Math.round(downloadProgress * 100)}%`
-                  : isUnlocked
-                  ? 'Downloading and decrypting...'
-                  : 'Unlock your vault to play this video.'}
-              </Text>
-            </View>
-          )}
-        </Pressable>
+            )}
+          </Pressable>
+        )}
 
         <DetailsSheet
           filename={previewFileName}
           kind={CATEGORY_LABELS[category] ?? 'File'}
-          size={sizeBytes != null ? formatSize(sizeBytes) : 'Unknown'}
-          created={createdAt ? formatDate(createdAt) : undefined}
+          size={currentSizeBytes != null ? formatSize(currentSizeBytes) : 'Unknown'}
+          created={currentCreatedAt ? formatDate(currentCreatedAt) : undefined}
           extraInfo={mediaDetailsRows
             .filter((r) => !['Name', 'Kind', 'Size', 'Created'].includes(r.label))
             .map((r) => ({ label: r.label, value: r.value }))}
           storageLocation={(() => {
-            const storage = trustLocation(storagePoolId);
+            const storage = trustLocation(currentStoragePoolId);
             return `${storage.region} · ${storage.city}`;
           })()}
           onShare={handleShare}
@@ -1827,7 +1893,7 @@ export default function PreviewScreen() {
           <View style={styles.headerSubRow}>
             <Text style={styles.headerSub}>
               {CATEGORY_LABELS[category] ?? 'File'}
-              {sizeBytes != null ? `  ·  ${formatSize(sizeBytes)}` : ''}
+              {currentSizeBytes != null ? `  ·  ${formatSize(currentSizeBytes)}` : ''}
             </Text>
             {isText && codeLanguage !== 'plaintext' && (
               <View style={styles.langBadge}>
@@ -2153,7 +2219,7 @@ export default function PreviewScreen() {
           archiveData ? (
             <ArchiveRenderer
               data={archiveData}
-              extension={(fileName ?? '').toLowerCase().split('.').pop() ?? 'tar'}
+              extension={(currentFileName ?? '').toLowerCase().split('.').pop() ?? 'tar'}
               colors={c}
             />
           ) : archiveError ? (
@@ -2218,14 +2284,14 @@ export default function PreviewScreen() {
       <DetailsSheet
         filename={previewFileName}
         kind={CATEGORY_LABELS[category] ?? 'File'}
-        size={sizeBytes != null ? formatSize(sizeBytes) : 'Unknown'}
-        created={createdAt ? formatDate(createdAt) : undefined}
+        size={currentSizeBytes != null ? formatSize(currentSizeBytes) : 'Unknown'}
+        created={currentCreatedAt ? formatDate(currentCreatedAt) : undefined}
         extraInfo={[
           ...(fileFormat ? [{ label: 'Format', value: fileFormat }] : []),
-          ...(mimeType ? [{ label: 'Type', value: mimeType }] : []),
+          ...(currentMimeType ? [{ label: 'Type', value: currentMimeType }] : []),
         ]}
         storageLocation={(() => {
-          const storage = trustLocation(storagePoolId);
+          const storage = trustLocation(currentStoragePoolId);
           return `${storage.region} · ${storage.city}`;
         })()}
         onShare={handleShare}
