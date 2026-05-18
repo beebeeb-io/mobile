@@ -1,21 +1,35 @@
 /**
- * Thumbnail generation for image uploads.
+ * Thumbnail generation for all media uploads: images, videos, and RAW photos.
  *
  * Thumbnails are encrypted with the file's AES-256-GCM key before upload,
  * matching the web client's format: nonce(12) || ciphertext.
+ *
+ * Supported formats:
+ * - JPEG, PNG, HEIC, WebP, etc.: expo-image-manipulator resizes to 256px JPEG
+ * - DNG (RAW photos): native UIImage/CoreImage decodes the embedded preview
+ * - MP4, MOV (videos): native AVAssetImageGenerator extracts a frame at ~1s
  *
  * Best-effort: a failed thumbnail must never block or rollback the
  * underlying upload. Callers should not await the result.
  */
 
 import { uploadThumbnail, downloadFile, getToken, thumbnailUrl } from './api';
-import { encryptChunk, decryptChunk } from '../../modules/beebeeb-crypto';
+import {
+  encryptChunk,
+  decryptChunk,
+  generateVideoThumbnail as nativeGenerateVideoThumbnail,
+  generateDngThumbnail as nativeGenerateDngThumbnail,
+} from '../../modules/beebeeb-crypto';
 import * as FileSystem from 'expo-file-system';
 import { EncodingType } from 'expo-file-system';
 import {
   decryptEncryptedBytes,
   inferChunkCountFromEncryptedSize,
 } from './encrypted-download';
+import {
+  getCachedThumbnail,
+  cacheThumbnailBase64,
+} from './thumbnail-cache';
 
 let ImageManipulator: typeof import('expo-image-manipulator') | null = null;
 try { ImageManipulator = require('expo-image-manipulator'); } catch {}
@@ -26,6 +40,8 @@ const MAX_THUMB_CACHE_ITEMS = 15000;
 const PREFETCH_CONCURRENCY = 4;
 
 const IMAGE_MIME_PREFIX = 'image/';
+const VIDEO_MIME_PREFIX = 'video/';
+const DNG_MIME = 'image/x-adobe-dng';
 
 function bytesToBase64(bytes: Uint8Array): string {
   let binary = '';
@@ -42,6 +58,19 @@ function base64ToBytes(b64: string): Uint8Array {
 
 export function isImageMime(mimeType: string | null | undefined): boolean {
   return !!mimeType && mimeType.startsWith(IMAGE_MIME_PREFIX);
+}
+
+export function isVideoMime(mimeType: string | null | undefined): boolean {
+  return !!mimeType && mimeType.startsWith(VIDEO_MIME_PREFIX);
+}
+
+export function isDngMime(mimeType: string | null | undefined): boolean {
+  return !!mimeType && mimeType === DNG_MIME;
+}
+
+/** Whether thumbnails can be generated for this MIME type. */
+export function isThumbnailable(mimeType: string | null | undefined): boolean {
+  return isImageMime(mimeType) || isVideoMime(mimeType);
 }
 
 /**
@@ -64,9 +93,61 @@ export async function generateThumbnail(sourceUri: string): Promise<Uint8Array |
 }
 
 /**
+ * Generate a thumbnail for a DNG (RAW) photo using the native CoreImage
+ * decoder. Returns bytes of a JPEG thumbnail, or null on failure.
+ */
+async function generateDngThumbnailBytes(sourceUri: string): Promise<Uint8Array | null> {
+  try {
+    const thumbPath = await nativeGenerateDngThumbnail(sourceUri, THUMB_WIDTH);
+    const b64 = await FileSystem.readAsStringAsync(thumbPath, { encoding: EncodingType.Base64 });
+    await FileSystem.deleteAsync(thumbPath, { idempotent: true }).catch(() => {});
+    return base64ToBytes(b64);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Generate a thumbnail for a video file (MP4/MOV) using the native
+ * AVAssetImageGenerator. Returns bytes of a JPEG thumbnail, or null on failure.
+ */
+async function generateVideoThumbnailBytes(sourceUri: string): Promise<Uint8Array | null> {
+  try {
+    const thumbPath = await nativeGenerateVideoThumbnail(sourceUri, THUMB_WIDTH);
+    const b64 = await FileSystem.readAsStringAsync(thumbPath, { encoding: EncodingType.Base64 });
+    await FileSystem.deleteAsync(thumbPath, { idempotent: true }).catch(() => {});
+    return base64ToBytes(b64);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Generate thumbnail bytes for any supported media type.
+ * Routes to the appropriate generator based on MIME type:
+ * - DNG: native CoreImage decoder
+ * - Video (MP4/MOV): native AVAssetImageGenerator
+ * - Other images: expo-image-manipulator
+ */
+async function generateThumbnailForMedia(
+  sourceUri: string,
+  mimeType: string | null | undefined,
+): Promise<Uint8Array | null> {
+  if (isDngMime(mimeType)) {
+    return generateDngThumbnailBytes(sourceUri);
+  }
+  if (isVideoMime(mimeType)) {
+    return generateVideoThumbnailBytes(sourceUri);
+  }
+  return generateThumbnail(sourceUri);
+}
+
+/**
  * Generate a thumbnail, encrypt it with the file key, and upload it.
  * Also caches the plaintext thumbnail locally so the Photos grid can display
  * it immediately without a server round-trip.
+ *
+ * Supports all media types: standard images, DNG (RAW), and video (MP4/MOV).
  * Fire-and-forget: never throws, never blocks the caller's success flow.
  */
 export async function generateAndUploadThumbnail(
@@ -75,17 +156,18 @@ export async function generateAndUploadThumbnail(
   mimeType: string | null | undefined,
   getFileKeyBytes: (fileId: string) => Promise<Uint8Array>,
 ): Promise<void> {
-  if (!isImageMime(mimeType)) return;
+  if (!isThumbnailable(mimeType)) return;
   try {
-    const thumb = await generateThumbnail(sourceUri);
+    const thumb = await generateThumbnailForMedia(sourceUri, mimeType);
     if (!thumb) return;
 
-    // Cache the plaintext thumbnail locally for instant display in the grid
-    const dest = thumbPath(fileId);
-    if (dest) {
-      const b64 = bytesToBase64(thumb);
-      await FileSystem.writeAsStringAsync(dest, b64, { encoding: EncodingType.Base64 });
-      thumbCache.set(fileId, dest);
+    // Cache the plaintext thumbnail in persistent storage for instant display
+    const b64 = bytesToBase64(thumb);
+    try {
+      const persistedPath = await cacheThumbnailBase64(fileId, b64);
+      thumbCache.set(fileId, persistedPath);
+    } catch {
+      // Persist failed — still upload the thumbnail to server
     }
 
     const fileKey = await getFileKeyBytes(fileId);
@@ -106,26 +188,27 @@ export async function generateAndUploadThumbnail(
  * Generate a thumbnail from a local camera-roll URI and cache it locally.
  * This avoids a server download+decrypt for photos that already exist on device.
  * Returns the cached thumbnail URI, or null on failure.
+ *
+ * Supports all media types when mimeType is provided: standard images,
+ * DNG (RAW), and video (MP4/MOV). Falls back to image-only if omitted.
  */
 export async function cacheLocalThumbnail(
   fileId: string,
   localUri: string,
+  mimeType?: string | null,
 ): Promise<string | null> {
   try {
-    const dest = thumbPath(fileId);
-    if (!dest) return null;
-
-    // Already cached?
+    // Already cached in persistent storage?
     const existing = await cachedThumbnailUri(fileId);
     if (existing) return existing;
 
-    const thumb = await generateThumbnail(localUri);
+    const thumb = await generateThumbnailForMedia(localUri, mimeType);
     if (!thumb) return null;
 
     const b64 = bytesToBase64(thumb);
-    await FileSystem.writeAsStringAsync(dest, b64, { encoding: EncodingType.Base64 });
-    thumbCache.set(fileId, dest);
-    return dest;
+    const persistedPath = await cacheThumbnailBase64(fileId, b64);
+    thumbCache.set(fileId, persistedPath);
+    return persistedPath;
   } catch {
     return null;
   }
@@ -139,10 +222,12 @@ function responseHeaderInt(headers: Headers, key: string): number | null {
 }
 
 /**
- * Best-effort repair for image files that predate thumbnail generation.
+ * Best-effort repair for media files that predate thumbnail generation.
  * Only call this for visible/recent items: it downloads the full encrypted
- * image, decrypts it locally, creates the normal encrypted thumbnail, uploads
+ * file, decrypts it locally, creates the normal encrypted thumbnail, uploads
  * that thumbnail, then leaves the visible cell to fetch the small thumbnail.
+ *
+ * Supports images, DNG (RAW photos), and video (MP4/MOV).
  */
 export async function ensureThumbnailForImage(
   fileId: string,
@@ -152,7 +237,7 @@ export async function ensureThumbnailForImage(
   mimeType: string | null | undefined,
   getFileKeyBytes: (fileId: string) => Promise<Uint8Array>,
 ): Promise<boolean> {
-  if (!isImageMime(mimeType)) return false;
+  if (!isThumbnailable(mimeType)) return false;
   const pending = repairInflight.get(fileId);
   if (pending) return pending;
 
@@ -185,14 +270,17 @@ export async function ensureThumbnailForImage(
       const ext = mime.includes('png') ? 'png'
         : mime.includes('webp') ? 'webp'
           : mime.includes('heic') || mime.includes('heif') ? 'heic'
-            : 'jpg';
+            : mime.includes('dng') ? 'dng'
+              : mime.includes('quicktime') ? 'mov'
+                : mime.includes('mp4') || mime.includes('mpeg-4') ? 'mp4'
+                  : 'jpg';
       const safeName = (fileName ?? fileId).replace(/[^a-zA-Z0-9._()-]/g, '_').slice(0, 64);
-      sourceUri = `${FileSystem.cacheDirectory}thumb_source_${fileId}_${safeName || 'image'}.${ext}`;
+      sourceUri = `${FileSystem.cacheDirectory}thumb_source_${fileId}_${safeName || 'media'}.${ext}`;
       await FileSystem.writeAsStringAsync(sourceUri, bytesToBase64(plaintext), {
         encoding: EncodingType.Base64,
       });
 
-      const thumb = await generateThumbnail(sourceUri);
+      const thumb = await generateThumbnailForMedia(sourceUri, mimeType);
       if (!thumb) return false;
 
       const { nonce, ciphertext } = await encryptChunk(fileKey, thumb);
@@ -219,54 +307,103 @@ export async function ensureThumbnailForImage(
   }
 }
 
-// In-memory cache: fileId → local temp file URI. Disk cache is bounded by
-// pruneThumbnailCache(); callers trigger it after list refreshes.
+// In-memory cache: fileId → local file URI. Thumbnails are now stored in
+// documentDirectory (persistent) via thumbnail-cache.ts so iOS doesn't
+// evict them between app launches.
 const thumbCache = new Map<string, string>();
 const inflight = new Map<string, Promise<string | null>>();
 const repairInflight = new Map<string, Promise<boolean>>();
 
+/** Persistent thumbnail directory (documentDirectory, survives cache purges). */
+const PERSISTENT_THUMB_DIR = `${FileSystem.documentDirectory}beebeeb-thumbnails/`;
+
 function thumbPath(fileId: string): string | null {
+  if (!FileSystem.documentDirectory) return null;
+  return `${PERSISTENT_THUMB_DIR}${fileId}.jpg`;
+}
+
+/** Legacy volatile cache path — checked during migration only. */
+function legacyThumbPath(fileId: string): string | null {
   if (!FileSystem.cacheDirectory) return null;
   return `${FileSystem.cacheDirectory}thumb_${fileId}.jpg`;
 }
 
 async function cachedThumbnailUri(fileId: string): Promise<string | null> {
+  // Fast path: in-memory map
   const memory = thumbCache.get(fileId);
   if (memory) return memory;
-  const dest = thumbPath(fileId);
-  if (!dest) return null;
-  const cached = await FileSystem.getInfoAsync(dest);
-  if (cached.exists && cached.size && cached.size > 0) {
-    thumbCache.set(fileId, dest);
-    return dest;
+
+  // Check persistent storage (documentDirectory)
+  const persistent = await getCachedThumbnail(fileId);
+  if (persistent) {
+    thumbCache.set(fileId, persistent);
+    return persistent;
   }
+
+  // Check legacy volatile cache (cacheDirectory) and migrate if found
+  const legacy = legacyThumbPath(fileId);
+  if (legacy) {
+    try {
+      const legacyInfo = await FileSystem.getInfoAsync(legacy);
+      if (legacyInfo.exists && legacyInfo.size && legacyInfo.size > 0) {
+        // Migrate to persistent storage
+        await FileSystem.makeDirectoryAsync(PERSISTENT_THUMB_DIR, { intermediates: true });
+        const destPath = thumbPath(fileId);
+        if (destPath) {
+          await FileSystem.copyAsync({ from: legacy, to: destPath });
+          thumbCache.set(fileId, destPath);
+          // Clean up old volatile copy
+          await FileSystem.deleteAsync(legacy, { idempotent: true }).catch(() => {});
+          return destPath;
+        }
+      }
+    } catch {
+      // Migration failed — not critical, will re-fetch from server
+    }
+  }
+
   return null;
 }
 
 export async function pruneThumbnailCache(maxItems = MAX_THUMB_CACHE_ITEMS): Promise<void> {
-  if (!FileSystem.cacheDirectory) return;
+  // Prune persistent thumbnail directory (documentDirectory)
   try {
-    const names = await FileSystem.readDirectoryAsync(FileSystem.cacheDirectory);
-    const thumbs = names.filter((name) => /^thumb_[^/]+\.jpg$/.test(name));
-    if (thumbs.length <= maxItems) return;
+    await FileSystem.makeDirectoryAsync(PERSISTENT_THUMB_DIR, { intermediates: true });
+    const names = await FileSystem.readDirectoryAsync(PERSISTENT_THUMB_DIR);
+    const thumbs = names.filter((name) => /\.jpg$/.test(name));
+    if (thumbs.length > maxItems) {
+      const infos = await Promise.all(thumbs.map(async (name) => {
+        const uri = `${PERSISTENT_THUMB_DIR}${name}`;
+        const info = await FileSystem.getInfoAsync(uri);
+        const mtime = info.exists && 'modificationTime' in info && typeof info.modificationTime === 'number'
+          ? info.modificationTime
+          : 0;
+        return { name, uri, mtime };
+      }));
 
-    const infos = await Promise.all(thumbs.map(async (name) => {
-      const uri = `${FileSystem.cacheDirectory}${name}`;
-      const info = await FileSystem.getInfoAsync(uri);
-      const mtime = info.exists && 'modificationTime' in info && typeof info.modificationTime === 'number'
-        ? info.modificationTime
-        : 0;
-      return { name, uri, mtime };
-    }));
-
-    infos.sort((a, b) => a.mtime - b.mtime);
-    const toDelete = infos.slice(0, Math.max(0, infos.length - maxItems));
-    for (const item of toDelete) {
-      await FileSystem.deleteAsync(item.uri, { idempotent: true }).catch(() => {});
-      thumbCache.delete(item.name.replace(/^thumb_/, '').replace(/\.jpg$/, ''));
+      infos.sort((a, b) => a.mtime - b.mtime);
+      const toDelete = infos.slice(0, Math.max(0, infos.length - maxItems));
+      for (const item of toDelete) {
+        await FileSystem.deleteAsync(item.uri, { idempotent: true }).catch(() => {});
+        thumbCache.delete(item.name.replace(/\.jpg$/, ''));
+      }
     }
   } catch {
-    // Cache pruning is best-effort; failure must not affect the photo grid.
+    // Pruning is best-effort; failure must not affect the photo grid.
+  }
+
+  // Also clean up any remaining legacy thumbnails in cacheDirectory
+  if (FileSystem.cacheDirectory) {
+    try {
+      const names = await FileSystem.readDirectoryAsync(FileSystem.cacheDirectory);
+      const legacyThumbs = names.filter((name) => /^thumb_[^/]+\.jpg$/.test(name));
+      for (const name of legacyThumbs) {
+        const uri = `${FileSystem.cacheDirectory}${name}`;
+        await FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => {});
+      }
+    } catch {
+      // Best-effort cleanup.
+    }
   }
 }
 
@@ -275,6 +412,9 @@ export async function pruneThumbnailCache(maxItems = MAX_THUMB_CACHE_ITEMS): Pro
  * Accepts the pre-derived per-file key from the crypto context.
  * Returns a local file URI suitable for <Image source={{ uri }} />,
  * or null if the thumbnail is unavailable or decryption fails.
+ *
+ * Thumbnails are stored in persistent documentDirectory so they survive
+ * iOS cache purges and app restarts.
  */
 export async function fetchDecryptedThumbnailUri(
   fileId: string,
@@ -283,8 +423,6 @@ export async function fetchDecryptedThumbnailUri(
   const cached = await cachedThumbnailUri(fileId);
   if (cached) return cached;
 
-  const dest = thumbPath(fileId);
-  if (!dest) return null;
   const pending = inflight.get(fileId);
   if (pending) return pending;
 
@@ -304,7 +442,6 @@ export async function fetchDecryptedThumbnailUri(
     // These were uploaded by old mobile code that didn't encrypt thumbnails.
     let plainBytes: Uint8Array;
     if (encryptedBytes[0] === 0xFF && encryptedBytes[1] === 0xD8 && encryptedBytes[2] === 0xFF) {
-      await FileSystem.deleteAsync(dest, { idempotent: true }).catch(() => {});
       thumbCache.delete(fileId);
       return null;
     } else {
@@ -314,12 +451,11 @@ export async function fetchDecryptedThumbnailUri(
       plainBytes = await decryptChunk(fileKey, nonce, ciphertext);
     }
 
-    // Write decrypted JPEG to local cache so <Image> can read it.
+    // Write decrypted JPEG to persistent storage so it survives app restarts.
     const b64 = bytesToBase64(plainBytes);
-    await FileSystem.writeAsStringAsync(dest, b64, { encoding: EncodingType.Base64 });
-
-    thumbCache.set(fileId, dest);
-    return dest;
+    const persistedPath = await cacheThumbnailBase64(fileId, b64);
+    thumbCache.set(fileId, persistedPath);
+    return persistedPath;
   })();
 
   inflight.set(fileId, fetchPromise);

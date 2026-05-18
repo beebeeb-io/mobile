@@ -3,6 +3,10 @@ import { Image, StyleSheet, View } from 'react-native';
 import type { StyleProp, ViewStyle } from 'react-native';
 import { useCrypto } from '../lib/crypto-context';
 import { cacheLocalThumbnail, fetchDecryptedThumbnailUri } from '../lib/thumbnail';
+import {
+  getCachedThumbnail,
+  enqueueThumbnailLoad,
+} from '../lib/thumbnail-cache';
 
 interface Props {
   fileId: string;
@@ -56,54 +60,60 @@ export const ThumbnailImage = React.memo(function ThumbnailImage({
       };
     }
 
-    // Priority 1: Use local camera-roll asset for thumbnail (no server call)
-    if (localAssetUri) {
-      cacheLocalThumbnail(fileId, localAssetUri)
-        .then((cachedUri) => {
-          if (cancelledRef.current) return;
-          if (cachedUri) {
-            setUri(cachedUri);
-          } else {
-            // Local generation failed — fall back to server fetch if has_thumbnail
-            if (hasThumbnail) {
-              return getFileKeyBytes(fileId)
-                .then((fileKey) => fetchDecryptedThumbnailUri(fileId, fileKey))
-                .then((serverUri) => {
+    // Step 1: Check persistent cache immediately (no network, no decrypt).
+    // If the thumbnail is already on disk, show it instantly.
+    getCachedThumbnail(fileId)
+      .then((cachedUri) => {
+        if (cancelledRef.current) return;
+        if (cachedUri) {
+          setUri(cachedUri);
+          return; // Done — no network needed.
+        }
+
+        // Step 2: Not cached. Use local asset or server fetch via the queue.
+        if (localAssetUri) {
+          return cacheLocalThumbnail(fileId, localAssetUri)
+            .then((localCachedUri) => {
+              if (cancelledRef.current) return;
+              if (localCachedUri) {
+                setUri(localCachedUri);
+              } else if (hasThumbnail) {
+                // Local generation failed — enqueue server fetch (concurrency limited)
+                return enqueueThumbnailLoad(fileId, async (fId) => {
+                  const fileKey = await getFileKeyBytes(fId);
+                  return fetchDecryptedThumbnailUri(fId, fileKey);
+                }).then((serverUri) => {
                   if (!cancelledRef.current) {
                     if (serverUri) setUri(serverUri);
                     else setFailed(true);
                   }
                 });
-            }
-            setFailed(true);
-          }
-        })
-        .catch(() => {
-          if (!cancelledRef.current) setFailed(true);
-        });
-      return () => {
-        cancelledRef.current = true;
-      };
-    }
+              } else {
+                setFailed(true);
+              }
+            });
+        }
 
-    // Priority 2: Fetch encrypted thumbnail from server
-    if (!hasThumbnail) {
-      setFailed(true);
-      return () => {
-        cancelledRef.current = true;
-      };
-    }
-    (async () => {
-      const fileKey = await getFileKeyBytes(fileId);
-      return fetchDecryptedThumbnailUri(fileId, fileKey);
-    })()
-      .then((cacheUri) => {
-        if (cacheUri && !cancelledRef.current) setUri(cacheUri);
-        if (!cacheUri && !cancelledRef.current) setFailed(true);
+        // No local asset — fetch from server via concurrency-limited queue
+        if (!hasThumbnail) {
+          setFailed(true);
+          return;
+        }
+
+        return enqueueThumbnailLoad(fileId, async (fId) => {
+          const fileKey = await getFileKeyBytes(fId);
+          return fetchDecryptedThumbnailUri(fId, fileKey);
+        }).then((fetchedUri) => {
+          if (!cancelledRef.current) {
+            if (fetchedUri) setUri(fetchedUri);
+            else setFailed(true);
+          }
+        });
       })
       .catch(() => {
         if (!cancelledRef.current) setFailed(true);
       });
+
     return () => {
       cancelledRef.current = true;
     };

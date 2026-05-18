@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ActivityIndicator,
   Alert,
+  Dimensions,
   FlatList,
   Image,
   Platform,
@@ -35,6 +36,7 @@ import {
   inferChunkCountFromEncryptedSize,
 } from '../lib/encrypted-download';
 import { decryptToTempFile } from '../lib/native-decrypt';
+import { getCachedPhoto, cachePhoto } from '../lib/photo-cache';
 import { PdfRenderer } from '../components/preview/PdfRenderer';
 import { DetailsSheet } from '../components/preview/DetailsSheet';
 import { ArchiveRenderer } from '../components/preview/ArchiveRenderer';
@@ -828,6 +830,133 @@ function buildCodeHtml(code: string, language: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Photo swipe page — renders a single photo inside the horizontal pager
+// ---------------------------------------------------------------------------
+
+const SCREEN_WIDTH = Dimensions.get('window').width;
+
+interface PhotoPageEntry {
+  id: string;
+  name_encrypted: string;
+  mime_type: string | null;
+  size_bytes: number;
+  created_at: string;
+  chunk_count: number;
+  version_number?: number;
+  storage_pool_id?: string | null;
+}
+
+const PhotoPage = React.memo(function PhotoPage({
+  entry,
+  isActive,
+  width,
+}: {
+  entry: PhotoPageEntry;
+  isActive: boolean;
+  width: number;
+}) {
+  const { colors: c } = useTheme();
+  const { isUnlocked, getFileKeyBytes } = useCrypto();
+  const [uri, setUri] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!isActive) return;
+    if (uri) return; // Already loaded
+    if (Platform.OS === 'web') return;
+
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+
+    (async () => {
+      try {
+        const token = await getToken();
+        if (!token) throw new Error('Not signed in');
+
+        const ext = extensionForMime(entry.mime_type ?? undefined, 'image');
+        const cacheUri = `${FileSystem.cacheDirectory}dec_${entry.id}_photo${ext}`;
+
+        try {
+          await FileSystem.deleteAsync(cacheUri, { idempotent: true });
+        } catch { /* ignore */ }
+
+        const res = await fetch(getDownloadUrl(entry.id), {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!res.ok) throw new ApiError(res.status, await errorMessageFromResponse(res));
+        const encBytes = new Uint8Array(await res.arrayBuffer());
+
+        if (isUnlocked && BeebeebCrypto.isNativeAvailable) {
+          const headerOriginalSize = responseHeaderInt(res.headers, 'X-Original-Size');
+          const effectiveSize = headerOriginalSize ?? entry.size_bytes ?? encBytes.length - 28;
+          if (effectiveSize <= 0) throw new Error('Could not determine plaintext size.');
+
+          const headerChunkCount = responseHeaderInt(res.headers, 'X-Chunk-Count');
+          const headerChunkSize = responseHeaderInt(res.headers, 'X-Chunk-Size');
+          const inferred = inferChunkCountFromEncryptedSize(encBytes.length, effectiveSize);
+          const effectiveChunkCount = headerChunkCount ?? entry.chunk_count ?? inferred ?? 1;
+          const effectiveChunkSize = headerChunkSize && headerChunkSize > 0 ? headerChunkSize : undefined;
+
+          const fileKey = await getFileKeyBytes(entry.id);
+          const decrypted = await decryptEncryptedBytes(fileKey, encBytes, effectiveChunkCount, effectiveSize, effectiveChunkSize);
+
+          await FileSystem.writeAsStringAsync(cacheUri, uint8ArrayToBase64(decrypted), {
+            encoding: FileSystem.EncodingType.Base64,
+          });
+          if (!cancelled) setUri(cacheUri);
+        } else {
+          const encCacheUri = `${FileSystem.cacheDirectory}${entry.id}_photo${ext}`;
+          await FileSystem.writeAsStringAsync(encCacheUri, uint8ArrayToBase64(encBytes), {
+            encoding: FileSystem.EncodingType.Base64,
+          });
+          if (!cancelled) setUri(encCacheUri);
+        }
+      } catch (err) {
+        if (!cancelled) setError(friendlyError(err));
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [isActive, uri, entry, isUnlocked, getFileKeyBytes]);
+
+  return (
+    <View style={{ width, flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+      {uri ? (
+        <Image
+          source={{ uri }}
+          style={{ width: '100%', height: '100%' }}
+          resizeMode="contain"
+        />
+      ) : error ? (
+        <View style={{ alignItems: 'center', gap: 12 }}>
+          <Text style={{ color: colors.white, fontSize: 16, fontWeight: '600' }}>
+            Couldn't load image
+          </Text>
+          <Text style={{ color: 'rgba(255,255,255,0.6)', fontSize: 13, textAlign: 'center' }}>
+            {error}
+          </Text>
+        </View>
+      ) : (
+        <View style={{ alignItems: 'center', gap: 12 }}>
+          <ActivityIndicator color={c.amber} size="large" />
+          <Text style={{ color: 'rgba(255,255,255,0.6)', fontSize: 13 }}>
+            {loading
+              ? isUnlocked
+                ? 'Downloading and decrypting...'
+                : 'Unlock your vault to view this image.'
+              : ''}
+          </Text>
+        </View>
+      )}
+    </View>
+  );
+});
+
+// ---------------------------------------------------------------------------
 // Screen
 // ---------------------------------------------------------------------------
 
@@ -845,7 +974,33 @@ export default function PreviewScreen() {
     chunkCount,
     versionNumber,
     storagePoolId,
+    photoListJson,
+    initialPhotoIndex,
   } = route.params;
+
+  // Parse the photo list for swipe navigation (passed from PhotosScreen)
+  const photoList = useMemo<PhotoPageEntry[]>(() => {
+    if (!photoListJson) return [];
+    try {
+      return JSON.parse(photoListJson) as PhotoPageEntry[];
+    } catch {
+      return [];
+    }
+  }, [photoListJson]);
+  const hasSwipe = photoList.length > 1;
+  const [currentPhotoIndex, setCurrentPhotoIndex] = useState(initialPhotoIndex ?? 0);
+  const pagerRef = useRef<FlatList<PhotoPageEntry>>(null);
+
+  // Derive the current photo entry from the swipe index
+  const currentEntry = hasSwipe ? photoList[currentPhotoIndex] : null;
+  const currentFileId = currentEntry?.id ?? fileId;
+  const currentFileName = currentEntry?.name_encrypted ?? fileName;
+  const currentMimeType = currentEntry?.mime_type ?? mimeType;
+  const currentSizeBytes = currentEntry?.size_bytes ?? sizeBytes;
+  const currentCreatedAt = currentEntry?.created_at ?? createdAt;
+  const currentChunkCount = currentEntry?.chunk_count ?? chunkCount;
+  const currentVersionNumber = currentEntry?.version_number ?? versionNumber;
+  const currentStoragePoolId = currentEntry?.storage_pool_id ?? storagePoolId;
 
   const [downloading, setDownloading] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState(0);
@@ -911,11 +1066,12 @@ export default function PreviewScreen() {
 
   const { isUnlocked, getFileKeyBytes } = useCrypto();
 
-  const category = fileCategory(mimeType, fileName);
+  // Use current* values so derived state updates when swiping between photos
+  const category = fileCategory(currentMimeType, currentFileName);
   const isImage = category === 'image';
   const isSvg = category === 'svg';
   const isPdf = category === 'pdf';
-  const isVideo = !!mimeType && mimeType.startsWith('video/');
+  const isVideo = !!currentMimeType && currentMimeType.startsWith('video/');
   const isArchive = category === 'archive';
   const isPptx = category === 'pptx';
   const isMediaPreview = isImage || isVideo;
@@ -931,17 +1087,17 @@ export default function PreviewScreen() {
     !isZip &&
     !isArchive &&
     !isPptx &&
-    !!mimeType &&
-    (mimeType.startsWith('text/') ||
-      mimeType === 'application/json' ||
-      mimeType === 'application/xml');
+    !!currentMimeType &&
+    (currentMimeType.startsWith('text/') ||
+      currentMimeType === 'application/json' ||
+      currentMimeType === 'application/xml');
   const previewFileName = useMemo(
-    () => previewDisplayName(fileName, category),
-    [category, fileName],
+    () => previewDisplayName(currentFileName, category),
+    [category, currentFileName],
   );
   const cacheFileName = useMemo(
-    () => previewCacheName(fileName, mimeType, category),
-    [category, fileName, mimeType],
+    () => previewCacheName(currentFileName, currentMimeType, category),
+    [category, currentFileName, currentMimeType],
   );
   const fileFormat = useMemo(() => {
     const ext = previewFileName.includes('.') ? previewFileName.split('.').pop() : null;
@@ -951,12 +1107,12 @@ export default function PreviewScreen() {
   // Code highlighting — language id + display label come from the filename
   // and mime; the highlighted HTML is rebuilt only when the loaded text changes.
   const codeLanguage = useMemo(
-    () => detectCodeLanguage(mimeType, fileName),
-    [mimeType, fileName],
+    () => detectCodeLanguage(currentMimeType, currentFileName),
+    [currentMimeType, currentFileName],
   );
   const codeLanguageLabel = useMemo(
-    () => languageDisplayLabel(codeLanguage, fileName),
-    [codeLanguage, fileName],
+    () => languageDisplayLabel(codeLanguage, currentFileName),
+    [codeLanguage, currentFileName],
   );
   const codeHtml = useMemo(() => {
     if (!isText || textContent == null) return null;
@@ -983,17 +1139,17 @@ export default function PreviewScreen() {
   })();
 
   const mediaDetailsRows = useMemo(() => {
-    const storage = trustLocation(storagePoolId);
+    const storage = trustLocation(currentStoragePoolId);
     const rows: Array<{ label: string; value: string }> = [
       { label: 'Name', value: previewFileName },
       { label: 'Kind', value: CATEGORY_LABELS[category] ?? 'File' },
     ];
     if (fileFormat) rows.push({ label: 'Format', value: fileFormat });
-    if (mimeType) rows.push({ label: 'Type', value: mimeType });
-    if (sizeBytes != null) rows.push({ label: 'Size', value: formatSize(sizeBytes) });
-    if (createdAt) rows.push({ label: 'Created', value: formatDate(createdAt) });
-    if (versionNumber != null) rows.push({ label: 'Version', value: `v${versionNumber}` });
-    if (chunkCount != null) rows.push({ label: 'Chunks', value: String(chunkCount) });
+    if (currentMimeType) rows.push({ label: 'Type', value: currentMimeType });
+    if (currentSizeBytes != null) rows.push({ label: 'Size', value: formatSize(currentSizeBytes) });
+    if (currentCreatedAt) rows.push({ label: 'Created', value: formatDate(currentCreatedAt) });
+    if (currentVersionNumber != null) rows.push({ label: 'Version', value: `v${currentVersionNumber}` });
+    if (currentChunkCount != null) rows.push({ label: 'Chunks', value: String(currentChunkCount) });
     rows.push({
       label: 'Encryption',
       value: isUnlocked ? 'Decrypted on this device' : 'Client-side encrypted',
@@ -1002,15 +1158,15 @@ export default function PreviewScreen() {
     return rows;
   }, [
     category,
-    chunkCount,
-    createdAt,
+    currentChunkCount,
+    currentCreatedAt,
     fileFormat,
     isUnlocked,
-    mimeType,
+    currentMimeType,
     previewFileName,
-    sizeBytes,
-    storagePoolId,
-    versionNumber,
+    currentSizeBytes,
+    currentStoragePoolId,
+    currentVersionNumber,
   ]);
 
   const handleClose = useCallback(() => {
@@ -1028,7 +1184,7 @@ export default function PreviewScreen() {
 
     // Keep the original extension on the cache filename — RN's <Image>,
     // expo-video, and the WebView pick the decoder from the URI suffix.
-    const cacheUri = `${FileSystem.cacheDirectory}${fileId}_${cacheFileName}`;
+    const cacheUri = `${FileSystem.cacheDirectory}${currentFileId}_${cacheFileName}`;
 
     // Remove any stale copy so a previous failed download (e.g. a JSON error
     // body that 401'd) can't masquerade as a valid file.
@@ -1038,7 +1194,7 @@ export default function PreviewScreen() {
       // Best-effort — proceed even if the path can't be cleared.
     }
 
-    const res = await fetch(getDownloadUrl(fileId), {
+    const res = await fetch(getDownloadUrl(currentFileId), {
       headers: { Authorization: `Bearer ${token}` },
     });
     if (!res.ok) {
@@ -1056,10 +1212,10 @@ export default function PreviewScreen() {
       }
 
       // Resolve plaintext size: prefer the X-Original-Size header (the server
-      // stores the canonical value), then the route-param `sizeBytes`, then
+      // stores the canonical value), then the route-param `currentSizeBytes`, then
       // fall back to the encrypted length minus a single-chunk overhead.
       const headerOriginalSize = responseHeaderInt(res.headers, 'X-Original-Size');
-      const effectiveSize = headerOriginalSize ?? sizeBytes ?? encBytes.length - 28;
+      const effectiveSize = headerOriginalSize ?? currentSizeBytes ?? encBytes.length - 28;
       if (effectiveSize <= 0) {
         throw new Error('Could not determine plaintext size for decryption.');
       }
@@ -1068,13 +1224,13 @@ export default function PreviewScreen() {
       const headerChunkCount = responseHeaderInt(res.headers, 'X-Chunk-Count');
       const headerChunkSize = responseHeaderInt(res.headers, 'X-Chunk-Size');
       const inferred = inferChunkCountFromEncryptedSize(encBytes.length, effectiveSize);
-      const effectiveChunkCount = headerChunkCount ?? chunkCount ?? inferred ?? 1;
+      const effectiveChunkCount = headerChunkCount ?? currentChunkCount ?? inferred ?? 1;
       const effectiveChunkSize = headerChunkSize && headerChunkSize > 0
         ? headerChunkSize
         : undefined;
 
       // Derive the per-file key once and reuse it across chunks.
-      const fileKey = await getFileKeyBytes(fileId);
+      const fileKey = await getFileKeyBytes(currentFileId);
       const decrypted = await decryptEncryptedBytes(
         fileKey,
         encBytes,
@@ -1083,14 +1239,14 @@ export default function PreviewScreen() {
         effectiveChunkSize,
       );
 
-      const decUri = `${FileSystem.cacheDirectory}dec_${fileId}_${cacheFileName}`;
+      const decUri = `${FileSystem.cacheDirectory}dec_${currentFileId}_${cacheFileName}`;
       await FileSystem.writeAsStringAsync(decUri, uint8ArrayToBase64(decrypted), {
         encoding: FileSystem.EncodingType.Base64,
       });
       return decUri;
     }
     return cacheUri;
-  }, [cacheFileName, fileId, isUnlocked, getFileKeyBytes, chunkCount, sizeBytes]);
+  }, [cacheFileName, currentFileId, isUnlocked, getFileKeyBytes, currentChunkCount, currentSizeBytes]);
 
   const getExportUri = useCallback(async (): Promise<{ uri: string; reusedPreview: boolean }> => {
     if (isImage && imageUri) return { uri: imageUri, reusedPreview: true };
@@ -1099,17 +1255,39 @@ export default function PreviewScreen() {
     return { uri: await fetchAndDecrypt(), reusedPreview: false };
   }, [fetchAndDecrypt, imageUri, isImage, isPdf, isVideo, pdfUri, videoUri]);
 
-  // Auto-load images inline on mount
+  // Auto-load images inline on mount — checks photo cache first to avoid
+  // re-downloading and re-decrypting when navigating back to a photo.
   useEffect(() => {
     if (!isImage) return;
     if (Platform.OS === 'web') return;
     let cancelled = false;
     setImageLoading(true);
     setImageError(null);
-    fetchAndDecrypt()
-      .then((uri) => {
-        if (!cancelled) setImageUri(uri);
-      })
+
+    (async () => {
+      // Fast path: check if this photo is already cached (memory or disk)
+      const cached = await getCachedPhoto(currentFileId);
+      if (cached) {
+        if (!cancelled) {
+          setImageUri(cached);
+          setImageLoading(false);
+        }
+        return;
+      }
+
+      // Slow path: download + decrypt, then cache the result
+      const decryptedUri = await fetchAndDecrypt();
+      if (cancelled) return;
+
+      // Store in photo cache for future navigations
+      try {
+        const cachedUri = await cachePhoto(currentFileId, decryptedUri);
+        if (!cancelled) setImageUri(cachedUri);
+      } catch {
+        // Caching failed — use the decrypted URI directly
+        if (!cancelled) setImageUri(decryptedUri);
+      }
+    })()
       .catch((err) => {
         if (!cancelled) setImageError(friendlyError(err));
       })
@@ -1122,7 +1300,7 @@ export default function PreviewScreen() {
     return () => {
       cancelled = true;
     };
-  }, [isImage, fetchAndDecrypt]);
+  }, [isImage, currentFileId, fetchAndDecrypt]);
 
   // Auto-load PDFs inline on mount — uses native decrypt + PdfRenderer.
   useEffect(() => {
@@ -1497,7 +1675,7 @@ export default function PreviewScreen() {
       if (canShare) {
         setExportStatus('Opening iOS export options...');
         await Sharing.shareAsync(shareUri, {
-          mimeType: mimeType ?? 'application/octet-stream',
+          mimeType: currentMimeType ?? 'application/octet-stream',
           dialogTitle: previewFileName,
         });
       } else {
@@ -1511,12 +1689,12 @@ export default function PreviewScreen() {
       setDownloadProgress(0);
       setExportStatus(null);
     }
-  }, [previewFileName, mimeType, getExportUri]);
+  }, [previewFileName, currentMimeType, getExportUri]);
 
   const handleShare = useCallback(async () => {
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    navigation.navigate('ShareSheet', { fileId, fileName: previewFileName, mimeType, sizeBytes });
-  }, [navigation, fileId, previewFileName, mimeType, sizeBytes]);
+    navigation.navigate('ShareSheet', { fileId: currentFileId, fileName: previewFileName, mimeType: currentMimeType, sizeBytes: currentSizeBytes });
+  }, [navigation, currentFileId, previewFileName, currentMimeType, currentSizeBytes]);
 
   if (isMediaPreview) {
     return (
