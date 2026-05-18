@@ -80,6 +80,14 @@ async function openAndMigrate(): Promise<SQLite.SQLiteDatabase> {
       ON backup_assets(asset_type);
     CREATE INDEX IF NOT EXISTS idx_backup_assets_created_at
       ON backup_assets(created_at);
+    CREATE TABLE IF NOT EXISTS backup_verification (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      verified_at TEXT NOT NULL DEFAULT (datetime('now')),
+      remote_file_id TEXT NOT NULL,
+      success INTEGER NOT NULL,
+      error_message TEXT,
+      file_size INTEGER
+    );
   `);
 
   // Migration: add columns for sync queue (v2)
@@ -475,4 +483,79 @@ export async function getRecentActivity(
      GROUP BY DATE(uploaded_at) ORDER BY date DESC`,
     [cutoff.toISOString()],
   );
+}
+
+// ─── Backup verification ────────────────────────────────────────────────────
+
+export interface VerificationRecord {
+  id: number;
+  verified_at: string;
+  remote_file_id: string;
+  success: boolean;
+  error_message: string | null;
+  file_size: number | null;
+}
+
+/**
+ * Record a verification result. Keeps only the last 20 rows to avoid
+ * unbounded growth.
+ */
+export async function recordVerification(
+  remoteFileId: string,
+  success: boolean,
+  errorMessage?: string,
+  fileSize?: number,
+): Promise<void> {
+  const db = await getDb();
+  await db.runAsync(
+    `INSERT INTO backup_verification (remote_file_id, success, error_message, file_size)
+     VALUES (?, ?, ?, ?)`,
+    [remoteFileId, success ? 1 : 0, errorMessage ?? null, fileSize ?? null],
+  );
+  // Trim to last 20 rows
+  await db.runAsync(
+    `DELETE FROM backup_verification WHERE id NOT IN (
+       SELECT id FROM backup_verification ORDER BY id DESC LIMIT 20
+     )`,
+  );
+}
+
+/**
+ * Get the most recent verification result.
+ */
+export async function getLastVerification(): Promise<VerificationRecord | null> {
+  const db = await getDb();
+  const row = await db.getFirstAsync<{
+    id: number;
+    verified_at: string;
+    remote_file_id: string;
+    success: number;
+    error_message: string | null;
+    file_size: number | null;
+  }>(
+    `SELECT id, verified_at, remote_file_id, success, error_message, file_size
+       FROM backup_verification ORDER BY id DESC LIMIT 1`,
+  );
+  if (!row) return null;
+  return {
+    id: row.id,
+    verified_at: row.verified_at,
+    remote_file_id: row.remote_file_id,
+    success: row.success === 1,
+    error_message: row.error_message,
+    file_size: row.file_size,
+  };
+}
+
+/**
+ * Pick a random uploaded backup asset with a remote_file_id.
+ */
+export async function getRandomUploadedAsset(): Promise<BackupAsset | null> {
+  const db = await getDb();
+  const row = await db.getFirstAsync<BackupAsset>(
+    `SELECT * FROM backup_assets
+      WHERE status = 'uploaded' AND remote_file_id IS NOT NULL
+      ORDER BY RANDOM() LIMIT 1`,
+  );
+  return row ?? null;
 }

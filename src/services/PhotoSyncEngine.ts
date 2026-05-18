@@ -31,6 +31,7 @@ import {
 import { photoBackupCheck, photoBackupMark, photoBackupListIds } from '../lib/api';
 import type { UploadProgress } from '../lib/api';
 import type { BackupFileStatus } from '../lib/backup-context';
+import { maybeVerify } from './BackupVerifier';
 
 const ENUMERATE_PAGE = 200;
 const CHECK_BATCH = 200;
@@ -52,6 +53,8 @@ export interface SyncEngineCallbacks {
   onProgress?: (counts: Record<string, number>) => void;
   onQueueUpdate?: (queue: BackupFileStatus[]) => void;
   signal?: AbortSignal;
+  /** Returns the master key bytes, or null if vault is locked. Used for backup verification. */
+  getMasterKey?: () => Uint8Array | null;
 }
 
 let listenerSubscription: MediaLibrary.Subscription | null = null;
@@ -290,6 +293,11 @@ export async function processUploads(callbacks: SyncEngineCallbacks): Promise<nu
             if (status) { status.status = 'done'; status.progress = 100; }
             totalUploaded++;
             consecutiveFailures = 0;
+
+            // Periodic backup integrity verification (every 100 uploads)
+            if (callbacks.getMasterKey) {
+              void maybeVerify({ getMasterKey: callbacks.getMasterKey }).catch(() => {});
+            }
           } catch (err) {
             const rateLimitWait = isRateLimitError(err);
             if (rateLimitWait !== null) {

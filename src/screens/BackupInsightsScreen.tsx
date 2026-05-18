@@ -35,13 +35,17 @@ import {
   getRecentActivity,
   retryAllFailed,
   clearAllData,
+  getLastVerification,
   type BackupAsset,
   type BackupAssetStatus,
+  type VerificationRecord,
 } from '../services/BackupDatabase';
 import {
   getLastFullScanAt,
 } from '../services/PhotoSyncEngine';
+import { verifyNow } from '../services/BackupVerifier';
 import { useBackup } from '../lib/backup-context';
+import { useCrypto } from '../lib/crypto-context';
 import NetInfo from '@react-native-community/netinfo';
 
 let MediaLibrary: { getAssetsAsync: (opts: { first: number; mediaType?: string[] }) => Promise<{ totalCount: number }>; MediaType?: { photo: string; video: string } } = {
@@ -279,6 +283,7 @@ interface InsightsData {
   failedAssets: BackupAsset[];
   recentActivity: { date: string; count: number; bytes: number }[];
   totalCameraRoll: number;
+  lastVerification: VerificationRecord | null;
 }
 
 export default function BackupInsightsScreen() {
@@ -288,6 +293,7 @@ export default function BackupInsightsScreen() {
   const backup = useBackup();
 
   const { photoSessionProgress, backupQueue } = backup;
+  const { getMasterKeyBytes } = useCrypto();
 
   const [data, setData] = useState<InsightsData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -295,16 +301,18 @@ export default function BackupInsightsScreen() {
   const [resyncing, setResyncing] = useState(false);
   const [clearing, setClearing] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [verifying, setVerifying] = useState(false);
 
   const loadData = useCallback(async () => {
     try {
-      const [counts, totalBytes, lastScanAt, failedAssets, recentActivity] =
+      const [counts, totalBytes, lastScanAt, failedAssets, recentActivity, lastVerification] =
         await Promise.all([
           getStatusCounts(),
           getTotalUploadedBytes(),
           getLastFullScanAt(),
           getFailedAssets(),
           getRecentActivity(7),
+          getLastVerification(),
         ]);
 
       // Get total camera roll count
@@ -333,6 +341,7 @@ export default function BackupInsightsScreen() {
         failedAssets,
         recentActivity,
         totalCameraRoll,
+        lastVerification,
       });
     } catch (err) {
       console.warn('BackupInsights: failed to load data', err);
@@ -455,6 +464,27 @@ export default function BackupInsightsScreen() {
       ],
     );
   }, [failedCount, loadData]);
+
+  const handleVerifyNow = useCallback(async () => {
+    setVerifying(true);
+    try {
+      const deps = {
+        getMasterKey: (): Uint8Array | null => {
+          try { return getMasterKeyBytes(); } catch { return null; }
+        },
+      };
+      const result = await verifyNow(deps, 5);
+      await loadData();
+      Alert.alert(
+        'Verification complete',
+        `${result.passed} passed, ${result.failed} failed out of 5 files checked.`,
+      );
+    } catch {
+      Alert.alert('Error', 'Could not run verification.');
+    } finally {
+      setVerifying(false);
+    }
+  }, [getMasterKeyBytes, loadData]);
 
   const handleExportLog = useCallback(async () => {
     setExporting(true);
@@ -668,6 +698,41 @@ export default function BackupInsightsScreen() {
                         ? `in ${formatTimeRemaining(nextScanMs)}`
                         : 'due now'}
                     </Text>
+                  </View>
+
+                  <View
+                    style={{
+                      flexDirection: 'row',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                    }}
+                  >
+                    <Text style={{ fontSize: 12, color: c.ink3 }}>
+                      Last verified
+                    </Text>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                      {data?.lastVerification && (
+                        <View
+                          style={{
+                            width: 6,
+                            height: 6,
+                            borderRadius: 3,
+                            backgroundColor: data.lastVerification.success ? c.green : c.red,
+                          }}
+                        />
+                      )}
+                      <Text
+                        style={{
+                          fontSize: 12,
+                          color: c.ink2,
+                          fontFamily: fonts.mono,
+                        }}
+                      >
+                        {data?.lastVerification
+                          ? timeAgo(new Date(data.lastVerification.verified_at).getTime())
+                          : 'Not yet'}
+                      </Text>
+                    </View>
                   </View>
                 </View>
               </View>
@@ -919,6 +984,14 @@ export default function BackupInsightsScreen() {
                   <Divider c={c} />
                 </>
               )}
+              <ActionButton
+                label="Verify backup integrity"
+                icon="shield-checkmark-outline"
+                onPress={handleVerifyNow}
+                loading={verifying}
+                c={c}
+              />
+              <Divider c={c} />
               <ActionButton
                 label="Export backup log"
                 icon="document-text-outline"
