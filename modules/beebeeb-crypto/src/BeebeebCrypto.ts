@@ -788,6 +788,31 @@ export async function clearBackupNotification(): Promise<void> {
   return BeebeebCryptoModule.clearBackupNotification();
 }
 
+// ─── Native thumbnail pipeline ──────────────────────────────────────────────
+//
+// Downloads the full encrypted file via native URLSession, decrypts to disk
+// via Rust, resizes with UIImage (no JS heap), encrypts the thumbnail JPEG
+// as a single AES-256-GCM chunk, and uploads via PUT. Zero JS memory usage.
+
+/**
+ * Generate and upload a thumbnail entirely in native code. Downloads the
+ * encrypted file via URLSession, decrypts to disk with Rust, resizes with
+ * UIImage, re-encrypts with Rust, uploads via PUT. The JS heap never holds
+ * the image data.
+ *
+ * @returns true on success, false if the file could not be processed.
+ */
+export async function generateAndUploadThumbnailNative(
+  handleId: number,
+  apiUrl: string,
+  token: string,
+  fileId: string,
+  maxSize: number,
+): Promise<boolean> {
+  if (typeof BeebeebCryptoModule.generateAndUploadThumbnailNative !== 'function') return false
+  return BeebeebCryptoModule.generateAndUploadThumbnailNative(handleId, apiUrl, token, fileId, maxSize)
+}
+
 // ─── Amber Constellation — display side ─────────────────────────────────────
 
 /**

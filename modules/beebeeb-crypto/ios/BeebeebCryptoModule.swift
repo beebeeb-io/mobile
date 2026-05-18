@@ -1109,5 +1109,130 @@ public class BeebeebCryptoModule: Module {
         "totalBytes": result.totalBytes,
       ]
     }
+
+    // ── Native thumbnail pipeline ────────────────────────────────────────
+    //
+    // Downloads the full encrypted file via URLSession, decrypts to disk via
+    // Rust, resizes with UIImage (no JS heap), encrypts the thumbnail JPEG
+    // as a single AES-256-GCM chunk, and uploads via PUT. Zero JS memory.
+
+    AsyncFunction("generateAndUploadThumbnailNative") { [self] (
+      handleId: Int, apiUrl: String, token: String,
+      fileId: String, maxSize: Int
+    ) async throws -> Bool in
+      let masterKey = try self.getHandle(handleId)
+
+      let tempDir = NSTemporaryDirectory() + "thumb-\(fileId)-\(UUID().uuidString)/"
+      try FileManager.default.createDirectory(
+        atPath: tempDir, withIntermediateDirectories: true
+      )
+      defer { try? FileManager.default.removeItem(atPath: tempDir) }
+
+      // 1. Fetch file metadata to learn chunk_count and size_bytes
+      let metaUrl = URL(string: "\(apiUrl)/api/v1/files/\(fileId)")!
+      var metaReq = URLRequest(url: metaUrl)
+      metaReq.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+      let (metaData, metaResp) = try await URLSession.shared.data(for: metaReq)
+      guard let httpMeta = metaResp as? HTTPURLResponse, httpMeta.statusCode == 200 else {
+        return false
+      }
+      guard let meta = try? JSONSerialization.jsonObject(with: metaData) as? [String: Any],
+            let chunkCount = meta["chunk_count"] as? Int,
+            let sizeBytes = meta["size_bytes"] as? Int,
+            chunkCount > 0, sizeBytes > 0
+      else { return false }
+
+      // 2. Download the full encrypted blob to a temp file
+      let downloadUrl = URL(string: "\(apiUrl)/api/v1/files/\(fileId)/download")!
+      var dlReq = URLRequest(url: downloadUrl)
+      dlReq.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+      let (dlData, dlResp) = try await URLSession.shared.data(for: dlReq)
+      guard let httpDl = dlResp as? HTTPURLResponse, httpDl.statusCode == 200 else {
+        return false
+      }
+      guard dlData.count > 0 else { return false }
+
+      // 3. Split the concatenated blob into individual chunk files
+      //    Each encrypted chunk = nonce(12) + ciphertext(plaintext_chunk + 16 tag)
+      //    so overhead per chunk = 28 bytes.
+      let nonceLen = 12
+      let tagLen = 16
+      let chunkOverhead = nonceLen + tagLen
+      let encryptedSize = dlData.count
+      // Default plaintext chunk size = 4 MB (matches beebeeb-types plan_chunks)
+      let defaultPlaintextChunkSize = 4 * 1024 * 1024
+      // Infer chunk size from total: plaintext per chunk = (sizeBytes / chunkCount) rounded up
+      let plaintextChunkSize: Int
+      if chunkCount == 1 {
+        plaintextChunkSize = sizeBytes
+      } else {
+        // Use header hint if available, else compute from total size
+        let headerChunkSize = (httpDl.value(forHTTPHeaderField: "X-Chunk-Size")).flatMap { Int($0) }
+        plaintextChunkSize = headerChunkSize ?? defaultPlaintextChunkSize
+      }
+
+      var chunkPaths: [String] = []
+      var offset = 0
+      for i in 0..<chunkCount {
+        let isLastChunk = (i == chunkCount - 1)
+        let thisPlaintextSize = isLastChunk
+          ? sizeBytes - (plaintextChunkSize * (chunkCount - 1))
+          : plaintextChunkSize
+        let thisEncryptedSize = thisPlaintextSize + chunkOverhead
+        guard offset + thisEncryptedSize <= encryptedSize else { return false }
+
+        let chunkData = dlData[offset..<(offset + thisEncryptedSize)]
+        let chunkPath = tempDir + "\(i).enc"
+        try Data(chunkData).write(to: URL(fileURLWithPath: chunkPath))
+        chunkPaths.append(chunkPath)
+        offset += thisEncryptedSize
+      }
+
+      // 4. Decrypt via Rust to a temp file
+      let decryptedPath = tempDir + "decrypted"
+      let _ = try masterKey.decryptFile(
+        fileId: fileId, chunkPaths: chunkPaths,
+        outputPath: decryptedPath, callback: nil
+      )
+
+      // 5. Resize natively with UIImage
+      guard let image = UIImage(contentsOfFile: decryptedPath) else { return false }
+      let maxDim = CGFloat(maxSize)
+      let scale = min(maxDim / max(image.size.width, image.size.height), 1.0)
+      let newSize = CGSize(
+        width: image.size.width * scale,
+        height: image.size.height * scale
+      )
+      UIGraphicsBeginImageContextWithOptions(newSize, false, 1.0)
+      image.draw(in: CGRect(origin: .zero, size: newSize))
+      let resized = UIGraphicsGetImageFromCurrentImageContext()
+      UIGraphicsEndImageContext()
+
+      guard let jpegData = resized?.jpegData(compressionQuality: 0.7) else { return false }
+
+      // 6. Encrypt thumbnail as a single AES-256-GCM chunk via Rust
+      let fileKey = try masterKey.deriveFileKey(fileId: Data(fileId.utf8))
+      let enc = try fileKey.encryptChunk(plaintext: jpegData)
+
+      // Wire format: nonce(12) || ciphertext — matches the web client
+      var wire = Data(capacity: enc.nonce.count + enc.ciphertext.count)
+      wire.append(enc.nonce)
+      wire.append(enc.ciphertext)
+
+      // 7. Upload encrypted thumbnail via PUT
+      let thumbUrl = URL(string: "\(apiUrl)/api/v1/files/\(fileId)/thumbnail")!
+      var thumbReq = URLRequest(url: thumbUrl)
+      thumbReq.httpMethod = "PUT"
+      thumbReq.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+      thumbReq.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+      thumbReq.httpBody = wire
+
+      let (_, thumbResp) = try await URLSession.shared.data(for: thumbReq)
+      guard let httpThumb = thumbResp as? HTTPURLResponse,
+            httpThumb.statusCode >= 200, httpThumb.statusCode < 300
+      else { return false }
+
+      return true
+    }
   }
 }
