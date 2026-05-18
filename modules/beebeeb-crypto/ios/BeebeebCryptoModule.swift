@@ -5,6 +5,7 @@ import PDFKit
 import Security
 import SQLite3
 import UIKit
+import UserNotifications
 
 private let fileProviderDomainIdentifier = NSFileProviderDomainIdentifier("io.beebeeb.files")
 private let fileProviderDisplayName = "Beebeeb"
@@ -893,6 +894,75 @@ public class BeebeebCryptoModule: Module {
 
     AsyncFunction("clearAllPendingShares") { () throws -> Int in
       try PendingSharesAccess.clearAll()
+    }
+
+    // ── Backup progress notification ─────────────────────────────────────
+
+    AsyncFunction("updateBackupNotification") { (uploaded: Int, total: Int, throughputMBps: Double, isComplete: Bool) in
+      let content = UNMutableNotificationContent()
+      content.title = "Beebeeb Backup"
+      if isComplete {
+        content.body = "\(total) photos secured"
+      } else {
+        let speed = String(format: "%.1f MB/s", throughputMBps)
+        content.body = "Backing up \(uploaded) of \(total) photos \u{00B7} \(speed)"
+      }
+      content.sound = nil
+
+      let request = UNNotificationRequest(
+        identifier: "io.beebeeb.backup-progress",
+        content: content,
+        trigger: nil
+      )
+      try? await UNUserNotificationCenter.current().add(request)
+
+      if isComplete {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 30) {
+          UNUserNotificationCenter.current().removeDeliveredNotifications(
+            withIdentifiers: ["io.beebeeb.backup-progress"]
+          )
+        }
+      }
+    }
+
+    AsyncFunction("clearBackupNotification") { () in
+      UNUserNotificationCenter.current().removeDeliveredNotifications(
+        withIdentifiers: ["io.beebeeb.backup-progress"]
+      )
+    }
+
+    // ── Native Backup Engine ──────────────────────────────────────────────
+
+    AsyncFunction("startNativeBackup") { (authToken: String, apiBaseUrl: String, parentFolderId: String?) in
+      let engine = NativeBackupEngine.shared
+      engine.token = authToken
+      engine.apiBaseUrl = apiBaseUrl
+      engine.parentFolderId = parentFolderId
+      engine.start()
+    }
+
+    AsyncFunction("stopNativeBackup") { () in
+      NativeBackupEngine.shared.stop()
+    }
+
+    AsyncFunction("pauseNativeBackup") { () in
+      NativeBackupEngine.shared.pause()
+    }
+
+    AsyncFunction("resumeNativeBackup") { () in
+      NativeBackupEngine.shared.resume()
+    }
+
+    AsyncFunction("getNativeBackupProgress") { () -> [String: Any] in
+      return NativeBackupEngine.shared.currentProgress()
+    }
+
+    AsyncFunction("triggerNativeBackupBatch") { () async throws -> [String: Any] in
+      let uploaded = try await NativeBackupEngine.shared.processBatch(limit: 30)
+      return NativeBackupEngine.shared.currentProgress().merging(
+        ["batchUploaded": uploaded],
+        uniquingKeysWith: { _, new in new }
+      )
     }
   }
 }
