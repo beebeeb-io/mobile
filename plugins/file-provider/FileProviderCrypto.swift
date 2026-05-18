@@ -7,10 +7,12 @@ private let logger = Logger(subsystem: "io.beebeeb.app.file-provider", category:
 private let kKeychainAccessGroup = "R8352WDJJR.io.beebeeb.shared"
 private let kMasterKeyLabel = "io.beebeeb.master-key"
 private let kWrappedKeyService = "io.beebeeb.masterkey"
+private let kWrappedKeyServiceExt = "io.beebeeb.masterkey.ext"
 #if DEBUG && targetEnvironment(simulator)
 private let kSimulatorSoftwareKeyService = "io.beebeeb.masterkey.simulator-software"
 #endif
 private let kSEKeyTag = "io.beebeeb.sekey".data(using: .utf8)!
+private let kSEKeyTagExt = "io.beebeeb.sekey.ext".data(using: .utf8)!
 private let kECIESAlgorithm = SecKeyAlgorithm.eciesEncryptionCofactorVariableIVX963SHA256AESGCM
 private let kChunkSize = 4 * 1024 * 1024
 
@@ -24,10 +26,22 @@ class FileProviderCrypto {
     // MARK: - Master Key Management
 
     private func loadMasterKey() {
+        // Try extension key first — .devicePasscode, no biometric prompt from extension context
         do {
-            if let keyData = try readWrappedMasterKey(label: kMasterKeyLabel) {
+            if let keyData = try readWrappedMasterKey(label: kMasterKeyLabel, service: kWrappedKeyServiceExt, seKeyTag: kSEKeyTagExt) {
                 masterKeyHandle = try MasterKeyHandle.fromKeychainBytes(bytes: keyData)
-                logger.info("Master key loaded from shared keychain")
+                logger.info("Master key loaded from extension keychain (no biometric)")
+                return
+            }
+        } catch {
+            logger.debug("Extension keychain key not available, falling back to primary: \(error.localizedDescription)")
+        }
+
+        // Fall back to primary key
+        do {
+            if let keyData = try readWrappedMasterKey(label: kMasterKeyLabel, service: kWrappedKeyService, seKeyTag: kSEKeyTag) {
+                masterKeyHandle = try MasterKeyHandle.fromKeychainBytes(bytes: keyData)
+                logger.info("Master key loaded from primary shared keychain")
                 return
             }
         } catch {
@@ -163,10 +177,10 @@ class FileProviderCrypto {
         return try mk.deriveFileKey(fileId: Data(fileId.utf8))
     }
 
-    private func readWrappedMasterKey(label: String) throws -> Data? {
+    private func readWrappedMasterKey(label: String, service: String = kWrappedKeyService, seKeyTag: Data = kSEKeyTag) throws -> Data? {
         var query: [CFString: Any] = [
             kSecClass: kSecClassGenericPassword,
-            kSecAttrService: kWrappedKeyService,
+            kSecAttrService: service,
             kSecAttrAccount: label,
             kSecReturnData: true,
             kSecMatchLimit: kSecMatchLimitOne,
@@ -182,7 +196,7 @@ class FileProviderCrypto {
         guard status == errSecSuccess, let wrapped = result as? Data else {
             throw FileProviderCryptoError.keychainReadFailed(status)
         }
-        guard let seKey = findSEKey() else {
+        guard let seKey = findSEKey(tag: seKeyTag) else {
             throw FileProviderCryptoError.noMasterKey
         }
 
@@ -216,11 +230,11 @@ class FileProviderCrypto {
     }
     #endif
 
-    private func findSEKey() -> SecKey? {
+    private func findSEKey(tag: Data = kSEKeyTag) -> SecKey? {
         var query: [CFString: Any] = [
             kSecClass: kSecClassKey,
             kSecAttrKeyType: kSecAttrKeyTypeECSECPrimeRandom,
-            kSecAttrApplicationTag: kSEKeyTag,
+            kSecAttrApplicationTag: tag,
             kSecAttrTokenID: kSecAttrTokenIDSecureEnclave,
             kSecReturnRef: true,
         ]

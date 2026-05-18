@@ -12,14 +12,28 @@ import Security
 enum SharedKeychain {
 
     private static let seKeyTag = "io.beebeeb.sekey".data(using: .utf8)!
+    private static let seKeyTagExt = "io.beebeeb.sekey.ext".data(using: .utf8)!
     private static let eciesAlgorithm = SecKeyAlgorithm.eciesEncryptionCofactorVariableIVX963SHA256AESGCM
     private static let keychainService = "io.beebeeb.masterkey"
+    private static let keychainServiceExt = "io.beebeeb.masterkey.ext"
     private static let masterKeyLabel = "primary"
     private static let keychainAccessGroup = "io.beebeeb.shared"
 
+    /// Load the master key, preferring the extension SE key (.devicePasscode — no
+    /// biometric prompt) and falling back to the primary SE key.
     static func loadMasterKey() -> Data? {
-        guard let wrapped = fetchWrappedBlob(),
-              let seKey = findSEKey() else {
+        // Try the extension key first — .devicePasscode, no Face ID prompt
+        if let extKey = findSEKey(tag: seKeyTagExt),
+           let extWrapped = fetchWrappedBlob(service: keychainServiceExt) {
+            var cfErr: Unmanaged<CFError>?
+            if let plain = SecKeyCreateDecryptedData(extKey, eciesAlgorithm, extWrapped as CFData, &cfErr) {
+                return plain as Data
+            }
+        }
+
+        // Fall back to primary key
+        guard let wrapped = fetchWrappedBlob(service: keychainService),
+              let seKey = findSEKey(tag: seKeyTag) else {
             return nil
         }
         var cfErr: Unmanaged<CFError>?
@@ -32,11 +46,11 @@ enum SharedKeychain {
 
     // MARK: - Private
 
-    private static func fetchWrappedBlob() -> Data? {
+    private static func fetchWrappedBlob(service: String) -> Data? {
         let accessGroup = "\(appIdentifierPrefix())\(keychainAccessGroup)"
         let query: [CFString: Any] = [
             kSecClass: kSecClassGenericPassword,
-            kSecAttrService: keychainService,
+            kSecAttrService: service,
             kSecAttrAccount: masterKeyLabel,
             kSecAttrAccessGroup: accessGroup,
             kSecReturnData: true,
@@ -50,11 +64,11 @@ enum SharedKeychain {
         return data
     }
 
-    private static func findSEKey() -> SecKey? {
+    private static func findSEKey(tag: Data) -> SecKey? {
         let query: [CFString: Any] = [
             kSecClass: kSecClassKey,
             kSecAttrKeyType: kSecAttrKeyTypeECSECPrimeRandom,
-            kSecAttrApplicationTag: seKeyTag,
+            kSecAttrApplicationTag: tag,
             kSecAttrTokenID: kSecAttrTokenIDSecureEnclave,
             kSecReturnRef: true,
         ]

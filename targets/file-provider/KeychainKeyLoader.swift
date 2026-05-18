@@ -20,15 +20,30 @@ enum KeychainKeyLoader {
   }
 
   private static let seKeyTag = "io.beebeeb.sekey".data(using: .utf8)!
+  private static let seKeyTagExt = "io.beebeeb.sekey.ext".data(using: .utf8)!
   private static let eciesAlgorithm = SecKeyAlgorithm.eciesEncryptionCofactorVariableIVX963SHA256AESGCM
 
   /// Read and unwrap the master key for `label`.
   ///
+  /// Tries the extension SE key first (`.devicePasscode` — no biometric prompt),
+  /// then falls back to the primary SE key. This allows the FileProvider extension
+  /// to decrypt without triggering Face ID from extension context.
+  ///
   /// Returns `Data` of length 32. The caller MUST zero out the returned bytes
   /// after constructing a `MasterKeyHandle` from them.
   static func loadMasterKey(label: String = BeebeebConstants.masterKeyLabel) throws -> Data {
-    let wrapped = try fetchWrappedBlob(label: label)
-    guard let seKey = findSEKey() else { throw LoadError.seKeyNotFound }
+    // Try the extension key first — .devicePasscode, no biometric prompt
+    if let extKey = findSEKey(tag: seKeyTagExt),
+       let extWrapped = try? fetchWrappedBlob(label: label, service: BeebeebConstants.keychainServiceExt) {
+      var cfErr: Unmanaged<CFError>?
+      if let plain = SecKeyCreateDecryptedData(extKey, eciesAlgorithm, extWrapped as CFData, &cfErr) {
+        return plain as Data
+      }
+    }
+
+    // Fall back to primary key
+    let wrapped = try fetchWrappedBlob(label: label, service: BeebeebConstants.keychainService)
+    guard let seKey = findSEKey(tag: seKeyTag) else { throw LoadError.seKeyNotFound }
 
     var cfErr: Unmanaged<CFError>?
     guard let plain = SecKeyCreateDecryptedData(seKey, eciesAlgorithm, wrapped as CFData, &cfErr) else {
@@ -39,11 +54,11 @@ enum KeychainKeyLoader {
 
   // MARK: - Private
 
-  private static func fetchWrappedBlob(label: String) throws -> Data {
+  private static func fetchWrappedBlob(label: String, service: String) throws -> Data {
     let accessGroup = "\(appIdentifierPrefix())\(BeebeebConstants.keychainAccessGroup)"
     let query: [CFString: Any] = [
       kSecClass: kSecClassGenericPassword,
-      kSecAttrService: BeebeebConstants.keychainService,
+      kSecAttrService: service,
       kSecAttrAccount: label,
       kSecAttrAccessGroup: accessGroup,
       kSecReturnData: true,
@@ -59,11 +74,11 @@ enum KeychainKeyLoader {
     return data
   }
 
-  private static func findSEKey() -> SecKey? {
+  private static func findSEKey(tag: Data) -> SecKey? {
     let query: [CFString: Any] = [
       kSecClass: kSecClassKey,
       kSecAttrKeyType: kSecAttrKeyTypeECSECPrimeRandom,
-      kSecAttrApplicationTag: seKeyTag,
+      kSecAttrApplicationTag: tag,
       kSecAttrTokenID: kSecAttrTokenIDSecureEnclave,
       kSecReturnRef: true,
     ]
