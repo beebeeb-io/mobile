@@ -575,7 +575,7 @@ export default function BackupInsightsScreen() {
               >
                 {backupQueue
                   .filter(f => f.status !== 'done')
-                  .slice(0, 15)
+                  .slice(0, 12)
                   .map((file, i) => (
                     <View
                       key={file.assetId}
