@@ -1063,5 +1063,51 @@ public class BeebeebCryptoModule: Module {
         uniquingKeysWith: { _, new in new }
       )
     }
+
+    // ── Rust upload bridge for manual (non-backup) uploads ────────────
+    //
+    // Calls the Rust `uploadEncryptedFile()` from the beebeeb-upload crate.
+    // The caller (JS) provides pre-encrypted chunk file paths. The Rust
+    // function handles init → chunk upload → complete in one blocking call.
+
+    AsyncFunction("uploadEncryptedFileNative") { (params: [String: Any]) throws -> [String: Any] in
+      guard let apiUrl = params["apiUrl"] as? String,
+            let token = params["token"] as? String,
+            let fileId = params["fileId"] as? String,
+            let nameEncrypted = params["nameEncrypted"] as? String,
+            let chunkPaths = params["chunkPaths"] as? [String],
+            let originalSize = params["originalSize"] as? Int
+      else {
+        throw NSError(
+          domain: "BeebeebCrypto",
+          code: 1,
+          userInfo: [NSLocalizedDescriptionKey: "Missing required parameters for uploadEncryptedFileNative"]
+        )
+      }
+      let parentId = params["parentId"] as? String
+      let mimeType = params["mimeType"] as? String
+      let isMediaFlag = params["isMedia"] as? Bool ?? false
+      let createdAt = params["createdAt"] as? String
+
+      let result = try uploadEncryptedFile(
+        apiUrl: apiUrl,
+        token: token,
+        fileId: fileId,
+        nameEncrypted: nameEncrypted,
+        parentId: parentId,
+        mimeType: mimeType,
+        isMedia: isMediaFlag,
+        chunkPaths: chunkPaths,
+        originalSize: UInt64(originalSize),
+        createdAt: createdAt,
+        callback: nil
+      )
+      return [
+        "fileId": result.fileId,
+        "uploadSessionId": result.uploadSessionId,
+        "chunksUploaded": result.chunksUploaded,
+        "totalBytes": result.totalBytes,
+      ]
+    }
   }
 }

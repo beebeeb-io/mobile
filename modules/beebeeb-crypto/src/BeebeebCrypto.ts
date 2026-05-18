@@ -606,6 +606,50 @@ export async function syncFileProviderCache(
   return BeebeebCryptoModule.syncFileProviderCache(entries)
 }
 
+// ─── Rust upload bridge ────────────────────────────────────────────────────
+//
+// Calls the Rust `uploadEncryptedFile()` from the beebeeb-upload crate via
+// the native module. The caller provides pre-encrypted chunk file paths and
+// the Rust function handles init -> chunk upload -> complete in one call.
+
+export interface UploadEncryptedFileResult {
+  fileId: string
+  uploadSessionId: string
+  chunksUploaded: number
+  totalBytes: number
+}
+
+/**
+ * Upload a file using the Rust upload crate. Expects pre-encrypted chunk
+ * files on disk. Handles the full upload protocol (init, chunk upload,
+ * complete) in a single call.
+ */
+export async function uploadEncryptedFileNative(
+  apiUrl: string,
+  token: string,
+  fileId: string,
+  nameEncrypted: string,
+  parentId: string | null,
+  mimeType: string | null,
+  isMedia: boolean,
+  chunkPaths: string[],
+  originalSize: number,
+  createdAt: string | null,
+): Promise<UploadEncryptedFileResult> {
+  return BeebeebCryptoModule.uploadEncryptedFileNative({
+    apiUrl,
+    token,
+    fileId,
+    nameEncrypted,
+    parentId,
+    mimeType,
+    isMedia,
+    chunkPaths,
+    originalSize,
+    createdAt,
+  })
+}
+
 // ─── Backup management ──────────────────────────────────────────────────────
 
 export interface NativeBackupProgress {

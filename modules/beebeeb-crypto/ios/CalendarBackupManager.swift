@@ -127,6 +127,10 @@ final class CalendarBackupManager {
      .replacingOccurrences(of: ",", with: "\\,")
   }
 
+  // TODO: Migrate to Rust uploadEncryptedFile() — requires encrypting chunks to
+  // temp files and calling the Rust upload function instead of the Swift HTTP
+  // uploader. NativeBackupEngine already demonstrates the pattern. For now this
+  // continues using the legacy Swift uploader which still works correctly.
   private func upload(data: Data, token: String) {
     let fileName = "calendar.ics"
     let mimeType = "text/calendar"

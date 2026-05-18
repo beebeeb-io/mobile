@@ -82,6 +82,10 @@ final class ContactsBackupManager {
     return true
   }
 
+  // TODO: Migrate to Rust uploadEncryptedFile() — requires encrypting chunks to
+  // temp files and calling the Rust upload function instead of the Swift HTTP
+  // uploader. NativeBackupEngine already demonstrates the pattern. For now this
+  // continues using the legacy Swift uploader which still works correctly.
   private func upload(data: Data, fileName: String, mimeType: String, token: String) {
     NativeEncryptedBackupUploader.shared.upload(
       plaintext: data,

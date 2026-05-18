@@ -57,16 +57,15 @@ struct BackupAssetRow {
 /// Architecture:
 /// - PHPhotoLibraryChangeObserver for real-time asset detection
 /// - 3-concurrent TaskGroup upload pipeline
-/// - Rust encrypt via MasterKeyHandle -> FileKeyHandle (chunk-level, same as NativeEncryptedBackupUploader)
-/// - NSURLSession background transfers for chunk uploads
+/// - Rust encrypt via MasterKeyHandle -> FileKeyHandle -> encryptChunk (chunks written to temp files)
+/// - Rust `uploadEncryptedFile()` from beebeeb-upload crate handles init/chunk-upload/complete
 /// - Shared SQLite database (backup_assets) with JS UI layer via WAL mode
 /// - Expo EventEmitter bridge for progress -> React
 ///
-/// Encryption uses the MasterKeyHandle -> FileKeyHandle -> encryptChunk path.
-/// The Rust core exposes `encrypt_file` (disk-based) for large files but the
-/// UniFFI mobile bindings have not yet added it. The in-memory chunk approach
-/// is fine for typical photo sizes (<20 MB). When the core adds `encryptFile`
-/// to MasterKeyHandle in the UniFFI surface, swap the `encryptData` call below.
+/// Encryption uses the MasterKeyHandle -> FileKeyHandle -> encryptChunk path,
+/// writing encrypted chunks to temp files. The Rust `uploadEncryptedFile()`
+/// function from the beebeeb-upload crate then handles the full upload
+/// protocol (init session, upload chunks, complete) in a single blocking call.
 final class NativeBackupEngine: NSObject {
   static let shared = NativeBackupEngine()
 
@@ -508,10 +507,23 @@ final class NativeBackupEngine: NSObject {
       let fileId = UUID().uuidString.lowercased()
       let fileKey = try masterKey.deriveFileKey(fileId: Data(fileId.utf8))
 
-      // 3. Encrypt chunks in memory using FileKeyHandle.encryptChunk API.
-      // Future: when MasterKeyHandle gains a UniFFI `encryptFile(path:)` method,
-      // swap to the disk-based path for better memory on large videos (>100 MB).
+      // 3. Encrypt chunks to temp files on disk for the Rust upload protocol
       let chunkResults = try encryptData(data: data, fileKey: fileKey)
+      let tempDir = NSTemporaryDirectory()
+      var chunkPaths: [String] = []
+      for (index, chunk) in chunkResults.enumerated() {
+        var chunkData = Data()
+        chunkData.append(chunk.nonce)
+        chunkData.append(chunk.ciphertext)
+        let path = (tempDir as NSString).appendingPathComponent("upload-\(fileId)-\(index).enc")
+        try chunkData.write(to: URL(fileURLWithPath: path))
+        chunkPaths.append(path)
+      }
+      defer {
+        for path in chunkPaths {
+          try? FileManager.default.removeItem(atPath: path)
+        }
+      }
 
       // 4. Encrypt filename
       let ext = fileExtension(for: uti)
@@ -519,47 +531,24 @@ final class NativeBackupEngine: NSObject {
       let mimeType = mimeTypeFromUTI(uti)
       let nameEncrypted = try masterKey.encryptName(fileId: fileId, filename: filename, mimeType: mimeType)
 
-      // 5. Compute total ciphertext size
-      var totalCiphertextBytes = 0
-      for chunk in chunkResults {
-        totalCiphertextBytes += chunk.nonce.count + chunk.ciphertext.count
-      }
-
-      // 6. Init upload session via metadata session (not background session)
-      let serverFileId = try await initUploadSession(
+      // 5. Upload via Rust — handles init, chunk upload, and complete in one call
+      let createdAt = ISO8601DateFormatter().string(from: Date())
+      let result = try uploadEncryptedFile(
+        apiUrl: baseURL,
+        token: authToken,
         fileId: fileId,
         nameEncrypted: nameEncrypted,
+        parentId: self.parentFolderId,
         mimeType: mimeType,
         isMedia: isMedia(mimeType: mimeType),
-        sizeBytes: data.count,
-        chunkCount: chunkResults.count,
-        authToken: authToken,
-        baseURL: baseURL
+        chunkPaths: chunkPaths,
+        originalSize: UInt64(data.count),
+        createdAt: createdAt,
+        callback: nil
       )
 
-      // 7. Upload each chunk
-      for (index, chunk) in chunkResults.enumerated() {
-        var chunkData = Data()
-        chunkData.append(chunk.nonce)
-        chunkData.append(chunk.ciphertext)
-
-        try await uploadChunk(
-          serverFileId: serverFileId,
-          chunkIndex: index,
-          chunkData: chunkData,
-          authToken: authToken,
-          baseURL: baseURL
-        )
-      }
-
-      // 8. Complete upload
-      try await completeUpload(
-        serverFileId: serverFileId,
-        authToken: authToken,
-        baseURL: baseURL
-      )
-
-      // 9. Mark complete in database
+      // 6. Mark complete in database
+      let serverFileId = result.fileId
       dbQueue.sync {
         markUploadComplete(assetId: asset.localAssetId, remoteFileId: serverFileId)
       }
@@ -567,9 +556,65 @@ final class NativeBackupEngine: NSObject {
       bytesUploaded += Int64(data.count)
 
       onFileStatus?(asset.localAssetId, "uploaded", filename, nil)
-      NSLog("[NativeBackupEngine] Uploaded \(filename) (\(data.count) bytes)")
+      NSLog("[NativeBackupEngine] Uploaded \(filename) (\(data.count) bytes, \(result.chunksUploaded) chunks via Rust)")
 
       return true
+
+      // --- Legacy Swift HTTP upload code (commented out for quick revert) ---
+      //
+      // // 5. Compute total ciphertext size
+      // var totalCiphertextBytes = 0
+      // for chunk in chunkResults {
+      //   totalCiphertextBytes += chunk.nonce.count + chunk.ciphertext.count
+      // }
+      //
+      // // 6. Init upload session via metadata session (not background session)
+      // let serverFileId = try await initUploadSession(
+      //   fileId: fileId,
+      //   nameEncrypted: nameEncrypted,
+      //   mimeType: mimeType,
+      //   isMedia: isMedia(mimeType: mimeType),
+      //   sizeBytes: data.count,
+      //   chunkCount: chunkResults.count,
+      //   authToken: authToken,
+      //   baseURL: baseURL
+      // )
+      //
+      // // 7. Upload each chunk
+      // for (index, chunk) in chunkResults.enumerated() {
+      //   var chunkData = Data()
+      //   chunkData.append(chunk.nonce)
+      //   chunkData.append(chunk.ciphertext)
+      //
+      //   try await uploadChunk(
+      //     serverFileId: serverFileId,
+      //     chunkIndex: index,
+      //     chunkData: chunkData,
+      //     authToken: authToken,
+      //     baseURL: baseURL
+      //   )
+      // }
+      //
+      // // 8. Complete upload
+      // try await completeUpload(
+      //   serverFileId: serverFileId,
+      //   authToken: authToken,
+      //   baseURL: baseURL
+      // )
+      //
+      // // 9. Mark complete in database
+      // dbQueue.sync {
+      //   markUploadComplete(assetId: asset.localAssetId, remoteFileId: serverFileId)
+      // }
+      // completedAssets += 1
+      // bytesUploaded += Int64(data.count)
+      //
+      // onFileStatus?(asset.localAssetId, "uploaded", filename, nil)
+      // NSLog("[NativeBackupEngine] Uploaded \(filename) (\(data.count) bytes)")
+      //
+      // return true
+      // --- End legacy Swift HTTP upload code ---
+
     } catch {
       dbQueue.sync {
         markFailed(assetId: asset.localAssetId, error: error.localizedDescription)
