@@ -112,7 +112,7 @@ final class PhotoBackupManager: NSObject {
     #if os(iOS)
     let request = BGProcessingTaskRequest(identifier: Self.bgTaskIdentifier)
     request.requiresNetworkConnectivity = true
-    request.requiresExternalPower = true
+    request.requiresExternalPower = false
     try? BGTaskScheduler.shared.submit(request)
     #endif
   }

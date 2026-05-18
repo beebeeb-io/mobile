@@ -76,18 +76,11 @@ function hashResumeKey(input: string): string {
 
 /**
  * Generate a UUID v4 for the file_id.
- * Uses crypto.randomUUID() (Hermes ≥ 0.75 / RN 0.76+) with a manual fallback.
+ * Uses crypto.randomUUID() which is available on Hermes ≥ 0.75 / RN 0.76+
+ * and all supported iOS/Android versions.
  */
 export function generateFileId(): string {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID()
-  }
-  // Fallback: manual UUID v4
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-    const r = (Math.random() * 16) | 0
-    const v = c === 'x' ? r : (r & 0x3) | 0x8
-    return v.toString(16)
-  })
+  return crypto.randomUUID()
 }
 
 // ─── Main function ────────────────────────────────────────────────────────────

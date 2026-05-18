@@ -304,9 +304,37 @@ export async function getPendingUploads(
   const db = await getDb();
   return db.getAllAsync<BackupAsset>(
     `SELECT * FROM backup_assets
-      WHERE status IN ('pending_upload', 'pending_reupload')
-      ORDER BY created_at ASC LIMIT ?`,
+      WHERE status IN ('pending_upload', 'pending_reupload', 'uploading')
+        AND retry_count < 10
+      ORDER BY created_at DESC LIMIT ?`,
     [limit],
+  );
+}
+
+/**
+ * Reset rows stuck in 'uploading' for more than 5 minutes back to
+ * 'pending_reupload' so they get retried. This handles the case where the
+ * app was killed mid-upload or the upload timed out silently.
+ */
+export async function recoverStuckUploads(): Promise<number> {
+  const db = await getDb();
+  const fiveMinAgo = Date.now() - 5 * 60 * 1000;
+  const result = await db.runAsync(
+    `UPDATE backup_assets SET status = 'pending_reupload'
+      WHERE status = 'uploading' AND last_attempt_at < ?`,
+    [fiveMinAgo],
+  );
+  return result.changes;
+}
+
+/**
+ * Items that have failed 10+ times and will no longer be retried
+ * automatically. Exposed so the UI can show a "permanently failed" list.
+ */
+export async function getDeadLetterItems(): Promise<BackupAsset[]> {
+  const db = await getDb();
+  return db.getAllAsync<BackupAsset>(
+    `SELECT * FROM backup_assets WHERE retry_count >= 10 ORDER BY last_attempt_at DESC`,
   );
 }
 
