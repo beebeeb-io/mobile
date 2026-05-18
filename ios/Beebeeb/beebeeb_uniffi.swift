@@ -414,7 +414,13 @@ fileprivate final class UniffiHandleMap<T>: @unchecked Sendable {
 
 
 // Public interface members begin here.
-
+// Magic number for the Rust proxy to call using the same mechanism as every other method,
+// to free the callback once it's dropped by Rust.
+private let IDX_CALLBACK_FREE: Int32 = 0
+// Callback return codes
+private let UNIFFI_CALLBACK_SUCCESS: Int32 = 0
+private let UNIFFI_CALLBACK_ERROR: Int32 = 1
+private let UNIFFI_CALLBACK_UNEXPECTED_ERROR: Int32 = 2
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -460,6 +466,22 @@ fileprivate struct FfiConverterUInt64: FfiConverterPrimitive {
     }
 
     public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterInt64: FfiConverterPrimitive {
+    typealias FfiType = Int64
+    typealias SwiftType = Int64
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Int64 {
+        return try lift(readInt(&buf))
+    }
+
+    public static func write(_ value: Int64, into buf: inout [UInt8]) {
         writeInt(&buf, lower(value))
     }
 }
@@ -913,6 +935,14 @@ public protocol MasterKeyHandleProtocol: AnyObject, Sendable {
     func computeRecoveryCheck() throws  -> Data
     
     /**
+     * Decrypt chunk files back to a single output file.
+     *
+     * Reads each chunk file (containing `nonce || ciphertext`), decrypts,
+     * and writes plaintext to output. Atomic rename at end.
+     */
+    func decryptFile(fileId: String, chunkPaths: [String], outputPath: String, callback: FileProgressCallback?) throws  -> DecryptedFileInfo
+    
+    /**
      * Decrypt a `name_encrypted` envelope using the handle's master key.
      */
     func decryptName(fileId: String, nameEncrypted: String) throws  -> String
@@ -931,6 +961,17 @@ public protocol MasterKeyHandleProtocol: AnyObject, Sendable {
      * Derive the X25519 secret scalar from the master key. Returns 32 bytes.
      */
     func deriveX25519Private() throws  -> Data
+    
+    /**
+     * Encrypt a file from disk, writing each chunk as a `.enc` file.
+     *
+     * Reads the input file chunk-by-chunk, encrypts with AES-256-GCM,
+     * writes `nonce || ciphertext` to `{output_dir}/{chunk_index}.enc`.
+     * Peak memory: 2x chunk_size.
+     *
+     * `profile` must be one of: `"desktop"`, `"web"`, `"mobile"`, `"backup"`.
+     */
+    func encryptFile(fileId: String, inputPath: String, outputDir: String, profile: String, callback: FileProgressCallback?) throws  -> EncryptedFileInfo
     
     /**
      * Encrypt a filename + optional MIME type using the handle's master key.
@@ -1035,6 +1076,24 @@ open func computeRecoveryCheck()throws  -> Data  {
 }
     
     /**
+     * Decrypt chunk files back to a single output file.
+     *
+     * Reads each chunk file (containing `nonce || ciphertext`), decrypts,
+     * and writes plaintext to output. Atomic rename at end.
+     */
+open func decryptFile(fileId: String, chunkPaths: [String], outputPath: String, callback: FileProgressCallback?)throws  -> DecryptedFileInfo  {
+    return try  FfiConverterTypeDecryptedFileInfo_lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
+    uniffi_beebeeb_uniffi_fn_method_masterkeyhandle_decrypt_file(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(fileId),
+        FfiConverterSequenceString.lower(chunkPaths),
+        FfiConverterString.lower(outputPath),
+        FfiConverterOptionCallbackInterfaceFileProgressCallback.lower(callback),$0
+    )
+})
+}
+    
+    /**
      * Decrypt a `name_encrypted` envelope using the handle's master key.
      */
 open func decryptName(fileId: String, nameEncrypted: String)throws  -> String  {
@@ -1079,6 +1138,28 @@ open func deriveX25519Private()throws  -> Data  {
     return try  FfiConverterData.lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
     uniffi_beebeeb_uniffi_fn_method_masterkeyhandle_derive_x25519_private(
             self.uniffiCloneHandle(),$0
+    )
+})
+}
+    
+    /**
+     * Encrypt a file from disk, writing each chunk as a `.enc` file.
+     *
+     * Reads the input file chunk-by-chunk, encrypts with AES-256-GCM,
+     * writes `nonce || ciphertext` to `{output_dir}/{chunk_index}.enc`.
+     * Peak memory: 2x chunk_size.
+     *
+     * `profile` must be one of: `"desktop"`, `"web"`, `"mobile"`, `"backup"`.
+     */
+open func encryptFile(fileId: String, inputPath: String, outputDir: String, profile: String, callback: FileProgressCallback?)throws  -> EncryptedFileInfo  {
+    return try  FfiConverterTypeEncryptedFileInfo_lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
+    uniffi_beebeeb_uniffi_fn_method_masterkeyhandle_encrypt_file(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(fileId),
+        FfiConverterString.lower(inputPath),
+        FfiConverterString.lower(outputDir),
+        FfiConverterString.lower(profile),
+        FfiConverterOptionCallbackInterfaceFileProgressCallback.lower(callback),$0
     )
 })
 }
@@ -1155,6 +1236,64 @@ public func FfiConverterTypeMasterKeyHandle_lower(_ value: MasterKeyHandle) -> U
 }
 
 
+
+
+/**
+ * Result of planning chunks for a file upload. Contains the chunk size and
+ * count needed for the given file size and client profile.
+ */
+public struct ChunkPlanResult: Equatable, Hashable {
+    public var chunkSizeBytes: UInt64
+    public var chunkCount: UInt64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(chunkSizeBytes: UInt64, chunkCount: UInt64) {
+        self.chunkSizeBytes = chunkSizeBytes
+        self.chunkCount = chunkCount
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension ChunkPlanResult: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeChunkPlanResult: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ChunkPlanResult {
+        return
+            try ChunkPlanResult(
+                chunkSizeBytes: FfiConverterUInt64.read(from: &buf), 
+                chunkCount: FfiConverterUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: ChunkPlanResult, into buf: inout [UInt8]) {
+        FfiConverterUInt64.write(value.chunkSizeBytes, into: &buf)
+        FfiConverterUInt64.write(value.chunkCount, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeChunkPlanResult_lift(_ buf: RustBuffer) throws -> ChunkPlanResult {
+    return try FfiConverterTypeChunkPlanResult.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeChunkPlanResult_lower(_ value: ChunkPlanResult) -> RustBuffer {
+    return FfiConverterTypeChunkPlanResult.lower(value)
+}
 
 
 public struct ConstellationEdgeDto: Equatable, Hashable {
@@ -1480,6 +1619,67 @@ public func FfiConverterTypeConstellationSessionInitDto_lower(_ value: Constella
 
 
 /**
+ * Result of decrypting chunk files back to a single file.
+ */
+public struct DecryptedFileInfo: Equatable, Hashable {
+    public var outputPath: String
+    public var totalBytes: UInt64
+    public var chunksProcessed: UInt32
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(outputPath: String, totalBytes: UInt64, chunksProcessed: UInt32) {
+        self.outputPath = outputPath
+        self.totalBytes = totalBytes
+        self.chunksProcessed = chunksProcessed
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension DecryptedFileInfo: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeDecryptedFileInfo: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> DecryptedFileInfo {
+        return
+            try DecryptedFileInfo(
+                outputPath: FfiConverterString.read(from: &buf), 
+                totalBytes: FfiConverterUInt64.read(from: &buf), 
+                chunksProcessed: FfiConverterUInt32.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: DecryptedFileInfo, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.outputPath, into: &buf)
+        FfiConverterUInt64.write(value.totalBytes, into: &buf)
+        FfiConverterUInt32.write(value.chunksProcessed, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeDecryptedFileInfo_lift(_ buf: RustBuffer) throws -> DecryptedFileInfo {
+    return try FfiConverterTypeDecryptedFileInfo.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeDecryptedFileInfo_lower(_ value: DecryptedFileInfo) -> RustBuffer {
+    return FfiConverterTypeDecryptedFileInfo.lower(value)
+}
+
+
+/**
  * Result of decrypting a name_encrypted blob with MIME type.
  */
 public struct DecryptedNameWithMime: Equatable, Hashable {
@@ -1533,6 +1733,132 @@ public func FfiConverterTypeDecryptedNameWithMime_lift(_ buf: RustBuffer) throws
 #endif
 public func FfiConverterTypeDecryptedNameWithMime_lower(_ value: DecryptedNameWithMime) -> RustBuffer {
     return FfiConverterTypeDecryptedNameWithMime.lower(value)
+}
+
+
+/**
+ * A single encrypted chunk (nonce + ciphertext) for batch decryption.
+ */
+public struct EncryptedChunkData: Equatable, Hashable {
+    public var nonce: Data
+    public var ciphertext: Data
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(nonce: Data, ciphertext: Data) {
+        self.nonce = nonce
+        self.ciphertext = ciphertext
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension EncryptedChunkData: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeEncryptedChunkData: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> EncryptedChunkData {
+        return
+            try EncryptedChunkData(
+                nonce: FfiConverterData.read(from: &buf), 
+                ciphertext: FfiConverterData.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: EncryptedChunkData, into buf: inout [UInt8]) {
+        FfiConverterData.write(value.nonce, into: &buf)
+        FfiConverterData.write(value.ciphertext, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeEncryptedChunkData_lift(_ buf: RustBuffer) throws -> EncryptedChunkData {
+    return try FfiConverterTypeEncryptedChunkData.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeEncryptedChunkData_lower(_ value: EncryptedChunkData) -> RustBuffer {
+    return FfiConverterTypeEncryptedChunkData.lower(value)
+}
+
+
+/**
+ * Info about a single encrypted chunk written to disk by `encrypt_file`.
+ */
+public struct EncryptedChunkInfo: Equatable, Hashable {
+    public var chunkIndex: UInt32
+    public var outputPath: String
+    public var nonce: Data
+    public var plaintextSize: UInt64
+    public var ciphertextSize: UInt64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(chunkIndex: UInt32, outputPath: String, nonce: Data, plaintextSize: UInt64, ciphertextSize: UInt64) {
+        self.chunkIndex = chunkIndex
+        self.outputPath = outputPath
+        self.nonce = nonce
+        self.plaintextSize = plaintextSize
+        self.ciphertextSize = ciphertextSize
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension EncryptedChunkInfo: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeEncryptedChunkInfo: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> EncryptedChunkInfo {
+        return
+            try EncryptedChunkInfo(
+                chunkIndex: FfiConverterUInt32.read(from: &buf), 
+                outputPath: FfiConverterString.read(from: &buf), 
+                nonce: FfiConverterData.read(from: &buf), 
+                plaintextSize: FfiConverterUInt64.read(from: &buf), 
+                ciphertextSize: FfiConverterUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: EncryptedChunkInfo, into buf: inout [UInt8]) {
+        FfiConverterUInt32.write(value.chunkIndex, into: &buf)
+        FfiConverterString.write(value.outputPath, into: &buf)
+        FfiConverterData.write(value.nonce, into: &buf)
+        FfiConverterUInt64.write(value.plaintextSize, into: &buf)
+        FfiConverterUInt64.write(value.ciphertextSize, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeEncryptedChunkInfo_lift(_ buf: RustBuffer) throws -> EncryptedChunkInfo {
+    return try FfiConverterTypeEncryptedChunkInfo.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeEncryptedChunkInfo_lower(_ value: EncryptedChunkInfo) -> RustBuffer {
+    return FfiConverterTypeEncryptedChunkInfo.lower(value)
 }
 
 
@@ -1595,6 +1921,71 @@ public func FfiConverterTypeEncryptedData_lift(_ buf: RustBuffer) throws -> Encr
 #endif
 public func FfiConverterTypeEncryptedData_lower(_ value: EncryptedData) -> RustBuffer {
     return FfiConverterTypeEncryptedData.lower(value)
+}
+
+
+/**
+ * Result of encrypting a complete file to disk chunks.
+ */
+public struct EncryptedFileInfo: Equatable, Hashable {
+    public var chunks: [EncryptedChunkInfo]
+    public var totalPlaintextBytes: UInt64
+    public var totalCiphertextBytes: UInt64
+    public var chunkSizeBytes: UInt64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(chunks: [EncryptedChunkInfo], totalPlaintextBytes: UInt64, totalCiphertextBytes: UInt64, chunkSizeBytes: UInt64) {
+        self.chunks = chunks
+        self.totalPlaintextBytes = totalPlaintextBytes
+        self.totalCiphertextBytes = totalCiphertextBytes
+        self.chunkSizeBytes = chunkSizeBytes
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension EncryptedFileInfo: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeEncryptedFileInfo: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> EncryptedFileInfo {
+        return
+            try EncryptedFileInfo(
+                chunks: FfiConverterSequenceTypeEncryptedChunkInfo.read(from: &buf), 
+                totalPlaintextBytes: FfiConverterUInt64.read(from: &buf), 
+                totalCiphertextBytes: FfiConverterUInt64.read(from: &buf), 
+                chunkSizeBytes: FfiConverterUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: EncryptedFileInfo, into buf: inout [UInt8]) {
+        FfiConverterSequenceTypeEncryptedChunkInfo.write(value.chunks, into: &buf)
+        FfiConverterUInt64.write(value.totalPlaintextBytes, into: &buf)
+        FfiConverterUInt64.write(value.totalCiphertextBytes, into: &buf)
+        FfiConverterUInt64.write(value.chunkSizeBytes, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeEncryptedFileInfo_lift(_ buf: RustBuffer) throws -> EncryptedFileInfo {
+    return try FfiConverterTypeEncryptedFileInfo.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeEncryptedFileInfo_lower(_ value: EncryptedFileInfo) -> RustBuffer {
+    return FfiConverterTypeEncryptedFileInfo.lower(value)
 }
 
 
@@ -2015,6 +2406,139 @@ public func FfiConverterTypeCryptoError_lower(_ value: CryptoError) -> RustBuffe
     return FfiConverterTypeCryptoError.lower(value)
 }
 
+
+
+
+public protocol FileProgressCallback: AnyObject, Sendable {
+    
+    func onProgress(chunksCompleted: UInt32, chunksTotal: UInt32) 
+    
+}
+
+
+// Put the implementation in a struct so we don't pollute the top-level namespace
+fileprivate struct UniffiCallbackInterfaceFileProgressCallback {
+
+    // Create the VTable using a series of closures.
+    // Swift automatically converts these into C callback functions.
+    //
+    // Store the vtable directly.
+    static let vtable: UniffiVTableCallbackInterfaceFileProgressCallback = UniffiVTableCallbackInterfaceFileProgressCallback(
+        uniffiFree: { (uniffiHandle: UInt64) -> () in
+            do {
+                try FfiConverterCallbackInterfaceFileProgressCallback.handleMap.remove(handle: uniffiHandle)
+            } catch {
+                print("Uniffi callback interface FileProgressCallback: handle missing in uniffiFree")
+            }
+        },
+        uniffiClone: { (uniffiHandle: UInt64) -> UInt64 in
+            do {
+                return try FfiConverterCallbackInterfaceFileProgressCallback.handleMap.clone(handle: uniffiHandle)
+            } catch {
+                fatalError("Uniffi callback interface FileProgressCallback: handle missing in uniffiClone")
+            }
+        },
+        onProgress: { (
+            uniffiHandle: UInt64,
+            chunksCompleted: UInt32,
+            chunksTotal: UInt32,
+            uniffiOutReturn: UnsafeMutableRawPointer,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> () in
+                guard let uniffiObj = try? FfiConverterCallbackInterfaceFileProgressCallback.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return uniffiObj.onProgress(
+                     chunksCompleted: try FfiConverterUInt32.lift(chunksCompleted),
+                     chunksTotal: try FfiConverterUInt32.lift(chunksTotal)
+                )
+            }
+
+            
+            let writeReturn = { () }
+            uniffiTraitInterfaceCall(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn
+            )
+        }
+    )
+
+    // Rust stores this pointer for future callback invocations, so it must live
+    // for the process lifetime (not just for the init function call).
+    static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceFileProgressCallback> = {
+        let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfaceFileProgressCallback>.allocate(capacity: 1)
+        ptr.initialize(to: vtable)
+        return UnsafePointer(ptr)
+    }()
+}
+
+private func uniffiCallbackInitFileProgressCallback() {
+    uniffi_beebeeb_uniffi_fn_init_callback_vtable_fileprogresscallback(UniffiCallbackInterfaceFileProgressCallback.vtablePtr)
+}
+
+// FfiConverter protocol for callback interfaces
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterCallbackInterfaceFileProgressCallback {
+    fileprivate static let handleMap = UniffiHandleMap<FileProgressCallback>()
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+extension FfiConverterCallbackInterfaceFileProgressCallback : FfiConverter {
+    typealias SwiftType = FileProgressCallback
+    typealias FfiType = UInt64
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func lift(_ handle: UInt64) throws -> SwiftType {
+        try handleMap.get(handle: handle)
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func lower(_ v: SwiftType) -> UInt64 {
+        return handleMap.insert(obj: v)
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func write(_ v: SwiftType, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(v))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterCallbackInterfaceFileProgressCallback_lift(_ handle: UInt64) throws -> FileProgressCallback {
+    return try FfiConverterCallbackInterfaceFileProgressCallback.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterCallbackInterfaceFileProgressCallback_lower(_ v: FileProgressCallback) -> UInt64 {
+    return FfiConverterCallbackInterfaceFileProgressCallback.lower(v)
+}
+
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
@@ -2066,6 +2590,55 @@ fileprivate struct FfiConverterOptionTypeConstellationPayloadDto: FfiConverterRu
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionCallbackInterfaceFileProgressCallback: FfiConverterRustBuffer {
+    typealias SwiftType = FileProgressCallback?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterCallbackInterfaceFileProgressCallback.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterCallbackInterfaceFileProgressCallback.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceString: FfiConverterRustBuffer {
+    typealias SwiftType = [String]
+
+    public static func write(_ value: [String], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterString.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [String] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [String]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterString.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeConstellationEdgeDto: FfiConverterRustBuffer {
     typealias SwiftType = [ConstellationEdgeDto]
 
@@ -2108,6 +2681,56 @@ fileprivate struct FfiConverterSequenceTypeConstellationNodeDto: FfiConverterRus
         seq.reserveCapacity(Int(len))
         for _ in 0 ..< len {
             seq.append(try FfiConverterTypeConstellationNodeDto.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeEncryptedChunkData: FfiConverterRustBuffer {
+    typealias SwiftType = [EncryptedChunkData]
+
+    public static func write(_ value: [EncryptedChunkData], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeEncryptedChunkData.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [EncryptedChunkData] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [EncryptedChunkData]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeEncryptedChunkData.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeEncryptedChunkInfo: FfiConverterRustBuffer {
+    typealias SwiftType = [EncryptedChunkInfo]
+
+    public static func write(_ value: [EncryptedChunkInfo], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeEncryptedChunkInfo.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [EncryptedChunkInfo] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [EncryptedChunkInfo]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeEncryptedChunkInfo.read(from: &buf))
         }
         return seq
     }
@@ -2190,6 +2813,19 @@ public func decryptChunk(key: Data, nonce: Data, ciphertext: Data)throws  -> Dat
         FfiConverterData.lower(key),
         FfiConverterData.lower(nonce),
         FfiConverterData.lower(ciphertext),$0
+    )
+})
+}
+/**
+ * Decrypt a sequence of encrypted chunks and write the plaintext to a file.
+ * Returns the total number of plaintext bytes written.
+ */
+public func decryptChunksToFile(key: Data, chunks: [EncryptedChunkData], outputPath: String)throws  -> UInt64  {
+    return try  FfiConverterUInt64.lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
+    uniffi_beebeeb_uniffi_fn_func_decrypt_chunks_to_file(
+        FfiConverterData.lower(key),
+        FfiConverterSequenceTypeEncryptedChunkData.lower(chunks),
+        FfiConverterString.lower(outputPath),$0
     )
 })
 }
@@ -2356,6 +2992,26 @@ public func isMedia(mimeType: String?) -> Bool  {
 })
 }
 /**
+ * Returns `true` if the given MIME type can be previewed in-app.
+ */
+public func isPreviewable(mimeType: String?) -> Bool  {
+    return try!  FfiConverterBool.lift(try! rustCall() {
+    uniffi_beebeeb_uniffi_fn_func_is_previewable(
+        FfiConverterOptionString.lower(mimeType),$0
+    )
+})
+}
+/**
+ * Returns `true` if the file extension indicates a previewable file.
+ */
+public func isPreviewableByExtension(filename: String) -> Bool  {
+    return try!  FfiConverterBool.lift(try! rustCall() {
+    uniffi_beebeeb_uniffi_fn_func_is_previewable_by_extension(
+        FfiConverterString.lower(filename),$0
+    )
+})
+}
+/**
  * Finish OPAQUE client login. Returns the finalization message, the session
  * key, and the export key (used to derive the master key envelope).
  */
@@ -2404,6 +3060,74 @@ public func opaqueRegistrationStart(password: Data)throws  -> OpaqueStartResult 
 })
 }
 /**
+ * Return the base storage quota (in bytes) for a plan slug.
+ */
+public func planBaseStorageBytes(planSlug: String) -> Int64  {
+    return try!  FfiConverterInt64.lift(try! rustCall() {
+    uniffi_beebeeb_uniffi_fn_func_plan_base_storage_bytes(
+        FfiConverterString.lower(planSlug),$0
+    )
+})
+}
+/**
+ * Whether the plan supports purchasing extra storage.
+ */
+public func planCanAddStorage(planSlug: String) -> Bool  {
+    return try!  FfiConverterBool.lift(try! rustCall() {
+    uniffi_beebeeb_uniffi_fn_func_plan_can_add_storage(
+        FfiConverterString.lower(planSlug),$0
+    )
+})
+}
+/**
+ * Plan how to split a file into chunks for upload based on the client profile.
+ *
+ * `profile` must be one of: `"desktop"`, `"web"`, `"mobile"`, `"backup"`.
+ * Returns the chunk size and count for the given file size.
+ */
+public func planChunks(fileSizeBytes: UInt64, profile: String)throws  -> ChunkPlanResult  {
+    return try  FfiConverterTypeChunkPlanResult_lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
+    uniffi_beebeeb_uniffi_fn_func_plan_chunks(
+        FfiConverterUInt64.lower(fileSizeBytes),
+        FfiConverterString.lower(profile),$0
+    )
+})
+}
+/**
+ * Compute the effective quota after add-ons and bonus bytes.
+ */
+public func planEffectiveQuota(planSlug: String, extraTb: Int64, bonusBytes: Int64) -> Int64  {
+    return try!  FfiConverterInt64.lift(try! rustCall() {
+    uniffi_beebeeb_uniffi_fn_func_plan_effective_quota(
+        FfiConverterString.lower(planSlug),
+        FfiConverterInt64.lower(extraTb),
+        FfiConverterInt64.lower(bonusBytes),$0
+    )
+})
+}
+/**
+ * Maximum additional TB a plan may purchase.
+ */
+public func planMaxExtraTb(planSlug: String) -> Int64  {
+    return try!  FfiConverterInt64.lift(try! rustCall() {
+    uniffi_beebeeb_uniffi_fn_func_plan_max_extra_tb(
+        FfiConverterString.lower(planSlug),$0
+    )
+})
+}
+/**
+ * Monthly cost in cents for a plan with optional add-ons.
+ */
+public func planMonthlyCostCents(planSlug: String, extraTb: Int64, extraUsers: Int64) -> Int64  {
+    return try!  FfiConverterInt64.lift(try! rustCall() {
+    uniffi_beebeeb_uniffi_fn_func_plan_monthly_cost_cents(
+        FfiConverterString.lower(planSlug),
+        FfiConverterInt64.lower(extraTb),
+        FfiConverterInt64.lower(extraUsers),$0
+    )
+})
+}
+/**
  * Recover a master key from a 12-word BIP39 recovery phrase.
  * Returns the 32-byte master key.
  */
@@ -2411,6 +3135,16 @@ public func recoverFromPhrase(phrase: String)throws  -> Data  {
     return try  FfiConverterData.lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
     uniffi_beebeeb_uniffi_fn_func_recover_from_phrase(
         FfiConverterString.lower(phrase),$0
+    )
+})
+}
+/**
+ * Format a byte count as a human-readable SI string (e.g. "5.0 TB").
+ */
+public func storageFormatSi(bytes: Int64) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+    uniffi_beebeeb_uniffi_fn_func_storage_format_si(
+        FfiConverterInt64.lower(bytes),$0
     )
 })
 }
@@ -2457,6 +3191,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_beebeeb_uniffi_checksum_func_decrypt_chunk() != 1418) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_beebeeb_uniffi_checksum_func_decrypt_chunks_to_file() != 27857) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_beebeeb_uniffi_checksum_func_decrypt_metadata() != 59510) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -2499,6 +3236,12 @@ private let initializationResult: InitializationResult = {
     if (uniffi_beebeeb_uniffi_checksum_func_is_media() != 46056) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_beebeeb_uniffi_checksum_func_is_previewable() != 57562) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_func_is_previewable_by_extension() != 2408) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_beebeeb_uniffi_checksum_func_opaque_login_finish() != 15751) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -2511,7 +3254,28 @@ private let initializationResult: InitializationResult = {
     if (uniffi_beebeeb_uniffi_checksum_func_opaque_registration_start() != 35428) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_beebeeb_uniffi_checksum_func_plan_base_storage_bytes() != 5655) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_func_plan_can_add_storage() != 24808) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_func_plan_chunks() != 33629) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_func_plan_effective_quota() != 26719) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_func_plan_max_extra_tb() != 16450) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_func_plan_monthly_cost_cents() != 56853) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_beebeeb_uniffi_checksum_func_recover_from_phrase() != 25900) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_func_storage_format_si() != 41780) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_beebeeb_uniffi_checksum_func_x25519_shared_secret() != 52845) {
@@ -2547,6 +3311,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_compute_recovery_check() != 4155) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_decrypt_file() != 23201) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_decrypt_name() != 40318) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -2557,6 +3324,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_derive_x25519_private() != 61634) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_encrypt_file() != 19137) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_encrypt_name() != 53513) {
@@ -2574,7 +3344,11 @@ private let initializationResult: InitializationResult = {
     if (uniffi_beebeeb_uniffi_checksum_constructor_masterkeyhandle_from_recovery_phrase() != 63639) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_beebeeb_uniffi_checksum_method_fileprogresscallback_on_progress() != 13325) {
+        return InitializationResult.apiChecksumMismatch
+    }
 
+    uniffiCallbackInitFileProgressCallback()
     return InitializationResult.ok
 }()
 
