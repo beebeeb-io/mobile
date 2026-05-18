@@ -42,7 +42,7 @@ final class FileProviderItem: NSObject, NSFileProviderItem {
     // While we wait for the main app to populate name_decrypted via
     // syncFileProviderCache, show a stable placeholder. The system will
     // refetch the item once we signal a working set update.
-    return cached.isFolder ? "Folder" : "Encrypted file"
+    return cached.isFolder ? "Folder" : "Open Beebeeb to decrypt"
   }
 
   var contentType: UTType {
