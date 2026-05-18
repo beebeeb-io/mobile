@@ -16,12 +16,15 @@ const withBeebeebCrypto = (config) => {
     if (!plist.UIBackgroundModes.includes('fetch')) plist.UIBackgroundModes.push('fetch')
     if (!plist.UIBackgroundModes.includes('processing')) plist.UIBackgroundModes.push('processing')
 
-    // Register the BGProcessingTask identifier with the system.
+    // Register the BGProcessingTask identifiers with the system.
     if (!Array.isArray(plist.BGTaskSchedulerPermittedIdentifiers)) {
       plist.BGTaskSchedulerPermittedIdentifiers = []
     }
     if (!plist.BGTaskSchedulerPermittedIdentifiers.includes('io.beebeeb.app.photo-backup')) {
       plist.BGTaskSchedulerPermittedIdentifiers.push('io.beebeeb.app.photo-backup')
+    }
+    if (!plist.BGTaskSchedulerPermittedIdentifiers.includes('io.beebeeb.app.native-backup')) {
+      plist.BGTaskSchedulerPermittedIdentifiers.push('io.beebeeb.app.native-backup')
     }
 
     // Permission usage descriptions — only set if not already provided.

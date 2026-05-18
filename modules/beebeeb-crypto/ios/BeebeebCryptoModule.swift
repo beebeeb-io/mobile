@@ -820,11 +820,16 @@ public class BeebeebCryptoModule: Module {
     }
 
     AsyncFunction("enablePhotoBackup") { (authToken: String) in
-      PhotoBackupManager.shared.enable(authToken: authToken)
+      let engine = NativeBackupEngine.shared
+      engine.token = authToken
+      if engine.apiBaseUrl == nil {
+        engine.apiBaseUrl = UserDefaults.standard.string(forKey: "io.beebeeb.serverURL")
+      }
+      engine.start()
     }
 
     AsyncFunction("disablePhotoBackup") { () in
-      PhotoBackupManager.shared.disable()
+      NativeBackupEngine.shared.stop()
     }
 
     AsyncFunction("enableContactsBackup") { (authToken: String) in
@@ -852,25 +857,20 @@ public class BeebeebCryptoModule: Module {
     }
 
     AsyncFunction("getBackupProgress") { () -> [String: Any] in
-      let p = PhotoBackupManager.shared.getProgress()
-      return [
-        "total": p.total,
-        "completed": p.completed,
-        "inProgress": p.inProgress,
-        "lastBackupAt": p.lastBackupAt as Any,
-      ]
+      return NativeBackupEngine.shared.currentProgress()
     }
 
     AsyncFunction("triggerImmediateBackup") { (authToken: String) in
-      let mgr = PhotoBackupManager.shared
-      // Wait for enable() to finish authorization + asset enumeration
-      // before triggering the batch, otherwise the queue is empty.
-      let semaphore = DispatchSemaphore(value: 0)
-      mgr.enable(authToken: authToken) {
-        semaphore.signal()
+      let engine = NativeBackupEngine.shared
+      engine.token = authToken
+      if engine.apiBaseUrl == nil {
+        engine.apiBaseUrl = UserDefaults.standard.string(forKey: "io.beebeeb.serverURL")
       }
-      _ = semaphore.wait(timeout: .now() + 30)
-      mgr.triggerImmediateBatch { _ in }
+      // start() is idempotent — returns immediately if already running.
+      engine.start()
+      Task {
+        _ = try? await engine.processBatch(limit: 50)
+      }
     }
 
     // ── Share Extension: pending shares dropped by BeebeebShare ────────

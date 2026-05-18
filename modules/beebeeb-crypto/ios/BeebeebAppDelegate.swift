@@ -10,11 +10,7 @@ public class BeebeebAppDelegate: ExpoAppDelegateSubscriber {
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
   ) -> Bool {
-    PhotoBackupManager.shared.registerBackgroundTask()
-    // Ensure background URLSession is created early so iOS can deliver pending events.
-    PhotoBackupManager.shared.setupBackgroundSession()
-
-    // Register NativeBackupEngine's background task and session.
+    // NativeBackupEngine is the active backup pipeline.
     // BGTaskScheduler.register must be called before didFinishLaunching returns.
     NativeBackupEngine.shared.registerBackgroundTask()
     return true
@@ -25,12 +21,7 @@ public class BeebeebAppDelegate: ExpoAppDelegateSubscriber {
     handleEventsForBackgroundURLSession identifier: String,
     completionHandler: @escaping () -> Void
   ) {
-    if identifier == PhotoBackupManager.bgSessionIdentifier {
-      PhotoBackupManager.shared.handleBackgroundSessionEvents(
-        identifier: identifier,
-        completionHandler: completionHandler
-      )
-    } else if identifier == NativeBackupEngine.bgSessionIdentifier {
+    if identifier == NativeBackupEngine.bgSessionIdentifier {
       NativeBackupEngine.shared.handleBackgroundSessionEvents(
         identifier: identifier,
         completionHandler: completionHandler

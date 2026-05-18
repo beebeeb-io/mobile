@@ -16,7 +16,6 @@ import {
   type NativeBackupProgress,
 } from '../../modules/beebeeb-crypto';
 import { ensureBackupFolders, type BackupCategory } from '../services/BackupService';
-import { PhotoBackupBridge } from './PhotoBackupBridge';
 
 const BACKUP_PHOTO_KEY = 'beebeeb_camera_backup';
 const BACKUP_CONTACTS_KEY = 'beebeeb_contacts_backup';
@@ -396,7 +395,6 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
   return (
     <BackupContext.Provider value={value}>
       {children}
-      <PhotoBackupBridge backup={value} />
     </BackupContext.Provider>
   );
 }
