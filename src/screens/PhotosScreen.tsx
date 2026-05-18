@@ -3,6 +3,7 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../App';
 import {
   ActivityIndicator,
+  Animated,
   Dimensions,
   FlatList,
   RefreshControl,
@@ -11,6 +12,11 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import {
+  PinchGestureHandler,
+  State,
+  type PinchGestureHandlerStateChangeEvent,
+} from 'react-native-gesture-handler';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
@@ -179,13 +185,18 @@ function groupByMonth(photos: FileEntry[]): PhotoGroup[] {
 }
 
 // ---------------------------------------------------------------------------
-// Grid dimensions — 4 columns to match the iOS design
+// Grid dimensions — pinch-to-zoom changes column count (2/4/7/12)
 // ---------------------------------------------------------------------------
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
 const GRID_GAP = 2;
-const COLS = 4;
-const CELL_SIZE = (SCREEN_WIDTH - GRID_GAP * (COLS - 1)) / COLS;
+const COLUMN_STEPS = [2, 4, 7, 12];
+const DEFAULT_COLS = 4;
+
+function cellSizeForCols(cols: number): number {
+  return (SCREEN_WIDTH - GRID_GAP * (cols - 1)) / cols;
+}
+
 const ACTIVE_THUMBNAIL_LIMIT = 500;
 
 function collectThumbnailIds(groups: PhotoGroup[], visibleIndexes: number[]): Set<string> {
@@ -223,53 +234,6 @@ function collectVisiblePhotoIds(groups: PhotoGroup[], visibleIndexes: number[]):
 }
 
 // ---------------------------------------------------------------------------
-// Filter chips
-// ---------------------------------------------------------------------------
-
-type Filter = 'All' | 'Years' | 'Months' | 'Days';
-const FILTERS: Filter[] = ['All', 'Years', 'Months', 'Days'];
-
-function FilterChips({
-  active,
-  onChange,
-}: {
-  active: Filter;
-  onChange: (f: Filter) => void;
-}) {
-  const { colors: c } = useTheme();
-  return (
-    <View style={styles.chipRow}>
-      {FILTERS.map((label) => {
-        const isActive = label === active;
-        return (
-          <TouchableOpacity
-            key={label}
-            activeOpacity={0.7}
-            onPress={() => onChange(label)}
-            style={[
-              styles.chip,
-              { backgroundColor: c.paper2, borderColor: c.line },
-              isActive && { backgroundColor: c.ink, borderColor: c.ink },
-            ]}
-            accessibilityLabel={`${label} view${isActive ? ', selected' : ''}`}
-            accessibilityRole="tab"
-            accessibilityState={{ selected: isActive }}
-          >
-            <Text style={[
-              styles.chipText,
-              { color: c.ink3 },
-              isActive && { color: c.paper, fontWeight: '600' },
-            ]}>
-              {label}
-            </Text>
-          </TouchableOpacity>
-        );
-      })}
-    </View>
-  );
-}
-
-// ---------------------------------------------------------------------------
 // Photo cell
 // ---------------------------------------------------------------------------
 
@@ -283,6 +247,8 @@ const PhotoCell = React.memo(function PhotoCell({
   onPress,
   accessibilityLabel,
   filename,
+  cellSize,
+  columns,
 }: {
   fileId: string;
   hasThumbnail?: boolean;
@@ -293,15 +259,19 @@ const PhotoCell = React.memo(function PhotoCell({
   onPress?: () => void;
   accessibilityLabel: string;
   filename?: string | null;
+  cellSize: number;
+  columns: number;
 }) {
   const { colors: c } = useTheme();
+  // Hide filename overlay and badge at small sizes (7+ columns)
+  const showOverlay = columns <= 4;
   return (
     <TouchableOpacity
       activeOpacity={0.7}
       onPress={onPress}
       accessibilityRole="button"
       accessibilityLabel={filename ? `Photo: ${filename}` : accessibilityLabel}
-      style={styles.cell}
+      style={{ width: cellSize, height: cellSize }}
     >
       <ThumbnailImage
         fileId={fileId}
@@ -312,14 +282,14 @@ const PhotoCell = React.memo(function PhotoCell({
         style={StyleSheet.absoluteFill}
         accessibilityLabel={filename ? `Photo: ${filename}` : accessibilityLabel}
       />
-      {filename ? (
+      {showOverlay && filename ? (
         <View style={styles.filenameOverlay}>
           <Text style={styles.filenameText} numberOfLines={1}>
             {filename}
           </Text>
         </View>
       ) : null}
-      {isFromBackup && (
+      {showOverlay && isFromBackup && (
         <View style={[styles.originBadge, { backgroundColor: c.amber }]}>
           <Ionicons name="camera" size={10} color={c.ink} />
         </View>
@@ -340,6 +310,8 @@ const GroupSection = React.memo(function GroupSection({
   localAssetMap,
   decryptedNames,
   onOpenPhoto,
+  columns,
+  cellSize,
 }: {
   group: PhotoGroup;
   seedOffset: number;
@@ -348,6 +320,8 @@ const GroupSection = React.memo(function GroupSection({
   localAssetMap: Map<string, string>;
   decryptedNames: Record<string, string>;
   onOpenPhoto: (entry: FileEntry) => void;
+  columns: number;
+  cellSize: number;
 }) {
   const { colors: c } = useTheme();
   return (
@@ -375,6 +349,8 @@ const GroupSection = React.memo(function GroupSection({
               filename={decryptedNames[photo.id] ?? null}
               accessibilityLabel={decryptedNames[photo.id] ? `Photo: ${decryptedNames[photo.id]}` : `Photo from ${group.label}`}
               onPress={() => onOpenPhoto(photo)}
+              cellSize={cellSize}
+              columns={columns}
             />
           );
         })}
@@ -538,7 +514,11 @@ export default function PhotosScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [filter, setFilter] = useState<Filter>('Months');
+  const [columns, setColumns] = useState(DEFAULT_COLS);
+  const cellSize = useMemo(() => cellSizeForCols(columns), [columns]);
+  // Column indicator — fades out after a pinch gesture changes the grid density
+  const columnIndicatorOpacity = useRef(new Animated.Value(0)).current;
+  const columnIndicatorTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [activeThumbnailIds, setActiveThumbnailIds] = useState<Set<string>>(() => new Set());
   const [activePhotoIds, setActivePhotoIds] = useState<Set<string>>(() => new Set());
   const [localAssetMap, setLocalAssetMap] = useState<Map<string, string>>(new Map());
@@ -719,6 +699,41 @@ export default function PhotosScreen() {
     return offsets;
   }, [groups]);
 
+  // Pinch-to-zoom: change grid column count
+  const handlePinchStateChange = useCallback(
+    (event: PinchGestureHandlerStateChangeEvent) => {
+      if (event.nativeEvent.state !== State.END) return;
+      const scale = event.nativeEvent.scale;
+      setColumns((prev) => {
+        const currentIdx = COLUMN_STEPS.indexOf(prev);
+        let nextIdx = currentIdx;
+        if (scale < 0.75 && currentIdx < COLUMN_STEPS.length - 1) {
+          // Pinch in — more columns, smaller photos
+          nextIdx = currentIdx + 1;
+        } else if (scale > 1.3 && currentIdx > 0) {
+          // Pinch out — fewer columns, larger photos
+          nextIdx = currentIdx - 1;
+        }
+        const nextCols = COLUMN_STEPS[nextIdx] ?? prev;
+        if (nextCols !== prev) {
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+          // Show column indicator briefly
+          columnIndicatorOpacity.setValue(1);
+          if (columnIndicatorTimer.current) clearTimeout(columnIndicatorTimer.current);
+          columnIndicatorTimer.current = setTimeout(() => {
+            Animated.timing(columnIndicatorOpacity, {
+              toValue: 0,
+              duration: 400,
+              useNativeDriver: true,
+            }).start();
+          }, 600);
+        }
+        return nextCols;
+      });
+    },
+    [columnIndicatorOpacity],
+  );
+
   const renderGroup = ({ item, index }: { item: PhotoGroup; index: number }) => (
     <GroupSection
       group={item}
@@ -728,6 +743,8 @@ export default function PhotosScreen() {
       localAssetMap={localAssetMap}
       decryptedNames={decryptedNames}
       onOpenPhoto={openPhoto}
+      columns={columns}
+      cellSize={cellSize}
     />
   );
 
@@ -774,13 +791,9 @@ export default function PhotosScreen() {
         </View>
 
         <DevicePhotosBanner />
-
-        <View style={styles.filterRow}>
-          <FilterChips active={filter} onChange={setFilter} />
-        </View>
       </View>
 
-      {/* Content */}
+      {/* Content — wrapped in PinchGestureHandler for zoom-to-change-grid */}
       {error ? (
         renderError()
       ) : loading && !refreshing ? (
@@ -789,29 +802,45 @@ export default function PhotosScreen() {
           <Text style={[styles.loadingText, { color: c.ink3 }]}>Loading photos...</Text>
         </View>
       ) : (
-        <FlatList
-          data={groups}
-          keyExtractor={(group) => group.key}
-          renderItem={renderGroup}
-          onViewableItemsChanged={handleViewableItemsChanged}
-          viewabilityConfig={viewabilityConfig}
-          ListEmptyComponent={renderEmpty}
-          refreshControl={
-            <RefreshControl
-              refreshing={refreshing}
-              onRefresh={handleRefresh}
-              tintColor={c.amber}
-              colors={[c.amber]}
+        <PinchGestureHandler onHandlerStateChange={handlePinchStateChange}>
+          <View style={{ flex: 1 }}>
+            <FlatList
+              data={groups}
+              keyExtractor={(group) => group.key}
+              renderItem={renderGroup}
+              onViewableItemsChanged={handleViewableItemsChanged}
+              viewabilityConfig={viewabilityConfig}
+              ListEmptyComponent={renderEmpty}
+              refreshControl={
+                <RefreshControl
+                  refreshing={refreshing}
+                  onRefresh={handleRefresh}
+                  tintColor={c.amber}
+                  colors={[c.amber]}
+                />
+              }
+              contentContainerStyle={groups.length === 0 ? styles.emptyList : undefined}
+              ListFooterComponent={<View style={{ height: 12 }} />}
+              onScroll={(e) => setIsScrolled(e.nativeEvent.contentOffset.y > 0)}
+              scrollEventThrottle={100}
+              removeClippedSubviews={true}
+              windowSize={5}
+              keyboardDismissMode="on-drag"
             />
-          }
-          contentContainerStyle={groups.length === 0 ? styles.emptyList : undefined}
-          ListFooterComponent={<View style={{ height: 12 }} />}
-          onScroll={(e) => setIsScrolled(e.nativeEvent.contentOffset.y > 0)}
-          scrollEventThrottle={100}
-          removeClippedSubviews={true}
-          windowSize={5}
-          keyboardDismissMode="on-drag"
-        />
+            {/* Column count indicator — shows briefly on pinch gesture */}
+            <Animated.View
+              pointerEvents="none"
+              style={[
+                styles.columnIndicator,
+                { backgroundColor: c.ink, opacity: columnIndicatorOpacity },
+              ]}
+            >
+              <Text style={[styles.columnIndicatorText, { color: c.paper }]}>
+                {columns} columns
+              </Text>
+            </Animated.View>
+          </View>
+        </PinchGestureHandler>
       )}
 
       <AutoBackupBanner />
@@ -830,14 +859,6 @@ const styles = StyleSheet.create({
   header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: spacing.lg, paddingTop: 6, paddingBottom: 4, gap: 8 },
   title: { fontSize: 28, fontWeight: '700', letterSpacing: -0.5 },
 
-  // Filter chips
-  filterRow: { paddingHorizontal: spacing.lg, paddingTop: 8, paddingBottom: 10 },
-  chipRow: { flexDirection: 'row', gap: 6 },
-  chip: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: radii.round, borderWidth: 1 },
-  chipActive: {},
-  chipText: { fontSize: 11, fontWeight: '400' },
-  chipTextActive: {},
-
   // Section (month group)
   section: { marginBottom: 12 },
   sectionHeader: { flexDirection: 'row', alignItems: 'baseline', paddingHorizontal: spacing.lg, paddingBottom: 6, gap: 8 },
@@ -846,7 +867,20 @@ const styles = StyleSheet.create({
 
   // Grid
   grid: { flexDirection: 'row', flexWrap: 'wrap', gap: GRID_GAP },
-  cell: { width: CELL_SIZE, height: CELL_SIZE },
+
+  // Column count indicator (pinch-to-zoom feedback)
+  columnIndicator: {
+    position: 'absolute',
+    alignSelf: 'center',
+    bottom: 24,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: radii.round,
+  },
+  columnIndicatorText: {
+    fontSize: 13,
+    fontWeight: '600',
+  },
 
   // Filename overlay — subtle label at bottom of each thumbnail
   filenameOverlay: {
