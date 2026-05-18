@@ -515,6 +515,7 @@
 			);
 			inputPaths = (
 				"${PODS_ROOT}/Target Support Files/Pods-Beebeeb/Pods-Beebeeb-resources.sh",
+				"${PODS_CONFIGURATION_BUILD_DIR}/AsyncStorage/AsyncStorage_resources.bundle",
 				"${PODS_CONFIGURATION_BUILD_DIR}/EXApplication/ExpoApplication_privacy.bundle",
 				"${PODS_CONFIGURATION_BUILD_DIR}/EXConstants/EXConstants.bundle",
 				"${PODS_CONFIGURATION_BUILD_DIR}/EXConstants/ExpoConstants_privacy.bundle",
@@ -534,6 +535,7 @@
 			);
 			name = "[CP] Copy Pods Resources";
 			outputPaths = (
+				"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/AsyncStorage_resources.bundle",
 				"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/ExpoApplication_privacy.bundle",
 				"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/EXConstants.bundle",
 				"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/ExpoConstants_privacy.bundle",
@@ -907,14 +909,21 @@
 					"DEBUG=1",
 					"$(inherited)",
 				);
-				"HEADER_SEARCH_PATHS[sdk=iphonesimulator*]" = "$(inherited) \"$(PROJECT_DIR)/BeebeebCore.xcframework/ios-arm64_x86_64-simulator/Headers\"";
-				"HEADER_SEARCH_PATHS[sdk=iphoneos*]" = "$(inherited) \"$(PROJECT_DIR)/BeebeebCore.xcframework/ios-arm64/Headers\"";
+				"HEADER_SEARCH_PATHS[sdk=iphoneos*]" = (
+					"$(inherited)",
+					"\"$(PROJECT_DIR)/BeebeebCore.xcframework/ios-arm64/Headers\"",
+				);
+				"HEADER_SEARCH_PATHS[sdk=iphonesimulator*]" = (
+					"$(inherited)",
+					"\"$(PROJECT_DIR)/BeebeebCore.xcframework/ios-arm64_x86_64-simulator/Headers\"",
+				);
 				INFOPLIST_FILE = BeebeebShare/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks";
 				MARKETING_VERSION = 1.0.0;
-				"OTHER_SWIFT_FLAGS[sdk=iphonesimulator*]" = "$(inherited) -D EXPO_CONFIGURATION_DEBUG -Xcc -fmodule-map-file=\"$(PROJECT_DIR)/BeebeebCore.xcframework/ios-arm64_x86_64-simulator/Headers/module.modulemap\"";
+				OTHER_SWIFT_FLAGS = "$(inherited) -D EXPO_CONFIGURATION_DEBUG";
 				"OTHER_SWIFT_FLAGS[sdk=iphoneos*]" = "$(inherited) -D EXPO_CONFIGURATION_DEBUG -Xcc -fmodule-map-file=\"$(PROJECT_DIR)/BeebeebCore.xcframework/ios-arm64/Headers/module.modulemap\"";
+				"OTHER_SWIFT_FLAGS[sdk=iphonesimulator*]" = "$(inherited) -D EXPO_CONFIGURATION_DEBUG -Xcc -fmodule-map-file=\"$(PROJECT_DIR)/BeebeebCore.xcframework/ios-arm64_x86_64-simulator/Headers/module.modulemap\"";
 				PRODUCT_BUNDLE_IDENTIFIER = io.beebeeb.app.share;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
@@ -937,14 +946,21 @@
 					"$(inherited)",
 					"$(PROJECT_DIR)",
 				);
-				"HEADER_SEARCH_PATHS[sdk=iphonesimulator*]" = "$(inherited) \"$(PROJECT_DIR)/BeebeebCore.xcframework/ios-arm64_x86_64-simulator/Headers\"";
-				"HEADER_SEARCH_PATHS[sdk=iphoneos*]" = "$(inherited) \"$(PROJECT_DIR)/BeebeebCore.xcframework/ios-arm64/Headers\"";
+				"HEADER_SEARCH_PATHS[sdk=iphoneos*]" = (
+					"$(inherited)",
+					"\"$(PROJECT_DIR)/BeebeebCore.xcframework/ios-arm64/Headers\"",
+				);
+				"HEADER_SEARCH_PATHS[sdk=iphonesimulator*]" = (
+					"$(inherited)",
+					"\"$(PROJECT_DIR)/BeebeebCore.xcframework/ios-arm64_x86_64-simulator/Headers\"",
+				);
 				INFOPLIST_FILE = BeebeebShare/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks";
 				MARKETING_VERSION = 1.0.0;
-				"OTHER_SWIFT_FLAGS[sdk=iphonesimulator*]" = "$(inherited) -D EXPO_CONFIGURATION_RELEASE -Xcc -fmodule-map-file=\"$(PROJECT_DIR)/BeebeebCore.xcframework/ios-arm64_x86_64-simulator/Headers/module.modulemap\"";
+				OTHER_SWIFT_FLAGS = "$(inherited) -D EXPO_CONFIGURATION_RELEASE";
 				"OTHER_SWIFT_FLAGS[sdk=iphoneos*]" = "$(inherited) -D EXPO_CONFIGURATION_RELEASE -Xcc -fmodule-map-file=\"$(PROJECT_DIR)/BeebeebCore.xcframework/ios-arm64/Headers/module.modulemap\"";
+				"OTHER_SWIFT_FLAGS[sdk=iphonesimulator*]" = "$(inherited) -D EXPO_CONFIGURATION_RELEASE -Xcc -fmodule-map-file=\"$(PROJECT_DIR)/BeebeebCore.xcframework/ios-arm64_x86_64-simulator/Headers/module.modulemap\"";
 				PRODUCT_BUNDLE_IDENTIFIER = io.beebeeb.app.share;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;

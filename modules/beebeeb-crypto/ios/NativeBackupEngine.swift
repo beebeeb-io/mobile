@@ -62,11 +62,11 @@ struct BackupAssetRow {
 /// - Shared SQLite database (backup_assets) with JS UI layer via WAL mode
 /// - Expo EventEmitter bridge for progress -> React
 ///
-/// The Rust `encrypt_file` disk-based API from the spec (Phase 1) is not yet available
-/// in the UniFFI bindings. This implementation uses the existing `encryptChunk` path
-/// (MasterKeyHandle -> FileKeyHandle -> encryptChunk) which is proven and working.
-/// When Phase 1 lands, the encryption step can be swapped to the file-based API
-/// for better memory efficiency on large files.
+/// Encryption uses the MasterKeyHandle -> FileKeyHandle -> encryptChunk path.
+/// The Rust core exposes `encrypt_file` (disk-based) for large files but the
+/// UniFFI mobile bindings have not yet added it. The in-memory chunk approach
+/// is fine for typical photo sizes (<20 MB). When the core adds `encryptFile`
+/// to MasterKeyHandle in the UniFFI surface, swap the `encryptData` call below.
 final class NativeBackupEngine: NSObject {
   static let shared = NativeBackupEngine()
 
@@ -508,12 +508,9 @@ final class NativeBackupEngine: NSObject {
       let fileId = UUID().uuidString.lowercased()
       let fileKey = try masterKey.deriveFileKey(fileId: Data(fileId.utf8))
 
-      // 3. Encrypt chunks in memory using existing encryptChunk API
-      // TODO: When Phase 1 Rust encrypt_file API lands (disk-based encryption via
-      // MasterKeyHandle.encryptFile), replace this with the file-based path for
-      // better memory efficiency on large files. The current approach loads the
-      // entire plaintext into memory and encrypts chunk by chunk, which is fine
-      // for typical photo sizes (<20MB) but not ideal for large videos.
+      // 3. Encrypt chunks in memory using FileKeyHandle.encryptChunk API.
+      // Future: when MasterKeyHandle gains a UniFFI `encryptFile(path:)` method,
+      // swap to the disk-based path for better memory on large videos (>100 MB).
       let chunkResults = try encryptData(data: data, fileKey: fileKey)
 
       // 4. Encrypt filename

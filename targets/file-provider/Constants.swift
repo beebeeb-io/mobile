@@ -21,7 +21,9 @@ enum BeebeebConstants {
   static let keychainServiceExt = "io.beebeeb.masterkey.ext"
 
   /// Keychain account label for the wrapped master key.
-  static let masterKeyLabel = "primary"
+  /// Must match the label used by the JS layer (`MASTER_KEY_LABEL` in
+  /// `crypto-context.tsx`) and `BeebeebCryptoBridge.kMasterKeyLabel`.
+  static let masterKeyLabel = "io.beebeeb.master-key"
 
   /// SQLite filename inside the App Group container.
   static let cacheDatabaseFilename = "file-provider-cache.sqlite"
