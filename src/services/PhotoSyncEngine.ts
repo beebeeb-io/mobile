@@ -24,10 +24,12 @@ import {
   getPendingDeletes,
   getAllUploadedIds,
   getStatusCounts,
+  recoverStuckUploads,
   type BackupAsset,
   type BackupAssetType,
 } from './BackupDatabase';
 import { photoBackupCheck, photoBackupMark, photoBackupListIds } from '../lib/api';
+import type { UploadProgress } from '../lib/api';
 import type { BackupFileStatus } from '../lib/backup-context';
 
 const ENUMERATE_PAGE = 200;
@@ -41,7 +43,10 @@ const FULL_SCAN_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
 export type DeletionBehavior = 'keep' | 'trash';
 
 export interface SyncEngineCallbacks {
-  encryptAndUpload: (asset: MediaLibrary.Asset) => Promise<{ fileId: string }>;
+  encryptAndUpload: (
+    asset: MediaLibrary.Asset,
+    onProgress?: (progress: UploadProgress) => void,
+  ) => Promise<{ fileId: string }>;
   deleteServerFile: (fileId: string) => Promise<void>;
   getDeletionBehavior: () => DeletionBehavior;
   onProgress?: (counts: Record<string, number>) => void;
@@ -145,6 +150,9 @@ export async function processUploads(callbacks: SyncEngineCallbacks): Promise<nu
   let totalUploaded = 0;
 
   try {
+    // Recover any rows stuck in 'uploading' from a previous crashed session
+    await recoverStuckUploads();
+
     while (true) {
       if (callbacks.signal?.aborted) break;
 
@@ -267,7 +275,16 @@ export async function processUploads(callbacks: SyncEngineCallbacks): Promise<nu
           callbacks.onQueueUpdate?.([...fileStatuses.values()]);
 
           try {
-            const { fileId } = await callbacks.encryptAndUpload(item.asset);
+            const { fileId } = await callbacks.encryptAndUpload(item.asset, (progress) => {
+              if (!status) return;
+              const percent = progress.bytesTotal > 0
+                ? Math.round((progress.bytesUploaded / progress.bytesTotal) * 100)
+                : 0;
+              status.status = 'uploading';
+              status.progress = Math.max(0, Math.min(100, percent));
+              status.sizeBytes = progress.bytesTotal || status.sizeBytes;
+              callbacks.onQueueUpdate?.([...fileStatuses.values()]);
+            });
             await photoBackupMark(item.row.local_asset_id, fileId);
             await markUploadComplete(item.row.local_asset_id, fileId);
             if (status) { status.status = 'done'; status.progress = 100; }
