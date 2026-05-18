@@ -1,6 +1,8 @@
+import AVFoundation
 import Foundation
 import Photos
 import SQLite3
+import UIKit
 import UserNotifications
 #if os(iOS)
 import BackgroundTasks
@@ -558,6 +560,16 @@ final class NativeBackupEngine: NSObject {
       onFileStatus?(asset.localAssetId, "uploaded", filename, nil)
       NSLog("[NativeBackupEngine] Uploaded \(filename) (\(data.count) bytes, \(result.chunksUploaded) chunks via Rust)")
 
+      // 7. Generate and upload thumbnail (best-effort, never blocks the upload)
+      generateAndUploadThumbnail(
+        phAssetId: asset.localAssetId,
+        serverFileId: serverFileId,
+        uti: uti,
+        masterKey: masterKey,
+        authToken: authToken,
+        baseURL: baseURL
+      )
+
       return true
 
       // --- Legacy Swift HTTP upload code (commented out for quick revert) ---
@@ -1079,6 +1091,146 @@ final class NativeBackupEngine: NSObject {
   }
   #endif
 
+  // MARK: - Thumbnail Generation
+
+  /// Maximum dimension for generated thumbnails (matches JS THUMB_WIDTH).
+  private let thumbMaxSize = 256
+
+  /// Generate and upload a thumbnail for an uploaded asset.
+  /// Best-effort: failures are logged but never block the upload pipeline.
+  private func generateAndUploadThumbnail(
+    phAssetId: String,
+    serverFileId: String,
+    uti: String,
+    masterKey: MasterKeyHandle,
+    authToken: String,
+    baseURL: String
+  ) {
+    Task.detached(priority: .utility) { [weak self] in
+      guard let self else { return }
+      do {
+        let jpegData: Data
+        if self.isVideoUTI(uti) {
+          jpegData = try await self.generateVideoThumbnail(phAssetId: phAssetId)
+        } else {
+          jpegData = try await self.generateImageThumbnail(phAssetId: phAssetId)
+        }
+
+        // Encrypt thumbnail as single AES-256-GCM chunk
+        let fileKey = try masterKey.deriveFileKey(fileId: Data(serverFileId.utf8))
+        let enc = try fileKey.encryptChunk(plaintext: jpegData)
+
+        // Wire format: nonce(12) || ciphertext — matches the web client
+        var wire = Data(capacity: enc.nonce.count + enc.ciphertext.count)
+        wire.append(enc.nonce)
+        wire.append(enc.ciphertext)
+
+        // Upload via PUT
+        guard let thumbUrl = URL(string: "\(baseURL)/api/v1/files/\(serverFileId)/thumbnail") else { return }
+        var request = URLRequest(url: thumbUrl)
+        request.httpMethod = "PUT"
+        request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+        request.httpBody = wire
+
+        let (_, response) = try await URLSession.shared.data(for: request)
+        let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+        if (200..<300).contains(statusCode) {
+          NSLog("[NativeBackupEngine] Thumbnail uploaded for \(serverFileId)")
+        } else {
+          NSLog("[NativeBackupEngine] Thumbnail upload HTTP \(statusCode) for \(serverFileId)")
+        }
+      } catch {
+        NSLog("[NativeBackupEngine] Thumbnail generation failed for \(phAssetId): \(error.localizedDescription)")
+      }
+    }
+  }
+
+  /// Generate a JPEG thumbnail from a video asset using AVAssetImageGenerator.
+  private func generateVideoThumbnail(phAssetId: String) async throws -> Data {
+    let phAsset = PHAsset.fetchAssets(withLocalIdentifiers: [phAssetId], options: nil).firstObject
+    guard let phAsset else { throw BackupError.assetNotFound }
+
+    let avAsset: AVAsset = try await withCheckedThrowingContinuation { continuation in
+      let options = PHVideoRequestOptions()
+      options.version = .original
+      options.isNetworkAccessAllowed = true
+      PHImageManager.default().requestAVAsset(forVideo: phAsset, options: options) { asset, _, info in
+        if let error = info?[PHImageErrorKey] as? Error {
+          continuation.resume(throwing: error)
+        } else if let asset {
+          continuation.resume(returning: asset)
+        } else {
+          continuation.resume(throwing: BackupError.assetLoadFailed)
+        }
+      }
+    }
+
+    let generator = AVAssetImageGenerator(asset: avAsset)
+    generator.appliesPreferredTrackTransform = true
+    generator.maximumSize = CGSize(width: thumbMaxSize, height: thumbMaxSize)
+
+    let time = CMTime(seconds: 1.0, preferredTimescale: 600)
+    let cgImage: CGImage
+    do {
+      cgImage = try generator.copyCGImage(at: time, actualTime: nil)
+    } catch {
+      // Fall back to time 0 if 1s is beyond the video duration
+      cgImage = try generator.copyCGImage(at: .zero, actualTime: nil)
+    }
+
+    let image = UIImage(cgImage: cgImage)
+    guard let jpeg = image.jpegData(compressionQuality: 0.7) else {
+      throw BackupError.assetLoadFailed
+    }
+    return jpeg
+  }
+
+  /// Generate a JPEG thumbnail from an image asset (JPEG, HEIC, PNG, DNG, etc).
+  /// Uses PHImageManager to get a small preview — this works for all image types
+  /// including RAW/DNG because Photos.framework handles the decoding.
+  private func generateImageThumbnail(phAssetId: String) async throws -> Data {
+    let phAsset = PHAsset.fetchAssets(withLocalIdentifiers: [phAssetId], options: nil).firstObject
+    guard let phAsset else { throw BackupError.assetNotFound }
+
+    let image: UIImage = try await withCheckedThrowingContinuation { continuation in
+      let options = PHImageRequestOptions()
+      options.deliveryMode = .highQualityFormat
+      options.isNetworkAccessAllowed = true
+      options.isSynchronous = false
+      options.resizeMode = .fast
+
+      let targetSize = CGSize(width: thumbMaxSize, height: thumbMaxSize)
+      PHImageManager.default().requestImage(
+        for: phAsset,
+        targetSize: targetSize,
+        contentMode: .aspectFit,
+        options: options
+      ) { result, info in
+        let isDegraded = info?[PHImageResultIsDegradedKey] as? Bool ?? false
+        if isDegraded { return } // Wait for the high-quality callback
+        if let error = info?[PHImageErrorKey] as? Error {
+          continuation.resume(throwing: error)
+        } else if let result {
+          continuation.resume(returning: result)
+        } else {
+          continuation.resume(throwing: BackupError.assetLoadFailed)
+        }
+      }
+    }
+
+    guard let jpeg = image.jpegData(compressionQuality: 0.7) else {
+      throw BackupError.assetLoadFailed
+    }
+    return jpeg
+  }
+
+  /// Whether the given UTI represents a video type.
+  private func isVideoUTI(_ uti: String) -> Bool {
+    return uti == "com.apple.quicktime-movie" || uti == "public.mpeg-4" ||
+           uti.hasPrefix("public.movie") || uti.hasPrefix("public.video")
+  }
+
   // MARK: - MIME / Extension Helpers
 
   private func mimeTypeFromUTI(_ uti: String) -> String? {
@@ -1088,6 +1240,7 @@ final class NativeBackupEngine: NSObject {
       "public.heic": "image/heic",
       "public.heif": "image/heif",
       "public.tiff": "image/tiff",
+      "com.adobe.raw-image": "image/x-adobe-dng",
       "com.apple.quicktime-movie": "video/quicktime",
       "public.mpeg-4": "video/mp4",
     ]
@@ -1101,6 +1254,7 @@ final class NativeBackupEngine: NSObject {
       "public.heic": "heic",
       "public.heif": "heif",
       "public.tiff": "tiff",
+      "com.adobe.raw-image": "dng",
       "com.apple.quicktime-movie": "mov",
       "public.mpeg-4": "mp4",
     ]

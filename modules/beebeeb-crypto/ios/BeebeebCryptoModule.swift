@@ -1,3 +1,4 @@
+import AVFoundation
 import ExpoModulesCore
 import Foundation
 import FileProvider
@@ -1108,6 +1109,82 @@ public class BeebeebCryptoModule: Module {
         "chunksUploaded": result.chunksUploaded,
         "totalBytes": result.totalBytes,
       ]
+    }
+
+    // ── Local thumbnail generation for video and RAW (DNG) files ────────
+    //
+    // generateVideoThumbnail: Uses AVAssetImageGenerator to extract a frame
+    // from a local video file (MP4/MOV) and writes a JPEG thumbnail to disk.
+    //
+    // generateDngThumbnail: Loads a DNG via UIImage (which uses CoreImage
+    // under the hood to decode the embedded preview) and resizes to JPEG.
+
+    AsyncFunction("generateVideoThumbnail") { (localUri: String, maxSize: Int) throws -> String in
+      let url = fileURL(fromURI: localUri)
+      let asset = AVAsset(url: url)
+      let generator = AVAssetImageGenerator(asset: asset)
+      generator.appliesPreferredTrackTransform = true
+      generator.maximumSize = CGSize(width: maxSize, height: maxSize)
+
+      let time = CMTime(seconds: 1.0, preferredTimescale: 600)
+      let cgImage: CGImage
+      do {
+        cgImage = try generator.copyCGImage(at: time, actualTime: nil)
+      } catch {
+        // Fall back to time 0 if time 1s is beyond duration
+        cgImage = try generator.copyCGImage(at: .zero, actualTime: nil)
+      }
+      let image = UIImage(cgImage: cgImage)
+
+      guard let jpegData = image.jpegData(compressionQuality: 0.7) else {
+        throw NSError(
+          domain: "BeebeebThumbnail",
+          code: 1,
+          userInfo: [NSLocalizedDescriptionKey: "Failed to encode video thumbnail as JPEG"]
+        )
+      }
+
+      let outputPath = NSTemporaryDirectory() + "video-thumb-\(UUID().uuidString).jpg"
+      try jpegData.write(to: URL(fileURLWithPath: outputPath))
+      return outputPath
+    }
+
+    AsyncFunction("generateDngThumbnail") { (localUri: String, maxSize: Int) throws -> String in
+      let url = fileURL(fromURI: localUri)
+
+      guard let image = UIImage(contentsOfFile: url.path) else {
+        throw NSError(
+          domain: "BeebeebThumbnail",
+          code: 2,
+          userInfo: [NSLocalizedDescriptionKey: "Failed to load DNG image"]
+        )
+      }
+
+      let maxDim = CGFloat(maxSize)
+      let scale = min(maxDim / max(image.size.width, image.size.height), 1.0)
+      let newSize = CGSize(
+        width: image.size.width * scale,
+        height: image.size.height * scale
+      )
+
+      let format = UIGraphicsImageRendererFormat()
+      format.scale = 1
+      let renderer = UIGraphicsImageRenderer(size: newSize, format: format)
+      let resized = renderer.image { _ in
+        image.draw(in: CGRect(origin: .zero, size: newSize))
+      }
+
+      guard let jpegData = resized.jpegData(compressionQuality: 0.7) else {
+        throw NSError(
+          domain: "BeebeebThumbnail",
+          code: 3,
+          userInfo: [NSLocalizedDescriptionKey: "Failed to encode DNG thumbnail as JPEG"]
+        )
+      }
+
+      let outputPath = NSTemporaryDirectory() + "dng-thumb-\(UUID().uuidString).jpg"
+      try jpegData.write(to: URL(fileURLWithPath: outputPath))
+      return outputPath
     }
 
     // ── Native thumbnail pipeline ────────────────────────────────────────

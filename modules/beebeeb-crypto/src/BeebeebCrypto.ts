@@ -788,6 +788,34 @@ export async function clearBackupNotification(): Promise<void> {
   return BeebeebCryptoModule.clearBackupNotification();
 }
 
+// ─── Local thumbnail generation for video and RAW (DNG) files ──────────────
+//
+// These functions generate a JPEG thumbnail from a local file URI and write
+// it to a temp path on disk. The caller is responsible for encrypting and
+// uploading the thumbnail, and for cleaning up the temp file.
+
+/**
+ * Extract a frame from a local video file (MP4/MOV) using AVAssetImageGenerator.
+ * Returns the path to a temporary JPEG thumbnail file.
+ */
+export async function generateVideoThumbnail(
+  localUri: string,
+  maxSize: number = 256,
+): Promise<string> {
+  return BeebeebCryptoModule.generateVideoThumbnail(localUri, maxSize)
+}
+
+/**
+ * Generate a JPEG thumbnail from a local DNG (RAW) photo using UIImage/CoreImage.
+ * Returns the path to a temporary JPEG thumbnail file.
+ */
+export async function generateDngThumbnail(
+  localUri: string,
+  maxSize: number = 256,
+): Promise<string> {
+  return BeebeebCryptoModule.generateDngThumbnail(localUri, maxSize)
+}
+
 // ─── Native thumbnail pipeline ──────────────────────────────────────────────
 //
 // Downloads the full encrypted file via native URLSession, decrypts to disk

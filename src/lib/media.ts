@@ -21,6 +21,7 @@ const MIME_MAP: Record<string, string> = {
   bmp: 'image/bmp',
   tiff: 'image/tiff',
   tif: 'image/tiff',
+  dng: 'image/x-adobe-dng',
 
   // Video
   mp4: 'video/mp4',
