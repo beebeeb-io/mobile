@@ -17,17 +17,27 @@ import UniformTypeIdentifiers
 /// `MasterKeyHandle` / `FileKeyHandle` objects in Rust, so raw key material
 /// never sits in the Swift heap.
 final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
+  /// Cached master key handle — loaded once per extension lifecycle to avoid
+  /// repeated Secure Enclave access (which can trigger Face ID).
+  private var cachedMasterKey: MasterKeyHandle?
+
   required init(domain: NSFileProviderDomain) {
     super.init()
     _ = domain
-    // Touch the cache early so the database schema is migrated before the
-    // first request arrives.
     _ = CacheManager.shared
   }
 
+  /// Returns the cached master key, loading from Keychain only once per
+  /// extension lifecycle. Subsequent calls reuse the in-memory handle.
+  private func masterKey() throws -> MasterKeyHandle {
+    if let key = cachedMasterKey { return key }
+    let key = try self.masterKey()
+    cachedMasterKey = key
+    return key
+  }
+
   func invalidate() {
-    // Nothing to tear down — the cache and API client are singletons that
-    // get reused across instantiations.
+    cachedMasterKey = nil
   }
 
   // MARK: - Item lookup
@@ -79,7 +89,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
 
     let task = Task.detached {
       do {
-        let masterKey = try CryptoBridge.loadMasterKeyHandle()
+        let masterKey = try self.masterKey()
         progress.completedUnitCount = 20
 
         let encrypted = try await ApiClient.shared.downloadEncrypted(fileId: cached.id)
@@ -145,7 +155,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         let plaintext = try Data(contentsOf: url)
         progress.completedUnitCount = 20
 
-        let masterKey = try CryptoBridge.loadMasterKeyHandle()
+        let masterKey = try self.masterKey()
         let fileId = UUID().uuidString
         let encryptedChunk = try CryptoBridge.encryptChunkForUpload(
           masterKeyHandle: masterKey,
@@ -231,7 +241,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
 
     let task = Task.detached {
       do {
-        let masterKey = try CryptoBridge.loadMasterKeyHandle()
+        let masterKey = try self.masterKey()
         progress.completedUnitCount = 15
 
         var nextName = cached.nameDecrypted
