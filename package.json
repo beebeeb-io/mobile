@@ -63,6 +63,7 @@
     "react-native-sse": "^1.2.1",
     "react-native-web": "~0.19.13",
     "react-native-webview": "13.12.5",
+    "uuid": "^14.0.0",
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
