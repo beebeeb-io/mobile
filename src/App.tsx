@@ -94,7 +94,7 @@ import SpeedtestScreen from './screens/SpeedtestScreen';
 import ErrorBoundary from './components/ErrorBoundary';
 import ConfirmActionPrompt from './components/ConfirmActionPrompt';
 import { DiagnosticPanel, LAST_CONNECTED_KEY } from './components/DiagnosticPanel';
-import { BackupProvider } from './lib/backup-context';
+import { BackupProvider, useBackup } from './lib/backup-context';
 import { discardAllPendingShares, processPendingShares } from '../plugins/share-extension/PendingSharesHandler';
 import { useToast } from './lib/toast-context';
 import { clearWidgetData } from './utils/widgetData';
@@ -456,6 +456,7 @@ function FileProviderDomainRegistrar({ enabled }: { enabled: boolean }) {
 
 function TabNavigator() {
   const { colors: c } = useTheme();
+  const backup = useBackup();
   // Check storage on mount — show badge on Settings tab when >= 80% full
   const [storageWarning, setStorageWarning] = useState(false);
   useEffect(() => {
@@ -463,6 +464,17 @@ function TabNavigator() {
       .then(u => { if (u.plan_limit_bytes > 0) setStorageWarning(u.used_bytes / u.plan_limit_bytes >= 0.8); })
       .catch(() => {});
   }, []);
+
+  // Backup badge: amber dot when backup is running, red dot when items have failed
+  const backupRunning = backup.photoSessionProgress?.running;
+  const backupFailed = backup.photoSessionProgress?.failed > 0;
+  const settingsBadge = backupFailed
+    ? { tabBarBadge: ' ', tabBarBadgeStyle: { backgroundColor: c.red, minWidth: 10, maxHeight: 10, borderRadius: 5, fontSize: 1 } }
+    : backupRunning
+      ? { tabBarBadge: ' ', tabBarBadgeStyle: { backgroundColor: c.amber, minWidth: 10, maxHeight: 10, borderRadius: 5, fontSize: 1 } }
+      : storageWarning
+        ? { tabBarBadge: '!', tabBarBadgeStyle: { backgroundColor: c.amberDeep, fontSize: 9 } }
+        : {};
 
   return (
     <Tab.Navigator
@@ -494,10 +506,7 @@ function TabNavigator() {
       <Tab.Screen
         name="Settings"
         component={SettingsScreen}
-        options={storageWarning ? {
-          tabBarBadge: '!',
-          tabBarBadgeStyle: { backgroundColor: c.amberDeep, fontSize: 9 },
-        } : undefined}
+        options={settingsBadge}
       />
     </Tab.Navigator>
   );

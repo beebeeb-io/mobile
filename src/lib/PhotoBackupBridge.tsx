@@ -33,11 +33,13 @@ import { ensureBackupFolders, getDeletionBehavior, updateBackupCategoryState } f
 import { generateAndUploadThumbnail } from './thumbnail';
 import { detectMediaMimeType } from './media';
 import { getStatusCounts } from '../services/BackupDatabase';
+import { updateBackupNotification, clearBackupNotification } from '../../modules/beebeeb-crypto';
 import type { UploadProgress } from './api';
 
 const BACKUP_REMINDER_IDENTIFIER = 'backup-pending-reminder';
 const REMINDER_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 let lastReminderSentAt = 0;
+let lastNotifUpdate = 0;
 
 interface PhotoBackupBridgeProps {
   backup: Pick<
@@ -53,7 +55,7 @@ interface PhotoBackupBridgeProps {
 }
 
 export function PhotoBackupBridge({ backup }: PhotoBackupBridgeProps): null {
-  const { isUnlocked, encryptChunk, encryptMetadata, getFileKeyBytes, tryBackgroundUnlock } = useCrypto();
+  const { isUnlocked, encryptChunk, encryptMetadata, getFileKeyBytes, getMasterKeyBytes, tryBackgroundUnlock } = useCrypto();
   const {
     isPhotoBackupEnabled,
     includeVideos,
@@ -78,6 +80,7 @@ export function PhotoBackupBridge({ backup }: PhotoBackupBridgeProps): null {
     encryptChunk,
     encryptMetadata,
     getFileKeyBytes,
+    getMasterKeyBytes,
     reportPhotoProgress,
     reportBackupQueue,
     showToast,
@@ -92,6 +95,7 @@ export function PhotoBackupBridge({ backup }: PhotoBackupBridgeProps): null {
       encryptChunk,
       encryptMetadata,
       getFileKeyBytes,
+      getMasterKeyBytes,
       reportPhotoProgress,
       reportBackupQueue,
       showToast,
@@ -106,7 +110,7 @@ export function PhotoBackupBridge({ backup }: PhotoBackupBridgeProps): null {
     abortRef.current = ctrl;
 
     return {
-      encryptAndUpload: async (asset) => {
+      encryptAndUpload: async (asset, onUploadProgress) => {
         const cameraRollFolderId = await ensureBackupFolders('camera_roll')
           .then((f) => f.categoryFolderId);
 
@@ -142,6 +146,7 @@ export function PhotoBackupBridge({ backup }: PhotoBackupBridgeProps): null {
           encryptChunkFn: s.encryptChunk,
           encryptMetadataFn: s.encryptMetadata,
           onProgress: (p: UploadProgress) => {
+            onUploadProgress?.(p);
             const elapsed = (Date.now() - uploadStart) / 1000;
             const throughputBps = elapsed > 0 ? p.bytesUploaded / elapsed : 0;
             const uploadedCount = (statusCounts.uploaded ?? 0) + (statusCounts.orphaned ?? 0);
@@ -155,6 +160,14 @@ export function PhotoBackupBridge({ backup }: PhotoBackupBridgeProps): null {
               p.bytesUploaded, p.bytesTotal,
               p.chunksUploaded, p.chunksTotal,
             );
+
+            // Debounced native notification update (every 5 seconds)
+            const now = Date.now();
+            if (now - lastNotifUpdate > 5000) {
+              lastNotifUpdate = now;
+              const throughputMBps = throughputBps / (1024 * 1024);
+              updateBackupNotification(uploadedCount, totalCount, throughputMBps, false).catch(() => {});
+            }
           },
         });
 
@@ -194,6 +207,14 @@ export function PhotoBackupBridge({ backup }: PhotoBackupBridgeProps): null {
 
       onQueueUpdate: (queue) => {
         stateRef.current.reportBackupQueue(queue);
+      },
+
+      getMasterKey: () => {
+        try {
+          return stateRef.current.getMasterKeyBytes();
+        } catch {
+          return null;
+        }
       },
 
       signal: ctrl.signal,
@@ -300,7 +321,7 @@ export function PhotoBackupBridge({ backup }: PhotoBackupBridgeProps): null {
       }
     }
 
-    // Report final status
+    // Report final status + completion notification
     try {
       const counts = await getStatusCounts();
       const uploaded = (counts.uploaded ?? 0) + (counts.orphaned ?? 0);
@@ -308,6 +329,13 @@ export function PhotoBackupBridge({ backup }: PhotoBackupBridgeProps): null {
       const failed = counts.failed ?? 0;
       const total = uploaded + pending + failed;
       stateRef.current.reportPhotoProgress(uploaded, total, failed, false, 0, null);
+
+      // Show completion notification if any uploads happened
+      if (uploaded > 0) {
+        updateBackupNotification(uploaded, uploaded, 0, true).catch(() => {});
+      } else {
+        clearBackupNotification().catch(() => {});
+      }
     } catch {
       // Status counts unavailable
     }
@@ -361,7 +389,7 @@ export function PhotoBackupBridge({ backup }: PhotoBackupBridgeProps): null {
       }
     }
 
-    // Report final status
+    // Report final status + completion notification
     try {
       const counts = await getStatusCounts();
       const uploaded = (counts.uploaded ?? 0) + (counts.orphaned ?? 0);
@@ -369,6 +397,12 @@ export function PhotoBackupBridge({ backup }: PhotoBackupBridgeProps): null {
       const failed = counts.failed ?? 0;
       const total = uploaded + pending + failed;
       stateRef.current.reportPhotoProgress(uploaded, total, failed, false, 0, null);
+
+      if (uploaded > 0) {
+        updateBackupNotification(uploaded, uploaded, 0, true).catch(() => {});
+      } else {
+        clearBackupNotification().catch(() => {});
+      }
     } catch {
       // Status counts unavailable
     }

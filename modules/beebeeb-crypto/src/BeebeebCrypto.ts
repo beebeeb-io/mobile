@@ -619,6 +619,30 @@ export async function clearAllPendingShares(): Promise<number> {
   return BeebeebCryptoModule.clearAllPendingShares()
 }
 
+// ─── Backup progress notification ──────────────────────────────────────────
+
+/**
+ * Show or update a persistent iOS notification with backup progress.
+ * When `isComplete` is true the notification auto-dismisses after 30 seconds.
+ */
+export async function updateBackupNotification(
+  uploaded: number,
+  total: number,
+  throughputMBps: number,
+  isComplete: boolean,
+): Promise<void> {
+  if (typeof BeebeebCryptoModule.updateBackupNotification !== 'function') return;
+  return BeebeebCryptoModule.updateBackupNotification(uploaded, total, throughputMBps, isComplete);
+}
+
+/**
+ * Remove the backup progress notification immediately.
+ */
+export async function clearBackupNotification(): Promise<void> {
+  if (typeof BeebeebCryptoModule.clearBackupNotification !== 'function') return;
+  return BeebeebCryptoModule.clearBackupNotification();
+}
+
 // ─── Amber Constellation — display side ─────────────────────────────────────
 
 /**
