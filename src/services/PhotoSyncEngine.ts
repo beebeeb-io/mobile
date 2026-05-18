@@ -173,28 +173,38 @@ export async function processUploads(callbacks: SyncEngineCallbacks): Promise<nu
       let encryptDone = false;
       let consecutiveFailures = 0;
 
-      // Promise-based signaling so upload workers wake when items arrive
-      let resolveQueueWait: (() => void) | null = null;
+      // Promise-based signaling so upload workers wake when items arrive.
+      // Multiple waiters supported via an array of resolvers.
+      let queueWaiters: (() => void)[] = [];
       function signalQueue() {
-        if (resolveQueueWait) { resolveQueueWait(); resolveQueueWait = null; }
+        const waiters = queueWaiters;
+        queueWaiters = [];
+        for (const r of waiters) r();
       }
       function waitForQueue(): Promise<void> {
         if (encryptedQueue.length > 0 || encryptDone) return Promise.resolve();
-        return new Promise<void>(r => { resolveQueueWait = r; });
+        return new Promise<void>(r => { queueWaiters.push(r); });
       }
 
       // ── Encrypt/validate workers ──
       // Validate assets and fetch MediaLibrary info concurrently.
       // Keep the encrypted queue at most MAX_ENCRYPT_CONCURRENT deep.
 
+      // Back-pressure: resolvers waiting for queue space
+      let spaceWaiters: (() => void)[] = [];
+      function signalSpace() {
+        const waiters = spaceWaiters;
+        spaceWaiters = [];
+        for (const r of waiters) r();
+      }
+
       const encryptWorker = async () => {
         while (true) {
           if (callbacks.signal?.aborted) return;
 
-          // Back-pressure: wait if queue is full
-          if (encryptedQueue.length >= MAX_ENCRYPT_CONCURRENT) {
-            await new Promise<void>(r => setTimeout(r, 50));
-            continue;
+          // Back-pressure: wait until queue has room
+          while (encryptedQueue.length >= MAX_ENCRYPT_CONCURRENT) {
+            await new Promise<void>(r => { spaceWaiters.push(r); });
           }
 
           const idx = encryptIndex++;
@@ -219,6 +229,7 @@ export async function processUploads(callbacks: SyncEngineCallbacks): Promise<nu
             // Asset validated — mark as queued, push into encrypted queue
             if (status) {
               status.filename = asset.filename || status.filename;
+              status.sizeBytes = (asset as any).fileSize || asset.width * asset.height * 3 || 0;
               status.status = 'queued';
               status.progress = 100;
             }
@@ -245,6 +256,7 @@ export async function processUploads(callbacks: SyncEngineCallbacks): Promise<nu
           await waitForQueue();
 
           const item = encryptedQueue.shift();
+          if (item) signalSpace(); // notify encrypt workers that queue has room
           if (!item) {
             if (encryptDone) return; // all items processed
             continue;
