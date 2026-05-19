@@ -56,6 +56,7 @@ import { useSync } from '../lib/sync-context';
 import { useSearchIndex } from '../lib/use-search-index';
 import type { SearchIndexEntry, SearchResult } from '../lib/search-index';
 import { donateSiriShortcut } from '../lib/siri-shortcuts';
+import { perfMark } from '../lib/perf-mark';
 
 // Tracks the currently open Swipeable so we can close it when another opens.
 let _openSwipeable: Swipeable | null = null;
@@ -1337,11 +1338,17 @@ export default function FilesScreen() {
       setLoading(true);
     }
     setError(null);
+    const endPerf = perfMark.start('files.fetch', {
+      parent: parentId ?? 'root',
+      refresh: isRefresh,
+    });
 
     try {
       const result = await listFiles(parentId ?? undefined);
       applyFilesForFolder(parentId, result, { preserveCachedOnEmpty: !isRefresh });
+      endPerf({ count: result.length });
     } catch (err) {
+      endPerf({ error: true });
       setError(friendlyError(err));
     } finally {
       setLoading(false);

@@ -35,6 +35,7 @@ import { detectMediaMimeType } from './media';
 import { getStatusCounts } from '../services/BackupDatabase';
 import { updateBackupNotification, clearBackupNotification } from '../../modules/beebeeb-crypto';
 import type { UploadProgress } from './api';
+import { perfMark } from './perf-mark';
 
 const BACKUP_REMINDER_IDENTIFIER = 'backup-pending-reminder';
 const REMINDER_COOLDOWN_MS = 24 * 60 * 60 * 1000;
@@ -237,6 +238,11 @@ export function PhotoBackupBridge({ backup }: PhotoBackupBridgeProps): null {
   const startSync = useCallback(async () => {
     const s = stateRef.current;
     if (!s.isUnlocked || !s.isPhotoBackupEnabled) return;
+    const endPerf = perfMark.start('backup.js.startSync', {
+      unlocked: s.isUnlocked,
+      enabled: s.isPhotoBackupEnabled,
+      wifiOnly: s.wifiOnly,
+    });
 
     // Wi-Fi check for wifiOnly users
     if (s.wifiOnly) {
@@ -245,6 +251,7 @@ export function PhotoBackupBridge({ backup }: PhotoBackupBridgeProps): null {
         const onWifi = net.type === 'wifi' && net.isConnected !== false;
         if (!onWifi) {
           console.log('[PhotoBackupBridge] wifiOnly=true and not on Wi-Fi — deferring');
+          endPerf({ deferred: 'wifi' });
           return;
         }
       } catch {
@@ -291,6 +298,7 @@ export function PhotoBackupBridge({ backup }: PhotoBackupBridgeProps): null {
           console.warn('[PhotoBackupBridge] could not update camera-roll manifest:', err);
         });
       } catch (err) {
+        endPerf({ error: true });
         if (err instanceof Error && err.name !== 'AbortError') {
           console.warn('[PhotoBackupBridge] reconciliation error:', err);
         }
@@ -315,6 +323,7 @@ export function PhotoBackupBridge({ backup }: PhotoBackupBridgeProps): null {
           });
         }
       } catch (err) {
+        endPerf({ error: true });
         if (err instanceof Error && err.name !== 'AbortError') {
           console.warn('[PhotoBackupBridge] processUploads error:', err);
         }
@@ -329,6 +338,7 @@ export function PhotoBackupBridge({ backup }: PhotoBackupBridgeProps): null {
       const failed = counts.failed ?? 0;
       const total = uploaded + pending + failed;
       stateRef.current.reportPhotoProgress(uploaded, total, failed, false, 0, null);
+      endPerf({ uploaded, pending, failed });
 
       // Show completion notification if any uploads happened
       if (uploaded > 0) {

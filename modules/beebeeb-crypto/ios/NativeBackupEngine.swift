@@ -71,6 +71,18 @@ struct BackupAssetRow {
 final class NativeBackupEngine: NSObject {
   static let shared = NativeBackupEngine()
 
+  private func perfLog(_ event: String, _ fields: [String: CustomStringConvertible] = [:]) {
+    let suffix = fields
+      .map { "\($0.key)=\($0.value)" }
+      .sorted()
+      .joined(separator: " ")
+    if suffix.isEmpty {
+      NSLog("[BeebeebPerf] backup.native.\(event)")
+    } else {
+      NSLog("[BeebeebPerf] backup.native.\(event) \(suffix)")
+    }
+  }
+
   // MARK: - Private state
 
   private let queue = DispatchQueue(label: "io.beebeeb.backup.engine", qos: .utility)
@@ -185,6 +197,10 @@ final class NativeBackupEngine: NSObject {
     }
 
     isRunning = true
+    perfLog("start", [
+      "total": totalAssets,
+      "completed": completedAssets
+    ])
     isPaused = false
     consecutiveFailures = 0
     backoffUntil = nil
@@ -220,12 +236,18 @@ final class NativeBackupEngine: NSObject {
       self?.recoverStuckUploads()
     }
 
+    perfLog("stop", [
+      "total": totalAssets,
+      "completed": completedAssets,
+      "inProgress": inProgressAssets
+    ])
     NSLog("[NativeBackupEngine] Stopped")
   }
 
   /// Pause the drain loop without clearing state. Background uploads continue.
   func pause() {
     isPaused = true
+    perfLog("pause")
     NSLog("[NativeBackupEngine] Paused")
   }
 
@@ -233,6 +255,7 @@ final class NativeBackupEngine: NSObject {
   func resume() {
     guard isRunning else { return }
     isPaused = false
+    perfLog("resume")
     NSLog("[NativeBackupEngine] Resumed")
   }
 
@@ -426,6 +449,11 @@ final class NativeBackupEngine: NSObject {
 
     // Get pending assets from database
     let pending = dbQueue.sync { getPendingUploads(limit: limit) }
+    perfLog("batch.start", [
+      "limit": limit,
+      "pending": pending.count,
+      "running": isRunning
+    ])
     if pending.isEmpty { return 0 }
 
     let batchStart = Date()
@@ -473,6 +501,11 @@ final class NativeBackupEngine: NSObject {
     }
 
     let duration = Date().timeIntervalSince(batchStart)
+    perfLog("batch.finish", [
+      "uploaded": uploaded,
+      "pending": pending.count,
+      "durationMs": Int(duration * 1000)
+    ])
     refreshProgress()
 
     onProgress?(totalAssets, completedAssets, failedAssets)
@@ -500,6 +533,10 @@ final class NativeBackupEngine: NSObject {
   ) async -> Bool {
     dbQueue.sync { markUploading(assetId: asset.localAssetId) }
     onFileStatus?(asset.localAssetId, "uploading", nil, nil)
+    perfLog("asset.start", [
+      "assetType": asset.assetType,
+      "retry": asset.retryCount
+    ])
 
     do {
       // 1. Get photo data from PHAsset
@@ -556,9 +593,13 @@ final class NativeBackupEngine: NSObject {
       }
       completedAssets += 1
       bytesUploaded += Int64(data.count)
+      perfLog("asset.finish", [
+        "bytes": data.count,
+        "chunks": result.chunksUploaded
+      ])
 
       onFileStatus?(asset.localAssetId, "uploaded", filename, nil)
-      NSLog("[NativeBackupEngine] Uploaded \(filename) (\(data.count) bytes, \(result.chunksUploaded) chunks via Rust)")
+      NSLog("[NativeBackupEngine] Uploaded asset (\(data.count) bytes, \(result.chunksUploaded) chunks via Rust)")
 
       // 7. Generate and upload thumbnail (best-effort, never blocks the upload)
       generateAndUploadThumbnail(
@@ -622,19 +663,23 @@ final class NativeBackupEngine: NSObject {
       // bytesUploaded += Int64(data.count)
       //
       // onFileStatus?(asset.localAssetId, "uploaded", filename, nil)
-      // NSLog("[NativeBackupEngine] Uploaded \(filename) (\(data.count) bytes)")
+      // NSLog("[NativeBackupEngine] Uploaded asset (\(data.count) bytes)")
       //
       // return true
       // --- End legacy Swift HTTP upload code ---
 
     } catch {
+      perfLog("asset.fail", [
+        "assetType": asset.assetType,
+        "retry": asset.retryCount
+      ])
       dbQueue.sync {
         markFailed(assetId: asset.localAssetId, error: error.localizedDescription)
       }
       failedAssets += 1
 
       onFileStatus?(asset.localAssetId, "failed", nil, error.localizedDescription)
-      NSLog("[NativeBackupEngine] Failed \(asset.localAssetId): \(error.localizedDescription)")
+      NSLog("[NativeBackupEngine] Asset upload failed: \(error.localizedDescription)")
 
       return false
     }

@@ -38,6 +38,7 @@ import {
 } from '../lib/thumbnail';
 import { getRemoteToLocalMap } from '../services/BackupDatabase';
 import { encryptedMetadataPayloadToBytes } from '../lib/encrypted-metadata';
+import { perfMark } from '../lib/perf-mark';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -565,6 +566,7 @@ export default function PhotosScreen() {
       setLoading(true);
     }
     setError(null);
+    const endPerf = perfMark.start('photos.fetch', { refresh: isRefresh });
 
     try {
       const allImages = await getPhotoCandidates();
@@ -583,11 +585,13 @@ export default function PhotosScreen() {
         photosCacheRef.current = [];
         setPhotos([]);
       }
+      endPerf({ count: images.length });
       void pruneThumbnailCache();
 
       // Build the remote_file_id → local_asset_id map for camera roll thumbnails
       void getRemoteToLocalMap().then((map) => setLocalAssetMap(map)).catch(() => {});
     } catch (err) {
+      endPerf({ error: true });
       setError(friendlyError(err));
     } finally {
       setLoading(false);
