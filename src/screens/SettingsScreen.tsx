@@ -417,7 +417,7 @@ function BackupCategoryStatus({ stats, paused, c }: { stats: CategoryStats; paus
       <View style={{ paddingHorizontal: 12, paddingBottom: 10, paddingTop: 2, flexDirection: 'row', alignItems: 'center', gap: 6 }}>
         <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: c.ink4 }} />
         <Text style={{ fontSize: 11, color: c.ink3, flex: 1 }}>
-          Paused · waiting for Wi-Fi · {totalCount - uploadedCount} remaining
+          Paused · waiting for Wi-Fi · {uploadedCount} of {totalCount} items backed up
         </Text>
       </View>
     );
@@ -445,7 +445,7 @@ function BackupCategoryStatus({ stats, paused, c }: { stats: CategoryStats; paus
 
   let line: string;
   if (syncing) {
-    line = `${uploadedCount} / ${totalCount} items · ${formatBytes(uploadedBytes)} / ${formatBytes(totalBytes)}`;
+    line = `${uploadedCount} of ${totalCount} items backed up · ${formatBytes(uploadedBytes)} / ${formatBytes(totalBytes)}`;
   } else if (lastSyncAt) {
     line = `Last backup: ${timeAgo(lastSyncAt)} · ${uploadedCount} items · ${formatBytes(uploadedBytes)}`;
   } else if (hasScanned && totalCount === 0) {
@@ -1863,8 +1863,8 @@ export default function SettingsScreen() {
                     <ActivityIndicator size="small" color={c.amber} />
                     <Text style={{ fontSize: 11, color: c.ink3, flex: 1 }}>
                       {photoSessionProgress.running && photoSessionProgress.total > 0
-                        ? `Backing up... ${photoSessionProgress.uploaded}/${photoSessionProgress.total}`
-                        : `Backing up ${backupProgress.inProgress} of ${backupProgress.total} items...`}
+                        ? `${photoSessionProgress.uploaded} of ${photoSessionProgress.total} ${includeVideos ? 'items' : 'photos'} backed up`
+                        : `${backupProgress.completed} of ${backupProgress.total} items backed up`}
                     </Text>
                   </View>
                 );

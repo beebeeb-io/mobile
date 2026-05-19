@@ -424,7 +424,7 @@ function DevicePhotosBanner() {
 // ---------------------------------------------------------------------------
 
 function AutoBackupBanner() {
-  const { isPhotoBackupEnabled, backupProgress, lastBackupAt } = useBackup();
+  const { isPhotoBackupEnabled, backupProgress, lastBackupAt, includeVideos } = useBackup();
   const isConnected = useNetworkStatus();
   const { colors: c } = useTheme();
   const navigation = useNavigation<{ navigate: (name: string) => void }>();
@@ -462,7 +462,7 @@ function AutoBackupBanner() {
   }
 
   if (backupProgress.inProgress > 0) {
-    const remaining = backupProgress.total - backupProgress.completed;
+    const itemLabel = includeVideos ? 'items' : 'photos';
     const ratio = backupProgress.total > 0
       ? Math.min(1, Math.max(0, backupProgress.completed / backupProgress.total))
       : 0;
@@ -471,7 +471,7 @@ function AutoBackupBanner() {
         <View style={styles.bannerHeaderRow}>
           <ActivityIndicator size="small" color={c.green} style={{ marginRight: 2 }} />
           <Text style={[styles.bannerText, { color: c.ink }]}>
-            Backing up {backupProgress.inProgress} of {remaining} remaining
+            {backupProgress.completed} of {backupProgress.total} {itemLabel} backed up
           </Text>
           <Text style={[styles.bannerHint, { color: c.ink2 }]}>{Math.round(ratio * 100)}%</Text>
         </View>
