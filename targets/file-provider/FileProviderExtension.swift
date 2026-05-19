@@ -379,7 +379,6 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
     }
     if let bridge = error as? CryptoBridge.CryptoBridgeError {
       switch bridge {
-      case .notLinked: return NSFileProviderError(.providerNotFound)
       case .keyUnavailable, .decodeFailed: return NSFileProviderError(.cannotSynchronize)
       }
     }

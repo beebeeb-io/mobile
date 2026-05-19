@@ -18,13 +18,17 @@
 		B18059E884C0ABDD17F3DC3D /* ExpoModulesProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = FAC715A2D49A985799AEE119 /* ExpoModulesProvider.swift */; };
 		BB2F792D24A3F905000567C9 /* Expo.plist in Resources */ = {isa = PBXBuildFile; fileRef = BB2F792C24A3F905000567C9 /* Expo.plist */; };
 		BEEBEE00000000000000000B /* BeebeebFileProvider.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = BEEBEE000000000000000001 /* BeebeebFileProvider.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
-		BEEBEE000000000000000020 /* BeebeebFileProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEEBEE000000000000000010 /* BeebeebFileProvider.swift */; };
+		BEEBEE000000000000000020 /* FileProviderExtension.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEEBEE000000000000000010 /* FileProviderExtension.swift */; };
 		BEEBEE000000000000000021 /* FileProviderItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEEBEE000000000000000011 /* FileProviderItem.swift */; };
 		BEEBEE000000000000000022 /* FileProviderEnumerator.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEEBEE000000000000000012 /* FileProviderEnumerator.swift */; };
-		BEEBEE000000000000000023 /* FileProviderCrypto.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEEBEE000000000000000013 /* FileProviderCrypto.swift */; };
-		BEEBEE000000000000000024 /* FileProviderAPIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEEBEE000000000000000014 /* FileProviderAPIClient.swift */; };
+		BEEBEE000000000000000023 /* CacheManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEEBEE000000000000000013 /* CacheManager.swift */; };
+		BEEBEE000000000000000024 /* ApiClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEEBEE000000000000000014 /* ApiClient.swift */; };
 		BEEBEE000000000000000025 /* beebeeb_uniffi.swift in Sources */ = {isa = PBXBuildFile; fileRef = 37EFB2142B2E4DC5ACA0EAC5 /* beebeeb_uniffi.swift */; };
 		BEEBEE000000000000000026 /* BeebeebCore.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = DB9E8601A0574FC294891B72 /* BeebeebCore.xcframework */; };
+		BEEBEE000000000000000027 /* CryptoBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEEBEE000000000000000017 /* CryptoBridge.swift */; };
+		BEEBEE000000000000000028 /* KeychainKeyLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEEBEE000000000000000018 /* KeychainKeyLoader.swift */; };
+		BEEBEE000000000000000029 /* Constants.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEEBEE000000000000000019 /* Constants.swift */; };
+		BEEBEE00000000000000002A /* SyncEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEEBEE00000000000000001A /* SyncEngine.swift */; };
 		BEEBEE000000000000000120 /* ShareViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEEBEE000000000000000110 /* ShareViewController.swift */; };
 		BEEBEE000000000000000121 /* BeebeebShare.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = BEEBEE000000000000000101 /* BeebeebShare.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		BEEBEE000000000000000122 /* BeebeebCryptoShim.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEEBEE000000000000000113 /* BeebeebCryptoShim.swift */; };
@@ -93,13 +97,17 @@
 		AA286B85B6C04FC6940260E9 /* SplashScreen.storyboard */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = file.storyboard; name = SplashScreen.storyboard; path = Beebeeb/SplashScreen.storyboard; sourceTree = "<group>"; };
 		BB2F792C24A3F905000567C9 /* Expo.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; path = Expo.plist; sourceTree = "<group>"; };
 		BEEBEE000000000000000001 /* BeebeebFileProvider.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = BeebeebFileProvider.appex; sourceTree = BUILT_PRODUCTS_DIR; };
-		BEEBEE000000000000000010 /* BeebeebFileProvider.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = BeebeebFileProvider.swift; path = "../plugins/file-provider/BeebeebFileProvider.swift"; sourceTree = "<group>"; };
-		BEEBEE000000000000000011 /* FileProviderItem.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = FileProviderItem.swift; path = "../plugins/file-provider/FileProviderItem.swift"; sourceTree = "<group>"; };
-		BEEBEE000000000000000012 /* FileProviderEnumerator.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = FileProviderEnumerator.swift; path = "../plugins/file-provider/FileProviderEnumerator.swift"; sourceTree = "<group>"; };
-		BEEBEE000000000000000013 /* FileProviderCrypto.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = FileProviderCrypto.swift; path = "../plugins/file-provider/FileProviderCrypto.swift"; sourceTree = "<group>"; };
-		BEEBEE000000000000000014 /* FileProviderAPIClient.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = FileProviderAPIClient.swift; path = "../plugins/file-provider/FileProviderAPIClient.swift"; sourceTree = "<group>"; };
+		BEEBEE000000000000000010 /* FileProviderExtension.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = FileProviderExtension.swift; path = "../targets/file-provider/FileProviderExtension.swift"; sourceTree = "<group>"; };
+		BEEBEE000000000000000011 /* FileProviderItem.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = FileProviderItem.swift; path = "../targets/file-provider/FileProviderItem.swift"; sourceTree = "<group>"; };
+		BEEBEE000000000000000012 /* FileProviderEnumerator.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = FileProviderEnumerator.swift; path = "../targets/file-provider/FileProviderEnumerator.swift"; sourceTree = "<group>"; };
+		BEEBEE000000000000000013 /* CacheManager.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = CacheManager.swift; path = "../targets/file-provider/CacheManager.swift"; sourceTree = "<group>"; };
+		BEEBEE000000000000000014 /* ApiClient.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = ApiClient.swift; path = "../targets/file-provider/ApiClient.swift"; sourceTree = "<group>"; };
 		BEEBEE000000000000000015 /* Info.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = Info.plist; path = BeebeebFileProvider/Info.plist; sourceTree = "<group>"; };
 		BEEBEE000000000000000016 /* BeebeebFileProvider.entitlements */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.entitlements; name = BeebeebFileProvider.entitlements; path = BeebeebFileProvider/BeebeebFileProvider.entitlements; sourceTree = "<group>"; };
+		BEEBEE000000000000000017 /* CryptoBridge.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = CryptoBridge.swift; path = "../targets/file-provider/CryptoBridge.swift"; sourceTree = "<group>"; };
+		BEEBEE000000000000000018 /* KeychainKeyLoader.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = KeychainKeyLoader.swift; path = "../targets/file-provider/KeychainKeyLoader.swift"; sourceTree = "<group>"; };
+		BEEBEE000000000000000019 /* Constants.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = Constants.swift; path = "../targets/file-provider/Constants.swift"; sourceTree = "<group>"; };
+		BEEBEE00000000000000001A /* SyncEngine.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = SyncEngine.swift; path = "../targets/file-provider/SyncEngine.swift"; sourceTree = "<group>"; };
 		BEEBEE000000000000000101 /* BeebeebShare.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = BeebeebShare.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		BEEBEE000000000000000110 /* ShareViewController.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = ShareViewController.swift; path = BeebeebShare/ShareViewController.swift; sourceTree = "<group>"; };
 		BEEBEE000000000000000111 /* Info.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = Info.plist; path = BeebeebShare/Info.plist; sourceTree = "<group>"; };
@@ -239,11 +247,15 @@
 		BEEBEE000000000000000002 /* BeebeebFileProvider */ = {
 			isa = PBXGroup;
 			children = (
-				BEEBEE000000000000000010 /* BeebeebFileProvider.swift */,
+				BEEBEE000000000000000010 /* FileProviderExtension.swift */,
 				BEEBEE000000000000000011 /* FileProviderItem.swift */,
 				BEEBEE000000000000000012 /* FileProviderEnumerator.swift */,
-				BEEBEE000000000000000013 /* FileProviderCrypto.swift */,
-				BEEBEE000000000000000014 /* FileProviderAPIClient.swift */,
+				BEEBEE000000000000000013 /* CacheManager.swift */,
+				BEEBEE000000000000000014 /* ApiClient.swift */,
+				BEEBEE000000000000000017 /* CryptoBridge.swift */,
+				BEEBEE000000000000000018 /* KeychainKeyLoader.swift */,
+				BEEBEE000000000000000019 /* Constants.swift */,
+				BEEBEE00000000000000001A /* SyncEngine.swift */,
 				37EFB2142B2E4DC5ACA0EAC5 /* beebeeb_uniffi.swift */,
 				BEEBEE000000000000000015 /* Info.plist */,
 				BEEBEE000000000000000016 /* BeebeebFileProvider.entitlements */,
@@ -594,11 +606,15 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				BEEBEE000000000000000020 /* BeebeebFileProvider.swift in Sources */,
+				BEEBEE000000000000000020 /* FileProviderExtension.swift in Sources */,
 				BEEBEE000000000000000021 /* FileProviderItem.swift in Sources */,
 				BEEBEE000000000000000022 /* FileProviderEnumerator.swift in Sources */,
-				BEEBEE000000000000000023 /* FileProviderCrypto.swift in Sources */,
-				BEEBEE000000000000000024 /* FileProviderAPIClient.swift in Sources */,
+				BEEBEE000000000000000023 /* CacheManager.swift in Sources */,
+				BEEBEE000000000000000024 /* ApiClient.swift in Sources */,
+				BEEBEE000000000000000027 /* CryptoBridge.swift in Sources */,
+				BEEBEE000000000000000028 /* KeychainKeyLoader.swift in Sources */,
+				BEEBEE000000000000000029 /* Constants.swift in Sources */,
+				BEEBEE00000000000000002A /* SyncEngine.swift in Sources */,
 				BEEBEE000000000000000025 /* beebeeb_uniffi.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
