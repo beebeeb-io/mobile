@@ -52,13 +52,46 @@ struct BackupAssetRow {
   let filename: String? // Not stored in DB — resolved from PHAsset at upload time
 }
 
+private enum BackupPacingMode: String {
+  case foregroundActive
+  case foregroundIdle
+  case background
+  case lowPower
+  case thermalPressure
+  case serverBackoff
+
+  var batchLimit: Int {
+    switch self {
+    case .foregroundActive, .lowPower, .thermalPressure, .serverBackoff:
+      return 1
+    case .foregroundIdle:
+      return 2
+    case .background:
+      return 3
+    }
+  }
+
+  var delayNanoseconds: UInt64 {
+    switch self {
+    case .foregroundActive:
+      return 2_000_000_000
+    case .foregroundIdle:
+      return 750_000_000
+    case .background:
+      return 150_000_000
+    case .lowPower, .thermalPressure, .serverBackoff:
+      return 5_000_000_000
+    }
+  }
+}
+
 // MARK: - NativeBackupEngine
 
 /// Native Swift backup engine replacing the JS-based PhotoSyncEngine.
 ///
 /// Architecture:
 /// - PHPhotoLibraryChangeObserver for real-time asset detection
-/// - 3-concurrent TaskGroup upload pipeline
+/// - Foreground-friendly single-upload pipeline
 /// - Rust encrypt via MasterKeyHandle -> FileKeyHandle -> encryptChunk (chunks written to temp files)
 /// - Rust `uploadEncryptedFile()` from beebeeb-upload crate handles init/chunk-upload/complete
 /// - Shared SQLite database (backup_assets) with JS UI layer via WAL mode
@@ -103,6 +136,8 @@ final class NativeBackupEngine: NSObject {
 
   // Chunk size matching existing uploader (4 MB)
   private let chunkSize = 4 * 1024 * 1024
+  private let maxConcurrentUploads = 1
+  private let batchLimit = 12
 
   // Backoff state
   private var consecutiveFailures = 0
@@ -317,6 +352,13 @@ final class NativeBackupEngine: NSObject {
         return
       }
 
+      let mode = currentPacingMode()
+      perfLog("mode", [
+        "mode": mode.rawValue,
+        "batchLimit": mode.batchLimit,
+        "delayMs": mode.delayNanoseconds / 1_000_000
+      ])
+
       let batchStart = isRunning
       if !isRunning {
         isRunning = true
@@ -324,7 +366,7 @@ final class NativeBackupEngine: NSObject {
       }
 
       do {
-        let uploaded = try await processBatch(limit: 50)
+        let uploaded = try await processBatch(limit: mode.batchLimit)
         task.setTaskCompleted(success: uploaded >= 0)
       } catch {
         task.setTaskCompleted(success: false)
@@ -402,34 +444,90 @@ final class NativeBackupEngine: NSObject {
 
   // MARK: - Drain Loop
 
+  private func currentApplicationState() -> UIApplication.State {
+    if Thread.isMainThread {
+      return UIApplication.shared.applicationState
+    }
+
+    return DispatchQueue.main.sync {
+      UIApplication.shared.applicationState
+    }
+  }
+
+  private func currentPacingMode() -> BackupPacingMode {
+    if let backoff = backoffUntil, Date() < backoff {
+      return .serverBackoff
+    }
+
+    let processInfo = ProcessInfo.processInfo
+    if processInfo.isLowPowerModeEnabled {
+      return .lowPower
+    }
+
+    switch processInfo.thermalState {
+    case .serious, .critical:
+      return .thermalPressure
+    default:
+      break
+    }
+
+    switch currentApplicationState() {
+    case .active:
+      return .foregroundActive
+    case .background:
+      return .background
+    case .inactive:
+      return .foregroundIdle
+    @unknown default:
+      return .foregroundActive
+    }
+  }
+
+  private func sleepIfStillRunning(nanoseconds: UInt64) async -> Bool {
+    guard isRunning, !Task.isCancelled else { return false }
+    do {
+      try await Task.sleep(nanoseconds: nanoseconds)
+    } catch {
+      return false
+    }
+    return isRunning && !Task.isCancelled
+  }
+
   private func startDrainLoop() {
     drainTask?.cancel()
     drainTask = Task { [weak self] in
       while let self, self.isRunning, !Task.isCancelled {
         if self.isPaused {
-          try? await Task.sleep(nanoseconds: 2_000_000_000) // 2s
+          _ = await self.sleepIfStillRunning(nanoseconds: 2_000_000_000) // 2s
           continue
         }
 
-        // Respect backoff
+        let mode = self.currentPacingMode()
+        self.perfLog("mode", [
+          "mode": mode.rawValue,
+          "batchLimit": mode.batchLimit,
+          "delayMs": mode.delayNanoseconds / 1_000_000
+        ])
+
         if let backoff = self.backoffUntil, Date() < backoff {
-          let remaining = backoff.timeIntervalSinceNow
-          try? await Task.sleep(nanoseconds: UInt64(remaining * 1_000_000_000))
+          let remaining = max(0, backoff.timeIntervalSinceNow)
+          let delay = min(mode.delayNanoseconds, UInt64(remaining * 1_000_000_000))
+          _ = await self.sleepIfStillRunning(nanoseconds: delay)
           continue
         }
 
         do {
-          let uploaded = try await self.processBatch(limit: 30)
+          guard self.isRunning, !self.isPaused, !Task.isCancelled else { continue }
+          let uploaded = try await self.processBatch(limit: mode.batchLimit)
           if uploaded == 0 {
             // No pending work — sleep before checking again
-            try? await Task.sleep(nanoseconds: 10_000_000_000) // 10s
+            _ = await self.sleepIfStillRunning(nanoseconds: max(10_000_000_000, mode.delayNanoseconds)) // 10s
           } else {
-            // Brief pause between batches to avoid overwhelming the device
-            try? await Task.sleep(nanoseconds: 500_000_000) // 0.5s
+            _ = await self.sleepIfStillRunning(nanoseconds: mode.delayNanoseconds)
           }
         } catch {
           NSLog("[NativeBackupEngine] Batch error: \(error.localizedDescription)")
-          try? await Task.sleep(nanoseconds: 5_000_000_000) // 5s on error
+          _ = await self.sleepIfStillRunning(nanoseconds: max(5_000_000_000, mode.delayNanoseconds)) // 5s on error
         }
       }
     }
@@ -438,7 +536,7 @@ final class NativeBackupEngine: NSObject {
   // MARK: - Core Upload Pipeline
 
   /// Process a batch of pending uploads. Returns the number of successfully uploaded assets.
-  func processBatch(limit: Int = 30) async throws -> Int {
+  func processBatch(limit: Int = 12) async throws -> Int {
     guard isRunning, let masterKey = masterKeyHandle else { return 0 }
     guard let authToken = token, let baseURL = apiBaseUrl else {
       throw BackupError.notConfigured
@@ -459,14 +557,16 @@ final class NativeBackupEngine: NSObject {
     let batchStart = Date()
     var uploaded = 0
 
-    // Process with concurrency limit of 3
+    // Process with a foreground-friendly concurrency limit. The Rust uploader
+    // can saturate bandwidth with multiple concurrent assets, which makes the
+    // React Native UI and Files/Photos browsing feel sluggish.
     await withTaskGroup(of: Bool.self) { group in
       var activeCount = 0
       var index = 0
 
-      while index < pending.count || !group.isEmpty {
+      while (index < pending.count || !group.isEmpty) && isRunning && !Task.isCancelled {
         // Add tasks up to concurrency limit
-        while activeCount < 3 && index < pending.count {
+        while activeCount < maxConcurrentUploads && index < pending.count && isRunning && !Task.isCancelled {
           let asset = pending[index]
           index += 1
           activeCount += 1
@@ -485,6 +585,10 @@ final class NativeBackupEngine: NSObject {
         // Wait for one to complete
         if let result = await group.next() {
           activeCount -= 1
+          if !self.isRunning || Task.isCancelled {
+            group.cancelAll()
+            break
+          }
           if result {
             uploaded += 1
             self.consecutiveFailures = 0
@@ -531,6 +635,7 @@ final class NativeBackupEngine: NSObject {
     authToken: String,
     baseURL: String
   ) async -> Bool {
+    guard isRunning && !Task.isCancelled else { return false }
     dbQueue.sync { markUploading(assetId: asset.localAssetId) }
     onFileStatus?(asset.localAssetId, "uploading", nil, nil)
     perfLog("asset.start", [
@@ -539,15 +644,19 @@ final class NativeBackupEngine: NSObject {
     ])
 
     do {
+      guard isRunning && !Task.isCancelled else { return false }
       // 1. Get photo data from PHAsset
       let (data, uti) = try await fetchAssetData(localId: asset.localAssetId)
+      guard isRunning && !Task.isCancelled else { return false }
 
       // 2. Generate file ID and derive file key
       let fileId = UUID().uuidString.lowercased()
       let fileKey = try masterKey.deriveFileKey(fileId: Data(fileId.utf8))
+      guard isRunning && !Task.isCancelled else { return false }
 
       // 3. Encrypt chunks to temp files on disk for the Rust upload protocol
       let chunkResults = try encryptData(data: data, fileKey: fileKey)
+      guard isRunning && !Task.isCancelled else { return false }
       let tempDir = NSTemporaryDirectory()
       var chunkPaths: [String] = []
       for (index, chunk) in chunkResults.enumerated() {
@@ -569,6 +678,7 @@ final class NativeBackupEngine: NSObject {
       let filename = "IMG_\(fileId).\(ext)"
       let mimeType = mimeTypeFromUTI(uti)
       let nameEncrypted = try masterKey.encryptName(fileId: fileId, filename: filename, mimeType: mimeType)
+      guard isRunning && !Task.isCancelled else { return false }
 
       // 5. Upload via Rust — handles init, chunk upload, and complete in one call
       let createdAt = ISO8601DateFormatter().string(from: Date())
@@ -1181,12 +1291,12 @@ final class NativeBackupEngine: NSObject {
         let (_, response) = try await URLSession.shared.data(for: request)
         let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
         if (200..<300).contains(statusCode) {
-          NSLog("[NativeBackupEngine] Thumbnail uploaded for \(serverFileId)")
+          NSLog("[NativeBackupEngine] Thumbnail uploaded")
         } else {
-          NSLog("[NativeBackupEngine] Thumbnail upload HTTP \(statusCode) for \(serverFileId)")
+          NSLog("[NativeBackupEngine] Thumbnail upload HTTP \(statusCode)")
         }
       } catch {
-        NSLog("[NativeBackupEngine] Thumbnail generation failed for \(phAssetId): \(error.localizedDescription)")
+        NSLog("[NativeBackupEngine] Thumbnail generation failed: \(error.localizedDescription)")
       }
     }
   }
