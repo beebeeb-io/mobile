@@ -1,15 +1,12 @@
 /**
  * Speed Test screen -- benchmarks latency, upload, download, and encryption.
  *
- * Ookla-style experience: animated semicircular gauge, phase stepper,
- * live speed readout, connection breakdown, and results summary.
- *
- * Gauge is built with the Animated API + rotation transforms (no extra deps).
+ * Native diagnostics experience with live phase status, metric cards,
+ * connection breakdown, and results summary.
  */
 
-import React, { useCallback, useRef, useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import {
-  Animated,
   ScrollView,
   StyleSheet,
   Text,
@@ -77,14 +74,12 @@ function formatMBpsNum(bytesPerSec: number): number {
   return bytesPerSec / (1024 * 1024);
 }
 
-/** Map speed in MB/s to a 0-180 degree angle using a log scale for the gauge */
-function speedToAngle(speedMBps: number): number {
-  // Tick marks: 0, 25, 50, 100, 200, 500
-  // Use log mapping for better visual distribution
+/** Map speed in MB/s to a 0-1 progress value using a log scale. */
+function speedToProgress(speedMBps: number): number {
   if (speedMBps <= 0) return 0;
   const maxLog = Math.log10(500);
   const speedLog = Math.log10(Math.min(speedMBps, 500));
-  return Math.max(0, (speedLog / maxLog) * 180);
+  return Math.max(0, Math.min(1, speedLog / maxLog));
 }
 
 /** Compute jitter (standard deviation of latency measurements) */
@@ -95,211 +90,423 @@ function computeJitter(latencies: number[]): number {
   return Math.sqrt(variance);
 }
 
-// ---------------------------------------------------------------------------
-// Gauge component
-// ---------------------------------------------------------------------------
+function phaseTitle(phase: Phase): string {
+  switch (phase) {
+    case 'connecting':
+      return 'Connecting to Beebeeb';
+    case 'latency':
+      return 'Latency';
+    case 'download':
+      return 'Download';
+    case 'upload':
+      return 'Upload';
+    case 'encryption':
+      return 'On-device encryption';
+    case 'done':
+      return 'Result';
+    case 'idle':
+    default:
+      return 'Ready to test';
+  }
+}
 
-const GAUGE_SIZE = 240;
-const GAUGE_STROKE = 14;
-const GAUGE_RADIUS = (GAUGE_SIZE - GAUGE_STROKE) / 2;
-const TICK_SPEEDS = [0, 25, 50, 100, 200, 500];
+function phaseIcon(phase: Phase): keyof typeof Ionicons.glyphMap {
+  switch (phase) {
+    case 'connecting':
+      return 'radio-outline';
+    case 'latency':
+      return 'pulse-outline';
+    case 'download':
+      return 'arrow-down-outline';
+    case 'upload':
+      return 'arrow-up-outline';
+    case 'encryption':
+      return 'lock-closed-outline';
+    case 'done':
+      return 'checkmark-circle-outline';
+    case 'idle':
+    default:
+      return 'speedometer-outline';
+  }
+}
 
-function Gauge({
-  gaugeAnim,
+function phaseCaption(phase: Phase, statusText: string): string {
+  if (statusText) return statusText;
+  switch (phase) {
+    case 'idle':
+      return 'Measures API latency, transfer speed, and local crypto throughput.';
+    case 'done':
+      return 'Last completed benchmark';
+    default:
+      return 'Benchmark running';
+  }
+}
+
+function MetricPanel({
+  phase,
+  statusText,
   currentSpeed,
   unit,
+  progress,
   c,
 }: {
-  gaugeAnim: Animated.Value;
+  phase: Phase;
+  statusText: string;
   currentSpeed: string;
   unit: string;
+  progress: number;
   c: C;
 }) {
-  // Needle rotation: maps 0-180 to the semicircle
-  const needleRotation = gaugeAnim.interpolate({
-    inputRange: [0, 180],
-    outputRange: ['-90deg', '90deg'],
-    extrapolate: 'clamp',
-  });
+  const clamped = Math.max(0, Math.min(1, progress));
+  const value = phase === 'idle' ? 'Ready' : phase === 'connecting' ? '...' : currentSpeed;
+  const displayUnit = phase === 'idle' || phase === 'connecting' ? '' : unit;
+  const progressLabel = phase === 'idle' ? 'Start' : phase === 'done' ? 'Complete' : 'Running';
 
   return (
-    <View style={gaugeStyles.container}>
-      {/* Background arc segments */}
-      <View style={gaugeStyles.arcContainer}>
-        {/* Background track */}
-        {Array.from({ length: 36 }).map((_, i) => {
-          const angle = (i * 5) - 90; // -90 to 85 degrees (180 deg semicircle)
-          const rad = (angle * Math.PI) / 180;
-          const x = GAUGE_RADIUS * Math.cos(rad);
-          const y = GAUGE_RADIUS * Math.sin(rad);
-          return (
-            <View
-              key={`bg-${i}`}
-              style={[
-                gaugeStyles.arcSegment,
-                {
-                  backgroundColor: c.line,
-                  left: GAUGE_SIZE / 2 + x - 3,
-                  top: GAUGE_SIZE / 2 + y - 3,
-                  transform: [{ rotate: `${angle + 90}deg` }],
-                },
-              ]}
-            />
-          );
-        })}
+    <View style={[meterStyles.card, { backgroundColor: c.paper, borderColor: c.line }]}>
+      <View style={meterStyles.topRow}>
+        <View style={[meterStyles.iconWrap, { backgroundColor: c.amberBg }]}>
+          <Ionicons name={phaseIcon(phase)} size={20} color={c.amber} />
+        </View>
+        <View style={meterStyles.titleBlock}>
+          <Text style={[meterStyles.title, { color: c.ink }]}>{phaseTitle(phase)}</Text>
+          <Text style={[meterStyles.caption, { color: c.ink2 }]} numberOfLines={2}>
+            {phaseCaption(phase, statusText)}
+          </Text>
+        </View>
+      </View>
 
-        {/* Animated fill segments -- using an overlay approach */}
-        {Array.from({ length: 36 }).map((_, i) => {
-          const segmentAngle = i * 5; // 0-175 degrees
-          const angle = segmentAngle - 90;
-          const rad = (angle * Math.PI) / 180;
-          const x = GAUGE_RADIUS * Math.cos(rad);
-          const y = GAUGE_RADIUS * Math.sin(rad);
-
-          const opacity = gaugeAnim.interpolate({
-            inputRange: [
-              Math.max(0, segmentAngle - 5),
-              segmentAngle,
-              segmentAngle + 5,
-            ],
-            outputRange: [0, 1, 1],
-            extrapolate: 'clamp',
-          });
-
-          return (
-            <Animated.View
-              key={`fill-${i}`}
-              style={[
-                gaugeStyles.arcSegment,
-                {
-                  backgroundColor: c.amber,
-                  left: GAUGE_SIZE / 2 + x - 3,
-                  top: GAUGE_SIZE / 2 + y - 3,
-                  transform: [{ rotate: `${angle + 90}deg` }],
-                  opacity,
-                },
-              ]}
-            />
-          );
-        })}
-
-        {/* Tick marks with labels */}
-        {TICK_SPEEDS.map((speed) => {
-          const tickAngle = speedToAngle(speed);
-          const outerAngle = tickAngle - 90;
-          const rad = (outerAngle * Math.PI) / 180;
-          const outerR = GAUGE_RADIUS + 16;
-          const x = outerR * Math.cos(rad);
-          const y = outerR * Math.sin(rad);
-          return (
-            <View
-              key={`tick-${speed}`}
-              style={[
-                gaugeStyles.tickLabel,
-                {
-                  left: GAUGE_SIZE / 2 + x - 16,
-                  top: GAUGE_SIZE / 2 + y - 8,
-                },
-              ]}
-            >
-              <Text style={[gaugeStyles.tickText, { color: c.ink3 }]}>
-                {speed}
-              </Text>
-            </View>
-          );
-        })}
-
-        {/* Needle */}
-        <Animated.View
+      <View style={meterStyles.readoutRow}>
+        <Text
           style={[
-            gaugeStyles.needleContainer,
+            meterStyles.value,
             {
-              transform: [{ rotate: needleRotation }],
+              color: c.ink,
+              fontFamily: phase === 'idle' ? undefined : fonts.mono,
+              fontSize: phase === 'idle' ? 42 : 52,
             },
           ]}
         >
-          <View style={[gaugeStyles.needle, { backgroundColor: c.ink }]} />
-        </Animated.View>
+          {value}
+        </Text>
+        {displayUnit !== '' && (
+          <Text style={[meterStyles.unit, { color: c.ink3 }]}>{displayUnit}</Text>
+        )}
+      </View>
 
-        {/* Center circle */}
-        <View style={[gaugeStyles.centerDot, { backgroundColor: c.amber }]} />
-
-        {/* Speed readout in center */}
-        <View style={gaugeStyles.readout}>
-          <Text style={[gaugeStyles.readoutValue, { color: c.ink, fontFamily: fonts.mono }]}>
-            {currentSpeed}
-          </Text>
-          <Text style={[gaugeStyles.readoutUnit, { color: c.ink3 }]}>
-            {unit}
-          </Text>
-        </View>
+      <View style={[meterStyles.track, { backgroundColor: c.line }]}>
+        <View
+          style={[
+            meterStyles.fill,
+            {
+              backgroundColor: c.amber,
+              width: `${Math.round((phase === 'done' ? 1 : clamped) * 100)}%`,
+            },
+          ]}
+        />
+      </View>
+      <View style={meterStyles.scaleRow}>
+        <Text style={[meterStyles.scaleText, { color: c.ink4 }]}>{progressLabel}</Text>
+        <Text style={[meterStyles.scaleText, { color: c.ink4 }]}>
+          {phase === 'latency' ? 'lower is better' : 'MB/s scale'}
+        </Text>
       </View>
     </View>
   );
 }
 
-const gaugeStyles = StyleSheet.create({
-  container: {
-    alignItems: 'center',
-    marginVertical: spacing.lg,
-  },
-  arcContainer: {
-    width: GAUGE_SIZE,
-    height: GAUGE_SIZE / 2 + 30, // Half circle + space for labels
-    position: 'relative',
-    overflow: 'visible',
-  },
-  arcSegment: {
-    position: 'absolute',
-    width: 6,
-    height: GAUGE_STROKE,
-    borderRadius: 3,
-  },
-  tickLabel: {
-    position: 'absolute',
-    width: 32,
-    alignItems: 'center',
-  },
-  tickText: {
-    fontSize: 9,
-    fontFamily: fonts.mono,
-  },
-  needleContainer: {
-    position: 'absolute',
-    left: GAUGE_SIZE / 2 - 2,
-    top: GAUGE_SIZE / 2 - GAUGE_RADIUS + 10,
-    width: 4,
-    height: GAUGE_RADIUS - 10,
-    transformOrigin: '2px 100%',
-  },
-  needle: {
-    width: 4,
-    height: '100%',
-    borderRadius: 2,
-  },
-  centerDot: {
-    position: 'absolute',
-    left: GAUGE_SIZE / 2 - 8,
-    top: GAUGE_SIZE / 2 - 8,
-    width: 16,
-    height: 16,
+const meterStyles = StyleSheet.create({
+  card: {
+    borderWidth: 1,
     borderRadius: 8,
+    padding: 18,
+    marginBottom: spacing.lg,
   },
-  readout: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    top: GAUGE_SIZE / 2 - 60,
+  topRow: {
+    flexDirection: 'row',
     alignItems: 'center',
+    gap: 12,
   },
-  readoutValue: {
-    fontSize: 42,
+  iconWrap: {
+    width: 42,
+    height: 42,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  titleBlock: {
+    flex: 1,
+  },
+  title: {
+    fontSize: 17,
     fontWeight: '700',
-    letterSpacing: -1,
   },
-  readoutUnit: {
+  caption: {
+    fontSize: 12,
+    lineHeight: 17,
+    marginTop: 2,
+  },
+  readoutRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    marginTop: 22,
+  },
+  value: {
+    fontSize: 52,
+    fontWeight: '800',
+    letterSpacing: 0,
+  },
+  unit: {
+    fontSize: 15,
+    fontWeight: '600',
+    marginBottom: 10,
+    marginLeft: 8,
+  },
+  track: {
+    height: 8,
+    borderRadius: 4,
+    overflow: 'hidden',
+    marginTop: 14,
+  },
+  fill: {
+    height: '100%',
+    borderRadius: 4,
+  },
+  scaleRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginTop: 8,
+  },
+  scaleText: {
+    fontSize: 11,
+    fontWeight: '500',
+  },
+});
+
+function BenchmarkGrid({
+  phase,
+  currentSpeed,
+  currentUnit,
+  liveLatencyMs,
+  liveResults,
+  results,
+  c,
+}: {
+  phase: Phase;
+  currentSpeed: string;
+  currentUnit: string;
+  liveLatencyMs: number | null;
+  liveResults: Partial<Results>;
+  results: Results | null;
+  c: C;
+}) {
+  const latencyValue = phase === 'latency' && currentSpeed !== '--'
+    ? currentSpeed
+    : liveLatencyMs !== null
+      ? formatMs(liveLatencyMs)
+      : '--';
+  const latencyUnit = latencyValue !== '--' ? 'ms' : '';
+  const downloadValue = results
+    ? formatMBps(results.downloadMBps * 1024 * 1024)
+    : liveResults.downloadMBps !== undefined
+      ? formatMBps(liveResults.downloadMBps * 1024 * 1024)
+      : phase === 'download'
+        ? currentSpeed
+        : '--';
+  const uploadValue = results
+    ? formatMBps(results.uploadMBps * 1024 * 1024)
+    : liveResults.uploadMBps !== undefined
+      ? formatMBps(liveResults.uploadMBps * 1024 * 1024)
+      : phase === 'upload'
+        ? currentSpeed
+        : '--';
+  const cryptoValue = results
+    ? formatMBps(results.encryptionMBps * 1024 * 1024)
+    : liveResults.encryptionMBps !== undefined
+      ? formatMBps(liveResults.encryptionMBps * 1024 * 1024)
+      : phase === 'encryption'
+        ? currentSpeed
+        : '--';
+  const items = [
+    {
+      icon: 'pulse-outline' as const,
+      label: 'Latency',
+      value: latencyValue,
+      unit: latencyUnit,
+      active: phase === 'latency',
+    },
+    {
+      icon: 'arrow-down-outline' as const,
+      label: 'Download',
+      value: downloadValue,
+      unit: downloadValue !== '--' ? 'MB/s' : '',
+      active: phase === 'download',
+    },
+    {
+      icon: 'arrow-up-outline' as const,
+      label: 'Upload',
+      value: uploadValue,
+      unit: uploadValue !== '--' ? 'MB/s' : '',
+      active: phase === 'upload',
+    },
+    {
+      icon: 'lock-closed-outline' as const,
+      label: 'Crypto',
+      value: cryptoValue,
+      unit: cryptoValue !== '--' ? currentUnit : '',
+      active: phase === 'encryption',
+    },
+  ];
+
+  return (
+    <View style={gridStyles.container}>
+      {items.map((item) => (
+        <View
+          key={item.label}
+          style={[
+            gridStyles.tile,
+            {
+              backgroundColor: item.active ? c.amberBg : c.paper,
+              borderColor: item.active ? c.amber : c.line,
+            },
+          ]}
+        >
+          <View style={gridStyles.tileHeader}>
+            <Ionicons name={item.icon} size={16} color={item.active ? c.amberDeep : c.ink3} />
+            <Text style={[gridStyles.tileLabel, { color: c.ink3 }]}>{item.label}</Text>
+          </View>
+          <View style={gridStyles.tileValueRow}>
+            <Text style={[gridStyles.tileValue, { color: c.ink, fontFamily: fonts.mono }]}>
+              {item.value}
+            </Text>
+            {item.unit !== '' && (
+              <Text style={[gridStyles.tileUnit, { color: c.ink3 }]}>{item.unit}</Text>
+            )}
+          </View>
+        </View>
+      ))}
+    </View>
+  );
+}
+
+const gridStyles = StyleSheet.create({
+  container: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+    marginBottom: spacing.md,
+  },
+  tile: {
+    width: '48.6%',
+    borderWidth: 1,
+    borderRadius: 8,
+    padding: 13,
+    minHeight: 96,
+  },
+  tileHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+  },
+  tileLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  tileValueRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    marginTop: 15,
+  },
+  tileValue: {
+    fontSize: 27,
+    fontWeight: '800',
+    letterSpacing: 0,
+  },
+  tileUnit: {
+    fontSize: 11,
+    fontWeight: '600',
+    marginLeft: 5,
+    marginBottom: 4,
+  },
+});
+
+function TestScope({ c }: { c: C }) {
+  const rows = [
+    {
+      icon: 'radio-outline' as const,
+      title: 'API route',
+      detail: 'Round trip to the active Beebeeb region',
+    },
+    {
+      icon: 'swap-vertical-outline' as const,
+      title: 'Transfer',
+      detail: 'Download and upload sample payloads',
+    },
+    {
+      icon: 'shield-checkmark-outline' as const,
+      title: 'Local crypto',
+      detail: 'Encrypt and decrypt on this iPhone',
+    },
+  ];
+
+  return (
+    <View style={[scopeStyles.card, { backgroundColor: c.paper, borderColor: c.line }]}>
+      {rows.map((row, index) => (
+        <View key={row.title}>
+          <View style={scopeStyles.row}>
+            <View style={[scopeStyles.scopeIcon, { backgroundColor: c.paper2 }]}>
+              <Ionicons name={row.icon} size={16} color={c.ink2} />
+            </View>
+            <View style={scopeStyles.scopeCopy}>
+              <Text style={[scopeStyles.scopeTitle, { color: c.ink }]}>{row.title}</Text>
+              <Text style={[scopeStyles.scopeDetail, { color: c.ink3 }]}>{row.detail}</Text>
+            </View>
+          </View>
+          {index < rows.length - 1 && (
+            <View style={[scopeStyles.separator, { backgroundColor: c.line }]} />
+          )}
+        </View>
+      ))}
+    </View>
+  );
+}
+
+const scopeStyles = StyleSheet.create({
+  card: {
+    borderWidth: 1,
+    borderRadius: 8,
+    marginTop: spacing.md,
+    overflow: 'hidden',
+  },
+  row: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+  },
+  scopeIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+  },
+  scopeCopy: {
+    flex: 1,
+  },
+  scopeTitle: {
     fontSize: 13,
-    marginTop: -4,
+    fontWeight: '700',
+  },
+  scopeDetail: {
+    fontSize: 12,
+    lineHeight: 16,
+    marginTop: 2,
+  },
+  separator: {
+    height: StyleSheet.hairlineWidth,
+    marginLeft: 58,
   },
 });
 
@@ -429,7 +636,7 @@ function ConnectionBreakdown({
 const breakdownStyles = StyleSheet.create({
   card: {
     borderWidth: 1,
-    borderRadius: 10,
+    borderRadius: 8,
     padding: 14,
     marginTop: spacing.lg,
   },
@@ -523,7 +730,7 @@ function ResultsSummary({
 const summaryStyles = StyleSheet.create({
   card: {
     borderWidth: 1,
-    borderRadius: 10,
+    borderRadius: 8,
     padding: 18,
     marginTop: spacing.lg,
   },
@@ -544,7 +751,7 @@ const summaryStyles = StyleSheet.create({
   value: {
     fontSize: 22,
     fontWeight: '700',
-    letterSpacing: -0.5,
+    letterSpacing: 0,
   },
   unit: {
     fontSize: 11,
@@ -693,30 +900,21 @@ export default function SpeedtestScreen() {
   const [encChunkLabel, setEncChunkLabel] = useState('');
   const [connectionInfo, setConnectionInfo] = useState<ConnectionInfo | null>(null);
   const [results, setResults] = useState<Results | null>(null);
+  const [liveLatencyMs, setLiveLatencyMs] = useState<number | null>(null);
+  const [liveResults, setLiveResults] = useState<Partial<Results>>({});
   const [error, setError] = useState('');
-
-  const gaugeAnim = useRef(new Animated.Value(0)).current;
+  const [meterProgress, setMeterProgress] = useState(0);
 
   const animateGauge = useCallback(
     (speedMBps: number) => {
-      const angle = speedToAngle(speedMBps);
-      Animated.spring(gaugeAnim, {
-        toValue: angle,
-        useNativeDriver: true,
-        friction: 10,
-        tension: 40,
-      }).start();
+      setMeterProgress(speedToProgress(speedMBps));
     },
-    [gaugeAnim],
+    [],
   );
 
   const resetGauge = useCallback(() => {
-    Animated.timing(gaugeAnim, {
-      toValue: 0,
-      duration: 300,
-      useNativeDriver: true,
-    }).start();
-  }, [gaugeAnim]);
+    setMeterProgress(0);
+  }, []);
 
   const runTest = useCallback(async () => {
     // Reset state
@@ -729,6 +927,8 @@ export default function SpeedtestScreen() {
     setEncChunkLabel('');
     setConnectionInfo(null);
     setResults(null);
+    setLiveLatencyMs(null);
+    setLiveResults({});
     setError('');
     resetGauge();
 
@@ -770,6 +970,7 @@ export default function SpeedtestScreen() {
       setPings((prev) => [...prev, ping]);
       const avg = latencies.reduce((a, b) => a + b, 0) / latencies.length;
       setCurrentSpeed(formatMs(avg));
+      setMeterProgress(Math.max(0, Math.min(1, 1 - avg / 250)));
       setStatusText(`Ping ${i + 1}/5`);
     }
 
@@ -783,83 +984,85 @@ export default function SpeedtestScreen() {
       latencyMax = Math.max(...latencies);
       jitter = computeJitter(latencies);
     }
+    setLiveLatencyMs(latencyAvg);
 
-    // ── 2. Download ─────────────────────────────────────────────────────
+    // ── 2. Download (parallel streams) ─────────────────────────────────
     setPhase('download');
     setCurrentUnit('MB/s');
     setCurrentSpeed('0');
     resetGauge();
     setStatusText('Measuring download...');
 
-    const DOWNLOAD_SIZE = 5_000_000; // 5 MB
-    const downloadSpeeds: number[] = [];
-    for (let i = 0; i < 3; i++) {
-      setStatusText(`Download ${i + 1}/3`);
+    const STREAM_SIZE = 25_000_000; // 25 MB per stream
+    const PARALLEL_STREAMS = 4;
+    const DOWNLOAD_ROUNDS = 2;
+    let totalDownloadBytes = 0;
+    let totalDownloadTime = 0;
+    for (let round = 0; round < DOWNLOAD_ROUNDS; round++) {
+      setStatusText(`Download ${round + 1}/${DOWNLOAD_ROUNDS} (${PARALLEL_STREAMS} streams)`);
       const start = performance.now();
-      try {
-        const res = await fetch(
-          `${apiUrl}/api/v1/speedtest?size=${DOWNLOAD_SIZE}`,
-          { headers: authHeaders },
-        );
-        await res.arrayBuffer();
-        const elapsed = (performance.now() - start) / 1000;
-        if (elapsed > 0) {
-          const speed = DOWNLOAD_SIZE / elapsed;
-          downloadSpeeds.push(speed);
-          const avgSpeed = downloadSpeeds.reduce((a, b) => a + b, 0) / downloadSpeeds.length;
-          const mbps = formatMBpsNum(avgSpeed);
-          setCurrentSpeed(formatMBps(avgSpeed));
-          animateGauge(mbps);
-        }
-      } catch {
-        // Skip failed attempt
+      const streams = Array.from({ length: PARALLEL_STREAMS }, () =>
+        fetch(`${apiUrl}/api/v1/speedtest?size=${STREAM_SIZE}`, { headers: authHeaders })
+          .then((res) => res.arrayBuffer())
+          .then((buf) => buf.byteLength)
+          .catch(() => 0),
+      );
+      const results = await Promise.all(streams);
+      const elapsed = (performance.now() - start) / 1000;
+      const roundBytes = results.reduce((a, b) => a + b, 0);
+      if (elapsed > 0 && roundBytes > 0) {
+        totalDownloadBytes += roundBytes;
+        totalDownloadTime += elapsed;
+        const throughput = totalDownloadBytes / totalDownloadTime;
+        const mbps = formatMBpsNum(throughput);
+        setCurrentSpeed(formatMBps(throughput));
+        animateGauge(mbps);
       }
     }
-    const avgDownload =
-      downloadSpeeds.length > 0
-        ? downloadSpeeds.reduce((a, b) => a + b, 0) / downloadSpeeds.length
-        : 0;
-    const downloadMBps = formatMBpsNum(avgDownload);
+    const downloadMBps = totalDownloadTime > 0
+      ? formatMBpsNum(totalDownloadBytes / totalDownloadTime)
+      : 0;
+    setLiveResults((prev) => ({ ...prev, downloadMBps }));
 
-    // ── 3. Upload ───────────────────────────────────────────────────────
+    // ── 3. Upload (parallel streams) ────────────────────────────────────
     setPhase('upload');
     setCurrentSpeed('0');
     resetGauge();
     setStatusText('Measuring upload...');
 
-    const UPLOAD_SIZE = 5 * 1024 * 1024; // 5 MB
-    const uploadBlob = new ArrayBuffer(UPLOAD_SIZE);
-    const uploadSpeeds: number[] = [];
-    for (let i = 0; i < 3; i++) {
-      setStatusText(`Upload ${i + 1}/3`);
+    const UPLOAD_STREAM_SIZE = 25 * 1024 * 1024; // 25 MB per stream
+    const uploadBlob = new ArrayBuffer(UPLOAD_STREAM_SIZE);
+    const UPLOAD_ROUNDS = 2;
+    let totalUploadBytes = 0;
+    let totalUploadTime = 0;
+    for (let round = 0; round < UPLOAD_ROUNDS; round++) {
+      setStatusText(`Upload ${round + 1}/${UPLOAD_ROUNDS} (${PARALLEL_STREAMS} streams)`);
       const start = performance.now();
-      try {
-        await fetch(`${apiUrl}/api/v1/speedtest`, {
+      const streams = Array.from({ length: PARALLEL_STREAMS }, () =>
+        fetch(`${apiUrl}/api/v1/speedtest`, {
           method: 'POST',
-          headers: {
-            ...authHeaders,
-            'Content-Type': 'application/octet-stream',
-          },
+          headers: { ...authHeaders, 'Content-Type': 'application/octet-stream' },
           body: uploadBlob,
-        });
-        const elapsed = (performance.now() - start) / 1000;
-        if (elapsed > 0) {
-          const speed = UPLOAD_SIZE / elapsed;
-          uploadSpeeds.push(speed);
-          const avgSpeed = uploadSpeeds.reduce((a, b) => a + b, 0) / uploadSpeeds.length;
-          const mbps = formatMBpsNum(avgSpeed);
-          setCurrentSpeed(formatMBps(avgSpeed));
-          animateGauge(mbps);
-        }
-      } catch {
-        // Skip failed attempt
+        })
+          .then(() => UPLOAD_STREAM_SIZE)
+          .catch(() => 0),
+      );
+      const results = await Promise.all(streams);
+      const elapsed = (performance.now() - start) / 1000;
+      const roundBytes = results.reduce((a, b) => a + b, 0);
+      if (elapsed > 0 && roundBytes > 0) {
+        totalUploadBytes += roundBytes;
+        totalUploadTime += elapsed;
+        const throughput = totalUploadBytes / totalUploadTime;
+        const mbps = formatMBpsNum(throughput);
+        setCurrentSpeed(formatMBps(throughput));
+        animateGauge(mbps);
       }
     }
-    const avgUpload =
-      uploadSpeeds.length > 0
-        ? uploadSpeeds.reduce((a, b) => a + b, 0) / uploadSpeeds.length
-        : 0;
-    const uploadMBps = formatMBpsNum(avgUpload);
+    const uploadMBps = totalUploadTime > 0
+      ? formatMBpsNum(totalUploadBytes / totalUploadTime)
+      : 0;
+    setLiveResults((prev) => ({ ...prev, uploadMBps }));
 
     // ── 4. Encryption ───────────────────────────────────────────────────
     setPhase('encryption');
@@ -929,6 +1132,7 @@ export default function SpeedtestScreen() {
     } catch {
       setStatusText('Crypto not available');
     }
+    setLiveResults((prev) => ({ ...prev, encryptionMBps }));
 
     // ── Done ────────────────────────────────────────────────────────────
     setPhase('done');
@@ -976,51 +1180,33 @@ export default function SpeedtestScreen() {
         style={s.scroll}
         contentContainerStyle={[s.scrollContent, { paddingBottom: insets.bottom + 24 }]}
       >
-        {/* Phase stepper */}
+        <MetricPanel
+          phase={phase}
+          statusText={statusText}
+          currentSpeed={currentSpeed}
+          unit={currentUnit}
+          progress={meterProgress}
+          c={c}
+        />
+
+        <BenchmarkGrid
+          phase={phase}
+          currentSpeed={currentSpeed}
+          currentUnit={currentUnit}
+          liveLatencyMs={liveLatencyMs}
+          liveResults={liveResults}
+          results={results}
+          c={c}
+        />
+
         {phase !== 'idle' && <PhaseStepper currentPhase={phase} c={c} />}
 
-        {/* Status text */}
-        {statusText !== '' && (
-          <Text style={[s.statusText, { color: c.ink3 }]}>{statusText}</Text>
-        )}
-
-        {/* Latency phase: ping dots */}
         {phase === 'latency' && <LatencyDots pings={pings} c={c} />}
-
-        {/* Gauge -- visible during download, upload, encryption, and idle */}
-        {(phase === 'idle' || phase === 'download' || phase === 'upload' || phase === 'encryption') && (
-          <Gauge
-            gaugeAnim={gaugeAnim}
-            currentSpeed={currentSpeed}
-            unit={phase === 'idle' ? 'MB/s' : currentUnit}
-            c={c}
-          />
-        )}
-
-        {/* Latency phase: show current average in big text */}
-        {phase === 'latency' && (
-          <View style={s.bigReadout}>
-            <Text style={[s.bigReadoutValue, { color: c.ink, fontFamily: fonts.mono }]}>
-              {currentSpeed}
-            </Text>
-            <Text style={[s.bigReadoutUnit, { color: c.ink3 }]}>ms</Text>
-          </View>
-        )}
-
-        {/* Connecting phase */}
-        {phase === 'connecting' && (
-          <View style={s.bigReadout}>
-            <Text style={[s.connectingText, { color: c.ink3 }]}>Connecting...</Text>
-          </View>
-        )}
 
         {/* Encryption progress bar */}
         {phase === 'encryption' && encChunkLabel !== '' && (
           <EncryptionProgress progress={encProgress} chunkLabel={encChunkLabel} c={c} />
         )}
-
-        {/* Results summary (done phase) */}
-        {phase === 'done' && results && <ResultsSummary results={results} c={c} />}
 
         {/* Connection breakdown (done phase) */}
         {phase === 'done' && connectionInfo && (
@@ -1057,13 +1243,7 @@ export default function SpeedtestScreen() {
           </Text>
         </TouchableOpacity>
 
-        {/* Info note */}
-        {phase === 'idle' && (
-          <Text style={[s.note, { color: c.ink4 }]}>
-            Tests connection to the Beebeeb API and measures on-device AES-256-GCM
-            encryption throughput via the native crypto module.
-          </Text>
-        )}
+        {phase === 'idle' && <TestScope c={c} />}
       </ScrollView>
     </View>
   );
