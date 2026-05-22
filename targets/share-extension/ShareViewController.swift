@@ -514,31 +514,17 @@ final class ShareViewController: UIViewController {
                     switch result {
                     case .uploaded:
                         self.showCompletion(message: "Saved")
-                    case .staged:
-                        self.showCompletion(message: "Saved. Open Beebeeb to encrypt and upload.")
                     }
+                }
+            } catch let uploadError as ShareUploader.UploadError {
+                await MainActor.run {
+                    self.showError(uploadError.errorDescription ?? "Couldn't save the file.")
                 }
             } catch {
                 await MainActor.run {
-                    // Try to stage as fallback on any error
-                    self.stageFallback(data: data, fileName: self.fileName, parentId: self.selectedFolderId)
-                    self.showCompletion(message: "Saved locally. Will upload when online.")
+                    self.showError("Couldn't save the file. Please try again.")
                 }
             }
-        }
-    }
-
-    private func stageFallback(data: Data, fileName: String, parentId: String?) {
-        guard let key = masterKey else { return }
-        let uploader = ShareUploader(apiUrl: apiUrl, sessionToken: sessionToken ?? "", masterKey: key)
-        // Fire and forget — best effort staging
-        Task {
-            _ = try? await uploader.upload(
-                fileData: data,
-                fileName: fileName,
-                parentId: parentId,
-                onProgress: { _, _ in }
-            )
         }
     }
 

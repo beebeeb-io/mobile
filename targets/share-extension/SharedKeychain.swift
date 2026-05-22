@@ -7,8 +7,12 @@ import Security
 /// `KeychainManager` writes the SE-wrapped key with `kSecAttrAccessibleAfterFirstUnlock`
 /// so extensions can read it after the first device unlock without a biometric prompt.
 ///
-/// Returns nil (never throws) — callers degrade gracefully by staging plaintext
-/// for the main app to encrypt on next launch.
+/// **Failure contract.** Returns `nil` when the master key is unavailable
+/// (no entry yet, or extension key is locked by `.devicePasscode` policy).
+/// Callers MUST surface a user-visible error and abort the share — they MUST
+/// NOT write the plaintext file to disk as a fallback. The previous fallback
+/// staged unencrypted bytes into the App Group container, which leaked
+/// plaintext if the user uninstalled before the main app drained the queue.
 enum SharedKeychain {
 
     private static let seKeyTag = "io.beebeeb.sekey".data(using: .utf8)!
@@ -17,10 +21,26 @@ enum SharedKeychain {
     private static let keychainService = "io.beebeeb.masterkey"
     private static let keychainServiceExt = "io.beebeeb.masterkey.ext"
     private static let masterKeyLabel = "primary"
-    private static let keychainAccessGroup = "io.beebeeb.shared"
+
+    /// Fully-qualified keychain access group used by the extension. The team
+    /// ID prefix (`R8352WDJJR.`) is hardcoded to match `KeychainKeyLoader`
+    /// in the File Provider target and `KeychainManager` in
+    /// `modules/beebeeb-crypto/ios/`. The previous implementation derived
+    /// the prefix by probing the keychain for an unrelated item at runtime
+    /// — that returned `""` on a fresh install (no items yet), which built
+    /// a malformed access group and made `loadMasterKey()` return `nil`
+    /// even though the entitlement was correctly provisioned. The hardcoded
+    /// value avoids that bootstrap failure. The team ID is also declared
+    /// once in `app.json` (`appleTeamId`) and once in
+    /// `targets/share-extension/expo-target.config.js` — keep all four in
+    /// sync if the team ID ever changes.
+    private static let accessGroup = "R8352WDJJR.io.beebeeb.shared"
 
     /// Load the master key, preferring the extension SE key (.devicePasscode — no
-    /// biometric prompt) and falling back to the primary SE key.
+    /// biometric prompt) and falling back to the primary SE key. Returns `nil`
+    /// when neither path yields a key. Callers MUST treat `nil` as a hard
+    /// failure (abort the share with a clear error) — never as a signal to
+    /// stage plaintext.
     static func loadMasterKey() -> Data? {
         // Try the extension key first — .devicePasscode, no Face ID prompt
         if let extKey = findSEKey(tag: seKeyTagExt),
@@ -47,7 +67,6 @@ enum SharedKeychain {
     // MARK: - Private
 
     private static func fetchWrappedBlob(service: String) -> Data? {
-        let accessGroup = "\(appIdentifierPrefix())\(keychainAccessGroup)"
         let query: [CFString: Any] = [
             kSecClass: kSecClassGenericPassword,
             kSecAttrService: service,
@@ -70,6 +89,7 @@ enum SharedKeychain {
             kSecAttrKeyType: kSecAttrKeyTypeECSECPrimeRandom,
             kSecAttrApplicationTag: tag,
             kSecAttrTokenID: kSecAttrTokenIDSecureEnclave,
+            kSecAttrAccessGroup: accessGroup,
             kSecReturnRef: true,
         ]
         var result: CFTypeRef?
@@ -78,26 +98,5 @@ enum SharedKeychain {
             return nil
         }
         return unsafeBitCast(obj, to: SecKey.self)
-    }
-
-    /// Resolve the team ID prefix at runtime from the bundle's keychain entitlements.
-    /// Same approach as `KeychainKeyLoader.appIdentifierPrefix` in the File Provider.
-    private static func appIdentifierPrefix() -> String {
-        let query: [CFString: Any] = [
-            kSecClass: kSecClassGenericPassword,
-            kSecAttrAccount: "__beebeeb_prefix_probe__",
-            kSecAttrService: "__beebeeb_prefix_probe__",
-            kSecReturnAttributes: true,
-            kSecMatchLimit: kSecMatchLimitOne,
-        ]
-        var result: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
-        if status == errSecSuccess,
-           let attrs = result as? [String: Any],
-           let group = attrs[kSecAttrAccessGroup as String] as? String,
-           let dot = group.firstIndex(of: ".") {
-            return String(group[..<group.index(after: dot)])
-        }
-        return ""
     }
 }

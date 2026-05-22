@@ -2,60 +2,38 @@ import Foundation
 
 /// Handles file upload from the Share Extension to the Beebeeb API.
 ///
-/// With BeebeebCore.xcframework linked (Phase 2), this class encrypts chunks
-/// in-process and uploads directly via URLSession. If the master key is
-/// unavailable from the shared keychain (device locked, first unlock not done),
-/// falls back to staging unencrypted in the App Group for the main app to
-/// encrypt and upload on next launch.
+/// Always encrypts in-process and uploads directly via URLSession. If the
+/// master key is unavailable (device not unlocked yet, entitlement broken)
+/// `ShareViewController` refuses the share at the point of key load — we
+/// never reach this class without a master key, so we never need to consider
+/// a plaintext-staging fallback. The previous fallback wrote unencrypted
+/// bytes to the App Group container, which leaked plaintext if the user
+/// uninstalled before the main app drained the staging directory.
 final class ShareUploader {
 
     // MARK: - Types
 
-    /// Manifest format compatible with PendingSharesAccess.swift in the main app.
-    /// Includes an optional `parentId` field that the main app uses to route
-    /// the upload to the correct folder.
-    struct IncomingShareManifest: Codable {
-        let id: String
-        let filename: String
-        let relativePath: String
-        let mimeType: String?
-        let sizeBytes: Int64
-        let timestamp: TimeInterval
-        let kind: String
-        let parentId: String?
-    }
-
     enum UploadError: LocalizedError {
-        case noAppGroup
         case fileReadFailed
-        case stagingFailed(Error)
+        case cryptoUnavailable(String)
         case uploadFailed(Int, String)
         case networkError(Error)
 
         var errorDescription: String? {
             switch self {
-            case .noAppGroup: return "App Group container not available"
             case .fileReadFailed: return "Could not read file data"
-            case .stagingFailed(let e): return "Staging failed: \(e.localizedDescription)"
+            case .cryptoUnavailable(let msg): return "Could not encrypt the file: \(msg). Open Beebeeb once, then try sharing again."
             case .uploadFailed(let code, let msg): return "Upload failed (HTTP \(code)): \(msg)"
             case .networkError(let e): return "Network error: \(e.localizedDescription)"
             }
         }
     }
 
+    /// Result of a share-sheet upload. The previous `staged` variant has been
+    /// removed — we never write plaintext to disk anymore.
     enum UploadResult {
-        /// File was encrypted and uploaded directly (Phase 2)
         case uploaded(fileId: String)
-        /// File was staged to App Group for main app to encrypt and upload
-        case staged(fileId: String)
     }
-
-    // MARK: - Constants
-
-    private static let appGroup = "group.io.beebeeb.shared"
-    /// Stages into IncomingShares/ which the main app's PendingSharesAccess.swift
-    /// already knows how to read via the native bridge → JS PendingSharesHandler.
-    private static let incomingDir = "IncomingShares"
 
     // MARK: - Properties
 
@@ -71,8 +49,8 @@ final class ShareUploader {
 
     // MARK: - Public
 
-    /// Upload or stage a file. Returns the result indicating whether the file
-    /// was uploaded directly or staged for the main app.
+    /// Encrypt then upload a file. Throws if encryption or the network
+    /// transfer fails. Never writes the plaintext to disk.
     ///
     /// Progress callback receives (fraction 0...1, statusMessage).
     func upload(
@@ -83,52 +61,31 @@ final class ShareUploader {
     ) async throws -> UploadResult {
         let fileID = UUID().uuidString
 
-        // Attempt encryption and direct upload. If crypto fails (e.g. master key
-        // unavailable from keychain, or any UniFFI error), fall back to staging
-        // the file unencrypted for the main app to handle on next launch.
+        onProgress(0.1, "Encrypting...")
+        let encryptedData: Data
+        let encryptedName: String
         do {
-            onProgress(0.1, "Encrypting...")
-            let encryptedData = try BeebeebCryptoShim.encrypt(data: fileData, masterKey: masterKey, fileID: fileID)
-            let encryptedName = try BeebeebCryptoShim.encryptFilename(fileName, masterKey: masterKey, fileID: fileID)
-
-            // Encryption succeeded — upload directly
-            onProgress(0.3, "Uploading...")
-            try await directUpload(
-                fileID: fileID,
-                encryptedData: encryptedData,
-                encryptedName: encryptedName,
-                parentId: parentId,
-                plaintextSize: fileData.count,
-                onProgress: onProgress
-            )
-            return .uploaded(fileId: fileID)
-
-        } catch is BeebeebCryptoShim.CryptoError {
-            // Crypto unavailable — stage for main app
-            onProgress(0.5, "Saving locally...")
-            try stageForMainApp(
-                fileID: fileID,
-                fileData: fileData,
-                fileName: fileName,
-                parentId: parentId
-            )
-            onProgress(1.0, "Saved")
-            return .staged(fileId: fileID)
-        } catch let error where !(error is UploadError) {
-            // Any other non-upload error (UniFFI crash, unexpected) — also stage
-            onProgress(0.5, "Saving locally...")
-            try stageForMainApp(
-                fileID: fileID,
-                fileData: fileData,
-                fileName: fileName,
-                parentId: parentId
-            )
-            onProgress(1.0, "Saved")
-            return .staged(fileId: fileID)
+            encryptedData = try BeebeebCryptoShim.encrypt(data: fileData, masterKey: masterKey, fileID: fileID)
+            encryptedName = try BeebeebCryptoShim.encryptFilename(fileName, masterKey: masterKey, fileID: fileID)
+        } catch let cryptoErr as BeebeebCryptoShim.CryptoError {
+            throw UploadError.cryptoUnavailable(String(describing: cryptoErr))
+        } catch {
+            throw UploadError.cryptoUnavailable(error.localizedDescription)
         }
+
+        onProgress(0.3, "Uploading...")
+        try await directUpload(
+            fileID: fileID,
+            encryptedData: encryptedData,
+            encryptedName: encryptedName,
+            parentId: parentId,
+            plaintextSize: fileData.count,
+            onProgress: onProgress
+        )
+        return .uploaded(fileId: fileID)
     }
 
-    // MARK: - Direct Upload (Phase 2)
+    // MARK: - Direct Upload
 
     private func directUpload(
         fileID: String,
@@ -219,97 +176,5 @@ final class ShareUploader {
         }
 
         onProgress(1.0, "Done")
-    }
-
-    // MARK: - Stage for Main App (Phase 1 fallback)
-
-    /// Stages the file into IncomingShares/ with a .json manifest compatible
-    /// with PendingSharesAccess.swift. The main app picks these up via the
-    /// existing native bridge (listPendingShares → consumePendingShare → upload).
-    ///
-    /// The manifest includes `parentId` in the filename field as a prefix hack:
-    /// "parentId:originalName" — the main app's handler parses this to route
-    /// the upload to the correct folder. If no parentId, just the original name.
-    private func stageForMainApp(
-        fileID: String,
-        fileData: Data,
-        fileName: String,
-        parentId: String?
-    ) throws {
-        guard let containerURL = FileManager.default.containerURL(
-            forSecurityApplicationGroupIdentifier: Self.appGroup
-        ) else {
-            throw UploadError.noAppGroup
-        }
-
-        let incomingDir = containerURL.appendingPathComponent(Self.incomingDir, isDirectory: true)
-        try FileManager.default.createDirectory(at: incomingDir, withIntermediateDirectories: true)
-
-        // Determine file extension
-        let ext = (fileName as NSString).pathExtension
-        let storedFilename = ext.isEmpty ? fileID : "\(fileID).\(ext)"
-
-        // Write file payload
-        let fileURL = incomingDir.appendingPathComponent(storedFilename)
-        try fileData.write(to: fileURL)
-
-        // Write manifest in the format PendingSharesAccess.swift expects
-        let manifest = IncomingShareManifest(
-            id: fileID,
-            filename: fileName,
-            relativePath: storedFilename,
-            mimeType: mimeTypeForExtension(ext),
-            sizeBytes: Int64(fileData.count),
-            timestamp: Date().timeIntervalSince1970,
-            kind: kindForExtension(ext),
-            parentId: parentId
-        )
-
-        let manifestURL = incomingDir.appendingPathComponent("\(fileID).json")
-        let encoded = try JSONEncoder().encode(manifest)
-        try encoded.write(to: manifestURL)
-
-        // Write parentId mapping as a JSON file in the App Group container.
-        // The main app's PendingSharesHandler.ts reads this via expo-file-system/next
-        // Paths.appleSharedContainers to route uploads to the correct folder.
-        if let pid = parentId {
-            let mapURL = containerURL.appendingPathComponent("share-parent-map.json")
-            var parentMap: [String: String] = [:]
-            if let existingData = try? Data(contentsOf: mapURL),
-               let existing = try? JSONDecoder().decode([String: String].self, from: existingData) {
-                parentMap = existing
-            }
-            parentMap[fileID] = pid
-            if let mapData = try? JSONEncoder().encode(parentMap) {
-                try? mapData.write(to: mapURL)
-            }
-        }
-    }
-
-    // MARK: - Helpers
-
-    private func mimeTypeForExtension(_ ext: String) -> String? {
-        switch ext.lowercased() {
-        case "jpg", "jpeg": return "image/jpeg"
-        case "png": return "image/png"
-        case "gif": return "image/gif"
-        case "heic": return "image/heic"
-        case "mp4": return "video/mp4"
-        case "mov": return "video/quicktime"
-        case "pdf": return "application/pdf"
-        case "txt": return "text/plain"
-        case "url": return "text/uri-list"
-        default: return nil
-        }
-    }
-
-    private func kindForExtension(_ ext: String) -> String {
-        switch ext.lowercased() {
-        case "jpg", "jpeg", "png", "gif", "heic", "webp": return "image"
-        case "mp4", "mov", "avi": return "video"
-        case "url": return "url"
-        case "txt": return "text"
-        default: return "file"
-        }
     }
 }
