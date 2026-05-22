@@ -241,6 +241,16 @@ final class NativeBackupEngine: NSObject {
   private var drainLoopGeneration = 0
   private var pendingDrainWakeReason: String?
   private let batchProcessingQueue = DispatchQueue(label: "io.beebeeb.backup.engine.batch", qos: .utility)
+  // PHKit picks its own callback queue (often main when the app is foregrounded).
+  // Hop here as the first line of every PhotoKit completion so the body — which
+  // can do heavy work like `Data(contentsOf:)` for videos or
+  // `continuation.resume` into an async context — never blocks main. Mirrors
+  // `PhotoBackupManager.phkitCallbackQueue` (task 0440); sibling queue here
+  // rather than cross-class reference to avoid type coupling (task 0443).
+  private static let phkitCallbackQueue = DispatchQueue(
+    label: "io.beebeeb.backup.engine.phkit-callback",
+    qos: .utility
+  )
   private var batchProcessingActive = false
   private var currentFetchResult: PHFetchResult<PHAsset>?
   private var photoObserverRegistered = false
@@ -2161,12 +2171,14 @@ final class NativeBackupEngine: NSObject {
       options.deliveryMode = .highQualityFormat
 
       PHImageManager.default().requestImageDataAndOrientation(for: phAsset, options: options) { data, uti, _, info in
-        if let error = info?[PHImageErrorKey] as? Error {
-          continuation.resume(throwing: error)
-        } else if let data = data {
-          continuation.resume(returning: (data, uti ?? "public.jpeg"))
-        } else {
-          continuation.resume(throwing: BackupError.assetLoadFailed)
+        Self.phkitCallbackQueue.async {
+          if let error = info?[PHImageErrorKey] as? Error {
+            continuation.resume(throwing: error)
+          } else if let data = data {
+            continuation.resume(returning: (data, uti ?? "public.jpeg"))
+          } else {
+            continuation.resume(throwing: BackupError.assetLoadFailed)
+          }
         }
       }
     }
@@ -2179,17 +2191,19 @@ final class NativeBackupEngine: NSObject {
       options.isNetworkAccessAllowed = true
 
       PHImageManager.default().requestAVAsset(forVideo: phAsset, options: options) { avAsset, _, info in
-        guard let urlAsset = avAsset as? AVURLAsset else {
-          continuation.resume(throwing: BackupError.assetLoadFailed)
-          return
-        }
+        Self.phkitCallbackQueue.async {
+          guard let urlAsset = avAsset as? AVURLAsset else {
+            continuation.resume(throwing: BackupError.assetLoadFailed)
+            return
+          }
 
-        do {
-          let data = try Data(contentsOf: urlAsset.url)
-          let uti = urlAsset.url.pathExtension == "mov" ? "com.apple.quicktime-movie" : "public.mpeg-4"
-          continuation.resume(returning: (data, uti))
-        } catch {
-          continuation.resume(throwing: error)
+          do {
+            let data = try Data(contentsOf: urlAsset.url)
+            let uti = urlAsset.url.pathExtension == "mov" ? "com.apple.quicktime-movie" : "public.mpeg-4"
+            continuation.resume(returning: (data, uti))
+          } catch {
+            continuation.resume(throwing: error)
+          }
         }
       }
     }
@@ -3164,12 +3178,14 @@ final class NativeBackupEngine: NSObject {
       options.version = .original
       options.isNetworkAccessAllowed = true
       PHImageManager.default().requestAVAsset(forVideo: phAsset, options: options) { asset, _, info in
-        if let error = info?[PHImageErrorKey] as? Error {
-          continuation.resume(throwing: error)
-        } else if let asset {
-          continuation.resume(returning: asset)
-        } else {
-          continuation.resume(throwing: BackupError.assetLoadFailed)
+        Self.phkitCallbackQueue.async {
+          if let error = info?[PHImageErrorKey] as? Error {
+            continuation.resume(throwing: error)
+          } else if let asset {
+            continuation.resume(returning: asset)
+          } else {
+            continuation.resume(throwing: BackupError.assetLoadFailed)
+          }
         }
       }
     }
@@ -3215,14 +3231,16 @@ final class NativeBackupEngine: NSObject {
         contentMode: .aspectFit,
         options: options
       ) { result, info in
-        let isDegraded = info?[PHImageResultIsDegradedKey] as? Bool ?? false
-        if isDegraded { return } // Wait for the high-quality callback
-        if let error = info?[PHImageErrorKey] as? Error {
-          continuation.resume(throwing: error)
-        } else if let result {
-          continuation.resume(returning: result)
-        } else {
-          continuation.resume(throwing: BackupError.assetLoadFailed)
+        Self.phkitCallbackQueue.async {
+          let isDegraded = info?[PHImageResultIsDegradedKey] as? Bool ?? false
+          if isDegraded { return } // Wait for the high-quality callback
+          if let error = info?[PHImageErrorKey] as? Error {
+            continuation.resume(throwing: error)
+          } else if let result {
+            continuation.resume(returning: result)
+          } else {
+            continuation.resume(throwing: BackupError.assetLoadFailed)
+          }
         }
       }
     }
