@@ -4065,6 +4065,16 @@ public func decryptChunk(key: Data, nonce: Data, ciphertext: Data)throws  -> Dat
 }
 /**
  * Decrypt a sequence of encrypted chunks and write the plaintext to a file.
+ *
+ * Chunks are decrypted sequentially and written in order; peak memory is
+ * bounded by the size of the largest single chunk's plaintext, not the
+ * total file size. The output file is created (truncating any existing
+ * file) before the first chunk.
+ *
+ * On `Err`, the output file may exist on disk in a partially-written
+ * state — the caller is responsible for deleting it so a downstream
+ * cache layer does not treat the partial file as complete.
+ *
  * Returns the total number of plaintext bytes written.
  */
 public func decryptChunksToFile(key: Data, chunks: [EncryptedChunkData], outputPath: String)throws  -> UInt64  {
@@ -4590,7 +4600,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_beebeeb_uniffi_checksum_func_decrypt_chunk() != 1418) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_beebeeb_uniffi_checksum_func_decrypt_chunks_to_file() != 27857) {
+    if (uniffi_beebeeb_uniffi_checksum_func_decrypt_chunks_to_file() != 41753) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_beebeeb_uniffi_checksum_func_decrypt_metadata() != 59510) {
