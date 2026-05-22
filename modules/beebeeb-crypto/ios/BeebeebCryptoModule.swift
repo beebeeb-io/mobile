@@ -42,6 +42,14 @@ private let thumbnailWebPTargetBytes = 50 * 1024
 private let thumbnailMaxEncryptedBytes = 64 * 1024
 private let thumbnailEncryptionOverheadBytes = 28
 
+// PHKit picks its own callback queue (often main when the app is foregrounded).
+// Hop here as the first line of every PhotoKit completion so the work in the
+// closure body never blocks main, consistent with PhotoBackupManager.
+private let beebeebCryptoPHKitCallbackQueue = DispatchQueue(
+  label: "io.beebeeb.crypto.phkit-callback",
+  qos: .utility
+)
+
 private struct ThumbnailEncodingConfig {
   let variant: String
   let maxEncryptedBytes: Int
@@ -186,18 +194,20 @@ private func generatePhotoLibraryImageThumbnail(
       contentMode: .aspectFit,
       options: options
     ) { result, info in
-      let isDegraded = info?[PHImageResultIsDegradedKey] as? Bool ?? false
-      if isDegraded { return }
-      if let error = info?[PHImageErrorKey] as? Error {
-        continuation.resume(throwing: error)
-      } else if let result {
-        continuation.resume(returning: result)
-      } else {
-        continuation.resume(throwing: NSError(
-          domain: "BeebeebThumbnail",
-          code: 11,
-          userInfo: [NSLocalizedDescriptionKey: "Failed to load photo thumbnail from library"]
-        ))
+      beebeebCryptoPHKitCallbackQueue.async {
+        let isDegraded = info?[PHImageResultIsDegradedKey] as? Bool ?? false
+        if isDegraded { return }
+        if let error = info?[PHImageErrorKey] as? Error {
+          continuation.resume(throwing: error)
+        } else if let result {
+          continuation.resume(returning: result)
+        } else {
+          continuation.resume(throwing: NSError(
+            domain: "BeebeebThumbnail",
+            code: 11,
+            userInfo: [NSLocalizedDescriptionKey: "Failed to load photo thumbnail from library"]
+          ))
+        }
       }
     }
   }
@@ -231,16 +241,18 @@ private func generatePhotoLibraryVideoThumbnail(
     options.version = .original
     options.isNetworkAccessAllowed = true
     PHImageManager.default().requestAVAsset(forVideo: phAsset, options: options) { asset, _, info in
-      if let error = info?[PHImageErrorKey] as? Error {
-        continuation.resume(throwing: error)
-      } else if let asset {
-        continuation.resume(returning: asset)
-      } else {
-        continuation.resume(throwing: NSError(
-          domain: "BeebeebThumbnail",
-          code: 14,
-          userInfo: [NSLocalizedDescriptionKey: "Failed to load video asset from library"]
-        ))
+      beebeebCryptoPHKitCallbackQueue.async {
+        if let error = info?[PHImageErrorKey] as? Error {
+          continuation.resume(throwing: error)
+        } else if let asset {
+          continuation.resume(returning: asset)
+        } else {
+          continuation.resume(throwing: NSError(
+            domain: "BeebeebThumbnail",
+            code: 14,
+            userInfo: [NSLocalizedDescriptionKey: "Failed to load video asset from library"]
+          ))
+        }
       }
     }
   }

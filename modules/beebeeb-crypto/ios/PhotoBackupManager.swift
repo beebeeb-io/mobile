@@ -332,28 +332,30 @@ final class PhotoBackupManager: NSObject {
     options.deliveryMode = .highQualityFormat
 
     PHImageManager.default().requestImageDataAndOrientation(for: asset, options: options) { [weak self] data, uti, _, _ in
-      guard let self else { completion(false); return }
-      guard let data else {
-        dbQueue.async {
-          guard let db = self.db else { return }
-          self.updateStatus(db: db, localIdentifier: asset.localIdentifier, status: "failed", error: "No image data")
+      Self.phkitCallbackQueue.async {
+        guard let self else { completion(false); return }
+        guard let data else {
+          self.dbQueue.async {
+            guard let db = self.db else { return }
+            self.updateStatus(db: db, localIdentifier: asset.localIdentifier, status: "failed", error: "No image data")
+          }
+          completion(false)
+          return
         }
-        completion(false)
-        return
+
+        let fallbackExt = self.fileExtension(for: uti ?? "public.jpeg")
+        let fileName = "\(UUID().uuidString).\(fallbackExt)"
+        let mimeType = guessMimeType(filename: fileName) ?? self.mimeType(for: uti ?? "public.jpeg")
+
+        self.uploadFile(
+          localIdentifier: asset.localIdentifier,
+          data: data,
+          fileName: fileName,
+          mimeType: mimeType,
+          token: token,
+          completion: completion
+        )
       }
-
-      let fallbackExt = self.fileExtension(for: uti ?? "public.jpeg")
-      let fileName = "\(UUID().uuidString).\(fallbackExt)"
-      let mimeType = guessMimeType(filename: fileName) ?? self.mimeType(for: uti ?? "public.jpeg")
-
-      self.uploadFile(
-        localIdentifier: asset.localIdentifier,
-        data: data,
-        fileName: fileName,
-        mimeType: mimeType,
-        token: token,
-        completion: completion
-      )
     }
   }
 
