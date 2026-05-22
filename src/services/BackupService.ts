@@ -42,7 +42,6 @@ import type { EncryptedData } from '../../modules/beebeeb-crypto';
 import { encryptedMetadataToJson, encryptedMetadataPayloadToBytes, fileMetadataPlaintext } from '../lib/encrypted-metadata';
 import { encryptedUpload, generateFileId } from '../lib/encrypted-upload';
 import { guessMimeType } from '../lib/media';
-import type { BackupEncryptors as ContactsBackupEncryptors } from './ContactsExporter';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -97,8 +96,6 @@ export interface BackupProgress {
   lastSyncAt?: string;
   error?: string;
 }
-
-export type BackupEncryptors = ContactsBackupEncryptors;
 
 /** Encryption functions needed by the backup folder machinery. */
 export interface BackupEncryption {
@@ -793,7 +790,6 @@ export async function updateBackupCategoryState(
 
 export async function initializeBackup(
   category: BackupCategory,
-  _encryption?: BackupEncryptors,
 ): Promise<void> {
   const { deviceFolderId } = await ensureBackupFolders(category);
 

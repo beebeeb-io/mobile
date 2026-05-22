@@ -74,7 +74,6 @@ import {
   type MobileNotificationPreferences,
   type AvailableRegion,
 } from '../lib/api';
-import { exportContacts } from '../services/ContactsExporter';
 import { exportCalendars } from '../services/CalendarExporter';
 import {
   initDatabase as initBackupDb,
@@ -1316,35 +1315,43 @@ export default function SettingsScreen() {
       await initializeBackup('contacts');
       const token = await getToken();
       if (!token) throw new Error('Session expired');
-      const result = await exportContacts({
-        encryptChunkFn: crypto.encryptChunk,
-        encryptMetadataFn: crypto.encryptMetadata,
-        decryptMetadataFn: crypto.decryptMetadata,
-      });
+
+      // Contact count is now best-effort from expo-contacts purely for the UI;
+      // Swift `ContactsBackupManager` re-enumerates via CNContactStore for the
+      // actual vCard serialization (richer field coverage than the old TS path).
+      const probe = await Contacts.getContactsAsync({ fields: [] }).catch(() => null);
+      const contactCount = probe?.data?.length ?? 0;
+
+      // Trigger the native backup. Swift handles enumeration, hashing,
+      // RFC 6350 serialization (CNContactVCardSerialization), encryption, and
+      // upload off the JS thread. Fire-and-forget — completion is observable
+      // later via the bridge surface task 0437 lands.
+      await BeebeebCrypto.enableContactsBackup(token);
+
       const timestamp = new Date().toISOString();
       await updateBackupCategoryState('contacts', {
         enabled: true,
         last_sync: timestamp,
-        items_synced: result.contactCount,
-        contact_count: result.contactCount,
+        items_synced: contactCount,
+        contact_count: contactCount,
       });
       setContactsLastSessionAt(timestamp);
-      setContactsLastSessionCount(result.contactCount);
+      setContactsLastSessionCount(contactCount);
       await SecureStore.setItemAsync(CONTACTS_LAST_SCAN_KEY, timestamp).catch(() => {});
-      await SecureStore.setItemAsync(CONTACTS_LAST_SCAN_COUNT_KEY, String(result.contactCount)).catch(() => {});
+      await SecureStore.setItemAsync(CONTACTS_LAST_SCAN_COUNT_KEY, String(contactCount)).catch(() => {});
       await refreshBackupStats();
       setContactsStats((prev) => ({
         ...prev,
-        uploadedCount: result.contactCount,
-        totalCount: Math.max(prev.totalCount, result.contactCount),
+        uploadedCount: contactCount,
+        totalCount: Math.max(prev.totalCount, contactCount),
         lastSyncAt: timestamp,
         syncing: false,
         hasScanned: true,
       }));
-      const message = result.exported
-        ? `Contacts backed up · ${result.contactCount} contact${result.contactCount === 1 ? '' : 's'}`
-        : `Contacts checked · ${result.contactCount} contact${result.contactCount === 1 ? '' : 's'} unchanged`;
-      showToast({ type: 'success', message });
+      showToast({
+        type: 'success',
+        message: `Contacts backup queued · ${contactCount} contact${contactCount === 1 ? '' : 's'}`,
+      });
     } catch (err) {
       console.warn('[SettingsScreen] contacts backup failed:', err);
       Alert.alert('Contacts backup failed', errorMessage(err));
@@ -1352,7 +1359,7 @@ export default function SettingsScreen() {
       setBackingUpContacts(false);
       setContactsStats((prev) => ({ ...prev, syncing: false }));
     }
-  }, [crypto.encryptChunk, crypto.encryptMetadata, crypto.decryptMetadata, refreshBackupStats, showToast]);
+  }, [refreshBackupStats, showToast]);
 
   const handleBackupCalendarNow = useCallback(async () => {
     const granted = await ensureCalendarPermission();
