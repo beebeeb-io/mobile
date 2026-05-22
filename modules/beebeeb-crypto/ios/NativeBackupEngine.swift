@@ -262,6 +262,15 @@ final class NativeBackupEngine: NSObject {
   private var consecutiveFailures = 0
   private var backoffUntil: Date?
 
+  // Cached UIApplication state — read by `currentApplicationState()` from
+  // background queues without blocking on main. The cache is seeded at init
+  // and maintained via four lifecycle notification observers; the previous
+  // implementation fell back to `DispatchQueue.main.sync` when called off
+  // main, which deadlocked the watchdog whenever main was busy in an
+  // Expo-module JS bridge call (task 0434).
+  private let applicationStateLock = NSLock()
+  private var _cachedApplicationState: UIApplication.State = .active
+
   static let bgTaskIdentifier = "io.beebeeb.app.native-backup"
   static let bgSessionIdentifier = "io.beebeeb.backup"
 
@@ -344,6 +353,26 @@ final class NativeBackupEngine: NSObject {
       name: UIApplication.willEnterForegroundNotification,
       object: nil
     )
+    // The two extra observers below feed `_cachedApplicationState` so
+    // `currentApplicationState()` never has to dispatch to main.
+    NotificationCenter.default.addObserver(
+      self,
+      selector: #selector(handleAppDidBecomeActiveForStateCache),
+      name: UIApplication.didBecomeActiveNotification,
+      object: nil
+    )
+    NotificationCenter.default.addObserver(
+      self,
+      selector: #selector(handleAppWillResignActiveForStateCache),
+      name: UIApplication.willResignActiveNotification,
+      object: nil
+    )
+    // Seed the cache from main without blocking init. Initial value is
+    // `.active` which is the safe default for an app that's just been
+    // brought up to handle a JS-side call into this Expo module.
+    DispatchQueue.main.async { [weak self] in
+      self?.updateCachedApplicationState(UIApplication.shared.applicationState)
+    }
   }
 
   deinit {
@@ -353,6 +382,7 @@ final class NativeBackupEngine: NSObject {
   // MARK: - Backup Status Surfaces
 
   @objc private func handleAppDidEnterBackground() {
+    updateCachedApplicationState(.background)
     beginBackgroundGraceIfNeeded()
     #if os(iOS)
     scheduleNextBackup()
@@ -363,6 +393,9 @@ final class NativeBackupEngine: NSObject {
   }
 
   @objc private func handleAppWillEnterForeground() {
+    // UIKit fires `didBecomeActive` shortly after; `.inactive` is the
+    // accurate transitional value the cache should hold in the meantime.
+    updateCachedApplicationState(.inactive)
     endBackgroundGrace()
     UNUserNotificationCenter.current().removePendingNotificationRequests(
       withIdentifiers: [backupReminderIdentifier]
@@ -1157,14 +1190,39 @@ final class NativeBackupEngine: NSObject {
 
   // MARK: - Drain Loop
 
+  /// Returns the current `UIApplication.State` without blocking.
+  ///
+  /// On main thread: reads `UIApplication.shared.applicationState` directly
+  /// and opportunistically refreshes the cache. Off main thread: returns the
+  /// cached value populated by the lifecycle-notification observers. The
+  /// previous implementation fell back to `DispatchQueue.main.sync` off
+  /// main, which deadlocked the iOS watchdog (~20 s kill) whenever main
+  /// was blocked on a JS bridge call into this same Expo module — common
+  /// during heavy UI work while a background drain tick was active.
   private func currentApplicationState() -> UIApplication.State {
     if Thread.isMainThread {
-      return UIApplication.shared.applicationState
+      let state = UIApplication.shared.applicationState
+      updateCachedApplicationState(state)
+      return state
     }
+    applicationStateLock.lock()
+    let cached = _cachedApplicationState
+    applicationStateLock.unlock()
+    return cached
+  }
 
-    return DispatchQueue.main.sync {
-      UIApplication.shared.applicationState
-    }
+  private func updateCachedApplicationState(_ state: UIApplication.State) {
+    applicationStateLock.lock()
+    _cachedApplicationState = state
+    applicationStateLock.unlock()
+  }
+
+  @objc private func handleAppDidBecomeActiveForStateCache() {
+    updateCachedApplicationState(.active)
+  }
+
+  @objc private func handleAppWillResignActiveForStateCache() {
+    updateCachedApplicationState(.inactive)
   }
 
   private func canExecuteBackupWorkNow() -> Bool {
