@@ -20,7 +20,17 @@ enum SharedKeychain {
     private static let eciesAlgorithm = SecKeyAlgorithm.eciesEncryptionCofactorVariableIVX963SHA256AESGCM
     private static let keychainService = "io.beebeeb.masterkey"
     private static let keychainServiceExt = "io.beebeeb.masterkey.ext"
-    private static let masterKeyLabel = "primary"
+    // Canonical label used by `MASTER_KEY_LABEL` in `src/lib/crypto-context.tsx`,
+    // `BeebeebCryptoBridge.kMasterKeyLabel` in
+    // `modules/beebeeb-crypto/ios/BeebeebCryptoBridge.swift`, and
+    // `BeebeebConstants.masterKeyLabel` in
+    // `targets/file-provider/Constants.swift`. The previous value `"primary"`
+    // (task 0445) caused `SecItemCopyMatching` to return `errSecItemNotFound`
+    // because the main app stores the wrapped master key with the canonical
+    // label — `SharedKeychain.loadMasterKey()` would return `nil` for every
+    // share even with correct entitlements (0433) and correct access-group
+    // prefix (0428).
+    private static let masterKeyLabel = "io.beebeeb.master-key"
 
     /// Fully-qualified keychain access group used by the extension. The team
     /// ID prefix (`R8352WDJJR.`) is hardcoded to match `KeychainKeyLoader`
