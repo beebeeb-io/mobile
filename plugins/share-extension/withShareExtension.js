@@ -20,7 +20,12 @@ const SOURCE_FILES = [
   'ShareViewController.swift',
   'BeebeebCryptoShim.swift',
   'ShareUploader.swift',
-  'SharedKeychain.swift',
+  // Share-extension's keychain reader is the canonical `BeebeebKeychainCore`
+  // (task 0436); the file at `targets/share-extension/BeebeebKeychainCore.swift`
+  // is a symlink to `modules/beebeeb-crypto/ios/Shared/BeebeebKeychainCore.swift`,
+  // and `fs.copyFileSync` follows the symlink so this entry copies the canonical
+  // content into `ios/BeebeebShare/BeebeebKeychainCore.swift`.
+  'BeebeebKeychainCore.swift',
   'FolderFetcher.swift',
 ];
 

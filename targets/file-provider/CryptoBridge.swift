@@ -20,7 +20,14 @@ enum CryptoBridge {
   // MARK: - Key access
 
   static func loadMasterKeyHandle() throws -> MasterKeyHandle {
-    var bytes = try KeychainKeyLoader.loadMasterKey()
+    // File Provider must NOT fall back to the primary SE key — that key may
+    // require Face ID, and Files.app can't surface a clean biometric prompt
+    // from an extension. `.extensionOnly` preserves that contract (task 0436,
+    // was previously `KeychainKeyLoader.loadMasterKey()`).
+    var bytes = try BeebeebKeychainCore.loadMasterKeyThrowing(
+      label: BeebeebConstants.masterKeyLabel,
+      mode: .extensionOnly
+    )
     defer {
       bytes.withUnsafeMutableBytes { buf in
         if let ptr = buf.baseAddress { memset(ptr, 0, buf.count) }

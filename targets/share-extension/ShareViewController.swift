@@ -86,8 +86,14 @@ final class ShareViewController: UIViewController {
     }
 
     private func performSetup() {
-        // Step 1: Check for master key (triggers Face ID if needed)
-        masterKey = SharedKeychain.loadMasterKey()
+        // Step 1: Check for master key (may trigger Face ID via the primary
+        // SE key if the extension SE key is unavailable).
+        // `.extensionThenPrimary` preserves the SharedKeychain.loadMasterKey()
+        // contract (task 0436).
+        masterKey = BeebeebKeychainCore.loadMasterKey(
+            label: "io.beebeeb.master-key",
+            mode: .extensionThenPrimary
+        )
 
         guard masterKey != nil else {
             showError("Unlock Beebeeb to save files")

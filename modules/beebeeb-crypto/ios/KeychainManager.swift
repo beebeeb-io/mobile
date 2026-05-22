@@ -31,22 +31,24 @@ enum KeychainError: LocalizedError {
 ///
 /// This allows background camera/contact backup to run after the first device unlock without
 /// re-prompting biometrics, while still keeping the master key protected by hardware.
+///
+/// **Read logic is shared via `BeebeebKeychainCore`** (task 0436). This type
+/// keeps the write paths (`store`, `setAccessControl`, etc.), the access-control
+/// policy flag, the simulator-software-key path, and the string-storage
+/// helpers added in 0430. Constants live in `BeebeebKeychainCore` and are
+/// referenced through it rather than redeclared here.
 final class KeychainManager {
 
   // MARK: - Constants
+  //
+  // The SE key tags, services, access group, and ECIES algorithm all live on
+  // `BeebeebKeychainCore` — single source of truth across the main app and
+  // both extensions. Local constants here are only for paths that have no
+  // counterpart in extensions.
 
-  private static let seKeyTag = "io.beebeeb.sekey".data(using: .utf8)!
-  private static let seKeyTagExt = "io.beebeeb.sekey.ext".data(using: .utf8)!
-  private static let wrappedKeyService = "io.beebeeb.masterkey"
-  private static let wrappedKeyServiceExt = "io.beebeeb.masterkey.ext"
   #if DEBUG && targetEnvironment(simulator)
   private static let simulatorSoftwareKeyService = "io.beebeeb.masterkey.simulator-software"
   #endif
-  private static let eciesAlgorithm = SecKeyAlgorithm.eciesEncryptionCofactorVariableIVX963SHA256AESGCM
-
-  // Shared with the File Provider extension through the keychain-access-groups
-  // entitlement. App Groups and keychain access groups are separate concepts.
-  private static let accessGroup: String? = "R8352WDJJR.io.beebeeb.shared"
 
   // Persisted across launches in UserDefaults (not sensitive — it's just a policy flag).
   private static var requiresBiometric: Bool {
@@ -73,7 +75,7 @@ final class KeychainManager {
     }
 
     var cfErr: Unmanaged<CFError>?
-    guard let wrapped = SecKeyCreateEncryptedData(publicKey, eciesAlgorithm, masterKeyBytes as CFData, &cfErr) else {
+    guard let wrapped = SecKeyCreateEncryptedData(publicKey, BeebeebKeychainCore.eciesAlgorithm, masterKeyBytes as CFData, &cfErr) else {
       throw KeychainError.encryptionFailed
     }
 
@@ -81,12 +83,12 @@ final class KeychainManager {
 
     var attrs: [CFString: Any] = [
       kSecClass: kSecClassGenericPassword,
-      kSecAttrService: wrappedKeyService,
+      kSecAttrService: BeebeebKeychainCore.wrappedKeyService,
       kSecAttrAccount: label,
       kSecAttrAccessible: kSecAttrAccessibleAfterFirstUnlock,
       kSecValueData: wrapped as Data,
     ]
-    if let group = accessGroup { attrs[kSecAttrAccessGroup] = group }
+    if let group = BeebeebKeychainCore.accessGroup { attrs[kSecAttrAccessGroup] = group }
 
     let status = SecItemAdd(attrs as CFDictionary, nil)
     guard status == errSecSuccess else {
@@ -108,20 +110,20 @@ final class KeychainManager {
     }
 
     var cfErr: Unmanaged<CFError>?
-    guard let extWrapped = SecKeyCreateEncryptedData(extPublicKey, eciesAlgorithm, masterKeyBytes as CFData, &cfErr) else {
+    guard let extWrapped = SecKeyCreateEncryptedData(extPublicKey, BeebeebKeychainCore.eciesAlgorithm, masterKeyBytes as CFData, &cfErr) else {
       throw KeychainError.encryptionFailed
     }
 
-    deleteWrappedItem(account: label, service: wrappedKeyServiceExt)
+    deleteWrappedItem(account: label, service: BeebeebKeychainCore.wrappedKeyServiceExt)
 
     var extAttrs: [CFString: Any] = [
       kSecClass: kSecClassGenericPassword,
-      kSecAttrService: wrappedKeyServiceExt,
+      kSecAttrService: BeebeebKeychainCore.wrappedKeyServiceExt,
       kSecAttrAccount: label,
       kSecAttrAccessible: kSecAttrAccessibleAfterFirstUnlock,
       kSecValueData: extWrapped as Data,
     ]
-    if let group = accessGroup { extAttrs[kSecAttrAccessGroup] = group }
+    if let group = BeebeebKeychainCore.accessGroup { extAttrs[kSecAttrAccessGroup] = group }
     let status = SecItemAdd(extAttrs as CFDictionary, nil)
     guard status == errSecSuccess else {
       throw KeychainError.writeError(status)
@@ -132,6 +134,12 @@ final class KeychainManager {
 
   /// Decrypt and return the master key. Returns nil if no key is stored.
   /// Triggers biometric/passcode prompt if the SE access control requires it.
+  ///
+  /// Delegates the SE-wrap read to `BeebeebKeychainCore`. On a successful
+  /// read, also (re)writes the extension-wrapped blob so backup extensions
+  /// can read the key without prompting; if the read came from a legacy
+  /// no-access-group keychain item, re-stores with the access group set so
+  /// the migration is idempotent.
   static func load(label: String) throws -> Data? {
     #if DEBUG && targetEnvironment(simulator)
     if let simulatorKey = try loadSimulatorSoftwareKey(label: label) {
@@ -139,40 +147,26 @@ final class KeychainManager {
     }
     #endif
 
-    var query: [CFString: Any] = [
-      kSecClass: kSecClassGenericPassword,
-      kSecAttrService: wrappedKeyService,
-      kSecAttrAccount: label,
-      kSecReturnData: true,
-      kSecMatchLimit: kSecMatchLimitOne,
-    ]
-    if let group = accessGroup { query[kSecAttrAccessGroup] = group }
-
-    var result: CFTypeRef?
-    var status = SecItemCopyMatching(query as CFDictionary, &result)
-    if status == errSecItemNotFound, accessGroup != nil {
-      query.removeValue(forKey: kSecAttrAccessGroup)
-      status = SecItemCopyMatching(query as CFDictionary, &result)
-    }
-    guard status == errSecSuccess else {
-      if status == errSecItemNotFound { return nil }
-      throw KeychainError.readError(status)
-    }
-    guard let wrapped = result as? Data else { return nil }
-
-    guard let seKey = findSEKey() ?? findLegacySEKey() else {
+    // Main app uses .primaryOnly — biometric/passcode prompt is acceptable
+    // here. Extensions use .extensionOnly / .extensionThenPrimary.
+    guard let plaintextData = BeebeebKeychainCore.loadMasterKey(label: label, mode: .primaryOnly) else {
+      // If no blob exists, return nil; if the SE key is missing entirely,
+      // surface as a typed error so the JS layer can fall back to recovery.
+      if BeebeebKeychainCore.fetchWrappedBlob(service: BeebeebKeychainCore.wrappedKeyService, label: label) == nil {
+        return nil
+      }
+      // Blob exists but SE-decrypt failed — likely missing SE key
       throw KeychainError.seKeyNotFound
     }
 
-    var cfErr: Unmanaged<CFError>?
-    guard let plaintext = SecKeyCreateDecryptedData(seKey, eciesAlgorithm, wrapped as CFData, &cfErr) else {
-      throw KeychainError.decryptionFailed
-    }
-    let plaintextData = plaintext as Data
+    // Keep the extension-wrapped blob in sync so backup extensions can read.
     try storeExtensionWrappedKey(masterKeyBytes: plaintextData, label: label)
-    if query[kSecAttrAccessGroup] == nil, accessGroup != nil {
-      try? store(masterKeyBytes: plaintextData, label: label)
-    }
+
+    // Idempotent re-store under the access group. If the read came from
+    // legacy no-access-group storage, this migrates it forward; if it
+    // already had the access group, this is a no-op rewrite.
+    try? store(masterKeyBytes: plaintextData, label: label)
+
     return plaintextData
   }
 
@@ -199,19 +193,20 @@ final class KeychainManager {
     let wasBiometric = requiresBiometric
     requiresBiometric = requireBiometric
 
-    guard wasBiometric != requireBiometric, let oldSEKey = findSEKey() else {
+    guard wasBiometric != requireBiometric,
+          let oldSEKey = BeebeebKeychainCore.findSEKey(tag: BeebeebKeychainCore.seKeyTag) else {
       return
     }
 
     // Fetch all wrapped blobs so we can re-wrap them under the new SE key
     var fetchQuery: [CFString: Any] = [
       kSecClass: kSecClassGenericPassword,
-      kSecAttrService: wrappedKeyService,
+      kSecAttrService: BeebeebKeychainCore.wrappedKeyService,
       kSecReturnData: true,
       kSecReturnAttributes: true,
       kSecMatchLimit: kSecMatchLimitAll,
     ]
-    if let group = accessGroup { fetchQuery[kSecAttrAccessGroup] = group }
+    if let group = BeebeebKeychainCore.accessGroup { fetchQuery[kSecAttrAccessGroup] = group }
 
     var allItems: CFTypeRef?
     let fetchStatus = SecItemCopyMatching(fetchQuery as CFDictionary, &allItems)
@@ -223,19 +218,19 @@ final class KeychainManager {
       guard let wrapped = item[kSecValueData] as? Data,
             let account = item[kSecAttrAccount] as? String else { continue }
       var cfErr: Unmanaged<CFError>?
-      if let plain = SecKeyCreateDecryptedData(oldSEKey, eciesAlgorithm, wrapped as CFData, &cfErr) {
+      if let plain = SecKeyCreateDecryptedData(oldSEKey, BeebeebKeychainCore.eciesAlgorithm, wrapped as CFData, &cfErr) {
         plaintexts.append((account: account, data: plain as Data))
       }
     }
 
     // Delete old primary SE key
-    deleteSEKey(tag: seKeyTag)
+    deleteSEKey(tag: BeebeebKeychainCore.seKeyTag)
 
     // Generate new primary SE key with updated access control
     let newFlags: SecAccessControlCreateFlags = requireBiometric
       ? [.privateKeyUsage, .biometryAny]
       : [.privateKeyUsage, .devicePasscode]
-    let newSEKey = try generateSEKey(tag: seKeyTag, flags: newFlags)
+    let newSEKey = try generateSEKey(tag: BeebeebKeychainCore.seKeyTag, flags: newFlags)
     guard let newPublicKey = SecKeyCopyPublicKey(newSEKey) else {
       throw KeychainError.seKeyNotFound
     }
@@ -243,18 +238,18 @@ final class KeychainManager {
     // Re-wrap each master key under the new primary SE key
     for item in plaintexts {
       var cfErr: Unmanaged<CFError>?
-      guard let rewrapped = SecKeyCreateEncryptedData(newPublicKey, eciesAlgorithm, item.data as CFData, &cfErr) else {
+      guard let rewrapped = SecKeyCreateEncryptedData(newPublicKey, BeebeebKeychainCore.eciesAlgorithm, item.data as CFData, &cfErr) else {
         continue
       }
       deleteWrappedItem(account: item.account)
       var attrs: [CFString: Any] = [
         kSecClass: kSecClassGenericPassword,
-        kSecAttrService: wrappedKeyService,
+        kSecAttrService: BeebeebKeychainCore.wrappedKeyService,
         kSecAttrAccount: item.account,
         kSecAttrAccessible: kSecAttrAccessibleAfterFirstUnlock,
         kSecValueData: rewrapped as Data,
       ]
-      if let group = accessGroup { attrs[kSecAttrAccessGroup] = group }
+      if let group = BeebeebKeychainCore.accessGroup { attrs[kSecAttrAccessGroup] = group }
       SecItemAdd(attrs as CFDictionary, nil)
     }
 
@@ -304,6 +299,11 @@ final class KeychainManager {
   // The access group is the same as for the master key, so background
   // tasks running in the main app's address space and extensions sharing
   // the `keychain-access-groups` entitlement can read the value.
+  //
+  // String storage is intentionally not consolidated into BeebeebKeychainCore
+  // — only the main app writes these, and the orthogonal API would just
+  // expand the shared surface for no benefit (per ios-engineer's note on
+  // 0436).
 
   private static let stringStorageService = "io.beebeeb.string-storage"
 
@@ -318,7 +318,7 @@ final class KeychainManager {
       kSecAttrAccessible: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
       kSecValueData: data,
     ]
-    if let group = accessGroup { attrs[kSecAttrAccessGroup] = group }
+    if let group = BeebeebKeychainCore.accessGroup { attrs[kSecAttrAccessGroup] = group }
 
     let status = SecItemAdd(attrs as CFDictionary, nil)
     guard status == errSecSuccess else { throw KeychainError.writeError(status) }
@@ -353,7 +353,7 @@ final class KeychainManager {
       kSecAttrService: stringStorageService,
       kSecAttrAccount: key,
     ]
-    if let group = accessGroup { query[kSecAttrAccessGroup] = group }
+    if let group = BeebeebKeychainCore.accessGroup { query[kSecAttrAccessGroup] = group }
     SecItemDelete(query as CFDictionary)
     // Also clear any legacy UserDefaults entry so the migration path can't
     // resurrect a stale value on the next read.
@@ -368,11 +368,11 @@ final class KeychainManager {
       kSecReturnData: true,
       kSecMatchLimit: kSecMatchLimitOne,
     ]
-    if let group = accessGroup { query[kSecAttrAccessGroup] = group }
+    if let group = BeebeebKeychainCore.accessGroup { query[kSecAttrAccessGroup] = group }
 
     var result: CFTypeRef?
     var status = SecItemCopyMatching(query as CFDictionary, &result)
-    if status == errSecItemNotFound, accessGroup != nil {
+    if status == errSecItemNotFound, BeebeebKeychainCore.accessGroup != nil {
       query.removeValue(forKey: kSecAttrAccessGroup)
       status = SecItemCopyMatching(query as CFDictionary, &result)
     }
@@ -380,57 +380,19 @@ final class KeychainManager {
     return String(data: data, encoding: .utf8)
   }
 
-  // MARK: - Private helpers
+  // MARK: - Private write helpers
 
   private static func getOrCreateSEKey() throws -> SecKey {
-    if let existing = findSEKey() { return existing }
+    if let existing = BeebeebKeychainCore.findSEKey(tag: BeebeebKeychainCore.seKeyTag) { return existing }
     let flags: SecAccessControlCreateFlags = requiresBiometric
       ? [.privateKeyUsage, .biometryAny]
       : [.privateKeyUsage, .devicePasscode]
-    return try generateSEKey(tag: seKeyTag, flags: flags)
+    return try generateSEKey(tag: BeebeebKeychainCore.seKeyTag, flags: flags)
   }
 
   private static func getOrCreateExtensionSEKey() throws -> SecKey {
-    if let existing = findSEKey(tag: seKeyTagExt) { return existing }
-    return try generateSEKey(tag: seKeyTagExt, flags: [.privateKeyUsage, .devicePasscode])
-  }
-
-  private static func findSEKey() -> SecKey? {
-    return findSEKey(tag: seKeyTag)
-  }
-
-  private static func findSEKey(tag: Data) -> SecKey? {
-    var query: [CFString: Any] = [
-      kSecClass: kSecClassKey,
-      kSecAttrKeyType: kSecAttrKeyTypeECSECPrimeRandom,
-      kSecAttrApplicationTag: tag,
-      kSecAttrTokenID: kSecAttrTokenIDSecureEnclave,
-      kSecReturnRef: true,
-    ]
-    if let group = accessGroup { query[kSecAttrAccessGroup] = group }
-    return findSEKey(query: query)
-  }
-
-  private static func findLegacySEKey() -> SecKey? {
-    let query: [CFString: Any] = [
-      kSecClass: kSecClassKey,
-      kSecAttrKeyType: kSecAttrKeyTypeECSECPrimeRandom,
-      kSecAttrApplicationTag: seKeyTag,
-      kSecAttrTokenID: kSecAttrTokenIDSecureEnclave,
-      kSecReturnRef: true,
-    ]
-    return findSEKey(query: query)
-  }
-
-  private static func findSEKey(query: [CFString: Any]) -> SecKey? {
-    var result: CFTypeRef?
-    guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
-          let obj = result else {
-      return nil
-    }
-    // SecKey is a CoreFoundation opaque type — unsafeBitCast is the standard
-    // way to bridge CFTypeRef → SecKey without a redundant conditional-cast warning.
-    return unsafeBitCast(obj, to: SecKey.self)
+    if let existing = BeebeebKeychainCore.findSEKey(tag: BeebeebKeychainCore.seKeyTagExt) { return existing }
+    return try generateSEKey(tag: BeebeebKeychainCore.seKeyTagExt, flags: [.privateKeyUsage, .devicePasscode])
   }
 
   /// Generate a Secure Enclave P-256 key with the given tag and access control flags.
@@ -454,7 +416,7 @@ final class KeychainManager {
         kSecAttrAccessControl: access,
       ] as [CFString: Any],
     ]
-    if let group = accessGroup { attributes[kSecAttrAccessGroup] = group }
+    if let group = BeebeebKeychainCore.accessGroup { attributes[kSecAttrAccessGroup] = group }
 
     var cfErr: Unmanaged<CFError>?
     guard let key = SecKeyCreateRandomKey(attributes as CFDictionary, &cfErr) else {
@@ -463,19 +425,19 @@ final class KeychainManager {
     return key
   }
 
-  private static func deleteWrappedItem(account: String, service: String = wrappedKeyService) {
+  private static func deleteWrappedItem(account: String, service: String = BeebeebKeychainCore.wrappedKeyService) {
     var query: [CFString: Any] = [
       kSecClass: kSecClassGenericPassword,
       kSecAttrService: service,
       kSecAttrAccount: account,
     ]
-    if let group = accessGroup { query[kSecAttrAccessGroup] = group }
+    if let group = BeebeebKeychainCore.accessGroup { query[kSecAttrAccessGroup] = group }
     SecItemDelete(query as CFDictionary)
   }
 
   private static func deleteSEKey() {
-    deleteSEKey(tag: seKeyTag)
-    deleteSEKey(tag: seKeyTagExt)
+    deleteSEKey(tag: BeebeebKeychainCore.seKeyTag)
+    deleteSEKey(tag: BeebeebKeychainCore.seKeyTagExt)
   }
 
   private static func deleteSEKey(tag: Data) {
@@ -485,10 +447,10 @@ final class KeychainManager {
       kSecAttrApplicationTag: tag,
       kSecAttrTokenID: kSecAttrTokenIDSecureEnclave,
     ]
-    if let group = accessGroup { query[kSecAttrAccessGroup] = group }
+    if let group = BeebeebKeychainCore.accessGroup { query[kSecAttrAccessGroup] = group }
     SecItemDelete(query as CFDictionary)
 
-    if accessGroup != nil {
+    if BeebeebKeychainCore.accessGroup != nil {
       var legacyQuery = query
       legacyQuery.removeValue(forKey: kSecAttrAccessGroup)
       SecItemDelete(legacyQuery as CFDictionary)
@@ -496,8 +458,8 @@ final class KeychainManager {
   }
 
   private static func deleteWrappedItems() {
-    deleteWrappedItems(service: wrappedKeyService)
-    deleteWrappedItems(service: wrappedKeyServiceExt)
+    deleteWrappedItems(service: BeebeebKeychainCore.wrappedKeyService)
+    deleteWrappedItems(service: BeebeebKeychainCore.wrappedKeyServiceExt)
   }
 
   private static func deleteWrappedItems(service: String) {
@@ -505,10 +467,10 @@ final class KeychainManager {
       kSecClass: kSecClassGenericPassword,
       kSecAttrService: service,
     ]
-    if let group = accessGroup { query[kSecAttrAccessGroup] = group }
+    if let group = BeebeebKeychainCore.accessGroup { query[kSecAttrAccessGroup] = group }
     SecItemDelete(query as CFDictionary)
 
-    if accessGroup != nil {
+    if BeebeebKeychainCore.accessGroup != nil {
       query.removeValue(forKey: kSecAttrAccessGroup)
       SecItemDelete(query as CFDictionary)
     }
@@ -523,7 +485,7 @@ final class KeychainManager {
     if let label {
       query[kSecAttrAccount] = label
     }
-    if let group = accessGroup {
+    if let group = BeebeebKeychainCore.accessGroup {
       query[kSecAttrAccessGroup] = group
     }
     return query
