@@ -4087,6 +4087,38 @@ public func decryptChunksToFile(key: Data, chunks: [EncryptedChunkData], outputP
 })
 }
 /**
+ * Decrypt a contiguous encrypted body into a file.
+ *
+ * `body` is the wire format produced by stacking encrypted chunks back
+ * to back: each chunk is `nonce (12 bytes) || ciphertext (chunk_size +
+ * 16 byte AES-GCM tag)`. All chunks but the last produce `chunk_size`
+ * bytes of plaintext; the final chunk is whatever remains.
+ *
+ * Compared to `decrypt_chunks_to_file`, this variant lets the caller
+ * hand over the full encrypted blob without pre-slicing — Rust performs
+ * the chunk boundaries internally. Saves N small `ByteArray` allocations
+ * + per-chunk marshalling overhead across the FFI for files with many
+ * chunks (a 100 MB / 1 MB-chunk file is one allocation here vs. 200
+ * across the bridge with the pre-sliced variant).
+ *
+ * Streams chunk-by-chunk — peak memory is one plaintext chunk, not the
+ * full file. Returns the total number of plaintext bytes written.
+ *
+ * On `Err`, the output file may exist on disk in a partially-written
+ * state — the caller is responsible for deleting it so a downstream
+ * cache layer does not treat the partial file as complete.
+ */
+public func decryptContiguousToFile(fileKey: Data, body: Data, chunkSize: UInt64, outputPath: String)throws  -> UInt64  {
+    return try  FfiConverterUInt64.lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
+    uniffi_beebeeb_uniffi_fn_func_decrypt_contiguous_to_file(
+        FfiConverterData.lower(fileKey),
+        FfiConverterData.lower(body),
+        FfiConverterUInt64.lower(chunkSize),
+        FfiConverterString.lower(outputPath),$0
+    )
+})
+}
+/**
  * Decrypt a metadata blob back to a UTF-8 string.
  */
 public func decryptMetadata(key: Data, nonce: Data, ciphertext: Data)throws  -> String  {
@@ -4601,6 +4633,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_beebeeb_uniffi_checksum_func_decrypt_chunks_to_file() != 41753) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_func_decrypt_contiguous_to_file() != 37405) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_beebeeb_uniffi_checksum_func_decrypt_metadata() != 59510) {

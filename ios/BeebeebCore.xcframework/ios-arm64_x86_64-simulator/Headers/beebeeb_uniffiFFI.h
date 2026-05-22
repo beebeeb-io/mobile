@@ -559,6 +559,11 @@ RustBuffer uniffi_beebeeb_uniffi_fn_func_decrypt_chunk(RustBuffer key, RustBuffe
 uint64_t uniffi_beebeeb_uniffi_fn_func_decrypt_chunks_to_file(RustBuffer key, RustBuffer chunks, RustBuffer output_path, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_BEEBEEB_UNIFFI_FN_FUNC_DECRYPT_CONTIGUOUS_TO_FILE
+#define UNIFFI_FFIDEF_UNIFFI_BEEBEEB_UNIFFI_FN_FUNC_DECRYPT_CONTIGUOUS_TO_FILE
+uint64_t uniffi_beebeeb_uniffi_fn_func_decrypt_contiguous_to_file(RustBuffer file_key, RustBuffer body, uint64_t chunk_size, RustBuffer output_path, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_BEEBEEB_UNIFFI_FN_FUNC_DECRYPT_METADATA
 #define UNIFFI_FFIDEF_UNIFFI_BEEBEEB_UNIFFI_FN_FUNC_DECRYPT_METADATA
 RustBuffer uniffi_beebeeb_uniffi_fn_func_decrypt_metadata(RustBuffer key, RustBuffer nonce, RustBuffer ciphertext, RustCallStatus *_Nonnull out_status
@@ -1060,6 +1065,12 @@ uint16_t uniffi_beebeeb_uniffi_checksum_func_decrypt_chunk(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_BEEBEEB_UNIFFI_CHECKSUM_FUNC_DECRYPT_CHUNKS_TO_FILE
 #define UNIFFI_FFIDEF_UNIFFI_BEEBEEB_UNIFFI_CHECKSUM_FUNC_DECRYPT_CHUNKS_TO_FILE
 uint16_t uniffi_beebeeb_uniffi_checksum_func_decrypt_chunks_to_file(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_BEEBEEB_UNIFFI_CHECKSUM_FUNC_DECRYPT_CONTIGUOUS_TO_FILE
+#define UNIFFI_FFIDEF_UNIFFI_BEEBEEB_UNIFFI_CHECKSUM_FUNC_DECRYPT_CONTIGUOUS_TO_FILE
+uint16_t uniffi_beebeeb_uniffi_checksum_func_decrypt_contiguous_to_file(void
     
 );
 #endif
