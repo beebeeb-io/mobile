@@ -18,9 +18,12 @@ final class CalendarBackupManager {
     }
   }
 
-  private var serverBaseURL: String {
-    // Server URL moved to Keychain (task 0430); see PhotoBackupManager note.
-    KeychainManager.loadString(key: "io.beebeeb.serverURL") ?? "http://localhost:3001"
+  // Server URL is keychain-only (task 0430). No localhost fallback (task 0442) —
+  // workspace rule forbids defaulting to dev hosts in production code paths.
+  // Returns nil when the keychain slot is empty; the upload site guards and
+  // aborts cleanly.
+  private var serverBaseURL: String? {
+    KeychainManager.loadString(key: "io.beebeeb.serverURL")
   }
 
   private init() {}
@@ -133,6 +136,10 @@ final class CalendarBackupManager {
   // uploader. NativeBackupEngine already demonstrates the pattern. For now this
   // continues using the legacy Swift uploader which still works correctly.
   private func upload(data: Data, token: String) {
+    guard let serverBaseURL else {
+      NSLog("[BeebeebBackup] calendar upload aborted: serverURL not configured in keychain (sign in again to set)")
+      return
+    }
     let fileName = "calendar.ics"
     let mimeType = "text/calendar"
     NativeEncryptedBackupUploader.shared.upload(

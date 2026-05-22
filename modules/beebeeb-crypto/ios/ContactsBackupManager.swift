@@ -17,9 +17,12 @@ final class ContactsBackupManager {
     }
   }
 
-  private var serverBaseURL: String {
-    // Server URL moved to Keychain (task 0430); see PhotoBackupManager note.
-    KeychainManager.loadString(key: "io.beebeeb.serverURL") ?? "http://localhost:3001"
+  // Server URL is keychain-only (task 0430). No localhost fallback (task 0442) —
+  // workspace rule forbids defaulting to dev hosts in production code paths.
+  // Returns nil when the keychain slot is empty; the upload site guards and
+  // aborts cleanly.
+  private var serverBaseURL: String? {
+    KeychainManager.loadString(key: "io.beebeeb.serverURL")
   }
 
   private init() {
@@ -88,6 +91,10 @@ final class ContactsBackupManager {
   // uploader. NativeBackupEngine already demonstrates the pattern. For now this
   // continues using the legacy Swift uploader which still works correctly.
   private func upload(data: Data, fileName: String, mimeType: String, token: String) {
+    guard let serverBaseURL else {
+      NSLog("[BeebeebBackup] contacts upload aborted: serverURL not configured in keychain (sign in again to set)")
+      return
+    }
     NativeEncryptedBackupUploader.shared.upload(
       plaintext: data,
       fileName: fileName,

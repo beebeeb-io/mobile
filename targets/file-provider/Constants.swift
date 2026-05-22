@@ -28,8 +28,14 @@ enum BeebeebConstants {
   /// SQLite filename inside the App Group container.
   static let cacheDatabaseFilename = "file-provider-cache.sqlite"
 
-  /// API base URL — overridden by the main app via UserDefaults during dev.
-  static let defaultApiBaseUrl = "http://localhost:3001"
+  /// API base URL fallback used by the File Provider when the main app hasn't
+  /// written `userDefaultsApiBaseUrlKey` yet. Defaults to production (task 0442)
+  /// — workspace rule forbids localhost defaults in production code paths.
+  /// In dev, the main app overrides this via UserDefaults during sign-in; if
+  /// the override is missing, the extension safely points at production rather
+  /// than silently hitting whatever's listening on :3001 in a misconfigured
+  /// simulator.
+  static let defaultApiBaseUrl = "https://api.beebeeb.io"
 
   /// UserDefaults key (in App Group) that the main app writes after sign-in.
   static let userDefaultsApiBaseUrlKey = "io.beebeeb.apiBaseUrl"

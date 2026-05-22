@@ -28,11 +28,13 @@ final class PhotoBackupManager: NSObject {
   private(set) var backgroundSession: URLSession?
   var backgroundSessionCompletionHandlers: [String: () -> Void] = [:]
 
-  private var serverBaseURL: String {
-    // Server URL moved to Keychain (task 0430) — `loadString` migrates from
-    // UserDefaults on first read after upgrade. Localhost fallback kept for
-    // dev builds where the URL is set later via mirrorSessionToAppGroup.
-    KeychainManager.loadString(key: "io.beebeeb.serverURL") ?? "http://localhost:3001"
+  // Server URL is keychain-only (task 0430). No localhost fallback — workspace
+  // rule forbids defaulting to dev hosts in production code paths, and silently
+  // sending encrypted blobs to whatever's listening on :3001 in a misconfigured
+  // simulator is worse than failing visibly (task 0442). Returns nil when the
+  // keychain slot is empty; callers must guard and abort the upload cleanly.
+  private var serverBaseURL: String? {
+    KeychainManager.loadString(key: "io.beebeeb.serverURL")
   }
 
   // Auth token passed from JS when enabling backup, persisted in the
@@ -364,6 +366,16 @@ final class PhotoBackupManager: NSObject {
   // uploader. NativeBackupEngine already demonstrates the pattern. For now this
   // continues using the legacy Swift uploader which still works correctly.
   private func uploadFile(localIdentifier: String, data: Data, fileName: String, mimeType: String, token: String, completion: @escaping (Bool) -> Void) {
+    guard let serverBaseURL else {
+      NSLog("[Beebeeb] photo backup aborted for \(localIdentifier): serverURL not configured in keychain (sign in again to set)")
+      dbQueue.async {
+        guard let db = self.db else { return }
+        self.updateStatus(db: db, localIdentifier: localIdentifier, status: "failed", error: "Server URL not configured")
+      }
+      completion(false)
+      return
+    }
+
     dbQueue.async {
       guard let db = self.db else { return }
       self.updateStatus(db: db, localIdentifier: localIdentifier, status: "uploading")
