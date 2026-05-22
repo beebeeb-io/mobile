@@ -30,10 +30,8 @@ function makeEncryptedBody(chunkCount: number, sizeBytes: number, chunkSize: num
     const plaintext = chunkCount === 1
       ? sizeBytes
       : isLast ? sizeBytes - i * chunkSize : chunkSize;
-    // Fill the nonce with the chunk index for deterministic identification.
     for (let n = 0; n < NONCE_LENGTH; n++) out[offset + n] = i;
     offset += NONCE_LENGTH;
-    // Fill ciphertext+tag region with the chunk index + 0x80 to distinguish.
     for (let c = 0; c < plaintext + GCM_TAG_LENGTH; c++) {
       out[offset + c] = 0x80 | i;
     }
@@ -42,7 +40,7 @@ function makeEncryptedBody(chunkCount: number, sizeBytes: number, chunkSize: num
   return out;
 }
 
-describe('sliceEncryptedBody', () => {
+describe('sliceEncryptedBody (fallback-path helper)', () => {
   test('produces one chunk for chunkCount=1', () => {
     const body = makeEncryptedBody(1, 1000, 4 * 1024 * 1024);
     const chunks = sliceEncryptedBody(body, 1, 1000, 4 * 1024 * 1024);
@@ -78,7 +76,6 @@ describe('sliceEncryptedBody', () => {
     const sizeBytes = chunkSize * 4;
     const body = makeEncryptedBody(4, sizeBytes, chunkSize);
     const chunks = sliceEncryptedBody(body, 4, sizeBytes, chunkSize);
-    // makeEncryptedBody fills nonce of chunk i with byte value i.
     for (let i = 0; i < 4; i++) {
       for (let n = 0; n < NONCE_LENGTH; n++) {
         expect(chunks[i].nonce[n]).toBe(i);
@@ -110,7 +107,7 @@ describe('sliceEncryptedBody', () => {
   });
 });
 
-describe('decryptChunksToFile adapter', () => {
+describe('decryptChunksToFile adapter (contiguous-body native call)', () => {
   beforeEach(() => {
     __setDecryptToFileBridgeForTest(null);
   });
@@ -125,57 +122,62 @@ describe('decryptChunksToFile adapter', () => {
 
   test('throws DecryptToFileUnavailableError when the bridge is missing', async () => {
     const fileKey = new Uint8Array(32);
-    const chunks = [{ nonce: new Uint8Array(12), ciphertext: new Uint8Array(16) }];
-    await expect(decryptChunksToFile(fileKey, chunks, '/tmp/out')).rejects.toBeInstanceOf(
+    const body = new Uint8Array(NONCE_LENGTH + 10 + GCM_TAG_LENGTH);
+    await expect(decryptChunksToFile(fileKey, body, 10, '/tmp/out')).rejects.toBeInstanceOf(
       DecryptToFileUnavailableError,
     );
   });
 
   test('isDecryptToFileReady flips to true when the bridge is injected', () => {
     __setDecryptToFileBridgeForTest({
-      decryptChunksToFile: async () => 0,
+      decryptContiguousToFile: async () => 0,
     });
     expect(isDecryptToFileReady()).toBe(true);
   });
 
-  test('calls the native bridge with the agreed argument shape', async () => {
+  test('calls the native bridge with the agreed argument shape (fileKey, body, chunkSize, path)', async () => {
     const spy = mock(async () => 12_345);
-    __setDecryptToFileBridgeForTest({ decryptChunksToFile: spy });
+    __setDecryptToFileBridgeForTest({ decryptContiguousToFile: spy });
     const fileKey = new Uint8Array(32).fill(0xaa);
-    const chunks = [
-      { nonce: new Uint8Array(12).fill(1), ciphertext: new Uint8Array(16).fill(2) },
-      { nonce: new Uint8Array(12).fill(3), ciphertext: new Uint8Array(16).fill(4) },
-    ];
-    const written = await decryptChunksToFile(fileKey, chunks, '/tmp/decrypted.bin');
+    const body = makeEncryptedBody(2, 200, 100);
+    const written = await decryptChunksToFile(fileKey, body, 100, '/tmp/decrypted.bin');
     expect(written).toBe(12_345);
     expect(spy).toHaveBeenCalledTimes(1);
     const call = (spy as any).mock.calls[0];
     expect(call[0]).toBe(fileKey);
-    expect(call[1]).toBe(chunks);
-    expect(call[2]).toBe('/tmp/decrypted.bin');
+    expect(call[1]).toBe(body);
+    expect(call[2]).toBe(100);
+    expect(call[3]).toBe('/tmp/decrypted.bin');
   });
 
   test('rejects when fileKey is not exactly 32 bytes', async () => {
-    __setDecryptToFileBridgeForTest({ decryptChunksToFile: async () => 0 });
+    __setDecryptToFileBridgeForTest({ decryptContiguousToFile: async () => 0 });
     const tooShort = new Uint8Array(16);
-    const chunks = [{ nonce: new Uint8Array(12), ciphertext: new Uint8Array(16) }];
-    await expect(decryptChunksToFile(tooShort, chunks, '/tmp/out')).rejects.toThrow(/32-byte fileKey/);
+    const body = new Uint8Array(NONCE_LENGTH + 10 + GCM_TAG_LENGTH);
+    await expect(decryptChunksToFile(tooShort, body, 10, '/tmp/out')).rejects.toThrow(/32-byte fileKey/);
   });
 
-  test('rejects when the chunks list is empty', async () => {
-    __setDecryptToFileBridgeForTest({ decryptChunksToFile: async () => 0 });
+  test('rejects when the body is empty', async () => {
+    __setDecryptToFileBridgeForTest({ decryptContiguousToFile: async () => 0 });
     const fileKey = new Uint8Array(32);
-    await expect(decryptChunksToFile(fileKey, [], '/tmp/out')).rejects.toThrow(/empty/);
+    await expect(decryptChunksToFile(fileKey, new Uint8Array(0), 10, '/tmp/out')).rejects.toThrow(/body is empty/);
+  });
+
+  test('rejects when chunkSize is not a positive integer', async () => {
+    __setDecryptToFileBridgeForTest({ decryptContiguousToFile: async () => 0 });
+    const fileKey = new Uint8Array(32);
+    const body = new Uint8Array(NONCE_LENGTH + 10 + GCM_TAG_LENGTH);
+    await expect(decryptChunksToFile(fileKey, body, 0, '/tmp/out')).rejects.toThrow(/chunkSize must be a positive integer/);
+    await expect(decryptChunksToFile(fileKey, body, 10.5, '/tmp/out')).rejects.toThrow(/positive integer/);
   });
 
   test('propagates native errors verbatim', async () => {
     const failing = mock(async () => {
-      const err = new Error('GCM auth tag mismatch on chunk 17');
-      throw err;
+      throw new Error('GCM auth tag mismatch on chunk 17');
     });
-    __setDecryptToFileBridgeForTest({ decryptChunksToFile: failing });
+    __setDecryptToFileBridgeForTest({ decryptContiguousToFile: failing });
     const fileKey = new Uint8Array(32);
-    const chunks = [{ nonce: new Uint8Array(12), ciphertext: new Uint8Array(16) }];
-    await expect(decryptChunksToFile(fileKey, chunks, '/tmp/out')).rejects.toThrow(/auth tag mismatch/);
+    const body = new Uint8Array(NONCE_LENGTH + 10 + GCM_TAG_LENGTH);
+    await expect(decryptChunksToFile(fileKey, body, 10, '/tmp/out')).rejects.toThrow(/auth tag mismatch/);
   });
 });
