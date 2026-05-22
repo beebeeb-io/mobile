@@ -54,6 +54,14 @@ Backend at `http://localhost:3001`. Same endpoints as the web client — see `re
 
 Same design tokens as web but converted to RGB (OKLCH not supported in React Native). See `src/theme.ts` for the color mapping.
 
+## Thumbnails
+
+Thumbnails are WebP format (200px width, 0.5 quality), generated in `src/lib/thumbnail.ts` via expo-image-manipulator. Video and DNG/RAW thumbnails are generated natively in Swift (`BeebeebCryptoModule.swift`) using `CGImageDestination` + `UTType.webP`.
+
+Thumbnail downloads use plain `fetch` (NOT `rateLimitedFetch`) because the server has a dedicated thumbnail rate limit tier (50k req/min per user). Once cached in `documentDirectory/beebeeb-thumbnails/`, thumbnails are never re-fetched. The cache supports legacy `.jpg` files from before the WebP migration.
+
+Concurrency is managed by the thumbnail loading queue in `src/lib/thumbnail-cache.ts` (max 5 concurrent loads).
+
 ## Crypto
 
 Will consume `beebeeb-core` via UniFFI-generated Swift/Kotlin bindings. Crypto runs at native speed, not in JS.
