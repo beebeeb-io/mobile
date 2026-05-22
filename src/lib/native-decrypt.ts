@@ -20,9 +20,15 @@ import {
   type PreviewLoadProgressEvent,
 } from '../../modules/beebeeb-crypto';
 import {
+  CHUNK_SIZE,
   decryptEncryptedBytes,
   inferChunkCountFromEncryptedSize,
 } from './encrypted-download';
+import {
+  decryptChunksToFile,
+  DecryptToFileUnavailableError,
+  isDecryptToFileReady,
+} from './decrypt-to-file';
 import {
   ApiError,
   getApiUrl,
@@ -253,7 +259,64 @@ export async function decryptToTempFile(
   const effectiveChunkSize =
     headerChunkSize && headerChunkSize > 0 ? headerChunkSize : undefined;
 
-  // Decrypt all chunks via native crypto bridge
+  // Fast path: when the native batched decrypt (task 0438) is available,
+  // hand the contiguous encrypted body to Rust in one call and let it slice,
+  // decrypt, and write the plaintext directly to `outputPath`. Avoids the
+  // ~100 per-chunk JSI round-trips the legacy `decryptEncryptedBytes` loop
+  // makes for a 100 MB file.
+  if (isDecryptToFileReady()) {
+    try {
+      options.onProgress?.({
+        requestId: '',
+        fileId,
+        stage: 'decrypting',
+        chunksCompleted: 0,
+        chunksTotal: effectiveChunkCount,
+      });
+      const written = await decryptChunksToFile(
+        resolvedFileKey,
+        encBytes,
+        effectiveChunkSize ?? CHUNK_SIZE,
+        outputPath,
+      );
+      if (options.signal?.aborted) {
+        await FileSystem.deleteAsync(outputPath, { idempotent: true }).catch(() => {});
+        throw abortError();
+      }
+      options.onProgress?.({
+        requestId: '',
+        fileId,
+        stage: 'decrypting',
+        chunksCompleted: effectiveChunkCount,
+        chunksTotal: effectiveChunkCount,
+      });
+      if (written <= 0) {
+        // Rust returned zero bytes — treat as a decrypt failure, clean up so
+        // the cache layer doesn't pick up a corrupt empty file later.
+        await FileSystem.deleteAsync(outputPath, { idempotent: true }).catch(() => {});
+        throw new Error('Native batched decrypt returned zero bytes.');
+      }
+      await prunePreviewCache(outputPath);
+      return outputPath;
+    } catch (err) {
+      // On any failure mid-batch, scrub the partial file so the cache doesn't
+      // surface it as complete. Then surface the error so the caller can
+      // retry (which may fall back via the probe if the native path is
+      // unhealthy).
+      await FileSystem.deleteAsync(outputPath, { idempotent: true }).catch(() => {});
+      if (err instanceof DecryptToFileUnavailableError) {
+        // Probe lied (e.g. bridge ripped out at runtime) — fall through to
+        // the per-chunk JS loop below.
+      } else {
+        throw err;
+      }
+    }
+  }
+
+  // Fallback: decrypt all chunks via the per-chunk JS bridge and write
+  // base64. Retained per the spec's "Existing per-chunk path retained as a
+  // fallback" criterion — covers older builds without the batched method
+  // and the unlikely runtime-unhealthy scenario above.
   const decrypted = await decryptEncryptedBytes(
     resolvedFileKey,
     encBytes,

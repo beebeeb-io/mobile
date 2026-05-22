@@ -847,6 +847,31 @@ export async function getBackupProgress(): Promise<NativeBackupProgress> {
   return BeebeebCryptoModule.getBackupProgress()
 }
 
+/**
+ * Batched decrypt-to-file (task 0438). Slices a contiguous encrypted body
+ * into chunks in Rust, decrypts each, appends plaintext to `outputPath`,
+ * returns total bytes written.
+ *
+ * Module-load-time conditional export: when the Swift turbomodule has not yet
+ * exposed `decryptContiguousToFile` (e.g. a build before the ios-engineer
+ * Expo `AsyncFunction` wrapper landed), this export resolves to `undefined`
+ * so the runtime probe in `src/lib/decrypt-to-file.ts` correctly reports the
+ * bridge as not yet ready and callers fall through to the per-chunk JS loop.
+ *
+ * Wire contract (matches rust-engineer's `decrypt_contiguous_to_file`):
+ *   fileKey    — 32-byte AES-256-GCM key
+ *   body       — nonce(12) || ciphertext || tag(16) per chunk, concatenated
+ *   chunkSize  — plaintext bytes per chunk (last is remainder)
+ *   outputPath — absolute device filesystem path; Rust appends, returns bytes
+ */
+export const decryptContiguousToFile:
+  | ((fileKey: Uint8Array, body: Uint8Array, chunkSize: number, outputPath: string) => Promise<number>)
+  | undefined =
+  typeof BeebeebCryptoModule.decryptContiguousToFile === 'function'
+    ? (fileKey, body, chunkSize, outputPath) =>
+        BeebeebCryptoModule.decryptContiguousToFile(fileKey, body, chunkSize, outputPath) as Promise<number>
+    : undefined
+
 /** Returns a debug-only native backup diagnostic snapshot. */
 export async function getNativeBackupDiagnostics(): Promise<NativeBackupDiagnostics | null> {
   if (typeof BeebeebCryptoModule.getNativeBackupDiagnostics !== 'function') return null
