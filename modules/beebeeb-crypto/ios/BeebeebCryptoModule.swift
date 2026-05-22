@@ -3,15 +3,19 @@ import ExpoModulesCore
 import Foundation
 import FileProvider
 import PDFKit
+import Photos
+import SDWebImage
+import SDWebImageWebPCoder
 import Security
 import SQLite3
 import UIKit
+import UniformTypeIdentifiers
 import UserNotifications
 
 private let fileProviderDomainIdentifier = NSFileProviderDomainIdentifier("io.beebeeb.files")
 private let fileProviderDisplayName = "Beebeeb"
 private let fileProviderDomainSchemaKey = "io.beebeeb.fileProviderDomainSchema"
-private let fileProviderDomainSchemaVersion = "replicated-v3"
+private let fileProviderDomainSchemaVersion = "replicated-v6-cache-bootstrap"
 private let appGroupIdentifier = "group.io.beebeeb.shared"
 private let simulatorFileProviderMasterKeyKey = "io.beebeeb.simulatorFileProviderMasterKey"
 private let sharedSessionTokenKey = "io.beebeeb.sessionToken"
@@ -21,6 +25,112 @@ private let fileProviderTrustedMountKey = "io.beebeeb.fileProvider.trustedMountE
 private let fileProviderAuthRequiredKey = "io.beebeeb.fileProvider.requireDeviceAuth"
 private let fileProviderUnlockedUntilKey = "io.beebeeb.fileProvider.unlockedUntilMs"
 private let fileProviderEnumeratorStatePrefix = "io.beebeeb.fileProvider.enumerator."
+
+private func encodeWebP(_ image: UIImage, quality: CGFloat) -> Data? {
+  let options: [SDImageCoderOption: Any] = [
+    .encodeCompressionQuality: quality,
+    .encodeFirstFrameOnly: true,
+  ]
+  return SDImageWebPCoder.shared.encodedData(
+    with: image,
+    format: .webP,
+    options: options
+  ) as Data?
+}
+
+private let thumbnailWebPTargetBytes = 50 * 1024
+private let thumbnailMaxEncryptedBytes = 64 * 1024
+private let thumbnailEncryptionOverheadBytes = 28
+
+private struct ThumbnailEncodingConfig {
+  let variant: String
+  let maxEncryptedBytes: Int
+  let targetBytes: Int
+  let candidates: [(maxDimension: CGFloat, quality: CGFloat)]
+}
+
+private func thumbnailEncodingConfig(_ variant: String?) -> ThumbnailEncodingConfig {
+  switch variant ?? "medium" {
+  case "small":
+    return ThumbnailEncodingConfig(
+      variant: "small",
+      maxEncryptedBytes: 32 * 1024,
+      targetBytes: 24 * 1024,
+      candidates: [
+        (384, 0.78),
+        (384, 0.66),
+        (384, 0.54),
+        (320, 0.50),
+        (256, 0.48),
+      ]
+    )
+  case "large":
+    return ThumbnailEncodingConfig(
+      variant: "large",
+      maxEncryptedBytes: 192 * 1024,
+      targetBytes: 150 * 1024,
+      candidates: [
+        (1280, 0.84),
+        (1280, 0.76),
+        (1280, 0.68),
+        (1024, 0.70),
+        (768, 0.74),
+        (640, 0.62),
+      ]
+    )
+  default:
+    return ThumbnailEncodingConfig(
+      variant: "medium",
+      maxEncryptedBytes: thumbnailMaxEncryptedBytes,
+      targetBytes: thumbnailWebPTargetBytes,
+      candidates: [
+        (768, 0.82),
+        (768, 0.74),
+        (768, 0.66),
+        (768, 0.58),
+        (768, 0.50),
+        (640, 0.58),
+        (512, 0.56),
+        (384, 0.54),
+      ]
+    )
+  }
+}
+
+private func resizeForThumbnail(_ image: UIImage, maxDimension: CGFloat) -> UIImage? {
+  let longestSide = max(image.size.width, image.size.height)
+  guard longestSide > maxDimension else { return image }
+  let scale = maxDimension / longestSide
+  let size = CGSize(width: image.size.width * scale, height: image.size.height * scale)
+  let format = UIGraphicsImageRendererFormat()
+  format.scale = 1
+  let renderer = UIGraphicsImageRenderer(size: size, format: format)
+  return renderer.image { _ in
+    image.draw(in: CGRect(origin: .zero, size: size))
+  }
+}
+
+private func encodeAdaptiveThumbnailWebP(
+  _ image: UIImage,
+  maxDimension: CGFloat,
+  config: ThumbnailEncodingConfig = thumbnailEncodingConfig(nil)
+) -> Data? {
+  var fallback: Data?
+  let maxPlaintextBytes = config.maxEncryptedBytes - thumbnailEncryptionOverheadBytes
+  for variant in config.candidates {
+    let targetDimension = max(1, min(variant.maxDimension, maxDimension))
+    guard let resized = resizeForThumbnail(image, maxDimension: targetDimension),
+          let data = encodeWebP(resized, quality: variant.quality)
+    else { continue }
+    if data.count <= maxPlaintextBytes {
+      fallback = data
+    }
+    if data.count <= config.targetBytes {
+      return data
+    }
+  }
+  return fallback
+}
 
 private func decodeBase64(_ value: String, field: String) throws -> Data {
   guard let data = Data(base64Encoded: value) else {
@@ -38,6 +148,279 @@ private func fileURL(fromURI uri: String) -> URL {
     return url
   }
   return URL(fileURLWithPath: uri)
+}
+
+private func isVideoMediaHint(_ value: String?) -> Bool {
+  guard let value = value?.lowercased() else { return false }
+  return value.hasPrefix("video/") ||
+         value == "com.apple.quicktime-movie" ||
+         value == "public.mpeg-4" ||
+         value.hasPrefix("public.movie") ||
+         value.hasPrefix("public.video")
+}
+
+private func generatePhotoLibraryImageThumbnail(
+  localIdentifier: String,
+  maxSize: Int,
+  config: ThumbnailEncodingConfig = thumbnailEncodingConfig(nil)
+) async throws -> Data {
+  let phAsset = PHAsset.fetchAssets(withLocalIdentifiers: [localIdentifier], options: nil).firstObject
+  guard let phAsset else {
+    throw NSError(
+      domain: "BeebeebThumbnail",
+      code: 10,
+      userInfo: [NSLocalizedDescriptionKey: "Photo asset not found in library"]
+    )
+  }
+
+  let image: UIImage = try await withCheckedThrowingContinuation { continuation in
+    let options = PHImageRequestOptions()
+    options.deliveryMode = .highQualityFormat
+    options.isNetworkAccessAllowed = true
+    options.isSynchronous = false
+    options.resizeMode = .fast
+
+    PHImageManager.default().requestImage(
+      for: phAsset,
+      targetSize: CGSize(width: maxSize, height: maxSize),
+      contentMode: .aspectFit,
+      options: options
+    ) { result, info in
+      let isDegraded = info?[PHImageResultIsDegradedKey] as? Bool ?? false
+      if isDegraded { return }
+      if let error = info?[PHImageErrorKey] as? Error {
+        continuation.resume(throwing: error)
+      } else if let result {
+        continuation.resume(returning: result)
+      } else {
+        continuation.resume(throwing: NSError(
+          domain: "BeebeebThumbnail",
+          code: 11,
+          userInfo: [NSLocalizedDescriptionKey: "Failed to load photo thumbnail from library"]
+        ))
+      }
+    }
+  }
+
+  guard let webpData = encodeAdaptiveThumbnailWebP(image, maxDimension: CGFloat(maxSize), config: config) else {
+    throw NSError(
+      domain: "BeebeebThumbnail",
+      code: 12,
+      userInfo: [NSLocalizedDescriptionKey: "Failed to encode photo thumbnail as WebP"]
+    )
+  }
+  return webpData
+}
+
+private func generatePhotoLibraryVideoThumbnail(
+  localIdentifier: String,
+  maxSize: Int,
+  config: ThumbnailEncodingConfig = thumbnailEncodingConfig(nil)
+) async throws -> Data {
+  let phAsset = PHAsset.fetchAssets(withLocalIdentifiers: [localIdentifier], options: nil).firstObject
+  guard let phAsset else {
+    throw NSError(
+      domain: "BeebeebThumbnail",
+      code: 13,
+      userInfo: [NSLocalizedDescriptionKey: "Video asset not found in library"]
+    )
+  }
+
+  let avAsset: AVAsset = try await withCheckedThrowingContinuation { continuation in
+    let options = PHVideoRequestOptions()
+    options.version = .original
+    options.isNetworkAccessAllowed = true
+    PHImageManager.default().requestAVAsset(forVideo: phAsset, options: options) { asset, _, info in
+      if let error = info?[PHImageErrorKey] as? Error {
+        continuation.resume(throwing: error)
+      } else if let asset {
+        continuation.resume(returning: asset)
+      } else {
+        continuation.resume(throwing: NSError(
+          domain: "BeebeebThumbnail",
+          code: 14,
+          userInfo: [NSLocalizedDescriptionKey: "Failed to load video asset from library"]
+        ))
+      }
+    }
+  }
+
+  let generator = AVAssetImageGenerator(asset: avAsset)
+  generator.appliesPreferredTrackTransform = true
+  generator.maximumSize = CGSize(width: maxSize, height: maxSize)
+
+  let time = CMTime(seconds: 1.0, preferredTimescale: 600)
+  let cgImage: CGImage
+  do {
+    cgImage = try generator.copyCGImage(at: time, actualTime: nil)
+  } catch {
+    cgImage = try generator.copyCGImage(at: .zero, actualTime: nil)
+  }
+
+  guard let webpData = encodeAdaptiveThumbnailWebP(UIImage(cgImage: cgImage), maxDimension: CGFloat(maxSize), config: config) else {
+    throw NSError(
+      domain: "BeebeebThumbnail",
+      code: 15,
+      userInfo: [NSLocalizedDescriptionKey: "Failed to encode video thumbnail as WebP"]
+    )
+  }
+  return webpData
+}
+
+private final class PreviewDownloadProgress: DownloadProgressCallback, FileProgressCallback, @unchecked Sendable {
+  private let lock = NSLock()
+  private var cancelled = false
+  private weak var task: URLSessionTask?
+  private let requestId: String?
+  private let fileId: String
+  private let emit: ([String: Any]) -> Void
+
+  init(requestId: String?, fileId: String, emit: @escaping ([String: Any]) -> Void) {
+    self.requestId = requestId
+    self.fileId = fileId
+    self.emit = emit
+  }
+
+  func setTask(_ task: URLSessionTask) {
+    lock.lock()
+    self.task = task
+    lock.unlock()
+  }
+
+  func cancel() {
+    lock.lock()
+    cancelled = true
+    let task = task
+    lock.unlock()
+    task?.cancel()
+  }
+
+  func isCancelled() -> Bool {
+    lock.lock()
+    let value = cancelled
+    lock.unlock()
+    return value
+  }
+
+  func onChunkDecrypted(chunkIndex: UInt32, totalChunks: UInt32) {
+    emitProgress(stage: "decrypting", chunksCompleted: Int(chunkIndex), chunksTotal: Int(totalChunks))
+  }
+
+  func onProgress(chunksCompleted: UInt32, chunksTotal: UInt32) {
+    emitProgress(stage: "decrypting", chunksCompleted: Int(chunksCompleted), chunksTotal: Int(chunksTotal))
+  }
+
+  func onComplete(outputPath: String) {
+    emitProgress(stage: "complete")
+  }
+
+  func onError(error: String) {
+    emitProgress(stage: "error", extra: ["error": error])
+  }
+
+  func emitDownload(bytesWritten: Int64, bytesExpected: Int64) {
+    emitProgress(
+      stage: "downloading",
+      bytesDownloaded: max(0, bytesWritten),
+      bytesTotal: bytesExpected > 0 ? bytesExpected : 0
+    )
+  }
+
+  func emitProgress(
+    stage: String,
+    bytesDownloaded: Int64? = nil,
+    bytesTotal: Int64? = nil,
+    chunksCompleted: Int? = nil,
+    chunksTotal: Int? = nil,
+    extra: [String: Any] = [:]
+  ) {
+    var body: [String: Any] = [
+      "requestId": requestId ?? "",
+      "fileId": fileId,
+      "stage": stage,
+    ]
+    if let bytesDownloaded { body["bytesDownloaded"] = bytesDownloaded }
+    if let bytesTotal { body["bytesTotal"] = bytesTotal }
+    if let chunksCompleted { body["chunksCompleted"] = chunksCompleted }
+    if let chunksTotal { body["chunksTotal"] = chunksTotal }
+    for (key, value) in extra { body[key] = value }
+    emit(body)
+  }
+}
+
+private final class PreviewEncryptedDownloadDelegate: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+  private var continuation: CheckedContinuation<(URL, HTTPURLResponse), Error>?
+  private var response: HTTPURLResponse?
+  private var session: URLSession?
+  private let progress: PreviewDownloadProgress
+
+  init(progress: PreviewDownloadProgress) {
+    self.progress = progress
+  }
+
+  func download(request: URLRequest) async throws -> (URL, HTTPURLResponse) {
+    try await withCheckedThrowingContinuation { continuation in
+      self.continuation = continuation
+      let session = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
+      self.session = session
+      let task = session.downloadTask(with: request)
+      progress.setTask(task)
+      task.resume()
+    }
+  }
+
+  func urlSession(
+    _ session: URLSession,
+    downloadTask: URLSessionDownloadTask,
+    didWriteData bytesWritten: Int64,
+    totalBytesWritten: Int64,
+    totalBytesExpectedToWrite: Int64
+  ) {
+    progress.emitDownload(bytesWritten: totalBytesWritten, bytesExpected: totalBytesExpectedToWrite)
+  }
+
+  func urlSession(
+    _ session: URLSession,
+    downloadTask: URLSessionDownloadTask,
+    didFinishDownloadingTo location: URL
+  ) {
+    response = downloadTask.response as? HTTPURLResponse
+    guard let response else {
+      continuation?.resume(throwing: NSError(
+        domain: "BeebeebPreviewDownload",
+        code: 1,
+        userInfo: [NSLocalizedDescriptionKey: "Missing download response"]
+      ))
+      continuation = nil
+      return
+    }
+
+    let target = FileManager.default.temporaryDirectory
+      .appendingPathComponent("beebeeb-preview-\(UUID().uuidString).enc")
+    do {
+      try FileManager.default.moveItem(at: location, to: target)
+      continuation?.resume(returning: (target, response))
+    } catch {
+      continuation?.resume(throwing: error)
+    }
+    continuation = nil
+  }
+
+  func urlSession(
+    _ session: URLSession,
+    task: URLSessionTask,
+    didCompleteWithError error: Error?
+  ) {
+    defer {
+      session.invalidateAndCancel()
+      self.session = nil
+    }
+    if let error, continuation != nil {
+      continuation?.resume(throwing: error)
+      continuation = nil
+    }
+  }
+
 }
 
 @available(iOS 16.0, *)
@@ -119,6 +502,10 @@ private func fileProviderDomainStatus(
   added: Bool,
   removedBeforeAdd: Bool = false,
   domainCount: Int,
+  cacheDatabaseReady: Bool = fileProviderCacheDatabaseExists(),
+  documentStorageURL: String? = nil,
+  userVisibleRootURL: String? = nil,
+  userVisibleRootError: String? = nil,
   rootEnumerationError: String? = nil,
   workingSetEnumerationError: String? = nil
 ) -> [String: Any] {
@@ -130,11 +517,28 @@ private func fileProviderDomainStatus(
     "added": added,
     "removedBeforeAdd": removedBeforeAdd,
     "domainCount": domainCount,
+    "cacheDatabaseReady": cacheDatabaseReady,
+    "documentStorageURL": documentStorageURL ?? NSNull(),
+    "userVisibleRootURL": userVisibleRootURL ?? NSNull(),
+    "userVisibleRootError": userVisibleRootError ?? NSNull(),
     "rootEnumerationSignaled": rootEnumerationError == nil,
     "workingSetEnumerationSignaled": workingSetEnumerationError == nil,
     "rootEnumerationError": rootEnumerationError ?? NSNull(),
     "workingSetEnumerationError": workingSetEnumerationError ?? NSNull(),
   ]
+}
+
+@available(iOS 16.0, *)
+private func fileProviderRootVisibility(domain: NSFileProviderDomain) async -> (String?, String?) {
+  guard let manager = NSFileProviderManager(for: domain) else {
+    return (nil, "File Provider manager unavailable")
+  }
+
+  return await withCheckedContinuation { (continuation: CheckedContinuation<(String?, String?), Never>) in
+    manager.getUserVisibleURL(for: .rootContainer) { url, error in
+      continuation.resume(returning: (url?.absoluteString, error?.localizedDescription))
+    }
+  }
 }
 
 private func sharedDefaults() -> UserDefaults? {
@@ -161,6 +565,117 @@ private func clearFileProviderSharedState(defaults: UserDefaults?) -> Int {
   return removed
 }
 
+private let fileProviderCacheSchemaStatements = [
+  """
+  CREATE TABLE IF NOT EXISTS file_cache (
+    id TEXT PRIMARY KEY,
+    parent_id TEXT,
+    name_encrypted TEXT,
+    name_decrypted TEXT,
+    mime_type TEXT,
+    size_bytes INTEGER NOT NULL DEFAULT 0,
+    is_folder INTEGER NOT NULL DEFAULT 0,
+    is_pinned INTEGER NOT NULL DEFAULT 0,
+    has_thumbnail INTEGER NOT NULL DEFAULT 0,
+    thumbnail_data BLOB,
+    thumbnail_nonce BLOB,
+    created_at TEXT,
+    updated_at TEXT,
+    sync_anchor INTEGER NOT NULL DEFAULT 0,
+    is_materialized INTEGER NOT NULL DEFAULT 0
+  );
+  """,
+  "CREATE INDEX IF NOT EXISTS idx_file_cache_parent ON file_cache(parent_id);",
+  "CREATE INDEX IF NOT EXISTS idx_file_cache_anchor ON file_cache(sync_anchor);",
+  """
+  CREATE TABLE IF NOT EXISTS sync_state (
+    key TEXT PRIMARY KEY,
+    value TEXT
+  );
+  """,
+  """
+  CREATE TABLE IF NOT EXISTS upload_queue (
+    id TEXT PRIMARY KEY,
+    parent_id TEXT,
+    local_path TEXT,
+    file_id TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at TEXT NOT NULL
+  );
+  """,
+]
+
+private func fileProviderCacheDatabaseUrl() -> URL? {
+  FileManager.default
+    .containerURL(forSecurityApplicationGroupIdentifier: appGroupIdentifier)?
+    .appendingPathComponent("file-provider-cache.sqlite")
+}
+
+private func ensureFileProviderCacheDatabase() -> Bool {
+  guard let url = fileProviderCacheDatabaseUrl() else {
+    return false
+  }
+
+  var db: OpaquePointer?
+  guard sqlite3_open_v2(
+    url.path,
+    &db,
+    SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX,
+    nil
+  ) == SQLITE_OK, let db else {
+    sqlite3_close(db)
+    return false
+  }
+  defer {
+    sqlite3_close(db)
+  }
+
+  for statement in fileProviderCacheSchemaStatements {
+    sqlite3_exec(db, statement, nil, nil, nil)
+  }
+  return true
+}
+
+private func fileProviderCacheDatabaseExists() -> Bool {
+  guard let url = fileProviderCacheDatabaseUrl() else {
+    return false
+  }
+  return FileManager.default.fileExists(atPath: url.path)
+}
+
+private func resetFileProviderCacheDatabase(at url: URL) -> Bool {
+  let fileManager = FileManager.default
+  guard fileManager.fileExists(atPath: url.path) else {
+    return false
+  }
+
+  var db: OpaquePointer?
+  guard sqlite3_open_v2(
+    url.path,
+    &db,
+    SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX,
+    nil
+  ) == SQLITE_OK, let db else {
+    sqlite3_close(db)
+    try? fileManager.removeItem(at: url)
+    return true
+  }
+  defer {
+    sqlite3_close(db)
+  }
+
+  // Keep the SQLite file inode stable. The File Provider extension may already
+  // have this database open; unlinking it can leave the app writing to one DB
+  // while the extension opens another at the same path.
+  sqlite3_exec(db, "BEGIN", nil, nil, nil)
+  sqlite3_exec(db, "DELETE FROM file_cache", nil, nil, nil)
+  sqlite3_exec(db, "DELETE FROM sync_state", nil, nil, nil)
+  sqlite3_exec(db, "DELETE FROM upload_queue", nil, nil, nil)
+  sqlite3_exec(db, "COMMIT", nil, nil, nil)
+  sqlite3_exec(db, "PRAGMA wal_checkpoint(TRUNCATE)", nil, nil, nil)
+  return true
+}
+
 private func clearFileProviderCacheState(defaults: UserDefaults?) -> Int {
   defaults?.dictionaryRepresentation().keys
     .filter { $0.hasPrefix(fileProviderEnumeratorStatePrefix) }
@@ -171,6 +686,12 @@ private func clearFileProviderCacheState(defaults: UserDefaults?) -> Int {
   if let container = fileManager.containerURL(forSecurityApplicationGroupIdentifier: appGroupIdentifier) {
     for name in ["BeebeebFileProvider", "FileProviderCache", "file-provider-cache.sqlite"] {
       let url = container.appendingPathComponent(name)
+      if name == "file-provider-cache.sqlite" {
+        if resetFileProviderCacheDatabase(at: url) {
+          removed += 1
+        }
+        continue
+      }
       if fileManager.fileExists(atPath: url.path) {
         try? fileManager.removeItem(at: url)
         removed += 1
@@ -183,15 +704,17 @@ private func clearFileProviderCacheState(defaults: UserDefaults?) -> Int {
 private func fileProviderPrivacyState(defaults: UserDefaults? = sharedDefaults()) -> [String: Any] {
   let trustedMountEnabled = defaults?.bool(forKey: fileProviderTrustedMountKey) ?? false
   let showInFiles = trustedMountEnabled && sharedBoolDefaultTrue(defaults, key: fileProviderEnabledKey)
-  let requireDeviceAuth = true
+  let requireDeviceAuth = defaults?.bool(forKey: fileProviderAuthRequiredKey) ?? true
   let unlockedUntilMs = defaults?.double(forKey: fileProviderUnlockedUntilKey) ?? 0
+  let cacheDatabaseReady = fileProviderCacheDatabaseExists()
   let locked = !showInFiles
 
   return [
     "supported": true,
     "showInFiles": showInFiles,
     "trustedMountEnabled": trustedMountEnabled,
-    "mounted": showInFiles,
+    "mounted": showInFiles && cacheDatabaseReady,
+    "cacheDatabaseReady": cacheDatabaseReady,
     "requireDeviceAuth": requireDeviceAuth,
     "unlockedUntilMs": unlockedUntilMs,
     "unlockWindowSeconds": 0,
@@ -200,32 +723,72 @@ private func fileProviderPrivacyState(defaults: UserDefaults? = sharedDefaults()
 }
 
 @available(iOS 16.0, *)
-private func registerMountedFileProviderDomain(defaults: UserDefaults?) async throws -> [String: Any] {
+private func fileProviderPrivacyState(defaults: UserDefaults?, domains: [NSFileProviderDomain]) -> [String: Any] {
+  var state = fileProviderPrivacyState(defaults: defaults)
+  let registered = domains.contains { $0.identifier == fileProviderDomainIdentifier }
+  let showInFiles = state["showInFiles"] as? Bool ?? false
+  state["registered"] = registered
+  state["domainCount"] = domains.count
+  let cacheDatabaseReady = state["cacheDatabaseReady"] as? Bool ?? false
+  state["mounted"] = showInFiles && registered && cacheDatabaseReady
+  state["locked"] = !showInFiles || !registered || !cacheDatabaseReady
+  return state
+}
+
+@available(iOS 16.0, *)
+private func currentFileProviderDomainStatus() async -> [String: Any] {
+  let domain = beebeebFileProviderDomain()
+  let domains = (try? await getFileProviderDomains()) ?? []
+  let registered = domains.contains { $0.identifier == domain.identifier }
+  return fileProviderDomainStatus(
+    domain: domain,
+    registered: registered,
+    added: false,
+    domainCount: domains.count
+  )
+}
+
+@available(iOS 16.0, *)
+private func registerMountedFileProviderDomain(
+  defaults: UserDefaults?,
+  forceReset: Bool = false
+) async throws -> [String: Any] {
   let domain = beebeebFileProviderDomain()
   let domainsBefore = try await getFileProviderDomains()
   let existed = domainsBefore.contains { $0.identifier == domain.identifier }
   let needsLegacyMigration = existed && defaults?.string(forKey: fileProviderDomainSchemaKey) != fileProviderDomainSchemaVersion
 
-  if needsLegacyMigration {
-    try await removeFileProviderDomain(domain)
+  if forceReset || needsLegacyMigration {
+    if existed {
+      try await removeFileProviderDomain(domain)
+    }
     _ = clearFileProviderCacheState(defaults: defaults)
   }
-  if !existed || needsLegacyMigration {
+  if !existed || forceReset || needsLegacyMigration {
     try await addFileProviderDomain(domain)
   }
+  let cacheReady = ensureFileProviderCacheDatabase()
   defaults?.set(fileProviderDomainSchemaVersion, forKey: fileProviderDomainSchemaKey)
   defaults?.synchronize()
 
   let rootError = await signalFileProviderEnumerator(domain: domain, itemIdentifier: .rootContainer)
   let workingSetError = await signalFileProviderEnumerator(domain: domain, itemIdentifier: .workingSet)
+  let manager = NSFileProviderManager(for: domain)
+  let documentStorageURL = manager?.documentStorageURL.absoluteString
+  let (userVisibleRootURL, userVisibleRootError) = await fileProviderRootVisibility(domain: domain)
   let domainsAfter = try await getFileProviderDomains()
+  let registered = domainsAfter.contains { $0.identifier == domain.identifier }
 
   return fileProviderDomainStatus(
     domain: domain,
-    registered: true,
-    added: !existed || needsLegacyMigration,
-    removedBeforeAdd: needsLegacyMigration,
+    registered: registered,
+    added: !existed || forceReset || needsLegacyMigration,
+    removedBeforeAdd: (forceReset && existed) || needsLegacyMigration,
     domainCount: domainsAfter.count,
+    cacheDatabaseReady: cacheReady,
+    documentStorageURL: documentStorageURL,
+    userVisibleRootURL: userVisibleRootURL,
+    userVisibleRootError: userVisibleRootError,
     rootEnumerationError: rootError,
     workingSetEnumerationError: workingSetError
   )
@@ -263,6 +826,8 @@ public class BeebeebCryptoModule: Module {
   // never cross the bridge after initial keychain load.
   private var masterKeyHandles: [Int: MasterKeyHandle] = [:]
   private var nextHandleId: Int = 1
+  private let previewDownloadLock = NSLock()
+  private var previewDownloadCancellations: [String: PreviewDownloadProgress] = [:]
 
   /// Store a MasterKeyHandle and return its opaque numeric ID.
   private func storeHandle(_ handle: MasterKeyHandle) -> Int {
@@ -284,8 +849,108 @@ public class BeebeebCryptoModule: Module {
     return handle
   }
 
+  private func storePreviewDownloadCancellation(
+    _ cancellation: PreviewDownloadProgress,
+    requestId: String?
+  ) {
+    guard let requestId, !requestId.isEmpty else { return }
+    previewDownloadLock.lock()
+    previewDownloadCancellations[requestId] = cancellation
+    previewDownloadLock.unlock()
+  }
+
+  private func removePreviewDownloadCancellation(requestId: String?) {
+    guard let requestId, !requestId.isEmpty else { return }
+    previewDownloadLock.lock()
+    previewDownloadCancellations.removeValue(forKey: requestId)
+    previewDownloadLock.unlock()
+  }
+
+  private func cancelPreviewDownload(requestId: String) -> Bool {
+    previewDownloadLock.lock()
+    let cancellation = previewDownloadCancellations[requestId]
+    previewDownloadLock.unlock()
+    cancellation?.cancel()
+    return cancellation != nil
+  }
+
+  private func splitEncryptedPreviewFile(
+    encryptedUrl: URL,
+    outputDir: URL,
+    chunkCount: Int,
+    originalSize: Int,
+    plaintextChunkSize: Int
+  ) throws -> [String] {
+    guard chunkCount > 0 else {
+      throw NSError(
+        domain: "BeebeebPreviewDownload",
+        code: 2,
+        userInfo: [NSLocalizedDescriptionKey: "Invalid chunk count"]
+      )
+    }
+    guard originalSize > 0, plaintextChunkSize > 0 else {
+      throw NSError(
+        domain: "BeebeebPreviewDownload",
+        code: 3,
+        userInfo: [NSLocalizedDescriptionKey: "Invalid download size metadata"]
+      )
+    }
+
+    let chunkOverhead = 28
+    let handle = try FileHandle(forReadingFrom: encryptedUrl)
+    defer {
+      try? handle.close()
+    }
+
+    var paths: [String] = []
+    for index in 0..<chunkCount {
+      let isLast = index == chunkCount - 1
+      let plaintextSize = chunkCount == 1
+        ? originalSize
+        : (isLast ? originalSize - plaintextChunkSize * (chunkCount - 1) : plaintextChunkSize)
+      guard plaintextSize > 0 else {
+        throw NSError(
+          domain: "BeebeebPreviewDownload",
+          code: 4,
+          userInfo: [NSLocalizedDescriptionKey: "Invalid chunk size"]
+        )
+      }
+      let encryptedChunkSize = plaintextSize + chunkOverhead
+      let data = handle.readData(ofLength: encryptedChunkSize)
+      guard data.count == encryptedChunkSize else {
+        throw NSError(
+          domain: "BeebeebPreviewDownload",
+          code: 5,
+          userInfo: [NSLocalizedDescriptionKey: "Encrypted payload ended before chunk \(index)"]
+        )
+      }
+      let path = outputDir.appendingPathComponent("\(index).enc").path
+      try data.write(to: URL(fileURLWithPath: path))
+      paths.append(path)
+    }
+
+    let remaining = handle.readDataToEndOfFile()
+    if !remaining.isEmpty {
+      throw NSError(
+        domain: "BeebeebPreviewDownload",
+        code: 6,
+        userInfo: [NSLocalizedDescriptionKey: "Encrypted payload has trailing bytes"]
+      )
+    }
+    return paths
+  }
+
   public func definition() -> ModuleDefinition {
     Name("BeebeebCrypto")
+    Events("onPreviewLoadProgress")
+
+    AsyncFunction("logDiagnostic") { (marker: String, payload: String?) in
+      if let payload, !payload.isEmpty {
+        NSLog("[BeebeebDiagnostics] \(marker) \(payload)")
+      } else {
+        NSLog("[BeebeebDiagnostics] \(marker)")
+      }
+    }
 
     AsyncFunction("generateRandomBytes") { (length: Int) throws -> Data in
       guard length > 0, length <= 4096 else {
@@ -494,6 +1159,17 @@ public class BeebeebCryptoModule: Module {
       return try master.deriveX25519Private()
     }
 
+    AsyncFunction("handleDeriveFileKey") { [self] (handleId: Int, fileId: String) throws -> Data in
+      let master = try self.getHandle(handleId)
+      var masterKeyBytes = try master.exportForKeychain()
+      defer {
+        masterKeyBytes.withUnsafeMutableBytes { ptr in
+          if let base = ptr.baseAddress { memset(base, 0, ptr.count) }
+        }
+      }
+      return try BeebeebCryptoBridge.deriveFileKey(masterKey: masterKeyBytes, fileId: fileId)
+    }
+
     AsyncFunction("handleComputeRecoveryCheck") { [self] (handleId: Int) throws -> Data in
       let master = try self.getHandle(handleId)
       return try master.computeRecoveryCheck()
@@ -522,6 +1198,15 @@ public class BeebeebCryptoModule: Module {
       let handle = try MasterKeyHandle.fromKeychainBytes(bytes: keyData)
       // Zero the raw bytes now that the handle owns the key
       var mutableData = keyData
+      mutableData.withUnsafeMutableBytes { ptr in
+        if let base = ptr.baseAddress { memset(base, 0, ptr.count) }
+      }
+      return self.storeHandle(handle)
+    }
+
+    AsyncFunction("createMasterKeyHandle") { [self] (masterKeyBytes: Data) throws -> Int in
+      let handle = try MasterKeyHandle.fromKeychainBytes(bytes: masterKeyBytes)
+      var mutableData = masterKeyBytes
       mutableData.withUnsafeMutableBytes { ptr in
         if let base = ptr.baseAddress { memset(base, 0, ptr.count) }
       }
@@ -594,7 +1279,7 @@ public class BeebeebCryptoModule: Module {
       guard (defaults?.bool(forKey: fileProviderTrustedMountKey) ?? false),
             sharedBoolDefaultTrue(defaults, key: fileProviderEnabledKey)
       else {
-        return try await removeMountedFileProviderDomain(defaults: defaults)
+        return await currentFileProviderDomainStatus()
       }
 
       return try await registerMountedFileProviderDomain(defaults: defaults)
@@ -638,12 +1323,16 @@ public class BeebeebCryptoModule: Module {
       }
       _ = clearFileProviderCacheState(defaults: sharedDefaults())
       try await addFileProviderDomain(domain)
+      let cacheReady = ensureFileProviderCacheDatabase()
       let defaults = sharedDefaults()
       defaults?.set(fileProviderDomainSchemaVersion, forKey: fileProviderDomainSchemaKey)
       defaults?.synchronize()
 
       let rootError = await signalFileProviderEnumerator(domain: domain, itemIdentifier: .rootContainer)
       let workingSetError = await signalFileProviderEnumerator(domain: domain, itemIdentifier: .workingSet)
+      let manager = NSFileProviderManager(for: domain)
+      let documentStorageURL = manager?.documentStorageURL.absoluteString
+      let (userVisibleRootURL, userVisibleRootError) = await fileProviderRootVisibility(domain: domain)
       let domainsAfter = try await getFileProviderDomains()
 
       return fileProviderDomainStatus(
@@ -652,6 +1341,10 @@ public class BeebeebCryptoModule: Module {
         added: true,
         removedBeforeAdd: existed,
         domainCount: domainsAfter.count,
+        cacheDatabaseReady: cacheReady,
+        documentStorageURL: documentStorageURL,
+        userVisibleRootURL: userVisibleRootURL,
+        userVisibleRootError: userVisibleRootError,
         rootEnumerationError: rootError,
         workingSetEnumerationError: workingSetError
       )
@@ -733,7 +1426,7 @@ public class BeebeebCryptoModule: Module {
       defaults?.set(0, forKey: fileProviderUnlockedUntilKey)
       defaults?.synchronize()
 
-      return try await registerMountedFileProviderDomain(defaults: defaults)
+      return try await registerMountedFileProviderDomain(defaults: defaults, forceReset: true)
     }
 
     AsyncFunction("removeFileProviderAccess") { () async throws -> [String: Any] in
@@ -757,13 +1450,26 @@ public class BeebeebCryptoModule: Module {
       return try await removeMountedFileProviderDomain(defaults: sharedDefaults())
     }
 
-    AsyncFunction("getFileProviderPrivacyState") { () -> [String: Any] in
-      fileProviderPrivacyState()
+    AsyncFunction("getFileProviderPrivacyState") { () async -> [String: Any] in
+      let defaults = sharedDefaults()
+      guard #available(iOS 16.0, *) else {
+        var state = fileProviderPrivacyState(defaults: defaults)
+        state["supported"] = false
+        state["showInFiles"] = false
+        state["mounted"] = false
+        state["locked"] = true
+        state["registered"] = false
+        state["domainCount"] = 0
+        return state
+      }
+
+      let domains = (try? await getFileProviderDomains()) ?? []
+      return fileProviderPrivacyState(defaults: defaults, domains: domains)
     }
 
-    AsyncFunction("setFileProviderAuthRequired") { (_: Bool) async -> [String: Any] in
+    AsyncFunction("setFileProviderAuthRequired") { (required: Bool) async -> [String: Any] in
       let defaults = sharedDefaults()
-      defaults?.set(true, forKey: fileProviderAuthRequiredKey)
+      defaults?.set(required, forKey: fileProviderAuthRequiredKey)
       defaults?.set(0, forKey: fileProviderUnlockedUntilKey)
       defaults?.synchronize()
       if #available(iOS 16.0, *) {
@@ -861,6 +1567,7 @@ public class BeebeebCryptoModule: Module {
       var count = 0
       let now = Int64(Date().timeIntervalSince1970 * 1000)
       let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+      var touchedParentIdentifiers = Set<String>()
 
       for entry in entries {
         guard let id = entry["id"] as? String else { continue }
@@ -871,7 +1578,11 @@ public class BeebeebCryptoModule: Module {
         sqlite3_bind_text(stmt, 1, (id as NSString).utf8String, -1, transient)
         if let parentId = entry["parent_id"] as? String {
           sqlite3_bind_text(stmt, 2, (parentId as NSString).utf8String, -1, transient)
+          touchedParentIdentifiers.insert(parentId)
         } else { sqlite3_bind_null(stmt, 2) }
+        if entry["parent_id"] == nil || entry["parent_id"] is NSNull {
+          touchedParentIdentifiers.insert(NSFileProviderItemIdentifier.rootContainer.rawValue)
+        }
         if let nameEnc = entry["name_encrypted"] as? String {
           sqlite3_bind_text(stmt, 3, (nameEnc as NSString).utf8String, -1, transient)
         } else { sqlite3_bind_null(stmt, 3) }
@@ -898,6 +1609,12 @@ public class BeebeebCryptoModule: Module {
       // Signal the File Provider to re-enumerate so it picks up fresh names.
       if #available(iOS 16.0, *), count > 0 {
         let domain = beebeebFileProviderDomain()
+        for rawIdentifier in touchedParentIdentifiers {
+          let itemIdentifier: NSFileProviderItemIdentifier = rawIdentifier == NSFileProviderItemIdentifier.rootContainer.rawValue
+            ? .rootContainer
+            : NSFileProviderItemIdentifier(rawIdentifier)
+          NSFileProviderManager(for: domain)?.signalEnumerator(for: itemIdentifier) { _ in }
+        }
         NSFileProviderManager(for: domain)?.signalEnumerator(for: .workingSet) { _ in }
       }
 
@@ -910,6 +1627,7 @@ public class BeebeebCryptoModule: Module {
       switch category {
       case "camera_roll":
         PhotoBackupManager.shared.configure(parentFolderId: parentFolderId)
+        NativeBackupEngine.shared.parentFolderId = parentFolderId
       case "contacts":
         ContactsBackupManager.shared.configure(parentFolderId: parentFolderId)
       case "calendar":
@@ -960,17 +1678,13 @@ public class BeebeebCryptoModule: Module {
       return NativeBackupEngine.shared.currentProgress()
     }
 
-    AsyncFunction("triggerImmediateBackup") { (authToken: String) in
+    AsyncFunction("triggerImmediateBackup") { (authToken: String) async throws -> [String: Any] in
       let engine = NativeBackupEngine.shared
       engine.token = authToken
       if engine.apiBaseUrl == nil {
         engine.apiBaseUrl = UserDefaults.standard.string(forKey: "io.beebeeb.serverURL")
       }
-      // start() is idempotent — returns immediately if already running.
-      engine.start()
-      Task {
-        _ = try? await engine.processBatch(limit: 50)
-      }
+      return try await engine.triggerManualBackup(limit: 50)
     }
 
     // ── Share Extension: pending shares dropped by BeebeebShare ────────
@@ -998,15 +1712,28 @@ public class BeebeebCryptoModule: Module {
 
     // ── Backup progress notification ─────────────────────────────────────
 
-    AsyncFunction("updateBackupNotification") { (uploaded: Int, total: Int, throughputMBps: Double, isComplete: Bool) in
+    AsyncFunction("configureBackupNotificationSettings") { (backupSummaries: Bool, noChangeCheckins: Bool, actionNeeded: Bool) in
+      let defaults = UserDefaults.standard
+      defaults.set(backupSummaries, forKey: "io.beebeeb.backupNotifications.backupSummaries")
+      defaults.set(noChangeCheckins, forKey: "io.beebeeb.backupNotifications.noChangeCheckins")
+      defaults.set(actionNeeded, forKey: "io.beebeeb.backupNotifications.actionNeeded")
+    }
+
+    AsyncFunction("updateBackupNotification") { (uploaded: Int, total: Int, throughputMBps: Double, isComplete: Bool, completionBody: String?) in
+      let appIsActive = await MainActor.run {
+        UIApplication.shared.applicationState == .active
+      }
+      if appIsActive {
+        UNUserNotificationCenter.current().removeDeliveredNotifications(
+          withIdentifiers: ["io.beebeeb.backup-progress"]
+        )
+        return
+      }
+
       let content = UNMutableNotificationContent()
       content.title = "Beebeeb Backup"
-      if isComplete {
-        content.body = "\(total) photos secured"
-      } else {
-        let speed = String(format: "%.1f MB/s", throughputMBps)
-        content.body = "Backing up \(uploaded) of \(total) photos \u{00B7} \(speed)"
-      }
+      guard isComplete else { return }
+      content.body = completionBody ?? "\(total) photos secured"
       content.sound = nil
 
       let request = UNNotificationRequest(
@@ -1057,8 +1784,12 @@ public class BeebeebCryptoModule: Module {
       return NativeBackupEngine.shared.currentProgress()
     }
 
+    AsyncFunction("getNativeBackupDiagnostics") { () -> [String: Any] in
+      return NativeBackupEngine.shared.diagnosticSnapshot()
+    }
+
     AsyncFunction("triggerNativeBackupBatch") { () async throws -> [String: Any] in
-      let uploaded = try await NativeBackupEngine.shared.processBatch(limit: 30)
+      let uploaded = try await NativeBackupEngine.shared.processBatch(limit: 12)
       return NativeBackupEngine.shared.currentProgress().merging(
         ["batchUploaded": uploaded],
         uniquingKeysWith: { _, new in new }
@@ -1111,13 +1842,108 @@ public class BeebeebCryptoModule: Module {
       ]
     }
 
+    // ── Rust download + decrypt bridge for previews ───────────────────
+    //
+    // Downloads the encrypted file and writes decrypted plaintext directly to
+    // disk through Rust/Swift. JS receives only the output file URI and never
+    // holds encrypted bytes, decrypted bytes, or base64 copies in its heap.
+
+    AsyncFunction("downloadAndDecryptFileNative") { [self] (
+      handleId: Int,
+      apiUrl: String,
+      token: String,
+      fileId: String,
+      outputUri: String,
+      requestId: String?
+    ) async throws -> [String: Any] in
+      let master = try self.getHandle(handleId)
+      let outputURL = fileURL(fromURI: outputUri)
+      let outputPath = outputURL.path
+      let progress = PreviewDownloadProgress(requestId: requestId, fileId: fileId) { [weak self] body in
+        DispatchQueue.main.async {
+          self?.sendEvent("onPreviewLoadProgress", body)
+        }
+      }
+      self.storePreviewDownloadCancellation(progress, requestId: requestId)
+      if Task.isCancelled {
+        progress.cancel()
+      }
+      defer {
+        self.removePreviewDownloadCancellation(requestId: requestId)
+      }
+
+      let tempDir = FileManager.default.temporaryDirectory
+        .appendingPathComponent("beebeeb-preview-\(fileId)-\(UUID().uuidString)", isDirectory: true)
+      try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+      defer {
+        try? FileManager.default.removeItem(at: tempDir)
+      }
+
+      let downloadUrl = URL(string: "\(apiUrl.trimmingCharacters(in: CharacterSet(charactersIn: "/")))/api/v1/files/\(fileId)/download")!
+      var request = URLRequest(url: downloadUrl)
+      request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+
+      progress.emitProgress(stage: "downloading", bytesDownloaded: 0, bytesTotal: 0)
+      let delegate = PreviewEncryptedDownloadDelegate(progress: progress)
+      let (encryptedUrl, response) = try await delegate.download(request: request)
+      defer {
+        try? FileManager.default.removeItem(at: encryptedUrl)
+      }
+
+      guard response.statusCode >= 200 && response.statusCode < 300 else {
+        throw NSError(
+          domain: "BeebeebPreviewDownload",
+          code: response.statusCode,
+          userInfo: [NSLocalizedDescriptionKey: "Download failed with HTTP \(response.statusCode)"]
+        )
+      }
+
+      let encryptedSize = Int((try FileManager.default.attributesOfItem(atPath: encryptedUrl.path)[.size] as? NSNumber)?.intValue ?? 0)
+      let chunkCount = Int(response.value(forHTTPHeaderField: "X-Chunk-Count") ?? "")
+        ?? 1
+      let originalSize = Int(response.value(forHTTPHeaderField: "X-Original-Size") ?? "")
+        ?? max(0, encryptedSize - 28)
+      let headerChunkSize = Int(response.value(forHTTPHeaderField: "X-Chunk-Size") ?? "")
+      let plaintextChunkSize = chunkCount <= 1
+        ? originalSize
+        : (headerChunkSize ?? (4 * 1024 * 1024))
+
+      let chunkPaths = try self.splitEncryptedPreviewFile(
+        encryptedUrl: encryptedUrl,
+        outputDir: tempDir,
+        chunkCount: chunkCount,
+        originalSize: originalSize,
+        plaintextChunkSize: plaintextChunkSize
+      )
+
+      progress.emitProgress(stage: "decrypting", chunksCompleted: 0, chunksTotal: chunkPaths.count)
+      let result = try master.decryptFile(
+        fileId: fileId,
+        chunkPaths: chunkPaths,
+        outputPath: outputPath,
+        callback: progress
+      )
+      progress.emitProgress(stage: "complete")
+
+      return [
+        "outputPath": result.outputPath,
+        "outputUri": URL(fileURLWithPath: result.outputPath).absoluteString,
+        "plaintextSize": result.totalBytes,
+        "chunksDecrypted": result.chunksProcessed,
+      ]
+    }
+
+    AsyncFunction("cancelDownloadAndDecryptFileNative") { [self] (requestId: String) -> Bool in
+      self.cancelPreviewDownload(requestId: requestId)
+    }
+
     // ── Local thumbnail generation for video and RAW (DNG) files ────────
     //
     // generateVideoThumbnail: Uses AVAssetImageGenerator to extract a frame
-    // from a local video file (MP4/MOV) and writes a JPEG thumbnail to disk.
+    // from a local video file (MP4/MOV) and writes a WebP thumbnail to disk.
     //
     // generateDngThumbnail: Loads a DNG via UIImage (which uses CoreImage
-    // under the hood to decode the embedded preview) and resizes to JPEG.
+    // under the hood to decode the embedded preview) and resizes to WebP.
 
     AsyncFunction("generateVideoThumbnail") { (localUri: String, maxSize: Int) throws -> String in
       let url = fileURL(fromURI: localUri)
@@ -1136,16 +1962,16 @@ public class BeebeebCryptoModule: Module {
       }
       let image = UIImage(cgImage: cgImage)
 
-      guard let jpegData = image.jpegData(compressionQuality: 0.7) else {
+      guard let webpData = encodeAdaptiveThumbnailWebP(image, maxDimension: CGFloat(maxSize)) else {
         throw NSError(
           domain: "BeebeebThumbnail",
           code: 1,
-          userInfo: [NSLocalizedDescriptionKey: "Failed to encode video thumbnail as JPEG"]
+          userInfo: [NSLocalizedDescriptionKey: "Failed to encode video thumbnail as WebP"]
         )
       }
 
-      let outputPath = NSTemporaryDirectory() + "video-thumb-\(UUID().uuidString).jpg"
-      try jpegData.write(to: URL(fileURLWithPath: outputPath))
+      let outputPath = NSTemporaryDirectory() + "video-thumb-\(UUID().uuidString).webp"
+      try webpData.write(to: URL(fileURLWithPath: outputPath))
       return outputPath
     }
 
@@ -1174,23 +2000,23 @@ public class BeebeebCryptoModule: Module {
         image.draw(in: CGRect(origin: .zero, size: newSize))
       }
 
-      guard let jpegData = resized.jpegData(compressionQuality: 0.7) else {
+      guard let webpData = encodeAdaptiveThumbnailWebP(resized, maxDimension: CGFloat(maxSize)) else {
         throw NSError(
           domain: "BeebeebThumbnail",
           code: 3,
-          userInfo: [NSLocalizedDescriptionKey: "Failed to encode DNG thumbnail as JPEG"]
+          userInfo: [NSLocalizedDescriptionKey: "Failed to encode DNG thumbnail as WebP"]
         )
       }
 
-      let outputPath = NSTemporaryDirectory() + "dng-thumb-\(UUID().uuidString).jpg"
-      try jpegData.write(to: URL(fileURLWithPath: outputPath))
+      let outputPath = NSTemporaryDirectory() + "dng-thumb-\(UUID().uuidString).webp"
+      try webpData.write(to: URL(fileURLWithPath: outputPath))
       return outputPath
     }
 
     // ── Native thumbnail pipeline ────────────────────────────────────────
     //
     // Downloads the full encrypted file via URLSession, decrypts to disk via
-    // Rust, resizes with UIImage (no JS heap), encrypts the thumbnail JPEG
+    // Rust, resizes with UIImage (no JS heap), encrypts the thumbnail WebP
     // as a single AES-256-GCM chunk, and uploads via PUT. Zero JS memory.
 
     AsyncFunction("generateAndUploadThumbnailNative") { [self] (
@@ -1285,16 +2111,21 @@ public class BeebeebCryptoModule: Module {
       let resized = UIGraphicsGetImageFromCurrentImageContext()
       UIGraphicsEndImageContext()
 
-      guard let jpegData = resized?.jpegData(compressionQuality: 0.7) else { return false }
+      guard let resizedImage = resized,
+            let webpData = encodeAdaptiveThumbnailWebP(resizedImage, maxDimension: CGFloat(maxSize))
+      else { return false }
 
       // 6. Encrypt thumbnail as a single AES-256-GCM chunk via Rust
       let fileKey = try masterKey.deriveFileKey(fileId: Data(fileId.utf8))
-      let enc = try fileKey.encryptChunk(plaintext: jpegData)
+      let enc = try fileKey.encryptChunk(plaintext: webpData)
 
       // Wire format: nonce(12) || ciphertext — matches the web client
       var wire = Data(capacity: enc.nonce.count + enc.ciphertext.count)
       wire.append(enc.nonce)
       wire.append(enc.ciphertext)
+      guard wire.count <= thumbnailMaxEncryptedBytes else {
+        return false
+      }
 
       // 7. Upload encrypted thumbnail via PUT
       let thumbUrl = URL(string: "\(apiUrl)/api/v1/files/\(fileId)/thumbnail")!
@@ -1310,6 +2141,64 @@ public class BeebeebCryptoModule: Module {
       else { return false }
 
       return true
+    }
+
+    AsyncFunction("generateAndUploadPhotoLibraryThumbnailNative") { [self] (
+      handleId: Int, apiUrl: String, token: String,
+      fileId: String, localIdentifier: String,
+      mediaTypeHint: String?, maxSize: Int,
+      variant: String?
+    ) async throws -> Bool in
+      let masterKey = try self.getHandle(handleId)
+      let config = thumbnailEncodingConfig(variant)
+
+      let phAsset = PHAsset.fetchAssets(withLocalIdentifiers: [localIdentifier], options: nil).firstObject
+      guard let phAsset else { return false }
+
+      let thumbnailData: Data
+      if phAsset.mediaType == .video || isVideoMediaHint(mediaTypeHint) {
+        thumbnailData = try await generatePhotoLibraryVideoThumbnail(
+          localIdentifier: localIdentifier,
+          maxSize: maxSize,
+          config: config
+        )
+      } else {
+        thumbnailData = try await generatePhotoLibraryImageThumbnail(
+          localIdentifier: localIdentifier,
+          maxSize: maxSize,
+          config: config
+        )
+      }
+
+      let fileKey = try masterKey.deriveFileKey(fileId: Data(fileId.utf8))
+      let enc = try fileKey.encryptChunk(plaintext: thumbnailData)
+
+      var wire = Data(capacity: enc.nonce.count + enc.ciphertext.count)
+      wire.append(enc.nonce)
+      wire.append(enc.ciphertext)
+      guard wire.count <= config.maxEncryptedBytes else {
+        NSLog("[BeebeebCrypto] Photo-library \(config.variant) thumbnail skipped: encrypted payload too large (\(wire.count) bytes)")
+        return false
+      }
+
+      let suffix = config.variant == "medium" ? "" : "/\(config.variant)"
+      guard let thumbUrl = URL(string: "\(apiUrl)/api/v1/files/\(fileId)/thumbnail\(suffix)") else {
+        return false
+      }
+      var request = URLRequest(url: thumbUrl)
+      request.httpMethod = "PUT"
+      request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+      request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+      request.httpBody = wire
+
+      let (_, response) = try await URLSession.shared.data(for: request)
+      let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+      if (200..<300).contains(statusCode) {
+        NSLog("[BeebeebCrypto] Photo-library \(config.variant) thumbnail uploaded")
+        return true
+      }
+      NSLog("[BeebeebCrypto] Photo-library \(config.variant) thumbnail upload HTTP \(statusCode)")
+      return false
     }
   }
 }

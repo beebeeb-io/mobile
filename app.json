@@ -30,6 +30,7 @@
       ],
       "infoPlist": {
         "CFBundleIconName": "AppIcon",
+        "NSSupportsLiveActivities": true,
         "NSFileProviderPresenceAuthorized": true,
         "NSCameraUsageDescription": "Beebeeb scans the amber constellation pattern to pair a new device.",
         "NSPhotoLibraryUsageDescription": "Beebeeb backs up your photos with end-to-end encryption.",

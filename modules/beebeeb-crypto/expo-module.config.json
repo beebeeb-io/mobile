@@ -1,7 +1,7 @@
 {
   "platforms": ["apple", "android"],
   "apple": {
-    "modules": ["BeebeebCryptoModule", "ConstellationModule"],
+    "modules": ["BeebeebCryptoModule", "ConstellationModule", "NativePhotosGridModule"],
     "appDelegateSubscribers": ["BeebeebAppDelegate"]
   },
   "android": {

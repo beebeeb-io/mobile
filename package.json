@@ -47,6 +47,7 @@
     "expo-sqlite": "~15.1.4",
     "expo-status-bar": "~2.0.0",
     "expo-store-review": "~8.0.1",
+    "expo-updates": "~0.27.5",
     "expo-video": "~2.0.6",
     "highlight.js": "^11.11.1",
     "jszip": "^3.10.1",
@@ -63,7 +64,7 @@
     "react-native-sse": "^1.2.1",
     "react-native-web": "~0.19.13",
     "react-native-webview": "13.12.5",
-    "uuid": "^14.0.0",
+    "uuid": "9.0.1",
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
@@ -74,5 +75,8 @@
     "ts-jest": "^29.4.9",
     "typescript": "~5.3.3"
   },
-  "private": true
+  "private": true,
+  "overrides": {
+    "uuid": "9.0.1"
+  }
 }

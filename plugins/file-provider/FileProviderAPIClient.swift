@@ -201,7 +201,7 @@ class FileProviderAPIClient {
 
         let decoder = JSONDecoder()
         let result = try decoder.decode(FilesResponse.self, from: data)
-        return result.files
+        return result.files.filter { $0.isUploading != true }
     }
 
     func listWorkingSet() async throws -> [FileMetadata] {
@@ -218,7 +218,7 @@ class FileProviderAPIClient {
             let files: [FileMetadata]
         }
 
-        return try JSONDecoder().decode(FilesResponse.self, from: data).files
+        return try JSONDecoder().decode(FilesResponse.self, from: data).files.filter { $0.isUploading != true }
     }
 
     func getFileMetadata(fileId: String) async throws -> FileMetadata {
@@ -444,6 +444,7 @@ enum FileProviderAPIError: Error, LocalizedError {
     case fileProviderDisabled
     case fileProviderLocked
     case conflict
+    case fileUnavailable
     case unsupportedOperation(String)
     case serverError(statusCode: Int)
 
@@ -469,6 +470,8 @@ enum FileProviderAPIError: Error, LocalizedError {
             return "Beebeeb is not mounted in Files. Open Beebeeb Settings to mount it on this iPhone."
         case .conflict:
             return "This file changed while Files was editing it. Reload the file and try again."
+        case .fileUnavailable:
+            return "This file is still syncing. Try again when upload completes."
         case .unsupportedOperation(let message):
             return message
         case .serverError(let code):
@@ -505,6 +508,8 @@ func fileProviderError(_ error: Error) -> Error {
                 code: NSFileWriteUnknownError,
                 userInfo: [NSLocalizedDescriptionKey: description]
             )
+        case .fileUnavailable:
+            return NSFileProviderError(.cannotSynchronize)
         case .quotaExceeded:
             return NSFileProviderError(.insufficientQuota)
         case .forbidden:

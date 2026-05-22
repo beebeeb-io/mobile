@@ -244,7 +244,7 @@ function DocumentScannerCameraScreen({ camera }: { camera: CameraModule }) {
     }
 
     setSaving(true);
-    const fileId = generateFileId();
+    const fileId = await generateFileId();
     const fileName = scannedPdfName();
     const pdfUri = `${FileSystem.cacheDirectory ?? ''}${fileId}.pdf`;
     pdfUriRef.current = pdfUri;

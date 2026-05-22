@@ -1,6 +1,6 @@
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import * as SecureStore from 'expo-secure-store';
-import { Platform } from 'react-native';
+import { AppState, Platform } from 'react-native';
 import NetInfo from '@react-native-community/netinfo';
 import {
   configureBackupFolder,
@@ -13,6 +13,7 @@ import {
   resumeContactsBackup,
   resumeCalendarBackup,
   getBackupProgress,
+  triggerImmediateBackup,
   type NativeBackupProgress,
 } from '../../modules/beebeeb-crypto';
 import { ensureBackupFolders, type BackupCategory } from '../services/BackupService';
@@ -29,34 +30,13 @@ interface BackupProgress {
   total: number;
   completed: number;
   inProgress: number;
-}
-
-export interface PhotoSessionProgress {
-  running: boolean;
-  uploaded: number;
-  total: number;
+  pending: number;
+  waitingToEncrypt?: number;
+  encryptedPendingUpload?: number;
+  uploading?: number;
   failed: number;
-  throughputBps: number;
-  etaSeconds: number | null;
-  currentFileName: string;
-  currentFileSizeBytes: number;
-  currentBytesUploaded: number;
-  currentBytesTotal: number;
-  currentChunk: number;
-  totalChunks: number;
-}
-
-export interface PhotoSessionResult {
-  uploaded: number;
-  failed: number;
-}
-
-export interface BackupFileStatus {
-  assetId: string;
-  filename: string;
-  sizeBytes: number;
-  status: 'encrypting' | 'queued' | 'uploading' | 'done' | 'failed';
-  progress: number; // 0-100
+  state: string;
+  reason: string;
 }
 
 export interface BackupContextValue {
@@ -76,33 +56,20 @@ export interface BackupContextValue {
   backupProgress: BackupProgress;
   lastBackupAt: string | null;
   triggerBackupNow: () => Promise<void>;
-  // Photo backup session state kept for legacy UI surfaces.
-  /** Live progress of the current foreground backup session. */
-  photoSessionProgress: PhotoSessionProgress;
-  /** Result of the most recently completed backup session, or null. */
-  lastPhotoSession: PhotoSessionResult | null;
-  /** Called by backup runners to report live + completed session state. */
-  reportPhotoProgress: (
-    uploaded: number, total: number, failed: number, running: boolean,
-    throughputBps?: number, etaSeconds?: number | null,
-    currentFileName?: string, currentFileSizeBytes?: number,
-    currentBytesUploaded?: number, currentBytesTotal?: number,
-    currentChunk?: number, totalChunks?: number,
-  ) => void;
-  /**
-   * Legacy compatibility counter for older camera-roll runner surfaces.
-   */
-  photoBackupForceCount: number;
-  /** Per-file status queue for the parallel backup pipeline. */
-  backupQueue: BackupFileStatus[];
-  /** Called by the sync engine to report per-file status updates. */
-  reportBackupQueue: (queue: BackupFileStatus[]) => void;
   // Legacy alias for components that used the old API
   isBackupEnabled: boolean;
   toggleBackup: () => Promise<void>;
 }
 
-const EMPTY_SESSION: PhotoSessionProgress = { running: false, uploaded: 0, total: 0, failed: 0, throughputBps: 0, etaSeconds: null, currentFileName: '', currentFileSizeBytes: 0, currentBytesUploaded: 0, currentBytesTotal: 0, currentChunk: 0, totalChunks: 0 };
+const EMPTY_PROGRESS: BackupProgress = {
+  total: 0,
+  completed: 0,
+  inProgress: 0,
+  pending: 0,
+  failed: 0,
+  state: 'complete',
+  reason: 'Nothing to back up',
+};
 
 export const BackupContext = createContext<BackupContextValue>({
   isPhotoBackupEnabled: false,
@@ -117,15 +84,9 @@ export const BackupContext = createContext<BackupContextValue>({
   setIncludeVideos: async () => {},
   setWifiOnly: async () => {},
   setBackgroundUpload: async () => {},
-  backupProgress: { total: 0, completed: 0, inProgress: 0 },
+  backupProgress: EMPTY_PROGRESS,
   lastBackupAt: null,
   triggerBackupNow: async () => {},
-  photoSessionProgress: EMPTY_SESSION,
-  lastPhotoSession: null,
-  reportPhotoProgress: () => {},
-  photoBackupForceCount: 0,
-  backupQueue: [],
-  reportBackupQueue: () => {},
   isBackupEnabled: false,
   toggleBackup: async () => {},
 });
@@ -148,32 +109,33 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
   const [includeVideos, setIncludeVideosState] = useState(true);
   const [wifiOnly, setWifiOnlyState] = useState(false);
   const [backgroundUpload, setBackgroundUploadState] = useState(true);
-  const [backupProgress, setBackupProgress] = useState<BackupProgress>({ total: 0, completed: 0, inProgress: 0 });
+  const [backupProgress, setBackupProgress] = useState<BackupProgress>(EMPTY_PROGRESS);
   const [lastBackupAt, setLastBackupAt] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // JS-side photo backup session state
-  const [photoSessionProgress, setPhotoSessionProgress] = useState<PhotoSessionProgress>(EMPTY_SESSION);
-  const [lastPhotoSession, setLastPhotoSession] = useState<PhotoSessionResult | null>(null);
-  const [photoBackupForceCount, setPhotoBackupForceCount] = useState(0);
-  const [backupQueue, setBackupQueue] = useState<BackupFileStatus[]>([]);
-
-  const reportBackupQueue = useCallback((queue: BackupFileStatus[]) => {
-    setBackupQueue(queue);
+  const applyNativeProgress = useCallback((p: NativeBackupProgress) => {
+    const pending = p.pending ?? Math.max(0, p.total - p.completed - p.inProgress);
+    const nativeState = p.state ?? (p.inProgress > 0 ? 'uploading' : pending > 0 ? 'idle' : 'complete');
+    setBackupProgress({
+      total: p.total,
+      completed: p.completed,
+      inProgress: p.inProgress,
+      pending,
+      waitingToEncrypt: p.waitingToEncrypt,
+      encryptedPendingUpload: p.encryptedPendingUpload,
+      uploading: p.uploading,
+      failed: p.failed ?? 0,
+      state: nativeState,
+      reason: p.reason ?? '',
+    });
+    if (p.lastBackupAt) setLastBackupAt(p.lastBackupAt);
   }, []);
 
-  const reportPhotoProgress = useCallback((
-    uploaded: number, total: number, failed: number, running: boolean,
-    throughputBps = 0, etaSeconds: number | null = null,
-    currentFileName = '', currentFileSizeBytes = 0,
-    currentBytesUploaded = 0, currentBytesTotal = 0,
-    currentChunk = 0, totalChunks = 0,
-  ) => {
-    setPhotoSessionProgress({ running, uploaded, total, failed, throughputBps, etaSeconds, currentFileName, currentFileSizeBytes, currentBytesUploaded, currentBytesTotal, currentChunk, totalChunks });
-    if (!running && (uploaded > 0 || failed > 0)) {
-      setLastPhotoSession({ uploaded, failed });
-    }
-  }, []);
+  const refreshNativeProgress = useCallback(async () => {
+    if (Platform.OS === 'web') return;
+    const p: NativeBackupProgress = await getBackupProgress();
+    applyNativeProgress(p);
+  }, [applyNativeProgress]);
 
   const enableNativeBackup = useCallback(async (category: BackupCategory, options: { runNow?: boolean } = {}) => {
     if (Platform.OS === 'web') return;
@@ -234,9 +196,7 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
 
     const poll = async () => {
       try {
-        const p: NativeBackupProgress = await getBackupProgress();
-        setBackupProgress({ total: p.total, completed: p.completed, inProgress: p.inProgress });
-        if (p.lastBackupAt) setLastBackupAt(p.lastBackupAt);
+        await refreshNativeProgress();
       } catch {
         // Native module not linked yet — ignore
       }
@@ -247,7 +207,18 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
     return () => {
       if (pollRef.current) clearInterval(pollRef.current);
     };
-  }, [isPhotoBackupEnabled]);
+  }, [isPhotoBackupEnabled, refreshNativeProgress]);
+
+  // Native state can legitimately say "open Beebeeb" after a background handoff.
+  // If the user has already foregrounded the app, refresh immediately so Settings
+  // reflects the live worker state instead of a stale background state.
+  useEffect(() => {
+    if (!isPhotoBackupEnabled || Platform.OS === 'web') return;
+    const sub = AppState.addEventListener('change', (next) => {
+      if (next === 'active') void refreshNativeProgress().catch(() => {});
+    });
+    return () => sub.remove();
+  }, [isPhotoBackupEnabled, refreshNativeProgress]);
 
   const togglePhotoBackup = useCallback(async () => {
     const next = !isPhotoBackupEnabled;
@@ -257,17 +228,17 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
       if (Platform.OS !== 'web') {
         if (next) {
           await enableNativeBackup('camera_roll');
-          setPhotoBackupForceCount((c) => c + 1);
+          await refreshNativeProgress().catch(() => {});
         } else {
           await disablePhotoBackup();
           await configureBackupFolder('camera_roll', null);
-          setBackupProgress({ total: 0, completed: 0, inProgress: 0 });
+          setBackupProgress(EMPTY_PROGRESS);
         }
       }
     } catch {
       // Native module not linked yet
     }
-  }, [enableNativeBackup, isPhotoBackupEnabled]);
+  }, [enableNativeBackup, isPhotoBackupEnabled, refreshNativeProgress]);
 
   const toggleContactsBackup = useCallback(async () => {
     const next = !isContactsBackupEnabled;
@@ -346,7 +317,6 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
       }
 
       if (Platform.OS === 'web') {
-        setPhotoBackupForceCount((c) => c + 1);
         return;
       }
 
@@ -355,15 +325,17 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
       try {
         const { categoryFolderId } = await ensureBackupFolders('camera_roll');
         await configureBackupFolder('camera_roll', categoryFolderId);
-        await enablePhotoBackup(token);
+        const progress = await triggerImmediateBackup(token);
+        applyNativeProgress(progress);
       } catch (err) {
         console.warn('[backup] native photo backup warm-up failed:', err);
+        await enablePhotoBackup(token);
+        await refreshNativeProgress().catch(() => {});
       }
-      setPhotoBackupForceCount((c) => c + 1);
     } catch (err) {
       console.warn('[backup] triggerBackupNow failed:', err);
     }
-  }, [wifiOnly]);
+  }, [applyNativeProgress, refreshNativeProgress, wifiOnly]);
 
   const value: BackupContextValue = {
     isPhotoBackupEnabled,
@@ -381,12 +353,6 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
     backupProgress,
     lastBackupAt,
     triggerBackupNow,
-    photoSessionProgress,
-    lastPhotoSession,
-    reportPhotoProgress,
-    photoBackupForceCount,
-    backupQueue,
-    reportBackupQueue,
     // Legacy alias
     isBackupEnabled: isPhotoBackupEnabled,
     toggleBackup: togglePhotoBackup,

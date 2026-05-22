@@ -47,6 +47,14 @@ import { useCrypto } from '../lib/crypto-context';
 import { useTheme, type ThemeMode } from '../lib/theme-context';
 import { useToast } from '../lib/toast-context';
 import { useNetworkStatus } from '../lib/useNetworkStatus';
+import {
+  DEFAULT_BACKUP_NOTIFICATION_SETTINGS,
+  type BackupNotificationSettings,
+} from '../lib/backup-notification-policy';
+import {
+  getBackupNotificationSettings,
+  setBackupNotificationSetting,
+} from '../lib/backup-notification-settings';
 import { writeWidgetData } from '../utils/widgetData';
 import {
   getStorageUsage,
@@ -93,7 +101,7 @@ import {
 import type { RootStackParamList } from '../App';
 import { NativeSwitch } from '../components/NativeSwitch';
 import { markUnlocked } from '../lib/lock-state';
-import { mountTrustedFileProvider, removeTrustedFileProvider } from '../lib/file-provider-mount';
+import { mountTrustedFileProvider, populateFileProviderCache, removeTrustedFileProvider } from '../lib/file-provider-mount';
 import { NOTIFICATIONS_OPT_OUT_KEY, registerForPushNotifications, unregisterPushToken } from '../lib/push-notifications';
 import * as BeebeebCrypto from '../../modules/beebeeb-crypto';
 
@@ -541,8 +549,6 @@ export default function SettingsScreen() {
     backupProgress,
     lastBackupAt,
     triggerBackupNow,
-    photoSessionProgress,
-    lastPhotoSession,
   } = useBackup();
   const { showToast } = useToast();
   const isOnline = useNetworkStatus();
@@ -585,6 +591,10 @@ export default function SettingsScreen() {
     backup_complete: false,
   });
   const [notifPrefsLoading, setNotifPrefsLoading] = useState(false);
+  const [backupNotifPrefs, setBackupNotifPrefs] = useState<BackupNotificationSettings>(
+    DEFAULT_BACKUP_NOTIFICATION_SETTINGS,
+  );
+  const [backupNotifPrefsLoading, setBackupNotifPrefsLoading] = useState(false);
 
   // Account
   const [displayName, setDisplayNameState] = useState<string>('');
@@ -685,7 +695,16 @@ export default function SettingsScreen() {
     try {
       const state = await BeebeebCrypto.getFileProviderPrivacyState();
       setFileProviderSupported(state.supported);
-      setFileProviderMounted(state.mounted ?? state.showInFiles);
+      let mounted = state.mounted ?? state.showInFiles;
+      if (state.supported && state.showInFiles && !mounted) {
+        try {
+          const repaired = await BeebeebCrypto.registerFileProviderDomain();
+          mounted = repaired.registered && repaired.cacheDatabaseReady !== false;
+        } catch {
+          mounted = false;
+        }
+      }
+      setFileProviderMounted(mounted);
     } catch {
       setFileProviderSupported(false);
     } finally {
@@ -755,17 +774,29 @@ export default function SettingsScreen() {
       setCameraRollStatusCounts(counts);
       setCameraRollTotalBytes(totalBytes);
 
-      // Get total count from MediaLibrary
+      // Get total count from MediaLibrary. Count videos when video backup is
+      // enabled so the "items" label does not show a photo-only total.
       try {
-        const result = await MediaLibrary.getAssetsAsync({ first: 0 });
-        setCameraRollTotalCount(result?.totalCount ?? 0);
+        const [photoAssets, videoAssets] = await Promise.all([
+          MediaLibrary.getAssetsAsync({
+            mediaType: MediaLibrary.MediaType.photo,
+            first: 0,
+          }),
+          includeVideos
+            ? MediaLibrary.getAssetsAsync({
+                mediaType: MediaLibrary.MediaType.video,
+                first: 0,
+              })
+            : Promise.resolve({ totalCount: 0 }),
+        ]);
+        setCameraRollTotalCount((photoAssets?.totalCount ?? 0) + (videoAssets?.totalCount ?? 0));
       } catch {
         // MediaLibrary may not be available
       }
     } catch {
       // Database may not be initialized yet
     }
-  }, []);
+  }, [includeVideos]);
 
   useEffect(() => {
     fetchUsage();
@@ -812,14 +843,19 @@ export default function SettingsScreen() {
         setNotificationsEnabled(false);
       }
     })();
+    getBackupNotificationSettings().then(setBackupNotifPrefs).catch(() => {});
   }, [fetchUsage, loadBiometricPrefs, loadFileProviderPrefs, loadAccountData, loadStorageRegionPref, isPhotoBackupEnabled, refreshCameraRollStatus, loadDeletionBehavior, loadKeepVaultUnlocked]);
 
-  // Refresh camera roll status whenever a JS session completes
+  // Refresh camera roll status whenever native backup work settles.
   useEffect(() => {
-    if (isPhotoBackupEnabled && !photoSessionProgress.running) {
+    if (
+      isPhotoBackupEnabled &&
+      backupProgress.inProgress === 0 &&
+      !['preparing', 'encrypting', 'uploading'].includes(backupProgress.state)
+    ) {
       void refreshCameraRollStatus();
     }
-  }, [isPhotoBackupEnabled, photoSessionProgress.running, refreshCameraRollStatus]);
+  }, [backupProgress.inProgress, backupProgress.state, isPhotoBackupEnabled, refreshCameraRollStatus]);
 
   // -- Backup status: refresh whenever toggles flip or the worker reports progress
   const syncing = backupProgress.inProgress > 0;
@@ -922,6 +958,28 @@ export default function SettingsScreen() {
   // ---------------------------------------------------------------------------
 
   const handleBiometricToggle = useCallback(async (enabled: boolean) => {
+    if (!enabled) {
+      setBiometricEnabled(false);
+      try {
+        await SecureStore.setItemAsync(BIOMETRIC_PREF_KEY, 'false');
+        markUnlocked();
+      } catch {
+        setBiometricEnabled(true);
+        Alert.alert('Face ID lock could not be disabled', 'Please try again.');
+        return;
+      }
+
+      try {
+        await crypto.setBiometricRequirement(false);
+      } catch {
+        showToast({
+          type: 'info',
+          message: 'Face ID lock is off. Local key protection will update after the next vault unlock.',
+        });
+      }
+      return;
+    }
+
     if (enabled) {
       const result = await LocalAuthentication.authenticateAsync({
         promptMessage: 'Confirm your identity to enable Face ID lock',
@@ -936,7 +994,7 @@ export default function SettingsScreen() {
       markUnlocked();
     }
     try {
-      await crypto.setBiometricRequirement(enabled);
+      await crypto.setBiometricRequirement(true);
     } catch {
       Alert.alert(
         'Face ID setup failed',
@@ -944,9 +1002,9 @@ export default function SettingsScreen() {
       );
       return;
     }
-    setBiometricEnabled(enabled);
-    await SecureStore.setItemAsync(BIOMETRIC_PREF_KEY, enabled ? 'true' : 'false');
-  }, [crypto]);
+    setBiometricEnabled(true);
+    await SecureStore.setItemAsync(BIOMETRIC_PREF_KEY, 'true');
+  }, [crypto, showToast]);
 
   const handleBiometricDelayPress = useCallback(() => {
     const apply = async (ms: number) => {
@@ -980,13 +1038,17 @@ export default function SettingsScreen() {
     setUpdatingFileProviderMount(true);
     try {
       const result = enabled
-        ? await mountTrustedFileProvider()
+        ? await mountTrustedFileProvider({ vaultUnlocked: crypto.isUnlocked })
         : await removeTrustedFileProvider();
+      const mounted = enabled && result.registered && result.cacheDatabaseReady !== false;
       setFileProviderSupported(result.supported);
-      setFileProviderMounted(enabled && result.registered);
+      setFileProviderMounted(mounted);
+      if (mounted && crypto.isUnlocked) {
+        void populateFileProviderCache(crypto.decryptMetadata).catch(() => {});
+      }
       showToast({
-        type: result.registered || !enabled ? 'success' : 'info',
-        message: enabled && result.registered
+        type: mounted || !enabled ? 'success' : 'info',
+        message: mounted
           ? 'Beebeeb is mounted in Files'
           : enabled
             ? 'Files integration is unavailable on this device'
@@ -998,7 +1060,7 @@ export default function SettingsScreen() {
     } finally {
       setUpdatingFileProviderMount(false);
     }
-  }, [fileProviderMounted, showToast]);
+  }, [crypto.decryptMetadata, crypto.isUnlocked, fileProviderMounted, showToast]);
 
   const handleNotificationsToggle = useCallback(async (enabled: boolean) => {
     if (enabled) {
@@ -1045,6 +1107,24 @@ export default function SettingsScreen() {
       }
     },
     [notifPrefs],
+  );
+
+  const handleBackupNotifPrefToggle = useCallback(
+    async (key: keyof BackupNotificationSettings, value: boolean) => {
+      const previous = backupNotifPrefs;
+      const next = { ...backupNotifPrefs, [key]: value };
+      setBackupNotifPrefs(next);
+      setBackupNotifPrefsLoading(true);
+      try {
+        const saved = await setBackupNotificationSetting(key, value);
+        setBackupNotifPrefs(saved);
+      } catch {
+        setBackupNotifPrefs(previous);
+      } finally {
+        setBackupNotifPrefsLoading(false);
+      }
+    },
+    [backupNotifPrefs],
   );
 
   const syncBackupCategory = useCallback(async (category: BackupCategory, enabling: boolean) => {
@@ -1439,6 +1519,9 @@ export default function SettingsScreen() {
       })
     : null;
   const serverRegionLabel = serverRegion?.region ? regionDisplayName(serverRegion.region) : null;
+  const cameraBackupActive =
+    ['preparing', 'encrypting', 'uploading'].includes(backupProgress.state) ||
+    backupProgress.inProgress > 0;
 
   // ---------------------------------------------------------------------------
   // Render
@@ -1844,7 +1927,6 @@ export default function SettingsScreen() {
             {isPhotoBackupEnabled && (() => {
               const backedUp = (cameraRollStatusCounts['uploaded'] ?? 0) + (cameraRollStatusCounts['orphaned'] ?? 0);
               const totalPhotos = cameraRollTotalCount;
-              const isRunning = photoSessionProgress.running || backupProgress.inProgress > 0;
 
               if (backupPaused) {
                 return (
@@ -1857,24 +1939,23 @@ export default function SettingsScreen() {
                 );
               }
 
-              if (isRunning) {
+              if (cameraBackupActive) {
                 return (
                   <View style={{ paddingHorizontal: 12, paddingBottom: 10, paddingTop: 2, flexDirection: 'row', alignItems: 'center', gap: 6 }}>
                     <ActivityIndicator size="small" color={c.amber} />
                     <Text style={{ fontSize: 11, color: c.ink3, flex: 1 }}>
-                      {photoSessionProgress.running && photoSessionProgress.total > 0
-                        ? `${photoSessionProgress.uploaded} of ${photoSessionProgress.total} ${includeVideos ? 'items' : 'photos'} backed up`
-                        : `${backupProgress.completed} of ${backupProgress.total} items backed up`}
+                      {backupProgress.reason || `${backupProgress.completed} of ${backupProgress.total} ${includeVideos ? 'items' : 'photos'} backed up`}
                     </Text>
                   </View>
                 );
               }
 
               if (totalPhotos > 0 || backedUp > 0) {
+                const itemLabel = includeVideos ? 'items' : 'photos';
                 return (
                   <View style={{ paddingHorizontal: 12, paddingBottom: 10, paddingTop: 2 }}>
                     <Text style={{ fontSize: 11, color: c.ink3 }}>
-                      {backedUp.toLocaleString()} of {totalPhotos.toLocaleString()} photos{' '}
+                      {backedUp.toLocaleString()} of {totalPhotos.toLocaleString()} {itemLabel}{' '}
                       {cameraRollTotalBytes > 0 ? `· ${formatBytes(cameraRollTotalBytes)}` : ''}
                     </Text>
                   </View>
@@ -1887,141 +1968,51 @@ export default function SettingsScreen() {
                 </View>
               );
             })()}
-            {/* ── Camera roll: expandable Advanced section ── */}
+            {isPhotoBackupEnabled && backupProgress.failed > 0 && (
+              <TouchableOpacity
+                style={{
+                  paddingHorizontal: 12,
+                  paddingBottom: 10,
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 8,
+                }}
+                activeOpacity={0.6}
+                onPress={() => navigation.navigate('BackupInsights')}
+                accessibilityLabel={`${backupProgress.failed} backup item${backupProgress.failed === 1 ? '' : 's'} need attention`}
+                accessibilityRole="button"
+              >
+                <Ionicons name="alert-circle-outline" size={15} color={c.red} />
+                <View style={{ flex: 1 }}>
+                  <Text style={{ fontSize: 11, fontWeight: '600' as const, color: c.red }}>
+                    {backupProgress.failed.toLocaleString()} backup item{backupProgress.failed === 1 ? '' : 's'} need attention
+                  </Text>
+                  <Text style={{ fontSize: 10, color: c.ink3, marginTop: 1 }}>
+                    Inspect details below; retry from this Backup section.
+                  </Text>
+                </View>
+              </TouchableOpacity>
+            )}
             {isPhotoBackupEnabled && (
               <>
                 <RowDivider c={c} />
                 <TouchableOpacity
                   style={layout.row}
                   activeOpacity={0.6}
-                  onPress={() => setAdvancedExpanded((prev) => !prev)}
-                  accessibilityLabel={advancedExpanded ? 'Collapse advanced backup options' : 'Expand advanced backup options'}
+                  onPress={handleBackupNow}
+                  disabled={backingUp || cameraBackupActive}
+                  accessibilityLabel="Back up camera roll now"
                   accessibilityRole="button"
                 >
-                  <Ionicons
-                    name={advancedExpanded ? 'chevron-down' : 'chevron-forward'}
-                    size={14}
-                    color={c.ink3}
-                    style={{ marginRight: 8 }}
-                  />
-                  <Text style={{ flex: 1, fontSize: 14, fontWeight: '400' as const, color: c.ink }}>
-                    Advanced
+                  {backingUp || cameraBackupActive ? (
+                    <ActivityIndicator size="small" color={c.amber} style={{ marginRight: 10 }} />
+                  ) : (
+                    <Ionicons name="cloud-upload-outline" size={18} color={c.amber} style={{ marginRight: 10 }} />
+                  )}
+                  <Text style={{ flex: 1, fontSize: 14, color: c.amber, fontWeight: '500' as const }}>
+                    {backupProgress.failed > 0 ? 'Retry camera roll backup' : 'Back up camera roll now'}
                   </Text>
                 </TouchableOpacity>
-                {advancedExpanded && (
-                  <>
-                    {/* Back up now button */}
-                    <RowDivider c={c} />
-                    <TouchableOpacity
-                      style={[layout.row, { paddingLeft: 28 }]}
-                      activeOpacity={0.6}
-                      onPress={handleBackupNow}
-                      disabled={backingUp || photoSessionProgress.running}
-                      accessibilityLabel="Back up camera roll now"
-                      accessibilityRole="button"
-                    >
-                      {backingUp || photoSessionProgress.running ? (
-                        <ActivityIndicator size="small" color={c.amber} />
-                      ) : (
-                        <Text style={{ fontSize: 14, color: c.amber, fontWeight: '500' as const }}>
-                          Back up now
-                        </Text>
-                      )}
-                    </TouchableOpacity>
-                    {/* Pause / Resume button */}
-                    {lastPhotoSession && lastPhotoSession.failed > 0 && (
-                      <>
-                        <RowDivider c={c} />
-                        <TouchableOpacity
-                          style={[layout.row, { paddingLeft: 28 }]}
-                          activeOpacity={0.6}
-                          onPress={handleBackupNow}
-                          disabled={backingUp}
-                          accessibilityLabel="Retry failed backup"
-                          accessibilityRole="button"
-                        >
-                          <Text style={{ fontSize: 14, color: c.amber, fontWeight: '500' as const }}>
-                            {backingUp ? 'Retrying...' : 'Retry failed items'}
-                          </Text>
-                        </TouchableOpacity>
-                      </>
-                    )}
-                    {/* Photos and videos toggle */}
-                    <RowDivider c={c} />
-                    <ToggleRow
-                      label="Photos and videos"
-                      subtitle="Back up videos in addition to photos. Videos can be large -- backed up over Wi-Fi only."
-                      value={includeVideos}
-                      onValueChange={handleIncludeVideosChange}
-                      indent
-                      c={c}
-                    />
-                    {/* Wi-Fi only toggle */}
-                    <RowDivider c={c} />
-                    <ToggleRow
-                      label="Wi-Fi only"
-                      subtitle="Only upload over Wi-Fi to save cellular data"
-                      value={wifiOnly}
-                      onValueChange={handleWifiOnlyChange}
-                      indent
-                      c={c}
-                    />
-                    {/* Background upload toggle */}
-                    <RowDivider c={c} />
-                    <ToggleRow
-                      label="Background upload"
-                      subtitle="Allow uploads in the background. May increase battery usage."
-                      value={backgroundUpload}
-                      onValueChange={handleBackgroundUploadChange}
-                      indent
-                      c={c}
-                    />
-                    {/* Keep vault unlocked for backup */}
-                    <RowDivider c={c} />
-                    <ToggleRow
-                      label="Keep vault unlocked for backup"
-                      subtitle="Your encryption key stays securely on this device so backups continue in the background."
-                      value={keepVaultUnlocked}
-                      onValueChange={handleKeepVaultUnlockedChange}
-                      indent
-                      c={c}
-                    />
-                    {/* Deletion preference */}
-                    <RowDivider c={c} />
-                    <View style={{ paddingHorizontal: 12, paddingVertical: 10, paddingLeft: 28 }}>
-                      <Text style={{ fontSize: 13, fontWeight: '400' as const, color: c.ink, marginBottom: 8 }}>
-                        When removed from device
-                      </Text>
-                      <TouchableOpacity
-                        style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 4 }}
-                        activeOpacity={0.6}
-                        onPress={() => void handleDeletionBehaviorChange('keep')}
-                      >
-                        <View style={[layout.regionRadio, { borderColor: deletionBehavior === 'keep' ? c.amber : c.ink4 }]}>
-                          {deletionBehavior === 'keep' && <View style={[layout.regionRadioDot, { backgroundColor: c.amber }]} />}
-                        </View>
-                        <Text style={{ fontSize: 13, color: c.ink }}>Keep in cloud</Text>
-                      </TouchableOpacity>
-                      <TouchableOpacity
-                        style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 4, marginTop: 4 }}
-                        activeOpacity={0.6}
-                        onPress={() => void handleDeletionBehaviorChange('trash')}
-                      >
-                        <View style={[layout.regionRadio, { borderColor: deletionBehavior === 'trash' ? c.amber : c.ink4 }]}>
-                          {deletionBehavior === 'trash' && <View style={[layout.regionRadioDot, { backgroundColor: c.amber }]} />}
-                        </View>
-                        <Text style={{ fontSize: 13, color: c.ink }}>Move to Beebeeb trash</Text>
-                      </TouchableOpacity>
-                    </View>
-                  </>
-                )}
-                {/* Backup insights link */}
-                <RowDivider c={c} />
-                <SettingsRow
-                  label="Backup insights"
-                  onPress={() => navigation.navigate('BackupInsights')}
-                  c={c}
-                />
               </>
             )}
             <RowDivider c={c} />
@@ -2044,12 +2035,13 @@ export default function SettingsScreen() {
                   accessibilityRole="button"
                 >
                   {backingUpContacts ? (
-                    <ActivityIndicator size="small" color={c.amber} />
+                    <ActivityIndicator size="small" color={c.amber} style={{ marginRight: 10 }} />
                   ) : (
-                    <Text style={{ fontSize: 14, color: c.amber, fontWeight: '500' as const }}>
-                      Back up contacts now
-                    </Text>
+                    <Ionicons name="people-outline" size={18} color={c.amber} style={{ marginRight: 10 }} />
                   )}
+                  <Text style={{ flex: 1, fontSize: 14, color: c.amber, fontWeight: '500' as const }}>
+                    Back up contacts now
+                  </Text>
                 </TouchableOpacity>
               </>
             )}
@@ -2073,18 +2065,109 @@ export default function SettingsScreen() {
                   accessibilityRole="button"
                 >
                   {backingUpCalendar ? (
-                    <ActivityIndicator size="small" color={c.amber} />
+                    <ActivityIndicator size="small" color={c.amber} style={{ marginRight: 10 }} />
                   ) : (
-                    <Text style={{ fontSize: 14, color: c.amber, fontWeight: '500' as const }}>
-                      Back up calendar now
-                    </Text>
+                    <Ionicons name="calendar-outline" size={18} color={c.amber} style={{ marginRight: 10 }} />
                   )}
+                  <Text style={{ flex: 1, fontSize: 14, color: c.amber, fontWeight: '500' as const }}>
+                    Back up calendar now
+                  </Text>
                 </TouchableOpacity>
               </>
             )}
             <RowDivider c={c} />
+            <TouchableOpacity
+              style={layout.row}
+              activeOpacity={0.6}
+              onPress={() => setAdvancedExpanded((prev) => !prev)}
+              accessibilityLabel={advancedExpanded ? 'Collapse advanced backup options' : 'Expand advanced backup options'}
+              accessibilityRole="button"
+            >
+              <Ionicons
+                name={advancedExpanded ? 'chevron-down' : 'chevron-forward'}
+                size={14}
+                color={c.ink3}
+                style={{ marginRight: 8 }}
+              />
+              <Text style={{ flex: 1, fontSize: 14, fontWeight: '400' as const, color: c.ink }}>
+                Advanced
+              </Text>
+            </TouchableOpacity>
+            {advancedExpanded && (
+              <>
+                <RowDivider c={c} />
+                <ToggleRow
+                  label="Photos and videos"
+                  subtitle="Back up videos in addition to photos. Videos can be large -- backed up over Wi-Fi only."
+                  value={includeVideos}
+                  onValueChange={handleIncludeVideosChange}
+                  indent
+                  c={c}
+                />
+                <RowDivider c={c} />
+                <ToggleRow
+                  label="Wi-Fi only"
+                  subtitle="Only upload over Wi-Fi to save cellular data"
+                  value={wifiOnly}
+                  onValueChange={handleWifiOnlyChange}
+                  indent
+                  c={c}
+                />
+                <RowDivider c={c} />
+                <ToggleRow
+                  label="Background upload"
+                  subtitle="Allow uploads in the background. May increase battery usage."
+                  value={backgroundUpload}
+                  onValueChange={handleBackgroundUploadChange}
+                  indent
+                  c={c}
+                />
+                <RowDivider c={c} />
+                <ToggleRow
+                  label="Keep vault unlocked for backup"
+                  subtitle="Your encryption key stays securely on this device so backups continue in the background."
+                  value={keepVaultUnlocked}
+                  onValueChange={handleKeepVaultUnlockedChange}
+                  indent
+                  c={c}
+                />
+                <RowDivider c={c} />
+                <View style={{ paddingHorizontal: 12, paddingVertical: 10, paddingLeft: 28 }}>
+                  <Text style={{ fontSize: 13, fontWeight: '400' as const, color: c.ink, marginBottom: 8 }}>
+                    When removed from device
+                  </Text>
+                  <TouchableOpacity
+                    style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 4 }}
+                    activeOpacity={0.6}
+                    onPress={() => void handleDeletionBehaviorChange('keep')}
+                  >
+                    <View style={[layout.regionRadio, { borderColor: deletionBehavior === 'keep' ? c.amber : c.ink4 }]}>
+                      {deletionBehavior === 'keep' && <View style={[layout.regionRadioDot, { backgroundColor: c.amber }]} />}
+                    </View>
+                    <Text style={{ fontSize: 13, color: c.ink }}>Keep in cloud</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 4, marginTop: 4 }}
+                    activeOpacity={0.6}
+                    onPress={() => void handleDeletionBehaviorChange('trash')}
+                  >
+                    <View style={[layout.regionRadio, { borderColor: deletionBehavior === 'trash' ? c.amber : c.ink4 }]}>
+                      {deletionBehavior === 'trash' && <View style={[layout.regionRadioDot, { backgroundColor: c.amber }]} />}
+                    </View>
+                    <Text style={{ fontSize: 13, color: c.ink }}>Move to Beebeeb trash</Text>
+                  </TouchableOpacity>
+                </View>
+              </>
+            )}
+            <RowDivider c={c} />
             <SettingsRow
-              label="Back up your apps"
+              label="Backup insights"
+              onPress={() => navigation.navigate('BackupInsights')}
+              c={c}
+            />
+            <RowDivider c={c} />
+            <SettingsRow
+              label="Backup guides"
               onPress={() => navigation.navigate('BackupGuides')}
               c={c}
             />
@@ -2144,6 +2227,31 @@ export default function SettingsScreen() {
                   value={notifPrefs.backup_complete}
                   onValueChange={(v) => void handleNotifPrefToggle('backup_complete', v)}
                   disabled={notifPrefsLoading}
+                  c={c}
+                />
+                <View style={{ height: 1, backgroundColor: c.line }} />
+                <ToggleRow
+                  label="Photo backup summaries"
+                  subtitle="Example: Beebeeb backed up 12 new photos in the last 24 hours"
+                  value={backupNotifPrefs.backupSummaries}
+                  onValueChange={(v) => void handleBackupNotifPrefToggle('backupSummaries', v)}
+                  disabled={backupNotifPrefsLoading}
+                  c={c}
+                />
+                <ToggleRow
+                  label="No-change check-ins"
+                  subtitle="Example: Beebeeb checked your camera roll. Nothing new to back up."
+                  value={backupNotifPrefs.noChangeCheckins}
+                  onValueChange={(v) => void handleBackupNotifPrefToggle('noChangeCheckins', v)}
+                  disabled={backupNotifPrefsLoading}
+                  c={c}
+                />
+                <ToggleRow
+                  label="Backup needs attention"
+                  subtitle="Example: Open Beebeeb to unlock photo backup"
+                  value={backupNotifPrefs.actionNeeded}
+                  onValueChange={(v) => void handleBackupNotifPrefToggle('actionNeeded', v)}
+                  disabled={backupNotifPrefsLoading}
                   c={c}
                 />
               </>
@@ -2263,6 +2371,13 @@ export default function SettingsScreen() {
               label="Speed test"
               icon="speedometer-outline"
               onPress={() => navigation.navigate('Speedtest')}
+              c={c}
+            />
+            <RowDivider c={c} />
+            <SettingsRow
+              label="Advanced"
+              icon="options-outline"
+              onPress={() => navigation.navigate('AdvancedSettings')}
               c={c}
             />
           </View>

@@ -11,8 +11,8 @@
  * restarts — every relaunch would re-upload every photo. expo-sqlite is in
  * the project dependencies and works in Expo Go as well as dev clients.
  *
- * Public surface is unchanged from the in-memory version so call sites in
- * `BackupService.ts` and `PhotoSyncEngine.ts` keep working with no edits.
+ * Public surface is shared by the native backup engine and React Native
+ * status/insights screens.
  *
  * See docs/specs/010-device-backup-system.md for the full design.
  */
@@ -22,11 +22,15 @@ import * as SQLite from 'expo-sqlite';
 export type BackupAssetType = 'photo' | 'video' | 'contact' | 'calendar';
 export type BackupAssetStatus =
   | 'pending_upload'
+  | 'staging'
+  | 'staged_upload'
   | 'uploading'
   | 'uploaded'
   | 'pending_delete'
   | 'pending_reupload'
   | 'orphaned'
+  | 'remote_deleted'
+  | 'local_missing'
   | 'failed';
 
 export interface BackupAsset {
@@ -43,6 +47,14 @@ export interface BackupAsset {
   last_attempt_at: number | null;
   retry_count: number;
   error_message: string | null;
+  staged_file_id?: string | null;
+  staged_name_encrypted?: string | null;
+  staged_mime_type?: string | null;
+  staged_is_media?: number | null;
+  staged_original_size?: number | null;
+  staged_chunk_count?: number | null;
+  staged_dir?: string | null;
+  staged_at?: number | null;
 }
 
 const DB_NAME = 'beebeeb-backup.db';
@@ -55,6 +67,20 @@ let dbPromise: Promise<SQLite.SQLiteDatabase> | null = null;
 async function getDb(): Promise<SQLite.SQLiteDatabase> {
   if (!dbPromise) dbPromise = openAndMigrate();
   return dbPromise;
+}
+
+async function migrateLocalMissingRows(db: SQLite.SQLiteDatabase): Promise<void> {
+  await db.execAsync(`
+    UPDATE backup_assets
+       SET status = 'local_missing',
+           retry_count = 0,
+           error_message = 'Photo removed from this iPhone before backup completed'
+     WHERE status != 'uploaded'
+       AND (
+         error_message LIKE '%Photo asset not found%'
+         OR error_message LIKE '%not found in library%'
+       );
+  `).catch(() => {});
 }
 
 async function openAndMigrate(): Promise<SQLite.SQLiteDatabase> {
@@ -103,12 +129,52 @@ async function openAndMigrate(): Promise<SQLite.SQLiteDatabase> {
   await db.execAsync(`
     ALTER TABLE backup_assets ADD COLUMN error_message TEXT;
   `).catch(() => {});
+  await db.execAsync(`
+    ALTER TABLE backup_assets ADD COLUMN staged_file_id TEXT;
+  `).catch(() => {});
+  await db.execAsync(`
+    ALTER TABLE backup_assets ADD COLUMN staged_name_encrypted TEXT;
+  `).catch(() => {});
+  await db.execAsync(`
+    ALTER TABLE backup_assets ADD COLUMN staged_mime_type TEXT;
+  `).catch(() => {});
+  await db.execAsync(`
+    ALTER TABLE backup_assets ADD COLUMN staged_is_media INTEGER DEFAULT 0;
+  `).catch(() => {});
+  await db.execAsync(`
+    ALTER TABLE backup_assets ADD COLUMN staged_original_size INTEGER DEFAULT 0;
+  `).catch(() => {});
+  await db.execAsync(`
+    ALTER TABLE backup_assets ADD COLUMN staged_chunk_count INTEGER DEFAULT 0;
+  `).catch(() => {});
+  await db.execAsync(`
+    ALTER TABLE backup_assets ADD COLUMN staged_dir TEXT;
+  `).catch(() => {});
+  await db.execAsync(`
+    ALTER TABLE backup_assets ADD COLUMN staged_at INTEGER;
+  `).catch(() => {});
+  await db.execAsync(`
+    CREATE TABLE IF NOT EXISTS backup_upload_chunks (
+      local_asset_id TEXT NOT NULL,
+      server_file_id TEXT NOT NULL,
+      chunk_index INTEGER NOT NULL,
+      path TEXT NOT NULL,
+      status TEXT NOT NULL,
+      task_id INTEGER,
+      last_error TEXT,
+      uploaded_at INTEGER,
+      PRIMARY KEY(local_asset_id, chunk_index)
+    );
+    CREATE INDEX IF NOT EXISTS idx_backup_upload_chunks_asset_status
+      ON backup_upload_chunks(local_asset_id, status);
+  `);
 
   // Migrate old status values to new enum
   await db.execAsync(`
     UPDATE backup_assets SET status = 'pending_upload' WHERE status = 'pending';
     UPDATE backup_assets SET status = 'uploaded' WHERE status = 'uploading';
   `);
+  await migrateLocalMissingRows(db);
 
   return db;
 }
@@ -194,7 +260,7 @@ export async function getPendingUploads(
   const db = await getDb();
   return db.getAllAsync<BackupAsset>(
     `SELECT * FROM backup_assets
-      WHERE status IN ('pending_upload', 'pending_reupload', 'uploading')
+      WHERE status IN ('pending_upload', 'pending_reupload', 'staging', 'staged_upload', 'uploading')
         AND retry_count < 10
       ORDER BY created_at DESC LIMIT ?`,
     [limit],
@@ -223,8 +289,12 @@ export async function recoverStuckUploads(): Promise<number> {
  */
 export async function getDeadLetterItems(): Promise<BackupAsset[]> {
   const db = await getDb();
+  await migrateLocalMissingRows(db);
   return db.getAllAsync<BackupAsset>(
-    `SELECT * FROM backup_assets WHERE retry_count >= 10 ORDER BY last_attempt_at DESC`,
+    `SELECT * FROM backup_assets
+      WHERE status != 'local_missing'
+        AND COALESCE(retry_count, 0) >= 10
+      ORDER BY last_attempt_at DESC`,
   );
 }
 
@@ -237,8 +307,26 @@ export async function getPendingDeletes(): Promise<BackupAsset[]> {
 
 export async function getFailedAssets(): Promise<BackupAsset[]> {
   const db = await getDb();
+  await migrateLocalMissingRows(db);
   return db.getAllAsync<BackupAsset>(
-    `SELECT * FROM backup_assets WHERE status = 'failed'`,
+    `SELECT * FROM backup_assets
+      WHERE status = 'failed'
+         OR (status != 'local_missing' AND COALESCE(retry_count, 0) >= 10)
+      ORDER BY last_attempt_at DESC`,
+  );
+}
+
+export async function getLocalMissingAssets(
+  limit: number = 10,
+): Promise<BackupAsset[]> {
+  const db = await getDb();
+  await migrateLocalMissingRows(db);
+  return db.getAllAsync<BackupAsset>(
+    `SELECT * FROM backup_assets
+      WHERE status = 'local_missing'
+      ORDER BY last_attempt_at DESC
+      LIMIT ?`,
+    [limit],
   );
 }
 
@@ -246,6 +334,7 @@ export async function getStatusCounts(): Promise<
   Record<BackupAssetStatus, number>
 > {
   const db = await getDb();
+  await migrateLocalMissingRows(db);
   const rows = await db.getAllAsync<{ status: string; count: number }>(
     `SELECT status, COUNT(*) as count FROM backup_assets GROUP BY status`,
   );
@@ -274,8 +363,10 @@ export async function upsertPendingUpload(
     `INSERT INTO backup_assets (local_asset_id, status, asset_type, file_size, created_at, queued_at, content_hash)
      VALUES (?, 'pending_upload', ?, ?, ?, ?, '')
      ON CONFLICT(local_asset_id) DO UPDATE SET
-       status = CASE WHEN status IN ('failed', 'orphaned') THEN 'pending_upload' ELSE status END,
-       queued_at = CASE WHEN status IN ('failed', 'orphaned') THEN ? ELSE queued_at END`,
+      status = CASE WHEN status IN ('failed', 'orphaned', 'local_missing') THEN 'pending_upload' ELSE status END,
+      queued_at = CASE WHEN status IN ('failed', 'orphaned', 'local_missing') THEN ? ELSE queued_at END,
+      retry_count = CASE WHEN status = 'local_missing' THEN 0 ELSE retry_count END,
+      error_message = CASE WHEN status = 'local_missing' THEN NULL ELSE error_message END`,
     [localId, assetType, sizeBytes, String(creationAt), now, now],
   );
 }
@@ -307,6 +398,20 @@ export async function markOrphaned(localId: string): Promise<void> {
   );
 }
 
+export async function markRemoteDeleted(localId: string): Promise<void> {
+  const db = await getDb();
+  await db.runAsync(
+    `UPDATE backup_assets
+        SET status = 'remote_deleted',
+            remote_file_id = NULL,
+            uploaded_at = NULL,
+            error_message = NULL
+      WHERE local_asset_id = ?
+        AND status IN ('uploaded', 'orphaned', 'pending_delete')`,
+    [localId],
+  );
+}
+
 export async function removePendingDelete(localId: string): Promise<void> {
   const db = await getDb();
   await db.runAsync(
@@ -317,8 +422,14 @@ export async function removePendingDelete(localId: string): Promise<void> {
 
 export async function retryAllFailed(): Promise<number> {
   const db = await getDb();
+  await migrateLocalMissingRows(db);
   const result = await db.runAsync(
-    `UPDATE backup_assets SET status = 'pending_upload', retry_count = 0, error_message = NULL WHERE status = 'failed'`,
+    `UPDATE backup_assets
+      SET status = 'pending_upload',
+          retry_count = 0,
+          error_message = NULL
+      WHERE status = 'failed'
+         OR (status != 'local_missing' AND COALESCE(retry_count, 0) >= 10)`,
   );
   return result.changes;
 }
@@ -331,7 +442,7 @@ export async function clearAllData(): Promise<void> {
 export async function getAllUploadedIds(): Promise<Set<string>> {
   const db = await getDb();
   const rows = await db.getAllAsync<{ local_asset_id: string }>(
-    `SELECT local_asset_id FROM backup_assets WHERE status IN ('uploaded', 'orphaned')`,
+    `SELECT local_asset_id FROM backup_assets WHERE status IN ('uploaded', 'orphaned', 'remote_deleted')`,
   );
   return new Set(rows.map((r) => r.local_asset_id));
 }
@@ -353,6 +464,27 @@ export async function getRemoteToLocalMap(): Promise<Map<string, string>> {
   return map;
 }
 
+/**
+ * Build a map from remote_file_id → original local asset creation time.
+ * The server index can only report what the uploader sent; this local map lets
+ * the Photos tab repair display grouping for rows uploaded by older native
+ * builds that accidentally sent upload time instead of PHAsset.creationDate.
+ */
+export async function getRemoteCreatedAtMap(): Promise<Map<string, string>> {
+  const db = await getDb();
+  const rows = await db.getAllAsync<{ remote_file_id: string; created_at: string }>(
+    `SELECT remote_file_id, created_at FROM backup_assets
+      WHERE status IN ('uploaded', 'orphaned')
+        AND remote_file_id IS NOT NULL
+        AND created_at IS NOT NULL`,
+  );
+  const map = new Map<string, string>();
+  for (const row of rows) {
+    map.set(row.remote_file_id, row.created_at);
+  }
+  return map;
+}
+
 export async function getRecentActivity(
   days: number = 7,
 ): Promise<{ date: string; count: number; bytes: number }[]> {
@@ -360,9 +492,9 @@ export async function getRecentActivity(
   const cutoff = new Date();
   cutoff.setDate(cutoff.getDate() - days);
   return db.getAllAsync<{ date: string; count: number; bytes: number }>(
-    `SELECT DATE(uploaded_at) as date, COUNT(*) as count, SUM(file_size) as bytes
+    `SELECT DATE(uploaded_at, 'localtime') as date, COUNT(*) as count, SUM(file_size) as bytes
      FROM backup_assets WHERE status = 'uploaded' AND uploaded_at >= ?
-     GROUP BY DATE(uploaded_at) ORDER BY date DESC`,
+     GROUP BY DATE(uploaded_at, 'localtime') ORDER BY date DESC`,
     [cutoff.toISOString()],
   );
 }

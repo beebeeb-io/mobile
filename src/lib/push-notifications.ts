@@ -111,6 +111,7 @@ type NotificationCategory =
   | 'storage_warning'
   | 'new_device_login'
   | 'backup_complete'
+  | 'backup_action_needed'
   | string;
 
 /**
@@ -147,8 +148,12 @@ export function handleNotificationTap(
       nav('Tabs', { screen: 'Settings' });
       break;
 
+    case 'backup_action_needed':
+      nav('Tabs', { screen: 'Settings' });
+      break;
+
     case 'backup_complete':
-      nav('Tabs', { screen: 'Photos' });
+      nav('Tabs', { screen: 'Settings' });
       break;
 
     default:

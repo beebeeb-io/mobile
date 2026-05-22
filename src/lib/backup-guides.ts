@@ -5,7 +5,6 @@ export interface BackupGuide {
   difficulty: 'easy' | 'medium' | 'manual'
   steps: string[]
   note?: string
-  upvotes: number
 }
 
 export const guides: BackupGuide[] = [
@@ -22,7 +21,6 @@ export const guides: BackupGuide[] = [
       'Select "Beebeeb" from the share sheet.',
     ],
     note: 'Exports one chat at a time. Repeat per chat for a full backup.',
-    upvotes: 0,
   },
   {
     id: 'telegram',
@@ -38,7 +36,6 @@ export const guides: BackupGuide[] = [
       'Open Beebeeb and upload the archive.',
     ],
     note: 'Export is only available on Telegram Desktop, not the mobile app.',
-    upvotes: 0,
   },
   {
     id: 'instagram',
@@ -54,7 +51,6 @@ export const guides: BackupGuide[] = [
       'Open the downloaded ZIP and share photos to Beebeeb.',
     ],
     note: 'Instagram can take up to 48 hours to prepare your archive.',
-    upvotes: 0,
   },
   {
     id: 'signal',
@@ -68,7 +64,6 @@ export const guides: BackupGuide[] = [
       'For media: save individual photos and videos to your camera roll, then back them up via Beebeeb camera backup.',
     ],
     note: 'Signal prioritises privacy by design — full export is not available. Your messages live on your device only.',
-    upvotes: 0,
   },
   {
     id: 'apple-notes',
@@ -83,7 +78,6 @@ export const guides: BackupGuide[] = [
       'Select "Beebeeb" from the share sheet.',
     ],
     note: 'Export one note at a time. For bulk export, use a Mac: File → Export As PDF.',
-    upvotes: 0,
   },
   {
     id: 'google-photos',
@@ -98,6 +92,5 @@ export const guides: BackupGuide[] = [
       'Download the archive and share the photos to Beebeeb.',
     ],
     note: 'Google Takeout archives can be several GB. Download via Wi-Fi.',
-    upvotes: 0,
   },
 ]

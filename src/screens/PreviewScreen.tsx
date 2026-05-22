@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ActivityIndicator,
   Alert,
+  Animated,
   Dimensions,
   FlatList,
   Image,
@@ -17,6 +18,7 @@ import { useNavigation, useRoute } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import * as Clipboard from 'expo-clipboard';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 import * as Haptics from 'expo-haptics';
@@ -28,15 +30,28 @@ import type { RootStackParamList } from '../App';
 import { colors, radii, shadows } from '../theme';
 import type { Colors } from '../theme';
 import { useTheme } from '../lib/theme-context';
-import { ApiError, getToken, getDownloadUrl, friendlyError, trustLocation } from '../lib/api';
+import { getToken, friendlyError, trustLocation, trashFiles } from '../lib/api';
 import { useCrypto } from '../lib/crypto-context';
-import * as BeebeebCrypto from '../../modules/beebeeb-crypto';
-import {
-  decryptEncryptedBytes,
-  inferChunkCountFromEncryptedSize,
-} from '../lib/encrypted-download';
 import { decryptToTempFile } from '../lib/native-decrypt';
-import { getCachedPhoto, cachePhoto } from '../lib/photo-cache';
+import type { PreviewLoadProgressEvent } from '../../modules/beebeeb-crypto';
+import {
+  estimatedDecryptSeconds,
+  formatDuration,
+  getDevicePerformanceProfile,
+  type DevicePerformanceProfile,
+} from '../lib/device-performance';
+import {
+  getCachedPhoto,
+  getCachedPhotoWithExtension,
+  cachePhoto,
+  cachePhotoWithExtension,
+} from '../lib/photo-cache';
+import { getCachedThumbnail } from '../lib/thumbnail-cache';
+import { cacheLocalThumbnail } from '../lib/thumbnail';
+import {
+  activePhotoPageIndices,
+  clampPhotoIndex,
+} from '../lib/photo-viewer-window';
 import { PdfRenderer } from '../components/preview/PdfRenderer';
 import { DetailsSheet } from '../components/preview/DetailsSheet';
 import { ArchiveRenderer } from '../components/preview/ArchiveRenderer';
@@ -88,6 +103,13 @@ hljs.registerLanguage('yaml', hljsYaml);
 
 type PreviewRoute = RouteProp<RootStackParamList, 'Preview'>;
 type Nav = NativeStackNavigationProp<RootStackParamList>;
+
+type PreviewOptionAction = {
+  label: string;
+  icon: React.ComponentProps<typeof Ionicons>['name'];
+  destructive?: boolean;
+  run: () => void;
+};
 
 function formatSize(bytes: number): string {
   if (bytes < 1_000) return `${bytes} B`;
@@ -145,6 +167,11 @@ function extensionForMime(mimeType?: string, category?: Category): string {
   if (category === 'zip') return '.zip';
   if (category === 'doc') return '.txt';
   return '';
+}
+
+function mediaCacheExtension(mimeType: string | null | undefined, category: Category): string | null {
+  const ext = extensionForMime(mimeType ?? undefined, category).replace(/^\./, '');
+  return ext || null;
 }
 
 function previewDisplayName(fileName: string, category: Category): string {
@@ -301,34 +328,6 @@ function base64ToUint8Array(b64: string): Uint8Array {
     bytes[i] = binary.charCodeAt(i);
   }
   return bytes;
-}
-
-function uint8ArrayToBase64(bytes: Uint8Array): string {
-  let binary = '';
-  for (let i = 0; i < bytes.length; i++) {
-    binary += String.fromCharCode(bytes[i]);
-  }
-  return btoa(binary);
-}
-
-function responseHeaderInt(headers: Headers, key: string): number | null {
-  const value = headers.get(key);
-  if (!value) return null;
-  const n = Number.parseInt(value, 10);
-  return Number.isFinite(n) && n >= 0 ? n : null;
-}
-
-async function errorMessageFromResponse(res: Response): Promise<string> {
-  const text = await res.text().catch(() => '');
-  if (!text) return res.statusText || `HTTP ${res.status}`;
-  try {
-    const body = JSON.parse(text) as { error?: unknown; message?: unknown };
-    if (typeof body.error === 'string') return body.error;
-    if (typeof body.message === 'string') return body.message;
-  } catch {
-    // Plain text error body.
-  }
-  return text;
 }
 
 /**
@@ -838,118 +837,356 @@ const SCREEN_WIDTH = Dimensions.get('window').width;
 interface PhotoPageEntry {
   id: string;
   name_encrypted: string;
+  display_name?: string;
   mime_type: string | null;
   size_bytes: number;
   created_at: string;
   chunk_count: number;
   version_number?: number;
   storage_pool_id?: string | null;
+  thumbnail_uri?: string | null;
+  local_asset_id?: string | null;
+}
+
+type PhotoLoadStage = 'checking' | 'downloading' | 'decrypting' | 'caching';
+type FileKeyLoader = (fileId: string) => Promise<Uint8Array>;
+type MasterKeyHandleLoader = () => number;
+
+interface PreviewProgressState {
+  stage: PhotoLoadStage | null;
+  bytesDownloaded: number;
+  bytesTotal: number;
+  chunksCompleted: number;
+  chunksTotal: number;
+}
+
+function emptyPreviewProgress(stage: PhotoLoadStage | null = null): PreviewProgressState {
+  return {
+    stage,
+    bytesDownloaded: 0,
+    bytesTotal: 0,
+    chunksCompleted: 0,
+    chunksTotal: 0,
+  };
+}
+
+interface InFlightPhotoLoad {
+  promise: Promise<string>;
+  signal: AbortSignal;
+}
+
+const inFlightPhotoLoads = new Map<string, InFlightPhotoLoad>();
+
+function isAbortError(err: unknown): boolean {
+  return err instanceof Error && err.name === 'AbortError';
+}
+
+function throwIfPreviewAborted(signal?: AbortSignal): void {
+  if (!signal?.aborted) return;
+  const error = new Error('Preview load cancelled.');
+  error.name = 'AbortError';
+  throw error;
+}
+
+function PreviewProgressStatus({
+  color,
+  isUnlocked,
+  isVideo,
+  progress,
+  profile,
+  sizeBytes,
+}: {
+  color: string;
+  isUnlocked: boolean;
+  isVideo: boolean;
+  progress: PreviewProgressState;
+  profile?: DevicePerformanceProfile | null;
+  sizeBytes?: number | null;
+}) {
+  const fraction = progressFraction(progress);
+  return (
+    <View style={styles.previewProgressWrap}>
+      <ActivityIndicator color={color} size="large" />
+      <View style={styles.previewProgressTrack}>
+        <View style={[styles.previewProgressFill, { width: `${Math.round(fraction * 100)}%`, backgroundColor: color }]} />
+      </View>
+      <Text style={styles.imageStatusSub}>
+      {progressStageText(progress, isUnlocked, isVideo, sizeBytes, profile ?? null)}
+      </Text>
+    </View>
+  );
+}
+
+function progressStageText(
+  progress: PreviewProgressState,
+  isUnlocked: boolean,
+  isVideo: boolean,
+  sizeBytes?: number | null,
+  profile?: DevicePerformanceProfile | null,
+): string {
+  if (!isUnlocked) return isVideo ? 'Unlock your vault to play this video.' : 'Unlock your vault to view this file.';
+  if (progress.stage === 'checking') return 'Checking local copy...';
+  if (progress.stage === 'downloading') {
+    if (progress.bytesTotal > 0) {
+      return `Downloading ${formatSize(progress.bytesDownloaded)} of ${formatSize(progress.bytesTotal)}`;
+    }
+    return isVideo ? 'Downloading video...' : 'Downloading encrypted file...';
+  }
+  if (progress.stage === 'decrypting') {
+    const progressText = progress.chunksTotal > 0
+      ? ` · ${Math.round((progress.chunksCompleted / progress.chunksTotal) * 100)}%`
+      : '';
+    const eta = formatDuration(estimatedDecryptSeconds(sizeBytes, profile ?? null));
+    return eta ? `Decrypting on iPhone · about ${eta}${progressText}` : `Decrypting on iPhone${progressText}`;
+  }
+  if (progress.stage === 'caching') return isVideo ? 'Saving for faster playback...' : 'Saving for faster swipes...';
+  return isVideo ? 'Preparing video...' : 'Preparing file...';
+}
+
+function progressFraction(progress: PreviewProgressState): number {
+  if (progress.stage === 'downloading' && progress.bytesTotal > 0) {
+    return Math.max(0, Math.min(1, progress.bytesDownloaded / progress.bytesTotal));
+  }
+  if (progress.stage === 'decrypting' && progress.chunksTotal > 0) {
+    return Math.max(0, Math.min(1, progress.chunksCompleted / progress.chunksTotal));
+  }
+  return 0;
+}
+
+function applyNativeProgress(event: PreviewLoadProgressEvent, setProgress: React.Dispatch<React.SetStateAction<PreviewProgressState>>): void {
+  if (event.stage !== 'downloading' && event.stage !== 'decrypting') return;
+  const stage: PhotoLoadStage = event.stage;
+  setProgress((prev) => ({
+    ...prev,
+    stage,
+    bytesDownloaded: event.bytesDownloaded ?? prev.bytesDownloaded,
+    bytesTotal: event.bytesTotal ?? prev.bytesTotal,
+    chunksCompleted: event.chunksCompleted ?? prev.chunksCompleted,
+    chunksTotal: event.chunksTotal ?? prev.chunksTotal,
+  }));
+}
+
+async function loadDecryptedPhotoForViewer(
+  entry: PhotoPageEntry,
+  isUnlocked: boolean,
+  getFileKeyBytes: FileKeyLoader,
+  getMasterKeyHandleId: MasterKeyHandleLoader,
+  onStage?: (stage: PhotoLoadStage) => void,
+  onProgress?: (event: PreviewLoadProgressEvent) => void,
+  signal?: AbortSignal,
+): Promise<string> {
+  throwIfPreviewAborted(signal);
+  const isVideo = !!entry.mime_type?.startsWith('video/');
+  const category: Category = isVideo ? 'video' : 'image';
+  const cacheExt = mediaCacheExtension(entry.mime_type, category);
+  onStage?.('checking');
+  const cached = isVideo
+    ? await getCachedPhotoWithExtension(entry.id, cacheExt)
+    : await getCachedPhoto(entry.id);
+  throwIfPreviewAborted(signal);
+  if (cached) return cached;
+
+  if (!isUnlocked) {
+    throw new Error('Unlock your vault to view this image.');
+  }
+
+  const inFlight = inFlightPhotoLoads.get(entry.id);
+  if (inFlight && !inFlight.signal.aborted) return inFlight.promise;
+
+  const loadPromise = (async () => {
+    throwIfPreviewAborted(signal);
+    onStage?.('downloading');
+    onStage?.('decrypting');
+    const ext = extensionForMime(entry.mime_type ?? undefined, category);
+    const decryptedUri = await decryptToTempFile(
+      entry.id,
+      () => getFileKeyBytes(entry.id),
+      ext,
+      entry.size_bytes,
+      entry.chunk_count,
+      getMasterKeyHandleId(),
+      { onProgress, signal },
+    );
+    if (signal?.aborted) {
+      await FileSystem.deleteAsync(decryptedUri, { idempotent: true }).catch(() => {});
+      throwIfPreviewAborted(signal);
+    }
+
+    onStage?.('caching');
+    const cachedUri = isVideo
+      ? await cachePhotoWithExtension(entry.id, decryptedUri, cacheExt)
+      : await cachePhoto(entry.id, decryptedUri);
+    if (cachedUri !== decryptedUri) {
+      await FileSystem.deleteAsync(decryptedUri, { idempotent: true }).catch(() => {});
+    }
+    throwIfPreviewAborted(signal);
+    return cachedUri;
+  })();
+
+  inFlightPhotoLoads.set(entry.id, { promise: loadPromise, signal: signal ?? new AbortController().signal });
+  try {
+    return await loadPromise;
+  } finally {
+    const current = inFlightPhotoLoads.get(entry.id);
+    if (current?.promise === loadPromise) inFlightPhotoLoads.delete(entry.id);
+  }
 }
 
 const PhotoPage = React.memo(function PhotoPage({
   entry,
-  isActive,
+  shouldLoadFull,
+  isCurrent,
   width,
 }: {
   entry: PhotoPageEntry;
-  isActive: boolean;
+  shouldLoadFull: boolean;
+  isCurrent: boolean;
   width: number;
 }) {
   const { colors: c } = useTheme();
-  const { isUnlocked, getFileKeyBytes } = useCrypto();
+  const { isUnlocked, getFileKeyBytes, getMasterKeyHandleId } = useCrypto();
+  const isVideoEntry = !!entry.mime_type && entry.mime_type.startsWith('video/');
   const [uri, setUri] = useState<string | null>(null);
+  const [thumbnailUri, setThumbnailUri] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [stage, setStage] = useState<PhotoLoadStage | null>(null);
+  const [progress, setProgress] = useState<PreviewProgressState>(() => emptyPreviewProgress('checking'));
+  const [performanceProfile, setPerformanceProfile] = useState<DevicePerformanceProfile | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const fullImageOpacity = useRef(new Animated.Value(0)).current;
+  const player = useVideoPlayer(isVideoEntry && uri ? uri : null, (p) => {
+    p.loop = false;
+  });
 
   useEffect(() => {
-    if (!isActive) return;
+    let cancelled = false;
+    const seeded = entry.thumbnail_uri ?? null;
+    if (seeded) setThumbnailUri(seeded);
+    const localUri = entry.local_asset_id ? `ph://${entry.local_asset_id}` : null;
+    const loadThumbnail = seeded
+      ? Promise.resolve(seeded)
+      : localUri
+        ? cacheLocalThumbnail(entry.id, localUri, entry.mime_type)
+        : getCachedThumbnail(entry.id);
+    loadThumbnail
+      .then((cached) => {
+        if (!cancelled) setThumbnailUri(cached);
+      })
+      .catch(() => {
+        if (!cancelled) setThumbnailUri(null);
+      });
+    return () => { cancelled = true; };
+  }, [entry.id]);
+
+  useEffect(() => {
+    if (!shouldLoadFull) return;
     if (uri) return; // Already loaded
     if (Platform.OS === 'web') return;
 
+    const controller = new AbortController();
     let cancelled = false;
     setLoading(true);
+    setStage('checking');
+    setProgress(emptyPreviewProgress('checking'));
     setError(null);
+    void getDevicePerformanceProfile().then((profile) => {
+      if (!cancelled) setPerformanceProfile(profile);
+    });
 
-    (async () => {
-      try {
-        const token = await getToken();
-        if (!token) throw new Error('Not signed in');
-
-        const ext = extensionForMime(entry.mime_type ?? undefined, 'image');
-        const cacheUri = `${FileSystem.cacheDirectory}dec_${entry.id}_photo${ext}`;
-
-        try {
-          await FileSystem.deleteAsync(cacheUri, { idempotent: true });
-        } catch { /* ignore */ }
-
-        const res = await fetch(getDownloadUrl(entry.id), {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        if (!res.ok) throw new ApiError(res.status, await errorMessageFromResponse(res));
-        const encBytes = new Uint8Array(await res.arrayBuffer());
-
-        if (isUnlocked && BeebeebCrypto.isNativeAvailable) {
-          const headerOriginalSize = responseHeaderInt(res.headers, 'X-Original-Size');
-          const effectiveSize = headerOriginalSize ?? entry.size_bytes ?? encBytes.length - 28;
-          if (effectiveSize <= 0) throw new Error('Could not determine plaintext size.');
-
-          const headerChunkCount = responseHeaderInt(res.headers, 'X-Chunk-Count');
-          const headerChunkSize = responseHeaderInt(res.headers, 'X-Chunk-Size');
-          const inferred = inferChunkCountFromEncryptedSize(encBytes.length, effectiveSize);
-          const effectiveChunkCount = headerChunkCount ?? entry.chunk_count ?? inferred ?? 1;
-          const effectiveChunkSize = headerChunkSize && headerChunkSize > 0 ? headerChunkSize : undefined;
-
-          const fileKey = await getFileKeyBytes(entry.id);
-          const decrypted = await decryptEncryptedBytes(fileKey, encBytes, effectiveChunkCount, effectiveSize, effectiveChunkSize);
-
-          await FileSystem.writeAsStringAsync(cacheUri, uint8ArrayToBase64(decrypted), {
-            encoding: FileSystem.EncodingType.Base64,
-          });
-          if (!cancelled) setUri(cacheUri);
-        } else {
-          const encCacheUri = `${FileSystem.cacheDirectory}${entry.id}_photo${ext}`;
-          await FileSystem.writeAsStringAsync(encCacheUri, uint8ArrayToBase64(encBytes), {
-            encoding: FileSystem.EncodingType.Base64,
-          });
-          if (!cancelled) setUri(encCacheUri);
+    loadDecryptedPhotoForViewer(
+      entry,
+      isUnlocked,
+      getFileKeyBytes,
+      getMasterKeyHandleId,
+      (nextStage) => {
+        if (!cancelled) {
+          setStage(nextStage);
+          setProgress((prev) => ({ ...prev, stage: nextStage }));
         }
-      } catch (err) {
-        if (!cancelled) setError(friendlyError(err));
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
+      },
+      (event) => {
+        if (!cancelled) applyNativeProgress(event, setProgress);
+      },
+      controller.signal,
+    )
+      .then((loadedUri) => {
+        if (!cancelled) setUri(loadedUri);
+      })
+      .catch((err) => {
+        if (!cancelled && !isAbortError(err)) setError(friendlyError(err));
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoading(false);
+          setStage(null);
+          setProgress(emptyPreviewProgress(null));
+        }
+      });
 
-    return () => { cancelled = true; };
-  }, [isActive, uri, entry, isUnlocked, getFileKeyBytes]);
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [shouldLoadFull, uri, entry, isUnlocked, getFileKeyBytes, getMasterKeyHandleId]);
+
+  useEffect(() => {
+    if (!uri) {
+      fullImageOpacity.setValue(0);
+      return;
+    }
+    Animated.timing(fullImageOpacity, {
+      toValue: 1,
+      duration: isCurrent ? 180 : 80,
+      useNativeDriver: true,
+    }).start();
+  }, [fullImageOpacity, isCurrent, uri]);
 
   return (
-    <View style={{ width, flex: 1, alignItems: 'center', justifyContent: 'center' }}>
-      {uri ? (
+    <View style={[styles.photoPage, { width }]}>
+      {thumbnailUri && !uri ? (
         <Image
+          source={{ uri: thumbnailUri }}
+          style={styles.photoPageThumbnail}
+          resizeMode="contain"
+          blurRadius={Platform.OS === 'ios' ? 14 : 8}
+        />
+      ) : null}
+      {uri && isVideoEntry ? (
+        <VideoView
+          player={player}
+          style={styles.photoPageImage}
+          contentFit="contain"
+          nativeControls
+          allowsFullscreen
+          allowsPictureInPicture
+        />
+      ) : uri ? (
+        <Animated.Image
           source={{ uri }}
-          style={{ width: '100%', height: '100%' }}
+          style={[styles.photoPageImage, { opacity: fullImageOpacity }]}
           resizeMode="contain"
         />
       ) : error ? (
-        <View style={{ alignItems: 'center', gap: 12 }}>
-          <Text style={{ color: colors.white, fontSize: 16, fontWeight: '600' }}>
-            Couldn't load image
+        <View style={styles.photoPageStatus}>
+          <Text style={styles.photoPageStatusTitle}>
+            {isVideoEntry ? "Couldn't load video" : "Couldn't load image"}
           </Text>
-          <Text style={{ color: 'rgba(255,255,255,0.6)', fontSize: 13, textAlign: 'center' }}>
+          <Text style={styles.photoPageStatusSub}>
             {error}
           </Text>
         </View>
       ) : (
-        <View style={{ alignItems: 'center', gap: 12 }}>
-          <ActivityIndicator color={c.amber} size="large" />
-          <Text style={{ color: 'rgba(255,255,255,0.6)', fontSize: 13 }}>
-            {loading
-              ? isUnlocked
-                ? 'Downloading and decrypting...'
-                : 'Unlock your vault to view this image.'
-              : ''}
-          </Text>
+        <View style={styles.photoPageStatus}>
+          {loading || shouldLoadFull ? (
+            <PreviewProgressStatus
+              color={c.amber}
+              isUnlocked={isUnlocked}
+              isVideo={isVideoEntry}
+              progress={progress.stage ? progress : { ...progress, stage }}
+              profile={performanceProfile}
+              sizeBytes={entry.size_bytes}
+            />
+          ) : null}
         </View>
       )}
     </View>
@@ -988,13 +1225,19 @@ export default function PreviewScreen() {
     }
   }, [photoListJson]);
   const hasSwipe = photoList.length > 1;
-  const [currentPhotoIndex, setCurrentPhotoIndex] = useState(initialPhotoIndex ?? 0);
+  const [currentPhotoIndex, setCurrentPhotoIndex] = useState(() => (
+    clampPhotoIndex(initialPhotoIndex ?? 0, photoList.length)
+  ));
   const pagerRef = useRef<FlatList<PhotoPageEntry>>(null);
+  const activePhotoPageIndexes = useMemo(
+    () => activePhotoPageIndices(currentPhotoIndex, photoList.length, 0),
+    [currentPhotoIndex, photoList.length],
+  );
 
   // Derive the current photo entry from the swipe index
   const currentEntry = hasSwipe ? photoList[currentPhotoIndex] : null;
   const currentFileId = currentEntry?.id ?? fileId;
-  const currentFileName = currentEntry?.name_encrypted ?? fileName;
+  const currentFileName = currentEntry?.display_name ?? currentEntry?.name_encrypted ?? fileName;
   const currentMimeType = currentEntry?.mime_type ?? mimeType;
   const currentSizeBytes = currentEntry?.size_bytes ?? sizeBytes;
   const currentCreatedAt = currentEntry?.created_at ?? createdAt;
@@ -1003,8 +1246,12 @@ export default function PreviewScreen() {
   const currentStoragePoolId = currentEntry?.storage_pool_id ?? storagePoolId;
 
   const [downloading, setDownloading] = useState(false);
-  const [downloadProgress, setDownloadProgress] = useState(0);
+  const [trashing, setTrashing] = useState(false);
+  const [, setDownloadProgress] = useState(0);
+  const [loadProgress, setLoadProgress] = useState<PreviewProgressState>(() => emptyPreviewProgress(null));
+  const [performanceProfile, setPerformanceProfile] = useState<DevicePerformanceProfile | null>(null);
   const [exportStatus, setExportStatus] = useState<string | null>(null);
+  const [optionsVisible, setOptionsVisible] = useState(false);
 
   // Image inline preview state
   const [imageUri, setImageUri] = useState<string | null>(null);
@@ -1064,7 +1311,11 @@ export default function PreviewScreen() {
   const [pptxLoading, setPptxLoading] = useState(false);
   const [pptxError, setPptxError] = useState<string | null>(null);
 
-  const { isUnlocked, getFileKeyBytes } = useCrypto();
+  useEffect(() => {
+    void getDevicePerformanceProfile().then(setPerformanceProfile).catch(() => {});
+  }, []);
+
+  const { isUnlocked, getFileKeyBytes, getMasterKeyHandleId } = useCrypto();
 
   // Use current* values so derived state updates when swiping between photos
   const category = fileCategory(currentMimeType, currentFileName);
@@ -1178,9 +1429,12 @@ export default function PreviewScreen() {
    * unlocked). Returns a local URI suitable for an <Image> source or sharing.
    * Falls back to the encrypted URI if crypto is unavailable.
    */
-  const fetchAndDecrypt = useCallback(async (): Promise<string> => {
+  const fetchAndDecrypt = useCallback(async (options: { signal?: AbortSignal } = {}): Promise<string> => {
+    throwIfPreviewAborted(options.signal);
+    setLoadProgress(emptyPreviewProgress('downloading'));
     const token = await getToken();
     if (!token) throw new Error('Not signed in');
+    throwIfPreviewAborted(options.signal);
 
     // Keep the original extension on the cache filename — RN's <Image>,
     // expo-video, and the WebView pick the decoder from the URI suffix.
@@ -1194,59 +1448,38 @@ export default function PreviewScreen() {
       // Best-effort — proceed even if the path can't be cleared.
     }
 
-    const res = await fetch(getDownloadUrl(currentFileId), {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    if (!res.ok) {
-      throw new ApiError(res.status, await errorMessageFromResponse(res));
-    }
-    const encBytes = new Uint8Array(await res.arrayBuffer());
-    await FileSystem.writeAsStringAsync(cacheUri, uint8ArrayToBase64(encBytes), {
-      encoding: FileSystem.EncodingType.Base64,
-    });
-    setDownloadProgress(1);
-
     if (isUnlocked) {
-      if (!BeebeebCrypto.isNativeAvailable) {
-        throw new Error('Preview requires a dev client build with native crypto.');
-      }
-
-      // Resolve plaintext size: prefer the X-Original-Size header (the server
-      // stores the canonical value), then the route-param `currentSizeBytes`, then
-      // fall back to the encrypted length minus a single-chunk overhead.
-      const headerOriginalSize = responseHeaderInt(res.headers, 'X-Original-Size');
-      const effectiveSize = headerOriginalSize ?? currentSizeBytes ?? encBytes.length - 28;
-      if (effectiveSize <= 0) {
-        throw new Error('Could not determine plaintext size for decryption.');
-      }
-
-      // Resolve chunk count: header → route param → byte-math inference.
-      const headerChunkCount = responseHeaderInt(res.headers, 'X-Chunk-Count');
-      const headerChunkSize = responseHeaderInt(res.headers, 'X-Chunk-Size');
-      const inferred = inferChunkCountFromEncryptedSize(encBytes.length, effectiveSize);
-      const effectiveChunkCount = headerChunkCount ?? currentChunkCount ?? inferred ?? 1;
-      const effectiveChunkSize = headerChunkSize && headerChunkSize > 0
-        ? headerChunkSize
-        : undefined;
-
-      // Derive the per-file key once and reuse it across chunks.
-      const fileKey = await getFileKeyBytes(currentFileId);
-      const decrypted = await decryptEncryptedBytes(
-        fileKey,
-        encBytes,
-        effectiveChunkCount,
-        effectiveSize,
-        effectiveChunkSize,
+      const ext = extensionForMime(currentMimeType, category);
+      const decryptedUri = await decryptToTempFile(
+        currentFileId,
+        () => getFileKeyBytes(currentFileId),
+        ext || cacheFileName,
+        currentSizeBytes,
+        currentChunkCount,
+        getMasterKeyHandleId(),
+        {
+          onProgress: (event) => applyNativeProgress(event, setLoadProgress),
+          signal: options.signal,
+        },
       );
-
-      const decUri = `${FileSystem.cacheDirectory}dec_${currentFileId}_${cacheFileName}`;
-      await FileSystem.writeAsStringAsync(decUri, uint8ArrayToBase64(decrypted), {
-        encoding: FileSystem.EncodingType.Base64,
-      });
-      return decUri;
+      throwIfPreviewAborted(options.signal);
+      setDownloadProgress(1);
+      setLoadProgress(emptyPreviewProgress(null));
+      return decryptedUri;
     }
-    return cacheUri;
-  }, [cacheFileName, currentFileId, isUnlocked, getFileKeyBytes, currentChunkCount, currentSizeBytes]);
+
+    throw new Error('Unlock your vault to preview this file.');
+  }, [
+    cacheFileName,
+    category,
+    currentChunkCount,
+    currentFileId,
+    currentMimeType,
+    currentSizeBytes,
+    getFileKeyBytes,
+    getMasterKeyHandleId,
+    isUnlocked,
+  ]);
 
   const getExportUri = useCallback(async (): Promise<{ uri: string; reusedPreview: boolean }> => {
     if (isImage && imageUri) return { uri: imageUri, reusedPreview: true };
@@ -1259,7 +1492,9 @@ export default function PreviewScreen() {
   // re-downloading and re-decrypting when navigating back to a photo.
   useEffect(() => {
     if (!isImage) return;
+    if (hasSwipe) return;
     if (Platform.OS === 'web') return;
+    const controller = new AbortController();
     let cancelled = false;
     setImageLoading(true);
     setImageError(null);
@@ -1267,6 +1502,7 @@ export default function PreviewScreen() {
     (async () => {
       // Fast path: check if this photo is already cached (memory or disk)
       const cached = await getCachedPhoto(currentFileId);
+      throwIfPreviewAborted(controller.signal);
       if (cached) {
         if (!cancelled) {
           setImageUri(cached);
@@ -1276,12 +1512,20 @@ export default function PreviewScreen() {
       }
 
       // Slow path: download + decrypt, then cache the result
-      const decryptedUri = await fetchAndDecrypt();
-      if (cancelled) return;
+      const decryptedUri = await fetchAndDecrypt({ signal: controller.signal });
+      if (cancelled || controller.signal.aborted) {
+        FileSystem.deleteAsync(decryptedUri, { idempotent: true }).catch(() => {});
+        return;
+      }
+      throwIfPreviewAborted(controller.signal);
 
       // Store in photo cache for future navigations
       try {
         const cachedUri = await cachePhoto(currentFileId, decryptedUri);
+        if (cachedUri !== decryptedUri) {
+          FileSystem.deleteAsync(decryptedUri, { idempotent: true }).catch(() => {});
+        }
+        throwIfPreviewAborted(controller.signal);
         if (!cancelled) setImageUri(cachedUri);
       } catch {
         // Caching failed — use the decrypted URI directly
@@ -1289,7 +1533,7 @@ export default function PreviewScreen() {
       }
     })()
       .catch((err) => {
-        if (!cancelled) setImageError(friendlyError(err));
+        if (!cancelled && !isAbortError(err)) setImageError(friendlyError(err));
       })
       .finally(() => {
         if (!cancelled) {
@@ -1299,28 +1543,42 @@ export default function PreviewScreen() {
       });
     return () => {
       cancelled = true;
+      controller.abort();
     };
-  }, [isImage, currentFileId, fetchAndDecrypt]);
+  }, [hasSwipe, isImage, currentFileId, fetchAndDecrypt]);
 
   // Auto-load PDFs inline on mount — uses native decrypt + PdfRenderer.
   useEffect(() => {
     if (!isPdf) return;
     if (Platform.OS === 'web') return;
     if (!isUnlocked) return;
+    const controller = new AbortController();
     let cancelled = false;
     setPdfLoading(true);
     setPdfError(null);
     setPdfUri(null);
+    setLoadProgress(emptyPreviewProgress('downloading'));
 
     (async () => {
       try {
-        const fileKey = await getFileKeyBytes(currentFileId);
-        const tempPath = await decryptToTempFile(currentFileId, fileKey, 'pdf', currentSizeBytes, currentChunkCount);
+        const tempPath = await decryptToTempFile(
+          currentFileId,
+          () => getFileKeyBytes(currentFileId),
+          'pdf',
+          currentSizeBytes,
+          currentChunkCount,
+          getMasterKeyHandleId(),
+          {
+            onProgress: (event) => applyNativeProgress(event, setLoadProgress),
+            signal: controller.signal,
+          },
+        );
+        throwIfPreviewAborted(controller.signal);
         if (!cancelled) {
           setPdfUri(tempPath);
         }
       } catch (err) {
-        if (!cancelled) setPdfError(friendlyError(err));
+        if (!cancelled && !isAbortError(err)) setPdfError(friendlyError(err));
       } finally {
         if (!cancelled) {
           setPdfLoading(false);
@@ -1331,25 +1589,29 @@ export default function PreviewScreen() {
 
     return () => {
       cancelled = true;
+      controller.abort();
     };
-  }, [isPdf, isUnlocked, currentFileId, getFileKeyBytes, currentSizeBytes, currentChunkCount]);
+  }, [isPdf, isUnlocked, currentFileId, getFileKeyBytes, getMasterKeyHandleId, currentSizeBytes, currentChunkCount]);
 
   // Auto-load text/code/JSON inline on mount — read decrypted file as UTF-8
   useEffect(() => {
     if (!isText) return;
     if (Platform.OS === 'web') return;
+    const controller = new AbortController();
     let cancelled = false;
     setTextLoading(true);
     setTextError(null);
-    fetchAndDecrypt()
+    fetchAndDecrypt({ signal: controller.signal })
       .then(async (uri) => {
+        throwIfPreviewAborted(controller.signal);
         const content = await FileSystem.readAsStringAsync(uri, {
           encoding: FileSystem.EncodingType.UTF8,
         });
+        throwIfPreviewAborted(controller.signal);
         if (!cancelled) setTextContent(content);
       })
       .catch((err) => {
-        if (!cancelled) setTextError(friendlyError(err));
+        if (!cancelled && !isAbortError(err)) setTextError(friendlyError(err));
       })
       .finally(() => {
         if (!cancelled) {
@@ -1359,19 +1621,22 @@ export default function PreviewScreen() {
       });
     return () => {
       cancelled = true;
+      controller.abort();
     };
   }, [isText, fetchAndDecrypt]);
 
   // Auto-load video on mount; track the on-disk URI so we can delete it on unmount
   useEffect(() => {
     if (!isVideo) return;
+    if (hasSwipe) return;
     if (Platform.OS === 'web') return;
+    const controller = new AbortController();
     let cancelled = false;
     setVideoLoading(true);
     setVideoError(null);
-    fetchAndDecrypt()
+    fetchAndDecrypt({ signal: controller.signal })
       .then((uri) => {
-        if (cancelled) {
+        if (cancelled || controller.signal.aborted) {
           // Screen already unmounted by the time the download completed —
           // delete the file directly since the cleanup branch never sees it.
           FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => {});
@@ -1381,7 +1646,7 @@ export default function PreviewScreen() {
         setVideoUri(uri);
       })
       .catch((err) => {
-        if (!cancelled) setVideoError(friendlyError(err));
+        if (!cancelled && !isAbortError(err)) setVideoError(friendlyError(err));
       })
       .finally(() => {
         if (!cancelled) {
@@ -1391,8 +1656,9 @@ export default function PreviewScreen() {
       });
     return () => {
       cancelled = true;
+      controller.abort();
     };
-  }, [isVideo, fetchAndDecrypt]);
+  }, [hasSwipe, isVideo, fetchAndDecrypt]);
 
   // Delete the temp video file when the screen unmounts.
   useEffect(() => {
@@ -1415,6 +1681,7 @@ export default function PreviewScreen() {
   useEffect(() => {
     if (!isDocx) return;
     if (Platform.OS === 'web') return;
+    const controller = new AbortController();
     let cancelled = false;
     setDocxLoading(true);
     setDocxError(null);
@@ -1422,16 +1689,19 @@ export default function PreviewScreen() {
 
     (async () => {
       try {
-        const uri = await fetchAndDecrypt();
+        const uri = await fetchAndDecrypt({ signal: controller.signal });
         if (cancelled) return;
+        throwIfPreviewAborted(controller.signal);
         const arrayBuffer = await readFileAsArrayBuffer(uri);
         if (cancelled) return;
+        throwIfPreviewAborted(controller.signal);
         const result = await mammoth.convertToHtml({ arrayBuffer });
         if (cancelled) return;
+        throwIfPreviewAborted(controller.signal);
         const body = (result?.value as string) ?? '';
         setDocxHtml(body || '<p><em>This document is empty.</em></p>');
       } catch (err) {
-        if (!cancelled) setDocxError(friendlyError(err));
+        if (!cancelled && !isAbortError(err)) setDocxError(friendlyError(err));
       } finally {
         if (!cancelled) {
           setDocxLoading(false);
@@ -1442,6 +1712,7 @@ export default function PreviewScreen() {
 
     return () => {
       cancelled = true;
+      controller.abort();
     };
   }, [isDocx, fetchAndDecrypt]);
 
@@ -1449,6 +1720,7 @@ export default function PreviewScreen() {
   useEffect(() => {
     if (!isSpreadsheet) return;
     if (Platform.OS === 'web') return;
+    const controller = new AbortController();
     let cancelled = false;
     setSheetLoading(true);
     setSheetError(null);
@@ -1456,14 +1728,16 @@ export default function PreviewScreen() {
 
     (async () => {
       try {
-        const uri = await fetchAndDecrypt();
+        const uri = await fetchAndDecrypt({ signal: controller.signal });
         if (cancelled) return;
+        throwIfPreviewAborted(controller.signal);
         const arrayBuffer = await readFileAsArrayBuffer(uri);
         if (cancelled) return;
+        throwIfPreviewAborted(controller.signal);
         const data = parseSpreadsheet(arrayBuffer);
         if (!cancelled) setSheetData(data);
       } catch (err) {
-        if (!cancelled) setSheetError(friendlyError(err));
+        if (!cancelled && !isAbortError(err)) setSheetError(friendlyError(err));
       } finally {
         if (!cancelled) {
           setSheetLoading(false);
@@ -1474,6 +1748,7 @@ export default function PreviewScreen() {
 
     return () => {
       cancelled = true;
+      controller.abort();
     };
   }, [isSpreadsheet, fetchAndDecrypt]);
 
@@ -1487,20 +1762,23 @@ export default function PreviewScreen() {
   useEffect(() => {
     if (!isSvg) return;
     if (Platform.OS === 'web') return;
+    const controller = new AbortController();
     let cancelled = false;
     setSvgLoading(true);
     setSvgError(null);
     setSvgContent(null);
 
-    fetchAndDecrypt()
+    fetchAndDecrypt({ signal: controller.signal })
       .then(async (uri) => {
+        throwIfPreviewAborted(controller.signal);
         const content = await FileSystem.readAsStringAsync(uri, {
           encoding: FileSystem.EncodingType.UTF8,
         });
+        throwIfPreviewAborted(controller.signal);
         if (!cancelled) setSvgContent(content);
       })
       .catch((err) => {
-        if (!cancelled) setSvgError(friendlyError(err));
+        if (!cancelled && !isAbortError(err)) setSvgError(friendlyError(err));
       })
       .finally(() => {
         if (!cancelled) {
@@ -1511,6 +1789,7 @@ export default function PreviewScreen() {
 
     return () => {
       cancelled = true;
+      controller.abort();
     };
   }, [isSvg, fetchAndDecrypt]);
 
@@ -1518,6 +1797,7 @@ export default function PreviewScreen() {
   useEffect(() => {
     if (!isHtml) return;
     if (Platform.OS === 'web') return;
+    const controller = new AbortController();
     let cancelled = false;
     setHtmlLoading(true);
     setHtmlError(null);
@@ -1525,15 +1805,17 @@ export default function PreviewScreen() {
     // Always start in rendered mode for a fresh file
     setHtmlShowSource(false);
 
-    fetchAndDecrypt()
+    fetchAndDecrypt({ signal: controller.signal })
       .then(async (uri) => {
+        throwIfPreviewAborted(controller.signal);
         const content = await FileSystem.readAsStringAsync(uri, {
           encoding: FileSystem.EncodingType.UTF8,
         });
+        throwIfPreviewAborted(controller.signal);
         if (!cancelled) setHtmlContent(content);
       })
       .catch((err) => {
-        if (!cancelled) setHtmlError(friendlyError(err));
+        if (!cancelled && !isAbortError(err)) setHtmlError(friendlyError(err));
       })
       .finally(() => {
         if (!cancelled) {
@@ -1544,6 +1826,7 @@ export default function PreviewScreen() {
 
     return () => {
       cancelled = true;
+      controller.abort();
     };
   }, [isHtml, fetchAndDecrypt]);
 
@@ -1557,6 +1840,7 @@ export default function PreviewScreen() {
   useEffect(() => {
     if (!isZip) return;
     if (Platform.OS === 'web') return;
+    const controller = new AbortController();
     let cancelled = false;
     setZipLoading(true);
     setZipError(null);
@@ -1564,14 +1848,16 @@ export default function PreviewScreen() {
 
     (async () => {
       try {
-        const uri = await fetchAndDecrypt();
+        const uri = await fetchAndDecrypt({ signal: controller.signal });
         if (cancelled) return;
+        throwIfPreviewAborted(controller.signal);
         const arrayBuffer = await readFileAsArrayBuffer(uri);
         if (cancelled) return;
+        throwIfPreviewAborted(controller.signal);
         const summary = await parseZip(arrayBuffer);
         if (!cancelled) setZipSummary(summary);
       } catch (err) {
-        if (!cancelled) setZipError(friendlyError(err));
+        if (!cancelled && !isAbortError(err)) setZipError(friendlyError(err));
       } finally {
         if (!cancelled) {
           setZipLoading(false);
@@ -1582,6 +1868,7 @@ export default function PreviewScreen() {
 
     return () => {
       cancelled = true;
+      controller.abort();
     };
   }, [isZip, fetchAndDecrypt]);
 
@@ -1589,6 +1876,7 @@ export default function PreviewScreen() {
   useEffect(() => {
     if (!isArchive) return;
     if (Platform.OS === 'web') return;
+    const controller = new AbortController();
     let cancelled = false;
     setArchiveLoading(true);
     setArchiveError(null);
@@ -1596,12 +1884,14 @@ export default function PreviewScreen() {
 
     (async () => {
       try {
-        const uri = await fetchAndDecrypt();
+        const uri = await fetchAndDecrypt({ signal: controller.signal });
         if (cancelled) return;
+        throwIfPreviewAborted(controller.signal);
         const arrayBuffer = await readFileAsArrayBuffer(uri);
+        throwIfPreviewAborted(controller.signal);
         if (!cancelled) setArchiveData(arrayBuffer);
       } catch (err) {
-        if (!cancelled) setArchiveError(friendlyError(err));
+        if (!cancelled && !isAbortError(err)) setArchiveError(friendlyError(err));
       } finally {
         if (!cancelled) {
           setArchiveLoading(false);
@@ -1612,6 +1902,7 @@ export default function PreviewScreen() {
 
     return () => {
       cancelled = true;
+      controller.abort();
     };
   }, [isArchive, fetchAndDecrypt]);
 
@@ -1619,6 +1910,7 @@ export default function PreviewScreen() {
   useEffect(() => {
     if (!isPptx) return;
     if (Platform.OS === 'web') return;
+    const controller = new AbortController();
     let cancelled = false;
     setPptxLoading(true);
     setPptxError(null);
@@ -1626,12 +1918,14 @@ export default function PreviewScreen() {
 
     (async () => {
       try {
-        const uri = await fetchAndDecrypt();
+        const uri = await fetchAndDecrypt({ signal: controller.signal });
         if (cancelled) return;
+        throwIfPreviewAborted(controller.signal);
         const arrayBuffer = await readFileAsArrayBuffer(uri);
+        throwIfPreviewAborted(controller.signal);
         if (!cancelled) setPptxData(arrayBuffer);
       } catch (err) {
-        if (!cancelled) setPptxError(friendlyError(err));
+        if (!cancelled && !isAbortError(err)) setPptxError(friendlyError(err));
       } finally {
         if (!cancelled) {
           setPptxLoading(false);
@@ -1642,6 +1936,7 @@ export default function PreviewScreen() {
 
     return () => {
       cancelled = true;
+      controller.abort();
     };
   }, [isPptx, fetchAndDecrypt]);
 
@@ -1696,6 +1991,75 @@ export default function PreviewScreen() {
     navigation.navigate('ShareSheet', { fileId: currentFileId, fileName: previewFileName, mimeType: currentMimeType, sizeBytes: currentSizeBytes });
   }, [navigation, currentFileId, previewFileName, currentMimeType, currentSizeBytes]);
 
+  const handleCopyName = useCallback(async () => {
+    await Clipboard.setStringAsync(previewFileName);
+    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+  }, [previewFileName]);
+
+  const handleDuplicate = useCallback(() => {
+    Alert.alert(
+      'Duplicate is not ready yet',
+      'Duplicating encrypted files needs a server-side copy operation so the file key, metadata, and chunks stay consistent.',
+    );
+  }, []);
+
+  const handleMoveToTrash = useCallback(() => {
+    if (trashing) return;
+
+    Alert.alert(
+      'Move to Trash?',
+      `${previewFileName} will be removed from Beebeeb. It will not be deleted from your iPhone camera roll.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Move to Trash',
+          style: 'destructive',
+          onPress: async () => {
+            setTrashing(true);
+            try {
+              await trashFiles([currentFileId]);
+              await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+              navigation.goBack();
+            } catch (err) {
+              await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+              Alert.alert('Delete failed', friendlyError(err));
+            } finally {
+              setTrashing(false);
+            }
+          },
+        },
+      ],
+    );
+  }, [currentFileId, navigation, previewFileName, trashing]);
+
+  const previewActions = useMemo<PreviewOptionAction[]>(() => [
+    { label: 'Share Beebeeb Link', icon: 'link-outline', run: handleShare },
+    { label: 'Export via iOS', icon: 'share-outline', run: handleDownload },
+    { label: 'Copy File Name', icon: 'copy-outline', run: handleCopyName },
+    { label: 'Duplicate', icon: 'duplicate-outline', run: handleDuplicate },
+    { label: 'Move to Trash', icon: 'trash-outline', destructive: true, run: handleMoveToTrash },
+  ], [handleCopyName, handleDownload, handleDuplicate, handleMoveToTrash, handleShare]);
+
+  const handlePreviewOptions = useCallback(() => {
+    if (Platform.OS === 'ios') {
+      setOptionsVisible(true);
+      return;
+    }
+
+    Alert.alert(
+      previewFileName,
+      undefined,
+      [
+        ...previewActions.map((action) => ({
+          text: action.label,
+          style: action.destructive ? 'destructive' as const : 'default' as const,
+          onPress: action.run,
+        })),
+        { text: 'Cancel', style: 'cancel' },
+      ],
+    );
+  }, [previewActions, previewFileName]);
+
   // Swipe pager: only render the active page + 1 neighbor on each side
   const handlePagerScroll = useCallback(
     (e: { nativeEvent: { contentOffset: { x: number } } }) => {
@@ -1720,16 +2084,28 @@ export default function PreviewScreen() {
     ({ item, index }: { item: PhotoPageEntry; index: number }) => (
       <PhotoPage
         entry={item}
-        isActive={Math.abs(index - currentPhotoIndex) <= 1}
+        shouldLoadFull={activePhotoPageIndexes.has(index)}
+        isCurrent={index === currentPhotoIndex}
         width={SCREEN_WIDTH}
       />
     ),
-    [currentPhotoIndex],
+    [activePhotoPageIndexes, currentPhotoIndex],
+  );
+
+  const renderSharedProgress = (isVideoProgress = false) => (
+    <PreviewProgressStatus
+      color={c.amber}
+      isUnlocked={isUnlocked}
+      isVideo={isVideoProgress}
+      progress={loadProgress.stage ? loadProgress : emptyPreviewProgress('downloading')}
+      profile={performanceProfile}
+      sizeBytes={currentSizeBytes}
+    />
   );
 
   if (isMediaPreview) {
     // When a photo list is provided, show a horizontal swipeable pager
-    const showPager = hasSwipe && isImage;
+    const showPager = hasSwipe && (isImage || isVideo);
 
     return (
       <View style={styles.mediaRoot}>
@@ -1754,12 +2130,13 @@ export default function PreviewScreen() {
           </View>
 
           <TouchableOpacity
-            onPress={handleShare}
-            style={styles.mediaIconButton}
+            onPress={handlePreviewOptions}
+            disabled={downloading || trashing}
+            style={[styles.mediaIconButton, (downloading || trashing) && styles.disabledIconButton]}
             hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
-            accessibilityLabel="Share Beebeeb link"
+            accessibilityLabel="Open file options"
           >
-            <Ionicons name="link-outline" size={19} color={colors.white} />
+            <Ionicons name="ellipsis-horizontal" size={21} color={colors.white} />
           </TouchableOpacity>
         </View>
 
@@ -1778,7 +2155,7 @@ export default function PreviewScreen() {
               data={photoList}
               horizontal
               pagingEnabled
-              initialScrollIndex={initialPhotoIndex ?? 0}
+              initialScrollIndex={clampPhotoIndex(initialPhotoIndex ?? 0, photoList.length)}
               getItemLayout={pagerGetItemLayout}
               keyExtractor={(item) => item.id}
               renderItem={renderPhotoPage}
@@ -1815,14 +2192,7 @@ export default function PreviewScreen() {
                 </View>
               ) : (
                 <View style={styles.imageStatus}>
-                  <ActivityIndicator color={c.amber} size="large" />
-                  <Text style={styles.imageStatusSub}>
-                    {imageLoading && downloadProgress > 0
-                      ? `Decrypting · ${Math.round(downloadProgress * 100)}%`
-                      : isUnlocked
-                      ? 'Downloading and decrypting...'
-                      : 'Unlock your vault to view this image.'}
-                  </Text>
+                  {renderSharedProgress(false)}
                 </View>
               )
             ) : videoUri ? (
@@ -1841,14 +2211,7 @@ export default function PreviewScreen() {
               </View>
             ) : (
               <View style={styles.imageStatus}>
-                <ActivityIndicator color={c.amber} size="large" />
-                <Text style={styles.imageStatusSub}>
-                  {videoLoading && downloadProgress > 0
-                    ? `Decrypting · ${Math.round(downloadProgress * 100)}%`
-                    : isUnlocked
-                    ? 'Downloading and decrypting...'
-                    : 'Unlock your vault to play this video.'}
-                </Text>
+                {renderSharedProgress(true)}
               </View>
             )}
           </Pressable>
@@ -1860,7 +2223,7 @@ export default function PreviewScreen() {
           size={currentSizeBytes != null ? formatSize(currentSizeBytes) : 'Unknown'}
           created={currentCreatedAt ? formatDate(currentCreatedAt) : undefined}
           extraInfo={mediaDetailsRows
-            .filter((r) => !['Name', 'Kind', 'Size', 'Created'].includes(r.label))
+            .filter((r) => !['Name', 'Kind', 'Size', 'Created', 'Storage'].includes(r.label))
             .map((r) => ({ label: r.label, value: r.value }))}
           storageLocation={(() => {
             const storage = trustLocation(currentStoragePoolId);
@@ -1869,6 +2232,13 @@ export default function PreviewScreen() {
           onShare={handleShare}
           onDownload={handleDownload}
           downloading={downloading}
+        />
+        <PreviewOptionsPopover
+          visible={optionsVisible}
+          filename={previewFileName}
+          actions={previewActions}
+          onClose={() => setOptionsVisible(false)}
+          top={insets.top + 62}
         />
       </View>
     );
@@ -1904,13 +2274,23 @@ export default function PreviewScreen() {
         </View>
 
         <TouchableOpacity
-          onPress={handleShare}
-          style={styles.headerAction}
+          onPress={handlePreviewOptions}
+          disabled={downloading || trashing}
+          style={[styles.headerIconButton, (downloading || trashing) && styles.disabledIconButton]}
           hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+          accessibilityLabel="Open file options"
         >
-          <Text style={styles.headerActionText}>Share</Text>
+          <Ionicons name="ellipsis-horizontal" size={21} color={colors.white} />
         </TouchableOpacity>
       </View>
+
+      <PreviewOptionsPopover
+        visible={optionsVisible}
+        filename={previewFileName}
+        actions={previewActions}
+        onClose={() => setOptionsVisible(false)}
+        top={insets.top + 58}
+      />
 
       {/* ---- Preview area ---- */}
       <View style={styles.previewArea}>
@@ -1931,14 +2311,7 @@ export default function PreviewScreen() {
             </View>
           ) : (
             <View style={styles.imageStatus}>
-              <ActivityIndicator color={c.amber} size="large" />
-              <Text style={styles.imageStatusSub}>
-                {imageLoading && downloadProgress > 0
-                  ? `Decrypting · ${Math.round(downloadProgress * 100)}%`
-                  : isUnlocked
-                  ? 'Downloading and decrypting...'
-                  : 'Unlock your vault to view this image.'}
-              </Text>
+              {renderSharedProgress(false)}
             </View>
           )
         ) : isSvg ? (
@@ -1960,14 +2333,7 @@ export default function PreviewScreen() {
             </View>
           ) : (
             <View style={styles.imageStatus}>
-              <ActivityIndicator color={c.amber} size="large" />
-              <Text style={styles.imageStatusSub}>
-                {svgLoading && downloadProgress > 0
-                  ? `Decrypting · ${Math.round(downloadProgress * 100)}%`
-                  : isUnlocked
-                  ? 'Downloading and decrypting...'
-                  : 'Unlock your vault to view this SVG.'}
-              </Text>
+              {renderSharedProgress(false)}
             </View>
           )
         ) : isPdf ? (
@@ -1982,14 +2348,7 @@ export default function PreviewScreen() {
             </View>
           ) : (
             <View style={styles.imageStatus}>
-              <ActivityIndicator color={c.amber} size="large" />
-              <Text style={styles.imageStatusSub}>
-                {pdfLoading && downloadProgress > 0
-                  ? `Decrypting · ${Math.round(downloadProgress * 100)}%`
-                  : isUnlocked
-                  ? 'Downloading and decrypting...'
-                  : 'Unlock your vault to view this PDF.'}
-              </Text>
+              {renderSharedProgress(false)}
             </View>
           )
         ) : isVideo ? (
@@ -2011,14 +2370,7 @@ export default function PreviewScreen() {
             </View>
           ) : (
             <View style={styles.imageStatus}>
-              <ActivityIndicator color={c.amber} size="large" />
-              <Text style={styles.imageStatusSub}>
-                {videoLoading && downloadProgress > 0
-                  ? `Decrypting · ${Math.round(downloadProgress * 100)}%`
-                  : isUnlocked
-                  ? 'Downloading and decrypting...'
-                  : 'Unlock your vault to play this video.'}
-              </Text>
+              {renderSharedProgress(true)}
             </View>
           )
         ) : isText ? (
@@ -2039,14 +2391,7 @@ export default function PreviewScreen() {
             </View>
           ) : (
             <View style={styles.imageStatus}>
-              <ActivityIndicator color={c.amber} size="large" />
-              <Text style={styles.imageStatusSub}>
-                {textLoading && downloadProgress > 0
-                  ? `Decrypting · ${Math.round(downloadProgress * 100)}%`
-                  : isUnlocked
-                  ? 'Downloading and decrypting...'
-                  : 'Unlock your vault to view this file.'}
-              </Text>
+              {renderSharedProgress(false)}
             </View>
           )
         ) : isDocx ? (
@@ -2066,14 +2411,7 @@ export default function PreviewScreen() {
             </View>
           ) : (
             <View style={styles.imageStatus}>
-              <ActivityIndicator color={c.amber} size="large" />
-              <Text style={styles.imageStatusSub}>
-                {docxLoading && downloadProgress > 0
-                  ? `Decrypting · ${Math.round(downloadProgress * 100)}%`
-                  : isUnlocked
-                  ? 'Downloading and converting document...'
-                  : 'Unlock your vault to view this document.'}
-              </Text>
+              {renderSharedProgress(false)}
             </View>
           )
         ) : isSpreadsheet ? (
@@ -2088,14 +2426,7 @@ export default function PreviewScreen() {
             </View>
           ) : (
             <View style={styles.imageStatus}>
-              <ActivityIndicator color={c.amber} size="large" />
-              <Text style={styles.imageStatusSub}>
-                {sheetLoading && downloadProgress > 0
-                  ? `Decrypting · ${Math.round(downloadProgress * 100)}%`
-                  : isUnlocked
-                  ? 'Downloading and parsing spreadsheet...'
-                  : 'Unlock your vault to view this spreadsheet.'}
-              </Text>
+              {renderSharedProgress(false)}
             </View>
           )
         ) : isHtml ? (
@@ -2183,14 +2514,7 @@ export default function PreviewScreen() {
             </View>
           ) : (
             <View style={styles.imageStatus}>
-              <ActivityIndicator color={c.amber} size="large" />
-              <Text style={styles.imageStatusSub}>
-                {htmlLoading && downloadProgress > 0
-                  ? `Decrypting · ${Math.round(downloadProgress * 100)}%`
-                  : isUnlocked
-                  ? 'Downloading and decrypting...'
-                  : 'Unlock your vault to view this page.'}
-              </Text>
+              {renderSharedProgress(false)}
             </View>
           )
         ) : isZip ? (
@@ -2205,14 +2529,7 @@ export default function PreviewScreen() {
             </View>
           ) : (
             <View style={styles.imageStatus}>
-              <ActivityIndicator color={c.amber} size="large" />
-              <Text style={styles.imageStatusSub}>
-                {zipLoading && downloadProgress > 0
-                  ? `Decrypting · ${Math.round(downloadProgress * 100)}%`
-                  : isUnlocked
-                  ? 'Downloading and reading archive...'
-                  : 'Unlock your vault to inspect this archive.'}
-              </Text>
+              {renderSharedProgress(false)}
             </View>
           )
         ) : isArchive ? (
@@ -2231,14 +2548,7 @@ export default function PreviewScreen() {
             </View>
           ) : (
             <View style={styles.imageStatus}>
-              <ActivityIndicator color={c.amber} size="large" />
-              <Text style={styles.imageStatusSub}>
-                {archiveLoading && downloadProgress > 0
-                  ? `Decrypting · ${Math.round(downloadProgress * 100)}%`
-                  : isUnlocked
-                  ? 'Downloading and reading archive...'
-                  : 'Unlock your vault to inspect this archive.'}
-              </Text>
+              {renderSharedProgress(false)}
             </View>
           )
         ) : isPptx ? (
@@ -2253,14 +2563,7 @@ export default function PreviewScreen() {
             </View>
           ) : (
             <View style={styles.imageStatus}>
-              <ActivityIndicator color={c.amber} size="large" />
-              <Text style={styles.imageStatusSub}>
-                {pptxLoading && downloadProgress > 0
-                  ? `Decrypting · ${Math.round(downloadProgress * 100)}%`
-                  : isUnlocked
-                  ? 'Downloading and extracting slides...'
-                  : 'Unlock your vault to view this presentation.'}
-              </Text>
+              {renderSharedProgress(false)}
             </View>
           )
         ) : (
@@ -2531,6 +2834,78 @@ function ZipContents({ summary, c }: ZipContentsProps) {
   );
 }
 
+interface PreviewOptionsPopoverProps {
+  visible: boolean;
+  filename: string;
+  actions: PreviewOptionAction[];
+  onClose: () => void;
+  top: number;
+}
+
+function PreviewOptionsPopover({
+  visible,
+  filename,
+  actions,
+  onClose,
+  top,
+}: PreviewOptionsPopoverProps) {
+  if (!visible) return null;
+
+  const runAction = (action: PreviewOptionAction) => {
+    onClose();
+    requestAnimationFrame(() => action.run());
+  };
+
+  return (
+    <View style={styles.optionsLayer} pointerEvents="box-none">
+      <Pressable
+        style={StyleSheet.absoluteFill}
+        onPress={onClose}
+        accessibilityRole="button"
+        accessibilityLabel="Close file options"
+      />
+      <View style={[styles.optionsPanel, { top }]}>
+        <Text style={styles.optionsTitle} numberOfLines={1}>
+          {filename}
+        </Text>
+        {actions.map((action, index) => {
+          const showDivider = index > 0 && (action.destructive || actions[index - 1]?.destructive);
+          return (
+            <View key={action.label}>
+              {showDivider ? <View style={styles.optionsDivider} /> : null}
+              <Pressable
+                onPress={() => runAction(action)}
+                style={({ pressed }) => [
+                  styles.optionsRow,
+                  pressed && styles.optionsRowPressed,
+                ]}
+                accessibilityRole="button"
+                accessibilityLabel={action.label}
+              >
+                <Ionicons
+                  name={action.icon}
+                  size={21}
+                  color={action.destructive ? '#FF6961' : 'rgba(255,255,255,0.92)'}
+                  style={styles.optionsIcon}
+                />
+                <Text
+                  style={[
+                    styles.optionsLabel,
+                    action.destructive && styles.optionsLabelDestructive,
+                  ]}
+                  numberOfLines={1}
+                >
+                  {action.label}
+                </Text>
+              </Pressable>
+            </View>
+          );
+        })}
+      </View>
+    </View>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Styles
 // ---------------------------------------------------------------------------
@@ -2561,6 +2936,9 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     backgroundColor: 'rgba(255,255,255,0.11)',
   },
+  disabledIconButton: {
+    opacity: 0.48,
+  },
   mediaHeaderText: {
     flex: 1,
     minWidth: 0,
@@ -2589,9 +2967,101 @@ const styles = StyleSheet.create({
     width: '100%',
     height: '100%',
   },
+  photoPage: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+  },
+  photoPageThumbnail: {
+    ...StyleSheet.absoluteFillObject,
+    width: '100%',
+    height: '100%',
+    opacity: 0.42,
+  },
+  photoPageImage: {
+    width: '100%',
+    height: '100%',
+  },
+  photoPageStatus: {
+    alignItems: 'center',
+    gap: 12,
+    paddingHorizontal: 28,
+  },
+  photoPageStatusTitle: {
+    color: colors.white,
+    fontSize: 16,
+    fontWeight: '600',
+    textAlign: 'center',
+  },
+  photoPageStatusSub: {
+    color: 'rgba(255,255,255,0.68)',
+    fontSize: 13,
+    lineHeight: 18,
+    textAlign: 'center',
+  },
   mediaVideo: {
     width: '100%',
     height: '100%',
+  },
+  optionsLayer: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 80,
+  },
+  optionsPanel: {
+    position: 'absolute',
+    right: 16,
+    width: 282,
+    paddingVertical: 6,
+    borderRadius: 16,
+    overflow: 'hidden',
+    backgroundColor: 'rgba(37,35,31,0.94)',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.16)',
+    shadowColor: '#000',
+    shadowOpacity: 0.36,
+    shadowRadius: 22,
+    shadowOffset: { width: 0, height: 14 },
+    elevation: 18,
+  },
+  optionsTitle: {
+    paddingHorizontal: 16,
+    paddingTop: 7,
+    paddingBottom: 6,
+    color: 'rgba(255,255,255,0.58)',
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: '500',
+  },
+  optionsRow: {
+    minHeight: 45,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    gap: 12,
+  },
+  optionsRowPressed: {
+    backgroundColor: 'rgba(255,255,255,0.12)',
+  },
+  optionsIcon: {
+    width: 24,
+    textAlign: 'center',
+  },
+  optionsLabel: {
+    flex: 1,
+    color: 'rgba(255,255,255,0.96)',
+    fontSize: 17,
+    lineHeight: 22,
+    fontWeight: '400',
+  },
+  optionsLabelDestructive: {
+    color: '#FF6961',
+  },
+  optionsDivider: {
+    height: StyleSheet.hairlineWidth,
+    marginHorizontal: 16,
+    marginVertical: 5,
+    backgroundColor: 'rgba(255,255,255,0.16)',
   },
   // (Media details sheet styles removed — now handled by DetailsSheet component)
 
@@ -2620,6 +3090,14 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: '400',
     color: colors.white,
+  },
+  headerIconButton: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: 'rgba(255,255,255,0.1)',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   headerCenter: {
     flex: 1,
@@ -2744,6 +3222,23 @@ const styles = StyleSheet.create({
     color: 'rgba(255,255,255,0.6)',
     textAlign: 'center',
     lineHeight: 20,
+  },
+  previewProgressWrap: {
+    width: Math.min(SCREEN_WIDTH - 72, 360),
+    alignItems: 'center',
+    gap: 12,
+  },
+  previewProgressTrack: {
+    width: '100%',
+    height: 4,
+    borderRadius: 2,
+    overflow: 'hidden',
+    backgroundColor: 'rgba(255,255,255,0.16)',
+  },
+  previewProgressFill: {
+    height: '100%',
+    minWidth: 8,
+    borderRadius: 2,
   },
 
   genericPlaceholder: { alignItems: 'center', gap: 16 },

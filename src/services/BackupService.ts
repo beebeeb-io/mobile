@@ -17,6 +17,7 @@
  */
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as FileSystem from 'expo-file-system';
 import * as SecureStore from 'expo-secure-store';
 import { Platform } from 'react-native';
 
@@ -35,12 +36,12 @@ import {
   listFiles,
   moveFile,
   renameFile,
-  uploadFile,
   type FileEntry,
 } from '../lib/api';
 import type { EncryptedData } from '../../modules/beebeeb-crypto';
-import { encryptedMetadataToJson, encryptedMetadataPayloadToBytes } from '../lib/encrypted-metadata';
-import { generateFileId } from '../lib/encrypted-upload';
+import { encryptedMetadataToJson, encryptedMetadataPayloadToBytes, fileMetadataPlaintext } from '../lib/encrypted-metadata';
+import { encryptedUpload, generateFileId } from '../lib/encrypted-upload';
+import { guessMimeType } from '../lib/media';
 import type { BackupEncryptors as ContactsBackupEncryptors } from './ContactsExporter';
 
 // ---------------------------------------------------------------------------
@@ -101,6 +102,8 @@ export type BackupEncryptors = ContactsBackupEncryptors;
 
 /** Encryption functions needed by the backup folder machinery. */
 export interface BackupEncryption {
+  encryptChunkFn: (fileId: string, plaintext: Uint8Array) => Promise<EncryptedData>;
+  decryptChunkFn: (fileId: string, nonce: Uint8Array, ciphertext: Uint8Array) => Promise<Uint8Array>;
   encryptMetadataFn: (fileId: string, metadata: string) => Promise<EncryptedData>;
   decryptMetadataFn: (fileId: string, nonce: Uint8Array, ciphertext: Uint8Array) => Promise<string>;
 }
@@ -135,6 +138,10 @@ const FOLDER_CACHE_KEY = 'beebeeb_backup_folders';
 const MANIFEST_FILENAME = '.device.json';
 const MANIFEST_VERSION = 1;
 const APP_VERSION = '1.0.0';
+const FALLBACK_CHUNK_SIZE = 4 * 1024 * 1024;
+const NONCE_LENGTH = 12;
+const GCM_TAG_LENGTH = 16;
+const BROKEN_MANIFEST_MAX_BYTES = 8 * 1024;
 
 const ROOT_FOLDER_NAME = 'Backups';
 
@@ -142,6 +149,12 @@ const CATEGORY_FOLDERS: Record<BackupCategory, string> = {
   camera_roll: 'Camera Roll',
   contacts: 'Contacts',
   calendar: 'Calendar',
+};
+
+type NameDecryptResult = {
+  name: string;
+  mimeType: string | null;
+  canonical: boolean;
 };
 
 // ---------------------------------------------------------------------------
@@ -269,7 +282,7 @@ function mergeLegacyMigration(
 /** Encrypt a folder name into the canonical JSON envelope the server expects. */
 async function encryptFolderName(folderId: string, name: string): Promise<string> {
   const enc = requireEncryption();
-  const metadataPlain = JSON.stringify({ name, mime_type: null });
+  const metadataPlain = fileMetadataPlaintext(name, null);
   const encrypted = await enc.encryptMetadataFn(folderId, metadataPlain);
   return encryptedMetadataToJson(encrypted);
 }
@@ -277,29 +290,73 @@ async function encryptFolderName(folderId: string, name: string): Promise<string
 /** Encrypt a file name into the canonical JSON envelope the server expects. */
 async function encryptFileName(fileId: string, name: string, mimeType?: string): Promise<string> {
   const enc = requireEncryption();
-  const metadataPlain = JSON.stringify({ name, mime_type: mimeType ?? null });
+  const metadataPlain = fileMetadataPlaintext(name, mimeType ?? null);
   const encrypted = await enc.encryptMetadataFn(fileId, metadataPlain);
   return encryptedMetadataToJson(encrypted);
 }
 
+function parseNameMetadata(plaintext: string): { name: string; mimeType: string | null; canonical: boolean } {
+  try {
+    const metadata = JSON.parse(plaintext) as { name?: unknown; mime_type?: unknown };
+    if (metadata && typeof metadata === 'object' && typeof metadata.name === 'string' && metadata.name.trim()) {
+      return {
+        name: metadata.name,
+        mimeType: typeof metadata.mime_type === 'string' ? metadata.mime_type : null,
+        canonical: true,
+      };
+    }
+  } catch {
+    // Legacy encrypted payloads were bare filename strings.
+  }
+  return { name: plaintext, mimeType: null, canonical: false };
+}
+
 /**
- * Decrypt a name_encrypted value to its plaintext name. Returns null if the
- * value is not a valid encrypted envelope (legacy plaintext).
+ * Decrypt a name_encrypted value to its plaintext name. Plaintext legacy
+ * values are accepted, but undecryptable encrypted envelopes return null.
  */
-async function decryptName(entry: FileEntry): Promise<string | null> {
+async function decryptNameDetails(entry: FileEntry): Promise<NameDecryptResult | null> {
   const enc = requireEncryption();
   const parsed = encryptedMetadataPayloadToBytes(entry.name_encrypted);
   if (!parsed) {
-    // Legacy plaintext name — return as-is for backward compat during migration
-    return entry.name_encrypted;
+    return {
+      name: entry.name_encrypted,
+      mimeType: entry.is_folder ? null : guessMimeType(entry.name_encrypted),
+      canonical: false,
+    };
   }
   try {
-    const metadataJson = await enc.decryptMetadataFn(entry.id, parsed.nonce, parsed.ciphertext);
-    const metadata = JSON.parse(metadataJson) as { name?: string };
-    return metadata.name ?? null;
+    const plaintext = await enc.decryptMetadataFn(entry.id, parsed.nonce, parsed.ciphertext);
+    const metadata = parseNameMetadata(plaintext);
+    return {
+      name: metadata.name,
+      mimeType: metadata.mimeType ?? (entry.is_folder ? null : guessMimeType(metadata.name)),
+      canonical: metadata.canonical,
+    };
   } catch {
     return null;
   }
+}
+
+async function decryptName(entry: FileEntry): Promise<string | null> {
+  return (await decryptNameDetails(entry))?.name ?? null;
+}
+
+async function normalizeBackupNameMetadata(entry: FileEntry, expectedName?: string): Promise<boolean> {
+  const details = await decryptNameDetails(entry);
+  if (!details) return false;
+  const nextName = expectedName ?? details.name;
+  if (!nextName) return false;
+  const nextMimeType = entry.is_folder ? undefined : (details.mimeType ?? guessMimeType(nextName) ?? undefined);
+  if (details.canonical && details.name === nextName && (entry.is_folder || details.mimeType === (nextMimeType ?? null))) {
+    return false;
+  }
+
+  const nameEncrypted = entry.is_folder
+    ? await encryptFolderName(entry.id, nextName)
+    : await encryptFileName(entry.id, nextName, nextMimeType);
+  await renameFile(entry.id, nameEncrypted);
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -319,7 +376,7 @@ async function findChildFolder(parentId: string | undefined, name: string): Prom
 async function ensureFolder(parentId: string | undefined, name: string): Promise<string> {
   const existing = await findChildFolder(parentId, name);
   if (existing) return existing.id;
-  const folderId = generateFileId();
+  const folderId = await generateFileId();
   const nameEncrypted = await encryptFolderName(folderId, name);
   const created = await createFolder(nameEncrypted, parentId, folderId);
   return created.id;
@@ -393,6 +450,79 @@ async function migrateLegacyRootBackups(
   };
 }
 
+async function selfHealKnownBackupMetadata(
+  rootId: string,
+  deviceFolderId: string,
+  categoryIds: Record<BackupCategory, string>,
+  deviceName: string,
+): Promise<void> {
+  let healed = 0;
+
+  const normalize = async (entry: FileEntry | undefined, expectedName?: string): Promise<void> => {
+    if (!entry) return;
+    try {
+      if (await normalizeBackupNameMetadata(entry, expectedName)) healed += 1;
+    } catch (err) {
+      console.warn('[BackupService] backup metadata self-heal failed:', err);
+    }
+  };
+
+  try {
+    const rootChildren = await listFiles(undefined);
+    await normalize(rootChildren.find((entry) => entry.id === rootId), ROOT_FOLDER_NAME);
+  } catch (err) {
+    console.warn('[BackupService] could not self-heal backup root metadata:', err);
+  }
+
+  try {
+    const backupRootChildren = await listFiles(rootId);
+    await normalize(backupRootChildren.find((entry) => entry.id === deviceFolderId), deviceName);
+  } catch (err) {
+    console.warn('[BackupService] could not self-heal backup device metadata:', err);
+  }
+
+  try {
+    await cleanupBrokenManifestCopies(deviceFolderId);
+
+    const expectedCategoryById = new Map<string, string>(
+      (Object.entries(CATEGORY_FOLDERS) as Array<[BackupCategory, string]>)
+        .map(([category, name]) => [categoryIds[category], name]),
+    );
+
+    const deviceChildren = await listFiles(deviceFolderId);
+    await Promise.all(deviceChildren.map(async (entry) => {
+      const expectedCategoryName = expectedCategoryById.get(entry.id);
+      if (expectedCategoryName) {
+        await normalize(entry, expectedCategoryName);
+        return;
+      }
+
+      // Repair small backup-owned files in the device folder, especially
+      // old manifest copies. Avoid touching arbitrary large uploads here.
+      if (!entry.is_folder && (entry.size_bytes ?? 0) <= 64 * 1024) {
+        await normalize(entry);
+      }
+    }));
+  } catch (err) {
+    console.warn('[BackupService] could not self-heal backup device children:', err);
+  }
+
+  for (const category of ['contacts', 'calendar'] as const) {
+    try {
+      const children = await listFiles(categoryIds[category]);
+      await Promise.all(children.map(async (entry) => {
+        if (!entry.is_folder) await normalize(entry);
+      }));
+    } catch (err) {
+      console.warn(`[BackupService] could not self-heal ${category} backup metadata:`, err);
+    }
+  }
+
+  if (healed > 0) {
+    console.info(`[BackupService] self-healed ${healed} backup metadata entr${healed === 1 ? 'y' : 'ies'}`);
+  }
+}
+
 /** Ensure `Backups/{deviceName}/{category}/` exists. Returns the device folder
  *  ID and the category folder ID. Caches results in SecureStore so subsequent
  *  calls skip the round-trips. */
@@ -425,6 +555,7 @@ export async function ensureBackupFolders(
   };
 
   cache = await migrateLegacyRootBackups(cache, categoryIds);
+  await selfHealKnownBackupMetadata(rootId, deviceFolderId, categoryIds, info.device_name);
 
   await writeFolderCache({
     ...cache,
@@ -485,6 +616,76 @@ async function findManifestFile(deviceFolderId: string): Promise<FileEntry | nul
   return null;
 }
 
+async function cleanupBrokenManifestCopies(deviceFolderId: string): Promise<void> {
+  let children: FileEntry[];
+  try {
+    children = await listFiles(deviceFolderId);
+  } catch (err) {
+    console.warn('[BackupService] could not inspect device folder for broken manifests:', err);
+    return;
+  }
+
+  await Promise.all(children.map(async (f) => {
+    if (f.is_folder) return;
+    if ((f.size_bytes ?? 0) > BROKEN_MANIFEST_MAX_BYTES) return;
+    const decrypted = await decryptName(f);
+    if (decrypted !== null) return;
+
+    try {
+      await deleteFile(f.id);
+    } catch (err) {
+      console.warn('[BackupService] could not remove broken manifest copy:', err);
+    }
+  }));
+}
+
+function readHeaderInt(headers: Headers, key: string): number | null {
+  const value = headers.get(key) ?? headers.get(key.toLowerCase());
+  if (!value) return null;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+async function decryptDownloadedText(entry: FileEntry): Promise<string> {
+  const enc = requireEncryption();
+  const res = await downloadFile(entry.id);
+  const encrypted = new Uint8Array(await res.arrayBuffer());
+  const plaintextSize = entry.size_bytes;
+  const chunkCount = readHeaderInt(res.headers, 'X-Chunk-Count') ?? entry.chunk_count ?? 1;
+  const chunkSize = readHeaderInt(res.headers, 'X-Chunk-Size') ?? FALLBACK_CHUNK_SIZE;
+
+  try {
+    const parts: Uint8Array[] = [];
+    let offset = 0;
+    for (let i = 0; i < chunkCount; i += 1) {
+      const isLast = i === chunkCount - 1;
+      const chunkPlaintextSize = chunkCount === 1
+        ? plaintextSize
+        : isLast
+          ? plaintextSize - i * chunkSize
+          : chunkSize;
+      const encryptedChunkSize = NONCE_LENGTH + chunkPlaintextSize + GCM_TAG_LENGTH;
+      const nonce = encrypted.slice(offset, offset + NONCE_LENGTH);
+      const ciphertext = encrypted.slice(offset + NONCE_LENGTH, offset + encryptedChunkSize);
+      parts.push(await enc.decryptChunkFn(entry.id, nonce, ciphertext));
+      offset += encryptedChunkSize;
+    }
+
+    const total = parts.reduce((sum, part) => sum + part.length, 0);
+    const plaintext = new Uint8Array(total);
+    let writeOffset = 0;
+    for (const part of parts) {
+      plaintext.set(part, writeOffset);
+      writeOffset += part.length;
+    }
+    return new TextDecoder().decode(plaintext);
+  } catch (err) {
+    const legacyPlaintext = new TextDecoder().decode(encrypted);
+    if (legacyPlaintext.trim().startsWith('{')) return legacyPlaintext;
+    throw err;
+  }
+}
+
 async function ensureDeviceFolderId(): Promise<string> {
   // Use camera_roll as the seed category — ensureBackupFolders only differs
   // in which category subfolder it creates, and we don't need that here.
@@ -499,8 +700,7 @@ export async function getDeviceManifest(): Promise<DeviceManifest | null> {
   const manifestFile = await findManifestFile(deviceFolderId);
   if (!manifestFile) return null;
 
-  const res = await downloadFile(manifestFile.id);
-  const text = await res.text();
+  const text = await decryptDownloadedText(manifestFile);
   try {
     return mergeLegacyMigration(JSON.parse(text) as DeviceManifest, cache.legacyMigration);
   } catch {
@@ -510,25 +710,31 @@ export async function getDeviceManifest(): Promise<DeviceManifest | null> {
 
 async function writeManifest(manifest: DeviceManifest, deviceFolderId: string): Promise<void> {
   const json = JSON.stringify(manifest);
-  const blob = new Blob([json], { type: 'application/json' });
-
+  if (!FileSystem.cacheDirectory) throw new Error('File cache unavailable');
+  await cleanupBrokenManifestCopies(deviceFolderId);
   const existing = await findManifestFile(deviceFolderId);
   if (existing) {
     await deleteFile(existing.id);
   }
 
-  const fileId = generateFileId();
-  const nameEncrypted = await encryptFileName(fileId, MANIFEST_FILENAME, 'application/json');
+  const fileId = await generateFileId();
+  const uri = `${FileSystem.cacheDirectory}device_manifest_${fileId}.json`;
+  const enc = requireEncryption();
 
-  await uploadFile(
-    {
-      name_encrypted: nameEncrypted,
-      parent_id: deviceFolderId,
-      mime_type: null as unknown as string,
-      size_bytes: blob.size,
-    },
-    blob,
-  );
+  await FileSystem.writeAsStringAsync(uri, json);
+  try {
+    await encryptedUpload({
+      fileId,
+      uri,
+      name: MANIFEST_FILENAME,
+      parentId: deviceFolderId,
+      mimeType: 'application/json',
+      encryptChunkFn: enc.encryptChunkFn,
+      encryptMetadataFn: enc.encryptMetadataFn,
+    });
+  } finally {
+    await FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => {});
+  }
 }
 
 export async function updateDeviceManifest(updates: Partial<DeviceManifest>): Promise<void> {

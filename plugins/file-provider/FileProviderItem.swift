@@ -8,6 +8,7 @@ struct FileMetadata: Codable {
     let mimeType: String?
     let sizeBytes: Int64
     let isFolder: Bool
+    let isUploading: Bool?
     let createdAt: String
     let updatedAt: String
     let chunkCount: Int?
@@ -20,6 +21,7 @@ struct FileMetadata: Codable {
         case mimeType = "mime_type"
         case sizeBytes = "size_bytes"
         case isFolder = "is_folder"
+        case isUploading = "is_uploading"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
         case chunkCount = "chunk_count"
@@ -112,8 +114,24 @@ class FileProviderItem: NSObject, NSFileProviderItem {
     }
 
     var itemVersion: NSFileProviderItemVersion {
-        let contentVersion = "v\(metadata?.versionNumber ?? 1)".data(using: .utf8) ?? Data()
-        let metadataVersion = (metadata?.updatedAt ?? "v1").data(using: .utf8) ?? contentVersion
+        let contentRaw = [
+            metadata?.versionNumber.map { "v\($0)" },
+            metadata?.updatedAt,
+            metadata?.sizeBytes.description,
+            metadata?.chunkCount?.description,
+        ]
+            .compactMap { $0 }
+            .joined(separator: "|")
+        let metadataRaw = [
+            contentRaw,
+            metadata?.nameEncrypted,
+            metadata?.parentId,
+            metadata?.mimeType,
+        ]
+            .compactMap { $0 }
+            .joined(separator: "|")
+        let contentVersion = Data((contentRaw.isEmpty ? "v1" : contentRaw).utf8)
+        let metadataVersion = Data((metadataRaw.isEmpty ? "v1" : metadataRaw).utf8)
         return NSFileProviderItemVersion(contentVersion: contentVersion, metadataVersion: metadataVersion)
     }
 }

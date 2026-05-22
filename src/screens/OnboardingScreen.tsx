@@ -19,7 +19,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { fonts, radii, spacing } from '../theme';
 import { useTheme } from '../lib/theme-context';
 import { useAuth } from '../lib/auth';
-import { mountTrustedFileProvider } from '../lib/file-provider-mount';
+import { useCrypto } from '../lib/crypto-context';
+import { mountTrustedFileProvider, populateFileProviderCache } from '../lib/file-provider-mount';
 import { useToast } from '../lib/toast-context';
 import type { RootStackParamList } from '../App';
 
@@ -69,6 +70,7 @@ export default function OnboardingScreen({ route, navigation, phrase: phraseProp
   const insets = useSafeAreaInsets();
   const { colors: c, resolved } = useTheme();
   const { markPhraseVerified } = useAuth();
+  const crypto = useCrypto();
   const { showToast } = useToast();
   const words = useMemo(
     () => normalizeWords(phraseProp ?? route?.params?.phrase),
@@ -339,10 +341,14 @@ export default function OnboardingScreen({ route, navigation, phrase: phraseProp
   async function handleMountFiles() {
     setMountingFiles(true);
     try {
-      const result = await mountTrustedFileProvider();
-      if (!result.supported || !result.registered) {
+      const result = await mountTrustedFileProvider({ vaultUnlocked: crypto.isUnlocked });
+      const mounted = result.supported && result.registered && result.cacheDatabaseReady !== false;
+      if (!mounted) {
         Alert.alert('Files unavailable', 'Beebeeb could not be mounted in Files on this device. You can try again later in Settings.');
         return;
+      }
+      if (crypto.isUnlocked) {
+        void populateFileProviderCache(crypto.decryptMetadata).catch(() => {});
       }
       showToast({ type: 'success', message: 'Beebeeb is mounted in Files' });
       setStep('done');

@@ -82,3 +82,16 @@ e2e/
 
 # Google Play service account key (secret — do not commit)
 google-service-account.json
+
+# Local test/debug captures — never commit (real user data fingerprints)
+/diagnostics/
+/screenshots/
+/.superpowers/
+*.db-shm
+*.db-wal
+*.mp4
+*.mov
+
+# Marketing app-store screenshots are intentionally tracked
+# (override the broad *.png rule above)
+!marketing/app-store/**/*.png

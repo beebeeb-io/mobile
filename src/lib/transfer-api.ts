@@ -11,6 +11,7 @@
 
 import { Platform } from 'react-native';
 import { ApiError, getApiUrl, getToken } from './api';
+import { rateLimitedFetch } from './rate-limited-fetch';
 
 /**
  * Wraps unknown fetch failures (offline, DNS, mobile interface flap) in the
@@ -18,7 +19,7 @@ import { ApiError, getApiUrl, getToken } from './api';
  */
 async function safeFetch(input: string, init: RequestInit): Promise<Response> {
   try {
-    return await fetch(input, init);
+    return await rateLimitedFetch(input, init);
   } catch (_err) {
     throw new ApiError(0, 'Could not reach the server. Check your connection and try again.');
   }

@@ -16,6 +16,8 @@ Pod::Spec.new do |s|
   s.static_framework = true
 
   s.dependency 'ExpoModulesCore'
+  s.dependency 'SDWebImage/Core'
+  s.dependency 'SDWebImageWebPCoder'
 
   s.source_files = '**/*.{h,m,mm,swift}'
   s.vendored_frameworks = '../../../ios/BeebeebCore.xcframework'

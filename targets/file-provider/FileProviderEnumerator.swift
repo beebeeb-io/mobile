@@ -15,7 +15,7 @@ final class FileProviderEnumerator: NSObject, NSFileProviderEnumerator {
   private var refreshTask: Task<Void, Never>?
 
   init(containerIdentifier: NSFileProviderItemIdentifier) {
-    if containerIdentifier == .rootContainer {
+    if containerIdentifier == .rootContainer || containerIdentifier == .workingSet {
       self.containerId = BeebeebConstants.rootContainerIdentifier
     } else {
       self.containerId = containerIdentifier.rawValue
@@ -47,10 +47,9 @@ final class FileProviderEnumerator: NSObject, NSFileProviderEnumerator {
   }
 
   func enumerateChanges(for observer: NSFileProviderChangeObserver, from anchor: NSFileProviderSyncAnchor) {
-    // No persistent change log yet — tell the system to do a fresh listing.
-    // When we add server-side change events, we'll diff against `anchor` here
-    // and emit `didUpdate`/`didDeleteItemsWithIdentifiers` accordingly.
-    observer.finishEnumeratingWithError(NSFileProviderError(.syncAnchorExpired))
+    currentSyncAnchor { currentAnchor in
+      observer.finishEnumeratingChanges(upTo: currentAnchor ?? NSFileProviderSyncAnchor(Data("0".utf8)), moreComing: false)
+    }
   }
 
   func currentSyncAnchor(completionHandler: @escaping (NSFileProviderSyncAnchor?) -> Void) {

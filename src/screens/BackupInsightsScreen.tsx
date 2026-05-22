@@ -13,8 +13,8 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   Platform,
+  RefreshControl,
   ScrollView,
   Share,
   StyleSheet,
@@ -32,20 +32,14 @@ import {
   getStatusCounts,
   getTotalUploadedBytes,
   getFailedAssets,
+  getLocalMissingAssets,
   getRecentActivity,
-  retryAllFailed,
-  clearAllData,
   getLastVerification,
   type BackupAsset,
   type BackupAssetStatus,
   type VerificationRecord,
 } from '../services/BackupDatabase';
-import {
-  getLastFullScanAt,
-} from '../services/PhotoSyncEngine';
-import { verifyNow } from '../services/BackupVerifier';
 import { useBackup } from '../lib/backup-context';
-import { useCrypto } from '../lib/crypto-context';
 import NetInfo from '@react-native-community/netinfo';
 
 let MediaLibrary: { getAssetsAsync: (opts: { first: number; mediaType?: string[] }) => Promise<{ totalCount: number }>; MediaType?: { photo: string; video: string } } = {
@@ -86,17 +80,6 @@ function formatTimeRemaining(ms: number): string {
   const min = Math.floor((ms % 3_600_000) / 60_000);
   if (hr > 0) return `${hr}h ${min}m`;
   return `${min}m`;
-}
-
-function fileStatusColor(status: string, c: C): string {
-  switch (status) {
-    case 'encrypting': return c.amber;
-    case 'queued': return c.ink3;
-    case 'uploading': return c.amber;
-    case 'done': return c.green;
-    case 'failed': return c.red;
-    default: return c.ink3;
-  }
 }
 
 function formatDateLabel(dateStr: string): string {
@@ -281,6 +264,7 @@ interface InsightsData {
   totalBytes: number;
   lastScanAt: number | null;
   failedAssets: BackupAsset[];
+  localMissingAssets: BackupAsset[];
   recentActivity: { date: string; count: number; bytes: number }[];
   totalCameraRoll: number;
   lastVerification: VerificationRecord | null;
@@ -291,26 +275,20 @@ export default function BackupInsightsScreen() {
   const navigation = useNavigation();
   const insets = useSafeAreaInsets();
   const backup = useBackup();
-
-  const { photoSessionProgress, backupQueue } = backup;
-  const { getMasterKeyHandleId } = useCrypto();
-
   const [data, setData] = useState<InsightsData | null>(null);
   const [loading, setLoading] = useState(true);
-  const [retrying, setRetrying] = useState(false);
-  const [resyncing, setResyncing] = useState(false);
-  const [clearing, setClearing] = useState(false);
   const [exporting, setExporting] = useState(false);
-  const [verifying, setVerifying] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
-  const loadData = useCallback(async () => {
+  const loadData = useCallback(async (showSpinner = false) => {
+    if (showSpinner) setRefreshing(true);
     try {
-      const [counts, totalBytes, lastScanAt, failedAssets, recentActivity, lastVerification] =
+      const [counts, totalBytes, failedAssets, localMissingAssets, recentActivity, lastVerification] =
         await Promise.all([
           getStatusCounts(),
           getTotalUploadedBytes(),
-          getLastFullScanAt(),
           getFailedAssets(),
+          getLocalMissingAssets(10),
           getRecentActivity(7),
           getLastVerification(),
         ]);
@@ -337,8 +315,9 @@ export default function BackupInsightsScreen() {
       setData({
         counts,
         totalBytes,
-        lastScanAt,
+        lastScanAt: null,
         failedAssets,
+        localMissingAssets,
         recentActivity,
         totalCameraRoll,
         lastVerification,
@@ -347,6 +326,7 @@ export default function BackupInsightsScreen() {
       console.warn('BackupInsights: failed to load data', err);
     } finally {
       setLoading(false);
+      if (showSpinner) setRefreshing(false);
     }
   }, []);
 
@@ -354,13 +334,39 @@ export default function BackupInsightsScreen() {
     void loadData();
   }, [loadData]);
 
-  // Poll data refresh while backup is running — 5s when active queue, 10s otherwise
+  const handleRefresh = useCallback(() => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    void loadData(true);
+  }, [loadData]);
+
+  // Poll data refresh while backup is running so SQLite-backed counts and
+  // activity rows catch up without forcing the user to leave this screen.
   useEffect(() => {
-    if (!photoSessionProgress?.running) return;
-    const intervalMs = backupQueue.length > 0 ? 5_000 : 10_000;
-    const interval = setInterval(loadData, intervalMs);
+    const isActive =
+      backup.backupProgress.state === 'preparing' ||
+      backup.backupProgress.state === 'encrypting' ||
+      backup.backupProgress.state === 'uploading' ||
+      backup.backupProgress.inProgress > 0 ||
+      (backup.backupProgress.pending ?? 0) > 0;
+    if (!isActive) return;
+    const interval = setInterval(() => void loadData(), 2_000);
     return () => clearInterval(interval);
-  }, [photoSessionProgress?.running, backupQueue.length > 0, loadData]);
+  }, [
+    backup.backupProgress.inProgress,
+    backup.backupProgress.pending,
+    backup.backupProgress.state,
+    loadData,
+  ]);
+
+  useEffect(() => {
+    if (!backup.isPhotoBackupEnabled) return;
+    void loadData();
+  }, [
+    backup.backupProgress.completed,
+    backup.backupProgress.total,
+    backup.isPhotoBackupEnabled,
+    loadData,
+  ]);
 
   // ── Determine sync state ───────────────────────────────────────────────────
 
@@ -370,7 +376,14 @@ export default function BackupInsightsScreen() {
     (data?.counts.pending_reupload ?? 0);
   const uploadedCount =
     (data?.counts.uploaded ?? 0) + (data?.counts.orphaned ?? 0);
-  const failedCount = data?.counts.failed ?? 0;
+  const failedCount = Math.max(
+    data?.counts.failed ?? 0,
+    data?.failedAssets.length ?? 0,
+    backup.backupProgress.failed ?? 0,
+  );
+  const localMissingCount = data?.counts.local_missing ?? 0;
+  const displayUploadedCount = Math.max(uploadedCount, backup.backupProgress.completed);
+  const displayTotalCameraRoll = Math.max(data?.totalCameraRoll ?? 0, backup.backupProgress.total);
 
   const [networkType, setNetworkType] = useState<string | null>(null);
   useEffect(() => {
@@ -392,109 +405,15 @@ export default function BackupInsightsScreen() {
 
   // ── Handlers ───────────────────────────────────────────────────────────────
 
-  const handleRetryAll = useCallback(async () => {
-    setRetrying(true);
-    try {
-      const count = await retryAllFailed();
-      await loadData();
-      Alert.alert(
-        'Retry queued',
-        `${count} failed item${count !== 1 ? 's' : ''} re-queued for upload.`,
-      );
-    } catch {
-      Alert.alert('Error', 'Could not retry failed uploads.');
-    } finally {
-      setRetrying(false);
-    }
-  }, [loadData]);
-
-  const handleFullResync = useCallback(async () => {
-    Alert.alert(
-      'Full resync',
-      'This will clear all backup state and re-check every photo against the server. This may take a while.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Resync',
-          style: 'destructive',
-          onPress: async () => {
-            setResyncing(true);
-            try {
-              await clearAllData();
-              await backup.triggerBackupNow();
-              await loadData();
-            } catch {
-              Alert.alert('Error', 'Could not start resync.');
-            } finally {
-              setResyncing(false);
-            }
-          },
-        },
-      ],
-    );
-  }, [loadData]);
-
-  const handleClearFailed = useCallback(async () => {
-    if (failedCount === 0) return;
-    Alert.alert(
-      'Clear failed items',
-      `Remove ${failedCount} failed item${failedCount !== 1 ? 's' : ''} from the backup queue? They will be re-discovered on the next full scan.`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Clear',
-          style: 'destructive',
-          onPress: async () => {
-            setClearing(true);
-            try {
-              // retryAllFailed resets status; we want to remove them.
-              // Use a raw approach: retry then immediately reload
-              // Actually, we need a dedicated delete. For now, mark them
-              // as pending so they retry, which is the closest available.
-              // A proper clearFailed would delete rows with status='failed'.
-              await retryAllFailed();
-              await loadData();
-            } catch {
-              Alert.alert('Error', 'Could not clear failed items.');
-            } finally {
-              setClearing(false);
-            }
-          },
-        },
-      ],
-    );
-  }, [failedCount, loadData]);
-
-  const handleVerifyNow = useCallback(async () => {
-    setVerifying(true);
-    try {
-      const deps = {
-        getMasterKeyHandleId: (): number | null => {
-          try { return getMasterKeyHandleId(); } catch { return null; }
-        },
-      };
-      const result = await verifyNow(deps, 5);
-      await loadData();
-      Alert.alert(
-        'Verification complete',
-        `${result.passed} passed, ${result.failed} failed out of 5 files checked.`,
-      );
-    } catch {
-      Alert.alert('Error', 'Could not run verification.');
-    } finally {
-      setVerifying(false);
-    }
-  }, [getMasterKeyHandleId, loadData]);
-
   const handleExportLog = useCallback(async () => {
     setExporting(true);
     try {
-      const [counts, totalBytes, lastScanAt, failedAssets, activity] =
+      const [counts, totalBytes, failedAssets, localMissingAssets, activity] =
         await Promise.all([
           getStatusCounts(),
           getTotalUploadedBytes(),
-          getLastFullScanAt(),
           getFailedAssets(),
+          getLocalMissingAssets(25),
           getRecentActivity(30),
         ]);
 
@@ -508,11 +427,12 @@ export default function BackupInsightsScreen() {
         `Uploaded: ${counts.uploaded ?? 0}`,
         `Pending delete: ${counts.pending_delete ?? 0}`,
         `Pending reupload: ${counts.pending_reupload ?? 0}`,
+        `Removed from iPhone: ${counts.local_missing ?? 0}`,
         `Orphaned: ${counts.orphaned ?? 0}`,
-        `Failed: ${counts.failed ?? 0}`,
+        `Failed: ${Math.max(counts.failed ?? 0, failedAssets.length)}`,
         '',
         `Total uploaded: ${formatBytes(totalBytes)}`,
-        `Last full scan: ${lastScanAt ? new Date(lastScanAt).toISOString() : 'Never'}`,
+        `Native state: ${backup.backupProgress.reason || backup.backupProgress.state}`,
         '',
         '--- Recent Activity (30 days) ---',
         ...activity.map(
@@ -530,6 +450,15 @@ export default function BackupInsightsScreen() {
         }
       }
 
+      if (localMissingAssets.length > 0) {
+        lines.push('', '--- Skipped Local Photos ---');
+        for (const asset of localMissingAssets) {
+          lines.push(
+            `${asset.local_asset_id}: ${asset.error_message ?? 'Photo no longer available locally'}`,
+          );
+        }
+      }
+
       await Share.share({
         message: lines.join('\n'),
         title: 'Beebeeb Backup Log',
@@ -540,6 +469,19 @@ export default function BackupInsightsScreen() {
       setExporting(false);
     }
   }, []);
+
+  const handleBack = useCallback(() => {
+    if (navigation.canGoBack()) {
+      navigation.goBack();
+      return;
+    }
+    // Live Activity and notification taps can cold-open this screen without a
+    // Settings route underneath it. In that case, make the visible Back affordance
+    // deterministic instead of leaving the user on a dead end.
+    (navigation.navigate as (name: string, params?: unknown) => void)('Tabs', {
+      screen: 'Settings',
+    });
+  }, [navigation]);
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
@@ -558,7 +500,7 @@ export default function BackupInsightsScreen() {
       >
         <TouchableOpacity
           style={layout.backButton}
-          onPress={() => navigation.goBack()}
+          onPress={handleBack}
           accessibilityRole="button"
           accessibilityLabel="Back"
         >
@@ -590,11 +532,19 @@ export default function BackupInsightsScreen() {
           style={layout.scroll}
           contentContainerStyle={layout.scrollContent}
           showsVerticalScrollIndicator={false}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={handleRefresh}
+              tintColor={c.amber}
+              colors={[c.amber]}
+            />
+          }
         >
           <View style={{ height: 16 }} />
 
-          {/* ── ACTIVE QUEUE card ─────────────────────────────────────── */}
-          {backupQueue.length > 0 && (
+          {/* ── ACTIVE native engine card ─────────────────────────────── */}
+          {((['preparing', 'encrypting', 'uploading'] as string[]).includes(backup.backupProgress.state) || backup.backupProgress.inProgress > 0) && (
             <View style={layout.section}>
               <SectionHeader title="Active" c={c} />
               <View
@@ -603,44 +553,17 @@ export default function BackupInsightsScreen() {
                   { backgroundColor: c.paper2, borderColor: c.line },
                 ]}
               >
-                {backupQueue
-                  .filter(f => f.status !== 'done')
-                  .slice(0, 12)
-                  .map((file, i) => (
-                    <View
-                      key={file.assetId}
-                      style={[
-                        layout.row,
-                        i > 0 && { borderTopWidth: 1, borderTopColor: c.line },
-                      ]}
-                    >
-                      <View style={{ flex: 1 }}>
-                        <Text
-                          style={[{ fontFamily: fonts.mono, fontSize: 12, color: c.ink }]}
-                          numberOfLines={1}
-                          ellipsizeMode="middle"
-                        >
-                          {file.filename}
-                        </Text>
-                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 4 }}>
-                          <Text style={[{ fontFamily: fonts.mono, fontSize: 10, color: fileStatusColor(file.status, c) }]}>
-                            {file.status === 'encrypting' ? `Encrypting ${file.progress}%` :
-                             file.status === 'queued' ? 'Ready to upload' :
-                             file.status === 'uploading' ? `Uploading ${file.progress}%` :
-                             file.status === 'failed' ? 'Failed' : 'Done'}
-                          </Text>
-                          <Text style={[{ fontFamily: fonts.mono, fontSize: 10, color: c.ink3 }]}>
-                            {formatBytes(file.sizeBytes)}
-                          </Text>
-                        </View>
-                      </View>
-                      {(file.status === 'encrypting' || file.status === 'uploading') && (
-                        <View style={{ width: 40, height: 4, borderRadius: 2, backgroundColor: c.line, overflow: 'hidden' }}>
-                          <View style={{ height: '100%', width: `${file.progress}%` as `${number}%`, backgroundColor: c.amber, borderRadius: 2 }} />
-                        </View>
-                      )}
-                    </View>
-                  ))}
+                <View style={{ padding: 14, gap: 10 }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                    <ActivityIndicator size="small" color={c.amber} />
+                    <Text style={{ flex: 1, color: c.ink, fontSize: 14, fontWeight: '700' }}>
+                      {backup.backupProgress.reason || 'Backing up camera roll'}
+                    </Text>
+                  </View>
+                  <Text style={{ color: c.ink3, fontSize: 12, lineHeight: 17 }}>
+                    {backup.backupProgress.waitingToEncrypt ?? 0} waiting to encrypt · {backup.backupProgress.encryptedPendingUpload ?? 0} ready to upload · {backup.backupProgress.uploading ?? backup.backupProgress.inProgress} uploading
+                  </Text>
+                </View>
               </View>
             </View>
           )}
@@ -739,6 +662,26 @@ export default function BackupInsightsScreen() {
             </View>
           </View>
 
+          {pendingCount > 0 && (
+            <View style={layout.section}>
+              <View
+                style={[
+                  layout.card,
+                  { backgroundColor: c.amberBg, borderColor: c.amber },
+                ]}
+              >
+                <View style={{ padding: 14, gap: 6 }}>
+                  <Text style={{ fontSize: 14, fontWeight: '700', color: c.ink }}>
+                    Keep Beebeeb open to finish faster
+                  </Text>
+                  <Text style={{ fontSize: 12, lineHeight: 17, color: c.ink2 }}>
+                    iOS lets Beebeeb upload encrypted files for a while after you leave. New encryption needs the app open again, and the Live Activity will say when that happens.
+                  </Text>
+                </View>
+              </View>
+            </View>
+          )}
+
           {/* ── PROGRESS card ──────────────────────────────────────────── */}
           <View style={layout.section}>
             <SectionHeader title="Progress" c={c} />
@@ -750,7 +693,7 @@ export default function BackupInsightsScreen() {
             >
               <StatRow
                 label="Photos backed up"
-                value={`${uploadedCount} / ${data?.totalCameraRoll ?? '?'}`}
+                value={`${displayUploadedCount} / ${displayTotalCameraRoll || '?'}`}
                 mono
                 c={c}
               />
@@ -766,8 +709,8 @@ export default function BackupInsightsScreen() {
               {/* Progress bar */}
               <View style={{ paddingHorizontal: 14, paddingVertical: 12, gap: 6 }}>
                 {(() => {
-                  const total = data?.totalCameraRoll ?? 0;
-                  const pct = total > 0 ? Math.min(uploadedCount / total, 1) : 0;
+                  const total = displayTotalCameraRoll;
+                  const pct = total > 0 ? Math.min(displayUploadedCount / total, 1) : 0;
                   const pctNum = Math.round(pct * 100);
                   const fillWidth = `${Math.max(pct * 100, 1)}%` as `${number}%`;
 
@@ -821,6 +764,17 @@ export default function BackupInsightsScreen() {
                   <StatRow
                     label="Pending"
                     value={`${pendingCount} item${pendingCount !== 1 ? 's' : ''}`}
+                    mono
+                    c={c}
+                  />
+                </>
+              )}
+              {localMissingCount > 0 && (
+                <>
+                  <Divider c={c} />
+                  <StatRow
+                    label="Removed from iPhone"
+                    value={`${localMissingCount} skipped`}
                     mono
                     c={c}
                   />
@@ -942,56 +896,72 @@ export default function BackupInsightsScreen() {
                   </>
                 )}
 
+              </View>
+            </View>
+          )}
+
+          {localMissingCount > 0 && (
+            <View style={layout.section}>
+              <SectionHeader title="Skipped local photos" c={c} />
+              <View
+                style={[
+                  layout.card,
+                  { backgroundColor: c.paper2, borderColor: c.line },
+                ]}
+              >
+                <View style={{ paddingHorizontal: 12, paddingVertical: 11, gap: 6 }}>
+                  <Text style={{ fontSize: 14, color: c.ink, fontWeight: '600' }}>
+                    {localMissingCount} photo{localMissingCount !== 1 ? 's' : ''} no longer on this iPhone
+                  </Text>
+                  <Text style={{ fontSize: 12, lineHeight: 17, color: c.ink3 }}>
+                    Usually this means the photo was deleted locally, iOS changed photo-library access, or the asset id became stale.
+                  </Text>
+                </View>
+                {data?.localMissingAssets.slice(0, 3).map((asset) => (
+                  <React.Fragment key={asset.local_asset_id}>
+                    <Divider c={c} />
+                    <View style={{ paddingHorizontal: 12, paddingVertical: 9, gap: 2 }}>
+                      <Text
+                        style={{ fontSize: 12, color: c.ink2, fontFamily: fonts.mono }}
+                        numberOfLines={1}
+                      >
+                        {asset.local_asset_id}
+                      </Text>
+                      <Text style={{ fontSize: 11, color: c.ink4 }} numberOfLines={1}>
+                        {asset.error_message ?? 'Photo no longer available locally'}
+                      </Text>
+                    </View>
+                  </React.Fragment>
+                ))}
+                {localMissingCount > 3 && (
+                  <>
+                    <Divider c={c} />
+                    <View style={{ padding: 10, alignItems: 'center' }}>
+                      <Text style={{ fontSize: 12, color: c.ink3 }}>
+                        and {localMissingCount - 3} more skipped locally
+                      </Text>
+                    </View>
+                  </>
+                )}
                 <Divider c={c} />
-                <ActionButton
-                  label="Retry all failed"
-                  icon="refresh-outline"
-                  onPress={handleRetryAll}
-                  loading={retrying}
+                <StatRow
+                  label="Repair"
+                  value="Run from Settings"
                   c={c}
                 />
               </View>
             </View>
           )}
 
-          {/* ── ACTIONS card ───────────────────────────────────────────── */}
+          {/* ── DIAGNOSTICS card ───────────────────────────────────────── */}
           <View style={layout.section}>
-            <SectionHeader title="Actions" c={c} />
+            <SectionHeader title="Diagnostics" c={c} />
             <View
               style={[
                 layout.card,
                 { backgroundColor: c.paper2, borderColor: c.line },
               ]}
             >
-              <ActionButton
-                label="Full resync"
-                icon="sync-outline"
-                onPress={handleFullResync}
-                loading={resyncing}
-                c={c}
-              />
-              <Divider c={c} />
-              {failedCount > 0 && (
-                <>
-                  <ActionButton
-                    label={`Clear ${failedCount} failed item${failedCount !== 1 ? 's' : ''}`}
-                    icon="close-circle-outline"
-                    onPress={handleClearFailed}
-                    loading={clearing}
-                    danger
-                    c={c}
-                  />
-                  <Divider c={c} />
-                </>
-              )}
-              <ActionButton
-                label="Verify backup integrity"
-                icon="shield-checkmark-outline"
-                onPress={handleVerifyNow}
-                loading={verifying}
-                c={c}
-              />
-              <Divider c={c} />
               <ActionButton
                 label="Export backup log"
                 icon="document-text-outline"

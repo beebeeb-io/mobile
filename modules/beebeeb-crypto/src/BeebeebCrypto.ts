@@ -24,6 +24,12 @@ import type {
   RecoveryPhraseResult,
 } from './BeebeebCrypto.types'
 
+interface BackupNotificationSettings {
+  backupSummaries: boolean;
+  noChangeCheckins: boolean;
+  actionNeeded: boolean;
+}
+
 /**
  * True when the native BeebeebCrypto module is linked. False in Expo Go (or any
  * build that didn't include the xcframework / .so), where every method on the
@@ -31,6 +37,15 @@ import type {
  * plain-auth / preview-disabled paths instead of catching the throw.
  */
 export const isNativeAvailable: boolean = nativeFlag
+
+export function logDiagnostic(marker: string, payload?: Record<string, unknown>): void {
+  if (typeof BeebeebCryptoModule.logDiagnostic !== 'function') return
+  try {
+    void BeebeebCryptoModule.logDiagnostic(marker, payload ? JSON.stringify(payload) : null)
+  } catch {
+    // Diagnostics must never affect app behavior.
+  }
+}
 
 function bytesToBase64(bytes: Uint8Array): string {
   let binary = ''
@@ -51,6 +66,12 @@ function base64ToBytes(value: string): Uint8Array {
 
 function coerceBytes(value: Uint8Array | string): Uint8Array {
   return typeof value === 'string' ? base64ToBytes(value) : value
+}
+
+function abortError(): Error {
+  const error = new Error('Preview load cancelled.')
+  error.name = 'AbortError'
+  return error
 }
 
 // ─── Key generation & recovery ──────────────────────────────────────────────
@@ -273,6 +294,18 @@ export async function loadKeyFromKeychainAsHandle(label: string): Promise<number
 }
 
 /**
+ * Create an opaque native handle from transient master-key bytes. This is used
+ * only on recovery/software-fallback paths where JS already had to receive the
+ * key material, and callers are responsible for zeroing their Uint8Array.
+ */
+export async function createMasterKeyHandle(masterKey: Uint8Array): Promise<number> {
+  if (typeof BeebeebCryptoModule.createMasterKeyHandle !== 'function') {
+    throw new Error('createMasterKeyHandle is not available in this native build')
+  }
+  return BeebeebCryptoModule.createMasterKeyHandle(masterKey)
+}
+
+/**
  * Encrypt a file chunk using the master key handle. Derives the file key
  * internally in native code — no raw key bytes cross the bridge.
  */
@@ -338,6 +371,18 @@ export async function handleDecryptMetadata(
  */
 export async function handleDeriveX25519Private(handleId: number): Promise<Uint8Array> {
   return coerceBytes(await BeebeebCryptoModule.handleDeriveX25519Private(handleId))
+}
+
+/**
+ * Derive a per-file key from the already-unlocked master key handle.
+ * This avoids re-reading the master key from Keychain after the vault is open,
+ * which would otherwise trigger repeated Face ID prompts on iOS.
+ */
+export async function handleDeriveFileKey(handleId: number, fileId: string): Promise<Uint8Array> {
+  if (typeof BeebeebCryptoModule.handleDeriveFileKey !== 'function') {
+    throw new Error('handleDeriveFileKey is not available in this native build')
+  }
+  return coerceBytes(await BeebeebCryptoModule.handleDeriveFileKey(handleId, fileId))
 }
 
 /**
@@ -498,6 +543,7 @@ export async function getFileProviderPrivacyState(): Promise<FileProviderPrivacy
       showInFiles: false,
       trustedMountEnabled: false,
       mounted: false,
+      cacheDatabaseReady: false,
       requireDeviceAuth: true,
       unlockedUntilMs: 0,
       unlockWindowSeconds: 0,
@@ -619,6 +665,24 @@ export interface UploadEncryptedFileResult {
   totalBytes: number
 }
 
+export interface DownloadAndDecryptFileNativeResult {
+  outputPath: string
+  outputUri: string
+  plaintextSize: number
+  chunksDecrypted: number
+}
+
+export interface PreviewLoadProgressEvent {
+  requestId: string
+  fileId: string
+  stage: 'downloading' | 'decrypting' | 'complete' | 'error'
+  bytesDownloaded?: number
+  bytesTotal?: number
+  chunksCompleted?: number
+  chunksTotal?: number
+  error?: string
+}
+
 /**
  * Upload a file using the Rust upload crate. Expects pre-encrypted chunk
  * files on disk. Handles the full upload protocol (init, chunk upload,
@@ -650,14 +714,82 @@ export async function uploadEncryptedFileNative(
   })
 }
 
+/**
+ * Download an encrypted file and decrypt it directly to disk in native code.
+ * JS passes only an opaque master-key handle and receives the output URI.
+ */
+export async function downloadAndDecryptFileNative(
+  handleId: number,
+  apiUrl: string,
+  token: string,
+  fileId: string,
+  outputUri: string,
+  options: { onProgress?: (event: PreviewLoadProgressEvent) => void; signal?: AbortSignal } = {},
+): Promise<DownloadAndDecryptFileNativeResult> {
+  if (typeof BeebeebCryptoModule.downloadAndDecryptFileNative !== 'function') {
+    throw new Error('downloadAndDecryptFileNative is not available in this native build')
+  }
+
+  const requestId = `preview-${fileId}-${Date.now()}-${Math.random().toString(36).slice(2)}`
+  let abortListener: (() => void) | null = null
+  const progressSubscription = options.onProgress && typeof BeebeebCryptoModule.addListener === 'function'
+    ? BeebeebCryptoModule.addListener('onPreviewLoadProgress', (event: PreviewLoadProgressEvent) => {
+      if (event.requestId === requestId) options.onProgress?.(event)
+    })
+    : null
+
+  if (options.signal?.aborted) {
+    throw abortError()
+  }
+
+  if (options.signal) {
+    abortListener = () => {
+      if (typeof BeebeebCryptoModule.cancelDownloadAndDecryptFileNative === 'function') {
+        void BeebeebCryptoModule.cancelDownloadAndDecryptFileNative(requestId).catch(() => {})
+      }
+    }
+    options.signal.addEventListener('abort', abortListener, { once: true })
+  }
+
+  try {
+    return await BeebeebCryptoModule.downloadAndDecryptFileNative(
+      handleId,
+      apiUrl,
+      token,
+      fileId,
+      outputUri,
+      requestId,
+    )
+  } catch (error) {
+    if (options.signal?.aborted) {
+      throw abortError()
+    }
+    throw error
+  } finally {
+    progressSubscription?.remove?.()
+    if (options.signal && abortListener) {
+      options.signal.removeEventListener('abort', abortListener)
+    }
+  }
+}
+
 // ─── Backup management ──────────────────────────────────────────────────────
 
 export interface NativeBackupProgress {
   total: number
   completed: number
   inProgress: number
+  pending?: number
+  waitingToEncrypt?: number
+  encryptedPendingUpload?: number
+  uploading?: number
+  failed?: number
+  state?: string
+  reason?: string
   lastBackupAt: string | null
 }
+
+export type NativeBackupDiagnostics = Record<string, unknown>
 
 export type NativeBackupCategory = 'camera_roll' | 'contacts' | 'calendar'
 
@@ -715,8 +847,14 @@ export async function getBackupProgress(): Promise<NativeBackupProgress> {
   return BeebeebCryptoModule.getBackupProgress()
 }
 
-/** Trigger an immediate batch (up to 50 items) without waiting for BGProcessingTask. */
-export async function triggerImmediateBackup(authToken: string): Promise<void> {
+/** Returns a debug-only native backup diagnostic snapshot. */
+export async function getNativeBackupDiagnostics(): Promise<NativeBackupDiagnostics | null> {
+  if (typeof BeebeebCryptoModule.getNativeBackupDiagnostics !== 'function') return null
+  return BeebeebCryptoModule.getNativeBackupDiagnostics()
+}
+
+/** Trigger an immediate native scan + batch, then leave the native watcher running. */
+export async function triggerImmediateBackup(authToken: string): Promise<NativeBackupProgress> {
   return BeebeebCryptoModule.triggerImmediateBackup(authToken)
 }
 
@@ -767,17 +905,35 @@ export async function clearAllPendingShares(): Promise<number> {
 // ─── Backup progress notification ──────────────────────────────────────────
 
 /**
- * Show or update a persistent iOS notification with backup progress.
- * When `isComplete` is true the notification auto-dismisses after 30 seconds.
+ * Show a backup completion notification. Progress notifications are deliberately
+ * suppressed; foreground progress is shown in the app.
  */
 export async function updateBackupNotification(
   uploaded: number,
   total: number,
   throughputMBps: number,
   isComplete: boolean,
+  completionBody?: string,
 ): Promise<void> {
   if (typeof BeebeebCryptoModule.updateBackupNotification !== 'function') return;
-  return BeebeebCryptoModule.updateBackupNotification(uploaded, total, throughputMBps, isComplete);
+  return BeebeebCryptoModule.updateBackupNotification(
+    uploaded,
+    total,
+    throughputMBps,
+    isComplete,
+    completionBody ?? null,
+  );
+}
+
+export async function configureBackupNotificationSettings(
+  settings: BackupNotificationSettings,
+): Promise<void> {
+  if (typeof BeebeebCryptoModule.configureBackupNotificationSettings !== 'function') return;
+  return BeebeebCryptoModule.configureBackupNotificationSettings(
+    settings.backupSummaries,
+    settings.noChangeCheckins,
+    settings.actionNeeded,
+  );
 }
 
 /**
@@ -790,28 +946,28 @@ export async function clearBackupNotification(): Promise<void> {
 
 // ─── Local thumbnail generation for video and RAW (DNG) files ──────────────
 //
-// These functions generate a JPEG thumbnail from a local file URI and write
+// These functions generate a medium WebP thumbnail from a local file URI and write
 // it to a temp path on disk. The caller is responsible for encrypting and
 // uploading the thumbnail, and for cleaning up the temp file.
 
 /**
  * Extract a frame from a local video file (MP4/MOV) using AVAssetImageGenerator.
- * Returns the path to a temporary JPEG thumbnail file.
+ * Returns the path to a temporary WebP thumbnail file.
  */
 export async function generateVideoThumbnail(
   localUri: string,
-  maxSize: number = 256,
+  maxSize: number = 768,
 ): Promise<string> {
   return BeebeebCryptoModule.generateVideoThumbnail(localUri, maxSize)
 }
 
 /**
- * Generate a JPEG thumbnail from a local DNG (RAW) photo using UIImage/CoreImage.
- * Returns the path to a temporary JPEG thumbnail file.
+ * Generate a WebP thumbnail from a local DNG (RAW) photo using UIImage/CoreImage.
+ * Returns the path to a temporary WebP thumbnail file.
  */
 export async function generateDngThumbnail(
   localUri: string,
-  maxSize: number = 256,
+  maxSize: number = 768,
 ): Promise<string> {
   return BeebeebCryptoModule.generateDngThumbnail(localUri, maxSize)
 }
@@ -819,7 +975,7 @@ export async function generateDngThumbnail(
 // ─── Native thumbnail pipeline ──────────────────────────────────────────────
 //
 // Downloads the full encrypted file via native URLSession, decrypts to disk
-// via Rust, resizes with UIImage (no JS heap), encrypts the thumbnail JPEG
+// via Rust, resizes with UIImage (no JS heap), encrypts the thumbnail WebP
 // as a single AES-256-GCM chunk, and uploads via PUT. Zero JS memory usage.
 
 /**
@@ -839,6 +995,33 @@ export async function generateAndUploadThumbnailNative(
 ): Promise<boolean> {
   if (typeof BeebeebCryptoModule.generateAndUploadThumbnailNative !== 'function') return false
   return BeebeebCryptoModule.generateAndUploadThumbnailNative(handleId, apiUrl, token, fileId, maxSize)
+}
+
+/**
+ * Generate and upload a medium thumbnail from an iOS Photos local identifier.
+ * This avoids downloading the full remote file during camera-roll repair.
+ */
+export async function generateAndUploadPhotoLibraryThumbnailNative(
+  handleId: number,
+  apiUrl: string,
+  token: string,
+  fileId: string,
+  localIdentifier: string,
+  mediaTypeHint: string | null | undefined,
+  maxSize: number,
+  variant: 'small' | 'medium' | 'large' = 'medium',
+): Promise<boolean> {
+  if (typeof BeebeebCryptoModule.generateAndUploadPhotoLibraryThumbnailNative !== 'function') return false
+  return BeebeebCryptoModule.generateAndUploadPhotoLibraryThumbnailNative(
+    handleId,
+    apiUrl,
+    token,
+    fileId,
+    localIdentifier,
+    mediaTypeHint ?? null,
+    maxSize,
+    variant,
+  )
 }
 
 // ─── Amber Constellation — display side ─────────────────────────────────────

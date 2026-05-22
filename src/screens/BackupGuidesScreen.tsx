@@ -73,14 +73,12 @@ function GuideCard({
   index,
   expanded,
   onToggle,
-  onUpvote,
   c,
 }: {
   guide: BackupGuide;
   index: number;
   expanded: boolean;
   onToggle: () => void;
-  onUpvote: () => void;
   c: Colors;
 }) {
   const bg = initialsColor(index);
@@ -107,15 +105,6 @@ function GuideCard({
         </View>
 
         <View style={styles.cardHeaderRight}>
-          <TouchableOpacity
-            style={[styles.upvoteBtn, { borderColor: c.line }]}
-            activeOpacity={0.7}
-            onPress={onUpvote}
-            accessibilityLabel={`Upvote ${guide.appName}`}
-          >
-            <Text style={[styles.upvoteArrow, { color: c.ink3 }]}>^</Text>
-            <Text style={[styles.upvoteCount, { color: c.ink2 }]}>{guide.upvotes}</Text>
-          </TouchableOpacity>
           <Text style={[styles.chevron, expanded && styles.chevronOpen, { color: c.ink4 }]}>{'›'}</Text>
         </View>
       </TouchableOpacity>
@@ -150,18 +139,12 @@ export default function BackupGuidesScreen() {
   const navigation = useNavigation<Nav>();
   const { colors: c } = useTheme();
   const insets = useSafeAreaInsets();
-  const [guideList, setGuideList] = useState(initialGuides);
+  const guideList = initialGuides;
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [requestApp, setRequestApp] = useState('');
 
   const handleToggle = useCallback((id: string) => {
     setExpandedId(prev => (prev === id ? null : id));
-  }, []);
-
-  const handleUpvote = useCallback((id: string) => {
-    setGuideList(prev =>
-      prev.map(g => (g.id === id ? { ...g, upvotes: g.upvotes + 1 } : g)),
-    );
   }, []);
 
   const handleRequest = useCallback(() => {
@@ -206,7 +189,6 @@ export default function BackupGuidesScreen() {
             index={index}
             expanded={expandedId === item.id}
             onToggle={() => handleToggle(item.id)}
-            onUpvote={() => handleUpvote(item.id)}
             c={c}
           />
         )}
@@ -217,7 +199,7 @@ export default function BackupGuidesScreen() {
             <View style={[styles.requestSection, { backgroundColor: c.paper, borderColor: c.line }]}>
               <Text style={[styles.requestHeading, { color: c.ink }]}>Don't see your app?</Text>
               <Text style={[styles.requestSub, { color: c.ink3 }]}>
-                Request a guide and vote for it on the roadmap.
+                Request a guide and we will add it to the backup library.
               </Text>
               <View style={styles.requestRow}>
                 <TextInput
@@ -361,26 +343,6 @@ const styles = StyleSheet.create({
   badgeText: {
     fontSize: 10,
     fontWeight: '600',
-  },
-
-  // Upvote
-  upvoteBtn: {
-    alignItems: 'center',
-    paddingHorizontal: 6,
-    paddingVertical: 4,
-    borderRadius: radii.sm,
-    borderWidth: 1,
-    minWidth: 34,
-  },
-  upvoteArrow: {
-    fontSize: 10,
-    fontWeight: '700',
-    lineHeight: 12,
-  },
-  upvoteCount: {
-    fontSize: 10,
-    fontWeight: '600',
-    lineHeight: 13,
   },
 
   chevron: {

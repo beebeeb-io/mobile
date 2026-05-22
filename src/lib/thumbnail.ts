@@ -5,7 +5,7 @@
  * matching the web client's format: nonce(12) || ciphertext.
  *
  * Supported formats:
- * - JPEG, PNG, HEIC, WebP, etc.: expo-image-manipulator resizes to 256px JPEG
+ * - JPEG, PNG, HEIC, WebP, etc.: expo-image-manipulator resizes to medium WebP
  * - DNG (RAW photos): native UIImage/CoreImage decodes the embedded preview
  * - MP4, MOV (videos): native AVAssetImageGenerator extracts a frame at ~1s
  *
@@ -13,35 +13,105 @@
  * underlying upload. Callers should not await the result.
  */
 
-import { uploadThumbnail, downloadFile, getToken, thumbnailUrl } from './api';
+import { uploadThumbnail, downloadFile, getApiUrl, getToken, thumbnailUrl } from './api';
+import { rateLimitedFetch } from './rate-limited-fetch';
+
 import {
   encryptChunk,
   decryptChunk,
   generateVideoThumbnail as nativeGenerateVideoThumbnail,
   generateDngThumbnail as nativeGenerateDngThumbnail,
+  generateAndUploadPhotoLibraryThumbnailNative,
 } from '../../modules/beebeeb-crypto';
 import * as FileSystem from 'expo-file-system';
+import * as MediaLibrary from 'expo-media-library';
 import { EncodingType } from 'expo-file-system';
 import {
   decryptEncryptedBytes,
   inferChunkCountFromEncryptedSize,
 } from './encrypted-download';
 import {
-  getCachedThumbnail,
   cacheThumbnailBase64,
+  enqueueThumbnailLoad,
+  getCachedThumbnail,
 } from './thumbnail-cache';
+import {
+  LEGACY_THUMB_CACHE_DIR_NAMES,
+  MAX_THUMB_BYTES_BY_SIZE,
+  THUMB_CACHE_DIR_NAME,
+  THUMB_VARIANTS_BY_SIZE,
+  THUMB_WIDTH,
+  type ThumbnailVariant,
+} from './thumbnail-policy';
 
 let ImageManipulator: typeof import('expo-image-manipulator') | null = null;
 try { ImageManipulator = require('expo-image-manipulator'); } catch {}
 
-const THUMB_WIDTH = 256;
-const THUMB_QUALITY = 0.7;
 const MAX_THUMB_CACHE_ITEMS = 15000;
-const PREFETCH_CONCURRENCY = 4;
+const THUMBNAIL_BACKOFF_BASE_MS = 4_000;
+const THUMBNAIL_BACKOFF_MAX_MS = 30_000;
+const THUMBNAIL_WARN_INTERVAL_MS = 10_000;
+export const THUMBNAIL_REPAIR_RETRY_MS = 60_000;
 
 const IMAGE_MIME_PREFIX = 'image/';
 const VIDEO_MIME_PREFIX = 'video/';
 const DNG_MIME = 'image/x-adobe-dng';
+const THUMBNAIL_ENCRYPTION_OVERHEAD_BYTES = 28;
+const MAX_ENCRYPTED_THUMB_BYTES_BY_SIZE: Record<ThumbnailVariant, number> = {
+  small: 32 * 1024,
+  medium: 64 * 1024,
+  large: 192 * 1024,
+};
+let thumbnailBackoffUntil = 0;
+let thumbnailServerFailureCount = 0;
+let lastThumbnailWarnAt = 0;
+
+export interface ThumbnailPrefetchStats {
+  attempted: number;
+  cached: number;
+  loaded: number;
+  failed: number;
+  skipped: number;
+}
+
+function warnThumbnailOnce(message: string, details?: unknown): void {
+  const now = Date.now();
+  if (now - lastThumbnailWarnAt < THUMBNAIL_WARN_INTERVAL_MS) return;
+  lastThumbnailWarnAt = now;
+  if (details !== undefined) {
+    console.warn(message, details);
+  } else {
+    console.warn(message);
+  }
+}
+
+function thumbnailBackoffRemainingMs(): number {
+  return Math.max(0, thumbnailBackoffUntil - Date.now());
+}
+
+function applyThumbnailBackoff(status: number, retryAfter: string | null): void {
+  const retryAfterSeconds = retryAfter ? Number(retryAfter) : NaN;
+  const retryAfterMs = Number.isFinite(retryAfterSeconds) && retryAfterSeconds >= 0
+    ? retryAfterSeconds * 1000
+    : null;
+  thumbnailServerFailureCount += 1;
+  const exponentialMs = Math.min(
+    THUMBNAIL_BACKOFF_MAX_MS,
+    THUMBNAIL_BACKOFF_BASE_MS * (2 ** Math.min(thumbnailServerFailureCount - 1, 3)),
+  );
+  const pauseMs = Math.min(THUMBNAIL_BACKOFF_MAX_MS, retryAfterMs ?? exponentialMs);
+  thumbnailBackoffUntil = Math.max(thumbnailBackoffUntil, Date.now() + pauseMs);
+  warnThumbnailOnce('[thumbnail] remote thumbnail fetch is backing off', {
+    status,
+    pauseMs,
+    failureCount: thumbnailServerFailureCount,
+  });
+}
+
+function clearThumbnailBackoff(): void {
+  thumbnailServerFailureCount = 0;
+  thumbnailBackoffUntil = 0;
+}
 
 function bytesToBase64(bytes: Uint8Array): string {
   let binary = '';
@@ -74,19 +144,31 @@ export function isThumbnailable(mimeType: string | null | undefined): boolean {
 }
 
 /**
- * Resize an image at `sourceUri` down to a 256-px-wide JPEG and
+ * Resize an image at `sourceUri` down to a medium WebP and
  * return its bytes. Returns null if the source can't be processed.
  */
-export async function generateThumbnail(sourceUri: string): Promise<Uint8Array | null> {
+export async function generateThumbnail(
+  sourceUri: string,
+  variant: ThumbnailVariant = 'medium',
+): Promise<Uint8Array | null> {
   try {
     if (!ImageManipulator) return null;
-    const result = await ImageManipulator.manipulateAsync(
-      sourceUri,
-      [{ resize: { width: THUMB_WIDTH } }],
-      { compress: THUMB_QUALITY, format: ImageManipulator.SaveFormat.JPEG, base64: true },
-    );
-    if (!result.base64) return null;
-    return base64ToBytes(result.base64);
+    const maxUploadPlaintextBytes = MAX_ENCRYPTED_THUMB_BYTES_BY_SIZE[variant] - THUMBNAIL_ENCRYPTION_OVERHEAD_BYTES;
+    let cappedFallback: Uint8Array | null = null;
+    for (const option of THUMB_VARIANTS_BY_SIZE[variant]) {
+      const result = await ImageManipulator.manipulateAsync(
+        sourceUri,
+        [{ resize: { width: option.width } }],
+        { compress: option.quality, format: ImageManipulator.SaveFormat.WEBP, base64: true },
+      );
+      if (!result.base64) continue;
+      const bytes = base64ToBytes(result.base64);
+      if (bytes.byteLength <= maxUploadPlaintextBytes) {
+        cappedFallback = bytes;
+      }
+      if (bytes.byteLength <= MAX_THUMB_BYTES_BY_SIZE[variant]) return bytes;
+    }
+    return cappedFallback;
   } catch {
     return null;
   }
@@ -94,11 +176,11 @@ export async function generateThumbnail(sourceUri: string): Promise<Uint8Array |
 
 /**
  * Generate a thumbnail for a DNG (RAW) photo using the native CoreImage
- * decoder. Returns bytes of a JPEG thumbnail, or null on failure.
+ * decoder. Returns bytes of a WebP thumbnail, or null on failure.
  */
-async function generateDngThumbnailBytes(sourceUri: string): Promise<Uint8Array | null> {
+async function generateDngThumbnailBytes(sourceUri: string, maxSize = THUMB_WIDTH): Promise<Uint8Array | null> {
   try {
-    const thumbPath = await nativeGenerateDngThumbnail(sourceUri, THUMB_WIDTH);
+    const thumbPath = await nativeGenerateDngThumbnail(sourceUri, maxSize);
     const b64 = await FileSystem.readAsStringAsync(thumbPath, { encoding: EncodingType.Base64 });
     await FileSystem.deleteAsync(thumbPath, { idempotent: true }).catch(() => {});
     return base64ToBytes(b64);
@@ -109,11 +191,11 @@ async function generateDngThumbnailBytes(sourceUri: string): Promise<Uint8Array 
 
 /**
  * Generate a thumbnail for a video file (MP4/MOV) using the native
- * AVAssetImageGenerator. Returns bytes of a JPEG thumbnail, or null on failure.
+ * AVAssetImageGenerator. Returns bytes of a WebP thumbnail, or null on failure.
  */
-async function generateVideoThumbnailBytes(sourceUri: string): Promise<Uint8Array | null> {
+async function generateVideoThumbnailBytes(sourceUri: string, maxSize = THUMB_WIDTH): Promise<Uint8Array | null> {
   try {
-    const thumbPath = await nativeGenerateVideoThumbnail(sourceUri, THUMB_WIDTH);
+    const thumbPath = await nativeGenerateVideoThumbnail(sourceUri, maxSize);
     const b64 = await FileSystem.readAsStringAsync(thumbPath, { encoding: EncodingType.Base64 });
     await FileSystem.deleteAsync(thumbPath, { idempotent: true }).catch(() => {});
     return base64ToBytes(b64);
@@ -132,14 +214,30 @@ async function generateVideoThumbnailBytes(sourceUri: string): Promise<Uint8Arra
 async function generateThumbnailForMedia(
   sourceUri: string,
   mimeType: string | null | undefined,
+  variant: ThumbnailVariant = 'medium',
 ): Promise<Uint8Array | null> {
+  const resolvedUri = await resolveLocalMediaUri(sourceUri);
+  const maxSize = THUMB_VARIANTS_BY_SIZE[variant][0]?.width ?? THUMB_WIDTH;
   if (isDngMime(mimeType)) {
-    return generateDngThumbnailBytes(sourceUri);
+    return generateDngThumbnailBytes(resolvedUri, maxSize);
   }
   if (isVideoMime(mimeType)) {
-    return generateVideoThumbnailBytes(sourceUri);
+    return generateVideoThumbnailBytes(resolvedUri, maxSize);
   }
-  return generateThumbnail(sourceUri);
+  return generateThumbnail(resolvedUri, variant);
+}
+
+async function resolveLocalMediaUri(sourceUri: string): Promise<string> {
+  if (!sourceUri.startsWith('ph://')) return sourceUri;
+  try {
+    const assetId = sourceUri.slice('ph://'.length);
+    const assetInfo = await MediaLibrary.getAssetInfoAsync(assetId, {
+      shouldDownloadFromNetwork: true,
+    });
+    return assetInfo.localUri ?? assetInfo.uri ?? sourceUri;
+  } catch {
+    return sourceUri;
+  }
 }
 
 /**
@@ -155,19 +253,22 @@ export async function generateAndUploadThumbnail(
   sourceUri: string,
   mimeType: string | null | undefined,
   getFileKeyBytes: (fileId: string) => Promise<Uint8Array>,
-): Promise<void> {
-  if (!isThumbnailable(mimeType)) return;
+  variant: ThumbnailVariant = 'medium',
+): Promise<boolean> {
+  if (!isThumbnailable(mimeType)) return false;
   try {
-    const thumb = await generateThumbnailForMedia(sourceUri, mimeType);
-    if (!thumb) return;
+    const thumb = await generateThumbnailForMedia(sourceUri, mimeType, variant);
+    if (!thumb) return false;
 
     // Cache the plaintext thumbnail in persistent storage for instant display
-    const b64 = bytesToBase64(thumb);
-    try {
-      const persistedPath = await cacheThumbnailBase64(fileId, b64);
-      thumbCache.set(fileId, persistedPath);
-    } catch {
-      // Persist failed — still upload the thumbnail to server
+    if (variant === 'medium') {
+      const b64 = bytesToBase64(thumb);
+      try {
+        const persistedPath = await cacheThumbnailBase64(fileId, b64);
+        thumbCache.set(fileId, persistedPath);
+      } catch {
+        // Persist failed — still upload the thumbnail to server
+      }
     }
 
     const fileKey = await getFileKeyBytes(fileId);
@@ -177,10 +278,53 @@ export async function generateAndUploadThumbnail(
     const wire = new Uint8Array(nonce.length + ciphertext.length);
     wire.set(nonce, 0);
     wire.set(ciphertext, nonce.length);
+    if (wire.byteLength > MAX_ENCRYPTED_THUMB_BYTES_BY_SIZE[variant]) {
+      warnThumbnailOnce('[thumbnail] generated thumbnail exceeded upload limit', {
+        fileId,
+        variant,
+        bytes: wire.byteLength,
+        limit: MAX_ENCRYPTED_THUMB_BYTES_BY_SIZE[variant],
+      });
+      return false;
+    }
 
-    await uploadThumbnail(fileId, wire);
+    await uploadThumbnail(fileId, wire, variant);
+    return true;
   } catch {
     // Best-effort — swallow.
+    return false;
+  }
+}
+
+/**
+ * Repair a missing medium thumbnail from a local iOS Photos asset.
+ *
+ * The thumbnail bytes, file-key derivation, encryption and upload all stay in
+ * native code; JS only passes the opaque master-key handle and progress state.
+ */
+export async function generateAndUploadPhotoLibraryThumbnail(
+  fileId: string,
+  localIdentifier: string,
+  mimeType: string | null | undefined,
+  getMasterKeyHandleId: () => number,
+  variant: ThumbnailVariant = 'medium',
+): Promise<boolean> {
+  if (!isThumbnailable(mimeType)) return false;
+  try {
+    const token = await getToken();
+    if (!token) return false;
+    return await generateAndUploadPhotoLibraryThumbnailNative(
+      getMasterKeyHandleId(),
+      getApiUrl(),
+      token,
+      fileId,
+      localIdentifier,
+      mimeType,
+      THUMB_VARIANTS_BY_SIZE[variant][0]?.width ?? THUMB_WIDTH,
+      variant,
+    );
+  } catch {
+    return false;
   }
 }
 
@@ -290,7 +434,11 @@ export async function ensureThumbnailForImage(
 
       await uploadThumbnail(fileId, wire);
       return true;
-    } catch {
+    } catch (err) {
+      warnThumbnailOnce('[thumbnail] visible thumbnail repair failed', {
+        fileId,
+        error: err instanceof Error ? err.message : String(err),
+      });
       return false;
     } finally {
       if (sourceUri) {
@@ -315,11 +463,11 @@ const inflight = new Map<string, Promise<string | null>>();
 const repairInflight = new Map<string, Promise<boolean>>();
 
 /** Persistent thumbnail directory (documentDirectory, survives cache purges). */
-const PERSISTENT_THUMB_DIR = `${FileSystem.documentDirectory}beebeeb-thumbnails/`;
+const PERSISTENT_THUMB_DIR = `${FileSystem.documentDirectory}${THUMB_CACHE_DIR_NAME}/`;
 
 function thumbPath(fileId: string): string | null {
   if (!FileSystem.documentDirectory) return null;
-  return `${PERSISTENT_THUMB_DIR}${fileId}.jpg`;
+  return `${PERSISTENT_THUMB_DIR}${fileId}.webp`;
 }
 
 /** Legacy volatile cache path — checked during migration only. */
@@ -370,7 +518,7 @@ export async function pruneThumbnailCache(maxItems = MAX_THUMB_CACHE_ITEMS): Pro
   try {
     await FileSystem.makeDirectoryAsync(PERSISTENT_THUMB_DIR, { intermediates: true });
     const names = await FileSystem.readDirectoryAsync(PERSISTENT_THUMB_DIR);
-    const thumbs = names.filter((name) => /\.jpg$/.test(name));
+    const thumbs = names.filter((name) => /\.(webp|jpg)$/.test(name));
     if (thumbs.length > maxItems) {
       const infos = await Promise.all(thumbs.map(async (name) => {
         const uri = `${PERSISTENT_THUMB_DIR}${name}`;
@@ -385,18 +533,24 @@ export async function pruneThumbnailCache(maxItems = MAX_THUMB_CACHE_ITEMS): Pro
       const toDelete = infos.slice(0, Math.max(0, infos.length - maxItems));
       for (const item of toDelete) {
         await FileSystem.deleteAsync(item.uri, { idempotent: true }).catch(() => {});
-        thumbCache.delete(item.name.replace(/\.jpg$/, ''));
+        thumbCache.delete(item.name.replace(/\.(webp|jpg)$/, ''));
       }
     }
   } catch {
     // Pruning is best-effort; failure must not affect the photo grid.
   }
 
+  for (const legacyDirName of LEGACY_THUMB_CACHE_DIR_NAMES) {
+    const legacyDir = `${FileSystem.documentDirectory}${legacyDirName}/`;
+    if (legacyDir === PERSISTENT_THUMB_DIR) continue;
+    await FileSystem.deleteAsync(legacyDir, { idempotent: true }).catch(() => {});
+  }
+
   // Also clean up any remaining legacy thumbnails in cacheDirectory
   if (FileSystem.cacheDirectory) {
     try {
       const names = await FileSystem.readDirectoryAsync(FileSystem.cacheDirectory);
-      const legacyThumbs = names.filter((name) => /^thumb_[^/]+\.jpg$/.test(name));
+      const legacyThumbs = names.filter((name) => /^thumb_[^/]+\.(webp|jpg)$/.test(name));
       for (const name of legacyThumbs) {
         const uri = `${FileSystem.cacheDirectory}${name}`;
         await FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => {});
@@ -419,7 +573,9 @@ export async function pruneThumbnailCache(maxItems = MAX_THUMB_CACHE_ITEMS): Pro
 export async function fetchDecryptedThumbnailUri(
   fileId: string,
   fileKey: Uint8Array,
+  signal?: AbortSignal,
 ): Promise<string | null> {
+  if (signal?.aborted) return null;
   const cached = await cachedThumbnailUri(fileId);
   if (cached) return cached;
 
@@ -427,13 +583,33 @@ export async function fetchDecryptedThumbnailUri(
   if (pending) return pending;
 
   const fetchPromise = (async () => {
+    const backoffRemaining = thumbnailBackoffRemainingMs();
+    if (backoffRemaining > 0) {
+      warnThumbnailOnce('[thumbnail] remote thumbnail fetch skipped during backoff', {
+        backoffRemainingMs: backoffRemaining,
+      });
+      return null;
+    }
+
     const token = await getToken();
     if (!token) return null;
 
-    const res = await fetch(thumbnailUrl(fileId), {
+    const res = await rateLimitedFetch(thumbnailUrl(fileId), {
       headers: { Authorization: `Bearer ${token}` },
+      signal,
     });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      if (res.status === 429 || res.status >= 500) {
+        applyThumbnailBackoff(res.status, res.headers.get('Retry-After'));
+      } else if (res.status !== 404) {
+        warnThumbnailOnce('[thumbnail] remote thumbnail fetch failed', {
+          status: res.status,
+          fileId,
+        });
+      }
+      return null;
+    }
+    clearThumbnailBackoff();
 
     const encryptedBytes = new Uint8Array(await res.arrayBuffer());
     if (encryptedBytes.length < 4) return null;
@@ -451,7 +627,7 @@ export async function fetchDecryptedThumbnailUri(
       plainBytes = await decryptChunk(fileKey, nonce, ciphertext);
     }
 
-    // Write decrypted JPEG to persistent storage so it survives app restarts.
+    // Write decrypted thumbnail to persistent storage so it survives app restarts.
     const b64 = bytesToBase64(plainBytes);
     const persistedPath = await cacheThumbnailBase64(fileId, b64);
     thumbCache.set(fileId, persistedPath);
@@ -461,32 +637,81 @@ export async function fetchDecryptedThumbnailUri(
   inflight.set(fileId, fetchPromise);
   try {
     return await fetchPromise;
-  } catch {
+  } catch (err) {
+    if (signal?.aborted || (err instanceof Error && err.name === 'AbortError')) {
+      return null;
+    }
+    warnThumbnailOnce('[thumbnail] remote thumbnail fetch threw', {
+      fileId,
+      error: err instanceof Error ? err.message : String(err),
+    });
     return null;
   } finally {
     inflight.delete(fileId);
   }
 }
 
+export interface PrefetchOptions {
+  signal?: AbortSignal;
+  /** Called as soon as a thumbnail URI is known (cache hit or freshly fetched). */
+  onLoaded?: (fileId: string, uri: string) => void;
+}
+
+/**
+ * Ensure thumbnails for the given file IDs are cached locally.
+ *
+ * Each ID is routed through the bounded queue in `thumbnail-cache.ts` so
+ * concurrency is shared with on-screen `<ThumbnailImage>` loads. Cache hits
+ * resolve immediately without entering the queue. If `signal` aborts, pending
+ * queue entries are dropped and in-flight fetches are cancelled.
+ */
 export async function prefetchDecryptedThumbnails(
   fileIds: string[],
   getFileKeyBytes: (fileId: string) => Promise<Uint8Array>,
-): Promise<void> {
+  options?: PrefetchOptions,
+): Promise<ThumbnailPrefetchStats> {
   const unique = Array.from(new Set(fileIds)).slice(0, MAX_THUMB_CACHE_ITEMS);
-  let cursor = 0;
+  const stats: ThumbnailPrefetchStats = {
+    attempted: 0,
+    cached: 0,
+    loaded: 0,
+    failed: 0,
+    skipped: 0,
+  };
+  const { signal, onLoaded } = options ?? {};
 
-  async function worker(): Promise<void> {
-    while (cursor < unique.length) {
-      const fileId = unique[cursor++];
-      if (!fileId || await cachedThumbnailUri(fileId)) continue;
-      try {
-        const fileKey = await getFileKeyBytes(fileId);
-        await fetchDecryptedThumbnailUri(fileId, fileKey);
-      } catch {
-        // Prefetch is opportunistic; visible cells can retry on demand.
-      }
+  await Promise.all(unique.map(async (fileId) => {
+    if (signal?.aborted) {
+      stats.skipped += 1;
+      return;
     }
-  }
+    if (!fileId) {
+      stats.skipped += 1;
+      return;
+    }
+    const cached = await cachedThumbnailUri(fileId);
+    if (cached) {
+      stats.cached += 1;
+      onLoaded?.(fileId, cached);
+      return;
+    }
+    stats.attempted += 1;
+    try {
+      const uri = await enqueueThumbnailLoad(fileId, async (fId, innerSignal) => {
+        const fileKey = await getFileKeyBytes(fId);
+        return fetchDecryptedThumbnailUri(fId, fileKey, innerSignal);
+      }, signal);
+      if (uri) {
+        stats.loaded += 1;
+        onLoaded?.(fileId, uri);
+      } else {
+        stats.failed += 1;
+      }
+    } catch {
+      stats.failed += 1;
+      // Prefetch is opportunistic; visible cells can retry on demand.
+    }
+  }));
 
-  await Promise.all(Array.from({ length: Math.min(PREFETCH_CONCURRENCY, unique.length) }, () => worker()));
+  return stats;
 }

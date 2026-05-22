@@ -255,8 +255,8 @@ export function DetailsSheet({
         bounces={false}
       >
         <View style={styles.rowsContainer}>
-          {rows.map((row) => (
-            <View key={row.label} style={styles.row}>
+          {rows.map((row, index) => (
+            <View key={`${row.label}-${index}`} style={styles.row}>
               <Text style={styles.rowLabel}>{row.label}</Text>
               <Text
                 style={[

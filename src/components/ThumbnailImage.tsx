@@ -1,8 +1,8 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Image, StyleSheet, View } from 'react-native';
 import type { StyleProp, ViewStyle } from 'react-native';
 import { useCrypto } from '../lib/crypto-context';
-import { cacheLocalThumbnail, fetchDecryptedThumbnailUri } from '../lib/thumbnail';
+import { cacheLocalThumbnail, fetchDecryptedThumbnailUri, generateAndUploadThumbnail } from '../lib/thumbnail';
 import {
   getCachedThumbnail,
   enqueueThumbnailLoad,
@@ -21,6 +21,8 @@ interface Props {
    * instead of downloading+decrypting from the server.
    */
   localAssetUri?: string | null;
+  mimeType?: string | null;
+  onUnavailable?: (fileId: string) => void;
   style?: StyleProp<ViewStyle>;
   accessibilityLabel?: string;
 }
@@ -31,6 +33,8 @@ export const ThumbnailImage = React.memo(function ThumbnailImage({
   placeholderColor,
   loadThumbnail = true,
   localAssetUri,
+  mimeType,
+  onUnavailable,
   style,
   accessibilityLabel,
 }: Props) {
@@ -38,13 +42,19 @@ export const ThumbnailImage = React.memo(function ThumbnailImage({
   const [uri, setUri] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
   const cancelledRef = useRef(false);
+  const markUnavailable = useCallback(() => {
+    setFailed(true);
+    onUnavailable?.(fileId);
+  }, [fileId, onUnavailable]);
+
+  useEffect(() => {
+    setUri(null);
+    setFailed(false);
+  }, [fileId]);
 
   useEffect(() => {
     cancelledRef.current = false;
-    setUri(null);
-    setFailed(false);
     if (!loadThumbnail) {
-      setFailed(true);
       return () => {
         cancelledRef.current = true;
       };
@@ -72,11 +82,14 @@ export const ThumbnailImage = React.memo(function ThumbnailImage({
 
         // Step 2: Not cached. Use local asset or server fetch via the queue.
         if (localAssetUri) {
-          return cacheLocalThumbnail(fileId, localAssetUri)
+          return cacheLocalThumbnail(fileId, localAssetUri, mimeType)
             .then((localCachedUri) => {
               if (cancelledRef.current) return;
               if (localCachedUri) {
                 setUri(localCachedUri);
+                if (!hasThumbnail) {
+                  void generateAndUploadThumbnail(fileId, localAssetUri, mimeType, getFileKeyBytes);
+                }
               } else if (hasThumbnail) {
                 // Local generation failed — enqueue server fetch (concurrency limited)
                 return enqueueThumbnailLoad(fileId, async (fId) => {
@@ -85,18 +98,18 @@ export const ThumbnailImage = React.memo(function ThumbnailImage({
                 }).then((serverUri) => {
                   if (!cancelledRef.current) {
                     if (serverUri) setUri(serverUri);
-                    else setFailed(true);
+                    else markUnavailable();
                   }
                 });
               } else {
-                setFailed(true);
+                markUnavailable();
               }
             });
         }
 
         // No local asset — fetch from server via concurrency-limited queue
         if (!hasThumbnail) {
-          setFailed(true);
+          markUnavailable();
           return;
         }
 
@@ -106,18 +119,18 @@ export const ThumbnailImage = React.memo(function ThumbnailImage({
         }).then((fetchedUri) => {
           if (!cancelledRef.current) {
             if (fetchedUri) setUri(fetchedUri);
-            else setFailed(true);
+            else markUnavailable();
           }
         });
       })
       .catch(() => {
-        if (!cancelledRef.current) setFailed(true);
+        if (!cancelledRef.current) markUnavailable();
       });
 
     return () => {
       cancelledRef.current = true;
     };
-  }, [fileId, getFileKeyBytes, hasThumbnail, isUnlocked, loadThumbnail, localAssetUri]);
+  }, [fileId, getFileKeyBytes, hasThumbnail, isUnlocked, loadThumbnail, localAssetUri, markUnavailable, mimeType]);
 
   return (
     <View
@@ -129,7 +142,7 @@ export const ThumbnailImage = React.memo(function ThumbnailImage({
           source={{ uri }}
           style={StyleSheet.absoluteFill}
           resizeMode="cover"
-          onError={() => setFailed(true)}
+          onError={markUnavailable}
         />
       )}
     </View>

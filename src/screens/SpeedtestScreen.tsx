@@ -5,7 +5,7 @@
  * connection breakdown, and results summary.
  */
 
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   ScrollView,
   StyleSheet,
@@ -13,6 +13,8 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import NetInfo from '@react-native-community/netinfo';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -20,6 +22,7 @@ import { useTheme } from '../lib/theme-context';
 import { fonts, spacing, type Colors } from '../theme';
 import { getApiUrl, getToken, getRegion } from '../lib/api';
 import { useCrypto } from '../lib/crypto-context';
+import { saveDevicePerformanceProfile } from '../lib/device-performance';
 
 type C = Colors;
 
@@ -53,7 +56,38 @@ interface Results {
   downloadMBps: number;
   uploadMBps: number;
   encryptionMBps: number;
+  measuredAt?: string;
+  networkType?: string;
+  uploadSkipped?: boolean;
 }
+
+interface TransferSample {
+  label: string;
+  size: number;
+}
+
+interface TransferResult {
+  bytes: number;
+  seconds: number;
+}
+
+interface LastSpeedtestRun {
+  measuredAt: string;
+  networkType: string;
+  downloadMbps: number;
+  uploadMbps: number | null;
+  encryptionMBps: number;
+  uploadSkipped: boolean;
+}
+
+const MIB = 1024 * 1024;
+const SPEEDTEST_LAST_RUN_KEY = 'beebeeb.speedtest.lastRun.v1';
+const LARGE_SAMPLE_MIN_MBPS = 25;
+const TRANSFER_SAMPLES: TransferSample[] = [
+  { label: '1 MB', size: 1 * MIB },
+  { label: '5 MB', size: 5 * MIB },
+  { label: '20 MB', size: 20 * MIB },
+];
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -70,8 +104,61 @@ function formatMBps(bytesPerSec: number): string {
   return mbps.toFixed(2);
 }
 
+function formatMbps(bytesPerSec: number): string {
+  const mbps = (bytesPerSec * 8) / 1_000_000;
+  if (mbps >= 100) return mbps.toFixed(0);
+  if (mbps >= 10) return mbps.toFixed(1);
+  return mbps.toFixed(2);
+}
+
+function formatMbpsValue(mbps: number): string {
+  if (mbps >= 100) return mbps.toFixed(0);
+  if (mbps >= 10) return mbps.toFixed(1);
+  return mbps.toFixed(2);
+}
+
+function bytesPerSecondToMbps(bytesPerSec: number): number {
+  return (bytesPerSec * 8) / 1_000_000;
+}
+
 function formatMBpsNum(bytesPerSec: number): number {
   return bytesPerSec / (1024 * 1024);
+}
+
+function mbpsFromStoredMBps(mbps: number): number {
+  return bytesPerSecondToMbps(mbps * 1024 * 1024);
+}
+
+function shouldRunLargeSample(bytesPerSec: number): boolean {
+  return bytesPerSecondToMbps(bytesPerSec) >= LARGE_SAMPLE_MIN_MBPS;
+}
+
+function formatNetworkType(type: string): string {
+  switch (type) {
+    case 'wifi':
+      return 'Wi-Fi';
+    case 'cellular':
+      return 'Cellular';
+    case 'ethernet':
+      return 'Ethernet';
+    case 'none':
+      return 'Offline';
+    case 'unknown':
+      return 'Unknown';
+    default:
+      return type ? type.charAt(0).toUpperCase() + type.slice(1) : 'Unknown';
+  }
+}
+
+function formatLastRunTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
 }
 
 /** Map speed in MB/s to a 0-1 progress value using a log scale. */
@@ -88,6 +175,50 @@ function computeJitter(latencies: number[]): number {
   const mean = latencies.reduce((a, b) => a + b, 0) / latencies.length;
   const variance = latencies.reduce((sum, v) => sum + (v - mean) ** 2, 0) / latencies.length;
   return Math.sqrt(variance);
+}
+
+function xhrTransfer(
+  url: string,
+  options: {
+    body?: ArrayBuffer;
+    headers?: Record<string, string>;
+    method: 'GET' | 'POST';
+    onProgress?: (loaded: number, total: number) => void;
+  },
+): Promise<TransferResult> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    const startedAt = performance.now();
+    xhr.open(options.method, url);
+    xhr.responseType = 'arraybuffer';
+    for (const [key, value] of Object.entries(options.headers ?? {})) {
+      xhr.setRequestHeader(key, value);
+    }
+    if (options.method === 'POST') {
+      xhr.upload.onprogress = (event) => {
+        options.onProgress?.(event.loaded, event.lengthComputable ? event.total : options.body?.byteLength ?? 0);
+      };
+    } else {
+      xhr.onprogress = (event) => {
+        options.onProgress?.(event.loaded, event.lengthComputable ? event.total : 0);
+      };
+    }
+    xhr.onerror = () => reject(new Error('Network request failed'));
+    xhr.ontimeout = () => reject(new Error('Network request timed out'));
+    xhr.onload = () => {
+      if (xhr.status < 200 || xhr.status >= 300) {
+        reject(new Error(`Speedtest request failed with HTTP ${xhr.status}`));
+        return;
+      }
+      const elapsed = Math.max((performance.now() - startedAt) / 1000, 0.001);
+      const responseBytes = xhr.response instanceof ArrayBuffer ? xhr.response.byteLength : 0;
+      resolve({
+        bytes: options.method === 'POST' ? options.body?.byteLength ?? 0 : responseBytes,
+        seconds: elapsed,
+      });
+    };
+    xhr.send(options.body ?? null);
+  });
 }
 
 function phaseTitle(phase: Phase): string {
@@ -208,7 +339,11 @@ function MetricPanel({
       <View style={meterStyles.scaleRow}>
         <Text style={[meterStyles.scaleText, { color: c.ink4 }]}>{progressLabel}</Text>
         <Text style={[meterStyles.scaleText, { color: c.ink4 }]}>
-          {phase === 'latency' ? 'lower is better' : 'MB/s scale'}
+          {phase === 'latency'
+            ? 'lower is better'
+            : phase === 'download' || phase === 'upload' || phase === 'encryption'
+              ? 'sample progress'
+              : 'Mbps scale'}
         </Text>
       </View>
     </View>
@@ -307,16 +442,20 @@ function BenchmarkGrid({
       : '--';
   const latencyUnit = latencyValue !== '--' ? 'ms' : '';
   const downloadValue = results
-    ? formatMBps(results.downloadMBps * 1024 * 1024)
+    ? formatMbps(results.downloadMBps * 1024 * 1024)
     : liveResults.downloadMBps !== undefined
-      ? formatMBps(liveResults.downloadMBps * 1024 * 1024)
+      ? formatMbps(liveResults.downloadMBps * 1024 * 1024)
       : phase === 'download'
         ? currentSpeed
         : '--';
   const uploadValue = results
-    ? formatMBps(results.uploadMBps * 1024 * 1024)
+    ? results.uploadSkipped
+      ? 'Skipped'
+      : formatMbps(results.uploadMBps * 1024 * 1024)
     : liveResults.uploadMBps !== undefined
-      ? formatMBps(liveResults.uploadMBps * 1024 * 1024)
+      ? liveResults.uploadSkipped
+        ? 'Skipped'
+        : formatMbps(liveResults.uploadMBps * 1024 * 1024)
       : phase === 'upload'
         ? currentSpeed
         : '--';
@@ -339,21 +478,21 @@ function BenchmarkGrid({
       icon: 'arrow-down-outline' as const,
       label: 'Download',
       value: downloadValue,
-      unit: downloadValue !== '--' ? 'MB/s' : '',
+      unit: downloadValue !== '--' ? 'Mbps' : '',
       active: phase === 'download',
     },
     {
       icon: 'arrow-up-outline' as const,
       label: 'Upload',
       value: uploadValue,
-      unit: uploadValue !== '--' ? 'MB/s' : '',
+      unit: uploadValue !== '--' && uploadValue !== 'Skipped' ? 'Mbps' : '',
       active: phase === 'upload',
     },
     {
       icon: 'lock-closed-outline' as const,
       label: 'Crypto',
       value: cryptoValue,
-      unit: cryptoValue !== '--' ? currentUnit : '',
+      unit: cryptoValue !== '--' ? 'MB/s' : '',
       active: phase === 'encryption',
     },
   ];
@@ -679,17 +818,20 @@ function ResultsSummary({
   const items = [
     {
       icon: 'arrow-down' as const,
-      value: formatMBps(results.downloadMBps * 1024 * 1024),
+      value: formatMbps(results.downloadMBps * 1024 * 1024),
+      unit: 'Mbps',
       label: 'Download',
     },
     {
       icon: 'arrow-up' as const,
-      value: formatMBps(results.uploadMBps * 1024 * 1024),
+      value: results.uploadSkipped ? 'Skipped' : formatMbps(results.uploadMBps * 1024 * 1024),
+      unit: results.uploadSkipped ? '' : 'Mbps',
       label: 'Upload',
     },
     {
       icon: 'lock-closed' as const,
       value: formatMBps(results.encryptionMBps * 1024 * 1024),
+      unit: 'MB/s',
       label: 'Encryption',
     },
   ];
@@ -710,7 +852,7 @@ function ResultsSummary({
                 {item.value}
               </Text>
             </View>
-            <Text style={[summaryStyles.unit, { color: c.ink3 }]}>MB/s</Text>
+            <Text style={[summaryStyles.unit, { color: c.ink3 }]}>{item.unit}</Text>
             <Text style={[summaryStyles.label, { color: c.ink4 }]}>{item.label}</Text>
             {i < items.length - 1 && (
               <View
@@ -722,6 +864,39 @@ function ResultsSummary({
             )}
           </View>
         ))}
+      </View>
+      {results.measuredAt && (
+        <Text style={[summaryStyles.note, { color: c.ink4 }]}>
+          Tested {formatLastRunTime(results.measuredAt)}
+          {results.networkType ? ` on ${formatNetworkType(results.networkType)}` : ''}.
+        </Text>
+      )}
+    </View>
+  );
+}
+
+function LastRunSummary({
+  lastRun,
+  c,
+}: {
+  lastRun: LastSpeedtestRun;
+  c: C;
+}) {
+  return (
+    <View style={[summaryStyles.card, { backgroundColor: c.paper, borderColor: c.line }]}>
+      <Text style={[summaryStyles.lastTitle, { color: c.ink3 }]}>Last speed test</Text>
+      <Text style={[summaryStyles.note, { color: c.ink4 }]}>
+        {formatLastRunTime(lastRun.measuredAt)} on {formatNetworkType(lastRun.networkType)}
+      </Text>
+      <View style={summaryStyles.lastRow}>
+        <Text style={[summaryStyles.lastMetric, { color: c.ink, fontFamily: fonts.mono }]}>
+          {formatMbpsValue(lastRun.downloadMbps)} Mbps down
+        </Text>
+        <Text style={[summaryStyles.lastMetric, { color: c.ink, fontFamily: fonts.mono }]}>
+          {lastRun.uploadSkipped || lastRun.uploadMbps === null
+            ? 'Upload skipped'
+            : `${formatMbpsValue(lastRun.uploadMbps)} Mbps up`}
+        </Text>
       </View>
     </View>
   );
@@ -768,6 +943,30 @@ const summaryStyles = StyleSheet.create({
     top: 4,
     bottom: 4,
     width: StyleSheet.hairlineWidth,
+  },
+  note: {
+    fontSize: 11,
+    lineHeight: 16,
+    marginTop: 14,
+    textAlign: 'center',
+  },
+  lastTitle: {
+    fontSize: 11,
+    fontWeight: '600',
+    letterSpacing: 1,
+    textAlign: 'center',
+    textTransform: 'uppercase',
+  },
+  lastRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
+    justifyContent: 'center',
+    marginTop: 12,
+  },
+  lastMetric: {
+    fontSize: 12,
+    fontWeight: '600',
   },
 });
 
@@ -893,7 +1092,7 @@ export default function SpeedtestScreen() {
   const [phase, setPhase] = useState<Phase>('idle');
   const [statusText, setStatusText] = useState('');
   const [currentSpeed, setCurrentSpeed] = useState('--');
-  const [currentUnit, setCurrentUnit] = useState('MB/s');
+  const [currentUnit, setCurrentUnit] = useState('Mbps');
   const [region, setRegion] = useState('');
   const [pings, setPings] = useState<number[]>([]);
   const [encProgress, setEncProgress] = useState(0);
@@ -904,6 +1103,30 @@ export default function SpeedtestScreen() {
   const [liveResults, setLiveResults] = useState<Partial<Results>>({});
   const [error, setError] = useState('');
   const [meterProgress, setMeterProgress] = useState(0);
+  const [networkType, setNetworkType] = useState('unknown');
+  const [lastRun, setLastRun] = useState<LastSpeedtestRun | null>(null);
+
+  useEffect(() => {
+    let mounted = true;
+    AsyncStorage.getItem(SPEEDTEST_LAST_RUN_KEY)
+      .then((raw) => {
+        if (!mounted || !raw) return;
+        setLastRun(JSON.parse(raw) as LastSpeedtestRun);
+      })
+      .catch(() => {});
+    NetInfo.fetch()
+      .then((state) => {
+        if (mounted) setNetworkType(state.type ?? 'unknown');
+      })
+      .catch(() => {});
+    const unsubscribe = NetInfo.addEventListener((state) => {
+      if (mounted) setNetworkType(state.type ?? 'unknown');
+    });
+    return () => {
+      mounted = false;
+      unsubscribe();
+    };
+  }, []);
 
   const animateGauge = useCallback(
     (speedMBps: number) => {
@@ -916,12 +1139,12 @@ export default function SpeedtestScreen() {
     setMeterProgress(0);
   }, []);
 
-  const runTest = useCallback(async () => {
+  const runTest = useCallback(async (options?: { full?: boolean }) => {
     // Reset state
     setPhase('connecting');
     setStatusText('');
     setCurrentSpeed('--');
-    setCurrentUnit('MB/s');
+    setCurrentUnit('Mbps');
     setPings([]);
     setEncProgress(0);
     setEncChunkLabel('');
@@ -932,11 +1155,16 @@ export default function SpeedtestScreen() {
     setError('');
     resetGauge();
 
+    try {
     const apiUrl = getApiUrl();
     const token = await getToken();
     const authHeaders: Record<string, string> = token
       ? { Authorization: `Bearer ${token}` }
       : {};
+    const net = await NetInfo.fetch();
+    const runNetworkType = net.type ?? 'unknown';
+    const skipUploadOnCellular = runNetworkType === 'cellular' && !options?.full;
+    setNetworkType(runNetworkType);
 
     // ── Region ──────────────────────────────────────────────────────────
     let serverLabel = 'Europe';
@@ -988,35 +1216,33 @@ export default function SpeedtestScreen() {
 
     // ── 2. Download (parallel streams) ─────────────────────────────────
     setPhase('download');
-    setCurrentUnit('MB/s');
+    setCurrentUnit('Mbps');
     setCurrentSpeed('0');
     resetGauge();
     setStatusText('Measuring download...');
 
-    const STREAM_SIZE = 25_000_000; // 25 MB per stream
-    const PARALLEL_STREAMS = 4;
-    const DOWNLOAD_ROUNDS = 2;
     let totalDownloadBytes = 0;
     let totalDownloadTime = 0;
-    for (let round = 0; round < DOWNLOAD_ROUNDS; round++) {
-      setStatusText(`Download ${round + 1}/${DOWNLOAD_ROUNDS} (${PARALLEL_STREAMS} streams)`);
-      const start = performance.now();
-      const streams = Array.from({ length: PARALLEL_STREAMS }, () =>
-        fetch(`${apiUrl}/api/v1/speedtest?size=${STREAM_SIZE}`, { headers: authHeaders })
-          .then((res) => res.arrayBuffer())
-          .then((buf) => buf.byteLength)
-          .catch(() => 0),
-      );
-      const results = await Promise.all(streams);
-      const elapsed = (performance.now() - start) / 1000;
-      const roundBytes = results.reduce((a, b) => a + b, 0);
-      if (elapsed > 0 && roundBytes > 0) {
-        totalDownloadBytes += roundBytes;
-        totalDownloadTime += elapsed;
-        const throughput = totalDownloadBytes / totalDownloadTime;
-        const mbps = formatMBpsNum(throughput);
-        setCurrentSpeed(formatMBps(throughput));
-        animateGauge(mbps);
+    for (let i = 0; i < TRANSFER_SAMPLES.length; i++) {
+      if (i === 2 && totalDownloadTime > 0 && !shouldRunLargeSample(totalDownloadBytes / totalDownloadTime)) {
+        setStatusText(`Download settled after 5 MB (${formatMbps(totalDownloadBytes / totalDownloadTime)} Mbps)`);
+        setMeterProgress(1);
+        break;
+      }
+      const sample = TRANSFER_SAMPLES[i];
+      setStatusText(`Downloading ${sample.label} sample (${i + 1}/${TRANSFER_SAMPLES.length})`);
+      const result = await xhrTransfer(`${apiUrl}/api/v1/speedtest?size=${sample.size}`, {
+        headers: authHeaders,
+        method: 'GET',
+        onProgress: (loaded, total) => {
+          const sampleProgress = total > 0 ? loaded / total : loaded / sample.size;
+          setMeterProgress(Math.max(0, Math.min(1, (i + sampleProgress) / TRANSFER_SAMPLES.length)));
+        },
+      });
+      if (result.seconds > 0 && result.bytes > 0) {
+        totalDownloadBytes += result.bytes;
+        totalDownloadTime += result.seconds;
+        setCurrentSpeed(formatMbps(totalDownloadBytes / totalDownloadTime));
       }
     }
     const downloadMBps = totalDownloadTime > 0
@@ -1026,46 +1252,53 @@ export default function SpeedtestScreen() {
 
     // ── 3. Upload (parallel streams) ────────────────────────────────────
     setPhase('upload');
+    setCurrentUnit('Mbps');
     setCurrentSpeed('0');
     resetGauge();
     setStatusText('Measuring upload...');
 
-    const UPLOAD_STREAM_SIZE = 25 * 1024 * 1024; // 25 MB per stream
-    const uploadBlob = new ArrayBuffer(UPLOAD_STREAM_SIZE);
-    const UPLOAD_ROUNDS = 2;
     let totalUploadBytes = 0;
     let totalUploadTime = 0;
-    for (let round = 0; round < UPLOAD_ROUNDS; round++) {
-      setStatusText(`Upload ${round + 1}/${UPLOAD_ROUNDS} (${PARALLEL_STREAMS} streams)`);
-      const start = performance.now();
-      const streams = Array.from({ length: PARALLEL_STREAMS }, () =>
-        fetch(`${apiUrl}/api/v1/speedtest`, {
-          method: 'POST',
-          headers: { ...authHeaders, 'Content-Type': 'application/octet-stream' },
+    let uploadSkipped = false;
+    if (skipUploadOnCellular) {
+      uploadSkipped = true;
+      setCurrentSpeed('Skipped');
+      setStatusText('Upload skipped on cellular. Run full test to include it.');
+      setMeterProgress(1);
+    } else {
+      for (let i = 0; i < TRANSFER_SAMPLES.length; i++) {
+        if (i === 2 && totalUploadTime > 0 && !shouldRunLargeSample(totalUploadBytes / totalUploadTime)) {
+          setStatusText(`Upload settled after 5 MB (${formatMbps(totalUploadBytes / totalUploadTime)} Mbps)`);
+          setMeterProgress(1);
+          break;
+        }
+        const sample = TRANSFER_SAMPLES[i];
+        setStatusText(`Uploading ${sample.label} sample (${i + 1}/${TRANSFER_SAMPLES.length})`);
+        const uploadBlob = new ArrayBuffer(sample.size);
+        const result = await xhrTransfer(`${apiUrl}/api/v1/speedtest`, {
           body: uploadBlob,
-        })
-          .then(() => UPLOAD_STREAM_SIZE)
-          .catch(() => 0),
-      );
-      const results = await Promise.all(streams);
-      const elapsed = (performance.now() - start) / 1000;
-      const roundBytes = results.reduce((a, b) => a + b, 0);
-      if (elapsed > 0 && roundBytes > 0) {
-        totalUploadBytes += roundBytes;
-        totalUploadTime += elapsed;
-        const throughput = totalUploadBytes / totalUploadTime;
-        const mbps = formatMBpsNum(throughput);
-        setCurrentSpeed(formatMBps(throughput));
-        animateGauge(mbps);
+          headers: { ...authHeaders, 'Content-Type': 'application/octet-stream' },
+          method: 'POST',
+          onProgress: (loaded, total) => {
+            const sampleProgress = total > 0 ? loaded / total : loaded / sample.size;
+            setMeterProgress(Math.max(0, Math.min(1, (i + sampleProgress) / TRANSFER_SAMPLES.length)));
+          },
+        });
+        if (result.seconds > 0 && result.bytes > 0) {
+          totalUploadBytes += result.bytes;
+          totalUploadTime += result.seconds;
+          setCurrentSpeed(formatMbps(totalUploadBytes / totalUploadTime));
+        }
       }
     }
     const uploadMBps = totalUploadTime > 0
       ? formatMBpsNum(totalUploadBytes / totalUploadTime)
       : 0;
-    setLiveResults((prev) => ({ ...prev, uploadMBps }));
+    setLiveResults((prev) => ({ ...prev, uploadMBps, uploadSkipped }));
 
     // ── 4. Encryption ───────────────────────────────────────────────────
     setPhase('encryption');
+    setCurrentUnit('MB/s');
     setCurrentSpeed('--');
     resetGauge();
     setStatusText('Benchmarking encryption...');
@@ -1077,17 +1310,18 @@ export default function SpeedtestScreen() {
         setStatusText('Vault locked');
         setCurrentSpeed('--');
       } else {
-        const MIB = 1024 * 1024;
         const chunkSizes = [
+          { size: 1 * MIB, label: '1 MB' },
           { size: 4 * MIB, label: '4 MB' },
           { size: 8 * MIB, label: '8 MB' },
           { size: 16 * MIB, label: '16 MB' },
-          { size: 64 * MIB, label: '64 MB' },
         ];
         const benchFileId = 'speedtest-benchmark-00000000';
 
         let totalEncBytes = 0;
         let totalEncTime = 0;
+        let totalDecBytes = 0;
+        let totalDecTime = 0;
 
         for (let ci = 0; ci < chunkSizes.length; ci++) {
           const { size, label } = chunkSizes[ci];
@@ -1102,18 +1336,19 @@ export default function SpeedtestScreen() {
 
           const encStart = performance.now();
           const encResults: { nonce: Uint8Array; ciphertext: Uint8Array }[] = [];
-          for (let i = 0; i < 2; i++) {
-            const enc = await crypto.encryptChunk(benchFileId, testChunk);
-            encResults.push(enc);
-          }
+          const enc = await crypto.encryptChunk(benchFileId, testChunk);
+          encResults.push(enc);
           const encMs = performance.now() - encStart;
 
-          totalEncBytes += 2 * size;
+          totalEncBytes += size;
           totalEncTime += encMs;
 
           // Decrypt too for fairness (but we show encryption throughput)
           for (const { nonce, ciphertext } of encResults) {
+            const decStart = performance.now();
             await crypto.decryptChunk(benchFileId, nonce, ciphertext);
+            totalDecBytes += size;
+            totalDecTime += performance.now() - decStart;
           }
 
           setEncProgress((ci + 1) / chunkSizes.length);
@@ -1128,6 +1363,14 @@ export default function SpeedtestScreen() {
 
         encryptionMBps =
           totalEncTime > 0 ? formatMBpsNum(totalEncBytes / (totalEncTime / 1000)) : 0;
+        if (totalDecTime > 0 && totalDecBytes > 0) {
+          await saveDevicePerformanceProfile({
+            decryptBytesPerSecond: totalDecBytes / (totalDecTime / 1000),
+            encryptionBytesPerSecond: totalEncTime > 0 ? totalEncBytes / (totalEncTime / 1000) : undefined,
+            measuredAt: new Date().toISOString(),
+            source: 'speedtest',
+          });
+        }
       }
     } catch {
       setStatusText('Crypto not available');
@@ -1147,11 +1390,35 @@ export default function SpeedtestScreen() {
       jitter,
     });
 
-    setResults({
+    const measuredAt = new Date().toISOString();
+    const nextResults = {
       downloadMBps,
       uploadMBps,
       encryptionMBps,
-    });
+      measuredAt,
+      networkType: runNetworkType,
+      uploadSkipped,
+    };
+    setResults(nextResults);
+    const nextLastRun: LastSpeedtestRun = {
+      measuredAt,
+      networkType: runNetworkType,
+      downloadMbps: mbpsFromStoredMBps(downloadMBps),
+      uploadMbps: uploadSkipped ? null : mbpsFromStoredMBps(uploadMBps),
+      encryptionMBps,
+      uploadSkipped,
+    };
+    setLastRun(nextLastRun);
+    await AsyncStorage.setItem(SPEEDTEST_LAST_RUN_KEY, JSON.stringify(nextLastRun));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Speed test failed';
+      setError(message);
+      setStatusText('Speed test failed');
+      setPhase('idle');
+      setCurrentSpeed('--');
+      setCurrentUnit('Mbps');
+      resetGauge();
+    }
   }, [crypto, animateGauge, resetGauge]);
 
   const isRunning = phase !== 'idle' && phase !== 'done';
@@ -1199,6 +1466,10 @@ export default function SpeedtestScreen() {
           c={c}
         />
 
+        <Text style={[s.note, { color: c.ink4 }]}>
+          Network speed is shown in Mbps, like most speed tests. Crypto is shown in MB/s because it measures local file throughput. 1 MB/s is about 8 Mbps.
+        </Text>
+
         {phase !== 'idle' && <PhaseStepper currentPhase={phase} c={c} />}
 
         {phase === 'latency' && <LatencyDots pings={pings} c={c} />}
@@ -1213,6 +1484,10 @@ export default function SpeedtestScreen() {
           <ConnectionBreakdown info={connectionInfo} c={c} />
         )}
 
+        {phase === 'done' && results && <ResultsSummary results={results} c={c} />}
+
+        {phase === 'idle' && !results && lastRun && <LastRunSummary lastRun={lastRun} c={c} />}
+
         {/* Error display */}
         {error !== '' && (
           <Text style={[s.errorText, { color: c.red }]}>{error}</Text>
@@ -1226,7 +1501,7 @@ export default function SpeedtestScreen() {
               backgroundColor: isRunning ? c.line2 : c.amber,
             },
           ]}
-          onPress={runTest}
+          onPress={() => runTest()}
           disabled={isRunning}
           activeOpacity={0.7}
           accessibilityLabel={isRunning ? 'Test running' : phase === 'done' ? 'Run again' : 'Run speed test'}
@@ -1242,6 +1517,20 @@ export default function SpeedtestScreen() {
             {isRunning ? 'Testing...' : phase === 'done' ? 'Test again' : 'Run test'}
           </Text>
         </TouchableOpacity>
+
+        {networkType === 'cellular' && !isRunning && (
+          <TouchableOpacity
+            style={[s.secondaryButton, { borderColor: c.line }]}
+            onPress={() => runTest({ full: true })}
+            activeOpacity={0.7}
+            accessibilityLabel="Run full speed test including upload"
+            accessibilityRole="button"
+          >
+            <Text style={[s.secondaryButtonText, { color: c.ink }]}>
+              Run full test including upload
+            </Text>
+          </TouchableOpacity>
+        )}
 
         {phase === 'idle' && <TestScope c={c} />}
       </ScrollView>
@@ -1325,6 +1614,18 @@ const s = StyleSheet.create({
   },
   runButtonText: {
     fontSize: 15,
+    fontWeight: '600',
+  },
+  secondaryButton: {
+    alignItems: 'center',
+    borderRadius: 10,
+    borderWidth: 1,
+    height: 44,
+    justifyContent: 'center',
+    marginTop: spacing.sm,
+  },
+  secondaryButtonText: {
+    fontSize: 14,
     fontWeight: '600',
   },
   note: {

@@ -45,6 +45,10 @@ export function encryptedMetadataToJson(enc: EncryptedData): string {
   })
 }
 
+export function fileMetadataPlaintext(name: string, mimeType?: string | null): string {
+  return JSON.stringify({ name, mime_type: mimeType ?? null })
+}
+
 export function encryptedMetadataPayloadToBytes(
   raw: string,
 ): { nonce: Uint8Array; ciphertext: Uint8Array } | null {

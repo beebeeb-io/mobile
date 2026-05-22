@@ -275,7 +275,7 @@ export async function exportCalendars(encryption: BackupEncryptors): Promise<Cal
     }
 
     if (!FileSystem.cacheDirectory) throw new Error('File cache unavailable');
-    const fileId = generateFileId();
+    const fileId = await generateFileId();
     const uri = `${FileSystem.cacheDirectory}calendar_${fileId}.ics`;
     let uploaded: FileEntry;
     await FileSystem.writeAsStringAsync(uri, ics);

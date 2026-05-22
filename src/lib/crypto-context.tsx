@@ -5,13 +5,16 @@ import * as SecureStore from 'expo-secure-store'
 import { Platform } from 'react-native'
 import {
   computeRecoveryCheck,
+  createMasterKeyHandle,
   handleComputeRecoveryCheck,
   handleDecryptChunk,
   handleDecryptMetadata,
+  handleDeriveFileKey,
+  handleDeriveX25519Private,
   handleEncryptChunk,
   handleEncryptMetadata,
-  handleDeriveX25519Private,
   loadKeyFromKeychainAsHandle,
+  logDiagnostic,
   recoverFromPhrase,
   releaseHandle,
   replaceKeychainAccessControl,
@@ -30,6 +33,10 @@ export const SIMULATOR_MASTER_KEY_FILE = `${FileSystem.documentDirectory ?? ''}b
 
 function usesSoftwareVaultFallback(): boolean {
   return !Device.isDevice || Device.modelName?.toLowerCase().includes('simulator') === true || __DEV__
+}
+
+function isPhysicalIOSDevice(): boolean {
+  return Platform.OS === 'ios' && Device.isDevice
 }
 
 function uint8ToBase64(bytes: Uint8Array): string {
@@ -96,18 +103,19 @@ async function loadVerifiedMasterKeyHandle(): Promise<number | null> {
   // Helper: verify raw bytes, create a handle if valid, zero the raw bytes.
   const verifyAndCreateHandle = async (candidate: Uint8Array | null): Promise<number | null> => {
     if (!candidate) return null
-    const actual = await computeRecoveryCheck(candidate)
-    if (!constantTimeEqual(actual, expected)) return null
-    // Store into SE keychain so loadKeyFromKeychainAsHandle works,
-    // then load as handle. The raw bytes are zeroed below.
     try {
-      await storeKeyInKeychain(candidate, MASTER_KEY_LABEL)
-    } catch {
-      // SE may be unavailable — still try handle load
+      const actual = await computeRecoveryCheck(candidate)
+      if (!constantTimeEqual(actual, expected)) return null
+      try {
+        await storeKeyInKeychain(candidate, MASTER_KEY_LABEL)
+      } catch {
+        // SE may be unavailable — the native handle can still be created
+        // directly from this verified fallback key.
+      }
+      return await createMasterKeyHandle(candidate)
+    } finally {
+      candidate.fill(0)
     }
-    const handleId = await loadKeyFromKeychainAsHandle(MASTER_KEY_LABEL)
-    candidate.fill(0)
-    return handleId
   }
 
   // Primary: Secure Enclave-wrapped key (real devices)
@@ -137,6 +145,74 @@ async function loadVerifiedMasterKeyHandle(): Promise<number | null> {
   return null
 }
 
+async function deriveFileKeyFromKeychainFallback(fileId: string, errorMessage: string): Promise<Uint8Array> {
+  const { deriveFileKey, loadKeyFromKeychain } = await import('../../modules/beebeeb-crypto')
+  const raw = await loadKeyFromKeychain(MASTER_KEY_LABEL)
+  if (!raw) throw new Error(errorMessage)
+  try {
+    return await deriveFileKey(raw, fileId)
+  } finally {
+    raw.fill(0)
+  }
+}
+
+export type VaultUnlockSource =
+  | 'unspecified'
+  | 'recovery_phrase'
+  | 'keychain'
+  | 'backup_background'
+  | 'already_unlocked'
+  | string
+
+export interface VaultUnlockDiagnostics {
+  isUnlocked: boolean
+  unlockAttempted: boolean
+  unlockInFlight: boolean
+  lastUnlockSource: VaultUnlockSource | null
+  lastUnlockOutcome: string | null
+  lastUnlockAt: string | null
+  lastUnlockError: string | null
+  lastPromptExpected: boolean | null
+  lastAlreadyUnlocked: boolean | null
+  lastInFlightAtRequest: boolean | null
+}
+
+let latestVaultUnlockDiagnostics: VaultUnlockDiagnostics = {
+  isUnlocked: false,
+  unlockAttempted: false,
+  unlockInFlight: false,
+  lastUnlockSource: null,
+  lastUnlockOutcome: null,
+  lastUnlockAt: null,
+  lastUnlockError: null,
+  lastPromptExpected: null,
+  lastAlreadyUnlocked: null,
+  lastInFlightAtRequest: null,
+}
+
+export function getLastVaultUnlockDiagnostics(): VaultUnlockDiagnostics {
+  return { ...latestVaultUnlockDiagnostics }
+}
+
+function updateVaultUnlockDiagnostics(patch: Partial<VaultUnlockDiagnostics>): VaultUnlockDiagnostics {
+  latestVaultUnlockDiagnostics = {
+    ...latestVaultUnlockDiagnostics,
+    ...patch,
+  }
+  return latestVaultUnlockDiagnostics
+}
+
+function logVaultUnlockDiagnostic(event: string, fields: Record<string, unknown>): void {
+  logDiagnostic('vault.unlock', {
+    event,
+    ...fields,
+  })
+  console.info('[BeebeebDiagnostics] vault.unlock', {
+    event,
+    ...fields,
+  })
+}
+
 interface CryptoContextValue {
   isUnlocked: boolean
   /**
@@ -151,7 +227,9 @@ interface CryptoContextValue {
    *   in the secure enclave for future unlocks.
    * - Without phrase: loads the master key from the secure enclave directly.
    */
-  unlock: (phrase?: string) => Promise<void>
+  unlock: (phrase?: string, source?: VaultUnlockSource) => Promise<void>
+  /** Latest vault unlock diagnostics for debug/export surfaces. */
+  getUnlockDiagnostics: () => VaultUnlockDiagnostics
   /** Zero out the in-memory master key and mark vault as locked. */
   lock: () => void
   encryptChunk: (fileId: string, plaintext: Uint8Array) => Promise<EncryptedData>
@@ -211,54 +289,190 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
   // MasterKeyHandle in native memory. Raw key bytes never enter the JS
   // heap. Never store in React state to avoid accidental serialisation.
   const masterKeyHandleId = useRef<number | null>(null)
+  const unlockInFlightRef = useRef(false)
+  const unlockPromiseRef = useRef<Promise<void> | null>(null)
 
-  const unlock = useCallback(async (phrase?: string) => {
+  useEffect(() => {
+    updateVaultUnlockDiagnostics({
+      isUnlocked,
+      unlockAttempted,
+      unlockInFlight: unlockInFlightRef.current,
+    })
+  }, [isUnlocked, unlockAttempted])
+
+  const unlock = useCallback(async (phrase?: string, source: VaultUnlockSource = phrase != null ? 'recovery_phrase' : 'keychain') => {
+    const hasRecoveryPhrase = phrase != null
+    const alreadyUnlocked = masterKeyHandleId.current != null
+    const promptExpected = !hasRecoveryPhrase && !alreadyUnlocked
+    const inFlightAtRequest = unlockPromiseRef.current != null || unlockInFlightRef.current
+    updateVaultUnlockDiagnostics({
+      isUnlocked: alreadyUnlocked,
+      unlockAttempted,
+      unlockInFlight: inFlightAtRequest,
+      lastUnlockSource: source,
+      lastUnlockOutcome: 'requested',
+      lastUnlockAt: new Date().toISOString(),
+      lastUnlockError: null,
+      lastPromptExpected: promptExpected,
+      lastAlreadyUnlocked: alreadyUnlocked,
+      lastInFlightAtRequest: inFlightAtRequest,
+    })
+    logVaultUnlockDiagnostic('request', {
+      source,
+      alreadyUnlocked,
+      promptExpected,
+      inFlightAtRequest,
+    })
+
     // If the vault is already open and no recovery phrase was given, skip the
     // redundant keychain load. On devices with biometric-protected Secure
     // Enclave keys, loadKeyFromKeychainAsHandle triggers a Face ID prompt —
     // calling unlock() again after BiometricLockScreen already authenticated
     // would surface a second, unnecessary Face ID dialog.
-    if (!phrase && masterKeyHandleId.current != null) {
+    if (!hasRecoveryPhrase && masterKeyHandleId.current != null) {
       setIsUnlocked(true)
       setUnlockAttempted(true)
+      updateVaultUnlockDiagnostics({
+        isUnlocked: true,
+        unlockAttempted: true,
+        unlockInFlight: false,
+        lastUnlockSource: source,
+        lastUnlockOutcome: 'already_unlocked',
+        lastUnlockAt: new Date().toISOString(),
+        lastUnlockError: null,
+      })
+      logVaultUnlockDiagnostic('already_unlocked', { source })
       return
     }
 
-    try {
-      if (phrase) {
-        // Derive the master key from the recovery phrase. The raw bytes
-        // are needed transiently to persist to keychain, but we immediately
-        // load a handle and zero the raw bytes.
-        const result = await recoverFromPhrase(phrase)
-        const masterKey = result.masterKey
-        // Persist before reporting phrase unlock as complete. The iOS
-        // simulator falls back to SecureStore because Secure Enclave is not
-        // available; if this races with a dev reload the next launch asks for
-        // the recovery phrase again.
-        await storeMasterKey(masterKey)
-        // Zero the raw bytes — they're now persisted in the keychain
-        masterKey.fill(0)
-        // Load the handle from the keychain
-        const handleId = await loadKeyFromKeychainAsHandle(MASTER_KEY_LABEL)
-        if (handleId == null) {
-          throw new Error('Failed to load master key handle after storing recovery phrase')
-        }
-        masterKeyHandleId.current = handleId
-      } else {
-        const handleId = await loadVerifiedMasterKeyHandle()
-        if (handleId == null) {
-          throw new Error('No master key in keychain — provide a recovery phrase to restore')
-        }
-        masterKeyHandleId.current = handleId
-      }
-
-      setIsUnlocked(true)
-    } finally {
-      // Mark the attempt as done regardless of outcome so screens waiting
-      // on this flag can proceed (showing "Encrypted file" fallback if needed).
-      setUnlockAttempted(true)
+    if (!hasRecoveryPhrase && unlockPromiseRef.current != null) {
+      updateVaultUnlockDiagnostics({
+        isUnlocked: false,
+        unlockAttempted,
+        unlockInFlight: true,
+        lastUnlockSource: source,
+        lastUnlockOutcome: 'awaiting_in_flight',
+        lastUnlockAt: new Date().toISOString(),
+        lastUnlockError: null,
+        lastPromptExpected: false,
+        lastAlreadyUnlocked: false,
+        lastInFlightAtRequest: true,
+      })
+      logVaultUnlockDiagnostic('awaiting_in_flight', {
+        source,
+        alreadyUnlocked: false,
+        promptExpected: false,
+        inFlightAtRequest: true,
+      })
+      await unlockPromiseRef.current
+      return
     }
-  }, [])
+
+    let unlockOperation: Promise<void> | null = null
+    unlockOperation = (async () => {
+      unlockInFlightRef.current = true
+      updateVaultUnlockDiagnostics({
+        unlockInFlight: true,
+        lastUnlockSource: source,
+        lastUnlockOutcome: 'started',
+        lastUnlockAt: new Date().toISOString(),
+        lastPromptExpected: promptExpected,
+        lastAlreadyUnlocked: alreadyUnlocked,
+        lastInFlightAtRequest: inFlightAtRequest,
+      })
+      logVaultUnlockDiagnostic('start', {
+        source,
+        alreadyUnlocked,
+        promptExpected,
+        inFlightAtRequest,
+      })
+      try {
+        if (hasRecoveryPhrase) {
+          // Derive the master key from the recovery phrase. The raw bytes
+          // are needed transiently to persist to keychain, but we immediately
+          // load a handle and zero the raw bytes.
+          const result = await recoverFromPhrase(phrase)
+          const masterKey = result.masterKey
+          // Persist before reporting phrase unlock as complete. The iOS
+          // simulator falls back to SecureStore because Secure Enclave is not
+          // available; if this races with a dev reload the next launch asks for
+          // the recovery phrase again.
+          await storeMasterKey(masterKey)
+          let handleId: number
+          try {
+            handleId = await createMasterKeyHandle(masterKey)
+          } finally {
+            // Zero the raw bytes — they're now persisted for future unlocks and
+            // represented by an opaque native handle for this session.
+            masterKey.fill(0)
+          }
+          masterKeyHandleId.current = handleId
+        } else {
+          const handleId = await loadVerifiedMasterKeyHandle()
+          if (handleId == null) {
+            throw new Error('No master key in keychain — provide a recovery phrase to restore')
+          }
+          masterKeyHandleId.current = handleId
+        }
+
+        setIsUnlocked(true)
+        updateVaultUnlockDiagnostics({
+          isUnlocked: true,
+          unlockAttempted: true,
+          unlockInFlight: unlockPromiseRef.current === unlockOperation ? false : unlockInFlightRef.current,
+          lastUnlockSource: source,
+          lastUnlockOutcome: 'success',
+          lastUnlockAt: new Date().toISOString(),
+          lastUnlockError: null,
+        })
+        logVaultUnlockDiagnostic('success', { source, usedRecoveryPhrase: hasRecoveryPhrase })
+        logVaultUnlockDiagnostic('end', {
+          source,
+          outcome: 'success',
+          promptExpected,
+          inFlightAtRequest,
+          alreadyUnlocked,
+        })
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        updateVaultUnlockDiagnostics({
+          isUnlocked: false,
+          unlockAttempted: true,
+          unlockInFlight: unlockPromiseRef.current === unlockOperation ? false : unlockInFlightRef.current,
+          lastUnlockSource: source,
+          lastUnlockOutcome: 'failed',
+          lastUnlockAt: new Date().toISOString(),
+          lastUnlockError: message,
+        })
+        logVaultUnlockDiagnostic('failed', { source, error: message })
+        logVaultUnlockDiagnostic('end', {
+          source,
+          outcome: 'failed',
+          promptExpected,
+          inFlightAtRequest,
+          alreadyUnlocked,
+          error: message,
+        })
+        throw error
+      } finally {
+        // Mark the attempt as done regardless of outcome so screens waiting
+        // on this flag can proceed (showing "Encrypted file" fallback if needed).
+        setUnlockAttempted(true)
+        if (unlockOperation != null && unlockPromiseRef.current === unlockOperation) {
+          unlockPromiseRef.current = null
+          unlockInFlightRef.current = false
+          updateVaultUnlockDiagnostics({
+            unlockAttempted: true,
+            unlockInFlight: false,
+          })
+        } else {
+          updateVaultUnlockDiagnostics({ unlockAttempted: true })
+        }
+      }
+    })()
+    unlockPromiseRef.current = unlockOperation
+    await unlockOperation
+  }, [unlockAttempted])
 
   const lock = useCallback(() => {
     if (masterKeyHandleId.current != null) {
@@ -309,21 +523,11 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
 
   const getFileKeyBytesFn = useCallback(
     async (fileId: string): Promise<Uint8Array> => {
-      // For share creation we still need raw file key bytes (they are
-      // per-file ephemeral, not the master key). Derive via handle.
-      // TODO(P2): move file key wrapping to native too.
-      const { deriveFileKey } = await import('../../modules/beebeeb-crypto')
-      const { loadKeyFromKeychain } = await import('../../modules/beebeeb-crypto')
-      // We need the raw master key bytes temporarily to derive the file key
-      // via the old deriveFileKey path. This is a known gap until P2 moves
-      // file key derivation fully native. The master key bytes are loaded from
-      // keychain, used, and immediately zeroed.
-      const raw = await loadKeyFromKeychain(MASTER_KEY_LABEL)
-      if (!raw) throw new Error('Vault is locked — cannot derive file key')
       try {
-        return await deriveFileKey(raw, fileId)
-      } finally {
-        raw.fill(0)
+        return await handleDeriveFileKey(requireHandleId(), fileId)
+      } catch (error) {
+        if (isPhysicalIOSDevice()) throw error
+        return deriveFileKeyFromKeychainFallback(fileId, 'Vault is locked — cannot derive file key')
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -347,20 +551,14 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
   )
 
   // The web client derives its search-index key with HKDF-SHA-256 over the
-  // master key with `info = "beebeeb-search-index"`. The handle-based path
-  // uses handleDecryptChunk internally, but for the search index we need
-  // the raw derived key bytes. Use the same temporary load pattern as
-  // getFileKeyBytes.
+  // master key with `info = "beebeeb-search-index"`.
   const getIndexKeyFn = useCallback(
     async (): Promise<Uint8Array> => {
-      const { deriveFileKey } = await import('../../modules/beebeeb-crypto')
-      const { loadKeyFromKeychain } = await import('../../modules/beebeeb-crypto')
-      const raw = await loadKeyFromKeychain(MASTER_KEY_LABEL)
-      if (!raw) throw new Error('Vault is locked — cannot derive index key')
       try {
-        return await deriveFileKey(raw, 'beebeeb-search-index')
-      } finally {
-        raw.fill(0)
+        return await handleDeriveFileKey(requireHandleId(), 'beebeeb-search-index')
+      } catch (error) {
+        if (isPhysicalIOSDevice()) throw error
+        return deriveFileKeyFromKeychainFallback('beebeeb-search-index', 'Vault is locked — cannot derive index key')
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -387,36 +585,86 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
 
   const tryBackgroundUnlockFn = useCallback(async (): Promise<boolean> => {
     // Already unlocked — nothing to do
-    if (masterKeyHandleId.current != null) return true
+    if (masterKeyHandleId.current != null) {
+      updateVaultUnlockDiagnostics({
+        isUnlocked: true,
+        unlockAttempted: true,
+        unlockInFlight: false,
+        lastUnlockSource: 'backup_background',
+        lastUnlockOutcome: 'already_unlocked',
+        lastUnlockAt: new Date().toISOString(),
+        lastUnlockError: null,
+        lastPromptExpected: false,
+        lastAlreadyUnlocked: true,
+        lastInFlightAtRequest: unlockInFlightRef.current,
+      })
+      logVaultUnlockDiagnostic('already_unlocked', { source: 'backup_background' })
+      return true
+    }
 
     try {
       const enabled = await getKeepVaultUnlocked()
-      if (!enabled) return false
+      if (!enabled) {
+        updateVaultUnlockDiagnostics({
+          isUnlocked: false,
+          unlockAttempted,
+          unlockInFlight: false,
+          lastUnlockSource: 'backup_background',
+          lastUnlockOutcome: 'disabled',
+          lastUnlockAt: new Date().toISOString(),
+          lastUnlockError: null,
+          lastPromptExpected: false,
+          lastAlreadyUnlocked: false,
+          lastInFlightAtRequest: unlockInFlightRef.current,
+        })
+        logVaultUnlockDiagnostic('disabled', { source: 'backup_background' })
+        return false
+      }
 
-      const handleId = await loadVerifiedMasterKeyHandle()
-      if (handleId == null) return false
-
-      masterKeyHandleId.current = handleId
-      setIsUnlocked(true)
-      setUnlockAttempted(true)
+      await unlock(undefined, 'backup_background')
       return true
-    } catch {
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      updateVaultUnlockDiagnostics({
+        isUnlocked: false,
+        unlockAttempted: true,
+        unlockInFlight: false,
+        lastUnlockSource: 'backup_background',
+        lastUnlockOutcome: 'failed',
+        lastUnlockAt: new Date().toISOString(),
+        lastUnlockError: message,
+        lastPromptExpected: false,
+        lastAlreadyUnlocked: false,
+        lastInFlightAtRequest: unlockInFlightRef.current,
+      })
+      logVaultUnlockDiagnostic('failed', { source: 'backup_background', error: message })
       return false
     }
-  }, [])
+  }, [unlock, unlockAttempted])
+
+  const getUnlockDiagnosticsFn = useCallback((): VaultUnlockDiagnostics => {
+    return {
+      ...getLastVaultUnlockDiagnostics(),
+      isUnlocked,
+      unlockAttempted,
+      unlockInFlight: unlockInFlightRef.current,
+    }
+  }, [isUnlocked, unlockAttempted])
 
   // Keep BackupService in sync with vault state so folder creation/lookup
   // always encrypts/decrypts names through the crypto context.
   useEffect(() => {
     if (isUnlocked) {
       setBackupEncryption({
+        encryptChunkFn: encryptChunkFn,
+        decryptChunkFn: decryptChunkFn,
         encryptMetadataFn: encryptMetadataFn,
         decryptMetadataFn: decryptMetadataFn,
       })
     } else {
       setBackupEncryption(null)
     }
-  }, [isUnlocked, encryptMetadataFn, decryptMetadataFn])
+  }, [isUnlocked, encryptChunkFn, encryptMetadataFn, decryptMetadataFn])
 
   return (
     <CryptoContext.Provider
@@ -424,6 +672,7 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
         isUnlocked,
         unlockAttempted,
         unlock,
+        getUnlockDiagnostics: getUnlockDiagnosticsFn,
         lock,
         encryptChunk: encryptChunkFn,
         decryptChunk: decryptChunkFn,

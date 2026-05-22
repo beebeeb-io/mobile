@@ -15,6 +15,7 @@ const withBeebeebCrypto = (config) => {
     if (!Array.isArray(plist.UIBackgroundModes)) plist.UIBackgroundModes = []
     if (!plist.UIBackgroundModes.includes('fetch')) plist.UIBackgroundModes.push('fetch')
     if (!plist.UIBackgroundModes.includes('processing')) plist.UIBackgroundModes.push('processing')
+    plist.NSSupportsLiveActivities = true
 
     // Register the BGProcessingTask identifiers with the system.
     if (!Array.isArray(plist.BGTaskSchedulerPermittedIdentifiers)) {

@@ -49,6 +49,10 @@ export interface FileProviderDomainRegistrationResult {
   domainCount: number
   rootEnumerationSignaled: boolean
   workingSetEnumerationSignaled: boolean
+  cacheDatabaseReady?: boolean
+  documentStorageURL?: string | null
+  userVisibleRootURL?: string | null
+  userVisibleRootError?: string | null
   rootEnumerationError?: string | null
   workingSetEnumerationError?: string | null
 }
@@ -64,6 +68,9 @@ export interface FileProviderPrivacyState {
   showInFiles: boolean
   trustedMountEnabled: boolean
   mounted: boolean
+  registered?: boolean
+  domainCount?: number
+  cacheDatabaseReady?: boolean
   requireDeviceAuth: boolean
   unlockedUntilMs: number
   unlockWindowSeconds: number

@@ -1,5 +1,5 @@
 import { BBLogo } from "../components/BBLogo";
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   StyleSheet,
@@ -39,6 +39,7 @@ export default function BiometricLockScreen({ onUnlocked }: Props) {
   const insets = useSafeAreaInsets();
   const [authenticating, setAuthenticating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const autoPromptedRef = useRef(false);
 
   const authenticate = useCallback(async () => {
     setError(null);
@@ -79,6 +80,8 @@ export default function BiometricLockScreen({ onUnlocked }: Props) {
 
   // Auto-trigger on mount
   useEffect(() => {
+    if (autoPromptedRef.current) return;
+    autoPromptedRef.current = true;
     authenticate();
   }, [authenticate]);
 

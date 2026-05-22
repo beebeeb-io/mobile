@@ -20,10 +20,11 @@ enum SyncEngine {
       return
     }
 
-    // The main app pre-populates decrypted names via syncFileProviderCache().
-    // We never load the master key here — that would trigger Face ID from
-    // the extension process. If a name isn't decrypted yet, show the fallback
-    // until the main app syncs it.
+    // Prefer extension-local decryption so iOS Files can open any folder even
+    // when the main app has not pre-warmed that directory's shared cache. This
+    // uses the extension Secure Enclave key only, so it does not trigger Face ID
+    // from the extension process.
+    let masterKeyHandle = try? CryptoBridge.loadMasterKeyHandle()
     let cached = CacheManager.shared.children(parent: parentId)
     let cachedById = Dictionary(uniqueKeysWithValues: cached.map { ($0.id, $0) })
 
@@ -31,14 +32,19 @@ enum SyncEngine {
 
     for dto in entries {
       let prior = cachedById[dto.id]
-      let nameDecrypted = prior?.nameDecrypted
+      let effectiveParentId = dto.parent_id ?? parentId
+      let decrypted = decryptName(
+        dto: dto,
+        masterKeyHandle: masterKeyHandle,
+        fallback: prior?.nameDecrypted
+      )
 
       let item = CachedItem(
         id: dto.id,
-        parentId: dto.parent_id,
+        parentId: effectiveParentId,
         nameEncrypted: dto.name_encrypted,
-        nameDecrypted: nameDecrypted,
-        mimeType: dto.mime_type,
+        nameDecrypted: decrypted.name,
+        mimeType: dto.mime_type ?? decrypted.mimeType,
         sizeBytes: dto.size_bytes,
         isFolder: dto.is_folder,
         isPinned: prior?.isPinned ?? false,
@@ -53,13 +59,21 @@ enum SyncEngine {
       rowsToUpsert.append(item)
     }
 
-    CacheManager.shared.upsert(rowsToUpsert)
+    CacheManager.shared.replaceChildren(parent: parentId, with: rowsToUpsert)
     CacheManager.shared.setSyncState(
       key: "container.\(containerId).anchor",
       value: String(Date().timeIntervalSince1970)
     )
 
-    // Tell the system the working set changed so it re-renders the Files UI.
+    // Tell the system both the opened container and the working set changed.
+    // Signaling only .workingSet leaves newly opened subfolders stuck on the
+    // empty cached listing even after the API refresh has inserted children.
+    let itemIdentifier: NSFileProviderItemIdentifier = (containerId == BeebeebConstants.rootContainerIdentifier)
+      ? .rootContainer
+      : NSFileProviderItemIdentifier(containerId)
+    NSFileProviderManager.default.signalEnumerator(for: itemIdentifier) { error in
+      if let error { NSLog("[Beebeeb] signalEnumerator(\(containerId)) failed: \(error)") }
+    }
     NSFileProviderManager.default.signalEnumerator(for: .workingSet) { error in
       if let error { NSLog("[Beebeeb] signalEnumerator workingSet failed: \(error)") }
     }
@@ -68,5 +82,32 @@ enum SyncEngine {
   private static func bumpAnchor(_ prior: Int64?) -> Int64 {
     let now = Int64(Date().timeIntervalSince1970 * 1000)
     return max(prior ?? 0, now)
+  }
+
+  private static func decryptName(
+    dto: ApiClient.FileEntryDto,
+    masterKeyHandle: MasterKeyHandle?,
+    fallback: String?
+  ) -> (name: String?, mimeType: String?) {
+    guard let raw = dto.name_encrypted, !raw.isEmpty else {
+      return (fallback, nil)
+    }
+    if !raw.hasPrefix("{") {
+      return (raw, nil)
+    }
+    guard let masterKeyHandle else {
+      return (fallback, nil)
+    }
+    do {
+      let decrypted = try CryptoBridge.decryptNameWithMime(
+        masterKeyHandle: masterKeyHandle,
+        fileId: dto.id,
+        nameEncrypted: raw
+      )
+      return (decrypted.name, decrypted.mimeType)
+    } catch {
+      NSLog("[Beebeeb] decrypt filename failed for item \(dto.id): \(error)")
+      return (fallback, nil)
+    }
   }
 }

@@ -10,7 +10,9 @@ import UniformTypeIdentifiers
 ///   Group container. Lookups and listings hit it directly for instant UI.
 /// - File contents are materialized on demand: `fetchContents` downloads the
 ///   ciphertext from the API and decrypts via the Rust `BeebeebCore` handles.
-/// - Uploads follow the inverse: encrypt locally, multipart-upload, then cache.
+/// - Uploads stream through the v2 chunked-upload endpoints: encrypt one
+///   chunk at a time, PUT it, finalize, then update the cache. Per-chunk
+///   I/O keeps memory under the extension's 50 MB jetsam budget.
 /// - Deletes hit the trash endpoint; modify supports rename + reparent.
 ///
 /// All crypto is byte-oriented at the Swift boundary but flows through opaque
@@ -95,10 +97,11 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         let encrypted = try await ApiClient.shared.downloadEncrypted(fileId: cached.id)
         progress.completedUnitCount = 70
 
-        let plaintext = try CryptoBridge.decryptDownloadedBlob(
+        let plaintext = try CryptoBridge.decryptDownloadedFile(
           masterKeyHandle: masterKey,
           fileId: cached.id,
-          blob: encrypted
+          encryptedFile: encrypted,
+          plaintextSize: cached.sizeBytes
         )
         progress.completedUnitCount = 90
 
@@ -139,9 +142,9 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
 
     let task = Task.detached {
       do {
-        // Folder creation isn't supported via the multipart endpoint we have
-        // here — the Files app exposes folder creation through a separate
-        // path that we'll implement once the /folder endpoint is wired in.
+        // Folder creation isn't supported by the v2 upload endpoint — the
+        // Files app exposes folder creation through a separate path that
+        // we'll implement once the /folder endpoint is wired in.
         if itemTemplate.contentType == .folder {
           completionHandler(nil, [], false, NSError(domain: NSFileProviderErrorDomain, code: NSFileProviderError.noSuchItem.rawValue))
           return
@@ -152,39 +155,32 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
           return
         }
 
-        let plaintext = try Data(contentsOf: url)
-        progress.completedUnitCount = 20
-
         let masterKey = try self.masterKey()
         let fileId = UUID().uuidString
-        let encryptedChunk = try CryptoBridge.encryptChunkForUpload(
-          masterKeyHandle: masterKey,
-          fileId: fileId,
-          plaintext: plaintext
-        )
         let nameEncrypted = try CryptoBridge.encryptFilename(
           masterKeyHandle: masterKey,
           fileId: fileId,
           filename: itemTemplate.filename
         )
-        progress.completedUnitCount = 60
+        progress.completedUnitCount = 10
 
         let parentRaw = itemTemplate.parentItemIdentifier.rawValue
         let parentId: String? = (parentRaw == NSFileProviderItemIdentifier.rootContainer.rawValue)
           ? nil
           : parentRaw
+        let mimeType = itemTemplate.contentType?.preferredMIMEType
 
-        var metadataDict: [String: Any] = [
-          "name_encrypted": nameEncrypted,
-          "mime_type": itemTemplate.contentType?.preferredMIMEType ?? "application/octet-stream",
-          "size_bytes": plaintext.count,
-        ]
-        metadataDict["parent_id"] = parentId ?? NSNull()
-        let metadataJson = try JSONSerialization.data(withJSONObject: metadataDict, options: [])
-
-        let response = try await ApiClient.shared.uploadEncrypted(
-          metadataJson: metadataJson,
-          chunks: [encryptedChunk]
+        let response = try await Self.streamUpload(
+          sourceUrl: url,
+          fileId: fileId,
+          nameEncrypted: nameEncrypted,
+          mimeType: mimeType,
+          parentId: parentId,
+          isMedia: Self.isMediaContent(itemTemplate.contentType),
+          masterKey: masterKey,
+          progress: progress,
+          progressBase: 10,
+          progressSpan: 80
         )
         progress.completedUnitCount = 90
 
@@ -193,7 +189,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
           parentId: parentId,
           nameEncrypted: response.name_encrypted,
           nameDecrypted: itemTemplate.filename,
-          mimeType: itemTemplate.contentType?.preferredMIMEType,
+          mimeType: mimeType,
           sizeBytes: response.size_bytes,
           isFolder: false,
           isPinned: false,
@@ -267,23 +263,32 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         progress.completedUnitCount = 30
 
         if changedFields.contains(.contents), let newContents {
-          let plaintext = try Data(contentsOf: newContents)
-          let encryptedChunk = try CryptoBridge.encryptChunkForUpload(
-            masterKeyHandle: masterKey,
+          let mimeType = item.contentType?.preferredMIMEType ?? cached.mimeType
+          // The v2 init endpoint requires an encrypted file name. If the
+          // cached row lacks one (legacy plaintext-named files), encrypt
+          // the current name on the fly using the existing file id.
+          let nameForUpload: String
+          if let existing = nextNameEncrypted {
+            nameForUpload = existing
+          } else {
+            nameForUpload = try CryptoBridge.encryptFilename(
+              masterKeyHandle: masterKey,
+              fileId: cached.id,
+              filename: item.filename
+            )
+            nextNameEncrypted = nameForUpload
+          }
+          let response = try await Self.streamUpload(
+            sourceUrl: newContents,
             fileId: cached.id,
-            plaintext: plaintext
-          )
-          var metadataDict: [String: Any] = [
-            "file_id": cached.id,
-            "name_encrypted": nextNameEncrypted,
-            "mime_type": item.contentType?.preferredMIMEType ?? cached.mimeType ?? "application/octet-stream",
-            "size_bytes": plaintext.count,
-          ]
-          metadataDict["parent_id"] = nextParentId ?? NSNull()
-          let metadataJson = try JSONSerialization.data(withJSONObject: metadataDict, options: [])
-          let response = try await ApiClient.shared.uploadEncrypted(
-            metadataJson: metadataJson,
-            chunks: [encryptedChunk]
+            nameEncrypted: nameForUpload,
+            mimeType: mimeType,
+            parentId: nextParentId,
+            isMedia: Self.isMediaContent(item.contentType),
+            masterKey: masterKey,
+            progress: progress,
+            progressBase: 30,
+            progressSpan: 50
           )
           nextSizeBytes = response.size_bytes
           nextNameEncrypted = response.name_encrypted ?? nextNameEncrypted
@@ -364,6 +369,103 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
     request: NSFileProviderRequest
   ) throws -> NSFileProviderEnumerator {
     return FileProviderEnumerator(containerIdentifier: containerItemIdentifier)
+  }
+
+  // MARK: - Streaming upload
+
+  /// Plaintext chunk size used for File Provider uploads. iOS gives File
+  /// Provider extensions ~50 MB of resident memory; 1 MB plaintext keeps the
+  /// per-chunk allocation (plaintext + AES-GCM ciphertext + URLSession copy)
+  /// well under that even with autorelease drift.
+  private static let uploadChunkSizeBytes = 1 * 1024 * 1024
+
+  /// Streams a plaintext file to the v2 chunked-upload endpoints. Reads one
+  /// chunk at a time via `FileHandle`, encrypts via `CryptoBridge`, and PUTs
+  /// it to the server. No full-file `Data` buffer ever exists in the
+  /// extension's heap — the only steady-state allocation is the per-chunk
+  /// plaintext/ciphertext pair (~2 MB combined).
+  ///
+  /// `progressBase` + `progressSpan` are written into `progress` as upload
+  /// advances; callers pick the slice so init/finalize remain visible in the
+  /// Files app progress indicator.
+  private static func streamUpload(
+    sourceUrl: URL,
+    fileId: String,
+    nameEncrypted: String,
+    mimeType: String?,
+    parentId: String?,
+    isMedia: Bool,
+    masterKey: MasterKeyHandle,
+    progress: Progress,
+    progressBase: Int64,
+    progressSpan: Int64
+  ) async throws -> ApiClient.UploadResponseDto {
+    let attrs = try FileManager.default.attributesOfItem(atPath: sourceUrl.path)
+    let fileSize = (attrs[.size] as? NSNumber)?.int64Value ?? 0
+    guard fileSize > 0 else {
+      throw NSFileProviderError(.noSuchItem)
+    }
+
+    let chunkSize = Self.uploadChunkSizeBytes
+    let chunkCount = max(1, Int((fileSize + Int64(chunkSize) - 1) / Int64(chunkSize)))
+
+    let session = try await ApiClient.shared.initUploadV2(
+      fileId: fileId,
+      nameEncrypted: nameEncrypted,
+      fileSizeBytes: fileSize,
+      mimeType: mimeType,
+      parentId: parentId,
+      isMedia: isMedia,
+      chunkSizeBytes: chunkSize,
+      chunkCount: chunkCount
+    )
+
+    let handle = try FileHandle(forReadingFrom: sourceUrl)
+    defer { try? handle.close() }
+
+    var bytesRead: Int64 = 0
+    for index in 0..<chunkCount {
+      try Task.checkCancellation()
+
+      var plaintextLen = 0
+      var encrypted = Data()
+      try autoreleasepool { () throws -> Void in
+        let plaintext = try handle.read(upToCount: chunkSize) ?? Data()
+        plaintextLen = plaintext.count
+        if plaintextLen == 0 { return }
+        encrypted = try CryptoBridge.encryptChunkForUpload(
+          masterKeyHandle: masterKey,
+          fileId: fileId,
+          plaintext: plaintext
+        )
+      }
+
+      // File shrank under us between attributesOfItem and read — abort
+      // rather than upload a short version that won't decrypt.
+      guard plaintextLen > 0 else {
+        throw NSFileProviderError(.serverUnreachable)
+      }
+
+      try await ApiClient.shared.uploadChunkV2(
+        uploadSessionId: session.upload_session_id,
+        index: index,
+        encryptedChunk: encrypted
+      )
+
+      bytesRead += Int64(plaintextLen)
+      let advance = progressSpan * bytesRead / fileSize
+      progress.completedUnitCount = progressBase + min(progressSpan, advance)
+    }
+
+    try Task.checkCancellation()
+    return try await ApiClient.shared.completeUploadV2(uploadSessionId: session.upload_session_id)
+  }
+
+  /// True when iOS would classify `type` as photo/video content. Used to set
+  /// the v2 `is_media` flag so server-side photo grids include the upload.
+  private static func isMediaContent(_ type: UTType?) -> Bool {
+    guard let type else { return false }
+    return type.conforms(to: .image) || type.conforms(to: .audiovisualContent)
   }
 
   // MARK: - Errors

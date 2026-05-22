@@ -3,18 +3,22 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../App';
 import {
   ActivityIndicator,
+  Alert,
   Animated,
   Dimensions,
   FlatList,
+  Platform,
   RefreshControl,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
 } from 'react-native';
+import * as FileSystem from 'expo-file-system';
 import {
   PinchGestureHandler,
   State,
+  type PinchGestureHandlerGestureEvent,
   type PinchGestureHandlerStateChangeEvent,
 } from 'react-native-gesture-handler';
 import { Ionicons } from '@expo/vector-icons';
@@ -22,9 +26,12 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import * as Haptics from 'expo-haptics';
 import * as MediaLibrary from 'expo-media-library';
+import * as Sharing from 'expo-sharing';
+import JSZip from 'jszip';
+import { NativePhotosGridView, type NativePhotoGridItem } from '../../modules/beebeeb-crypto';
 import { radii, spacing } from '../theme';
 import { useTheme } from '../lib/theme-context';
-import { getAllImages, friendlyError, getApiUrl, getToken } from '../lib/api';
+import { ApiError, getAllImages, getFileIndex, friendlyError, trashFiles } from '../lib/api';
 import type { FileEntry } from '../lib/api';
 import { guessMimeType } from '../lib/media';
 import { useBackup } from '../lib/backup-context';
@@ -32,13 +39,24 @@ import { useCrypto } from '../lib/crypto-context';
 import { useNetworkStatus } from '../lib/useNetworkStatus';
 import { ThumbnailImage } from '../components/ThumbnailImage';
 import {
+  cacheLocalThumbnail,
   ensureThumbnailForImage,
   prefetchDecryptedThumbnails,
   pruneThumbnailCache,
+  THUMBNAIL_REPAIR_RETRY_MS,
 } from '../lib/thumbnail';
-import { getRemoteToLocalMap } from '../services/BackupDatabase';
+import { getCachedThumbnail, pruneThumbnailsForRemoteFiles } from '../lib/thumbnail-cache';
+import { decryptToTempFile } from '../lib/native-decrypt';
+import { prunePhotoCacheForRemoteFiles } from '../lib/photo-cache';
+import { loadCachedFileIndex, saveCachedFileIndex, type CachedFileIndex } from '../lib/file-index-cache';
+import { getRemoteCreatedAtMap, getRemoteToLocalMap, markRemoteDeleted } from '../services/BackupDatabase';
 import { encryptedMetadataPayloadToBytes } from '../lib/encrypted-metadata';
+import { mapInBatches } from '../lib/async-batch';
 import { perfMark } from '../lib/perf-mark';
+import {
+  columnsForPinchScale,
+  DEFAULT_PHOTO_GRID_COLUMNS,
+} from '../lib/photo-grid';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -74,68 +92,98 @@ function filenameCandidates(entry: MediaEntry): string[] {
   ].filter((value): value is string => !!value && !value.startsWith('{'));
 }
 
-function photoMimeType(entry: FileEntry): string | null {
+function mediaMimeType(entry: FileEntry): string | null {
   const mediaEntry = entry as MediaEntry;
   const mime = (entry.mime_type ?? mediaEntry.mime ?? '').toLowerCase();
   if (mime.startsWith('image/')) return entry.mime_type ?? mediaEntry.mime ?? 'image/jpeg';
-  if (mime.startsWith('video/')) return null;
+  if (mime.startsWith('video/')) return entry.mime_type ?? mediaEntry.mime ?? 'video/mp4';
 
   const category = mediaCategory(mediaEntry);
   if (category === 'image' || category === 'photo') return 'image/jpeg';
-  if (category === 'video') return null;
+  if (category === 'video') return 'video/mp4';
 
   for (const name of filenameCandidates(mediaEntry)) {
     const guessed = guessMimeType(name);
     if (guessed?.startsWith('image/')) return guessed;
-    if (guessed?.startsWith('video/')) return null;
+    if (guessed?.startsWith('video/')) return guessed;
   }
 
   return entry.is_media ? 'image/jpeg' : null;
 }
 
-function isImageFile(entry: FileEntry): boolean {
-  return photoMimeType(entry) !== null;
+function isMediaFile(entry: FileEntry): boolean {
+  return mediaMimeType(entry) !== null;
+}
+
+function isEncryptedThumbnailCandidate(entry: FileEntry): boolean {
+  return !!entry.has_thumbnail && typeof entry.name_encrypted === 'string' && entry.name_encrypted.startsWith('{');
+}
+
+function isVisibleMediaFile(entry: FileEntry, decryptedMimeTypes: Record<string, string>): boolean {
+  const decryptedMime = decryptedMimeTypes[entry.id]?.toLowerCase();
+  if (decryptedMime) return decryptedMime.startsWith('image/') || decryptedMime.startsWith('video/');
+  return isMediaFile(entry) || isEncryptedThumbnailCandidate(entry);
+}
+
+function photoCandidatesFromIndex(files: FileEntry[]): FileEntry[] {
+  return files.filter((entry) => (
+    !entry.is_folder &&
+    !entry.is_uploading &&
+    (isMediaFile(entry) || isEncryptedThumbnailCandidate(entry))
+  ));
 }
 
 /**
  * Parse the decrypted metadata plaintext. The server may store the filename as
  * a bare string (legacy) or as `{"name":"...", "mime_type":"..."}` (current).
  */
-function parseDecryptedPhotoName(plaintext: string): string {
+interface DecryptedPhotoMetadata {
+  name: string;
+  mimeType?: string;
+}
+
+function parseDecryptedPhotoMetadata(plaintext: string): DecryptedPhotoMetadata {
   try {
-    const metadata = JSON.parse(plaintext) as { name?: unknown };
+    const metadata = JSON.parse(plaintext) as { mime_type?: unknown; name?: unknown };
     if (metadata && typeof metadata === 'object' && typeof metadata.name === 'string') {
       const name = metadata.name.trim();
-      if (name) return name;
+      const mimeType = typeof metadata.mime_type === 'string' ? metadata.mime_type.trim() : '';
+      if (name) return { name, mimeType: mimeType || guessMimeType(name) || undefined };
     }
   } catch {
     // Legacy format: plaintext is the bare filename.
   }
-  return plaintext || 'Photo';
+  const name = plaintext || 'Photo';
+  return { name, mimeType: guessMimeType(name) || undefined };
 }
 
-async function getMediaFiles(): Promise<FileEntry[] | null> {
-  const token = await getToken();
-  const res = await fetch(`${getApiUrl()}/api/v1/files/media`, {
-    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
-  });
+function preparePhotoEntries(entries: FileEntry[]): FileEntry[] {
+  return entries
+    .filter((entry) => !entry.is_folder && !entry.is_uploading)
+    .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+}
 
-  if (res.status === 404 || res.status === 405) return null;
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({ error: res.statusText }));
-    const message = typeof body === 'object' && body !== null && 'error' in body
-      ? String((body as { error?: unknown }).error ?? res.statusText)
-      : res.statusText;
-    throw new Error(message);
+async function getPhotoCandidates(cachedIndex?: CachedFileIndex | null): Promise<FileEntry[]> {
+  try {
+    const existingIndex = cachedIndex ?? await loadCachedFileIndex();
+    const index = await getFileIndex(existingIndex?.hash);
+    if (!index.changed && existingIndex) {
+      return photoCandidatesFromIndex(existingIndex.files);
+    }
+    if (index.files) {
+      await saveCachedFileIndex(index.hash, index.files);
+      return photoCandidatesFromIndex(index.files);
+    }
+  } catch (err) {
+    // Older API builds do not have /files/index yet. Because /files/{id}
+    // also exists, those builds may treat "index" as a UUID and return 400
+    // instead of 404. Fall back to the media endpoint in all unsupported-route
+    // cases, but keep auth/network/server errors visible.
+    if (!(err instanceof ApiError) || (err.status !== 400 && err.status !== 404 && err.status !== 405)) {
+      throw err;
+    }
   }
 
-  const data = await res.json() as { files?: FileEntry[] };
-  return Array.isArray(data.files) ? data.files : [];
-}
-
-async function getPhotoCandidates(): Promise<FileEntry[]> {
-  const mediaFiles = await getMediaFiles();
-  if (mediaFiles) return mediaFiles;
   return getAllImages();
 }
 
@@ -144,13 +192,8 @@ async function getPhotoCandidates(): Promise<FileEntry[]> {
  * thumbnail so the grid never shows blank cells while images are streaming in.
  */
 function swatch(seed: number): string {
-  const hues = [55, 72, 28, 90, 42, 65, 18, 82];
-  const sats = [22, 28, 24, 32, 26, 30, 20, 28];
-  const lights = [78, 62, 84, 70, 66, 80, 72, 68];
-  const h = hues[seed % hues.length];
-  const s = sats[(seed * 7) % sats.length];
-  const l = lights[(seed * 3) % lights.length];
-  return `hsl(${h}, ${s}%, ${l}%)`;
+  const colors = ['#d7ceb1', '#a5a173', '#e1d8bd', '#abc58a', '#c1aa77', '#d1ca9d', '#cba884', '#aebf92'];
+  return colors[seed % colors.length] ?? '#d7ceb1';
 }
 
 interface PhotoGroup {
@@ -169,7 +212,7 @@ const MONTH_NAMES = [
 function groupByMonth(photos: FileEntry[]): PhotoGroup[] {
   const map = new Map<string, PhotoGroup>();
   for (const photo of photos) {
-    const date = new Date(photo.created_at);
+    const date = parseCreatedAt(photo.created_at) ?? new Date();
     const year = date.getFullYear();
     const month = date.getMonth();
     const key = `${year}-${String(month + 1).padStart(2, '0')}`;
@@ -185,53 +228,229 @@ function groupByMonth(photos: FileEntry[]): PhotoGroup[] {
   return Array.from(map.values()).sort((a, b) => (a.key < b.key ? 1 : -1));
 }
 
+function parseCreatedAt(value: string | null | undefined): Date | null {
+  if (!value) return null;
+  const trimmed = value.trim();
+  const numeric = Number(trimmed);
+  if (Number.isFinite(numeric)) {
+    const seconds = numeric > 10_000_000_000 ? numeric / 1000 : numeric;
+    return new Date(seconds * 1000);
+  }
+  const date = new Date(trimmed);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function normalizeCreatedAt(value: string | null | undefined): string | null {
+  const date = parseCreatedAt(value);
+  return date ? date.toISOString() : null;
+}
+
 // ---------------------------------------------------------------------------
 // Grid dimensions — pinch-to-zoom changes column count (2/4/7/12)
 // ---------------------------------------------------------------------------
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
 const GRID_GAP = 2;
-const COLUMN_STEPS = [2, 4, 7, 12];
-const DEFAULT_COLS = 4;
+const DEFAULT_COLS = DEFAULT_PHOTO_GRID_COLUMNS;
+const SECTION_HEADER_HEIGHT = 28;
+const LIST_FOOTER_HEIGHT = 12;
+const PHOTO_PREVIEW_WINDOW_RADIUS = 12;
+const METADATA_DECRYPT_BATCH_SIZE = 8;
+const INITIAL_METADATA_PREFETCH_LIMIT = 40;
+const THUMBNAIL_PRELOAD_BEFORE = 24;
+const THUMBNAIL_PRELOAD_AFTER = 40;
 
 function cellSizeForCols(cols: number): number {
   return (SCREEN_WIDTH - GRID_GAP * (cols - 1)) / cols;
 }
 
-const ACTIVE_THUMBNAIL_LIMIT = 500;
+const ACTIVE_THUMBNAIL_LIMIT = 72;
+const THUMBNAIL_PREFETCH_DEBOUNCE_MS = 100;
 
-function collectThumbnailIds(groups: PhotoGroup[], visibleIndexes: number[]): Set<string> {
-  if (groups.length === 0) return new Set();
-  const indexes = visibleIndexes.length > 0 ? visibleIndexes : [0];
-  const min = Math.max(0, Math.min(...indexes) - 1);
-  const max = Math.min(groups.length - 1, Math.max(...indexes) + 1);
-  const ids: string[] = [];
-
-  for (let groupIndex = min; groupIndex <= max && ids.length < ACTIVE_THUMBNAIL_LIMIT; groupIndex++) {
-    for (const photo of groups[groupIndex]?.data ?? []) {
-      if (photo.has_thumbnail) ids.push(photo.id);
-      if (ids.length >= ACTIVE_THUMBNAIL_LIMIT) break;
+function mergeUriMap(
+  prev: Record<string, string>,
+  next: Record<string, string>,
+): Record<string, string> {
+  let changed = false;
+  for (const [id, uri] of Object.entries(next)) {
+    if (prev[id] !== uri) {
+      changed = true;
+      break;
     }
   }
-
-  return new Set(ids);
+  return changed ? { ...prev, ...next } : prev;
 }
 
-function collectVisiblePhotoIds(groups: PhotoGroup[], visibleIndexes: number[]): Set<string> {
-  if (groups.length === 0) return new Set();
+interface PhotoHeaderItem {
+  type: 'header';
+  key: string;
+  label: string;
+  count: number;
+  offset: number;
+  length: number;
+}
+
+interface PhotoRowItem {
+  type: 'row';
+  key: string;
+  photos: FileEntry[];
+  seedOffset: number;
+  offset: number;
+  length: number;
+}
+
+type PhotoListItem = PhotoHeaderItem | PhotoRowItem;
+
+function buildPhotoListItems(groups: PhotoGroup[], columns: number, cellSize: number): PhotoListItem[] {
+  const items: PhotoListItem[] = [];
+  let offset = 0;
+  let seedOffset = 0;
+  const rowLength = cellSize + GRID_GAP;
+
+  for (const group of groups) {
+    items.push({
+      type: 'header',
+      key: `header-${group.key}`,
+      label: group.label,
+      count: group.data.length,
+      offset,
+      length: SECTION_HEADER_HEIGHT,
+    });
+    offset += SECTION_HEADER_HEIGHT;
+
+    for (let i = 0; i < group.data.length; i += columns) {
+      const photos = group.data.slice(i, i + columns);
+      items.push({
+        type: 'row',
+        key: `row-${group.key}-${i / columns}`,
+        photos,
+        seedOffset: seedOffset + i,
+        offset,
+        length: rowLength,
+      });
+      offset += rowLength;
+    }
+
+    seedOffset += group.data.length;
+  }
+
+  return items;
+}
+
+function collectVisiblePhotoIds(items: PhotoListItem[], visibleIndexes: number[]): Set<string> {
+  if (items.length === 0) return new Set();
   const indexes = visibleIndexes.length > 0 ? visibleIndexes : [0];
-  const min = Math.max(0, Math.min(...indexes) - 1);
-  const max = Math.min(groups.length - 1, Math.max(...indexes) + 1);
+  const min = Math.max(0, Math.min(...indexes) - 3);
+  const max = Math.min(items.length - 1, Math.max(...indexes) + 6);
   const ids: string[] = [];
 
-  for (let groupIndex = min; groupIndex <= max && ids.length < ACTIVE_THUMBNAIL_LIMIT; groupIndex++) {
-    for (const photo of groups[groupIndex]?.data ?? []) {
+  for (let itemIndex = min; itemIndex <= max && ids.length < ACTIVE_THUMBNAIL_LIMIT; itemIndex++) {
+    const item = items[itemIndex];
+    if (!item || item.type !== 'row') continue;
+    for (const photo of item.photos) {
       ids.push(photo.id);
       if (ids.length >= ACTIVE_THUMBNAIL_LIMIT) break;
     }
   }
 
   return new Set(ids);
+}
+
+function collectInitialPhotoIds(items: PhotoListItem[]): Set<string> {
+  return collectVisiblePhotoIds(items, [0, 1, 2, 3, 4, 5]);
+}
+
+function collectBufferedPhotoIds(
+  orderedPhotos: FileEntry[],
+  visibleIds: Set<string>,
+  before = THUMBNAIL_PRELOAD_BEFORE,
+  after = THUMBNAIL_PRELOAD_AFTER,
+  limit = ACTIVE_THUMBNAIL_LIMIT,
+): Set<string> {
+  if (orderedPhotos.length === 0 || visibleIds.size === 0) return new Set();
+
+  const visibleIndexes = orderedPhotos
+    .map((photo, index) => (visibleIds.has(photo.id) ? index : -1))
+    .filter((index) => index >= 0);
+  if (visibleIndexes.length === 0) return visibleIds;
+
+  const min = Math.max(0, Math.min(...visibleIndexes) - before);
+  const max = Math.min(orderedPhotos.length - 1, Math.max(...visibleIndexes) + after);
+  const ids: string[] = [];
+
+  for (const index of visibleIndexes.sort((a, b) => a - b)) {
+    const id = orderedPhotos[index]?.id;
+    if (id) ids.push(id);
+  }
+
+  for (let index = Math.max(...visibleIndexes) + 1; index <= max && ids.length < limit; index++) {
+    const id = orderedPhotos[index]?.id;
+    if (id) ids.push(id);
+  }
+
+  for (let index = Math.min(...visibleIndexes) - 1; index >= min && ids.length < limit; index--) {
+    const id = orderedPhotos[index]?.id;
+    if (id) ids.push(id);
+  }
+
+  return new Set(ids);
+}
+
+function safeDisplayName(entry: FileEntry, decryptedNames: Record<string, string>): string {
+  const decrypted = decryptedNames[entry.id];
+  if (decrypted) return decrypted;
+  const raw = entry.name_encrypted;
+  if (typeof raw === 'string' && raw.trim() && !raw.startsWith('{') && raw.length < 200) {
+    return raw;
+  }
+  return 'Photo';
+}
+
+function safeZipName(name: string, fallback: string): string {
+  const cleaned = name
+    .replace(/[\\/:\0]/g, '_')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return cleaned || fallback;
+}
+
+function extensionForPhoto(entry: FileEntry, displayName: string, mimeType?: string | null): string {
+  const fromName = displayName.split('.').pop();
+  if (fromName && fromName.length > 0 && fromName.length <= 6 && fromName !== displayName) {
+    return fromName.toLowerCase();
+  }
+  const mime = (mimeType ?? mediaMimeType(entry) ?? '').toLowerCase();
+  if (mime.includes('heic')) return 'heic';
+  if (mime.includes('png')) return 'png';
+  if (mime.includes('webp')) return 'webp';
+  if (mime.includes('gif')) return 'gif';
+  if (mime.includes('quicktime')) return 'mov';
+  if (mime.startsWith('video/')) return 'mp4';
+  return 'jpg';
+}
+
+function sameIdSet(a: Set<string>, b: Set<string>): boolean {
+  if (a.size !== b.size) return false;
+  for (const id of a) {
+    if (!b.has(id)) return false;
+  }
+  return true;
+}
+
+function firstVisiblePhotoId(items: PhotoListItem[], visibleIndexes: number[]): string | null {
+  const ordered = visibleIndexes
+    .filter((index) => index >= 0 && index < items.length)
+    .sort((a, b) => a - b);
+
+  for (const index of ordered) {
+    const item = items[index];
+    if (item?.type === 'row' && item.photos[0]) return item.photos[0].id;
+  }
+  return null;
+}
+
+function findPhotoItemIndex(items: PhotoListItem[], photoId: string): number {
+  return items.findIndex((item) => item.type === 'row' && item.photos.some((photo) => photo.id === photoId));
 }
 
 // ---------------------------------------------------------------------------
@@ -245,11 +464,16 @@ const PhotoCell = React.memo(function PhotoCell({
   seed,
   isFromBackup,
   localAssetUri,
+  mimeType,
+  onThumbnailUnavailable,
   onPress,
   accessibilityLabel,
-  filename,
   cellSize,
   columns,
+  isVideo,
+  isSelected,
+  selectMode,
+  onLongPress,
 }: {
   fileId: string;
   hasThumbnail?: boolean;
@@ -257,21 +481,29 @@ const PhotoCell = React.memo(function PhotoCell({
   seed: number;
   isFromBackup: boolean;
   localAssetUri?: string | null;
+  mimeType?: string | null;
+  onThumbnailUnavailable: (fileId: string) => void;
   onPress?: () => void;
   accessibilityLabel: string;
-  filename?: string | null;
   cellSize: number;
   columns: number;
+  isVideo: boolean;
+  isSelected: boolean;
+  selectMode: boolean;
+  onLongPress?: () => void;
 }) {
   const { colors: c } = useTheme();
-  // Hide filename overlay and badge at small sizes (7+ columns)
   const showOverlay = columns <= 4;
+  const videoBadgeSize = columns <= 4 ? 22 : 18;
   return (
     <TouchableOpacity
       activeOpacity={0.7}
       onPress={onPress}
+      onLongPress={onLongPress}
+      delayLongPress={250}
       accessibilityRole="button"
-      accessibilityLabel={filename ? `Photo: ${filename}` : accessibilityLabel}
+      accessibilityState={selectMode ? { selected: isSelected } : undefined}
+      accessibilityLabel={accessibilityLabel}
       style={{ width: cellSize, height: cellSize }}
     >
       <ThumbnailImage
@@ -279,83 +511,117 @@ const PhotoCell = React.memo(function PhotoCell({
         hasThumbnail={hasThumbnail}
         loadThumbnail={loadThumbnail}
         localAssetUri={localAssetUri}
+        mimeType={mimeType}
+        onUnavailable={onThumbnailUnavailable}
         placeholderColor={swatch(seed)}
         style={StyleSheet.absoluteFill}
-        accessibilityLabel={filename ? `Photo: ${filename}` : accessibilityLabel}
+        accessibilityLabel={accessibilityLabel}
       />
-      {showOverlay && filename ? (
-        <View style={styles.filenameOverlay}>
-          <Text style={styles.filenameText} numberOfLines={1}>
-            {filename}
-          </Text>
-        </View>
-      ) : null}
       {showOverlay && isFromBackup && (
         <View style={[styles.originBadge, { backgroundColor: c.amber }]}>
           <Ionicons name="camera" size={10} color={c.ink} />
         </View>
       )}
+      {isVideo ? (
+        <View
+          style={[
+            styles.videoBadge,
+            {
+              width: videoBadgeSize,
+              height: videoBadgeSize,
+              borderRadius: videoBadgeSize / 2,
+            },
+          ]}
+        >
+          <Ionicons name="play" size={columns <= 4 ? 12 : 10} color="#FFFFFF" />
+        </View>
+      ) : null}
+      {selectMode ? (
+        <>
+          {isSelected ? <View style={styles.selectionOverlay} pointerEvents="none" /> : null}
+          <View
+            style={[
+              styles.selectionBadge,
+              {
+                borderColor: isSelected ? c.amber : 'rgba(255,255,255,0.8)',
+                backgroundColor: isSelected ? c.amber : 'rgba(0,0,0,0.35)',
+              },
+            ]}
+            pointerEvents="none"
+          >
+            {isSelected ? <Ionicons name="checkmark" size={14} color={c.ink} /> : null}
+          </View>
+        </>
+      ) : null}
     </TouchableOpacity>
   );
 });
 
-// ---------------------------------------------------------------------------
-// Group section: header + grid
-// ---------------------------------------------------------------------------
-
-const GroupSection = React.memo(function GroupSection({
-  group,
-  seedOffset,
+const PhotoRow = React.memo(function PhotoRow({
+  photos,
   photosFolderId,
   activeThumbnailIds,
   localAssetMap,
   decryptedNames,
+  decryptedMimeTypes,
+  onThumbnailUnavailable,
   onOpenPhoto,
+  onTogglePhoto,
+  onLongPressPhoto,
+  selectedIds,
+  selectMode,
   columns,
   cellSize,
+  seedOffset,
 }: {
-  group: PhotoGroup;
-  seedOffset: number;
+  photos: FileEntry[];
   photosFolderId: string | null;
   activeThumbnailIds: Set<string>;
   localAssetMap: Map<string, string>;
   decryptedNames: Record<string, string>;
+  decryptedMimeTypes: Record<string, string>;
+  onThumbnailUnavailable: (fileId: string) => void;
   onOpenPhoto: (entry: FileEntry) => void;
+  onTogglePhoto: (entry: FileEntry) => void;
+  onLongPressPhoto: (entry: FileEntry) => void;
+  selectedIds: Set<string>;
+  selectMode: boolean;
   columns: number;
   cellSize: number;
+  seedOffset: number;
 }) {
-  const { colors: c } = useTheme();
   return (
-    <View style={styles.section}>
-      <View style={styles.sectionHeader}>
-        <Text style={[styles.sectionLabel, { color: c.ink }]}>{group.label}</Text>
-        <Text style={[styles.sectionCount, { color: c.ink3 }]}>
-          {group.data.length} {group.data.length === 1 ? 'item' : 'items'}
-        </Text>
-      </View>
-      <View style={styles.grid}>
-        {group.data.map((photo, i) => {
-          // If this photo was backed up from camera roll, use its local asset URI
-          const localId = localAssetMap.get(photo.id);
-          const localAssetUri = localId ? `ph://${localId}` : null;
-          return (
-            <PhotoCell
-              key={photo.id}
-              fileId={photo.id}
-              hasThumbnail={photo.has_thumbnail}
-              loadThumbnail={activeThumbnailIds.has(photo.id)}
-              seed={seedOffset + i}
-              isFromBackup={photosFolderId !== null && photo.parent_id === photosFolderId}
-              localAssetUri={localAssetUri}
-              filename={decryptedNames[photo.id] ?? null}
-              accessibilityLabel={decryptedNames[photo.id] ? `Photo: ${decryptedNames[photo.id]}` : `Photo from ${group.label}`}
-              onPress={() => onOpenPhoto(photo)}
-              cellSize={cellSize}
-              columns={columns}
-            />
-          );
-        })}
-      </View>
+    <View style={[styles.photoRow, { height: cellSize + GRID_GAP }]}>
+      {photos.map((photo, i) => {
+        // If this photo was backed up from camera roll, use its local asset URI
+        const localId = localAssetMap.get(photo.id);
+        const localAssetUri = localId ? `ph://${localId}` : null;
+        const mimeType = decryptedMimeTypes[photo.id] ?? mediaMimeType(photo);
+        const isVideo = !!mimeType?.startsWith('video/');
+        const mediaLabel = isVideo ? 'Video' : 'Photo';
+        const isSelected = selectedIds.has(photo.id);
+        return (
+          <PhotoCell
+            key={photo.id}
+            fileId={photo.id}
+            hasThumbnail={photo.has_thumbnail}
+            loadThumbnail={activeThumbnailIds.size === 0 || activeThumbnailIds.has(photo.id)}
+            seed={seedOffset + i}
+            isFromBackup={photosFolderId !== null && photo.parent_id === photosFolderId}
+            localAssetUri={localAssetUri}
+            mimeType={mimeType}
+            onThumbnailUnavailable={onThumbnailUnavailable}
+            accessibilityLabel={decryptedNames[photo.id] ? `${mediaLabel}: ${decryptedNames[photo.id]}` : mediaLabel}
+            onPress={() => (selectMode ? onTogglePhoto(photo) : onOpenPhoto(photo))}
+            onLongPress={() => onLongPressPhoto(photo)}
+            cellSize={cellSize}
+            columns={columns}
+            isVideo={isVideo}
+            isSelected={isSelected}
+            selectMode={selectMode}
+          />
+        );
+      })}
     </View>
   );
 });
@@ -365,9 +631,9 @@ const GroupSection = React.memo(function GroupSection({
 // ---------------------------------------------------------------------------
 
 function DevicePhotosBanner() {
-  const { isPhotoBackupEnabled, backupProgress } = useBackup();
+  const { isPhotoBackupEnabled, backupProgress, includeVideos } = useBackup();
   const { colors: c } = useTheme();
-  const [deviceCount, setDeviceCount] = useState<number | null>(null);
+  const [deviceCounts, setDeviceCounts] = useState<{ photos: number; videos: number } | null>(null);
   const [permissionDenied, setPermissionDenied] = useState(false);
 
   useEffect(() => {
@@ -380,11 +646,24 @@ function DevicePhotosBanner() {
           if (!cancelled) setPermissionDenied(true);
           return;
         }
-        const { totalCount } = await MediaLibrary.getAssetsAsync({
-          mediaType: 'photo',
-          first: 0,
-        });
-        if (!cancelled) setDeviceCount(totalCount);
+        const [photoAssets, videoAssets] = await Promise.all([
+          MediaLibrary.getAssetsAsync({
+            mediaType: MediaLibrary.MediaType.photo,
+            first: 0,
+          }),
+          includeVideos
+            ? MediaLibrary.getAssetsAsync({
+              mediaType: MediaLibrary.MediaType.video,
+              first: 0,
+            })
+            : Promise.resolve({ totalCount: 0 }),
+        ]);
+        if (!cancelled) {
+          setDeviceCounts({
+            photos: photoAssets.totalCount,
+            videos: videoAssets.totalCount,
+          });
+        }
       } catch {
         // Media library unavailable (e.g. simulator without photos, web)
       }
@@ -392,7 +671,7 @@ function DevicePhotosBanner() {
     return () => {
       cancelled = true;
     };
-  }, [isPhotoBackupEnabled]);
+  }, [includeVideos, isPhotoBackupEnabled]);
 
   if (!isPhotoBackupEnabled) return null;
   if (permissionDenied) {
@@ -404,13 +683,20 @@ function DevicePhotosBanner() {
       </View>
     );
   }
-  if (deviceCount === null) return null;
+  if (deviceCounts === null) return null;
+
+  const mediaCountText = includeVideos
+    ? [
+      `${deviceCounts.photos.toLocaleString()} ${deviceCounts.photos === 1 ? 'photo' : 'photos'}`,
+      `${deviceCounts.videos.toLocaleString()} ${deviceCounts.videos === 1 ? 'video' : 'videos'}`,
+    ].join(', ')
+    : `${deviceCounts.photos.toLocaleString()} ${deviceCounts.photos === 1 ? 'photo' : 'photos'}`;
 
   return (
     <View style={[styles.deviceBanner, { backgroundColor: c.paper2, borderColor: c.line }]}>
       <Ionicons name="phone-portrait-outline" size={14} color={c.ink3} />
       <Text style={[styles.deviceBannerText, { color: c.ink2 }]}>
-        {deviceCount.toLocaleString()} {deviceCount === 1 ? 'photo' : 'photos'} on device
+        {mediaCountText} on device
       </Text>
       <Text style={[styles.deviceBannerHint, { color: c.ink3 }]}>
         {backupProgress.completed.toLocaleString()} backed up
@@ -505,7 +791,7 @@ function AutoBackupBanner() {
 export default function PhotosScreen() {
   const insets = useSafeAreaInsets();
   const { colors: c } = useTheme();
-  const { getFileKeyBytes, isUnlocked, decryptMetadata } = useCrypto();
+  const { getFileKeyBytes, getMasterKeyHandleId, isUnlocked, decryptMetadata } = useCrypto();
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const [isScrolled, setIsScrolled] = useState(false);
   const [photos, setPhotos] = useState<FileEntry[]>([]);
@@ -516,6 +802,7 @@ export default function PhotosScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [columns, setColumns] = useState(DEFAULT_COLS);
+  const [isPinching, setIsPinching] = useState(false);
   const cellSize = useMemo(() => cellSizeForCols(columns), [columns]);
   // Column indicator — fades out after a pinch gesture changes the grid density
   const columnIndicatorOpacity = useRef(new Animated.Value(0)).current;
@@ -523,40 +810,118 @@ export default function PhotosScreen() {
   const [activeThumbnailIds, setActiveThumbnailIds] = useState<Set<string>>(() => new Set());
   const [activePhotoIds, setActivePhotoIds] = useState<Set<string>>(() => new Set());
   const [localAssetMap, setLocalAssetMap] = useState<Map<string, string>>(new Map());
+  const [localCreatedAtMap, setLocalCreatedAtMap] = useState<Record<string, string>>({});
   const [decryptedNames, setDecryptedNames] = useState<Record<string, string>>({});
-  const groupsRef = useRef<PhotoGroup[]>([]);
+  const [decryptedMimeTypes, setDecryptedMimeTypes] = useState<Record<string, string>>({});
+  const [thumbnailUris, setThumbnailUris] = useState<Record<string, string>>({});
+  const [thumbnailRetryTick, setThumbnailRetryTick] = useState(0);
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
+  const [bulkAction, setBulkAction] = useState<'delete' | 'share' | null>(null);
+  const [bulkStatus, setBulkStatus] = useState<string | null>(null);
+  const decryptedNamesRef = useRef<Record<string, string>>({});
+  const decryptedMimeTypesRef = useRef<Record<string, string>>({});
+  const listRef = useRef<FlatList<PhotoListItem>>(null);
+  const listItemsRef = useRef<PhotoListItem[]>([]);
+  const visibleIndexesRef = useRef<number[]>([0]);
+  const columnsRef = useRef(DEFAULT_COLS);
+  const isScrolledRef = useRef(false);
+  const isPinchingRef = useRef(false);
+  const pinchStartColumnsRef = useRef(DEFAULT_COLS);
+  const pendingAnchorPhotoIdRef = useRef<string | null>(null);
+  const thumbnailSeedSignatureRef = useRef<string | null>(null);
+  const thumbnailRepairAttemptsRef = useRef<Map<string, number>>(new Map());
+  const localThumbnailAttemptsRef = useRef<Set<string>>(new Set());
+  const thumbnailRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const viewabilityConfig = useRef({ itemVisiblePercentThreshold: 10 }).current;
+  const photosById = useMemo(() => new Map(photos.map((photo) => [photo.id, photo])), [photos]);
+  const activeThumbnailIdsRef = useRef<Set<string>>(new Set());
+  const isPhotosFocusedRef = useRef(false);
 
-  // Decrypt filenames for visible photos. Re-runs when photos change or vault unlocks.
+  useEffect(() => {
+    columnsRef.current = columns;
+  }, [columns]);
+
+  useEffect(() => () => {
+    if (columnIndicatorTimer.current) clearTimeout(columnIndicatorTimer.current);
+    if (thumbnailRetryTimerRef.current) clearTimeout(thumbnailRetryTimerRef.current);
+  }, []);
+
+  useEffect(() => {
+    decryptedNamesRef.current = decryptedNames;
+  }, [decryptedNames]);
+
+  useEffect(() => {
+    activeThumbnailIdsRef.current = activeThumbnailIds;
+  }, [activeThumbnailIds]);
+
+  useEffect(() => {
+    decryptedMimeTypesRef.current = decryptedMimeTypes;
+  }, [decryptedMimeTypes]);
+
+  // Decrypt filenames for the active viewport only. Large accounts can contain
+  // thousands of photos, so metadata work must follow the user's scroll window.
   useEffect(() => {
     if (!isUnlocked) {
       setDecryptedNames({});
+      setDecryptedMimeTypes({});
+      decryptedNamesRef.current = {};
+      decryptedMimeTypesRef.current = {};
       return;
     }
-    const results: Record<string, string> = {};
+    const candidateIds = activePhotoIds.size > 0
+      ? activePhotoIds
+      : new Set(photos.slice(0, INITIAL_METADATA_PREFETCH_LIMIT).map((photo) => photo.id));
+    const candidates = Array.from(candidateIds)
+      .map((id) => photosById.get(id))
+      .filter((photo): photo is FileEntry => !!photo)
+      .filter((photo) => (
+      !decryptedNamesRef.current[photo.id] &&
+      !decryptedMimeTypesRef.current[photo.id]
+    ));
+    if (candidates.length === 0) return;
+
+    const nameResults: Record<string, string> = {};
+    const mimeResults: Record<string, string> = {};
     let cancelled = false;
-    Promise.all(
-      photos.map(async (photo) => {
+    void mapInBatches(
+      candidates,
+      METADATA_DECRYPT_BATCH_SIZE,
+      async (photo) => {
+        if (cancelled) return;
         try {
           const raw = photo.name_encrypted ?? '';
           if (!raw.startsWith('{')) {
             // Not JSON-encrypted — use the raw value if it looks like a filename
-            if (raw && raw.length < 200) results[photo.id] = raw;
+            if (raw && raw.length < 200) {
+              nameResults[photo.id] = raw;
+              const mimeType = guessMimeType(raw);
+              if (mimeType) mimeResults[photo.id] = mimeType;
+            }
             return;
           }
           const payload = encryptedMetadataPayloadToBytes(raw);
           if (!payload) return;
           const plaintext = await decryptMetadata(photo.id, payload.nonce, payload.ciphertext);
-          results[photo.id] = parseDecryptedPhotoName(plaintext);
+          const metadata = parseDecryptedPhotoMetadata(plaintext);
+          nameResults[photo.id] = metadata.name;
+          if (metadata.mimeType) mimeResults[photo.id] = metadata.mimeType;
         } catch {
           // Decryption failure — leave unset
         }
-      }),
+      },
     ).then(() => {
-      if (!cancelled) setDecryptedNames({ ...results });
+      if (!cancelled) {
+        if (Object.keys(nameResults).length > 0) {
+          setDecryptedNames((prev) => ({ ...prev, ...nameResults }));
+        }
+        if (Object.keys(mimeResults).length > 0) {
+          setDecryptedMimeTypes((prev) => ({ ...prev, ...mimeResults }));
+        }
+      }
     });
     return () => { cancelled = true; };
-  }, [photos, isUnlocked, decryptMetadata]);
+  }, [activePhotoIds, photos, photosById, isUnlocked, decryptMetadata]);
 
   const fetchPhotos = useCallback(async (isRefresh = false) => {
     const hasVisiblePhotos = photosCountRef.current > 0;
@@ -567,15 +932,28 @@ export default function PhotosScreen() {
     }
     setError(null);
     const endPerf = perfMark.start('photos.fetch', { refresh: isRefresh });
+    let renderedCachedIndex = false;
 
     try {
-      const allImages = await getPhotoCandidates();
+      const cachedIndex = await loadCachedFileIndex();
+      if (!isRefresh && !hasVisiblePhotos && cachedIndex) {
+        const cachedImages = preparePhotoEntries(photoCandidatesFromIndex(cachedIndex.files));
+        if (cachedImages.length > 0) {
+          renderedCachedIndex = true;
+          photosCacheRef.current = cachedImages;
+          setPhotos(cachedImages);
+          setLoading(false);
+          setRefreshing(true);
+        }
+      }
+
+      const allImages = await getPhotoCandidates(cachedIndex);
       setPhotosFolderId(null);
       // Server usually returns image/media rows sorted newest first, but defend
       // against future changes by re-applying both invariants here.
-      const images = allImages
-        .filter(isImageFile)
-        .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+      const images = preparePhotoEntries(allImages);
+      const shouldPruneLocalMediaCache = images.length > 0 || photosCacheRef.current.length === 0;
+      const remotePhotoIds = new Set(images.map((entry) => entry.id));
       if (images.length > 0) {
         photosCacheRef.current = images;
         setPhotos(images);
@@ -587,12 +965,42 @@ export default function PhotosScreen() {
       }
       endPerf({ count: images.length });
       void pruneThumbnailCache();
+      if (shouldPruneLocalMediaCache) {
+        setThumbnailUris((prev) => {
+          let changed = false;
+          const next: Record<string, string> = {};
+          for (const [fileId, uri] of Object.entries(prev)) {
+            if (remotePhotoIds.has(fileId)) {
+              next[fileId] = uri;
+            } else {
+              changed = true;
+            }
+          }
+          return changed ? next : prev;
+        });
+        void pruneThumbnailsForRemoteFiles(remotePhotoIds);
+        void prunePhotoCacheForRemoteFiles(remotePhotoIds);
+      }
 
-      // Build the remote_file_id → local_asset_id map for camera roll thumbnails
-      void getRemoteToLocalMap().then((map) => setLocalAssetMap(map)).catch(() => {});
+      // Build local repair maps for camera roll thumbnails and original capture dates.
+      // Older native builds sent upload time as created_at; the local backup DB keeps
+      // the PHAsset date after the native repair pass, so prefer it for display.
+      void Promise.all([getRemoteToLocalMap(), getRemoteCreatedAtMap()])
+        .then(([assetMap, createdMap]) => {
+          const createdAt: Record<string, string> = {};
+          for (const [fileId, value] of createdMap) {
+            const normalized = normalizeCreatedAt(value);
+            if (normalized) createdAt[fileId] = normalized;
+          }
+          setLocalAssetMap(assetMap);
+          setLocalCreatedAtMap(createdAt);
+        })
+        .catch(() => {});
     } catch (err) {
       endPerf({ error: true });
-      setError(friendlyError(err));
+      if (!renderedCachedIndex) {
+        setError(friendlyError(err));
+      }
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -610,73 +1018,471 @@ export default function PhotosScreen() {
     fetchPhotos(true);
   }, [fetchPhotos]);
 
-  const groups = useMemo(() => groupByMonth(photos), [photos]);
+  const handleThumbnailUnavailable = useCallback((fileId: string) => {
+    setPhotos((prev) => prev.map((item) => (
+      item.id === fileId && item.has_thumbnail ? { ...item, has_thumbnail: false } : item
+    )));
+  }, []);
+
+  const visiblePhotos = useMemo(
+    () => photos
+      .filter((photo) => isVisibleMediaFile(photo, decryptedMimeTypes))
+      .map((photo) => {
+        const createdAt = localCreatedAtMap[photo.id];
+        return createdAt && createdAt !== photo.created_at ? { ...photo, created_at: createdAt } : photo;
+      })
+      .sort((a, b) => (parseCreatedAt(b.created_at)?.getTime() ?? 0) - (parseCreatedAt(a.created_at)?.getTime() ?? 0)),
+    [decryptedMimeTypes, localCreatedAtMap, photos],
+  );
+
+  const groups = useMemo(() => groupByMonth(visiblePhotos), [visiblePhotos]);
 
   // Build a flat list of all photos in display order (newest first, grouped by month)
   const flatPhotos = useMemo(() => groups.flatMap((g) => g.data), [groups]);
+  const listItems = useMemo(() => buildPhotoListItems(groups, columns, cellSize), [cellSize, columns, groups]);
+  const initialThumbnailIds = useMemo(() => collectInitialPhotoIds(listItems), [listItems]);
+
+  useEffect(() => {
+    const firstId = flatPhotos[0]?.id;
+    if (!firstId) return;
+    const signature = `${firstId}:${flatPhotos.length}`;
+    if (thumbnailSeedSignatureRef.current === signature) return;
+    thumbnailSeedSignatureRef.current = signature;
+    const seedLimit = columnsRef.current >= 7 ? 40 : ACTIVE_THUMBNAIL_LIMIT;
+    const ids = new Set(flatPhotos.slice(0, seedLimit).map((photo) => photo.id));
+    setActiveThumbnailIds((prev) => (sameIdSet(prev, ids) ? prev : ids));
+    setActivePhotoIds((prev) => (prev.size === 0 ? ids : prev));
+  }, [flatPhotos]);
+
+  const nativePhotoItems = useMemo<NativePhotoGridItem[]>(() => {
+    const items: NativePhotoGridItem[] = [];
+    let seed = 0;
+    for (const group of groups) {
+      for (const photo of group.data) {
+        const mimeType = decryptedMimeTypes[photo.id] ?? mediaMimeType(photo);
+        items.push({
+          id: photo.id,
+          displayName: decryptedNames[photo.id] ?? null,
+          mimeType,
+          monthKey: group.key,
+          monthLabel: group.label,
+          thumbnailUri: thumbnailUris[photo.id] ?? null,
+          localAssetId: localAssetMap.get(photo.id) ?? null,
+          placeholderColor: swatch(seed),
+          isVideo: !!mimeType?.startsWith('video/'),
+          isFromBackup: photosFolderId !== null && photo.parent_id === photosFolderId,
+        });
+        seed += 1;
+      }
+    }
+    return items;
+  }, [decryptedMimeTypes, decryptedNames, groups, localAssetMap, photosFolderId, thumbnailUris]);
+  const selectedPhotos = useMemo(
+    () => flatPhotos.filter((photo) => selectedIds.has(photo.id)),
+    [flatPhotos, selectedIds],
+  );
+
+  useEffect(() => {
+    if (!selectMode || selectedIds.size === 0) return;
+    const visibleIds = new Set(flatPhotos.map((photo) => photo.id));
+    setSelectedIds((prev) => {
+      const next = new Set(Array.from(prev).filter((id) => visibleIds.has(id)));
+      if (next.size === 0) {
+        setSelectMode(false);
+        setBulkStatus(null);
+      }
+      return sameIdSet(prev, next) ? prev : next;
+    });
+  }, [flatPhotos, selectMode, selectedIds.size]);
 
   const openPhoto = useCallback(
     (entry: FileEntry) => {
       Haptics.selectionAsync();
       const index = flatPhotos.findIndex((p) => p.id === entry.id);
-      // Serialize photo list for swipe navigation — only the fields PreviewScreen needs
+      const selectedIndex = index >= 0 ? index : 0;
+      const windowStart = Math.max(0, selectedIndex - PHOTO_PREVIEW_WINDOW_RADIUS);
+      const windowEnd = Math.min(flatPhotos.length, selectedIndex + PHOTO_PREVIEW_WINDOW_RADIUS + 1);
+      const previewPhotos = flatPhotos.slice(windowStart, windowEnd);
+      const initialPhotoIndex = Math.max(0, selectedIndex - windowStart);
+      // Serialize a bounded media window for swipe navigation — only the fields PreviewScreen needs.
       const photoListJson = JSON.stringify(
-        flatPhotos.map((p) => ({
+        previewPhotos.map((p) => ({
           id: p.id,
           name_encrypted: p.name_encrypted,
-          mime_type: p.mime_type,
+          display_name: safeDisplayName(p, decryptedNames),
+          mime_type: decryptedMimeTypes[p.id] ?? mediaMimeType(p) ?? p.mime_type,
           size_bytes: p.size_bytes,
           created_at: p.created_at,
           chunk_count: p.chunk_count,
           version_number: p.version_number,
           storage_pool_id: p.storage_pool_id ?? null,
+          thumbnail_uri: thumbnailUris[p.id] ?? null,
+          local_asset_id: localAssetMap.get(p.id) ?? null,
         })),
       );
       navigation.navigate('Preview', {
         fileId: entry.id,
-        fileName: decryptedNames[entry.id] ?? entry.name_encrypted ?? 'Photo',
-        mimeType: photoMimeType(entry) ?? undefined,
+        fileName: safeDisplayName(entry, decryptedNames),
+        mimeType: decryptedMimeTypes[entry.id] ?? mediaMimeType(entry) ?? undefined,
         sizeBytes: entry.size_bytes ?? undefined,
         createdAt: entry.created_at,
         chunkCount: entry.chunk_count,
         versionNumber: entry.version_number,
         storagePoolId: entry.storage_pool_id ?? null,
         photoListJson,
-        initialPhotoIndex: index >= 0 ? index : 0,
+        initialPhotoIndex,
       });
     },
-    [navigation, decryptedNames, flatPhotos],
+    [navigation, decryptedMimeTypes, decryptedNames, flatPhotos, localAssetMap, thumbnailUris],
   );
 
-  useEffect(() => {
-    photosCountRef.current = photos.length;
-    if (photos.length > 0) photosCacheRef.current = photos;
-  }, [photos]);
+  const clearSelection = useCallback(() => {
+    setSelectMode(false);
+    setSelectedIds(new Set());
+    setBulkStatus(null);
+  }, []);
+
+  const toggleSelectedPhoto = useCallback((entry: FileEntry) => {
+    Haptics.selectionAsync();
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(entry.id)) {
+        next.delete(entry.id);
+      } else {
+        next.add(entry.id);
+      }
+      if (next.size === 0) {
+        setSelectMode(false);
+        setBulkStatus(null);
+      }
+      return next;
+    });
+  }, []);
+
+  const enterSelectionMode = useCallback((entry: FileEntry) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    setSelectMode(true);
+    setBulkStatus(null);
+    setSelectedIds(new Set([entry.id]));
+  }, []);
+
+  const deleteSelectedPhotos = useCallback(async () => {
+    if (selectedPhotos.length === 0 || bulkAction) return;
+    Alert.alert(
+      'Delete from Beebeeb?',
+      `Delete ${selectedPhotos.length} selected ${selectedPhotos.length === 1 ? 'photo' : 'photos'} from your Beebeeb vault? This will not delete anything from iPhone Photos.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            setBulkAction('delete');
+            setBulkStatus('Deleting from Beebeeb...');
+            try {
+              const selectedIds = selectedPhotos.map((photo) => photo.id);
+              const result = await trashFiles(selectedIds);
+              const deletedIds = new Set([...result.trashed, ...result.already_trashed]);
+              await Promise.all(selectedPhotos.map(async (photo) => {
+                if (!deletedIds.has(photo.id)) return;
+                const localAssetId = localAssetMap.get(photo.id);
+                if (localAssetId) await markRemoteDeleted(localAssetId);
+              }));
+
+              setPhotos((prev) => prev.filter((photo) => !deletedIds.has(photo.id)));
+              photosCacheRef.current = photosCacheRef.current.filter((photo) => !deletedIds.has(photo.id));
+              setLocalAssetMap((prev) => {
+                const next = new Map(prev);
+                for (const photoId of deletedIds) next.delete(photoId);
+                return next;
+              });
+              if (deletedIds.size > 0) {
+                const retainedIds = new Set(photosCacheRef.current.map((photo) => photo.id));
+                void pruneThumbnailsForRemoteFiles(retainedIds);
+                void prunePhotoCacheForRemoteFiles(retainedIds);
+              }
+              clearSelection();
+              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+              if (result.missing.length > 0 || deletedIds.size < selectedIds.length) {
+                Alert.alert(
+                  'Some photos were not moved',
+                  'Beebeeb refreshed the photo list because a few selected items were already gone or unavailable.',
+                );
+                void fetchPhotos();
+              }
+            } catch (err) {
+              Alert.alert('Delete failed', friendlyError(err));
+              setBulkStatus(null);
+            } finally {
+              setBulkAction(null);
+            }
+          },
+        },
+      ],
+    );
+  }, [bulkAction, clearSelection, fetchPhotos, localAssetMap, selectedPhotos]);
+
+  const shareSelectedPhotos = useCallback(async () => {
+    if (selectedPhotos.length === 0 || bulkAction) return;
+    if (!isUnlocked) {
+      Alert.alert('Unlock required', 'Unlock your vault before sharing photos.');
+      return;
+    }
+    const selectedSizeBytes = selectedPhotos.reduce((sum, photo) => sum + (photo.size_bytes ?? 0), 0);
+    if (selectedPhotos.length > 50 || selectedSizeBytes > 250_000_000) {
+      Alert.alert(
+        'Too many photos',
+        'ZIP sharing currently supports up to 50 photos or 250 MB at once. Select fewer photos for this export.',
+      );
+      return;
+    }
+    const cacheDir = FileSystem.cacheDirectory;
+    if (!cacheDir) {
+      Alert.alert('Share failed', 'Temporary storage is unavailable on this device.');
+      return;
+    }
+    const canShare = await Sharing.isAvailableAsync();
+    if (!canShare) {
+      Alert.alert('Share unavailable', 'The iOS share sheet is not available right now.');
+      return;
+    }
+
+    setBulkAction('share');
+    setBulkStatus('Preparing ZIP...');
+    try {
+      const zip = new JSZip();
+      const usedNames = new Set<string>();
+      for (let index = 0; index < selectedPhotos.length; index += 1) {
+        const photo = selectedPhotos[index];
+        setBulkStatus(`Preparing ${index + 1} of ${selectedPhotos.length}...`);
+        const displayName = safeDisplayName(photo, decryptedNames);
+        const mimeType = decryptedMimeTypes[photo.id] ?? mediaMimeType(photo);
+        const extension = extensionForPhoto(photo, displayName, mimeType);
+        const rawName = displayName.includes('.') ? displayName : `${displayName}.${extension}`;
+        let zipName = safeZipName(rawName, `${photo.id}.${extension}`);
+        if (usedNames.has(zipName)) {
+          const dot = zipName.lastIndexOf('.');
+          zipName = dot > 0
+            ? `${zipName.slice(0, dot)}-${photo.id.slice(0, 8)}${zipName.slice(dot)}`
+            : `${zipName}-${photo.id.slice(0, 8)}`;
+        }
+        usedNames.add(zipName);
+
+        const decryptedUri = await decryptToTempFile(
+          photo.id,
+          () => getFileKeyBytes(photo.id),
+          extension,
+          photo.size_bytes,
+          photo.chunk_count,
+          getMasterKeyHandleId(),
+        );
+        const base64 = await FileSystem.readAsStringAsync(decryptedUri, {
+          encoding: FileSystem.EncodingType.Base64,
+        });
+        zip.file(zipName, base64, { base64: true, binary: true, compression: 'STORE' });
+      }
+
+      setBulkStatus('Opening share sheet...');
+      const zipBase64 = await zip.generateAsync({ type: 'base64', compression: 'STORE' });
+      const zipUri = `${cacheDir}beebeeb-photos-${Date.now()}.zip`;
+      await FileSystem.writeAsStringAsync(zipUri, zipBase64, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+      await Sharing.shareAsync(zipUri, {
+        mimeType: 'application/zip',
+        dialogTitle: 'Share Beebeeb photos',
+        UTI: 'com.pkware.zip-archive',
+      });
+      await FileSystem.deleteAsync(zipUri, { idempotent: true }).catch(() => {});
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch (err) {
+      Alert.alert('Share failed', friendlyError(err));
+    } finally {
+      setBulkAction(null);
+      setBulkStatus(null);
+    }
+  }, [
+    bulkAction,
+    decryptedMimeTypes,
+    decryptedNames,
+    getFileKeyBytes,
+    getMasterKeyHandleId,
+    isUnlocked,
+    selectedPhotos,
+  ]);
+
+  const handleGridScroll = useCallback((e: { nativeEvent: { contentOffset: { y: number } } }) => {
+    const nextIsScrolled = e.nativeEvent.contentOffset.y > 0;
+    if (nextIsScrolled === isScrolledRef.current) return;
+    isScrolledRef.current = nextIsScrolled;
+    setIsScrolled(nextIsScrolled);
+  }, []);
 
   useEffect(() => {
-    groupsRef.current = groups;
-    setActiveThumbnailIds(collectThumbnailIds(groups, [0]));
-    setActivePhotoIds(collectVisiblePhotoIds(groups, [0]));
-  }, [groups]);
+    photosCountRef.current = visiblePhotos.length;
+    if (photos.length > 0) photosCacheRef.current = photos;
+  }, [photos, visiblePhotos.length]);
+
+  useEffect(() => {
+    listItemsRef.current = listItems;
+    const visibleIndexes = visibleIndexesRef.current;
+    const ids = collectVisiblePhotoIds(listItems, visibleIndexes);
+    setActiveThumbnailIds((prev) => (sameIdSet(prev, ids) ? prev : ids));
+    setActivePhotoIds((prev) => (sameIdSet(prev, ids) ? prev : ids));
+  }, [listItems]);
 
   useEffect(() => {
     const ids = Array.from(activeThumbnailIds);
     if (ids.length === 0) return;
-    void prefetchDecryptedThumbnails(ids, getFileKeyBytes);
-  }, [activeThumbnailIds, getFileKeyBytes]);
+    const serverThumbnailIds = new Set(photos.filter((photo) => photo.has_thumbnail).map((photo) => photo.id));
+    const idsWithServerThumbs = ids.filter((id) => serverThumbnailIds.has(id) && !localAssetMap.has(id));
+    if (idsWithServerThumbs.length === 0) return;
+
+    let cancelled = false;
+    const controller = new AbortController();
+
+    // Trailing-edge debounce: rapid viewport changes during a flick collapse
+    // into a single prefetch pass for the final visible set. The previous
+    // run's AbortController is also aborted in cleanup, so any in-flight
+    // fetches for IDs that left the viewport stop early.
+    const debounceTimer = setTimeout(() => {
+      void (async () => {
+        // Batched cache lookup — keeps the FS stat fan-out modest so a
+        // viewport-sized array (~72 items) doesn't spawn that many parallel
+        // I/O calls on the JS thread at once.
+        const cachedPairs = await mapInBatches(
+          idsWithServerThumbs,
+          10,
+          async (id) => [id, await getCachedThumbnail(id)] as const,
+        );
+        if (cancelled) return;
+
+        const cachedUris: Record<string, string> = {};
+        const toFetch: string[] = [];
+        for (const [id, uri] of cachedPairs) {
+          if (uri) {
+            cachedUris[id] = uri;
+          } else {
+            toFetch.push(id);
+          }
+        }
+        if (Object.keys(cachedUris).length > 0) {
+          setThumbnailUris((prev) => mergeUriMap(prev, cachedUris));
+        }
+        if (toFetch.length === 0) {
+          if (thumbnailRetryTimerRef.current) {
+            clearTimeout(thumbnailRetryTimerRef.current);
+            thumbnailRetryTimerRef.current = null;
+          }
+          return;
+        }
+
+        const fetched: Record<string, string> = {};
+        const stats = await prefetchDecryptedThumbnails(
+          toFetch,
+          getFileKeyBytes,
+          {
+            signal: controller.signal,
+            onLoaded: (fileId, uri) => {
+              fetched[fileId] = uri;
+            },
+          },
+        );
+        if (cancelled) return;
+        if (Object.keys(fetched).length > 0) {
+          setThumbnailUris((prev) => mergeUriMap(prev, fetched));
+        }
+
+        const everythingFailed =
+          stats.failed > 0 && stats.loaded === 0 && Object.keys(fetched).length === 0;
+        if (everythingFailed) {
+          if (thumbnailRetryTimerRef.current) clearTimeout(thumbnailRetryTimerRef.current);
+          thumbnailRetryTimerRef.current = setTimeout(() => {
+            thumbnailRetryTimerRef.current = null;
+            setThumbnailRetryTick((value) => value + 1);
+          }, 8000);
+        } else if (thumbnailRetryTimerRef.current) {
+          clearTimeout(thumbnailRetryTimerRef.current);
+          thumbnailRetryTimerRef.current = null;
+        }
+      })();
+    }, THUMBNAIL_PREFETCH_DEBOUNCE_MS);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(debounceTimer);
+      controller.abort();
+      if (thumbnailRetryTimerRef.current) {
+        clearTimeout(thumbnailRetryTimerRef.current);
+        thumbnailRetryTimerRef.current = null;
+      }
+    };
+  }, [activeThumbnailIds, getFileKeyBytes, localAssetMap, photos, thumbnailRetryTick]);
 
   useEffect(() => {
-    const missing = photos.filter((photo) => activePhotoIds.has(photo.id) && !photo.has_thumbnail).slice(0, 8);
+    const ids = Array.from(activeThumbnailIds);
+    if (ids.length === 0 || localAssetMap.size === 0) return;
+    const attempts = localThumbnailAttemptsRef.current;
+    const candidates = ids
+      .filter((id) => localAssetMap.has(id) && !attempts.has(id))
+      .slice(0, 10);
+    if (candidates.length === 0) return;
+
+    let cancelled = false;
+    void mapInBatches(candidates, 2, async (id) => {
+      attempts.add(id);
+      const localId = localAssetMap.get(id);
+      if (!localId) return null;
+      const photo = photosById.get(id);
+      const mimeType = photo ? decryptedMimeTypes[id] ?? mediaMimeType(photo) : null;
+      const uri = await cacheLocalThumbnail(id, `ph://${localId}`, mimeType);
+      return uri ? [id, uri] as const : null;
+    }).then((results) => {
+      if (cancelled) return;
+      const next: Record<string, string> = {};
+      for (const result of results) {
+        if (result) next[result[0]] = result[1];
+      }
+      if (Object.keys(next).length === 0) return;
+      setThumbnailUris((prev) => {
+        let changed = false;
+        for (const [id, uri] of Object.entries(next)) {
+          if (prev[id] !== uri) {
+            changed = true;
+            break;
+          }
+        }
+        return changed ? { ...prev, ...next } : prev;
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeThumbnailIds, decryptedMimeTypes, localAssetMap, photosById, thumbnailUris]);
+
+  useEffect(() => {
+    if (!isUnlocked) return;
+    const repairAttempts = thumbnailRepairAttemptsRef.current;
+    const now = Date.now();
+    const missing = photos
+      .filter((photo) => (
+        activePhotoIds.has(photo.id) &&
+        !photo.has_thumbnail &&
+        !localAssetMap.has(photo.id) &&
+        now - (repairAttempts.get(photo.id) ?? 0) >= THUMBNAIL_REPAIR_RETRY_MS
+      ))
+      .slice(0, 8);
     if (missing.length === 0) return;
     let cancelled = false;
     void (async () => {
       for (const photo of missing) {
+        repairAttempts.set(photo.id, Date.now());
         const repaired = await ensureThumbnailForImage(
           photo.id,
           photo.name_encrypted,
           photo.size_bytes,
           photo.chunk_count,
-          photo.mime_type,
+          decryptedMimeTypes[photo.id] ?? mediaMimeType(photo),
           getFileKeyBytes,
         );
         if (cancelled) return;
@@ -690,75 +1496,194 @@ export default function PhotosScreen() {
     return () => {
       cancelled = true;
     };
-  }, [activePhotoIds, getFileKeyBytes, photos]);
+  }, [activePhotoIds, decryptedMimeTypes, getFileKeyBytes, isUnlocked, localAssetMap, photos]);
 
-  // Compute seed offsets so swatch colors are stable across the whole screen
-  const groupOffsets = useMemo(() => {
-    const offsets: number[] = [];
-    let acc = 0;
-    for (const g of groups) {
-      offsets.push(acc);
-      acc += g.data.length;
-    }
-    return offsets;
-  }, [groups]);
+  const showColumnIndicator = useCallback(() => {
+    columnIndicatorOpacity.setValue(1);
+    if (columnIndicatorTimer.current) clearTimeout(columnIndicatorTimer.current);
+    columnIndicatorTimer.current = setTimeout(() => {
+      Animated.timing(columnIndicatorOpacity, {
+        toValue: 0,
+        duration: 400,
+        useNativeDriver: true,
+      }).start();
+    }, 600);
+  }, [columnIndicatorOpacity]);
 
-  // Pinch-to-zoom: change grid column count
+  const applyColumnCount = useCallback((nextCols: number) => {
+    if (nextCols === columnsRef.current) return;
+    columnsRef.current = nextCols;
+    pendingAnchorPhotoIdRef.current = firstVisiblePhotoId(
+      listItemsRef.current,
+      visibleIndexesRef.current,
+    );
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    showColumnIndicator();
+    setColumns(nextCols);
+  }, [showColumnIndicator]);
+
+  const handlePinchGestureEvent = useCallback(
+    (event: PinchGestureHandlerGestureEvent) => {
+      if (!isPinchingRef.current) return;
+      applyColumnCount(columnsForPinchScale(pinchStartColumnsRef.current, event.nativeEvent.scale));
+    },
+    [applyColumnCount],
+  );
+
+  // Pinch-to-zoom: update grid density while the gesture is active. Avoid
+  // scaling the virtualized list; iOS clipping plus list virtualization makes
+  // that path flicker and drop thumbnails on large grids.
   const handlePinchStateChange = useCallback(
     (event: PinchGestureHandlerStateChangeEvent) => {
+      if (event.nativeEvent.state === State.BEGAN) {
+        pinchStartColumnsRef.current = columnsRef.current;
+        isPinchingRef.current = true;
+        setIsPinching(true);
+        return;
+      }
+      if (
+        event.nativeEvent.state !== State.END &&
+        event.nativeEvent.state !== State.CANCELLED &&
+        event.nativeEvent.state !== State.FAILED
+      ) {
+        return;
+      }
+
+      isPinchingRef.current = false;
+      setIsPinching(false);
+
       if (event.nativeEvent.state !== State.END) return;
-      const scale = event.nativeEvent.scale;
-      setColumns((prev) => {
-        const currentIdx = COLUMN_STEPS.indexOf(prev);
-        let nextIdx = currentIdx;
-        if (scale < 0.75 && currentIdx < COLUMN_STEPS.length - 1) {
-          // Pinch in — more columns, smaller photos
-          nextIdx = currentIdx + 1;
-        } else if (scale > 1.3 && currentIdx > 0) {
-          // Pinch out — fewer columns, larger photos
-          nextIdx = currentIdx - 1;
-        }
-        const nextCols = COLUMN_STEPS[nextIdx] ?? prev;
-        if (nextCols !== prev) {
-          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-          // Show column indicator briefly
-          columnIndicatorOpacity.setValue(1);
-          if (columnIndicatorTimer.current) clearTimeout(columnIndicatorTimer.current);
-          columnIndicatorTimer.current = setTimeout(() => {
-            Animated.timing(columnIndicatorOpacity, {
-              toValue: 0,
-              duration: 400,
-              useNativeDriver: true,
-            }).start();
-          }, 600);
-        }
-        return nextCols;
-      });
+      applyColumnCount(columnsForPinchScale(pinchStartColumnsRef.current, event.nativeEvent.scale));
     },
-    [columnIndicatorOpacity],
+    [applyColumnCount],
   );
 
-  const renderGroup = ({ item, index }: { item: PhotoGroup; index: number }) => (
-    <GroupSection
-      group={item}
-      seedOffset={groupOffsets[index] ?? 0}
-      photosFolderId={photosFolderId}
-      activeThumbnailIds={activeThumbnailIds}
-      localAssetMap={localAssetMap}
-      decryptedNames={decryptedNames}
-      onOpenPhoto={openPhoto}
-      columns={columns}
-      cellSize={cellSize}
-    />
-  );
+  useEffect(() => {
+    const anchorPhotoId = pendingAnchorPhotoIdRef.current;
+    if (!anchorPhotoId) return;
+    pendingAnchorPhotoIdRef.current = null;
+    const index = findPhotoItemIndex(listItems, anchorPhotoId);
+    if (index < 0) return;
+    requestAnimationFrame(() => {
+      listRef.current?.scrollToIndex({
+        index,
+        animated: false,
+        viewPosition: 0.15,
+      });
+    });
+  }, [listItems]);
+
+  const renderItem = useCallback(({ item }: { item: PhotoListItem }) => {
+    if (item.type === 'header') {
+      return (
+        <View style={styles.sectionHeader}>
+          <Text style={[styles.sectionLabel, { color: c.ink }]}>{item.label}</Text>
+          <Text style={[styles.sectionCount, { color: c.ink3 }]}>
+            {item.count} {item.count === 1 ? 'item' : 'items'}
+          </Text>
+        </View>
+      );
+    }
+
+    return (
+      <PhotoRow
+        photos={item.photos}
+        seedOffset={item.seedOffset}
+        photosFolderId={photosFolderId}
+        activeThumbnailIds={activeThumbnailIds.size > 0 ? activeThumbnailIds : initialThumbnailIds}
+        localAssetMap={localAssetMap}
+        decryptedNames={decryptedNames}
+        decryptedMimeTypes={decryptedMimeTypes}
+        onThumbnailUnavailable={handleThumbnailUnavailable}
+        onOpenPhoto={openPhoto}
+        onTogglePhoto={toggleSelectedPhoto}
+        onLongPressPhoto={enterSelectionMode}
+        selectedIds={selectedIds}
+        selectMode={selectMode}
+        columns={columns}
+        cellSize={cellSize}
+      />
+    );
+  }, [
+    activeThumbnailIds,
+    c.ink,
+    c.ink3,
+    cellSize,
+    columns,
+    decryptedMimeTypes,
+    decryptedNames,
+    enterSelectionMode,
+    handleThumbnailUnavailable,
+    initialThumbnailIds,
+    localAssetMap,
+    openPhoto,
+    photosFolderId,
+    selectMode,
+    selectedIds,
+    toggleSelectedPhoto,
+  ]);
+
+  const getItemLayout = useCallback((_data: ArrayLike<PhotoListItem> | null | undefined, index: number) => {
+    const item = listItems[index];
+    if (!item) {
+      return { length: cellSize + GRID_GAP, offset: 0, index };
+    }
+    return { length: item.length, offset: item.offset, index };
+  }, [cellSize, listItems]);
 
   const handleViewableItemsChanged = useRef((info: { viewableItems: Array<{ index: number | null }> }) => {
+    if (isPinchingRef.current) return;
     const indexes = info.viewableItems
       .map((item) => item.index)
       .filter((index): index is number => typeof index === 'number');
-    setActiveThumbnailIds(collectThumbnailIds(groupsRef.current, indexes));
-    setActivePhotoIds(collectVisiblePhotoIds(groupsRef.current, indexes));
+    visibleIndexesRef.current = indexes.length > 0 ? indexes : visibleIndexesRef.current;
+    const ids = collectVisiblePhotoIds(listItemsRef.current, indexes);
+    setActiveThumbnailIds((prev) => (sameIdSet(prev, ids) ? prev : ids));
+    setActivePhotoIds((prev) => (sameIdSet(prev, ids) ? prev : ids));
   }).current;
+
+  const selectedIdArray = useMemo(() => Array.from(selectedIds), [selectedIds]);
+
+  const handleNativePhotoPress = useCallback((event: { nativeEvent: { id: string } }) => {
+    const { id } = event.nativeEvent;
+    const photo = photosById.get(id);
+    if (photo) openPhoto(photo);
+  }, [openPhoto, photosById]);
+
+  const handleNativeSelectionChange = useCallback((event: { nativeEvent: { selectedIds: string[]; selectionMode: boolean } }) => {
+    const { selectedIds: nextSelectedIds, selectionMode } = event.nativeEvent;
+    setSelectMode((prev) => (prev === selectionMode ? prev : selectionMode));
+    setSelectedIds((prev) => {
+      const next = new Set(nextSelectedIds);
+      return sameIdSet(prev, next) ? prev : next;
+    });
+    setBulkStatus(null);
+  }, []);
+
+  const handleNativeVisibleIdsChange = useCallback((event: { nativeEvent: { ids: string[] } }) => {
+    const { ids: nativeIds } = event.nativeEvent;
+    const visibleIds = new Set(nativeIds);
+    const zoomedOut = columnsRef.current >= 7;
+    const bufferedIds = collectBufferedPhotoIds(
+      flatPhotos,
+      visibleIds,
+      zoomedOut ? 12 : THUMBNAIL_PRELOAD_BEFORE,
+      zoomedOut ? 18 : THUMBNAIL_PRELOAD_AFTER,
+      zoomedOut ? 40 : ACTIVE_THUMBNAIL_LIMIT,
+    );
+    setActiveThumbnailIds((prev) => (sameIdSet(prev, bufferedIds) ? prev : bufferedIds));
+    setActivePhotoIds((prev) => (sameIdSet(prev, visibleIds) ? prev : visibleIds));
+  }, [flatPhotos]);
+
+  const handleNativeZoomChange = useCallback((event: { nativeEvent: { columns: number } }) => {
+    const { columns: nextColumns } = event.nativeEvent;
+    columnsRef.current = nextColumns;
+    setColumns((prev) => (prev === nextColumns ? prev : nextColumns));
+  }, []);
+
+  const handleNativePerfEvent = useCallback((event: { nativeEvent: Record<string, unknown> }) => {
+    console.info('[BeebeebPerf] photos.native', JSON.stringify(event.nativeEvent));
+  }, []);
 
   const renderEmpty = () => {
     if (loading) return null;
@@ -769,7 +1694,7 @@ export default function PhotosScreen() {
         </View>
         <Text style={[styles.emptyTitle, { color: c.ink2 }]}>No photos yet</Text>
         <Text style={[styles.emptySubtitle, { color: c.ink3 }]}>
-          Photos you upload — or back up automatically — will appear here. Encrypted on your device, never visible to us.
+          Photos and videos you upload — or back up automatically — will appear here. Encrypted on your device, never visible to us.
         </Text>
       </View>
     );
@@ -790,8 +1715,21 @@ export default function PhotosScreen() {
       {/* Header area — bottom border appears when scrolled */}
       <View style={[isScrolled && { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: c.line }]}>
         <View style={styles.header}>
-          <Text style={[styles.title, { color: c.ink }]}>Photos</Text>
+          <Text style={[styles.title, { color: c.ink }]}>
+            {selectMode ? `${selectedIds.size} selected` : 'Photos'}
+          </Text>
           <View style={{ flex: 1 }} />
+          {selectMode ? (
+            <TouchableOpacity
+              activeOpacity={0.7}
+              onPress={clearSelection}
+              accessibilityRole="button"
+              accessibilityLabel="Cancel selection"
+              style={[styles.headerIconButton, { borderColor: c.line, backgroundColor: c.paper2 }]}
+            >
+              <Ionicons name="close" size={18} color={c.ink2} />
+            </TouchableOpacity>
+          ) : null}
         </View>
 
         <DevicePhotosBanner />
@@ -805,13 +1743,32 @@ export default function PhotosScreen() {
           <ActivityIndicator color={c.amber} size="large" />
           <Text style={[styles.loadingText, { color: c.ink3 }]}>Loading photos...</Text>
         </View>
+      ) : Platform.OS === 'ios' ? (
+        <NativePhotosGridView
+          style={styles.gridContainer}
+          items={nativePhotoItems}
+          selectedIds={selectedIdArray}
+          selectionMode={selectMode}
+          refreshing={refreshing}
+          onPhotoPress={handleNativePhotoPress}
+          onSelectionChange={handleNativeSelectionChange}
+          onVisiblePhotoIdsChange={handleNativeVisibleIdsChange}
+          onRefresh={handleRefresh}
+          onZoomChange={handleNativeZoomChange}
+          onPerfEvent={handleNativePerfEvent}
+        />
       ) : (
-        <PinchGestureHandler onHandlerStateChange={handlePinchStateChange}>
-          <View style={{ flex: 1 }}>
+        <PinchGestureHandler
+          onGestureEvent={handlePinchGestureEvent}
+          onHandlerStateChange={handlePinchStateChange}
+        >
+          <Animated.View style={styles.gridContainer}>
             <FlatList
-              data={groups}
-              keyExtractor={(group) => group.key}
-              renderItem={renderGroup}
+              ref={listRef}
+              data={listItems}
+              keyExtractor={(item) => item.key}
+              renderItem={renderItem}
+              getItemLayout={getItemLayout}
               onViewableItemsChanged={handleViewableItemsChanged}
               viewabilityConfig={viewabilityConfig}
               ListEmptyComponent={renderEmpty}
@@ -823,11 +1780,15 @@ export default function PhotosScreen() {
                   colors={[c.amber]}
                 />
               }
-              contentContainerStyle={groups.length === 0 ? styles.emptyList : undefined}
-              ListFooterComponent={<View style={{ height: 12 }} />}
-              onScroll={(e) => setIsScrolled(e.nativeEvent.contentOffset.y > 0)}
-              scrollEventThrottle={100}
-              removeClippedSubviews={true}
+              contentContainerStyle={listItems.length === 0 ? styles.emptyList : undefined}
+              ListFooterComponent={<View style={{ height: LIST_FOOTER_HEIGHT }} />}
+              onScroll={handleGridScroll}
+              scrollEventThrottle={16}
+              scrollEnabled={!isPinching}
+              removeClippedSubviews
+              initialNumToRender={12}
+              maxToRenderPerBatch={8}
+              updateCellsBatchingPeriod={80}
               windowSize={5}
               keyboardDismissMode="on-drag"
             />
@@ -843,9 +1804,53 @@ export default function PhotosScreen() {
                 {columns} columns
               </Text>
             </Animated.View>
-          </View>
+          </Animated.View>
         </PinchGestureHandler>
       )}
+
+      {selectMode ? (
+        <View style={[styles.selectionBar, { backgroundColor: c.paper2, borderTopColor: c.line }]}>
+          <Text style={[styles.selectionStatus, { color: c.ink2 }]} numberOfLines={1}>
+            {bulkStatus ?? `${selectedIds.size} selected`}
+          </Text>
+          <TouchableOpacity
+            activeOpacity={0.7}
+            onPress={shareSelectedPhotos}
+            disabled={bulkAction !== null || selectedIds.size === 0}
+            accessibilityRole="button"
+            accessibilityLabel="Share selected photos as a ZIP"
+            style={[
+              styles.selectionAction,
+              { borderColor: c.line, opacity: bulkAction !== null || selectedIds.size === 0 ? 0.5 : 1 },
+            ]}
+          >
+            {bulkAction === 'share' ? (
+              <ActivityIndicator size="small" color={c.amber} />
+            ) : (
+              <Ionicons name="share-outline" size={18} color={c.amber} />
+            )}
+            <Text style={[styles.selectionActionText, { color: c.amber }]}>Share ZIP</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            activeOpacity={0.7}
+            onPress={deleteSelectedPhotos}
+            disabled={bulkAction !== null || selectedIds.size === 0}
+            accessibilityRole="button"
+            accessibilityLabel="Delete selected photos from Beebeeb"
+            style={[
+              styles.selectionAction,
+              { borderColor: c.line, opacity: bulkAction !== null || selectedIds.size === 0 ? 0.5 : 1 },
+            ]}
+          >
+            {bulkAction === 'delete' ? (
+              <ActivityIndicator size="small" color={c.red} />
+            ) : (
+              <Ionicons name="trash-outline" size={18} color={c.red} />
+            )}
+            <Text style={[styles.selectionActionText, { color: c.red }]}>Delete</Text>
+          </TouchableOpacity>
+        </View>
+      ) : null}
 
       <AutoBackupBanner />
     </View>
@@ -858,19 +1863,20 @@ export default function PhotosScreen() {
 
 const styles = StyleSheet.create({
   root: { flex: 1 },
+  gridContainer: { flex: 1 },
 
   // Header
   header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: spacing.lg, paddingTop: 6, paddingBottom: 4, gap: 8 },
   title: { fontSize: 28, fontWeight: '700', letterSpacing: -0.5 },
+  headerIconButton: { width: 34, height: 34, borderRadius: 17, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
 
-  // Section (month group)
-  section: { marginBottom: 12 },
-  sectionHeader: { flexDirection: 'row', alignItems: 'baseline', paddingHorizontal: spacing.lg, paddingBottom: 6, gap: 8 },
+  // Section rows
+  sectionHeader: { height: SECTION_HEADER_HEIGHT, flexDirection: 'row', alignItems: 'flex-end', paddingHorizontal: spacing.lg, paddingBottom: 6, gap: 8 },
   sectionLabel: { fontSize: 13, fontWeight: '600' },
   sectionCount: { fontSize: 10 },
 
   // Grid
-  grid: { flexDirection: 'row', flexWrap: 'wrap', gap: GRID_GAP },
+  photoRow: { flexDirection: 'row', gap: GRID_GAP },
 
   // Column count indicator (pinch-to-zoom feedback)
   columnIndicator: {
@@ -885,24 +1891,6 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '600',
   },
-
-  // Filename overlay — subtle label at bottom of each thumbnail
-  filenameOverlay: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
-    paddingHorizontal: 3,
-    paddingVertical: 2,
-    backgroundColor: 'rgba(0,0,0,0.45)',
-  },
-  filenameText: {
-    fontSize: 8,
-    fontFamily: 'JetBrains Mono',
-    color: 'rgba(255,255,255,0.85)',
-    lineHeight: 10,
-  },
-
   // Origin badge — small camera chip overlaid on iOS-backup photos
   originBadge: {
     position: 'absolute',
@@ -911,6 +1899,33 @@ const styles = StyleSheet.create({
     width: 16,
     height: 16,
     borderRadius: 4,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  videoBadge: {
+    position: 'absolute',
+    top: 5,
+    right: 5,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(0,0,0,0.58)',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.45)',
+  },
+  selectionOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(246, 192, 58, 0.25)',
+    borderWidth: 2,
+    borderColor: 'rgba(246, 192, 58, 0.95)',
+  },
+  selectionBadge: {
+    position: 'absolute',
+    top: 6,
+    left: 6,
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    borderWidth: 2,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -943,6 +1958,12 @@ const styles = StyleSheet.create({
   bannerHint: { fontSize: 10, fontWeight: '600' },
   progressTrack: { height: 3, borderRadius: 2, overflow: 'hidden' },
   progressFill: { height: '100%', borderRadius: 2 },
+
+  // Selection actions
+  selectionBar: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: spacing.lg, paddingVertical: 10, borderTopWidth: 1, gap: 8 },
+  selectionStatus: { flex: 1, fontSize: 12, fontWeight: '600' },
+  selectionAction: { minHeight: 36, paddingHorizontal: 12, borderRadius: radii.md, borderWidth: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 },
+  selectionActionText: { fontSize: 12, fontWeight: '700' },
 
   // Device photos banner (top of screen, only when backup is enabled)
   deviceBanner: {

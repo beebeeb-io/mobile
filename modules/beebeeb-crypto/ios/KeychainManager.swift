@@ -65,9 +65,7 @@ final class KeychainManager {
 
     #if DEBUG && targetEnvironment(simulator)
     try storeSimulatorSoftwareKey(masterKeyBytes: masterKeyBytes, label: label)
-    return
-    #endif
-
+    #else
     // --- Primary SE key (biometric or passcode, per user preference) ---
     let seKey = try getOrCreateSEKey()
     guard let publicKey = SecKeyCopyPublicKey(seKey) else {
@@ -96,19 +94,23 @@ final class KeychainManager {
     }
 
     // --- Extension SE key (.devicePasscode always — no biometric prompt from extensions) ---
-    storeExtensionWrappedKey(masterKeyBytes: masterKeyBytes, label: label)
+    try storeExtensionWrappedKey(masterKeyBytes: masterKeyBytes, label: label)
+    #endif
   }
 
   /// Encrypt the master key under the extension SE key and persist alongside
-  /// the primary blob. Best-effort: failure here does not block the main store
-  /// because the primary key is already safely written. Extensions fall back to
-  /// the primary key when the extension blob is absent.
-  private static func storeExtensionWrappedKey(masterKeyBytes: Data, label: String) {
-    guard let extSEKey = try? getOrCreateExtensionSEKey(),
-          let extPublicKey = SecKeyCopyPublicKey(extSEKey) else { return }
+  /// the primary blob. This is required: the File Provider intentionally never
+  /// falls back to the primary key because it may require Face ID from Files.app.
+  private static func storeExtensionWrappedKey(masterKeyBytes: Data, label: String) throws {
+    let extSEKey = try getOrCreateExtensionSEKey()
+    guard let extPublicKey = SecKeyCopyPublicKey(extSEKey) else {
+      throw KeychainError.seKeyNotFound
+    }
 
     var cfErr: Unmanaged<CFError>?
-    guard let extWrapped = SecKeyCreateEncryptedData(extPublicKey, eciesAlgorithm, masterKeyBytes as CFData, &cfErr) else { return }
+    guard let extWrapped = SecKeyCreateEncryptedData(extPublicKey, eciesAlgorithm, masterKeyBytes as CFData, &cfErr) else {
+      throw KeychainError.encryptionFailed
+    }
 
     deleteWrappedItem(account: label, service: wrappedKeyServiceExt)
 
@@ -120,7 +122,10 @@ final class KeychainManager {
       kSecValueData: extWrapped as Data,
     ]
     if let group = accessGroup { extAttrs[kSecAttrAccessGroup] = group }
-    SecItemAdd(extAttrs as CFDictionary, nil)
+    let status = SecItemAdd(extAttrs as CFDictionary, nil)
+    guard status == errSecSuccess else {
+      throw KeychainError.writeError(status)
+    }
   }
 
   // MARK: - Load
@@ -163,10 +168,12 @@ final class KeychainManager {
     guard let plaintext = SecKeyCreateDecryptedData(seKey, eciesAlgorithm, wrapped as CFData, &cfErr) else {
       throw KeychainError.decryptionFailed
     }
+    let plaintextData = plaintext as Data
+    try storeExtensionWrappedKey(masterKeyBytes: plaintextData, label: label)
     if query[kSecAttrAccessGroup] == nil, accessGroup != nil {
-      try? store(masterKeyBytes: plaintext as Data, label: label)
+      try? store(masterKeyBytes: plaintextData, label: label)
     }
-    return plaintext as Data
+    return plaintextData
   }
 
   // MARK: - Delete
@@ -251,16 +258,11 @@ final class KeychainManager {
       SecItemAdd(attrs as CFDictionary, nil)
     }
 
-    // Manage extension key: create when biometric ON, delete when OFF.
-    // When biometric is OFF the primary key already uses .devicePasscode,
-    // so extensions can use the primary key directly — no need for the ext copy.
-    if requireBiometric {
-      for item in plaintexts {
-        storeExtensionWrappedKey(masterKeyBytes: item.data, label: item.account)
-      }
-    } else {
-      deleteSEKey(tag: seKeyTagExt)
-      deleteWrappedItems(service: wrappedKeyServiceExt)
+    // Always keep the extension wrapped key available. The File Provider never
+    // falls back to the primary key, because that key may require Face ID from
+    // an extension process and can cause repeated system prompts in Files.app.
+    for item in plaintexts {
+      try storeExtensionWrappedKey(masterKeyBytes: item.data, label: item.account)
     }
   }
 

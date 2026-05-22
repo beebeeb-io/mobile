@@ -82,6 +82,7 @@ export async function decryptEncryptedBytes(
   chunkCount: number,
   sizeBytes: number,
   chunkSize = CHUNK_SIZE,
+  onChunkDecrypted?: (chunksCompleted: number, chunksTotal: number) => void,
 ): Promise<Uint8Array> {
   if (chunkCount < 1) {
     throw new Error(`Invalid chunkCount: ${chunkCount}`)
@@ -121,6 +122,7 @@ export async function decryptEncryptedBytes(
     const plaintext = await nativeDecryptChunk(fileKey, nonce, ciphertext)
     decryptedParts.push(plaintext)
     offset += encryptedChunkSize
+    onChunkDecrypted?.(i + 1, chunkCount)
   }
 
   // Sanity: we should have consumed the whole body. A stray tail usually

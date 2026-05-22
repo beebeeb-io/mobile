@@ -8,7 +8,13 @@ import { encryptedMetadataPayloadToBytes } from './encrypted-metadata';
 import { requestDeviceOwnerAuth } from './device-owner-auth';
 import { wasRecentlyUnlocked } from './lock-state';
 
-export async function mountTrustedFileProvider(): Promise<FileProviderDomainRegistrationResult> {
+type MountTrustedFileProviderOptions = {
+  vaultUnlocked?: boolean;
+};
+
+export async function mountTrustedFileProvider(
+  options: MountTrustedFileProviderOptions = {},
+): Promise<FileProviderDomainRegistrationResult> {
   if (Platform.OS !== 'ios') {
     return {
       supported: false,
@@ -26,7 +32,7 @@ export async function mountTrustedFileProvider(): Promise<FileProviderDomainRegi
   // Skip the device-owner auth prompt if the user just authenticated via
   // BiometricLockScreen. Without this guard, returning from background could
   // trigger a second Face ID prompt when the File Provider mount runs.
-  if (!wasRecentlyUnlocked()) {
+  if (!options.vaultUnlocked && !wasRecentlyUnlocked()) {
     const auth = await requestDeviceOwnerAuth('Mount Beebeeb in Files', {
       unavailable: 'Set up Face ID or an iPhone passcode before mounting Beebeeb in Files.',
       cancelled: 'Authentication cancelled. Beebeeb was not mounted in Files.',
@@ -43,7 +49,11 @@ export async function mountTrustedFileProvider(): Promise<FileProviderDomainRegi
   }
 
   await BeebeebCrypto.mirrorSessionToAppGroup(token, getApiUrl());
-  return BeebeebCrypto.mountFileProviderAccess();
+  const result = await BeebeebCrypto.mountFileProviderAccess();
+  if (result.registered && result.cacheDatabaseReady === false) {
+    throw new Error('Beebeeb mounted in iOS, but Files storage is not ready yet. Try again in a moment.');
+  }
+  return result;
 }
 
 export async function removeTrustedFileProvider(): Promise<FileProviderDomainRegistrationResult> {
@@ -60,12 +70,13 @@ export async function removeTrustedFileProvider(): Promise<FileProviderDomainReg
 export async function syncDecryptedEntriesToFileProvider(
   files: FileEntry[],
   decryptedNames: Record<string, string>,
+  parentId?: string | null,
 ): Promise<number> {
   if (Platform.OS !== 'ios') return 0;
 
   const entries: FileProviderCacheEntry[] = files.map((f) => ({
     id: f.id,
-    parent_id: f.parent_id ?? null,
+    parent_id: f.parent_id ?? parentId ?? null,
     name_encrypted: f.name_encrypted ?? null,
     name_decrypted: decryptedNames[f.id] ?? null,
     mime_type: f.mime_type ?? null,
@@ -105,42 +116,45 @@ export async function populateFileProviderCache(
   if (Platform.OS !== 'ios') return 0;
   try {
     let totalSynced = 0;
-    const allFiles: FileEntry[] = [];
-    const allNames: Record<string, string> = {};
 
-    // BFS through all folders to populate the entire tree
+    // BFS through all folders. Sync each directory as soon as it is decrypted so
+    // Files.app can render root and recently opened folders without waiting for
+    // a full-vault traversal.
     const queue: (string | undefined)[] = [undefined]; // start with root
     while (queue.length > 0) {
       const parentId = queue.shift();
       try {
         const files = await listFiles(parentId);
-        for (const file of files) {
-          allFiles.push(file);
+        const names: Record<string, string> = {};
+
+        await Promise.all(files.map(async (file) => {
           try {
             const raw = file.name_encrypted ?? '';
             if (!raw.startsWith('{')) {
-              if (raw && raw.length < 200) allNames[file.id] = raw;
+              if (raw && raw.length < 200) names[file.id] = raw;
             } else {
               const payload = encryptedMetadataPayloadToBytes(raw);
               if (payload) {
                 const plaintext = await decryptMetadata(file.id, payload.nonce, payload.ciphertext);
                 const name = parseDecryptedName(plaintext);
-                if (name) allNames[file.id] = name;
+                if (name) names[file.id] = name;
               }
             }
           } catch {
             // skip individual decrypt failures
           }
-          if (file.is_folder) {
-            queue.push(file.id);
-          }
+        }));
+
+        totalSynced += await syncDecryptedEntriesToFileProvider(files, names, parentId ?? null);
+
+        for (const file of files) {
+          if (file.is_folder) queue.push(file.id);
         }
       } catch {
         // skip folders that fail to list
       }
     }
 
-    totalSynced = await syncDecryptedEntriesToFileProvider(allFiles, allNames);
     return totalSynced;
   } catch {
     return 0;

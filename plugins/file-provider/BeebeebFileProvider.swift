@@ -103,6 +103,9 @@ class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                 try validateFileProviderAccess()
 
                 let metadata = try await apiClient.getFileMetadata(fileId: itemIdentifier.rawValue)
+                guard metadata.isUploading != true else {
+                    throw FileProviderAPIError.fileUnavailable
+                }
                 progress.completedUnitCount = 20
 
                 let encryptedFile = try await apiClient.downloadFile(fileId: itemIdentifier.rawValue)
@@ -116,8 +119,7 @@ class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                 )
                 progress.completedUnitCount = 90
 
-                let tempDir = FileManager.default.temporaryDirectory
-                    .appendingPathComponent("BeebeebFileProvider", isDirectory: true)
+                let tempDir = try fileProviderTemporaryDirectory()
                     .appendingPathComponent(itemIdentifier.rawValue, isDirectory: true)
                 try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
 
@@ -341,6 +343,14 @@ class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         let components = value.components(separatedBy: invalid).filter { !$0.isEmpty }
         let cleaned = components.joined(separator: "-").trimmingCharacters(in: .whitespacesAndNewlines)
         return cleaned.isEmpty ? "file" : cleaned
+    }
+
+    private func fileProviderTemporaryDirectory() throws -> URL {
+        if let url = try NSFileProviderManager(for: domain)?.temporaryDirectoryURL() {
+            return url.appendingPathComponent("BeebeebFileProvider", isDirectory: true)
+        }
+        return FileManager.default.temporaryDirectory
+            .appendingPathComponent("BeebeebFileProvider", isDirectory: true)
     }
 
     private static func versionNumber(from version: NSFileProviderItemVersion) -> Int? {

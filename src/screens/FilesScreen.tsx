@@ -7,7 +7,6 @@ import {
   FlatList,
   Image,
   KeyboardAvoidingView,
-  LayoutAnimation,
   Modal,
   Platform,
   RefreshControl,
@@ -42,21 +41,24 @@ import { useToast } from '../lib/toast-context';
 import SkeletonRow from '../components/SkeletonRow';
 import PresenceAvatars from '../components/PresenceAvatars';
 import TrustDetailsSheet from '../components/TrustDetailsSheet';
-import { ApiError, listFiles, createFolder, deleteFile, renameFile, moveFile, uploadFile, downloadFile, friendlyError, getStorageUsage, createProofOfExistence, storageLocation, trustLocation, getFolderPresence, getUploadStatus, getApiUrl, getToken } from '../lib/api';
+import { ApiError, listFiles, getFileIndex, createFolder, deleteFile, trashFiles, renameFile, moveFile, uploadFile, downloadFile, friendlyError, getStorageUsage, createProofOfExistence, storageLocation, trustLocation, getFolderPresence, getUploadStatus, getApiUrl, getToken } from '../lib/api';
 import { guessMimeType, fileCategory as fileCategoryFromMime } from '../lib/media';
 import { generateAndUploadThumbnail, fetchDecryptedThumbnailUri } from '../lib/thumbnail';
 import type { FileEntry, StorageUsage, ProofOfExistence, PresenceUser, SyncNode } from '../lib/api';
 import type { RootStackParamList, TabParamList } from '../App';
 import { useCrypto } from '../lib/crypto-context';
-import { encryptedMetadataPayloadToBytes, encryptedMetadataToJson } from '../lib/encrypted-metadata';
+import { encryptedMetadataPayloadToBytes, encryptedMetadataToJson, fileMetadataPlaintext } from '../lib/encrypted-metadata';
 import { syncDecryptedEntriesToFileProvider } from '../lib/file-provider-mount';
 import { useAuth } from '../lib/auth';
 import { encryptedUpload, generateFileId } from '../lib/encrypted-upload';
 import { useSync } from '../lib/sync-context';
 import { useSearchIndex } from '../lib/use-search-index';
+import { useBackup } from '../lib/backup-context';
 import type { SearchIndexEntry, SearchResult } from '../lib/search-index';
 import { donateSiriShortcut } from '../lib/siri-shortcuts';
+import { mapInBatches } from '../lib/async-batch';
 import { perfMark } from '../lib/perf-mark';
+import { loadCachedFileIndex, saveCachedFileIndex, type CachedFileIndex } from '../lib/file-index-cache';
 
 // Tracks the currently open Swipeable so we can close it when another opens.
 let _openSwipeable: Swipeable | null = null;
@@ -207,6 +209,10 @@ function upsertFileEntry(entries: FileEntry[], entry: FileEntry): FileEntry[] {
 
 function folderCacheKey(parentId: string | null): string {
   return parentId ?? 'root';
+}
+
+function filesForFolderFromIndex(index: CachedFileIndex, parentId: string | null): FileEntry[] {
+  return index.files.filter((entry) => (entry.parent_id ?? null) === parentId);
 }
 
 /** Determine a file type category from the mime type. */
@@ -1045,6 +1051,7 @@ export default function FilesScreen() {
   const { colors: c } = useTheme();
   const { showToast } = useToast();
   const { phraseVerified } = useAuth();
+  const { backupProgress, includeVideos, isPhotoBackupEnabled } = useBackup();
 
   // Navigation state: stack of folders
   const [folderStack, setFolderStack] = useState<BreadcrumbEntry[]>([
@@ -1214,10 +1221,21 @@ export default function FilesScreen() {
       setDecryptedMimeTypes({});
       return;
     }
+    const folderId = currentFolder.id;
+    const folderKey = folderCacheKey(folderId);
+    if (filesFolderKeyRef.current !== folderKey) {
+      setDecryptedNames({});
+      setDecryptedMimeTypes({});
+      return;
+    }
     const results: Record<string, string> = {};
     const mimeResults: Record<string, string | null> = {};
-    Promise.all(
-      files.map(async (file) => {
+    let cancelled = false;
+    void mapInBatches(
+      files,
+      24,
+      async (file) => {
+        if (cancelled) return;
         try {
           const raw = file.name_encrypted ?? '';
           if (!raw.startsWith('{')) return; // not JSON-encrypted — displayName() handles it
@@ -1231,8 +1249,10 @@ export default function FilesScreen() {
           // Decryption failure — leave results[file.id] unset so displayName()
           // renders "Encrypted file" rather than raw ciphertext.
         }
-      }),
+      },
     ).then(() => {
+      if (cancelled) return;
+      if (filesFolderKeyRef.current !== folderKey) return;
       // Enrich local MIME type map from decrypted filenames when the server
       // row has no mime_type (MIME is now encrypted inside the metadata blob).
       for (const file of files) {
@@ -1248,9 +1268,10 @@ export default function FilesScreen() {
       setDecryptedMimeTypes({ ...mimeResults });
       // Push decrypted names to the File Provider cache so the iOS Files app
       // shows real filenames instead of "Encrypted file".
-      void syncDecryptedEntriesToFileProvider(files, results).catch(() => {});
+      void syncDecryptedEntriesToFileProvider(files, results, folderId).catch(() => {});
     });
-  }, [files, isUnlocked, decryptMetadata]);
+    return () => { cancelled = true; };
+  }, [currentFolder.id, files, isUnlocked, decryptMetadata]);
 
   // Load pinned folders from SecureStore on mount
   useEffect(() => {
@@ -1287,7 +1308,6 @@ export default function FilesScreen() {
 
   const toggleViewMode = useCallback(() => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
     setViewMode((prev) => {
       const next = prev === 'list' ? 'grid' : 'list';
       SecureStore.setItemAsync('beebeeb_view_mode', next).catch(() => {});
@@ -1342,14 +1362,50 @@ export default function FilesScreen() {
       parent: parentId ?? 'root',
       refresh: isRefresh,
     });
+    let renderedCachedIndex = false;
 
     try {
+      const cachedIndex = await loadCachedFileIndex();
+      if (!isRefresh && !hasVisibleFiles && cachedIndex) {
+        const cachedFiles = filesForFolderFromIndex(cachedIndex, parentId);
+        if (cachedFiles.length > 0) {
+          renderedCachedIndex = true;
+          applyFilesForFolder(parentId, cachedFiles, { preserveCachedOnEmpty: true });
+          setLoading(false);
+          setRefreshing(true);
+        }
+      }
+
+      try {
+        const index = await getFileIndex(cachedIndex?.hash);
+        const sourceIndex = !index.changed && cachedIndex
+          ? cachedIndex
+          : index.files
+            ? { hash: index.hash, files: index.files, storedAt: Date.now() }
+            : null;
+        if (index.files) {
+          await saveCachedFileIndex(index.hash, index.files);
+        }
+        if (sourceIndex) {
+          const result = filesForFolderFromIndex(sourceIndex, parentId);
+          applyFilesForFolder(parentId, result, { preserveCachedOnEmpty: !isRefresh });
+          endPerf({ count: result.length, source: 'index' });
+          return;
+        }
+      } catch (err) {
+        if (!(err instanceof ApiError) || (err.status !== 400 && err.status !== 404 && err.status !== 405)) {
+          throw err;
+        }
+      }
+
       const result = await listFiles(parentId ?? undefined);
       applyFilesForFolder(parentId, result, { preserveCachedOnEmpty: !isRefresh });
-      endPerf({ count: result.length });
+      endPerf({ count: result.length, source: 'folder' });
     } catch (err) {
       endPerf({ error: true });
-      setError(friendlyError(err));
+      if (!renderedCachedIndex) {
+        setError(friendlyError(err));
+      }
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -1496,6 +1552,11 @@ export default function FilesScreen() {
     fetchFiles(currentFolder.id, true);
   }, [currentFolder.id, fetchFiles]);
 
+  const handleReviewBackup = useCallback(() => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    (navigation.navigate as any)('Tabs', { screen: 'Settings' });
+  }, [navigation]);
+
   const pickAndUploadFile = useCallback(async () => {
     if (!phraseVerified) {
       Alert.alert(
@@ -1520,7 +1581,7 @@ export default function FilesScreen() {
     const asset = picked.assets[0];
 
     // ── Conflict check ────────────────────────────────────────────────────
-    let uploadFileId = generateFileId();   // new UUID by default
+    let uploadFileId = await generateFileId();   // new UUID by default
     let uploadFileName = asset.name;       // original name by default
     let v2InitNameEncrypted: string | undefined;
 
@@ -1578,7 +1639,7 @@ export default function FilesScreen() {
       // Add to the encrypted search index so the new file is searchable
       // across the whole vault from the very next keystroke.
       indexFile(uploaded.id, toSearchIndexEntry(uploaded, uploadFileName, currentFolder.id));
-      // Fire-and-forget: generate + upload a 256px thumbnail for image files.
+      // Fire-and-forget: generate + upload a medium encrypted thumbnail for media files.
       void generateAndUploadThumbnail(uploaded.id, asset.uri, asset.mimeType ?? null, getFileKeyBytes);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       donateSiriShortcut('upload');
@@ -1648,7 +1709,7 @@ export default function FilesScreen() {
       lastName = display;
       setUpload({ fileName: display, stage: 1, percent: 30, city: lastLoc.city, region: lastLoc.region });
       try {
-        const fileId = shouldVersion && conflict ? conflict.id : generateFileId();
+        const fileId = shouldVersion && conflict ? conflict.id : await generateFileId();
         const v2InitNameEncrypted = shouldVersion && conflict ? conflict.name_encrypted : undefined;
         const uploadUri = await copyPhotoAssetToUploadCache(asset.uri, fileId, name);
         const uploaded = await encryptedUpload({
@@ -1755,6 +1816,7 @@ export default function FilesScreen() {
     if (action === 'upload') {
       pickAndUploadFile();
     } else if (action === 'search') {
+      setSearchActive(true);
       // Tiny delay so the input has mounted before we focus, otherwise the
       // keyboard sometimes drops on iOS cold-launch.
       setTimeout(() => searchInputRef.current?.focus(), 50);
@@ -1773,8 +1835,8 @@ export default function FilesScreen() {
         Alert.alert('Vault is locked', 'Unlock the vault before creating folders.');
         return;
       }
-      const folderId = generateFileId();
-      const encName = await encryptMetadata(folderId, trimmed);
+      const folderId = await generateFileId();
+      const encName = await encryptMetadata(folderId, fileMetadataPlaintext(trimmed, null));
       const nameEncrypted = encryptedMetadataToJson(encName);
       const folder = await createFolder(nameEncrypted, currentFolder.id ?? undefined, folderId);
       const now = new Date().toISOString();
@@ -1898,11 +1960,19 @@ export default function FilesScreen() {
           onPress: async () => {
             try {
               const ids = [...selectedIds];
-              await Promise.all(ids.map((id) => deleteFile(id)));
-              setFiles((prev) => prev.filter((f) => !selectedIds.has(f.id)));
-              for (const id of ids) unindexFile(id);
+              const result = await trashFiles(ids);
+              const trashedIds = new Set([...result.trashed, ...result.already_trashed]);
+              setFiles((prev) => prev.filter((f) => !trashedIds.has(f.id)));
+              for (const id of trashedIds) unindexFile(id);
               Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
               exitSelectMode();
+              if (result.missing.length > 0 || trashedIds.size < ids.length) {
+                Alert.alert(
+                  'Some items were not moved',
+                  'Beebeeb refreshed the folder because a few selected items were already gone or unavailable.',
+                );
+                void fetchFiles(currentFolder.id, true);
+              }
             } catch (err) {
               Alert.alert('Error', friendlyError(err));
             }
@@ -1910,7 +1980,7 @@ export default function FilesScreen() {
         },
       ],
     );
-  }, [selectedIds, exitSelectMode, unindexFile]);
+  }, [currentFolder.id, exitSelectMode, fetchFiles, selectedIds, unindexFile]);
 
   const handleBatchShare = useCallback(() => {
     if (selectedIds.size === 0) return;
@@ -1990,13 +2060,18 @@ export default function FilesScreen() {
 
   const handleSearchToggle = useCallback(() => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
     setSearchActive((prev) => {
       if (!prev) donateSiriShortcut('search');
       else setSearchQuery('');
       return !prev;
     });
   }, []);
+
+  useEffect(() => {
+    if (!searchActive || selectMode) return;
+    const timer = setTimeout(() => searchInputRef.current?.focus(), 100);
+    return () => clearTimeout(timer);
+  }, [searchActive, selectMode]);
 
   const navigateToPinned = useCallback((pf: { id: string; name: string }) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -2109,7 +2184,7 @@ export default function FilesScreen() {
               const next = (input ?? '').trim();
               if (!next || next === name) return;
               try {
-                const encName = await encryptMetadata(item.id, next);
+                const encName = await encryptMetadata(item.id, fileMetadataPlaintext(next, mimeTypeFor(item)));
                 const nameEncrypted = encryptedMetadataToJson(encName);
                 await renameFile(item.id, nameEncrypted);
                 setFiles((prev) =>
@@ -2546,6 +2621,17 @@ export default function FilesScreen() {
       .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime())
       .slice(0, 3)
   ), [files]);
+  const backupPendingCount = backupProgress.pending ?? 0;
+  const showBackupContinueBanner =
+    isPhotoBackupEnabled &&
+    backupPendingCount > 0 &&
+    backupProgress.state === 'waitingForAppOpen' &&
+    folderStack.length === 1 &&
+    !selectMode &&
+    !searchActive;
+  const backupItemLabel = includeVideos
+    ? backupPendingCount === 1 ? 'item is' : 'items are'
+    : backupPendingCount === 1 ? 'photo is' : 'photos are';
 
   const renderRecentSection = () => {
     if (recentFiles.length === 0 || folderStack.length > 1 || selectMode || searchActive) return null;
@@ -2897,6 +2983,31 @@ export default function FilesScreen() {
         );
       })()}
 
+      {showBackupContinueBanner && (
+        <View style={[styles.backupContinueBanner, { backgroundColor: c.paper2, borderColor: c.line }]}>
+          <View style={[styles.backupContinueIcon, { backgroundColor: c.amberBg }]}>
+            <Ionicons name="cloud-upload-outline" size={17} color={c.amberDeep} />
+          </View>
+          <View style={styles.backupContinueTextWrap}>
+            <Text style={[styles.backupContinueTitle, { color: c.ink }]} numberOfLines={1}>
+              Backup waiting
+            </Text>
+            <Text style={[styles.backupContinueSubtitle, { color: c.ink3 }]} numberOfLines={1}>
+              {backupPendingCount.toLocaleString()} {backupItemLabel} waiting
+            </Text>
+          </View>
+          <TouchableOpacity
+            style={[styles.backupContinueButton, { backgroundColor: c.amber }]}
+            onPress={handleReviewBackup}
+            activeOpacity={0.75}
+            accessibilityRole="button"
+            accessibilityLabel="Review backup settings"
+          >
+            <Text style={[styles.backupContinueButtonText, { color: c.ink }]}>Review</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
       {/* Search bar — slides in below header when active */}
       {searchActive && !selectMode && (
         <>
@@ -2908,7 +3019,6 @@ export default function FilesScreen() {
               onChangeText={setSearchQuery}
               placeholder="Search your vault..."
               placeholderTextColor={c.ink4}
-              autoFocus
               returnKeyType="search"
               autoCapitalize="none"
               autoCorrect={false}
@@ -3347,6 +3457,38 @@ const styles = StyleSheet.create({
   },
   storageBannerText: { flex: 1, fontSize: 12, fontWeight: '500' },
   storageBannerHint: { fontSize: 12, fontWeight: '700' },
+
+  // Backup continuation banner
+  backupContinueBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginHorizontal: spacing.lg,
+    marginBottom: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: radii.md,
+    borderWidth: 1,
+    gap: 10,
+  },
+  backupContinueIcon: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  backupContinueTextWrap: { flex: 1, minWidth: 0 },
+  backupContinueTitle: { fontSize: 13, fontWeight: '700' },
+  backupContinueSubtitle: { fontSize: 12, lineHeight: 16, marginTop: 1 },
+  backupContinueButton: {
+    minWidth: 78,
+    height: 34,
+    borderRadius: radii.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 12,
+  },
+  backupContinueButtonText: { fontSize: 12, fontWeight: '700' },
 
   // FAB — standard iOS size 56x56
   fab: { position: 'absolute', right: 20, width: 56, height: 56, borderRadius: 28, alignItems: 'center', justifyContent: 'center', ...shadows.lg },

@@ -22,31 +22,24 @@ enum KeychainKeyLoader {
   private static let seKeyTag = "io.beebeeb.sekey".data(using: .utf8)!
   private static let seKeyTagExt = "io.beebeeb.sekey.ext".data(using: .utf8)!
   private static let eciesAlgorithm = SecKeyAlgorithm.eciesEncryptionCofactorVariableIVX963SHA256AESGCM
+  private static let accessGroup = "R8352WDJJR.io.beebeeb.shared"
 
   /// Read and unwrap the master key for `label`.
   ///
-  /// Tries the extension SE key first (`.devicePasscode` — no biometric prompt),
-  /// then falls back to the primary SE key. This allows the FileProvider extension
-  /// to decrypt without triggering Face ID from extension context.
+  /// Uses only the extension SE key (`.devicePasscode` — no biometric prompt).
+  /// The File Provider must never fall back to the primary key because that key
+  /// may require Face ID and can cause repeated system prompts from Files.app.
   ///
   /// Returns `Data` of length 32. The caller MUST zero out the returned bytes
   /// after constructing a `MasterKeyHandle` from them.
   static func loadMasterKey(label: String = BeebeebConstants.masterKeyLabel) throws -> Data {
-    // Try the extension key first — .devicePasscode, no biometric prompt
-    if let extKey = findSEKey(tag: seKeyTagExt),
-       let extWrapped = try? fetchWrappedBlob(label: label, service: BeebeebConstants.keychainServiceExt) {
-      var cfErr: Unmanaged<CFError>?
-      if let plain = SecKeyCreateDecryptedData(extKey, eciesAlgorithm, extWrapped as CFData, &cfErr) {
-        return plain as Data
-      }
+    guard let extKey = findSEKey(tag: seKeyTagExt) else {
+      throw LoadError.seKeyNotFound
     }
-
-    // Fall back to primary key
-    let wrapped = try fetchWrappedBlob(label: label, service: BeebeebConstants.keychainService)
-    guard let seKey = findSEKey(tag: seKeyTag) else { throw LoadError.seKeyNotFound }
+    let wrapped = try fetchWrappedBlob(label: label, service: BeebeebConstants.keychainServiceExt)
 
     var cfErr: Unmanaged<CFError>?
-    guard let plain = SecKeyCreateDecryptedData(seKey, eciesAlgorithm, wrapped as CFData, &cfErr) else {
+    guard let plain = SecKeyCreateDecryptedData(extKey, eciesAlgorithm, wrapped as CFData, &cfErr) else {
       throw LoadError.decryptFailed
     }
     return plain as Data
@@ -55,7 +48,6 @@ enum KeychainKeyLoader {
   // MARK: - Private
 
   private static func fetchWrappedBlob(label: String, service: String) throws -> Data {
-    let accessGroup = "\(appIdentifierPrefix())\(BeebeebConstants.keychainAccessGroup)"
     let query: [CFString: Any] = [
       kSecClass: kSecClassGenericPassword,
       kSecAttrService: service,
@@ -80,6 +72,7 @@ enum KeychainKeyLoader {
       kSecAttrKeyType: kSecAttrKeyTypeECSECPrimeRandom,
       kSecAttrApplicationTag: tag,
       kSecAttrTokenID: kSecAttrTokenIDSecureEnclave,
+      kSecAttrAccessGroup: accessGroup,
       kSecReturnRef: true,
     ]
     var result: CFTypeRef?
@@ -88,24 +81,7 @@ enum KeychainKeyLoader {
     return unsafeBitCast(obj, to: SecKey.self)
   }
 
-  /// Resolve the team identifier prefix at runtime from the bundle's keychain
-  /// access groups entitlement, so we don't hard-code it.
-  private static func appIdentifierPrefix() -> String {
-    let query: [CFString: Any] = [
-      kSecClass: kSecClassGenericPassword,
-      kSecAttrAccount: "__beebeeb_prefix_probe__",
-      kSecAttrService: "__beebeeb_prefix_probe__",
-      kSecReturnAttributes: true,
-      kSecMatchLimit: kSecMatchLimitOne,
-    ]
-    var result: CFTypeRef?
-    let status = SecItemCopyMatching(query as CFDictionary, &result)
-    if status == errSecSuccess,
-       let attrs = result as? [String: Any],
-       let group = attrs[kSecAttrAccessGroup as String] as? String,
-       let dot = group.firstIndex(of: ".") {
-      return String(group[..<group.index(after: dot)])
-    }
-    return ""
-  }
+  // The main app uses the same explicit group in KeychainManager. Keeping the
+  // extension query identical is more reliable on iOS than trying to inspect
+  // expanded entitlements from inside the extension process.
 }

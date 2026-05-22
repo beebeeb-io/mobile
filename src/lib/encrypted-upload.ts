@@ -20,10 +20,11 @@
  */
 
 import * as FileSystem from 'expo-file-system'
+import { generateRandomBytes } from '../../modules/beebeeb-crypto'
 import type { EncryptedData } from '../../modules/beebeeb-crypto'
 import { uploadEncryptedChunked } from './api'
 import type { FileEntry, UploadProgress } from './api'
-import { encryptedMetadataToJson } from './encrypted-metadata'
+import { encryptedMetadataToJson, fileMetadataPlaintext } from './encrypted-metadata'
 import { isMedia } from './media'
 
 export interface EncryptedUploadOptions {
@@ -74,13 +75,34 @@ function hashResumeKey(input: string): string {
   return (hash >>> 0).toString(36)
 }
 
+function uuidV4FromBytes(bytes: Uint8Array): string {
+  if (bytes.length < 16) throw new Error('UUID generation requires 16 random bytes')
+  const b = bytes.slice(0, 16)
+  b[6] = (b[6] & 0x0f) | 0x40
+  b[8] = (b[8] & 0x3f) | 0x80
+  const hex = Array.from(b, (value) => value.toString(16).padStart(2, '0')).join('')
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
+}
+
 /**
  * Generate a UUID v4 for the file_id.
- * Uses crypto.randomUUID() which is available on Hermes ≥ 0.75 / RN 0.76+
- * and all supported iOS/Android versions.
+ * React Native/Hermes does not consistently expose the web `crypto` global, so
+ * fall back to the native Beebeeb crypto module instead of using Math.random().
  */
-export function generateFileId(): string {
-  return crypto.randomUUID()
+export async function generateFileId(): Promise<string> {
+  const runtimeCrypto = (globalThis as {
+    crypto?: {
+      randomUUID?: () => string
+      getRandomValues?: (bytes: Uint8Array) => Uint8Array
+    }
+  }).crypto
+  if (typeof runtimeCrypto?.randomUUID === 'function') return runtimeCrypto.randomUUID()
+  if (typeof runtimeCrypto?.getRandomValues === 'function') {
+    const bytes = new Uint8Array(16)
+    runtimeCrypto.getRandomValues(bytes)
+    return uuidV4FromBytes(bytes)
+  }
+  return uuidV4FromBytes(await generateRandomBytes(16))
 }
 
 // ─── Main function ────────────────────────────────────────────────────────────
@@ -103,7 +125,7 @@ export async function encryptedUpload(opts: EncryptedUploadOptions): Promise<Fil
   // Expo types: size is on FileInfo when { size: true } is passed
   const plaintextSize: number = (info as FileSystem.FileInfo & { size?: number }).size ?? 0
 
-  const metadataPlain = JSON.stringify({ name, mime_type: mimeType ?? null })
+  const metadataPlain = fileMetadataPlaintext(name, mimeType ?? null)
 
   const nameEncryptedForFileId = async (targetFileId: string): Promise<string> => {
     const encName = await encryptMetadataFn(targetFileId, metadataPlain)

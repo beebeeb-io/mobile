@@ -102,6 +102,15 @@ final class CacheManager {
     }
   }
 
+  func replaceChildren(parent: String?, with items: [CachedItem]) {
+    queue.sync {
+      execute("BEGIN")
+      _deleteChildren(parent: parent, keepingIds: Set(items.map(\.id)))
+      for item in items { _upsert(item) }
+      execute("COMMIT")
+    }
+  }
+
   func item(id: String) -> CachedItem? {
     queue.sync { _item(id: id) }
   }
@@ -198,6 +207,32 @@ final class CacheManager {
       bindNullable(stmt, 13, item.updatedAt)
       sqlite3_bind_int64(stmt, 14, item.syncAnchor)
       sqlite3_bind_int(stmt, 15, item.isMaterialized ? 1 : 0)
+    }
+  }
+
+  private func _deleteChildren(parent: String?, keepingIds ids: Set<String>) {
+    var sql: String
+    if parent == nil {
+      sql = "DELETE FROM file_cache WHERE parent_id IS NULL"
+    } else {
+      sql = "DELETE FROM file_cache WHERE parent_id = ?"
+    }
+
+    if !ids.isEmpty {
+      let placeholders = Array(repeating: "?", count: ids.count).joined(separator: ",")
+      sql += " AND id NOT IN (\(placeholders))"
+    }
+
+    executeBindable(sql) { stmt in
+      var index: Int32 = 1
+      if let parent {
+        sqlite3_bind_text(stmt, index, (parent as NSString).utf8String, -1, nil)
+        index += 1
+      }
+      for id in ids.sorted() {
+        sqlite3_bind_text(stmt, index, (id as NSString).utf8String, -1, nil)
+        index += 1
+      }
     }
   }
 

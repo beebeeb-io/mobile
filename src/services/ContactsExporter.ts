@@ -301,7 +301,7 @@ export async function exportContacts(encryption: BackupEncryptors): Promise<Cont
   }
 
   if (!FileSystem.cacheDirectory) throw new Error('File cache unavailable');
-  const fileId = generateFileId();
+  const fileId = await generateFileId();
   const uri = `${FileSystem.cacheDirectory}contacts_${fileId}.vcf`;
   await FileSystem.writeAsStringAsync(uri, vcards);
   let uploaded: FileEntry;

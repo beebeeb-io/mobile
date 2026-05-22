@@ -352,7 +352,7 @@ private func uniffiTraitInterfaceCallWithError<T, E>(
         callStatus.pointee.errorBuf = FfiConverterString.lower(String(describing: error))
     }
 }
-// Initial value and increment amount for handles. 
+// Initial value and increment amount for handles.
 // These ensure that SWIFT handles always have the lowest bit set
 fileprivate let UNIFFI_HANDLEMAP_INITIAL: UInt64 = 1
 fileprivate let UNIFFI_HANDLEMAP_DELTA: UInt64 = 2
@@ -434,6 +434,22 @@ fileprivate struct FfiConverterUInt8: FfiConverterPrimitive {
     }
 
     public static func write(_ value: UInt8, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterUInt16: FfiConverterPrimitive {
+    typealias FfiType = UInt16
+    typealias SwiftType = UInt16
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> UInt16 {
+        return try lift(readInt(&buf))
+    }
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
         writeInt(&buf, lower(value))
     }
 }
@@ -592,21 +608,21 @@ fileprivate struct FfiConverterData: FfiConverterRustBuffer {
  * Stateful decoder handle.
  */
 public protocol ConstellationDecoderHandleProtocol: AnyObject, Sendable {
-    
+
     func framesIngested()  -> UInt32
-    
+
     /**
      * Feed one observed frame. Returns the recovered payload when the
      * codeword is complete, otherwise `None`.
      */
     func ingestFrame(observations: [ObservedNodeDto])  -> ConstellationPayloadDto?
-    
+
     func progress()  -> Float
-    
-    func reset() 
-    
+
+    func reset()
+
     func shardsCollected()  -> UInt32
-    
+
 }
 /**
  * Stateful decoder handle.
@@ -668,9 +684,9 @@ public convenience init() {
         try! rustCall { uniffi_beebeeb_uniffi_fn_free_constellationdecoderhandle(handle, $0) }
     }
 
-    
 
-    
+
+
 open func framesIngested() -> UInt32  {
     return try!  FfiConverterUInt32.lift(try! rustCall() {
     uniffi_beebeeb_uniffi_fn_method_constellationdecoderhandle_frames_ingested(
@@ -678,7 +694,7 @@ open func framesIngested() -> UInt32  {
     )
 })
 }
-    
+
     /**
      * Feed one observed frame. Returns the recovered payload when the
      * codeword is complete, otherwise `None`.
@@ -691,7 +707,7 @@ open func ingestFrame(observations: [ObservedNodeDto]) -> ConstellationPayloadDt
     )
 })
 }
-    
+
 open func progress() -> Float  {
     return try!  FfiConverterFloat.lift(try! rustCall() {
     uniffi_beebeeb_uniffi_fn_method_constellationdecoderhandle_progress(
@@ -699,14 +715,14 @@ open func progress() -> Float  {
     )
 })
 }
-    
+
 open func reset()  {try! rustCall() {
     uniffi_beebeeb_uniffi_fn_method_constellationdecoderhandle_reset(
             self.uniffiCloneHandle(),$0
     )
 }
 }
-    
+
 open func shardsCollected() -> UInt32  {
     return try!  FfiConverterUInt32.lift(try! rustCall() {
     uniffi_beebeeb_uniffi_fn_method_constellationdecoderhandle_shards_collected(
@@ -714,9 +730,9 @@ open func shardsCollected() -> UInt32  {
     )
 })
 }
-    
 
-    
+
+
 }
 
 
@@ -769,15 +785,15 @@ public func FfiConverterTypeConstellationDecoderHandle_lower(_ value: Constellat
  * Opaque handle to a FileKey. Created via `MasterKeyHandle::derive_file_key`.
  */
 public protocol FileKeyHandleProtocol: AnyObject, Sendable {
-    
+
     func decryptChunk(nonce: Data, ciphertext: Data) throws  -> Data
-    
+
     func decryptMetadata(nonce: Data, ciphertext: Data) throws  -> String
-    
+
     func encryptChunk(plaintext: Data) throws  -> EncryptedData
-    
+
     func encryptMetadata(metadata: String) throws  -> EncryptedData
-    
+
 }
 /**
  * Opaque handle to a FileKey. Created via `MasterKeyHandle::derive_file_key`.
@@ -832,9 +848,9 @@ open class FileKeyHandle: FileKeyHandleProtocol, @unchecked Sendable {
         try! rustCall { uniffi_beebeeb_uniffi_fn_free_filekeyhandle(handle, $0) }
     }
 
-    
 
-    
+
+
 open func decryptChunk(nonce: Data, ciphertext: Data)throws  -> Data  {
     return try  FfiConverterData.lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
     uniffi_beebeeb_uniffi_fn_method_filekeyhandle_decrypt_chunk(
@@ -844,7 +860,7 @@ open func decryptChunk(nonce: Data, ciphertext: Data)throws  -> Data  {
     )
 })
 }
-    
+
 open func decryptMetadata(nonce: Data, ciphertext: Data)throws  -> String  {
     return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
     uniffi_beebeeb_uniffi_fn_method_filekeyhandle_decrypt_metadata(
@@ -854,7 +870,7 @@ open func decryptMetadata(nonce: Data, ciphertext: Data)throws  -> String  {
     )
 })
 }
-    
+
 open func encryptChunk(plaintext: Data)throws  -> EncryptedData  {
     return try  FfiConverterTypeEncryptedData_lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
     uniffi_beebeeb_uniffi_fn_method_filekeyhandle_encrypt_chunk(
@@ -863,7 +879,7 @@ open func encryptChunk(plaintext: Data)throws  -> EncryptedData  {
     )
 })
 }
-    
+
 open func encryptMetadata(metadata: String)throws  -> EncryptedData  {
     return try  FfiConverterTypeEncryptedData_lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
     uniffi_beebeeb_uniffi_fn_method_filekeyhandle_encrypt_metadata(
@@ -872,9 +888,9 @@ open func encryptMetadata(metadata: String)throws  -> EncryptedData  {
     )
 })
 }
-    
 
-    
+
+
 }
 
 
@@ -924,16 +940,244 @@ public func FfiConverterTypeFileKeyHandle_lower(_ value: FileKeyHandle) -> UInt6
 
 
 /**
+ * Opaque handle to a FileProviderCache SQLite database.
+ *
+ * Thread-safe — the underlying connection is mutex-protected.
+ */
+public protocol FileProviderCacheHandleProtocol: AnyObject, Sendable {
+
+    /**
+     * Delete all entries. Returns the number of rows deleted.
+     */
+    func clear() throws  -> UInt32
+
+    /**
+     * Return the total number of cached entries.
+     */
+    func count() throws  -> UInt32
+
+    /**
+     * Delete a single entry by ID. Returns `true` if a row was deleted.
+     */
+    func deleteItem(id: String) throws  -> Bool
+
+    /**
+     * Get all children of a parent folder. Pass `None` for root items.
+     */
+    func getChildren(parentId: String?) throws  -> [CachedFileEntryData]
+
+    /**
+     * Get a single item by ID.
+     */
+    func getItem(id: String) throws  -> CachedFileEntryData?
+
+    /**
+     * Insert or update entries in bulk. Returns the number of rows affected.
+     */
+    func upsertEntries(entries: [CachedFileEntryData]) throws  -> UInt32
+
+}
+/**
+ * Opaque handle to a FileProviderCache SQLite database.
+ *
+ * Thread-safe — the underlying connection is mutex-protected.
+ */
+open class FileProviderCacheHandle: FileProviderCacheHandleProtocol, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_beebeeb_uniffi_fn_clone_fileprovidercachehandle(self.handle, $0) }
+    }
+    // No primary constructor declared for this class.
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_beebeeb_uniffi_fn_free_fileprovidercachehandle(handle, $0) }
+    }
+
+
+    /**
+     * Open (or create) the cache database at `db_path`.
+     * Pass `":memory:"` for an in-memory database (tests).
+     */
+public static func `open`(dbPath: String)throws  -> FileProviderCacheHandle  {
+    return try  FfiConverterTypeFileProviderCacheHandle_lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
+    uniffi_beebeeb_uniffi_fn_constructor_fileprovidercachehandle_open(
+        FfiConverterString.lower(dbPath),$0
+    )
+})
+}
+
+
+
+    /**
+     * Delete all entries. Returns the number of rows deleted.
+     */
+open func clear()throws  -> UInt32  {
+    return try  FfiConverterUInt32.lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
+    uniffi_beebeeb_uniffi_fn_method_fileprovidercachehandle_clear(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+
+    /**
+     * Return the total number of cached entries.
+     */
+open func count()throws  -> UInt32  {
+    return try  FfiConverterUInt32.lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
+    uniffi_beebeeb_uniffi_fn_method_fileprovidercachehandle_count(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+
+    /**
+     * Delete a single entry by ID. Returns `true` if a row was deleted.
+     */
+open func deleteItem(id: String)throws  -> Bool  {
+    return try  FfiConverterBool.lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
+    uniffi_beebeeb_uniffi_fn_method_fileprovidercachehandle_delete_item(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(id),$0
+    )
+})
+}
+
+    /**
+     * Get all children of a parent folder. Pass `None` for root items.
+     */
+open func getChildren(parentId: String?)throws  -> [CachedFileEntryData]  {
+    return try  FfiConverterSequenceTypeCachedFileEntryData.lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
+    uniffi_beebeeb_uniffi_fn_method_fileprovidercachehandle_get_children(
+            self.uniffiCloneHandle(),
+        FfiConverterOptionString.lower(parentId),$0
+    )
+})
+}
+
+    /**
+     * Get a single item by ID.
+     */
+open func getItem(id: String)throws  -> CachedFileEntryData?  {
+    return try  FfiConverterOptionTypeCachedFileEntryData.lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
+    uniffi_beebeeb_uniffi_fn_method_fileprovidercachehandle_get_item(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(id),$0
+    )
+})
+}
+
+    /**
+     * Insert or update entries in bulk. Returns the number of rows affected.
+     */
+open func upsertEntries(entries: [CachedFileEntryData])throws  -> UInt32  {
+    return try  FfiConverterUInt32.lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
+    uniffi_beebeeb_uniffi_fn_method_fileprovidercachehandle_upsert_entries(
+            self.uniffiCloneHandle(),
+        FfiConverterSequenceTypeCachedFileEntryData.lower(entries),$0
+    )
+})
+}
+
+
+
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeFileProviderCacheHandle: FfiConverter {
+    typealias FfiType = UInt64
+    typealias SwiftType = FileProviderCacheHandle
+
+    public static func lift(_ handle: UInt64) throws -> FileProviderCacheHandle {
+        return FileProviderCacheHandle(unsafeFromHandle: handle)
+    }
+
+    public static func lower(_ value: FileProviderCacheHandle) -> UInt64 {
+        return value.uniffiCloneHandle()
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> FileProviderCacheHandle {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: FileProviderCacheHandle, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFileProviderCacheHandle_lift(_ handle: UInt64) throws -> FileProviderCacheHandle {
+    return try FfiConverterTypeFileProviderCacheHandle.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFileProviderCacheHandle_lower(_ value: FileProviderCacheHandle) -> UInt64 {
+    return FfiConverterTypeFileProviderCacheHandle.lower(value)
+}
+
+
+
+
+
+
+/**
  * Opaque handle to a MasterKey. The key bytes never leave Rust except via
  * `export_for_keychain`, which is only called once to persist to the OS keychain.
  */
 public protocol MasterKeyHandleProtocol: AnyObject, Sendable {
-    
+
     /**
      * Compute the recovery-check value (stored server-side to verify the phrase).
      */
     func computeRecoveryCheck() throws  -> Data
-    
+
     /**
      * Decrypt chunk files back to a single output file.
      *
@@ -941,27 +1185,27 @@ public protocol MasterKeyHandleProtocol: AnyObject, Sendable {
      * and writes plaintext to output. Atomic rename at end.
      */
     func decryptFile(fileId: String, chunkPaths: [String], outputPath: String, callback: FileProgressCallback?) throws  -> DecryptedFileInfo
-    
+
     /**
      * Decrypt a `name_encrypted` envelope using the handle's master key.
      */
     func decryptName(fileId: String, nameEncrypted: String) throws  -> String
-    
+
     /**
      * Decrypt a `name_encrypted` envelope and return both filename and MIME type.
      */
     func decryptNameWithMime(fileId: String, nameEncrypted: String) throws  -> DecryptedNameWithMime
-    
+
     /**
      * Derive a FileKeyHandle for the given file ID.
      */
     func deriveFileKey(fileId: Data) throws  -> FileKeyHandle
-    
+
     /**
      * Derive the X25519 secret scalar from the master key. Returns 32 bytes.
      */
     func deriveX25519Private() throws  -> Data
-    
+
     /**
      * Encrypt a file from disk, writing each chunk as a `.enc` file.
      *
@@ -972,18 +1216,18 @@ public protocol MasterKeyHandleProtocol: AnyObject, Sendable {
      * `profile` must be one of: `"desktop"`, `"web"`, `"mobile"`, `"backup"`.
      */
     func encryptFile(fileId: String, inputPath: String, outputDir: String, profile: String, callback: FileProgressCallback?) throws  -> EncryptedFileInfo
-    
+
     /**
      * Encrypt a filename + optional MIME type using the handle's master key.
      */
     func encryptName(fileId: String, filename: String, mimeType: String?) throws  -> String
-    
+
     /**
      * Export the raw 32-byte key for writing to the OS keychain.
      * Only call this once at account setup; never log or transmit the result.
      */
     func exportForKeychain() throws  -> Data
-    
+
 }
 /**
  * Opaque handle to a MasterKey. The key bytes never leave Rust except via
@@ -1039,7 +1283,7 @@ open class MasterKeyHandle: MasterKeyHandleProtocol, @unchecked Sendable {
         try! rustCall { uniffi_beebeeb_uniffi_fn_free_masterkeyhandle(handle, $0) }
     }
 
-    
+
     /**
      * Reconstruct a MasterKeyHandle from 32 raw bytes read from the OS keychain.
      */
@@ -1050,7 +1294,7 @@ public static func fromKeychainBytes(bytes: Data)throws  -> MasterKeyHandle  {
     )
 })
 }
-    
+
     /**
      * Reconstruct a MasterKeyHandle from a 12-word BIP39 recovery phrase.
      */
@@ -1061,9 +1305,9 @@ public static func fromRecoveryPhrase(phrase: String)throws  -> MasterKeyHandle 
     )
 })
 }
-    
 
-    
+
+
     /**
      * Compute the recovery-check value (stored server-side to verify the phrase).
      */
@@ -1074,7 +1318,7 @@ open func computeRecoveryCheck()throws  -> Data  {
     )
 })
 }
-    
+
     /**
      * Decrypt chunk files back to a single output file.
      *
@@ -1092,7 +1336,7 @@ open func decryptFile(fileId: String, chunkPaths: [String], outputPath: String, 
     )
 })
 }
-    
+
     /**
      * Decrypt a `name_encrypted` envelope using the handle's master key.
      */
@@ -1105,7 +1349,7 @@ open func decryptName(fileId: String, nameEncrypted: String)throws  -> String  {
     )
 })
 }
-    
+
     /**
      * Decrypt a `name_encrypted` envelope and return both filename and MIME type.
      */
@@ -1118,7 +1362,7 @@ open func decryptNameWithMime(fileId: String, nameEncrypted: String)throws  -> D
     )
 })
 }
-    
+
     /**
      * Derive a FileKeyHandle for the given file ID.
      */
@@ -1130,7 +1374,7 @@ open func deriveFileKey(fileId: Data)throws  -> FileKeyHandle  {
     )
 })
 }
-    
+
     /**
      * Derive the X25519 secret scalar from the master key. Returns 32 bytes.
      */
@@ -1141,7 +1385,7 @@ open func deriveX25519Private()throws  -> Data  {
     )
 })
 }
-    
+
     /**
      * Encrypt a file from disk, writing each chunk as a `.enc` file.
      *
@@ -1163,7 +1407,7 @@ open func encryptFile(fileId: String, inputPath: String, outputDir: String, prof
     )
 })
 }
-    
+
     /**
      * Encrypt a filename + optional MIME type using the handle's master key.
      */
@@ -1177,7 +1421,7 @@ open func encryptName(fileId: String, filename: String, mimeType: String?)throws
     )
 })
 }
-    
+
     /**
      * Export the raw 32-byte key for writing to the OS keychain.
      * Only call this once at account setup; never log or transmit the result.
@@ -1189,9 +1433,9 @@ open func exportForKeychain()throws  -> Data  {
     )
 })
 }
-    
 
-    
+
+
 }
 
 
@@ -1239,6 +1483,152 @@ public func FfiConverterTypeMasterKeyHandle_lower(_ value: MasterKeyHandle) -> U
 
 
 /**
+ * A single entry inside an archive (TAR, GZ, TGZ).
+ */
+public struct ArchiveEntryDto: Equatable, Hashable {
+    public var name: String
+    public var size: UInt64
+    public var isDirectory: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(name: String, size: UInt64, isDirectory: Bool) {
+        self.name = name
+        self.size = size
+        self.isDirectory = isDirectory
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension ArchiveEntryDto: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeArchiveEntryDto: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ArchiveEntryDto {
+        return
+            try ArchiveEntryDto(
+                name: FfiConverterString.read(from: &buf),
+                size: FfiConverterUInt64.read(from: &buf),
+                isDirectory: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: ArchiveEntryDto, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.name, into: &buf)
+        FfiConverterUInt64.write(value.size, into: &buf)
+        FfiConverterBool.write(value.isDirectory, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeArchiveEntryDto_lift(_ buf: RustBuffer) throws -> ArchiveEntryDto {
+    return try FfiConverterTypeArchiveEntryDto.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeArchiveEntryDto_lower(_ value: ArchiveEntryDto) -> RustBuffer {
+    return FfiConverterTypeArchiveEntryDto.lower(value)
+}
+
+
+/**
+ * A cached file/folder entry for the iOS FileProvider extension.
+ */
+public struct CachedFileEntryData: Equatable, Hashable {
+    public var id: String
+    public var parentId: String?
+    public var nameEncrypted: String?
+    public var nameDecrypted: String?
+    public var mimeType: String?
+    public var sizeBytes: Int64
+    public var isFolder: Bool
+    public var createdAt: String?
+    public var updatedAt: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(id: String, parentId: String?, nameEncrypted: String?, nameDecrypted: String?, mimeType: String?, sizeBytes: Int64, isFolder: Bool, createdAt: String?, updatedAt: String?) {
+        self.id = id
+        self.parentId = parentId
+        self.nameEncrypted = nameEncrypted
+        self.nameDecrypted = nameDecrypted
+        self.mimeType = mimeType
+        self.sizeBytes = sizeBytes
+        self.isFolder = isFolder
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CachedFileEntryData: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCachedFileEntryData: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CachedFileEntryData {
+        return
+            try CachedFileEntryData(
+                id: FfiConverterString.read(from: &buf),
+                parentId: FfiConverterOptionString.read(from: &buf),
+                nameEncrypted: FfiConverterOptionString.read(from: &buf),
+                nameDecrypted: FfiConverterOptionString.read(from: &buf),
+                mimeType: FfiConverterOptionString.read(from: &buf),
+                sizeBytes: FfiConverterInt64.read(from: &buf),
+                isFolder: FfiConverterBool.read(from: &buf),
+                createdAt: FfiConverterOptionString.read(from: &buf),
+                updatedAt: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CachedFileEntryData, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.id, into: &buf)
+        FfiConverterOptionString.write(value.parentId, into: &buf)
+        FfiConverterOptionString.write(value.nameEncrypted, into: &buf)
+        FfiConverterOptionString.write(value.nameDecrypted, into: &buf)
+        FfiConverterOptionString.write(value.mimeType, into: &buf)
+        FfiConverterInt64.write(value.sizeBytes, into: &buf)
+        FfiConverterBool.write(value.isFolder, into: &buf)
+        FfiConverterOptionString.write(value.createdAt, into: &buf)
+        FfiConverterOptionString.write(value.updatedAt, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCachedFileEntryData_lift(_ buf: RustBuffer) throws -> CachedFileEntryData {
+    return try FfiConverterTypeCachedFileEntryData.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCachedFileEntryData_lower(_ value: CachedFileEntryData) -> RustBuffer {
+    return FfiConverterTypeCachedFileEntryData.lower(value)
+}
+
+
+/**
  * Result of planning chunks for a file upload. Contains the chunk size and
  * count needed for the given file size and client profile.
  */
@@ -1253,9 +1643,9 @@ public struct ChunkPlanResult: Equatable, Hashable {
         self.chunkCount = chunkCount
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -1269,7 +1659,7 @@ public struct FfiConverterTypeChunkPlanResult: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ChunkPlanResult {
         return
             try ChunkPlanResult(
-                chunkSizeBytes: FfiConverterUInt64.read(from: &buf), 
+                chunkSizeBytes: FfiConverterUInt64.read(from: &buf),
                 chunkCount: FfiConverterUInt64.read(from: &buf)
         )
     }
@@ -1311,9 +1701,9 @@ public struct ConstellationEdgeDto: Equatable, Hashable {
         self.flowSpeed = flowSpeed
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -1327,9 +1717,9 @@ public struct FfiConverterTypeConstellationEdgeDto: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ConstellationEdgeDto {
         return
             try ConstellationEdgeDto(
-                fromIdx: FfiConverterUInt32.read(from: &buf), 
-                toIdx: FfiConverterUInt32.read(from: &buf), 
-                weight: FfiConverterFloat.read(from: &buf), 
+                fromIdx: FfiConverterUInt32.read(from: &buf),
+                toIdx: FfiConverterUInt32.read(from: &buf),
+                weight: FfiConverterFloat.read(from: &buf),
                 flowSpeed: FfiConverterFloat.read(from: &buf)
         )
     }
@@ -1375,9 +1765,9 @@ public struct ConstellationFrameDto: Equatable, Hashable {
         self.ringPhase = ringPhase
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -1391,10 +1781,10 @@ public struct FfiConverterTypeConstellationFrameDto: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ConstellationFrameDto {
         return
             try ConstellationFrameDto(
-                frameIndex: FfiConverterUInt32.read(from: &buf), 
-                seed: FfiConverterUInt64.read(from: &buf), 
-                nodes: FfiConverterSequenceTypeConstellationNodeDto.read(from: &buf), 
-                edges: FfiConverterSequenceTypeConstellationEdgeDto.read(from: &buf), 
+                frameIndex: FfiConverterUInt32.read(from: &buf),
+                seed: FfiConverterUInt64.read(from: &buf),
+                nodes: FfiConverterSequenceTypeConstellationNodeDto.read(from: &buf),
+                edges: FfiConverterSequenceTypeConstellationEdgeDto.read(from: &buf),
                 ringPhase: FfiConverterFloat.read(from: &buf)
         )
     }
@@ -1443,9 +1833,9 @@ public struct ConstellationNodeDto: Equatable, Hashable {
         self.pulsePhase = pulsePhase
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -1459,11 +1849,11 @@ public struct FfiConverterTypeConstellationNodeDto: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ConstellationNodeDto {
         return
             try ConstellationNodeDto(
-                kind: FfiConverterUInt8.read(from: &buf), 
-                x: FfiConverterFloat.read(from: &buf), 
-                y: FfiConverterFloat.read(from: &buf), 
-                z: FfiConverterFloat.read(from: &buf), 
-                brightness: FfiConverterFloat.read(from: &buf), 
+                kind: FfiConverterUInt8.read(from: &buf),
+                x: FfiConverterFloat.read(from: &buf),
+                y: FfiConverterFloat.read(from: &buf),
+                z: FfiConverterFloat.read(from: &buf),
+                brightness: FfiConverterFloat.read(from: &buf),
                 pulsePhase: FfiConverterFloat.read(from: &buf)
         )
     }
@@ -1511,9 +1901,9 @@ public struct ConstellationPayloadDto: Equatable, Hashable {
         self.confirmCodeHash = confirmCodeHash
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -1527,10 +1917,10 @@ public struct FfiConverterTypeConstellationPayloadDto: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ConstellationPayloadDto {
         return
             try ConstellationPayloadDto(
-                sessionId: FfiConverterData.read(from: &buf), 
-                ephemeralPubkey: FfiConverterData.read(from: &buf), 
-                nonce: FfiConverterData.read(from: &buf), 
-                expiresAtUnixMs: FfiConverterUInt64.read(from: &buf), 
+                sessionId: FfiConverterData.read(from: &buf),
+                ephemeralPubkey: FfiConverterData.read(from: &buf),
+                nonce: FfiConverterData.read(from: &buf),
+                expiresAtUnixMs: FfiConverterUInt64.read(from: &buf),
                 confirmCodeHash: FfiConverterData.read(from: &buf)
         )
     }
@@ -1573,9 +1963,9 @@ public struct ConstellationSessionInitDto: Equatable, Hashable {
         self.ephemeralPrivate = ephemeralPrivate
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -1589,8 +1979,8 @@ public struct FfiConverterTypeConstellationSessionInitDto: FfiConverterRustBuffe
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ConstellationSessionInitDto {
         return
             try ConstellationSessionInitDto(
-                payload: FfiConverterTypeConstellationPayloadDto.read(from: &buf), 
-                confirmCode: FfiConverterString.read(from: &buf), 
+                payload: FfiConverterTypeConstellationPayloadDto.read(from: &buf),
+                confirmCode: FfiConverterString.read(from: &buf),
                 ephemeralPrivate: FfiConverterData.read(from: &buf)
         )
     }
@@ -1634,9 +2024,9 @@ public struct DecryptedFileInfo: Equatable, Hashable {
         self.chunksProcessed = chunksProcessed
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -1650,8 +2040,8 @@ public struct FfiConverterTypeDecryptedFileInfo: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> DecryptedFileInfo {
         return
             try DecryptedFileInfo(
-                outputPath: FfiConverterString.read(from: &buf), 
-                totalBytes: FfiConverterUInt64.read(from: &buf), 
+                outputPath: FfiConverterString.read(from: &buf),
+                totalBytes: FfiConverterUInt64.read(from: &buf),
                 chunksProcessed: FfiConverterUInt32.read(from: &buf)
         )
     }
@@ -1693,9 +2083,9 @@ public struct DecryptedNameWithMime: Equatable, Hashable {
         self.mimeType = mimeType
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -1709,7 +2099,7 @@ public struct FfiConverterTypeDecryptedNameWithMime: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> DecryptedNameWithMime {
         return
             try DecryptedNameWithMime(
-                name: FfiConverterString.read(from: &buf), 
+                name: FfiConverterString.read(from: &buf),
                 mimeType: FfiConverterOptionString.read(from: &buf)
         )
     }
@@ -1737,6 +2127,67 @@ public func FfiConverterTypeDecryptedNameWithMime_lower(_ value: DecryptedNameWi
 
 
 /**
+ * Result of a successful file download + decrypt.
+ */
+public struct DownloadResultData: Equatable, Hashable {
+    public var outputPath: String
+    public var plaintextSize: UInt64
+    public var chunksDecrypted: UInt32
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(outputPath: String, plaintextSize: UInt64, chunksDecrypted: UInt32) {
+        self.outputPath = outputPath
+        self.plaintextSize = plaintextSize
+        self.chunksDecrypted = chunksDecrypted
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension DownloadResultData: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeDownloadResultData: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> DownloadResultData {
+        return
+            try DownloadResultData(
+                outputPath: FfiConverterString.read(from: &buf),
+                plaintextSize: FfiConverterUInt64.read(from: &buf),
+                chunksDecrypted: FfiConverterUInt32.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: DownloadResultData, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.outputPath, into: &buf)
+        FfiConverterUInt64.write(value.plaintextSize, into: &buf)
+        FfiConverterUInt32.write(value.chunksDecrypted, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeDownloadResultData_lift(_ buf: RustBuffer) throws -> DownloadResultData {
+    return try FfiConverterTypeDownloadResultData.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeDownloadResultData_lower(_ value: DownloadResultData) -> RustBuffer {
+    return FfiConverterTypeDownloadResultData.lower(value)
+}
+
+
+/**
  * A single encrypted chunk (nonce + ciphertext) for batch decryption.
  */
 public struct EncryptedChunkData: Equatable, Hashable {
@@ -1750,9 +2201,9 @@ public struct EncryptedChunkData: Equatable, Hashable {
         self.ciphertext = ciphertext
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -1766,7 +2217,7 @@ public struct FfiConverterTypeEncryptedChunkData: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> EncryptedChunkData {
         return
             try EncryptedChunkData(
-                nonce: FfiConverterData.read(from: &buf), 
+                nonce: FfiConverterData.read(from: &buf),
                 ciphertext: FfiConverterData.read(from: &buf)
         )
     }
@@ -1813,9 +2264,9 @@ public struct EncryptedChunkInfo: Equatable, Hashable {
         self.ciphertextSize = ciphertextSize
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -1829,10 +2280,10 @@ public struct FfiConverterTypeEncryptedChunkInfo: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> EncryptedChunkInfo {
         return
             try EncryptedChunkInfo(
-                chunkIndex: FfiConverterUInt32.read(from: &buf), 
-                outputPath: FfiConverterString.read(from: &buf), 
-                nonce: FfiConverterData.read(from: &buf), 
-                plaintextSize: FfiConverterUInt64.read(from: &buf), 
+                chunkIndex: FfiConverterUInt32.read(from: &buf),
+                outputPath: FfiConverterString.read(from: &buf),
+                nonce: FfiConverterData.read(from: &buf),
+                plaintextSize: FfiConverterUInt64.read(from: &buf),
                 ciphertextSize: FfiConverterUInt64.read(from: &buf)
         )
     }
@@ -1879,9 +2330,9 @@ public struct EncryptedData: Equatable, Hashable {
         self.ciphertext = ciphertext
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -1895,8 +2346,8 @@ public struct FfiConverterTypeEncryptedData: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> EncryptedData {
         return
             try EncryptedData(
-                cipherSuite: FfiConverterString.read(from: &buf), 
-                nonce: FfiConverterData.read(from: &buf), 
+                cipherSuite: FfiConverterString.read(from: &buf),
+                nonce: FfiConverterData.read(from: &buf),
                 ciphertext: FfiConverterData.read(from: &buf)
         )
     }
@@ -1942,9 +2393,9 @@ public struct EncryptedFileInfo: Equatable, Hashable {
         self.chunkSizeBytes = chunkSizeBytes
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -1958,9 +2409,9 @@ public struct FfiConverterTypeEncryptedFileInfo: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> EncryptedFileInfo {
         return
             try EncryptedFileInfo(
-                chunks: FfiConverterSequenceTypeEncryptedChunkInfo.read(from: &buf), 
-                totalPlaintextBytes: FfiConverterUInt64.read(from: &buf), 
-                totalCiphertextBytes: FfiConverterUInt64.read(from: &buf), 
+                chunks: FfiConverterSequenceTypeEncryptedChunkInfo.read(from: &buf),
+                totalPlaintextBytes: FfiConverterUInt64.read(from: &buf),
+                totalCiphertextBytes: FfiConverterUInt64.read(from: &buf),
                 chunkSizeBytes: FfiConverterUInt64.read(from: &buf)
         )
     }
@@ -1990,6 +2441,63 @@ public func FfiConverterTypeEncryptedFileInfo_lower(_ value: EncryptedFileInfo) 
 
 
 /**
+ * Parsed encrypted metadata payload (nonce + ciphertext bytes).
+ */
+public struct EncryptedMetadataParts: Equatable, Hashable {
+    public var nonce: Data
+    public var ciphertext: Data
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(nonce: Data, ciphertext: Data) {
+        self.nonce = nonce
+        self.ciphertext = ciphertext
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension EncryptedMetadataParts: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeEncryptedMetadataParts: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> EncryptedMetadataParts {
+        return
+            try EncryptedMetadataParts(
+                nonce: FfiConverterData.read(from: &buf),
+                ciphertext: FfiConverterData.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: EncryptedMetadataParts, into buf: inout [UInt8]) {
+        FfiConverterData.write(value.nonce, into: &buf)
+        FfiConverterData.write(value.ciphertext, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeEncryptedMetadataParts_lift(_ buf: RustBuffer) throws -> EncryptedMetadataParts {
+    return try FfiConverterTypeEncryptedMetadataParts.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeEncryptedMetadataParts_lower(_ value: EncryptedMetadataParts) -> RustBuffer {
+    return FfiConverterTypeEncryptedMetadataParts.lower(value)
+}
+
+
+/**
  * Master key bytes returned from `derive_master_key`.
  */
 public struct MasterKeyResult: Equatable, Hashable {
@@ -2001,9 +2509,9 @@ public struct MasterKeyResult: Equatable, Hashable {
         self.key = key
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -2055,9 +2563,9 @@ public struct ObservedNodeDto: Equatable, Hashable {
         self.confidence = confidence
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -2071,8 +2579,8 @@ public struct FfiConverterTypeObservedNodeDto: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ObservedNodeDto {
         return
             try ObservedNodeDto(
-                idx: FfiConverterUInt32.read(from: &buf), 
-                brightness: FfiConverterFloat.read(from: &buf), 
+                idx: FfiConverterUInt32.read(from: &buf),
+                brightness: FfiConverterFloat.read(from: &buf),
                 confidence: FfiConverterFloat.read(from: &buf)
         )
     }
@@ -2116,9 +2624,9 @@ public struct OpaqueLoginFinishResult: Equatable, Hashable {
         self.exportKey = exportKey
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -2132,8 +2640,8 @@ public struct FfiConverterTypeOpaqueLoginFinishResult: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> OpaqueLoginFinishResult {
         return
             try OpaqueLoginFinishResult(
-                message: FfiConverterData.read(from: &buf), 
-                sessionKey: FfiConverterData.read(from: &buf), 
+                message: FfiConverterData.read(from: &buf),
+                sessionKey: FfiConverterData.read(from: &buf),
                 exportKey: FfiConverterData.read(from: &buf)
         )
     }
@@ -2175,9 +2683,9 @@ public struct OpaqueStartResult: Equatable, Hashable {
         self.state = state
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -2191,7 +2699,7 @@ public struct FfiConverterTypeOpaqueStartResult: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> OpaqueStartResult {
         return
             try OpaqueStartResult(
-                message: FfiConverterData.read(from: &buf), 
+                message: FfiConverterData.read(from: &buf),
                 state: FfiConverterData.read(from: &buf)
         )
     }
@@ -2232,9 +2740,9 @@ public struct RecoveryPhraseResult: Equatable, Hashable {
         self.masterKey = masterKey
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -2248,7 +2756,7 @@ public struct FfiConverterTypeRecoveryPhraseResult: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> RecoveryPhraseResult {
         return
             try RecoveryPhraseResult(
-                phrase: FfiConverterString.read(from: &buf), 
+                phrase: FfiConverterString.read(from: &buf),
                 masterKey: FfiConverterData.read(from: &buf)
         )
     }
@@ -2275,10 +2783,75 @@ public func FfiConverterTypeRecoveryPhraseResult_lower(_ value: RecoveryPhraseRe
 }
 
 
+/**
+ * Result of a successful file upload.
+ */
+public struct UploadResultData: Equatable, Hashable {
+    public var fileId: String
+    public var uploadSessionId: String
+    public var chunksUploaded: UInt32
+    public var totalBytes: UInt64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(fileId: String, uploadSessionId: String, chunksUploaded: UInt32, totalBytes: UInt64) {
+        self.fileId = fileId
+        self.uploadSessionId = uploadSessionId
+        self.chunksUploaded = chunksUploaded
+        self.totalBytes = totalBytes
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension UploadResultData: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeUploadResultData: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> UploadResultData {
+        return
+            try UploadResultData(
+                fileId: FfiConverterString.read(from: &buf),
+                uploadSessionId: FfiConverterString.read(from: &buf),
+                chunksUploaded: FfiConverterUInt32.read(from: &buf),
+                totalBytes: FfiConverterUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: UploadResultData, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.fileId, into: &buf)
+        FfiConverterString.write(value.uploadSessionId, into: &buf)
+        FfiConverterUInt32.write(value.chunksUploaded, into: &buf)
+        FfiConverterUInt64.write(value.totalBytes, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeUploadResultData_lift(_ buf: RustBuffer) throws -> UploadResultData {
+    return try FfiConverterTypeUploadResultData.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeUploadResultData_lower(_ value: UploadResultData) -> RustBuffer {
+    return FfiConverterTypeUploadResultData.lower(value)
+}
+
+
 public enum CryptoError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
 
-    
-    
+
+
     case Encryption(detail: String
     )
     case Decryption
@@ -2293,15 +2866,15 @@ public enum CryptoError: Swift.Error, Equatable, Hashable, Foundation.LocalizedE
     case Io(detail: String
     )
 
-    
 
-    
 
-    
+
+
+
     public var errorDescription: String? {
         String(reflecting: self)
     }
-    
+
 }
 
 #if compiler(>=6)
@@ -2318,9 +2891,9 @@ public struct FfiConverterTypeCryptoError: FfiConverterRustBuffer {
         let variant: Int32 = try readInt(&buf)
         switch variant {
 
-        
 
-        
+
+
         case 1: return .Encryption(
             detail: try FfiConverterString.read(from: &buf)
             )
@@ -2347,46 +2920,46 @@ public struct FfiConverterTypeCryptoError: FfiConverterRustBuffer {
     public static func write(_ value: CryptoError, into buf: inout [UInt8]) {
         switch value {
 
-        
 
-        
-        
+
+
+
         case let .Encryption(detail):
             writeInt(&buf, Int32(1))
             FfiConverterString.write(detail, into: &buf)
-            
-        
+
+
         case .Decryption:
             writeInt(&buf, Int32(2))
-        
-        
+
+
         case let .Kdf(detail):
             writeInt(&buf, Int32(3))
             FfiConverterString.write(detail, into: &buf)
-            
-        
+
+
         case .InvalidRecoveryPhrase:
             writeInt(&buf, Int32(4))
-        
-        
+
+
         case let .InvalidInput(detail):
             writeInt(&buf, Int32(5))
             FfiConverterString.write(detail, into: &buf)
-            
-        
+
+
         case let .Opaque(detail):
             writeInt(&buf, Int32(6))
             FfiConverterString.write(detail, into: &buf)
-            
-        
+
+
         case .Cancelled:
             writeInt(&buf, Int32(7))
-        
-        
+
+
         case let .Io(detail):
             writeInt(&buf, Int32(8))
             FfiConverterString.write(detail, into: &buf)
-            
+
         }
     }
 }
@@ -2407,12 +2980,383 @@ public func FfiConverterTypeCryptoError_lower(_ value: CryptoError) -> RustBuffe
 }
 
 
+/**
+ * Error from the upload protocol (UniFFI-compatible enum).
+ */
+public enum UploadError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
+
+
+
+    case Network(detail: String
+    )
+    case ServerError(status: UInt16, message: String
+    )
+    case ClientError(status: UInt16, message: String
+    )
+    case RateLimited(retryAfterSecs: UInt64
+    )
+    case UploadIo(detail: String
+    )
+    case InvalidResponse(detail: String
+    )
+    case UploadInvalidInput(detail: String
+    )
+    case UploadCancelled
+    case MaxRetriesExhausted(attempts: UInt32, lastError: String
+    )
+
+
+
+
+
+
+    public var errorDescription: String? {
+        String(reflecting: self)
+    }
+
+}
+
+#if compiler(>=6)
+extension UploadError: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeUploadError: FfiConverterRustBuffer {
+    typealias SwiftType = UploadError
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> UploadError {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+
+
+
+        case 1: return .Network(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+        case 2: return .ServerError(
+            status: try FfiConverterUInt16.read(from: &buf),
+            message: try FfiConverterString.read(from: &buf)
+            )
+        case 3: return .ClientError(
+            status: try FfiConverterUInt16.read(from: &buf),
+            message: try FfiConverterString.read(from: &buf)
+            )
+        case 4: return .RateLimited(
+            retryAfterSecs: try FfiConverterUInt64.read(from: &buf)
+            )
+        case 5: return .UploadIo(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+        case 6: return .InvalidResponse(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+        case 7: return .UploadInvalidInput(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+        case 8: return .UploadCancelled
+        case 9: return .MaxRetriesExhausted(
+            attempts: try FfiConverterUInt32.read(from: &buf),
+            lastError: try FfiConverterString.read(from: &buf)
+            )
+
+         default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: UploadError, into buf: inout [UInt8]) {
+        switch value {
+
+
+
+
+
+        case let .Network(detail):
+            writeInt(&buf, Int32(1))
+            FfiConverterString.write(detail, into: &buf)
+
+
+        case let .ServerError(status,message):
+            writeInt(&buf, Int32(2))
+            FfiConverterUInt16.write(status, into: &buf)
+            FfiConverterString.write(message, into: &buf)
+
+
+        case let .ClientError(status,message):
+            writeInt(&buf, Int32(3))
+            FfiConverterUInt16.write(status, into: &buf)
+            FfiConverterString.write(message, into: &buf)
+
+
+        case let .RateLimited(retryAfterSecs):
+            writeInt(&buf, Int32(4))
+            FfiConverterUInt64.write(retryAfterSecs, into: &buf)
+
+
+        case let .UploadIo(detail):
+            writeInt(&buf, Int32(5))
+            FfiConverterString.write(detail, into: &buf)
+
+
+        case let .InvalidResponse(detail):
+            writeInt(&buf, Int32(6))
+            FfiConverterString.write(detail, into: &buf)
+
+
+        case let .UploadInvalidInput(detail):
+            writeInt(&buf, Int32(7))
+            FfiConverterString.write(detail, into: &buf)
+
+
+        case .UploadCancelled:
+            writeInt(&buf, Int32(8))
+
+
+        case let .MaxRetriesExhausted(attempts,lastError):
+            writeInt(&buf, Int32(9))
+            FfiConverterUInt32.write(attempts, into: &buf)
+            FfiConverterString.write(lastError, into: &buf)
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeUploadError_lift(_ buf: RustBuffer) throws -> UploadError {
+    return try FfiConverterTypeUploadError.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeUploadError_lower(_ value: UploadError) -> RustBuffer {
+    return FfiConverterTypeUploadError.lower(value)
+}
+
+
+
+
+/**
+ * Callback interface for download progress. Implemented by Swift/Kotlin.
+ */
+public protocol DownloadProgressCallback: AnyObject, Sendable {
+
+    func onChunkDecrypted(chunkIndex: UInt32, totalChunks: UInt32)
+
+    func onComplete(outputPath: String)
+
+    func onError(error: String)
+
+    func isCancelled()  -> Bool
+
+}
+
+
+// Put the implementation in a struct so we don't pollute the top-level namespace
+fileprivate struct UniffiCallbackInterfaceDownloadProgressCallback {
+
+    // Create the VTable using a series of closures.
+    // Swift automatically converts these into C callback functions.
+    //
+    // Store the vtable directly.
+    static let vtable: UniffiVTableCallbackInterfaceDownloadProgressCallback = UniffiVTableCallbackInterfaceDownloadProgressCallback(
+        uniffiFree: { (uniffiHandle: UInt64) -> () in
+            do {
+                try FfiConverterCallbackInterfaceDownloadProgressCallback.handleMap.remove(handle: uniffiHandle)
+            } catch {
+                print("Uniffi callback interface DownloadProgressCallback: handle missing in uniffiFree")
+            }
+        },
+        uniffiClone: { (uniffiHandle: UInt64) -> UInt64 in
+            do {
+                return try FfiConverterCallbackInterfaceDownloadProgressCallback.handleMap.clone(handle: uniffiHandle)
+            } catch {
+                fatalError("Uniffi callback interface DownloadProgressCallback: handle missing in uniffiClone")
+            }
+        },
+        onChunkDecrypted: { (
+            uniffiHandle: UInt64,
+            chunkIndex: UInt32,
+            totalChunks: UInt32,
+            uniffiOutReturn: UnsafeMutableRawPointer,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> () in
+                guard let uniffiObj = try? FfiConverterCallbackInterfaceDownloadProgressCallback.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return uniffiObj.onChunkDecrypted(
+                     chunkIndex: try FfiConverterUInt32.lift(chunkIndex),
+                     totalChunks: try FfiConverterUInt32.lift(totalChunks)
+                )
+            }
+
+
+            let writeReturn = { () }
+            uniffiTraitInterfaceCall(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn
+            )
+        },
+        onComplete: { (
+            uniffiHandle: UInt64,
+            outputPath: RustBuffer,
+            uniffiOutReturn: UnsafeMutableRawPointer,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> () in
+                guard let uniffiObj = try? FfiConverterCallbackInterfaceDownloadProgressCallback.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return uniffiObj.onComplete(
+                     outputPath: try FfiConverterString.lift(outputPath)
+                )
+            }
+
+
+            let writeReturn = { () }
+            uniffiTraitInterfaceCall(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn
+            )
+        },
+        onError: { (
+            uniffiHandle: UInt64,
+            error: RustBuffer,
+            uniffiOutReturn: UnsafeMutableRawPointer,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> () in
+                guard let uniffiObj = try? FfiConverterCallbackInterfaceDownloadProgressCallback.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return uniffiObj.onError(
+                     error: try FfiConverterString.lift(error)
+                )
+            }
+
+
+            let writeReturn = { () }
+            uniffiTraitInterfaceCall(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn
+            )
+        },
+        isCancelled: { (
+            uniffiHandle: UInt64,
+            uniffiOutReturn: UnsafeMutablePointer<Int8>,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> Bool in
+                guard let uniffiObj = try? FfiConverterCallbackInterfaceDownloadProgressCallback.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return uniffiObj.isCancelled(
+                )
+            }
+
+
+            let writeReturn = { uniffiOutReturn.pointee = FfiConverterBool.lower($0) }
+            uniffiTraitInterfaceCall(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn
+            )
+        }
+    )
+
+    // Rust stores this pointer for future callback invocations, so it must live
+    // for the process lifetime (not just for the init function call).
+    static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceDownloadProgressCallback> = {
+        let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfaceDownloadProgressCallback>.allocate(capacity: 1)
+        ptr.initialize(to: vtable)
+        return UnsafePointer(ptr)
+    }()
+}
+
+private func uniffiCallbackInitDownloadProgressCallback() {
+    uniffi_beebeeb_uniffi_fn_init_callback_vtable_downloadprogresscallback(UniffiCallbackInterfaceDownloadProgressCallback.vtablePtr)
+}
+
+// FfiConverter protocol for callback interfaces
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterCallbackInterfaceDownloadProgressCallback {
+    fileprivate static let handleMap = UniffiHandleMap<DownloadProgressCallback>()
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+extension FfiConverterCallbackInterfaceDownloadProgressCallback : FfiConverter {
+    typealias SwiftType = DownloadProgressCallback
+    typealias FfiType = UInt64
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func lift(_ handle: UInt64) throws -> SwiftType {
+        try handleMap.get(handle: handle)
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func lower(_ v: SwiftType) -> UInt64 {
+        return handleMap.insert(obj: v)
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func write(_ v: SwiftType, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(v))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterCallbackInterfaceDownloadProgressCallback_lift(_ handle: UInt64) throws -> DownloadProgressCallback {
+    return try FfiConverterCallbackInterfaceDownloadProgressCallback.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterCallbackInterfaceDownloadProgressCallback_lower(_ v: DownloadProgressCallback) -> UInt64 {
+    return FfiConverterCallbackInterfaceDownloadProgressCallback.lower(v)
+}
+
+
 
 
 public protocol FileProgressCallback: AnyObject, Sendable {
-    
-    func onProgress(chunksCompleted: UInt32, chunksTotal: UInt32) 
-    
+
+    func onProgress(chunksCompleted: UInt32, chunksTotal: UInt32)
+
 }
 
 
@@ -2456,7 +3400,7 @@ fileprivate struct UniffiCallbackInterfaceFileProgressCallback {
                 )
             }
 
-            
+
             let writeReturn = { () }
             uniffiTraitInterfaceCall(
                 callStatus: uniffiCallStatus,
@@ -2539,6 +3483,194 @@ public func FfiConverterCallbackInterfaceFileProgressCallback_lower(_ v: FilePro
     return FfiConverterCallbackInterfaceFileProgressCallback.lower(v)
 }
 
+
+
+
+/**
+ * Callback interface for upload progress. Implemented by Swift/Kotlin.
+ */
+public protocol UploadProgressCallback: AnyObject, Sendable {
+
+    func onChunkUploaded(chunkIndex: UInt32, totalChunks: UInt32)
+
+    func onComplete(fileId: String)
+
+    func onError(error: String)
+
+}
+
+
+// Put the implementation in a struct so we don't pollute the top-level namespace
+fileprivate struct UniffiCallbackInterfaceUploadProgressCallback {
+
+    // Create the VTable using a series of closures.
+    // Swift automatically converts these into C callback functions.
+    //
+    // Store the vtable directly.
+    static let vtable: UniffiVTableCallbackInterfaceUploadProgressCallback = UniffiVTableCallbackInterfaceUploadProgressCallback(
+        uniffiFree: { (uniffiHandle: UInt64) -> () in
+            do {
+                try FfiConverterCallbackInterfaceUploadProgressCallback.handleMap.remove(handle: uniffiHandle)
+            } catch {
+                print("Uniffi callback interface UploadProgressCallback: handle missing in uniffiFree")
+            }
+        },
+        uniffiClone: { (uniffiHandle: UInt64) -> UInt64 in
+            do {
+                return try FfiConverterCallbackInterfaceUploadProgressCallback.handleMap.clone(handle: uniffiHandle)
+            } catch {
+                fatalError("Uniffi callback interface UploadProgressCallback: handle missing in uniffiClone")
+            }
+        },
+        onChunkUploaded: { (
+            uniffiHandle: UInt64,
+            chunkIndex: UInt32,
+            totalChunks: UInt32,
+            uniffiOutReturn: UnsafeMutableRawPointer,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> () in
+                guard let uniffiObj = try? FfiConverterCallbackInterfaceUploadProgressCallback.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return uniffiObj.onChunkUploaded(
+                     chunkIndex: try FfiConverterUInt32.lift(chunkIndex),
+                     totalChunks: try FfiConverterUInt32.lift(totalChunks)
+                )
+            }
+
+
+            let writeReturn = { () }
+            uniffiTraitInterfaceCall(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn
+            )
+        },
+        onComplete: { (
+            uniffiHandle: UInt64,
+            fileId: RustBuffer,
+            uniffiOutReturn: UnsafeMutableRawPointer,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> () in
+                guard let uniffiObj = try? FfiConverterCallbackInterfaceUploadProgressCallback.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return uniffiObj.onComplete(
+                     fileId: try FfiConverterString.lift(fileId)
+                )
+            }
+
+
+            let writeReturn = { () }
+            uniffiTraitInterfaceCall(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn
+            )
+        },
+        onError: { (
+            uniffiHandle: UInt64,
+            error: RustBuffer,
+            uniffiOutReturn: UnsafeMutableRawPointer,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> () in
+                guard let uniffiObj = try? FfiConverterCallbackInterfaceUploadProgressCallback.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return uniffiObj.onError(
+                     error: try FfiConverterString.lift(error)
+                )
+            }
+
+
+            let writeReturn = { () }
+            uniffiTraitInterfaceCall(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn
+            )
+        }
+    )
+
+    // Rust stores this pointer for future callback invocations, so it must live
+    // for the process lifetime (not just for the init function call).
+    static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceUploadProgressCallback> = {
+        let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfaceUploadProgressCallback>.allocate(capacity: 1)
+        ptr.initialize(to: vtable)
+        return UnsafePointer(ptr)
+    }()
+}
+
+private func uniffiCallbackInitUploadProgressCallback() {
+    uniffi_beebeeb_uniffi_fn_init_callback_vtable_uploadprogresscallback(UniffiCallbackInterfaceUploadProgressCallback.vtablePtr)
+}
+
+// FfiConverter protocol for callback interfaces
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterCallbackInterfaceUploadProgressCallback {
+    fileprivate static let handleMap = UniffiHandleMap<UploadProgressCallback>()
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+extension FfiConverterCallbackInterfaceUploadProgressCallback : FfiConverter {
+    typealias SwiftType = UploadProgressCallback
+    typealias FfiType = UInt64
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func lift(_ handle: UInt64) throws -> SwiftType {
+        try handleMap.get(handle: handle)
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func lower(_ v: SwiftType) -> UInt64 {
+        return handleMap.insert(obj: v)
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func write(_ v: SwiftType, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(v))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterCallbackInterfaceUploadProgressCallback_lift(_ handle: UInt64) throws -> UploadProgressCallback {
+    return try FfiConverterCallbackInterfaceUploadProgressCallback.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterCallbackInterfaceUploadProgressCallback_lower(_ v: UploadProgressCallback) -> UInt64 {
+    return FfiConverterCallbackInterfaceUploadProgressCallback.lower(v)
+}
+
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
@@ -2558,6 +3690,30 @@ fileprivate struct FfiConverterOptionString: FfiConverterRustBuffer {
         switch try readInt(&buf) as Int8 {
         case 0: return nil
         case 1: return try FfiConverterString.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeCachedFileEntryData: FfiConverterRustBuffer {
+    typealias SwiftType = CachedFileEntryData?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeCachedFileEntryData.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeCachedFileEntryData.read(from: &buf)
         default: throw UniffiInternalError.unexpectedOptionalTag
         }
     }
@@ -2590,6 +3746,30 @@ fileprivate struct FfiConverterOptionTypeConstellationPayloadDto: FfiConverterRu
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionCallbackInterfaceDownloadProgressCallback: FfiConverterRustBuffer {
+    typealias SwiftType = DownloadProgressCallback?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterCallbackInterfaceDownloadProgressCallback.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterCallbackInterfaceDownloadProgressCallback.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionCallbackInterfaceFileProgressCallback: FfiConverterRustBuffer {
     typealias SwiftType = FileProgressCallback?
 
@@ -2606,6 +3786,30 @@ fileprivate struct FfiConverterOptionCallbackInterfaceFileProgressCallback: FfiC
         switch try readInt(&buf) as Int8 {
         case 0: return nil
         case 1: return try FfiConverterCallbackInterfaceFileProgressCallback.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionCallbackInterfaceUploadProgressCallback: FfiConverterRustBuffer {
+    typealias SwiftType = UploadProgressCallback?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterCallbackInterfaceUploadProgressCallback.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterCallbackInterfaceUploadProgressCallback.read(from: &buf)
         default: throw UniffiInternalError.unexpectedOptionalTag
         }
     }
@@ -2631,6 +3835,56 @@ fileprivate struct FfiConverterSequenceString: FfiConverterRustBuffer {
         seq.reserveCapacity(Int(len))
         for _ in 0 ..< len {
             seq.append(try FfiConverterString.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeArchiveEntryDto: FfiConverterRustBuffer {
+    typealias SwiftType = [ArchiveEntryDto]
+
+    public static func write(_ value: [ArchiveEntryDto], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeArchiveEntryDto.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [ArchiveEntryDto] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [ArchiveEntryDto]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeArchiveEntryDto.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeCachedFileEntryData: FfiConverterRustBuffer {
+    typealias SwiftType = [CachedFileEntryData]
+
+    public static func write(_ value: [CachedFileEntryData], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeCachedFileEntryData.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [CachedFileEntryData] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [CachedFileEntryData]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeCachedFileEntryData.read(from: &buf))
         }
         return seq
     }
@@ -2805,6 +4059,29 @@ public func constellationVerifyCode(payload: ConstellationPayloadDto, code: Stri
 })
 }
 /**
+ * Decompress gzip-compressed data.
+ */
+public func decompressGzip(data: Data)throws  -> Data  {
+    return try  FfiConverterData.lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
+    uniffi_beebeeb_uniffi_fn_func_decompress_gzip(
+        FfiConverterData.lower(data),$0
+    )
+})
+}
+/**
+ * Decrypt a blob produced by `encrypt_blob`.
+ *
+ * Expects `nonce (12 bytes) || ciphertext`. Returns the original plaintext.
+ */
+public func decryptBlob(key: Data, ciphertext: Data)throws  -> Data  {
+    return try  FfiConverterData.lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
+    uniffi_beebeeb_uniffi_fn_func_decrypt_blob(
+        FfiConverterData.lower(key),
+        FfiConverterData.lower(ciphertext),$0
+    )
+})
+}
+/**
  * Decrypt a ciphertext chunk that was produced by `encrypt_chunk`.
  */
 public func decryptChunk(key: Data, nonce: Data, ciphertext: Data)throws  -> Data  {
@@ -2892,6 +4169,21 @@ public func deriveMasterKey(password: String, salt: Data)throws  -> MasterKeyRes
 })
 }
 /**
+ * Derive `length` bytes from a shared secret using HKDF-SHA256.
+ *
+ * Used for SAS word derivation — the word list lookup stays in JS/Swift.
+ * `info` is typically `b"beebeeb-sas-v1"` or similar context string.
+ */
+public func deriveSasBytes(sharedSecret: Data, info: Data, length: UInt32) -> Data  {
+    return try!  FfiConverterData.lift(try! rustCall() {
+    uniffi_beebeeb_uniffi_fn_func_derive_sas_bytes(
+        FfiConverterData.lower(sharedSecret),
+        FfiConverterData.lower(info),
+        FfiConverterUInt32.lower(length),$0
+    )
+})
+}
+/**
  * Derive a share key from a shared secret and file ID. Returns 32-byte share key.
  */
 public func deriveShareKey(sharedSecret: Data, fileId: Data)throws  -> Data  {
@@ -2919,6 +4211,40 @@ public func deriveX25519Public(privateKey: Data)throws  -> Data  {
     return try  FfiConverterData.lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
     uniffi_beebeeb_uniffi_fn_func_derive_x25519_public(
         FfiConverterData.lower(privateKey),$0
+    )
+})
+}
+/**
+ * Download an encrypted file, decrypt it, and write plaintext to disk.
+ * Blocking — call from Swift `Task { }` or Kotlin `withContext(Dispatchers.IO)`.
+ *
+ * Uses the MasterKeyHandle to derive the per-file key via HKDF, then
+ * fetches `GET /api/v1/files/{file_id}/download`, splits into chunks,
+ * decrypts each with AES-256-GCM, and writes to `output_path`.
+ */
+public func downloadAndDecryptFile(apiUrl: String, token: String, masterKeyHandle: MasterKeyHandle, fileId: String, outputPath: String, callback: DownloadProgressCallback?)throws  -> DownloadResultData  {
+    return try  FfiConverterTypeDownloadResultData_lift(try rustCallWithError(FfiConverterTypeUploadError_lift) {
+    uniffi_beebeeb_uniffi_fn_func_download_and_decrypt_file(
+        FfiConverterString.lower(apiUrl),
+        FfiConverterString.lower(token),
+        FfiConverterTypeMasterKeyHandle_lower(masterKeyHandle),
+        FfiConverterString.lower(fileId),
+        FfiConverterString.lower(outputPath),
+        FfiConverterOptionCallbackInterfaceDownloadProgressCallback.lower(callback),$0
+    )
+})
+}
+/**
+ * Encrypt an arbitrary byte buffer with AES-256-GCM.
+ *
+ * Returns `nonce (12 bytes) || ciphertext`. The key must be exactly 32 bytes.
+ * Used by the search index and anywhere an opaque blob needs authenticated encryption.
+ */
+public func encryptBlob(key: Data, plaintext: Data)throws  -> Data  {
+    return try  FfiConverterData.lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
+    uniffi_beebeeb_uniffi_fn_func_encrypt_blob(
+        FfiConverterData.lower(key),
+        FfiConverterData.lower(plaintext),$0
     )
 })
 }
@@ -2956,6 +4282,21 @@ public func encryptName(masterKey: Data, fileId: String, filename: String, mimeT
         FfiConverterString.lower(fileId),
         FfiConverterString.lower(filename),
         FfiConverterOptionString.lower(mimeType),$0
+    )
+})
+}
+/**
+ * Generate a recovery kit PDF with a title, recovery words, and metadata.
+ *
+ * Returns the raw PDF bytes (valid PDF 1.4).
+ */
+public func generateRecoveryPdf(title: String, words: [String], metadataKeys: [String], metadataValues: [String])throws  -> Data  {
+    return try  FfiConverterData.lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
+    uniffi_beebeeb_uniffi_fn_func_generate_recovery_pdf(
+        FfiConverterString.lower(title),
+        FfiConverterSequenceString.lower(words),
+        FfiConverterSequenceString.lower(metadataKeys),
+        FfiConverterSequenceString.lower(metadataValues),$0
     )
 })
 }
@@ -3012,6 +4353,29 @@ public func isPreviewableByExtension(filename: String) -> Bool  {
 })
 }
 /**
+ * List entries in an archive, detecting format from the filename extension.
+ *
+ * Supported: `.tar`, `.gz`, `.tgz`, `.tar.gz`.
+ */
+public func listArchive(data: Data, filename: String)throws  -> [ArchiveEntryDto]  {
+    return try  FfiConverterSequenceTypeArchiveEntryDto.lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
+    uniffi_beebeeb_uniffi_fn_func_list_archive(
+        FfiConverterData.lower(data),
+        FfiConverterString.lower(filename),$0
+    )
+})
+}
+/**
+ * List entries in a TAR archive from raw bytes.
+ */
+public func listTarEntries(data: Data)throws  -> [ArchiveEntryDto]  {
+    return try  FfiConverterSequenceTypeArchiveEntryDto.lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
+    uniffi_beebeeb_uniffi_fn_func_list_tar_entries(
+        FfiConverterData.lower(data),$0
+    )
+})
+}
+/**
  * Finish OPAQUE client login. Returns the finalization message, the session
  * key, and the export key (used to derive the master key envelope).
  */
@@ -3056,6 +4420,19 @@ public func opaqueRegistrationStart(password: Data)throws  -> OpaqueStartResult 
     return try  FfiConverterTypeOpaqueStartResult_lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
     uniffi_beebeeb_uniffi_fn_func_opaque_registration_start(
         FfiConverterData.lower(password),$0
+    )
+})
+}
+/**
+ * Parse a JSON-encoded encrypted metadata payload.
+ *
+ * Accepts both base64 strings (canonical) and numeric arrays (legacy).
+ * Returns a record with `nonce` and `ciphertext` byte vectors.
+ */
+public func parseEncryptedMetadata(payload: String)throws  -> EncryptedMetadataParts  {
+    return try  FfiConverterTypeEncryptedMetadataParts_lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
+    uniffi_beebeeb_uniffi_fn_func_parse_encrypted_metadata(
+        FfiConverterString.lower(payload),$0
     )
 })
 }
@@ -3139,12 +4516,58 @@ public func recoverFromPhrase(phrase: String)throws  -> Data  {
 })
 }
 /**
+ * Serialize a nonce + ciphertext pair into the canonical JSON metadata format.
+ *
+ * Output: `{"nonce":"<base64>","ciphertext":"<base64>"}`.
+ */
+public func serializeEncryptedMetadata(nonce: Data, ciphertext: Data) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+    uniffi_beebeeb_uniffi_fn_func_serialize_encrypted_metadata(
+        FfiConverterData.lower(nonce),
+        FfiConverterData.lower(ciphertext),$0
+    )
+})
+}
+/**
+ * Compute the SHA-256 digest of `data`. Returns a 32-byte hash.
+ */
+public func sha256(data: Data) -> Data  {
+    return try!  FfiConverterData.lift(try! rustCall() {
+    uniffi_beebeeb_uniffi_fn_func_sha256(
+        FfiConverterData.lower(data),$0
+    )
+})
+}
+/**
  * Format a byte count as a human-readable SI string (e.g. "5.0 TB").
  */
 public func storageFormatSi(bytes: Int64) -> String  {
     return try!  FfiConverterString.lift(try! rustCall() {
     uniffi_beebeeb_uniffi_fn_func_storage_format_si(
         FfiConverterInt64.lower(bytes),$0
+    )
+})
+}
+/**
+ * Upload encrypted chunk files to the server. Blocking — call from Swift's
+ * `Task { }` or Kotlin's `withContext(Dispatchers.IO) { }`.
+ *
+ * Creates a tokio runtime internally and blocks until complete.
+ */
+public func uploadEncryptedFile(apiUrl: String, token: String, fileId: String, nameEncrypted: String, parentId: String?, mimeType: String?, isMedia: Bool, chunkPaths: [String], originalSize: UInt64, createdAt: String?, callback: UploadProgressCallback?)throws  -> UploadResultData  {
+    return try  FfiConverterTypeUploadResultData_lift(try rustCallWithError(FfiConverterTypeUploadError_lift) {
+    uniffi_beebeeb_uniffi_fn_func_upload_encrypted_file(
+        FfiConverterString.lower(apiUrl),
+        FfiConverterString.lower(token),
+        FfiConverterString.lower(fileId),
+        FfiConverterString.lower(nameEncrypted),
+        FfiConverterOptionString.lower(parentId),
+        FfiConverterOptionString.lower(mimeType),
+        FfiConverterBool.lower(isMedia),
+        FfiConverterSequenceString.lower(chunkPaths),
+        FfiConverterUInt64.lower(originalSize),
+        FfiConverterOptionString.lower(createdAt),
+        FfiConverterOptionCallbackInterfaceUploadProgressCallback.lower(callback),$0
     )
 })
 }
@@ -3188,6 +4611,12 @@ private let initializationResult: InitializationResult = {
     if (uniffi_beebeeb_uniffi_checksum_func_constellation_verify_code() != 40191) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_beebeeb_uniffi_checksum_func_decompress_gzip() != 58898) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_func_decrypt_blob() != 48689) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_beebeeb_uniffi_checksum_func_decrypt_chunk() != 1418) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -3209,6 +4638,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_beebeeb_uniffi_checksum_func_derive_master_key() != 58065) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_beebeeb_uniffi_checksum_func_derive_sas_bytes() != 47034) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_beebeeb_uniffi_checksum_func_derive_share_key() != 10175) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -3218,6 +4650,12 @@ private let initializationResult: InitializationResult = {
     if (uniffi_beebeeb_uniffi_checksum_func_derive_x25519_public() != 3860) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_beebeeb_uniffi_checksum_func_download_and_decrypt_file() != 8703) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_func_encrypt_blob() != 15197) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_beebeeb_uniffi_checksum_func_encrypt_chunk() != 23692) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -3225,6 +4663,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_beebeeb_uniffi_checksum_func_encrypt_name() != 54015) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_func_generate_recovery_pdf() != 58665) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_beebeeb_uniffi_checksum_func_generate_recovery_phrase() != 56821) {
@@ -3242,6 +4683,12 @@ private let initializationResult: InitializationResult = {
     if (uniffi_beebeeb_uniffi_checksum_func_is_previewable_by_extension() != 2408) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_beebeeb_uniffi_checksum_func_list_archive() != 4008) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_func_list_tar_entries() != 55781) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_beebeeb_uniffi_checksum_func_opaque_login_finish() != 15751) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -3252,6 +4699,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_beebeeb_uniffi_checksum_func_opaque_registration_start() != 35428) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_func_parse_encrypted_metadata() != 44121) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_beebeeb_uniffi_checksum_func_plan_base_storage_bytes() != 5655) {
@@ -3275,7 +4725,16 @@ private let initializationResult: InitializationResult = {
     if (uniffi_beebeeb_uniffi_checksum_func_recover_from_phrase() != 25900) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_beebeeb_uniffi_checksum_func_serialize_encrypted_metadata() != 54488) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_func_sha256() != 58954) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_beebeeb_uniffi_checksum_func_storage_format_si() != 41780) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_func_upload_encrypted_file() != 24232) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_beebeeb_uniffi_checksum_func_x25519_shared_secret() != 52845) {
@@ -3308,6 +4767,24 @@ private let initializationResult: InitializationResult = {
     if (uniffi_beebeeb_uniffi_checksum_method_filekeyhandle_encrypt_metadata() != 60336) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_beebeeb_uniffi_checksum_method_fileprovidercachehandle_clear() != 34269) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_method_fileprovidercachehandle_count() != 37338) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_method_fileprovidercachehandle_delete_item() != 61592) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_method_fileprovidercachehandle_get_children() != 48252) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_method_fileprovidercachehandle_get_item() != 11530) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_method_fileprovidercachehandle_upsert_entries() != 33479) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_compute_recovery_check() != 4155) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -3338,17 +4815,43 @@ private let initializationResult: InitializationResult = {
     if (uniffi_beebeeb_uniffi_checksum_constructor_constellationdecoderhandle_new() != 21598) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_beebeeb_uniffi_checksum_constructor_fileprovidercachehandle_open() != 22658) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_beebeeb_uniffi_checksum_constructor_masterkeyhandle_from_keychain_bytes() != 25584) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_beebeeb_uniffi_checksum_constructor_masterkeyhandle_from_recovery_phrase() != 63639) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_beebeeb_uniffi_checksum_method_downloadprogresscallback_on_chunk_decrypted() != 37523) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_method_downloadprogresscallback_on_complete() != 6229) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_method_downloadprogresscallback_on_error() != 17950) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_method_downloadprogresscallback_is_cancelled() != 18485) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_beebeeb_uniffi_checksum_method_fileprogresscallback_on_progress() != 13325) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_beebeeb_uniffi_checksum_method_uploadprogresscallback_on_chunk_uploaded() != 53798) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_method_uploadprogresscallback_on_complete() != 25763) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_method_uploadprogresscallback_on_error() != 59360) {
+        return InitializationResult.apiChecksumMismatch
+    }
 
+    uniffiCallbackInitDownloadProgressCallback()
     uniffiCallbackInitFileProgressCallback()
+    uniffiCallbackInitUploadProgressCallback()
     return InitializationResult.ok
 }()
 

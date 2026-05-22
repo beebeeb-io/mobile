@@ -10,6 +10,8 @@ import * as SecureStore from 'expo-secure-store';
 import * as FileSystem from 'expo-file-system';
 import { Platform } from 'react-native';
 import * as BeebeebCrypto from '../../modules/beebeeb-crypto';
+import { clearCachedFileIndex } from './file-index-cache';
+import { rateLimitedFetch } from './rate-limited-fetch';
 
 // API target. Override at build time with EXPO_PUBLIC_API_URL or via
 // expoConfig.extra.apiUrl (e.g. through eas.json env or app.config.ts).
@@ -133,6 +135,7 @@ export async function clearToken(): Promise<void> {
   cachedDeviceConfirmationSecret = null;
   await tokenStore.remove(TOKEN_KEY);
   await tokenStore.remove(DEVICE_CONFIRMATION_SECRET_KEY);
+  await clearCachedFileIndex().catch(() => {});
   await BeebeebCrypto.mirrorSessionToAppGroup(null, null).catch(() => false);
 }
 
@@ -216,7 +219,7 @@ async function request<T>(
 ): Promise<T> {
   let res: Response;
   try {
-    res = await fetch(`${BASE_URL}${path}`, {
+    res = await rateLimitedFetch(`${BASE_URL}${path}`, {
       method,
       headers: await headers(auth, extraHeaders),
       body: body ? JSON.stringify(body) : undefined,
@@ -337,7 +340,7 @@ export async function confirmAction(password: string): Promise<ConfirmActionResp
 
   let res: Response;
   try {
-    res = await fetch(`${BASE_URL}/api/v1/auth/confirm`, {
+    res = await rateLimitedFetch(`${BASE_URL}/api/v1/auth/confirm`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -455,6 +458,13 @@ export interface ListFilesResponse {
   files: FileEntry[];
 }
 
+export interface FileIndexResponse {
+  hash: string;
+  changed: boolean;
+  count: number;
+  files?: FileEntry[];
+}
+
 export async function createFolder(name: string, parentId?: string, folderId?: string): Promise<FileEntry> {
   return request<FileEntry>('POST', '/api/v1/files/folder', {
     name_encrypted: name,
@@ -478,11 +488,30 @@ export async function getFile(id: string): Promise<FileEntry> {
 }
 
 /**
- * GET /api/v1/files/all-images — every non-trashed image owned by the user
- * across every folder, sorted newest first. Each entry includes `parent_id`
- * so the caller can tag origin (iOS auto-backup vs. uploaded elsewhere).
+ * GET /api/v1/files/index — whole-vault metadata index with a stable hash.
+ * If `hash` still matches, the server returns `changed: false` without files.
+ */
+export async function getFileIndex(hash?: string): Promise<FileIndexResponse> {
+  const path = hash
+    ? `/api/v1/files/index?hash=${encodeURIComponent(hash)}`
+    : '/api/v1/files/index';
+  return request<FileIndexResponse>('GET', path);
+}
+
+/**
+ * GET /api/v1/files/media — every non-trashed media file owned by the user.
+ * Falls back to the legacy all-images endpoint for older servers.
  */
 export async function getAllImages(): Promise<FileEntry[]> {
+  try {
+    const data = await request<ListFilesResponse>('GET', '/api/v1/files/media');
+    return data.files;
+  } catch (err) {
+    if (!(err instanceof ApiError) || (err.status !== 404 && err.status !== 405)) {
+      throw err;
+    }
+  }
+
   const data = await request<ListFilesResponse>('GET', '/api/v1/files/all-images');
   return data.files;
 }
@@ -495,7 +524,12 @@ export async function getAllImages(): Promise<FileEntry[]> {
  */
 const CHUNK_SIZE = 4 * 1024 * 1024;
 const MOBILE_UPLOAD_CHUNK_SIZE_CAP_BYTES = 16 * 1024 * 1024;
+const MOBILE_UPLOAD_CHUNK_PAUSE_MS = 250;
 const SIMPLE_UPLOAD_THRESHOLD = 5 * 1024 * 1024; // 5 MB — below this, use simple upload
+
+function uploadPaceDelay(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, MOBILE_UPLOAD_CHUNK_PAUSE_MS));
+}
 
 function bytesToBlob(bytes: Uint8Array): Blob {
   const copy = bytes.slice();
@@ -531,7 +565,7 @@ async function putBinaryBytes(url: string, token: string | null, bytes: Uint8Arr
     }
   }
 
-  const res = await fetch(url, {
+  const res = await rateLimitedFetch(url, {
     method: 'PUT',
     headers,
     body: bytesToBlob(bytes),
@@ -577,7 +611,7 @@ async function uploadFileSimple(
   form.append('metadata', JSON.stringify(metadata));
   form.append('chunk_0', fileBlob);
 
-  const res = await fetch(`${BASE_URL}/api/v1/files/upload`, {
+  const res = await rateLimitedFetch(`${BASE_URL}/api/v1/files/upload`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}` },
     body: form,
@@ -699,7 +733,7 @@ export async function uploadEncryptedChunked(params: {
   // ── Step 1: Init — register the file/upload session ────────────────────
   if (protocol === 'v1') {
     initialNameEncrypted = await resolveNameEncrypted(fileId)
-    const initRes = await fetch(`${BASE_URL}/api/v1/files/upload/init`, {
+    const initRes = await rateLimitedFetch(`${BASE_URL}/api/v1/files/upload/init`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -772,6 +806,9 @@ export async function uploadEncryptedChunked(params: {
       uploadSessionId,
       protocol,
     })
+    if (i + 1 < chunkCount) {
+      await uploadPaceDelay()
+    }
   }
 
   // ── Step 3: Complete ───────────────────────────────────────────────────
@@ -789,7 +826,7 @@ export async function uploadEncryptedChunked(params: {
   const completePath = protocol === 'v2' && uploadSessionId
     ? `/api/v1/uploads/${uploadSessionId}/complete`
     : `/api/v1/files/${serverFileId}/upload/complete`
-  const completeRes = await fetch(`${BASE_URL}${completePath}`, {
+  const completeRes = await rateLimitedFetch(`${BASE_URL}${completePath}`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({}),
@@ -825,7 +862,7 @@ async function initUploadV2(params: {
   isMedia?: boolean;
   createdAt?: string;
 }): Promise<UploadV2InitResponse | null> {
-  const res = await fetch(`${BASE_URL}/api/v1/uploads/init`, {
+  const res = await rateLimitedFetch(`${BASE_URL}/api/v1/uploads/init`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${params.token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -916,7 +953,7 @@ async function uploadFileChunked(
   onProgress?.({ phase: 'preparing', chunksTotal: chunkCount, chunksUploaded: 0, bytesTotal: totalSize, bytesUploaded: 0 });
 
   // Step 1: Init upload — server creates the file record
-  const initRes = await fetch(`${BASE_URL}/api/v1/files/upload/init`, {
+  const initRes = await rateLimitedFetch(`${BASE_URL}/api/v1/files/upload/init`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -939,7 +976,7 @@ async function uploadFileChunked(
     const end = Math.min(start + CHUNK_SIZE, totalSize);
     const chunk = fileBlob.slice(start, end);
 
-    const chunkRes = await fetch(`${BASE_URL}/api/v1/files/${file_id}/chunks/${i}`, {
+    const chunkRes = await rateLimitedFetch(`${BASE_URL}/api/v1/files/${file_id}/chunks/${i}`, {
       method: 'PUT',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/octet-stream' },
       body: chunk,
@@ -956,12 +993,15 @@ async function uploadFileChunked(
       bytesTotal: totalSize,
       bytesUploaded: end,
     });
+    if (i + 1 < chunkCount) {
+      await uploadPaceDelay();
+    }
   }
 
   // Step 3: Complete upload — server finalizes the file
   onProgress?.({ phase: 'finalizing', chunksTotal: chunkCount, chunksUploaded: chunkCount, bytesTotal: totalSize, bytesUploaded: totalSize });
 
-  const completeRes = await fetch(`${BASE_URL}/api/v1/files/${file_id}/upload/complete`, {
+  const completeRes = await rateLimitedFetch(`${BASE_URL}/api/v1/files/${file_id}/upload/complete`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({}),
@@ -973,9 +1013,12 @@ async function uploadFileChunked(
   return completeRes.json() as Promise<FileEntry>;
 }
 
+export type ThumbnailVariant = 'small' | 'medium' | 'large';
+
 /** Returns the authenticated thumbnail endpoint URL for a file. */
-export function thumbnailUrl(fileId: string): string {
-  return `${BASE_URL}/api/v1/files/${fileId}/thumbnail`;
+export function thumbnailUrl(fileId: string, variant: ThumbnailVariant = 'medium'): string {
+  const suffix = variant === 'medium' ? '' : `/${variant}`;
+  return `${BASE_URL}/api/v1/files/${fileId}/thumbnail${suffix}`;
 }
 
 /**
@@ -983,17 +1026,22 @@ export function thumbnailUrl(fileId: string): string {
  * Best-effort: callers should fire-and-forget so a failed thumbnail
  * never blocks the upload success flow.
  */
-export async function uploadThumbnail(fileId: string, bytes: Uint8Array): Promise<void> {
+export async function uploadThumbnail(
+  fileId: string,
+  bytes: Uint8Array,
+  variant: ThumbnailVariant = 'medium',
+): Promise<void> {
   const token = await getToken();
-  const res = await putBinaryBytes(`${BASE_URL}/api/v1/files/${fileId}/thumbnail`, token, bytes);
+  const res = await putBinaryBytes(thumbnailUrl(fileId, variant), token, bytes);
   if (!res.ok) {
-    throw new ApiError(res.status, `Thumbnail upload failed (HTTP ${res.status})`);
+    const err = await res.error().catch(() => ({ error: undefined }));
+    throw new ApiError(res.status, err.error ?? `Thumbnail upload failed (HTTP ${res.status})`);
   }
 }
 
 export async function downloadFile(id: string): Promise<Response> {
   const token = await getToken();
-  const res = await fetch(`${BASE_URL}/api/v1/files/${id}/download`, {
+  const res = await rateLimitedFetch(`${BASE_URL}/api/v1/files/${id}/download`, {
     headers: { Authorization: `Bearer ${token}` },
   });
   if (!res.ok) {
@@ -1004,6 +1052,29 @@ export async function downloadFile(id: string): Promise<Response> {
 
 export async function deleteFile(id: string): Promise<void> {
   await request('DELETE', `/api/v1/files/${id}`);
+}
+
+export interface BulkTrashResult {
+  trashed: string[];
+  already_trashed: string[];
+  missing: string[];
+}
+
+export async function trashFiles(ids: string[]): Promise<BulkTrashResult> {
+  const uniqueIds = Array.from(new Set(ids));
+  if (uniqueIds.length === 0) {
+    return { trashed: [], already_trashed: [], missing: [] };
+  }
+
+  try {
+    return await request<BulkTrashResult>('POST', '/api/v1/files/trash', { ids: uniqueIds });
+  } catch (err) {
+    if (err instanceof ApiError && [400, 404, 405].includes(err.status)) {
+      await Promise.all(uniqueIds.map((id) => deleteFile(id)));
+      return { trashed: uniqueIds, already_trashed: [], missing: [] };
+    }
+    throw err;
+  }
 }
 
 export async function renameFile(id: string, newName: string): Promise<void> {
@@ -1184,7 +1255,7 @@ export async function downloadSharedFileBlob(
 
   let res: Response;
   try {
-    res = await fetch(`${BASE_URL}/api/v1/shares/${token}/download`, { headers });
+    res = await rateLimitedFetch(`${BASE_URL}/api/v1/shares/${token}/download`, { headers });
   } catch (_err) {
     throw new ApiError(0, 'Could not reach the server. Check your connection and try again.');
   }

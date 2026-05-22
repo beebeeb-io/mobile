@@ -5,6 +5,7 @@
     <key>BGTaskSchedulerPermittedIdentifiers</key>
     <array>
       <string>io.beebeeb.app.photo-backup</string>
+      <string>io.beebeeb.app.native-backup</string>
     </array>
     <key>CADisableMinimumFrameDurationOnPhone</key>
     <true/>
@@ -95,6 +96,8 @@
     <string>Beebeeb saves downloaded photos to your library.</string>
     <key>NSPhotoLibraryUsageDescription</key>
     <string>Beebeeb backs up your photos with end-to-end encryption.</string>
+    <key>NSSupportsLiveActivities</key>
+    <true/>
     <key>NSRemindersFullAccessUsageDescription</key>
     <string>Beebeeb backs up your reminders with end-to-end encryption.</string>
     <key>NSRemindersUsageDescription</key>

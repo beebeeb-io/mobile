@@ -14,10 +14,14 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MOBILE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-CORE_DIR="$(cd "$MOBILE_DIR/../../core" 2>/dev/null && pwd)" || {
+if [ -d "$MOBILE_DIR/../core" ]; then
+    CORE_DIR="$(cd "$MOBILE_DIR/../core" && pwd)"
+elif [ -d "$MOBILE_DIR/../../core" ]; then
+    CORE_DIR="$(cd "$MOBILE_DIR/../../core" && pwd)"
+else
     echo "ERROR: repos/core not found — run from inside the monorepo"
     exit 1
-}
+fi
 
 XCFW_SRC="$CORE_DIR/BeebeebCore.xcframework"
 XCFW_DST="$MOBILE_DIR/ios/BeebeebCore.xcframework"

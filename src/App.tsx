@@ -90,6 +90,7 @@ import DocumentScannerScreen from './screens/DocumentScannerScreen';
 import TwoFactorSetupScreen from './screens/TwoFactorSetupScreen';
 import BackupInsightsScreen from './screens/BackupInsightsScreen';
 import SpeedtestScreen from './screens/SpeedtestScreen';
+import AdvancedSettingsScreen from './screens/AdvancedSettingsScreen';
 
 import ErrorBoundary from './components/ErrorBoundary';
 import ConfirmActionPrompt from './components/ConfirmActionPrompt';
@@ -98,11 +99,26 @@ import { BackupProvider, useBackup } from './lib/backup-context';
 import { discardAllPendingShares, processPendingShares } from '../plugins/share-extension/PendingSharesHandler';
 import { useToast } from './lib/toast-context';
 import { clearWidgetData } from './utils/widgetData';
+import { ensureDevicePerformanceProfile } from './lib/device-performance';
+import { ThumbnailRepairWorker } from './lib/ThumbnailRepairWorker';
 
 const ONBOARDING_KEY = 'beebeeb_onboarding_done';
 const PHRASE_VERIFIED_KEY = 'beebeeb_phrase_verified';
 const MASTER_KEY_CHECK_LABEL = 'io.beebeeb.master-key-check';
 const MASTER_KEY_FALLBACK_LABEL = 'io.beebeeb.master-key.fallback';
+const STARTUP_STEP_TIMEOUT_MS = 5000;
+
+function withStartupTimeout<T>(promise: Promise<T>, fallback: T, label: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((resolve) => {
+      setTimeout(() => {
+        console.warn(`[Beebeeb] Startup step timed out: ${label}`);
+        resolve(fallback);
+      }, STARTUP_STEP_TIMEOUT_MS);
+    }),
+  ]);
+}
 
 // ---------------------------------------------------------------------------
 // Navigation types
@@ -167,6 +183,7 @@ export type RootStackParamList = {
   TwoFactorSetup: undefined;
   BackupInsights: undefined;
   Speedtest: undefined;
+  AdvancedSettings: undefined;
 };
 
 // ---------------------------------------------------------------------------
@@ -192,6 +209,7 @@ const linking = {
         path: '',
       },
       SharedView: 's/:token',
+      BackupInsights: 'settings/backup-insights',
     },
   },
 };
@@ -202,6 +220,22 @@ const Stack = createNativeStackNavigator<RootStackParamList>();
 // Module-level nav ref so non-component code (deep-link handler / quick
 // action listener) can dispatch navigation without a hook.
 const navigationRef = createNavigationContainerRef<RootStackParamList>();
+
+function isBackupInsightsURL(url: string): boolean {
+  const normalized = url.toLowerCase().replace(/\/+$/, '');
+  return normalized === 'beebeeb://settings/backup-insights' ||
+    normalized === 'https://beebeeb.io/settings/backup-insights' ||
+    normalized === 'http://beebeeb.io/settings/backup-insights';
+}
+
+function dispatchWhenNavigationReady(dispatch: () => void, attempt = 0): void {
+  if (navigationRef.isReady()) {
+    dispatch();
+    return;
+  }
+  if (attempt >= 30) return;
+  setTimeout(() => dispatchWhenNavigationReady(dispatch, attempt + 1), 150);
+}
 
 // Configure in-foreground notification display before any component mounts.
 setupNotificationHandler();
@@ -352,12 +386,12 @@ function BiometricGuard({ locked, onUnlock }: { locked: boolean; onUnlock: () =>
     if (locked) return;
     if (crypto.isUnlocked) { silentUnlockDone.current = true; return; }
     silentUnlockDone.current = true;
-    crypto.unlock().catch(() => {});
+    crypto.unlock(undefined, 'cold_launch_vault_unlock').catch(() => {});
   }, [locked, crypto.isUnlocked]);
 
   async function handleUnlocked() {
     try {
-      await crypto.unlock();
+      await crypto.unlock(undefined, 'app_biometric_lock_screen');
     } catch {
       // Key not in keychain yet (e.g. legacy account before OPAQUE) — just unlock the screen
     }
@@ -404,19 +438,23 @@ function VaultRecoveryGate({ enabled }: { enabled: boolean }) {
 function FileProviderDomainRegistrar({ enabled }: { enabled: boolean }) {
   const crypto = useCrypto();
   const registeringRef = useRef(false);
-  const registeredRef = useRef(false);
+  const attemptedRef = useRef(false);
 
   const register = useCallback(async () => {
     if (Platform.OS !== 'ios' || !enabled || !crypto.isUnlocked) return;
-    if (registeringRef.current || registeredRef.current) return;
+    if (registeringRef.current || attemptedRef.current) return;
 
     registeringRef.current = true;
+    attemptedRef.current = true;
     try {
       const token = await getToken();
       if (!token) return;
       await BeebeebCrypto.mirrorSessionToAppGroup(token, getApiUrl()).catch(() => false);
       const result = await BeebeebCrypto.registerFileProviderDomain();
-      registeredRef.current = result.registered;
+      const mounted = result.registered && result.cacheDatabaseReady !== false;
+      if (mounted) {
+        void populateFileProviderCache(crypto.decryptMetadata).catch(() => {});
+      }
       if (__DEV__) {
         console.log('[FileProvider] domain registration', result);
       }
@@ -427,11 +465,11 @@ function FileProviderDomainRegistrar({ enabled }: { enabled: boolean }) {
     } finally {
       registeringRef.current = false;
     }
-  }, [enabled, crypto.isUnlocked]);
+  }, [crypto.decryptMetadata, crypto.isUnlocked, enabled]);
 
   useEffect(() => {
-    registeredRef.current = false;
-  }, [enabled]);
+    attemptedRef.current = false;
+  }, [crypto.isUnlocked, enabled]);
 
   useEffect(() => {
     void register();
@@ -464,9 +502,11 @@ function TabNavigator() {
       .catch(() => {});
   }, []);
 
-  // Backup badge: amber dot when backup is running, red dot when items have failed
-  const backupRunning = backup.photoSessionProgress?.running;
-  const backupFailed = backup.photoSessionProgress?.failed > 0;
+  // Backup badge is driven by the native backup engine state.
+  const backupRunning =
+    ['preparing', 'encrypting', 'uploading'].includes(backup.backupProgress.state) ||
+    backup.backupProgress.inProgress > 0;
+  const backupFailed = backup.backupProgress.failed > 0;
   const settingsBadge = backupFailed
     ? { tabBarBadge: ' ', tabBarBadgeStyle: { backgroundColor: c.red, minWidth: 10, maxHeight: 10, borderRadius: 5, fontSize: 1 } }
     : backupRunning
@@ -638,39 +678,50 @@ export default function App() {
     let slowTimer: ReturnType<typeof setTimeout> | undefined;
     let needsDiagnostics = false;
 
-    const tokenExists = await hasToken();
-    if (tokenExists) {
-      setLoadingStatus('Contacting server...');
-      slowTimer = setTimeout(() => setLoadingStatus('Taking longer than usual...'), 5_000);
+    try {
+      const tokenExists = await withStartupTimeout(hasToken(), false, 'read session token');
+      if (tokenExists) {
+        setLoadingStatus('Contacting server...');
+        slowTimer = setTimeout(() => setLoadingStatus('Taking longer than usual...'), 5_000);
 
-      const me = await retryGetMe();
-      clearTimeout(slowTimer);
+        const me = await retryGetMe();
+        clearTimeout(slowTimer);
+        slowTimer = undefined;
 
-      if (me) {
-        setLoadingStatus('Unlocking vault...');
-        setUser(me);
-        SecureStore.setItemAsync(LAST_CONNECTED_KEY, new Date().toISOString()).catch(() => {});
-      } else {
-        // All retries exhausted — show diagnostics
-        needsDiagnostics = true;
-        setLoadingStatus('');
-        setShowDiagnostics(true);
+        if (me) {
+          setLoadingStatus('Unlocking vault...');
+          setUser(me);
+          SecureStore.setItemAsync(LAST_CONNECTED_KEY, new Date().toISOString()).catch(() => {});
+        } else {
+          // All retries exhausted — show diagnostics
+          needsDiagnostics = true;
+          setLoadingStatus('');
+          setShowDiagnostics(true);
+        }
       }
+
+      // When diagnostics are showing, keep the splash screen visible — don't
+      // fall through to the auth/main navigator until the user retries or
+      // chooses to sign in.
+      if (needsDiagnostics) {
+        // Still load preferences in the background so they're ready on retry
+        void withStartupTimeout(loadPreferences(tokenExists), undefined, 'load preferences');
+        return;
+      }
+
+      setLoadingStatus('Loading preferences...');
+      await withStartupTimeout(loadPreferences(tokenExists), undefined, 'load preferences');
+
+      setChecking(false);
+    } catch (err) {
+      console.warn('[Beebeeb] Startup failed; falling back to signed-out state', err);
+      setUser(null);
+      setLoadingStatus('');
+      setShowDiagnostics(false);
+      setChecking(false);
+    } finally {
+      if (slowTimer) clearTimeout(slowTimer);
     }
-
-    // When diagnostics are showing, keep the splash screen visible — don't
-    // fall through to the auth/main navigator until the user retries or
-    // chooses to sign in.
-    if (needsDiagnostics) {
-      // Still load preferences in the background so they're ready on retry
-      void loadPreferences(tokenExists);
-      return;
-    }
-
-    setLoadingStatus('Loading preferences...');
-    await loadPreferences(tokenExists);
-
-    setChecking(false);
   }, [retryGetMe, loadPreferences]);
 
   // On mount: check for an existing session
@@ -744,9 +795,13 @@ export default function App() {
       else if (url === 'beebeeb://search') action = 'search';
       else if (url === 'beebeeb://scan') action = 'scan';
       else if (url === 'beebeeb://recent') action = 'recent';
-      if (!action) return;
       const dispatch = () => {
         if (!navigationRef.isReady()) return;
+        if (isBackupInsightsURL(url)) {
+          navigationRef.navigate('BackupInsights');
+          return;
+        }
+        if (!action) return;
         // The Tabs route's deep-nested signature isn't easy to express in
         // RootStackParamList without leaking nav internals; the runtime
         // shape `{ screen, params }` is what react-navigation expects, and
@@ -758,9 +813,11 @@ export default function App() {
         });
       };
       // Cold-launch URLs may arrive before the container is mounted; retry
-      // once on the next tick if so.
-      if (navigationRef.isReady()) dispatch();
-      else setTimeout(dispatch, 0);
+      // for a short window; Live Activity taps can arrive before auth restore
+      // has mounted the authenticated stack.
+      if (action || isBackupInsightsURL(url)) {
+        dispatchWhenNavigationReady(dispatch);
+      }
     };
 
     Linking.getInitialURL().then(handleShortcutURL).catch(() => {});
@@ -897,6 +954,8 @@ export default function App() {
           onStateChange={handleNavigationStateChange}
         >
             <VaultRecoveryGate enabled={isAuthenticated} />
+            <DevicePerformanceCalibrator enabled={isAuthenticated && !locked} />
+            <ThumbnailRepairWorker enabled={isAuthenticated && !locked} />
             <FileProviderDomainRegistrar enabled={isAuthenticated && !locked} />
             <Stack.Navigator screenOptions={{ headerShown: false }}>
               {isAuthenticated ? (
@@ -972,6 +1031,11 @@ export default function App() {
                     component={SpeedtestScreen}
                     options={{ headerShown: false }}
                   />
+                  <Stack.Screen
+                    name="AdvancedSettings"
+                    component={AdvancedSettingsScreen}
+                    options={{ headerShown: false }}
+                  />
                 </>
               ) : (
                 <>
@@ -1034,6 +1098,20 @@ function AppWithErrorBoundary() {
       </ErrorBoundary>
     </GestureHandlerRootView>
   );
+}
+
+function DevicePerformanceCalibrator({ enabled }: { enabled: boolean }) {
+  const crypto = useCrypto();
+
+  useEffect(() => {
+    if (!enabled || !crypto.isUnlocked) return;
+    const timer = setTimeout(() => {
+      void ensureDevicePerformanceProfile(crypto).catch(() => null);
+    }, 2500);
+    return () => clearTimeout(timer);
+  }, [crypto, enabled]);
+
+  return null;
 }
 
 registerRootComponent(AppWithErrorBoundary);

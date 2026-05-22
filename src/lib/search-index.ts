@@ -15,6 +15,7 @@
 
 import { encryptChunk, decryptChunk } from '../../modules/beebeeb-crypto'
 import { getApiUrl, getToken } from './api'
+import { rateLimitedFetch } from './rate-limited-fetch'
 
 export interface SearchIndexEntry {
   name: string
@@ -115,7 +116,7 @@ export async function fetchIndex(indexKey: Uint8Array): Promise<SearchIndex | nu
   const token = await getToken()
   if (!token) return null
 
-  const res = await fetch(`${getApiUrl()}/api/v1/index`, {
+  const res = await rateLimitedFetch(`${getApiUrl()}/api/v1/index`, {
     headers: { Authorization: `Bearer ${token}` },
   })
   if (res.status === 404) return null
@@ -140,7 +141,7 @@ export async function saveIndex(
   }
   if (etag) headers['If-Match'] = etag
 
-  const res = await fetch(`${getApiUrl()}/api/v1/index`, {
+  const res = await rateLimitedFetch(`${getApiUrl()}/api/v1/index`, {
     method: 'PUT',
     headers,
     body: encrypted as unknown as BodyInit,

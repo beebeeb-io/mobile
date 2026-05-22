@@ -104,7 +104,7 @@ export async function processPendingShares(opts: ProcessPendingSharesOptions): P
       const parentId = parentMap[summary.id] ?? undefined
 
       await encryptedUpload({
-        fileId: generateFileId(),
+        fileId: await generateFileId(),
         uri: resource.uri,
         name: resource.filename,
         parentId,

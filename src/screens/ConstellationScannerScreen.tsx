@@ -294,7 +294,7 @@ export function ConstellationScannerScreen() {
     setSavingToVault(true);
     try {
       await encryptedUpload({
-        fileId: generateFileId(),
+        fileId: await generateFileId(),
         uri: savedUri,
         name: savedFileName ?? 'beebeeb-transfer.enc',
         mimeType: savedMime ?? 'application/octet-stream',

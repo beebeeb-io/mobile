@@ -18,7 +18,10 @@ final class FileProviderItem: NSObject, NSFileProviderItem {
   // MARK: - Identity
 
   var itemIdentifier: NSFileProviderItemIdentifier {
-    NSFileProviderItemIdentifier(cached.id)
+    if cached.id == BeebeebConstants.rootContainerIdentifier {
+      return .rootContainer
+    }
+    return NSFileProviderItemIdentifier(cached.id)
   }
 
   var parentItemIdentifier: NSFileProviderItemIdentifier {
@@ -84,9 +87,12 @@ final class FileProviderItem: NSObject, NSFileProviderItem {
   /// the updated_at timestamp + size — server-driven changes always bump
   /// `updated_at`, so this captures every meaningful mutation.
   var itemVersion: NSFileProviderItemVersion {
-    let payload = "\(cached.updatedAt ?? "")|\(cached.sizeBytes)"
-    let bytes = Data(payload.utf8)
-    return NSFileProviderItemVersion(contentVersion: bytes, metadataVersion: bytes)
+    let contentPayload = "\(cached.updatedAt ?? "")|\(cached.sizeBytes)"
+    let metadataPayload = "\(contentPayload)|\(cached.nameDecrypted ?? "")|\(cached.nameEncrypted ?? "")|\(cached.parentId ?? "")"
+    return NSFileProviderItemVersion(
+      contentVersion: Data(contentPayload.utf8),
+      metadataVersion: Data(metadataPayload.utf8)
+    )
   }
 
   // MARK: - Helpers
