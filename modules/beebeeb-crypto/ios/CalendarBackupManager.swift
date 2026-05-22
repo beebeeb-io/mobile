@@ -45,10 +45,20 @@ final class CalendarBackupManager {
     guard let token = authToken else { return }
     DispatchQueue.global(qos: .background).async { [weak self] in
       guard let self else { return }
-      let ical = self.exportICal()
-      guard let data = ical.data(using: .utf8) else { return }
-      guard self.shouldUpload(data: data, stateKey: "io.beebeeb.calendarBackupLastHash") else { return }
-      self.upload(data: data, token: token)
+      let calendars = self.store.calendars(for: .event)
+      let start = Calendar.current.date(byAdding: .year, value: -5, to: Date())!
+      let end = Calendar.current.date(byAdding: .year, value: 2, to: Date())!
+      for cal in calendars {
+        let predicate = self.store.predicateForEvents(withStart: start, end: end, calendars: [cal])
+        let events = self.store.events(matching: predicate)
+        if events.isEmpty { continue }
+        let ical = self.exportICal(calendar: cal, events: events)
+        guard let data = ical.data(using: .utf8) else { continue }
+        let stateKey = "io.beebeeb.calendarBackupLastHash." + self.stateKeyComponent(for: cal.title)
+        guard self.shouldUpload(data: data, stateKey: stateKey) else { continue }
+        let fileName = self.safeFileName(cal.title) + ".ics"
+        self.upload(data: data, fileName: fileName, token: token)
+      }
     }
   }
 
@@ -70,38 +80,43 @@ final class CalendarBackupManager {
     }
   }
 
-  private func exportICal() -> String {
-    let calendars = store.calendars(for: .event)
-    let start = Calendar.current.date(byAdding: .year, value: -5, to: Date())!
-    let end = Calendar.current.date(byAdding: .year, value: 2, to: Date())!
-    let predicate = store.predicateForEvents(withStart: start, end: end, calendars: nil)
-    let events = store.events(matching: predicate)
+  /// Build an RFC 5545 iCalendar file for a single EKCalendar. Per task 0439
+  /// (with audit in the task spec), this implementation now:
+  /// - emits one file per calendar instead of a merged file
+  /// - includes the REQUIRED `DTSTAMP` on every VEVENT (RFC 5545 §3.6.1)
+  /// - omits the bogus `BEGIN:VTIMEZONE / TZID:<calendar title>` block — events
+  ///   are already in UTC (`yyyyMMdd'T'HHmmss'Z'`), so no VTIMEZONE is needed
+  /// - emits `METHOD:PUBLISH` + `X-WR-CALNAME` for client interop
+  /// - applies 75-octet line folding (RFC 5545 §3.1) on every output line
+  private func exportICal(calendar: EKCalendar, events: [EKEvent]) -> String {
+    let utcFmt = DateFormatter()
+    utcFmt.dateFormat = "yyyyMMdd'T'HHmmss'Z'"
+    utcFmt.timeZone = TimeZone(identifier: "UTC")
+    let allDayFmt = DateFormatter()
+    allDayFmt.dateFormat = "yyyyMMdd"
+    allDayFmt.timeZone = TimeZone(identifier: "UTC")
+    let dtstampNow = utcFmt.string(from: Date())
 
-    var lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Beebeeb//EN", "CALSCALE:GREGORIAN"]
-
-    for calendar in calendars {
-      lines += ["BEGIN:VTIMEZONE", "TZID:\(icalEscape(calendar.title))", "END:VTIMEZONE"]
-    }
-
-    let fmt = ISO8601DateFormatter()
-    fmt.formatOptions = [.withFullDate, .withTime, .withColonSeparatorInTime]
+    var lines: [String] = []
+    lines.append("BEGIN:VCALENDAR")
+    lines.append("VERSION:2.0")
+    lines.append("PRODID:-//Beebeeb//EN")
+    lines.append("CALSCALE:GREGORIAN")
+    lines.append("METHOD:PUBLISH")
+    lines.append("X-WR-CALNAME:\(icalEscape(calendar.title))")
 
     for event in events {
       lines.append("BEGIN:VEVENT")
       lines.append("UID:\(event.eventIdentifier ?? UUID().uuidString)")
+      lines.append("DTSTAMP:\(dtstampNow)")
       lines.append("SUMMARY:\(icalEscape(event.title ?? ""))")
 
       if event.isAllDay {
-        let df = DateFormatter()
-        df.dateFormat = "yyyyMMdd"
-        lines.append("DTSTART;VALUE=DATE:\(df.string(from: event.startDate))")
-        lines.append("DTEND;VALUE=DATE:\(df.string(from: event.endDate))")
+        lines.append("DTSTART;VALUE=DATE:\(allDayFmt.string(from: event.startDate))")
+        lines.append("DTEND;VALUE=DATE:\(allDayFmt.string(from: event.endDate))")
       } else {
-        let df = DateFormatter()
-        df.dateFormat = "yyyyMMdd'T'HHmmss'Z'"
-        df.timeZone = TimeZone(identifier: "UTC")
-        lines.append("DTSTART:\(df.string(from: event.startDate))")
-        lines.append("DTEND:\(df.string(from: event.endDate))")
+        lines.append("DTSTART:\(utcFmt.string(from: event.startDate))")
+        lines.append("DTEND:\(utcFmt.string(from: event.endDate))")
       }
 
       if let notes = event.notes, !notes.isEmpty {
@@ -114,7 +129,66 @@ final class CalendarBackupManager {
     }
 
     lines.append("END:VCALENDAR")
-    return lines.joined(separator: "\r\n")
+    return lines.map { foldLine($0) }.joined(separator: "\r\n")
+  }
+
+  /// RFC 5545 §3.1 line folding: lines MUST NOT exceed 75 octets. Long lines
+  /// are split between any two characters by inserting CRLF + a single space
+  /// (or HTAB). The continuation's leading space is part of the 75-octet
+  /// limit, so continuation chunks carry up to 74 octets of content.
+  ///
+  /// Splits on Unicode scalar boundaries so a multi-byte UTF-8 sequence is
+  /// never sliced — a literal byte-count split would corrupt characters like
+  /// emoji or accented letters that legitimately appear in calendar notes.
+  private func foldLine(_ line: String) -> String {
+    if line.utf8.count <= 75 { return line }
+
+    var result = ""
+    var currentChunk = ""
+    var currentBytes = 0
+    var isFirstChunk = true
+
+    for scalar in line.unicodeScalars {
+      let scalarBytes = String(scalar).utf8.count
+      let chunkLimit = isFirstChunk ? 75 : 74
+      if currentBytes + scalarBytes > chunkLimit {
+        if isFirstChunk {
+          result = currentChunk
+          isFirstChunk = false
+        } else {
+          result += "\r\n " + currentChunk
+        }
+        currentChunk = String(scalar)
+        currentBytes = scalarBytes
+      } else {
+        currentChunk += String(scalar)
+        currentBytes += scalarBytes
+      }
+    }
+
+    if isFirstChunk {
+      result = currentChunk
+    } else if !currentChunk.isEmpty {
+      result += "\r\n " + currentChunk
+    }
+    return result
+  }
+
+  /// Sanitize a calendar title for use as a filename. The encrypted-name
+  /// envelope ultimately wraps this, but the display name shown when the
+  /// user downloads the .ics needs to be filesystem-safe.
+  private func safeFileName(_ title: String) -> String {
+    let invalid = CharacterSet(charactersIn: "/\\:?*\"<>|")
+    let cleaned = title.components(separatedBy: invalid).joined(separator: "_")
+    return cleaned.isEmpty ? "Calendar" : cleaned
+  }
+
+  /// Hash a calendar title to a stable ASCII-safe component for the
+  /// per-calendar dedup key in UserDefaults. Calendar titles can contain
+  /// any character; the SHA-256 hex keeps the key well-formed regardless.
+  private func stateKeyComponent(for title: String) -> String {
+    let digest = SHA256.hash(data: Data(title.utf8))
+    return digest.map { String(format: "%02x", $0) }.joined()
   }
 
   private func shouldUpload(data: Data, stateKey: String) -> Bool {
@@ -135,12 +209,11 @@ final class CalendarBackupManager {
   // temp files and calling the Rust upload function instead of the Swift HTTP
   // uploader. NativeBackupEngine already demonstrates the pattern. For now this
   // continues using the legacy Swift uploader which still works correctly.
-  private func upload(data: Data, token: String) {
+  private func upload(data: Data, fileName: String, token: String) {
     guard let serverBaseURL else {
       NSLog("[BeebeebBackup] calendar upload aborted: serverURL not configured in keychain (sign in again to set)")
       return
     }
-    let fileName = "calendar.ics"
     let mimeType = "text/calendar"
     NativeEncryptedBackupUploader.shared.upload(
       plaintext: data,
@@ -151,7 +224,7 @@ final class CalendarBackupManager {
       serverBaseURL: serverBaseURL
     ) { result in
       if case .failure(let error) = result {
-        NSLog("[BeebeebBackup] calendar upload failed: \(error.localizedDescription)")
+        NSLog("[BeebeebBackup] calendar upload of \(fileName) failed: \(error.localizedDescription)")
       }
     }
   }
