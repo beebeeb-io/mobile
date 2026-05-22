@@ -1712,6 +1712,24 @@ public class BeebeebCryptoModule: Module {
       return NativeBackupEngine.shared.assetStatusForBridge(localId: localId)
     }
 
+    // ── 0438 Expo wrapper for the Rust-side fast-path decrypt ─────────
+    //
+    // rust-engineer shipped `decryptContiguousToFile` in core (commit
+    // `c5335ff`); ts-engineer wired the JS side (`src/lib/decrypt-to-file.ts`
+    // and `src/lib/native-decrypt.ts`, gated by `isDecryptToFileReady()`
+    // runtime probe). This 5-line wrapper exposes the UniFFI binding to JS
+    // so the probe flips and the fast path takes over (Rust slices, decrypts
+    // and writes in one call — no per-chunk JSI round-trips). The per-chunk
+    // JS loop stays in place as the fallback path.
+    AsyncFunction("decryptContiguousToFile") {
+      (fileKey: Data, body: Data, chunkSize: UInt64, outputPath: String) throws -> UInt64 in
+      // UniFFI emits this as a top-level function in `beebeeb_uniffi.swift`,
+      // not under a namespace — call it directly.
+      return try decryptContiguousToFile(
+        fileKey: fileKey, body: body, chunkSize: chunkSize, outputPath: outputPath
+      )
+    }
+
     AsyncFunction("triggerImmediateBackup") { (authToken: String) async throws -> [String: Any] in
       let engine = NativeBackupEngine.shared
       engine.token = authToken
