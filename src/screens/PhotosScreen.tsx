@@ -27,7 +27,6 @@ import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import * as Haptics from 'expo-haptics';
 import * as MediaLibrary from 'expo-media-library';
 import * as Sharing from 'expo-sharing';
-import JSZip from 'jszip';
 import { NativePhotosGridView, type NativePhotoGridItem } from '../../modules/beebeeb-crypto';
 import { radii, spacing } from '../theme';
 import { useTheme } from '../lib/theme-context';
@@ -1250,6 +1249,10 @@ export default function PhotosScreen() {
     setBulkAction('share');
     setBulkStatus('Preparing ZIP...');
     try {
+      // Lazy-load JSZip the first time the user shares a multi-select bundle.
+      // Static import would parse the ~1 MB module on every cold start; this
+      // path is rare so deferring to first use is a clean win for TTI.
+      const { default: JSZip } = await import('jszip');
       const zip = new JSZip();
       const usedNames = new Set<string>();
       for (let index = 0; index < selectedPhotos.length; index += 1) {
