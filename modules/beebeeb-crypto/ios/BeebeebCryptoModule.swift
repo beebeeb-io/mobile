@@ -1695,6 +1695,23 @@ public class BeebeebCryptoModule: Module {
       return NativeBackupEngine.shared.currentProgress()
     }
 
+    // ── 0437 single-owner bridge (Swift drives, TS reads) ─────────────
+    //
+    // Match the contract in `src/lib/backup-bridge.ts`. `getBackupStatus`
+    // returns a `BackupStatusSnapshot`-shaped dictionary; `getAssetStatus`
+    // returns the per-asset 4-state string or `nil`. The event channel
+    // (`addBackupStatusListener` → `backup-status-changed`) and the
+    // `migrateLegacyBackupState` ingest path land in the 0437 (b)
+    // checkpoint — this is the read-side slice.
+
+    AsyncFunction("getBackupStatus") { () -> [String: Any] in
+      return NativeBackupEngine.shared.snapshotForBridge()
+    }
+
+    AsyncFunction("getAssetStatus") { (localId: String) -> String? in
+      return NativeBackupEngine.shared.assetStatusForBridge(localId: localId)
+    }
+
     AsyncFunction("triggerImmediateBackup") { (authToken: String) async throws -> [String: Any] in
       let engine = NativeBackupEngine.shared
       engine.token = authToken

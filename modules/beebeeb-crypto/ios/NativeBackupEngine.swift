@@ -1015,6 +1015,109 @@ final class NativeBackupEngine: NSObject {
     NSLog("[NativeBackupEngine] Resumed")
   }
 
+  // MARK: - 0437 single-owner bridge (Swift drives, TS reads)
+
+  /// Snapshot the engine's runtime state into the JS-readable shape that
+  /// `src/lib/backup-bridge.ts` consumes (`BackupStatusSnapshot`). Replaces
+  /// the old per-screen calls into `BackupDatabase.ts` — JS reads only,
+  /// Swift writes. See task 0437.
+  func snapshotForBridge() -> [String: Any] {
+    refreshProgress()
+    let pending = pendingUploadCount()
+    let internalState = backupState(pending: pending).state
+    let lastError = lastErrorMessageForBridge()
+    let backoffMillis: Any = backoffUntil.map { Int($0.timeIntervalSince1970 * 1000) } ?? NSNull()
+    return [
+      "totalAssets": totalAssets,
+      "completedAssets": completedAssets,
+      "inProgressAssets": inProgressAssets,
+      "failedAssets": failedAssets,
+      "bytesUploaded": bytesUploaded,
+      "bytesTotal": bytesTotal,
+      "state": mapBridgeState(internalState: internalState),
+      "lastErrorMessage": (lastError as Any?) ?? NSNull(),
+      "backoffUntil": backoffMillis,
+    ]
+  }
+
+  /// Look up the current bridge-shaped status for a single asset by its
+  /// `PHAsset.localIdentifier`. Returns one of `"queued"`, `"uploading"`,
+  /// `"completed"`, `"failed"`, or `nil` when the asset isn't tracked.
+  func assetStatusForBridge(localId: String) -> String? {
+    return dbQueue.sync {
+      guard let db = self.db else { return nil }
+      var stmt: OpaquePointer?
+      defer { sqlite3_finalize(stmt) }
+      let sql = "SELECT status FROM backup_assets WHERE local_asset_id = ? LIMIT 1"
+      guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
+      sqlite3_bind_text(stmt, 1, (localId as NSString).utf8String, -1, nil)
+      guard sqlite3_step(stmt) == SQLITE_ROW,
+            sqlite3_column_type(stmt, 0) != SQLITE_NULL else { return nil }
+      let raw = String(cString: sqlite3_column_text(stmt, 0))
+      return Self.mapBridgeAssetStatus(raw)
+    }
+  }
+
+  /// Collapse the engine's 8-state internal status to the 4-state shape
+  /// ts-engineer's `BackupRunState` defines. The TS UI only cares about the
+  /// macro state (idle / running / paused / error); fine-grained reasons
+  /// like `waitingForWifi` map to `paused` because the user-visible
+  /// behaviour ("not making progress, will resume") is identical.
+  private func mapBridgeState(internalState: String) -> String {
+    switch internalState {
+    case "uploading", "preparing":
+      return "running"
+    case "pausedByUser", "waitingForAppOpen", "waitingForWifi":
+      return "paused"
+    case "needsAttention":
+      return "error"
+    case "idle", "complete":
+      return "idle"
+    default:
+      return "idle"
+    }
+  }
+
+  /// Map SQLite `status` column values to the bridge enum. The engine
+  /// uses a richer set of internal transitions (`staging`, `staged_upload`,
+  /// `pending_reupload`, etc.) but the bridge only exposes the 4-state
+  /// shape that ts-engineer's `BackupAssetRuntimeStatus` declares.
+  private static func mapBridgeAssetStatus(_ raw: String) -> String {
+    switch raw {
+    case "uploading":
+      return "uploading"
+    case "uploaded":
+      return "completed"
+    case "failed", "local_missing":
+      return "failed"
+    default:
+      // pending_upload, pending_reupload, staging, staged_upload — all
+      // pre-upload states show as queued to the JS UI.
+      return "queued"
+    }
+  }
+
+  /// Most recent non-null `error_message` from a failed asset row.
+  /// Surfaces the user-actionable error that the engine has been
+  /// retrying. `nil` when the queue has no failed assets.
+  private func lastErrorMessageForBridge() -> String? {
+    return dbQueue.sync {
+      guard let db = self.db else { return nil }
+      var stmt: OpaquePointer?
+      defer { sqlite3_finalize(stmt) }
+      let sql = """
+      SELECT error_message FROM backup_assets
+      WHERE status IN ('failed', 'local_missing') AND error_message IS NOT NULL AND error_message != ''
+      ORDER BY COALESCE(last_attempt_at, 0) DESC
+      LIMIT 1
+      """
+      guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
+      guard sqlite3_step(stmt) == SQLITE_ROW,
+            sqlite3_column_type(stmt, 0) != SQLITE_NULL else { return nil }
+      return String(cString: sqlite3_column_text(stmt, 0))
+    }
+  }
+
   /// Return current progress as a dictionary suitable for JS bridge.
   func currentProgress() -> [String: Any] {
     refreshProgress()
