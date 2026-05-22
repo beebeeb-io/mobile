@@ -271,6 +271,25 @@ final class NativeBackupEngine: NSObject {
   private let applicationStateLock = NSLock()
   private var _cachedApplicationState: UIApplication.State = .active
 
+  // Background task plumbing — stores the outer Task handle so the
+  // BGProcessingTask expiration handler can `cancel()` it (task 0435).
+  // The previous implementation only called `pause()` from the
+  // expiration handler, which flipped `isPaused = true` but did NOT
+  // propagate cancellation into the running Task — the inner upload
+  // loop kept running until the current photo finished, frequently
+  // overshooting the system's expiration grace window. Now we store
+  // the Task handle and `.cancel()` it on expiration; `Task.isCancelled`
+  // is already checked aggressively throughout `processBatch` and the
+  // per-asset upload paths, so cancellation unwinds within hundreds of
+  // milliseconds.
+  private var backgroundTaskHandle: Task<Void, Never>?
+  // Guard against double `setTaskCompleted(success:)` — Apple's contract
+  // forbids it. Both the body's terminal call and the expiration
+  // handler funnel through `completeBackgroundTaskOnce` to ensure
+  // exactly one call regardless of which path wins the race.
+  private let backgroundTaskCompletionLock = NSLock()
+  private var backgroundTaskCompletionFired = false
+
   static let bgTaskIdentifier = "io.beebeeb.app.native-backup"
   static let bgSessionIdentifier = "io.beebeeb.backup"
 
@@ -1034,58 +1053,105 @@ final class NativeBackupEngine: NSObject {
   private func handleBackgroundTask(_ task: BGProcessingTask) {
     scheduleNextBackup()
     isBackgroundTaskActive = true
+    // Reset the completion guard for this invocation. The property lives
+    // on the engine (singleton) so a previous task's completion state
+    // would otherwise leak forward.
+    backgroundTaskCompletionLock.lock()
+    backgroundTaskCompletionFired = false
+    backgroundTaskCompletionLock.unlock()
 
-    task.expirationHandler = { [weak self] in
-      self?.pause()
-    }
-
-    Task {
+    let bgTask = Task { [weak self] in
+      guard let self else { return }
       defer {
-        isBackgroundTaskActive = false
+        self.isBackgroundTaskActive = false
+        self.backgroundTaskHandle = nil
       }
 
       // Ensure master key is available for background processing
-      if masterKeyHandle == nil {
+      if self.masterKeyHandle == nil {
         do {
-          masterKeyHandle = try BeebeebCryptoBridge.loadMasterKey()
+          self.masterKeyHandle = try BeebeebCryptoBridge.loadMasterKey()
         } catch {
-          task.setTaskCompleted(success: false)
+          self.completeBackgroundTaskOnce(task, success: false)
           return
         }
       }
 
-      guard masterKeyHandle != nil else {
-        task.setTaskCompleted(success: false)
+      guard self.masterKeyHandle != nil else {
+        self.completeBackgroundTaskOnce(task, success: false)
         return
       }
 
-      let mode = currentPacingMode()
-      perfLog("mode", [
+      let mode = self.currentPacingMode()
+      self.perfLog("mode", [
         "mode": mode.rawValue,
         "batchLimit": mode.batchLimit,
         "delayMs": mode.delayNanoseconds / 1_000_000
       ])
 
-      let batchStart = isRunning
-      if !isRunning {
-        isRunning = true
-        isPaused = false
-        updateBackupStatusSurfaces(reason: "Background backup running")
+      let batchStart = self.isRunning
+      if !self.isRunning {
+        self.isRunning = true
+        self.isPaused = false
+        self.updateBackupStatusSurfaces(reason: "Background backup running")
       }
 
       do {
-        _ = await scanPhotoLibraryForPendingUploads(reason: "Background backup scan")
-        let uploaded = try await processBatch(limit: mode.batchLimit)
-        task.setTaskCompleted(success: uploaded >= 0)
+        // Cooperative cancellation checkpoints between phases so an
+        // expiration that fires while we're between long-running async
+        // calls unwinds immediately instead of starting another batch.
+        try Task.checkCancellation()
+        _ = await self.scanPhotoLibraryForPendingUploads(reason: "Background backup scan")
+        try Task.checkCancellation()
+        let uploaded = try await self.processBatch(limit: mode.batchLimit)
+        self.completeBackgroundTaskOnce(task, success: uploaded >= 0)
+      } catch is CancellationError {
+        self.perfLog("bg-task.expired", [:])
+        self.completeBackgroundTaskOnce(task, success: false)
       } catch {
-        task.setTaskCompleted(success: false)
+        self.completeBackgroundTaskOnce(task, success: false)
       }
 
       if !batchStart {
-        isRunning = false
-        updateBackupStatusSurfaces()
-        scheduleOpenAppReminderIfNeeded()
+        self.isRunning = false
+        self.updateBackupStatusSurfaces()
+        self.scheduleOpenAppReminderIfNeeded()
       }
+    }
+    backgroundTaskHandle = bgTask
+
+    task.expirationHandler = { [weak self] in
+      // Propagate cancellation into the running Task so the
+      // `try Task.checkCancellation()` checkpoints and `Task.isCancelled`
+      // checks inside `processBatch` / `uploadSingleAsset` unwind
+      // promptly. Also flip `isPaused` so any non-cancellation-aware
+      // bookkeeping (status surfaces, JS-side state) reflects the
+      // suspension. As a backstop, mark the BGProcessingTask completed
+      // — `completeBackgroundTaskOnce` is idempotent, so the body's
+      // own terminal call is a no-op if we win the race.
+      NSLog("[NativeBackupEngine] Background task expiring — cancelling work")
+      self?.backgroundTaskHandle?.cancel()
+      self?.pause()
+      if let self {
+        self.completeBackgroundTaskOnce(task, success: false)
+      }
+    }
+  }
+
+  /// Idempotent wrapper around `BGProcessingTask.setTaskCompleted(success:)`.
+  /// Apple's contract requires exactly one call; the expiration handler
+  /// and the Task body's terminal branches all funnel through here so a
+  /// late-firing expiration doesn't double-call after the body completed
+  /// (or vice versa).
+  private func completeBackgroundTaskOnce(_ task: BGProcessingTask, success: Bool) {
+    backgroundTaskCompletionLock.lock()
+    let alreadyFired = backgroundTaskCompletionFired
+    if !alreadyFired {
+      backgroundTaskCompletionFired = true
+    }
+    backgroundTaskCompletionLock.unlock()
+    if !alreadyFired {
+      task.setTaskCompleted(success: success)
     }
   }
   #endif
