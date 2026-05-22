@@ -5,6 +5,15 @@ const fs = require('fs');
 const EXTENSION_NAME = 'BeebeebShare';
 const EXTENSION_BUNDLE_ID = 'io.beebeeb.app.share';
 const APP_GROUP = 'group.io.beebeeb.shared';
+// Keychain access group shared between the main app and the Share Extension.
+// `$(AppIdentifierPrefix)` is a build-time placeholder Xcode expands to the
+// team ID + "." prefix. `SharedKeychain.swift` hardcodes the resolved value
+// ("R8352WDJJR.io.beebeeb.shared") so the literal string here must match the
+// canonical declaration in `targets/share-extension/expo-target.config.js`.
+// (task 0444 — without this entry, `expo prebuild --clean` regenerated the
+// entitlements file without keychain-access-groups, silently wiping the
+// 0433 fix and breaking `SharedKeychain.loadMasterKey()` on every fresh build.)
+const KEYCHAIN_ACCESS_GROUP = '$(AppIdentifierPrefix)io.beebeeb.shared';
 const PRINCIPAL_CLASS = 'ShareViewController';
 
 const SOURCE_FILES = [
@@ -111,6 +120,10 @@ function withShareExtension(config) {
   <key>com.apple.security.application-groups</key>
   <array>
     <string>${APP_GROUP}</string>
+  </array>
+  <key>keychain-access-groups</key>
+  <array>
+    <string>${KEYCHAIN_ACCESS_GROUP}</string>
   </array>
 </dict>
 </plist>`;

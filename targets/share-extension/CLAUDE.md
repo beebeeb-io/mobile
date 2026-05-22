@@ -15,24 +15,40 @@ and uploads it directly to the Beebeeb API.
 - `generated.entitlements` — Expo-generated copy of the entitlements; should be byte-identical to `expo-target.config.js`'s `entitlements:` dict
 - `Info.plist` — extension principal class + activation rules
 
-## Entitlements: dual-file fragility
+## Source-of-truth files: edit the plugin, not the regenerated copies
 
-There are **two** entitlement files for this target and Xcode signs against
-the manual one, not the Expo-generated one:
+This target has both Swift source files AND entitlements in **two places**.
+**The Expo plugin at `plugins/share-extension/withShareExtension.js` is the
+canonical source.** `expo prebuild` runs that plugin and regenerates the
+`ios/BeebeebShare/` copies. Edits made directly to the regenerated copies
+survive only until the next `expo prebuild --clean` (which EAS production
+builds run automatically).
 
-- `repos/mobile/ios/BeebeebShare/BeebeebShare.entitlements` (used at build time, signed into the `.appex`)
-- `repos/mobile/targets/share-extension/generated.entitlements` (output of `expo prebuild`)
-- `repos/mobile/targets/share-extension/expo-target.config.js` (canonical source)
+| What | Edit here (canonical) | Regenerated copy (do not edit) |
+|---|---|---|
+| Swift sources (`SharedKeychain.swift`, `ShareViewController.swift`, ...) | `targets/share-extension/<name>.swift` | `ios/BeebeebShare/<name>.swift` |
+| Entitlements (`keychain-access-groups`, `application-groups`, ...) | inline template inside `plugins/share-extension/withShareExtension.js` | `ios/BeebeebShare/BeebeebShare.entitlements` |
+| Info.plist | inline template inside `plugins/share-extension/withShareExtension.js` | `ios/BeebeebShare/Info.plist` |
 
-If you change `expo-target.config.js`, you must either:
+`targets/share-extension/expo-target.config.js` and
+`targets/share-extension/generated.entitlements` exist for documentation /
+future migration to the `@bacons/apple-targets` plugin. They are **not in
+the active plugin chain** today — `expo prebuild` ignores them for this
+target. Don't trust them as source of truth.
 
-1. Re-run `npx expo prebuild` (which overwrites `ios/BeebeebShare/BeebeebShare.entitlements`), or
-2. Manually mirror the change into `ios/BeebeebShare/BeebeebShare.entitlements`.
+To change entitlements: edit the inline template in
+`plugins/share-extension/withShareExtension.js`, then run
+`npx expo prebuild --platform ios --clean` to regenerate
+`ios/BeebeebShare/BeebeebShare.entitlements`. EAS will rerun prebuild on
+its own.
 
-The May 2026 incident (task 0433) was that `expo-target.config.js` had
-`keychain-access-groups` but the manual file did not — the Share Extension
-shipped without keychain entitlement and `SharedKeychain.loadMasterKey()`
-returned `nil` for every fresh install. Always keep both files in sync.
+Two incidents we shipped through this footgun (2026-05):
+- **Task 0433** added `keychain-access-groups` directly to the manual
+  entitlements file. The plugin template still emitted only
+  `application-groups`, so a subsequent prebuild would have wiped the fix.
+- **Task 0444** caught the latent regression and updated the plugin
+  template. Without that, every `expo prebuild --clean` was a silent
+  security regression on top of 0428 + 0433.
 
 ## Plaintext on disk: never
 
