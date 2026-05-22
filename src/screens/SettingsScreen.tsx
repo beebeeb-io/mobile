@@ -74,7 +74,6 @@ import {
   type MobileNotificationPreferences,
   type AvailableRegion,
 } from '../lib/api';
-import { exportCalendars } from '../services/CalendarExporter';
 import {
   initDatabase as initBackupDb,
   getUploadedCount,
@@ -1383,35 +1382,50 @@ export default function SettingsScreen() {
       await initializeBackup('calendar');
       const token = await getToken();
       if (!token) throw new Error('Session expired');
-      const result = await exportCalendars({
-        encryptChunkFn: crypto.encryptChunk,
-        encryptMetadataFn: crypto.encryptMetadata,
-        decryptMetadataFn: crypto.decryptMetadata,
-      });
+
+      // Counts for UI display only — Swift `CalendarBackupManager` re-enumerates
+      // via EventKit when it builds the per-calendar .ics files (now RFC 5545
+      // compliant + per-calendar split after 0439's Swift fixes).
+      const calendars = await Calendar.getCalendarsAsync(Calendar.EntityTypes.EVENT).catch(() => []);
+      const calendarCount = Array.isArray(calendars) ? calendars.length : 0;
+      const now = new Date();
+      const windowStart = new Date(now.getTime() - 365 * 24 * 60 * 60 * 1000);
+      const windowEnd = new Date(now.getTime() + 365 * 24 * 60 * 60 * 1000);
+      let eventCount = 0;
+      if (calendarCount > 0) {
+        const calIds = calendars.map((c: { id: string }) => c.id);
+        const events = await Calendar.getEventsAsync(calIds, windowStart, windowEnd).catch(() => []);
+        eventCount = Array.isArray(events) ? events.length : 0;
+      }
+
+      // Trigger the native backup. Swift handles enumeration, RFC 5545
+      // serialization, encryption, and upload off the JS thread.
+      await BeebeebCrypto.enableCalendarBackup(token);
+
       const timestamp = new Date().toISOString();
       await updateBackupCategoryState('calendar', {
         enabled: true,
         last_sync: timestamp,
-        items_synced: result.eventCount,
-        calendar_count: result.calendarCount,
+        items_synced: eventCount,
+        calendar_count: calendarCount,
       });
       setCalendarLastSessionAt(timestamp);
-      setCalendarLastSessionCount(result.eventCount);
+      setCalendarLastSessionCount(eventCount);
       await SecureStore.setItemAsync(CALENDAR_LAST_SCAN_KEY, timestamp).catch(() => {});
-      await SecureStore.setItemAsync(CALENDAR_LAST_SCAN_COUNT_KEY, String(result.eventCount)).catch(() => {});
+      await SecureStore.setItemAsync(CALENDAR_LAST_SCAN_COUNT_KEY, String(eventCount)).catch(() => {});
       await refreshBackupStats();
       setCalendarStats((prev) => ({
         ...prev,
-        uploadedCount: result.eventCount,
-        totalCount: Math.max(prev.totalCount, result.eventCount),
+        uploadedCount: eventCount,
+        totalCount: Math.max(prev.totalCount, eventCount),
         lastSyncAt: timestamp,
         syncing: false,
         hasScanned: true,
       }));
-      const message = result.exported
-        ? `Calendar backed up · ${result.eventCount} event${result.eventCount === 1 ? '' : 's'}`
-        : `Calendar checked · ${result.calendarCount} calendar${result.calendarCount === 1 ? '' : 's'}`;
-      showToast({ type: 'success', message });
+      showToast({
+        type: 'success',
+        message: `Calendar backup queued · ${eventCount} event${eventCount === 1 ? '' : 's'} across ${calendarCount} calendar${calendarCount === 1 ? '' : 's'}`,
+      });
     } catch (err) {
       console.warn('[SettingsScreen] calendar backup failed:', err);
       Alert.alert('Calendar backup failed', errorMessage(err));
@@ -1419,7 +1433,7 @@ export default function SettingsScreen() {
       setBackingUpCalendar(false);
       setCalendarStats((prev) => ({ ...prev, syncing: false }));
     }
-  }, [crypto.encryptChunk, crypto.encryptMetadata, crypto.decryptMetadata, refreshBackupStats, showToast]);
+  }, [refreshBackupStats, showToast]);
 
   const handleRegionChange = useCallback(async (poolName: string) => {
     const r = REGIONS.find(x => x.poolName === poolName);
