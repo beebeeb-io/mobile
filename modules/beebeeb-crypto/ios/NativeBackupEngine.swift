@@ -278,14 +278,31 @@ final class NativeBackupEngine: NSObject {
     }
   }
 
+  // Backup auth token and server URL are persisted in the Keychain (not
+  // UserDefaults) so they do not propagate via unencrypted iTunes / iCloud
+  // backups. See `KeychainManager.storeString` for the storage class and
+  // task 0430 for context. `loadString` performs a one-time on-demand
+  // migration from UserDefaults the first time it's called after upgrade.
   var token: String? {
-    get { UserDefaults.standard.string(forKey: "io.beebeeb.backupToken") }
-    set { UserDefaults.standard.set(newValue, forKey: "io.beebeeb.backupToken") }
+    get { KeychainManager.loadString(key: "io.beebeeb.backupToken") }
+    set {
+      if let value = newValue, !value.isEmpty {
+        try? KeychainManager.storeString(value, key: "io.beebeeb.backupToken")
+      } else {
+        KeychainManager.deleteString(key: "io.beebeeb.backupToken")
+      }
+    }
   }
 
   var apiBaseUrl: String? {
-    get { UserDefaults.standard.string(forKey: "io.beebeeb.serverURL") }
-    set { UserDefaults.standard.set(newValue, forKey: "io.beebeeb.serverURL") }
+    get { KeychainManager.loadString(key: "io.beebeeb.serverURL") }
+    set {
+      if let value = newValue, !value.isEmpty {
+        try? KeychainManager.storeString(value, key: "io.beebeeb.serverURL")
+      } else {
+        KeychainManager.deleteString(key: "io.beebeeb.serverURL")
+      }
+    }
   }
 
   // MARK: - Progress (thread-safe via atomic reads from main queue)

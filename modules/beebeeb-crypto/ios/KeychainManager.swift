@@ -292,6 +292,94 @@ final class KeychainManager {
     }
   }
 
+  // MARK: - Arbitrary string storage (for backup token, server URL, etc.)
+  //
+  // Used to keep the backup auth token and server URL out of UserDefaults.
+  // UserDefaults plist files are included verbatim in unencrypted iTunes /
+  // iCloud backups, so a bearer token there leaks on device restore /
+  // forensic extraction. Keychain items written with
+  // `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` do NOT migrate via
+  // unencrypted backups, which is the property we need (task 0430).
+  //
+  // The access group is the same as for the master key, so background
+  // tasks running in the main app's address space and extensions sharing
+  // the `keychain-access-groups` entitlement can read the value.
+
+  private static let stringStorageService = "io.beebeeb.string-storage"
+
+  static func storeString(_ value: String, key: String) throws {
+    let data = Data(value.utf8)
+    deleteString(key: key)
+
+    var attrs: [CFString: Any] = [
+      kSecClass: kSecClassGenericPassword,
+      kSecAttrService: stringStorageService,
+      kSecAttrAccount: key,
+      kSecAttrAccessible: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+      kSecValueData: data,
+    ]
+    if let group = accessGroup { attrs[kSecAttrAccessGroup] = group }
+
+    let status = SecItemAdd(attrs as CFDictionary, nil)
+    guard status == errSecSuccess else { throw KeychainError.writeError(status) }
+  }
+
+  /// Returns the stored string for `key`. Performs a one-time on-demand
+  /// migration: if the keychain entry is missing but UserDefaults still
+  /// holds the legacy value, copy it into the keychain and remove the
+  /// UserDefaults key. UserDefaults is only cleared after the keychain
+  /// write returns `errSecSuccess` — never partially, to avoid losing the
+  /// only copy of an auth token if the keychain write fails.
+  static func loadString(key: String) -> String? {
+    if let existing = readStringFromKeychain(key: key) {
+      return existing
+    }
+
+    let defaults = UserDefaults.standard
+    guard let legacy = defaults.string(forKey: key) else { return nil }
+    do {
+      try storeString(legacy, key: key)
+      defaults.removeObject(forKey: key)
+      return legacy
+    } catch {
+      NSLog("[Beebeeb] keychain migration failed for \(key): \(error.localizedDescription) — falling back to UserDefaults until next launch")
+      return legacy
+    }
+  }
+
+  static func deleteString(key: String) {
+    var query: [CFString: Any] = [
+      kSecClass: kSecClassGenericPassword,
+      kSecAttrService: stringStorageService,
+      kSecAttrAccount: key,
+    ]
+    if let group = accessGroup { query[kSecAttrAccessGroup] = group }
+    SecItemDelete(query as CFDictionary)
+    // Also clear any legacy UserDefaults entry so the migration path can't
+    // resurrect a stale value on the next read.
+    UserDefaults.standard.removeObject(forKey: key)
+  }
+
+  private static func readStringFromKeychain(key: String) -> String? {
+    var query: [CFString: Any] = [
+      kSecClass: kSecClassGenericPassword,
+      kSecAttrService: stringStorageService,
+      kSecAttrAccount: key,
+      kSecReturnData: true,
+      kSecMatchLimit: kSecMatchLimitOne,
+    ]
+    if let group = accessGroup { query[kSecAttrAccessGroup] = group }
+
+    var result: CFTypeRef?
+    var status = SecItemCopyMatching(query as CFDictionary, &result)
+    if status == errSecItemNotFound, accessGroup != nil {
+      query.removeValue(forKey: kSecAttrAccessGroup)
+      status = SecItemCopyMatching(query as CFDictionary, &result)
+    }
+    guard status == errSecSuccess, let data = result as? Data else { return nil }
+    return String(data: data, encoding: .utf8)
+  }
+
   // MARK: - Private helpers
 
   private static func getOrCreateSEKey() throws -> SecKey {

@@ -15,18 +15,38 @@ final class PhotoBackupManager: NSObject {
 
   private var db: OpaquePointer?
   private let dbQueue = DispatchQueue(label: "io.beebeeb.backupdb", qos: .background)
+  // PHKit chooses its own callback queue and frequently uses the main thread
+  // when the app is foregrounded. Hop to this serial background queue at the
+  // top of every PhotoKit completion handler so filename/MIME derivation and
+  // upload kickoff never run on main. Kept separate from `dbQueue` so DB
+  // writes never have to wait on metadata work.
+  private static let phkitCallbackQueue = DispatchQueue(
+    label: "io.beebeeb.backup.phkit-callback",
+    qos: .utility
+  )
   private var currentFetchResult: PHFetchResult<PHAsset>?
   private(set) var backgroundSession: URLSession?
   var backgroundSessionCompletionHandlers: [String: () -> Void] = [:]
 
   private var serverBaseURL: String {
-    UserDefaults.standard.string(forKey: "io.beebeeb.serverURL") ?? "http://localhost:3001"
+    // Server URL moved to Keychain (task 0430) — `loadString` migrates from
+    // UserDefaults on first read after upgrade. Localhost fallback kept for
+    // dev builds where the URL is set later via mirrorSessionToAppGroup.
+    KeychainManager.loadString(key: "io.beebeeb.serverURL") ?? "http://localhost:3001"
   }
 
-  // Auth token passed from JS when enabling backup, persisted for background relaunches.
+  // Auth token passed from JS when enabling backup, persisted in the
+  // Keychain (not UserDefaults) so it does not leak via unencrypted iTunes
+  // / iCloud backups. See task 0430 + `KeychainManager.storeString`.
   var storedAuthToken: String? {
-    get { UserDefaults.standard.string(forKey: "io.beebeeb.backupToken") }
-    set { UserDefaults.standard.set(newValue, forKey: "io.beebeeb.backupToken") }
+    get { KeychainManager.loadString(key: "io.beebeeb.backupToken") }
+    set {
+      if let value = newValue, !value.isEmpty {
+        try? KeychainManager.storeString(value, key: "io.beebeeb.backupToken")
+      } else {
+        KeychainManager.deleteString(key: "io.beebeeb.backupToken")
+      }
+    }
   }
 
   var parentFolderId: String? {

@@ -19,7 +19,8 @@ final class CalendarBackupManager {
   }
 
   private var serverBaseURL: String {
-    UserDefaults.standard.string(forKey: "io.beebeeb.serverURL") ?? "http://localhost:3001"
+    // Server URL moved to Keychain (task 0430); see PhotoBackupManager note.
+    KeychainManager.loadString(key: "io.beebeeb.serverURL") ?? "http://localhost:3001"
   }
 
   private init() {}

@@ -1232,21 +1232,26 @@ public class BeebeebCryptoModule: Module {
       guard let defaults = UserDefaults(suiteName: "group.io.beebeeb.shared") else {
         return false
       }
+      // App Group UserDefaults still mirrors the session token for the
+      // share extension / file provider (different from the backup token).
+      // The backup token + server URL go to the Keychain via
+      // `KeychainManager.storeString` so they don't leak into unencrypted
+      // device backups (task 0430).
       if let token, !token.isEmpty {
         defaults.set(token, forKey: sharedSessionTokenKey)
-        UserDefaults.standard.set(token, forKey: "io.beebeeb.backupToken")
+        try? KeychainManager.storeString(token, key: "io.beebeeb.backupToken")
       } else {
         defaults.removeObject(forKey: sharedSessionTokenKey)
-        UserDefaults.standard.removeObject(forKey: "io.beebeeb.backupToken")
+        KeychainManager.deleteString(key: "io.beebeeb.backupToken")
       }
       if let baseUrl, !baseUrl.isEmpty {
         defaults.set(baseUrl, forKey: sharedAPIBaseURLKey)
-        UserDefaults.standard.set(baseUrl, forKey: "io.beebeeb.serverURL")
+        try? KeychainManager.storeString(baseUrl, key: "io.beebeeb.serverURL")
       } else {
         defaults.removeObject(forKey: sharedAPIBaseURLKey)
+        KeychainManager.deleteString(key: "io.beebeeb.serverURL")
       }
       defaults.synchronize()
-      UserDefaults.standard.synchronize()
       return true
     }
 
@@ -1641,7 +1646,7 @@ public class BeebeebCryptoModule: Module {
       let engine = NativeBackupEngine.shared
       engine.token = authToken
       if engine.apiBaseUrl == nil {
-        engine.apiBaseUrl = UserDefaults.standard.string(forKey: "io.beebeeb.serverURL")
+        engine.apiBaseUrl = KeychainManager.loadString(key: "io.beebeeb.serverURL")
       }
       engine.start()
     }
@@ -1682,7 +1687,7 @@ public class BeebeebCryptoModule: Module {
       let engine = NativeBackupEngine.shared
       engine.token = authToken
       if engine.apiBaseUrl == nil {
-        engine.apiBaseUrl = UserDefaults.standard.string(forKey: "io.beebeeb.serverURL")
+        engine.apiBaseUrl = KeychainManager.loadString(key: "io.beebeeb.serverURL")
       }
       return try await engine.triggerManualBackup(limit: 50)
     }
