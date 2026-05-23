@@ -265,6 +265,11 @@ export async function decryptToTempFile(
   // ~100 per-chunk JSI round-trips the legacy `decryptEncryptedBytes` loop
   // makes for a 100 MB file.
   if (isDecryptToFileReady()) {
+    console.info('[decrypt] fast-path: decryptContiguousToFile (0438)', {
+      fileId,
+      chunkCount: effectiveChunkCount,
+      bytes: encBytes.length,
+    });
     try {
       options.onProgress?.({
         requestId: '',
