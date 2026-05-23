@@ -457,6 +457,14 @@ export interface FileEntry {
   share_count?: number;
   /** True when a thumbnail blob has been uploaded for this file. */
   has_thumbnail?: boolean;
+  /**
+   * Decoded byte length of the encrypted thumbnail (base64 → bytes), or
+   * null/undefined when no thumbnail exists. Surfaced by the server (task
+   * 0553) so the bulk-backfill worker can identify "degraded" thumbnails
+   * (those uploaded under the pre-0552 50 KB cap) without re-downloading
+   * each blob.
+   */
+  thumbnail_bytes?: number | null;
   is_starred?: boolean;
   /** True when the file is an image or video (set at upload time). */
   is_media?: boolean;

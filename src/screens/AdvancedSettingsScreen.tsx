@@ -29,6 +29,7 @@ import {
   type PerformanceStorageProfile,
 } from '../lib/performance-storage-settings';
 import {
+  DEFAULT_THUMBNAIL_IMPROVE_QUALITY,
   getThumbnailRepairSettings,
   getThumbnailRepairStatus,
   pauseThumbnailRepair,
@@ -37,6 +38,7 @@ import {
   type ThumbnailRepairSettings,
   type ThumbnailRepairStatus,
 } from '../lib/thumbnail-repair-settings';
+import { isDegradedThumbnail } from '../lib/thumbnail-repair-predicate';
 import { getRemoteToLocalMap } from '../services/BackupDatabase';
 
 type Nav = NativeStackNavigationProp<RootStackParamList>;
@@ -71,7 +73,15 @@ function formatTime(value: number | null | undefined): string | null {
   return new Date(value).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
-async function loadFileCountAndMissingLocal(): Promise<{ fileCount: number; missingLocalThumbnails: number }> {
+/** Rough estimate of original-photo download per degraded backfill (bytes). */
+const DEGRADED_ESTIMATED_BYTES_PER_FILE = 3_500_000;
+
+async function loadFileCountAndMissingLocal(): Promise<{
+  fileCount: number;
+  missingLocalThumbnails: number;
+  degradedThumbnails: number;
+  degradedThumbnailsNonPhotoKit: number;
+}> {
   const cached = await loadCachedFileIndex();
   const index = await getFileIndex(cached?.hash);
   const files = !index.changed && cached
@@ -81,10 +91,24 @@ async function loadFileCountAndMissingLocal(): Promise<{ fileCount: number; miss
 
   const localMap = await getRemoteToLocalMap();
   const mediaFiles = files.filter((file) => !file.is_folder && !file.is_uploading);
+
+  // Reuse the same predicate the worker uses, so UI count and worker queue agree.
+  const degradedAll = mediaFiles.filter(isDegradedThumbnail);
+  const degradedNonPhotoKit = degradedAll.filter((f) => !localMap.has(f.id));
+
   return {
     fileCount: mediaFiles.length,
     missingLocalThumbnails: mediaFiles.filter((file) => !file.has_thumbnail && localMap.has(file.id)).length,
+    degradedThumbnails: degradedAll.length,
+    degradedThumbnailsNonPhotoKit: degradedNonPhotoKit.length,
   };
+}
+
+function formatBandwidthEstimate(fileCount: number): string {
+  const bytes = fileCount * DEGRADED_ESTIMATED_BYTES_PER_FILE;
+  if (bytes < 1_000_000) return `${Math.round(bytes / 1_000)} KB`;
+  if (bytes < 1_000_000_000) return `${Math.round(bytes / 1_000_000)} MB`;
+  return `${(bytes / 1_000_000_000).toFixed(1)} GB`;
 }
 
 export default function AdvancedSettingsScreen() {
@@ -93,13 +117,20 @@ export default function AdvancedSettingsScreen() {
   const { colors: c } = useTheme();
   const { getUnlockDiagnostics } = useCrypto();
   const [profile, setProfile] = useState<PerformanceStorageProfile>('balanced');
-  const [repairSettings, setRepairSettingsState] = useState<ThumbnailRepairSettings>({ autoRepairWhileIdle: false });
+  const [repairSettings, setRepairSettingsState] = useState<ThumbnailRepairSettings>({
+    autoRepairWhileIdle: false,
+    improveQuality: DEFAULT_THUMBNAIL_IMPROVE_QUALITY,
+  });
   const [repairStatus, setRepairStatus] = useState<ThumbnailRepairStatus | null>(null);
   const [fileCount, setFileCount] = useState(0);
   const [missingLocalThumbnails, setMissingLocalThumbnails] = useState(0);
+  const [degradedNonPhotoKit, setDegradedNonPhotoKit] = useState(0);
+  const [degradedThorough, setDegradedThorough] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
   const [startingRepair, setStartingRepair] = useState(false);
   const [pausingRepair, setPausingRepair] = useState(false);
+  const [startingImprove, setStartingImprove] = useState(false);
+  const [pausingImprove, setPausingImprove] = useState(false);
   const [copiedDiagnostics, setCopiedDiagnostics] = useState(false);
   const lastRepairCountRefreshRef = useRef(0);
 
@@ -116,13 +147,20 @@ export default function AdvancedSettingsScreen() {
         getPerformanceStorageSettings(),
         getThumbnailRepairSettings(),
         getThumbnailRepairStatus(),
-        loadFileCountAndMissingLocal().catch(() => ({ fileCount: 0, missingLocalThumbnails: 0 })),
+        loadFileCountAndMissingLocal().catch(() => ({
+          fileCount: 0,
+          missingLocalThumbnails: 0,
+          degradedThumbnails: 0,
+          degradedThumbnailsNonPhotoKit: 0,
+        })),
       ]);
       setProfile(perf.profile);
       setRepairSettingsState(repair);
       setRepairStatus(status);
       setFileCount(counts.fileCount);
       setMissingLocalThumbnails(counts.missingLocalThumbnails);
+      setDegradedNonPhotoKit(counts.degradedThumbnailsNonPhotoKit);
+      setDegradedThorough(counts.degradedThumbnails);
     } finally {
       setRefreshing(false);
     }
@@ -148,6 +186,8 @@ export default function AdvancedSettingsScreen() {
           if (counts) {
             setFileCount(counts.fileCount);
             setMissingLocalThumbnails(counts.missingLocalThumbnails);
+            setDegradedNonPhotoKit(counts.degradedThumbnailsNonPhotoKit);
+            setDegradedThorough(counts.degradedThumbnails);
           }
         }
       })().catch(() => {});
@@ -161,14 +201,33 @@ export default function AdvancedSettingsScreen() {
   }, []);
 
   const toggleIdleRepair = useCallback(async (value: boolean) => {
-    const next = await setThumbnailRepairSettings({ autoRepairWhileIdle: value });
+    const next = await setThumbnailRepairSettings({
+      ...repairSettings,
+      autoRepairWhileIdle: value,
+    });
     setRepairSettingsState(next);
-  }, []);
+  }, [repairSettings]);
+
+  const toggleImproveWifiOnly = useCallback(async (value: boolean) => {
+    const next = await setThumbnailRepairSettings({
+      ...repairSettings,
+      improveQuality: { ...repairSettings.improveQuality, wifiOnly: value },
+    });
+    setRepairSettingsState(next);
+  }, [repairSettings]);
+
+  const toggleImproveThorough = useCallback(async (value: boolean) => {
+    const next = await setThumbnailRepairSettings({
+      ...repairSettings,
+      improveQuality: { ...repairSettings.improveQuality, thoroughMode: value },
+    });
+    setRepairSettingsState(next);
+  }, [repairSettings]);
 
   const startRepair = useCallback(async () => {
     setStartingRepair(true);
     try {
-      const next = await requestThumbnailRepair();
+      const next = await requestThumbnailRepair('missing');
       setRepairStatus(next);
     } finally {
       setStartingRepair(false);
@@ -182,6 +241,26 @@ export default function AdvancedSettingsScreen() {
       setRepairStatus(next);
     } finally {
       setPausingRepair(false);
+    }
+  }, []);
+
+  const startImprove = useCallback(async () => {
+    setStartingImprove(true);
+    try {
+      const next = await requestThumbnailRepair('degraded');
+      setRepairStatus(next);
+    } finally {
+      setStartingImprove(false);
+    }
+  }, []);
+
+  const pauseImprove = useCallback(async () => {
+    setPausingImprove(true);
+    try {
+      const next = await pauseThumbnailRepair();
+      setRepairStatus(next);
+    } finally {
+      setPausingImprove(false);
     }
   }, []);
 
@@ -320,22 +399,169 @@ export default function AdvancedSettingsScreen() {
               Only photos still available on this iPhone are repaired automatically. Remote-only files need a server-side repair.
             </Text>
             <TouchableOpacity
-              onPress={repairStatus?.running ? pauseRepair : startRepair}
-              disabled={startingRepair || pausingRepair || (!repairStatus?.running && missingLocalThumbnails === 0)}
+              onPress={(repairStatus?.running && repairStatus.mode === 'missing') ? pauseRepair : startRepair}
+              disabled={
+                startingRepair ||
+                pausingRepair ||
+                (repairStatus?.running && repairStatus.mode === 'degraded') ||
+                (!repairStatus?.running && missingLocalThumbnails === 0)
+              }
               style={[
                 styles.primaryButton,
-                { backgroundColor: (!repairStatus?.running && missingLocalThumbnails === 0) ? c.line2 : c.amber },
+                {
+                  backgroundColor:
+                    (repairStatus?.running && repairStatus.mode === 'degraded') ||
+                    (!repairStatus?.running && missingLocalThumbnails === 0)
+                      ? c.line2
+                      : c.amber,
+                },
               ]}
             >
               {startingRepair || pausingRepair ? (
                 <ActivityIndicator color="#16110a" />
               ) : (
                 <Text style={styles.primaryButtonText}>
-                  {repairStatus?.running
+                  {repairStatus?.running && repairStatus.mode === 'missing'
                     ? 'Pause repair'
-                    : repairStatus?.phase === 'paused'
+                    : repairStatus?.phase === 'paused' && repairStatus.mode === 'missing'
                       ? 'Resume repair'
                       : 'Start repair'}
+                </Text>
+              )}
+            </TouchableOpacity>
+          </View>
+        </View>
+
+        {/* ── Improve thumbnail quality (task 0553) ─────────────────────── */}
+        <Text style={[styles.sectionTitle, { color: c.ink3 }]}>Improve thumbnail quality</Text>
+        <View style={[styles.card, { backgroundColor: c.paper2, borderColor: c.line }]}>
+          <View style={styles.repairBlock}>
+            <Text style={[styles.body, { color: c.ink2 }]}>
+              This re-downloads each original photo, regenerates a sharper thumbnail, and uploads it. Use Wi-Fi for best results — your data plan will thank you.
+            </Text>
+
+            <View style={styles.statGrid}>
+              <View style={[styles.statBox, { backgroundColor: c.paper, borderColor: c.line }]}>
+                <Text style={[styles.statValue, { color: c.ink }]}>
+                  {(repairSettings.improveQuality.thoroughMode ? degradedThorough : degradedNonPhotoKit).toLocaleString()}
+                </Text>
+                <Text style={[styles.statLabel, { color: c.ink3 }]}>need improvement</Text>
+              </View>
+              <View style={[styles.statBox, { backgroundColor: c.paper, borderColor: c.line }]}>
+                <Text style={[styles.statValue, { color: c.ink }]}>
+                  {formatBandwidthEstimate(
+                    repairSettings.improveQuality.thoroughMode ? degradedThorough : degradedNonPhotoKit,
+                  )}
+                </Text>
+                <Text style={[styles.statLabel, { color: c.ink3 }]}>est. download</Text>
+              </View>
+              <View style={[styles.statBox, { backgroundColor: c.paper, borderColor: c.line }]}>
+                <Text style={[styles.statValue, { color: c.ink }]}>
+                  {(repairStatus?.mode === 'degraded' ? (repairStatus.repaired ?? 0) : 0).toLocaleString()}
+                </Text>
+                <Text style={[styles.statLabel, { color: c.ink3 }]}>improved</Text>
+              </View>
+            </View>
+
+            {repairStatus?.mode === 'degraded' && (repairStatus.running || repairStatus.phase === 'paused') ? (
+              <>
+                <View style={[styles.progressTrack, { backgroundColor: c.line }]}>
+                  <View
+                    style={[
+                      styles.progressFill,
+                      {
+                        backgroundColor: c.amber,
+                        width: `${repairStatus.totalMissing > 0
+                          ? Math.min(100, Math.round((repairStatus.checked / repairStatus.totalMissing) * 100))
+                          : 0}%`,
+                      },
+                    ]}
+                  />
+                </View>
+                <View style={[styles.activityBox, { backgroundColor: c.paper, borderColor: c.line }]}>
+                  <Text style={[styles.activityTitle, { color: c.ink }]}>
+                    {repairStatus.currentAction ?? repairStatus.lastMessage ?? 'Working…'}
+                  </Text>
+                  <Text style={[styles.caption, { color: c.ink4 }]}>
+                    Processed {(repairStatus.checked ?? 0).toLocaleString()} of {(repairStatus.totalMissing ?? 0).toLocaleString()} files
+                    {` · ${formatBytes(repairStatus.bytesDownloaded ?? 0)} downloaded`}
+                  </Text>
+                  {repairStatus.activity?.length ? (
+                    <View style={styles.activityList}>
+                      {repairStatus.activity.slice(0, 3).map((item) => (
+                        <View key={`imp-${item.at}-${item.message}`} style={styles.activityRow}>
+                          <Text style={[styles.activityTime, { color: c.ink4 }]}>{formatTime(item.at) ?? '--:--'}</Text>
+                          <Text style={[styles.activityMessage, { color: c.ink3 }]} numberOfLines={2}>
+                            {item.message}
+                          </Text>
+                        </View>
+                      ))}
+                    </View>
+                  ) : null}
+                </View>
+              </>
+            ) : null}
+
+            <View style={[styles.divider, { backgroundColor: c.line }]} />
+
+            <View style={styles.row}>
+              <View style={styles.rowText}>
+                <Text style={[styles.rowTitle, { color: c.ink }]}>Wi-Fi only</Text>
+                <Text style={[styles.rowSub, { color: c.ink3 }]}>
+                  Pauses when you leave Wi-Fi. Resumes automatically when you come back.
+                </Text>
+              </View>
+              <NativeSwitch
+                colors={c}
+                value={repairSettings.improveQuality.wifiOnly}
+                onValueChange={toggleImproveWifiOnly}
+              />
+            </View>
+
+            <View style={styles.row}>
+              <View style={styles.rowText}>
+                <Text style={[styles.rowTitle, { color: c.ink }]}>Rebuild for photos in my camera roll too</Text>
+                <Text style={[styles.rowSub, { color: c.ink3 }]}>
+                  Off by default. Your iPhone already renders thumbnails for those locally. Turn on if you plan to delete the originals from your camera roll later.
+                </Text>
+              </View>
+              <NativeSwitch
+                colors={c}
+                value={repairSettings.improveQuality.thoroughMode}
+                onValueChange={toggleImproveThorough}
+              />
+            </View>
+
+            <TouchableOpacity
+              onPress={(repairStatus?.running && repairStatus.mode === 'degraded') ? pauseImprove : startImprove}
+              disabled={
+                startingImprove ||
+                pausingImprove ||
+                (repairStatus?.running && repairStatus.mode === 'missing') ||
+                (!repairStatus?.running &&
+                  (repairSettings.improveQuality.thoroughMode ? degradedThorough : degradedNonPhotoKit) === 0)
+              }
+              style={[
+                styles.primaryButton,
+                {
+                  backgroundColor:
+                    (repairStatus?.running && repairStatus.mode === 'missing') ||
+                    (!repairStatus?.running &&
+                      (repairSettings.improveQuality.thoroughMode ? degradedThorough : degradedNonPhotoKit) === 0)
+                      ? c.line2
+                      : c.amber,
+                },
+              ]}
+            >
+              {startingImprove || pausingImprove ? (
+                <ActivityIndicator color="#16110a" />
+              ) : (
+                <Text style={styles.primaryButtonText}>
+                  {repairStatus?.running && repairStatus.mode === 'degraded'
+                    ? 'Pause improvement'
+                    : repairStatus?.phase === 'paused' && repairStatus.mode === 'degraded'
+                      ? 'Resume improvement'
+                      : 'Start improvement'}
                 </Text>
               )}
             </TouchableOpacity>

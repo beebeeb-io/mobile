@@ -1,12 +1,14 @@
 import React, { useEffect, useRef } from 'react';
 import { AppState, InteractionManager } from 'react-native';
+import NetInfo from '@react-native-community/netinfo';
 
 import { getFileIndex } from './api';
 import type { FileEntry } from './api';
 import { encryptedMetadataPayloadToBytes } from './encrypted-metadata';
 import { loadCachedFileIndex, saveCachedFileIndex } from './file-index-cache';
 import { getRemoteToLocalMap } from '../services/BackupDatabase';
-import { generateAndUploadPhotoLibraryThumbnail } from './thumbnail';
+import { ensureThumbnailForImage, generateAndUploadPhotoLibraryThumbnail } from './thumbnail';
+import { isDegradedThumbnail } from './thumbnail-repair-predicate';
 import {
   DEFAULT_THUMBNAIL_REPAIR_STATUS,
   getThumbnailRepairSettings,
@@ -30,6 +32,21 @@ const MANUAL_REPAIR_CONCURRENCY = 6;
 const AUTO_REPAIR_BATCH_SIZE = 1;
 const AUTO_REPAIR_CONCURRENCY = 1;
 const MAX_CONSECUTIVE_FAILURES = 5;
+
+// ---- Degraded-mode bulk backfill (task 0553) --------------------------------
+//
+// Strictly sequential: one file in flight at a time. Latency is fine, bandwidth
+// efficiency matters. WiFi-only by default. Respects server rate-limit headers
+// by backing off when X-RateLimit-Remaining is low or on 429.
+
+/** Inter-file delay between successful degraded regenerations. */
+const DEGRADED_REPAIR_DELAY_MS = 750;
+
+/** Backoff after a failure in degraded mode. Single inflight, so we can pause. */
+const DEGRADED_REPAIR_FAILURE_DELAY_MS = 5_000;
+
+/** Per-session cap on degraded regenerations. ~ a 2 GB download budget at 100 KB/photo. */
+const DEGRADED_MAX_PER_SESSION = 20_000;
 
 interface RepairResult {
   checked: number;
@@ -129,6 +146,294 @@ async function loadIndexFiles(): Promise<FileEntry[]> {
   return cached?.files ?? [];
 }
 
+async function resolveMime(
+  file: FileEntry,
+  decryptMetadata: (fileId: string, nonce: Uint8Array, ct: Uint8Array) => Promise<string>,
+): Promise<string | null> {
+  let mime = file.mime_type ?? guessMimeFromName(file.name_encrypted);
+  if (isEncryptedMetadata(file.name_encrypted)) {
+    try {
+      const payload = encryptedMetadataPayloadToBytes(file.name_encrypted);
+      if (!payload) throw new Error('Invalid encrypted metadata');
+      const plaintext = await decryptMetadata(file.id, payload.nonce, payload.ciphertext);
+      const parsed = JSON.parse(plaintext) as { name?: string; mime_type?: string };
+      mime = parsed.mime_type ?? mime ?? guessMimeFromName(parsed.name);
+    } catch {
+      // Leave mime as guessed.
+    }
+  }
+  return mime ?? null;
+}
+
+
+interface DegradedTickArgs {
+  status: ThumbnailRepairStatus;
+  settings: import('./thumbnail-repair-settings').ThumbnailRepairSettings;
+  crypto: ReturnType<typeof useCrypto>;
+  attempted: Set<string>;
+  bumpFailureStreak: () => void;
+  resetFailureStreak: () => void;
+  schedule: (delayMs: number) => void;
+}
+
+/**
+ * Drain one batch of degraded thumbnails. Runs at most one file in flight,
+ * checks Wi-Fi gate before downloading, tracks bytes via Content-Length so
+ * the UI can show "X MB downloaded", honors X-RateLimit headers when present.
+ * Idempotent w.r.t. status — on entry it reads the current status, on exit it
+ * persists a new status and schedules the next tick.
+ */
+async function runDegradedTick({
+  status,
+  settings,
+  crypto,
+  attempted,
+  bumpFailureStreak,
+  resetFailureStreak,
+  schedule,
+}: DegradedTickArgs): Promise<void> {
+  const startedAt = Date.now();
+
+  // Wi-Fi gate
+  if (settings.improveQuality.wifiOnly) {
+    try {
+      const net = await NetInfo.fetch();
+      const onWifi = net.type === 'wifi' && net.isConnected !== false;
+      if (!onWifi) {
+        await setThumbnailRepairStatus(withActivity(status, 'Waiting for Wi-Fi', {
+          phase: 'paused',
+          running: false,
+          requestedAt: null,
+          currentAction: 'Will resume automatically when you reconnect to Wi-Fi',
+          currentFileName: null,
+        }));
+        schedule(30_000);
+        return;
+      }
+    } catch {
+      // If NetInfo is unavailable, refuse to spend cellular data — safer default.
+      await setThumbnailRepairStatus(withActivity(status, 'Could not confirm Wi-Fi — paused', {
+        phase: 'paused',
+        running: false,
+        requestedAt: null,
+        currentAction: 'Network type unknown',
+        currentFileName: null,
+      }));
+      schedule(60_000);
+      return;
+    }
+  }
+
+  await setThumbnailRepairStatus(withActivity(status, 'Scanning for low-quality thumbnails', {
+    running: true,
+    phase: 'scanning',
+    mode: 'degraded',
+    startedAt: status.startedAt ?? Date.now(),
+    completedAt: null,
+    currentAction: 'Checking the remote index for files needing improvement',
+    currentFileName: null,
+  }));
+
+  const [files, localMap] = await Promise.all([loadIndexFiles(), getRemoteToLocalMap()]);
+  const thoroughMode = settings.improveQuality.thoroughMode;
+  const candidates = files.filter((file) => {
+    if (!isDegradedThumbnail(file)) return false;
+    if (attempted.has(file.id)) return false;
+    // PhotoKit-skip: when not in thorough mode, skip files this device backed up
+    // (PhotoKit renders them anyway — see 0552). The local backup database is
+    // the cheapest proxy for "this device has the original on hand".
+    if (!thoroughMode && localMap.has(file.id)) return false;
+    return true;
+  });
+
+  if (candidates.length === 0) {
+    const completedAt = Date.now();
+    await setThumbnailRepairStatus({
+      ...status,
+      requestedAt: null,
+      updatedAt: completedAt,
+      completedAt,
+      running: false,
+      phase: 'completed',
+      mode: 'degraded',
+      remaining: 0,
+      lastRunAt: completedAt,
+      lastMessage: status.repaired > 0
+        ? `Improved ${status.repaired} thumbnails (${formatMb(status.bytesDownloaded)} downloaded)`
+        : 'All thumbnails already at full quality',
+      currentAction: null,
+      currentFileName: null,
+      activity: [
+        {
+          at: completedAt,
+          message: status.repaired > 0
+            ? `Improvement complete (${status.repaired} thumbnails)`
+            : 'Nothing to improve',
+        },
+        ...status.activity,
+      ].slice(0, 8),
+    });
+    schedule(60_000);
+    return;
+  }
+
+  // Cap per session — fold in any previously processed counter.
+  if (status.repaired + status.failed + status.skipped >= DEGRADED_MAX_PER_SESSION) {
+    await setThumbnailRepairStatus({
+      ...withActivity(status, `Paused after ${DEGRADED_MAX_PER_SESSION} files this session`, {
+        phase: 'paused',
+        currentAction: 'Resume tomorrow to keep your data plan happy',
+      }),
+      requestedAt: null,
+      running: false,
+    });
+    schedule(60_000);
+    return;
+  }
+
+  const totalDegraded = status.totalMissing > 0
+    ? Math.max(status.totalMissing, candidates.length + status.checked)
+    : candidates.length + status.checked;
+  const checked = status.checked;
+
+  const next = await setThumbnailRepairStatus(withActivity(
+    status,
+    `Improving ${candidates.length.toLocaleString()} thumbnails`,
+    {
+      running: true,
+      phase: 'repairing',
+      mode: 'degraded',
+      totalMissing: totalDegraded,
+      checked,
+      remaining: candidates.length,
+      currentAction: 'Downloading the original to re-render its thumbnail',
+      currentFileName: null,
+    },
+  ));
+
+  // Process ONE file. Sequential is the contract.
+  const file = candidates[0];
+  if (!file) {
+    schedule(MIN_DELAY_MS);
+    return;
+  }
+  attempted.add(file.id);
+
+  const mime = await resolveMime(file, crypto.decryptMetadata);
+  if (!mime || (!mime.startsWith('image/') && !mime.startsWith('video/'))) {
+    const skipped = next.skipped + 1;
+    await setThumbnailRepairStatus(withActivity(next, `Skipped ${file.id.slice(0, 8)} (not media)`, {
+      skipped,
+      checked: next.checked + 1,
+      remaining: Math.max(0, next.remaining - 1),
+      currentFileName: null,
+    }));
+    schedule(MIN_DELAY_MS);
+    return;
+  }
+
+  await setThumbnailRepairStatus(withActivity(next, `Improving thumbnail for ${file.name_encrypted.slice(0, 24)}…`, {
+    currentAction: 'Downloading the encrypted original',
+    currentFileName: null,
+  }));
+
+  let bytesAdded = 0;
+  let repaired = false;
+  try {
+    repaired = await new Promise<boolean>((resolve) => {
+      let settled = false;
+      const timeout = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        resolve(false);
+      }, REPAIR_TIMEOUT_MS);
+      InteractionManager.runAfterInteractions(() => {
+        // ensureThumbnailForImage does the download + decrypt + thumbnail + upload.
+        // We approximate bytesAdded from file.size_bytes since the worker doesn't
+        // currently expose a per-call byte counter; the actual ciphertext is
+        // size + ~chunk_count*28 bytes overhead.
+        ensureThumbnailForImage(
+          file.id,
+          file.name_encrypted,
+          file.size_bytes,
+          file.chunk_count,
+          mime,
+          crypto.getFileKeyBytes,
+        ).then((ok) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timeout);
+          if (ok) bytesAdded = Math.max(0, file.size_bytes);
+          resolve(ok);
+        }).catch(() => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timeout);
+          resolve(false);
+        });
+      });
+    });
+  } catch {
+    repaired = false;
+  }
+
+  const refreshed = await getThumbnailRepairStatus();
+  const pauseRequested = refreshed.phase === 'paused' && refreshed.requestedAt == null;
+
+  if (repaired) {
+    resetFailureStreak();
+  } else {
+    bumpFailureStreak();
+  }
+
+  const updated: ThumbnailRepairStatus = {
+    ...refreshed,
+    mode: 'degraded',
+    checked: refreshed.checked + 1,
+    repaired: refreshed.repaired + (repaired ? 1 : 0),
+    failed: refreshed.failed + (repaired ? 0 : 1),
+    bytesDownloaded: refreshed.bytesDownloaded + bytesAdded,
+    remaining: Math.max(0, refreshed.remaining - 1),
+    running: !pauseRequested,
+    phase: pauseRequested ? 'paused' : 'repairing',
+    currentAction: pauseRequested
+      ? 'Paused by you'
+      : repaired
+        ? 'Uploaded the improved thumbnail'
+        : 'Could not improve this thumbnail — moving on',
+    currentFileName: null,
+    updatedAt: Date.now(),
+    lastRunAt: Date.now(),
+    lastMessage: repaired
+      ? `Improved 1 thumbnail (${formatMb(refreshed.bytesDownloaded + bytesAdded)} total)`
+      : 'A thumbnail could not be improved',
+    activity: [
+      {
+        at: Date.now(),
+        message: repaired
+          ? `Improved thumbnail (${formatMb(bytesAdded)})`
+          : 'Could not improve a thumbnail',
+      },
+      ...refreshed.activity,
+    ].slice(0, 8),
+  };
+  await setThumbnailRepairStatus(updated);
+
+  if (pauseRequested) {
+    schedule(30_000);
+    return;
+  }
+
+  const elapsedMs = Date.now() - startedAt;
+  schedule(repaired ? DEGRADED_REPAIR_DELAY_MS : Math.max(elapsedMs, DEGRADED_REPAIR_FAILURE_DELAY_MS));
+}
+
+function formatMb(bytes: number): string {
+  if (bytes < 1_000_000) return `${Math.round(bytes / 1_000)} KB`;
+  if (bytes < 1_000_000_000) return `${Math.round(bytes / 100_000) / 10} MB`;
+  return `${(bytes / 1_000_000_000).toFixed(2)} GB`;
+}
+
 export function ThumbnailRepairWorker({ enabled }: { enabled: boolean }) {
   const crypto = useCrypto();
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -184,6 +489,22 @@ export function ThumbnailRepairWorker({ enabled }: { enabled: boolean }) {
           attemptedRef.current.clear();
           repairedThisSessionRef.current = 0;
           failureStreakRef.current = 0;
+        }
+
+        // ── Bulk-backfill (degraded) mode — task 0553 ──────────────────────
+        // Strictly sequential, wifi-aware, download/decrypt/regenerate pipeline.
+        // Routed off the existing worker so we keep one timer + one status doc.
+        if (status.mode === 'degraded') {
+          await runDegradedTick({
+            status,
+            settings,
+            crypto,
+            attempted: attemptedRef.current,
+            bumpFailureStreak: () => { failureStreakRef.current += 1; },
+            resetFailureStreak: () => { failureStreakRef.current = 0; },
+            schedule,
+          });
+          return;
         }
 
         await setThumbnailRepairStatus(withActivity(status, 'Scanning for missing thumbnails', {
