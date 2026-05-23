@@ -318,6 +318,8 @@ export default function OnboardingScreen({ route, navigation, phrase: phraseProp
     await Clipboard.setStringAsync(words.join(' '));
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
+    // Auto-clear clipboard after 60 seconds to limit exposure of recovery phrase
+    setTimeout(() => Clipboard.setStringAsync(''), 60000);
   }
 
   function setAnswer(index: number, value: string) {

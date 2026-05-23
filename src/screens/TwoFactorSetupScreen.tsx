@@ -206,6 +206,8 @@ function StepSecret({
   const handleCopy = useCallback(async () => {
     await Clipboard.setStringAsync(setup.secret);
     Alert.alert('Copied', 'Secret key copied to clipboard.');
+    // Auto-clear clipboard after 60 seconds to limit exposure of TOTP secret
+    setTimeout(() => Clipboard.setStringAsync(''), 60000);
   }, [setup.secret]);
 
   return (
@@ -358,6 +360,8 @@ function StepBackupCodes({
   const handleCopyAll = useCallback(async () => {
     await Clipboard.setStringAsync(codes.join('\n'));
     Alert.alert('Copied', 'All backup codes copied to clipboard.');
+    // Auto-clear clipboard after 60 seconds to limit exposure of backup codes
+    setTimeout(() => Clipboard.setStringAsync(''), 60000);
   }, [codes]);
 
   // Render codes in pairs

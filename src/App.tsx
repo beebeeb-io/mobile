@@ -191,7 +191,7 @@ export type RootStackParamList = {
 // ---------------------------------------------------------------------------
 
 const linking = {
-  prefixes: ['beebeeb://', 'https://beebeeb.io', 'http://beebeeb.io'],
+  prefixes: ['beebeeb://', 'https://beebeeb.io'],
   config: {
     screens: {
       Tabs: {
@@ -224,8 +224,7 @@ const navigationRef = createNavigationContainerRef<RootStackParamList>();
 function isBackupInsightsURL(url: string): boolean {
   const normalized = url.toLowerCase().replace(/\/+$/, '');
   return normalized === 'beebeeb://settings/backup-insights' ||
-    normalized === 'https://beebeeb.io/settings/backup-insights' ||
-    normalized === 'http://beebeeb.io/settings/backup-insights';
+    normalized === 'https://beebeeb.io/settings/backup-insights';
 }
 
 function dispatchWhenNavigationReady(dispatch: () => void, attempt = 0): void {
