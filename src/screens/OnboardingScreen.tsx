@@ -1,4 +1,5 @@
 import { BBLogo } from "../components/BBLogo";
+import { BBWordmark } from "../components/BBWordmark";
 import React, { useMemo, useState } from 'react';
 import {
   ActivityIndicator,
@@ -382,6 +383,7 @@ export default function OnboardingScreen({ route, navigation, phrase: phraseProp
         <View style={styles.header}>
           <View style={styles.logoWrap}>
             <BBLogo size={48} />
+            <BBWordmark size={22} style={{ marginTop: 12 }} />
           </View>
           <View style={styles.progress} accessibilityLabel={`Step ${stepNumber} of 4`}>
             {[1, 2, 3, 4].map((item) => (

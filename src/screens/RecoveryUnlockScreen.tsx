@@ -1,4 +1,5 @@
 import { BBLogo } from "../components/BBLogo";
+import { BBWordmark } from "../components/BBWordmark";
 import React, { useMemo, useState } from 'react';
 import {
   ActivityIndicator,
@@ -127,6 +128,7 @@ export default function RecoveryUnlockScreen() {
       >
         <View style={styles.logoRow}>
           <BBLogo size={48} />
+          <BBWordmark size={22} style={{ marginTop: 12 }} />
         </View>
 
         <Text style={styles.heading}>Unlock your vault</Text>

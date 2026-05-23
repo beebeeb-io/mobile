@@ -1,4 +1,5 @@
 import { BBLogo } from "../components/BBLogo";
+import { BBWordmark } from "../components/BBWordmark";
 import React, { useState } from 'react';
 import {
   Platform,
@@ -65,6 +66,7 @@ export default function RecoveryPhraseScreen() {
         <View style={styles.logoRow}>
           <View style={styles.logo}>
             <BBLogo size={48} />
+            <BBWordmark size={22} style={{ marginTop: 12 }} />
           </View>
         </View>
 
