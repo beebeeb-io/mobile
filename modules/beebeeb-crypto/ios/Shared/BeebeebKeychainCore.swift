@@ -30,6 +30,7 @@ enum BeebeebKeychainCore {
     enum LoadError: Error {
         case notFound
         case readFailed(OSStatus)
+        case writeFailed(OSStatus)
         case decryptFailed
         case seKeyNotFound
     }
@@ -148,6 +149,106 @@ enum BeebeebKeychainCore {
             }
         }
         return nil
+    }
+
+    // MARK: - Generic string storage (App-Group-shared)
+    //
+    // Used by task 0447 for the user's session token + apiBaseUrl. Items
+    // are written with the App Group access group + accessibility
+    // `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`, so the File
+    // Provider extension + Share Extension can read them after first
+    // unlock — and `ThisDeviceOnly` excludes them from unencrypted
+    // iCloud / iTunes device backups (where they previously leaked as
+    // App-Group UserDefaults plist entries).
+    //
+    // Same `stringStorageService` as `KeychainManager`'s 0430 helpers, so
+    // a future cleanup that promotes all string keys to a single owner
+    // can deduplicate without a separate keychain item migration.
+
+    static let stringStorageService = "io.beebeeb.string-storage"
+    static let appGroupSuiteName = "group.io.beebeeb.shared"
+
+    /// Persist `value` under `key` in the shared Keychain. Replaces any
+    /// existing value at the same key. Also clears any legacy App Group
+    /// UserDefaults entry at the same key (belt-and-suspenders against the
+    /// pre-0447 plaintext leak resurfacing on the next write).
+    static func storeString(_ value: String, key: String) throws {
+        let data = Data(value.utf8)
+        deleteStringFromKeychain(key: key)
+        var attrs: [CFString: Any] = [
+            kSecClass: kSecClassGenericPassword,
+            kSecAttrService: stringStorageService,
+            kSecAttrAccount: key,
+            kSecAttrAccessible: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+            kSecValueData: data,
+        ]
+        if let group = accessGroup { attrs[kSecAttrAccessGroup] = group }
+        let status = SecItemAdd(attrs as CFDictionary, nil)
+        guard status == errSecSuccess else {
+            throw LoadError.writeFailed(status)
+        }
+        UserDefaults(suiteName: appGroupSuiteName)?.removeObject(forKey: key)
+    }
+
+    /// Return the stored string at `key`, or `nil` if neither the Keychain
+    /// nor the legacy App Group UserDefaults has a value. Performs an
+    /// on-demand migration the first time a legacy UserDefaults entry is
+    /// encountered: writes to Keychain, then clears UserDefaults ONLY on
+    /// `errSecSuccess` from `SecItemAdd`. If the write fails, the legacy
+    /// value is still returned (existing sessions survive the failure;
+    /// migration retries on the next read).
+    static func loadString(key: String) -> String? {
+        if let existing = readStringFromKeychain(key: key) {
+            return existing
+        }
+        let defaults = UserDefaults(suiteName: appGroupSuiteName)
+        guard let legacy = defaults?.string(forKey: key) else { return nil }
+        do {
+            try storeString(legacy, key: key)
+            // `storeString` cleared the App-Group UserDefaults entry on
+            // success — nothing else to do here.
+            return legacy
+        } catch {
+            NSLog("[Beebeeb] keychain migration failed for \(key): \(error.localizedDescription) — keeping App Group UserDefaults entry until next launch")
+            return legacy
+        }
+    }
+
+    /// Remove the string at `key` from BOTH the shared Keychain and the
+    /// legacy App Group UserDefaults entry. Used at sign-out so a stale
+    /// session token can't survive even via the migration path.
+    static func deleteString(key: String) {
+        deleteStringFromKeychain(key: key)
+        UserDefaults(suiteName: appGroupSuiteName)?.removeObject(forKey: key)
+    }
+
+    private static func readStringFromKeychain(key: String) -> String? {
+        var query: [CFString: Any] = [
+            kSecClass: kSecClassGenericPassword,
+            kSecAttrService: stringStorageService,
+            kSecAttrAccount: key,
+            kSecReturnData: true,
+            kSecMatchLimit: kSecMatchLimitOne,
+        ]
+        if let group = accessGroup { query[kSecAttrAccessGroup] = group }
+        var result: CFTypeRef?
+        var status = SecItemCopyMatching(query as CFDictionary, &result)
+        if status == errSecItemNotFound, accessGroup != nil {
+            query.removeValue(forKey: kSecAttrAccessGroup)
+            status = SecItemCopyMatching(query as CFDictionary, &result)
+        }
+        guard status == errSecSuccess, let data = result as? Data else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    private static func deleteStringFromKeychain(key: String) {
+        var query: [CFString: Any] = [
+            kSecClass: kSecClassGenericPassword,
+            kSecAttrService: stringStorageService,
+            kSecAttrAccount: key,
+        ]
+        if let group = accessGroup { query[kSecAttrAccessGroup] = group }
+        SecItemDelete(query as CFDictionary)
     }
 
     /// Fetch a wrapped-key blob from the generic-password keychain class.

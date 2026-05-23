@@ -123,13 +123,16 @@ class FileProviderAPIClient {
     // MARK: - Auth
 
     private func authToken() throws -> String {
-        guard
-            let token = appGroupString(UserDefaults(suiteName: kAppGroup), key: kSharedSessionTokenKey),
-            !token.isEmpty
+        // Session token moved to shared Keychain in task 0447 (App Group
+        // UserDefaults plist was leaking into unencrypted device backups).
+        // `BeebeebKeychainCore.loadString` migrates the legacy UserDefaults
+        // entry to keychain on first read and only clears the legacy entry
+        // on `errSecSuccess`, so existing installs upgrade transparently.
+        guard let token = BeebeebKeychainCore.loadString(key: kSharedSessionTokenKey),
+              !token.isEmpty
         else {
             throw FileProviderAPIError.notAuthenticated
         }
-
         return token
     }
 
@@ -142,7 +145,8 @@ class FileProviderAPIClient {
     }
 
     private func currentBaseURL() -> URL {
-        let rawBaseURL = appGroupString(UserDefaults(suiteName: kAppGroup), key: kSharedAPIBaseURLKey) ?? kFallbackAPIBaseURL
+        // Same migration as `authToken()` — see task 0447.
+        let rawBaseURL = BeebeebKeychainCore.loadString(key: kSharedAPIBaseURLKey) ?? kFallbackAPIBaseURL
         return URL(string: rawBaseURL) ?? URL(string: kFallbackAPIBaseURL)!
     }
 

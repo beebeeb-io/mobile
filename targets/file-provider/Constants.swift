@@ -28,19 +28,26 @@ enum BeebeebConstants {
   /// SQLite filename inside the App Group container.
   static let cacheDatabaseFilename = "file-provider-cache.sqlite"
 
-  /// API base URL fallback used by the File Provider when the main app hasn't
-  /// written `userDefaultsApiBaseUrlKey` yet. Defaults to production (task 0442)
-  /// — workspace rule forbids localhost defaults in production code paths.
-  /// In dev, the main app overrides this via UserDefaults during sign-in; if
-  /// the override is missing, the extension safely points at production rather
-  /// than silently hitting whatever's listening on :3001 in a misconfigured
-  /// simulator.
+  /// API base URL fallback used by the File Provider when the main app
+  /// hasn't written the corresponding keychain entry yet. Defaults to
+  /// production (task 0442) — workspace rule forbids localhost defaults
+  /// in production code paths. In dev, the main app overrides this via
+  /// `BeebeebKeychainCore.storeString(...)` during sign-in (see task
+  /// 0447); if the override is missing, the extension safely points at
+  /// production rather than silently hitting whatever's listening on
+  /// :3001 in a misconfigured simulator.
   static let defaultApiBaseUrl = "https://api.beebeeb.io"
 
-  /// UserDefaults key (in App Group) that the main app writes after sign-in.
+  /// Account name used to store the API base URL in the shared Keychain.
+  /// Historical name preserved (`userDefaults…Key`) — the key value is
+  /// the same; only the storage backend moved from App Group UserDefaults
+  /// to the shared Keychain in task 0447 (the old UserDefaults plist
+  /// entry leaked into unencrypted device backups). `loadString` migrates
+  /// the legacy value on first read.
   static let userDefaultsApiBaseUrlKey = "io.beebeeb.apiBaseUrl"
 
-  /// UserDefaults key for the session token, mirrored from SecureStore by the main app.
+  /// Account name used to store the session token in the shared Keychain.
+  /// Same migration story as `userDefaultsApiBaseUrlKey` — see task 0447.
   static let userDefaultsSessionTokenKey = "io.beebeeb.sessionToken"
 
   /// Logical root directory shown in the iOS Files app.

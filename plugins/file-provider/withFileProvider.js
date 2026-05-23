@@ -12,6 +12,11 @@ const SOURCE_FILES = [
   'FileProviderEnumerator.swift',
   'FileProviderCrypto.swift',
   'FileProviderAPIClient.swift',
+  // Symlink to modules/beebeeb-crypto/ios/Shared/BeebeebKeychainCore.swift.
+  // Needed so FileProviderAPIClient can read the session token from the
+  // shared Keychain (task 0447) — App Group UserDefaults plaintext is
+  // now empty after sign-in.
+  'BeebeebKeychainCore.swift',
 ];
 const EXTENSION_FILES = [
   ...SOURCE_FILES.map((file) => ({

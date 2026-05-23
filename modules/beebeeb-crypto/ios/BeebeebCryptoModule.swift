@@ -570,8 +570,12 @@ private func clearFileProviderSharedState(defaults: UserDefaults?) -> Int {
   defaults?.set(false, forKey: fileProviderTrustedMountKey)
   defaults?.set(true, forKey: fileProviderAuthRequiredKey)
   defaults?.set(0, forKey: fileProviderUnlockedUntilKey)
-  defaults?.removeObject(forKey: sharedSessionTokenKey)
-  defaults?.removeObject(forKey: sharedAPIBaseURLKey)
+  // Session token + apiBaseUrl live in the shared Keychain (task 0447),
+  // not in App Group UserDefaults. `deleteString` also clears any legacy
+  // UserDefaults entries at the same keys so a stale token from a
+  // pre-0447 install can't survive a sign-out.
+  BeebeebKeychainCore.deleteString(key: sharedSessionTokenKey)
+  BeebeebKeychainCore.deleteString(key: sharedAPIBaseURLKey)
   defaults?.removeObject(forKey: simulatorFileProviderMasterKeyKey)
   let removed = clearFileProviderCacheState(defaults: defaults)
   return removed
@@ -1241,29 +1245,31 @@ public class BeebeebCryptoModule: Module {
     }
 
     AsyncFunction("mirrorSessionToAppGroup") { (token: String?, baseUrl: String?) -> Bool in
-      guard let defaults = UserDefaults(suiteName: "group.io.beebeeb.shared") else {
-        return false
-      }
-      // App Group UserDefaults still mirrors the session token for the
-      // share extension / file provider (different from the backup token).
-      // The backup token + server URL go to the Keychain via
-      // `KeychainManager.storeString` so they don't leak into unencrypted
-      // device backups (task 0430).
+      // Session token + apiBaseUrl go to the SHARED Keychain
+      // (`BeebeebKeychainCore` with the App Group access group +
+      // `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`) so the File
+      // Provider extension + Share Extension can read them after first
+      // unlock, and so they're EXCLUDED from unencrypted iCloud / iTunes
+      // device backups. This replaces the previous App-Group UserDefaults
+      // path that leaked the bearer in plaintext (task 0447). The
+      // per-app KeychainManager copy for the backup engine
+      // (`io.beebeeb.backupToken` / `io.beebeeb.serverURL`) stays — it's
+      // a separate keychain item used only by `NativeBackupEngine`
+      // running in the main app address space (task 0430).
       if let token, !token.isEmpty {
-        defaults.set(token, forKey: sharedSessionTokenKey)
+        try? BeebeebKeychainCore.storeString(token, key: sharedSessionTokenKey)
         try? KeychainManager.storeString(token, key: "io.beebeeb.backupToken")
       } else {
-        defaults.removeObject(forKey: sharedSessionTokenKey)
+        BeebeebKeychainCore.deleteString(key: sharedSessionTokenKey)
         KeychainManager.deleteString(key: "io.beebeeb.backupToken")
       }
       if let baseUrl, !baseUrl.isEmpty {
-        defaults.set(baseUrl, forKey: sharedAPIBaseURLKey)
+        try? BeebeebKeychainCore.storeString(baseUrl, key: sharedAPIBaseURLKey)
         try? KeychainManager.storeString(baseUrl, key: "io.beebeeb.serverURL")
       } else {
-        defaults.removeObject(forKey: sharedAPIBaseURLKey)
+        BeebeebKeychainCore.deleteString(key: sharedAPIBaseURLKey)
         KeychainManager.deleteString(key: "io.beebeeb.serverURL")
       }
-      defaults.synchronize()
       return true
     }
 

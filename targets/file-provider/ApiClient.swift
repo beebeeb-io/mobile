@@ -9,7 +9,6 @@ final class ApiClient {
   static let shared = ApiClient()
 
   private let session: URLSession
-  private let defaults: UserDefaults?
 
   private init() {
     let cfg = URLSessionConfiguration.default
@@ -17,19 +16,28 @@ final class ApiClient {
     cfg.timeoutIntervalForResource = 600
     cfg.httpMaximumConnectionsPerHost = 4
     self.session = URLSession(configuration: cfg)
-    self.defaults = UserDefaults(suiteName: BeebeebConstants.appGroup)
+    // App Group UserDefaults handle is no longer needed — session token
+    // and baseUrl moved to the shared Keychain (task 0447).
   }
 
   // MARK: - Configuration
 
   var baseUrl: URL {
-    let raw = defaults?.string(forKey: BeebeebConstants.userDefaultsApiBaseUrlKey)
+    // Session base URL moved from App Group UserDefaults to the shared
+    // Keychain (`BeebeebKeychainCore`) in task 0447 so it doesn't leak
+    // into unencrypted device backups. `loadString` migrates the legacy
+    // UserDefaults entry into the keychain on first read and only
+    // clears the legacy entry on `errSecSuccess`, so existing installs
+    // upgrade transparently. Falls back to the production default when
+    // the keychain slot is empty.
+    let raw = BeebeebKeychainCore.loadString(key: BeebeebConstants.userDefaultsApiBaseUrlKey)
       ?? BeebeebConstants.defaultApiBaseUrl
     return URL(string: raw)!
   }
 
   var sessionToken: String? {
-    defaults?.string(forKey: BeebeebConstants.userDefaultsSessionTokenKey)
+    // Same migration as `baseUrl` — see the comment above.
+    BeebeebKeychainCore.loadString(key: BeebeebConstants.userDefaultsSessionTokenKey)
   }
 
   // MARK: - DTOs
