@@ -8,9 +8,10 @@ import {
 } from './thumbnail-policy';
 
 describe('thumbnail policy', () => {
-  test('uses one medium-sized thumbnail tier capped at 50KB', () => {
+  test('uses one medium-sized thumbnail tier capped at 100KB', () => {
+    // task 0552 bumped the cap from 50KB → 100KB
     expect(THUMB_WIDTH).toBe(768);
-    expect(MAX_THUMB_BYTES).toBe(50 * 1024);
+    expect(MAX_THUMB_BYTES).toBe(100 * 1024);
     expect(THUMB_VARIANTS.every((variant) => variant.width === THUMB_WIDTH)).toBe(true);
     expect(Math.min(...THUMB_VARIANTS.map((variant) => variant.quality))).toBeGreaterThanOrEqual(0.5);
   });
