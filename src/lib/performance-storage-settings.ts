@@ -20,24 +20,33 @@ export const DEFAULT_PERFORMANCE_STORAGE_SETTINGS: PerformanceStorageSettings = 
   profile: 'balanced',
 };
 
+// Task 0552: thumbnails are always 768px @ ≤100 KB (the cap was bumped from
+// 50 KB so complex photos don't degrade to 384px). The setting now controls
+// DOWNLOAD BEHAVIOUR, not thumbnail size:
+//   - light    → no prefetch, fetch on viewport entry only
+//   - balanced → prefetch a 200-tile window around the viewport (default)
+//   - smooth   → full-library prefetch on app launch
+// Estimate adds the ~25-byte blurhash placeholder per file regardless of
+// profile, since the placeholder is always cached locally.
+const BLURHASH_BYTES_PER_FILE = 25;
 const PROFILE_ESTIMATES: Record<PerformanceStorageProfile, Omit<PerformanceStorageEstimate, 'estimatedBytes'>> = {
   light: {
-    thumbnailBytesPerFile: 20 * 1024,
+    thumbnailBytesPerFile: 100 * 1024,
     localPreviewBudgetBytes: 150 * 1024 * 1024,
-    label: 'Light',
-    description: 'Uses less storage. Thumbnails and previews are loaded more cautiously.',
+    label: 'Data saver',
+    description: 'Thumbnails fetch only when a tile scrolls into view. Lowest data use.',
   },
   balanced: {
-    thumbnailBytesPerFile: 50 * 1024,
+    thumbnailBytesPerFile: 100 * 1024,
     localPreviewBudgetBytes: 500 * 1024 * 1024,
     label: 'Balanced',
-    description: 'Keeps medium thumbnails and recent previews cached for normal use.',
+    description: 'Prefetches a 200-tile window around the viewport so scrolling feels smooth.',
   },
   smooth: {
-    thumbnailBytesPerFile: 90 * 1024,
+    thumbnailBytesPerFile: 100 * 1024,
     localPreviewBudgetBytes: 1_500 * 1024 * 1024,
     label: 'Smooth',
-    description: 'Keeps more thumbnails warm and reserves space for a larger local preview tier.',
+    description: 'Prefetches the entire library on launch. Uses the most data but no waits.',
   },
 };
 
@@ -48,7 +57,10 @@ export function estimatePerformanceStorage(
   const base = PROFILE_ESTIMATES[profile];
   return {
     ...base,
-    estimatedBytes: Math.max(0, fileCount) * base.thumbnailBytesPerFile + base.localPreviewBudgetBytes,
+    // task 0552: 100 KB thumbnail cap + ~25 byte blurhash per file
+    estimatedBytes:
+      Math.max(0, fileCount) * (base.thumbnailBytesPerFile + BLURHASH_BYTES_PER_FILE)
+      + base.localPreviewBudgetBytes,
   };
 }
 
