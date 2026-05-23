@@ -434,7 +434,14 @@ export async function confirmDeviceOwnerAction(params: {
 export interface FileEntry {
   id: string;
   name_encrypted: string;
-  mime_type: string | null;
+  /**
+   * @deprecated The plaintext mime_type column has been dropped server-side.
+   * The server no longer populates this field; the local cache may still
+   * fill it in client-side from the decrypted metadata blob (see
+   * decryptFileMetadata) so existing screens that fall back to file.mime_type
+   * keep working until they migrate to the decrypted value.
+   */
+  mime_type?: string | null;
   size_bytes: number;
   is_folder: boolean;
   is_uploading?: boolean;
@@ -772,8 +779,8 @@ export async function uploadEncryptedChunked(params: {
         file_id: fileId,
         name_encrypted: initialNameEncrypted,
         parent_id: parentId ?? null,
-        // MIME type is encrypted inside name_encrypted — never sent in plaintext
-        mime_type: null,
+        // MIME type is encrypted inside name_encrypted; the server has no
+        // plaintext mime_type column to store it in.
         is_media: isMedia ?? false,
         // Server expects PLAINTEXT size — `sizeBytes` (= plaintext + chunkCount*28)
         // is only used for progress reporting (total encrypted bytes in flight).
@@ -901,8 +908,8 @@ async function initUploadV2(params: {
       file_name: params.fileName,
       file_size_bytes: params.fileSizeBytes,
       parent_id: params.parentId ?? null,
-      // MIME type is encrypted inside name — never sent in plaintext
-      mime_type: null,
+      // MIME type is encrypted inside name_encrypted; the server has no
+      // plaintext mime_type column.
       is_media: params.isMedia ?? false,
       profile: 'mobile',
       chunk_size_bytes: CHUNK_SIZE,
@@ -985,13 +992,14 @@ async function uploadFileChunked(
   onProgress?.({ phase: 'preparing', chunksTotal: chunkCount, chunksUploaded: 0, bytesTotal: totalSize, bytesUploaded: 0 });
 
   // Step 1: Init upload — server creates the file record
+  // MIME type is encrypted inside name_encrypted; the server has no
+  // plaintext mime_type column.
   const initRes = await rateLimitedFetch(`${BASE_URL}/api/v1/files/upload/init`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
       name_encrypted: metadata.name_encrypted,
       parent_id: metadata.parent_id ?? null,
-      mime_type: metadata.mime_type ?? null,
       size_bytes: metadata.size_bytes,
       chunk_count: chunkCount,
     }),
@@ -1189,7 +1197,8 @@ export interface MyShareLink {
   file: {
     name_encrypted: string;
     size_bytes: number;
-    mime_type: string | null;
+    /** @deprecated dropped server-side — always undefined now. */
+    mime_type?: string | null;
   };
 }
 
@@ -1730,7 +1739,8 @@ export interface SyncNode {
   is_folder: boolean;
   is_uploading?: boolean;
   size_bytes: number;
-  mime_type: string | null;
+  /** @deprecated dropped server-side — always undefined now. */
+  mime_type?: string | null;
   content_hash: string | null;
   version_number: number;
   has_thumbnail: boolean;
