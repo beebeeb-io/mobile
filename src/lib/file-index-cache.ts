@@ -46,6 +46,23 @@ export async function loadCachedFileIndex(): Promise<CachedFileIndex | null> {
   }
 }
 
+// Ensure FileSystem.documentDirectory exists. On a fresh iOS install the
+// Documents folder is created lazily by the system on first access, and an
+// immediate writeAsStringAsync there raises "folder doesn't exist" with the
+// filename as the offending path. Idempotent makeDirectoryAsync({intermediates:
+// true}) is the documented expo-file-system pattern for this guard.
+async function ensureDocumentDirectory(): Promise<void> {
+  if (!FileSystem.documentDirectory) return;
+  try {
+    await FileSystem.makeDirectoryAsync(FileSystem.documentDirectory, {
+      intermediates: true,
+    });
+  } catch {
+    // already exists or transient permission — writeAsStringAsync will surface
+    // any real error
+  }
+}
+
 export async function saveCachedFileIndex(
   hash: string,
   files: FileEntry[],
@@ -54,6 +71,7 @@ export async function saveCachedFileIndex(
   const payload: CachedFileIndex = { hash, files, storedAt };
   const serialized = JSON.stringify(payload);
   if (FileSystem.documentDirectory) {
+    await ensureDocumentDirectory();
     await FileSystem.writeAsStringAsync(FILE_INDEX_CACHE_PATH, serialized);
     return;
   }
