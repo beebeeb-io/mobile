@@ -264,6 +264,12 @@ export async function decryptToTempFile(
   // decrypt, and write the plaintext directly to `outputPath`. Avoids the
   // ~100 per-chunk JSI round-trips the legacy `decryptEncryptedBytes` loop
   // makes for a 100 MB file.
+  console.info('[decrypt] FINGERPRINT-2026-05-23 entering decryptToTempFile', {
+    fileId,
+    probeReady: isDecryptToFileReady(),
+    bytes: encBytes.length,
+    chunks: effectiveChunkCount,
+  });
   if (isDecryptToFileReady()) {
     console.info('[decrypt] fast-path: decryptContiguousToFile (0438)', {
       fileId,
