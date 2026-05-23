@@ -19,6 +19,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
+import { usePreventScreenCapture } from 'expo-screen-capture';
 import { useNavigation } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../lib/theme-context';
@@ -414,6 +415,9 @@ function StepBackupCodes({
 // ── Screen ────────────────────────────────────────────────────────────────────
 
 export default function TwoFactorSetupScreen() {
+  // Block screenshots/screen recording — this screen shows the TOTP secret,
+  // QR code, and one-time backup codes that can each break 2FA if leaked.
+  usePreventScreenCapture('two-factor-setup');
   const navigation = useNavigation();
   const insets = useSafeAreaInsets();
   const { colors: c } = useTheme();

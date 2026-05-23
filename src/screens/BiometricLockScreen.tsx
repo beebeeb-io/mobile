@@ -10,6 +10,7 @@ import {
 } from 'react-native';
 import * as LocalAuthentication from 'expo-local-authentication';
 import * as Haptics from 'expo-haptics';
+import { usePreventScreenCapture } from 'expo-screen-capture';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { colors } from '../theme';
 import { requestConfirmation } from '../lib/confirm-action';
@@ -37,6 +38,9 @@ function FaceIdIcon() {
 }
 
 export default function BiometricLockScreen({ onUnlocked }: Props) {
+  // Block screenshots/screen recording while the app is locked — the lock
+  // screen covers any sensitive content that was on-screen at lock time.
+  usePreventScreenCapture('biometric-lock');
   const insets = useSafeAreaInsets();
   const [authenticating, setAuthenticating] = useState(false);
   const [error, setError] = useState<string | null>(null);

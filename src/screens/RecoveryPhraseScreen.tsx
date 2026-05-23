@@ -12,6 +12,7 @@ import {
 import { useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { usePreventScreenCapture } from 'expo-screen-capture';
 import { colors, radii, spacing } from '../theme';
 import { useTheme } from '../lib/theme-context';
 import { useAuth } from '../lib/auth';
@@ -22,6 +23,8 @@ type Nav = NativeStackNavigationProp<RootStackParamList>;
 type Route = RouteProp<RootStackParamList, 'RecoveryPhrase'>;
 
 export default function RecoveryPhraseScreen() {
+  // Block screenshots/screen recording while the BIP39 phrase is on-screen.
+  usePreventScreenCapture('recovery-phrase');
   const navigation = useNavigation<Nav>();
   const route = useRoute<Route>();
   const insets = useSafeAreaInsets();

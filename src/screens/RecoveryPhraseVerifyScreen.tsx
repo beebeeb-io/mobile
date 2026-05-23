@@ -14,6 +14,7 @@ import {
 import { useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { usePreventScreenCapture } from 'expo-screen-capture';
 import { fonts, radii, spacing } from '../theme';
 import { useTheme } from '../lib/theme-context';
 import { useAuth } from '../lib/auth';
@@ -32,6 +33,9 @@ function pickVerifyPositions(length: number): number[] {
 }
 
 export default function RecoveryPhraseVerifyScreen() {
+  // Block screenshots/screen recording — the phrase words are inferable from
+  // the prompts and entered text on this screen.
+  usePreventScreenCapture('recovery-phrase-verify');
   const navigation = useNavigation<Nav>();
   const route = useRoute<Route>();
   const insets = useSafeAreaInsets();

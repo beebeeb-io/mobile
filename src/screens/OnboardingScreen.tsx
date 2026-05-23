@@ -14,6 +14,7 @@ import {
   View,
 } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
+import { usePreventScreenCapture } from 'expo-screen-capture';
 import type { RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -68,6 +69,9 @@ function pickVerifyPositions(words: string[]): number[] {
 }
 
 export default function OnboardingScreen({ route, navigation, phrase: phraseProp, onComplete }: Props) {
+  // Block screenshots/screen recording while the recovery phrase is on-screen.
+  // iOS overlays a black/blur view in captures; Android sets FLAG_SECURE.
+  usePreventScreenCapture('onboarding-recovery-phrase');
   const insets = useSafeAreaInsets();
   const { colors: c, resolved } = useTheme();
   const { markPhraseVerified } = useAuth();

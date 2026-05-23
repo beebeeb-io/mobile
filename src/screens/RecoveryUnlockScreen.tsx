@@ -16,6 +16,7 @@ import { CommonActions, useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
+import { usePreventScreenCapture } from 'expo-screen-capture';
 import { fonts, radii, spacing } from '../theme';
 import { useAuth } from '../lib/auth';
 import { useCrypto } from '../lib/crypto-context';
@@ -30,6 +31,8 @@ function normalizePhrase(value: string): string {
 }
 
 export default function RecoveryUnlockScreen() {
+  // Block screenshots/screen recording — user types their recovery phrase here.
+  usePreventScreenCapture('recovery-unlock');
   const navigation = useNavigation<Nav>();
   const insets = useSafeAreaInsets();
   const { signOut } = useAuth();
