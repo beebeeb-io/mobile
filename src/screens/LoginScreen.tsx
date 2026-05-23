@@ -16,6 +16,7 @@ import {
   opaqueLoginStart,
   opaqueLoginFinish,
   friendlyError,
+  TwoFactorRequiredError,
 } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { useTheme } from '../lib/theme-context';
@@ -79,6 +80,13 @@ export default function LoginScreen() {
         setTimeout(() => navigation.navigate('DevicePairingScan'), 0);
       }
     } catch (err) {
+      if (err instanceof TwoFactorRequiredError) {
+        // Navigate to the 2FA challenge screen with the partial token.
+        // refreshAuth is deferred until after completeTwoFactor succeeds.
+        setLoading(false);
+        navigation.navigate('TwoFactorChallenge', { partialToken: err.partialToken });
+        return;
+      }
       setError(friendlyError(err));
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
     } finally {

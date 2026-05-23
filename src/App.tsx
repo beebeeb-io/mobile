@@ -64,6 +64,7 @@ try {
 
 // Eager screens — auth entry points and tab destinations (Tab navigator handles its own lazy mounting)
 import LoginScreen from './screens/LoginScreen';
+import TwoFactorChallengeScreen from './screens/TwoFactorChallengeScreen';
 import SignupScreen from './screens/SignupScreen';
 import FilesScreen from './screens/FilesScreen';
 import SharedScreen from './screens/SharedScreen';
@@ -138,6 +139,7 @@ export type TabParamList = {
 export type RootStackParamList = {
   // Auth screens
   Login: { returnTo?: 'DevicePairingScan' } | undefined;
+  TwoFactorChallenge: { partialToken: string };
   Signup: undefined;
   // Main app
   Tabs: undefined;
@@ -1047,6 +1049,11 @@ export default function App() {
                     name="Login"
                     component={LoginScreen}
                     options={{ animationTypeForReplace: 'pop' }}
+                  />
+                  <Stack.Screen
+                    name="TwoFactorChallenge"
+                    component={TwoFactorChallengeScreen}
+                    options={{ headerShown: false, gestureEnabled: false }}
                   />
                   <Stack.Screen name="Signup" component={SignupScreen} />
                 </>

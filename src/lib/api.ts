@@ -171,6 +171,19 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * Thrown by `opaqueLoginFinish` / `login` when the user has 2FA enabled and
+ * the server returns `{ requires_2fa: true, partial_token }` instead of a
+ * session token. Caller must navigate to TwoFactorChallenge with this
+ * partial_token and call `completeTwoFactor` after the user enters their code.
+ */
+export class TwoFactorRequiredError extends Error {
+  constructor(public partialToken: string) {
+    super('two_factor_required');
+    this.name = 'TwoFactorRequiredError';
+  }
+}
+
 /** Return a human-friendly message for common API errors. */
 export function friendlyError(err: unknown): string {
   if (err instanceof ApiError) {
@@ -272,7 +285,26 @@ export async function signup(email: string, password: string): Promise<AuthRespo
 }
 
 export async function login(email: string, password: string): Promise<AuthResponse> {
-  const data = await request<AuthResponse>('POST', '/api/v1/auth/login', { email, password }, false, mobileClientHeaders());
+  const data = await request<AuthResponse & { requires_2fa?: boolean; partial_token?: string }>(
+    'POST',
+    '/api/v1/auth/login',
+    { email, password },
+    false,
+    mobileClientHeaders(),
+  );
+  // Server returns { requires_2fa, partial_token } when TOTP is enabled.
+  // In that case we don't have a session yet — caller navigates to the 2FA
+  // challenge screen.
+  if (data.requires_2fa) {
+    const partial = data.partial_token;
+    if (typeof partial !== 'string' || partial.length === 0) {
+      throw new ApiError(500, 'Server signalled requires_2fa without a partial token');
+    }
+    throw new TwoFactorRequiredError(partial);
+  }
+  if (typeof data.session_token !== 'string' || data.session_token.length === 0) {
+    throw new ApiError(500, 'Server returned no session token');
+  }
   await setSessionCredentials(data.session_token, data.device_confirmation_secret);
   return data;
 }
@@ -1550,9 +1582,19 @@ export async function opaqueLoginFinish(
     if (!BeebeebCrypto.isNativeAvailable) throw new NativeCryptoUnavailableError('opaqueLoginFinish');
     throw err;
   }
-  let data: { session_token: string; device_confirmation_secret?: string };
+  let data: {
+    session_token?: string;
+    device_confirmation_secret?: string;
+    requires_2fa?: boolean;
+    partial_token?: string;
+  };
   try {
-    data = await request<{ session_token: string; device_confirmation_secret?: string }>(
+    data = await request<{
+      session_token?: string;
+      device_confirmation_secret?: string;
+      requires_2fa?: boolean;
+      partial_token?: string;
+    }>(
       'POST',
       '/api/v1/opaque/login-finish',
       {
@@ -1566,7 +1608,48 @@ export async function opaqueLoginFinish(
   } catch (err) {
     throw err;
   }
+  // Server returns { requires_2fa, partial_token } when TOTP is enabled.
+  // In that case we don't have a session yet — caller navigates to the 2FA
+  // challenge screen.
+  if (data.requires_2fa) {
+    const partial = data.partial_token;
+    if (typeof partial !== 'string' || partial.length === 0) {
+      throw new ApiError(500, 'Server signalled requires_2fa without a partial token');
+    }
+    throw new TwoFactorRequiredError(partial);
+  }
+  if (typeof data.session_token !== 'string' || data.session_token.length === 0) {
+    throw new ApiError(500, 'Server returned no session token');
+  }
   await setSessionCredentials(data.session_token, data.device_confirmation_secret);
+  return { sessionToken: data.session_token };
+}
+
+/**
+ * Complete 2FA challenge. Exchanges the partial_token from a `requires_2fa`
+ * response (from either legacy login or opaque login-finish) for a real
+ * session token. Server endpoint: POST /api/v1/auth/2fa/verify.
+ *
+ * `code` is either the 6-digit TOTP code OR a backup code. Server treats
+ * both the same way — try TOTP first, fall back to backup code list.
+ */
+export async function completeTwoFactor(
+  partialToken: string,
+  code: string,
+): Promise<{ sessionToken: string }> {
+  const data = await request<{ user_id: string; session_token: string; salt?: string }>(
+    'POST',
+    '/api/v1/auth/2fa/verify',
+    { partial_token: partialToken, code },
+    false,
+    mobileClientHeaders(),
+  );
+  if (typeof data.session_token !== 'string' || data.session_token.length === 0) {
+    throw new ApiError(500, 'Server returned no session token');
+  }
+  // No device_confirmation_secret on the 2FA path — server doesn't issue
+  // one. Trash device-owner auth will require a re-confirmation later.
+  await setSessionCredentials(data.session_token, undefined);
   return { sessionToken: data.session_token };
 }
 
