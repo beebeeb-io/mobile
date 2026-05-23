@@ -36,6 +36,7 @@ import { guessMimeType } from '../lib/media';
 import { useBackup } from '../lib/backup-context';
 import { useCrypto } from '../lib/crypto-context';
 import { useNetworkStatus } from '../lib/useNetworkStatus';
+import { initLocalIdentifierMap } from '../lib/local-identifier-map';
 import { ThumbnailImage } from '../components/ThumbnailImage';
 import {
   cacheLocalThumbnail,
@@ -464,6 +465,7 @@ const PhotoCell = React.memo(function PhotoCell({
   isFromBackup,
   localAssetUri,
   mimeType,
+  blurhash,
   onThumbnailUnavailable,
   onPress,
   accessibilityLabel,
@@ -481,6 +483,7 @@ const PhotoCell = React.memo(function PhotoCell({
   isFromBackup: boolean;
   localAssetUri?: string | null;
   mimeType?: string | null;
+  blurhash?: string | null;
   onThumbnailUnavailable: (fileId: string) => void;
   onPress?: () => void;
   accessibilityLabel: string;
@@ -511,6 +514,7 @@ const PhotoCell = React.memo(function PhotoCell({
         loadThumbnail={loadThumbnail}
         localAssetUri={localAssetUri}
         mimeType={mimeType}
+        blurhash={blurhash}
         onUnavailable={onThumbnailUnavailable}
         placeholderColor={swatch(seed)}
         style={StyleSheet.absoluteFill}
@@ -609,6 +613,7 @@ const PhotoRow = React.memo(function PhotoRow({
             isFromBackup={photosFolderId !== null && photo.parent_id === photosFolderId}
             localAssetUri={localAssetUri}
             mimeType={mimeType}
+            blurhash={photo.blurhash}
             onThumbnailUnavailable={onThumbnailUnavailable}
             accessibilityLabel={decryptedNames[photo.id] ? `${mediaLabel}: ${decryptedNames[photo.id]}` : mediaLabel}
             onPress={() => (selectMode ? onTogglePhoto(photo) : onOpenPhoto(photo))}
@@ -1011,6 +1016,15 @@ export default function PhotosScreen() {
       fetchPhotos();
     }, [fetchPhotos])
   );
+
+  // Task 0552: hydrate the server-side PhotoKit identifier map once the
+  // vault is unlocked. The map persists to disk so subsequent app launches
+  // resolve PhotoKit-backed thumbnails synchronously from cache while the
+  // network refresh happens in the background.
+  useEffect(() => {
+    if (!isUnlocked) return;
+    void initLocalIdentifierMap();
+  }, [isUnlocked]);
 
   const handleRefresh = useCallback(() => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);

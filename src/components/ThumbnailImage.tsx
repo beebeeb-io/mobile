@@ -7,6 +7,22 @@ import {
   getCachedThumbnail,
   enqueueThumbnailLoad,
 } from '../lib/thumbnail-cache';
+import { getLocalIdentifier } from '../lib/local-identifier-map';
+
+// Task 0552: blurhash placeholder. Dynamic require so the JS layer keeps
+// working even when the native binding isn't linked (web preview, jest, etc.).
+type BlurhashViewType = React.ComponentType<{
+  blurhash: string;
+  style?: StyleProp<ViewStyle>;
+}>;
+let BlurhashView: BlurhashViewType | null = null;
+try {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const mod = require('react-native-blurhash');
+  BlurhashView = (mod?.Blurhash ?? null) as BlurhashViewType | null;
+} catch {
+  BlurhashView = null;
+}
 
 interface Props {
   fileId: string;
@@ -22,6 +38,12 @@ interface Props {
    */
   localAssetUri?: string | null;
   mimeType?: string | null;
+  /**
+   * Optional blurhash placeholder string (task 0552). Rendered immediately
+   * as a low-resolution colour gradient before either PhotoKit or the
+   * encrypted-blob path resolves. ~25 bytes from the server.
+   */
+  blurhash?: string | null;
   onUnavailable?: (fileId: string) => void;
   style?: StyleProp<ViewStyle>;
   accessibilityLabel?: string;
@@ -34,6 +56,7 @@ export const ThumbnailImage = React.memo(function ThumbnailImage({
   loadThumbnail = true,
   localAssetUri,
   mimeType,
+  blurhash,
   onUnavailable,
   style,
   accessibilityLabel,
@@ -70,6 +93,17 @@ export const ThumbnailImage = React.memo(function ThumbnailImage({
       };
     }
 
+    // Task 0552 PhotoKit short-circuit: if this fileId is known to be backed
+    // by a still-resolvable PHAsset, render from the camera roll directly and
+    // skip the encrypted-blob round-trip. We treat the identifier map as
+    // authoritative — if the asset has since been deleted from the library,
+    // `cacheLocalThumbnail` returns null and we fall through to the encrypted
+    // path. This is the (a)-(b)-(c) priority sequence from the task spec.
+    const cameraRollUri = localAssetUri ?? (() => {
+      const local = getLocalIdentifier(fileId);
+      return local ? `ph://${local}` : null;
+    })();
+
     // Step 1: Check persistent cache immediately (no network, no decrypt).
     // If the thumbnail is already on disk, show it instantly.
     getCachedThumbnail(fileId)
@@ -81,14 +115,14 @@ export const ThumbnailImage = React.memo(function ThumbnailImage({
         }
 
         // Step 2: Not cached. Use local asset or server fetch via the queue.
-        if (localAssetUri) {
-          return cacheLocalThumbnail(fileId, localAssetUri, mimeType)
+        if (cameraRollUri) {
+          return cacheLocalThumbnail(fileId, cameraRollUri, mimeType)
             .then((localCachedUri) => {
               if (cancelledRef.current) return;
               if (localCachedUri) {
                 setUri(localCachedUri);
                 if (!hasThumbnail) {
-                  void generateAndUploadThumbnail(fileId, localAssetUri, mimeType, getFileKeyBytes);
+                  void generateAndUploadThumbnail(fileId, cameraRollUri, mimeType, getFileKeyBytes);
                 }
               } else if (hasThumbnail) {
                 // Local generation failed — enqueue server fetch (concurrency limited)
@@ -137,6 +171,9 @@ export const ThumbnailImage = React.memo(function ThumbnailImage({
       style={[styles.container, { backgroundColor: placeholderColor }, style]}
       accessibilityLabel={accessibilityLabel}
     >
+      {blurhash && BlurhashView && !uri && !failed && (
+        <BlurhashView blurhash={blurhash} style={StyleSheet.absoluteFill} />
+      )}
       {uri && !failed && (
         <Image
           source={{ uri }}

@@ -47,6 +47,39 @@ import {
 let ImageManipulator: typeof import('expo-image-manipulator') | null = null;
 try { ImageManipulator = require('expo-image-manipulator'); } catch {}
 
+// Task 0552: blurhash placeholder. We load the binding dynamically because the
+// native module is only present after a fresh build — JS-only sims (or any
+// tooling that imports this file without the prebuilt binary) must keep
+// working. Encoding falls back to null when unavailable.
+type BlurhashLike = {
+  encode?: (uri: string, componentsX: number, componentsY: number) => Promise<string>;
+};
+let blurhashModule: BlurhashLike | null = null;
+try {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const mod = require('react-native-blurhash');
+  blurhashModule = (mod?.Blurhash as BlurhashLike) ?? (mod as BlurhashLike) ?? null;
+} catch {
+  blurhashModule = null;
+}
+
+/**
+ * Best-effort blurhash encoding from a local file URI. Returns null if the
+ * native binding isn't loaded or encoding throws. Used for the placeholder
+ * gradient that renders before either PhotoKit or the encrypted thumbnail
+ * resolves a tile.
+ */
+export async function encodeBlurhashFromUri(localUri: string): Promise<string | null> {
+  if (!blurhashModule?.encode) return null;
+  try {
+    const hash = await blurhashModule.encode(localUri, 4, 3);
+    if (!hash || hash.length === 0 || hash.length > 64) return null;
+    return hash;
+  } catch {
+    return null;
+  }
+}
+
 const MAX_THUMB_CACHE_ITEMS = 15000;
 const THUMBNAIL_BACKOFF_BASE_MS = 4_000;
 const THUMBNAIL_BACKOFF_MAX_MS = 30_000;
@@ -260,11 +293,20 @@ export async function generateAndUploadThumbnail(
     const thumb = await generateThumbnailForMedia(sourceUri, mimeType, variant);
     if (!thumb) return false;
 
+    // Task 0552: encode a blurhash from the same source URI for the medium
+    // variant. Best-effort — null when the native binding isn't loaded.
+    // We intentionally do NOT block thumbnail upload on this; if encoding
+    // fails the placeholder gradient simply doesn't appear.
+    let blurhash: string | null = null;
+    if (variant === 'medium' && !isVideoMime(mimeType)) {
+      blurhash = await encodeBlurhashFromUri(sourceUri).catch(() => null);
+    }
+
     // Cache the plaintext thumbnail in persistent storage for instant display
     if (variant === 'medium') {
       const b64 = bytesToBase64(thumb);
       try {
-        const persistedPath = await cacheThumbnailBase64(fileId, b64);
+        const persistedPath = await cacheThumbnailBase64(fileId, b64, variant);
         thumbCache.set(fileId, persistedPath);
       } catch {
         // Persist failed — still upload the thumbnail to server
@@ -288,7 +330,7 @@ export async function generateAndUploadThumbnail(
       return false;
     }
 
-    await uploadThumbnail(fileId, wire, variant);
+    await uploadThumbnail(fileId, wire, variant, blurhash);
     return true;
   } catch {
     // Best-effort — swallow.

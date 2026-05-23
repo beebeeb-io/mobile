@@ -465,6 +465,13 @@ export interface FileEntry {
    * each blob.
    */
   thumbnail_bytes?: number | null;
+  /**
+   * Blurhash placeholder string (~25 bytes, base83 encoded 4x3 colour grid).
+   * Unencrypted by design — see task 0552 for the privacy argument. The
+   * client renders this as an immediate gradient before either PhotoKit or
+   * the encrypted-blob path resolves.
+   */
+  blurhash?: string | null;
   is_starred?: boolean;
   /** True when the file is an image or video (set at upload time). */
   is_media?: boolean;
@@ -1073,18 +1080,42 @@ export function thumbnailUrl(fileId: string, variant: ThumbnailVariant = 'medium
  * Upload a thumbnail blob for a file. Server caps payloads at 512KB.
  * Best-effort: callers should fire-and-forget so a failed thumbnail
  * never blocks the upload success flow.
+ *
+ * `blurhash`, when provided, is attached as a query param so the server
+ * can store it on `files.blurhash` in the same DB write (task 0552).
+ * Only the medium variant carries a blurhash — the placeholder is
+ * variant-agnostic.
  */
 export async function uploadThumbnail(
   fileId: string,
   bytes: Uint8Array,
   variant: ThumbnailVariant = 'medium',
+  blurhash?: string | null,
 ): Promise<void> {
   const token = await getToken();
-  const res = await putBinaryBytes(thumbnailUrl(fileId, variant), token, bytes);
+  let url = thumbnailUrl(fileId, variant);
+  if (blurhash && variant === 'medium') {
+    url += `?blurhash=${encodeURIComponent(blurhash)}`;
+  }
+  const res = await putBinaryBytes(url, token, bytes);
   if (!res.ok) {
     const err = await res.error().catch(() => ({ error: undefined }));
     throw new ApiError(res.status, err.error ?? `Thumbnail upload failed (HTTP ${res.status})`);
   }
+}
+
+/**
+ * GET /api/v1/files/photo-backup/identifiers — task 0552.
+ * Returns the full file_id → local_identifier map for the authenticated
+ * user. The mobile client uses this to short-circuit thumbnail rendering
+ * for camera-roll-backed photos.
+ */
+export async function fetchPhotoBackupIdentifierMap(): Promise<Record<string, string>> {
+  const data = await request<{ identifiers?: Record<string, string> }>(
+    'GET',
+    '/api/v1/files/photo-backup/identifiers',
+  );
+  return data.identifiers ?? {};
 }
 
 export async function downloadFile(id: string): Promise<Response> {

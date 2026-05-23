@@ -1,9 +1,17 @@
 /**
  * Persistent thumbnail storage.
  *
- * Thumbnails are small (10-50 KB each) and expensive to re-download
+ * Thumbnails are small (10-100 KB each) and expensive to re-download
  * and decrypt. They live in `documentDirectory` so iOS preserves them
  * across app restarts and cache purges.
+ *
+ * **Cache key (task 0552):** filenames are `${fileId}.${variant}.webp`. The
+ * old single-file-per-id format (`${fileId}.webp`) caused list views that
+ * loaded the `small` variant first to "win" — a later Photos grid request
+ * for `medium` would silently return the 384px file. The memory map is
+ * keyed `${fileId}:${variant}` for the same reason. Legacy unsuffixed
+ * files left behind by older builds are migrated lazily into the `medium`
+ * slot on first access.
  *
  * This module also provides a concurrency-limited thumbnail loader
  * that prevents overwhelming the network or the crypto bridge when
@@ -12,13 +20,28 @@
 
 import * as FileSystem from 'expo-file-system';
 
-import { THUMB_CACHE_DIR_NAME } from './thumbnail-policy';
+import { THUMB_CACHE_DIR_NAME, type ThumbnailVariant } from './thumbnail-policy';
 
 const THUMB_DIR = `${FileSystem.documentDirectory}${THUMB_CACHE_DIR_NAME}/`;
 
 /** Max concurrent thumbnail download+decrypt operations. */
 const MAX_CONCURRENT_LOADS = 6;
+/** In-memory cache. Keyed by `${fileId}:${variant}` so the photo grid never
+ *  serves a stale small thumbnail when a medium one was requested. */
 const memoryThumbPaths = new Map<string, string>();
+
+function cacheKey(fileId: string, variant: ThumbnailVariant): string {
+  return `${fileId}:${variant}`;
+}
+
+function variantPath(fileId: string, variant: ThumbnailVariant): string {
+  return `${THUMB_DIR}${fileId}.${variant}.webp`;
+}
+
+/** Legacy single-file-per-id path. Files written before task 0552 used this. */
+function legacyVariantPath(fileId: string): string {
+  return `${THUMB_DIR}${fileId}.webp`;
+}
 
 // ---------------------------------------------------------------------------
 // Persistent cache read/write
@@ -27,37 +50,67 @@ const memoryThumbPaths = new Map<string, string>();
 /**
  * Check if a thumbnail exists in persistent storage.
  * Returns the local file URI or null.
+ *
+ * `variant` defaults to `'medium'` because the Photos grid is by far the
+ * dominant caller. Pass an explicit variant for screens that genuinely need
+ * a different tier.
  */
 export async function getCachedThumbnail(
   fileId: string,
+  variant: ThumbnailVariant = 'medium',
 ): Promise<string | null> {
-  const memory = memoryThumbPaths.get(fileId);
+  const key = cacheKey(fileId, variant);
+  const memory = memoryThumbPaths.get(key);
   if (memory) return memory;
 
-  const path = `${THUMB_DIR}${fileId}.webp`;
+  const path = variantPath(fileId, variant);
   try {
     const info = await FileSystem.getInfoAsync(path);
     if (info.exists) {
-      memoryThumbPaths.set(fileId, path);
+      memoryThumbPaths.set(key, path);
       return path;
     }
   } catch {
     return null;
   }
 
+  // Task 0552 migration: pre-variant builds wrote `${fileId}.webp`. We treat
+  // those as `medium` (the only variant that was ever uploaded before this
+  // task) and move them into the suffixed slot.
+  if (variant === 'medium') {
+    const legacy = legacyVariantPath(fileId);
+    try {
+      const legacyInfo = await FileSystem.getInfoAsync(legacy);
+      if (legacyInfo.exists) {
+        try {
+          await FileSystem.moveAsync({ from: legacy, to: path });
+          memoryThumbPaths.set(key, path);
+          return path;
+        } catch {
+          // If the rename failed, surface the legacy file as-is so the grid
+          // still renders something. It will be re-fetched on next miss.
+          memoryThumbPaths.set(key, legacy);
+          return legacy;
+        }
+      }
+    } catch {
+      // fall through
+    }
+  }
+
   // Check for legacy .jpg cached before the WebP migration
-  const legacyPath = `${THUMB_DIR}${fileId}.jpg`;
+  const legacyJpg = `${THUMB_DIR}${fileId}.jpg`;
   try {
-    const info = await FileSystem.getInfoAsync(legacyPath);
+    const info = await FileSystem.getInfoAsync(legacyJpg);
     if (info.exists) {
-      memoryThumbPaths.set(fileId, legacyPath);
-      return legacyPath;
+      memoryThumbPaths.set(key, legacyJpg);
+      return legacyJpg;
     }
   } catch {
     // fall through
   }
 
-  memoryThumbPaths.delete(fileId);
+  memoryThumbPaths.delete(key);
   return null;
 }
 
@@ -69,13 +122,14 @@ export async function getCachedThumbnail(
 export async function cacheThumbnail(
   fileId: string,
   data: Uint8Array,
+  variant: ThumbnailVariant = 'medium',
 ): Promise<string> {
   await FileSystem.makeDirectoryAsync(THUMB_DIR, { intermediates: true });
-  const path = `${THUMB_DIR}${fileId}.webp`;
+  const path = variantPath(fileId, variant);
   await FileSystem.writeAsStringAsync(path, uint8ArrayToBase64(data), {
     encoding: FileSystem.EncodingType.Base64,
   });
-  memoryThumbPaths.set(fileId, path);
+  memoryThumbPaths.set(cacheKey(fileId, variant), path);
   return path;
 }
 
@@ -86,13 +140,14 @@ export async function cacheThumbnail(
 export async function cacheThumbnailBase64(
   fileId: string,
   base64Data: string,
+  variant: ThumbnailVariant = 'medium',
 ): Promise<string> {
   await FileSystem.makeDirectoryAsync(THUMB_DIR, { intermediates: true });
-  const path = `${THUMB_DIR}${fileId}.webp`;
+  const path = variantPath(fileId, variant);
   await FileSystem.writeAsStringAsync(path, base64Data, {
     encoding: FileSystem.EncodingType.Base64,
   });
-  memoryThumbPaths.set(fileId, path);
+  memoryThumbPaths.set(cacheKey(fileId, variant), path);
   return path;
 }
 
@@ -103,11 +158,12 @@ export async function cacheThumbnailBase64(
 export async function persistThumbnailFromPath(
   fileId: string,
   sourcePath: string,
+  variant: ThumbnailVariant = 'medium',
 ): Promise<string> {
   await FileSystem.makeDirectoryAsync(THUMB_DIR, { intermediates: true });
-  const destPath = `${THUMB_DIR}${fileId}.webp`;
+  const destPath = variantPath(fileId, variant);
   await FileSystem.copyAsync({ from: sourcePath, to: destPath });
-  memoryThumbPaths.set(fileId, destPath);
+  memoryThumbPaths.set(cacheKey(fileId, variant), destPath);
   return destPath;
 }
 
@@ -134,11 +190,17 @@ export async function pruneThumbnailsForRemoteFiles(
   try {
     const names = await FileSystem.readDirectoryAsync(THUMB_DIR);
     await Promise.all(names.map(async (name) => {
-      const match = /^(.+)\.(webp|jpg)$/i.exec(name);
+      // Match `${id}.${variant}.webp` (task 0552) or legacy `${id}.{webp|jpg}`.
+      const variantMatch = /^([^.]+)\.(small|medium|large)\.webp$/i.exec(name);
+      const legacyMatch = /^(.+)\.(webp|jpg)$/i.exec(name);
+      const match = variantMatch ?? legacyMatch;
       if (!match) return;
       const fileId = match[1];
       if (retain.has(fileId)) return;
-      memoryThumbPaths.delete(fileId);
+      // Drop every variant from the memory map for this file.
+      for (const v of ['small', 'medium', 'large'] as const) {
+        memoryThumbPaths.delete(cacheKey(fileId, v));
+      }
       await FileSystem.deleteAsync(`${THUMB_DIR}${name}`, { idempotent: true }).catch(() => {});
     }));
   } catch {
