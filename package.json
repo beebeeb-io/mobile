@@ -18,6 +18,7 @@
     "screenshots:appstore": "node scripts/generate-app-store-screenshots.mjs"
   },
   "dependencies": {
+    "@e965/xlsx": "^0.20.3",
     "@expo/metro-runtime": "~4.0.1",
     "@react-native-async-storage/async-storage": "^3.0.2",
     "@react-native-community/netinfo": "11.4.1",
@@ -64,8 +65,7 @@
     "react-native-sse": "^1.2.1",
     "react-native-web": "~0.19.13",
     "react-native-webview": "13.12.5",
-    "uuid": "9.0.1",
-    "xlsx": "^0.18.5"
+    "uuid": "9.0.1"
   },
   "devDependencies": {
     "@types/jest": "^30.0.0",
