@@ -413,12 +413,17 @@ function BiometricGuard({ locked, onUnlock }: { locked: boolean; onUnlock: () =>
   );
 }
 
-function VaultRecoveryGate({ enabled }: { enabled: boolean }) {
+function VaultRecoveryGate({ enabled, navReady }: { enabled: boolean; navReady: boolean }) {
   const crypto = useCrypto();
 
   useEffect(() => {
     if (!enabled || !crypto.unlockAttempted || crypto.isUnlocked) return;
-    if (!navigationRef.isReady()) return;
+    // Bail until the navigation container is ready. navReady is in the dep
+    // array so this effect re-fires the moment nav becomes ready, even if
+    // crypto.unlockAttempted flipped to true earlier (common on cold launch
+    // when keychain auto-unlock fails fast before NavigationContainer's
+    // onReady fires).
+    if (!navReady || !navigationRef.isReady()) return;
 
     const currentRoute = navigationRef.getCurrentRoute()?.name;
     if (
@@ -430,7 +435,7 @@ function VaultRecoveryGate({ enabled }: { enabled: boolean }) {
     }
 
     navigationRef.navigate('RecoveryUnlock');
-  }, [enabled, crypto.unlockAttempted, crypto.isUnlocked]);
+  }, [enabled, navReady, crypto.unlockAttempted, crypto.isUnlocked]);
 
   return null;
 }
@@ -953,7 +958,7 @@ export default function App() {
           onReady={() => setNavReady(true)}
           onStateChange={handleNavigationStateChange}
         >
-            <VaultRecoveryGate enabled={isAuthenticated} />
+            <VaultRecoveryGate enabled={isAuthenticated} navReady={navReady} />
             <DevicePerformanceCalibrator enabled={isAuthenticated && !locked} />
             <ThumbnailRepairWorker enabled={isAuthenticated && !locked} />
             <FileProviderDomainRegistrar enabled={isAuthenticated && !locked} />
