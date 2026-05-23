@@ -109,7 +109,8 @@
       "./plugins/fmt-patch/withFmtPatch.js",
       "./plugins/shortcut-bridge/withShortcutBridge.js",
       "expo-video",
-      "expo-image-picker"
+      "expo-image-picker",
+      "./plugins/android-security/withAndroidSecurity.js"
     ],
     "extra": {
       "apiUrl": "https://api.beebeeb.io",
