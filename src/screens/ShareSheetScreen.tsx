@@ -171,7 +171,9 @@ export default function ShareSheetScreen() {
   const [expiry, setExpiry] = useState<ExpiryOption>(EXPIRY_OPTIONS[1]);
   const [opens, setOpens] = useState<OpensOption>(OPENS_OPTIONS[0]);
   const [passphrase, setPassphrase] = useState('');
-  const [doubleEncrypted, setDoubleEncrypted] = useState(false);
+  // Default to double-encrypted: even Beebeeb cannot decrypt. Users can opt
+  // out via the toggle below for assisted recovery.
+  const [doubleEncrypted, setDoubleEncrypted] = useState(true);
   const [mode, setMode] = useState<'link' | 'person'>('link');
   const [recipient, setRecipient] = useState('');
   const [inviteSentTo, setInviteSentTo] = useState<string | null>(null);
@@ -180,7 +182,12 @@ export default function ShareSheetScreen() {
   // For double-encrypted shares, we build the URL locally and store it here.
   // For standard shares, we use share.url from the server.
   const [localShareUrl, setLocalShareUrl] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
+  // The URL without the #key= fragment, and the raw key — shown side-by-side
+  // so the recipient gets two distinct things to send through separate
+  // channels (maximum security).
+  const [shareUrlBase, setShareUrlBase] = useState<string | null>(null);
+  const [shareKey, setShareKey] = useState<string | null>(null);
+  const [copied, setCopied] = useState<'full' | 'link' | 'key' | null>(null);
   const [error, setError] = useState<string | null>(null);
   const { showToast } = useToast();
 
@@ -230,10 +237,17 @@ export default function ShareSheetScreen() {
     successTitle: { fontSize: 11, fontWeight: '600', color: c.ink3, textTransform: 'uppercase', letterSpacing: 0.6, flex: 1 },
     urlBox: { flexDirection: 'row', alignItems: 'center', backgroundColor: c.paper2, borderWidth: 1, borderColor: c.line, borderRadius: radii.md, paddingLeft: 12, paddingRight: 6, paddingVertical: 6, gap: 8 },
     urlText: { flex: 1, fontSize: 12, color: c.ink, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
+    fieldLabel: { fontSize: 11, fontWeight: '600', color: c.ink2, marginBottom: 6, marginTop: 10 },
+    keyLabelRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6, marginTop: 10 },
+    keyBadge: { backgroundColor: c.amberBg, borderWidth: 1, borderColor: c.amber, borderRadius: radii.sm, paddingHorizontal: 6, paddingVertical: 2 },
+    keyBadgeText: { fontSize: 9, fontWeight: '700', color: c.amberDeep, letterSpacing: 0.5 },
+    keyBox: { flexDirection: 'row', alignItems: 'center', backgroundColor: c.amberBg, borderWidth: 1, borderColor: c.amber, borderRadius: radii.md, paddingLeft: 12, paddingRight: 6, paddingVertical: 6, gap: 8 },
+    keyText: { flex: 1, fontSize: 12, color: c.amberDeep, fontWeight: '600', fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
     copyButton: { paddingHorizontal: 12, paddingVertical: 7, backgroundColor: c.ink, borderRadius: radii.sm },
     copyButtonText: { fontSize: 12, fontWeight: '600', color: c.amber },
     successDetails: { marginTop: 10, gap: 4 },
     successHint: { fontSize: 12, color: c.ink3 },
+    successHintEm: { fontWeight: '700', color: c.ink },
     buttonRow: { flexDirection: 'row', gap: 10, marginTop: spacing.xl },
     shareButton: { flex: 1, height: 44, backgroundColor: c.amber, borderRadius: radii.md, alignItems: 'center', justifyContent: 'center' },
     shareButtonText: { fontSize: 14, fontWeight: '700', color: c.ink },
@@ -298,6 +312,8 @@ export default function ShareSheetScreen() {
       // share key and must not be copied for standard mobile shares.
       const shareBase = `${APP_URL}/s/${result.token}`;
       setLocalShareUrl(`${shareBase}#key=${encodeURIComponent(keyForUrl)}`);
+      setShareUrlBase(shareBase);
+      setShareKey(keyForUrl);
 
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } catch (err) {
@@ -364,14 +380,25 @@ export default function ShareSheetScreen() {
   // client-held decryption material: file key for standard, K_c for double.
   const displayUrl = localShareUrl ?? share?.url ?? '';
 
-  const handleCopy = useCallback(async () => {
-    if (!displayUrl) return;
-    await Clipboard.setStringAsync(displayUrl);
-    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    setCopied(true);
-    showToast({ type: 'success', message: 'Link copied to clipboard' });
-    setTimeout(() => setCopied(false), 2000);
-  }, [displayUrl, showToast]);
+  const handleCopy = useCallback(
+    async (text: string, target: 'full' | 'link' | 'key', toastLabel: string) => {
+      if (!text) return;
+      await Clipboard.setStringAsync(text);
+      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      setCopied(target);
+      showToast({ type: 'success', message: `${toastLabel} copied to clipboard` });
+      setTimeout(() => setCopied(null), 2000);
+      // Auto-clear clipboard after 60s for sensitive payloads (full link
+      // contains #key=, key is the raw decryption key). The bare URL is not
+      // sensitive on its own.
+      if (target === 'full' || target === 'key') {
+        setTimeout(() => {
+          Clipboard.setStringAsync('').catch(() => {});
+        }, 60_000);
+      }
+    },
+    [showToast],
+  );
 
   const handleShare = useCallback(async () => {
     if (!displayUrl) return;
@@ -409,29 +436,63 @@ export default function ShareSheetScreen() {
         </View>
 
         {share ? (
-          /* ---- Share created — show URL + copy ---- */
+          /* ---- Share created — show URL + key as two distinct items ---- */
           <View style={styles.successCard}>
             <View style={styles.successHeaderRow}>
-              <Text style={styles.successTitle}>Encrypted link</Text>
+              <Text style={styles.successTitle}>End-to-end encrypted share</Text>
               {share.double_encrypted && (
                 <View style={styles.zkBadge}>
                   <Text style={styles.zkBadgeText}>DOUBLE ENCRYPTED</Text>
                 </View>
               )}
             </View>
+
+            {/* Step 1 — the link (safe to send through most channels) */}
+            <Text style={styles.fieldLabel}>Share link</Text>
             <View style={styles.urlBox}>
               <Text style={styles.urlText} numberOfLines={1} selectable>
-                {displayUrl}
+                {shareUrlBase ?? displayUrl}
               </Text>
               <TouchableOpacity
                 style={styles.copyButton}
-                onPress={handleCopy}
+                onPress={() => handleCopy(shareUrlBase ?? displayUrl, 'link', 'Link')}
                 activeOpacity={0.8}
               >
-                <Text style={styles.copyButtonText}>{copied ? 'Copied' : 'Copy'}</Text>
+                <Text style={styles.copyButtonText}>{copied === 'link' ? 'Copied' : 'Copy'}</Text>
               </TouchableOpacity>
             </View>
+
+            {/* Step 2 — the decryption key (must travel via a different channel) */}
+            {shareKey && (
+              <>
+                <View style={styles.keyLabelRow}>
+                  <Text style={styles.fieldLabel}>Decryption key</Text>
+                  <View style={styles.keyBadge}>
+                    <Text style={styles.keyBadgeText}>SEND SEPARATELY</Text>
+                  </View>
+                </View>
+                <View style={styles.keyBox}>
+                  <Text style={styles.keyText} numberOfLines={1} selectable>
+                    {shareKey}
+                  </Text>
+                  <TouchableOpacity
+                    style={styles.copyButton}
+                    onPress={() => handleCopy(shareKey, 'key', 'Key')}
+                    activeOpacity={0.8}
+                  >
+                    <Text style={styles.copyButtonText}>{copied === 'key' ? 'Copied' : 'Copy'}</Text>
+                  </TouchableOpacity>
+                </View>
+              </>
+            )}
+
             <View style={styles.successDetails}>
+              <Text style={styles.successHint}>
+                End-to-end encrypted — Beebeeb cannot decrypt this share. Send the link and the key through separate channels for maximum security.
+              </Text>
+              <Text style={styles.successHint}>
+                The recipient needs <Text style={styles.successHintEm}>both</Text> the link and the key to open the file.
+              </Text>
               {share.expires_at && (
                 <Text style={styles.successHint}>
                   Expires {new Date(share.expires_at).toLocaleString()}
@@ -442,11 +503,6 @@ export default function ShareSheetScreen() {
                   {share.max_opens === 1 ? 'One-time' : `Up to ${share.max_opens} opens`}
                 </Text>
               )}
-              {share.double_encrypted && (
-                <Text style={styles.successHint}>
-                  Only someone with the exact link can decrypt this file. Even Beebeeb cannot read it.
-                </Text>
-              )}
             </View>
 
             <View style={styles.buttonRow}>
@@ -455,7 +511,7 @@ export default function ShareSheetScreen() {
                 onPress={handleShare}
                 activeOpacity={0.8}
               >
-                <Text style={styles.shareButtonText}>Share</Text>
+                <Text style={styles.shareButtonText}>Share full link</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={styles.doneButton}
@@ -585,14 +641,18 @@ export default function ShareSheetScreen() {
                   Recipients will be asked for this before opening the file.
                 </Text>
 
-                {/* Double-encrypted toggle */}
+                {/* Double-encrypted toggle (default on — opting out is "less secure") */}
                 <View style={styles.toggleRow}>
                   <View style={styles.toggleInfo}>
-                    <Text style={styles.toggleLabel}>Double encrypted</Text>
+                    <Text style={styles.toggleLabel}>
+                      {doubleEncrypted
+                        ? 'End-to-end encrypted'
+                        : 'Allow Beebeeb to assist with recovery'}
+                    </Text>
                     <Text style={styles.toggleSub}>
                       {doubleEncrypted
-                        ? 'Even Beebeeb cannot decrypt this link. Only someone with the exact URL can access the file.'
-                        : 'Standard: Beebeeb holds a wrapped copy for revocation. Enable for full client-side control.'}
+                        ? 'Beebeeb cannot decrypt this share. The recipient needs both the link and the key — send them through separate channels.'
+                        : 'Less secure: Beebeeb keeps a server-wrapped copy of the key. We can technically decrypt this share.'}
                     </Text>
                     {doubleEncrypted && (
                       <View style={styles.zkBadge}>
@@ -655,8 +715,8 @@ export default function ShareSheetScreen() {
             <Text style={styles.fineprint}>
               {mode === 'link'
                 ? doubleEncrypted
-                  ? 'Key generated on your device — the server stores an opaque blob and cannot decrypt.'
-                  : 'The link gives access to a key wrapped for the recipient. We never see the file.'
+                  ? 'End-to-end encrypted — Beebeeb cannot decrypt. The recipient needs both the link and the key.'
+                  : 'Beebeeb keeps a server-wrapped copy of the key. Less secure — your file is technically decryptable by us.'
                 : 'Email invites appear as pending until the recipient can accept them.'}
             </Text>
           </ScrollView>
