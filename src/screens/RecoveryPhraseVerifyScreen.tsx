@@ -100,9 +100,9 @@ export default function RecoveryPhraseVerifyScreen() {
     // when the vault is actually unlocked and we know the user — both are
     // true in the signup flow, but a defensive guard keeps us safe for any
     // future code path that lands here without an unlocked vault.
-    if (user?.id && isUnlocked) {
+    if (user?.user_id && isUnlocked) {
       void seedWelcomeMarkdown({
-        userId: user.id,
+        userId: user.user_id,
         encryptChunkFn: encryptChunk,
         encryptMetadataFn: encryptMetadata,
       });
