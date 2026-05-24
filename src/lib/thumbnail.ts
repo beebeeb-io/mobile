@@ -43,6 +43,7 @@ import {
   THUMB_WIDTH,
   type ThumbnailVariant,
 } from './thumbnail-policy';
+import { getLocalIdentifier } from './local-identifier-map';
 
 let ImageManipulator: typeof import('expo-image-manipulator') | null = null;
 try { ImageManipulator = require('expo-image-manipulator'); } catch {}
@@ -735,6 +736,16 @@ export async function prefetchDecryptedThumbnails(
     if (cached) {
       stats.cached += 1;
       onLoaded?.(fileId, cached);
+      return;
+    }
+    // Task 0552 follow-up: if this file is PhotoKit-backed (camera roll), do
+    // NOT fetch the encrypted thumbnail here. Otherwise we race with the
+    // tile-level PhotoKit short-circuit: PhotoKit caches a high-quality
+    // render first; this prefetch then overwrites the same cache file with
+    // the lower-quality encrypted blob, so the next render flips to the
+    // worse version. Skip — the tile will render via PhotoKit on demand.
+    if (getLocalIdentifier(fileId)) {
+      stats.skipped += 1;
       return;
     }
     stats.attempted += 1;
