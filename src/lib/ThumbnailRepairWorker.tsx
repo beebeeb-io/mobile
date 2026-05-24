@@ -8,6 +8,7 @@ import { encryptedMetadataPayloadToBytes } from './encrypted-metadata';
 import { loadCachedFileIndex, saveCachedFileIndex } from './file-index-cache';
 import { getRemoteToLocalMap } from '../services/BackupDatabase';
 import { ensureThumbnailForImage, generateAndUploadPhotoLibraryThumbnail } from './thumbnail';
+import { invalidateCachedThumbnail } from './thumbnail-cache';
 import { isDegradedThumbnail } from './thumbnail-repair-predicate';
 import {
   DEFAULT_THUMBNAIL_REPAIR_STATUS,
@@ -377,6 +378,14 @@ async function runDegradedTick({
     repaired = false;
   }
 
+  // Invalidate the local thumbnail cache BEFORE we mark the status as improved.
+  // Without this the Photos grid keeps reading the old blurry blob from disk
+  // and the user never sees the freshly uploaded high-quality thumbnail.
+  // Best-effort: a failure here must not roll back a successful server upload.
+  if (repaired) {
+    await invalidateCachedThumbnail(file.id).catch(() => {});
+  }
+
   const refreshed = await getThumbnailRepairStatus();
   const pauseRequested = refreshed.phase === 'paused' && refreshed.requestedAt == null;
 
@@ -655,6 +664,13 @@ export function ThumbnailRepairWorker({ enabled }: { enabled: boolean }) {
               });
             });
           });
+
+          // Symmetric with the degraded path: if the upload succeeded, drop
+          // any stale on-disk thumbnail for this file so the next render
+          // pulls the freshly uploaded version instead of the old cached blob.
+          if (repaired) {
+            await invalidateCachedThumbnail(file.id).catch(() => {});
+          }
 
           return repaired
             ? { checked: 1, repaired: 1, skipped: 0, failed: 0 }

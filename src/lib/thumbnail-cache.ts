@@ -176,6 +176,39 @@ export async function clearThumbnailCache(): Promise<void> {
 }
 
 /**
+ * Invalidate every cached variant for a single file id (task 0553 fix).
+ *
+ * The thumbnail-repair worker uploads a fresh server thumbnail when a file is
+ * detected as DEGRADED, but the on-disk cache and the in-memory path map still
+ * point at the OLD, blurry render. Without this call, the Photos grid keeps
+ * showing the stale version until the user manually clears the app cache.
+ *
+ * Removes every variant on disk (small/medium/large + the legacy
+ * `${fileId}.webp` / `${fileId}.jpg` paths) and drops the in-memory entries
+ * so the next read falls through to `fetchDecryptedThumbnailUri`, which will
+ * pull the freshly uploaded blob from the server.
+ *
+ * Best-effort: failures must never abort a repair tick. The worst case is
+ * the user keeps seeing the old thumbnail — exactly what they see today.
+ */
+export async function invalidateCachedThumbnail(fileId: string): Promise<void> {
+  if (!fileId) return;
+  for (const variant of ['small', 'medium', 'large'] as const) {
+    memoryThumbPaths.delete(cacheKey(fileId, variant));
+  }
+  const candidates = [
+    variantPath(fileId, 'small'),
+    variantPath(fileId, 'medium'),
+    variantPath(fileId, 'large'),
+    legacyVariantPath(fileId),
+    `${THUMB_DIR}${fileId}.jpg`,
+  ];
+  await Promise.all(candidates.map((path) =>
+    FileSystem.deleteAsync(path, { idempotent: true }).catch(() => {}),
+  ));
+}
+
+/**
  * Remove persisted thumbnails whose remote file no longer exists.
  *
  * Thumbnails are intentionally long-lived because they are expensive to
