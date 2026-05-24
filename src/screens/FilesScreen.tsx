@@ -1050,7 +1050,8 @@ export default function FilesScreen() {
   const tabBarHeight = useBottomTabBarHeight();
   const { colors: c } = useTheme();
   const { showToast } = useToast();
-  const { phraseVerified } = useAuth();
+  const { user, phraseVerified } = useAuth();
+  const isAuthenticated = user !== null;
   const { backupProgress, includeVideos, isPhotoBackupEnabled } = useBackup();
 
   // Navigation state: stack of folders
@@ -1068,6 +1069,17 @@ export default function FilesScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [usage, setUsage] = useState<StorageUsage | null>(null);
+  // True once a fetch (or a non-empty sync snapshot) has produced an
+  // authoritative result for this screen. Gates the empty-state copy so
+  // "Upload your first file" never flashes before the first load completes.
+  // Per-folder is excessive — login race is the only place this matters.
+  const [hasLoadedOnce, setHasLoadedOnce] = useState(false);
+  const hasLoadedOnceRef = useRef(false);
+  const setHasLoadedOnceTrue = useCallback(() => {
+    if (hasLoadedOnceRef.current) return;
+    hasLoadedOnceRef.current = true;
+    setHasLoadedOnce(true);
+  }, []);
 
   // Search state
   const [searchActive, setSearchActive] = useState(false);
@@ -1390,6 +1402,7 @@ export default function FilesScreen() {
           const result = filesForFolderFromIndex(sourceIndex, parentId);
           applyFilesForFolder(parentId, result, { preserveCachedOnEmpty: !isRefresh });
           endPerf({ count: result.length, source: 'index' });
+          setHasLoadedOnceTrue();
           return;
         }
       } catch (err) {
@@ -1401,6 +1414,7 @@ export default function FilesScreen() {
       const result = await listFiles(parentId ?? undefined);
       applyFilesForFolder(parentId, result, { preserveCachedOnEmpty: !isRefresh });
       endPerf({ count: result.length, source: 'folder' });
+      setHasLoadedOnceTrue();
     } catch (err) {
       endPerf({ error: true });
       if (!renderedCachedIndex) {
@@ -1410,7 +1424,7 @@ export default function FilesScreen() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [applyFilesForFolder]);
+  }, [applyFilesForFolder, setHasLoadedOnceTrue]);
 
   // Fetch on mount and when folder changes. When the CRDT sync engine is
   // ready, derive the list from the in-memory tree instead of hitting
@@ -1431,21 +1445,51 @@ export default function FilesScreen() {
       }
 
       if (sync.ready) {
-        const nodes = sync.children(currentFolder.id);
-        applyFilesForFolder(
-          currentFolder.id,
-          nodes.filter((n) => !n.is_trashed).map(syncNodeToFileEntry),
-          { preserveCachedOnEmpty: true },
-        );
-        setLoading(false);
-        setError(null);
-        return;
+        const liveNodes = sync.children(currentFolder.id).filter((n) => !n.is_trashed);
+        const folderKey = folderCacheKey(currentFolder.id);
+        const cachedFolderFiles = folderFilesCacheRef.current[folderKey];
+        // The CRDT engine flips `ready` once `start()` resolves, which can
+        // beat the actual snapshot for catch-up paths or when the server
+        // returns an empty initial frame. Falling through to fetchFiles in
+        // that case prevents the Files tab from rendering the empty state
+        // for an existing account on first paint after login.
+        const haveAuthoritativeData = liveNodes.length > 0 || (cachedFolderFiles?.length ?? 0) > 0;
+        if (haveAuthoritativeData) {
+          applyFilesForFolder(
+            currentFolder.id,
+            liveNodes.map(syncNodeToFileEntry),
+            { preserveCachedOnEmpty: true },
+          );
+          setLoading(false);
+          setError(null);
+          setHasLoadedOnceTrue();
+          return;
+        }
       }
       fetchFiles(currentFolder.id);
       // sync.treeVersion bumps on every op — re-derive without re-fetching.
       // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [currentFolder.id, fetchFiles, unlockAttempted, sync.ready, sync.treeVersion])
+    }, [currentFolder.id, fetchFiles, unlockAttempted, sync.ready, sync.treeVersion, setHasLoadedOnceTrue])
   );
+
+  // Belt-and-braces: on auth+unlock transition, ensure at least one fetch has
+  // been kicked even if the focus effect was suppressed. Idempotent — the
+  // ref guard prevents firing more than once per login and we skip when the
+  // focus effect already produced authoritative data.
+  const loginFetchKickedRef = useRef(false);
+  useEffect(() => {
+    if (!isAuthenticated || !unlockAttempted) {
+      loginFetchKickedRef.current = false;
+      return;
+    }
+    if (loginFetchKickedRef.current) return;
+    if (hasLoadedOnceRef.current) {
+      loginFetchKickedRef.current = true;
+      return;
+    }
+    loginFetchKickedRef.current = true;
+    void fetchFiles(currentFolder.id, false);
+  }, [isAuthenticated, unlockAttempted, currentFolder.id, fetchFiles]);
 
   // Load presence for the current folder. The endpoint silently returns []
   // when the folder isn't shared or the API doesn't exist yet.
@@ -2810,6 +2854,20 @@ export default function FilesScreen() {
           <Text style={[styles.emptySubtitle, { color: c.ink3 }]}>
             Nothing matches "{searchQuery.trim()}"
           </Text>
+        </View>
+      );
+    }
+    // Wait for at least one authoritative fetch before claiming the folder
+    // is empty. Otherwise existing accounts see "Upload your first file" on
+    // the first paint after login while the index is still being fetched.
+    // The unlock guard is intentionally additive — `loading` already covers
+    // most of this, but the sync-ready branch can transition us out of
+    // `loading` before any data is on disk.
+    const stillResolving = !hasLoadedOnce && (refreshing || !unlockAttempted);
+    if (stillResolving) {
+      return (
+        <View style={styles.emptyContainer}>
+          <ActivityIndicator color={c.amber} />
         </View>
       );
     }
