@@ -36,7 +36,12 @@ import { guessMimeType } from '../lib/media';
 import { useBackup } from '../lib/backup-context';
 import { useCrypto } from '../lib/crypto-context';
 import { useNetworkStatus } from '../lib/useNetworkStatus';
-import { initLocalIdentifierMap } from '../lib/local-identifier-map';
+import {
+  getLocalIdentifier,
+  getLocalIdentifierMapSize,
+  initLocalIdentifierMap,
+  refreshLocalIdentifierMap,
+} from '../lib/local-identifier-map';
 import { ThumbnailImage } from '../components/ThumbnailImage';
 import {
   cacheLocalThumbnail,
@@ -823,6 +828,7 @@ export default function PhotosScreen() {
   const [activeThumbnailIds, setActiveThumbnailIds] = useState<Set<string>>(() => new Set());
   const [activePhotoIds, setActivePhotoIds] = useState<Set<string>>(() => new Set());
   const [localAssetMap, setLocalAssetMap] = useState<Map<string, string>>(new Map());
+  const [localIdentifierVersion, setLocalIdentifierVersion] = useState(0);
   const [localCreatedAtMap, setLocalCreatedAtMap] = useState<Record<string, string>>({});
   const [decryptedNames, setDecryptedNames] = useState<Record<string, string>>({});
   const [decryptedMimeTypes, setDecryptedMimeTypes] = useState<Record<string, string>>({});
@@ -1043,7 +1049,23 @@ export default function PhotosScreen() {
   // network refresh happens in the background.
   useEffect(() => {
     if (!isUnlocked) return;
-    void initLocalIdentifierMap();
+    let cancelled = false;
+    void (async () => {
+      await initLocalIdentifierMap();
+      if (cancelled) return;
+      setLocalIdentifierVersion((value) => value + 1);
+      await refreshLocalIdentifierMap();
+      if (cancelled) return;
+      setLocalIdentifierVersion((value) => value + 1);
+      console.info('[PhotosScreen] PhotoKit identifier map ready', {
+        identifiers: getLocalIdentifierMapSize(),
+      });
+    })().catch((err: unknown) =>
+      console.warn('[PhotosScreen] initLocalIdentifierMap failed', err),
+    );
+    return () => {
+      cancelled = true;
+    };
   }, [isUnlocked]);
 
   const handleRefresh = useCallback(() => {
@@ -1067,6 +1089,32 @@ export default function PhotosScreen() {
       .sort((a, b) => (parseCreatedAt(b.created_at)?.getTime() ?? 0) - (parseCreatedAt(a.created_at)?.getTime() ?? 0)),
     [decryptedMimeTypes, localCreatedAtMap, photos],
   );
+
+  const photoKitAssetMap = useMemo(() => {
+    let merged: Map<string, string> | null = null;
+    for (const photo of visiblePhotos) {
+      if (localAssetMap.has(photo.id)) continue;
+      const local = getLocalIdentifier(photo.id);
+      if (!local) continue;
+      if (!merged) merged = new Map(localAssetMap);
+      merged.set(photo.id, local);
+    }
+    return merged ?? localAssetMap;
+  }, [localAssetMap, localIdentifierVersion, visiblePhotos]);
+
+  const photoKitServerIdentifierCount = useMemo(
+    () => visiblePhotos.reduce((count, photo) => (
+      !localAssetMap.has(photo.id) && getLocalIdentifier(photo.id) ? count + 1 : count
+    ), 0),
+    [localAssetMap, localIdentifierVersion, visiblePhotos],
+  );
+
+  useEffect(() => {
+    if (photoKitServerIdentifierCount === 0) return;
+    console.info('[PhotosScreen] PhotoKit server identifiers applied', {
+      visible: photoKitServerIdentifierCount,
+    });
+  }, [photoKitServerIdentifierCount]);
 
   const groups = useMemo(() => groupByMonth(visiblePhotos), [visiblePhotos]);
 
@@ -1100,7 +1148,7 @@ export default function PhotosScreen() {
           monthKey: group.key,
           monthLabel: group.label,
           thumbnailUri: thumbnailUris[photo.id] ?? null,
-          localAssetId: localAssetMap.get(photo.id) ?? null,
+          localAssetId: photoKitAssetMap.get(photo.id) ?? null,
           placeholderColor: swatch(seed),
           isVideo: !!mimeType?.startsWith('video/'),
           isFromBackup: photosFolderId !== null && photo.parent_id === photosFolderId,
@@ -1109,7 +1157,7 @@ export default function PhotosScreen() {
       }
     }
     return items;
-  }, [decryptedMimeTypes, decryptedNames, groups, localAssetMap, photosFolderId, thumbnailUris]);
+  }, [decryptedMimeTypes, decryptedNames, groups, photoKitAssetMap, photosFolderId, thumbnailUris]);
   const selectedPhotos = useMemo(
     () => flatPhotos.filter((photo) => selectedIds.has(photo.id)),
     [flatPhotos, selectedIds],
@@ -1150,7 +1198,7 @@ export default function PhotosScreen() {
           version_number: p.version_number,
           storage_pool_id: p.storage_pool_id ?? null,
           thumbnail_uri: thumbnailUris[p.id] ?? null,
-          local_asset_id: localAssetMap.get(p.id) ?? null,
+          local_asset_id: photoKitAssetMap.get(p.id) ?? null,
         })),
       );
       navigation.navigate('Preview', {
@@ -1166,7 +1214,7 @@ export default function PhotosScreen() {
         initialPhotoIndex,
       });
     },
-    [navigation, decryptedMimeTypes, decryptedNames, flatPhotos, localAssetMap, thumbnailUris],
+    [navigation, decryptedMimeTypes, decryptedNames, flatPhotos, photoKitAssetMap, thumbnailUris],
   );
 
   const clearSelection = useCallback(() => {
@@ -1418,7 +1466,7 @@ export default function PhotosScreen() {
     const ids = Array.from(activeThumbnailIds);
     if (ids.length === 0) return;
     const serverThumbnailIds = new Set(photos.filter((photo) => photo.has_thumbnail).map((photo) => photo.id));
-    const idsWithServerThumbs = ids.filter((id) => serverThumbnailIds.has(id) && !localAssetMap.has(id));
+    const idsWithServerThumbs = ids.filter((id) => serverThumbnailIds.has(id) && !photoKitAssetMap.has(id));
     if (idsWithServerThumbs.length === 0) return;
 
     let cancelled = false;
@@ -1500,21 +1548,21 @@ export default function PhotosScreen() {
         thumbnailRetryTimerRef.current = null;
       }
     };
-  }, [activeThumbnailIds, getFileKeyBytes, localAssetMap, photos, thumbnailRetryTick]);
+  }, [activeThumbnailIds, getFileKeyBytes, photoKitAssetMap, photos, thumbnailRetryTick]);
 
   useEffect(() => {
     const ids = Array.from(activeThumbnailIds);
-    if (ids.length === 0 || localAssetMap.size === 0) return;
+    if (ids.length === 0 || photoKitAssetMap.size === 0) return;
     const attempts = localThumbnailAttemptsRef.current;
     const candidates = ids
-      .filter((id) => localAssetMap.has(id) && !attempts.has(id))
+      .filter((id) => photoKitAssetMap.has(id) && !attempts.has(id))
       .slice(0, 10);
     if (candidates.length === 0) return;
 
     let cancelled = false;
     void mapInBatches(candidates, 2, async (id) => {
       attempts.add(id);
-      const localId = localAssetMap.get(id);
+      const localId = photoKitAssetMap.get(id);
       if (!localId) return null;
       const photo = photosById.get(id);
       const mimeType = photo ? decryptedMimeTypes[id] ?? mediaMimeType(photo) : null;
@@ -1541,7 +1589,7 @@ export default function PhotosScreen() {
     return () => {
       cancelled = true;
     };
-  }, [activeThumbnailIds, decryptedMimeTypes, localAssetMap, photosById, thumbnailUris]);
+  }, [activeThumbnailIds, decryptedMimeTypes, photoKitAssetMap, photosById, thumbnailUris]);
 
   useEffect(() => {
     if (!isUnlocked) return;
@@ -1551,7 +1599,7 @@ export default function PhotosScreen() {
       .filter((photo) => (
         activePhotoIds.has(photo.id) &&
         !photo.has_thumbnail &&
-        !localAssetMap.has(photo.id) &&
+        !photoKitAssetMap.has(photo.id) &&
         now - (repairAttempts.get(photo.id) ?? 0) >= THUMBNAIL_REPAIR_RETRY_MS
       ))
       .slice(0, 8);
@@ -1579,7 +1627,7 @@ export default function PhotosScreen() {
     return () => {
       cancelled = true;
     };
-  }, [activePhotoIds, decryptedMimeTypes, getFileKeyBytes, isUnlocked, localAssetMap, photos]);
+  }, [activePhotoIds, decryptedMimeTypes, getFileKeyBytes, isUnlocked, photoKitAssetMap, photos]);
 
   const showColumnIndicator = useCallback(() => {
     columnIndicatorOpacity.setValue(1);
@@ -1738,7 +1786,7 @@ export default function PhotosScreen() {
         seedOffset={item.seedOffset}
         photosFolderId={photosFolderId}
         activeThumbnailIds={activeThumbnailIds.size > 0 ? activeThumbnailIds : initialThumbnailIds}
-        localAssetMap={localAssetMap}
+        localAssetMap={photoKitAssetMap}
         decryptedNames={decryptedNames}
         decryptedMimeTypes={decryptedMimeTypes}
         onThumbnailUnavailable={handleThumbnailUnavailable}
@@ -1762,7 +1810,7 @@ export default function PhotosScreen() {
     enterSelectionMode,
     handleThumbnailUnavailable,
     initialThumbnailIds,
-    localAssetMap,
+    photoKitAssetMap,
     openPhoto,
     photosFolderId,
     selectMode,
