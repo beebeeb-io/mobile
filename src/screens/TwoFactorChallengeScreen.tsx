@@ -14,6 +14,7 @@ import { useRoute } from '@react-navigation/native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import * as Haptics from 'expo-haptics';
 import { BBLogo } from '../components/BBLogo';
+import { SixDigitInput, type SixDigitInputHandle } from '../components/SixDigitInput';
 import { radii, spacing } from '../theme';
 import { completeTwoFactor, friendlyError } from '../lib/api';
 import { useAuth } from '../lib/auth';
@@ -32,12 +33,20 @@ export default function TwoFactorChallengeScreen() {
   const [useBackup, setUseBackup] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const codeRef = useRef<TextInput>(null);
+  const backupRef = useRef<TextInput>(null);
+  const sixBoxRef = useRef<SixDigitInputHandle>(null);
+  // Re-entrancy guard so an auto-submit on the 6th digit can't double-fire
+  // if React batches the onChange + onComplete into the same tick.
+  const submittingRef = useRef(false);
 
   useEffect(() => {
-    const id = setTimeout(() => codeRef.current?.focus(), 200);
-    return () => clearTimeout(id);
-  }, []);
+    if (useBackup) {
+      const id = setTimeout(() => backupRef.current?.focus(), 200);
+      return () => clearTimeout(id);
+    }
+    // SixDigitInput handles its own first-mount focus.
+    return undefined;
+  }, [useBackup]);
 
   const styles = useMemo(
     () =>
@@ -106,14 +115,16 @@ export default function TwoFactorChallengeScreen() {
     [c, resolved],
   );
 
-  async function handleSubmit() {
-    const trimmed = code.trim();
+  async function handleSubmit(explicitCode?: string) {
+    if (submittingRef.current) return;
+    const trimmed = (explicitCode ?? code).trim();
     if (!trimmed) {
       setError(
         useBackup ? 'Enter a backup code.' : 'Enter the 6-digit code from your authenticator.',
       );
       return;
     }
+    submittingRef.current = true;
     setError(null);
     setLoading(true);
     try {
@@ -124,8 +135,15 @@ export default function TwoFactorChallengeScreen() {
     } catch (err) {
       setError(friendlyError(err));
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      if (!useBackup) {
+        // Wrong code — clear the boxes so the user can retype without
+        // having to backspace 6 times.
+        setCode('');
+        sixBoxRef.current?.clear();
+      }
     } finally {
       setLoading(false);
+      submittingRef.current = false;
     }
   }
 
@@ -155,26 +173,44 @@ export default function TwoFactorChallengeScreen() {
           </View>
         )}
         <Text style={styles.label}>{useBackup ? 'Backup code' : 'Authenticator code'}</Text>
-        <TextInput
-          ref={codeRef}
-          style={styles.input}
-          value={code}
-          onChangeText={setCode}
-          placeholder={useBackup ? 'XXXX-XXXX' : '000000'}
-          placeholderTextColor={c.ink4}
-          keyboardType={useBackup ? 'default' : 'number-pad'}
-          autoCapitalize="characters"
-          autoCorrect={false}
-          maxLength={useBackup ? 20 : 6}
-          returnKeyType="go"
-          onSubmitEditing={handleSubmit}
-          editable={!loading}
-          accessibilityLabel="Two factor code"
-          testID="two-factor-code-input"
-        />
+        {useBackup ? (
+          <TextInput
+            ref={backupRef}
+            style={styles.input}
+            value={code}
+            onChangeText={setCode}
+            placeholder="XXXX-XXXX"
+            placeholderTextColor={c.ink4}
+            keyboardType="default"
+            autoCapitalize="characters"
+            autoCorrect={false}
+            maxLength={20}
+            returnKeyType="go"
+            onSubmitEditing={() => handleSubmit()}
+            editable={!loading}
+            accessibilityLabel="Backup code"
+            testID="two-factor-code-input"
+          />
+        ) : (
+          <SixDigitInput
+            ref={sixBoxRef}
+            value={code}
+            onChange={(next) => {
+              setCode(next);
+              if (error) setError(null);
+            }}
+            onComplete={(full) => {
+              void handleSubmit(full);
+            }}
+            disabled={loading}
+            invalid={!!error}
+            testID="two-factor-code-input"
+            accessibilityLabel="Authenticator code"
+          />
+        )}
         <TouchableOpacity
           style={[styles.button, loading && styles.buttonDisabled]}
-          onPress={handleSubmit}
+          onPress={() => handleSubmit()}
           activeOpacity={0.8}
           disabled={loading}
           accessibilityLabel="Verify"
