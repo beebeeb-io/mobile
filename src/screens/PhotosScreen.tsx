@@ -1593,6 +1593,11 @@ export default function PhotosScreen() {
     }, 600);
   }, [columnIndicatorOpacity]);
 
+  // Task 0560 — commit a column-count change. Always called from
+  // commitPinchedColumns with a cross-fade wrapped around it; the
+  // fade-out hides the brief moment where every cell jumps to its new
+  // slot, the setColumns call lays out the grid at the new density
+  // off-screen, and the fade-in reveals the new layout in place.
   const applyColumnCount = useCallback((nextCols: number) => {
     if (nextCols === columnsRef.current) return;
     columnsRef.current = nextCols;
@@ -1605,21 +1610,72 @@ export default function PhotosScreen() {
     setColumns(nextCols);
   }, [showColumnIndicator]);
 
+  // Task 0560 — during the active pinch we only update the *preview* of
+  // what the column count will be. We do NOT call setColumns here, because
+  // changing `columns` mid-gesture causes every PhotoCell to re-layout
+  // synchronously — and the default RN behaviour is to position-tween
+  // each tile from its old slot to its new slot, which looks like photos
+  // flying across the screen. Instead, hold the gesture's predicted
+  // column count in a ref and apply it on END with a cross-fade.
+  const pendingColumnsRef = useRef(DEFAULT_COLS);
+
   const handlePinchGestureEvent = useCallback(
     (event: PinchGestureHandlerGestureEvent) => {
       if (!isPinchingRef.current) return;
-      applyColumnCount(columnsForPinchScale(pinchStartColumnsRef.current, event.nativeEvent.scale));
+      const predicted = columnsForPinchScale(
+        pinchStartColumnsRef.current,
+        event.nativeEvent.scale,
+      );
+      if (predicted === pendingColumnsRef.current) return;
+      pendingColumnsRef.current = predicted;
+      // Show the indicator so the user gets live feedback during the
+      // gesture, even though the actual grid layout is held until END.
+      showColumnIndicator();
     },
-    [applyColumnCount],
+    [showColumnIndicator],
   );
 
-  // Pinch-to-zoom: update grid density while the gesture is active. Avoid
-  // scaling the virtualized list; iOS clipping plus list virtualization makes
-  // that path flicker and drop thumbnails on large grids.
+  // Task 0560 — on gesture release: cross-fade the column-count change.
+  // Fade the grid to opacity 0, swap the columns, then fade back to 1.
+  // The layout shift happens while the grid is invisible so the user
+  // never sees individual photos slide across the screen.
+  const commitPinchedColumns = useCallback((nextCols: number) => {
+    if (nextCols === columnsRef.current) {
+      // No-op pinch (e.g. small scale change that snapped back). Make
+      // sure opacity is restored in case a previous fade-out was in
+      // flight and the user pinched again.
+      gridOpacity.setValue(1);
+      return;
+    }
+    // Fast fade-out, then snap columns, then fade-in. ~80ms each side
+    // is short enough to feel like a single transition but long enough
+    // for the layout pass + re-render to complete in the dark.
+    Animated.timing(gridOpacity, {
+      toValue: 0,
+      duration: 80,
+      useNativeDriver: true,
+    }).start(({ finished }) => {
+      if (!finished) {
+        gridOpacity.setValue(1);
+        return;
+      }
+      applyColumnCount(nextCols);
+      // Wait one frame so the new layout is committed before fading back.
+      requestAnimationFrame(() => {
+        Animated.timing(gridOpacity, {
+          toValue: 1,
+          duration: 160,
+          useNativeDriver: true,
+        }).start();
+      });
+    });
+  }, [applyColumnCount, gridOpacity]);
+
   const handlePinchStateChange = useCallback(
     (event: PinchGestureHandlerStateChangeEvent) => {
       if (event.nativeEvent.state === State.BEGAN) {
         pinchStartColumnsRef.current = columnsRef.current;
+        pendingColumnsRef.current = columnsRef.current;
         isPinchingRef.current = true;
         setIsPinching(true);
         return;
@@ -1635,10 +1691,18 @@ export default function PhotosScreen() {
       isPinchingRef.current = false;
       setIsPinching(false);
 
-      if (event.nativeEvent.state !== State.END) return;
-      applyColumnCount(columnsForPinchScale(pinchStartColumnsRef.current, event.nativeEvent.scale));
+      if (event.nativeEvent.state !== State.END) {
+        // Cancelled / failed — restore opacity in case a fade-out was in
+        // flight (the .start callback handles the no-op case but this is
+        // belt-and-braces).
+        gridOpacity.setValue(1);
+        return;
+      }
+      commitPinchedColumns(
+        columnsForPinchScale(pinchStartColumnsRef.current, event.nativeEvent.scale),
+      );
     },
-    [applyColumnCount],
+    [commitPinchedColumns, gridOpacity],
   );
 
   useEffect(() => {
@@ -1858,39 +1922,44 @@ export default function PhotosScreen() {
           onHandlerStateChange={handlePinchStateChange}
         >
           <Animated.View style={styles.gridContainer}>
-            <FlatList
-              ref={listRef}
-              data={listItems}
-              keyExtractor={(item) => item.key}
-              renderItem={renderItem}
-              getItemLayout={getItemLayout}
-              onViewableItemsChanged={handleViewableItemsChanged}
-              viewabilityConfig={viewabilityConfig}
-              ListEmptyComponent={renderEmpty}
-              refreshControl={
-                <RefreshControl
-                  refreshing={refreshing}
-                  onRefresh={handleRefresh}
-                  tintColor={c.amber}
-                  colors={[c.amber]}
-                />
-              }
-              contentContainerStyle={listItems.length === 0 ? styles.emptyList : undefined}
-              ListFooterComponent={<View style={{ height: LIST_FOOTER_HEIGHT }} />}
-              onScroll={handleGridScroll}
-              onScrollBeginDrag={handleScrollBeginDrag}
-              onScrollEndDrag={handleScrollEndDrag}
-              onMomentumScrollBegin={handleMomentumScrollBegin}
-              onMomentumScrollEnd={handleMomentumScrollEnd}
-              scrollEventThrottle={16}
-              scrollEnabled={!isPinching}
-              removeClippedSubviews
-              initialNumToRender={12}
-              maxToRenderPerBatch={8}
-              updateCellsBatchingPeriod={80}
-              windowSize={5}
-              keyboardDismissMode="on-drag"
-            />
+            {/* Task 0560 — opacity-only wrapper around the FlatList. The
+                column indicator sits OUTSIDE this view so it stays
+                visible during the cross-fade. */}
+            <Animated.View style={[styles.gridContainer, { opacity: gridOpacity }]}>
+              <FlatList
+                ref={listRef}
+                data={listItems}
+                keyExtractor={(item) => item.key}
+                renderItem={renderItem}
+                getItemLayout={getItemLayout}
+                onViewableItemsChanged={handleViewableItemsChanged}
+                viewabilityConfig={viewabilityConfig}
+                ListEmptyComponent={renderEmpty}
+                refreshControl={
+                  <RefreshControl
+                    refreshing={refreshing}
+                    onRefresh={handleRefresh}
+                    tintColor={c.amber}
+                    colors={[c.amber]}
+                  />
+                }
+                contentContainerStyle={listItems.length === 0 ? styles.emptyList : undefined}
+                ListFooterComponent={<View style={{ height: LIST_FOOTER_HEIGHT }} />}
+                onScroll={handleGridScroll}
+                onScrollBeginDrag={handleScrollBeginDrag}
+                onScrollEndDrag={handleScrollEndDrag}
+                onMomentumScrollBegin={handleMomentumScrollBegin}
+                onMomentumScrollEnd={handleMomentumScrollEnd}
+                scrollEventThrottle={16}
+                scrollEnabled={!isPinching}
+                removeClippedSubviews
+                initialNumToRender={12}
+                maxToRenderPerBatch={8}
+                updateCellsBatchingPeriod={80}
+                windowSize={5}
+                keyboardDismissMode="on-drag"
+              />
+            </Animated.View>
             {/* Column count indicator — shows briefly on pinch gesture */}
             <Animated.View
               pointerEvents="none"
