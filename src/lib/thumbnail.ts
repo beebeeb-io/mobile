@@ -632,6 +632,11 @@ export async function fetchDecryptedThumbnailUri(
   signal?: AbortSignal,
 ): Promise<string | null> {
   if (signal?.aborted) return null;
+  // Central PhotoKit guard: caller-side checks can race the async map hydrate.
+  // Once a file resolves to a local PHAsset, never surface or write the
+  // encrypted server thumbnail from this path.
+  if (getLocalIdentifier(fileId)) return null;
+
   const cached = await cachedThumbnailUri(fileId);
   if (cached) return cached;
 
@@ -684,6 +689,7 @@ export async function fetchDecryptedThumbnailUri(
     }
 
     // Write decrypted thumbnail to persistent storage so it survives app restarts.
+    if (getLocalIdentifier(fileId)) return null;
     const b64 = bytesToBase64(plainBytes);
     const persistedPath = await cacheThumbnailBase64(fileId, b64);
     thumbCache.set(fileId, persistedPath);
@@ -745,12 +751,6 @@ export async function prefetchDecryptedThumbnails(
       stats.skipped += 1;
       return;
     }
-    const cached = await cachedThumbnailUri(fileId);
-    if (cached) {
-      stats.cached += 1;
-      onLoaded?.(fileId, cached);
-      return;
-    }
     // Task 0552 follow-up: if this file is PhotoKit-backed (camera roll), do
     // NOT fetch the encrypted thumbnail here. Otherwise we race with the
     // tile-level PhotoKit short-circuit: PhotoKit caches a high-quality
@@ -759,6 +759,12 @@ export async function prefetchDecryptedThumbnails(
     // worse version. Skip — the tile will render via PhotoKit on demand.
     if (getLocalIdentifier(fileId)) {
       stats.skipped += 1;
+      return;
+    }
+    const cached = await cachedThumbnailUri(fileId);
+    if (cached) {
+      stats.cached += 1;
+      onLoaded?.(fileId, cached);
       return;
     }
     stats.attempted += 1;

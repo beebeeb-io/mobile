@@ -57,6 +57,66 @@ interface RepairResult {
   failed: number;
 }
 
+interface DegradedRepairDiagnostics {
+  scans: number;
+  uploaded: number;
+  uploadedCameraRollBacked: number;
+  failed: number;
+}
+
+const degradedRepairDiagnostics: DegradedRepairDiagnostics = {
+  scans: 0,
+  uploaded: 0,
+  uploadedCameraRollBacked: 0,
+  failed: 0,
+};
+
+function logDegradedScan(candidates: FileEntry[], localMap: Map<string, string>, thoroughMode: boolean): void {
+  degradedRepairDiagnostics.scans += 1;
+  const cameraRollBacked = candidates.reduce((count, file) => (
+    count + (localMap.has(file.id) ? 1 : 0)
+  ), 0);
+  console.info('[thumbnail-repair] degraded scan', {
+    scans: degradedRepairDiagnostics.scans,
+    candidates: candidates.length,
+    cameraRollBackedCandidates: cameraRollBacked,
+    thoroughMode,
+  });
+}
+
+function logDegradedResult(fileId: string, repaired: boolean, cameraRollBacked: boolean, bytesDownloaded: number): void {
+  if (repaired) {
+    degradedRepairDiagnostics.uploaded += 1;
+    if (cameraRollBacked) degradedRepairDiagnostics.uploadedCameraRollBacked += 1;
+  } else {
+    degradedRepairDiagnostics.failed += 1;
+  }
+
+  const payload = {
+    fileId,
+    cameraRollBacked,
+    bytesDownloaded,
+    uploaded: degradedRepairDiagnostics.uploaded,
+    uploadedCameraRollBacked: degradedRepairDiagnostics.uploadedCameraRollBacked,
+    failed: degradedRepairDiagnostics.failed,
+  };
+
+  if (repaired && cameraRollBacked) {
+    console.warn(
+      '[thumbnail-repair] uploaded improved server thumbnail for a camera-roll-backed file; iOS Photos renders PhotoKit first while the local asset exists',
+      payload,
+    );
+    return;
+  }
+
+  if (repaired) {
+    console.info('[thumbnail-repair] uploaded improved server thumbnail', payload);
+    return;
+  }
+
+  console.warn('[thumbnail-repair] failed to upload improved thumbnail', payload);
+}
+
 function delayFor(failureStreak: number, elapsedMs: number, manualRequested = false): number {
   if (manualRequested) {
     if (failureStreak > 0) {
@@ -247,6 +307,7 @@ async function runDegradedTick({
     if (!thoroughMode && localMap.has(file.id)) return false;
     return true;
   });
+  logDegradedScan(candidates, localMap, thoroughMode);
 
   if (candidates.length === 0) {
     const completedAt = Date.now();
@@ -320,6 +381,7 @@ async function runDegradedTick({
     return;
   }
   attempted.add(file.id);
+  const cameraRollBacked = localMap.has(file.id);
 
   const mime = await resolveMime(file, crypto.decryptMetadata);
   if (!mime || (!mime.startsWith('image/') && !mime.startsWith('video/'))) {
@@ -387,6 +449,7 @@ async function runDegradedTick({
     await invalidateCachedThumbnail(file.id).catch(() => {});
     invalidateInMemoryThumbCache(file.id);
   }
+  logDegradedResult(file.id, repaired, cameraRollBacked, bytesAdded);
 
   const refreshed = await getThumbnailRepairStatus();
   const pauseRequested = refreshed.phase === 'paused' && refreshed.requestedAt == null;
