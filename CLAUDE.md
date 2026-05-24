@@ -56,11 +56,17 @@ Same design tokens as web but converted to RGB (OKLCH not supported in React Nat
 
 ## Thumbnails
 
-Thumbnails are WebP format (200px width, 0.5 quality), generated in `src/lib/thumbnail.ts` via expo-image-manipulator. Video and DNG/RAW thumbnails are generated natively in Swift (`BeebeebCryptoModule.swift`) using `CGImageDestination` + `UTType.webP`.
+Thumbnails are WebP format. **Medium (default) is 768px wide at WebP q0.82, capped at 100 KB on disk** — generated in `src/lib/thumbnail.ts` via expo-image-manipulator with a degrade ladder in `src/lib/thumbnail-policy.ts` for photos that exceed the byte cap. Small (384px) and large (1280px) variants exist for list-row + preview contexts. Video and DNG/RAW thumbnails are generated natively in Swift (`BeebeebCryptoModule.swift`) using `CGImageDestination` + `UTType.webP`.
 
-Thumbnail downloads use plain `fetch` (NOT `rateLimitedFetch`) because the server has a dedicated thumbnail rate limit tier (50k req/min per user). Once cached in `documentDirectory/beebeeb-thumbnails/`, thumbnails are never re-fetched. The cache supports legacy `.jpg` files from before the WebP migration.
+**Rendering layered (task 0552):**
 
-Concurrency is managed by the thumbnail loading queue in `src/lib/thumbnail-cache.ts` (max 5 concurrent loads).
+1. **PhotoKit-first.** If a file has a `localIdentifier` in the camera-roll → PhotoKit serves the thumbnail directly via `PHImageManager.requestImage(for:targetSize:)`. No bandwidth, no decrypt cost, exact-pixel sizing for each tile. The identifier map is fetched from `GET /api/v1/files/photo-backup/identifiers` and cached in `src/lib/local-identifier-map.ts`.
+2. **Encrypted-thumbnail fallback.** For files not in camera roll, the encrypted blob is downloaded + decrypted + cached.
+3. **Blurhash placeholder.** ~25-byte unencrypted blurhash stored alongside the file metadata (`files.blurhash`) renders an instant gradient via `react-native-blurhash` while either pixel source resolves. Removes flash-of-empty-tile during scroll.
+
+Thumbnail downloads use plain `fetch` (NOT `rateLimitedFetch`) because the server has a dedicated thumbnail rate limit tier (50k req/min per user). Cached at `documentDirectory/beebeeb-thumbnails-v3/{fileId}.{variant}.webp` (variant in the filename — important: a list view loading `small` no longer poisons a grid's `medium` lookup). Bulk backfill of degraded legacy thumbnails lives in Settings → Advanced → "Improve thumbnail quality" (task 0553).
+
+Concurrency is managed by the thumbnail loading queue in `src/lib/thumbnail-cache.ts` (max 5 concurrent loads). The Settings → Performance slider controls **download behavior** (Data saver / Balanced / Smooth — when to prefetch encrypted thumbs), not thumbnail size.
 
 ## Crypto
 
