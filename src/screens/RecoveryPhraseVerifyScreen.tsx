@@ -18,6 +18,8 @@ import { usePreventScreenCapture } from 'expo-screen-capture';
 import { fonts, radii, spacing } from '../theme';
 import { useTheme } from '../lib/theme-context';
 import { useAuth } from '../lib/auth';
+import { useCrypto } from '../lib/crypto-context';
+import { seedWelcomeMarkdown } from '../lib/welcome-seed';
 import type { RootStackParamList } from '../App';
 
 type Nav = NativeStackNavigationProp<RootStackParamList>;
@@ -41,7 +43,8 @@ export default function RecoveryPhraseVerifyScreen() {
   const insets = useSafeAreaInsets();
   const { colors: c, resolved } = useTheme();
 
-  const { markPhraseVerified } = useAuth();
+  const { user, markPhraseVerified } = useAuth();
+  const { encryptChunk, encryptMetadata, isUnlocked } = useCrypto();
   const { phrase } = route.params;
   const positions = useMemo(() => pickVerifyPositions(phrase.length), [phrase.length]);
 
@@ -90,6 +93,21 @@ export default function RecoveryPhraseVerifyScreen() {
       return;
     }
     await markPhraseVerified();
+
+    // Fire-and-forget seed of a welcome.md into a brand-new account. The
+    // helper is idempotent (SecureStore flag + server-side root-empty check),
+    // gracefully no-ops on errors, and never blocks navigation. Only attempt
+    // when the vault is actually unlocked and we know the user — both are
+    // true in the signup flow, but a defensive guard keeps us safe for any
+    // future code path that lands here without an unlocked vault.
+    if (user?.id && isUnlocked) {
+      void seedWelcomeMarkdown({
+        userId: user.id,
+        encryptChunkFn: encryptChunk,
+        encryptMetadataFn: encryptMetadata,
+      });
+    }
+
     navigation.navigate('Tabs');
   }
 
@@ -110,8 +128,8 @@ export default function RecoveryPhraseVerifyScreen() {
         <View style={styles.logoRow}>
           <View style={styles.logo}>
             <BBLogo size={48} />
-            <BBWordmark size={22} style={{ marginTop: 12 }} />
           </View>
+          <BBWordmark size={22} style={{ marginTop: 12 }} />
         </View>
 
         <Text style={styles.heading}>Verify your phrase</Text>

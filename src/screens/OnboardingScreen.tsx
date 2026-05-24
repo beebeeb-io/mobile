@@ -387,8 +387,8 @@ export default function OnboardingScreen({ route, navigation, phrase: phraseProp
         <View style={styles.header}>
           <View style={styles.logoWrap}>
             <BBLogo size={48} />
-            <BBWordmark size={22} style={{ marginTop: 12 }} />
           </View>
+          <BBWordmark size={22} style={{ marginTop: 12, alignSelf: 'center' }} />
           <View style={styles.progress} accessibilityLabel={`Step ${stepNumber} of 4`}>
             {[1, 2, 3, 4].map((item) => (
               <View

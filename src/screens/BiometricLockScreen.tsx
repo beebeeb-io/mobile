@@ -94,11 +94,12 @@ export default function BiometricLockScreen({ onUnlocked }: Props) {
     <View style={[styles.root, { paddingTop: insets.top, paddingBottom: insets.bottom }]}>
       {/* Center section */}
       <View style={styles.center}>
-        {/* Logo */}
+        {/* Logo — wordmark omitted here because `styles.logo` is a fixed
+            52x52 ink-colored frame that would clip the wordmark. */}
         <View style={styles.logo}>
           <BBLogo size={48} />
-          <BBWordmark size={22} style={{ marginTop: 12 }} />
         </View>
+        <BBWordmark size={22} style={{ marginTop: 12 }} />
 
         <Text style={styles.title}>Beebeeb is locked</Text>
         <Text style={styles.subtitle}>

@@ -38,6 +38,7 @@ import * as Haptics from 'expo-haptics';
 import * as Notifications from 'expo-notifications';
 import * as BeebeebCrypto from '../modules/beebeeb-crypto';
 import { populateFileProviderCache } from './lib/file-provider-mount';
+import { initLocalIdentifierMap } from './lib/local-identifier-map';
 import {
   setupNotificationHandler,
   registerForPushNotifications,
@@ -596,6 +597,12 @@ export default function App() {
       SecureStore.setItemAsync(LAST_CONNECTED_KEY, new Date().toISOString()).catch(() => {});
       // Register push token once the user is authenticated.
       void registerForPushNotifications();
+      // Hydrate the PhotoKit identifier map so thumbnails can short-circuit
+      // through PHImageManager for camera-roll-backed files (task 0552).
+      // Fire-and-forget — never block auth on this network call.
+      void initLocalIdentifierMap().catch((err: unknown) =>
+        console.warn('[App] initLocalIdentifierMap failed', err),
+      );
     } catch {
       // Token invalid or expired — stay on login
       await clearToken();

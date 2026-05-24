@@ -26,6 +26,7 @@ import {
   estimatePerformanceStorage,
   getPerformanceStorageSettings,
   setPerformanceStorageSettings,
+  PROFILE_LABELS,
   type PerformanceStorageProfile,
 } from '../lib/performance-storage-settings';
 import {
@@ -308,7 +309,7 @@ export default function AdvancedSettingsScreen() {
                   ]}
                 >
                   <Text style={[styles.segmentText, { color: selected ? '#16110a' : c.ink2 }]}>
-                    {item[0].toUpperCase() + item.slice(1)}
+                    {PROFILE_LABELS[item]}
                   </Text>
                 </TouchableOpacity>
               );

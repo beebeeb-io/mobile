@@ -192,8 +192,11 @@ async function getPhotoCandidates(cachedIndex?: CachedFileIndex | null): Promise
  * thumbnail so the grid never shows blank cells while images are streaming in.
  */
 function swatch(seed: number): string {
-  const colors = ['#d7ceb1', '#a5a173', '#e1d8bd', '#abc58a', '#c1aa77', '#d1ca9d', '#cba884', '#aebf92'];
-  return colors[seed % colors.length] ?? '#d7ceb1';
+  // Neutral warm-tone palette: low-saturation, no green or olive. Once
+  // PhotoKit short-circuit (task 0552) is active for camera-roll-backed
+  // photos, this placeholder flashes only briefly for non-PhotoKit files.
+  const colors = ['#e8e2d5', '#d9d2c3', '#dcd5c5', '#d4ccba', '#e1dac9', '#d0c8b6', '#e5dfd0', '#d8d1c0'];
+  return colors[seed % colors.length] ?? '#e8e2d5';
 }
 
 interface PhotoGroup {
@@ -811,6 +814,12 @@ export default function PhotosScreen() {
   // Column indicator — fades out after a pinch gesture changes the grid density
   const columnIndicatorOpacity = useRef(new Animated.Value(0)).current;
   const columnIndicatorTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Task 0560 — opacity driver for the cross-fade applied when the pinch
+  // gesture ends and the column count actually changes. Animating opacity
+  // (rather than letting the FlatList re-layout in place) hides the brief
+  // moment where every cell jumps to a new slot, so the user sees a
+  // photos-app-style cross-fade rather than tiles flying across the grid.
+  const gridOpacity = useRef(new Animated.Value(1)).current;
   const [activeThumbnailIds, setActiveThumbnailIds] = useState<Set<string>>(() => new Set());
   const [activePhotoIds, setActivePhotoIds] = useState<Set<string>>(() => new Set());
   const [localAssetMap, setLocalAssetMap] = useState<Map<string, string>>(new Map());
@@ -832,6 +841,17 @@ export default function PhotosScreen() {
   const isScrolledRef = useRef(false);
   const isPinchingRef = useRef(false);
   const pinchStartColumnsRef = useRef(DEFAULT_COLS);
+  // Task 0559 — momentum-friendly viewport tracking. While the user is
+  // touch-dragging or the list is decelerating, we stash the latest visible
+  // indexes in a ref instead of pushing them through setState. Setting
+  // activeThumbnailIds mid-flick re-renders the grid AND fires the
+  // prefetch-debounce effect, both of which steal time from the scroll
+  // thread and make the deceleration hard-stop instead of glide. The
+  // pending indexes are flushed on scrollEndDrag-without-momentum and on
+  // momentumScrollEnd.
+  const isScrollingRef = useRef(false);
+  const inMomentumRef = useRef(false);
+  const pendingViewportIndexesRef = useRef<number[] | null>(null);
   const pendingAnchorPhotoIdRef = useRef<string | null>(null);
   const thumbnailSeedSignatureRef = useRef<string | null>(null);
   const thumbnailRepairAttemptsRef = useRef<Map<string, number>>(new Map());
@@ -1335,6 +1355,52 @@ export default function PhotosScreen() {
     setIsScrolled(nextIsScrolled);
   }, []);
 
+  // Task 0559 — flush the deferred viewport once the user lets go AND the
+  // scroll thread is finished decelerating. Mid-flick, viewable-item events
+  // are stashed in a ref (see handleViewableItemsChanged below); this
+  // recomputes the active set in a single pass at the landing position so
+  // thumbnails for the new viewport start loading immediately after the
+  // grid settles, without thrashing the JS thread during the glide itself.
+  const flushPendingViewport = useCallback(() => {
+    const indexes = pendingViewportIndexesRef.current;
+    pendingViewportIndexesRef.current = null;
+    if (indexes && indexes.length > 0) {
+      visibleIndexesRef.current = indexes;
+    }
+    const ids = collectVisiblePhotoIds(listItemsRef.current, visibleIndexesRef.current);
+    setActiveThumbnailIds((prev) => (sameIdSet(prev, ids) ? prev : ids));
+    setActivePhotoIds((prev) => (sameIdSet(prev, ids) ? prev : ids));
+  }, []);
+
+  const handleScrollBeginDrag = useCallback(() => {
+    isScrollingRef.current = true;
+    inMomentumRef.current = false;
+  }, []);
+
+  const handleScrollEndDrag = useCallback(() => {
+    // Finger lifted. RN fires momentumScrollBegin synchronously between
+    // scrollEndDrag and JS receiving control — so if inMomentumRef is
+    // still false on the next frame, the list has no momentum and we can
+    // flush immediately. Otherwise leave isScrollingRef true and let
+    // momentumScrollEnd do the flush at the actual landing position.
+    requestAnimationFrame(() => {
+      if (inMomentumRef.current) return;
+      isScrollingRef.current = false;
+      flushPendingViewport();
+    });
+  }, [flushPendingViewport]);
+
+  const handleMomentumScrollBegin = useCallback(() => {
+    isScrollingRef.current = true;
+    inMomentumRef.current = true;
+  }, []);
+
+  const handleMomentumScrollEnd = useCallback(() => {
+    isScrollingRef.current = false;
+    inMomentumRef.current = false;
+    flushPendingViewport();
+  }, [flushPendingViewport]);
+
   useEffect(() => {
     photosCountRef.current = visiblePhotos.length;
     if (photos.length > 0) photosCacheRef.current = photos;
@@ -1653,7 +1719,19 @@ export default function PhotosScreen() {
     const indexes = info.viewableItems
       .map((item) => item.index)
       .filter((index): index is number => typeof index === 'number');
-    visibleIndexesRef.current = indexes.length > 0 ? indexes : visibleIndexesRef.current;
+    if (indexes.length === 0) return;
+    // Task 0559 — during a flick or active drag, stash the latest indexes
+    // in a ref and skip the setState pair. setActiveThumbnailIds re-renders
+    // the grid and re-fires the prefetch effect; running either while the
+    // scroll thread is decelerating starves the scroll and produces a
+    // hard-stop. The pending indexes are applied in a single pass by
+    // flushPendingViewport() after momentum/drag ends.
+    if (isScrollingRef.current) {
+      pendingViewportIndexesRef.current = indexes;
+      visibleIndexesRef.current = indexes;
+      return;
+    }
+    visibleIndexesRef.current = indexes;
     const ids = collectVisiblePhotoIds(listItemsRef.current, indexes);
     setActiveThumbnailIds((prev) => (sameIdSet(prev, ids) ? prev : ids));
     setActivePhotoIds((prev) => (sameIdSet(prev, ids) ? prev : ids));
@@ -1800,6 +1878,10 @@ export default function PhotosScreen() {
               contentContainerStyle={listItems.length === 0 ? styles.emptyList : undefined}
               ListFooterComponent={<View style={{ height: LIST_FOOTER_HEIGHT }} />}
               onScroll={handleGridScroll}
+              onScrollBeginDrag={handleScrollBeginDrag}
+              onScrollEndDrag={handleScrollEndDrag}
+              onMomentumScrollBegin={handleMomentumScrollBegin}
+              onMomentumScrollEnd={handleMomentumScrollEnd}
               scrollEventThrottle={16}
               scrollEnabled={!isPinching}
               removeClippedSubviews

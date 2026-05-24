@@ -50,6 +50,15 @@ const PROFILE_ESTIMATES: Record<PerformanceStorageProfile, Omit<PerformanceStora
   },
 };
 
+/** Public-facing label for each profile (used by the Settings segmented
+ *  control). Source of truth — do NOT capitalize the profile id at the
+ *  render site; look it up here. */
+export const PROFILE_LABELS: Record<PerformanceStorageProfile, string> = {
+  light: PROFILE_ESTIMATES.light.label,
+  balanced: PROFILE_ESTIMATES.balanced.label,
+  smooth: PROFILE_ESTIMATES.smooth.label,
+};
+
 export function estimatePerformanceStorage(
   fileCount: number,
   profile: PerformanceStorageProfile,

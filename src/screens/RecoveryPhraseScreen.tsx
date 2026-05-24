@@ -69,8 +69,8 @@ export default function RecoveryPhraseScreen() {
         <View style={styles.logoRow}>
           <View style={styles.logo}>
             <BBLogo size={48} />
-            <BBWordmark size={22} style={{ marginTop: 12 }} />
           </View>
+          <BBWordmark size={22} style={{ marginTop: 12 }} />
         </View>
 
         <Text style={styles.heading}>Your recovery phrase</Text>
