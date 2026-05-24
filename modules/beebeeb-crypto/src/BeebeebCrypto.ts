@@ -365,7 +365,7 @@ export async function handleDecryptMetadata(
 }
 
 /**
- * Derive the X25519 private key from the master key handle. Used for
+ * Derive the X25519 secret scalar from the master key handle. Used for
  * key-agreement during share creation. Returns raw bytes because the
  * caller needs them for the X25519 shared secret computation.
  */
@@ -448,6 +448,24 @@ export async function replaceKeychainAccessControl(
   label: string,
 ): Promise<boolean> {
   return BeebeebCryptoModule.replaceKeychainAccessControl(require, key, label)
+}
+
+/**
+ * Handle-based variant of `replaceKeychainAccessControl`. The cached
+ * `MasterKeyHandle` is used to materialize the bytes natively and re-wrap
+ * the SE blob, without re-reading the existing Keychain blob (which would
+ * trigger Face ID under the old policy). Raw bytes never enter the JS heap.
+ *
+ * Returns `false` if the native function is unavailable (older builds);
+ * callers should fall back to `replaceKeychainAccessControl` in that case.
+ */
+export async function replaceKeychainAccessControlFromHandle(
+  handleId: number,
+  require: boolean,
+  label: string,
+): Promise<boolean> {
+  if (typeof BeebeebCryptoModule.replaceKeychainAccessControlFromHandle !== 'function') return false
+  return BeebeebCryptoModule.replaceKeychainAccessControlFromHandle(handleId, require, label)
 }
 
 /**

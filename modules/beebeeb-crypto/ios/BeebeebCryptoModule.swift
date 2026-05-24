@@ -1244,6 +1244,25 @@ public class BeebeebCryptoModule: Module {
       return true
     }
 
+    // Re-wrap the SE-protected master key under a new access-control policy
+    // without re-reading the existing wrapped blob from the Keychain. Reading
+    // the existing blob triggers Face ID under the current policy, which is
+    // exactly the surprise prompt the user reported when toggling biometrics
+    // (task 0556). The cached `MasterKeyHandle` already holds the key in
+    // native memory; export it transiently, hand it to `KeychainManager`, and
+    // zero the buffer before returning. Raw bytes never cross the JS bridge.
+    AsyncFunction("replaceKeychainAccessControlFromHandle") { [self] (handleId: Int, require: Bool, label: String) throws -> Bool in
+      let master = try self.getHandle(handleId)
+      var bytes = try master.exportForKeychain()
+      defer {
+        bytes.withUnsafeMutableBytes { ptr in
+          if let base = ptr.baseAddress { memset(base, 0, ptr.count) }
+        }
+      }
+      try KeychainManager.replaceAccessControl(requireBiometric: require, masterKeyBytes: bytes, label: label)
+      return true
+    }
+
     AsyncFunction("mirrorSessionToAppGroup") { (token: String?, baseUrl: String?) -> Bool in
       // Session token + apiBaseUrl go to the SHARED Keychain
       // (`BeebeebKeychainCore` with the App Group access group +

@@ -18,10 +18,42 @@ import {
   recoverFromPhrase,
   releaseHandle,
   replaceKeychainAccessControl,
+  replaceKeychainAccessControlFromHandle,
   storeKeyInKeychain,
 } from '../../modules/beebeeb-crypto'
 import type { EncryptedData } from '../../modules/beebeeb-crypto'
 import { setBackupEncryption, getKeepVaultUnlocked } from '../services/BackupService'
+
+// ─── Master key cache lifecycle (task 0556) ────────────────────────────────
+//
+// SOURCE OF TRUTH: `masterKeyHandleId.current` inside `CryptoProvider`.
+// It is an opaque numeric ID pointing at a `MasterKeyHandle` in native
+// (Rust/Swift) memory. Raw key bytes NEVER enter the JS heap.
+//
+// Lifecycle:
+//   - CREATED on the first successful `unlock()` of the JS process —
+//     either from a recovery phrase (creates a fresh handle from
+//     bytes that exist only transiently in native memory) or from a
+//     Keychain auto-unlock (`loadKeyFromKeychainAsHandle` reads the
+//     SE-wrapped blob, may prompt Face ID once, then zeros bytes).
+//   - HELD for the entire life of the JS process. Locking the screen
+//     with biometric does NOT release it; the lock screen only gates
+//     UI input, the crypto context stays warm so we can decrypt
+//     thumbnails the moment the user is back in.
+//   - RELEASED only on explicit `lock()` (intended for signout and
+//     manual lock paths) or on JS process termination. The handle
+//     intentionally outlives the biometric lock screen.
+//
+// Downstream invariant: every crypto operation in this file goes
+// through `requireHandleId()`. NO code path may read the master key
+// from the OS Keychain after `unlock()` has succeeded — that would
+// re-prompt Face ID. The native backup engine, file provider, and
+// PHKit callbacks live in separate processes / native contexts and
+// keep their own keychain reads (extension SE key, `.devicePasscode`,
+// never Face ID); those are outside this contract.
+//
+// Diagnostic logging must never receive raw bytes. The handle ID is
+// opaque and fine to log.
 
 const MASTER_KEY_LABEL = 'io.beebeeb.master-key'
 const MASTER_KEY_CHECK_LABEL = 'io.beebeeb.master-key-check'
@@ -33,10 +65,6 @@ export const SIMULATOR_MASTER_KEY_FILE = `${FileSystem.documentDirectory ?? ''}b
 
 function usesSoftwareVaultFallback(): boolean {
   return !Device.isDevice || Device.modelName?.toLowerCase().includes('simulator') === true || __DEV__
-}
-
-function isPhysicalIOSDevice(): boolean {
-  return Platform.OS === 'ios' && Device.isDevice
 }
 
 function uint8ToBase64(bytes: Uint8Array): string {
@@ -145,17 +173,6 @@ async function loadVerifiedMasterKeyHandle(): Promise<number | null> {
   return null
 }
 
-async function deriveFileKeyFromKeychainFallback(fileId: string, errorMessage: string): Promise<Uint8Array> {
-  const { deriveFileKey, loadKeyFromKeychain } = await import('../../modules/beebeeb-crypto')
-  const raw = await loadKeyFromKeychain(MASTER_KEY_LABEL)
-  if (!raw) throw new Error(errorMessage)
-  try {
-    return await deriveFileKey(raw, fileId)
-  } finally {
-    raw.fill(0)
-  }
-}
-
 export type VaultUnlockSource =
   | 'unspecified'
   | 'recovery_phrase'
@@ -250,7 +267,7 @@ interface CryptoContextValue {
    */
   getMasterKeyHandleId: () => number
   /**
-   * Derive the X25519 private key from the master key handle.
+   * Derive the X25519 secret scalar from the master key handle.
    * Returns raw bytes needed for the X25519 shared secret computation
    * during share creation. Throws if vault is locked.
    */
@@ -523,12 +540,13 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
 
   const getFileKeyBytesFn = useCallback(
     async (fileId: string): Promise<Uint8Array> => {
-      try {
-        return await handleDeriveFileKey(requireHandleId(), fileId)
-      } catch (error) {
-        if (isPhysicalIOSDevice()) throw error
-        return deriveFileKeyFromKeychainFallback(fileId, 'Vault is locked — cannot derive file key')
-      }
+      // The handle is created at unlock time on every platform (including
+      // simulator — see the `createMasterKeyHandle` calls in `unlock()` and
+      // `loadVerifiedMasterKeyHandle`). If the handle is missing the vault is
+      // genuinely locked; we must NEVER fall back to re-reading the Keychain
+      // here because that would surface a Face ID prompt during routine
+      // thumbnail/preview decryption (task 0556).
+      return handleDeriveFileKey(requireHandleId(), fileId)
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
@@ -551,15 +569,13 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
   )
 
   // The web client derives its search-index key with HKDF-SHA-256 over the
-  // master key with `info = "beebeeb-search-index"`.
+  // master key with `info = "beebeeb-search-index"`. Handle-only (no Keychain
+  // fallback) for the same reason as `getFileKeyBytes` — every search-bar
+  // keystroke can drive this path, and a Face ID prompt mid-typing would be a
+  // catastrophic UX regression (task 0556).
   const getIndexKeyFn = useCallback(
     async (): Promise<Uint8Array> => {
-      try {
-        return await handleDeriveFileKey(requireHandleId(), 'beebeeb-search-index')
-      } catch (error) {
-        if (isPhysicalIOSDevice()) throw error
-        return deriveFileKeyFromKeychainFallback('beebeeb-search-index', 'Vault is locked — cannot derive index key')
-      }
+      return handleDeriveFileKey(requireHandleId(), 'beebeeb-search-index')
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
@@ -568,8 +584,18 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
   const setBiometricRequirementFn = useCallback(
     async (require: boolean): Promise<void> => {
       if (Platform.OS !== 'ios' || usesSoftwareVaultFallback()) return
-      // replaceKeychainAccessControl needs raw key bytes to re-wrap under
-      // new access control. Load transiently and zero immediately.
+      // Re-wrap the SE blob from the cached handle. The previous
+      // implementation called `loadKeyFromKeychain(MASTER_KEY_LABEL)`,
+      // which prompted Face ID under the old policy before we even got
+      // to the re-wrap step — a noticeable double-prompt when toggling
+      // biometrics from Settings (task 0556). The native function
+      // exports the bytes from the in-memory handle and zeroes the
+      // buffer; raw bytes never cross the JS bridge. Older builds
+      // without the native function return false here, and we fall
+      // back to the legacy raw-bytes path.
+      const handleId = requireHandleId()
+      const ok = await replaceKeychainAccessControlFromHandle(handleId, require, MASTER_KEY_LABEL)
+      if (ok) return
       const { loadKeyFromKeychain } = await import('../../modules/beebeeb-crypto')
       const raw = await loadKeyFromKeychain(MASTER_KEY_LABEL)
       if (!raw) throw new Error('Vault is locked — cannot change biometric requirement')
