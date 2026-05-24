@@ -20,6 +20,8 @@
 
 import * as FileSystem from 'expo-file-system';
 import { fetchPhotoBackupIdentifierMap } from './api';
+import { invalidateCachedThumbnail } from './thumbnail-cache';
+import { invalidateInMemoryThumbCache } from './thumbnail';
 
 const STORAGE_FILE = `${FileSystem.documentDirectory ?? ''}local-id-map.json`;
 
@@ -79,9 +81,22 @@ export async function refreshLocalIdentifierMap(): Promise<void> {
   inflightFetch = (async () => {
     try {
       const next = await fetchPhotoBackupIdentifierMap();
+      // Files that are NEWLY PhotoKit-backed (weren't in the map before, are
+      // now) probably have a poisoned encrypted-blob cache from before the
+      // PhotoKit short-circuit landed. Drop those cache entries so the
+      // PhotoKit path can take over on the next render. Best-effort, async.
+      const previouslyKnown = new Set(Object.keys(inMemoryMap));
+      const newlyKnown = Object.keys(next).filter((id) => !previouslyKnown.has(id));
       inMemoryMap = next;
       isReady = true;
       await saveToDisk({ fetched_at: new Date().toISOString(), identifiers: next });
+      // Fire invalidation in the background — never block the refresh.
+      // Drop both the on-disk cache AND the in-memory map so the next
+      // render re-stats and pulls from PhotoKit.
+      for (const id of newlyKnown) invalidateInMemoryThumbCache(id);
+      void Promise.all(newlyKnown.map((id) => invalidateCachedThumbnail(id))).catch(
+        (err) => console.warn('[local-identifier-map] cache invalidation failed', err),
+      );
     } catch (err) {
       // Network failure — leave the disk cache (or empty map) in place. The
       // photo grid will fall through to the encrypted-blob path for any

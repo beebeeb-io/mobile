@@ -705,6 +705,13 @@ export default function App() {
           setLoadingStatus('Unlocking vault...');
           setUser(me);
           SecureStore.setItemAsync(LAST_CONNECTED_KEY, new Date().toISOString()).catch(() => {});
+          // Hydrate PhotoKit identifier map on cold launch too (refreshAuth
+          // only fires for the sign-in path; runStartup is the cold-launch
+          // path and needs its own hydration so prefetch doesn't race the
+          // empty map). Fire-and-forget — never block startup on this.
+          void initLocalIdentifierMap().catch((err: unknown) =>
+            console.warn('[App] initLocalIdentifierMap (cold launch) failed', err),
+          );
         } else {
           // All retries exhausted — show diagnostics
           needsDiagnostics = true;

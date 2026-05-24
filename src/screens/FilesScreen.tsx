@@ -44,6 +44,8 @@ import TrustDetailsSheet from '../components/TrustDetailsSheet';
 import { ApiError, listFiles, getFileIndex, createFolder, deleteFile, trashFiles, renameFile, moveFile, uploadFile, downloadFile, friendlyError, getStorageUsage, createProofOfExistence, storageLocation, trustLocation, getFolderPresence, getUploadStatus, getApiUrl, getToken } from '../lib/api';
 import { guessMimeType, fileCategory as fileCategoryFromMime } from '../lib/media';
 import { generateAndUploadThumbnail, fetchDecryptedThumbnailUri } from '../lib/thumbnail';
+import { getCachedThumbnail } from '../lib/thumbnail-cache';
+import { getLocalIdentifier } from '../lib/local-identifier-map';
 import type { FileEntry, StorageUsage, ProofOfExistence, PresenceUser, SyncNode } from '../lib/api';
 import type { RootStackParamList, TabParamList } from '../App';
 import { useCrypto } from '../lib/crypto-context';
@@ -339,6 +341,17 @@ const FileIcon = React.memo(function FileIcon({
     let cancelled = false;
     (async () => {
       try {
+        // PhotoKit-backed files have their cache file written by the Photos
+        // tab's PhotoKit short-circuit. Don't run the encrypted-blob fetch
+        // here — it would race the PhotoKit path and overwrite the higher-
+        // quality render with the lower-quality server thumbnail (task 0563).
+        // If a cached version exists already, use it directly. Otherwise the
+        // category icon fallback below is fine for the small list-row icon.
+        if (getLocalIdentifier(fileId)) {
+          const cached = await getCachedThumbnail(fileId);
+          if (cached && !cancelled) setThumbUri(cached);
+          return;
+        }
         const fileKey = await getFileKeyBytes(fileId);
         if (!fileKey || cancelled) return;
         const uri = await fetchDecryptedThumbnailUri(fileId, fileKey);

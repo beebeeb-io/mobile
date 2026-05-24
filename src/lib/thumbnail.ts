@@ -505,6 +505,19 @@ const thumbCache = new Map<string, string>();
 const inflight = new Map<string, Promise<string | null>>();
 const repairInflight = new Map<string, Promise<boolean>>();
 
+/**
+ * Drop the in-memory thumbnail-URI cache entry for `fileId`. Used by the
+ * thumbnail repair worker and the local-identifier-map refresh path: after
+ * either pipeline replaces a thumbnail on disk, the next render must
+ * re-stat instead of returning the stale path from `thumbCache`. The
+ * persistent disk cache is invalidated separately via
+ * `invalidateCachedThumbnail` in `thumbnail-cache.ts`.
+ */
+export function invalidateInMemoryThumbCache(fileId: string): void {
+  if (!fileId) return;
+  thumbCache.delete(fileId);
+}
+
 /** Persistent thumbnail directory (documentDirectory, survives cache purges). */
 const PERSISTENT_THUMB_DIR = `${FileSystem.documentDirectory}${THUMB_CACHE_DIR_NAME}/`;
 

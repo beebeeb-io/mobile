@@ -9,6 +9,7 @@ import { loadCachedFileIndex, saveCachedFileIndex } from './file-index-cache';
 import { getRemoteToLocalMap } from '../services/BackupDatabase';
 import { ensureThumbnailForImage, generateAndUploadPhotoLibraryThumbnail } from './thumbnail';
 import { invalidateCachedThumbnail } from './thumbnail-cache';
+import { invalidateInMemoryThumbCache } from './thumbnail';
 import { isDegradedThumbnail } from './thumbnail-repair-predicate';
 import {
   DEFAULT_THUMBNAIL_REPAIR_STATUS,
@@ -384,6 +385,7 @@ async function runDegradedTick({
   // Best-effort: a failure here must not roll back a successful server upload.
   if (repaired) {
     await invalidateCachedThumbnail(file.id).catch(() => {});
+    invalidateInMemoryThumbCache(file.id);
   }
 
   const refreshed = await getThumbnailRepairStatus();
@@ -670,6 +672,7 @@ export function ThumbnailRepairWorker({ enabled }: { enabled: boolean }) {
           // pulls the freshly uploaded version instead of the old cached blob.
           if (repaired) {
             await invalidateCachedThumbnail(file.id).catch(() => {});
+            invalidateInMemoryThumbCache(file.id);
           }
 
           return repaired
