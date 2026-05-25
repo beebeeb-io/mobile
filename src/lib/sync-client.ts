@@ -103,7 +103,7 @@ function uuid(): string {
   });
 }
 
-async function getDeviceId(): Promise<string> {
+export async function getDeviceId(): Promise<string> {
   let id = await storage.get(DEVICE_ID_KEY);
   if (!id) {
     id = uuid();

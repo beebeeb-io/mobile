@@ -12,6 +12,7 @@ import { Platform } from 'react-native';
 import * as BeebeebCrypto from '../../modules/beebeeb-crypto';
 import { clearCachedFileIndex } from './file-index-cache';
 import { rateLimitedFetch } from './rate-limited-fetch';
+import { getDeviceId } from './sync-client';
 import { setAnnouncement, clearAnnouncement } from './announcement-context';
 
 // API target. Override at build time with EXPO_PUBLIC_API_URL or via
@@ -129,6 +130,16 @@ export async function setToken(token: string): Promise<void> {
   cachedToken = token;
   await tokenStore.set(TOKEN_KEY, token);
   await BeebeebCrypto.mirrorSessionToAppGroup(token, BASE_URL).catch(() => false);
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { requireOptionalNativeModule } = require('expo-modules-core');
+    const Native = requireOptionalNativeModule('ThumbnailService') as {
+      setApiCredentials?: (baseURL: string, token: string) => Promise<void>;
+    } | null;
+    await Native?.setApiCredentials?.(getApiUrl(), token);
+  } catch {
+    // best-effort
+  }
 }
 
 export async function clearToken(): Promise<void> {
@@ -1130,6 +1141,30 @@ export async function fetchPhotoBackupIdentifierMap(): Promise<Record<string, st
     '/api/v1/files/photo-backup/identifiers',
   );
   return data.identifiers ?? {};
+}
+
+/**
+ * POST /api/v1/files/:fileId/photo-backup/clear-association — Plan A.
+ *
+ * Scoped to (user_id, device_id, file_id). The server uses the
+ * X-Beebeeb-Device-Id header to delete only this device's association,
+ * leaving other devices' associations for the same file intact.
+ *
+ * Called by `local-identifier-map.ts:removeLocalIdentifier` when the native
+ * ThumbnailService reports a PhotoKit miss via `onAssociationCleared`.
+ *
+ * Depends on Plan A: `clear_photo_backup_association` handler in
+ * `repos/server/beebeeb-api/src/routes/files.rs`.
+ */
+export async function photoBackupClearAssociation(fileId: string): Promise<void> {
+  const deviceId = await getDeviceId();
+  await request<void>(
+    'POST',
+    `/api/v1/files/${fileId}/photo-backup/clear-association`,
+    {},
+    true,
+    { 'X-Beebeeb-Device-Id': deviceId },
+  );
 }
 
 export async function downloadFile(id: string): Promise<Response> {

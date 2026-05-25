@@ -1261,26 +1261,7 @@ private final class PhotoGridCell: UICollectionViewCell {
   }
 
   static let reuseIdentifier = "PhotoGridCell"
-  private static let fileImageCache = NSCache<NSString, UIImage>()
-  private static let sourceImageCache = NSCache<NSString, UIImage>()
   private static var metrics = Metrics()
-  private static let localLoadLock = NSLock()
-  private static var localLoadOperations: [String: BlockOperation] = [:]
-  private static var localLoadCompletions: [String: [(UIImage?) -> Void]] = [:]
-  private static let fileLoadQueue: OperationQueue = {
-    let queue = OperationQueue()
-    queue.name = "io.beebeeb.photo-grid.thumbnail-decode"
-    queue.maxConcurrentOperationCount = 4
-    queue.qualityOfService = .utility
-    return queue
-  }()
-  private static let localLoadQueue: OperationQueue = {
-    let queue = OperationQueue()
-    queue.name = "io.beebeeb.photo-grid.photokit"
-    queue.maxConcurrentOperationCount = 4
-    queue.qualityOfService = .utility
-    return queue
-  }()
 
   private let imageView = UIImageView()
   private let originBadge = UIImageView(image: UIImage(systemName: "camera.fill"))
@@ -1289,9 +1270,7 @@ private final class PhotoGridCell: UICollectionViewCell {
   private let selectionBadge = UIView()
   private let selectionCheck = UIImageView(image: UIImage(systemName: "checkmark"))
   private var representedId: String?
-  private var representedSourceKey: String?
-  private var fileLoadInFlightKey: String?
-  private var localLoadInFlightKey: String?
+  private var inFlightLoadId: UUID?
 
   override init(frame: CGRect) {
     super.init(frame: frame)
@@ -1338,11 +1317,15 @@ private final class PhotoGridCell: UICollectionViewCell {
 
   override func prepareForReuse() {
     super.prepareForReuse()
+    let previousId = representedId
     representedId = nil
-    representedSourceKey = nil
-    fileLoadInFlightKey = nil
-    localLoadInFlightKey = nil
+    inFlightLoadId = nil
     imageView.image = nil
+    if let previousId {
+      Task {
+        await ThumbnailService.shared.cancelPhotoKitRequest(for: previousId)
+      }
+    }
   }
 
   override func layoutSubviews() {
@@ -1359,7 +1342,7 @@ private final class PhotoGridCell: UICollectionViewCell {
   func configure(
     item: NativePhotoGridItem,
     columns: Int,
-    imageManager: PHImageManager
+    imageManager _: PHImageManager
   ) {
     representedId = item.id
     contentView.backgroundColor = item.placeholderColor
@@ -1367,45 +1350,43 @@ private final class PhotoGridCell: UICollectionViewCell {
     originBadge.isHidden = !showOverlay || !item.isFromBackup
     videoBadge.isHidden = !item.isVideo
 
-    let sourceKey = Self.sourceKey(for: item)
-    if representedSourceKey != sourceKey {
-      fileLoadInFlightKey = nil
-      localLoadInFlightKey = nil
-      representedSourceKey = sourceKey
-      imageView.image = nil
-    } else if imageView.image != nil || fileLoadInFlightKey == sourceKey || localLoadInFlightKey == sourceKey {
-      return
-    }
+    imageView.image = nil
+    let cellSize = max(bounds.width, bounds.height)
+    let targetSize = CGSize(width: cellSize, height: cellSize)
+    let fileId = item.id
 
-    if let cached = Self.sourceImageCache.object(forKey: sourceKey as NSString) {
-      Self.metrics.sourceCacheHits += 1
-      imageView.image = cached
-      return
-    }
+    let loadTaskId = UUID()
+    inFlightLoadId = loadTaskId
 
-    if let localAssetId = item.localAssetId {
-      loadLocalAsset(localAssetId, itemId: item.id, imageManager: imageManager)
-    } else if let uri = item.thumbnailUri ?? Self.persistentThumbnailURL(for: item.id)?.path {
-      loadFileThumbnail(uri, itemId: item.id)
+    Task { [weak self] in
+      do {
+        let resolved = try await ThumbnailService.shared.getThumbnail(for: fileId, targetSize: targetSize)
+        guard
+          let self,
+          self.representedId == fileId,
+          self.inFlightLoadId == loadTaskId
+        else { return }
+        let image = UIImage(contentsOfFile: resolved.fileURL.path)
+        await MainActor.run {
+          guard
+            self.representedId == fileId,
+            self.inFlightLoadId == loadTaskId
+          else { return }
+          self.imageView.image = image
+        }
+      } catch {
+        // Service returned nothing usable — leave the placeholder colour.
+      }
     }
   }
 
-  static func prefetch(items: [NativePhotoGridItem], columns: Int, containerWidth: CGFloat, imageManager: PHImageManager) {
-    let targetPixels = targetPixels(forSide: containerWidth / CGFloat(max(columns, 1)))
+  static func prefetch(items: [NativePhotoGridItem], columns: Int, containerWidth: CGFloat, imageManager _: PHImageManager) {
+    let side = containerWidth / CGFloat(max(columns, 1))
+    let targetSize = CGSize(width: side, height: side)
     for item in items {
-      let sourceKey = sourceKey(for: item)
-      if sourceImageCache.object(forKey: sourceKey as NSString) != nil {
-        continue
-      }
-      if let localAssetId = item.localAssetId {
-        enqueueLocalAsset(
-          localAssetId,
-          sourceKey: sourceKey,
-          targetPixels: targetPixels,
-          imageManager: imageManager,
-          priority: .prefetch,
-          completion: nil
-        )
+      let fileId = item.id
+      Task.detached(priority: .utility) {
+        _ = try? await ThumbnailService.shared.getThumbnail(for: fileId, targetSize: targetSize)
       }
     }
   }
@@ -1422,220 +1403,10 @@ private final class PhotoGridCell: UICollectionViewCell {
     selectionBadge.backgroundColor = selected ? UIColor(red: 0.965, green: 0.753, blue: 0.227, alpha: 1) : UIColor.black.withAlphaComponent(0.35)
   }
 
-  private func loadFileThumbnail(_ uri: String, itemId: String) {
-    let url = Self.fileURL(from: uri)
-    let targetPixels = max(96, Int(ceil(max(bounds.width, bounds.height) * UIScreen.main.scale)))
-    let cacheKey = "\(url.path)#\(targetPixels)" as NSString
-    if let cached = Self.fileImageCache.object(forKey: cacheKey) {
-      Self.metrics.fileCacheHits += 1
-      imageView.image = cached
-      if let representedSourceKey {
-        Self.sourceImageCache.setObject(cached, forKey: representedSourceKey as NSString)
-      }
-      return
-    }
-    fileLoadInFlightKey = representedSourceKey
-    let sourceKey = representedSourceKey
-    Self.metrics.fileLoadStarts += 1
-    Self.fileLoadQueue.addOperation { [weak self] in
-      let image = Self.downsampledImage(from: url, maxPixelSize: targetPixels)
-      if let image {
-        Self.fileImageCache.setObject(image, forKey: cacheKey)
-        if let sourceKey {
-          Self.sourceImageCache.setObject(image, forKey: sourceKey as NSString)
-        }
-      }
-      DispatchQueue.main.async {
-        guard self?.representedId == itemId else { return }
-        self?.fileLoadInFlightKey = nil
-        if let image {
-          self?.imageView.image = image
-        }
-      }
-    }
-  }
-
-  private func loadLocalAsset(_ localIdentifier: String, itemId: String, imageManager: PHImageManager) {
-    guard let sourceKey = representedSourceKey else { return }
-    localLoadInFlightKey = sourceKey
-    let targetPixels = Self.targetPixels(forSide: max(bounds.width, bounds.height))
-    Self.enqueueLocalAsset(
-      localIdentifier,
-      sourceKey: sourceKey,
-      targetPixels: targetPixels,
-      imageManager: imageManager,
-      priority: .visible
-    ) { [weak self] image in
-      guard self?.representedId == itemId else { return }
-      self?.localLoadInFlightKey = nil
-      if let image {
-        self?.imageView.image = image
-      }
-    }
-  }
-
   static func metricsSnapshot() -> Metrics {
     metrics
   }
 
-  private enum LocalLoadPriority {
-    case visible
-    case prefetch
-  }
-
-  private static func enqueueLocalAsset(
-    _ localIdentifier: String,
-    sourceKey: String,
-    targetPixels: Int,
-    imageManager: PHImageManager,
-    priority: LocalLoadPriority,
-    completion: ((UIImage?) -> Void)?
-  ) {
-    if let cached = sourceImageCache.object(forKey: sourceKey as NSString) {
-      if let completion {
-        DispatchQueue.main.async {
-          completion(cached)
-        }
-      }
-      return
-    }
-
-    localLoadLock.lock()
-    if let existing = localLoadOperations[sourceKey] {
-      if priority == .visible {
-        existing.queuePriority = .veryHigh
-        existing.qualityOfService = .userInitiated
-      }
-      if let completion {
-        localLoadCompletions[sourceKey, default: []].append(completion)
-      }
-      localLoadLock.unlock()
-      return
-    }
-    if let completion {
-      localLoadCompletions[sourceKey, default: []].append(completion)
-    }
-    let operation = BlockOperation {
-      let assets = PHAsset.fetchAssets(withLocalIdentifiers: [localIdentifier], options: nil)
-      guard let asset = assets.firstObject else {
-        Self.finishLocalLoad(sourceKey: sourceKey, image: nil)
-        return
-      }
-      Self.metrics.localAssetStarts += 1
-      let size = CGSize(width: targetPixels, height: targetPixels)
-      let options = PHImageRequestOptions()
-      options.deliveryMode = .highQualityFormat
-      options.resizeMode = .exact
-      options.isNetworkAccessAllowed = false
-      options.isSynchronous = true
-      var loadedImage: UIImage?
-      imageManager.requestImage(
-        for: asset,
-        targetSize: size,
-        contentMode: .aspectFill,
-        options: options
-      ) { image, _ in
-        loadedImage = image
-      }
-      Self.finishLocalLoad(sourceKey: sourceKey, image: loadedImage)
-    }
-    if priority == .visible {
-      operation.queuePriority = .veryHigh
-      operation.qualityOfService = .userInitiated
-    } else {
-      operation.queuePriority = .low
-      operation.qualityOfService = .utility
-    }
-    localLoadOperations[sourceKey] = operation
-    localLoadLock.unlock()
-    localLoadQueue.addOperation(operation)
-  }
-
-  private static func finishLocalLoad(sourceKey: String, image: UIImage?) {
-    if let image {
-      sourceImageCache.setObject(image, forKey: sourceKey as NSString)
-    }
-    localLoadLock.lock()
-    localLoadOperations[sourceKey] = nil
-    let completions = localLoadCompletions.removeValue(forKey: sourceKey) ?? []
-    localLoadLock.unlock()
-    guard !completions.isEmpty else { return }
-    DispatchQueue.main.async {
-      completions.forEach { $0(image) }
-    }
-  }
-
-  private static func targetPixels(forSide side: CGFloat) -> Int {
-    let scale = UIScreen.main.scale
-    if side < 56 {
-      return 128
-    }
-    if side < 96 {
-      return 200
-    }
-    if side < 140 {
-      return max(320, Int(ceil(side * scale)))
-    }
-    if side < 220 {
-      return max(640, Int(ceil(side * scale)))
-    }
-    return min(1024, max(768, Int(ceil(side * scale))))
-  }
-
-  private static func sourceKey(for item: NativePhotoGridItem) -> String {
-    if let localAssetId = item.localAssetId {
-      return "local:\(localAssetId)"
-    }
-    if let thumbnailUri = item.thumbnailUri {
-      return "file:\(thumbnailUri)"
-    }
-    if let persistentThumbnail = persistentThumbnailURL(for: item.id) {
-      return "file:\(persistentThumbnail.path)"
-    }
-    return "placeholder:\(item.id)"
-  }
-
-  private static func fileURL(from uri: String) -> URL {
-    if let parsed = URL(string: uri), parsed.isFileURL {
-      return parsed
-    }
-    return URL(fileURLWithPath: uri)
-  }
-
-  private static func downsampledImage(from url: URL, maxPixelSize: Int) -> UIImage? {
-    let options = [kCGImageSourceShouldCache: false] as CFDictionary
-    guard let source = CGImageSourceCreateWithURL(url as CFURL, options) else {
-      return (try? Data(contentsOf: url)).flatMap { UIImage(data: $0) }
-    }
-    let thumbnailOptions = [
-      kCGImageSourceCreateThumbnailFromImageAlways: true,
-      kCGImageSourceShouldCacheImmediately: true,
-      kCGImageSourceCreateThumbnailWithTransform: true,
-      kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
-    ] as CFDictionary
-    guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbnailOptions) else {
-      return (try? Data(contentsOf: url)).flatMap { UIImage(data: $0) }
-    }
-    return UIImage(cgImage: cgImage)
-  }
-
-  private static func persistentThumbnailURL(for fileId: String) -> URL? {
-    guard let documentDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
-      return nil
-    }
-    for directoryName in ["beebeeb-thumbnails-v3"] {
-      let directory = documentDirectory.appendingPathComponent(directoryName, isDirectory: true)
-      let webp = directory.appendingPathComponent("\(fileId).webp")
-      if FileManager.default.fileExists(atPath: webp.path) {
-        return webp
-      }
-      let legacyJpg = directory.appendingPathComponent("\(fileId).jpg")
-      if FileManager.default.fileExists(atPath: legacyJpg.path) {
-        return legacyJpg
-      }
-    }
-    return nil
-  }
 }
 
 private final class PhotoGridHeaderView: UICollectionReusableView {

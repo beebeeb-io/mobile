@@ -10,6 +10,41 @@
  */
 
 import BeebeebCryptoModule, { isNativeAvailable as nativeFlag } from './BeebeebCryptoModule'
+import { requireOptionalNativeModule } from 'expo-modules-core'
+
+// ─── Thumbnail worker pool types (declared early for use in module type below) ─
+
+export interface QueueStats {
+  pending: number;
+  running: number;
+  succeeded: number;
+  failedRetry: number;
+  failedPerm: number;
+  filesPerSec: number;
+  etaSec: number;
+  isPaused: boolean;
+  isThermalThrottled: boolean;
+}
+
+export interface RegenResult {
+  fileId: string;
+  success: boolean;
+  category: string | null;
+  stageTimings: Record<string, number>;
+  bytesUploaded: number;
+}
+
+const BeebeebThumbnailsModule = requireOptionalNativeModule<{
+  regenerateThumbnail(fileId: string, qualityPreset: string): Promise<RegenResult>
+  enqueueApplyQuality(fileIds: string[], qualityPreset: string): Promise<number>
+  pauseWorkers(): Promise<void>
+  resumeWorkers(): Promise<void>
+  retryFile(fileId: string): Promise<void>
+  cancelAllWorkers(): Promise<void>
+  getQueueStats(): Promise<QueueStats>
+  listFailedPermanentFiles(): Promise<string[]>
+  clearQueueOnSignOut(): Promise<void>
+}>('ThumbnailService')
 import type {
   ConstellationFrame,
   ConstellationSessionInit,
@@ -1090,4 +1125,50 @@ export async function constellationEncode(
   frameIndex: number,
 ): Promise<ConstellationFrame> {
   return BeebeebCryptoModule.constellationEncode(payload, frameIndex)
+}
+
+// ─── Thumbnail worker pool bridge ───────────────────────────────────────────
+
+/**
+ * Worker pool functions for thumbnail regeneration on iOS.
+ * All methods are no-ops when the native ThumbnailService module is unavailable
+ * (Android, Expo Go, builds without the xcframework).
+ */
+export const BeebeebThumbnails = {
+  regenerateThumbnail: (fileId: string, qualityPreset: string): Promise<RegenResult> => {
+    if (!BeebeebThumbnailsModule?.regenerateThumbnail) return Promise.reject(new Error('ThumbnailService not available'))
+    return BeebeebThumbnailsModule.regenerateThumbnail(fileId, qualityPreset)
+  },
+  enqueueApplyQuality: (fileIds: string[], qualityPreset: string): Promise<number> => {
+    if (!BeebeebThumbnailsModule?.enqueueApplyQuality) return Promise.resolve(0)
+    return BeebeebThumbnailsModule.enqueueApplyQuality(fileIds, qualityPreset)
+  },
+  pauseWorkers: (): Promise<void> => {
+    if (!BeebeebThumbnailsModule?.pauseWorkers) return Promise.resolve()
+    return BeebeebThumbnailsModule.pauseWorkers()
+  },
+  resumeWorkers: (): Promise<void> => {
+    if (!BeebeebThumbnailsModule?.resumeWorkers) return Promise.resolve()
+    return BeebeebThumbnailsModule.resumeWorkers()
+  },
+  retryFile: (fileId: string): Promise<void> => {
+    if (!BeebeebThumbnailsModule?.retryFile) return Promise.resolve()
+    return BeebeebThumbnailsModule.retryFile(fileId)
+  },
+  cancelAllWorkers: (): Promise<void> => {
+    if (!BeebeebThumbnailsModule?.cancelAllWorkers) return Promise.resolve()
+    return BeebeebThumbnailsModule.cancelAllWorkers()
+  },
+  getQueueStats: (): Promise<QueueStats> => {
+    if (!BeebeebThumbnailsModule?.getQueueStats) return Promise.resolve({ pending: 0, running: 0, succeeded: 0, failedRetry: 0, failedPerm: 0, filesPerSec: 0, etaSec: 0, isPaused: false, isThermalThrottled: false })
+    return BeebeebThumbnailsModule.getQueueStats()
+  },
+  listFailedPermanentFiles: (): Promise<string[]> => {
+    if (!BeebeebThumbnailsModule?.listFailedPermanentFiles) return Promise.resolve([])
+    return BeebeebThumbnailsModule.listFailedPermanentFiles()
+  },
+  clearQueueOnSignOut: (): Promise<void> => {
+    if (!BeebeebThumbnailsModule?.clearQueueOnSignOut) return Promise.resolve()
+    return BeebeebThumbnailsModule.clearQueueOnSignOut()
+  },
 }

@@ -2784,6 +2784,73 @@ public func FfiConverterTypeRecoveryPhraseResult_lower(_ value: RecoveryPhraseRe
 
 
 /**
+ * Resize RGBA pixel data for thumbnail use. Always available (no WebP
+ * dependency). The longest side is scaled to `max_dimension` preserving
+ * aspect ratio. If the source already fits, the buffer is returned as-is.
+ *
+ * Returns `(resized_rgba, new_width, new_height)` packed as three fields.
+ *
+ * iOS calls this and then encodes to WebP natively via vImage/ImageIO.
+ */
+public struct ResizeResult: Equatable, Hashable {
+    public var rgba: Data
+    public var width: UInt32
+    public var height: UInt32
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(rgba: Data, width: UInt32, height: UInt32) {
+        self.rgba = rgba
+        self.width = width
+        self.height = height
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension ResizeResult: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeResizeResult: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ResizeResult {
+        return
+            try ResizeResult(
+                rgba: FfiConverterData.read(from: &buf), 
+                width: FfiConverterUInt32.read(from: &buf), 
+                height: FfiConverterUInt32.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: ResizeResult, into buf: inout [UInt8]) {
+        FfiConverterData.write(value.rgba, into: &buf)
+        FfiConverterUInt32.write(value.width, into: &buf)
+        FfiConverterUInt32.write(value.height, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeResizeResult_lift(_ buf: RustBuffer) throws -> ResizeResult {
+    return try FfiConverterTypeResizeResult.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeResizeResult_lower(_ value: ResizeResult) -> RustBuffer {
+    return FfiConverterTypeResizeResult.lower(value)
+}
+
+
+/**
  * Result of a successful file upload.
  */
 public struct UploadResultData: Equatable, Hashable {
@@ -2977,6 +3044,112 @@ public func FfiConverterTypeCryptoError_lift(_ buf: RustBuffer) throws -> Crypto
 #endif
 public func FfiConverterTypeCryptoError_lower(_ value: CryptoError) -> RustBuffer {
     return FfiConverterTypeCryptoError.lower(value)
+}
+
+
+/**
+ * Error from thumbnail generation (UniFFI-compatible enum).
+ *
+ * Always available — used by both `resize_for_thumbnail` and
+ * `generate_thumbnail_*`.
+ */
+public enum ThumbnailError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
+
+    
+    
+    case AllStepsFailed
+    case ResizeFailed(detail: String
+    )
+    case EncodeFailed(detail: String
+    )
+    case ThumbnailInvalidInput(detail: String
+    )
+
+    
+
+    
+
+    
+    public var errorDescription: String? {
+        String(reflecting: self)
+    }
+    
+}
+
+#if compiler(>=6)
+extension ThumbnailError: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeThumbnailError: FfiConverterRustBuffer {
+    typealias SwiftType = ThumbnailError
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ThumbnailError {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        
+
+        
+        case 1: return .AllStepsFailed
+        case 2: return .ResizeFailed(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+        case 3: return .EncodeFailed(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+        case 4: return .ThumbnailInvalidInput(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+
+         default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: ThumbnailError, into buf: inout [UInt8]) {
+        switch value {
+
+        
+
+        
+        
+        case .AllStepsFailed:
+            writeInt(&buf, Int32(1))
+        
+        
+        case let .ResizeFailed(detail):
+            writeInt(&buf, Int32(2))
+            FfiConverterString.write(detail, into: &buf)
+            
+        
+        case let .EncodeFailed(detail):
+            writeInt(&buf, Int32(3))
+            FfiConverterString.write(detail, into: &buf)
+            
+        
+        case let .ThumbnailInvalidInput(detail):
+            writeInt(&buf, Int32(4))
+            FfiConverterString.write(detail, into: &buf)
+            
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeThumbnailError_lift(_ buf: RustBuffer) throws -> ThumbnailError {
+    return try FfiConverterTypeThumbnailError.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeThumbnailError_lower(_ value: ThumbnailError) -> RustBuffer {
+    return FfiConverterTypeThumbnailError.lower(value)
 }
 
 
@@ -4527,6 +4700,16 @@ public func recoverFromPhrase(phrase: String)throws  -> Data  {
     )
 })
 }
+public func resizeForThumbnail(rgba: Data, srcWidth: UInt32, srcHeight: UInt32, maxDimension: UInt32)throws  -> ResizeResult  {
+    return try  FfiConverterTypeResizeResult_lift(try rustCallWithError(FfiConverterTypeThumbnailError_lift) {
+    uniffi_beebeeb_uniffi_fn_func_resize_for_thumbnail(
+        FfiConverterData.lower(rgba),
+        FfiConverterUInt32.lower(srcWidth),
+        FfiConverterUInt32.lower(srcHeight),
+        FfiConverterUInt32.lower(maxDimension),$0
+    )
+})
+}
 /**
  * Serialize a nonce + ciphertext pair into the canonical JSON metadata format.
  *
@@ -4738,6 +4921,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_beebeeb_uniffi_checksum_func_recover_from_phrase() != 25900) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_func_resize_for_thumbnail() != 49314) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_beebeeb_uniffi_checksum_func_serialize_encrypted_metadata() != 54488) {

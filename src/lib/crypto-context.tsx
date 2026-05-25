@@ -546,7 +546,18 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
       // genuinely locked; we must NEVER fall back to re-reading the Keychain
       // here because that would surface a Face ID prompt during routine
       // thumbnail/preview decryption (task 0556).
-      return handleDeriveFileKey(requireHandleId(), fileId)
+      const key = await handleDeriveFileKey(requireHandleId(), fileId)
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const { requireOptionalNativeModule } = require('expo-modules-core')
+        const Native = requireOptionalNativeModule('ThumbnailService') as {
+          setFileKey?: (fileId: string, keyBytes: Uint8Array) => Promise<void>
+        } | null
+        await Native?.setFileKey?.(fileId, key)
+      } catch {
+        // best-effort
+      }
+      return key
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
@@ -691,6 +702,31 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
       setBackupEncryption(null)
     }
   }, [isUnlocked, encryptChunkFn, encryptMetadataFn, decryptMetadataFn])
+
+  // Push session credentials to the native ThumbnailService so its actor can
+  // fetch + decrypt remote thumbnails without crossing back to JS. Best-effort:
+  // no-op on Android where the module isn't registered.
+  useEffect(() => {
+    if (!isUnlocked) return
+    void (async () => {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const { requireOptionalNativeModule } = require('expo-modules-core')
+        const Native = requireOptionalNativeModule('ThumbnailService') as {
+          setApiCredentials?: (baseURL: string, token: string) => Promise<void>
+        } | null
+        if (Native?.setApiCredentials) {
+          const { getToken, getApiUrl } = await import('./api')
+          const token = await getToken()
+          if (token) {
+            await Native.setApiCredentials(getApiUrl(), token)
+          }
+        }
+      } catch (err) {
+        console.warn('[crypto-context] thumbnail native credentials sync failed', err)
+      }
+    })()
+  }, [isUnlocked])
 
   return (
     <CryptoContext.Provider

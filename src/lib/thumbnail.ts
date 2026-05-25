@@ -13,6 +13,7 @@
  * underlying upload. Callers should not await the result.
  */
 
+import { Platform } from 'react-native';
 import { uploadThumbnail, downloadFile, getApiUrl, getToken, thumbnailUrl } from './api';
 import { rateLimitedFetch } from './rate-limited-fetch';
 
@@ -352,6 +353,9 @@ export async function generateAndUploadPhotoLibraryThumbnail(
   getMasterKeyHandleId: () => number,
   variant: ThumbnailVariant = 'medium',
 ): Promise<boolean> {
+  if (Platform.OS === 'ios') {
+    throw new Error('thumbnail.ts iOS path replaced by BeebeebThumbnails — caller should use useThumbnail()');
+  }
   if (!isThumbnailable(mimeType)) return false;
   try {
     const token = await getToken();
@@ -424,6 +428,9 @@ export async function ensureThumbnailForImage(
   mimeType: string | null | undefined,
   getFileKeyBytes: (fileId: string) => Promise<Uint8Array>,
 ): Promise<boolean> {
+  if (Platform.OS === 'ios') {
+    throw new Error('thumbnail.ts iOS path replaced by BeebeebThumbnails — caller should use useThumbnail()');
+  }
   if (!isThumbnailable(mimeType)) return false;
   const pending = repairInflight.get(fileId);
   if (pending) return pending;
@@ -631,6 +638,9 @@ export async function fetchDecryptedThumbnailUri(
   fileKey: Uint8Array,
   signal?: AbortSignal,
 ): Promise<string | null> {
+  if (Platform.OS === 'ios') {
+    throw new Error('thumbnail.ts iOS path replaced by BeebeebThumbnails — caller should use useThumbnail()');
+  }
   if (signal?.aborted) return null;
   // Central PhotoKit guard: caller-side checks can race the async map hydrate.
   // Once a file resolves to a local PHAsset, never surface or write the

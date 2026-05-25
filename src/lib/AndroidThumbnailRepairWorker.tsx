@@ -1,6 +1,11 @@
 import React, { useEffect, useRef } from 'react';
-import { AppState, InteractionManager } from 'react-native';
+import { AppState, InteractionManager, Platform } from 'react-native';
 import NetInfo from '@react-native-community/netinfo';
+
+// Defensive: this component is mounted only on Android (App.tsx checks Platform).
+if (Platform.OS !== 'android' && __DEV__) {
+  console.warn('AndroidThumbnailRepairWorker loaded on non-Android — App.tsx should gate this.');
+}
 
 import { getFileIndex } from './api';
 import type { FileEntry } from './api';
@@ -10,14 +15,155 @@ import { getRemoteToLocalMap } from '../services/BackupDatabase';
 import { ensureThumbnailForImage, generateAndUploadPhotoLibraryThumbnail } from './thumbnail';
 import { invalidateCachedThumbnail } from './thumbnail-cache';
 import { invalidateInMemoryThumbCache } from './thumbnail';
-import { isDegradedThumbnail } from './thumbnail-repair-predicate';
-import {
-  DEFAULT_THUMBNAIL_REPAIR_STATUS,
-  getThumbnailRepairSettings,
-  getThumbnailRepairStatus,
-  setThumbnailRepairStatus,
-  type ThumbnailRepairStatus,
-} from './thumbnail-repair-settings';
+// ---------------------------------------------------------------------------
+// Inlined from thumbnail-repair-predicate.ts (deleted in task 22)
+// ---------------------------------------------------------------------------
+
+/** Decoded ciphertext bytes below this threshold are treated as DEGRADED. */
+const DEGRADED_THUMBNAIL_BYTES_THRESHOLD = 30 * 1024;
+
+function isDegradedThumbnail(file: FileEntry): boolean {
+  if (file.is_folder || file.is_uploading) return false;
+  if (file.has_thumbnail !== true) return false;
+  const bytes = file.thumbnail_bytes;
+  if (bytes == null) return true;
+  return bytes < DEGRADED_THUMBNAIL_BYTES_THRESHOLD;
+}
+
+// ---------------------------------------------------------------------------
+// Inlined from thumbnail-repair-settings.ts (deleted in task 22)
+// ---------------------------------------------------------------------------
+
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
+export interface ThumbnailImproveQualitySettings {
+  wifiOnly: boolean;
+  thoroughMode: boolean;
+}
+
+export interface ThumbnailRepairSettings {
+  autoRepairWhileIdle: boolean;
+  improveQuality: ThumbnailImproveQualitySettings;
+}
+
+export type ThumbnailRepairPhase =
+  | 'idle' | 'queued' | 'scanning' | 'repairing' | 'paused' | 'completed' | 'failed';
+
+export type ThumbnailRepairMode = 'missing' | 'degraded';
+
+export interface ThumbnailRepairActivity {
+  at: number;
+  message: string;
+}
+
+export interface ThumbnailRepairStatus {
+  requestedAt: number | null;
+  startedAt: number | null;
+  updatedAt: number | null;
+  completedAt: number | null;
+  running: boolean;
+  phase: ThumbnailRepairPhase;
+  mode: ThumbnailRepairMode;
+  checked: number;
+  remaining: number;
+  repaired: number;
+  skipped: number;
+  failed: number;
+  totalMissing: number;
+  bytesDownloaded: number;
+  lastRunAt: number | null;
+  lastMessage: string | null;
+  currentAction: string | null;
+  currentFileName: string | null;
+  activity: ThumbnailRepairActivity[];
+}
+
+const SETTINGS_KEY = 'beebeeb:thumbnail-repair-settings:v1';
+const STATUS_KEY = 'beebeeb:thumbnail-repair-status:v1';
+
+export const DEFAULT_THUMBNAIL_REPAIR_STATUS: ThumbnailRepairStatus = {
+  requestedAt: null, startedAt: null, updatedAt: null, completedAt: null,
+  running: false, phase: 'idle', mode: 'missing',
+  checked: 0, remaining: 0, repaired: 0, skipped: 0, failed: 0,
+  totalMissing: 0, bytesDownloaded: 0,
+  lastRunAt: null, lastMessage: null, currentAction: null, currentFileName: null,
+  activity: [],
+};
+
+function normalizeImproveQuality(
+  value: Partial<ThumbnailImproveQualitySettings> | null | undefined,
+): ThumbnailImproveQualitySettings {
+  return {
+    wifiOnly: value?.wifiOnly !== false,
+    thoroughMode: value?.thoroughMode === true,
+  };
+}
+
+function normalizeSettings(value: Partial<ThumbnailRepairSettings> | null): ThumbnailRepairSettings {
+  return {
+    autoRepairWhileIdle: value?.autoRepairWhileIdle === true,
+    improveQuality: normalizeImproveQuality(value?.improveQuality),
+  };
+}
+
+function normalizeStatus(value: Partial<ThumbnailRepairStatus> | null): ThumbnailRepairStatus {
+  const phase = value?.phase;
+  const activity = Array.isArray(value?.activity)
+    ? value.activity.filter((item) => (
+        item && typeof item.at === 'number' && typeof item.message === 'string' && item.message.trim().length > 0
+      )).slice(0, 8)
+    : [];
+  const mode: ThumbnailRepairMode = value?.mode === 'degraded' ? 'degraded' : 'missing';
+  return {
+    requestedAt: typeof value?.requestedAt === 'number' ? value.requestedAt : null,
+    startedAt: typeof value?.startedAt === 'number' ? value.startedAt : null,
+    updatedAt: typeof value?.updatedAt === 'number' ? value.updatedAt : null,
+    completedAt: typeof value?.completedAt === 'number' ? value.completedAt : null,
+    running: value?.running === true,
+    phase: phase === 'queued' || phase === 'scanning' || phase === 'repairing' || phase === 'paused' || phase === 'completed' || phase === 'failed' ? phase : 'idle',
+    mode,
+    checked: typeof value?.checked === 'number' ? value.checked : 0,
+    remaining: typeof value?.remaining === 'number' ? value.remaining : 0,
+    repaired: typeof value?.repaired === 'number' ? value.repaired : 0,
+    skipped: typeof value?.skipped === 'number' ? value.skipped : 0,
+    failed: typeof value?.failed === 'number' ? value.failed : 0,
+    totalMissing: typeof value?.totalMissing === 'number' ? value.totalMissing : 0,
+    bytesDownloaded: typeof value?.bytesDownloaded === 'number' && value.bytesDownloaded >= 0 ? value.bytesDownloaded : 0,
+    lastRunAt: typeof value?.lastRunAt === 'number' ? value.lastRunAt : null,
+    lastMessage: typeof value?.lastMessage === 'string' ? value.lastMessage : null,
+    currentAction: typeof value?.currentAction === 'string' ? value.currentAction : null,
+    currentFileName: typeof value?.currentFileName === 'string' ? value.currentFileName : null,
+    activity,
+  };
+}
+
+async function getThumbnailRepairSettings(): Promise<ThumbnailRepairSettings> {
+  const raw = await AsyncStorage.getItem(SETTINGS_KEY).catch(() => null);
+  if (!raw) return { autoRepairWhileIdle: false, improveQuality: { wifiOnly: true, thoroughMode: false } };
+  try {
+    return normalizeSettings(JSON.parse(raw) as Partial<ThumbnailRepairSettings>);
+  } catch {
+    await AsyncStorage.removeItem(SETTINGS_KEY).catch(() => {});
+    return { autoRepairWhileIdle: false, improveQuality: { wifiOnly: true, thoroughMode: false } };
+  }
+}
+
+async function getThumbnailRepairStatus(): Promise<ThumbnailRepairStatus> {
+  const raw = await AsyncStorage.getItem(STATUS_KEY).catch(() => null);
+  if (!raw) return DEFAULT_THUMBNAIL_REPAIR_STATUS;
+  try {
+    return normalizeStatus(JSON.parse(raw) as Partial<ThumbnailRepairStatus>);
+  } catch {
+    await AsyncStorage.removeItem(STATUS_KEY).catch(() => {});
+    return DEFAULT_THUMBNAIL_REPAIR_STATUS;
+  }
+}
+
+async function setThumbnailRepairStatus(next: ThumbnailRepairStatus): Promise<ThumbnailRepairStatus> {
+  const normalized = normalizeStatus(next);
+  await AsyncStorage.setItem(STATUS_KEY, JSON.stringify(normalized));
+  return normalized;
+}
 import { getPerformanceStorageSettings, type PerformanceStorageProfile } from './performance-storage-settings';
 import type { ThumbnailVariant } from './thumbnail-policy';
 import { useCrypto } from './crypto-context';
@@ -37,18 +183,54 @@ const MAX_CONSECUTIVE_FAILURES = 5;
 
 // ---- Degraded-mode bulk backfill (task 0553) --------------------------------
 //
-// Strictly sequential: one file in flight at a time. Latency is fine, bandwidth
-// efficiency matters. WiFi-only by default. Respects server rate-limit headers
-// by backing off when X-RateLimit-Remaining is low or on 429.
+// Up to DEGRADED_CONCURRENCY files in flight at a time. Latency is fine,
+// bandwidth efficiency matters. WiFi-only by default. Respects server
+// rate-limit headers by backing off when X-RateLimit-Remaining is low or on 429.
 
 /** Inter-file delay between successful degraded regenerations. */
 const DEGRADED_REPAIR_DELAY_MS = 750;
 
-/** Backoff after a failure in degraded mode. Single inflight, so we can pause. */
+/** Backoff after a failure in degraded mode. */
 const DEGRADED_REPAIR_FAILURE_DELAY_MS = 5_000;
 
 /** Per-session cap on degraded regenerations. ~ a 2 GB download budget at 100 KB/photo. */
 const DEGRADED_MAX_PER_SESSION = 20_000;
+
+/** Max concurrent file downloads in degraded (bulk-backfill) mode. */
+const DEGRADED_CONCURRENCY = 4;
+
+// ---------------------------------------------------------------------------
+// Error classification
+// ---------------------------------------------------------------------------
+
+type ErrorCategory =
+  | 'network_5xx' | 'network_429' | 'photoKit_missing'
+  | 'decrypt_failed' | 'generate_failed' | 'upload_too_large'
+  | 'timeout' | 'unknown';
+
+function classifyError(error: unknown, httpStatus: number | null): ErrorCategory {
+  if (httpStatus === 429) return 'network_429';
+  if (httpStatus && httpStatus >= 500) return 'network_5xx';
+  if (httpStatus === 413) return 'upload_too_large';
+  const msg = error instanceof Error ? error.message : String(error ?? '');
+  if (/timeout|timed out/i.test(msg)) return 'timeout';
+  if (/decrypt/i.test(msg)) return 'decrypt_failed';
+  if (/PHAsset|local asset/i.test(msg)) return 'photoKit_missing';
+  return 'unknown';
+}
+
+function categoryUserText(c: ErrorCategory): string {
+  switch (c) {
+    case 'network_5xx': return 'Server hiccup';
+    case 'network_429': return 'Slowing down to respect server limits';
+    case 'photoKit_missing': return 'Photo no longer in Photos app';
+    case 'decrypt_failed': return "Couldn't decrypt — file may be corrupt";
+    case 'generate_failed': return "Couldn't generate thumbnail";
+    case 'upload_too_large': return 'Photo too small to thumbnail';
+    case 'timeout': return 'Took too long, will try again';
+    default: return 'Something went wrong';
+  }
+}
 
 interface RepairResult {
   checked: number;
@@ -230,7 +412,7 @@ async function resolveMime(
 
 interface DegradedTickArgs {
   status: ThumbnailRepairStatus;
-  settings: import('./thumbnail-repair-settings').ThumbnailRepairSettings;
+  settings: ThumbnailRepairSettings;
   crypto: ReturnType<typeof useCrypto>;
   attempted: Set<string>;
   bumpFailureStreak: () => void;
@@ -239,9 +421,10 @@ interface DegradedTickArgs {
 }
 
 /**
- * Drain one batch of degraded thumbnails. Runs at most one file in flight,
- * checks Wi-Fi gate before downloading, tracks bytes via Content-Length so
- * the UI can show "X MB downloaded", honors X-RateLimit headers when present.
+ * Drain one batch of degraded thumbnails. Runs up to DEGRADED_CONCURRENCY
+ * files in flight at a time, checks Wi-Fi gate before downloading, tracks
+ * bytes via Content-Length so the UI can show "X MB downloaded", honors
+ * X-RateLimit headers when present.
  * Idempotent w.r.t. status — on entry it reads the current status, on exit it
  * persists a new status and schedules the next tick.
  */
@@ -374,119 +557,131 @@ async function runDegradedTick({
     },
   ));
 
-  // Process ONE file. Sequential is the contract.
-  const file = candidates[0];
-  if (!file) {
+  // Process up to DEGRADED_CONCURRENCY files concurrently.
+  const batch = candidates.slice(0, DEGRADED_CONCURRENCY);
+  if (batch.length === 0) {
     schedule(MIN_DELAY_MS);
     return;
   }
-  attempted.add(file.id);
-  const cameraRollBacked = localMap.has(file.id);
+  for (const file of batch) attempted.add(file.id);
 
-  const mime = await resolveMime(file, crypto.decryptMetadata);
-  if (!mime || (!mime.startsWith('image/') && !mime.startsWith('video/'))) {
-    const skipped = next.skipped + 1;
-    await setThumbnailRepairStatus(withActivity(next, `Skipped ${file.id.slice(0, 8)} (not media)`, {
-      skipped,
-      checked: next.checked + 1,
-      remaining: Math.max(0, next.remaining - 1),
-      currentFileName: null,
-    }));
-    schedule(MIN_DELAY_MS);
-    return;
-  }
+  let anyRepaired = false;
+  let anyFailed = false;
+  let totalBytesAdded = 0;
 
-  await setThumbnailRepairStatus(withActivity(next, `Improving thumbnail for ${file.name_encrypted.slice(0, 24)}…`, {
-    currentAction: 'Downloading the encrypted original',
-    currentFileName: null,
-  }));
+  await mapWithConcurrency(batch, DEGRADED_CONCURRENCY, async (file) => {
+    const cameraRollBacked = localMap.has(file.id);
 
-  let bytesAdded = 0;
-  let repaired = false;
-  try {
-    repaired = await new Promise<boolean>((resolve) => {
-      let settled = false;
-      const timeout = setTimeout(() => {
-        if (settled) return;
-        settled = true;
-        resolve(false);
-      }, REPAIR_TIMEOUT_MS);
-      InteractionManager.runAfterInteractions(() => {
-        // ensureThumbnailForImage does the download + decrypt + thumbnail + upload.
-        // We approximate bytesAdded from file.size_bytes since the worker doesn't
-        // currently expose a per-call byte counter; the actual ciphertext is
-        // size + ~chunk_count*28 bytes overhead.
-        ensureThumbnailForImage(
-          file.id,
-          file.name_encrypted,
-          file.size_bytes,
-          file.chunk_count,
-          mime,
-          crypto.getFileKeyBytes,
-        ).then((ok) => {
+    const mime = await resolveMime(file, crypto.decryptMetadata);
+    if (!mime || (!mime.startsWith('image/') && !mime.startsWith('video/'))) {
+      const skipped = next.skipped + 1;
+      await setThumbnailRepairStatus(withActivity(next, `Skipped ${file.id.slice(0, 8)} (not media)`, {
+        skipped,
+        checked: next.checked + 1,
+        remaining: Math.max(0, next.remaining - 1),
+        currentFileName: null,
+      }));
+      return;
+    }
+
+    let bytesAdded = 0;
+    let repaired = false;
+    let lastError: unknown = null;
+    try {
+      repaired = await new Promise<boolean>((resolve) => {
+        let settled = false;
+        const timeout = setTimeout(() => {
           if (settled) return;
           settled = true;
-          clearTimeout(timeout);
-          if (ok) bytesAdded = Math.max(0, file.size_bytes);
-          resolve(ok);
-        }).catch(() => {
-          if (settled) return;
-          settled = true;
-          clearTimeout(timeout);
+          lastError = new Error('timed out');
           resolve(false);
+        }, REPAIR_TIMEOUT_MS);
+        InteractionManager.runAfterInteractions(() => {
+          // ensureThumbnailForImage does the download + decrypt + thumbnail + upload.
+          // We approximate bytesAdded from file.size_bytes since the worker doesn't
+          // currently expose a per-call byte counter; the actual ciphertext is
+          // size + ~chunk_count*28 bytes overhead.
+          ensureThumbnailForImage(
+            file.id,
+            file.name_encrypted,
+            file.size_bytes,
+            file.chunk_count,
+            mime,
+            crypto.getFileKeyBytes,
+          ).then((ok) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timeout);
+            if (ok) bytesAdded = Math.max(0, file.size_bytes);
+            resolve(ok);
+          }).catch((err: unknown) => {
+            if (settled) return;
+            settled = true;
+            lastError = err;
+            clearTimeout(timeout);
+            resolve(false);
+          });
         });
       });
-    });
-  } catch {
-    repaired = false;
-  }
+    } catch (err) {
+      lastError = err;
+      repaired = false;
+    }
 
-  // Invalidate the local thumbnail cache BEFORE we mark the status as improved.
-  // Without this the Photos grid keeps reading the old blurry blob from disk
-  // and the user never sees the freshly uploaded high-quality thumbnail.
-  // Best-effort: a failure here must not roll back a successful server upload.
-  if (repaired) {
-    await invalidateCachedThumbnail(file.id).catch(() => {});
-    invalidateInMemoryThumbCache(file.id);
-  }
-  logDegradedResult(file.id, repaired, cameraRollBacked, bytesAdded);
+    // Invalidate the local thumbnail cache BEFORE we mark the status as improved.
+    if (repaired) {
+      await invalidateCachedThumbnail(file.id).catch(() => {});
+      invalidateInMemoryThumbCache(file.id);
+      anyRepaired = true;
+      totalBytesAdded += bytesAdded;
+    } else {
+      anyFailed = true;
+      const category = classifyError(lastError, null);
+      const userMsg = categoryUserText(category);
+      console.warn('[thumbnail-repair] degraded tick failure', { fileId: file.id, category, userMsg });
+    }
+    logDegradedResult(file.id, repaired, cameraRollBacked, bytesAdded);
+  });
 
   const refreshed = await getThumbnailRepairStatus();
   const pauseRequested = refreshed.phase === 'paused' && refreshed.requestedAt == null;
 
-  if (repaired) {
+  if (anyRepaired) {
     resetFailureStreak();
-  } else {
+  } else if (anyFailed) {
     bumpFailureStreak();
   }
+
+  const lastFailureCategory = anyFailed && !anyRepaired ? classifyError(null, null) : 'unknown';
+  const actionText = pauseRequested
+    ? 'Paused by you'
+    : anyRepaired
+      ? 'Uploaded the improved thumbnail'
+      : categoryUserText(lastFailureCategory);
 
   const updated: ThumbnailRepairStatus = {
     ...refreshed,
     mode: 'degraded',
-    checked: refreshed.checked + 1,
-    repaired: refreshed.repaired + (repaired ? 1 : 0),
-    failed: refreshed.failed + (repaired ? 0 : 1),
-    bytesDownloaded: refreshed.bytesDownloaded + bytesAdded,
-    remaining: Math.max(0, refreshed.remaining - 1),
+    checked: refreshed.checked + batch.length,
+    repaired: refreshed.repaired + (anyRepaired ? batch.filter((f) => !localMap.has(f.id)).length : 0),
+    failed: refreshed.failed + (anyFailed ? 1 : 0),
+    bytesDownloaded: refreshed.bytesDownloaded + totalBytesAdded,
+    remaining: Math.max(0, refreshed.remaining - batch.length),
     running: !pauseRequested,
     phase: pauseRequested ? 'paused' : 'repairing',
-    currentAction: pauseRequested
-      ? 'Paused by you'
-      : repaired
-        ? 'Uploaded the improved thumbnail'
-        : 'Could not improve this thumbnail — moving on',
+    currentAction: actionText,
     currentFileName: null,
     updatedAt: Date.now(),
     lastRunAt: Date.now(),
-    lastMessage: repaired
-      ? `Improved 1 thumbnail (${formatMb(refreshed.bytesDownloaded + bytesAdded)} total)`
-      : 'A thumbnail could not be improved',
+    lastMessage: anyRepaired
+      ? `Improved thumbnails (${formatMb(refreshed.bytesDownloaded + totalBytesAdded)} total)`
+      : 'Some thumbnails could not be improved',
     activity: [
       {
         at: Date.now(),
-        message: repaired
-          ? `Improved thumbnail (${formatMb(bytesAdded)})`
-          : 'Could not improve a thumbnail',
+        message: anyRepaired
+          ? `Improved ${batch.length} thumbnail(s) (${formatMb(totalBytesAdded)})`
+          : actionText,
       },
       ...refreshed.activity,
     ].slice(0, 8),
@@ -499,7 +694,7 @@ async function runDegradedTick({
   }
 
   const elapsedMs = Date.now() - startedAt;
-  schedule(repaired ? DEGRADED_REPAIR_DELAY_MS : Math.max(elapsedMs, DEGRADED_REPAIR_FAILURE_DELAY_MS));
+  schedule(anyRepaired ? DEGRADED_REPAIR_DELAY_MS : Math.max(elapsedMs, DEGRADED_REPAIR_FAILURE_DELAY_MS));
 }
 
 function formatMb(bytes: number): string {
@@ -508,7 +703,7 @@ function formatMb(bytes: number): string {
   return `${(bytes / 1_000_000_000).toFixed(2)} GB`;
 }
 
-export function ThumbnailRepairWorker({ enabled }: { enabled: boolean }) {
+export function AndroidThumbnailRepairWorker({ enabled }: { enabled: boolean }) {
   const crypto = useCrypto();
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const runningRef = useRef(false);
@@ -566,7 +761,8 @@ export function ThumbnailRepairWorker({ enabled }: { enabled: boolean }) {
         }
 
         // ── Bulk-backfill (degraded) mode — task 0553 ──────────────────────
-        // Strictly sequential, wifi-aware, download/decrypt/regenerate pipeline.
+        // Up to DEGRADED_CONCURRENCY concurrent, wifi-aware,
+        // download/decrypt/regenerate pipeline.
         // Routed off the existing worker so we keep one timer + one status doc.
         if (status.mode === 'degraded') {
           await runDegradedTick({
@@ -670,7 +866,7 @@ export function ThumbnailRepairWorker({ enabled }: { enabled: boolean }) {
           beforeGenerate,
           manualRequested
             ? `Repairing ${batch.length} thumbnails at high speed`
-            : 'Generating thumbnail on this iPhone',
+            : 'Generating thumbnail on this device',
           {
             phase: 'repairing',
             currentAction: manualRequested
@@ -817,3 +1013,5 @@ export function ThumbnailRepairWorker({ enabled }: { enabled: boolean }) {
 
   return null;
 }
+
+export default AndroidThumbnailRepairWorker;

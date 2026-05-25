@@ -19,6 +19,7 @@
  */
 
 import * as FileSystem from 'expo-file-system';
+import { Platform } from 'react-native';
 
 import { THUMB_CACHE_DIR_NAME, type ThumbnailVariant } from './thumbnail-policy';
 
@@ -142,6 +143,9 @@ export async function cacheThumbnailBase64(
   base64Data: string,
   variant: ThumbnailVariant = 'medium',
 ): Promise<string> {
+  if (Platform.OS !== 'android') {
+    throw new Error('cacheThumbnailBase64 is Android-only — iOS thumbnails are managed by the native ThumbnailService actor');
+  }
   await FileSystem.makeDirectoryAsync(THUMB_DIR, { intermediates: true });
   const path = variantPath(fileId, variant);
   await FileSystem.writeAsStringAsync(path, base64Data, {
@@ -304,6 +308,9 @@ export function enqueueThumbnailLoad(
   loader: ThumbnailLoader,
   signal?: AbortSignal,
 ): Promise<string | null> {
+  if (Platform.OS !== 'android') {
+    throw new Error('enqueueThumbnailLoad is Android-only — iOS uses BeebeebThumbnails native service');
+  }
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
       resolve(null);
