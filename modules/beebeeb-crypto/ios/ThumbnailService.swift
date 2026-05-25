@@ -261,3 +261,17 @@ extension ThumbnailService {
     throw ThumbnailServiceError.notImplemented
   }
 }
+
+extension ThumbnailService {
+  public func cancelPhotoKitRequest(for fileId: FileId) async {
+    await PhotoKitResolver.shared.cancelInFlight(for: fileId)
+  }
+
+  public func forgetFile(_ fileId: FileId) {
+    state.removeValue(forKey: fileId)
+    cache.removeValue(forKey: CacheKey(fileId: fileId, source: .photoKit))
+    cache.removeValue(forKey: CacheKey(fileId: fileId, source: .remote))
+    inFlight[fileId]?.cancel()
+    inFlight.removeValue(forKey: fileId)
+  }
+}
