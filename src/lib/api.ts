@@ -2188,3 +2188,60 @@ export async function enableTotp(code: string): Promise<void> {
 export async function disableTotp(code: string): Promise<void> {
   await request('POST', '/api/v1/auth/2fa/disable', { code });
 }
+
+// ---------------------------------------------------------------------------
+// Clients & Sessions (backup confidence system)
+// ---------------------------------------------------------------------------
+
+export interface ClientDevice {
+  id: string;
+  hostname: string;
+  platform: string;
+  bb_version: string | null;
+  last_seen: string;
+  created_at: string;
+  session_count?: number;
+}
+
+export interface ClientSession {
+  id: string;
+  device_id?: string;
+  device_hostname?: string;
+  device_platform?: string;
+  name: string;
+  session_type: string;
+  local_path: string | null;
+  remote_path: string;
+  status: string;
+  heartbeat_interval_secs: number;
+  alert_after_missed: number;
+  created_at: string;
+  last_heartbeat: string | null;
+  files_synced: number | null;
+  files_total: number | null;
+  bytes_synced: number | null;
+  bytes_total: number | null;
+  heartbeat_status: string | null;
+  current_file: string | null;
+  speed_bps?: number | null;
+}
+
+/** GET /api/v1/clients/devices */
+export async function listClientDevices(): Promise<{ devices: ClientDevice[] }> {
+  return request<{ devices: ClientDevice[] }>('GET', '/api/v1/clients/devices');
+}
+
+/** GET /api/v1/clients/sessions */
+export async function listClientSessions(): Promise<{ sessions: ClientSession[] }> {
+  return request<{ sessions: ClientSession[] }>('GET', '/api/v1/clients/sessions');
+}
+
+/** POST /api/v1/clients/devices — register or update this device */
+export async function registerClientDevice(body: {
+  hostname: string;
+  platform: string;
+  bb_version: string;
+  push_token?: string;
+}): Promise<ClientDevice> {
+  return request<ClientDevice>('POST', '/api/v1/clients/devices', body);
+}

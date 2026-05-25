@@ -98,6 +98,7 @@ import {
 } from '../services/BackupService';
 import type { RootStackParamList } from '../App';
 import { NativeSwitch } from '../components/NativeSwitch';
+import DevicesSection from '../components/settings/DevicesSection';
 import { markUnlocked } from '../lib/lock-state';
 import { mountTrustedFileProvider, populateFileProviderCache, removeTrustedFileProvider } from '../lib/file-provider-mount';
 import { NOTIFICATIONS_OPT_OUT_KEY, registerForPushNotifications, unregisterPushToken } from '../lib/push-notifications';
@@ -2193,6 +2194,16 @@ export default function SettingsScreen() {
               c={c}
             />
           </View>
+        </View>
+
+        {/* ---- Devices & Backups ---- */}
+        <View style={layout.section}>
+          <SectionHeader title="Devices & Backups" c={c} />
+          <DevicesSection c={c} />
+          <SectionNote
+            text="Devices and their sync/backup sessions. Status updates every 30 seconds."
+            c={c}
+          />
         </View>
 
         {/* ---- Notifications ---- */}

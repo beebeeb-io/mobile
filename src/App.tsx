@@ -46,6 +46,7 @@ import {
   unregisterPushToken,
   handleNotificationTap,
 } from './lib/push-notifications';
+import { registerDevice } from './lib/device-registration';
 
 const BIOMETRIC_PREF_KEY = 'beebeeb_biometric_lock';
 const BIOMETRIC_DELAY_KEY = 'beebeeb_biometric_delay';
@@ -609,6 +610,8 @@ export default function App() {
       SecureStore.setItemAsync(LAST_CONNECTED_KEY, new Date().toISOString()).catch(() => {});
       // Register push token once the user is authenticated.
       void registerForPushNotifications();
+      // Register this device with the clients API (best-effort).
+      void registerDevice();
       // Hydrate the PhotoKit identifier map so thumbnails can short-circuit
       // through PHImageManager for camera-roll-backed files (task 0552).
       // Fire-and-forget — never block auth on this network call.
@@ -720,6 +723,8 @@ export default function App() {
           setLoadingStatus('Unlocking vault...');
           setUser(me);
           SecureStore.setItemAsync(LAST_CONNECTED_KEY, new Date().toISOString()).catch(() => {});
+          // Register this device with the clients API (best-effort, cold launch).
+          void registerDevice();
           // Hydrate PhotoKit identifier map on cold launch too (refreshAuth
           // only fires for the sign-in path; runStartup is the cold-launch
           // path and needs its own hydration so prefetch doesn't race the
