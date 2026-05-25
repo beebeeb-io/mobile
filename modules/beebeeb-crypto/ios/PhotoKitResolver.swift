@@ -86,6 +86,53 @@ public actor PhotoKitResolver {
     }
   }
 
+  /// Request the full-resolution image as a `UIImage` for thumbnail regeneration.
+  /// Unlike `requestImage`, this returns the UIImage directly instead of writing
+  /// to a file, because the caller (thumbnail encoder) needs the pixel data.
+  public func requestFullImage(localIdentifier: String) async throws -> UIImage {
+    let assets = PHAsset.fetchAssets(withLocalIdentifiers: [localIdentifier], options: nil)
+    guard let asset = assets.firstObject else {
+      throw NSError(domain: "BeebeebPhotoKit", code: 404,
+                    userInfo: [NSLocalizedDescriptionKey: "PHAsset not found for localIdentifier"])
+    }
+
+    let options = PHImageRequestOptions()
+    options.deliveryMode = .highQualityFormat
+    options.resizeMode = .none
+    options.isNetworkAccessAllowed = false
+    options.isSynchronous = false
+
+    // Request at the asset's full pixel dimensions
+    let fullSize = CGSize(width: CGFloat(asset.pixelWidth), height: CGFloat(asset.pixelHeight))
+
+    return try await withCheckedThrowingContinuation { continuation in
+      PHImageManager.default().requestImage(
+        for: asset,
+        targetSize: fullSize,
+        contentMode: .default,
+        options: options
+      ) { image, info in
+        let isDegraded = (info?[PHImageResultIsDegradedKey] as? NSNumber)?.boolValue ?? false
+        if isDegraded { return }
+        if let cancelled = info?[PHImageCancelledKey] as? NSNumber, cancelled.boolValue {
+          continuation.resume(throwing: NSError(domain: "BeebeebPhotoKit", code: -999,
+                                                userInfo: [NSLocalizedDescriptionKey: "request cancelled"]))
+          return
+        }
+        if let error = info?[PHImageErrorKey] as? NSError {
+          continuation.resume(throwing: error)
+          return
+        }
+        guard let image else {
+          continuation.resume(throwing: NSError(domain: "BeebeebPhotoKit", code: 404,
+                                                userInfo: [NSLocalizedDescriptionKey: "PHImageManager returned nil"]))
+          return
+        }
+        continuation.resume(returning: image)
+      }
+    }
+  }
+
   public func cancelInFlight(for fileId: FileId) {
     if let id = inFlightRequests.removeValue(forKey: fileId) {
       PHImageManager.default().cancelImageRequest(id)

@@ -77,10 +77,16 @@ public final class ThumbnailServiceModule: Module, ThumbnailEventEmitter {
         for: fileId,
         quality: .continuous(width: width, jpegQuality: jpegQuality)
       )
-      return [
+      var dict: [String: Any] = [
         "fileId": result.fileId,
+        "success": result.success,
+        "stageTimings": result.stageTimings,
         "bytesUploaded": result.bytesUploaded,
       ]
+      if let cat = result.category {
+        dict["category"] = cat.rawValue
+      }
+      return dict
     }
 
     AsyncFunction("setLocalIdentifierMap") { (map: [String: String]) -> Void in
