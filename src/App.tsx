@@ -765,7 +765,7 @@ export default function App() {
       const done = await AsyncStorage.getItem(MIGRATION_KEY);
       if (done === '1') return;
       try {
-        await AsyncStorage.multiRemove([
+        await AsyncStorage.removeMany([
           'beebeeb:thumbnail-repair-settings:v1',
           'beebeeb:thumbnail-repair-status:v1',
         ]);

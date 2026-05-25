@@ -15,14 +15,155 @@ import { getRemoteToLocalMap } from '../services/BackupDatabase';
 import { ensureThumbnailForImage, generateAndUploadPhotoLibraryThumbnail } from './thumbnail';
 import { invalidateCachedThumbnail } from './thumbnail-cache';
 import { invalidateInMemoryThumbCache } from './thumbnail';
-import { isDegradedThumbnail } from './thumbnail-repair-predicate';
-import {
-  DEFAULT_THUMBNAIL_REPAIR_STATUS,
-  getThumbnailRepairSettings,
-  getThumbnailRepairStatus,
-  setThumbnailRepairStatus,
-  type ThumbnailRepairStatus,
-} from './thumbnail-repair-settings';
+// ---------------------------------------------------------------------------
+// Inlined from thumbnail-repair-predicate.ts (deleted in task 22)
+// ---------------------------------------------------------------------------
+
+/** Decoded ciphertext bytes below this threshold are treated as DEGRADED. */
+const DEGRADED_THUMBNAIL_BYTES_THRESHOLD = 30 * 1024;
+
+function isDegradedThumbnail(file: FileEntry): boolean {
+  if (file.is_folder || file.is_uploading) return false;
+  if (file.has_thumbnail !== true) return false;
+  const bytes = file.thumbnail_bytes;
+  if (bytes == null) return true;
+  return bytes < DEGRADED_THUMBNAIL_BYTES_THRESHOLD;
+}
+
+// ---------------------------------------------------------------------------
+// Inlined from thumbnail-repair-settings.ts (deleted in task 22)
+// ---------------------------------------------------------------------------
+
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
+export interface ThumbnailImproveQualitySettings {
+  wifiOnly: boolean;
+  thoroughMode: boolean;
+}
+
+export interface ThumbnailRepairSettings {
+  autoRepairWhileIdle: boolean;
+  improveQuality: ThumbnailImproveQualitySettings;
+}
+
+export type ThumbnailRepairPhase =
+  | 'idle' | 'queued' | 'scanning' | 'repairing' | 'paused' | 'completed' | 'failed';
+
+export type ThumbnailRepairMode = 'missing' | 'degraded';
+
+export interface ThumbnailRepairActivity {
+  at: number;
+  message: string;
+}
+
+export interface ThumbnailRepairStatus {
+  requestedAt: number | null;
+  startedAt: number | null;
+  updatedAt: number | null;
+  completedAt: number | null;
+  running: boolean;
+  phase: ThumbnailRepairPhase;
+  mode: ThumbnailRepairMode;
+  checked: number;
+  remaining: number;
+  repaired: number;
+  skipped: number;
+  failed: number;
+  totalMissing: number;
+  bytesDownloaded: number;
+  lastRunAt: number | null;
+  lastMessage: string | null;
+  currentAction: string | null;
+  currentFileName: string | null;
+  activity: ThumbnailRepairActivity[];
+}
+
+const SETTINGS_KEY = 'beebeeb:thumbnail-repair-settings:v1';
+const STATUS_KEY = 'beebeeb:thumbnail-repair-status:v1';
+
+export const DEFAULT_THUMBNAIL_REPAIR_STATUS: ThumbnailRepairStatus = {
+  requestedAt: null, startedAt: null, updatedAt: null, completedAt: null,
+  running: false, phase: 'idle', mode: 'missing',
+  checked: 0, remaining: 0, repaired: 0, skipped: 0, failed: 0,
+  totalMissing: 0, bytesDownloaded: 0,
+  lastRunAt: null, lastMessage: null, currentAction: null, currentFileName: null,
+  activity: [],
+};
+
+function normalizeImproveQuality(
+  value: Partial<ThumbnailImproveQualitySettings> | null | undefined,
+): ThumbnailImproveQualitySettings {
+  return {
+    wifiOnly: value?.wifiOnly !== false,
+    thoroughMode: value?.thoroughMode === true,
+  };
+}
+
+function normalizeSettings(value: Partial<ThumbnailRepairSettings> | null): ThumbnailRepairSettings {
+  return {
+    autoRepairWhileIdle: value?.autoRepairWhileIdle === true,
+    improveQuality: normalizeImproveQuality(value?.improveQuality),
+  };
+}
+
+function normalizeStatus(value: Partial<ThumbnailRepairStatus> | null): ThumbnailRepairStatus {
+  const phase = value?.phase;
+  const activity = Array.isArray(value?.activity)
+    ? value.activity.filter((item) => (
+        item && typeof item.at === 'number' && typeof item.message === 'string' && item.message.trim().length > 0
+      )).slice(0, 8)
+    : [];
+  const mode: ThumbnailRepairMode = value?.mode === 'degraded' ? 'degraded' : 'missing';
+  return {
+    requestedAt: typeof value?.requestedAt === 'number' ? value.requestedAt : null,
+    startedAt: typeof value?.startedAt === 'number' ? value.startedAt : null,
+    updatedAt: typeof value?.updatedAt === 'number' ? value.updatedAt : null,
+    completedAt: typeof value?.completedAt === 'number' ? value.completedAt : null,
+    running: value?.running === true,
+    phase: phase === 'queued' || phase === 'scanning' || phase === 'repairing' || phase === 'paused' || phase === 'completed' || phase === 'failed' ? phase : 'idle',
+    mode,
+    checked: typeof value?.checked === 'number' ? value.checked : 0,
+    remaining: typeof value?.remaining === 'number' ? value.remaining : 0,
+    repaired: typeof value?.repaired === 'number' ? value.repaired : 0,
+    skipped: typeof value?.skipped === 'number' ? value.skipped : 0,
+    failed: typeof value?.failed === 'number' ? value.failed : 0,
+    totalMissing: typeof value?.totalMissing === 'number' ? value.totalMissing : 0,
+    bytesDownloaded: typeof value?.bytesDownloaded === 'number' && value.bytesDownloaded >= 0 ? value.bytesDownloaded : 0,
+    lastRunAt: typeof value?.lastRunAt === 'number' ? value.lastRunAt : null,
+    lastMessage: typeof value?.lastMessage === 'string' ? value.lastMessage : null,
+    currentAction: typeof value?.currentAction === 'string' ? value.currentAction : null,
+    currentFileName: typeof value?.currentFileName === 'string' ? value.currentFileName : null,
+    activity,
+  };
+}
+
+async function getThumbnailRepairSettings(): Promise<ThumbnailRepairSettings> {
+  const raw = await AsyncStorage.getItem(SETTINGS_KEY).catch(() => null);
+  if (!raw) return { autoRepairWhileIdle: false, improveQuality: { wifiOnly: true, thoroughMode: false } };
+  try {
+    return normalizeSettings(JSON.parse(raw) as Partial<ThumbnailRepairSettings>);
+  } catch {
+    await AsyncStorage.removeItem(SETTINGS_KEY).catch(() => {});
+    return { autoRepairWhileIdle: false, improveQuality: { wifiOnly: true, thoroughMode: false } };
+  }
+}
+
+async function getThumbnailRepairStatus(): Promise<ThumbnailRepairStatus> {
+  const raw = await AsyncStorage.getItem(STATUS_KEY).catch(() => null);
+  if (!raw) return DEFAULT_THUMBNAIL_REPAIR_STATUS;
+  try {
+    return normalizeStatus(JSON.parse(raw) as Partial<ThumbnailRepairStatus>);
+  } catch {
+    await AsyncStorage.removeItem(STATUS_KEY).catch(() => {});
+    return DEFAULT_THUMBNAIL_REPAIR_STATUS;
+  }
+}
+
+async function setThumbnailRepairStatus(next: ThumbnailRepairStatus): Promise<ThumbnailRepairStatus> {
+  const normalized = normalizeStatus(next);
+  await AsyncStorage.setItem(STATUS_KEY, JSON.stringify(normalized));
+  return normalized;
+}
 import { getPerformanceStorageSettings, type PerformanceStorageProfile } from './performance-storage-settings';
 import type { ThumbnailVariant } from './thumbnail-policy';
 import { useCrypto } from './crypto-context';
@@ -271,7 +412,7 @@ async function resolveMime(
 
 interface DegradedTickArgs {
   status: ThumbnailRepairStatus;
-  settings: import('./thumbnail-repair-settings').ThumbnailRepairSettings;
+  settings: ThumbnailRepairSettings;
   crypto: ReturnType<typeof useCrypto>;
   attempted: Set<string>;
   bumpFailureStreak: () => void;
