@@ -142,3 +142,107 @@ extension ThumbnailService {
     ])
   }
 }
+
+extension ThumbnailService {
+  fileprivate func resolveRemote(
+    fileId: FileId,
+    targetSize _: CGSize
+  ) async throws -> ResolvedThumbnail {
+    let remoteKey = CacheKey(fileId: fileId, source: .remote)
+
+    if let memHit = cacheHit(remoteKey) {
+      setState(.remoteResolved(memHit), for: fileId)
+      return ResolvedThumbnail(fileURL: memHit, source: .remote)
+    }
+    if let diskHit = diskCacheURL(for: fileId) {
+      writeCache(remoteKey, url: diskHit)
+      setState(.remoteResolved(diskHit), for: fileId)
+      return ResolvedThumbnail(fileURL: diskHit, source: .cache)
+    }
+
+    setState(.remotePending, for: fileId)
+
+    guard let credentialsProvider = apiCredentialsProvider,
+          let credentials = await credentialsProvider() else {
+      setState(.remoteFailed(category: .unknown), for: fileId)
+      throw ThumbnailServiceError.remoteUnavailable
+    }
+    let (baseURL, sessionToken) = credentials
+
+    let thumbnailURL = baseURL.appendingPathComponent("api/v1/files/\(fileId)/thumbnail")
+    var request = URLRequest(url: thumbnailURL)
+    request.httpMethod = "GET"
+    request.setValue("Bearer \(sessionToken)", forHTTPHeaderField: "Authorization")
+
+    let (data, response): (Data, URLResponse)
+    do {
+      (data, response) = try await URLSession.shared.data(for: request)
+    } catch {
+      setState(.remoteFailed(category: .network5xx), for: fileId)
+      throw ThumbnailServiceError.remoteUnavailable
+    }
+
+    guard let http = response as? HTTPURLResponse else {
+      setState(.remoteFailed(category: .network5xx), for: fileId)
+      throw ThumbnailServiceError.remoteUnavailable
+    }
+    if http.statusCode == 404 {
+      setState(.remoteFailed(category: .unknown), for: fileId)
+      throw ThumbnailServiceError.remoteUnavailable
+    }
+    if http.statusCode == 429 {
+      setState(.remoteFailed(category: .network429), for: fileId)
+      throw ThumbnailServiceError.remoteUnavailable
+    }
+    if !(200..<300).contains(http.statusCode) {
+      setState(.remoteFailed(category: .network5xx), for: fileId)
+      throw ThumbnailServiceError.remoteUnavailable
+    }
+    guard data.count >= 13 else {
+      setState(.remoteFailed(category: .decryptFailed), for: fileId)
+      throw ThumbnailServiceError.decryptFailed
+    }
+    if data.count >= 3, data[0] == 0xFF, data[1] == 0xD8, data[2] == 0xFF {
+      setState(.remoteFailed(category: .decryptFailed), for: fileId)
+      throw ThumbnailServiceError.decryptFailed
+    }
+    let nonce = data.prefix(12)
+    let ciphertext = data.dropFirst(12)
+
+    guard let keyProvider = fileKeyProvider,
+          let fileKey = await keyProvider(fileId) else {
+      setState(.remoteFailed(category: .decryptFailed), for: fileId)
+      throw ThumbnailServiceError.decryptFailed
+    }
+    let plaintext: Data
+    do {
+      plaintext = try BeebeebCryptoBridge.decryptChunk(
+        key: fileKey,
+        nonce: Data(nonce),
+        ciphertext: Data(ciphertext)
+      )
+    } catch {
+      setState(.remoteFailed(category: .decryptFailed), for: fileId)
+      throw ThumbnailServiceError.decryptFailed
+    }
+
+    let outDir = documentDirectory.appendingPathComponent("beebeeb-thumbnails-v3", isDirectory: true)
+    try? FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
+    let outURL = outDir.appendingPathComponent("\(fileId).medium.webp")
+    do {
+      try plaintext.write(to: outURL, options: .atomic)
+    } catch {
+      setState(.remoteFailed(category: .unknown), for: fileId)
+      throw ThumbnailServiceError.ioFailure(error.localizedDescription)
+    }
+
+    writeCache(remoteKey, url: outURL)
+    setState(.remoteResolved(outURL), for: fileId)
+    eventEmitter?.emit("onThumbnailReady", body: [
+      "fileId": fileId,
+      "source": "remote",
+      "uri": outURL.absoluteString,
+    ])
+    return ResolvedThumbnail(fileURL: outURL, source: .remote)
+  }
+}
