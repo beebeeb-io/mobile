@@ -58,7 +58,6 @@ import { useSearchIndex } from '../lib/use-search-index';
 import { useBackup } from '../lib/backup-context';
 import type { SearchIndexEntry, SearchResult } from '../lib/search-index';
 import { donateSiriShortcut } from '../lib/siri-shortcuts';
-import { mapInBatches } from '../lib/async-batch';
 import { perfMark } from '../lib/perf-mark';
 import { loadCachedFileIndex, saveCachedFileIndex, type CachedFileIndex } from '../lib/file-index-cache';
 
@@ -1240,6 +1239,10 @@ export default function FilesScreen() {
   // Decrypt filenames whenever the file list or unlock state changes.
   // Re-runs automatically when isUnlocked transitions false→true so the
   // startup race (files fetched before key is in memory) heals itself.
+  //
+  // Progressive rendering: names are decrypted in small batches (8 files)
+  // with a state update after each batch, so names appear incrementally as
+  // they decrypt rather than all at once after a blocking delay.
   useEffect(() => {
     if (!isUnlocked) {
       setDecryptedNames({});
@@ -1253,48 +1256,79 @@ export default function FilesScreen() {
       setDecryptedMimeTypes({});
       return;
     }
-    const results: Record<string, string> = {};
-    const mimeResults: Record<string, string | null> = {};
+
+    // Filter to files that need decryption (JSON-encrypted metadata).
+    const toDecrypt = files.filter((f) => (f.name_encrypted ?? '').startsWith('{'));
+    if (toDecrypt.length === 0) return;
+
+    const allNames: Record<string, string> = {};
+    const allMimes: Record<string, string | null> = {};
     let cancelled = false;
-    void mapInBatches(
-      files,
-      24,
-      async (file) => {
+
+    const BATCH_SIZE = 8;
+
+    const decryptBatch = async (batch: FileEntry[]): Promise<void> => {
+      const batchNames: Record<string, string> = {};
+      const batchMimes: Record<string, string | null> = {};
+      await Promise.all(
+        batch.map(async (file) => {
+          if (cancelled) return;
+          try {
+            const raw = file.name_encrypted ?? '';
+            const payload = encryptedMetadataPayloadToBytes(raw);
+            if (!payload) return;
+            const plaintext = await decryptMetadata(file.id, payload.nonce, payload.ciphertext);
+            const metadata = parseDecryptedMetadata(plaintext);
+            batchNames[file.id] = metadata.name;
+            batchMimes[file.id] = metadata.mimeType;
+            allNames[file.id] = metadata.name;
+            allMimes[file.id] = metadata.mimeType;
+          } catch {
+            // Decryption failure — leave unset so displayName() renders
+            // "Encrypted file" rather than raw ciphertext.
+          }
+        }),
+      );
+      if (cancelled || filesFolderKeyRef.current !== folderKey) return;
+      if (Object.keys(batchNames).length === 0) return;
+      // Merge this batch's results into state progressively so each name
+      // appears as soon as its decryption completes, not all at once.
+      setDecryptedNames((prev) => ({ ...prev, ...batchNames }));
+      setDecryptedMimeTypes((prev) => ({ ...prev, ...batchMimes }));
+    };
+
+    void (async () => {
+      for (let i = 0; i < toDecrypt.length; i += BATCH_SIZE) {
         if (cancelled) return;
-        try {
-          const raw = file.name_encrypted ?? '';
-          if (!raw.startsWith('{')) return; // not JSON-encrypted — displayName() handles it
-          const payload = encryptedMetadataPayloadToBytes(raw);
-          if (!payload) return;
-          const plaintext = await decryptMetadata(file.id, payload.nonce, payload.ciphertext);
-          const metadata = parseDecryptedMetadata(plaintext);
-          results[file.id] = metadata.name;
-          mimeResults[file.id] = metadata.mimeType;
-        } catch {
-          // Decryption failure — leave results[file.id] unset so displayName()
-          // renders "Encrypted file" rather than raw ciphertext.
-        }
-      },
-    ).then(() => {
-      if (cancelled) return;
-      if (filesFolderKeyRef.current !== folderKey) return;
-      // Enrich local MIME type map from decrypted filenames when the server
-      // row has no mime_type (MIME is now encrypted inside the metadata blob).
-      for (const file of files) {
-        if (file.is_folder || file.mime_type != null) continue;
-        const decryptedName = results[file.id];
-        if (!decryptedName) continue;
-        const guessed = guessMimeType(decryptedName);
-        if (guessed) {
-          mimeResults[file.id] = mimeResults[file.id] ?? guessed;
+        const batch = toDecrypt.slice(i, i + BATCH_SIZE);
+        await decryptBatch(batch);
+        // Yield to the event loop between batches to let React process
+        // the state update and render the newly decrypted names.
+        if (i + BATCH_SIZE < toDecrypt.length) {
+          await new Promise<void>((r) => setTimeout(r, 0));
         }
       }
-      setDecryptedNames({ ...results });
-      setDecryptedMimeTypes({ ...mimeResults });
+      if (cancelled || filesFolderKeyRef.current !== folderKey) return;
+      // Enrich local MIME type map from decrypted filenames when the server
+      // row has no mime_type (MIME is now encrypted inside the metadata blob).
+      const enrichedMimes: Record<string, string | null> = {};
+      for (const file of files) {
+        if (file.is_folder || file.mime_type != null) continue;
+        const decryptedName = allNames[file.id];
+        if (!decryptedName) continue;
+        const guessed = guessMimeType(decryptedName);
+        if (guessed && allMimes[file.id] == null) {
+          enrichedMimes[file.id] = guessed;
+          allMimes[file.id] = guessed;
+        }
+      }
+      if (Object.keys(enrichedMimes).length > 0) {
+        setDecryptedMimeTypes((prev) => ({ ...prev, ...enrichedMimes }));
+      }
       // Push decrypted names to the File Provider cache so the iOS Files app
       // shows real filenames instead of "Encrypted file".
-      void syncDecryptedEntriesToFileProvider(files, results, folderId).catch(() => {});
-    });
+      void syncDecryptedEntriesToFileProvider(files, allNames, folderId).catch(() => {});
+    })();
     return () => { cancelled = true; };
   }, [currentFolder.id, files, isUnlocked, decryptMetadata]);
 
@@ -1439,6 +1473,11 @@ export default function FilesScreen() {
     }
   }, [applyFilesForFolder, setHasLoadedOnceTrue]);
 
+  // Track the folder ID we last loaded for so re-focus from a child screen
+  // (e.g. Preview) does not redundantly re-derive the file list. Replaced by
+  // a separate useEffect for live sync updates while the screen is focused.
+  const lastLoadedFolderRef = useRef<string | null | undefined>(undefined);
+
   // Fetch on mount and when folder changes. When the CRDT sync engine is
   // ready, derive the list from the in-memory tree instead of hitting
   // /api/v1/files — that path stays as a fallback (server too old, or
@@ -1457,10 +1496,24 @@ export default function FilesScreen() {
         return;
       }
 
+      // When returning from a child screen (e.g. Preview), skip the
+      // re-derive / re-fetch if we already have data for this folder.
+      // This prevents a race condition where the sync tree or API returns
+      // a partial result during re-focus, replacing the full file list.
+      const folderKey = folderCacheKey(currentFolder.id);
+      const cachedFolderFiles = folderFilesCacheRef.current[folderKey];
+      if (
+        lastLoadedFolderRef.current === currentFolder.id &&
+        cachedFolderFiles &&
+        cachedFolderFiles.length > 0
+      ) {
+        // Data is already loaded for this folder — preserve it.
+        // Live sync updates are handled by the useEffect below.
+        return;
+      }
+
       if (sync.ready) {
         const liveNodes = sync.children(currentFolder.id).filter((n) => !n.is_trashed);
-        const folderKey = folderCacheKey(currentFolder.id);
-        const cachedFolderFiles = folderFilesCacheRef.current[folderKey];
         // The CRDT engine flips `ready` once `start()` resolves, which can
         // beat the actual snapshot for catch-up paths or when the server
         // returns an empty initial frame. Falling through to fetchFiles in
@@ -1473,6 +1526,7 @@ export default function FilesScreen() {
             liveNodes.map(syncNodeToFileEntry),
             { preserveCachedOnEmpty: true },
           );
+          lastLoadedFolderRef.current = currentFolder.id;
           setLoading(false);
           setError(null);
           setHasLoadedOnceTrue();
@@ -1480,10 +1534,30 @@ export default function FilesScreen() {
         }
       }
       fetchFiles(currentFolder.id);
-      // sync.treeVersion bumps on every op — re-derive without re-fetching.
+      lastLoadedFolderRef.current = currentFolder.id;
       // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [currentFolder.id, fetchFiles, unlockAttempted, sync.ready, sync.treeVersion, setHasLoadedOnceTrue])
+    }, [currentFolder.id, fetchFiles, unlockAttempted, sync.ready, setHasLoadedOnceTrue])
   );
+
+  // Live sync updates: when treeVersion changes while the screen is focused
+  // and sync is ready, re-derive the file list from the CRDT tree. This is
+  // separate from the useFocusEffect above so that returning from a child
+  // screen does NOT redundantly re-derive (which caused a race where only
+  // a partial result replaced the full list).
+  useEffect(() => {
+    if (!sync.ready || !unlockAttempted) return;
+    if (lastLoadedFolderRef.current !== currentFolder.id) return;
+    const liveNodes = sync.children(currentFolder.id).filter((n) => !n.is_trashed);
+    if (liveNodes.length > 0) {
+      applyFilesForFolder(
+        currentFolder.id,
+        liveNodes.map(syncNodeToFileEntry),
+        { preserveCachedOnEmpty: true },
+      );
+    }
+    // Re-derive whenever the tree mutates (treeVersion bumps on every op).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sync.treeVersion]);
 
   // Belt-and-braces: on auth+unlock transition, ensure at least one fetch has
   // been kicked even if the focus effect was suppressed. Idempotent — the
@@ -1493,6 +1567,7 @@ export default function FilesScreen() {
   useEffect(() => {
     if (!isAuthenticated || !unlockAttempted) {
       loginFetchKickedRef.current = false;
+      lastLoadedFolderRef.current = undefined;
       return;
     }
     if (loginFetchKickedRef.current) return;
