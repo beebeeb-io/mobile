@@ -1524,8 +1524,8 @@ private final class PhotoGridCell: UICollectionViewCell {
       Self.metrics.localAssetStarts += 1
       let size = CGSize(width: targetPixels, height: targetPixels)
       let options = PHImageRequestOptions()
-      options.deliveryMode = .fastFormat
-      options.resizeMode = .fast
+      options.deliveryMode = .highQualityFormat
+      options.resizeMode = .exact
       options.isNetworkAccessAllowed = false
       options.isSynchronous = true
       var loadedImage: UIImage?

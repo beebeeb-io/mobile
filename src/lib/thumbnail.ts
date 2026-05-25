@@ -93,7 +93,7 @@ const DNG_MIME = 'image/x-adobe-dng';
 const THUMBNAIL_ENCRYPTION_OVERHEAD_BYTES = 28;
 const MAX_ENCRYPTED_THUMB_BYTES_BY_SIZE: Record<ThumbnailVariant, number> = {
   small: 32 * 1024,
-  medium: 64 * 1024,
+  medium: 128 * 1024,
   large: 192 * 1024,
 };
 let thumbnailBackoffUntil = 0;

@@ -38,8 +38,8 @@ private func encodeWebP(_ image: UIImage, quality: CGFloat) -> Data? {
   ) as Data?
 }
 
-private let thumbnailWebPTargetBytes = 50 * 1024
-private let thumbnailMaxEncryptedBytes = 64 * 1024
+private let thumbnailWebPTargetBytes = 100 * 1024
+private let thumbnailMaxEncryptedBytes = 128 * 1024
 private let thumbnailEncryptionOverheadBytes = 28
 
 // PHKit picks its own callback queue (often main when the app is foregrounded).

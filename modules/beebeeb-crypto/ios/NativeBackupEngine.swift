@@ -3160,8 +3160,8 @@ final class NativeBackupEngine: NSObject {
 
   /// Maximum dimension for generated thumbnails (matches JS THUMB_WIDTH).
   private let thumbMaxSize = 768
-  private let thumbTargetBytes = 50 * 1024
-  private let thumbMaxEncryptedBytes = 64 * 1024
+  private let thumbTargetBytes = 100 * 1024
+  private let thumbMaxEncryptedBytes = 128 * 1024
   private let thumbEncryptionOverheadBytes = 28
   private let thumbWebPVariants: [(maxDimension: CGFloat, quality: CGFloat)] = [
     (768, 0.82),
@@ -3170,8 +3170,8 @@ final class NativeBackupEngine: NSObject {
     (768, 0.58),
     (768, 0.50),
     (640, 0.58),
-    (512, 0.58),
-    (384, 0.56),
+    (512, 0.56),
+    (384, 0.54),
   ]
 
   private func resizeForThumbnail(_ image: UIImage, maxDimension: CGFloat) -> UIImage? {
