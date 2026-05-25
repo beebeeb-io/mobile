@@ -12,6 +12,7 @@ import { Platform } from 'react-native';
 import * as BeebeebCrypto from '../../modules/beebeeb-crypto';
 import { clearCachedFileIndex } from './file-index-cache';
 import { rateLimitedFetch } from './rate-limited-fetch';
+import { getDeviceId } from './sync-client';
 
 // API target. Override at build time with EXPO_PUBLIC_API_URL or via
 // expoConfig.extra.apiUrl (e.g. through eas.json env or app.config.ts).
@@ -1116,6 +1117,30 @@ export async function fetchPhotoBackupIdentifierMap(): Promise<Record<string, st
     '/api/v1/files/photo-backup/identifiers',
   );
   return data.identifiers ?? {};
+}
+
+/**
+ * POST /api/v1/files/:fileId/photo-backup/clear-association — Plan A.
+ *
+ * Scoped to (user_id, device_id, file_id). The server uses the
+ * X-Beebeeb-Device-Id header to delete only this device's association,
+ * leaving other devices' associations for the same file intact.
+ *
+ * Called by `local-identifier-map.ts:removeLocalIdentifier` when the native
+ * ThumbnailService reports a PhotoKit miss via `onAssociationCleared`.
+ *
+ * Depends on Plan A: `clear_photo_backup_association` handler in
+ * `repos/server/beebeeb-api/src/routes/files.rs`.
+ */
+export async function photoBackupClearAssociation(fileId: string): Promise<void> {
+  const deviceId = await getDeviceId();
+  await request<void>(
+    'POST',
+    `/api/v1/files/${fileId}/photo-backup/clear-association`,
+    {},
+    true,
+    { 'X-Beebeeb-Device-Id': deviceId },
+  );
 }
 
 export async function downloadFile(id: string): Promise<Response> {
