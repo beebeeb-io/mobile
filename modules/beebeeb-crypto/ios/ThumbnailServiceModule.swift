@@ -142,6 +142,23 @@ public final class ThumbnailServiceModule: Module, ThumbnailEventEmitter {
       results["service_compiled"] = true
       return results.mapValues { $0 as Any }
     }
+
+    AsyncFunction("__queueDbSmokeTest") { () -> [String: Any] in
+        let db = ThumbnailQueueDB.shared
+        db.clearAll()
+        db.enqueue(fileIds: ["a", "b", "c"], qualityPreset: "w768q082")
+        let ready = db.popReady(limit: 2)
+        db.markSucceeded(fileId: "a")
+        db.recordFailure(fileId: "b", category: .network_5xx, message: "test")
+        let stats = db.stats()
+        return [
+            "popped": ready.count,
+            "pending": stats.pending,
+            "running": stats.running,
+            "succeeded": stats.succeeded,
+            "failed_retry": stats.failedRetry
+        ]
+    }
 #endif
   }
 }
