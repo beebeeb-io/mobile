@@ -308,9 +308,145 @@ public final class ThumbnailWorkerPool: NSObject, @unchecked Sendable {
         statsTimer = nil
     }
 
-    // MARK: - Pump (stub — filled in Task 7)
+    // MARK: - Pump — drain SQLite queue into NSOperationQueue
 
     func pump() {
-        // Will be implemented in Task 7
+        stateLock.lock()
+        let isPaused = paused
+        stateLock.unlock()
+        if isPaused { return }
+        let capacity = queue.maxConcurrentOperationCount - queue.operationCount
+        guard capacity > 0 else { return }
+        let ready = ThumbnailQueueDB.shared.popReady(limit: capacity)
+        guard !ready.isEmpty else { return }
+        for item in ready {
+            enqueueOperation(item: item)
+        }
+    }
+
+    private func enqueueOperation(item: ThumbnailQueueDB.Item) {
+        let op = AsyncOperation { [weak self] finish in
+            guard let self else { finish(); return }
+            await self.runOne(item: item)
+            finish()
+        }
+        queue.addOperation(op)
+    }
+
+    /// Execute a single thumbnail regeneration pipeline with a 45-second deadline.
+    private func runOne(item: ThumbnailQueueDB.Item) async {
+        let slotIndex = self.claimSlot(fileId: item.fileId) ?? -1
+        let startedAt = Date()
+        var success = false
+        var category: ThumbnailErrorCategory? = nil
+        var errMsg = ""
+        var bytes = 0
+        var stages: [String: Int] = [:]
+
+        do {
+            self.updateStage(slotIndex, "photoKit")
+            let result = try await self.runWithDeadline(seconds: 45) {
+                try await ThumbnailService.shared.regenerateThumbnail(
+                    fileId: item.fileId, qualityPreset: item.qualityPreset
+                )
+            }
+            success = result.success
+            bytes = result.bytesUploaded
+            stages = result.stageTimings
+        } catch let nsErr as NSError {
+            let inferredStatus = nsErr.code >= 400 ? nsErr.code : nil
+            category = ThumbnailErrorCategory.classify(error: nsErr, httpStatus: inferredStatus)
+            errMsg = nsErr.localizedDescription
+        } catch {
+            category = .unknown
+            errMsg = "\(error)"
+        }
+
+        let totalMs = Int(Date().timeIntervalSince(startedAt) * 1000)
+        if success {
+            ThumbnailQueueDB.shared.markSucceeded(fileId: item.fileId)
+            self.recordCompletion(addedBytes: bytes)
+            self.onFileCompleted?(item.fileId, true, nil, totalMs, stages)
+        } else {
+            let cat = category ?? .unknown
+            ThumbnailQueueDB.shared.recordFailure(fileId: item.fileId, category: cat, message: errMsg)
+            self.onFileCompleted?(item.fileId, false, cat.rawValue, totalMs, stages)
+            if !cat.isRetriable || item.attempts + 1 >= 3 {
+                self.onWorkerFailure?(item.fileId, cat.rawValue, errMsg, item.attempts + 1)
+            }
+        }
+        if slotIndex >= 0 { self.releaseSlot(slotIndex) }
+        // Try to fill the slot we just freed
+        self.pump()
+    }
+
+    /// Run an async body with a hard deadline. If the body doesn't finish in time,
+    /// the deadline task throws a timeout error. Whichever completes first wins.
+    private func runWithDeadline<T>(seconds: TimeInterval, _ body: @escaping () async throws -> T) async throws -> T {
+        try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask { try await body() }
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                throw NSError(
+                    domain: NSURLErrorDomain,
+                    code: NSURLErrorTimedOut,
+                    userInfo: [NSLocalizedDescriptionKey: "deadline exceeded (\(Int(seconds))s)"]
+                )
+            }
+            let result = try await group.next()!
+            group.cancelAll()
+            return result
+        }
+    }
+}
+
+// MARK: - AsyncOperation
+
+/// Custom `Operation` subclass that hosts Swift async work without blocking the
+/// operation thread. Uses KVO-driven `isExecuting`/`isFinished` transitions so
+/// `NSOperationQueue` can manage concurrency correctly.
+///
+/// This replaces the `BlockOperation` + `Task.detached` + `DispatchSemaphore`
+/// pattern, which would block the operation thread for the full pipeline duration
+/// and negate the queue's concurrency benefits.
+public final class AsyncOperation: Operation, @unchecked Sendable {
+    public override var isAsynchronous: Bool { true }
+
+    private var _isExecuting = false
+    private var _isFinished = false
+
+    public override var isExecuting: Bool { _isExecuting }
+    public override var isFinished: Bool { _isFinished }
+
+    private let body: (@escaping () -> Void) async -> Void
+
+    public init(body: @escaping (@escaping () -> Void) async -> Void) {
+        self.body = body
+        super.init()
+    }
+
+    public override func start() {
+        if isCancelled {
+            willChangeValue(forKey: "isFinished")
+            _isFinished = true
+            didChangeValue(forKey: "isFinished")
+            return
+        }
+        willChangeValue(forKey: "isExecuting")
+        _isExecuting = true
+        didChangeValue(forKey: "isExecuting")
+
+        Task.detached(priority: .utility) { [weak self] in
+            guard let self else { return }
+            await self.body { [weak self] in
+                guard let self else { return }
+                self.willChangeValue(forKey: "isFinished")
+                self.willChangeValue(forKey: "isExecuting")
+                self._isFinished = true
+                self._isExecuting = false
+                self.didChangeValue(forKey: "isFinished")
+                self.didChangeValue(forKey: "isExecuting")
+            }
+        }
     }
 }
