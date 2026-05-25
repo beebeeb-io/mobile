@@ -129,6 +129,16 @@ export async function setToken(token: string): Promise<void> {
   cachedToken = token;
   await tokenStore.set(TOKEN_KEY, token);
   await BeebeebCrypto.mirrorSessionToAppGroup(token, BASE_URL).catch(() => false);
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { requireOptionalNativeModule } = require('expo-modules-core');
+    const Native = requireOptionalNativeModule('ThumbnailService') as {
+      setApiCredentials?: (baseURL: string, token: string) => Promise<void>;
+    } | null;
+    await Native?.setApiCredentials?.(getApiUrl(), token);
+  } catch {
+    // best-effort
+  }
 }
 
 export async function clearToken(): Promise<void> {
