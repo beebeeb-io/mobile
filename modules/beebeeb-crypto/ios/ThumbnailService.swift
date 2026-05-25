@@ -246,3 +246,18 @@ extension ThumbnailService {
     return ResolvedThumbnail(fileURL: outURL, source: .remote)
   }
 }
+
+extension ThumbnailService {
+  public struct RegenResult: Sendable, Equatable {
+    public let fileId: FileId
+    public let bytesUploaded: Int
+  }
+
+  public func regenerateThumbnail(
+    for fileId: FileId,
+    quality: ThumbnailQuality
+  ) async throws -> RegenResult {
+    _ = (fileId, quality)
+    throw ThumbnailServiceError.notImplemented
+  }
+}
