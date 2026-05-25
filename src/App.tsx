@@ -98,6 +98,8 @@ import ErrorBoundary from './components/ErrorBoundary';
 import ConfirmActionPrompt from './components/ConfirmActionPrompt';
 import { DiagnosticPanel, LAST_CONNECTED_KEY } from './components/DiagnosticPanel';
 import { BackupProvider, useBackup } from './lib/backup-context';
+import { AnnouncementProvider } from './lib/announcement-context';
+import AnnouncementBanner from './components/AnnouncementBanner';
 import { discardAllPendingShares, processPendingShares } from '../plugins/share-extension/PendingSharesHandler';
 import { useToast } from './lib/toast-context';
 import { clearWidgetData } from './utils/widgetData';
@@ -966,6 +968,7 @@ export default function App() {
       <SafeAreaProvider>
       <SyncProvider>
       <ToastProvider>
+      <AnnouncementProvider>
       <BackupProvider>
         <NavigationContainer
           ref={navigationRef}
@@ -1078,6 +1081,9 @@ export default function App() {
         {/* Offline banner */}
         {!isConnected && <OfflineBanner />}
 
+        {/* Server-sent announcement banner */}
+        <AnnouncementBanner />
+
         {/* Onboarding overlay — shown once after first signup */}
         {isAuthenticated && !onboardingDone && (
           <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: c.paper2 }}>
@@ -1105,6 +1111,7 @@ export default function App() {
 
         <StatusBar style={resolved === 'dark' ? 'light' : 'dark'} />
       </BackupProvider>
+      </AnnouncementProvider>
       </ToastProvider>
       </SyncProvider>
       </SafeAreaProvider>
