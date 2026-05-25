@@ -3,6 +3,7 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { registerRootComponent } from 'expo';
 import { StatusBar } from 'expo-status-bar';
 import { ActivityIndicator, AppState, type AppStateStatus, Keyboard, Linking, Platform, StyleSheet, View } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SecureStore from 'expo-secure-store';
 import * as FileSystem from 'expo-file-system';
 import { NavigationContainer, createNavigationContainerRef } from '@react-navigation/native';
@@ -755,6 +756,23 @@ export default function App() {
       if (slowTimer) clearTimeout(slowTimer);
     }
   }, [retryGetMe, loadPreferences]);
+
+  // One-shot migration: remove legacy thumbnail-repair AsyncStorage keys that
+  // are no longer used by the redesigned thumbnail system (Plan C).
+  useEffect(() => {
+    void (async () => {
+      const MIGRATION_KEY = 'beebeeb:thumbnail-quality-migration:v1';
+      const done = await AsyncStorage.getItem(MIGRATION_KEY);
+      if (done === '1') return;
+      try {
+        await AsyncStorage.multiRemove([
+          'beebeeb:thumbnail-repair-settings:v1',
+          'beebeeb:thumbnail-repair-status:v1',
+        ]);
+      } catch {}
+      await AsyncStorage.setItem(MIGRATION_KEY, '1');
+    })();
+  }, []);
 
   // On mount: check for an existing session
   useEffect(() => {
