@@ -131,3 +131,14 @@ extension ThumbnailService {
     return try await resolveRemote(fileId: fileId, targetSize: targetSize)
   }
 }
+
+extension ThumbnailService {
+  fileprivate func handleStaleLocalId(fileId: FileId) async throws {
+    setState(.staleLocalId, for: fileId)
+    cache.removeValue(forKey: CacheKey(fileId: fileId, source: .photoKit))
+    logger.notice("STALE_LOCALID for \(fileId) — emitting onAssociationCleared")
+    eventEmitter?.emit("onAssociationCleared", body: [
+      "fileId": fileId,
+    ])
+  }
+}
