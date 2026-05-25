@@ -38,7 +38,7 @@ public final class ThumbnailServiceModule: Module, ThumbnailEventEmitter {
 
   public func definition() -> ModuleDefinition {
     Name("ThumbnailService")
-    Events("onThumbnailReady", "onAssociationCleared")
+    Events("onThumbnailReady", "onAssociationCleared", "onWorkerStage", "onPoolStats", "onFileCompleted", "onWorkerFailure", "onPoolStateChanged")
 
     OnCreate {
       Task {
@@ -54,6 +54,42 @@ public final class ThumbnailServiceModule: Module, ThumbnailEventEmitter {
             ThumbnailServiceModule.fileKey(fileId)
           }
         )
+      }
+      ThumbnailWorkerPool.shared.startObservers()
+      ThumbnailWorkerPool.shared.onWorkerStage = { [weak self] slot, fileId, stage, elapsedMs in
+          self?.sendEvent("onWorkerStage", ["slot": slot, "fileId": fileId, "stage": stage, "elapsedMs": elapsedMs])
+      }
+      ThumbnailWorkerPool.shared.onPoolStats = { [weak self] snap in
+          guard let self else { return }
+          let data: [String: Any] = [
+              "workers": snap.workers.map { ["slot": $0.slot, "fileId": $0.fileId as Any, "stage": $0.stage, "elapsedMs": $0.elapsedMs] },
+              "completed": snap.completed,
+              "failed": snap.failed,
+              "retrying": snap.retrying,
+              "queueDepth": snap.queueDepth,
+              "filesPerSec": snap.filesPerSec,
+              "kbPerSec": snap.kbPerSec,
+              "etaSec": snap.etaSec,
+              "isPaused": snap.isPaused,
+              "isThermalThrottled": snap.isThermalThrottled
+          ]
+          self.sendEvent("onPoolStats", data)
+      }
+      ThumbnailWorkerPool.shared.onFileCompleted = { [weak self] fileId, success, category, totalMs, stages in
+          self?.sendEvent("onFileCompleted", [
+              "fileId": fileId, "success": success,
+              "category": category as Any, "totalMs": totalMs,
+              "stageBreakdown": stages
+          ])
+      }
+      ThumbnailWorkerPool.shared.onWorkerFailure = { [weak self] fileId, code, msg, attempt in
+          self?.sendEvent("onWorkerFailure", [
+              "fileId": fileId, "errorCode": code,
+              "errorMessage": msg, "attempt": attempt
+          ])
+      }
+      ThumbnailWorkerPool.shared.onPoolStateChanged = { [weak self] state in
+          self?.sendEvent("onPoolStateChanged", ["state": state])
       }
     }
 
@@ -72,21 +108,62 @@ public final class ThumbnailServiceModule: Module, ThumbnailEventEmitter {
       await ThumbnailService.shared.forgetFile(fileId)
     }
 
-    AsyncFunction("regenerateThumbnail") { (fileId: String, width: Int, jpegQuality: Float) async throws -> [String: Any] in
-      let result = try await ThumbnailService.shared.regenerateThumbnail(
-        for: fileId,
-        quality: .continuous(width: width, jpegQuality: jpegQuality)
-      )
-      var dict: [String: Any] = [
-        "fileId": result.fileId,
-        "success": result.success,
-        "stageTimings": result.stageTimings,
-        "bytesUploaded": result.bytesUploaded,
+    AsyncFunction("regenerateThumbnail") { (fileId: String, qualityPreset: String) async throws -> [String: Any] in
+      let r = try await ThumbnailService.shared.regenerateThumbnail(fileId: fileId, qualityPreset: qualityPreset)
+      return [
+          "fileId": r.fileId,
+          "success": r.success,
+          "category": r.category?.rawValue as Any,
+          "stageTimings": r.stageTimings,
+          "bytesUploaded": r.bytesUploaded
       ]
-      if let cat = result.category {
-        dict["category"] = cat.rawValue
-      }
-      return dict
+    }
+
+    AsyncFunction("enqueueApplyQuality") { (fileIds: [String], qualityPreset: String) -> Int in
+        ThumbnailWorkerPool.shared.enqueue(fileIds: fileIds, qualityPreset: qualityPreset)
+        return fileIds.count
+    }
+
+    AsyncFunction("pauseWorkers") { () -> Void in
+        ThumbnailWorkerPool.shared.pause()
+    }
+
+    AsyncFunction("resumeWorkers") { () -> Void in
+        ThumbnailWorkerPool.shared.resume()
+    }
+
+    AsyncFunction("retryFile") { (fileId: String) -> Void in
+        ThumbnailQueueDB.shared.retry(fileId: fileId)
+        ThumbnailWorkerPool.shared.pump()
+    }
+
+    AsyncFunction("cancelAllWorkers") { () -> Void in
+        ThumbnailWorkerPool.shared.cancelAll()
+    }
+
+    AsyncFunction("getQueueStats") { () -> [String: Any] in
+        let stats = ThumbnailQueueDB.shared.stats()
+        let snap  = ThumbnailWorkerPool.shared.snapshot()
+        return [
+            "pending": stats.pending,
+            "running": stats.running,
+            "succeeded": stats.succeeded,
+            "failedRetry": stats.failedRetry,
+            "failedPerm": stats.failedPerm,
+            "filesPerSec": snap.filesPerSec,
+            "etaSec": snap.etaSec,
+            "isPaused": snap.isPaused,
+            "isThermalThrottled": snap.isThermalThrottled
+        ]
+    }
+
+    AsyncFunction("listFailedPermanentFiles") { () -> [String] in
+        return ThumbnailQueueDB.shared.failedPermFileIds()
+    }
+
+    AsyncFunction("clearQueueOnSignOut") { () -> Void in
+        ThumbnailWorkerPool.shared.cancelAll()
+        ThumbnailQueueDB.shared.clearAll()
     }
 
     AsyncFunction("setLocalIdentifierMap") { (map: [String: String]) -> Void in
