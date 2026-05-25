@@ -120,6 +120,29 @@ public final class ThumbnailServiceModule: Module, ThumbnailEventEmitter {
       ThumbnailServiceModule.fileKeys.removeAll()
       ThumbnailServiceModule.fileKeysLock.unlock()
     }
+
+#if DEBUG
+    AsyncFunction("runSelfTests") { () async throws -> [String: Any] in
+      var results: [String: Bool] = [:]
+
+      let svc = ThumbnailService.shared
+      let probeFile = "selftest-\(UUID().uuidString)"
+      await svc.forgetFile(probeFile)
+      let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(probeFile).png")
+      try? "x".data(using: .utf8)?.write(to: url)
+      await svc.setState(.photoKitResolved(url), for: probeFile)
+      let didAccept = await svc.writeCache(
+        CacheKey(fileId: probeFile, source: .remote),
+        url: url
+      )
+      results["photoKitResolved_drops_remote_write"] = (didAccept == false)
+
+      await svc.forgetFile(probeFile)
+
+      results["service_compiled"] = true
+      return results.mapValues { $0 as Any }
+    }
+#endif
   }
 }
 
