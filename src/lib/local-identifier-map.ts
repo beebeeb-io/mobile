@@ -23,6 +23,18 @@ import { fetchPhotoBackupIdentifierMap, photoBackupClearAssociation } from './ap
 import { invalidateCachedThumbnail } from './thumbnail-cache';
 import { invalidateInMemoryThumbCache } from './thumbnail';
 
+let ThumbnailServiceNative: {
+  setLocalIdentifierMap?: (map: Record<string, string>) => Promise<void>;
+  removeLocalIdentifier?: (fileId: string) => Promise<void>;
+} | null = null;
+try {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const mod = require('expo-modules-core');
+  ThumbnailServiceNative = mod.requireOptionalNativeModule?.('ThumbnailService') ?? null;
+} catch {
+  ThumbnailServiceNative = null;
+}
+
 type MapChangeListener = (changedFileId: string) => void;
 const mapChangeListeners = new Set<MapChangeListener>();
 
@@ -117,6 +129,11 @@ export async function refreshLocalIdentifierMap(): Promise<void> {
       void Promise.all(newlyKnown.map((id) => invalidateCachedThumbnail(id))).catch(
         (err) => console.warn('[local-identifier-map] cache invalidation failed', err),
       );
+      if (ThumbnailServiceNative?.setLocalIdentifierMap) {
+        await ThumbnailServiceNative.setLocalIdentifierMap(next).catch((err) => {
+          console.warn('[local-identifier-map] native sync failed', err);
+        });
+      }
     } catch (err) {
       // Network failure — leave the disk cache (or empty map) in place. The
       // photo grid will fall through to the encrypted-blob path for any
@@ -157,6 +174,11 @@ export async function removeLocalIdentifier(fileId: string): Promise<void> {
     console.warn('[local-identifier-map] cache invalidation failed', err);
   });
   emitMapChanged(fileId);
+  if (ThumbnailServiceNative?.removeLocalIdentifier) {
+    await ThumbnailServiceNative.removeLocalIdentifier(fileId).catch((err) => {
+      console.warn('[local-identifier-map] native removeLocalIdentifier failed', err);
+    });
+  }
   try {
     await photoBackupClearAssociation(fileId);
   } catch (err) {
@@ -177,6 +199,9 @@ export async function clearLocalIdentifierMap(): Promise<void> {
     await FileSystem.deleteAsync(STORAGE_FILE, { idempotent: true });
   } catch {
     // best-effort
+  }
+  if (ThumbnailServiceNative?.setLocalIdentifierMap) {
+    await ThumbnailServiceNative.setLocalIdentifierMap({}).catch(() => {});
   }
 }
 
