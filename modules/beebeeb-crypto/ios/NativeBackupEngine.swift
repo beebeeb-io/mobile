@@ -3160,61 +3160,7 @@ final class NativeBackupEngine: NSObject {
 
   /// Maximum dimension for generated thumbnails (matches JS THUMB_WIDTH).
   private let thumbMaxSize = 768
-  private let thumbTargetBytes = 100 * 1024
   private let thumbMaxEncryptedBytes = 128 * 1024
-  private let thumbEncryptionOverheadBytes = 28
-  private let thumbWebPVariants: [(maxDimension: CGFloat, quality: CGFloat)] = [
-    (768, 0.82),
-    (768, 0.74),
-    (768, 0.66),
-    (768, 0.58),
-    (768, 0.50),
-    (640, 0.58),
-    (512, 0.56),
-    (384, 0.54),
-  ]
-
-  private func resizeForThumbnail(_ image: UIImage, maxDimension: CGFloat) -> UIImage? {
-    let longestSide = max(image.size.width, image.size.height)
-    guard longestSide > maxDimension else { return image }
-    let scale = maxDimension / longestSide
-    let size = CGSize(width: image.size.width * scale, height: image.size.height * scale)
-    let format = UIGraphicsImageRendererFormat()
-    format.scale = 1
-    let renderer = UIGraphicsImageRenderer(size: size, format: format)
-    return renderer.image { _ in
-      image.draw(in: CGRect(origin: .zero, size: size))
-    }
-  }
-
-  private func encodeWebP(_ image: UIImage, quality: CGFloat) -> Data? {
-    let options: [SDImageCoderOption: Any] = [
-      .encodeCompressionQuality: quality,
-      .encodeFirstFrameOnly: true,
-    ]
-    return SDImageWebPCoder.shared.encodedData(
-      with: image,
-      format: .webP,
-      options: options
-    ) as Data?
-  }
-
-  private func encodeAdaptiveThumbnailWebP(_ image: UIImage) -> Data? {
-    var fallback: Data?
-    let maxPlaintextBytes = thumbMaxEncryptedBytes - thumbEncryptionOverheadBytes
-    for variant in thumbWebPVariants {
-      guard let resized = resizeForThumbnail(image, maxDimension: variant.maxDimension),
-            let data = encodeWebP(resized, quality: variant.quality)
-      else { continue }
-      if data.count <= maxPlaintextBytes {
-        fallback = data
-      }
-      if data.count <= thumbTargetBytes {
-        return data
-      }
-    }
-    return fallback
-  }
 
   /// Generate and upload a thumbnail for an uploaded asset.
   /// Best-effort: failures are logged but never block the upload pipeline.
@@ -3307,7 +3253,7 @@ final class NativeBackupEngine: NSObject {
     }
 
     let image = UIImage(cgImage: cgImage)
-    guard let webp = encodeAdaptiveThumbnailWebP(image) else {
+    guard let webp = ThumbnailGenerator.generate(from: image, config: .medium) else {
       throw BackupError.assetLoadFailed
     }
     return webp
@@ -3348,7 +3294,7 @@ final class NativeBackupEngine: NSObject {
       }
     }
 
-    guard let webp = encodeAdaptiveThumbnailWebP(image) else {
+    guard let webp = ThumbnailGenerator.generate(from: image, config: .medium) else {
       throw BackupError.assetLoadFailed
     }
     return webp

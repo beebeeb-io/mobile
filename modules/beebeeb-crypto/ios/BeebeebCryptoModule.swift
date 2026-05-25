@@ -4,8 +4,6 @@ import Foundation
 import FileProvider
 import PDFKit
 import Photos
-import SDWebImage
-import SDWebImageWebPCoder
 import Security
 import SQLite3
 import UIKit
@@ -26,22 +24,6 @@ private let fileProviderAuthRequiredKey = "io.beebeeb.fileProvider.requireDevice
 private let fileProviderUnlockedUntilKey = "io.beebeeb.fileProvider.unlockedUntilMs"
 private let fileProviderEnumeratorStatePrefix = "io.beebeeb.fileProvider.enumerator."
 
-private func encodeWebP(_ image: UIImage, quality: CGFloat) -> Data? {
-  let options: [SDImageCoderOption: Any] = [
-    .encodeCompressionQuality: quality,
-    .encodeFirstFrameOnly: true,
-  ]
-  return SDImageWebPCoder.shared.encodedData(
-    with: image,
-    format: .webP,
-    options: options
-  ) as Data?
-}
-
-private let thumbnailWebPTargetBytes = 100 * 1024
-private let thumbnailMaxEncryptedBytes = 128 * 1024
-private let thumbnailEncryptionOverheadBytes = 28
-
 // PHKit picks its own callback queue (often main when the app is foregrounded).
 // Hop here as the first line of every PhotoKit completion so the work in the
 // closure body never blocks main, consistent with PhotoBackupManager.
@@ -49,96 +31,6 @@ private let beebeebCryptoPHKitCallbackQueue = DispatchQueue(
   label: "io.beebeeb.crypto.phkit-callback",
   qos: .utility
 )
-
-private struct ThumbnailEncodingConfig {
-  let variant: String
-  let maxEncryptedBytes: Int
-  let targetBytes: Int
-  let candidates: [(maxDimension: CGFloat, quality: CGFloat)]
-}
-
-private func thumbnailEncodingConfig(_ variant: String?) -> ThumbnailEncodingConfig {
-  switch variant ?? "medium" {
-  case "small":
-    return ThumbnailEncodingConfig(
-      variant: "small",
-      maxEncryptedBytes: 32 * 1024,
-      targetBytes: 24 * 1024,
-      candidates: [
-        (384, 0.78),
-        (384, 0.66),
-        (384, 0.54),
-        (320, 0.50),
-        (256, 0.48),
-      ]
-    )
-  case "large":
-    return ThumbnailEncodingConfig(
-      variant: "large",
-      maxEncryptedBytes: 192 * 1024,
-      targetBytes: 150 * 1024,
-      candidates: [
-        (1280, 0.84),
-        (1280, 0.76),
-        (1280, 0.68),
-        (1024, 0.70),
-        (768, 0.74),
-        (640, 0.62),
-      ]
-    )
-  default:
-    return ThumbnailEncodingConfig(
-      variant: "medium",
-      maxEncryptedBytes: thumbnailMaxEncryptedBytes,
-      targetBytes: thumbnailWebPTargetBytes,
-      candidates: [
-        (768, 0.82),
-        (768, 0.74),
-        (768, 0.66),
-        (768, 0.58),
-        (768, 0.50),
-        (640, 0.58),
-        (512, 0.56),
-        (384, 0.54),
-      ]
-    )
-  }
-}
-
-private func resizeForThumbnail(_ image: UIImage, maxDimension: CGFloat) -> UIImage? {
-  let longestSide = max(image.size.width, image.size.height)
-  guard longestSide > maxDimension else { return image }
-  let scale = maxDimension / longestSide
-  let size = CGSize(width: image.size.width * scale, height: image.size.height * scale)
-  let format = UIGraphicsImageRendererFormat()
-  format.scale = 1
-  let renderer = UIGraphicsImageRenderer(size: size, format: format)
-  return renderer.image { _ in
-    image.draw(in: CGRect(origin: .zero, size: size))
-  }
-}
-
-private func encodeAdaptiveThumbnailWebP(
-  _ image: UIImage,
-  maxDimension: CGFloat,
-  config: ThumbnailEncodingConfig = thumbnailEncodingConfig(nil)
-) -> Data? {
-  var fallback: Data?
-  let maxPlaintextBytes = config.maxEncryptedBytes - thumbnailEncryptionOverheadBytes
-  for variant in config.candidates {
-    let targetDimension = max(1, min(variant.maxDimension, maxDimension))
-    guard let resized = resizeForThumbnail(image, maxDimension: targetDimension),
-          let data = encodeWebP(resized, quality: variant.quality)
-    else { continue }
-    if data.count <= maxPlaintextBytes {
-      fallback = data
-    }
-    if data.count <= config.targetBytes {
-      return data
-    }
-  }
-  return fallback
-}
 
 private func decodeBase64(_ value: String, field: String) throws -> Data {
   guard let data = Data(base64Encoded: value) else {
@@ -170,7 +62,7 @@ private func isVideoMediaHint(_ value: String?) -> Bool {
 private func generatePhotoLibraryImageThumbnail(
   localIdentifier: String,
   maxSize: Int,
-  config: ThumbnailEncodingConfig = thumbnailEncodingConfig(nil)
+  config: ThumbnailGenerator.Config = .medium
 ) async throws -> Data {
   let phAsset = PHAsset.fetchAssets(withLocalIdentifiers: [localIdentifier], options: nil).firstObject
   guard let phAsset else {
@@ -212,7 +104,7 @@ private func generatePhotoLibraryImageThumbnail(
     }
   }
 
-  guard let webpData = encodeAdaptiveThumbnailWebP(image, maxDimension: CGFloat(maxSize), config: config) else {
+  guard let webpData = ThumbnailGenerator.generate(from: image, config: config) else {
     throw NSError(
       domain: "BeebeebThumbnail",
       code: 12,
@@ -225,7 +117,7 @@ private func generatePhotoLibraryImageThumbnail(
 private func generatePhotoLibraryVideoThumbnail(
   localIdentifier: String,
   maxSize: Int,
-  config: ThumbnailEncodingConfig = thumbnailEncodingConfig(nil)
+  config: ThumbnailGenerator.Config = .medium
 ) async throws -> Data {
   let phAsset = PHAsset.fetchAssets(withLocalIdentifiers: [localIdentifier], options: nil).firstObject
   guard let phAsset else {
@@ -269,7 +161,7 @@ private func generatePhotoLibraryVideoThumbnail(
     cgImage = try generator.copyCGImage(at: .zero, actualTime: nil)
   }
 
-  guard let webpData = encodeAdaptiveThumbnailWebP(UIImage(cgImage: cgImage), maxDimension: CGFloat(maxSize), config: config) else {
+  guard let webpData = ThumbnailGenerator.generate(from: UIImage(cgImage: cgImage), config: config) else {
     throw NSError(
       domain: "BeebeebThumbnail",
       code: 15,
@@ -2039,7 +1931,7 @@ public class BeebeebCryptoModule: Module {
       }
       let image = UIImage(cgImage: cgImage)
 
-      guard let webpData = encodeAdaptiveThumbnailWebP(image, maxDimension: CGFloat(maxSize)) else {
+      guard let webpData = ThumbnailGenerator.generate(from: image, config: .medium) else {
         throw NSError(
           domain: "BeebeebThumbnail",
           code: 1,
@@ -2063,21 +1955,7 @@ public class BeebeebCryptoModule: Module {
         )
       }
 
-      let maxDim = CGFloat(maxSize)
-      let scale = min(maxDim / max(image.size.width, image.size.height), 1.0)
-      let newSize = CGSize(
-        width: image.size.width * scale,
-        height: image.size.height * scale
-      )
-
-      let format = UIGraphicsImageRendererFormat()
-      format.scale = 1
-      let renderer = UIGraphicsImageRenderer(size: newSize, format: format)
-      let resized = renderer.image { _ in
-        image.draw(in: CGRect(origin: .zero, size: newSize))
-      }
-
-      guard let webpData = encodeAdaptiveThumbnailWebP(resized, maxDimension: CGFloat(maxSize)) else {
+      guard let webpData = ThumbnailGenerator.generate(from: image, config: .medium) else {
         throw NSError(
           domain: "BeebeebThumbnail",
           code: 3,
@@ -2175,21 +2053,9 @@ public class BeebeebCryptoModule: Module {
         outputPath: decryptedPath, callback: nil
       )
 
-      // 5. Resize natively with UIImage
+      // 5. Resize via Rust + encode WebP
       guard let image = UIImage(contentsOfFile: decryptedPath) else { return false }
-      let maxDim = CGFloat(maxSize)
-      let scale = min(maxDim / max(image.size.width, image.size.height), 1.0)
-      let newSize = CGSize(
-        width: image.size.width * scale,
-        height: image.size.height * scale
-      )
-      UIGraphicsBeginImageContextWithOptions(newSize, false, 1.0)
-      image.draw(in: CGRect(origin: .zero, size: newSize))
-      let resized = UIGraphicsGetImageFromCurrentImageContext()
-      UIGraphicsEndImageContext()
-
-      guard let resizedImage = resized,
-            let webpData = encodeAdaptiveThumbnailWebP(resizedImage, maxDimension: CGFloat(maxSize))
+      guard let webpData = ThumbnailGenerator.generate(from: image, config: .medium)
       else { return false }
 
       // 6. Encrypt thumbnail as a single AES-256-GCM chunk via Rust
@@ -2200,7 +2066,7 @@ public class BeebeebCryptoModule: Module {
       var wire = Data(capacity: enc.nonce.count + enc.ciphertext.count)
       wire.append(enc.nonce)
       wire.append(enc.ciphertext)
-      guard wire.count <= thumbnailMaxEncryptedBytes else {
+      guard wire.count <= ThumbnailGenerator.Config.medium.maxBytes + 28 else {
         return false
       }
 
@@ -2227,7 +2093,8 @@ public class BeebeebCryptoModule: Module {
       variant: String?
     ) async throws -> Bool in
       let masterKey = try self.getHandle(handleId)
-      let config = thumbnailEncodingConfig(variant)
+      let config = ThumbnailGenerator.config(for: variant)
+      let variantLabel = variant ?? "medium"
 
       let phAsset = PHAsset.fetchAssets(withLocalIdentifiers: [localIdentifier], options: nil).firstObject
       guard let phAsset else { return false }
@@ -2253,12 +2120,13 @@ public class BeebeebCryptoModule: Module {
       var wire = Data(capacity: enc.nonce.count + enc.ciphertext.count)
       wire.append(enc.nonce)
       wire.append(enc.ciphertext)
-      guard wire.count <= config.maxEncryptedBytes else {
-        NSLog("[BeebeebCrypto] Photo-library \(config.variant) thumbnail skipped: encrypted payload too large (\(wire.count) bytes)")
+      // maxBytes already accounts for encryption overhead (28 bytes)
+      guard wire.count <= config.maxBytes + 28 else {
+        NSLog("[BeebeebCrypto] Photo-library \(variantLabel) thumbnail skipped: encrypted payload too large (\(wire.count) bytes)")
         return false
       }
 
-      let suffix = config.variant == "medium" ? "" : "/\(config.variant)"
+      let suffix = variantLabel == "medium" ? "" : "/\(variantLabel)"
       guard let thumbUrl = URL(string: "\(apiUrl)/api/v1/files/\(fileId)/thumbnail\(suffix)") else {
         return false
       }
@@ -2271,10 +2139,10 @@ public class BeebeebCryptoModule: Module {
       let (_, response) = try await URLSession.shared.data(for: request)
       let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
       if (200..<300).contains(statusCode) {
-        NSLog("[BeebeebCrypto] Photo-library \(config.variant) thumbnail uploaded")
+        NSLog("[BeebeebCrypto] Photo-library \(variantLabel) thumbnail uploaded")
         return true
       }
-      NSLog("[BeebeebCrypto] Photo-library \(config.variant) thumbnail upload HTTP \(statusCode)")
+      NSLog("[BeebeebCrypto] Photo-library \(variantLabel) thumbnail upload HTTP \(statusCode)")
       return false
     }
   }
