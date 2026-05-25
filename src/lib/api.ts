@@ -13,6 +13,7 @@ import * as BeebeebCrypto from '../../modules/beebeeb-crypto';
 import { clearCachedFileIndex } from './file-index-cache';
 import { rateLimitedFetch } from './rate-limited-fetch';
 import { getDeviceId } from './sync-client';
+import { setAnnouncement, clearAnnouncement } from './announcement-context';
 
 // API target. Override at build time with EXPO_PUBLIC_API_URL or via
 // expoConfig.extra.apiUrl (e.g. through eas.json env or app.config.ts).
@@ -268,6 +269,19 @@ async function request<T>(
     const err = await res.json().catch(() => ({ error: res.statusText }));
     throw new ApiError(res.status, err.error ?? err.message ?? res.statusText);
   }
+
+  // Read server-sent announcement header (percent-encoded UTF-8 string).
+  const announcementHeader = res.headers.get('x-beebeeb-announcement');
+  if (announcementHeader) {
+    try {
+      setAnnouncement(decodeURIComponent(announcementHeader));
+    } catch {
+      setAnnouncement(announcementHeader);
+    }
+  } else {
+    clearAnnouncement();
+  }
+
   return res.json() as Promise<T>;
 }
 
