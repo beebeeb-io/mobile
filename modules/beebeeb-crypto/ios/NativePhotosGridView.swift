@@ -1289,9 +1289,7 @@ private final class PhotoGridCell: UICollectionViewCell {
   private let selectionBadge = UIView()
   private let selectionCheck = UIImageView(image: UIImage(systemName: "checkmark"))
   private var representedId: String?
-  private var representedSourceKey: String?
-  private var fileLoadInFlightKey: String?
-  private var localLoadInFlightKey: String?
+  private var inFlightLoadId: UUID?
 
   override init(frame: CGRect) {
     super.init(frame: frame)
@@ -1338,11 +1336,15 @@ private final class PhotoGridCell: UICollectionViewCell {
 
   override func prepareForReuse() {
     super.prepareForReuse()
+    let previousId = representedId
     representedId = nil
-    representedSourceKey = nil
-    fileLoadInFlightKey = nil
-    localLoadInFlightKey = nil
+    inFlightLoadId = nil
     imageView.image = nil
+    if let previousId {
+      Task {
+        await ThumbnailService.shared.cancelPhotoKitRequest(for: previousId)
+      }
+    }
   }
 
   override func layoutSubviews() {
@@ -1359,7 +1361,7 @@ private final class PhotoGridCell: UICollectionViewCell {
   func configure(
     item: NativePhotoGridItem,
     columns: Int,
-    imageManager: PHImageManager
+    imageManager _: PHImageManager
   ) {
     representedId = item.id
     contentView.backgroundColor = item.placeholderColor
@@ -1367,45 +1369,43 @@ private final class PhotoGridCell: UICollectionViewCell {
     originBadge.isHidden = !showOverlay || !item.isFromBackup
     videoBadge.isHidden = !item.isVideo
 
-    let sourceKey = Self.sourceKey(for: item)
-    if representedSourceKey != sourceKey {
-      fileLoadInFlightKey = nil
-      localLoadInFlightKey = nil
-      representedSourceKey = sourceKey
-      imageView.image = nil
-    } else if imageView.image != nil || fileLoadInFlightKey == sourceKey || localLoadInFlightKey == sourceKey {
-      return
-    }
+    imageView.image = nil
+    let cellSize = max(bounds.width, bounds.height)
+    let targetSize = CGSize(width: cellSize, height: cellSize)
+    let fileId = item.id
 
-    if let cached = Self.sourceImageCache.object(forKey: sourceKey as NSString) {
-      Self.metrics.sourceCacheHits += 1
-      imageView.image = cached
-      return
-    }
+    let loadTaskId = UUID()
+    inFlightLoadId = loadTaskId
 
-    if let localAssetId = item.localAssetId {
-      loadLocalAsset(localAssetId, itemId: item.id, imageManager: imageManager)
-    } else if let uri = item.thumbnailUri ?? Self.persistentThumbnailURL(for: item.id)?.path {
-      loadFileThumbnail(uri, itemId: item.id)
+    Task { [weak self] in
+      do {
+        let resolved = try await ThumbnailService.shared.getThumbnail(for: fileId, targetSize: targetSize)
+        guard
+          let self,
+          self.representedId == fileId,
+          self.inFlightLoadId == loadTaskId
+        else { return }
+        let image = UIImage(contentsOfFile: resolved.fileURL.path)
+        await MainActor.run {
+          guard
+            self.representedId == fileId,
+            self.inFlightLoadId == loadTaskId
+          else { return }
+          self.imageView.image = image
+        }
+      } catch {
+        // Service returned nothing usable — leave the placeholder colour.
+      }
     }
   }
 
-  static func prefetch(items: [NativePhotoGridItem], columns: Int, containerWidth: CGFloat, imageManager: PHImageManager) {
-    let targetPixels = targetPixels(forSide: containerWidth / CGFloat(max(columns, 1)))
+  static func prefetch(items: [NativePhotoGridItem], columns: Int, containerWidth: CGFloat, imageManager _: PHImageManager) {
+    let side = containerWidth / CGFloat(max(columns, 1))
+    let targetSize = CGSize(width: side, height: side)
     for item in items {
-      let sourceKey = sourceKey(for: item)
-      if sourceImageCache.object(forKey: sourceKey as NSString) != nil {
-        continue
-      }
-      if let localAssetId = item.localAssetId {
-        enqueueLocalAsset(
-          localAssetId,
-          sourceKey: sourceKey,
-          targetPixels: targetPixels,
-          imageManager: imageManager,
-          priority: .prefetch,
-          completion: nil
-        )
+      let fileId = item.id
+      Task.detached(priority: .utility) {
+        _ = try? await ThumbnailService.shared.getThumbnail(for: fileId, targetSize: targetSize)
       }
     }
   }
