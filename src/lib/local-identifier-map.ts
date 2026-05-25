@@ -22,6 +22,7 @@ import * as FileSystem from 'expo-file-system';
 import { fetchPhotoBackupIdentifierMap, photoBackupClearAssociation } from './api';
 import { invalidateCachedThumbnail } from './thumbnail-cache';
 import { invalidateInMemoryThumbCache } from './thumbnail';
+import { onAssociationCleared } from './thumbnail-events';
 
 let ThumbnailServiceNative: {
   setLocalIdentifierMap?: (map: Record<string, string>) => Promise<void>;
@@ -97,8 +98,16 @@ export function isLocalIdentifierMapReady(): boolean {
  *  2. Kick off a fresh fetch in the background. Returns the disk hydration
  *     promise — the network refresh is fire-and-forget.
  */
+let associationListenerRegistered = false;
+
 export async function initLocalIdentifierMap(): Promise<void> {
   await loadFromDisk();
+  if (!associationListenerRegistered) {
+    onAssociationCleared(({ fileId }) => {
+      void removeLocalIdentifier(fileId);
+    });
+    associationListenerRegistered = true;
+  }
   // Fire and forget — never block app startup on this.
   void refreshLocalIdentifierMap();
 }
