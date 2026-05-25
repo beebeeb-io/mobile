@@ -60,3 +60,85 @@ export function onAssociationCleared(
   });
   return sub ?? { remove: () => {} };
 }
+
+// ─── Worker pool events ───────────────────────────────────────────────────────
+
+export interface PoolStatsEvent {
+  workers: Array<{ slot: number; fileId: string | null; stage: string; elapsedMs: number }>;
+  completed: number;
+  failed: number;
+  retrying: number;
+  queueDepth: number;
+  filesPerSec: number;
+  kbPerSec: number;
+  etaSec: number;
+  isPaused: boolean;
+  isThermalThrottled: boolean;
+}
+
+export interface FileCompletedEvent {
+  fileId: string;
+  success: boolean;
+  category: string | null;
+  totalMs: number;
+  stageBreakdown: Record<string, number>;
+}
+
+export interface WorkerFailureEvent {
+  fileId: string;
+  errorCode: string;
+  errorMessage: string;
+  attempt: number;
+}
+
+export interface WorkerStageEvent {
+  slot: number;
+  fileId: string;
+  stage: string;
+  elapsedMs: number;
+}
+
+export function onPoolStats(
+  handler: (event: PoolStatsEvent) => void,
+): Subscription {
+  const sub = safeAddListener('onPoolStats', (raw) => {
+    handler(raw as PoolStatsEvent);
+  });
+  return sub ?? { remove: () => {} };
+}
+
+export function onFileCompleted(
+  handler: (event: FileCompletedEvent) => void,
+): Subscription {
+  const sub = safeAddListener('onFileCompleted', (raw) => {
+    const event = raw as Partial<FileCompletedEvent>;
+    if (typeof event?.fileId === 'string') {
+      handler(event as FileCompletedEvent);
+    }
+  });
+  return sub ?? { remove: () => {} };
+}
+
+export function onWorkerFailure(
+  handler: (event: WorkerFailureEvent) => void,
+): Subscription {
+  const sub = safeAddListener('onWorkerFailure', (raw) => {
+    const event = raw as Partial<WorkerFailureEvent>;
+    if (typeof event?.fileId === 'string') {
+      handler(event as WorkerFailureEvent);
+    }
+  });
+  return sub ?? { remove: () => {} };
+}
+
+export function onWorkerStage(
+  handler: (event: WorkerStageEvent) => void,
+): Subscription {
+  const sub = safeAddListener('onWorkerStage', (raw) => {
+    const event = raw as Partial<WorkerStageEvent>;
+    if (typeof event?.fileId === 'string' && typeof event?.slot === 'number') {
+      handler(event as WorkerStageEvent);
+    }
+  });
+  return sub ?? { remove: () => {} };
+}
