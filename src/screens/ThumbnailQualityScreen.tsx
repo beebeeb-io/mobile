@@ -379,9 +379,13 @@ export default function ThumbnailQualityScreen() {
             </View>
           </>
         ) : (
-          <Text style={[styles.caption, { color: c.ink3, marginTop: 16 }]}>
-            Thumbnail regeneration is available on iOS in this version.
-          </Text>
+          <>
+            <Text style={[styles.sectionTitle, { color: c.ink3 }]}>Apply to existing photos</Text>
+            <View style={[styles.card, { backgroundColor: c.paper2, borderColor: c.line }]}>
+              <Text style={[styles.applyTitle, { color: c.ink }]}>Apply to existing photos</Text>
+              <Text style={[styles.body, { color: c.ink2 }]}>Thumbnail regeneration is available on iOS only in this version. Coming to Android soon.</Text>
+            </View>
+          </>
         )}
       </ScrollView>
     </View>
@@ -433,4 +437,5 @@ const styles = StyleSheet.create({
   statLabel: { fontSize: 11, fontWeight: '700', marginTop: 2 },
   primaryButton: { minHeight: 48, borderRadius: 10, alignItems: 'center', justifyContent: 'center', marginTop: 6 },
   primaryButtonText: { color: '#16110a', fontSize: 15, fontWeight: '900' },
+  applyTitle: { fontSize: 15, fontWeight: '800' },
 });
