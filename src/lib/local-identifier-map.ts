@@ -19,9 +19,29 @@
  */
 
 import * as FileSystem from 'expo-file-system';
-import { fetchPhotoBackupIdentifierMap } from './api';
+import { fetchPhotoBackupIdentifierMap, photoBackupClearAssociation } from './api';
 import { invalidateCachedThumbnail } from './thumbnail-cache';
 import { invalidateInMemoryThumbCache } from './thumbnail';
+
+type MapChangeListener = (changedFileId: string) => void;
+const mapChangeListeners = new Set<MapChangeListener>();
+
+export function onLocalMapChanged(listener: MapChangeListener): () => void {
+  mapChangeListeners.add(listener);
+  return () => {
+    mapChangeListeners.delete(listener);
+  };
+}
+
+function emitMapChanged(fileId: string): void {
+  for (const listener of mapChangeListeners) {
+    try {
+      listener(fileId);
+    } catch (err) {
+      console.warn('[local-identifier-map] listener threw', err);
+    }
+  }
+}
 
 const STORAGE_FILE = `${FileSystem.documentDirectory ?? ''}local-id-map.json`;
 
@@ -107,6 +127,44 @@ export async function refreshLocalIdentifierMap(): Promise<void> {
     }
   })();
   return inflightFetch;
+}
+
+/**
+ * Remove a single fileId from the local-identifier map. Triggered when the
+ * native `ThumbnailService` emits `onAssociationCleared` (which fires after a
+ * PhotoKit `requestImage` returns PHPhotosErrorDomain code 3164, "asset not
+ * found").
+ *
+ * Effects:
+ *  1. Drops the entry from the in-memory map AND the persisted disk copy.
+ *  2. Invalidates both the in-memory thumbnail cache and the on-disk one so
+ *     the next render re-resolves via the remote path.
+ *  3. Fires `onLocalMapChanged` so other listeners (the native side, primarily)
+ *     can purge their state too.
+ *  4. Calls the server's `/clear-association` endpoint so the server-side
+ *     `user_local_identifiers` row for THIS device is deleted (the Plan A
+ *     migration re-keys the table to `(user_id, device_id, file_id)`).
+ */
+export async function removeLocalIdentifier(fileId: string): Promise<void> {
+  if (!(fileId in inMemoryMap)) return;
+  delete inMemoryMap[fileId];
+  await saveToDisk({
+    fetched_at: new Date().toISOString(),
+    identifiers: { ...inMemoryMap },
+  });
+  invalidateInMemoryThumbCache(fileId);
+  void invalidateCachedThumbnail(fileId).catch((err) => {
+    console.warn('[local-identifier-map] cache invalidation failed', err);
+  });
+  emitMapChanged(fileId);
+  try {
+    await photoBackupClearAssociation(fileId);
+  } catch (err) {
+    // Best-effort: a transient network failure here just means the server
+    // row stays until the next time the user opens this file. The local
+    // map is the truth for render-path purposes.
+    console.warn('[local-identifier-map] clear-association POST failed', err);
+  }
 }
 
 /**
