@@ -70,3 +70,64 @@ public actor ThumbnailService {
 internal protocol ThumbnailEventEmitter: AnyObject, Sendable {
   func emit(_ name: String, body: [String: Any])
 }
+
+extension ThumbnailService {
+  public func getThumbnail(
+    for fileId: FileId,
+    targetSize: CGSize
+  ) async throws -> ResolvedThumbnail {
+    if let pending = inFlight[fileId] {
+      return try await pending.value
+    }
+
+    let task: Task<ResolvedThumbnail, Error> = Task { [weak self] in
+      guard let self else { throw ThumbnailServiceError.cancelled }
+      return try await self.resolve(fileId: fileId, targetSize: targetSize)
+    }
+    inFlight[fileId] = task
+    defer { inFlight[fileId] = nil }
+
+    do {
+      return try await task.value
+    } catch {
+      throw error
+    }
+  }
+
+  fileprivate func resolve(
+    fileId: FileId,
+    targetSize: CGSize
+  ) async throws -> ResolvedThumbnail {
+    let localId = localIdentifierLookup?(fileId) ?? nil
+
+    if let localId {
+      let photoKitKey = CacheKey(fileId: fileId, source: .photoKit)
+      if let hit = cacheHit(photoKitKey) {
+        setState(.photoKitResolved(hit), for: fileId)
+        return ResolvedThumbnail(fileURL: hit, source: .photoKit)
+      }
+
+      setState(.photoKitPending, for: fileId)
+      let result = await PhotoKitResolver.shared.requestImage(
+        fileId: fileId,
+        localIdentifier: localId,
+        targetSize: targetSize
+      )
+
+      switch result {
+      case .success(let url):
+        writeCache(photoKitKey, url: url)
+        setState(.photoKitResolved(url), for: fileId)
+        return ResolvedThumbnail(fileURL: url, source: .photoKit)
+
+      case .notFound:
+        try await handleStaleLocalId(fileId: fileId)
+
+      case .error(let message):
+        logger.warning("PhotoKit transient failure for \(fileId): \(message)")
+      }
+    }
+
+    return try await resolveRemote(fileId: fileId, targetSize: targetSize)
+  }
+}
