@@ -93,6 +93,8 @@ import TwoFactorSetupScreen from './screens/TwoFactorSetupScreen';
 import BackupInsightsScreen from './screens/BackupInsightsScreen';
 import SpeedtestScreen from './screens/SpeedtestScreen';
 import AdvancedSettingsScreen from './screens/AdvancedSettingsScreen';
+import ThumbnailQualityScreen from './screens/ThumbnailQualityScreen';
+import ThumbnailWorkerScreen from './screens/ThumbnailWorkerScreen';
 
 import ErrorBoundary from './components/ErrorBoundary';
 import ConfirmActionPrompt from './components/ConfirmActionPrompt';
@@ -102,7 +104,8 @@ import { discardAllPendingShares, processPendingShares } from '../plugins/share-
 import { useToast } from './lib/toast-context';
 import { clearWidgetData } from './utils/widgetData';
 import { ensureDevicePerformanceProfile } from './lib/device-performance';
-import { ThumbnailRepairWorker } from './lib/ThumbnailRepairWorker';
+import AndroidThumbnailRepairWorker from './lib/AndroidThumbnailRepairWorker';
+import { BeebeebThumbnails } from '../modules/beebeeb-crypto';
 
 const ONBOARDING_KEY = 'beebeeb_onboarding_done';
 const PHRASE_VERIFIED_KEY = 'beebeeb_phrase_verified';
@@ -187,6 +190,8 @@ export type RootStackParamList = {
   BackupInsights: undefined;
   Speedtest: undefined;
   AdvancedSettings: undefined;
+  ThumbnailQuality: undefined;
+  ThumbnailWorker: undefined;
 };
 
 // ---------------------------------------------------------------------------
@@ -404,6 +409,10 @@ function BiometricGuard({ locked, onUnlock }: { locked: boolean; onUnlock: () =>
     // Pre-populate FileProvider cache with decrypted names so iOS Files
     // shows real names immediately without needing to open the Files tab first.
     populateFileProviderCache(crypto.decryptMetadata).catch(() => {});
+    // Resume any thumbnail worker pool jobs that were paused during lock.
+    if (Platform.OS === 'ios') {
+      try { await BeebeebThumbnails.resumeWorkers(); } catch {}
+    }
     onUnlock();
   }
 
@@ -630,6 +639,9 @@ export default function App() {
     await BeebeebCrypto.removeFileProviderAccess().catch(() => null);
     await BeebeebCrypto.mirrorSessionToAppGroup(null, null).catch(() => false);
     await BeebeebCrypto.mirrorSimulatorFileProviderMasterKey(null).catch(() => false);
+    if (Platform.OS === 'ios') {
+      try { await BeebeebThumbnails.clearQueueOnSignOut(); } catch {}
+    }
     await discardAllPendingShares().catch(() => 0);
     await clearWidgetData().catch(() => {});
     await SecureStore.deleteItemAsync(MASTER_KEY_CHECK_LABEL).catch(() => {});
@@ -975,7 +987,9 @@ export default function App() {
         >
             <VaultRecoveryGate enabled={isAuthenticated} navReady={navReady} />
             <DevicePerformanceCalibrator enabled={isAuthenticated && !locked} />
-            <ThumbnailRepairWorker enabled={isAuthenticated && !locked} />
+            {isAuthenticated && !locked && Platform.OS === 'android'
+              ? <AndroidThumbnailRepairWorker enabled />
+              : null}
             <FileProviderDomainRegistrar enabled={isAuthenticated && !locked} />
             <Stack.Navigator screenOptions={{ headerShown: false }}>
               {isAuthenticated ? (
@@ -1054,6 +1068,16 @@ export default function App() {
                   <Stack.Screen
                     name="AdvancedSettings"
                     component={AdvancedSettingsScreen}
+                    options={{ headerShown: false }}
+                  />
+                  <Stack.Screen
+                    name="ThumbnailQuality"
+                    component={ThumbnailQualityScreen}
+                    options={{ headerShown: false }}
+                  />
+                  <Stack.Screen
+                    name="ThumbnailWorker"
+                    component={ThumbnailWorkerScreen}
                     options={{ headerShown: false }}
                   />
                 </>
