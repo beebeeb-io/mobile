@@ -735,6 +735,11 @@ int64_t uniffi_beebeeb_uniffi_fn_func_plan_monthly_cost_cents(RustBuffer plan_sl
 RustBuffer uniffi_beebeeb_uniffi_fn_func_recover_from_phrase(RustBuffer phrase, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_BEEBEEB_UNIFFI_FN_FUNC_RESIZE_FOR_THUMBNAIL
+#define UNIFFI_FFIDEF_UNIFFI_BEEBEEB_UNIFFI_FN_FUNC_RESIZE_FOR_THUMBNAIL
+RustBuffer uniffi_beebeeb_uniffi_fn_func_resize_for_thumbnail(RustBuffer rgba, uint32_t src_width, uint32_t src_height, uint32_t max_dimension, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_BEEBEEB_UNIFFI_FN_FUNC_SERIALIZE_ENCRYPTED_METADATA
 #define UNIFFI_FFIDEF_UNIFFI_BEEBEEB_UNIFFI_FN_FUNC_SERIALIZE_ENCRYPTED_METADATA
 RustBuffer uniffi_beebeeb_uniffi_fn_func_serialize_encrypted_metadata(RustBuffer nonce, RustBuffer ciphertext, RustCallStatus *_Nonnull out_status
@@ -1275,6 +1280,12 @@ uint16_t uniffi_beebeeb_uniffi_checksum_func_plan_monthly_cost_cents(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_BEEBEEB_UNIFFI_CHECKSUM_FUNC_RECOVER_FROM_PHRASE
 #define UNIFFI_FFIDEF_UNIFFI_BEEBEEB_UNIFFI_CHECKSUM_FUNC_RECOVER_FROM_PHRASE
 uint16_t uniffi_beebeeb_uniffi_checksum_func_recover_from_phrase(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_BEEBEEB_UNIFFI_CHECKSUM_FUNC_RESIZE_FOR_THUMBNAIL
+#define UNIFFI_FFIDEF_UNIFFI_BEEBEEB_UNIFFI_CHECKSUM_FUNC_RESIZE_FOR_THUMBNAIL
+uint16_t uniffi_beebeeb_uniffi_checksum_func_resize_for_thumbnail(void
     
 );
 #endif
