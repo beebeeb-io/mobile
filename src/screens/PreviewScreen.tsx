@@ -46,7 +46,7 @@ import {
   cachePhotoWithExtension,
 } from '../lib/photo-cache';
 import { getCachedThumbnail } from '../lib/thumbnail-cache';
-import { cacheLocalThumbnail } from '../lib/thumbnail';
+import { cacheLocalThumbnail, fetchDecryptedLargeThumbnailUri } from '../lib/thumbnail';
 import {
   activePhotoPageIndices,
   clampPhotoIndex,
@@ -621,6 +621,23 @@ async function loadDecryptedPhotoForViewer(
 
   const loadPromise = (async () => {
     throwIfPreviewAborted(signal);
+
+    // Thumbnail-first: for images, try the large thumbnail before downloading the full original.
+    if (!isVideo) {
+      onStage?.('downloading');
+      try {
+        const fileKey = await getFileKeyBytes(entry.id);
+        const largeThumbnailUri = await fetchDecryptedLargeThumbnailUri(entry.id, fileKey, signal);
+        if (largeThumbnailUri) {
+          throwIfPreviewAborted(signal);
+          return largeThumbnailUri;
+        }
+      } catch {
+        // Large thumbnail unavailable — fall through to full download
+      }
+      throwIfPreviewAborted(signal);
+    }
+
     onStage?.('downloading');
     onStage?.('decrypting');
     const ext = extensionForMime(entry.mime_type ?? undefined, category);
@@ -1115,8 +1132,8 @@ export default function PreviewScreen() {
     return { uri: await fetchAndDecrypt(), reusedPreview: false };
   }, [fetchAndDecrypt, imageUri, isImage, isPdf, isVideo, pdfUri, videoUri]);
 
-  // Auto-load images inline on mount — checks photo cache first to avoid
-  // re-downloading and re-decrypting when navigating back to a photo.
+  // Auto-load images inline on mount — tries large thumbnail first (spec 031),
+  // then falls back to full original download + decrypt.
   useEffect(() => {
     if (!isImage) return;
     if (hasSwipe) return;
@@ -1138,7 +1155,23 @@ export default function PreviewScreen() {
         return;
       }
 
-      // Slow path: download + decrypt, then cache the result
+      // Thumbnail-first: try the large thumbnail before the full original
+      if (isUnlocked) {
+        try {
+          const fileKey = await getFileKeyBytes(currentFileId);
+          const largeUri = await fetchDecryptedLargeThumbnailUri(currentFileId, fileKey, controller.signal);
+          if (largeUri && !cancelled && !controller.signal.aborted) {
+            setImageUri(largeUri);
+            setImageLoading(false);
+            return;
+          }
+        } catch {
+          // Large thumbnail unavailable — fall through
+        }
+        throwIfPreviewAborted(controller.signal);
+      }
+
+      // Slow path: download + decrypt full original, then cache the result
       const decryptedUri = await fetchAndDecrypt({ signal: controller.signal });
       if (cancelled || controller.signal.aborted) {
         FileSystem.deleteAsync(decryptedUri, { idempotent: true }).catch(() => {});
@@ -1172,7 +1205,7 @@ export default function PreviewScreen() {
       cancelled = true;
       controller.abort();
     };
-  }, [hasSwipe, isImage, currentFileId, fetchAndDecrypt]);
+  }, [hasSwipe, isImage, currentFileId, fetchAndDecrypt, isUnlocked, getFileKeyBytes]);
 
   // Auto-load PDFs inline on mount — uses native decrypt + PdfRenderer.
   useEffect(() => {

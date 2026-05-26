@@ -1771,8 +1771,9 @@ export default function FilesScreen() {
       // Add to the encrypted search index so the new file is searchable
       // across the whole vault from the very next keystroke.
       indexFile(uploaded.id, toSearchIndexEntry(uploaded, uploadFileName, currentFolder.id));
-      // Fire-and-forget: generate + upload a medium encrypted thumbnail for media files.
+      // Fire-and-forget: generate + upload medium and large encrypted thumbnails for media files.
       void generateAndUploadThumbnail(uploaded.id, asset.uri, asset.mimeType ?? null, getFileKeyBytes);
+      void generateAndUploadThumbnail(uploaded.id, asset.uri, asset.mimeType ?? null, getFileKeyBytes, 'large');
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       donateSiriShortcut('upload');
       showToast({ type: 'success', message: `"${uploadFileName}" stored in ${finalLoc.city}` });
@@ -1872,8 +1873,9 @@ export default function FilesScreen() {
         lastLoc = trustLocation(uploaded.storage_pool_id);
         setFiles((prev) => upsertFileEntry(prev, uploaded));
         indexFile(uploaded.id, toSearchIndexEntry(uploaded, name, currentFolder.id));
-        // Fire-and-forget: image picker only returns images, so always thumbnail.
+        // Fire-and-forget: image picker only returns images, so always thumbnail (medium + large).
         void generateAndUploadThumbnail(uploaded.id, uploadUri, asset.mimeType ?? 'image/jpeg', getFileKeyBytes);
+        void generateAndUploadThumbnail(uploaded.id, uploadUri, asset.mimeType ?? 'image/jpeg', getFileKeyBytes, 'large');
         successCount += 1;
       } catch (err) {
         console.warn('[UPLOAD] Error type:', typeof err, err instanceof Error ? err.constructor.name : 'unknown');

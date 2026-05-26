@@ -95,7 +95,7 @@ const THUMBNAIL_ENCRYPTION_OVERHEAD_BYTES = 28;
 const MAX_ENCRYPTED_THUMB_BYTES_BY_SIZE: Record<ThumbnailVariant, number> = {
   small: 32 * 1024,
   medium: 128 * 1024,
-  large: 192 * 1024,
+  large: 512 * 1024,
 };
 let thumbnailBackoffUntil = 0;
 let thumbnailServerFailureCount = 0;
@@ -720,6 +720,45 @@ export async function fetchDecryptedThumbnailUri(
     return null;
   } finally {
     inflight.delete(fileId);
+  }
+}
+
+/**
+ * Fetch, decrypt, and write the large thumbnail variant to a temp file.
+ * Returns a local file URI for display, or null on failure/404.
+ * NOT cached persistently — ephemeral per spec 031.
+ */
+export async function fetchDecryptedLargeThumbnailUri(
+  fileId: string,
+  fileKey: Uint8Array,
+  signal?: AbortSignal,
+): Promise<string | null> {
+  if (signal?.aborted) return null;
+  try {
+    const token = await getToken();
+    if (!token) return null;
+
+    const res = await rateLimitedFetch(thumbnailUrl(fileId, 'large'), {
+      headers: { Authorization: `Bearer ${token}` },
+      signal,
+    });
+    if (!res.ok) return null;
+
+    const encryptedBytes = new Uint8Array(await res.arrayBuffer());
+    if (encryptedBytes.length < 13) return null;
+
+    const nonce = encryptedBytes.slice(0, 12);
+    const ciphertext = encryptedBytes.slice(12);
+    const plainBytes = await decryptChunk(fileKey, nonce, ciphertext);
+
+    if (!FileSystem.cacheDirectory) return null;
+    const tempPath = `${FileSystem.cacheDirectory}large_thumb_${fileId}.webp`;
+    await FileSystem.writeAsStringAsync(tempPath, bytesToBase64(plainBytes), {
+      encoding: EncodingType.Base64,
+    });
+    return tempPath;
+  } catch {
+    return null;
   }
 }
 
