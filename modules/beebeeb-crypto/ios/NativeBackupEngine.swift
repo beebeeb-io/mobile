@@ -920,6 +920,7 @@ final class NativeBackupEngine: NSObject {
         return
       }
       masterKeyHandle = mk
+      BeebeebCryptoBridge.setCachedMasterKey(mk)
     } catch {
       NSLog("[NativeBackupEngine] Failed to load master key: \(error.localizedDescription)")
       return
@@ -969,6 +970,7 @@ final class NativeBackupEngine: NSObject {
 
     // Clear sensitive state
     masterKeyHandle = nil
+    BeebeebCryptoBridge.clearCachedMasterKey()
     uploadTaskMap.removeAll()
 
     // Recover any rows stuck in 'uploading' state

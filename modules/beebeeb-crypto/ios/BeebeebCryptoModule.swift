@@ -1085,6 +1085,9 @@ public class BeebeebCryptoModule: Module {
 
     AsyncFunction("releaseHandle") { [self] (handleId: Int) in
       self.masterKeyHandles.removeValue(forKey: handleId)
+      if self.masterKeyHandles.isEmpty {
+        BeebeebCryptoBridge.clearCachedMasterKey()
+      }
     }
 
     AsyncFunction("storeKeyInKeychain") { (masterKeyBytes: Data, label: String) throws in
@@ -1109,6 +1112,7 @@ public class BeebeebCryptoModule: Module {
       mutableData.withUnsafeMutableBytes { ptr in
         if let base = ptr.baseAddress { memset(base, 0, ptr.count) }
       }
+      BeebeebCryptoBridge.setCachedMasterKey(handle)
       return self.storeHandle(handle)
     }
 
@@ -1118,6 +1122,7 @@ public class BeebeebCryptoModule: Module {
       mutableData.withUnsafeMutableBytes { ptr in
         if let base = ptr.baseAddress { memset(base, 0, ptr.count) }
       }
+      BeebeebCryptoBridge.setCachedMasterKey(handle)
       return self.storeHandle(handle)
     }
 

@@ -26,6 +26,28 @@ enum BeebeebCryptoBridge {
     /// Must match the label used by the JS layer when calling `storeKeyInKeychain`.
     static let kMasterKeyLabel = "io.beebeeb.master-key"
 
+    // MARK: - In-process master key cache
+    //
+    // Avoids repeated Keychain reads (which can trigger Face ID / passcode)
+    // during hot paths like the backup engine's per-asset encrypt loop.
+    // The cache is populated on first successful load and cleared on sign-out
+    // or when the backup engine stops.
+
+    private static var cachedMasterKey: MasterKeyHandle?
+    private static let masterKeyCacheLock = NSLock()
+
+    static func setCachedMasterKey(_ handle: MasterKeyHandle?) {
+        masterKeyCacheLock.lock()
+        cachedMasterKey = handle
+        masterKeyCacheLock.unlock()
+    }
+
+    static func clearCachedMasterKey() {
+        masterKeyCacheLock.lock()
+        cachedMasterKey = nil
+        masterKeyCacheLock.unlock()
+    }
+
     enum BridgeError: LocalizedError {
         case noMasterKey
 
@@ -42,13 +64,25 @@ enum BeebeebCryptoBridge {
     /// Decrypt the wrapped master key from the Secure Enclave-backed keychain
     /// and reconstruct a `MasterKeyHandle`. Returns `nil` if no key is stored.
     /// May trigger a biometric/passcode prompt if SE access control requires it.
+    /// Uses an in-process cache to avoid repeated biometric prompts.
     static func loadMasterKey() throws -> MasterKeyHandle? {
+        masterKeyCacheLock.lock()
+        if let cached = cachedMasterKey {
+            masterKeyCacheLock.unlock()
+            return cached
+        }
+        masterKeyCacheLock.unlock()
+
         if let bytes = try KeychainManager.load(label: kMasterKeyLabel) {
-            return try MasterKeyHandle.fromKeychainBytes(bytes: bytes)
+            let handle = try MasterKeyHandle.fromKeychainBytes(bytes: bytes)
+            setCachedMasterKey(handle)
+            return handle
         }
         #if targetEnvironment(simulator)
         if let bytes = loadSimulatorFallbackMasterKey() {
-            return try MasterKeyHandle.fromKeychainBytes(bytes: bytes)
+            let handle = try MasterKeyHandle.fromKeychainBytes(bytes: bytes)
+            setCachedMasterKey(handle)
+            return handle
         }
         #endif
         return nil
