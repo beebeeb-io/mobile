@@ -366,6 +366,8 @@ public final class NativePhotosGridView: ExpoView {
   private var isScrollingWithMomentum = false
   private var needsVisibleReconfigureAfterScroll = false
   private var needsScrollSideEffectsAfterScroll = false
+  private var pendingItemsAfterScroll: [NativePhotoGridItem]?
+  private var thumbnailPrefetchTasks: [String: Task<Void, Never>] = [:]
   private var isPinchingGrid = false
   private var autoscrollLink: CADisplayLink?
   private var autoscrollVelocity: CGFloat = 0
@@ -421,6 +423,10 @@ public final class NativePhotosGridView: ExpoView {
     return view
   }()
 
+  private var isCollectionViewScrolling: Bool {
+    collectionView.isTracking || collectionView.isDragging || collectionView.isDecelerating || isScrollingWithMomentum
+  }
+
   required init(appContext: AppContext? = nil) {
     super.init(appContext: appContext)
     clipsToBounds = true
@@ -446,6 +452,7 @@ public final class NativePhotosGridView: ExpoView {
     visibleDispatchWorkItem?.cancel()
     preheatWorkItem?.cancel()
     selectionDispatchWorkItem?.cancel()
+    thumbnailPrefetchTasks.values.forEach { $0.cancel() }
     autoscrollLink?.invalidate()
     pinchDisplayLink?.invalidate()
   }
@@ -463,6 +470,21 @@ public final class NativePhotosGridView: ExpoView {
     }
     let nextLayoutSignature = Self.layoutSignature(for: nextItems)
 
+    if nextLayoutSignature != layoutSignature, isCollectionViewScrolling {
+      pendingItemsAfterScroll = nextItems
+      needsScrollSideEffectsAfterScroll = true
+      return
+    }
+
+    applyItems(nextItems, itemSignature: nextSignature, layoutSignature: nextLayoutSignature)
+  }
+
+  private func applyItems(
+    _ nextItems: [NativePhotoGridItem],
+    itemSignature nextSignature: String,
+    layoutSignature nextLayoutSignature: String
+  ) {
+    pendingItemsAfterScroll = nil
     let previousSelectedIds = selectedIds
     let previousSelectionMode = selectionMode
     var grouped: [NativePhotoGridSection] = []
@@ -492,7 +514,7 @@ public final class NativePhotosGridView: ExpoView {
     itemSignature = nextSignature
     let layoutChanged = nextLayoutSignature != layoutSignature
     if nextLayoutSignature == layoutSignature {
-      if isScrollingWithMomentum {
+      if isCollectionViewScrolling {
         needsVisibleReconfigureAfterScroll = true
       } else {
         reconfigureVisibleCells()
@@ -510,7 +532,7 @@ public final class NativePhotosGridView: ExpoView {
     if layoutChanged || selectedIds != previousSelectedIds || selectionMode != previousSelectionMode {
       applySelectedState()
     }
-    if isScrollingWithMomentum {
+    if isCollectionViewScrolling {
       needsScrollSideEffectsAfterScroll = true
     } else {
       dispatchVisibleIds()
@@ -1061,6 +1083,17 @@ public final class NativePhotosGridView: ExpoView {
     visibleDispatchWorkItem = nil
     preheatWorkItem?.cancel()
     preheatWorkItem = nil
+    if let pendingItemsAfterScroll {
+      self.pendingItemsAfterScroll = nil
+      needsVisibleReconfigureAfterScroll = false
+      needsScrollSideEffectsAfterScroll = false
+      applyItems(
+        pendingItemsAfterScroll,
+        itemSignature: Self.signature(for: pendingItemsAfterScroll),
+        layoutSignature: Self.layoutSignature(for: pendingItemsAfterScroll)
+      )
+      return
+    }
     if needsVisibleReconfigureAfterScroll {
       needsVisibleReconfigureAfterScroll = false
       reconfigureVisibleCells()
@@ -1178,14 +1211,21 @@ extension NativePhotosGridView: UICollectionViewDataSource, UICollectionViewDele
   public func scrollViewDidScroll(_ scrollView: UIScrollView) {
     if isPinchingGrid {
       needsScrollSideEffectsAfterScroll = true
-      scheduleVisibleIdsDispatch()
+      // Skip visible-ids dispatch during pinch — flushScrollSideEffects
+      // handles it when the gesture ends.
       preheatWorkItem?.cancel()
       preheatWorkItem = nil
       return
     }
     if scrollView.isTracking || scrollView.isDragging || scrollView.isDecelerating {
       needsScrollSideEffectsAfterScroll = true
-      scheduleVisibleIdsDispatch()
+      // Do NOT dispatch visible IDs while the user is dragging or the
+      // scroll is decelerating. The dispatch crosses the RN bridge,
+      // triggers React re-renders + thumbnail prefetch effects, and the
+      // resulting main-thread work stalls UIKit's deceleration physics —
+      // causing the scroll to hard-stop instead of gliding smoothly.
+      // flushScrollSideEffects() dispatches once at the final position
+      // when scrollViewDidEndDecelerating / scrollViewDidEndDragging fires.
       preheatWorkItem?.cancel()
       preheatWorkItem = nil
       return
@@ -1218,12 +1258,27 @@ extension NativePhotosGridView: UICollectionViewDataSource, UICollectionViewDele
 extension NativePhotosGridView: UICollectionViewDataSourcePrefetching {
   public func collectionView(_ collectionView: UICollectionView, prefetchItemsAt indexPaths: [IndexPath]) {
     let items = indexPaths.compactMap { item(at: $0) }
-    PhotoGridCell.prefetch(items: items, columns: currentColumns, containerWidth: collectionView.bounds.width, imageManager: photoCachingManager)
+    let side = collectionView.bounds.width / CGFloat(max(currentColumns, 1))
+    let targetSize = CGSize(width: side, height: side)
+    for item in items {
+      let fileId = item.id
+      guard thumbnailPrefetchTasks[fileId] == nil else { continue }
+      let task = Task(priority: .utility) { [weak self] in
+        _ = try? await ThumbnailService.shared.getThumbnail(for: fileId, targetSize: targetSize)
+        guard !Task.isCancelled else { return }
+        await MainActor.run { [weak self] in
+          self?.thumbnailPrefetchTasks[fileId] = nil
+        }
+      }
+      thumbnailPrefetchTasks[fileId] = task
+    }
   }
 
   public func collectionView(_ collectionView: UICollectionView, cancelPrefetchingForItemsAt indexPaths: [IndexPath]) {
     let items = indexPaths.compactMap { item(at: $0) }
-    PhotoGridCell.cancelPrefetch(items: items)
+    for item in items {
+      thumbnailPrefetchTasks.removeValue(forKey: item.id)?.cancel()
+    }
   }
 }
 
@@ -1271,6 +1326,7 @@ private final class PhotoGridCell: UICollectionViewCell {
   private let selectionCheck = UIImageView(image: UIImage(systemName: "checkmark"))
   private var representedId: String?
   private var inFlightLoadId: UUID?
+  private var thumbnailLoadTask: Task<Void, Never>?
 
   override init(frame: CGRect) {
     super.init(frame: frame)
@@ -1317,10 +1373,13 @@ private final class PhotoGridCell: UICollectionViewCell {
 
   override func prepareForReuse() {
     super.prepareForReuse()
+    thumbnailLoadTask?.cancel()
+    thumbnailLoadTask = nil
     let previousId = representedId
     representedId = nil
     inFlightLoadId = nil
-    imageView.image = nil
+    // Keep imageView.image — the stale thumbnail acts as a placeholder until
+    // configure() loads the correct one (same technique as Apple Photos).
     if let previousId {
       Task {
         await ThumbnailService.shared.cancelPhotoKitRequest(for: previousId)
@@ -1344,55 +1403,68 @@ private final class PhotoGridCell: UICollectionViewCell {
     columns: Int,
     imageManager _: PHImageManager
   ) {
-    representedId = item.id
+    let fileId = item.id
+    let identifierChanged = representedId != fileId
+    if identifierChanged {
+      thumbnailLoadTask?.cancel()
+      thumbnailLoadTask = nil
+      inFlightLoadId = nil
+      imageView.image = nil
+    }
+
+    representedId = fileId
     contentView.backgroundColor = item.placeholderColor
     let showOverlay = columns <= 4
     originBadge.isHidden = !showOverlay || !item.isFromBackup
     videoBadge.isHidden = !item.isVideo
 
-    imageView.image = nil
     let cellSize = max(bounds.width, bounds.height)
     let targetSize = CGSize(width: cellSize, height: cellSize)
-    let fileId = item.id
+
+    if !identifierChanged, thumbnailLoadTask != nil {
+      return
+    }
+    if !identifierChanged, imageView.image != nil {
+      return
+    }
 
     let loadTaskId = UUID()
     inFlightLoadId = loadTaskId
 
-    Task { [weak self] in
+    let task = Task(priority: .utility) { [weak self] in
       do {
         let resolved = try await ThumbnailService.shared.getThumbnail(for: fileId, targetSize: targetSize)
-        guard
-          let self,
-          self.representedId == fileId,
-          self.inFlightLoadId == loadTaskId
-        else { return }
+        try Task.checkCancellation()
         let image = UIImage(contentsOfFile: resolved.fileURL.path)
+        try Task.checkCancellation()
         await MainActor.run {
           guard
+            !Task.isCancelled,
+            let self,
             self.representedId == fileId,
             self.inFlightLoadId == loadTaskId
           else { return }
-          self.imageView.image = image
+          if let image {
+            self.imageView.image = image
+          }
+          self.thumbnailLoadTask = nil
+          self.inFlightLoadId = nil
         }
+      } catch is CancellationError {
+        // Reuse or prefetch cancellation; keep the current placeholder/image.
       } catch {
-        // Service returned nothing usable — leave the placeholder colour.
+        await MainActor.run {
+          guard
+            let self,
+            self.representedId == fileId,
+            self.inFlightLoadId == loadTaskId
+          else { return }
+          self.thumbnailLoadTask = nil
+          self.inFlightLoadId = nil
+        }
       }
     }
-  }
-
-  static func prefetch(items: [NativePhotoGridItem], columns: Int, containerWidth: CGFloat, imageManager _: PHImageManager) {
-    let side = containerWidth / CGFloat(max(columns, 1))
-    let targetSize = CGSize(width: side, height: side)
-    for item in items {
-      let fileId = item.id
-      Task.detached(priority: .utility) {
-        _ = try? await ThumbnailService.shared.getThumbnail(for: fileId, targetSize: targetSize)
-      }
-    }
-  }
-
-  static func cancelPrefetch(items: [NativePhotoGridItem]) {
-    // Keep in-flight thumbnail work alive so fast reverse scrolling reuses the warmed cache.
+    thumbnailLoadTask = task
   }
 
   func setSelectionMode(_ enabled: Bool, selected: Bool) {
