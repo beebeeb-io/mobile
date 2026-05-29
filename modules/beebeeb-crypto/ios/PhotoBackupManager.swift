@@ -361,10 +361,12 @@ final class PhotoBackupManager: NSObject {
     }
   }
 
-  // TODO: Migrate to Rust uploadEncryptedFile() — requires encrypting chunks to
-  // temp files and calling the Rust upload function instead of the Swift HTTP
-  // uploader. NativeBackupEngine already demonstrates the pattern. For now this
-  // continues using the legacy Swift uploader which still works correctly.
+  // Encryption runs through the shared beebeeb-core streaming primitive
+  // (`ChunkEncryptorHandle`) inside `NativeEncryptedBackupUploader`: the master
+  // key stays in Rust/the keychain and the plaintext is sliced into core-planned
+  // chunks (no whole-file ciphertext buffer, no hardcoded chunk size). Only the
+  // HTTP transport is still Swift (URLSession); moving that to the Rust uploader
+  // as `NativeBackupEngine` does is a later cleanup, not a correctness gap.
   private func uploadFile(localIdentifier: String, data: Data, fileName: String, mimeType: String, token: String, completion: @escaping (Bool) -> Void) {
     guard let serverBaseURL else {
       NSLog("[Beebeeb] photo backup aborted for \(localIdentifier): serverURL not configured in keychain (sign in again to set)")

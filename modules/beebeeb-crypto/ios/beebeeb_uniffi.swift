@@ -605,6 +605,433 @@ fileprivate struct FfiConverterData: FfiConverterRustBuffer {
 
 
 /**
+ * Stateful streaming decryptor handle. Single-consumer (see module note).
+ */
+public protocol ChunkDecryptorHandleProtocol: AnyObject, Sendable {
+    
+    /**
+     * PULL: emit the next decrypted chunk, or `None` at clean EOF.
+     */
+    func nextChunk() throws  -> DecryptedChunkDto?
+    
+    /**
+     * PUSH: decrypt one caller-provided wire frame (`nonce || ciphertext || tag`).
+     */
+    func pushFrame(frame: Data) throws  -> DecryptedChunkDto
+    
+}
+/**
+ * Stateful streaming decryptor handle. Single-consumer (see module note).
+ */
+open class ChunkDecryptorHandle: ChunkDecryptorHandleProtocol, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_beebeeb_uniffi_fn_clone_chunkdecryptorhandle(self.handle, $0) }
+    }
+    // No primary constructor declared for this class.
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_beebeeb_uniffi_fn_free_chunkdecryptorhandle(handle, $0) }
+    }
+
+    
+    /**
+     * PUSH constructor: the caller feeds wire frames via
+     * [`push_frame`](Self::push_frame). Each frame is self-describing, so no chunk
+     * size is needed.
+     */
+public static func forPush(masterKey: MasterKeyHandle, fileId: String)throws  -> ChunkDecryptorHandle  {
+    return try  FfiConverterTypeChunkDecryptorHandle_lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
+    uniffi_beebeeb_uniffi_fn_constructor_chunkdecryptorhandle_for_push(
+        FfiConverterTypeMasterKeyHandle_lower(masterKey),
+        FfiConverterString.lower(fileId),$0
+    )
+})
+}
+    
+    /**
+     * PULL constructor: stream-decrypt an encrypted file from disk.
+     * `chunk_size_bytes` is the PLAINTEXT chunk size used at encryption (the wire
+     * frame is `nonce(12) + chunk_size + tag(16)`). Errors if it is 0.
+     */
+public static func fromFile(masterKey: MasterKeyHandle, fileId: String, chunkSizeBytes: UInt64, inputPath: String)throws  -> ChunkDecryptorHandle  {
+    return try  FfiConverterTypeChunkDecryptorHandle_lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
+    uniffi_beebeeb_uniffi_fn_constructor_chunkdecryptorhandle_from_file(
+        FfiConverterTypeMasterKeyHandle_lower(masterKey),
+        FfiConverterString.lower(fileId),
+        FfiConverterUInt64.lower(chunkSizeBytes),
+        FfiConverterString.lower(inputPath),$0
+    )
+})
+}
+    
+
+    
+    /**
+     * PULL: emit the next decrypted chunk, or `None` at clean EOF.
+     */
+open func nextChunk()throws  -> DecryptedChunkDto?  {
+    return try  FfiConverterOptionTypeDecryptedChunkDto.lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
+    uniffi_beebeeb_uniffi_fn_method_chunkdecryptorhandle_next_chunk(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+    
+    /**
+     * PUSH: decrypt one caller-provided wire frame (`nonce || ciphertext || tag`).
+     */
+open func pushFrame(frame: Data)throws  -> DecryptedChunkDto  {
+    return try  FfiConverterTypeDecryptedChunkDto_lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
+    uniffi_beebeeb_uniffi_fn_method_chunkdecryptorhandle_push_frame(
+            self.uniffiCloneHandle(),
+        FfiConverterData.lower(frame),$0
+    )
+})
+}
+    
+
+    
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeChunkDecryptorHandle: FfiConverter {
+    typealias FfiType = UInt64
+    typealias SwiftType = ChunkDecryptorHandle
+
+    public static func lift(_ handle: UInt64) throws -> ChunkDecryptorHandle {
+        return ChunkDecryptorHandle(unsafeFromHandle: handle)
+    }
+
+    public static func lower(_ value: ChunkDecryptorHandle) -> UInt64 {
+        return value.uniffiCloneHandle()
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ChunkDecryptorHandle {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: ChunkDecryptorHandle, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeChunkDecryptorHandle_lift(_ handle: UInt64) throws -> ChunkDecryptorHandle {
+    return try FfiConverterTypeChunkDecryptorHandle.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeChunkDecryptorHandle_lower(_ value: ChunkDecryptorHandle) -> UInt64 {
+    return FfiConverterTypeChunkDecryptorHandle.lower(value)
+}
+
+
+
+
+
+
+/**
+ * Stateful streaming encryptor handle. Single-consumer (see module note).
+ *
+ * `inner` is `None` only after [`finish`](Self::finish) has consumed the
+ * encryptor; any method called afterwards returns `InvalidInput`.
+ */
+public protocol ChunkEncryptorHandleProtocol: AnyObject, Sendable {
+    
+    /**
+     * The chunk plan (size + count) this encryptor follows.
+     */
+    func chunkPlan() throws  -> ChunkPlanResult
+    
+    /**
+     * How many chunks have been emitted so far.
+     */
+    func chunksEmitted() throws  -> UInt32
+    
+    /**
+     * Expected total ciphertext bytes: `file_size + 28 * chunk_count`. Use for
+     * `upload_init` without reading the whole file.
+     */
+    func expectedTotalCiphertext() throws  -> UInt64
+    
+    /**
+     * Consume the encryptor (by value) and return the summary after the integrity
+     * guard (detects a source that shrank). The handle is unusable afterwards.
+     */
+    func finish() throws  -> ChunkEncryptorSummaryDto
+    
+    /**
+     * PULL: emit the next encrypted chunk, or `None` once the plan is exhausted.
+     */
+    func nextChunk() throws  -> EncryptedChunkDto?
+    
+    /**
+     * PUSH: encrypt one caller-provided plaintext chunk.
+     */
+    func pushChunk(plaintext: Data) throws  -> EncryptedChunkDto
+    
+}
+/**
+ * Stateful streaming encryptor handle. Single-consumer (see module note).
+ *
+ * `inner` is `None` only after [`finish`](Self::finish) has consumed the
+ * encryptor; any method called afterwards returns `InvalidInput`.
+ */
+open class ChunkEncryptorHandle: ChunkEncryptorHandleProtocol, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_beebeeb_uniffi_fn_clone_chunkencryptorhandle(self.handle, $0) }
+    }
+    // No primary constructor declared for this class.
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_beebeeb_uniffi_fn_free_chunkencryptorhandle(handle, $0) }
+    }
+
+    
+    /**
+     * PUSH constructor: the caller slices the plaintext and feeds chunks via
+     * [`push_chunk`](Self::push_chunk). Plan derived from (`file_size`, `profile`).
+     */
+public static func forPush(masterKey: MasterKeyHandle, fileId: String, fileSize: UInt64, profile: String)throws  -> ChunkEncryptorHandle  {
+    return try  FfiConverterTypeChunkEncryptorHandle_lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
+    uniffi_beebeeb_uniffi_fn_constructor_chunkencryptorhandle_for_push(
+        FfiConverterTypeMasterKeyHandle_lower(masterKey),
+        FfiConverterString.lower(fileId),
+        FfiConverterUInt64.lower(fileSize),
+        FfiConverterString.lower(profile),$0
+    )
+})
+}
+    
+    /**
+     * PULL constructor: stream-encrypt a file from disk. The file is stat'd for
+     * its size and the chunk plan is derived from (`size`, `profile`). The key is
+     * derived in core from the borrowed master key.
+     *
+     * `profile` must be one of: `"desktop"`, `"web"`, `"mobile"`, `"backup"`.
+     */
+public static func fromFile(masterKey: MasterKeyHandle, fileId: String, inputPath: String, profile: String)throws  -> ChunkEncryptorHandle  {
+    return try  FfiConverterTypeChunkEncryptorHandle_lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
+    uniffi_beebeeb_uniffi_fn_constructor_chunkencryptorhandle_from_file(
+        FfiConverterTypeMasterKeyHandle_lower(masterKey),
+        FfiConverterString.lower(fileId),
+        FfiConverterString.lower(inputPath),
+        FfiConverterString.lower(profile),$0
+    )
+})
+}
+    
+
+    
+    /**
+     * The chunk plan (size + count) this encryptor follows.
+     */
+open func chunkPlan()throws  -> ChunkPlanResult  {
+    return try  FfiConverterTypeChunkPlanResult_lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
+    uniffi_beebeeb_uniffi_fn_method_chunkencryptorhandle_chunk_plan(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+    
+    /**
+     * How many chunks have been emitted so far.
+     */
+open func chunksEmitted()throws  -> UInt32  {
+    return try  FfiConverterUInt32.lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
+    uniffi_beebeeb_uniffi_fn_method_chunkencryptorhandle_chunks_emitted(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+    
+    /**
+     * Expected total ciphertext bytes: `file_size + 28 * chunk_count`. Use for
+     * `upload_init` without reading the whole file.
+     */
+open func expectedTotalCiphertext()throws  -> UInt64  {
+    return try  FfiConverterUInt64.lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
+    uniffi_beebeeb_uniffi_fn_method_chunkencryptorhandle_expected_total_ciphertext(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+    
+    /**
+     * Consume the encryptor (by value) and return the summary after the integrity
+     * guard (detects a source that shrank). The handle is unusable afterwards.
+     */
+open func finish()throws  -> ChunkEncryptorSummaryDto  {
+    return try  FfiConverterTypeChunkEncryptorSummaryDto_lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
+    uniffi_beebeeb_uniffi_fn_method_chunkencryptorhandle_finish(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+    
+    /**
+     * PULL: emit the next encrypted chunk, or `None` once the plan is exhausted.
+     */
+open func nextChunk()throws  -> EncryptedChunkDto?  {
+    return try  FfiConverterOptionTypeEncryptedChunkDto.lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
+    uniffi_beebeeb_uniffi_fn_method_chunkencryptorhandle_next_chunk(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+    
+    /**
+     * PUSH: encrypt one caller-provided plaintext chunk.
+     */
+open func pushChunk(plaintext: Data)throws  -> EncryptedChunkDto  {
+    return try  FfiConverterTypeEncryptedChunkDto_lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
+    uniffi_beebeeb_uniffi_fn_method_chunkencryptorhandle_push_chunk(
+            self.uniffiCloneHandle(),
+        FfiConverterData.lower(plaintext),$0
+    )
+})
+}
+    
+
+    
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeChunkEncryptorHandle: FfiConverter {
+    typealias FfiType = UInt64
+    typealias SwiftType = ChunkEncryptorHandle
+
+    public static func lift(_ handle: UInt64) throws -> ChunkEncryptorHandle {
+        return ChunkEncryptorHandle(unsafeFromHandle: handle)
+    }
+
+    public static func lower(_ value: ChunkEncryptorHandle) -> UInt64 {
+        return value.uniffiCloneHandle()
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ChunkEncryptorHandle {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: ChunkEncryptorHandle, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeChunkEncryptorHandle_lift(_ handle: UInt64) throws -> ChunkEncryptorHandle {
+    return try FfiConverterTypeChunkEncryptorHandle.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeChunkEncryptorHandle_lower(_ value: ChunkEncryptorHandle) -> UInt64 {
+    return FfiConverterTypeChunkEncryptorHandle.lower(value)
+}
+
+
+
+
+
+
+/**
  * Stateful decoder handle.
  */
 public protocol ConstellationDecoderHandleProtocol: AnyObject, Sendable {
@@ -1629,6 +2056,71 @@ public func FfiConverterTypeCachedFileEntryData_lower(_ value: CachedFileEntryDa
 
 
 /**
+ * Summary returned by [`ChunkEncryptorHandle::finish`] after the integrity guard.
+ */
+public struct ChunkEncryptorSummaryDto: Equatable, Hashable {
+    public var chunkCount: UInt32
+    public var totalPlaintext: UInt64
+    public var totalCiphertext: UInt64
+    public var chunkSizeBytes: UInt64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(chunkCount: UInt32, totalPlaintext: UInt64, totalCiphertext: UInt64, chunkSizeBytes: UInt64) {
+        self.chunkCount = chunkCount
+        self.totalPlaintext = totalPlaintext
+        self.totalCiphertext = totalCiphertext
+        self.chunkSizeBytes = chunkSizeBytes
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension ChunkEncryptorSummaryDto: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeChunkEncryptorSummaryDto: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ChunkEncryptorSummaryDto {
+        return
+            try ChunkEncryptorSummaryDto(
+                chunkCount: FfiConverterUInt32.read(from: &buf), 
+                totalPlaintext: FfiConverterUInt64.read(from: &buf), 
+                totalCiphertext: FfiConverterUInt64.read(from: &buf), 
+                chunkSizeBytes: FfiConverterUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: ChunkEncryptorSummaryDto, into buf: inout [UInt8]) {
+        FfiConverterUInt32.write(value.chunkCount, into: &buf)
+        FfiConverterUInt64.write(value.totalPlaintext, into: &buf)
+        FfiConverterUInt64.write(value.totalCiphertext, into: &buf)
+        FfiConverterUInt64.write(value.chunkSizeBytes, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeChunkEncryptorSummaryDto_lift(_ buf: RustBuffer) throws -> ChunkEncryptorSummaryDto {
+    return try FfiConverterTypeChunkEncryptorSummaryDto.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeChunkEncryptorSummaryDto_lower(_ value: ChunkEncryptorSummaryDto) -> RustBuffer {
+    return FfiConverterTypeChunkEncryptorSummaryDto.lower(value)
+}
+
+
+/**
  * Result of planning chunks for a file upload. Contains the chunk size and
  * count needed for the given file size and client profile.
  */
@@ -2009,6 +2501,63 @@ public func FfiConverterTypeConstellationSessionInitDto_lower(_ value: Constella
 
 
 /**
+ * One decrypted chunk produced by [`ChunkDecryptorHandle`].
+ */
+public struct DecryptedChunkDto: Equatable, Hashable {
+    public var index: UInt32
+    public var data: Data
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(index: UInt32, data: Data) {
+        self.index = index
+        self.data = data
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension DecryptedChunkDto: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeDecryptedChunkDto: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> DecryptedChunkDto {
+        return
+            try DecryptedChunkDto(
+                index: FfiConverterUInt32.read(from: &buf), 
+                data: FfiConverterData.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: DecryptedChunkDto, into buf: inout [UInt8]) {
+        FfiConverterUInt32.write(value.index, into: &buf)
+        FfiConverterData.write(value.data, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeDecryptedChunkDto_lift(_ buf: RustBuffer) throws -> DecryptedChunkDto {
+    return try FfiConverterTypeDecryptedChunkDto.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeDecryptedChunkDto_lower(_ value: DecryptedChunkDto) -> RustBuffer {
+    return FfiConverterTypeDecryptedChunkDto.lower(value)
+}
+
+
+/**
  * Result of decrypting chunk files back to a single file.
  */
 public struct DecryptedFileInfo: Equatable, Hashable {
@@ -2241,6 +2790,64 @@ public func FfiConverterTypeEncryptedChunkData_lift(_ buf: RustBuffer) throws ->
 #endif
 public func FfiConverterTypeEncryptedChunkData_lower(_ value: EncryptedChunkData) -> RustBuffer {
     return FfiConverterTypeEncryptedChunkData.lower(value)
+}
+
+
+/**
+ * One encrypted chunk produced by [`ChunkEncryptorHandle`]:
+ * `data` = `nonce(12) || ciphertext || tag(16)`.
+ */
+public struct EncryptedChunkDto: Equatable, Hashable {
+    public var index: UInt32
+    public var data: Data
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(index: UInt32, data: Data) {
+        self.index = index
+        self.data = data
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension EncryptedChunkDto: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeEncryptedChunkDto: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> EncryptedChunkDto {
+        return
+            try EncryptedChunkDto(
+                index: FfiConverterUInt32.read(from: &buf), 
+                data: FfiConverterData.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: EncryptedChunkDto, into buf: inout [UInt8]) {
+        FfiConverterUInt32.write(value.index, into: &buf)
+        FfiConverterData.write(value.data, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeEncryptedChunkDto_lift(_ buf: RustBuffer) throws -> EncryptedChunkDto {
+    return try FfiConverterTypeEncryptedChunkDto.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeEncryptedChunkDto_lower(_ value: EncryptedChunkDto) -> RustBuffer {
+    return FfiConverterTypeEncryptedChunkDto.lower(value)
 }
 
 
@@ -3889,6 +4496,54 @@ fileprivate struct FfiConverterOptionTypeConstellationPayloadDto: FfiConverterRu
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionTypeDecryptedChunkDto: FfiConverterRustBuffer {
+    typealias SwiftType = DecryptedChunkDto?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeDecryptedChunkDto.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeDecryptedChunkDto.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeEncryptedChunkDto: FfiConverterRustBuffer {
+    typealias SwiftType = EncryptedChunkDto?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeEncryptedChunkDto.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeEncryptedChunkDto.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionCallbackInterfaceDownloadProgressCallback: FfiConverterRustBuffer {
     typealias SwiftType = DownloadProgressCallback?
 
@@ -4941,6 +5596,30 @@ private let initializationResult: InitializationResult = {
     if (uniffi_beebeeb_uniffi_checksum_func_x25519_shared_secret() != 52845) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_beebeeb_uniffi_checksum_method_chunkdecryptorhandle_next_chunk() != 20032) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_method_chunkdecryptorhandle_push_frame() != 40122) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_method_chunkencryptorhandle_chunk_plan() != 33166) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_method_chunkencryptorhandle_chunks_emitted() != 41181) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_method_chunkencryptorhandle_expected_total_ciphertext() != 32489) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_method_chunkencryptorhandle_finish() != 32551) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_method_chunkencryptorhandle_next_chunk() != 56471) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_method_chunkencryptorhandle_push_chunk() != 41028) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_beebeeb_uniffi_checksum_method_constellationdecoderhandle_frames_ingested() != 10893) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -5011,6 +5690,18 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_export_for_keychain() != 50366) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_constructor_chunkdecryptorhandle_for_push() != 48588) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_constructor_chunkdecryptorhandle_from_file() != 31798) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_constructor_chunkencryptorhandle_for_push() != 9385) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_constructor_chunkencryptorhandle_from_file() != 26502) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_beebeeb_uniffi_checksum_constructor_constellationdecoderhandle_new() != 21598) {

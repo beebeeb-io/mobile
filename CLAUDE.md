@@ -70,7 +70,15 @@ Concurrency is managed by the thumbnail loading queue in `src/lib/thumbnail-cach
 
 ## Crypto
 
-Will consume `beebeeb-core` via UniFFI-generated Swift/Kotlin bindings. Crypto runs at native speed, not in JS.
+Consumes `beebeeb-core` via UniFFI-generated Swift/Kotlin bindings. Crypto runs at native speed, not in JS. The master key never leaves Rust/the keychain — Swift holds an opaque `MasterKeyHandle` and all derivation/encryption happens inside core.
+
+- **Bindings:** the generated Swift lives at `modules/beebeeb-crypto/ios/beebeeb_uniffi.swift` (the BeebeebCrypto pod compiles it as part of the module) and the static libs + C header are vendored in `ios/BeebeebCore.xcframework` (`libbeebeeb_uniffi.a` for device, `libbeebeeb_uniffi_sim_fat.a` for simulator). These are **generated artifacts** — regenerate them from `beebeeb-core`'s `build-ios.sh` (overwrite in place, no `pod install` needed since the podspec globs them) rather than hand-editing. They carry uniffi-bindgen template trailing whitespace; that is expected, not a lint failure to "fix".
+
+- **Native backup uploads (`NativeEncryptedBackupUploader.swift`)** use the shared streaming primitive `ChunkEncryptorHandle`:
+  - `ChunkEncryptorHandle.forPush(masterKey:, fileId:, fileSize:, profile: "mobile")` — `forPush` (not `fromFile`) because callers hold in-memory `Data`, not a file path.
+  - `chunkPlan()` gives `{chunkSizeBytes, chunkCount}` (derived in core from profile + size — never hardcode a chunk size). Slice the plaintext into plan-sized chunks; `pushChunk(plaintext:)` returns an `EncryptedChunkDto{index, data}` whose `data` is the full `nonce||ct||tag` frame to PUT directly. Then `finish()` runs the integrity guard **before** `upload/complete`.
+  - Wire contract preserved: `upload/init` still sends `size_bytes` = plaintext byte count (the server recomputes stored size from chunks); `chunk_count` comes from the plan.
+  - Profiles are `"desktop" | "web" | "mobile" | "backup"`. The photo/contacts/calendar backup managers call `NativeEncryptedBackupUploader.shared.upload(plaintext:…)`; the HTTP transport is still Swift (URLSession), the encryption is core.
 
 
 ## Graphify
