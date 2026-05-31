@@ -98,6 +98,8 @@ import SpeedtestScreen from './screens/SpeedtestScreen';
 import AdvancedSettingsScreen from './screens/AdvancedSettingsScreen';
 import ThumbnailQualityScreen from './screens/ThumbnailQualityScreen';
 import ThumbnailWorkerScreen from './screens/ThumbnailWorkerScreen';
+import FileRequestsScreen from './screens/FileRequestsScreen';
+import CreateFileRequestScreen from './screens/CreateFileRequestScreen';
 
 import ErrorBoundary from './components/ErrorBoundary';
 import ConfirmActionPrompt from './components/ConfirmActionPrompt';
@@ -154,6 +156,9 @@ export type RootStackParamList = {
   // Main app
   Tabs: undefined;
   Trash: undefined;
+  // File requests (0643)
+  FileRequests: undefined;
+  CreateFileRequest: undefined;
   Preview: {
     fileId: string;
     fileName: string;
@@ -170,6 +175,13 @@ export type RootStackParamList = {
     initialPhotoIndex?: number;
     /** Snapshot of the Photos screen performance profile to avoid a first-frame default. */
     performanceStorageProfile?: PerformanceStorageProfile;
+    // ── File-request uploads (0643) ──
+    // When set, the file arrived through a file request and must be decrypted
+    // with the request content key (resolved from these), NOT the master-key
+    // path. All three present ⇒ request file. See file-request-crypto.ts.
+    fileRequestId?: string | null;
+    senderEphemeralPubkey?: string | null;
+    wrappedContentKey?: string | null;
   };
   ShareSheet: {
     fileId: string;
@@ -1103,6 +1115,8 @@ export default function App() {
                     options={{ presentation: 'modal', animation: 'slide_from_bottom' }}
                   />
                   <Stack.Screen name="Trash" component={TrashScreen} />
+                  <Stack.Screen name="FileRequests" component={FileRequestsScreen} />
+                  <Stack.Screen name="CreateFileRequest" component={CreateFileRequestScreen} />
                   <Stack.Screen name="BackupGuides" component={BackupGuidesScreen} />
                   <Stack.Screen name="Privacy" component={PrivacyScreen} options={{ headerShown: false }} />
                   <Stack.Screen name="Storage" component={StorageScreen} options={{ headerShown: false }} />

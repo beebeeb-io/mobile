@@ -1192,7 +1192,25 @@ export default function PreviewScreen() {
     photoListJson,
     initialPhotoIndex,
     performanceStorageProfile: routePerformanceStorageProfile,
+    fileRequestId,
+    senderEphemeralPubkey,
+    wrappedContentKey,
   } = route.params;
+
+  // File-request uploads (0643): when all three sealed-key fields are present
+  // the file is decrypted with the request content key C, not the master-key
+  // path. Only applies to the single previewed file (never the photo-swipe set).
+  const requestFileFields = useMemo(
+    () =>
+      fileRequestId && senderEphemeralPubkey && wrappedContentKey
+        ? {
+            file_request_id: fileRequestId,
+            sender_ephemeral_pubkey: senderEphemeralPubkey,
+            wrapped_content_key: wrappedContentKey,
+          }
+        : null,
+    [fileRequestId, senderEphemeralPubkey, wrappedContentKey],
+  );
 
   // Parse the photo list for swipe navigation (passed from PhotosScreen)
   const photoList = useMemo<PhotoPageEntry[]>(() => {
@@ -1307,7 +1325,23 @@ export default function PreviewScreen() {
     }).catch(() => {});
   }, []);
 
-  const { isUnlocked, getFileKeyBytes, getMasterKeyHandleId } = useCrypto();
+  const { isUnlocked, getFileKeyBytes, getMasterKeyHandleId, getRequestContentKey } = useCrypto();
+
+  // Resolve the key provider + master-key handle for decryptToTempFile. For a
+  // file-request upload (0643) we hand it the request content key C and a null
+  // handle, which forces the explicit-key decrypt path (decryptChunksToFile)
+  // instead of the native master-key derivation that would produce the wrong
+  // key. Only the single previewed file can be a request upload — swiped photos
+  // always take the normal path.
+  const resolveDecryptKey = useCallback(
+    (id: string): { keyProvider: () => Promise<Uint8Array>; handleId: number | null } => {
+      if (requestFileFields && id === fileId) {
+        return { keyProvider: () => getRequestContentKey(requestFileFields), handleId: null };
+      }
+      return { keyProvider: () => getFileKeyBytes(id), handleId: getMasterKeyHandleId() };
+    },
+    [requestFileFields, fileId, getRequestContentKey, getFileKeyBytes, getMasterKeyHandleId],
+  );
 
   // Use current* values so derived state updates when swiping between photos
   const category = fileCategory(currentMimeType, currentFileName);
@@ -1480,18 +1514,21 @@ export default function PreviewScreen() {
           category,
           extension: ext || cacheFileName,
         });
-        decryptedUri = await decryptToTempFile(
-          currentFileId,
-          () => getFileKeyBytes(currentFileId),
-          ext || cacheFileName,
-          currentSizeBytes,
-          currentChunkCount,
-          getMasterKeyHandleId(),
-          {
-            onProgress: (event) => applyNativeProgress(event, setLoadProgress),
-            signal: options.signal,
-          },
-        );
+        {
+          const { keyProvider, handleId } = resolveDecryptKey(currentFileId);
+          decryptedUri = await decryptToTempFile(
+            currentFileId,
+            keyProvider,
+            ext || cacheFileName,
+            currentSizeBytes,
+            currentChunkCount,
+            handleId,
+            {
+              onProgress: (event) => applyNativeProgress(event, setLoadProgress),
+              signal: options.signal,
+            },
+          );
+        }
       } catch (error) {
         recordRuntimeTrace('preview.original.decrypt_failed', {
           fileId: currentFileId,
@@ -1523,6 +1560,7 @@ export default function PreviewScreen() {
     currentSizeBytes,
     getFileKeyBytes,
     getMasterKeyHandleId,
+    resolveDecryptKey,
     isUnlocked,
   ]);
 
@@ -1697,13 +1735,14 @@ export default function PreviewScreen() {
 
     (async () => {
       try {
+        const { keyProvider: pdfKeyProvider, handleId: pdfHandleId } = resolveDecryptKey(currentFileId);
         const tempPath = await decryptToTempFile(
           currentFileId,
-          () => getFileKeyBytes(currentFileId),
+          pdfKeyProvider,
           'pdf',
           currentSizeBytes,
           currentChunkCount,
-          getMasterKeyHandleId(),
+          pdfHandleId,
           {
             onProgress: (event) => applyNativeProgress(event, setLoadProgress),
             signal: controller.signal,
@@ -1727,7 +1766,7 @@ export default function PreviewScreen() {
       cancelled = true;
       controller.abort();
     };
-  }, [isPdf, isUnlocked, currentFileId, getFileKeyBytes, getMasterKeyHandleId, currentSizeBytes, currentChunkCount]);
+  }, [isPdf, isUnlocked, currentFileId, getFileKeyBytes, getMasterKeyHandleId, resolveDecryptKey, currentSizeBytes, currentChunkCount]);
 
   // Auto-load text/code/JSON inline on mount — read decrypted file as UTF-8
   useEffect(() => {

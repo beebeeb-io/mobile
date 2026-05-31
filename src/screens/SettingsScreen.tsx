@@ -2453,6 +2453,13 @@ export default function SettingsScreen() {
             />
             <RowDivider c={c} />
             <SettingsRow
+              label="File requests"
+              icon="link-outline"
+              onPress={() => navigation.navigate('FileRequests')}
+              c={c}
+            />
+            <RowDivider c={c} />
+            <SettingsRow
               label="Available offline"
               icon="cloud-download-outline"
               badge="Coming soon"
