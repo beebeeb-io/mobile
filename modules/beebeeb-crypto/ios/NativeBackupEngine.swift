@@ -1787,28 +1787,8 @@ final class NativeBackupEngine: NSObject {
       onFileStatus?(asset.localAssetId, "encrypting", nil, nil)
 
       guard isRunning && !Task.isCancelled else { return false }
-      // 1. Get photo data from PHAsset
-      let (data, uti) = try await fetchAssetData(localId: asset.localAssetId)
-      guard canStageEncryptedAsset(plaintextBytes: Int64(data.count)) else {
-        dbQueue.sync {
-          markPending(assetId: asset.localAssetId, error: "Waiting for free iPhone storage before staging backup")
-        }
-        updateBackupStatusSurfaces(reason: "Waiting for iPhone storage")
-        return false
-      }
-      guard isRunning && !Task.isCancelled else { return false }
-
-      // 2. Generate file ID
+      // 1. Generate file ID + the on-disk chunk temp area (shared by both paths)
       let fileId = UUID().uuidString.lowercased()
-      guard isRunning && !Task.isCancelled else { return false }
-
-      // 3. Encrypt chunks to temp files on disk via the shared beebeeb-core
-      //    ladder (task 0672). The encryptor owns the chunk plan (mobile
-      //    profile) — no hardcoded 4 MiB — derives the per-file key in Rust from
-      //    the borrowed MasterKeyHandle, and `finish()` runs the integrity guard
-      //    before we stage/upload. Each `chunk.data` is the full
-      //    `nonce||ct||tag` frame, byte-identical to the previous
-      //    `nonce`+`ciphertext` layout, so existing downloads decrypt unchanged.
       let tempDir = NSTemporaryDirectory()
       var chunkPaths: [String] = []
       defer {
@@ -1816,33 +1796,96 @@ final class NativeBackupEngine: NSObject {
           try? FileManager.default.removeItem(atPath: path)
         }
       }
-      let encryptor = try ChunkEncryptorHandle.forPush(
-        masterKey: masterKey,
-        fileId: fileId,
-        fileSize: UInt64(data.count),
-        profile: Self.chunkProfile
-      )
-      let plan = try encryptor.chunkPlan()
-      let planChunkSize = Int(plan.chunkSizeBytes)
-      let planChunkCount = Int(plan.chunkCount)
-      for index in 0..<planChunkCount {
-        guard isRunning && !Task.isCancelled else { return false }
-        let start = index * planChunkSize
-        let end = min(start + planChunkSize, data.count)
-        let slice = start < end ? data.subdata(in: start..<end) : Data()
-        let chunk = try encryptor.pushChunk(plaintext: slice)
-        let path = (tempDir as NSString).appendingPathComponent("upload-\(fileId)-\(Int(chunk.index)).enc")
-        try chunk.data.write(to: URL(fileURLWithPath: path))
-        chunkPaths.append(path)
-      }
-      // Integrity guard (detects a source that shrank) before staging.
-      _ = try encryptor.finish()
       guard isRunning && !Task.isCancelled else { return false }
 
-      // 4. Encrypt filename
-      let ext = fileExtension(for: uti)
+      // 2. Encrypt to temp chunk files via the shared beebeeb-core ladder (task
+      //    0672). Core owns the chunk plan (mobile profile) — no hardcoded 4 MiB
+      //    — derives the per-file key in Rust from the borrowed MasterKeyHandle,
+      //    and `finish()` runs the integrity guard before we stage/upload. Each
+      //    frame (`chunk.data` = nonce||ct||tag) is byte-identical to the prior
+      //    nonce+ciphertext layout, so existing downloads decrypt unchanged.
+      //
+      //    Videos stream straight from disk via `fromFile` so a multi-GB clip
+      //    never enters RAM; photos use the in-memory `forPush` path. A video
+      //    not backed by a readable on-disk AVURLAsset (e.g. a composition)
+      //    falls through to the in-memory path — unchanged from before.
+      let resolvedUti: String
+      let resolvedOriginalSize: Int
+
+      if asset.assetType == "video",
+         let videoSource = try await fetchVideoFileSource(localId: asset.localAssetId) {
+        resolvedUti = videoSource.uti
+        resolvedOriginalSize = videoSource.sizeBytes
+        guard canStageEncryptedAsset(plaintextBytes: Int64(resolvedOriginalSize)) else {
+          dbQueue.sync {
+            markPending(assetId: asset.localAssetId, error: "Waiting for free iPhone storage before staging backup")
+          }
+          updateBackupStatusSurfaces(reason: "Waiting for iPhone storage")
+          return false
+        }
+        guard isRunning && !Task.isCancelled else { return false }
+        // Hold the AVURLAsset alive for the whole pull loop so its backing file
+        // URL stays valid (task 0672 — risk #1: video-URL lifetime). The loop
+        // reads one core-planned chunk at a time → peak memory ≈ one chunk.
+        let completed: Bool = try withExtendedLifetime(videoSource) { () throws -> Bool in
+          let encryptor = try ChunkEncryptorHandle.fromFile(
+            masterKey: masterKey,
+            fileId: fileId,
+            inputPath: videoSource.url.path,
+            profile: Self.chunkProfile
+          )
+          while let chunk = try encryptor.nextChunk() {
+            guard isRunning && !Task.isCancelled else { return false }
+            let path = (tempDir as NSString).appendingPathComponent("upload-\(fileId)-\(Int(chunk.index)).enc")
+            try chunk.data.write(to: URL(fileURLWithPath: path))
+            chunkPaths.append(path)
+          }
+          // Integrity guard (detects a source that shrank) before staging.
+          _ = try encryptor.finish()
+          return true
+        }
+        guard completed else { return false }
+      } else {
+        // In-memory path: photos, and any video without a streamable file URL.
+        let (data, uti) = try await fetchAssetData(localId: asset.localAssetId)
+        guard canStageEncryptedAsset(plaintextBytes: Int64(data.count)) else {
+          dbQueue.sync {
+            markPending(assetId: asset.localAssetId, error: "Waiting for free iPhone storage before staging backup")
+          }
+          updateBackupStatusSurfaces(reason: "Waiting for iPhone storage")
+          return false
+        }
+        guard isRunning && !Task.isCancelled else { return false }
+        resolvedUti = uti
+        resolvedOriginalSize = data.count
+        let encryptor = try ChunkEncryptorHandle.forPush(
+          masterKey: masterKey,
+          fileId: fileId,
+          fileSize: UInt64(data.count),
+          profile: Self.chunkProfile
+        )
+        let plan = try encryptor.chunkPlan()
+        let planChunkSize = Int(plan.chunkSizeBytes)
+        let planChunkCount = Int(plan.chunkCount)
+        for index in 0..<planChunkCount {
+          guard isRunning && !Task.isCancelled else { return false }
+          let start = index * planChunkSize
+          let end = min(start + planChunkSize, data.count)
+          let slice = start < end ? data.subdata(in: start..<end) : Data()
+          let chunk = try encryptor.pushChunk(plaintext: slice)
+          let path = (tempDir as NSString).appendingPathComponent("upload-\(fileId)-\(Int(chunk.index)).enc")
+          try chunk.data.write(to: URL(fileURLWithPath: path))
+          chunkPaths.append(path)
+        }
+        // Integrity guard (detects a source that shrank) before staging.
+        _ = try encryptor.finish()
+      }
+      guard isRunning && !Task.isCancelled else { return false }
+
+      // 3. Encrypt filename
+      let ext = fileExtension(for: resolvedUti)
       let filename = "IMG_\(fileId).\(ext)"
-      let mimeType = mimeTypeFromUTI(uti)
+      let mimeType = mimeTypeFromUTI(resolvedUti)
       let nameEncrypted = try masterKey.encryptName(fileId: fileId, filename: filename, mimeType: mimeType)
       guard isRunning && !Task.isCancelled else { return false }
 
@@ -1851,7 +1894,7 @@ final class NativeBackupEngine: NSObject {
         fileId: fileId,
         nameEncrypted: nameEncrypted,
         mimeType: mimeType,
-        originalSize: data.count,
+        originalSize: resolvedOriginalSize,
         chunkPaths: chunkPaths
       )
       chunkPaths.removeAll()
@@ -2356,6 +2399,64 @@ final class NativeBackupEngine: NSObject {
           } catch {
             continuation.resume(throwing: error)
           }
+        }
+      }
+    }
+  }
+
+  /// A streamable on-disk source for a camera-roll video. Holds the `AVURLAsset`
+  /// so its backing file URL stays valid for the entire `fromFile` pull loop
+  /// (task 0672 — the video is encrypted directly from disk, never read into
+  /// RAM).
+  private struct StagedVideoSource {
+    let asset: AVURLAsset  // retained to keep `url` valid across the loop
+    let url: URL
+    let uti: String
+    let sizeBytes: Int
+  }
+
+  /// Resolve a readable on-disk file URL for a video PHAsset, for streaming
+  /// encryption via `ChunkEncryptorHandle.fromFile`. Returns nil for videos not
+  /// backed by a readable on-disk `AVURLAsset` (e.g. compositions / slo-mo), in
+  /// which case the caller falls back to the in-memory path — the same outcome
+  /// as before task 0672. Throws `assetNotFound` if the asset is gone.
+  private func fetchVideoFileSource(localId: String) async throws -> StagedVideoSource? {
+    let fetchResult = PHAsset.fetchAssets(withLocalIdentifiers: [localId], options: nil)
+    guard let phAsset = fetchResult.firstObject else {
+      throw BackupError.assetNotFound
+    }
+    guard phAsset.mediaType == .video else { return nil }
+
+    return try await withCheckedThrowingContinuation { continuation in
+      let options = PHVideoRequestOptions()
+      options.version = .original
+      options.isNetworkAccessAllowed = true
+
+      PHImageManager.default().requestAVAsset(forVideo: phAsset, options: options) { avAsset, _, info in
+        Self.phkitCallbackQueue.async {
+          if let error = info?[PHImageErrorKey] as? Error {
+            continuation.resume(throwing: error)
+            return
+          }
+          guard let urlAsset = avAsset as? AVURLAsset, self.readableRegularFile(urlAsset.url) else {
+            // Composition / non-URL-backed asset — fall back to the in-memory path.
+            continuation.resume(returning: nil)
+            return
+          }
+          let size = (try? urlAsset.url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+          guard size > 0 else {
+            continuation.resume(returning: nil)
+            return
+          }
+          let uti = urlAsset.url.pathExtension.lowercased() == "mov"
+            ? "com.apple.quicktime-movie"
+            : "public.mpeg-4"
+          continuation.resume(returning: StagedVideoSource(
+            asset: urlAsset,
+            url: urlAsset.url,
+            uti: uti,
+            sizeBytes: size
+          ))
         }
       }
     }
