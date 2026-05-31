@@ -23,6 +23,7 @@ import {
 } from '../../modules/beebeeb-crypto'
 import type { EncryptedData } from '../../modules/beebeeb-crypto'
 import { setBackupEncryption, getKeepVaultUnlocked } from '../services/BackupService'
+import { recordRuntimeTrace } from './runtime-trace'
 
 // ─── Master key cache lifecycle (task 0556) ────────────────────────────────
 //
@@ -91,15 +92,24 @@ async function storeMasterKey(masterKey: Uint8Array): Promise<void> {
   const encoded = uint8ToBase64(masterKey)
   const softwareFallbackRuntime = usesSoftwareVaultFallback()
   let nativeKeychainStored = false
+  recordRuntimeTrace('keychain.store.request', {
+    label: MASTER_KEY_LABEL,
+    softwareFallbackRuntime,
+  })
   try {
     await storeKeyInKeychain(masterKey, MASTER_KEY_LABEL)
     nativeKeychainStored = true
+    recordRuntimeTrace('keychain.store.native_success', { label: MASTER_KEY_LABEL })
   } catch {
     // Secure Enclave unavailable — fall through to software fallback.
+    recordRuntimeTrace('keychain.store.native_failed', { label: MASTER_KEY_LABEL })
   }
   const useSoftwareFallback = !nativeKeychainStored || softwareFallbackRuntime
   if (useSoftwareFallback) {
     await SecureStore.setItemAsync(MASTER_KEY_FALLBACK_LABEL, encoded)
+    recordRuntimeTrace('keychain.store.software_fallback_written', {
+      label: MASTER_KEY_FALLBACK_LABEL,
+    })
   }
   if (useSoftwareFallback && FileSystem.documentDirectory) {
     await FileSystem.writeAsStringAsync(SIMULATOR_MASTER_KEY_FILE, encoded)
@@ -118,7 +128,10 @@ async function storeMasterKey(masterKey: Uint8Array): Promise<void> {
  */
 async function loadVerifiedMasterKeyHandle(): Promise<number | null> {
   const checkB64 = await SecureStore.getItemAsync(MASTER_KEY_CHECK_LABEL).catch(() => null)
-  if (!checkB64) return null
+  if (!checkB64) {
+    recordRuntimeTrace('keychain.load.no_recovery_check', { label: MASTER_KEY_CHECK_LABEL })
+    return null
+  }
 
   const expected = base64ToUint8(checkB64)
 
@@ -149,25 +162,52 @@ async function loadVerifiedMasterKeyHandle(): Promise<number | null> {
   // Primary: Secure Enclave-wrapped key (real devices)
   if (!usesSoftwareVaultFallback()) {
     try {
+      recordRuntimeTrace('keychain.load.native_handle_request', {
+        label: MASTER_KEY_LABEL,
+        promptMayAppear: true,
+        source: 'loadVerifiedMasterKeyHandle',
+      })
       const handleId = await loadKeyFromKeychainAsHandle(MASTER_KEY_LABEL)
       if (handleId != null) {
-        if (await verifyHandle(handleId)) return handleId
+        if (await verifyHandle(handleId)) {
+          recordRuntimeTrace('keychain.load.native_handle_success', {
+            label: MASTER_KEY_LABEL,
+            handleId,
+          })
+          return handleId
+        }
         // Verification failed — release the handle
         await releaseHandle(handleId).catch(() => {})
+        recordRuntimeTrace('keychain.load.native_handle_verify_failed', {
+          label: MASTER_KEY_LABEL,
+          handleId,
+        })
       }
     } catch {
       // SE unavailable — try fallback below
+      recordRuntimeTrace('keychain.load.native_handle_failed', { label: MASTER_KEY_LABEL })
     }
   }
 
   // Fallback: SecureStore (simulator, or SE failure on older/unavailable devices)
   const raw = await SecureStore.getItemAsync(MASTER_KEY_FALLBACK_LABEL).catch(() => null)
   const fallbackHandle = await verifyAndCreateHandle(raw ? base64ToUint8(raw) : null)
-  if (fallbackHandle != null) return fallbackHandle
+  if (fallbackHandle != null) {
+    recordRuntimeTrace('keychain.load.software_fallback_success', {
+      label: MASTER_KEY_FALLBACK_LABEL,
+      handleId: fallbackHandle,
+    })
+    return fallbackHandle
+  }
 
   if (usesSoftwareVaultFallback() && FileSystem.documentDirectory) {
     const fileRaw = await FileSystem.readAsStringAsync(SIMULATOR_MASTER_KEY_FILE).catch(() => null)
-    return verifyAndCreateHandle(fileRaw ? base64ToUint8(fileRaw) : null)
+    const fileHandle = await verifyAndCreateHandle(fileRaw ? base64ToUint8(fileRaw) : null)
+    recordRuntimeTrace('keychain.load.simulator_file_result', {
+      found: fileHandle != null,
+      handleId: fileHandle,
+    })
+    return fileHandle
   }
 
   return null
@@ -220,6 +260,10 @@ function updateVaultUnlockDiagnostics(patch: Partial<VaultUnlockDiagnostics>): V
 }
 
 function logVaultUnlockDiagnostic(event: string, fields: Record<string, unknown>): void {
+  recordRuntimeTrace('vault.unlock', {
+    event,
+    ...fields,
+  })
   logDiagnostic('vault.unlock', {
     event,
     ...fields,
@@ -492,6 +536,9 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
   }, [unlockAttempted])
 
   const lock = useCallback(() => {
+    recordRuntimeTrace('vault.lock.request', {
+      hadHandle: masterKeyHandleId.current != null,
+    })
     if (masterKeyHandleId.current != null) {
       // Release the native handle — Rust will zeroize and drop the key material
       void releaseHandle(masterKeyHandleId.current).catch(() => {})
@@ -501,7 +548,10 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
   }, [])
 
   const requireHandleId = (): number => {
-    if (masterKeyHandleId.current == null) throw new Error('Vault is locked. Please lock and unlock the app, then try uploading again.')
+    if (masterKeyHandleId.current == null) {
+      recordRuntimeTrace('vault.handle.missing', { hasHandle: false })
+      throw new Error('Vault is locked. Please lock and unlock the app, then try uploading again.')
+    }
     return masterKeyHandleId.current
   }
 
@@ -595,6 +645,10 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
   const setBiometricRequirementFn = useCallback(
     async (require: boolean): Promise<void> => {
       if (Platform.OS !== 'ios' || usesSoftwareVaultFallback()) return
+      recordRuntimeTrace('keychain.biometric_requirement.request', {
+        require,
+        hasHandle: masterKeyHandleId.current != null,
+      })
       // Re-wrap the SE blob from the cached handle. The previous
       // implementation called `loadKeyFromKeychain(MASTER_KEY_LABEL)`,
       // which prompted Face ID under the old policy before we even got
@@ -606,7 +660,17 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
       // back to the legacy raw-bytes path.
       const handleId = requireHandleId()
       const ok = await replaceKeychainAccessControlFromHandle(handleId, require, MASTER_KEY_LABEL)
-      if (ok) return
+      if (ok) {
+        recordRuntimeTrace('keychain.biometric_requirement.native_rewrap_success', {
+          require,
+          handleId,
+        })
+        return
+      }
+      recordRuntimeTrace('keychain.biometric_requirement.legacy_fallback_request', {
+        require,
+        promptMayAppear: true,
+      })
       const { loadKeyFromKeychain } = await import('../../modules/beebeeb-crypto')
       const raw = await loadKeyFromKeychain(MASTER_KEY_LABEL)
       if (!raw) throw new Error('Vault is locked — cannot change biometric requirement')

@@ -141,8 +141,14 @@ final class KeychainManager {
   /// no-access-group keychain item, re-stores with the access group set so
   /// the migration is idempotent.
   static func load(label: String) throws -> Data? {
+    RuntimeTrace.event("keychain.manager.load.request", [
+      "label": label,
+      "mode": "primaryOnly",
+      "promptMayAppear": true
+    ])
     #if DEBUG && targetEnvironment(simulator)
     if let simulatorKey = try loadSimulatorSoftwareKey(label: label) {
+      RuntimeTrace.event("keychain.manager.load.simulator_success", ["label": label])
       return simulatorKey
     }
     #endif
@@ -153,9 +159,11 @@ final class KeychainManager {
       // If no blob exists, return nil; if the SE key is missing entirely,
       // surface as a typed error so the JS layer can fall back to recovery.
       if BeebeebKeychainCore.fetchWrappedBlob(service: BeebeebKeychainCore.wrappedKeyService, label: label) == nil {
+        RuntimeTrace.event("keychain.manager.load.miss", ["label": label])
         return nil
       }
       // Blob exists but SE-decrypt failed — likely missing SE key
+      RuntimeTrace.event("keychain.manager.load.se_key_not_found", ["label": label])
       throw KeychainError.seKeyNotFound
     }
 
@@ -167,6 +175,7 @@ final class KeychainManager {
     // already had the access group, this is a no-op rewrite.
     try? store(masterKeyBytes: plaintextData, label: label)
 
+    RuntimeTrace.event("keychain.manager.load.success", ["label": label])
     return plaintextData
   }
 
@@ -192,9 +201,18 @@ final class KeychainManager {
   static func setAccessControl(requireBiometric: Bool) throws {
     let wasBiometric = requiresBiometric
     requiresBiometric = requireBiometric
+    RuntimeTrace.event("keychain.manager.set_access_control.request", [
+      "requireBiometric": requireBiometric,
+      "wasBiometric": wasBiometric,
+      "promptMayAppear": wasBiometric
+    ])
 
     guard wasBiometric != requireBiometric,
           let oldSEKey = BeebeebKeychainCore.findSEKey(tag: BeebeebKeychainCore.seKeyTag) else {
+      RuntimeTrace.event("keychain.manager.set_access_control.noop", [
+        "requireBiometric": requireBiometric,
+        "wasBiometric": wasBiometric
+      ])
       return
     }
 
@@ -211,6 +229,10 @@ final class KeychainManager {
     var allItems: CFTypeRef?
     let fetchStatus = SecItemCopyMatching(fetchQuery as CFDictionary, &allItems)
     let items = fetchStatus == errSecSuccess ? (allItems as? [[CFString: Any]] ?? []) : []
+    RuntimeTrace.event("keychain.manager.set_access_control.items_fetched", [
+      "count": items.count,
+      "status": fetchStatus
+    ])
 
     // Decrypt each blob with the old SE key (triggers auth prompt if needed)
     var plaintexts: [(account: String, data: Data)] = []
@@ -259,6 +281,10 @@ final class KeychainManager {
     for item in plaintexts {
       try storeExtensionWrappedKey(masterKeyBytes: item.data, label: item.account)
     }
+    RuntimeTrace.event("keychain.manager.set_access_control.success", [
+      "requireBiometric": requireBiometric,
+      "rewrapped": plaintexts.count
+    ])
   }
 
   /// Switch access control using the already-unlocked master key.
@@ -267,7 +293,15 @@ final class KeychainManager {
   /// When the user enables Face ID from Settings, using that plaintext avoids
   /// one extra prompt under the old device-passcode policy.
   static func replaceAccessControl(requireBiometric: Bool, masterKeyBytes: Data, label: String) throws {
+    RuntimeTrace.event("keychain.manager.replace_access_control.request", [
+      "requireBiometric": requireBiometric,
+      "label": label
+    ])
     guard masterKeyBytes.count == 32 else {
+      RuntimeTrace.event("keychain.manager.replace_access_control.invalid_key_size", [
+        "label": label,
+        "size": masterKeyBytes.count
+      ])
       throw KeychainError.invalidMasterKeySize
     }
 
@@ -278,11 +312,20 @@ final class KeychainManager {
 
     do {
       try store(masterKeyBytes: masterKeyBytes, label: label)
+      RuntimeTrace.event("keychain.manager.replace_access_control.success", [
+        "requireBiometric": requireBiometric,
+        "label": label
+      ])
     } catch {
       deleteSEKey()
       deleteWrappedItems()
       requiresBiometric = previousPolicy
       try? store(masterKeyBytes: masterKeyBytes, label: label)
+      RuntimeTrace.event("keychain.manager.replace_access_control.failed_rolled_back", [
+        "requireBiometric": requireBiometric,
+        "label": label,
+        "error": error.localizedDescription
+      ])
       throw error
     }
   }
