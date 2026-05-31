@@ -3458,6 +3458,64 @@ public func FfiConverterTypeResizeResult_lower(_ value: ResizeResult) -> RustBuf
 
 
 /**
+ * A content key sealed to a request public key: the uploader's ephemeral
+ * X25519 public key and the wrapped content key (raw `nonce ‖ ciphertext`).
+ */
+public struct SealedRequestUpload: Equatable, Hashable {
+    public var ePub: Data
+    public var wrappedKey: Data
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(ePub: Data, wrappedKey: Data) {
+        self.ePub = ePub
+        self.wrappedKey = wrappedKey
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension SealedRequestUpload: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeSealedRequestUpload: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SealedRequestUpload {
+        return
+            try SealedRequestUpload(
+                ePub: FfiConverterData.read(from: &buf), 
+                wrappedKey: FfiConverterData.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: SealedRequestUpload, into buf: inout [UInt8]) {
+        FfiConverterData.write(value.ePub, into: &buf)
+        FfiConverterData.write(value.wrappedKey, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSealedRequestUpload_lift(_ buf: RustBuffer) throws -> SealedRequestUpload {
+    return try FfiConverterTypeSealedRequestUpload.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSealedRequestUpload_lower(_ value: SealedRequestUpload) -> RustBuffer {
+    return FfiConverterTypeSealedRequestUpload.lower(value)
+}
+
+
+/**
  * Result of a successful file upload.
  */
 public struct UploadResultData: Equatable, Hashable {
@@ -3519,6 +3577,64 @@ public func FfiConverterTypeUploadResultData_lift(_ buf: RustBuffer) throws -> U
 #endif
 public func FfiConverterTypeUploadResultData_lower(_ value: UploadResultData) -> RustBuffer {
     return FfiConverterTypeUploadResultData.lower(value)
+}
+
+
+/**
+ * A request's X25519 private key wrapped under the owner's master key
+ * (AES-256-GCM ciphertext + nonce). Stored server-side.
+ */
+public struct WrappedRequestPrivate: Equatable, Hashable {
+    public var wrapped: Data
+    public var nonce: Data
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(wrapped: Data, nonce: Data) {
+        self.wrapped = wrapped
+        self.nonce = nonce
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension WrappedRequestPrivate: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeWrappedRequestPrivate: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> WrappedRequestPrivate {
+        return
+            try WrappedRequestPrivate(
+                wrapped: FfiConverterData.read(from: &buf), 
+                nonce: FfiConverterData.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: WrappedRequestPrivate, into buf: inout [UInt8]) {
+        FfiConverterData.write(value.wrapped, into: &buf)
+        FfiConverterData.write(value.nonce, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeWrappedRequestPrivate_lift(_ buf: RustBuffer) throws -> WrappedRequestPrivate {
+    return try FfiConverterTypeWrappedRequestPrivate.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeWrappedRequestPrivate_lower(_ value: WrappedRequestPrivate) -> RustBuffer {
+    return FfiConverterTypeWrappedRequestPrivate.lower(value)
 }
 
 
@@ -5009,6 +5125,18 @@ public func deriveMasterKey(password: String, salt: Data)throws  -> MasterKeyRes
 })
 }
 /**
+ * Derive the per-request private-key-wrapping key from the owner's master key.
+ * Returns 32 bytes.
+ */
+public func deriveRequestWrapKey(masterKey: Data, requestId: Data)throws  -> Data  {
+    return try  FfiConverterData.lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
+    uniffi_beebeeb_uniffi_fn_func_derive_request_wrap_key(
+        FfiConverterData.lower(masterKey),
+        FfiConverterData.lower(requestId),$0
+    )
+})
+}
+/**
  * Derive `length` bytes from a shared secret using HKDF-SHA256.
  *
  * Used for SAS word derivation — the word list lookup stays in JS/Swift.
@@ -5264,6 +5392,19 @@ public func opaqueRegistrationStart(password: Data)throws  -> OpaqueStartResult 
 })
 }
 /**
+ * Open a sealed request upload (owner decrypt path). Returns the 32-byte content key.
+ */
+public func openRequestUpload(rPriv: Data, ePub: Data, fileId: Data, wrappedKey: Data)throws  -> Data  {
+    return try  FfiConverterData.lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
+    uniffi_beebeeb_uniffi_fn_func_open_request_upload(
+        FfiConverterData.lower(rPriv),
+        FfiConverterData.lower(ePub),
+        FfiConverterData.lower(fileId),
+        FfiConverterData.lower(wrappedKey),$0
+    )
+})
+}
+/**
  * Parse a JSON-encoded encrypted metadata payload.
  *
  * Accepts both base64 strings (canonical) and numeric arrays (legacy).
@@ -5366,6 +5507,18 @@ public func resizeForThumbnail(rgba: Data, srcWidth: UInt32, srcHeight: UInt32, 
 })
 }
 /**
+ * Seal a content key to a request's public key (anonymous uploader path).
+ */
+public func sealToRequest(rPub: Data, fileId: Data, contentKey: Data)throws  -> SealedRequestUpload  {
+    return try  FfiConverterTypeSealedRequestUpload_lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
+    uniffi_beebeeb_uniffi_fn_func_seal_to_request(
+        FfiConverterData.lower(rPub),
+        FfiConverterData.lower(fileId),
+        FfiConverterData.lower(contentKey),$0
+    )
+})
+}
+/**
  * Serialize a nonce + ciphertext pair into the canonical JSON metadata format.
  *
  * Output: `{"nonce":"<base64>","ciphertext":"<base64>"}`.
@@ -5399,6 +5552,19 @@ public func storageFormatSi(bytes: Int64) -> String  {
 })
 }
 /**
+ * Unwrap a request's X25519 private key. Returns 32 bytes.
+ */
+public func unwrapRequestPrivate(masterKey: Data, requestId: Data, wrapped: Data, nonce: Data)throws  -> Data  {
+    return try  FfiConverterData.lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
+    uniffi_beebeeb_uniffi_fn_func_unwrap_request_private(
+        FfiConverterData.lower(masterKey),
+        FfiConverterData.lower(requestId),
+        FfiConverterData.lower(wrapped),
+        FfiConverterData.lower(nonce),$0
+    )
+})
+}
+/**
  * Upload encrypted chunk files to the server. Blocking — call from Swift's
  * `Task { }` or Kotlin's `withContext(Dispatchers.IO) { }`.
  *
@@ -5418,6 +5584,18 @@ public func uploadEncryptedFile(apiUrl: String, token: String, fileId: String, n
         FfiConverterUInt64.lower(originalSize),
         FfiConverterOptionString.lower(createdAt),
         FfiConverterOptionCallbackInterfaceUploadProgressCallback.lower(callback),$0
+    )
+})
+}
+/**
+ * Wrap a request's X25519 private key under the owner's master key.
+ */
+public func wrapRequestPrivate(masterKey: Data, requestId: Data, rPriv: Data)throws  -> WrappedRequestPrivate  {
+    return try  FfiConverterTypeWrappedRequestPrivate_lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
+    uniffi_beebeeb_uniffi_fn_func_wrap_request_private(
+        FfiConverterData.lower(masterKey),
+        FfiConverterData.lower(requestId),
+        FfiConverterData.lower(rPriv),$0
     )
 })
 }
@@ -5491,6 +5669,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_beebeeb_uniffi_checksum_func_derive_master_key() != 58065) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_beebeeb_uniffi_checksum_func_derive_request_wrap_key() != 57226) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_beebeeb_uniffi_checksum_func_derive_sas_bytes() != 47034) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -5554,6 +5735,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_beebeeb_uniffi_checksum_func_opaque_registration_start() != 35428) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_beebeeb_uniffi_checksum_func_open_request_upload() != 62082) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_beebeeb_uniffi_checksum_func_parse_encrypted_metadata() != 44121) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -5581,6 +5765,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_beebeeb_uniffi_checksum_func_resize_for_thumbnail() != 49314) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_beebeeb_uniffi_checksum_func_seal_to_request() != 8770) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_beebeeb_uniffi_checksum_func_serialize_encrypted_metadata() != 54488) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -5590,7 +5777,13 @@ private let initializationResult: InitializationResult = {
     if (uniffi_beebeeb_uniffi_checksum_func_storage_format_si() != 41780) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_beebeeb_uniffi_checksum_func_unwrap_request_private() != 44962) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_beebeeb_uniffi_checksum_func_upload_encrypted_file() != 24232) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_func_wrap_request_private() != 37314) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_beebeeb_uniffi_checksum_func_x25519_shared_secret() != 52845) {
