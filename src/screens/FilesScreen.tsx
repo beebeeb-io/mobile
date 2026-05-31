@@ -1941,13 +1941,20 @@ export default function FilesScreen() {
 
   // Quick action / deep-link landing: route.params.action is set by the App
   // shortcut handler (beebeeb://upload, beebeeb://search, beebeeb://scan,
-  // beebeeb://recent). Trigger the right surface and clear the param so
-  // subsequent focuses don't re-fire it.
+  // beebeeb://recent) and by the Files tab reselect handler. Trigger the
+  // right surface and clear the param so subsequent focuses don't re-fire it.
   useEffect(() => {
     const action = route.params?.action;
     if (!action) return;
     navigation.setParams({ action: undefined });
-    if (action === 'upload') {
+    if (action === 'root') {
+      setSearchActive(false);
+      setSearchQuery('');
+      setRecentFilterActive(false);
+      setSelectMode(false);
+      setSelectedIds(new Set());
+      setFolderStack([{ id: null, name: 'Drive' }]);
+    } else if (action === 'upload') {
       pickAndUploadFile();
     } else if (action === 'search') {
       setSearchActive(true);

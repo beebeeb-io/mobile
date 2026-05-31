@@ -16,6 +16,7 @@ import { Icon } from './components/Icon';
 import { colors } from './theme';
 import * as Font from 'expo-font';
 import { ThemeProvider, useTheme } from './lib/theme-context';
+import type { PerformanceStorageProfile } from './lib/performance-storage-settings';
 import { ToastProvider } from './lib/toast-context';
 import { BBLogo } from './components/BBLogo';
 import {
@@ -136,9 +137,10 @@ function withStartupTimeout<T>(promise: Promise<T>, fallback: T, label: string):
 export type TabParamList = {
   // `action` lets deep links / quick actions ask Files to do something on
   // arrival (`'upload'` opens the picker, `'search'` focuses the search bar,
-  // `'scan'` opens document scanner, `'recent'` shows last-24h filter).
+  // `'scan'` opens document scanner, `'recent'` shows last-24h filter, and
+  // `'root'` resets the Files tab to Drive root on same-tab reselect.
   // FilesScreen consumes & clears the param so the action only fires once.
-  Files: { action?: 'upload' | 'search' | 'scan' | 'recent' } | undefined;
+  Files: { action?: 'upload' | 'search' | 'scan' | 'recent' | 'root' } | undefined;
   Shared: undefined;
   Photos: undefined;
   Settings: undefined;
@@ -166,6 +168,8 @@ export type RootStackParamList = {
     photoListJson?: string;
     /** Index of the tapped photo within the photoList. */
     initialPhotoIndex?: number;
+    /** Snapshot of the Photos screen performance profile to avoid a first-frame default. */
+    performanceStorageProfile?: PerformanceStorageProfile;
   };
   ShareSheet: {
     fileId: string;
@@ -385,7 +389,15 @@ function ShareSheetImporter({ enabled }: { enabled: boolean }) {
 // Biometric guard — lives inside CryptoProvider so it can call useCrypto()
 // ---------------------------------------------------------------------------
 
-function BiometricGuard({ locked, onUnlock }: { locked: boolean; onUnlock: () => void }) {
+function BiometricGuard({
+  locked,
+  startupLockChecked,
+  onUnlock,
+}: {
+  locked: boolean;
+  startupLockChecked: boolean;
+  onUnlock: () => void;
+}) {
   const crypto = useCrypto();
 
   // Silent vault unlock — runs exactly ONCE on cold launch.
@@ -394,11 +406,12 @@ function BiometricGuard({ locked, onUnlock }: { locked: boolean; onUnlock: () =>
   const silentUnlockDone = useRef(false);
   useEffect(() => {
     if (silentUnlockDone.current) return;
+    if (!startupLockChecked) return;
     if (locked) return;
     if (crypto.isUnlocked) { silentUnlockDone.current = true; return; }
     silentUnlockDone.current = true;
     crypto.unlock(undefined, 'cold_launch_vault_unlock').catch(() => {});
-  }, [locked, crypto.isUnlocked]);
+  }, [locked, startupLockChecked, crypto.isUnlocked]);
 
   async function handleUnlocked() {
     try {
@@ -559,7 +572,19 @@ function TabNavigator() {
         },
       })}
     >
-      <Tab.Screen name="Files" component={FilesScreen} />
+      <Tab.Screen
+        name="Files"
+        component={FilesScreen}
+        listeners={({ navigation, route }) => ({
+          tabPress: () => {
+            const state = navigation.getState();
+            const focusedRoute = state.routes[state.index];
+            if (focusedRoute?.key === route.key) {
+              navigation.setParams({ action: 'root' });
+            }
+          },
+        })}
+      />
       <Tab.Screen name="Shared" component={SharedScreen} />
       <Tab.Screen name="Photos" component={PhotosScreen} />
       <Tab.Screen
@@ -590,6 +615,7 @@ export default function App() {
 
   // Biometric lock: show lock screen when app resumes from background
   const [locked, setLocked] = useState(false);
+  const [startupLockChecked, setStartupLockChecked] = useState(false);
   const appStateRef = useRef<AppStateStatus>(AppState.currentState);
   const backgroundAtRef = useRef<number | null>(null);
 
@@ -786,6 +812,34 @@ export default function App() {
     void runStartup();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!user) {
+      setLocked(false);
+      setStartupLockChecked(true);
+      backgroundAtRef.current = null;
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    setStartupLockChecked(false);
+    void (async () => {
+      const pref = await SecureStore.getItemAsync(BIOMETRIC_PREF_KEY).catch(() => null);
+      if (cancelled) return;
+      if (pref === 'true' && !wasRecentlyUnlocked()) {
+        setLocked(true);
+      } else {
+        setLocked(false);
+      }
+      setStartupLockChecked(true);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.user_id]);
 
   // Register session-expired handler so 401s auto-sign-out
   useEffect(() => {
@@ -1012,11 +1066,11 @@ export default function App() {
           onStateChange={handleNavigationStateChange}
         >
             <VaultRecoveryGate enabled={isAuthenticated} navReady={navReady} />
-            <DevicePerformanceCalibrator enabled={isAuthenticated && !locked} />
-            {isAuthenticated && !locked && Platform.OS === 'android'
+            <DevicePerformanceCalibrator enabled={isAuthenticated && startupLockChecked && !locked} />
+            {isAuthenticated && startupLockChecked && !locked && Platform.OS === 'android'
               ? <AndroidThumbnailRepairWorker enabled />
               : null}
-            <FileProviderDomainRegistrar enabled={isAuthenticated && !locked} />
+            <FileProviderDomainRegistrar enabled={isAuthenticated && startupLockChecked && !locked} />
             <Stack.Navigator screenOptions={{ headerShown: false }}>
               {isAuthenticated ? (
                 <>
@@ -1147,11 +1201,15 @@ export default function App() {
 
         {/* Biometric lock overlay — shown when app resumes from background */}
         {isAuthenticated && (
-          <BiometricGuard locked={locked} onUnlock={() => { markUnlocked(); setLocked(false); }} />
+          <BiometricGuard
+            locked={locked}
+            startupLockChecked={startupLockChecked}
+            onUnlock={() => { markUnlocked(); setLocked(false); }}
+          />
         )}
 
         {/* Share Extension dropbox — uploads files dropped by BeebeebShare */}
-        <ShareSheetImporter enabled={isAuthenticated && !locked} />
+        <ShareSheetImporter enabled={isAuthenticated && startupLockChecked && !locked} />
 
         {/* Android-only password prompt for step-up re-auth (no-op on iOS) */}
         <ConfirmActionPrompt />
