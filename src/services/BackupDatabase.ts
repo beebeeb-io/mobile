@@ -63,6 +63,9 @@ const DB_NAME = 'beebeeb-backup.db';
 // `getDb()` so they're safe to call before initDatabase() resolves — they'll
 // just block on the in-flight init.
 let dbPromise: Promise<SQLite.SQLiteDatabase> | null = null;
+let localMissingMigrationLastRunAt = 0;
+let localMissingMigrationInFlight: Promise<void> | null = null;
+const LOCAL_MISSING_MIGRATION_MIN_INTERVAL_MS = 60_000;
 
 async function getDb(): Promise<SQLite.SQLiteDatabase> {
   if (!dbPromise) dbPromise = openAndMigrate();
@@ -81,6 +84,21 @@ async function migrateLocalMissingRows(db: SQLite.SQLiteDatabase): Promise<void>
          OR error_message LIKE '%not found in library%'
        );
   `).catch(() => {});
+  localMissingMigrationLastRunAt = Date.now();
+}
+
+async function migrateLocalMissingRowsIfNeeded(db: SQLite.SQLiteDatabase): Promise<void> {
+  if (localMissingMigrationInFlight) {
+    await localMissingMigrationInFlight;
+    return;
+  }
+  if (Date.now() - localMissingMigrationLastRunAt < LOCAL_MISSING_MIGRATION_MIN_INTERVAL_MS) {
+    return;
+  }
+  localMissingMigrationInFlight = migrateLocalMissingRows(db).finally(() => {
+    localMissingMigrationInFlight = null;
+  });
+  await localMissingMigrationInFlight;
 }
 
 async function openAndMigrate(): Promise<SQLite.SQLiteDatabase> {
@@ -220,6 +238,46 @@ export async function getTotalBytes(
   return row?.total ?? 0;
 }
 
+export interface BackupCategorySummary {
+  uploadedCount: number;
+  totalCount: number;
+  uploadedBytes: number;
+  totalBytes: number;
+}
+
+export async function getCategorySummaries(): Promise<
+  Partial<Record<BackupAssetType, BackupCategorySummary>>
+> {
+  const db = await getDb();
+  const rows = await db.getAllAsync<{
+    asset_type: BackupAssetType;
+    uploaded_count: number;
+    total_count: number;
+    uploaded_bytes: number | null;
+    total_bytes: number | null;
+  }>(
+    `SELECT
+       asset_type,
+       SUM(CASE WHEN status = 'uploaded' THEN 1 ELSE 0 END) AS uploaded_count,
+       COUNT(*) AS total_count,
+       SUM(CASE WHEN status = 'uploaded' THEN file_size ELSE 0 END) AS uploaded_bytes,
+       SUM(file_size) AS total_bytes
+     FROM backup_assets
+     GROUP BY asset_type`,
+  );
+
+  const summaries: Partial<Record<BackupAssetType, BackupCategorySummary>> = {};
+  for (const row of rows) {
+    summaries[row.asset_type] = {
+      uploadedCount: row.uploaded_count ?? 0,
+      totalCount: row.total_count ?? 0,
+      uploadedBytes: row.uploaded_bytes ?? 0,
+      totalBytes: row.total_bytes ?? 0,
+    };
+  }
+  return summaries;
+}
+
 export async function getUploadedBytes(
   assetType: BackupAssetType,
 ): Promise<number> {
@@ -289,7 +347,7 @@ export async function recoverStuckUploads(): Promise<number> {
  */
 export async function getDeadLetterItems(): Promise<BackupAsset[]> {
   const db = await getDb();
-  await migrateLocalMissingRows(db);
+  await migrateLocalMissingRowsIfNeeded(db);
   return db.getAllAsync<BackupAsset>(
     `SELECT * FROM backup_assets
       WHERE status != 'local_missing'
@@ -305,14 +363,16 @@ export async function getPendingDeletes(): Promise<BackupAsset[]> {
   );
 }
 
-export async function getFailedAssets(): Promise<BackupAsset[]> {
+export async function getFailedAssets(limit?: number): Promise<BackupAsset[]> {
   const db = await getDb();
-  await migrateLocalMissingRows(db);
+  await migrateLocalMissingRowsIfNeeded(db);
+  const params = typeof limit === 'number' ? [limit] : [];
   return db.getAllAsync<BackupAsset>(
     `SELECT * FROM backup_assets
       WHERE status = 'failed'
          OR (status != 'local_missing' AND COALESCE(retry_count, 0) >= 10)
-      ORDER BY last_attempt_at DESC`,
+      ORDER BY last_attempt_at DESC${typeof limit === 'number' ? ' LIMIT ?' : ''}`,
+    params,
   );
 }
 
@@ -320,7 +380,7 @@ export async function getLocalMissingAssets(
   limit: number = 10,
 ): Promise<BackupAsset[]> {
   const db = await getDb();
-  await migrateLocalMissingRows(db);
+  await migrateLocalMissingRowsIfNeeded(db);
   return db.getAllAsync<BackupAsset>(
     `SELECT * FROM backup_assets
       WHERE status = 'local_missing'
@@ -334,7 +394,7 @@ export async function getStatusCounts(): Promise<
   Record<BackupAssetStatus, number>
 > {
   const db = await getDb();
-  await migrateLocalMissingRows(db);
+  await migrateLocalMissingRowsIfNeeded(db);
   const rows = await db.getAllAsync<{ status: string; count: number }>(
     `SELECT status, COUNT(*) as count FROM backup_assets GROUP BY status`,
   );
