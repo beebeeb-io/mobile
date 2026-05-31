@@ -32,7 +32,7 @@ import { useTheme } from '../lib/theme-context';
 import { getToken, friendlyError, trustLocation, trashFiles } from '../lib/api';
 import { useCrypto } from '../lib/crypto-context';
 import { decryptToTempFile } from '../lib/native-decrypt';
-import type { PreviewLoadProgressEvent } from '../../modules/beebeeb-crypto';
+import { BeebeebThumbnails, type PreviewLoadProgressEvent } from '../../modules/beebeeb-crypto';
 import {
   estimatedDecryptSeconds,
   formatDuration,
@@ -46,12 +46,21 @@ import {
   cachePhotoWithExtension,
 } from '../lib/photo-cache';
 import { getCachedThumbnail } from '../lib/thumbnail-cache';
-import { cacheLocalThumbnail, fetchDecryptedLargeThumbnailUri } from '../lib/thumbnail';
+import {
+  cacheLocalThumbnail,
+  fetchDecryptedLargeThumbnailUri,
+  fetchDecryptedThumbnailUri,
+} from '../lib/thumbnail';
+import {
+  getPerformanceStorageSettings,
+  type PerformanceStorageProfile,
+} from '../lib/performance-storage-settings';
 import {
   activePhotoPageIndices,
   clampPhotoIndex,
 } from '../lib/photo-viewer-window';
 import { DetailsSheet } from '../components/preview/DetailsSheet';
+import { recordRuntimeTrace } from '../lib/runtime-trace';
 
 // Preview renderers are lazy-loaded so that the libraries each one depends on
 // (jszip, xlsx, mammoth, pako, react-native-pdf, highlight.js) only enter
@@ -477,6 +486,28 @@ interface PhotoPageEntry {
 type PhotoLoadStage = 'checking' | 'downloading' | 'decrypting' | 'caching';
 type FileKeyLoader = (fileId: string) => Promise<Uint8Array>;
 type MasterKeyHandleLoader = () => number;
+type ImagePreviewKind = 'thumbnail' | 'large' | 'original';
+
+const NORMAL_PREVIEW_THUMB_SIZE = 768;
+const LARGE_PREVIEW_THUMB_SIZE = 1600;
+
+function normalizePerformanceStorageProfile(value: unknown): PerformanceStorageProfile {
+  return value === 'light' || value === 'balanced' || value === 'smooth'
+    ? value
+    : 'balanced';
+}
+
+interface ThumbnailPreviewResult {
+  uri: string;
+  kind: Exclude<ImagePreviewKind, 'original'>;
+  source: 'photoKit' | 'remote' | 'cache' | 'local';
+}
+
+interface PhotoPreviewLoadOptions {
+  profile: PerformanceStorageProfile;
+  allowOriginal: boolean;
+  forceOriginal?: boolean;
+}
 
 interface PreviewProgressState {
   stage: PhotoLoadStage | null;
@@ -497,7 +528,7 @@ function emptyPreviewProgress(stage: PhotoLoadStage | null = null): PreviewProgr
 }
 
 interface InFlightPhotoLoad {
-  promise: Promise<string>;
+  promise: Promise<{ uri: string; kind: ImagePreviewKind }>;
   signal: AbortSignal;
 }
 
@@ -505,6 +536,13 @@ const inFlightPhotoLoads = new Map<string, InFlightPhotoLoad>();
 
 function isAbortError(err: unknown): boolean {
   return err instanceof Error && err.name === 'AbortError';
+}
+
+function previewErrorTraceFields(err: unknown): Record<string, unknown> {
+  if (err instanceof Error) {
+    return { name: err.name, message: err.message, friendlyMessage: friendlyError(err) };
+  }
+  return { message: String(err), friendlyMessage: friendlyError(err) };
 }
 
 function throwIfPreviewAborted(signal?: AbortSignal): void {
@@ -566,7 +604,7 @@ function progressStageText(
     return eta ? `Decrypting on iPhone · about ${eta}${progressText}` : `Decrypting on iPhone${progressText}`;
   }
   if (progress.stage === 'caching') return isVideo ? 'Saving for faster playback...' : 'Saving for faster swipes...';
-  return isVideo ? 'Preparing video...' : 'Preparing file...';
+  return isVideo ? 'Preparing video...' : 'Loading preview...';
 }
 
 function progressFraction(progress: PreviewProgressState): number {
@@ -592,55 +630,202 @@ function applyNativeProgress(event: PreviewLoadProgressEvent, setProgress: React
   }));
 }
 
+async function loadNativeThumbnail(
+  fileId: string,
+  size: number,
+  signal?: AbortSignal,
+): Promise<ThumbnailPreviewResult | null> {
+  if (Platform.OS !== 'ios') return null;
+  try {
+    const result = await BeebeebThumbnails.getThumbnail(fileId, size, size);
+    throwIfPreviewAborted(signal);
+    return {
+      uri: result.uri,
+      kind: size > NORMAL_PREVIEW_THUMB_SIZE ? 'large' : 'thumbnail',
+      source: result.source === 'photoKit' ? 'photoKit' : result.source === 'remote' ? 'remote' : 'cache',
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function loadNormalPreviewThumbnail(
+  entry: PhotoPageEntry,
+  isUnlocked: boolean,
+  getFileKeyBytes: FileKeyLoader,
+  signal?: AbortSignal,
+): Promise<ThumbnailPreviewResult | null> {
+  throwIfPreviewAborted(signal);
+  if (entry.thumbnail_uri) {
+    return {
+      uri: entry.thumbnail_uri,
+      kind: 'thumbnail',
+      source: entry.local_asset_id ? 'photoKit' : 'cache',
+    };
+  }
+
+  const native = await loadNativeThumbnail(entry.id, NORMAL_PREVIEW_THUMB_SIZE, signal);
+  if (native) return { ...native, kind: 'thumbnail' };
+
+  const localUri = entry.local_asset_id ? `ph://${entry.local_asset_id}` : null;
+  if (localUri) {
+    const local = await cacheLocalThumbnail(entry.id, localUri, entry.mime_type);
+    throwIfPreviewAborted(signal);
+    if (local) return { uri: local, kind: 'thumbnail', source: 'local' };
+  }
+
+  const cached = await getCachedThumbnail(entry.id, 'medium');
+  throwIfPreviewAborted(signal);
+  if (cached) return { uri: cached, kind: 'thumbnail', source: 'cache' };
+
+  if (!isUnlocked) return null;
+  try {
+    const fileKey = await getFileKeyBytes(entry.id);
+    const remote = await fetchDecryptedThumbnailUri(entry.id, fileKey, signal);
+    throwIfPreviewAborted(signal);
+    return remote ? { uri: remote, kind: 'thumbnail', source: 'remote' } : null;
+  } catch {
+    return null;
+  }
+}
+
+async function loadLargePreviewThumbnail(
+  entry: PhotoPageEntry,
+  isUnlocked: boolean,
+  getFileKeyBytes: FileKeyLoader,
+  signal?: AbortSignal,
+): Promise<ThumbnailPreviewResult | null> {
+  throwIfPreviewAborted(signal);
+
+  if (entry.local_asset_id) {
+    const native = await loadNativeThumbnail(entry.id, LARGE_PREVIEW_THUMB_SIZE, signal);
+    if (native) return { ...native, kind: 'large' };
+  }
+
+  const cached = await getCachedThumbnail(entry.id, 'large');
+  throwIfPreviewAborted(signal);
+  if (cached) return { uri: cached, kind: 'large', source: 'cache' };
+
+  if (!isUnlocked) return null;
+  try {
+    const fileKey = await getFileKeyBytes(entry.id);
+    const remote = await fetchDecryptedLargeThumbnailUri(entry.id, fileKey, signal);
+    throwIfPreviewAborted(signal);
+    return remote ? { uri: remote, kind: 'large', source: 'remote' } : null;
+  } catch {
+    return null;
+  }
+}
+
 async function loadDecryptedPhotoForViewer(
   entry: PhotoPageEntry,
   isUnlocked: boolean,
   getFileKeyBytes: FileKeyLoader,
   getMasterKeyHandleId: MasterKeyHandleLoader,
+  options: PhotoPreviewLoadOptions,
   onStage?: (stage: PhotoLoadStage) => void,
   onProgress?: (event: PreviewLoadProgressEvent) => void,
   signal?: AbortSignal,
-): Promise<string> {
+): Promise<{ uri: string; kind: ImagePreviewKind }> {
   throwIfPreviewAborted(signal);
   const isVideo = !!entry.mime_type?.startsWith('video/');
   const category: Category = isVideo ? 'video' : 'image';
   const cacheExt = mediaCacheExtension(entry.mime_type, category);
+  const startedAt = Date.now();
+  recordRuntimeTrace('preview.photo_page.load_start', {
+    fileId: entry.id,
+    category,
+    mimeType: entry.mime_type,
+    sizeBytes: entry.size_bytes,
+    chunkCount: entry.chunk_count,
+    shouldUseVideoCache: isVideo,
+    isUnlocked,
+    profile: options.profile,
+    allowOriginal: options.allowOriginal,
+    forceOriginal: options.forceOriginal === true,
+  });
   onStage?.('checking');
-  const cached = isVideo
-    ? await getCachedPhotoWithExtension(entry.id, cacheExt)
-    : await getCachedPhoto(entry.id);
-  throwIfPreviewAborted(signal);
-  if (cached) return cached;
-
-  if (!isUnlocked) {
-    throw new Error('Unlock your vault to view this image.');
+  if (isVideo || options.forceOriginal) {
+    const cached = isVideo
+      ? await getCachedPhotoWithExtension(entry.id, cacheExt)
+      : await getCachedPhoto(entry.id);
+    throwIfPreviewAborted(signal);
+    if (cached) {
+      recordRuntimeTrace('preview.photo_page.cache_hit', {
+        fileId: entry.id,
+        category,
+        cacheExt,
+        elapsedMs: Date.now() - startedAt,
+      });
+      return { uri: cached, kind: 'original' };
+    }
+    recordRuntimeTrace('preview.photo_page.cache_miss', {
+      fileId: entry.id,
+      category,
+      cacheExt,
+    });
   }
 
-  const inFlight = inFlightPhotoLoads.get(entry.id);
-  if (inFlight && !inFlight.signal.aborted) return inFlight.promise;
+  const loadKey = [
+    entry.id,
+    isVideo ? 'video' : options.forceOriginal ? 'original' : options.profile,
+    options.allowOriginal ? 'allow-original' : 'preview-only',
+  ].join(':');
+  const inFlight = inFlightPhotoLoads.get(loadKey);
+  if (inFlight && !inFlight.signal.aborted) {
+    recordRuntimeTrace('preview.photo_page.join_inflight', { fileId: entry.id, category });
+    return inFlight.promise;
+  }
 
-  const loadPromise = (async () => {
+  const loadPromise: Promise<{ uri: string; kind: ImagePreviewKind }> = (async () => {
     throwIfPreviewAborted(signal);
 
-    // Thumbnail-first: for images, try the large thumbnail before downloading the full original.
-    if (!isVideo) {
-      onStage?.('downloading');
-      try {
-        const fileKey = await getFileKeyBytes(entry.id);
-        const largeThumbnailUri = await fetchDecryptedLargeThumbnailUri(entry.id, fileKey, signal);
-        if (largeThumbnailUri) {
-          throwIfPreviewAborted(signal);
-          return largeThumbnailUri;
-        }
-      } catch {
-        // Large thumbnail unavailable — fall through to full download
+    if (!isVideo && !options.forceOriginal) {
+      const normal = await loadNormalPreviewThumbnail(entry, isUnlocked, getFileKeyBytes, signal);
+      if (normal?.source === 'photoKit' || normal?.source === 'local') {
+        recordRuntimeTrace('preview.photo_page.thumbnail.success', {
+          fileId: entry.id,
+          source: normal.source,
+          elapsedMs: Date.now() - startedAt,
+        });
+        return { uri: normal.uri, kind: 'thumbnail' };
       }
-      throwIfPreviewAborted(signal);
+
+      if (normal) {
+        recordRuntimeTrace('preview.photo_page.thumbnail.success', {
+          fileId: entry.id,
+          source: normal.source,
+          elapsedMs: Date.now() - startedAt,
+        });
+        return { uri: normal.uri, kind: 'thumbnail' };
+      }
+
+      if (!options.allowOriginal) {
+        recordRuntimeTrace('preview.photo_page.thumbnail.empty', { fileId: entry.id, profile: options.profile });
+        throw new Error('Preview thumbnail is not available. Use View Original to download the full photo.');
+      }
+    }
+
+    if (!isUnlocked) {
+      recordRuntimeTrace('preview.photo_page.locked', { fileId: entry.id, category });
+      throw new Error(isVideo ? 'Unlock your vault to play this video.' : 'Unlock your vault to view this image.');
+    }
+
+    if (!isVideo && !options.forceOriginal) {
+      recordRuntimeTrace('preview.photo_page.original.fallback', { fileId: entry.id, profile: options.profile });
     }
 
     onStage?.('downloading');
     onStage?.('decrypting');
     const ext = extensionForMime(entry.mime_type ?? undefined, category);
+    recordRuntimeTrace('preview.photo_page.original.request', {
+      fileId: entry.id,
+      category,
+      extension: ext,
+      sizeBytes: entry.size_bytes,
+      chunkCount: entry.chunk_count,
+      hasMasterKeyHandle: getMasterKeyHandleId() != null,
+    });
     const decryptedUri = await decryptToTempFile(
       entry.id,
       () => getFileKeyBytes(entry.id),
@@ -652,6 +837,7 @@ async function loadDecryptedPhotoForViewer(
     );
     if (signal?.aborted) {
       await FileSystem.deleteAsync(decryptedUri, { idempotent: true }).catch(() => {});
+      recordRuntimeTrace('preview.photo_page.original.aborted_after_decrypt', { fileId: entry.id });
       throwIfPreviewAborted(signal);
     }
 
@@ -663,15 +849,21 @@ async function loadDecryptedPhotoForViewer(
       await FileSystem.deleteAsync(decryptedUri, { idempotent: true }).catch(() => {});
     }
     throwIfPreviewAborted(signal);
-    return cachedUri;
+    recordRuntimeTrace('preview.photo_page.original.success', {
+      fileId: entry.id,
+      category,
+      cacheExt,
+      elapsedMs: Date.now() - startedAt,
+    });
+    return { uri: cachedUri, kind: 'original' };
   })();
 
-  inFlightPhotoLoads.set(entry.id, { promise: loadPromise, signal: signal ?? new AbortController().signal });
+  inFlightPhotoLoads.set(loadKey, { promise: loadPromise, signal: signal ?? new AbortController().signal });
   try {
     return await loadPromise;
   } finally {
-    const current = inFlightPhotoLoads.get(entry.id);
-    if (current?.promise === loadPromise) inFlightPhotoLoads.delete(entry.id);
+    const current = inFlightPhotoLoads.get(loadKey);
+    if (current?.promise === loadPromise) inFlightPhotoLoads.delete(loadKey);
   }
 }
 
@@ -680,16 +872,21 @@ const PhotoPage = React.memo(function PhotoPage({
   shouldLoadFull,
   isCurrent,
   width,
+  previewProfile,
+  originalRequestNonce,
 }: {
   entry: PhotoPageEntry;
   shouldLoadFull: boolean;
   isCurrent: boolean;
   width: number;
+  previewProfile: PerformanceStorageProfile;
+  originalRequestNonce: number;
 }) {
   const { colors: c } = useTheme();
   const { isUnlocked, getFileKeyBytes, getMasterKeyHandleId } = useCrypto();
   const isVideoEntry = !!entry.mime_type && entry.mime_type.startsWith('video/');
   const [uri, setUri] = useState<string | null>(null);
+  const [uriKind, setUriKind] = useState<ImagePreviewKind | null>(null);
   const [thumbnailUri, setThumbnailUri] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [stage, setStage] = useState<PhotoLoadStage | null>(null);
@@ -697,9 +894,20 @@ const PhotoPage = React.memo(function PhotoPage({
   const [performanceProfile, setPerformanceProfile] = useState<DevicePerformanceProfile | null>(null);
   const [error, setError] = useState<string | null>(null);
   const fullImageOpacity = useRef(new Animated.Value(0)).current;
+  const largePreviewAttemptRef = useRef<string | null>(null);
   const player = useVideoPlayer(isVideoEntry && uri ? uri : null, (p) => {
     p.loop = false;
   });
+
+  useEffect(() => {
+    setUri(null);
+    setUriKind(null);
+    setError(null);
+    setLoading(false);
+    setStage(null);
+    setProgress(emptyPreviewProgress(null));
+    largePreviewAttemptRef.current = null;
+  }, [entry.id]);
 
   useEffect(() => {
     let cancelled = false;
@@ -723,7 +931,7 @@ const PhotoPage = React.memo(function PhotoPage({
 
   useEffect(() => {
     if (!shouldLoadFull) return;
-    if (uri) return; // Already loaded
+    if (uri) return;
     if (Platform.OS === 'web') return;
 
     const controller = new AbortController();
@@ -741,6 +949,11 @@ const PhotoPage = React.memo(function PhotoPage({
       isUnlocked,
       getFileKeyBytes,
       getMasterKeyHandleId,
+      {
+        profile: previewProfile,
+        allowOriginal: isVideoEntry,
+        forceOriginal: false,
+      },
       (nextStage) => {
         if (!cancelled) {
           setStage(nextStage);
@@ -752,11 +965,26 @@ const PhotoPage = React.memo(function PhotoPage({
       },
       controller.signal,
     )
-      .then((loadedUri) => {
-        if (!cancelled) setUri(loadedUri);
+      .then((loaded) => {
+        if (!cancelled) {
+          recordRuntimeTrace('preview.photo_page.render_ready', {
+            fileId: entry.id,
+            isVideo: isVideoEntry,
+            kind: loaded.kind,
+          });
+          setUri(loaded.uri);
+          setUriKind(loaded.kind);
+        }
       })
       .catch((err) => {
-        if (!cancelled && !isAbortError(err)) setError(friendlyError(err));
+        if (!cancelled && !isAbortError(err)) {
+          recordRuntimeTrace('preview.photo_page.load_failed', {
+            fileId: entry.id,
+            isVideo: isVideoEntry,
+            ...previewErrorTraceFields(err),
+          });
+          setError(friendlyError(err));
+        }
       })
       .finally(() => {
         if (!cancelled) {
@@ -770,7 +998,115 @@ const PhotoPage = React.memo(function PhotoPage({
       cancelled = true;
       controller.abort();
     };
-  }, [shouldLoadFull, uri, entry, isUnlocked, getFileKeyBytes, getMasterKeyHandleId]);
+  }, [shouldLoadFull, uri, entry, isUnlocked, getFileKeyBytes, getMasterKeyHandleId, isVideoEntry, previewProfile]);
+
+  useEffect(() => {
+    if (!shouldLoadFull || !isCurrent) return;
+    if (previewProfile !== 'smooth' || isVideoEntry || uriKind !== 'thumbnail' || !uri) return;
+    if (Platform.OS === 'web') return;
+    const attemptKey = `${entry.id}:${uri}`;
+    if (largePreviewAttemptRef.current === attemptKey) return;
+    largePreviewAttemptRef.current = attemptKey;
+
+    const controller = new AbortController();
+    let cancelled = false;
+    const startedAt = Date.now();
+    recordRuntimeTrace('preview.photo_page.large_thumbnail.upgrade_request', { fileId: entry.id });
+
+    loadLargePreviewThumbnail(entry, isUnlocked, getFileKeyBytes, controller.signal)
+      .then((large) => {
+        if (cancelled || !large) {
+          if (!cancelled) recordRuntimeTrace('preview.photo_page.large_thumbnail.empty', { fileId: entry.id });
+          return;
+        }
+        recordRuntimeTrace('preview.photo_page.large_thumbnail.success', {
+          fileId: entry.id,
+          source: large.source,
+          elapsedMs: Date.now() - startedAt,
+        });
+        setUri(large.uri);
+        setUriKind('large');
+      })
+      .catch((err) => {
+        if (!cancelled && !isAbortError(err)) {
+          recordRuntimeTrace('preview.photo_page.large_thumbnail.failed', {
+            fileId: entry.id,
+            ...previewErrorTraceFields(err),
+          });
+        }
+      });
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [entry, getFileKeyBytes, isCurrent, isUnlocked, isVideoEntry, previewProfile, shouldLoadFull, uri, uriKind]);
+
+  useEffect(() => {
+    if (!originalRequestNonce || !isCurrent || isVideoEntry) return;
+    if (uriKind === 'original') return;
+    if (Platform.OS === 'web') return;
+
+    const controller = new AbortController();
+    let cancelled = false;
+    setLoading(true);
+    setStage('checking');
+    setProgress(emptyPreviewProgress('checking'));
+    setError(null);
+
+    loadDecryptedPhotoForViewer(
+      entry,
+      isUnlocked,
+      getFileKeyBytes,
+      getMasterKeyHandleId,
+      {
+        profile: previewProfile,
+        allowOriginal: true,
+        forceOriginal: true,
+      },
+      (nextStage) => {
+        if (!cancelled) {
+          setStage(nextStage);
+          setProgress((prev) => ({ ...prev, stage: nextStage }));
+        }
+      },
+      (event) => {
+        if (!cancelled) applyNativeProgress(event, setProgress);
+      },
+      controller.signal,
+    )
+      .then((loaded) => {
+        if (!cancelled) {
+          recordRuntimeTrace('preview.photo_page.original.render_ready', {
+            fileId: entry.id,
+            kind: loaded.kind,
+          });
+          setUri(loaded.uri);
+          setUriKind(loaded.kind);
+        }
+      })
+      .catch((err) => {
+        if (!cancelled && !isAbortError(err)) {
+          recordRuntimeTrace('preview.photo_page.original.load_failed', {
+            fileId: entry.id,
+            ...previewErrorTraceFields(err),
+          });
+          setError(friendlyError(err));
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoading(false);
+          setStage(null);
+          setProgress(emptyPreviewProgress(null));
+        }
+      });
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [entry, getFileKeyBytes, getMasterKeyHandleId, isCurrent, isUnlocked, isVideoEntry, originalRequestNonce, previewProfile, uriKind]);
 
   useEffect(() => {
     if (!uri) {
@@ -791,7 +1127,6 @@ const PhotoPage = React.memo(function PhotoPage({
           source={{ uri: thumbnailUri }}
           style={styles.photoPageThumbnail}
           resizeMode="contain"
-          blurRadius={Platform.OS === 'ios' ? 14 : 8}
         />
       ) : null}
       {uri && isVideoEntry ? (
@@ -856,6 +1191,7 @@ export default function PreviewScreen() {
     storagePoolId,
     photoListJson,
     initialPhotoIndex,
+    performanceStorageProfile: routePerformanceStorageProfile,
   } = route.params;
 
   // Parse the photo list for swipe navigation (passed from PhotosScreen)
@@ -878,7 +1214,7 @@ export default function PreviewScreen() {
   );
 
   // Derive the current photo entry from the swipe index
-  const currentEntry = hasSwipe ? photoList[currentPhotoIndex] : null;
+  const currentEntry = photoList.length > 0 ? photoList[currentPhotoIndex] : null;
   const currentFileId = currentEntry?.id ?? fileId;
   const currentFileName = currentEntry?.display_name ?? currentEntry?.name_encrypted ?? fileName;
   const currentMimeType = currentEntry?.mime_type ?? mimeType;
@@ -893,13 +1229,19 @@ export default function PreviewScreen() {
   const [, setDownloadProgress] = useState(0);
   const [loadProgress, setLoadProgress] = useState<PreviewProgressState>(() => emptyPreviewProgress(null));
   const [performanceProfile, setPerformanceProfile] = useState<DevicePerformanceProfile | null>(null);
+  const [performanceStorageProfile, setPerformanceStorageProfile] = useState<PerformanceStorageProfile>(() => (
+    normalizePerformanceStorageProfile(routePerformanceStorageProfile)
+  ));
   const [exportStatus, setExportStatus] = useState<string | null>(null);
   const [optionsVisible, setOptionsVisible] = useState(false);
+  const [originalPhotoRequest, setOriginalPhotoRequest] = useState<{ fileId: string; nonce: number } | null>(null);
 
   // Image inline preview state
   const [imageUri, setImageUri] = useState<string | null>(null);
+  const [imagePreviewKind, setImagePreviewKind] = useState<ImagePreviewKind | null>(null);
   const [imageLoading, setImageLoading] = useState(false);
   const [imageError, setImageError] = useState<string | null>(null);
+  const imageLargePreviewAttemptRef = useRef<string | null>(null);
 
   // PDF inline preview state — uses PdfRenderer with native react-native-pdf
   const [pdfUri, setPdfUri] = useState<string | null>(null);
@@ -960,6 +1302,9 @@ export default function PreviewScreen() {
 
   useEffect(() => {
     void getDevicePerformanceProfile().then(setPerformanceProfile).catch(() => {});
+    void getPerformanceStorageSettings().then((settings) => {
+      setPerformanceStorageProfile(settings.profile);
+    }).catch(() => {});
   }, []);
 
   const { isUnlocked, getFileKeyBytes, getMasterKeyHandleId } = useCrypto();
@@ -973,6 +1318,19 @@ export default function PreviewScreen() {
   const isArchive = category === 'archive';
   const isPptx = category === 'pptx';
   const isMediaPreview = isImage || isVideo;
+
+  useEffect(() => {
+    recordRuntimeTrace('preview.open', {
+      fileId: currentFileId,
+      category,
+      mimeType: currentMimeType ?? null,
+      sizeBytes: currentSizeBytes ?? null,
+      chunkCount: currentChunkCount ?? null,
+      hasSwipe,
+      hasPhotoList: photoList.length > 0,
+      isUnlocked,
+    });
+  }, [category, currentChunkCount, currentFileId, currentMimeType, currentSizeBytes, hasSwipe, isUnlocked, photoList.length]);
   const isDocx = category === 'docx';
   const isSpreadsheet = category === 'spreadsheet';
   const isHtml = category === 'html';
@@ -1075,9 +1433,22 @@ export default function PreviewScreen() {
    */
   const fetchAndDecrypt = useCallback(async (options: { signal?: AbortSignal } = {}): Promise<string> => {
     throwIfPreviewAborted(options.signal);
+    const startedAt = Date.now();
+    recordRuntimeTrace('preview.original.fetch_start', {
+      fileId: currentFileId,
+      category,
+      mimeType: currentMimeType ?? null,
+      sizeBytes: currentSizeBytes ?? null,
+      chunkCount: currentChunkCount ?? null,
+      isUnlocked,
+      hasMasterKeyHandle: getMasterKeyHandleId() != null,
+    });
     setLoadProgress(emptyPreviewProgress('downloading'));
     const token = await getToken();
-    if (!token) throw new Error('Not signed in');
+    if (!token) {
+      recordRuntimeTrace('preview.original.no_token', { fileId: currentFileId });
+      throw new Error('Not signed in');
+    }
     throwIfPreviewAborted(options.signal);
 
     // Keep the original extension on the cache filename — RN's <Image>,
@@ -1088,30 +1459,60 @@ export default function PreviewScreen() {
     // body that 401'd) can't masquerade as a valid file.
     try {
       await FileSystem.deleteAsync(cacheUri, { idempotent: true });
+      recordRuntimeTrace('preview.original.stale_cache_cleared', {
+        fileId: currentFileId,
+        category,
+      });
     } catch {
+      recordRuntimeTrace('preview.original.stale_cache_clear_failed', {
+        fileId: currentFileId,
+        category,
+      });
       // Best-effort — proceed even if the path can't be cleared.
     }
 
     if (isUnlocked) {
       const ext = extensionForMime(currentMimeType, category);
-      const decryptedUri = await decryptToTempFile(
-        currentFileId,
-        () => getFileKeyBytes(currentFileId),
-        ext || cacheFileName,
-        currentSizeBytes,
-        currentChunkCount,
-        getMasterKeyHandleId(),
-        {
-          onProgress: (event) => applyNativeProgress(event, setLoadProgress),
-          signal: options.signal,
-        },
-      );
+      let decryptedUri: string;
+      try {
+        recordRuntimeTrace('preview.original.decrypt_request', {
+          fileId: currentFileId,
+          category,
+          extension: ext || cacheFileName,
+        });
+        decryptedUri = await decryptToTempFile(
+          currentFileId,
+          () => getFileKeyBytes(currentFileId),
+          ext || cacheFileName,
+          currentSizeBytes,
+          currentChunkCount,
+          getMasterKeyHandleId(),
+          {
+            onProgress: (event) => applyNativeProgress(event, setLoadProgress),
+            signal: options.signal,
+          },
+        );
+      } catch (error) {
+        recordRuntimeTrace('preview.original.decrypt_failed', {
+          fileId: currentFileId,
+          category,
+          elapsedMs: Date.now() - startedAt,
+          ...previewErrorTraceFields(error),
+        });
+        throw error;
+      }
       throwIfPreviewAborted(options.signal);
       setDownloadProgress(1);
       setLoadProgress(emptyPreviewProgress(null));
+      recordRuntimeTrace('preview.original.fetch_success', {
+        fileId: currentFileId,
+        category,
+        elapsedMs: Date.now() - startedAt,
+      });
       return decryptedUri;
     }
 
+    recordRuntimeTrace('preview.original.locked', { fileId: currentFileId, category });
     throw new Error('Unlock your vault to preview this file.');
   }, [
     cacheFileName,
@@ -1126,14 +1527,40 @@ export default function PreviewScreen() {
   ]);
 
   const getExportUri = useCallback(async (): Promise<{ uri: string; reusedPreview: boolean }> => {
-    if (isImage && imageUri) return { uri: imageUri, reusedPreview: true };
+    if (isImage && imageUri && imagePreviewKind === 'original') return { uri: imageUri, reusedPreview: true };
     if (isVideo && videoUri) return { uri: videoUri, reusedPreview: true };
     if (isPdf && pdfUri) return { uri: pdfUri, reusedPreview: true };
     return { uri: await fetchAndDecrypt(), reusedPreview: false };
-  }, [fetchAndDecrypt, imageUri, isImage, isPdf, isVideo, pdfUri, videoUri]);
+  }, [fetchAndDecrypt, imagePreviewKind, imageUri, isImage, isPdf, isVideo, pdfUri, videoUri]);
 
-  // Auto-load images inline on mount — tries large thumbnail first (spec 031),
-  // then falls back to full original download + decrypt.
+  const currentPhotoPageEntry = useMemo<PhotoPageEntry>(() => ({
+    id: currentFileId,
+    name_encrypted: currentFileName,
+    display_name: currentFileName,
+    mime_type: currentMimeType ?? null,
+    size_bytes: currentSizeBytes ?? 0,
+    created_at: currentCreatedAt ?? new Date().toISOString(),
+    chunk_count: currentChunkCount ?? 1,
+    version_number: currentVersionNumber,
+    storage_pool_id: currentStoragePoolId ?? null,
+    thumbnail_uri: currentEntry?.thumbnail_uri ?? null,
+    local_asset_id: currentEntry?.local_asset_id ?? null,
+  }), [
+    currentChunkCount,
+    currentCreatedAt,
+    currentEntry?.local_asset_id,
+    currentEntry?.thumbnail_uri,
+    currentFileId,
+    currentFileName,
+    currentMimeType,
+    currentSizeBytes,
+    currentStoragePoolId,
+    currentVersionNumber,
+  ]);
+
+  // Auto-load image previews inline. Data saver/Balanced use the normal
+  // thumbnail only; Smooth may upgrade to the large thumbnail. Originals are
+  // loaded only from explicit actions.
   useEffect(() => {
     if (!isImage) return;
     if (hasSwipe) return;
@@ -1142,58 +1569,46 @@ export default function PreviewScreen() {
     let cancelled = false;
     setImageLoading(true);
     setImageError(null);
+    setImagePreviewKind(null);
+    setLoadProgress(emptyPreviewProgress('checking'));
 
     (async () => {
-      // Fast path: check if this photo is already cached (memory or disk)
-      const cached = await getCachedPhoto(currentFileId);
-      throwIfPreviewAborted(controller.signal);
-      if (cached) {
-        if (!cancelled) {
-          setImageUri(cached);
-          setImageLoading(false);
-        }
-        return;
-      }
-
-      // Thumbnail-first: try the large thumbnail before the full original
-      if (isUnlocked) {
-        try {
-          const fileKey = await getFileKeyBytes(currentFileId);
-          const largeUri = await fetchDecryptedLargeThumbnailUri(currentFileId, fileKey, controller.signal);
-          if (largeUri && !cancelled && !controller.signal.aborted) {
-            setImageUri(largeUri);
-            setImageLoading(false);
-            return;
-          }
-        } catch {
-          // Large thumbnail unavailable — fall through
-        }
-        throwIfPreviewAborted(controller.signal);
-      }
-
-      // Slow path: download + decrypt full original, then cache the result
-      const decryptedUri = await fetchAndDecrypt({ signal: controller.signal });
-      if (cancelled || controller.signal.aborted) {
-        FileSystem.deleteAsync(decryptedUri, { idempotent: true }).catch(() => {});
-        return;
-      }
-      throwIfPreviewAborted(controller.signal);
-
-      // Store in photo cache for future navigations
-      try {
-        const cachedUri = await cachePhoto(currentFileId, decryptedUri);
-        if (cachedUri !== decryptedUri) {
-          FileSystem.deleteAsync(decryptedUri, { idempotent: true }).catch(() => {});
-        }
-        throwIfPreviewAborted(controller.signal);
-        if (!cancelled) setImageUri(cachedUri);
-      } catch {
-        // Caching failed — use the decrypted URI directly
-        if (!cancelled) setImageUri(decryptedUri);
+      const preview = await loadDecryptedPhotoForViewer(
+        currentPhotoPageEntry,
+        isUnlocked,
+        getFileKeyBytes,
+        getMasterKeyHandleId,
+        {
+          profile: performanceStorageProfile,
+          allowOriginal: false,
+          forceOriginal: false,
+        },
+        (nextStage) => {
+          if (!cancelled) setLoadProgress((prev) => ({ ...prev, stage: nextStage }));
+        },
+        (event) => {
+          if (!cancelled) applyNativeProgress(event, setLoadProgress);
+        },
+        controller.signal,
+      );
+      if (!cancelled) {
+        recordRuntimeTrace('preview.image.preview.success', {
+          fileId: currentFileId,
+          kind: preview.kind,
+          profile: performanceStorageProfile,
+        });
+        setImageUri(preview.uri);
+        setImagePreviewKind(preview.kind);
       }
     })()
       .catch((err) => {
-        if (!cancelled && !isAbortError(err)) setImageError(friendlyError(err));
+        if (!cancelled && !isAbortError(err)) {
+          recordRuntimeTrace('preview.image.load_failed', {
+            fileId: currentFileId,
+            ...previewErrorTraceFields(err),
+          });
+          setImageError(friendlyError(err));
+        }
       })
       .finally(() => {
         if (!cancelled) {
@@ -1205,7 +1620,68 @@ export default function PreviewScreen() {
       cancelled = true;
       controller.abort();
     };
-  }, [hasSwipe, isImage, currentFileId, fetchAndDecrypt, isUnlocked, getFileKeyBytes]);
+  }, [
+    currentFileId,
+    currentPhotoPageEntry,
+    getFileKeyBytes,
+    getMasterKeyHandleId,
+    hasSwipe,
+    isImage,
+    isUnlocked,
+    performanceStorageProfile,
+  ]);
+
+  useEffect(() => {
+    if (!isImage || hasSwipe) return;
+    if (performanceStorageProfile !== 'smooth' || imagePreviewKind !== 'thumbnail' || !imageUri) return;
+    if (Platform.OS === 'web') return;
+    const attemptKey = `${currentFileId}:${imageUri}`;
+    if (imageLargePreviewAttemptRef.current === attemptKey) return;
+    imageLargePreviewAttemptRef.current = attemptKey;
+
+    const controller = new AbortController();
+    let cancelled = false;
+    const startedAt = Date.now();
+    recordRuntimeTrace('preview.image.large_thumbnail.upgrade_request', { fileId: currentFileId });
+
+    loadLargePreviewThumbnail(currentPhotoPageEntry, isUnlocked, getFileKeyBytes, controller.signal)
+      .then((large) => {
+        if (cancelled || !large) {
+          if (!cancelled) recordRuntimeTrace('preview.image.large_thumbnail.empty', { fileId: currentFileId });
+          return;
+        }
+        recordRuntimeTrace('preview.image.large_thumbnail.success', {
+          fileId: currentFileId,
+          source: large.source,
+          elapsedMs: Date.now() - startedAt,
+        });
+        setImageUri(large.uri);
+        setImagePreviewKind('large');
+      })
+      .catch((err) => {
+        if (!cancelled && !isAbortError(err)) {
+          recordRuntimeTrace('preview.image.large_thumbnail.failed', {
+            fileId: currentFileId,
+            ...previewErrorTraceFields(err),
+          });
+        }
+      });
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [
+    currentFileId,
+    currentPhotoPageEntry,
+    getFileKeyBytes,
+    hasSwipe,
+    imagePreviewKind,
+    imageUri,
+    isImage,
+    isUnlocked,
+    performanceStorageProfile,
+  ]);
 
   // Auto-load PDFs inline on mount — uses native decrypt + PdfRenderer.
   useEffect(() => {
@@ -1590,6 +2066,7 @@ export default function PreviewScreen() {
       Alert.alert('Not available', 'File download is only available on iOS and Android.');
       return;
     }
+    recordRuntimeTrace('preview.download_original.press', { fileId: currentFileId, category });
 
     setDownloading(true);
     setDownloadProgress(0);
@@ -1629,7 +2106,61 @@ export default function PreviewScreen() {
       setDownloadProgress(0);
       setExportStatus(null);
     }
-  }, [previewFileName, currentMimeType, getExportUri]);
+  }, [category, currentFileId, currentMimeType, getExportUri, previewFileName]);
+
+  const handleViewOriginal = useCallback(async () => {
+    if (!isImage) return;
+    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    recordRuntimeTrace('preview.view_original.press', {
+      fileId: currentFileId,
+      hasSwipe,
+    });
+
+    if (hasSwipe) {
+      setOriginalPhotoRequest({ fileId: currentFileId, nonce: Date.now() });
+      return;
+    }
+
+    const controller = new AbortController();
+    setImageLoading(true);
+    setImageError(null);
+    setLoadProgress(emptyPreviewProgress('downloading'));
+    try {
+      const cached = await getCachedPhoto(currentFileId);
+      if (cached) {
+        setImageUri(cached);
+        setImagePreviewKind('original');
+        recordRuntimeTrace('preview.image.view_original.cache_hit', { fileId: currentFileId });
+        return;
+      }
+
+      const decryptedUri = await fetchAndDecrypt({ signal: controller.signal });
+      throwIfPreviewAborted(controller.signal);
+      try {
+        const cachedUri = await cachePhoto(currentFileId, decryptedUri);
+        if (cachedUri !== decryptedUri) {
+          await FileSystem.deleteAsync(decryptedUri, { idempotent: true }).catch(() => {});
+        }
+        setImageUri(cachedUri);
+      } catch {
+        setImageUri(decryptedUri);
+      }
+      setImagePreviewKind('original');
+      recordRuntimeTrace('preview.image.view_original.success', { fileId: currentFileId });
+    } catch (err) {
+      if (!isAbortError(err)) {
+        setImageError(friendlyError(err));
+        recordRuntimeTrace('preview.image.view_original.failed', {
+          fileId: currentFileId,
+          ...previewErrorTraceFields(err),
+        });
+      }
+    } finally {
+      setImageLoading(false);
+      setDownloadProgress(0);
+      setLoadProgress(emptyPreviewProgress(null));
+    }
+  }, [currentFileId, fetchAndDecrypt, hasSwipe, isImage]);
 
   const handleShare = useCallback(async () => {
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -1678,12 +2209,13 @@ export default function PreviewScreen() {
   }, [currentFileId, navigation, previewFileName, trashing]);
 
   const previewActions = useMemo<PreviewOptionAction[]>(() => [
+    ...(isImage ? [{ label: 'View Original', icon: 'image-outline' as const, run: handleViewOriginal }] : []),
     { label: 'Share Beebeeb Link', icon: 'link-outline', run: handleShare },
-    { label: 'Export via iOS', icon: 'share-outline', run: handleDownload },
+    { label: 'Save Original…', icon: 'share-outline', run: handleDownload },
     { label: 'Copy File Name', icon: 'copy-outline', run: handleCopyName },
     { label: 'Duplicate', icon: 'duplicate-outline', run: handleDuplicate },
     { label: 'Move to Trash', icon: 'trash-outline', destructive: true, run: handleMoveToTrash },
-  ], [handleCopyName, handleDownload, handleDuplicate, handleMoveToTrash, handleShare]);
+  ], [handleCopyName, handleDownload, handleDuplicate, handleMoveToTrash, handleShare, handleViewOriginal, isImage]);
 
   const handlePreviewOptions = useCallback(() => {
     if (Platform.OS === 'ios') {
@@ -1732,9 +2264,11 @@ export default function PreviewScreen() {
         shouldLoadFull={activePhotoPageIndexes.has(index)}
         isCurrent={index === currentPhotoIndex}
         width={SCREEN_WIDTH}
+        previewProfile={performanceStorageProfile}
+        originalRequestNonce={originalPhotoRequest?.fileId === item.id ? originalPhotoRequest.nonce : 0}
       />
     ),
-    [activePhotoPageIndexes, currentPhotoIndex],
+    [activePhotoPageIndexes, currentPhotoIndex, originalPhotoRequest, performanceStorageProfile],
   );
 
   const renderSharedProgress = (isVideoProgress = false) => (

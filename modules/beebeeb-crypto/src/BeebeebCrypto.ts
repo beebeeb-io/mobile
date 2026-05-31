@@ -35,6 +35,7 @@ export interface RegenResult {
 }
 
 const BeebeebThumbnailsModule = requireOptionalNativeModule<{
+  getThumbnail(fileId: string, width: number, height: number): Promise<{ uri: string; source: string }>
   regenerateThumbnail(fileId: string, qualityPreset: string): Promise<RegenResult>
   enqueueApplyQuality(fileIds: string[], qualityPreset: string): Promise<number>
   pauseWorkers(): Promise<void>
@@ -846,6 +847,22 @@ export type NativeBackupDiagnostics = Record<string, unknown>
 
 export type NativeBackupCategory = 'camera_roll' | 'contacts' | 'calendar'
 
+export interface NativeCategoryBackupStatus {
+  lastScanAt: string | null
+  lastScanCount: number
+  lastUploadAt: string | null
+  hasParentFolder?: boolean
+  hasKnownBackupState?: boolean
+}
+
+const EMPTY_CATEGORY_BACKUP_STATUS: NativeCategoryBackupStatus = {
+  lastScanAt: null,
+  lastScanCount: 0,
+  lastUploadAt: null,
+  hasParentFolder: false,
+  hasKnownBackupState: false,
+}
+
 /** Set the server folder native backup workers should upload new items into. */
 export async function configureBackupFolder(category: NativeBackupCategory, parentFolderId: string | null): Promise<void> {
   if (typeof BeebeebCryptoModule.configureBackupFolder !== 'function') return
@@ -878,6 +895,20 @@ export async function disableContactsBackup(): Promise<void> {
   return BeebeebCryptoModule.disableContactsBackup()
 }
 
+export async function getContactsBackupStatus(): Promise<NativeCategoryBackupStatus> {
+  if (typeof BeebeebCryptoModule.getContactsBackupStatus !== 'function') {
+    return EMPTY_CATEGORY_BACKUP_STATUS
+  }
+  const status = await BeebeebCryptoModule.getContactsBackupStatus()
+  return {
+    lastScanAt: status?.lastScanAt ?? null,
+    lastScanCount: Number(status?.lastScanCount ?? 0),
+    lastUploadAt: status?.lastUploadAt ?? null,
+    hasParentFolder: Boolean(status?.hasParentFolder),
+    hasKnownBackupState: Boolean(status?.hasKnownBackupState),
+  }
+}
+
 /** Start calendar backup. Requests EKEventStore access and uploads an encrypted iCal. */
 export async function enableCalendarBackup(authToken: string): Promise<void> {
   return BeebeebCryptoModule.enableCalendarBackup(authToken)
@@ -893,6 +924,20 @@ export async function resumeCalendarBackup(authToken: string): Promise<void> {
 
 export async function disableCalendarBackup(): Promise<void> {
   return BeebeebCryptoModule.disableCalendarBackup()
+}
+
+export async function getCalendarBackupStatus(): Promise<NativeCategoryBackupStatus> {
+  if (typeof BeebeebCryptoModule.getCalendarBackupStatus !== 'function') {
+    return EMPTY_CATEGORY_BACKUP_STATUS
+  }
+  const status = await BeebeebCryptoModule.getCalendarBackupStatus()
+  return {
+    lastScanAt: status?.lastScanAt ?? null,
+    lastScanCount: Number(status?.lastScanCount ?? 0),
+    lastUploadAt: status?.lastUploadAt ?? null,
+    hasParentFolder: Boolean(status?.hasParentFolder),
+    hasKnownBackupState: Boolean(status?.hasKnownBackupState),
+  }
 }
 
 /** Returns live backup queue statistics from the on-device SQLite store. */
@@ -1135,6 +1180,10 @@ export async function constellationEncode(
  * (Android, Expo Go, builds without the xcframework).
  */
 export const BeebeebThumbnails = {
+  getThumbnail: (fileId: string, width: number, height: number): Promise<{ uri: string; source: string }> => {
+    if (!BeebeebThumbnailsModule?.getThumbnail) return Promise.reject(new Error('ThumbnailService not available'))
+    return BeebeebThumbnailsModule.getThumbnail(fileId, width, height)
+  },
   regenerateThumbnail: (fileId: string, qualityPreset: string): Promise<RegenResult> => {
     if (!BeebeebThumbnailsModule?.regenerateThumbnail) return Promise.reject(new Error('ThumbnailService not available'))
     return BeebeebThumbnailsModule.regenerateThumbnail(fileId, qualityPreset)
