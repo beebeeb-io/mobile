@@ -19,6 +19,7 @@ import type { RootStackParamList } from '../App';
 import { getNativeBackupDiagnostics, BeebeebThumbnails, type QueueStats } from '../../modules/beebeeb-crypto';
 import { useCrypto } from '../lib/crypto-context';
 import { useTheme } from '../lib/theme-context';
+import { formatRuntimeTraceJsonl, getRuntimeTraceSnapshot, recordRuntimeTrace } from '../lib/runtime-trace';
 import { getFileIndex } from '../lib/api';
 import { loadCachedFileIndex, saveCachedFileIndex } from '../lib/file-index-cache';
 import {
@@ -40,9 +41,9 @@ function formatBytes(bytes: number): string {
 }
 
 function profileCopy(profile: PerformanceStorageProfile): string {
-  if (profile === 'light') return 'Smallest cache, less preloading.';
-  if (profile === 'smooth') return 'Medium server thumbnails plus a larger local preview tier for smoother browsing.';
-  return 'Medium thumbnails and recent previews.';
+  if (profile === 'light') return 'Loads remote thumbnails only when they scroll into view.';
+  if (profile === 'smooth') return 'Prefetches normal thumbnails and opens photos with a larger preview thumbnail.';
+  return 'Prefetches normal thumbnails around the viewport for smoother scrolling.';
 }
 
 export default function AdvancedSettingsScreen() {
@@ -96,6 +97,7 @@ export default function AdvancedSettingsScreen() {
   }, []);
 
   const copyDiagnostics = useCallback(async () => {
+    recordRuntimeTrace('advanced.diagnostics.copy_request');
     const payload = {
       generatedAt: new Date().toISOString(),
       platform: Platform.OS,
@@ -103,6 +105,8 @@ export default function AdvancedSettingsScreen() {
       backup: await getNativeBackupDiagnostics().catch((error) => ({
         error: error instanceof Error ? error.message : String(error),
       })),
+      runtimeTrace: getRuntimeTraceSnapshot(),
+      runtimeTraceJsonl: formatRuntimeTraceJsonl(),
     };
     await Clipboard.setStringAsync(JSON.stringify(payload, null, 2));
     setCopiedDiagnostics(true);
@@ -150,7 +154,7 @@ export default function AdvancedSettingsScreen() {
             <Text style={[styles.estimateLabel, { color: c.ink3 }]}>Estimated local cache</Text>
             <Text style={[styles.estimateValue, { color: c.ink }]}>{formatBytes(estimate.estimatedBytes)}</Text>
             <Text style={[styles.caption, { color: c.ink4 }]}>
-              Based on {fileCount.toLocaleString()} files. Smooth uses two tiers: medium thumbnails plus larger local previews.
+              Based on {fileCount.toLocaleString()} files. Smooth adds a larger preview tier; originals load only when requested.
             </Text>
           </View>
         </View>

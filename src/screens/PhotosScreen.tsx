@@ -58,10 +58,16 @@ import { getRemoteCreatedAtMap, getRemoteToLocalMap, markRemoteDeleted } from '.
 import { encryptedMetadataPayloadToBytes } from '../lib/encrypted-metadata';
 import { mapInBatches } from '../lib/async-batch';
 import { perfMark } from '../lib/perf-mark';
+import { recordRuntimeTrace } from '../lib/runtime-trace';
 import {
   columnsForPinchScale,
   DEFAULT_PHOTO_GRID_COLUMNS,
 } from '../lib/photo-grid';
+import {
+  DEFAULT_PERFORMANCE_STORAGE_SETTINGS,
+  getPerformanceStorageSettings,
+  type PerformanceStorageProfile,
+} from '../lib/performance-storage-settings';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -345,19 +351,25 @@ function buildPhotoListItems(groups: PhotoGroup[], columns: number, cellSize: nu
   return items;
 }
 
-function collectVisiblePhotoIds(items: PhotoListItem[], visibleIndexes: number[]): Set<string> {
+function collectVisiblePhotoIds(
+  items: PhotoListItem[],
+  visibleIndexes: number[],
+  beforeItems = 3,
+  afterItems = 6,
+  limit = ACTIVE_THUMBNAIL_LIMIT,
+): Set<string> {
   if (items.length === 0) return new Set();
   const indexes = visibleIndexes.length > 0 ? visibleIndexes : [0];
-  const min = Math.max(0, Math.min(...indexes) - 3);
-  const max = Math.min(items.length - 1, Math.max(...indexes) + 6);
+  const min = Math.max(0, Math.min(...indexes) - beforeItems);
+  const max = Math.min(items.length - 1, Math.max(...indexes) + afterItems);
   const ids: string[] = [];
 
-  for (let itemIndex = min; itemIndex <= max && ids.length < ACTIVE_THUMBNAIL_LIMIT; itemIndex++) {
+  for (let itemIndex = min; itemIndex <= max && ids.length < limit; itemIndex++) {
     const item = items[itemIndex];
     if (!item || item.type !== 'row') continue;
     for (const photo of item.photos) {
       ids.push(photo.id);
-      if (ids.length >= ACTIVE_THUMBNAIL_LIMIT) break;
+      if (ids.length >= limit) break;
     }
   }
 
@@ -365,7 +377,7 @@ function collectVisiblePhotoIds(items: PhotoListItem[], visibleIndexes: number[]
 }
 
 function collectInitialPhotoIds(items: PhotoListItem[]): Set<string> {
-  return collectVisiblePhotoIds(items, [0, 1, 2, 3, 4, 5]);
+  return collectVisiblePhotoIds(items, [0, 1, 2, 3, 4, 5], 0, 0);
 }
 
 function collectBufferedPhotoIds(
@@ -402,6 +414,23 @@ function collectBufferedPhotoIds(
   }
 
   return new Set(ids);
+}
+
+function collectThumbnailIdsForProfile(
+  orderedPhotos: FileEntry[],
+  visibleIds: Set<string>,
+  columns: number,
+  profile: PerformanceStorageProfile,
+): Set<string> {
+  if (profile === 'light') return new Set(visibleIds);
+  const zoomedOut = columns >= 7;
+  return collectBufferedPhotoIds(
+    orderedPhotos,
+    visibleIds,
+    zoomedOut ? 12 : THUMBNAIL_PRELOAD_BEFORE,
+    zoomedOut ? 18 : THUMBNAIL_PRELOAD_AFTER,
+    zoomedOut ? 40 : ACTIVE_THUMBNAIL_LIMIT,
+  );
 }
 
 function safeDisplayName(entry: FileEntry, decryptedNames: Record<string, string>): string {
@@ -867,10 +896,22 @@ export default function PhotosScreen() {
   const photosById = useMemo(() => new Map(photos.map((photo) => [photo.id, photo])), [photos]);
   const activeThumbnailIdsRef = useRef<Set<string>>(new Set());
   const isPhotosFocusedRef = useRef(false);
+  const [isPhotosFocused, setIsPhotosFocused] = useState(false);
+  const [performanceStorageProfile, setPerformanceStorageProfile] = useState<PerformanceStorageProfile>(
+    DEFAULT_PERFORMANCE_STORAGE_SETTINGS.profile,
+  );
+  const performanceStorageProfileRef = useRef<PerformanceStorageProfile>(
+    DEFAULT_PERFORMANCE_STORAGE_SETTINGS.profile,
+  );
+  const flatPhotosRef = useRef<FileEntry[]>([]);
 
   useEffect(() => {
     columnsRef.current = columns;
   }, [columns]);
+
+  useEffect(() => {
+    performanceStorageProfileRef.current = performanceStorageProfile;
+  }, [performanceStorageProfile]);
 
   useEffect(() => () => {
     if (columnIndicatorTimer.current) clearTimeout(columnIndicatorTimer.current);
@@ -955,6 +996,10 @@ export default function PhotosScreen() {
 
   const fetchPhotos = useCallback(async (isRefresh = false) => {
     const hasVisiblePhotos = photosCountRef.current > 0;
+    recordRuntimeTrace('photos.fetch.request', {
+      refresh: isRefresh,
+      hasVisiblePhotos,
+    });
     if (isRefresh || hasVisiblePhotos) {
       setRefreshing(true);
     } else {
@@ -974,6 +1019,9 @@ export default function PhotosScreen() {
           setPhotos(cachedImages);
           setLoading(false);
           setRefreshing(true);
+          recordRuntimeTrace('photos.fetch.cached_index_rendered', {
+            count: cachedImages.length,
+          });
         }
       }
 
@@ -1011,6 +1059,11 @@ export default function PhotosScreen() {
         void pruneThumbnailsForRemoteFiles(remotePhotoIds);
         void prunePhotoCacheForRemoteFiles(remotePhotoIds);
       }
+      recordRuntimeTrace('photos.fetch.success', {
+        count: images.length,
+        renderedCachedIndex,
+        prunedLocalMediaCache: shouldPruneLocalMediaCache,
+      });
 
       // Build local repair maps for camera roll thumbnails and original capture dates.
       // Older native builds sent upload time as created_at; the local backup DB keeps
@@ -1028,6 +1081,10 @@ export default function PhotosScreen() {
         .catch(() => {});
     } catch (err) {
       endPerf({ error: true });
+      recordRuntimeTrace('photos.fetch.failed', {
+        renderedCachedIndex,
+        error: err instanceof Error ? err.message : String(err),
+      });
       if (!renderedCachedIndex) {
         setError(friendlyError(err));
       }
@@ -1039,7 +1096,24 @@ export default function PhotosScreen() {
 
   useFocusEffect(
     useCallback(() => {
+      let cancelled = false;
+      isPhotosFocusedRef.current = true;
+      setIsPhotosFocused(true);
+      recordRuntimeTrace('photos.screen.focus');
+      void getPerformanceStorageSettings()
+        .then((settings) => {
+          if (cancelled) return;
+          setPerformanceStorageProfile(settings.profile);
+          recordRuntimeTrace('photos.performance_storage_profile.loaded', { profile: settings.profile });
+        })
+        .catch(() => {});
       fetchPhotos();
+      return () => {
+        cancelled = true;
+        isPhotosFocusedRef.current = false;
+        setIsPhotosFocused(false);
+        recordRuntimeTrace('photos.screen.blur');
+      };
     }, [fetchPhotos])
   );
 
@@ -1051,17 +1125,26 @@ export default function PhotosScreen() {
     if (!isUnlocked) return;
     let cancelled = false;
     void (async () => {
+      recordRuntimeTrace('photos.local_identifier_map.init_request');
       await initLocalIdentifierMap();
       if (cancelled) return;
       setLocalIdentifierVersion((value) => value + 1);
       await refreshLocalIdentifierMap();
       if (cancelled) return;
       setLocalIdentifierVersion((value) => value + 1);
+      recordRuntimeTrace('photos.local_identifier_map.ready', {
+        identifiers: getLocalIdentifierMapSize(),
+      });
       console.info('[PhotosScreen] PhotoKit identifier map ready', {
         identifiers: getLocalIdentifierMapSize(),
       });
     })().catch((err: unknown) =>
-      console.warn('[PhotosScreen] initLocalIdentifierMap failed', err),
+      {
+        recordRuntimeTrace('photos.local_identifier_map.failed', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+        console.warn('[PhotosScreen] initLocalIdentifierMap failed', err);
+      },
     );
     return () => {
       cancelled = true;
@@ -1069,11 +1152,13 @@ export default function PhotosScreen() {
   }, [isUnlocked]);
 
   const handleRefresh = useCallback(() => {
+    recordRuntimeTrace('photos.refresh.request');
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     fetchPhotos(true);
   }, [fetchPhotos]);
 
   const handleThumbnailUnavailable = useCallback((fileId: string) => {
+    recordRuntimeTrace('photos.thumbnail.unavailable', { fileId });
     setPhotos((prev) => prev.map((item) => (
       item.id === fileId && item.has_thumbnail ? { ...item, has_thumbnail: false } : item
     )));
@@ -1124,16 +1209,27 @@ export default function PhotosScreen() {
   const initialThumbnailIds = useMemo(() => collectInitialPhotoIds(listItems), [listItems]);
 
   useEffect(() => {
+    flatPhotosRef.current = flatPhotos;
+  }, [flatPhotos]);
+
+  useEffect(() => {
     const firstId = flatPhotos[0]?.id;
     if (!firstId) return;
-    const signature = `${firstId}:${flatPhotos.length}`;
+    const signature = `${firstId}:${flatPhotos.length}:${columns}:${performanceStorageProfile}`;
     if (thumbnailSeedSignatureRef.current === signature) return;
     thumbnailSeedSignatureRef.current = signature;
-    const seedLimit = columnsRef.current >= 7 ? 40 : ACTIVE_THUMBNAIL_LIMIT;
-    const ids = new Set(flatPhotos.slice(0, seedLimit).map((photo) => photo.id));
-    setActiveThumbnailIds((prev) => (sameIdSet(prev, ids) ? prev : ids));
-    setActivePhotoIds((prev) => (prev.size === 0 ? ids : prev));
-  }, [flatPhotos]);
+    const visibleIds = initialThumbnailIds.size > 0
+      ? initialThumbnailIds
+      : new Set(flatPhotos.slice(0, columnsRef.current >= 7 ? 40 : 24).map((photo) => photo.id));
+    const thumbnailIds = collectThumbnailIdsForProfile(
+      flatPhotos,
+      visibleIds,
+      columnsRef.current,
+      performanceStorageProfile,
+    );
+    setActiveThumbnailIds((prev) => (sameIdSet(prev, thumbnailIds) ? prev : thumbnailIds));
+    setActivePhotoIds((prev) => (prev.size === 0 ? visibleIds : prev));
+  }, [columns, flatPhotos, initialThumbnailIds, performanceStorageProfile]);
 
   const nativePhotoItems = useMemo<NativePhotoGridItem[]>(() => {
     const items: NativePhotoGridItem[] = [];
@@ -1212,9 +1308,10 @@ export default function PhotosScreen() {
         storagePoolId: entry.storage_pool_id ?? null,
         photoListJson,
         initialPhotoIndex,
+        performanceStorageProfile,
       });
     },
-    [navigation, decryptedMimeTypes, decryptedNames, flatPhotos, photoKitAssetMap, thumbnailUris],
+    [navigation, decryptedMimeTypes, decryptedNames, flatPhotos, performanceStorageProfile, photoKitAssetMap, thumbnailUris],
   );
 
   const clearSelection = useCallback(() => {
@@ -1415,10 +1512,16 @@ export default function PhotosScreen() {
     if (indexes && indexes.length > 0) {
       visibleIndexesRef.current = indexes;
     }
-    const ids = collectVisiblePhotoIds(listItemsRef.current, visibleIndexesRef.current);
-    setActiveThumbnailIds((prev) => (sameIdSet(prev, ids) ? prev : ids));
-    setActivePhotoIds((prev) => (sameIdSet(prev, ids) ? prev : ids));
-  }, []);
+    const visibleIds = collectVisiblePhotoIds(listItemsRef.current, visibleIndexesRef.current, 0, 0);
+    const thumbnailIds = collectThumbnailIdsForProfile(
+      flatPhotos,
+      visibleIds,
+      columnsRef.current,
+      performanceStorageProfile,
+    );
+    setActiveThumbnailIds((prev) => (sameIdSet(prev, thumbnailIds) ? prev : thumbnailIds));
+    setActivePhotoIds((prev) => (sameIdSet(prev, visibleIds) ? prev : visibleIds));
+  }, [flatPhotos, performanceStorageProfile]);
 
   const handleScrollBeginDrag = useCallback(() => {
     isScrollingRef.current = true;
@@ -1457,17 +1560,29 @@ export default function PhotosScreen() {
   useEffect(() => {
     listItemsRef.current = listItems;
     const visibleIndexes = visibleIndexesRef.current;
-    const ids = collectVisiblePhotoIds(listItems, visibleIndexes);
-    setActiveThumbnailIds((prev) => (sameIdSet(prev, ids) ? prev : ids));
-    setActivePhotoIds((prev) => (sameIdSet(prev, ids) ? prev : ids));
-  }, [listItems]);
+    const visibleIds = collectVisiblePhotoIds(listItems, visibleIndexes, 0, 0);
+    const thumbnailIds = collectThumbnailIdsForProfile(
+      flatPhotos,
+      visibleIds,
+      columnsRef.current,
+      performanceStorageProfile,
+    );
+    setActiveThumbnailIds((prev) => (sameIdSet(prev, thumbnailIds) ? prev : thumbnailIds));
+    setActivePhotoIds((prev) => (sameIdSet(prev, visibleIds) ? prev : visibleIds));
+  }, [flatPhotos, listItems, performanceStorageProfile]);
 
   useEffect(() => {
+    if (!isPhotosFocused) return;
     const ids = Array.from(activeThumbnailIds);
     if (ids.length === 0) return;
     const serverThumbnailIds = new Set(photos.filter((photo) => photo.has_thumbnail).map((photo) => photo.id));
     const idsWithServerThumbs = ids.filter((id) => serverThumbnailIds.has(id) && !photoKitAssetMap.has(id));
     if (idsWithServerThumbs.length === 0) return;
+    recordRuntimeTrace('photos.thumbnail.prefetch_queued', {
+      activeIds: ids.length,
+      serverThumbnailIds: idsWithServerThumbs.length,
+      photoKitBackedIds: ids.length - idsWithServerThumbs.length,
+    });
 
     let cancelled = false;
     const controller = new AbortController();
@@ -1500,6 +1615,11 @@ export default function PhotosScreen() {
         if (Object.keys(cachedUris).length > 0) {
           setThumbnailUris((prev) => mergeUriMap(prev, cachedUris));
         }
+        recordRuntimeTrace('photos.thumbnail.prefetch_cache_checked', {
+          requested: idsWithServerThumbs.length,
+          cacheHits: Object.keys(cachedUris).length,
+          toFetch: toFetch.length,
+        });
         if (toFetch.length === 0) {
           if (thumbnailRetryTimerRef.current) {
             clearTimeout(thumbnailRetryTimerRef.current);
@@ -1520,6 +1640,12 @@ export default function PhotosScreen() {
           },
         );
         if (cancelled) return;
+        recordRuntimeTrace('photos.thumbnail.prefetch_result', {
+          requested: toFetch.length,
+          loaded: stats.loaded,
+          failed: stats.failed,
+          fetched: Object.keys(fetched).length,
+        });
         if (Object.keys(fetched).length > 0) {
           setThumbnailUris((prev) => mergeUriMap(prev, fetched));
         }
@@ -1548,9 +1674,10 @@ export default function PhotosScreen() {
         thumbnailRetryTimerRef.current = null;
       }
     };
-  }, [activeThumbnailIds, getFileKeyBytes, photoKitAssetMap, photos, thumbnailRetryTick]);
+  }, [activeThumbnailIds, getFileKeyBytes, isPhotosFocused, photoKitAssetMap, photos, thumbnailRetryTick]);
 
   useEffect(() => {
+    if (!isPhotosFocused) return;
     const ids = Array.from(activeThumbnailIds);
     if (ids.length === 0 || photoKitAssetMap.size === 0) return;
     const attempts = localThumbnailAttemptsRef.current;
@@ -1589,9 +1716,10 @@ export default function PhotosScreen() {
     return () => {
       cancelled = true;
     };
-  }, [activeThumbnailIds, decryptedMimeTypes, photoKitAssetMap, photosById, thumbnailUris]);
+  }, [activeThumbnailIds, decryptedMimeTypes, isPhotosFocused, photoKitAssetMap, photosById, thumbnailUris]);
 
   useEffect(() => {
+    if (!isPhotosFocused) return;
     if (!isUnlocked) return;
     const repairAttempts = thumbnailRepairAttemptsRef.current;
     const now = Date.now();
@@ -1605,6 +1733,9 @@ export default function PhotosScreen() {
       .slice(0, 8);
     if (missing.length === 0) return;
     let cancelled = false;
+    recordRuntimeTrace('photos.thumbnail.repair_queued', {
+      count: missing.length,
+    });
     void (async () => {
       for (const photo of missing) {
         repairAttempts.set(photo.id, Date.now());
@@ -1618,16 +1749,19 @@ export default function PhotosScreen() {
         );
         if (cancelled) return;
         if (repaired) {
+          recordRuntimeTrace('photos.thumbnail.repair_success', { fileId: photo.id });
           setPhotos((prev) => prev.map((item) => (
             item.id === photo.id ? { ...item, has_thumbnail: true } : item
           )));
+        } else {
+          recordRuntimeTrace('photos.thumbnail.repair_failed', { fileId: photo.id });
         }
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [activePhotoIds, decryptedMimeTypes, getFileKeyBytes, isUnlocked, photoKitAssetMap, photos]);
+  }, [activePhotoIds, decryptedMimeTypes, getFileKeyBytes, isPhotosFocused, isUnlocked, photoKitAssetMap, photos]);
 
   const showColumnIndicator = useCallback(() => {
     columnIndicatorOpacity.setValue(1);
@@ -1844,21 +1978,32 @@ export default function PhotosScreen() {
       return;
     }
     visibleIndexesRef.current = indexes;
-    const ids = collectVisiblePhotoIds(listItemsRef.current, indexes);
-    setActiveThumbnailIds((prev) => (sameIdSet(prev, ids) ? prev : ids));
-    setActivePhotoIds((prev) => (sameIdSet(prev, ids) ? prev : ids));
+    const visibleIds = collectVisiblePhotoIds(listItemsRef.current, indexes, 0, 0);
+    const thumbnailIds = collectThumbnailIdsForProfile(
+      flatPhotosRef.current,
+      visibleIds,
+      columnsRef.current,
+      performanceStorageProfileRef.current,
+    );
+    setActiveThumbnailIds((prev) => (sameIdSet(prev, thumbnailIds) ? prev : thumbnailIds));
+    setActivePhotoIds((prev) => (sameIdSet(prev, visibleIds) ? prev : visibleIds));
   }).current;
 
   const selectedIdArray = useMemo(() => Array.from(selectedIds), [selectedIds]);
 
   const handleNativePhotoPress = useCallback((event: { nativeEvent: { id: string } }) => {
     const { id } = event.nativeEvent;
+    recordRuntimeTrace('photos.native.photo_press', { fileId: id });
     const photo = photosById.get(id);
     if (photo) openPhoto(photo);
   }, [openPhoto, photosById]);
 
   const handleNativeSelectionChange = useCallback((event: { nativeEvent: { selectedIds: string[]; selectionMode: boolean } }) => {
     const { selectedIds: nextSelectedIds, selectionMode } = event.nativeEvent;
+    recordRuntimeTrace('photos.native.selection_change', {
+      count: nextSelectedIds.length,
+      selectionMode,
+    });
     setSelectMode((prev) => (prev === selectionMode ? prev : selectionMode));
     setSelectedIds((prev) => {
       const next = new Set(nextSelectedIds);
@@ -1869,26 +2014,31 @@ export default function PhotosScreen() {
 
   const handleNativeVisibleIdsChange = useCallback((event: { nativeEvent: { ids: string[] } }) => {
     const { ids: nativeIds } = event.nativeEvent;
+    recordRuntimeTrace('photos.native.visible_ids_change', {
+      count: nativeIds.length,
+      columns: columnsRef.current,
+      profile: performanceStorageProfile,
+    });
     const visibleIds = new Set(nativeIds);
-    const zoomedOut = columnsRef.current >= 7;
-    const bufferedIds = collectBufferedPhotoIds(
+    const thumbnailIds = collectThumbnailIdsForProfile(
       flatPhotos,
       visibleIds,
-      zoomedOut ? 12 : THUMBNAIL_PRELOAD_BEFORE,
-      zoomedOut ? 18 : THUMBNAIL_PRELOAD_AFTER,
-      zoomedOut ? 40 : ACTIVE_THUMBNAIL_LIMIT,
+      columnsRef.current,
+      performanceStorageProfile,
     );
-    setActiveThumbnailIds((prev) => (sameIdSet(prev, bufferedIds) ? prev : bufferedIds));
+    setActiveThumbnailIds((prev) => (sameIdSet(prev, thumbnailIds) ? prev : thumbnailIds));
     setActivePhotoIds((prev) => (sameIdSet(prev, visibleIds) ? prev : visibleIds));
-  }, [flatPhotos]);
+  }, [flatPhotos, performanceStorageProfile]);
 
   const handleNativeZoomChange = useCallback((event: { nativeEvent: { columns: number } }) => {
     const { columns: nextColumns } = event.nativeEvent;
+    recordRuntimeTrace('photos.native.zoom_change', { columns: nextColumns });
     columnsRef.current = nextColumns;
     setColumns((prev) => (prev === nextColumns ? prev : nextColumns));
   }, []);
 
   const handleNativePerfEvent = useCallback((event: { nativeEvent: Record<string, unknown> }) => {
+    recordRuntimeTrace('photos.native.perf_event', event.nativeEvent);
     console.info('[BeebeebPerf] photos.native', JSON.stringify(event.nativeEvent));
   }, []);
 
