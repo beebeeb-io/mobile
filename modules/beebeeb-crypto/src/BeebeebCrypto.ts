@@ -173,6 +173,72 @@ export async function deriveShareKey(
   return coerceBytes(await BeebeebCryptoModule.deriveShareKey(sharedSecret, fileId))
 }
 
+// ─── File requests (0643) ─────────────────────────────────────────────────────
+//
+// Per-request sealed-keypair (ECIES) crypto. The master key never crosses to JS
+// (task 0556): wrap/unwrap take the opaque master-key handle id and export the
+// raw key transiently inside native. The HKDF context is EMPTY on the native
+// side (the ratified cross-client contract, decision 0651) — JS never passes a
+// request/file id here.
+
+/** Result of creating a per-request keypair: the public key (for the link
+ *  fragment) plus R_priv wrapped under the master key (for the server). */
+export interface RequestKeypairResult {
+  /** R_pub — X25519 public key, goes in the link fragment `#<R_pub>`. */
+  publicKey: Uint8Array
+  /** R_priv wrapped under the master key (AES-256-GCM ciphertext). */
+  wrapped: Uint8Array
+  /** GCM nonce used to wrap R_priv. */
+  nonce: Uint8Array
+}
+
+/**
+ * Generate a fresh per-request X25519 keypair and wrap R_priv under the master
+ * key, given the opaque master-key handle id. R_priv is generated with
+ * SecRandomCopyBytes and never leaves native.
+ */
+export async function createRequestKeypairWithHandle(handleId: number): Promise<RequestKeypairResult> {
+  const result = await BeebeebCryptoModule.createRequestKeypairWithHandle(handleId)
+  return {
+    publicKey: coerceBytes(result.publicKey),
+    wrapped: coerceBytes(result.wrapped),
+    nonce: coerceBytes(result.nonce),
+  }
+}
+
+/**
+ * Unwrap a request's R_priv using the master-key handle. Returns the raw 32-byte
+ * private key — the caller MUST zeroize it (and clear any cache) on vault lock.
+ */
+export async function unwrapRequestPrivateWithHandle(
+  handleId: number,
+  wrapped: Uint8Array,
+  nonce: Uint8Array,
+): Promise<Uint8Array> {
+  return coerceBytes(await BeebeebCryptoModule.unwrapRequestPrivateWithHandle(handleId, wrapped, nonce))
+}
+
+/**
+ * Recover the content key C for a request-uploaded file (owner decrypt path).
+ * Takes the unwrapped R_priv, the uploader's ephemeral public key, and the
+ * wrapped content key. C can then be used as a normal 32-byte file key.
+ */
+export async function openRequestUpload(
+  rPriv: Uint8Array,
+  ePub: Uint8Array,
+  wrappedKey: Uint8Array,
+): Promise<Uint8Array> {
+  return coerceBytes(await BeebeebCryptoModule.openRequestUpload(rPriv, ePub, wrappedKey))
+}
+
+/**
+ * Derive the X25519 public key from a raw private key. Used to rebuild a
+ * request's link fragment (`#<R_pub>`) from an unwrapped R_priv.
+ */
+export async function deriveX25519PublicFromPrivate(privateKey: Uint8Array): Promise<Uint8Array> {
+  return coerceBytes(await BeebeebCryptoModule.deriveX25519Public(privateKey))
+}
+
 // ─── File encryption ─────────────────────────────────────────────────────────
 
 /**

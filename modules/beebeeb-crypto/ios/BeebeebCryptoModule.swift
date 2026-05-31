@@ -933,6 +933,81 @@ public class BeebeebCryptoModule: Module {
       try deriveShareKey(sharedSecret: sharedSecret, fileId: fileId)
     }
 
+    // MARK: - File Requests (0643)
+    //
+    // Per-request sealed-keypair crypto (ECIES) for file requests. Mirrors the
+    // web reference (repos/web/src/lib/crypto.ts) byte-for-byte at the core
+    // level: same UniFFI functions, same EMPTY HKDF context, same X25519/HKDF/
+    // AES — so links round-trip cross-client.
+    //
+    // Invariants:
+    //  - The MASTER key never crosses to JS (task 0556). wrap/unwrap export the
+    //    raw key transiently from the in-memory MasterKeyHandle and zero it.
+    //  - R_priv is generated with SecRandomCopyBytes and, on create, never
+    //    leaves native — only {publicKey, wrapped, nonce} are returned.
+    //  - The HKDF context is EMPTY (`Data()`) for BOTH wrap (requestId) and open
+    //    (fileId) — the ratified cross-client contract (decision 0651). The
+    //    server-assigned ids are NOT used; uniqueness comes from the random
+    //    keypair, ephemeral keypair, content key, and GCM nonce.
+    //
+    // New tracks (camera-roll 0672, ShareUploader 0673) MUST add their own
+    // marked regions and not interleave here.
+
+    AsyncFunction("createRequestKeypairWithHandle") { [self] (handleId: Int) throws -> [String: Any] in
+      // 1. Fresh per-request X25519 private key (32 CSPRNG bytes).
+      var rPrivBytes = [UInt8](repeating: 0, count: 32)
+      let status = SecRandomCopyBytes(kSecRandomDefault, 32, &rPrivBytes)
+      guard status == errSecSuccess else {
+        throw NSError(
+          domain: "BeebeebCrypto",
+          code: Int(status),
+          userInfo: [NSLocalizedDescriptionKey: "Secure random generator failed"]
+        )
+      }
+      var rPriv = Data(rPrivBytes)
+      rPrivBytes.withUnsafeMutableBytes { ptr in
+        if let base = ptr.baseAddress { memset(base, 0, ptr.count) }
+      }
+      defer { rPriv.resetBytes(in: 0..<rPriv.count) }
+
+      // 2. Derive R_pub (goes in the link fragment, never persisted server-side).
+      let rPub = try deriveX25519Public(privateKey: rPriv)
+
+      // 3. Wrap R_priv under the master key (raw bytes stay native, zeroed after).
+      let master = try self.getHandle(handleId)
+      var masterKeyBytes = try master.exportForKeychain()
+      defer {
+        masterKeyBytes.withUnsafeMutableBytes { ptr in
+          if let base = ptr.baseAddress { memset(base, 0, ptr.count) }
+        }
+      }
+      let wrapped = try wrapRequestPrivate(masterKey: masterKeyBytes, requestId: Data(), rPriv: rPriv)
+      return [
+        "publicKey": rPub,
+        "wrapped": wrapped.wrapped,
+        "nonce": wrapped.nonce,
+      ]
+    }
+
+    AsyncFunction("unwrapRequestPrivateWithHandle") { [self] (handleId: Int, wrapped: Data, nonce: Data) throws -> Data in
+      let master = try self.getHandle(handleId)
+      var masterKeyBytes = try master.exportForKeychain()
+      defer {
+        masterKeyBytes.withUnsafeMutableBytes { ptr in
+          if let base = ptr.baseAddress { memset(base, 0, ptr.count) }
+        }
+      }
+      // Returns R_priv to JS; the caller (RequestKeyResolver) caches it and
+      // zeroizes on vault lock.
+      return try unwrapRequestPrivate(masterKey: masterKeyBytes, requestId: Data(), wrapped: wrapped, nonce: nonce)
+    }
+
+    AsyncFunction("openRequestUpload") { (rPriv: Data, ePub: Data, wrappedKey: Data) throws -> Data in
+      // Recover the content key C for a request-uploaded file (owner decrypt).
+      // No master key needed — R_priv is supplied by the caller.
+      try openRequestUpload(rPriv: rPriv, ePub: ePub, fileId: Data(), wrappedKey: wrappedKey)
+    }
+
     AsyncFunction("encryptChunk") { (key: Data, plaintext: Data) throws -> [String: Any] in
       let result = try BeebeebCryptoBridge.encryptChunk(key: key, plaintext: plaintext)
       return [

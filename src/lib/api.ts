@@ -500,6 +500,17 @@ export interface FileEntry {
   is_starred?: boolean;
   /** True when the file is an image or video (set at upload time). */
   is_media?: boolean;
+  // ── File-request uploads (0643) ──
+  // Set only for files that arrived through a file request. When all three are
+  // present the file is decrypted via the request-key path (openRequestUpload)
+  // rather than the normal master-key-derived per-file key. See
+  // src/lib/file-request-crypto.ts.
+  /** The file request this upload satisfies (UUID), or null for normal files. */
+  file_request_id?: string | null;
+  /** Uploader's ephemeral X25519 public key (base64), used to recover C. */
+  sender_ephemeral_pubkey?: string | null;
+  /** Content key C sealed to the request key (base64). */
+  wrapped_content_key?: string | null;
 }
 
 /**
@@ -2244,4 +2255,80 @@ export async function registerClientDevice(body: {
   push_token?: string;
 }): Promise<ClientDevice> {
   return request<ClientDevice>('POST', '/api/v1/clients/devices', body);
+}
+
+// ─── File requests (0643) ─────────────────────────────────────────────────────
+//
+// File requests are the inverse of sharing: an account-less link anyone can use
+// to upload files INTO the owner's encrypted vault. The owner creates the
+// request here; uploads happen via the web `/r/:token` page (the universal
+// uploader — native in-app upload is out of scope for this pass). Mirrors the
+// web client (repos/web/src/lib/api.ts).
+
+/** A file request owned by the current user. */
+export interface FileRequest {
+  id: string;
+  title: string;
+  description: string | null;
+  token: string | null;
+  /** R_priv wrapped under the owner's master key (base64, opaque). Used to
+   *  rebuild R_pub for the "copy link" action. */
+  wrapped_private_key: string | null;
+  wrap_nonce: string | null;
+  target_folder_id: string | null;
+  max_files: number;
+  max_total_bytes: number | null;
+  files_received: number;
+  total_bytes_received: number;
+  expires_at: string | null;
+  closed: boolean;
+  closed_at: string | null;
+  created_at: string;
+  /** `APP_URL/r/<token>` — the client appends `#<R_pub>` to share. */
+  request_url: string | null;
+}
+
+export interface CreateFileRequestParams {
+  title: string;
+  description?: string;
+  target_folder_id?: string;
+  max_files?: number;
+  max_total_bytes?: number;
+  expires_in_secs?: number;
+  /** R_priv wrapped under the master key (base64). */
+  wrapped_private_key: string;
+  /** GCM nonce used to wrap R_priv (base64). */
+  wrap_nonce: string;
+}
+
+export interface CreateFileRequestResult {
+  id: string;
+  token: string;
+  target_folder_id: string | null;
+  max_files: number;
+  max_total_bytes: number | null;
+  files_received: number;
+  total_bytes_received: number;
+  expires_at: string | null;
+  closed: boolean;
+  created_at: string;
+  request_url: string | null;
+}
+
+/** POST /api/v1/file-requests — create a request. Returns the token + caps. */
+export async function createFileRequest(params: CreateFileRequestParams): Promise<CreateFileRequestResult> {
+  return request<CreateFileRequestResult>('POST', '/api/v1/file-requests', params);
+}
+
+/** GET /api/v1/file-requests — the owner's requests (incl. wrapped key for link rebuild). */
+export async function listFileRequests(): Promise<{ file_requests: FileRequest[] }> {
+  return request<{ file_requests: FileRequest[] }>('GET', '/api/v1/file-requests');
+}
+
+/** POST /api/v1/file-requests/:id/close — stop accepting new uploads (received files kept). */
+export async function closeFileRequest(id: string): Promise<{ id: string; closed: boolean; closed_at: string | null }> {
+  return request<{ id: string; closed: boolean; closed_at: string | null }>(
+    'POST',
+    `/api/v1/file-requests/${id}/close`,
+  );
 }

@@ -6,6 +6,8 @@ import { Platform } from 'react-native'
 import {
   computeRecoveryCheck,
   createMasterKeyHandle,
+  createRequestKeypairWithHandle,
+  deriveX25519PublicFromPrivate,
   handleComputeRecoveryCheck,
   handleDecryptChunk,
   handleDecryptMetadata,
@@ -20,10 +22,16 @@ import {
   replaceKeychainAccessControl,
   replaceKeychainAccessControlFromHandle,
   storeKeyInKeychain,
+  unwrapRequestPrivateWithHandle,
 } from '../../modules/beebeeb-crypto'
-import type { EncryptedData } from '../../modules/beebeeb-crypto'
+import type { EncryptedData, RequestKeypairResult } from '../../modules/beebeeb-crypto'
 import { setBackupEncryption, getKeepVaultUnlocked } from '../services/BackupService'
 import { recordRuntimeTrace } from './runtime-trace'
+import {
+  createRequestKeyResolver,
+  type RequestFileFields,
+  type RequestKeyResolver,
+} from './file-request-crypto'
 
 // ─── Master key cache lifecycle (task 0556) ────────────────────────────────
 //
@@ -337,6 +345,26 @@ interface CryptoContextValue {
    * Safe to call when already unlocked — returns true immediately.
    */
   tryBackgroundUnlock: () => Promise<boolean>
+  // ── File requests (0643) ──
+  /**
+   * Generate a per-request X25519 keypair and wrap R_priv under the master key.
+   * Returns the public key (for the link fragment) + the wrapped private key
+   * (to POST to the server). R_priv is generated natively and never enters JS.
+   * Throws if the vault is locked.
+   */
+  createRequestKeypair: () => Promise<RequestKeypairResult>
+  /**
+   * Rebuild a request's X25519 public key from its stored wrapped private key,
+   * so the share link can be reconstructed. Throws if the vault is locked.
+   */
+  rebuildRequestPublicKey: (wrapped: Uint8Array, nonce: Uint8Array) => Promise<Uint8Array>
+  /**
+   * Resolve the content key C for a file that arrived through a file request.
+   * Use the returned key wherever a normal per-file key is expected (chunk +
+   * metadata decryption). Throws if the vault is locked or the file is not a
+   * request upload.
+   */
+  getRequestContentKey: (file: RequestFileFields) => Promise<Uint8Array>
 }
 
 const CryptoContext = createContext<CryptoContextValue | null>(null)
@@ -352,6 +380,9 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
   const masterKeyHandleId = useRef<number | null>(null)
   const unlockInFlightRef = useRef(false)
   const unlockPromiseRef = useRef<Promise<void> | null>(null)
+  // File-request owner-decrypt resolver (0643). Lazily created; caches unwrapped
+  // R_priv per request. Cleared + zeroized on lock() alongside the master key.
+  const requestResolverRef = useRef<RequestKeyResolver | null>(null)
 
   useEffect(() => {
     updateVaultUnlockDiagnostics({
@@ -544,6 +575,9 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
       void releaseHandle(masterKeyHandleId.current).catch(() => {})
       masterKeyHandleId.current = null
     }
+    // Zero + drop any cached file-request R_priv buffers (0643).
+    requestResolverRef.current?.clear()
+    requestResolverRef.current = null
     setIsUnlocked(false)
   }, [])
 
@@ -752,6 +786,40 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
     }
   }, [isUnlocked, unlockAttempted])
 
+  // ── File requests (0643) ──
+
+  const createRequestKeypairFn = useCallback(
+    async (): Promise<RequestKeypairResult> => {
+      return createRequestKeypairWithHandle(requireHandleId())
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  )
+
+  const rebuildRequestPublicKeyFn = useCallback(
+    async (wrapped: Uint8Array, nonce: Uint8Array): Promise<Uint8Array> => {
+      const rPriv = await unwrapRequestPrivateWithHandle(requireHandleId(), wrapped, nonce)
+      try {
+        return await deriveX25519PublicFromPrivate(rPriv)
+      } finally {
+        rPriv.fill(0)
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  )
+
+  const getRequestContentKeyFn = useCallback(
+    async (file: RequestFileFields): Promise<Uint8Array> => {
+      if (requestResolverRef.current == null) {
+        requestResolverRef.current = createRequestKeyResolver(() => requireHandleId())
+      }
+      return requestResolverRef.current.resolveContentKey(file)
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  )
+
   // Keep BackupService in sync with vault state so folder creation/lookup
   // always encrypts/decrypts names through the crypto context.
   useEffect(() => {
@@ -810,6 +878,9 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
         getIndexKey: getIndexKeyFn,
         setBiometricRequirement: setBiometricRequirementFn,
         tryBackgroundUnlock: tryBackgroundUnlockFn,
+        createRequestKeypair: createRequestKeypairFn,
+        rebuildRequestPublicKey: rebuildRequestPublicKeyFn,
+        getRequestContentKey: getRequestContentKeyFn,
       }}
     >
       {children}
