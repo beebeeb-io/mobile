@@ -6,21 +6,27 @@ const EXTENSION_NAME = 'BeebeebFileProvider';
 const EXTENSION_BUNDLE_ID = 'io.beebeeb.app.file-provider';
 const APP_GROUP = 'group.io.beebeeb.shared';
 const TEAM_ID = 'R8352WDJJR';
+// Canonical File Provider extension sources live in `targets/file-provider/`
+// (task 0561 Fork A1). This list MUST match the BeebeebFileProvider sources
+// wired in ios/Beebeeb.xcodeproj/project.pbxproj. The principal class is
+// `FileProviderExtension` (see Info.plist below). The older divergent
+// `plugins/file-provider/*.swift` tree (principal class `BeebeebFileProvider`)
+// was deleted — a prebuild that re-wired it produced a non-loading extension
+// (principal-class mismatch).
 const SOURCE_FILES = [
-  'BeebeebFileProvider.swift',
+  'FileProviderExtension.swift',
   'FileProviderItem.swift',
   'FileProviderEnumerator.swift',
-  'FileProviderCrypto.swift',
-  'FileProviderAPIClient.swift',
-  // Symlink to modules/beebeeb-crypto/ios/Shared/BeebeebKeychainCore.swift.
-  // Needed so FileProviderAPIClient can read the session token from the
-  // shared Keychain (task 0447) — App Group UserDefaults plaintext is
-  // now empty after sign-in.
+  'CacheManager.swift',
+  'ApiClient.swift',
+  'CryptoBridge.swift',
   'BeebeebKeychainCore.swift',
+  'Constants.swift',
+  'SyncEngine.swift',
 ];
 const EXTENSION_FILES = [
   ...SOURCE_FILES.map((file) => ({
-    path: `../plugins/file-provider/${file}`,
+    path: `../targets/file-provider/${file}`,
     name: file,
     fileType: 'sourcecode.swift',
     buildPhase: 'PBXSourcesBuildPhase',
@@ -349,7 +355,7 @@ function ensureExtensionWiring(project) {
 
   const sourceBuildFiles = SOURCE_FILES.map((file) => {
     const fileRef = ensureFileReference(project, {
-      path: `../plugins/file-provider/${file}`,
+      path: `../targets/file-provider/${file}`,
       name: file,
       fileType: 'sourcecode.swift',
     });
