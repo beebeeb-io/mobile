@@ -50,8 +50,15 @@ public final class ThumbnailServiceModule: Module, ThumbnailEventEmitter {
           apiCredentialsProvider: {
             ThumbnailServiceModule.credentials()
           },
-          fileKeyProvider: { fileId in
-            ThumbnailServiceModule.fileKey(fileId)
+          remoteThumbnailDecryptProvider: { fileId, nonce, ciphertext in
+            if let fileKey = ThumbnailServiceModule.fileKey(fileId) {
+              return try BeebeebCryptoBridge.decryptChunk(key: fileKey, nonce: nonce, ciphertext: ciphertext)
+            }
+            return try BeebeebCryptoBridge.decryptChunkWithCachedMasterKey(
+              fileId: fileId,
+              nonce: nonce,
+              ciphertext: ciphertext
+            )
           }
         )
       }
@@ -251,11 +258,11 @@ extension ThumbnailService {
     emitter: ThumbnailEventEmitter,
     localIdentifierLookup: @escaping (FileId) -> String?,
     apiCredentialsProvider: @escaping () async -> (URL, String)?,
-    fileKeyProvider: @escaping (FileId) async -> Data?
+    remoteThumbnailDecryptProvider: @escaping (FileId, Data, Data) async throws -> Data?
   ) {
     self.eventEmitter = emitter
     self.localIdentifierLookup = localIdentifierLookup
     self.apiCredentialsProvider = apiCredentialsProvider
-    self.fileKeyProvider = fileKeyProvider
+    self.remoteThumbnailDecryptProvider = remoteThumbnailDecryptProvider
   }
 }

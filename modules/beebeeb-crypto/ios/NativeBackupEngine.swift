@@ -646,6 +646,7 @@ final class NativeBackupEngine: NSObject {
         "pacingMode": currentPacingMode().rawValue,
         "canRunNow": canExecuteBackupWorkNow(),
         "masterKeyHandleCached": masterKeyHandle != nil,
+        "masterKeyBridgeCached": BeebeebCryptoBridge.hasCachedMasterKey(),
         "tokenConfigured": token?.isEmpty == false,
         "apiBaseUrlConfigured": apiBaseUrl?.isEmpty == false,
         "freeBytesAvailable": freeBytes,
@@ -915,13 +916,23 @@ final class NativeBackupEngine: NSObject {
     }
 
     do {
+      let bridgeCacheAvailable = BeebeebCryptoBridge.hasCachedMasterKey()
+      RuntimeTrace.event("backup.native.start.master_key_request", [
+        "promptMayAppear": masterKeyHandle == nil && !bridgeCacheAvailable,
+        "bridgeCacheAvailable": bridgeCacheAvailable
+      ])
       guard let mk = try BeebeebCryptoBridge.loadMasterKey() else {
+        RuntimeTrace.event("backup.native.start.master_key_missing")
         NSLog("[NativeBackupEngine] No master key in keychain — cannot start")
         return
       }
       masterKeyHandle = mk
       BeebeebCryptoBridge.setCachedMasterKey(mk)
+      RuntimeTrace.event("backup.native.start.master_key_ready")
     } catch {
+      RuntimeTrace.event("backup.native.start.master_key_failed", [
+        "error": error.localizedDescription
+      ])
       NSLog("[NativeBackupEngine] Failed to load master key: \(error.localizedDescription)")
       return
     }
@@ -950,9 +961,11 @@ final class NativeBackupEngine: NSObject {
     NSLog("[NativeBackupEngine] Started — \(totalAssets) total, \(completedAssets) completed")
   }
 
-  /// Stop the backup engine. Cancels the drain loop, unregisters observers,
-  /// and clears the cached master key. In-flight NSURLSession background
-  /// uploads continue independently.
+  /// Stop the backup engine. Cancels the drain loop and unregisters observers.
+  /// The app-wide in-process master-key cache is retained while the user is
+  /// still unlocked so backup stop/start does not trigger an extra keychain
+  /// biometric prompt. In-flight NSURLSession background uploads continue
+  /// independently.
   func stop() {
     guard isRunning else { return }
     isRunning = false
@@ -968,9 +981,11 @@ final class NativeBackupEngine: NSObject {
     }
     stopNetworkMonitor()
 
-    // Clear sensitive state
+    // Clear engine-owned state, but keep the app-wide unlocked-session cache.
     masterKeyHandle = nil
-    BeebeebCryptoBridge.clearCachedMasterKey()
+    RuntimeTrace.event("backup.native.stop.master_key_handle_released", [
+      "bridgeCacheRetained": BeebeebCryptoBridge.hasCachedMasterKey()
+    ])
     uploadTaskMap.removeAll()
 
     // Recover any rows stuck in 'uploading' state
@@ -1184,9 +1199,16 @@ final class NativeBackupEngine: NSObject {
 
       // Ensure master key is available for background processing
       if self.masterKeyHandle == nil {
-        do {
-          self.masterKeyHandle = try BeebeebCryptoBridge.loadMasterKey()
-        } catch {
+        if let cached = BeebeebCryptoBridge.cachedMasterKeyIfAvailable() {
+          self.masterKeyHandle = cached
+          RuntimeTrace.event("backup.native.background_task.master_key_ready", [
+            "source": "bridgeCache"
+          ])
+        } else {
+          RuntimeTrace.event("backup.native.background_task.master_key_skipped", [
+            "reason": "no_unlocked_cache",
+            "promptMayAppear": false
+          ])
           self.completeBackgroundTaskOnce(task, success: false)
           return
         }
@@ -2035,6 +2057,17 @@ final class NativeBackupEngine: NSObject {
       serverFileId = existing
       isResumingExistingRemote = true
     } else {
+      guard let parentFolderId, !parentFolderId.isEmpty else {
+        RuntimeTrace.event("backup.native.upload_aborted", [
+          "reason": "missing_parent_folder",
+          "assetType": asset.assetType,
+        ])
+        dbQueue.sync {
+          markPending(assetId: asset.localAssetId, error: "Missing backup destination folder")
+        }
+        updateBackupStatusSurfaces(reason: "Waiting for backup folder")
+        return false
+      }
       serverFileId = try await initUploadSession(
         fileId: fileId,
         nameEncrypted: nameEncrypted,
