@@ -263,8 +263,16 @@ final class NativeBackupEngine: NSObject {
   private var isNetworkAvailable = true
   #endif
 
-  // Chunk size matching existing uploader (4 MB)
+  // Storage pre-flight estimate ONLY (see estimatedEncryptedBytes). The WIRE
+  // chunk size is owned by beebeeb-core's ChunkEncryptorHandle (the "mobile"
+  // profile), not this constant — task 0672 moved the camera-roll pipeline onto
+  // the shared core ladder. Keeping a fixed value here just over-estimates the
+  // per-chunk overhead for the free-disk check, which is conservative/safe.
   private let chunkSize = 4 * 1024 * 1024
+  /// beebeeb-core chunk-plan profile. The chunk size + count are derived in Rust
+  /// from this profile + the plaintext size — never hardcoded. Must be one of
+  /// "desktop" | "web" | "mobile" | "backup".
+  private static let chunkProfile = "mobile"
   private let maxConcurrentUploads = 1
   private let batchLimit = 12
 
@@ -1790,29 +1798,46 @@ final class NativeBackupEngine: NSObject {
       }
       guard isRunning && !Task.isCancelled else { return false }
 
-      // 2. Generate file ID and derive file key
+      // 2. Generate file ID
       let fileId = UUID().uuidString.lowercased()
-      let fileKey = try masterKey.deriveFileKey(fileId: Data(fileId.utf8))
       guard isRunning && !Task.isCancelled else { return false }
 
-      // 3. Encrypt chunks to temp files on disk for the Rust upload protocol
-      let chunkResults = try encryptData(data: data, fileKey: fileKey)
-      guard isRunning && !Task.isCancelled else { return false }
+      // 3. Encrypt chunks to temp files on disk via the shared beebeeb-core
+      //    ladder (task 0672). The encryptor owns the chunk plan (mobile
+      //    profile) — no hardcoded 4 MiB — derives the per-file key in Rust from
+      //    the borrowed MasterKeyHandle, and `finish()` runs the integrity guard
+      //    before we stage/upload. Each `chunk.data` is the full
+      //    `nonce||ct||tag` frame, byte-identical to the previous
+      //    `nonce`+`ciphertext` layout, so existing downloads decrypt unchanged.
       let tempDir = NSTemporaryDirectory()
       var chunkPaths: [String] = []
-      for (index, chunk) in chunkResults.enumerated() {
-        var chunkData = Data()
-        chunkData.append(chunk.nonce)
-        chunkData.append(chunk.ciphertext)
-        let path = (tempDir as NSString).appendingPathComponent("upload-\(fileId)-\(index).enc")
-        try chunkData.write(to: URL(fileURLWithPath: path))
-        chunkPaths.append(path)
-      }
       defer {
         for path in chunkPaths {
           try? FileManager.default.removeItem(atPath: path)
         }
       }
+      let encryptor = try ChunkEncryptorHandle.forPush(
+        masterKey: masterKey,
+        fileId: fileId,
+        fileSize: UInt64(data.count),
+        profile: Self.chunkProfile
+      )
+      let plan = try encryptor.chunkPlan()
+      let planChunkSize = Int(plan.chunkSizeBytes)
+      let planChunkCount = Int(plan.chunkCount)
+      for index in 0..<planChunkCount {
+        guard isRunning && !Task.isCancelled else { return false }
+        let start = index * planChunkSize
+        let end = min(start + planChunkSize, data.count)
+        let slice = start < end ? data.subdata(in: start..<end) : Data()
+        let chunk = try encryptor.pushChunk(plaintext: slice)
+        let path = (tempDir as NSString).appendingPathComponent("upload-\(fileId)-\(Int(chunk.index)).enc")
+        try chunk.data.write(to: URL(fileURLWithPath: path))
+        chunkPaths.append(path)
+      }
+      // Integrity guard (detects a source that shrank) before staging.
+      _ = try encryptor.finish()
+      guard isRunning && !Task.isCancelled else { return false }
 
       // 4. Encrypt filename
       let ext = fileExtension(for: uti)
@@ -2273,22 +2298,11 @@ final class NativeBackupEngine: NSObject {
 
   // MARK: - Encryption
 
-  /// Encrypt data into chunks using the existing FileKeyHandle.encryptChunk API.
-  /// Returns an array of EncryptedData (nonce + ciphertext per chunk).
-  private func encryptData(data: Data, fileKey: FileKeyHandle) throws -> [EncryptedData] {
-    var results: [EncryptedData] = []
-    let totalChunks = max(1, Int(ceil(Double(data.count) / Double(chunkSize))))
-
-    for i in 0..<totalChunks {
-      let start = i * chunkSize
-      let end = min(start + chunkSize, data.count)
-      let chunkPlaintext = start < end ? data.subdata(in: start..<end) : Data()
-      let encrypted = try fileKey.encryptChunk(plaintext: chunkPlaintext)
-      results.append(encrypted)
-    }
-
-    return results
-  }
+  // NOTE: the old `encryptData(data:fileKey:)` 4 MiB chunk loop was removed in
+  // task 0672 — the camera-roll pipeline now encrypts via the shared core
+  // `ChunkEncryptorHandle` ladder (see the staging path above). The single-frame
+  // thumbnail encrypt still uses `fileKey.encryptChunk` directly (that is a
+  // single AES-GCM blob, not a chunk loop, and is correct as-is).
 
   // MARK: - PHAsset Data Fetch
 
