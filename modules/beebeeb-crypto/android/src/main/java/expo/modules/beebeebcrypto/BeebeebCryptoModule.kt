@@ -48,7 +48,7 @@ class BeebeebCryptoModule : Module() {
 
     AsyncFunction("opaqueLoginStart") { _: String, _: String -> throw NotLinkedException() }
 
-    AsyncFunction("opaqueLoginFinish") { _: String, _: String, _: String -> throw NotLinkedException() }
+    AsyncFunction("opaqueLoginFinish") { _: String, _: String, _: String, _: Int -> throw NotLinkedException() }
 
     AsyncFunction("deriveFileKey") { _: ByteArray, _: String -> throw NotLinkedException() }
 

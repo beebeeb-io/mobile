@@ -5346,13 +5346,19 @@ public func listTarEntries(data: Data)throws  -> [ArchiveEntryDto]  {
 /**
  * Finish OPAQUE client login. Returns the finalization message, the session
  * key, and the export key (used to derive the master key envelope).
+ *
+ * `ksf_version` selects the KSF the account's password file was registered
+ * under (0 = legacy Identity KSF, anything else = current Argon2id). Mobile
+ * reads it from the login-start response and passes it through verbatim; the
+ * KSF must match or finish fails.
  */
-public func opaqueLoginFinish(clientState: Data, password: Data, serverResponse: Data)throws  -> OpaqueLoginFinishResult  {
+public func opaqueLoginFinish(clientState: Data, password: Data, serverResponse: Data, ksfVersion: UInt32)throws  -> OpaqueLoginFinishResult  {
     return try  FfiConverterTypeOpaqueLoginFinishResult_lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
     uniffi_beebeeb_uniffi_fn_func_opaque_login_finish(
         FfiConverterData.lower(clientState),
         FfiConverterData.lower(password),
-        FfiConverterData.lower(serverResponse),$0
+        FfiConverterData.lower(serverResponse),
+        FfiConverterUInt32.lower(ksfVersion),$0
     )
 })
 }
@@ -5723,7 +5729,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_beebeeb_uniffi_checksum_func_list_tar_entries() != 55781) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_beebeeb_uniffi_checksum_func_opaque_login_finish() != 15751) {
+    if (uniffi_beebeeb_uniffi_checksum_func_opaque_login_finish() != 12898) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_beebeeb_uniffi_checksum_func_opaque_login_start() != 19878) {

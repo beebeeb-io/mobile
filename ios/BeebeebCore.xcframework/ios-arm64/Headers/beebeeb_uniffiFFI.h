@@ -762,7 +762,7 @@ RustBuffer uniffi_beebeeb_uniffi_fn_func_list_tar_entries(RustBuffer data, RustC
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_BEEBEEB_UNIFFI_FN_FUNC_OPAQUE_LOGIN_FINISH
 #define UNIFFI_FFIDEF_UNIFFI_BEEBEEB_UNIFFI_FN_FUNC_OPAQUE_LOGIN_FINISH
-RustBuffer uniffi_beebeeb_uniffi_fn_func_opaque_login_finish(RustBuffer client_state, RustBuffer password, RustBuffer server_response, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_beebeeb_uniffi_fn_func_opaque_login_finish(RustBuffer client_state, RustBuffer password, RustBuffer server_response, uint32_t ksf_version, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_BEEBEEB_UNIFFI_FN_FUNC_OPAQUE_LOGIN_START

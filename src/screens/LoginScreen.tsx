@@ -71,8 +71,8 @@ export default function LoginScreen() {
     try {
       // OPAQUE login — no fallback to password-based auth.
       // If OPAQUE fails the error is surfaced to the user.
-      const { state, serverMessage, serverState } = await opaqueLoginStart(trimmedEmail, password);
-      await opaqueLoginFinish(trimmedEmail, password, state, serverMessage, serverState);
+      const { state, serverMessage, serverState, ksf_version } = await opaqueLoginStart(trimmedEmail, password);
+      await opaqueLoginFinish(trimmedEmail, password, state, serverMessage, serverState, ksf_version);
       // Token is stored by opaqueLoginFinish. App.tsx auth state will pick it up.
       markUnlocked();
       // Token stored — tell App to refresh auth state

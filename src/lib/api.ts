@@ -1615,6 +1615,13 @@ export interface OpaqueLoginStartResult {
   state: Uint8Array;
   serverMessage: Uint8Array;
   serverState: string;
+  /**
+   * The account's OPAQUE KSF version, forwarded by /opaque/login-start.
+   * 0 = legacy Identity KSF (no client stretch), 1 = Argon2id. Must be passed
+   * to opaqueLoginFinish so the WASM/UniFFI finish stretches with the matching
+   * KSF — otherwise a v0 (legacy) account's fresh login fails.
+   */
+  ksf_version: number;
 }
 
 export interface OpaqueLoginResult {
@@ -1652,9 +1659,9 @@ export async function opaqueLoginStart(email: string, password: string): Promise
     if (!BeebeebCrypto.isNativeAvailable) throw new NativeCryptoUnavailableError('opaqueLoginStart');
     throw err;
   }
-  let data: { server_message: string; server_state: string };
+  let data: { server_message: string; server_state: string; ksf_version: number };
   try {
-    data = await request<{ server_message: string; server_state: string }>(
+    data = await request<{ server_message: string; server_state: string; ksf_version: number }>(
       'POST',
       '/api/v1/opaque/login-start',
       { email, client_message: uint8ToBase64(message) },
@@ -1667,6 +1674,9 @@ export async function opaqueLoginStart(email: string, password: string): Promise
     state,
     serverMessage: base64ToUint8(data.server_message),
     serverState: data.server_state,
+    // Default to 1 (Argon2id) if a stale server omits the field, matching the
+    // current client KSF — only a v0 account needs the explicit 0.
+    ksf_version: typeof data.ksf_version === 'number' ? data.ksf_version : 1,
   };
 }
 
@@ -1681,11 +1691,12 @@ export async function opaqueLoginFinish(
   state: Uint8Array,
   serverMessage: Uint8Array,
   serverState: string,
+  ksfVersion: number,
 ): Promise<OpaqueLoginResult> {
   if (!BeebeebCrypto.isNativeAvailable) throw new NativeCryptoUnavailableError('opaqueLoginFinish');
   let message: Uint8Array;
   try {
-    ({ message } = await BeebeebCrypto.opaqueLoginFinish(state, serverMessage, password));
+    ({ message } = await BeebeebCrypto.opaqueLoginFinish(state, serverMessage, password, ksfVersion));
   } catch (err) {
     if (!BeebeebCrypto.isNativeAvailable) throw new NativeCryptoUnavailableError('opaqueLoginFinish');
     throw err;

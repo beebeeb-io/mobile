@@ -351,16 +351,21 @@ export async function opaqueLoginStart(username: string, password: string): Prom
  * Finish OPAQUE login (client side).
  * `sessionKey` is the shared secret — use it to derive/decrypt the master key.
  * `password` must be the same password passed to opaqueLoginStart.
+ * `ksfVersion` is the account's OPAQUE KSF version (from /opaque/login-start):
+ * 0 = legacy Identity KSF, 1 = Argon2id. The native finish dispatches on it so
+ * a legacy (v0) account stretches with the matching KSF and its login succeeds.
  */
 export async function opaqueLoginFinish(
   state: Uint8Array,
   serverMessage: Uint8Array,
   password: string,
+  ksfVersion: number,
 ): Promise<OpaqueLoginFinishResult> {
   const result = await BeebeebCryptoModule.opaqueLoginFinish(
     bytesToBase64(state),
     bytesToBase64(serverMessage),
     password,
+    ksfVersion,
   )
   return {
     message: coerceBytes(result.message),

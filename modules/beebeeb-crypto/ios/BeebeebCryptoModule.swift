@@ -1101,10 +1101,15 @@ public class BeebeebCryptoModule: Module {
       ]
     }
 
-    AsyncFunction("opaqueLoginFinish") { (state: String, serverMessage: String, password: String) throws -> [String: Any] in
+    AsyncFunction("opaqueLoginFinish") { (state: String, serverMessage: String, password: String, ksfVersion: Int) throws -> [String: Any] in
       let stateData = try decodeBase64(state, field: "state")
       let serverMessageData = try decodeBase64(serverMessage, field: "serverMessage")
-      let result = try opaqueLoginFinish(clientState: stateData, password: Data(password.utf8), serverResponse: serverMessageData)
+      // `ksfVersion` (0 = legacy Identity KSF, 1 = Argon2id) selects the KSF the
+      // account's OPAQUE password file was registered under, so a v0 (legacy)
+      // account stretches with the matching KSF and its fresh login succeeds.
+      // Forwarded from /opaque/login-start through the JS bridge as Int, lowered
+      // to the UniFFI UInt32 the regenerated binding expects.
+      let result = try opaqueLoginFinish(clientState: stateData, password: Data(password.utf8), serverResponse: serverMessageData, ksfVersion: UInt32(ksfVersion))
       return [
         "message": result.message.base64EncodedString(),
         "sessionKey": result.sessionKey.base64EncodedString(),
