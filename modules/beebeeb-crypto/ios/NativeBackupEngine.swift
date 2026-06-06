@@ -79,6 +79,11 @@ enum BackupError: LocalizedError {
   case httpStatus(Int, String)
   case jsonEncoding
   case encryptionFailed(String)
+  /// A resumable upload session could not be reconciled: after re-PUTting every
+  /// non-complete chunk, these chunk indices were still reported pending by the
+  /// local bookkeeping, so `upload/complete` was not attempted. Surfaced (rather
+  /// than silently returning false) so the wedge produces a diagnosable failure.
+  case unreconciledChunks([Int])
 
   var errorDescription: String? {
     switch self {
@@ -93,6 +98,9 @@ enum BackupError: LocalizedError {
       return body.isEmpty ? "HTTP \(code)" : "HTTP \(code): \(body)"
     case .jsonEncoding: return "JSON encoding failed"
     case .encryptionFailed(let msg): return "Encryption failed: \(msg)"
+    case .unreconciledChunks(let indices):
+      let list = indices.map(String.init).joined(separator: ",")
+      return "Resumable upload could not be reconciled; chunks still pending: [\(list)]"
     }
   }
 }
@@ -1709,6 +1717,15 @@ final class NativeBackupEngine: NSObject {
 
   /// Manual "Back up now" should give retry-exhausted rows another chance.
   /// Automatic background drains still respect the retry cap to avoid loops.
+  ///
+  /// The status set MUST mirror the drain selection set (`pending_upload`,
+  /// `pending_reupload`, `staging`, `staged_upload`, `uploading`) — earlier this
+  /// only reset `pending_upload`/`pending_reupload`, which silently EXCLUDED the
+  /// resume-wedged rows: a chunk-upload that dead-letters leaves the asset in
+  /// `staged_upload` (markFailed sets `staged_upload` whenever `staged_file_id`
+  /// is set), so the exact rows a manual retry most needs to revive were the
+  /// ones it skipped. With retry reset, the drain re-selects them and the
+  /// `.resumable` self-heal re-stages any with evicted `.enc` chunks.
   func resetRetryExhaustedUploadsForManualRun() {
     guard let db = db else { return }
     let sql = """
@@ -1716,7 +1733,7 @@ final class NativeBackupEngine: NSObject {
     SET retry_count = 0,
         error_message = NULL,
         last_attempt_at = NULL
-    WHERE status IN ('pending_upload', 'pending_reupload')
+    WHERE status IN ('pending_upload', 'pending_reupload', 'staging', 'staged_upload', 'uploading')
       AND COALESCE(retry_count, 0) >= 10
     """
     var stmt: OpaquePointer?
@@ -2102,7 +2119,9 @@ final class NativeBackupEngine: NSObject {
       return false
     }
 
-    guard let chunks = resolveStagedChunks(asset: asset, fileId: fileId) else {
+    // `var` so the `.resumable` self-heal below can re-bind to a freshly
+    // revalidated set (paths may have been relocated by resolveStagedChunks).
+    guard var chunks = resolveStagedChunks(asset: asset, fileId: fileId) else {
       dbQueue.sync {
         clearStagedStateForRestage(
           assetId: asset.localAssetId,
@@ -2190,6 +2209,29 @@ final class NativeBackupEngine: NSObject {
         return false
 
       case .resumable:
+        // Self-heal a wedged resume. The server still reports this session
+        // resumable, but iOS may have evicted the staged `.enc` files (Caches/
+        // tmp are reclaimed under storage pressure) since we resolved `chunks`
+        // above. Re-verify every non-complete chunk's staged file exists and is
+        // non-zero via the same helper used on the initial staging check. If it
+        // can no longer be reconciled, route to the re-stage branch (identical
+        // to `.missingRemote`): clear staged state, drop the old file_id, and
+        // re-encrypt from scratch — instead of `markUploading` on an
+        // unreconcilable session and then throwing on the missing-file PUT every
+        // drain until the asset dead-letters at retry 10. The orphaned server
+        // session is reaped by the server's stale_upload_cleanup worker.
+        guard let revalidated = resolveStagedChunks(asset: asset, fileId: fileId) else {
+          dbQueue.sync {
+            clearStagedStateForRestage(
+              assetId: asset.localAssetId,
+              error: "Resumable session lost its staged chunks; re-encrypting"
+            )
+          }
+          removeStagedDirectory(stagedDir: stagedDir, fileId: fileId)
+          updateBackupStatusSurfaces(reason: "Re-encrypting backup")
+          return false
+        }
+        chunks = revalidated
         dbQueue.sync { markUploading(assetId: asset.localAssetId, remoteFileId: serverFileId) }
       }
     }
@@ -2209,7 +2251,17 @@ final class NativeBackupEngine: NSObject {
     }
 
     let remaining = dbQueue.sync { countPendingStagedChunks(assetId: asset.localAssetId) }
-    guard remaining == 0 else { return false }
+    guard remaining == 0 else {
+      // The re-PUT loop finished but the local bookkeeping still reports chunks
+      // pending. Surface a diagnosable error with the offending indices instead
+      // of returning false silently — the silence is exactly why this wedge was
+      // invisible (no error status, no log line) while it spun every drain until
+      // the asset dead-lettered at retry 10. Throwing routes to markFailed with
+      // a concrete message and still re-stages on a later attempt.
+      let unreconciled = dbQueue.sync { getPendingStagedChunks(assetId: asset.localAssetId) }
+        .map { $0.index }
+      throw BackupError.unreconciledChunks(unreconciled)
+    }
 
     try await completeUpload(
       serverFileId: serverFileId,
