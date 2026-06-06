@@ -457,10 +457,16 @@ function VaultRecoveryGate({ enabled, navReady }: { enabled: boolean; navReady: 
   const crypto = useCrypto();
 
   useEffect(() => {
-    if (!enabled || !crypto.unlockAttempted || crypto.isUnlocked) return;
+    // Gate on the DEDICATED needsRecoveryPhrase signal, not the outcome-
+    // agnostic unlockAttempted. unlockAttempted flips true on ANY settled
+    // unlock — including a transient Secure-Enclave fast-fail on cold launch,
+    // which is NOT a missing key and must not route to recovery. Only a
+    // genuine no-key result (fresh Debug-sim / device restore) sets
+    // needsRecoveryPhrase. See crypto-context loadVerifiedMasterKeyHandle.
+    if (!enabled || !crypto.needsRecoveryPhrase || crypto.isUnlocked) return;
     // Bail until the navigation container is ready. navReady is in the dep
     // array so this effect re-fires the moment nav becomes ready, even if
-    // crypto.unlockAttempted flipped to true earlier (common on cold launch
+    // needsRecoveryPhrase flipped to true earlier (common on cold launch
     // when keychain auto-unlock fails fast before NavigationContainer's
     // onReady fires).
     if (!navReady || !navigationRef.isReady()) return;
@@ -475,7 +481,7 @@ function VaultRecoveryGate({ enabled, navReady }: { enabled: boolean; navReady: 
     }
 
     navigationRef.navigate('RecoveryUnlock');
-  }, [enabled, navReady, crypto.unlockAttempted, crypto.isUnlocked]);
+  }, [enabled, navReady, crypto.needsRecoveryPhrase, crypto.isUnlocked]);
 
   return null;
 }
@@ -1077,7 +1083,7 @@ export default function App() {
           onReady={() => setNavReady(true)}
           onStateChange={handleNavigationStateChange}
         >
-            <VaultRecoveryGate enabled={isAuthenticated} navReady={navReady} />
+            <VaultRecoveryGate enabled={isAuthenticated && startupLockChecked && !locked} navReady={navReady} />
             <DevicePerformanceCalibrator enabled={isAuthenticated && startupLockChecked && !locked} />
             {isAuthenticated && startupLockChecked && !locked && Platform.OS === 'android'
               ? <AndroidThumbnailRepairWorker enabled />

@@ -127,18 +127,42 @@ async function storeMasterKey(masterKey: Uint8Array): Promise<void> {
 }
 
 /**
+ * Discriminated outcome of a keychain auto-unlock attempt.
+ *
+ * The two failure shapes are NOT interchangeable and must never collapse
+ * into a single `null` (the old contract):
+ *   - `no_key`    — the master-key check label is absent: no key was ever
+ *                   provisioned on this install (fresh Debug-sim, or a
+ *                   device restore that dropped the SE blob). The vault
+ *                   genuinely needs a recovery phrase. This is terminal.
+ *   - `transient` — a key WAS provisioned here (check label present) but the
+ *                   Secure-Enclave / Keychain read threw or returned null,
+ *                   typically because the SE isn't warm yet this early in
+ *                   process start (`native_handle_failed`). A relaunch — or a
+ *                   single short retry once the SE warms — reads it fine. This
+ *                   must NOT trigger the recovery-phrase prompt.
+ */
+type VaultLoadResult = { handleId: number } | { reason: 'no_key' } | { reason: 'transient' }
+
+/**
  * Load the master key from persistent storage and return an opaque native
  * handle ID. The real key bytes never enter the JS heap. For fallback paths
  * (simulator, older devices) the raw bytes are loaded transiently, stored
  * into the SE-backed keychain to create a handle, then zeroed.
  *
- * Returns null if no key is stored or verification fails.
+ * Returns a discriminated `VaultLoadResult`:
+ *   - `{ handleId }`         on success
+ *   - `{ reason: 'no_key' }` ONLY when no key was ever provisioned (check
+ *                            label absent) — the genuine recovery path
+ *   - `{ reason: 'transient' }` when a key exists here but the read failed
+ *                            (SE not warm, fallback miss despite a present
+ *                            check label) — safe to retry, never recovery
  */
-async function loadVerifiedMasterKeyHandle(): Promise<number | null> {
+async function loadVerifiedMasterKeyHandle(): Promise<VaultLoadResult> {
   const checkB64 = await SecureStore.getItemAsync(MASTER_KEY_CHECK_LABEL).catch(() => null)
   if (!checkB64) {
     recordRuntimeTrace('keychain.load.no_recovery_check', { label: MASTER_KEY_CHECK_LABEL })
-    return null
+    return { reason: 'no_key' }
   }
 
   const expected = base64ToUint8(checkB64)
@@ -167,6 +191,11 @@ async function loadVerifiedMasterKeyHandle(): Promise<number | null> {
     }
   }
 
+  // The check label is present below this point: a key WAS provisioned on this
+  // install. Therefore EVERY failure from here on is `transient`, never
+  // `no_key` — relaunching (or retrying once the SE warms) reads it fine. The
+  // only `no_key` exit is the absent-check-label guard above.
+
   // Primary: Secure Enclave-wrapped key (real devices)
   if (!usesSoftwareVaultFallback()) {
     try {
@@ -182,7 +211,7 @@ async function loadVerifiedMasterKeyHandle(): Promise<number | null> {
             label: MASTER_KEY_LABEL,
             handleId,
           })
-          return handleId
+          return { handleId }
         }
         // Verification failed — release the handle
         await releaseHandle(handleId).catch(() => {})
@@ -191,8 +220,12 @@ async function loadVerifiedMasterKeyHandle(): Promise<number | null> {
           handleId,
         })
       }
+      // handleId == null: the SE/Keychain read returned no key even though a
+      // key was provisioned here (check label present) — SE not warm yet.
+      // Transient: a relaunch / retry reads it. Do NOT prompt for recovery.
     } catch {
-      // SE unavailable — try fallback below
+      // SE read threw — same transient story. Fall through to the SecureStore
+      // fallback (real devices won't have one), then report transient.
       recordRuntimeTrace('keychain.load.native_handle_failed', { label: MASTER_KEY_LABEL })
     }
   }
@@ -205,7 +238,7 @@ async function loadVerifiedMasterKeyHandle(): Promise<number | null> {
       label: MASTER_KEY_FALLBACK_LABEL,
       handleId: fallbackHandle,
     })
-    return fallbackHandle
+    return { handleId: fallbackHandle }
   }
 
   if (usesSoftwareVaultFallback() && FileSystem.documentDirectory) {
@@ -215,10 +248,15 @@ async function loadVerifiedMasterKeyHandle(): Promise<number | null> {
       found: fileHandle != null,
       handleId: fileHandle,
     })
-    return fileHandle
+    if (fileHandle != null) {
+      return { handleId: fileHandle }
+    }
   }
 
-  return null
+  // Check label present but no readable key from any source: transient. The
+  // genuine missing-key case already returned `no_key` at the top.
+  recordRuntimeTrace('keychain.load.transient_miss', { label: MASTER_KEY_CHECK_LABEL })
+  return { reason: 'transient' }
 }
 
 export type VaultUnlockSource =
@@ -290,6 +328,16 @@ interface CryptoContextValue {
    * "vault is open" / "vault is locked with no key available".
    */
   unlockAttempted: boolean
+  /**
+   * True ONLY when a keychain auto-unlock failed because no master key was
+   * ever provisioned on this install (the genuine recovery-phrase case:
+   * fresh Debug-sim, device restore that dropped the SE blob). It is NOT set
+   * by a transient Secure-Enclave fast-fail on cold launch — those get one
+   * silent retry and never reach this state. The VaultRecoveryGate keys off
+   * THIS signal (not the outcome-agnostic `unlockAttempted`) before routing
+   * to RecoveryUnlock.
+   */
+  needsRecoveryPhrase: boolean
   /**
    * Unlock the vault.
    * - With phrase: derives the master key from a recovery phrase and stores it
@@ -374,6 +422,11 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
   // True once the first unlock() attempt has settled (success or failure).
   // Used by FilesScreen to distinguish "still loading key" from "locked".
   const [unlockAttempted, setUnlockAttempted] = useState(false)
+  // True ONLY when an auto-unlock proved the vault genuinely has no key
+  // provisioned (loadVerifiedMasterKeyHandle → { reason: 'no_key' }). This
+  // is the recovery-phrase signal the VaultRecoveryGate gates on. A transient
+  // Secure-Enclave fast-fail never sets this; it is handled by a silent retry.
+  const [needsRecoveryPhrase, setNeedsRecoveryPhrase] = useState(false)
   // masterKeyHandleId holds an opaque numeric ID referencing the real
   // MasterKeyHandle in native memory. Raw key bytes never enter the JS
   // heap. Never store in React state to avoid accidental serialisation.
@@ -499,12 +552,40 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
             masterKey.fill(0)
           }
           masterKeyHandleId.current = handleId
+          // A successful phrase unlock provisions a key — clear any prior
+          // needs-recovery state.
+          setNeedsRecoveryPhrase(false)
         } else {
-          const handleId = await loadVerifiedMasterKeyHandle()
-          if (handleId == null) {
-            throw new Error('No master key in keychain — provide a recovery phrase to restore')
+          let result = await loadVerifiedMasterKeyHandle()
+
+          // Belt-and-suspenders: a `transient` result on cold launch is almost
+          // always a Secure-Enclave that isn't warm yet. Give it ONE silent
+          // retry after a short delay — the SE typically warms within a frame
+          // or two — before deciding anything terminal. A `no_key` result is
+          // never retried (it's genuinely missing) and a success short-circuits.
+          if ('reason' in result && result.reason === 'transient') {
+            recordRuntimeTrace('vault.unlock.transient_retry', { source })
+            await new Promise((resolve) => setTimeout(resolve, 400))
+            result = await loadVerifiedMasterKeyHandle()
           }
-          masterKeyHandleId.current = handleId
+
+          if ('handleId' in result) {
+            masterKeyHandleId.current = result.handleId
+            setNeedsRecoveryPhrase(false)
+          } else if (result.reason === 'no_key') {
+            // Genuine: no key was ever provisioned here (Debug-sim / device
+            // restore). This is the ONLY path that arms the recovery prompt.
+            setNeedsRecoveryPhrase(true)
+            throw new Error('No master key in keychain — provide a recovery phrase to restore')
+          } else {
+            // Still transient after the retry: a key exists on this install but
+            // the SE/Keychain read keeps failing this early in process start. Do
+            // NOT arm the recovery prompt — a relaunch with a warm keychain
+            // reads it. Surface as a (non-recovery) error so unlockAttempted
+            // settles and callers can fall back, without navigating to recovery.
+            recordRuntimeTrace('vault.unlock.transient_persisted', { source })
+            throw new Error('Vault key temporarily unavailable — relaunch the app to retry')
+          }
         }
 
         setIsUnlocked(true)
@@ -579,6 +660,9 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
     requestResolverRef.current?.clear()
     requestResolverRef.current = null
     setIsUnlocked(false)
+    // A manual/signout lock is not a missing-key condition — clear the
+    // recovery signal so a subsequent unlock starts from a clean slate.
+    setNeedsRecoveryPhrase(false)
   }, [])
 
   const requireHandleId = (): number => {
@@ -865,6 +949,7 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
       value={{
         isUnlocked,
         unlockAttempted,
+        needsRecoveryPhrase,
         unlock,
         getUnlockDiagnostics: getUnlockDiagnosticsFn,
         lock,
