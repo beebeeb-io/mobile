@@ -31,6 +31,15 @@
       "android": {
         "buildType": "app-bundle"
       }
+    },
+    "simulator": {
+      "ios": {
+        "simulator": true
+      },
+      "env": {
+        "EXPO_PUBLIC_API_URL": "http://localhost:3001",
+        "EXPO_NO_OTA_UPDATES": "1"
+      }
     }
   },
   "submit": {
