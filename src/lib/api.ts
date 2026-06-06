@@ -282,6 +282,11 @@ async function request<T>(
     clearAnnouncement();
   }
 
+  // 204 No Content (and other empty bodies) have nothing to parse — return
+  // undefined so callers typed `Promise<void>` (e.g. deleteClientSession)
+  // don't reject on an empty res.json().
+  if (res.status === 204) return undefined as T;
+
   return res.json() as Promise<T>;
 }
 
@@ -2256,6 +2261,11 @@ export async function listClientDevices(): Promise<{ devices: ClientDevice[] }> 
 /** GET /api/v1/clients/sessions */
 export async function listClientSessions(): Promise<{ sessions: ClientSession[] }> {
   return request<{ sessions: ClientSession[] }>('GET', '/api/v1/clients/sessions');
+}
+
+/** DELETE /api/v1/clients/sessions/:id — forget a sync/backup session (server returns 204). */
+export async function deleteClientSession(id: string): Promise<void> {
+  await request<void>('DELETE', `/api/v1/clients/sessions/${id}`);
 }
 
 /** POST /api/v1/clients/devices — register or update this device */

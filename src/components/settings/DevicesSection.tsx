@@ -11,9 +11,10 @@
  *   - Grey:  no heartbeat ever received
  */
 
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -22,8 +23,10 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import type { Colors } from '../../theme';
 import {
+  deleteClientSession,
   listClientDevices,
   listClientSessions,
+  friendlyError,
   type ClientDevice,
   type ClientSession,
 } from '../../lib/api';
@@ -120,6 +123,11 @@ export default function DevicesSection({ c }: Props) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [expandedDevices, setExpandedDevices] = useState<Set<string>>(new Set());
+  // Stopped sessions are hidden by default — they clutter the list with dead
+  // backups. Users opt in to seeing (and forgetting) them via "Show stopped".
+  const [showStopped, setShowStopped] = useState(false);
+  // Session IDs currently being forgotten — disables their row while in flight.
+  const [forgetting, setForgetting] = useState<Set<string>>(new Set());
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const fetchData = useCallback(async () => {
@@ -137,6 +145,46 @@ export default function DevicesSection({ c }: Props) {
       setLoading(false);
     }
   }, []);
+
+  const forgetSession = useCallback(
+    async (session: ClientSession) => {
+      setForgetting((prev) => new Set(prev).add(session.id));
+      try {
+        await deleteClientSession(session.id);
+        // Drop it locally so it disappears immediately, then refresh from the
+        // server to reconcile device session counts.
+        setSessions((prev) => prev.filter((s) => s.id !== session.id));
+        await fetchData();
+      } catch (err) {
+        Alert.alert('Could not forget session', friendlyError(err));
+      } finally {
+        setForgetting((prev) => {
+          const next = new Set(prev);
+          next.delete(session.id);
+          return next;
+        });
+      }
+    },
+    [fetchData],
+  );
+
+  const confirmForgetSession = useCallback(
+    (session: ClientSession) => {
+      Alert.alert(
+        'Forget this session?',
+        `"${session.name}" will be removed from your devices. This does not affect any files — only the sync/backup record. The session reappears if the device reconnects.`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Forget',
+            style: 'destructive',
+            onPress: () => void forgetSession(session),
+          },
+        ],
+      );
+    },
+    [forgetSession],
+  );
 
   useEffect(() => {
     void fetchData();
@@ -158,14 +206,24 @@ export default function DevicesSection({ c }: Props) {
     });
   }, []);
 
-  // Group sessions by device_id
-  const sessionsByDevice = new Map<string, ClientSession[]>();
-  for (const s of sessions) {
-    const did = s.device_id ?? '';
-    const list = sessionsByDevice.get(did) ?? [];
-    list.push(s);
-    sessionsByDevice.set(did, list);
-  }
+  // Stopped sessions are hidden by default. Group only the visible ones by
+  // device_id, and count the hidden ones so we can offer a "Show stopped" toggle.
+  const stoppedCount = useMemo(
+    () => sessions.filter((s) => s.status === 'stopped').length,
+    [sessions],
+  );
+
+  const sessionsByDevice = useMemo(() => {
+    const map = new Map<string, ClientSession[]>();
+    for (const s of sessions) {
+      if (!showStopped && s.status === 'stopped') continue;
+      const did = s.device_id ?? '';
+      const list = map.get(did) ?? [];
+      list.push(s);
+      map.set(did, list);
+    }
+    return map;
+  }, [sessions, showStopped]);
 
   if (loading) {
     return (
@@ -267,6 +325,10 @@ export default function DevicesSection({ c }: Props) {
               <View style={{ paddingBottom: 4 }}>
                 {deviceSessions.map((session, sIdx) => {
                   const status = sessionStatus(session, c);
+                  // "Forget" is offered for SYNC sessions only — backups and
+                  // mounts are managed elsewhere.
+                  const canForget = session.session_type === 'sync';
+                  const isForgetting = forgetting.has(session.id);
                   return (
                     <View key={session.id}>
                       {sIdx > 0 && (
@@ -327,6 +389,28 @@ export default function DevicesSection({ c }: Props) {
                             </Text>
                           )}
                         </View>
+                        {canForget && (
+                          isForgetting ? (
+                            <ActivityIndicator
+                              size="small"
+                              color={c.ink4}
+                              style={styles.forgetButton}
+                            />
+                          ) : (
+                            <TouchableOpacity
+                              style={styles.forgetButton}
+                              activeOpacity={0.6}
+                              onPress={() => confirmForgetSession(session)}
+                              accessibilityRole="button"
+                              accessibilityLabel={`Forget session ${session.name}`}
+                              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                            >
+                              <Text style={{ fontSize: 12, fontWeight: '500', color: c.red }}>
+                                Forget
+                              </Text>
+                            </TouchableOpacity>
+                          )
+                        )}
                       </View>
                     </View>
                   );
@@ -336,6 +420,33 @@ export default function DevicesSection({ c }: Props) {
           </React.Fragment>
         );
       })}
+
+      {/* Show / hide stopped sessions — hidden by default to keep the list to
+          live devices. Only rendered when there is at least one stopped session. */}
+      {stoppedCount > 0 && (
+        <>
+          <View style={{ height: 1, backgroundColor: c.line, marginLeft: 12 }} />
+          <TouchableOpacity
+            style={styles.toggleRow}
+            activeOpacity={0.6}
+            onPress={() => setShowStopped((v) => !v)}
+            accessibilityRole="button"
+            accessibilityLabel={showStopped ? 'Hide stopped sessions' : 'Show stopped sessions'}
+          >
+            <Ionicons
+              name={showStopped ? 'eye-off-outline' : 'eye-outline'}
+              size={14}
+              color={c.ink3}
+              style={{ marginRight: 8 }}
+            />
+            <Text style={{ fontSize: 12, color: c.ink3 }}>
+              {showStopped
+                ? 'Hide stopped'
+                : `Show stopped (${stoppedCount})`}
+            </Text>
+          </TouchableOpacity>
+        </>
+      )}
     </View>
   );
 }
@@ -379,5 +490,19 @@ const styles = StyleSheet.create({
     borderRadius: 3.5,
     marginTop: 5,
     marginRight: 8,
+  },
+  forgetButton: {
+    marginLeft: 8,
+    paddingVertical: 2,
+    paddingHorizontal: 4,
+    alignSelf: 'center',
+    minWidth: 44,
+    alignItems: 'flex-end',
+  },
+  toggleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 11,
+    paddingHorizontal: 12,
   },
 });
