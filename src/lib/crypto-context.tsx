@@ -204,6 +204,17 @@ async function loadVerifiedMasterKeyHandle(): Promise<VaultLoadResult> {
         promptMayAppear: true,
         source: 'loadVerifiedMasterKeyHandle',
       })
+      // TODO(167): when invoked from the biometric lock screen path, the SE
+      // decrypt inside loadKeyFromKeychainAsHandle raises its OWN Face ID prompt
+      // (the SE private key is gated by .biometryAny). To collapse this to a
+      // single prompt, thread the LAContext the lock screen already evaluated
+      // into the keychain query via kSecUseAuthenticationContext (so the SE op
+      // reuses the satisfied biometric evaluation within the reuse window). That
+      // requires plumbing an LAContext from BiometricLockScreen → native
+      // KeychainManager.load → BeebeebKeychainCore.findSEKey, which is left as
+      // native follow-up work. Until then, App.tsx skips the silent cold-launch
+      // unlock when biometric lock is enabled so only ONE prompt fires, strictly
+      // sequenced after LocalAuthentication resolves.
       const handleId = await loadKeyFromKeychainAsHandle(MASTER_KEY_LABEL)
       if (handleId != null) {
         if (await verifyHandle(handleId)) {

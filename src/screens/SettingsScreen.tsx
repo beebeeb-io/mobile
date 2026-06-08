@@ -880,11 +880,24 @@ export default function SettingsScreen() {
     try {
       const state = await BeebeebCrypto.getFileProviderPrivacyState();
       setFileProviderSupported(state.supported);
-      let mounted = state.mounted ?? state.showInFiles;
+      // Only claim "mounted in Files" when iOS actually presents the location.
+      // userVisibleRootError != null means the domain is registered on paper but
+      // the user can't see it — treat that as not mounted.
+      let mounted =
+        (state.mounted ?? state.showInFiles) && !state.userVisibleRootError;
       if (state.supported && state.showInFiles && !mounted) {
         try {
-          const repaired = await BeebeebCrypto.registerFileProviderDomain();
-          mounted = repaired.registered && repaired.cacheDatabaseReady !== false;
+          // The user enabled the trusted mount but it isn't visible. If the
+          // domain itself is gone (showInFiles but !registered), force a
+          // remove-then-add reset to get it back; otherwise re-register.
+          const repaired =
+            state.registered === false
+              ? await BeebeebCrypto.resetFileProviderDomain()
+              : await BeebeebCrypto.registerFileProviderDomain();
+          mounted =
+            repaired.registered &&
+            repaired.cacheDatabaseReady !== false &&
+            !repaired.userVisibleRootError;
         } catch {
           mounted = false;
         }
@@ -1286,7 +1299,14 @@ export default function SettingsScreen() {
       const result = enabled
         ? await mountTrustedFileProvider({ vaultUnlocked: crypto.isUnlocked })
         : await removeTrustedFileProvider();
-      const mounted = enabled && result.registered && result.cacheDatabaseReady !== false;
+      // Don't claim "mounted in Files" unless iOS actually presents the
+      // location: userVisibleRootError != null means it's registered but not
+      // user-visible.
+      const mounted =
+        enabled &&
+        result.registered &&
+        result.cacheDatabaseReady !== false &&
+        !result.userVisibleRootError;
       setFileProviderSupported(result.supported);
       setFileProviderMounted(mounted);
       if (mounted && crypto.isUnlocked) {

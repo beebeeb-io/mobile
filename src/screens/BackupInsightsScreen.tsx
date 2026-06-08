@@ -324,6 +324,8 @@ export default function BackupInsightsScreen() {
   const [loading, setLoading] = useState(true);
   const [exporting, setExporting] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [retrying, setRetrying] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
   const dataRef = useRef<InsightsData | null>(null);
   const loadInFlightRef = useRef<Promise<void> | null>(null);
   const lastSlowLoadAtRef = useRef(0);
@@ -572,6 +574,24 @@ export default function BackupInsightsScreen() {
       setExporting(false);
     }
   }, []);
+
+  // Manually revive the backup queue: triggerBackupNow resets retry-exhausted
+  // assets (retry_count>=10), rescans, and wakes the native drain. This is the
+  // only path that un-sticks a backup stalled on retry-exhausted items.
+  const handleBackupNow = useCallback(async () => {
+    setActionError(null);
+    setRetrying(true);
+    try {
+      await backup.triggerBackupNow();
+      await loadData(true);
+    } catch (err) {
+      setActionError(
+        err instanceof Error ? err.message : 'Could not start backup. Try again.',
+      );
+    } finally {
+      setRetrying(false);
+    }
+  }, [backup, loadData]);
 
   const handleBack = useCallback(() => {
     if (navigation.canGoBack()) {
@@ -1026,6 +1046,14 @@ export default function BackupInsightsScreen() {
                   </>
                 )}
 
+                <Divider c={c} />
+                <ActionButton
+                  label={retrying ? 'Starting…' : 'Retry failed uploads'}
+                  icon="refresh"
+                  onPress={handleBackupNow}
+                  loading={retrying}
+                  c={c}
+                />
               </View>
             </View>
           )}
@@ -1093,6 +1121,14 @@ export default function BackupInsightsScreen() {
               ]}
             >
               <ActionButton
+                label={retrying ? 'Starting…' : 'Back up now'}
+                icon="cloud-upload-outline"
+                onPress={handleBackupNow}
+                loading={retrying}
+                c={c}
+              />
+              <Divider c={c} />
+              <ActionButton
                 label="Export backup log"
                 icon="document-text-outline"
                 onPress={handleExportLog}
@@ -1100,6 +1136,18 @@ export default function BackupInsightsScreen() {
                 c={c}
               />
             </View>
+            {actionError && (
+              <Text
+                style={{
+                  fontSize: 12,
+                  color: c.red,
+                  marginTop: 8,
+                  paddingHorizontal: 4,
+                }}
+              >
+                {actionError}
+              </Text>
+            )}
           </View>
 
           <View style={{ height: 20 }} />

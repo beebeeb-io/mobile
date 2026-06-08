@@ -229,6 +229,20 @@ function ensureExtensionBuildConfigurations(project) {
 
   const createConfig = (name, debug) => {
     const uuid = project.generateUuid();
+    // The File Provider target compiles beebeeb_uniffi.swift, which does
+    // `import beebeeb_uniffiFFI`. That module is only resolvable when the
+    // BeebeebCore.xcframework's per-slice Headers dir is on HEADER_SEARCH_PATHS
+    // and its module.modulemap is fed to Clang via `-Xcc -fmodule-map-file`.
+    // The app target and the Share extension both carry these flags; without
+    // them the File Provider target fails to compile (the diagnosed root cause
+    // of Beebeeb never appearing in Files.app). Mirror the Share extension's
+    // exact per-sdk flags. Append to (don't clobber) the EXPO_CONFIGURATION
+    // define on OTHER_SWIFT_FLAGS.
+    const expoDefine = debug ? 'EXPO_CONFIGURATION_DEBUG' : 'EXPO_CONFIGURATION_RELEASE';
+    const moduleMapDevice =
+      '$(PROJECT_DIR)/BeebeebCore.xcframework/ios-arm64/Headers/module.modulemap';
+    const moduleMapSim =
+      '$(PROJECT_DIR)/BeebeebCore.xcframework/ios-arm64_x86_64-simulator/Headers/module.modulemap';
     const buildSettings = {
       ALWAYS_SEARCH_USER_PATHS: 'NO',
       APPLICATION_EXTENSION_API_ONLY: 'YES',
@@ -237,10 +251,21 @@ function ensureExtensionBuildConfigurations(project) {
       CURRENT_PROJECT_VERSION: 1,
       DEVELOPMENT_TEAM: TEAM_ID,
       FRAMEWORK_SEARCH_PATHS: ['"$(inherited)"', '"$(PROJECT_DIR)"'],
+      'HEADER_SEARCH_PATHS[sdk=iphoneos*]': [
+        '"$(inherited)"',
+        '"\\"$(PROJECT_DIR)/BeebeebCore.xcframework/ios-arm64/Headers\\""',
+      ],
+      'HEADER_SEARCH_PATHS[sdk=iphonesimulator*]': [
+        '"$(inherited)"',
+        '"\\"$(PROJECT_DIR)/BeebeebCore.xcframework/ios-arm64_x86_64-simulator/Headers\\""',
+      ],
       INFOPLIST_FILE: `${EXTENSION_NAME}/Info.plist`,
       IPHONEOS_DEPLOYMENT_TARGET: 16.0,
       LD_RUNPATH_SEARCH_PATHS: '"$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks"',
       MARKETING_VERSION: '1.0.0',
+      OTHER_SWIFT_FLAGS: `"$(inherited) -D ${expoDefine}"`,
+      'OTHER_SWIFT_FLAGS[sdk=iphoneos*]': `"$(inherited) -D ${expoDefine} -Xcc -fmodule-map-file=\\"${moduleMapDevice}\\""`,
+      'OTHER_SWIFT_FLAGS[sdk=iphonesimulator*]': `"$(inherited) -D ${expoDefine} -Xcc -fmodule-map-file=\\"${moduleMapSim}\\""`,
       PRODUCT_BUNDLE_IDENTIFIER: EXTENSION_BUNDLE_ID,
       PRODUCT_NAME: '"$(TARGET_NAME)"',
       SKIP_INSTALL: 'YES',

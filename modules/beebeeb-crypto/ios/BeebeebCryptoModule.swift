@@ -1567,7 +1567,29 @@ public class BeebeebCryptoModule: Module {
       }
 
       let domains = (try? await getFileProviderDomains()) ?? []
-      return fileProviderPrivacyState(defaults: defaults, domains: domains)
+      var state = fileProviderPrivacyState(defaults: defaults, domains: domains)
+
+      // "registered" + cache-ready is not the same as actually presented in
+      // Files.app. iOS only surfaces the location once getUserVisibleURL
+      // resolves without error; a non-nil error means the mount exists on paper
+      // but the user can't see it. Gate the reported `mounted` on real
+      // presentation and pass the error string through so the JS layer (and the
+      // user) can see WHY the location is missing.
+      let registered = state["registered"] as? Bool ?? false
+      if registered {
+        let domain = beebeebFileProviderDomain()
+        let (userVisibleRootURL, userVisibleRootError) = await fileProviderRootVisibility(domain: domain)
+        state["userVisibleRootURL"] = userVisibleRootURL ?? NSNull()
+        state["userVisibleRootError"] = userVisibleRootError ?? NSNull()
+        if userVisibleRootError != nil {
+          state["mounted"] = false
+          state["locked"] = true
+        }
+      } else {
+        state["userVisibleRootURL"] = NSNull()
+        state["userVisibleRootError"] = NSNull()
+      }
+      return state
     }
 
     AsyncFunction("setFileProviderAuthRequired") { (required: Bool) async -> [String: Any] in

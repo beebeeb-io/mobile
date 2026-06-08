@@ -71,6 +71,14 @@ export interface FileProviderPrivacyState {
   registered?: boolean
   domainCount?: number
   cacheDatabaseReady?: boolean
+  /** Resolved user-visible root URL, or null when iOS could not present it. */
+  userVisibleRootURL?: string | null
+  /**
+   * Non-null when getUserVisibleURL failed — the domain is registered on paper
+   * but is NOT actually presented in Files.app. `mounted` is false whenever
+   * this is set.
+   */
+  userVisibleRootError?: string | null
   requireDeviceAuth: boolean
   unlockedUntilMs: number
   unlockWindowSeconds: number

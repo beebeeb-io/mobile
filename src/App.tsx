@@ -422,7 +422,16 @@ function BiometricGuard({
     if (locked) return;
     if (crypto.isUnlocked) { silentUnlockDone.current = true; return; }
     silentUnlockDone.current = true;
-    crypto.unlock(undefined, 'cold_launch_vault_unlock').catch(() => {});
+    // When biometric lock is enabled, the lock screen's authenticate() is the
+    // SOLE entry that drives unlock. Firing a silent keychain-backed unlock here
+    // too would surface a SECOND Face ID prompt on a Secure-Enclave key (the SE
+    // decrypt prompts), racing the lock screen and producing the "first fails,
+    // second unlocks" double-prompt. Skip the silent path entirely in that case.
+    void (async () => {
+      const pref = await SecureStore.getItemAsync(BIOMETRIC_PREF_KEY).catch(() => null);
+      if (pref === 'true') return;
+      await crypto.unlock(undefined, 'cold_launch_vault_unlock').catch(() => {});
+    })();
   }, [locked, startupLockChecked, crypto.isUnlocked]);
 
   async function handleUnlocked() {
@@ -502,7 +511,13 @@ function FileProviderDomainRegistrar({ enabled }: { enabled: boolean }) {
       if (!token) return;
       await BeebeebCrypto.mirrorSessionToAppGroup(token, getApiUrl()).catch(() => false);
       const result = await BeebeebCrypto.registerFileProviderDomain();
-      const mounted = result.registered && result.cacheDatabaseReady !== false;
+      // "registered" is not "presented in Files". userVisibleRootError != null
+      // means iOS could not surface the location (the user may have removed it),
+      // so don't treat it as mounted.
+      const mounted =
+        result.registered &&
+        result.cacheDatabaseReady !== false &&
+        !result.userVisibleRootError;
       if (mounted) {
         void populateFileProviderCache(crypto.decryptMetadata).catch(() => {});
       }
@@ -529,6 +544,11 @@ function FileProviderDomainRegistrar({ enabled }: { enabled: boolean }) {
   useEffect(() => {
     const sub = AppState.addEventListener('change', (next) => {
       if (next === 'active') {
+        // Re-arm so every foreground re-checks getDomains() and re-adds the
+        // domain if the user removed the Beebeeb location in Files while the
+        // app was backgrounded. Without this, attemptedRef stays true and a
+        // user-removed mount never comes back until the vault re-locks.
+        attemptedRef.current = false;
         void register();
       }
     });
