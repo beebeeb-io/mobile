@@ -177,7 +177,15 @@ async function setSessionCredentials(token: string, deviceConfirmationSecret?: s
 // ---------------------------------------------------------------------------
 
 export class ApiError extends Error {
-  constructor(public status: number, message: string) {
+  /**
+   * Machine-readable error code from the server response body's `error` field
+   * (e.g. `object_budget_exceeded`, `quota_exceeded`). Set when the server
+   * returns a structured `{ error, message }` payload. Callers branch on this
+   * instead of pattern-matching the human-readable `message`, which can change
+   * without notice. Optional + additive — existing `(status, message)` callers
+   * are unaffected.
+   */
+  constructor(public status: number, message: string, public code?: string) {
     super(message);
     this.name = 'ApiError';
   }
@@ -199,6 +207,16 @@ export class TwoFactorRequiredError extends Error {
 /** Return a human-friendly message for common API errors. */
 export function friendlyError(err: unknown): string {
   if (err instanceof ApiError) {
+    // Typed quota errors come back with a machine-readable `code` so we don't
+    // pattern-match the human message. Branch on these first, before the
+    // generic status handling swallows them (server task 0670).
+    if (err.code === 'object_budget_exceeded') {
+      // Object-COUNT cap — distinct from the byte/storage quota below.
+      return 'File limit reached. This account has hit its maximum number of files — delete some files or contact support to raise the limit.';
+    }
+    if (err.code === 'quota_exceeded') {
+      return 'Storage full. Free up space or upgrade your plan to keep uploading.';
+    }
     if (err.status === 0) return 'Could not reach the server. Check your connection and try again.';
     if (err.status === 401) {
       // The message is set by the caller's path: login/signup => "Wrong email or password",
@@ -846,8 +864,8 @@ export async function uploadEncryptedChunked(params: {
       }),
     })
     if (!initRes.ok) {
-      const err = await initRes.json().catch(() => ({ error: initRes.statusText }))
-      throw new ApiError(initRes.status, (err as { error?: string }).error ?? initRes.statusText)
+      const err = (await initRes.json().catch(() => ({ error: initRes.statusText }))) as { error?: string; message?: string }
+      throw new ApiError(initRes.status, err.message ?? err.error ?? initRes.statusText, err.error)
     }
     const init = (await initRes.json()) as { file_id: string }
     serverFileId = init.file_id
@@ -875,8 +893,10 @@ export async function uploadEncryptedChunked(params: {
       : `/api/v1/files/${serverFileId}/chunks/${i}`
     const chunkRes = await putBinaryBytes(`${BASE_URL}${chunkPath}`, token, encBytes)
     if (!chunkRes.ok) {
-      const err = await chunkRes.error()
-      throw new ApiError(chunkRes.status, (err as { error?: string }).error ?? `Chunk ${i} failed`)
+      const err = (await chunkRes.error()) as { error?: string; message?: string }
+      // Carry the machine code (e.g. `object_budget_exceeded`, `quota_exceeded`)
+      // so friendlyError() can show the right copy instead of the raw code.
+      throw new ApiError(chunkRes.status, err.message ?? err.error ?? `Chunk ${i} failed`, err.error)
     }
 
     bytesUploaded += encBytes.length
@@ -975,8 +995,8 @@ async function initUploadV2(params: {
   })
   if (res.status === 404 || res.status === 405) return null
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: res.statusText }))
-    throw new ApiError(res.status, (err as { error?: string }).error ?? res.statusText)
+    const err = (await res.json().catch(() => ({ error: res.statusText }))) as { error?: string; message?: string }
+    throw new ApiError(res.status, err.message ?? err.error ?? res.statusText, err.error)
   }
   const data = await res.json() as UploadV2InitResponse
   return {
@@ -1062,7 +1082,7 @@ async function uploadFileChunked(
   });
   if (!initRes.ok) {
     const err = await initRes.json().catch(() => ({ error: initRes.statusText }));
-    throw new ApiError(initRes.status, err.error ?? err.message ?? initRes.statusText);
+    throw new ApiError(initRes.status, err.message ?? err.error ?? initRes.statusText, err.error);
   }
   const { file_id } = (await initRes.json()) as { file_id: string; chunk_count: number };
 
@@ -1079,7 +1099,7 @@ async function uploadFileChunked(
     });
     if (!chunkRes.ok) {
       const err = await chunkRes.json().catch(() => ({ error: chunkRes.statusText }));
-      throw new ApiError(chunkRes.status, err.error ?? `Chunk ${i} upload failed`);
+      throw new ApiError(chunkRes.status, err.message ?? err.error ?? `Chunk ${i} upload failed`, err.error);
     }
 
     onProgress?.({
