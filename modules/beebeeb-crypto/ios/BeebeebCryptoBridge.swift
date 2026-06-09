@@ -29,9 +29,9 @@ enum BeebeebCryptoBridge {
     // MARK: - In-process master key cache
     //
     // Avoids repeated Keychain reads (which can trigger Face ID / passcode)
-    // during hot paths like the backup engine's per-asset encrypt loop.
-    // The cache is populated on first successful load and cleared on sign-out
-    // or when the backup engine stops.
+    // during hot paths like thumbnail decrypt and backup stop/start cycles.
+    // The cache is populated on first successful load and cleared when the
+    // unlocked JS master-key handles are released, such as app lock or sign-out.
 
     private static var cachedMasterKey: MasterKeyHandle?
     private static let masterKeyCacheLock = NSLock()
@@ -40,12 +40,31 @@ enum BeebeebCryptoBridge {
         masterKeyCacheLock.lock()
         cachedMasterKey = handle
         masterKeyCacheLock.unlock()
+        RuntimeTrace.event("native_master_key_cache.set", ["hasHandle": handle != nil])
+    }
+
+    static func hasCachedMasterKey() -> Bool {
+        masterKeyCacheLock.lock()
+        let hasCached = cachedMasterKey != nil
+        masterKeyCacheLock.unlock()
+        return hasCached
+    }
+
+    static func cachedMasterKeyIfAvailable() -> MasterKeyHandle? {
+        masterKeyCacheLock.lock()
+        let cached = cachedMasterKey
+        masterKeyCacheLock.unlock()
+        if cached != nil {
+            RuntimeTrace.event("native_master_key_cache.hit")
+        }
+        return cached
     }
 
     static func clearCachedMasterKey() {
         masterKeyCacheLock.lock()
         cachedMasterKey = nil
         masterKeyCacheLock.unlock()
+        RuntimeTrace.event("native_master_key_cache.clear")
     }
 
     enum BridgeError: LocalizedError {
@@ -69,22 +88,30 @@ enum BeebeebCryptoBridge {
         masterKeyCacheLock.lock()
         if let cached = cachedMasterKey {
             masterKeyCacheLock.unlock()
+            RuntimeTrace.event("native_master_key_cache.hit")
             return cached
         }
         masterKeyCacheLock.unlock()
 
+        RuntimeTrace.event("native_master_key_cache.miss", [
+            "source": "BeebeebCryptoBridge.loadMasterKey",
+            "promptMayAppear": true
+        ])
         if let bytes = try KeychainManager.load(label: kMasterKeyLabel) {
             let handle = try MasterKeyHandle.fromKeychainBytes(bytes: bytes)
             setCachedMasterKey(handle)
+            RuntimeTrace.event("native_master_key_cache.loaded_from_keychain")
             return handle
         }
         #if targetEnvironment(simulator)
         if let bytes = loadSimulatorFallbackMasterKey() {
             let handle = try MasterKeyHandle.fromKeychainBytes(bytes: bytes)
             setCachedMasterKey(handle)
+            RuntimeTrace.event("native_master_key_cache.loaded_from_simulator_file")
             return handle
         }
         #endif
+        RuntimeTrace.event("native_master_key_cache.load_miss")
         return nil
     }
 
@@ -99,6 +126,24 @@ enum BeebeebCryptoBridge {
 
     static func deriveFileKey(masterKey: Data, fileId: String) throws -> Data {
         return try _uniffiDeriveFileKey(masterKey, Data(fileId.utf8))
+    }
+
+    static func decryptChunkWithCachedMasterKey(fileId: String, nonce: Data, ciphertext: Data) throws -> Data? {
+        masterKeyCacheLock.lock()
+        let cached = cachedMasterKey
+        masterKeyCacheLock.unlock()
+
+        guard let cached else {
+            RuntimeTrace.event("native_master_key_cache.thumbnail_decrypt_miss", [
+                "fileId": fileId,
+                "promptMayAppear": false
+            ])
+            return nil
+        }
+
+        let fileKey = try cached.deriveFileKey(fileId: Data(fileId.utf8))
+        RuntimeTrace.event("native_master_key_cache.thumbnail_decrypt_key_ready", ["fileId": fileId])
+        return try fileKey.decryptChunk(nonce: nonce, ciphertext: ciphertext)
     }
 
     static func encryptChunk(key: Data, plaintext: Data) throws -> EncryptedData {

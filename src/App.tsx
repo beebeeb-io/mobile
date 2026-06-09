@@ -16,6 +16,7 @@ import { Icon } from './components/Icon';
 import { colors } from './theme';
 import * as Font from 'expo-font';
 import { ThemeProvider, useTheme } from './lib/theme-context';
+import type { PerformanceStorageProfile } from './lib/performance-storage-settings';
 import { ToastProvider } from './lib/toast-context';
 import { BBLogo } from './components/BBLogo';
 import {
@@ -97,6 +98,8 @@ import SpeedtestScreen from './screens/SpeedtestScreen';
 import AdvancedSettingsScreen from './screens/AdvancedSettingsScreen';
 import ThumbnailQualityScreen from './screens/ThumbnailQualityScreen';
 import ThumbnailWorkerScreen from './screens/ThumbnailWorkerScreen';
+import FileRequestsScreen from './screens/FileRequestsScreen';
+import CreateFileRequestScreen from './screens/CreateFileRequestScreen';
 
 import ErrorBoundary from './components/ErrorBoundary';
 import ConfirmActionPrompt from './components/ConfirmActionPrompt';
@@ -136,9 +139,10 @@ function withStartupTimeout<T>(promise: Promise<T>, fallback: T, label: string):
 export type TabParamList = {
   // `action` lets deep links / quick actions ask Files to do something on
   // arrival (`'upload'` opens the picker, `'search'` focuses the search bar,
-  // `'scan'` opens document scanner, `'recent'` shows last-24h filter).
+  // `'scan'` opens document scanner, `'recent'` shows last-24h filter, and
+  // `'root'` resets the Files tab to Drive root on same-tab reselect.
   // FilesScreen consumes & clears the param so the action only fires once.
-  Files: { action?: 'upload' | 'search' | 'scan' | 'recent' } | undefined;
+  Files: { action?: 'upload' | 'search' | 'scan' | 'recent' | 'root' } | undefined;
   Shared: undefined;
   Photos: undefined;
   Settings: undefined;
@@ -152,6 +156,9 @@ export type RootStackParamList = {
   // Main app
   Tabs: undefined;
   Trash: undefined;
+  // File requests (0643)
+  FileRequests: undefined;
+  CreateFileRequest: undefined;
   Preview: {
     fileId: string;
     fileName: string;
@@ -166,6 +173,15 @@ export type RootStackParamList = {
     photoListJson?: string;
     /** Index of the tapped photo within the photoList. */
     initialPhotoIndex?: number;
+    /** Snapshot of the Photos screen performance profile to avoid a first-frame default. */
+    performanceStorageProfile?: PerformanceStorageProfile;
+    // ── File-request uploads (0643) ──
+    // When set, the file arrived through a file request and must be decrypted
+    // with the request content key (resolved from these), NOT the master-key
+    // path. All three present ⇒ request file. See file-request-crypto.ts.
+    fileRequestId?: string | null;
+    senderEphemeralPubkey?: string | null;
+    wrappedContentKey?: string | null;
   };
   ShareSheet: {
     fileId: string;
@@ -385,7 +401,15 @@ function ShareSheetImporter({ enabled }: { enabled: boolean }) {
 // Biometric guard — lives inside CryptoProvider so it can call useCrypto()
 // ---------------------------------------------------------------------------
 
-function BiometricGuard({ locked, onUnlock }: { locked: boolean; onUnlock: () => void }) {
+function BiometricGuard({
+  locked,
+  startupLockChecked,
+  onUnlock,
+}: {
+  locked: boolean;
+  startupLockChecked: boolean;
+  onUnlock: () => void;
+}) {
   const crypto = useCrypto();
 
   // Silent vault unlock — runs exactly ONCE on cold launch.
@@ -394,11 +418,21 @@ function BiometricGuard({ locked, onUnlock }: { locked: boolean; onUnlock: () =>
   const silentUnlockDone = useRef(false);
   useEffect(() => {
     if (silentUnlockDone.current) return;
+    if (!startupLockChecked) return;
     if (locked) return;
     if (crypto.isUnlocked) { silentUnlockDone.current = true; return; }
     silentUnlockDone.current = true;
-    crypto.unlock(undefined, 'cold_launch_vault_unlock').catch(() => {});
-  }, [locked, crypto.isUnlocked]);
+    // When biometric lock is enabled, the lock screen's authenticate() is the
+    // SOLE entry that drives unlock. Firing a silent keychain-backed unlock here
+    // too would surface a SECOND Face ID prompt on a Secure-Enclave key (the SE
+    // decrypt prompts), racing the lock screen and producing the "first fails,
+    // second unlocks" double-prompt. Skip the silent path entirely in that case.
+    void (async () => {
+      const pref = await SecureStore.getItemAsync(BIOMETRIC_PREF_KEY).catch(() => null);
+      if (pref === 'true') return;
+      await crypto.unlock(undefined, 'cold_launch_vault_unlock').catch(() => {});
+    })();
+  }, [locked, startupLockChecked, crypto.isUnlocked]);
 
   async function handleUnlocked() {
     try {
@@ -432,10 +466,16 @@ function VaultRecoveryGate({ enabled, navReady }: { enabled: boolean; navReady: 
   const crypto = useCrypto();
 
   useEffect(() => {
-    if (!enabled || !crypto.unlockAttempted || crypto.isUnlocked) return;
+    // Gate on the DEDICATED needsRecoveryPhrase signal, not the outcome-
+    // agnostic unlockAttempted. unlockAttempted flips true on ANY settled
+    // unlock — including a transient Secure-Enclave fast-fail on cold launch,
+    // which is NOT a missing key and must not route to recovery. Only a
+    // genuine no-key result (fresh Debug-sim / device restore) sets
+    // needsRecoveryPhrase. See crypto-context loadVerifiedMasterKeyHandle.
+    if (!enabled || !crypto.needsRecoveryPhrase || crypto.isUnlocked) return;
     // Bail until the navigation container is ready. navReady is in the dep
     // array so this effect re-fires the moment nav becomes ready, even if
-    // crypto.unlockAttempted flipped to true earlier (common on cold launch
+    // needsRecoveryPhrase flipped to true earlier (common on cold launch
     // when keychain auto-unlock fails fast before NavigationContainer's
     // onReady fires).
     if (!navReady || !navigationRef.isReady()) return;
@@ -450,7 +490,7 @@ function VaultRecoveryGate({ enabled, navReady }: { enabled: boolean; navReady: 
     }
 
     navigationRef.navigate('RecoveryUnlock');
-  }, [enabled, navReady, crypto.unlockAttempted, crypto.isUnlocked]);
+  }, [enabled, navReady, crypto.needsRecoveryPhrase, crypto.isUnlocked]);
 
   return null;
 }
@@ -471,7 +511,13 @@ function FileProviderDomainRegistrar({ enabled }: { enabled: boolean }) {
       if (!token) return;
       await BeebeebCrypto.mirrorSessionToAppGroup(token, getApiUrl()).catch(() => false);
       const result = await BeebeebCrypto.registerFileProviderDomain();
-      const mounted = result.registered && result.cacheDatabaseReady !== false;
+      // "registered" is not "presented in Files". userVisibleRootError != null
+      // means iOS could not surface the location (the user may have removed it),
+      // so don't treat it as mounted.
+      const mounted =
+        result.registered &&
+        result.cacheDatabaseReady !== false &&
+        !result.userVisibleRootError;
       if (mounted) {
         void populateFileProviderCache(crypto.decryptMetadata).catch(() => {});
       }
@@ -498,6 +544,11 @@ function FileProviderDomainRegistrar({ enabled }: { enabled: boolean }) {
   useEffect(() => {
     const sub = AppState.addEventListener('change', (next) => {
       if (next === 'active') {
+        // Re-arm so every foreground re-checks getDomains() and re-adds the
+        // domain if the user removed the Beebeeb location in Files while the
+        // app was backgrounded. Without this, attemptedRef stays true and a
+        // user-removed mount never comes back until the vault re-locks.
+        attemptedRef.current = false;
         void register();
       }
     });
@@ -559,7 +610,19 @@ function TabNavigator() {
         },
       })}
     >
-      <Tab.Screen name="Files" component={FilesScreen} />
+      <Tab.Screen
+        name="Files"
+        component={FilesScreen}
+        listeners={({ navigation, route }) => ({
+          tabPress: () => {
+            const state = navigation.getState();
+            const focusedRoute = state.routes[state.index];
+            if (focusedRoute?.key === route.key) {
+              navigation.setParams({ action: 'root' });
+            }
+          },
+        })}
+      />
       <Tab.Screen name="Shared" component={SharedScreen} />
       <Tab.Screen name="Photos" component={PhotosScreen} />
       <Tab.Screen
@@ -590,6 +653,7 @@ export default function App() {
 
   // Biometric lock: show lock screen when app resumes from background
   const [locked, setLocked] = useState(false);
+  const [startupLockChecked, setStartupLockChecked] = useState(false);
   const appStateRef = useRef<AppStateStatus>(AppState.currentState);
   const backgroundAtRef = useRef<number | null>(null);
 
@@ -786,6 +850,34 @@ export default function App() {
     void runStartup();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!user) {
+      setLocked(false);
+      setStartupLockChecked(true);
+      backgroundAtRef.current = null;
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    setStartupLockChecked(false);
+    void (async () => {
+      const pref = await SecureStore.getItemAsync(BIOMETRIC_PREF_KEY).catch(() => null);
+      if (cancelled) return;
+      if (pref === 'true' && !wasRecentlyUnlocked()) {
+        setLocked(true);
+      } else {
+        setLocked(false);
+      }
+      setStartupLockChecked(true);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.user_id]);
 
   // Register session-expired handler so 401s auto-sign-out
   useEffect(() => {
@@ -1011,12 +1103,12 @@ export default function App() {
           onReady={() => setNavReady(true)}
           onStateChange={handleNavigationStateChange}
         >
-            <VaultRecoveryGate enabled={isAuthenticated} navReady={navReady} />
-            <DevicePerformanceCalibrator enabled={isAuthenticated && !locked} />
-            {isAuthenticated && !locked && Platform.OS === 'android'
+            <VaultRecoveryGate enabled={isAuthenticated && startupLockChecked && !locked} navReady={navReady} />
+            <DevicePerformanceCalibrator enabled={isAuthenticated && startupLockChecked && !locked} />
+            {isAuthenticated && startupLockChecked && !locked && Platform.OS === 'android'
               ? <AndroidThumbnailRepairWorker enabled />
               : null}
-            <FileProviderDomainRegistrar enabled={isAuthenticated && !locked} />
+            <FileProviderDomainRegistrar enabled={isAuthenticated && startupLockChecked && !locked} />
             <Stack.Navigator screenOptions={{ headerShown: false }}>
               {isAuthenticated ? (
                 <>
@@ -1049,6 +1141,8 @@ export default function App() {
                     options={{ presentation: 'modal', animation: 'slide_from_bottom' }}
                   />
                   <Stack.Screen name="Trash" component={TrashScreen} />
+                  <Stack.Screen name="FileRequests" component={FileRequestsScreen} />
+                  <Stack.Screen name="CreateFileRequest" component={CreateFileRequestScreen} />
                   <Stack.Screen name="BackupGuides" component={BackupGuidesScreen} />
                   <Stack.Screen name="Privacy" component={PrivacyScreen} options={{ headerShown: false }} />
                   <Stack.Screen name="Storage" component={StorageScreen} options={{ headerShown: false }} />
@@ -1147,11 +1241,15 @@ export default function App() {
 
         {/* Biometric lock overlay — shown when app resumes from background */}
         {isAuthenticated && (
-          <BiometricGuard locked={locked} onUnlock={() => { markUnlocked(); setLocked(false); }} />
+          <BiometricGuard
+            locked={locked}
+            startupLockChecked={startupLockChecked}
+            onUnlock={() => { markUnlocked(); setLocked(false); }}
+          />
         )}
 
         {/* Share Extension dropbox — uploads files dropped by BeebeebShare */}
-        <ShareSheetImporter enabled={isAuthenticated && !locked} />
+        <ShareSheetImporter enabled={isAuthenticated && startupLockChecked && !locked} />
 
         {/* Android-only password prompt for step-up re-auth (no-op on iOS) */}
         <ConfirmActionPrompt />

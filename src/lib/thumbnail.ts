@@ -32,6 +32,7 @@ import {
   inferChunkCountFromEncryptedSize,
 } from './encrypted-download';
 import {
+  cacheThumbnail,
   cacheThumbnailBase64,
   enqueueThumbnailLoad,
   getCachedThumbnail,
@@ -735,6 +736,9 @@ export async function fetchDecryptedLargeThumbnailUri(
 ): Promise<string | null> {
   if (signal?.aborted) return null;
   try {
+    const cached = await getCachedThumbnail(fileId, 'large');
+    if (cached) return cached;
+
     const token = await getToken();
     if (!token) return null;
 
@@ -750,13 +754,7 @@ export async function fetchDecryptedLargeThumbnailUri(
     const nonce = encryptedBytes.slice(0, 12);
     const ciphertext = encryptedBytes.slice(12);
     const plainBytes = await decryptChunk(fileKey, nonce, ciphertext);
-
-    if (!FileSystem.cacheDirectory) return null;
-    const tempPath = `${FileSystem.cacheDirectory}large_thumb_${fileId}.webp`;
-    await FileSystem.writeAsStringAsync(tempPath, bytesToBase64(plainBytes), {
-      encoding: EncodingType.Base64,
-    });
-    return tempPath;
+    return cacheThumbnail(fileId, plainBytes, 'large');
   } catch {
     return null;
   }

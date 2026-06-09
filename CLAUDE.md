@@ -25,6 +25,17 @@ Prerequisites (must be installed):
 
 Exception: CI/CD environments without Xcode must use cloud builds.
 
+### `eas build --local` "Unable to resolve module …/src/App.tsx" — symlinked-tmpdir fix (task 0671)
+
+`eas build --local` stages the project in a **symlinked tmpdir** (macOS `/tmp`→`/private/tmp`,
+`/var/folders/…/T`→`/private/var/…`). The "Bundle React Native code and images" script computes the
+bundler ENTRY as an **absolute** path (via `expo/scripts/resolveAppEntry … absolute`) only when
+`ENTRY_FILE` is empty; that absolute path keeps the unresolved-symlink form while Metro realpaths its
+projectRoot, so Metro sees the entry *outside* the project root → `Unable to resolve module …/src/App.tsx`
+→ **ARCHIVE FAILED** on any entry. Direct local builds in the real repo dir are unaffected (no symlinked tmpdir).
+**Fix (committed):** `ios/.xcode.env` pins a **relative** entry — `export ENTRY_FILE="src/App.tsx"` —
+which resolves against Metro's realpath'd cwd everywhere. Do not remove it.
+
 ## Stack
 
 React Native + Expo (managed workflow) + TypeScript. Package manager: **bun**.

@@ -20,12 +20,11 @@ export const DEFAULT_PERFORMANCE_STORAGE_SETTINGS: PerformanceStorageSettings = 
   profile: 'balanced',
 };
 
-// Task 0552: thumbnails are always 768px @ ≤100 KB (the cap was bumped from
-// 50 KB so complex photos don't degrade to 384px). The setting now controls
-// DOWNLOAD BEHAVIOUR, not thumbnail size:
-//   - light    → no prefetch, fetch on viewport entry only
-//   - balanced → prefetch a 200-tile window around the viewport (default)
-//   - smooth   → full-library prefetch on app launch
+// Task 0552: normal thumbnails use the user's Thumbnail Quality setting. This
+// setting controls fetch behaviour and whether Preview uses an extra large tier:
+//   - light    → remote thumbnails fetch only when a tile scrolls into view
+//   - balanced → normal thumbnails prefetch around the viewport (default)
+//   - smooth   → balanced grid behaviour plus large preview thumbnails on tap
 // Estimate adds the ~25-byte blurhash placeholder per file regardless of
 // profile, since the placeholder is always cached locally.
 const BLURHASH_BYTES_PER_FILE = 25;
@@ -34,19 +33,19 @@ const PROFILE_ESTIMATES: Record<PerformanceStorageProfile, Omit<PerformanceStora
     thumbnailBytesPerFile: 100 * 1024,
     localPreviewBudgetBytes: 150 * 1024 * 1024,
     label: 'Data saver',
-    description: 'Thumbnails fetch only when a tile scrolls into view. Lowest data use.',
+    description: 'Loads remote thumbnails only when they scroll into view. Photo taps reuse the normal thumbnail.',
   },
   balanced: {
     thumbnailBytesPerFile: 100 * 1024,
     localPreviewBudgetBytes: 500 * 1024 * 1024,
     label: 'Balanced',
-    description: 'Prefetches a 200-tile window around the viewport so scrolling feels smooth.',
+    description: 'Prefetches normal thumbnails around the viewport. Photo taps reuse the normal thumbnail.',
   },
   smooth: {
     thumbnailBytesPerFile: 100 * 1024,
     localPreviewBudgetBytes: 1_500 * 1024 * 1024,
     label: 'Smooth',
-    description: 'Prefetches the entire library on launch. Uses the most data but no waits.',
+    description: 'Prefetches normal thumbnails around the viewport and loads a larger preview thumbnail on photo tap.',
   },
 };
 

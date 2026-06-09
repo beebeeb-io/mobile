@@ -79,6 +79,16 @@ enum BackupError: LocalizedError {
   case httpStatus(Int, String)
   case jsonEncoding
   case encryptionFailed(String)
+  /// A resumable upload session could not be reconciled: after re-PUTting every
+  /// non-complete chunk, these chunk indices were still reported pending by the
+  /// local bookkeeping, so `upload/complete` was not attempted. Surfaced (rather
+  /// than silently returning false) so the wedge produces a diagnosable failure.
+  case unreconciledChunks([Int])
+  /// The server fail-fast 408 `storage.upload_stalled`: the chunk PUT body went
+  /// idle (the 0-byte-stall symptom). Distinct from a generic httpStatus so the
+  /// upload path can re-stage + requeue immediately instead of climbing toward
+  /// the retry-10 dead-letter.
+  case uploadStalled(Int)
 
   var errorDescription: String? {
     switch self {
@@ -93,6 +103,11 @@ enum BackupError: LocalizedError {
       return body.isEmpty ? "HTTP \(code)" : "HTTP \(code): \(body)"
     case .jsonEncoding: return "JSON encoding failed"
     case .encryptionFailed(let msg): return "Encryption failed: \(msg)"
+    case .unreconciledChunks(let indices):
+      let list = indices.map(String.init).joined(separator: ",")
+      return "Resumable upload could not be reconciled; chunks still pending: [\(list)]"
+    case .uploadStalled(let chunkIndex):
+      return "Upload stalled on chunk \(chunkIndex) (server reported storage.upload_stalled)"
     }
   }
 }
@@ -115,17 +130,34 @@ struct BackupAssetRow {
   let stagedOriginalSize: Int64
   let stagedChunkCount: Int
   let stagedDir: String?
+  /// v2 upload-session id (`/api/v1/uploads/{id}/...`). Persisted alongside
+  /// `remoteFileId` (= the v2 `file_id`) so a resumed/relaunched upload re-PUTs
+  /// chunks and completes against the SAME session. `remoteFileId` is still used
+  /// for the GET /files/{id} completion check and thumbnails.
+  let stagedUploadSessionId: String?
 }
 
 private struct BackgroundChunkTaskDescription: Codable {
   let localAssetId: String
-  let serverFileId: String
+  /// v2 upload-session id the chunk PUT targets. Named `serverFileId` no longer
+  /// (the route is `/uploads/{session}/chunks/{i}`), but kept as a stable JSON
+  /// key so descriptions persisted by nsurlsessiond across launches still decode.
+  let uploadSessionId: String
   let chunkIndex: Int
 }
 
 private struct StagedChunkRow {
   let index: Int
   let path: String
+}
+
+/// Result of POST /api/v1/uploads/init. We persist BOTH: `uploadSessionId` is
+/// the route anchor for chunk PUTs + complete; `fileId` is the durable file row
+/// used for thumbnails and the GET /files/{id} completion/resume check.
+private struct UploadSessionInit {
+  let uploadSessionId: String
+  let fileId: String
+  let chunkCount: Int
 }
 
 private enum ExistingUploadDisposition {
@@ -263,8 +295,16 @@ final class NativeBackupEngine: NSObject {
   private var isNetworkAvailable = true
   #endif
 
-  // Chunk size matching existing uploader (4 MB)
+  // Storage pre-flight estimate ONLY (see estimatedEncryptedBytes). The WIRE
+  // chunk size is owned by beebeeb-core's ChunkEncryptorHandle (the "mobile"
+  // profile), not this constant — task 0672 moved the camera-roll pipeline onto
+  // the shared core ladder. Keeping a fixed value here just over-estimates the
+  // per-chunk overhead for the free-disk check, which is conservative/safe.
   private let chunkSize = 4 * 1024 * 1024
+  /// beebeeb-core chunk-plan profile. The chunk size + count are derived in Rust
+  /// from this profile + the plaintext size — never hardcoded. Must be one of
+  /// "desktop" | "web" | "mobile" | "backup".
+  private static let chunkProfile = "mobile"
   private let maxConcurrentUploads = 1
   private let batchLimit = 12
 
@@ -368,6 +408,7 @@ final class NativeBackupEngine: NSObject {
   private override init() {
     super.init()
     setupBackgroundSession()
+    reconcileOrphanedBackgroundTasks()
     setupMetadataSession()
     dbQueue.sync { openDatabase() }
     NotificationCenter.default.addObserver(
@@ -646,6 +687,7 @@ final class NativeBackupEngine: NSObject {
         "pacingMode": currentPacingMode().rawValue,
         "canRunNow": canExecuteBackupWorkNow(),
         "masterKeyHandleCached": masterKeyHandle != nil,
+        "masterKeyBridgeCached": BeebeebCryptoBridge.hasCachedMasterKey(),
         "tokenConfigured": token?.isEmpty == false,
         "apiBaseUrlConfigured": apiBaseUrl?.isEmpty == false,
         "freeBytesAvailable": freeBytes,
@@ -897,6 +939,46 @@ final class NativeBackupEngine: NSObject {
     backgroundSession = URLSession(configuration: config, delegate: self, delegateQueue: nil)
   }
 
+  /// Cancel background-session upload tasks left over from a prior app launch.
+  ///
+  /// Background sessions persist their tasks across launches; nsurlsessiond
+  /// resurrects them out-of-process. But `chunkUploadContinuations` /
+  /// `uploadTaskMap` are in-memory only, so after relaunch NOTHING is awaiting
+  /// these tasks and the engine has no record of them. The drain loop then
+  /// re-stages the same asset (resolveStagedChunks → re-PUT) and, on a re-stage,
+  /// deletes the staged `.enc` the orphaned task is still trying to read. The
+  /// daemon opens the chunk PUT, finds a deleted/replaced source file, and sends
+  /// 0 body bytes — the 0-byte stall. (The v2 408 fail-fast now bounds the blast
+  /// radius to ~90s, but cancelling the orphan removes the cause outright.)
+  ///
+  /// Reattaching to the persistent session (in `setupBackgroundSession`) revives
+  /// these tasks; here we proactively cancel every one of them exactly once at
+  /// launch, BEFORE the first drain can re-stage/delete anything. Their chunk
+  /// rows remain in `uploading` and are reset to `pending` by the existing
+  /// `recoverStuckUploads()` (which runs at the top of every drain), so each
+  /// affected chunk is cleanly re-driven in-process with a fresh task whose
+  /// continuation we actually hold. No data is lost — the staged `.enc` files
+  /// in Application Support are untouched.
+  private func reconcileOrphanedBackgroundTasks() {
+    backgroundSession.getAllTasks { [weak self] tasks in
+      guard let self else { return }
+      guard !tasks.isEmpty else { return }
+      var cancelled = 0
+      for task in tasks {
+        // At launch the continuation map is always empty, so every task here is
+        // a prior-launch orphan. Guard on the map anyway to stay correct if this
+        // is ever called later in a session.
+        if self.chunkUploadContinuations[task.taskIdentifier] == nil {
+          task.cancel()
+          cancelled += 1
+        }
+      }
+      if cancelled > 0 {
+        NSLog("[NativeBackupEngine] Cancelled \(cancelled) orphaned background upload task(s) from a prior launch")
+      }
+    }
+  }
+
   private func setupMetadataSession() {
     let config = URLSessionConfiguration.default
     config.timeoutIntervalForRequest = 30
@@ -915,13 +997,23 @@ final class NativeBackupEngine: NSObject {
     }
 
     do {
+      let bridgeCacheAvailable = BeebeebCryptoBridge.hasCachedMasterKey()
+      RuntimeTrace.event("backup.native.start.master_key_request", [
+        "promptMayAppear": masterKeyHandle == nil && !bridgeCacheAvailable,
+        "bridgeCacheAvailable": bridgeCacheAvailable
+      ])
       guard let mk = try BeebeebCryptoBridge.loadMasterKey() else {
+        RuntimeTrace.event("backup.native.start.master_key_missing")
         NSLog("[NativeBackupEngine] No master key in keychain — cannot start")
         return
       }
       masterKeyHandle = mk
       BeebeebCryptoBridge.setCachedMasterKey(mk)
+      RuntimeTrace.event("backup.native.start.master_key_ready")
     } catch {
+      RuntimeTrace.event("backup.native.start.master_key_failed", [
+        "error": error.localizedDescription
+      ])
       NSLog("[NativeBackupEngine] Failed to load master key: \(error.localizedDescription)")
       return
     }
@@ -950,9 +1042,11 @@ final class NativeBackupEngine: NSObject {
     NSLog("[NativeBackupEngine] Started — \(totalAssets) total, \(completedAssets) completed")
   }
 
-  /// Stop the backup engine. Cancels the drain loop, unregisters observers,
-  /// and clears the cached master key. In-flight NSURLSession background
-  /// uploads continue independently.
+  /// Stop the backup engine. Cancels the drain loop and unregisters observers.
+  /// The app-wide in-process master-key cache is retained while the user is
+  /// still unlocked so backup stop/start does not trigger an extra keychain
+  /// biometric prompt. In-flight NSURLSession background uploads continue
+  /// independently.
   func stop() {
     guard isRunning else { return }
     isRunning = false
@@ -968,9 +1062,11 @@ final class NativeBackupEngine: NSObject {
     }
     stopNetworkMonitor()
 
-    // Clear sensitive state
+    // Clear engine-owned state, but keep the app-wide unlocked-session cache.
     masterKeyHandle = nil
-    BeebeebCryptoBridge.clearCachedMasterKey()
+    RuntimeTrace.event("backup.native.stop.master_key_handle_released", [
+      "bridgeCacheRetained": BeebeebCryptoBridge.hasCachedMasterKey()
+    ])
     uploadTaskMap.removeAll()
 
     // Recover any rows stuck in 'uploading' state
@@ -1184,9 +1280,16 @@ final class NativeBackupEngine: NSObject {
 
       // Ensure master key is available for background processing
       if self.masterKeyHandle == nil {
-        do {
-          self.masterKeyHandle = try BeebeebCryptoBridge.loadMasterKey()
-        } catch {
+        if let cached = BeebeebCryptoBridge.cachedMasterKeyIfAvailable() {
+          self.masterKeyHandle = cached
+          RuntimeTrace.event("backup.native.background_task.master_key_ready", [
+            "source": "bridgeCache"
+          ])
+        } else {
+          RuntimeTrace.event("backup.native.background_task.master_key_skipped", [
+            "reason": "no_unlocked_cache",
+            "promptMayAppear": false
+          ])
           self.completeBackgroundTaskOnce(task, success: false)
           return
         }
@@ -1679,6 +1782,15 @@ final class NativeBackupEngine: NSObject {
 
   /// Manual "Back up now" should give retry-exhausted rows another chance.
   /// Automatic background drains still respect the retry cap to avoid loops.
+  ///
+  /// The status set MUST mirror the drain selection set (`pending_upload`,
+  /// `pending_reupload`, `staging`, `staged_upload`, `uploading`) — earlier this
+  /// only reset `pending_upload`/`pending_reupload`, which silently EXCLUDED the
+  /// resume-wedged rows: a chunk-upload that dead-letters leaves the asset in
+  /// `staged_upload` (markFailed sets `staged_upload` whenever `staged_file_id`
+  /// is set), so the exact rows a manual retry most needs to revive were the
+  /// ones it skipped. With retry reset, the drain re-selects them and the
+  /// `.resumable` self-heal re-stages any with evicted `.enc` chunks.
   func resetRetryExhaustedUploadsForManualRun() {
     guard let db = db else { return }
     let sql = """
@@ -1686,7 +1798,7 @@ final class NativeBackupEngine: NSObject {
     SET retry_count = 0,
         error_message = NULL,
         last_attempt_at = NULL
-    WHERE status IN ('pending_upload', 'pending_reupload')
+    WHERE status IN ('pending_upload', 'pending_reupload', 'staging', 'staged_upload', 'uploading')
       AND COALESCE(retry_count, 0) >= 10
     """
     var stmt: OpaquePointer?
@@ -1757,45 +1869,105 @@ final class NativeBackupEngine: NSObject {
       onFileStatus?(asset.localAssetId, "encrypting", nil, nil)
 
       guard isRunning && !Task.isCancelled else { return false }
-      // 1. Get photo data from PHAsset
-      let (data, uti) = try await fetchAssetData(localId: asset.localAssetId)
-      guard canStageEncryptedAsset(plaintextBytes: Int64(data.count)) else {
-        dbQueue.sync {
-          markPending(assetId: asset.localAssetId, error: "Waiting for free iPhone storage before staging backup")
-        }
-        updateBackupStatusSurfaces(reason: "Waiting for iPhone storage")
-        return false
-      }
-      guard isRunning && !Task.isCancelled else { return false }
-
-      // 2. Generate file ID and derive file key
+      // 1. Generate file ID + the on-disk chunk temp area (shared by both paths)
       let fileId = UUID().uuidString.lowercased()
-      let fileKey = try masterKey.deriveFileKey(fileId: Data(fileId.utf8))
-      guard isRunning && !Task.isCancelled else { return false }
-
-      // 3. Encrypt chunks to temp files on disk for the Rust upload protocol
-      let chunkResults = try encryptData(data: data, fileKey: fileKey)
-      guard isRunning && !Task.isCancelled else { return false }
       let tempDir = NSTemporaryDirectory()
       var chunkPaths: [String] = []
-      for (index, chunk) in chunkResults.enumerated() {
-        var chunkData = Data()
-        chunkData.append(chunk.nonce)
-        chunkData.append(chunk.ciphertext)
-        let path = (tempDir as NSString).appendingPathComponent("upload-\(fileId)-\(index).enc")
-        try chunkData.write(to: URL(fileURLWithPath: path))
-        chunkPaths.append(path)
-      }
       defer {
         for path in chunkPaths {
           try? FileManager.default.removeItem(atPath: path)
         }
       }
+      guard isRunning && !Task.isCancelled else { return false }
 
-      // 4. Encrypt filename
-      let ext = fileExtension(for: uti)
+      // 2. Encrypt to temp chunk files via the shared beebeeb-core ladder (task
+      //    0672). Core owns the chunk plan (mobile profile) — no hardcoded 4 MiB
+      //    — derives the per-file key in Rust from the borrowed MasterKeyHandle,
+      //    and `finish()` runs the integrity guard before we stage/upload. Each
+      //    frame (`chunk.data` = nonce||ct||tag) is byte-identical to the prior
+      //    nonce+ciphertext layout, so existing downloads decrypt unchanged.
+      //
+      //    Videos stream straight from disk via `fromFile` so a multi-GB clip
+      //    never enters RAM; photos use the in-memory `forPush` path. A video
+      //    not backed by a readable on-disk AVURLAsset (e.g. a composition)
+      //    falls through to the in-memory path — unchanged from before.
+      let resolvedUti: String
+      let resolvedOriginalSize: Int
+
+      if asset.assetType == "video",
+         let videoSource = try await fetchVideoFileSource(localId: asset.localAssetId) {
+        resolvedUti = videoSource.uti
+        resolvedOriginalSize = videoSource.sizeBytes
+        guard canStageEncryptedAsset(plaintextBytes: Int64(resolvedOriginalSize)) else {
+          dbQueue.sync {
+            markPending(assetId: asset.localAssetId, error: "Waiting for free iPhone storage before staging backup")
+          }
+          updateBackupStatusSurfaces(reason: "Waiting for iPhone storage")
+          return false
+        }
+        guard isRunning && !Task.isCancelled else { return false }
+        // Hold the AVURLAsset alive for the whole pull loop so its backing file
+        // URL stays valid (task 0672 — risk #1: video-URL lifetime). The loop
+        // reads one core-planned chunk at a time → peak memory ≈ one chunk.
+        let completed: Bool = try withExtendedLifetime(videoSource) { () throws -> Bool in
+          let encryptor = try ChunkEncryptorHandle.fromFile(
+            masterKey: masterKey,
+            fileId: fileId,
+            inputPath: videoSource.url.path,
+            profile: Self.chunkProfile
+          )
+          while let chunk = try encryptor.nextChunk() {
+            guard isRunning && !Task.isCancelled else { return false }
+            let path = (tempDir as NSString).appendingPathComponent("upload-\(fileId)-\(Int(chunk.index)).enc")
+            try chunk.data.write(to: URL(fileURLWithPath: path))
+            chunkPaths.append(path)
+          }
+          // Integrity guard (detects a source that shrank) before staging.
+          _ = try encryptor.finish()
+          return true
+        }
+        guard completed else { return false }
+      } else {
+        // In-memory path: photos, and any video without a streamable file URL.
+        let (data, uti) = try await fetchAssetData(localId: asset.localAssetId)
+        guard canStageEncryptedAsset(plaintextBytes: Int64(data.count)) else {
+          dbQueue.sync {
+            markPending(assetId: asset.localAssetId, error: "Waiting for free iPhone storage before staging backup")
+          }
+          updateBackupStatusSurfaces(reason: "Waiting for iPhone storage")
+          return false
+        }
+        guard isRunning && !Task.isCancelled else { return false }
+        resolvedUti = uti
+        resolvedOriginalSize = data.count
+        let encryptor = try ChunkEncryptorHandle.forPush(
+          masterKey: masterKey,
+          fileId: fileId,
+          fileSize: UInt64(data.count),
+          profile: Self.chunkProfile
+        )
+        let plan = try encryptor.chunkPlan()
+        let planChunkSize = Int(plan.chunkSizeBytes)
+        let planChunkCount = Int(plan.chunkCount)
+        for index in 0..<planChunkCount {
+          guard isRunning && !Task.isCancelled else { return false }
+          let start = index * planChunkSize
+          let end = min(start + planChunkSize, data.count)
+          let slice = start < end ? data.subdata(in: start..<end) : Data()
+          let chunk = try encryptor.pushChunk(plaintext: slice)
+          let path = (tempDir as NSString).appendingPathComponent("upload-\(fileId)-\(Int(chunk.index)).enc")
+          try chunk.data.write(to: URL(fileURLWithPath: path))
+          chunkPaths.append(path)
+        }
+        // Integrity guard (detects a source that shrank) before staging.
+        _ = try encryptor.finish()
+      }
+      guard isRunning && !Task.isCancelled else { return false }
+
+      // 3. Encrypt filename
+      let ext = fileExtension(for: resolvedUti)
       let filename = "IMG_\(fileId).\(ext)"
-      let mimeType = mimeTypeFromUTI(uti)
+      let mimeType = mimeTypeFromUTI(resolvedUti)
       let nameEncrypted = try masterKey.encryptName(fileId: fileId, filename: filename, mimeType: mimeType)
       guard isRunning && !Task.isCancelled else { return false }
 
@@ -1804,7 +1976,7 @@ final class NativeBackupEngine: NSObject {
         fileId: fileId,
         nameEncrypted: nameEncrypted,
         mimeType: mimeType,
-        originalSize: data.count,
+        originalSize: resolvedOriginalSize,
         chunkPaths: chunkPaths
       )
       chunkPaths.removeAll()
@@ -1831,6 +2003,31 @@ final class NativeBackupEngine: NSObject {
       onFileStatus?(asset.localAssetId, "local_missing", nil, BackupError.assetNotFound.localizedDescription)
       NSLog("[NativeBackupEngine] Asset missing locally, skipped: \(asset.localAssetId)")
 
+      return false
+    } catch BackupError.uploadStalled(let chunkIndex) {
+      // 408 storage.upload_stalled: the chunk body went idle — almost always the
+      // staged `.enc` was deleted/replaced under the in-flight background task
+      // (the 0-byte stall). Re-stage from scratch and requeue WITHOUT bumping
+      // retry_count, so the asset re-encrypts and re-uploads on the next drain
+      // instead of climbing toward the retry-10 dead-letter. The v2 session +
+      // its partial chunks are reaped by the server's stale-upload cleanup.
+      perfLog("asset.stalled", [
+        "assetType": asset.assetType,
+        "chunkIndex": chunkIndex,
+        "retry": asset.retryCount
+      ])
+      dbQueue.sync {
+        clearStagedStateForRestage(
+          assetId: asset.localAssetId,
+          error: "Upload stalled (408); re-encrypting"
+        )
+      }
+      if let stagedDir = asset.stagedDir, let fileId = asset.stagedFileId {
+        removeStagedDirectory(stagedDir: stagedDir, fileId: fileId)
+      }
+      updateBackupStatusSurfaces(reason: "Re-encrypting backup")
+      onFileStatus?(asset.localAssetId, "pending", nil, nil)
+      NSLog("[NativeBackupEngine] Asset upload stalled on chunk \(chunkIndex); re-staging: \(asset.localAssetId)")
       return false
     } catch {
       perfLog("asset.fail", [
@@ -2012,7 +2209,9 @@ final class NativeBackupEngine: NSObject {
       return false
     }
 
-    guard let chunks = resolveStagedChunks(asset: asset, fileId: fileId) else {
+    // `var` so the `.resumable` self-heal below can re-bind to a freshly
+    // revalidated set (paths may have been relocated by resolveStagedChunks).
+    guard var chunks = resolveStagedChunks(asset: asset, fileId: fileId) else {
       dbQueue.sync {
         clearStagedStateForRestage(
           assetId: asset.localAssetId,
@@ -2030,12 +2229,40 @@ final class NativeBackupEngine: NSObject {
     }
 
     let serverFileId: String
+    let uploadSessionId: String
     let isResumingExistingRemote: Bool
-    if let existing = asset.remoteFileId, !existing.isEmpty {
+    // Resume requires BOTH the file_id (remoteFileId) AND the v2 session id. A
+    // row that has a file_id but no session id is a pre-migration remnant or a
+    // half-written init — re-stage cleanly rather than guessing a session id.
+    if let existing = asset.remoteFileId, !existing.isEmpty,
+       let existingSession = asset.stagedUploadSessionId, !existingSession.isEmpty {
       serverFileId = existing
+      uploadSessionId = existingSession
       isResumingExistingRemote = true
+    } else if let existing = asset.remoteFileId, !existing.isEmpty {
+      // Stale file_id without a session id — drop it and re-init below.
+      dbQueue.sync {
+        clearStagedStateForRestage(
+          assetId: asset.localAssetId,
+          error: "Upload session id missing for an existing remote; re-encrypting"
+        )
+      }
+      removeStagedDirectory(stagedDir: stagedDir, fileId: fileId)
+      updateBackupStatusSurfaces(reason: "Re-encrypting backup")
+      return false
     } else {
-      serverFileId = try await initUploadSession(
+      guard let parentFolderId, !parentFolderId.isEmpty else {
+        RuntimeTrace.event("backup.native.upload_aborted", [
+          "reason": "missing_parent_folder",
+          "assetType": asset.assetType,
+        ])
+        dbQueue.sync {
+          markPending(assetId: asset.localAssetId, error: "Missing backup destination folder")
+        }
+        updateBackupStatusSurfaces(reason: "Waiting for backup folder")
+        return false
+      }
+      let session = try await initUploadSession(
         fileId: fileId,
         nameEncrypted: nameEncrypted,
         mimeType: asset.stagedMimeType,
@@ -2046,13 +2273,21 @@ final class NativeBackupEngine: NSObject {
         authToken: authToken,
         baseURL: baseURL
       )
-      dbQueue.sync { markUploading(assetId: asset.localAssetId, remoteFileId: serverFileId) }
+      serverFileId = session.fileId
+      uploadSessionId = session.uploadSessionId
+      dbQueue.sync {
+        markUploading(
+          assetId: asset.localAssetId,
+          remoteFileId: serverFileId,
+          uploadSessionId: uploadSessionId
+        )
+      }
       isResumingExistingRemote = false
     }
 
     if isResumingExistingRemote {
       switch try await inspectExistingUpload(
-        serverFileId: serverFileId,
+        fileId: serverFileId,
         authToken: authToken,
         baseURL: baseURL
       ) {
@@ -2089,17 +2324,50 @@ final class NativeBackupEngine: NSObject {
         return false
 
       case .resumable:
-        dbQueue.sync { markUploading(assetId: asset.localAssetId, remoteFileId: serverFileId) }
+        // Self-heal a wedged resume. The server still reports this session
+        // resumable, but iOS may have evicted the staged `.enc` files (Caches/
+        // tmp are reclaimed under storage pressure) since we resolved `chunks`
+        // above. Re-verify every non-complete chunk's staged file exists and is
+        // non-zero via the same helper used on the initial staging check. If it
+        // can no longer be reconciled, route to the re-stage branch (identical
+        // to `.missingRemote`): clear staged state, drop the old file_id, and
+        // re-encrypt from scratch — instead of `markUploading` on an
+        // unreconcilable session and then throwing on the missing-file PUT every
+        // drain until the asset dead-letters at retry 10. The orphaned server
+        // session is reaped by the server's stale_upload_cleanup worker.
+        guard let revalidated = resolveStagedChunks(asset: asset, fileId: fileId) else {
+          dbQueue.sync {
+            clearStagedStateForRestage(
+              assetId: asset.localAssetId,
+              error: "Resumable session lost its staged chunks; re-encrypting"
+            )
+          }
+          removeStagedDirectory(stagedDir: stagedDir, fileId: fileId)
+          updateBackupStatusSurfaces(reason: "Re-encrypting backup")
+          return false
+        }
+        chunks = revalidated
+        dbQueue.sync {
+          markUploading(
+            assetId: asset.localAssetId,
+            remoteFileId: serverFileId,
+            uploadSessionId: nil // COALESCE keeps the row's existing session id
+          )
+        }
       }
     }
 
     onFileStatus?(asset.localAssetId, "uploading", nil, nil)
 
+    // v2 chunk PUTs are idempotent (INSERT…ON CONFLICT DO UPDATE), so re-sending
+    // an already-stored chunk on a resume is safe. `chunks` already excludes
+    // chunks the local bookkeeping marked 'uploaded' (getPendingStagedChunks),
+    // so a resume only re-drives the genuinely-incomplete tail.
     for chunk in chunks {
       guard isRunning && !Task.isCancelled else { return false }
       try await uploadStagedChunk(
         localAssetId: asset.localAssetId,
-        serverFileId: serverFileId,
+        uploadSessionId: uploadSessionId,
         chunkIndex: chunk.index,
         fileURL: URL(fileURLWithPath: chunk.path),
         authToken: authToken,
@@ -2108,10 +2376,20 @@ final class NativeBackupEngine: NSObject {
     }
 
     let remaining = dbQueue.sync { countPendingStagedChunks(assetId: asset.localAssetId) }
-    guard remaining == 0 else { return false }
+    guard remaining == 0 else {
+      // The re-PUT loop finished but the local bookkeeping still reports chunks
+      // pending. Surface a diagnosable error with the offending indices instead
+      // of returning false silently — the silence is exactly why this wedge was
+      // invisible (no error status, no log line) while it spun every drain until
+      // the asset dead-lettered at retry 10. Throwing routes to markFailed with
+      // a concrete message and still re-stages on a later attempt.
+      let unreconciled = dbQueue.sync { getPendingStagedChunks(assetId: asset.localAssetId) }
+        .map { $0.index }
+      throw BackupError.unreconciledChunks(unreconciled)
+    }
 
     try await completeUpload(
-      serverFileId: serverFileId,
+      uploadSessionId: uploadSessionId,
       authToken: authToken,
       baseURL: baseURL
     )
@@ -2154,12 +2432,27 @@ final class NativeBackupEngine: NSObject {
     }
   }
 
+  /// Decide how to resume an upload whose session was opened in a prior pass.
+  ///
+  /// v2 has no session-status GET (only init/chunks/complete), so we read the
+  /// durable file row via GET /api/v1/files/{file_id} and map `is_uploading`:
+  ///   • 404                  → `.missingRemote`  (file gone — re-stage)
+  ///   • is_uploading == false → `.alreadyCompleted` (complete already landed)
+  ///   • otherwise            → `.resumable`      (re-PUT the non-uploaded tail,
+  ///                             then POST complete — chunk PUTs are idempotent)
+  /// The "which chunks to re-send" decision is purely LOCAL: the caller drives
+  /// only chunks the local `backup_upload_chunks` table still marks pending.
+  /// This is correct without a server status GET because v2 chunk PUTs are
+  /// idempotent — re-sending a chunk the server already stored is a no-op
+  /// (`skipped:true`), and `complete` validates the full set server-side and
+  /// fails loudly if any chunk is genuinely missing, which routes back to a
+  /// re-stage. No silent partial-file completion is possible.
   private func inspectExistingUpload(
-    serverFileId: String,
+    fileId: String,
     authToken: String,
     baseURL: String
   ) async throws -> ExistingUploadDisposition {
-    guard let url = URL(string: "\(baseURL)/api/v1/files/\(serverFileId)/upload/status") else {
+    guard let url = URL(string: "\(baseURL)/api/v1/files/\(fileId)") else {
       throw BackupError.invalidServerURL
     }
 
@@ -2170,17 +2463,8 @@ final class NativeBackupEngine: NSObject {
     let (data, response) = try await metadataSession.data(for: request)
     let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
 
-    if (200..<300).contains(statusCode) {
-      return .resumable
-    }
-
     if statusCode == 404 {
       return .missingRemote
-    }
-
-    let body = String(data: data, encoding: .utf8) ?? ""
-    if statusCode == 400, body.localizedCaseInsensitiveContains("upload already completed") {
-      return .alreadyCompleted
     }
 
     if statusCode == 429 {
@@ -2193,12 +2477,24 @@ final class NativeBackupEngine: NSObject {
       throw BackupError.httpStatus(429, "Rate limited")
     }
 
-    throw BackupError.httpStatus(statusCode, body)
+    guard (200..<300).contains(statusCode) else {
+      let body = String(data: data, encoding: .utf8) ?? ""
+      throw BackupError.httpStatus(statusCode, body)
+    }
+
+    let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    // `is_uploading == false` means complete already ran for this file. Absent
+    // or true ⇒ still in progress ⇒ resumable. Default to resumable on a missing
+    // flag (safe: re-PUT idempotent + complete revalidates).
+    if let isUploading = json?["is_uploading"] as? Bool, isUploading == false {
+      return .alreadyCompleted
+    }
+    return .resumable
   }
 
   private func uploadStagedChunk(
     localAssetId: String,
-    serverFileId: String,
+    uploadSessionId: String,
     chunkIndex: Int,
     fileURL: URL,
     authToken: String,
@@ -2209,7 +2505,11 @@ final class NativeBackupEngine: NSObject {
       throw BackupError.assetLoadFailed
     }
 
-    guard let url = URL(string: "\(baseURL)/api/v1/files/\(serverFileId)/chunks/\(chunkIndex)") else {
+    // v2 chunk route: PUT /api/v1/uploads/{session}/chunks/{index} — streams the
+    // body to storage and fail-fasts with 408 storage.upload_stalled on an idle
+    // body, instead of the legacy /files/{id}/chunks/{n} route that let a 0-byte
+    // body hang for ~22 min and leak an is_uploading orphan.
+    guard let url = URL(string: "\(baseURL)/api/v1/uploads/\(uploadSessionId)/chunks/\(chunkIndex)") else {
       throw BackupError.invalidServerURL
     }
 
@@ -2220,7 +2520,7 @@ final class NativeBackupEngine: NSObject {
 
     let description = BackgroundChunkTaskDescription(
       localAssetId: localAssetId,
-      serverFileId: serverFileId,
+      uploadSessionId: uploadSessionId,
       chunkIndex: chunkIndex
     )
 
@@ -2240,22 +2540,11 @@ final class NativeBackupEngine: NSObject {
 
   // MARK: - Encryption
 
-  /// Encrypt data into chunks using the existing FileKeyHandle.encryptChunk API.
-  /// Returns an array of EncryptedData (nonce + ciphertext per chunk).
-  private func encryptData(data: Data, fileKey: FileKeyHandle) throws -> [EncryptedData] {
-    var results: [EncryptedData] = []
-    let totalChunks = max(1, Int(ceil(Double(data.count) / Double(chunkSize))))
-
-    for i in 0..<totalChunks {
-      let start = i * chunkSize
-      let end = min(start + chunkSize, data.count)
-      let chunkPlaintext = start < end ? data.subdata(in: start..<end) : Data()
-      let encrypted = try fileKey.encryptChunk(plaintext: chunkPlaintext)
-      results.append(encrypted)
-    }
-
-    return results
-  }
+  // NOTE: the old `encryptData(data:fileKey:)` 4 MiB chunk loop was removed in
+  // task 0672 — the camera-roll pipeline now encrypts via the shared core
+  // `ChunkEncryptorHandle` ladder (see the staging path above). The single-frame
+  // thumbnail encrypt still uses `fileKey.encryptChunk` directly (that is a
+  // single AES-GCM blob, not a chunk loop, and is correct as-is).
 
   // MARK: - PHAsset Data Fetch
 
@@ -2314,8 +2603,73 @@ final class NativeBackupEngine: NSObject {
     }
   }
 
+  /// A streamable on-disk source for a camera-roll video. Holds the `AVURLAsset`
+  /// so its backing file URL stays valid for the entire `fromFile` pull loop
+  /// (task 0672 — the video is encrypted directly from disk, never read into
+  /// RAM).
+  private struct StagedVideoSource {
+    let asset: AVURLAsset  // retained to keep `url` valid across the loop
+    let url: URL
+    let uti: String
+    let sizeBytes: Int
+  }
+
+  /// Resolve a readable on-disk file URL for a video PHAsset, for streaming
+  /// encryption via `ChunkEncryptorHandle.fromFile`. Returns nil for videos not
+  /// backed by a readable on-disk `AVURLAsset` (e.g. compositions / slo-mo), in
+  /// which case the caller falls back to the in-memory path — the same outcome
+  /// as before task 0672. Throws `assetNotFound` if the asset is gone.
+  private func fetchVideoFileSource(localId: String) async throws -> StagedVideoSource? {
+    let fetchResult = PHAsset.fetchAssets(withLocalIdentifiers: [localId], options: nil)
+    guard let phAsset = fetchResult.firstObject else {
+      throw BackupError.assetNotFound
+    }
+    guard phAsset.mediaType == .video else { return nil }
+
+    return try await withCheckedThrowingContinuation { continuation in
+      let options = PHVideoRequestOptions()
+      options.version = .original
+      options.isNetworkAccessAllowed = true
+
+      PHImageManager.default().requestAVAsset(forVideo: phAsset, options: options) { avAsset, _, info in
+        Self.phkitCallbackQueue.async {
+          if let error = info?[PHImageErrorKey] as? Error {
+            continuation.resume(throwing: error)
+            return
+          }
+          guard let urlAsset = avAsset as? AVURLAsset, self.readableRegularFile(urlAsset.url) else {
+            // Composition / non-URL-backed asset — fall back to the in-memory path.
+            continuation.resume(returning: nil)
+            return
+          }
+          let size = (try? urlAsset.url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+          guard size > 0 else {
+            continuation.resume(returning: nil)
+            return
+          }
+          let uti = urlAsset.url.pathExtension.lowercased() == "mov"
+            ? "com.apple.quicktime-movie"
+            : "public.mpeg-4"
+          continuation.resume(returning: StagedVideoSource(
+            asset: urlAsset,
+            url: urlAsset.url,
+            uti: uti,
+            sizeBytes: size
+          ))
+        }
+      }
+    }
+  }
+
   // MARK: - API Calls (metadata session — standard URLSession, not background)
 
+  /// Open a v2 upload session (POST /api/v1/uploads/init). Returns both the
+  /// `upload_session_id` (the chunk/complete route anchor) and the durable
+  /// `file_id`. The v2 init derives the chunk plan server-side from
+  /// `profile` ("mobile") + `file_size_bytes`, which matches the core "mobile"
+  /// plan the asset was staged with (same source of truth), so we omit the
+  /// chunk_count/chunk_size pair and let the server compute it — then assert the
+  /// returned count equals the staged count to catch any drift early.
   private func initUploadSession(
     fileId: String,
     nameEncrypted: String,
@@ -2326,21 +2680,26 @@ final class NativeBackupEngine: NSObject {
     chunkCount: Int,
     authToken: String,
     baseURL: String
-  ) async throws -> String {
-    guard let url = URL(string: "\(baseURL)/api/v1/files/upload/init") else {
+  ) async throws -> UploadSessionInit {
+    guard let url = URL(string: "\(baseURL)/api/v1/uploads/init") else {
       throw BackupError.invalidServerURL
     }
 
-    let body: [String: Any] = [
+    var body: [String: Any] = [
+      // v2 names `name_encrypted` as `file_name`; `size_bytes` as
+      // `file_size_bytes` (= plaintext byte count — server recomputes stored
+      // size from the chunks). `file_id` is honored so thumbnails + name
+      // envelope stay bound to the same id we encrypted under.
       "file_id": fileId,
-      "name_encrypted": nameEncrypted,
-      "parent_id": parentFolderId as Any? ?? NSNull(),
-      "mime_type": NSNull(),
+      "file_name": nameEncrypted,
+      "file_size_bytes": sizeBytes,
+      "profile": Self.chunkProfile,
       "is_media": isMedia,
       "created_at": normalizedCreatedAt(createdAt),
-      "size_bytes": sizeBytes,
-      "chunk_count": chunkCount,
     ]
+    if let parentFolderId, !parentFolderId.isEmpty {
+      body["parent_id"] = parentFolderId
+    }
     guard let bodyData = try? JSONSerialization.data(withJSONObject: body) else {
       throw BackupError.jsonEncoding
     }
@@ -2371,61 +2730,43 @@ final class NativeBackupEngine: NSObject {
     }
 
     guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          let uploadSessionId = json["upload_session_id"] as? String,
+          !uploadSessionId.isEmpty,
           let serverFileId = json["file_id"] as? String,
           !serverFileId.isEmpty else {
       throw BackupError.invalidResponse
     }
 
-    return serverFileId
+    let serverChunkCount = (json["chunk_count"] as? Int) ?? chunkCount
+    if serverChunkCount != chunkCount {
+      // The server-derived plan disagrees with what we staged — re-staging under
+      // the server plan is the only safe recovery. Surface as invalidResponse so
+      // the caller routes to the re-stage branch rather than PUTting a mismatched
+      // chunk set.
+      NSLog("[NativeBackupEngine] init chunk_count mismatch: staged=\(chunkCount) server=\(serverChunkCount)")
+      throw BackupError.invalidResponse
+    }
+
+    return UploadSessionInit(
+      uploadSessionId: uploadSessionId,
+      fileId: serverFileId,
+      chunkCount: serverChunkCount
+    )
   }
 
-  private func uploadChunk(
-    serverFileId: String,
-    chunkIndex: Int,
-    chunkData: Data,
-    authToken: String,
-    baseURL: String
-  ) async throws {
-    guard let url = URL(string: "\(baseURL)/api/v1/files/\(serverFileId)/chunks/\(chunkIndex)") else {
-      throw BackupError.invalidServerURL
-    }
-
-    // Write chunk to temp file for background-safe upload
-    let tempDir = NSTemporaryDirectory()
-    let tempFile = URL(fileURLWithPath: tempDir).appendingPathComponent("chunk-\(serverFileId)-\(chunkIndex).enc")
-    try chunkData.write(to: tempFile)
-    defer { try? FileManager.default.removeItem(at: tempFile) }
-
-    var request = URLRequest(url: url)
-    request.httpMethod = "PUT"
-    request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
-    request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
-
-    // Use uploadTask(with:fromFile:) for background-safe transfer.
-    // For now we await the result synchronously within the TaskGroup.
-    // The background session handles retries and survives app suspension.
-    let (_, response) = try await backgroundSession.upload(for: request, fromFile: tempFile)
-    let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
-
-    if statusCode == 429 {
-      if let retryAfter = (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Retry-After"),
-         let seconds = Double(retryAfter) {
-        backoffUntil = Date().addingTimeInterval(seconds)
-      }
-      throw BackupError.httpStatus(429, "Rate limited")
-    }
-
-    guard (200..<300).contains(statusCode) else {
-      throw BackupError.httpStatus(statusCode, "Chunk upload failed")
-    }
-  }
+  // NOTE: the legacy in-process `uploadChunk(...)` helper (PUT
+  // /files/{id}/chunks/{n} via the async `backgroundSession.upload(for:fromFile:)`
+  // convenience) was removed in the v2 migration. It had no callers — the live
+  // path is `uploadStagedChunk` via the delegate/continuation pattern — and kept
+  // a reference to the legacy route alive. The single chunk-PUT surface is now
+  // `uploadStagedChunk` on /uploads/{session}/chunks/{i}.
 
   private func completeUpload(
-    serverFileId: String,
+    uploadSessionId: String,
     authToken: String,
     baseURL: String
   ) async throws {
-    guard let url = URL(string: "\(baseURL)/api/v1/files/\(serverFileId)/upload/complete") else {
+    guard let url = URL(string: "\(baseURL)/api/v1/uploads/\(uploadSessionId)/complete") else {
       throw BackupError.invalidServerURL
     }
 
@@ -2493,7 +2834,8 @@ final class NativeBackupEngine: NSObject {
       staged_original_size INTEGER DEFAULT 0,
       staged_chunk_count INTEGER DEFAULT 0,
       staged_dir TEXT,
-      staged_at INTEGER
+      staged_at INTEGER,
+      upload_session_id TEXT
     );
     CREATE TABLE IF NOT EXISTS backup_upload_chunks (
       local_asset_id TEXT NOT NULL,
@@ -2524,6 +2866,7 @@ final class NativeBackupEngine: NSObject {
       "ALTER TABLE backup_assets ADD COLUMN staged_chunk_count INTEGER DEFAULT 0",
       "ALTER TABLE backup_assets ADD COLUMN staged_dir TEXT",
       "ALTER TABLE backup_assets ADD COLUMN staged_at INTEGER",
+      "ALTER TABLE backup_assets ADD COLUMN upload_session_id TEXT",
     ]
     for migration in migrations {
       sqlite3_exec(db, migration, nil, nil, nil)
@@ -2612,7 +2955,7 @@ final class NativeBackupEngine: NSObject {
            COALESCE(retry_count, 0), error_message,
            staged_file_id, staged_name_encrypted, staged_mime_type,
            COALESCE(staged_is_media, 0), COALESCE(staged_original_size, 0),
-           COALESCE(staged_chunk_count, 0), staged_dir
+           COALESCE(staged_chunk_count, 0), staged_dir, upload_session_id
     FROM backup_assets
     WHERE status IN ('pending_upload', 'pending_reupload', 'staged_upload', 'uploading')
       AND COALESCE(retry_count, 0) < 10
@@ -2672,6 +3015,9 @@ final class NativeBackupEngine: NSObject {
       stagedChunkCount: Int(sqlite3_column_int(stmt, 13)),
       stagedDir: sqlite3_column_type(stmt, 14) != SQLITE_NULL
         ? String(cString: sqlite3_column_text(stmt, 14))
+        : nil,
+      stagedUploadSessionId: sqlite3_column_type(stmt, 15) != SQLITE_NULL
+        ? String(cString: sqlite3_column_text(stmt, 15))
         : nil
     )
   }
@@ -2683,7 +3029,7 @@ final class NativeBackupEngine: NSObject {
            COALESCE(retry_count, 0), error_message,
            staged_file_id, staged_name_encrypted, staged_mime_type,
            COALESCE(staged_is_media, 0), COALESCE(staged_original_size, 0),
-           COALESCE(staged_chunk_count, 0), staged_dir
+           COALESCE(staged_chunk_count, 0), staged_dir, upload_session_id
     FROM backup_assets
     WHERE local_asset_id = ?
       AND staged_file_id IS NOT NULL
@@ -2726,12 +3072,15 @@ final class NativeBackupEngine: NSObject {
     sqlite3_step(stmt)
   }
 
-  private func markUploading(assetId: String, remoteFileId: String) {
+  private func markUploading(assetId: String, remoteFileId: String, uploadSessionId: String?) {
     guard let db = db else { return }
+    // COALESCE keeps an existing session id on a resume re-`markUploading` where
+    // the caller passes nil (recovered from the row, not freshly re-inited).
     let sql = """
     UPDATE backup_assets
     SET status = 'uploading',
         remote_file_id = ?,
+        upload_session_id = COALESCE(?, upload_session_id),
         last_attempt_at = ?
     WHERE local_asset_id = ?
     """
@@ -2739,8 +3088,13 @@ final class NativeBackupEngine: NSObject {
     guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
     defer { sqlite3_finalize(stmt) }
     sqlite3_bind_text(stmt, 1, (remoteFileId as NSString).utf8String, -1, nil)
-    sqlite3_bind_int64(stmt, 2, nowMs())
-    sqlite3_bind_text(stmt, 3, (assetId as NSString).utf8String, -1, nil)
+    if let uploadSessionId {
+      sqlite3_bind_text(stmt, 2, (uploadSessionId as NSString).utf8String, -1, nil)
+    } else {
+      sqlite3_bind_null(stmt, 2)
+    }
+    sqlite3_bind_int64(stmt, 3, nowMs())
+    sqlite3_bind_text(stmt, 4, (assetId as NSString).utf8String, -1, nil)
     sqlite3_step(stmt)
   }
 
@@ -2840,6 +3194,7 @@ final class NativeBackupEngine: NSObject {
     UPDATE backup_assets
     SET status = 'pending_reupload',
         remote_file_id = NULL,
+        upload_session_id = NULL,
         staged_file_id = NULL,
         staged_name_encrypted = NULL,
         staged_mime_type = NULL,
@@ -2873,6 +3228,7 @@ final class NativeBackupEngine: NSObject {
         uploaded_at = ?,
         error_message = NULL,
         retry_count = 0,
+        upload_session_id = NULL,
         staged_file_id = NULL,
         staged_name_encrypted = NULL,
         staged_mime_type = NULL,
@@ -3096,7 +3452,20 @@ final class NativeBackupEngine: NSObject {
       NSLog("[NativeBackupEngine] Recovered \(changes) stuck uploads")
     }
 
-    sqlite3_exec(db, "UPDATE backup_upload_chunks SET status = 'pending', task_id = NULL WHERE status = 'uploading'", nil, nil, nil)
+    // Only reset chunks whose owning URLSession task is NOT currently awaited in
+    // this process. A chunk we hold a live continuation for is mid-flight on the
+    // background session — resetting it here would orphan that task (it keeps
+    // running, and its staged source file may later be re-staged/deleted →
+    // 0-byte PUT). Orphans from a prior launch were already cancelled by
+    // `reconcileOrphanedBackgroundTasks()`, so their task_id is safe to clear.
+    let liveTaskIds = chunkUploadContinuations.keys
+    if liveTaskIds.isEmpty {
+      sqlite3_exec(db, "UPDATE backup_upload_chunks SET status = 'pending', task_id = NULL WHERE status = 'uploading'", nil, nil, nil)
+    } else {
+      let keep = liveTaskIds.map(String.init).joined(separator: ",")
+      let sql = "UPDATE backup_upload_chunks SET status = 'pending', task_id = NULL WHERE status = 'uploading' AND (task_id IS NULL OR task_id NOT IN (\(keep)))"
+      sqlite3_exec(db, sql, nil, nil, nil)
+    }
   }
 
   /// Refresh progress counters from the database.
@@ -3412,12 +3781,17 @@ extension NativeBackupEngine: URLSessionDelegate, URLSessionTaskDelegate, URLSes
         }
         continuation?.resume()
       } else {
-        let uploadError = BackupError.httpStatus(statusCode, "Chunk upload failed")
+        // 408 = server fail-fast `storage.upload_stalled` (idle body — the
+        // 0-byte-stall symptom). Surface it as a distinct error so the asset
+        // path re-stages + requeues fast instead of climbing toward retry-10.
+        let uploadError: Error = statusCode == 408
+          ? BackupError.uploadStalled(chunk.chunkIndex)
+          : BackupError.httpStatus(statusCode, "Chunk upload failed")
         dbQueue.async { [weak self] in
           self?.markChunkFailed(
             assetId: chunk.localAssetId,
             chunkIndex: chunk.chunkIndex,
-            error: "HTTP \(statusCode)"
+            error: statusCode == 408 ? "storage.upload_stalled (408)" : "HTTP \(statusCode)"
           )
         }
         continuation?.resume(throwing: uploadError)

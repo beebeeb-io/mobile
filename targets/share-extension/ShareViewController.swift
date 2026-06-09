@@ -32,7 +32,7 @@ final class ShareViewController: UIViewController {
 
     // MARK: - State
 
-    private var masterKey: Data?
+    private var masterKeyHandle: MasterKeyHandle?
     private var sessionToken: String?
     private var apiUrl: String = defaultApiUrl
     private var folders: [FolderFetcher.Folder] = []
@@ -40,7 +40,13 @@ final class ShareViewController: UIViewController {
     private var selectedFolderId: String? = nil
     private var fileName: String = "File"
     private var fileSize: Int64 = 0
+    /// Small in-memory shares (text / URL items). nil for file shares, which use
+    /// `fileURL` and stream-encrypt from disk (task 0673).
     private var fileData: Data?
+    /// Stable on-disk copy of a shared file, staged in the extension container so
+    /// it can be stream-encrypted later without reading the whole file into RAM.
+    /// Cleaned up after the upload completes.
+    private var fileURL: URL?
 
     // MARK: - UI Elements
 
@@ -90,12 +96,19 @@ final class ShareViewController: UIViewController {
         // SE key if the extension SE key is unavailable).
         // `.extensionThenPrimary` preserves the SharedKeychain.loadMasterKey()
         // contract (task 0436).
-        masterKey = BeebeebKeychainCore.loadMasterKey(
+        // Load the raw master-key bytes, immediately wrap them in an opaque
+        // MasterKeyHandle, and zero the bytes — raw key material never lives in
+        // this controller beyond this scope, and never crosses into
+        // ShareUploader (task 0673 key hygiene).
+        if var keyBytes = BeebeebKeychainCore.loadMasterKey(
             label: "io.beebeeb.master-key",
             mode: .extensionThenPrimary
-        )
+        ) {
+            defer { keyBytes.resetBytes(in: 0..<keyBytes.count) }
+            masterKeyHandle = try? MasterKeyHandle.fromKeychainBytes(bytes: keyBytes)
+        }
 
-        guard masterKey != nil else {
+        guard masterKeyHandle != nil else {
             showError("Unlock Beebeeb to save files")
             return
         }
@@ -183,12 +196,21 @@ final class ShareViewController: UIViewController {
                     DispatchQueue.main.async { completion(false) }
                     return
                 }
-                // File URL is only valid in this callback — read immediately
+                // The provided URL is valid only inside this callback. Copy it to
+                // a stable temp file in the extension container (disk-to-disk,
+                // bounded memory) so the upload can stream-encrypt it later
+                // without reading the whole file into RAM (task 0673).
                 do {
-                    let data = try Data(contentsOf: url)
+                    let stableURL = FileManager.default.temporaryDirectory
+                        .appendingPathComponent("share-\(UUID().uuidString)")
+                        .appendingPathExtension(url.pathExtension)
+                    try? FileManager.default.removeItem(at: stableURL)
+                    try FileManager.default.copyItem(at: url, to: stableURL)
+                    let size = (try? stableURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
                     self.fileName = url.lastPathComponent
-                    self.fileSize = Int64(data.count)
-                    self.fileData = data
+                    self.fileSize = Int64(size)
+                    self.fileURL = stableURL
+                    self.fileData = nil
                     DispatchQueue.main.async {
                         self.updateFilePreview()
                         completion(true)
@@ -488,7 +510,11 @@ final class ShareViewController: UIViewController {
     }
 
     @objc private func saveTapped() {
-        guard let data = fileData, let key = masterKey else {
+        guard let handle = masterKeyHandle else {
+            showError("Unlock Beebeeb to save files")
+            return
+        }
+        guard fileURL != nil || fileData != nil else {
             showError("Could not read file")
             return
         }
@@ -500,18 +526,43 @@ final class ShareViewController: UIViewController {
 
         showProgress()
 
+        let stagedURL = fileURL
+        let inMemoryData = fileData
+        let name = fileName
+        let parent = selectedFolderId
+
         Task {
-            let uploader = ShareUploader(apiUrl: apiUrl, sessionToken: token, masterKey: key)
+            let uploader = ShareUploader(apiUrl: apiUrl, sessionToken: token, masterKey: handle)
+            // Clean up the staged temp file in all paths (success / failure / cancel).
+            defer {
+                if let stagedURL {
+                    try? FileManager.default.removeItem(at: stagedURL)
+                }
+            }
 
             do {
-                let result = try await uploader.upload(
-                    fileData: data,
-                    fileName: fileName,
-                    parentId: selectedFolderId,
-                    onProgress: { [weak self] fraction, message in
-                        self?.updateProgress(fraction: fraction, message: message)
-                    }
-                )
+                let result: ShareUploader.UploadResult
+                if let stagedURL {
+                    result = try await uploader.uploadFile(
+                        at: stagedURL,
+                        fileName: name,
+                        parentId: parent,
+                        onProgress: { [weak self] fraction, message in
+                            self?.updateProgress(fraction: fraction, message: message)
+                        }
+                    )
+                } else if let inMemoryData {
+                    result = try await uploader.uploadData(
+                        inMemoryData,
+                        fileName: name,
+                        parentId: parent,
+                        onProgress: { [weak self] fraction, message in
+                            self?.updateProgress(fraction: fraction, message: message)
+                        }
+                    )
+                } else {
+                    throw ShareUploader.UploadError.fileReadFailed
+                }
 
                 await MainActor.run {
                     // Update recents

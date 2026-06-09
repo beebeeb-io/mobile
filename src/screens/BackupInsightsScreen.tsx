@@ -10,7 +10,7 @@
  *   5. ACTIONS — full resync, clear failed, export log
  */
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Platform,
@@ -39,8 +39,14 @@ import {
   type BackupAssetStatus,
   type VerificationRecord,
 } from '../services/BackupDatabase';
+import {
+  getDeviceManifest,
+  type BackupCategoryState,
+  type DeviceManifest,
+} from '../services/BackupService';
 import { useBackup } from '../lib/backup-context';
 import NetInfo from '@react-native-community/netinfo';
+import { recordRuntimeTrace } from '../lib/runtime-trace';
 
 let MediaLibrary: { getAssetsAsync: (opts: { first: number; mediaType?: string[] }) => Promise<{ totalCount: number }>; MediaType?: { photo: string; video: string } } = {
   getAssetsAsync: async () => ({ totalCount: 0 }),
@@ -98,6 +104,44 @@ function formatDateLabel(dateStr: string): string {
   }
 
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
+function formatCategoryBackupState(state: BackupCategoryState | undefined, itemLabel: string): string {
+  if (!state?.enabled) return 'Off';
+  if (state.last_sync) {
+    const synced = state.items_synced ?? 0;
+    const countLabel = synced > 0
+      ? ` · ${synced.toLocaleString()} ${itemLabel}${synced === 1 ? '' : 's'}`
+      : '';
+    return `${timeAgo(new Date(state.last_sync).getTime())}${countLabel}`;
+  }
+  return 'On · waiting for first run';
+}
+
+function withTimeout<T>(promise: Promise<T>, fallback: T, timeoutMs: number): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const timer = new Promise<T>((resolve) => {
+    timeout = setTimeout(() => resolve(fallback), timeoutMs);
+  });
+  return Promise.race([promise, timer]).finally(() => {
+    if (timeout) clearTimeout(timeout);
+  });
+}
+
+function emptyStatusCounts(): Record<BackupAssetStatus, number> {
+  return {
+    pending_upload: 0,
+    staging: 0,
+    staged_upload: 0,
+    uploading: 0,
+    uploaded: 0,
+    pending_delete: 0,
+    pending_reupload: 0,
+    orphaned: 0,
+    remote_deleted: 0,
+    local_missing: 0,
+    failed: 0,
+  };
 }
 
 // ── Layout ───────────────────────────────────────────────────────────────────
@@ -268,6 +312,7 @@ interface InsightsData {
   recentActivity: { date: string; count: number; bytes: number }[];
   totalCameraRoll: number;
   lastVerification: VerificationRecord | null;
+  manifest: DeviceManifest | null;
 }
 
 export default function BackupInsightsScreen() {
@@ -279,54 +324,101 @@ export default function BackupInsightsScreen() {
   const [loading, setLoading] = useState(true);
   const [exporting, setExporting] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [retrying, setRetrying] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const dataRef = useRef<InsightsData | null>(null);
+  const loadInFlightRef = useRef<Promise<void> | null>(null);
+  const lastSlowLoadAtRef = useRef(0);
+  const lastProgressRefreshAtRef = useRef(0);
+
+  useEffect(() => {
+    dataRef.current = data;
+  }, [data]);
 
   const loadData = useCallback(async (showSpinner = false) => {
-    if (showSpinner) setRefreshing(true);
-    try {
-      const [counts, totalBytes, failedAssets, localMissingAssets, recentActivity, lastVerification] =
-        await Promise.all([
-          getStatusCounts(),
-          getTotalUploadedBytes(),
-          getFailedAssets(),
-          getLocalMissingAssets(10),
-          getRecentActivity(7),
-          getLastVerification(),
-        ]);
+    if (loadInFlightRef.current) {
+      await loadInFlightRef.current;
+      return;
+    }
 
-      // Get total camera roll count
-      let totalCameraRoll = 0;
+    const task = (async () => {
+      const started = Date.now();
+      const previousData = dataRef.current;
+      const includeSlow =
+        showSpinner ||
+        previousData === null ||
+        Date.now() - lastSlowLoadAtRef.current > 30_000;
+
+      if (showSpinner) setRefreshing(true);
       try {
-        const mediaTypes: string[] = [];
-        if (MediaLibrary.MediaType) {
-          mediaTypes.push(
-            MediaLibrary.MediaType.photo,
-            MediaLibrary.MediaType.video,
-          );
-        }
-        const result = await MediaLibrary.getAssetsAsync({
-          first: 1,
-          ...(mediaTypes.length > 0 ? { mediaType: mediaTypes } : {}),
-        });
-        totalCameraRoll = result.totalCount;
-      } catch {
-        // MediaLibrary may not be available
-      }
+        const [counts, totalBytes, failedAssets, localMissingAssets, recentActivity, lastVerification] =
+          await Promise.all([
+            withTimeout(getStatusCounts(), previousData?.counts ?? emptyStatusCounts(), 1_000),
+            withTimeout(getTotalUploadedBytes(), previousData?.totalBytes ?? 0, 1_000),
+            withTimeout(getFailedAssets(10), previousData?.failedAssets ?? [], 1_000),
+            withTimeout(getLocalMissingAssets(10), previousData?.localMissingAssets ?? [], 1_000),
+            withTimeout(getRecentActivity(7), previousData?.recentActivity ?? [], 1_000),
+            withTimeout(getLastVerification(), previousData?.lastVerification ?? null, 1_000),
+          ]);
 
-      setData({
-        counts,
-        totalBytes,
-        lastScanAt: null,
-        failedAssets,
-        localMissingAssets,
-        recentActivity,
-        totalCameraRoll,
-        lastVerification,
-      });
-    } catch (err) {
-      console.warn('BackupInsights: failed to load data', err);
+        let manifest = previousData?.manifest ?? null;
+        let totalCameraRoll = previousData?.totalCameraRoll ?? 0;
+        if (includeSlow) {
+          [manifest, totalCameraRoll] = await Promise.all([
+            withTimeout(getDeviceManifest().catch(() => null), manifest, 1_000),
+            withTimeout((async () => {
+              const mediaTypes: string[] = [];
+              if (MediaLibrary.MediaType) {
+                mediaTypes.push(
+                  MediaLibrary.MediaType.photo,
+                  MediaLibrary.MediaType.video,
+                );
+              }
+              const result = await MediaLibrary.getAssetsAsync({
+                first: 1,
+                ...(mediaTypes.length > 0 ? { mediaType: mediaTypes } : {}),
+              });
+              return result.totalCount;
+            })().catch(() => totalCameraRoll), totalCameraRoll, 1_000),
+          ]);
+          lastSlowLoadAtRef.current = Date.now();
+        }
+
+        const nextData = {
+          counts,
+          totalBytes,
+          lastScanAt: null,
+          failedAssets,
+          localMissingAssets,
+          recentActivity,
+          totalCameraRoll,
+          lastVerification,
+          manifest,
+        };
+        dataRef.current = nextData;
+        setData(nextData);
+        recordRuntimeTrace('backup_insights.load.complete', {
+          durationMs: Date.now() - started,
+          includeSlow,
+          failedPreviewCount: failedAssets.length,
+        });
+      } catch (err) {
+        console.warn('BackupInsights: failed to load data', err);
+        recordRuntimeTrace('backup_insights.load.failed', {
+          durationMs: Date.now() - started,
+          error: err instanceof Error ? err.message : 'Unknown error',
+        });
+      } finally {
+        setLoading(false);
+        if (showSpinner) setRefreshing(false);
+      }
+    })();
+
+    loadInFlightRef.current = task;
+    try {
+      await task;
     } finally {
-      setLoading(false);
-      if (showSpinner) setRefreshing(false);
+      loadInFlightRef.current = null;
     }
   }, []);
 
@@ -349,7 +441,7 @@ export default function BackupInsightsScreen() {
       backup.backupProgress.inProgress > 0 ||
       (backup.backupProgress.pending ?? 0) > 0;
     if (!isActive) return;
-    const interval = setInterval(() => void loadData(), 2_000);
+    const interval = setInterval(() => void loadData(), 5_000);
     return () => clearInterval(interval);
   }, [
     backup.backupProgress.inProgress,
@@ -360,6 +452,8 @@ export default function BackupInsightsScreen() {
 
   useEffect(() => {
     if (!backup.isPhotoBackupEnabled) return;
+    if (Date.now() - lastProgressRefreshAtRef.current < 5_000) return;
+    lastProgressRefreshAtRef.current = Date.now();
     void loadData();
   }, [
     backup.backupProgress.completed,
@@ -384,6 +478,17 @@ export default function BackupInsightsScreen() {
   const localMissingCount = data?.counts.local_missing ?? 0;
   const displayUploadedCount = Math.max(uploadedCount, backup.backupProgress.completed);
   const displayTotalCameraRoll = Math.max(data?.totalCameraRoll ?? 0, backup.backupProgress.total);
+  const activeWaitingToEncrypt = backup.backupProgress.waitingToEncrypt ?? 0;
+  const activeReadyToUpload = backup.backupProgress.encryptedPendingUpload ?? 0;
+  const activeUploading = backup.backupProgress.uploading ?? backup.backupProgress.inProgress;
+  const activeProgressLine = displayTotalCameraRoll > 0
+    ? `${displayUploadedCount.toLocaleString()} of ${displayTotalCameraRoll.toLocaleString()} backed up`
+    : `${displayUploadedCount.toLocaleString()} backed up`;
+  const activeQueueLine = [
+    `${activeWaitingToEncrypt.toLocaleString()} waiting to encrypt`,
+    `${activeReadyToUpload.toLocaleString()} ready to upload`,
+    `${activeUploading.toLocaleString()} uploading`,
+  ].join(' · ');
 
   const [networkType, setNetworkType] = useState<string | null>(null);
   useEffect(() => {
@@ -469,6 +574,24 @@ export default function BackupInsightsScreen() {
       setExporting(false);
     }
   }, []);
+
+  // Manually revive the backup queue: triggerBackupNow resets retry-exhausted
+  // assets (retry_count>=10), rescans, and wakes the native drain. This is the
+  // only path that un-sticks a backup stalled on retry-exhausted items.
+  const handleBackupNow = useCallback(async () => {
+    setActionError(null);
+    setRetrying(true);
+    try {
+      await backup.triggerBackupNow();
+      await loadData(true);
+    } catch (err) {
+      setActionError(
+        err instanceof Error ? err.message : 'Could not start backup. Try again.',
+      );
+    } finally {
+      setRetrying(false);
+    }
+  }, [backup, loadData]);
 
   const handleBack = useCallback(() => {
     if (navigation.canGoBack()) {
@@ -561,7 +684,11 @@ export default function BackupInsightsScreen() {
                     </Text>
                   </View>
                   <Text style={{ color: c.ink3, fontSize: 12, lineHeight: 17 }}>
-                    {backup.backupProgress.waitingToEncrypt ?? 0} waiting to encrypt · {backup.backupProgress.encryptedPendingUpload ?? 0} ready to upload · {backup.backupProgress.uploading ?? backup.backupProgress.inProgress} uploading
+                    {activeProgressLine}
+                    {failedCount > 0 ? ` · ${failedCount.toLocaleString()} need attention` : ''}
+                  </Text>
+                  <Text style={{ color: c.ink3, fontSize: 12, lineHeight: 17 }}>
+                    {activeQueueLine}
                   </Text>
                 </View>
               </View>
@@ -783,6 +910,29 @@ export default function BackupInsightsScreen() {
             </View>
           </View>
 
+          {/* ── OTHER BACKUPS card ─────────────────────────────────────── */}
+          <View style={layout.section}>
+            <SectionHeader title="Contacts & Calendar" c={c} />
+            <View
+              style={[
+                layout.card,
+                { backgroundColor: c.paper2, borderColor: c.line },
+              ]}
+            >
+              <StatRow
+                label="Contacts"
+                value={formatCategoryBackupState(data?.manifest?.backups.contacts, 'contact')}
+                c={c}
+              />
+              <Divider c={c} />
+              <StatRow
+                label="Calendar"
+                value={formatCategoryBackupState(data?.manifest?.backups.calendar, 'event')}
+                c={c}
+              />
+            </View>
+          </View>
+
           {/* ── ACTIVITY card ──────────────────────────────────────────── */}
           <View style={layout.section}>
             <SectionHeader title="Recent Activity" c={c} />
@@ -896,6 +1046,14 @@ export default function BackupInsightsScreen() {
                   </>
                 )}
 
+                <Divider c={c} />
+                <ActionButton
+                  label={retrying ? 'Starting…' : 'Retry failed uploads'}
+                  icon="refresh"
+                  onPress={handleBackupNow}
+                  loading={retrying}
+                  c={c}
+                />
               </View>
             </View>
           )}
@@ -963,6 +1121,14 @@ export default function BackupInsightsScreen() {
               ]}
             >
               <ActionButton
+                label={retrying ? 'Starting…' : 'Back up now'}
+                icon="cloud-upload-outline"
+                onPress={handleBackupNow}
+                loading={retrying}
+                c={c}
+              />
+              <Divider c={c} />
+              <ActionButton
                 label="Export backup log"
                 icon="document-text-outline"
                 onPress={handleExportLog}
@@ -970,6 +1136,18 @@ export default function BackupInsightsScreen() {
                 c={c}
               />
             </View>
+            {actionError && (
+              <Text
+                style={{
+                  fontSize: 12,
+                  color: c.red,
+                  marginTop: 8,
+                  paddingHorizontal: 4,
+                }}
+              >
+                {actionError}
+              </Text>
+            )}
           </View>
 
           <View style={{ height: 20 }} />

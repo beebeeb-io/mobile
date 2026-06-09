@@ -4,6 +4,10 @@ import CryptoKit
 
 final class CalendarBackupManager {
   static let shared = CalendarBackupManager()
+  private static let lastHashPrefix = "io.beebeeb.calendarBackupLastHash."
+  private static let lastScanAtKey = "io.beebeeb.calendarBackupLastScanAt"
+  private static let lastScanCountKey = "io.beebeeb.calendarBackupLastScanCount"
+  private static let lastUploadAtKey = "io.beebeeb.calendarBackupLastUploadAt"
 
   private let store = EKEventStore()
   private var authToken: String?
@@ -30,6 +34,7 @@ final class CalendarBackupManager {
 
   func enable(authToken: String, runNow: Bool = true) {
     self.authToken = authToken
+    RuntimeTrace.event("backup.calendar.enable", ["runNow": runNow])
     requestAccessAndBackup(runNow: runNow)
   }
 
@@ -39,32 +44,62 @@ final class CalendarBackupManager {
 
   func configure(parentFolderId: String?) {
     self.parentFolderId = parentFolderId
+    RuntimeTrace.event("backup.calendar.configure", [
+      "hasParentFolder": !(parentFolderId?.isEmpty ?? true),
+    ])
   }
 
   func backup() {
     guard let token = authToken else { return }
+    RuntimeTrace.event("backup.calendar.start")
     DispatchQueue.global(qos: .background).async { [weak self] in
       guard let self else { return }
       let calendars = self.store.calendars(for: .event)
+      RuntimeTrace.event("backup.calendar.enumerated", ["calendarCount": calendars.count])
       let start = Calendar.current.date(byAdding: .year, value: -5, to: Date())!
       let end = Calendar.current.date(byAdding: .year, value: 2, to: Date())!
+      var scannedEventCount = 0
       for cal in calendars {
         let predicate = self.store.predicateForEvents(withStart: start, end: end, calendars: [cal])
         let events = self.store.events(matching: predicate)
+        scannedEventCount += events.count
         if events.isEmpty { continue }
         let ical = self.exportICal(calendar: cal, events: events)
         guard let data = ical.data(using: .utf8) else { continue }
-        let stateKey = "io.beebeeb.calendarBackupLastHash." + self.stateKeyComponent(for: cal.title)
-        guard self.shouldUpload(data: data, stateKey: stateKey) else { continue }
+        let stateKey = Self.lastHashPrefix + self.stateKeyComponent(for: cal.title)
+        guard self.shouldUpload(data: data, stateKey: stateKey) else {
+          RuntimeTrace.event("backup.calendar.skipped_unchanged", ["eventCount": events.count])
+          continue
+        }
         let fileName = self.safeFileName(cal.title) + ".ics"
         self.upload(data: data, fileName: fileName, token: token)
       }
+      self.recordScan(count: scannedEventCount)
     }
+  }
+
+  func status() -> [String: Any] {
+    let defaults = UserDefaults.standard
+    let hasCalendarHash = defaults.dictionaryRepresentation().keys.contains { key in
+      key.hasPrefix(Self.lastHashPrefix)
+    }
+    let hasKnownBackupState =
+      hasCalendarHash ||
+      defaults.string(forKey: Self.lastScanAtKey) != nil ||
+      defaults.string(forKey: Self.lastUploadAtKey) != nil
+    return [
+      "lastScanAt": defaults.string(forKey: Self.lastScanAtKey) as Any? ?? NSNull(),
+      "lastScanCount": defaults.integer(forKey: Self.lastScanCountKey),
+      "lastUploadAt": defaults.string(forKey: Self.lastUploadAtKey) as Any? ?? NSNull(),
+      "hasParentFolder": !(parentFolderId?.isEmpty ?? true),
+      "hasKnownBackupState": hasKnownBackupState
+    ]
   }
 
   private func requestAccessAndBackup(runNow: Bool) {
     if #available(iOS 17.0, *) {
       store.requestFullAccessToEvents { [weak self] granted, _ in
+        RuntimeTrace.event("backup.calendar.permission", ["granted": granted])
         guard granted else { return }
         if runNow {
           self?.backup()
@@ -72,6 +107,7 @@ final class CalendarBackupManager {
       }
     } else {
       store.requestAccess(to: .event) { [weak self] granted, _ in
+        RuntimeTrace.event("backup.calendar.permission", ["granted": granted])
         guard granted else { return }
         if runNow {
           self?.backup()
@@ -198,6 +234,22 @@ final class CalendarBackupManager {
     return true
   }
 
+  private func recordScan(count: Int) {
+    let now = ISO8601DateFormatter().string(from: Date())
+    let defaults = UserDefaults.standard
+    defaults.set(now, forKey: Self.lastScanAtKey)
+    defaults.set(count, forKey: Self.lastScanCountKey)
+    RuntimeTrace.event("backup.calendar.scan_recorded", [
+      "eventCount": count,
+      "lastScanAt": now
+    ])
+  }
+
+  private func recordUploadSuccess() {
+    let now = ISO8601DateFormatter().string(from: Date())
+    UserDefaults.standard.set(now, forKey: Self.lastUploadAtKey)
+  }
+
   private func icalEscape(_ s: String) -> String {
     s.replacingOccurrences(of: "\\", with: "\\\\")
      .replacingOccurrences(of: "\n", with: "\\n")
@@ -211,7 +263,13 @@ final class CalendarBackupManager {
   // continues using the legacy Swift uploader which still works correctly.
   private func upload(data: Data, fileName: String, token: String) {
     guard let serverBaseURL else {
+      RuntimeTrace.event("backup.calendar.upload_aborted", ["reason": "missing_server_url"])
       NSLog("[BeebeebBackup] calendar upload aborted: serverURL not configured in keychain (sign in again to set)")
+      return
+    }
+    guard let parentFolderId, !parentFolderId.isEmpty else {
+      RuntimeTrace.event("backup.calendar.upload_aborted", ["reason": "missing_parent_folder"])
+      NSLog("[BeebeebBackup] calendar upload of \(fileName) aborted: backup destination folder not configured")
       return
     }
     let mimeType = "text/calendar"
@@ -223,7 +281,13 @@ final class CalendarBackupManager {
       authToken: token,
       serverBaseURL: serverBaseURL
     ) { result in
-      if case .failure(let error) = result {
+      switch result {
+      case .success:
+        self.recordUploadSuccess()
+        RuntimeTrace.event("backup.calendar.upload_success")
+        NSLog("[BeebeebBackup] calendar upload succeeded")
+      case .failure(let error):
+        RuntimeTrace.event("backup.calendar.upload_failed", ["error": error.localizedDescription])
         NSLog("[BeebeebBackup] calendar upload of \(fileName) failed: \(error.localizedDescription)")
       }
     }

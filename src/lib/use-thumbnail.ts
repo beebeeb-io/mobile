@@ -6,6 +6,7 @@ import { onThumbnailReady } from './thumbnail-events';
 import { getCachedThumbnail, enqueueThumbnailLoad } from './thumbnail-cache';
 import { cacheLocalThumbnail, fetchDecryptedThumbnailUri } from './thumbnail';
 import { getLocalIdentifier } from './local-identifier-map';
+import { recordRuntimeTrace } from './runtime-trace';
 
 interface UseThumbnailOptions {
   width?: number;
@@ -45,12 +46,23 @@ export function useThumbnail(
     setState({ uri: null, source: null, failed: false });
 
     if (!enabled || !isUnlocked) return () => { cancelledRef.current = true; };
+    recordRuntimeTrace('thumbnail.hook.request', {
+      fileId,
+      platform: Platform.OS,
+      width,
+      height,
+      hasThumbnail,
+    });
 
     if (Platform.OS === 'ios' && ThumbnailServiceNative?.getThumbnail) {
       ThumbnailServiceNative
         .getThumbnail(fileId, width, height)
         .then((result) => {
           if (cancelledRef.current) return;
+          recordRuntimeTrace('thumbnail.hook.native_success', {
+            fileId,
+            source: result.source,
+          });
           setState({
             uri: result.uri,
             source: result.source as ThumbnailHookState['source'],
@@ -59,6 +71,10 @@ export function useThumbnail(
         })
         .catch((err) => {
           if (cancelledRef.current) return;
+          recordRuntimeTrace('thumbnail.hook.native_failed', {
+            fileId,
+            error: err instanceof Error ? err.message : String(err),
+          });
           console.warn('[useThumbnail] native getThumbnail failed', fileId, err);
           setState({ uri: null, source: null, failed: true });
         });
@@ -77,6 +93,7 @@ export function useThumbnail(
       .then((cachedUri) => {
         if (cancelledRef.current) return;
         if (cachedUri) {
+          recordRuntimeTrace('thumbnail.hook.android_cache_hit', { fileId });
           setState({ uri: cachedUri, source: 'cache', failed: false });
           return;
         }
@@ -84,6 +101,7 @@ export function useThumbnail(
           return cacheLocalThumbnail(fileId, cameraRollUri, mimeType).then((localUri) => {
             if (cancelledRef.current) return;
             if (localUri) {
+              recordRuntimeTrace('thumbnail.hook.android_photokit_success', { fileId });
               setState({ uri: localUri, source: 'photoKit', failed: false });
               return;
             }
@@ -96,8 +114,13 @@ export function useThumbnail(
               return fetchDecryptedThumbnailUri(fId, fileKey);
             }).then((serverUri) => {
               if (cancelledRef.current) return;
-              if (serverUri) setState({ uri: serverUri, source: 'remote', failed: false });
-              else setState({ uri: null, source: null, failed: true });
+              if (serverUri) {
+                recordRuntimeTrace('thumbnail.hook.android_remote_success', { fileId });
+                setState({ uri: serverUri, source: 'remote', failed: false });
+              } else {
+                recordRuntimeTrace('thumbnail.hook.android_remote_empty', { fileId });
+                setState({ uri: null, source: null, failed: true });
+              }
             });
           });
         }
@@ -110,12 +133,18 @@ export function useThumbnail(
           return fetchDecryptedThumbnailUri(fId, fileKey);
         }).then((serverUri) => {
           if (cancelledRef.current) return;
-          if (serverUri) setState({ uri: serverUri, source: 'remote', failed: false });
-          else setState({ uri: null, source: null, failed: true });
+          if (serverUri) {
+            recordRuntimeTrace('thumbnail.hook.remote_success', { fileId });
+            setState({ uri: serverUri, source: 'remote', failed: false });
+          } else {
+            recordRuntimeTrace('thumbnail.hook.remote_empty', { fileId });
+            setState({ uri: null, source: null, failed: true });
+          }
         });
       })
       .catch(() => {
         if (cancelledRef.current) return;
+        recordRuntimeTrace('thumbnail.hook.failed', { fileId });
         setState({ uri: null, source: null, failed: true });
       });
 
@@ -130,6 +159,10 @@ export function useThumbnail(
     const sub = onThumbnailReady(({ fileId: changedId, uri, source }) => {
       if (changedId !== fileId) return;
       if (cancelledRef.current) return;
+      recordRuntimeTrace('thumbnail.hook.native_event_ready', {
+        fileId,
+        source,
+      });
       setState({ uri, source: source as ThumbnailHookState['source'], failed: false });
     });
     return () => sub.remove();

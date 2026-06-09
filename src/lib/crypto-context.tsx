@@ -6,6 +6,8 @@ import { Platform } from 'react-native'
 import {
   computeRecoveryCheck,
   createMasterKeyHandle,
+  createRequestKeypairWithHandle,
+  deriveX25519PublicFromPrivate,
   handleComputeRecoveryCheck,
   handleDecryptChunk,
   handleDecryptMetadata,
@@ -20,9 +22,16 @@ import {
   replaceKeychainAccessControl,
   replaceKeychainAccessControlFromHandle,
   storeKeyInKeychain,
+  unwrapRequestPrivateWithHandle,
 } from '../../modules/beebeeb-crypto'
-import type { EncryptedData } from '../../modules/beebeeb-crypto'
+import type { EncryptedData, RequestKeypairResult } from '../../modules/beebeeb-crypto'
 import { setBackupEncryption, getKeepVaultUnlocked } from '../services/BackupService'
+import { recordRuntimeTrace } from './runtime-trace'
+import {
+  createRequestKeyResolver,
+  type RequestFileFields,
+  type RequestKeyResolver,
+} from './file-request-crypto'
 
 // ─── Master key cache lifecycle (task 0556) ────────────────────────────────
 //
@@ -91,15 +100,24 @@ async function storeMasterKey(masterKey: Uint8Array): Promise<void> {
   const encoded = uint8ToBase64(masterKey)
   const softwareFallbackRuntime = usesSoftwareVaultFallback()
   let nativeKeychainStored = false
+  recordRuntimeTrace('keychain.store.request', {
+    label: MASTER_KEY_LABEL,
+    softwareFallbackRuntime,
+  })
   try {
     await storeKeyInKeychain(masterKey, MASTER_KEY_LABEL)
     nativeKeychainStored = true
+    recordRuntimeTrace('keychain.store.native_success', { label: MASTER_KEY_LABEL })
   } catch {
     // Secure Enclave unavailable — fall through to software fallback.
+    recordRuntimeTrace('keychain.store.native_failed', { label: MASTER_KEY_LABEL })
   }
   const useSoftwareFallback = !nativeKeychainStored || softwareFallbackRuntime
   if (useSoftwareFallback) {
     await SecureStore.setItemAsync(MASTER_KEY_FALLBACK_LABEL, encoded)
+    recordRuntimeTrace('keychain.store.software_fallback_written', {
+      label: MASTER_KEY_FALLBACK_LABEL,
+    })
   }
   if (useSoftwareFallback && FileSystem.documentDirectory) {
     await FileSystem.writeAsStringAsync(SIMULATOR_MASTER_KEY_FILE, encoded)
@@ -109,16 +127,43 @@ async function storeMasterKey(masterKey: Uint8Array): Promise<void> {
 }
 
 /**
+ * Discriminated outcome of a keychain auto-unlock attempt.
+ *
+ * The two failure shapes are NOT interchangeable and must never collapse
+ * into a single `null` (the old contract):
+ *   - `no_key`    — the master-key check label is absent: no key was ever
+ *                   provisioned on this install (fresh Debug-sim, or a
+ *                   device restore that dropped the SE blob). The vault
+ *                   genuinely needs a recovery phrase. This is terminal.
+ *   - `transient` — a key WAS provisioned here (check label present) but the
+ *                   Secure-Enclave / Keychain read threw or returned null,
+ *                   typically because the SE isn't warm yet this early in
+ *                   process start (`native_handle_failed`). A relaunch — or a
+ *                   single short retry once the SE warms — reads it fine. This
+ *                   must NOT trigger the recovery-phrase prompt.
+ */
+type VaultLoadResult = { handleId: number } | { reason: 'no_key' } | { reason: 'transient' }
+
+/**
  * Load the master key from persistent storage and return an opaque native
  * handle ID. The real key bytes never enter the JS heap. For fallback paths
  * (simulator, older devices) the raw bytes are loaded transiently, stored
  * into the SE-backed keychain to create a handle, then zeroed.
  *
- * Returns null if no key is stored or verification fails.
+ * Returns a discriminated `VaultLoadResult`:
+ *   - `{ handleId }`         on success
+ *   - `{ reason: 'no_key' }` ONLY when no key was ever provisioned (check
+ *                            label absent) — the genuine recovery path
+ *   - `{ reason: 'transient' }` when a key exists here but the read failed
+ *                            (SE not warm, fallback miss despite a present
+ *                            check label) — safe to retry, never recovery
  */
-async function loadVerifiedMasterKeyHandle(): Promise<number | null> {
+async function loadVerifiedMasterKeyHandle(): Promise<VaultLoadResult> {
   const checkB64 = await SecureStore.getItemAsync(MASTER_KEY_CHECK_LABEL).catch(() => null)
-  if (!checkB64) return null
+  if (!checkB64) {
+    recordRuntimeTrace('keychain.load.no_recovery_check', { label: MASTER_KEY_CHECK_LABEL })
+    return { reason: 'no_key' }
+  }
 
   const expected = base64ToUint8(checkB64)
 
@@ -146,31 +191,83 @@ async function loadVerifiedMasterKeyHandle(): Promise<number | null> {
     }
   }
 
+  // The check label is present below this point: a key WAS provisioned on this
+  // install. Therefore EVERY failure from here on is `transient`, never
+  // `no_key` — relaunching (or retrying once the SE warms) reads it fine. The
+  // only `no_key` exit is the absent-check-label guard above.
+
   // Primary: Secure Enclave-wrapped key (real devices)
   if (!usesSoftwareVaultFallback()) {
     try {
+      recordRuntimeTrace('keychain.load.native_handle_request', {
+        label: MASTER_KEY_LABEL,
+        promptMayAppear: true,
+        source: 'loadVerifiedMasterKeyHandle',
+      })
+      // TODO(167): when invoked from the biometric lock screen path, the SE
+      // decrypt inside loadKeyFromKeychainAsHandle raises its OWN Face ID prompt
+      // (the SE private key is gated by .biometryAny). To collapse this to a
+      // single prompt, thread the LAContext the lock screen already evaluated
+      // into the keychain query via kSecUseAuthenticationContext (so the SE op
+      // reuses the satisfied biometric evaluation within the reuse window). That
+      // requires plumbing an LAContext from BiometricLockScreen → native
+      // KeychainManager.load → BeebeebKeychainCore.findSEKey, which is left as
+      // native follow-up work. Until then, App.tsx skips the silent cold-launch
+      // unlock when biometric lock is enabled so only ONE prompt fires, strictly
+      // sequenced after LocalAuthentication resolves.
       const handleId = await loadKeyFromKeychainAsHandle(MASTER_KEY_LABEL)
       if (handleId != null) {
-        if (await verifyHandle(handleId)) return handleId
+        if (await verifyHandle(handleId)) {
+          recordRuntimeTrace('keychain.load.native_handle_success', {
+            label: MASTER_KEY_LABEL,
+            handleId,
+          })
+          return { handleId }
+        }
         // Verification failed — release the handle
         await releaseHandle(handleId).catch(() => {})
+        recordRuntimeTrace('keychain.load.native_handle_verify_failed', {
+          label: MASTER_KEY_LABEL,
+          handleId,
+        })
       }
+      // handleId == null: the SE/Keychain read returned no key even though a
+      // key was provisioned here (check label present) — SE not warm yet.
+      // Transient: a relaunch / retry reads it. Do NOT prompt for recovery.
     } catch {
-      // SE unavailable — try fallback below
+      // SE read threw — same transient story. Fall through to the SecureStore
+      // fallback (real devices won't have one), then report transient.
+      recordRuntimeTrace('keychain.load.native_handle_failed', { label: MASTER_KEY_LABEL })
     }
   }
 
   // Fallback: SecureStore (simulator, or SE failure on older/unavailable devices)
   const raw = await SecureStore.getItemAsync(MASTER_KEY_FALLBACK_LABEL).catch(() => null)
   const fallbackHandle = await verifyAndCreateHandle(raw ? base64ToUint8(raw) : null)
-  if (fallbackHandle != null) return fallbackHandle
+  if (fallbackHandle != null) {
+    recordRuntimeTrace('keychain.load.software_fallback_success', {
+      label: MASTER_KEY_FALLBACK_LABEL,
+      handleId: fallbackHandle,
+    })
+    return { handleId: fallbackHandle }
+  }
 
   if (usesSoftwareVaultFallback() && FileSystem.documentDirectory) {
     const fileRaw = await FileSystem.readAsStringAsync(SIMULATOR_MASTER_KEY_FILE).catch(() => null)
-    return verifyAndCreateHandle(fileRaw ? base64ToUint8(fileRaw) : null)
+    const fileHandle = await verifyAndCreateHandle(fileRaw ? base64ToUint8(fileRaw) : null)
+    recordRuntimeTrace('keychain.load.simulator_file_result', {
+      found: fileHandle != null,
+      handleId: fileHandle,
+    })
+    if (fileHandle != null) {
+      return { handleId: fileHandle }
+    }
   }
 
-  return null
+  // Check label present but no readable key from any source: transient. The
+  // genuine missing-key case already returned `no_key` at the top.
+  recordRuntimeTrace('keychain.load.transient_miss', { label: MASTER_KEY_CHECK_LABEL })
+  return { reason: 'transient' }
 }
 
 export type VaultUnlockSource =
@@ -220,6 +317,10 @@ function updateVaultUnlockDiagnostics(patch: Partial<VaultUnlockDiagnostics>): V
 }
 
 function logVaultUnlockDiagnostic(event: string, fields: Record<string, unknown>): void {
+  recordRuntimeTrace('vault.unlock', {
+    event,
+    ...fields,
+  })
   logDiagnostic('vault.unlock', {
     event,
     ...fields,
@@ -238,6 +339,16 @@ interface CryptoContextValue {
    * "vault is open" / "vault is locked with no key available".
    */
   unlockAttempted: boolean
+  /**
+   * True ONLY when a keychain auto-unlock failed because no master key was
+   * ever provisioned on this install (the genuine recovery-phrase case:
+   * fresh Debug-sim, device restore that dropped the SE blob). It is NOT set
+   * by a transient Secure-Enclave fast-fail on cold launch — those get one
+   * silent retry and never reach this state. The VaultRecoveryGate keys off
+   * THIS signal (not the outcome-agnostic `unlockAttempted`) before routing
+   * to RecoveryUnlock.
+   */
+  needsRecoveryPhrase: boolean
   /**
    * Unlock the vault.
    * - With phrase: derives the master key from a recovery phrase and stores it
@@ -293,6 +404,26 @@ interface CryptoContextValue {
    * Safe to call when already unlocked — returns true immediately.
    */
   tryBackgroundUnlock: () => Promise<boolean>
+  // ── File requests (0643) ──
+  /**
+   * Generate a per-request X25519 keypair and wrap R_priv under the master key.
+   * Returns the public key (for the link fragment) + the wrapped private key
+   * (to POST to the server). R_priv is generated natively and never enters JS.
+   * Throws if the vault is locked.
+   */
+  createRequestKeypair: () => Promise<RequestKeypairResult>
+  /**
+   * Rebuild a request's X25519 public key from its stored wrapped private key,
+   * so the share link can be reconstructed. Throws if the vault is locked.
+   */
+  rebuildRequestPublicKey: (wrapped: Uint8Array, nonce: Uint8Array) => Promise<Uint8Array>
+  /**
+   * Resolve the content key C for a file that arrived through a file request.
+   * Use the returned key wherever a normal per-file key is expected (chunk +
+   * metadata decryption). Throws if the vault is locked or the file is not a
+   * request upload.
+   */
+  getRequestContentKey: (file: RequestFileFields) => Promise<Uint8Array>
 }
 
 const CryptoContext = createContext<CryptoContextValue | null>(null)
@@ -302,12 +433,20 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
   // True once the first unlock() attempt has settled (success or failure).
   // Used by FilesScreen to distinguish "still loading key" from "locked".
   const [unlockAttempted, setUnlockAttempted] = useState(false)
+  // True ONLY when an auto-unlock proved the vault genuinely has no key
+  // provisioned (loadVerifiedMasterKeyHandle → { reason: 'no_key' }). This
+  // is the recovery-phrase signal the VaultRecoveryGate gates on. A transient
+  // Secure-Enclave fast-fail never sets this; it is handled by a silent retry.
+  const [needsRecoveryPhrase, setNeedsRecoveryPhrase] = useState(false)
   // masterKeyHandleId holds an opaque numeric ID referencing the real
   // MasterKeyHandle in native memory. Raw key bytes never enter the JS
   // heap. Never store in React state to avoid accidental serialisation.
   const masterKeyHandleId = useRef<number | null>(null)
   const unlockInFlightRef = useRef(false)
   const unlockPromiseRef = useRef<Promise<void> | null>(null)
+  // File-request owner-decrypt resolver (0643). Lazily created; caches unwrapped
+  // R_priv per request. Cleared + zeroized on lock() alongside the master key.
+  const requestResolverRef = useRef<RequestKeyResolver | null>(null)
 
   useEffect(() => {
     updateVaultUnlockDiagnostics({
@@ -424,12 +563,40 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
             masterKey.fill(0)
           }
           masterKeyHandleId.current = handleId
+          // A successful phrase unlock provisions a key — clear any prior
+          // needs-recovery state.
+          setNeedsRecoveryPhrase(false)
         } else {
-          const handleId = await loadVerifiedMasterKeyHandle()
-          if (handleId == null) {
-            throw new Error('No master key in keychain — provide a recovery phrase to restore')
+          let result = await loadVerifiedMasterKeyHandle()
+
+          // Belt-and-suspenders: a `transient` result on cold launch is almost
+          // always a Secure-Enclave that isn't warm yet. Give it ONE silent
+          // retry after a short delay — the SE typically warms within a frame
+          // or two — before deciding anything terminal. A `no_key` result is
+          // never retried (it's genuinely missing) and a success short-circuits.
+          if ('reason' in result && result.reason === 'transient') {
+            recordRuntimeTrace('vault.unlock.transient_retry', { source })
+            await new Promise((resolve) => setTimeout(resolve, 400))
+            result = await loadVerifiedMasterKeyHandle()
           }
-          masterKeyHandleId.current = handleId
+
+          if ('handleId' in result) {
+            masterKeyHandleId.current = result.handleId
+            setNeedsRecoveryPhrase(false)
+          } else if (result.reason === 'no_key') {
+            // Genuine: no key was ever provisioned here (Debug-sim / device
+            // restore). This is the ONLY path that arms the recovery prompt.
+            setNeedsRecoveryPhrase(true)
+            throw new Error('No master key in keychain — provide a recovery phrase to restore')
+          } else {
+            // Still transient after the retry: a key exists on this install but
+            // the SE/Keychain read keeps failing this early in process start. Do
+            // NOT arm the recovery prompt — a relaunch with a warm keychain
+            // reads it. Surface as a (non-recovery) error so unlockAttempted
+            // settles and callers can fall back, without navigating to recovery.
+            recordRuntimeTrace('vault.unlock.transient_persisted', { source })
+            throw new Error('Vault key temporarily unavailable — relaunch the app to retry')
+          }
         }
 
         setIsUnlocked(true)
@@ -492,16 +659,28 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
   }, [unlockAttempted])
 
   const lock = useCallback(() => {
+    recordRuntimeTrace('vault.lock.request', {
+      hadHandle: masterKeyHandleId.current != null,
+    })
     if (masterKeyHandleId.current != null) {
       // Release the native handle — Rust will zeroize and drop the key material
       void releaseHandle(masterKeyHandleId.current).catch(() => {})
       masterKeyHandleId.current = null
     }
+    // Zero + drop any cached file-request R_priv buffers (0643).
+    requestResolverRef.current?.clear()
+    requestResolverRef.current = null
     setIsUnlocked(false)
+    // A manual/signout lock is not a missing-key condition — clear the
+    // recovery signal so a subsequent unlock starts from a clean slate.
+    setNeedsRecoveryPhrase(false)
   }, [])
 
   const requireHandleId = (): number => {
-    if (masterKeyHandleId.current == null) throw new Error('Vault is locked. Please lock and unlock the app, then try uploading again.')
+    if (masterKeyHandleId.current == null) {
+      recordRuntimeTrace('vault.handle.missing', { hasHandle: false })
+      throw new Error('Vault is locked. Please lock and unlock the app, then try uploading again.')
+    }
     return masterKeyHandleId.current
   }
 
@@ -595,6 +774,10 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
   const setBiometricRequirementFn = useCallback(
     async (require: boolean): Promise<void> => {
       if (Platform.OS !== 'ios' || usesSoftwareVaultFallback()) return
+      recordRuntimeTrace('keychain.biometric_requirement.request', {
+        require,
+        hasHandle: masterKeyHandleId.current != null,
+      })
       // Re-wrap the SE blob from the cached handle. The previous
       // implementation called `loadKeyFromKeychain(MASTER_KEY_LABEL)`,
       // which prompted Face ID under the old policy before we even got
@@ -606,7 +789,17 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
       // back to the legacy raw-bytes path.
       const handleId = requireHandleId()
       const ok = await replaceKeychainAccessControlFromHandle(handleId, require, MASTER_KEY_LABEL)
-      if (ok) return
+      if (ok) {
+        recordRuntimeTrace('keychain.biometric_requirement.native_rewrap_success', {
+          require,
+          handleId,
+        })
+        return
+      }
+      recordRuntimeTrace('keychain.biometric_requirement.legacy_fallback_request', {
+        require,
+        promptMayAppear: true,
+      })
       const { loadKeyFromKeychain } = await import('../../modules/beebeeb-crypto')
       const raw = await loadKeyFromKeychain(MASTER_KEY_LABEL)
       if (!raw) throw new Error('Vault is locked — cannot change biometric requirement')
@@ -688,6 +881,40 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
     }
   }, [isUnlocked, unlockAttempted])
 
+  // ── File requests (0643) ──
+
+  const createRequestKeypairFn = useCallback(
+    async (): Promise<RequestKeypairResult> => {
+      return createRequestKeypairWithHandle(requireHandleId())
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  )
+
+  const rebuildRequestPublicKeyFn = useCallback(
+    async (wrapped: Uint8Array, nonce: Uint8Array): Promise<Uint8Array> => {
+      const rPriv = await unwrapRequestPrivateWithHandle(requireHandleId(), wrapped, nonce)
+      try {
+        return await deriveX25519PublicFromPrivate(rPriv)
+      } finally {
+        rPriv.fill(0)
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  )
+
+  const getRequestContentKeyFn = useCallback(
+    async (file: RequestFileFields): Promise<Uint8Array> => {
+      if (requestResolverRef.current == null) {
+        requestResolverRef.current = createRequestKeyResolver(() => requireHandleId())
+      }
+      return requestResolverRef.current.resolveContentKey(file)
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  )
+
   // Keep BackupService in sync with vault state so folder creation/lookup
   // always encrypts/decrypts names through the crypto context.
   useEffect(() => {
@@ -733,6 +960,7 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
       value={{
         isUnlocked,
         unlockAttempted,
+        needsRecoveryPhrase,
         unlock,
         getUnlockDiagnostics: getUnlockDiagnosticsFn,
         lock,
@@ -746,6 +974,9 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
         getIndexKey: getIndexKeyFn,
         setBiometricRequirement: setBiometricRequirementFn,
         tryBackgroundUnlock: tryBackgroundUnlockFn,
+        createRequestKeypair: createRequestKeypairFn,
+        rebuildRequestPublicKey: rebuildRequestPublicKeyFn,
+        getRequestContentKey: getRequestContentKeyFn,
       }}
     >
       {children}

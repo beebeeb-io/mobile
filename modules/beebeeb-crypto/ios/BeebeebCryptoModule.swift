@@ -207,18 +207,37 @@ private final class PreviewDownloadProgress: DownloadProgressCallback, FileProgr
   }
 
   func onChunkDecrypted(chunkIndex: UInt32, totalChunks: UInt32) {
+    if chunkIndex == 1 || chunkIndex == totalChunks || chunkIndex % 10 == 0 {
+      RuntimeTrace.event("preview.native_download.chunk_decrypted", [
+        "fileId": fileId,
+        "chunkIndex": Int(chunkIndex),
+        "totalChunks": Int(totalChunks)
+      ])
+    }
     emitProgress(stage: "decrypting", chunksCompleted: Int(chunkIndex), chunksTotal: Int(totalChunks))
   }
 
   func onProgress(chunksCompleted: UInt32, chunksTotal: UInt32) {
+    if chunksCompleted == 1 || chunksCompleted == chunksTotal || chunksCompleted % 10 == 0 {
+      RuntimeTrace.event("preview.native_download.progress", [
+        "fileId": fileId,
+        "chunksCompleted": Int(chunksCompleted),
+        "chunksTotal": Int(chunksTotal)
+      ])
+    }
     emitProgress(stage: "decrypting", chunksCompleted: Int(chunksCompleted), chunksTotal: Int(chunksTotal))
   }
 
   func onComplete(outputPath: String) {
+    RuntimeTrace.event("preview.native_download.callback_complete", ["fileId": fileId])
     emitProgress(stage: "complete")
   }
 
   func onError(error: String) {
+    RuntimeTrace.event("preview.native_download.callback_error", [
+      "fileId": fileId,
+      "error": error
+    ])
     emitProgress(stage: "error", extra: ["error": error])
   }
 
@@ -914,6 +933,81 @@ public class BeebeebCryptoModule: Module {
       try deriveShareKey(sharedSecret: sharedSecret, fileId: fileId)
     }
 
+    // MARK: - File Requests (0643)
+    //
+    // Per-request sealed-keypair crypto (ECIES) for file requests. Mirrors the
+    // web reference (repos/web/src/lib/crypto.ts) byte-for-byte at the core
+    // level: same UniFFI functions, same EMPTY HKDF context, same X25519/HKDF/
+    // AES — so links round-trip cross-client.
+    //
+    // Invariants:
+    //  - The MASTER key never crosses to JS (task 0556). wrap/unwrap export the
+    //    raw key transiently from the in-memory MasterKeyHandle and zero it.
+    //  - R_priv is generated with SecRandomCopyBytes and, on create, never
+    //    leaves native — only {publicKey, wrapped, nonce} are returned.
+    //  - The HKDF context is EMPTY (`Data()`) for BOTH wrap (requestId) and open
+    //    (fileId) — the ratified cross-client contract (decision 0651). The
+    //    server-assigned ids are NOT used; uniqueness comes from the random
+    //    keypair, ephemeral keypair, content key, and GCM nonce.
+    //
+    // New tracks (camera-roll 0672, ShareUploader 0673) MUST add their own
+    // marked regions and not interleave here.
+
+    AsyncFunction("createRequestKeypairWithHandle") { [self] (handleId: Int) throws -> [String: Any] in
+      // 1. Fresh per-request X25519 private key (32 CSPRNG bytes).
+      var rPrivBytes = [UInt8](repeating: 0, count: 32)
+      let status = SecRandomCopyBytes(kSecRandomDefault, 32, &rPrivBytes)
+      guard status == errSecSuccess else {
+        throw NSError(
+          domain: "BeebeebCrypto",
+          code: Int(status),
+          userInfo: [NSLocalizedDescriptionKey: "Secure random generator failed"]
+        )
+      }
+      var rPriv = Data(rPrivBytes)
+      rPrivBytes.withUnsafeMutableBytes { ptr in
+        if let base = ptr.baseAddress { memset(base, 0, ptr.count) }
+      }
+      defer { rPriv.resetBytes(in: 0..<rPriv.count) }
+
+      // 2. Derive R_pub (goes in the link fragment, never persisted server-side).
+      let rPub = try deriveX25519Public(privateKey: rPriv)
+
+      // 3. Wrap R_priv under the master key (raw bytes stay native, zeroed after).
+      let master = try self.getHandle(handleId)
+      var masterKeyBytes = try master.exportForKeychain()
+      defer {
+        masterKeyBytes.withUnsafeMutableBytes { ptr in
+          if let base = ptr.baseAddress { memset(base, 0, ptr.count) }
+        }
+      }
+      let wrapped = try wrapRequestPrivate(masterKey: masterKeyBytes, requestId: Data(), rPriv: rPriv)
+      return [
+        "publicKey": rPub,
+        "wrapped": wrapped.wrapped,
+        "nonce": wrapped.nonce,
+      ]
+    }
+
+    AsyncFunction("unwrapRequestPrivateWithHandle") { [self] (handleId: Int, wrapped: Data, nonce: Data) throws -> Data in
+      let master = try self.getHandle(handleId)
+      var masterKeyBytes = try master.exportForKeychain()
+      defer {
+        masterKeyBytes.withUnsafeMutableBytes { ptr in
+          if let base = ptr.baseAddress { memset(base, 0, ptr.count) }
+        }
+      }
+      // Returns R_priv to JS; the caller (RequestKeyResolver) caches it and
+      // zeroizes on vault lock.
+      return try unwrapRequestPrivate(masterKey: masterKeyBytes, requestId: Data(), wrapped: wrapped, nonce: nonce)
+    }
+
+    AsyncFunction("openRequestUpload") { (rPriv: Data, ePub: Data, wrappedKey: Data) throws -> Data in
+      // Recover the content key C for a request-uploaded file (owner decrypt).
+      // No master key needed — R_priv is supplied by the caller.
+      try openRequestUpload(rPriv: rPriv, ePub: ePub, fileId: Data(), wrappedKey: wrappedKey)
+    }
+
     AsyncFunction("encryptChunk") { (key: Data, plaintext: Data) throws -> [String: Any] in
       let result = try BeebeebCryptoBridge.encryptChunk(key: key, plaintext: plaintext)
       return [
@@ -1007,10 +1101,15 @@ public class BeebeebCryptoModule: Module {
       ]
     }
 
-    AsyncFunction("opaqueLoginFinish") { (state: String, serverMessage: String, password: String) throws -> [String: Any] in
+    AsyncFunction("opaqueLoginFinish") { (state: String, serverMessage: String, password: String, ksfVersion: Int) throws -> [String: Any] in
       let stateData = try decodeBase64(state, field: "state")
       let serverMessageData = try decodeBase64(serverMessage, field: "serverMessage")
-      let result = try opaqueLoginFinish(clientState: stateData, password: Data(password.utf8), serverResponse: serverMessageData)
+      // `ksfVersion` (0 = legacy Identity KSF, 1 = Argon2id) selects the KSF the
+      // account's OPAQUE password file was registered under, so a v0 (legacy)
+      // account stretches with the matching KSF and its fresh login succeeds.
+      // Forwarded from /opaque/login-start through the JS bridge as Int, lowered
+      // to the UniFFI UInt32 the regenerated binding expects.
+      let result = try opaqueLoginFinish(clientState: stateData, password: Data(password.utf8), serverResponse: serverMessageData, ksfVersion: UInt32(ksfVersion))
       return [
         "message": result.message.base64EncodedString(),
         "sessionKey": result.sessionKey.base64EncodedString(),
@@ -1091,11 +1190,35 @@ public class BeebeebCryptoModule: Module {
     }
 
     AsyncFunction("storeKeyInKeychain") { (masterKeyBytes: Data, label: String) throws in
-      try KeychainManager.store(masterKeyBytes: masterKeyBytes, label: label)
+      RuntimeTrace.event("keychain.bridge.store.request", ["label": label])
+      do {
+        try KeychainManager.store(masterKeyBytes: masterKeyBytes, label: label)
+        RuntimeTrace.event("keychain.bridge.store.success", ["label": label])
+      } catch {
+        RuntimeTrace.event("keychain.bridge.store.failed", ["label": label, "error": error.localizedDescription])
+        throw error
+      }
     }
 
     AsyncFunction("loadKeyFromKeychain") { (label: String) throws -> Data? in
-      try KeychainManager.load(label: label)
+      RuntimeTrace.event("keychain.bridge.load_bytes.request", [
+        "label": label,
+        "promptMayAppear": true
+      ])
+      do {
+        let key = try KeychainManager.load(label: label)
+        RuntimeTrace.event("keychain.bridge.load_bytes.result", [
+          "label": label,
+          "found": key != nil
+        ])
+        return key
+      } catch {
+        RuntimeTrace.event("keychain.bridge.load_bytes.failed", [
+          "label": label,
+          "error": error.localizedDescription
+        ])
+        throw error
+      }
     }
 
     // ── Opaque handle-based keychain load ──────────────────────────────
@@ -1105,7 +1228,14 @@ public class BeebeebCryptoModule: Module {
     // the key material.
 
     AsyncFunction("loadKeyFromKeychainAsHandle") { [self] (label: String) throws -> Int? in
-      guard let keyData = try KeychainManager.load(label: label) else { return nil }
+      RuntimeTrace.event("keychain.bridge.load_handle.request", [
+        "label": label,
+        "promptMayAppear": true
+      ])
+      guard let keyData = try KeychainManager.load(label: label) else {
+        RuntimeTrace.event("keychain.bridge.load_handle.miss", ["label": label])
+        return nil
+      }
       let handle = try MasterKeyHandle.fromKeychainBytes(bytes: keyData)
       // Zero the raw bytes now that the handle owns the key
       var mutableData = keyData
@@ -1113,7 +1243,12 @@ public class BeebeebCryptoModule: Module {
         if let base = ptr.baseAddress { memset(base, 0, ptr.count) }
       }
       BeebeebCryptoBridge.setCachedMasterKey(handle)
-      return self.storeHandle(handle)
+      let handleId = self.storeHandle(handle)
+      RuntimeTrace.event("keychain.bridge.load_handle.success", [
+        "label": label,
+        "handleId": handleId
+      ])
+      return handleId
     }
 
     AsyncFunction("createMasterKeyHandle") { [self] (masterKeyBytes: Data) throws -> Int in
@@ -1123,7 +1258,9 @@ public class BeebeebCryptoModule: Module {
         if let base = ptr.baseAddress { memset(base, 0, ptr.count) }
       }
       BeebeebCryptoBridge.setCachedMasterKey(handle)
-      return self.storeHandle(handle)
+      let handleId = self.storeHandle(handle)
+      RuntimeTrace.event("keychain.bridge.create_handle.success", ["handleId": handleId])
+      return handleId
     }
 
     AsyncFunction("deleteKeyFromKeychain") { () throws -> Bool in
@@ -1132,12 +1269,27 @@ public class BeebeebCryptoModule: Module {
     }
 
     AsyncFunction("setRequireBiometric") { (require: Bool) throws -> Bool in
+      RuntimeTrace.event("keychain.bridge.set_require_biometric.request", [
+        "require": require,
+        "promptMayAppear": true
+      ])
       try KeychainManager.setAccessControl(requireBiometric: require)
+      RuntimeTrace.event("keychain.bridge.set_require_biometric.success", ["require": require])
       return true
     }
 
     AsyncFunction("replaceKeychainAccessControl") { (require: Bool, masterKeyBytes: Data, label: String) throws -> Bool in
+      RuntimeTrace.event("keychain.bridge.replace_access_control.request", [
+        "require": require,
+        "label": label,
+        "source": "raw_bytes"
+      ])
       try KeychainManager.replaceAccessControl(requireBiometric: require, masterKeyBytes: masterKeyBytes, label: label)
+      RuntimeTrace.event("keychain.bridge.replace_access_control.success", [
+        "require": require,
+        "label": label,
+        "source": "raw_bytes"
+      ])
       return true
     }
 
@@ -1149,6 +1301,12 @@ public class BeebeebCryptoModule: Module {
     // native memory; export it transiently, hand it to `KeychainManager`, and
     // zero the buffer before returning. Raw bytes never cross the JS bridge.
     AsyncFunction("replaceKeychainAccessControlFromHandle") { [self] (handleId: Int, require: Bool, label: String) throws -> Bool in
+      RuntimeTrace.event("keychain.bridge.replace_access_control.request", [
+        "require": require,
+        "label": label,
+        "handleId": handleId,
+        "source": "handle"
+      ])
       let master = try self.getHandle(handleId)
       var bytes = try master.exportForKeychain()
       defer {
@@ -1157,6 +1315,12 @@ public class BeebeebCryptoModule: Module {
         }
       }
       try KeychainManager.replaceAccessControl(requireBiometric: require, masterKeyBytes: bytes, label: label)
+      RuntimeTrace.event("keychain.bridge.replace_access_control.success", [
+        "require": require,
+        "label": label,
+        "handleId": handleId,
+        "source": "handle"
+      ])
       return true
     }
 
@@ -1403,7 +1567,29 @@ public class BeebeebCryptoModule: Module {
       }
 
       let domains = (try? await getFileProviderDomains()) ?? []
-      return fileProviderPrivacyState(defaults: defaults, domains: domains)
+      var state = fileProviderPrivacyState(defaults: defaults, domains: domains)
+
+      // "registered" + cache-ready is not the same as actually presented in
+      // Files.app. iOS only surfaces the location once getUserVisibleURL
+      // resolves without error; a non-nil error means the mount exists on paper
+      // but the user can't see it. Gate the reported `mounted` on real
+      // presentation and pass the error string through so the JS layer (and the
+      // user) can see WHY the location is missing.
+      let registered = state["registered"] as? Bool ?? false
+      if registered {
+        let domain = beebeebFileProviderDomain()
+        let (userVisibleRootURL, userVisibleRootError) = await fileProviderRootVisibility(domain: domain)
+        state["userVisibleRootURL"] = userVisibleRootURL ?? NSNull()
+        state["userVisibleRootError"] = userVisibleRootError ?? NSNull()
+        if userVisibleRootError != nil {
+          state["mounted"] = false
+          state["locked"] = true
+        }
+      } else {
+        state["userVisibleRootURL"] = NSNull()
+        state["userVisibleRootError"] = NSNull()
+      }
+      return state
     }
 
     AsyncFunction("setFileProviderAuthRequired") { (required: Bool) async -> [String: Any] in
@@ -1563,6 +1749,10 @@ public class BeebeebCryptoModule: Module {
     // ── Backup management ──────────────────────────────────────────────
 
     AsyncFunction("configureBackupFolder") { (category: String, parentFolderId: String?) in
+      RuntimeTrace.event("backup.configure_folder", [
+        "category": category,
+        "hasParentFolder": !(parentFolderId?.isEmpty ?? true),
+      ])
       switch category {
       case "camera_roll":
         PhotoBackupManager.shared.configure(parentFolderId: parentFolderId)
@@ -1601,6 +1791,10 @@ public class BeebeebCryptoModule: Module {
       ContactsBackupManager.shared.disable()
     }
 
+    AsyncFunction("getContactsBackupStatus") { () -> [String: Any] in
+      return ContactsBackupManager.shared.status()
+    }
+
     AsyncFunction("enableCalendarBackup") { (authToken: String) in
       CalendarBackupManager.shared.enable(authToken: authToken, runNow: true)
     }
@@ -1611,6 +1805,10 @@ public class BeebeebCryptoModule: Module {
 
     AsyncFunction("disableCalendarBackup") { () in
       CalendarBackupManager.shared.disable()
+    }
+
+    AsyncFunction("getCalendarBackupStatus") { () -> [String: Any] in
+      return CalendarBackupManager.shared.status()
     }
 
     AsyncFunction("getBackupProgress") { () -> [String: Any] in
@@ -1830,6 +2028,10 @@ public class BeebeebCryptoModule: Module {
       outputUri: String,
       requestId: String?
     ) async throws -> [String: Any] in
+      RuntimeTrace.event("preview.native_download.request", [
+        "fileId": fileId,
+        "hasRequestId": requestId != nil
+      ])
       let master = try self.getHandle(handleId)
       let outputURL = fileURL(fromURI: outputUri)
       let outputPath = outputURL.path
@@ -1860,6 +2062,14 @@ public class BeebeebCryptoModule: Module {
       progress.emitProgress(stage: "downloading", bytesDownloaded: 0, bytesTotal: 0)
       let delegate = PreviewEncryptedDownloadDelegate(progress: progress)
       let (encryptedUrl, response) = try await delegate.download(request: request)
+      RuntimeTrace.event("preview.native_download.response", [
+        "fileId": fileId,
+        "status": response.statusCode,
+        "contentLength": Int(response.value(forHTTPHeaderField: "Content-Length") ?? "") ?? 0,
+        "chunkCountHeader": Int(response.value(forHTTPHeaderField: "X-Chunk-Count") ?? "") ?? 0,
+        "originalSizeHeader": Int(response.value(forHTTPHeaderField: "X-Original-Size") ?? "") ?? 0,
+        "chunkSizeHeader": Int(response.value(forHTTPHeaderField: "X-Chunk-Size") ?? "") ?? 0
+      ])
       defer {
         try? FileManager.default.removeItem(at: encryptedUrl)
       }
@@ -1881,6 +2091,14 @@ public class BeebeebCryptoModule: Module {
       let plaintextChunkSize = chunkCount <= 1
         ? originalSize
         : (headerChunkSize ?? (4 * 1024 * 1024))
+      RuntimeTrace.event("preview.native_download.chunk_metadata", [
+        "fileId": fileId,
+        "encryptedSize": encryptedSize,
+        "originalSize": originalSize,
+        "chunkCount": chunkCount,
+        "plaintextChunkSize": plaintextChunkSize,
+        "hasHeaderChunkSize": headerChunkSize != nil
+      ])
 
       let chunkPaths = try self.splitEncryptedPreviewFile(
         encryptedUrl: encryptedUrl,
@@ -1889,8 +2107,16 @@ public class BeebeebCryptoModule: Module {
         originalSize: originalSize,
         plaintextChunkSize: plaintextChunkSize
       )
+      RuntimeTrace.event("preview.native_download.split_complete", [
+        "fileId": fileId,
+        "chunks": chunkPaths.count
+      ])
 
       progress.emitProgress(stage: "decrypting", chunksCompleted: 0, chunksTotal: chunkPaths.count)
+      RuntimeTrace.event("preview.native_download.decrypt_start", [
+        "fileId": fileId,
+        "chunks": chunkPaths.count
+      ])
       let result = try master.decryptFile(
         fileId: fileId,
         chunkPaths: chunkPaths,
@@ -1898,6 +2124,11 @@ public class BeebeebCryptoModule: Module {
         callback: progress
       )
       progress.emitProgress(stage: "complete")
+      RuntimeTrace.event("preview.native_download.decrypt_complete", [
+        "fileId": fileId,
+        "totalBytes": result.totalBytes,
+        "chunksProcessed": result.chunksProcessed
+      ])
 
       return [
         "outputPath": result.outputPath,

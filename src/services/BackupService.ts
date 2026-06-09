@@ -126,6 +126,10 @@ function requireEncryption(): BackupEncryption {
   return _encryption;
 }
 
+function isEncryptionUnavailableError(err: unknown): boolean {
+  return err instanceof Error && err.message.includes('Encryption not configured');
+}
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -453,13 +457,16 @@ async function selfHealKnownBackupMetadata(
   categoryIds: Record<BackupCategory, string>,
   deviceName: string,
 ): Promise<void> {
+  if (!_encryption) return;
   let healed = 0;
 
   const normalize = async (entry: FileEntry | undefined, expectedName?: string): Promise<void> => {
     if (!entry) return;
+    if (!_encryption) return;
     try {
       if (await normalizeBackupNameMetadata(entry, expectedName)) healed += 1;
     } catch (err) {
+      if (isEncryptionUnavailableError(err)) return;
       console.warn('[BackupService] backup metadata self-heal failed:', err);
     }
   };

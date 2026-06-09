@@ -49,6 +49,8 @@ import { getLocalIdentifier } from '../lib/local-identifier-map';
 import type { FileEntry, StorageUsage, ProofOfExistence, PresenceUser, SyncNode } from '../lib/api';
 import type { RootStackParamList, TabParamList } from '../App';
 import { useCrypto } from '../lib/crypto-context';
+import { decryptMetadata as decryptMetadataWithKey } from '../../modules/beebeeb-crypto';
+import { isRequestUpload } from '../lib/file-request-crypto';
 import { encryptedMetadataPayloadToBytes, encryptedMetadataToJson, fileMetadataPlaintext } from '../lib/encrypted-metadata';
 import { syncDecryptedEntriesToFileProvider } from '../lib/file-provider-mount';
 import { useAuth } from '../lib/auth';
@@ -1134,7 +1136,7 @@ export default function FilesScreen() {
   const [presence, setPresence] = useState<PresenceUser[]>([]);
 
   // Crypto
-  const { isUnlocked, unlockAttempted, decryptMetadata, encryptChunk, encryptMetadata, getFileKeyBytes } = useCrypto();
+  const { isUnlocked, unlockAttempted, decryptMetadata, encryptChunk, encryptMetadata, getFileKeyBytes, getRequestContentKey } = useCrypto();
   const [decryptedNames, setDecryptedNames] = useState<Record<string, string>>({});
   const [decryptedMimeTypes, setDecryptedMimeTypes] = useState<Record<string, string | null>>({});
 
@@ -1277,7 +1279,15 @@ export default function FilesScreen() {
             const raw = file.name_encrypted ?? '';
             const payload = encryptedMetadataPayloadToBytes(raw);
             if (!payload) return;
-            const plaintext = await decryptMetadata(file.id, payload.nonce, payload.ciphertext);
+            // Files received through a file request (0643) are encrypted with the
+            // request content key C, not the master-key-derived per-file key.
+            const plaintext = isRequestUpload(file)
+              ? await decryptMetadataWithKey(
+                  await getRequestContentKey(file),
+                  payload.nonce,
+                  payload.ciphertext,
+                )
+              : await decryptMetadata(file.id, payload.nonce, payload.ciphertext);
             const metadata = parseDecryptedMetadata(plaintext);
             batchNames[file.id] = metadata.name;
             batchMimes[file.id] = metadata.mimeType;
@@ -1673,6 +1683,11 @@ export default function FilesScreen() {
           chunkCount: file.chunk_count,
           versionNumber: file.version_number,
           storagePoolId: file.storage_pool_id ?? null,
+          // File-request uploads (0643): pass the sealed-key fields so Preview
+          // decrypts with the request content key, not the master-key path.
+          fileRequestId: file.file_request_id ?? null,
+          senderEphemeralPubkey: file.sender_ephemeral_pubkey ?? null,
+          wrappedContentKey: file.wrapped_content_key ?? null,
         });
       }
     },
@@ -1941,13 +1956,20 @@ export default function FilesScreen() {
 
   // Quick action / deep-link landing: route.params.action is set by the App
   // shortcut handler (beebeeb://upload, beebeeb://search, beebeeb://scan,
-  // beebeeb://recent). Trigger the right surface and clear the param so
-  // subsequent focuses don't re-fire it.
+  // beebeeb://recent) and by the Files tab reselect handler. Trigger the
+  // right surface and clear the param so subsequent focuses don't re-fire it.
   useEffect(() => {
     const action = route.params?.action;
     if (!action) return;
     navigation.setParams({ action: undefined });
-    if (action === 'upload') {
+    if (action === 'root') {
+      setSearchActive(false);
+      setSearchQuery('');
+      setRecentFilterActive(false);
+      setSelectMode(false);
+      setSelectedIds(new Set());
+      setFolderStack([{ id: null, name: 'Drive' }]);
+    } else if (action === 'upload') {
       pickAndUploadFile();
     } else if (action === 'search') {
       setSearchActive(true);

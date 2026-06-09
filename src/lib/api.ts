@@ -177,7 +177,15 @@ async function setSessionCredentials(token: string, deviceConfirmationSecret?: s
 // ---------------------------------------------------------------------------
 
 export class ApiError extends Error {
-  constructor(public status: number, message: string) {
+  /**
+   * Machine-readable error code from the server response body's `error` field
+   * (e.g. `object_budget_exceeded`, `quota_exceeded`). Set when the server
+   * returns a structured `{ error, message }` payload. Callers branch on this
+   * instead of pattern-matching the human-readable `message`, which can change
+   * without notice. Optional + additive — existing `(status, message)` callers
+   * are unaffected.
+   */
+  constructor(public status: number, message: string, public code?: string) {
     super(message);
     this.name = 'ApiError';
   }
@@ -199,6 +207,16 @@ export class TwoFactorRequiredError extends Error {
 /** Return a human-friendly message for common API errors. */
 export function friendlyError(err: unknown): string {
   if (err instanceof ApiError) {
+    // Typed quota errors come back with a machine-readable `code` so we don't
+    // pattern-match the human message. Branch on these first, before the
+    // generic status handling swallows them (server task 0670).
+    if (err.code === 'object_budget_exceeded') {
+      // Object-COUNT cap — distinct from the byte/storage quota below.
+      return 'File limit reached. This account has hit its maximum number of files — delete some files or contact support to raise the limit.';
+    }
+    if (err.code === 'quota_exceeded') {
+      return 'Storage full. Free up space or upgrade your plan to keep uploading.';
+    }
     if (err.status === 0) return 'Could not reach the server. Check your connection and try again.';
     if (err.status === 401) {
       // The message is set by the caller's path: login/signup => "Wrong email or password",
@@ -281,6 +299,11 @@ async function request<T>(
   } else {
     clearAnnouncement();
   }
+
+  // 204 No Content (and other empty bodies) have nothing to parse — return
+  // undefined so callers typed `Promise<void>` (e.g. deleteClientSession)
+  // don't reject on an empty res.json().
+  if (res.status === 204) return undefined as T;
 
   return res.json() as Promise<T>;
 }
@@ -500,6 +523,17 @@ export interface FileEntry {
   is_starred?: boolean;
   /** True when the file is an image or video (set at upload time). */
   is_media?: boolean;
+  // ── File-request uploads (0643) ──
+  // Set only for files that arrived through a file request. When all three are
+  // present the file is decrypted via the request-key path (openRequestUpload)
+  // rather than the normal master-key-derived per-file key. See
+  // src/lib/file-request-crypto.ts.
+  /** The file request this upload satisfies (UUID), or null for normal files. */
+  file_request_id?: string | null;
+  /** Uploader's ephemeral X25519 public key (base64), used to recover C. */
+  sender_ephemeral_pubkey?: string | null;
+  /** Content key C sealed to the request key (base64). */
+  wrapped_content_key?: string | null;
 }
 
 /**
@@ -830,8 +864,8 @@ export async function uploadEncryptedChunked(params: {
       }),
     })
     if (!initRes.ok) {
-      const err = await initRes.json().catch(() => ({ error: initRes.statusText }))
-      throw new ApiError(initRes.status, (err as { error?: string }).error ?? initRes.statusText)
+      const err = (await initRes.json().catch(() => ({ error: initRes.statusText }))) as { error?: string; message?: string }
+      throw new ApiError(initRes.status, err.message ?? err.error ?? initRes.statusText, err.error)
     }
     const init = (await initRes.json()) as { file_id: string }
     serverFileId = init.file_id
@@ -859,8 +893,10 @@ export async function uploadEncryptedChunked(params: {
       : `/api/v1/files/${serverFileId}/chunks/${i}`
     const chunkRes = await putBinaryBytes(`${BASE_URL}${chunkPath}`, token, encBytes)
     if (!chunkRes.ok) {
-      const err = await chunkRes.error()
-      throw new ApiError(chunkRes.status, (err as { error?: string }).error ?? `Chunk ${i} failed`)
+      const err = (await chunkRes.error()) as { error?: string; message?: string }
+      // Carry the machine code (e.g. `object_budget_exceeded`, `quota_exceeded`)
+      // so friendlyError() can show the right copy instead of the raw code.
+      throw new ApiError(chunkRes.status, err.message ?? err.error ?? `Chunk ${i} failed`, err.error)
     }
 
     bytesUploaded += encBytes.length
@@ -959,8 +995,8 @@ async function initUploadV2(params: {
   })
   if (res.status === 404 || res.status === 405) return null
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: res.statusText }))
-    throw new ApiError(res.status, (err as { error?: string }).error ?? res.statusText)
+    const err = (await res.json().catch(() => ({ error: res.statusText }))) as { error?: string; message?: string }
+    throw new ApiError(res.status, err.message ?? err.error ?? res.statusText, err.error)
   }
   const data = await res.json() as UploadV2InitResponse
   return {
@@ -1046,7 +1082,7 @@ async function uploadFileChunked(
   });
   if (!initRes.ok) {
     const err = await initRes.json().catch(() => ({ error: initRes.statusText }));
-    throw new ApiError(initRes.status, err.error ?? err.message ?? initRes.statusText);
+    throw new ApiError(initRes.status, err.message ?? err.error ?? initRes.statusText, err.error);
   }
   const { file_id } = (await initRes.json()) as { file_id: string; chunk_count: number };
 
@@ -1063,7 +1099,7 @@ async function uploadFileChunked(
     });
     if (!chunkRes.ok) {
       const err = await chunkRes.json().catch(() => ({ error: chunkRes.statusText }));
-      throw new ApiError(chunkRes.status, err.error ?? `Chunk ${i} upload failed`);
+      throw new ApiError(chunkRes.status, err.message ?? err.error ?? `Chunk ${i} upload failed`, err.error);
     }
 
     onProgress?.({
@@ -1604,6 +1640,13 @@ export interface OpaqueLoginStartResult {
   state: Uint8Array;
   serverMessage: Uint8Array;
   serverState: string;
+  /**
+   * The account's OPAQUE KSF version, forwarded by /opaque/login-start.
+   * 0 = legacy Identity KSF (no client stretch), 1 = Argon2id. Must be passed
+   * to opaqueLoginFinish so the WASM/UniFFI finish stretches with the matching
+   * KSF — otherwise a v0 (legacy) account's fresh login fails.
+   */
+  ksf_version: number;
 }
 
 export interface OpaqueLoginResult {
@@ -1641,9 +1684,9 @@ export async function opaqueLoginStart(email: string, password: string): Promise
     if (!BeebeebCrypto.isNativeAvailable) throw new NativeCryptoUnavailableError('opaqueLoginStart');
     throw err;
   }
-  let data: { server_message: string; server_state: string };
+  let data: { server_message: string; server_state: string; ksf_version: number };
   try {
-    data = await request<{ server_message: string; server_state: string }>(
+    data = await request<{ server_message: string; server_state: string; ksf_version: number }>(
       'POST',
       '/api/v1/opaque/login-start',
       { email, client_message: uint8ToBase64(message) },
@@ -1656,6 +1699,9 @@ export async function opaqueLoginStart(email: string, password: string): Promise
     state,
     serverMessage: base64ToUint8(data.server_message),
     serverState: data.server_state,
+    // Default to 1 (Argon2id) if a stale server omits the field, matching the
+    // current client KSF — only a v0 account needs the explicit 0.
+    ksf_version: typeof data.ksf_version === 'number' ? data.ksf_version : 1,
   };
 }
 
@@ -1670,11 +1716,12 @@ export async function opaqueLoginFinish(
   state: Uint8Array,
   serverMessage: Uint8Array,
   serverState: string,
+  ksfVersion: number,
 ): Promise<OpaqueLoginResult> {
   if (!BeebeebCrypto.isNativeAvailable) throw new NativeCryptoUnavailableError('opaqueLoginFinish');
   let message: Uint8Array;
   try {
-    ({ message } = await BeebeebCrypto.opaqueLoginFinish(state, serverMessage, password));
+    ({ message } = await BeebeebCrypto.opaqueLoginFinish(state, serverMessage, password, ksfVersion));
   } catch (err) {
     if (!BeebeebCrypto.isNativeAvailable) throw new NativeCryptoUnavailableError('opaqueLoginFinish');
     throw err;
@@ -2236,6 +2283,11 @@ export async function listClientSessions(): Promise<{ sessions: ClientSession[] 
   return request<{ sessions: ClientSession[] }>('GET', '/api/v1/clients/sessions');
 }
 
+/** DELETE /api/v1/clients/sessions/:id — forget a sync/backup session (server returns 204). */
+export async function deleteClientSession(id: string): Promise<void> {
+  await request<void>('DELETE', `/api/v1/clients/sessions/${id}`);
+}
+
 /** POST /api/v1/clients/devices — register or update this device */
 export async function registerClientDevice(body: {
   hostname: string;
@@ -2244,4 +2296,80 @@ export async function registerClientDevice(body: {
   push_token?: string;
 }): Promise<ClientDevice> {
   return request<ClientDevice>('POST', '/api/v1/clients/devices', body);
+}
+
+// ─── File requests (0643) ─────────────────────────────────────────────────────
+//
+// File requests are the inverse of sharing: an account-less link anyone can use
+// to upload files INTO the owner's encrypted vault. The owner creates the
+// request here; uploads happen via the web `/r/:token` page (the universal
+// uploader — native in-app upload is out of scope for this pass). Mirrors the
+// web client (repos/web/src/lib/api.ts).
+
+/** A file request owned by the current user. */
+export interface FileRequest {
+  id: string;
+  title: string;
+  description: string | null;
+  token: string | null;
+  /** R_priv wrapped under the owner's master key (base64, opaque). Used to
+   *  rebuild R_pub for the "copy link" action. */
+  wrapped_private_key: string | null;
+  wrap_nonce: string | null;
+  target_folder_id: string | null;
+  max_files: number;
+  max_total_bytes: number | null;
+  files_received: number;
+  total_bytes_received: number;
+  expires_at: string | null;
+  closed: boolean;
+  closed_at: string | null;
+  created_at: string;
+  /** `APP_URL/r/<token>` — the client appends `#<R_pub>` to share. */
+  request_url: string | null;
+}
+
+export interface CreateFileRequestParams {
+  title: string;
+  description?: string;
+  target_folder_id?: string;
+  max_files?: number;
+  max_total_bytes?: number;
+  expires_in_secs?: number;
+  /** R_priv wrapped under the master key (base64). */
+  wrapped_private_key: string;
+  /** GCM nonce used to wrap R_priv (base64). */
+  wrap_nonce: string;
+}
+
+export interface CreateFileRequestResult {
+  id: string;
+  token: string;
+  target_folder_id: string | null;
+  max_files: number;
+  max_total_bytes: number | null;
+  files_received: number;
+  total_bytes_received: number;
+  expires_at: string | null;
+  closed: boolean;
+  created_at: string;
+  request_url: string | null;
+}
+
+/** POST /api/v1/file-requests — create a request. Returns the token + caps. */
+export async function createFileRequest(params: CreateFileRequestParams): Promise<CreateFileRequestResult> {
+  return request<CreateFileRequestResult>('POST', '/api/v1/file-requests', params);
+}
+
+/** GET /api/v1/file-requests — the owner's requests (incl. wrapped key for link rebuild). */
+export async function listFileRequests(): Promise<{ file_requests: FileRequest[] }> {
+  return request<{ file_requests: FileRequest[] }>('GET', '/api/v1/file-requests');
+}
+
+/** POST /api/v1/file-requests/:id/close — stop accepting new uploads (received files kept). */
+export async function closeFileRequest(id: string): Promise<{ id: string; closed: boolean; closed_at: string | null }> {
+  return request<{ id: string; closed: boolean; closed_at: string | null }>(
+    'POST',
+    `/api/v1/file-requests/${id}/close`,
+  );
 }

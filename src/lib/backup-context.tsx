@@ -17,6 +17,8 @@ import {
   type NativeBackupProgress,
 } from '../../modules/beebeeb-crypto';
 import { ensureBackupFolders, type BackupCategory } from '../services/BackupService';
+import { useCrypto } from './crypto-context';
+import { recordRuntimeTrace } from './runtime-trace';
 
 const BACKUP_PHOTO_KEY = 'beebeeb_camera_backup';
 const BACKUP_CONTACTS_KEY = 'beebeeb_contacts_backup';
@@ -103,6 +105,7 @@ async function getStoredToken(): Promise<string | null> {
 }
 
 export function BackupProvider({ children }: { children: React.ReactNode }) {
+  const { isUnlocked } = useCrypto();
   const [isPhotoBackupEnabled, setIsPhotoBackupEnabled] = useState(false);
   const [isContactsBackupEnabled, setIsContactsBackupEnabled] = useState(false);
   const [isCalendarBackupEnabled, setIsCalendarBackupEnabled] = useState(false);
@@ -141,9 +144,22 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
     if (Platform.OS === 'web') return;
     const token = await getStoredToken();
     if (!token) return;
+    if (!isUnlocked) {
+      recordRuntimeTrace('backup.native.enable.deferred', {
+        category,
+        reason: 'vault_locked',
+        runNow: options.runNow !== false,
+      });
+      return;
+    }
 
     const { categoryFolderId } = await ensureBackupFolders(category);
     await configureBackupFolder(category, categoryFolderId);
+    recordRuntimeTrace('backup.native.folder_configured', {
+      category,
+      hasParentFolder: categoryFolderId.length > 0,
+      runNow: options.runNow !== false,
+    });
 
     if (category === 'camera_roll') {
       await enablePhotoBackup(token);
@@ -160,7 +176,7 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
         await enableCalendarBackup(token);
       }
     }
-  }, []);
+  }, [isUnlocked]);
 
   // Load persisted preferences on mount
   useEffect(() => {

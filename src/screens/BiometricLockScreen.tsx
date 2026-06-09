@@ -45,8 +45,14 @@ export default function BiometricLockScreen({ onUnlocked }: Props) {
   const [authenticating, setAuthenticating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const autoPromptedRef = useRef(false);
+  // Guards against a second concurrent prompt — the auto-prompt effect and a
+  // user tap can otherwise both call authenticate(), stacking two Face ID
+  // sheets. Cleared in the finally block once the first one settles.
+  const inFlightRef = useRef(false);
 
   const authenticate = useCallback(async () => {
+    if (inFlightRef.current) return;
+    inFlightRef.current = true;
     setError(null);
     setAuthenticating(true);
     try {
@@ -70,6 +76,7 @@ export default function BiometricLockScreen({ onUnlocked }: Props) {
       setError('Could not access biometrics. Tap to try again.');
     } finally {
       setAuthenticating(false);
+      inFlightRef.current = false;
     }
   }, [onUnlocked]);
 

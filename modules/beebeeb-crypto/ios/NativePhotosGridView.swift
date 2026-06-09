@@ -875,7 +875,7 @@ public final class NativePhotosGridView: ExpoView {
     let thumbnailMetrics = PhotoGridCell.metricsSnapshot()
     let thumbnailDelta = thumbnailMetrics.delta(from: pinchThumbnailMetricsStart)
     let frames = max(pinchAppliedFrameCount, 1)
-    onPerfEvent([
+    let payload: [String: Any] = [
       "type": "pinch",
       "result": result,
       "columns": columns,
@@ -891,7 +891,9 @@ public final class NativePhotosGridView: ExpoView {
       "fileCacheHits": thumbnailDelta.fileCacheHits,
       "fileLoadStarts": thumbnailDelta.fileLoadStarts,
       "localAssetStarts": thumbnailDelta.localAssetStarts
-    ])
+    ]
+    RuntimeTrace.event("photos.native.pinch.perf", payload)
+    onPerfEvent(payload)
   }
 
   private func relayout(columns: Int, anchor: CGPoint, animated: Bool = false) {
@@ -1078,6 +1080,11 @@ public final class NativePhotosGridView: ExpoView {
   }
 
   private func flushScrollSideEffects() {
+    RuntimeTrace.event("photos.native.flush_scroll_side_effects", [
+      "hasPendingItems": pendingItemsAfterScroll != nil,
+      "needsVisibleReconfigure": needsVisibleReconfigureAfterScroll,
+      "needsScrollSideEffects": needsScrollSideEffectsAfterScroll
+    ])
     isScrollingWithMomentum = false
     visibleDispatchWorkItem?.cancel()
     visibleDispatchWorkItem = nil
@@ -1258,6 +1265,10 @@ extension NativePhotosGridView: UICollectionViewDataSource, UICollectionViewDele
 extension NativePhotosGridView: UICollectionViewDataSourcePrefetching {
   public func collectionView(_ collectionView: UICollectionView, prefetchItemsAt indexPaths: [IndexPath]) {
     let items = indexPaths.compactMap { item(at: $0) }
+    RuntimeTrace.event("photos.native.prefetch.start", [
+      "count": items.count,
+      "columns": currentColumns
+    ])
     let side = collectionView.bounds.width / CGFloat(max(currentColumns, 1))
     let targetSize = CGSize(width: side, height: side)
     for item in items {
@@ -1276,6 +1287,7 @@ extension NativePhotosGridView: UICollectionViewDataSourcePrefetching {
 
   public func collectionView(_ collectionView: UICollectionView, cancelPrefetchingForItemsAt indexPaths: [IndexPath]) {
     let items = indexPaths.compactMap { item(at: $0) }
+    RuntimeTrace.event("photos.native.prefetch.cancel", ["count": items.count])
     for item in items {
       thumbnailPrefetchTasks.removeValue(forKey: item.id)?.cancel()
     }
@@ -1381,6 +1393,7 @@ private final class PhotoGridCell: UICollectionViewCell {
     // Keep imageView.image — the stale thumbnail acts as a placeholder until
     // configure() loads the correct one (same technique as Apple Photos).
     if let previousId {
+      RuntimeTrace.event("photos.native.cell.prepare_for_reuse", ["fileId": previousId])
       Task {
         await ThumbnailService.shared.cancelPhotoKitRequest(for: previousId)
       }
@@ -1405,6 +1418,13 @@ private final class PhotoGridCell: UICollectionViewCell {
   ) {
     let fileId = item.id
     let identifierChanged = representedId != fileId
+    RuntimeTrace.event("photos.native.cell.configure", [
+      "fileId": fileId,
+      "identifierChanged": identifierChanged,
+      "hasLocalAssetId": item.localAssetId != nil,
+      "hasThumbnailUri": item.thumbnailUri != nil,
+      "columns": columns
+    ])
     if identifierChanged {
       thumbnailLoadTask?.cancel()
       thumbnailLoadTask = nil
@@ -1422,9 +1442,11 @@ private final class PhotoGridCell: UICollectionViewCell {
     let targetSize = CGSize(width: cellSize, height: cellSize)
 
     if !identifierChanged, thumbnailLoadTask != nil {
+      RuntimeTrace.event("photos.native.cell.skip_duplicate_task", ["fileId": fileId])
       return
     }
     if !identifierChanged, imageView.image != nil {
+      RuntimeTrace.event("photos.native.cell.skip_existing_image", ["fileId": fileId])
       return
     }
 
@@ -1446,13 +1468,22 @@ private final class PhotoGridCell: UICollectionViewCell {
           else { return }
           if let image {
             self.imageView.image = image
+            RuntimeTrace.event("photos.native.cell.image_ready", [
+              "fileId": fileId,
+              "source": resolved.source.rawValue
+            ])
           }
           self.thumbnailLoadTask = nil
           self.inFlightLoadId = nil
         }
       } catch is CancellationError {
         // Reuse or prefetch cancellation; keep the current placeholder/image.
+        RuntimeTrace.event("photos.native.cell.load_cancelled", ["fileId": fileId])
       } catch {
+        RuntimeTrace.event("photos.native.cell.load_failed", [
+          "fileId": fileId,
+          "error": error.localizedDescription
+        ])
         await MainActor.run {
           guard
             let self,

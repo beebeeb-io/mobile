@@ -15,7 +15,7 @@ public actor ThumbnailService {
 
   internal var localIdentifierLookup: ((FileId) -> String?)?
 
-  internal var fileKeyProvider: ((FileId) async -> Data?)?
+  internal var remoteThumbnailDecryptProvider: ((FileId, Data, Data) async throws -> Data?)?
   internal var apiCredentialsProvider: (() async -> (URL, String)?)?
 
   private let documentDirectory: URL = {
@@ -76,20 +76,40 @@ extension ThumbnailService {
     for fileId: FileId,
     targetSize: CGSize
   ) async throws -> ResolvedThumbnail {
+    RuntimeTrace.event("thumbnail.native.request", [
+      "fileId": fileId,
+      "targetWidth": Int(targetSize.width),
+      "targetHeight": Int(targetSize.height),
+      "state": String(describing: currentState(for: fileId))
+    ])
     if let pending = inFlight[fileId] {
+      RuntimeTrace.event("thumbnail.native.join_inflight", ["fileId": fileId])
       return try await pending.value
     }
 
     let task: Task<ResolvedThumbnail, Error> = Task { [weak self] in
       guard let self else { throw ThumbnailServiceError.cancelled }
+      try Task.checkCancellation()
       return try await self.resolve(fileId: fileId, targetSize: targetSize)
     }
     inFlight[fileId] = task
     defer { inFlight[fileId] = nil }
 
     do {
-      return try await task.value
+      let resolved = try await task.value
+      RuntimeTrace.event("thumbnail.native.resolved", [
+        "fileId": fileId,
+        "source": resolved.source.rawValue
+      ])
+      return resolved
+    } catch is CancellationError {
+      RuntimeTrace.event("thumbnail.native.cancelled", ["fileId": fileId])
+      throw ThumbnailServiceError.cancelled
     } catch {
+      RuntimeTrace.event("thumbnail.native.failed", [
+        "fileId": fileId,
+        "error": error.localizedDescription
+      ])
       throw error
     }
   }
@@ -99,35 +119,55 @@ extension ThumbnailService {
     targetSize: CGSize
   ) async throws -> ResolvedThumbnail {
     let localId = localIdentifierLookup?(fileId) ?? nil
+    RuntimeTrace.event("thumbnail.native.resolve.start", [
+      "fileId": fileId,
+      "hasLocalIdentifier": localId != nil
+    ])
 
     if let localId {
       let photoKitKey = CacheKey(fileId: fileId, source: .photoKit)
       if let hit = cacheHit(photoKitKey) {
         setState(.photoKitResolved(hit), for: fileId)
+        RuntimeTrace.event("thumbnail.native.cache_hit", [
+          "fileId": fileId,
+          "source": "photoKitMemory"
+        ])
         return ResolvedThumbnail(fileURL: hit, source: .photoKit)
       }
 
       setState(.photoKitPending, for: fileId)
+      RuntimeTrace.event("thumbnail.native.photokit.request", [
+        "fileId": fileId,
+        "localIdentifier": localId
+      ])
       let result = await PhotoKitResolver.shared.requestImage(
         fileId: fileId,
         localIdentifier: localId,
         targetSize: targetSize
       )
+      try Task.checkCancellation()
 
       switch result {
       case .success(let url):
         writeCache(photoKitKey, url: url)
         setState(.photoKitResolved(url), for: fileId)
+        RuntimeTrace.event("thumbnail.native.photokit.success", ["fileId": fileId])
         return ResolvedThumbnail(fileURL: url, source: .photoKit)
 
       case .notFound:
+        RuntimeTrace.event("thumbnail.native.photokit.not_found", ["fileId": fileId])
         try await handleStaleLocalId(fileId: fileId)
 
       case .error(let message):
+        RuntimeTrace.event("thumbnail.native.photokit.failed", [
+          "fileId": fileId,
+          "error": message
+        ])
         logger.warning("PhotoKit transient failure for \(fileId): \(message)")
       }
     }
 
+    RuntimeTrace.event("thumbnail.native.remote_fallback", ["fileId": fileId])
     return try await resolveRemote(fileId: fileId, targetSize: targetSize)
   }
 }
@@ -136,6 +176,7 @@ extension ThumbnailService {
   fileprivate func handleStaleLocalId(fileId: FileId) async throws {
     setState(.staleLocalId, for: fileId)
     cache.removeValue(forKey: CacheKey(fileId: fileId, source: .photoKit))
+    RuntimeTrace.event("thumbnail.native.stale_local_identifier", ["fileId": fileId])
     logger.notice("STALE_LOCALID for \(fileId) — emitting onAssociationCleared")
     eventEmitter?.emit("onAssociationCleared", body: [
       "fileId": fileId,
@@ -152,19 +193,30 @@ extension ThumbnailService {
 
     if let memHit = cacheHit(remoteKey) {
       setState(.remoteResolved(memHit), for: fileId)
+      RuntimeTrace.event("thumbnail.native.cache_hit", [
+        "fileId": fileId,
+        "source": "remoteMemory"
+      ])
       return ResolvedThumbnail(fileURL: memHit, source: .remote)
     }
     if let diskHit = diskCacheURL(for: fileId) {
       writeCache(remoteKey, url: diskHit)
       setState(.remoteResolved(diskHit), for: fileId)
+      RuntimeTrace.event("thumbnail.native.cache_hit", [
+        "fileId": fileId,
+        "source": "remoteDisk"
+      ])
       return ResolvedThumbnail(fileURL: diskHit, source: .cache)
     }
 
     setState(.remotePending, for: fileId)
+    RuntimeTrace.event("thumbnail.native.remote.request", ["fileId": fileId])
+    try Task.checkCancellation()
 
     guard let credentialsProvider = apiCredentialsProvider,
           let credentials = await credentialsProvider() else {
       setState(.remoteFailed(category: .unknown), for: fileId)
+      RuntimeTrace.event("thumbnail.native.remote.missing_credentials", ["fileId": fileId])
       throw ThumbnailServiceError.remoteUnavailable
     }
     let (baseURL, sessionToken) = credentials
@@ -177,15 +229,29 @@ extension ThumbnailService {
     let (data, response): (Data, URLResponse)
     do {
       (data, response) = try await URLSession.shared.data(for: request)
+    } catch is CancellationError {
+      RuntimeTrace.event("thumbnail.native.remote.cancelled", ["fileId": fileId])
+      throw ThumbnailServiceError.cancelled
     } catch {
       setState(.remoteFailed(category: .network5xx), for: fileId)
+      RuntimeTrace.event("thumbnail.native.remote.network_failed", [
+        "fileId": fileId,
+        "error": error.localizedDescription
+      ])
       throw ThumbnailServiceError.remoteUnavailable
     }
+    try Task.checkCancellation()
 
     guard let http = response as? HTTPURLResponse else {
       setState(.remoteFailed(category: .network5xx), for: fileId)
+      RuntimeTrace.event("thumbnail.native.remote.invalid_response", ["fileId": fileId])
       throw ThumbnailServiceError.remoteUnavailable
     }
+    RuntimeTrace.event("thumbnail.native.remote.http", [
+      "fileId": fileId,
+      "status": http.statusCode,
+      "bytes": data.count
+    ])
     if http.statusCode == 404 {
       setState(.remoteFailed(category: .unknown), for: fileId)
       throw ThumbnailServiceError.remoteUnavailable
@@ -200,29 +266,39 @@ extension ThumbnailService {
     }
     guard data.count >= 13 else {
       setState(.remoteFailed(category: .decryptFailed), for: fileId)
+      RuntimeTrace.event("thumbnail.native.remote.too_small", [
+        "fileId": fileId,
+        "bytes": data.count
+      ])
       throw ThumbnailServiceError.decryptFailed
     }
     if data.count >= 3, data[0] == 0xFF, data[1] == 0xD8, data[2] == 0xFF {
       setState(.remoteFailed(category: .decryptFailed), for: fileId)
+      RuntimeTrace.event("thumbnail.native.remote.legacy_plain_jpeg", ["fileId": fileId])
       throw ThumbnailServiceError.decryptFailed
     }
     let nonce = data.prefix(12)
     let ciphertext = data.dropFirst(12)
 
-    guard let keyProvider = fileKeyProvider,
-          let fileKey = await keyProvider(fileId) else {
+    guard let decryptProvider = remoteThumbnailDecryptProvider else {
       setState(.remoteFailed(category: .decryptFailed), for: fileId)
+      RuntimeTrace.event("thumbnail.native.remote.missing_file_key", ["fileId": fileId])
       throw ThumbnailServiceError.decryptFailed
     }
     let plaintext: Data
     do {
-      plaintext = try BeebeebCryptoBridge.decryptChunk(
-        key: fileKey,
-        nonce: Data(nonce),
-        ciphertext: Data(ciphertext)
-      )
+      guard let decrypted = try await decryptProvider(fileId, Data(nonce), Data(ciphertext)) else {
+        setState(.remoteFailed(category: .decryptFailed), for: fileId)
+        RuntimeTrace.event("thumbnail.native.remote.missing_file_key", ["fileId": fileId])
+        throw ThumbnailServiceError.decryptFailed
+      }
+      plaintext = decrypted
     } catch {
       setState(.remoteFailed(category: .decryptFailed), for: fileId)
+      RuntimeTrace.event("thumbnail.native.remote.decrypt_failed", [
+        "fileId": fileId,
+        "error": error.localizedDescription
+      ])
       throw ThumbnailServiceError.decryptFailed
     }
 
@@ -233,6 +309,10 @@ extension ThumbnailService {
       try plaintext.write(to: outURL, options: .atomic)
     } catch {
       setState(.remoteFailed(category: .unknown), for: fileId)
+      RuntimeTrace.event("thumbnail.native.remote.write_failed", [
+        "fileId": fileId,
+        "error": error.localizedDescription
+      ])
       throw ThumbnailServiceError.ioFailure(error.localizedDescription)
     }
 
@@ -242,6 +322,10 @@ extension ThumbnailService {
       "fileId": fileId,
       "source": "remote",
       "uri": outURL.absoluteString,
+    ])
+    RuntimeTrace.event("thumbnail.native.remote.ready", [
+      "fileId": fileId,
+      "bytes": plaintext.count
     ])
     return ResolvedThumbnail(fileURL: outURL, source: .remote)
   }
@@ -339,6 +423,9 @@ extension ThumbnailService {
 
 extension ThumbnailService {
   public func cancelPhotoKitRequest(for fileId: FileId) async {
+    RuntimeTrace.event("thumbnail.native.cancel_request", ["fileId": fileId])
+    inFlight[fileId]?.cancel()
+    inFlight.removeValue(forKey: fileId)
     await PhotoKitResolver.shared.cancelInFlight(for: fileId)
   }
 

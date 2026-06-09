@@ -36,6 +36,7 @@ import {
   getToken,
 } from './api';
 import { rateLimitedFetch } from './rate-limited-fetch';
+import { recordRuntimeTrace } from './runtime-trace';
 
 const PREVIEW_CACHE_DIR = `${FileSystem.cacheDirectory}preview/`;
 const MAX_PREVIEW_CACHE_ITEMS = 24;
@@ -74,6 +75,16 @@ function responseHeaderInt(headers: Headers, key: string): number | null {
   if (!value) return null;
   const n = Number.parseInt(value, 10);
   return Number.isFinite(n) && n >= 0 ? n : null;
+}
+
+function errorTraceFields(error: unknown): Record<string, unknown> {
+  if (error instanceof ApiError) {
+    return { name: error.name, status: error.status, message: error.message };
+  }
+  if (error instanceof Error) {
+    return { name: error.name, message: error.message };
+  }
+  return { message: String(error) };
 }
 
 async function errorMessageFromResponse(res: Response): Promise<string> {
@@ -169,30 +180,59 @@ export async function decryptToTempFile(
   options: PreviewDecryptOptions = {},
 ): Promise<string> {
   if (!isNativeAvailable) {
+    recordRuntimeTrace('preview.decrypt.native_unavailable', { fileId });
     throw new Error('Preview requires a dev client build with native crypto.');
   }
 
+  const startedAt = Date.now();
   throwIfAborted(options.signal);
   await ensureCacheDir();
   throwIfAborted(options.signal);
 
   const ext = extension.replace(/^\./, '');
   const outputPath = `${PREVIEW_CACHE_DIR}${fileId}.${ext}`;
+  recordRuntimeTrace('preview.decrypt.start', {
+    fileId,
+    extension: ext,
+    sizeBytes: sizeBytes ?? null,
+    chunkCount: chunkCount ?? null,
+    hasMasterKeyHandle: masterKeyHandleId != null,
+    hasFileKeyProvider: fileKey != null,
+  });
 
   // Check cache — return immediately if a non-empty file exists
   const cached = await FileSystem.getInfoAsync(outputPath);
   if (cached.exists && cached.size && cached.size > 0) {
     throwIfAborted(options.signal);
+    recordRuntimeTrace('preview.decrypt.cache_hit', {
+      fileId,
+      extension: ext,
+      cachedSize: cached.size,
+      elapsedMs: Date.now() - startedAt,
+    });
     options.onProgress?.({ requestId: '', fileId, stage: 'complete' });
     return outputPath;
   }
+  recordRuntimeTrace('preview.decrypt.cache_miss', {
+    fileId,
+    extension: ext,
+    cachedExists: cached.exists,
+    cachedSize: cached.exists ? cached.size ?? 0 : 0,
+  });
 
   const token = await getToken();
-  if (!token) throw new Error('Not signed in');
+  if (!token) {
+    recordRuntimeTrace('preview.decrypt.no_token', { fileId });
+    throw new Error('Not signed in');
+  }
   throwIfAborted(options.signal);
 
   if (masterKeyHandleId != null) {
     try {
+      recordRuntimeTrace('preview.decrypt.native.request', {
+        fileId,
+        extension: ext,
+      });
       const result = await downloadAndDecryptFileNative(
         masterKeyHandleId,
         getApiUrl(),
@@ -203,34 +243,80 @@ export async function decryptToTempFile(
       );
       if (options.signal?.aborted) {
         await FileSystem.deleteAsync(outputPath, { idempotent: true }).catch(() => {});
+        recordRuntimeTrace('preview.decrypt.native.aborted_after_result', { fileId });
         throw abortError();
       }
       await prunePreviewCache(outputPath);
+      recordRuntimeTrace('preview.decrypt.native.success', {
+        fileId,
+        extension: ext,
+        plaintextSize: result.plaintextSize,
+        chunksDecrypted: result.chunksDecrypted,
+        elapsedMs: Date.now() - startedAt,
+      });
       return result.outputUri || outputPath;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (!message.includes('downloadAndDecryptFileNative is not available')) {
+        recordRuntimeTrace('preview.decrypt.native.failed', {
+          fileId,
+          extension: ext,
+          elapsedMs: Date.now() - startedAt,
+          ...errorTraceFields(error),
+        });
         throw error;
       }
+      recordRuntimeTrace('preview.decrypt.native.not_available_fallback', { fileId });
     }
   }
 
   if (!fileKey) {
+    recordRuntimeTrace('preview.decrypt.no_key_material', { fileId });
     throw new Error('Native preview decrypt requires a master key handle.');
   }
+  recordRuntimeTrace('preview.decrypt.file_key.request', { fileId });
   const resolvedFileKey = typeof fileKey === 'function' ? await fileKey() : fileKey;
+  recordRuntimeTrace('preview.decrypt.file_key.ready', {
+    fileId,
+    keyLength: resolvedFileKey.length,
+  });
   throwIfAborted(options.signal);
 
   // Fallback for older native builds: download the full encrypted blob through
   // JS, decrypt through the chunk bridge, and write base64. New iOS builds
   // should use the native handle path above.
-  const res = await rateLimitedFetch(getDownloadUrl(fileId), {
-    headers: { Authorization: `Bearer ${token}` },
-    signal: options.signal,
-  });
+  let res: Response;
+  try {
+    recordRuntimeTrace('preview.decrypt.js_download.request', { fileId });
+    res = await rateLimitedFetch(getDownloadUrl(fileId), {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: options.signal,
+    });
+  } catch (error) {
+    recordRuntimeTrace('preview.decrypt.js_download.network_failed', {
+      fileId,
+      ...errorTraceFields(error),
+    });
+    throw error;
+  }
   throwIfAborted(options.signal);
+  recordRuntimeTrace('preview.decrypt.js_download.response', {
+    fileId,
+    status: res.status,
+    ok: res.ok,
+    contentLength: responseHeaderInt(res.headers, 'Content-Length'),
+    originalSizeHeader: responseHeaderInt(res.headers, 'X-Original-Size'),
+    chunkCountHeader: responseHeaderInt(res.headers, 'X-Chunk-Count'),
+    chunkSizeHeader: responseHeaderInt(res.headers, 'X-Chunk-Size'),
+  });
   if (!res.ok) {
-    throw new ApiError(res.status, await errorMessageFromResponse(res));
+    const message = await errorMessageFromResponse(res);
+    recordRuntimeTrace('preview.decrypt.js_download.http_failed', {
+      fileId,
+      status: res.status,
+      message,
+    });
+    throw new ApiError(res.status, message);
   }
 
   const contentLength = responseHeaderInt(res.headers, 'Content-Length');
@@ -242,6 +328,10 @@ export async function decryptToTempFile(
     bytesTotal: contentLength ?? 0,
   });
   const encBytes = new Uint8Array(await res.arrayBuffer());
+  recordRuntimeTrace('preview.decrypt.js_download.body_read', {
+    fileId,
+    encryptedBytes: encBytes.length,
+  });
   throwIfAborted(options.signal);
 
   // Resolve plaintext size
@@ -258,6 +348,17 @@ export async function decryptToTempFile(
   const effectiveChunkCount = headerChunkCount ?? chunkCount ?? inferred ?? 1;
   const effectiveChunkSize =
     headerChunkSize && headerChunkSize > 0 ? headerChunkSize : undefined;
+  recordRuntimeTrace('preview.decrypt.chunk_metadata', {
+    fileId,
+    encryptedBytes: encBytes.length,
+    effectiveSize,
+    effectiveChunkCount,
+    effectiveChunkSize: effectiveChunkSize ?? CHUNK_SIZE,
+    headerOriginalSize,
+    headerChunkCount,
+    headerChunkSize,
+    inferredChunkCount: inferred,
+  });
 
   // Fast path: when the native batched decrypt (task 0438) is available,
   // hand the contiguous encrypted body to Rust in one call and let it slice,
@@ -277,6 +378,12 @@ export async function decryptToTempFile(
       bytes: encBytes.length,
     });
     try {
+      recordRuntimeTrace('preview.decrypt.fast_path.request', {
+        fileId,
+        encryptedBytes: encBytes.length,
+        effectiveChunkCount,
+        effectiveChunkSize: effectiveChunkSize ?? CHUNK_SIZE,
+      });
       options.onProgress?.({
         requestId: '',
         fileId,
@@ -308,6 +415,11 @@ export async function decryptToTempFile(
         throw new Error('Native batched decrypt returned zero bytes.');
       }
       await prunePreviewCache(outputPath);
+      recordRuntimeTrace('preview.decrypt.fast_path.success', {
+        fileId,
+        written,
+        elapsedMs: Date.now() - startedAt,
+      });
       return outputPath;
     } catch (err) {
       // On any failure mid-batch, scrub the partial file so the cache doesn't
@@ -318,7 +430,13 @@ export async function decryptToTempFile(
       if (err instanceof DecryptToFileUnavailableError) {
         // Probe lied (e.g. bridge ripped out at runtime) — fall through to
         // the per-chunk JS loop below.
+        recordRuntimeTrace('preview.decrypt.fast_path.unavailable_fallback', { fileId });
       } else {
+        recordRuntimeTrace('preview.decrypt.fast_path.failed', {
+          fileId,
+          elapsedMs: Date.now() - startedAt,
+          ...errorTraceFields(err),
+        });
         throw err;
       }
     }
@@ -328,33 +446,67 @@ export async function decryptToTempFile(
   // base64. Retained per the spec's "Existing per-chunk path retained as a
   // fallback" criterion — covers older builds without the batched method
   // and the unlikely runtime-unhealthy scenario above.
-  const decrypted = await decryptEncryptedBytes(
-    resolvedFileKey,
-    encBytes,
-    effectiveChunkCount,
-    effectiveSize,
-    effectiveChunkSize,
-    (chunksCompleted, chunksTotal) => {
-      options.onProgress?.({
-        requestId: '',
-        fileId,
-        stage: 'decrypting',
-        chunksCompleted,
-        chunksTotal,
-      });
-    },
-  );
+  let decrypted: Uint8Array;
+  try {
+    recordRuntimeTrace('preview.decrypt.js_loop.request', {
+      fileId,
+      encryptedBytes: encBytes.length,
+      effectiveChunkCount,
+      effectiveChunkSize: effectiveChunkSize ?? CHUNK_SIZE,
+    });
+    decrypted = await decryptEncryptedBytes(
+      resolvedFileKey,
+      encBytes,
+      effectiveChunkCount,
+      effectiveSize,
+      effectiveChunkSize,
+      (chunksCompleted, chunksTotal) => {
+        options.onProgress?.({
+          requestId: '',
+          fileId,
+          stage: 'decrypting',
+          chunksCompleted,
+          chunksTotal,
+        });
+      },
+    );
+    recordRuntimeTrace('preview.decrypt.js_loop.success', {
+      fileId,
+      plaintextBytes: decrypted.length,
+    });
+  } catch (error) {
+    recordRuntimeTrace('preview.decrypt.js_loop.failed', {
+      fileId,
+      ...errorTraceFields(error),
+    });
+    throw error;
+  }
   throwIfAborted(options.signal);
 
   // Write plaintext to temp file
-  await FileSystem.writeAsStringAsync(outputPath, uint8ArrayToBase64(decrypted), {
-    encoding: FileSystem.EncodingType.Base64,
-  });
+  try {
+    await FileSystem.writeAsStringAsync(outputPath, uint8ArrayToBase64(decrypted), {
+      encoding: FileSystem.EncodingType.Base64,
+    });
+  } catch (error) {
+    recordRuntimeTrace('preview.decrypt.write_failed', {
+      fileId,
+      ...errorTraceFields(error),
+    });
+    throw error;
+  }
   if (options.signal?.aborted) {
     await FileSystem.deleteAsync(outputPath, { idempotent: true }).catch(() => {});
+    recordRuntimeTrace('preview.decrypt.aborted_after_write', { fileId });
     throw abortError();
   }
   await prunePreviewCache(outputPath);
+  recordRuntimeTrace('preview.decrypt.success', {
+    fileId,
+    extension: ext,
+    plaintextBytes: decrypted.length,
+    elapsedMs: Date.now() - startedAt,
+  });
 
   return outputPath;
 }

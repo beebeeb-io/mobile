@@ -2,68 +2,64 @@ import Foundation
 
 /// Handles file upload from the Share Extension to the Beebeeb API.
 ///
-/// With BeebeebCore.xcframework linked (Phase 2), this class encrypts chunks
-/// in-process and uploads directly via URLSession. If the master key is
-/// unavailable from the shared keychain (device locked, first unlock not done),
-/// falls back to staging unencrypted in the App Group for the main app to
-/// encrypt and upload on next launch.
+/// Streams encryption through the shared beebeeb-core chunk ladder
+/// (`ChunkEncryptorHandle`) and uploads via the v2 chunked-upload session
+/// (`/api/v1/uploads/init` → `PUT /uploads/{session}/chunks/{i}` →
+/// `/uploads/{session}/complete`) — the SAME contract the File Provider uses
+/// (task 0673). Key hygiene: the caller passes an opaque `MasterKeyHandle`;
+/// raw `masterKey: Data` never crosses into this class. For file shares the
+/// plaintext streams from disk one core-planned chunk at a time (bounded
+/// memory) — a multi-GB share is never read whole into RAM.
+///
+/// If the master key is unavailable, `ShareViewController` refuses the share at
+/// key-load, so we never reach this class without a key — there is no
+/// plaintext-staging fallback (writing plaintext to the App Group leaked it on
+/// uninstall; removed by task 0428).
 final class ShareUploader {
 
     // MARK: - Types
 
-    /// Manifest format compatible with PendingSharesAccess.swift in the main app.
-    /// Includes an optional `parentId` field that the main app uses to route
-    /// the upload to the correct folder.
-    struct IncomingShareManifest: Codable {
-        let id: String
-        let filename: String
-        let relativePath: String
-        let mimeType: String?
-        let sizeBytes: Int64
-        let timestamp: TimeInterval
-        let kind: String
-        let parentId: String?
-    }
-
     enum UploadError: LocalizedError {
-        case noAppGroup
         case fileReadFailed
-        case stagingFailed(Error)
+        case cryptoUnavailable(String)
         case uploadFailed(Int, String)
         case networkError(Error)
 
         var errorDescription: String? {
             switch self {
-            case .noAppGroup: return "App Group container not available"
             case .fileReadFailed: return "Could not read file data"
-            case .stagingFailed(let e): return "Staging failed: \(e.localizedDescription)"
+            case .cryptoUnavailable(let msg): return "Could not encrypt the file: \(msg). Open Beebeeb once, then try sharing again."
             case .uploadFailed(let code, let msg): return "Upload failed (HTTP \(code)): \(msg)"
             case .networkError(let e): return "Network error: \(e.localizedDescription)"
             }
         }
     }
 
+    /// Result of a share-sheet upload. The previous `staged` variant has been
+    /// removed — we never write plaintext to disk anymore.
     enum UploadResult {
-        /// File was encrypted and uploaded directly (Phase 2)
         case uploaded(fileId: String)
-        /// File was staged to App Group for main app to encrypt and upload
-        case staged(fileId: String)
     }
 
-    // MARK: - Constants
-
-    private static let appGroup = "group.io.beebeeb.shared"
-    /// Stages into IncomingShares/ which the main app's PendingSharesAccess.swift
-    /// already knows how to read via the native bridge → JS PendingSharesHandler.
-    private static let incomingDir = "IncomingShares"
+    /// v2 init response (subset we use).
+    private struct InitResponse: Decodable {
+        let file_id: String
+        let upload_session_id: String
+    }
 
     // MARK: - Properties
 
     private let apiUrl: String
     private let sessionToken: String
-    private let masterKey: Data
+    private let masterKey: MasterKeyHandle
 
-    init(apiUrl: String, sessionToken: String, masterKey: Data) {
+    /// beebeeb-core chunk-plan profile. Chunk size + count are derived in Rust
+    /// from this profile + the plaintext size — never hardcoded here (the old
+    /// 4 MiB constant is gone). Must be one of "desktop" | "web" | "mobile" |
+    /// "backup".
+    private static let chunkProfile = "mobile"
+
+    init(apiUrl: String, sessionToken: String, masterKey: MasterKeyHandle) {
         self.apiUrl = apiUrl
         self.sessionToken = sessionToken
         self.masterKey = masterKey
@@ -71,245 +67,236 @@ final class ShareUploader {
 
     // MARK: - Public
 
-    /// Upload or stage a file. Returns the result indicating whether the file
-    /// was uploaded directly or staged for the main app.
-    ///
-    /// Progress callback receives (fraction 0...1, statusMessage).
-    func upload(
-        fileData: Data,
+    /// Stream-encrypt a file on disk and upload it. Bounded memory: the core
+    /// encryptor reads + encrypts one plan-sized chunk at a time from `fileURL`.
+    func uploadFile(
+        at fileURL: URL,
         fileName: String,
         parentId: String?,
         onProgress: @escaping (Float, String) -> Void
     ) async throws -> UploadResult {
-        let fileID = UUID().uuidString
+        let fileId = UUID().uuidString.lowercased()
 
-        // Attempt encryption and direct upload. If crypto fails (e.g. master key
-        // unavailable from keychain, or any UniFFI error), fall back to staging
-        // the file unencrypted for the main app to handle on next launch.
+        let fileSize: Int64
         do {
-            onProgress(0.1, "Encrypting...")
-            let encryptedData = try BeebeebCryptoShim.encrypt(data: fileData, masterKey: masterKey, fileID: fileID)
-            let encryptedName = try BeebeebCryptoShim.encryptFilename(fileName, masterKey: masterKey, fileID: fileID)
+            let attrs = try FileManager.default.attributesOfItem(atPath: fileURL.path)
+            fileSize = (attrs[.size] as? NSNumber)?.int64Value ?? 0
+        } catch {
+            throw UploadError.fileReadFailed
+        }
+        guard fileSize > 0 else { throw UploadError.fileReadFailed }
 
-            // Encryption succeeded — upload directly
-            onProgress(0.3, "Uploading...")
-            try await directUpload(
-                fileID: fileID,
-                encryptedData: encryptedData,
-                encryptedName: encryptedName,
-                parentId: parentId,
-                plaintextSize: fileData.count,
-                onProgress: onProgress
+        onProgress(0.05, "Encrypting...")
+        let encryptedName: String
+        let encryptor: ChunkEncryptorHandle
+        let plan: ChunkPlanResult
+        do {
+            encryptedName = try masterKey.encryptName(fileId: fileId, filename: fileName, mimeType: nil)
+            encryptor = try ChunkEncryptorHandle.fromFile(
+                masterKey: masterKey,
+                fileId: fileId,
+                inputPath: fileURL.path,
+                profile: Self.chunkProfile
             )
-            return .uploaded(fileId: fileID)
-
-        } catch is BeebeebCryptoShim.CryptoError {
-            // Crypto unavailable — stage for main app
-            onProgress(0.5, "Saving locally...")
-            try stageForMainApp(
-                fileID: fileID,
-                fileData: fileData,
-                fileName: fileName,
-                parentId: parentId
-            )
-            onProgress(1.0, "Saved")
-            return .staged(fileId: fileID)
-        } catch let error where !(error is UploadError) {
-            // Any other non-upload error (UniFFI crash, unexpected) — also stage
-            onProgress(0.5, "Saving locally...")
-            try stageForMainApp(
-                fileID: fileID,
-                fileData: fileData,
-                fileName: fileName,
-                parentId: parentId
-            )
-            onProgress(1.0, "Saved")
-            return .staged(fileId: fileID)
-        }
-    }
-
-    // MARK: - Direct Upload (Phase 2)
-
-    private func directUpload(
-        fileID: String,
-        encryptedData: Data,
-        encryptedName: String,
-        parentId: String?,
-        plaintextSize: Int,
-        onProgress: @escaping (Float, String) -> Void
-    ) async throws {
-        let chunkSize = 4 * 1024 * 1024  // 4MB chunks
-        let chunkCount = max(1, Int(ceil(Double(encryptedData.count) / Double(chunkSize))))
-
-        // Init upload
-        let initBody: [String: Any] = [
-            "file_name": encryptedName,
-            "file_size_bytes": encryptedData.count,
-            "parent_id": parentId as Any,
-            "mime_type": NSNull(),
-            "is_media": false,
-            "profile": "mobile-share",
-            "chunk_size_bytes": chunkSize,
-            "chunk_count": chunkCount,
-        ]
-
-        guard let initURL = URL(string: "\(apiUrl)/api/v1/uploads/init") else {
-            throw UploadError.networkError(URLError(.badURL))
+            plan = try encryptor.chunkPlan()
+        } catch {
+            throw UploadError.cryptoUnavailable(error.localizedDescription)
         }
 
-        var initRequest = URLRequest(url: initURL)
-        initRequest.httpMethod = "POST"
-        initRequest.setValue("Bearer \(sessionToken)", forHTTPHeaderField: "Authorization")
-        initRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        initRequest.httpBody = try JSONSerialization.data(withJSONObject: initBody)
+        let session = try await initUpload(
+            fileId: fileId,
+            nameEncrypted: encryptedName,
+            plaintextSize: fileSize,
+            isMedia: Self.isMedia(fileName: fileName),
+            parentId: parentId,
+            chunkSizeBytes: Int(plan.chunkSizeBytes),
+            chunkCount: Int(plan.chunkCount)
+        )
 
-        let (initData, initResponse) = try await URLSession.shared.data(for: initRequest)
-        guard let httpResp = initResponse as? HTTPURLResponse, httpResp.statusCode == 200 else {
-            let code = (initResponse as? HTTPURLResponse)?.statusCode ?? 0
-            let msg = String(data: initData, encoding: .utf8) ?? "Unknown error"
-            throw UploadError.uploadFailed(code, msg)
-        }
-
-        guard let initJson = try? JSONSerialization.jsonObject(with: initData) as? [String: Any],
-              let serverFileId = initJson["file_id"] as? String else {
-            throw UploadError.uploadFailed(0, "Invalid init response")
-        }
-
-        // Upload chunks
-        for i in 0..<chunkCount {
-            let start = i * chunkSize
-            let end = min(start + chunkSize, encryptedData.count)
-            let chunk = encryptedData[start..<end]
-
-            guard let chunkURL = URL(string: "\(apiUrl)/api/v1/files/\(serverFileId)/chunks/\(i)") else {
-                throw UploadError.networkError(URLError(.badURL))
+        onProgress(0.3, "Uploading...")
+        let chunkCount = max(1, Int(plan.chunkCount))
+        var uploaded = 0
+        while true {
+            let chunk: EncryptedChunkDto?
+            do {
+                // Read + encrypt one chunk; autoreleasepool releases the frame
+                // buffer between iterations so peak memory stays ~one chunk.
+                chunk = try autoreleasepool { try encryptor.nextChunk() }
+            } catch {
+                throw UploadError.cryptoUnavailable(error.localizedDescription)
             }
-
-            var chunkRequest = URLRequest(url: chunkURL)
-            chunkRequest.httpMethod = "PUT"
-            chunkRequest.setValue("Bearer \(sessionToken)", forHTTPHeaderField: "Authorization")
-            chunkRequest.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
-            chunkRequest.httpBody = Data(chunk)
-
-            let (_, chunkResponse) = try await URLSession.shared.data(for: chunkRequest)
-            guard let chunkHttpResp = chunkResponse as? HTTPURLResponse, chunkHttpResp.statusCode == 200 else {
-                let code = (chunkResponse as? HTTPURLResponse)?.statusCode ?? 0
-                throw UploadError.uploadFailed(code, "Chunk \(i) upload failed")
-            }
-
-            let progress = 0.3 + 0.6 * Float(i + 1) / Float(chunkCount)
+            guard let chunk else { break }
+            try await putChunk(uploadSessionId: session.upload_session_id, index: Int(chunk.index), frame: chunk.data)
+            uploaded += 1
+            let progress = min(0.9, 0.3 + 0.6 * Float(uploaded) / Float(chunkCount))
             onProgress(progress, "Uploading... \(Int(progress * 100))%")
         }
 
-        // Complete upload
-        guard let completeURL = URL(string: "\(apiUrl)/api/v1/files/\(serverFileId)/upload/complete") else {
-            throw UploadError.networkError(URLError(.badURL))
-        }
+        // Integrity guard (detects a source that shrank) before completing.
+        do { _ = try encryptor.finish() }
+        catch { throw UploadError.cryptoUnavailable(error.localizedDescription) }
 
-        var completeRequest = URLRequest(url: completeURL)
-        completeRequest.httpMethod = "POST"
-        completeRequest.setValue("Bearer \(sessionToken)", forHTTPHeaderField: "Authorization")
-        completeRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        completeRequest.httpBody = "{}".data(using: .utf8)
-
-        let (_, completeResponse) = try await URLSession.shared.data(for: completeRequest)
-        guard let completeHttpResp = completeResponse as? HTTPURLResponse, completeHttpResp.statusCode == 200 else {
-            let code = (completeResponse as? HTTPURLResponse)?.statusCode ?? 0
-            throw UploadError.uploadFailed(code, "Complete request failed")
-        }
-
+        try await completeUpload(uploadSessionId: session.upload_session_id)
         onProgress(1.0, "Done")
+        return .uploaded(fileId: fileId)
     }
 
-    // MARK: - Stage for Main App (Phase 1 fallback)
-
-    /// Stages the file into IncomingShares/ with a .json manifest compatible
-    /// with PendingSharesAccess.swift. The main app picks these up via the
-    /// existing native bridge (listPendingShares → consumePendingShare → upload).
-    ///
-    /// The manifest includes `parentId` in the filename field as a prefix hack:
-    /// "parentId:originalName" — the main app's handler parses this to route
-    /// the upload to the correct folder. If no parentId, just the original name.
-    private func stageForMainApp(
-        fileID: String,
-        fileData: Data,
+    /// In-memory variant for small shares (text / URL items) delivered as `Data`.
+    func uploadData(
+        _ data: Data,
         fileName: String,
-        parentId: String?
-    ) throws {
-        guard let containerURL = FileManager.default.containerURL(
-            forSecurityApplicationGroupIdentifier: Self.appGroup
-        ) else {
-            throw UploadError.noAppGroup
+        parentId: String?,
+        onProgress: @escaping (Float, String) -> Void
+    ) async throws -> UploadResult {
+        let fileId = UUID().uuidString.lowercased()
+
+        onProgress(0.1, "Encrypting...")
+        let encryptedName: String
+        let encryptor: ChunkEncryptorHandle
+        let plan: ChunkPlanResult
+        do {
+            encryptedName = try masterKey.encryptName(fileId: fileId, filename: fileName, mimeType: nil)
+            encryptor = try ChunkEncryptorHandle.forPush(
+                masterKey: masterKey,
+                fileId: fileId,
+                fileSize: UInt64(data.count),
+                profile: Self.chunkProfile
+            )
+            plan = try encryptor.chunkPlan()
+        } catch {
+            throw UploadError.cryptoUnavailable(error.localizedDescription)
         }
 
-        let incomingDir = containerURL.appendingPathComponent(Self.incomingDir, isDirectory: true)
-        try FileManager.default.createDirectory(at: incomingDir, withIntermediateDirectories: true)
-
-        // Determine file extension
-        let ext = (fileName as NSString).pathExtension
-        let storedFilename = ext.isEmpty ? fileID : "\(fileID).\(ext)"
-
-        // Write file payload
-        let fileURL = incomingDir.appendingPathComponent(storedFilename)
-        try fileData.write(to: fileURL)
-
-        // Write manifest in the format PendingSharesAccess.swift expects
-        let manifest = IncomingShareManifest(
-            id: fileID,
-            filename: fileName,
-            relativePath: storedFilename,
-            mimeType: mimeTypeForExtension(ext),
-            sizeBytes: Int64(fileData.count),
-            timestamp: Date().timeIntervalSince1970,
-            kind: kindForExtension(ext),
-            parentId: parentId
+        let session = try await initUpload(
+            fileId: fileId,
+            nameEncrypted: encryptedName,
+            plaintextSize: Int64(data.count),
+            isMedia: Self.isMedia(fileName: fileName),
+            parentId: parentId,
+            chunkSizeBytes: Int(plan.chunkSizeBytes),
+            chunkCount: Int(plan.chunkCount)
         )
 
-        let manifestURL = incomingDir.appendingPathComponent("\(fileID).json")
-        let encoded = try JSONEncoder().encode(manifest)
-        try encoded.write(to: manifestURL)
+        onProgress(0.3, "Uploading...")
+        let chunkSize = Int(plan.chunkSizeBytes)
+        let chunkCount = Int(plan.chunkCount)
+        for index in 0..<chunkCount {
+            let start = index * chunkSize
+            let end = min(start + chunkSize, data.count)
+            let slice = start < end ? data.subdata(in: start..<end) : Data()
+            let frame: Data
+            do { frame = try encryptor.pushChunk(plaintext: slice).data }
+            catch { throw UploadError.cryptoUnavailable(error.localizedDescription) }
+            try await putChunk(uploadSessionId: session.upload_session_id, index: index, frame: frame)
+            let progress = min(0.9, 0.3 + 0.6 * Float(index + 1) / Float(chunkCount))
+            onProgress(progress, "Uploading... \(Int(progress * 100))%")
+        }
 
-        // Write parentId mapping as a JSON file in the App Group container.
-        // The main app's PendingSharesHandler.ts reads this via expo-file-system/next
-        // Paths.appleSharedContainers to route uploads to the correct folder.
-        if let pid = parentId {
-            let mapURL = containerURL.appendingPathComponent("share-parent-map.json")
-            var parentMap: [String: String] = [:]
-            if let existingData = try? Data(contentsOf: mapURL),
-               let existing = try? JSONDecoder().decode([String: String].self, from: existingData) {
-                parentMap = existing
-            }
-            parentMap[fileID] = pid
-            if let mapData = try? JSONEncoder().encode(parentMap) {
-                try? mapData.write(to: mapURL)
-            }
+        do { _ = try encryptor.finish() }
+        catch { throw UploadError.cryptoUnavailable(error.localizedDescription) }
+
+        try await completeUpload(uploadSessionId: session.upload_session_id)
+        onProgress(1.0, "Done")
+        return .uploaded(fileId: fileId)
+    }
+
+    // MARK: - v2 chunked-upload session (mirrors the File Provider's ApiClient)
+
+    private func initUpload(
+        fileId: String,
+        nameEncrypted: String,
+        plaintextSize: Int64,
+        isMedia: Bool,
+        parentId: String?,
+        chunkSizeBytes: Int,
+        chunkCount: Int
+    ) async throws -> InitResponse {
+        guard let url = URL(string: "\(apiUrl)/api/v1/uploads/init") else {
+            throw UploadError.networkError(URLError(.badURL))
+        }
+        // Wire contract: file_size_bytes is the PLAINTEXT byte count (the server
+        // recomputes the stored ciphertext size from the chunks); chunk_size +
+        // chunk_count come from the core plan.
+        var body: [String: Any] = [
+            "file_id": fileId,
+            "file_name": nameEncrypted,
+            "file_size_bytes": plaintextSize,
+            "is_media": isMedia,
+            "profile": Self.chunkProfile,
+            "chunk_size_bytes": chunkSizeBytes,
+            "chunk_count": chunkCount,
+        ]
+        body["mime_type"] = NSNull()
+        body["parent_id"] = parentId ?? NSNull()
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(sessionToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        let (data, response) = try await send(request)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+            throw UploadError.uploadFailed(code, String(data: data, encoding: .utf8) ?? "init failed")
+        }
+        guard let decoded = try? JSONDecoder().decode(InitResponse.self, from: data) else {
+            throw UploadError.uploadFailed(0, "Invalid init response")
+        }
+        return decoded
+    }
+
+    private func putChunk(uploadSessionId: String, index: Int, frame: Data) async throws {
+        guard let url = URL(string: "\(apiUrl)/api/v1/uploads/\(uploadSessionId)/chunks/\(index)") else {
+            throw UploadError.networkError(URLError(.badURL))
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "PUT"
+        request.setValue("Bearer \(sessionToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+        request.httpBody = frame
+
+        let (data, response) = try await send(request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+            throw UploadError.uploadFailed(code, String(data: data, encoding: .utf8) ?? "chunk \(index) failed")
+        }
+    }
+
+    private func completeUpload(uploadSessionId: String) async throws {
+        guard let url = URL(string: "\(apiUrl)/api/v1/uploads/\(uploadSessionId)/complete") else {
+            throw UploadError.networkError(URLError(.badURL))
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(sessionToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = Data("{}".utf8)
+
+        let (data, response) = try await send(request)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+            throw UploadError.uploadFailed(code, String(data: data, encoding: .utf8) ?? "complete failed")
+        }
+    }
+
+    private func send(_ request: URLRequest) async throws -> (Data, URLResponse) {
+        do {
+            return try await URLSession.shared.data(for: request)
+        } catch {
+            throw UploadError.networkError(error)
         }
     }
 
     // MARK: - Helpers
 
-    private func mimeTypeForExtension(_ ext: String) -> String? {
-        switch ext.lowercased() {
-        case "jpg", "jpeg": return "image/jpeg"
-        case "png": return "image/png"
-        case "gif": return "image/gif"
-        case "heic": return "image/heic"
-        case "mp4": return "video/mp4"
-        case "mov": return "video/quicktime"
-        case "pdf": return "application/pdf"
-        case "txt": return "text/plain"
-        case "url": return "text/uri-list"
-        default: return nil
-        }
-    }
-
-    private func kindForExtension(_ ext: String) -> String {
-        switch ext.lowercased() {
-        case "jpg", "jpeg", "png", "gif", "heic", "webp": return "image"
-        case "mp4", "mov", "avi": return "video"
-        case "url": return "url"
-        case "txt": return "text"
-        default: return "file"
+    private static func isMedia(fileName: String) -> Bool {
+        switch (fileName as NSString).pathExtension.lowercased() {
+        case "jpg", "jpeg", "png", "gif", "heic", "heif", "webp", "tiff", "bmp",
+             "mp4", "mov", "m4v", "avi", "hevc":
+            return true
+        default:
+            return false
         }
     }
 }
