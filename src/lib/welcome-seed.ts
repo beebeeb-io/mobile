@@ -7,10 +7,14 @@
  * Idempotency is double-guarded:
  *  1. Per-device SecureStore flag (`beebeeb_welcome_seeded:<userId>`). A second
  *     sign-in on the same device short-circuits before we hit the network.
- *  2. Server-side root-folder check. If the user already has any files at root
- *     (e.g. they're signing in from a second device, or restored from a
- *     recovery phrase), we skip the seed entirely so we never spam duplicate
- *     welcome.md files into an established vault.
+ *  2. Server-side root-content check. If the user already has a real FILE
+ *     (a non-folder entry) at root (e.g. they're signing in from a second
+ *     device, or restored from a recovery phrase), we skip the seed entirely so
+ *     we never spam duplicate welcome.md files into an established vault.
+ *     NB: auto-created system folders (e.g. "Backups") are NOT real content and
+ *     must not block the seed — that was the 0558 bug (every new account gets a
+ *     Backups folder, so a "root non-empty" guard tripped on every fresh
+ *     account and welcome.md never seeded).
  *
  * Failures are silent — a missing welcome file is not worth blocking the
  * post-onboarding navigation. Errors are surfaced via console.warn so a
@@ -74,7 +78,7 @@ async function markSeeded(userId: string): Promise<void> {
     await SecureStore.setItemAsync(seedKey(userId), 'true');
   } catch {
     // Non-fatal — worst case the seed runs once more on a future sign-in
-    // and the "root is non-empty" guard catches it.
+    // and the root-content guard catches it.
   }
 }
 
@@ -88,8 +92,14 @@ export async function seedWelcomeMarkdown(opts: SeedWelcomeOptions): Promise<boo
   try {
     if (await hasWelcomeBeenSeeded(userId)) return false;
 
-    // Server-side guard: if root already has files (second device, restore
-    // from recovery phrase, etc), don't seed.
+    // Server-side guard: if root already has a real FILE (non-folder), the user
+    // has content (second device, restore from recovery phrase, or a prior
+    // seed — welcome.md is itself a non-folder file), so don't seed. Folders are
+    // ignored on purpose: the server auto-creates a "Backups" folder at root for
+    // every new account, and counting it as "content" suppressed the seed on
+    // every fresh account (task 0558). markSeeded only latches here (genuine
+    // existing content) or after a successful upload — never on a transient
+    // listFiles error (that path returns without latching, so it retries).
     let existing;
     try {
       existing = await listFiles(undefined, false);
@@ -97,7 +107,7 @@ export async function seedWelcomeMarkdown(opts: SeedWelcomeOptions): Promise<boo
       console.warn('[welcome-seed] could not list root files, skipping seed', err);
       return false;
     }
-    if (existing.length > 0) {
+    if (existing.some((f) => !f.is_folder)) {
       await markSeeded(userId);
       return false;
     }
