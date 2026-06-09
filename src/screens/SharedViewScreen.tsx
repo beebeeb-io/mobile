@@ -18,7 +18,7 @@ import { radii, spacing } from '../theme';
 import { useTheme } from '../lib/theme-context';
 import { downloadSharedFileBlob, getShareByToken, friendlyError } from '../lib/api';
 import type { ShareInfo } from '../lib/api';
-import { consumeShareKey } from '../lib/share-key-store';
+import { consumeShareKey, consumeShareKeyAsync } from '../lib/share-key-store';
 import {
   decryptEncryptedBytes,
   inferChunkCountFromEncryptedSize,
@@ -159,7 +159,24 @@ export default function SharedViewScreen() {
   const [info, setInfo] = useState<ShareInfo | null>(null);
   // Captured from the #key= URL fragment (stored before React Navigation
   // strips it). Available only when the user arrives via a deep link.
-  const [shareKey] = useState<string | null>(() => routeShareKey ?? consumeShareKey(token));
+  // Sync fast-path hits the in-memory queue; the effect below covers the
+  // cold-start race where the fragment was persisted by a prior process but
+  // not yet hydrated into memory (task 0710).
+  const [shareKey, setShareKey] = useState<string | null>(() => routeShareKey ?? consumeShareKey(token));
+
+  useEffect(() => {
+    if (shareKey) return;
+    let cancelled = false;
+    void consumeShareKeyAsync(token).then((key) => {
+      if (!cancelled && key) setShareKey(key);
+    });
+    return () => {
+      cancelled = true;
+    };
+    // Run once per token; shareKey is intentionally excluded so a resolved key
+    // doesn't re-trigger the async consume.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token]);
 
   // Decryption state — driven by the "Decrypt & save" button.
   const [decrypting, setDecrypting] = useState(false);

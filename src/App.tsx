@@ -35,7 +35,7 @@ import { CryptoProvider, SIMULATOR_MASTER_KEY_FILE, useCrypto } from './lib/cryp
 import { markUnlocked, wasRecentlyUnlocked } from './lib/lock-state';
 import { SyncProvider } from './lib/sync-context';
 import { useNetworkStatus } from './lib/useNetworkStatus';
-import { setPendingShareKey } from './lib/share-key-store';
+import { hydrateShareKeys, setPendingShareKey } from './lib/share-key-store';
 import * as Haptics from 'expo-haptics';
 import * as Notifications from 'expo-notifications';
 import * as BeebeebCrypto from '../modules/beebeeb-crypto';
@@ -979,6 +979,9 @@ export default function App() {
   // by SharedViewScreen on mount so the "Download in browser" CTA can open the
   // full URL (including key) in Safari.
   useEffect(() => {
+    // Restore any share key persisted by a prior process before the sync
+    // consume path runs (cold-start race, task 0710).
+    void hydrateShareKeys();
     function captureShareFragment(url: string | null): void {
       if (!url) return;
       const hashIdx = url.indexOf('#');
