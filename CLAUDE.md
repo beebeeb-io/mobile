@@ -1,6 +1,10 @@
 # beebeeb-io/mobile
 
-Beebeeb for iOS and Android. React Native + Expo.
+Beebeeb for iOS (ships at the September 2026 launch) and Android (post-launch). React Native + Expo.
+
+## Platform status — iOS-first, Android descoped from launch (task 0711)
+
+**iOS ships at launch. Android does NOT ship September 1; it is post-launch.** The Android crypto module (`modules/beebeeb-crypto/android/src/main/java/expo/modules/beebeebcrypto/BeebeebCryptoModule.kt`) is a **stub** — every native crypto / keychain / OPAQUE call throws `NotLinkedException`, so the app does not function on Android. Making it real is post-launch work (link the Rust `.so` via UniFFI, Android Keystore + BiometricPrompt, device QA) tracked in the post-launch Android task. Do not represent Android as shipping at launch in code comments, docs, or any outward surface. (Android *browsers* run the web app + CLI — that IS fine to say.)
 
 ## iOS builds — always build locally on macOS (free)
 

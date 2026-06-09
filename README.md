@@ -2,12 +2,12 @@
   <a href="https://beebeeb.io"><img src="https://beebeeb.io/assets/beebeeb-icon.png" alt="beebeeb" width="72" height="72" /></a>
 </p>
 <h1 align="center">beebeeb mobile</h1>
-<p align="center">End-to-end encrypted cloud storage for iOS and Android.</p>
+<p align="center">End-to-end encrypted cloud storage. iOS at launch; Android after launch.</p>
 <p align="center"><strong>We can't recover your data. Not even if we wanted to.</strong> That's the point.</p>
 <p align="center">
   <a href="https://github.com/beebeeb-io/mobile/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/beebeeb-io/mobile/ci.yml?branch=main&label=CI" alt="CI" /></a> &nbsp;
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-555.svg" alt="License: AGPL-3.0" /></a> &nbsp;
-  <img src="https://img.shields.io/badge/platform-iOS%20%C2%B7%20Android-555.svg" alt="iOS · Android" /> &nbsp;
+  <img src="https://img.shields.io/badge/platform-iOS%20%C2%B7%20Android%20after%20launch-555.svg" alt="iOS · Android after launch" /> &nbsp;
   <a href="SECURITY.md"><img src="https://img.shields.io/badge/security-policy-555.svg" alt="Security policy" /></a>
 </p>
 <p align="center"><a href="https://beebeeb.io">Website</a> &nbsp;·&nbsp; <a href="https://beebeeb.io/security">How it works</a> &nbsp;·&nbsp; <a href="SECURITY.md">Report a vulnerability</a></p>
@@ -19,9 +19,9 @@
   <img src="marketing/01-files-drive.png" alt="beebeeb mobile — encrypted Drive on iOS" width="280" />
 </p>
 
-> **In active development.** Core screens and navigation are implemented. Crypto integration (UniFFI) and camera backup are in progress.
+> **In active development — iOS-first.** Core screens and navigation are implemented; crypto integration (UniFFI) and camera backup are in progress. **iOS ships at the September 2026 launch; Android comes after launch** — the Android crypto module is currently a stub (every native crypto/keychain call throws `NotLinkedException`), so the app is not yet functional on Android.
 
-The [beebeeb](https://beebeeb.io) mobile app — browse, preview, back up, and share your encrypted files from your phone. All encryption runs natively via UniFFI bindings to [core](https://github.com/beebeeb-io/core) (Swift on iOS, Kotlin on Android), not in JavaScript. The master key never leaves Rust and the keychain; the server only ever sees ciphertext.
+The [beebeeb](https://beebeeb.io) mobile app — browse, preview, back up, and share your encrypted files from your phone. All encryption runs natively via UniFFI bindings to [core](https://github.com/beebeeb-io/core) (Swift on iOS; the Kotlin/Android binding is a post-launch stub), not in JavaScript. The master key never leaves Rust and the keychain; the server only ever sees ciphertext.
 
 ## Features (planned and in progress)
 
@@ -47,10 +47,10 @@ The [beebeeb](https://beebeeb.io) mobile app — browse, preview, back up, and s
 
 ## Platform support
 
-| Platform | Minimum version |
-|---|---|
-| iOS | 16+ |
-| Android | 12+ |
+| Platform | Minimum version | Launch status |
+|---|---|---|
+| iOS | 16+ | Ships at launch |
+| Android | 12+ | Post-launch — crypto module is currently a stub |
 
 ## Architecture
 
@@ -150,6 +150,7 @@ src/
 | Camera backup | In progress |
 | Share extension | Planned |
 | Offline mode | Planned |
+| Android platform | Post-launch — crypto module is a stub (all native calls throw) |
 
 ## Security
 
