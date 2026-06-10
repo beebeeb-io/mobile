@@ -230,24 +230,10 @@ export async function ackTransfer(sessionId: string, token: string): Promise<voi
 // Crypto helpers (v1 — JS-only stand-ins until UniFFI exposes the core)
 // ---------------------------------------------------------------------------
 
-/**
- * Generate `n` "random" bytes. v1 uses Math.random — fine for the mock
- * shared secret and ephemeral keypair material we send over the wire while
- * the real X25519 is being wired up. The security property comes from the
- * SAS verification step, not from this RNG.
- */
-export function randomBytes(n: number): Uint8Array {
-  const out = new Uint8Array(n);
-  // Prefer crypto.getRandomValues if the runtime has it (Hermes on iOS does
-  // since RN 0.71+); fall back to Math.random for older targets / Web.
-  const gv = (globalThis as { crypto?: { getRandomValues?: (a: Uint8Array) => Uint8Array } }).crypto?.getRandomValues;
-  if (typeof gv === 'function') {
-    gv.call((globalThis as { crypto: object }).crypto, out);
-    return out;
-  }
-  for (let i = 0; i < n; i++) out[i] = Math.floor(Math.random() * 256);
-  return out;
-}
+// randomBytes lives in ./transfer-crypto (RN-free so it's unit-testable under
+// bun, task 0675) — re-exported here so existing Constellation callers keep
+// importing it from transfer-api unchanged.
+export { randomBytes } from './transfer-crypto';
 
 /** Hex-encode a byte array (lowercase, no separator). */
 export function bytesToHex(bytes: Uint8Array): string {
