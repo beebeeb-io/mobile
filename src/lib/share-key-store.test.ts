@@ -30,6 +30,7 @@ const {
   consumeShareKey,
   consumeShareKeyAsync,
   hydrateShareKeys,
+  makeShareKeyResolver,
   __setClockForTest,
   __resetShareKeyStoreForTest,
 } = await import('./share-key-store');
@@ -110,5 +111,45 @@ describe('share-key-store (0710 pending-key queue)', () => {
   test('corrupt storage value is ignored, not thrown', async () => {
     store.set(`${PFX}t`, '{not valid json');
     expect(await consumeShareKeyAsync('t')).toBeNull();
+  });
+});
+
+describe('makeShareKeyResolver (0710 stale-key-on-renavigation fix)', () => {
+  test('REGRESSION A→C→A: re-resolving a consumed token reads the per-screen cache, not the emptied queue', () => {
+    setPendingShareKey('A', 'keyA');
+    setPendingShareKey('C', 'keyC');
+    const r = makeShareKeyResolver();
+    // First open of A consumes A from the store (delete-on-consume).
+    expect(r.resolveSync('A', null)).toBe('keyA');
+    expect(consumeShareKey('A')).toBeNull(); // store no longer has A
+    // Second link C re-renders the screen → new token.
+    expect(r.resolveSync('C', null)).toBe('keyC');
+    // Re-open A (token changes back) — the store is empty for A, but the
+    // resolver's cache still has it. Pre-fix this returned null/stale → CryptoError.
+    expect(r.resolveSync('A', null)).toBe('keyA');
+  });
+
+  test('route-param key takes the fast path and is cached (no store consume needed)', () => {
+    const r = makeShareKeyResolver();
+    expect(r.resolveSync('T', 'routeKeyT')).toBe('routeKeyT');
+    // cached now — a re-resolve returns it even with a different (null) route key
+    expect(r.resolveSync('T', null)).toBe('routeKeyT');
+  });
+
+  test('each screen owns its own cache — a fresh resolver does NOT see another screen’s consumed key', () => {
+    setPendingShareKey('A', 'keyA');
+    const r1 = makeShareKeyResolver();
+    expect(r1.resolveSync('A', null)).toBe('keyA'); // consumes from store
+    const r2 = makeShareKeyResolver(); // a different screen instance
+    expect(r2.resolveSync('A', null)).toBeNull(); // store empty, r2 has no cache
+  });
+
+  test('async fallback resolves from storage and caches', async () => {
+    store.set(`${PFX}cold`, JSON.stringify({ shareKey: 'kc', capturedAtMs: Date.now() }));
+    const r = makeShareKeyResolver();
+    expect(r.resolveSync('cold', null)).toBeNull(); // not in memory queue
+    expect(await r.resolveAsync('cold')).toBe('kc'); // from storage
+    // now cached — sync resolve hits the cache
+    expect(r.resolveSync('cold', null)).toBe('kc');
   });
 });
