@@ -363,17 +363,22 @@ extension ThumbnailService {
       throw NSError(domain: "BeebeebPhotoKit", code: 404,
                     userInfo: [NSLocalizedDescriptionKey: "no local identifier mapping for fileId"])
     }
-    let preset = Self.parseQualityPreset(qualityPreset)
+    // `qualityPreset` is retained on the queue/bridge signature, but the medium
+    // policy is fixed (768px, ≤100 KB target / ≤128 KB cap — task 0552), so the
+    // shared ladder below is authoritative rather than a free-floating quality.
     let img = try await PhotoKitResolver.shared.requestFullImage(localIdentifier: localId)
     stages["photoKit"] = Int(Date().timeIntervalSince(stagePhotoKitStart) * 1000)
 
-    // Stage 2: Resize + WebP encode
+    // Stage 2: Resize + WebP encode via the SHARED ladder (the same path the
+    // backup engine uses). The ladder degrades quality to fit the medium cap by
+    // construction. The old single-quality encode produced ~80-120 KB thumbnails
+    // that ALWAYS blew the stale 64 KB self-check below, so every "Improve
+    // thumbnail quality" regeneration failed permanently (task 0553).
     let stageResizeStart = Date()
-    let resized = try BeebeebThumbnailEncoder.encode(
-      image: img,
-      targetWidth: preset.width,
-      quality: CGFloat(preset.quality)
-    )
+    guard let resized = ThumbnailGenerator.generate(from: img, config: .medium) else {
+      throw NSError(domain: "BeebeebThumbnailGen", code: 422,
+                    userInfo: [NSLocalizedDescriptionKey: "thumbnail encode produced no output"])
+    }
     stages["resize"] = Int(Date().timeIntervalSince(stageResizeStart) * 1000)
 
     // Stage 3: Encrypt
@@ -383,9 +388,12 @@ extension ThumbnailService {
       plaintext: resized
     )
     stages["encrypt"] = Int(Date().timeIntervalSince(stageEncryptStart) * 1000)
-    if encrypted.count > 64 * 1024 {
+    // Guard against the server's medium cap (MAX_ENCRYPTED_THUMBNAIL_BYTES = 128 KB).
+    // The ladder already keeps us under this — it is no longer the gate that
+    // silently killed every regen (was a hardcoded 64 KB, half the real limit).
+    if encrypted.count > ThumbnailGenerator.Config.medium.maxBytes + 28 {
       throw NSError(domain: "BeebeebThumbnailGen", code: 413,
-                    userInfo: [NSLocalizedDescriptionKey: "encrypted thumb exceeds 64KB cap"])
+                    userInfo: [NSLocalizedDescriptionKey: "encrypted thumb exceeds medium cap"])
     }
 
     // Stage 4: Upload
