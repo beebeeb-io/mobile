@@ -71,7 +71,9 @@ Same design tokens as web but converted to RGB (OKLCH not supported in React Nat
 
 ## Thumbnails
 
-Thumbnails are WebP format. **Medium (default) is 768px wide at WebP q0.82, capped at 100 KB on disk** — generated in `src/lib/thumbnail.ts` via expo-image-manipulator with a degrade ladder in `src/lib/thumbnail-policy.ts` for photos that exceed the byte cap. Small (384px) and large (1280px) variants exist for list-row + preview contexts. Video and DNG/RAW thumbnails are generated natively in Swift (`BeebeebCryptoModule.swift`) using `CGImageDestination` + `UTType.webP`.
+Thumbnails are WebP format. **Medium (default) is 768px wide at WebP q0.82, ~100 KB target / 128 KB encrypted cap** — generated in `src/lib/thumbnail.ts` via expo-image-manipulator with a degrade ladder in `src/lib/thumbnail-policy.ts` for photos that exceed the byte cap. Small (384px) and large (1280px) variants exist for list-row + preview contexts.
+
+**Native backup path (task 0631).** At backup time the native engine (`NativeBackupEngine.swift`) makes ONE high-quality PhotoKit source fetch (`thumbSourceMaxSize` = 1600px long-edge) per camera-roll photo/video and from it generates BOTH the medium (768px) and large (1280px) thumbnails **plus a blurhash**, via the shared `ThumbnailGenerator` (Rust `resizeForThumbnail` Lanczos3 + Swift `SDWebImageWebPCoder` WebP encode — not `CGImageDestination`). Medium PUTs to `/thumbnail?blurhash=…`, large to `/thumbnail/large`. Server stores these as reserved V1 chunk blobs: **medium = `u32::MAX` → `4294967295.bin`, large = `u32::MAX-2` → `4294967293.bin`** (there is no `thumbnail_large_encrypted` column; `files.has_large_thumbnail` flips true on the large PUT). The native blurhash comes from `BlurHashEncoder.swift` (self-contained woltapp encoder, 4×3 components, byte-identical to the JS `react-native-blurhash`). The legacy degraded-thumbnail regen worker (`ThumbnailService.regenerateThumbnail`, task 0553) also encodes through the same `ThumbnailGenerator.medium` ladder + 128 KB cap.
 
 **Rendering layered (task 0552):**
 
