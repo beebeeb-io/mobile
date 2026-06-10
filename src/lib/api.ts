@@ -11,6 +11,7 @@ import * as FileSystem from 'expo-file-system';
 import { Platform } from 'react-native';
 import * as BeebeebCrypto from '../../modules/beebeeb-crypto';
 import { clearCachedFileIndex } from './file-index-cache';
+import { collectPaged } from './paginate';
 import { rateLimitedFetch } from './rate-limited-fetch';
 import { getDeviceId } from './sync-client';
 import { setAnnouncement, clearAnnouncement } from './announcement-context';
@@ -569,6 +570,8 @@ export function trustLocation(poolId: string | null | undefined): TrustLocation 
 
 export interface ListFilesResponse {
   files: FileEntry[];
+  /** Opaque keyset cursor for the next page; null/absent on the last page (task 0739). */
+  next_cursor?: string | null;
 }
 
 export interface FileIndexResponse {
@@ -586,14 +589,54 @@ export async function createFolder(name: string, parentId?: string, folderId?: s
   });
 }
 
-export async function listFiles(parentId?: string, trashed = false): Promise<FileEntry[]> {
+export const FILE_LIST_HARD_CAP = 50_000;
+
+/**
+ * One keyset page of a folder listing (task 0739). `cursor` is opaque — pass back
+ * whatever the prior page returned, never parse it. The server keeps
+ * `next_cursor: null` on the last page (absent/garbled cursor → first page).
+ */
+export async function listFilesPage(opts: {
+  parentId?: string;
+  trashed?: boolean;
+  limit?: number;
+  cursor?: string;
+}): Promise<{ files: FileEntry[]; next_cursor: string | null }> {
   const params = new URLSearchParams();
-  if (parentId) params.set('parent_id', parentId);
-  if (trashed) params.set('trashed', 'true');
+  if (opts.parentId) params.set('parent_id', opts.parentId);
+  if (opts.trashed) params.set('trashed', 'true');
+  if (opts.limit) params.set('limit', String(opts.limit));
+  if (opts.cursor) params.set('cursor', opts.cursor);
   const qs = params.toString();
-  const path = `/api/v1/files${qs ? `?${qs}` : ''}`;
-  const data = await request<ListFilesResponse>('GET', path);
-  return data.files;
+  const data = await request<ListFilesResponse>('GET', `/api/v1/files${qs ? `?${qs}` : ''}`);
+  return { files: data.files, next_cursor: data.next_cursor ?? null };
+}
+
+/**
+ * First page only (≤ server default of 200) — preserved for existence checks
+ * where the cap is irrelevant. Anything that RENDERS or ITERATES a folder must
+ * use `listAllFiles`, or it silently truncates at 200 (task 0755).
+ */
+export async function listFiles(parentId?: string, trashed = false): Promise<FileEntry[]> {
+  return (await listFilesPage({ parentId, trashed })).files;
+}
+
+/**
+ * Follow `next_cursor` to enumerate a folder IN FULL, past the server's 200-item
+ * default page (task 0755). Bounded by `maxTotal` (default `FILE_LIST_HARD_CAP`).
+ */
+export async function listAllFiles(
+  parentId?: string,
+  options?: { trashed?: boolean; maxTotal?: number },
+): Promise<FileEntry[]> {
+  return collectPaged<FileEntry>(
+    async (cursor) => {
+      const page = await listFilesPage({ parentId, trashed: options?.trashed, cursor });
+      return { items: page.files, nextCursor: page.next_cursor };
+    },
+    options?.maxTotal ?? FILE_LIST_HARD_CAP,
+    'listAllFiles',
+  );
 }
 
 export async function getFile(id: string): Promise<FileEntry> {

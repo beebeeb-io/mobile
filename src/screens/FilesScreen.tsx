@@ -41,7 +41,7 @@ import { useToast } from '../lib/toast-context';
 import SkeletonRow from '../components/SkeletonRow';
 import PresenceAvatars from '../components/PresenceAvatars';
 import TrustDetailsSheet from '../components/TrustDetailsSheet';
-import { ApiError, listFiles, getFileIndex, createFolder, deleteFile, trashFiles, renameFile, moveFile, uploadFile, downloadFile, friendlyError, getStorageUsage, createProofOfExistence, storageLocation, trustLocation, getFolderPresence, getUploadStatus, getApiUrl, getToken } from '../lib/api';
+import { ApiError, listAllFiles, getFileIndex, createFolder, deleteFile, trashFiles, renameFile, moveFile, uploadFile, downloadFile, friendlyError, getStorageUsage, createProofOfExistence, storageLocation, trustLocation, getFolderPresence, getUploadStatus, getApiUrl, getToken } from '../lib/api';
 import { guessMimeType, fileCategory as fileCategoryFromMime } from '../lib/media';
 import { generateAndUploadThumbnail, fetchDecryptedThumbnailUri } from '../lib/thumbnail';
 import { getCachedThumbnail } from '../lib/thumbnail-cache';
@@ -1468,7 +1468,7 @@ export default function FilesScreen() {
         }
       }
 
-      const result = await listFiles(parentId ?? undefined);
+      const result = await listAllFiles(parentId ?? undefined);
       applyFilesForFolder(parentId, result, { preserveCachedOnEmpty: !isRefresh });
       endPerf({ count: result.length, source: 'folder' });
       setHasLoadedOnceTrue();
@@ -2166,7 +2166,7 @@ export default function FilesScreen() {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     let folders: FileEntry[] = [];
     try {
-      const all = await listFiles();
+      const all = await listAllFiles();
       folders = all.filter((f) => f.is_folder && !selectedIds.has(f.id));
     } catch {
       Alert.alert('Error', 'Could not load folders.');
@@ -2372,7 +2372,7 @@ export default function FilesScreen() {
     const promptMove = async () => {
       let folders: FileEntry[] = [];
       try {
-        const all = await listFiles();
+        const all = await listAllFiles();
         folders = all.filter((f) => f.is_folder && f.id !== item.id);
       } catch {
         Alert.alert('Error', 'Could not load folders.');

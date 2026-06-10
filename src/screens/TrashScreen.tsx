@@ -19,7 +19,7 @@ import { radii, spacing } from '../theme';
 import { useTheme } from '../lib/theme-context';
 import { useToast } from '../lib/toast-context';
 import {
-  listFiles,
+  listAllFiles,
   restoreFile,
   permanentDeleteFile,
   confirmDeviceOwnerAction,
@@ -229,7 +229,7 @@ export default function TrashScreen() {
     else setLoading(true);
     setError(null);
     try {
-      const result = await listFiles(undefined, true);
+      const result = await listAllFiles(undefined, { trashed: true });
       result.sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
       setFiles(result);
     } catch (err) {

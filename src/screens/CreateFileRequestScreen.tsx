@@ -29,7 +29,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { RootStackParamList } from '../App';
 import { useTheme } from '../lib/theme-context';
 import { useCrypto } from '../lib/crypto-context';
-import { createFileRequest, listFiles, type FileEntry } from '../lib/api';
+import { createFileRequest, listAllFiles, type FileEntry } from '../lib/api';
 import { toBase64, toBase64url } from '../lib/file-request-crypto';
 import { encryptedMetadataPayloadToBytes } from '../lib/encrypted-metadata';
 
@@ -89,7 +89,7 @@ export default function CreateFileRequestScreen() {
   useEffect(() => {
     let cancelled = false;
     setLoadingFolders(true);
-    listFiles(current?.id ?? undefined, false)
+    listAllFiles(current?.id ?? undefined)
       .then(async (files: FileEntry[]) => {
         const folders = files.filter((f) => f.is_folder);
         const named = await Promise.all(
