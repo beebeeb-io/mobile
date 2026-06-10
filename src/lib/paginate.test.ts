@@ -1,7 +1,7 @@
 // @ts-nocheck — bun runs this; `bun:test` types aren't in the Expo tsconfig
 // (matches the convention in the other src/lib/*.test.ts files).
 import { describe, expect, test } from 'bun:test';
-import { collectPaged } from './paginate';
+import { collectPaged, findInPages } from './paginate';
 
 // A fake paged source: `pages[i]` is one page; the cursor is just the next page
 // index as a string, so we can assert the exact cursor threading (no dup/skip).
@@ -58,5 +58,28 @@ describe('collectPaged — keyset pagination loop (0739/0755)', () => {
   test('empty first page returns empty', async () => {
     const { fetchPage } = pagedSource([[]]);
     expect(await collectPaged(fetchPage, 1000)).toEqual([]);
+  });
+});
+
+describe('findInPages — early-exit lookup across pages (0755)', () => {
+  test('finds a target PAST page 1 (the truncation bug) and early-exits', async () => {
+    // Target 7 is on page 3; must not stop at the capped first page, and must
+    // NOT fetch page 4 once found.
+    const { fetchPage, calls } = pagedSource([[1, 2], [3, 4], [5, 6, 7], [8, 9]]);
+    const found = await findInPages(fetchPage, (n) => n === 7);
+    expect(found).toBe(7);
+    expect(calls).toEqual([undefined, '1', '2']); // stopped at page 3, never fetched page 4
+  });
+
+  test('returns undefined when no page matches (walks every page)', async () => {
+    const { fetchPage, calls } = pagedSource([[1, 2], [3, 4], [5]]);
+    expect(await findInPages(fetchPage, (n) => n === 99)).toBeUndefined();
+    expect(calls).toEqual([undefined, '1', '2']); // exhausted the cursor
+  });
+
+  test('supports an async predicate (e.g. per-entry name decryption)', async () => {
+    const { fetchPage } = pagedSource([[10, 20], [30, 40]]);
+    const found = await findInPages(fetchPage, async (n) => n === 30);
+    expect(found).toBe(30);
   });
 });

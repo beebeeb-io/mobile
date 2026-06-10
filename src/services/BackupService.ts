@@ -33,7 +33,8 @@ import {
   createFolder,
   deleteFile,
   downloadFile,
-  listFiles,
+  listAllFiles,
+  findFile,
   moveFile,
   renameFile,
   type FileEntry,
@@ -365,13 +366,11 @@ async function normalizeBackupNameMetadata(entry: FileEntry, expectedName?: stri
 // ---------------------------------------------------------------------------
 
 async function findChildFolder(parentId: string | undefined, name: string): Promise<FileEntry | null> {
-  const children = await listFiles(parentId);
-  for (const f of children) {
-    if (!f.is_folder) continue;
-    const decrypted = await decryptName(f);
-    if (decrypted === name) return f;
-  }
-  return null;
+  // Early-exit cursor walk: stop at the first matching folder but never miss one
+  // past page 1. A capped single page here let ensureFolder create DUPLICATE
+  // backup folder trees when a parent had >200 children (task 0755).
+  const match = await findFile(parentId, async (f) => f.is_folder && (await decryptName(f)) === name);
+  return match ?? null;
 }
 
 async function ensureFolder(parentId: string | undefined, name: string): Promise<string> {
@@ -414,7 +413,7 @@ async function migrateLegacyRootBackups(
 
   let rootChildren: FileEntry[];
   try {
-    rootChildren = await listFiles(undefined);
+    rootChildren = await listAllFiles(undefined);
   } catch (err) {
     console.warn('[BackupService] could not inspect root for legacy backups:', err);
     return cache;
@@ -472,14 +471,14 @@ async function selfHealKnownBackupMetadata(
   };
 
   try {
-    const rootChildren = await listFiles(undefined);
+    const rootChildren = await listAllFiles(undefined);
     await normalize(rootChildren.find((entry) => entry.id === rootId), ROOT_FOLDER_NAME);
   } catch (err) {
     console.warn('[BackupService] could not self-heal backup root metadata:', err);
   }
 
   try {
-    const backupRootChildren = await listFiles(rootId);
+    const backupRootChildren = await listAllFiles(rootId);
     await normalize(backupRootChildren.find((entry) => entry.id === deviceFolderId), deviceName);
   } catch (err) {
     console.warn('[BackupService] could not self-heal backup device metadata:', err);
@@ -493,7 +492,7 @@ async function selfHealKnownBackupMetadata(
         .map(([category, name]) => [categoryIds[category], name]),
     );
 
-    const deviceChildren = await listFiles(deviceFolderId);
+    const deviceChildren = await listAllFiles(deviceFolderId);
     await Promise.all(deviceChildren.map(async (entry) => {
       const expectedCategoryName = expectedCategoryById.get(entry.id);
       if (expectedCategoryName) {
@@ -513,7 +512,7 @@ async function selfHealKnownBackupMetadata(
 
   for (const category of ['contacts', 'calendar'] as const) {
     try {
-      const children = await listFiles(categoryIds[category]);
+      const children = await listAllFiles(categoryIds[category]);
       await Promise.all(children.map(async (entry) => {
         if (!entry.is_folder) await normalize(entry);
       }));
@@ -611,19 +610,20 @@ function buildDefaultManifest(info: DeviceInfo): DeviceManifest {
 }
 
 async function findManifestFile(deviceFolderId: string): Promise<FileEntry | null> {
-  const children = await listFiles(deviceFolderId);
-  for (const f of children) {
-    if (f.is_folder) continue;
-    const decrypted = await decryptName(f);
-    if (decrypted === MANIFEST_FILENAME) return f;
-  }
-  return null;
+  // Early-exit cursor walk: a capped single page let a device folder with >200
+  // entries hide the manifest, making the backup look fresh → duplicate manifest
+  // / re-upload (task 0755).
+  const match = await findFile(
+    deviceFolderId,
+    async (f) => !f.is_folder && (await decryptName(f)) === MANIFEST_FILENAME,
+  );
+  return match ?? null;
 }
 
 async function cleanupBrokenManifestCopies(deviceFolderId: string): Promise<void> {
   let children: FileEntry[];
   try {
-    children = await listFiles(deviceFolderId);
+    children = await listAllFiles(deviceFolderId);
   } catch (err) {
     console.warn('[BackupService] could not inspect device folder for broken manifests:', err);
     return;

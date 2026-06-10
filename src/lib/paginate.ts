@@ -30,3 +30,26 @@ export async function collectPaged<T>(
   } while (cursor);
   return all;
 }
+
+/**
+ * Walk pages following `next_cursor`, returning the FIRST item the (possibly
+ * async) predicate matches — stopping immediately on match (early-exit). Use for
+ * by-name/by-id LOOKUPS where scanning/decrypting the whole vault would be
+ * wasteful (task 0755). Returns `undefined` if no page matches before the cursor
+ * is exhausted. A truncated single-page lookup would silently miss a target past
+ * page 1 — this never does.
+ */
+export async function findInPages<T>(
+  fetchPage: (cursor?: string) => Promise<{ items: T[]; nextCursor: string | null }>,
+  match: (item: T) => boolean | Promise<boolean>,
+): Promise<T | undefined> {
+  let cursor: string | undefined;
+  do {
+    const { items, nextCursor } = await fetchPage(cursor);
+    for (const item of items) {
+      if (await match(item)) return item;
+    }
+    cursor = nextCursor ?? undefined;
+  } while (cursor);
+  return undefined;
+}

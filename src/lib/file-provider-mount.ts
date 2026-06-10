@@ -2,7 +2,7 @@ import { Platform } from 'react-native';
 import * as BeebeebCrypto from '../../modules/beebeeb-crypto';
 import type { FileProviderDomainRegistrationResult } from '../../modules/beebeeb-crypto/src/BeebeebCrypto.types';
 import type { FileProviderCacheEntry } from '../../modules/beebeeb-crypto/src/BeebeebCrypto';
-import { getApiUrl, getToken, listFiles } from './api';
+import { getApiUrl, getToken, listAllFiles } from './api';
 import type { FileEntry } from './api';
 import { encryptedMetadataPayloadToBytes } from './encrypted-metadata';
 import { requestDeviceOwnerAuth } from './device-owner-auth';
@@ -124,7 +124,9 @@ export async function populateFileProviderCache(
     while (queue.length > 0) {
       const parentId = queue.shift();
       try {
-        const files = await listFiles(parentId);
+        // Full cursor walk — the Files.app BFS must see EVERY child of each
+        // folder, not the first 200 (task 0755).
+        const files = await listAllFiles(parentId);
         const names: Record<string, string> = {};
 
         await Promise.all(files.map(async (file) => {

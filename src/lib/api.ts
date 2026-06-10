@@ -11,7 +11,7 @@ import * as FileSystem from 'expo-file-system';
 import { Platform } from 'react-native';
 import * as BeebeebCrypto from '../../modules/beebeeb-crypto';
 import { clearCachedFileIndex } from './file-index-cache';
-import { collectPaged } from './paginate';
+import { collectPaged, findInPages } from './paginate';
 import { rateLimitedFetch } from './rate-limited-fetch';
 import { getDeviceId } from './sync-client';
 import { setAnnouncement, clearAnnouncement } from './announcement-context';
@@ -636,6 +636,27 @@ export async function listAllFiles(
     },
     options?.maxTotal ?? FILE_LIST_HARD_CAP,
     'listAllFiles',
+  );
+}
+
+/**
+ * Find the FIRST child of `parentId` matching `match`, following the keyset
+ * cursor and EARLY-EXITING on the first hit (task 0755). Use for by-name/by-id
+ * lookups (e.g. backup folder/manifest resolution) where a single capped page
+ * would silently miss a target past page 1 — causing duplicate folders/manifests
+ * — but decrypting the entire vault to find one entry would be wasteful.
+ */
+export async function findFile(
+  parentId: string | undefined,
+  match: (f: FileEntry) => boolean | Promise<boolean>,
+  options?: { trashed?: boolean },
+): Promise<FileEntry | undefined> {
+  return findInPages<FileEntry>(
+    async (cursor) => {
+      const page = await listFilesPage({ parentId, trashed: options?.trashed, cursor });
+      return { items: page.files, nextCursor: page.next_cursor };
+    },
+    match,
   );
 }
 
