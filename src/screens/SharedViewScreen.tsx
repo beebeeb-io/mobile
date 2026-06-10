@@ -196,6 +196,20 @@ export default function SharedViewScreen() {
 
   useEffect(() => {
     let cancelled = false;
+    // `token` changed → this is a DIFFERENT share. React Navigation re-renders
+    // (does not remount) this screen, so every piece of per-share state must be
+    // reset or the previous share leaks into this one. The shareKey is handled
+    // by its own resolver effect above; here we reset the metadata + the
+    // decryption result. Without resetting `decryptedUri`, the render gate below
+    // ("decryptedUri ? Share-or-save : Decrypt") would keep showing the FIRST
+    // share's already-decrypted file under the new share — a wrong-file leak,
+    // the same re-navigation class as the stale-shareKey bug (task 0710).
+    setLoading(true);
+    setError(null);
+    setInfo(null);
+    setDecryptedUri(null);
+    setDecryptError(null);
+    setDecrypting(false);
     (async () => {
       try {
         const result = await getShareByToken(token);
