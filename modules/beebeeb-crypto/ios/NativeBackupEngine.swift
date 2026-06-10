@@ -3529,12 +3529,16 @@ final class NativeBackupEngine: NSObject {
 
   // MARK: - Thumbnail Generation
 
-  /// Maximum dimension for generated thumbnails (matches JS THUMB_WIDTH).
-  private let thumbMaxSize = 768
-  private let thumbMaxEncryptedBytes = 128 * 1024
+  /// Long edge requested from PhotoKit for the thumbnail SOURCE image. Large
+  /// enough to feed the 1280px `large` ladder crisply; both the `medium` (768px)
+  /// and `large` (1280px) variants are downsampled from this single fetch via
+  /// the shared `ThumbnailGenerator` ladder (task 0631).
+  private let thumbSourceMaxSize = 1600
 
-  /// Generate and upload a thumbnail for an uploaded asset.
-  /// Best-effort: failures are logged but never block the upload pipeline.
+  /// Generate and upload the medium + large thumbnails (and a blurhash) for an
+  /// uploaded asset. Best-effort: failures are logged but never block the upload
+  /// pipeline. One PhotoKit fetch yields the source image; the medium (768px),
+  /// large (1280px) and blurhash are all derived from it (task 0631).
   private func generateAndUploadThumbnail(
     phAssetId: String,
     serverFileId: String,
@@ -3547,40 +3551,50 @@ final class NativeBackupEngine: NSObject {
     Task.detached(priority: .utility) { [weak self] in
       guard let self else { return }
       do {
-        let thumbnailData: Data
-        if assetType == "video" || self.isVideoType(mediaTypeHint) {
-          thumbnailData = try await self.generateVideoThumbnail(phAssetId: phAssetId)
-        } else {
-          thumbnailData = try await self.generateImageThumbnail(phAssetId: phAssetId)
-        }
+        let isVideo = assetType == "video" || self.isVideoType(mediaTypeHint)
+        let source: UIImage = isVideo
+          ? try await self.fetchVideoSourceFrame(phAssetId: phAssetId)
+          : try await self.fetchPhotoSourceImage(phAssetId: phAssetId)
 
-        // Encrypt thumbnail as single AES-256-GCM chunk
         let fileKey = try masterKey.deriveFileKey(fileId: Data(serverFileId.utf8))
-        let enc = try fileKey.encryptChunk(plaintext: thumbnailData)
 
-        // Wire format: nonce(12) || ciphertext — matches the web client
-        var wire = Data(capacity: enc.nonce.count + enc.ciphertext.count)
-        wire.append(enc.nonce)
-        wire.append(enc.ciphertext)
-        guard wire.count <= self.thumbMaxEncryptedBytes else {
-          NSLog("[NativeBackupEngine] Thumbnail skipped: encrypted payload too large (\(wire.count) bytes)")
-          return
+        // Blurhash placeholder — images only (the web/JS path skips video too).
+        // Best-effort; nil simply means the Photos grid shows no instant gradient.
+        let blurhash = isVideo ? nil : BlurHashEncoder.encode(source)
+
+        // Medium thumbnail. Carries the blurhash so the server persists it on
+        // files.blurhash alongside has_thumbnail (server only stores the
+        // placeholder with the medium variant).
+        if let mediumData = ThumbnailGenerator.generate(from: source, config: .medium) {
+          await self.putThumbnail(
+            variant: nil,
+            data: mediumData,
+            fileKey: fileKey,
+            maxBytes: ThumbnailGenerator.Config.medium.maxBytes + 28,
+            blurhash: blurhash,
+            serverFileId: serverFileId,
+            authToken: authToken,
+            baseURL: baseURL
+          )
+        } else {
+          NSLog("[NativeBackupEngine] Medium thumbnail produced no output")
         }
 
-        // Upload via PUT
-        guard let thumbUrl = URL(string: "\(baseURL)/api/v1/files/\(serverFileId)/thumbnail") else { return }
-        var request = URLRequest(url: thumbUrl)
-        request.httpMethod = "PUT"
-        request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
-        request.httpBody = wire
-
-        let (_, response) = try await URLSession.shared.data(for: request)
-        let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
-        if (200..<300).contains(statusCode) {
-          NSLog("[NativeBackupEngine] Thumbnail uploaded")
+        // Large thumbnail (1280px) — used by the preview screen + web preview.
+        // Independent best-effort PUT to /thumbnail/large; sets has_large_thumbnail.
+        if let largeData = ThumbnailGenerator.generate(from: source, config: .large) {
+          await self.putThumbnail(
+            variant: "large",
+            data: largeData,
+            fileKey: fileKey,
+            maxBytes: ThumbnailGenerator.Config.large.maxBytes + 28,
+            blurhash: nil,
+            serverFileId: serverFileId,
+            authToken: authToken,
+            baseURL: baseURL
+          )
         } else {
-          NSLog("[NativeBackupEngine] Thumbnail upload HTTP \(statusCode)")
+          NSLog("[NativeBackupEngine] Large thumbnail produced no output")
         }
       } catch {
         NSLog("[NativeBackupEngine] Thumbnail generation failed: \(error.localizedDescription)")
@@ -3588,8 +3602,62 @@ final class NativeBackupEngine: NSObject {
     }
   }
 
-  /// Generate a WebP thumbnail from a video asset using AVAssetImageGenerator.
-  private func generateVideoThumbnail(phAssetId: String) async throws -> Data {
+  /// Encrypt one thumbnail variant and PUT it. `variant == nil` → the medium
+  /// endpoint (`/thumbnail`); otherwise `/thumbnail/<variant>`. A non-nil
+  /// `blurhash` is appended as a `?blurhash=` query param (server persists it
+  /// only on the medium variant). Best-effort — never throws.
+  private func putThumbnail(
+    variant: String?,
+    data: Data,
+    fileKey: FileKeyHandle,
+    maxBytes: Int,
+    blurhash: String?,
+    serverFileId: String,
+    authToken: String,
+    baseURL: String
+  ) async {
+    let label = variant ?? "medium"
+    do {
+      let enc = try fileKey.encryptChunk(plaintext: data)
+      // Wire format: nonce(12) || ciphertext — matches the web client.
+      var wire = Data(capacity: enc.nonce.count + enc.ciphertext.count)
+      wire.append(enc.nonce)
+      wire.append(enc.ciphertext)
+      guard wire.count <= maxBytes else {
+        NSLog("[NativeBackupEngine] \(label) thumbnail skipped: encrypted payload too large (\(wire.count) bytes)")
+        return
+      }
+
+      let suffix = variant.map { "/\($0)" } ?? ""
+      var urlString = "\(baseURL)/api/v1/files/\(serverFileId)/thumbnail\(suffix)"
+      // Encode against the unreserved set so base83 symbols (#, +, ?, …) and the
+      // `+`-means-space urlencoded pitfall are all percent-escaped.
+      if let blurhash, !blurhash.isEmpty,
+         let encoded = blurhash.addingPercentEncoding(withAllowedCharacters: .alphanumerics) {
+        urlString += "?blurhash=\(encoded)"
+      }
+      guard let thumbUrl = URL(string: urlString) else { return }
+      var request = URLRequest(url: thumbUrl)
+      request.httpMethod = "PUT"
+      request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
+      request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+      request.httpBody = wire
+
+      let (_, response) = try await URLSession.shared.data(for: request)
+      let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+      if (200..<300).contains(statusCode) {
+        NSLog("[NativeBackupEngine] \(label) thumbnail uploaded\(blurhash != nil ? " (+blurhash)" : "")")
+      } else {
+        NSLog("[NativeBackupEngine] \(label) thumbnail upload HTTP \(statusCode)")
+      }
+    } catch {
+      NSLog("[NativeBackupEngine] \(label) thumbnail upload failed: \(error.localizedDescription)")
+    }
+  }
+
+  /// Extract a source frame (1s in, or 0s for very short clips) from a video
+  /// asset at `thumbSourceMaxSize`, for downstream medium + large generation.
+  private func fetchVideoSourceFrame(phAssetId: String) async throws -> UIImage {
     let phAsset = PHAsset.fetchAssets(withLocalIdentifiers: [phAssetId], options: nil).firstObject
     guard let phAsset else { throw BackupError.assetNotFound }
 
@@ -3612,7 +3680,7 @@ final class NativeBackupEngine: NSObject {
 
     let generator = AVAssetImageGenerator(asset: avAsset)
     generator.appliesPreferredTrackTransform = true
-    generator.maximumSize = CGSize(width: thumbMaxSize, height: thumbMaxSize)
+    generator.maximumSize = CGSize(width: thumbSourceMaxSize, height: thumbSourceMaxSize)
 
     let time = CMTime(seconds: 1.0, preferredTimescale: 600)
     let cgImage: CGImage
@@ -3622,29 +3690,24 @@ final class NativeBackupEngine: NSObject {
       // Fall back to time 0 if 1s is beyond the video duration
       cgImage = try generator.copyCGImage(at: .zero, actualTime: nil)
     }
-
-    let image = UIImage(cgImage: cgImage)
-    guard let webp = ThumbnailGenerator.generate(from: image, config: .medium) else {
-      throw BackupError.assetLoadFailed
-    }
-    return webp
+    return UIImage(cgImage: cgImage)
   }
 
-  /// Generate a WebP thumbnail from an image asset (JPEG, HEIC, PNG, DNG, etc).
-  /// Uses PHImageManager to get a small preview — this works for all image types
-  /// including RAW/DNG because Photos.framework handles the decoding.
-  private func generateImageThumbnail(phAssetId: String) async throws -> Data {
+  /// Fetch a source image (JPEG, HEIC, PNG, DNG, etc) from PhotoKit at
+  /// `thumbSourceMaxSize`. Works for all image types incl. RAW/DNG because
+  /// Photos.framework handles the decoding.
+  private func fetchPhotoSourceImage(phAssetId: String) async throws -> UIImage {
     let phAsset = PHAsset.fetchAssets(withLocalIdentifiers: [phAssetId], options: nil).firstObject
     guard let phAsset else { throw BackupError.assetNotFound }
 
-    let image: UIImage = try await withCheckedThrowingContinuation { continuation in
+    return try await withCheckedThrowingContinuation { continuation in
       let options = PHImageRequestOptions()
       options.deliveryMode = .highQualityFormat
       options.isNetworkAccessAllowed = true
       options.isSynchronous = false
-      options.resizeMode = .fast
+      options.resizeMode = .exact
 
-      let targetSize = CGSize(width: thumbMaxSize, height: thumbMaxSize)
+      let targetSize = CGSize(width: thumbSourceMaxSize, height: thumbSourceMaxSize)
       PHImageManager.default().requestImage(
         for: phAsset,
         targetSize: targetSize,
@@ -3664,11 +3727,6 @@ final class NativeBackupEngine: NSObject {
         }
       }
     }
-
-    guard let webp = ThumbnailGenerator.generate(from: image, config: .medium) else {
-      throw BackupError.assetLoadFailed
-    }
-    return webp
   }
 
   /// Whether the given UTI represents a video type.
