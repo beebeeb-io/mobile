@@ -161,6 +161,46 @@ export async function hydrateShareKeys(): Promise<void> {
   }
 }
 
+/**
+ * A screen-local resolver that memoises resolved keys per share token. The
+ * store is consume-once + delete-on-consume, and React Navigation RE-RENDERS
+ * (does not remount) SharedViewScreen when a second share link arrives — so the
+ * same component instance sees a changing `token`. Re-resolving a token whose
+ * key this screen already consumed (e.g. an A→C→A re-open where A's fragment was
+ * stripped and consumed on first mount) must read this cache, otherwise the
+ * second resolution finds the emptied queue and regresses the stale-wrong-key
+ * bug into a missing-key one. Each screen owns one resolver (held in a ref).
+ * (task 0710 — stale-key-on-renavigation fix)
+ */
+export function makeShareKeyResolver() {
+  const cache = new Map<string, string>();
+  return {
+    resolveSync(token: string, routeKey: string | null): string | null {
+      const cached = cache.get(token);
+      if (cached) {
+        recordRuntimeTrace('share-key.resolve', { token, source: 'cache' });
+        return cached;
+      }
+      const key = routeKey ?? consumeShareKey(token);
+      if (key) {
+        cache.set(token, key);
+        recordRuntimeTrace('share-key.resolve', { token, source: routeKey ? 'route' : 'queue' });
+      }
+      return key;
+    },
+    async resolveAsync(token: string): Promise<string | null> {
+      const cached = cache.get(token);
+      if (cached) return cached;
+      const key = await consumeShareKeyAsync(token);
+      if (key) {
+        cache.set(token, key);
+        recordRuntimeTrace('share-key.resolve', { token, source: 'queue-async' });
+      }
+      return key;
+    },
+  };
+}
+
 /** Test-only hooks. Not used by production code. */
 export function __setClockForTest(fn: (() => number) | null): void {
   nowMs = fn ?? (() => Date.now());

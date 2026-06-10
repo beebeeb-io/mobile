@@ -38,7 +38,8 @@
       },
       "env": {
         "EXPO_PUBLIC_API_URL": "http://localhost:3001",
-        "EXPO_NO_OTA_UPDATES": "1"
+        "EXPO_NO_OTA_UPDATES": "1",
+        "EXPO_PUBLIC_BEEBEEB_RUNTIME_TRACE": "1"
       }
     }
   },

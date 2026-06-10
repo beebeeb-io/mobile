@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Linking,
@@ -18,7 +18,7 @@ import { radii, spacing } from '../theme';
 import { useTheme } from '../lib/theme-context';
 import { downloadSharedFileBlob, getShareByToken, friendlyError } from '../lib/api';
 import type { ShareInfo } from '../lib/api';
-import { consumeShareKey, consumeShareKeyAsync } from '../lib/share-key-store';
+import { makeShareKeyResolver } from '../lib/share-key-store';
 import {
   decryptEncryptedBytes,
   inferChunkCountFromEncryptedSize,
@@ -157,26 +157,37 @@ export default function SharedViewScreen() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<ShareInfo | null>(null);
-  // Captured from the #key= URL fragment (stored before React Navigation
-  // strips it). Available only when the user arrives via a deep link.
-  // Sync fast-path hits the in-memory queue; the effect below covers the
-  // cold-start race where the fragment was persisted by a prior process but
-  // not yet hydrated into memory (task 0710).
-  const [shareKey, setShareKey] = useState<string | null>(() => routeShareKey ?? consumeShareKey(token));
+  // The #key= fragment for THIS share, resolved PER-TOKEN.
+  //
+  // React Navigation re-renders (does not remount) this screen when a second
+  // share deep link arrives, so `token` can change while this component instance
+  // lives on. A mount-once `useState(resolve())` would keep the FIRST link's key
+  // on the second token → AES-GCM rejects it → CryptoError. So we re-resolve
+  // whenever `token`/`routeShareKey` change, through a screen-local resolver
+  // whose cache absorbs the store's consume-once semantics (an A→C→A re-open
+  // reads the cache instead of finding the emptied queue). (task 0710)
+  const resolverRef = useRef(makeShareKeyResolver());
+  const [shareKey, setShareKey] = useState<string | null>(() =>
+    resolverRef.current.resolveSync(token, routeShareKey),
+  );
 
   useEffect(() => {
-    if (shareKey) return;
     let cancelled = false;
-    void consumeShareKeyAsync(token).then((key) => {
+    const sync = resolverRef.current.resolveSync(token, routeShareKey);
+    if (sync) {
+      setShareKey(sync);
+      return;
+    }
+    // No sync key yet for this token — cover the cold-start race where the
+    // fragment was persisted by a prior process but not yet hydrated.
+    setShareKey(null);
+    void resolverRef.current.resolveAsync(token).then((key) => {
       if (!cancelled && key) setShareKey(key);
     });
     return () => {
       cancelled = true;
     };
-    // Run once per token; shareKey is intentionally excluded so a resolved key
-    // doesn't re-trigger the async consume.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token]);
+  }, [token, routeShareKey]);
 
   // Decryption state — driven by the "Decrypt & save" button.
   const [decrypting, setDecrypting] = useState(false);
@@ -220,7 +231,7 @@ export default function SharedViewScreen() {
   const handleDecrypt = useCallback(async (): Promise<void> => {
     if (!info) return;
     if (!shareKey) {
-      setDecryptError('Share key missing from link.');
+      setDecryptError('This link is missing its key. Open the full link, including the part after #.');
       return;
     }
     if (!BeebeebCrypto.isNativeAvailable) {
@@ -306,7 +317,16 @@ export default function SharedViewScreen() {
         });
       }
     } catch (e) {
-      setDecryptError(e instanceof Error ? e.message : 'Decryption failed.');
+      // Map the native crypto failure to honest, actionable copy — a raw
+      // `BeebeebCrypto.CryptoError.Decryption` string is not something a user can
+      // act on (task 0710 / 0726). A decryption failure here means the key in the
+      // link does not match this file (wrong, truncated, or edited link).
+      const raw = e instanceof Error ? e.message : '';
+      setDecryptError(
+        /CryptoError/i.test(raw)
+          ? "This key doesn't match this file. Check that you opened the complete, unedited link."
+          : raw || 'Could not decrypt this file.',
+      );
     } finally {
       setDecrypting(false);
     }
