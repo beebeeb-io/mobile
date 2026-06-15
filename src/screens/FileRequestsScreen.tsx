@@ -44,7 +44,9 @@ function formatBytes(bytes: number): string {
   return `${(bytes / 1_000_000_000).toFixed(1)} GB`;
 }
 
-export default function FileRequestsScreen() {
+// `embedded` (task 0782): rendered inside the Shared tab's "Requests" segment —
+// suppress the screen's own header (the Shared screen provides the title + the "+").
+export default function FileRequestsScreen({ embedded = false }: { embedded?: boolean } = {}) {
   const navigation = useNavigation<Nav>();
   const insets = useSafeAreaInsets();
   const { colors: c } = useTheme();
@@ -127,15 +129,17 @@ export default function FileRequestsScreen() {
 
   return (
     <View style={[styles.root, { backgroundColor: c.paper }]}>
-      <View style={[styles.header, { paddingTop: insets.top + 10, borderBottomColor: c.line }]}>
-        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.iconButton}>
-          <Ionicons name="chevron-back" size={24} color={c.ink} />
-        </TouchableOpacity>
-        <Text style={[styles.title, { color: c.ink }]}>File requests</Text>
-        <TouchableOpacity onPress={() => navigation.navigate('CreateFileRequest')} style={styles.iconButton}>
-          <Ionicons name="add" size={26} color={c.amberDeep} />
-        </TouchableOpacity>
-      </View>
+      {!embedded && (
+        <View style={[styles.header, { paddingTop: insets.top + 10, borderBottomColor: c.line }]}>
+          <TouchableOpacity onPress={() => navigation.goBack()} style={styles.iconButton}>
+            <Ionicons name="chevron-back" size={24} color={c.ink} />
+          </TouchableOpacity>
+          <Text style={[styles.title, { color: c.ink }]}>File requests</Text>
+          <TouchableOpacity onPress={() => navigation.navigate('CreateFileRequest')} style={styles.iconButton}>
+            <Ionicons name="add" size={26} color={c.amberDeep} />
+          </TouchableOpacity>
+        </View>
+      )}
 
       <ScrollView
         style={styles.scroll}

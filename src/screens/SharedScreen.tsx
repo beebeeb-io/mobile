@@ -18,8 +18,9 @@ import SkeletonRow from '../components/SkeletonRow';
 import { useCrypto } from '../lib/crypto-context';
 import { encryptedMetadataPayloadToBytes } from '../lib/encrypted-metadata';
 import { guessMimeType } from '../lib/media';
-import { getIncomingInvites, getSentInvites, listMyShares, friendlyError } from '../lib/api';
+import { getIncomingInvites, getSentInvites, listMyShares, listFileRequests, friendlyError } from '../lib/api';
 import type { ShareInvite, MyShareLink } from '../lib/api';
+import FileRequestsScreen from './FileRequestsScreen';
 import type { RootStackParamList } from '../App';
 
 type Nav = NativeStackNavigationProp<RootStackParamList>;
@@ -203,7 +204,7 @@ function ShareLinkBadge({ link }: { link: MyShareLink }) {
 // Tab type
 // ---------------------------------------------------------------------------
 
-type Tab = 'incoming' | 'sent' | 'pending' | 'links';
+type Tab = 'incoming' | 'sent' | 'pending' | 'links' | 'requests';
 type InviteDirection = 'incoming' | 'sent';
 
 interface InviteListItem {
@@ -220,6 +221,19 @@ export default function SharedScreen() {
   const insets = useSafeAreaInsets();
   const navigation = useNavigation<Nav>();
   const [activeTab, setActiveTab] = useState<Tab>('incoming');
+  // 0782 — open file-request count for the "Requests" tab badge.
+  const [requestCount, setRequestCount] = useState(0);
+  useEffect(() => {
+    let cancelled = false;
+    void listFileRequests()
+      .then(({ file_requests }) => {
+        if (!cancelled) setRequestCount(file_requests.filter((r) => !r.closed).length);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   const [isScrolled, setIsScrolled] = useState(false);
 
   // Crypto — for decrypting share link filenames
@@ -523,6 +537,9 @@ export default function SharedScreen() {
     { id: 'sent' as const, label: 'Shared by me', count: sentApproved.length },
     { id: 'pending' as const, label: 'Pending', count: pendingInvites.length },
     { id: 'links' as const, label: 'My links', count: links.length },
+    // 0782 — File Requests surfaced as a peer tab in Shared (inbound-from-others,
+    // the conceptual sibling of "Shared with me").
+    { id: 'requests' as const, label: 'Requests', count: requestCount },
   ];
 
   // ------------------------------------------------------------------
@@ -576,7 +593,19 @@ export default function SharedScreen() {
       {/* Header area */}
       <View style={[isScrolled && { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: c.line }]}>
       {/* Title */}
-      <Text style={[styles.title, { color: c.ink }]}>Shared</Text>
+      <View style={styles.titleRow}>
+        <Text style={[styles.title, { color: c.ink }]}>Shared</Text>
+        {activeTab === 'requests' && (
+          <TouchableOpacity
+            onPress={() => navigation.navigate('CreateFileRequest')}
+            style={styles.headerAdd}
+            accessibilityRole="button"
+            accessibilityLabel="Create file request"
+          >
+            <Ionicons name="add" size={26} color={c.amberDeep} />
+          </TouchableOpacity>
+        )}
+      </View>
 
       {/* Tabs */}
       <View style={styles.tabBar} accessibilityRole="tablist">
@@ -677,7 +706,7 @@ export default function SharedScreen() {
           contentContainerStyle={pendingInvites.length === 0 ? styles.emptyList : undefined}
           keyboardDismissMode="on-drag"
         />
-      ) : (
+      ) : activeTab === 'links' ? (
         <FlatList
           data={links}
           keyExtractor={(item) => item.id}
@@ -696,6 +725,9 @@ export default function SharedScreen() {
           contentContainerStyle={links.length === 0 ? styles.emptyList : undefined}
           keyboardDismissMode="on-drag"
         />
+      ) : (
+        /* 0782 — File Requests as the "Requests" tab content (own header suppressed). */
+        <FileRequestsScreen embedded />
       )}
     </View>
   );
@@ -708,6 +740,8 @@ export default function SharedScreen() {
 const styles = StyleSheet.create({
   root: { flex: 1 },
   title: { fontSize: 28, fontWeight: '700', paddingHorizontal: spacing.lg, paddingTop: 6, paddingBottom: 4 },
+  titleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  headerAdd: { paddingRight: spacing.lg, paddingLeft: 12, paddingVertical: 6 },
 
   // Tab bar
   tabBar: { flexDirection: 'row', flexWrap: 'wrap', paddingHorizontal: spacing.lg, paddingBottom: spacing.sm, gap: 4 },
