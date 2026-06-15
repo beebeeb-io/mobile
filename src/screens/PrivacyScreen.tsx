@@ -23,12 +23,15 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
+import * as FileSystem from 'expo-file-system';
+import * as Sharing from 'expo-sharing';
 import { useNavigation } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../lib/theme-context';
 import { fonts, spacing, type Colors } from '../theme';
 import { NativeSwitch } from '../components/NativeSwitch';
 import {
+  getToken,
   getTrackingPreference,
   setTrackingPreference,
   requestDataExport,
@@ -202,6 +205,7 @@ function ActivityTrackingRow({ c }: { c: C }) {
 function DataExportRow({ c }: { c: C }) {
   const [exportStatus, setExportStatus] = useState<DataExportStatus | null>(null);
   const [requesting, setRequesting] = useState(false);
+  const [downloading, setDownloading] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const stopPoll = useCallback(() => {
@@ -239,11 +243,40 @@ function DataExportRow({ c }: { c: C }) {
     }
   }, [startPoll]);
 
-  const handleDownload = useCallback(() => {
-    if (exportStatus?.download_url) {
-      Linking.openURL(exportStatus.download_url).catch(() => {});
+  const handleDownload = useCallback(async () => {
+    const url = exportStatus?.download_url;
+    if (!url || downloading) return;
+    setDownloading(true);
+    try {
+      // In-app AUTHENTICATED download (task 0781): the system browser carries no
+      // Bearer token, so opening the URL there 401s ("am I even authenticated?").
+      // Fetch it with the session token to a temp file, then hand it to the native
+      // share/save sheet so the user picks where to store it. No token ever rides
+      // in a URL — the server endpoint is Bearer-scoped to the caller's own export.
+      const token = await getToken();
+      const dest = `${FileSystem.cacheDirectory}beebeeb-data-export-${exportStatus?.export_id ?? 'latest'}.zip`;
+      const { uri, status } = await FileSystem.downloadAsync(url, dest, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      if (status !== 200) throw new Error(`download failed (${status})`);
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(uri, {
+          mimeType: 'application/zip',
+          UTI: 'public.zip-archive',
+          dialogTitle: 'Save your data export',
+        });
+      } else {
+        Alert.alert('Export downloaded', 'Your data export was saved to the app’s files.');
+      }
+    } catch {
+      Alert.alert(
+        'Download failed',
+        'We couldn’t download your export. Please try again in a moment.',
+      );
+    } finally {
+      setDownloading(false);
     }
-  }, [exportStatus]);
+  }, [exportStatus, downloading]);
 
   const status = exportStatus?.status;
   const isPolling = (status === 'pending' || status === 'processing') && !requesting;
@@ -253,20 +286,22 @@ function DataExportRow({ c }: { c: C }) {
       <ActionRow
         label="Download my data"
         subtitle={
-          status === 'ready'
-            ? 'Your export is ready — tap to download'
-            : status === 'failed'
-              ? 'Export failed — tap to retry'
-              : isPolling
-                ? 'Building your export...'
-                : 'Account data export as a JSON ZIP'
+          downloading
+            ? 'Downloading your export...'
+            : status === 'ready'
+              ? 'Your export is ready — tap to download'
+              : status === 'failed'
+                ? 'Export failed — tap to retry'
+                : isPolling
+                  ? 'Building your export...'
+                  : 'Account data export as a JSON ZIP'
         }
         icon="cloud-download-outline"
-        disabled={requesting || isPolling}
+        disabled={requesting || isPolling || downloading}
         onPress={status === 'ready' ? handleDownload : handleRequest}
         c={c}
       />
-      {(requesting || isPolling) && (
+      {(requesting || isPolling || downloading) && (
         <View style={{ paddingHorizontal: 44, paddingBottom: 10 }}>
           <ActivityIndicator size="small" color={c.amber} />
         </View>
