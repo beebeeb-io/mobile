@@ -1205,7 +1205,65 @@ export default function FilesScreen() {
   // Encrypted search index — fetched on unlock, queried on every keystroke
   // when the search bar is open. Powers the "in your vault" results hint
   // below the search bar; also kept in sync after create, rename, move, and delete.
-  const { ready: searchIndexReady, search: searchVault, indexFile, unindexFile } = useSearchIndex();
+  const { ready: searchIndexReady, search: searchVault, indexFile, unindexFile, getIndexedIds } = useSearchIndex();
+
+  // 0778A — recursive search. The encrypted index is populated INCREMENTALLY (on
+  // upload/rename), so files created on another device/client aren't in it and a
+  // term that lives only in a nested folder returns "No results" (IMG_5520). Once
+  // per unlock, reconcile the index against the FULL vault tree (sync.allNodes()):
+  // decrypt + index every node not already present, so searchVault covers every
+  // subtree. The index persists + syncs, so this is a one-time build per vault.
+  const searchReconciledRef = useRef(false);
+  useEffect(() => {
+    if (!isUnlocked) {
+      searchReconciledRef.current = false;
+      return;
+    }
+    if (!searchIndexReady || !sync.ready || searchReconciledRef.current) return;
+    searchReconciledRef.current = true;
+
+    let cancelled = false;
+    void (async () => {
+      const indexed = getIndexedIds();
+      const missing = sync
+        .allNodes()
+        .filter(
+          (n) => !n.is_trashed && !indexed.has(n.id) && (n.name_encrypted ?? '').startsWith('{'),
+        );
+      const BATCH = 12;
+      for (let i = 0; i < missing.length && !cancelled; i += BATCH) {
+        await Promise.all(
+          missing.slice(i, i + BATCH).map(async (node) => {
+            try {
+              const payload = encryptedMetadataPayloadToBytes(node.name_encrypted ?? '');
+              if (!payload) return;
+              const plaintext = await decryptMetadata(node.id, payload.nonce, payload.ciphertext);
+              const { name } = parseDecryptedMetadata(plaintext);
+              if (cancelled || !name) return;
+              indexFile(node.id, {
+                name,
+                path: name,
+                type: node.is_folder ? 'folder' : '',
+                size: node.size_bytes ?? 0,
+                parent: node.parent_id,
+                starred: false,
+                created: '',
+                modified: '',
+                tags: [],
+              });
+            } catch {
+              // request-upload (content-key) or a transient decrypt failure — it
+              // gets indexed when its folder is opened. Non-fatal.
+            }
+          }),
+        );
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isUnlocked, searchIndexReady, sync, getIndexedIds, indexFile, decryptMetadata]);
 
   // 0777 — native-iOS action sheets. Sort + "+" add menus route through the single
   // reusable <BBActionSheet>; opened by these flags (row-actions menu follows).

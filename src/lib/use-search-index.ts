@@ -34,6 +34,9 @@ export interface UseSearchIndex {
   indexFile: (fileId: string, entry: SearchIndexEntry) => void
   /** Remove an entry; schedules a debounced server save. */
   unindexFile: (fileId: string) => void
+  /** Ids currently present in the in-memory index — for the full-vault reconcile
+   *  (task 0778A) that back-fills files added on another client. */
+  getIndexedIds: () => Set<string>
 }
 
 export function useSearchIndex(): UseSearchIndex {
@@ -93,6 +96,11 @@ export function useSearchIndex(): UseSearchIndex {
     return searchIndex(idx, query)
   }, [])
 
+  const getIndexedIds = useCallback((): Set<string> => {
+    const idx = indexRef.current
+    return new Set(idx ? Object.keys(idx.files) : [])
+  }, [])
+
   const indexFile = useCallback((fileId: string, entry: SearchIndexEntry) => {
     if (!indexRef.current) return
     indexRef.current = updateIndexEntry(indexRef.current, fileId, entry)
@@ -115,5 +123,5 @@ export function useSearchIndex(): UseSearchIndex {
     }
   }, [])
 
-  return { ready, search, indexFile, unindexFile }
+  return { ready, search, indexFile, unindexFile, getIndexedIds }
 }
