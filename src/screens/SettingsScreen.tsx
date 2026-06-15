@@ -2454,8 +2454,7 @@ export default function SettingsScreen() {
             <SettingsRow
               label="Download my data"
               icon="download-outline"
-              badge="Coming soon"
-              showChevron={false}
+              onPress={() => navigation.navigate('Privacy')}
               c={c}
             />
           </View>
