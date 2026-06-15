@@ -57,6 +57,7 @@ import { useAuth } from '../lib/auth';
 import { encryptedUpload, generateFileId } from '../lib/encrypted-upload';
 import { useSync } from '../lib/sync-context';
 import { useSearchIndex } from '../lib/use-search-index';
+import { BBActionSheet, type ActionSheetRow, type ActionSheetFileHeader } from '../components/BBActionSheet';
 import { useBackup } from '../lib/backup-context';
 import type { SearchIndexEntry, SearchResult } from '../lib/search-index';
 import { donateSiriShortcut } from '../lib/siri-shortcuts';
@@ -170,6 +171,30 @@ function parseDecryptedMetadata(plaintext: string): { name: string; mimeType: st
     // Legacy metadata format: plaintext is the bare filename.
   }
   return { name: plaintext || 'Encrypted file', mimeType: null };
+}
+
+// 0777 — map a row-action label to its leading icon for the BBActionSheet.
+function rowActionIcon(label: string): React.ComponentProps<typeof Ionicons>['name'] {
+  switch (label) {
+    case 'Rename': return 'pencil-outline';
+    case 'Preview': return 'eye-outline';
+    case 'Open': return 'folder-open-outline';
+    case 'Share': return 'link-outline';
+    case 'Export...': return 'share-outline';
+    case 'Save to Photos': return 'images-outline';
+    case 'Move to...': return 'folder-outline';
+    case 'Make available offline':
+    case 'Remove offline': return 'arrow-down-circle-outline';
+    case 'Create proof': return 'shield-checkmark-outline';
+    case 'Lock file': return 'lock-closed-outline';
+    case 'Unlock file': return 'lock-open-outline';
+    case 'Pin to top':
+    case 'Unpin': return 'pin-outline';
+    case 'Move to Trash':
+    case 'Delete': return 'trash-outline';
+    case 'Details': return 'information-circle-outline';
+    default: return 'ellipsis-horizontal';
+  }
 }
 
 /**
@@ -625,7 +650,17 @@ const FileRowItem = React.memo(function FileRowItem({
           <Icon name="lock" size={13} color={c.amberDeep} />
         </TouchableOpacity>
       )}
-      {!selectMode && <Text style={[styles.chevron, { color: c.ink4 }]}>{'›'}</Text>}
+      {!selectMode && (
+        <TouchableOpacity
+          onPress={() => onLongPress(item)}
+          hitSlop={{ top: 10, right: 6, bottom: 10, left: 10 }}
+          style={styles.moreButton}
+          accessibilityRole="button"
+          accessibilityLabel={`Actions for ${nameText}`}
+        >
+          <Ionicons name="ellipsis-horizontal" size={18} color={c.ink3} />
+        </TouchableOpacity>
+      )}
     </TouchableOpacity>
   );
 
@@ -1171,6 +1206,13 @@ export default function FilesScreen() {
   // when the search bar is open. Powers the "in your vault" results hint
   // below the search bar; also kept in sync after create, rename, move, and delete.
   const { ready: searchIndexReady, search: searchVault, indexFile, unindexFile } = useSearchIndex();
+
+  // 0777 — native-iOS action sheets. Sort + "+" add menus route through the single
+  // reusable <BBActionSheet>; opened by these flags (row-actions menu follows).
+  const [sortSheetOpen, setSortSheetOpen] = useState(false);
+  const [addSheetOpen, setAddSheetOpen] = useState(false);
+  const [rowSheet, setRowSheet] = useState<{ header: ActionSheetFileHeader; rows: ActionSheetRow[] } | null>(null);
+  const [rowSheetOpen, setRowSheetOpen] = useState(false);
 
   // Upload state — drives the 3-stage trust banner above the FAB.
   // stage 1 = encrypting · stage 2 = uploading · stage 3 = storing/done.
@@ -1928,31 +1970,11 @@ export default function FilesScreen() {
     navigation.navigate('DocumentScanner', { parentId: currentFolder.id ?? undefined });
   }, [currentFolder.id, navigation, phraseVerified]);
 
+  // 0777 — FAB button feedback (Medium), then the native add sheet.
   const handleFabPress = useCallback(() => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    if (Platform.OS === 'ios') {
-      ActionSheetIOS.showActionSheetWithOptions(
-        {
-          options: ['Upload file', 'Upload photo', 'Scan document', 'New folder', 'Cancel'],
-          cancelButtonIndex: 4,
-        },
-        (index) => {
-          if (index === 0) pickAndUploadFile();
-          else if (index === 1) pickAndUploadPhotos();
-          else if (index === 2) openDocumentScanner();
-          else if (index === 3) showNewFolderPrompt();
-        },
-      );
-    } else {
-      Alert.alert('Add to Drive', undefined, [
-        { text: 'Upload file', onPress: pickAndUploadFile },
-        { text: 'Upload photo', onPress: pickAndUploadPhotos },
-        { text: 'Scan document', onPress: openDocumentScanner },
-        { text: 'New folder', onPress: showNewFolderPrompt },
-        { text: 'Cancel', style: 'cancel' },
-      ]);
-    }
-  }, [openDocumentScanner, pickAndUploadFile, pickAndUploadPhotos]);
+    setAddSheetOpen(true);
+  }, []);
 
   // Quick action / deep-link landing: route.params.action is set by the App
   // shortcut handler (beebeeb://upload, beebeeb://search, beebeeb://scan,
@@ -2031,6 +2053,17 @@ export default function FilesScreen() {
     }
   }, [submitNewFolder]);
 
+  // 0777 — "+" add-file sheet rows (placed after all four handlers are declared).
+  const addRows = useMemo<ActionSheetRow[]>(
+    () => [
+      { key: 'photo', label: 'Upload photo or video', icon: 'image-outline', onPress: pickAndUploadPhotos },
+      { key: 'file', label: 'Upload file', icon: 'document-outline', onPress: pickAndUploadFile },
+      { key: 'scan', label: 'Scan document', icon: 'scan-outline', onPress: openDocumentScanner },
+      { key: 'folder', label: 'New folder', icon: 'create-outline', onPress: showNewFolderPrompt },
+    ],
+    [pickAndUploadPhotos, pickAndUploadFile, openDocumentScanner, showNewFolderPrompt],
+  );
+
   const confirmNewFolderModal = useCallback(async () => {
     const trimmed = newFolderName.trim();
     if (!trimmed) return;
@@ -2044,29 +2077,26 @@ export default function FilesScreen() {
     }
   }, [newFolderName, submitNewFolder]);
 
+  // 0777 — native bottom sheet (no haptic on open, per iOS HIG).
   const handleSortPress = useCallback(() => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    const options = [...SORT_ORDER.map((o) => SORT_LABELS[o]), 'Cancel'];
-    const cancelIndex = options.length - 1;
-    if (Platform.OS === 'ios') {
-      ActionSheetIOS.showActionSheetWithOptions(
-        { title: 'Sort by', options, cancelButtonIndex: cancelIndex },
-        (index) => {
-          const order = SORT_ORDER[index];
-          if (order) setSortOrder(order);
-        },
-      );
-    } else {
-      Alert.alert(
-        'Sort by',
-        undefined,
-        [
-          ...SORT_ORDER.map((o) => ({ text: SORT_LABELS[o], onPress: () => setSortOrder(o) })),
-          { text: 'Cancel', style: 'cancel' as const },
-        ],
-      );
-    }
+    setSortSheetOpen(true);
   }, []);
+
+  const sortRows = useMemo<ActionSheetRow[]>(
+    () =>
+      SORT_ORDER.map((o) => ({
+        key: o,
+        label: SORT_LABELS[o],
+        icon: o.startsWith('name')
+          ? 'text'
+          : o.startsWith('date')
+            ? 'calendar-outline'
+            : 'swap-vertical-outline',
+        active: o === sortOrder,
+        onPress: () => setSortOrder(o),
+      })),
+    [sortOrder],
+  );
 
   // ------------------------------------------------------------------
   // Multi-select handlers
@@ -2643,33 +2673,27 @@ export default function FilesScreen() {
       }
     };
 
-    const handleAction = (index: number) => {
-      if (index === cancelIndex) return;
-      const option = options[index];
-      if (option) dispatchAction(option);
-    };
-
-    if (Platform.OS === 'ios') {
-      ActionSheetIOS.showActionSheetWithOptions(
-        {
-          title: name,
-          options,
-          destructiveButtonIndex: destructiveIndex,
-          cancelButtonIndex: cancelIndex,
-        },
-        handleAction,
-      );
-    } else {
-      const alertButtons: Parameters<typeof Alert.alert>[2] = options
-        .slice(0, cancelIndex)
-        .map((opt, i) => ({
-          text: opt,
-          style: (i === destructiveIndex ? 'destructive' : 'default') as 'destructive' | 'default',
-          onPress: () => dispatchAction(opt),
-        }));
-      alertButtons.push({ text: 'Cancel', style: 'cancel' as const });
-      Alert.alert(name, undefined, alertButtons);
-    }
+    // 0777 — present via the reusable native bottom sheet instead of
+    // ActionSheetIOS/Alert. Reuses the dynamic options + dispatchAction.
+    const sheetRows: ActionSheetRow[] = options.slice(0, cancelIndex).map((opt, i) => ({
+      key: opt,
+      label: opt,
+      icon: rowActionIcon(opt),
+      destructive: i === destructiveIndex,
+      onPress: () => dispatchAction(opt),
+    }));
+    const subtitle = item.is_folder
+      ? 'Folder'
+      : `${formatSize(item.size_bytes)}  ·  ${formatDate(item.updated_at)}`;
+    setRowSheet({
+      header: {
+        name,
+        subtitle,
+        thumbnail: <Ionicons name={item.is_folder ? 'folder' : 'document'} size={20} color={c.ink3} />,
+      },
+      rows: sheetRows,
+    });
+    setRowSheetOpen(true);
   }, [
     navigation,
     openFile,
@@ -3404,6 +3428,25 @@ export default function FilesScreen() {
         </TouchableOpacity>
       )}
 
+      {/* 0777 — native bottom sheets routed through the one reusable component. */}
+      <BBActionSheet
+        visible={sortSheetOpen}
+        onClose={() => setSortSheetOpen(false)}
+        title="Sort by"
+        rows={sortRows}
+      />
+      <BBActionSheet
+        visible={addSheetOpen}
+        onClose={() => setAddSheetOpen(false)}
+        rows={addRows}
+      />
+      <BBActionSheet
+        visible={rowSheetOpen}
+        onClose={() => setRowSheetOpen(false)}
+        header={rowSheet?.header}
+        rows={rowSheet?.rows ?? []}
+      />
+
       {/* Android new-folder modal — Alert.prompt is iOS-only. */}
       <Modal
         visible={newFolderOpen}
@@ -3554,6 +3597,7 @@ const styles = StyleSheet.create({
     marginRight: 4,
   },
   chevron: { fontSize: 18 },
+  moreButton: { paddingHorizontal: 4, paddingVertical: 4 },
 
   // File grid
   gridContent: { paddingHorizontal: spacing.lg, paddingTop: 12 },
