@@ -57,6 +57,7 @@ import { useAuth } from '../lib/auth';
 import { encryptedUpload, generateFileId } from '../lib/encrypted-upload';
 import { useSync } from '../lib/sync-context';
 import { useSearchIndex } from '../lib/use-search-index';
+import { BBActionSheet, type ActionSheetRow } from '../components/BBActionSheet';
 import { useBackup } from '../lib/backup-context';
 import type { SearchIndexEntry, SearchResult } from '../lib/search-index';
 import { donateSiriShortcut } from '../lib/siri-shortcuts';
@@ -1172,6 +1173,11 @@ export default function FilesScreen() {
   // below the search bar; also kept in sync after create, rename, move, and delete.
   const { ready: searchIndexReady, search: searchVault, indexFile, unindexFile } = useSearchIndex();
 
+  // 0777 — native-iOS action sheets. Sort + "+" add menus route through the single
+  // reusable <BBActionSheet>; opened by these flags (row-actions menu follows).
+  const [sortSheetOpen, setSortSheetOpen] = useState(false);
+  const [addSheetOpen, setAddSheetOpen] = useState(false);
+
   // Upload state — drives the 3-stage trust banner above the FAB.
   // stage 1 = encrypting · stage 2 = uploading · stage 3 = storing/done.
   type UploadStage = 1 | 2 | 3 | 'done';
@@ -1928,31 +1934,11 @@ export default function FilesScreen() {
     navigation.navigate('DocumentScanner', { parentId: currentFolder.id ?? undefined });
   }, [currentFolder.id, navigation, phraseVerified]);
 
+  // 0777 — FAB button feedback (Medium), then the native add sheet.
   const handleFabPress = useCallback(() => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    if (Platform.OS === 'ios') {
-      ActionSheetIOS.showActionSheetWithOptions(
-        {
-          options: ['Upload file', 'Upload photo', 'Scan document', 'New folder', 'Cancel'],
-          cancelButtonIndex: 4,
-        },
-        (index) => {
-          if (index === 0) pickAndUploadFile();
-          else if (index === 1) pickAndUploadPhotos();
-          else if (index === 2) openDocumentScanner();
-          else if (index === 3) showNewFolderPrompt();
-        },
-      );
-    } else {
-      Alert.alert('Add to Drive', undefined, [
-        { text: 'Upload file', onPress: pickAndUploadFile },
-        { text: 'Upload photo', onPress: pickAndUploadPhotos },
-        { text: 'Scan document', onPress: openDocumentScanner },
-        { text: 'New folder', onPress: showNewFolderPrompt },
-        { text: 'Cancel', style: 'cancel' },
-      ]);
-    }
-  }, [openDocumentScanner, pickAndUploadFile, pickAndUploadPhotos]);
+    setAddSheetOpen(true);
+  }, []);
 
   // Quick action / deep-link landing: route.params.action is set by the App
   // shortcut handler (beebeeb://upload, beebeeb://search, beebeeb://scan,
@@ -2031,6 +2017,17 @@ export default function FilesScreen() {
     }
   }, [submitNewFolder]);
 
+  // 0777 — "+" add-file sheet rows (placed after all four handlers are declared).
+  const addRows = useMemo<ActionSheetRow[]>(
+    () => [
+      { key: 'photo', label: 'Upload photo or video', icon: 'image-outline', onPress: pickAndUploadPhotos },
+      { key: 'file', label: 'Upload file', icon: 'document-outline', onPress: pickAndUploadFile },
+      { key: 'scan', label: 'Scan document', icon: 'scan-outline', onPress: openDocumentScanner },
+      { key: 'folder', label: 'New folder', icon: 'create-outline', onPress: showNewFolderPrompt },
+    ],
+    [pickAndUploadPhotos, pickAndUploadFile, openDocumentScanner, showNewFolderPrompt],
+  );
+
   const confirmNewFolderModal = useCallback(async () => {
     const trimmed = newFolderName.trim();
     if (!trimmed) return;
@@ -2044,29 +2041,26 @@ export default function FilesScreen() {
     }
   }, [newFolderName, submitNewFolder]);
 
+  // 0777 — native bottom sheet (no haptic on open, per iOS HIG).
   const handleSortPress = useCallback(() => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    const options = [...SORT_ORDER.map((o) => SORT_LABELS[o]), 'Cancel'];
-    const cancelIndex = options.length - 1;
-    if (Platform.OS === 'ios') {
-      ActionSheetIOS.showActionSheetWithOptions(
-        { title: 'Sort by', options, cancelButtonIndex: cancelIndex },
-        (index) => {
-          const order = SORT_ORDER[index];
-          if (order) setSortOrder(order);
-        },
-      );
-    } else {
-      Alert.alert(
-        'Sort by',
-        undefined,
-        [
-          ...SORT_ORDER.map((o) => ({ text: SORT_LABELS[o], onPress: () => setSortOrder(o) })),
-          { text: 'Cancel', style: 'cancel' as const },
-        ],
-      );
-    }
+    setSortSheetOpen(true);
   }, []);
+
+  const sortRows = useMemo<ActionSheetRow[]>(
+    () =>
+      SORT_ORDER.map((o) => ({
+        key: o,
+        label: SORT_LABELS[o],
+        icon: o.startsWith('name')
+          ? 'text'
+          : o.startsWith('date')
+            ? 'calendar-outline'
+            : 'swap-vertical-outline',
+        active: o === sortOrder,
+        onPress: () => setSortOrder(o),
+      })),
+    [sortOrder],
+  );
 
   // ------------------------------------------------------------------
   // Multi-select handlers
@@ -3403,6 +3397,19 @@ export default function FilesScreen() {
           <Text style={[styles.fabText, { color: c.ink }]}>+</Text>
         </TouchableOpacity>
       )}
+
+      {/* 0777 — native bottom sheets routed through the one reusable component. */}
+      <BBActionSheet
+        visible={sortSheetOpen}
+        onClose={() => setSortSheetOpen(false)}
+        title="Sort by"
+        rows={sortRows}
+      />
+      <BBActionSheet
+        visible={addSheetOpen}
+        onClose={() => setAddSheetOpen(false)}
+        rows={addRows}
+      />
 
       {/* Android new-folder modal — Alert.prompt is iOS-only. */}
       <Modal
