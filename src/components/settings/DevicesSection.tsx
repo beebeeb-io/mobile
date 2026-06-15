@@ -4,11 +4,17 @@
  * Fetches the user's registered devices and their sync/backup sessions,
  * displaying each device as a card with session status indicators.
  *
- * Status colors:
- *   - Green: heartbeat received within 2x heartbeat_interval_secs
- *   - Amber: heartbeat older than 2x but within 5x interval (stale)
- *   - Red:   heartbeat older than 5x interval or status "stopped"/"error"
- *   - Grey:  no heartbeat ever received
+ * 0780 — Status visual language (three unambiguous device states):
+ *   Active now  — amber filled presence dot + amber "Active now" / "Syncing N of M…" label
+ *   Idle        — no dot; recency in "Last active X ago" text
+ *   Stopped     — hollow gray ring; muted text; only inside "Show stopped (N)" group
+ *
+ * HARD RULE: the platform glyph brightness is CONSTANT for every Active + Idle device.
+ * Never vary glyph opacity to imply recency.
+ *
+ * Session-level status (expanded rows):
+ *   Green: heartbeat within 2× interval   Amber: 2–5× interval (stale)
+ *   Red:   >5× interval or error          Grey:  no heartbeat / stopped
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -21,7 +27,7 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import type { Colors } from '../../theme';
+import { type Colors, fonts, radii } from '../../theme';
 import {
   deleteClientSession,
   listClientDevices,
@@ -105,6 +111,39 @@ function sessionStatus(
     return { color: c.amber, label: 'Stale' };
   }
   return { color: c.red, label: 'Offline' };
+}
+
+// 0780 — device-level status. The reported bug (IMG_5522) was encoding recency in
+// the platform-glyph brightness; instead derive an explicit status from the
+// server's session state (fallback: last_seen math) and signal it with a presence
+// dot + status text, keeping the glyph a CONSTANT brightness for active+idle.
+type DeviceState = 'active' | 'idle' | 'stopped';
+
+const FIVE_MIN_MS = 5 * 60 * 1000;
+const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+
+function deviceState(
+  device: ClientDevice,
+  deviceSessions: ClientSession[],
+): { state: DeviceState; syncing: { synced: number; total: number } | null } {
+  const live = deviceSessions.filter((s) => s.status !== 'stopped' && s.status !== 'error');
+  const transferring = live.find(
+    (s) => s.files_synced != null && s.files_total != null && s.files_synced < s.files_total,
+  );
+  if (transferring) {
+    return {
+      state: 'active',
+      syncing: { synced: transferring.files_synced as number, total: transferring.files_total as number },
+    };
+  }
+  const recent = live.some(
+    (s) => s.last_heartbeat && Date.now() - new Date(s.last_heartbeat).getTime() < FIVE_MIN_MS,
+  );
+  const lastSeenMs = device.last_seen ? Date.now() - new Date(device.last_seen).getTime() : Infinity;
+  if (recent || lastSeenMs < FIVE_MIN_MS) return { state: 'active', syncing: null };
+  const allStopped = deviceSessions.length > 0 && live.length === 0;
+  if (lastSeenMs > THIRTY_DAYS_MS || allStopped) return { state: 'stopped', syncing: null };
+  return { state: 'idle', syncing: null };
 }
 
 // ---------------------------------------------------------------------------
@@ -208,22 +247,34 @@ export default function DevicesSection({ c }: Props) {
 
   // Stopped sessions are hidden by default. Group only the visible ones by
   // device_id, and count the hidden ones so we can offer a "Show stopped" toggle.
-  const stoppedCount = useMemo(
-    () => sessions.filter((s) => s.status === 'stopped').length,
-    [sessions],
-  );
-
+  // All sessions grouped per device — used both for status derivation and the
+  // expansion list (0780; no longer hides stopped sessions at the session level —
+  // dimming now happens only at the device level, inside "Show stopped").
   const sessionsByDevice = useMemo(() => {
     const map = new Map<string, ClientSession[]>();
     for (const s of sessions) {
-      if (!showStopped && s.status === 'stopped') continue;
       const did = s.device_id ?? '';
       const list = map.get(did) ?? [];
       list.push(s);
       map.set(did, list);
     }
     return map;
-  }, [sessions, showStopped]);
+  }, [sessions]);
+
+  // Partition devices by computed status: active/idle render live; stopped collapse
+  // into the explicitly-labeled "Show stopped (N)" group (the one place dimming is
+  // allowed). 0780.
+  const deviceRows = useMemo(
+    () =>
+      devices.map((device) => ({
+        device,
+        ...deviceState(device, sessionsByDevice.get(device.id) ?? []),
+      })),
+    [devices, sessionsByDevice],
+  );
+  const liveDevices = useMemo(() => deviceRows.filter((d) => d.state !== 'stopped'), [deviceRows]);
+  const stoppedDevices = useMemo(() => deviceRows.filter((d) => d.state === 'stopped'), [deviceRows]);
+  const stoppedCount = stoppedDevices.length;
 
   if (loading) {
     return (
@@ -259,69 +310,84 @@ export default function DevicesSection({ c }: Props) {
     );
   }
 
-  return (
-    <View style={[styles.card, { backgroundColor: c.paper, borderColor: c.line }]}>
-      {devices.map((device, idx) => {
-        const deviceSessions = sessionsByDevice.get(device.id) ?? [];
-        const isExpanded = expandedDevices.has(device.id);
-        const hasActiveSessions = deviceSessions.some(
-          (s) => s.status !== 'stopped',
-        );
+  const renderDevice = (
+    entry: { device: ClientDevice; state: DeviceState; syncing: { synced: number; total: number } | null },
+    idx: number,
+  ) => {
+    const { device, state, syncing } = entry;
+    const deviceSessions = sessionsByDevice.get(device.id) ?? [];
+    const isExpanded = expandedDevices.has(device.id);
+    const stopped = state === 'stopped';
+    // HARD RULE (0780): the platform glyph brightness is CONSTANT for every active
+    // + idle device. Only stopped (inside this labeled group) is dimmed.
+    const glyphColor = stopped ? c.ink3 : c.ink;
 
-        return (
-          <React.Fragment key={device.id}>
-            {idx > 0 && (
-              <View style={{ height: 1, backgroundColor: c.line, marginLeft: 12 }} />
+    return (
+      <React.Fragment key={device.id}>
+        {idx > 0 && <View style={[styles.rowSep, { backgroundColor: c.line }]} />}
+
+        {/* Device header */}
+        <TouchableOpacity
+          style={styles.deviceRow}
+          activeOpacity={0.6}
+          onPress={() => toggleDevice(device.id)}
+          accessibilityRole="button"
+          accessibilityLabel={`${device.hostname}, ${state === 'active' ? 'active now' : state === 'idle' ? 'idle' : 'stopped'}`}
+        >
+          {/* Icon tile — constant-brightness glyph + a status presence dot. */}
+          <View style={[styles.tile, { backgroundColor: c.paper2 }]}>
+            <Ionicons name={platformIcon(device.platform)} size={20} color={glyphColor} />
+            {state === 'active' && (
+              <View style={[styles.presenceDot, { backgroundColor: c.amber, borderColor: c.paper }]} />
             )}
+            {state === 'stopped' && (
+              <View style={[styles.presenceRing, { borderColor: c.ink4, backgroundColor: c.paper }]} />
+            )}
+          </View>
 
-            {/* Device header */}
-            <TouchableOpacity
-              style={styles.deviceRow}
-              activeOpacity={0.6}
-              onPress={() => toggleDevice(device.id)}
-              accessibilityLabel={`${device.hostname}, ${device.platform}`}
-              accessibilityRole="button"
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text
+              style={{ fontSize: 17, fontWeight: stopped ? '500' : '600', color: stopped ? c.ink3 : c.ink }}
+              numberOfLines={1}
             >
-              <Ionicons
-                name={platformIcon(device.platform)}
-                size={18}
-                color={hasActiveSessions ? c.ink : c.ink3}
-                style={{ marginRight: 10, width: 22 }}
-              />
-              <View style={{ flex: 1, minWidth: 0 }}>
-                <Text
-                  style={{
-                    fontSize: 14,
-                    fontWeight: '500',
-                    color: c.ink,
-                  }}
-                  numberOfLines={1}
-                >
-                  {device.hostname}
+              {device.hostname}
+            </Text>
+            <Text style={{ fontSize: 13, marginTop: 2 }} numberOfLines={1}>
+              <Text style={{ fontFamily: fonts.mono, color: c.ink3 }}>
+                {device.platform}{device.bb_version ? ` ${device.bb_version}` : ''}
+              </Text>
+              <Text style={{ color: c.ink3 }}>{'  ·  '}</Text>
+              {state === 'active' ? (
+                <Text style={{ color: c.amber, fontWeight: '600' }}>
+                  {syncing
+                    ? `Syncing ${syncing.synced.toLocaleString()} of ${syncing.total.toLocaleString()}…`
+                    : 'Active now'}
                 </Text>
-                <Text style={{ fontSize: 11, color: c.ink3, marginTop: 1 }}>
-                  {device.platform}
-                  {device.bb_version ? ` v${device.bb_version}` : ''}
-                  {' '}
-                  {device.last_seen ? `· ${timeAgo(device.last_seen)}` : ''}
+              ) : state === 'idle' ? (
+                <Text>
+                  <Text style={{ color: c.ink3 }}>Last active </Text>
+                  <Text style={{ color: c.ink2 }}>{device.last_seen ? timeAgo(device.last_seen) : 'unknown'}</Text>
                 </Text>
-              </View>
-              {deviceSessions.length > 0 && (
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginRight: 4 }}>
-                  <Text style={{ fontSize: 11, color: c.ink4 }}>
-                    {deviceSessions.length}
-                  </Text>
-                  <Ionicons
-                    name={isExpanded ? 'chevron-up' : 'chevron-down'}
-                    size={14}
-                    color={c.ink4}
-                  />
-                </View>
+              ) : (
+                <Text style={{ color: c.ink3 }}>
+                  Stopped{device.last_seen ? ` · ${timeAgo(device.last_seen)}` : ''}
+                </Text>
               )}
-            </TouchableOpacity>
+            </Text>
+          </View>
 
-            {/* Sessions under this device */}
-            {isExpanded && deviceSessions.length > 0 && (
+          {deviceSessions.length > 0 && (
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginLeft: 6 }}>
+              <Text style={{ fontFamily: fonts.mono, fontSize: 13, color: c.ink3 }}>
+                {deviceSessions.length}
+              </Text>
+              <Ionicons name={isExpanded ? 'chevron-up' : 'chevron-down'} size={14} color={c.ink3} />
+            </View>
+          )}
+        </TouchableOpacity>
+
+        {/* Sessions under this device */}
+        {isExpanded && deviceSessions.length > 0 && (
               <View style={{ paddingBottom: 4 }}>
                 {deviceSessions.map((session, sIdx) => {
                   const status = sessionStatus(session, c);
@@ -419,32 +485,32 @@ export default function DevicesSection({ c }: Props) {
             )}
           </React.Fragment>
         );
-      })}
+  };
 
-      {/* Show / hide stopped sessions — hidden by default to keep the list to
-          live devices. Only rendered when there is at least one stopped session. */}
+  return (
+    <View style={[styles.card, { backgroundColor: c.paper, borderColor: c.line }]}>
+      {liveDevices.map((entry, idx) => renderDevice(entry, idx))}
+
+      {/* Stopped DEVICES collapse into this explicitly-labeled group — the one
+          place dimming is allowed (0780). */}
       {stoppedCount > 0 && (
         <>
-          <View style={{ height: 1, backgroundColor: c.line, marginLeft: 12 }} />
+          <View style={[styles.rowSep, { backgroundColor: c.line }]} />
           <TouchableOpacity
             style={styles.toggleRow}
             activeOpacity={0.6}
             onPress={() => setShowStopped((v) => !v)}
             accessibilityRole="button"
-            accessibilityLabel={showStopped ? 'Hide stopped sessions' : 'Show stopped sessions'}
+            accessibilityLabel={showStopped ? 'Hide stopped devices' : 'Show stopped devices'}
           >
-            <Ionicons
-              name={showStopped ? 'eye-off-outline' : 'eye-outline'}
-              size={14}
-              color={c.ink3}
-              style={{ marginRight: 8 }}
-            />
-            <Text style={{ fontSize: 12, color: c.ink3 }}>
-              {showStopped
-                ? 'Hide stopped'
-                : `Show stopped (${stoppedCount})`}
+            <Ionicons name="moon-outline" size={16} color={c.ink3} style={{ marginRight: 8 }} />
+            <Text style={{ fontSize: 15, color: c.ink2 }}>
+              {showStopped ? 'Hide stopped' : `Show stopped (${stoppedCount})`}
             </Text>
+            <View style={{ flex: 1 }} />
+            <Ionicons name={showStopped ? 'chevron-up' : 'chevron-down'} size={16} color={c.ink3} />
           </TouchableOpacity>
+          {showStopped && stoppedDevices.map((entry, idx) => renderDevice(entry, idx))}
         </>
       )}
     </View>
@@ -474,8 +540,35 @@ const styles = StyleSheet.create({
   deviceRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 11,
-    paddingHorizontal: 12,
+    minHeight: 64,
+    paddingHorizontal: 16,
+    gap: 12,
+  },
+  rowSep: { height: StyleSheet.hairlineWidth, marginLeft: 16 },
+  tile: {
+    width: 36,
+    height: 36,
+    borderRadius: radii.lg,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  presenceDot: {
+    position: 'absolute',
+    right: -2,
+    bottom: -2,
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    borderWidth: 2,
+  },
+  presenceRing: {
+    position: 'absolute',
+    right: -2,
+    bottom: -2,
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    borderWidth: 1.5,
   },
   sessionRow: {
     flexDirection: 'row',
