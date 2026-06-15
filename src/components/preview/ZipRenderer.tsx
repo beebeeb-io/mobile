@@ -1,31 +1,29 @@
 /**
- * ZipRenderer — read-only listing for .zip archives via JSZip.
+ * ZipRenderer — read-only, NAVIGABLE listing for .zip archives via JSZip.
  *
- * Owns the JSZip import so the library only enters Hermes when the user
- * opens a ZIP. (.tar / .gz / .tgz are handled by ArchiveRenderer.)
+ * Owns the JSZip import so the library only enters Hermes when the user opens a
+ * ZIP. (.tar / .gz / .tgz are handled by ArchiveRenderer.)
+ *
+ * Nested folders are navigable (task 0779): the flat central-directory entries
+ * are projected into a folder tree on the fly — tap a folder to drill in, tap a
+ * breadcrumb to ascend. Still read-only (no extraction needed to browse).
  */
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
+  ScrollView,
   StyleSheet,
   Text,
+  TouchableOpacity,
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import JSZip from 'jszip';
 import { colors, radii } from '../../theme';
 import type { Colors } from '../../theme';
-
-interface ZipEntry {
-  path: string;
-  name: string;
-  isFolder: boolean;
-  uncompressedSize: number;
-  modifiedAt: Date | null;
-  ext: string;
-}
+import { type ZipEntry, type ZipRow, levelRows, isMacOsNoise } from '../../lib/zip-tree';
 
 interface ZipSummary {
   entries: ZipEntry[];
@@ -50,6 +48,8 @@ async function parseZip(arrayBuffer: ArrayBuffer): Promise<ZipSummary> {
 
   Object.keys(zip.files).forEach((path) => {
     const f = zip.files[path];
+    // Hide macOS resource-fork noise (__MACOSX/ + ._* AppleDouble) — task 0779.
+    if (isMacOsNoise(path)) return;
     const cleanPath = f.dir ? path.replace(/\/$/, '') : path;
     const segments = cleanPath.split('/');
     const name = segments[segments.length - 1] || cleanPath;
@@ -74,11 +74,6 @@ async function parseZip(arrayBuffer: ArrayBuffer): Promise<ZipSummary> {
       modifiedAt: f.date ?? null,
       ext,
     });
-  });
-
-  entries.sort((a, b) => {
-    if (a.isFolder !== b.isFolder) return a.isFolder ? -1 : 1;
-    return a.path.localeCompare(b.path);
   });
 
   return { entries, fileCount, folderCount, totalUncompressed };
@@ -126,11 +121,14 @@ function formatZipDate(d: Date | null): string | null {
 export function ZipRenderer({ data, colors: c }: ZipRendererProps) {
   const [summary, setSummary] = useState<ZipSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Current folder prefix being browsed ('' = archive root, 'a/b/' = nested).
+  const [prefix, setPrefix] = useState('');
 
   useEffect(() => {
     let cancelled = false;
     setSummary(null);
     setError(null);
+    setPrefix('');
     (async () => {
       try {
         const result = await parseZip(data);
@@ -145,6 +143,12 @@ export function ZipRenderer({ data, colors: c }: ZipRendererProps) {
       cancelled = true;
     };
   }, [data]);
+
+  const rows = useMemo(
+    () => (summary ? levelRows(summary.entries, prefix) : []),
+    [summary, prefix],
+  );
+  const segments = useMemo(() => prefix.split('/').filter(Boolean), [prefix]);
 
   if (error) {
     return (
@@ -166,26 +170,49 @@ export function ZipRenderer({ data, colors: c }: ZipRendererProps) {
     );
   }
 
-  const { entries, fileCount, folderCount, totalUncompressed } = summary;
+  const { fileCount, folderCount, totalUncompressed } = summary;
 
-  const renderRow = ({ item }: { item: ZipEntry }) => {
-    const iconBg = item.isFolder ? c.amberDeep : c.ink3;
-    const iconName = zipEntryIcon(item);
-    const dateLabel = formatZipDate(item.modifiedAt);
+  const renderRow = ({ item }: { item: ZipRow }) => {
+    if (item.kind === 'folder') {
+      return (
+        <TouchableOpacity
+          style={[styles.zipRow, { borderBottomColor: c.line }]}
+          onPress={() => setPrefix(`${prefix}${item.name}/`)}
+          activeOpacity={0.6}
+          accessibilityRole="button"
+          accessibilityLabel={`${item.name}, folder, open`}
+        >
+          <View style={[styles.zipIcon, { backgroundColor: c.amberDeep }]}>
+            <Ionicons name="folder" size={16} color="#FFFFFF" />
+          </View>
+          <View style={styles.zipRowText}>
+            <Text style={[styles.zipRowName, { color: c.ink }]} numberOfLines={1}>
+              {item.name}
+            </Text>
+            <Text style={[styles.zipRowMeta, { color: c.ink3 }]} numberOfLines={1}>
+              {item.fileCount > 0
+                ? `${item.fileCount} ${item.fileCount === 1 ? 'file' : 'files'}`
+                : 'Folder'}
+            </Text>
+          </View>
+          <Ionicons name="chevron-forward" size={16} color={c.ink3} />
+        </TouchableOpacity>
+      );
+    }
 
+    const entry = item.entry;
+    const dateLabel = formatZipDate(entry.modifiedAt);
     return (
       <View style={[styles.zipRow, { borderBottomColor: c.line }]}>
-        <View style={[styles.zipIcon, { backgroundColor: iconBg }]}>
-          <Ionicons name={iconName} size={16} color="#FFFFFF" />
+        <View style={[styles.zipIcon, { backgroundColor: c.ink3 }]}>
+          <Ionicons name={zipEntryIcon(entry)} size={16} color="#FFFFFF" />
         </View>
         <View style={styles.zipRowText}>
           <Text style={[styles.zipRowName, { color: c.ink }]} numberOfLines={1}>
-            {item.path || item.name}
+            {entry.name}
           </Text>
           <Text style={[styles.zipRowMeta, { color: c.ink3 }]} numberOfLines={1}>
-            {item.isFolder
-              ? 'Folder'
-              : `${formatZipSize(item.uncompressedSize)}${dateLabel ? `  ·  ${dateLabel}` : ''}`}
+            {`${formatZipSize(entry.uncompressedSize)}${dateLabel ? `  ·  ${dateLabel}` : ''}`}
           </Text>
         </View>
       </View>
@@ -211,7 +238,43 @@ export function ZipRenderer({ data, colors: c }: ZipRendererProps) {
         </Text>
       </View>
 
-      {entries.length === 0 ? (
+      {/* Breadcrumb — shown once you drill into a nested folder. Each crumb is
+          tappable to jump back up; the last crumb is the current folder. */}
+      {segments.length > 0 && (
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          style={[styles.breadcrumbBar, { borderBottomColor: c.line }]}
+          contentContainerStyle={styles.breadcrumb}
+        >
+          <TouchableOpacity onPress={() => setPrefix('')} accessibilityRole="button">
+            <Text style={[styles.crumb, { color: c.amberDeep }]}>Archive</Text>
+          </TouchableOpacity>
+          {segments.map((seg, i) => {
+            const isLast = i === segments.length - 1;
+            const target = `${segments.slice(0, i + 1).join('/')}/`;
+            return (
+              <View key={target} style={styles.crumbGroup}>
+                <Ionicons name="chevron-forward" size={12} color={c.ink3} />
+                <TouchableOpacity
+                  onPress={() => setPrefix(target)}
+                  disabled={isLast}
+                  accessibilityRole="button"
+                >
+                  <Text
+                    style={[styles.crumb, { color: isLast ? c.ink : c.amberDeep }]}
+                    numberOfLines={1}
+                  >
+                    {seg}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            );
+          })}
+        </ScrollView>
+      )}
+
+      {summary.entries.length === 0 ? (
         <View style={styles.imageStatus}>
           <Text style={[styles.imageStatusTitle, { color: colors.white }]}>
             Empty archive
@@ -220,8 +283,10 @@ export function ZipRenderer({ data, colors: c }: ZipRendererProps) {
         </View>
       ) : (
         <FlatList
-          data={entries}
-          keyExtractor={(item, i) => `${i}-${item.path}`}
+          data={rows}
+          keyExtractor={(item, i) =>
+            item.kind === 'folder' ? `d:${i}:${item.name}` : `f:${i}:${item.entry.path}`
+          }
           renderItem={renderRow}
           initialNumToRender={20}
           windowSize={11}
@@ -254,6 +319,23 @@ const styles = StyleSheet.create({
   zipHeaderTitle: { fontSize: 14, fontWeight: '700' },
   zipHeaderSize: { fontSize: 12, fontWeight: '500' },
   zipHeaderHint: { fontSize: 11, fontStyle: 'italic' },
+  breadcrumbBar: {
+    flexGrow: 0,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  breadcrumb: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    gap: 4,
+  },
+  crumbGroup: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  crumb: { fontSize: 12, fontWeight: '600', maxWidth: 160 },
   zipRow: {
     flexDirection: 'row',
     alignItems: 'center',
