@@ -1,9 +1,11 @@
 import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  AccessibilityInfo,
   ActivityIndicator,
   Alert,
   Animated,
   Dimensions,
+  Easing,
   FlatList,
   Image,
   Platform,
@@ -14,6 +16,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import type { ImageStyle, StyleProp, ViewStyle } from 'react-native';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { RouteProp } from '@react-navigation/native';
@@ -867,6 +870,199 @@ async function loadDecryptedPhotoForViewer(
   }
 }
 
+// ---------------------------------------------------------------------------
+// Task 0799 — "View Original" progressive de-blur
+// ---------------------------------------------------------------------------
+
+const PROGRESSIVE_BLUR_RADIUS = 22;
+
+function clamp01(n: number): number {
+  return Math.max(0, Math.min(1, n));
+}
+
+function lerp(a: number, b: number, t: number): number {
+  return a + (b - a) * clamp01(t);
+}
+
+/**
+ * Renders a base preview (L0) with a blurred copy on top (L1) that fades out as
+ * the encrypted original downloads + decrypts ON THIS DEVICE, then crossfades to
+ * the sharp original (L2) at completion. A slim amber bar (L3) carries the
+ * truthful byte/chunk progress during the download phase.
+ *
+ * Every visual is bound to a real signal (`progressFraction` over the existing
+ * `PreviewLoadProgressEvent`): the blur "clearing up" literally means more of
+ * your encrypted file has arrived and been decrypted locally. No cloud, no
+ * native blur dependency — the de-blur is a crossfade between a `blurRadius`'d
+ * copy and the sharp pixels, all on-device. Honors Reduce Motion (plain
+ * crossfade, no de-blur) and cache hits (skips the theater entirely).
+ */
+const ProgressiveOriginalImage = React.memo(function ProgressiveOriginalImage({
+  baseUri,
+  originalUri,
+  progress,
+  active,
+  cacheHit = false,
+  reduceMotion = false,
+  amber,
+  containerStyle,
+  imageStyle,
+  baseOpacity,
+  accessibilityLabel,
+  onPromote,
+}: {
+  baseUri: string | null;
+  originalUri: string | null;
+  progress: PreviewProgressState;
+  active: boolean;
+  cacheHit?: boolean;
+  reduceMotion?: boolean;
+  amber: string;
+  containerStyle?: StyleProp<ViewStyle>;
+  imageStyle?: StyleProp<ImageStyle>;
+  baseOpacity?: Animated.Value;
+  accessibilityLabel?: string;
+  onPromote?: () => void;
+}) {
+  const blurVeil = useRef(new Animated.Value(0)).current; // 0 = sharp, 1 = fully blurred
+  const originalOpacity = useRef(new Animated.Value(0)).current;
+  const originalScale = useRef(new Animated.Value(1)).current;
+  const breathingRef = useRef<Animated.CompositeAnimation | null>(null);
+  const promotedRef = useRef(false);
+
+  const showTransition = active || originalUri != null;
+  const fraction = progressFraction(progress);
+  const indeterminate =
+    progress.stage != null && progress.bytesTotal === 0 && progress.chunksTotal === 0;
+
+  const stopBreathing = () => {
+    breathingRef.current?.stop();
+    breathingRef.current = null;
+  };
+
+  // Ramp the blur in when an original load starts (preview "softens").
+  useEffect(() => {
+    if (!active) return;
+    promotedRef.current = false;
+    originalOpacity.setValue(0);
+    originalScale.setValue(1);
+    if (reduceMotion || cacheHit) {
+      blurVeil.setValue(0);
+      return;
+    }
+    Animated.timing(blurVeil, {
+      toValue: 1,
+      duration: 160,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    }).start();
+    return () => { stopBreathing(); };
+  }, [active, cacheHit, reduceMotion, blurVeil, originalOpacity, originalScale]);
+
+  // Track the blur down to real progress during the load (honest de-blur).
+  useEffect(() => {
+    if (!active || originalUri != null || reduceMotion || cacheHit) return;
+    if (indeterminate) {
+      if (!breathingRef.current) {
+        const loop = Animated.loop(
+          Animated.sequence([
+            Animated.timing(blurVeil, { toValue: 0.72, duration: 1200, easing: Easing.inOut(Easing.sin), useNativeDriver: true }),
+            Animated.timing(blurVeil, { toValue: 0.48, duration: 1200, easing: Easing.inOut(Easing.sin), useNativeDriver: true }),
+          ]),
+        );
+        breathingRef.current = loop;
+        loop.start();
+      }
+      return;
+    }
+    stopBreathing();
+    Animated.timing(blurVeil, {
+      toValue: lerp(1, 0.18, fraction),
+      duration: 150,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    }).start();
+  }, [active, originalUri, reduceMotion, cacheHit, indeterminate, fraction, blurVeil]);
+
+  // Closing crossfade once the sharp original is ready.
+  useEffect(() => {
+    if (originalUri == null || promotedRef.current) return;
+    promotedRef.current = true;
+    stopBreathing();
+    const crossfade = cacheHit ? 120 : reduceMotion ? 150 : 240;
+    originalScale.setValue(!cacheHit && !reduceMotion ? 1.015 : 1);
+    Animated.parallel([
+      Animated.timing(originalOpacity, {
+        toValue: 1,
+        duration: crossfade,
+        easing: Easing.inOut(Easing.cubic),
+        useNativeDriver: true,
+      }),
+      Animated.timing(blurVeil, {
+        toValue: 0,
+        duration: cacheHit ? 120 : 260,
+        easing: Easing.inOut(Easing.cubic),
+        useNativeDriver: true,
+      }),
+      Animated.timing(originalScale, {
+        toValue: 1,
+        duration: 260,
+        easing: Easing.inOut(Easing.cubic),
+        useNativeDriver: true,
+      }),
+    ]).start(({ finished }) => {
+      if (finished) onPromote?.();
+    });
+  }, [originalUri, cacheHit, reduceMotion, blurVeil, originalOpacity, originalScale, onPromote]);
+
+  const showBar = active && originalUri == null && !cacheHit;
+
+  return (
+    <View style={containerStyle} pointerEvents="box-none">
+      {baseUri ? (
+        <Animated.Image
+          source={{ uri: baseUri }}
+          style={[imageStyle, baseOpacity ? { opacity: baseOpacity } : null]}
+          resizeMode="contain"
+          accessibilityLabel={accessibilityLabel}
+        />
+      ) : null}
+
+      {baseUri && showTransition ? (
+        <Animated.Image
+          source={{ uri: baseUri }}
+          style={[StyleSheet.absoluteFill, imageStyle, { opacity: blurVeil }]}
+          resizeMode="contain"
+          blurRadius={PROGRESSIVE_BLUR_RADIUS}
+        />
+      ) : null}
+
+      {originalUri ? (
+        <Animated.Image
+          source={{ uri: originalUri }}
+          style={[StyleSheet.absoluteFill, imageStyle, { opacity: originalOpacity, transform: [{ scale: originalScale }] }]}
+          resizeMode="contain"
+          accessibilityLabel={accessibilityLabel}
+        />
+      ) : null}
+
+      {showBar ? (
+        <View style={styles.progressiveBarTrack} pointerEvents="none">
+          <Animated.View
+            style={[
+              styles.progressiveBarFill,
+              { backgroundColor: amber },
+              indeterminate
+                ? styles.progressiveBarIndeterminate
+                : { width: `${Math.round(clamp01(fraction) * 100)}%` },
+            ]}
+          />
+        </View>
+      ) : null}
+    </View>
+  );
+});
+
 const PhotoPage = React.memo(function PhotoPage({
   entry,
   shouldLoadFull,
@@ -895,9 +1091,39 @@ const PhotoPage = React.memo(function PhotoPage({
   const [error, setError] = useState<string | null>(null);
   const fullImageOpacity = useRef(new Animated.Value(0)).current;
   const largePreviewAttemptRef = useRef<string | null>(null);
+  // Task 0799: progressive de-blur transition for "View Original".
+  const [originalUri, setOriginalUri] = useState<string | null>(null);
+  const [originalActive, setOriginalActive] = useState(false);
+  const [originalCacheHit, setOriginalCacheHit] = useState(false);
+  const [reduceMotion, setReduceMotion] = useState(false);
+  const sawOriginalProgressRef = useRef(false);
   const player = useVideoPlayer(isVideoEntry && uri ? uri : null, (p) => {
     p.loop = false;
   });
+
+  useEffect(() => {
+    let mounted = true;
+    AccessibilityInfo.isReduceMotionEnabled()
+      .then((value) => { if (mounted) setReduceMotion(value); })
+      .catch(() => {});
+    const sub = AccessibilityInfo.addEventListener('reduceMotionChanged', (value) => {
+      setReduceMotion(value);
+    });
+    return () => { mounted = false; sub?.remove?.(); };
+  }, []);
+
+  const promoteOriginal = useCallback(() => {
+    if (originalUri) {
+      setUri(originalUri);
+      setUriKind('original');
+    }
+    setOriginalUri(null);
+    setOriginalActive(false);
+    setOriginalCacheHit(false);
+    sawOriginalProgressRef.current = false;
+    AccessibilityInfo.announceForAccessibility('Original ready');
+    void Haptics.selectionAsync().catch(() => {});
+  }, [originalUri]);
 
   useEffect(() => {
     setUri(null);
@@ -907,6 +1133,10 @@ const PhotoPage = React.memo(function PhotoPage({
     setStage(null);
     setProgress(emptyPreviewProgress(null));
     largePreviewAttemptRef.current = null;
+    setOriginalUri(null);
+    setOriginalActive(false);
+    setOriginalCacheHit(false);
+    sawOriginalProgressRef.current = false;
   }, [entry.id]);
 
   useEffect(() => {
@@ -1049,10 +1279,18 @@ const PhotoPage = React.memo(function PhotoPage({
 
     const controller = new AbortController();
     let cancelled = false;
-    setLoading(true);
+    // Task 0799: don't show the spinner status or clear `uri` — the base preview
+    // stays on screen as L0 while the de-blur transition plays. We only drive
+    // `progress` (for the bar/blur) and flip `originalActive` on.
+    sawOriginalProgressRef.current = false;
+    setOriginalCacheHit(false);
+    setOriginalUri(null);
+    setOriginalActive(true);
     setStage('checking');
     setProgress(emptyPreviewProgress('checking'));
     setError(null);
+    AccessibilityInfo.announceForAccessibility('Loading original');
+    void Haptics.selectionAsync().catch(() => {});
 
     loadDecryptedPhotoForViewer(
       entry,
@@ -1071,7 +1309,13 @@ const PhotoPage = React.memo(function PhotoPage({
         }
       },
       (event) => {
-        if (!cancelled) applyNativeProgress(event, setProgress);
+        if (!cancelled) {
+          // Real download/decrypt bytes arrived → this is not a cache hit.
+          if (event.stage === 'downloading' || event.stage === 'decrypting') {
+            sawOriginalProgressRef.current = true;
+          }
+          applyNativeProgress(event, setProgress);
+        }
       },
       controller.signal,
     )
@@ -1081,8 +1325,11 @@ const PhotoPage = React.memo(function PhotoPage({
             fileId: entry.id,
             kind: loaded.kind,
           });
-          setUri(loaded.uri);
-          setUriKind(loaded.kind);
+          // Hand the sharp original to the de-blur layer; the crossfade finishes
+          // and `promoteOriginal` swaps it into the base. If no real progress
+          // ever fired, it was already local → skip the theater.
+          setOriginalCacheHit(!sawOriginalProgressRef.current);
+          setOriginalUri(loaded.uri);
         }
       })
       .catch((err) => {
@@ -1092,11 +1339,11 @@ const PhotoPage = React.memo(function PhotoPage({
             ...previewErrorTraceFields(err),
           });
           setError(friendlyError(err));
+          setOriginalActive(false);
         }
       })
       .finally(() => {
         if (!cancelled) {
-          setLoading(false);
           setStage(null);
           setProgress(emptyPreviewProgress(null));
         }
@@ -1139,10 +1386,18 @@ const PhotoPage = React.memo(function PhotoPage({
           allowsPictureInPicture
         />
       ) : uri ? (
-        <Animated.Image
-          source={{ uri }}
-          style={[styles.photoPageImage, { opacity: fullImageOpacity }]}
-          resizeMode="contain"
+        <ProgressiveOriginalImage
+          baseUri={uri}
+          originalUri={originalUri}
+          progress={progress}
+          active={originalActive}
+          cacheHit={originalCacheHit}
+          reduceMotion={reduceMotion}
+          amber={c.amber}
+          containerStyle={StyleSheet.absoluteFill}
+          imageStyle={styles.photoPageImage}
+          baseOpacity={fullImageOpacity}
+          onPromote={promoteOriginal}
         />
       ) : error ? (
         <View style={styles.photoPageStatus}>
@@ -1260,6 +1515,38 @@ export default function PreviewScreen() {
   const [imageLoading, setImageLoading] = useState(false);
   const [imageError, setImageError] = useState<string | null>(null);
   const imageLargePreviewAttemptRef = useRef<string | null>(null);
+  // Task 0799: progressive de-blur for "View Original" on the single-image path.
+  const [originalImageBase, setOriginalImageBase] = useState<string | null>(null);
+  const [originalImagePending, setOriginalImagePending] = useState<string | null>(null);
+  const [originalImageActive, setOriginalImageActive] = useState(false);
+  const [originalImageCacheHit, setOriginalImageCacheHit] = useState(false);
+  const [reduceMotion, setReduceMotion] = useState(false);
+
+  useEffect(() => {
+    let mounted = true;
+    AccessibilityInfo.isReduceMotionEnabled()
+      .then((value) => { if (mounted) setReduceMotion(value); })
+      .catch(() => {});
+    const sub = AccessibilityInfo.addEventListener('reduceMotionChanged', (value) => {
+      setReduceMotion(value);
+    });
+    return () => { mounted = false; sub?.remove?.(); };
+  }, []);
+
+  const promoteOriginalImage = useCallback(() => {
+    setOriginalImagePending((pending) => {
+      if (pending) {
+        setImageUri(pending);
+        setImagePreviewKind('original');
+      }
+      return null;
+    });
+    setOriginalImageActive(false);
+    setOriginalImageBase(null);
+    setOriginalImageCacheHit(false);
+    AccessibilityInfo.announceForAccessibility('Original ready');
+    void Haptics.selectionAsync().catch(() => {});
+  }, []);
 
   // PDF inline preview state — uses PdfRenderer with native react-native-pdf
   const [pdfUri, setPdfUri] = useState<string | null>(null);
@@ -2161,45 +2448,58 @@ export default function PreviewScreen() {
     }
 
     const controller = new AbortController();
-    setImageLoading(true);
+    // Task 0799: keep the current preview on screen as the de-blur base; load
+    // the original into the transition layer instead of swapping `imageUri`.
+    setOriginalImageBase(imageUri);
+    setOriginalImagePending(null);
+    setOriginalImageCacheHit(false);
+    setOriginalImageActive(true);
     setImageError(null);
     setLoadProgress(emptyPreviewProgress('downloading'));
+    AccessibilityInfo.announceForAccessibility('Loading original');
     try {
       const cached = await getCachedPhoto(currentFileId);
       if (cached) {
-        setImageUri(cached);
-        setImagePreviewKind('original');
+        // Already local → skip the theater; the component does a quick crossfade.
+        setOriginalImageCacheHit(true);
+        setOriginalImagePending(cached);
         recordRuntimeTrace('preview.image.view_original.cache_hit', { fileId: currentFileId });
         return;
       }
 
       const decryptedUri = await fetchAndDecrypt({ signal: controller.signal });
       throwIfPreviewAborted(controller.signal);
+      let resolvedUri = decryptedUri;
       try {
         const cachedUri = await cachePhoto(currentFileId, decryptedUri);
         if (cachedUri !== decryptedUri) {
           await FileSystem.deleteAsync(decryptedUri, { idempotent: true }).catch(() => {});
         }
-        setImageUri(cachedUri);
+        resolvedUri = cachedUri;
       } catch {
-        setImageUri(decryptedUri);
+        resolvedUri = decryptedUri;
       }
-      setImagePreviewKind('original');
+      setOriginalImagePending(resolvedUri);
       recordRuntimeTrace('preview.image.view_original.success', { fileId: currentFileId });
     } catch (err) {
       if (!isAbortError(err)) {
         setImageError(friendlyError(err));
+        setOriginalImageActive(false);
+        setOriginalImageBase(null);
         recordRuntimeTrace('preview.image.view_original.failed', {
           fileId: currentFileId,
           ...previewErrorTraceFields(err),
         });
+      } else {
+        setOriginalImageActive(false);
+        setOriginalImageBase(null);
       }
     } finally {
       setImageLoading(false);
       setDownloadProgress(0);
       setLoadProgress(emptyPreviewProgress(null));
     }
-  }, [currentFileId, fetchAndDecrypt, hasSwipe, isImage]);
+  }, [currentFileId, fetchAndDecrypt, hasSwipe, imageUri, isImage]);
 
   const handleShare = useCallback(async () => {
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -2397,12 +2697,28 @@ export default function PreviewScreen() {
           >
             {isImage ? (
               imageUri ? (
-                <Image
-                  source={{ uri: imageUri }}
-                  style={styles.mediaImage}
-                  resizeMode="contain"
-                  accessibilityLabel={previewFileName}
-                />
+                originalImageActive ? (
+                  <ProgressiveOriginalImage
+                    baseUri={originalImageBase ?? imageUri}
+                    originalUri={originalImagePending}
+                    progress={loadProgress}
+                    active={originalImageActive}
+                    cacheHit={originalImageCacheHit}
+                    reduceMotion={reduceMotion}
+                    amber={c.amber}
+                    containerStyle={styles.mediaImage}
+                    imageStyle={styles.mediaImage}
+                    accessibilityLabel={previewFileName}
+                    onPromote={promoteOriginalImage}
+                  />
+                ) : (
+                  <Image
+                    source={{ uri: imageUri }}
+                    style={styles.mediaImage}
+                    resizeMode="contain"
+                    accessibilityLabel={previewFileName}
+                  />
+                )
               ) : imageError ? (
                 <View style={styles.imageStatus}>
                   <Text style={[styles.imageStatusTitle, { color: colors.white }]}>Couldn't load image</Text>
@@ -2514,12 +2830,28 @@ export default function PreviewScreen() {
       <View style={styles.previewArea}>
         {isImage ? (
           imageUri ? (
-            <Image
-              source={{ uri: imageUri }}
-              style={styles.image}
-              resizeMode="contain"
-              accessibilityLabel={previewFileName}
-            />
+            originalImageActive ? (
+              <ProgressiveOriginalImage
+                baseUri={originalImageBase ?? imageUri}
+                originalUri={originalImagePending}
+                progress={loadProgress}
+                active={originalImageActive}
+                cacheHit={originalImageCacheHit}
+                reduceMotion={reduceMotion}
+                amber={c.amber}
+                containerStyle={styles.image}
+                imageStyle={styles.image}
+                accessibilityLabel={previewFileName}
+                onPromote={promoteOriginalImage}
+              />
+            ) : (
+              <Image
+                source={{ uri: imageUri }}
+                style={styles.image}
+                resizeMode="contain"
+                accessibilityLabel={previewFileName}
+              />
+            )
           ) : imageError ? (
             <View style={styles.imageStatus}>
               <Text style={[styles.imageStatusTitle, { color: colors.white }]}>
@@ -3229,6 +3561,24 @@ const styles = StyleSheet.create({
     height: '100%',
     minWidth: 8,
     borderRadius: 2,
+  },
+  // Task 0799 — slim "bytes arriving" bar pinned to the top of the frame during
+  // the View-Original download phase.
+  progressiveBarTrack: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 2,
+    backgroundColor: 'rgba(255,255,255,0.14)',
+    overflow: 'hidden',
+  },
+  progressiveBarFill: {
+    height: '100%',
+    borderRadius: 2,
+  },
+  progressiveBarIndeterminate: {
+    width: '36%',
   },
 
   genericPlaceholder: { alignItems: 'center', gap: 16 },
