@@ -13,7 +13,7 @@
  * the component pure: it only walks `parentId` links and renders.
  */
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
@@ -72,6 +72,12 @@ export default function FolderPickerModal({
   const [stack, setStack] = useState<Crumb[]>([{ id: null, name: ROOT_NAME }]);
   const current = stack[stack.length - 1];
 
+  // Reset to the root whenever the sheet is dismissed, so the next open starts
+  // fresh — but never mid-flight (a failed move keeps the user where they were).
+  useEffect(() => {
+    if (!visible) setStack([{ id: null, name: ROOT_NAME }]);
+  }, [visible]);
+
   // Children of every folder, grouped by parent id, sorted by name. Recomputed
   // only when the folder set changes — drilling is then a cheap lookup.
   const childrenByParent = useMemo(() => {
@@ -90,11 +96,6 @@ export default function FolderPickerModal({
   const visibleFolders = childrenByParent.get(current.id) ?? [];
   const hasChildren = (id: string) => (childrenByParent.get(id)?.length ?? 0) > 0;
 
-  const resetAndCancel = () => {
-    setStack([{ id: null, name: ROOT_NAME }]);
-    onCancel();
-  };
-
   const drillInto = (folder: PickerFolder) => {
     setStack((prev) => [...prev, { id: folder.id, name: folder.name }]);
   };
@@ -103,10 +104,9 @@ export default function FolderPickerModal({
     setStack((prev) => prev.slice(0, index + 1));
   };
 
-  const confirm = () => {
-    onConfirm(current.id);
-    setStack([{ id: null, name: ROOT_NAME }]);
-  };
+  // The `visible` effect handles resetting the stack on dismissal (success or
+  // cancel), so these just delegate — a failed move leaves the user in place.
+  const confirm = () => onConfirm(current.id);
 
   const alreadyHere = current.id === currentParentId;
 
@@ -115,13 +115,13 @@ export default function FolderPickerModal({
       visible={visible}
       animationType="slide"
       presentationStyle={Platform.OS === 'ios' ? 'pageSheet' : 'fullScreen'}
-      onRequestClose={resetAndCancel}
+      onRequestClose={onCancel}
     >
       <View style={[styles.root, { backgroundColor: c.paper, paddingTop: Platform.OS === 'android' ? insets.top : 0 }]}>
         {/* Header */}
         <View style={[styles.header, { borderBottomColor: c.line }]}>
           <TouchableOpacity
-            onPress={resetAndCancel}
+            onPress={onCancel}
             disabled={busy}
             hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
             accessibilityRole="button"
