@@ -1382,6 +1382,15 @@ export interface MyShareLink {
   has_passphrase: boolean;
   revoked: boolean;
   created_at: string;
+  /**
+   * 0709 A+ owner-recoverable blobs (base64). Present for shares created with
+   * the owner-recoverable flow; NULL for legacy / pre-0709 shares (incl. older
+   * mobile-created links) — those are genuinely unrecoverable, so the UI offers
+   * "revoke & recreate" rather than fabricating a link. The server stores these
+   * opaque and never unwraps them.
+   */
+  owner_wrapped_key?: string | null;
+  owner_wrapped_token?: string | null;
   file: {
     name_encrypted: string;
     size_bytes: number;
@@ -1400,6 +1409,18 @@ export interface ShareCreateOpts {
    * the URL fragment (#key=…) and is never sent to the server.
    */
   wrapped_file_key?: string;
+  /**
+   * 0709 A+ owner-recoverable share (all-or-nothing with the two wrapped blobs):
+   * a client-generated raw token — URL-safe-no-pad base64 of 20 random bytes
+   * (27 chars). The server validates + hashes it and uses it instead of
+   * generating one. Omit all three for a legacy server-generated token; sending
+   * only some of the three is a typed 400. Wire format matches the web client.
+   */
+  token?: string;
+  /** base64(AES-256-GCM(masterKey, K_c)) — lets the OWNER re-copy a working link. */
+  owner_wrapped_key?: string;
+  /** base64(AES-256-GCM(masterKey, tokenUtf8)) — the raw token, wrapped for re-copy. */
+  owner_wrapped_token?: string;
 }
 
 export async function createShare(

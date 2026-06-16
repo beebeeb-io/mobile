@@ -1023,6 +1023,39 @@ public class BeebeebCryptoModule: Module {
       return try unwrapRequestPrivate(masterKey: masterKeyBytes, requestId: Data(), wrapped: wrapped, nonce: nonce)
     }
 
+    // ─── Owner-recoverable share wrap (0805) ───────────────────────────────
+    //  Wrap/unwrap bytes DIRECTLY under the master key with AES-256-GCM — the
+    //  core chunk AEAD (BeebeebCryptoBridge.encryptChunk/decryptChunk), keyed by
+    //  the master key as-is (NO HKDF), so the blob is byte-for-byte compatible
+    //  with web's wrapKeyForShare(masterKey, …). The master key is exported
+    //  transiently from the in-memory handle and zeroed; only ciphertext + nonce
+    //  reach JS. Used for owner_wrapped_key (K_c) and owner_wrapped_token.
+    AsyncFunction("wrapForOwnerWithHandle") { [self] (handleId: Int, plaintext: Data) throws -> [String: Any] in
+      let master = try self.getHandle(handleId)
+      var masterKeyBytes = try master.exportForKeychain()
+      defer {
+        masterKeyBytes.withUnsafeMutableBytes { ptr in
+          if let base = ptr.baseAddress { memset(base, 0, ptr.count) }
+        }
+      }
+      let result = try BeebeebCryptoBridge.encryptChunk(key: masterKeyBytes, plaintext: plaintext)
+      return [
+        "wrapped": result.ciphertext,
+        "nonce": result.nonce,
+      ]
+    }
+
+    AsyncFunction("unwrapForOwnerWithHandle") { [self] (handleId: Int, wrapped: Data, nonce: Data) throws -> Data in
+      let master = try self.getHandle(handleId)
+      var masterKeyBytes = try master.exportForKeychain()
+      defer {
+        masterKeyBytes.withUnsafeMutableBytes { ptr in
+          if let base = ptr.baseAddress { memset(base, 0, ptr.count) }
+        }
+      }
+      return try BeebeebCryptoBridge.decryptChunk(key: masterKeyBytes, nonce: nonce, ciphertext: wrapped)
+    }
+
     AsyncFunction("openRequestUpload") { (rPriv: Data, ePub: Data, wrappedKey: Data) throws -> Data in
       // Recover the content key C for a request-uploaded file (owner decrypt).
       // No master key needed — R_priv is supplied by the caller.
