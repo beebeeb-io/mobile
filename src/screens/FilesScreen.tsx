@@ -2235,6 +2235,20 @@ export default function FilesScreen() {
     if ((SORT_ORDER as string[]).includes(order)) setSortOrder(order);
   }, []);
 
+  // 0800 — Long-pressing the (single-line, truncated) folder title opens a
+  // native UIMenu whose header is the FULL folder name, plus a Copy action.
+  const folderTitleMenuActions = useMemo<MenuAction[]>(
+    () => [{ id: 'copy', title: 'Copy name', image: 'doc.on.doc', imageColor: c.ink }],
+    [c.ink],
+  );
+  const onFolderTitleAction = useCallback(({ nativeEvent }: NativeActionEvent) => {
+    if (nativeEvent.event === 'copy') {
+      void Clipboard.setStringAsync(currentFolder.name);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      showToast({ type: 'success', message: 'Folder name copied' });
+    }
+  }, [currentFolder.name, showToast]);
+
   // ------------------------------------------------------------------
   // Multi-select handlers
   // ------------------------------------------------------------------
@@ -3255,7 +3269,25 @@ export default function FilesScreen() {
               <Text style={[styles.backButtonText, { color: c.ink2 }]}>{'‹'}</Text>
             </TouchableOpacity>
           )}
-          <Text style={[styles.title, { color: c.ink }]}>{currentFolder.name}</Text>
+          {/* 0800 — single line, tail-truncated (never stacks vertically);
+              long-press surfaces the full name via a native UIMenu header. */}
+          <MenuView
+            title={currentFolder.name}
+            onPressAction={onFolderTitleAction}
+            actions={folderTitleMenuActions}
+            shouldOpenOnLongPress
+            themeVariant={themeScheme}
+            style={styles.titleMenu}
+          >
+            <Text
+              style={[styles.title, { color: c.ink }]}
+              numberOfLines={1}
+              ellipsizeMode="tail"
+              accessibilityLabel={currentFolder.name}
+            >
+              {currentFolder.name}
+            </Text>
+          </MenuView>
           {!searchActive && presence.length > 0 && (
             <View style={styles.presenceWrap}>
               <PresenceAvatars users={presence} />
@@ -3755,7 +3787,10 @@ const styles = StyleSheet.create({
   selectTitle: { flex: 1, fontSize: 16, fontWeight: '600', textAlign: 'center' },
   backButton: { width: 30, height: 30, borderRadius: 15, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
   backButtonText: { fontSize: 20, fontWeight: '600', marginTop: -2 },
-  title: { fontSize: 28, fontWeight: '700' },
+  // 0800 — flexShrink lets a long folder name yield space to the trailing
+  // action icons (truncating with "…") instead of wrapping to a second line.
+  titleMenu: { flexShrink: 1 },
+  title: { fontSize: 28, fontWeight: '700', flexShrink: 1 },
   searchBar: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: spacing.lg, paddingBottom: spacing.sm, gap: 10 },
   searchInput: { flex: 1, height: 36, borderRadius: radii.md, paddingHorizontal: 12, fontSize: 15, borderWidth: 1 },
   searchButton: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
