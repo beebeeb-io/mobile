@@ -31,7 +31,7 @@ import {
 } from './lib/api';
 import type { User } from './lib/api';
 import { AuthContext } from './lib/auth';
-import { CryptoProvider, SIMULATOR_MASTER_KEY_FILE, useCrypto } from './lib/crypto-context';
+import { CryptoProvider, SIMULATOR_MASTER_KEY_FILE, useCrypto, usesSoftwareVaultFallback } from './lib/crypto-context';
 import { markUnlocked, wasRecentlyUnlocked } from './lib/lock-state';
 import { SyncProvider } from './lib/sync-context';
 import { useNetworkStatus } from './lib/useNetworkStatus';
@@ -434,11 +434,32 @@ function BiometricGuard({
     })();
   }, [locked, startupLockChecked, crypto.isUnlocked]);
 
-  async function handleUnlocked() {
+  // The vault key load raises its OWN Face ID prompt only when it reads the
+  // biometric-gated Secure-Enclave key — i.e. on a real release build with a
+  // cold vault. When the vault is already warm (foreground re-lock) or we're
+  // on a simulator / Debug build, the load is silent, so the lock screen must
+  // prompt explicitly to enforce a biometric. Getting this wrong in either
+  // direction is the double-prompt (prompt + SE) or a missing gate (task 0792).
+  const requireExplicitBiometric = crypto.isUnlocked || usesSoftwareVaultFallback();
+
+  async function handleUnlocked(opts?: { fallbackUnlock?: boolean }): Promise<{ ok: boolean }> {
+    const fallbackUnlock = opts?.fallbackUnlock ?? false;
     try {
       await crypto.unlock(undefined, 'app_biometric_lock_screen');
-    } catch {
-      // Key not in keychain yet (e.g. legacy account before OPAQUE) — just unlock the screen
+    } catch (err) {
+      // The key load failed. The ONLY failure that should still open the app
+      // is the genuine "no key was ever provisioned" case (fresh install /
+      // device restore): there is nothing to biometric-gate and the
+      // VaultRecoveryGate takes over to collect a recovery phrase. The
+      // password path is also allowed through (the user proved identity with
+      // their Beebeeb password). EVERY other failure — a cancelled
+      // Secure-Enclave Face ID, or a transient keychain read — is fail-closed:
+      // stay locked so the vault never opens without a successful biometric.
+      const message = err instanceof Error ? err.message : '';
+      const missingKey = /no master key in keychain/i.test(message);
+      if (!fallbackUnlock && !missingKey) {
+        return { ok: false };
+      }
     }
     const token = await getToken().catch(() => null);
     if (token) {
@@ -452,12 +473,13 @@ function BiometricGuard({
       try { await BeebeebThumbnails.resumeWorkers(); } catch {}
     }
     onUnlock();
+    return { ok: true };
   }
 
   if (!locked) return null;
   return (
     <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}>
-      <BiometricLockScreen onUnlocked={handleUnlocked} />
+      <BiometricLockScreen onUnlocked={handleUnlocked} requireExplicitBiometric={requireExplicitBiometric} />
     </View>
   );
 }

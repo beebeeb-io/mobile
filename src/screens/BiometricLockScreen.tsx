@@ -17,7 +17,26 @@ import { requestConfirmation } from '../lib/confirm-action';
 import { markUnlocked } from '../lib/lock-state';
 
 interface Props {
-  onUnlocked: () => void;
+  /**
+   * Perform the actual vault unlock (load the master key + warm caches) and
+   * report whether the app may transition past the lock screen. On real
+   * release builds the key load itself triggers the Secure-Enclave Face ID
+   * prompt — that is THE biometric gate, so `requireExplicitBiometric` is
+   * false and we do NOT prompt separately. Resolves `{ ok: false }` when the
+   * biometric was cancelled / the key could not be loaded, so we stay locked.
+   * `fallbackUnlock` is set by the password path to preserve best-effort
+   * unlock when the key load fails.
+   */
+  onUnlocked: (opts?: { fallbackUnlock?: boolean }) => Promise<{ ok: boolean }>;
+  /**
+   * When true, the key load will NOT raise a biometric prompt (simulator /
+   * Debug build, or the vault is already warm from a foreground re-lock), so
+   * this screen must run its own `LocalAuthentication.authenticateAsync()` to
+   * enforce a biometric. When false, the Secure-Enclave decrypt inside
+   * `onUnlocked()` is the single biometric — prompting here too would produce
+   * the double Face ID prompt (task 0792).
+   */
+  requireExplicitBiometric: boolean;
 }
 
 function FaceIdIcon() {
@@ -37,7 +56,7 @@ function FaceIdIcon() {
   );
 }
 
-export default function BiometricLockScreen({ onUnlocked }: Props) {
+export default function BiometricLockScreen({ onUnlocked, requireExplicitBiometric }: Props) {
   // Block screenshots/screen recording while the app is locked — the lock
   // screen covers any sensitive content that was on-screen at lock time.
   usePreventScreenCapture('biometric-lock');
@@ -56,29 +75,53 @@ export default function BiometricLockScreen({ onUnlocked }: Props) {
     setError(null);
     setAuthenticating(true);
     try {
-      // disableDeviceFallback: true keeps iOS from offering the device passcode
-      // sheet on a Face ID failure. That sheet drops the app into `inactive`
-      // long enough to confuse the AppState lock-trigger; the in-app password
-      // button below is the explicit fallback path instead.
-      const result = await LocalAuthentication.authenticateAsync({
-        promptMessage: 'Unlock Beebeeb',
-        cancelLabel: 'Cancel',
-        disableDeviceFallback: true,
-      });
-      if (result.success) {
-        await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      // EXACTLY ONE biometric evaluation must occur (task 0792). Two cases:
+      //
+      //   1. requireExplicitBiometric — the vault key load will NOT prompt
+      //      (simulator / Debug build, or the vault is already warm from a
+      //      foreground re-lock). We must prompt here, and this is the gate.
+      //   2. otherwise — the key load (`onUnlocked`) performs the
+      //      Secure-Enclave Face ID decrypt; that IS the single prompt, so we
+      //      do NOT prompt here. Prompting in both places is what produced the
+      //      "succeeds but app doesn't open, then prompts again" double prompt.
+      if (requireExplicitBiometric) {
+        // disableDeviceFallback: true keeps iOS from offering the device
+        // passcode sheet on a Face ID failure. That sheet drops the app into
+        // `inactive` long enough to confuse the AppState lock-trigger; the
+        // in-app password button below is the explicit fallback path instead.
+        const result = await LocalAuthentication.authenticateAsync({
+          promptMessage: 'Unlock Beebeeb',
+          cancelLabel: 'Cancel',
+          disableDeviceFallback: true,
+        });
+        if (!result.success) {
+          if (result.error !== 'user_cancel' && result.error !== 'system_cancel') {
+            setError('Authentication failed. Tap to try again.');
+          }
+          return;
+        }
+        // Bridge the lock-state grace window across the inactive→active churn
+        // around the prompt and the subsequent key load, so the AppState
+        // listener doesn't re-arm the lock under us.
         markUnlocked();
-        onUnlocked();
-      } else if (result.error !== 'user_cancel' && result.error !== 'system_cancel') {
-        setError('Authentication failed. Tap to try again.');
       }
+
+      const outcome = await onUnlocked();
+      if (!outcome.ok) {
+        // Key load failed (e.g. the Secure-Enclave biometric was cancelled).
+        // Fail closed — stay locked and let the user retry. Never transition
+        // without a successful biometric.
+        setError('Authentication failed. Tap to try again.');
+        return;
+      }
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } catch {
       setError('Could not access biometrics. Tap to try again.');
     } finally {
       setAuthenticating(false);
       inFlightRef.current = false;
     }
-  }, [onUnlocked]);
+  }, [onUnlocked, requireExplicitBiometric]);
 
   const unlockWithPassword = useCallback(async () => {
     const token = await requestConfirmation({
@@ -87,7 +130,9 @@ export default function BiometricLockScreen({ onUnlocked }: Props) {
     });
     if (!token) return;
     markUnlocked();
-    onUnlocked();
+    // Password is the fallback when biometrics aren't working — allow the app
+    // through even if the (biometric-gated) key load can't complete here.
+    await onUnlocked({ fallbackUnlock: true });
   }, [onUnlocked]);
 
   // Auto-trigger on mount

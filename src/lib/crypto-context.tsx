@@ -72,7 +72,18 @@ const MASTER_KEY_CHECK_LABEL = 'io.beebeeb.master-key-check'
 const MASTER_KEY_FALLBACK_LABEL = 'io.beebeeb.master-key.fallback'
 export const SIMULATOR_MASTER_KEY_FILE = `${FileSystem.documentDirectory ?? ''}beebeeb-simulator-master-key.txt`
 
-function usesSoftwareVaultFallback(): boolean {
+/**
+ * True when the master key is NOT stored behind a biometric-gated Secure
+ * Enclave key on this runtime (simulator, non-SE device, or any Debug build).
+ * In that case `unlock()`/`loadVerifiedMasterKeyHandle()` read the key from
+ * SecureStore (or the simulator file) WITHOUT raising a Face ID prompt, so the
+ * biometric lock screen must perform its own explicit `authenticateAsync()` to
+ * enforce a biometric. On a real release build this is `false`, and the SE
+ * decrypt inside `unlock()` IS the biometric gate (a single Face ID prompt).
+ * Exported so the lock-screen flow can decide whether `unlock()` will prompt
+ * and therefore avoid a redundant second prompt (task 0792).
+ */
+export function usesSoftwareVaultFallback(): boolean {
   return !Device.isDevice || Device.modelName?.toLowerCase().includes('simulator') === true || __DEV__
 }
 
