@@ -57,6 +57,8 @@ import { useAuth } from '../lib/auth';
 import { encryptedUpload, generateFileId } from '../lib/encrypted-upload';
 import { useSync } from '../lib/sync-context';
 import { useSearchIndex } from '../lib/use-search-index';
+import { loadNameCache, scheduleSaveNameCache, type NameCache } from '../lib/name-cache';
+import { recordRuntimeTrace } from '../lib/runtime-trace';
 import { offlineManager, type OfflineStatus } from '../lib/offline-manager';
 import { useOfflineVersion } from '../lib/use-offline';
 import { decryptToTempFile } from '../lib/native-decrypt';
@@ -1212,9 +1214,51 @@ export default function FilesScreen() {
   const [presence, setPresence] = useState<PresenceUser[]>([]);
 
   // Crypto
-  const { isUnlocked, unlockAttempted, decryptMetadata, encryptChunk, encryptMetadata, getFileKeyBytes, getRequestContentKey, getMasterKeyHandleId } = useCrypto();
+  const { isUnlocked, unlockAttempted, decryptMetadata, decryptNames, encryptChunk, encryptMetadata, getFileKeyBytes, getRequestContentKey, getMasterKeyHandleId } = useCrypto();
   const [decryptedNames, setDecryptedNames] = useState<Record<string, string>>({});
+  // Task 0807: persistent (fileId,version) name cache + a ref mirror of
+  // decryptedNames so the per-folder decrypt effect can read the latest names
+  // without re-running on every name update (which would loop).
+  const nameCacheRef = useRef<NameCache>({});
+  const decryptedNamesRef = useRef<Record<string, string>>({});
+  const decryptedMimeTypesRef = useRef<Record<string, string | null>>({});
   const [decryptedMimeTypes, setDecryptedMimeTypes] = useState<Record<string, string | null>>({});
+
+  // Task 0807: keep a ref mirror of decryptedNames so the per-folder decrypt
+  // effect can read the latest resolved names WITHOUT listing decryptedNames as
+  // a dependency (which would re-fire the effect on every name update → loop).
+  useEffect(() => {
+    decryptedNamesRef.current = decryptedNames;
+  }, [decryptedNames]);
+
+  useEffect(() => {
+    decryptedMimeTypesRef.current = decryptedMimeTypes;
+  }, [decryptedMimeTypes]);
+
+  // Task 0807 (Pillar 2): load the persistent (fileId,version) name cache from
+  // disk ONCE and seed the in-memory maps from it, so a COLD launch renders real
+  // names immediately — before the index round-trip and with zero on-device
+  // decrypts. The per-folder effect later validates each name by version_number.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const cache = await loadNameCache();
+      if (cancelled) return;
+      nameCacheRef.current = cache;
+      const ids = Object.keys(cache);
+      if (ids.length === 0) return;
+      const seedNames: Record<string, string> = {};
+      const seedMimes: Record<string, string | null> = {};
+      for (const id of ids) {
+        seedNames[id] = cache[id]!.name;
+        if (cache[id]!.mime != null) seedMimes[id] = cache[id]!.mime;
+      }
+      // Existing (fresher) in-memory names win over the disk seed.
+      setDecryptedNames((prev) => ({ ...seedNames, ...prev }));
+      setDecryptedMimeTypes((prev) => ({ ...seedMimes, ...prev }));
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   /** Find a non-folder file in the current folder whose decrypted name matches `filename`. */
   const findConflict = useCallback((filename: string): FileEntry | null => {
@@ -1247,6 +1291,29 @@ export default function FilesScreen() {
   // when the search bar is open. Powers the "in your vault" results hint
   // below the search bar; also kept in sync after create, rename, move, and delete.
   const { ready: searchIndexReady, search: searchVault, indexFile, unindexFile, getIndexedIds, allEntries } = useSearchIndex();
+
+  // Task 0807 (Pillar 3): the unlock reconcile already decrypts the whole vault
+  // into the search index — so seed decryptedNames from it as soon as it's ready.
+  // Most folder opens (and re-opens) then resolve names with ZERO on-device
+  // decrypts; only files missing from the index hit the batch decrypt.
+  const indexSeededRef = useRef(false);
+  useEffect(() => {
+    if (!isUnlocked) {
+      indexSeededRef.current = false;
+      return;
+    }
+    if (!searchIndexReady || indexSeededRef.current) return;
+    indexSeededRef.current = true;
+    const entries = allEntries();
+    const seedNames: Record<string, string> = {};
+    for (const [id, entry] of Object.entries(entries)) {
+      if (entry?.name) seedNames[id] = entry.name;
+    }
+    if (Object.keys(seedNames).length > 0) {
+      // Existing (version-validated) in-memory names win over the index seed.
+      setDecryptedNames((prev) => ({ ...seedNames, ...prev }));
+    }
+  }, [isUnlocked, searchIndexReady, allEntries]);
 
   // 0778A — recursive search. The encrypted index is populated INCREMENTALLY (on
   // upload/rename), so files created on another device/client aren't in it and a
@@ -1388,13 +1455,19 @@ export default function FilesScreen() {
   // Scroll shadow — appears when list is scrolled past top
   const [isScrolled, setIsScrolled] = useState(false);
 
-  // Decrypt filenames whenever the file list or unlock state changes.
-  // Re-runs automatically when isUnlocked transitions false→true so the
-  // startup race (files fetched before key is in memory) heals itself.
+  // Resolve filenames for the current folder (task 0807 — folder-load perf).
   //
-  // Progressive rendering: names are decrypted in small batches (8 files)
-  // with a state update after each batch, so names appear incrementally as
-  // they decrypt rather than all at once after a blocking delay.
+  // Cache/index FIRST, decrypt only the misses, and ONE batched native call for
+  // the whole folder instead of N per-file bridge crossings:
+  //   1. A name whose persistent (fileId,version) cache entry matches the row's
+  //      version_number is a hit → 0 decrypts.
+  //   2. A name already in the session map / search-index seed (no version
+  //      conflict) is a hit → 0 decrypts.
+  //   3. Everything else is a miss → ONE `decryptNames` batch call (master-key
+  //      stays in the SE handle, 0556). Request-uploads (content-key) fall back
+  //      to a per-file decrypt (rare).
+  // The session map is NOT cleared per folder (it was at the old :1406); only on
+  // lock. Results write through to the persistent cache for instant cold launch.
   useEffect(() => {
     if (!isUnlocked) {
       setDecryptedNames({});
@@ -1403,94 +1476,151 @@ export default function FilesScreen() {
     }
     const folderId = currentFolder.id;
     const folderKey = folderCacheKey(folderId);
-    if (filesFolderKeyRef.current !== folderKey) {
-      setDecryptedNames({});
-      setDecryptedMimeTypes({});
+
+    const encrypted = files.filter((f) => (f.name_encrypted ?? '').startsWith('{'));
+    if (encrypted.length === 0) return;
+
+    // ── Phase 1: seed from cache/index, collect misses ──────────────────────
+    const knownNames = decryptedNamesRef.current;
+    const knownMimes = decryptedMimeTypesRef.current;
+    const cache = nameCacheRef.current;
+    const seedNames: Record<string, string> = {};
+    const seedMimes: Record<string, string | null> = {};
+    const misses: FileEntry[] = [];
+    let cacheHits = 0;
+
+    for (const f of encrypted) {
+      const version = f.version_number ?? 0;
+      const cached = cache[f.id];
+      if (cached && cached.version === version) {
+        // Valid persistent-cache hit — surface it if not already shown.
+        if (knownNames[f.id] == null) seedNames[f.id] = cached.name;
+        if (cached.mime != null && knownMimes[f.id] == null) seedMimes[f.id] = cached.mime;
+        cacheHits += 1;
+        continue;
+      }
+      if (!cached && knownNames[f.id] != null) {
+        // Index/session seed already provides the name and the row carries no
+        // stale-version signal we can detect → trust it (index is kept current).
+        cacheHits += 1;
+        continue;
+      }
+      // No cache, or cache version is stale (renamed elsewhere) → must decrypt.
+      misses.push(f);
+    }
+
+    if (Object.keys(seedNames).length > 0) setDecryptedNames((prev) => ({ ...seedNames, ...prev }));
+    if (Object.keys(seedMimes).length > 0) setDecryptedMimeTypes((prev) => ({ ...seedMimes, ...prev }));
+
+    if (misses.length === 0) {
+      recordRuntimeTrace('files.folder_decrypt', {
+        folderId, total: encrypted.length, cacheHits, batchDecrypted: 0, batchCalls: 0,
+      });
       return;
     }
 
-    // Filter to files that need decryption (JSON-encrypted metadata).
-    const toDecrypt = files.filter((f) => (f.name_encrypted ?? '').startsWith('{'));
-    if (toDecrypt.length === 0) return;
-
-    const allNames: Record<string, string> = {};
-    const allMimes: Record<string, string | null> = {};
+    // ── Phase 2: batch-decrypt the misses (ONE call) ────────────────────────
     let cancelled = false;
+    let batchCalls = 0;
+    void (async () => {
+      const requestUploads = misses.filter((f) => isRequestUpload(f));
+      const normal = misses.filter((f) => !isRequestUpload(f));
+      const appliedNames: Record<string, string> = {};
+      const appliedMimes: Record<string, string | null> = {};
 
-    const BATCH_SIZE = 8;
+      if (normal.length > 0) {
+        try {
+          batchCalls += 1;
+          const results = await decryptNames(
+            normal.map((f) => ({ fileId: f.id, nameEncrypted: f.name_encrypted ?? '' })),
+          );
+          if (cancelled) return;
+          results.forEach((r, i) => {
+            const f = normal[i];
+            if (!f || !r || r.error || !r.name) return;
+            appliedNames[f.id] = r.name;
+            appliedMimes[f.id] = r.mimeType ?? null;
+          });
+        } catch {
+          // Batch unavailable (JS-only build / locked) — leave misses unresolved;
+          // displayName() shows "Encrypted file" rather than ciphertext.
+        }
+      }
 
-    const decryptBatch = async (batch: FileEntry[]): Promise<void> => {
-      const batchNames: Record<string, string> = {};
-      const batchMimes: Record<string, string | null> = {};
+      // Request-upload names (rare): per-file content-key decrypt.
       await Promise.all(
-        batch.map(async (file) => {
+        requestUploads.map(async (f) => {
           if (cancelled) return;
           try {
-            const raw = file.name_encrypted ?? '';
-            const payload = encryptedMetadataPayloadToBytes(raw);
+            const payload = encryptedMetadataPayloadToBytes(f.name_encrypted ?? '');
             if (!payload) return;
-            // Files received through a file request (0643) are encrypted with the
-            // request content key C, not the master-key-derived per-file key.
-            const plaintext = isRequestUpload(file)
-              ? await decryptMetadataWithKey(
-                  await getRequestContentKey(file),
-                  payload.nonce,
-                  payload.ciphertext,
-                )
-              : await decryptMetadata(file.id, payload.nonce, payload.ciphertext);
-            const metadata = parseDecryptedMetadata(plaintext);
-            batchNames[file.id] = metadata.name;
-            batchMimes[file.id] = metadata.mimeType;
-            allNames[file.id] = metadata.name;
-            allMimes[file.id] = metadata.mimeType;
+            const plaintext = await decryptMetadataWithKey(
+              await getRequestContentKey(f),
+              payload.nonce,
+              payload.ciphertext,
+            );
+            const md = parseDecryptedMetadata(plaintext);
+            appliedNames[f.id] = md.name;
+            appliedMimes[f.id] = md.mimeType;
           } catch {
-            // Decryption failure — leave unset so displayName() renders
-            // "Encrypted file" rather than raw ciphertext.
+            // leave unset
           }
         }),
       );
-      if (cancelled || filesFolderKeyRef.current !== folderKey) return;
-      if (Object.keys(batchNames).length === 0) return;
-      // Merge this batch's results into state progressively so each name
-      // appears as soon as its decryption completes, not all at once.
-      setDecryptedNames((prev) => ({ ...prev, ...batchNames }));
-      setDecryptedMimeTypes((prev) => ({ ...prev, ...batchMimes }));
-    };
 
-    void (async () => {
-      for (let i = 0; i < toDecrypt.length; i += BATCH_SIZE) {
-        if (cancelled) return;
-        const batch = toDecrypt.slice(i, i + BATCH_SIZE);
-        await decryptBatch(batch);
-        // Yield to the event loop between batches to let React process
-        // the state update and render the newly decrypted names.
-        if (i + BATCH_SIZE < toDecrypt.length) {
-          await new Promise<void>((r) => setTimeout(r, 0));
-        }
+      if (cancelled) return;
+
+      // Enrich MIME from the decrypted filename when the row has none.
+      for (const f of misses) {
+        if (f.is_folder || f.mime_type != null) continue;
+        const nm = appliedNames[f.id];
+        if (!nm || appliedMimes[f.id] != null) continue;
+        const guessed = guessMimeType(nm);
+        if (guessed) appliedMimes[f.id] = guessed;
       }
-      if (cancelled || filesFolderKeyRef.current !== folderKey) return;
-      // Enrich local MIME type map from decrypted filenames when the server
-      // row has no mime_type (MIME is now encrypted inside the metadata blob).
-      const enrichedMimes: Record<string, string | null> = {};
-      for (const file of files) {
-        if (file.is_folder || file.mime_type != null) continue;
-        const decryptedName = allNames[file.id];
-        if (!decryptedName) continue;
-        const guessed = guessMimeType(decryptedName);
-        if (guessed && allMimes[file.id] == null) {
-          enrichedMimes[file.id] = guessed;
-          allMimes[file.id] = guessed;
-        }
+
+      // Write through to the persistent (fileId,version) cache + persist.
+      let cacheChanged = false;
+      for (const f of misses) {
+        const nm = appliedNames[f.id];
+        if (nm == null) continue;
+        nameCacheRef.current[f.id] = {
+          name: nm,
+          mime: appliedMimes[f.id] ?? null,
+          version: f.version_number ?? 0,
+        };
+        cacheChanged = true;
       }
-      if (Object.keys(enrichedMimes).length > 0) {
-        setDecryptedMimeTypes((prev) => ({ ...prev, ...enrichedMimes }));
+      if (cacheChanged) scheduleSaveNameCache(nameCacheRef.current);
+
+      if (Object.keys(appliedNames).length > 0) {
+        setDecryptedNames((prev) => ({ ...prev, ...appliedNames }));
       }
+      if (Object.keys(appliedMimes).length > 0) {
+        setDecryptedMimeTypes((prev) => ({ ...prev, ...appliedMimes }));
+      }
+
+      recordRuntimeTrace('files.folder_decrypt', {
+        folderId,
+        total: encrypted.length,
+        cacheHits,
+        batchDecrypted: normal.length,
+        requestUploads: requestUploads.length,
+        batchCalls,
+      });
+
       // Push decrypted names to the File Provider cache so the iOS Files app
       // shows real filenames instead of "Encrypted file".
-      void syncDecryptedEntriesToFileProvider(files, allNames, folderId).catch(() => {});
+      if (filesFolderKeyRef.current === folderKey) {
+        void syncDecryptedEntriesToFileProvider(
+          files,
+          { ...decryptedNamesRef.current, ...appliedNames },
+          folderId,
+        ).catch(() => {});
+      }
     })();
     return () => { cancelled = true; };
-  }, [currentFolder.id, files, isUnlocked, decryptMetadata]);
+  }, [currentFolder.id, files, isUnlocked, decryptNames, getRequestContentKey]);
 
   // Load pinned folders from SecureStore on mount
   useEffect(() => {

@@ -559,6 +559,50 @@ export async function handleDecryptMetadata(
   return BeebeebCryptoModule.handleDecryptMetadata(handleId, fileId, nonce, ciphertext)
 }
 
+/** One (fileId, name_encrypted) input to the batch name decrypt (task 0807). */
+export interface BatchNameItem {
+  fileId: string
+  /** The `name_encrypted` JSON envelope as stored on the file row. */
+  nameEncrypted: string
+}
+
+/**
+ * One result of the batch name decrypt. On success `name` is set (mime optional)
+ * and `error` is null; on failure `error` is set and the others null. A single
+ * failed item never fails the whole batch.
+ */
+export interface BatchNameResult {
+  name: string | null
+  mimeType: string | null
+  error: string | null
+}
+
+/**
+ * Batch-decrypt many file names in ONE bridge crossing (task 0807 — folder-load
+ * perf). Delegates to core's `MasterKeyHandle.decryptNames` (0806): the master
+ * key is derived natively from the handle and never crosses to JS (0556).
+ * Order + length of the result match `items`.
+ *
+ * Falls back to a per-item "unavailable" error array when the native binding is
+ * missing (Expo Go / a build before the regenerated UniFFI binding) so callers
+ * can degrade to the legacy per-name path.
+ */
+export async function decryptNames(
+  handleId: number,
+  items: BatchNameItem[],
+): Promise<BatchNameResult[]> {
+  if (typeof BeebeebCryptoModule.decryptNames !== 'function') {
+    return items.map(() => ({ name: null, mimeType: null, error: 'decryptNames unavailable' }))
+  }
+  const results = await BeebeebCryptoModule.decryptNames(handleId, items)
+  if (!Array.isArray(results)) return []
+  return results.map((r: { name?: unknown; mimeType?: unknown; error?: unknown }) => ({
+    name: typeof r?.name === 'string' ? r.name : null,
+    mimeType: typeof r?.mimeType === 'string' ? r.mimeType : null,
+    error: typeof r?.error === 'string' ? r.error : null,
+  }))
+}
+
 /**
  * Derive the X25519 secret scalar from the master key handle. Used for
  * key-agreement during share creation. Returns raw bytes because the

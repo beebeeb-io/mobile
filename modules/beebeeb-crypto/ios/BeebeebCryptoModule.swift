@@ -1288,6 +1288,25 @@ public class BeebeebCryptoModule: Module {
       return try fk.decryptMetadata(nonce: nonce, ciphertext: ciphertext)
     }
 
+    // Task 0807: batch-decrypt many file names in ONE bridge crossing (folder-load
+    // perf). Delegates to core's `MasterKeyHandle.decryptNames` (0806) — the master
+    // key stays native (0556); a bad item yields a per-item error, never failing the
+    // batch. Order + length match `items`.
+    AsyncFunction("decryptNames") { [self] (handleId: Int, items: [[String: String]]) throws -> [[String: Any]] in
+      let master = try self.getHandle(handleId)
+      let batchItems = items.map { item in
+        BatchNameItem(fileId: item["fileId"] ?? "", nameEncrypted: item["nameEncrypted"] ?? "")
+      }
+      let results = try master.decryptNames(items: batchItems)
+      return results.map { result -> [String: Any] in
+        [
+          "name": result.name as Any,
+          "mimeType": result.mimeType as Any,
+          "error": result.error as Any,
+        ]
+      }
+    }
+
     AsyncFunction("handleDeriveX25519Private") { [self] (handleId: Int) throws -> Data in
       let master = try self.getHandle(handleId)
       return try master.deriveX25519Private()

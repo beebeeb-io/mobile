@@ -7,6 +7,7 @@ import {
   computeRecoveryCheck,
   createMasterKeyHandle,
   createRequestKeypairWithHandle,
+  decryptNames,
   deriveX25519PublicFromPrivate,
   handleComputeRecoveryCheck,
   handleDecryptChunk,
@@ -24,7 +25,7 @@ import {
   storeKeyInKeychain,
   unwrapRequestPrivateWithHandle,
 } from '../../modules/beebeeb-crypto'
-import type { EncryptedData, RequestKeypairResult } from '../../modules/beebeeb-crypto'
+import type { BatchNameItem, BatchNameResult, EncryptedData, RequestKeypairResult } from '../../modules/beebeeb-crypto'
 import { setBackupEncryption, getKeepVaultUnlocked } from '../services/BackupService'
 import { recordRuntimeTrace } from './runtime-trace'
 import {
@@ -375,6 +376,12 @@ interface CryptoContextValue {
   decryptChunk: (fileId: string, nonce: Uint8Array, ct: Uint8Array) => Promise<Uint8Array>
   encryptMetadata: (fileId: string, metadata: string) => Promise<EncryptedData>
   decryptMetadata: (fileId: string, nonce: Uint8Array, ct: Uint8Array) => Promise<string>
+  /**
+   * Batch-decrypt many file names in ONE native call (task 0807). The master
+   * key stays in the secure-enclave handle (0556). Order + length of the result
+   * match `items`; a failed item yields `error` for that item only.
+   */
+  decryptNames: (items: BatchNameItem[]) => Promise<BatchNameResult[]>
   /**
    * Derive and return the raw 32-byte file key for a given fileId.
    * Used for ZK share creation where we need to wrap the key client-side.
@@ -728,6 +735,14 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
     [],
   )
 
+  const decryptNamesFn = useCallback(
+    async (items: BatchNameItem[]): Promise<BatchNameResult[]> => {
+      return decryptNames(requireHandleId(), items)
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  )
+
   const getFileKeyBytesFn = useCallback(
     async (fileId: string): Promise<Uint8Array> => {
       // The handle is created at unlock time on every platform (including
@@ -979,6 +994,7 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
         decryptChunk: decryptChunkFn,
         encryptMetadata: encryptMetadataFn,
         decryptMetadata: decryptMetadataFn,
+        decryptNames: decryptNamesFn,
         getFileKeyBytes: getFileKeyBytesFn,
         getMasterKeyHandleId: getMasterKeyHandleIdFn,
         deriveX25519PrivateFromHandle: deriveX25519PrivateFromHandleFn,
