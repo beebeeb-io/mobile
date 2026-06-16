@@ -2125,14 +2125,19 @@ export default function FilesScreen() {
 
   // 0789 — "+" add menu as native iOS UIMenu items, with trailing SF Symbols.
   // (Placed after all four upload handlers are declared.)
+  // 0791 — `imageColor` MUST be set explicitly. On the New Architecture the
+  // Fabric bridge always forwards `imageColor` as `@(action.imageColor)` (a C++
+  // int that defaults to 0 when JS omits it); native then tints the symbol with
+  // `RCTConvert.uiColor(0)` = fully transparent, so the glyph renders blank with
+  // its space reserved. Passing the label color tints it visibly on both arches.
   const addMenuActions = useMemo<MenuAction[]>(
     () => [
-      { id: 'photo', title: 'Upload photo or video', image: 'photo.on.rectangle' },
-      { id: 'file', title: 'Upload file', image: 'doc' },
-      { id: 'scan', title: 'Scan document', image: 'doc.viewfinder' },
-      { id: 'folder', title: 'New folder', image: 'folder.badge.plus' },
+      { id: 'photo', title: 'Upload photo or video', image: 'photo.on.rectangle', imageColor: c.ink },
+      { id: 'file', title: 'Upload file', image: 'doc', imageColor: c.ink },
+      { id: 'scan', title: 'Scan document', image: 'doc.viewfinder', imageColor: c.ink },
+      { id: 'folder', title: 'New folder', image: 'folder.badge.plus', imageColor: c.ink },
     ],
-    [],
+    [c.ink],
   );
 
   const onAddAction = useCallback(({ nativeEvent }: NativeActionEvent) => {
@@ -2165,9 +2170,11 @@ export default function FilesScreen() {
         id: o,
         title: SORT_LABELS[o],
         image: SORT_SF_SYMBOL[o],
+        // 0791 — explicit tint so the SF Symbol renders (see addMenuActions note).
+        imageColor: c.ink,
         state: o === sortOrder ? 'on' : 'off',
       })),
-    [sortOrder],
+    [sortOrder, c.ink],
   );
 
   const onSortAction = useCallback(({ nativeEvent }: NativeActionEvent) => {
