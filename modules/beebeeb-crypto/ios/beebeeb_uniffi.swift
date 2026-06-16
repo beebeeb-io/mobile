@@ -1624,6 +1624,15 @@ public protocol MasterKeyHandleProtocol: AnyObject, Sendable {
     func decryptNameWithMime(fileId: String, nameEncrypted: String) throws  -> DecryptedNameWithMime
     
     /**
+     * Batch-decrypt many file names in ONE FFI call (task 0806 — folder-load
+     * perf). The key never crosses FFI (derived in core from this handle). Each
+     * result mirrors `decrypt_name_with_mime` + tries both the string-UUID and
+     * legacy binary-UUID key forms; a bad item yields `error` for that item only.
+     * Order + length match `items`. An unparseable `file_id` is an item error.
+     */
+    func decryptNames(items: [BatchNameItem]) throws  -> [BatchNameResult]
+    
+    /**
      * Derive a FileKeyHandle for the given file ID.
      */
     func deriveFileKey(fileId: Data) throws  -> FileKeyHandle
@@ -1791,6 +1800,22 @@ open func decryptNameWithMime(fileId: String, nameEncrypted: String)throws  -> D
 }
     
     /**
+     * Batch-decrypt many file names in ONE FFI call (task 0806 — folder-load
+     * perf). The key never crosses FFI (derived in core from this handle). Each
+     * result mirrors `decrypt_name_with_mime` + tries both the string-UUID and
+     * legacy binary-UUID key forms; a bad item yields `error` for that item only.
+     * Order + length match `items`. An unparseable `file_id` is an item error.
+     */
+open func decryptNames(items: [BatchNameItem])throws  -> [BatchNameResult]  {
+    return try  FfiConverterSequenceTypeBatchNameResult.lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
+    uniffi_beebeeb_uniffi_fn_method_masterkeyhandle_decrypt_names(
+            self.uniffiCloneHandle(),
+        FfiConverterSequenceTypeBatchNameItem.lower(items),$0
+    )
+})
+}
+    
+    /**
      * Derive a FileKeyHandle for the given file ID.
      */
 open func deriveFileKey(fileId: Data)throws  -> FileKeyHandle  {
@@ -1909,6 +1934,284 @@ public func FfiConverterTypeMasterKeyHandle_lower(_ value: MasterKeyHandle) -> U
 
 
 
+
+
+/**
+ * A mutable client-side search index. Build it from a file list, mutate it
+ * incrementally (`upsert`/`remove` return the dirty bucket set), query it, and
+ * (de)serialize it to encrypted shards for sync. Crypto runs in core against the
+ * borrowed master key — raw key bytes never cross FFI.
+ */
+public protocol SearchIndexHandleProtocol: AnyObject, Sendable {
+    
+    /**
+     * Encrypt only the given buckets' shard pages (incremental sync) — pass the
+     * dirty set from `upsert`/`remove`. An emptied bucket yields no pages.
+     */
+    func encryptBuckets(masterKey: MasterKeyHandle, buckets: [UInt32]) throws  -> [EncryptedShardDto]
+    
+    /**
+     * Encrypt every non-empty shard page of the index.
+     */
+    func encryptShards(masterKey: MasterKeyHandle) throws  -> [EncryptedShardDto]
+    
+    /**
+     * Number of indexed files.
+     */
+    func fileCount()  -> UInt64
+    
+    /**
+     * Shard count this index uses.
+     */
+    func numShards()  -> UInt32
+    
+    /**
+     * Search; returns the matching `file_id`s.
+     */
+    func query(term: String)  -> [String]
+    
+    /**
+     * Remove a file. Returns the dirty bucket set (empty if not indexed).
+     */
+    func remove(fileId: String)  -> [UInt32]
+    
+    /**
+     * Insert or update a file (add or rename). Returns the buckets whose shards
+     * changed — re-encrypt only these for an incremental sync.
+     */
+    func upsert(fileId: String, name: String)  -> [UInt32]
+    
+}
+/**
+ * A mutable client-side search index. Build it from a file list, mutate it
+ * incrementally (`upsert`/`remove` return the dirty bucket set), query it, and
+ * (de)serialize it to encrypted shards for sync. Crypto runs in core against the
+ * borrowed master key — raw key bytes never cross FFI.
+ */
+open class SearchIndexHandle: SearchIndexHandleProtocol, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_beebeeb_uniffi_fn_clone_searchindexhandle(self.handle, $0) }
+    }
+    /**
+     * Empty index with the given shard count (clamped to ≥ 1).
+     */
+public convenience init(numShards: UInt32) {
+    let handle =
+        try! rustCall() {
+    uniffi_beebeeb_uniffi_fn_constructor_searchindexhandle_new(
+        FfiConverterUInt32.lower(numShards),$0
+    )
+}
+    self.init(unsafeFromHandle: handle)
+}
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_beebeeb_uniffi_fn_free_searchindexhandle(handle, $0) }
+    }
+
+    
+    /**
+     * Build from `(file_id, name)` pairs.
+     */
+public static func build(files: [SearchFileEntry], numShards: UInt32) -> SearchIndexHandle  {
+    return try!  FfiConverterTypeSearchIndexHandle_lift(try! rustCall() {
+    uniffi_beebeeb_uniffi_fn_constructor_searchindexhandle_build(
+        FfiConverterSequenceTypeSearchFileEntry.lower(files),
+        FfiConverterUInt32.lower(numShards),$0
+    )
+})
+}
+    
+    /**
+     * Reconstruct from encrypted shards (decrypts each with the master key).
+     * `num_shards` must match the value the shards were built with.
+     */
+public static func fromEncryptedShards(masterKey: MasterKeyHandle, shards: [EncryptedShardDto], numShards: UInt32)throws  -> SearchIndexHandle  {
+    return try  FfiConverterTypeSearchIndexHandle_lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
+    uniffi_beebeeb_uniffi_fn_constructor_searchindexhandle_from_encrypted_shards(
+        FfiConverterTypeMasterKeyHandle_lower(masterKey),
+        FfiConverterSequenceTypeEncryptedShardDto.lower(shards),
+        FfiConverterUInt32.lower(numShards),$0
+    )
+})
+}
+    
+
+    
+    /**
+     * Encrypt only the given buckets' shard pages (incremental sync) — pass the
+     * dirty set from `upsert`/`remove`. An emptied bucket yields no pages.
+     */
+open func encryptBuckets(masterKey: MasterKeyHandle, buckets: [UInt32])throws  -> [EncryptedShardDto]  {
+    return try  FfiConverterSequenceTypeEncryptedShardDto.lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
+    uniffi_beebeeb_uniffi_fn_method_searchindexhandle_encrypt_buckets(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeMasterKeyHandle_lower(masterKey),
+        FfiConverterSequenceUInt32.lower(buckets),$0
+    )
+})
+}
+    
+    /**
+     * Encrypt every non-empty shard page of the index.
+     */
+open func encryptShards(masterKey: MasterKeyHandle)throws  -> [EncryptedShardDto]  {
+    return try  FfiConverterSequenceTypeEncryptedShardDto.lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
+    uniffi_beebeeb_uniffi_fn_method_searchindexhandle_encrypt_shards(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeMasterKeyHandle_lower(masterKey),$0
+    )
+})
+}
+    
+    /**
+     * Number of indexed files.
+     */
+open func fileCount() -> UInt64  {
+    return try!  FfiConverterUInt64.lift(try! rustCall() {
+    uniffi_beebeeb_uniffi_fn_method_searchindexhandle_file_count(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+    
+    /**
+     * Shard count this index uses.
+     */
+open func numShards() -> UInt32  {
+    return try!  FfiConverterUInt32.lift(try! rustCall() {
+    uniffi_beebeeb_uniffi_fn_method_searchindexhandle_num_shards(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+    
+    /**
+     * Search; returns the matching `file_id`s.
+     */
+open func query(term: String) -> [String]  {
+    return try!  FfiConverterSequenceString.lift(try! rustCall() {
+    uniffi_beebeeb_uniffi_fn_method_searchindexhandle_query(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(term),$0
+    )
+})
+}
+    
+    /**
+     * Remove a file. Returns the dirty bucket set (empty if not indexed).
+     */
+open func remove(fileId: String) -> [UInt32]  {
+    return try!  FfiConverterSequenceUInt32.lift(try! rustCall() {
+    uniffi_beebeeb_uniffi_fn_method_searchindexhandle_remove(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(fileId),$0
+    )
+})
+}
+    
+    /**
+     * Insert or update a file (add or rename). Returns the buckets whose shards
+     * changed — re-encrypt only these for an incremental sync.
+     */
+open func upsert(fileId: String, name: String) -> [UInt32]  {
+    return try!  FfiConverterSequenceUInt32.lift(try! rustCall() {
+    uniffi_beebeeb_uniffi_fn_method_searchindexhandle_upsert(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(fileId),
+        FfiConverterString.lower(name),$0
+    )
+})
+}
+    
+
+    
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeSearchIndexHandle: FfiConverter {
+    typealias FfiType = UInt64
+    typealias SwiftType = SearchIndexHandle
+
+    public static func lift(_ handle: UInt64) throws -> SearchIndexHandle {
+        return SearchIndexHandle(unsafeFromHandle: handle)
+    }
+
+    public static func lower(_ value: SearchIndexHandle) -> UInt64 {
+        return value.uniffiCloneHandle()
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SearchIndexHandle {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: SearchIndexHandle, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSearchIndexHandle_lift(_ handle: UInt64) throws -> SearchIndexHandle {
+    return try FfiConverterTypeSearchIndexHandle.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSearchIndexHandle_lower(_ value: SearchIndexHandle) -> UInt64 {
+    return FfiConverterTypeSearchIndexHandle.lower(value)
+}
+
+
+
+
 /**
  * A single entry inside an archive (TAR, GZ, TGZ).
  */
@@ -1967,6 +2270,138 @@ public func FfiConverterTypeArchiveEntryDto_lift(_ buf: RustBuffer) throws -> Ar
 #endif
 public func FfiConverterTypeArchiveEntryDto_lower(_ value: ArchiveEntryDto) -> RustBuffer {
     return FfiConverterTypeArchiveEntryDto.lower(value)
+}
+
+
+/**
+ * One `(file_id, name_encrypted)` input to the batch `decrypt_names` (task 0806).
+ */
+public struct BatchNameItem: Equatable, Hashable {
+    /**
+     * Hyphenated-lowercase UUID string (the server-canonical file id).
+     */
+    public var fileId: String
+    /**
+     * The `name_encrypted` JSON envelope.
+     */
+    public var nameEncrypted: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Hyphenated-lowercase UUID string (the server-canonical file id).
+         */fileId: String, 
+        /**
+         * The `name_encrypted` JSON envelope.
+         */nameEncrypted: String) {
+        self.fileId = fileId
+        self.nameEncrypted = nameEncrypted
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension BatchNameItem: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeBatchNameItem: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> BatchNameItem {
+        return
+            try BatchNameItem(
+                fileId: FfiConverterString.read(from: &buf), 
+                nameEncrypted: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: BatchNameItem, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.fileId, into: &buf)
+        FfiConverterString.write(value.nameEncrypted, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeBatchNameItem_lift(_ buf: RustBuffer) throws -> BatchNameItem {
+    return try FfiConverterTypeBatchNameItem.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeBatchNameItem_lower(_ value: BatchNameItem) -> RustBuffer {
+    return FfiConverterTypeBatchNameItem.lower(value)
+}
+
+
+/**
+ * One result of the batch `decrypt_names` (task 0806). On success `name` is set
+ * (`mime_type` optional) and `error` is None; on failure `error` is set and the
+ * others are None. One failed item never fails the whole batch.
+ */
+public struct BatchNameResult: Equatable, Hashable {
+    public var name: String?
+    public var mimeType: String?
+    public var error: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(name: String?, mimeType: String?, error: String?) {
+        self.name = name
+        self.mimeType = mimeType
+        self.error = error
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension BatchNameResult: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeBatchNameResult: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> BatchNameResult {
+        return
+            try BatchNameResult(
+                name: FfiConverterOptionString.read(from: &buf), 
+                mimeType: FfiConverterOptionString.read(from: &buf), 
+                error: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: BatchNameResult, into buf: inout [UInt8]) {
+        FfiConverterOptionString.write(value.name, into: &buf)
+        FfiConverterOptionString.write(value.mimeType, into: &buf)
+        FfiConverterOptionString.write(value.error, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeBatchNameResult_lift(_ buf: RustBuffer) throws -> BatchNameResult {
+    return try FfiConverterTypeBatchNameResult.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeBatchNameResult_lower(_ value: BatchNameResult) -> RustBuffer {
+    return FfiConverterTypeBatchNameResult.lower(value)
 }
 
 
@@ -3105,6 +3540,68 @@ public func FfiConverterTypeEncryptedMetadataParts_lower(_ value: EncryptedMetad
 
 
 /**
+ * An encrypted shard page: opaque ciphertext `blob` plus its (non-secret)
+ * `bucket`/`page` coordinates. `blob` is `nonce || ciphertext || tag`.
+ */
+public struct EncryptedShardDto: Equatable, Hashable {
+    public var bucket: UInt32
+    public var page: UInt32
+    public var blob: Data
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(bucket: UInt32, page: UInt32, blob: Data) {
+        self.bucket = bucket
+        self.page = page
+        self.blob = blob
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension EncryptedShardDto: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeEncryptedShardDto: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> EncryptedShardDto {
+        return
+            try EncryptedShardDto(
+                bucket: FfiConverterUInt32.read(from: &buf), 
+                page: FfiConverterUInt32.read(from: &buf), 
+                blob: FfiConverterData.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: EncryptedShardDto, into buf: inout [UInt8]) {
+        FfiConverterUInt32.write(value.bucket, into: &buf)
+        FfiConverterUInt32.write(value.page, into: &buf)
+        FfiConverterData.write(value.blob, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeEncryptedShardDto_lift(_ buf: RustBuffer) throws -> EncryptedShardDto {
+    return try FfiConverterTypeEncryptedShardDto.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeEncryptedShardDto_lower(_ value: EncryptedShardDto) -> RustBuffer {
+    return FfiConverterTypeEncryptedShardDto.lower(value)
+}
+
+
+/**
  * Master key bytes returned from `derive_master_key`.
  */
 public struct MasterKeyResult: Equatable, Hashable {
@@ -3512,6 +4009,242 @@ public func FfiConverterTypeSealedRequestUpload_lift(_ buf: RustBuffer) throws -
 #endif
 public func FfiConverterTypeSealedRequestUpload_lower(_ value: SealedRequestUpload) -> RustBuffer {
     return FfiConverterTypeSealedRequestUpload.lower(value)
+}
+
+
+/**
+ * One file's (id, name) pair for [`SearchIndexHandle::build`].
+ */
+public struct SearchFileEntry: Equatable, Hashable {
+    public var fileId: String
+    public var name: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(fileId: String, name: String) {
+        self.fileId = fileId
+        self.name = name
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension SearchFileEntry: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeSearchFileEntry: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SearchFileEntry {
+        return
+            try SearchFileEntry(
+                fileId: FfiConverterString.read(from: &buf), 
+                name: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: SearchFileEntry, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.fileId, into: &buf)
+        FfiConverterString.write(value.name, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSearchFileEntry_lift(_ buf: RustBuffer) throws -> SearchFileEntry {
+    return try FfiConverterTypeSearchFileEntry.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSearchFileEntry_lower(_ value: SearchFileEntry) -> RustBuffer {
+    return FfiConverterTypeSearchFileEntry.lower(value)
+}
+
+
+/**
+ * A shard coordinate — a target in a [`SyncPlanDto`].
+ */
+public struct ShardCoordDto: Equatable, Hashable {
+    public var bucket: UInt32
+    public var page: UInt32
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(bucket: UInt32, page: UInt32) {
+        self.bucket = bucket
+        self.page = page
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension ShardCoordDto: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeShardCoordDto: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ShardCoordDto {
+        return
+            try ShardCoordDto(
+                bucket: FfiConverterUInt32.read(from: &buf), 
+                page: FfiConverterUInt32.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: ShardCoordDto, into buf: inout [UInt8]) {
+        FfiConverterUInt32.write(value.bucket, into: &buf)
+        FfiConverterUInt32.write(value.page, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeShardCoordDto_lift(_ buf: RustBuffer) throws -> ShardCoordDto {
+    return try FfiConverterTypeShardCoordDto.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeShardCoordDto_lower(_ value: ShardCoordDto) -> RustBuffer {
+    return FfiConverterTypeShardCoordDto.lower(value)
+}
+
+
+/**
+ * A shard reference (coordinate + last-known version) for [`search_index_sync_plan`].
+ */
+public struct ShardRefDto: Equatable, Hashable {
+    public var bucket: UInt32
+    public var page: UInt32
+    public var version: Int64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(bucket: UInt32, page: UInt32, version: Int64) {
+        self.bucket = bucket
+        self.page = page
+        self.version = version
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension ShardRefDto: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeShardRefDto: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ShardRefDto {
+        return
+            try ShardRefDto(
+                bucket: FfiConverterUInt32.read(from: &buf), 
+                page: FfiConverterUInt32.read(from: &buf), 
+                version: FfiConverterInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: ShardRefDto, into buf: inout [UInt8]) {
+        FfiConverterUInt32.write(value.bucket, into: &buf)
+        FfiConverterUInt32.write(value.page, into: &buf)
+        FfiConverterInt64.write(value.version, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeShardRefDto_lift(_ buf: RustBuffer) throws -> ShardRefDto {
+    return try FfiConverterTypeShardRefDto.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeShardRefDto_lower(_ value: ShardRefDto) -> RustBuffer {
+    return FfiConverterTypeShardRefDto.lower(value)
+}
+
+
+/**
+ * The shard sync plan: coordinates to PUT / GET / DELETE on the server.
+ */
+public struct SyncPlanDto: Equatable, Hashable {
+    public var toPut: [ShardCoordDto]
+    public var toGet: [ShardCoordDto]
+    public var toDelete: [ShardCoordDto]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(toPut: [ShardCoordDto], toGet: [ShardCoordDto], toDelete: [ShardCoordDto]) {
+        self.toPut = toPut
+        self.toGet = toGet
+        self.toDelete = toDelete
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension SyncPlanDto: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeSyncPlanDto: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SyncPlanDto {
+        return
+            try SyncPlanDto(
+                toPut: FfiConverterSequenceTypeShardCoordDto.read(from: &buf), 
+                toGet: FfiConverterSequenceTypeShardCoordDto.read(from: &buf), 
+                toDelete: FfiConverterSequenceTypeShardCoordDto.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: SyncPlanDto, into buf: inout [UInt8]) {
+        FfiConverterSequenceTypeShardCoordDto.write(value.toPut, into: &buf)
+        FfiConverterSequenceTypeShardCoordDto.write(value.toGet, into: &buf)
+        FfiConverterSequenceTypeShardCoordDto.write(value.toDelete, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSyncPlanDto_lift(_ buf: RustBuffer) throws -> SyncPlanDto {
+    return try FfiConverterTypeSyncPlanDto.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSyncPlanDto_lower(_ value: SyncPlanDto) -> RustBuffer {
+    return FfiConverterTypeSyncPlanDto.lower(value)
 }
 
 
@@ -4732,6 +5465,31 @@ fileprivate struct FfiConverterOptionCallbackInterfaceUploadProgressCallback: Ff
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceUInt32: FfiConverterRustBuffer {
+    typealias SwiftType = [UInt32]
+
+    public static func write(_ value: [UInt32], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterUInt32.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [UInt32] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [UInt32]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterUInt32.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceString: FfiConverterRustBuffer {
     typealias SwiftType = [String]
 
@@ -4774,6 +5532,56 @@ fileprivate struct FfiConverterSequenceTypeArchiveEntryDto: FfiConverterRustBuff
         seq.reserveCapacity(Int(len))
         for _ in 0 ..< len {
             seq.append(try FfiConverterTypeArchiveEntryDto.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeBatchNameItem: FfiConverterRustBuffer {
+    typealias SwiftType = [BatchNameItem]
+
+    public static func write(_ value: [BatchNameItem], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeBatchNameItem.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [BatchNameItem] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [BatchNameItem]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeBatchNameItem.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeBatchNameResult: FfiConverterRustBuffer {
+    typealias SwiftType = [BatchNameResult]
+
+    public static func write(_ value: [BatchNameResult], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeBatchNameResult.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [BatchNameResult] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [BatchNameResult]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeBatchNameResult.read(from: &buf))
         }
         return seq
     }
@@ -4907,6 +5715,31 @@ fileprivate struct FfiConverterSequenceTypeEncryptedChunkInfo: FfiConverterRustB
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypeEncryptedShardDto: FfiConverterRustBuffer {
+    typealias SwiftType = [EncryptedShardDto]
+
+    public static func write(_ value: [EncryptedShardDto], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeEncryptedShardDto.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [EncryptedShardDto] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [EncryptedShardDto]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeEncryptedShardDto.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeObservedNodeDto: FfiConverterRustBuffer {
     typealias SwiftType = [ObservedNodeDto]
 
@@ -4924,6 +5757,81 @@ fileprivate struct FfiConverterSequenceTypeObservedNodeDto: FfiConverterRustBuff
         seq.reserveCapacity(Int(len))
         for _ in 0 ..< len {
             seq.append(try FfiConverterTypeObservedNodeDto.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeSearchFileEntry: FfiConverterRustBuffer {
+    typealias SwiftType = [SearchFileEntry]
+
+    public static func write(_ value: [SearchFileEntry], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeSearchFileEntry.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [SearchFileEntry] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [SearchFileEntry]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeSearchFileEntry.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeShardCoordDto: FfiConverterRustBuffer {
+    typealias SwiftType = [ShardCoordDto]
+
+    public static func write(_ value: [ShardCoordDto], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeShardCoordDto.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [ShardCoordDto] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [ShardCoordDto]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeShardCoordDto.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeShardRefDto: FfiConverterRustBuffer {
+    typealias SwiftType = [ShardRefDto]
+
+    public static func write(_ value: [ShardRefDto], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeShardRefDto.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [ShardRefDto] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [ShardRefDto]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeShardRefDto.read(from: &buf))
         }
         return seq
     }
@@ -5279,6 +6187,18 @@ public func generateRecoveryPhrase()throws  -> RecoveryPhraseResult  {
 })
 }
 /**
+ * Generate a canonical share token (task 0708): 20 bytes of OS randomness as
+ * URL-safe-no-pad base64 (27 chars). Mobile mints this for A1 owner-recoverable
+ * shares so the client-supplied `token` matches the server's format exactly
+ * (single canonical impl shared with web/WASM via `beebeeb-core`).
+ */
+public func generateShareToken() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+    uniffi_beebeeb_uniffi_fn_func_generate_share_token($0
+    )
+})
+}
+/**
  * Guess the MIME type from a filename extension.
  * Returns `None` for unknown extensions.
  */
@@ -5525,6 +6445,21 @@ public func sealToRequest(rPub: Data, fileId: Data, contentKey: Data)throws  -> 
 })
 }
 /**
+ * Compute which shards to PUT/GET/DELETE to converge the client's `local` set
+ * with the server `remote` manifest (last-writer-wins). `local_is_authoritative`
+ * = true treats a server-only coordinate as a stale shard to DELETE (use after a
+ * full local rebuild); false treats it as a shard to GET.
+ */
+public func searchIndexSyncPlan(local: [ShardRefDto], remote: [ShardRefDto], localIsAuthoritative: Bool) -> SyncPlanDto  {
+    return try!  FfiConverterTypeSyncPlanDto_lift(try! rustCall() {
+    uniffi_beebeeb_uniffi_fn_func_search_index_sync_plan(
+        FfiConverterSequenceTypeShardRefDto.lower(local),
+        FfiConverterSequenceTypeShardRefDto.lower(remote),
+        FfiConverterBool.lower(localIsAuthoritative),$0
+    )
+})
+}
+/**
  * Serialize a nonce + ciphertext pair into the canonical JSON metadata format.
  *
  * Output: `{"nonce":"<base64>","ciphertext":"<base64>"}`.
@@ -5711,6 +6646,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_beebeeb_uniffi_checksum_func_generate_recovery_phrase() != 56821) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_beebeeb_uniffi_checksum_func_generate_share_token() != 31239) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_beebeeb_uniffi_checksum_func_guess_mime_type() != 41583) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -5772,6 +6710,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_beebeeb_uniffi_checksum_func_seal_to_request() != 8770) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_func_search_index_sync_plan() != 19508) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_beebeeb_uniffi_checksum_func_serialize_encrypted_metadata() != 54488) {
@@ -5876,6 +6817,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_decrypt_name_with_mime() != 23459) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_decrypt_names() != 3029) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_derive_file_key() != 1679) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -5889,6 +6833,27 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_export_for_keychain() != 50366) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_method_searchindexhandle_encrypt_buckets() != 883) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_method_searchindexhandle_encrypt_shards() != 20407) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_method_searchindexhandle_file_count() != 50201) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_method_searchindexhandle_num_shards() != 22759) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_method_searchindexhandle_query() != 50316) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_method_searchindexhandle_remove() != 43141) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_method_searchindexhandle_upsert() != 22759) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_beebeeb_uniffi_checksum_constructor_chunkdecryptorhandle_for_push() != 48588) {
@@ -5913,6 +6878,15 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_beebeeb_uniffi_checksum_constructor_masterkeyhandle_from_recovery_phrase() != 63639) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_constructor_searchindexhandle_build() != 16971) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_constructor_searchindexhandle_from_encrypted_shards() != 32486) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_constructor_searchindexhandle_new() != 39475) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_beebeeb_uniffi_checksum_method_downloadprogresscallback_on_chunk_decrypted() != 37523) {
