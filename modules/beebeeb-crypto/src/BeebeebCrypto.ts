@@ -769,12 +769,43 @@ export interface FileProviderCacheEntry {
 /**
  * Write pre-decrypted file entries to the shared App Group SQLite cache.
  * Returns the number of rows written. iOS only; no-op on Android.
+ *
+ * `prune` controls whether rows no longer present are deleted. Pass `true`
+ * ONLY when `entries` is the COMPLETE child set for every parent it touches
+ * (a full folder listing) — the native side then deletes any cached row under
+ * those parents that is not in the incoming set, mirroring the File Provider
+ * extension's CacheManager.replaceChildren(parent:with:). Pass `false` (the
+ * default) for a partial push (e.g. a single-folder decrypted-name refresh),
+ * where deleting "missing" siblings would be wrong.
+ *
+ * `pruneParents` (only meaningful with `prune: true`) names the parent
+ * identifiers whose COMPLETE child set is represented by `entries` — including
+ * parents that became EMPTY (every child trashed/deleted remotely), which would
+ * otherwise contribute no rows to `entries` and so never get pruned/signaled.
+ * Each id is a parent string; use `null` for the root container. The native
+ * side seeds these parents with an empty keep-set before the entry loop, so an
+ * empty push still deletes every surviving row under them and re-enumerates.
  */
 export async function syncFileProviderCache(
   entries: FileProviderCacheEntry[],
+  prune = false,
+  pruneParents: (string | null)[] | null = null,
 ): Promise<number> {
   if (typeof BeebeebCryptoModule.syncFileProviderCache !== 'function') return 0
-  return BeebeebCryptoModule.syncFileProviderCache(entries)
+  return BeebeebCryptoModule.syncFileProviderCache(entries, prune, pruneParents)
+}
+
+/**
+ * Delete specific entries from the shared App Group SQLite cache and signal the
+ * File Provider to re-enumerate their parent folders. Used for local
+ * trash/delete write-through so a file removed from inside the app disappears
+ * from the iOS Files app immediately. Returns the number of rows removed.
+ * iOS only; no-op (returns 0) on Android or builds without the native bridge.
+ */
+export async function removeFileProviderEntries(ids: string[]): Promise<number> {
+  if (ids.length === 0) return 0
+  if (typeof BeebeebCryptoModule.removeFileProviderEntries !== 'function') return 0
+  return BeebeebCryptoModule.removeFileProviderEntries(ids)
 }
 
 // ─── Rust upload bridge ────────────────────────────────────────────────────

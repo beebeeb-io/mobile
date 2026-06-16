@@ -52,7 +52,7 @@ import { useCrypto } from '../lib/crypto-context';
 import { decryptMetadata as decryptMetadataWithKey } from '../../modules/beebeeb-crypto';
 import { isRequestUpload } from '../lib/file-request-crypto';
 import { encryptedMetadataPayloadToBytes, encryptedMetadataToJson, fileMetadataPlaintext } from '../lib/encrypted-metadata';
-import { syncDecryptedEntriesToFileProvider } from '../lib/file-provider-mount';
+import { syncDecryptedEntriesToFileProvider, removeFromFileProviderCache } from '../lib/file-provider-mount';
 import { useAuth } from '../lib/auth';
 import { encryptedUpload, generateFileId } from '../lib/encrypted-upload';
 import { useSync } from '../lib/sync-context';
@@ -2227,6 +2227,9 @@ export default function FilesScreen() {
               const trashedIds = new Set([...result.trashed, ...result.already_trashed]);
               setFiles((prev) => prev.filter((f) => !trashedIds.has(f.id)));
               for (const id of trashedIds) unindexFile(id);
+              // Drop the trashed rows from the iOS File Provider cache so they
+              // disappear from Files.app immediately (not just from this view).
+              void removeFromFileProviderCache([...trashedIds]);
               Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
               exitSelectMode();
               if (result.missing.length > 0 || trashedIds.size < ids.length) {
@@ -2609,6 +2612,7 @@ export default function FilesScreen() {
                 await deleteFile(item.id);
                 setFiles((prev) => prev.filter((f) => f.id !== item.id));
                 unindexFile(item.id);
+                void removeFromFileProviderCache([item.id]);
                 showToast({ type: 'info', message: `"${name}" moved to Trash` });
               } catch (err) {
                 Alert.alert('Error', friendlyError(err));
@@ -2633,6 +2637,7 @@ export default function FilesScreen() {
                 await deleteFile(item.id);
                 setFiles((prev) => prev.filter((f) => f.id !== item.id));
                 unindexFile(item.id);
+                void removeFromFileProviderCache([item.id]);
                 showToast({ type: 'info', message: `"${name}" moved to Trash` });
               } catch (err) {
                 Alert.alert('Error', friendlyError(err));
@@ -2990,6 +2995,7 @@ export default function FilesScreen() {
               await deleteFile(item.id);
               setFiles((prev) => prev.filter((f) => f.id !== item.id));
               unindexFile(item.id);
+              void removeFromFileProviderCache([item.id]);
             } catch (err) {
               Alert.alert('Error', friendlyError(err));
             }

@@ -1630,7 +1630,15 @@ public class BeebeebCryptoModule: Module {
     // main app decrypts names on the JS side and writes them to the shared
     // SQLite cache here.
 
-    AsyncFunction("syncFileProviderCache") { (entries: [[String: Any]]) -> Int in
+    // `prune` opts the writer into deleting rows that are no longer present in
+    // the incoming child set. The caller passes `prune == true` ONLY when
+    // `entries` contains the COMPLETE child set for every parent it touches
+    // (a full folder listing). A partial push (e.g. a single decrypted-name
+    // refresh) MUST pass `prune == false`, otherwise siblings the caller did
+    // not include would be wrongly deleted. When `prune` is omitted the
+    // default is `false`, preserving the legacy upsert-only behaviour.
+    AsyncFunction("syncFileProviderCache") { (entries: [[String: Any]], prune: Bool?, pruneParents: [Any]?) -> Int in
+      let shouldPrune = prune ?? false
       guard let containerUrl = FileManager.default.containerURL(
         forSecurityApplicationGroupIdentifier: appGroupIdentifier
       ) else {
@@ -1693,6 +1701,36 @@ public class BeebeebCryptoModule: Module {
       let now = Int64(Date().timeIntervalSince1970 * 1000)
       let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
       var touchedParentIdentifiers = Set<String>()
+      // Per-parent COMPLETE child-id sets, keyed by the SQLite parent_id value
+      // (the real parent string, or nil → the root sentinel below). Only used
+      // when `shouldPrune` is true. Mirrors CacheManager._deleteChildren's
+      // (parent, keepingIds) contract: we keep exactly the ids the caller sent
+      // for that parent and delete every other row under it.
+      let rootParentSentinel = "\u{0}__bb_root__"
+      var childIdsByParent: [String: Set<String>] = [:]
+
+      // Seed prune targets that may contribute NO entries. The JS write-through
+      // passes `pruneParents` for every affected parent — including folders that
+      // became EMPTY (last live child trashed/deleted remotely) and remotely
+      // trashed FOLDERs whose descendant rows must be cleared. Those parents
+      // would never appear in the per-entry derivation below (no rows to upsert),
+      // so without seeding their prune DELETE never runs and Files.app keeps the
+      // vanished rows. Seeding an empty keep-set here means the prune pass deletes
+      // EVERY surviving row under them and re-enumerates. A `nil`/NSNull element
+      // is the root container (matching the per-entry null-parent handling). Only
+      // honoured when pruning — a partial push never names pruneParents.
+      if shouldPrune, let pruneParents {
+        for raw in pruneParents {
+          if let parentId = raw as? String {
+            if childIdsByParent[parentId] == nil { childIdsByParent[parentId] = [] }
+            touchedParentIdentifiers.insert(parentId)
+          } else {
+            // nil / NSNull → root container.
+            if childIdsByParent[rootParentSentinel] == nil { childIdsByParent[rootParentSentinel] = [] }
+            touchedParentIdentifiers.insert(NSFileProviderItemIdentifier.rootContainer.rawValue)
+          }
+        }
+      }
 
       for entry in entries {
         guard let id = entry["id"] as? String else { continue }
@@ -1704,9 +1742,11 @@ public class BeebeebCryptoModule: Module {
         if let parentId = entry["parent_id"] as? String {
           sqlite3_bind_text(stmt, 2, (parentId as NSString).utf8String, -1, transient)
           touchedParentIdentifiers.insert(parentId)
+          childIdsByParent[parentId, default: []].insert(id)
         } else { sqlite3_bind_null(stmt, 2) }
         if entry["parent_id"] == nil || entry["parent_id"] is NSNull {
           touchedParentIdentifiers.insert(NSFileProviderItemIdentifier.rootContainer.rawValue)
+          childIdsByParent[rootParentSentinel, default: []].insert(id)
         }
         if let nameEnc = entry["name_encrypted"] as? String {
           sqlite3_bind_text(stmt, 3, (nameEnc as NSString).utf8String, -1, transient)
@@ -1729,10 +1769,53 @@ public class BeebeebCryptoModule: Module {
 
         if sqlite3_step(stmt) == SQLITE_DONE { count += 1 }
       }
+
+      // Prune stale rows. For each parent the caller supplied a COMPLETE child
+      // set for, delete file_cache rows under that parent whose id is NOT in
+      // the incoming set — mirroring CacheManager._deleteChildren(parent:
+      // keepingIds:). This is what makes a remote trash/delete disappear from
+      // Files.app without the user re-opening the folder. Guarded by
+      // `shouldPrune` so partial single-folder pushes never delete siblings.
+      if shouldPrune {
+        for (parentKey, keepIds) in childIdsByParent {
+          let isRoot = parentKey == rootParentSentinel
+          var deleteSql: String
+          if isRoot {
+            deleteSql = "DELETE FROM file_cache WHERE parent_id IS NULL"
+          } else {
+            deleteSql = "DELETE FROM file_cache WHERE parent_id = ?"
+          }
+          if !keepIds.isEmpty {
+            let placeholders = Array(repeating: "?", count: keepIds.count).joined(separator: ",")
+            deleteSql += " AND id NOT IN (\(placeholders))"
+          }
+
+          var delStmt: OpaquePointer?
+          guard sqlite3_prepare_v2(db, deleteSql, -1, &delStmt, nil) == SQLITE_OK else { continue }
+          defer { sqlite3_finalize(delStmt) }
+
+          var index: Int32 = 1
+          if !isRoot {
+            sqlite3_bind_text(delStmt, index, (parentKey as NSString).utf8String, -1, transient)
+            index += 1
+          }
+          // Sorted for deterministic binding order (matches CacheManager).
+          for keepId in keepIds.sorted() {
+            sqlite3_bind_text(delStmt, index, (keepId as NSString).utf8String, -1, transient)
+            index += 1
+          }
+          sqlite3_step(delStmt)
+        }
+      }
+
       sqlite3_exec(db, "COMMIT", nil, nil, nil)
 
       // Signal the File Provider to re-enumerate so it picks up fresh names.
-      if #available(iOS 16.0, *), count > 0 {
+      // Fire whenever a row was upserted (count > 0) OR a prune pass ran over a
+      // touched parent — a folder that was emptied by pruning has count == 0 but
+      // still needs Files.app to re-enumerate and drop the vanished rows.
+      let didPrune = shouldPrune && !touchedParentIdentifiers.isEmpty
+      if #available(iOS 16.0, *), count > 0 || didPrune {
         let domain = beebeebFileProviderDomain()
         for rawIdentifier in touchedParentIdentifiers {
           let itemIdentifier: NSFileProviderItemIdentifier = rawIdentifier == NSFileProviderItemIdentifier.rootContainer.rawValue
@@ -1744,6 +1827,77 @@ public class BeebeebCryptoModule: Module {
       }
 
       return count
+    }
+
+    // Remove specific entries from the shared File Provider cache (local
+    // trash/delete write-through). Resolves each id's parent_id first so we can
+    // re-enumerate the affected folders, then deletes the rows and signals the
+    // File Provider — so a file trashed/deleted from inside the app disappears
+    // from Files.app immediately instead of lingering until the next listing.
+    AsyncFunction("removeFileProviderEntries") { (ids: [String]) -> Int in
+      guard !ids.isEmpty else { return 0 }
+      guard let containerUrl = FileManager.default.containerURL(
+        forSecurityApplicationGroupIdentifier: appGroupIdentifier
+      ) else {
+        return 0
+      }
+      let dbPath = containerUrl.appendingPathComponent("file-provider-cache.sqlite").path
+      var db: OpaquePointer?
+      guard sqlite3_open_v2(
+        dbPath,
+        &db,
+        SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX,
+        nil
+      ) == SQLITE_OK, let db else {
+        sqlite3_close(db)
+        return 0
+      }
+      defer { sqlite3_close(db) }
+
+      let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+      // Track the parents whose listing changed so we can signal them. A NULL
+      // parent_id (root) maps to the rootContainer sentinel, matching the
+      // upsert path above.
+      var touchedParentIdentifiers = Set<String>()
+
+      sqlite3_exec(db, "BEGIN", nil, nil, nil)
+      var removed = 0
+      for id in ids {
+        // Look up the parent before deleting so we know which folder to signal.
+        var selStmt: OpaquePointer?
+        if sqlite3_prepare_v2(db, "SELECT parent_id FROM file_cache WHERE id = ?", -1, &selStmt, nil) == SQLITE_OK {
+          sqlite3_bind_text(selStmt, 1, (id as NSString).utf8String, -1, transient)
+          if sqlite3_step(selStmt) == SQLITE_ROW {
+            if let cstr = sqlite3_column_text(selStmt, 0) {
+              touchedParentIdentifiers.insert(String(cString: cstr))
+            } else {
+              touchedParentIdentifiers.insert(NSFileProviderItemIdentifier.rootContainer.rawValue)
+            }
+          }
+        }
+        sqlite3_finalize(selStmt)
+
+        var delStmt: OpaquePointer?
+        if sqlite3_prepare_v2(db, "DELETE FROM file_cache WHERE id = ?", -1, &delStmt, nil) == SQLITE_OK {
+          sqlite3_bind_text(delStmt, 1, (id as NSString).utf8String, -1, transient)
+          if sqlite3_step(delStmt) == SQLITE_DONE { removed += 1 }
+        }
+        sqlite3_finalize(delStmt)
+      }
+      sqlite3_exec(db, "COMMIT", nil, nil, nil)
+
+      if #available(iOS 16.0, *), removed > 0 {
+        let domain = beebeebFileProviderDomain()
+        for rawIdentifier in touchedParentIdentifiers {
+          let itemIdentifier: NSFileProviderItemIdentifier = rawIdentifier == NSFileProviderItemIdentifier.rootContainer.rawValue
+            ? .rootContainer
+            : NSFileProviderItemIdentifier(rawIdentifier)
+          NSFileProviderManager(for: domain)?.signalEnumerator(for: itemIdentifier) { _ in }
+        }
+        NSFileProviderManager(for: domain)?.signalEnumerator(for: .workingSet) { _ in }
+      }
+
+      return removed
     }
 
     // ── Backup management ──────────────────────────────────────────────

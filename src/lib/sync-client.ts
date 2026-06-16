@@ -26,7 +26,9 @@ import {
   getStreamToken,
   getToken,
 } from './api';
-import type { SyncOp, SyncNode } from './api';
+import type { SyncOp, SyncNode, FileEntry } from './api';
+import { loadCachedFileIndex, saveCachedFileIndex } from './file-index-cache';
+import { syncDecryptedEntriesToFileProvider } from './file-provider-mount';
 
 const LAST_SEQ_KEY = 'bb_sync_last_seq';
 const PENDING_OPS_KEY = 'bb_sync_pending_ops';
@@ -34,6 +36,11 @@ const DEVICE_ID_KEY = 'bb_sync_device_id';
 
 const RECONNECT_DELAY_MS = 1500;
 const RECONNECT_MAX_DELAY_MS = 30_000;
+
+// Debounce window for persisting the live tree to the on-disk index cache (and
+// the iOS File Provider cache) after remote ops. A burst of ops (e.g. catch-up
+// after reconnect, or a multi-file web trash) collapses into one disk write.
+const CACHE_PERSIST_DEBOUNCE_MS = 800;
 
 export type ConnectionStatus =
   | 'idle'
@@ -192,6 +199,11 @@ export class SyncClient {
   private listeners = new Set<Listener>();
   private started = false;
   private destroyed = false;
+  // Write-through persistence (debounced). `cachePersistTimer` coalesces a burst
+  // of remote ops; `dirtyParents` accumulates the parent folders whose listing
+  // changed so we can signal exactly those File Provider enumerators.
+  private cachePersistTimer: ReturnType<typeof setTimeout> | null = null;
+  private dirtyParents = new Set<string | null>();
 
   getStatus(): ConnectionStatus {
     return this.status;
@@ -303,6 +315,13 @@ export class SyncClient {
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
+    }
+    if (this.cachePersistTimer) {
+      clearTimeout(this.cachePersistTimer);
+      this.cachePersistTimer = null;
+      // Flush any pending write-through so a stop right after a remote trash
+      // doesn't leave the on-disk index stale for the next cold launch.
+      if (this.dirtyParents.size > 0) void this.persistCacheNow();
     }
     if (this.eventSource) {
       this.eventSource.close();
@@ -431,10 +450,194 @@ export class SyncClient {
       }
     }
 
+    // Capture the affected parents BEFORE applying — a delete removes the node
+    // and a move rewrites its parent_id, so the pre-op parent would otherwise be
+    // lost. We persist the live tree (and prune the File Provider cache) for
+    // these folders after the op lands.
+    const affectedParents = this.affectedParentsForOp(op.op_type, op.payload);
+
     this.applyOpToTree(op.op_type, op.payload);
     this.lastSeq = op.seq_id;
     await saveLastSeq(this.lastSeq);
     this.emit({ type: 'op', op });
+
+    if (affectedParents) {
+      for (const parent of affectedParents) this.dirtyParents.add(parent);
+      this.scheduleCachePersist();
+    }
+  }
+
+  /**
+   * Parents whose child listing this op changes, or `null` when the op does not
+   * affect any folder listing (e.g. share notifications, file_update which only
+   * mutates metadata in place). Returns the OLD parent for trash/delete and BOTH
+   * old + new parents for a move so the source folder is reconciled too.
+   */
+  private affectedParentsForOp(
+    opType: string,
+    payload: Record<string, unknown>,
+  ): Set<string | null> | null {
+    const id = payload.id as string | undefined;
+    switch (opType) {
+      case 'file_create':
+      case 'folder_create': {
+        const parent = (payload.parent_id as string | null | undefined) ?? null;
+        return new Set<string | null>([parent]);
+      }
+      case 'file_trash':
+      case 'file_restore':
+      case 'file_delete': {
+        if (!id) return null;
+        const existing = this.tree.get(id);
+        return new Set<string | null>([existing?.parent_id ?? null]);
+      }
+      case 'file_move':
+      case 'folder_move': {
+        const parents = new Set<string | null>();
+        if (id) {
+          const existing = this.tree.get(id);
+          parents.add(existing?.parent_id ?? null);
+        }
+        parents.add((payload.new_parent_id as string | null | undefined) ?? null);
+        return parents;
+      }
+      case 'file_rename':
+      case 'folder_rename': {
+        // Rename changes the displayed name but not which folder it lives in;
+        // still reconcile the parent so the File Provider picks up the new name.
+        if (!id) return null;
+        const existing = this.tree.get(id);
+        return new Set<string | null>([existing?.parent_id ?? null]);
+      }
+      default:
+        // file_update (metadata-only), share_create/revoke, unknown — no listing
+        // change that the on-disk index / File Provider cache needs to mirror.
+        return null;
+    }
+  }
+
+  /**
+   * Debounced write-through. Persists the live (non-trashed) tree to the on-disk
+   * index cache so a cold launch never resurrects a remotely-trashed file, and
+   * on iOS re-syncs the affected folders into the File Provider SQLite cache
+   * (which now prunes vanished rows). Best-effort — failures are swallowed.
+   */
+  private scheduleCachePersist(): void {
+    if (this.destroyed) return;
+    if (this.cachePersistTimer) return;
+    this.cachePersistTimer = setTimeout(() => {
+      this.cachePersistTimer = null;
+      void this.persistCacheNow();
+    }, CACHE_PERSIST_DEBOUNCE_MS);
+  }
+
+  private async persistCacheNow(): Promise<void> {
+    const parents = this.dirtyParents;
+    this.dirtyParents = new Set<string | null>();
+    if (parents.size === 0) return;
+
+    // Trashed-ancestor closure: the set of node ids that are themselves trashed
+    // OR live under a folder that is trashed. The server has no recursive trash
+    // — trashing a folder leaves its descendants with is_trashed=false — so a
+    // plain `!node.is_trashed` filter would keep those descendants "live" and
+    // resurrect them on a cold launch (index cache) or strand them in Files.app
+    // (File Provider rows under an already-removed folder). Walking ancestors
+    // once collapses the whole subtree. `trashedFolderIds` are the roots of
+    // those collapsed subtrees, whose descendant rows we must explicitly prune.
+    const { closure, trashedFolderIds } = this.computeTrashedClosure();
+
+    // Live view = nodes not in the trashed-ancestor closure.
+    const liveNodes: SyncNode[] = [];
+    for (const node of this.tree.values()) {
+      if (!closure.has(node.id)) liveNodes.push(node);
+    }
+
+    // Persist the on-disk index cache (FileEntry-shaped). Reuse the existing
+    // cache hash when present so the next getFileIndex() conditional fetch still
+    // short-circuits; fall back to a sentinel that forces a refetch otherwise.
+    try {
+      const existing = await loadCachedFileIndex().catch(() => null);
+      const hash = existing?.hash ?? 'live-writethrough';
+      const files = liveNodes.map(syncNodeToFileEntry);
+      await saveCachedFileIndex(hash, files);
+    } catch {
+      // disk write best-effort; the next full fetch reconciles
+    }
+
+    // iOS File Provider write-through. Push each affected folder's COMPLETE
+    // non-trashed child set with prune enabled so vanished rows are deleted and
+    // Files.app re-enumerates. Names already cached in SQLite are preserved
+    // (the upsert COALESCEs name_decrypted), so we pass an empty name map.
+    if (Platform.OS !== 'ios') return;
+
+    // Build the complete entry set for every dirty parent (using the live view,
+    // so trashed-folder descendants are excluded), plus the explicit pruneParents
+    // list. pruneParents must include:
+    //   - every dirty parent (so an EMPTY folder — last child trashed remotely —
+    //     still seeds an empty keep-set in Swift and gets its surviving row
+    //     pruned + signaled, the BLOCKER fix), and
+    //   - every trashed FOLDER id (so descendant rows whose parent_id == that
+    //     folder are cleared even though the folder's own parent was the only
+    //     thing affectedParentsForOp reported — the HIGH fix).
+    const entries = liveNodes
+      .filter((n) => parents.has(n.parent_id ?? null))
+      .map(syncNodeToFileEntry);
+    const pruneParents: (string | null)[] = [
+      ...parents,
+      ...trashedFolderIds,
+    ];
+    try {
+      await syncDecryptedEntriesToFileProvider(entries, {}, null, {
+        prune: true,
+        pruneParents,
+      });
+    } catch {
+      // best-effort; the next folder enumeration reconciles
+    }
+  }
+
+  /**
+   * Walk the in-memory tree to find every node that is trashed or has a trashed
+   * ancestor folder. Because the server does not recursively trash, a trashed
+   * folder's children keep is_trashed=false; this closure treats the whole
+   * subtree under any trashed folder as gone. Returns the id closure plus the
+   * set of trashed folder ids (the subtree roots whose descendant rows need
+   * pruning from the persisted caches).
+   */
+  private computeTrashedClosure(): {
+    closure: Set<string>;
+    trashedFolderIds: Set<string>;
+  } {
+    const closure = new Set<string>();
+    const trashedFolderIds = new Set<string>();
+
+    // Memoized ancestor-trashed check. A node is in the closure if it is itself
+    // trashed or any ancestor folder is trashed. Cache results per id to keep
+    // the walk linear even for deep trees.
+    const memo = new Map<string, boolean>();
+    const isTrashedOrUnderTrashed = (id: string): boolean => {
+      const cached = memo.get(id);
+      if (cached !== undefined) return cached;
+      const node = this.tree.get(id);
+      if (!node) {
+        memo.set(id, false);
+        return false;
+      }
+      // Mark visiting to break any (malformed) parent cycle.
+      memo.set(id, false);
+      const result =
+        node.is_trashed ||
+        (node.parent_id != null && isTrashedOrUnderTrashed(node.parent_id));
+      memo.set(id, result);
+      return result;
+    };
+
+    for (const node of this.tree.values()) {
+      if (node.is_trashed && node.is_folder) trashedFolderIds.add(node.id);
+      if (isTrashedOrUnderTrashed(node.id)) closure.add(node.id);
+    }
+
+    return { closure, trashedFolderIds };
   }
 
   /** Mutate the in-memory tree based on op type + payload. */
@@ -620,6 +823,31 @@ export class SyncClient {
 interface SyncSnapshotLike {
   seq_id: number;
   nodes: SyncNode[];
+}
+
+/**
+ * Project a sync-tree node onto the FileEntry shape the on-disk index cache and
+ * File Provider sync expect. `chunk_count` defaults to 0 (SyncNode may omit it);
+ * the index cache's validator requires it to be a number, and a cold-launch
+ * render only needs name/size/folder fields — the real chunk_count arrives with
+ * the next full fetch.
+ */
+function syncNodeToFileEntry(node: SyncNode): FileEntry {
+  return {
+    id: node.id,
+    name_encrypted: node.name_encrypted,
+    parent_id: node.parent_id ?? null,
+    is_folder: node.is_folder,
+    size_bytes: node.size_bytes,
+    mime_type: node.mime_type ?? null,
+    chunk_count: node.chunk_count ?? 0,
+    created_at: node.created_at,
+    updated_at: node.updated_at,
+    version_number: node.version_number,
+    storage_pool_id: node.storage_pool_id ?? null,
+    has_thumbnail: node.has_thumbnail,
+    is_starred: node.is_starred,
+  };
 }
 
 function payloadToNode(

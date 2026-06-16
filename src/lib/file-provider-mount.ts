@@ -71,6 +71,7 @@ export async function syncDecryptedEntriesToFileProvider(
   files: FileEntry[],
   decryptedNames: Record<string, string>,
   parentId?: string | null,
+  options: { prune?: boolean; pruneParents?: (string | null)[] } = {},
 ): Promise<number> {
   if (Platform.OS !== 'ios') return 0;
 
@@ -86,7 +87,36 @@ export async function syncDecryptedEntriesToFileProvider(
     updated_at: f.updated_at ?? null,
   }));
 
-  return BeebeebCrypto.syncFileProviderCache(entries);
+  // `prune` is only safe when `files` is the COMPLETE listing for `parentId`
+  // (every child present). A partial push (e.g. FilesScreen's per-folder
+  // decrypted-name refresh) must leave prune off so siblings aren't deleted.
+  //
+  // `pruneParents` lets the caller name parents that became EMPTY — their
+  // complete child set is "no rows", so they contribute nothing to `entries`
+  // and would never be pruned/signaled from the per-entry derivation alone.
+  // Default to the single `parentId` (when pruning) so an emptied folder still
+  // gets its surviving rows deleted; callers that push multiple parents in one
+  // batch (e.g. the sync write-through) pass the explicit set.
+  const prune = options.prune ?? false;
+  const pruneParents = prune
+    ? options.pruneParents ?? [parentId ?? null]
+    : null;
+  return BeebeebCrypto.syncFileProviderCache(entries, prune, pruneParents);
+}
+
+/**
+ * Delete entries from the File Provider cache after a local trash/delete so the
+ * iOS Files app drops them immediately. No-op off iOS. Failures are swallowed —
+ * the cache self-heals on the next full enumeration.
+ */
+export async function removeFromFileProviderCache(ids: string[]): Promise<void> {
+  if (Platform.OS !== 'ios') return;
+  if (ids.length === 0) return;
+  try {
+    await BeebeebCrypto.removeFileProviderEntries(ids);
+  } catch {
+    // best-effort — next folder enumeration will reconcile
+  }
 }
 
 /**
@@ -147,7 +177,12 @@ export async function populateFileProviderCache(
           }
         }));
 
-        totalSynced += await syncDecryptedEntriesToFileProvider(files, names, parentId ?? null);
+        // `listAllFiles` returns the COMPLETE child set for this folder (full
+        // cursor walk), so prune is safe here — rows for children that no
+        // longer exist remotely (e.g. trashed on the web) are deleted.
+        totalSynced += await syncDecryptedEntriesToFileProvider(files, names, parentId ?? null, {
+          prune: true,
+        });
 
         for (const file of files) {
           if (file.is_folder) queue.push(file.id);

@@ -27,6 +27,7 @@ import {
 } from '../lib/api';
 import type { FileEntry } from '../lib/api';
 import { requestDeviceOwnerAuth } from '../lib/device-owner-auth';
+import { removeFromFileProviderCache } from '../lib/file-provider-mount';
 import { useCrypto } from '../lib/crypto-context';
 import { encryptedMetadataPayloadToBytes } from '../lib/encrypted-metadata';
 import type { RootStackParamList } from '../App';
@@ -292,6 +293,7 @@ export default function TrashScreen() {
               Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
               await permanentDeleteFile(item.id, confirmation_token);
               setFiles((prev) => prev.filter((f) => f.id !== item.id));
+              void removeFromFileProviderCache([item.id]);
               showToast({ type: 'info', message: `"${name}" permanently deleted` });
             } catch (err) {
               Alert.alert('Error', friendlyError(err));
@@ -333,6 +335,7 @@ export default function TrashScreen() {
               }
               const deleted = new Set(deletedIds);
               setFiles((prev) => prev.filter((file) => !deleted.has(file.id)));
+              void removeFromFileProviderCache(deletedIds);
               showToast({
                 type: 'success',
                 message: deletedIds.length === items.length
