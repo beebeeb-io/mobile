@@ -12,13 +12,13 @@ import * as Haptics from 'expo-haptics';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { radii, spacing } from '../theme';
+import { radii, shadows, spacing } from '../theme';
 import { useTheme } from '../lib/theme-context';
 import SkeletonRow from '../components/SkeletonRow';
 import { useCrypto } from '../lib/crypto-context';
 import { encryptedMetadataPayloadToBytes } from '../lib/encrypted-metadata';
 import { guessMimeType } from '../lib/media';
-import { getIncomingInvites, getSentInvites, listMyShares, listFileRequests, friendlyError } from '../lib/api';
+import { getIncomingInvites, getSentInvites, listMyShares, friendlyError } from '../lib/api';
 import type { ShareInvite, MyShareLink } from '../lib/api';
 import FileRequestsScreen from './FileRequestsScreen';
 import type { RootStackParamList } from '../App';
@@ -204,13 +204,24 @@ function ShareLinkBadge({ link }: { link: MyShareLink }) {
 // Tab type
 // ---------------------------------------------------------------------------
 
-type Tab = 'incoming' | 'sent' | 'pending' | 'links' | 'requests';
+// Tier 1 — what kind of object. Tier 2 — direction within Shares.
+type TopTab = 'shares' | 'requests';
+type ShareDir = 'with' | 'by' | 'pending';
 type InviteDirection = 'incoming' | 'sent';
 
 interface InviteListItem {
   invite: ShareInvite;
   direction: InviteDirection;
 }
+
+/**
+ * A single row in the "By me" list. Outbound shares come in two mechanisms —
+ * a targeted invite to a named person, or an open public link — merged into
+ * one reverse-chronological list and distinguished per row (not by a tab).
+ */
+type ByMeItem =
+  | { kind: 'invite'; key: string; createdAt: string; invite: ShareInvite }
+  | { kind: 'link'; key: string; createdAt: string; link: MyShareLink };
 
 // ---------------------------------------------------------------------------
 // Screen
@@ -220,20 +231,9 @@ export default function SharedScreen() {
   const { colors: c } = useTheme();
   const insets = useSafeAreaInsets();
   const navigation = useNavigation<Nav>();
-  const [activeTab, setActiveTab] = useState<Tab>('incoming');
-  // 0782 — open file-request count for the "Requests" tab badge.
-  const [requestCount, setRequestCount] = useState(0);
-  useEffect(() => {
-    let cancelled = false;
-    void listFileRequests()
-      .then(({ file_requests }) => {
-        if (!cancelled) setRequestCount(file_requests.filter((r) => !r.closed).length);
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  // Tier 1: Shares vs File Requests. Tier 2 (under Shares): direction.
+  const [topTab, setTopTab] = useState<TopTab>('shares');
+  const [shareDir, setShareDir] = useState<ShareDir>('with');
   const [isScrolled, setIsScrolled] = useState(false);
 
   // Crypto — for decrypting share link filenames
@@ -453,7 +453,6 @@ export default function SharedScreen() {
   };
 
   const renderIncomingItem = ({ item }: { item: ShareInvite }) => renderInviteRow(item, 'incoming');
-  const renderSentItem = ({ item }: { item: ShareInvite }) => renderInviteRow(item, 'sent');
   const renderPendingItem = ({ item }: { item: InviteListItem }) => renderInviteRow(item.invite, item.direction);
 
   const renderLinkItem = ({ item }: { item: MyShareLink }) => {
@@ -463,7 +462,10 @@ export default function SharedScreen() {
     if (item.download_count > 0) stats.push(`${item.download_count} download${item.download_count !== 1 ? 's' : ''}`);
     const expiry = expiryLabel(item.expires_at);
 
+    // Lead with "Public link" so a link row reads differently at a glance from
+    // an invite row ("To name@…") inside the merged "By me" list (0798).
     const metaParts = [
+      'Public link',
       formatBytes(item.file.size_bytes),
       formatDate(item.created_at),
       ...stats,
@@ -491,6 +493,12 @@ export default function SharedScreen() {
       </TouchableOpacity>
     );
   };
+
+  // "By me" = outbound invites + public links, one reverse-chronological list.
+  const renderByMeItem = ({ item }: { item: ByMeItem }) =>
+    item.kind === 'invite'
+      ? renderInviteRow(item.invite, 'sent')
+      : renderLinkItem({ item: item.link });
 
   const renderEmpty = (
     message: string,
@@ -532,43 +540,61 @@ export default function SharedScreen() {
       .filter((item) => item.status !== 'approved')
       .map((invite) => ({ invite, direction: 'sent' as const })),
   ].sort((a, b) => new Date(b.invite.created_at).getTime() - new Date(a.invite.created_at).getTime());
-  const tabs = [
-    { id: 'incoming' as const, label: 'Shared with me', count: incomingApproved.length },
-    { id: 'sent' as const, label: 'Shared by me', count: sentApproved.length },
+
+  // "By me" merges outbound invites (to a named person) and public links into
+  // one reverse-chronological list; mechanism is a per-row label, never a tab.
+  const byMeItems: ByMeItem[] = [
+    ...sentApproved.map((invite) => ({
+      kind: 'invite' as const,
+      key: `invite-${invite.id}`,
+      createdAt: invite.created_at,
+      invite,
+    })),
+    ...links.map((link) => ({
+      kind: 'link' as const,
+      key: `link-${link.id}`,
+      createdAt: link.created_at,
+      link,
+    })),
+  ].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+  // Tier 1 (object kind) carries no counts — they live on Tier 2 (direction).
+  const topTabs = [
+    { id: 'shares' as const, label: 'Shares' },
+    { id: 'requests' as const, label: 'File Requests' },
+  ];
+  const dirTabs = [
+    { id: 'with' as const, label: 'With me', count: incomingApproved.length },
+    { id: 'by' as const, label: 'By me', count: byMeItems.length },
     { id: 'pending' as const, label: 'Pending', count: pendingInvites.length },
-    { id: 'links' as const, label: 'My links', count: links.length },
-    // 0782 — File Requests surfaced as a peer tab in Shared (inbound-from-others,
-    // the conceptual sibling of "Shared with me").
-    { id: 'requests' as const, label: 'Requests', count: requestCount },
   ];
 
   // ------------------------------------------------------------------
   // Main render
   // ------------------------------------------------------------------
 
+  // Content state is driven by the active direction within Shares (only the
+  // Shares tier renders these FlatLists; File Requests owns its own state).
   const currentError =
-    activeTab === 'links' ? linksError
-    : activeTab === 'sent' ? sentError
-    : activeTab === 'pending' ? incomingError ?? sentError
+    shareDir === 'by' ? (sentError ?? linksError)
+    : shareDir === 'pending' ? (incomingError ?? sentError)
     : incomingError;
   const currentLoading =
-    activeTab === 'links' ? (linksLoading && !linksRefreshing)
-    : activeTab === 'sent' ? (sentLoading && !sentRefreshing)
-    : activeTab === 'pending'
+    shareDir === 'by'
+      ? ((sentLoading && !sentRefreshing) || (linksLoading && !linksRefreshing))
+    : shareDir === 'pending'
       ? ((incomingLoading && !incomingRefreshing) || (sentLoading && !sentRefreshing))
       : (incomingLoading && !incomingRefreshing);
   const currentRefreshing =
-    activeTab === 'links' ? linksRefreshing
-    : activeTab === 'sent' ? sentRefreshing
-    : activeTab === 'pending' ? (incomingRefreshing || sentRefreshing)
+    shareDir === 'by' ? (sentRefreshing || linksRefreshing)
+    : shareDir === 'pending' ? (incomingRefreshing || sentRefreshing)
     : incomingRefreshing;
   const onRefresh = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    if (activeTab === 'links') {
-      fetchLinks(true);
-    } else if (activeTab === 'sent') {
+    if (shareDir === 'by') {
       fetchSent(true);
-    } else if (activeTab === 'pending') {
+      fetchLinks(true);
+    } else if (shareDir === 'pending') {
       fetchIncoming(true);
       fetchSent(true);
     } else {
@@ -576,11 +602,10 @@ export default function SharedScreen() {
     }
   };
   const onRetry = () => {
-    if (activeTab === 'links') {
-      fetchLinks();
-    } else if (activeTab === 'sent') {
+    if (shareDir === 'by') {
       fetchSent();
-    } else if (activeTab === 'pending') {
+      fetchLinks();
+    } else if (shareDir === 'pending') {
       fetchIncoming();
       fetchSent();
     } else {
@@ -595,7 +620,7 @@ export default function SharedScreen() {
       {/* Title */}
       <View style={styles.titleRow}>
         <Text style={[styles.title, { color: c.ink }]}>Shared</Text>
-        {activeTab === 'requests' && (
+        {topTab === 'requests' && (
           <TouchableOpacity
             onPress={() => navigation.navigate('CreateFileRequest')}
             style={styles.headerAdd}
@@ -607,54 +632,92 @@ export default function SharedScreen() {
         )}
       </View>
 
-      {/* Tabs */}
-      <View style={styles.tabBar} accessibilityRole="tablist">
-        {tabs.map((tab) => {
-          const active = activeTab === tab.id;
+      {/* Tier 1 — object kind: Shares | File Requests (neutral elevated pill;
+          amber is reserved for the Tier-2 active state + status pills). */}
+      <View style={[styles.segmented, { backgroundColor: c.paper2 }]} accessibilityRole="tablist">
+        {topTabs.map((t) => {
+          const active = topTab === t.id;
           return (
             <TouchableOpacity
-              key={tab.id}
-              style={[styles.tab, active && [styles.tabActive, { borderBottomColor: c.amber }]]}
-              onPress={() => setActiveTab(tab.id)}
+              key={t.id}
+              style={[styles.segment, active && [styles.segmentActive, { backgroundColor: c.paper }]]}
+              onPress={() => {
+                if (topTab === t.id) return;
+                Haptics.selectionAsync();
+                setTopTab(t.id);
+              }}
               activeOpacity={0.7}
               accessibilityRole="tab"
               accessibilityState={{ selected: active }}
-              accessibilityLabel={`${tab.label}, ${tab.count} item${tab.count === 1 ? '' : 's'}`}
+              accessibilityLabel={t.label}
             >
-              <View style={styles.tabContent}>
-                <Text
-                  style={[styles.tabText, { color: c.ink3 }, active && [styles.tabTextActive, { color: c.ink }]]}
-                  numberOfLines={1}
-                  adjustsFontSizeToFit
-                  minimumFontScale={0.86}
-                >
-                  {tab.label}
-                </Text>
-                <View style={[styles.tabCountBadge, { backgroundColor: active ? c.amberBg : c.paper2 }]}>
-                  <Text style={[styles.tabCountText, { color: active ? c.amberDeep : c.ink3 }]} numberOfLines={1}>
-                    {tab.count}
-                  </Text>
-                </View>
-              </View>
+              <Text
+                style={[styles.segmentText, { color: c.ink3 }, active && { color: c.ink, fontWeight: '600' }]}
+                numberOfLines={1}
+              >
+                {t.label}
+              </Text>
             </TouchableOpacity>
           );
         })}
       </View>
+
+      {/* Tier 2 — direction within Shares: With me | By me | Pending. */}
+      {topTab === 'shares' && (
+        <View style={styles.dirBar} accessibilityRole="tablist">
+          {dirTabs.map((t) => {
+            const active = shareDir === t.id;
+            return (
+              <TouchableOpacity
+                key={t.id}
+                style={[styles.dirTab, active && { borderBottomColor: c.amber }]}
+                onPress={() => {
+                  if (shareDir === t.id) return;
+                  Haptics.selectionAsync();
+                  setShareDir(t.id);
+                }}
+                activeOpacity={0.7}
+                accessibilityRole="tab"
+                accessibilityState={{ selected: active }}
+                accessibilityLabel={`${t.label}, ${t.count} item${t.count === 1 ? '' : 's'}`}
+              >
+                <View style={styles.tabContent}>
+                  <Text
+                    style={[styles.tabText, { color: c.ink3 }, active && [styles.tabTextActive, { color: c.ink }]]}
+                    numberOfLines={1}
+                  >
+                    {t.label}
+                  </Text>
+                  <View style={[styles.tabCountBadge, { backgroundColor: active ? c.amberBg : c.paper2 }]}>
+                    <Text style={[styles.tabCountText, { color: active ? c.amberDeep : c.ink3 }]} numberOfLines={1}>
+                      {t.count}
+                    </Text>
+                  </View>
+                </View>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+      )}
       </View>{/* end header area */}
 
       {/* Content */}
-      {currentError ? (
+      {topTab === 'requests' ? (
+        /* File Requests — the existing list, rendered inline (own header
+           suppressed, keeps its own empty/error/refresh). */
+        <FileRequestsScreen embedded />
+      ) : currentError ? (
         renderError(currentError, onRetry)
       ) : currentLoading ? (
         <View>
           {[0, 1, 2].map((i) => <SkeletonRow key={i} />)}
         </View>
-      ) : activeTab === 'incoming' ? (
+      ) : shareDir === 'with' ? (
         <FlatList
           data={incomingApproved}
           keyExtractor={(item) => item.id}
           renderItem={renderIncomingItem}
-          ListEmptyComponent={renderEmpty('No shared files yet', 'people-outline')}
+          ListEmptyComponent={renderEmpty('No files shared with you yet.', 'people-outline')}
           onScroll={(e) => setIsScrolled(e.nativeEvent.contentOffset.y > 0)}
           scrollEventThrottle={100}
           refreshControl={
@@ -668,12 +731,12 @@ export default function SharedScreen() {
           contentContainerStyle={incomingApproved.length === 0 ? styles.emptyList : undefined}
           keyboardDismissMode="on-drag"
         />
-      ) : activeTab === 'sent' ? (
+      ) : shareDir === 'by' ? (
         <FlatList
-          data={sentApproved}
-          keyExtractor={(item) => item.id}
-          renderItem={renderSentItem}
-          ListEmptyComponent={renderEmpty('No approved sent shares yet', 'send-outline')}
+          data={byMeItems}
+          keyExtractor={(item) => item.key}
+          renderItem={renderByMeItem}
+          ListEmptyComponent={renderEmpty("You haven't shared anything yet.", 'share-outline')}
           onScroll={(e) => setIsScrolled(e.nativeEvent.contentOffset.y > 0)}
           scrollEventThrottle={100}
           refreshControl={
@@ -684,15 +747,15 @@ export default function SharedScreen() {
               colors={[c.amber]}
             />
           }
-          contentContainerStyle={sentApproved.length === 0 ? styles.emptyList : undefined}
+          contentContainerStyle={byMeItems.length === 0 ? styles.emptyList : undefined}
           keyboardDismissMode="on-drag"
         />
-      ) : activeTab === 'pending' ? (
+      ) : (
         <FlatList
           data={pendingInvites}
           keyExtractor={(item) => `${item.direction}-${item.invite.id}`}
           renderItem={renderPendingItem}
-          ListEmptyComponent={renderEmpty('No pending shares', 'time-outline')}
+          ListEmptyComponent={renderEmpty('Nothing waiting on you.', 'time-outline')}
           onScroll={(e) => setIsScrolled(e.nativeEvent.contentOffset.y > 0)}
           scrollEventThrottle={100}
           refreshControl={
@@ -706,28 +769,6 @@ export default function SharedScreen() {
           contentContainerStyle={pendingInvites.length === 0 ? styles.emptyList : undefined}
           keyboardDismissMode="on-drag"
         />
-      ) : activeTab === 'links' ? (
-        <FlatList
-          data={links}
-          keyExtractor={(item) => item.id}
-          renderItem={renderLinkItem}
-          ListEmptyComponent={renderEmpty('No share links yet', 'link-outline')}
-          onScroll={(e) => setIsScrolled(e.nativeEvent.contentOffset.y > 0)}
-          scrollEventThrottle={100}
-          refreshControl={
-            <RefreshControl
-              refreshing={linksRefreshing}
-              onRefresh={onRefresh}
-              tintColor={c.amber}
-              colors={[c.amber]}
-            />
-          }
-          contentContainerStyle={links.length === 0 ? styles.emptyList : undefined}
-          keyboardDismissMode="on-drag"
-        />
-      ) : (
-        /* 0782 — File Requests as the "Requests" tab content (own header suppressed). */
-        <FileRequestsScreen embedded />
       )}
     </View>
   );
@@ -743,12 +784,17 @@ const styles = StyleSheet.create({
   titleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   headerAdd: { paddingRight: spacing.lg, paddingLeft: 12, paddingVertical: 6 },
 
-  // Tab bar
-  tabBar: { flexDirection: 'row', flexWrap: 'wrap', paddingHorizontal: spacing.lg, paddingBottom: spacing.sm, gap: 4 },
-  tab: { width: '48%', flexGrow: 1, paddingVertical: 10, alignItems: 'center', borderBottomWidth: 2, borderBottomColor: 'transparent' },
-  tabActive: { borderBottomColor: 'transparent' },
+  // Tier 1 — segmented control (Shares | File Requests)
+  segmented: { flexDirection: 'row', marginHorizontal: spacing.lg, marginBottom: spacing.sm, borderRadius: radii.lg, padding: 3 },
+  segment: { flex: 1, paddingVertical: 8, alignItems: 'center', justifyContent: 'center', borderRadius: radii.md },
+  segmentActive: { ...shadows.sm },
+  segmentText: { fontSize: 14, fontWeight: '500' },
+
+  // Tier 2 — direction segment (With me | By me | Pending), amber underline active
+  dirBar: { flexDirection: 'row', paddingHorizontal: spacing.lg, paddingBottom: spacing.sm, gap: 4 },
+  dirTab: { flex: 1, paddingVertical: 10, alignItems: 'center', borderBottomWidth: 2, borderBottomColor: 'transparent' },
   tabContent: { width: '100%', paddingHorizontal: 6, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 },
-  tabText: { flexShrink: 1, fontSize: 12, fontWeight: '500' },
+  tabText: { flexShrink: 1, fontSize: 13, fontWeight: '500' },
   tabTextActive: { fontWeight: '600' },
   tabCountBadge: { minWidth: 22, height: 20, paddingHorizontal: 6, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
   tabCountText: { fontSize: 11, fontWeight: '700' },
