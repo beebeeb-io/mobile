@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   ActionSheetIOS,
   ActivityIndicator,
@@ -1529,6 +1529,37 @@ export default function FilesScreen() {
     setFiles([]);
   }, []);
 
+  // 0797 — Replace the visible listing the instant the folder changes so the
+  // PREVIOUS folder's items never flash while the new folder loads. `files`
+  // is a single state slice shared across folders, so without this the FlatList
+  // keeps rendering the old folder's rows until the async fetch/sync-derive
+  // resolves — exactly the "empty nested folder briefly shows other items" bug.
+  //
+  // Runs in a layout effect (before paint) and is source-agnostic: it covers
+  // tapping into a folder, breadcrumb jumps, and the back button. When we have
+  // the destination folder's entries cached we render them immediately (instant,
+  // then reconciled by the sync derive below); otherwise we clear to an empty
+  // list under the loading skeleton until authoritative data arrives.
+  const renderedFolderKeyRef = useRef(folderCacheKey(currentFolder.id));
+  useLayoutEffect(() => {
+    const key = folderCacheKey(currentFolder.id);
+    if (renderedFolderKeyRef.current === key) return;
+    renderedFolderKeyRef.current = key;
+    filesFolderKeyRef.current = key;
+    const cached = folderFilesCacheRef.current[key];
+    if (cached && cached.length > 0) {
+      filesCountRef.current = cached.length;
+      setFiles(cached);
+    } else {
+      // No cached content for the destination — show the loading skeleton
+      // (not the "empty folder" copy) until the fetch/sync derive resolves.
+      filesCountRef.current = 0;
+      setFiles([]);
+      setLoading(true);
+    }
+    setError(null);
+  }, [currentFolder.id]);
+
   // ------------------------------------------------------------------
   // Fetch files
   // ------------------------------------------------------------------
@@ -1643,12 +1674,25 @@ export default function FilesScreen() {
         // returns an empty initial frame. Falling through to fetchFiles in
         // that case prevents the Files tab from rendering the empty state
         // for an existing account on first paint after login.
-        const haveAuthoritativeData = liveNodes.length > 0 || (cachedFolderFiles?.length ?? 0) > 0;
+        //
+        // 0797 — For a NESTED folder we navigated into, its own node is present
+        // in the in-memory tree, which means the snapshot for this subtree has
+        // loaded. An empty children list is therefore authoritative: render the
+        // empty folder instantly from memory instead of falling through to a
+        // slow network fetch (the cause of the laggy empty-folder load). The
+        // root (id === null) keeps the conservative guard so an existing account
+        // never flashes the empty state during the catch-up race.
+        const folderResolvedInTree =
+          currentFolder.id !== null && sync.getNode(currentFolder.id) !== undefined;
+        const haveAuthoritativeData =
+          liveNodes.length > 0 || (cachedFolderFiles?.length ?? 0) > 0 || folderResolvedInTree;
         if (haveAuthoritativeData) {
           applyFilesForFolder(
             currentFolder.id,
             liveNodes.map(syncNodeToFileEntry),
-            { preserveCachedOnEmpty: true },
+            // When the folder is resolved-empty in the tree, don't preserve a
+            // stale cache — clear to the real (empty) state.
+            { preserveCachedOnEmpty: !folderResolvedInTree },
           );
           lastLoadedFolderRef.current = currentFolder.id;
           setLoading(false);
