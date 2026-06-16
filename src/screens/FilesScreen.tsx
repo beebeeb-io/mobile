@@ -41,7 +41,7 @@ import SkeletonRow from '../components/SkeletonRow';
 import PresenceAvatars from '../components/PresenceAvatars';
 import TrustDetailsSheet from '../components/TrustDetailsSheet';
 import FolderPickerModal, { type PickerFolder } from '../components/FolderPickerModal';
-import { ApiError, listAllFiles, getFileIndex, createFolder, deleteFile, trashFiles, renameFile, moveFile, uploadFile, downloadFile, friendlyError, getStorageUsage, createProofOfExistence, storageLocation, trustLocation, getFolderPresence, getUploadStatus, getApiUrl, getToken } from '../lib/api';
+import { ApiError, listAllFiles, getFileIndex, createFolder, deleteFile, trashFiles, renameFile, moveFile, uploadFile, friendlyError, getStorageUsage, createProofOfExistence, storageLocation, trustLocation, getFolderPresence, getUploadStatus, getApiUrl, getToken } from '../lib/api';
 import { guessMimeType, fileCategory as fileCategoryFromMime } from '../lib/media';
 import { generateAndUploadThumbnail, fetchDecryptedThumbnailUri } from '../lib/thumbnail';
 import { getCachedThumbnail } from '../lib/thumbnail-cache';
@@ -184,7 +184,7 @@ function rowActionIcon(label: string): React.ComponentProps<typeof Ionicons>['na
     case 'Preview': return 'eye-outline';
     case 'Open': return 'folder-open-outline';
     case 'Share': return 'link-outline';
-    case 'Export...': return 'share-outline';
+    case 'Save to Files': return 'download-outline';
     case 'Save to Photos': return 'images-outline';
     case 'Move to...': return 'folder-outline';
     case 'Make available offline':
@@ -1212,7 +1212,7 @@ export default function FilesScreen() {
   const [presence, setPresence] = useState<PresenceUser[]>([]);
 
   // Crypto
-  const { isUnlocked, unlockAttempted, decryptMetadata, encryptChunk, encryptMetadata, getFileKeyBytes, getRequestContentKey } = useCrypto();
+  const { isUnlocked, unlockAttempted, decryptMetadata, encryptChunk, encryptMetadata, getFileKeyBytes, getRequestContentKey, getMasterKeyHandleId } = useCrypto();
   const [decryptedNames, setDecryptedNames] = useState<Record<string, string>>({});
   const [decryptedMimeTypes, setDecryptedMimeTypes] = useState<Record<string, string | null>>({});
 
@@ -2628,6 +2628,8 @@ export default function FilesScreen() {
     const isPinned = pinnedFolders.some((p) => p.id === item.id);
     const pinLabel = isPinned ? 'Unpin' : 'Pin to top';
     const isImage = !item.is_folder && (itemMimeType ?? '').startsWith('image/');
+    const isVideo = !item.is_folder && (itemMimeType ?? '').startsWith('video/');
+    const isMedia = isImage || isVideo;
     const offlineTracked = item.is_folder
       ? offlineManager.isFolderOffline(item.id)
       : offlineManager.getStatus(item.id) != null;
@@ -2637,8 +2639,8 @@ export default function FilesScreen() {
     // 'Send via Constellation' is intentionally hidden — Constellation crypto is v1 mock
     // (random bytes instead of real X25519 ECDH). Re-enable when real per-transfer
     // encryption is implemented. See task 0093.
-    const fileOptions = ['Rename', 'Preview', 'Share', 'Export...'];
-    if (isImage) fileOptions.push('Save to Photos');
+    const fileOptions = ['Rename', 'Preview', 'Share', 'Save to Files'];
+    if (isMedia) fileOptions.push('Save to Photos');
     fileOptions.push('Move to...', offlineLabel, 'Create proof', lockLabel, 'Move to Trash', 'Details');
     const options = item.is_folder
       ? ['Rename', 'Open', 'Share', 'Move to...', offlineLabel, 'Delete', pinLabel, lockLabel, 'Details', 'Cancel']
@@ -2690,37 +2692,48 @@ export default function FilesScreen() {
     // 0796 — open the native nested folder picker (drill-in + breadcrumb).
     const promptMove = () => { void openMovePicker([item.id]); };
 
-    const promptExport = async () => {
+    // 0795 — decrypt the file to a sandboxed temp via the same native streaming
+    // path the previewer uses, then hand it to the native save sheet. Decryption
+    // is client-side; downloads hit only our own API. (Replaces the old export
+    // path that wrote the still-ENCRYPTED blob straight to disk.)
+    const extForSave = (): string => {
+      const dot = name.lastIndexOf('.');
+      if (dot > 0 && dot < name.length - 1) return name.slice(dot + 1).toLowerCase();
+      const fromMime = (itemMimeType ?? '').split('/')[1];
+      return (fromMime && fromMime.length <= 5 ? fromMime : 'bin').toLowerCase();
+    };
+    const decryptForSave = (): Promise<string> => {
+      const { keyProvider, handleId } = isRequestUpload(item)
+        ? { keyProvider: () => getRequestContentKey(item), handleId: null as number | null }
+        : { keyProvider: () => getFileKeyBytes(item.id), handleId: getMasterKeyHandleId() };
+      return decryptToTempFile(item.id, keyProvider, extForSave(), item.size_bytes, item.chunk_count, handleId);
+    };
+
+    const saveToFiles = async () => {
       if (!(await ensureFileReady(item))) return;
-      const safeName = name.replace(/[^a-zA-Z0-9._()-]/g, '_');
-      const localUri = `${FileSystem.cacheDirectory}${safeName}`;
+      if (!(await Sharing.isAvailableAsync())) {
+        Alert.alert('Not available', 'Saving is not available on this device.');
+        return;
+      }
+      const safeName = (name.replace(/[^a-zA-Z0-9._()-]/g, '_') || 'file');
+      const namedUri = `${FileSystem.cacheDirectory}${safeName}`;
       setExportingName(name);
       try {
-        const res = await downloadFile(item.id);
-        const blob = await res.blob();
-        const base64 = await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onloadend = () => {
-            const result = reader.result as string;
-            resolve(result.split(',')[1] ?? '');
-          };
-          reader.onerror = reject;
-          reader.readAsDataURL(blob);
-        });
-        await FileSystem.writeAsStringAsync(localUri, base64, {
-          encoding: FileSystem.EncodingType.Base64,
-        });
-        await Sharing.shareAsync(localUri, {
+        const decryptedUri = await decryptForSave();
+        // Copy to a correctly-named temp so the saved file keeps its real name
+        // (the decrypt cache keys files by id), then drop the copy afterwards.
+        await FileSystem.deleteAsync(namedUri, { idempotent: true }).catch(() => {});
+        await FileSystem.copyAsync({ from: decryptedUri, to: namedUri });
+        await Sharing.shareAsync(namedUri, {
           mimeType: itemMimeType ?? 'application/octet-stream',
           UTI: itemMimeType ?? 'public.data',
-          dialogTitle: `Export "${name}"`,
+          dialogTitle: `Save "${name}"`,
         });
       } catch (err) {
-        showToast({ type: 'error', message: `Export failed: ${friendlyError(err)}` });
+        showToast({ type: 'error', message: `Could not save: ${friendlyError(err)}` });
       } finally {
         setExportingName(null);
-        // Clean up temp file (best-effort)
-        FileSystem.deleteAsync(localUri, { idempotent: true }).catch(() => {});
+        FileSystem.deleteAsync(namedUri, { idempotent: true }).catch(() => {});
       }
     };
 
@@ -2730,36 +2743,20 @@ export default function FilesScreen() {
       if (status !== 'granted') {
         Alert.alert(
           'Permission required',
-          'Allow photo library access to save images to Photos.',
+          'Allow photo library access to save to Photos.',
         );
         return;
       }
-      const safeName = name.replace(/[^a-zA-Z0-9._()-]/g, '_');
-      const localUri = `${FileSystem.cacheDirectory}${safeName}`;
       setExportingName(name);
       try {
-        const res = await downloadFile(item.id);
-        const blob = await res.blob();
-        const base64 = await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onloadend = () => {
-            const result = reader.result as string;
-            resolve(result.split(',')[1] ?? '');
-          };
-          reader.onerror = reject;
-          reader.readAsDataURL(blob);
-        });
-        await FileSystem.writeAsStringAsync(localUri, base64, {
-          encoding: FileSystem.EncodingType.Base64,
-        });
-        await MediaLibrary.saveToLibraryAsync(localUri);
+        const decryptedUri = await decryptForSave();
+        await MediaLibrary.saveToLibraryAsync(decryptedUri);
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         showToast({ type: 'success', message: 'Saved to Photos' });
       } catch (err) {
         showToast({ type: 'error', message: `Save failed: ${friendlyError(err)}` });
       } finally {
         setExportingName(null);
-        FileSystem.deleteAsync(localUri, { idempotent: true }).catch(() => {});
       }
     };
 
@@ -2881,7 +2878,7 @@ export default function FilesScreen() {
           // real X25519 ECDH). Hidden from the action menu until real per-transfer
           // encryption is implemented. See task 0093.
           return;
-        case 'Export...': void promptExport(); return;
+        case 'Save to Files': void saveToFiles(); return;
         case 'Save to Photos': void saveToGallery(); return;
         case 'Move to...': void promptMove(); return;
         case 'Make available offline':
