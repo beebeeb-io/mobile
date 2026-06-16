@@ -23,13 +23,14 @@ import { useTheme } from '../lib/theme-context';
 import { useToast } from '../lib/toast-context';
 import { useKeyboardLayoutAnimation } from '../lib/useKeyboardLayoutAnimation';
 import { NativeSwitch } from '../components/NativeSwitch';
-import { approveInvite, createInvite, createShare, friendlyError, resolveSharingContact } from '../lib/api';
+import { ApiError, approveInvite, createInvite, createShare, friendlyError, resolveSharingContact } from '../lib/api';
 import type { Share as ShareLink } from '../lib/api';
 import { useCrypto } from '../lib/crypto-context';
 import {
   deriveShareKey,
   encryptChunk,
   generateRandomBytes,
+  wrapForOwnerWithHandle,
   x25519SharedSecret,
 } from '../../modules/beebeeb-crypto';
 
@@ -100,6 +101,20 @@ async function wrapFileKeyForShare(clientKey: Uint8Array, fileKey: Uint8Array): 
   return result;
 }
 
+/**
+ * Wrap `bytes` under the OWNER's master key (0709 A+) and return the on-wire
+ * base64 blob `nonce(12) || AES-256-GCM-ciphertext`. The master key never
+ * crosses to JS — it's used inside native via the opaque handle. Same layout as
+ * web's `wrapKeyForShare(masterKey, …)`, so the blob round-trips across clients.
+ */
+async function ownerWrapToBase64(handleId: number, bytes: Uint8Array): Promise<string> {
+  const { wrapped, nonce } = await wrapForOwnerWithHandle(handleId, bytes);
+  const blob = new Uint8Array(nonce.length + wrapped.length);
+  blob.set(nonce, 0);
+  blob.set(wrapped, nonce.length);
+  return toBase64(blob);
+}
+
 async function encryptFileKeyForRecipient(
   derivePrivateKey: () => Promise<Uint8Array>,
   recipientPublicKey: Uint8Array,
@@ -165,7 +180,7 @@ export default function ShareSheetScreen() {
   const insets = useSafeAreaInsets();
   const { colors: c, resolved } = useTheme();
   const { fileId, fileName, mimeType, sizeBytes } = route.params;
-  const { getFileKeyBytes, deriveX25519PrivateFromHandle, isUnlocked } = useCrypto();
+  const { getFileKeyBytes, deriveX25519PrivateFromHandle, getMasterKeyHandleId, isUnlocked } = useCrypto();
   useKeyboardLayoutAnimation();
 
   const [expiry, setExpiry] = useState<ExpiryOption>(EXPIRY_OPTIONS[1]);
@@ -266,13 +281,15 @@ export default function ShareSheetScreen() {
     setInviteSentTo(null);
 
     try {
-      let wrappedFileKey: string | undefined;
-      let keyForUrl: string;
-
       if (!isUnlocked) {
         setError('Vault is locked. Unlock it to create a share.');
         return;
       }
+
+      let wrappedFileKey: string | undefined;
+      let keyForUrl: string;
+      // 0805: owner-recoverable wrap of K_c (double-encrypted public links only).
+      let ownerWrappedKey: string | undefined;
 
       const fileKey = await getFileKeyBytes(fileId);
 
@@ -289,6 +306,11 @@ export default function ShareSheetScreen() {
         wrappedFileKey = toBase64(wrapped);
         keyForUrl = toBase64url(clientKey);
 
+        // 0805: wrap K_c under the OWNER's master key so the owner can re-copy a
+        // working link later (Shared → By me). The server stores it opaque and
+        // never unwraps it; the master key stays inside native (task 0556).
+        ownerWrappedKey = await ownerWrapToBase64(getMasterKeyHandleId(), clientKey);
+
         // Zero client key — it's now in keyForUrl string (JS engine manages that)
         clientKey.fill(0);
       } else {
@@ -298,18 +320,51 @@ export default function ShareSheetScreen() {
         fileKey.fill(0);
       }
 
-      const result = await createShare(fileId, {
+      // A1 client-supplied token (double-encrypted public links only): mint a
+      // fresh raw token and wrap it for owner re-copy. token + owner_wrapped_key
+      // + owner_wrapped_token are sent ALL-OR-NOTHING — matches web's flow and
+      // the server's typed validator. Standard shares fall back to a
+      // server-generated token (no owner-recovery — honest, unchanged).
+      const mintTokenFields = async (): Promise<{ token: string; owner_wrapped_token: string } | undefined> => {
+        if (!ownerWrappedKey) return undefined;
+        // URL-safe-no-pad base64 of 20 random bytes (27 chars), like web.
+        const token = toBase64url(await generateRandomBytes(20));
+        const owner_wrapped_token = await ownerWrapToBase64(getMasterKeyHandleId(), asciiBytes(token));
+        return { token, owner_wrapped_token };
+      };
+      let tokenFields = await mintTokenFields();
+      const buildOpts = () => ({
         expires_in_hours: expiry.hours ?? undefined,
         max_opens: opens.value ?? undefined,
         passphrase: passphrase.trim() || undefined,
         ...(wrappedFileKey ? { wrapped_file_key: wrappedFileKey } : {}),
+        ...(ownerWrappedKey && tokenFields
+          ? {
+              token: tokenFields.token,
+              owner_wrapped_key: ownerWrappedKey,
+              owner_wrapped_token: tokenFields.owner_wrapped_token,
+            }
+          : {}),
       });
+
+      let result: ShareLink;
+      try {
+        result = await createShare(fileId, buildOpts());
+      } catch (e) {
+        // 409 = client-token collision (≈ never at 20 random bytes) → re-mint once.
+        if (e instanceof ApiError && e.status === 409 && tokenFields) {
+          tokenFields = await mintTokenFields();
+          result = await createShare(fileId, buildOpts());
+        } else {
+          throw e;
+        }
+      }
 
       setShare(result);
 
       // Build the share URL locally so the fragment is always the client-side
-      // decryption material. The server response fragment carries its internal
-      // share key and must not be copied for standard mobile shares.
+      // decryption material. result.token echoes our client-supplied token (or
+      // the server-generated one for standard shares).
       const shareBase = `${APP_URL}/s/${result.token}`;
       setLocalShareUrl(`${shareBase}#key=${encodeURIComponent(keyForUrl)}`);
       setShareUrlBase(shareBase);
@@ -322,7 +377,7 @@ export default function ShareSheetScreen() {
     } finally {
       setCreating(false);
     }
-  }, [fileId, expiry, opens, passphrase, doubleEncrypted, isUnlocked, getFileKeyBytes]);
+  }, [fileId, expiry, opens, passphrase, doubleEncrypted, isUnlocked, getFileKeyBytes, getMasterKeyHandleId]);
 
   const handleCreateInvite = useCallback(async () => {
     const raw = recipient.trim();

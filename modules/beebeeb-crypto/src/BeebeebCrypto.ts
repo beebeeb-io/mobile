@@ -219,6 +219,54 @@ export async function unwrapRequestPrivateWithHandle(
   return coerceBytes(await BeebeebCryptoModule.unwrapRequestPrivateWithHandle(handleId, wrapped, nonce))
 }
 
+// ─── Owner-recoverable share wrap (0805) ──────────────────────────────────────
+//
+// Wrap/unwrap arbitrary bytes DIRECTLY under the master key with AES-256-GCM —
+// the SAME operation as web's `wrapKeyForShare(masterKey, …)` (the master key is
+// used as the AES key as-is; NO HKDF), so an owner-wrapped blob is byte-for-byte
+// compatible across web and mobile. The master key is exported transiently
+// inside native from the opaque handle (task 0556) and zeroed; only the
+// ciphertext + GCM nonce ever cross to JS. Used for `owner_wrapped_key` (wraps
+// the share's client key K_c) and `owner_wrapped_token` (wraps the raw token) so
+// the OWNER can later re-copy a working public-share link.
+
+export interface OwnerWrapResult {
+  /** AES-256-GCM ciphertext, with the 16-byte tag appended. */
+  wrapped: Uint8Array
+  /** 12-byte GCM nonce. */
+  nonce: Uint8Array
+}
+
+/**
+ * Wrap `bytes` under the master key (handle) with AES-256-GCM. Returns the
+ * ciphertext + nonce; concatenate `nonce || wrapped` and base64-encode to get
+ * the on-wire `owner_wrapped_*` blob (matches web's `wrapKeyForShare` layout).
+ */
+export async function wrapForOwnerWithHandle(
+  handleId: number,
+  bytes: Uint8Array,
+): Promise<OwnerWrapResult> {
+  const result = await BeebeebCryptoModule.wrapForOwnerWithHandle(handleId, bytes)
+  return {
+    wrapped: coerceBytes(result.wrapped),
+    nonce: coerceBytes(result.nonce),
+  }
+}
+
+/**
+ * Unwrap a blob previously produced by `wrapForOwnerWithHandle` (or web's
+ * `wrapKeyForShare(masterKey, …)`). Split the stored blob into `nonce` (first 12
+ * bytes) and `wrapped` (the rest) before calling. Returns the plaintext bytes;
+ * the caller MUST zeroize them when done.
+ */
+export async function unwrapForOwnerWithHandle(
+  handleId: number,
+  wrapped: Uint8Array,
+  nonce: Uint8Array,
+): Promise<Uint8Array> {
+  return coerceBytes(await BeebeebCryptoModule.unwrapForOwnerWithHandle(handleId, wrapped, nonce))
+}
+
 /**
  * Recover the content key C for a request-uploaded file (owner decrypt path).
  * Takes the unwrapped R_priv, the uploader's ephemeral public key, and the

@@ -9,19 +9,25 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
+import * as Clipboard from 'expo-clipboard';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { radii, shadows, spacing } from '../theme';
 import { useTheme } from '../lib/theme-context';
+import { useToast } from '../lib/toast-context';
 import SkeletonRow from '../components/SkeletonRow';
 import { useCrypto } from '../lib/crypto-context';
+import { unwrapForOwnerWithHandle } from '../../modules/beebeeb-crypto';
 import { encryptedMetadataPayloadToBytes } from '../lib/encrypted-metadata';
 import { guessMimeType } from '../lib/media';
 import { getIncomingInvites, getSentInvites, listMyShares, friendlyError } from '../lib/api';
 import type { ShareInvite, MyShareLink } from '../lib/api';
 import FileRequestsScreen from './FileRequestsScreen';
 import type { RootStackParamList } from '../App';
+
+// Public links resolve against the web app origin (cross-client by design).
+const APP_URL = 'https://app.beebeeb.io';
 
 type Nav = NativeStackNavigationProp<RootStackParamList>;
 
@@ -131,6 +137,63 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }
 
+// ── Owner-recoverable public link rebuild (0805) ───────────────────────────
+// Mirrors web's src/lib/share-link.ts: unwrap the owner-wrapped K_c + token
+// under the master key (via the native handle — key never enters JS) and
+// rebuild a working /s/<token>#key=<K_c> link. Standard base64 in/out, base64url
+// for the fragment — byte-compatible with web so a mobile-made link opens there.
+
+function fromBase64(value: string): Uint8Array {
+  const binary = atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+function toBase64url(bytes: Uint8Array): string {
+  let s = '';
+  for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+  return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+/** Decode ASCII bytes (the share token alphabet is [A-Za-z0-9_-]). */
+function decodeAscii(bytes: Uint8Array): string {
+  let s = '';
+  for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+  return s;
+}
+
+/** Synchronous render-decision: could a working link be rebuilt right now? */
+function canRebuildShareLink(link: MyShareLink, isUnlocked: boolean): boolean {
+  return isUnlocked && !!link.owner_wrapped_key && !!link.owner_wrapped_token;
+}
+
+/**
+ * Rebuild a full recipient link for one of the owner's public shares, or null
+ * when it can't be rebuilt (vault locked, or a legacy share with no
+ * owner-wrapped blobs). Never throws.
+ */
+async function buildOwnerShareLink(
+  link: MyShareLink,
+  handleId: number,
+): Promise<string | null> {
+  if (!link.owner_wrapped_key || !link.owner_wrapped_token) return null;
+  try {
+    const keyBlob = fromBase64(link.owner_wrapped_key);
+    const kc = await unwrapForOwnerWithHandle(handleId, keyBlob.slice(12), keyBlob.slice(0, 12));
+    if (kc.length !== 32) return null;
+    const tokBlob = fromBase64(link.owner_wrapped_token);
+    const tokenBytes = await unwrapForOwnerWithHandle(handleId, tokBlob.slice(12), tokBlob.slice(0, 12));
+    const token = decodeAscii(tokenBytes);
+    if (!token) return null;
+    const url = `${APP_URL}/s/${token}#key=${encodeURIComponent(toBase64url(kc))}`;
+    kc.fill(0);
+    return url;
+  } catch {
+    return null;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Status badges
 // ---------------------------------------------------------------------------
@@ -231,13 +294,14 @@ export default function SharedScreen() {
   const { colors: c } = useTheme();
   const insets = useSafeAreaInsets();
   const navigation = useNavigation<Nav>();
+  const { showToast } = useToast();
   // Tier 1: Shares vs File Requests. Tier 2 (under Shares): direction.
   const [topTab, setTopTab] = useState<TopTab>('shares');
   const [shareDir, setShareDir] = useState<ShareDir>('with');
   const [isScrolled, setIsScrolled] = useState(false);
 
-  // Crypto — for decrypting share link filenames
-  const { isUnlocked, decryptMetadata } = useCrypto();
+  // Crypto — for decrypting share link filenames + owner-link rebuild (0805)
+  const { isUnlocked, decryptMetadata, getMasterKeyHandleId } = useCrypto();
 
   // Incoming invites
   const [incoming, setIncoming] = useState<ShareInvite[]>([]);
@@ -423,6 +487,29 @@ export default function SharedScreen() {
     [navigation, decryptedLinkNames, decryptedLinkMimes],
   );
 
+  // 0805 — rebuild + copy the owner-recoverable public link. The K_c + token are
+  // unwrapped under the master key (via the native handle; key never enters JS).
+  const copyShareLink = useCallback(
+    async (link: MyShareLink) => {
+      try {
+        const url = await buildOwnerShareLink(link, getMasterKeyHandleId());
+        if (!url) {
+          showToast({
+            type: 'info',
+            message: 'This link is not stored on this device. Revoke it and create a new one to share again.',
+          });
+          return;
+        }
+        await Clipboard.setStringAsync(url);
+        await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        showToast({ type: 'success', message: 'Link copied' });
+      } catch {
+        showToast({ type: 'error', message: 'Could not copy link. Unlock Beebeeb and try again.' });
+      }
+    },
+    [getMasterKeyHandleId, showToast],
+  );
+
   const renderInviteRow = (item: ShareInvite, direction: InviteDirection) => {
     const tappable = item.status === 'approved';
     const peer = direction === 'incoming'
@@ -472,25 +559,48 @@ export default function SharedScreen() {
       expiry,
     ].filter(Boolean);
 
+    const recoverable = canRebuildShareLink(item, isUnlocked);
     return (
-      <TouchableOpacity
-        activeOpacity={item.revoked ? 1 : 0.6}
-        onPress={item.revoked ? undefined : () => openShareLinkPreview(item)}
-        accessibilityRole="button"
-        accessibilityLabel={`Share link for ${name}`}
-        style={[styles.row, { borderBottomColor: c.line }, item.revoked && { opacity: 0.55 }]}
-      >
-        <View style={[styles.fileIcon, { backgroundColor: linkMimeColor(item) }]}>
-          <Ionicons name={linkIcon(item)} size={16} color="#FFFFFF" />
+      <View style={[styles.row, { borderBottomColor: c.line }, item.revoked && { opacity: 0.55 }]}>
+        <TouchableOpacity
+          activeOpacity={item.revoked ? 1 : 0.6}
+          onPress={item.revoked ? undefined : () => openShareLinkPreview(item)}
+          accessibilityRole="button"
+          accessibilityLabel={`Share link for ${name}`}
+          style={styles.rowMain}
+        >
+          <View style={[styles.fileIcon, { backgroundColor: linkMimeColor(item) }]}>
+            <Ionicons name={linkIcon(item)} size={16} color="#FFFFFF" />
+          </View>
+          <View style={styles.rowInfo}>
+            <Text style={[styles.rowName, { color: c.ink }]} numberOfLines={1}>{name}</Text>
+            <Text style={[styles.rowMeta, { color: c.ink3 }]} numberOfLines={1}>
+              {metaParts.join('  ·  ')}
+            </Text>
+          </View>
+        </TouchableOpacity>
+        <View style={styles.rowTrailing}>
+          <ShareLinkBadge link={item} />
+          {!item.revoked && (
+            recoverable ? (
+              <TouchableOpacity
+                onPress={() => copyShareLink(item)}
+                accessibilityRole="button"
+                accessibilityLabel={`Copy link for ${name}`}
+                style={styles.copyLinkBtn}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              >
+                <Ionicons name="link-outline" size={13} color={c.amberDeep} />
+                <Text style={[styles.copyLinkText, { color: c.amberDeep }]}>Copy link</Text>
+              </TouchableOpacity>
+            ) : isUnlocked ? (
+              <Text style={[styles.linkUnavailable, { color: c.ink3 }]} numberOfLines={2}>
+                Link not stored — revoke and recreate
+              </Text>
+            ) : null
+          )}
         </View>
-        <View style={styles.rowInfo}>
-          <Text style={[styles.rowName, { color: c.ink }]} numberOfLines={1}>{name}</Text>
-          <Text style={[styles.rowMeta, { color: c.ink3 }]} numberOfLines={1}>
-            {metaParts.join('  ·  ')}
-          </Text>
-        </View>
-        <ShareLinkBadge link={item} />
-      </TouchableOpacity>
+      </View>
     );
   };
 
@@ -801,6 +911,11 @@ const styles = StyleSheet.create({
 
   // List rows
   row: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, paddingHorizontal: spacing.lg, borderBottomWidth: 1, gap: 12 },
+  rowMain: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 12, minWidth: 0 },
+  rowTrailing: { alignItems: 'flex-end', justifyContent: 'center', gap: 6, maxWidth: 128 },
+  copyLinkBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingVertical: 2 },
+  copyLinkText: { fontSize: 12, fontWeight: '600' },
+  linkUnavailable: { fontSize: 10.5, lineHeight: 14, textAlign: 'right' },
   fileIcon: { width: 32, height: 32, borderRadius: radii.sm, alignItems: 'center', justifyContent: 'center' },
   rowInfo: { flex: 1, minWidth: 0 },
   rowName: { fontSize: 14, fontWeight: '500' },
