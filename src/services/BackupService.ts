@@ -373,13 +373,36 @@ async function findChildFolder(parentId: string | undefined, name: string): Prom
   return match ?? null;
 }
 
+// In-flight find-or-create coalescing (0811). The find-then-create in
+// ensureFolder is not atomic: concurrent callers for the same (parent, name)
+// could each find nothing and then each create, producing duplicate folders.
+// The founder hit exactly this — three backup categories enabling at once each
+// created a "Backups" root (6 duplicates accrued via repeated runs). Keying by
+// parent + name and sharing ONE promise makes find-or-create effectively atomic
+// within the process. The entry is cleared on settle so a later call re-runs
+// (and so re-validates / self-heals if the folder was deleted out-of-band).
+const _ensureFolderInFlight = new Map<string, Promise<string>>();
+
 async function ensureFolder(parentId: string | undefined, name: string): Promise<string> {
-  const existing = await findChildFolder(parentId, name);
-  if (existing) return existing.id;
-  const folderId = await generateFileId();
-  const nameEncrypted = await encryptFolderName(folderId, name);
-  const created = await createFolder(nameEncrypted, parentId, folderId);
-  return created.id;
+  const key = `${parentId ?? 'root'}/${name}`;
+  const pending = _ensureFolderInFlight.get(key);
+  if (pending) return pending;
+
+  const promise = (async (): Promise<string> => {
+    const existing = await findChildFolder(parentId, name);
+    if (existing) return existing.id;
+    const folderId = await generateFileId();
+    const nameEncrypted = await encryptFolderName(folderId, name);
+    const created = await createFolder(nameEncrypted, parentId, folderId);
+    return created.id;
+  })();
+
+  _ensureFolderInFlight.set(key, promise);
+  try {
+    return await promise;
+  } finally {
+    _ensureFolderInFlight.delete(key);
+  }
 }
 
 async function moveLegacyItem(item: FileEntry, parentId: string, newPlaintextName?: string): Promise<boolean> {
@@ -527,23 +550,29 @@ async function selfHealKnownBackupMetadata(
 }
 
 /** Ensure `Backups/{deviceName}/{category}/` exists. Returns the device folder
- *  ID and the category folder ID. Caches results in SecureStore so subsequent
- *  calls skip the round-trips. */
+ *  ID and the category folder ID. Each folder is resolved via ensureFolder
+ *  (find-or-create, in-flight-coalesced so concurrent callers can't create
+ *  duplicates — 0811); the resolved ids are persisted to SecureStore for
+ *  diagnostics / future validated reuse. */
 export async function ensureBackupFolders(
   category: BackupCategory,
 ): Promise<{ deviceFolderId: string; categoryFolderId: string }> {
   let cache = await readFolderCache();
 
-  let rootId = cache.rootId;
-  rootId = await ensureFolder(undefined, ROOT_FOLDER_NAME);
-
-  let deviceFolderId = cache.deviceId;
+  // NOTE: the previous `cache.rootId`/`deviceId`/`categoryIds` reads here were
+  // dead — each was overwritten by the ensureFolder call on the next line. We
+  // intentionally keep ensureFolder authoritative (find-or-create) rather than
+  // short-circuiting on the cache: a cached id can point at a folder deleted
+  // out-of-band, and find-or-create self-heals by recreating it. The race that
+  // produced duplicates is closed by ensureFolder's in-flight coalescing above
+  // plus sequencing the enables, not by trusting a possibly-stale cache. The
+  // cache is still written below for diagnostics / future validated reuse.
   const info = await getDeviceInfo();
-  deviceFolderId = await ensureFolder(rootId, info.device_name);
+  const rootId = await ensureFolder(undefined, ROOT_FOLDER_NAME);
+  const deviceFolderId = await ensureFolder(rootId, info.device_name);
 
   const categoryFolderName = CATEGORY_FOLDERS[category];
-  let categoryFolderId = cache.categoryIds?.[category];
-  categoryFolderId = await ensureFolder(deviceFolderId, categoryFolderName);
+  const categoryFolderId = await ensureFolder(deviceFolderId, categoryFolderName);
 
   const categoryIds: Record<BackupCategory, string> = {
     camera_roll: category === 'camera_roll'
