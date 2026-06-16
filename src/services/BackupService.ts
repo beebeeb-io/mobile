@@ -37,6 +37,7 @@ import {
   findFile,
   moveFile,
   renameFile,
+  trashFiles,
   type FileEntry,
 } from '../lib/api';
 import type { EncryptedData } from '../../modules/beebeeb-crypto';
@@ -549,6 +550,126 @@ async function selfHealKnownBackupMetadata(
   }
 }
 
+// ---------------------------------------------------------------------------
+// 0813 — self-heal: merge duplicate "Backups" roots into one
+// ---------------------------------------------------------------------------
+//
+// The pre-0811 find-then-create race left some vaults (the founder's: 6) with
+// several sibling "Backups" roots holding split backup contents. This keeps the
+// OLDEST root, reparents every child of the others into it, then trashes the
+// now-empty duplicates. 0811 stops NEW duplicates; this cleans the EXISTING ones.
+//
+// Safety — this mutates the real vault, so it is deliberately conservative:
+//   - Only folders returned by `listAllFiles(undefined)` are considered, so every
+//     candidate is a CONFIRMED root sibling (same null parent). It never merges
+//     across different parents, and `listAllFiles` walks every page (no missed
+//     root) and excludes trashed entries (already-merged dups stay merged).
+//   - Only folders whose DECRYPTED name is byte-identical to ROOT_FOLDER_NAME are
+//     touched — never arbitrary user folders that happen to look similar.
+//   - A child is never moved into itself, and a top-level candidate root is never
+//     moved. A root survivor can't be a descendant of any moved child (its only
+//     ancestor is the vault root), so reparenting can't create a cycle — the
+//     classic "move into self/descendant" hazard is structurally impossible here.
+//   - A duplicate is trashed ONLY after a re-list confirms it is empty; if any
+//     move failed, the duplicate is left untouched for the next (idempotent) run.
+//     Trash (not hard-delete) keeps it recoverable.
+//   - Idempotent + deterministic: with <=1 root it is a no-op; the survivor is the
+//     oldest `created_at` (id tie-break for the race's same-millisecond roots), so
+//     repeated runs converge on the same survivor.
+//   - Coalesced: concurrent callers share one in-flight pass; a fully-successful
+//     pass sets a session flag so later warm-ups skip the round-trips.
+let _backupRootsMerged = false;
+let _mergeRootsInFlight: Promise<void> | null = null;
+
+async function mergeDuplicateBackupRoots(): Promise<void> {
+  if (_backupRootsMerged) return;
+  if (_mergeRootsInFlight) return _mergeRootsInFlight;
+
+  _mergeRootsInFlight = (async () => {
+    try {
+      const rootChildren = await listAllFiles(undefined);
+      const candidates: FileEntry[] = [];
+      for (const f of rootChildren) {
+        if (!f.is_folder) continue;
+        if ((await decryptName(f)) === ROOT_FOLDER_NAME) candidates.push(f);
+      }
+      if (candidates.length <= 1) {
+        _backupRootsMerged = true;
+        return;
+      }
+
+      // Survivor = oldest by created_at; id tie-break keeps the choice stable
+      // across runs (the race created several roots in the same millisecond).
+      const survivor = candidates.reduce((best, c) => {
+        const tBest = Date.parse(best.created_at);
+        const tC = Date.parse(c.created_at);
+        if (Number.isNaN(tC)) return best;
+        if (Number.isNaN(tBest) || tC < tBest) return c;
+        if (tC > tBest) return best;
+        return c.id < best.id ? c : best;
+      });
+      const candidateIds = new Set(candidates.map((c) => c.id));
+      const duplicates = candidates.filter((c) => c.id !== survivor.id);
+
+      let movedChildren = 0;
+      let trashedRoots = 0;
+      let deferredRoots = 0;
+
+      for (const dup of duplicates) {
+        const children = await listAllFiles(dup.id);
+        for (const child of children) {
+          // Never move a folder into itself; never relocate a top-level candidate
+          // root (both structurally impossible here, but guarded explicitly).
+          if (child.id === survivor.id || candidateIds.has(child.id)) continue;
+          try {
+            await moveFile(child.id, survivor.id);
+            movedChildren += 1;
+          } catch (err) {
+            console.warn('[BackupService] 0813 merge: could not move child', child.id, err);
+          }
+        }
+
+        // Trash ONLY once a fresh listing confirms the duplicate is empty —
+        // never trash a root that still holds children (a failed move).
+        const remaining = await listAllFiles(dup.id);
+        if (remaining.length === 0) {
+          try {
+            const result = await trashFiles([dup.id]);
+            if (result.trashed.includes(dup.id) || result.already_trashed.includes(dup.id)) {
+              trashedRoots += 1;
+            } else {
+              deferredRoots += 1;
+            }
+          } catch (err) {
+            deferredRoots += 1;
+            console.warn('[BackupService] 0813 merge: could not trash empty duplicate root', dup.id, err);
+          }
+        } else {
+          deferredRoots += 1;
+          console.warn(
+            `[BackupService] 0813 merge: duplicate root ${dup.id} still has ${remaining.length} child(ren) after move — leaving it for the next run`,
+          );
+        }
+      }
+
+      console.info(
+        `[BackupService] 0813 merged ${duplicates.length} duplicate "Backups" root(s) into ${survivor.id}: ` +
+          `moved ${movedChildren} child(ren), trashed ${trashedRoots}, deferred ${deferredRoots}`,
+      );
+
+      // Only mark done when every duplicate was fully consolidated + trashed;
+      // otherwise the next warm-up retries the stragglers (idempotent).
+      if (deferredRoots === 0) _backupRootsMerged = true;
+    } catch (err) {
+      console.warn('[BackupService] 0813 merge: self-heal failed (will retry):', err);
+    } finally {
+      _mergeRootsInFlight = null;
+    }
+  })();
+
+  return _mergeRootsInFlight;
+}
+
 /** Ensure `Backups/{deviceName}/{category}/` exists. Returns the device folder
  *  ID and the category folder ID. Each folder is resolved via ensureFolder
  *  (find-or-create, in-flight-coalesced so concurrent callers can't create
@@ -558,6 +679,12 @@ export async function ensureBackupFolders(
   category: BackupCategory,
 ): Promise<{ deviceFolderId: string; categoryFolderId: string }> {
   let cache = await readFolderCache();
+
+  // 0813 — before resolving the tree, consolidate any pre-existing duplicate
+  // "Backups" roots (from the pre-0811 race) into one. Running it FIRST means
+  // the resolve below targets the single surviving root, so we never cache or
+  // configure a root that's about to be emptied/trashed. Best-effort + idempotent.
+  await mergeDuplicateBackupRoots();
 
   // NOTE: the previous `cache.rootId`/`deviceId`/`categoryIds` reads here were
   // dead — each was overwritten by the ensureFolder call on the next line. We
