@@ -7,6 +7,30 @@ export interface EncryptedData {
   ciphertext: Uint8Array
 }
 
+/** One recognized line of text from on-device OCR (task 0802). */
+export interface OcrLine {
+  text: string
+  /** Vision's per-line confidence, 0–1. */
+  confidence: number
+}
+
+/**
+ * Result of on-device Apple Vision text recognition. Produced entirely on
+ * device — no network, no cloud (privacy-aligned). `language` is the
+ * NaturalLanguage dominant-language BCP-47 tag (e.g. "en", "nl"), or null when
+ * undetectable.
+ */
+export interface OcrResult {
+  /** All recognized lines joined with newlines. */
+  text: string
+  lines: OcrLine[]
+  /** Mean per-line confidence, 0–1. */
+  confidence: number
+  language: string | null
+  /** Always true — Vision text recognition is on-device. */
+  onDevice: boolean
+}
+
 export interface RecoveryPhraseResult {
   phrase: string
   masterKey: Uint8Array

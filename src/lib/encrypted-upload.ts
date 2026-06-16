@@ -25,6 +25,7 @@ import type { EncryptedData } from '../../modules/beebeeb-crypto'
 import { uploadEncryptedChunked } from './api'
 import type { FileEntry, UploadProgress } from './api'
 import { encryptedMetadataToJson, fileMetadataPlaintext } from './encrypted-metadata'
+import type { FileMetadataExtras } from './encrypted-metadata'
 import { isMedia } from './media'
 
 export interface EncryptedUploadOptions {
@@ -44,6 +45,12 @@ export interface EncryptedUploadOptions {
    * instead of the upload timestamp.
    */
   createdAt?: string
+  /**
+   * Optional additive metadata stored inside the E2E-encrypted blob alongside
+   * name/mime_type (task 0802): on-device OCR note + local AI summary. Fully
+   * client-side; never sent in plaintext.
+   */
+  metadataExtras?: FileMetadataExtras
   encryptChunkFn: (fileId: string, plaintext: Uint8Array) => Promise<EncryptedData>
   encryptMetadataFn: (fileId: string, metadata: string) => Promise<EncryptedData>
   onProgress?: (p: UploadProgress) => void
@@ -115,7 +122,7 @@ export async function generateFileId(): Promise<string> {
  */
 export async function encryptedUpload(opts: EncryptedUploadOptions): Promise<FileEntry> {
   const {
-    fileId, uri, name, parentId, mimeType, createdAt,
+    fileId, uri, name, parentId, mimeType, createdAt, metadataExtras,
     v2InitNameEncrypted, encryptChunkFn, encryptMetadataFn, onProgress,
   } = opts
 
@@ -125,7 +132,7 @@ export async function encryptedUpload(opts: EncryptedUploadOptions): Promise<Fil
   // Expo types: size is on FileInfo when { size: true } is passed
   const plaintextSize: number = (info as FileSystem.FileInfo & { size?: number }).size ?? 0
 
-  const metadataPlain = fileMetadataPlaintext(name, mimeType ?? null)
+  const metadataPlain = fileMetadataPlaintext(name, mimeType ?? null, metadataExtras)
 
   const nameEncryptedForFileId = async (targetFileId: string): Promise<string> => {
     const encName = await encryptMetadataFn(targetFileId, metadataPlain)

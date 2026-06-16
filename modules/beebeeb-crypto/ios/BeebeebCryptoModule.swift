@@ -2,6 +2,7 @@ import AVFoundation
 import ExpoModulesCore
 import Foundation
 import FileProvider
+import NaturalLanguage
 import PDFKit
 import Photos
 import Security
@@ -9,6 +10,7 @@ import SQLite3
 import UIKit
 import UniformTypeIdentifiers
 import UserNotifications
+import Vision
 
 private let fileProviderDomainIdentifier = NSFileProviderDomainIdentifier("io.beebeeb.files")
 private let fileProviderDisplayName = "Beebeeb"
@@ -48,6 +50,25 @@ private func fileURL(fromURI uri: String) -> URL {
     return url
   }
   return URL(fileURLWithPath: uri)
+}
+
+/// Map a UIImage display orientation to the CGImagePropertyOrientation that
+/// Vision's image handler expects, so OCR reads text the right way up even when
+/// the source JPEG carries an EXIF orientation tag.
+private func cgImagePropertyOrientation(
+  from uiOrientation: UIImage.Orientation
+) -> CGImagePropertyOrientation {
+  switch uiOrientation {
+  case .up: return .up
+  case .down: return .down
+  case .left: return .left
+  case .right: return .right
+  case .upMirrored: return .upMirrored
+  case .downMirrored: return .downMirrored
+  case .leftMirrored: return .leftMirrored
+  case .rightMirrored: return .rightMirrored
+  @unknown default: return .up
+  }
 }
 
 private func isVideoMediaHint(_ value: String?) -> Bool {
@@ -1076,6 +1097,79 @@ public class BeebeebCryptoModule: Module {
       )
       try data.write(to: outputURL, options: .atomic)
       return outputURL.absoluteString
+    }
+
+    // MARK: - On-device document OCR (0802)
+    //
+    // Apple Vision text recognition (`VNRecognizeTextRequest`) runs entirely
+    // on-device — it makes ZERO network calls and never sends pixels or text to
+    // Apple or any cloud. This is the privacy-preserving OCR engine for scanned
+    // documents (fits the no-US/no-cloud rule); the recognized text is handed
+    // back to JS where it is encrypted into the file's note field and (later)
+    // the encrypted search index. NaturalLanguage's on-device language detector
+    // tags the dominant language to help the local summary.
+    AsyncFunction("recognizeDocumentText") { (uri: String, options: [String: Any]?) throws -> [String: Any] in
+      let url = fileURL(fromURI: uri)
+      guard
+        let imageData = try? Data(contentsOf: url),
+        let uiImage = UIImage(data: imageData),
+        let cgImage = uiImage.cgImage
+      else {
+        throw NSError(
+          domain: "BeebeebOCR",
+          code: 1,
+          userInfo: [NSLocalizedDescriptionKey: "Could not load image for text recognition"]
+        )
+      }
+
+      let request = VNRecognizeTextRequest()
+      request.recognitionLevel = .accurate
+      request.usesLanguageCorrection = true
+      if #available(iOS 16.0, *) {
+        request.automaticallyDetectsLanguage = true
+      }
+      // Optional caller-supplied language hints (BCP-47, e.g. ["en-US","nl-NL"]).
+      if let langs = options?["languages"] as? [String], !langs.isEmpty {
+        request.recognitionLanguages = langs
+      }
+
+      let orientation = cgImagePropertyOrientation(from: uiImage.imageOrientation)
+      let handler = VNImageRequestHandler(cgImage: cgImage, orientation: orientation, options: [:])
+      try handler.perform([request])
+
+      let observations = request.results ?? []
+      var lines: [[String: Any]] = []
+      var collected: [String] = []
+      var confidenceSum: Float = 0
+      var confidenceCount = 0
+      for observation in observations {
+        guard let candidate = observation.topCandidates(1).first else { continue }
+        let value = candidate.string
+        collected.append(value)
+        lines.append(["text": value, "confidence": Double(candidate.confidence)])
+        confidenceSum += candidate.confidence
+        confidenceCount += 1
+      }
+
+      let text = collected.joined(separator: "\n")
+      let averageConfidence = confidenceCount > 0
+        ? Double(confidenceSum / Float(confidenceCount))
+        : 0
+
+      var dominantLanguage: String?
+      if !text.isEmpty {
+        let recognizer = NLLanguageRecognizer()
+        recognizer.processString(text)
+        dominantLanguage = recognizer.dominantLanguage?.rawValue
+      }
+
+      return [
+        "text": text,
+        "lines": lines,
+        "confidence": averageConfidence,
+        "language": dominantLanguage as Any,
+        "onDevice": true,
+      ]
     }
 
     AsyncFunction("opaqueRegistrationStart") { (_ username: String, password: String) throws -> [String: Any] in
