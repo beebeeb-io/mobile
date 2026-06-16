@@ -1765,6 +1765,10 @@ export default function PreviewScreen() {
       hasMasterKeyHandle: getMasterKeyHandleId() != null,
     });
     setLoadProgress(emptyPreviewProgress('downloading'));
+    // 0803 — offline-open is handled centrally inside decryptToTempFile: it
+    // prefers a local encrypted copy (no network) and raises a clear "Not
+    // available offline" error when a non-pinned file is opened with no
+    // connectivity. getToken reads the stored token, which is present offline.
     const token = await getToken();
     if (!token) {
       recordRuntimeTrace('preview.original.no_token', { fileId: currentFileId });
