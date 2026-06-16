@@ -2550,6 +2550,34 @@ export default function FilesScreen() {
     });
   }, []);
 
+  // Parent→children index of the whole (non-trashed) vault, rebuilt only when
+  // the sync tree changes — lets a folder's descendant files be gathered cheaply
+  // for recursive offline (0794).
+  const nodesByParent = useMemo(() => {
+    const map = new Map<string | null, SyncNode[]>();
+    for (const n of sync.allNodes()) {
+      if (n.is_trashed) continue;
+      const list = map.get(n.parent_id) ?? [];
+      list.push(n);
+      map.set(n.parent_id, list);
+    }
+    return map;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sync, sync.treeVersion]);
+
+  const folderDescendantFileIds = useCallback((folderId: string): string[] => {
+    const out: string[] = [];
+    const stack: string[] = [folderId];
+    while (stack.length > 0) {
+      const pid = stack.pop()!;
+      for (const child of nodesByParent.get(pid) ?? []) {
+        if (child.is_folder) stack.push(child.id);
+        else out.push(child.id);
+      }
+    }
+    return out;
+  }, [nodesByParent]);
+
   // 0793 — toggle a single FILE offline. The offlineManager owns the queued →
   // downloading N% → available pipeline (with real byte progress); the row
   // indicator reflects it live. The encrypted blob is stored as-is (decrypted
@@ -2567,13 +2595,43 @@ export default function FilesScreen() {
     showToast({ type: 'info', message: 'Saving for offline…' });
   }, [showToast, ensureFileReady]);
 
+  // 0794 — make a FOLDER available offline: recursively enqueue every nested
+  // file (walked from the cached sync tree, reusing the same subtree pattern as
+  // the move picker). The folder row shows aggregate progress; removing it
+  // cancels/clears the whole subtree.
+  const toggleFolderOffline = useCallback(async (folder: FileEntry) => {
+    const fileIds = folderDescendantFileIds(folder.id);
+    if (offlineManager.isFolderOffline(folder.id)) {
+      await offlineManager.removeFolder(folder.id, fileIds);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      showToast({ type: 'info', message: 'Folder removed from offline' });
+      return;
+    }
+    offlineManager.markFolderOffline(folder.id);
+    if (fileIds.length === 0) {
+      showToast({ type: 'info', message: 'Folder is empty — nothing to download' });
+      return;
+    }
+    const index = allEntries();
+    const files = fileIds.map((id) => ({ id, name: index[id]?.name ?? decryptedNames[id] ?? 'File' }));
+    offlineManager.makeFilesAvailable(files);
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    showToast({
+      type: 'info',
+      message: `Saving ${fileIds.length} file${fileIds.length === 1 ? '' : 's'} offline…`,
+    });
+  }, [folderDescendantFileIds, allEntries, decryptedNames, showToast]);
+
   const handleLongPress = useCallback((item: FileEntry) => {
     const name = decryptedNames[item.id] ?? displayName(item);
     const itemMimeType = mimeTypeFor(item);
     const isPinned = pinnedFolders.some((p) => p.id === item.id);
     const pinLabel = isPinned ? 'Unpin' : 'Pin to top';
     const isImage = !item.is_folder && (itemMimeType ?? '').startsWith('image/');
-    const offlineLabel = offlineManager.getStatus(item.id) != null ? 'Remove offline' : 'Make available offline';
+    const offlineTracked = item.is_folder
+      ? offlineManager.isFolderOffline(item.id)
+      : offlineManager.getStatus(item.id) != null;
+    const offlineLabel = offlineTracked ? 'Remove offline' : 'Make available offline';
     const isLocked = lockedFileIds.has(item.id);
     const lockLabel = isLocked ? 'Unlock file' : 'Lock file';
     // 'Send via Constellation' is intentionally hidden — Constellation crypto is v1 mock
@@ -2583,7 +2641,7 @@ export default function FilesScreen() {
     if (isImage) fileOptions.push('Save to Photos');
     fileOptions.push('Move to...', offlineLabel, 'Create proof', lockLabel, 'Move to Trash', 'Details');
     const options = item.is_folder
-      ? ['Rename', 'Open', 'Share', 'Move to...', 'Delete', pinLabel, lockLabel, 'Details', 'Cancel']
+      ? ['Rename', 'Open', 'Share', 'Move to...', offlineLabel, 'Delete', pinLabel, lockLabel, 'Details', 'Cancel']
       : [...fileOptions, 'Cancel'];
     const destructiveIndex = options.indexOf(item.is_folder ? 'Delete' : 'Move to Trash');
     const cancelIndex = options.length - 1;
@@ -2827,7 +2885,10 @@ export default function FilesScreen() {
         case 'Save to Photos': void saveToGallery(); return;
         case 'Move to...': void promptMove(); return;
         case 'Make available offline':
-        case 'Remove offline': void toggleOffline(item, name); return;
+        case 'Remove offline':
+          if (item.is_folder) void toggleFolderOffline(item);
+          else void toggleOffline(item, name);
+          return;
         case 'Create proof': void promptProveExistence(); return;
         case 'Delete': confirmDeleteFolder(); return;
         case 'Move to Trash': confirmMoveToTrash(); return;
@@ -2891,6 +2952,7 @@ export default function FilesScreen() {
     pinnedFolders,
     togglePin,
     toggleOffline,
+    toggleFolderOffline,
     proofs,
     lockedFileIds,
     currentFolder.id,
@@ -3121,34 +3183,6 @@ export default function FilesScreen() {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     enterSelectMode(item.id);
   }, [enterSelectMode]);
-
-  // Parent→children index of the whole (non-trashed) vault, rebuilt only when
-  // the sync tree changes — lets a folder's descendant files be gathered cheaply
-  // for recursive offline (0794).
-  const nodesByParent = useMemo(() => {
-    const map = new Map<string | null, SyncNode[]>();
-    for (const n of sync.allNodes()) {
-      if (n.is_trashed) continue;
-      const list = map.get(n.parent_id) ?? [];
-      list.push(n);
-      map.set(n.parent_id, list);
-    }
-    return map;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sync, sync.treeVersion]);
-
-  const folderDescendantFileIds = useCallback((folderId: string): string[] => {
-    const out: string[] = [];
-    const stack: string[] = [folderId];
-    while (stack.length > 0) {
-      const pid = stack.pop()!;
-      for (const child of nodesByParent.get(pid) ?? []) {
-        if (child.is_folder) stack.push(child.id);
-        else out.push(child.id);
-      }
-    }
-    return out;
-  }, [nodesByParent]);
 
   // Per-item offline status for the row indicator. Files read the manager
   // directly; folders aggregate over their descendant files (0794). Depends on
