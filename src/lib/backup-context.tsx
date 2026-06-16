@@ -197,9 +197,22 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
         if (videos !== null) setIncludeVideosState(videos === 'true');
         if (wifi !== null) setWifiOnlyState(wifi === 'true');
         if (bgUpload !== null) setBackgroundUploadState(bgUpload === 'true');
-        if (photo === 'true') void enableNativeBackup('camera_roll', { runNow: false });
-        if (contacts === 'true') void enableNativeBackup('contacts', { runNow: false });
-        if (calendar === 'true') void enableNativeBackup('calendar', { runNow: false });
+        // 0811 — sequence the enables. Firing all three unawaited made each
+        // category's ensureBackupFolders race to create its own "Backups" root
+        // (duplicate roots). Running them in series means the first warms the
+        // folder tree and the rest reuse it; ensureFolder's in-flight coalescing
+        // is the belt-and-braces guard for any remaining concurrency (e.g. a
+        // background task firing alongside this). Wrapped so the mount effect
+        // isn't blocked.
+        void (async () => {
+          try {
+            if (photo === 'true') await enableNativeBackup('camera_roll', { runNow: false });
+            if (contacts === 'true') await enableNativeBackup('contacts', { runNow: false });
+            if (calendar === 'true') await enableNativeBackup('calendar', { runNow: false });
+          } catch {
+            // Best-effort warm-up — individual enables log their own failures.
+          }
+        })();
       } catch {
         // SecureStore unavailable (web / unit tests)
       }
