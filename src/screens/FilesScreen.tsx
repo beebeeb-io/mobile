@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
-  ActionSheetIOS,
   ActivityIndicator,
   Alert,
   Dimensions,
@@ -41,6 +40,7 @@ import { useToast } from '../lib/toast-context';
 import SkeletonRow from '../components/SkeletonRow';
 import PresenceAvatars from '../components/PresenceAvatars';
 import TrustDetailsSheet from '../components/TrustDetailsSheet';
+import FolderPickerModal, { type PickerFolder } from '../components/FolderPickerModal';
 import { ApiError, listAllFiles, getFileIndex, createFolder, deleteFile, trashFiles, renameFile, moveFile, uploadFile, downloadFile, friendlyError, getStorageUsage, createProofOfExistence, storageLocation, trustLocation, getFolderPresence, getUploadStatus, getApiUrl, getToken } from '../lib/api';
 import { guessMimeType, fileCategory as fileCategoryFromMime } from '../lib/media';
 import { generateAndUploadThumbnail, fetchDecryptedThumbnailUri } from '../lib/thumbnail';
@@ -1219,7 +1219,7 @@ export default function FilesScreen() {
   // Encrypted search index — fetched on unlock, queried on every keystroke
   // when the search bar is open. Powers the "in your vault" results hint
   // below the search bar; also kept in sync after create, rename, move, and delete.
-  const { ready: searchIndexReady, search: searchVault, indexFile, unindexFile, getIndexedIds } = useSearchIndex();
+  const { ready: searchIndexReady, search: searchVault, indexFile, unindexFile, getIndexedIds, allEntries } = useSearchIndex();
 
   // 0778A — recursive search. The encrypted index is populated INCREMENTALLY (on
   // upload/rename), so files created on another device/client aren't in it and a
@@ -1285,6 +1285,15 @@ export default function FilesScreen() {
   // tracked follow-up (dynamic per-row actions + Swipeable gesture interplay).
   const [rowSheet, setRowSheet] = useState<{ header: ActionSheetFileHeader; rows: ActionSheetRow[] } | null>(null);
   const [rowSheetOpen, setRowSheetOpen] = useState(false);
+
+  // 0796 — native nested folder picker for "Move". `null` = closed.
+  const [movePicker, setMovePicker] = useState<{
+    ids: string[];
+    title: string;
+    folders: PickerFolder[];
+    currentParentId: string | null;
+  } | null>(null);
+  const [moveBusy, setMoveBusy] = useState(false);
 
   // Upload state — drives the 3-stage trust banner above the FAB.
   // stage 1 = encrypting · stage 2 = uploading · stage 3 = storing/done.
@@ -2319,58 +2328,147 @@ export default function FilesScreen() {
     })();
   }, [selectedIds, files, decryptedNames, exitSelectMode, navigation, mimeTypeFor, ensureFileReady]);
 
-  const handleBatchMove = useCallback(async () => {
-    if (selectedIds.size === 0) return;
+  // 0796 — Build the FULL selectable folder tree for the Move picker. Folder
+  // STRUCTURE comes from the authoritative in-memory sync tree (`sync.allNodes`),
+  // names from the cached search index → in-memory decryptedNames → on-demand
+  // decrypt → display fallback. The moved items and their entire subtree are
+  // excluded so a folder can never be moved into itself or a descendant.
+  const buildPickerFolders = useCallback(async (movingIds: string[]): Promise<PickerFolder[]> => {
+    let folderNodes: SyncNode[] = sync.allNodes().filter((n) => n.is_folder && !n.is_trashed);
+    if (folderNodes.length === 0) {
+      // Sync not ready — fall back to a flat root listing (better than nothing).
+      try {
+        const all = await listAllFiles();
+        folderNodes = all.filter((f) => f.is_folder).map((f) => ({
+          id: f.id,
+          name_encrypted: f.name_encrypted ?? '',
+          parent_id: f.parent_id ?? null,
+          is_folder: true,
+          size_bytes: f.size_bytes ?? 0,
+          content_hash: null,
+          version_number: 1,
+          has_thumbnail: false,
+          storage_pool_id: f.storage_pool_id ?? null,
+          is_trashed: false,
+          is_starred: false,
+          created_at: f.created_at,
+          updated_at: f.updated_at,
+        }));
+      } catch {
+        folderNodes = [];
+      }
+    }
+
+    // Exclude the moved folders + their descendants.
+    const childrenOf = new Map<string | null, SyncNode[]>();
+    for (const n of folderNodes) {
+      const list = childrenOf.get(n.parent_id) ?? [];
+      list.push(n);
+      childrenOf.set(n.parent_id, list);
+    }
+    const excluded = new Set<string>();
+    const movingSet = new Set(movingIds);
+    const queue = folderNodes.filter((n) => movingSet.has(n.id));
+    for (const node of queue) excluded.add(node.id);
+    while (queue.length > 0) {
+      const node = queue.pop()!;
+      for (const child of childrenOf.get(node.id) ?? []) {
+        if (!excluded.has(child.id)) {
+          excluded.add(child.id);
+          queue.push(child);
+        }
+      }
+    }
+
+    // Resolve decrypted names.
+    const indexEntries = allEntries();
+    const nameCache: Record<string, string> = {};
+    const toDecrypt: SyncNode[] = [];
+    for (const n of folderNodes) {
+      if (excluded.has(n.id)) continue;
+      const cached = decryptedNames[n.id] ?? indexEntries[n.id]?.name;
+      if (cached) nameCache[n.id] = cached;
+      else if ((n.name_encrypted ?? '').startsWith('{')) toDecrypt.push(n);
+      else nameCache[n.id] = displayName(syncNodeToFileEntry(n)) || 'Untitled folder';
+    }
+    const BATCH = 12;
+    for (let i = 0; i < toDecrypt.length; i += BATCH) {
+      await Promise.all(
+        toDecrypt.slice(i, i + BATCH).map(async (n) => {
+          try {
+            const payload = encryptedMetadataPayloadToBytes(n.name_encrypted ?? '');
+            if (payload) {
+              const plaintext = await decryptMetadata(n.id, payload.nonce, payload.ciphertext);
+              const { name } = parseDecryptedMetadata(plaintext);
+              if (name) {
+                nameCache[n.id] = name;
+                return;
+              }
+            }
+          } catch {
+            // fall through to display fallback
+          }
+          nameCache[n.id] = displayName(syncNodeToFileEntry(n)) || 'Untitled folder';
+        }),
+      );
+    }
+
+    return folderNodes
+      .filter((n) => !excluded.has(n.id))
+      .map((n) => ({ id: n.id, name: nameCache[n.id] ?? 'Untitled folder', parentId: n.parent_id }));
+  }, [sync, allEntries, decryptedNames, decryptMetadata]);
+
+  const openMovePicker = useCallback(async (ids: string[]) => {
+    if (ids.length === 0) return;
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    let folders: FileEntry[] = [];
     try {
-      const all = await listAllFiles();
-      folders = all.filter((f) => f.is_folder && !selectedIds.has(f.id));
+      const folders = await buildPickerFolders(ids);
+      setMovePicker({
+        ids,
+        title: ids.length === 1 ? 'Move' : `Move ${ids.length} items`,
+        folders,
+        currentParentId: currentFolder.id,
+      });
     } catch {
       Alert.alert('Error', 'Could not load folders.');
-      return;
     }
-    const folderNames = folders.map((f) => decryptedNames[f.id] ?? displayName(f));
-    const moveOptions = ['Drive (root)', ...folderNames, 'Cancel'];
-    const moveCancelIdx = moveOptions.length - 1;
+  }, [buildPickerFolders, currentFolder.id]);
 
-    const doMove = async (targetId: string | null) => {
-      try {
-        const ids = [...selectedIds];
-        await Promise.all(ids.map((id) => moveFile(id, targetId)));
-        for (const id of ids) {
-          const moved = files.find((f) => f.id === id);
-          if (!moved) continue;
-          indexFile(id, toSearchIndexEntry(moved, decryptedNames[id] ?? displayName(moved), targetId));
-        }
-        setFiles((prev) => prev.filter((f) => !selectedIds.has(f.id)));
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-        exitSelectMode();
-      } catch (err) {
-        Alert.alert('Error', friendlyError(err));
+  const performMove = useCallback(async (targetId: string | null) => {
+    const picker = movePicker;
+    if (!picker || moveBusy) return;
+    const ids = picker.ids;
+    const destName = targetId === null
+      ? 'Drive'
+      : picker.folders.find((f) => f.id === targetId)?.name ?? 'folder';
+    setMoveBusy(true);
+    try {
+      await Promise.all(ids.map((id) => moveFile(id, targetId)));
+      for (const id of ids) {
+        const moved = files.find((f) => f.id === id);
+        if (!moved) continue;
+        indexFile(id, toSearchIndexEntry(moved, decryptedNames[id] ?? displayName(moved), targetId));
       }
-    };
-
-    if (Platform.OS === 'ios') {
-      ActionSheetIOS.showActionSheetWithOptions(
-        { title: 'Move to', options: moveOptions, cancelButtonIndex: moveCancelIdx },
-        (idx) => {
-          if (idx === moveCancelIdx) return;
-          if (idx === 0) void doMove(null);
-          else void doMove(folders[idx - 1]!.id);
-        },
-      );
-    } else {
-      Alert.alert('Move to', undefined, [
-        { text: 'Drive (root)', onPress: () => void doMove(null) },
-        ...folders.map((f, i) => ({
-          text: folderNames[i] ?? displayName(f),
-          onPress: () => void doMove(f.id),
-        })),
-        { text: 'Cancel', style: 'cancel' as const },
-      ]);
+      const movedSet = new Set(ids);
+      setFiles((prev) => prev.filter((f) => !movedSet.has(f.id)));
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      showToast({
+        type: 'success',
+        message: ids.length === 1 ? `Moved to ${destName}` : `Moved ${ids.length} items to ${destName}`,
+      });
+      setMovePicker(null);
+      if (selectMode) exitSelectMode();
+    } catch (err) {
+      Alert.alert('Error', friendlyError(err));
+    } finally {
+      setMoveBusy(false);
     }
-  }, [selectedIds, files, decryptedNames, exitSelectMode, indexFile]);
+  }, [movePicker, moveBusy, files, decryptedNames, indexFile, showToast, selectMode, exitSelectMode]);
+
+  const handleBatchMove = useCallback(() => {
+    if (selectedIds.size === 0) return;
+    void openMovePicker([...selectedIds]);
+  }, [selectedIds, openMovePicker]);
 
   const handleSearchToggle = useCallback(() => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -2527,51 +2625,8 @@ export default function FilesScreen() {
       );
     };
 
-    const promptMove = async () => {
-      let folders: FileEntry[] = [];
-      try {
-        const all = await listAllFiles();
-        folders = all.filter((f) => f.is_folder && f.id !== item.id);
-      } catch {
-        Alert.alert('Error', 'Could not load folders.');
-        return;
-      }
-      const folderNames = folders.map((f) => decryptedNames[f.id] ?? displayName(f));
-      const moveOptions = ['Drive (root)', ...folderNames, 'Cancel'];
-      const moveCancelIdx = moveOptions.length - 1;
-
-      const doMove = async (targetId: string | null, targetName?: string) => {
-        try {
-          await moveFile(item.id, targetId);
-          indexFile(item.id, toSearchIndexEntry(item, name, targetId));
-          setFiles((prev) => prev.filter((f) => f.id !== item.id));
-          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-          showToast({ type: 'success', message: `Moved to ${targetName ?? 'Drive'}` });
-        } catch (err) {
-          Alert.alert('Error', friendlyError(err));
-        }
-      };
-
-      if (Platform.OS === 'ios') {
-        ActionSheetIOS.showActionSheetWithOptions(
-          { title: 'Move to', options: moveOptions, cancelButtonIndex: moveCancelIdx },
-          (idx) => {
-            if (idx === moveCancelIdx) return;
-            if (idx === 0) void doMove(null, 'Drive');
-            else { const fn = folderNames[idx - 1]; void doMove(folders[idx - 1]!.id, fn); }
-          },
-        );
-      } else {
-        Alert.alert('Move to', undefined, [
-          { text: 'Drive (root)', onPress: () => void doMove(null, 'Drive') },
-          ...folders.map((f, i) => ({
-            text: folderNames[i] ?? displayName(f),
-            onPress: () => void doMove(f.id, folderNames[i]),
-          })),
-          { text: 'Cancel', style: 'cancel' as const },
-        ]);
-      }
-    };
+    // 0796 — open the native nested folder picker (drill-in + breadcrumb).
+    const promptMove = () => { void openMovePicker([item.id]); };
 
     const promptExport = async () => {
       if (!(await ensureFileReady(item))) return;
@@ -3591,6 +3646,17 @@ export default function FilesScreen() {
         onClose={() => setRowSheetOpen(false)}
         header={rowSheet?.header}
         rows={rowSheet?.rows ?? []}
+      />
+
+      {/* 0796 — native nested folder picker for "Move" */}
+      <FolderPickerModal
+        visible={movePicker !== null}
+        title={movePicker?.title ?? 'Move'}
+        folders={movePicker?.folders ?? []}
+        currentParentId={movePicker?.currentParentId ?? null}
+        busy={moveBusy}
+        onCancel={() => { if (!moveBusy) setMovePicker(null); }}
+        onConfirm={(targetId) => void performMove(targetId)}
       />
 
       {/* Android new-folder modal — Alert.prompt is iOS-only. */}

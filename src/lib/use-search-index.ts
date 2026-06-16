@@ -37,6 +37,9 @@ export interface UseSearchIndex {
   /** Ids currently present in the in-memory index — for the full-vault reconcile
    *  (task 0778A) that back-fills files added on another client. */
   getIndexedIds: () => Set<string>
+  /** Snapshot of the in-memory index entries (decrypted name + parent per id).
+   *  Used by the move picker (0796) as the cached, complete folder source. */
+  allEntries: () => Record<string, SearchIndexEntry>
 }
 
 export function useSearchIndex(): UseSearchIndex {
@@ -101,6 +104,10 @@ export function useSearchIndex(): UseSearchIndex {
     return new Set(idx ? Object.keys(idx.files) : [])
   }, [])
 
+  const allEntries = useCallback((): Record<string, SearchIndexEntry> => {
+    return indexRef.current?.files ?? {}
+  }, [])
+
   const indexFile = useCallback((fileId: string, entry: SearchIndexEntry) => {
     if (!indexRef.current) return
     indexRef.current = updateIndexEntry(indexRef.current, fileId, entry)
@@ -123,5 +130,5 @@ export function useSearchIndex(): UseSearchIndex {
     }
   }, [])
 
-  return { ready, search, indexFile, unindexFile, getIndexedIds }
+  return { ready, search, indexFile, unindexFile, getIndexedIds, allEntries }
 }
