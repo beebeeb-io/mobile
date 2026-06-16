@@ -58,6 +58,7 @@ import { encryptedUpload, generateFileId } from '../lib/encrypted-upload';
 import { useSync } from '../lib/sync-context';
 import { useSearchIndex } from '../lib/use-search-index';
 import { BBActionSheet, type ActionSheetRow, type ActionSheetFileHeader } from '../components/BBActionSheet';
+import { MenuView, type MenuAction, type NativeActionEvent } from '@react-native-menu/menu';
 import { useBackup } from '../lib/backup-context';
 import type { SearchIndexEntry, SearchResult } from '../lib/search-index';
 import { donateSiriShortcut } from '../lib/siri-shortcuts';
@@ -857,6 +858,19 @@ const SORT_LABELS: Record<SortOrder, string> = {
 
 const SORT_ORDER: SortOrder[] = ['name-asc', 'name-desc', 'date-desc', 'date-asc', 'size-desc', 'size-asc'];
 
+// 0789 — trailing SF Symbol per sort row in the native iOS UIMenu pull-down.
+// The symbol names the sort key (name / date / size); the active row also gets
+// the system checkmark (MenuAction.state = 'on'). iOS renders SF Symbols on the
+// trailing edge of a UIMenu row, exactly the Apple Music pattern Guus asked for.
+const SORT_SF_SYMBOL: Record<SortOrder, string> = {
+  'name-asc': 'textformat',
+  'name-desc': 'textformat',
+  'date-desc': 'calendar',
+  'date-asc': 'calendar',
+  'size-desc': 'arrow.up.arrow.down',
+  'size-asc': 'arrow.up.arrow.down',
+};
+
 function applySortOrder(
   list: FileEntry[],
   order: SortOrder,
@@ -1097,7 +1111,7 @@ export default function FilesScreen() {
   // Bottom tab bar overlaps the FAB unless we offset by its real height
   // (insets.bottom alone underestimates this on devices with a home bar).
   const tabBarHeight = useBottomTabBarHeight();
-  const { colors: c } = useTheme();
+  const { colors: c, resolved: themeScheme } = useTheme();
   const { showToast } = useToast();
   const { user, phraseVerified } = useAuth();
   const isAuthenticated = user !== null;
@@ -1265,10 +1279,10 @@ export default function FilesScreen() {
     };
   }, [isUnlocked, searchIndexReady, sync, getIndexedIds, indexFile, decryptMetadata]);
 
-  // 0777 — native-iOS action sheets. Sort + "+" add menus route through the single
-  // reusable <BBActionSheet>; opened by these flags (row-actions menu follows).
-  const [sortSheetOpen, setSortSheetOpen] = useState(false);
-  const [addSheetOpen, setAddSheetOpen] = useState(false);
+  // 0789 — Sort + "+" add menus are now the real iOS UIMenu pull-down (MenuView),
+  // anchored under the button. Only the file-row long-press still routes through the
+  // reusable <BBActionSheet> (rowSheet); converting it to a native context menu is a
+  // tracked follow-up (dynamic per-row actions + Swipeable gesture interplay).
   const [rowSheet, setRowSheet] = useState<{ header: ActionSheetFileHeader; rows: ActionSheetRow[] } | null>(null);
   const [rowSheetOpen, setRowSheetOpen] = useState(false);
 
@@ -2029,10 +2043,8 @@ export default function FilesScreen() {
   }, [currentFolder.id, navigation, phraseVerified]);
 
   // 0777 — FAB button feedback (Medium), then the native add sheet.
-  const handleFabPress = useCallback(() => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    setAddSheetOpen(true);
-  }, []);
+  // 0789 — the "+" FAB opens the native iOS UIMenu pull-down (see addMenuActions /
+  // onAddAction below, declared once the four upload handlers are in scope).
 
   // Quick action / deep-link landing: route.params.action is set by the App
   // shortcut handler (beebeeb://upload, beebeeb://search, beebeeb://scan,
@@ -2111,16 +2123,26 @@ export default function FilesScreen() {
     }
   }, [submitNewFolder]);
 
-  // 0777 — "+" add-file sheet rows (placed after all four handlers are declared).
-  const addRows = useMemo<ActionSheetRow[]>(
+  // 0789 — "+" add menu as native iOS UIMenu items, with trailing SF Symbols.
+  // (Placed after all four upload handlers are declared.)
+  const addMenuActions = useMemo<MenuAction[]>(
     () => [
-      { key: 'photo', label: 'Upload photo or video', icon: 'image-outline', onPress: pickAndUploadPhotos },
-      { key: 'file', label: 'Upload file', icon: 'document-outline', onPress: pickAndUploadFile },
-      { key: 'scan', label: 'Scan document', icon: 'scan-outline', onPress: openDocumentScanner },
-      { key: 'folder', label: 'New folder', icon: 'create-outline', onPress: showNewFolderPrompt },
+      { id: 'photo', title: 'Upload photo or video', image: 'photo.on.rectangle' },
+      { id: 'file', title: 'Upload file', image: 'doc' },
+      { id: 'scan', title: 'Scan document', image: 'doc.viewfinder' },
+      { id: 'folder', title: 'New folder', image: 'folder.badge.plus' },
     ],
-    [pickAndUploadPhotos, pickAndUploadFile, openDocumentScanner, showNewFolderPrompt],
+    [],
   );
+
+  const onAddAction = useCallback(({ nativeEvent }: NativeActionEvent) => {
+    switch (nativeEvent.event) {
+      case 'photo': pickAndUploadPhotos(); return;
+      case 'file': pickAndUploadFile(); return;
+      case 'scan': openDocumentScanner(); return;
+      case 'folder': showNewFolderPrompt(); return;
+    }
+  }, [pickAndUploadPhotos, pickAndUploadFile, openDocumentScanner, showNewFolderPrompt]);
 
   const confirmNewFolderModal = useCallback(async () => {
     const trimmed = newFolderName.trim();
@@ -2135,26 +2157,23 @@ export default function FilesScreen() {
     }
   }, [newFolderName, submitNewFolder]);
 
-  // 0777 — native bottom sheet (no haptic on open, per iOS HIG).
-  const handleSortPress = useCallback(() => {
-    setSortSheetOpen(true);
-  }, []);
-
-  const sortRows = useMemo<ActionSheetRow[]>(
+  // 0789 — sort options as native iOS UIMenu items: trailing SF Symbol per row,
+  // the active sort carries the system checkmark (state 'on').
+  const sortMenuActions = useMemo<MenuAction[]>(
     () =>
       SORT_ORDER.map((o) => ({
-        key: o,
-        label: SORT_LABELS[o],
-        icon: o.startsWith('name')
-          ? 'text'
-          : o.startsWith('date')
-            ? 'calendar-outline'
-            : 'swap-vertical-outline',
-        active: o === sortOrder,
-        onPress: () => setSortOrder(o),
+        id: o,
+        title: SORT_LABELS[o],
+        image: SORT_SF_SYMBOL[o],
+        state: o === sortOrder ? 'on' : 'off',
       })),
     [sortOrder],
   );
+
+  const onSortAction = useCallback(({ nativeEvent }: NativeActionEvent) => {
+    const order = nativeEvent.event as SortOrder;
+    if ((SORT_ORDER as string[]).includes(order)) setSortOrder(order);
+  }, []);
 
   // ------------------------------------------------------------------
   // Multi-select handlers
@@ -3164,19 +3183,27 @@ export default function FilesScreen() {
             </TouchableOpacity>
           )}
           {!searchActive && (
-            <TouchableOpacity
-              onPress={handleSortPress}
+            <MenuView
+              title="Sort by"
+              onPressAction={onSortAction}
+              actions={sortMenuActions}
+              shouldOpenOnLongPress={false}
+              themeVariant={themeScheme}
               hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
               style={styles.searchButton}
-              accessibilityLabel={`Sort files, current: ${SORT_LABELS[sortOrder]}`}
-              accessibilityRole="button"
             >
-              <Ionicons
-                name="swap-vertical"
-                size={20}
-                color={sortOrder !== 'date-desc' ? c.amberDeep : c.ink2}
-              />
-            </TouchableOpacity>
+              <View
+                style={styles.searchButton}
+                accessibilityLabel={`Sort files, current: ${SORT_LABELS[sortOrder]}`}
+                accessibilityRole="button"
+              >
+                <Ionicons
+                  name="swap-vertical"
+                  size={20}
+                  color={sortOrder !== 'date-desc' ? c.amberDeep : c.ink2}
+                />
+              </View>
+            </MenuView>
           )}
           <TouchableOpacity
             onPress={handleSearchToggle}
@@ -3472,32 +3499,42 @@ export default function FilesScreen() {
         </View>
       )}
 
-      {/* Floating action button — hidden in select mode */}
+      {/* Floating action button — hidden in select mode. Opens the native iOS
+          UIMenu pull-down (0789). While an upload is in flight the FAB is a plain
+          disabled button so the menu can't fire mid-upload. */}
       {!selectMode && (
-        <TouchableOpacity
-          style={[styles.fab, { bottom: 16 + tabBarHeight, backgroundColor: c.amber }]}
-          activeOpacity={0.8}
-          onPress={handleFabPress}
-          disabled={!!uploadingName}
-          accessibilityLabel="Add file or folder"
-          accessibilityRole="button"
-        >
-          <Text style={[styles.fabText, { color: c.ink }]}>+</Text>
-        </TouchableOpacity>
+        uploadingName ? (
+          <TouchableOpacity
+            style={[styles.fab, { bottom: 16 + tabBarHeight, backgroundColor: c.amber }]}
+            activeOpacity={0.8}
+            disabled
+            accessibilityLabel="Add file or folder"
+            accessibilityRole="button"
+          >
+            <Text style={[styles.fabText, { color: c.ink }]}>+</Text>
+          </TouchableOpacity>
+        ) : (
+          <MenuView
+            onPressAction={onAddAction}
+            actions={addMenuActions}
+            shouldOpenOnLongPress={false}
+            themeVariant={themeScheme}
+            style={[styles.fab, { bottom: 16 + tabBarHeight, backgroundColor: c.amber }]}
+          >
+            <View
+              style={styles.fabInner}
+              accessibilityLabel="Add file or folder"
+              accessibilityRole="button"
+            >
+              <Text style={[styles.fabText, { color: c.ink }]}>+</Text>
+            </View>
+          </MenuView>
+        )
       )}
 
-      {/* 0777 — native bottom sheets routed through the one reusable component. */}
-      <BBActionSheet
-        visible={sortSheetOpen}
-        onClose={() => setSortSheetOpen(false)}
-        title="Sort by"
-        rows={sortRows}
-      />
-      <BBActionSheet
-        visible={addSheetOpen}
-        onClose={() => setAddSheetOpen(false)}
-        rows={addRows}
-      />
+      {/* 0789 — file-row long-press still uses the reusable bottom sheet; sort + "+"
+          are now native UIMenus (above). Converting the long-press to a native
+          context menu is a tracked follow-up. */}
       <BBActionSheet
         visible={rowSheetOpen}
         onClose={() => setRowSheetOpen(false)}
@@ -3764,6 +3801,7 @@ const styles = StyleSheet.create({
 
   // FAB — standard iOS size 56x56
   fab: { position: 'absolute', right: 20, width: 56, height: 56, borderRadius: 28, alignItems: 'center', justifyContent: 'center', ...shadows.lg },
+  fabInner: { width: '100%', height: '100%', alignItems: 'center', justifyContent: 'center' },
   fabText: { fontSize: 28, fontWeight: '600', marginTop: -2 },
 
   // Upload progress banner
