@@ -37,6 +37,8 @@ import {
 } from './api';
 import { rateLimitedFetch } from './rate-limited-fetch';
 import { recordRuntimeTrace } from './runtime-trace';
+import { offlineManager, offlineFilePath } from './offline-manager';
+import NetInfo from '@react-native-community/netinfo';
 
 const PREVIEW_CACHE_DIR = `${FileSystem.cacheDirectory}preview/`;
 const MAX_PREVIEW_CACHE_ITEMS = 24;
@@ -68,6 +70,13 @@ function uint8ArrayToBase64(bytes: Uint8Array): string {
     binary += String.fromCharCode(bytes[i]);
   }
   return btoa(binary);
+}
+
+function base64ToUint8Array(b64: string): Uint8Array {
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
 }
 
 function responseHeaderInt(headers: Headers, key: string): number | null {
@@ -219,6 +228,40 @@ export async function decryptToTempFile(
     cachedExists: cached.exists,
     cachedSize: cached.exists ? cached.size ?? 0 : 0,
   });
+
+  // 0803 — offline-first. If this file has a local encrypted copy (pinned via
+  // "available offline"), decrypt it on-device with NO network — works in
+  // airplane mode, across every preview type (PDF, image, video, text, …) since
+  // they all funnel through here. Falls through to the network path only if the
+  // local copy is unreadable.
+  await offlineManager.init();
+  if (offlineManager.isAvailable(fileId)) {
+    try {
+      // Prefer the chunk metadata captured at download time (exact upload chunk
+      // size); fall back to the caller's file-metadata values.
+      const meta = offlineManager.getMeta(fileId);
+      return await decryptLocalFileToTempFile(
+        fileId,
+        fileKey,
+        ext,
+        offlineFilePath(fileId),
+        meta?.sizeBytes ?? sizeBytes,
+        meta?.chunkCount ?? chunkCount,
+        meta?.chunkSize,
+        options,
+      );
+    } catch (err) {
+      if (options.signal?.aborted) throw err;
+      recordRuntimeTrace('preview.decrypt.offline_fallback', { fileId, ...errorTraceFields(err) });
+    }
+  } else {
+    // Not pinned for offline — if there's also no connectivity, surface a clear
+    // "not available offline" state instead of a confusing server timeout.
+    const net = await NetInfo.fetch().catch(() => null);
+    if (net && net.isConnected === false) {
+      throw new Error('Not available offline. Connect to the internet, or mark this file available offline first.');
+    }
+  }
 
   const token = await getToken();
   if (!token) {
@@ -508,6 +551,137 @@ export async function decryptToTempFile(
     elapsedMs: Date.now() - startedAt,
   });
 
+  return outputPath;
+}
+
+/**
+ * Decrypt a LOCAL encrypted file (an offline copy in `OFFLINE_DIR`) to a temp
+ * file — the read-from-local half of "available offline" (task 0803).
+ *
+ * Identical decryption to `decryptToTempFile`, but the ciphertext is read from
+ * `localEncryptedUri` instead of fetched from the API, so it works with NO
+ * network. The offline blob is the exact `nonce||ct||tag` chunk stream the
+ * server stores; since the HTTP size/chunk headers aren't persisted alongside
+ * it, plaintext size + chunk count come from the file metadata (`sizeBytes`,
+ * `chunkCount`) with a fallback inference. Plaintext is written only to the
+ * sandboxed, auto-pruned preview cache — never persisted in the clear.
+ */
+export async function decryptLocalFileToTempFile(
+  fileId: string,
+  fileKey: Uint8Array | (() => Promise<Uint8Array>) | null,
+  extension: string,
+  localEncryptedUri: string,
+  sizeBytes?: number | null,
+  chunkCount?: number | null,
+  chunkSize?: number | null,
+  options: PreviewDecryptOptions = {},
+): Promise<string> {
+  await ensureCacheDir();
+  throwIfAborted(options.signal);
+
+  const ext = extension.replace(/^\./, '');
+  const outputPath = `${PREVIEW_CACHE_DIR}${fileId}.${ext}`;
+
+  // Reuse a previously-decrypted plaintext copy when present.
+  const cached = await FileSystem.getInfoAsync(outputPath);
+  if (cached.exists && cached.size && cached.size > 0) {
+    options.onProgress?.({ requestId: '', fileId, stage: 'complete' });
+    return outputPath;
+  }
+
+  if (!fileKey) {
+    throw new Error('Decrypting an offline file requires the file key.');
+  }
+  const resolvedFileKey = typeof fileKey === 'function' ? await fileKey() : fileKey;
+  throwIfAborted(options.signal);
+
+  // Read the local ENCRYPTED bytes (same blob the server stores).
+  const info = await FileSystem.getInfoAsync(localEncryptedUri);
+  if (!info.exists || !(info.size && info.size > 0)) {
+    throw new Error('Offline copy is missing.');
+  }
+  const b64 = await FileSystem.readAsStringAsync(localEncryptedUri, {
+    encoding: FileSystem.EncodingType.Base64,
+  });
+  const encBytes = base64ToUint8Array(b64);
+  throwIfAborted(options.signal);
+
+  const effectiveSize = sizeBytes ?? encBytes.length - 28;
+  if (effectiveSize <= 0) {
+    throw new Error('Could not determine plaintext size for the offline file.');
+  }
+  const inferred = inferChunkCountFromEncryptedSize(encBytes.length, effectiveSize);
+  const effectiveChunkCount = chunkCount ?? inferred ?? 1;
+  // The exact upload chunk size is required to slice a multi-chunk body. It is
+  // captured from the download headers (offlineManager.getMeta); fall back to
+  // the default only when unknown — matching the network path's own fallback.
+  const effectiveChunkSize = chunkSize && chunkSize > 0 ? chunkSize : CHUNK_SIZE;
+
+  recordRuntimeTrace('offline.decrypt.start', {
+    fileId,
+    extension: ext,
+    encryptedBytes: encBytes.length,
+    effectiveSize,
+    effectiveChunkCount,
+    effectiveChunkSize,
+  });
+
+  // Fast path: hand the contiguous body to Rust to slice + decrypt + write.
+  if (isDecryptToFileReady()) {
+    try {
+      options.onProgress?.({
+        requestId: '',
+        fileId,
+        stage: 'decrypting',
+        chunksCompleted: 0,
+        chunksTotal: effectiveChunkCount,
+      });
+      const written = await decryptChunksToFile(resolvedFileKey, encBytes, effectiveChunkSize, outputPath);
+      if (options.signal?.aborted) {
+        await FileSystem.deleteAsync(outputPath, { idempotent: true }).catch(() => {});
+        throw abortError();
+      }
+      if (written <= 0) {
+        await FileSystem.deleteAsync(outputPath, { idempotent: true }).catch(() => {});
+        throw new Error('Native batched decrypt returned zero bytes.');
+      }
+      await prunePreviewCache(outputPath);
+      options.onProgress?.({ requestId: '', fileId, stage: 'complete' });
+      recordRuntimeTrace('offline.decrypt.fast_path.success', { fileId, written });
+      return outputPath;
+    } catch (err) {
+      await FileSystem.deleteAsync(outputPath, { idempotent: true }).catch(() => {});
+      if (!(err instanceof DecryptToFileUnavailableError)) {
+        recordRuntimeTrace('offline.decrypt.fast_path.failed', { fileId, ...errorTraceFields(err) });
+        throw err;
+      }
+      // Probe lied — fall through to the per-chunk JS loop.
+    }
+  }
+
+  // Fallback: per-chunk JS decrypt, then write base64.
+  const decrypted = await decryptEncryptedBytes(
+    resolvedFileKey,
+    encBytes,
+    effectiveChunkCount,
+    effectiveSize,
+    effectiveChunkSize,
+    (chunksCompleted, chunksTotal) => {
+      options.onProgress?.({ requestId: '', fileId, stage: 'decrypting', chunksCompleted, chunksTotal });
+    },
+  );
+  throwIfAborted(options.signal);
+
+  await FileSystem.writeAsStringAsync(outputPath, uint8ArrayToBase64(decrypted), {
+    encoding: FileSystem.EncodingType.Base64,
+  });
+  if (options.signal?.aborted) {
+    await FileSystem.deleteAsync(outputPath, { idempotent: true }).catch(() => {});
+    throw abortError();
+  }
+  await prunePreviewCache(outputPath);
+  options.onProgress?.({ requestId: '', fileId, stage: 'complete' });
+  recordRuntimeTrace('offline.decrypt.success', { fileId, plaintextBytes: decrypted.length });
   return outputPath;
 }
 

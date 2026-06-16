@@ -41,6 +41,31 @@ interface ManifestEntry {
   fileId: string;
   fileName: string;
   savedAt: string;
+  // Chunk metadata captured from the download response headers — required to
+  // decrypt the local copy later WITHOUT the network (0803). The offline blob
+  // is the raw chunk stream; without the upload chunk size, a multi-chunk file
+  // can't be sliced correctly.
+  sizeBytes?: number;
+  chunkCount?: number;
+  chunkSize?: number;
+}
+
+export interface OfflineFileMeta {
+  sizeBytes?: number;
+  chunkCount?: number;
+  chunkSize?: number;
+}
+
+function headerInt(headers: Record<string, string> | undefined, key: string): number | undefined {
+  if (!headers) return undefined;
+  const lower = key.toLowerCase();
+  for (const k of Object.keys(headers)) {
+    if (k.toLowerCase() === lower) {
+      const n = Number.parseInt(headers[k], 10);
+      return Number.isFinite(n) && n > 0 ? n : undefined;
+    }
+  }
+  return undefined;
 }
 
 interface PersistedManifest {
@@ -126,6 +151,13 @@ class OfflineManager {
 
   isFolderOffline(folderId: string): boolean {
     return this.folders.has(folderId);
+  }
+
+  /** Chunk metadata captured at download time, for offline decryption (0803). */
+  getMeta(fileId: string): OfflineFileMeta | undefined {
+    const entry = this.manifest.get(fileId);
+    if (!entry) return undefined;
+    return { sizeBytes: entry.sizeBytes, chunkCount: entry.chunkCount, chunkSize: entry.chunkSize };
   }
 
   /** Aggregate status across a set of file ids (for a folder row, 0794). */
@@ -263,7 +295,17 @@ class OfflineManager {
         throw new Error(`Download failed (${result?.status ?? 'no response'})`);
       }
 
-      this.manifest.set(fileId, { fileId, fileName, savedAt: new Date().toISOString() });
+      // Capture the chunk metadata from the response headers so the local copy
+      // can be decrypted later with no network (0803).
+      const headers = result.headers as Record<string, string> | undefined;
+      this.manifest.set(fileId, {
+        fileId,
+        fileName,
+        savedAt: new Date().toISOString(),
+        sizeBytes: headerInt(headers, 'X-Original-Size'),
+        chunkCount: headerInt(headers, 'X-Chunk-Count'),
+        chunkSize: headerInt(headers, 'X-Chunk-Size'),
+      });
       this.status.set(fileId, { state: 'available', progress: 1 });
       await this.persistFiles();
       this.emit();
