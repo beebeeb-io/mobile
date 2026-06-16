@@ -18,6 +18,7 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { Ionicons } from '@expo/vector-icons';
 import type { RootStackParamList } from '../App';
 import { encryptedUpload, generateFileId } from '../lib/encrypted-upload';
+import { normalizeImageOrientation } from '../lib/image-orientation';
 import { friendlyError, trustLocation } from '../lib/api';
 import { useCrypto } from '../lib/crypto-context';
 import { useTheme } from '../lib/theme-context';
@@ -212,7 +213,32 @@ function DocumentScannerCameraScreen({ camera }: { camera: CameraModule }) {
         Alert.alert('Scan failed', 'Could not capture this page. Please try again.');
         return;
       }
-      addCapture(page);
+
+      // Task 0801: bake the EXIF orientation into the pixels. The captured JPEG
+      // is embedded raw into a PDF image XObject, which ignores orientation
+      // tags — without this the page renders rotated. Re-encoding normalizes the
+      // pixels to "up" and gives us the post-rotation width/height for the PDF
+      // page sizing. Best-effort: if the manipulator binding is missing we keep
+      // the original capture rather than failing the scan.
+      let normalizedPage = page;
+      try {
+        const normalized = await normalizeImageOrientation(photo.uri, { quality: 0.82 });
+        if (normalized) {
+          normalizedPage = {
+            uri: normalized.uri,
+            base64: normalized.base64,
+            width: normalized.width,
+            height: normalized.height,
+          };
+          if (normalized.uri !== photo.uri) {
+            FileSystem.deleteAsync(photo.uri, { idempotent: true }).catch(() => {});
+          }
+        }
+      } catch {
+        // Keep the original capture — a mis-oriented page beats a failed scan.
+      }
+
+      addCapture(normalizedPage);
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     } catch (err) {
       Alert.alert('Scan failed', friendlyError(err));
