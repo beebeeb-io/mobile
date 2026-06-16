@@ -54,6 +54,7 @@ import type {
   FileProviderDomainRegistrationResult,
   FileProviderPrivacyState,
   MasterKeyResult,
+  OcrResult,
   OpaqueLoginFinishResult,
   OpaqueRegistrationFinishResult,
   OpaqueStartResult,
@@ -297,6 +298,45 @@ export async function renderPdfFirstPage(
 ): Promise<string | null> {
   if (typeof BeebeebCryptoModule.renderPdfFirstPage !== 'function') return null
   return BeebeebCryptoModule.renderPdfFirstPage(inputUri, outputUri, maxDimension)
+}
+
+// ─── On-device document OCR (0802) ──────────────────────────────────────────
+
+/**
+ * Recognize text in a local image entirely on-device via Apple Vision
+ * (`VNRecognizeTextRequest`). Makes ZERO network calls — pixels and text never
+ * leave the device (privacy-aligned, no US/cloud dependency). Used by the
+ * document scanner to extract a searchable note from scanned pages.
+ *
+ * Returns `null` when the native binding is unavailable (Expo Go / JS-only
+ * environments / Android), so callers degrade gracefully instead of throwing.
+ *
+ * @param uri        Local image URI (file://) — e.g. a normalized scanner capture.
+ * @param languages  Optional BCP-47 recognition-language hints (e.g.
+ *                   ["en-US", "nl-NL"]). On iOS 16+ language is auto-detected
+ *                   when omitted.
+ */
+export async function recognizeDocumentText(
+  uri: string,
+  languages?: string[],
+): Promise<OcrResult | null> {
+  if (typeof BeebeebCryptoModule.recognizeDocumentText !== 'function') return null
+  const result = await BeebeebCryptoModule.recognizeDocumentText(
+    uri,
+    languages && languages.length > 0 ? { languages } : null,
+  )
+  return {
+    text: typeof result?.text === 'string' ? result.text : '',
+    lines: Array.isArray(result?.lines)
+      ? result.lines.map((line: { text?: unknown; confidence?: unknown }) => ({
+          text: typeof line?.text === 'string' ? line.text : '',
+          confidence: typeof line?.confidence === 'number' ? line.confidence : 0,
+        }))
+      : [],
+    confidence: typeof result?.confidence === 'number' ? result.confidence : 0,
+    language: typeof result?.language === 'string' ? result.language : null,
+    onDevice: result?.onDevice !== false,
+  }
 }
 
 // ─── OPAQUE authentication ───────────────────────────────────────────────────

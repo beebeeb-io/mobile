@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -19,6 +19,9 @@ import { Ionicons } from '@expo/vector-icons';
 import type { RootStackParamList } from '../App';
 import { encryptedUpload, generateFileId } from '../lib/encrypted-upload';
 import { normalizeImageOrientation } from '../lib/image-orientation';
+import { recognizeDocumentText } from '../../modules/beebeeb-crypto';
+import { summarizeDocument } from '../lib/doc-summary';
+import type { DocSummary } from '../lib/doc-summary';
 import { friendlyError, trustLocation } from '../lib/api';
 import { useCrypto } from '../lib/crypto-context';
 import { useTheme } from '../lib/theme-context';
@@ -78,6 +81,8 @@ interface CapturePage {
   base64: string;
   width: number;
   height: number;
+  /** On-device OCR text for this page (task 0802); '' when none / unavailable. */
+  ocrText?: string;
 }
 
 function base64ToUint8Array(b64: string): Uint8Array {
@@ -165,12 +170,16 @@ function DocumentScannerCameraScreen({ camera }: { camera: CameraModule }) {
   const cameraRef = useRef<CameraRef | null>(null);
   const capturesRef = useRef<CapturePage[]>([]);
   const pdfUriRef = useRef<string | null>(null);
+  const ocrPendingRef = useRef(0);
 
   const [captures, setCaptures] = useState<CapturePage[]>([]);
   const [previewing, setPreviewing] = useState(false);
   const [cameraReady, setCameraReady] = useState(false);
   const [capturing, setCapturing] = useState(false);
   const [saving, setSaving] = useState(false);
+  // Task 0802: on-device OCR/summary state.
+  const [ocrBusy, setOcrBusy] = useState(false);
+  const [aiNoteCleared, setAiNoteCleared] = useState(false);
 
   useEffect(() => {
     capturesRef.current = captures;
@@ -196,6 +205,27 @@ function DocumentScannerCameraScreen({ camera }: { camera: CameraModule }) {
   const addCapture = useCallback((page: CapturePage) => {
     setCaptures((prev) => [...prev, page]);
     setPreviewing(true);
+  }, []);
+
+  // Task 0802: extract text from a captured page entirely on-device (Apple
+  // Vision). Best-effort and non-blocking — OCR runs after the page is added so
+  // capturing stays snappy, and a failure never interrupts scanning. ZERO
+  // network: the pixels and recognized text never leave the device.
+  const runOcrForPage = useCallback(async (uri: string) => {
+    ocrPendingRef.current += 1;
+    setOcrBusy(true);
+    try {
+      const result = await recognizeDocumentText(uri);
+      const text = result?.text?.trim() ?? '';
+      if (text) {
+        setCaptures((prev) => prev.map((p) => (p.uri === uri ? { ...p, ocrText: text } : p)));
+      }
+    } catch {
+      // OCR is an enhancement, not a requirement — swallow and move on.
+    } finally {
+      ocrPendingRef.current = Math.max(0, ocrPendingRef.current - 1);
+      if (ocrPendingRef.current === 0) setOcrBusy(false);
+    }
   }, []);
 
   const handleCapture = useCallback(async () => {
@@ -240,12 +270,14 @@ function DocumentScannerCameraScreen({ camera }: { camera: CameraModule }) {
 
       addCapture(normalizedPage);
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      // Fire-and-forget on-device OCR for this page (task 0802).
+      void runOcrForPage(normalizedPage.uri);
     } catch (err) {
       Alert.alert('Scan failed', friendlyError(err));
     } finally {
       setCapturing(false);
     }
-  }, [addCapture, cameraReady, capturing]);
+  }, [addCapture, cameraReady, capturing, runOcrForPage]);
 
   const handleRetakeLast = useCallback(() => {
     setCaptures((prev) => {
@@ -260,6 +292,21 @@ function DocumentScannerCameraScreen({ camera }: { camera: CameraModule }) {
   const handleAddAnotherPage = useCallback(() => {
     setPreviewing(false);
     setCameraReady(false);
+  }, []);
+
+  // Task 0802: combine every page's on-device OCR text and locally summarize it.
+  const combinedOcr = useMemo(
+    () => captures.map((p) => p.ocrText ?? '').filter((t) => t.length > 0).join('\n\n').trim(),
+    [captures],
+  );
+  const docSummary: DocSummary | null = useMemo(
+    () => (combinedOcr.length > 0 ? summarizeDocument(combinedOcr) : null),
+    [combinedOcr],
+  );
+  const showAiNote = !aiNoteCleared && combinedOcr.length > 0;
+
+  const handleClearAiNote = useCallback(() => {
+    setAiNoteCleared(true);
   }, []);
 
   const handleSaveToVault = useCallback(async () => {
@@ -286,12 +333,28 @@ function DocumentScannerCameraScreen({ camera }: { camera: CameraModule }) {
         encoding: FileSystem.EncodingType.Base64,
       });
 
+      // Task 0802: attach the on-device OCR note + local summary to the file's
+      // E2E-encrypted metadata (unless the user cleared it). All computed on
+      // device; never sent in plaintext. The OCR text rides in the encrypted
+      // metadata blob so a follow-up can feed it into the search index (0778).
+      const noteText = aiNoteCleared ? '' : combinedOcr;
+      const summary = noteText.length > 0 ? summarizeDocument(noteText) : null;
+      const metadataExtras = noteText.length > 0
+        ? {
+            note: noteText,
+            aiSummary: summary?.summary,
+            aiDocType: summary?.docType,
+            ai: true,
+          }
+        : undefined;
+
       const uploaded = await encryptedUpload({
         fileId,
         uri: pdfUri,
         name: fileName,
         parentId: route.params?.parentId ?? undefined,
         mimeType: 'application/pdf',
+        metadataExtras,
         encryptChunkFn: encryptChunk,
         encryptMetadataFn: encryptMetadata,
       });
@@ -305,7 +368,7 @@ function DocumentScannerCameraScreen({ camera }: { camera: CameraModule }) {
     } finally {
       setSaving(false);
     }
-  }, [captures, encryptChunk, encryptMetadata, isUnlocked, navigation, route.params?.parentId, saving, showToast]);
+  }, [aiNoteCleared, captures, combinedOcr, encryptChunk, encryptMetadata, isUnlocked, navigation, route.params?.parentId, saving, showToast]);
 
   const lastCapture = captures[captures.length - 1] ?? null;
   const hasPermission = permission?.granted === true;
@@ -372,6 +435,59 @@ function DocumentScannerCameraScreen({ camera }: { camera: CameraModule }) {
             </View>
           )}
         </View>
+
+        {/*
+          Task 0802: AI note + summary, computed on-device. Placeholder treatment
+          pending the ux-designer's 0802 spec (final badge/icon, edit affordance).
+          The data wiring (note, summary, doc type, "on your device" signal,
+          clear control) is complete; only the exact styling is the designer's.
+        */}
+        {previewing && (showAiNote || ocrBusy) && (
+          <View style={[styles.aiCard, { backgroundColor: c.paper2, borderColor: c.line }]}>
+            <View style={styles.aiCardHeader}>
+              <View style={styles.aiBadge}>
+                <Ionicons name="sparkles" size={14} color={c.amber} />
+                <Text style={[styles.aiBadgeText, { color: c.ink }]}>AI summary</Text>
+              </View>
+              <View style={styles.aiCardHeaderRight}>
+                <View style={[styles.aiPill, { borderColor: c.line }]}>
+                  <Ionicons name="lock-closed" size={10} color={c.ink3} />
+                  <Text style={[styles.aiPillText, { color: c.ink3 }]}>On your device</Text>
+                </View>
+                {showAiNote && (
+                  <TouchableOpacity
+                    onPress={handleClearAiNote}
+                    accessibilityRole="button"
+                    accessibilityLabel="Remove AI note"
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  >
+                    <Ionicons name="close" size={16} color={c.ink3} />
+                  </TouchableOpacity>
+                )}
+              </View>
+            </View>
+            {ocrBusy && !showAiNote ? (
+              <View style={styles.aiBusyRow}>
+                <ActivityIndicator size="small" color={c.amber} />
+                <Text style={[styles.aiBusyText, { color: c.ink3 }]}>Reading text…</Text>
+              </View>
+            ) : showAiNote ? (
+              <>
+                {docSummary && (
+                  <Text style={[styles.aiSummary, { color: c.ink }]} numberOfLines={2}>
+                    {docSummary.summary}
+                  </Text>
+                )}
+                <Text style={[styles.aiNotePreview, { color: c.ink3 }]} numberOfLines={3}>
+                  {combinedOcr}
+                </Text>
+                <Text style={[styles.aiFootnote, { color: c.ink4 }]}>
+                  Extracted on this device · saved encrypted with the document
+                </Text>
+              </>
+            ) : null}
+          </View>
+        )}
 
         <View style={styles.actionRow}>
           {previewing && (
@@ -517,4 +633,46 @@ const styles = StyleSheet.create({
   },
   secondaryButtonText: { fontSize: 14, fontWeight: '700' },
   disabled: { opacity: 0.45 },
+  // Task 0802 — AI note card (placeholder treatment, pending designer spec).
+  aiCard: {
+    borderWidth: 1,
+    borderRadius: radii.md,
+    padding: spacing.md,
+    gap: spacing.sm,
+  },
+  aiCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  aiBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  aiBadgeText: { fontSize: 14, fontWeight: '700' },
+  aiCardHeaderRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+  },
+  aiPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    borderWidth: 1,
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+  aiPillText: { fontSize: 11, fontWeight: '600' },
+  aiBusyRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  aiBusyText: { fontSize: 13, fontFamily: fonts.sans },
+  aiSummary: { fontSize: 14, fontWeight: '600', lineHeight: 19 },
+  aiNotePreview: { fontSize: 12, lineHeight: 17, fontFamily: fonts.sans },
+  aiFootnote: { fontSize: 11, lineHeight: 15, fontFamily: fonts.sans },
 });
