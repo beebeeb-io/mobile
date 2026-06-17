@@ -56,6 +56,20 @@ final class ContactsBackupManager {
     authToken = nil
   }
 
+  /// Task 0819: self-heal after the server-side backup copy is gone. Clears the
+  /// scan/upload timestamps AND the SHA-256 dedup digest (`lastHashKey`) so the
+  /// NEXT backup run RE-UPLOADS instead of being suppressed as "unchanged", and
+  /// the status tile resets. Data-safe — only local UserDefaults bookkeeping is
+  /// cleared; the contacts themselves and the configured parent folder are kept.
+  func reset() {
+    let defaults = UserDefaults.standard
+    defaults.removeObject(forKey: Self.lastHashKey)
+    defaults.removeObject(forKey: Self.lastScanAtKey)
+    defaults.removeObject(forKey: Self.lastScanCountKey)
+    defaults.removeObject(forKey: Self.lastUploadAtKey)
+    RuntimeTrace.event("backup.contacts.reset")
+  }
+
   func configure(parentFolderId: String?) {
     self.parentFolderId = parentFolderId
     RuntimeTrace.event("backup.contacts.configure", [
@@ -98,6 +112,9 @@ final class ContactsBackupManager {
       "lastScanCount": defaults.integer(forKey: Self.lastScanCountKey),
       "lastUploadAt": defaults.string(forKey: Self.lastUploadAtKey) as Any? ?? NSNull(),
       "hasParentFolder": !(parentFolderId?.isEmpty ?? true),
+      // Task 0819: the category folder id (Contacts/) so the reconcile can detect
+      // it's gone from /files/index and trigger a self-heal reset.
+      "parentFolderId": parentFolderId as Any? ?? NSNull(),
       "hasKnownBackupState": hasKnownBackupState
     ]
   }

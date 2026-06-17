@@ -42,6 +42,23 @@ final class CalendarBackupManager {
     authToken = nil
   }
 
+  /// Task 0819: self-heal after the server-side backup copy is gone. Clears the
+  /// scan/upload timestamps AND EVERY per-calendar SHA dedup digest (all keys
+  /// under `lastHashPrefix`) so the next run RE-UPLOADS each calendar instead of
+  /// being suppressed as "unchanged", and the status tile resets. Data-safe —
+  /// only local UserDefaults bookkeeping is cleared; the calendars themselves and
+  /// the configured parent folder are kept.
+  func reset() {
+    let defaults = UserDefaults.standard
+    for key in defaults.dictionaryRepresentation().keys where key.hasPrefix(Self.lastHashPrefix) {
+      defaults.removeObject(forKey: key)
+    }
+    defaults.removeObject(forKey: Self.lastScanAtKey)
+    defaults.removeObject(forKey: Self.lastScanCountKey)
+    defaults.removeObject(forKey: Self.lastUploadAtKey)
+    RuntimeTrace.event("backup.calendar.reset")
+  }
+
   func configure(parentFolderId: String?) {
     self.parentFolderId = parentFolderId
     RuntimeTrace.event("backup.calendar.configure", [
@@ -92,6 +109,9 @@ final class CalendarBackupManager {
       "lastScanCount": defaults.integer(forKey: Self.lastScanCountKey),
       "lastUploadAt": defaults.string(forKey: Self.lastUploadAtKey) as Any? ?? NSNull(),
       "hasParentFolder": !(parentFolderId?.isEmpty ?? true),
+      // Task 0819: the category folder id (Calendar/) so the reconcile can detect
+      // it's gone from /files/index and trigger a self-heal reset.
+      "parentFolderId": parentFolderId as Any? ?? NSNull(),
       "hasKnownBackupState": hasKnownBackupState
     ]
   }
