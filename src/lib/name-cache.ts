@@ -97,6 +97,26 @@ export function scheduleSaveNameCache(cache: NameCache): void {
   }, SAVE_DEBOUNCE_MS);
 }
 
+/**
+ * Remove specific file ids from the persisted name cache — the reconcile (0817)
+ * drops names for files that no longer exist server-side so stale entries don't
+ * linger. Returns the count removed. Best-effort; persists immediately.
+ */
+export async function pruneNameCache(fileIds: string[] | Set<string>): Promise<number> {
+  const ids = fileIds instanceof Set ? fileIds : new Set(fileIds);
+  if (ids.size === 0) return 0;
+  const cache = await loadNameCache();
+  let removed = 0;
+  for (const id of ids) {
+    if (Object.prototype.hasOwnProperty.call(cache, id)) {
+      delete cache[id];
+      removed += 1;
+    }
+  }
+  if (removed > 0) await saveNameCacheNow(cache);
+  return removed;
+}
+
 /** Drop the on-disk cache (e.g. on sign-out). Best-effort. */
 export async function clearNameCache(): Promise<void> {
   if (saveTimer) {

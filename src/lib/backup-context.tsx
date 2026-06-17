@@ -16,7 +16,7 @@ import {
   triggerImmediateBackup,
   type NativeBackupProgress,
 } from '../../modules/beebeeb-crypto';
-import { ensureBackupFolders, type BackupCategory } from '../services/BackupService';
+import { ensureBackupFolders, reconcileDerivedStateAgainstServer, type BackupCategory } from '../services/BackupService';
 import { useCrypto } from './crypto-context';
 import { recordRuntimeTrace } from './runtime-trace';
 
@@ -244,7 +244,18 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!isPhotoBackupEnabled || Platform.OS === 'web') return;
     const sub = AppState.addEventListener('change', (next) => {
-      if (next === 'active') void refreshNativeProgress().catch(() => {});
+      if (next !== 'active') return;
+      // 0817 — on foreground, reconcile derived state vs server truth FIRST
+      // (hash-gated, ~free when unchanged), then refresh the native bar so a
+      // server-side delete (e.g. from web) self-corrects the count.
+      void (async () => {
+        try {
+          await reconcileDerivedStateAgainstServer();
+        } catch {
+          // best-effort
+        }
+        await refreshNativeProgress().catch(() => {});
+      })();
     });
     return () => sub.remove();
   }, [isPhotoBackupEnabled, refreshNativeProgress]);

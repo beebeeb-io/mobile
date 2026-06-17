@@ -507,6 +507,83 @@ export async function getAllUploadedIds(): Promise<Set<string>> {
   return new Set(rows.map((r) => r.local_asset_id));
 }
 
+// ---------------------------------------------------------------------------
+// 0817 — reconcile primitives (server-truth diff against /files/index). Also
+// reused by the 0818 delete-cascade dispatcher.
+// ---------------------------------------------------------------------------
+
+/** SQLite bind-variable limit is ~999; chunk IN(...) lists well under it. */
+const SQL_IN_CHUNK = 400;
+
+/** REMOTE file ids of every still-"uploaded"/"orphaned" backup asset. The
+ *  reconcile diffs these against /files/index to find orphans whose server copy
+ *  is gone. */
+export async function getAllUploadedRemoteIds(): Promise<Set<string>> {
+  const db = await getDb();
+  const rows = await db.getAllAsync<{ remote_file_id: string }>(
+    `SELECT remote_file_id FROM backup_assets
+      WHERE status IN ('uploaded', 'orphaned') AND remote_file_id IS NOT NULL`,
+  );
+  return new Set(rows.map((r) => r.remote_file_id));
+}
+
+/** Re-queue uploaded/orphaned backup assets for re-upload: status →
+ *  'pending_upload', remote_file_id/uploaded_at cleared. With `remoteFileIds`,
+ *  only those rows reset (per-file reconcile); without, ALL uploaded/orphaned
+ *  rows reset (the "Backups root deleted" case). Conservative — re-queue, never
+ *  delete — so re-upload is automatic and nothing is lost if /files/index was
+ *  briefly wrong. Returns rows changed. */
+export async function resetUploadedState(remoteFileIds?: string[]): Promise<number> {
+  const db = await getDb();
+  const SET_CLAUSE =
+    `SET status = 'pending_upload', remote_file_id = NULL, uploaded_at = NULL, ` +
+    `error_message = NULL, retry_count = 0, queued_at = NULL`;
+
+  if (remoteFileIds === undefined) {
+    const result = await db.runAsync(
+      `UPDATE backup_assets ${SET_CLAUSE} WHERE status IN ('uploaded', 'orphaned')`,
+    );
+    return result.changes;
+  }
+
+  let changed = 0;
+  for (let i = 0; i < remoteFileIds.length; i += SQL_IN_CHUNK) {
+    const batch = remoteFileIds.slice(i, i + SQL_IN_CHUNK);
+    if (batch.length === 0) continue;
+    const placeholders = batch.map(() => '?').join(',');
+    const result = await db.runAsync(
+      `UPDATE backup_assets ${SET_CLAUSE}
+        WHERE status IN ('uploaded', 'orphaned') AND remote_file_id IN (${placeholders})`,
+      batch,
+    );
+    changed += result.changes;
+  }
+  return changed;
+}
+
+/** Bulk-mark backup assets as remote-deleted by REMOTE file id (status →
+ *  'remote_deleted', ids cleared). Unlike resetUploadedState these are NOT
+ *  re-queued — for the EXPLICIT delete-cascade (0818) where the user deleted the
+ *  file on purpose, so it must not silently re-upload. Returns rows changed. */
+export async function markRemoteDeletedByFileIds(remoteFileIds: string[]): Promise<number> {
+  const db = await getDb();
+  let changed = 0;
+  for (let i = 0; i < remoteFileIds.length; i += SQL_IN_CHUNK) {
+    const batch = remoteFileIds.slice(i, i + SQL_IN_CHUNK);
+    if (batch.length === 0) continue;
+    const placeholders = batch.map(() => '?').join(',');
+    const result = await db.runAsync(
+      `UPDATE backup_assets
+          SET status = 'remote_deleted', remote_file_id = NULL, uploaded_at = NULL, error_message = NULL
+        WHERE remote_file_id IN (${placeholders})
+          AND status IN ('uploaded', 'orphaned', 'pending_delete')`,
+      batch,
+    );
+    changed += result.changes;
+  }
+  return changed;
+}
+
 /**
  * Build a map from remote_file_id → local_asset_id for all uploaded/orphaned
  * backup assets. Used by the Photos grid to resolve camera-roll thumbnails.
