@@ -42,6 +42,12 @@ import {
   type FileEntry,
 } from '../lib/api';
 import type { EncryptedData } from '../../modules/beebeeb-crypto';
+import {
+  getContactsBackupStatus,
+  getCalendarBackupStatus,
+  resetContactsBackup,
+  resetCalendarBackup,
+} from '../../modules/beebeeb-crypto';
 import { encryptedMetadataToJson, encryptedMetadataPayloadToBytes, fileMetadataPlaintext } from '../lib/encrypted-metadata';
 import { encryptedUpload, generateFileId } from '../lib/encrypted-upload';
 import { guessMimeType } from '../lib/media';
@@ -784,6 +790,45 @@ async function clearFolderCache(): Promise<void> {
 }
 
 /**
+ * Task 0819: contacts/calendar self-heal. Their backup state lives in native
+ * UserDefaults (scan/upload timestamps + a SHA-256 dedup digest) and writes NO
+ * SQLite rows, so the camera-roll reconcile above can't see it. Worse, the dedup
+ * REFUSES to re-upload after the server copy is deleted (a silent backup failure,
+ * not just a stale tile). When the category folder is gone from `/files/index`
+ * (or the whole Backups root is gone), clear that native state so the NEXT run
+ * re-uploads (not SHA-suppressed) and the "Last backup · N" tile resets.
+ * Data-safe: only local bookkeeping is cleared — contacts/calendars and the
+ * configured folder are untouched.
+ */
+async function selfHealCategoryBackup(
+  category: 'contacts' | 'calendar',
+  indexIds: Set<string>,
+  rootGone: boolean,
+): Promise<void> {
+  try {
+    const status =
+      category === 'contacts'
+        ? await getContactsBackupStatus()
+        : await getCalendarBackupStatus();
+    // Never backed up → nothing to heal (don't reset a fresh install).
+    if (!status.hasKnownBackupState) return;
+    const folderId = status.parentFolderId ?? null;
+    // Gone when the whole Backups root is gone, or this category's folder
+    // (Contacts//Calendar/) is absent from the live index.
+    const folderGone = rootGone || (folderId != null && !indexIds.has(folderId));
+    if (!folderGone) return;
+    if (category === 'contacts') await resetContactsBackup();
+    else await resetCalendarBackup();
+    console.info(
+      `[BackupService] reconcile: ${category} backup folder gone server-side — cleared native dedup/state so the next run re-uploads`,
+    );
+  } catch (err) {
+    // Best-effort — a failed self-heal must never break the reconcile.
+    console.warn(`[BackupService] reconcile: ${category} self-heal skipped`, err);
+  }
+}
+
+/**
  * Reconcile every reachable derived store against `/files/index`. Idempotent,
  * hash-gated (near-free when the vault is unchanged), and coalesced so concurrent
  * callers share one pass. Safe to call on backup warm-up and app foreground.
@@ -826,13 +871,18 @@ export async function reconcileDerivedStateAgainstServer(): Promise<void> {
         const requeued = await resetUploadedState();
         await clearFolderCache();
         console.info(`[BackupService] reconcile: Backups root gone — re-queued ${requeued} asset(s), cleared folder cache`);
-        // SEAM (0819): contacts/calendar live in native UserDefaults + per-file
-        // SHA digests; clearing those (so re-upload isn't SHA-suppressed) is done
-        // by the native reset in 0819. Hook it here once that lands.
       } else if (backupOrphans.length > 0) {
         const requeued = await resetUploadedState(backupOrphans);
         console.info(`[BackupService] reconcile: re-queued ${requeued} orphaned backup asset(s)`);
       }
+
+      // --- Contacts / calendar self-heal (0819) ------------------------------
+      // These derive from native UserDefaults (not SQLite/the folder cache), so
+      // they're reconciled separately: a gone category folder (or a gone root)
+      // clears the native scan/upload state + SHA dedup so the next run
+      // re-uploads instead of silently skipping as "unchanged".
+      await selfHealCategoryBackup('contacts', indexIds, rootGone);
+      await selfHealCategoryBackup('calendar', indexIds, rootGone);
 
       // --- Offline-pinned copies --------------------------------------------
       const offlineFileOrphans = offlineManager.offlineFileIds().filter((id) => !indexIds.has(id));

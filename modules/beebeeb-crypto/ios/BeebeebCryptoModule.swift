@@ -2095,6 +2095,12 @@ public class BeebeebCryptoModule: Module {
       return ContactsBackupManager.shared.status()
     }
 
+    // Task 0819: self-heal — clear the local scan/upload state + SHA dedup digest
+    // so the next backup run re-uploads after the server copy was deleted.
+    AsyncFunction("resetContactsBackup") { () in
+      ContactsBackupManager.shared.reset()
+    }
+
     AsyncFunction("enableCalendarBackup") { (authToken: String) in
       CalendarBackupManager.shared.enable(authToken: authToken, runNow: true)
     }
@@ -2109,6 +2115,13 @@ public class BeebeebCryptoModule: Module {
 
     AsyncFunction("getCalendarBackupStatus") { () -> [String: Any] in
       return CalendarBackupManager.shared.status()
+    }
+
+    // Task 0819: self-heal — clear the local scan/upload state + every per-calendar
+    // SHA dedup digest so the next backup run re-uploads after the server copy was
+    // deleted.
+    AsyncFunction("resetCalendarBackup") { () in
+      CalendarBackupManager.shared.reset()
     }
 
     AsyncFunction("getBackupProgress") { () -> [String: Any] in

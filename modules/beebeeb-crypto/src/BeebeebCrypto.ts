@@ -1086,6 +1086,9 @@ export interface NativeCategoryBackupStatus {
   lastScanCount: number
   lastUploadAt: string | null
   hasParentFolder?: boolean
+  /** Task 0819: the configured category folder id (Contacts//Calendar/). The
+   *  reconcile checks it against /files/index to detect a server-side deletion. */
+  parentFolderId?: string | null
   hasKnownBackupState?: boolean
 }
 
@@ -1094,6 +1097,7 @@ const EMPTY_CATEGORY_BACKUP_STATUS: NativeCategoryBackupStatus = {
   lastScanCount: 0,
   lastUploadAt: null,
   hasParentFolder: false,
+  parentFolderId: null,
   hasKnownBackupState: false,
 }
 
@@ -1139,8 +1143,19 @@ export async function getContactsBackupStatus(): Promise<NativeCategoryBackupSta
     lastScanCount: Number(status?.lastScanCount ?? 0),
     lastUploadAt: status?.lastUploadAt ?? null,
     hasParentFolder: Boolean(status?.hasParentFolder),
+    parentFolderId: typeof status?.parentFolderId === 'string' ? status.parentFolderId : null,
     hasKnownBackupState: Boolean(status?.hasKnownBackupState),
   }
+}
+
+/**
+ * Task 0819: clear the contacts backup's local scan/upload state + SHA dedup
+ * digest so the next run re-uploads after the server copy was deleted. No-op
+ * when the native module is unavailable.
+ */
+export async function resetContactsBackup(): Promise<void> {
+  if (typeof BeebeebCryptoModule.resetContactsBackup !== 'function') return
+  return BeebeebCryptoModule.resetContactsBackup()
 }
 
 /** Start calendar backup. Requests EKEventStore access and uploads an encrypted iCal. */
@@ -1170,8 +1185,19 @@ export async function getCalendarBackupStatus(): Promise<NativeCategoryBackupSta
     lastScanCount: Number(status?.lastScanCount ?? 0),
     lastUploadAt: status?.lastUploadAt ?? null,
     hasParentFolder: Boolean(status?.hasParentFolder),
+    parentFolderId: typeof status?.parentFolderId === 'string' ? status.parentFolderId : null,
     hasKnownBackupState: Boolean(status?.hasKnownBackupState),
   }
+}
+
+/**
+ * Task 0819: clear the calendar backup's local scan/upload state + every
+ * per-calendar SHA dedup digest so the next run re-uploads after the server
+ * copy was deleted. No-op when the native module is unavailable.
+ */
+export async function resetCalendarBackup(): Promise<void> {
+  if (typeof BeebeebCryptoModule.resetCalendarBackup !== 'function') return
+  return BeebeebCryptoModule.resetCalendarBackup()
 }
 
 /** Returns live backup queue statistics from the on-device SQLite store. */
