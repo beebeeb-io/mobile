@@ -212,6 +212,39 @@ export async function invalidateCachedThumbnail(fileId: string): Promise<void> {
   ));
 }
 
+/** Bulk JS-cache invalidation — the reconcile (0817) drops thumbnails for files
+ *  that no longer exist server-side. */
+export async function invalidateCachedThumbnails(fileIds: string[]): Promise<void> {
+  await Promise.all(fileIds.map((id) => invalidateCachedThumbnail(id)));
+}
+
+// Native ThumbnailService in-memory cache/state invalidation (0817). The JS disk
+// cache is handled above / by pruneThumbnailsForRemoteFiles; this clears the
+// native service's per-file FSM state + URL cache so it doesn't serve a stale
+// hit. Guarded — the method only exists in builds that shipped it; older builds
+// silently no-op (the native in-memory cache is per-session anyway).
+let _thumbNative: { invalidateCacheEntries?: (fileIds: string[]) => Promise<void> } | null | undefined;
+function thumbNative(): { invalidateCacheEntries?: (fileIds: string[]) => Promise<void> } | null {
+  if (_thumbNative === undefined) {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { requireOptionalNativeModule } = require('expo-modules-core');
+      _thumbNative = requireOptionalNativeModule('ThumbnailService') ?? null;
+    } catch {
+      _thumbNative = null;
+    }
+  }
+  return _thumbNative ?? null;
+}
+
+export async function invalidateNativeThumbnailCache(fileIds: string[]): Promise<void> {
+  if (fileIds.length === 0) return;
+  const native = thumbNative();
+  if (typeof native?.invalidateCacheEntries === 'function') {
+    await native.invalidateCacheEntries(fileIds).catch(() => {});
+  }
+}
+
 /**
  * Remove persisted thumbnails whose remote file no longer exists.
  *

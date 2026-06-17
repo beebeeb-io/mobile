@@ -153,6 +153,17 @@ class OfflineManager {
     return this.folders.has(folderId);
   }
 
+  /** All pinned offline FILE ids (manifest keys) — for the server reconcile
+   *  (0817) to drop on-disk copies whose remote file no longer exists. */
+  offlineFileIds(): string[] {
+    return [...this.manifest.keys()];
+  }
+
+  /** All pinned offline FOLDER ids — reconcile drops pins for deleted folders. */
+  offlineFolderIds(): string[] {
+    return [...this.folders];
+  }
+
   /** Chunk metadata captured at download time, for offline decryption (0803). */
   getMeta(fileId: string): OfflineFileMeta | undefined {
     const entry = this.manifest.get(fileId);

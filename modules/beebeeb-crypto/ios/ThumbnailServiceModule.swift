@@ -115,6 +115,12 @@ public final class ThumbnailServiceModule: Module, ThumbnailEventEmitter {
       await ThumbnailService.shared.forgetFile(fileId)
     }
 
+    // 0817 — bulk invalidate the native thumbnail cache/state for files whose
+    // remote copy no longer exists (server reconcile drops orphaned thumbnails).
+    AsyncFunction("invalidateCacheEntries") { (fileIds: [String]) async -> Void in
+      await ThumbnailService.shared.invalidateCacheEntries(fileIds)
+    }
+
     AsyncFunction("regenerateThumbnail") { (fileId: String, qualityPreset: String) async throws -> [String: Any] in
       let r = try await ThumbnailService.shared.regenerateThumbnail(fileId: fileId, qualityPreset: qualityPreset)
       return [

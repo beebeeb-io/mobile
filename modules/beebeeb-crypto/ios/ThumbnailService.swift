@@ -444,4 +444,14 @@ extension ThumbnailService {
     inFlight[fileId]?.cancel()
     inFlight.removeValue(forKey: fileId)
   }
+
+  /// 0817 — bulk-invalidate the in-memory cache + FSM state for files whose
+  /// remote copy no longer exists (server reconcile). Mirrors `forgetFile` for a
+  /// batch so a cache hit can't keep serving a stale thumbnail for a deleted
+  /// file. The on-disk webp cache is pruned on the JS side.
+  public func invalidateCacheEntries(_ fileIds: [FileId]) {
+    for fileId in fileIds {
+      forgetFile(fileId)
+    }
+  }
 }

@@ -38,12 +38,22 @@ import {
   moveFile,
   renameFile,
   trashFiles,
+  getFileIndex,
   type FileEntry,
 } from '../lib/api';
 import type { EncryptedData } from '../../modules/beebeeb-crypto';
 import { encryptedMetadataToJson, encryptedMetadataPayloadToBytes, fileMetadataPlaintext } from '../lib/encrypted-metadata';
 import { encryptedUpload, generateFileId } from '../lib/encrypted-upload';
 import { guessMimeType } from '../lib/media';
+// 0817 — reconcile derived state against /files/index (server truth).
+import { getAllUploadedRemoteIds, resetUploadedState } from './BackupDatabase';
+import { offlineManager } from '../lib/offline-manager';
+import {
+  pruneThumbnailsForRemoteFiles,
+  invalidateCachedThumbnails,
+  invalidateNativeThumbnailCache,
+} from '../lib/thumbnail-cache';
+import { loadNameCache, pruneNameCache } from '../lib/name-cache';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -746,6 +756,131 @@ async function flattenDuplicateBackupFolders(): Promise<void> {
   return _flattenInFlight;
 }
 
+// ---------------------------------------------------------------------------
+// 0817 — reconcile derived state against server truth (/files/index)
+// ---------------------------------------------------------------------------
+//
+// Six derived stores are 100% client-side and never cross-checked against the
+// server, so a delete (especially from web — which doesn't cascade a content
+// signal through sync) orphans them all: the camera-roll manifest still shows
+// "X of Y uploaded", thumbnails/offline copies linger, search keeps stale hits.
+// This is the safety net + past-damage repair (the founder deleted "Backups" on
+// web; mobile still showed "Uploading 6,398 of 9,464").
+//
+// Server truth = GET /files/index (whole-vault non-trashed ids, with a HASH
+// short-circuit so it's ~free when nothing changed). We diff every reachable
+// store's ids against it and demote/remove orphans via the per-store primitives.
+// CONSERVATIVE: the backup manifest is RE-QUEUED (pending_upload), never wiped —
+// so re-upload is automatic and nothing is lost if the index call was briefly
+// wrong.
+
+const RECONCILE_HASH_KEY = 'beebeeb_reconcile_index_hash';
+let _reconcileInFlight: Promise<void> | null = null;
+
+/** Reset the persisted backup folder cache so ensureBackupFolders rebuilds the
+ *  tree from scratch (used when the whole Backups root is gone). */
+async function clearFolderCache(): Promise<void> {
+  await writeFolderCache({});
+}
+
+/**
+ * Reconcile every reachable derived store against `/files/index`. Idempotent,
+ * hash-gated (near-free when the vault is unchanged), and coalesced so concurrent
+ * callers share one pass. Safe to call on backup warm-up and app foreground.
+ */
+export async function reconcileDerivedStateAgainstServer(): Promise<void> {
+  if (_reconcileInFlight) return _reconcileInFlight;
+
+  _reconcileInFlight = (async () => {
+    try {
+      const lastHash = (await storeGet(RECONCILE_HASH_KEY)) ?? undefined;
+      let resp;
+      try {
+        resp = await getFileIndex(lastHash);
+      } catch (err) {
+        // Network/auth blip — leave state as-is and retry next warm-up. NEVER
+        // demote on an absent index we couldn't fetch.
+        console.warn('[BackupService] reconcile: /files/index fetch failed, skipping', err);
+        return;
+      }
+
+      // Hash short-circuit: nothing changed since the last reconcile → no-op.
+      if (!resp.changed || !resp.files) {
+        return;
+      }
+
+      const indexIds = new Set(resp.files.map((f) => f.id));
+
+      // --- Backup manifest (camera roll) -------------------------------------
+      const cache = await readFolderCache();
+      const rootGone = cache.rootId != null && !indexIds.has(cache.rootId);
+      const uploadedRemote = await getAllUploadedRemoteIds();
+      const backupOrphans = rootGone
+        ? [...uploadedRemote]
+        : [...uploadedRemote].filter((id) => !indexIds.has(id));
+
+      if (rootGone) {
+        // The founder's exact case: the entire Backups tree was deleted
+        // server-side. Re-queue ALL uploaded assets (so re-enabling backup
+        // re-uploads them) and drop the stale folder cache so the tree rebuilds.
+        const requeued = await resetUploadedState();
+        await clearFolderCache();
+        console.info(`[BackupService] reconcile: Backups root gone — re-queued ${requeued} asset(s), cleared folder cache`);
+        // SEAM (0819): contacts/calendar live in native UserDefaults + per-file
+        // SHA digests; clearing those (so re-upload isn't SHA-suppressed) is done
+        // by the native reset in 0819. Hook it here once that lands.
+      } else if (backupOrphans.length > 0) {
+        const requeued = await resetUploadedState(backupOrphans);
+        console.info(`[BackupService] reconcile: re-queued ${requeued} orphaned backup asset(s)`);
+      }
+
+      // --- Offline-pinned copies --------------------------------------------
+      const offlineFileOrphans = offlineManager.offlineFileIds().filter((id) => !indexIds.has(id));
+      for (const id of offlineFileOrphans) {
+        await offlineManager.removeFile(id);
+      }
+      const offlineFolderOrphans = offlineManager.offlineFolderIds().filter((id) => !indexIds.has(id));
+      for (const id of offlineFolderOrphans) {
+        await offlineManager.removeFolder(id, []);
+      }
+
+      // --- Name cache (0807) -------------------------------------------------
+      const nameCache = await loadNameCache();
+      const nameOrphans = Object.keys(nameCache).filter((id) => !indexIds.has(id));
+      if (nameOrphans.length > 0) await pruneNameCache(nameOrphans);
+
+      // --- Thumbnails --------------------------------------------------------
+      // Disk: drop any cached thumbnail whose file isn't in the index.
+      await pruneThumbnailsForRemoteFiles(indexIds);
+      // Memory (JS) + native FSM/cache: invalidate the union of orphans we found
+      // (covers the founder's deleted backup files + any deleted offline/named
+      // file) so a warm cache can't keep serving a stale image.
+      const orphanUnion = [
+        ...new Set([...backupOrphans, ...offlineFileOrphans, ...nameOrphans]),
+      ];
+      if (orphanUnion.length > 0) {
+        await invalidateCachedThumbnails(orphanUnion);
+        await invalidateNativeThumbnailCache(orphanUnion);
+      }
+
+      // --- Search index ------------------------------------------------------
+      // SEAM: the search index is held in the useSearchIndex hook (it owns the
+      // HKDF-derived index key + the in-memory blob), which this plain module
+      // can't reach. The 0818 dispatcher — wired into React — reconciles it via
+      // getIndexedIds() + unindexFile() against this same indexIds set.
+
+      await storeSet(RECONCILE_HASH_KEY, resp.hash);
+      console.info(`[BackupService] reconcile complete (index hash ${resp.hash.slice(0, 8)}…, ${indexIds.size} live files)`);
+    } catch (err) {
+      console.warn('[BackupService] reconcile failed (will retry next warm-up):', err);
+    } finally {
+      _reconcileInFlight = null;
+    }
+  })();
+
+  return _reconcileInFlight;
+}
+
 /** Ensure `Backups/{deviceName}/{category}/` exists. Returns the device folder
  *  ID and the category folder ID. Each folder is resolved via ensureFolder
  *  (find-or-create, in-flight-coalesced so concurrent callers can't create
@@ -763,6 +898,12 @@ export async function ensureBackupFolders(
   // we never cache or configure a folder that's about to be emptied/trashed.
   // Best-effort + idempotent.
   await flattenDuplicateBackupFolders();
+
+  // 0817 — reconcile derived state against /files/index (hash-gated, ~free when
+  // unchanged). If the Backups root is gone server-side this clears the stale
+  // folder cache below + re-queues the manifest, so the resolve rebuilds the
+  // tree and the camera-roll count self-corrects. Best-effort.
+  await reconcileDerivedStateAgainstServer();
 
   // NOTE: the previous `cache.rootId`/`deviceId`/`categoryIds` reads here were
   // dead — each was overwritten by the ensureFolder call on the next line. We
