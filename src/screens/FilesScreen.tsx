@@ -57,6 +57,7 @@ import { useAuth } from '../lib/auth';
 import { encryptedUpload, generateFileId } from '../lib/encrypted-upload';
 import { useSync } from '../lib/sync-context';
 import { useSearchIndex } from '../lib/use-search-index';
+import { onFilesDeleted } from '../lib/delete-cascade';
 import { loadNameCache, scheduleSaveNameCache, type NameCache } from '../lib/name-cache';
 import { recordRuntimeTrace } from '../lib/runtime-trace';
 import { offlineManager, type OfflineStatus } from '../lib/offline-manager';
@@ -1290,7 +1291,7 @@ export default function FilesScreen() {
   // Encrypted search index — fetched on unlock, queried on every keystroke
   // when the search bar is open. Powers the "in your vault" results hint
   // below the search bar; also kept in sync after create, rename, move, and delete.
-  const { ready: searchIndexReady, search: searchVault, indexFile, unindexFile, getIndexedIds, allEntries } = useSearchIndex();
+  const { ready: searchIndexReady, search: searchVault, indexFile, getIndexedIds, allEntries } = useSearchIndex();
 
   // Task 0807 (Pillar 3): the unlock reconcile already decrypts the whole vault
   // into the search index — so seed decryptedNames from it as soon as it's ready.
@@ -2455,10 +2456,14 @@ export default function FilesScreen() {
               const result = await trashFiles(ids);
               const trashedIds = new Set([...result.trashed, ...result.already_trashed]);
               setFiles((prev) => prev.filter((f) => !trashedIds.has(f.id)));
-              for (const id of trashedIds) unindexFile(id);
+              // 0818 — fan the delete out to EVERY derived store, expanding any
+              // trashed folder to its full subtree (the old per-id unindex missed
+              // descendants + 4 of the 6 stores).
+              const subtree = sync.collectSubtreeIds([...trashedIds]);
+              void onFilesDeleted(subtree, { subtree: true });
               // Drop the trashed rows from the iOS File Provider cache so they
               // disappear from Files.app immediately (not just from this view).
-              void removeFromFileProviderCache([...trashedIds]);
+              void removeFromFileProviderCache(subtree);
               Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
               exitSelectMode();
               if (result.missing.length > 0 || trashedIds.size < ids.length) {
@@ -2475,7 +2480,7 @@ export default function FilesScreen() {
         },
       ],
     );
-  }, [currentFolder.id, exitSelectMode, fetchFiles, selectedIds, unindexFile]);
+  }, [currentFolder.id, exitSelectMode, fetchFiles, selectedIds, sync]);
 
   const handleBatchShare = useCallback(() => {
     if (selectedIds.size === 0) return;
@@ -2903,8 +2908,11 @@ export default function FilesScreen() {
               try {
                 await deleteFile(item.id);
                 setFiles((prev) => prev.filter((f) => f.id !== item.id));
-                unindexFile(item.id);
-                void removeFromFileProviderCache([item.id]);
+                // 0818 — cascade the delete to every derived store; expand the
+                // folder's subtree so descendants aren't orphaned.
+                const subtree = sync.collectSubtreeIds([item.id]);
+                void onFilesDeleted(subtree, { subtree: item.is_folder });
+                void removeFromFileProviderCache(subtree);
                 showToast({ type: 'info', message: `"${name}" moved to Trash` });
               } catch (err) {
                 Alert.alert('Error', friendlyError(err));
@@ -2928,8 +2936,11 @@ export default function FilesScreen() {
               try {
                 await deleteFile(item.id);
                 setFiles((prev) => prev.filter((f) => f.id !== item.id));
-                unindexFile(item.id);
-                void removeFromFileProviderCache([item.id]);
+                // 0818 — cascade the delete to every derived store; expand the
+                // folder's subtree so descendants aren't orphaned.
+                const subtree = sync.collectSubtreeIds([item.id]);
+                void onFilesDeleted(subtree, { subtree: item.is_folder });
+                void removeFromFileProviderCache(subtree);
                 showToast({ type: 'info', message: `"${name}" moved to Trash` });
               } catch (err) {
                 Alert.alert('Error', friendlyError(err));
@@ -3084,7 +3095,7 @@ export default function FilesScreen() {
     lockedFileIds,
     currentFolder.id,
     indexFile,
-    unindexFile,
+    sync,
     encryptMetadata,
     mimeTypeFor,
     ensureFileReady,
@@ -3289,8 +3300,10 @@ export default function FilesScreen() {
             try {
               await deleteFile(item.id);
               setFiles((prev) => prev.filter((f) => f.id !== item.id));
-              unindexFile(item.id);
-              void removeFromFileProviderCache([item.id]);
+              // 0818 — cascade to every derived store, subtree-expanded.
+              const subtree = sync.collectSubtreeIds([item.id]);
+              void onFilesDeleted(subtree, { subtree: item.is_folder });
+              void removeFromFileProviderCache(subtree);
             } catch (err) {
               Alert.alert('Error', friendlyError(err));
             }
@@ -3298,7 +3311,7 @@ export default function FilesScreen() {
         },
       ],
     );
-  }, [decryptedNames, unindexFile]);
+  }, [decryptedNames, sync]);
 
   // Long-press enters multi-select with the pressed row already selected,
   // matching the runbook expectation. The previous ActionSheet (rename,

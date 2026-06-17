@@ -18,6 +18,7 @@ import * as Haptics from 'expo-haptics';
 import { radii, spacing } from '../theme';
 import { useTheme } from '../lib/theme-context';
 import { useToast } from '../lib/toast-context';
+import { onFilesDeleted } from '../lib/delete-cascade';
 import {
   listAllFiles,
   restoreFile,
@@ -294,6 +295,9 @@ export default function TrashScreen() {
               await permanentDeleteFile(item.id, confirmation_token);
               setFiles((prev) => prev.filter((f) => f.id !== item.id));
               void removeFromFileProviderCache([item.id]);
+              // 0818 — final cleanup across derived stores (idempotent; descendants
+              // were already cascaded at trash time).
+              void onFilesDeleted([item.id]);
               showToast({ type: 'info', message: `"${name}" permanently deleted` });
             } catch (err) {
               Alert.alert('Error', friendlyError(err));
@@ -336,6 +340,8 @@ export default function TrashScreen() {
               const deleted = new Set(deletedIds);
               setFiles((prev) => prev.filter((file) => !deleted.has(file.id)));
               void removeFromFileProviderCache(deletedIds);
+              // 0818 — cascade across derived stores (idempotent).
+              void onFilesDeleted(deletedIds);
               showToast({
                 type: 'success',
                 message: deletedIds.length === items.length

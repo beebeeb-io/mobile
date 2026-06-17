@@ -22,6 +22,7 @@ import {
   type SearchIndexEntry,
   type SearchResult,
 } from './search-index'
+import { subscribeFilesDeleted } from './delete-cascade'
 
 const SAVE_DEBOUNCE_MS = 1500
 
@@ -118,6 +119,31 @@ export function useSearchIndex(): UseSearchIndex {
     if (!indexRef.current) return
     indexRef.current = removeIndexEntry(indexRef.current, fileId)
     scheduleSave()
+  }, [scheduleSave])
+
+  // 0818 — the delete-cascade dispatcher (a plain module) can't reach this
+  // hook's in-memory index + key, so it publishes deleted ids to a bus we
+  // subscribe to here. This closes the 0817 search-index seam: a delete (local
+  // OR sync-arrived, subtree-expanded) drops every affected entry, fixing the
+  // "web-deleted file stays searchable / folder-delete misses descendants" hole.
+  useEffect(() => {
+    const unsubscribe = subscribeFilesDeleted((ids) => {
+      const idx = indexRef.current
+      if (!idx) return
+      let next = idx
+      let changed = false
+      for (const id of ids) {
+        if (next.files[id]) {
+          next = removeIndexEntry(next, id)
+          changed = true
+        }
+      }
+      if (changed) {
+        indexRef.current = next
+        scheduleSave()
+      }
+    })
+    return unsubscribe
   }, [scheduleSave])
 
   // Flush any pending save when the consumer unmounts (best-effort).

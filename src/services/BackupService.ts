@@ -789,6 +789,23 @@ async function clearFolderCache(): Promise<void> {
   await writeFolderCache({});
 }
 
+/** 0818 — if any deleted id is a cached backup folder (root/device/category),
+ *  drop the folder cache so ensureBackupFolders rebuilds the tree instead of
+ *  reusing a now-deleted folder. Called by the delete-cascade dispatcher. */
+export async function invalidateBackupFolderCacheIfDeleted(deletedIds: Set<string>): Promise<void> {
+  if (deletedIds.size === 0) return;
+  const cache = await readFolderCache();
+  const backupFolderIds = [
+    cache.rootId,
+    cache.deviceId,
+    ...Object.values(cache.categoryIds ?? {}),
+  ].filter((id): id is string => typeof id === 'string');
+  if (backupFolderIds.some((id) => deletedIds.has(id))) {
+    await clearFolderCache();
+    console.info('[BackupService] delete-cascade: a backup folder was deleted — cleared folder cache');
+  }
+}
+
 /**
  * Task 0819: contacts/calendar self-heal. Their backup state lives in native
  * UserDefaults (scan/upload timestamps + a SHA-256 dedup digest) and writes NO
