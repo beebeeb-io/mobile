@@ -64,6 +64,11 @@ interface SyncEvent {
   status?: ConnectionStatus;
   error?: Error;
   op?: SyncOp;
+  /** For a trash/delete op: the affected file ids — the SUBTREE (node +
+   *  descendants) for a 0816 cascade-tagged folder op, or just the node for a
+   *  plain file. Captured BEFORE the op is applied (a delete removes the rows),
+   *  so the delete-cascade dispatcher (0818) can fan out to every derived store. */
+  deletedIds?: string[];
 }
 
 type Listener = (event: SyncEvent) => void;
@@ -229,6 +234,50 @@ export class SyncClient {
       if ((node.parent_id ?? null) === target) out.push(node);
     }
     return out;
+  }
+
+  /**
+   * Expand a set of node ids to include every descendant in the in-memory tree
+   * (BFS over parent_id). Used by the delete-cascade dispatcher (0818) so a
+   * folder delete fans out to ALL of its contents across the derived stores,
+   * and by the recursive cascade-apply below. Cycle-safe via a visited set.
+   */
+  collectSubtreeIds(rootIds: string[]): string[] {
+    const childrenByParent = new Map<string | null, string[]>();
+    for (const node of this.tree.values()) {
+      const p = node.parent_id ?? null;
+      const list = childrenByParent.get(p);
+      if (list) list.push(node.id);
+      else childrenByParent.set(p, [node.id]);
+    }
+    const result = new Set<string>();
+    const stack: string[] = [];
+    for (const id of rootIds) {
+      if (!result.has(id)) {
+        result.add(id);
+        stack.push(id);
+      }
+    }
+    while (stack.length > 0) {
+      const cur = stack.pop()!;
+      for (const childId of childrenByParent.get(cur) ?? []) {
+        if (!result.has(childId)) {
+          result.add(childId);
+          stack.push(childId);
+        }
+      }
+    }
+    return [...result];
+  }
+
+  /** Ids a trash/delete op removes from the live view: the SUBTREE for a 0816
+   *  cascade-tagged folder op, else just the node. Must be called BEFORE the op
+   *  is applied (delete drops the rows). Empty for non-delete ops. */
+  private deletedIdsForOp(opType: string, payload: Record<string, unknown>): string[] {
+    if (opType !== 'file_trash' && opType !== 'file_delete') return [];
+    const id = payload.id as string | undefined;
+    if (!id) return [];
+    return payload.cascade === true ? this.collectSubtreeIds([id]) : [id];
   }
 
   subscribe(listener: Listener): () => void {
@@ -455,11 +504,14 @@ export class SyncClient {
     // lost. We persist the live tree (and prune the File Provider cache) for
     // these folders after the op lands.
     const affectedParents = this.affectedParentsForOp(op.op_type, op.payload);
+    // 0818 — capture the deleted subtree BEFORE applying (a cascade delete drops
+    // the descendant rows) so the dispatcher can invalidate every store.
+    const deletedIds = this.deletedIdsForOp(op.op_type, op.payload);
 
     this.applyOpToTree(op.op_type, op.payload);
     this.lastSeq = op.seq_id;
     await saveLastSeq(this.lastSeq);
-    this.emit({ type: 'op', op });
+    this.emit({ type: 'op', op, deletedIds: deletedIds.length > 0 ? deletedIds : undefined });
 
     if (affectedParents) {
       for (const parent of affectedParents) this.dirtyParents.add(parent);
@@ -699,20 +751,33 @@ export class SyncClient {
       case 'file_trash': {
         const id = payload.id as string | undefined;
         if (!id) return;
-        const existing = this.tree.get(id);
-        if (existing) this.tree.set(id, { ...existing, is_trashed: true });
+        // 0816/0818 — a cascade-tagged folder trash recursively trashes the
+        // whole subtree, so descendants don't linger "live" in the in-memory
+        // tree (which previously left stale rows under a web-deleted folder).
+        const ids = payload.cascade === true ? this.collectSubtreeIds([id]) : [id];
+        for (const nid of ids) {
+          const existing = this.tree.get(nid);
+          if (existing) this.tree.set(nid, { ...existing, is_trashed: true });
+        }
         break;
       }
       case 'file_restore': {
         const id = payload.id as string | undefined;
         if (!id) return;
-        const existing = this.tree.get(id);
-        if (existing) this.tree.set(id, { ...existing, is_trashed: false });
+        // Symmetric with cascade trash: un-trash the subtree for a cascade op.
+        const ids = payload.cascade === true ? this.collectSubtreeIds([id]) : [id];
+        for (const nid of ids) {
+          const existing = this.tree.get(nid);
+          if (existing) this.tree.set(nid, { ...existing, is_trashed: false });
+        }
         break;
       }
       case 'file_delete': {
         const id = payload.id as string | undefined;
-        if (id) this.tree.delete(id);
+        if (!id) return;
+        // Cascade-tagged folder delete removes the whole subtree from the tree.
+        const ids = payload.cascade === true ? this.collectSubtreeIds([id]) : [id];
+        for (const nid of ids) this.tree.delete(nid);
         break;
       }
       case 'share_create':

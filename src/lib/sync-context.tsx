@@ -20,6 +20,7 @@ import type { ReactNode } from 'react';
 import { SyncClient, type ConnectionStatus } from './sync-client';
 import type { SyncNode } from './api';
 import { useAuth } from './auth';
+import { onFilesDeleted } from './delete-cascade';
 
 interface SyncContextValue {
   /** Connection state — `connected` once SSE handshake succeeds. */
@@ -41,6 +42,9 @@ interface SyncContextValue {
   getNode: (id: string) => SyncNode | undefined;
   /** All nodes — useful for search indexing. */
   allNodes: () => SyncNode[];
+  /** Expand ids to include all descendants in the in-memory tree (for the
+   *  delete-cascade dispatcher — folder deletes must fan out to their contents). */
+  collectSubtreeIds: (ids: string[]) => string[];
   /** Submit a local op (optimistic apply + POST). */
   submitOp: (
     opType: string,
@@ -85,6 +89,13 @@ export function SyncProvider({ children }: { children: ReactNode }) {
         setTreeVersion((n) => n + 1);
       } else if (event.type === 'op') {
         setTreeVersion((n) => n + 1);
+        // 0818 — a sync-arrived trash/delete (incl. 0816's cascade-tagged folder
+        // op, whose subtree was captured before apply) fans out to every derived
+        // store so a web delete doesn't leave orphaned backup rows / thumbnails /
+        // offline copies / search hits. Fire-and-forget; the cascade is idempotent.
+        if (event.deletedIds && event.deletedIds.length > 0) {
+          void onFilesDeleted(event.deletedIds, { subtree: true });
+        }
       } else if (event.type === 'error' && event.error) {
         setError(event.error);
       }
@@ -127,6 +138,10 @@ export function SyncProvider({ children }: { children: ReactNode }) {
     return clientRef.current?.getAllNodes() ?? [];
   }, []);
 
+  const collectSubtreeIds = useCallback((ids: string[]): string[] => {
+    return clientRef.current?.collectSubtreeIds(ids) ?? ids;
+  }, []);
+
   const submitOp = useCallback(
     async (
       opType: string,
@@ -150,9 +165,10 @@ export function SyncProvider({ children }: { children: ReactNode }) {
       children: children_,
       getNode,
       allNodes,
+      collectSubtreeIds,
       submitOp,
     }),
-    [status, loading, error, ready, treeVersion, children_, getNode, allNodes, submitOp],
+    [status, loading, error, ready, treeVersion, children_, getNode, allNodes, collectSubtreeIds, submitOp],
   );
 
   return <SyncContext.Provider value={value}>{children}</SyncContext.Provider>;
