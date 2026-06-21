@@ -2125,6 +2125,10 @@ export async function registerDeviceToken(params: {
   token: string;
   platform: 'ios' | 'android';
   device_id: string;
+  /** Canonical client_devices UUID — links this push token to the device row so
+   * "forget device" cascades it and per-device mute works. Optional: server
+   * backfills by (user_id, platform) when absent. */
+  client_device_id?: string;
 }): Promise<void> {
   await request<void>('POST', '/api/v1/notifications/register-device', params);
 }
