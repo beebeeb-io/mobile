@@ -29,10 +29,10 @@ import {
 import type { SyncOp, SyncNode, FileEntry } from './api';
 import { loadCachedFileIndex, saveCachedFileIndex } from './file-index-cache';
 import { syncDecryptedEntriesToFileProvider } from './file-provider-mount';
+import { getDeviceId } from './device-identity';
 
 const LAST_SEQ_KEY = 'bb_sync_last_seq';
 const PENDING_OPS_KEY = 'bb_sync_pending_ops';
-const DEVICE_ID_KEY = 'bb_sync_device_id';
 
 const RECONNECT_DELAY_MS = 1500;
 const RECONNECT_MAX_DELAY_MS = 30_000;
@@ -115,14 +115,12 @@ function uuid(): string {
   });
 }
 
-export async function getDeviceId(): Promise<string> {
-  let id = await storage.get(DEVICE_ID_KEY);
-  if (!id) {
-    id = uuid();
-    await storage.set(DEVICE_ID_KEY, id);
-  }
-  return id;
-}
+// Device identity is now owned by the canonical `device-identity` module
+// (task 0863). Re-export it here so existing importers (api.ts and this file's
+// SyncClient) keep working — the value is the same `bb_sync_device_id` this
+// engine has always used, so there is no PhotoKit-dedup churn or op-origin
+// discontinuity for already-synced devices.
+export { getDeviceId };
 
 async function loadLastSeq(): Promise<number> {
   const raw = await storage.get(LAST_SEQ_KEY);

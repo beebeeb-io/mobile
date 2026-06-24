@@ -60,6 +60,7 @@ import {
   invalidateNativeThumbnailCache,
 } from '../lib/thumbnail-cache';
 import { loadNameCache, pruneNameCache } from '../lib/name-cache';
+import { getDeviceId } from '../lib/device-identity';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -152,7 +153,6 @@ function isEncryptionUnavailableError(err: unknown): boolean {
 // Constants
 // ---------------------------------------------------------------------------
 
-const DEVICE_ID_KEY = 'beebeeb_device_id';
 const FOLDER_CACHE_KEY = 'beebeeb_backup_folders';
 const MANIFEST_FILENAME = '.device.json';
 const MANIFEST_VERSION = 1;
@@ -207,26 +207,6 @@ async function storeSet(key: string, value: string): Promise<void> {
 // Device identity
 // ---------------------------------------------------------------------------
 
-/** UUID v4 generator. The device ID is an opaque identifier — no crypto-grade
- *  entropy needed; the user's account auth is what guards access. */
-function generateUuid(): string {
-  const g = (globalThis as unknown as { crypto?: { randomUUID?: () => string } }).crypto;
-  if (g?.randomUUID) return g.randomUUID();
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-    const r = (Math.random() * 16) | 0;
-    const v = c === 'x' ? r : (r & 0x3) | 0x8;
-    return v.toString(16);
-  });
-}
-
-async function getOrCreateDeviceId(): Promise<string> {
-  const existing = await storeGet(DEVICE_ID_KEY);
-  if (existing) return existing;
-  const id = generateUuid();
-  await storeSet(DEVICE_ID_KEY, id);
-  return id;
-}
-
 interface DeviceInfo {
   device_id: string;
   device_name: string;
@@ -237,7 +217,13 @@ interface DeviceInfo {
 
 async function getDeviceInfo(): Promise<DeviceInfo> {
   return {
-    device_id: await getOrCreateDeviceId(),
+    // Canonical device id (task 0863). The manifest's device_id is write-only
+    // metadata — backup folders are keyed by device_name and uploaded-state by
+    // file id — so adopting the canonical id here is re-upload-safe. For an
+    // existing install the canonical module carries forward the old
+    // `beebeeb_device_id` value (when no sync id exists) so the manifest stays
+    // byte-identical across the upgrade.
+    device_id: await getDeviceId(),
     device_name: Device.deviceName ?? 'Unknown Device',
     device_model: Device.modelName ?? 'Unknown Model',
     os_version: `${Device.osName ?? Platform.OS} ${Device.osVersion ?? ''}`.trim(),
