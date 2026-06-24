@@ -75,17 +75,24 @@ export const SIMULATOR_MASTER_KEY_FILE = `${FileSystem.documentDirectory ?? ''}b
 
 /**
  * True when the master key is NOT stored behind a biometric-gated Secure
- * Enclave key on this runtime (simulator, non-SE device, or any Debug build).
+ * Enclave key on this runtime (simulator or non-SE device).
  * In that case `unlock()`/`loadVerifiedMasterKeyHandle()` read the key from
  * SecureStore (or the simulator file) WITHOUT raising a Face ID prompt, so the
  * biometric lock screen must perform its own explicit `authenticateAsync()` to
- * enforce a biometric. On a real release build this is `false`, and the SE
- * decrypt inside `unlock()` IS the biometric gate (a single Face ID prompt).
+ * enforce a biometric. On a real device (release OR debug build) this is
+ * `false`, and the SE decrypt inside `unlock()` IS the biometric gate (a
+ * single Face ID prompt).
  * Exported so the lock-screen flow can decide whether `unlock()` will prompt
  * and therefore avoid a redundant second prompt (task 0792).
+ *
+ * SECURITY NOTE: do NOT add `|| __DEV__` here. A debug build on a real physical
+ * device must use the Secure Enclave path — the software-vault fallback writes
+ * the master key to a plain file in documentDirectory (unencrypted, accessible
+ * to any process on a jailbroken device). `Device.isDevice` (false on
+ * simulator/emulator, true on real hardware) is the correct discriminator.
  */
 export function usesSoftwareVaultFallback(): boolean {
-  return !Device.isDevice || Device.modelName?.toLowerCase().includes('simulator') === true || __DEV__
+  return !Device.isDevice || Device.modelName?.toLowerCase().includes('simulator') === true
 }
 
 function uint8ToBase64(bytes: Uint8Array): string {
