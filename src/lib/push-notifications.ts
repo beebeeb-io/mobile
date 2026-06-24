@@ -51,7 +51,13 @@ function getProjectId(): string | undefined {
   return Constants.expoConfig?.extra?.eas?.projectId ?? Constants.easConfig?.projectId;
 }
 
-export async function registerForPushNotifications(): Promise<void> {
+export async function registerForPushNotifications(
+  /** Canonical client_devices UUID from registerDevice(), if available.
+   * When provided, the server links the push token to the device row so
+   * "forget device" cascades it and per-device mute works.
+   * Field is optional server-side — registration proceeds without it. */
+  clientDeviceId?: string | null,
+): Promise<void> {
   // Skip in simulator / web — push tokens don't exist there.
   if (!Device.isDevice) return;
 
@@ -84,6 +90,7 @@ export async function registerForPushNotifications(): Promise<void> {
       token,
       platform: Platform.OS === 'ios' ? 'ios' : 'android',
       device_id: deviceId,
+      ...(clientDeviceId ? { client_device_id: clientDeviceId } : {}),
     });
   } catch {
     // Non-fatal — app works fine without push tokens.

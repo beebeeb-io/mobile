@@ -694,10 +694,12 @@ export default function App() {
       const me = await getMe();
       setUser(me);
       SecureStore.setItemAsync(LAST_CONNECTED_KEY, new Date().toISOString()).catch(() => {});
-      // Register push token once the user is authenticated.
-      void registerForPushNotifications();
-      // Register this device with the clients API (best-effort).
-      void registerDevice();
+      // Register this device with the clients API first so we can thread
+      // the canonical client_devices UUID into the push-token registration.
+      // Both are best-effort — failures are silently swallowed inside each fn.
+      void registerDevice().then((clientDeviceId) => {
+        void registerForPushNotifications(clientDeviceId);
+      });
       // Hydrate the PhotoKit identifier map so thumbnails can short-circuit
       // through PHImageManager for camera-roll-backed files (task 0552).
       // Fire-and-forget — never block auth on this network call.
