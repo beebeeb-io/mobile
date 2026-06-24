@@ -70,6 +70,14 @@ import type { SearchIndexEntry, SearchResult } from '../lib/search-index';
 import { donateSiriShortcut } from '../lib/siri-shortcuts';
 import { perfMark } from '../lib/perf-mark';
 import { loadCachedFileIndex, saveCachedFileIndex, type CachedFileIndex } from '../lib/file-index-cache';
+import {
+  appendFolderToBreadcrumbStack,
+  filterSelfChildEntries,
+  folderCacheKey,
+  shouldApplyFilesForFolderToVisibleRows,
+  shouldApplyFolderRequestToVisibleState,
+  type BreadcrumbEntry,
+} from '../lib/folder-navigation';
 
 // Tracks the currently open Swipeable so we can close it when another opens.
 let _openSwipeable: Swipeable | null = null;
@@ -242,12 +250,11 @@ function upsertFileEntry(entries: FileEntry[], entry: FileEntry): FileEntry[] {
   return [entry, ...entries.filter((current) => current.id !== entry.id)];
 }
 
-function folderCacheKey(parentId: string | null): string {
-  return parentId ?? 'root';
-}
-
 function filesForFolderFromIndex(index: CachedFileIndex, parentId: string | null): FileEntry[] {
-  return index.files.filter((entry) => (entry.parent_id ?? null) === parentId);
+  return filterSelfChildEntries(
+    index.files.filter((entry) => (entry.parent_id ?? null) === parentId),
+    parentId,
+  );
 }
 
 /** Determine a file type category from the mime type. */
@@ -391,11 +398,6 @@ const OfflineIndicator = React.memo(function OfflineIndicator({
 // ---------------------------------------------------------------------------
 // Breadcrumb item
 // ---------------------------------------------------------------------------
-
-interface BreadcrumbEntry {
-  id: string | null; // null = root
-  name: string;
-}
 
 // ---------------------------------------------------------------------------
 // File icon component
@@ -1674,24 +1676,31 @@ export default function FilesScreen() {
     parentId: string | null,
     nextFiles: FileEntry[],
     options: { preserveCachedOnEmpty?: boolean } = {},
-  ) => {
-    const unique = uniqueFileEntries(nextFiles);
+  ): boolean => {
+    const unique = uniqueFileEntries(filterSelfChildEntries(nextFiles, parentId));
     const cacheKey = folderCacheKey(parentId);
-    filesFolderKeyRef.current = cacheKey;
+    const shouldRender = shouldApplyFilesForFolderToVisibleRows(parentId, filesFolderKeyRef.current);
     if (unique.length > 0) {
       folderFilesCacheRef.current[cacheKey] = unique;
+      if (!shouldRender) return false;
+      filesFolderKeyRef.current = cacheKey;
       setFiles(unique);
-      return;
+      return true;
     }
 
     const cached = folderFilesCacheRef.current[cacheKey];
     if (options.preserveCachedOnEmpty && cached && cached.length > 0) {
+      if (!shouldRender) return false;
+      filesFolderKeyRef.current = cacheKey;
       setFiles(cached);
-      return;
+      return true;
     }
 
     delete folderFilesCacheRef.current[cacheKey];
+    if (!shouldRender) return false;
+    filesFolderKeyRef.current = cacheKey;
     setFiles([]);
+    return true;
   }, []);
 
   // 0797 — Replace the visible listing the instant the folder changes so the
@@ -1722,6 +1731,7 @@ export default function FilesScreen() {
       setFiles([]);
       setLoading(true);
     }
+    setRefreshing(false);
     setError(null);
   }, [currentFolder.id]);
 
@@ -1730,13 +1740,19 @@ export default function FilesScreen() {
   // ------------------------------------------------------------------
 
   const fetchFiles = useCallback(async (parentId: string | null, isRefresh = false) => {
+    const isRequestStillVisible = () =>
+      shouldApplyFolderRequestToVisibleState(parentId, filesFolderKeyRef.current);
     const hasVisibleFiles = filesCountRef.current > 0;
-    if (isRefresh || hasVisibleFiles) {
-      setRefreshing(true);
-    } else {
-      setLoading(true);
+    if (isRequestStillVisible()) {
+      if (isRefresh || hasVisibleFiles) {
+        setRefreshing(true);
+      } else {
+        setLoading(true);
+      }
     }
-    setError(null);
+    if (isRequestStillVisible()) {
+      setError(null);
+    }
     const endPerf = perfMark.start('files.fetch', {
       parent: parentId ?? 'root',
       refresh: isRefresh,
@@ -1749,9 +1765,10 @@ export default function FilesScreen() {
         const cachedFiles = filesForFolderFromIndex(cachedIndex, parentId);
         if (cachedFiles.length > 0) {
           renderedCachedIndex = true;
-          applyFilesForFolder(parentId, cachedFiles, { preserveCachedOnEmpty: true });
-          setLoading(false);
-          setRefreshing(true);
+          if (applyFilesForFolder(parentId, cachedFiles, { preserveCachedOnEmpty: true })) {
+            setLoading(false);
+            setRefreshing(true);
+          }
         }
       }
 
@@ -1767,9 +1784,9 @@ export default function FilesScreen() {
         }
         if (sourceIndex) {
           const result = filesForFolderFromIndex(sourceIndex, parentId);
-          applyFilesForFolder(parentId, result, { preserveCachedOnEmpty: !isRefresh });
+          const rendered = applyFilesForFolder(parentId, result, { preserveCachedOnEmpty: !isRefresh });
           endPerf({ count: result.length, source: 'index' });
-          setHasLoadedOnceTrue();
+          if (rendered) setHasLoadedOnceTrue();
           return;
         }
       } catch (err) {
@@ -1779,17 +1796,19 @@ export default function FilesScreen() {
       }
 
       const result = await listAllFiles(parentId ?? undefined);
-      applyFilesForFolder(parentId, result, { preserveCachedOnEmpty: !isRefresh });
+      const rendered = applyFilesForFolder(parentId, result, { preserveCachedOnEmpty: !isRefresh });
       endPerf({ count: result.length, source: 'folder' });
-      setHasLoadedOnceTrue();
+      if (rendered) setHasLoadedOnceTrue();
     } catch (err) {
       endPerf({ error: true });
-      if (!renderedCachedIndex) {
+      if (isRequestStillVisible() && !renderedCachedIndex) {
         setError(friendlyError(err));
       }
     } finally {
-      setLoading(false);
-      setRefreshing(false);
+      if (isRequestStillVisible()) {
+        setLoading(false);
+        setRefreshing(false);
+      }
     }
   }, [applyFilesForFolder, setHasLoadedOnceTrue]);
 
@@ -1946,10 +1965,10 @@ export default function FilesScreen() {
   const navigateToFolder = useCallback((folder: FileEntry) => {
     setSearchActive(false);
     setSearchQuery('');
-    setFolderStack((prev) => [
-      ...prev,
-      { id: folder.id, name: decryptedNames[folder.id] ?? displayName(folder) },
-    ]);
+    setFolderStack((prev) => appendFolderToBreadcrumbStack(prev, {
+      id: folder.id,
+      name: decryptedNames[folder.id] ?? displayName(folder),
+    }));
   }, [decryptedNames]);
 
   const navigateToBreadcrumb = useCallback((index: number) => {
