@@ -15,6 +15,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { radii, spacing } from '../theme';
 import type { Colors } from '../theme';
 import { useTheme } from '../lib/theme-context';
+import { useToast } from '../lib/toast-context';
 import { guides as initialGuides, type BackupGuide } from '../lib/backup-guides';
 import type { RootStackParamList } from '../App';
 
@@ -138,6 +139,7 @@ function GuideCard({
 export default function BackupGuidesScreen() {
   const navigation = useNavigation<Nav>();
   const { colors: c } = useTheme();
+  const { showToast } = useToast();
   const insets = useSafeAreaInsets();
   const guideList = initialGuides;
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -150,9 +152,9 @@ export default function BackupGuidesScreen() {
   const handleRequest = useCallback(() => {
     const trimmed = requestApp.trim();
     if (!trimmed) return;
-    // Placeholder — will wire to POST /api/v1/feedback/app-request
+    showToast({ type: 'info', message: `Thanks — we'll look into adding ${trimmed}.` });
     setRequestApp('');
-  }, [requestApp]);
+  }, [requestApp, showToast]);
 
   const handleRoadmap = useCallback(() => {
     Linking.openURL('https://beebeeb.io/roadmap');

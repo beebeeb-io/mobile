@@ -22,6 +22,7 @@ import {
   type WorkerFailureEvent,
 } from '../lib/thumbnail-events';
 import { useTheme } from '../lib/theme-context';
+import { formatThroughput } from '../lib/format';
 
 type Nav = NativeStackNavigationProp<RootStackParamList>;
 
@@ -55,12 +56,8 @@ function formatEta(etaSec: number): string {
   return `${Math.round(mins / 60)}h`;
 }
 
-function formatThroughput(filesPerSec: number, kbPerSec: number): string {
-  const fps = filesPerSec.toFixed(1);
-  const kbps = kbPerSec > 1024
-    ? `${(kbPerSec / 1024).toFixed(1)} MB/s`
-    : `${Math.round(kbPerSec)} KB/s`;
-  return `${fps} files/s · ${kbps}`;
+function formatWorkerThroughput(filesPerSec: number, kbPerSec: number): string {
+  return `${filesPerSec.toFixed(1)} files/s · ${formatThroughput(kbPerSec)}`;
 }
 
 export default function ThumbnailWorkerScreen() {
@@ -220,7 +217,7 @@ export default function ThumbnailWorkerScreen() {
         {/* Throughput + ETA */}
         {stats && (stats.filesPerSec > 0 || stats.etaSec > 0) ? (
           <Text style={[styles.throughputLine, { color: c.ink3 }]}>
-            {formatThroughput(stats.filesPerSec, kbPerSec)}
+            {formatWorkerThroughput(stats.filesPerSec, kbPerSec)}
             {stats.etaSec > 0 ? ` · ETA ${formatEta(stats.etaSec)}` : ''}
             {stats.isThermalThrottled ? ' · throttled' : ''}
           </Text>

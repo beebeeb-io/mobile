@@ -24,6 +24,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { fonts, radii, spacing } from '../theme';
 import { useTheme } from '../lib/theme-context';
 import { trustLocation, type FileEntry } from '../lib/api';
+import { formatBytes as formatSize } from '../lib/format';
 import EncryptionProof from './EncryptionProof';
 
 interface Props {
@@ -53,14 +54,6 @@ function formatTimestamp(iso: string | null | undefined): string {
   return `${month} ${day}, ${year} at ${hh}:${mm}`;
 }
 
-function formatSize(bytes: number): string {
-  if (bytes === 0) return '0 B';
-  if (bytes < 1_000) return `${bytes} B`;
-  if (bytes < 1_000_000) return `${Math.round(bytes / 1_000)} KB`;
-  if (bytes < 1_000_000_000) return `${Math.round(bytes / 1_000_000)} MB`;
-  if (bytes < 1_000_000_000_000) return `${(bytes / 1_000_000_000).toFixed(1)} GB`;
-  return `${(bytes / 1_000_000_000_000).toFixed(1)} TB`;
-}
 
 interface RowProps {
   label: string;

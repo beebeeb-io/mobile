@@ -31,6 +31,7 @@ import { BeebeebThumbnails } from '../../modules/beebeeb-crypto';
 import { getFileIndex } from '../lib/api';
 import { loadCachedFileIndex, saveCachedFileIndex } from '../lib/file-index-cache';
 import { getRemoteToLocalMap } from '../services/BackupDatabase';
+import { formatBytes } from '../lib/format';
 import { useTheme } from '../lib/theme-context';
 
 type Nav = NativeStackNavigationProp<RootStackParamList>;
@@ -38,11 +39,6 @@ type Nav = NativeStackNavigationProp<RootStackParamList>;
 /** Baseline for delta estimation — matches the default medium thumbnail size. */
 const BASELINE_BYTES = 48 * 1024;
 
-function formatBytes(bytes: number): string {
-  if (Math.abs(bytes) < 1_000_000) return `${Math.round(bytes / 1_000)} KB`;
-  if (Math.abs(bytes) < 1_000_000_000) return `${Math.round(bytes / 1_000_000)} MB`;
-  return `${(bytes / 1_000_000_000).toFixed(1)} GB`;
-}
 
 function formatTime(seconds: number): string {
   if (seconds < 60) return `~${Math.ceil(seconds)}s`;

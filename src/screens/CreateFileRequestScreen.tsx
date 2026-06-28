@@ -295,7 +295,7 @@ export default function CreateFileRequestScreen() {
         </View>
 
         {error && (
-          <View style={[styles.errorBox, { backgroundColor: c.amberBg, borderColor: c.red }]}>
+          <View style={[styles.errorBox, { backgroundColor: 'rgba(216,64,64,0.12)', borderColor: c.red }]}>
             <Text style={[styles.errorText, { color: c.red }]}>{error}</Text>
           </View>
         )}

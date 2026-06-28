@@ -26,6 +26,7 @@ import { NativeSwitch } from '../components/NativeSwitch';
 import { ApiError, approveInvite, createInvite, createShare, friendlyError, resolveSharingContact } from '../lib/api';
 import type { Share as ShareLink } from '../lib/api';
 import { useCrypto } from '../lib/crypto-context';
+import { formatBytes as formatSize } from '../lib/format';
 import {
   deriveShareKey,
   encryptChunk,
@@ -40,14 +41,6 @@ type ShareRoute = RouteProp<RootStackParamList, 'ShareSheet'>;
 // Helpers
 // ---------------------------------------------------------------------------
 
-function formatSize(bytes: number): string {
-  if (bytes === 0) return '0 B';
-  if (bytes < 1_000) return `${bytes} B`;
-  if (bytes < 1_000_000) return `${Math.round(bytes / 1_000)} KB`;
-  if (bytes < 1_000_000_000) return `${Math.round(bytes / 1_000_000)} MB`;
-  if (bytes < 1_000_000_000_000) return `${(bytes / 1_000_000_000).toFixed(1)} GB`;
-  return `${(bytes / 1_000_000_000_000).toFixed(1)} TB`;
-}
 
 function makeFileTypeBadge(mime: string | undefined, c: ReturnType<typeof useTheme>['colors']): { label: string; color: string } {
   const m = mime ?? '';

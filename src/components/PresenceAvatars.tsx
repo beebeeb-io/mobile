@@ -8,16 +8,6 @@ export interface PresenceUser {
   initials: string;
 }
 
-const PALETTE = ['#e67e22', '#3498db', '#2ecc71', '#9b59b6', '#e74c3c', '#1abc9c'];
-
-function hashColor(email: string): string {
-  let hash = 0;
-  for (const ch of email) {
-    hash = ((hash << 5) - hash + ch.charCodeAt(0)) | 0;
-  }
-  return PALETTE[Math.abs(hash) % PALETTE.length]!;
-}
-
 const MAX_VISIBLE = 3;
 
 export default function PresenceAvatars({ users }: { users: PresenceUser[] }) {
@@ -42,7 +32,7 @@ export default function PresenceAvatars({ users }: { users: PresenceUser[] }) {
           style={[
             styles.avatar,
             {
-              backgroundColor: hashColor(user.email),
+              backgroundColor: c.ink3,
               borderColor: c.paper,
               marginLeft: i > 0 ? -10 : 0,
               zIndex: 10 - i,

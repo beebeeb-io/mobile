@@ -14,17 +14,10 @@ import type { RootStackParamList } from '../App';
 
 type Nav = NativeStackNavigationProp<RootStackParamList>;
 
-// Show-card icon stays bluish in both themes (matches the "show" affordance,
-// distinct from the amber Scan card). Light/dark variants of the badge bg.
-const SHOW_BG_LIGHT = '#eef2ff';
-const SHOW_BG_DARK = 'rgba(79, 107, 205, 0.18)';
-const SHOW_INK = '#4f6bcd';
-
 export default function DevicePairingScreen() {
   const navigation = useNavigation<Nav>();
   const insets = useSafeAreaInsets();
-  const { colors: c, resolved } = useTheme();
-  const showBg = resolved === 'dark' ? SHOW_BG_DARK : SHOW_BG_LIGHT;
+  const { colors: c } = useTheme();
 
   return (
     <View style={[styles.root, { backgroundColor: c.paper2, paddingTop: insets.top, paddingBottom: insets.bottom }]}>
@@ -82,11 +75,11 @@ export default function DevicePairingScreen() {
           accessibilityLabel="Show on this device"
           accessibilityHint="Displays a pattern for another device to scan"
         >
-          <View style={[styles.cardIcon, { backgroundColor: showBg }]}>
-            {/* Globe outline */}
-            <View style={[styles.globeOuter, { borderColor: SHOW_INK }]}>
-              <View style={[styles.globeH, { backgroundColor: SHOW_INK }]} />
-              <View style={[styles.globeV, { backgroundColor: SHOW_INK }]} />
+          <View style={[styles.cardIcon, { backgroundColor: c.line }]}>
+            {/* Globe outline (neutral ink — shape differentiates from the amber Scan card) */}
+            <View style={[styles.globeOuter, { borderColor: c.ink2 }]}>
+              <View style={[styles.globeH, { backgroundColor: c.ink2 }]} />
+              <View style={[styles.globeV, { backgroundColor: c.ink2 }]} />
             </View>
           </View>
           <Text style={[styles.cardTitle, { color: c.ink }]}>Show on this device</Text>

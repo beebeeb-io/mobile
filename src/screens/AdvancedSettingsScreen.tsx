@@ -22,6 +22,7 @@ import { useTheme } from '../lib/theme-context';
 import { formatRuntimeTraceJsonl, getRuntimeTraceSnapshot, recordRuntimeTrace } from '../lib/runtime-trace';
 import { getFileIndex } from '../lib/api';
 import { loadCachedFileIndex, saveCachedFileIndex } from '../lib/file-index-cache';
+import { formatBytes } from '../lib/format';
 import {
   estimatePerformanceStorage,
   getPerformanceStorageSettings,
@@ -34,11 +35,6 @@ type Nav = NativeStackNavigationProp<RootStackParamList>;
 
 const PROFILES: PerformanceStorageProfile[] = ['light', 'balanced', 'smooth'];
 
-function formatBytes(bytes: number): string {
-  if (bytes < 1_000_000) return `${Math.round(bytes / 1_000)} KB`;
-  if (bytes < 1_000_000_000) return `${Math.round(bytes / 1_000_000)} MB`;
-  return `${(bytes / 1_000_000_000).toFixed(1)} GB`;
-}
 
 function profileCopy(profile: PerformanceStorageProfile): string {
   if (profile === 'light') return 'Loads remote thumbnails only when they scroll into view.';

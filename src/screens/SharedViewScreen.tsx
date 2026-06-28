@@ -19,6 +19,7 @@ import { useTheme } from '../lib/theme-context';
 import { downloadSharedFileBlob, getShareByToken, friendlyError } from '../lib/api';
 import type { ShareInfo } from '../lib/api';
 import { makeShareKeyResolver } from '../lib/share-key-store';
+import { formatBytes as formatSize } from '../lib/format';
 import {
   decryptEncryptedBytes,
   inferChunkCountFromEncryptedSize,
@@ -33,12 +34,6 @@ type Nav = NativeStackNavigationProp<RootStackParamList>;
 // Helpers
 // ---------------------------------------------------------------------------
 
-function formatSize(bytes: number): string {
-  if (bytes < 1_000) return `${bytes} B`;
-  if (bytes < 1_000_000) return `${(bytes / 1_000).toFixed(0)} KB`;
-  if (bytes < 1_000_000_000) return `${(bytes / 1_000_000).toFixed(1)} MB`;
-  return `${(bytes / 1_000_000_000).toFixed(2)} GB`;
-}
 
 function formatExpiry(iso: string): string {
   const d = new Date(iso);

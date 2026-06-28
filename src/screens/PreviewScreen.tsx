@@ -64,6 +64,7 @@ import {
 } from '../lib/photo-viewer-window';
 import { DetailsSheet } from '../components/preview/DetailsSheet';
 import { recordRuntimeTrace } from '../lib/runtime-trace';
+import { formatBytes as formatSize } from '../lib/format';
 
 // Preview renderers are lazy-loaded so that the libraries each one depends on
 // (jszip, xlsx, mammoth, pako, react-native-pdf, highlight.js) only enter
@@ -112,13 +113,6 @@ type PreviewOptionAction = {
   run: () => void;
 };
 
-function formatSize(bytes: number): string {
-  if (bytes < 1_000) return `${bytes} B`;
-  if (bytes < 1_000_000) return `${(bytes / 1_000).toFixed(0)} KB`;
-  if (bytes < 1_000_000_000) return `${(bytes / 1_000_000).toFixed(0)} MB`;
-  if (bytes < 1_000_000_000_000) return `${(bytes / 1_000_000_000).toFixed(1)} GB`;
-  return `${(bytes / 1_000_000_000_000).toFixed(1)} TB`;
-}
 
 function formatDate(iso: string): string {
   const d = new Date(iso);

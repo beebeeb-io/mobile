@@ -20,6 +20,7 @@ const INDICATOR_FADE_MS = 2000;
 export function PdfRenderer({ filePath }: PdfRendererProps) {
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(0);
+  const [hasError, setHasError] = useState(false);
   const { colors } = useTheme();
 
   const fadeAnim = useRef(new Animated.Value(0)).current;
@@ -49,6 +50,19 @@ export function PdfRenderer({ filePath }: PdfRendererProps) {
     };
   }, []);
 
+  if (hasError) {
+    return (
+      <View style={styles.imageStatus}>
+        <Text style={[styles.imageStatusTitle, { color: colors.white }]}>
+          Couldn't open PDF
+        </Text>
+        <Text style={[styles.imageStatusSub, { color: colors.white }]}>
+          This file may be damaged or unsupported.
+        </Text>
+      </View>
+    );
+  }
+
   return (
     <View style={styles.container}>
       <Pdf
@@ -68,6 +82,7 @@ export function PdfRenderer({ filePath }: PdfRendererProps) {
         }}
         onError={(error) => {
           console.error('PDF render error:', error);
+          setHasError(true);
         }}
       />
       {totalPages > 1 && (
@@ -116,4 +131,11 @@ const styles = StyleSheet.create({
     fontFamily: fonts.mono,
     fontVariant: ['tabular-nums'],
   },
+  imageStatus: {
+    alignItems: 'center',
+    gap: 12,
+    padding: 24,
+  },
+  imageStatusTitle: { fontSize: 16, fontWeight: '600' },
+  imageStatusSub: { fontSize: 12, opacity: 0.85, textAlign: 'center' },
 });

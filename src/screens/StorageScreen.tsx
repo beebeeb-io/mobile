@@ -21,6 +21,7 @@ import { useNavigation } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../lib/theme-context';
 import { spacing, type Colors } from '../theme';
+import { formatBytes } from '../lib/format';
 import {
   getStorageUsage,
   getSubscription,
@@ -38,11 +39,6 @@ type BillingCycle = 'monthly' | 'yearly';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function formatBytes(bytes: number): string {
-  if (bytes < 1_000_000_000) return `${(bytes / 1_000_000).toFixed(0)} MB`;
-  if (bytes < 1_000_000_000_000) return `${(bytes / 1_000_000_000).toFixed(1)} GB`;
-  return `${(bytes / 1_000_000_000_000).toFixed(1)} TB`;
-}
 
 function planLabel(slug: string): string {
   // Server is migrating personal -> basic and data_hoarder -> business; the

@@ -80,13 +80,13 @@ interface LastSpeedtestRun {
   uploadSkipped: boolean;
 }
 
-const MIB = 1024 * 1024;
+const MB = 1_000_000;
 const SPEEDTEST_LAST_RUN_KEY = 'beebeeb.speedtest.lastRun.v1';
 const LARGE_SAMPLE_MIN_MBPS = 25;
 const TRANSFER_SAMPLES: TransferSample[] = [
-  { label: '1 MB', size: 1 * MIB },
-  { label: '5 MB', size: 5 * MIB },
-  { label: '20 MB', size: 20 * MIB },
+  { label: '1 MB', size: 1 * MB },
+  { label: '5 MB', size: 5 * MB },
+  { label: '20 MB', size: 20 * MB },
 ];
 
 // ---------------------------------------------------------------------------
@@ -1311,10 +1311,10 @@ export default function SpeedtestScreen() {
         setCurrentSpeed('--');
       } else {
         const chunkSizes = [
-          { size: 1 * MIB, label: '1 MB' },
-          { size: 4 * MIB, label: '4 MB' },
-          { size: 8 * MIB, label: '8 MB' },
-          { size: 16 * MIB, label: '16 MB' },
+          { size: 1 * MB, label: '1 MB' },
+          { size: 4 * MB, label: '4 MB' },
+          { size: 8 * MB, label: '8 MB' },
+          { size: 16 * MB, label: '16 MB' },
         ];
         const benchFileId = 'speedtest-benchmark-00000000';
 

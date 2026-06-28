@@ -23,6 +23,7 @@ import { encryptedMetadataPayloadToBytes } from '../lib/encrypted-metadata';
 import { guessMimeType } from '../lib/media';
 import { getIncomingInvites, getSentInvites, listMyShares, friendlyError } from '../lib/api';
 import type { ShareInvite, MyShareLink } from '../lib/api';
+import { formatBytes } from '../lib/format';
 import FileRequestsScreen from './FileRequestsScreen';
 import type { RootStackParamList } from '../App';
 
@@ -128,13 +129,6 @@ function mimeIcon(mime: string | null | undefined): IoniconName {
 function fileTypeIconForInvite(invite: ShareInvite): IoniconName {
   if (invite.is_folder || invite.is_folder_share) return 'folder';
   return mimeIcon(invite.mime_type);
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }
 
 // ── Owner-recoverable public link rebuild (0805) ───────────────────────────

@@ -27,6 +27,7 @@ import { useTheme } from '../lib/theme-context';
 import { useCrypto } from '../lib/crypto-context';
 import { listFileRequests, closeFileRequest, type FileRequest } from '../lib/api';
 import { fromBase64, toBase64url } from '../lib/file-request-crypto';
+import { formatBytes } from '../lib/format';
 
 type Nav = NativeStackNavigationProp<RootStackParamList>;
 type Status = 'open' | 'closed' | 'expired';
@@ -37,12 +38,6 @@ function statusOf(r: FileRequest): Status {
   return 'open';
 }
 
-function formatBytes(bytes: number): string {
-  if (bytes < 1000) return `${bytes} B`;
-  if (bytes < 1_000_000) return `${Math.round(bytes / 1000)} KB`;
-  if (bytes < 1_000_000_000) return `${Math.round(bytes / 1_000_000)} MB`;
-  return `${(bytes / 1_000_000_000).toFixed(1)} GB`;
-}
 
 // `embedded` (task 0782): rendered inside the Shared tab's "Requests" segment —
 // suppress the screen's own header (the Shared screen provides the title + the "+").

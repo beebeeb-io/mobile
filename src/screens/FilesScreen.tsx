@@ -70,6 +70,7 @@ import type { SearchIndexEntry, SearchResult } from '../lib/search-index';
 import { donateSiriShortcut } from '../lib/siri-shortcuts';
 import { perfMark } from '../lib/perf-mark';
 import { loadCachedFileIndex, saveCachedFileIndex, type CachedFileIndex } from '../lib/file-index-cache';
+import { formatBytes as formatSize } from '../lib/format';
 import {
   appendFolderToBreadcrumbStack,
   filterSelfChildEntries,
@@ -85,16 +86,6 @@ let _openSwipeable: Swipeable | null = null;
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/** Format bytes into a human-readable string (SI: 1 KB = 1,000 bytes). */
-function formatSize(bytes: number): string {
-  if (bytes === 0) return '0 B';
-  if (bytes < 1_000) return `${bytes} B`;
-  if (bytes < 1_000_000) return `${Math.round(bytes / 1_000)} KB`;
-  if (bytes < 1_000_000_000) return `${Math.round(bytes / 1_000_000)} MB`;
-  if (bytes < 1_000_000_000_000) return `${(bytes / 1_000_000_000).toFixed(1)} GB`;
-  return `${(bytes / 1_000_000_000_000).toFixed(1)} TB`;
-}
 
 /** Format an ISO date string into a relative or short date. */
 function formatDate(iso: string | null | undefined): string {

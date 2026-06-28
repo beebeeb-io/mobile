@@ -88,7 +88,6 @@ import RecoveryUnlockScreen from './screens/RecoveryUnlockScreen';
 import DevicePairingScreen from './screens/DevicePairingScreen';
 import DevicePairingScanScreen from './screens/DevicePairingScanScreen';
 import DevicePairingShowScreen from './screens/DevicePairingShowScreen';
-import PairingConfirmScreen from './screens/PairingConfirmScreen';
 import ConstellationSendScreen from './screens/ConstellationSendScreen';
 import BiometricLockScreen from './screens/BiometricLockScreen';
 import OnboardingScreen from './screens/OnboardingScreen';
@@ -282,7 +281,6 @@ export type RootStackParamList = {
   DevicePairing: undefined;
   DevicePairingScan: undefined;
   DevicePairingShow: undefined;
-  PairingConfirm: { progress: number; nodeCount: number };
   // Constellation peer transfer — sender flow.
   ConstellationSend: { fileId: string; fileName: string };
   DocumentScanner: { parentId?: string } | undefined;
@@ -1323,7 +1321,6 @@ export default function App() {
                   <Stack.Screen name="DevicePairing" component={DevicePairingScreen} />
                   <Stack.Screen name="DevicePairingScan" component={DevicePairingScanScreen} />
                   <Stack.Screen name="DevicePairingShow" component={DevicePairingShowScreen} />
-                  <Stack.Screen name="PairingConfirm" component={PairingConfirmScreen} />
                   <Stack.Screen
                     name="ConstellationSend"
                     component={ConstellationSendScreen}

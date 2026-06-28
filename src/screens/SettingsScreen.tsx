@@ -159,11 +159,11 @@ interface NativePermissionResponse {
 // Data residency regions
 // ---------------------------------------------------------------------------
 
-const REGIONS: ReadonlyArray<{ poolName: string; label: string; subtitle: string; flag: string; available: boolean }> = [
-  { poolName: 'europe', label: 'Europe', subtitle: 'Anywhere in Europe', flag: '\u{1F6E1}️', available: true },
-  { poolName: 'falkenstein-de', label: 'Falkenstein', subtitle: 'Preference or force', flag: '\u{1F1E9}\u{1F1EA}', available: true },
-  { poolName: 'helsinki-fi', label: 'Helsinki', subtitle: 'Preference or force', flag: '\u{1F1EB}\u{1F1EE}', available: false },
-  { poolName: 'ede-nl', label: 'Ede', subtitle: 'Preference or force', flag: '\u{1F1F3}\u{1F1F1}', available: false },
+const REGIONS: ReadonlyArray<{ poolName: string; label: string; subtitle: string; available: boolean }> = [
+  { poolName: 'europe', label: 'Europe', subtitle: 'Anywhere in Europe', available: true },
+  { poolName: 'falkenstein-de', label: 'Falkenstein', subtitle: 'Preference or force', available: true },
+  { poolName: 'helsinki-fi', label: 'Helsinki', subtitle: 'Preference or force', available: false },
+  { poolName: 'ede-nl', label: 'Ede', subtitle: 'Preference or force', available: false },
 ];
 
 // ---------------------------------------------------------------------------
@@ -2012,7 +2012,6 @@ export default function SettingsScreen() {
                     accessibilityRole="radio"
                     accessibilityState={{ checked: storageRegion === r.poolName, disabled: !r.available }}
                   >
-                    <Text style={{ fontSize: 20 }}>{r.flag}</Text>
                     <View style={[
                       layout.regionRadio,
                       { borderColor: storageRegion === r.poolName && r.available ? c.amber : c.line2 },

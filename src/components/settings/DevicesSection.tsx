@@ -28,6 +28,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { type Colors, fonts, radii } from '../../theme';
+import { formatBytes } from '../../lib/format';
 import {
   deleteClientSession,
   listClientDevices,
@@ -55,12 +56,6 @@ function timeAgo(iso: string): string {
   return new Date(iso).toLocaleDateString();
 }
 
-function formatBytes(bytes: number): string {
-  if (bytes < 1_000) return `${bytes} B`;
-  if (bytes < 1_000_000) return `${(bytes / 1_000).toFixed(0)} KB`;
-  if (bytes < 1_000_000_000) return `${(bytes / 1_000_000).toFixed(0)} MB`;
-  return `${(bytes / 1_000_000_000).toFixed(1)} GB`;
-}
 
 type IoniconName = React.ComponentProps<typeof Ionicons>['name'];
 
