@@ -20,6 +20,9 @@ private let backupReminderIdentifier = "io.beebeeb.backup.open-app-reminder"
 private let backupReminderLastSentKey = "io.beebeeb.backupNotifications.openAppReminderLastSentAt"
 private let backupReminderCooldownSeconds: TimeInterval = 24 * 60 * 60
 private let backupReminderDelaySeconds: TimeInterval = 15 * 60
+private let backupClientSessionIdKey = "io.beebeeb.backupClientSessionId"
+private let backupHeartbeatCadenceSeconds: TimeInterval = 30
+private let backupSelectedAlbumIdsKey = "io.beebeeb.photoBackupSelectedAlbumIds"
 private let stagedBackupDirectoryName = "NativeBackupStaging"
 private let minimumFreeBytesAfterStaging: Int64 = 2 * 1024 * 1024 * 1024
 private let maxStagedBackupBytes: Int64 = 3 * 1024 * 1024 * 1024
@@ -42,7 +45,7 @@ struct BeebeebBackupActivityAttributes: ActivityAttributes {
   var startedAt: Date
 }
 
-private struct BackupStatusPayload: Codable {
+private struct BackupStatusPayload: Codable, Sendable {
   var total: Int
   var completed: Int
   var pending: Int
@@ -64,6 +67,17 @@ private struct BackupWorkBreakdown {
   var waitingToEncrypt: Int
   var encryptedPendingUpload: Int
   var uploading: Int
+}
+
+private struct BackupHeartbeatPayload: Sendable {
+  let status: String
+  let filesSynced: Int
+  let filesTotal: Int
+  let bytesSynced: Int64
+  let bytesTotal: Int64
+  let currentFile: String?
+  let speedBps: Int64
+  let detail: String
 }
 
 // MARK: - Types
@@ -220,6 +234,13 @@ final class NativeBackupEngine: NSObject {
 
   private let liveActivityRequestQueue = DispatchQueue(label: "io.beebeeb.backup.live-activity")
   private var liveActivityRequestInFlight = false
+
+  private let heartbeatQueue = DispatchQueue(label: "io.beebeeb.backup.heartbeat", qos: .utility)
+  private var lastHeartbeatSentAt: Date?
+  private var lastHeartbeatStatus: String?
+  private var lastHeartbeatBytesSynced: Int64 = 0
+  private var lastHeartbeatMetricAt: Date?
+  private var lastKnownSpeedBps: Int64 = 0
 
   private func perfLog(_ event: String, _ fields: [String: CustomStringConvertible] = [:]) {
     let suffix = fields
@@ -383,6 +404,30 @@ final class NativeBackupEngine: NSObject {
     }
   }
 
+
+  var backupClientSessionId: String? {
+    get { KeychainManager.loadString(key: backupClientSessionIdKey) }
+    set {
+      if let value = newValue, !value.isEmpty {
+        try? KeychainManager.storeString(value, key: backupClientSessionIdKey)
+      } else {
+        KeychainManager.deleteString(key: backupClientSessionIdKey)
+      }
+    }
+  }
+
+  var selectedPhotoAlbumIds: [String] {
+    get { UserDefaults.standard.stringArray(forKey: backupSelectedAlbumIdsKey) ?? [] }
+    set {
+      let sanitized = Array(NSOrderedSet(array: newValue.filter { !$0.isEmpty })) as? [String] ?? []
+      if sanitized.isEmpty {
+        UserDefaults.standard.removeObject(forKey: backupSelectedAlbumIdsKey)
+      } else {
+        UserDefaults.standard.set(sanitized, forKey: backupSelectedAlbumIdsKey)
+      }
+    }
+  }
+
   // MARK: - Progress (thread-safe via atomic reads from main queue)
 
   private(set) var totalAssets = 0
@@ -391,6 +436,7 @@ final class NativeBackupEngine: NSObject {
   private(set) var inProgressAssets = 0
   private(set) var bytesUploaded: Int64 = 0
   private(set) var bytesTotal: Int64 = 0
+  private(set) var bytesTransferProgress: Int64 = 0
 
   // MARK: - Callbacks
 
@@ -485,7 +531,7 @@ final class NativeBackupEngine: NSObject {
       guard let db = db else { return 0 }
       return countWhere(
         db: db,
-        condition: "status IN ('pending_upload', 'pending_reupload', 'staging', 'staged_upload', 'uploading') AND COALESCE(retry_count, 0) < 10"
+        condition: "COALESCE(selected_for_backup, 1) = 1 AND status IN ('pending_upload', 'pending_reupload', 'staging', 'staged_upload', 'uploading') AND COALESCE(retry_count, 0) < 10"
       )
     }
   }
@@ -512,15 +558,15 @@ final class NativeBackupEngine: NSObject {
       return BackupWorkBreakdown(
         waitingToEncrypt: countWhere(
           db: db,
-          condition: "status IN ('pending_upload', 'pending_reupload', 'staging') AND staged_file_id IS NULL AND COALESCE(retry_count, 0) < 10"
+          condition: "COALESCE(selected_for_backup, 1) = 1 AND status IN ('pending_upload', 'pending_reupload', 'staging') AND staged_file_id IS NULL AND COALESCE(retry_count, 0) < 10"
         ),
         encryptedPendingUpload: countWhere(
           db: db,
-          condition: "status = 'staged_upload' AND staged_file_id IS NOT NULL AND COALESCE(retry_count, 0) < 10"
+          condition: "COALESCE(selected_for_backup, 1) = 1 AND status = 'staged_upload' AND staged_file_id IS NOT NULL AND COALESCE(retry_count, 0) < 10"
         ),
         uploading: countWhere(
           db: db,
-          condition: "status = 'uploading' AND COALESCE(retry_count, 0) < 10"
+          condition: "COALESCE(selected_for_backup, 1) = 1 AND status = 'uploading' AND COALESCE(retry_count, 0) < 10"
         )
       )
     }
@@ -549,7 +595,7 @@ final class NativeBackupEngine: NSObject {
     dbQueue.sync {
       guard let db = db else { return }
       var stmt: OpaquePointer?
-      let sql = "SELECT status, COUNT(*) FROM backup_assets GROUP BY status"
+      let sql = "SELECT status, COUNT(*) FROM backup_assets WHERE COALESCE(selected_for_backup, 1) = 1 GROUP BY status"
       guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
       defer { sqlite3_finalize(stmt) }
       while sqlite3_step(stmt) == SQLITE_ROW {
@@ -557,8 +603,8 @@ final class NativeBackupEngine: NSObject {
         let status = String(cString: statusPointer)
         counts[status] = Int(sqlite3_column_int(stmt, 1))
       }
-      counts["failed_retryable"] = countWhere(db: db, condition: "status = 'failed' AND COALESCE(retry_count, 0) < 10")
-      counts["failed_terminal"] = countWhere(db: db, condition: "COALESCE(retry_count, 0) >= 10")
+      counts["failed_retryable"] = countWhere(db: db, condition: "COALESCE(selected_for_backup, 1) = 1 AND status = 'failed' AND COALESCE(retry_count, 0) < 10")
+      counts["failed_terminal"] = countWhere(db: db, condition: "COALESCE(selected_for_backup, 1) = 1 AND COALESCE(retry_count, 0) >= 10")
     }
 
     return counts
@@ -790,8 +836,127 @@ final class NativeBackupEngine: NSObject {
     let payload = makeBackupStatusPayload(reason: reason)
     writeBackupStatus(payload)
     updateLiveActivity(payload)
+    emitBackupHeartbeat(payload: payload)
     if payload.pending == 0 {
       endBackgroundGrace()
+    }
+  }
+
+  private func heartbeatStatus(for payload: BackupStatusPayload) -> String {
+    switch payload.state {
+    case "uploading", "preparing":
+      return "syncing"
+    case "pausedByUser", "waitingForAppOpen", "waitingForWifi":
+      return "paused"
+    case "needsAttention":
+      return "error"
+    case "complete", "idle":
+      return isRunning ? "watching" : "idle"
+    default:
+      return payload.failed > 0 && payload.pending == 0 ? "error" : "idle"
+    }
+  }
+
+  private func makeSafeCurrentFile(payload: BackupStatusPayload, status: String) -> String? {
+    guard status == "syncing", payload.total > 0 else { return nil }
+    let current = min(payload.total, max(1, payload.completed + max(1, payload.uploading)))
+    return "Uploading photo \(current)/\(payload.total)"
+  }
+
+  private func emitBackupHeartbeat(payload: BackupStatusPayload) {
+    guard let authToken = token, !authToken.isEmpty,
+          let baseURL = apiBaseUrl, !baseURL.isEmpty,
+          let sessionId = backupClientSessionId, !sessionId.isEmpty else { return }
+
+    let status = heartbeatStatus(for: payload)
+    heartbeatQueue.async { [weak self] in
+      guard let self else { return }
+      let now = Date()
+      let statusChanged = self.lastHeartbeatStatus != status
+      let elapsed = self.lastHeartbeatSentAt.map { now.timeIntervalSince($0) } ?? .infinity
+      guard statusChanged || elapsed >= backupHeartbeatCadenceSeconds else { return }
+
+      let transferBytes = max(payload.bytesUploaded, self.bytesTransferProgress)
+      let metricElapsed = self.lastHeartbeatMetricAt.map { now.timeIntervalSince($0) } ?? 0
+      let byteDelta = transferBytes - self.lastHeartbeatBytesSynced
+      if metricElapsed > 0, byteDelta > 0 {
+        self.lastKnownSpeedBps = max(0, Int64(Double(byteDelta) / metricElapsed))
+      } else if status != "syncing" {
+        self.lastKnownSpeedBps = 0
+      }
+
+      self.lastHeartbeatSentAt = now
+      self.lastHeartbeatStatus = status
+      self.lastHeartbeatMetricAt = now
+      self.lastHeartbeatBytesSynced = transferBytes
+
+      let heartbeat = BackupHeartbeatPayload(
+        status: status,
+        filesSynced: payload.completed,
+        filesTotal: payload.total,
+        bytesSynced: payload.bytesUploaded,
+        bytesTotal: payload.bytesTotal,
+        currentFile: self.makeSafeCurrentFile(payload: payload, status: status),
+        speedBps: self.lastKnownSpeedBps,
+        detail: payload.reason
+      )
+
+      Task.detached(priority: .utility) { [weak self] in
+        await self?.postBackupHeartbeat(
+          heartbeat,
+          authToken: authToken,
+          baseURL: baseURL,
+          sessionId: sessionId
+        )
+      }
+    }
+  }
+
+  private func postBackupHeartbeat(
+    _ payload: BackupHeartbeatPayload,
+    authToken: String,
+    baseURL: String,
+    sessionId: String
+  ) async {
+    guard let url = URL(string: "\(baseURL)/api/v1/clients/sessions/\(sessionId)/heartbeat") else {
+      NSLog("[NativeBackupEngine] Backup heartbeat skipped: invalid server URL")
+      return
+    }
+
+    let currentFileValue: Any = payload.currentFile ?? NSNull()
+    let body: [String: Any] = [
+      "status": payload.status,
+      "files_synced": payload.filesSynced,
+      "files_total": payload.filesTotal,
+      "bytes_synced": payload.bytesSynced,
+      "bytes_total": payload.bytesTotal,
+      "current_file": currentFileValue,
+      "speed_bps": payload.speedBps,
+      "detail": payload.detail,
+    ]
+
+    guard JSONSerialization.isValidJSONObject(body),
+          let bodyData = try? JSONSerialization.data(withJSONObject: body) else {
+      NSLog("[NativeBackupEngine] Backup heartbeat skipped: JSON encoding failed")
+      return
+    }
+
+    var request = URLRequest(url: url)
+    request.httpMethod = "POST"
+    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
+    request.httpBody = bodyData
+
+    do {
+      let (data, response) = try await metadataSession.data(for: request)
+      let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+      guard (200..<300).contains(statusCode) else {
+        let body = String(data: data, encoding: .utf8) ?? ""
+        NSLog("[NativeBackupEngine] Backup heartbeat failed status=\(statusCode) body=\(body)")
+        return
+      }
+    } catch {
+      NSLog("[NativeBackupEngine] Backup heartbeat failed: \(error.localizedDescription)")
     }
   }
 
@@ -1420,12 +1585,8 @@ final class NativeBackupEngine: NSObject {
     options.predicate = NSPredicate(format: "mediaType == %d OR mediaType == %d",
                                     PHAssetMediaType.image.rawValue,
                                     PHAssetMediaType.video.rawValue)
-    let result = PHAsset.fetchAssets(with: options)
-    currentFetchResult = result
-
-    // Insert any new assets not yet in the database
-    var assets: [PHAsset] = []
-    result.enumerateObjects { asset, _, _ in assets.append(asset) }
+    let selectedAlbums = selectedPhotoAlbumIds
+    let assets = fetchAssetsForBackup(options: options, selectedAlbumIds: selectedAlbums)
 
     let hasPending = await withCheckedContinuation { continuation in
       dbQueue.async { [weak self] in
@@ -1434,6 +1595,7 @@ final class NativeBackupEngine: NSObject {
           return
         }
         self.insertNewAssets(assets)
+        self.updateAssetSelectionScope(allowedAssetIds: Set(assets.map(\.localIdentifier)), hasAlbumSelection: !selectedAlbums.isEmpty)
         continuation.resume(returning: self.hasPendingUploads())
       }
     }
@@ -1442,6 +1604,33 @@ final class NativeBackupEngine: NSObject {
       self?.updateBackupStatusSurfaces(reason: reason)
     }
     return hasPending
+  }
+
+  private func fetchAssetsForBackup(options: PHFetchOptions, selectedAlbumIds: [String]) -> [PHAsset] {
+    guard !selectedAlbumIds.isEmpty else {
+      let result = PHAsset.fetchAssets(with: options)
+      currentFetchResult = result
+      var assets: [PHAsset] = []
+      result.enumerateObjects { asset, _, _ in assets.append(asset) }
+      return assets
+    }
+
+    // A selected-album scan is a union of multiple PHFetchResult instances, so
+    // there is no single `currentFetchResult` safe for PHChange incremental
+    // inserts. Force the change observer to perform a selected-album rescan
+    // instead of trusting unvalidated insertedObjects from an all-library fetch.
+    currentFetchResult = nil
+    let collections = PHAssetCollection.fetchAssetCollections(withLocalIdentifiers: selectedAlbumIds, options: nil)
+    var assetsById: [String: PHAsset] = [:]
+    collections.enumerateObjects { collection, _, _ in
+      let result = PHAsset.fetchAssets(in: collection, options: options)
+      result.enumerateObjects { asset, _, _ in
+        assetsById[asset.localIdentifier] = asset
+      }
+    }
+    return assetsById.values.sorted {
+      ($0.creationDate ?? .distantPast) > ($1.creationDate ?? .distantPast)
+    }
   }
 
   // MARK: - Network Monitor
@@ -1799,6 +1988,7 @@ final class NativeBackupEngine: NSObject {
         error_message = NULL,
         last_attempt_at = NULL
     WHERE status IN ('pending_upload', 'pending_reupload', 'staging', 'staged_upload', 'uploading')
+      AND COALESCE(selected_for_backup, 1) = 1
       AND COALESCE(retry_count, 0) >= 10
     """
     var stmt: OpaquePointer?
@@ -2297,8 +2487,6 @@ final class NativeBackupEngine: NSObject {
           deleteStagedChunks(assetId: asset.localAssetId)
         }
         removeStagedDirectory(stagedDir: stagedDir, fileId: fileId)
-        completedAssets += 1
-        bytesUploaded += asset.stagedOriginalSize
         updateBackupStatusSurfaces(reason: "Recovered completed backup")
         onFileStatus?(asset.localAssetId, "uploaded", nil, nil)
         generateAndUploadThumbnail(
@@ -2400,8 +2588,6 @@ final class NativeBackupEngine: NSObject {
     }
     removeStagedDirectory(stagedDir: stagedDir, fileId: fileId)
 
-    completedAssets += 1
-    bytesUploaded += asset.stagedOriginalSize
     updateBackupStatusSurfaces()
     perfLog("asset.finish", [
       "bytes": asset.stagedOriginalSize,
@@ -2835,7 +3021,8 @@ final class NativeBackupEngine: NSObject {
       staged_chunk_count INTEGER DEFAULT 0,
       staged_dir TEXT,
       staged_at INTEGER,
-      upload_session_id TEXT
+      upload_session_id TEXT,
+      selected_for_backup INTEGER DEFAULT 1
     );
     CREATE TABLE IF NOT EXISTS backup_upload_chunks (
       local_asset_id TEXT NOT NULL,
@@ -2867,6 +3054,7 @@ final class NativeBackupEngine: NSObject {
       "ALTER TABLE backup_assets ADD COLUMN staged_dir TEXT",
       "ALTER TABLE backup_assets ADD COLUMN staged_at INTEGER",
       "ALTER TABLE backup_assets ADD COLUMN upload_session_id TEXT",
+      "ALTER TABLE backup_assets ADD COLUMN selected_for_backup INTEGER DEFAULT 1",
     ]
     for migration in migrations {
       sqlite3_exec(db, migration, nil, nil, nil)
@@ -2913,6 +3101,7 @@ final class NativeBackupEngine: NSObject {
     ON CONFLICT(local_asset_id) DO UPDATE SET
       created_at = excluded.created_at,
       asset_type = excluded.asset_type,
+      selected_for_backup = 1,
       status = CASE
         WHEN backup_assets.status = 'local_missing' THEN 'pending_upload'
         ELSE backup_assets.status
@@ -2945,6 +3134,32 @@ final class NativeBackupEngine: NSObject {
     sqlite3_exec(db, "COMMIT", nil, nil, nil)
   }
 
+  private func updateAssetSelectionScope(allowedAssetIds: Set<String>, hasAlbumSelection: Bool) {
+    guard let db = db else { return }
+
+    guard hasAlbumSelection else {
+      sqlite3_exec(db, "UPDATE backup_assets SET selected_for_backup = 1 WHERE COALESCE(selected_for_backup, 1) != 1", nil, nil, nil)
+      return
+    }
+
+    if allowedAssetIds.isEmpty {
+      sqlite3_exec(db, "UPDATE backup_assets SET selected_for_backup = 0", nil, nil, nil)
+      return
+    }
+
+    let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+    let placeholders = Array(repeating: "?", count: allowedAssetIds.count).joined(separator: ",")
+    sqlite3_exec(db, "UPDATE backup_assets SET selected_for_backup = 0", nil, nil, nil)
+    let sql = "UPDATE backup_assets SET selected_for_backup = 1 WHERE local_asset_id IN (\(placeholders))"
+    var stmt: OpaquePointer?
+    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
+    defer { sqlite3_finalize(stmt) }
+    for (index, assetId) in allowedAssetIds.enumerated() {
+      sqlite3_bind_text(stmt, Int32(index + 1), (assetId as NSString).utf8String, -1, transient)
+    }
+    sqlite3_step(stmt)
+  }
+
   /// Get pending uploads ordered by creation date (newest first), respecting retry limits.
   func getPendingUploads(limit: Int) -> [BackupAssetRow] {
     guard let db = db else { return [] }
@@ -2958,6 +3173,7 @@ final class NativeBackupEngine: NSObject {
            COALESCE(staged_chunk_count, 0), staged_dir, upload_session_id
     FROM backup_assets
     WHERE status IN ('pending_upload', 'pending_reupload', 'staged_upload', 'uploading')
+      AND COALESCE(selected_for_backup, 1) = 1
       AND COALESCE(retry_count, 0) < 10
     ORDER BY created_at DESC
     LIMIT ?
@@ -3050,6 +3266,7 @@ final class NativeBackupEngine: NSObject {
     SELECT 1
     FROM backup_assets
     WHERE status IN ('pending_upload', 'pending_reupload', 'staged_upload', 'uploading')
+      AND COALESCE(selected_for_backup, 1) = 1
       AND COALESCE(retry_count, 0) < 10
     LIMIT 1
     """
@@ -3473,11 +3690,61 @@ final class NativeBackupEngine: NSObject {
     dbQueue.sync {
       guard let db = db else { return }
       migratePhotoKitMissingAssetRows()
-      totalAssets = countWhere(db: db, condition: "1=1")
-      completedAssets = countWhere(db: db, condition: "status = 'uploaded'")
-      failedAssets = countWhere(db: db, condition: "COALESCE(retry_count, 0) >= 10")
-      inProgressAssets = countWhere(db: db, condition: "status IN ('staging', 'staged_upload', 'uploading')")
+      let selectedCondition = "COALESCE(selected_for_backup, 1) = 1"
+      totalAssets = countWhere(db: db, condition: selectedCondition)
+      completedAssets = countWhere(db: db, condition: "\(selectedCondition) AND status = 'uploaded'")
+      failedAssets = countWhere(db: db, condition: "\(selectedCondition) AND COALESCE(retry_count, 0) >= 10")
+      inProgressAssets = countWhere(db: db, condition: "\(selectedCondition) AND status IN ('staging', 'staged_upload', 'uploading')")
+
+      // Byte progress is recomputed from durable SQLite state so heartbeats stay
+      // sane across resumes/relaunches and cannot double-count older manual
+      // in-memory increments. Prefer staged_original_size once known; file_size
+      // is populated with the same original byte count during staging and remains
+      // after completed rows clear their staged state.
+      bytesTotal = sumBytes(
+        db: db,
+        expression: "MAX(COALESCE(staged_original_size, 0), COALESCE(file_size, 0))",
+        condition: selectedCondition
+      )
+      bytesUploaded = sumBytes(
+        db: db,
+        expression: "MAX(COALESCE(staged_original_size, 0), COALESCE(file_size, 0))",
+        condition: "\(selectedCondition) AND status = 'uploaded'"
+      )
+      let uploadedChunkBytes = uploadedStagedChunkBytes(db: db)
+      bytesTransferProgress = max(bytesUploaded, bytesUploaded + uploadedChunkBytes)
     }
+  }
+
+  private func sumBytes(db: OpaquePointer, expression: String, condition: String) -> Int64 {
+    var stmt: OpaquePointer?
+    let sql = "SELECT COALESCE(SUM(\(expression)), 0) FROM backup_assets WHERE \(condition)"
+    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return 0 }
+    defer { sqlite3_finalize(stmt) }
+    return sqlite3_step(stmt) == SQLITE_ROW ? sqlite3_column_int64(stmt, 0) : 0
+  }
+
+  private func uploadedStagedChunkBytes(db: OpaquePointer) -> Int64 {
+    var total: Int64 = 0
+    var stmt: OpaquePointer?
+    let sql = """
+    SELECT c.path
+    FROM backup_upload_chunks c
+    JOIN backup_assets a ON a.local_asset_id = c.local_asset_id
+    WHERE c.status = 'uploaded'
+      AND a.status != 'uploaded'
+      AND COALESCE(a.selected_for_backup, 1) = 1
+    """
+    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return 0 }
+    defer { sqlite3_finalize(stmt) }
+    while sqlite3_step(stmt) == SQLITE_ROW {
+      guard sqlite3_column_type(stmt, 0) != SQLITE_NULL,
+            let pathPointer = sqlite3_column_text(stmt, 0) else { continue }
+      let path = String(cString: pathPointer)
+      let size = (try? URL(fileURLWithPath: path).resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+      total += Int64(max(0, size))
+    }
+    return total
   }
 
   private func countWhere(db: OpaquePointer, condition: String) -> Int {
@@ -3787,6 +4054,16 @@ final class NativeBackupEngine: NSObject {
 
 extension NativeBackupEngine: PHPhotoLibraryChangeObserver {
   func photoLibraryDidChange(_ changeInstance: PHChange) {
+    if !selectedPhotoAlbumIds.isEmpty {
+      Task { [weak self] in
+        guard let self else { return }
+        if await self.scanPhotoLibraryForPendingUploads(reason: "Selected albums rescanned") {
+          self.wakeDrainLoop(reason: "photo-library-selected")
+        }
+      }
+      return
+    }
+
     guard let old = currentFetchResult else { return }
     guard let details = changeInstance.changeDetails(for: old) else { return }
 

@@ -1488,6 +1488,7 @@ public class BeebeebCryptoModule: Module {
       } else {
         BeebeebKeychainCore.deleteString(key: sharedSessionTokenKey)
         KeychainManager.deleteString(key: "io.beebeeb.backupToken")
+        NativeBackupEngine.shared.backupClientSessionId = nil
       }
       if let baseUrl, !baseUrl.isEmpty {
         try? BeebeebKeychainCore.storeString(baseUrl, key: sharedAPIBaseURLKey)
@@ -1496,6 +1497,11 @@ public class BeebeebCryptoModule: Module {
         BeebeebKeychainCore.deleteString(key: sharedAPIBaseURLKey)
         KeychainManager.deleteString(key: "io.beebeeb.serverURL")
       }
+      return true
+    }
+
+    AsyncFunction("mirrorBackupClientSession") { (sessionId: String?) -> Bool in
+      NativeBackupEngine.shared.backupClientSessionId = sessionId
       return true
     }
 
@@ -2066,6 +2072,36 @@ public class BeebeebCryptoModule: Module {
       }
     }
 
+    AsyncFunction("listPhotoBackupAlbums") { () -> [[String: Any]] in
+      let collections = PHAssetCollection.fetchAssetCollections(with: .album, subtype: .any, options: nil)
+      var albums: [[String: Any]] = []
+      collections.enumerateObjects { collection, _, _ in
+        let assetOptions = PHFetchOptions()
+        assetOptions.predicate = NSPredicate(format: "mediaType == %d OR mediaType == %d",
+                                             PHAssetMediaType.image.rawValue,
+                                             PHAssetMediaType.video.rawValue)
+        let count = PHAsset.fetchAssets(in: collection, options: assetOptions).count
+        guard count > 0 else { return }
+        albums.append([
+          "id": collection.localIdentifier,
+          "title": collection.localizedTitle ?? "Untitled album",
+          "assetCount": count,
+        ])
+      }
+      return albums.sorted {
+        (($0["title"] as? String) ?? "").localizedCaseInsensitiveCompare(($1["title"] as? String) ?? "") == .orderedAscending
+      }
+    }
+
+    AsyncFunction("getPhotoBackupSelectedAlbumIds") { () -> [String] in
+      NativeBackupEngine.shared.selectedPhotoAlbumIds
+    }
+
+    AsyncFunction("setPhotoBackupSelectedAlbumIds") { (albumIds: [String]) -> Bool in
+      NativeBackupEngine.shared.selectedPhotoAlbumIds = albumIds
+      return true
+    }
+
     AsyncFunction("enablePhotoBackup") { (authToken: String) in
       let engine = NativeBackupEngine.shared
       engine.token = authToken
@@ -2077,6 +2113,7 @@ public class BeebeebCryptoModule: Module {
 
     AsyncFunction("disablePhotoBackup") { () in
       NativeBackupEngine.shared.stop()
+      NativeBackupEngine.shared.backupClientSessionId = nil
     }
 
     AsyncFunction("enableContactsBackup") { (authToken: String) in

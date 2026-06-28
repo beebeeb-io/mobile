@@ -667,6 +667,7 @@ export default function SettingsScreen() {
     setBackgroundUpload,
     backupProgress,
     lastBackupAt,
+    triggerBackupNow,
   } = useBackup();
   const { showToast } = useToast();
   const isOnline = useNetworkStatus();
@@ -730,6 +731,10 @@ export default function SettingsScreen() {
   const [backupStatsLoading, setBackupStatsLoading] = useState(true);
   const backupStatsRefreshInFlightRef = useRef(false);
   const backupStatsRefreshQueuedRef = useRef(false);
+  const [photoAlbumsExpanded, setPhotoAlbumsExpanded] = useState(false);
+  const [photoAlbumsLoading, setPhotoAlbumsLoading] = useState(false);
+  const [photoAlbums, setPhotoAlbums] = useState<BeebeebCrypto.PhotoBackupAlbum[]>([]);
+  const [selectedPhotoAlbumIds, setSelectedPhotoAlbumIds] = useState<string[]>([]);
 
   // Camera roll status (from BackupDatabase getStatusCounts + getTotalUploadedBytes)
   const [cameraRollStatusCounts, setCameraRollStatusCounts] = useState<Record<string, number>>({});
@@ -811,10 +816,32 @@ export default function SettingsScreen() {
     }
   }, []);
 
+  const loadPhotoAlbumSelection = useCallback(async () => {
+    if (Platform.OS !== 'ios') return;
+    setPhotoAlbumsLoading(true);
+    try {
+      const [albums, selectedIds] = await Promise.all([
+        BeebeebCrypto.listPhotoBackupAlbums(),
+        BeebeebCrypto.getPhotoBackupSelectedAlbumIds(),
+      ]);
+      const filteredIds = selectedIds.filter((id) => albums.some((album) => album.id === id));
+      setPhotoAlbums(albums);
+      setSelectedPhotoAlbumIds(filteredIds);
+      if (filteredIds.length !== selectedIds.length) {
+        await BeebeebCrypto.setPhotoBackupSelectedAlbumIds(filteredIds);
+      }
+    } catch (err) {
+      console.warn('[SettingsScreen] failed to load photo backup albums:', err);
+    } finally {
+      setPhotoAlbumsLoading(false);
+    }
+  }, []);
+
   useFocusEffect(
     useCallback(() => {
       void loadNativeContactCalendarBackupStatus();
-    }, [loadNativeContactCalendarBackupStatus]),
+      void loadPhotoAlbumSelection();
+    }, [loadNativeContactCalendarBackupStatus, loadPhotoAlbumSelection]),
   );
 
   const fetchUsage = useCallback(async () => {
@@ -1514,6 +1541,30 @@ export default function SettingsScreen() {
     });
   }, [includeVideos, isPhotoBackupEnabled, refreshBackupStats, setBackgroundUpload, wifiOnly]);
 
+  const persistPhotoAlbumSelection = useCallback(async (nextIds: string[]) => {
+    if (Platform.OS !== 'ios') return;
+    const uniqueIds = Array.from(new Set(nextIds));
+    setSelectedPhotoAlbumIds(uniqueIds);
+    try {
+      await BeebeebCrypto.setPhotoBackupSelectedAlbumIds(uniqueIds);
+      if (isPhotoBackupEnabled) {
+        await triggerBackupNow();
+        void refreshCameraRollStatus();
+        void refreshBackupStats();
+      }
+    } catch (err) {
+      console.warn('[SettingsScreen] failed to save photo album backup selection:', err);
+      void loadPhotoAlbumSelection();
+    }
+  }, [isPhotoBackupEnabled, loadPhotoAlbumSelection, refreshBackupStats, refreshCameraRollStatus, triggerBackupNow]);
+
+  const handleTogglePhotoAlbum = useCallback((albumId: string) => {
+    const nextIds = selectedPhotoAlbumIds.includes(albumId)
+      ? selectedPhotoAlbumIds.filter((id) => id !== albumId)
+      : [...selectedPhotoAlbumIds, albumId];
+    void persistPhotoAlbumSelection(nextIds);
+  }, [persistPhotoAlbumSelection, selectedPhotoAlbumIds]);
+
   const handleStoragePress = useCallback(() => {
     if (!usage) return;
     const used = usage.used_bytes;
@@ -1725,6 +1776,9 @@ export default function SettingsScreen() {
       : cameraBackupActive
         ? c.amber
         : c.green;
+  const photoAlbumSelectionLabel = selectedPhotoAlbumIds.length === 0
+    ? 'All photos'
+    : `${selectedPhotoAlbumIds.length} album${selectedPhotoAlbumIds.length === 1 ? '' : 's'} selected`;
 
   // ---------------------------------------------------------------------------
   // Render
@@ -2220,6 +2274,80 @@ export default function SettingsScreen() {
                   indent
                   c={c}
                 />
+                {Platform.OS === 'ios' && (
+                  <>
+                    <RowDivider c={c} />
+                    <TouchableOpacity
+                      style={[layout.row, { paddingLeft: 28 }]}
+                      activeOpacity={0.6}
+                      onPress={() => {
+                        setPhotoAlbumsExpanded((prev) => !prev);
+                        if (!photoAlbumsExpanded) void loadPhotoAlbumSelection();
+                      }}
+                      accessibilityLabel="Choose photo albums to back up"
+                      accessibilityRole="button"
+                    >
+                      <Ionicons
+                        name={photoAlbumsExpanded ? 'chevron-down' : 'chevron-forward'}
+                        size={14}
+                        color={c.ink3}
+                        style={{ marginRight: 8 }}
+                      />
+                      <View style={{ flex: 1 }}>
+                        <Text style={{ fontSize: 14, fontWeight: '400' as const, color: c.ink }}>
+                          Photo albums
+                        </Text>
+                        <Text style={{ fontSize: 11, color: c.ink3, marginTop: 2 }}>
+                          {photoAlbumsLoading ? 'Loading albums...' : photoAlbumSelectionLabel}
+                        </Text>
+                      </View>
+                    </TouchableOpacity>
+                    {photoAlbumsExpanded && (
+                      <View style={{ paddingHorizontal: 12, paddingBottom: 8, paddingLeft: 50 }}>
+                        <TouchableOpacity
+                          style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 7 }}
+                          activeOpacity={0.6}
+                          onPress={() => void persistPhotoAlbumSelection([])}
+                        >
+                          <View style={[layout.regionRadio, { borderColor: selectedPhotoAlbumIds.length === 0 ? c.amber : c.ink4 }]}>
+                            {selectedPhotoAlbumIds.length === 0 && <View style={[layout.regionRadioDot, { backgroundColor: c.amber }]} />}
+                          </View>
+                          <Text style={{ fontSize: 13, color: c.ink, flex: 1 }}>All photos</Text>
+                        </TouchableOpacity>
+                        {photoAlbums.map((album) => {
+                          const selected = selectedPhotoAlbumIds.includes(album.id);
+                          return (
+                            <TouchableOpacity
+                              key={album.id}
+                              style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 7 }}
+                              activeOpacity={0.6}
+                              onPress={() => handleTogglePhotoAlbum(album.id)}
+                              accessibilityLabel={`${album.title}${selected ? ', selected' : ''}`}
+                              accessibilityState={{ checked: selected }}
+                            >
+                              <Ionicons
+                                name={selected ? 'checkbox' : 'square-outline'}
+                                size={18}
+                                color={selected ? c.amber : c.ink4}
+                              />
+                              <Text style={{ fontSize: 13, color: c.ink, flex: 1 }} numberOfLines={1}>
+                                {album.title}
+                              </Text>
+                              <Text style={{ fontSize: 12, color: c.ink3 }}>
+                                {album.assetCount.toLocaleString()}
+                              </Text>
+                            </TouchableOpacity>
+                          );
+                        })}
+                        {!photoAlbumsLoading && photoAlbums.length === 0 && (
+                          <Text style={{ fontSize: 12, color: c.ink3, paddingVertical: 6 }}>
+                            No custom iOS albums found. Beebeeb will back up all photos.
+                          </Text>
+                        )}
+                      </View>
+                    )}
+                  </>
+                )}
                 <RowDivider c={c} />
                 <ToggleRow
                   label="Wi-Fi only"

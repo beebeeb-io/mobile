@@ -37,6 +37,9 @@ const BASE_URL = resolveBaseUrl();
 const TOKEN_KEY = 'beebeeb_session_token';
 const DEVICE_CONFIRMATION_SECRET_KEY = 'beebeeb_device_confirmation_secret';
 
+const MOBILE_IOS_BACKUP_CLIENT_SESSION_KEY = 'beebeeb_mobile_ios_backup_client_session_id';
+const MOBILE_IOS_BACKUP_SESSION_NAME = 'iPhone Camera Roll Backup';
+
 export type ApiEnvironmentKind = 'local' | 'production' | 'custom';
 
 export interface ApiEnvironment {
@@ -120,14 +123,20 @@ export function registerSessionExpiredHandler(fn: SessionExpiredHandler): void {
 
 let cachedToken: string | null = null;
 let cachedDeviceConfirmationSecret: string | null | undefined;
+let sessionGeneration = 0;
 
 export async function getToken(): Promise<string | null> {
   if (cachedToken) return cachedToken;
-  cachedToken = await tokenStore.get(TOKEN_KEY);
-  return cachedToken;
+  const generationAtStart = sessionGeneration;
+  const token = await tokenStore.get(TOKEN_KEY);
+  if (generationAtStart === sessionGeneration) {
+    cachedToken = token;
+  }
+  return token;
 }
 
 export async function setToken(token: string): Promise<void> {
+  sessionGeneration += 1;
   cachedToken = token;
   await tokenStore.set(TOKEN_KEY, token);
   await BeebeebCrypto.mirrorSessionToAppGroup(token, BASE_URL).catch(() => false);
@@ -144,11 +153,14 @@ export async function setToken(token: string): Promise<void> {
 }
 
 export async function clearToken(): Promise<void> {
+  sessionGeneration += 1;
   cachedToken = null;
   cachedDeviceConfirmationSecret = null;
   await tokenStore.remove(TOKEN_KEY);
   await tokenStore.remove(DEVICE_CONFIRMATION_SECRET_KEY);
   await clearCachedFileIndex().catch(() => {});
+  await tokenStore.remove(MOBILE_IOS_BACKUP_CLIENT_SESSION_KEY);
+  await BeebeebCrypto.mirrorBackupClientSession(null).catch(() => false);
   await BeebeebCrypto.mirrorSessionToAppGroup(null, null).catch(() => false);
 }
 
@@ -238,14 +250,31 @@ export function friendlyError(err: unknown): string {
   return 'Something went wrong. Please try again.';
 }
 
-async function headers(auth = true, extra?: Record<string, string>): Promise<Record<string, string>> {
+interface RequestAuthSnapshot {
+  generation: number;
+  token: string | null;
+}
+
+interface RequestHeaders {
+  headers: Record<string, string>;
+  authSnapshot: RequestAuthSnapshot | null;
+}
+
+function isCurrentSessionSnapshot(snapshot: RequestAuthSnapshot): boolean {
+  return sessionGeneration === snapshot.generation && cachedToken === snapshot.token;
+}
+
+async function headers(auth = true, extra?: Record<string, string>): Promise<RequestHeaders> {
   const h: Record<string, string> = { 'Content-Type': 'application/json' };
+  let authSnapshot: RequestAuthSnapshot | null = null;
   if (auth) {
+    const generation = sessionGeneration;
     const token = await getToken();
+    authSnapshot = { generation, token };
     if (token) h['Authorization'] = `Bearer ${token}`;
   }
   if (extra) Object.assign(h, extra);
-  return h;
+  return { headers: h, authSnapshot };
 }
 
 function mobileClientHeaders(): Record<string, string> | undefined {
@@ -262,10 +291,13 @@ async function request<T>(
   extraHeaders?: Record<string, string>,
 ): Promise<T> {
   let res: Response;
+  let authSnapshot: RequestAuthSnapshot | null = null;
   try {
+    const requestHeaders = await headers(auth, extraHeaders);
+    authSnapshot = requestHeaders.authSnapshot;
     res = await rateLimitedFetch(`${BASE_URL}${path}`, {
       method,
-      headers: await headers(auth, extraHeaders),
+      headers: requestHeaders.headers,
       body: body ? JSON.stringify(body) : undefined,
     });
   } catch (_err) {
@@ -277,8 +309,10 @@ async function request<T>(
     // /auth/login or /auth/signup means "wrong credentials" and should NOT
     // trigger sign-out.
     if (auth) {
-      await clearToken();
-      onSessionExpired?.();
+      if (authSnapshot && isCurrentSessionSnapshot(authSnapshot)) {
+        await clearToken();
+        onSessionExpired?.();
+      }
       throw new ApiError(401, 'Session expired');
     }
     throw new ApiError(401, 'Wrong email or password.');
@@ -2385,6 +2419,84 @@ export async function registerClientDevice(body: {
   push_token?: string;
 }): Promise<ClientDevice> {
   return request<ClientDevice>('POST', '/api/v1/clients/devices', body);
+}
+
+export interface CreateClientSessionBody {
+  device_id: string;
+  name: string;
+  session_type: 'sync' | 'backup' | 'mount' | 'webdav';
+  local_path?: string | null;
+  remote_path: string;
+  heartbeat_interval_secs?: number;
+  alert_after_missed?: number;
+}
+
+/** POST /api/v1/clients/sessions — create a sync/backup client session. */
+export async function createClientSession(body: CreateClientSessionBody): Promise<ClientSession> {
+  return request<ClientSession>('POST', '/api/v1/clients/sessions', body);
+}
+
+/**
+ * Create or reuse the mobile iOS camera-roll backup session.
+ *
+ * This is intentionally JS-owned: JS knows the registered client device id and
+ * persists the server session id, while native only receives the opaque id for
+ * best-effort heartbeat emission.
+ */
+export async function ensureMobileIosBackupClientSession(deviceId: string): Promise<string | null> {
+  const cached = await tokenStore.get(MOBILE_IOS_BACKUP_CLIENT_SESSION_KEY);
+
+  let sessions: { sessions: ClientSession[] };
+  try {
+    sessions = await listClientSessions();
+  } catch {
+    // Avoid duplicate backup sessions when the list endpoint is unavailable,
+    // and do not reuse a cached id that we cannot validate still exists.
+    // Telemetry setup is best-effort and can retry on the next backup start.
+    return null;
+  }
+
+  if (cached) {
+    const cachedSession = sessions.sessions.find((session) => session.id === cached);
+    if (
+      cachedSession?.device_id === deviceId &&
+      cachedSession.session_type === 'backup' &&
+      cachedSession.name === MOBILE_IOS_BACKUP_SESSION_NAME &&
+      cachedSession.status !== 'stopped'
+    ) {
+      return cached;
+    }
+    await tokenStore.remove(MOBILE_IOS_BACKUP_CLIENT_SESSION_KEY);
+  }
+
+  const existing = sessions.sessions.find((session) => (
+    session.device_id === deviceId &&
+    session.session_type === 'backup' &&
+    session.name === MOBILE_IOS_BACKUP_SESSION_NAME &&
+    session.status !== 'stopped'
+  ));
+  if (existing?.id) {
+    await tokenStore.set(MOBILE_IOS_BACKUP_CLIENT_SESSION_KEY, existing.id);
+    return existing.id;
+  }
+
+  const created = await createClientSession({
+    device_id: deviceId,
+    name: MOBILE_IOS_BACKUP_SESSION_NAME,
+    session_type: 'backup',
+    local_path: 'Camera Roll',
+    remote_path: '/Backups/Camera Roll',
+    heartbeat_interval_secs: 30,
+    alert_after_missed: 4,
+  });
+  await tokenStore.set(MOBILE_IOS_BACKUP_CLIENT_SESSION_KEY, created.id);
+  return created.id;
+}
+
+/** Clear the locally remembered iOS backup session id and native mirror. */
+export async function clearMobileIosBackupClientSession(): Promise<void> {
+  await tokenStore.remove(MOBILE_IOS_BACKUP_CLIENT_SESSION_KEY);
+  await BeebeebCrypto.mirrorBackupClientSession(null).catch(() => false);
 }
 
 // ─── File requests (0643) ─────────────────────────────────────────────────────

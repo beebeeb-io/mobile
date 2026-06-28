@@ -55,6 +55,7 @@ export interface BackupAsset {
   staged_chunk_count?: number | null;
   staged_dir?: string | null;
   staged_at?: number | null;
+  selected_for_backup?: number | null;
 }
 
 const DB_NAME = 'beebeeb-backup.db';
@@ -172,6 +173,9 @@ async function openAndMigrate(): Promise<SQLite.SQLiteDatabase> {
     ALTER TABLE backup_assets ADD COLUMN staged_at INTEGER;
   `).catch(() => {});
   await db.execAsync(`
+    ALTER TABLE backup_assets ADD COLUMN selected_for_backup INTEGER DEFAULT 1;
+  `).catch(() => {});
+  await db.execAsync(`
     CREATE TABLE IF NOT EXISTS backup_upload_chunks (
       local_asset_id TEXT NOT NULL,
       server_file_id TEXT NOT NULL,
@@ -207,8 +211,8 @@ export async function getUploadedCount(
   const db = await getDb();
   const row = await db.getFirstAsync<{ count: number }>(
     `SELECT COUNT(*) AS count
-       FROM backup_assets
-      WHERE status = 'uploaded' AND asset_type = ?`,
+      FROM backup_assets
+      WHERE COALESCE(selected_for_backup, 1) = 1 AND status = 'uploaded' AND asset_type = ?`,
     [assetType],
   );
   return row?.count ?? 0;
@@ -219,7 +223,7 @@ export async function getTotalCount(
 ): Promise<number> {
   const db = await getDb();
   const row = await db.getFirstAsync<{ count: number }>(
-    `SELECT COUNT(*) AS count FROM backup_assets WHERE asset_type = ?`,
+    `SELECT COUNT(*) AS count FROM backup_assets WHERE COALESCE(selected_for_backup, 1) = 1 AND asset_type = ?`,
     [assetType],
   );
   return row?.count ?? 0;
@@ -231,8 +235,8 @@ export async function getTotalBytes(
   const db = await getDb();
   const row = await db.getFirstAsync<{ total: number | null }>(
     `SELECT SUM(file_size) AS total
-       FROM backup_assets
-      WHERE asset_type = ?`,
+      FROM backup_assets
+      WHERE COALESCE(selected_for_backup, 1) = 1 AND asset_type = ?`,
     [assetType],
   );
   return row?.total ?? 0;
@@ -263,6 +267,7 @@ export async function getCategorySummaries(): Promise<
        SUM(CASE WHEN status = 'uploaded' THEN file_size ELSE 0 END) AS uploaded_bytes,
        SUM(file_size) AS total_bytes
      FROM backup_assets
+     WHERE COALESCE(selected_for_backup, 1) = 1
      GROUP BY asset_type`,
   );
 
@@ -284,8 +289,8 @@ export async function getUploadedBytes(
   const db = await getDb();
   const row = await db.getFirstAsync<{ total: number | null }>(
     `SELECT SUM(file_size) AS total
-       FROM backup_assets
-      WHERE status = 'uploaded' AND asset_type = ?`,
+      FROM backup_assets
+      WHERE COALESCE(selected_for_backup, 1) = 1 AND status = 'uploaded' AND asset_type = ?`,
     [assetType],
   );
   return row?.total ?? 0;
@@ -319,6 +324,7 @@ export async function getPendingUploads(
   return db.getAllAsync<BackupAsset>(
     `SELECT * FROM backup_assets
       WHERE status IN ('pending_upload', 'pending_reupload', 'staging', 'staged_upload', 'uploading')
+        AND COALESCE(selected_for_backup, 1) = 1
         AND retry_count < 10
       ORDER BY created_at DESC LIMIT ?`,
     [limit],
@@ -396,7 +402,10 @@ export async function getStatusCounts(): Promise<
   const db = await getDb();
   await migrateLocalMissingRowsIfNeeded(db);
   const rows = await db.getAllAsync<{ status: string; count: number }>(
-    `SELECT status, COUNT(*) as count FROM backup_assets GROUP BY status`,
+    `SELECT status, COUNT(*) as count
+       FROM backup_assets
+      WHERE COALESCE(selected_for_backup, 1) = 1
+      GROUP BY status`,
   );
   const counts: Record<string, number> = {};
   for (const row of rows) counts[row.status] = row.count;
@@ -406,7 +415,9 @@ export async function getStatusCounts(): Promise<
 export async function getTotalUploadedBytes(): Promise<number> {
   const db = await getDb();
   const row = await db.getFirstAsync<{ total: number }>(
-    `SELECT COALESCE(SUM(file_size), 0) as total FROM backup_assets WHERE status = 'uploaded'`,
+    `SELECT COALESCE(SUM(file_size), 0) as total
+       FROM backup_assets
+      WHERE COALESCE(selected_for_backup, 1) = 1 AND status = 'uploaded'`,
   );
   return row?.total ?? 0;
 }
@@ -420,9 +431,10 @@ export async function upsertPendingUpload(
   const db = await getDb();
   const now = Date.now();
   await db.runAsync(
-    `INSERT INTO backup_assets (local_asset_id, status, asset_type, file_size, created_at, queued_at, content_hash)
-     VALUES (?, 'pending_upload', ?, ?, ?, ?, '')
+    `INSERT INTO backup_assets (local_asset_id, status, asset_type, file_size, created_at, queued_at, content_hash, selected_for_backup)
+     VALUES (?, 'pending_upload', ?, ?, ?, ?, '', 1)
      ON CONFLICT(local_asset_id) DO UPDATE SET
+      selected_for_backup = 1,
       status = CASE WHEN status IN ('failed', 'orphaned', 'local_missing') THEN 'pending_upload' ELSE status END,
       queued_at = CASE WHEN status IN ('failed', 'orphaned', 'local_missing') THEN ? ELSE queued_at END,
       retry_count = CASE WHEN status = 'local_missing' THEN 0 ELSE retry_count END,

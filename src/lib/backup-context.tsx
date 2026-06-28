@@ -14,11 +14,14 @@ import {
   resumeCalendarBackup,
   getBackupProgress,
   triggerImmediateBackup,
+  mirrorBackupClientSession,
   type NativeBackupProgress,
 } from '../../modules/beebeeb-crypto';
 import { ensureBackupFolders, reconcileDerivedStateAgainstServer, type BackupCategory } from '../services/BackupService';
 import { useCrypto } from './crypto-context';
 import { recordRuntimeTrace } from './runtime-trace';
+import { registerDevice } from './device-registration';
+import { clearMobileIosBackupClientSession, ensureMobileIosBackupClientSession } from './api';
 
 const BACKUP_PHOTO_KEY = 'beebeeb_camera_backup';
 const BACKUP_CONTACTS_KEY = 'beebeeb_contacts_backup';
@@ -104,6 +107,21 @@ async function getStoredToken(): Promise<string | null> {
   }
 }
 
+async function mirrorBackupSessionForNative(): Promise<void> {
+  if (Platform.OS !== 'ios') return;
+  try {
+    const deviceId = await registerDevice();
+    if (!deviceId) return;
+    const sessionId = await ensureMobileIosBackupClientSession(deviceId);
+    if (sessionId) {
+      await mirrorBackupClientSession(sessionId).catch(() => false);
+    }
+  } catch (err) {
+    // Backup telemetry is best-effort. Never block or fail backup startup.
+    if (__DEV__) console.warn('[backup] client-session setup failed:', err);
+  }
+}
+
 export function BackupProvider({ children }: { children: React.ReactNode }) {
   const { isUnlocked } = useCrypto();
   const [isPhotoBackupEnabled, setIsPhotoBackupEnabled] = useState(false);
@@ -162,6 +180,7 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
     });
 
     if (category === 'camera_roll') {
+      await mirrorBackupSessionForNative();
       await enablePhotoBackup(token);
     } else if (category === 'contacts') {
       if (options.runNow === false) {
@@ -271,6 +290,7 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
           await refreshNativeProgress().catch(() => {});
         } else {
           await disablePhotoBackup();
+          await clearMobileIosBackupClientSession().catch(() => {});
           await configureBackupFolder('camera_roll', null);
           setBackupProgress(EMPTY_PROGRESS);
         }
@@ -365,6 +385,7 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
       try {
         const { categoryFolderId } = await ensureBackupFolders('camera_roll');
         await configureBackupFolder('camera_roll', categoryFolderId);
+        await mirrorBackupSessionForNative();
         const progress = await triggerImmediateBackup(token);
         applyNativeProgress(progress);
       } catch (err) {

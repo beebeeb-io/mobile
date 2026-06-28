@@ -22,6 +22,7 @@ import { BBLogo } from './components/BBLogo';
 import {
   hasToken,
   clearToken,
+  ApiError,
   getApiUrl,
   getMe,
   getToken,
@@ -111,6 +112,7 @@ import { discardAllPendingShares, processPendingShares } from '../plugins/share-
 import { useToast } from './lib/toast-context';
 import { clearWidgetData } from './utils/widgetData';
 import { ensureDevicePerformanceProfile } from './lib/device-performance';
+import { shouldKeepStartupRestoring, type StartupAuthState } from './lib/startup-auth';
 import AndroidThumbnailRepairWorker from './lib/AndroidThumbnailRepairWorker';
 import { BeebeebThumbnails } from '../modules/beebeeb-crypto';
 
@@ -119,17 +121,95 @@ const PHRASE_VERIFIED_KEY = 'beebeeb_phrase_verified';
 const MASTER_KEY_CHECK_LABEL = 'io.beebeeb.master-key-check';
 const MASTER_KEY_FALLBACK_LABEL = 'io.beebeeb.master-key.fallback';
 const STARTUP_STEP_TIMEOUT_MS = 5000;
+const STARTUP_TOKEN_READ_RECOVERY_TIMEOUT_MS = 15_000;
+
+type StartupDiagnosticResult =
+  | 'success'
+  | 'slow'
+  | 'token-present'
+  | 'no-token'
+  | 'restored'
+  | 'invalid-token'
+  | 'transient-failure'
+  | 'recovery-timeout'
+  | 'failed';
+
+function classifyStartupError(err: unknown): string {
+  if (err instanceof ApiError) {
+    if (err.status === 0) return 'network';
+    if (err.status === 401) return 'invalid-token';
+    return `api-${err.status}`;
+  }
+  if (err instanceof StartupTokenReadRecoveryError) return 'token-read-timeout';
+  if (err instanceof Error && err.message === 'timeout') return 'timeout';
+  return 'exception';
+}
+
+function logStartupDiagnostic(
+  stage: string,
+  result: StartupDiagnosticResult,
+  startedAt: number,
+  fallback?: string,
+): void {
+  const durationMs = Date.now() - startedAt;
+  const fallbackSuffix = fallback ? ` fallback=${fallback}` : '';
+  const message = `[Beebeeb][StartupAuth] stage=${stage} result=${result} duration_ms=${durationMs}${fallbackSuffix}`;
+  if (result === 'success' || result === 'token-present' || result === 'no-token' || result === 'restored') {
+    console.info(message);
+  } else {
+    console.warn(message);
+  }
+}
+
+class StartupTokenReadRecoveryError extends Error {
+  constructor() {
+    super('startup_token_read_recovery_timeout');
+    this.name = 'StartupTokenReadRecoveryError';
+  }
+}
+
+async function readStartupTokenWithRecovery(): Promise<string | null> {
+  const stage = 'read-session-token';
+  const startedAt = Date.now();
+  let slowTimer: ReturnType<typeof setTimeout> | undefined;
+  let recoveryTimer: ReturnType<typeof setTimeout> | undefined;
+
+  const recoveryTimeout = new Promise<never>((_, reject) => {
+    slowTimer = setTimeout(() => {
+      logStartupDiagnostic(stage, 'slow', startedAt, 'waiting');
+    }, STARTUP_STEP_TIMEOUT_MS);
+    recoveryTimer = setTimeout(() => {
+      logStartupDiagnostic(stage, 'recovery-timeout', startedAt, 'diagnostics');
+      reject(new StartupTokenReadRecoveryError());
+    }, STARTUP_TOKEN_READ_RECOVERY_TIMEOUT_MS);
+  });
+
+  try {
+    const token = await Promise.race([getToken(), recoveryTimeout]);
+    logStartupDiagnostic(stage, token !== null ? 'token-present' : 'no-token', startedAt);
+    return token;
+  } catch (err) {
+    if (!(err instanceof StartupTokenReadRecoveryError)) {
+      logStartupDiagnostic(stage, 'failed', startedAt, classifyStartupError(err));
+    }
+    throw err;
+  } finally {
+    if (slowTimer) clearTimeout(slowTimer);
+    if (recoveryTimer) clearTimeout(recoveryTimer);
+  }
+}
 
 function withStartupTimeout<T>(promise: Promise<T>, fallback: T, label: string): Promise<T> {
-  return Promise.race([
-    promise,
-    new Promise<T>((resolve) => {
-      setTimeout(() => {
-        console.warn(`[Beebeeb] Startup step timed out: ${label}`);
-        resolve(fallback);
-      }, STARTUP_STEP_TIMEOUT_MS);
-    }),
-  ]);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<T>((resolve) => {
+    timer = setTimeout(() => {
+      console.warn(`[Beebeeb][StartupAuth] stage=${label} result=slow duration_ms=${STARTUP_STEP_TIMEOUT_MS} fallback=default`);
+      resolve(fallback);
+    }, STARTUP_STEP_TIMEOUT_MS);
+  });
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -678,6 +758,7 @@ export default function App() {
   const [startupLockChecked, setStartupLockChecked] = useState(false);
   const appStateRef = useRef<AppStateStatus>(AppState.currentState);
   const backgroundAtRef = useRef<number | null>(null);
+  const startupRunIdRef = useRef(0);
 
   // Onboarding: shown once after first signup
   const [onboardingDone, setOnboardingDone] = useState(true); // true by default, corrected in startup
@@ -744,7 +825,10 @@ export default function App() {
     setUser(null);
   }, []);
 
-  // Retry getMe() up to 3 times with backoff before giving up
+  // Retry getMe() on transient startup failures. A 401 is definitive: the
+  // API client clears the invalid token, and startup must render signed-out
+  // instead of staying in diagnostics. Network/server/timeout failures keep
+  // the restoring surface so a valid stored token is not treated as logout.
   const retryGetMe = useCallback(async (): Promise<User | null> => {
     const delays = [1000, 3000, 5000];
     for (const delay of delays) {
@@ -755,11 +839,14 @@ export default function App() {
             setTimeout(() => reject(new Error('timeout')), 10_000),
           ),
         ]);
-      } catch {
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 401) {
+          throw err;
+        }
         await new Promise(r => setTimeout(r, delay));
       }
     }
-    return null; // all retries failed
+    return null; // all retries failed with transient failures
   }, []);
 
   // Shared preferences loader — called from runStartup and also when
@@ -791,23 +878,55 @@ export default function App() {
   const runStartup = useCallback(async () => {
     setShowDiagnostics(false);
     setLoadingFailed(false);
-    setLoadingStatus('');
+    setLoadingStatus('Restoring session...');
     setChecking(true);
+
+    const runId = startupRunIdRef.current + 1;
+    startupRunIdRef.current = runId;
+    const isCurrentStartupRun = () => startupRunIdRef.current === runId;
 
     let slowTimer: ReturnType<typeof setTimeout> | undefined;
     let needsDiagnostics = false;
+    let startupAuthState: StartupAuthState = 'unknown';
 
     try {
-      const tokenExists = await withStartupTimeout(hasToken(), false, 'read session token');
+      const token = await readStartupTokenWithRecovery();
+      if (!isCurrentStartupRun()) return;
+      const tokenExists = token !== null;
+      startupAuthState = tokenExists ? 'token-present' : 'no-token';
+
       if (tokenExists) {
         setLoadingStatus('Contacting server...');
-        slowTimer = setTimeout(() => setLoadingStatus('Taking longer than usual...'), 5_000);
+        slowTimer = setTimeout(() => {
+          if (isCurrentStartupRun()) setLoadingStatus('Taking longer than usual...');
+        }, 5_000);
 
-        const me = await retryGetMe();
+        const profileStartedAt = Date.now();
+        let me: User | null = null;
+        try {
+          me = await retryGetMe();
+          if (!isCurrentStartupRun()) return;
+        } catch (err) {
+          if (err instanceof ApiError && err.status === 401) {
+            if (!isCurrentStartupRun()) return;
+            startupAuthState = 'invalid-token';
+            logStartupDiagnostic('fetch-profile', 'invalid-token', profileStartedAt);
+            setUser(null);
+            setLoadingStatus('Loading preferences...');
+            await withStartupTimeout(loadPreferences(false), undefined, 'load-preferences');
+            if (!isCurrentStartupRun()) return;
+            setShowDiagnostics(false);
+            setChecking(false);
+            return;
+          }
+          throw err;
+        }
         clearTimeout(slowTimer);
         slowTimer = undefined;
 
         if (me) {
+          startupAuthState = 'restored';
+          logStartupDiagnostic('fetch-profile', 'restored', profileStartedAt);
           setLoadingStatus('Unlocking vault...');
           setUser(me);
           SecureStore.setItemAsync(LAST_CONNECTED_KEY, new Date().toISOString()).catch(() => {});
@@ -821,7 +940,10 @@ export default function App() {
             console.warn('[App] initLocalIdentifierMap (cold launch) failed', err),
           );
         } else {
-          // All retries exhausted — show diagnostics
+          // All transient retries exhausted — keep the restoring/diagnostic
+          // surface. The token remains stored, so showing Login here would be
+          // a false logout on cold launch.
+          logStartupDiagnostic('fetch-profile', 'transient-failure', profileStartedAt, 'diagnostics');
           needsDiagnostics = true;
           setLoadingStatus('');
           setShowDiagnostics(true);
@@ -833,20 +955,34 @@ export default function App() {
       // chooses to sign in.
       if (needsDiagnostics) {
         // Still load preferences in the background so they're ready on retry
-        void withStartupTimeout(loadPreferences(tokenExists), undefined, 'load preferences');
+        if (isCurrentStartupRun()) {
+          void withStartupTimeout(loadPreferences(tokenExists), undefined, 'load-preferences');
+        }
         return;
       }
 
       setLoadingStatus('Loading preferences...');
-      await withStartupTimeout(loadPreferences(tokenExists), undefined, 'load preferences');
+      await withStartupTimeout(loadPreferences(tokenExists), undefined, 'load-preferences');
+      if (!isCurrentStartupRun()) return;
 
       setChecking(false);
     } catch (err) {
-      console.warn('[Beebeeb] Startup failed; falling back to signed-out state', err);
-      setUser(null);
+      if (err instanceof StartupTokenReadRecoveryError) {
+        startupAuthState = 'token-read-timeout';
+      }
+      console.warn(
+        `[Beebeeb][StartupAuth] stage=startup result=failed fallback=${shouldKeepStartupRestoring(startupAuthState) ? 'diagnostics' : 'signed-out'} reason=${classifyStartupError(err)}`,
+      );
+      if (!isCurrentStartupRun()) return;
       setLoadingStatus('');
-      setShowDiagnostics(false);
-      setChecking(false);
+      if (shouldKeepStartupRestoring(startupAuthState)) {
+        setShowDiagnostics(true);
+        setChecking(true);
+      } else {
+        setUser(null);
+        setShowDiagnostics(false);
+        setChecking(false);
+      }
     } finally {
       if (slowTimer) clearTimeout(slowTimer);
     }
@@ -1085,6 +1221,7 @@ export default function App() {
             <DiagnosticPanel
               onRetry={() => void runStartup()}
               onSignIn={() => {
+                startupRunIdRef.current += 1;
                 setShowDiagnostics(false);
                 setChecking(false);
                 setUser(null);

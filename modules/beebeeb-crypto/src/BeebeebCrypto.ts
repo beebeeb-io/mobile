@@ -719,6 +719,12 @@ export async function mirrorSessionToAppGroup(
   return BeebeebCryptoModule.mirrorSessionToAppGroup(token, baseUrl)
 }
 
+/** Mirror the server client-session id used by native iOS backup heartbeats. */
+export async function mirrorBackupClientSession(sessionId: string | null): Promise<boolean> {
+  if (typeof BeebeebCryptoModule.mirrorBackupClientSession !== 'function') return false
+  return BeebeebCryptoModule.mirrorBackupClientSession(sessionId)
+}
+
 /**
  * Legacy cleanup shim. Older debug simulator builds mirrored the raw master key
  * into App Group defaults for File Provider QA. Current builds never persist
@@ -1105,6 +1111,39 @@ const EMPTY_CATEGORY_BACKUP_STATUS: NativeCategoryBackupStatus = {
 export async function configureBackupFolder(category: NativeBackupCategory, parentFolderId: string | null): Promise<void> {
   if (typeof BeebeebCryptoModule.configureBackupFolder !== 'function') return
   return BeebeebCryptoModule.configureBackupFolder(category, parentFolderId)
+}
+
+export interface PhotoBackupAlbum {
+  id: string
+  title: string
+  assetCount: number
+}
+
+/** List iOS user albums that can scope camera-roll backup. Empty on unsupported builds/platforms. */
+export async function listPhotoBackupAlbums(): Promise<PhotoBackupAlbum[]> {
+  if (typeof BeebeebCryptoModule.listPhotoBackupAlbums !== 'function') return []
+  const albums = await BeebeebCryptoModule.listPhotoBackupAlbums()
+  if (!Array.isArray(albums)) return []
+  return albums
+    .map((album: any) => ({
+      id: String(album?.id ?? ''),
+      title: String(album?.title ?? 'Untitled album'),
+      assetCount: Number(album?.assetCount ?? 0),
+    }))
+    .filter((album) => album.id.length > 0 && album.assetCount > 0)
+}
+
+/** Empty selection means the default: back up all photos/videos. */
+export async function getPhotoBackupSelectedAlbumIds(): Promise<string[]> {
+  if (typeof BeebeebCryptoModule.getPhotoBackupSelectedAlbumIds !== 'function') return []
+  const ids = await BeebeebCryptoModule.getPhotoBackupSelectedAlbumIds()
+  return Array.isArray(ids) ? ids.filter((id): id is string => typeof id === 'string' && id.length > 0) : []
+}
+
+/** Persist selected iOS album identifiers. Passing [] restores all-photos backup. */
+export async function setPhotoBackupSelectedAlbumIds(albumIds: string[]): Promise<boolean> {
+  if (typeof BeebeebCryptoModule.setPhotoBackupSelectedAlbumIds !== 'function') return false
+  return BeebeebCryptoModule.setPhotoBackupSelectedAlbumIds(albumIds)
 }
 
 /** Start camera roll backup. Registers PHPhotoLibrary observer and schedules BGProcessingTask. */
