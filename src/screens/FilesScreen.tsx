@@ -2419,6 +2419,17 @@ export default function FilesScreen() {
     }
   }, [currentFolder.name, showToast]);
 
+  // Deep breadcrumbs collapse to "root … current" — tapping the "…" opens a
+  // native iOS UIMenu of the in-between folders; the action id is the folderStack
+  // index to jump to. (Guus request — keep the breadcrumb to 3 segments max.)
+  const onBreadcrumbCollapsedAction = useCallback(({ nativeEvent }: NativeActionEvent) => {
+    const idx = Number.parseInt(nativeEvent.event, 10);
+    if (Number.isInteger(idx) && idx > 0 && idx < folderStack.length - 1) {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      navigateToBreadcrumb(idx);
+    }
+  }, [folderStack.length, navigateToBreadcrumb]);
+
   // ------------------------------------------------------------------
   // Multi-select handlers
   // ------------------------------------------------------------------
@@ -3150,51 +3161,107 @@ export default function FilesScreen() {
   // Render helpers
   // ------------------------------------------------------------------
 
-  const renderBreadcrumbs = () => (
-    <ScrollView
-      horizontal
-      showsHorizontalScrollIndicator={false}
-      style={styles.breadcrumbScroll}
-      contentContainerStyle={styles.breadcrumbRow}
-    >
-      {folderStack.map((entry, index) => {
-        const isLast = index === folderStack.length - 1;
-        return (
-          <View key={entry.id ?? 'root'} style={styles.breadcrumbItem}>
-            {index > 0 && (
-              <Ionicons
-                name="chevron-forward"
-                size={12}
-                color={c.ink4}
-                style={styles.breadcrumbChevron}
-              />
-            )}
-            <TouchableOpacity
-              disabled={isLast}
-              onPress={() => {
-                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                navigateToBreadcrumb(index);
-              }}
-              hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
-              accessibilityLabel={`Navigate to ${entry.name}`}
+  const renderBreadcrumbs = () => {
+    // Deep paths collapse to exactly 3 segments: root  …  current. The "…" is a
+    // native iOS UIMenu of every in-between folder, so any ancestor is reachable
+    // in one tap without a long horizontal scroll. Shallow paths (≤3) render in
+    // full. (Guus request.)
+    if (folderStack.length > 3) {
+      const root = folderStack[0];
+      const current = folderStack[folderStack.length - 1];
+      const middleActions: MenuAction[] = folderStack
+        .slice(1, folderStack.length - 1)
+        .map((entry, i) => ({ id: String(i + 1), title: entry.name, image: 'folder' }));
+      return (
+        <View style={[styles.breadcrumbRow, styles.breadcrumbCollapsedRow]}>
+          <TouchableOpacity
+            onPress={() => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              navigateToBreadcrumb(0);
+            }}
+            hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
+            accessibilityLabel={`Navigate to ${root.name}`}
+            accessibilityRole="button"
+          >
+            <Text style={[styles.breadcrumbText, { color: c.amberDeep }]} numberOfLines={1}>
+              {root.name}
+            </Text>
+          </TouchableOpacity>
+
+          <Ionicons name="chevron-forward" size={12} color={c.ink4} style={styles.breadcrumbChevron} />
+
+          <MenuView
+            onPressAction={onBreadcrumbCollapsedAction}
+            actions={middleActions}
+            themeVariant={themeScheme}
+          >
+            <View
+              style={styles.breadcrumbEllipsis}
+              accessibilityLabel="Show folders in between"
               accessibilityRole="button"
             >
-              <Text
-                style={[
-                  styles.breadcrumbText,
-                  { color: c.amberDeep },
-                  isLast && { color: c.ink, fontWeight: '600' },
-                ]}
-                numberOfLines={1}
+              <Text style={[styles.breadcrumbText, { color: c.amberDeep, fontWeight: '600' }]}>…</Text>
+            </View>
+          </MenuView>
+
+          <Ionicons name="chevron-forward" size={12} color={c.ink4} style={styles.breadcrumbChevron} />
+
+          <Text
+            style={[styles.breadcrumbText, { color: c.ink, fontWeight: '600', flexShrink: 1 }]}
+            numberOfLines={1}
+            ellipsizeMode="tail"
+          >
+            {current.name}
+          </Text>
+        </View>
+      );
+    }
+    return (
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        style={styles.breadcrumbScroll}
+        contentContainerStyle={styles.breadcrumbRow}
+      >
+        {folderStack.map((entry, index) => {
+          const isLast = index === folderStack.length - 1;
+          return (
+            <View key={entry.id ?? 'root'} style={styles.breadcrumbItem}>
+              {index > 0 && (
+                <Ionicons
+                  name="chevron-forward"
+                  size={12}
+                  color={c.ink4}
+                  style={styles.breadcrumbChevron}
+                />
+              )}
+              <TouchableOpacity
+                disabled={isLast}
+                onPress={() => {
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  navigateToBreadcrumb(index);
+                }}
+                hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
+                accessibilityLabel={`Navigate to ${entry.name}`}
+                accessibilityRole="button"
               >
-                {entry.name}
-              </Text>
-            </TouchableOpacity>
-          </View>
-        );
-      })}
-    </ScrollView>
-  );
+                <Text
+                  style={[
+                    styles.breadcrumbText,
+                    { color: c.amberDeep },
+                    isLast && { color: c.ink, fontWeight: '600' },
+                  ]}
+                  numberOfLines={1}
+                >
+                  {entry.name}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          );
+        })}
+      </ScrollView>
+    );
+  };
 
   // 3 most recently modified non-folder files — reuses the existing files array
   const recentFiles = useMemo(() => (
@@ -4032,6 +4099,8 @@ const styles = StyleSheet.create({
   // Breadcrumbs
   breadcrumbScroll: { flexGrow: 0, paddingBottom: spacing.sm },
   breadcrumbRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: spacing.lg, gap: 2 },
+  breadcrumbCollapsedRow: { paddingBottom: spacing.sm },
+  breadcrumbEllipsis: { paddingHorizontal: 6, paddingVertical: 2, minWidth: 24, alignItems: 'center' },
   breadcrumbItem: { flexDirection: 'row', alignItems: 'center' },
   breadcrumbChevron: { marginHorizontal: 2 },
   breadcrumbText: { fontSize: 12, fontWeight: '500' },
