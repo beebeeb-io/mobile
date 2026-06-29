@@ -2587,6 +2587,19 @@ export default function SettingsScreen() {
           </View>
         </View>
 
+        {/* ---- Photos ---- */}
+        <View style={layout.section}>
+          <SectionHeader title="Photos" c={c} />
+          <View style={[layout.card, { backgroundColor: c.paper, borderColor: c.line }]}>
+            <SettingsRow
+              label="Folders in Photos"
+              icon="images-outline"
+              onPress={() => navigation.navigate('PhotoLibrarySettings')}
+              c={c}
+            />
+          </View>
+        </View>
+
         {/* ---- Files ---- */}
         <View style={layout.section}>
           <SectionHeader title="Files" c={c} />

@@ -68,6 +68,11 @@ import {
   getPerformanceStorageSettings,
   type PerformanceStorageProfile,
 } from '../lib/performance-storage-settings';
+import {
+  getExcludedPhotoFolderIds,
+  filterByExcludedFolders,
+  filterByExcludedFoldersDirect,
+} from '../lib/photo-library-prefs';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -174,16 +179,29 @@ function preparePhotoEntries(entries: FileEntry[]): FileEntry[] {
     .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
 }
 
-async function getPhotoCandidates(cachedIndex?: CachedFileIndex | null): Promise<FileEntry[]> {
+async function getPhotoCandidates(
+  cachedIndex?: CachedFileIndex | null,
+  excludedFolderIds?: Set<string>,
+): Promise<FileEntry[]> {
+  const excluded = excludedFolderIds ?? new Set<string>();
   try {
     const existingIndex = cachedIndex ?? await loadCachedFileIndex();
     const index = await getFileIndex(existingIndex?.hash);
     if (!index.changed && existingIndex) {
-      return photoCandidatesFromIndex(existingIndex.files);
+      // Pass the FULL index (folder rows included) so exclusion is transitive.
+      return filterByExcludedFolders(
+        existingIndex.files,
+        photoCandidatesFromIndex(existingIndex.files),
+        excluded,
+      );
     }
     if (index.files) {
       await saveCachedFileIndex(index.hash, index.files);
-      return photoCandidatesFromIndex(index.files);
+      return filterByExcludedFolders(
+        index.files,
+        photoCandidatesFromIndex(index.files),
+        excluded,
+      );
     }
   } catch (err) {
     // Older API builds do not have /files/index yet. Because /files/{id}
@@ -195,7 +213,9 @@ async function getPhotoCandidates(cachedIndex?: CachedFileIndex | null): Promise
     }
   }
 
-  return getAllImages();
+  // Legacy /files/media path has no folder tree — degrade to direct-parent
+  // exclusion (transitive exclusion only matters on the index path above).
+  return filterByExcludedFoldersDirect(await getAllImages(), excluded);
 }
 
 /**
@@ -1010,9 +1030,18 @@ export default function PhotosScreen() {
     let renderedCachedIndex = false;
 
     try {
+      // Per-device folder-inclusion preference (task 0885). Read fresh on every
+      // fetch so a toggle in PhotoLibrarySettings takes effect on next focus.
+      const excludedFolderIds = new Set(await getExcludedPhotoFolderIds());
       const cachedIndex = await loadCachedFileIndex();
       if (!isRefresh && !hasVisiblePhotos && cachedIndex) {
-        const cachedImages = preparePhotoEntries(photoCandidatesFromIndex(cachedIndex.files));
+        const cachedImages = preparePhotoEntries(
+          filterByExcludedFolders(
+            cachedIndex.files,
+            photoCandidatesFromIndex(cachedIndex.files),
+            excludedFolderIds,
+          ),
+        );
         if (cachedImages.length > 0) {
           renderedCachedIndex = true;
           photosCacheRef.current = cachedImages;
@@ -1025,7 +1054,7 @@ export default function PhotosScreen() {
         }
       }
 
-      const allImages = await getPhotoCandidates(cachedIndex);
+      const allImages = await getPhotoCandidates(cachedIndex, excludedFolderIds);
       setPhotosFolderId(null);
       // Server usually returns image/media rows sorted newest first, but defend
       // against future changes by re-applying both invariants here.

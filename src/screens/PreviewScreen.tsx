@@ -871,6 +871,14 @@ async function loadDecryptedPhotoForViewer(
 
 const PROGRESSIVE_BLUR_RADIUS = 22;
 
+// Task 0885 (FIX #3) — failsafe: once a decrypted image uri is handed to an
+// <Image>, the bytes are local so decode/render should be near-instant. If the
+// image neither loads nor errors within this window, surface a "Couldn't load
+// image" state instead of spinning forever. Generous enough to tolerate a slow
+// full-resolution decode on older devices, but bounded so the spinner cannot
+// live indefinitely.
+const IMAGE_RENDER_WATCHDOG_MS = 12000;
+
 function clamp01(n: number): number {
   return Math.max(0, Math.min(1, n));
 }
@@ -905,6 +913,8 @@ const ProgressiveOriginalImage = React.memo(function ProgressiveOriginalImage({
   baseOpacity,
   accessibilityLabel,
   onPromote,
+  onImageLoad,
+  onImageError,
 }: {
   baseUri: string | null;
   originalUri: string | null;
@@ -918,6 +928,10 @@ const ProgressiveOriginalImage = React.memo(function ProgressiveOriginalImage({
   baseOpacity?: Animated.Value;
   accessibilityLabel?: string;
   onPromote?: () => void;
+  // Task 0885 (FIX #3): bubble the underlying <Image> decode result up so the
+  // consumer can clear the spinner (load) or surface an error (decode failure).
+  onImageLoad?: () => void;
+  onImageError?: () => void;
 }) {
   const blurVeil = useRef(new Animated.Value(0)).current; // 0 = sharp, 1 = fully blurred
   const originalOpacity = useRef(new Animated.Value(0)).current;
@@ -1020,6 +1034,8 @@ const ProgressiveOriginalImage = React.memo(function ProgressiveOriginalImage({
           style={[imageStyle, baseOpacity ? { opacity: baseOpacity } : null]}
           resizeMode="contain"
           accessibilityLabel={accessibilityLabel}
+          onLoad={onImageLoad}
+          onError={onImageError}
         />
       ) : null}
 
@@ -1038,6 +1054,8 @@ const ProgressiveOriginalImage = React.memo(function ProgressiveOriginalImage({
           style={[StyleSheet.absoluteFill, imageStyle, { opacity: originalOpacity, transform: [{ scale: originalScale }] }]}
           resizeMode="contain"
           accessibilityLabel={accessibilityLabel}
+          onLoad={onImageLoad}
+          onError={onImageError}
         />
       ) : null}
 
@@ -1091,6 +1109,9 @@ const PhotoPage = React.memo(function PhotoPage({
   const [originalActive, setOriginalActive] = useState(false);
   const [originalCacheHit, setOriginalCacheHit] = useState(false);
   const [reduceMotion, setReduceMotion] = useState(false);
+  // Task 0885 (FIX #3): track whether the mounted <Image> has actually decoded,
+  // so the failsafe watchdog can tell "rendered" from "spinning forever".
+  const [imageLoaded, setImageLoaded] = useState(false);
   const sawOriginalProgressRef = useRef(false);
   const player = useVideoPlayer(isVideoEntry && uri ? uri : null, (p) => {
     p.loop = false;
@@ -1131,6 +1152,7 @@ const PhotoPage = React.memo(function PhotoPage({
     setOriginalUri(null);
     setOriginalActive(false);
     setOriginalCacheHit(false);
+    setImageLoaded(false);
     sawOriginalProgressRef.current = false;
   }, [entry.id]);
 
@@ -1320,6 +1342,20 @@ const PhotoPage = React.memo(function PhotoPage({
             fileId: entry.id,
             kind: loaded.kind,
           });
+          // Task 0885 (FIX #1): when there is no base preview to de-blur (e.g. a
+          // desktop-uploaded image that has no thumbnail), the de-blur crossfade
+          // never runs, so `promoteOriginal` would never fire and the decrypted
+          // original would never mount. Mount it directly instead — there is
+          // nothing to de-blur, so skip the transition theater entirely.
+          if (!uri) {
+            setOriginalActive(false);
+            setOriginalUri(null);
+            setOriginalCacheHit(false);
+            setImageLoaded(false);
+            setUri(loaded.uri);
+            setUriKind('original');
+            return;
+          }
           // Hand the sharp original to the de-blur layer; the crossfade finishes
           // and `promoteOriginal` swaps it into the base. If no real progress
           // ever fired, it was already local → skip the theater.
@@ -1362,16 +1398,38 @@ const PhotoPage = React.memo(function PhotoPage({
     }).start();
   }, [fullImageOpacity, isCurrent, uri]);
 
+  // Task 0885 (FIX #3): failsafe — once we hand a decrypted uri to the <Image>,
+  // the bytes are local, so if it neither loads nor errors within the watchdog
+  // window something is wrong (undecodable bytes, oversized texture). Surface an
+  // error instead of an endless spinner. Skips video (its own player) and waits
+  // for the load/error callbacks that clear or trip it.
+  useEffect(() => {
+    if (!uri || isVideoEntry || imageLoaded || error) return;
+    const t = setTimeout(() => {
+      setError((prev) => prev ?? "This image couldn't be displayed.");
+    }, IMAGE_RENDER_WATCHDOG_MS);
+    return () => clearTimeout(t);
+  }, [uri, isVideoEntry, imageLoaded, error]);
+
   return (
     <View style={[styles.photoPage, { width }]}>
-      {thumbnailUri && !uri ? (
+      {thumbnailUri && !uri && !error ? (
         <Image
           source={{ uri: thumbnailUri }}
           style={styles.photoPageThumbnail}
           resizeMode="contain"
         />
       ) : null}
-      {uri && isVideoEntry ? (
+      {error ? (
+        <View style={styles.photoPageStatus}>
+          <Text style={styles.photoPageStatusTitle}>
+            {isVideoEntry ? "Couldn't load video" : "Couldn't load image"}
+          </Text>
+          <Text style={styles.photoPageStatusSub}>
+            {error}
+          </Text>
+        </View>
+      ) : uri && isVideoEntry ? (
         <VideoView
           player={player}
           style={styles.photoPageImage}
@@ -1393,16 +1451,9 @@ const PhotoPage = React.memo(function PhotoPage({
           imageStyle={styles.photoPageImage}
           baseOpacity={fullImageOpacity}
           onPromote={promoteOriginal}
+          onImageLoad={() => setImageLoaded(true)}
+          onImageError={() => setError((prev) => prev ?? "This image couldn't be displayed.")}
         />
-      ) : error ? (
-        <View style={styles.photoPageStatus}>
-          <Text style={styles.photoPageStatusTitle}>
-            {isVideoEntry ? "Couldn't load video" : "Couldn't load image"}
-          </Text>
-          <Text style={styles.photoPageStatusSub}>
-            {error}
-          </Text>
-        </View>
       ) : (
         <View style={styles.photoPageStatus}>
           {loading || shouldLoadFull ? (
@@ -1510,6 +1561,9 @@ export default function PreviewScreen() {
   const [imagePreviewKind, setImagePreviewKind] = useState<ImagePreviewKind | null>(null);
   const [imageLoading, setImageLoading] = useState(false);
   const [imageError, setImageError] = useState<string | null>(null);
+  // Task 0885 (FIX #3): track whether the mounted <Image> has actually decoded,
+  // so the failsafe watchdog can distinguish "rendered" from "stuck".
+  const [imageLoaded, setImageLoaded] = useState(false);
   const imageLargePreviewAttemptRef = useRef<string | null>(null);
   // Task 0799: progressive de-blur for "View Original" on the single-image path.
   const [originalImageBase, setOriginalImageBase] = useState<string | null>(null);
@@ -1635,6 +1689,23 @@ export default function PreviewScreen() {
   const isArchive = category === 'archive';
   const isPptx = category === 'pptx';
   const isMediaPreview = isImage || isVideo;
+
+  // Task 0885 (FIX #3): reset the decode flag whenever the displayed image uri
+  // changes so the watchdog re-arms for the new source.
+  useEffect(() => {
+    setImageLoaded(false);
+  }, [imageUri]);
+
+  // Task 0885 (FIX #3): failsafe — once a decrypted uri is mounted the bytes are
+  // local, so if the <Image> never loads or errors within the watchdog window,
+  // surface an error rather than spinning forever.
+  useEffect(() => {
+    if (!isImage || !imageUri || imageLoaded || imageError) return;
+    const t = setTimeout(() => {
+      setImageError((prev) => prev ?? "This image couldn't be displayed.");
+    }, IMAGE_RENDER_WATCHDOG_MS);
+    return () => clearTimeout(t);
+  }, [isImage, imageUri, imageLoaded, imageError]);
 
   useEffect(() => {
     recordRuntimeTrace('preview.open', {
@@ -2479,6 +2550,19 @@ export default function PreviewScreen() {
     try {
       const cached = await getCachedPhoto(currentFileId);
       if (cached) {
+        if (!imageUri) {
+          // Task 0885 (FIX #1): no base preview to de-blur (thumbnail-less,
+          // e.g. desktop upload) → the crossfade/promote path never runs, so
+          // mount the original directly instead of spinning forever.
+          setOriginalImageActive(false);
+          setOriginalImageBase(null);
+          setOriginalImagePending(null);
+          setImageLoaded(false);
+          setImageUri(cached);
+          setImagePreviewKind('original');
+          recordRuntimeTrace('preview.image.view_original.cache_hit', { fileId: currentFileId });
+          return;
+        }
         // Already local → skip the theater; the component does a quick crossfade.
         setOriginalImageCacheHit(true);
         setOriginalImagePending(cached);
@@ -2498,7 +2582,18 @@ export default function PreviewScreen() {
       } catch {
         resolvedUri = decryptedUri;
       }
-      setOriginalImagePending(resolvedUri);
+      if (!imageUri) {
+        // Task 0885 (FIX #1): thumbnail-less original — mount it directly since
+        // there is no base preview to de-blur into.
+        setOriginalImageActive(false);
+        setOriginalImageBase(null);
+        setOriginalImagePending(null);
+        setImageLoaded(false);
+        setImageUri(resolvedUri);
+        setImagePreviewKind('original');
+      } else {
+        setOriginalImagePending(resolvedUri);
+      }
       recordRuntimeTrace('preview.image.view_original.success', { fileId: currentFileId });
     } catch (err) {
       if (!isAbortError(err)) {
@@ -2715,7 +2810,12 @@ export default function PreviewScreen() {
             ]}
           >
             {isImage ? (
-              imageUri ? (
+              imageError ? (
+                <View style={styles.imageStatus}>
+                  <Text style={[styles.imageStatusTitle, { color: colors.white }]}>Couldn't load image</Text>
+                  <Text style={styles.imageStatusSub}>{imageError}</Text>
+                </View>
+              ) : imageUri ? (
                 originalImageActive ? (
                   <ProgressiveOriginalImage
                     baseUri={originalImageBase ?? imageUri}
@@ -2729,6 +2829,8 @@ export default function PreviewScreen() {
                     imageStyle={styles.mediaImage}
                     accessibilityLabel={previewFileName}
                     onPromote={promoteOriginalImage}
+                    onImageLoad={() => setImageLoaded(true)}
+                    onImageError={() => setImageError((prev) => prev ?? "This image couldn't be displayed.")}
                   />
                 ) : (
                   <Image
@@ -2736,13 +2838,10 @@ export default function PreviewScreen() {
                     style={styles.mediaImage}
                     resizeMode="contain"
                     accessibilityLabel={previewFileName}
+                    onLoad={() => setImageLoaded(true)}
+                    onError={() => setImageError((prev) => prev ?? "This image couldn't be displayed.")}
                   />
                 )
-              ) : imageError ? (
-                <View style={styles.imageStatus}>
-                  <Text style={[styles.imageStatusTitle, { color: colors.white }]}>Couldn't load image</Text>
-                  <Text style={styles.imageStatusSub}>{imageError}</Text>
-                </View>
               ) : (
                 <View style={styles.imageStatus}>
                   {renderSharedProgress(false)}
@@ -2848,7 +2947,14 @@ export default function PreviewScreen() {
       {/* ---- Preview area ---- */}
       <View style={styles.previewArea}>
         {isImage ? (
-          imageUri ? (
+          imageError ? (
+            <View style={styles.imageStatus}>
+              <Text style={[styles.imageStatusTitle, { color: colors.white }]}>
+                Couldn't load image
+              </Text>
+              <Text style={styles.imageStatusSub}>{imageError}</Text>
+            </View>
+          ) : imageUri ? (
             originalImageActive ? (
               <ProgressiveOriginalImage
                 baseUri={originalImageBase ?? imageUri}
@@ -2862,6 +2968,8 @@ export default function PreviewScreen() {
                 imageStyle={styles.image}
                 accessibilityLabel={previewFileName}
                 onPromote={promoteOriginalImage}
+                onImageLoad={() => setImageLoaded(true)}
+                onImageError={() => setImageError((prev) => prev ?? "This image couldn't be displayed.")}
               />
             ) : (
               <Image
@@ -2869,15 +2977,10 @@ export default function PreviewScreen() {
                 style={styles.image}
                 resizeMode="contain"
                 accessibilityLabel={previewFileName}
+                onLoad={() => setImageLoaded(true)}
+                onError={() => setImageError((prev) => prev ?? "This image couldn't be displayed.")}
               />
             )
-          ) : imageError ? (
-            <View style={styles.imageStatus}>
-              <Text style={[styles.imageStatusTitle, { color: colors.white }]}>
-                Couldn't load image
-              </Text>
-              <Text style={styles.imageStatusSub}>{imageError}</Text>
-            </View>
           ) : (
             <View style={styles.imageStatus}>
               {renderSharedProgress(false)}

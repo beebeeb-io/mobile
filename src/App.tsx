@@ -99,6 +99,7 @@ import SpeedtestScreen from './screens/SpeedtestScreen';
 import AdvancedSettingsScreen from './screens/AdvancedSettingsScreen';
 import ThumbnailQualityScreen from './screens/ThumbnailQualityScreen';
 import ThumbnailWorkerScreen from './screens/ThumbnailWorkerScreen';
+import PhotoLibrarySettingsScreen from './screens/PhotoLibrarySettingsScreen';
 import FileRequestsScreen from './screens/FileRequestsScreen';
 import CreateFileRequestScreen from './screens/CreateFileRequestScreen';
 
@@ -298,6 +299,7 @@ export type RootStackParamList = {
   AdvancedSettings: undefined;
   ThumbnailQuality: undefined;
   ThumbnailWorker: undefined;
+  PhotoLibrarySettings: undefined;
 };
 
 // ---------------------------------------------------------------------------
@@ -1368,6 +1370,11 @@ export default function App() {
                   <Stack.Screen
                     name="ThumbnailWorker"
                     component={ThumbnailWorkerScreen}
+                    options={{ headerShown: false }}
+                  />
+                  <Stack.Screen
+                    name="PhotoLibrarySettings"
+                    component={PhotoLibrarySettingsScreen}
                     options={{ headerShown: false }}
                   />
                 </>
