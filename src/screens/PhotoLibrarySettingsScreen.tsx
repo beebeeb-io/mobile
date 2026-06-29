@@ -22,6 +22,7 @@ import { NativeSwitch } from '../components/NativeSwitch';
 import { encryptedMetadataPayloadToBytes } from '../lib/encrypted-metadata';
 import {
   getExcludedPhotoFolderIds,
+  setExcludedPhotoFolderIds,
   setPhotoFolderExcluded,
   mediaCountByFolder,
 } from '../lib/photo-library-prefs';
@@ -132,6 +133,28 @@ export default function PhotoLibrarySettingsScreen() {
         return { id, name, parentName, count, isProtected: PROTECTED_FOLDER_NAMES.has(name) };
       });
 
+      // A folder that CONTAINS a protected folder (e.g. the device folder above
+      // "Camera Roll") must also be pinned "Always shown": excluding it would
+      // transitively hide the protected camera roll, contradicting the label and
+      // emptying the Photos tab. Pin every protected folder + all its ancestors.
+      const alwaysShownIds = new Set<string>();
+      for (const row of rows) {
+        if (!PROTECTED_FOLDER_NAMES.has(row.name)) continue;
+        alwaysShownIds.add(row.id);
+        let cur = folderById.get(row.id)?.parent_id ?? null;
+        let depth = 0;
+        const seen = new Set<string>();
+        while (cur && depth < 64 && !seen.has(cur)) {
+          alwaysShownIds.add(cur);
+          seen.add(cur);
+          cur = folderById.get(cur)?.parent_id ?? null;
+          depth += 1;
+        }
+      }
+      for (const row of rows) {
+        if (alwaysShownIds.has(row.id)) row.isProtected = true;
+      }
+
       rows.sort((a, b) => {
         if (a.isProtected !== b.isProtected) return a.isProtected ? -1 : 1;
         const byName = a.name.localeCompare(b.name);
@@ -140,7 +163,17 @@ export default function PhotoLibrarySettingsScreen() {
       });
 
       setFolders(rows);
-      setExcluded(new Set(await getExcludedPhotoFolderIds()));
+
+      // Self-heal: drop any persisted exclusion that is now pinned (protected or
+      // an ancestor of one) — otherwise a folder excluded before this fix would
+      // keep the camera roll hidden with no toggle to turn it back on.
+      const persisted = new Set(await getExcludedPhotoFolderIds());
+      let healed = false;
+      for (const id of Array.from(persisted)) {
+        if (alwaysShownIds.has(id)) { persisted.delete(id); healed = true; }
+      }
+      if (healed) await setExcludedPhotoFolderIds(Array.from(persisted));
+      setExcluded(persisted);
     } catch {
       setFolders([]);
     } finally {
