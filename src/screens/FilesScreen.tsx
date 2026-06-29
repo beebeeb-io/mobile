@@ -1662,7 +1662,21 @@ export default function FilesScreen() {
     if (filesFolderKeyRef.current !== folderCacheKey(currentFolder.id)) return;
     if (files.length === 0) return;
     folderFilesCacheRef.current[folderCacheKey(currentFolder.id)] = files;
-  }, [currentFolder.id, files]);
+    // Run ONLY when `files` actually changes — NEVER on a bare folder change.
+    // On the root→child navigation commit, the layout effect (above) has already
+    // advanced filesFolderKeyRef to the new folder, but the closure `files` still
+    // holds the PREVIOUS folder's rows (setFiles is async). With `currentFolder.id`
+    // in the deps this effect fired on that boundary render and wrote the old
+    // folder's rows under the NEW folder's cache key — poisoning e.g. a child's
+    // cache with root's contents (the "open Backups, see root" bug). On a sparse
+    // cold-start tree that poison then became session-permanent (the focus effect
+    // trusts the poisoned cache instead of fetching). Depending on `files` alone
+    // is sufficient: optimistic edits (upload/move/delete) all change the `files`
+    // reference, and filesFolderKeyRef only advances in lock-step with a real
+    // setFiles, so key↔content stay consistent. (Co-defect: sync-client flips
+    // ready=true on a sparse catch-up tree — filed separately.)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [files]);
 
   const applyFilesForFolder = useCallback((
     parentId: string | null,
