@@ -126,11 +126,21 @@ export default function FileRequestsScreen({ embedded = false }: { embedded?: bo
     <View style={[styles.root, { backgroundColor: c.paper }]}>
       {!embedded && (
         <View style={[styles.header, { paddingTop: insets.top + 10, borderBottomColor: c.line }]}>
-          <TouchableOpacity onPress={() => navigation.goBack()} style={styles.iconButton}>
+          <TouchableOpacity
+            onPress={() => navigation.goBack()}
+            style={styles.iconButton}
+            accessibilityRole="button"
+            accessibilityLabel="Go back"
+          >
             <Ionicons name="chevron-back" size={24} color={c.ink} />
           </TouchableOpacity>
           <Text style={[styles.title, { color: c.ink }]}>File requests</Text>
-          <TouchableOpacity onPress={() => navigation.navigate('CreateFileRequest')} style={styles.iconButton}>
+          <TouchableOpacity
+            onPress={() => navigation.navigate('CreateFileRequest')}
+            style={styles.iconButton}
+            accessibilityRole="button"
+            accessibilityLabel="New file request"
+          >
             <Ionicons name="add" size={26} color={c.amberDeep} />
           </TouchableOpacity>
         </View>

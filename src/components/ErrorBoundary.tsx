@@ -1,6 +1,6 @@
 import React from 'react';
-import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { colors, radii, spacing } from '../theme';
+import { Appearance, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { colors, darkColors, radii, spacing } from '../theme';
 
 interface State {
   hasError: boolean;
@@ -37,34 +37,40 @@ export default class ErrorBoundary extends React.Component<Props, State> {
     const message = this.state.error?.message ?? 'Unknown error';
     const stack = this.state.error?.stack ?? '';
 
+    // ErrorBoundary sits ABOVE ThemeProvider in the tree, so the theme
+    // context isn't reachable here. Read the scheme directly — theme-context
+    // mirrors explicit prefs into Appearance.setColorScheme, so this reflects
+    // both "system" and an explicitly-chosen light/dark mode.
+    const c = Appearance.getColorScheme() === 'dark' ? darkColors : colors;
+
     return (
-      <View style={styles.root}>
-        <View style={styles.card}>
+      <View style={[styles.root, { backgroundColor: c.paper2 }]}>
+        <View style={[styles.card, { backgroundColor: c.paper, borderColor: c.line }]}>
           {/* Logo */}
-          <View style={styles.logo}>
-            <Text style={styles.logoText}>bb</Text>
+          <View style={[styles.logo, { backgroundColor: c.ink }]}>
+            <Text style={[styles.logoText, { color: c.amber }]}>bb</Text>
           </View>
 
-          <Text style={styles.heading}>Something went wrong</Text>
-          <Text style={styles.subheading}>
+          <Text style={[styles.heading, { color: c.ink }]}>Something went wrong</Text>
+          <Text style={[styles.subheading, { color: c.ink3 }]}>
             An unexpected error occurred. Tap Restart to try again.
           </Text>
 
-          <View style={styles.errorBox}>
-            <Text style={styles.errorMessage}>{message}</Text>
+          <View style={[styles.errorBox, { backgroundColor: c.paper2, borderColor: c.line }]}>
+            <Text style={[styles.errorMessage, { color: c.red }]}>{message}</Text>
             {!!stack && (
-              <Text style={styles.errorStack} numberOfLines={8}>
+              <Text style={[styles.errorStack, { color: c.ink3 }]} numberOfLines={8}>
                 {stack}
               </Text>
             )}
           </View>
 
           <TouchableOpacity
-            style={styles.restartButton}
+            style={[styles.restartButton, { backgroundColor: c.amber }]}
             onPress={this.handleRestart}
             activeOpacity={0.8}
           >
-            <Text style={styles.restartButtonText}>Restart</Text>
+            <Text style={[styles.restartButtonText, { color: c.ink }]}>Restart</Text>
           </TouchableOpacity>
         </View>
       </View>

@@ -834,7 +834,7 @@ function AutoBackupBanner() {
     <View style={[styles.banner, styles.bannerActive, { backgroundColor: c.amberBg, borderColor: c.amber }]}>
       <View style={[styles.bannerDot, styles.bannerDotActive, { backgroundColor: c.green }]} />
       <Text style={[styles.bannerText, { color: c.ink }]}>
-        {allDone ? 'All photos backed up' : 'Auto-backup on'}
+        {allDone ? `All ${includeVideos ? 'items' : 'photos'} backed up` : 'Auto-backup on'}
       </Text>
       {lastBackupAt && (
         <Text style={[styles.bannerHint, { color: c.ink3 }]}>
@@ -2132,6 +2132,8 @@ export default function PhotosScreen() {
           <ActivityIndicator color={c.amber} size="large" />
           <Text style={[styles.loadingText, { color: c.ink3 }]}>Loading photos...</Text>
         </View>
+      ) : Platform.OS === 'ios' && nativePhotoItems.length === 0 && !loading ? (
+        renderEmpty()
       ) : Platform.OS === 'ios' ? (
         <NativePhotosGridView
           style={styles.gridContainer}

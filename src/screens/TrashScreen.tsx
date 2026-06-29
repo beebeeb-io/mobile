@@ -385,8 +385,10 @@ export default function TrashScreen() {
           style={[styles.backButton, { backgroundColor: c.paper2, borderColor: c.line }]}
           onPress={() => navigation.goBack()}
           hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          accessibilityRole="button"
+          accessibilityLabel="Go back"
         >
-          <Text style={[styles.backButtonText, { color: c.ink2 }]}>{'‹'}</Text>
+          <Ionicons name="chevron-back" size={22} color={c.ink2} />
         </TouchableOpacity>
         <Text style={[styles.title, { color: c.ink }]}>Trash</Text>
         <View style={{ flex: 1 }} />

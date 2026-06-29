@@ -226,7 +226,7 @@ export default function PhotoLibrarySettingsScreen() {
           <View style={[styles.card, { backgroundColor: c.paper2, borderColor: c.line }]}>
             {folders.map((folder, i) => {
               const shown = !excluded.has(folder.id);
-              const countLabel = `${folder.count.toLocaleString()} ${folder.count === 1 ? 'photo' : 'photos'}`;
+              const countLabel = `${folder.count.toLocaleString()} ${folder.count === 1 ? 'item' : 'items'}`;
               const subtitle = folder.parentName
                 ? `${folder.parentName} · ${countLabel}`
                 : countLabel;

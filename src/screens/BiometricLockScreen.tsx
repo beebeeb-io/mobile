@@ -11,8 +11,10 @@ import {
 import * as LocalAuthentication from 'expo-local-authentication';
 import * as Haptics from 'expo-haptics';
 import { usePreventScreenCapture } from 'expo-screen-capture';
+import { StatusBar } from 'expo-status-bar';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { colors } from '../theme';
+import { useTheme } from '../lib/theme-context';
 import { requestConfirmation } from '../lib/confirm-action';
 import { markUnlocked } from '../lib/lock-state';
 
@@ -39,18 +41,18 @@ interface Props {
   requireExplicitBiometric: boolean;
 }
 
-function FaceIdIcon() {
+function FaceIdIcon({ color }: { color: string }) {
   return (
     <View style={styles.svgContainer}>
       {/* Outer circle */}
-      <View style={styles.faceCircle}>
+      <View style={[styles.faceCircle, { borderColor: color }]}>
         {/* Eyes */}
         <View style={styles.eyes}>
-          <View style={styles.eye} />
-          <View style={styles.eye} />
+          <View style={[styles.eye, { backgroundColor: color }]} />
+          <View style={[styles.eye, { backgroundColor: color }]} />
         </View>
         {/* Smile arc — approximated with a border */}
-        <View style={styles.smile} />
+        <View style={[styles.smile, { borderColor: color }]} />
       </View>
     </View>
   );
@@ -61,6 +63,7 @@ export default function BiometricLockScreen({ onUnlocked, requireExplicitBiometr
   // screen covers any sensitive content that was on-screen at lock time.
   usePreventScreenCapture('biometric-lock');
   const insets = useSafeAreaInsets();
+  const { colors: c, resolved } = useTheme();
   const [authenticating, setAuthenticating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const autoPromptedRef = useRef(false);
@@ -143,18 +146,19 @@ export default function BiometricLockScreen({ onUnlocked, requireExplicitBiometr
   }, [authenticate]);
 
   return (
-    <View style={[styles.root, { paddingTop: insets.top, paddingBottom: insets.bottom }]}>
+    <View style={[styles.root, { backgroundColor: c.amberBg, paddingTop: insets.top, paddingBottom: insets.bottom }]}>
+      <StatusBar style={resolved === 'dark' ? 'light' : 'dark'} />
       {/* Center section */}
       <View style={styles.center}>
         {/* Logo — wordmark omitted here because `styles.logo` is a fixed
             52x52 ink-colored frame that would clip the wordmark. */}
-        <View style={styles.logo}>
+        <View style={[styles.logo, { backgroundColor: c.ink }]}>
           <BBLogo size={48} />
         </View>
         <BBWordmark size={22} style={{ marginTop: 12 }} />
 
-        <Text style={styles.title}>Beebeeb is locked</Text>
-        <Text style={styles.subtitle}>
+        <Text style={[styles.title, { color: c.ink }]}>Beebeeb is locked</Text>
+        <Text style={[styles.subtitle, { color: c.ink3 }]}>
           Your vault key lives only on this device. Use Face ID to unlock it locally — nothing leaves the phone.
         </Text>
 
@@ -163,18 +167,18 @@ export default function BiometricLockScreen({ onUnlocked, requireExplicitBiometr
           activeOpacity={0.8}
           onPress={authenticate}
           disabled={authenticating}
-          style={styles.faceIdOuter}
+          style={[styles.faceIdOuter, { shadowColor: c.amber }]}
         >
-          <View style={styles.faceIdInner}>
+          <View style={[styles.faceIdInner, { backgroundColor: c.paper, borderColor: c.ink }]}>
             {authenticating ? (
-              <ActivityIndicator size="large" color={colors.ink} />
+              <ActivityIndicator size="large" color={c.ink} />
             ) : (
-              <FaceIdIcon />
+              <FaceIdIcon color={c.ink} />
             )}
           </View>
         </TouchableOpacity>
 
-        <Text style={styles.lookToUnlock}>
+        <Text style={[styles.lookToUnlock, { color: c.ink3 }]}>
           {authenticating ? 'Authenticating...' : 'Look to unlock'}
         </Text>
       </View>
@@ -183,10 +187,10 @@ export default function BiometricLockScreen({ onUnlocked, requireExplicitBiometr
       <View style={styles.footer}>
         {error && (
           <TouchableOpacity onPress={authenticate} style={styles.errorRow}>
-            <Text style={styles.errorText}>{error}</Text>
+            <Text style={[styles.errorText, { color: c.red }]}>{error}</Text>
           </TouchableOpacity>
         )}
-        <Text style={styles.footerText} onPress={authenticate}>
+        <Text style={[styles.footerText, { color: c.ink3 }]} onPress={authenticate}>
           Try Face ID again
         </Text>
         {error && (
@@ -194,9 +198,9 @@ export default function BiometricLockScreen({ onUnlocked, requireExplicitBiometr
             onPress={unlockWithPassword}
             accessibilityRole="button"
             accessibilityLabel="Use Beebeeb password"
-            style={styles.passwordButton}
+            style={[styles.passwordButton, { borderColor: c.line, backgroundColor: c.paper }]}
           >
-            <Text style={styles.passwordButtonText}>Use Beebeeb password</Text>
+            <Text style={[styles.passwordButtonText, { color: c.ink }]}>Use Beebeeb password</Text>
           </TouchableOpacity>
         )}
       </View>

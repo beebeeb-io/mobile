@@ -1629,13 +1629,6 @@ export default function SettingsScreen() {
     Linking.openURL('https://app.beebeeb.io/settings/security');
   }, []);
 
-  const handleDownloadRecoveryKit = useCallback(async () => {
-    Alert.alert(
-      'Recovery kit unavailable',
-      'Your recovery phrase is shown once during account setup and is not stored on this device. Use the copy you saved offline.',
-    );
-  }, []);
-
   const handlePrivacyPolicy = useCallback(() => {
     Linking.openURL('https://beebeeb.io/privacy');
   }, []);
@@ -2135,7 +2128,7 @@ export default function SettingsScreen() {
             <SettingsRow
               label="Recovery phrase"
               icon="document-text-outline"
-              onPress={() => { void handleDownloadRecoveryKit(); }}
+              showChevron={false}
               c={c}
             />
             <RowDivider c={c} />
@@ -2153,6 +2146,10 @@ export default function SettingsScreen() {
               c={c}
             />
           </View>
+          <SectionNote
+            text="Your recovery phrase is shown once during account setup and is not stored on this device. Use the copy you saved offline."
+            c={c}
+          />
           <SectionNote
             text="Manage your password on the web at app.beebeeb.io."
             c={c}
@@ -2450,7 +2447,7 @@ export default function SettingsScreen() {
                 />
                 <ToggleRow
                   label="Storage warnings"
-                  subtitle="When you reach 80% or 100% of your quota"
+                  subtitle="When you reach 75%, 90% or 100% of your quota"
                   value={notifPrefs.storage_warning}
                   onValueChange={(v) => void handleNotifPrefToggle('storage_warning', v)}
                   disabled={notifPrefsLoading}

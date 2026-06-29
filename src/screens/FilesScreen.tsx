@@ -3019,12 +3019,12 @@ export default function FilesScreen() {
 
     const confirmDeleteFolder = () => {
       Alert.alert(
-        'Delete folder',
-        `"${name}" will be deleted.`,
+        'Move folder to Trash',
+        `"${name}" will be moved to Trash.`,
         [
           { text: 'Cancel', style: 'cancel' },
           {
-            text: 'Delete',
+            text: 'Move to Trash',
             style: 'destructive',
             onPress: async () => {
               try {
@@ -3596,18 +3596,21 @@ export default function FilesScreen() {
     );
   };
 
-  const renderError = () => (
-    <View style={styles.errorContainer}>
-      <Ionicons name="cloud-offline-outline" size={48} color={c.ink3} />
-      <Text style={[styles.errorText, { color: c.ink2 }]}>{error}</Text>
-      <TouchableOpacity
-        style={[styles.retryButton, { backgroundColor: c.amber }]}
-        onPress={() => fetchFiles(currentFolder.id)}
-      >
-        <Text style={[styles.retryButtonText, { color: c.ink }]}>Retry</Text>
-      </TouchableOpacity>
-    </View>
-  );
+  const renderError = () => {
+    const isOffline = !!error && /offline|network|connection|internet|unreachable|reach|fetch/i.test(error);
+    return (
+      <View style={styles.errorContainer}>
+        <Ionicons name={isOffline ? 'cloud-offline-outline' : 'alert-circle-outline'} size={48} color={c.ink3} />
+        <Text style={[styles.errorText, { color: c.ink2 }]}>{error}</Text>
+        <TouchableOpacity
+          style={[styles.retryButton, { backgroundColor: c.amber }]}
+          onPress={() => fetchFiles(currentFolder.id)}
+        >
+          <Text style={[styles.retryButtonText, { color: c.ink }]}>Retry</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  };
 
   // ------------------------------------------------------------------
   // Main render

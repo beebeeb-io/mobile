@@ -2637,7 +2637,7 @@ export default function PreviewScreen() {
 
     Alert.alert(
       'Move to Trash?',
-      `${previewFileName} will be removed from Beebeeb. It will not be deleted from your iPhone camera roll.`,
+      `${previewFileName} will be removed from Beebeeb.${isImage || isVideo ? ' It will not be deleted from your iPhone camera roll.' : ''}`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -2659,7 +2659,7 @@ export default function PreviewScreen() {
         },
       ],
     );
-  }, [currentFileId, navigation, previewFileName, trashing]);
+  }, [currentFileId, navigation, previewFileName, trashing, isImage, isVideo]);
 
   const previewActions = useMemo<PreviewOptionAction[]>(() => [
     ...(isImage ? [{ label: 'View Original', icon: 'image-outline' as const, run: handleViewOriginal }] : []),

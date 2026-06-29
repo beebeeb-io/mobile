@@ -708,47 +708,53 @@ export default function BackupInsightsScreen() {
                 <StatusDot status={syncStatus} c={c} />
 
                 <View style={{ gap: 4 }}>
-                  <View
-                    style={{
-                      flexDirection: 'row',
-                      justifyContent: 'space-between',
-                    }}
-                  >
-                    <Text style={{ fontSize: 12, color: c.ink3 }}>
-                      Last full scan
-                    </Text>
-                    <Text
-                      style={{
-                        fontSize: 12,
-                        color: c.ink2,
-                        fontFamily: fonts.mono,
-                      }}
-                    >
-                      {data?.lastScanAt ? timeAgo(data.lastScanAt) : 'Never'}
-                    </Text>
-                  </View>
+                  {/* Hidden until a real scan timestamp exists — no point
+                      showing "Never" / "due now" before the first scan. */}
+                  {data?.lastScanAt ? (
+                    <>
+                      <View
+                        style={{
+                          flexDirection: 'row',
+                          justifyContent: 'space-between',
+                        }}
+                      >
+                        <Text style={{ fontSize: 12, color: c.ink3 }}>
+                          Last full scan
+                        </Text>
+                        <Text
+                          style={{
+                            fontSize: 12,
+                            color: c.ink2,
+                            fontFamily: fonts.mono,
+                          }}
+                        >
+                          {timeAgo(data.lastScanAt)}
+                        </Text>
+                      </View>
 
-                  <View
-                    style={{
-                      flexDirection: 'row',
-                      justifyContent: 'space-between',
-                    }}
-                  >
-                    <Text style={{ fontSize: 12, color: c.ink3 }}>
-                      Next scheduled
-                    </Text>
-                    <Text
-                      style={{
-                        fontSize: 12,
-                        color: c.ink2,
-                        fontFamily: fonts.mono,
-                      }}
-                    >
-                      {nextScanMs > 0
-                        ? `in ${formatTimeRemaining(nextScanMs)}`
-                        : 'due now'}
-                    </Text>
-                  </View>
+                      <View
+                        style={{
+                          flexDirection: 'row',
+                          justifyContent: 'space-between',
+                        }}
+                      >
+                        <Text style={{ fontSize: 12, color: c.ink3 }}>
+                          Next scheduled
+                        </Text>
+                        <Text
+                          style={{
+                            fontSize: 12,
+                            color: c.ink2,
+                            fontFamily: fonts.mono,
+                          }}
+                        >
+                          {nextScanMs > 0
+                            ? `in ${formatTimeRemaining(nextScanMs)}`
+                            : 'due now'}
+                        </Text>
+                      </View>
+                    </>
+                  ) : null}
 
                   <View
                     style={{
@@ -820,7 +826,7 @@ export default function BackupInsightsScreen() {
             >
               <StatRow
                 label="Photos backed up"
-                value={`${displayUploadedCount} / ${displayTotalCameraRoll || '?'}`}
+                value={`${displayUploadedCount.toLocaleString()} / ${displayTotalCameraRoll ? displayTotalCameraRoll.toLocaleString() : '?'}`}
                 mono
                 c={c}
               />
