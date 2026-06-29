@@ -40,6 +40,38 @@ projectRoot, so Metro sees the entry *outside* the project root → `Unable to r
 **Fix (committed):** `ios/.xcode.env` pins a **relative** entry — `export ENTRY_FILE="src/App.tsx"` —
 which resolves against Metro's realpath'd cwd everywhere. Do not remove it.
 
+## Local simulator QA — environment gotchas on this Mac (verified 2026-06-29)
+
+Running the iOS app on the Simulator for QA hits several env-specific walls. Workarounds:
+
+- **`eas` / `bunx tsc` / `maestro` crash with `MODULE_NOT_FOUND … internal/preload`** — a stale
+  `NODE_OPTIONS` preload (cmux `restore-node-options.cjs`) crashes node before the tool runs.
+  **Fix: prefix every node CLI with `env -u NODE_OPTIONS`** (e.g. `env -u NODE_OPTIONS eas build …`,
+  `env -u NODE_OPTIONS bunx tsc --noEmit`, `env -u NODE_OPTIONS ~/.maestro/bin/maestro test …`).
+- **`simctl` hangs forever (any subcommand)** until Xcode first-launch is completed — it spawns
+  `xcodebuild -runFirstLaunch`, which does a **PackageKit system install** (needs admin/root).
+  **Fix: a human runs `sudo xcodebuild -runFirstLaunch` once** (it cannot be done headlessly — it
+  blocks on `AuthorizationCopyRights`). Non-hanging health check: `xcodebuild -checkFirstLaunchStatus`
+  (exit 0 = done, 69 = pending).
+- **`cargo run` deadlocks** through the nested agent shell (GNU Make jobserver-token deadlock; rustc
+  sits at 0% CPU, no output) — even `CARGO_BUILD_JOBS=4` did not reliably help. **Fix: run the
+  prebuilt binary directly** — `cd repos/server && ./target/debug/beebeeb-api` (the workspace has 4
+  bins, so `cargo run` also needs `--bin beebeeb-api`). For mobile QA a slightly-stale server is fine.
+- **Local API blob storage points at PRODUCTION Hetzner S3** (`repos/server/.env` `S3_*` →
+  `beebeeb-s01`). So file-content upload/download + backup uploads from the local API write to the
+  **prod bucket** — do NOT run upload/backup tests against the local stack. The `live-src`/`live-tgt`
+  storage-pool health-check errors at boot are harmless **migration placeholders** (`endpoint: https://test`),
+  not the main store. Backup/file-content QA belongs on **TestFlight** (real device, real backend).
+  Login, metadata (file lists, sizes, counts), navigation, and Settings all work locally.
+- **Maestro `takeScreenshot`** silently drops relative paths — pass an **absolute** path, or capture
+  with `xcrun simctl io <UDID> screenshot --type=png <abs>.png`. Tab/sub-tab labels with count badges
+  (e.g. "By me 6") aren't reliable text targets — tap by `point: "x%,y%"`.
+- **`clearState: true` does NOT sign out** — the master key persists in the iOS keychain across an
+  app-data clear, so the app auto-restores to the authenticated screen (this is the 0876 restore
+  working). To force the signed-out screen, sign out in-app first.
+- **Local QA account:** `qa0688content@beebeeb.io` / `BeebeebQA0688content!` (OPAQUE, seeded files/
+  photos; see `.claude/skills/beebeeb-test-accounts.md`).
+
 ## Stack
 
 React Native + Expo (managed workflow) + TypeScript. Package manager: **bun**.
