@@ -44,10 +44,15 @@ which resolves against Metro's realpath'd cwd everywhere. Do not remove it.
 
 Running the iOS app on the Simulator for QA hits several env-specific walls. Workarounds:
 
-- **`eas` / `bunx tsc` / `maestro` crash with `MODULE_NOT_FOUND … internal/preload`** — a stale
-  `NODE_OPTIONS` preload (cmux `restore-node-options.cjs`) crashes node before the tool runs.
-  **Fix: prefix every node CLI with `env -u NODE_OPTIONS`** (e.g. `env -u NODE_OPTIONS eas build …`,
-  `env -u NODE_OPTIONS bunx tsc --noEmit`, `env -u NODE_OPTIONS ~/.maestro/bin/maestro test …`).
+- **Any node process crashes with `MODULE_NOT_FOUND … internal/preload` / `restore-node-options.cjs`**
+  — `NODE_OPTIONS` is `--require=/var/folders/…/T/cmux-claude-node-options/restore-node-options.cjs`,
+  but cmux's temp shim got garbage-collected from `/var/folders/.../T`, so node can't load the
+  `--require` and crashes on startup (this also fails the Claude **Stop hooks**).
+  **Durable fix:** recreate the shim as a no-op — `echo 'module.exports={};' > "$(printf '%s'
+  "$NODE_OPTIONS" | sed -E 's/.*--require=([^ ]*restore-node-options\.cjs).*/\1/')"` (or just
+  unset `NODE_OPTIONS` in your shell profile). It lives in a temp dir, so it can recur if that dir
+  is cleaned again — a cmux lifecycle issue, not a beebeeb one.
+  **Per-command fallback:** prefix node CLIs with `env -u NODE_OPTIONS` (`eas`, `bunx tsc`, `maestro`).
 - **`simctl` hangs forever (any subcommand)** until Xcode first-launch is completed — it spawns
   `xcodebuild -runFirstLaunch`, which does a **PackageKit system install** (needs admin/root).
   **Fix: a human runs `sudo xcodebuild -runFirstLaunch` once** (it cannot be done headlessly — it
