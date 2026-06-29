@@ -366,7 +366,11 @@ extension ThumbnailService {
     // `qualityPreset` is retained on the queue/bridge signature, but the medium
     // policy is fixed (768px, ≤100 KB target / ≤128 KB cap — task 0552), so the
     // shared ladder below is authoritative rather than a free-floating quality.
-    let img = try await PhotoKitResolver.shared.requestFullImage(localIdentifier: localId)
+    // Repair is a deliberate user action — allow PhotoKit to fetch iCloud-
+    // offloaded originals over the network so optimized-storage photos don't
+    // fail non-retriably (task 0883).
+    let img = try await PhotoKitResolver.shared.requestFullImage(
+      localIdentifier: localId, allowNetworkAccess: true)
     stages["photoKit"] = Int(Date().timeIntervalSince(stagePhotoKitStart) * 1000)
 
     // Stage 2: Resize + WebP encode via the SHARED ladder (the same path the

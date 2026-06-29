@@ -42,6 +42,7 @@ import * as Notifications from 'expo-notifications';
 import * as BeebeebCrypto from '../modules/beebeeb-crypto';
 import { populateFileProviderCache } from './lib/file-provider-mount';
 import { initLocalIdentifierMap } from './lib/local-identifier-map';
+import { resetThumbnailSelfRepairState } from './lib/thumbnail-self-repair';
 import {
   setupNotificationHandler,
   registerForPushNotifications,
@@ -254,6 +255,13 @@ export type RootStackParamList = {
     initialPhotoIndex?: number;
     /** Snapshot of the Photos screen performance profile to avoid a first-frame default. */
     performanceStorageProfile?: PerformanceStorageProfile;
+    /**
+     * Server `has_thumbnail` truth for the opened file (0883 auto self-repair).
+     * Only owner navigators (Photos/Files) pass it; when `false` the preview
+     * decrypt path generates + uploads a thumbnail from the downloaded plaintext.
+     * Undefined ⇒ unknown ⇒ self-repair skips (avoids network-probe storms).
+     */
+    hasThumbnail?: boolean;
     // ── File-request uploads (0643) ──
     // When set, the file arrived through a file request and must be decrypted
     // with the request content key (resolved from these), NOT the master-key
@@ -815,6 +823,7 @@ export default function App() {
     if (Platform.OS === 'ios') {
       try { await BeebeebThumbnails.clearQueueOnSignOut(); } catch {}
     }
+    resetThumbnailSelfRepairState();
     await discardAllPendingShares().catch(() => 0);
     await clearWidgetData().catch(() => {});
     await SecureStore.deleteItemAsync(MASTER_KEY_CHECK_LABEL).catch(() => {});

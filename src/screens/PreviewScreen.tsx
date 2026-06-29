@@ -35,6 +35,7 @@ import { useTheme } from '../lib/theme-context';
 import { getToken, friendlyError, trustLocation, trashFiles } from '../lib/api';
 import { useCrypto } from '../lib/crypto-context';
 import { decryptToTempFile } from '../lib/native-decrypt';
+import { maybeSelfRepairThumbnailFromLocalFile } from '../lib/thumbnail-self-repair';
 import { BeebeebThumbnails, type PreviewLoadProgressEvent } from '../../modules/beebeeb-crypto';
 import {
   estimatedDecryptSeconds,
@@ -1441,6 +1442,7 @@ export default function PreviewScreen() {
     photoListJson,
     initialPhotoIndex,
     performanceStorageProfile: routePerformanceStorageProfile,
+    hasThumbnail,
     fileRequestId,
     senderEphemeralPubkey,
     wrappedContentKey,
@@ -1831,6 +1833,22 @@ export default function PreviewScreen() {
         category,
         elapsedMs: Date.now() - startedAt,
       });
+      // 0883 — auto self-repair: the full plaintext is now on disk. If this is
+      // an OWNER media file the server has no thumbnail for, generate + upload
+      // one from the bytes we just decrypted (fire-and-forget, never blocks the
+      // open). Gated entirely inside the helper; we only feed it owner context.
+      // hasThumbnail describes the *opened* file only — for swiped photos
+      // (currentFileId !== fileId) we pass undefined so the helper skips.
+      maybeSelfRepairThumbnailFromLocalFile({
+        fileId: currentFileId,
+        localPlaintextUri: decryptedUri,
+        mimeType:
+          currentMimeType ??
+          (category === 'image' ? 'image/jpeg' : category === 'video' ? 'video/mp4' : null),
+        hasServerThumbnail: currentFileId === fileId ? hasThumbnail : undefined,
+        isRequestUpload: !!requestFileFields && currentFileId === fileId,
+        getFileKeyBytes,
+      });
       return decryptedUri;
     }
 
@@ -1843,6 +1861,9 @@ export default function PreviewScreen() {
     currentFileId,
     currentMimeType,
     currentSizeBytes,
+    fileId,
+    hasThumbnail,
+    requestFileFields,
     getFileKeyBytes,
     getMasterKeyHandleId,
     resolveDecryptKey,

@@ -1309,6 +1309,9 @@ export default function PhotosScreen() {
         photoListJson,
         initialPhotoIndex,
         performanceStorageProfile,
+        // 0883 — let Preview auto self-repair a missing thumbnail for this owner
+        // photo/video from the downloaded plaintext (undefined ⇒ skip).
+        hasThumbnail: entry.has_thumbnail,
       });
     },
     [navigation, decryptedMimeTypes, decryptedNames, flatPhotos, performanceStorageProfile, photoKitAssetMap, thumbnailUris],

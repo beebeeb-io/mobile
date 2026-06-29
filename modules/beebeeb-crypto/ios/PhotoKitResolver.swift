@@ -89,7 +89,17 @@ public actor PhotoKitResolver {
   /// Request the full-resolution image as a `UIImage` for thumbnail regeneration.
   /// Unlike `requestImage`, this returns the UIImage directly instead of writing
   /// to a file, because the caller (thumbnail encoder) needs the pixel data.
-  public func requestFullImage(localIdentifier: String) async throws -> UIImage {
+  ///
+  /// `allowNetworkAccess` defaults to `false` (conservative). The "Improve
+  /// thumbnail quality" repair path passes `true`: it is a deliberate user
+  /// action, so fetching iCloud-offloaded originals over the network is
+  /// expected — otherwise every optimized-storage original fails non-retriably
+  /// (task 0883). This is NOT the latency-sensitive grid render path; that path
+  /// uses `requestImage` above, which keeps `isNetworkAccessAllowed = false`.
+  public func requestFullImage(
+    localIdentifier: String,
+    allowNetworkAccess: Bool = false
+  ) async throws -> UIImage {
     let assets = PHAsset.fetchAssets(withLocalIdentifiers: [localIdentifier], options: nil)
     guard let asset = assets.firstObject else {
       throw NSError(domain: "BeebeebPhotoKit", code: 404,
@@ -99,7 +109,7 @@ public actor PhotoKitResolver {
     let options = PHImageRequestOptions()
     options.deliveryMode = .highQualityFormat
     options.resizeMode = .none
-    options.isNetworkAccessAllowed = false
+    options.isNetworkAccessAllowed = allowNetworkAccess
     options.isSynchronous = false
 
     // Request at the asset's full pixel dimensions

@@ -44,6 +44,7 @@ import FolderPickerModal, { type PickerFolder } from '../components/FolderPicker
 import { ApiError, listAllFiles, getFileIndex, createFolder, deleteFile, trashFiles, renameFile, moveFile, uploadFile, friendlyError, getStorageUsage, createProofOfExistence, storageLocation, trustLocation, getFolderPresence, getUploadStatus, getApiUrl, getToken } from '../lib/api';
 import { guessMimeType, fileCategory as fileCategoryFromMime } from '../lib/media';
 import { generateAndUploadThumbnail, fetchDecryptedThumbnailUri } from '../lib/thumbnail';
+import { maybeSelfRepairThumbnailFromLocalFile } from '../lib/thumbnail-self-repair';
 import { getCachedThumbnail } from '../lib/thumbnail-cache';
 import { getLocalIdentifier } from '../lib/local-identifier-map';
 import type { FileEntry, StorageUsage, ProofOfExistence, PresenceUser, SyncNode } from '../lib/api';
@@ -2017,6 +2018,9 @@ export default function FilesScreen() {
             chunkCount: file.chunk_count,
             versionNumber: file.version_number,
             storagePoolId: file.storage_pool_id ?? null,
+            // 0883 — let Preview auto self-repair a missing thumbnail for this
+            // owner media file from the downloaded plaintext (undefined ⇒ skip).
+            hasThumbnail: file.has_thumbnail,
             // File-request uploads (0643): pass the sealed-key fields so Preview
             // decrypts with the request content key, not the master-key path.
             fileRequestId: file.file_request_id ?? null,
@@ -2862,11 +2866,30 @@ export default function FilesScreen() {
       const fromMime = (itemMimeType ?? '').split('/')[1];
       return (fromMime && fromMime.length <= 5 ? fromMime : 'bin').toLowerCase();
     };
-    const decryptForSave = (): Promise<string> => {
-      const { keyProvider, handleId } = isRequestUpload(item)
+    const decryptForSave = async (): Promise<string> => {
+      const requestUpload = isRequestUpload(item);
+      const { keyProvider, handleId } = requestUpload
         ? { keyProvider: () => getRequestContentKey(item), handleId: null as number | null }
         : { keyProvider: () => getFileKeyBytes(item.id), handleId: getMasterKeyHandleId() };
-      return decryptToTempFile(item.id, keyProvider, extForSave(), item.size_bytes, item.chunk_count, handleId);
+      const decryptedUri = await decryptToTempFile(
+        item.id, keyProvider, extForSave(), item.size_bytes, item.chunk_count, handleId,
+      );
+      // 0883 — auto self-repair: the plaintext is now on disk. If this owner
+      // media file has no server thumbnail, generate + upload one from those
+      // bytes (fire-and-forget, never blocks the save). Request uploads use a
+      // different content key and are skipped inside the helper.
+      maybeSelfRepairThumbnailFromLocalFile({
+        fileId: item.id,
+        localPlaintextUri: decryptedUri,
+        mimeType: itemMimeType,
+        hasServerThumbnail: item.has_thumbnail,
+        isRequestUpload: requestUpload,
+        getFileKeyBytes,
+        onRepaired: (id) => {
+          setFiles((prev) => prev.map((f) => (f.id === id ? { ...f, has_thumbnail: true } : f)));
+        },
+      });
+      return decryptedUri;
     };
 
     const saveToFiles = async () => {

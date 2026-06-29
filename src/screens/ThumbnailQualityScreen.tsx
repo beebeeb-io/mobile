@@ -31,13 +31,19 @@ import { BeebeebThumbnails } from '../../modules/beebeeb-crypto';
 import { getFileIndex } from '../lib/api';
 import { loadCachedFileIndex, saveCachedFileIndex } from '../lib/file-index-cache';
 import { getRemoteToLocalMap } from '../services/BackupDatabase';
+import { seedLocalIdentifierMap } from '../lib/local-identifier-map';
 import { formatBytes } from '../lib/format';
 import { useTheme } from '../lib/theme-context';
 
 type Nav = NativeStackNavigationProp<RootStackParamList>;
 
-/** Baseline for delta estimation — matches the default medium thumbnail size. */
-const BASELINE_BYTES = 48 * 1024;
+/**
+ * Baseline for delta estimation — matches the default medium thumbnail size.
+ * Medium is 768px @ WebP q0.82, ~100 KB target / 128 KB encrypted cap
+ * (see repos/mobile/CLAUDE.md → Thumbnails). The old 48 KB baseline was ~half
+ * the real medium size, so every estimate read low (task 0883).
+ */
+const BASELINE_BYTES = 100 * 1024;
 
 
 function formatTime(seconds: number): string {
@@ -50,7 +56,7 @@ function formatTime(seconds: number): string {
 
 /** Estimate bytes per thumbnail for a given quality setting. */
 function estimateBytesPerThumb(q: { width: number; quality: number }): number {
-  // Very rough model: default (768px, q0.82) ≈ 48 KB.
+  // Very rough model: default (768px, q0.82) ≈ 100 KB.
   // Scale by (width/768)^1.5 * (quality/0.82).
   const widthFactor = (q.width / 768) ** 1.5;
   const qualFactor = q.quality / 0.82;
@@ -77,6 +83,10 @@ export default function ThumbnailQualityScreen() {
   const [eligibleCount, setEligibleCount] = useState<number | null>(null);
   const [eligibleIds, setEligibleIds] = useState<string[]>([]);
   const [loadingScope, setLoadingScope] = useState(false);
+  // Average CURRENT stored thumbnail size (bytes) across eligible files that
+  // report a `thumbnail_bytes`. null when none report it → delta is unknown
+  // (we show "—" rather than a fake 0). Used to compute a real storage delta.
+  const [avgCurrentThumbBytes, setAvgCurrentThumbBytes] = useState<number | null>(null);
 
   // Apply state
   const [applying, setApplying] = useState(false);
@@ -146,8 +156,23 @@ export default function ThumbnailQualityScreen() {
       ));
       setEligibleIds(eligible.map((f) => f.id));
       setEligibleCount(eligible.length);
+
+      // Capture the CURRENT stored thumbnail size so the delta reflects a real
+      // saving/cost instead of (new slider) − (saved slider), which is 0 on
+      // open. Average over the files that actually report `thumbnail_bytes`,
+      // then extrapolate to all eligible (task 0883).
+      const known = eligible.filter(
+        (f) => typeof f.thumbnail_bytes === 'number' && (f.thumbnail_bytes ?? 0) > 0,
+      );
+      if (known.length > 0) {
+        const sum = known.reduce((acc, f) => acc + (f.thumbnail_bytes ?? 0), 0);
+        setAvgCurrentThumbBytes(sum / known.length);
+      } else {
+        setAvgCurrentThumbBytes(null);
+      }
     } catch {
       setEligibleCount(0);
+      setAvgCurrentThumbBytes(null);
     } finally {
       setLoadingScope(false);
     }
@@ -198,6 +223,15 @@ export default function ThumbnailQualityScreen() {
       await setThumbnailQuality(q);
       setSavedSliderValue(sliderValue);
       const preset = toPreset(q);
+      // Seed the native worker's localIdentifier map from the SAME local data
+      // the eligibility filter used (backup_assets remote→local map). Without
+      // this the worker resolves localIdentifiers from a server-populated map
+      // that is empty (its sole writer `photoBackupMark` is dead since the
+      // native backup engine landed), so every file failed 404 "no local
+      // identifier mapping" → permanent fail (task 0883). Seeding here makes the
+      // worker and the eligibility set agree by construction.
+      const localMap = await getRemoteToLocalMap();
+      await seedLocalIdentifierMap(Object.fromEntries(localMap));
       await BeebeebThumbnails.enqueueApplyQuality(eligibleIds, preset);
       navigation.navigate('ThumbnailWorker');
     } catch {
@@ -208,11 +242,16 @@ export default function ThumbnailQualityScreen() {
   }, [applying, eligibleIds, sliderValue, navigation]);
 
   const q = fromSliderT(sliderValue);
-  const savedQ = fromSliderT(savedSliderValue);
   const estBytesPerThumb = estimateBytesPerThumb(q);
-  const savedBytesPerThumb = estimateBytesPerThumb(savedQ);
-  const deltaPerFile = estBytesPerThumb - savedBytesPerThumb;
-  const totalDeltaBytes = eligibleCount != null ? deltaPerFile * eligibleCount : null;
+  // Storage delta = projected total at the chosen quality − current stored
+  // total (new − old: positive = uses more storage, shown with "+"). Based on
+  // the REAL current stored thumbnail size, not the saved-vs-new slider diff
+  // (which is 0 on open). When no eligible file reports its stored size the
+  // delta is genuinely unknown → null → shows "—" instead of a fake 0.
+  const deltaPerFile =
+    avgCurrentThumbBytes != null ? estBytesPerThumb - avgCurrentThumbBytes : null;
+  const totalDeltaBytes =
+    eligibleCount != null && deltaPerFile != null ? deltaPerFile * eligibleCount : null;
   const etaSec = eligibleCount != null ? eligibleCount / 8.0 : null;
   const isChanged = Math.abs(sliderValue - savedSliderValue) > 0.005;
 
@@ -342,7 +381,7 @@ export default function ThumbnailQualityScreen() {
                   </View>
 
                   <Text style={[styles.caption, { color: c.ink3 }]}>
-                    Only photos still available on this iPhone are eligible. Runs 8 workers in parallel.
+                    Photos backed up from this iPhone are eligible; originals offloaded to iCloud are fetched as needed. Runs 8 workers in parallel.
                   </Text>
 
                   <TouchableOpacity

@@ -156,6 +156,34 @@ export async function refreshLocalIdentifierMap(): Promise<void> {
 }
 
 /**
+ * Seed the native worker's localIdentifier map directly from LOCAL data
+ * (e.g. the `backup_assets` remote→local map) WITHOUT a server round-trip.
+ *
+ * Why this exists: the "Improve thumbnail quality" repair worker resolves each
+ * file's PHAsset.localIdentifier from the native map. That map was historically
+ * only ever populated from the server endpoint via `refreshLocalIdentifierMap()`,
+ * but the sole writer of that server table (`photoBackupMark`) has had no runtime
+ * callers since the native backup engine landed (task 0631) — so the server map
+ * is empty and every repair failed with 404 "no local identifier mapping" →
+ * permanent fail. Seeding the native map from the SAME local source the
+ * eligibility filter uses makes the worker and the eligibility set agree by
+ * construction (task 0883).
+ *
+ * Merges into the in-memory + on-disk map, then pushes the FULL merged map to
+ * the native module (native `setLocalIdentifierMap` replaces wholesale).
+ */
+export async function seedLocalIdentifierMap(entries: Record<string, string>): Promise<void> {
+  inMemoryMap = { ...inMemoryMap, ...entries };
+  isReady = true;
+  await saveToDisk({ fetched_at: new Date().toISOString(), identifiers: { ...inMemoryMap } });
+  if (ThumbnailServiceNative?.setLocalIdentifierMap) {
+    await ThumbnailServiceNative.setLocalIdentifierMap({ ...inMemoryMap }).catch((err) => {
+      console.warn('[local-identifier-map] native seed failed', err);
+    });
+  }
+}
+
+/**
  * Remove a single fileId from the local-identifier map. Triggered when the
  * native `ThumbnailService` emits `onAssociationCleared` (which fires after a
  * PhotoKit `requestImage` returns PHPhotosErrorDomain code 3164, "asset not
