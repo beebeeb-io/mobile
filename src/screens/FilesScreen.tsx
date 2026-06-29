@@ -1146,6 +1146,14 @@ export default function FilesScreen() {
   ]);
   const currentFolder = folderStack[folderStack.length - 1];
 
+  // Breadcrumb collapsed-path popover. A deep path collapses to "Drive … current";
+  // tapping "…" opens a CUSTOM popover anchored under the chip that draws the
+  // in-between folders as an indented tree (the native UIMenu can't indent).
+  const [breadcrumbPopoverOpen, setBreadcrumbPopoverOpen] = useState(false);
+  const [breadcrumbAnchor, setBreadcrumbAnchor] =
+    useState<{ x: number; y: number; width: number; height: number } | null>(null);
+  const breadcrumbChipRef = useRef<View>(null);
+
   // Data state
   const [files, setFiles] = useState<FileEntry[]>([]);
   const folderFilesCacheRef = useRef<Record<string, FileEntry[]>>({});
@@ -1981,6 +1989,22 @@ export default function FilesScreen() {
     setFolderStack((prev) => prev.slice(0, index + 1));
   }, []);
 
+  // Open the collapsed-breadcrumb popover, measuring the "…" chip so the popover
+  // hangs directly under it.
+  const openBreadcrumbPopover = useCallback(() => {
+    Haptics.selectionAsync();
+    breadcrumbChipRef.current?.measureInWindow((x, y, width, height) => {
+      setBreadcrumbAnchor({ x, y, width, height });
+      setBreadcrumbPopoverOpen(true);
+    });
+  }, []);
+
+  const onBreadcrumbCrumbPress = useCallback((stackIndex: number) => {
+    setBreadcrumbPopoverOpen(false);
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    navigateToBreadcrumb(stackIndex);
+  }, [navigateToBreadcrumb]);
+
   const ensureFileReady = useCallback(async (file: FileEntry): Promise<boolean> => {
     if (file.is_folder) return true;
     if (file.is_uploading === true) {
@@ -2440,14 +2464,6 @@ export default function FilesScreen() {
   // Deep breadcrumbs collapse to "root … current" — tapping the "…" opens a
   // native iOS UIMenu of the in-between folders; the action id is the folderStack
   // index to jump to. (Guus request — keep the breadcrumb to 3 segments max.)
-  const onBreadcrumbCollapsedAction = useCallback(({ nativeEvent }: NativeActionEvent) => {
-    const idx = Number.parseInt(nativeEvent.event, 10);
-    if (Number.isInteger(idx) && idx > 0 && idx < folderStack.length - 1) {
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-      navigateToBreadcrumb(idx);
-    }
-  }, [folderStack.length, navigateToBreadcrumb]);
-
   // ------------------------------------------------------------------
   // Multi-select handlers
   // ------------------------------------------------------------------
@@ -3235,9 +3251,6 @@ export default function FilesScreen() {
     if (folderStack.length > 3) {
       const root = folderStack[0];
       const current = folderStack[folderStack.length - 1];
-      const middleActions: MenuAction[] = folderStack
-        .slice(1, folderStack.length - 1)
-        .map((entry, i) => ({ id: String(i + 1), title: entry.name, image: 'folder' }));
       return (
         <View style={[styles.breadcrumbRow, styles.breadcrumbCollapsedRow]}>
           <TouchableOpacity
@@ -3256,19 +3269,16 @@ export default function FilesScreen() {
 
           <Ionicons name="chevron-forward" size={12} color={c.ink4} style={styles.breadcrumbChevron} />
 
-          <MenuView
-            onPressAction={onBreadcrumbCollapsedAction}
-            actions={middleActions}
-            themeVariant={themeScheme}
+          <TouchableOpacity
+            onPress={openBreadcrumbPopover}
+            hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
+            accessibilityLabel="Show folders in between"
+            accessibilityRole="button"
           >
-            <View
-              style={styles.breadcrumbEllipsis}
-              accessibilityLabel="Show folders in between"
-              accessibilityRole="button"
-            >
+            <View ref={breadcrumbChipRef} collapsable={false} style={styles.breadcrumbEllipsis}>
               <Text style={[styles.breadcrumbText, { color: c.amberDeep, fontWeight: '600' }]}>…</Text>
             </View>
-          </MenuView>
+          </TouchableOpacity>
 
           <Ionicons name="chevron-forward" size={12} color={c.ink4} style={styles.breadcrumbChevron} />
 
@@ -4104,6 +4114,75 @@ export default function FilesScreen() {
         </KeyboardAvoidingView>
       </Modal>
 
+      {/* Breadcrumb collapsed-path popover — indented tree of the in-between
+          folders, anchored under the "…" chip. The native UIMenu can't draw an
+          indent, so we render our own. Indent caps at 3 columns; folders deeper
+          than that get an amber "…" and an "in <parent>" annotation. */}
+      <Modal
+        visible={breadcrumbPopoverOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setBreadcrumbPopoverOpen(false)}
+      >
+        <TouchableOpacity
+          activeOpacity={1}
+          style={StyleSheet.absoluteFill}
+          onPress={() => setBreadcrumbPopoverOpen(false)}
+        />
+        {breadcrumbAnchor ? (() => {
+          const screenW = Dimensions.get('window').width;
+          const screenH = Dimensions.get('window').height;
+          const popW = Math.min(300, screenW - 24);
+          const left = Math.max(8, Math.min(breadcrumbAnchor.x - 10, screenW - popW - 8));
+          const top = breadcrumbAnchor.y + breadcrumbAnchor.height + 4;
+          const middle = folderStack.slice(1, folderStack.length - 1);
+          return (
+            <View
+              style={[
+                styles.breadcrumbPopover,
+                { backgroundColor: c.paper, borderColor: c.line, width: popW, left, top },
+              ]}
+            >
+              <ScrollView style={{ maxHeight: screenH * 0.5 }} bounces={false}>
+                {middle.map((entry, i) => {
+                  const stackIndex = i + 1;
+                  const indent = Math.min(i, 2);
+                  const showEllipsis = i >= 2;
+                  const annotation = i >= 3 ? `in ${folderStack[i].name}` : null;
+                  return (
+                    <TouchableOpacity
+                      key={entry.id ?? `crumb-${stackIndex}`}
+                      onPress={() => onBreadcrumbCrumbPress(stackIndex)}
+                      style={[styles.breadcrumbPopoverRow, { paddingLeft: 12 + indent * 18 }]}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Go to ${entry.name}`}
+                    >
+                      {showEllipsis ? (
+                        <Text style={[styles.breadcrumbPopoverEllipsis, { color: c.amber }]}>…</Text>
+                      ) : null}
+                      <Ionicons
+                        name="folder-outline"
+                        size={18}
+                        color={c.amberDeep}
+                        style={styles.breadcrumbPopoverIcon}
+                      />
+                      <Text
+                        style={[styles.breadcrumbPopoverLabel, { color: c.ink }]}
+                        numberOfLines={1}
+                        ellipsizeMode="tail"
+                      >
+                        {entry.name}
+                        {annotation ? <Text style={{ color: c.ink3 }}>{`  ${annotation}`}</Text> : null}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </ScrollView>
+            </View>
+          );
+        })() : null}
+      </Modal>
+
       {/* Trust details bottom sheet — opened from the lock icon on a file row */}
       <TrustDetailsSheet
         file={trustFile}
@@ -4170,6 +4249,21 @@ const styles = StyleSheet.create({
   breadcrumbItem: { flexDirection: 'row', alignItems: 'center' },
   breadcrumbChevron: { marginHorizontal: 2 },
   breadcrumbText: { fontSize: 12, fontWeight: '500' },
+  breadcrumbPopover: {
+    position: 'absolute',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 12,
+    paddingVertical: 6,
+    shadowColor: '#000',
+    shadowOpacity: 0.18,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 8,
+  },
+  breadcrumbPopoverRow: { flexDirection: 'row', alignItems: 'center', paddingRight: 14, paddingVertical: 10 },
+  breadcrumbPopoverEllipsis: { width: 14, fontSize: 15, fontWeight: '700', textAlign: 'center', marginRight: 2 },
+  breadcrumbPopoverIcon: { marginRight: 8 },
+  breadcrumbPopoverLabel: { fontSize: 15, flexShrink: 1 },
 
   // Swipe actions
   swipeActions: { flexDirection: 'row' },
