@@ -290,21 +290,22 @@ export default function ShareSheetScreen() {
       // sees K_c, so it cannot decrypt the share.
       const clientKey = await generateRandomBytes(32);
 
-      // Wrap fileKey under K_c using AES-256-GCM (WASM encryptChunk)
-      const wrapped = await wrapFileKeyForShare(clientKey, fileKey);
+      try {
+        // Wrap fileKey under K_c using AES-256-GCM (WASM encryptChunk)
+        const wrapped = await wrapFileKeyForShare(clientKey, fileKey);
+        wrappedFileKey = toBase64(wrapped);
+        keyForUrl = toBase64url(clientKey);
 
-      // Zero the raw file key immediately after wrapping
-      fileKey.fill(0);
-
-      wrappedFileKey = toBase64(wrapped);
-      keyForUrl = toBase64url(clientKey);
-
-      // 0805: wrap K_c under the OWNER's master key. The server stores it opaque
-      // and never unwraps it; the master key stays inside native (task 0556).
-      ownerWrappedKey = await ownerWrapToBase64(getMasterKeyHandleId(), clientKey);
-
-      // Zero client key — it's now in keyForUrl string (JS engine manages that)
-      clientKey.fill(0);
+        // 0805: wrap K_c under the OWNER's master key. The server stores it opaque
+        // and never unwraps it; the master key stays inside native (task 0556).
+        ownerWrappedKey = await ownerWrapToBase64(getMasterKeyHandleId(), clientKey);
+      } finally {
+        // Zero raw key material even if a wrap throws, so no plaintext file key /
+        // K_c lingers in the JS heap until GC. (keyForUrl holds K_c as a string
+        // the JS engine manages; the Uint8Array is the sensitive copy.)
+        fileKey.fill(0);
+        clientKey.fill(0);
+      }
 
       // A1 client-supplied token (double-encrypted public links only): mint a
       // fresh raw token and wrap it for owner re-copy. token + owner_wrapped_key
