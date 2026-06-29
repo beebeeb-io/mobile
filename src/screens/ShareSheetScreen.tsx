@@ -22,7 +22,6 @@ import { radii, spacing, shadows } from '../theme';
 import { useTheme } from '../lib/theme-context';
 import { useToast } from '../lib/toast-context';
 import { useKeyboardLayoutAnimation } from '../lib/useKeyboardLayoutAnimation';
-import { NativeSwitch } from '../components/NativeSwitch';
 import { ApiError, approveInvite, createInvite, createShare, friendlyError, resolveSharingContact } from '../lib/api';
 import type { Share as ShareLink } from '../lib/api';
 import { useCrypto } from '../lib/crypto-context';
@@ -179,9 +178,6 @@ export default function ShareSheetScreen() {
   const [expiry, setExpiry] = useState<ExpiryOption>(EXPIRY_OPTIONS[1]);
   const [opens, setOpens] = useState<OpensOption>(OPENS_OPTIONS[0]);
   const [passphrase, setPassphrase] = useState('');
-  // Default to double-encrypted: even Beebeeb cannot decrypt. Users can opt
-  // out via the toggle below for assisted recovery.
-  const [doubleEncrypted, setDoubleEncrypted] = useState(true);
   const [mode, setMode] = useState<'link' | 'person'>('link');
   const [recipient, setRecipient] = useState('');
   const [inviteSentTo, setInviteSentTo] = useState<string | null>(null);
@@ -286,32 +282,29 @@ export default function ShareSheetScreen() {
 
       const fileKey = await getFileKeyBytes(fileId);
 
-      if (doubleEncrypted) {
-        // Generate client key K_c (stays in device + URL fragment only)
-        const clientKey = await generateRandomBytes(32);
+      // All new shares are double-encrypted: the server requires `wrapped_file_key`
+      // and rejects plain shares (shares.rs — "new shares must be double-encrypted").
+      // Generate a client key K_c (stays on-device + in the URL fragment only),
+      // wrap the file key under K_c, and wrap K_c under the OWNER's master key so
+      // the owner can re-copy a working link later (Shared → By me). Beebeeb never
+      // sees K_c, so it cannot decrypt the share.
+      const clientKey = await generateRandomBytes(32);
 
-        // Wrap fileKey under K_c using AES-256-GCM (WASM encryptChunk)
-        const wrapped = await wrapFileKeyForShare(clientKey, fileKey);
+      // Wrap fileKey under K_c using AES-256-GCM (WASM encryptChunk)
+      const wrapped = await wrapFileKeyForShare(clientKey, fileKey);
 
-        // Zero the raw file key immediately after wrapping
-        fileKey.fill(0);
+      // Zero the raw file key immediately after wrapping
+      fileKey.fill(0);
 
-        wrappedFileKey = toBase64(wrapped);
-        keyForUrl = toBase64url(clientKey);
+      wrappedFileKey = toBase64(wrapped);
+      keyForUrl = toBase64url(clientKey);
 
-        // 0805: wrap K_c under the OWNER's master key so the owner can re-copy a
-        // working link later (Shared → By me). The server stores it opaque and
-        // never unwraps it; the master key stays inside native (task 0556).
-        ownerWrappedKey = await ownerWrapToBase64(getMasterKeyHandleId(), clientKey);
+      // 0805: wrap K_c under the OWNER's master key. The server stores it opaque
+      // and never unwraps it; the master key stays inside native (task 0556).
+      ownerWrappedKey = await ownerWrapToBase64(getMasterKeyHandleId(), clientKey);
 
-        // Zero client key — it's now in keyForUrl string (JS engine manages that)
-        clientKey.fill(0);
-      } else {
-        // Standard shares match the web client: the URL fragment carries the
-        // actual file key, which is never sent to the server.
-        keyForUrl = toBase64(fileKey);
-        fileKey.fill(0);
-      }
+      // Zero client key — it's now in keyForUrl string (JS engine manages that)
+      clientKey.fill(0);
 
       // A1 client-supplied token (double-encrypted public links only): mint a
       // fresh raw token and wrap it for owner re-copy. token + owner_wrapped_key
@@ -370,7 +363,7 @@ export default function ShareSheetScreen() {
     } finally {
       setCreating(false);
     }
-  }, [fileId, expiry, opens, passphrase, doubleEncrypted, isUnlocked, getFileKeyBytes, getMasterKeyHandleId]);
+  }, [fileId, expiry, opens, passphrase, isUnlocked, getFileKeyBytes, getMasterKeyHandleId]);
 
   const handleCreateInvite = useCallback(async () => {
     const raw = recipient.trim();
@@ -689,33 +682,18 @@ export default function ShareSheetScreen() {
                   Recipients will be asked for this before opening the file.
                 </Text>
 
-                {/* Double-encrypted toggle (default on — opting out is "less secure") */}
+                {/* Every share is end-to-end (double) encrypted — the server
+                    requires it, so this is a static indicator, not a toggle. */}
                 <View style={styles.toggleRow}>
                   <View style={styles.toggleInfo}>
-                    <Text style={styles.toggleLabel}>
-                      {doubleEncrypted
-                        ? 'End-to-end encrypted'
-                        : 'Allow Beebeeb to assist with recovery'}
-                    </Text>
+                    <Text style={styles.toggleLabel}>End-to-end encrypted</Text>
                     <Text style={styles.toggleSub}>
-                      {doubleEncrypted
-                        ? 'Beebeeb cannot decrypt this share. The recipient needs both the link and the key — send them through separate channels.'
-                        : 'Less secure: Beebeeb keeps a server-wrapped copy of the key. We can technically decrypt this share.'}
+                      Beebeeb cannot decrypt this share. The recipient needs both the link and the key — send them through separate channels.
                     </Text>
-                    {doubleEncrypted && (
-                      <View style={styles.zkBadge}>
-                        <Text style={styles.zkBadgeText}>ACTIVE</Text>
-                      </View>
-                    )}
+                    <View style={styles.zkBadge}>
+                      <Text style={styles.zkBadgeText}>ACTIVE</Text>
+                    </View>
                   </View>
-                  <NativeSwitch
-                    value={doubleEncrypted}
-                    onValueChange={(v) => {
-                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                      setDoubleEncrypted(v);
-                    }}
-                    colors={c}
-                  />
                 </View>
               </>
             ) : (
@@ -762,9 +740,7 @@ export default function ShareSheetScreen() {
 
             <Text style={styles.fineprint}>
               {mode === 'link'
-                ? doubleEncrypted
-                  ? 'End-to-end encrypted — Beebeeb cannot decrypt. The recipient needs both the link and the key.'
-                  : 'Beebeeb keeps a server-wrapped copy of the key. Less secure — your file is technically decryptable by us.'
+                ? 'End-to-end encrypted — Beebeeb cannot decrypt. The recipient needs both the link and the key.'
                 : 'Email invites appear as pending until the recipient can accept them.'}
             </Text>
           </ScrollView>
