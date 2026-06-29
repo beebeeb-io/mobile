@@ -309,7 +309,10 @@ async function request<T>(
     // /auth/login or /auth/signup means "wrong credentials" and should NOT
     // trigger sign-out.
     if (auth) {
-      if (authSnapshot && isCurrentSessionSnapshot(authSnapshot)) {
+      // Only treat as session expiry when a token was actually attached — a
+      // 401 on an auth=true call that went out with no token (snapshot.token
+      // null) must not falsely fire onSessionExpired/clearToken.
+      if (authSnapshot && authSnapshot.token != null && isCurrentSessionSnapshot(authSnapshot)) {
         await clearToken();
         onSessionExpired?.();
       }
@@ -1900,13 +1903,24 @@ export async function completeTwoFactor(
   partialToken: string,
   code: string,
 ): Promise<{ sessionToken: string }> {
-  const data = await request<{ user_id: string; session_token: string; salt?: string }>(
-    'POST',
-    '/api/v1/auth/2fa/verify',
-    { partial_token: partialToken, code },
-    false,
-    mobileClientHeaders(),
-  );
+  let data: { user_id: string; session_token: string; salt?: string };
+  try {
+    data = await request<{ user_id: string; session_token: string; salt?: string }>(
+      'POST',
+      '/api/v1/auth/2fa/verify',
+      { partial_token: partialToken, code },
+      false,
+      mobileClientHeaders(),
+    );
+  } catch (err) {
+    // This is an auth=false call, so request() maps a 401 to the login copy
+    // ("Wrong email or password."). Here a 401 means the TOTP/backup code was
+    // wrong or expired — surface code-specific copy for the 2FA screen.
+    if (err instanceof ApiError && err.status === 401) {
+      throw new ApiError(401, 'Incorrect or expired code. Try again.');
+    }
+    throw err;
+  }
   if (typeof data.session_token !== 'string' || data.session_token.length === 0) {
     throw new ApiError(500, 'Server returned no session token');
   }

@@ -345,12 +345,15 @@ export default function TrashScreen() {
               });
             } catch (err) {
               Alert.alert('Error', friendlyError(err));
+              // Mid-loop failure: some rows are already server-deleted but the
+              // optimistic removal below never ran — reconcile from the server.
+              void fetchTrash(true);
             }
           },
         },
       ],
     );
-  }, [files, showToast]);
+  }, [files, showToast, fetchTrash]);
 
   const renderItem = useCallback(({ item }: { item: FileEntry }) => (
     <TrashRow

@@ -5,7 +5,7 @@
  * connection breakdown, and results summary.
  */
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ScrollView,
   StyleSheet,
@@ -1106,6 +1106,16 @@ export default function SpeedtestScreen() {
   const [networkType, setNetworkType] = useState('unknown');
   const [lastRun, setLastRun] = useState<LastSpeedtestRun | null>(null);
 
+  // Tracks mount status so the long multi-phase runTest loop stops writing
+  // state after the user navigates away mid-test (avoids setState-after-unmount).
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
   useEffect(() => {
     let mounted = true;
     AsyncStorage.getItem(SPEEDTEST_LAST_RUN_KEY)
@@ -1164,12 +1174,14 @@ export default function SpeedtestScreen() {
     const net = await NetInfo.fetch();
     const runNetworkType = net.type ?? 'unknown';
     const skipUploadOnCellular = runNetworkType === 'cellular' && !options?.full;
+    if (!mountedRef.current) return;
     setNetworkType(runNetworkType);
 
     // ── Region ──────────────────────────────────────────────────────────
     let serverLabel = 'Europe';
     try {
       const reg = await getRegion();
+      if (!mountedRef.current) return;
       const parts: string[] = [];
       if (reg.region) parts.push(reg.region.charAt(0).toUpperCase() + reg.region.slice(1));
       if (reg.jurisdiction) parts.push(reg.jurisdiction);
@@ -1195,6 +1207,7 @@ export default function SpeedtestScreen() {
       }
       const ping = performance.now() - start;
       latencies.push(ping);
+      if (!mountedRef.current) return;
       setPings((prev) => [...prev, ping]);
       const avg = latencies.reduce((a, b) => a + b, 0) / latencies.length;
       setCurrentSpeed(formatMs(avg));
@@ -1235,10 +1248,12 @@ export default function SpeedtestScreen() {
         headers: authHeaders,
         method: 'GET',
         onProgress: (loaded, total) => {
+          if (!mountedRef.current) return;
           const sampleProgress = total > 0 ? loaded / total : loaded / sample.size;
           setMeterProgress(Math.max(0, Math.min(1, (i + sampleProgress) / TRANSFER_SAMPLES.length)));
         },
       });
+      if (!mountedRef.current) return;
       if (result.seconds > 0 && result.bytes > 0) {
         totalDownloadBytes += result.bytes;
         totalDownloadTime += result.seconds;
@@ -1280,10 +1295,12 @@ export default function SpeedtestScreen() {
           headers: { ...authHeaders, 'Content-Type': 'application/octet-stream' },
           method: 'POST',
           onProgress: (loaded, total) => {
+            if (!mountedRef.current) return;
             const sampleProgress = total > 0 ? loaded / total : loaded / sample.size;
             setMeterProgress(Math.max(0, Math.min(1, (i + sampleProgress) / TRANSFER_SAMPLES.length)));
           },
         });
+        if (!mountedRef.current) return;
         if (result.seconds > 0 && result.bytes > 0) {
           totalUploadBytes += result.bytes;
           totalUploadTime += result.seconds;
@@ -1351,6 +1368,7 @@ export default function SpeedtestScreen() {
             totalDecTime += performance.now() - decStart;
           }
 
+          if (!mountedRef.current) return;
           setEncProgress((ci + 1) / chunkSizes.length);
 
           // Update gauge with running average
@@ -1375,6 +1393,7 @@ export default function SpeedtestScreen() {
     } catch {
       setStatusText('Crypto not available');
     }
+    if (!mountedRef.current) return;
     setLiveResults((prev) => ({ ...prev, encryptionMBps }));
 
     // ── Done ────────────────────────────────────────────────────────────
@@ -1411,6 +1430,7 @@ export default function SpeedtestScreen() {
     setLastRun(nextLastRun);
     await AsyncStorage.setItem(SPEEDTEST_LAST_RUN_KEY, JSON.stringify(nextLastRun));
     } catch (err) {
+      if (!mountedRef.current) return;
       const message = err instanceof Error ? err.message : 'Speed test failed';
       setError(message);
       setStatusText('Speed test failed');

@@ -1995,36 +1995,40 @@ export default function FilesScreen() {
 
   const openFile = useCallback(
     async (file: FileEntry) => {
-      // Per-file Face ID lock check — applies to both files and folders.
-      if (await isFileLocked(file.id)) {
-        const result = await LocalAuthentication.authenticateAsync({
-          promptMessage: 'Authenticate to open this file',
-          disableDeviceFallback: true,
-        });
-        if (!result.success) return;
-      }
-      if (file.is_folder) {
-        navigateToFolder(file);
-      } else {
-        if (!(await ensureFileReady(file))) return;
-        navigation.navigate('Preview', {
-          fileId: file.id,
-          fileName: decryptedNames[file.id] ?? displayName(file),
-          mimeType: mimeTypeFor(file) ?? undefined,
-          sizeBytes: file.size_bytes,
-          createdAt: file.created_at,
-          chunkCount: file.chunk_count,
-          versionNumber: file.version_number,
-          storagePoolId: file.storage_pool_id ?? null,
-          // File-request uploads (0643): pass the sealed-key fields so Preview
-          // decrypts with the request content key, not the master-key path.
-          fileRequestId: file.file_request_id ?? null,
-          senderEphemeralPubkey: file.sender_ephemeral_pubkey ?? null,
-          wrappedContentKey: file.wrapped_content_key ?? null,
-        });
+      try {
+        // Per-file Face ID lock check — applies to both files and folders.
+        if (await isFileLocked(file.id)) {
+          const result = await LocalAuthentication.authenticateAsync({
+            promptMessage: 'Authenticate to open this file',
+            disableDeviceFallback: true,
+          });
+          if (!result.success) return;
+        }
+        if (file.is_folder) {
+          navigateToFolder(file);
+        } else {
+          if (!(await ensureFileReady(file))) return;
+          navigation.navigate('Preview', {
+            fileId: file.id,
+            fileName: decryptedNames[file.id] ?? displayName(file),
+            mimeType: mimeTypeFor(file) ?? undefined,
+            sizeBytes: file.size_bytes,
+            createdAt: file.created_at,
+            chunkCount: file.chunk_count,
+            versionNumber: file.version_number,
+            storagePoolId: file.storage_pool_id ?? null,
+            // File-request uploads (0643): pass the sealed-key fields so Preview
+            // decrypts with the request content key, not the master-key path.
+            fileRequestId: file.file_request_id ?? null,
+            senderEphemeralPubkey: file.sender_ephemeral_pubkey ?? null,
+            wrappedContentKey: file.wrapped_content_key ?? null,
+          });
+        }
+      } catch {
+        showToast({ type: 'error', message: "Couldn't open file" });
       }
     },
-    [navigateToFolder, navigation, decryptedNames, mimeTypeFor, ensureFileReady],
+    [navigateToFolder, navigation, decryptedNames, mimeTypeFor, ensureFileReady, showToast],
   );
 
   const handleRefresh = useCallback(() => {

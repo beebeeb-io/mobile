@@ -138,7 +138,7 @@ async function storeMasterKey(masterKey: Uint8Array): Promise<void> {
       label: MASTER_KEY_FALLBACK_LABEL,
     })
   }
-  if (useSoftwareFallback && FileSystem.documentDirectory) {
+  if (softwareFallbackRuntime && FileSystem.documentDirectory) {
     await FileSystem.writeAsStringAsync(SIMULATOR_MASTER_KEY_FILE, encoded)
   }
   const check = await computeRecoveryCheck(masterKey)

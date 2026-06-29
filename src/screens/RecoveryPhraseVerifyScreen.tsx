@@ -26,8 +26,10 @@ type Nav = NativeStackNavigationProp<RootStackParamList>;
 type Route = RouteProp<RootStackParamList, 'RecoveryPhraseVerify'>;
 
 function pickVerifyPositions(length: number): number[] {
+  if (length <= 0) return [];
+  const count = Math.min(3, length);
   const positions: number[] = [];
-  while (positions.length < 3) {
+  while (positions.length < count) {
     const n = Math.floor(Math.random() * length);
     if (!positions.includes(n)) positions.push(n);
   }
