@@ -611,7 +611,9 @@ function StorageBar({
   showPercent?: boolean;
   prominent?: boolean;
 }) {
-  const pct = limitBytes > 0 ? Math.min(usedBytes / limitBytes, 1) : 0;
+  // limitBytes <= 0 = "no fixed cap" sentinel — never show "-1 B" or a bogus 0%.
+  const hasCap = limitBytes > 0;
+  const pct = hasCap ? Math.min(usedBytes / limitBytes, 1) : 0;
   const pctNum = Math.round(pct * 100);
   const barColor = pct > 0.9 ? c.red : pct > 0.75 ? c.amberDeep : c.amber;
   const fillWidth = `${Math.max(pct * 100, 1)}%` as `${number}%`;
@@ -626,16 +628,18 @@ function StorageBar({
           <Text style={{ fontSize: prominent ? 13 : 12, fontWeight: '600' as const, color: c.ink2 }}>
             Storage
           </Text>
-          <Text style={{ fontSize: prominent ? 13 : 12, fontWeight: '600' as const, color: barColor }}>
-            {pctNum}% used
-          </Text>
+          {hasCap ? (
+            <Text style={{ fontSize: prominent ? 13 : 12, fontWeight: '600' as const, color: barColor }}>
+              {pctNum}% used
+            </Text>
+          ) : null}
         </View>
       )}
       <View style={{ height: barHeight, borderRadius: barHeight / 2, backgroundColor: c.line, overflow: 'hidden' }}>
         <View style={{ height: '100%', borderRadius: barHeight / 2, width: fillWidth, backgroundColor: barColor }} />
       </View>
       <Text style={{ fontSize: 11, color: c.ink3 }}>
-        {usedLabel} of {totalLabel} used
+        {hasCap ? `${usedLabel} of ${totalLabel} used` : `${usedLabel} used`}
       </Text>
     </View>
   );
@@ -1565,24 +1569,10 @@ export default function SettingsScreen() {
     void persistPhotoAlbumSelection(nextIds);
   }, [persistPhotoAlbumSelection, selectedPhotoAlbumIds]);
 
-  const handleStoragePress = useCallback(() => {
-    if (!usage) return;
-    const used = usage.used_bytes;
-    const limit = usage.plan_limit_bytes;
-    // Server doesn't expose a breakdown endpoint yet — proportions are estimates.
-    const images = Math.round(used * 0.62);
-    const videos = Math.round(used * 0.21);
-    const documents = Math.round(used * 0.12);
-    const other = Math.max(used - images - videos - documents, 0);
-    Alert.alert(
-      'Storage breakdown',
-      `Images          ${formatBytes(images, 1)}\n` +
-        `Videos          ${formatBytes(videos, 1)}\n` +
-        `Documents   ${formatBytes(documents, 1)}\n` +
-        `Other            ${formatBytes(other, 1)}\n\n` +
-        `${formatBytes(used, 1)} of ${formatBytes(limit, 1)} used`,
-    );
-  }, [usage]);
+  // (Removed the "Storage breakdown" Alert — it applied a hardcoded 62/21/12%
+  // split to total usage and presented invented per-category byte totals as
+  // exact facts, violating the honesty brand rule. The storage bar now opens the
+  // real StorageScreen, which shows measured totals only.)
 
   const handleDeletionBehaviorChange = useCallback(async (behavior: 'keep' | 'trash') => {
     setDeletionBehaviorState(behavior);
@@ -1909,9 +1899,9 @@ export default function SettingsScreen() {
               <TouchableOpacity
                 style={layout.storageRow}
                 activeOpacity={0.6}
-                onPress={handleStoragePress}
+                onPress={() => navigation.navigate('Storage')}
                 accessibilityRole="button"
-                accessibilityLabel="Show storage breakdown"
+                accessibilityLabel="Show storage details"
               >
                 <StorageBar
                   usedBytes={usage.used_bytes}
@@ -2678,7 +2668,7 @@ export default function SettingsScreen() {
             <RowDivider c={c} />
             <SettingsRow
               label="Operated by"
-              value="Beebeeb.io, Netherlands"
+              value="Initlabs B.V., Wijchen, Netherlands"
               showChevron={false}
               c={c}
             />
@@ -2744,7 +2734,7 @@ export default function SettingsScreen() {
           {serverRegionLabel && (
             <Text style={{ fontSize: 10, color: c.ink4 }}>Stored in {serverRegionLabel}</Text>
           )}
-          <Text style={{ fontSize: 10, color: c.ink4 }}>Operated by Beebeeb.io, Netherlands.</Text>
+          <Text style={{ fontSize: 10, color: c.ink4 }}>Operated by Initlabs B.V., Wijchen, Netherlands.</Text>
         </View>
       </ScrollView>
     </View>

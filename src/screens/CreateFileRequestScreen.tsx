@@ -47,12 +47,13 @@ const EXPIRY_OPTIONS: { label: string; secs: number | null }[] = [
   { label: '30 days', secs: 30 * 86400 },
 ];
 
+// SI units (powers of 1000) to match the labels — brand rule: MB/GB are decimal.
 const SIZE_OPTIONS: { label: string; bytes: number | null }[] = [
   { label: 'No limit', bytes: null },
-  { label: '100 MB', bytes: 100 * 1024 * 1024 },
-  { label: '500 MB', bytes: 500 * 1024 * 1024 },
-  { label: '1 GB', bytes: 1024 * 1024 * 1024 },
-  { label: '5 GB', bytes: 5 * 1024 * 1024 * 1024 },
+  { label: '100 MB', bytes: 100 * 1_000_000 },
+  { label: '500 MB', bytes: 500 * 1_000_000 },
+  { label: '1 GB', bytes: 1_000_000_000 },
+  { label: '5 GB', bytes: 5 * 1_000_000_000 },
 ];
 
 function parseName(plaintext: string): string {

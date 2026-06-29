@@ -96,7 +96,10 @@ function Divider({ c }: { c: C }) {
 function StorageUsageCard({
   usage, c,
 }: { usage: StorageUsage; c: C }) {
-  const pct = usage.plan_limit_bytes > 0
+  // plan_limit_bytes <= 0 is the "no fixed cap" sentinel (e.g. enterprise);
+  // never render it as a byte value ("-1 B") and don't show a denominator/%.
+  const hasCap = usage.plan_limit_bytes > 0;
+  const pct = hasCap
     ? Math.min(1, usage.used_bytes / usage.plan_limit_bytes)
     : 0;
   const isWarning = pct >= 0.8;
@@ -112,9 +115,11 @@ function StorageUsageCard({
         <Text style={{ fontSize: 15, fontWeight: '600', color: c.ink }}>
           {formatBytes(usage.used_bytes)} used
         </Text>
-        <Text style={{ fontSize: 13, color: c.ink3 }}>
-          of {formatBytes(usage.plan_limit_bytes)}
-        </Text>
+        {hasCap ? (
+          <Text style={{ fontSize: 13, color: c.ink3 }}>
+            of {formatBytes(usage.plan_limit_bytes)}
+          </Text>
+        ) : null}
       </View>
 
       {/* Progress bar */}
@@ -147,7 +152,7 @@ function StorageUsageCard({
 
       {/* Plan label */}
       <Text style={{ fontSize: 11, color: c.ink3 }}>
-        {planLabel(usage.plan_name)} plan · {formatBytes(usage.plan_limit_bytes)} total
+        {planLabel(usage.plan_name)} plan{hasCap ? ` · ${formatBytes(usage.plan_limit_bytes)} total` : ''}
       </Text>
     </View>
   );

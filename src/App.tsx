@@ -277,7 +277,7 @@ export type RootStackParamList = {
     mimeType?: string;
     sizeBytes?: number;
   };
-  // Incoming share link: beebeeb://s/:token or https://beebeeb.io/s/:token
+  // Incoming share link: beebeeb://s/:token or https://app.beebeeb.io/s/:token
   SharedView: { token: string };
   BackupGuides: undefined;
   // Auth / onboarding upgrade screens
@@ -307,7 +307,11 @@ export type RootStackParamList = {
 // ---------------------------------------------------------------------------
 
 const linking = {
-  prefixes: ['beebeeb://', 'https://beebeeb.io'],
+  // Real share/file links are served from app.beebeeb.io (the web app host);
+  // beebeeb.io is the marketing domain. Both must be intercepted so a tapped
+  // share link (app.beebeeb.io/s/:token) opens the in-app SharedView instead of
+  // launching the app to the default tab and stranding the recipient.
+  prefixes: ['beebeeb://', 'https://app.beebeeb.io', 'https://beebeeb.io'],
   config: {
     screens: {
       Tabs: {
@@ -340,6 +344,7 @@ const navigationRef = createNavigationContainerRef<RootStackParamList>();
 function isBackupInsightsURL(url: string): boolean {
   const normalized = url.toLowerCase().replace(/\/+$/, '');
   return normalized === 'beebeeb://settings/backup-insights' ||
+    normalized === 'https://app.beebeeb.io/settings/backup-insights' ||
     normalized === 'https://beebeeb.io/settings/backup-insights';
 }
 
