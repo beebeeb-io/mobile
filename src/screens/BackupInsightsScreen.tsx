@@ -47,6 +47,7 @@ import {
 import { useBackup } from '../lib/backup-context';
 import NetInfo from '@react-native-community/netinfo';
 import { recordRuntimeTrace } from '../lib/runtime-trace';
+import { formatBytes } from '../lib/format';
 
 let MediaLibrary: { getAssetsAsync: (opts: { first: number; mediaType?: string[] }) => Promise<{ totalCount: number }>; MediaType?: { photo: string; video: string } } = {
   getAssetsAsync: async () => ({ totalCount: 0 }),
@@ -58,14 +59,6 @@ type C = Colors;
 const FULL_SCAN_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1_000) return `${bytes} B`;
-  if (bytes < 1_000_000) return `${(bytes / 1_000).toFixed(0)} KB`;
-  if (bytes < 1_000_000_000) return `${(bytes / 1_000_000).toFixed(1)} MB`;
-  if (bytes < 1_000_000_000_000) return `${(bytes / 1_000_000_000).toFixed(1)} GB`;
-  return `${(bytes / 1_000_000_000_000).toFixed(1)} TB`;
-}
 
 function timeAgo(ms: number): string {
   const elapsed = Date.now() - ms;

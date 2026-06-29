@@ -15,6 +15,7 @@ import { getRemoteToLocalMap } from '../services/BackupDatabase';
 import { ensureThumbnailForImage, generateAndUploadPhotoLibraryThumbnail } from './thumbnail';
 import { invalidateCachedThumbnail } from './thumbnail-cache';
 import { invalidateInMemoryThumbCache } from './thumbnail';
+import { formatBytes } from './format';
 // ---------------------------------------------------------------------------
 // Inlined from thumbnail-repair-predicate.ts (deleted in task 22)
 // ---------------------------------------------------------------------------
@@ -505,7 +506,7 @@ async function runDegradedTick({
       remaining: 0,
       lastRunAt: completedAt,
       lastMessage: status.repaired > 0
-        ? `Improved ${status.repaired} thumbnails (${formatMb(status.bytesDownloaded)} downloaded)`
+        ? `Improved ${status.repaired} thumbnails (${formatBytes(status.bytesDownloaded)} downloaded)`
         : 'All thumbnails already at full quality',
       currentAction: null,
       currentFileName: null,
@@ -674,13 +675,13 @@ async function runDegradedTick({
     updatedAt: Date.now(),
     lastRunAt: Date.now(),
     lastMessage: anyRepaired
-      ? `Improved thumbnails (${formatMb(refreshed.bytesDownloaded + totalBytesAdded)} total)`
+      ? `Improved thumbnails (${formatBytes(refreshed.bytesDownloaded + totalBytesAdded)} total)`
       : 'Some thumbnails could not be improved',
     activity: [
       {
         at: Date.now(),
         message: anyRepaired
-          ? `Improved ${batch.length} thumbnail(s) (${formatMb(totalBytesAdded)})`
+          ? `Improved ${batch.length} thumbnail(s) (${formatBytes(totalBytesAdded)})`
           : actionText,
       },
       ...refreshed.activity,
@@ -695,12 +696,6 @@ async function runDegradedTick({
 
   const elapsedMs = Date.now() - startedAt;
   schedule(anyRepaired ? DEGRADED_REPAIR_DELAY_MS : Math.max(elapsedMs, DEGRADED_REPAIR_FAILURE_DELAY_MS));
-}
-
-function formatMb(bytes: number): string {
-  if (bytes < 1_000_000) return `${Math.round(bytes / 1_000)} KB`;
-  if (bytes < 1_000_000_000) return `${Math.round(bytes / 100_000) / 10} MB`;
-  return `${(bytes / 1_000_000_000).toFixed(2)} GB`;
 }
 
 export function AndroidThumbnailRepairWorker({ enabled }: { enabled: boolean }) {

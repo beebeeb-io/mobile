@@ -24,6 +24,7 @@ import JSZip from 'jszip';
 import { colors, radii } from '../../theme';
 import type { Colors } from '../../theme';
 import { type ZipEntry, type ZipRow, levelRows, isMacOsNoise } from '../../lib/zip-tree';
+import { formatBytes } from '../../lib/format';
 
 interface ZipSummary {
   entries: ZipEntry[];
@@ -101,13 +102,6 @@ function zipEntryIcon(entry: ZipEntry): IoniconName {
     return 'code-slash';
   }
   return 'document-outline';
-}
-
-function formatZipSize(bytes: number): string {
-  if (bytes < 1_000) return `${bytes} B`;
-  if (bytes < 1_000_000) return `${(bytes / 1_000).toFixed(0)} KB`;
-  if (bytes < 1_000_000_000) return `${(bytes / 1_000_000).toFixed(1)} MB`;
-  return `${(bytes / 1_000_000_000).toFixed(1)} GB`;
 }
 
 function formatZipDate(d: Date | null): string | null {
@@ -212,7 +206,7 @@ export function ZipRenderer({ data, colors: c }: ZipRendererProps) {
             {entry.name}
           </Text>
           <Text style={[styles.zipRowMeta, { color: c.ink3 }]} numberOfLines={1}>
-            {`${formatZipSize(entry.uncompressedSize)}${dateLabel ? `  ·  ${dateLabel}` : ''}`}
+            {`${formatBytes(entry.uncompressedSize)}${dateLabel ? `  ·  ${dateLabel}` : ''}`}
           </Text>
         </View>
       </View>
@@ -230,7 +224,7 @@ export function ZipRenderer({ data, colors: c }: ZipRendererProps) {
               : ''}
           </Text>
           <Text style={[styles.zipHeaderSize, { color: c.ink3 }]}>
-            {formatZipSize(totalUncompressed)} uncompressed
+            {formatBytes(totalUncompressed)} uncompressed
           </Text>
         </View>
         <Text style={[styles.zipHeaderHint, { color: c.ink3 }]}>

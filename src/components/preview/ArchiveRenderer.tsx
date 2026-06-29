@@ -20,6 +20,7 @@ import JSZip from 'jszip';
 import pako from 'pako';
 import { radii } from '../../theme';
 import type { Colors } from '../../theme';
+import { formatBytes } from '../../lib/format';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -262,13 +263,6 @@ function entryIcon(entry: ArchiveEntry): IoniconName {
 // Formatting helpers
 // ---------------------------------------------------------------------------
 
-function formatSize(bytes: number): string {
-  if (bytes < 1_000) return `${bytes} B`;
-  if (bytes < 1_000_000) return `${(bytes / 1_000).toFixed(0)} KB`;
-  if (bytes < 1_000_000_000) return `${(bytes / 1_000_000).toFixed(1)} MB`;
-  return `${(bytes / 1_000_000_000).toFixed(1)} GB`;
-}
-
 function formatDate(d: Date | null): string | null {
   if (!d || isNaN(d.getTime())) return null;
   const month = d.toLocaleString('en', { month: 'short' });
@@ -428,7 +422,7 @@ function ArchiveContents({ summary, colors: c }: ArchiveContentsProps) {
               >
                 {item.isFolder
                   ? 'Folder'
-                  : `${formatSize(item.size)}${dateLabel ? `  ·  ${dateLabel}` : ''}`}
+                  : `${formatBytes(item.size)}${dateLabel ? `  ·  ${dateLabel}` : ''}`}
               </Text>
             </View>
           </View>
@@ -448,7 +442,7 @@ function ArchiveContents({ summary, colors: c }: ArchiveContentsProps) {
               : ''}
           </Text>
           <Text style={[styles.headerSize, { color: c.ink3 }]}>
-            {formatSize(totalSize)} uncompressed
+            {formatBytes(totalSize)} uncompressed
           </Text>
         </View>
         <Text style={[styles.headerHint, { color: c.ink3 }]}>

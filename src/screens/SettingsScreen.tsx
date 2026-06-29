@@ -48,6 +48,7 @@ import { useTheme, type ThemeMode } from '../lib/theme-context';
 import { useToast } from '../lib/toast-context';
 import { useNetworkStatus } from '../lib/useNetworkStatus';
 import { recordRuntimeTrace } from '../lib/runtime-trace';
+import { formatBytes } from '../lib/format';
 import {
   DEFAULT_BACKUP_NOTIFICATION_SETTINGS,
   type BackupNotificationSettings,
@@ -169,14 +170,6 @@ const REGIONS: ReadonlyArray<{ poolName: string; label: string; subtitle: string
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-function formatBytes(bytes: number, gbDecimals = 0): string {
-  if (bytes < 1_000) return `${bytes} B`;
-  if (bytes < 1_000_000) return `${(bytes / 1_000).toFixed(0)} KB`;
-  if (bytes < 1_000_000_000) return `${(bytes / 1_000_000).toFixed(0)} MB`;
-  if (bytes < 1_000_000_000_000) return `${(bytes / 1_000_000_000).toFixed(gbDecimals)} GB`;
-  return `${(bytes / 1_000_000_000_000).toFixed(1)} TB`;
-}
 
 function formatDate(iso: string): string {
   const d = new Date(iso);
@@ -618,8 +611,8 @@ function StorageBar({
   const barColor = pct > 0.9 ? c.red : pct > 0.75 ? c.amberDeep : c.amber;
   const fillWidth = `${Math.max(pct * 100, 1)}%` as `${number}%`;
   const barHeight = prominent ? 8 : 6;
-  const usedLabel = formatBytes(usedBytes, prominent ? 1 : 0);
-  const totalLabel = formatBytes(limitBytes, prominent ? 1 : 0);
+  const usedLabel = formatBytes(usedBytes);
+  const totalLabel = formatBytes(limitBytes);
 
   return (
     <View style={{ gap: 6 }}>
