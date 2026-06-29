@@ -444,9 +444,20 @@ export class SessionTooOldForConfirmationError extends Error {
  * confirmation token. Destructive endpoints require it via the
  * X-Confirm-Token header.
  *
- * Uses a direct fetch (not `request()`) because a 401 here means
- * "wrong password," not "session expired" — we must NOT clear the token
- * or trigger sign-out. A typo on step-up should let the user retry.
+ * OPAQUE-first (task 0856): the password is proven to the server via the
+ * authenticated confirm-opaque-start/finish round-trip, so it never crosses the
+ * wire in plaintext. Mirrors the web client's confirmAction (web src/lib/api.ts).
+ * Legacy Argon2-only accounts (no opaque_password_file) get a distinguishable
+ * 409 { opaque_unavailable: true } from confirm-opaque-start and transparently
+ * fall back to the plaintext /auth/confirm path (confirmActionPlaintext).
+ *
+ * The signature and the two thrown error types (IncorrectPasswordError,
+ * SessionTooOldForConfirmationError) are unchanged, so every step-up caller
+ * (confirm-action.ts, Trash, delete, BiometricLockScreen, …) is untouched.
+ *
+ * Uses direct fetches (not `request()`) because a 401 here means "wrong
+ * password," not "session expired" — we must NOT clear the token or trigger
+ * sign-out. A typo on step-up should let the user retry.
  */
 export async function confirmAction(password: string): Promise<ConfirmActionResponse> {
   const token = await getToken();
@@ -456,6 +467,132 @@ export async function confirmAction(password: string): Promise<ConfirmActionResp
     throw new ApiError(401, 'Session expired');
   }
 
+  const authHeaders: Record<string, string> = {
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${token}`,
+  };
+
+  // 1. OPAQUE login start (native) — yields the client CredentialRequest message
+  //    plus the opaque client state we round-trip into finish. The username arg
+  //    is cosmetic (the native bridge ignores it; the server binds the credential
+  //    to the caller's own account server-side), so pass an empty string.
+  const loginStart = await BeebeebCrypto.opaqueLoginStart('', password);
+
+  // 2. Authenticated POST to confirm-opaque-start. Direct fetch (not request())
+  //    so a 401/409 on this step-up path never clears the session / signs the
+  //    user out.
+  let startRes: Response;
+  try {
+    startRes = await rateLimitedFetch(`${BASE_URL}/api/v1/auth/confirm-opaque-start`, {
+      method: 'POST',
+      headers: authHeaders,
+      body: JSON.stringify({ client_message: uint8ToBase64(loginStart.message) }),
+    });
+  } catch (_err) {
+    throw new ApiError(0, 'Could not reach the server. Check your connection and try again.');
+  }
+
+  // 3. Legacy Argon2-only account (no opaque_password_file) → distinguishable
+  //    409 { opaque_unavailable: true }. Fall back to the plaintext path, which
+  //    still works for these accounts (incl. the session-freshness fallback).
+  if (startRes.status === 409) {
+    const body = (await startRes.json().catch(() => ({}))) as Record<string, unknown>;
+    if (body.opaque_unavailable === true) {
+      return confirmActionPlaintext(password, token);
+    }
+    // Some other 409 — surface it rather than silently swallowing.
+    throw new ApiError(
+      startRes.status,
+      (body.message ?? body.error ?? startRes.statusText) as string,
+    );
+  }
+
+  if (!startRes.ok) {
+    const body = (await startRes
+      .json()
+      .catch(() => ({ error: startRes.statusText }))) as Record<string, unknown>;
+    throw new ApiError(
+      startRes.status,
+      (body.message ?? body.error ?? startRes.statusText) as string,
+    );
+  }
+
+  const startBody = (await startRes.json()) as {
+    server_message: string;
+    server_state: string;
+    ksf_version: number;
+  };
+
+  // 4. OPAQUE login finish (native), threading the account's KSF version so the
+  //    client stretches with the matching KSF (0 = legacy Identity, 1 = Argon2id
+  //    — forwarded from the server, never hardcoded). A WRONG password fails
+  //    HERE, client-side, when finish verifies the server MAC; map that to the
+  //    same "Incorrect password" UX as the 401 / plaintext paths.
+  let loginFinishMessage: Uint8Array;
+  try {
+    const loginFinish = await BeebeebCrypto.opaqueLoginFinish(
+      loginStart.state,
+      base64ToUint8(startBody.server_message),
+      password,
+      // Defend against a stale server omitting ksf_version (mirror the login
+      // flow's guard): default to 1 (Argon2id), the current registration KSF.
+      typeof startBody.ksf_version === 'number' ? startBody.ksf_version : 1,
+    );
+    loginFinishMessage = loginFinish.message;
+  } catch (_err) {
+    throw new IncorrectPasswordError();
+  }
+
+  // 5. Authenticated POST to confirm-opaque-finish with the finish client message
+  //    + the round-tripped server state. Direct fetch for the same reason as start.
+  let finishRes: Response;
+  try {
+    finishRes = await rateLimitedFetch(`${BASE_URL}/api/v1/auth/confirm-opaque-finish`, {
+      method: 'POST',
+      headers: authHeaders,
+      body: JSON.stringify({
+        client_message: uint8ToBase64(loginFinishMessage),
+        server_state: startBody.server_state,
+      }),
+    });
+  } catch (_err) {
+    throw new ApiError(0, 'Could not reach the server. Check your connection and try again.');
+  }
+
+  if (finishRes.status === 401) {
+    // OPAQUE finish 401 = wrong password (a password-guess oracle). Same UX as
+    // the client-side finish failure above. (Session-too-old does not arise on
+    // the OPAQUE finish — that fallback lives only on the plaintext path.)
+    throw new IncorrectPasswordError();
+  }
+  if (!finishRes.ok) {
+    const body = (await finishRes
+      .json()
+      .catch(() => ({ error: finishRes.statusText }))) as Record<string, unknown>;
+    throw new ApiError(
+      finishRes.status,
+      (body.message ?? body.error ?? finishRes.statusText) as string,
+    );
+  }
+  return finishRes.json() as Promise<ConfirmActionResponse>;
+}
+
+/**
+ * Legacy plaintext step-up fallback (`POST /api/v1/auth/confirm`). Kept intact
+ * for Argon2-only accounts with no OPAQUE credential — those return
+ * 409 { opaque_unavailable: true } from confirm-opaque-start. The password
+ * leaves the device here; that is the documented, account-specific exception
+ * OPAQUE cannot yet cover.
+ *
+ * Direct fetch (not request()) so a 401 — the user mistyping their password
+ * during step-up — does NOT clear the token and bounce them to sign-in. The
+ * session_too_old_for_confirmation → SessionTooOldForConfirmationError mapping
+ * is preserved (this freshness check lives only on the plaintext path).
+ */
+async function confirmActionPlaintext(
+  password: string,
+  token: string,
+): Promise<ConfirmActionResponse> {
   let res: Response;
   try {
     res = await rateLimitedFetch(`${BASE_URL}/api/v1/auth/confirm`, {
