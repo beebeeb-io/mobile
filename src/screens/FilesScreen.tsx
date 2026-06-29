@@ -2649,21 +2649,50 @@ export default function FilesScreen() {
       : picker.folders.find((f) => f.id === targetId)?.name ?? 'folder';
     setMoveBusy(true);
     try {
-      await Promise.all(ids.map((id) => moveFile(id, targetId)));
-      for (const id of ids) {
+      // R11 — per-item moves so a partial failure reconciles correctly.
+      // Promise.all rejected on the first failure, so items that had already
+      // moved server-side were never removed from this view or reindexed (UI
+      // diverged from server until a manual refresh). allSettled lets us apply
+      // the successes and leave the failed items exactly where they were.
+      const results = await Promise.allSettled(ids.map((id) => moveFile(id, targetId)));
+      const movedIds: string[] = [];
+      let firstError: unknown;
+      results.forEach((result, i) => {
+        if (result.status === 'fulfilled') {
+          movedIds.push(ids[i]!);
+        } else if (firstError === undefined) {
+          firstError = result.reason;
+        }
+      });
+      for (const id of movedIds) {
         const moved = files.find((f) => f.id === id);
         if (!moved) continue;
         indexFile(id, toSearchIndexEntry(moved, decryptedNames[id] ?? displayName(moved), targetId));
       }
-      const movedSet = new Set(ids);
+      const movedSet = new Set(movedIds);
       setFiles((prev) => prev.filter((f) => !movedSet.has(f.id)));
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      showToast({
-        type: 'success',
-        message: ids.length === 1 ? `Moved to ${destName}` : `Moved ${ids.length} items to ${destName}`,
-      });
-      setMovePicker(null);
-      if (selectMode) exitSelectMode();
+      const failedCount = ids.length - movedIds.length;
+      if (movedIds.length === 0) {
+        // Nothing moved — surface the error and keep the picker open to retry.
+        Alert.alert('Error', friendlyError(firstError));
+      } else if (failedCount === 0) {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        showToast({
+          type: 'success',
+          message: ids.length === 1 ? `Moved to ${destName}` : `Moved ${ids.length} items to ${destName}`,
+        });
+        setMovePicker(null);
+        if (selectMode) exitSelectMode();
+      } else {
+        // Partial failure — reconcile what moved, tell the user what didn't.
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+        showToast({
+          type: 'info',
+          message: `Moved ${movedIds.length} of ${ids.length} to ${destName}; ${failedCount} could not be moved`,
+        });
+        setMovePicker(null);
+        if (selectMode) exitSelectMode();
+      }
     } catch (err) {
       Alert.alert('Error', friendlyError(err));
     } finally {

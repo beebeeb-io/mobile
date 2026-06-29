@@ -455,9 +455,11 @@ export class SessionTooOldForConfirmationError extends Error {
  * SessionTooOldForConfirmationError) are unchanged, so every step-up caller
  * (confirm-action.ts, Trash, delete, BiometricLockScreen, …) is untouched.
  *
- * Uses direct fetches (not `request()`) because a 401 here means "wrong
- * password," not "session expired" — we must NOT clear the token or trigger
- * sign-out. A typo on step-up should let the user retry.
+ * Uses direct fetches (not `request()`) because a 401 on confirm-opaque-FINISH
+ * means "wrong password," not "session expired" — there we must NOT clear the
+ * token or trigger sign-out, so a typo on step-up just lets the user retry. A
+ * 401 on confirm-opaque-START is different: the password is not proven until
+ * finish, so a start 401 is an expired session and IS handled as a sign-out.
  */
 export async function confirmAction(password: string): Promise<ConfirmActionResponse> {
   const token = await getToken();
@@ -479,8 +481,8 @@ export async function confirmAction(password: string): Promise<ConfirmActionResp
   const loginStart = await BeebeebCrypto.opaqueLoginStart('', password);
 
   // 2. Authenticated POST to confirm-opaque-start. Direct fetch (not request())
-  //    so a 401/409 on this step-up path never clears the session / signs the
-  //    user out.
+  //    so a 409 (legacy-account fallback) is handled inline. A 401 here is an
+  //    expired session (the password is not proven until finish) → re-auth.
   let startRes: Response;
   try {
     startRes = await rateLimitedFetch(`${BASE_URL}/api/v1/auth/confirm-opaque-start`, {
@@ -505,6 +507,20 @@ export async function confirmAction(password: string): Promise<ConfirmActionResp
       startRes.status,
       (body.message ?? body.error ?? startRes.statusText) as string,
     );
+  }
+
+  // A 401 on confirm-opaque-start is a dead/expired session, NOT a wrong
+  // password: the password is only proven at confirm-opaque-finish, never at
+  // start (start just runs server_login_start to mint a challenge). The only
+  // 401 source here is the authenticated AuthUser extractor rejecting the
+  // bearer token (or a per-account lockout, which the rest of the app likewise
+  // surfaces as a sign-out). Re-authenticate instead of showing a misleading
+  // "wrong password"/generic error: clear the stale token and fire
+  // onSessionExpired, mirroring request()'s session-expiry path.
+  if (startRes.status === 401) {
+    await clearToken();
+    onSessionExpired?.();
+    throw new ApiError(401, 'Session expired');
   }
 
   if (!startRes.ok) {
@@ -1472,8 +1488,33 @@ export async function trashFiles(ids: string[]): Promise<BulkTrashResult> {
     return await request<BulkTrashResult>('POST', '/api/v1/files/trash', { ids: uniqueIds });
   } catch (err) {
     if (err instanceof ApiError && [400, 404, 405].includes(err.status)) {
-      await Promise.all(uniqueIds.map((id) => deleteFile(id)));
-      return { trashed: uniqueIds, already_trashed: [], missing: [] };
+      // Legacy fallback: no bulk endpoint, so delete each file individually.
+      // Reconcile per-item with allSettled — a single failure must not abandon
+      // the rest of the batch (Promise.all) nor let us claim the whole batch was
+      // trashed. Report exactly which ids landed (trashed), which were already
+      // gone (404 -> missing, matching the bulk endpoint's contract), and which
+      // genuinely failed (also surfaced as missing so callers refresh/retry).
+      const settled = await Promise.allSettled(uniqueIds.map((id) => deleteFile(id)));
+      const trashed: string[] = [];
+      const missing: string[] = [];
+      const hardErrors: unknown[] = [];
+      settled.forEach((outcome, i) => {
+        const id = uniqueIds[i];
+        if (outcome.status === 'fulfilled') {
+          trashed.push(id);
+        } else if (outcome.reason instanceof ApiError && outcome.reason.status === 404) {
+          missing.push(id);
+        } else {
+          missing.push(id);
+          hardErrors.push(outcome.reason);
+        }
+      });
+      // Nothing succeeded and every failure was a real error (e.g. offline / 5xx):
+      // surface it instead of masking an outage as "some items already gone".
+      if (trashed.length === 0 && hardErrors.length === uniqueIds.length) {
+        throw hardErrors[0];
+      }
+      return { trashed, already_trashed: [], missing };
     }
     throw err;
   }

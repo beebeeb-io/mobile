@@ -481,6 +481,26 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
     })
   }, [isUnlocked, unlockAttempted])
 
+  // Release native key material on unmount (bug R3). Signout flips this
+  // provider's `key` prop (user_id → 'signed-out') which REMOUNTS the provider:
+  // that resets the JS refs of the *new* instance but never runs `lock()`, so
+  // the OLD instance's native MasterKeyHandle is never released (Rust never
+  // zeroizes the master key) and the cached request-key (R_priv) buffers in the
+  // resolver are never zeroed. Mirror lock()'s teardown here — minus setState,
+  // since the component is unmounting. The biometric lock screen does NOT change
+  // `key`, so the warm-vault-on-lock design (the handle intentionally outlives
+  // the lock screen) is preserved.
+  useEffect(() => {
+    return () => {
+      if (masterKeyHandleId.current != null) {
+        void releaseHandle(masterKeyHandleId.current).catch(() => {})
+        masterKeyHandleId.current = null
+      }
+      requestResolverRef.current?.clear()
+      requestResolverRef.current = null
+    }
+  }, [])
+
   const unlock = useCallback(async (phrase?: string, source: VaultUnlockSource = phrase != null ? 'recovery_phrase' : 'keychain') => {
     const hasRecoveryPhrase = phrase != null
     const alreadyUnlocked = masterKeyHandleId.current != null

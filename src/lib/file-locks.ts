@@ -4,7 +4,13 @@ const LOCKED_FILES_KEY = 'beebeeb.locked_files'
 
 async function getLockedFileIds(): Promise<Set<string>> {
   const raw = await SecureStore.getItemAsync(LOCKED_FILES_KEY).catch(() => null)
-  return new Set(raw ? JSON.parse(raw) : [])
+  if (!raw) return new Set()
+  try {
+    const parsed = JSON.parse(raw)
+    return new Set(Array.isArray(parsed) ? parsed : [])
+  } catch {
+    return new Set()
+  }
 }
 
 export async function isFileLocked(fileId: string): Promise<boolean> {

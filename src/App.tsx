@@ -795,10 +795,15 @@ export default function App() {
       void initLocalIdentifierMap().catch((err: unknown) =>
         console.warn('[App] initLocalIdentifierMap failed', err),
       );
-    } catch {
-      // Token invalid or expired — stay on login
-      await clearToken();
-      setUser(null);
+    } catch (err) {
+      // Only a definitive 401 means the session is gone — and request() has
+      // already cleared the invalid token in that case. Transient failures
+      // (offline/network ApiError(0), 5xx, Secure-Enclave warm-up) must NOT
+      // destroy a valid stored session: keep it so the next attempt can retry.
+      if (err instanceof ApiError && err.status === 401) {
+        await clearToken();
+        setUser(null);
+      }
     }
   }, []);
 
