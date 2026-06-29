@@ -82,4 +82,20 @@ describe('findInPages — early-exit lookup across pages (0755)', () => {
     const found = await findInPages(fetchPage, async (n) => n === 30);
     expect(found).toBe(30);
   });
+
+  test('stops at the maxItems cap when the cursor never goes null (hostile/cyclic source)', async () => {
+    // A pathological source: one item per page, cursor NEVER null → without the
+    // outer bound this would loop forever. The hard ceiling below converts a
+    // regression (unbounded loop) into a loud failure instead of a hung test.
+    let calls = 0;
+    const fetchPage = async (cursor?: string) => {
+      if (++calls > 100) throw new Error('findInPages did not honour maxItems — unbounded loop');
+      const idx = cursor === undefined ? 0 : Number(cursor);
+      return { items: [idx], nextCursor: String(idx + 1) }; // nextCursor is NEVER null
+    };
+    const found = await findInPages(fetchPage, (n) => n === -1 /* never matches */, 10);
+    expect(found).toBeUndefined();
+    // 1 item per page × cap of 10 ⇒ stops after scanning 10 items (10 fetches).
+    expect(calls).toBe(10);
+  });
 });

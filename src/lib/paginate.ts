@@ -38,16 +38,27 @@ export async function collectPaged<T>(
  * wasteful (task 0755). Returns `undefined` if no page matches before the cursor
  * is exhausted. A truncated single-page lookup would silently miss a target past
  * page 1 — this never does.
+ *
+ * `maxItems` is an outer bound (mirrors collectPaged's `maxTotal`) so a
+ * pathological or hostile listing whose `next_cursor` never goes null can't loop
+ * unbounded; on scanning that many items without a match we stop and warn,
+ * returning `undefined`.
  */
 export async function findInPages<T>(
   fetchPage: (cursor?: string) => Promise<{ items: T[]; nextCursor: string | null }>,
   match: (item: T) => boolean | Promise<boolean>,
+  maxItems = 50_000,
 ): Promise<T | undefined> {
   let cursor: string | undefined;
+  let scanned = 0;
   do {
     const { items, nextCursor } = await fetchPage(cursor);
     for (const item of items) {
       if (await match(item)) return item;
+      if (++scanned >= maxItems) {
+        console.warn(`[findInPages] scanned ${maxItems} items without a match — stopping`);
+        return undefined;
+      }
     }
     cursor = nextCursor ?? undefined;
   } while (cursor);
