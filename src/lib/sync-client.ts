@@ -881,6 +881,29 @@ export class SyncClient {
       console.warn('[SyncClient] Failed to flush pending ops', err);
     }
   }
+
+  /**
+   * R13 — optimistically mirror a LOCAL move/rename into the in-memory tree
+   * WITHOUT posting it. The authoritative write already went out over the REST
+   * file API (`moveFile`/`renameFile`); the server emits the matching sync op,
+   * which echoes back over SSE and re-applies the SAME absolute change
+   * idempotently. Without this, an optimistic move/rename lived only in the
+   * screen's `setFiles` state and was reverted the instant the list re-derived
+   * from `getChildren()` (focus / treeVersion re-render) before the echo
+   * arrived — and, while the stream is disconnected, until the next snapshot.
+   * No-op until the node is loaded (the legacy index path covers that case).
+   */
+  applyLocalOp(opType: string, payload: Record<string, unknown>): void {
+    const id = payload.id as string | undefined;
+    if (!id || !this.tree.has(id)) return;
+    const affectedParents = this.affectedParentsForOp(opType, payload);
+    this.applyOpToTree(opType, payload);
+    this.emit({ type: 'op' });
+    if (affectedParents) {
+      for (const parent of affectedParents) this.dirtyParents.add(parent);
+      this.scheduleCachePersist();
+    }
+  }
 }
 
 interface SyncSnapshotLike {

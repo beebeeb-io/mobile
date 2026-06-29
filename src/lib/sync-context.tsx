@@ -50,6 +50,12 @@ interface SyncContextValue {
     opType: string,
     payload: Record<string, unknown>,
   ) => Promise<{ accepted: boolean; reason?: string }>;
+  /**
+   * R13 — optimistically mirror a mutation already written via the REST file
+   * API into the in-memory tree (no POST). The server echo re-applies it
+   * idempotently over SSE.
+   */
+  applyLocalOp: (opType: string, payload: Record<string, unknown>) => void;
 }
 
 const SyncContext = createContext<SyncContextValue | null>(null);
@@ -155,6 +161,13 @@ export function SyncProvider({ children }: { children: ReactNode }) {
     [],
   );
 
+  const applyLocalOp = useCallback(
+    (opType: string, payload: Record<string, unknown>): void => {
+      clientRef.current?.applyLocalOp(opType, payload);
+    },
+    [],
+  );
+
   const value = useMemo<SyncContextValue>(
     () => ({
       status,
@@ -167,8 +180,9 @@ export function SyncProvider({ children }: { children: ReactNode }) {
       allNodes,
       collectSubtreeIds,
       submitOp,
+      applyLocalOp,
     }),
-    [status, loading, error, ready, treeVersion, children_, getNode, allNodes, collectSubtreeIds, submitOp],
+    [status, loading, error, ready, treeVersion, children_, getNode, allNodes, collectSubtreeIds, submitOp, applyLocalOp],
   );
 
   return <SyncContext.Provider value={value}>{children}</SyncContext.Provider>;

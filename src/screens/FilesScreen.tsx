@@ -2698,6 +2698,14 @@ export default function FilesScreen() {
         const moved = files.find((f) => f.id === id);
         if (!moved) continue;
         indexFile(id, toSearchIndexEntry(moved, decryptedNames[id] ?? displayName(moved), targetId));
+        // R13 — mirror the move into the sync tree (the source the list
+        // re-derives from on focus / treeVersion), so it isn't reverted before
+        // the server's SSE echo lands.
+        sync.applyLocalOp(moved.is_folder ? 'folder_move' : 'file_move', {
+          id,
+          old_parent_id: currentFolder.id,
+          new_parent_id: targetId,
+        });
       }
       const movedSet = new Set(movedIds);
       setFiles((prev) => prev.filter((f) => !movedSet.has(f.id)));
@@ -2728,7 +2736,7 @@ export default function FilesScreen() {
     } finally {
       setMoveBusy(false);
     }
-  }, [movePicker, moveBusy, files, decryptedNames, indexFile, showToast, selectMode, exitSelectMode]);
+  }, [movePicker, moveBusy, files, decryptedNames, indexFile, showToast, selectMode, exitSelectMode, sync, currentFolder.id]);
 
   const handleBatchMove = useCallback(() => {
     if (selectedIds.size === 0) return;
@@ -2886,6 +2894,13 @@ export default function FilesScreen() {
                 const encName = await encryptMetadata(item.id, fileMetadataPlaintext(next, mimeTypeFor(item)));
                 const nameEncrypted = encryptedMetadataToJson(encName);
                 await renameFile(item.id, nameEncrypted);
+                // R13 — mirror the rename into the sync tree so a focus /
+                // treeVersion re-derive doesn't flash the old name before the
+                // server's SSE echo lands.
+                sync.applyLocalOp(item.is_folder ? 'folder_rename' : 'file_rename', {
+                  id: item.id,
+                  new_name_encrypted: nameEncrypted,
+                });
                 setFiles((prev) =>
                   prev.map((f) => (
                     f.id === item.id
