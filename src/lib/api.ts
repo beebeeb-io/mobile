@@ -1871,7 +1871,6 @@ export interface Subscription {
   status: string;
   current_period_end: string | null;
   is_mock?: boolean;
-  stripe_configured?: boolean;
   quota_bytes?: number;
   used_bytes?: number;
 }
@@ -2461,7 +2460,6 @@ export async function unfreezeAccount(): Promise<{ frozen: boolean }> {
 export interface Plan {
   id: string;
   name: string;
-  stripe_product_id?: string | null;
   price_eur: number;
   price_yearly_eur: number;
   storage_bytes: number;
@@ -2482,23 +2480,9 @@ export async function getPlans(): Promise<Plan[]> {
   }
 }
 
-/** POST /api/v1/billing/checkout — starts a Stripe Checkout session */
-export async function createCheckoutSession(params: {
-  plan: string;
-  billing_cycle: 'monthly' | 'yearly';
-  seats?: number;
-}): Promise<{ url: string }> {
-  return request<{ url: string }>('POST', '/api/v1/billing/checkout', params);
-}
-
-/** POST /api/v1/billing/portal — opens Stripe Customer Portal */
-export async function createPortalSession(): Promise<{ url: string } | null> {
-  try {
-    return await request<{ url: string }>('POST', '/api/v1/billing/portal');
-  } catch {
-    return null;
-  }
-}
+// Billing checkout + management moved to the web (app.beebeeb.io/settings/billing)
+// when billing migrated off Stripe to Mollie — the mobile app no longer creates
+// checkout/portal sessions itself (task 0958).
 
 // ─── Data residency (task 0051) ───────────────────────────────────────────────
 

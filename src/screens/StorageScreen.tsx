@@ -1,6 +1,7 @@
 /**
  * Storage & Plan screen — usage breakdown + plan upgrade.
- * Opens Stripe URLs in the system browser (not in-app — App Store policy).
+ * Billing actions (upgrade / manage) open the web billing page in the system
+ * browser — App Store policy + a single web billing surface (Mollie).
  */
 
 import React, { useCallback, useEffect, useState } from 'react';
@@ -26,9 +27,6 @@ import {
   getStorageUsage,
   getSubscription,
   getPlans,
-  createCheckoutSession,
-  createPortalSession,
-  ApiError,
   type StorageUsage,
   type Subscription,
   type Plan,
@@ -231,13 +229,12 @@ function CurrentPlanCard({
 // ── Plan upgrade card ─────────────────────────────────────────────────────────
 
 function PlanCard({
-  plan, currentPlanSlug, onUpgrade, upgrading, billingUnavailable, c,
+  plan, currentPlanSlug, onUpgrade, upgrading, c,
 }: {
   plan: Plan;
   currentPlanSlug: string;
   onUpgrade: (planId: string, billingCycle: BillingCycle) => void;
   upgrading: string | null;
-  billingUnavailable: boolean;
   c: C;
 }) {
   const isCurrent = plan.id === currentPlanSlug;
@@ -279,12 +276,12 @@ function PlanCard({
         </Text>
       )}
 
-      {/* Upgrade buttons */}
+      {/* Upgrade buttons → open the web billing page (logic lives on the web) */}
       {!isCurrent && (
         <View style={{ flexDirection: 'row', gap: 8, marginTop: 2 }}>
           <TouchableOpacity
             activeOpacity={0.8}
-            disabled={!!upgrading || billingUnavailable}
+            disabled={!!upgrading}
             onPress={() => { Haptics.selectionAsync(); onUpgrade(plan.id, 'monthly'); }}
             style={{
               flex: 1,
@@ -300,23 +297,23 @@ function PlanCard({
             }}
             accessibilityRole="button"
             accessibilityLabel={`Upgrade to ${plan.name} monthly`}
-            accessibilityState={{ disabled: !!upgrading || billingUnavailable }}
+            accessibilityState={{ disabled: !!upgrading }}
           >
             {upgrading === monthlyKey
               ? <ActivityIndicator size="small" color={c.amber} />
-              : <Text style={{ fontSize: 13, fontWeight: '700', color: billingUnavailable ? c.ink3 : c.ink }}>Monthly</Text>
+              : <Text style={{ fontSize: 13, fontWeight: '700', color: c.ink }}>Monthly</Text>
             }
           </TouchableOpacity>
           {hasYearly && (
             <TouchableOpacity
               activeOpacity={0.8}
-              disabled={!!upgrading || billingUnavailable}
+              disabled={!!upgrading}
               onPress={() => { Haptics.selectionAsync(); onUpgrade(plan.id, 'yearly'); }}
               style={{
                 flex: 1,
-                backgroundColor: billingUnavailable ? c.paper2 : c.amber,
-                borderColor: billingUnavailable ? c.line : c.amber,
-                borderWidth: billingUnavailable ? 1 : 0,
+                backgroundColor: c.amber,
+                borderColor: c.amber,
+                borderWidth: 0,
                 borderRadius: 8,
                 paddingVertical: 9,
                 alignItems: 'center',
@@ -326,24 +323,18 @@ function PlanCard({
               }}
               accessibilityRole="button"
               accessibilityLabel={`Upgrade to ${plan.name} yearly`}
-              accessibilityState={{ disabled: !!upgrading || billingUnavailable }}
+              accessibilityState={{ disabled: !!upgrading }}
             >
               {upgrading === yearlyKey
                 ? <ActivityIndicator size="small" color={c.ink} />
                 : <>
-                    <Text style={{ fontSize: 13, fontWeight: '700', color: billingUnavailable ? c.ink3 : c.ink }}>Yearly</Text>
-                    <Ionicons name="chevron-forward" size={14} color={billingUnavailable ? c.ink3 : c.ink} />
+                    <Text style={{ fontSize: 13, fontWeight: '700', color: c.ink }}>Yearly</Text>
+                    <Ionicons name="chevron-forward" size={14} color={c.ink} />
                   </>
               }
             </TouchableOpacity>
           )}
         </View>
-      )}
-
-      {!isCurrent && billingUnavailable && (
-        <Text style={{ fontSize: 11, color: c.ink3, lineHeight: 15 }}>
-          Plan changes are not available in this app environment. Use the web app for billing changes.
-        </Text>
       )}
 
       {isCurrent && (
@@ -390,54 +381,39 @@ export default function StorageScreen() {
 
   const currentPlanSlug = subscription?.plan ?? usage?.plan_name ?? 'free';
   const isFree = currentPlanSlug.toLowerCase() === 'free';
-  const billingUnavailable = subscription?.stripe_configured === false;
+  // Billing logic lives on the web (App Store policy + single Mollie surface):
+  // this screen presents the plans + usage natively, but checkout and
+  // subscription management open the web billing page in the system browser.
+  const openWebBilling = useCallback(async () => {
+    try {
+      await Linking.openURL('https://app.beebeeb.io/settings/billing');
+    } catch {
+      Alert.alert(
+        'Couldn’t open billing',
+        'Manage your subscription on the web at app.beebeeb.io/settings/billing.',
+      );
+    }
+  }, []);
 
-  // Upgrade: open Stripe Checkout in system browser
+  // Upgrade / Manage → open the web billing page (it handles the actual checkout
+  // and subscription changes). The busy state gives immediate tap feedback.
   const handleUpgrade = useCallback(async (planId: string, billingCycle: BillingCycle) => {
     setUpgrading(`${planId}:${billingCycle}`);
     try {
-      const { url } = await createCheckoutSession({
-        plan: planId,
-        billing_cycle: billingCycle,
-        seats: 1,
-      });
-      await Linking.openURL(url);
-    } catch (err) {
-      const setupUnavailable =
-        err instanceof ApiError &&
-        (err.message.toLowerCase().includes('stripe not configured') ||
-          err.message.toLowerCase().includes('no live price'));
-      Alert.alert(
-        setupUnavailable ? 'Billing changes unavailable' : 'Could not start checkout',
-        setupUnavailable
-          ? 'Your current storage and plan are shown here. Billing changes are handled on the web while payment setup is unavailable in this environment.'
-          : 'We could not start checkout from the app. Open the web app to manage billing.',
-        [
-          { text: 'Cancel', style: 'cancel' },
-          { text: 'Open web app', onPress: () => Linking.openURL('https://app.beebeeb.io/settings/billing').catch(() => {}) },
-        ],
-      );
+      await openWebBilling();
     } finally {
       setUpgrading(null);
     }
-  }, []);
+  }, [openWebBilling]);
 
-  // Manage: open Stripe Customer Portal
   const handleManage = useCallback(async () => {
     setManaging(true);
     try {
-      const result = await createPortalSession();
-      if (result?.url) {
-        await Linking.openURL(result.url);
-      } else {
-        Linking.openURL('https://app.beebeeb.io/settings/billing').catch(() => {});
-      }
-    } catch {
-      Linking.openURL('https://app.beebeeb.io/settings/billing').catch(() => {});
+      await openWebBilling();
     } finally {
       setManaging(false);
     }
-  }, []);
+  }, [openWebBilling]);
 
   return (
     <View style={[layout.root, { backgroundColor: c.paper }]}>
@@ -514,15 +490,13 @@ export default function StorageScreen() {
                     currentPlanSlug={currentPlanSlug}
                     onUpgrade={handleUpgrade}
                     upgrading={upgrading}
-                    billingUnavailable={billingUnavailable}
                     c={c}
                   />
                 ))}
               </View>
               <Text style={[layout.noteText, { color: c.ink3, marginTop: 8 }]}>
-                {billingUnavailable
-                  ? 'Prices in EUR. Billing changes are available on the web while payment setup is unavailable here.'
-                  : 'Prices in EUR. Annual billing includes a discount. You will be redirected to Stripe Checkout in your browser.'}
+                Prices in EUR. Annual billing includes a discount. Checkout and
+                subscription management open securely on the web at beebeeb.io.
               </Text>
             </View>
           )}
