@@ -594,14 +594,24 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
         } else {
           let result = await loadVerifiedMasterKeyHandle()
 
-          // Belt-and-suspenders: a `transient` result on cold launch is almost
-          // always a Secure-Enclave that isn't warm yet. Give it ONE silent
-          // retry after a short delay — the SE typically warms within a frame
-          // or two — before deciding anything terminal. A `no_key` result is
-          // never retried (it's genuinely missing) and a success short-circuits.
-          if ('reason' in result && result.reason === 'transient') {
-            recordRuntimeTrace('vault.unlock.transient_retry', { source })
-            await new Promise((resolve) => setTimeout(resolve, 400))
+          // A `transient` result on cold launch is almost always a Secure-Enclave
+          // that isn't warm yet. The SE warm-up is device-dependent and can take
+          // noticeably longer than one frame on real hardware (a single 400ms
+          // retry left users seeing the first unlock fail and having to tap again).
+          // Retry with backoff until the read settles to a definitive result
+          // (success or no_key). This is safe and adds NO extra Face ID prompts:
+          // a `transient` is a pre-success fast-fail (the SE returned no key and
+          // no prompt completed); only the first WARM read prompts, once, and it
+          // short-circuits the loop. `no_key` is never retried (genuinely missing).
+          const transientBackoffMs = [300, 500, 800, 1200, 1800]
+          for (let attempt = 0; attempt < transientBackoffMs.length; attempt += 1) {
+            if (!('reason' in result) || result.reason !== 'transient') break
+            recordRuntimeTrace('vault.unlock.transient_retry', {
+              source,
+              attempt: attempt + 1,
+              delayMs: transientBackoffMs[attempt],
+            })
+            await new Promise((resolve) => setTimeout(resolve, transientBackoffMs[attempt]))
             result = await loadVerifiedMasterKeyHandle()
           }
 
