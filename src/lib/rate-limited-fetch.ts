@@ -3,12 +3,17 @@ type FetchLike = (input: FetchInput, init?: RequestInit) => Promise<Response>;
 type SleepFn = (ms: number) => Promise<void>;
 type NowFn = () => number;
 
-export type RateLimitBucket = 'auth' | 'files' | 'shares' | 'general' | 'external';
+export type RateLimitBucket = 'auth' | 'files' | 'shares' | 'billing' | 'general' | 'external';
 
 const DEFAULT_BUCKET_SPACING_MS: Record<RateLimitBucket, number> = {
   auth: 250,
   files: 120,
   shares: 250,
+  // Billing reads (subscription + plans) are a tiny, low-frequency pair that a
+  // single screen fires together. Keep them in their own zero-spacing bucket so
+  // they run in parallel instead of serializing behind the shared `general`
+  // 140 ms cadence — the server billing tier is generous and these are GETs.
+  billing: 0,
   general: 140,
   external: 0,
 };
@@ -47,6 +52,7 @@ export function bucketForUrl(input: FetchInput): RateLimitBucket {
   if (pathname.includes('/api/v1/files') || pathname.includes('/api/v1/uploads')) return 'files';
   if (pathname.includes('/api/v1/auth')) return 'auth';
   if (pathname.includes('/api/v1/shares')) return 'shares';
+  if (pathname.includes('/api/v1/billing')) return 'billing';
   if (pathname.includes('/api/')) return 'general';
   return 'external';
 }

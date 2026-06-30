@@ -15,6 +15,42 @@ describe('rate-limited fetch', () => {
     expect(bucketForUrl('https://example.com/pixel.png')).toBe('external');
   });
 
+  test('routes billing reads into their own bucket, not the shared general lane', () => {
+    expect(bucketForUrl('https://api.beebeeb.io/api/v1/billing/subscription')).toBe('billing');
+    expect(bucketForUrl('https://api.beebeeb.io/api/v1/billing/plans')).toBe('billing');
+    // A non-billing /api/ route still falls through to the catch-all bucket.
+    expect(bucketForUrl('https://api.beebeeb.io/api/v1/preferences/theme')).toBe('general');
+    // Files stay on the files lane (the billing rule must not steal them).
+    expect(bucketForUrl('https://api.beebeeb.io/api/v1/files/usage')).toBe('files');
+  });
+
+  test('runs the two billing reads concurrently (zero-spacing bucket, no serialization)', async () => {
+    let now = 2_000;
+    const calls: number[] = [];
+    const sleeps: number[] = [];
+    const fetcher = createRateLimitedFetch({
+      fetchImpl: async () => {
+        calls.push(now);
+        return new Response('{}', { status: 200 });
+      },
+      now: () => now,
+      sleep: async (ms) => {
+        sleeps.push(ms);
+        now += ms;
+      },
+      // Default billing spacing is 0; assert the concurrent behaviour explicitly.
+    });
+
+    await Promise.all([
+      fetcher('https://api.beebeeb.io/api/v1/billing/subscription'),
+      fetcher('https://api.beebeeb.io/api/v1/billing/plans'),
+    ]);
+
+    // Both fire at the same logical instant — no queue wait was inserted.
+    expect(calls).toEqual([2_000, 2_000]);
+    expect(sleeps).toEqual([]);
+  });
+
   test('paces concurrent file requests through one queue', async () => {
     let now = 1_000;
     const calls: number[] = [];

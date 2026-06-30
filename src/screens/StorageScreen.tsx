@@ -24,13 +24,13 @@ import { useTheme } from '../lib/theme-context';
 import { spacing, type Colors } from '../theme';
 import { formatBytes } from '../lib/format';
 import {
-  getStorageUsage,
   getSubscription,
   getPlans,
   type StorageUsage,
   type Subscription,
   type Plan,
 } from '../lib/api';
+import { loadCachedBilling, saveCachedBilling } from '../lib/billing-cache';
 
 type C = Colors;
 type BillingCycle = 'monthly' | 'yearly';
@@ -60,6 +60,29 @@ const UPGRADE_CHAIN: Record<string, string> = {
   personal: 'pro',
   data_hoarder: 'business',
 };
+
+/**
+ * Derive the storage-usage view-model from the subscription payload. The
+ * `/billing/subscription` response already embeds `used_bytes` + `quota_bytes`
+ * (server `billing.rs` sources both from the same `get_user_quota` that backs
+ * `/files/usage`), so this screen no longer needs the separate
+ * `getStorageUsage()` round-trip. `plan_name` maps to `subscription.plan` (both
+ * are the plan slug). `quota_bytes <= 0` is the unlimited sentinel — preserved
+ * here so `StorageUsageCard` renders "no fixed cap" exactly as before.
+ */
+function usageFromSubscription(sub: Subscription | null): StorageUsage | null {
+  if (!sub || sub.used_bytes == null || sub.quota_bytes == null) return null;
+  return {
+    used_bytes: sub.used_bytes,
+    plan_limit_bytes: sub.quota_bytes,
+    plan_name: sub.plan,
+  };
+}
+
+/** Plans shown as upgrade options — active, excluding free (matches prior filter). */
+function visiblePlans(all: Plan[]): Plan[] {
+  return all.filter((pl) => pl.is_active !== false && pl.id !== 'free');
+}
 
 // ── Layout ────────────────────────────────────────────────────────────────────
 
@@ -354,28 +377,55 @@ export default function StorageScreen() {
   const navigation = useNavigation();
   const insets = useSafeAreaInsets();
 
-  const [usage, setUsage] = useState<StorageUsage | null>(null);
   const [subscription, setSubscription] = useState<Subscription | null>(null);
   const [plans, setPlans] = useState<Plan[]>([]);
   const [loading, setLoading] = useState(true);
   const [upgrading, setUpgrading] = useState<string | null>(null);
   const [managing, setManaging] = useState(false);
 
+  // Storage usage is derived from the subscription payload (used_bytes +
+  // quota_bytes are embedded there), so there is no separate usage round-trip.
+  const usage = usageFromSubscription(subscription);
+
   useEffect(() => {
     let cancelled = false;
-    Promise.all([
-      getStorageUsage().catch(() => null),
-      getSubscription().catch(() => null),
-      getPlans().catch(() => []),
-    ]).then(([u, sub, p]) => {
+
+    (async () => {
+      // 1. Instant paint: render last-known billing values from cache so a warm
+      //    open shows content immediately instead of a spinner. (Briefly stale —
+      //    confirmed by the network refresh below.)
+      const cached = await loadCachedBilling();
       if (cancelled) return;
-      if (u) setUsage(u);
+      if (cached) {
+        setSubscription(cached.subscription);
+        setPlans(visiblePlans(cached.plans));
+        setLoading(false);
+      }
+
+      // 2. Revalidate in the background. Billing + plans now sit in their own
+      //    zero-spacing rate-limit bucket, so these two run in parallel.
+      const [sub, freshPlans] = await Promise.all([
+        getSubscription().catch(() => null),
+        getPlans().catch(() => [] as Plan[]),
+      ]);
+      if (cancelled) return;
+
       if (sub) setSubscription(sub);
-      // Show plans excluding free + already above current
-      setPlans(p.filter(pl => pl.is_active !== false && pl.id !== 'free'));
-    }).finally(() => {
-      if (!cancelled) setLoading(false);
-    });
+      if (freshPlans.length > 0) setPlans(visiblePlans(freshPlans));
+
+      // 3. Re-persist the freshest known-good snapshot. Don't clobber a good
+      //    warm cache with an all-empty error result (sub null + no plans).
+      if (sub || freshPlans.length > 0) {
+        void saveCachedBilling(
+          sub ?? cached?.subscription ?? null,
+          freshPlans.length > 0 ? freshPlans : cached?.plans ?? [],
+        );
+      }
+
+      // Cold first-ever open (no cache) ends its spinner here.
+      setLoading(false);
+    })();
+
     return () => { cancelled = true; };
   }, []);
 
