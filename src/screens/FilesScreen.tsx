@@ -203,6 +203,34 @@ function rowActionIcon(label: string): React.ComponentProps<typeof Ionicons>['na
   }
 }
 
+// 1104 — stable testID for a row-action so Maestro/E2E can tap it by id
+// (RN testID → iOS accessibilityIdentifier). Toggle labels collapse to one
+// stable id (offline/lock/pin/delete/preview) so a flow doesn't depend on the
+// current toggle state.
+function sheetActionTestId(label: string): string {
+  switch (label) {
+    case 'Rename': return 'sheet-action-rename';
+    case 'Preview':
+    case 'Open': return 'sheet-action-preview';
+    case 'Share': return 'sheet-action-share';
+    case 'Save to Files': return 'sheet-action-save-files';
+    case 'Save to Photos': return 'sheet-action-save-photos';
+    case 'Move to...': return 'sheet-action-move';
+    case 'Make available offline':
+    case 'Remove offline': return 'sheet-action-offline';
+    case 'Create proof': return 'sheet-action-proof';
+    case 'Lock file':
+    case 'Unlock file': return 'sheet-action-lock';
+    case 'Pin to top':
+    case 'Unpin': return 'sheet-action-pin';
+    case 'Move to Trash':
+    case 'Delete': return 'sheet-action-delete';
+    case 'Details': return 'sheet-action-details';
+    default:
+      return `sheet-action-${label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')}`;
+  }
+}
+
 /**
  * Project a SyncNode (CRDT tree node) onto the FileEntry shape the rest of
  * the screen consumes. Both shapes already share most fields — this is a
@@ -3186,6 +3214,7 @@ export default function FilesScreen() {
       label: opt,
       icon: rowActionIcon(opt),
       destructive: i === destructiveIndex,
+      testID: sheetActionTestId(opt),
       onPress: () => dispatchAction(opt),
     }));
     const subtitle = item.is_folder
@@ -3270,6 +3299,7 @@ export default function FilesScreen() {
               navigateToBreadcrumb(0);
             }}
             hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
+            testID="breadcrumb-crumb-0"
             accessibilityLabel={`Navigate to ${root.name}`}
             accessibilityRole="button"
           >
@@ -3283,6 +3313,7 @@ export default function FilesScreen() {
           <TouchableOpacity
             onPress={openBreadcrumbPopover}
             hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
+            testID="breadcrumb-collapse"
             accessibilityLabel="Show folders in between"
             accessibilityRole="button"
           >
@@ -3294,6 +3325,7 @@ export default function FilesScreen() {
           <Ionicons name="chevron-forward" size={12} color={c.ink4} style={styles.breadcrumbChevron} />
 
           <Text
+            testID={`breadcrumb-crumb-${folderStack.length - 1}`}
             style={[styles.breadcrumbText, { color: c.ink, fontWeight: '600', flexShrink: 1 }]}
             numberOfLines={1}
             ellipsizeMode="tail"
@@ -3329,6 +3361,7 @@ export default function FilesScreen() {
                   navigateToBreadcrumb(index);
                 }}
                 hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
+                testID={`breadcrumb-crumb-${index}`}
                 accessibilityLabel={`Navigate to ${entry.name}`}
                 accessibilityRole="button"
               >
@@ -4102,6 +4135,7 @@ export default function FilesScreen() {
               onSubmitEditing={() => void confirmNewFolderModal()}
               editable={!creatingFolder}
               style={[styles.modalInput, { color: c.ink, borderColor: c.line2, backgroundColor: c.paper2 }]}
+              testID="create-folder-input"
               accessibilityLabel="Folder name"
             />
             <View style={styles.modalActions}>
@@ -4118,6 +4152,7 @@ export default function FilesScreen() {
                 style={[styles.modalPrimary, { backgroundColor: c.amber, opacity: !newFolderName.trim() || creatingFolder ? 0.5 : 1 }]}
                 onPress={() => void confirmNewFolderModal()}
                 disabled={!newFolderName.trim() || creatingFolder}
+                testID="create-folder-confirm"
                 accessibilityRole="button"
                 accessibilityLabel="Create folder"
               >
@@ -4168,6 +4203,7 @@ export default function FilesScreen() {
                       key={entry.id ?? `crumb-${stackIndex}`}
                       onPress={() => onBreadcrumbCrumbPress(stackIndex)}
                       style={[styles.breadcrumbPopoverRow, { paddingLeft: 12 + indent * 18 }]}
+                      testID={`breadcrumb-crumb-${stackIndex}`}
                       accessibilityRole="button"
                       accessibilityLabel={`Go to ${entry.name}`}
                     >

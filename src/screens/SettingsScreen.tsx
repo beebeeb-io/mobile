@@ -316,12 +316,17 @@ function SettingsRow({
       }
     : undefined;
 
+  // 1104 — stable id for Maestro/E2E (RN testID → iOS accessibilityIdentifier),
+  // derived deterministically from the label. Keeps accessibilityLabel for VoiceOver.
+  const testID = `settings-row-${label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')}`;
+
   return (
     <TouchableOpacity
       style={layout.row}
       activeOpacity={onPress ? 0.6 : 1}
       onPress={handlePress}
       disabled={!onPress}
+      testID={testID}
       accessibilityLabel={value ? `${label}, ${value}` : label}
       accessibilityRole={onPress ? 'button' : 'text'}
     >

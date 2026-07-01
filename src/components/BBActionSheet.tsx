@@ -43,6 +43,8 @@ export interface ActionSheetRow {
   active?: boolean;
   /** Destructive (Delete) — red icon + label, medium-impact haptic. */
   destructive?: boolean;
+  /** Stable id for Maestro/E2E (RN testID → iOS accessibilityIdentifier). */
+  testID?: string;
   onPress: () => void;
 }
 
@@ -192,6 +194,7 @@ export function BBActionSheet({ visible, onClose, title, header, rows }: BBActio
                 <React.Fragment key={row.key}>
                   <Pressable
                     onPress={() => handleRow(row)}
+                    testID={row.testID}
                     accessibilityRole="button"
                     accessibilityState={{ selected: row.active }}
                     style={({ pressed }) => [styles.row, pressed && { backgroundColor: c.line }]}
