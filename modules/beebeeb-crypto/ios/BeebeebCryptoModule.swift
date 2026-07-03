@@ -211,6 +211,52 @@ private final class PreviewDownloadProgress: DownloadProgressCallback, FileProgr
   private let fileId: String
   private let emit: ([String: Any]) -> Void
 
+  // Progress-emission throttle state (guarded by `lock`). The high-frequency stages
+  // ("downloading" from URLSession didWriteData, per-chunk "decrypting") fire tens of
+  // thousands of times for a multi-GB export; unthrottled that floods the RN bridge +
+  // main queue and gets the app memory-watchdog-killed (TestFlight #190). We gate those
+  // to at most ~1 event / 150ms OR a whole-percent advance, while ALWAYS emitting the
+  // first event of a stage, any stage transition, the final tick, and terminal stages.
+  private var lastEmitStage: String = ""
+  private var lastEmitPercent: Int = -1
+  private var lastEmitAt: Date = .distantPast
+
+  /// Decide (under `lock`) whether this progress event should reach the JS bridge.
+  /// - `downloading` / `decrypting` are throttled; everything else (complete/error)
+  ///   is always emitted. A stage change always emits and resets the throttle window.
+  private func shouldEmit(stage: String, percent: Int, isFinal: Bool) -> Bool {
+    lock.lock()
+    defer { lock.unlock() }
+
+    // First event of a stage / any stage transition (e.g. downloading→decrypting,
+    // →complete, →error): always emit, and reset the window so the next stage starts fresh.
+    if stage != lastEmitStage {
+      lastEmitStage = stage
+      lastEmitPercent = percent
+      lastEmitAt = Date()
+      return true
+    }
+
+    // Non-throttled stages (complete/error and anything unexpected): never suppress.
+    guard stage == "downloading" || stage == "decrypting" else { return true }
+
+    // Always emit the final tick of a throttled stage so the banner reaches 100%
+    // before it transitions (download-complete → decrypting, decrypt-complete → complete).
+    if isFinal {
+      lastEmitPercent = percent
+      lastEmitAt = Date()
+      return true
+    }
+
+    let now = Date()
+    let elapsedOK = now.timeIntervalSince(lastEmitAt) >= 0.15  // ~150ms
+    let percentOK = percent >= lastEmitPercent + 1
+    guard elapsedOK || percentOK else { return false }
+    lastEmitPercent = percent
+    lastEmitAt = now
+    return true
+  }
+
   init(requestId: String?, fileId: String, emit: @escaping ([String: Any]) -> Void) {
     self.requestId = requestId
     self.fileId = fileId
@@ -289,6 +335,24 @@ private final class PreviewDownloadProgress: DownloadProgressCallback, FileProgr
     chunksTotal: Int? = nil,
     extra: [String: Any] = [:]
   ) {
+    // Compute the integer percent + final-tick flag for the high-frequency stages so the
+    // throttle gate can drop redundant events before they hit the main-queue/RN-bridge emit.
+    var percent = 0
+    var isFinal = false
+    if stage == "downloading" {
+      if let bytesTotal, bytesTotal > 0, let bytesDownloaded {
+        percent = Int((bytesDownloaded * 100) / bytesTotal)
+        isFinal = bytesDownloaded >= bytesTotal
+      }
+    } else if stage == "decrypting" {
+      if let chunksTotal, chunksTotal > 0, let chunksCompleted {
+        percent = Int((chunksCompleted * 100) / chunksTotal)
+        isFinal = chunksCompleted >= chunksTotal
+      }
+    }
+
+    guard shouldEmit(stage: stage, percent: percent, isFinal: isFinal) else { return }
+
     var body: [String: Any] = [
       "requestId": requestId ?? "",
       "fileId": fileId,
