@@ -1,4 +1,5 @@
 import Foundation
+import LocalAuthentication
 import Security
 
 enum KeychainError: LocalizedError {
@@ -9,6 +10,11 @@ enum KeychainError: LocalizedError {
   case writeError(OSStatus)
   case readError(OSStatus)
   case invalidMasterKeySize
+  /// Typed biometric/passcode outcome for the primary master-key load, carried
+  /// to the JS layer as a stable code so cold-start warm-up (retry) is
+  /// distinguished from a real cancel / auth failure / lockout (surface, stay
+  /// locked — task 0882 / fail-closed 0428).
+  case vaultAuth(BeebeebKeychainCore.AuthFailureReason)
 
   var errorDescription: String? {
     switch self {
@@ -19,6 +25,7 @@ enum KeychainError: LocalizedError {
     case .writeError(let s): return "Keychain write error \(s)"
     case .readError(let s): return "Keychain read error \(s)"
     case .invalidMasterKeySize: return "Master key must be exactly 32 bytes"
+    case .vaultAuth(let reason): return reason.message
     }
   }
 }
@@ -153,18 +160,45 @@ final class KeychainManager {
     }
     #endif
 
+    // No wrapped blob at all → no key was ever provisioned here (fresh install /
+    // device restore that dropped the SE blob). Return nil BEFORE evaluating any
+    // biometric so a genuine recovery case never flashes a Face ID sheet. The JS
+    // layer maps this nil → { reason: 'no_key' } → recovery-phrase prompt.
+    guard BeebeebKeychainCore.fetchWrappedBlob(service: BeebeebKeychainCore.wrappedKeyService, label: label) != nil else {
+      RuntimeTrace.event("keychain.manager.load.miss", ["label": label])
+      return nil
+    }
+
+    // A key IS provisioned. Perform EXACTLY ONE explicit, user-initiated
+    // evaluation (task 0882 primary fix) and reuse it for the SE decrypt via
+    // kSecUseAuthenticationContext — this REPLACES the old too-early implicit
+    // biometric raised inside SecKeyCreateDecryptedData (which fired before the
+    // Secure Enclave was warm on a true cold restart, returned nil, and got
+    // mislabeled as a generic `seKeyNotFound` → JS `transient`). Preserves the
+    // 0792 exactly-one-prompt invariant (the explicit eval replaces, never adds,
+    // a prompt) and runs off the main thread (see authenticateForPrimaryLoad).
+    let authContext = try authenticateForPrimaryLoad(label: label)
+
     // Main app uses .primaryOnly — biometric/passcode prompt is acceptable
     // here. Extensions use .extensionOnly / .extensionThenPrimary.
-    guard let plaintextData = BeebeebKeychainCore.loadMasterKey(label: label, mode: .primaryOnly) else {
-      // If no blob exists, return nil; if the SE key is missing entirely,
-      // surface as a typed error so the JS layer can fall back to recovery.
-      if BeebeebKeychainCore.fetchWrappedBlob(service: BeebeebKeychainCore.wrappedKeyService, label: label) == nil {
-        RuntimeTrace.event("keychain.manager.load.miss", ["label": label])
-        return nil
-      }
-      // Blob exists but SE-decrypt failed — likely missing SE key
-      RuntimeTrace.event("keychain.manager.load.se_key_not_found", ["label": label])
-      throw KeychainError.seKeyNotFound
+    var decryptError: Unmanaged<CFError>?
+    guard let plaintextData = BeebeebKeychainCore.loadMasterKey(
+      label: label,
+      mode: .primaryOnly,
+      authContext: authContext,
+      decryptError: &decryptError
+    ) else {
+      // Auth succeeded but the SE decrypt still returned nil this early in
+      // process start. Map the (previously discarded) CFError to a typed reason
+      // instead of a blanket seKeyNotFound (task 0882 companion). The common
+      // case is a transient SE hiccup → notWarm → JS retries, and the retry
+      // reuses `authContext` (no second prompt).
+      let reason = BeebeebKeychainCore.classifyDecryptError(decryptError)
+      RuntimeTrace.event("keychain.manager.load.decrypt_failed", [
+        "label": label,
+        "reason": reason.rawValue
+      ])
+      throw KeychainError.vaultAuth(reason)
     }
 
     // Keep the extension-wrapped blob in sync so backup extensions can read.
@@ -177,6 +211,114 @@ final class KeychainManager {
 
     RuntimeTrace.event("keychain.manager.load.success", ["label": label])
     return plaintextData
+  }
+
+  // MARK: - Primary-load biometric evaluation (task 0882)
+
+  /// Run EXACTLY ONE explicit, user-initiated biometric/passcode evaluation for
+  /// the primary master-key load and return the satisfied `LAContext` so the SE
+  /// decrypt can reuse it (`kSecUseAuthenticationContext`) without raising a
+  /// second prompt (0792 exactly-one-prompt). This replaces the too-early
+  /// IMPLICIT evaluation that `SecKeyCreateDecryptedData` used to raise on its
+  /// own — that fired before the Secure Enclave was warm on a cold restart and
+  /// silently failed (task 0882).
+  ///
+  /// Policy matches the primary SE key's access-control variant
+  /// (`getOrCreateSEKey`, driven by `requiresBiometric`):
+  ///   - `.biometryAny`    → `.deviceOwnerAuthenticationWithBiometrics`
+  ///   - `.devicePasscode` → `.deviceOwnerAuthentication` (biometrics OR
+  ///                          passcode — preserves the passcode-only fallback).
+  ///
+  /// Threading: `evaluatePolicy` is asynchronous and iOS presents its sheet on
+  /// the main thread. We therefore MUST NOT block the main thread while waiting
+  /// (that would prevent the sheet from presenting → deadlock). Expo
+  /// AsyncFunctions already invoke this off the main thread; we wait on a
+  /// semaphore from that background thread (main stays free for the sheet), and
+  /// defensively fail-closed (retryable) rather than block if ever called on
+  /// main.
+  ///
+  /// Throws `KeychainError.vaultAuth(reason)` on cancel / failure / lockout /
+  /// unavailable so the JS layer decides retry-vs-surface (fail-closed, 0428).
+  private static func authenticateForPrimaryLoad(label: String) throws -> LAContext {
+    let context = LAContext()
+    // Short reuse window so the immediately-following SE decrypt (and a cheap
+    // post-auth transient retry) are covered by this single evaluation without
+    // leaving a broad ambient-auth window open.
+    context.touchIDAuthenticationAllowableReuseDuration = 10
+    let reason = "Unlock your Beebeeb vault"
+
+    let requireBiometricPolicy = requiresBiometric
+    let policy: LAPolicy = requireBiometricPolicy
+      ? .deviceOwnerAuthenticationWithBiometrics
+      : .deviceOwnerAuthentication
+    if requireBiometricPolicy {
+      // No passcode-fallback button for the biometrics-only key (mirrors the
+      // RN lock screen's disableDeviceFallback); the in-app password button is
+      // the explicit fallback. Passcode-allowed keys keep the default sheet.
+      context.localizedFallbackTitle = ""
+    }
+
+    var canEvalError: NSError?
+    guard context.canEvaluatePolicy(policy, error: &canEvalError) else {
+      RuntimeTrace.event("keychain.manager.load.cannot_evaluate", [
+        "label": label,
+        "requiresBiometric": requireBiometricPolicy,
+        "error": canEvalError?.localizedDescription ?? "unknown"
+      ])
+      // Subsystem not ready yet this early in start (or biometrics not
+      // enrolled) — retryable, not a user failure.
+      throw KeychainError.vaultAuth(.notAvailable)
+    }
+
+    // Never block the main thread (invariant: no main-thread deadlock). Expo
+    // AsyncFunctions run off-main; if we are ever on main, bail retryably rather
+    // than risk stalling the UI that must present the sheet.
+    if Thread.isMainThread {
+      RuntimeTrace.event("keychain.manager.load.evaluate_on_main_skipped", ["label": label])
+      throw KeychainError.vaultAuth(.notWarm)
+    }
+
+    let semaphore = DispatchSemaphore(value: 0)
+    var evalSuccess = false
+    var evalError: Error?
+    context.evaluatePolicy(policy, localizedReason: reason) { success, error in
+      evalSuccess = success
+      evalError = error
+      semaphore.signal()
+    }
+    semaphore.wait()
+
+    if evalSuccess {
+      RuntimeTrace.event("keychain.manager.load.evaluate_success", [
+        "label": label,
+        "requiresBiometric": requireBiometricPolicy
+      ])
+      return context
+    }
+
+    let failureReason = classifyLAError(evalError)
+    RuntimeTrace.event("keychain.manager.load.evaluate_failed", [
+      "label": label,
+      "reason": failureReason.rawValue
+    ])
+    throw KeychainError.vaultAuth(failureReason)
+  }
+
+  /// Map an `LAError` from `evaluatePolicy` to a typed reason (task 0882).
+  private static func classifyLAError(_ error: Error?) -> BeebeebKeychainCore.AuthFailureReason {
+    guard let laError = error as? LAError else { return .authFailed }
+    switch laError.code {
+    case .userCancel, .systemCancel, .appCancel, .userFallback:
+      return .userCanceled
+    case .authenticationFailed:
+      return .authFailed
+    case .biometryLockout:
+      return .biometryLockout
+    case .biometryNotAvailable, .biometryNotEnrolled, .passcodeNotSet, .invalidContext, .notInteractive:
+      return .notAvailable
+    default:
+      return .notWarm
+    }
   }
 
   // MARK: - Delete

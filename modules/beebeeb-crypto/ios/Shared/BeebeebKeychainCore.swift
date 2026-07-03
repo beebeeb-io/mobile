@@ -35,6 +35,67 @@ enum BeebeebKeychainCore {
         case seKeyNotFound
     }
 
+    /// Typed outcome for a primary-key biometric/passcode evaluation or the
+    /// SE decrypt that follows it (task 0882). Replaces the old blanket
+    /// "decrypt returned nil → seKeyNotFound → JS transient" collapse: the JS
+    /// layer needs to distinguish a cold-start Secure-Enclave warm-up race
+    /// (retry silently) from a real user cancel / auth failure / lockout
+    /// (surface, stay locked — fail-closed, task 0428).
+    ///
+    /// `notWarm` / `notAvailable` are the ONLY retryable reasons.
+    enum AuthFailureReason: String {
+        case notWarm         // SE / auth subsystem not ready this early in start — retry
+        case notAvailable    // biometrics/passcode not available or not enrolled yet — retry
+        case userCanceled    // user dismissed the sheet — surface, stay locked
+        case authFailed      // biometric/passcode did not match — surface
+        case biometryLockout // too many failed biometric attempts — surface
+
+        /// Stable machine code surfaced across the JS bridge (read in
+        /// `src/lib/crypto-context.tsx`). Keep in sync with the JS mapper.
+        var jsCode: String {
+            switch self {
+            case .notWarm:         return "ERR_VAULT_SE_NOT_WARM"
+            case .notAvailable:    return "ERR_VAULT_AUTH_NOT_AVAILABLE"
+            case .userCanceled:    return "ERR_VAULT_AUTH_CANCELED"
+            case .authFailed:      return "ERR_VAULT_AUTH_FAILED"
+            case .biometryLockout: return "ERR_VAULT_BIOMETRY_LOCKOUT"
+            }
+        }
+
+        var message: String {
+            switch self {
+            case .notWarm:         return "Secure Enclave not ready yet"
+            case .notAvailable:    return "Biometric authentication is not available"
+            case .userCanceled:    return "Authentication was canceled"
+            case .authFailed:      return "Biometric authentication failed"
+            case .biometryLockout: return "Biometrics are locked — use your passcode"
+            }
+        }
+    }
+
+    /// Map an SE-decrypt `CFError` (previously discarded at the decrypt call
+    /// site) to a typed reason (task 0882 companion). Matched numerically so
+    /// this extension-shared file does not need to `import LocalAuthentication`
+    /// (the Share Extension target does not link it).
+    static func classifyDecryptError(_ error: Unmanaged<CFError>?) -> AuthFailureReason {
+        guard let cfError = error?.takeRetainedValue() else { return .notWarm }
+        let code = CFErrorGetCode(cfError)
+        let domain = CFErrorGetDomain(cfError) as String?
+        if domain == "com.apple.LocalAuthentication" {
+            // LAError raw values.
+            switch code {
+            case -1:                  return .authFailed        // authenticationFailed
+            case -2, -3, -4, -9:      return .userCanceled      // userCancel / userFallback / systemCancel / appCancel
+            case -8:                  return .biometryLockout   // biometryLockout
+            case -5, -6, -7, -10, -1004:
+                return .notAvailable  // passcodeNotSet / biometryNotAvailable / biometryNotEnrolled / invalidContext / notInteractive
+            default:                  return .notWarm
+            }
+        }
+        if code == -128 { return .userCanceled } // errSecUserCanceled
+        return .notWarm
+    }
+
     /// Selects which Secure-Enclave key the loader tries.
     enum LoadMode {
         /// Try the primary SE key only. Used by the main app, where a Face ID
@@ -75,26 +136,54 @@ enum BeebeebKeychainCore {
     /// Non-throwing — Share Extension callers expect nil-on-failure so they
     /// can show a user-visible "unlock to share" error and abort (never
     /// stage plaintext, per task 0428).
-    static func loadMasterKey(label: String, mode: LoadMode) -> Data? {
+    static func loadMasterKey(label: String, mode: LoadMode, authContext: AnyObject? = nil) -> Data? {
+        var decryptError: Unmanaged<CFError>?
+        let plain = loadMasterKey(label: label, mode: mode, authContext: authContext, decryptError: &decryptError)
+        // Extension / non-throwing callers ignore the CFError — release it so it
+        // does not leak on a failed decrypt.
+        if plain == nil { _ = decryptError?.takeRetainedValue() }
+        return plain
+    }
+
+    /// Full primary-path loader that surfaces the SE-decrypt `CFError` to the
+    /// caller (task 0882) instead of discarding it. `authContext` — when the
+    /// main app has already performed ONE explicit user-initiated evaluation —
+    /// is bound to the primary SE key via `kSecUseAuthenticationContext`, so
+    /// `SecKeyCreateDecryptedData` REUSES that satisfied evaluation rather than
+    /// raising its own too-early implicit biometric prompt (preserves the
+    /// 0792 exactly-one-prompt invariant). The extension path never uses a
+    /// context (its key is `.devicePasscode`, no prompt).
+    static func loadMasterKey(
+        label: String,
+        mode: LoadMode,
+        authContext: AnyObject?,
+        decryptError: inout Unmanaged<CFError>?
+    ) -> Data? {
         // Extension SE key path (.devicePasscode, no Face ID prompt)
         if mode != .primaryOnly,
            let extKey = findSEKey(tag: seKeyTagExt),
            let wrapped = fetchWrappedBlob(service: wrappedKeyServiceExt, label: label) {
-            var cfErr: Unmanaged<CFError>?
-            if let plain = SecKeyCreateDecryptedData(extKey, eciesAlgorithm, wrapped as CFData, &cfErr) {
+            if let plain = SecKeyCreateDecryptedData(extKey, eciesAlgorithm, wrapped as CFData, &decryptError) {
                 return plain as Data
             }
+            // Ext decrypt failed — drop its CFError before trying the primary
+            // path so we do not report a stale ext error for a primary failure.
+            _ = decryptError?.takeRetainedValue()
+            decryptError = nil
         }
 
         guard mode != .extensionOnly else { return nil }
 
-        // Primary SE key path (may trigger biometric/passcode prompt)
+        // Primary SE key path. When `authContext` is supplied the decrypt reuses
+        // the already-satisfied evaluation; otherwise it may trigger an implicit
+        // biometric/passcode prompt (legacy callers).
         guard let wrapped = fetchWrappedBlob(service: wrappedKeyService, label: label),
-              let primaryKey = findSEKey(tag: seKeyTag) else {
+              let primaryKey = findSEKey(tag: seKeyTag, authContext: authContext) else {
             return nil
         }
-        var cfErr: Unmanaged<CFError>?
-        guard let plain = SecKeyCreateDecryptedData(primaryKey, eciesAlgorithm, wrapped as CFData, &cfErr) else {
+        guard let plain = SecKeyCreateDecryptedData(primaryKey, eciesAlgorithm, wrapped as CFData, &decryptError) else {
+            // CFError intentionally NOT discarded here (task 0882) — the caller
+            // maps it with `classifyDecryptError` and propagates a typed reason.
             return nil
         }
         return plain as Data
@@ -125,7 +214,12 @@ enum BeebeebKeychainCore {
     /// Find an SE key by application tag. Tries the access-group-scoped
     /// lookup first, then falls back to no-access-group (for keys created
     /// before the App Group rollout — legacy installs from earlier builds).
-    static func findSEKey(tag: Data) -> SecKey? {
+    /// `authContext` (an `LAContext`, typed `AnyObject?` so this
+    /// extension-shared file need not `import LocalAuthentication`) binds the
+    /// returned `SecKey` to an already-satisfied evaluation via
+    /// `kSecUseAuthenticationContext` (task 0882). The main app passes the
+    /// context it evaluated once; extensions pass `nil`.
+    static func findSEKey(tag: Data, authContext: AnyObject? = nil) -> SecKey? {
         var query: [CFString: Any] = [
             kSecClass: kSecClassKey,
             kSecAttrKeyType: kSecAttrKeyTypeECSECPrimeRandom,
@@ -134,6 +228,7 @@ enum BeebeebKeychainCore {
             kSecReturnRef: true,
         ]
         if let group = accessGroup { query[kSecAttrAccessGroup] = group }
+        if let ctx = authContext { query[kSecUseAuthenticationContext] = ctx }
 
         var result: CFTypeRef?
         var status = SecItemCopyMatching(query as CFDictionary, &result)

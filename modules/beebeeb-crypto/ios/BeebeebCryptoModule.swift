@@ -34,6 +34,17 @@ private let beebeebCryptoPHKitCallbackQueue = DispatchQueue(
   qos: .utility
 )
 
+/// Translate a `KeychainError.vaultAuth(reason)` thrown by the primary
+/// master-key load into an Expo `Exception` carrying a STABLE machine `code`
+/// (`reason.jsCode`) that the JS layer reads to decide retry-vs-surface
+/// (task 0882). Any other error passes through unchanged.
+private func mapVaultAuthError(_ error: Error) -> Error {
+  if let keychainError = error as? KeychainError, case let .vaultAuth(reason) = keychainError {
+    return Exception(name: "VaultAuthException", description: reason.message, code: reason.jsCode)
+  }
+  return error
+}
+
 private func decodeBase64(_ value: String, field: String) throws -> Data {
   guard let data = Data(base64Encoded: value) else {
     throw NSError(
@@ -1363,7 +1374,7 @@ public class BeebeebCryptoModule: Module {
           "label": label,
           "error": error.localizedDescription
         ])
-        throw error
+        throw mapVaultAuthError(error)
       }
     }
 
@@ -1378,7 +1389,19 @@ public class BeebeebCryptoModule: Module {
         "label": label,
         "promptMayAppear": true
       ])
-      guard let keyData = try KeychainManager.load(label: label) else {
+      let keyData: Data?
+      do {
+        keyData = try KeychainManager.load(label: label)
+      } catch {
+        RuntimeTrace.event("keychain.bridge.load_handle.failed", [
+          "label": label,
+          "error": error.localizedDescription
+        ])
+        // Surface the typed vault-auth reason (stable code) to JS so
+        // crypto-context can retry warm-up vs. surface cancel/fail/lockout.
+        throw mapVaultAuthError(error)
+      }
+      guard let keyData else {
         RuntimeTrace.event("keychain.bridge.load_handle.miss", ["label": label])
         return nil
       }

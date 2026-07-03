@@ -161,7 +161,37 @@ async function storeMasterKey(masterKey: Uint8Array): Promise<void> {
  *                   single short retry once the SE warms — reads it fine. This
  *                   must NOT trigger the recovery-phrase prompt.
  */
-type VaultLoadResult = { handleId: number } | { reason: 'no_key' } | { reason: 'transient' }
+type VaultLoadResult =
+  | { handleId: number }
+  | { reason: 'no_key' }
+  | { reason: 'transient' }
+  // Surfaced (fail-closed) biometric outcomes from the native primary load
+  // (task 0882). These are NOT retried — the lock screen stays locked and the
+  // user gets a real tap-to-retry (0428). `transient` is the ONLY retry path.
+  | { reason: 'auth_canceled' }
+  | { reason: 'auth_failed' }
+  | { reason: 'biometry_lockout' }
+
+/**
+ * Map a native vault-auth error `code` (thrown by `loadKeyFromKeychainAsHandle`
+ * as an Expo Exception, task 0882) to a surfaced VaultLoadResult reason.
+ * Returns `null` for retryable / unknown codes so the caller falls through to
+ * the normal `transient` path (silent cold-start warm-up retry).
+ */
+function surfacedReasonForAuthCode(code: unknown): 'auth_canceled' | 'auth_failed' | 'biometry_lockout' | null {
+  switch (code) {
+    case 'ERR_VAULT_AUTH_CANCELED':
+      return 'auth_canceled'
+    case 'ERR_VAULT_AUTH_FAILED':
+      return 'auth_failed'
+    case 'ERR_VAULT_BIOMETRY_LOCKOUT':
+      return 'biometry_lockout'
+    // ERR_VAULT_SE_NOT_WARM / ERR_VAULT_AUTH_NOT_AVAILABLE (and anything else)
+    // are retryable → fall through to transient.
+    default:
+      return null
+  }
+}
 
 /**
  * Load the master key from persistent storage and return an opaque native
@@ -223,17 +253,13 @@ async function loadVerifiedMasterKeyHandle(): Promise<VaultLoadResult> {
         promptMayAppear: true,
         source: 'loadVerifiedMasterKeyHandle',
       })
-      // TODO(167): when invoked from the biometric lock screen path, the SE
-      // decrypt inside loadKeyFromKeychainAsHandle raises its OWN Face ID prompt
-      // (the SE private key is gated by .biometryAny). To collapse this to a
-      // single prompt, thread the LAContext the lock screen already evaluated
-      // into the keychain query via kSecUseAuthenticationContext (so the SE op
-      // reuses the satisfied biometric evaluation within the reuse window). That
-      // requires plumbing an LAContext from BiometricLockScreen → native
-      // KeychainManager.load → BeebeebKeychainCore.findSEKey, which is left as
-      // native follow-up work. Until then, App.tsx skips the silent cold-launch
-      // unlock when biometric lock is enabled so only ONE prompt fires, strictly
-      // sequenced after LocalAuthentication resolves.
+      // Native primary load (task 0882): KeychainManager.load performs ONE
+      // explicit, user-initiated biometric/passcode evaluation and reuses it for
+      // the SE decrypt via kSecUseAuthenticationContext — a single prompt
+      // (0792), replacing the old too-early IMPLICIT SE evaluation that raced
+      // the cold-start warm-up. Auth outcomes arrive as a thrown Expo Exception
+      // whose `code` we classify below: cancel/fail/lockout are SURFACED
+      // (fail-closed, 0428); warm-up/unavailable fall through to `transient`.
       const handleId = await loadKeyFromKeychainAsHandle(MASTER_KEY_LABEL)
       if (handleId != null) {
         if (await verifyHandle(handleId)) {
@@ -253,10 +279,27 @@ async function loadVerifiedMasterKeyHandle(): Promise<VaultLoadResult> {
       // handleId == null: the SE/Keychain read returned no key even though a
       // key was provisioned here (check label present) — SE not warm yet.
       // Transient: a relaunch / retry reads it. Do NOT prompt for recovery.
-    } catch {
-      // SE read threw — same transient story. Fall through to the SecureStore
-      // fallback (real devices won't have one), then report transient.
-      recordRuntimeTrace('keychain.load.native_handle_failed', { label: MASTER_KEY_LABEL })
+    } catch (error) {
+      const code = (error as { code?: unknown } | null)?.code
+      const surfaced = surfacedReasonForAuthCode(code)
+      if (surfaced != null) {
+        // A real user cancel / auth failure / biometric lockout. Surface it —
+        // do NOT retry and do NOT fall through to the SecureStore fallback (a
+        // provisioned real-device install has none anyway). The lock screen
+        // stays locked with a genuine tap-to-retry (0428 fail-closed).
+        recordRuntimeTrace('keychain.load.native_handle_auth_surfaced', {
+          label: MASTER_KEY_LABEL,
+          code: typeof code === 'string' ? code : 'unknown',
+          reason: surfaced,
+        })
+        return { reason: surfaced }
+      }
+      // SE read threw a retryable/unknown code (warm-up) — same transient story.
+      // Fall through to the SecureStore fallback, then report transient.
+      recordRuntimeTrace('keychain.load.native_handle_failed', {
+        label: MASTER_KEY_LABEL,
+        code: typeof code === 'string' ? code : 'unknown',
+      })
     }
   }
 
@@ -614,15 +657,21 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
         } else {
           let result = await loadVerifiedMasterKeyHandle()
 
-          // A `transient` result on cold launch is almost always a Secure-Enclave
-          // that isn't warm yet. The SE warm-up is device-dependent and can take
-          // noticeably longer than one frame on real hardware (a single 400ms
-          // retry left users seeing the first unlock fail and having to tap again).
-          // Retry with backoff until the read settles to a definitive result
-          // (success or no_key). This is safe and adds NO extra Face ID prompts:
-          // a `transient` is a pre-success fast-fail (the SE returned no key and
-          // no prompt completed); only the first WARM read prompts, once, and it
-          // short-circuits the loop. `no_key` is never retried (genuinely missing).
+          // Backoff ONLY for `transient` — the Secure-Enclave / auth subsystem
+          // not being warm yet this early in a cold restart (SE returned no key,
+          // or auth was not yet available; NO prompt was completed and NO user
+          // failure occurred). The SE warm-up is device-dependent and can take
+          // noticeably longer than one frame on real hardware, so retry with
+          // backoff until the read settles.
+          //
+          // With the task 0882 native fix, the single explicit prompt fires
+          // inside the FIRST warm evaluation and its satisfied LAContext is
+          // reused by the SE decrypt (kSecUseAuthenticationContext) — so these
+          // retries add NO extra Face ID prompts. Crucially, a real user cancel /
+          // auth failure / biometric lockout does NOT come back as `transient`:
+          // it is a distinct surfaced reason (auth_canceled / auth_failed /
+          // biometry_lockout) and is handled below WITHOUT retry (fail-closed,
+          // 0428). `no_key` is never retried (genuinely missing → recovery).
           const transientBackoffMs = [300, 500, 800, 1200, 1800]
           for (let attempt = 0; attempt < transientBackoffMs.length; attempt += 1) {
             if (!('reason' in result) || result.reason !== 'transient') break
@@ -643,6 +692,25 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
             // restore). This is the ONLY path that arms the recovery prompt.
             setNeedsRecoveryPhrase(true)
             throw new Error('No master key in keychain — provide a recovery phrase to restore')
+          } else if (
+            result.reason === 'auth_canceled' ||
+            result.reason === 'auth_failed' ||
+            result.reason === 'biometry_lockout'
+          ) {
+            // Real biometric outcome (task 0882): the user canceled, the
+            // biometric failed to match, or biometrics are locked out. Fail
+            // CLOSED — do NOT arm recovery and do NOT silently retry. Surface a
+            // non-recovery error so the BiometricLockScreen stays locked with a
+            // genuine tap-to-retry (and the password fallback for lockout). The
+            // vault never opens without a successful evaluation (0428).
+            recordRuntimeTrace('vault.unlock.auth_surfaced', { source, reason: result.reason })
+            const authMessage =
+              result.reason === 'biometry_lockout'
+                ? 'Biometrics are locked — use your Beebeeb password to unlock'
+                : result.reason === 'auth_canceled'
+                  ? 'Biometric unlock was canceled'
+                  : 'Biometric unlock failed — try again'
+            throw new Error(authMessage)
           } else {
             // Still transient after the retry: a key exists on this install but
             // the SE/Keychain read keeps failing this early in process start. Do
