@@ -49,7 +49,7 @@ import { getLocalIdentifier } from '../lib/local-identifier-map';
 import type { FileEntry, StorageUsage, ProofOfExistence, PresenceUser, SyncNode } from '../lib/api';
 import type { RootStackParamList, TabParamList } from '../App';
 import { useCrypto } from '../lib/crypto-context';
-import { decryptMetadata as decryptMetadataWithKey, type PreviewLoadProgressEvent } from '../../modules/beebeeb-crypto';
+import { decryptMetadata as decryptMetadataWithKey } from '../../modules/beebeeb-crypto';
 import { isRequestUpload } from '../lib/file-request-crypto';
 import { encryptedMetadataPayloadToBytes, encryptedMetadataToJson, fileMetadataPlaintext } from '../lib/encrypted-metadata';
 import { syncDecryptedEntriesToFileProvider, removeFromFileProviderCache } from '../lib/file-provider-mount';
@@ -414,19 +414,6 @@ const OfflineIndicator = React.memo(function OfflineIndicator({
   );
 });
 
-// 1177 — map a decrypt-to-temp progress event onto a 0..1 fraction for the
-// "Exporting…" indicator (same math the previewer uses). Returns -1 when the
-// stage carries no known total yet, so the banner renders an indeterminate
-// spinner rather than a fake 0%.
-function exportProgressFraction(e: PreviewLoadProgressEvent): number {
-  if (e.stage === 'downloading' && (e.bytesTotal ?? 0) > 0) {
-    return Math.max(0, Math.min(1, (e.bytesDownloaded ?? 0) / (e.bytesTotal ?? 1)));
-  }
-  if (e.stage === 'decrypting' && (e.chunksTotal ?? 0) > 0) {
-    return Math.max(0, Math.min(1, (e.chunksCompleted ?? 0) / (e.chunksTotal ?? 1)));
-  }
-  return -1;
-}
 
 // ---------------------------------------------------------------------------
 // Breadcrumb item
@@ -2984,16 +2971,13 @@ export default function FilesScreen() {
       const fromMime = (itemMimeType ?? '').split('/')[1];
       return (fromMime && fromMime.length <= 5 ? fromMime : 'bin').toLowerCase();
     };
-    const decryptForSave = async (
-      onProgress?: (e: PreviewLoadProgressEvent) => void,
-    ): Promise<string> => {
+    const decryptForSave = async (): Promise<string> => {
       const requestUpload = isRequestUpload(item);
       const { keyProvider, handleId } = requestUpload
         ? { keyProvider: () => getRequestContentKey(item), handleId: null as number | null }
         : { keyProvider: () => getFileKeyBytes(item.id), handleId: getMasterKeyHandleId() };
       const decryptedUri = await decryptToTempFile(
         item.id, keyProvider, extForSave(), item.size_bytes, item.chunk_count, handleId,
-        { onProgress },
       );
       // 0883 — auto self-repair: the plaintext is now on disk. If this owner
       // media file has no server thumbnail, generate + upload one from those
@@ -3013,29 +2997,6 @@ export default function FilesScreen() {
       return decryptedUri;
     };
 
-    // 1177 — feed real download/decrypt progress into the top-of-Files
-    // "Exporting…" indicator. HARD-THROTTLED (5% buckets + a 250ms floor): the
-    // native layer emits download progress PER NETWORK PACKET (unthrottled), and
-    // every setExporting reconciles the whole FilesScreen tree (FlatList +
-    // thumbnails). At packet rate on a large file that render churn tripped
-    // iOS's memory watchdog and crashed the app (task 1177 regression). Bucketing
-    // to 5% caps a full 0→100% export at ~20 re-renders regardless of file size;
-    // the 250ms floor keeps the indeterminate spinner alive within a bucket.
-    const startExportProgress = (): ((e: PreviewLoadProgressEvent) => void) => {
-      setExporting({ name, progress: -1 });
-      let lastBucket = -2;
-      let lastAt = 0;
-      return (e) => {
-        const fraction = exportProgressFraction(e);
-        const bucket = fraction < 0 ? -1 : Math.floor(fraction * 20); // 5% steps
-        const now = Date.now();
-        if (bucket === lastBucket && now - lastAt < 250) return;
-        lastBucket = bucket;
-        lastAt = now;
-        setExporting({ name, progress: fraction });
-      };
-    };
-
     const saveToFiles = async () => {
       if (!(await ensureFileReady(item))) return;
       if (!(await Sharing.isAvailableAsync())) {
@@ -3044,9 +3005,9 @@ export default function FilesScreen() {
       }
       const safeName = (name.replace(/[^a-zA-Z0-9._()-]/g, '_') || 'file');
       const namedUri = `${FileSystem.cacheDirectory}${safeName}`;
-      const onProgress = startExportProgress();
+      setExporting({ name, progress: -1 });
       try {
-        const decryptedUri = await decryptForSave(onProgress);
+        const decryptedUri = await decryptForSave();
         // Copy to a correctly-named temp so the saved file keeps its real name
         // (the decrypt cache keys files by id), then drop the copy afterwards.
         await FileSystem.deleteAsync(namedUri, { idempotent: true }).catch(() => {});
@@ -3077,9 +3038,9 @@ export default function FilesScreen() {
         );
         return;
       }
-      const onProgress = startExportProgress();
+      setExporting({ name, progress: -1 });
       try {
-        const decryptedUri = await decryptForSave(onProgress);
+        const decryptedUri = await decryptForSave();
         // Prepare phase done — clear the indicator before the (fast) native save.
         setExporting(null);
         await MediaLibrary.saveToLibraryAsync(decryptedUri);
