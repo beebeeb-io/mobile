@@ -497,10 +497,12 @@ function ShareSheetImporter({ enabled }: { enabled: boolean }) {
 function BiometricGuard({
   locked,
   startupLockChecked,
+  userId,
   onUnlock,
 }: {
   locked: boolean;
   startupLockChecked: boolean;
+  userId: string | undefined;
   onUnlock: () => void;
 }) {
   const crypto = useCrypto();
@@ -526,6 +528,29 @@ function BiometricGuard({
       await crypto.unlock(undefined, 'cold_launch_vault_unlock').catch(() => {});
     })();
   }, [locked, startupLockChecked, crypto.isUnlocked]);
+
+  // Post-login vault unlock — closes the gap the two existing unlock drivers
+  // leave open for biometric-app-lock-ON accounts that sign in mid-session
+  // (task 1176). On such a login the grace window (markUnlocked) suppresses the
+  // BiometricLockScreen, and the silent cold-launch unlock above bails on
+  // `pref === 'true'` (and is a consumed one-shot) — so NOTHING calls
+  // crypto.unlock(), unlockAttempted never flips true, and FilesScreen parks on
+  // its skeleton forever (gated on unlockAttempted at FilesScreen.tsx:1870).
+  //
+  // The `!locked` guard is load-bearing: on a COLD-LAUNCH biometric account
+  // (locked === true) this returns early so the BiometricLockScreen remains the
+  // SOLE unlock driver — this must NOT reintroduce the double-Face-ID the lock
+  // screen / silent-unlock split fixed (tasks 0792 / 0882). We only drive an
+  // unlock once the startup lock decision has settled AND no lock screen is up
+  // AND the vault is neither unlocked nor even attempted. crypto.unlock() has
+  // in-flight dedup, so any overlap with another driver is a no-op.
+  useEffect(() => {
+    if (!userId) return;
+    if (!startupLockChecked) return;
+    if (locked) return;
+    if (crypto.isUnlocked || crypto.unlockAttempted) return;
+    crypto.unlock(undefined, 'post_login_vault_unlock').catch(() => {});
+  }, [userId, startupLockChecked, locked, crypto.isUnlocked, crypto.unlockAttempted]);
 
   // The vault key load raises its OWN Face ID prompt only when it reads the
   // biometric-gated Secure-Enclave key — i.e. on a real release build with a
@@ -1431,6 +1456,7 @@ export default function App() {
           <BiometricGuard
             locked={locked}
             startupLockChecked={startupLockChecked}
+            userId={user?.user_id}
             onUnlock={() => { markUnlocked(); setLocked(false); }}
           />
         )}
