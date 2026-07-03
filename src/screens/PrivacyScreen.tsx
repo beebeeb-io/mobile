@@ -102,6 +102,8 @@ function ActionRow({
       style={layout.row}
       activeOpacity={0.6}
       disabled={disabled}
+      // 1104 follow-up — stable id for Maestro/E2E (matches SettingsRow scheme)
+      testID={`privacy-row-${label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')}`}
       onPress={() => {
         Haptics.selectionAsync();
         onPress();
