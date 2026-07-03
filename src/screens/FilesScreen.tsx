@@ -2965,10 +2965,36 @@ export default function FilesScreen() {
     // path the previewer uses, then hand it to the native save sheet. Decryption
     // is client-side; downloads hit only our own API. (Replaces the old export
     // path that wrote the still-ENCRYPTED blob straight to disk.)
+    // 1181 — map a MIME type to a real media file extension. Slicing the MIME
+    // subtype (the old behaviour) produced 'bin' for anything with a subtype
+    // longer than 5 chars (video/quicktime, image/svg+xml) and mislabelled
+    // others (image/jpeg -> 'jpeg'), which the native Photos importer then
+    // classifies as .unknown and refuses to save. A correct extension gives
+    // the saved temp the right UTI so Photos accepts it.
+    const MIME_TO_EXT: Record<string, string> = {
+      'image/jpeg': 'jpg',
+      'image/jpg': 'jpg',
+      'image/pjpeg': 'jpg',
+      'image/png': 'png',
+      'image/gif': 'gif',
+      'image/heic': 'heic',
+      'image/heif': 'heif',
+      'image/webp': 'webp',
+      'image/tiff': 'tiff',
+      'image/bmp': 'bmp',
+      'video/quicktime': 'mov',
+      'video/mp4': 'mp4',
+      'video/mpeg': 'mpg',
+      'video/x-m4v': 'm4v',
+      'video/3gpp': '3gp',
+      'video/webm': 'webm',
+    };
     const extForSave = (): string => {
       const dot = name.lastIndexOf('.');
       if (dot > 0 && dot < name.length - 1) return name.slice(dot + 1).toLowerCase();
-      const fromMime = (itemMimeType ?? '').split('/')[1];
+      const mime = (itemMimeType ?? '').toLowerCase();
+      if (MIME_TO_EXT[mime]) return MIME_TO_EXT[mime];
+      const fromMime = mime.split('/')[1];
       return (fromMime && fromMime.length <= 5 ? fromMime : 'bin').toLowerCase();
     };
     const decryptForSave = async (): Promise<string> => {
@@ -3030,11 +3056,23 @@ export default function FilesScreen() {
 
     const saveToGallery = async () => {
       if (!(await ensureFileReady(item))) return;
-      const { status } = await MediaLibrary.requestPermissionsAsync();
-      if (status !== 'granted') {
+      // 1181 — Photos only accepts images and videos. The menu already gates
+      // this action to media, but guard defensively: never let a non-media file
+      // reach the save path and surface a false "Saved to Photos".
+      if (!isMedia) {
+        showToast({
+          type: 'error',
+          message: "This file type can't be saved to Photos. Use Save to Files instead.",
+        });
+        return;
+      }
+      // Request add-only (write) access — `true` asks for the minimal
+      // "add photos" permission rather than full-library read/write.
+      const perm = await MediaLibrary.requestPermissionsAsync(true);
+      if (perm.status !== 'granted') {
         Alert.alert(
           'Permission required',
-          'Allow photo library access to save to Photos.',
+          'Allow Photos access to save to your library.',
         );
         return;
       }
@@ -3043,7 +3081,17 @@ export default function FilesScreen() {
         const decryptedUri = await decryptForSave();
         // Prepare phase done — clear the indicator before the (fast) native save.
         setExporting(null);
-        await MediaLibrary.saveToLibraryAsync(decryptedUri);
+        // 1181 — createAssetAsync imports the ORIGINAL file via PhotoKit and
+        // resolves with the created asset (unlike saveToLibraryAsync, which
+        // re-encodes via the legacy UIImageWriteToSavedPhotosAlbum API and
+        // resolves on a nil-error even when nothing durable was written — e.g.
+        // under Limited access). We only report success once Photos confirms a
+        // real asset id, so "Saved to Photos" is always honest. The decrypted
+        // temp is kept until this await resolves so import can read it.
+        const asset = await MediaLibrary.createAssetAsync(decryptedUri);
+        if (!asset?.id) {
+          throw new Error('Photos did not confirm the save');
+        }
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         showToast({ type: 'success', message: 'Saved to Photos' });
       } catch (err) {
