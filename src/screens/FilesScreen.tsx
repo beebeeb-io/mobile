@@ -49,7 +49,7 @@ import { getLocalIdentifier } from '../lib/local-identifier-map';
 import type { FileEntry, StorageUsage, ProofOfExistence, PresenceUser, SyncNode } from '../lib/api';
 import type { RootStackParamList, TabParamList } from '../App';
 import { useCrypto } from '../lib/crypto-context';
-import { decryptMetadata as decryptMetadataWithKey } from '../../modules/beebeeb-crypto';
+import { decryptMetadata as decryptMetadataWithKey, type PreviewLoadProgressEvent } from '../../modules/beebeeb-crypto';
 import { isRequestUpload } from '../lib/file-request-crypto';
 import { encryptedMetadataPayloadToBytes, encryptedMetadataToJson, fileMetadataPlaintext } from '../lib/encrypted-metadata';
 import { syncDecryptedEntriesToFileProvider, removeFromFileProviderCache } from '../lib/file-provider-mount';
@@ -413,6 +413,20 @@ const OfflineIndicator = React.memo(function OfflineIndicator({
     </View>
   );
 });
+
+// 1177 — map a decrypt-to-temp progress event onto a 0..1 fraction for the
+// "Exporting…" indicator (same math the previewer uses). Returns -1 when the
+// stage carries no known total yet, so the banner renders an indeterminate
+// spinner rather than a fake 0%.
+function exportProgressFraction(e: PreviewLoadProgressEvent): number {
+  if (e.stage === 'downloading' && (e.bytesTotal ?? 0) > 0) {
+    return Math.max(0, Math.min(1, (e.bytesDownloaded ?? 0) / (e.bytesTotal ?? 1)));
+  }
+  if (e.stage === 'decrypting' && (e.chunksTotal ?? 0) > 0) {
+    return Math.max(0, Math.min(1, (e.chunksCompleted ?? 0) / (e.chunksTotal ?? 1)));
+  }
+  return -1;
+}
 
 // ---------------------------------------------------------------------------
 // Breadcrumb item
@@ -1476,8 +1490,14 @@ export default function FilesScreen() {
   const [newFolderName, setNewFolderName] = useState('');
   const [creatingFolder, setCreatingFolder] = useState(false);
 
-  // Export state — shows banner while downloading for native share sheet
-  const [exportingName, setExportingName] = useState<string | null>(null);
+  // Export state (1177) — a top-of-Files "Exporting…" indicator shown for the
+  // whole prepare phase (download + decrypt → temp) of Save to Files / Save to
+  // Photos, so a large file no longer looks frozen before the native sheet.
+  // `progress` is 0..1 when the byte/chunk total is known, or -1 (indeterminate)
+  // until the first real signal arrives. Matches the offline download visual
+  // language (amber spinner + tabular %). Cleared the moment the native sheet
+  // opens (Save to Files) / the save completes (Photos), or on error.
+  const [exporting, setExporting] = useState<{ name: string; progress: number } | null>(null);
 
   // Scroll shadow — appears when list is scrolled past top
   const [isScrolled, setIsScrolled] = useState(false);
@@ -2964,13 +2984,16 @@ export default function FilesScreen() {
       const fromMime = (itemMimeType ?? '').split('/')[1];
       return (fromMime && fromMime.length <= 5 ? fromMime : 'bin').toLowerCase();
     };
-    const decryptForSave = async (): Promise<string> => {
+    const decryptForSave = async (
+      onProgress?: (e: PreviewLoadProgressEvent) => void,
+    ): Promise<string> => {
       const requestUpload = isRequestUpload(item);
       const { keyProvider, handleId } = requestUpload
         ? { keyProvider: () => getRequestContentKey(item), handleId: null as number | null }
         : { keyProvider: () => getFileKeyBytes(item.id), handleId: getMasterKeyHandleId() };
       const decryptedUri = await decryptToTempFile(
         item.id, keyProvider, extForSave(), item.size_bytes, item.chunk_count, handleId,
+        { onProgress },
       );
       // 0883 — auto self-repair: the plaintext is now on disk. If this owner
       // media file has no server thumbnail, generate + upload one from those
@@ -2990,6 +3013,21 @@ export default function FilesScreen() {
       return decryptedUri;
     };
 
+    // 1177 — feed real download/decrypt progress into the top-of-Files
+    // "Exporting…" indicator, throttled to whole-percent changes so a
+    // multi-chunk decrypt doesn't spam React with a re-render per chunk.
+    const startExportProgress = (): ((e: PreviewLoadProgressEvent) => void) => {
+      setExporting({ name, progress: -1 });
+      let lastPct = -2;
+      return (e) => {
+        const fraction = exportProgressFraction(e);
+        const pct = fraction < 0 ? -1 : Math.round(fraction * 100);
+        if (pct === lastPct) return;
+        lastPct = pct;
+        setExporting({ name, progress: fraction });
+      };
+    };
+
     const saveToFiles = async () => {
       if (!(await ensureFileReady(item))) return;
       if (!(await Sharing.isAvailableAsync())) {
@@ -2998,13 +3036,16 @@ export default function FilesScreen() {
       }
       const safeName = (name.replace(/[^a-zA-Z0-9._()-]/g, '_') || 'file');
       const namedUri = `${FileSystem.cacheDirectory}${safeName}`;
-      setExportingName(name);
+      const onProgress = startExportProgress();
       try {
-        const decryptedUri = await decryptForSave();
+        const decryptedUri = await decryptForSave(onProgress);
         // Copy to a correctly-named temp so the saved file keeps its real name
         // (the decrypt cache keys files by id), then drop the copy afterwards.
         await FileSystem.deleteAsync(namedUri, { idempotent: true }).catch(() => {});
         await FileSystem.copyAsync({ from: decryptedUri, to: namedUri });
+        // Prepare phase done — dismiss the indicator the moment the native
+        // sheet opens (shareAsync only resolves once it's dismissed).
+        setExporting(null);
         await Sharing.shareAsync(namedUri, {
           mimeType: itemMimeType ?? 'application/octet-stream',
           UTI: itemMimeType ?? 'public.data',
@@ -3013,7 +3054,7 @@ export default function FilesScreen() {
       } catch (err) {
         showToast({ type: 'error', message: `Could not save: ${friendlyError(err)}` });
       } finally {
-        setExportingName(null);
+        setExporting(null);
         FileSystem.deleteAsync(namedUri, { idempotent: true }).catch(() => {});
       }
     };
@@ -3028,16 +3069,18 @@ export default function FilesScreen() {
         );
         return;
       }
-      setExportingName(name);
+      const onProgress = startExportProgress();
       try {
-        const decryptedUri = await decryptForSave();
+        const decryptedUri = await decryptForSave(onProgress);
+        // Prepare phase done — clear the indicator before the (fast) native save.
+        setExporting(null);
         await MediaLibrary.saveToLibraryAsync(decryptedUri);
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         showToast({ type: 'success', message: 'Saved to Photos' });
       } catch (err) {
         showToast({ type: 'error', message: `Save failed: ${friendlyError(err)}` });
       } finally {
-        setExportingName(null);
+        setExporting(null);
       }
     };
 
@@ -3837,6 +3880,32 @@ export default function FilesScreen() {
         </View>
       )}
 
+      {/* 1177 — top-of-Files "Exporting…" indicator. Shown for the whole
+          download + decrypt prepare phase of Save to Files / Save to Photos, so
+          a large file no longer looks frozen before the native sheet appears.
+          Same amber spinner + tabular-% visual language as the offline
+          download indicator; dismissed the moment the sheet opens / save ends. */}
+      {exporting && !selectMode && (
+        <View
+          style={[styles.exportBanner, { backgroundColor: c.paper2, borderColor: c.line }]}
+          accessibilityLabel={
+            exporting.progress >= 0
+              ? `Exporting ${exporting.name}, ${Math.round(exporting.progress * 100)} percent`
+              : `Exporting ${exporting.name}`
+          }
+        >
+          <ActivityIndicator size="small" color={c.amber} />
+          <Text style={[styles.exportBannerText, { color: c.ink2 }]} numberOfLines={1}>
+            Exporting {exporting.name}
+          </Text>
+          {exporting.progress >= 0 && (
+            <Text style={[styles.exportBannerPct, { color: c.amberDeep }]}>
+              {Math.round(exporting.progress * 100)}%
+            </Text>
+          )}
+        </View>
+      )}
+
       {/* Search bar — slides in below header when active */}
       {searchActive && !selectMode && (
         <>
@@ -3999,25 +4068,6 @@ export default function FilesScreen() {
               c={c}
             />
           </View>
-        </View>
-      )}
-
-      {/* Inline export progress (shown while downloading for native share sheet) */}
-      {exportingName && !selectMode && (
-        <View
-          style={[
-            styles.uploadBanner,
-            {
-              bottom: 16 + insets.bottom + 64,
-              backgroundColor: c.paper2,
-              borderColor: c.line,
-            },
-          ]}
-        >
-          <ActivityIndicator color={c.amber} size="small" />
-          <Text style={[styles.uploadBannerText, { color: c.ink2 }]} numberOfLines={1}>
-            Exporting {exportingName}...
-          </Text>
         </View>
       )}
 
@@ -4431,6 +4481,23 @@ const styles = StyleSheet.create({
   },
   storageBannerText: { flex: 1, fontSize: 12, fontWeight: '500' },
   storageBannerHint: { fontSize: 12, fontWeight: '700' },
+
+  // 1177 — top-of-Files "Exporting…" indicator (Save to Files / Save to Photos
+  // prepare phase). Matches the storage/backup banner shape; the amber spinner
+  // + tabular-% mirrors the offline download indicator's visual language.
+  exportBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginHorizontal: spacing.lg,
+    marginBottom: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: radii.md,
+    borderWidth: 1,
+    gap: 10,
+  },
+  exportBannerText: { flex: 1, fontSize: 13, fontWeight: '500' },
+  exportBannerPct: { fontSize: 12, fontWeight: '700', fontVariant: ['tabular-nums'] },
 
   // Backup continuation banner
   backupContinueBanner: {
