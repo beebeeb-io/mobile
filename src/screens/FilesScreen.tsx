@@ -3014,16 +3014,24 @@ export default function FilesScreen() {
     };
 
     // 1177 — feed real download/decrypt progress into the top-of-Files
-    // "Exporting…" indicator, throttled to whole-percent changes so a
-    // multi-chunk decrypt doesn't spam React with a re-render per chunk.
+    // "Exporting…" indicator. HARD-THROTTLED (5% buckets + a 250ms floor): the
+    // native layer emits download progress PER NETWORK PACKET (unthrottled), and
+    // every setExporting reconciles the whole FilesScreen tree (FlatList +
+    // thumbnails). At packet rate on a large file that render churn tripped
+    // iOS's memory watchdog and crashed the app (task 1177 regression). Bucketing
+    // to 5% caps a full 0→100% export at ~20 re-renders regardless of file size;
+    // the 250ms floor keeps the indeterminate spinner alive within a bucket.
     const startExportProgress = (): ((e: PreviewLoadProgressEvent) => void) => {
       setExporting({ name, progress: -1 });
-      let lastPct = -2;
+      let lastBucket = -2;
+      let lastAt = 0;
       return (e) => {
         const fraction = exportProgressFraction(e);
-        const pct = fraction < 0 ? -1 : Math.round(fraction * 100);
-        if (pct === lastPct) return;
-        lastPct = pct;
+        const bucket = fraction < 0 ? -1 : Math.floor(fraction * 20); // 5% steps
+        const now = Date.now();
+        if (bucket === lastBucket && now - lastAt < 250) return;
+        lastBucket = bucket;
+        lastAt = now;
         setExporting({ name, progress: fraction });
       };
     };
