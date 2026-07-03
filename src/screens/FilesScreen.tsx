@@ -40,6 +40,7 @@ import SkeletonRow from '../components/SkeletonRow';
 import PresenceAvatars from '../components/PresenceAvatars';
 import TrustDetailsSheet from '../components/TrustDetailsSheet';
 import FolderPickerModal, { type PickerFolder } from '../components/FolderPickerModal';
+import ExportProgressBanner, { type ExportProgressBannerHandle } from '../components/ExportProgressBanner';
 import { ApiError, listAllFiles, getFileIndex, createFolder, deleteFile, trashFiles, renameFile, moveFile, uploadFile, friendlyError, getStorageUsage, createProofOfExistence, storageLocation, trustLocation, getFolderPresence, getUploadStatus, getApiUrl, getToken } from '../lib/api';
 import { guessMimeType, fileCategory as fileCategoryFromMime } from '../lib/media';
 import { generateAndUploadThumbnail, fetchDecryptedThumbnailUri } from '../lib/thumbnail';
@@ -1480,11 +1481,13 @@ export default function FilesScreen() {
   // Export state (1177) — a top-of-Files "Exporting…" indicator shown for the
   // whole prepare phase (download + decrypt → temp) of Save to Files / Save to
   // Photos, so a large file no longer looks frozen before the native sheet.
-  // `progress` is 0..1 when the byte/chunk total is known, or -1 (indeterminate)
-  // until the first real signal arrives. Matches the offline download visual
-  // language (amber spinner + tabular %). Cleared the moment the native sheet
-  // opens (Save to Files) / the save completes (Photos), or on error.
-  const [exporting, setExporting] = useState<{ name: string; progress: number } | null>(null);
+  // 1180 — `exporting` is ONLY a show/hide + name toggle. It flips exactly twice
+  // per export (on start, on clear), never per progress tick — the per-tick
+  // percentage lives inside <ExportProgressBanner/> and is fed imperatively via
+  // `exportBannerRef` so a progress tick NEVER re-renders FilesScreen / its
+  // FlatList (that render churn is what crashed 1177 on a 3 GB file, #188).
+  const [exporting, setExporting] = useState<{ name: string } | null>(null);
+  const exportBannerRef = useRef<ExportProgressBannerHandle>(null);
 
   // Scroll shadow — appears when list is scrolled past top
   const [isScrolled, setIsScrolled] = useState(false);
@@ -3004,6 +3007,14 @@ export default function FilesScreen() {
         : { keyProvider: () => getFileKeyBytes(item.id), handleId: getMasterKeyHandleId() };
       const decryptedUri = await decryptToTempFile(
         item.id, keyProvider, extForSave(), item.size_bytes, item.chunk_count, handleId,
+        {
+          // 1180 — crash-safe Save progress. The native handle path
+          // (downloadAndDecryptFileNative, handleId != null) streams to disk, so
+          // onProgress is memory-safe. Push each event into the ISOLATED banner
+          // via its ref — this does NOT setState on FilesScreen, so the FlatList
+          // never re-renders per tick (the #188/1177 crash cause).
+          onProgress: (event) => exportBannerRef.current?.setProgress(event),
+        },
       );
       // 0883 — auto self-repair: the plaintext is now on disk. If this owner
       // media file has no server thumbnail, generate + upload one from those
@@ -3031,7 +3042,7 @@ export default function FilesScreen() {
       }
       const safeName = (name.replace(/[^a-zA-Z0-9._()-]/g, '_') || 'file');
       const namedUri = `${FileSystem.cacheDirectory}${safeName}`;
-      setExporting({ name, progress: -1 });
+      setExporting({ name });
       try {
         const decryptedUri = await decryptForSave();
         // Copy to a correctly-named temp so the saved file keeps its real name
@@ -3076,7 +3087,7 @@ export default function FilesScreen() {
         );
         return;
       }
-      setExporting({ name, progress: -1 });
+      setExporting({ name });
       try {
         const decryptedUri = await decryptForSave();
         // Prepare phase done — clear the indicator before the (fast) native save.
@@ -3897,30 +3908,16 @@ export default function FilesScreen() {
         </View>
       )}
 
-      {/* 1177 — top-of-Files "Exporting…" indicator. Shown for the whole
-          download + decrypt prepare phase of Save to Files / Save to Photos, so
-          a large file no longer looks frozen before the native sheet appears.
-          Same amber spinner + tabular-% visual language as the offline
-          download indicator; dismissed the moment the sheet opens / save ends. */}
+      {/* 1180 — top-of-Files "Exporting…" indicator for Save to Files / Save to
+          Photos. Shown for the whole download + decrypt prepare phase so a large
+          file no longer looks frozen before the native sheet appears. The banner
+          owns its own progress state and is fed IMPERATIVELY via exportBannerRef
+          (see decryptForSave onProgress) — a progress tick re-renders ONLY this
+          ~40pt banner, never FilesScreen or its FlatList. That isolation is the
+          whole point: it is what makes the restored "Downloading N% / Decrypting
+          X/Y (N%)" progress crash-safe on a 3 GB export (1177/#188 regression). */}
       {exporting && !selectMode && (
-        <View
-          style={[styles.exportBanner, { backgroundColor: c.paper2, borderColor: c.line }]}
-          accessibilityLabel={
-            exporting.progress >= 0
-              ? `Exporting ${exporting.name}, ${Math.round(exporting.progress * 100)} percent`
-              : `Exporting ${exporting.name}`
-          }
-        >
-          <ActivityIndicator size="small" color={c.amber} />
-          <Text style={[styles.exportBannerText, { color: c.ink2 }]} numberOfLines={1}>
-            Exporting {exporting.name}
-          </Text>
-          {exporting.progress >= 0 && (
-            <Text style={[styles.exportBannerPct, { color: c.amberDeep }]}>
-              {Math.round(exporting.progress * 100)}%
-            </Text>
-          )}
-        </View>
+        <ExportProgressBanner ref={exportBannerRef} name={exporting.name} />
       )}
 
       {/* Search bar — slides in below header when active */}
@@ -4502,19 +4499,8 @@ const styles = StyleSheet.create({
   // 1177 — top-of-Files "Exporting…" indicator (Save to Files / Save to Photos
   // prepare phase). Matches the storage/backup banner shape; the amber spinner
   // + tabular-% mirrors the offline download indicator's visual language.
-  exportBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginHorizontal: spacing.lg,
-    marginBottom: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderRadius: radii.md,
-    borderWidth: 1,
-    gap: 10,
-  },
-  exportBannerText: { flex: 1, fontSize: 13, fontWeight: '500' },
-  exportBannerPct: { fontSize: 12, fontWeight: '700', fontVariant: ['tabular-nums'] },
+  // 1180 — export banner styles moved into ExportProgressBanner.tsx (isolated,
+  // memoized, imperatively-updated) so progress ticks never re-render this screen.
 
   // Backup continuation banner
   backupContinueBanner: {
