@@ -1026,18 +1026,30 @@ export async function downloadAndDecryptFileNative(
 
   const requestId = `preview-${fileId}-${Date.now()}-${Math.random().toString(36).slice(2)}`
   let abortListener: (() => void) | null = null
-  const progressSubscription = options.onProgress && typeof BeebeebCryptoModule.addListener === 'function'
-    ? BeebeebCryptoModule.addListener('onPreviewLoadProgress', (event: PreviewLoadProgressEvent) => {
-      if (event.requestId === requestId) options.onProgress?.(event)
-    })
-    : null
+  let poll: ReturnType<typeof setInterval> | null = null
+
+  if (options.onProgress && typeof BeebeebCryptoModule.getPreviewLoadProgress === 'function') {
+    let lastKey = ''
+    poll = setInterval(() => {
+      const ev = BeebeebCryptoModule.getPreviewLoadProgress(requestId)
+      if (ev && ev.requestId === requestId) {
+        const k = ev.stage + ':' + (ev.chunksCompleted ?? ev.bytesDownloaded ?? '')
+        if (k !== lastKey) {
+          lastKey = k
+          options.onProgress?.(ev as PreviewLoadProgressEvent)
+        }
+      }
+    }, 200)
+  }
 
   if (options.signal?.aborted) {
+    if (poll) clearInterval(poll)
     throw abortError()
   }
 
   if (options.signal) {
     abortListener = () => {
+      if (poll) clearInterval(poll)
       if (typeof BeebeebCryptoModule.cancelDownloadAndDecryptFileNative === 'function') {
         void BeebeebCryptoModule.cancelDownloadAndDecryptFileNative(requestId).catch(() => {})
       }
@@ -1060,7 +1072,11 @@ export async function downloadAndDecryptFileNative(
     }
     throw error
   } finally {
-    progressSubscription?.remove?.()
+    const finalEv = BeebeebCryptoModule.getPreviewLoadProgress?.(requestId)
+    if (finalEv && finalEv.requestId === requestId) {
+      options.onProgress?.(finalEv as PreviewLoadProgressEvent)
+    }
+    if (poll) clearInterval(poll)
     if (options.signal && abortListener) {
       options.signal.removeEventListener('abort', abortListener)
     }

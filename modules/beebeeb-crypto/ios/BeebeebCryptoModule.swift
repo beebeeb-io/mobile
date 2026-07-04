@@ -851,6 +851,8 @@ public class BeebeebCryptoModule: Module {
   private var nextHandleId: Int = 1
   private let previewDownloadLock = NSLock()
   private var previewDownloadCancellations: [String: PreviewDownloadProgress] = [:]
+  private let previewProgressLock = NSLock()
+  private var previewProgressSnapshots: [String: [String: Any]] = [:]
 
   /// Store a MasterKeyHandle and return its opaque numeric ID.
   private func storeHandle(_ handle: MasterKeyHandle) -> Int {
@@ -895,6 +897,28 @@ public class BeebeebCryptoModule: Module {
     previewDownloadLock.unlock()
     cancellation?.cancel()
     return cancellation != nil
+  }
+
+  private func storePreviewProgress(_ requestId: String, _ body: [String: Any]) {
+    guard !requestId.isEmpty else { return }
+    previewProgressLock.lock()
+    previewProgressSnapshots[requestId] = body
+    previewProgressLock.unlock()
+  }
+
+  private func readPreviewProgress(_ requestId: String) -> [String: Any]? {
+    guard !requestId.isEmpty else { return nil }
+    previewProgressLock.lock()
+    let snapshot = previewProgressSnapshots[requestId]
+    previewProgressLock.unlock()
+    return snapshot
+  }
+
+  private func clearPreviewProgress(_ requestId: String) {
+    guard !requestId.isEmpty else { return }
+    previewProgressLock.lock()
+    previewProgressSnapshots.removeValue(forKey: requestId)
+    previewProgressLock.unlock()
   }
 
   private func splitEncryptedPreviewFile(
@@ -965,7 +989,6 @@ public class BeebeebCryptoModule: Module {
 
   public func definition() -> ModuleDefinition {
     Name("BeebeebCrypto")
-    Events("onPreviewLoadProgress")
 
     AsyncFunction("logDiagnostic") { (marker: String, payload: String?) in
       if let payload, !payload.isEmpty {
@@ -2473,9 +2496,7 @@ public class BeebeebCryptoModule: Module {
       let outputURL = fileURL(fromURI: outputUri)
       let outputPath = outputURL.path
       let progress = PreviewDownloadProgress(requestId: requestId, fileId: fileId) { [weak self] body in
-        DispatchQueue.main.async {
-          self?.sendEvent("onPreviewLoadProgress", body)
-        }
+        self?.storePreviewProgress(requestId ?? "", body)
       }
       self.storePreviewDownloadCancellation(progress, requestId: requestId)
       if Task.isCancelled {
@@ -2483,6 +2504,7 @@ public class BeebeebCryptoModule: Module {
       }
       defer {
         self.removePreviewDownloadCancellation(requestId: requestId)
+        self.clearPreviewProgress(requestId ?? "")
       }
 
       let tempDir = FileManager.default.temporaryDirectory
@@ -2577,6 +2599,10 @@ public class BeebeebCryptoModule: Module {
 
     AsyncFunction("cancelDownloadAndDecryptFileNative") { [self] (requestId: String) -> Bool in
       self.cancelPreviewDownload(requestId: requestId)
+    }
+
+    Function("getPreviewLoadProgress") { [weak self] (requestId: String) -> [String: Any]? in
+      self?.readPreviewProgress(requestId)
     }
 
     // ── Local thumbnail generation for video and RAW (DNG) files ────────
