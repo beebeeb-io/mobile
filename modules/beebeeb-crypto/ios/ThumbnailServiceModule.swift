@@ -26,6 +26,16 @@ public final class ThumbnailServiceModule: Module, ThumbnailEventEmitter {
   private static var fileKeys: [String: Data] = [:]
   private static let fileKeysLock = NSLock()
 
+  private let diagnosticEventLock = NSLock()
+  private var observedDiagnosticEvents = Set<String>()
+  private static let diagnosticEvents: Set<String> = [
+    "onWorkerStage",
+    "onPoolStats",
+    "onFileCompleted",
+    "onWorkerFailure",
+    "onPoolStateChanged",
+  ]
+
   static func fileKey(_ fileId: String) -> Data? {
     fileKeysLock.lock()
     defer { fileKeysLock.unlock() }
@@ -33,12 +43,47 @@ public final class ThumbnailServiceModule: Module, ThumbnailEventEmitter {
   }
 
   internal func emit(_ name: String, body: [String: Any]) {
-    sendEvent(name, body)
+    appContext?.executeOnJavaScriptThread { [weak self] in
+      self?.sendEvent(name, body)
+    }
+  }
+
+  private func emitDiagnostic(_ name: String, body: [String: Any]) {
+    guard isObservingDiagnosticEvent(name) else { return }
+    emit(name, body: body)
+  }
+
+  private func setDiagnosticEvent(_ name: String, observed: Bool) {
+    guard Self.diagnosticEvents.contains(name) else { return }
+    diagnosticEventLock.lock()
+    if observed {
+      observedDiagnosticEvents.insert(name)
+    } else {
+      observedDiagnosticEvents.remove(name)
+    }
+    diagnosticEventLock.unlock()
+  }
+
+  private func isObservingDiagnosticEvent(_ name: String) -> Bool {
+    diagnosticEventLock.lock()
+    let observed = observedDiagnosticEvents.contains(name)
+    diagnosticEventLock.unlock()
+    return observed
   }
 
   public func definition() -> ModuleDefinition {
     Name("ThumbnailService")
     Events("onThumbnailReady", "onAssociationCleared", "onWorkerStage", "onPoolStats", "onFileCompleted", "onWorkerFailure", "onPoolStateChanged")
+    OnStartObserving("onWorkerStage") { self.setDiagnosticEvent("onWorkerStage", observed: true) }
+    OnStopObserving("onWorkerStage") { self.setDiagnosticEvent("onWorkerStage", observed: false) }
+    OnStartObserving("onPoolStats") { self.setDiagnosticEvent("onPoolStats", observed: true) }
+    OnStopObserving("onPoolStats") { self.setDiagnosticEvent("onPoolStats", observed: false) }
+    OnStartObserving("onFileCompleted") { self.setDiagnosticEvent("onFileCompleted", observed: true) }
+    OnStopObserving("onFileCompleted") { self.setDiagnosticEvent("onFileCompleted", observed: false) }
+    OnStartObserving("onWorkerFailure") { self.setDiagnosticEvent("onWorkerFailure", observed: true) }
+    OnStopObserving("onWorkerFailure") { self.setDiagnosticEvent("onWorkerFailure", observed: false) }
+    OnStartObserving("onPoolStateChanged") { self.setDiagnosticEvent("onPoolStateChanged", observed: true) }
+    OnStopObserving("onPoolStateChanged") { self.setDiagnosticEvent("onPoolStateChanged", observed: false) }
 
     OnCreate {
       Task {
@@ -64,7 +109,7 @@ public final class ThumbnailServiceModule: Module, ThumbnailEventEmitter {
       }
       ThumbnailWorkerPool.shared.startObservers()
       ThumbnailWorkerPool.shared.onWorkerStage = { [weak self] slot, fileId, stage, elapsedMs in
-          self?.sendEvent("onWorkerStage", ["slot": slot, "fileId": fileId, "stage": stage, "elapsedMs": elapsedMs])
+          self?.emitDiagnostic("onWorkerStage", body: ["slot": slot, "fileId": fileId, "stage": stage, "elapsedMs": elapsedMs])
       }
       ThumbnailWorkerPool.shared.onPoolStats = { [weak self] snap in
           guard let self else { return }
@@ -80,23 +125,23 @@ public final class ThumbnailServiceModule: Module, ThumbnailEventEmitter {
               "isPaused": snap.isPaused,
               "isThermalThrottled": snap.isThermalThrottled
           ]
-          self.sendEvent("onPoolStats", data)
+          self.emitDiagnostic("onPoolStats", body: data)
       }
       ThumbnailWorkerPool.shared.onFileCompleted = { [weak self] fileId, success, category, totalMs, stages in
-          self?.sendEvent("onFileCompleted", [
+          self?.emitDiagnostic("onFileCompleted", body: [
               "fileId": fileId, "success": success,
               "category": category as Any, "totalMs": totalMs,
               "stageBreakdown": stages
           ])
       }
       ThumbnailWorkerPool.shared.onWorkerFailure = { [weak self] fileId, code, msg, attempt in
-          self?.sendEvent("onWorkerFailure", [
+          self?.emitDiagnostic("onWorkerFailure", body: [
               "fileId": fileId, "errorCode": code,
               "errorMessage": msg, "attempt": attempt
           ])
       }
       ThumbnailWorkerPool.shared.onPoolStateChanged = { [weak self] state in
-          self?.sendEvent("onPoolStateChanged", ["state": state])
+          self?.emitDiagnostic("onPoolStateChanged", body: ["state": state])
       }
     }
 

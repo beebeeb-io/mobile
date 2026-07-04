@@ -2991,6 +2991,8 @@ export default function FilesScreen() {
       'video/x-m4v': 'm4v',
       'video/3gpp': '3gp',
       'video/webm': 'webm',
+      'video/x-msvideo': 'avi',
+      'video/x-matroska': 'mkv',
     };
     const extForSave = (): string => {
       const dot = name.lastIndexOf('.');
@@ -3077,9 +3079,10 @@ export default function FilesScreen() {
         });
         return;
       }
-      // Request add-only (write) access — `true` asks for the minimal
-      // "add photos" permission rather than full-library read/write.
-      const perm = await MediaLibrary.requestPermissionsAsync(true);
+      // Videos need post-import verification so we can avoid a false success
+      // toast when PhotoKit creates a placeholder but no visible video. Full
+      // read/write permission lets getAssetInfoAsync validate the new asset.
+      const perm = await MediaLibrary.requestPermissionsAsync(!isVideo);
       if (perm.status !== 'granted') {
         Alert.alert(
           'Permission required',
@@ -3102,6 +3105,13 @@ export default function FilesScreen() {
         const asset = await MediaLibrary.createAssetAsync(decryptedUri);
         if (!asset?.id) {
           throw new Error('Photos did not confirm the save');
+        }
+        const assetInfo = await MediaLibrary.getAssetInfoAsync(asset, {
+          shouldDownloadFromNetwork: false,
+        });
+        const expectedMediaType = isVideo ? MediaLibrary.MediaType.video : MediaLibrary.MediaType.photo;
+        if (assetInfo.mediaType !== expectedMediaType) {
+          throw new Error(`Photos saved an unexpected asset type: ${assetInfo.mediaType}`);
         }
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         showToast({ type: 'success', message: 'Saved to Photos' });
