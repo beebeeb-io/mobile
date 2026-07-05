@@ -3158,22 +3158,44 @@ final class NativeBackupEngine: NSObject {
       return
     }
 
-    if allowedAssetIds.isEmpty {
-      sqlite3_exec(db, "UPDATE backup_assets SET selected_for_backup = 0", nil, nil, nil)
-      return
+    let sqlInChunk = 400
+    let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+    guard sqlite3_exec(db, "BEGIN", nil, nil, nil) == SQLITE_OK else { return }
+    var didCommit = false
+    defer {
+      if !didCommit {
+        sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+      }
     }
 
-    let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-    let placeholders = Array(repeating: "?", count: allowedAssetIds.count).joined(separator: ",")
-    sqlite3_exec(db, "UPDATE backup_assets SET selected_for_backup = 0", nil, nil, nil)
-    let sql = "UPDATE backup_assets SET selected_for_backup = 1 WHERE local_asset_id IN (\(placeholders))"
-    var stmt: OpaquePointer?
-    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
-    defer { sqlite3_finalize(stmt) }
-    for (index, assetId) in allowedAssetIds.enumerated() {
-      sqlite3_bind_text(stmt, Int32(index + 1), (assetId as NSString).utf8String, -1, transient)
+    guard sqlite3_exec(db, "UPDATE backup_assets SET selected_for_backup = 0", nil, nil, nil) == SQLITE_OK else { return }
+
+    let assetIds = Array(allowedAssetIds)
+    for start in stride(from: 0, to: assetIds.count, by: sqlInChunk) {
+      let end = min(start + sqlInChunk, assetIds.count)
+      let batch = assetIds[start..<end]
+      let placeholders = Array(repeating: "?", count: batch.count).joined(separator: ",")
+      let sql = "UPDATE backup_assets SET selected_for_backup = 1 WHERE local_asset_id IN (\(placeholders))"
+      var stmt: OpaquePointer?
+      guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
+      var didBindBatch = true
+      for (index, assetId) in batch.enumerated() {
+        if sqlite3_bind_text(stmt, Int32(index + 1), (assetId as NSString).utf8String, -1, transient) != SQLITE_OK {
+          didBindBatch = false
+          break
+        }
+      }
+      guard didBindBatch else {
+        sqlite3_finalize(stmt)
+        return
+      }
+      let stepResult = sqlite3_step(stmt)
+      sqlite3_finalize(stmt)
+      guard stepResult == SQLITE_DONE else { return }
     }
-    sqlite3_step(stmt)
+
+    guard sqlite3_exec(db, "COMMIT", nil, nil, nil) == SQLITE_OK else { return }
+    didCommit = true
   }
 
   /// Get pending uploads ordered by creation date (newest first), respecting retry limits.
