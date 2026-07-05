@@ -48,6 +48,7 @@ import { useBackup } from '../lib/backup-context';
 import NetInfo from '@react-native-community/netinfo';
 import { recordRuntimeTrace } from '../lib/runtime-trace';
 import { formatBytes } from '../lib/format';
+import * as BeebeebCrypto from '../../modules/beebeeb-crypto';
 
 let MediaLibrary: { getAssetsAsync: (opts: { first: number; mediaType?: string[] }) => Promise<{ totalCount: number }>; MediaType?: { photo: string; video: string } } = {
   getAssetsAsync: async () => ({ totalCount: 0 }),
@@ -319,7 +320,9 @@ export default function BackupInsightsScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [retrying, setRetrying] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [isPhotoAlbumSelectionActive, setIsPhotoAlbumSelectionActive] = useState(false);
   const dataRef = useRef<InsightsData | null>(null);
+  const isPhotoAlbumSelectionActiveRef = useRef(false);
   const loadInFlightRef = useRef<Promise<void> | null>(null);
   const lastSlowLoadAtRef = useRef(0);
   const lastProgressRefreshAtRef = useRef(0);
@@ -327,6 +330,10 @@ export default function BackupInsightsScreen() {
   useEffect(() => {
     dataRef.current = data;
   }, [data]);
+
+  useEffect(() => {
+    isPhotoAlbumSelectionActiveRef.current = isPhotoAlbumSelectionActive;
+  }, [isPhotoAlbumSelectionActive]);
 
   const loadData = useCallback(async (showSpinner = false) => {
     if (loadInFlightRef.current) {
@@ -337,6 +344,7 @@ export default function BackupInsightsScreen() {
     const task = (async () => {
       const started = Date.now();
       const previousData = dataRef.current;
+      let nextPhotoAlbumSelectionActive = isPhotoAlbumSelectionActiveRef.current;
       const includeSlow =
         showSpinner ||
         previousData === null ||
@@ -344,7 +352,7 @@ export default function BackupInsightsScreen() {
 
       if (showSpinner) setRefreshing(true);
       try {
-        const [counts, totalBytes, failedAssets, localMissingAssets, recentActivity, lastVerification] =
+        const [counts, totalBytes, failedAssets, localMissingAssets, recentActivity, lastVerification, selectedPhotoAlbumIds] =
           await Promise.all([
             withTimeout(getStatusCounts(), previousData?.counts ?? emptyStatusCounts(), 1_000),
             withTimeout(getTotalUploadedBytes(), previousData?.totalBytes ?? 0, 1_000),
@@ -352,7 +360,15 @@ export default function BackupInsightsScreen() {
             withTimeout(getLocalMissingAssets(10), previousData?.localMissingAssets ?? [], 1_000),
             withTimeout(getRecentActivity(7), previousData?.recentActivity ?? [], 1_000),
             withTimeout(getLastVerification(), previousData?.lastVerification ?? null, 1_000),
+            withTimeout(
+              BeebeebCrypto.getPhotoBackupSelectedAlbumIds().catch(() => []),
+              nextPhotoAlbumSelectionActive ? ['selected'] : [],
+              1_000,
+            ),
           ]);
+        nextPhotoAlbumSelectionActive = selectedPhotoAlbumIds.length > 0;
+        isPhotoAlbumSelectionActiveRef.current = nextPhotoAlbumSelectionActive;
+        setIsPhotoAlbumSelectionActive(nextPhotoAlbumSelectionActive);
 
         let manifest = previousData?.manifest ?? null;
         let totalCameraRoll = previousData?.totalCameraRoll ?? 0;
@@ -470,7 +486,9 @@ export default function BackupInsightsScreen() {
   );
   const localMissingCount = data?.counts.local_missing ?? 0;
   const displayUploadedCount = Math.max(uploadedCount, backup.backupProgress.completed);
-  const displayTotalCameraRoll = Math.max(data?.totalCameraRoll ?? 0, backup.backupProgress.total);
+  const displayTotalCameraRoll = isPhotoAlbumSelectionActive
+    ? backup.backupProgress.total
+    : Math.max(data?.totalCameraRoll ?? 0, backup.backupProgress.total);
   const activeWaitingToEncrypt = backup.backupProgress.waitingToEncrypt ?? 0;
   const activeReadyToUpload = backup.backupProgress.encryptedPendingUpload ?? 0;
   const activeUploading = backup.backupProgress.uploading ?? backup.backupProgress.inProgress;
