@@ -59,6 +59,7 @@ export interface BackupAsset {
 }
 
 const DB_NAME = 'beebeeb-backup.db';
+const LEGACY_STATUS_ENUM_MIGRATION_VERSION = 1;
 
 // Module-level handle, set by initDatabase(). All other functions await
 // `getDb()` so they're safe to call before initDatabase() resolves — they'll
@@ -191,11 +192,18 @@ async function openAndMigrate(): Promise<SQLite.SQLiteDatabase> {
       ON backup_upload_chunks(local_asset_id, status);
   `);
 
-  // Migrate old status values to new enum
-  await db.execAsync(`
-    UPDATE backup_assets SET status = 'pending_upload' WHERE status = 'pending';
-    UPDATE backup_assets SET status = 'uploaded' WHERE status = 'uploading';
-  `);
+  // One-time legacy status enum migration. Do not rerun on every launch:
+  // `uploading` is now a live in-progress state and must only be recovered by
+  // recoverStuckUploads(), which applies the staleness timeout.
+  const versionRow = await db.getFirstAsync<{ user_version: number }>('PRAGMA user_version');
+  const schemaVersion = versionRow?.user_version ?? 0;
+  if (schemaVersion < LEGACY_STATUS_ENUM_MIGRATION_VERSION) {
+    await db.execAsync(`
+      UPDATE backup_assets SET status = 'pending_upload' WHERE status = 'pending';
+      UPDATE backup_assets SET status = 'uploaded' WHERE status = 'uploading';
+      PRAGMA user_version = ${LEGACY_STATUS_ENUM_MIGRATION_VERSION};
+    `);
+  }
   await migrateLocalMissingRows(db);
 
   return db;
