@@ -4100,7 +4100,7 @@ export default function FilesScreen() {
 
       {/* Batch action bar — shown in select mode */}
       {selectMode && (
-        <View style={[styles.actionBar, { backgroundColor: c.paper, borderTopColor: c.line, paddingBottom: insets.bottom }]}>
+        <View style={[styles.actionBar, { backgroundColor: c.paper, borderTopColor: c.line }]}>
           <TouchableOpacity
             style={styles.actionBarButton}
             onPress={handleBatchShare}
