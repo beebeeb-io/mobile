@@ -892,6 +892,7 @@ export async function getAllImages(): Promise<FileEntry[]> {
 const CHUNK_SIZE = 4 * 1024 * 1024;
 const MOBILE_UPLOAD_CHUNK_SIZE_CAP_BYTES = 16 * 1024 * 1024;
 const MOBILE_UPLOAD_CHUNK_PAUSE_MS = 250;
+const MOBILE_UPLOAD_NAME_PATCH_MAX_ATTEMPTS = 3;
 const SIMPLE_UPLOAD_THRESHOLD = 5 * 1024 * 1024; // 5 MB — below this, use simple upload
 
 function uploadPaceDelay(): Promise<void> {
@@ -1205,15 +1206,42 @@ export async function uploadEncryptedChunked(params: {
     throw new ApiError(completeRes.status, (err as { error?: string }).error ?? 'Finalize failed')
   }
   const completed = await completeRes.json() as FileEntry
+  let shouldClearResumeState = true
   if (protocol === 'v2') {
     const finalNameEncrypted = await resolveNameEncrypted(serverFileId)
     if (finalNameEncrypted !== initialNameEncrypted) {
-      await request('PATCH', `/api/v1/files/${serverFileId}`, { name_encrypted: finalNameEncrypted })
-      completed.name_encrypted = finalNameEncrypted
+      const patched = await patchCompletedUploadNameEncrypted(serverFileId, finalNameEncrypted)
+      if (patched) {
+        completed.name_encrypted = finalNameEncrypted
+      } else {
+        shouldClearResumeState = false
+      }
     }
   }
-  clearUploadResumeStateSoon(resumeKey)
+  if (shouldClearResumeState) clearUploadResumeStateSoon(resumeKey)
   return completed
+}
+
+async function patchCompletedUploadNameEncrypted(serverFileId: string, finalNameEncrypted: string): Promise<boolean> {
+  let lastError: unknown
+  for (let attempt = 1; attempt <= MOBILE_UPLOAD_NAME_PATCH_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      await request('PATCH', `/api/v1/files/${serverFileId}`, { name_encrypted: finalNameEncrypted })
+      return true
+    } catch (err) {
+      lastError = err
+      if (attempt < MOBILE_UPLOAD_NAME_PATCH_MAX_ATTEMPTS) {
+        await uploadPaceDelay()
+      }
+    }
+  }
+
+  console.warn('[upload] final encrypted filename patch failed after retries', {
+    serverFileId,
+    attempts: MOBILE_UPLOAD_NAME_PATCH_MAX_ATTEMPTS,
+    error: lastError instanceof Error ? lastError.message : String(lastError),
+  })
+  return false
 }
 
 interface UploadV2InitResponse {

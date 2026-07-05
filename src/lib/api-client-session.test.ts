@@ -217,3 +217,69 @@ describe('ensureMobileIosBackupClientSession', () => {
     expect(store.get(CACHE_KEY)).toBe('created-session');
   });
 });
+
+describe('uploadEncryptedChunked v2 name correction', () => {
+  test('retries a transient final name patch failure and clears resume state after repair', async () => {
+    store.set(TOKEN_KEY, 'upload-token');
+    fetchQueue.push(
+      async () => jsonResponse({
+        file_id: 'server-file',
+        upload_session_id: 'upload-session',
+        chunk_size_bytes: 1024,
+        chunk_count: 1,
+      }),
+      async () => new Response('{}', { status: 200 }),
+      async () => jsonResponse({ id: 'server-file', name_encrypted: 'initial-name' }),
+      async () => jsonResponse({ error: 'temporary' }, 503),
+      async () => jsonResponse({ id: 'server-file', name_encrypted: 'final-name' }),
+    );
+
+    const { uploadEncryptedChunked } = await loadFreshApi();
+
+    const completed = await uploadEncryptedChunked({
+      fileId: 'client-file',
+      nameEncrypted: async (id: string) => id === 'server-file' ? 'final-name' : 'initial-name',
+      plaintextSizeBytes: 1,
+      resumeKey: 'retry-success',
+      readEncryptedChunk: async (_index: number, _chunkSizeBytes: number, fileId: string) => {
+        expect(fileId).toBe('server-file');
+        return new Uint8Array(29);
+      },
+    });
+
+    expect(completed.name_encrypted).toBe('final-name');
+    expect(fetchCalls.filter((call) => call.init.method === 'PATCH')).toHaveLength(2);
+    expect(store.has('beebeeb_upload_resume_retry-success')).toBe(false);
+  });
+
+  test('returns completed file and preserves resume state when final name patch keeps failing', async () => {
+    store.set(TOKEN_KEY, 'upload-token');
+    fetchQueue.push(
+      async () => jsonResponse({
+        file_id: 'server-file',
+        upload_session_id: 'upload-session',
+        chunk_size_bytes: 1024,
+        chunk_count: 1,
+      }),
+      async () => new Response('{}', { status: 200 }),
+      async () => jsonResponse({ id: 'server-file', name_encrypted: 'initial-name' }),
+      async () => jsonResponse({ error: 'temporary' }, 503),
+      async () => jsonResponse({ error: 'temporary' }, 503),
+      async () => jsonResponse({ error: 'temporary' }, 503),
+    );
+
+    const { uploadEncryptedChunked } = await loadFreshApi();
+
+    const completed = await uploadEncryptedChunked({
+      fileId: 'client-file',
+      nameEncrypted: async (id: string) => id === 'server-file' ? 'final-name' : 'initial-name',
+      plaintextSizeBytes: 1,
+      resumeKey: 'retry-failed',
+      readEncryptedChunk: async () => new Uint8Array(29),
+    });
+
+    expect(completed.name_encrypted).toBe('initial-name');
+    expect(fetchCalls.filter((call) => call.init.method === 'PATCH')).toHaveLength(3);
+    expect(store.has('beebeeb_upload_resume_retry-failed')).toBe(true);
+  });
+});
