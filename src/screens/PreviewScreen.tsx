@@ -32,6 +32,7 @@ import type { RootStackParamList } from '../App';
 import { colors, radii, shadows } from '../theme';
 import type { Colors } from '../theme';
 import { useTheme } from '../lib/theme-context';
+import { useToast } from '../lib/toast-context';
 import { getToken, friendlyError, trustLocation, trashFiles } from '../lib/api';
 import { useCrypto } from '../lib/crypto-context';
 import { decryptToTempFile } from '../lib/native-decrypt';
@@ -1481,6 +1482,7 @@ export default function PreviewScreen() {
   const route = useRoute<PreviewRoute>();
   const insets = useSafeAreaInsets();
   const { colors: c, resolved } = useTheme();
+  const { showToast } = useToast();
   const {
     fileId,
     fileName,
@@ -1883,6 +1885,9 @@ export default function PreviewScreen() {
             handleId,
             {
               onProgress: (event) => applyNativeProgress(event, setLoadProgress),
+              onOfflineFallback: () => {
+                showToast({ type: 'info', message: 'Offline copy unreadable. Re-downloading...' });
+              },
               signal: options.signal,
             },
           );
@@ -1934,6 +1939,7 @@ export default function PreviewScreen() {
     currentSizeBytes,
     fileId,
     hasThumbnail,
+    showToast,
     requestFileFields,
     getFileKeyBytes,
     getMasterKeyHandleId,

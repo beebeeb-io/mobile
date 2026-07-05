@@ -47,6 +47,7 @@ const PREVIEW_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 
 export interface PreviewDecryptOptions {
   onProgress?: (event: PreviewLoadProgressEvent) => void;
+  onOfflineFallback?: (event: { fileId: string; reason: string }) => void;
   signal?: AbortSignal;
 }
 
@@ -88,10 +89,21 @@ function responseHeaderInt(headers: Headers, key: string): number | null {
 
 function errorTraceFields(error: unknown): Record<string, unknown> {
   if (error instanceof ApiError) {
-    return { name: error.name, status: error.status, message: error.message };
+    return {
+      name: error.name,
+      status: error.status,
+      message: error.message,
+      stack: error.stack,
+      cause: error.cause,
+    };
   }
   if (error instanceof Error) {
-    return { name: error.name, message: error.message };
+    return {
+      name: error.name,
+      message: error.message,
+      stack: error.stack,
+      cause: error.cause,
+    };
   }
   return { message: String(error) };
 }
@@ -252,7 +264,12 @@ export async function decryptToTempFile(
       );
     } catch (err) {
       if (options.signal?.aborted) throw err;
-      recordRuntimeTrace('preview.decrypt.offline_fallback', { fileId, ...errorTraceFields(err) });
+      const traceFields = errorTraceFields(err);
+      const reason = typeof traceFields.message === 'string' && traceFields.message.length > 0
+        ? traceFields.message
+        : 'Offline copy could not be decrypted.';
+      recordRuntimeTrace('preview.decrypt.offline_fallback', { fileId, ...traceFields });
+      options.onOfflineFallback?.({ fileId, reason });
     }
   } else {
     // Not pinned for offline — if there's also no connectivity, surface a clear

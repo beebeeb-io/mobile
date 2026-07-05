@@ -100,7 +100,11 @@ export interface SelfRepairArgs {
  * Fire-and-forget entry point. Returns immediately; never throws, never blocks.
  */
 export function maybeSelfRepairThumbnailFromLocalFile(args: SelfRepairArgs): void {
-  void runSelfRepair(args).catch(() => {
+  void runSelfRepair(args).catch((err) => {
+    console.warn('[thumbnail-self-repair] repair worker failed', {
+      fileId: args.fileId,
+      error: err instanceof Error ? err.message : String(err),
+    });
     // Best-effort — a failed self-repair must never surface to the user.
   });
 }
@@ -157,7 +161,11 @@ async function runSelfRepair(args: SelfRepairArgs): Promise<boolean> {
         }
       }
       return ok;
-    } catch {
+    } catch (err) {
+      console.warn('[thumbnail-self-repair] thumbnail upload repair failed', {
+        fileId,
+        error: err instanceof Error ? err.message : String(err),
+      });
       return false;
     } finally {
       releaseSlot();

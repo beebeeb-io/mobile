@@ -235,7 +235,10 @@ async function generateVideoThumbnailBytes(sourceUri: string, maxSize = THUMB_WI
     const b64 = await FileSystem.readAsStringAsync(thumbPath, { encoding: EncodingType.Base64 });
     await FileSystem.deleteAsync(thumbPath, { idempotent: true }).catch(() => {});
     return base64ToBytes(b64);
-  } catch {
+  } catch (err) {
+    warnThumbnailOnce('[thumbnail] video thumbnail generation failed', {
+      error: err instanceof Error ? err.message : String(err),
+    });
     return null;
   }
 }

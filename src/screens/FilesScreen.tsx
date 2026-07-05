@@ -3016,6 +3016,9 @@ export default function FilesScreen() {
           // via its ref — this does NOT setState on FilesScreen, so the FlatList
           // never re-renders per tick (the #188/1177 crash cause).
           onProgress: (event) => exportBannerRef.current?.setProgress(event),
+          onOfflineFallback: () => {
+            showToast({ type: 'info', message: 'Offline copy unreadable. Re-downloading...' });
+          },
         },
       );
       // 0883 — auto self-repair: the plaintext is now on disk. If this owner
