@@ -1162,6 +1162,18 @@ export async function setPhotoBackupSelectedAlbumIds(albumIds: string[]): Promis
   return BeebeebCryptoModule.setPhotoBackupSelectedAlbumIds(albumIds)
 }
 
+/** Whether native camera-roll discovery should include videos. Defaults to true on unsupported builds. */
+export async function getPhotoBackupIncludeVideos(): Promise<boolean> {
+  if (typeof BeebeebCryptoModule.getPhotoBackupIncludeVideos !== 'function') return true
+  return Boolean(await BeebeebCryptoModule.getPhotoBackupIncludeVideos())
+}
+
+/** Persist whether native camera-roll discovery should include videos. */
+export async function setPhotoBackupIncludeVideos(includeVideos: boolean): Promise<boolean> {
+  if (typeof BeebeebCryptoModule.setPhotoBackupIncludeVideos !== 'function') return false
+  return BeebeebCryptoModule.setPhotoBackupIncludeVideos(includeVideos)
+}
+
 /** Start camera roll backup. Registers PHPhotoLibrary observer and schedules BGProcessingTask. */
 export async function enablePhotoBackup(authToken: string): Promise<void> {
   return BeebeebCryptoModule.enablePhotoBackup(authToken)

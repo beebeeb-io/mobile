@@ -2187,9 +2187,14 @@ public class BeebeebCryptoModule: Module {
       var albums: [[String: Any]] = []
       collections.enumerateObjects { collection, _, _ in
         let assetOptions = PHFetchOptions()
-        assetOptions.predicate = NSPredicate(format: "mediaType == %d OR mediaType == %d",
-                                             PHAssetMediaType.image.rawValue,
-                                             PHAssetMediaType.video.rawValue)
+        if NativeBackupEngine.shared.includeVideos {
+          assetOptions.predicate = NSPredicate(format: "mediaType == %d OR mediaType == %d",
+                                               PHAssetMediaType.image.rawValue,
+                                               PHAssetMediaType.video.rawValue)
+        } else {
+          assetOptions.predicate = NSPredicate(format: "mediaType == %d",
+                                               PHAssetMediaType.image.rawValue)
+        }
         let count = PHAsset.fetchAssets(in: collection, options: assetOptions).count
         guard count > 0 else { return }
         albums.append([
@@ -2209,6 +2214,15 @@ public class BeebeebCryptoModule: Module {
 
     AsyncFunction("setPhotoBackupSelectedAlbumIds") { (albumIds: [String]) -> Bool in
       NativeBackupEngine.shared.selectedPhotoAlbumIds = albumIds
+      return true
+    }
+
+    AsyncFunction("getPhotoBackupIncludeVideos") { () -> Bool in
+      NativeBackupEngine.shared.includeVideos
+    }
+
+    AsyncFunction("setPhotoBackupIncludeVideos") { (includeVideos: Bool) -> Bool in
+      NativeBackupEngine.shared.includeVideos = includeVideos
       return true
     }
 

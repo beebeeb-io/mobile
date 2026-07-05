@@ -23,6 +23,7 @@ private let backupReminderDelaySeconds: TimeInterval = 15 * 60
 private let backupClientSessionIdKey = "io.beebeeb.backupClientSessionId"
 private let backupHeartbeatCadenceSeconds: TimeInterval = 30
 private let backupSelectedAlbumIdsKey = "io.beebeeb.photoBackupSelectedAlbumIds"
+private let backupIncludeVideosKey = "io.beebeeb.photoBackupIncludeVideos"
 private let stagedBackupDirectoryName = "NativeBackupStaging"
 private let minimumFreeBytesAfterStaging: Int64 = 2 * 1024 * 1024 * 1024
 private let maxStagedBackupBytes: Int64 = 3 * 1024 * 1024 * 1024
@@ -425,6 +426,17 @@ final class NativeBackupEngine: NSObject {
       } else {
         UserDefaults.standard.set(sanitized, forKey: backupSelectedAlbumIdsKey)
       }
+    }
+  }
+
+  var includeVideos: Bool {
+    get {
+      guard UserDefaults.standard.object(forKey: backupIncludeVideosKey) != nil else { return true }
+      return UserDefaults.standard.bool(forKey: backupIncludeVideosKey)
+    }
+    set {
+      UserDefaults.standard.set(newValue, forKey: backupIncludeVideosKey)
+      currentFetchResult = nil
     }
   }
 
@@ -1581,10 +1593,14 @@ final class NativeBackupEngine: NSObject {
 
     let options = PHFetchOptions()
     options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
-    // Fetch both images and videos
-    options.predicate = NSPredicate(format: "mediaType == %d OR mediaType == %d",
-                                    PHAssetMediaType.image.rawValue,
-                                    PHAssetMediaType.video.rawValue)
+    if includeVideos {
+      options.predicate = NSPredicate(format: "mediaType == %d OR mediaType == %d",
+                                      PHAssetMediaType.image.rawValue,
+                                      PHAssetMediaType.video.rawValue)
+    } else {
+      options.predicate = NSPredicate(format: "mediaType == %d",
+                                      PHAssetMediaType.image.rawValue)
+    }
     let selectedAlbums = selectedPhotoAlbumIds
     let assets = fetchAssetsForBackup(options: options, selectedAlbumIds: selectedAlbums)
 
@@ -3172,7 +3188,7 @@ final class NativeBackupEngine: NSObject {
            COALESCE(staged_is_media, 0), COALESCE(staged_original_size, 0),
            COALESCE(staged_chunk_count, 0), staged_dir, upload_session_id
     FROM backup_assets
-    WHERE status IN ('pending_upload', 'pending_reupload', 'staged_upload', 'uploading')
+    WHERE status IN ('pending_upload', 'pending_reupload', 'staging', 'staged_upload', 'uploading')
       AND COALESCE(selected_for_backup, 1) = 1
       AND COALESCE(retry_count, 0) < 10
     ORDER BY created_at DESC
@@ -3265,7 +3281,7 @@ final class NativeBackupEngine: NSObject {
     let sql = """
     SELECT 1
     FROM backup_assets
-    WHERE status IN ('pending_upload', 'pending_reupload', 'staged_upload', 'uploading')
+    WHERE status IN ('pending_upload', 'pending_reupload', 'staging', 'staged_upload', 'uploading')
       AND COALESCE(selected_for_backup, 1) = 1
       AND COALESCE(retry_count, 0) < 10
     LIMIT 1

@@ -15,6 +15,8 @@ import {
   getBackupProgress,
   triggerImmediateBackup,
   mirrorBackupClientSession,
+  getPhotoBackupIncludeVideos,
+  setPhotoBackupIncludeVideos,
   type NativeBackupProgress,
 } from '../../modules/beebeeb-crypto';
 import { ensureBackupFolders, reconcileDerivedStateAgainstServer, type BackupCategory } from '../services/BackupService';
@@ -133,6 +135,7 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
   const [backupProgress, setBackupProgress] = useState<BackupProgress>(EMPTY_PROGRESS);
   const [lastBackupAt, setLastBackupAt] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const includeVideosRef = useRef(true);
 
   const applyNativeProgress = useCallback((p: NativeBackupProgress) => {
     const pending = p.pending ?? Math.max(0, p.total - p.completed - p.inProgress);
@@ -180,6 +183,7 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
     });
 
     if (category === 'camera_roll') {
+      await setPhotoBackupIncludeVideos(includeVideosRef.current).catch(() => false);
       await mirrorBackupSessionForNative();
       await enablePhotoBackup(token);
     } else if (category === 'contacts') {
@@ -213,7 +217,21 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
         setIsContactsBackupEnabled(contacts === 'true');
         setIsCalendarBackupEnabled(calendar === 'true');
         // Defaults: videos on, wifi-only off, background on
-        if (videos !== null) setIncludeVideosState(videos === 'true');
+        let includeVideosValue = videos !== null ? videos === 'true' : true;
+        if (Platform.OS === 'ios') {
+          try {
+            const nativeIncludeVideos = await getPhotoBackupIncludeVideos();
+            if (videos === null) {
+              includeVideosValue = nativeIncludeVideos;
+            } else if (nativeIncludeVideos !== includeVideosValue) {
+              await setPhotoBackupIncludeVideos(includeVideosValue);
+            }
+          } catch {
+            // Older native builds do not expose this setting yet.
+          }
+        }
+        includeVideosRef.current = includeVideosValue;
+        setIncludeVideosState(includeVideosValue);
         if (wifi !== null) setWifiOnlyState(wifi === 'true');
         if (bgUpload !== null) setBackgroundUploadState(bgUpload === 'true');
         // 0811 — sequence the enables. Firing all three unawaited made each
@@ -337,11 +355,15 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
   }, [enableNativeBackup, isCalendarBackupEnabled]);
 
   const setIncludeVideos = useCallback(async (value: boolean) => {
+    includeVideosRef.current = value;
     setIncludeVideosState(value);
     try {
       await SecureStore.setItemAsync(BACKUP_INCLUDE_VIDEOS_KEY, value ? 'true' : 'false');
     } catch {
       // SecureStore unavailable
+    }
+    if (Platform.OS === 'ios') {
+      await setPhotoBackupIncludeVideos(value).catch(() => false);
     }
   }, []);
 
@@ -385,6 +407,7 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
       try {
         const { categoryFolderId } = await ensureBackupFolders('camera_roll');
         await configureBackupFolder('camera_roll', categoryFolderId);
+        await setPhotoBackupIncludeVideos(includeVideosRef.current).catch(() => false);
         await mirrorBackupSessionForNative();
         const progress = await triggerImmediateBackup(token);
         applyNativeProgress(progress);
