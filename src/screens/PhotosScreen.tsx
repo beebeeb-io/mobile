@@ -53,6 +53,8 @@ import {
 import { getCachedThumbnail, pruneThumbnailsForRemoteFiles } from '../lib/thumbnail-cache';
 import { decryptToTempFile } from '../lib/native-decrypt';
 import { prunePhotoCacheForRemoteFiles } from '../lib/photo-cache';
+import { onFilesDeleted } from '../lib/delete-cascade';
+import { removeFromFileProviderCache } from '../lib/file-provider-mount';
 import { loadCachedFileIndex, saveCachedFileIndex, type CachedFileIndex } from '../lib/file-index-cache';
 import { getRemoteCreatedAtMap, getRemoteToLocalMap, markRemoteDeleted } from '../services/BackupDatabase';
 import { encryptedMetadataPayloadToBytes } from '../lib/encrypted-metadata';
@@ -1410,6 +1412,8 @@ export default function PhotosScreen() {
                 const retainedIds = new Set(photosCacheRef.current.map((photo) => photo.id));
                 void pruneThumbnailsForRemoteFiles(retainedIds);
                 void prunePhotoCacheForRemoteFiles(retainedIds);
+                void onFilesDeleted(Array.from(deletedIds));
+                void removeFromFileProviderCache(Array.from(deletedIds));
               }
               clearSelection();
               Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
