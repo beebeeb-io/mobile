@@ -1,6 +1,17 @@
 // @ts-nocheck
 import { describe, expect, test, mock, beforeEach } from 'bun:test';
 
+// thumbnail-cache.ts imports { Platform } from 'react-native'. Without this mock the real
+// react-native entrypoint is parsed and its Flow `import typeof` syntax throws. This file used
+// to pass only because another test file registered a react-native mock first (bun's
+// mock.module registry is process-global) — see 0877.
+// OS must be 'android': enqueueThumbnailLoad throws on any other platform by design
+// (iOS routes through the BeebeebThumbnails native service instead).
+mock.module('react-native', () => ({
+  NativeModules: {},
+  Platform: { OS: 'android' },
+}));
+
 mock.module('expo-file-system', () => ({
   documentDirectory: 'file:///doc/',
   cacheDirectory: 'file:///cache/',

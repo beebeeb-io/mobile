@@ -81,6 +81,24 @@ Running the iOS app on the Simulator for QA hits several env-specific walls. Wor
 
 React Native + Expo (managed workflow) + TypeScript. Package manager: **bun**.
 
+## Tests — run `bun run test`, NOT `bun test` (task 0877)
+
+```sh
+bun run test        # correct: per-file process isolation (155 pass / 0 fail)
+bun test            # WRONG: leaky shared registry, reports ~10 phantom failures
+```
+
+bun 1.3.4 keeps `mock.module()` registrations on a **process-global** registry that is never
+reset between test files, and `mock.restore()` does not undo them. The first file to register a
+specifier wins for the entire run, so two files mocking the same module differently corrupt each
+other — e.g. `api-client-session.test.ts` registers an empty `expo-file-system`, which starves
+`welcome-seed.test.ts` of `cacheDirectory`.
+
+`bun run test` invokes `scripts/test-isolated.mjs`, which gives every test file its own process
+(the module-registry-per-file semantics jest has and bun lacks). Consequence for new tests:
+**every test file must mock every native module it needs itself** — never rely on another file
+having mocked it. Two tests were found relying on exactly that when isolation was introduced.
+
 ## API
 
 Backend at `http://localhost:3001`. Same endpoints as the web client — see `repos/server/CLAUDE.md` for the full API reference.
