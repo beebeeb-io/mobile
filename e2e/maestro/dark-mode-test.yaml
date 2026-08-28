@@ -1,0 +1,67 @@
+appId: io.beebeeb.app
+---
+- launchApp
+
+# Make sure we're on the Files tab and signed in
+- tapOn:
+    point: "12%,95%"
+
+- extendedWaitUntil:
+    visible: "Drive"
+    timeout: 15000
+
+# Go to Settings
+- tapOn:
+    point: "85%,95%"
+
+- extendedWaitUntil:
+    visible: "Settings"
+    timeout: 5000
+
+# Scroll down to the Appearance section and pick Dark
+- scrollUntilVisible:
+    element:
+      text: "Appearance"
+    direction: DOWN
+    timeout: 10000
+
+- tapOn: "Dark"
+
+- takeScreenshot: "dark-01-settings"
+
+# Visit each tab in dark mode
+- tapOn:
+    point: "12%,95%"
+- extendedWaitUntil:
+    visible: "Drive"
+    timeout: 5000
+- takeScreenshot: "dark-02-files"
+
+- tapOn:
+    point: "37%,95%"
+- takeScreenshot: "dark-03-shared"
+
+- tapOn:
+    point: "62%,95%"
+- extendedWaitUntil:
+    visible: "Photos"
+    timeout: 5000
+- takeScreenshot: "dark-04-photos"
+
+- tapOn:
+    point: "87%,95%"
+- extendedWaitUntil:
+    visible: "Settings"
+    timeout: 5000
+- takeScreenshot: "dark-05-settings"
+
+# Switch back to System theme so the device is left in a clean state
+- scrollUntilVisible:
+    element:
+      text: "Appearance"
+    direction: DOWN
+    timeout: 10000
+
+- tapOn: "System"
+
+- takeScreenshot: "dark-06-back-to-system"

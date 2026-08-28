@@ -74,7 +74,11 @@ playwright-report/
 # Graphify local files (not committed)
 graphify-out/.graphify_root
 graphify-out/cache/
-e2e/
+# Ignore e2e ARTIFACTS only — never the flows/specs themselves. A blanket `e2e/` rule
+# silently kept new Maestro flows out of git (dark-mode-test.yaml was lost this way); the
+# 16 already-tracked e2e files were only safe because gitignore does not affect tracked files.
+e2e/artifacts/
+e2e/.maestro/
 *.png
 !assets/icon.png
 !assets/adaptive-icon.png

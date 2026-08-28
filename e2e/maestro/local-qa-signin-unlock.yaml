@@ -1,0 +1,103 @@
+# Local-QA sign-in + vault unlock against the LOCAL API (:3001).
+#
+# Gets a Debug/dev-client build from cold start to a fully unlocked Drive, which is the
+# precondition for every content-level QA flow (upload, offline pinning, preview, sharing).
+#
+# Three gotchas are encoded here; each one cost real time to find (2026-08-28):
+#
+#  1. The keyboard covers the "Sign in" button. Tapping `sign-in-button` right after
+#     inputText silently lands ON THE KEYBOARD — the handler never fires, there is no error,
+#     and the form just sits there looking filled-in. `hideKeyboard` is unreliable on iOS, so
+#     dismiss by tapping a neutral area first.
+#  2. The expo-dev-client menu opens over the app on Debug builds. Its first panel has
+#     "Continue"; the menu itself then STAYS open and needs the X at top-right.
+#  3. The recovery-phrase TextInput cannot be targeted by its placeholder text — tap by point.
+#
+# Precondition: local API on :3001 (repos/server/target/debug/beebeeb-api, NOT `cargo run` —
+# jobserver deadlock) + Postgres on :5434. Account is localhost-only; prod login fails.
+appId: io.beebeeb.app
+---
+- launchApp
+
+# Gotcha 2 — dev-client menu.
+- runFlow:
+    when:
+      visible: "Continue"
+    commands:
+      - tapOn: "Continue"
+- runFlow:
+    when:
+      visible: "Reload"
+    commands:
+      - tapOn:
+          point: "94%,43%"
+
+# A dev-client with no bundle loaded shows the launcher instead of the app.
+- runFlow:
+    when:
+      visible: "http://localhost:8081"
+    commands:
+      - tapOn: "http://localhost:8081"
+
+# Already signed in but keyless? Start from a clean signed-out state.
+- runFlow:
+    when:
+      visible: "Use another account"
+    commands:
+      - tapOn: "Use another account"
+
+# PRECONDITION: start signed OUT (or on the RecoveryUnlock screen, handled above). A
+# sign-out-first branch was tried and removed: `scrollUntilVisible` on the Settings list hangs
+# inside a conditional runFlow. If the app is already signed in, sign out by hand first, or use
+# the existing e2e/maestro/login-flow.yaml which does its own sign-out with fixed scrolls.
+
+- extendedWaitUntil:
+    visible: "Sign in"
+    timeout: 60000
+
+- tapOn:
+    id: "email-input"
+- inputText: "qa0688content@beebeeb.io"
+- tapOn:
+    id: "password-input"
+- inputText: "BeebeebQA0688content!"
+
+# Gotcha 1 — dismiss the keyboard before tapping Sign in.
+- tapOn:
+    point: "50%,28%"
+- tapOn:
+    id: "sign-in-button"
+
+# iOS offers to save the password; it covers the app.
+- runFlow:
+    when:
+      visible: "Not Now"
+    commands:
+      - tapOn: "Not Now"
+
+# On a device with no master key the vault must be restored from the recovery phrase.
+# (See task 1205 — this screen intermittently fails to appear on the post-login path.)
+- runFlow:
+    when:
+      visible: "Unlock your vault"
+    commands:
+      # Gotcha 3 — the phrase input is not addressable by placeholder.
+      - tapOn:
+          point: "50%,56%"
+      - inputText: "nothing dawn wheat axis group brain spirit reject beef enhance coffee truth"
+      - tapOn:
+          point: "50%,30%"
+      - tapOn: "Unlock vault"
+      - runFlow:
+          when:
+            visible: "Not Now"
+          commands:
+            - tapOn: "Not Now"
+
+- extendedWaitUntil:
+    visible: "Drive"
+    timeout: 60000
+
+# Proves the vault is actually UNLOCKED, not merely signed in: with a locked vault the rows
+# render as blank skeleton bars, so a decrypted folder name is the real assertion.
+- assertVisible: "Backups"
