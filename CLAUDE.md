@@ -62,12 +62,17 @@ Running the iOS app on the Simulator for QA hits several env-specific walls. Wor
   sits at 0% CPU, no output) — even `CARGO_BUILD_JOBS=4` did not reliably help. **Fix: run the
   prebuilt binary directly** — `cd repos/server && ./target/debug/beebeeb-api` (the workspace has 4
   bins, so `cargo run` also needs `--bin beebeeb-api`). For mobile QA a slightly-stale server is fine.
-- **Local API blob storage points at PRODUCTION Hetzner S3** (`repos/server/.env` `S3_*` →
-  `beebeeb-s01`). So file-content upload/download + backup uploads from the local API write to the
-  **prod bucket** — do NOT run upload/backup tests against the local stack. The `live-src`/`live-tgt`
-  storage-pool health-check errors at boot are harmless **migration placeholders** (`endpoint: https://test`),
-  not the main store. Backup/file-content QA belongs on **TestFlight** (real device, real backend).
-  Login, metadata (file lists, sizes, counts), navigation, and Settings all work locally.
+- **Local API blob storage is LOCAL FILESYSTEM — safe for upload/download QA.** (Corrected
+  2026-08-28; this entry previously claimed local uploads hit the prod Hetzner bucket. That is
+  **wrong** and it wrongly ruled out local content QA for two months.) `repos/server/.env` sets
+  `BLOB_STORE=local`, and `main.rs:1157` (`ensure_dev_local_pool`) idempotently guarantees exactly
+  one ACTIVE `default` pool on disk at `BLOB_STORE_PATH`. Verified against the live dev DB: all 95
+  `storage_pools` rows are `provider=local`, and the default is
+  `file://…/repos/server/data/blobs`. The `S3_*` vars in `.env` are **inert** while
+  `BLOB_STORE=local` — `main.rs:1252` only reads them under `BLOB_STORE=s3`. `live-src`/`live-tgt`
+  are inactive (`is_active=f`) migration placeholders. Upload, download, offline pinning, and
+  sharing are all locally testable; only push notifications and real-device-only surfaces need
+  TestFlight.
 - **Maestro `takeScreenshot`** silently drops relative paths — pass an **absolute** path, or capture
   with `xcrun simctl io <UDID> screenshot --type=png <abs>.png`. Tab/sub-tab labels with count badges
   (e.g. "By me 6") aren't reliable text targets — tap by `point: "x%,y%"`.
