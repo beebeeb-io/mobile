@@ -718,6 +718,11 @@ const FileRowItem = React.memo(function FileRowItem({
           style={styles.moreButton}
           accessibilityRole="button"
           accessibilityLabel={`Actions for ${nameText}`}
+          // Maestro/E2E cannot target this by accessibilityLabel — on this app only
+          // testID (→ iOS accessibilityIdentifier) matches reliably (see 1206). Without
+          // it, every flow that opens a row menu is stuck with brittle coordinate taps.
+          // Keyed by file id so sibling rows are unambiguous.
+          testID={`file-row-actions-${item.id}`}
         >
           <Ionicons name="ellipsis-horizontal" size={18} color={c.ink3} />
         </TouchableOpacity>
