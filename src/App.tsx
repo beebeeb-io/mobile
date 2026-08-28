@@ -18,6 +18,7 @@ import * as Font from 'expo-font';
 import { ThemeProvider, useTheme } from './lib/theme-context';
 import type { PerformanceStorageProfile } from './lib/performance-storage-settings';
 import { ToastProvider } from './lib/toast-context';
+import { recordRuntimeTrace } from './lib/runtime-trace';
 import { BBLogo } from './components/BBLogo';
 import {
   hasToken,
@@ -612,6 +613,17 @@ function VaultRecoveryGate({ enabled, navReady }: { enabled: boolean; navReady: 
     // which is NOT a missing key and must not route to recovery. Only a
     // genuine no-key result (fresh Debug-sim / device restore) sets
     // needsRecoveryPhrase. See crypto-context loadVerifiedMasterKeyHandle.
+    // 1205 — this gate silently no-ops on the post-login path (cold launch is
+    // fine), leaving a keyless device dead-ended on Drive. Trace every run so
+    // the reason is visible instead of inferred.
+    recordRuntimeTrace('vault.recovery_gate.run', {
+      enabled,
+      navReady,
+      navRefReady: navigationRef.isReady(),
+      needsRecoveryPhrase: crypto.needsRecoveryPhrase,
+      isUnlocked: crypto.isUnlocked,
+      currentRoute: navigationRef.isReady() ? navigationRef.getCurrentRoute()?.name ?? null : null,
+    });
     if (!enabled || !crypto.needsRecoveryPhrase || crypto.isUnlocked) return;
     // Bail until the navigation container is ready. navReady is in the dep
     // array so this effect re-fires the moment nav becomes ready, even if
