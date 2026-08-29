@@ -27,6 +27,7 @@ import * as Sharing from 'expo-sharing';
 import * as Haptics from 'expo-haptics';
 import { WebView } from 'react-native-webview';
 import { useVideoPlayer, VideoView } from 'expo-video';
+import NetInfo from '@react-native-community/netinfo';
 import { Ionicons } from '@expo/vector-icons';
 import type { RootStackParamList } from '../App';
 import { colors, radii, shadows } from '../theme';
@@ -800,8 +801,21 @@ async function loadDecryptedPhotoForViewer(
       }
 
       if (!options.allowOriginal) {
-        recordRuntimeTrace('preview.photo_page.thumbnail.empty', { fileId: entry.id, profile: options.profile });
-        throw new Error('Preview thumbnail is not available. Use View Original to download the full photo.');
+        // 1013 — "Use View Original to download" is only actionable when there IS a network.
+        // Offline, that advice sends the user at a button that cannot succeed; tell them the
+        // real reason and the one action that fixes it. Mirrors native-decrypt.ts:279.
+        const net = await NetInfo.fetch().catch(() => null);
+        const offline = net?.isConnected === false;
+        recordRuntimeTrace('preview.photo_page.thumbnail.empty', {
+          fileId: entry.id,
+          profile: options.profile,
+          offline,
+        });
+        throw new Error(
+          offline
+            ? 'Not available offline. Connect to the internet, or mark this file available offline first.'
+            : 'Preview thumbnail is not available. Use View Original to download the full photo.',
+        );
       }
     }
 
