@@ -2238,7 +2238,8 @@ export default function FilesScreen() {
     let picked: ImagePicker.ImagePickerResult;
     try {
       picked = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        // 1292 — the menu item says "Upload photo or video"; the picker excluded videos.
+        mediaTypes: ['images', 'videos'],
         allowsMultipleSelection: true,
         quality: 1,
       });
@@ -2256,12 +2257,14 @@ export default function FilesScreen() {
     const usedInBatch = new Set<string>();
     for (let i = 0; i < total; i++) {
       const asset = picked.assets[i]!;
-      const rawName = asset.fileName ?? `photo-${Date.now()}-${i}.jpg`;
+      const isVideoAsset = asset.type === 'video';
+      const rawName =
+        asset.fileName ?? `${isVideoAsset ? 'video' : 'photo'}-${Date.now()}-${i}.${isVideoAsset ? 'mp4' : 'jpg'}`;
       const conflict = findConflict(rawName);
       const shouldVersion = !!conflict && shouldAutoVersionUpload(
         conflict,
         rawName,
-        asset.mimeType ?? 'image/jpeg',
+        asset.mimeType ?? (isVideoAsset ? 'video/mp4' : 'image/jpeg'),
         asset.fileSize,
       );
       // Batch photo uploads stay silent. Same-name, same-type changed files
@@ -2283,7 +2286,7 @@ export default function FilesScreen() {
           uri: uploadUri,
           name,
           parentId: currentFolder.id ?? undefined,
-          mimeType: asset.mimeType ?? 'image/jpeg',
+          mimeType: asset.mimeType ?? (isVideoAsset ? 'video/mp4' : 'image/jpeg'),
           v2InitNameEncrypted,
           encryptChunkFn: encryptChunk,
           encryptMetadataFn: encryptMetadata,
