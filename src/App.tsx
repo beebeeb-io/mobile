@@ -613,7 +613,8 @@ function VaultRecoveryGate({ enabled, navReady }: { enabled: boolean; navReady: 
     // which is NOT a missing key and must not route to recovery. Only a
     // genuine no-key result (fresh Debug-sim / device restore) sets
     // needsRecoveryPhrase. See crypto-context loadVerifiedMasterKeyHandle.
-    // 1205 — this gate silently no-ops on the post-login path (cold launch is
+    // 1283 (filed as 1205; renumbered in the 2026-08-29 workspace ID deconflict) —
+    // this gate silently no-ops on the post-login path (cold launch is
     // fine), leaving a keyless device dead-ended on Drive. Trace every run so
     // the reason is visible instead of inferred.
     recordRuntimeTrace('vault.recovery_gate.run', {
