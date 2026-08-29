@@ -37,6 +37,7 @@ import { useToast } from '../lib/toast-context';
 import { getToken, friendlyError, trustLocation, trashFiles } from '../lib/api';
 import { useCrypto } from '../lib/crypto-context';
 import { decryptToTempFile } from '../lib/native-decrypt';
+import { offlineManager } from '../lib/offline-manager';
 import { maybeSelfRepairThumbnailFromLocalFile } from '../lib/thumbnail-self-repair';
 import { BeebeebThumbnails, type PreviewLoadProgressEvent } from '../../modules/beebeeb-crypto';
 import {
@@ -654,6 +655,10 @@ async function loadNormalPreviewThumbnail(
   isUnlocked: boolean,
   getFileKeyBytes: FileKeyLoader,
   signal?: AbortSignal,
+  // 1290 — when false, only the LOCAL rungs run (entry uri / native service / PhotoKit / cache);
+  // the remote fetch tail is skipped. Used for offline-pinned files, which must never touch the
+  // network for a preview.
+  allowRemote: boolean = true,
 ): Promise<ThumbnailPreviewResult | null> {
   throwIfPreviewAborted(signal);
   if (entry.thumbnail_uri) {
@@ -664,8 +669,15 @@ async function loadNormalPreviewThumbnail(
     };
   }
 
-  const native = await loadNativeThumbnail(entry.id, NORMAL_PREVIEW_THUMB_SIZE, signal);
-  if (native) return { ...native, kind: 'thumbnail' };
+  // 1290 — the native BeebeebThumbnails service fetches from the SERVER when it has no cached
+  // copy (its result.source can be 'remote'), so for offline-pinned files (allowRemote=false)
+  // this rung is skipped entirely: a pinned file must never touch the network for a preview.
+  // The remaining rungs (PhotoKit asset, JS cache) are genuinely local; when they miss, the
+  // caller falls through to decrypting the pinned local original instead.
+  if (allowRemote) {
+    const native = await loadNativeThumbnail(entry.id, NORMAL_PREVIEW_THUMB_SIZE, signal);
+    if (native) return { ...native, kind: 'thumbnail' };
+  }
 
   const localUri = entry.local_asset_id ? `ph://${entry.local_asset_id}` : null;
   if (localUri) {
@@ -678,6 +690,7 @@ async function loadNormalPreviewThumbnail(
   throwIfPreviewAborted(signal);
   if (cached) return { uri: cached, kind: 'thumbnail', source: 'cache' };
 
+  if (!allowRemote) return null;
   if (!isUnlocked) return null;
   try {
     const fileKey = await getFileKeyBytes(entry.id);
@@ -783,7 +796,18 @@ async function loadDecryptedPhotoForViewer(
     let autoOriginalFallback = false;
 
     if (!isVideo && !options.forceOriginal) {
-      const normal = await loadNormalPreviewThumbnail(entry, isUnlocked, getFileKeyBytes, signal);
+      // 1290 (Guus) — an offline-pinned file must ALWAYS use what is on the device: local
+      // thumbnail rungs are fine (PhotoKit asset, caches), but the network preview fetch is
+      // skipped, and when no local thumbnail exists we fall straight through to the original
+      // path below — decryptToTempFile prefers the pinned local copy (zero network).
+      await offlineManager.init().catch(() => {});
+      const pinnedLocal = offlineManager.isAvailable(entry.id);
+      recordRuntimeTrace('preview.photo_page.pin_probe', {
+        fileId: entry.id,
+        pinnedLocal,
+        status: offlineManager.getStatus(entry.id)?.state ?? 'none',
+      });
+      const normal = await loadNormalPreviewThumbnail(entry, isUnlocked, getFileKeyBytes, signal, !pinnedLocal);
       if (normal?.source === 'photoKit' || normal?.source === 'local') {
         recordRuntimeTrace('preview.photo_page.thumbnail.success', {
           fileId: entry.id,
@@ -802,7 +826,10 @@ async function loadDecryptedPhotoForViewer(
         return { uri: normal.uri, kind: 'thumbnail' };
       }
 
-      if (!options.allowOriginal) {
+      if (pinnedLocal) {
+        recordRuntimeTrace('preview.photo_page.offline_first', { fileId: entry.id });
+        autoOriginalFallback = false;
+      } else if (!options.allowOriginal) {
         // 1013 — offline, nothing can be downloaded: tell the user the real reason and the
         // one action that fixes it (mirrors native-decrypt.ts:279).
         //
