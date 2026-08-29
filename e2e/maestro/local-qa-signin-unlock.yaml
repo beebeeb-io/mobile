@@ -76,7 +76,7 @@ appId: io.beebeeb.app
       - tapOn: "Not Now"
 
 # On a device with no master key the vault must be restored from the recovery phrase.
-# (See task 1205 — this screen intermittently fails to appear on the post-login path.)
+# (See task 1283, filed as 1205 — this screen intermittently fails to appear on the post-login path.)
 - runFlow:
     when:
       visible: "Unlock your vault"
