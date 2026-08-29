@@ -2317,10 +2317,18 @@ public class BeebeebCryptoModule: Module {
     // JS loop stays in place as the fallback path.
     AsyncFunction("decryptContiguousToFile") {
       (fileKey: Data, body: Data, chunkSize: UInt64, outputPath: String) throws -> UInt64 in
+      // JS hands us an expo-file-system URI ("file:///var/.../preview/x.png").
+      // Rust does File::create() on whatever string it gets, and a file:// URI
+      // is not a POSIX path — it failed with
+      //   CryptoError.Io("create file: No such file or directory (os error 2)")
+      // on EVERY call, silently disabling this whole fast path. Convert at the
+      // native boundary like every other file-taking function in this module
+      // (fileURL(fromURI:) — see generateVideoThumbnail, encryptFile, …).
+      let resolvedPath = fileURL(fromURI: outputPath).path
       // UniFFI emits this as a top-level function in `beebeeb_uniffi.swift`,
       // not under a namespace — call it directly.
       return try decryptContiguousToFile(
-        fileKey: fileKey, body: body, chunkSize: chunkSize, outputPath: outputPath
+        fileKey: fileKey, body: body, chunkSize: chunkSize, outputPath: resolvedPath
       )
     }
 
