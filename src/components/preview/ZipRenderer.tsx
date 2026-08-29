@@ -21,6 +21,9 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import JSZip from 'jszip';
+import * as FileSystem from 'expo-file-system';
+import * as Sharing from 'expo-sharing';
+import { Alert } from 'react-native';
 import { colors, radii } from '../../theme';
 import type { Colors } from '../../theme';
 import { type ZipEntry, type ZipRow, levelRows, isMacOsNoise } from '../../lib/zip-tree';
@@ -112,11 +115,41 @@ function formatZipDate(d: Date | null): string | null {
   return `${month} ${day}, ${year}`;
 }
 
+// 1291 — single-entry extraction cap. The whole archive is already in memory (data:
+// ArrayBuffer), so extracting adds ~entry-size on top; beyond this, protect the
+// memory-watchdog budget and tell the user to use the full archive instead.
+const MAX_EXTRACT_BYTES = 100 * 1000 * 1000; // 100 MB (SI)
+
+/** Extract one file entry to the auto-pruned cache and hand it to the OS share
+ *  sheet (Quick Look / Save to Files / AirDrop). Returns when the sheet closes. */
+async function extractAndShare(data: ArrayBuffer, entry: ZipEntry): Promise<void> {
+  const zip = await JSZip.loadAsync(data);
+  const file = zip.files[entry.path] ?? zip.files[`${entry.path}/`];
+  if (!file || file.dir) throw new Error('Entry not found in archive.');
+  const b64 = await file.async('base64');
+  // Only the basename reaches the filesystem — entry paths are attacker-controlled
+  // archive content and may contain traversal segments.
+  const safeName = entry.name.replace(/[/\\]/g, '_') || 'extracted';
+  const dir = `${FileSystem.cacheDirectory}zip-extract/`;
+  await FileSystem.makeDirectoryAsync(dir, { intermediates: true }).catch(() => {});
+  const target = `${dir}${Date.now()}-${safeName}`;
+  await FileSystem.writeAsStringAsync(target, b64, { encoding: FileSystem.EncodingType.Base64 });
+  try {
+    await Sharing.shareAsync(target);
+  } finally {
+    // Best-effort cleanup once the sheet resolves; the dir lives under the
+    // auto-pruned cache either way.
+    FileSystem.deleteAsync(target, { idempotent: true }).catch(() => {});
+  }
+}
+
 export function ZipRenderer({ data, colors: c }: ZipRendererProps) {
   const [summary, setSummary] = useState<ZipSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
   // Current folder prefix being browsed ('' = archive root, 'a/b/' = nested).
   const [prefix, setPrefix] = useState('');
+  // 1291 — path of the entry currently being extracted (one at a time).
+  const [extracting, setExtracting] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -196,8 +229,39 @@ export function ZipRenderer({ data, colors: c }: ZipRendererProps) {
 
     const entry = item.entry;
     const dateLabel = formatZipDate(entry.modifiedAt);
+    const isExtracting = extracting === entry.path;
+    // 1291 (Guus) — a file row is no longer inert: tap extracts the single entry to the
+    // auto-pruned cache and opens the OS share sheet (Quick Look / Save to Files / AirDrop).
+    const onExtract = async () => {
+      if (extracting) return;
+      if (entry.uncompressedSize > MAX_EXTRACT_BYTES) {
+        Alert.alert(
+          'File too large to extract here',
+          `${entry.name} is ${formatBytes(entry.uncompressedSize)}. Save the whole archive to Files and extract it there instead.`,
+        );
+        return;
+      }
+      setExtracting(entry.path);
+      try {
+        await extractAndShare(data, entry);
+      } catch (err) {
+        Alert.alert(
+          'Could not extract file',
+          err instanceof Error ? err.message : 'The entry could not be read from the archive.',
+        );
+      } finally {
+        setExtracting(null);
+      }
+    };
     return (
-      <View style={[styles.zipRow, { borderBottomColor: c.line }]}>
+      <TouchableOpacity
+        style={[styles.zipRow, { borderBottomColor: c.line }]}
+        onPress={() => void onExtract()}
+        disabled={extracting != null}
+        accessibilityRole="button"
+        accessibilityLabel={`${entry.name}, extract and preview`}
+        testID={`zip-entry-${entry.path}`}
+      >
         <View style={[styles.zipIcon, { backgroundColor: c.ink3 }]}>
           <Ionicons name={zipEntryIcon(entry)} size={16} color="#FFFFFF" />
         </View>
@@ -209,7 +273,12 @@ export function ZipRenderer({ data, colors: c }: ZipRendererProps) {
             {`${formatBytes(entry.uncompressedSize)}${dateLabel ? `  ·  ${dateLabel}` : ''}`}
           </Text>
         </View>
-      </View>
+        {isExtracting ? (
+          <ActivityIndicator size="small" color={c.amber} />
+        ) : (
+          <Ionicons name="open-outline" size={16} color={c.ink3} />
+        )}
+      </TouchableOpacity>
     );
   };
 
@@ -228,7 +297,7 @@ export function ZipRenderer({ data, colors: c }: ZipRendererProps) {
           </Text>
         </View>
         <Text style={[styles.zipHeaderHint, { color: c.ink3 }]}>
-          Read-only listing · download the archive to extract files.
+          Tap a file to extract and preview it · folders open in place.
         </Text>
       </View>
 
