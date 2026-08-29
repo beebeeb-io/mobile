@@ -177,6 +177,7 @@ export default function RecoveryUnlockScreen() {
           style={styles.secondaryButton}
           onPress={() => { void handleSignOut(); }}
           activeOpacity={0.7}
+          testID="recovery-use-another-account"
         >
           <Text style={styles.secondaryText}>Use another account</Text>
         </TouchableOpacity>

@@ -4145,6 +4145,7 @@ export default function FilesScreen() {
             style={[styles.fab, { bottom: 16, backgroundColor: c.amber }]}
             activeOpacity={0.8}
             disabled
+            testID="fab-add"
             accessibilityLabel="Add file or folder"
             accessibilityRole="button"
           >
@@ -4152,6 +4153,9 @@ export default function FilesScreen() {
           </TouchableOpacity>
         ) : (
           <MenuView
+            // 1284 — the menu ROWS are a native UIMenu and cannot carry RN testIDs; target them
+            // by their visible titles. This id covers opening the menu without coordinate taps.
+            testID="fab-add"
             onPressAction={onAddAction}
             actions={addMenuActions}
             shouldOpenOnLongPress={false}
