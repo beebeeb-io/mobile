@@ -770,6 +770,7 @@ function TabNavigator() {
       <Tab.Screen
         name="Files"
         component={FilesScreen}
+        options={{ tabBarButtonTestID: 'tab-files' }}
         listeners={({ navigation, route }) => ({
           tabPress: () => {
             const state = navigation.getState();
@@ -780,12 +781,12 @@ function TabNavigator() {
           },
         })}
       />
-      <Tab.Screen name="Shared" component={SharedScreen} />
-      <Tab.Screen name="Photos" component={PhotosScreen} />
+      <Tab.Screen name="Shared" component={SharedScreen} options={{ tabBarButtonTestID: 'tab-shared' }} />
+      <Tab.Screen name="Photos" component={PhotosScreen} options={{ tabBarButtonTestID: 'tab-photos' }} />
       <Tab.Screen
         name="Settings"
         component={SettingsScreen}
-        options={settingsBadge}
+        options={{ ...settingsBadge, tabBarButtonTestID: 'tab-settings' }}
       />
     </Tab.Navigator>
   );
