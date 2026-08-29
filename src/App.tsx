@@ -603,7 +603,7 @@ function BiometricGuard({
   );
 }
 
-function VaultRecoveryGate({ enabled, navReady }: { enabled: boolean; navReady: boolean }) {
+function VaultRecoveryGate({ enabled, navReady, navReadyEpoch }: { enabled: boolean; navReady: boolean; navReadyEpoch: number }) {
   const crypto = useCrypto();
 
   useEffect(() => {
@@ -620,6 +620,7 @@ function VaultRecoveryGate({ enabled, navReady }: { enabled: boolean; navReady: 
     recordRuntimeTrace('vault.recovery_gate.run', {
       enabled,
       navReady,
+      navReadyEpoch,
       navRefReady: navigationRef.isReady(),
       needsRecoveryPhrase: crypto.needsRecoveryPhrase,
       isUnlocked: crypto.isUnlocked,
@@ -643,7 +644,10 @@ function VaultRecoveryGate({ enabled, navReady }: { enabled: boolean; navReady: 
     }
 
     navigationRef.navigate('RecoveryUnlock');
-  }, [enabled, navReady, crypto.needsRecoveryPhrase, crypto.isUnlocked]);
+    // 1283 — navReadyEpoch in the deps is the actual fix: every container (re)mount re-runs this
+    // effect once the new navigator is ready, so a navigate() swallowed by a remount is simply
+    // re-issued against the live navigator instead of being lost forever.
+  }, [enabled, navReady, navReadyEpoch, crypto.needsRecoveryPhrase, crypto.isUnlocked]);
 
   return null;
 }
@@ -818,6 +822,11 @@ export default function App() {
   const [phraseVerified, setPhraseVerified] = useState(true);
   const [pendingRecoveryPhrase, setPendingRecoveryPhrase] = useState<string[] | null>(null);
   const [navReady, setNavReady] = useState(false);
+  // 1283 — increments on EVERY NavigationContainer onReady, including remounts (the container
+  // remounts under CryptoProvider's user-keyed remount on sign-in). navReady alone is stale-true
+  // across a remount, so effects keyed only on it never re-fire — which is how the vault-recovery
+  // redirect could be issued against a dying navigator and silently vanish.
+  const [navReadyEpoch, setNavReadyEpoch] = useState(0);
 
   const isConnected = useNetworkStatus();
 
@@ -1321,10 +1330,13 @@ export default function App() {
         <NavigationContainer
           ref={navigationRef}
           linking={linking}
-          onReady={() => setNavReady(true)}
+          onReady={() => {
+            setNavReady(true);
+            setNavReadyEpoch((epoch) => epoch + 1);
+          }}
           onStateChange={handleNavigationStateChange}
         >
-            <VaultRecoveryGate enabled={isAuthenticated && startupLockChecked && !locked} navReady={navReady} />
+            <VaultRecoveryGate enabled={isAuthenticated && startupLockChecked && !locked} navReady={navReady} navReadyEpoch={navReadyEpoch} />
             <DevicePerformanceCalibrator enabled={isAuthenticated && startupLockChecked && !locked} />
             {isAuthenticated && startupLockChecked && !locked && Platform.OS === 'android'
               ? <AndroidThumbnailRepairWorker enabled />
