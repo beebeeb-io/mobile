@@ -2242,6 +2242,12 @@ export default function FilesScreen() {
         mediaTypes: ['images', 'videos'],
         allowsMultipleSelection: true,
         quality: 1,
+        // 1294 follow-up (Guus, device: "i select videos but doesnt work. photo does work."):
+        // by default PHPicker TRANSCODES videos to a "compatible" representation (H.265 -> H.264)
+        // before resolving — a minutes-long, zero-feedback export for a real camera video, which
+        // reads as the picker doing nothing (confirmed on sim: a 12.8 MB HEVC arrived as 38 MB
+        // H.264). We are an E2E storage app: store the user's ORIGINAL bytes, don't transcode.
+        preferredAssetRepresentationMode: ImagePicker.UIImagePickerPreferredAssetRepresentationMode.Current,
       });
     } catch (err) {
       Alert.alert('Error', friendlyError(err));
@@ -2255,8 +2261,15 @@ export default function FilesScreen() {
     let lastName = '';
     // Track names already used in this batch to avoid duplicate suffixes
     const usedInBatch = new Set<string>();
+    let exportFailures = 0;
     for (let i = 0; i < total; i++) {
       const asset = picked.assets[i]!;
+      if (!asset.uri) {
+        // iCloud-offloaded originals can fail to export (network, storage); a missing uri
+        // would previously just skip with no signal — count and report honestly below.
+        exportFailures += 1;
+        continue;
+      }
       const isVideoAsset = asset.type === 'video';
       const rawName =
         asset.fileName ?? `${isVideoAsset ? 'video' : 'photo'}-${Date.now()}-${i}.${isVideoAsset ? 'mp4' : 'jpg'}`;
@@ -2327,13 +2340,21 @@ export default function FilesScreen() {
       showToast({
         type: 'success',
         message: successCount === 1
-          ? `Photo stored in ${lastLoc.city}`
-          : `${successCount} photos stored in ${lastLoc.city}`,
+          ? `Item stored in ${lastLoc.city}`
+          : `${successCount} items stored in ${lastLoc.city}`,
       });
       fetchFiles(currentFolder.id, true);
       setTimeout(() => setUpload((cur) => (cur && cur.stage === 'done' ? null : cur)), 1800);
     } else {
       setUpload(null);
+    }
+    if (exportFailures > 0) {
+      // 1294 follow-up — an asset the system could not export (iCloud original that failed to
+      // download, storage pressure) used to vanish silently. Say so.
+      Alert.alert(
+        'Some items could not be read',
+        `${exportFailures} ${exportFailures === 1 ? 'item' : 'items'} could not be exported from your photo library. Check that originals are downloadable (iCloud) and try again.`,
+      );
     }
   }, [currentFolder.id, fetchFiles, phraseVerified, showToast, findConflict, shouldAutoVersionUpload, folderFileNames, encryptChunk, encryptMetadata, indexFile]);
 
