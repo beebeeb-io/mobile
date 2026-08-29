@@ -779,6 +779,8 @@ async function loadDecryptedPhotoForViewer(
 
   const loadPromise: Promise<{ uri: string; kind: ImagePreviewKind }> = (async () => {
     throwIfPreviewAborted(signal);
+    // 1286 — set when an image had no server thumbnail and we auto-loaded the original.
+    let autoOriginalFallback = false;
 
     if (!isVideo && !options.forceOriginal) {
       const normal = await loadNormalPreviewThumbnail(entry, isUnlocked, getFileKeyBytes, signal);
@@ -801,21 +803,28 @@ async function loadDecryptedPhotoForViewer(
       }
 
       if (!options.allowOriginal) {
-        // 1013 — "Use View Original to download" is only actionable when there IS a network.
-        // Offline, that advice sends the user at a button that cannot succeed; tell them the
-        // real reason and the one action that fixes it. Mirrors native-decrypt.ts:279.
+        // 1013 — offline, nothing can be downloaded: tell the user the real reason and the
+        // one action that fixes it (mirrors native-decrypt.ts:279).
+        //
+        // 1286 (Guus, 2026-08-29) — ONLINE, a missing thumbnail is no longer a dead end that
+        // tells the user to press View Original themselves: we fall through and load the
+        // original automatically (same progressive UI), and on success self-repair uploads
+        // the missing thumbnail (0883) so the file is healed for every device. This changes
+        // ONLY the no-thumbnail case — files with a thumbnail keep the cheap preview-only path.
         const net = await NetInfo.fetch().catch(() => null);
         const offline = net?.isConnected === false;
         recordRuntimeTrace('preview.photo_page.thumbnail.empty', {
           fileId: entry.id,
           profile: options.profile,
           offline,
+          autoOriginal: !offline,
         });
-        throw new Error(
-          offline
-            ? 'Not available offline. Connect to the internet, or mark this file available offline first.'
-            : 'Preview thumbnail is not available. Use View Original to download the full photo.',
-        );
+        if (offline) {
+          throw new Error(
+            'Not available offline. Connect to the internet, or mark this file available offline first.',
+          );
+        }
+        autoOriginalFallback = true;
       }
     }
 
@@ -868,6 +877,20 @@ async function loadDecryptedPhotoForViewer(
       cacheExt,
       elapsedMs: Date.now() - startedAt,
     });
+    if (autoOriginalFallback) {
+      // 1286 — the plaintext original is now in the preview cache and we have just PROVEN the
+      // server thumbnail is missing (the thumbnail fetch above returned empty — no probing,
+      // honoring 0883's no-storm contract). Generate + upload the thumbnail from these bytes so
+      // the grid stops being blank everywhere. Fire-and-forget; never blocks or throws. Scoped
+      // to the image auto-fallback only — video decrypt-completion regen stays untouched (1203).
+      maybeSelfRepairThumbnailFromLocalFile({
+        fileId: entry.id,
+        localPlaintextUri: cachedUri,
+        mimeType: entry.mime_type ?? 'image/jpeg',
+        hasServerThumbnail: false,
+        getFileKeyBytes,
+      });
+    }
     return { uri: cachedUri, kind: 'original' };
   })();
 
