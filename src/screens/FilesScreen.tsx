@@ -650,7 +650,7 @@ const FileRowItem = React.memo(function FileRowItem({
             const loc = storageLocation(item.storage_pool_id);
             const locSuffix = loc.shortCode ? `  ·  ${loc.shortCode}` : '';
             if (item.is_folder) return `${formatDate(item.updated_at)}${locSuffix}`;
-            if (isPendingUpload) return `Upload pending  ·  ${formatSize(item.size_bytes)}${locSuffix}`;
+            if (isPendingUpload) return `Upload pending  ·  ${formatSize(item.size_bytes)}  ·  started ${formatDate(item.created_at)}${locSuffix}`;
             if (sortOrder === 'size-desc' || sortOrder === 'size-asc') return `${formatSize(item.size_bytes)}${locSuffix}`;
             return `${formatSize(item.size_bytes)}  ·  ${formatDate(item.updated_at)}${locSuffix}`;
           })()}
@@ -1998,6 +1998,44 @@ export default function FilesScreen() {
     navigateToBreadcrumb(stackIndex);
   }, [navigateToBreadcrumb]);
 
+  // 1303 — a pending (never-finalized) upload placeholder gets a real
+  // affordance instead of a dead-end toast: tap → status + Discard. Discard
+  // trashes the row server-side (stale_upload_cleanup reaps its blobs at the
+  // 7-day mark regardless) and drops it from the visible list immediately.
+  const discardPendingUpload = useCallback(async (file: FileEntry) => {
+    try {
+      await deleteFile(file.id);
+      setFiles((prev) => prev.filter((f) => f.id !== file.id));
+      showToast({ type: 'success', message: 'Pending upload discarded' });
+      fetchFiles(currentFolder.id, true);
+    } catch (err) {
+      showToast({ type: 'error', message: `Couldn't discard: ${friendlyError(err)}` });
+    }
+  }, [currentFolder.id, fetchFiles, showToast]);
+
+  const handlePendingUpload = useCallback(async (file: FileEntry) => {
+    let detail = 'This upload never finished.';
+    try {
+      const status = await getUploadStatus(file.id);
+      if (!status.is_uploading) {
+        // Server says it actually completed — the local flag is stale; reconcile.
+        fetchFiles(currentFolder.id, true);
+        return;
+      }
+      detail = `${status.uploaded_chunks.length} of ${status.chunk_count} encrypted chunks were stored before the upload stopped.`;
+    } catch {
+      // keep the generic line — the dialog still offers the way out
+    }
+    Alert.alert(
+      'Upload pending',
+      `${detail}\n\nDiscarding removes this placeholder and its stored chunks. To upload the file, add it again from its source.`,
+      [
+        { text: 'Discard upload', style: 'destructive', onPress: () => { void discardPendingUpload(file); } },
+        { text: 'Keep', style: 'cancel' },
+      ],
+    );
+  }, [currentFolder.id, discardPendingUpload, fetchFiles]);
+
   const ensureFileReady = useCallback(async (file: FileEntry): Promise<boolean> => {
     if (file.is_folder) return true;
     if (file.is_uploading === true) {
@@ -2038,6 +2076,9 @@ export default function FilesScreen() {
         }
         if (file.is_folder) {
           navigateToFolder(file);
+        } else if (file.is_uploading === true) {
+          await handlePendingUpload(file);
+          return;
         } else {
           if (!(await ensureFileReady(file))) return;
           navigation.navigate('Preview', {
@@ -2063,7 +2104,7 @@ export default function FilesScreen() {
         showToast({ type: 'error', message: "Couldn't open file" });
       }
     },
-    [navigateToFolder, navigation, decryptedNames, mimeTypeFor, ensureFileReady, showToast],
+    [navigateToFolder, navigation, decryptedNames, mimeTypeFor, ensureFileReady, handlePendingUpload, showToast],
   );
 
   const handleRefresh = useCallback(() => {
