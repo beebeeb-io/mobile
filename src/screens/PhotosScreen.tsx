@@ -2145,6 +2145,8 @@ export default function PhotosScreen() {
           selectedIds={selectedIdArray}
           selectionMode={selectMode}
           refreshing={refreshing}
+          headerTextColor={c.ink}
+          headerCountColor={c.ink3}
           onPhotoPress={handleNativePhotoPress}
           onSelectionChange={handleNativeSelectionChange}
           onVisiblePhotoIdsChange={handleNativeVisibleIdsChange}
