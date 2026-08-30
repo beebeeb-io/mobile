@@ -427,22 +427,27 @@ export default function TwoFactorSetupScreen() {
   const [loadingSetup, setLoadingSetup] = useState(true);
   const [setupError, setSetupError] = useState<string | null>(null);
 
-  // Fetch secret on mount
-  useEffect(() => {
-    let cancelled = false;
+  // Fetch secret on mount; re-runs via the error state's Retry button (1297).
+  const cancelledRef = useRef(false);
+  const fetchSetup = useCallback(() => {
     setLoadingSetup(true);
+    setSetupError(null);
     setupTotp()
       .then(data => {
-        if (!cancelled) setSetup(data);
+        if (!cancelledRef.current) setSetup(data);
       })
       .catch(err => {
-        if (!cancelled) setSetupError(friendlyError(err));
+        if (!cancelledRef.current) setSetupError(friendlyError(err));
       })
       .finally(() => {
-        if (!cancelled) setLoadingSetup(false);
+        if (!cancelledRef.current) setLoadingSetup(false);
       });
-    return () => { cancelled = true; };
   }, []);
+  useEffect(() => {
+    cancelledRef.current = false;
+    fetchSetup();
+    return () => { cancelledRef.current = true; };
+  }, [fetchSetup]);
 
   const handleDone = useCallback(() => {
     navigation.goBack();
@@ -496,6 +501,28 @@ export default function TwoFactorSetupScreen() {
             <Text style={{ color: c.red, marginTop: 16, fontFamily: fonts.sans, textAlign: 'center' }}>
               {setupError}
             </Text>
+            <TouchableOpacity
+              onPress={() => {
+                Haptics.selectionAsync();
+                fetchSetup();
+              }}
+              style={{
+                marginTop: 24,
+                minHeight: 44,
+                paddingHorizontal: 28,
+                borderRadius: 999,
+                backgroundColor: c.amber,
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+              accessibilityRole="button"
+              accessibilityLabel="Retry two-factor setup"
+              testID="totp-setup-retry"
+            >
+              <Text style={{ color: '#1a1a1e', fontSize: 15, fontWeight: '600', fontFamily: fonts.sans }}>
+                Try again
+              </Text>
+            </TouchableOpacity>
           </View>
         )}
 
