@@ -35,6 +35,8 @@ import * as MediaLibrary from 'expo-media-library';
 import * as Clipboard from 'expo-clipboard';
 import { fonts, radii, spacing, shadows } from '../theme';
 import { useTheme } from '../lib/theme-context';
+import { UploadActivityCard } from '../components/UploadActivityCard';
+import type { UploadActivityState, UploadStage } from '../components/UploadActivityCard';
 import { useToast } from '../lib/toast-context';
 import SkeletonRow from '../components/SkeletonRow';
 import PresenceAvatars from '../components/PresenceAvatars';
@@ -483,44 +485,6 @@ const FileIcon = React.memo(function FileIcon({
     </View>
   );
 });
-
-// ---------------------------------------------------------------------------
-// Upload stage row — one line + progress bar in the trust upload banner
-// ---------------------------------------------------------------------------
-
-interface UploadStageRowProps {
-  index: 1 | 2 | 3;
-  label: string;
-  done: boolean;
-  active: boolean;
-  percent: number;
-  barColor: string;
-  showCheck?: boolean;
-  c: ReturnType<typeof useTheme>['colors'];
-}
-
-function UploadStageRow({ index, label, done, active, percent, barColor, showCheck, c }: UploadStageRowProps) {
-  const labelColor = done ? c.ink2 : active ? c.ink : c.ink4;
-  const numColor = done || active ? c.ink2 : c.ink4;
-  const trackColor = c.line;
-  const fillPct = Math.max(0, Math.min(100, percent));
-  return (
-    <View style={{ gap: 3 }}>
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-        <Text style={{ fontFamily: fonts.mono, fontSize: 10, color: numColor, width: 16 }}>
-          {`0${index}`}
-        </Text>
-        <Text style={{ flex: 1, fontSize: 12, fontWeight: active || done ? '600' : '400', color: labelColor }} numberOfLines={1}>
-          {label}
-        </Text>
-        {showCheck && <Ionicons name="checkmark-circle" size={14} color={c.amber} />}
-      </View>
-      <View style={{ height: 3, borderRadius: 1.5, backgroundColor: trackColor, overflow: 'hidden', marginLeft: 22 }}>
-        <View style={{ height: '100%', width: `${fillPct}%` as `${number}%`, backgroundColor: barColor, borderRadius: 1.5 }} />
-      </View>
-    </View>
-  );
-}
 
 // ---------------------------------------------------------------------------
 // File row item (memoized to prevent unnecessary re-renders in FlatList)
@@ -1423,19 +1387,9 @@ export default function FilesScreen() {
   } | null>(null);
   const [moveBusy, setMoveBusy] = useState(false);
 
-  // Upload state — drives the 3-stage trust banner above the FAB.
+  // Upload state — drives the Live-Activity upload card above the FAB (1301).
   // stage 1 = encrypting · stage 2 = uploading · stage 3 = storing/done.
-  type UploadStage = 1 | 2 | 3 | 'done';
-  const [upload, setUpload] = useState<{
-    fileName: string;
-    stage: UploadStage;
-    percent: number;
-    city: string;
-    region: string;
-    chunksUploaded?: number;
-    chunksTotal?: number;
-    chunkSizeBytes?: number;
-  } | null>(null);
+  const [upload, setUpload] = useState<UploadActivityState | null>(null);
   const uploadingName = upload?.fileName ?? null;
 
   // Trust details sheet — opened by tapping the lock icon on a row/grid cell.
@@ -2171,7 +2125,7 @@ export default function FilesScreen() {
     }
 
     const loc = trustLocation(undefined);
-    setUpload({ fileName: uploadFileName, stage: 1, percent: 30, city: loc.city, region: loc.region });
+    setUpload({ fileName: uploadFileName, stage: 1, percent: 0, city: loc.city, region: loc.region });
     try {
       const uploaded = await encryptedUpload({
         fileId: uploadFileId,
@@ -2188,13 +2142,18 @@ export default function FilesScreen() {
             : 0;
           setUpload((prev) => {
             const base = prev ?? { fileName: asset.name, stage: 1 as UploadStage, percent: 0, city: loc.city, region: loc.region };
-            if (progress.phase === 'preparing') {
-              return { ...base, stage: 1, percent: Math.max(percent, 30), chunksUploaded: progress.chunksUploaded, chunksTotal: progress.chunksTotal, chunkSizeBytes: progress.chunkSizeBytes };
-            }
-            if (progress.phase === 'finalizing') {
-              return { ...base, stage: 3, percent: 60, chunksUploaded: progress.chunksUploaded, chunksTotal: progress.chunksTotal, chunkSizeBytes: progress.chunkSizeBytes };
-            }
-            return { ...base, stage: 2, percent, chunksUploaded: progress.chunksUploaded, chunksTotal: progress.chunksTotal, chunkSizeBytes: progress.chunkSizeBytes };
+            const stage: UploadStage = progress.phase === 'preparing' ? 1 : progress.phase === 'finalizing' ? 3 : 2;
+            return {
+              ...base,
+              stage,
+              percent,
+              chunksUploaded: progress.chunksUploaded,
+              chunksTotal: progress.chunksTotal,
+              chunkSizeBytes: progress.chunkSizeBytes,
+              bytesUploaded: progress.bytesUploaded,
+              bytesTotal: progress.bytesTotal,
+              cryptoBytesPerSec: progress.cryptoBytesPerSec,
+            };
           });
         },
       });
@@ -2289,7 +2248,7 @@ export default function FilesScreen() {
 
       const display = total > 1 ? `${name} (${i + 1}/${total})` : name;
       lastName = display;
-      setUpload({ fileName: display, stage: 1, percent: 30, city: lastLoc.city, region: lastLoc.region });
+      setUpload({ fileName: display, stage: 1, percent: 0, city: lastLoc.city, region: lastLoc.region });
       try {
         const fileId = shouldVersion && conflict ? conflict.id : await generateFileId();
         const v2InitNameEncrypted = shouldVersion && conflict ? conflict.name_encrypted : undefined;
@@ -2309,13 +2268,18 @@ export default function FilesScreen() {
               : 0;
             setUpload((prev) => {
               const base = prev ?? { fileName: display, stage: 1 as UploadStage, percent: 0, city: lastLoc.city, region: lastLoc.region };
-              if (progress.phase === 'preparing') {
-                return { ...base, stage: 1, percent: Math.max(percent, 30), chunksUploaded: progress.chunksUploaded, chunksTotal: progress.chunksTotal, chunkSizeBytes: progress.chunkSizeBytes };
-              }
-              if (progress.phase === 'finalizing') {
-                return { ...base, stage: 3, percent: 60, chunksUploaded: progress.chunksUploaded, chunksTotal: progress.chunksTotal, chunkSizeBytes: progress.chunkSizeBytes };
-              }
-              return { ...base, stage: 2, percent, chunksUploaded: progress.chunksUploaded, chunksTotal: progress.chunksTotal, chunkSizeBytes: progress.chunkSizeBytes };
+              const stage: UploadStage = progress.phase === 'preparing' ? 1 : progress.phase === 'finalizing' ? 3 : 2;
+              return {
+                ...base,
+                stage,
+                percent,
+                chunksUploaded: progress.chunksUploaded,
+                chunksTotal: progress.chunksTotal,
+                chunkSizeBytes: progress.chunkSizeBytes,
+                bytesUploaded: progress.bytesUploaded,
+                bytesTotal: progress.bytesTotal,
+                cryptoBytesPerSec: progress.cryptoBytesPerSec,
+              };
             });
           },
         });
@@ -4070,61 +4034,9 @@ export default function FilesScreen() {
         />
       )}
 
-      {/* Inline 3-stage trust upload banner (encrypt → upload → stored) */}
+      {/* 1301 — Live-Activity upload card (C2): measured AES rate + net rate + ETA */}
       {upload && !selectMode && (
-        <View
-          style={[
-            styles.uploadBanner,
-            {
-              bottom: 16 + insets.bottom + 64,
-              backgroundColor: c.paper2,
-              borderColor: upload.stage === 'done' ? c.amber : c.line,
-            },
-          ]}
-        >
-          <View style={{ flex: 1, gap: 8 }}>
-            <Text style={[styles.uploadFileName, { color: c.ink3 }]} numberOfLines={1}>
-              {upload.fileName}
-            </Text>
-
-            <UploadStageRow
-              index={1}
-              label="Encrypting on your device..."
-              done={upload.stage !== 1}
-              active={upload.stage === 1}
-              percent={upload.stage === 1 ? upload.percent : 100}
-              barColor={c.amber}
-              c={c}
-            />
-            <UploadStageRow
-              index={2}
-              label={
-                upload.chunksTotal && upload.chunkSizeBytes
-                  ? `Uploading ${upload.chunksUploaded ?? 0} / ${upload.chunksTotal} chunks · chunk size ${formatSize(upload.chunkSizeBytes)}`
-                  : `Uploading ciphertext to ${upload.city}`
-              }
-              done={upload.stage === 3 || upload.stage === 'done'}
-              active={upload.stage === 2}
-              percent={upload.stage === 2 ? upload.percent : (upload.stage === 1 ? 0 : 100)}
-              barColor={c.ink3}
-              c={c}
-            />
-            <UploadStageRow
-              index={3}
-              label={
-                upload.stage === 'done'
-                  ? `Stored in ${upload.region} · ${upload.city} · Key stayed here`
-                  : `Storing in ${upload.region} · ${upload.city}...`
-              }
-              done={upload.stage === 'done'}
-              active={upload.stage === 3}
-              percent={upload.stage === 'done' ? 100 : upload.stage === 3 ? upload.percent : 0}
-              barColor={c.amber}
-              showCheck={upload.stage === 'done'}
-              c={c}
-            />
-          </View>
-        </View>
+        <UploadActivityCard upload={upload} bottom={16 + insets.bottom + 64} />
       )}
 
       {/* Batch action bar — shown in select mode */}
@@ -4585,22 +4497,6 @@ const styles = StyleSheet.create({
   fabInner: { width: '100%', height: '100%', alignItems: 'center', justifyContent: 'center' },
   fabText: { fontSize: 28, fontWeight: '600', marginTop: -2 },
 
-  // Upload progress banner
-  uploadBanner: {
-    position: 'absolute',
-    left: spacing.lg,
-    right: spacing.lg,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    paddingHorizontal: spacing.md,
-    paddingVertical: 10,
-    borderRadius: radii.md,
-    borderWidth: 1,
-    ...shadows.lg,
-  },
-  uploadBannerText: { fontSize: 13, flex: 1, fontWeight: '500' },
-  uploadFileName: { fontSize: 11, fontWeight: '500' },
   sharedBadge: { marginLeft: 4 },
   presenceWrap: { flexDirection: 'row', alignItems: 'center', marginRight: 8 },
 
