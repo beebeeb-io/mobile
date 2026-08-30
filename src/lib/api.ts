@@ -2552,7 +2552,10 @@ export interface TotpSetup {
 
 /** POST /api/v1/auth/2fa/setup — generate secret + backup codes */
 export async function setupTotp(): Promise<TotpSetup> {
-  return request<TotpSetup>('POST', '/api/v1/auth/2fa/setup');
+  // Body {} (not empty): request() always sets Content-Type: application/json,
+  // and axum's Option<Json<SetupRequest>> on the server rejects a JSON-typed
+  // EMPTY body with 400 ("EOF while parsing") — the 1297 wizard dead-end.
+  return request<TotpSetup>('POST', '/api/v1/auth/2fa/setup', {});
 }
 
 /** POST /api/v1/auth/2fa/enable — verify code and activate TOTP */
