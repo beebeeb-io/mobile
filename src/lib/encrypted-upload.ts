@@ -145,6 +145,16 @@ export async function encryptedUpload(opts: EncryptedUploadOptions): Promise<Fil
   // sequence. Each call reads chunk_size_bytes from the file at the correct
   // position, encrypts them, and returns the nonce||ciphertext wire bytes.
   // At most one plaintext chunk + one ciphertext chunk are in memory at once.
+  // Live on-device encryption throughput (task 1301): accumulate bytes and
+  // wall time across the per-chunk encrypt calls. Surfaced via UploadProgress
+  // so the upload card can show an honest, measured AES rate — not the
+  // calibrated benchmark. Only reported once >50ms has been spent encrypting
+  // (a single tiny chunk gives a meaningless rate).
+  let cryptoPlainBytes = 0
+  let cryptoElapsedMs = 0
+  const measuredCryptoRate = (): number | undefined =>
+    cryptoElapsedMs > 50 ? (cryptoPlainBytes / cryptoElapsedMs) * 1000 : undefined
+
   const readEncryptedChunk = async (
     index: number,
     chunkSizeBytes: number,
@@ -166,7 +176,10 @@ export async function encryptedUpload(opts: EncryptedUploadOptions): Promise<Fil
       plaintext = b64ToUint8Array(b64)
     }
 
+    const encStart = Date.now()
     const enc = await encryptChunkFn(effectiveFileId, plaintext)
+    cryptoElapsedMs += Date.now() - encStart
+    cryptoPlainBytes += plaintext.byteLength
     return combineNonceCiphertext(enc)
   }
 
@@ -193,7 +206,9 @@ export async function encryptedUpload(opts: EncryptedUploadOptions): Promise<Fil
     createdAt,
     plaintextSizeBytes: plaintextSize,
     resumeKey,
-    onProgress,
+    onProgress: onProgress
+      ? (p) => onProgress({ ...p, cryptoBytesPerSec: measuredCryptoRate() })
+      : undefined,
     readEncryptedChunk,
   })
 }

@@ -952,6 +952,8 @@ export interface UploadProgress {
   bytesTotal: number;
   bytesUploaded: number;
   chunkSizeBytes?: number;
+  /** Measured on-device encryption throughput (task 1301) — bytes/sec over the encrypt calls so far. */
+  cryptoBytesPerSec?: number;
   uploadSessionId?: string;
   protocol?: 'v1' | 'v2';
 }
