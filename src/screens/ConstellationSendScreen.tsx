@@ -8,6 +8,10 @@
  *   4. Derive SAS words (matching the receiver) and ask the user to verify.
  *   5. On approve: encrypt the file, upload, show progress, show "Delivered".
  *
+ * NOTE (1300): the entry point to this screen is intentionally HIDDEN in the
+ * UI until real X25519 ECDH lands (task 0093). The route stays registered so
+ * deep flows keep compiling — do not "clean up" this screen as dead code.
+ *
  * v1 simplifications (see team-lead brief):
  *   - Mock shared secret — random bytes used in place of X25519 ECDH output.
  *     The constellation still encodes a real session_id and the SAS words
