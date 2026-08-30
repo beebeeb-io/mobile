@@ -752,16 +752,15 @@ export default function SettingsScreen() {
       recordRuntimeTrace('settings.screen.focus', {
         sections: [
           'Account',
-          'Storage',
-          'Storage & Plan',
-          'Data residency',
-          'Security',
+          'Storage & plan',
           'Backup',
-          'Devices & Backups',
+          'Devices',
+          'Files',
           'Notifications',
           'Appearance',
-          'Privacy',
-          'Files',
+          'Security',
+          'Privacy & data',
+          'Data residency',
           'Support',
           'About',
         ],
@@ -1878,9 +1877,9 @@ export default function SettingsScreen() {
           </View>
         </View>
 
-        {/* ---- Storage ---- */}
+        {/* ---- Storage & plan ---- */}
         <View style={layout.section}>
-          <SectionHeader title="Storage" c={c} />
+          <SectionHeader title="Storage & plan" c={c} />
           <View style={[layout.card, { backgroundColor: c.paper, borderColor: c.line }]}>
             {loadingUsage ? (
               <View style={layout.loadingRow}>
@@ -1908,250 +1907,6 @@ export default function SettingsScreen() {
               </View>
             )}
           </View>
-        </View>
-
-        {/* ---- Storage & Plan ---- */}
-        <View style={layout.section}>
-          <SectionHeader title="Storage & Plan" c={c} />
-          <View style={[layout.card, { backgroundColor: c.paper, borderColor: c.line }]}>
-            <SettingsRow
-              label="Storage & Plan"
-              icon="cloud-outline"
-              onPress={() => navigation.navigate('Storage')}
-              c={c}
-            />
-          </View>
-        </View>
-
-        {/* ---- Data residency ---- */}
-        <View style={layout.section}>
-          <SectionHeader title="Data residency" c={c} />
-          <View style={[layout.card, { backgroundColor: c.paper, borderColor: c.line }]}>
-            {/* API regions when loaded — dynamic from /api/v1/me/region */}
-            {apiRegions !== null
-              ? apiRegions.map((r, i) => {
-                  const isSelected = storageRegion === r.continent;
-                  return (
-                    <React.Fragment key={r.continent}>
-                      {i > 0 && <RowDivider c={c} />}
-                      <TouchableOpacity
-                        style={layout.regionOption}
-                        activeOpacity={0.6}
-                        onPress={() => void handleRegionChange(r.continent)}
-                        disabled={savingRegion || apiRegions.length <= 1}
-                        accessibilityLabel={`${r.display_name}${isSelected ? ', selected' : ''}`}
-                        accessibilityRole="radio"
-                        accessibilityState={{ checked: isSelected }}
-                      >
-                        <View style={[
-                          layout.regionRadio,
-                          { borderColor: isSelected ? c.amber : c.line2 },
-                        ]}>
-                          {isSelected && (
-                            <View style={[layout.regionRadioDot, { backgroundColor: c.amber }]} />
-                          )}
-                        </View>
-                        <View style={layout.regionInfo}>
-                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                            <Text style={{ fontSize: 14, color: c.ink, fontWeight: '400' as const }}>
-                              {r.display_name}
-                            </Text>
-                            {r.is_default && (
-                              <Text style={{
-                                fontSize: 10, color: c.ink4, fontWeight: '500' as const,
-                                paddingHorizontal: 5, paddingVertical: 1,
-                                borderRadius: 4, borderWidth: 1, borderColor: c.line2,
-                                overflow: 'hidden' as const,
-                              }}>
-                                Default
-                              </Text>
-                            )}
-                          </View>
-                          <Text style={{ fontSize: 11, color: c.ink3, marginTop: 1 }}>
-                            {r.continent === 'europe'
-                              ? 'Anywhere in Europe'
-                              : (r.example_city ?? r.city ?? 'Preference or force')}
-                          </Text>
-                        </View>
-                        {isSelected && (
-                          <Ionicons name="checkmark" size={16} color={c.amber} />
-                        )}
-                      </TouchableOpacity>
-                    </React.Fragment>
-                  );
-                })
-              /* Fallback: hardcoded REGIONS while API endpoint isn't deployed */
-              : REGIONS.map((r, i) => (
-                <React.Fragment key={r.poolName}>
-                  {i > 0 && <RowDivider c={c} />}
-                  <TouchableOpacity
-                    style={layout.regionOption}
-                    activeOpacity={r.available ? 0.6 : 1}
-                    onPress={() => r.available && void handleRegionChange(r.poolName)}
-                    disabled={!r.available || savingRegion}
-                    accessibilityLabel={`${r.label}${!r.available ? ', coming soon' : storageRegion === r.poolName ? ', selected' : ''}`}
-                    accessibilityRole="radio"
-                    accessibilityState={{ checked: storageRegion === r.poolName, disabled: !r.available }}
-                  >
-                    <View style={[
-                      layout.regionRadio,
-                      { borderColor: storageRegion === r.poolName && r.available ? c.amber : c.line2 },
-                    ]}>
-                      {storageRegion === r.poolName && r.available && (
-                        <View style={[layout.regionRadioDot, { backgroundColor: c.amber }]} />
-                      )}
-                    </View>
-                    <View style={layout.regionInfo}>
-                      <Text style={{ fontSize: 14, color: r.available ? c.ink : c.ink4, fontWeight: '400' as const }}>
-                        {r.label}
-                      </Text>
-                      <Text style={{ fontSize: 11, color: c.ink3, marginTop: 1 }}>
-                        {r.subtitle}{!r.available ? ' · Coming soon' : ''}
-                      </Text>
-                    </View>
-                    {!r.available && (
-                      <Text style={{
-                        fontSize: 10, color: c.ink4, fontWeight: '500' as const,
-                        paddingHorizontal: 6, paddingVertical: 2,
-                        borderRadius: 4, borderWidth: 1, borderColor: c.line2,
-                        overflow: 'hidden' as const,
-                      }}>
-                        Soon
-                      </Text>
-                    )}
-                  </TouchableOpacity>
-                </React.Fragment>
-              ))
-            }
-
-            {storageRegion !== 'europe' && (
-              <>
-                <RowDivider c={c} />
-                <View style={layout.row}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={{ fontSize: 14, fontWeight: '400' as const, color: c.ink }}>Force region</Text>
-                    {storageRegionMode === 'force' && (
-                      <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 4, gap: 4 }}>
-                        <Ionicons name="warning" size={12} color={c.amberDeep} />
-                        <Text style={{ fontSize: 11, color: c.amberDeep }}>Capacity limited</Text>
-                      </View>
-                    )}
-                  </View>
-                  <NativeSwitch
-                    value={storageRegionMode === 'force'}
-                    onValueChange={(v) => handleRegionModeChange(v ? 'force' : 'preference')}
-                    colors={c}
-                  />
-                </View>
-              </>
-            )}
-          </View>
-          <SectionNote
-            text="New uploads go to your selected region. Existing files stay where they are. Need to migrate? Contact us."
-            c={c}
-          />
-          <SectionNote
-            text={storageRegionMode === 'force'
-              ? 'Force: uploads only go to your selected region. May fail when at capacity.'
-              : 'Preference: uploads go to your region when possible, overflow to others if needed.'}
-            c={c}
-          />
-        </View>
-
-        {/* ---- Security ---- */}
-        <View style={layout.section}>
-          <SectionHeader title="Security" c={c} />
-          <View style={[layout.card, { backgroundColor: c.paper, borderColor: c.line }]}>
-            {!loadingBiometric && biometricAvailable && (
-              <>
-                <ToggleRow
-                  label="Face ID lock"
-                  value={biometricEnabled}
-                  onValueChange={handleBiometricToggle}
-                  c={c}
-                />
-                {biometricEnabled && (
-                  <>
-                    <RowDivider c={c} />
-                    <SettingsRow
-                      label="Lock after"
-                      value={biometricDelayLabel(biometricDelayMs)}
-                      onPress={handleBiometricDelayPress}
-                      c={c}
-                    />
-                  </>
-                )}
-                <RowDivider c={c} />
-              </>
-            )}
-            {fileProviderSupported && (
-              <>
-                <ToggleRow
-                  label="Mount Beebeeb in Files"
-                  subtitle="Anyone who can unlock this iPhone can access the mounted Files location."
-                  value={fileProviderMounted}
-                  onValueChange={handleFileProviderMountToggle}
-                  disabled={loadingFileProvider || updatingFileProviderMount}
-                  c={c}
-                />
-                {fileProviderMounted && (
-                  <>
-                    <RowDivider c={c} />
-                    <SettingsRow
-                      label="Remove Files access"
-                      value={updatingFileProviderMount ? 'Removing...' : 'Mounted'}
-                      icon="folder-open-outline"
-                      onPress={updatingFileProviderMount ? undefined : () => handleFileProviderMountToggle(false)}
-                      c={c}
-                    />
-                  </>
-                )}
-                <RowDivider c={c} />
-              </>
-            )}
-            <SettingsRow
-              label="Two-Factor Authentication"
-              icon="lock-closed-outline"
-              onPress={() => navigation.navigate('TwoFactorSetup')}
-              c={c}
-            />
-            <RowDivider c={c} />
-            <SettingsRow
-              label="Account & Security"
-              icon="shield-checkmark-outline"
-              onPress={handleAccountSecurity}
-              c={c}
-            />
-            <RowDivider c={c} />
-            <SettingsRow
-              label="Recovery phrase"
-              icon="document-text-outline"
-              showChevron={false}
-              c={c}
-            />
-            <RowDivider c={c} />
-            <SettingsRow
-              label="Add a device"
-              icon="phone-portrait-outline"
-              onPress={() => navigation.navigate('DevicePairing')}
-              c={c}
-            />
-            <RowDivider c={c} />
-            <SettingsRow
-              label="Siri & Shortcuts"
-              icon="mic-outline"
-              onPress={() => { void Linking.openSettings(); }}
-              c={c}
-            />
-          </View>
-          <SectionNote
-            text="Your recovery phrase is shown once during account setup and is not stored on this device. Use the copy you saved offline."
-            c={c}
-          />
-          <SectionNote
-            text="Manage your password on the web at app.beebeeb.io."
-            c={c}
-          />
         </View>
 
         {/* ---- Backup ---- */}
@@ -2399,17 +2154,58 @@ export default function SettingsScreen() {
               onPress={() => navigation.navigate('BackupGuides')}
               c={c}
             />
+            <RowDivider c={c} />
+            <SettingsRow
+              label="Folders in Photos"
+              icon="images-outline"
+              onPress={() => navigation.navigate('PhotoLibrarySettings')}
+              c={c}
+            />
           </View>
         </View>
 
-        {/* ---- Devices & Backups ---- */}
+        {/* ---- Devices ---- */}
         <View style={layout.section}>
-          <SectionHeader title="Devices & Backups" c={c} />
+          <SectionHeader title="Devices" c={c} />
+          <View style={[layout.card, { backgroundColor: c.paper, borderColor: c.line, marginBottom: 8 }]}>
+            <SettingsRow
+              label="Add a device"
+              icon="phone-portrait-outline"
+              onPress={() => navigation.navigate('DevicePairing')}
+              c={c}
+            />
+          </View>
           <DevicesSection c={c} />
           <SectionNote
             text="Devices and their sync/backup sessions. Status updates every 30 seconds."
             c={c}
           />
+        </View>
+
+        {/* ---- Files ---- */}
+        <View style={layout.section}>
+          <SectionHeader title="Files" c={c} />
+          <View style={[layout.card, { backgroundColor: c.paper, borderColor: c.line }]}>
+            {fileProviderSupported && (
+              <>
+                <ToggleRow
+                  label="Mount Beebeeb in Files"
+                  subtitle="Anyone who can unlock this iPhone can access the mounted Files location."
+                  value={fileProviderMounted}
+                  onValueChange={handleFileProviderMountToggle}
+                  disabled={loadingFileProvider || updatingFileProviderMount}
+                  c={c}
+                />
+                <RowDivider c={c} />
+              </>
+            )}
+            <SettingsRow
+              label="Trash"
+              icon="trash-outline"
+              onPress={() => navigation.navigate('Trash')}
+              c={c}
+            />
+          </View>
         </View>
 
         {/* ---- Notifications ---- */}
@@ -2552,9 +2348,60 @@ export default function SettingsScreen() {
           </View>
         </View>
 
-        {/* ---- Privacy ---- */}
+        {/* ---- Security ---- */}
         <View style={layout.section}>
-          <SectionHeader title="Privacy" c={c} />
+          <SectionHeader title="Security" c={c} />
+          <View style={[layout.card, { backgroundColor: c.paper, borderColor: c.line }]}>
+            {!loadingBiometric && biometricAvailable && (
+              <>
+                <ToggleRow
+                  label="Face ID lock"
+                  value={biometricEnabled}
+                  onValueChange={handleBiometricToggle}
+                  c={c}
+                />
+                {biometricEnabled && (
+                  <>
+                    <RowDivider c={c} />
+                    <SettingsRow
+                      label="Lock after"
+                      value={biometricDelayLabel(biometricDelayMs)}
+                      onPress={handleBiometricDelayPress}
+                      c={c}
+                    />
+                  </>
+                )}
+                <RowDivider c={c} />
+              </>
+            )}
+            <SettingsRow
+              label="Two-Factor Authentication"
+              icon="lock-closed-outline"
+              onPress={() => navigation.navigate('TwoFactorSetup')}
+              c={c}
+            />
+            <RowDivider c={c} />
+            <SettingsRow
+              label="Manage account on the web"
+              value="app.beebeeb.io"
+              icon="shield-checkmark-outline"
+              onPress={handleAccountSecurity}
+              c={c}
+            />
+          </View>
+          <SectionNote
+            text="Your recovery phrase is shown once during account setup and is not stored on this device. Use the copy you saved offline."
+            c={c}
+          />
+          <SectionNote
+            text="Manage your password on the web at app.beebeeb.io."
+            c={c}
+          />
+        </View>
+
+        {/* ---- Privacy & data ---- */}
+        <View style={layout.section}>
+          <SectionHeader title="Privacy & data" c={c} />
           <View style={[layout.card, { backgroundColor: c.paper, borderColor: c.line }]}>
             <SettingsRow
               label="Privacy settings"
@@ -2562,55 +2409,142 @@ export default function SettingsScreen() {
               onPress={() => navigation.navigate('Privacy')}
               c={c}
             />
-            <RowDivider c={c} />
-            <SettingsRow
-              label="Download my data"
-              icon="download-outline"
-              onPress={() => navigation.navigate('Privacy')}
-              c={c}
-            />
           </View>
         </View>
 
-        {/* ---- Photos ---- */}
+        {/* ---- Data residency ---- */}
         <View style={layout.section}>
-          <SectionHeader title="Photos" c={c} />
+          <SectionHeader title="Data residency" c={c} />
           <View style={[layout.card, { backgroundColor: c.paper, borderColor: c.line }]}>
-            <SettingsRow
-              label="Folders in Photos"
-              icon="images-outline"
-              onPress={() => navigation.navigate('PhotoLibrarySettings')}
-              c={c}
-            />
-          </View>
-        </View>
+            {/* API regions when loaded — dynamic from /api/v1/me/region */}
+            {apiRegions !== null
+              ? apiRegions.map((r, i) => {
+                  const isSelected = storageRegion === r.continent;
+                  return (
+                    <React.Fragment key={r.continent}>
+                      {i > 0 && <RowDivider c={c} />}
+                      <TouchableOpacity
+                        style={layout.regionOption}
+                        activeOpacity={0.6}
+                        onPress={() => void handleRegionChange(r.continent)}
+                        disabled={savingRegion || apiRegions.length <= 1}
+                        accessibilityLabel={`${r.display_name}${isSelected ? ', selected' : ''}`}
+                        accessibilityRole="radio"
+                        accessibilityState={{ checked: isSelected }}
+                      >
+                        <View style={[
+                          layout.regionRadio,
+                          { borderColor: isSelected ? c.amber : c.line2 },
+                        ]}>
+                          {isSelected && (
+                            <View style={[layout.regionRadioDot, { backgroundColor: c.amber }]} />
+                          )}
+                        </View>
+                        <View style={layout.regionInfo}>
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                            <Text style={{ fontSize: 14, color: c.ink, fontWeight: '400' as const }}>
+                              {r.display_name}
+                            </Text>
+                            {r.is_default && (
+                              <Text style={{
+                                fontSize: 10, color: c.ink4, fontWeight: '500' as const,
+                                paddingHorizontal: 5, paddingVertical: 1,
+                                borderRadius: 4, borderWidth: 1, borderColor: c.line2,
+                                overflow: 'hidden' as const,
+                              }}>
+                                Default
+                              </Text>
+                            )}
+                          </View>
+                          <Text style={{ fontSize: 11, color: c.ink3, marginTop: 1 }}>
+                            {r.continent === 'europe'
+                              ? 'Anywhere in Europe'
+                              : (r.example_city ?? r.city ?? 'Preference or force')}
+                          </Text>
+                        </View>
+                        {isSelected && (
+                          <Ionicons name="checkmark" size={16} color={c.amber} />
+                        )}
+                      </TouchableOpacity>
+                    </React.Fragment>
+                  );
+                })
+              /* Fallback: hardcoded REGIONS while API endpoint isn't deployed */
+              : REGIONS.map((r, i) => (
+                <React.Fragment key={r.poolName}>
+                  {i > 0 && <RowDivider c={c} />}
+                  <TouchableOpacity
+                    style={layout.regionOption}
+                    activeOpacity={r.available ? 0.6 : 1}
+                    onPress={() => r.available && void handleRegionChange(r.poolName)}
+                    disabled={!r.available || savingRegion}
+                    accessibilityLabel={`${r.label}${!r.available ? ', coming soon' : storageRegion === r.poolName ? ', selected' : ''}`}
+                    accessibilityRole="radio"
+                    accessibilityState={{ checked: storageRegion === r.poolName, disabled: !r.available }}
+                  >
+                    <View style={[
+                      layout.regionRadio,
+                      { borderColor: storageRegion === r.poolName && r.available ? c.amber : c.line2 },
+                    ]}>
+                      {storageRegion === r.poolName && r.available && (
+                        <View style={[layout.regionRadioDot, { backgroundColor: c.amber }]} />
+                      )}
+                    </View>
+                    <View style={layout.regionInfo}>
+                      <Text style={{ fontSize: 14, color: r.available ? c.ink : c.ink4, fontWeight: '400' as const }}>
+                        {r.label}
+                      </Text>
+                      <Text style={{ fontSize: 11, color: c.ink3, marginTop: 1 }}>
+                        {r.subtitle}{!r.available ? ' · Coming soon' : ''}
+                      </Text>
+                    </View>
+                    {!r.available && (
+                      <Text style={{
+                        fontSize: 10, color: c.ink4, fontWeight: '500' as const,
+                        paddingHorizontal: 6, paddingVertical: 2,
+                        borderRadius: 4, borderWidth: 1, borderColor: c.line2,
+                        overflow: 'hidden' as const,
+                      }}>
+                        Soon
+                      </Text>
+                    )}
+                  </TouchableOpacity>
+                </React.Fragment>
+              ))
+            }
 
-        {/* ---- Files ---- */}
-        <View style={layout.section}>
-          <SectionHeader title="Files" c={c} />
-          <View style={[layout.card, { backgroundColor: c.paper, borderColor: c.line }]}>
-            <SettingsRow
-              label="Trash"
-              icon="trash-outline"
-              onPress={() => navigation.navigate('Trash')}
-              c={c}
-            />
-            <RowDivider c={c} />
-            <SettingsRow
-              label="File requests"
-              icon="link-outline"
-              onPress={() => navigation.navigate('FileRequests')}
-              c={c}
-            />
-            <RowDivider c={c} />
-            <SettingsRow
-              label="Available offline"
-              icon="cloud-download-outline"
-              badge="Coming soon"
-              showChevron={false}
-              c={c}
-            />
+            {storageRegion !== 'europe' && (
+              <>
+                <RowDivider c={c} />
+                <View style={layout.row}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ fontSize: 14, fontWeight: '400' as const, color: c.ink }}>Force region</Text>
+                    {storageRegionMode === 'force' && (
+                      <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 4, gap: 4 }}>
+                        <Ionicons name="warning" size={12} color={c.amberDeep} />
+                        <Text style={{ fontSize: 11, color: c.amberDeep }}>Capacity limited</Text>
+                      </View>
+                    )}
+                  </View>
+                  <NativeSwitch
+                    value={storageRegionMode === 'force'}
+                    onValueChange={(v) => handleRegionModeChange(v ? 'force' : 'preference')}
+                    colors={c}
+                  />
+                </View>
+              </>
+            )}
           </View>
+          <SectionNote
+            text="New uploads go to your selected region. Existing files stay where they are. Need to migrate? Contact us."
+            c={c}
+          />
+          <SectionNote
+            text={storageRegionMode === 'force'
+              ? 'Force: uploads only go to your selected region. May fail when at capacity.'
+              : 'Preference: uploads go to your region when possible, overflow to others if needed.'}
+            c={c}
+          />
         </View>
 
         {/* ---- Support ---- */}
@@ -2628,6 +2562,13 @@ export default function SettingsScreen() {
               label="Speed test"
               icon="speedometer-outline"
               onPress={() => navigation.navigate('Speedtest')}
+              c={c}
+            />
+            <RowDivider c={c} />
+            <SettingsRow
+              label="Siri & Shortcuts"
+              icon="mic-outline"
+              onPress={() => { void Linking.openSettings(); }}
               c={c}
             />
             <RowDivider c={c} />

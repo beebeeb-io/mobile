@@ -15,7 +15,7 @@ appId: io.beebeeb.app
     visible: "Settings"
     timeout: 5000
 
-# Scroll until "Add a device" row appears under Account & Security
+# Scroll until "Add a device" row appears (Devices section since the 1296 reorg)
 - scrollUntilVisible:
     element:
       text: "Add a device"
