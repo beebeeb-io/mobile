@@ -88,7 +88,7 @@ import StorageScreen from './screens/StorageScreen';
 import RecoveryPhraseVerifyScreen from './screens/RecoveryPhraseVerifyScreen';
 import RecoveryUnlockScreen from './screens/RecoveryUnlockScreen';
 import DevicePairingScreen from './screens/DevicePairingScreen';
-import DevicePairingScanScreen from './screens/DevicePairingScanScreen';
+import { ConstellationScannerScreen as DevicePairingScanScreen } from './screens/ConstellationScannerScreen';
 import DevicePairingShowScreen from './screens/DevicePairingShowScreen';
 import ConstellationSendScreen from './screens/ConstellationSendScreen';
 import BiometricLockScreen from './screens/BiometricLockScreen';
