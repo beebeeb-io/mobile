@@ -44,6 +44,17 @@ public final class NativePhotosGridModule: Module {
       Prop("refreshing") { (view: NativePhotosGridView, refreshing: Bool?) in
         view.setRefreshing(refreshing ?? false)
       }
+
+      // 1298 — month-header colors follow the app theme (RN passes resolved
+      // ink/ink3 hex). Without these the headers were hardcoded white — fine
+      // over photos, near-invisible on the cream page background.
+      Prop("headerTextColor") { (view: NativePhotosGridView, hex: String?) in
+        view.setHeaderColors(label: UIColor(hexString: hex), count: nil)
+      }
+
+      Prop("headerCountColor") { (view: NativePhotosGridView, hex: String?) in
+        view.setHeaderColors(label: nil, count: UIColor(hexString: hex))
+      }
     }
   }
 }
@@ -352,6 +363,17 @@ public final class NativePhotosGridView: ExpoView {
   private var selectionMode = false
   private var selectedIds = Set<String>()
   private var sections: [NativePhotoGridSection] = []
+  fileprivate var headerLabelColor: UIColor?
+  fileprivate var headerCountColor: UIColor?
+
+  func setHeaderColors(label: UIColor?, count: UIColor?) {
+    if let label { headerLabelColor = label }
+    if let count { headerCountColor = count }
+    // Headers are reusable supplementary views — repaint the visible ones.
+    for header in collectionView.visibleSupplementaryViews(ofKind: UICollectionView.elementKindSectionHeader) {
+      (header as? PhotoGridHeaderView)?.applyColors(label: headerLabelColor, count: headerCountColor)
+    }
+  }
   private var indexPathById: [String: IndexPath] = [:]
   private var itemSignature = ""
   private var layoutSignature = ""
@@ -1189,6 +1211,7 @@ extension NativePhotosGridView: UICollectionViewDataSource, UICollectionViewDele
     }
     let section = sections[indexPath.section]
     header.configure(label: section.label, count: section.items.count)
+    header.applyColors(label: headerLabelColor, count: headerCountColor)
     return header
   }
 
@@ -1522,8 +1545,11 @@ private final class PhotoGridHeaderView: UICollectionReusableView {
     super.init(frame: frame)
     label.font = UIFont.systemFont(ofSize: 13, weight: .semibold)
     count.font = UIFont.systemFont(ofSize: 10, weight: .regular)
-    label.textColor = UIColor.white.withAlphaComponent(0.88)
-    count.textColor = UIColor.white.withAlphaComponent(0.45)
+    // Brand ink tokens as trait-aware fallback (light #2a2520 / dark #e8e6e3);
+    // the RN side normally overrides via headerTextColor/headerCountColor so
+    // the in-app appearance setting wins over the system trait.
+    label.textColor = PhotoGridHeaderView.defaultLabelColor
+    count.textColor = PhotoGridHeaderView.defaultCountColor
     addSubview(label)
     addSubview(count)
   }
@@ -1544,6 +1570,23 @@ private final class PhotoGridHeaderView: UICollectionReusableView {
     self.label.text = label
     self.count.text = "\(count) \(count == 1 ? "item" : "items")"
     setNeedsLayout()
+  }
+
+  func applyColors(label: UIColor?, count: UIColor?) {
+    self.label.textColor = label ?? PhotoGridHeaderView.defaultLabelColor
+    self.count.textColor = count ?? PhotoGridHeaderView.defaultCountColor
+  }
+
+  static let defaultLabelColor = UIColor { trait in
+    trait.userInterfaceStyle == .dark
+      ? UIColor(red: 232 / 255, green: 230 / 255, blue: 227 / 255, alpha: 1)
+      : UIColor(red: 42 / 255, green: 37 / 255, blue: 32 / 255, alpha: 1)
+  }
+
+  static let defaultCountColor = UIColor { trait in
+    trait.userInterfaceStyle == .dark
+      ? UIColor(red: 138 / 255, green: 134 / 255, blue: 127 / 255, alpha: 1)
+      : UIColor(red: 138 / 255, green: 134 / 255, blue: 127 / 255, alpha: 0.9)
   }
 }
 

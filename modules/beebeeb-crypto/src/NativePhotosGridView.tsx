@@ -24,6 +24,9 @@ interface NativePhotosGridProps {
   selectedIds: string[]
   selectionMode: boolean
   refreshing: boolean
+  /** 1298 — month-header ink, resolved by the RN theme (hex). */
+  headerTextColor?: string
+  headerCountColor?: string
   onPhotoPress?: (event: NativeEvent<{ id: string }>) => void
   onSelectionChange?: (event: NativeEvent<{ selectedIds: string[]; selectionMode: boolean }>) => void
   onVisiblePhotoIdsChange?: (event: NativeEvent<{ ids: string[] }>) => void

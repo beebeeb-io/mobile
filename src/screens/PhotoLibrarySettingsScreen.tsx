@@ -206,9 +206,13 @@ export default function PhotoLibrarySettingsScreen() {
         style={styles.scroll}
         contentContainerStyle={{ padding: 16, paddingBottom: insets.bottom + 40 }}
       >
+        {/* 1299 — only promise a switch when at least one row actually has one:
+            in the common all-backup-folders vault every row is pinned and the
+            old copy promised a control the screen did not offer. */}
         <Text style={[styles.body, { color: c.ink2 }]}>
-          Choose which folders appear in Photos. Your phone backup always shows. Turn off folders
-          like album artwork you do not want mixed in.
+          {folders.length > 0 && folders.every((f) => f.isProtected)
+            ? 'These folders hold your phone backup, so they always show in Photos.'
+            : 'Choose which folders appear in Photos. Folders that hold your phone backup always show. Turn off folders like album artwork you do not want mixed in.'}
         </Text>
 
         {loading ? (
@@ -260,8 +264,9 @@ export default function PhotoLibrarySettingsScreen() {
 
         {!loading && folders.length > 0 ? (
           <Text style={[styles.note, { color: c.ink3 }]}>
-            Turning a folder off hides its photos from this device only. The files stay in your
-            vault and remain visible under Files.
+            {folders.every((f) => f.isProtected)
+              ? 'Other folders will appear here with a switch once they contain photos.'
+              : 'Turning a folder off hides its photos from this device only. The files stay in your vault and remain visible under Files.'}
           </Text>
         ) : null}
       </ScrollView>
