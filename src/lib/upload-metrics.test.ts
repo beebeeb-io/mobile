@@ -52,6 +52,8 @@ describe('RateMeter', () => {
 
 describe('formatRate', () => {
   test('SI formatting per magnitude', () => {
+    expect(formatRate(1_180_000_000)).toBe('1.2 GB/s');
+    expect(formatRate(999_000_000)).toBe('999 MB/s');
     expect(formatRate(412_000_000)).toBe('412 MB/s');
     expect(formatRate(11_840_000)).toBe('11.8 MB/s');
     expect(formatRate(850_000)).toBe('850 kB/s');

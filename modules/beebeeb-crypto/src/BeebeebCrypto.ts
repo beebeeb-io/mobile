@@ -1548,3 +1548,113 @@ export const BeebeebThumbnails = {
     return BeebeebThumbnailsModule.clearQueueOnSignOut()
   },
 }
+
+// ─── Native manual upload (task 1310) ────────────────────────────────────────
+//
+// The Swift side encrypts a file straight from disk with the core streaming
+// encryptor and PUTs the frames itself, reporting byte-level progress through a
+// snapshot JS polls. JS keeps the upload-session protocol (see api.ts).
+
+export interface NativeUploadPlan {
+  chunkSizeBytes: number
+  chunkCount: number
+}
+
+export interface NativeUploadProgressEvent {
+  requestId: string
+  stage: 'encrypting' | 'uploading' | 'complete' | 'error'
+  chunksUploaded: number
+  chunksTotal: number
+  bytesUploaded: number
+  bytesTotal: number
+  cryptoBytesPerSec?: number
+  error?: string
+}
+
+export interface NativeUploadChunksParams {
+  handleId: number
+  apiUrl: string
+  token: string
+  fileId: string
+  inputUri: string
+  uploadSessionId: string
+  chunkSizeBytes: number
+  chunkCount: number
+  startChunkIndex: number
+}
+
+export interface NativeUploadChunksResult {
+  chunksUploaded: number
+  bytesUploaded: number
+  bytesTotal: number
+  cryptoBytesPerSec: number
+}
+
+/** True when this native build ships the streaming upload engine. */
+export function isNativeUploadAvailable(): boolean {
+  return (
+    nativeFlag &&
+    typeof BeebeebCryptoModule.planUploadChunksNative === 'function' &&
+    typeof BeebeebCryptoModule.uploadChunksNative === 'function'
+  )
+}
+
+/** Chunk layout beebeeb-core plans for this file under the mobile profile. */
+export function planUploadChunksNative(fileSizeBytes: number): NativeUploadPlan {
+  const plan = BeebeebCryptoModule.planUploadChunksNative(fileSizeBytes) as NativeUploadPlan
+  return { chunkSizeBytes: Number(plan.chunkSizeBytes), chunkCount: Number(plan.chunkCount) }
+}
+
+/**
+ * Encrypt + PUT every chunk from `startChunkIndex` on into an existing upload
+ * session. Progress snapshots are polled every `pollIntervalMs` (default 150)
+ * and forwarded to `onProgress` whenever they change. Rejects with an Error
+ * whose message carries the `bb_upload_error` envelope on transport/server
+ * failures — see `parseNativeUploadError` in src/lib/native-upload-bridge.ts.
+ */
+export async function uploadChunksNative(
+  params: NativeUploadChunksParams,
+  options: { onProgress?: (event: NativeUploadProgressEvent) => void; signal?: AbortSignal; pollIntervalMs?: number } = {},
+): Promise<NativeUploadChunksResult> {
+  const requestId = `upload-${params.fileId}-${Date.now()}-${Math.random().toString(36).slice(2)}`
+  let poll: ReturnType<typeof setInterval> | null = null
+  let lastKey = ''
+
+  const flush = () => {
+    const ev = BeebeebCryptoModule.getUploadProgressNative?.(requestId) as NativeUploadProgressEvent | null | undefined
+    if (!ev || ev.requestId !== requestId) return
+    const key = `${ev.stage}:${ev.chunksUploaded}:${ev.bytesUploaded}`
+    if (key === lastKey) return
+    lastKey = key
+    options.onProgress?.(ev)
+  }
+
+  const abortListener = () => {
+    void BeebeebCryptoModule.cancelUploadNative?.(requestId).catch(() => {})
+  }
+  if (options.signal?.aborted) throw uploadAbortError()
+  options.signal?.addEventListener('abort', abortListener, { once: true })
+  if (options.onProgress) poll = setInterval(flush, options.pollIntervalMs ?? 150)
+
+  try {
+    const result = (await BeebeebCryptoModule.uploadChunksNative({ ...params, requestId })) as NativeUploadChunksResult
+    return {
+      chunksUploaded: Number(result.chunksUploaded),
+      bytesUploaded: Number(result.bytesUploaded),
+      bytesTotal: Number(result.bytesTotal),
+      cryptoBytesPerSec: Number(result.cryptoBytesPerSec),
+    }
+  } catch (error) {
+    if (options.signal?.aborted) throw uploadAbortError()
+    throw error
+  } finally {
+    if (poll) clearInterval(poll)
+    options.signal?.removeEventListener('abort', abortListener)
+  }
+}
+
+function uploadAbortError(): Error {
+  const error = new Error('Upload cancelled.')
+  error.name = 'AbortError'
+  return error
+}

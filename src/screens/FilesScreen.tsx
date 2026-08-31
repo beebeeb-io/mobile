@@ -2177,6 +2177,7 @@ export default function FilesScreen() {
         v2InitNameEncrypted,
         encryptChunkFn: encryptChunk,
         encryptMetadataFn: encryptMetadata,
+        masterKeyHandleId: getMasterKeyHandleId(),
         onProgress: (progress) => {
           const percent = progress.bytesTotal > 0
             ? Math.round((progress.bytesUploaded / progress.bytesTotal) * 100)
@@ -2303,6 +2304,7 @@ export default function FilesScreen() {
           v2InitNameEncrypted,
           encryptChunkFn: encryptChunk,
           encryptMetadataFn: encryptMetadata,
+          masterKeyHandleId: getMasterKeyHandleId(),
           onProgress: (progress) => {
             const percent = progress.bytesTotal > 0
               ? Math.round((progress.bytesUploaded / progress.bytesTotal) * 100)

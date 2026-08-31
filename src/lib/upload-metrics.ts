@@ -51,6 +51,7 @@ export class RateMeter {
 export function formatRate(bytesPerSec: number | null | undefined): string | null {
   if (bytesPerSec == null || !Number.isFinite(bytesPerSec) || bytesPerSec <= 0) return null;
   const mbps = bytesPerSec / 1_000_000;
+  if (mbps >= 1000) return `${(mbps / 1000).toFixed(1)} GB/s`;
   if (mbps >= 100) return `${Math.round(mbps)} MB/s`;
   if (mbps >= 1) return `${mbps.toFixed(1)} MB/s`;
   return `${Math.max(1, Math.round(bytesPerSec / 1_000))} kB/s`;

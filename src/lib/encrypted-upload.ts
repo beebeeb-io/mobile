@@ -22,7 +22,7 @@
 import * as FileSystem from 'expo-file-system/legacy'
 import { generateRandomBytes } from '../../modules/beebeeb-crypto'
 import type { EncryptedData } from '../../modules/beebeeb-crypto'
-import { uploadEncryptedChunked } from './api'
+import { uploadEncryptedChunked, uploadEncryptedFileNative } from './api'
 import type { FileEntry, UploadProgress } from './api'
 import { encryptedMetadataToJson, fileMetadataPlaintext } from './encrypted-metadata'
 import type { FileMetadataExtras } from './encrypted-metadata'
@@ -53,6 +53,12 @@ export interface EncryptedUploadOptions {
   metadataExtras?: FileMetadataExtras
   encryptChunkFn: (fileId: string, plaintext: Uint8Array) => Promise<EncryptedData>
   encryptMetadataFn: (fileId: string, metadata: string) => Promise<EncryptedData>
+  /**
+   * Opaque master-key handle (task 1310). When present on iOS the file is
+   * encrypted and sent by the native streaming engine — plaintext never enters
+   * the JS heap and progress is byte-level. Omit to force the JS chunk loop.
+   */
+  masterKeyHandleId?: number | null
   onProgress?: (p: UploadProgress) => void
 }
 
@@ -123,7 +129,7 @@ export async function generateFileId(): Promise<string> {
 export async function encryptedUpload(opts: EncryptedUploadOptions): Promise<FileEntry> {
   const {
     fileId, uri, name, parentId, mimeType, createdAt, metadataExtras,
-    v2InitNameEncrypted, encryptChunkFn, encryptMetadataFn, onProgress,
+    v2InitNameEncrypted, encryptChunkFn, encryptMetadataFn, masterKeyHandleId, onProgress,
   } = opts
 
   // ── 1. Get file size ────────────────────────────────────────────────────
@@ -195,6 +201,23 @@ export async function encryptedUpload(opts: EncryptedUploadOptions): Promise<Fil
   // MIME type is now encrypted inside name_encrypted — never sent in plaintext.
   // Only `is_media` (a boolean) is sent so the server can index media files.
   const mediaFlag = isMedia(mimeType)
+
+  if (masterKeyHandleId != null) {
+    const native = await uploadEncryptedFileNative({
+      masterKeyHandleId,
+      fileId,
+      inputUri: uri,
+      nameEncrypted: nameEncryptedForFileId,
+      v2InitNameEncrypted,
+      parentId,
+      isMedia: mediaFlag,
+      createdAt,
+      plaintextSizeBytes: plaintextSize,
+      resumeKey,
+      onProgress,
+    })
+    if (native) return native
+  }
 
   return uploadEncryptedChunked({
     fileId,

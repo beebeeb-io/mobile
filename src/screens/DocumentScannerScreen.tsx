@@ -165,7 +165,7 @@ function DocumentScannerCameraScreen({ camera }: { camera: CameraModule }) {
   const route = useRoute<Route>();
   const { colors: c } = useTheme();
   const { showToast } = useToast();
-  const { isUnlocked, encryptChunk, encryptMetadata } = useCrypto();
+  const { isUnlocked, encryptChunk, encryptMetadata, getMasterKeyHandleId } = useCrypto();
   const [permission, requestPermission] = useCameraPermissions();
   const cameraRef = useRef<CameraRef | null>(null);
   const capturesRef = useRef<CapturePage[]>([]);
@@ -356,6 +356,7 @@ function DocumentScannerCameraScreen({ camera }: { camera: CameraModule }) {
         mimeType: 'application/pdf',
         metadataExtras,
         encryptChunkFn: encryptChunk,
+        masterKeyHandleId: getMasterKeyHandleId(),
         encryptMetadataFn: encryptMetadata,
       });
       const loc = trustLocation(uploaded.storage_pool_id);
