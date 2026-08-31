@@ -27,6 +27,7 @@ import {
   getToken,
 } from './api';
 import type { SyncOp, SyncNode, FileEntry } from './api';
+import { isSyncOp } from './sync-op-guard';
 import { loadCachedFileIndex, saveCachedFileIndex } from './file-index-cache';
 import { syncDecryptedEntriesToFileProvider } from './file-provider-mount';
 import { getDeviceId } from './device-identity';
@@ -426,8 +427,14 @@ export class SyncClient {
       const data = event.data;
       if (!data) return;
       try {
-        const op = JSON.parse(data) as SyncOp;
-        void this.applyRemoteOp(op);
+        const msg = JSON.parse(data) as unknown;
+        // The server multiplexes event-bus notifications (`{type: "file.created", …}`
+        // — no seq_id / op_type / payload) onto the same SSE stream as sync ops and
+        // documents that "the client can ignore non-sync events". Applying one as
+        // an op threw `payload.id` on undefined for every folder the backup
+        // reconcile created (1305 — RN 0.86 surfaces the rejection as an error).
+        if (!isSyncOp(msg)) return;
+        void this.applyRemoteOp(msg);
       } catch (err) {
         console.error('[SyncClient] Failed to parse SSE message', err);
       }
@@ -481,6 +488,7 @@ export class SyncClient {
    * already in place — we just confirm it.
    */
   private async applyRemoteOp(op: SyncOp): Promise<void> {
+    if (!isSyncOp(op)) return; // defensive: catch-up / snapshot paths share this entry
     if (op.seq_id <= this.lastSeq) return; // already applied
 
     // Echo suppression.

@@ -1,9 +1,11 @@
 const { withXcodeProject, withInfoPlist } = require('@expo/config-plugins');
 const path = require('path');
 const fs = require('fs');
+const { ensureExtensionTarget } = require('../lib/extension-target');
 
 const EXTENSION_NAME = 'BeebeebShare';
 const EXTENSION_BUNDLE_ID = 'io.beebeeb.app.share';
+const TEAM_ID = 'R8352WDJJR';
 const APP_GROUP = 'group.io.beebeeb.shared';
 // Keychain access group shared between the main app and the Share Extension.
 // `$(AppIdentifierPrefix)` is a build-time placeholder Xcode expands to the
@@ -139,18 +141,20 @@ function withShareExtension(config) {
     // the extension target lives in the .xcodeproj and is preserved across
     // prebuilds via the Pods/Podfile flow, so we only need to (re)copy
     // sources unless the target is missing entirely.
-    if (project.pbxTargetByName(targetName)) {
-      console.log(`[ShareExtension] Target '${targetName}' already exists — refreshed source files only`);
-      return config;
-    }
-
-    console.log(`[ShareExtension] Files staged in ${extDir}`);
-    console.log(`[ShareExtension] First-time setup: add the target in Xcode:`);
-    console.log(`  1. File > New > Target > Share Extension`);
-    console.log(`  2. Product Name: ${targetName}, Bundle ID: ${EXTENSION_BUNDLE_ID}`);
-    console.log(`  3. Replace generated files with the ones in ios/${targetName}/`);
-    console.log(`  4. Add App Group capability: ${APP_GROUP}`);
-    console.log(`  5. Set the deployment target to match the main app`);
+    // Wire the Xcode target programmatically (task 1305). Until the SDK 57
+    // upgrade this target only existed in the committed project.pbxproj — added
+    // by hand in Xcode per the old "First-time setup" instructions — and every
+    // `expo prebuild --clean` silently dropped it. Idempotent on re-runs.
+    ensureExtensionTarget(project, {
+      name: targetName,
+      bundleId: EXTENSION_BUNDLE_ID,
+      teamId: TEAM_ID,
+      sources: SOURCE_FILES.map((file) => ({ path: `${targetName}/${file}`, name: file })),
+      includeUniffiBindings: true,
+      linkRustFramework: true,
+      deploymentTarget: '16.0',
+    });
+    console.log(`[ShareExtension] Target '${targetName}' ensured in Xcode project (files staged in ${extDir})`);
 
     return config;
   });

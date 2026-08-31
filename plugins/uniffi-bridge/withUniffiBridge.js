@@ -79,13 +79,30 @@ const withCopyArtifacts = (config) =>
 const withXcodeProjectWiring = (config) =>
   withXcodeProject(config, (config) => {
     const project = config.modResults;
-    const target = project.pbxTargetByName(TARGET_NAME);
+    // pbxTargetByName() returns the PBXNativeTarget OBJECT (no uuid) under
+    // SDK 57's xcode lib — resolve { uuid, ...target } from the section instead.
+    const findTarget = (name) => {
+      const section = project.pbxNativeTargetSection();
+      for (const [uuid, value] of Object.entries(section)) {
+        if (value && typeof value === 'object' && value.name === name) return { uuid, ...value };
+      }
+      return null;
+    };
+    const target = findTarget(TARGET_NAME);
     if (!target) {
       console.warn(`[uniffi-bridge] Target "${TARGET_NAME}" not found in Xcode project`);
       return config;
     }
 
-    if (!project.hasFile(FRAMEWORK_NAME)) {
+    // Gate on the APP target's Frameworks phase, not on project.hasFile(): the
+    // file-provider plugin creates a file ref for the same xcframework, and
+    // under SDK 57's xcode lib hasFile() then returned true → the app target
+    // was never linked → every Rust FFI symbol undefined at link time.
+    const appFrameworksPhase = project.pbxFrameworksBuildPhaseObj(target.uuid);
+    const appAlreadyLinked = !!(appFrameworksPhase && (appFrameworksPhase.files || []).some(
+      (f) => String(f.comment || '').includes(FRAMEWORK_NAME),
+    ));
+    if (!appAlreadyLinked) {
       project.addFramework(FRAMEWORK_NAME, {
         customFramework: true,
         embed: true,
@@ -96,6 +113,49 @@ const withXcodeProjectWiring = (config) =>
       });
       console.log(`[uniffi-bridge] Added ${FRAMEWORK_NAME} to ${TARGET_NAME} (Embed & Sign)`);
     }
+
+    // The share extension (ios/BeebeebShare/*.swift) calls into the Rust core
+    // too; the committed project linked the xcframework to it, the plugins never
+    // did. Link it here so a clean prebuild reproduces a linkable project.
+    const shareTarget = findTarget('BeebeebShare');
+    if (shareTarget) {
+      const sharePhase = project.pbxFrameworksBuildPhaseObj(shareTarget.uuid);
+      const shareLinked = !!(sharePhase && (sharePhase.files || []).some(
+        (f) => String(f.comment || '').includes(FRAMEWORK_NAME),
+      ));
+      if (!shareLinked) {
+        project.addFramework(FRAMEWORK_NAME, {
+          customFramework: true,
+          link: true,
+          target: shareTarget.uuid,
+          lastKnownFileType: 'wrapper.xcframework',
+        });
+        console.log(`[uniffi-bridge] Linked ${FRAMEWORK_NAME} to BeebeebShare`);
+      }
+    }
+
+    // Link the Rust static library EXPLICITLY per SDK slice. Neither CocoaPods
+    // (the podspec's vendored_frameworks — slice libs have different names, so
+    // no -l flag is emitted) nor the xcframework file ref in the Frameworks
+    // phase resolves it under SDK 57 / RN 0.86's debug-dylib app layout:
+    // every uniffi FFI symbol was undefined at link time.
+    const rustLinkFlags = {
+      '"OTHER_LDFLAGS[sdk=iphonesimulator*]"':
+        '"$(inherited) \\"$(PROJECT_DIR)/BeebeebCore.xcframework/ios-arm64_x86_64-simulator/libbeebeeb_uniffi_sim_fat.a\\""',
+      '"OTHER_LDFLAGS[sdk=iphoneos*]"':
+        '"$(inherited) \\"$(PROJECT_DIR)/BeebeebCore.xcframework/ios-arm64/libbeebeeb_uniffi.a\\""',
+    };
+    const applyRustLinkFlags = (nativeTarget) => {
+      const listUuid = nativeTarget && nativeTarget.buildConfigurationList;
+      const list = listUuid && project.pbxXCConfigurationList()[listUuid];
+      const configs = project.pbxXCBuildConfigurationSection();
+      for (const ref of (list && list.buildConfigurations) || []) {
+        const cfg = configs[ref.value];
+        if (cfg && cfg.buildSettings) Object.assign(cfg.buildSettings, rustLinkFlags);
+      }
+    };
+    applyRustLinkFlags(target);
+    if (shareTarget) applyRustLinkFlags(shareTarget);
 
     let beebeebGroupKey =
       project.findPBXGroupKey({ name: TARGET_NAME, path: TARGET_NAME }) ||
