@@ -27,6 +27,37 @@ const ThumbnailServiceNative = requireOptionalNativeModule<{
 }>('ThumbnailService');
 
 /**
+ * Imperative one-shot thumbnail fetch, for call sites that are not components
+ * and so cannot use the hook (task 1321).
+ *
+ * It exists because there was nowhere for them to migrate to: `useThumbnail`
+ * covers render sites, but a plain async function had only the legacy
+ * `fetchDecryptedThumbnailUri`, which throws unconditionally on iOS since the
+ * BeebeebThumbnails migration. Those callers wrapped it in try/catch, so the
+ * throw turned into a silently missing thumbnail rather than an error.
+ *
+ * Same routing as the hook: iOS through the native ThumbnailService actor
+ * (PhotoKit-first, source-aware cache, single-flight), everything else through
+ * the legacy path.
+ */
+export async function fetchThumbnailUriOnce(
+  fileId: string,
+  fileKey: Uint8Array,
+  opts: { width?: number; height?: number; signal?: AbortSignal } = {},
+): Promise<string | null> {
+  const { width = 256, height = 256, signal } = opts;
+  if (Platform.OS === 'ios' && ThumbnailServiceNative?.getThumbnail) {
+    try {
+      const result = await ThumbnailServiceNative.getThumbnail(fileId, width, height);
+      return result?.uri ?? null;
+    } catch {
+      return null;
+    }
+  }
+  return fetchDecryptedThumbnailUri(fileId, fileKey, signal);
+}
+
+/**
  * Single hook for any render site that wants a thumbnail. iOS routes through
  * the native `ThumbnailService` actor (PhotoKit-first, source-aware cache,
  * single-flight). Android keeps the existing flow until the Kotlin worker

@@ -46,7 +46,8 @@ import FolderPickerModal, { type PickerFolder } from '../components/FolderPicker
 import ExportProgressBanner, { type ExportProgressBannerHandle } from '../components/ExportProgressBanner';
 import { ApiError, listAllFiles, getFileIndex, createFolder, deleteFile, trashFiles, renameFile, moveFile, uploadFile, friendlyError, getStorageUsage, createProofOfExistence, storageLocation, trustLocation, getFolderPresence, getUploadStatus, getApiUrl, getToken } from '../lib/api';
 import { guessMimeType, fileCategory as fileCategoryFromMime } from '../lib/media';
-import { generateAndUploadThumbnail, fetchDecryptedThumbnailUri } from '../lib/thumbnail';
+import { generateAndUploadThumbnail } from '../lib/thumbnail';
+import { useThumbnail } from '../lib/use-thumbnail';
 import { maybeSelfRepairThumbnailFromLocalFile } from '../lib/thumbnail-self-repair';
 import { getCachedThumbnail } from '../lib/thumbnail-cache';
 import { getLocalIdentifier } from '../lib/local-identifier-map';
@@ -431,33 +432,21 @@ const FileIcon = React.memo(function FileIcon({
   category, size = 32, fileId, hasThumbnail,
 }: { category: string; size?: number; fileId?: string; hasThumbnail?: boolean }) {
   const { colors: c } = useTheme();
-  const { getFileKeyBytes } = useCrypto();
-  const [thumbUri, setThumbUri] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (!fileId || !hasThumbnail) return;
-    let cancelled = false;
-    (async () => {
-      try {
-        // PhotoKit-backed files have their cache file written by the Photos
-        // tab's PhotoKit short-circuit. Don't run the encrypted-blob fetch
-        // here — it would race the PhotoKit path and overwrite the higher-
-        // quality render with the lower-quality server thumbnail (task 0563).
-        // If a cached version exists already, use it directly. Otherwise the
-        // category icon fallback below is fine for the small list-row icon.
-        if (getLocalIdentifier(fileId)) {
-          const cached = await getCachedThumbnail(fileId);
-          if (cached && !cancelled) setThumbUri(cached);
-          return;
-        }
-        const fileKey = await getFileKeyBytes(fileId);
-        if (!fileKey || cancelled) return;
-        const uri = await fetchDecryptedThumbnailUri(fileId, fileKey);
-        if (uri && !cancelled) setThumbUri(uri);
-      } catch { /* non-fatal */ }
-    })();
-    return () => { cancelled = true; };
-  }, [fileId, hasThumbnail, getFileKeyBytes]);
+  // 1321 — was a hand-rolled effect calling fetchDecryptedThumbnailUri, which
+  // throws unconditionally on iOS since the BeebeebThumbnails migration. It was
+  // wrapped in `catch { /* non-fatal */ }`, so instead of failing it silently
+  // returned no thumbnail for EVERY non-PhotoKit file and the row fell back to
+  // a category icon. useThumbnail is the migrated path: it routes iOS through
+  // the native service and keeps the PhotoKit short-circuit that task 0563
+  // added (never overwrite the higher-quality PhotoKit render with the
+  // lower-quality server thumbnail).
+  const { uri: thumbUri } = useThumbnail(fileId ?? '', {
+    enabled: Boolean(fileId && hasThumbnail),
+    hasThumbnail: Boolean(hasThumbnail),
+    width: size * 3,
+    height: size * 3,
+  });
   const CATEGORY_COLORS: Record<string, string> = {
     folder: c.amberDeep,
     image: c.amber,
