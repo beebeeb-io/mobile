@@ -9,9 +9,13 @@ appId: io.beebeeb.app
 
 - takeScreenshot: "folder-01-drive"
 
-# Tap the FAB (+) button at bottom right
+# Tap the FAB (+) button at bottom right.
+# Was a point tap at 87%,87%; the 1312 floating tab bar is taller than the old
+# flush one, so the shorter scene moved the FAB up ~20pt and the point missed.
+# The FAB has always carried testID="fab-add" — use it, so layout changes
+# cannot silently break this flow again.
 - tapOn:
-    point: "87%,87%"
+    id: "fab-add"
 
 # Assert folder creation dialog appears
 - extendedWaitUntil:
