@@ -48,8 +48,12 @@ appId: io.beebeeb.app
 # "Waiting for another device…", which is also the better assertion because it
 # proves the pairing session actually STARTED rather than that a screen merely
 # rendered.
+# The trailing .* is load-bearing: the real string ends in an ellipsis
+# ("Waiting for another device…") and Maestro's text selector is a FULL-match
+# regex, so the bare prefix does not match. Fourth instance of that trap in
+# this suite, after "With me 0", "By me 6" and "Dark theme".
 - extendedWaitUntil:
-    visible: "Waiting for another device"
+    visible: "Waiting for another device.*"
     timeout: 8000
 
 - takeScreenshot: "device-pairing-03-constellation"
