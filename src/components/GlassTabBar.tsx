@@ -55,7 +55,7 @@ const BAR_GAP = 12;
 
 export function GlassTabBar({ state, descriptors, navigation }: BottomTabBarProps) {
   const insets = useSafeAreaInsets();
-  const { colors: c, resolved } = useTheme();
+  const { resolved } = useTheme();
   const material = glassMaterial(resolved);
 
   const openSearch = () => {
@@ -72,15 +72,6 @@ export function GlassTabBar({ state, descriptors, navigation }: BottomTabBarProp
       style={[
         styles.bar,
         {
-          // The app passes no `theme` to NavigationContainer, so the tab bar
-          // container falls back to react-navigation's light DefaultTheme and
-          // paints itself WHITE. The old opaque `tabBarStyle` hid that; taking
-          // it away exposed a white band under the capsule in dark mode.
-          // Painting the page colour here keeps the band continuous with the
-          // screen above it. Fixing it globally would mean giving the whole
-          // NavigationContainer a theme, which changes stack backgrounds on
-          // screens this task is not allowed to touch.
-          backgroundColor: c.paper,
           paddingLeft: BAR_INSET_X,
           paddingRight: BAR_INSET_X,
           paddingBottom: (insets.bottom || 12) + BAR_BOTTOM - 12,
