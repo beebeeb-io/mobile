@@ -193,6 +193,16 @@ function TabBadge({
   if (badge === undefined || badge === null) return null;
   const s = (StyleSheet.flatten(badgeStyle) ?? {}) as TextStyle;
 
+  // The box needs an EXPLICIT height. App.tsx draws its dot as a blank ' ' at
+  // fontSize 1 capped by maxHeight, which is the stock badge's idiom — but the
+  // stock badge also fixes its own size. Letting a 1pt glyph drive the height
+  // collapses the dot into a 2pt red BAR (caught on the simulator, not by any
+  // test). So: height comes from the caller's maxHeight when it set one, else
+  // from the font size, and never from the content.
+  const fontSize = s.fontSize ?? 10;
+  const height = (s.maxHeight as number | undefined) ?? fontSize + 5;
+  const minWidth = (s.minWidth as number | undefined) ?? 16;
+
   return (
     <View
       pointerEvents="none"
@@ -200,15 +210,15 @@ function TabBadge({
         styles.badge,
         {
           backgroundColor: (s.backgroundColor as string) ?? colors.red,
-          minWidth: (s.minWidth as number) ?? 16,
-          maxHeight: s.maxHeight as number | undefined,
-          borderRadius: (s.borderRadius as number) ?? 8,
+          height,
+          minWidth,
+          borderRadius: (s.borderRadius as number) ?? height / 2,
         },
       ]}
     >
       <Text
         numberOfLines={1}
-        style={[styles.badgeText, { fontSize: s.fontSize ?? 10, color: (s.color as string) ?? colors.white }]}
+        style={[styles.badgeText, { fontSize, color: (s.color as string) ?? colors.white }]}
       >
         {String(badge)}
       </Text>
