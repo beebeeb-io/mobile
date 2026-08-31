@@ -207,6 +207,16 @@ export default function AdvancedSettingsScreen() {
                   {copiedDiagnostics ? 'Copied diagnostics' : 'Copy diagnostics JSON'}
                 </Text>
               </TouchableOpacity>
+              <TouchableOpacity
+                onPress={() => navigation.navigate('GlassGallery')}
+                style={[styles.secondaryButton, { borderColor: c.line, backgroundColor: c.paper }]}
+                accessibilityLabel="Open the glass primitives gallery"
+                accessibilityRole="button"
+              >
+                <Text style={[styles.secondaryButtonText, { color: c.ink }]}>
+                  Glass primitives gallery
+                </Text>
+              </TouchableOpacity>
             </View>
           </>
         ) : null}

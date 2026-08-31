@@ -101,6 +101,9 @@ import AdvancedSettingsScreen from './screens/AdvancedSettingsScreen';
 import ThumbnailQualityScreen from './screens/ThumbnailQualityScreen';
 import ThumbnailWorkerScreen from './screens/ThumbnailWorkerScreen';
 import PhotoLibrarySettingsScreen from './screens/PhotoLibrarySettingsScreen';
+// __DEV__-only glass primitives gallery (task 1311). Registered below only
+// when __DEV__, so it is unreachable in a production build.
+import GlassGalleryScreen from './screens/GlassGalleryScreen';
 import FileRequestsScreen from './screens/FileRequestsScreen';
 import CreateFileRequestScreen from './screens/CreateFileRequestScreen';
 
@@ -301,6 +304,8 @@ export type RootStackParamList = {
   ThumbnailQuality: undefined;
   ThumbnailWorker: undefined;
   PhotoLibrarySettings: undefined;
+  /** `__DEV__` only — the iOS 26 glass primitives gallery (task 1311). */
+  GlassGallery: undefined;
 };
 
 // ---------------------------------------------------------------------------
@@ -1428,6 +1433,13 @@ export default function App() {
                     component={ThumbnailQualityScreen}
                     options={{ headerShown: false }}
                   />
+                  {__DEV__ ? (
+                    <Stack.Screen
+                      name="GlassGallery"
+                      component={GlassGalleryScreen}
+                      options={{ headerShown: false }}
+                    />
+                  ) : null}
                   <Stack.Screen
                     name="ThumbnailWorker"
                     component={ThumbnailWorkerScreen}
