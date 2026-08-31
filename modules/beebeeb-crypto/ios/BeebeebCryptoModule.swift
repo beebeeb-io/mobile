@@ -853,6 +853,9 @@ public class BeebeebCryptoModule: Module {
   private var previewDownloadCancellations: [String: PreviewDownloadProgress] = [:]
   private let previewProgressLock = NSLock()
   private var previewProgressSnapshots: [String: [String: Any]] = [:]
+  /// Live native manual uploads keyed by requestId (task 1310) — polled by JS.
+  private let uploadProgressLock = NSLock()
+  private var uploadProgressEntries: [String: NativeUploadProgress] = [:]
 
   /// Store a MasterKeyHandle and return its opaque numeric ID.
   private func storeHandle(_ handle: MasterKeyHandle) -> Int {
@@ -912,6 +915,33 @@ public class BeebeebCryptoModule: Module {
     let snapshot = previewProgressSnapshots[requestId]
     previewProgressLock.unlock()
     return snapshot
+  }
+
+  private func storeUploadProgress(_ progress: NativeUploadProgress) {
+    uploadProgressLock.lock()
+    uploadProgressEntries[progress.requestId] = progress
+    uploadProgressLock.unlock()
+  }
+
+  private func readUploadProgress(_ requestId: String) -> [String: Any]? {
+    uploadProgressLock.lock()
+    let entry = uploadProgressEntries[requestId]
+    uploadProgressLock.unlock()
+    return entry?.currentSnapshot()
+  }
+
+  private func removeUploadProgress(_ requestId: String) {
+    uploadProgressLock.lock()
+    uploadProgressEntries.removeValue(forKey: requestId)
+    uploadProgressLock.unlock()
+  }
+
+  private func cancelUpload(_ requestId: String) -> Bool {
+    uploadProgressLock.lock()
+    let entry = uploadProgressEntries[requestId]
+    uploadProgressLock.unlock()
+    entry?.cancel()
+    return entry != nil
   }
 
   private func clearPreviewProgress(_ requestId: String) {
@@ -2625,6 +2655,90 @@ public class BeebeebCryptoModule: Module {
 
     Function("getPreviewLoadProgress") { [weak self] (requestId: String) -> [String: Any]? in
       self?.readPreviewProgress(requestId)
+    }
+
+    // ── Native manual upload (task 1310) ──────────────────────────────
+    //
+    // JS owns the upload-session protocol (init / resume state / complete /
+    // encrypted-name patch); native owns everything that must not touch the JS
+    // heap: reading the file, encrypting it with the core streaming encryptor
+    // and PUTting the frames with byte-level progress. See NativeManualUploader.
+
+    Function("planUploadChunksNative") { (fileSizeBytes: Double) throws -> [String: Any] in
+      let plan = try NativeManualUploader.plan(fileSizeBytes: UInt64(max(0, fileSizeBytes)))
+      return [
+        "chunkSizeBytes": Double(plan.chunkSizeBytes),
+        "chunkCount": Double(plan.chunkCount),
+      ]
+    }
+
+    AsyncFunction("uploadChunksNative") { [self] (params: [String: Any]) async throws -> [String: Any] in
+      func number(_ key: String) -> Double? {
+        if let value = params[key] as? Double { return value }
+        if let value = params[key] as? Int { return Double(value) }
+        if let value = params[key] as? NSNumber { return value.doubleValue }
+        return nil
+      }
+      guard let handleId = number("handleId").map({ Int($0) }),
+            let apiUrl = params["apiUrl"] as? String,
+            let token = params["token"] as? String,
+            let fileId = params["fileId"] as? String,
+            let inputUri = params["inputUri"] as? String,
+            let uploadSessionId = params["uploadSessionId"] as? String,
+            let chunkSizeBytes = number("chunkSizeBytes"),
+            let chunkCount = number("chunkCount"),
+            let requestId = params["requestId"] as? String
+      else {
+        throw NSError(
+          domain: "BeebeebUpload",
+          code: 1,
+          userInfo: [NSLocalizedDescriptionKey: "Missing required parameters for uploadChunksNative"]
+        )
+      }
+      let startChunkIndex = UInt32(max(0, number("startChunkIndex") ?? 0))
+      let master = try self.getHandle(handleId)
+      let progress = NativeUploadProgress(requestId: requestId)
+      self.storeUploadProgress(progress)
+      defer { self.removeUploadProgress(requestId) }
+
+      RuntimeTrace.event("upload.native.start", [
+        "fileId": fileId,
+        "chunkCount": Int(chunkCount),
+        "chunkSizeBytes": Int(chunkSizeBytes),
+        "startChunkIndex": Int(startChunkIndex),
+      ])
+      let request = NativeManualUploader.Request(
+        masterKey: master,
+        fileId: fileId,
+        inputPath: fileURL(fromURI: inputUri).path,
+        apiUrl: apiUrl,
+        token: token,
+        uploadSessionId: uploadSessionId,
+        chunkSizeBytes: UInt64(chunkSizeBytes),
+        chunkCount: UInt64(chunkCount),
+        startChunkIndex: startChunkIndex
+      )
+      do {
+        let result = try await NativeManualUploader.shared.upload(request, progress: progress)
+        RuntimeTrace.event("upload.native.complete", [
+          "fileId": fileId,
+          "chunksUploaded": result["chunksUploaded"] ?? 0,
+          "bytesUploaded": result["bytesUploaded"] ?? 0,
+        ])
+        return result
+      } catch {
+        progress.fail(error.localizedDescription)
+        RuntimeTrace.event("upload.native.error", ["fileId": fileId, "error": error.localizedDescription])
+        throw error
+      }
+    }
+
+    Function("getUploadProgressNative") { [weak self] (requestId: String) -> [String: Any]? in
+      self?.readUploadProgress(requestId)
+    }
+
+    AsyncFunction("cancelUploadNative") { [self] (requestId: String) -> Bool in
+      self.cancelUpload(requestId)
     }
 
     // ── Local thumbnail generation for video and RAW (DNG) files ────────

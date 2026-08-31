@@ -13,6 +13,8 @@ import * as BeebeebCrypto from '../../modules/beebeeb-crypto';
 import { clearCachedFileIndex } from './file-index-cache';
 import { collectPaged, findInPages } from './paginate';
 import { rateLimitedFetch } from './rate-limited-fetch';
+import { isNativeUploadAvailable, planUploadChunksNative, uploadChunksNative } from '../../modules/beebeeb-crypto';
+import { nativeProgressToUploadProgress, parseNativeUploadError, resumeStateMatchesNativePlan } from './native-upload-bridge';
 import { getDeviceId } from './sync-client';
 import { setAnnouncement, clearAnnouncement } from './announcement-context';
 
@@ -1195,6 +1197,24 @@ export async function uploadEncryptedChunked(params: {
     protocol,
   })
 
+  return finalizeUpload({ protocol, serverFileId, uploadSessionId, token, resolveNameEncrypted, initialNameEncrypted, resumeKey })
+}
+
+/**
+ * Step 3 of both upload paths: tell the server the session is complete, then
+ * (v2) bind the encrypted name to the server-assigned file id and clear the
+ * resume state. Shared by the JS chunk loop and the native streaming path.
+ */
+async function finalizeUpload(params: {
+  protocol: 'v1' | 'v2'
+  serverFileId: string
+  uploadSessionId?: string
+  token: string | null
+  resolveNameEncrypted: (fileId: string) => Promise<string>
+  initialNameEncrypted: string
+  resumeKey?: string
+}): Promise<FileEntry> {
+  const { protocol, serverFileId, uploadSessionId, token, resolveNameEncrypted, initialNameEncrypted, resumeKey } = params
   const completePath = protocol === 'v2' && uploadSessionId
     ? `/api/v1/uploads/${uploadSessionId}/complete`
     : `/api/v1/files/${serverFileId}/upload/complete`
@@ -1222,6 +1242,150 @@ export async function uploadEncryptedChunked(params: {
   }
   if (shouldClearResumeState) clearUploadResumeStateSoon(resumeKey)
   return completed
+}
+
+/**
+ * Native streaming upload (task 1310, iOS).
+ *
+ * Same wire protocol as `uploadEncryptedChunked` (storage-v2 session), but the
+ * file is read, encrypted and PUT by the Swift engine — plaintext never enters
+ * the JS heap and progress is byte-level instead of one tick per chunk. JS
+ * still owns init, resume state, complete and the encrypted-name patch.
+ *
+ * Resolves to `null` when the native engine is not in this build or the server
+ * has no v2 session endpoint, so the caller can fall back to the JS loop.
+ * Server/transport failures throw `ApiError` exactly like the JS path.
+ */
+export async function uploadEncryptedFileNative(params: {
+  masterKeyHandleId: number
+  fileId: string
+  inputUri: string
+  nameEncrypted: string | ((fileId: string) => Promise<string>)
+  v2InitNameEncrypted?: string
+  parentId?: string
+  isMedia?: boolean
+  createdAt?: string
+  plaintextSizeBytes: number
+  resumeKey?: string
+  onProgress?: (p: UploadProgress) => void
+}): Promise<FileEntry | null> {
+  if (Platform.OS !== 'ios' || !isNativeUploadAvailable()) return null
+  const {
+    masterKeyHandleId, fileId, inputUri, nameEncrypted, v2InitNameEncrypted,
+    parentId, isMedia, createdAt, plaintextSizeBytes, resumeKey, onProgress,
+  } = params
+  const token = await getToken()
+  if (!token) throw new ApiError(401, 'Not signed in')
+  const resolveNameEncrypted = async (id: string) =>
+    typeof nameEncrypted === 'function' ? nameEncrypted(id) : nameEncrypted
+
+  const plan = planUploadChunksNative(plaintextSizeBytes)
+  if (!(plan.chunkSizeBytes > 0) || !(plan.chunkCount > 0)) return null
+
+  const initialNameEncrypted = v2InitNameEncrypted ?? await resolveNameEncrypted(fileId)
+  const resumeState = resumeKey ? await loadUploadResumeState(resumeKey) : null
+
+  let serverFileId: string
+  let uploadSessionId: string
+  let startChunkIndex = 0
+  if (resumeState && resumeStateMatchesNativePlan(resumeState, { plaintextSizeBytes, parentId, ...plan })) {
+    serverFileId = resumeState.fileId
+    uploadSessionId = resumeState.uploadSessionId as string
+    startChunkIndex = Math.min(resumeState.lastUploadedChunkIndex + 1, plan.chunkCount)
+  } else {
+    const v2Init = await initUploadV2({
+      token,
+      fileName: initialNameEncrypted,
+      fileSizeBytes: plaintextSizeBytes,
+      parentId,
+      isMedia,
+      createdAt,
+      chunkSizeBytes: plan.chunkSizeBytes,
+      chunkCount: plan.chunkCount,
+    })
+    if (!v2Init) return null
+    if (v2Init.chunk_size_bytes !== plan.chunkSizeBytes || v2Init.chunk_count !== plan.chunkCount) {
+      throw new ApiError(500, 'Server changed the upload chunk plan', 'chunk_plan_mismatch')
+    }
+    serverFileId = v2Init.file_id
+    uploadSessionId = v2Init.upload_session_id
+  }
+
+  const sizeBytes = plaintextSizeBytes + plan.chunkCount * 28
+  onProgress?.({
+    phase: 'preparing',
+    chunksTotal: plan.chunkCount,
+    chunksUploaded: startChunkIndex,
+    bytesTotal: sizeBytes,
+    bytesUploaded: estimateUploadedBytes(startChunkIndex, plan.chunkSizeBytes, plaintextSizeBytes),
+    chunkSizeBytes: plan.chunkSizeBytes,
+    uploadSessionId,
+    protocol: 'v2',
+  })
+
+  const persistResume = (lastUploadedChunkIndex: number) => saveUploadResumeStateSoon(resumeKey, {
+    protocol: 'v2',
+    fileId: serverFileId,
+    uploadSessionId,
+    chunkSizeBytes: plan.chunkSizeBytes,
+    chunkCount: plan.chunkCount,
+    plaintextSizeBytes,
+    parentId: parentId ?? null,
+    mimeType: null,
+    lastUploadedChunkIndex,
+  })
+  persistResume(startChunkIndex - 1)
+  let lastPersistedChunk = startChunkIndex - 1
+
+  try {
+    await uploadChunksNative(
+      {
+        handleId: masterKeyHandleId,
+        apiUrl: BASE_URL,
+        token,
+        fileId,
+        inputUri,
+        uploadSessionId,
+        chunkSizeBytes: plan.chunkSizeBytes,
+        chunkCount: plan.chunkCount,
+        startChunkIndex,
+      },
+      {
+        onProgress: (ev) => {
+          onProgress?.(nativeProgressToUploadProgress(ev, { chunkSizeBytes: plan.chunkSizeBytes, uploadSessionId }))
+          const completedIndex = ev.chunksUploaded - 1
+          if (completedIndex > lastPersistedChunk) {
+            lastPersistedChunk = completedIndex
+            persistResume(completedIndex)
+          }
+        },
+      },
+    )
+  } catch (err) {
+    throw nativeUploadErrorToApiError(err)
+  }
+
+  onProgress?.({
+    phase: 'finalizing',
+    chunksTotal: plan.chunkCount,
+    chunksUploaded: plan.chunkCount,
+    bytesTotal: sizeBytes,
+    bytesUploaded: sizeBytes,
+    chunkSizeBytes: plan.chunkSizeBytes,
+    uploadSessionId,
+    protocol: 'v2',
+  })
+  return finalizeUpload({
+    protocol: 'v2', serverFileId, uploadSessionId, token, resolveNameEncrypted, initialNameEncrypted, resumeKey,
+  })
+}
+
+/** Rebuild the `ApiError` the JS chunk loop would have thrown for the same server reply. */
+function nativeUploadErrorToApiError(err: unknown): unknown {
+  if (err instanceof ApiError) return err
+  const envelope = parseNativeUploadError(err instanceof Error ? err.message : String(err))
+  if (!envelope) return err
+  return new ApiError(envelope.status, envelope.message, envelope.code)
 }
 
 async function patchCompletedUploadNameEncrypted(serverFileId: string, finalNameEncrypted: string): Promise<boolean> {
@@ -1260,7 +1424,12 @@ async function initUploadV2(params: {
   parentId?: string;
   isMedia?: boolean;
   createdAt?: string;
+  /** Client chunk plan; defaults to the JS loop's fixed 4 MiB layout. */
+  chunkSizeBytes?: number;
+  chunkCount?: number;
 }): Promise<UploadV2InitResponse | null> {
+  const chunkSizeBytes = params.chunkSizeBytes ?? CHUNK_SIZE
+  const chunkCount = params.chunkCount ?? Math.max(1, Math.ceil(params.fileSizeBytes / CHUNK_SIZE))
   const res = await rateLimitedFetch(`${BASE_URL}/api/v1/uploads/init`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${params.token}`, 'Content-Type': 'application/json' },
@@ -1272,8 +1441,8 @@ async function initUploadV2(params: {
       // plaintext mime_type column.
       is_media: params.isMedia ?? false,
       profile: 'mobile',
-      chunk_size_bytes: CHUNK_SIZE,
-      chunk_count: Math.max(1, Math.ceil(params.fileSizeBytes / CHUNK_SIZE)),
+      chunk_size_bytes: chunkSizeBytes,
+      chunk_count: chunkCount,
       created_at: params.createdAt ?? null,
     }),
   })

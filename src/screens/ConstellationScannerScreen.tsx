@@ -299,6 +299,7 @@ export function ConstellationScannerScreen() {
         name: savedFileName ?? 'beebeeb-transfer.enc',
         mimeType: savedMime ?? 'application/octet-stream',
         encryptChunkFn: crypto.encryptChunk,
+        masterKeyHandleId: crypto.getMasterKeyHandleId(),
         encryptMetadataFn: crypto.encryptMetadata,
       });
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);

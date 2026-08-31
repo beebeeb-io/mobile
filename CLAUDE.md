@@ -182,6 +182,20 @@ Consumes `beebeeb-core` via UniFFI-generated Swift/Kotlin bindings. Crypto runs 
   - Wire contract preserved: `upload/init` still sends `size_bytes` = plaintext byte count (the server recomputes stored size from chunks); `chunk_count` comes from the plan.
   - Profiles are `"desktop" | "web" | "mobile" | "backup"`. The photo/contacts/calendar backup managers call `NativeEncryptedBackupUploader.shared.upload(plaintext:…)`; the HTTP transport is still Swift (URLSession), the encryption is core.
 
+- **Manual uploads are native too (task 1310, `NativeManualUploader.swift`).** `encryptedUpload()` in
+  `src/lib/encrypted-upload.ts` routes through `uploadEncryptedFileNative()` (api.ts) whenever the caller
+  passes `masterKeyHandleId` (FilesScreen, DocumentScanner, ConstellationScanner do). JS keeps the
+  storage-v2 protocol — `planUploadChunksNative(size)` (core `planChunks`, profile `"mobile"`) →
+  `/api/v1/uploads/init` with that plan → resume state → `complete` → encrypted-name patch — and the
+  Swift engine does the rest: `ChunkEncryptorHandle.fromFile` + `nextChunk()` straight from disk,
+  `URLSession.upload(for:from:delegate:)` PUTs with `didSendBodyData` byte-level progress, 429/5xx/network
+  retry with backoff. JS polls `getUploadProgressNative(requestId)` every 150 ms. Errors come back as a
+  `{"bb_upload_error":true,status,code,message}` envelope that `native-upload-bridge.ts` turns back into an
+  `ApiError`. Plaintext never enters the JS heap. The old JS chunk loop (`uploadEncryptedChunked`,
+  base64 round-trips — measured at ~1 s of pure JS per 4 MiB chunk on an M-series Mac) stays only as the
+  fallback for callers without a key handle / servers without v2. Never reintroduce base64 file reads in
+  the upload path.
+
 
 ## Graphify
 

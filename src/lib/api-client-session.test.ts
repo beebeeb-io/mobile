@@ -38,6 +38,9 @@ mock.module('react-native', () => ({
 mock.module('../../modules/beebeeb-crypto', () => ({
   mirrorBackupClientSession: async () => true,
   mirrorSessionToAppGroup: async () => true,
+  isNativeUploadAvailable: () => false,
+  planUploadChunksNative: () => ({ chunkSizeBytes: 0, chunkCount: 0 }),
+  uploadChunksNative: async () => { throw new Error('native upload not mocked'); },
 }));
 
 mock.module('./file-index-cache', () => ({

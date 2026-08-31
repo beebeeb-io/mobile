@@ -2921,7 +2921,7 @@ SPEC CHECKSUMS:
   ExpoLocalAuthentication: 96989637e567a10cdeabe61e5c6026d30c0dc53f
   ExpoLogBox: 80957303325cd4439137765c90a87d7f22aaf2ff
   ExpoMediaLibrary: 344f5b528a71f34794e9d7396e32589531df146e
-  ExpoModulesCore: 8ac461cada7787e70824ebc9f61ab2a040e09358
+  ExpoModulesCore: b541d55f609897eaa97f9693f2a527c5b7f533c9
   ExpoModulesJSI: 1529d4289b9a3647d8901a27b41f1af173598b45
   ExpoModulesWorklets: 57a11e6ae984c2680e7967b785ded96199caed8c
   ExpoNotifications: dd1288ca85d320ea163105e5efdf0a1cc05760f8
