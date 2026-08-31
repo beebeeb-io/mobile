@@ -2118,11 +2118,16 @@ export default function PhotosScreen() {
 
   return (
     <View style={[styles.root, { backgroundColor: c.paper }]}>
-      {/* 1322 — the grid bleeds edge-to-edge; the header floats over it with a
-          progressive scroll-edge blur, which only appears once something is
-          actually scrolled beneath it (the same rule Drive uses in 1313). The
-          hairline border it used to draw is replaced by that blur. */}
-      {isScrolled ? <ScrollEdgeBlur height={headerHeight || insets.top + 56} /> : null}
+      {/* 1322 — the grid bleeds edge-to-edge, so the blur is ALWAYS on rather
+          than gated on scroll the way Drive's is. Two reasons. Photos is
+          permanently full-bleed — there is no resting state where content
+          genuinely starts below the header, so a gate would only ever be
+          wrong. And `isScrolled` cannot drive it here: `handleGridScroll` is
+          wired to the FlatList, which is the non-iOS fallback, so on the
+          platform we ship `isScrolled` has been permanently false since the
+          native grid landed — the hairline border it used to gate was dead
+          too. Without the blur the title is unreadable over bright photos. */}
+      <ScrollEdgeBlur height={headerHeight || insets.top + 56} />
       <View
         style={[styles.floatingHeader, { paddingTop: insets.top }]}
         onLayout={(e) => {
