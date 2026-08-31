@@ -33,6 +33,7 @@ import type { RootStackParamList } from '../App';
 import { colors, radii, shadows } from '../theme';
 import type { Colors } from '../theme';
 import { useTheme } from '../lib/theme-context';
+import { GlassCircle, ScrollEdgeBlur } from '../components/glass';
 import { useToast } from '../lib/toast-context';
 import { getToken, friendlyError, trustLocation, trashFiles } from '../lib/api';
 import { useCrypto } from '../lib/crypto-context';
@@ -2811,15 +2812,22 @@ export default function PreviewScreen() {
 
     return (
       <View style={styles.mediaRoot}>
+        {/* 1314 — the canvas floats Preview's chrome as glass over the media
+            instead of a flat black bar. The scrim becomes a progressive blur
+            so the title stays legible over bright images, and the controls
+            become glass circles. */}
+        <ScrollEdgeBlur scheme="dark" height={insets.top + 64} />
         <View style={[styles.mediaHeader, { paddingTop: insets.top + 8 }]}>
-          <TouchableOpacity
-            onPress={handleClose}
-            style={styles.mediaIconButton}
-            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
-            accessibilityLabel="Close preview"
-          >
-            <Ionicons name="chevron-down" size={22} color={colors.white} />
-          </TouchableOpacity>
+          <GlassCircle scheme="dark" size={38}>
+            <TouchableOpacity
+              onPress={handleClose}
+              style={styles.glassHit}
+              hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+              accessibilityLabel="Close preview"
+            >
+              <Ionicons name="chevron-down" size={22} color={colors.white} />
+            </TouchableOpacity>
+          </GlassCircle>
 
           <View style={styles.mediaHeaderText}>
             <Text style={styles.mediaHeaderTitle} numberOfLines={1}>{previewFileName}</Text>
@@ -2831,15 +2839,21 @@ export default function PreviewScreen() {
             </Text>
           </View>
 
-          <TouchableOpacity
-            onPress={handlePreviewOptions}
-            disabled={downloading || trashing}
-            style={[styles.mediaIconButton, (downloading || trashing) && styles.disabledIconButton]}
-            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
-            accessibilityLabel="Open file options"
+          <GlassCircle
+            scheme="dark"
+            size={38}
+            style={(downloading || trashing) ? styles.disabledIconButton : undefined}
           >
-            <Ionicons name="ellipsis-horizontal" size={21} color={colors.white} />
-          </TouchableOpacity>
+            <TouchableOpacity
+              onPress={handlePreviewOptions}
+              disabled={downloading || trashing}
+              style={styles.glassHit}
+              hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+              accessibilityLabel="Open file options"
+            >
+              <Ionicons name="ellipsis-horizontal" size={21} color={colors.white} />
+            </TouchableOpacity>
+          </GlassCircle>
         </View>
 
         {showPager ? (
@@ -3442,7 +3456,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingBottom: 12,
     gap: 12,
-    backgroundColor: 'rgba(2,2,3,0.72)',
   },
   mediaIconButton: {
     width: 38,
@@ -3452,6 +3465,9 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     backgroundColor: 'rgba(255,255,255,0.11)',
   },
+  // 1314 — fills a GlassCircle; the material supplies the disc, this is the
+  // touch target inside it.
+  glassHit: { width: '100%', height: '100%', alignItems: 'center', justifyContent: 'center' },
   disabledIconButton: {
     opacity: 0.48,
   },

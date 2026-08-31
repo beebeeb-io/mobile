@@ -15,6 +15,7 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { radii, shadows, spacing } from '../theme';
 import { useTheme } from '../lib/theme-context';
+import { GlassSegment, ScrollEdgeBlur } from '../components/glass';
 import { useToast } from '../lib/toast-context';
 import SkeletonRow from '../components/SkeletonRow';
 import { useCrypto } from '../lib/crypto-context';
@@ -293,6 +294,9 @@ export default function SharedScreen() {
   const [topTab, setTopTab] = useState<TopTab>('shares');
   const [shareDir, setShareDir] = useState<ShareDir>('with');
   const [isScrolled, setIsScrolled] = useState(false);
+  // 1314 — the floating header's measured height, fed to every list's top
+  // inset. All three dir lists need it, not just the visible one.
+  const [headerHeight, setHeaderHeight] = useState(0);
 
   // Crypto — for decrypting share link filenames + owner-link rebuild (0805)
   const { isUnlocked, decryptMetadata, getMasterKeyHandleId } = useCrypto();
@@ -717,10 +721,21 @@ export default function SharedScreen() {
     }
   };
 
+  // Shared by all three dir lists so none of them can be forgotten.
+  const listInset = { paddingTop: headerHeight, paddingBottom: insets.bottom + 120 };
+
   return (
-    <View style={[styles.root, { paddingTop: insets.top, backgroundColor: c.paper }]}>
-      {/* Header area */}
-      <View style={[isScrolled && { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: c.line }]}>
+    <View style={[styles.root, { backgroundColor: c.paper }]}>
+      {/* 1314 — content runs under the chrome; the header floats with a
+          scroll-edge blur, replacing the hairline border it used to draw. */}
+      {isScrolled ? <ScrollEdgeBlur height={headerHeight || insets.top + 120} /> : null}
+      <View
+        style={[styles.floatingHeader, { paddingTop: insets.top }]}
+        onLayout={(e) => {
+          const h = Math.round(e.nativeEvent.layout.height);
+          setHeaderHeight((prev) => (Math.abs(prev - h) > 1 ? h : prev));
+        }}
+      >
       {/* Title */}
       <View style={styles.titleRow}>
         <Text style={[styles.title, { color: c.ink }]}>Shared</Text>
@@ -736,35 +751,22 @@ export default function SharedScreen() {
         )}
       </View>
 
-      {/* Tier 1 — object kind: Shares | File Requests (neutral elevated pill;
-          amber is reserved for the Tier-2 active state + status pills). */}
-      <View style={[styles.segmented, { backgroundColor: c.paper2 }]} accessibilityRole="tablist">
-        {topTabs.map((t) => {
-          const active = topTab === t.id;
-          return (
-            <TouchableOpacity
-              key={t.id}
-              style={[styles.segment, active && [styles.segmentActive, { backgroundColor: c.paper }]]}
-              onPress={() => {
-                if (topTab === t.id) return;
-                Haptics.selectionAsync();
-                setTopTab(t.id);
-              }}
-              activeOpacity={0.7}
-              accessibilityRole="tab"
-              accessibilityState={{ selected: active }}
-              accessibilityLabel={t.label}
-            >
-              <Text
-                style={[styles.segmentText, { color: c.ink3 }, active && { color: c.ink, fontWeight: '600' }]}
-                numberOfLines={1}
-              >
-                {t.label}
-              </Text>
-            </TouchableOpacity>
-          );
-        })}
-      </View>
+      {/* Tier 1 — object kind: Shares | File Requests. 1314: the canvas's glass
+          capsule with the active item in its own bubble, replacing the flat
+          neutral pill. The two-tier IA from 1296 is unchanged — the canvas
+          artboard shows a single capsule because it predates that split, and
+          merging the tiers here would be a reorganisation, not a restyle. */}
+      <GlassSegment
+        style={styles.segmentedWrap}
+        options={topTabs.map((t) => ({ value: t.id, label: t.label }))}
+        value={topTab}
+        onChange={(next) => {
+          if (topTab === next) return;
+          Haptics.selectionAsync();
+          setTopTab(next);
+        }}
+        accessibilityLabel="Shared view"
+      />
 
       {/* Tier 2 — direction within Shares: With me | By me | Pending. */}
       {topTab === 'shares' && (
@@ -832,7 +834,7 @@ export default function SharedScreen() {
               colors={[c.amber]}
             />
           }
-          contentContainerStyle={incomingApproved.length === 0 ? styles.emptyList : undefined}
+          contentContainerStyle={[incomingApproved.length === 0 ? styles.emptyList : undefined, listInset]}
           keyboardDismissMode="on-drag"
         />
       ) : shareDir === 'by' ? (
@@ -851,7 +853,7 @@ export default function SharedScreen() {
               colors={[c.amber]}
             />
           }
-          contentContainerStyle={byMeItems.length === 0 ? styles.emptyList : undefined}
+          contentContainerStyle={[byMeItems.length === 0 ? styles.emptyList : undefined, listInset]}
           keyboardDismissMode="on-drag"
         />
       ) : (
@@ -870,7 +872,7 @@ export default function SharedScreen() {
               colors={[c.amber]}
             />
           }
-          contentContainerStyle={pendingInvites.length === 0 ? styles.emptyList : undefined}
+          contentContainerStyle={[pendingInvites.length === 0 ? styles.emptyList : undefined, listInset]}
           keyboardDismissMode="on-drag"
         />
       )}
@@ -884,12 +886,17 @@ export default function SharedScreen() {
 
 const styles = StyleSheet.create({
   root: { flex: 1 },
+  floatingHeader: { position: 'absolute', top: 0, left: 0, right: 0, zIndex: 10 },
   title: { fontSize: 28, fontWeight: '700', paddingHorizontal: spacing.lg, paddingTop: 6, paddingBottom: 4 },
   titleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   headerAdd: { paddingRight: spacing.lg, paddingLeft: 12, paddingVertical: 6 },
 
   // Tier 1 — segmented control (Shares | File Requests)
   segmented: { flexDirection: 'row', marginHorizontal: spacing.lg, marginBottom: spacing.sm, borderRadius: radii.lg, padding: 3 },
+  // 1314 — GlassSegment lays out its own track, so its wrapper must carry
+  // margins ONLY. Handing it `segmented` (flexDirection: 'row') made the outer
+  // wrapper a row container and collapsed the capsule to a sliver.
+  segmentedWrap: { marginHorizontal: spacing.lg, marginBottom: spacing.sm },
   segment: { flex: 1, paddingVertical: 8, alignItems: 'center', justifyContent: 'center', borderRadius: radii.md },
   segmentActive: { ...shadows.sm },
   segmentText: { fontSize: 14, fontWeight: '500' },

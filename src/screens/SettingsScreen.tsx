@@ -40,11 +40,12 @@ try { Constants = require('expo-constants'); } catch {}
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { fonts, spacing, type Colors } from '../theme';
+import { fonts, spacing, surfacesFor, typeScale, type Colors } from '../theme';
 import { useAuth } from '../lib/auth';
 import { useBackup } from '../lib/backup-context';
 import { useCrypto } from '../lib/crypto-context';
 import { useTheme, type ThemeMode } from '../lib/theme-context';
+import { ScrollEdgeBlur } from '../components/glass';
 import { useToast } from '../lib/toast-context';
 import { useNetworkStatus } from '../lib/useNetworkStatus';
 import { recordRuntimeTrace } from '../lib/runtime-trace';
@@ -250,10 +251,12 @@ async function ensureCalendarPermission(): Promise<boolean> {
 const layout = StyleSheet.create({
   root: { flex: 1 },
   scroll: { flex: 1 },
-  scrollContent: { paddingHorizontal: 14, paddingBottom: 40 },
+  scrollContent: { paddingHorizontal: 16 },
+  floatingTitle: { position: 'absolute', top: 0, left: 0, right: 0, zIndex: 10 },
   section: { marginBottom: 14 },
-  card: { borderRadius: 12, borderWidth: 1, overflow: 'hidden' },
-  row: { flexDirection: 'row', alignItems: 'center', paddingVertical: 11, paddingHorizontal: 12 },
+  // 1314 — grouped-inset: an opaque cell, not an outlined box.
+  card: { borderRadius: 26, overflow: 'hidden' },
+  row: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, paddingHorizontal: 16, minHeight: 46 },
   rowRight: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   loadingRow: { paddingVertical: 18, alignItems: 'center' },
   storageRow: { paddingVertical: 12, paddingHorizontal: 12 },
@@ -338,7 +341,8 @@ function SettingsRow({
           style={{ marginRight: 12, width: 20 }}
         />
       )}
-      <Text style={{ flex: 1, fontSize: 14, fontWeight: '400' as const, color: danger ? c.red : c.ink }}>
+      {/* 1314 — canvas grouped-inset rows are 17pt, not 14. */}
+      <Text style={[typeScale.body, { flex: 1, color: danger ? c.red : c.ink }]}>
         {label}
       </Text>
       <View style={layout.rowRight}>
@@ -377,9 +381,9 @@ function ToggleRow({
   return (
     <View style={[layout.row, indent && { paddingLeft: 28 }]}>
       <View style={{ flex: 1, paddingRight: 12 }}>
-        <Text style={{ fontSize: 14, fontWeight: '400' as const, color: c.ink }}>{label}</Text>
+        <Text style={[typeScale.body, { color: c.ink }]}>{label}</Text>
         {subtitle && (
-          <Text style={{ fontSize: 11, color: c.ink3, marginTop: 2, lineHeight: 15 }}>
+          <Text style={[typeScale.footnote, { color: c.ink3, marginTop: 2 }]}>
             {subtitle}
           </Text>
         )}
@@ -785,7 +789,10 @@ export default function SettingsScreen() {
   const [calendarNativeStatus, setCalendarNativeStatus] = useState<BeebeebCrypto.NativeCategoryBackupStatus | null>(null);
 
   // Theme — sourced from global ThemeContext
-  const { colors: c, mode: themePreference, setMode: handleThemeChange } = useTheme();
+  const { colors: c, resolved, mode: themePreference, setMode: handleThemeChange } = useTheme();
+  // 1314 — measured height of the floating title, fed to the scroll inset.
+  const [headerHeight, setHeaderHeight] = useState(0);
+  const [isScrolled, setIsScrolled] = useState(false);
 
   // ---------------------------------------------------------------------------
   // Data loading
@@ -1764,18 +1771,33 @@ export default function SettingsScreen() {
   // Render
   // ---------------------------------------------------------------------------
 
+  const surfaces = surfacesFor(resolved);
+
   return (
-    <View style={[layout.root, { backgroundColor: c.paper2 }]}>
-      <Text style={{
-        fontSize: 28, fontWeight: '700' as const, color: c.ink,
-        paddingHorizontal: spacing.lg, paddingTop: insets.top + 6, paddingBottom: 10,
-      }}>
-        Settings
-      </Text>
+    <View style={[layout.root, { backgroundColor: surfaces.groupedBg }]}>
+      {/* 1314 — content runs under the chrome; the title floats with a
+          scroll-edge blur behind it, the same pattern Drive uses (1313). */}
+      {isScrolled ? <ScrollEdgeBlur height={headerHeight || insets.top + 52} /> : null}
+      <View
+        style={layout.floatingTitle}
+        onLayout={(e) => {
+          const h = Math.round(e.nativeEvent.layout.height);
+          setHeaderHeight((prev) => (Math.abs(prev - h) > 1 ? h : prev));
+        }}
+      >
+        <Text style={[typeScale.largeTitle, {
+          color: c.ink,
+          paddingHorizontal: spacing.lg, paddingTop: insets.top + 6, paddingBottom: 10,
+        }]}>
+          Settings
+        </Text>
+      </View>
 
       <ScrollView
         style={layout.scroll}
-        contentContainerStyle={layout.scrollContent}
+        contentContainerStyle={[layout.scrollContent, { paddingTop: headerHeight, paddingBottom: insets.bottom + 120 }]}
+        onScroll={(e) => setIsScrolled(e.nativeEvent.contentOffset.y > 0)}
+        scrollEventThrottle={100}
         showsVerticalScrollIndicator={false}
         keyboardDismissMode="on-drag"
         keyboardShouldPersistTaps="handled"
@@ -1792,7 +1814,7 @@ export default function SettingsScreen() {
         {/* ---- Account ---- */}
         <View style={layout.section}>
           <SectionHeader title="Account" c={c} />
-          <View style={[layout.card, { backgroundColor: c.paper, borderColor: c.line }]}>
+          <View style={[layout.card, { backgroundColor: surfaces.groupedCell }]}>
             <View style={layout.accountRow}>
               <View style={[layout.avatarCircle, { backgroundColor: c.ink }]}>
                 <Text style={{ color: c.amber, fontSize: 13, fontWeight: '700' as const, letterSpacing: -0.3 }}>
@@ -1880,7 +1902,7 @@ export default function SettingsScreen() {
         {/* ---- Storage & plan ---- */}
         <View style={layout.section}>
           <SectionHeader title="Storage & plan" c={c} />
-          <View style={[layout.card, { backgroundColor: c.paper, borderColor: c.line }]}>
+          <View style={[layout.card, { backgroundColor: surfaces.groupedCell }]}>
             {loadingUsage ? (
               <View style={layout.loadingRow}>
                 <ActivityIndicator size="small" color={c.ink4} />
@@ -1912,7 +1934,7 @@ export default function SettingsScreen() {
         {/* ---- Backup ---- */}
         <View style={layout.section}>
           <SectionHeader title="Backup" c={c} />
-          <View style={[layout.card, { backgroundColor: c.paper, borderColor: c.line }]}>
+          <View style={[layout.card, { backgroundColor: surfaces.groupedCell }]}>
             <ToggleRow
               label="Back up camera roll"
               value={isPhotoBackupEnabled}
@@ -2167,7 +2189,7 @@ export default function SettingsScreen() {
         {/* ---- Devices ---- */}
         <View style={layout.section}>
           <SectionHeader title="Devices" c={c} />
-          <View style={[layout.card, { backgroundColor: c.paper, borderColor: c.line, marginBottom: 8 }]}>
+          <View style={[layout.card, { backgroundColor: surfaces.groupedCell, marginBottom: 8 }]}>
             <SettingsRow
               label="Add a device"
               icon="phone-portrait-outline"
@@ -2185,7 +2207,7 @@ export default function SettingsScreen() {
         {/* ---- Files ---- */}
         <View style={layout.section}>
           <SectionHeader title="Files" c={c} />
-          <View style={[layout.card, { backgroundColor: c.paper, borderColor: c.line }]}>
+          <View style={[layout.card, { backgroundColor: surfaces.groupedCell }]}>
             {fileProviderSupported && (
               <>
                 <ToggleRow
@@ -2211,7 +2233,7 @@ export default function SettingsScreen() {
         {/* ---- Notifications ---- */}
         <View style={layout.section}>
           <SectionHeader title="Notifications" c={c} />
-          <View style={[layout.card, { backgroundColor: c.paper, borderColor: c.line }]}>
+          <View style={[layout.card, { backgroundColor: surfaces.groupedCell }]}>
             {/* Master OS permission toggle */}
             <ToggleRow
               label="Push notifications"
@@ -2296,7 +2318,7 @@ export default function SettingsScreen() {
         {/* ---- Appearance ---- */}
         <View style={layout.section}>
           <SectionHeader title="Appearance" c={c} />
-          <View style={[layout.card, { backgroundColor: c.paper, borderColor: c.line }]}>
+          <View style={[layout.card, { backgroundColor: surfaces.groupedCell }]}>
             <View style={layout.themeOptions}>
               {(['light', 'dark', 'system'] as ThemeMode[]).map((pref) => {
                 const selected = themePreference === pref;
@@ -2351,7 +2373,7 @@ export default function SettingsScreen() {
         {/* ---- Security ---- */}
         <View style={layout.section}>
           <SectionHeader title="Security" c={c} />
-          <View style={[layout.card, { backgroundColor: c.paper, borderColor: c.line }]}>
+          <View style={[layout.card, { backgroundColor: surfaces.groupedCell }]}>
             {!loadingBiometric && biometricAvailable && (
               <>
                 <ToggleRow
@@ -2402,7 +2424,7 @@ export default function SettingsScreen() {
         {/* ---- Privacy & data ---- */}
         <View style={layout.section}>
           <SectionHeader title="Privacy & data" c={c} />
-          <View style={[layout.card, { backgroundColor: c.paper, borderColor: c.line }]}>
+          <View style={[layout.card, { backgroundColor: surfaces.groupedCell }]}>
             <SettingsRow
               label="Privacy settings"
               icon="shield-outline"
@@ -2415,7 +2437,7 @@ export default function SettingsScreen() {
         {/* ---- Data residency ---- */}
         <View style={layout.section}>
           <SectionHeader title="Data residency" c={c} />
-          <View style={[layout.card, { backgroundColor: c.paper, borderColor: c.line }]}>
+          <View style={[layout.card, { backgroundColor: surfaces.groupedCell }]}>
             {/* API regions when loaded — dynamic from /api/v1/me/region */}
             {apiRegions !== null
               ? apiRegions.map((r, i) => {
@@ -2550,7 +2572,7 @@ export default function SettingsScreen() {
         {/* ---- Support ---- */}
         <View style={layout.section}>
           <SectionHeader title="Support" c={c} />
-          <View style={[layout.card, { backgroundColor: c.paper, borderColor: c.line }]}>
+          <View style={[layout.card, { backgroundColor: surfaces.groupedCell }]}>
             <SettingsRow
               label="Report a problem"
               icon="bug-outline"
@@ -2584,7 +2606,7 @@ export default function SettingsScreen() {
         {/* ---- About ---- */}
         <View style={layout.section}>
           <SectionHeader title="About" c={c} />
-          <View style={[layout.card, { backgroundColor: c.paper, borderColor: c.line }]}>
+          <View style={[layout.card, { backgroundColor: surfaces.groupedCell }]}>
             <SettingsRow
               label="Version"
               icon="information-circle-outline"
@@ -2650,7 +2672,7 @@ export default function SettingsScreen() {
 
         {/* ---- Sign out ---- */}
         <View style={layout.section}>
-          <View style={[layout.card, { backgroundColor: c.paper, borderColor: c.line }]}>
+          <View style={[layout.card, { backgroundColor: surfaces.groupedCell }]}>
             <SettingsRow
               label="Sign out"
               icon="log-out-outline"

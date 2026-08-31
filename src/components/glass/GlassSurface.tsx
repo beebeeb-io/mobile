@@ -120,7 +120,14 @@ export type GlassSurfaceProps = {
   scheme?: GlassScheme;
   /** A concentric radius name from the canvas, or a raw point value. */
   radius?: number | GlassRadiusName;
-  /** Style for the outer (shadow) wrapper — layout, position, size. */
+  /**
+   * Style for the outer (shadow) wrapper — layout, position, size.
+   *
+   * Do NOT put `flexDirection` here. The wrapper's single child is the clipped
+   * content box, so making the wrapper a row container sizes that child to its
+   * content and the surface collapses to a sliver. Row/column layout for the
+   * CONTENT goes in `contentStyle`.
+   */
   style?: StyleProp<ViewStyle>;
   /** Style for the inner (clipped) content box — padding, flex direction. */
   contentStyle?: StyleProp<ViewStyle>;
