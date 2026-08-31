@@ -104,6 +104,7 @@ import PhotoLibrarySettingsScreen from './screens/PhotoLibrarySettingsScreen';
 // __DEV__-only glass primitives gallery (task 1311). Registered below only
 // when __DEV__, so it is unreachable in a production build.
 import GlassGalleryScreen from './screens/GlassGalleryScreen';
+import { GlassTabBar } from './components/GlassTabBar';
 import FileRequestsScreen from './screens/FileRequestsScreen';
 import CreateFileRequestScreen from './screens/CreateFileRequestScreen';
 
@@ -755,6 +756,10 @@ function TabNavigator() {
 
   return (
     <Tab.Navigator
+      // 1312: the floating iOS 26 glass capsule replaces the stock opaque bar.
+      // GlassTabBar re-applies `tabBarButtonTestID` and the badge options by
+      // hand — a custom tabBar means react-navigation no longer does.
+      tabBar={(props) => <GlassTabBar {...props} />}
       screenListeners={{
         tabPress: () => {
           Keyboard.dismiss();
@@ -766,15 +771,8 @@ function TabNavigator() {
         tabBarIcon: ({ focused, color }) => <TabIcon name={route.name} focused={focused} color={color} />,
         tabBarActiveTintColor: c.amber,
         tabBarInactiveTintColor: c.ink4,
-        tabBarStyle: {
-          backgroundColor: c.paper,
-          borderTopColor: c.line,
-          borderTopWidth: 1,
-        },
-        tabBarLabelStyle: {
-          fontSize: 9.5,
-          fontWeight: '500' as const,
-        },
+        // The scene must not paint under the capsule's rounded corners.
+        sceneStyle: { backgroundColor: c.paper },
       })}
     >
       <Tab.Screen
