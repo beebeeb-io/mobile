@@ -57,8 +57,8 @@ import { getCachedThumbnail } from '../lib/thumbnail-cache';
 import {
   cacheLocalThumbnail,
   fetchDecryptedLargeThumbnailUri,
-  fetchDecryptedThumbnailUri,
 } from '../lib/thumbnail';
+import { fetchThumbnailUriOnce } from '../lib/use-thumbnail';
 import {
   getPerformanceStorageSettings,
   type PerformanceStorageProfile,
@@ -695,7 +695,10 @@ async function loadNormalPreviewThumbnail(
   if (!isUnlocked) return null;
   try {
     const fileKey = await getFileKeyBytes(entry.id);
-    const remote = await fetchDecryptedThumbnailUri(entry.id, fileKey, signal);
+    // 1321 — was fetchDecryptedThumbnailUri, which throws unconditionally on
+    // iOS since the BeebeebThumbnails migration. The catch below turned that
+    // into a silently missing preview thumbnail.
+    const remote = await fetchThumbnailUriOnce(entry.id, fileKey, { signal });
     throwIfPreviewAborted(signal);
     return remote ? { uri: remote, kind: 'thumbnail', source: 'remote' } : null;
   } catch {

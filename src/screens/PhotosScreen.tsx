@@ -1770,6 +1770,20 @@ export default function PhotosScreen() {
   useEffect(() => {
     if (!isPhotosFocused) return;
     if (!isUnlocked) return;
+    // 1321 — this sweep calls the LEGACY ensureThumbnailForImage, which throws
+    // unconditionally on iOS since the BeebeebThumbnails migration. Because the
+    // loop runs inside `void (async () => …)()` the throw became an UNHANDLED
+    // REJECTION: a redbox in dev, and silently swallowed in release with the
+    // thumbnail simply never appearing.
+    //
+    // iOS does not need this sweep. Missing thumbnails are covered by the
+    // native path in useThumbnail, and task 0883's thumbnail-self-repair
+    // regenerates on open/save from the already-decrypted plaintext. The sweep
+    // remains the Android route, which is what ensureThumbnailForImage still
+    // serves. It was missed by 0883's migration because that task's contract is
+    // OWNER-ONLY from decrypt SITES — and this is a background sweep, not a
+    // decrypt site, so it sat outside the set being migrated.
+    if (Platform.OS === 'ios') return;
     const repairAttempts = thumbnailRepairAttemptsRef.current;
     const now = Date.now();
     const missing = photos
