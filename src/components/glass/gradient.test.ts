@@ -1,3 +1,4 @@
+// @ts-nocheck — bun runs this; `bun:test` types aren't in the Expo tsconfig
 import { describe, expect, it } from 'bun:test';
 import {
   bandColors,

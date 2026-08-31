@@ -133,6 +133,10 @@ export type GlassMaterial = {
   bubbleRim: string;
   /** Drop shadow of that bubble. */
   bubbleShadow: ViewStyle;
+  /** Primary text colour ON glass (the canvas uses its own on-glass inks). */
+  label: string;
+  /** Secondary text colour on glass. */
+  labelMuted: string;
 };
 
 /**
@@ -169,6 +173,9 @@ const DARK_MATERIAL: GlassMaterial = {
   bubbleFill: 'rgba(255,255,255,0.13)',
   bubbleRim: 'rgba(255,255,255,0.28)',
   bubbleShadow: cssShadow(2, 8, '#000000', 0.25),
+  // ios26.py: INK, INK2 = '#F2F1EE', 'rgba(240,238,233,0.62)'
+  label: '#F2F1EE',
+  labelMuted: 'rgba(240,238,233,0.62)',
 };
 
 /**
@@ -206,6 +213,8 @@ const LIGHT_MATERIAL: GlassMaterial = {
   bubbleFill: 'rgba(255,255,255,0.85)',
   bubbleRim: 'rgba(255,255,255,0.90)',
   bubbleShadow: cssShadow(2, 8, '#2a2520', 0.14),
+  label: '#2a2520',
+  labelMuted: 'rgba(42,37,32,0.62)',
 };
 
 /** Resolve the glass material for a colour scheme. */
@@ -243,4 +252,27 @@ export function scrollEdgeBandIntensity(band: number, bands: number): number {
   const full = intensityForCssBlur(SCROLL_EDGE.cssBlurPx);
   // Bands compound, so each carries a share of the total rather than all of it.
   return Math.min(100, Math.max(1, Math.round(full / bands) + band));
+}
+
+/**
+ * Heights of the stacked scroll-edge blur bands, tallest first.
+ *
+ * Each band is anchored at the top and blurs what is beneath it, so a point
+ * near the top of the strip sits under EVERY band and accumulates the full
+ * blur, while a point near the bottom sits under only the first. Heights run
+ * from the full height down to `solidStop` × height, which reproduces the
+ * canvas mask — solid blur through the first 52%, fading to nothing at 100%.
+ */
+export function scrollEdgeBandHeights(
+  height: number,
+  bands: number = SCROLL_EDGE.bands,
+  solidStop: number = SCROLL_EDGE.solidStop,
+): number[] {
+  if (bands <= 1) return [height];
+  const out: number[] = [];
+  for (let i = 0; i < bands; i += 1) {
+    const fade = 1 - i / (bands - 1);
+    out.push(height * (solidStop + (1 - solidStop) * fade));
+  }
+  return out;
 }
