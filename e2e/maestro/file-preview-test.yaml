@@ -12,33 +12,29 @@ appId: io.beebeeb.app
 
 - takeScreenshot: "preview-01-files-list"
 
-# The first file/folder row sits below the storage card and search header.
-# In the demo account a "Welcome.pdf" lives at the root — tap it if visible,
-# otherwise fall back to the first row by coordinate.
-- runFlow:
-    when:
-      visible: "Welcome.pdf"
-    commands:
-      - tapOn: "Welcome.pdf"
+# Open a FILE, not a folder.
+#
+# This used to prefer "Welcome.pdf" and fall back to `point: "50%,40%"`. Neither
+# worked on the QA account: Welcome.pdf exists only in the DEMO account, and at
+# root y=40% lands on the "Backups" FOLDER row — so the flow navigated into a
+# folder and no preview ever opened. That is why it failed before the redesign
+# as well; it has nothing to do with the chrome.
+#
+# Matching on a filename EXTENSION is account-agnostic: folders do not have one.
+- tapOn:
+    text: ".*\\.(jpe?g|png|pdf|mp4|mov)"
 
-- runFlow:
-    when:
-      notVisible: "Welcome.pdf"
-    commands:
-      # Tap the first row in the list (below the storage / search header)
-      - tapOn:
-          point: "50%,40%"
-
-# Preview header shows a × close button at the top-left and the filename
-# centered. Wait for the close affordance to be present.
+# Preview is open. There are TWO preview headers — a "×" for documents and a
+# chevron for media — so assert the shared testID rather than either glyph.
 - extendedWaitUntil:
-    visible: "×"
+    visible:
+      id: "preview-close"
     timeout: 10000
 
 - takeScreenshot: "preview-02-open"
 
-# Close preview via the × in the top-left
-- tapOn: "×"
+- tapOn:
+    id: "preview-close"
 
 - extendedWaitUntil:
     visible: "Drive"

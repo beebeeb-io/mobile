@@ -24,6 +24,21 @@ appId: io.beebeeb.app
 
 - takeScreenshot: "deep-link-02-upload-on-files"
 
+# beebeeb://upload opens the SYSTEM document picker, which is modal: until it is
+# dismissed the next deep link cannot take effect and every later assertion
+# fails against a sheet that is still on screen.
+#
+# This is why the flow's original ordering was already broken before the
+# redesign. Task 1324 reordered it and accidentally stopped exercising the
+# problem; task 1321 restored the original order and with it the bug. Dismissing
+# the picker fixes the cause rather than re-hiding it behind an ordering.
+- runFlow:
+    when:
+      visible: "Recents"
+    commands:
+      - tapOn:
+          point: "77%,13%"
+
 # beebeeb://shared lands on the Shared tab via React Navigation linking.
 # Segments were renamed in-product to "With me" / "By me"; the trailing .*
 # matters because each label renders with a count badge and Maestro's text
