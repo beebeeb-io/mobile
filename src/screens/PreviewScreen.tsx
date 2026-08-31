@@ -2826,6 +2826,7 @@ export default function PreviewScreen() {
               onPress={handleClose}
               style={styles.glassHit}
               hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+              testID="preview-close"
               accessibilityLabel="Close preview"
             >
               <Ionicons name="chevron-down" size={22} color={colors.white} />
@@ -2991,6 +2992,11 @@ export default function PreviewScreen() {
           onPress={handleClose}
           style={styles.closeButton}
           hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+          // 1336 — same testID as the MEDIA header's close control below, so a
+          // test can assert the preview is open without knowing which of the
+          // two headers rendered. Preview had no testIDs at all.
+          testID="preview-close"
+          accessibilityLabel="Close preview"
         >
           <Text style={styles.closeIcon}>{'×'}</Text>
         </TouchableOpacity>
