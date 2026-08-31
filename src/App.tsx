@@ -105,6 +105,7 @@ import PhotoLibrarySettingsScreen from './screens/PhotoLibrarySettingsScreen';
 // when __DEV__, so it is unreachable in a production build.
 import GlassGalleryScreen from './screens/GlassGalleryScreen';
 import { GlassTabBar } from './components/GlassTabBar';
+import { navigationThemeFor } from './lib/navigation-theme';
 import FileRequestsScreen from './screens/FileRequestsScreen';
 import CreateFileRequestScreen from './screens/CreateFileRequestScreen';
 
@@ -1338,6 +1339,9 @@ export default function App() {
       <BackupProvider>
         <NavigationContainer
           ref={navigationRef}
+          // 1320 — without this react-navigation uses its light DefaultTheme and
+          // paints container backgrounds white in dark mode.
+          theme={navigationThemeFor(resolved)}
           linking={linking}
           onReady={() => {
             setNavReady(true);
