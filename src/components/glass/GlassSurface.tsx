@@ -22,12 +22,23 @@
  *   shadow sits on an outer wrapper and the blur stack on an inner clipper.
  */
 
-import React, { useMemo } from 'react';
-import { StyleSheet, View, type StyleProp, type ViewStyle } from 'react-native';
+import React, { useMemo, useState } from 'react';
+import {
+  StyleSheet,
+  View,
+  type LayoutChangeEvent,
+  type StyleProp,
+  type ViewStyle,
+} from 'react-native';
 import { BlurView } from 'expo-blur';
 
 import { useTheme } from '../../lib/theme-context';
-import { bandColors, rotationForCssAngle, type Stop } from './gradient';
+import {
+  bandColorsAcross,
+  rotatedGradientGeometry,
+  rotationForCssAngle,
+  type Stop,
+} from './gradient';
 import {
   GLASS_RADII,
   glassMaterial,
@@ -37,7 +48,7 @@ import {
 } from './glass-recipe';
 
 /** Bands used to approximate the sheen. At alpha ≤ 0.10 banding is invisible. */
-const SHEEN_BANDS = 14;
+const SHEEN_BANDS = 20;
 
 /** Resolve a radius name or a raw point value. */
 export function resolveRadius(radius: number | GlassRadiusName): number {
@@ -54,27 +65,49 @@ function sheenStops(material: GlassMaterial): Stop[] {
 }
 
 function Sheen({ material }: { material: GlassMaterial }) {
-  const colors = useMemo(() => bandColors(sheenStops(material), SHEEN_BANDS), [material]);
-  const rotate = rotationForCssAngle(material.sheenAngle);
+  // The overlay has to be measured: its correct size depends on the surface's
+  // aspect ratio, and a percentage of one dimension does not cover a rotated
+  // rectangle (see `rotatedGradientGeometry`).
+  const [size, setSize] = useState<{ w: number; h: number } | null>(null);
 
-  // The band stack is oversized to 300% and centred so that, once rotated, it
-  // still covers every corner of the surface whatever its aspect ratio.
+  const onLayout = (e: LayoutChangeEvent) => {
+    const { width, height } = e.nativeEvent.layout;
+    setSize((prev) =>
+      prev && prev.w === width && prev.h === height ? prev : { w: width, h: height },
+    );
+  };
+
+  const geometry = useMemo(
+    () => (size ? rotatedGradientGeometry(size.w, size.h, material.sheenAngle) : null),
+    [size, material.sheenAngle],
+  );
+
+  const colors = useMemo(
+    () =>
+      geometry
+        ? bandColorsAcross(sheenStops(material), SHEEN_BANDS, geometry.size, geometry.extent)
+        : [],
+    [geometry, material],
+  );
+
   return (
-    <View pointerEvents="none" style={StyleSheet.absoluteFill}>
-      <View
-        style={{
-          position: 'absolute',
-          left: '-100%',
-          top: '-100%',
-          width: '300%',
-          height: '300%',
-          transform: [{ rotate }],
-        }}
-      >
-        {colors.map((color, i) => (
-          <View key={i} style={{ flex: 1, backgroundColor: color }} />
-        ))}
-      </View>
+    <View pointerEvents="none" style={StyleSheet.absoluteFill} onLayout={onLayout}>
+      {geometry ? (
+        <View
+          style={{
+            position: 'absolute',
+            left: geometry.left,
+            top: geometry.top,
+            width: geometry.size,
+            height: geometry.size,
+            transform: [{ rotate: rotationForCssAngle(material.sheenAngle) }],
+          }}
+        >
+          {colors.map((color, i) => (
+            <View key={i} style={{ flex: 1, backgroundColor: color }} />
+          ))}
+        </View>
+      ) : null}
     </View>
   );
 }

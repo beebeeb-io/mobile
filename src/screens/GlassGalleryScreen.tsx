@@ -137,7 +137,7 @@ export default function GlassGalleryScreen() {
       <ScrollView
         style={styles.scroll}
         contentContainerStyle={{
-          paddingTop: insets.top + 56,
+          paddingTop: insets.top + 100,
           paddingBottom: insets.bottom + 140,
           paddingHorizontal: surfaces.groupInset,
         }}

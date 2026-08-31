@@ -320,6 +320,11 @@ const linking = {
   prefixes: ['beebeeb://', 'https://app.beebeeb.io', 'https://beebeeb.io'],
   config: {
     screens: {
+      // `__DEV__` only: a direct route to the glass primitives gallery
+      // (task 1311), so the material can be screenshotted reproducibly with
+      //   xcrun simctl openurl <udid> beebeeb://dev/glass
+      // rather than tapped through Settings. Absent from release builds.
+      ...(__DEV__ ? { GlassGallery: 'dev/glass' } : null),
       Tabs: {
         // Bare tab name → its tab. beebeeb://photos lands on Photos,
         // beebeeb://shared on Shared, etc. Files keeps the empty path so

@@ -120,3 +120,60 @@ export function bandColors(stops: readonly Stop[], count: number): string[] {
 export function rotationForCssAngle(angle: number): string {
   return `${angle - 180}deg`;
 }
+
+/**
+ * Geometry for a gradient overlay that is rotated to fake a diagonal CSS
+ * gradient over a `w × h` element.
+ *
+ * The overlay is a square of side `w + h`, which is the smallest square
+ * guaranteed to cover the element at ANY rotation (its axis-aligned bounding
+ * box is `(w+h)(|cos| + |sin|) ≥ w+h`, so it covers both dimensions). Sizing
+ * it as a percentage of the element instead is the trap: 300% of the HEIGHT
+ * of a wide, short capsule is far narrower than the capsule is long, so the
+ * gradient visibly stops partway across and leaves a hard diagonal edge.
+ *
+ * `extent` is how far the element itself reaches along the gradient axis. CSS
+ * measures its stops across the ELEMENT, not across our oversized square, so
+ * the stops have to be mapped onto that centred sub-range — see
+ * `bandColorsAcross`.
+ */
+export function rotatedGradientGeometry(w: number, h: number, cssAngle: number) {
+  const size = w + h;
+  const theta = ((cssAngle - 180) * Math.PI) / 180;
+  const extent = Math.abs(w * Math.sin(theta)) + Math.abs(h * Math.cos(theta));
+  return {
+    /** Side of the square overlay, in points. */
+    size,
+    /** Left offset that centres the overlay on the element. */
+    left: (w - size) / 2,
+    /** Top offset that centres the overlay on the element. */
+    top: (h - size) / 2,
+    /** The element's own reach along the gradient axis, in points. */
+    extent,
+  };
+}
+
+/**
+ * Flatten a gradient into `count` bands spanning a `size`-long overlay, with
+ * the stops mapped onto the centred `extent` the element actually occupies.
+ *
+ * Bands outside that range hold the nearest stop's colour, exactly as CSS does
+ * beyond its first and last stop.
+ */
+export function bandColorsAcross(
+  stops: readonly Stop[],
+  count: number,
+  size: number,
+  extent: number,
+): string[] {
+  if (count < 1) throw new Error('bandColorsAcross: count must be >= 1');
+  if (extent <= 0) return bandColors(stops, count);
+
+  const start = (size - extent) / 2;
+  const out: string[] = [];
+  for (let i = 0; i < count; i += 1) {
+    const posInOverlay = ((i + 0.5) / count) * size;
+    out.push(sampleStops(stops, (posInOverlay - start) / extent));
+  }
+  return out;
+}

@@ -2,8 +2,10 @@
 import { describe, expect, it } from 'bun:test';
 import {
   bandColors,
+  bandColorsAcross,
   formatRgba,
   parseColor,
+  rotatedGradientGeometry,
   rotationForCssAngle,
   sampleStops,
   type Stop,
@@ -127,5 +129,68 @@ describe('rotationForCssAngle', () => {
 
   it('maps the canvas 118deg sheen to -62deg', () => {
     expect(rotationForCssAngle(118)).toBe('-62deg');
+  });
+});
+
+
+describe('rotatedGradientGeometry', () => {
+  it('covers a wide, short capsule that a 300%-of-height overlay would miss', () => {
+    // The real regression: a 358x52 capsule at the canvas's 118deg sheen.
+    const { size, extent } = rotatedGradientGeometry(358, 52, 118);
+    expect(size).toBe(410);
+    // The capsule reaches ~340pt along the gradient axis, so the old overlay
+    // (300% of 52 = 156pt) covered less than half of it.
+    expect(extent).toBeCloseTo(340.5, 0);
+    expect(size).toBeGreaterThanOrEqual(extent);
+  });
+
+  it('centres the overlay on the element', () => {
+    const { size, left, top } = rotatedGradientGeometry(100, 40, 118);
+    expect(left).toBe((100 - size) / 2);
+    expect(top).toBe((40 - size) / 2);
+  });
+
+  it('always produces a square at least as large as either dimension', () => {
+    for (const [w, h] of [[358, 52], [42, 42], [56, 56], [390, 300], [10, 400]]) {
+      const { size, extent } = rotatedGradientGeometry(w, h, 118);
+      expect(size).toBeGreaterThanOrEqual(w);
+      expect(size).toBeGreaterThanOrEqual(h);
+      expect(size).toBeGreaterThanOrEqual(extent);
+    }
+  });
+
+  it('reduces to the element height when the gradient runs straight down', () => {
+    const { extent } = rotatedGradientGeometry(300, 80, 180);
+    expect(extent).toBeCloseTo(80, 6);
+  });
+});
+
+describe('bandColorsAcross', () => {
+  const sheen: Stop[] = [
+    { pos: 0, color: 'rgba(255,255,255,0.10)' },
+    { pos: 0.34, color: 'rgba(255,255,255,0.02)' },
+    { pos: 0.58, color: 'rgba(255,255,255,0)' },
+  ];
+
+  it('holds the first stop across the overlay margin before the element', () => {
+    // extent is half the overlay, so the first quarter is all pre-element.
+    const bands = bandColorsAcross(sheen, 8, 400, 200);
+    expect(parseColor(bands[0]).a).toBeCloseTo(0.1, 4);
+  });
+
+  it('still fades to fully transparent by the end of the element', () => {
+    const bands = bandColorsAcross(sheen, 12, 410, 340);
+    expect(parseColor(bands[bands.length - 1]).a).toBe(0);
+  });
+
+  it('never increases in alpha across the sheen ramp', () => {
+    const alphas = bandColorsAcross(sheen, 18, 410, 340).map((c) => parseColor(c).a);
+    for (let i = 1; i < alphas.length; i += 1) {
+      expect(alphas[i]).toBeLessThanOrEqual(alphas[i - 1]);
+    }
+  });
+
+  it('falls back to a plain band split when the element has no extent', () => {
+    expect(bandColorsAcross(sheen, 4, 100, 0)).toEqual(bandColors(sheen, 4));
   });
 });
