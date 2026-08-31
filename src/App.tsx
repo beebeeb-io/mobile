@@ -101,6 +101,9 @@ import AdvancedSettingsScreen from './screens/AdvancedSettingsScreen';
 import ThumbnailQualityScreen from './screens/ThumbnailQualityScreen';
 import ThumbnailWorkerScreen from './screens/ThumbnailWorkerScreen';
 import PhotoLibrarySettingsScreen from './screens/PhotoLibrarySettingsScreen';
+// __DEV__-only glass primitives gallery (task 1311). Registered below only
+// when __DEV__, so it is unreachable in a production build.
+import GlassGalleryScreen from './screens/GlassGalleryScreen';
 import FileRequestsScreen from './screens/FileRequestsScreen';
 import CreateFileRequestScreen from './screens/CreateFileRequestScreen';
 
@@ -301,6 +304,8 @@ export type RootStackParamList = {
   ThumbnailQuality: undefined;
   ThumbnailWorker: undefined;
   PhotoLibrarySettings: undefined;
+  /** `__DEV__` only — the iOS 26 glass primitives gallery (task 1311). */
+  GlassGallery: undefined;
 };
 
 // ---------------------------------------------------------------------------
@@ -315,6 +320,11 @@ const linking = {
   prefixes: ['beebeeb://', 'https://app.beebeeb.io', 'https://beebeeb.io'],
   config: {
     screens: {
+      // `__DEV__` only: a direct route to the glass primitives gallery
+      // (task 1311), so the material can be screenshotted reproducibly with
+      //   xcrun simctl openurl <udid> beebeeb://dev/glass
+      // rather than tapped through Settings. Absent from release builds.
+      ...(__DEV__ ? { GlassGallery: 'dev/glass' } : null),
       Tabs: {
         // Bare tab name → its tab. beebeeb://photos lands on Photos,
         // beebeeb://shared on Shared, etc. Files keeps the empty path so
@@ -1428,6 +1438,13 @@ export default function App() {
                     component={ThumbnailQualityScreen}
                     options={{ headerShown: false }}
                   />
+                  {__DEV__ ? (
+                    <Stack.Screen
+                      name="GlassGallery"
+                      component={GlassGalleryScreen}
+                      options={{ headerShown: false }}
+                    />
+                  ) : null}
                   <Stack.Screen
                     name="ThumbnailWorker"
                     component={ThumbnailWorkerScreen}
