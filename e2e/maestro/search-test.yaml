@@ -12,9 +12,11 @@ appId: io.beebeeb.app
 
 - takeScreenshot: "search-01-before"
 
-# Tap the search icon at the top-right of the Files header
+# Tap the search icon at the top-right of the Files header.
+# Was a coordinate tap; the header is being moved by the iOS 26 work, so it
+# rots the same way the tab-bar taps did. testID added in FilesScreen.
 - tapOn:
-    point: "91%,10%"
+    id: "files-header-search"
 
 # Search input has autoFocus — type the query
 - inputText: "demo"

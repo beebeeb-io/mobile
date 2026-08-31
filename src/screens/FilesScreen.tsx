@@ -3893,6 +3893,10 @@ export default function FilesScreen() {
             </MenuView>
           )}
           <TouchableOpacity
+            // 1324 — stable target for e2e. This button is header-anchored, and
+            // the header is being moved by the iOS 26 work, so a coordinate tap
+            // at it rots the same way the tab-bar ones did.
+            testID="files-header-search"
             onPress={handleSearchToggle}
             hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
             style={styles.searchButton}
