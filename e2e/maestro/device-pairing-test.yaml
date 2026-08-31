@@ -21,6 +21,13 @@ appId: io.beebeeb.app
       text: "Add a device"
     direction: DOWN
     timeout: 10000
+    # centerElement: the floating tab bar (task 1312) overlays the bottom ~110pt
+    # of every scrollable screen, and scrollUntilVisible has no concept of it —
+    # it stops as soon as the target is inside the SCROLL VIEW's bounds, which
+    # includes the region hidden behind the capsule. The subsequent tap then
+    # lands on the tab bar instead of the row. Centering guarantees the target
+    # clears the chrome. Required for any scrollUntilVisible on a tabbed screen.
+    centerElement: true
 
 - takeScreenshot: "device-pairing-01-settings-row"
 
@@ -36,18 +43,23 @@ appId: io.beebeeb.app
 # Open the Show flow → Amber Constellation WebView renders the pattern
 - tapOn: "Show on this device"
 
-# Wait for the show screen to render. The header label is the same.
+# DevicePairingShowScreen. The old assertion claimed "the header label is the
+# same" — it is not, and never was: this screen has no such header. It shows
+# "Waiting for another device…", which is also the better assertion because it
+# proves the pairing session actually STARTED rather than that a screen merely
+# rendered.
 - extendedWaitUntil:
-    visible: "Show on this device"
+    visible: "Waiting for another device"
     timeout: 8000
 
 - takeScreenshot: "device-pairing-03-constellation"
 
-# Back to DevicePairingScreen
+# Back to DevicePairingScreen. The old assertion looked for "Add a device",
+# which is the SETTINGS row — one screen further back than we are.
 - tapOn: "Back"
 
 - extendedWaitUntil:
-    visible: "Add a device"
+    visible: "Show on this device"
     timeout: 5000
 
 # Back to Settings

@@ -31,6 +31,13 @@ appId: io.beebeeb.app
       text: "Dark theme.*"
     direction: DOWN
     timeout: 10000
+    # centerElement: the floating tab bar (task 1312) overlays the bottom ~110pt
+    # of every scrollable screen, and scrollUntilVisible has no concept of it —
+    # it stops as soon as the target is inside the SCROLL VIEW's bounds, which
+    # includes the region hidden behind the capsule. The subsequent tap then
+    # lands on the tab bar instead of the row. Centering guarantees the target
+    # clears the chrome. Required for any scrollUntilVisible on a tabbed screen.
+    centerElement: true
 
 - tapOn: "Dark theme.*"
 
@@ -68,6 +75,13 @@ appId: io.beebeeb.app
       text: "System theme.*"
     direction: DOWN
     timeout: 10000
+    # centerElement: the floating tab bar (task 1312) overlays the bottom ~110pt
+    # of every scrollable screen, and scrollUntilVisible has no concept of it —
+    # it stops as soon as the target is inside the SCROLL VIEW's bounds, which
+    # includes the region hidden behind the capsule. The subsequent tap then
+    # lands on the tab bar instead of the row. Centering guarantees the target
+    # clears the chrome. Required for any scrollUntilVisible on a tabbed screen.
+    centerElement: true
 
 - tapOn: "System theme.*"
 
