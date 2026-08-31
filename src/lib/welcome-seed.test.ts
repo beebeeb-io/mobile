@@ -7,6 +7,15 @@ let listThrows = false;
 let uploadCalls: any[] = [];
 const secureStore = new Map<string, string>();
 
+mock.module('@react-native-async-storage/async-storage', () => ({
+  default: {
+    getItem: async () => null,
+    setItem: async () => {},
+    removeItem: async () => {},
+    multiRemove: async () => {},
+    getAllKeys: async () => [],
+  },
+}));
 mock.module('expo-secure-store', () => ({
   getItemAsync: async (k: string) => secureStore.get(k) ?? null,
   setItemAsync: async (k: string, v: string) => {
@@ -25,7 +34,7 @@ mock.module('./encrypted-upload', () => ({
     uploadCalls.push(opts);
   },
 }));
-mock.module('expo-file-system', () => ({
+mock.module('expo-file-system/legacy', () => ({
   cacheDirectory: '/tmp/cache/',
   EncodingType: { UTF8: 'utf8' },
   writeAsStringAsync: async () => {},

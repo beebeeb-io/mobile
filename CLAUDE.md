@@ -40,6 +40,29 @@ projectRoot, so Metro sees the entry *outside* the project root → `Unable to r
 **Fix (committed):** `ios/.xcode.env` pins a **relative** entry — `export ENTRY_FILE="src/App.tsx"` —
 which resolves against Metro's realpath'd cwd everywhere. Do not remove it.
 
+## `expo prebuild` — ALWAYS run the vendored-file restore afterwards (task 1305)
+
+`expo prebuild` (with AND without `--clean`) deletes/overwrites files that config plugins do
+NOT reproduce: `ios/BeebeebCore.xcframework`, `ios/Beebeeb/beebeeb_uniffi.swift`,
+`ios/.xcode.env` (the 0671 ENTRY_FILE pin), `ios/BeebeebWidget/BeebeebWidget.swift`,
+`PrivacyInfo.xcprivacy`. The uniffi-bridge plugin only re-copies the Rust artifacts when
+`../../core` sits next to the project — never true in a worktree or an eas staging dir — so the
+committed copies are the source of truth. Symptoms when you forget: "Undefined symbols
+_ffi_beebeeb_uniffi_*" at link, "Build input file cannot be found: BeebeebWidget.swift", or an
+`eas build --local` that dies with "Unable to resolve module …/src/App.tsx".
+
+```sh
+bunx expo prebuild --platform ios --clean --no-install && scripts/restore-vendored-ios.sh
+```
+
+Since SDK 57 every extension target (FileProvider, Share, Widget) is created by its config
+plugin (`plugins/lib/extension-target.js` is the shared helper) — do not add targets by hand in
+Xcode; a clean prebuild must reproduce the whole project. Plugin order in app.json matters:
+`uniffi-bridge` runs after the extension plugins so it can link the Rust framework to them.
+Invariant the helper enforces: a `PBXBuildFile` belongs to exactly ONE build phase — dedupe build
+files per owning target, never globally by fileRef, or `pod install` fails in Xcodeproj's
+`project.save` ("Consistency issue: no parent for object …").
+
 ## Local simulator QA — environment gotchas on this Mac (verified 2026-06-29)
 
 Running the iOS app on the Simulator for QA hits several env-specific walls. Workarounds:

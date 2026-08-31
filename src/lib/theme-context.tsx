@@ -48,7 +48,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const setMode = useCallback((newMode: ThemeMode) => {
     setModeState(newMode);
     if (Appearance.setColorScheme) {
-      Appearance.setColorScheme(newMode === 'system' ? null : newMode);
+      Appearance.setColorScheme(newMode === 'system' ? 'unspecified' : newMode);
     }
     SecureStore.setItemAsync(THEME_PREF_KEY, newMode).catch(() => {});
   }, []);

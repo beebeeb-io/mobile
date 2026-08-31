@@ -15,8 +15,8 @@
  */
 
 import { Platform } from 'react-native'
-import * as FileSystem from 'expo-file-system'
-import { File, Paths } from 'expo-file-system/next'
+import * as FileSystem from 'expo-file-system/legacy'
+import { File, Paths } from 'expo-file-system'
 import {
   acknowledgePendingShare,
   clearAllPendingShares,
@@ -85,7 +85,7 @@ export async function processPendingShares(opts: ProcessPendingSharesOptions): P
 
   // Read the parent-folder mapping from the App Group container.
   // The share extension writes this so we know where to upload each file.
-  const parentMap = readParentMap()
+  const parentMap = await readParentMap()
 
   const result: ProcessResult = { uploaded: 0, failed: 0, skipped: 0 }
   const uploadedIds: string[] = []
@@ -145,7 +145,7 @@ export async function processPendingShares(opts: ProcessPendingSharesOptions): P
  * Read the parent-folder mapping from the App Group container.
  * The share extension writes `share-parent-map.json` with format: { [shareId]: folderId }
  */
-function readParentMap(): Record<string, string> {
+async function readParentMap(): Promise<Record<string, string>> {
   try {
     const groupDirectory = Paths.appleSharedContainers[APP_GROUP]
     if (!groupDirectory?.exists) return {}
@@ -153,7 +153,7 @@ function readParentMap(): Record<string, string> {
     const file = new File(groupDirectory, PARENT_MAP_FILE)
     if (!file.exists) return {}
 
-    const content = file.text()
+    const content = await file.text()
     if (!content) return {}
     return JSON.parse(content) as Record<string, string>
   } catch {

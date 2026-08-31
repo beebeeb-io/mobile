@@ -34,7 +34,7 @@ async function promptForPassword(title: string, message: string): Promise<string
         message,
         [
           { text: 'Cancel', style: 'cancel', onPress: () => resolve(null) },
-          { text: 'Confirm', style: 'destructive', onPress: (value) => resolve(value ?? null) },
+          { text: 'Confirm', style: 'destructive', onPress: (value?: string) => resolve(value ?? null) },
         ],
         'secure-text',
       );

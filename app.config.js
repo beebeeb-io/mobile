@@ -9,7 +9,7 @@ module.exports = {
   // in the data path). The app therefore ships ONLY via signed TestFlight / App
   // Store binaries — it never fetches a JS bundle from a US server at runtime.
   // Re-enable only behind an EU-hosted self-hosted expo-updates server.
-  updates: { enabled: false, checkOnLaunch: 'NEVER' },
+  updates: { enabled: false },
   runtimeVersion: config.runtimeVersion ?? config.version,
   extra: {
     ...config.extra,

@@ -24,9 +24,9 @@ import {
   generateDngThumbnail as nativeGenerateDngThumbnail,
   generateAndUploadPhotoLibraryThumbnailNative,
 } from '../../modules/beebeeb-crypto';
-import * as FileSystem from 'expo-file-system';
-import * as MediaLibrary from 'expo-media-library';
-import { EncodingType } from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
+import * as MediaLibrary from 'expo-media-library/legacy';
+import { EncodingType } from 'expo-file-system/legacy';
 import {
   decryptEncryptedBytes,
   inferChunkCountFromEncryptedSize,

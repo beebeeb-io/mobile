@@ -7,10 +7,6 @@
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
-    "newArchEnabled": true,
-    "splash": {
-      "backgroundColor": "#FAF8F5"
-    },
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "io.beebeeb.app",
@@ -102,15 +98,25 @@
       "expo-document-picker",
       "expo-media-library",
       "./modules/beebeeb-crypto/app.plugin.js",
-      "./plugins/uniffi-bridge/withUniffiBridge.js",
       "./plugins/file-provider/withFileProvider.js",
       "./plugins/share-extension/withShareExtension.js",
+      "./plugins/uniffi-bridge/withUniffiBridge.js",
       "./plugins/withWidget",
       "./plugins/fmt-patch/withFmtPatch.js",
       "./plugins/shortcut-bridge/withShortcutBridge.js",
       "expo-video",
       "expo-image-picker",
-      "./plugins/android-security/withAndroidSecurity.js"
+      "./plugins/android-security/withAndroidSecurity.js",
+      "expo-sharing",
+      "expo-sqlite",
+      "expo-status-bar",
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#FAF8F5",
+          "resizeMode": "contain"
+        }
+      ]
     ],
     "extra": {
       "apiUrl": "https://api.beebeeb.io",

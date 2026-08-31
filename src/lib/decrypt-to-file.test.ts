@@ -1,6 +1,15 @@
 // @ts-nocheck
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
 
+mock.module('@react-native-async-storage/async-storage', () => ({
+  default: {
+    getItem: async () => null,
+    setItem: async () => {},
+    removeItem: async () => {},
+    multiRemove: async () => {},
+    getAllKeys: async () => [],
+  },
+}));
 mock.module('../../modules/beebeeb-crypto', () => ({}));
 
 const {

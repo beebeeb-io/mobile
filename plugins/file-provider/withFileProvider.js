@@ -104,11 +104,20 @@ function ensureFileReference(project, file) {
   return uuid;
 }
 
-function ensureBuildFile(project, fileRef, comment, settings) {
+// A PBXBuildFile belongs to exactly ONE build phase — dedupe only within the
+// uuids already owned by the target being wired (`ownedUuids`), never globally
+// by fileRef: the app + Share targets also compile beebeeb_uniffi.swift and
+// link BeebeebCore.xcframework, and this mod runs LAST (mods execute in
+// reverse registration order), so a global match reuses THEIR build file and
+// Xcodeproj then refuses to save the project during pod install (task 1305).
+function ensureBuildFile(project, fileRef, comment, settings, ownedUuids) {
   const buildFiles = section(project, 'PBXBuildFile');
   const existing = findObject(
     buildFiles,
-    (value) => value.fileRef === fileRef && (!settings || JSON.stringify(value.settings) === JSON.stringify(settings)),
+    (value, key) =>
+      value.fileRef === fileRef &&
+      (!ownedUuids || ownedUuids.has(key)) &&
+      (!settings || JSON.stringify(value.settings) === JSON.stringify(settings)),
   );
   if (existing) return existing[0];
 
@@ -251,11 +260,11 @@ function ensureExtensionBuildConfigurations(project) {
       CURRENT_PROJECT_VERSION: 1,
       DEVELOPMENT_TEAM: TEAM_ID,
       FRAMEWORK_SEARCH_PATHS: ['"$(inherited)"', '"$(PROJECT_DIR)"'],
-      'HEADER_SEARCH_PATHS[sdk=iphoneos*]': [
+      '"HEADER_SEARCH_PATHS[sdk=iphoneos*]"': [
         '"$(inherited)"',
         '"\\"$(PROJECT_DIR)/BeebeebCore.xcframework/ios-arm64/Headers\\""',
       ],
-      'HEADER_SEARCH_PATHS[sdk=iphonesimulator*]': [
+      '"HEADER_SEARCH_PATHS[sdk=iphonesimulator*]"': [
         '"$(inherited)"',
         '"\\"$(PROJECT_DIR)/BeebeebCore.xcframework/ios-arm64_x86_64-simulator/Headers\\""',
       ],
@@ -264,8 +273,8 @@ function ensureExtensionBuildConfigurations(project) {
       LD_RUNPATH_SEARCH_PATHS: '"$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks"',
       MARKETING_VERSION: '1.0.0',
       OTHER_SWIFT_FLAGS: `"$(inherited) -D ${expoDefine}"`,
-      'OTHER_SWIFT_FLAGS[sdk=iphoneos*]': `"$(inherited) -D ${expoDefine} -Xcc -fmodule-map-file=\\"${moduleMapDevice}\\""`,
-      'OTHER_SWIFT_FLAGS[sdk=iphonesimulator*]': `"$(inherited) -D ${expoDefine} -Xcc -fmodule-map-file=\\"${moduleMapSim}\\""`,
+      '\"OTHER_SWIFT_FLAGS[sdk=iphoneos*]\"': `"$(inherited) -D ${expoDefine} -Xcc -fmodule-map-file=\\"${moduleMapDevice}\\""`,
+      '\"OTHER_SWIFT_FLAGS[sdk=iphonesimulator*]\"': `"$(inherited) -D ${expoDefine} -Xcc -fmodule-map-file=\\"${moduleMapSim}\\""`,
       PRODUCT_BUNDLE_IDENTIFIER: EXTENSION_BUNDLE_ID,
       PRODUCT_NAME: '"$(TARGET_NAME)"',
       SKIP_INSTALL: 'YES',
@@ -375,8 +384,23 @@ function ensureTargetDependency(project, appTarget, extensionTarget) {
 function ensureExtensionWiring(project) {
   ensureGroup(project);
   const extensionTarget = ensureTarget(project);
-  const appTarget = project.getFirstTarget();
+  // xcode lib returns { uuid, firstTarget } — normalize to the { uuid, target }
+  // shape the wiring helpers expect (SDK 57 upgrade).
+  const firstTarget = project.getFirstTarget();
+  const appTarget = { uuid: firstTarget.uuid, target: firstTarget.firstTarget || firstTarget.target };
   if (!appTarget) return;
+  const ownedUuidsOf = (target) => {
+    const owned = new Set();
+    for (const phaseRef of target.buildPhases || []) {
+      for (const phaseType of ['PBXSourcesBuildPhase', 'PBXFrameworksBuildPhase', 'PBXResourcesBuildPhase', 'PBXCopyFilesBuildPhase']) {
+        const phase = section(project, phaseType)[phaseRef.value];
+        if (phase) for (const f of phase.files || []) owned.add(f.value);
+      }
+    }
+    return owned;
+  };
+  const owned = ownedUuidsOf(extensionTarget.target);
+  const appOwned = ownedUuidsOf(appTarget.target);
 
   const sourceBuildFiles = SOURCE_FILES.map((file) => {
     const fileRef = ensureFileReference(project, {
@@ -385,7 +409,7 @@ function ensureExtensionWiring(project) {
       fileType: 'sourcecode.swift',
     });
     return {
-      value: ensureBuildFile(project, fileRef, `${file} in Sources`),
+      value: ensureBuildFile(project, fileRef, `${file} in Sources`, undefined, owned),
       comment: `${file} in Sources`,
     };
   });
@@ -396,7 +420,7 @@ function ensureExtensionWiring(project) {
     fileType: 'sourcecode.swift',
   });
   sourceBuildFiles.push({
-    value: ensureBuildFile(project, uniffiRef, 'beebeeb_uniffi.swift in Sources'),
+    value: ensureBuildFile(project, uniffiRef, 'beebeeb_uniffi.swift in Sources', undefined, owned),
     comment: 'beebeeb_uniffi.swift in Sources',
   });
 
@@ -408,7 +432,7 @@ function ensureExtensionWiring(project) {
       fileType: 'wrapper.xcframework',
     });
   const frameworkBuildFile = {
-    value: ensureBuildFile(project, frameworkRef, 'BeebeebCore.xcframework in Frameworks'),
+    value: ensureBuildFile(project, frameworkRef, 'BeebeebCore.xcframework in Frameworks', undefined, owned),
     comment: 'BeebeebCore.xcframework in Frameworks',
   };
 
@@ -419,7 +443,7 @@ function ensureExtensionWiring(project) {
   const productBuildFile = {
     value: ensureBuildFile(project, extensionTarget.target.productReference, `${EXTENSION_NAME}.appex in Embed App Extensions`, {
       ATTRIBUTES: ['RemoveHeadersOnCopy'],
-    }),
+    }, appOwned),
     comment: `${EXTENSION_NAME}.appex in Embed App Extensions`,
   };
   const embedPhaseUuid = ensureBuildPhase(

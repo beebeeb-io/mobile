@@ -7,12 +7,21 @@ import { describe, expect, test, mock, beforeEach } from 'bun:test';
 // mock.module registry is process-global) — see 0877.
 // OS must be 'android': enqueueThumbnailLoad throws on any other platform by design
 // (iOS routes through the BeebeebThumbnails native service instead).
+mock.module('@react-native-async-storage/async-storage', () => ({
+  default: {
+    getItem: async () => null,
+    setItem: async () => {},
+    removeItem: async () => {},
+    multiRemove: async () => {},
+    getAllKeys: async () => [],
+  },
+}));
 mock.module('react-native', () => ({
   NativeModules: {},
   Platform: { OS: 'android' },
 }));
 
-mock.module('expo-file-system', () => ({
+mock.module('expo-file-system/legacy', () => ({
   documentDirectory: 'file:///doc/',
   cacheDirectory: 'file:///cache/',
   EncodingType: { Base64: 'base64' },

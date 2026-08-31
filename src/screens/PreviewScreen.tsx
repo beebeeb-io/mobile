@@ -22,7 +22,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import * as Clipboard from 'expo-clipboard';
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import * as Haptics from 'expo-haptics';
 import { WebView } from 'react-native-webview';
@@ -1500,7 +1500,7 @@ const PhotoPage = React.memo(function PhotoPage({
           style={styles.photoPageImage}
           contentFit="contain"
           nativeControls
-          allowsFullscreen
+          fullscreenOptions={{ enable: true }}
           allowsPictureInPicture
         />
       ) : uri ? (
@@ -2923,7 +2923,7 @@ export default function PreviewScreen() {
                 style={styles.mediaVideo}
                 contentFit="contain"
                 nativeControls
-                allowsFullscreen
+                fullscreenOptions={{ enable: true }}
                 allowsPictureInPicture
               />
             ) : videoError ? (
@@ -3102,7 +3102,7 @@ export default function PreviewScreen() {
               style={styles.video}
               contentFit="contain"
               nativeControls
-              allowsFullscreen
+              fullscreenOptions={{ enable: true }}
               allowsPictureInPicture
             />
           ) : videoError ? (
@@ -3490,7 +3490,7 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   photoPageThumbnail: {
-    ...StyleSheet.absoluteFillObject,
+    position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
     width: '100%',
     height: '100%',
     opacity: 0.42,
@@ -3521,7 +3521,7 @@ const styles = StyleSheet.create({
     height: '100%',
   },
   optionsLayer: {
-    ...StyleSheet.absoluteFillObject,
+    position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
     zIndex: 80,
   },
   optionsPanel: {

@@ -56,13 +56,50 @@ const withWidget = (config) => {
 </dict>
 </plist>`)
     if (!xcodeProject.pbxGroupByName('BeebeebWidget')) {
-      xcodeProject.addTarget('BeebeebWidget', 'app_extension', 'BeebeebWidget', 'io.beebeeb.app.widget')
+      // SDK 57's xcode lib returns null from getTarget(name) — use the target
+      // object addTarget returns (it carries the uuid) instead.
+      const widgetTarget = xcodeProject.addTarget('BeebeebWidget', 'app_extension', 'BeebeebWidget', 'io.beebeeb.app.widget')
       const group = xcodeProject.addPbxGroup(
         ['BeebeebWidget.swift'],
         'BeebeebWidget',
         'BeebeebWidget'
       )
-      xcodeProject.addBuildPhase(['BeebeebWidget.swift'], 'PBXSourcesBuildPhase', 'Sources', xcodeProject.getTarget('BeebeebWidget').uuid)
+      // Full project-relative path: SDK 57's xcode lib no longer resolves the
+      // file through the group's path (build failed with 'ios/BeebeebWidget.swift not found').
+      xcodeProject.addBuildPhase(['BeebeebWidget/BeebeebWidget.swift'], 'PBXSourcesBuildPhase', 'Sources', widgetTarget.uuid)
+
+      // Explicit build settings: SDK 57's xcode lib no longer inherits a
+      // usable SWIFT_VERSION into extension targets (build failed with
+      // "SWIFT_VERSION '' is unsupported"). Mirrors the settings the widget
+      // target carried in the committed project before the upgrade.
+      const nativeTarget = widgetTarget.pbxNativeTarget || widgetTarget.target
+      const configListUuid = nativeTarget && nativeTarget.buildConfigurationList
+      const configList = configListUuid && xcodeProject.pbxXCConfigurationList()[configListUuid]
+      const configSection = xcodeProject.pbxXCBuildConfigurationSection()
+      for (const ref of (configList && configList.buildConfigurations) || []) {
+        const cfgEntry = configSection[ref.value]
+        if (!cfgEntry || !cfgEntry.buildSettings) continue
+        const isDebug = /debug/i.test(cfgEntry.name || '')
+        Object.assign(cfgEntry.buildSettings, {
+          ALWAYS_SEARCH_USER_PATHS: 'NO',
+          APPLICATION_EXTENSION_API_ONLY: 'YES',
+          CLANG_ENABLE_MODULES: 'YES',
+          CODE_SIGN_ENTITLEMENTS: 'BeebeebWidget/BeebeebWidget.entitlements',
+          CURRENT_PROJECT_VERSION: 1,
+          DEVELOPMENT_TEAM: 'R8352WDJJR',
+          INFOPLIST_FILE: 'BeebeebWidget/Info.plist',
+          IPHONEOS_DEPLOYMENT_TARGET: '16.0',
+          LD_RUNPATH_SEARCH_PATHS: '"$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks"',
+          MARKETING_VERSION: '1.0.0',
+          OTHER_SWIFT_FLAGS: isDebug ? '"$(inherited) -D EXPO_CONFIGURATION_DEBUG"' : '"$(inherited) -D EXPO_CONFIGURATION_RELEASE"',
+          PRODUCT_BUNDLE_IDENTIFIER: 'io.beebeeb.app.widget',
+          PRODUCT_NAME: '"$(TARGET_NAME)"',
+          SKIP_INSTALL: 'YES',
+          SWIFT_OPTIMIZATION_LEVEL: isDebug ? '"-Onone"' : '"-O"',
+          SWIFT_VERSION: '5.0',
+          TARGETED_DEVICE_FAMILY: '"1,2"',
+        })
+      }
     }
     return cfg
   })
