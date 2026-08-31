@@ -10,17 +10,17 @@ appId: io.beebeeb.app
 
 # Tap Shared tab (tab bar icons at ~95% y, labels at ~96.5%)
 - tapOn:
-    point: "35%,95%"
+    id: "tab-shared"
 - takeScreenshot: "02-shared"
 
 # Tap Photos tab
 - tapOn:
-    point: "60%,95%"
+    id: "tab-photos"
 - takeScreenshot: "03-photos"
 
 # Tap Settings tab
 - tapOn:
-    point: "85%,95%"
+    id: "tab-settings"
 - takeScreenshot: "04-settings"
 
 # Scroll down in settings
@@ -33,7 +33,7 @@ appId: io.beebeeb.app
 
 # Tap Files tab
 - tapOn:
-    point: "12%,95%"
+    id: "tab-files"
 - extendedWaitUntil:
     visible: "Drive"
     timeout: 5000

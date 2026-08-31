@@ -9,7 +9,7 @@ appId: io.beebeeb.app
     commands:
       # Go to Settings tab
       - tapOn:
-          point: "85%,95%"
+          id: "tab-settings"
       # Scroll to bottom where Sign out is
       - scroll
       - scroll
@@ -56,13 +56,13 @@ appId: io.beebeeb.app
 
 # Verify all tabs accessible
 - tapOn:
-    point: "35%,95%"
+    id: "tab-shared"
 - takeScreenshot: "login-03-shared"
 
 - tapOn:
-    point: "60%,95%"
+    id: "tab-photos"
 - takeScreenshot: "login-04-photos"
 
 - tapOn:
-    point: "85%,95%"
+    id: "tab-settings"
 - takeScreenshot: "login-05-settings"

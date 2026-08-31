@@ -4,7 +4,7 @@ appId: io.beebeeb.app
 
 # Make sure we're on the Files tab and signed in
 - tapOn:
-    point: "12%,95%"
+    id: "tab-files"
 
 - extendedWaitUntil:
     visible: "Drive"
@@ -12,7 +12,7 @@ appId: io.beebeeb.app
 
 # Go to Settings
 - tapOn:
-    point: "85%,95%"
+    id: "tab-settings"
 
 - extendedWaitUntil:
     visible: "Settings"
@@ -31,25 +31,25 @@ appId: io.beebeeb.app
 
 # Visit each tab in dark mode
 - tapOn:
-    point: "12%,95%"
+    id: "tab-files"
 - extendedWaitUntil:
     visible: "Drive"
     timeout: 5000
 - takeScreenshot: "dark-02-files"
 
 - tapOn:
-    point: "37%,95%"
+    id: "tab-shared"
 - takeScreenshot: "dark-03-shared"
 
 - tapOn:
-    point: "62%,95%"
+    id: "tab-photos"
 - extendedWaitUntil:
     visible: "Photos"
     timeout: 5000
 - takeScreenshot: "dark-04-photos"
 
 - tapOn:
-    point: "87%,95%"
+    id: "tab-settings"
 - extendedWaitUntil:
     visible: "Settings"
     timeout: 5000

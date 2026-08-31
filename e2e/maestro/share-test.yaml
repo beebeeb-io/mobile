@@ -9,7 +9,7 @@ appId: io.beebeeb.app
 
 # Navigate to Shared tab
 - tapOn:
-    point: "35%,95%"
+    id: "tab-shared"
 
 # Two segmented tabs — "Shared with me" / "Shared by me"
 - extendedWaitUntil:
