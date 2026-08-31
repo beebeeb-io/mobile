@@ -11,30 +11,31 @@ appId: io.beebeeb.app
 - tapOn:
     id: "tab-shared"
 
-# Two segmented tabs — "Shared with me" / "Shared by me"
+# Two segmented tabs. Renamed in-product to "With me.*" / "By me.*"
+# (SharedScreen dirTabs); this flow still asserted the old strings.
 - extendedWaitUntil:
-    visible: "Shared with me"
+    visible: "With me.*"
     timeout: 5000
 
-- assertVisible: "Shared with me"
-- assertVisible: "Shared by me"
+- assertVisible: "With me.*"
+- assertVisible: "By me.*"
 
 - takeScreenshot: "share-01-incoming"
 
-# Switch to "Shared by me"
-- tapOn: "Shared by me"
+# Switch to "By me.*"
+- tapOn: "By me.*"
 
 - extendedWaitUntil:
-    visible: "Shared by me"
+    visible: "By me.*"
     timeout: 5000
 
 - takeScreenshot: "share-02-outgoing"
 
-# Back to "Shared with me" and try to tap the first row if any items exist.
-- tapOn: "Shared with me"
+# Back to "With me.*" and try to tap the first row if any items exist.
+- tapOn: "With me.*"
 
 - extendedWaitUntil:
-    visible: "Shared with me"
+    visible: "With me.*"
     timeout: 5000
 
 # Optional: tap the first list row by coordinate. If the demo account has no

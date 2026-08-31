@@ -8,15 +8,10 @@ appId: io.beebeeb.app
     timeout: 10000
 - takeScreenshot: "01-files-drive"
 
-# Tap Shared tab (tab bar icons at ~95% y, labels at ~96.5%)
+# Tap Shared tab
 - tapOn:
     id: "tab-shared"
 - takeScreenshot: "02-shared"
-
-# Tap Photos tab
-- tapOn:
-    id: "tab-photos"
-- takeScreenshot: "03-photos"
 
 # Tap Settings tab
 - tapOn:
@@ -38,3 +33,13 @@ appId: io.beebeeb.app
     visible: "Drive"
     timeout: 5000
 - takeScreenshot: "07-files-final"
+
+# Photos LAST, deliberately. Task 1321: visiting Photos raises a pre-existing
+# "thumbnail.ts iOS path replaced by BeebeebThumbnails" rejection, and in a dev
+# build the LogBox redbox then covers the screen and blocks every later
+# assertion. It reproduces on main without this branch's changes. Ordering
+# Photos last keeps the tour complete without asserting through the redbox.
+# Restore this to its original position once 1321 is fixed.
+- tapOn:
+    id: "tab-photos"
+- takeScreenshot: "03-photos"
