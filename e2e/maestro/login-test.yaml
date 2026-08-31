@@ -37,14 +37,28 @@ appId: io.beebeeb.app
     commands:
       - tapOn:
           id: "tab-settings"
+      # Fixed scrolls, not scrollUntilVisible: that hangs inside a conditional
+      # runFlow on this list (documented in local-qa-signin-unlock.yaml).
+      # Measured from a FRESH Settings top: 3 is NOT enough and 6 is; 8 leaves
+      # headroom as the list grows. The old 3 came from before task 1314 made
+      # the rows 17pt, which is what pushed it over.
+      - scroll
+      - scroll
+      - scroll
+      - scroll
+      - scroll
       - scroll
       - scroll
       - scroll
       - tapOn: "Sign out"
-      # Confirm the alert — the second "Sign out" is the destructive button.
+      # Confirm the alert. With it open there are THREE "Sign out" texts in the
+      # hierarchy: the Settings row behind it (0), the alert TITLE (1), and the
+      # destructive BUTTON (2). The old index:1 tapped the title, which is not
+      # tappable, so the alert just stayed open and the sign-out never happened
+      # — silently, with the step reported as COMPLETED.
       - tapOn:
           text: "Sign out"
-          index: 1
+          index: 2
 
 # THE assertion that was impossible before.
 - extendedWaitUntil:
