@@ -99,8 +99,21 @@ Running the iOS app on the Simulator for QA hits several env-specific walls. Wor
   sharing are all locally testable; only push notifications and real-device-only surfaces need
   TestFlight.
 - **Maestro `takeScreenshot`** silently drops relative paths — pass an **absolute** path, or capture
-  with `xcrun simctl io <UDID> screenshot --type=png <abs>.png`. Tab/sub-tab labels with count badges
-  (e.g. "By me 6") aren't reliable text targets — tap by `point: "x%,y%"`.
+  with `xcrun simctl io <UDID> screenshot --type=png <abs>.png`.
+- **NEVER tap chrome by coordinate. Use a `testID`.** This file used to advise
+  `point: "x%,y%"` for labels with count badges. That advice caused a real outage of the whole e2e
+  suite: task 1312 moved the tab bar up, and **22 coordinate taps across 9 flows** silently began
+  missing their targets — three flows were red on `main` and nobody knew (task 1324). Worse,
+  `full-app-test` stayed GREEN while asserting nothing, because its blind tap at `12%,95%` landed on
+  a dev-redbox **Dismiss** button. **A coordinate tap can pass while testing nothing.**
+  If an element has no testID, add one — that is cheaper than the flow rotting the next time the
+  layout moves. Content-relative taps (a file row) are acceptable; chrome-relative taps are not.
+- **A Maestro text selector must match the node's ENTIRE accessible name, and React Native's
+  `accessibilityLabel` silently REPLACES the visible text.** So an assertion written from what you
+  can see on screen is a guess. Three flows were broken by this in one day: the theme option reads
+  "Dark" but its label is `"Dark theme"` (plus `", selected"` when active); the tabs read "By me" and
+  "With me" but carry count badges. Use `id:` where you can, and a `.*`-anchored regex where you must
+  (`"Dark theme.*"`). Read the label in the source — do not read the screen.
 - **`clearState: true` does NOT sign out** — the master key persists in the iOS keychain across an
   app-data clear, so the app auto-restores to the authenticated screen (this is the 0876 restore
   working). To force the signed-out screen, sign out in-app first.
