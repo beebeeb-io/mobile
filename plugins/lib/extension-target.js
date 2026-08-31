@@ -77,11 +77,21 @@ function ensureFileReference(project, file) {
   return uuid;
 }
 
-function ensureBuildFile(project, fileRef, comment, settings) {
+// A PBXBuildFile belongs to exactly ONE build phase. Dedupe per owning
+// target (via the uuids already listed in that target's phases), never
+// globally by fileRef: the FileProvider and Share targets both compile
+// beebeeb_uniffi.swift and both link BeebeebCore.xcframework, and sharing one
+// build-file object between them makes Xcodeproj refuse to save the project
+// ("Consistency issue: no parent for object … SourcesBuildPhase,
+// SourcesBuildPhase" during pod install's react_native_post_install).
+function ensureBuildFile(project, fileRef, comment, settings, ownedUuids) {
   const buildFiles = section(project, 'PBXBuildFile');
   const existing = findObject(
     buildFiles,
-    (value) => value.fileRef === fileRef && (!settings || JSON.stringify(value.settings) === JSON.stringify(settings)),
+    (value, key) =>
+      value.fileRef === fileRef &&
+      (!ownedUuids || ownedUuids.has(key)) &&
+      (!settings || JSON.stringify(value.settings) === JSON.stringify(settings)),
   );
   if (existing) return existing[0];
 
@@ -90,6 +100,18 @@ function ensureBuildFile(project, fileRef, comment, settings) {
   if (settings) buildFile.settings = settings;
   addCommented(buildFiles, uuid, buildFile, comment);
   return uuid;
+}
+
+/** All PBXBuildFile uuids referenced from any build phase of `target`. */
+function ownedBuildFileUuids(project, target) {
+  const owned = new Set();
+  for (const phaseRef of target.buildPhases || []) {
+    for (const phaseType of ['PBXSourcesBuildPhase', 'PBXFrameworksBuildPhase', 'PBXResourcesBuildPhase', 'PBXCopyFilesBuildPhase']) {
+      const phase = section(project, phaseType)[phaseRef.value];
+      if (phase) for (const f of phase.files || []) owned.add(f.value);
+    }
+  }
+  return owned;
 }
 
 function ensureGroup(project, spec, files) {
@@ -226,6 +248,18 @@ function ensureBuildConfigurations(project, spec) {
       SKIP_INSTALL: 'YES',
       SWIFT_VERSION: 5.0,
       TARGETED_DEVICE_FAMILY: '"1,2"',
+      // Explicit per-SDK link of the Rust static lib slice. Set HERE (order-
+      // independent) rather than by the uniffi-bridge plugin: config-plugin
+      // mods execute in reverse registration order, so uniffi-bridge runs
+      // before this target exists.
+      ...(spec.linkRustFramework
+        ? {
+            '"OTHER_LDFLAGS[sdk=iphonesimulator*]"':
+              '"$(inherited) \\"$(PROJECT_DIR)/BeebeebCore.xcframework/ios-arm64_x86_64-simulator/libbeebeeb_uniffi_sim_fat.a\\""',
+            '"OTHER_LDFLAGS[sdk=iphoneos*]"':
+              '"$(inherited) \\"$(PROJECT_DIR)/BeebeebCore.xcframework/ios-arm64/libbeebeeb_uniffi.a\\""',
+          }
+        : {}),
       ...(spec.extraBuildSettings || {}),
     };
     if (debug) {
@@ -341,10 +375,12 @@ function ensureExtensionTarget(project, spec) {
 
   const extensionTarget = ensureNativeTarget(project, spec);
   const appTarget = getAppTarget(project);
+  const owned = ownedBuildFileUuids(project, extensionTarget.target);
+  const appOwned = ownedBuildFileUuids(project, appTarget.target);
 
   const sourceBuildFiles = sourceFiles.map((file) => {
     const fileRef = ensureFileReference(project, file);
-    return { value: ensureBuildFile(project, fileRef, `${file.name} in Sources`), comment: `${file.name} in Sources` };
+    return { value: ensureBuildFile(project, fileRef, `${file.name} in Sources`, undefined, owned), comment: `${file.name} in Sources` };
   });
   if (spec.includeUniffiBindings) {
     const uniffiRef = ensureFileReference(project, {
@@ -353,7 +389,7 @@ function ensureExtensionTarget(project, spec) {
       fileType: 'sourcecode.swift',
     });
     sourceBuildFiles.push({
-      value: ensureBuildFile(project, uniffiRef, 'beebeeb_uniffi.swift in Sources'),
+      value: ensureBuildFile(project, uniffiRef, 'beebeeb_uniffi.swift in Sources', undefined, owned),
       comment: 'beebeeb_uniffi.swift in Sources',
     });
   }
@@ -368,7 +404,7 @@ function ensureExtensionTarget(project, spec) {
         fileType: 'wrapper.xcframework',
       });
     frameworkBuildFiles.push({
-      value: ensureBuildFile(project, frameworkRef, 'BeebeebCore.xcframework in Frameworks'),
+      value: ensureBuildFile(project, frameworkRef, 'BeebeebCore.xcframework in Frameworks', undefined, owned),
       comment: 'BeebeebCore.xcframework in Frameworks',
     });
   }
@@ -380,7 +416,7 @@ function ensureExtensionTarget(project, spec) {
   const productBuildFile = {
     value: ensureBuildFile(project, extensionTarget.target.productReference, `${spec.name}.appex in Embed App Extensions`, {
       ATTRIBUTES: ['RemoveHeadersOnCopy'],
-    }),
+    }, appOwned),
     comment: `${spec.name}.appex in Embed App Extensions`,
   };
   const embedPhaseUuid = ensureBuildPhase(
@@ -399,4 +435,25 @@ function ensureExtensionTarget(project, spec) {
   return extensionTarget;
 }
 
-module.exports = { ensureExtensionTarget };
+/**
+ * Link BeebeebCore.xcframework into `target`'s Frameworks phase with a build
+ * file owned by THAT target (never shared with another target's phase).
+ * Idempotent. `target` is a { uuid, target } pair.
+ */
+function linkRustFramework(project, target) {
+  const owned = ownedBuildFileUuids(project, target.target);
+  const frameworkRef =
+    findObject(section(project, 'PBXFileReference'), (value) => value.path === 'BeebeebCore.xcframework')?.[0] ||
+    ensureFileReference(project, {
+      path: 'BeebeebCore.xcframework',
+      name: 'BeebeebCore.xcframework',
+      fileType: 'wrapper.xcframework',
+    });
+  const buildFile = {
+    value: ensureBuildFile(project, frameworkRef, 'BeebeebCore.xcframework in Frameworks', undefined, owned),
+    comment: 'BeebeebCore.xcframework in Frameworks',
+  };
+  ensureBuildPhase(project, target.target, 'PBXFrameworksBuildPhase', 'Frameworks', [buildFile]);
+}
+
+module.exports = { ensureExtensionTarget, linkRustFramework };

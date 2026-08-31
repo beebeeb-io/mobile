@@ -104,11 +104,20 @@ function ensureFileReference(project, file) {
   return uuid;
 }
 
-function ensureBuildFile(project, fileRef, comment, settings) {
+// A PBXBuildFile belongs to exactly ONE build phase — dedupe only within the
+// uuids already owned by the target being wired (`ownedUuids`), never globally
+// by fileRef: the app + Share targets also compile beebeeb_uniffi.swift and
+// link BeebeebCore.xcframework, and this mod runs LAST (mods execute in
+// reverse registration order), so a global match reuses THEIR build file and
+// Xcodeproj then refuses to save the project during pod install (task 1305).
+function ensureBuildFile(project, fileRef, comment, settings, ownedUuids) {
   const buildFiles = section(project, 'PBXBuildFile');
   const existing = findObject(
     buildFiles,
-    (value) => value.fileRef === fileRef && (!settings || JSON.stringify(value.settings) === JSON.stringify(settings)),
+    (value, key) =>
+      value.fileRef === fileRef &&
+      (!ownedUuids || ownedUuids.has(key)) &&
+      (!settings || JSON.stringify(value.settings) === JSON.stringify(settings)),
   );
   if (existing) return existing[0];
 
@@ -380,6 +389,18 @@ function ensureExtensionWiring(project) {
   const firstTarget = project.getFirstTarget();
   const appTarget = { uuid: firstTarget.uuid, target: firstTarget.firstTarget || firstTarget.target };
   if (!appTarget) return;
+  const ownedUuidsOf = (target) => {
+    const owned = new Set();
+    for (const phaseRef of target.buildPhases || []) {
+      for (const phaseType of ['PBXSourcesBuildPhase', 'PBXFrameworksBuildPhase', 'PBXResourcesBuildPhase', 'PBXCopyFilesBuildPhase']) {
+        const phase = section(project, phaseType)[phaseRef.value];
+        if (phase) for (const f of phase.files || []) owned.add(f.value);
+      }
+    }
+    return owned;
+  };
+  const owned = ownedUuidsOf(extensionTarget.target);
+  const appOwned = ownedUuidsOf(appTarget.target);
 
   const sourceBuildFiles = SOURCE_FILES.map((file) => {
     const fileRef = ensureFileReference(project, {
@@ -388,7 +409,7 @@ function ensureExtensionWiring(project) {
       fileType: 'sourcecode.swift',
     });
     return {
-      value: ensureBuildFile(project, fileRef, `${file} in Sources`),
+      value: ensureBuildFile(project, fileRef, `${file} in Sources`, undefined, owned),
       comment: `${file} in Sources`,
     };
   });
@@ -399,7 +420,7 @@ function ensureExtensionWiring(project) {
     fileType: 'sourcecode.swift',
   });
   sourceBuildFiles.push({
-    value: ensureBuildFile(project, uniffiRef, 'beebeeb_uniffi.swift in Sources'),
+    value: ensureBuildFile(project, uniffiRef, 'beebeeb_uniffi.swift in Sources', undefined, owned),
     comment: 'beebeeb_uniffi.swift in Sources',
   });
 
@@ -411,7 +432,7 @@ function ensureExtensionWiring(project) {
       fileType: 'wrapper.xcframework',
     });
   const frameworkBuildFile = {
-    value: ensureBuildFile(project, frameworkRef, 'BeebeebCore.xcframework in Frameworks'),
+    value: ensureBuildFile(project, frameworkRef, 'BeebeebCore.xcframework in Frameworks', undefined, owned),
     comment: 'BeebeebCore.xcframework in Frameworks',
   };
 
@@ -422,7 +443,7 @@ function ensureExtensionWiring(project) {
   const productBuildFile = {
     value: ensureBuildFile(project, extensionTarget.target.productReference, `${EXTENSION_NAME}.appex in Embed App Extensions`, {
       ATTRIBUTES: ['RemoveHeadersOnCopy'],
-    }),
+    }, appOwned),
     comment: `${EXTENSION_NAME}.appex in Embed App Extensions`,
   };
   const embedPhaseUuid = ensureBuildPhase(
