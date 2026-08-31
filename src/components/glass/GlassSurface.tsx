@@ -142,37 +142,69 @@ export function GlassSurface({
   const material = glassMaterial(activeScheme);
   const r = resolveRadius(radius);
 
-  return (
-    <View style={[elevated ? material.shadow : null, { borderRadius: r }, style]}>
-      <View style={[styles.clip, { borderRadius: r }, contentStyle]}>
-        <BlurView
-          intensity={material.blurIntensity}
-          tint={material.tint}
-          style={StyleSheet.absoluteFill}
-          pointerEvents="none"
-        />
-        <View
-          pointerEvents="none"
-          style={[StyleSheet.absoluteFill, { backgroundColor: material.fill }]}
-        />
-        <Sheen material={material} />
+  // The specular rim sits just inside the structural outline, so the two read
+  // as one edge rather than two stacked lines. In dark mode the outline is
+  // zero-width, which puts the rim exactly where it has always been.
+  const inset = material.rimOuterWidth;
+
+  const inner = (
+    <View style={[styles.clip, { borderRadius: r }, contentStyle]}>
+      <BlurView
+        intensity={material.blurIntensity}
+        tint={material.tint}
+        style={StyleSheet.absoluteFill}
+        pointerEvents="none"
+      />
+      <View
+        pointerEvents="none"
+        style={[StyleSheet.absoluteFill, { backgroundColor: material.fill }]}
+      />
+      <Sheen material={material} />
+      {inset > 0 ? (
         <View
           pointerEvents="none"
           style={[
             StyleSheet.absoluteFill,
-            {
-              borderRadius: r,
-              borderWidth: material.rimWidth,
-              borderColor: material.rimSide,
-              borderTopColor: material.rimTop,
-              borderBottomColor: material.rimBottom,
-            },
+            { borderRadius: r, borderWidth: inset, borderColor: material.rimOuter },
           ]}
         />
-        {children}
-      </View>
+      ) : null}
+      <View
+        pointerEvents="none"
+        style={{
+          position: 'absolute',
+          top: inset,
+          left: inset,
+          right: inset,
+          bottom: inset,
+          borderRadius: Math.max(0, r - inset),
+          borderWidth: material.rimWidth,
+          borderColor: material.rimSide,
+          borderTopColor: material.rimTop,
+          borderBottomColor: material.rimBottom,
+        }}
+      />
+      {children}
     </View>
   );
+
+  if (!elevated) {
+    return <View style={[{ borderRadius: r }, style]}>{inner}</View>;
+  }
+
+  // A view carries only one shadow, so the wider ambient layer needs its own
+  // wrapper: ambient outside, contact shadow inside. `style` stays on the
+  // outermost view so callers keep controlling layout. Dark mode has no
+  // ambient layer and renders exactly the single-wrapper tree it always did.
+  if (material.ambientShadow) {
+    return (
+      <View style={[material.ambientShadow, { borderRadius: r }, style]}>
+        <View style={[material.shadow, { borderRadius: r }]}>{inner}</View>
+      </View>
+    );
+  }
+
+  return <View style={[material.shadow, { borderRadius: r }, style]}>{inner}</View>;
 }
 
 const styles = StyleSheet.create({

@@ -61,6 +61,35 @@ describe('glassMaterial', () => {
     expect(glassMaterial('light').tint).toBe('light');
   });
 
+  it('defines the light edge with an outline the dark recipe does not need', () => {
+    const light = glassMaterial('light');
+    const dark = glassMaterial('dark');
+    // The load-bearing light-mode fix: a real hairline ON the boundary.
+    expect(light.rimOuterWidth).toBeGreaterThan(0);
+    expect(light.rimOuter).not.toBe('transparent');
+    // Dark keeps the canvas exactly: no outline, so the specular rim does not
+    // shift by even half a point.
+    expect(dark.rimOuterWidth).toBe(0);
+    expect(dark.rimOuter).toBe('transparent');
+  });
+
+  it('gives light a tighter contact shadow plus an ambient layer', () => {
+    const light = glassMaterial('light');
+    const dark = glassMaterial('dark');
+    // Tighter than the diffuse 12/34 that failed to define an edge.
+    expect(light.shadow.shadowOffset).toEqual({ width: 0, height: 4 });
+    expect(light.shadow.shadowRadius).toBe(7);
+    expect(light.shadow.shadowOpacity).toBe(0.22);
+    // Two layers read as floating; the canvas needs only one over dark ground.
+    expect(light.ambientShadow).not.toBeNull();
+    expect(dark.ambientShadow).toBeNull();
+  });
+
+  it('does not solve light mode by pouring in fill opacity', () => {
+    // An opaque light chip is a card, not glass, and breaks over a photo.
+    expect(glassMaterial('light').fill).toBe('rgba(250,248,245,0.62)');
+  });
+
   it('keeps geometry identical across schemes, changing only optics', () => {
     const dark = glassMaterial('dark');
     const light = glassMaterial('light');

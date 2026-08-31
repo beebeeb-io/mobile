@@ -111,6 +111,17 @@ export type GlassMaterial = {
   tint: 'light' | 'dark';
   /** Fill painted over the blur. */
   fill: string;
+  /**
+   * Structural outline drawn ON the material boundary.
+   *
+   * This is what carries LIGHT mode. A specular white rim only reads against
+   * darker content; over a pale grouped background it vanishes, and with it
+   * the whole edge of the control. Dark mode sets this transparent at zero
+   * width, because the canvas defines no outline there.
+   */
+  rimOuter: string;
+  /** Thickness of that outline. Zero disables it entirely. */
+  rimOuterWidth: number;
   /** Specular top rim — the 1px inset highlight that makes it read as glass. */
   rimTop: string;
   /** Thickness of the top rim, in points. */
@@ -121,8 +132,15 @@ export type GlassMaterial = {
   rimBottom: string;
   /** Thickness of the side and bottom rims, in points. */
   rimWidth: number;
-  /** Soft drop shadow beneath the floating control. */
+  /** Contact shadow — tight and close, defines where the material meets. */
   shadow: ViewStyle;
+  /**
+   * Wider ambient shadow under the contact shadow, or `null` for a single
+   * layer. Two layers are what make a control read as FLOATING rather than
+   * stuck on; the canvas needs only one because a dark ground already
+   * separates the material.
+   */
+  ambientShadow: ViewStyle | null;
   /** Diagonal specular sheen: [start, mid, end] colours at 0% / 34% / 58%. */
   sheen: readonly [string, string, string];
   /** Angle of the sheen sweep, in degrees. */
@@ -162,12 +180,17 @@ const DARK_MATERIAL: GlassMaterial = {
   cssSaturate: 1.9,
   tint: 'dark',
   fill: 'rgba(44,44,50,0.46)',
+  // The canvas draws no outline in dark mode; width 0 keeps the specular rim
+  // exactly where it was, so dark rendering is untouched by the light fix.
+  rimOuter: 'transparent',
+  rimOuterWidth: 0,
   rimTop: 'rgba(255,255,255,0.30)',
   rimTopWidth: 0.75,
   rimSide: 'rgba(255,255,255,0.08)',
   rimBottom: 'rgba(255,255,255,0.05)',
   rimWidth: 0.5,
   shadow: cssShadow(12, 34, '#000000', 0.42),
+  ambientShadow: null,
   sheen: ['rgba(255,255,255,0.10)', 'rgba(255,255,255,0.02)', 'rgba(255,255,255,0)'],
   sheenAngle: 118,
   bubbleFill: 'rgba(255,255,255,0.13)',
@@ -180,19 +203,36 @@ const DARK_MATERIAL: GlassMaterial = {
 
 /**
  * Light material — DERIVED, not lifted. All eleven canvas artboards are dark,
- * so there is no light `.lg` rule to copy. The derivation keeps every
- * *geometric* value identical and flips only the optics:
+ * so there is no light `.lg` rule to copy.
  *
- *   · fill      — the warm `paper` white at 0.62 rather than 0.46. Light glass
- *                 needs more fill than dark glass to stay legible over a photo,
- *                 because a light scrim has less contrast against bright content.
- *   · rims      — the specular highlight stays WHITE in both schemes (a
- *                 highlight is light hitting an edge); the bottom rim becomes a
- *                 warm ink shade instead of a white one, which is what an edge
- *                 in shadow does on a light material.
- *   · shadow    — warm ink at a much lower opacity: a light control floating on
- *                 a light page casts a far weaker shadow than 0.42 black.
- *   · sheen     — unchanged; the diagonal specular sweep is white in both.
+ * ── Why this is not just the dark recipe inverted ─────────────────────────
+ * The first attempt was, and it failed: measured off the simulator, a control
+ * sat at luminance 251 on a 234 ground — a 15L step with no hairline and a
+ * shadow so diffuse it darkened the ground by 3L. Over a plain light surface
+ * the capsule, circles and sheet had no discernible edge; they read as
+ * slightly different paint rather than floating material.
+ *
+ * The cause is structural, not a tuning error. The canvas material is legible
+ * because its fill is DARK (`rgba(44,44,50,0.46)`) over dark or photographic
+ * content. Invert that to a near-white fill and put it on a near-white ground
+ * and it is invisible by construction — and adding fill opacity only converts
+ * it into an opaque card, which then looks wrong the moment it floats over a
+ * photo.
+ *
+ * So light mode defines the EDGE instead of the surface, which is what iOS
+ * does:
+ *   · rimOuter  — a real dark hairline ON the boundary. This is the load-
+ *                 bearing change; it is what you actually see against a pale
+ *                 ground, and it costs nothing over a photo.
+ *   · shadow    — a TIGHT contact shadow (offset 4, blur 14) instead of the
+ *                 diffuse 12/34, plus a wide low ambient beneath it. Tight
+ *                 defines the edge; wide says it floats.
+ *   · rims      — the white specular highlight stays, but INSIDE the outline,
+ *                 where it does its real job over bright photo content.
+ *   · sheen     — pulled back from 0.55 to 0.30: at 0.55 over an already pale
+ *                 material it blew the top-left corner to white and was the
+ *                 other half of the "milky" look.
+ *   · fill      — deliberately NOT increased. It stays at 0.62.
  *
  * These are the values to re-check first when the canvas gains light artboards.
  */
@@ -202,17 +242,20 @@ const LIGHT_MATERIAL: GlassMaterial = {
   cssSaturate: 1.9,
   tint: 'light',
   fill: 'rgba(250,248,245,0.62)',
-  rimTop: 'rgba(255,255,255,0.75)',
+  rimOuter: 'rgba(42,37,32,0.22)',
+  rimOuterWidth: 0.5,
+  rimTop: 'rgba(255,255,255,0.85)',
   rimTopWidth: 0.75,
-  rimSide: 'rgba(255,255,255,0.35)',
-  rimBottom: 'rgba(42,37,32,0.06)',
+  rimSide: 'rgba(255,255,255,0.45)',
+  rimBottom: 'rgba(42,37,32,0.05)',
   rimWidth: 0.5,
-  shadow: cssShadow(12, 34, '#2a2520', 0.16),
-  sheen: ['rgba(255,255,255,0.55)', 'rgba(255,255,255,0.12)', 'rgba(255,255,255,0)'],
+  shadow: cssShadow(4, 14, '#2a2520', 0.22),
+  ambientShadow: cssShadow(14, 36, '#2a2520', 0.10),
+  sheen: ['rgba(255,255,255,0.30)', 'rgba(255,255,255,0.08)', 'rgba(255,255,255,0)'],
   sheenAngle: 118,
   bubbleFill: 'rgba(255,255,255,0.85)',
   bubbleRim: 'rgba(255,255,255,0.90)',
-  bubbleShadow: cssShadow(2, 8, '#2a2520', 0.14),
+  bubbleShadow: cssShadow(2, 8, '#2a2520', 0.18),
   label: '#2a2520',
   labelMuted: 'rgba(42,37,32,0.62)',
 };
