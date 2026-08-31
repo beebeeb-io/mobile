@@ -20,10 +20,6 @@
           "$(AppIdentifierPrefix)io.beebeeb.shared"
         ]
       },
-      "associatedDomains": [
-        "applinks:beebeeb.io",
-        "applinks:app.beebeeb.io"
-      ],
       "infoPlist": {
         "CFBundleIconName": "AppIcon",
         "NSSupportsLiveActivities": true,
