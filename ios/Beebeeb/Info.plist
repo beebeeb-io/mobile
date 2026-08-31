@@ -15,36 +15,12 @@
     <string>Beebeeb</string>
     <key>CFBundleExecutable</key>
     <string>$(EXECUTABLE_NAME)</string>
+    <key>CFBundleIconName</key>
+    <string>AppIcon</string>
     <key>CFBundleIdentifier</key>
     <string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
-    <key>CFBundleIconName</key>
-    <string>AppIcon</string>
-    <key>CFBundleIcons</key>
-    <dict>
-      <key>CFBundlePrimaryIcon</key>
-      <dict>
-        <key>CFBundleIconName</key>
-        <string>AppIcon</string>
-        <key>CFBundleIconFiles</key>
-        <array>
-          <string>AppIcon</string>
-        </array>
-      </dict>
-    </dict>
-    <key>CFBundleIcons~ipad</key>
-    <dict>
-      <key>CFBundlePrimaryIcon</key>
-      <dict>
-        <key>CFBundleIconName</key>
-        <string>AppIcon</string>
-        <key>CFBundleIconFiles</key>
-        <array>
-          <string>AppIcon</string>
-        </array>
-      </dict>
-    </dict>
     <key>CFBundleName</key>
     <string>$(PRODUCT_NAME)</string>
     <key>CFBundlePackageType</key>
@@ -62,9 +38,15 @@
           <string>io.beebeeb.app</string>
         </array>
       </dict>
+      <dict>
+        <key>CFBundleURLSchemes</key>
+        <array>
+          <string>exp+beebeeb</string>
+        </array>
+      </dict>
     </array>
     <key>CFBundleVersion</key>
-    <string>1</string>
+    <string>102</string>
     <key>ITSAppUsesNonExemptEncryption</key>
     <false/>
     <key>LSMinimumSystemVersion</key>
@@ -78,6 +60,10 @@
       <key>NSAllowsLocalNetworking</key>
       <true/>
     </dict>
+    <key>NSBonjourServices</key>
+    <array>
+      <string>_expo._tcp</string>
+    </array>
     <key>NSCalendarsFullAccessUsageDescription</key>
     <string>Beebeeb backs up your calendar with end-to-end encryption.</string>
     <key>NSCalendarsUsageDescription</key>
@@ -90,18 +76,28 @@
     <string>Allow $(PRODUCT_NAME) to use Face ID</string>
     <key>NSFileProviderPresenceAuthorized</key>
     <true/>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>Expo Dev Launcher uses the local network to discover and connect to development servers running on your computer.</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>Allow $(PRODUCT_NAME) to access your microphone</string>
     <key>NSPhotoLibraryAddUsageDescription</key>
     <string>Beebeeb saves downloaded photos to your library.</string>
     <key>NSPhotoLibraryUsageDescription</key>
     <string>Beebeeb backs up your photos with end-to-end encryption.</string>
-    <key>NSSupportsLiveActivities</key>
-    <true/>
     <key>NSRemindersFullAccessUsageDescription</key>
     <string>Beebeeb backs up your reminders with end-to-end encryption.</string>
     <key>NSRemindersUsageDescription</key>
     <string>Beebeeb backs up your reminders with end-to-end encryption.</string>
+    <key>NSSupportsLiveActivities</key>
+    <true/>
+    <key>NSUserActivityTypes</key>
+    <array>
+      <string>io.beebeeb.app.upload</string>
+      <string>io.beebeeb.app.search</string>
+      <string>io.beebeeb.app.scan</string>
+    </array>
+    <key>RCTMetroPort</key>
+    <string>$(RCT_METRO_PORT)</string>
     <key>UIApplicationShortcutItems</key>
     <array>
       <dict>
@@ -119,28 +115,28 @@
       </dict>
       <dict>
         <key>UIApplicationShortcutItemType</key>
-        <string>io.beebeeb.search</string>
+        <string>io.beebeeb.scan</string>
         <key>UIApplicationShortcutItemTitle</key>
-        <string>Search Files</string>
+        <string>Scan Document</string>
         <key>UIApplicationShortcutItemIconType</key>
-        <string>UIApplicationShortcutIconTypeSearch</string>
+        <string>UIApplicationShortcutIconTypeCompose</string>
         <key>UIApplicationShortcutItemUserInfo</key>
         <dict>
           <key>url</key>
-          <string>beebeeb://search</string>
+          <string>beebeeb://scan</string>
         </dict>
       </dict>
       <dict>
         <key>UIApplicationShortcutItemType</key>
-        <string>io.beebeeb.photos</string>
+        <string>io.beebeeb.recent</string>
         <key>UIApplicationShortcutItemTitle</key>
-        <string>Photos</string>
+        <string>Recent Files</string>
         <key>UIApplicationShortcutItemIconType</key>
-        <string>UIApplicationShortcutIconTypeCapturePhoto</string>
+        <string>UIApplicationShortcutIconTypeTime</string>
         <key>UIApplicationShortcutItemUserInfo</key>
         <dict>
           <key>url</key>
-          <string>beebeeb://photos</string>
+          <string>beebeeb://recent</string>
         </dict>
       </dict>
     </array>

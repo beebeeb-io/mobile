@@ -14,7 +14,7 @@
  * to a one-shot batch decrypt.
  */
 
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 
 export interface CachedName {
   name: string;

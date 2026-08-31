@@ -3,128 +3,55 @@
 	archiveVersion = 1;
 	classes = {
 	};
-	objectVersion = 46;
+	objectVersion = 54;
 	objects = {
 
 /* Begin PBXBuildFile section */
-		13B07FBC1A68108700A75B9A /* AppDelegate.mm in Sources */ = {isa = PBXBuildFile; fileRef = 13B07FB01A68108700A75B9A /* AppDelegate.mm */; };
 		13B07FBF1A68108700A75B9A /* Images.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 13B07FB51A68108700A75B9A /* Images.xcassets */; };
-		13B07FC11A68108700A75B9A /* main.m in Sources */ = {isa = PBXBuildFile; fileRef = 13B07FB71A68108700A75B9A /* main.m */; };
-		1544F34E6B158111FA1CFE18 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = F50E99740F33DDAD97DC53BB /* PrivacyInfo.xcprivacy */; };
 		3E461D99554A48A4959DE609 /* SplashScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = AA286B85B6C04FC6940260E9 /* SplashScreen.storyboard */; };
-		4AC72F49B00846A5BC341395 /* beebeeb_uniffi.swift in Sources */ = {isa = PBXBuildFile; fileRef = 37EFB2142B2E4DC5ACA0EAC5 /* beebeeb_uniffi.swift */; };
-		7B7EB99F251145AA993A3DF8 /* noop-file.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D07A44B5A2D436C8C962CB9 /* noop-file.swift */; };
-		96905EF65AED1B983A6B3ABC /* libPods-Beebeeb.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 58EEBF8E8E6FB1BC6CAF49B5 /* libPods-Beebeeb.a */; };
-		B18059E884C0ABDD17F3DC3D /* ExpoModulesProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = FAC715A2D49A985799AEE119 /* ExpoModulesProvider.swift */; };
 		BB2F792D24A3F905000567C9 /* Expo.plist in Resources */ = {isa = PBXBuildFile; fileRef = BB2F792C24A3F905000567C9 /* Expo.plist */; };
-		BEEBEE00000000000000000B /* BeebeebFileProvider.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = BEEBEE000000000000000001 /* BeebeebFileProvider.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
-		BEEBEE000000000000000020 /* FileProviderExtension.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEEBEE000000000000000010 /* FileProviderExtension.swift */; };
-		BEEBEE000000000000000021 /* FileProviderItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEEBEE000000000000000011 /* FileProviderItem.swift */; };
-		BEEBEE000000000000000022 /* FileProviderEnumerator.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEEBEE000000000000000012 /* FileProviderEnumerator.swift */; };
-		BEEBEE000000000000000023 /* CacheManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEEBEE000000000000000013 /* CacheManager.swift */; };
-		BEEBEE000000000000000024 /* ApiClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEEBEE000000000000000014 /* ApiClient.swift */; };
-		BEEBEE000000000000000025 /* beebeeb_uniffi.swift in Sources */ = {isa = PBXBuildFile; fileRef = 37EFB2142B2E4DC5ACA0EAC5 /* beebeeb_uniffi.swift */; };
-		BEEBEE000000000000000026 /* BeebeebCore.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = DB9E8601A0574FC294891B72 /* BeebeebCore.xcframework */; };
-		BEEBEE000000000000000027 /* CryptoBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEEBEE000000000000000017 /* CryptoBridge.swift */; };
-		BEEBEE000000000000000028 /* BeebeebKeychainCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEEBEE000000000000000018 /* BeebeebKeychainCore.swift */; };
-		BEEBEE000000000000000029 /* Constants.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEEBEE000000000000000019 /* Constants.swift */; };
-		BEEBEE00000000000000002A /* SyncEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEEBEE00000000000000001A /* SyncEngine.swift */; };
-		BEEBEE000000000000000120 /* ShareViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEEBEE000000000000000110 /* ShareViewController.swift */; };
-		BEEBEE000000000000000121 /* BeebeebShare.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = BEEBEE000000000000000101 /* BeebeebShare.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
-		BEEBEE000000000000000122 /* BeebeebCryptoShim.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEEBEE000000000000000113 /* BeebeebCryptoShim.swift */; };
-		BEEBEE000000000000000123 /* ShareUploader.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEEBEE000000000000000114 /* ShareUploader.swift */; };
-		BEEBEE000000000000000124 /* BeebeebKeychainCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEEBEE000000000000000115 /* BeebeebKeychainCore.swift */; };
-		BEEBEE000000000000000125 /* FolderFetcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEEBEE000000000000000116 /* FolderFetcher.swift */; };
-		BEEBEE000000000000000126 /* beebeeb_uniffi.swift in Sources */ = {isa = PBXBuildFile; fileRef = 37EFB2142B2E4DC5ACA0EAC5 /* beebeeb_uniffi.swift */; };
-		BEEBEE000000000000000127 /* BeebeebCore.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = DB9E8601A0574FC294891B72 /* BeebeebCore.xcframework */; };
-		BEEBEE000000000000000220 /* BeebeebWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEEBEE000000000000000210 /* BeebeebWidget.swift */; };
-		BEEBEE000000000000000221 /* BeebeebWidget.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = BEEBEE000000000000000201 /* BeebeebWidget.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
-		E83845F60A174F628F826745 /* BeebeebCore.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = DB9E8601A0574FC294891B72 /* BeebeebCore.xcframework */; };
+		F11748422D0307B40044C1D9 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = F11748412D0307B40044C1D9 /* AppDelegate.swift */; };
+		D0F5E122096345E082745866 /* BeebeebWidget.appex in Copy Files */ = {isa = PBXBuildFile; fileRef = E8F66D9374D44F5EACB2942C /* BeebeebWidget.appex */; };
+		01A7CD90D23B4287957B86DC /* BeebeebWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4AD90C6E6CB4548B25D52BA /* BeebeebWidget.swift */; };
+		E4426EF3C1BD48EA814AF264 /* FileProviderExtension.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4AE4F8268C364E79A4814F6B; };
+		55CE61161E554284B167E75A /* FileProviderItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9444DA10D80647DAB11C2006; };
+		71ADA35118C64237A57119E4 /* FileProviderEnumerator.swift in Sources */ = {isa = PBXBuildFile; fileRef = E6D8A066260248F7AC321453; };
+		711563CC40F24239834E4A35 /* CacheManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 16A2E8437874414DBEB89483; };
+		420E2332910944B6AE710078 /* ApiClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 73410FE134094125BE47F347; };
+		90E156AA7A864DB7A66DAE94 /* CryptoBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 86271FEC3D204A0099CB12E8; };
+		7431A46EB7A74DA582FAEA6B /* BeebeebKeychainCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC124B85FA5D45148CD45EFB; };
+		B21769A5E20841D2A1BEFD20 /* Constants.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF348C46C0AF4F3A8E4EEB7E; };
+		C252E89AD58145118E55CB61 /* SyncEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 907F7C9049054154807D80C5; };
+		6CAECB76C8974F3198BED453 /* beebeeb_uniffi.swift in Sources */ = {isa = PBXBuildFile; fileRef = BFCA37900BFF4B0A8613083A; };
+		F2E13859797C4921BE2D771F /* BeebeebCore.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 761D24996DCF488185F07FC1; };
+		3A9AAAF92C8540CC8A72F13B /* BeebeebFileProvider.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = 8A1C88B2833443DEB72E2ECD; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
-
-/* Begin PBXContainerItemProxy section */
-		BEEBEE000000000000000030 /* PBXContainerItemProxy */ = {
-			isa = PBXContainerItemProxy;
-			containerPortal = 83CBB9F71A601CBA00E9B192 /* Project object */;
-			proxyType = 1;
-			remoteGlobalIDString = BEEBEE000000000000000003;
-			remoteInfo = BeebeebFileProvider;
-		};
-		BEEBEE000000000000000130 /* PBXContainerItemProxy */ = {
-			isa = PBXContainerItemProxy;
-			containerPortal = 83CBB9F71A601CBA00E9B192 /* Project object */;
-			proxyType = 1;
-			remoteGlobalIDString = BEEBEE000000000000000103;
-			remoteInfo = BeebeebShare;
-		};
-		BEEBEE000000000000000230 /* PBXContainerItemProxy */ = {
-			isa = PBXContainerItemProxy;
-			containerPortal = 83CBB9F71A601CBA00E9B192 /* Project object */;
-			proxyType = 1;
-			remoteGlobalIDString = BEEBEE000000000000000203;
-			remoteInfo = BeebeebWidget;
-		};
-/* End PBXContainerItemProxy section */
-
-/* Begin PBXCopyFilesBuildPhase section */
-		BEEBEE00000000000000000A /* Embed App Extensions */ = {
-			isa = PBXCopyFilesBuildPhase;
-			buildActionMask = 2147483647;
-			dstPath = "";
-			dstSubfolderSpec = 13;
-			files = (
-				BEEBEE00000000000000000B /* BeebeebFileProvider.appex in Embed App Extensions */,
-				BEEBEE000000000000000121 /* BeebeebShare.appex in Embed App Extensions */,
-				BEEBEE000000000000000221 /* BeebeebWidget.appex in Embed App Extensions */,
-			);
-			name = "Embed App Extensions";
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		13B07F961A680F5B00A75B9A /* Beebeeb.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Beebeeb.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		13B07FAF1A68108700A75B9A /* AppDelegate.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; name = AppDelegate.h; path = Beebeeb/AppDelegate.h; sourceTree = "<group>"; };
-		13B07FB01A68108700A75B9A /* AppDelegate.mm */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.objcpp; name = AppDelegate.mm; path = Beebeeb/AppDelegate.mm; sourceTree = "<group>"; };
 		13B07FB51A68108700A75B9A /* Images.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; name = Images.xcassets; path = Beebeeb/Images.xcassets; sourceTree = "<group>"; };
 		13B07FB61A68108700A75B9A /* Info.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = Info.plist; path = Beebeeb/Info.plist; sourceTree = "<group>"; };
-		13B07FB71A68108700A75B9A /* main.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; name = main.m; path = Beebeeb/main.m; sourceTree = "<group>"; };
-		37EFB2142B2E4DC5ACA0EAC5 /* beebeeb_uniffi.swift */ = {isa = PBXFileReference; explicitFileType = undefined; fileEncoding = 4; includeInIndex = 0; lastKnownFileType = sourcecode.swift; name = beebeeb_uniffi.swift; path = Beebeeb/beebeeb_uniffi.swift; sourceTree = "<group>"; };
-		58EEBF8E8E6FB1BC6CAF49B5 /* libPods-Beebeeb.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-Beebeeb.a"; sourceTree = BUILT_PRODUCTS_DIR; };
-		6C2E3173556A471DD304B334 /* Pods-Beebeeb.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Beebeeb.debug.xcconfig"; path = "Target Support Files/Pods-Beebeeb/Pods-Beebeeb.debug.xcconfig"; sourceTree = "<group>"; };
-		7A4D352CD337FB3A3BF06240 /* Pods-Beebeeb.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Beebeeb.release.xcconfig"; path = "Target Support Files/Pods-Beebeeb/Pods-Beebeeb.release.xcconfig"; sourceTree = "<group>"; };
-		7D07A44B5A2D436C8C962CB9 /* noop-file.swift */ = {isa = PBXFileReference; explicitFileType = undefined; fileEncoding = 4; includeInIndex = 0; lastKnownFileType = sourcecode.swift; name = "noop-file.swift"; path = "Beebeeb/noop-file.swift"; sourceTree = "<group>"; };
 		AA286B85B6C04FC6940260E9 /* SplashScreen.storyboard */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = file.storyboard; name = SplashScreen.storyboard; path = Beebeeb/SplashScreen.storyboard; sourceTree = "<group>"; };
 		BB2F792C24A3F905000567C9 /* Expo.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; path = Expo.plist; sourceTree = "<group>"; };
-		BEEBEE000000000000000001 /* BeebeebFileProvider.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = BeebeebFileProvider.appex; sourceTree = BUILT_PRODUCTS_DIR; };
-		BEEBEE000000000000000010 /* FileProviderExtension.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = FileProviderExtension.swift; path = "../targets/file-provider/FileProviderExtension.swift"; sourceTree = "<group>"; };
-		BEEBEE000000000000000011 /* FileProviderItem.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = FileProviderItem.swift; path = "../targets/file-provider/FileProviderItem.swift"; sourceTree = "<group>"; };
-		BEEBEE000000000000000012 /* FileProviderEnumerator.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = FileProviderEnumerator.swift; path = "../targets/file-provider/FileProviderEnumerator.swift"; sourceTree = "<group>"; };
-		BEEBEE000000000000000013 /* CacheManager.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = CacheManager.swift; path = "../targets/file-provider/CacheManager.swift"; sourceTree = "<group>"; };
-		BEEBEE000000000000000014 /* ApiClient.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = ApiClient.swift; path = "../targets/file-provider/ApiClient.swift"; sourceTree = "<group>"; };
-		BEEBEE000000000000000015 /* Info.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = Info.plist; path = BeebeebFileProvider/Info.plist; sourceTree = "<group>"; };
-		BEEBEE000000000000000016 /* BeebeebFileProvider.entitlements */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.entitlements; name = BeebeebFileProvider.entitlements; path = BeebeebFileProvider/BeebeebFileProvider.entitlements; sourceTree = "<group>"; };
-		BEEBEE000000000000000017 /* CryptoBridge.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = CryptoBridge.swift; path = "../targets/file-provider/CryptoBridge.swift"; sourceTree = "<group>"; };
-		BEEBEE000000000000000018 /* BeebeebKeychainCore.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = BeebeebKeychainCore.swift; path = "../targets/file-provider/BeebeebKeychainCore.swift"; sourceTree = "<group>"; };
-		BEEBEE000000000000000019 /* Constants.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = Constants.swift; path = "../targets/file-provider/Constants.swift"; sourceTree = "<group>"; };
-		BEEBEE00000000000000001A /* SyncEngine.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = SyncEngine.swift; path = "../targets/file-provider/SyncEngine.swift"; sourceTree = "<group>"; };
-		BEEBEE000000000000000101 /* BeebeebShare.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = BeebeebShare.appex; sourceTree = BUILT_PRODUCTS_DIR; };
-		BEEBEE000000000000000110 /* ShareViewController.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = ShareViewController.swift; path = BeebeebShare/ShareViewController.swift; sourceTree = "<group>"; };
-		BEEBEE000000000000000111 /* Info.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = Info.plist; path = BeebeebShare/Info.plist; sourceTree = "<group>"; };
-		BEEBEE000000000000000112 /* BeebeebShare.entitlements */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.entitlements; name = BeebeebShare.entitlements; path = BeebeebShare/BeebeebShare.entitlements; sourceTree = "<group>"; };
-		BEEBEE000000000000000113 /* BeebeebCryptoShim.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = BeebeebCryptoShim.swift; path = BeebeebShare/BeebeebCryptoShim.swift; sourceTree = "<group>"; };
-		BEEBEE000000000000000114 /* ShareUploader.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = ShareUploader.swift; path = BeebeebShare/ShareUploader.swift; sourceTree = "<group>"; };
-		BEEBEE000000000000000115 /* BeebeebKeychainCore.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = BeebeebKeychainCore.swift; path = BeebeebShare/BeebeebKeychainCore.swift; sourceTree = "<group>"; };
-		BEEBEE000000000000000116 /* FolderFetcher.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = FolderFetcher.swift; path = BeebeebShare/FolderFetcher.swift; sourceTree = "<group>"; };
-		BEEBEE000000000000000201 /* BeebeebWidget.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = BeebeebWidget.appex; sourceTree = BUILT_PRODUCTS_DIR; };
-		BEEBEE000000000000000210 /* BeebeebWidget.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = BeebeebWidget.swift; path = BeebeebWidget/BeebeebWidget.swift; sourceTree = "<group>"; };
-		BEEBEE000000000000000211 /* Info.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = Info.plist; path = BeebeebWidget/Info.plist; sourceTree = "<group>"; };
-		BEEBEE000000000000000212 /* BeebeebWidget.entitlements */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.entitlements; name = BeebeebWidget.entitlements; path = BeebeebWidget/BeebeebWidget.entitlements; sourceTree = "<group>"; };
-		C942FC1605944D92B88E9954 /* Beebeeb-Bridging-Header.h */ = {isa = PBXFileReference; explicitFileType = undefined; fileEncoding = 4; includeInIndex = 0; lastKnownFileType = sourcecode.c.h; name = "Beebeeb-Bridging-Header.h"; path = "Beebeeb/Beebeeb-Bridging-Header.h"; sourceTree = "<group>"; };
-		DB9E8601A0574FC294891B72 /* BeebeebCore.xcframework */ = {isa = PBXFileReference; explicitFileType = undefined; fileEncoding = undefined; includeInIndex = 0; lastKnownFileType = wrapper.xcframework; name = BeebeebCore.xcframework; path = BeebeebCore.xcframework; sourceTree = "<group>"; };
 		ED297162215061F000B7C4FE /* JavaScriptCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = JavaScriptCore.framework; path = System/Library/Frameworks/JavaScriptCore.framework; sourceTree = SDKROOT; };
-		F50E99740F33DDAD97DC53BB /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; includeInIndex = 1; name = PrivacyInfo.xcprivacy; path = Beebeeb/PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
-		FAC715A2D49A985799AEE119 /* ExpoModulesProvider.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ExpoModulesProvider.swift; path = "Pods/Target Support Files/Pods-Beebeeb/ExpoModulesProvider.swift"; sourceTree = "<group>"; };
+		F11748412D0307B40044C1D9 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppDelegate.swift; path = Beebeeb/AppDelegate.swift; sourceTree = "<group>"; };
+		F11748442D0722820044C1D9 /* Beebeeb-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = "Beebeeb-Bridging-Header.h"; path = "Beebeeb/Beebeeb-Bridging-Header.h"; sourceTree = "<group>"; };
+		E8F66D9374D44F5EACB2942C /* BeebeebWidget.appex */ = {isa = PBXFileReference; name = "BeebeebWidget.appex"; path = "BeebeebWidget.appex"; sourceTree = BUILT_PRODUCTS_DIR; fileEncoding = undefined; lastKnownFileType = undefined; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; };
+		D4AD90C6E6CB4548B25D52BA /* BeebeebWidget.swift */ = {isa = PBXFileReference; name = "BeebeebWidget.swift"; path = "BeebeebWidget.swift"; sourceTree = "<group>"; fileEncoding = 4; lastKnownFileType = sourcecode.swift; explicitFileType = undefined; includeInIndex = 0; };
+		4AE4F8268C364E79A4814F6B /* FileProviderExtension.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = FileProviderExtension.swift; path = ../targets/file-provider/FileProviderExtension.swift; sourceTree = "<group>"; };
+		9444DA10D80647DAB11C2006 /* FileProviderItem.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = FileProviderItem.swift; path = ../targets/file-provider/FileProviderItem.swift; sourceTree = "<group>"; };
+		E6D8A066260248F7AC321453 /* FileProviderEnumerator.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = FileProviderEnumerator.swift; path = ../targets/file-provider/FileProviderEnumerator.swift; sourceTree = "<group>"; };
+		16A2E8437874414DBEB89483 /* CacheManager.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = CacheManager.swift; path = ../targets/file-provider/CacheManager.swift; sourceTree = "<group>"; };
+		73410FE134094125BE47F347 /* ApiClient.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = ApiClient.swift; path = ../targets/file-provider/ApiClient.swift; sourceTree = "<group>"; };
+		86271FEC3D204A0099CB12E8 /* CryptoBridge.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = CryptoBridge.swift; path = ../targets/file-provider/CryptoBridge.swift; sourceTree = "<group>"; };
+		BC124B85FA5D45148CD45EFB /* BeebeebKeychainCore.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = BeebeebKeychainCore.swift; path = ../targets/file-provider/BeebeebKeychainCore.swift; sourceTree = "<group>"; };
+		BF348C46C0AF4F3A8E4EEB7E /* Constants.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = Constants.swift; path = ../targets/file-provider/Constants.swift; sourceTree = "<group>"; };
+		907F7C9049054154807D80C5 /* SyncEngine.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = SyncEngine.swift; path = ../targets/file-provider/SyncEngine.swift; sourceTree = "<group>"; };
+		BFCA37900BFF4B0A8613083A /* beebeeb_uniffi.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = beebeeb_uniffi.swift; path = Beebeeb/beebeeb_uniffi.swift; sourceTree = "<group>"; };
+		0AB3AD90BBD449D3BE56DCB9 /* Info.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = Info.plist; path = BeebeebFileProvider/Info.plist; sourceTree = "<group>"; };
+		5967EF296AE649E49F3E5123 /* BeebeebFileProvider.entitlements */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.entitlements; name = BeebeebFileProvider.entitlements; path = BeebeebFileProvider/BeebeebFileProvider.entitlements; sourceTree = "<group>"; };
+		8A1C88B2833443DEB72E2ECD /* BeebeebFileProvider.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = BeebeebFileProvider.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		761D24996DCF488185F07FC1 /* BeebeebCore.xcframework */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = wrapper.xcframework; name = BeebeebCore.xcframework; path = BeebeebCore.xcframework; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -132,31 +59,14 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				96905EF65AED1B983A6B3ABC /* libPods-Beebeeb.a in Frameworks */,
-				E83845F60A174F628F826745 /* BeebeebCore.xcframework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		BEEBEE000000000000000008 /* Frameworks */ = {
+		BEE0FAA60C6D4E6F929C4B34 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				BEEBEE000000000000000026 /* BeebeebCore.xcframework in Frameworks */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-		BEEBEE000000000000000108 /* Frameworks */ = {
-			isa = PBXFrameworksBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-				BEEBEE000000000000000127 /* BeebeebCore.xcframework in Frameworks */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-		BEEBEE000000000000000208 /* Frameworks */ = {
-			isa = PBXFrameworksBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
+				F2E13859797C4921BE2D771F /* BeebeebCore.xcframework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -166,17 +76,12 @@
 		13B07FAE1A68108700A75B9A /* Beebeeb */ = {
 			isa = PBXGroup;
 			children = (
+				F11748412D0307B40044C1D9 /* AppDelegate.swift */,
+				F11748442D0722820044C1D9 /* Beebeeb-Bridging-Header.h */,
 				BB2F792B24A3F905000567C9 /* Supporting */,
-				13B07FAF1A68108700A75B9A /* AppDelegate.h */,
-				13B07FB01A68108700A75B9A /* AppDelegate.mm */,
 				13B07FB51A68108700A75B9A /* Images.xcassets */,
 				13B07FB61A68108700A75B9A /* Info.plist */,
-				13B07FB71A68108700A75B9A /* main.m */,
 				AA286B85B6C04FC6940260E9 /* SplashScreen.storyboard */,
-				7D07A44B5A2D436C8C962CB9 /* noop-file.swift */,
-				C942FC1605944D92B88E9954 /* Beebeeb-Bridging-Header.h */,
-				37EFB2142B2E4DC5ACA0EAC5 /* beebeeb_uniffi.swift */,
-				F50E99740F33DDAD97DC53BB /* PrivacyInfo.xcprivacy */,
 			);
 			name = Beebeeb;
 			sourceTree = "<group>";
@@ -185,8 +90,6 @@
 			isa = PBXGroup;
 			children = (
 				ED297162215061F000B7C4FE /* JavaScriptCore.framework */,
-				58EEBF8E8E6FB1BC6CAF49B5 /* libPods-Beebeeb.a */,
-				DB9E8601A0574FC294891B72 /* BeebeebCore.xcframework */,
 			);
 			name = Frameworks;
 			sourceTree = "<group>";
@@ -202,14 +105,10 @@
 			isa = PBXGroup;
 			children = (
 				13B07FAE1A68108700A75B9A /* Beebeeb */,
-				BEEBEE000000000000000002 /* BeebeebFileProvider */,
-				BEEBEE000000000000000102 /* BeebeebShare */,
-				BEEBEE000000000000000202 /* BeebeebWidget */,
 				832341AE1AAA6A7D00B99B32 /* Libraries */,
 				83CBBA001A601CBA00E9B192 /* Products */,
 				2D16E6871FA4F8E400B85C8A /* Frameworks */,
-				D65327D7A22EEC0BE12398D9 /* Pods */,
-				D7E4C46ADA2E9064B798F356 /* ExpoModulesProviders */,
+				1846342B5EF847A3A67D4939 /* BeebeebFileProvider */,
 			);
 			indentWidth = 2;
 			sourceTree = "<group>";
@@ -220,19 +119,10 @@
 			isa = PBXGroup;
 			children = (
 				13B07F961A680F5B00A75B9A /* Beebeeb.app */,
-				BEEBEE000000000000000001 /* BeebeebFileProvider.appex */,
-				BEEBEE000000000000000101 /* BeebeebShare.appex */,
-				BEEBEE000000000000000201 /* BeebeebWidget.appex */,
+				E8F66D9374D44F5EACB2942C /* BeebeebWidget.appex */,
+				8A1C88B2833443DEB72E2ECD /* BeebeebFileProvider.appex */,
 			);
 			name = Products;
-			sourceTree = "<group>";
-		};
-		92DBD88DE9BF7D494EA9DA96 /* Beebeeb */ = {
-			isa = PBXGroup;
-			children = (
-				FAC715A2D49A985799AEE119 /* ExpoModulesProvider.swift */,
-			);
-			name = Beebeeb;
 			sourceTree = "<group>";
 		};
 		BB2F792B24A3F905000567C9 /* Supporting */ = {
@@ -244,64 +134,32 @@
 			path = Beebeeb/Supporting;
 			sourceTree = "<group>";
 		};
-		BEEBEE000000000000000002 /* BeebeebFileProvider */ = {
+		54A4B0DC6DEB48A4B3F39AF0 /* BeebeebWidget */ = {
 			isa = PBXGroup;
 			children = (
-				BEEBEE000000000000000010 /* FileProviderExtension.swift */,
-				BEEBEE000000000000000011 /* FileProviderItem.swift */,
-				BEEBEE000000000000000012 /* FileProviderEnumerator.swift */,
-				BEEBEE000000000000000013 /* CacheManager.swift */,
-				BEEBEE000000000000000014 /* ApiClient.swift */,
-				BEEBEE000000000000000017 /* CryptoBridge.swift */,
-				BEEBEE000000000000000018 /* BeebeebKeychainCore.swift */,
-				BEEBEE000000000000000019 /* Constants.swift */,
-				BEEBEE00000000000000001A /* SyncEngine.swift */,
-				37EFB2142B2E4DC5ACA0EAC5 /* beebeeb_uniffi.swift */,
-				BEEBEE000000000000000015 /* Info.plist */,
-				BEEBEE000000000000000016 /* BeebeebFileProvider.entitlements */,
-			);
-			name = BeebeebFileProvider;
-			sourceTree = "<group>";
-		};
-		BEEBEE000000000000000102 /* BeebeebShare */ = {
-			isa = PBXGroup;
-			children = (
-				BEEBEE000000000000000110 /* ShareViewController.swift */,
-				BEEBEE000000000000000113 /* BeebeebCryptoShim.swift */,
-				BEEBEE000000000000000114 /* ShareUploader.swift */,
-				BEEBEE000000000000000115 /* BeebeebKeychainCore.swift */,
-				BEEBEE000000000000000116 /* FolderFetcher.swift */,
-				BEEBEE000000000000000111 /* Info.plist */,
-				BEEBEE000000000000000112 /* BeebeebShare.entitlements */,
-			);
-			name = BeebeebShare;
-			sourceTree = "<group>";
-		};
-		BEEBEE000000000000000202 /* BeebeebWidget */ = {
-			isa = PBXGroup;
-			children = (
-				BEEBEE000000000000000210 /* BeebeebWidget.swift */,
-				BEEBEE000000000000000211 /* Info.plist */,
-				BEEBEE000000000000000212 /* BeebeebWidget.entitlements */,
+				D4AD90C6E6CB4548B25D52BA /* BeebeebWidget.swift */,
 			);
 			name = BeebeebWidget;
+			path = BeebeebWidget;
 			sourceTree = "<group>";
 		};
-		D65327D7A22EEC0BE12398D9 /* Pods */ = {
+		1846342B5EF847A3A67D4939 /* BeebeebFileProvider */ = {
 			isa = PBXGroup;
 			children = (
-				6C2E3173556A471DD304B334 /* Pods-Beebeeb.debug.xcconfig */,
-				7A4D352CD337FB3A3BF06240 /* Pods-Beebeeb.release.xcconfig */,
+				4AE4F8268C364E79A4814F6B /* FileProviderExtension.swift */,
+				9444DA10D80647DAB11C2006 /* FileProviderItem.swift */,
+				E6D8A066260248F7AC321453 /* FileProviderEnumerator.swift */,
+				16A2E8437874414DBEB89483 /* CacheManager.swift */,
+				73410FE134094125BE47F347 /* ApiClient.swift */,
+				86271FEC3D204A0099CB12E8 /* CryptoBridge.swift */,
+				BC124B85FA5D45148CD45EFB /* BeebeebKeychainCore.swift */,
+				BF348C46C0AF4F3A8E4EEB7E /* Constants.swift */,
+				907F7C9049054154807D80C5 /* SyncEngine.swift */,
+				BFCA37900BFF4B0A8613083A /* beebeeb_uniffi.swift */,
+				0AB3AD90BBD449D3BE56DCB9 /* Info.plist */,
+				5967EF296AE649E49F3E5123 /* BeebeebFileProvider.entitlements */,
 			);
-			path = Pods;
-			sourceTree = "<group>";
-		};
-		D7E4C46ADA2E9064B798F356 /* ExpoModulesProviders */ = {
-			isa = PBXGroup;
-			children = (
-				92DBD88DE9BF7D494EA9DA96 /* Beebeeb */,
-			);
-			name = ExpoModulesProviders;
+			name = BeebeebFileProvider;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -312,34 +170,47 @@
 			buildConfigurationList = 13B07F931A680F5B00A75B9A /* Build configuration list for PBXNativeTarget "Beebeeb" */;
 			buildPhases = (
 				08A4A3CD28434E44B6B9DE2E /* [CP] Check Pods Manifest.lock */,
-				B13CD642DB5FAB67853EFF28 /* [Expo] Configure project */,
 				13B07F871A680F5B00A75B9A /* Sources */,
 				13B07F8C1A680F5B00A75B9A /* Frameworks */,
 				13B07F8E1A680F5B00A75B9A /* Resources */,
-				BEEBEE00000000000000000A /* Embed App Extensions */,
 				00DD1BFF1BD5951E006B06BC /* Bundle React Native code and images */,
 				800E24972A6A228C8D4807E9 /* [CP] Copy Pods Resources */,
-				473B8E1264E51969466FA6B4 /* [CP] Embed Pods Frameworks */,
+				61B734AF4E9547B6876AE939 /* [Expo Dev Launcher] Strip Local Network Keys for Release */,
+				7371824A8F404BB28A984AE0 /* Copy Files */,
+				979A1F9879D3482A9E8E2159 /* Embed App Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
-				BEEBEE000000000000000031 /* PBXTargetDependency */,
-				BEEBEE000000000000000131 /* PBXTargetDependency */,
-				BEEBEE000000000000000231 /* PBXTargetDependency */,
+				ED06B316C50B48CDBD2D5939 /* BeebeebFileProvider */,
 			);
 			name = Beebeeb;
 			productName = Beebeeb;
 			productReference = 13B07F961A680F5B00A75B9A /* Beebeeb.app */;
 			productType = "com.apple.product-type.application";
 		};
-		BEEBEE000000000000000003 /* BeebeebFileProvider */ = {
+		EBEDA3DAB0B043AA8A00A410 /* "BeebeebWidget" */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = BEEBEE000000000000000004 /* Build configuration list for PBXNativeTarget "BeebeebFileProvider" */;
+			name = "BeebeebWidget";
+			productName = "BeebeebWidget";
+			productReference = E8F66D9374D44F5EACB2942C;
+			productType = "com.apple.product-type.app-extension";
+			buildConfigurationList = 9F6814D49769406B8614D651;
 			buildPhases = (
-				BEEBEE000000000000000007 /* Sources */,
-				BEEBEE000000000000000008 /* Frameworks */,
-				BEEBEE000000000000000009 /* Resources */,
+				9B67D58E070C406CBB5FDABA /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+		};
+		94E90420F98F47FF9B025FDE /* BeebeebFileProvider */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 8158EA98723346CBBE267C56;
+			buildPhases = (
+				ADE4C0D20ABC40A6A94349C1 /* Sources */,
+				BEE0FAA60C6D4E6F929C4B34 /* Frameworks */,
+				E7D48999FD104AF7917FB538 /* Resources */,
 			);
 			buildRules = (
 			);
@@ -347,41 +218,7 @@
 			);
 			name = BeebeebFileProvider;
 			productName = BeebeebFileProvider;
-			productReference = BEEBEE000000000000000001 /* BeebeebFileProvider.appex */;
-			productType = "com.apple.product-type.app-extension";
-		};
-		BEEBEE000000000000000103 /* BeebeebShare */ = {
-			isa = PBXNativeTarget;
-			buildConfigurationList = BEEBEE000000000000000104 /* Build configuration list for PBXNativeTarget "BeebeebShare" */;
-			buildPhases = (
-				BEEBEE000000000000000107 /* Sources */,
-				BEEBEE000000000000000108 /* Frameworks */,
-				BEEBEE000000000000000109 /* Resources */,
-			);
-			buildRules = (
-			);
-			dependencies = (
-			);
-			name = BeebeebShare;
-			productName = BeebeebShare;
-			productReference = BEEBEE000000000000000101 /* BeebeebShare.appex */;
-			productType = "com.apple.product-type.app-extension";
-		};
-		BEEBEE000000000000000203 /* BeebeebWidget */ = {
-			isa = PBXNativeTarget;
-			buildConfigurationList = BEEBEE000000000000000204 /* Build configuration list for PBXNativeTarget "BeebeebWidget" */;
-			buildPhases = (
-				BEEBEE000000000000000207 /* Sources */,
-				BEEBEE000000000000000208 /* Frameworks */,
-				BEEBEE000000000000000209 /* Resources */,
-			);
-			buildRules = (
-			);
-			dependencies = (
-			);
-			name = BeebeebWidget;
-			productName = BeebeebWidget;
-			productReference = BEEBEE000000000000000201 /* BeebeebWidget.appex */;
+			productReference = 8A1C88B2833443DEB72E2ECD;
 			productType = "com.apple.product-type.app-extension";
 		};
 /* End PBXNativeTarget section */
@@ -393,15 +230,6 @@
 				LastUpgradeCheck = 1130;
 				TargetAttributes = {
 					13B07F861A680F5B00A75B9A = {
-						LastSwiftMigration = 1250;
-					};
-					BEEBEE000000000000000003 = {
-						LastSwiftMigration = 1250;
-					};
-					BEEBEE000000000000000103 = {
-						LastSwiftMigration = 1250;
-					};
-					BEEBEE000000000000000203 = {
 						LastSwiftMigration = 1250;
 					};
 				};
@@ -420,9 +248,8 @@
 			projectRoot = "";
 			targets = (
 				13B07F861A680F5B00A75B9A /* Beebeeb */,
-				BEEBEE000000000000000003 /* BeebeebFileProvider */,
-				BEEBEE000000000000000103 /* BeebeebShare */,
-				BEEBEE000000000000000203 /* BeebeebWidget */,
+				EBEDA3DAB0B043AA8A00A410 /* "BeebeebWidget" */,
+				94E90420F98F47FF9B025FDE /* BeebeebFileProvider */,
 			);
 		};
 /* End PBXProject section */
@@ -435,25 +262,10 @@
 				BB2F792D24A3F905000567C9 /* Expo.plist in Resources */,
 				13B07FBF1A68108700A75B9A /* Images.xcassets in Resources */,
 				3E461D99554A48A4959DE609 /* SplashScreen.storyboard in Resources */,
-				1544F34E6B158111FA1CFE18 /* PrivacyInfo.xcprivacy in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		BEEBEE000000000000000009 /* Resources */ = {
-			isa = PBXResourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-		BEEBEE000000000000000109 /* Resources */ = {
-			isa = PBXResourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-		BEEBEE000000000000000209 /* Resources */ = {
+		E7D48999FD104AF7917FB538 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -470,6 +282,8 @@
 			files = (
 			);
 			inputPaths = (
+				"$(SRCROOT)/.xcode.env",
+				"$(SRCROOT)/.xcode.env.local",
 			);
 			name = "Bundle React Native code and images";
 			outputPaths = (
@@ -500,26 +314,6 @@
 			shellScript = "diff \"${PODS_PODFILE_DIR_PATH}/Podfile.lock\" \"${PODS_ROOT}/Manifest.lock\" > /dev/null\nif [ $? != 0 ] ; then\n    # print error to STDERR\n    echo \"error: The sandbox is not in sync with the Podfile.lock. Run 'pod install' or update your CocoaPods installation.\" >&2\n    exit 1\nfi\n# This output is used by Xcode 'outputs' to avoid re-running this script phase.\necho \"SUCCESS\" > \"${SCRIPT_OUTPUT_FILE_0}\"\n";
 			showEnvVarsInLog = 0;
 		};
-		473B8E1264E51969466FA6B4 /* [CP] Embed Pods Frameworks */ = {
-			isa = PBXShellScriptBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			inputPaths = (
-				"${PODS_ROOT}/Target Support Files/Pods-Beebeeb/Pods-Beebeeb-frameworks.sh",
-				"${PODS_XCFRAMEWORKS_BUILD_DIR}/ExpoSQLite/crsqlite.framework/crsqlite",
-				"${PODS_XCFRAMEWORKS_BUILD_DIR}/hermes-engine/Pre-built/hermes.framework/hermes",
-			);
-			name = "[CP] Embed Pods Frameworks";
-			outputPaths = (
-				"${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}/crsqlite.framework",
-				"${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}/hermes.framework",
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-			shellPath = /bin/sh;
-			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-Beebeeb/Pods-Beebeeb-frameworks.sh\"\n";
-			showEnvVarsInLog = 0;
-		};
 		800E24972A6A228C8D4807E9 /* [CP] Copy Pods Resources */ = {
 			isa = PBXShellScriptBuildPhase;
 			buildActionMask = 2147483647;
@@ -527,71 +321,68 @@
 			);
 			inputPaths = (
 				"${PODS_ROOT}/Target Support Files/Pods-Beebeeb/Pods-Beebeeb-resources.sh",
-				"${PODS_CONFIGURATION_BUILD_DIR}/AsyncStorage/AsyncStorage_resources.bundle",
-				"${PODS_CONFIGURATION_BUILD_DIR}/EXApplication/ExpoApplication_privacy.bundle",
 				"${PODS_CONFIGURATION_BUILD_DIR}/EXConstants/EXConstants.bundle",
-				"${PODS_CONFIGURATION_BUILD_DIR}/EXConstants/ExpoConstants_privacy.bundle",
-				"${PODS_CONFIGURATION_BUILD_DIR}/EXNotifications/ExpoNotifications_privacy.bundle",
 				"${PODS_CONFIGURATION_BUILD_DIR}/EXUpdates/EXUpdates.bundle",
-				"${PODS_CONFIGURATION_BUILD_DIR}/ExpoDevice/ExpoDevice_privacy.bundle",
-				"${PODS_CONFIGURATION_BUILD_DIR}/ExpoFileSystem/ExpoFileSystem_privacy.bundle",
-				"${PODS_CONFIGURATION_BUILD_DIR}/ExpoMediaLibrary/ExpoMediaLibrary_privacy.bundle",
-				"${PODS_CONFIGURATION_BUILD_DIR}/RCT-Folly/RCT-Folly_privacy.bundle",
-				"${PODS_CONFIGURATION_BUILD_DIR}/ReachabilitySwift/ReachabilitySwift.bundle",
-				"${PODS_CONFIGURATION_BUILD_DIR}/React-Core/React-Core_privacy.bundle",
-				"${PODS_CONFIGURATION_BUILD_DIR}/React-cxxreact/React-cxxreact_privacy.bundle",
-				"${PODS_CONFIGURATION_BUILD_DIR}/SDWebImage/SDWebImage.bundle",
-				"${PODS_CONFIGURATION_BUILD_DIR}/boost/boost_privacy.bundle",
-				"${PODS_CONFIGURATION_BUILD_DIR}/expo-dev-launcher/EXDevLauncher.bundle",
-				"${PODS_CONFIGURATION_BUILD_DIR}/expo-dev-menu/EXDevMenu.bundle",
-				"${PODS_CONFIGURATION_BUILD_DIR}/glog/glog_privacy.bundle",
-				"${PODS_CONFIGURATION_BUILD_DIR}/react-native-blob-util/ReactNativeBlobUtilPrivacyInfo.bundle",
+				"${PODS_CONFIGURATION_BUILD_DIR}/React-Core/RCTI18nStrings.bundle",
 			);
 			name = "[CP] Copy Pods Resources";
 			outputPaths = (
-				"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/AsyncStorage_resources.bundle",
-				"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/ExpoApplication_privacy.bundle",
 				"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/EXConstants.bundle",
-				"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/ExpoConstants_privacy.bundle",
-				"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/ExpoNotifications_privacy.bundle",
 				"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/EXUpdates.bundle",
-				"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/ExpoDevice_privacy.bundle",
-				"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/ExpoFileSystem_privacy.bundle",
-				"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/ExpoMediaLibrary_privacy.bundle",
-				"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/RCT-Folly_privacy.bundle",
-				"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/ReachabilitySwift.bundle",
-				"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/React-Core_privacy.bundle",
-				"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/React-cxxreact_privacy.bundle",
-				"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/SDWebImage.bundle",
-				"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/boost_privacy.bundle",
-				"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/EXDevLauncher.bundle",
-				"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/EXDevMenu.bundle",
-				"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/glog_privacy.bundle",
-				"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/ReactNativeBlobUtilPrivacyInfo.bundle",
+				"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/RCTI18nStrings.bundle",
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
 			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-Beebeeb/Pods-Beebeeb-resources.sh\"\n";
 			showEnvVarsInLog = 0;
 		};
-		B13CD642DB5FAB67853EFF28 /* [Expo] Configure project */ = {
+		61B734AF4E9547B6876AE939 /* [Expo Dev Launcher] Strip Local Network Keys for Release */ = {
 			isa = PBXShellScriptBuildPhase;
-			alwaysOutOfDate = 1;
 			buildActionMask = 2147483647;
 			files = (
 			);
-			inputFileListPaths = (
-			);
+			runOnlyForDeploymentPostprocessing = 0;
+			name = "[Expo Dev Launcher] Strip Local Network Keys for Release";
 			inputPaths = (
-			);
-			name = "[Expo] Configure project";
-			outputFileListPaths = (
 			);
 			outputPaths = (
 			);
-			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "# This script configures Expo modules and generates the modules provider file.\nbash -l -c \"./Pods/Target\\ Support\\ Files/Pods-Beebeeb/expo-configure-project.sh\"\n";
+			shellScript = "# Strip dev-launcher-specific local network permission keys from non-Debug builds
+# This only removes _expo._tcp Bonjour services and the dev-launcher usage description.
+# Other Bonjour services and custom descriptions are preserved for production use.
+
+if [ \"$CONFIGURATION\" != \"Debug\" ]; then
+  PLIST_PATH=\"${TARGET_BUILD_DIR}/${INFOPLIST_PATH}\"
+  if [ -f \"$PLIST_PATH\" ]; then
+    # Check if NSBonjourServices exists
+    if /usr/libexec/PlistBuddy -c \"Print :NSBonjourServices\" \"$PLIST_PATH\" >/dev/null 2>&1; then
+      # Get the count of services
+      COUNT=$(/usr/libexec/PlistBuddy -c \"Print :NSBonjourServices\" \"$PLIST_PATH\" 2>/dev/null | grep \"^    \" | wc -l | tr -d ' ')
+
+      # Remove _expo._tcp
+      for ((i=COUNT-1; i>=0; i--)); do
+        SERVICE=$(/usr/libexec/PlistBuddy -c \"Print :NSBonjourServices:$i\" \"$PLIST_PATH\" 2>/dev/null || echo \"\")
+        if echo \"$SERVICE\" | grep -q \"_expo._tcp\"; then
+          /usr/libexec/PlistBuddy -c \"Delete :NSBonjourServices:$i\" \"$PLIST_PATH\" 2>/dev/null || true
+        fi
+      done
+
+      # If the array is now empty, remove it entirely
+      REMAINING=$(/usr/libexec/PlistBuddy -c \"Print :NSBonjourServices\" \"$PLIST_PATH\" 2>/dev/null | grep \"^    \" | wc -l | tr -d ' ')
+      if [ \"$REMAINING\" -eq \"0\" ]; then
+        /usr/libexec/PlistBuddy -c \"Delete :NSBonjourServices\" \"$PLIST_PATH\" 2>/dev/null || true
+      fi
+    fi
+
+    # Only delete the description if it matches the dev-launcher default text
+    DESC=$(/usr/libexec/PlistBuddy -c \"Print :NSLocalNetworkUsageDescription\" \"$PLIST_PATH\" 2>/dev/null || echo \"\")
+    if echo \"$DESC\" | grep -q \"Expo Dev Launcher\"; then
+      /usr/libexec/PlistBuddy -c \"Delete :NSLocalNetworkUsageDescription\" \"$PLIST_PATH\" 2>/dev/null || true
+    fi
+  fi
+fi
+";
 		};
 /* End PBXShellScriptBuildPhase section */
 
@@ -600,140 +391,101 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				13B07FBC1A68108700A75B9A /* AppDelegate.mm in Sources */,
-				13B07FC11A68108700A75B9A /* main.m in Sources */,
-				B18059E884C0ABDD17F3DC3D /* ExpoModulesProvider.swift in Sources */,
-				7B7EB99F251145AA993A3DF8 /* noop-file.swift in Sources */,
-				4AC72F49B00846A5BC341395 /* beebeeb_uniffi.swift in Sources */,
+				F11748422D0307B40044C1D9 /* AppDelegate.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		BEEBEE000000000000000007 /* Sources */ = {
+		9B67D58E070C406CBB5FDABA /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				BEEBEE000000000000000020 /* FileProviderExtension.swift in Sources */,
-				BEEBEE000000000000000021 /* FileProviderItem.swift in Sources */,
-				BEEBEE000000000000000022 /* FileProviderEnumerator.swift in Sources */,
-				BEEBEE000000000000000023 /* CacheManager.swift in Sources */,
-				BEEBEE000000000000000024 /* ApiClient.swift in Sources */,
-				BEEBEE000000000000000027 /* CryptoBridge.swift in Sources */,
-				BEEBEE000000000000000028 /* BeebeebKeychainCore.swift in Sources */,
-				BEEBEE000000000000000029 /* Constants.swift in Sources */,
-				BEEBEE00000000000000002A /* SyncEngine.swift in Sources */,
-				BEEBEE000000000000000025 /* beebeeb_uniffi.swift in Sources */,
+				01A7CD90D23B4287957B86DC /* "BeebeebWidget.swift" in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		BEEBEE000000000000000107 /* Sources */ = {
+		ADE4C0D20ABC40A6A94349C1 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				BEEBEE000000000000000120 /* ShareViewController.swift in Sources */,
-				BEEBEE000000000000000122 /* BeebeebCryptoShim.swift in Sources */,
-				BEEBEE000000000000000123 /* ShareUploader.swift in Sources */,
-				BEEBEE000000000000000124 /* BeebeebKeychainCore.swift in Sources */,
-				BEEBEE000000000000000125 /* FolderFetcher.swift in Sources */,
-				BEEBEE000000000000000126 /* beebeeb_uniffi.swift in Sources */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-		BEEBEE000000000000000207 /* Sources */ = {
-			isa = PBXSourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-				BEEBEE000000000000000220 /* BeebeebWidget.swift in Sources */,
+				E4426EF3C1BD48EA814AF264 /* FileProviderExtension.swift in Sources */,
+				55CE61161E554284B167E75A /* FileProviderItem.swift in Sources */,
+				71ADA35118C64237A57119E4 /* FileProviderEnumerator.swift in Sources */,
+				711563CC40F24239834E4A35 /* CacheManager.swift in Sources */,
+				420E2332910944B6AE710078 /* ApiClient.swift in Sources */,
+				90E156AA7A864DB7A66DAE94 /* CryptoBridge.swift in Sources */,
+				7431A46EB7A74DA582FAEA6B /* BeebeebKeychainCore.swift in Sources */,
+				B21769A5E20841D2A1BEFD20 /* Constants.swift in Sources */,
+				C252E89AD58145118E55CB61 /* SyncEngine.swift in Sources */,
+				6CAECB76C8974F3198BED453 /* beebeeb_uniffi.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
 
-/* Begin PBXTargetDependency section */
-		BEEBEE000000000000000031 /* PBXTargetDependency */ = {
-			isa = PBXTargetDependency;
-			target = BEEBEE000000000000000003 /* BeebeebFileProvider */;
-			targetProxy = BEEBEE000000000000000030 /* PBXContainerItemProxy */;
-		};
-		BEEBEE000000000000000131 /* PBXTargetDependency */ = {
-			isa = PBXTargetDependency;
-			target = BEEBEE000000000000000103 /* BeebeebShare */;
-			targetProxy = BEEBEE000000000000000130 /* PBXContainerItemProxy */;
-		};
-		BEEBEE000000000000000231 /* PBXTargetDependency */ = {
-			isa = PBXTargetDependency;
-			target = BEEBEE000000000000000203 /* BeebeebWidget */;
-			targetProxy = BEEBEE000000000000000230 /* PBXContainerItemProxy */;
-		};
-/* End PBXTargetDependency section */
-
 /* Begin XCBuildConfiguration section */
 		13B07F941A680F5B00A75B9A /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = 6C2E3173556A471DD304B334 /* Pods-Beebeeb.debug.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
-				CODE_SIGN_ENTITLEMENTS = Beebeeb/Beebeeb.entitlements;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = R8352WDJJR;
 				ENABLE_BITCODE = NO;
-				FRAMEWORK_SEARCH_PATHS = (
-					"$(inherited)",
-					"\".\"",
-				);
 				GCC_PREPROCESSOR_DEFINITIONS = (
 					"$(inherited)",
 					"FB_SONARKIT_ENABLED=1",
 				);
 				INFOPLIST_FILE = Beebeeb/Info.plist;
-				IPHONEOS_DEPLOYMENT_TARGET = 15.1;
-				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
+				IPHONEOS_DEPLOYMENT_TARGET = 16.4;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 13.4;
 				MARKETING_VERSION = 1.0;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
 					"-lc++",
 				);
-				OTHER_SWIFT_FLAGS = "$(inherited) -D EXPO_CONFIGURATION_DEBUG";
-				PRODUCT_BUNDLE_IDENTIFIER = io.beebeeb.app;
-				PRODUCT_NAME = Beebeeb;
+				PRODUCT_BUNDLE_IDENTIFIER = "io.beebeeb.app";
+				PRODUCT_NAME = "Beebeeb";
 				SWIFT_OBJC_BRIDGING_HEADER = "Beebeeb/Beebeeb-Bridging-Header.h";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1,2";
 				VERSIONING_SYSTEM = "apple-generic";
+				DEVELOPMENT_TEAM = R8352WDJJR;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				CODE_SIGN_ENTITLEMENTS = Beebeeb/Beebeeb.entitlements;
 			};
 			name = Debug;
 		};
 		13B07F951A680F5B00A75B9A /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = 7A4D352CD337FB3A3BF06240 /* Pods-Beebeeb.release.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
-				CODE_SIGN_ENTITLEMENTS = Beebeeb/Beebeeb.entitlements;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = R8352WDJJR;
-				FRAMEWORK_SEARCH_PATHS = (
-					"$(inherited)",
-					"\".\"",
-				);
 				INFOPLIST_FILE = Beebeeb/Info.plist;
-				IPHONEOS_DEPLOYMENT_TARGET = 15.1;
-				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
+				IPHONEOS_DEPLOYMENT_TARGET = 16.4;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 13.4;
 				MARKETING_VERSION = 1.0;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
 					"-lc++",
 				);
-				OTHER_SWIFT_FLAGS = "$(inherited) -D EXPO_CONFIGURATION_RELEASE";
-				PRODUCT_BUNDLE_IDENTIFIER = io.beebeeb.app;
-				PRODUCT_NAME = Beebeeb;
+				PRODUCT_BUNDLE_IDENTIFIER = "io.beebeeb.app";
+				PRODUCT_NAME = "Beebeeb";
 				SWIFT_OBJC_BRIDGING_HEADER = "Beebeeb/Beebeeb-Bridging-Header.h";
 				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1,2";
 				VERSIONING_SYSTEM = "apple-generic";
+				DEVELOPMENT_TEAM = R8352WDJJR;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				CODE_SIGN_ENTITLEMENTS = Beebeeb/Beebeeb.entitlements;
 			};
 			name = Release;
 		};
@@ -784,19 +536,15 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 15.1;
-				LD_RUNPATH_SEARCH_PATHS = "/usr/lib/swift $(inherited)";
-				LIBRARY_SEARCH_PATHS = "$(SDKROOT)/usr/lib/swift\"$(inherited)\"";
+				IPHONEOS_DEPLOYMENT_TARGET = 16.4;
+				LD_RUNPATH_SEARCH_PATHS = (
+					/usr/lib/swift,
+					"$(inherited)",
+				);
+				LIBRARY_SEARCH_PATHS = "\"$(inherited)\"";
 				MTL_ENABLE_DEBUG_INFO = YES;
 				ONLY_ACTIVE_ARCH = YES;
-				OTHER_LDFLAGS = (
-					"$(inherited)",
-					" ",
-				);
-				REACT_NATIVE_PATH = "${PODS_ROOT}/../../node_modules/react-native";
 				SDKROOT = iphoneos;
-				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) DEBUG";
-				USE_HERMES = true;
 			};
 			name = Debug;
 		};
@@ -840,53 +588,45 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 15.1;
-				LD_RUNPATH_SEARCH_PATHS = "/usr/lib/swift $(inherited)";
-				LIBRARY_SEARCH_PATHS = "$(SDKROOT)/usr/lib/swift\"$(inherited)\"";
-				MTL_ENABLE_DEBUG_INFO = NO;
-				OTHER_LDFLAGS = (
+				IPHONEOS_DEPLOYMENT_TARGET = 16.4;
+				LD_RUNPATH_SEARCH_PATHS = (
+					/usr/lib/swift,
 					"$(inherited)",
-					" ",
 				);
-				REACT_NATIVE_PATH = "${PODS_ROOT}/../../node_modules/react-native";
+				LIBRARY_SEARCH_PATHS = "\"$(inherited)\"";
+				MTL_ENABLE_DEBUG_INFO = NO;
 				SDKROOT = iphoneos;
-				USE_HERMES = true;
 				VALIDATE_PRODUCT = YES;
 			};
 			name = Release;
 		};
-		BEEBEE000000000000000005 /* Debug */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				ALWAYS_SEARCH_USER_PATHS = NO;
-				APPLICATION_EXTENSION_API_ONLY = YES;
-				CLANG_ENABLE_MODULES = YES;
-				CODE_SIGN_ENTITLEMENTS = BeebeebFileProvider/BeebeebFileProvider.entitlements;
-				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = R8352WDJJR;
-				FRAMEWORK_SEARCH_PATHS = (
-					"$(inherited)",
-					"$(PROJECT_DIR)",
-				);
-				GCC_PREPROCESSOR_DEFINITIONS = (
-					"DEBUG=1",
-					"$(inherited)",
-				);
-				INFOPLIST_FILE = BeebeebFileProvider/Info.plist;
-				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
-				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks";
-				MARKETING_VERSION = 1.0.0;
-				OTHER_SWIFT_FLAGS = "$(inherited) -D EXPO_CONFIGURATION_DEBUG";
-				PRODUCT_BUNDLE_IDENTIFIER = "io.beebeeb.app.file-provider";
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SKIP_INSTALL = YES;
-				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
-				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1,2";
-			};
+		59567B42E69840FBBB3C1E1A /* Debug */ = {
 			name = Debug;
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				INFOPLIST_FILE = "BeebeebWidget/BeebeebWidget-Info.plist";
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks";
+				PRODUCT_NAME = "BeebeebWidget";
+				SKIP_INSTALL = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = "io.beebeeb.app.widget";
+			};
 		};
-		BEEBEE000000000000000006 /* Release */ = {
+		C445AF469D8D4CE3BC59455A /* Release */ = {
+			name = Release;
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				INFOPLIST_FILE = "BeebeebWidget/BeebeebWidget-Info.plist";
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks";
+				PRODUCT_NAME = "BeebeebWidget";
+				SKIP_INSTALL = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = "io.beebeeb.app.widget";
+			};
+		};
+		B1C4F0C40F6C4DB0B771E7D0 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
@@ -898,36 +638,6 @@
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(PROJECT_DIR)",
-				);
-				INFOPLIST_FILE = BeebeebFileProvider/Info.plist;
-				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
-				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks";
-				MARKETING_VERSION = 1.0.0;
-				OTHER_SWIFT_FLAGS = "$(inherited) -D EXPO_CONFIGURATION_RELEASE";
-				PRODUCT_BUNDLE_IDENTIFIER = "io.beebeeb.app.file-provider";
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SKIP_INSTALL = YES;
-				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1,2";
-			};
-			name = Release;
-		};
-		BEEBEE000000000000000105 /* Debug */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				ALWAYS_SEARCH_USER_PATHS = NO;
-				APPLICATION_EXTENSION_API_ONLY = YES;
-				CLANG_ENABLE_MODULES = YES;
-				CODE_SIGN_ENTITLEMENTS = BeebeebShare/BeebeebShare.entitlements;
-				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = R8352WDJJR;
-				FRAMEWORK_SEARCH_PATHS = (
-					"$(inherited)",
-					"$(PROJECT_DIR)",
-				);
-				GCC_PREPROCESSOR_DEFINITIONS = (
-					"DEBUG=1",
-					"$(inherited)",
 				);
 				"HEADER_SEARCH_PATHS[sdk=iphoneos*]" = (
 					"$(inherited)",
@@ -937,29 +647,33 @@
 					"$(inherited)",
 					"\"$(PROJECT_DIR)/BeebeebCore.xcframework/ios-arm64_x86_64-simulator/Headers\"",
 				);
-				INFOPLIST_FILE = BeebeebShare/Info.plist;
-				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				INFOPLIST_FILE = BeebeebFileProvider/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 16;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks";
 				MARKETING_VERSION = 1.0.0;
 				OTHER_SWIFT_FLAGS = "$(inherited) -D EXPO_CONFIGURATION_DEBUG";
 				"OTHER_SWIFT_FLAGS[sdk=iphoneos*]" = "$(inherited) -D EXPO_CONFIGURATION_DEBUG -Xcc -fmodule-map-file=\"$(PROJECT_DIR)/BeebeebCore.xcframework/ios-arm64/Headers/module.modulemap\"";
 				"OTHER_SWIFT_FLAGS[sdk=iphonesimulator*]" = "$(inherited) -D EXPO_CONFIGURATION_DEBUG -Xcc -fmodule-map-file=\"$(PROJECT_DIR)/BeebeebCore.xcframework/ios-arm64_x86_64-simulator/Headers/module.modulemap\"";
-				PRODUCT_BUNDLE_IDENTIFIER = io.beebeeb.app.share;
+				PRODUCT_BUNDLE_IDENTIFIER = io.beebeeb.app.file-provider;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
-				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
-				SWIFT_VERSION = 5.0;
+				SWIFT_VERSION = 5;
 				TARGETED_DEVICE_FAMILY = "1,2";
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 			};
 			name = Debug;
 		};
-		BEEBEE000000000000000106 /* Release */ = {
+		6935E6E9163F4D8EBF9E2B70 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CLANG_ENABLE_MODULES = YES;
-				CODE_SIGN_ENTITLEMENTS = BeebeebShare/BeebeebShare.entitlements;
+				CODE_SIGN_ENTITLEMENTS = BeebeebFileProvider/BeebeebFileProvider.entitlements;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = R8352WDJJR;
 				FRAMEWORK_SEARCH_PATHS = (
@@ -974,66 +688,17 @@
 					"$(inherited)",
 					"\"$(PROJECT_DIR)/BeebeebCore.xcframework/ios-arm64_x86_64-simulator/Headers\"",
 				);
-				INFOPLIST_FILE = BeebeebShare/Info.plist;
-				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				INFOPLIST_FILE = BeebeebFileProvider/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 16;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks";
 				MARKETING_VERSION = 1.0.0;
 				OTHER_SWIFT_FLAGS = "$(inherited) -D EXPO_CONFIGURATION_RELEASE";
 				"OTHER_SWIFT_FLAGS[sdk=iphoneos*]" = "$(inherited) -D EXPO_CONFIGURATION_RELEASE -Xcc -fmodule-map-file=\"$(PROJECT_DIR)/BeebeebCore.xcframework/ios-arm64/Headers/module.modulemap\"";
 				"OTHER_SWIFT_FLAGS[sdk=iphonesimulator*]" = "$(inherited) -D EXPO_CONFIGURATION_RELEASE -Xcc -fmodule-map-file=\"$(PROJECT_DIR)/BeebeebCore.xcframework/ios-arm64_x86_64-simulator/Headers/module.modulemap\"";
-				PRODUCT_BUNDLE_IDENTIFIER = io.beebeeb.app.share;
+				PRODUCT_BUNDLE_IDENTIFIER = io.beebeeb.app.file-provider;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
-				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1,2";
-			};
-			name = Release;
-		};
-		BEEBEE000000000000000205 /* Debug */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				ALWAYS_SEARCH_USER_PATHS = NO;
-				APPLICATION_EXTENSION_API_ONLY = YES;
-				CLANG_ENABLE_MODULES = YES;
-				CODE_SIGN_ENTITLEMENTS = BeebeebWidget/BeebeebWidget.entitlements;
-				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = R8352WDJJR;
-				GCC_PREPROCESSOR_DEFINITIONS = (
-					"DEBUG=1",
-					"$(inherited)",
-				);
-				INFOPLIST_FILE = BeebeebWidget/Info.plist;
-				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
-				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks";
-				MARKETING_VERSION = 1.0.0;
-				OTHER_SWIFT_FLAGS = "$(inherited) -D EXPO_CONFIGURATION_DEBUG";
-				PRODUCT_BUNDLE_IDENTIFIER = io.beebeeb.app.widget;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SKIP_INSTALL = YES;
-				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
-				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1,2";
-			};
-			name = Debug;
-		};
-		BEEBEE000000000000000206 /* Release */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				ALWAYS_SEARCH_USER_PATHS = NO;
-				APPLICATION_EXTENSION_API_ONLY = YES;
-				CLANG_ENABLE_MODULES = YES;
-				CODE_SIGN_ENTITLEMENTS = BeebeebWidget/BeebeebWidget.entitlements;
-				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = R8352WDJJR;
-				INFOPLIST_FILE = BeebeebWidget/Info.plist;
-				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
-				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks";
-				MARKETING_VERSION = 1.0.0;
-				OTHER_SWIFT_FLAGS = "$(inherited) -D EXPO_CONFIGURATION_RELEASE";
-				PRODUCT_BUNDLE_IDENTIFIER = io.beebeeb.app.widget;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SKIP_INSTALL = YES;
-				SWIFT_VERSION = 5.0;
+				SWIFT_VERSION = 5;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Release;
@@ -1059,34 +724,68 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		BEEBEE000000000000000004 /* Build configuration list for PBXNativeTarget "BeebeebFileProvider" */ = {
+		9F6814D49769406B8614D651 /* Build configuration list for PBXNativeTarget "BeebeebWidget" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				BEEBEE000000000000000005 /* Debug */,
-				BEEBEE000000000000000006 /* Release */,
+				59567B42E69840FBBB3C1E1A /* Debug */,
+				C445AF469D8D4CE3BC59455A /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		BEEBEE000000000000000104 /* Build configuration list for PBXNativeTarget "BeebeebShare" */ = {
+		8158EA98723346CBBE267C56 /* Build configuration list for PBXNativeTarget "BeebeebFileProvider" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				BEEBEE000000000000000105 /* Debug */,
-				BEEBEE000000000000000106 /* Release */,
-			);
-			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Release;
-		};
-		BEEBEE000000000000000204 /* Build configuration list for PBXNativeTarget "BeebeebWidget" */ = {
-			isa = XCConfigurationList;
-			buildConfigurations = (
-				BEEBEE000000000000000205 /* Debug */,
-				BEEBEE000000000000000206 /* Release */,
+				B1C4F0C40F6C4DB0B771E7D0 /* Debug */,
+				6935E6E9163F4D8EBF9E2B70 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		7371824A8F404BB28A984AE0 /* Copy Files */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				D0F5E122096345E082745866 /* BeebeebWidget.appex in Copy Files */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			name = "Copy Files";
+			dstPath = "";
+			dstSubfolderSpec = 13;
+		};
+		979A1F9879D3482A9E8E2159 /* Embed App Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				3A9AAAF92C8540CC8A72F13B /* BeebeebFileProvider.appex in Embed App Extensions */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			name = "Embed App Extensions";
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXContainerItemProxy section */
+		0DEF1387F88C41CB916BC0DB /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 83CBB9F71A601CBA00E9B192;
+			proxyType = 1;
+			remoteGlobalIDString = 94E90420F98F47FF9B025FDE;
+			remoteInfo = BeebeebFileProvider;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXTargetDependency section */
+		ED06B316C50B48CDBD2D5939 /* BeebeebFileProvider */ = {
+			isa = PBXTargetDependency;
+			target = 94E90420F98F47FF9B025FDE;
+			targetProxy = 0DEF1387F88C41CB916BC0DB;
+		};
+/* End PBXTargetDependency section */
 	};
 	rootObject = 83CBB9F71A601CBA00E9B192 /* Project object */;
 }

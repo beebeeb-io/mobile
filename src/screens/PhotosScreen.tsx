@@ -14,7 +14,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import {
   PinchGestureHandler,
   State,
@@ -25,7 +25,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import * as Haptics from 'expo-haptics';
-import * as MediaLibrary from 'expo-media-library';
+import * as MediaLibrary from 'expo-media-library/legacy';
 import * as Sharing from 'expo-sharing';
 import { NativePhotosGridView, type NativePhotoGridItem } from '../../modules/beebeeb-crypto';
 import { radii, spacing } from '../theme';
@@ -2319,7 +2319,7 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(255,255,255,0.45)',
   },
   selectionOverlay: {
-    ...StyleSheet.absoluteFillObject,
+    position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
     backgroundColor: 'rgba(246, 192, 58, 0.25)',
     borderWidth: 2,
     borderColor: 'rgba(246, 192, 58, 0.95)',

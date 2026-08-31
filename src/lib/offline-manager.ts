@@ -17,7 +17,7 @@
  * plaintext on disk.
  */
 
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import * as SecureStore from 'expo-secure-store';
 import { getDownloadUrl, getToken } from './api';
 

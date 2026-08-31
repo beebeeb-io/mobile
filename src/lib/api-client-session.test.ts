@@ -6,6 +6,15 @@ let secureStoreGetQueue: Array<(key: string) => Promise<string | null>> = [];
 const fetchCalls: Array<{ url: string; init: RequestInit }> = [];
 let fetchQueue: Array<() => Promise<Response>> = [];
 
+mock.module('@react-native-async-storage/async-storage', () => ({
+  default: {
+    getItem: async () => null,
+    setItem: async () => {},
+    removeItem: async () => {},
+    multiRemove: async () => {},
+    getAllKeys: async () => [],
+  },
+}));
 mock.module('expo-constants', () => ({
   default: { expoConfig: { extra: { apiUrl: 'https://api.test' } } },
 }));
@@ -20,7 +29,7 @@ mock.module('expo-secure-store', () => ({
   deleteItemAsync: async (key: string) => { store.delete(key); },
 }));
 
-mock.module('expo-file-system', () => ({}));
+mock.module('expo-file-system/legacy', () => ({}));
 
 mock.module('react-native', () => ({
   Platform: { OS: 'ios' },

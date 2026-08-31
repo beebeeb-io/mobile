@@ -13,7 +13,7 @@
  * Until then, it uses the existing per-chunk JS bridge decryption.
  */
 
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import {
   downloadAndDecryptFileNative,
   isNativeAvailable,

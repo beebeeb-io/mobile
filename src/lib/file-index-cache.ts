@@ -1,5 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import type { FileEntry } from './api';
 
 const FILE_INDEX_CACHE_KEY = 'beebeeb:file-index-cache:v1';

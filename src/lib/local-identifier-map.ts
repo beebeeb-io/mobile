@@ -18,7 +18,7 @@
  *   the encrypted-thumbnail path unchanged.
  */
 
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import { fetchPhotoBackupIdentifierMap, photoBackupClearAssociation } from './api';
 import { invalidateCachedThumbnail } from './thumbnail-cache';
 import { invalidateInMemoryThumbCache } from './thumbnail';

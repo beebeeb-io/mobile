@@ -110,7 +110,10 @@
       "./plugins/shortcut-bridge/withShortcutBridge.js",
       "expo-video",
       "expo-image-picker",
-      "./plugins/android-security/withAndroidSecurity.js"
+      "./plugins/android-security/withAndroidSecurity.js",
+      "expo-sharing",
+      "expo-sqlite",
+      "expo-status-bar"
     ],
     "extra": {
       "apiUrl": "https://api.beebeeb.io",

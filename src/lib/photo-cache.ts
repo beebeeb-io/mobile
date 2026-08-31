@@ -11,7 +11,7 @@
  * Thumbnails use a separate persistent store (see thumbnail-cache.ts).
  */
 
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import {
   planPhotoCacheEvictions,
   type PhotoCacheDiskEntry,

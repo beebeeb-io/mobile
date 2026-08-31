@@ -20,7 +20,7 @@
  * post-onboarding navigation. Errors are surfaced via console.warn so a
  * verifier running with a debugger attached can see what happened.
  */
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import * as SecureStore from 'expo-secure-store';
 import type { EncryptedData } from '../../modules/beebeeb-crypto';
 import { listFiles } from './api';

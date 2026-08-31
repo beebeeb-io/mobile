@@ -56,13 +56,15 @@ const withWidget = (config) => {
 </dict>
 </plist>`)
     if (!xcodeProject.pbxGroupByName('BeebeebWidget')) {
-      xcodeProject.addTarget('BeebeebWidget', 'app_extension', 'BeebeebWidget', 'io.beebeeb.app.widget')
+      // SDK 57's xcode lib returns null from getTarget(name) — use the target
+      // object addTarget returns (it carries the uuid) instead.
+      const widgetTarget = xcodeProject.addTarget('BeebeebWidget', 'app_extension', 'BeebeebWidget', 'io.beebeeb.app.widget')
       const group = xcodeProject.addPbxGroup(
         ['BeebeebWidget.swift'],
         'BeebeebWidget',
         'BeebeebWidget'
       )
-      xcodeProject.addBuildPhase(['BeebeebWidget.swift'], 'PBXSourcesBuildPhase', 'Sources', xcodeProject.getTarget('BeebeebWidget').uuid)
+      xcodeProject.addBuildPhase(['BeebeebWidget.swift'], 'PBXSourcesBuildPhase', 'Sources', widgetTarget.uuid)
     }
     return cfg
   })

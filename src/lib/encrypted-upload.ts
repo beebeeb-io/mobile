@@ -19,7 +19,7 @@
  * This lets us compute size_bytes before reading any file data.
  */
 
-import * as FileSystem from 'expo-file-system'
+import * as FileSystem from 'expo-file-system/legacy'
 import { generateRandomBytes } from '../../modules/beebeeb-crypto'
 import type { EncryptedData } from '../../modules/beebeeb-crypto'
 import { uploadEncryptedChunked } from './api'
@@ -127,7 +127,7 @@ export async function encryptedUpload(opts: EncryptedUploadOptions): Promise<Fil
   } = opts
 
   // ── 1. Get file size ────────────────────────────────────────────────────
-  const info = await FileSystem.getInfoAsync(uri, { size: true })
+  const info = await FileSystem.getInfoAsync(uri)
   if (!info.exists) throw new Error(`File not found: ${uri}`)
   // Expo types: size is on FileInfo when { size: true } is passed
   const plaintextSize: number = (info as FileSystem.FileInfo & { size?: number }).size ?? 0

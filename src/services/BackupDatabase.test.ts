@@ -38,6 +38,15 @@ class FakeBackupDb {
 
 const databases = new Map<string, FakeBackupDb>();
 
+mock.module('@react-native-async-storage/async-storage', () => ({
+  default: {
+    getItem: async () => null,
+    setItem: async () => {},
+    removeItem: async () => {},
+    multiRemove: async () => {},
+    getAllKeys: async () => [],
+  },
+}));
 mock.module('expo-sqlite', () => ({
   openDatabaseAsync: async (name: string) => {
     let db = databases.get(name);

@@ -1,5 +1,5 @@
 import { Platform } from 'react-native'
-import { File, Paths } from 'expo-file-system/next'
+import { File, Paths } from 'expo-file-system'
 
 interface WidgetData {
   storageUsed: number

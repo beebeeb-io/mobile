@@ -5,7 +5,7 @@ import { StatusBar } from 'expo-status-bar';
 import { ActivityIndicator, AppState, type AppStateStatus, Keyboard, Linking, Platform, StyleSheet, View } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SecureStore from 'expo-secure-store';
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import { NavigationContainer, createNavigationContainerRef } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
@@ -1063,7 +1063,7 @@ export default function App() {
       const done = await AsyncStorage.getItem(MIGRATION_KEY);
       if (done === '1') return;
       try {
-        await AsyncStorage.removeMany([
+        await AsyncStorage.multiRemove([
           'beebeeb:thumbnail-repair-settings:v1',
           'beebeeb:thumbnail-repair-status:v1',
         ]);

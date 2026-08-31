@@ -251,11 +251,11 @@ function ensureExtensionBuildConfigurations(project) {
       CURRENT_PROJECT_VERSION: 1,
       DEVELOPMENT_TEAM: TEAM_ID,
       FRAMEWORK_SEARCH_PATHS: ['"$(inherited)"', '"$(PROJECT_DIR)"'],
-      'HEADER_SEARCH_PATHS[sdk=iphoneos*]': [
+      '"HEADER_SEARCH_PATHS[sdk=iphoneos*]"': [
         '"$(inherited)"',
         '"\\"$(PROJECT_DIR)/BeebeebCore.xcframework/ios-arm64/Headers\\""',
       ],
-      'HEADER_SEARCH_PATHS[sdk=iphonesimulator*]': [
+      '"HEADER_SEARCH_PATHS[sdk=iphonesimulator*]"': [
         '"$(inherited)"',
         '"\\"$(PROJECT_DIR)/BeebeebCore.xcframework/ios-arm64_x86_64-simulator/Headers\\""',
       ],
@@ -264,8 +264,8 @@ function ensureExtensionBuildConfigurations(project) {
       LD_RUNPATH_SEARCH_PATHS: '"$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks"',
       MARKETING_VERSION: '1.0.0',
       OTHER_SWIFT_FLAGS: `"$(inherited) -D ${expoDefine}"`,
-      'OTHER_SWIFT_FLAGS[sdk=iphoneos*]': `"$(inherited) -D ${expoDefine} -Xcc -fmodule-map-file=\\"${moduleMapDevice}\\""`,
-      'OTHER_SWIFT_FLAGS[sdk=iphonesimulator*]': `"$(inherited) -D ${expoDefine} -Xcc -fmodule-map-file=\\"${moduleMapSim}\\""`,
+      '\"OTHER_SWIFT_FLAGS[sdk=iphoneos*]\"': `"$(inherited) -D ${expoDefine} -Xcc -fmodule-map-file=\\"${moduleMapDevice}\\""`,
+      '\"OTHER_SWIFT_FLAGS[sdk=iphonesimulator*]\"': `"$(inherited) -D ${expoDefine} -Xcc -fmodule-map-file=\\"${moduleMapSim}\\""`,
       PRODUCT_BUNDLE_IDENTIFIER: EXTENSION_BUNDLE_ID,
       PRODUCT_NAME: '"$(TARGET_NAME)"',
       SKIP_INSTALL: 'YES',
@@ -375,7 +375,10 @@ function ensureTargetDependency(project, appTarget, extensionTarget) {
 function ensureExtensionWiring(project) {
   ensureGroup(project);
   const extensionTarget = ensureTarget(project);
-  const appTarget = project.getFirstTarget();
+  // xcode lib returns { uuid, firstTarget } — normalize to the { uuid, target }
+  // shape the wiring helpers expect (SDK 57 upgrade).
+  const firstTarget = project.getFirstTarget();
+  const appTarget = { uuid: firstTarget.uuid, target: firstTarget.firstTarget || firstTarget.target };
   if (!appTarget) return;
 
   const sourceBuildFiles = SOURCE_FILES.map((file) => {

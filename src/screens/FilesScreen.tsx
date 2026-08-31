@@ -29,9 +29,9 @@ import * as LocalAuthentication from 'expo-local-authentication';
 import * as DocumentPicker from 'expo-document-picker';
 import { isFileLocked, lockFile, unlockFile } from '../lib/file-locks';
 import * as ImagePicker from 'expo-image-picker';
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
-import * as MediaLibrary from 'expo-media-library';
+import * as MediaLibrary from 'expo-media-library/legacy';
 import * as Clipboard from 'expo-clipboard';
 import { fonts, radii, spacing, shadows } from '../theme';
 import { useTheme } from '../lib/theme-context';
@@ -2955,7 +2955,7 @@ export default function FilesScreen() {
           { text: 'Cancel', style: 'cancel' },
           {
             text: 'Save',
-            onPress: async (input) => {
+            onPress: async (input?: string) => {
               const next = (input ?? '').trim();
               if (!next || next === name) return;
               try {
@@ -4543,7 +4543,7 @@ const styles = StyleSheet.create({
 
   // Android new-folder modal
   modalOverlay: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 24 },
-  modalBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.4)' },
+  modalBackdrop: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.4)' },
   modalCard: {
     width: '100%',
     maxWidth: 360,

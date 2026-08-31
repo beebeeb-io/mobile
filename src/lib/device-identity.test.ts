@@ -4,6 +4,15 @@ import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
 // In-memory SecureStore so the canonical-id migration is testable without the
 // native keychain module. The module under test imports `* as SecureStore`.
 const store = new Map<string, string>();
+mock.module('@react-native-async-storage/async-storage', () => ({
+  default: {
+    getItem: async () => null,
+    setItem: async () => {},
+    removeItem: async () => {},
+    multiRemove: async () => {},
+    getAllKeys: async () => [],
+  },
+}));
 mock.module('expo-secure-store', () => ({
   getItemAsync: async (key: string) => store.get(key) ?? null,
   setItemAsync: async (key: string, value: string) => { store.set(key, value); },
