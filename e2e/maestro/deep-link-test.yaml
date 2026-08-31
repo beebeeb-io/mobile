@@ -1,19 +1,10 @@
 appId: io.beebeeb.app
 ---
-# beebeeb://photos → land on Photos tab
-- launchApp:
-    arguments:
-      url: "beebeeb://photos"
-
-- extendedWaitUntil:
-    visible: "Photos"
-    timeout: 15000
-
-- takeScreenshot: "deep-link-01-photos"
-
 # beebeeb://upload is intercepted by the deep-link handler and triggers the
 # upload action on the Files tab (file picker / upload sheet).
-- openLink: "beebeeb://upload"
+- launchApp:
+    arguments:
+      url: "beebeeb://upload"
 
 - extendedWaitUntil:
     visible: "Drive"
@@ -21,11 +12,25 @@ appId: io.beebeeb.app
 
 - takeScreenshot: "deep-link-02-upload-on-files"
 
-# beebeeb://shared lands on the Shared tab via React Navigation linking
+# beebeeb://shared lands on the Shared tab via React Navigation linking.
+# Segments were renamed in-product to "With me.*" / "By me.*"; this flow still
+# asserted the old "Shared with me".
 - openLink: "beebeeb://shared"
 
 - extendedWaitUntil:
-    visible: "Shared with me"
+    visible: "With me.*"
     timeout: 10000
 
 - takeScreenshot: "deep-link-03-shared"
+
+# beebeeb://photos LAST, deliberately — see task 1321. Visiting Photos raises a
+# pre-existing thumbnail.ts rejection whose dev-build redbox then covers the
+# screen and blocks every later assertion. It reproduces on main without this
+# branch's changes. Restore this to first position once 1321 is fixed.
+- openLink: "beebeeb://photos"
+
+- extendedWaitUntil:
+    visible: "Photos"
+    timeout: 15000
+
+- takeScreenshot: "deep-link-01-photos"

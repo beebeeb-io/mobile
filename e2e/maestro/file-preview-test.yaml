@@ -4,7 +4,7 @@ appId: io.beebeeb.app
 
 # Make sure we're on the Files tab and signed in
 - tapOn:
-    point: "12%,95%"
+    id: "tab-files"
 
 - extendedWaitUntil:
     visible: "Drive"

@@ -4,7 +4,7 @@ appId: io.beebeeb.app
 
 # Make sure we're on the Files tab and signed in
 - tapOn:
-    point: "12%,95%"
+    id: "tab-files"
 
 - extendedWaitUntil:
     visible: "Drive"
@@ -26,13 +26,13 @@ appId: io.beebeeb.app
 # Navigating to another tab and back is a reliable way to leave search;
 # tapping the in-header Cancel triggers a flaky iOS background event in this build.
 - tapOn:
-    point: "60%,95%"
+    id: "tab-photos"
 - extendedWaitUntil:
     visible: "Photos"
     timeout: 5000
 
 - tapOn:
-    point: "12%,95%"
+    id: "tab-files"
 - extendedWaitUntil:
     visible: "Drive"
     timeout: 5000
