@@ -57,8 +57,10 @@ bunx expo prebuild --platform ios --clean --no-install && scripts/restore-vendor
 
 Since SDK 57 every extension target (FileProvider, Share, Widget) is created by its config
 plugin (`plugins/lib/extension-target.js` is the shared helper) — do not add targets by hand in
-Xcode; a clean prebuild must reproduce the whole project. Plugin order in app.json matters:
-`uniffi-bridge` runs after the extension plugins so it can link the Rust framework to them.
+Xcode; a clean prebuild must reproduce the whole project. Config-plugin mods execute in
+**reverse registration order** (the last plugin in app.json runs first), so never rely on one
+plugin seeing another's target: every target that links the Rust core sets its own per-SDK
+`OTHER_LDFLAGS` in `extension-target.js`; `uniffi-bridge` only handles the app target.
 Invariant the helper enforces: a `PBXBuildFile` belongs to exactly ONE build phase — dedupe build
 files per owning target, never globally by fileRef, or `pod install` fails in Xcodeproj's
 `project.save` ("Consistency issue: no parent for object …").
