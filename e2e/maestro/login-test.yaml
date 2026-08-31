@@ -1,37 +1,63 @@
+# Sign-out / sign-in bootstrap for the whole suite (task 1326).
+#
+# This is the FIRST entry in run-all.yaml, so whatever it leaves behind is the
+# starting state for every flow after it. Two defects made it fail forever:
+#
+#  1. It used `launchApp: clearState: true` and then asserted "Sign in".
+#     CLAUDE.md:104 documents that clearState does NOT sign out — the master key
+#     persists in the iOS KEYCHAIN across an app-data clear, so the app
+#     auto-restores to the authenticated screen (the 0876 restore working as
+#     designed). The assertion could never pass on a device that had ever signed
+#     in, so run-all died at step one and nothing after it ever ran.
+#
+#  2. It signed in as demo@beebeeb.io — a different account from the one the
+#     rest of the suite asserts against. Fixing only the sign-out would have
+#     turned "dies at step 1" into "runs steps 2-8 against an account with no
+#     Backups folder and no Welcome.pdf", which is worse than failing loudly.
+#
+# The fix is a real bootstrap: sign out through the UI (the only thing that
+# clears the keychain entry), prove the signed-out screen, then sign back in as
+# the QA account and unlock the vault. It ends with the device signed IN and
+# decrypting, which is what every later flow assumes.
 appId: io.beebeeb.app
 ---
-- launchApp:
-    clearState: true
+- launchApp
 
-# Wait for login screen
+# Dev-client builds open their menu over the app.
+- runFlow:
+    when:
+      visible: "Continue"
+    commands:
+      - tapOn: "Continue"
+
+# Already signed in? Sign out. This is the step clearState cannot do for us.
+- runFlow:
+    when:
+      visible: "Drive"
+    commands:
+      - tapOn:
+          id: "tab-settings"
+      - scroll
+      - scroll
+      - scroll
+      - tapOn: "Sign out"
+      # Confirm the alert — the second "Sign out" is the destructive button.
+      - tapOn:
+          text: "Sign out"
+          index: 1
+
+# THE assertion that was impossible before.
 - extendedWaitUntil:
     visible: "Sign in"
-    timeout: 15000
+    timeout: 20000
 
-- takeScreenshot: "login-01-initial"
+- takeScreenshot: "login-01-signed-out"
 
-# Enter credentials
-- tapOn:
-    id: "email-input"
-- inputText: "demo@beebeeb.io"
+# Sign back in as the QA account and unlock the vault. Delegated rather than
+# duplicated: local-qa-signin-unlock.yaml already encodes the three gotchas
+# (keyboard covering the button, the dev-client menu, the un-targetable
+# recovery-phrase input) and ends by asserting a DECRYPTED folder name, which
+# proves the vault is unlocked rather than merely signed in.
+- runFlow: local-qa-signin-unlock.yaml
 
-- tapOn:
-    id: "password-input"
-- inputText: "demodemo12345678"
-
-- tapOn:
-    id: "sign-in-button"
-
-# Handle recovery phrase onboarding (first-time login)
-- extendedWaitUntil:
-    visible: "Your recovery phrase"
-    timeout: 15000
-
-- tapOn: "I'll do this later (not recommended)"
-
-# Assert Drive is visible after login
-- extendedWaitUntil:
-    visible: "Drive"
-    timeout: 10000
-
-- takeScreenshot: "login-02-drive-logged-in"
+- takeScreenshot: "login-02-restored"
