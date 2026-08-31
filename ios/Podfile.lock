@@ -265,6 +265,8 @@ PODS:
     - ExpoModulesCore
   - ExpoSharing (57.0.16):
     - ExpoModulesCore
+  - ExpoSplashScreen (57.0.8):
+    - ExpoModulesCore
   - ExpoSQLite (57.0.2):
     - ExpoModulesCore
   - ExpoStoreReview (57.0.2):
@@ -2521,6 +2523,7 @@ DEPENDENCIES:
   - ExpoScreenCapture (from `../node_modules/expo-screen-capture/ios`)
   - ExpoSecureStore (from `../node_modules/expo-secure-store/ios`)
   - ExpoSharing (from `../node_modules/expo-sharing/ios`)
+  - ExpoSplashScreen (from `../node_modules/expo-splash-screen/ios`)
   - ExpoSQLite (from `../node_modules/expo-sqlite/ios`)
   - ExpoStoreReview (from `../node_modules/expo-store-review/ios`)
   - ExpoVideo (from `../node_modules/expo-video/ios/ExpoVideo.podspec`)
@@ -2699,6 +2702,8 @@ EXTERNAL SOURCES:
     :path: "../node_modules/expo-secure-store/ios"
   ExpoSharing:
     :path: "../node_modules/expo-sharing/ios"
+  ExpoSplashScreen:
+    :path: "../node_modules/expo-splash-screen/ios"
   ExpoSQLite:
     :path: "../node_modules/expo-sqlite/ios"
   ExpoStoreReview:
@@ -2924,6 +2929,7 @@ SPEC CHECKSUMS:
   ExpoScreenCapture: 6b82aba55db3ecc6f124ebd45163d6db9b916b2d
   ExpoSecureStore: cc7c4f560528e7a644b1342b0cc2790576e677e1
   ExpoSharing: b1797248b8dbb7bf32a670a8df582189a65aa5d4
+  ExpoSplashScreen: 6f422fd595600d78520c6b7dcf8a908fb8a7fec0
   ExpoSQLite: 57b23ab9fbb72215fa33763246d00ce6e6e531b4
   ExpoStoreReview: 4695f78a9ca1d33f0e0755801c10f7dc875c298d
   ExpoVideo: fad16dd734258a757b78c6287988ab7beb4e2f16
