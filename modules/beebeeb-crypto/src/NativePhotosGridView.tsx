@@ -27,6 +27,15 @@ interface NativePhotosGridProps {
   /** 1298 — month-header ink, resolved by the RN theme (hex). */
   headerTextColor?: string
   headerCountColor?: string
+  /**
+   * 1322 — how much of the grid is covered by the floating chrome, in points.
+   * Applied as a real `UIScrollView.contentInset`, so the scrollable range
+   * grows: the first row clears the header at scroll-top and the last row
+   * clears the tab bar at scroll-bottom. The refresh control's origin follows
+   * `contentInsetTop` automatically.
+   */
+  contentInsetTop?: number
+  contentInsetBottom?: number
   onPhotoPress?: (event: NativeEvent<{ id: string }>) => void
   onSelectionChange?: (event: NativeEvent<{ selectedIds: string[]; selectionMode: boolean }>) => void
   onVisiblePhotoIdsChange?: (event: NativeEvent<{ ids: string[] }>) => void

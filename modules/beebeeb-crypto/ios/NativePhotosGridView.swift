@@ -55,6 +55,19 @@ public final class NativePhotosGridModule: Module {
       Prop("headerCountColor") { (view: NativePhotosGridView, hex: String?) in
         view.setHeaderColors(label: nil, count: UIColor(hexString: hex))
       }
+
+      // 1322 — the grid runs edge-to-edge under the floating chrome, so RN
+      // tells it how much of the top and bottom is covered. A REAL
+      // UIScrollView contentInset, not a spacer: the scrollable range grows,
+      // so the first row is reachable at the top and the last at the bottom.
+      // The refresh control's origin follows contentInset.top for free.
+      Prop("contentInsetTop") { (view: NativePhotosGridView, value: Double?) in
+        view.setContentInset(top: value.map { CGFloat($0) }, bottom: nil)
+      }
+
+      Prop("contentInsetBottom") { (view: NativePhotosGridView, value: Double?) in
+        view.setContentInset(top: nil, bottom: value.map { CGFloat($0) })
+      }
     }
   }
 }
@@ -72,7 +85,9 @@ private final class PhotoGridLayout: UICollectionViewLayout {
   private(set) var attributeRequestCount = 0
   private(set) var attributeProducedCount = 0
 
-  private let headerHeight: CGFloat = 28
+  // 1322 — was 28, sized for a 13pt semibold label. The canvas month header is
+  // SF 20/700, which needs the extra room plus breathing space above it.
+  private let headerHeight: CGFloat = 44
   private var transition: Transition?
   private var itemCounts: [Int] = []
   private var layoutWidth: CGFloat = 1
@@ -374,6 +389,33 @@ public final class NativePhotosGridView: ExpoView {
       (header as? PhotoGridHeaderView)?.applyColors(label: headerLabelColor, count: headerCountColor)
     }
   }
+  /// 1322 — how much of the grid is covered by the floating chrome.
+  /// Applied as a real `UIScrollView.contentInset`, so the scrollable range
+  /// grows by the same amount: the first row can be scrolled clear of the
+  /// header and the last row clear of the tab bar. A spacer would look the
+  /// same at rest and be unreachable at the ends.
+  func setContentInset(top: CGFloat?, bottom: CGFloat?) {
+    var inset = collectionView.contentInset
+    if let top { inset.top = top }
+    if let bottom { inset.bottom = bottom }
+    guard inset != collectionView.contentInset else { return }
+
+    // Preserve the visual scroll position across an inset change, otherwise
+    // the content jumps by the delta whenever the header resizes.
+    let wasAtTop = collectionView.contentOffset.y <= -collectionView.contentInset.top + 0.5
+    let topDelta = inset.top - collectionView.contentInset.top
+    collectionView.contentInset = inset
+    collectionView.verticalScrollIndicatorInsets = inset
+    if wasAtTop {
+      collectionView.setContentOffset(CGPoint(x: 0, y: -inset.top), animated: false)
+    } else if topDelta != 0 {
+      collectionView.setContentOffset(
+        CGPoint(x: collectionView.contentOffset.x, y: collectionView.contentOffset.y - topDelta),
+        animated: false
+      )
+    }
+  }
+
   private var indexPathById: [String: IndexPath] = [:]
   private var itemSignature = ""
   private var layoutSignature = ""
@@ -426,6 +468,10 @@ public final class NativePhotosGridView: ExpoView {
     let view = UICollectionView(frame: .zero, collectionViewLayout: gridLayout)
     view.backgroundColor = .clear
     view.clipsToBounds = true
+    // 1322 — RN owns the inset. Left on .automatic, UIKit would add its own
+    // safe-area inset on top of the one we set and the grid would start
+    // roughly twice too far down.
+    view.contentInsetAdjustmentBehavior = .never
     view.alwaysBounceVertical = true
     view.decelerationRate = .normal
     view.delaysContentTouches = false
@@ -1543,8 +1589,10 @@ private final class PhotoGridHeaderView: UICollectionReusableView {
 
   override init(frame: CGRect) {
     super.init(frame: frame)
-    label.font = UIFont.systemFont(ofSize: 13, weight: .semibold)
-    count.font = UIFont.systemFont(ofSize: 10, weight: .regular)
+    // 1322 — canvas Photos artboard: month headers are SF 20/700 sitting on
+    // the background, not 13pt semibold chips.
+    label.font = UIFont.systemFont(ofSize: 20, weight: .bold)
+    count.font = UIFont.systemFont(ofSize: 13, weight: .regular)
     // Brand ink tokens as trait-aware fallback (light #2a2520 / dark #e8e6e3);
     // the RN side normally overrides via headerTextColor/headerCountColor so
     // the in-app appearance setting wins over the system trait.

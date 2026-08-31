@@ -30,6 +30,7 @@ import * as Sharing from 'expo-sharing';
 import { NativePhotosGridView, type NativePhotoGridItem } from '../../modules/beebeeb-crypto';
 import { radii, spacing } from '../theme';
 import { useTheme } from '../lib/theme-context';
+import { ScrollEdgeBlur } from '../components/glass';
 import { ApiError, getAllImages, getFileIndex, friendlyError, trashFiles } from '../lib/api';
 import type { FileEntry } from '../lib/api';
 import { guessMimeType } from '../lib/media';
@@ -289,6 +290,14 @@ const SCREEN_WIDTH = Dimensions.get('window').width;
 const GRID_GAP = 2;
 const DEFAULT_COLS = DEFAULT_PHOTO_GRID_COLUMNS;
 const SECTION_HEADER_HEIGHT = 28;
+/**
+ * 1322 — vertical space the floating tab bar occupies above the safe area
+ * (capsule height plus the canvas's 22pt bottom offset and the bar's own
+ * padding). Added to the grid's bottom inset so the last row can be scrolled
+ * clear of the capsule instead of sitting under it.
+ */
+const TAB_BAR_RESERVED = 96;
+
 const LIST_FOOTER_HEIGHT = 12;
 const PHOTO_PREVIEW_WINDOW_RADIUS = 12;
 const METADATA_DECRYPT_BATCH_SIZE = 8;
@@ -857,6 +866,10 @@ export default function PhotosScreen() {
   const { getFileKeyBytes, getMasterKeyHandleId, isUnlocked, decryptMetadata } = useCrypto();
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const [isScrolled, setIsScrolled] = useState(false);
+  // 1322 — the floating header's measured height. Fed to the native grid as a
+  // real contentInset so the grid scrolls UNDER the chrome instead of starting
+  // below it. Not constant: the device-photos banner appears and disappears.
+  const [headerHeight, setHeaderHeight] = useState(0);
   const [photos, setPhotos] = useState<FileEntry[]>([]);
   const photosCacheRef = useRef<FileEntry[]>([]);
   const photosCountRef = useRef(0);
@@ -2104,9 +2117,19 @@ export default function PhotosScreen() {
   );
 
   return (
-    <View style={[styles.root, { paddingTop: insets.top, backgroundColor: c.paper }]}>
-      {/* Header area — bottom border appears when scrolled */}
-      <View style={[isScrolled && { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: c.line }]}>
+    <View style={[styles.root, { backgroundColor: c.paper }]}>
+      {/* 1322 — the grid bleeds edge-to-edge; the header floats over it with a
+          progressive scroll-edge blur, which only appears once something is
+          actually scrolled beneath it (the same rule Drive uses in 1313). The
+          hairline border it used to draw is replaced by that blur. */}
+      {isScrolled ? <ScrollEdgeBlur height={headerHeight || insets.top + 56} /> : null}
+      <View
+        style={[styles.floatingHeader, { paddingTop: insets.top }]}
+        onLayout={(e) => {
+          const h = Math.round(e.nativeEvent.layout.height);
+          setHeaderHeight((prev) => (Math.abs(prev - h) > 1 ? h : prev));
+        }}
+      >
         <View style={styles.header}>
           <Text style={[styles.title, { color: c.ink }]}>
             {selectMode ? `${selectedIds.size} selected` : 'Photos'}
@@ -2147,6 +2170,8 @@ export default function PhotosScreen() {
           refreshing={refreshing}
           headerTextColor={c.ink}
           headerCountColor={c.ink3}
+          contentInsetTop={headerHeight}
+          contentInsetBottom={insets.bottom + TAB_BAR_RESERVED}
           onPhotoPress={handleNativePhotoPress}
           onSelectionChange={handleNativeSelectionChange}
           onVisiblePhotoIdsChange={handleNativeVisibleIdsChange}
@@ -2270,6 +2295,7 @@ export default function PhotosScreen() {
 const styles = StyleSheet.create({
   root: { flex: 1 },
   gridContainer: { flex: 1 },
+  floatingHeader: { position: 'absolute', top: 0, left: 0, right: 0, zIndex: 10 },
 
   // Header
   header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: spacing.lg, paddingTop: 6, paddingBottom: 4, gap: 8 },
