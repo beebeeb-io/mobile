@@ -1,5 +1,6 @@
 import { BBLogo } from "../components/BBLogo";
 import { BBWordmark } from "../components/BBWordmark";
+import { GlassCapsule } from '../components/glass';
 import React, { useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -44,7 +45,9 @@ export default function LoginScreen() {
     scrollContent: { flexGrow: 1, justifyContent: 'center', paddingHorizontal: spacing.xl, paddingVertical: 40 },
     brandRow: { alignItems: 'center', marginBottom: spacing.xl },
     heading: { fontSize: 24, fontWeight: '700', color: c.ink, textAlign: 'center', marginBottom: 4 },
-    subheading: { fontSize: 13, color: c.ink3, textAlign: 'center', marginBottom: spacing.xl },
+    subheading: { fontSize: 13, color: c.ink3, textAlign: 'center' },
+    trustPill: { alignSelf: 'center', marginTop: 6, marginBottom: spacing.xl },
+    trustPillBody: { paddingHorizontal: 16, paddingVertical: 9 },
     errorBanner: { backgroundColor: resolved === 'dark' ? '#2d1515' : '#fef2f2', borderWidth: 1, borderColor: resolved === 'dark' ? '#5c2828' : '#fecaca', borderRadius: radii.md, paddingVertical: spacing.sm, paddingHorizontal: spacing.md, marginBottom: spacing.lg },
     errorText: { fontSize: 12, color: c.red, lineHeight: 17 },
     label: { fontSize: 12, fontWeight: '600', color: c.ink2, marginBottom: 4, marginTop: spacing.md },
@@ -112,9 +115,15 @@ export default function LoginScreen() {
         </View>
 
         <Text style={styles.heading}>Sign in</Text>
-        <Text style={styles.subheading}>
-          End-to-end encrypted cloud storage.
-        </Text>
+        {/* 1315 — the canvas puts the trust claim in a glass pill. The COPY is
+            unchanged: the artboard says "keys never leave this device", but
+            rewording a product trust claim is a content decision, not a
+            restyle, so the shipped line keeps its wording. */}
+        <GlassCapsule style={styles.trustPill} contentStyle={styles.trustPillBody}>
+          <Text style={styles.subheading}>
+            End-to-end encrypted cloud storage.
+          </Text>
+        </GlassCapsule>
 
         {/* Error banner */}
         {error && (

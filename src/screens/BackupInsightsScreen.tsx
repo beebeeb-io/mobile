@@ -27,6 +27,7 @@ import * as Haptics from 'expo-haptics';
 import { useNavigation } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../lib/theme-context';
+import { ScrollEdgeBlur } from '../components/glass';
 import { fonts, spacing, type Colors } from '../theme';
 import {
   getStatusCounts,
@@ -313,6 +314,9 @@ export default function BackupInsightsScreen() {
   const { colors: c } = useTheme();
   const navigation = useNavigation();
   const insets = useSafeAreaInsets();
+  // 1315 — measured floating-header height feeding the scroll inset.
+  const [headerHeight, setHeaderHeight] = useState(0);
+  const [isScrolled, setIsScrolled] = useState(false);
   const backup = useBackup();
   const [data, setData] = useState<InsightsData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -621,15 +625,22 @@ export default function BackupInsightsScreen() {
 
   return (
     <View style={[layout.root, { backgroundColor: c.paper }]}>
-      {/* Header */}
+      {/* 1315 — content runs under the chrome. */}
+      {isScrolled ? <ScrollEdgeBlur height={headerHeight || insets.top + 80} /> : null}
       <View
         style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          right: 0,
+          zIndex: 10,
           paddingTop: insets.top + (Platform.OS === 'android' ? 8 : 4),
           paddingHorizontal: 14,
           paddingBottom: 12,
-          borderBottomWidth: 1,
-          borderBottomColor: c.line,
-          backgroundColor: c.paper,
+        }}
+        onLayout={(e) => {
+          const h = Math.round(e.nativeEvent.layout.height);
+          setHeaderHeight((prev) => (Math.abs(prev - h) > 1 ? h : prev));
         }}
       >
         <TouchableOpacity
@@ -664,7 +675,9 @@ export default function BackupInsightsScreen() {
       ) : (
         <ScrollView
           style={layout.scroll}
-          contentContainerStyle={layout.scrollContent}
+          contentContainerStyle={[layout.scrollContent, { paddingTop: headerHeight }]}
+          onScroll={(e) => setIsScrolled(e.nativeEvent.contentOffset.y > 0)}
+          scrollEventThrottle={100}
           showsVerticalScrollIndicator={false}
           refreshControl={
             <RefreshControl

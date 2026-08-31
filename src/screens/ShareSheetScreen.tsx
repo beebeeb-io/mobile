@@ -200,7 +200,19 @@ export default function ShareSheetScreen() {
   const styles = useMemo(() => StyleSheet.create({
     root: { flex: 1, backgroundColor: 'transparent', justifyContent: 'flex-end' },
     backdrop: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.35)' },
-    sheet: { backgroundColor: c.paper, borderTopLeftRadius: 20, borderTopRightRadius: 20, paddingHorizontal: spacing.lg, paddingTop: 12, maxHeight: '90%', ...shadows.lg },
+    // 1315 — the canvas floats the share sheet rather than pinning it flush to
+    // the bottom: all four corners at GLASS_RADII.sheet (38), inset from the
+    // screen edges. Kept opaque — this is a CONTENT surface (link settings,
+    // expiry), and the redesign's rule is that glass is the control layer only.
+    sheet: {
+      backgroundColor: c.paper,
+      borderRadius: 38,
+      marginHorizontal: 10,
+      paddingHorizontal: spacing.lg,
+      paddingTop: 12,
+      maxHeight: '90%',
+      ...shadows.lg,
+    },
     handle: { width: 36, height: 4, borderRadius: 2, backgroundColor: c.line2, alignSelf: 'center', marginBottom: 14 },
     fileRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 16 },
     fileIcon: { width: 36, height: 36, borderRadius: radii.md, alignItems: 'center', justifyContent: 'center' },

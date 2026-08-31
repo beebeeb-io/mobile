@@ -21,6 +21,7 @@ import * as Haptics from 'expo-haptics';
 import { useNavigation } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../lib/theme-context';
+import { ScrollEdgeBlur } from '../components/glass';
 import { spacing, type Colors } from '../theme';
 import { formatBytes } from '../lib/format';
 import {
@@ -376,6 +377,9 @@ export default function StorageScreen() {
   const { colors: c } = useTheme();
   const navigation = useNavigation();
   const insets = useSafeAreaInsets();
+  // 1315 — measured floating-header height feeding the scroll inset.
+  const [headerHeight, setHeaderHeight] = useState(0);
+  const [isScrolled, setIsScrolled] = useState(false);
 
   const [subscription, setSubscription] = useState<Subscription | null>(null);
   const [plans, setPlans] = useState<Plan[]>([]);
@@ -467,15 +471,25 @@ export default function StorageScreen() {
 
   return (
     <View style={[layout.root, { backgroundColor: c.paper }]}>
-      {/* Header */}
-      <View style={{
-        paddingTop: insets.top + (Platform.OS === 'android' ? 8 : 4),
-        paddingHorizontal: 14,
-        paddingBottom: 12,
-        borderBottomWidth: 1,
-        borderBottomColor: c.line,
-        backgroundColor: c.paper,
-      }}>
+      {/* 1315 — content runs under the chrome; the header floats with a
+          scroll-edge blur, replacing its opaque fill and hairline border. */}
+      {isScrolled ? <ScrollEdgeBlur height={headerHeight || insets.top + 80} /> : null}
+      <View
+        style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          right: 0,
+          zIndex: 10,
+          paddingTop: insets.top + (Platform.OS === 'android' ? 8 : 4),
+          paddingHorizontal: 14,
+          paddingBottom: 12,
+        }}
+        onLayout={(e) => {
+          const h = Math.round(e.nativeEvent.layout.height);
+          setHeaderHeight((prev) => (Math.abs(prev - h) > 1 ? h : prev));
+        }}
+      >
         <TouchableOpacity
           style={layout.backButton}
           onPress={() => navigation.goBack()}
@@ -499,8 +513,10 @@ export default function StorageScreen() {
           style={layout.scroll}
           contentContainerStyle={[
             layout.content,
-            { paddingTop: spacing.md, paddingBottom: insets.bottom + 40 },
+            { paddingTop: headerHeight + spacing.md, paddingBottom: insets.bottom + 40 },
           ]}
+          onScroll={(e) => setIsScrolled(e.nativeEvent.contentOffset.y > 0)}
+          scrollEventThrottle={100}
           showsVerticalScrollIndicator={false}
         >
           {/* Storage usage */}

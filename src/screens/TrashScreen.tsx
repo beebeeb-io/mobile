@@ -17,6 +17,7 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import * as Haptics from 'expo-haptics';
 import { radii, spacing } from '../theme';
 import { useTheme } from '../lib/theme-context';
+import { ScrollEdgeBlur } from '../components/glass';
 import { useToast } from '../lib/toast-context';
 import { onFilesDeleted } from '../lib/delete-cascade';
 import {
@@ -174,6 +175,8 @@ const TrashRow = React.memo(function TrashRow({ item, decryptedName, onRestore, 
 export default function TrashScreen() {
   const navigation = useNavigation<Nav>();
   const insets = useSafeAreaInsets();
+  const [headerHeight, setHeaderHeight] = useState(0);
+  const [isScrolled, setIsScrolled] = useState(false);
   const { colors: c } = useTheme();
   const { showToast } = useToast();
 
@@ -378,9 +381,16 @@ export default function TrashScreen() {
   };
 
   return (
-    <View style={[styles.root, { paddingTop: insets.top, backgroundColor: c.paper }]}>
-      {/* Header */}
-      <View style={[styles.header, { borderBottomColor: c.line }]}>
+    <View style={[styles.root, { backgroundColor: c.paper }]}>
+      {/* 1315 — content runs under the chrome. */}
+      {isScrolled ? <ScrollEdgeBlur height={headerHeight || insets.top + 64} /> : null}
+      <View
+        style={[styles.header, styles.floatingHeader, { paddingTop: insets.top }]}
+        onLayout={(e) => {
+          const h = Math.round(e.nativeEvent.layout.height);
+          setHeaderHeight((prev) => (Math.abs(prev - h) > 1 ? h : prev));
+        }}
+      >
         <TouchableOpacity
           style={[styles.backButton, { backgroundColor: c.paper2, borderColor: c.line }]}
           onPress={() => navigation.goBack()}
@@ -440,7 +450,11 @@ export default function TrashScreen() {
               colors={[c.amber]}
             />
           }
-          contentContainerStyle={files.length === 0 ? styles.emptyList : undefined}
+          contentContainerStyle={[files.length === 0 ? styles.emptyList : undefined, { paddingTop: headerHeight, paddingBottom: insets.bottom + 40 }]}
+          // Without this `isScrolled` stays false forever and the blur never
+          // appears — the same dead-state bug found on Photos in 1322.
+          onScroll={(e) => setIsScrolled(e.nativeEvent.contentOffset.y > 0)}
+          scrollEventThrottle={100}
         />
       )}
     </View>
@@ -453,6 +467,7 @@ export default function TrashScreen() {
 
 const styles = StyleSheet.create({
   root: { flex: 1 },
+  floatingHeader: { position: 'absolute', top: 0, left: 0, right: 0, zIndex: 10 },
 
   header: {
     flexDirection: 'row',
