@@ -35,6 +35,7 @@ import * as MediaLibrary from 'expo-media-library/legacy';
 import * as Clipboard from 'expo-clipboard';
 import { fonts, radii, spacing, shadows } from '../theme';
 import { useTheme } from '../lib/theme-context';
+import { ScrollEdgeBlur } from '../components/glass';
 import { UploadActivityCard } from '../components/UploadActivityCard';
 import type { UploadActivityState, UploadStage } from '../components/UploadActivityCard';
 import { useToast } from '../lib/toast-context';
@@ -1450,6 +1451,11 @@ export default function FilesScreen() {
 
   // Scroll shadow — appears when list is scrolled past top
   const [isScrolled, setIsScrolled] = useState(false);
+  // 1313 — the floating header's height, measured. It is NOT constant: the
+  // breadcrumb row, the pinned-folders row, the search field and select mode
+  // each change it, and the list's top inset has to track it or content hides
+  // under the chrome.
+  const [headerHeight, setHeaderHeight] = useState(0);
 
   // Resolve filenames for the current folder (task 0807 — folder-load perf).
   //
@@ -3769,9 +3775,20 @@ export default function FilesScreen() {
   const allSelected = selectedIds.size === allDisplayedIds.length && allDisplayedIds.length > 0;
 
   return (
-    <View style={[styles.root, { paddingTop: insets.top, backgroundColor: c.paper }]}>
-      {/* Header area wrapper — shows bottom shadow when list is scrolled */}
-      <View style={[styles.headerArea, isScrolled && { borderBottomColor: c.line, borderBottomWidth: StyleSheet.hairlineWidth }]}>
+    <View style={[styles.root, { backgroundColor: c.paper }]}>
+      {/* 1313 — content runs full-bleed UNDER the chrome. The scroll-edge blur
+          only appears once something is actually scrolled beneath it, which is
+          what iOS does; at rest the header sits on the page colour and a blur
+          band would just be a tint. `isScrolled` used to drive a hairline
+          border here — the blur replaces it. */}
+      {isScrolled ? <ScrollEdgeBlur height={headerHeight || insets.top + 56} /> : null}
+      <View
+        style={[styles.headerArea, { paddingTop: insets.top }]}
+        onLayout={(e) => {
+          const h = Math.round(e.nativeEvent.layout.height);
+          setHeaderHeight((prev) => (Math.abs(prev - h) > 1 ? h : prev));
+        }}
+      >
       {/* Header — select mode vs normal mode */}
       {selectMode ? (
         <View style={styles.header}>
@@ -4020,28 +4037,12 @@ export default function FilesScreen() {
       {folderStack.length > 1 && !searchActive && !selectMode && renderBreadcrumbs()}
       </View>{/* end headerArea */}
 
-      {/* Pinned folders */}
-      {renderPinnedSection()}
-
-      {/* Recent files */}
-      {renderRecentSection()}
-
-      {/* Recent filter banner — shown when the "Recent Files" quick action is active */}
-      {recentFilterActive && (
-        <View style={[styles.recentFilterBanner, { backgroundColor: c.amberBg, borderColor: c.amberDeep }]}>
-          <Ionicons name="time-outline" size={14} color={c.amberDeep} />
-          <Text style={[styles.recentFilterText, { color: c.amberDeep }]}>Showing files from the last 24 hours</Text>
-          <TouchableOpacity onPress={() => setRecentFilterActive(false)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-            <Ionicons name="close-circle" size={16} color={c.amberDeep} />
-          </TouchableOpacity>
-        </View>
-      )}
-
       {/* Content */}
       {error ? (
-        renderError()
+        // The header floats, so every content branch needs the same top inset.
+        <View style={{ flex: 1, paddingTop: headerHeight }}>{renderError()}</View>
       ) : loading && !refreshing ? (
-        <View>
+        <View style={{ paddingTop: headerHeight }}>
           {[0, 1, 2, 3, 4].map((i) => <SkeletonRow key={i} />)}
         </View>
       ) : (
@@ -4056,6 +4057,26 @@ export default function FilesScreen() {
           numColumns={viewMode === 'grid' ? GRID_COLUMNS : 1}
           columnWrapperStyle={viewMode === 'grid' ? styles.gridRow : undefined}
           ListEmptyComponent={renderEmpty}
+          // 1313 — pinned/recent/banner moved OUT of the static flow and into
+          // the list, so the whole content column scrolls under the floating
+          // header. Passed as an element rather than a component so React
+          // reconciles it instead of remounting, which would reset the pinned
+          // row's horizontal scroll on every render.
+          ListHeaderComponent={
+            <View>
+              {renderPinnedSection()}
+              {renderRecentSection()}
+              {recentFilterActive ? (
+                <View style={[styles.recentFilterBanner, { backgroundColor: c.amberBg, borderColor: c.amberDeep }]}>
+                  <Ionicons name="time-outline" size={14} color={c.amberDeep} />
+                  <Text style={[styles.recentFilterText, { color: c.amberDeep }]}>Showing files from the last 24 hours</Text>
+                  <TouchableOpacity onPress={() => setRecentFilterActive(false)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                    <Ionicons name="close-circle" size={16} color={c.amberDeep} />
+                  </TouchableOpacity>
+                </View>
+              ) : null}
+            </View>
+          }
           onScroll={(e) => setIsScrolled(e.nativeEvent.contentOffset.y > 0)}
           scrollEventThrottle={100}
           refreshControl={
@@ -4064,12 +4085,14 @@ export default function FilesScreen() {
               onRefresh={selectMode ? undefined : handleRefresh}
               tintColor={c.amber}
               colors={[c.amber]}
+              // Without this the spinner appears underneath the floating header.
+              progressViewOffset={headerHeight}
             />
           }
           contentContainerStyle={[
             displayedFiles.length === 0 ? styles.emptyList : undefined,
             viewMode === 'grid' ? styles.gridContent : undefined,
-            { paddingBottom: 80 + insets.bottom },
+            { paddingTop: headerHeight, paddingBottom: 80 + insets.bottom },
           ]}
           removeClippedSubviews={true}
           windowSize={5}
@@ -4333,7 +4356,7 @@ const styles = StyleSheet.create({
   root: { flex: 1 },
 
   // Header
-  headerArea: {},
+  headerArea: { position: 'absolute', top: 0, left: 0, right: 0, zIndex: 10 },
   header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: spacing.lg, paddingVertical: spacing.sm, gap: 8 },
   selectTitle: { flex: 1, fontSize: 16, fontWeight: '600', textAlign: 'center' },
   backButton: { width: 30, height: 30, borderRadius: 15, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
