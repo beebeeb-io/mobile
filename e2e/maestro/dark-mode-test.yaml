@@ -18,14 +18,21 @@ appId: io.beebeeb.app
     visible: "Settings"
     timeout: 5000
 
-# Scroll down to the Appearance section and pick Dark
+# Scroll to the Appearance control and pick Dark. Two traps here, both
+# pre-dating the tab-bar work (this fails the same way on ab20926):
+#  1. Target the option, not the "Appearance" section header — the header
+#     scrolls into view while the Light/Dark/System control is still below
+#     the fold, so scrolling to it and then tapping fails.
+#  2. The option's accessibilityLabel is "Dark theme" (plus ", selected" when
+#     active), NOT "Dark". Maestro's text selector is a FULL-match regex, so
+#     "Dark" never matches. Hence "Dark theme.*".
 - scrollUntilVisible:
     element:
-      text: "Appearance"
+      text: "Dark theme.*"
     direction: DOWN
     timeout: 10000
 
-- tapOn: "Dark"
+- tapOn: "Dark theme.*"
 
 - takeScreenshot: "dark-01-settings"
 
@@ -58,10 +65,10 @@ appId: io.beebeeb.app
 # Switch back to System theme so the device is left in a clean state
 - scrollUntilVisible:
     element:
-      text: "Appearance"
+      text: "System theme.*"
     direction: DOWN
     timeout: 10000
 
-- tapOn: "System"
+- tapOn: "System theme.*"
 
 - takeScreenshot: "dark-06-back-to-system"
