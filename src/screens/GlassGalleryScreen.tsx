@@ -31,20 +31,24 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { RootStackParamList } from '../App';
 import {
   GLASS_CIRCLE_SIZES,
+  GLASS_RADII,
   GlassCapsule,
   GlassCircle,
   GlassSegment,
   GlassSheet,
   ScrollEdgeBlur,
   glassMaterial,
+  type GlassMaterial,
   type GlassScheme,
 } from '../components/glass';
 import {
   colors,
   darkColors,
   fonts,
+  shadows,
   surfacesFor,
   typeScale,
+  type Colors,
   type TypeStyleName,
 } from '../theme';
 
@@ -113,6 +117,101 @@ function PhotoGridBackdrop() {
 
 function SectionLabel({ text, color }: { text: string; color: string }) {
   return <Text style={[styles.sectionLabel, { color }]}>{text}</Text>;
+}
+
+/**
+ * The share-sheet contents, rendered identically on either material so the
+ * ONLY difference between the two specimens below is the fill. Each variant
+ * passes the colour system it would really use: the opaque card reads from
+ * the theme (`c.ink` / `c.line`), the glass sheet from the recipe material.
+ */
+function SheetSpecimenBody({
+  ink,
+  inkMuted,
+  chipBorder,
+  chipActiveFill,
+}: {
+  ink: string;
+  inkMuted: string;
+  chipBorder: string;
+  chipActiveFill: string;
+}) {
+  return (
+    <>
+      <Text style={[typeScale.title3, { color: ink }]}>Share link</Text>
+      <Text style={[typeScale.footnote, { color: inkMuted }]}>
+        The key stays in the fragment. We never receive it.
+      </Text>
+      <View style={styles.sheetRow}>
+        {['24 hours', '7 days', 'Never'].map((label, i) => (
+          <View
+            key={label}
+            style={[
+              styles.expiry,
+              {
+                backgroundColor: i === 1 ? chipActiveFill : 'transparent',
+                borderColor: chipBorder,
+              },
+            ]}
+          >
+            <Text style={[typeScale.footnote, { color: i === 1 ? ink : inkMuted }]}>{label}</Text>
+          </View>
+        ))}
+      </View>
+    </>
+  );
+}
+
+/**
+ * RULING #1 visual aid — the ShareSheet material question, side by side.
+ *
+ * `canvas.json` (`wave2`) calls the share sheet "a floating 38px-radius GLASS
+ * sheet", while `ShareSheet.dc.html:83` fills it `rgba(28,28,33,0.86)` — far
+ * from the 0.46 the same canvas uses for real glass, i.e. near-opaque. Task
+ * 1315 read that as a content surface and shipped it opaque. Rather than
+ * re-argue it in prose, both are rendered here at the same radius over the
+ * same backdrop, in whichever scheme the toggle is on, so the call can be
+ * made by looking. Recorded as RULING OPEN #1 in
+ * `design/ios26-canvas/DEVIATIONS.md`; nothing in ShareSheetScreen changes
+ * until it is made.
+ */
+function SheetMaterialComparison({
+  scheme,
+  c,
+  material,
+}: {
+  scheme: GlassScheme;
+  c: Colors;
+  material: GlassMaterial;
+}) {
+  return (
+    <>
+      <Text style={[typeScale.caption2, styles.mono, styles.variantLabel, { color: material.labelMuted }]}>
+        {`A · opaque c.paper ${c.paper} — as ShareSheetScreen ships it`}
+      </Text>
+      <View style={[styles.opaqueSheet, { backgroundColor: c.paper }]}>
+        <View style={[styles.opaqueHandle, { backgroundColor: c.line2 }]} />
+        <SheetSpecimenBody
+          ink={c.ink}
+          inkMuted={c.ink3}
+          chipBorder={c.line}
+          chipActiveFill={c.paper2}
+        />
+      </View>
+
+      <Text style={[typeScale.caption2, styles.mono, styles.variantLabel, { color: material.labelMuted }]}>
+        {`B · recipe glass fill ${material.fill} — canvas.json "glass sheet"`}
+      </Text>
+      <GlassSheet scheme={scheme} style={styles.glassSheetSpecimen} contentStyle={styles.sheetBody}>
+        <SheetSpecimenBody
+          ink={material.label}
+          inkMuted={material.labelMuted}
+          chipBorder={material.rimSide}
+          chipActiveFill={material.bubbleFill}
+        />
+      </GlassSheet>
+    </>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -235,6 +334,12 @@ export default function GlassGalleryScreen() {
             ))}
           </View>
         </GlassSheet>
+
+        <SectionLabel
+          text="Opaque card at 38 vs glass-sheet fill variant"
+          color={material.labelMuted}
+        />
+        <SheetMaterialComparison scheme={scheme} c={c} material={material} />
 
         <SectionLabel text="Type scale" color={material.labelMuted} />
         <View
@@ -412,6 +517,19 @@ const styles = StyleSheet.create({
   },
 
   sheetBody: { padding: 20, gap: 8 },
+  variantLabel: { marginBottom: 6, marginLeft: 4 },
+  // Geometry lifted from ShareSheetScreen.tsx as shipped: radius 38, inset 10,
+  // shadows.lg. Only the fill differs between this and the GlassSheet below.
+  opaqueSheet: {
+    borderRadius: GLASS_RADII.sheet,
+    marginHorizontal: 10,
+    padding: 20,
+    gap: 8,
+    marginBottom: 14,
+    ...shadows.lg,
+  },
+  opaqueHandle: { width: 36, height: 5, borderRadius: 3, alignSelf: 'center', marginBottom: 6 },
+  glassSheetSpecimen: { marginHorizontal: 10, marginBottom: 10 },
   sheetRow: { flexDirection: 'row', gap: 8, marginTop: 6 },
   expiry: {
     paddingHorizontal: 14,
