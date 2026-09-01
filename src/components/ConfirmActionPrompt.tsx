@@ -18,6 +18,7 @@ import {
   View,
 } from 'react-native';
 import { radii, shadows } from '../theme';
+import { modalScrim } from './glass';
 import { useTheme } from '../lib/theme-context';
 import { registerAndroidConfirmPrompter } from '../lib/confirm-action';
 
@@ -28,7 +29,7 @@ interface PendingPrompt {
 }
 
 export default function ConfirmActionPrompt() {
-  const { colors: c } = useTheme();
+  const { colors: c, resolved } = useTheme();
   const [pending, setPending] = useState<PendingPrompt | null>(null);
   const [password, setPassword] = useState('');
   const inputRef = useRef<TextInput>(null);
@@ -63,7 +64,11 @@ export default function ConfirmActionPrompt() {
       onRequestClose={() => close(null)}
     >
       <KeyboardAvoidingView style={styles.overlay} behavior={undefined}>
-        <TouchableOpacity activeOpacity={1} style={styles.backdrop} onPress={() => close(null)} />
+        <TouchableOpacity
+          activeOpacity={1}
+          style={[styles.backdrop, { backgroundColor: modalScrim(resolved) }]}
+          onPress={() => close(null)}
+        />
         <View style={[styles.card, { backgroundColor: c.paper, borderColor: c.line }]}>
           <Text style={[styles.title, { color: c.ink }]}>{pending.title}</Text>
           <Text style={[styles.body, { color: c.ink3 }]}>{pending.message}</Text>
@@ -110,7 +115,7 @@ export default function ConfirmActionPrompt() {
 
 const styles = StyleSheet.create({
   overlay: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 24 },
-  backdrop: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.4)' },
+  backdrop: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 },
   card: {
     width: '100%',
     maxWidth: 360,

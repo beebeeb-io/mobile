@@ -19,6 +19,7 @@ import * as Haptics from 'expo-haptics';
 import type { RouteProp } from '@react-navigation/native';
 import type { RootStackParamList } from '../App';
 import { radii, spacing, shadows } from '../theme';
+import { modalScrim } from '../components/glass';
 import { useTheme } from '../lib/theme-context';
 import { useToast } from '../lib/toast-context';
 import { useKeyboardLayoutAnimation } from '../lib/useKeyboardLayoutAnimation';
@@ -199,7 +200,7 @@ export default function ShareSheetScreen() {
 
   const styles = useMemo(() => StyleSheet.create({
     root: { flex: 1, backgroundColor: 'transparent', justifyContent: 'flex-end' },
-    backdrop: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.35)' },
+    backdrop: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: modalScrim(resolved) },
     // 1315 — the canvas floats the share sheet rather than pinning it flush to
     // the bottom: all four corners at GLASS_RADII.sheet (38), inset from the
     // screen edges. Kept opaque — this is a CONTENT surface (link settings,

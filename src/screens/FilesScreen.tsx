@@ -35,7 +35,7 @@ import * as MediaLibrary from 'expo-media-library/legacy';
 import * as Clipboard from 'expo-clipboard';
 import { fonts, radii, spacing, shadows } from '../theme';
 import { useTheme } from '../lib/theme-context';
-import { ScrollEdgeBlur } from '../components/glass';
+import { ScrollEdgeBlur, modalScrim } from '../components/glass';
 import { UploadActivityCard } from '../components/UploadActivityCard';
 import type { UploadActivityState, UploadStage } from '../components/UploadActivityCard';
 import { useToast } from '../lib/toast-context';
@@ -4199,7 +4199,7 @@ export default function FilesScreen() {
         >
           <TouchableOpacity
             activeOpacity={1}
-            style={styles.modalBackdrop}
+            style={[styles.modalBackdrop, { backgroundColor: modalScrim(themeScheme) }]}
             onPress={() => !creatingFolder && setNewFolderOpen(false)}
           />
           <View style={[styles.modalCard, { backgroundColor: c.paper, borderColor: c.line }]}>
@@ -4561,7 +4561,7 @@ const styles = StyleSheet.create({
 
   // Android new-folder modal
   modalOverlay: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 24 },
-  modalBackdrop: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.4)' },
+  modalBackdrop: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 },
   modalCard: {
     width: '100%',
     maxWidth: 360,
