@@ -2,8 +2,8 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../lib/theme-context';
-import { fonts } from '../theme';
-import { GLASS_RADII, GlassSurface, glassMaterial } from './glass';
+import { colors, darkColors, fonts } from '../theme';
+import { GLASS_RADII, GlassSurface, glassMaterial, type GlassScheme } from './glass';
 import { RateMeter, etaSeconds, formatEta, formatRate, ringRotations } from '../lib/upload-metrics';
 
 /**
@@ -139,15 +139,29 @@ function ProgressRing({ size, stroke, progress, color, trackColor, holeColor, ch
 interface UploadActivityCardProps {
   upload: UploadActivityState;
   bottom: number;
+  /**
+   * Override the resolved colour scheme. Every real call site (FilesScreen)
+   * omits this and gets the app's live theme, unchanged. It exists only so
+   * GlassGalleryScreen can show both schemes side by side without touching
+   * the live app theme — the same `scheme?: GlassScheme` escape hatch every
+   * other glass primitive (`GlassSurface`, `GlassCapsule`, `GlassCircle`,
+   * `GlassSegment`) already exposes for exactly this reason.
+   */
+  scheme?: GlassScheme;
 }
 
-export const UploadActivityCard = React.memo(function UploadActivityCard({ upload, bottom }: UploadActivityCardProps) {
-  const { colors: c, resolved } = useTheme();
-  const dark = resolved === 'dark';
+export const UploadActivityCard = React.memo(function UploadActivityCard({ upload, bottom, scheme }: UploadActivityCardProps) {
+  const { resolved: liveScheme } = useTheme();
+  const resolvedScheme = scheme ?? liveScheme;
+  const dark = resolvedScheme === 'dark';
   // 1340 — the card's own hand-rolled blur/fill/border/shadow are gone; the
   // whole surface now reads through the shared glassMaterial(scheme), the
   // same recipe the tab bar and every other floating control uses.
-  const material = glassMaterial(resolved);
+  const material = glassMaterial(resolvedScheme);
+  // Equivalent to useTheme().colors (theme-context.tsx computes it the same
+  // way) but derived from resolvedScheme so a gallery override also repaints
+  // the amber/ink literals below, not just the glass material.
+  const c = dark ? darkColors : colors;
 
   // Smoothed network rate from bytesUploaded deltas. The meter lives across
   // renders; a batch's next file restarts the counter and the meter absorbs it.
@@ -207,7 +221,7 @@ export const UploadActivityCard = React.memo(function UploadActivityCard({ uploa
       accessibilityLabel={`Uploading ${upload.fileName}, ${pct} percent`}
       testID="upload-activity-card"
     >
-      <GlassSurface scheme={resolved} radius="card" contentStyle={styles.row}>
+      <GlassSurface scheme={resolvedScheme} radius="card" contentStyle={styles.row}>
         {/* Brand mark */}
         <View style={[styles.mark, { backgroundColor: c.amber }]}>
           <Text style={styles.markGlyph}>b</Text>
