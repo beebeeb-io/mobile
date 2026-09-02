@@ -3835,15 +3835,20 @@ export default function FilesScreen() {
             // and every other floating circle use. No canvas artboard samples a
             // back-chevron circle at this exact 30pt size; DERIVED by extending
             // the recipe rather than sampled (see DEVIATIONS.md).
-            <GlassCircle scheme={themeScheme} size={30}>
-              <TouchableOpacity
-                style={styles.backButtonHit}
-                onPress={() => navigateToBreadcrumb(folderStack.length - 2)}
-                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-              >
+            // The TouchableOpacity is the OUTER element wrapping GlassCircle
+            // (not nested inside it) — RN clips hitSlop to the parent view's
+            // bounds, so an inner pressable's hitSlop would be clipped to the
+            // fixed 30×30 circle instead of extending the touch target.
+            <TouchableOpacity
+              onPress={() => navigateToBreadcrumb(folderStack.length - 2)}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              accessibilityRole="button"
+              accessibilityLabel="Back"
+            >
+              <GlassCircle scheme={themeScheme} size={30}>
                 <Text style={[styles.backButtonText, { color: glassMaterial(themeScheme).label }]}>{'‹'}</Text>
-              </TouchableOpacity>
-            </GlassCircle>
+              </GlassCircle>
+            </TouchableOpacity>
           )}
           {/* 0800 — single line, tail-truncated (never stacks vertically);
               long-press surfaces the full name via a native UIMenu header. */}
@@ -4410,9 +4415,9 @@ const styles = StyleSheet.create({
   headerArea: { position: 'absolute', top: 0, left: 0, right: 0, zIndex: 10 },
   header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: spacing.lg, paddingVertical: spacing.sm, gap: 8 },
   selectTitle: { flex: 1, fontSize: 16, fontWeight: '600', textAlign: 'center' },
-  // 1341 — the 30×30 circle itself is now a GlassCircle (glass-recipe.ts);
-  // this is just the touch target + centering inside it.
-  backButtonHit: { width: '100%', height: '100%', alignItems: 'center', justifyContent: 'center' },
+  // 1341 — the 30×30 circle itself is now a GlassCircle (glass-recipe.ts),
+  // which centers its own children; the outer TouchableOpacity (rendered
+  // inline above) just wraps it for an unclipped hitSlop.
   backButtonText: { fontSize: 20, fontWeight: '600', marginTop: -2 },
   // 0800 — flexShrink lets a long folder name yield space to the trailing
   // action icons (truncating with "…") instead of wrapping to a second line.
