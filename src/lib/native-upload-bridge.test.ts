@@ -1,6 +1,8 @@
 // @ts-nocheck
 import { describe, expect, it } from 'bun:test'
 import {
+  assertNativeUploadEncryptedUnderSessionId,
+  NativeUploadIdMismatchError,
   nativeProgressToUploadProgress,
   parseNativeUploadError,
   resumeStateMatchesNativePlan,
@@ -73,6 +75,25 @@ describe('nativeProgressToUploadProgress', () => {
       ctx,
     )
     expect(p.bytesUploaded).toBe(1_000_000)
+  })
+})
+
+describe('assertNativeUploadEncryptedUnderSessionId', () => {
+  it('passes silently when the encryption id matches the session id', () => {
+    expect(() => assertNativeUploadEncryptedUnderSessionId('SERVER-ID', 'SERVER-ID')).not.toThrow()
+  })
+
+  it('throws instead of letting an undecryptable upload reach complete (task 1351)', () => {
+    expect(() => assertNativeUploadEncryptedUnderSessionId('CLIENT-ID', 'SERVER-ID'))
+      .toThrow(NativeUploadIdMismatchError)
+    try {
+      assertNativeUploadEncryptedUnderSessionId('CLIENT-ID', 'SERVER-ID')
+      throw new Error('expected assertNativeUploadEncryptedUnderSessionId to throw')
+    } catch (err) {
+      expect(err).toBeInstanceOf(NativeUploadIdMismatchError)
+      expect((err as NativeUploadIdMismatchError).encryptedUnderFileId).toBe('CLIENT-ID')
+      expect((err as NativeUploadIdMismatchError).sessionFileId).toBe('SERVER-ID')
+    }
   })
 })
 
