@@ -17,7 +17,7 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import * as Haptics from 'expo-haptics';
 import { radii, spacing } from '../theme';
 import { useTheme } from '../lib/theme-context';
-import { SCROLL_EDGE, ScrollEdgeBlur } from '../components/glass';
+import { GlassCapsule, GlassCircle, SCROLL_EDGE, ScrollEdgeBlur, glassMaterial } from '../components/glass';
 import { useToast } from '../lib/toast-context';
 import { onFilesDeleted } from '../lib/delete-cascade';
 import {
@@ -177,7 +177,7 @@ export default function TrashScreen() {
   const insets = useSafeAreaInsets();
   const [headerHeight, setHeaderHeight] = useState(0);
   const [isScrolled, setIsScrolled] = useState(false);
-  const { colors: c } = useTheme();
+  const { colors: c, resolved: themeScheme } = useTheme();
   const { showToast } = useToast();
 
   const { isUnlocked, decryptMetadata } = useCrypto();
@@ -391,23 +391,42 @@ export default function TrashScreen() {
           setHeaderHeight((prev) => (Math.abs(prev - h) > 1 ? h : prev));
         }}
       >
+        {/* 1342 — was a flat backgroundColor: c.paper2 / borderColor: c.line
+            circle (the same off-recipe shape FilesScreen's back-button had
+            before 1341). Now a GlassCircle reading the shared glassMaterial(),
+            same as every other floating circle. The TouchableOpacity is the
+            OUTER element wrapping GlassCircle (not nested inside it) — RN
+            clips hitSlop to the parent view's bounds, so an inner pressable's
+            hitSlop would be clipped to the fixed 30×30 circle instead of
+            extending the touch target (the lesson FilesScreen's back-button
+            hit-target fix learned the hard way). */}
         <TouchableOpacity
-          style={[styles.backButton, { backgroundColor: c.paper2, borderColor: c.line }]}
           onPress={() => navigation.goBack()}
           hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
           accessibilityRole="button"
           accessibilityLabel="Go back"
         >
-          <Ionicons name="chevron-back" size={22} color={c.ink2} />
+          <GlassCircle scheme={themeScheme} size={30}>
+            <Ionicons name="chevron-back" size={22} color={glassMaterial(themeScheme).label} />
+          </GlassCircle>
         </TouchableOpacity>
         <Text style={[styles.title, { color: c.ink }]}>Trash</Text>
         <View style={{ flex: 1 }} />
         {files.length > 0 && (
+          // 1342 — LIFTED VERBATIM from Trash.dc.html:82: a glass capsule,
+          // height 42, radius 999, padding "0 18px", 15/600 red text — was a
+          // bare Text touchable with no fill/border/glass at all. Colour
+          // stays the app's c.red token (not the canvas's raw #E8443A),
+          // matching FilesScreen's literal-destructive-red precedent (1341).
           <TouchableOpacity
             onPress={handleEmptyTrash}
             hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            accessibilityRole="button"
+            accessibilityLabel="Empty trash"
           >
-            <Text style={[styles.emptyTrashBtn, { color: c.red }]}>Empty</Text>
+            <GlassCapsule scheme={themeScheme} contentStyle={styles.emptyTrashBody}>
+              <Text style={[styles.emptyTrashBtn, { color: c.red }]}>Empty</Text>
+            </GlassCapsule>
           </TouchableOpacity>
         )}
       </View>
@@ -477,17 +496,18 @@ const styles = StyleSheet.create({
     gap: 10,
     borderBottomWidth: StyleSheet.hairlineWidth,
   },
-  backButton: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
-    borderWidth: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
+  // 1342 — the 30×30 circle itself is now a GlassCircle (glass-recipe.ts);
+  // the outer TouchableOpacity (rendered inline above) just wraps it for an
+  // unclipped hitSlop. backButtonText stays unused pre-existing dead code
+  // (out of scope for this fidelity sweep).
   backButtonText: { fontSize: 20, fontWeight: '600', marginTop: -2 },
   title: { fontSize: 22, fontWeight: '700' },
-  emptyTrashBtn: { fontSize: 14, fontWeight: '600' },
+  // 1342 — the capsule itself is a GlassCapsule (glass-recipe.ts, radius 999
+  // from GLASS_RADII.capsule); this is the fixed 42pt height + "0 18px"
+  // padding lifted verbatim from Trash.dc.html:82. fontSize 15/600 also
+  // lifted (was 14/600, an app-default size with no canvas backing).
+  emptyTrashBody: { height: 42, paddingHorizontal: 18, alignItems: 'center', justifyContent: 'center' },
+  emptyTrashBtn: { fontSize: 15, fontWeight: '600' },
 
   hintBanner: {
     paddingHorizontal: spacing.lg,

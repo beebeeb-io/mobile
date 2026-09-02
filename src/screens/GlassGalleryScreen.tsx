@@ -21,7 +21,7 @@
  * comparable. The thin stripe tiles make the blur radius directly readable.
  */
 
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
@@ -29,6 +29,7 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import type { RootStackParamList } from '../App';
+import { UploadActivityCard, type UploadActivityState } from '../components/UploadActivityCard';
 import {
   GLASS_CIRCLE_SIZES,
   GLASS_RADII,
@@ -36,6 +37,7 @@ import {
   GlassCircle,
   GlassSegment,
   GlassSheet,
+  GlassSurface,
   SCROLL_EDGE,
   ScrollEdgeBlur,
   glassMaterial,
@@ -216,6 +218,104 @@ function SheetMaterialComparison({
 }
 
 /**
+ * Pressed states — capsule / circle / segment (task 1342).
+ *
+ * `GlassCapsule` and `GlassCircle` are plain `GlassSurface` wrappers: neither
+ * has an `onPress` prop, and `glass-recipe.ts` defines no pressed material for
+ * them. Every real call site (FilesScreen / PhotosScreen / TrashScreen's
+ * back-buttons and select-mode action bars, all task 1341/1342) wraps them in
+ * an OUTER `TouchableOpacity`, so the only press feedback either primitive
+ * ever gets is that wrapper's `activeOpacity` — a generic RN behaviour, not a
+ * glass-specific style. Rather than invent a fake "pressed material," this
+ * dims a second specimen to the 0.7 `activeOpacity` this app's call sites use
+ * and labels it as exactly that.
+ *
+ * `GlassSegment` is different: it DOES have a real recipe-defined
+ * pressed/selected style — `material.bubbleFill` / `bubbleRim` /
+ * `bubbleShadow` on whichever item is `value`. So its pair below is not a
+ * simulation; it is the same component rendered twice with a different
+ * `value`, showing the actual bubble move from one item to the other.
+ */
+function PressedStateComparison({
+  scheme,
+  material,
+}: {
+  scheme: GlassScheme;
+  material: GlassMaterial;
+}) {
+  return (
+    <>
+      <Text style={[typeScale.caption2, styles.mono, styles.variantLabel, { color: material.labelMuted }]}>
+        {'Capsule / Circle — neither defines a pressed material (plain GlassSurface wrappers, no onPress). Real usage wraps them in an outer TouchableOpacity; the 0.7 opacity below is that wrapper’s activeOpacity, not a recipe value.'}
+      </Text>
+      <View style={styles.pressedRow}>
+        <View style={styles.pressedSpecimen}>
+          <GlassCapsule scheme={scheme} contentStyle={styles.capsuleBody}>
+            <Ionicons name="lock-closed" size={17} color={colors.amber} />
+            <Text style={[typeScale.subhead, { color: material.label }]}>Capsule</Text>
+          </GlassCapsule>
+          <Text style={[typeScale.caption2, styles.mono, { color: material.labelMuted }]}>at rest</Text>
+        </View>
+        <View style={[styles.pressedSpecimen, { opacity: 0.7 }]}>
+          <GlassCapsule scheme={scheme} contentStyle={styles.capsuleBody}>
+            <Ionicons name="lock-closed" size={17} color={colors.amber} />
+            <Text style={[typeScale.subhead, { color: material.label }]}>Capsule</Text>
+          </GlassCapsule>
+          <Text style={[typeScale.caption2, styles.mono, { color: material.labelMuted }]}>pressed (0.7 activeOpacity)</Text>
+        </View>
+      </View>
+
+      <View style={[styles.pressedRow, { marginTop: 12 }]}>
+        <View style={styles.pressedSpecimen}>
+          <GlassCircle scheme={scheme} size={GLASS_CIRCLE_SIZES.action}>
+            <Ionicons name="close" size={18} color={material.label} />
+          </GlassCircle>
+          <Text style={[typeScale.caption2, styles.mono, { color: material.labelMuted }]}>at rest</Text>
+        </View>
+        <View style={[styles.pressedSpecimen, { opacity: 0.7 }]}>
+          <GlassCircle scheme={scheme} size={GLASS_CIRCLE_SIZES.action}>
+            <Ionicons name="close" size={18} color={material.label} />
+          </GlassCircle>
+          <Text style={[typeScale.caption2, styles.mono, { color: material.labelMuted }]}>pressed (0.7 activeOpacity)</Text>
+        </View>
+      </View>
+
+      <Text style={[typeScale.caption2, styles.mono, styles.variantLabel, { color: material.labelMuted, marginTop: 14 }]}>
+        {'Segment — the one primitive with a REAL recipe-defined pressed/selected style (material.bubbleFill / bubbleRim / bubbleShadow). Not a simulation: the same GlassSegment, value flipped.'}
+      </Text>
+      <View style={styles.pressedRow}>
+        <View style={{ flex: 1 }}>
+          <GlassSegment
+            scheme={scheme}
+            options={[
+              { value: 'a', label: 'Files' },
+              { value: 'b', label: 'Photos' },
+            ]}
+            value="a"
+            onChange={() => {}}
+            accessibilityLabel="Segment specimen — before press"
+          />
+          <Text style={[typeScale.caption2, styles.mono, styles.variantLabel, { color: material.labelMuted }]}>before press</Text>
+        </View>
+        <View style={{ flex: 1 }}>
+          <GlassSegment
+            scheme={scheme}
+            options={[
+              { value: 'a', label: 'Files' },
+              { value: 'b', label: 'Photos' },
+            ]}
+            value="b"
+            onChange={() => {}}
+            accessibilityLabel="Segment specimen — after press"
+          />
+          <Text style={[typeScale.caption2, styles.mono, styles.variantLabel, { color: material.labelMuted }]}>after press</Text>
+        </View>
+      </View>
+    </>
+  );
+}
+
+/**
  * Tall-header banding-case demo (task 1348).
  *
  * `SCROLL_EDGE.chromeFallback` (the canvas 128) is the fallback height every
@@ -249,6 +349,75 @@ function TallHeaderBandingDemo({
         {label}
       </Text>
     </View>
+  );
+}
+
+/**
+ * Card-28 upload pill with ring + ETA (task 1340).
+ *
+ * `canvas.json` `n-drive`'s only reference to this card is textual — "C2
+ * upload card floats as a Live-Activity-style glass pill with the ETA
+ * countdown in the ring" — no artboard ever samples it in pixels, so every
+ * value `UploadActivityCard` now carries (radius 28, blur, shadow, fill) is
+ * DERIVED from the shared recipe, not lifted (see DEVIATIONS.md, "Phase 4 —
+ * upload card").
+ *
+ * This renders the REAL component, not a simulation: `bytesUploaded` ticks
+ * on a local interval so the card's own internal `RateMeter` gets genuine
+ * deltas to smooth into a rate — that smoothed rate is what actually drives
+ * the ring's ETA text (`ringEta`). A single static prop set would leave the
+ * ring showing a bare percent forever, because the meter's first sample has
+ * nothing to compare against yet.
+ */
+function UploadCardDemo({ scheme }: { scheme: GlassScheme }) {
+  const TOTAL_BYTES = 128_000_000; // a plausible large-photo/video export
+  const [bytesUploaded, setBytesUploaded] = useState(0);
+
+  useEffect(() => {
+    setBytesUploaded(0);
+    const step = TOTAL_BYTES / 24;
+    const id = setInterval(() => {
+      setBytesUploaded((prev) => Math.min(TOTAL_BYTES, prev + step));
+    }, 400);
+    return () => clearInterval(id);
+  }, []);
+
+  const uploading: UploadActivityState = {
+    fileName: 'Quarterly-Report-2026.pdf',
+    stage: 2,
+    percent: Math.round((bytesUploaded / TOTAL_BYTES) * 100),
+    city: 'Falkenstein',
+    region: 'eu-de',
+    bytesUploaded,
+    bytesTotal: TOTAL_BYTES,
+    cryptoBytesPerSec: 420_000_000,
+  };
+  const done: UploadActivityState = {
+    fileName: 'Quarterly-Report-2026.pdf',
+    stage: 'done',
+    percent: 100,
+    city: 'Falkenstein',
+    region: 'eu-de',
+  };
+
+  const labelColor = glassMaterial(scheme).labelMuted;
+
+  return (
+    <>
+      <View style={styles.uploadCardDemoBox}>
+        <UploadActivityCard upload={uploading} bottom={0} scheme={scheme} />
+      </View>
+      <Text style={[typeScale.caption2, styles.mono, styles.variantLabel, { color: labelColor }]}>
+        uploading — bar + ring animate live; ETA fills in once the on-card RateMeter has two samples
+      </Text>
+      <View style={styles.uploadCardDemoBox}>
+        <UploadActivityCard upload={done} bottom={0} scheme={scheme} />
+      </View>
+      <Text style={[typeScale.caption2, styles.mono, styles.variantLabel, { color: labelColor }]}>
+        done — no border (removed, task 1340); the cue is content only — the ring going solid amber
+        + the checkmark + the data line switching to "Stored in …"
+      </Text>
+    </>
   );
 }
 
@@ -342,6 +511,60 @@ export default function GlassGalleryScreen() {
           style={styles.control}
         />
 
+        {/* 1338b — the iOS 26 bottom search bar's two pieces: the filter
+            capsule row (one shared glass track, the selected kind in its own
+            bubbleFill — the same active-item pattern as Segment above) and
+            the query pill (`Search.dc.html:89`: radius 999, padding 14/20,
+            17px text — lifted verbatim). See FilesScreen.tsx for the live,
+            keyboard-avoiding version anchored above the tab bar. */}
+        <SectionLabel text="Search bar + filter capsules" color={material.labelMuted} />
+        <GlassCapsule scheme={scheme} contentStyle={styles.searchCapsuleTrack} style={styles.control}>
+          <View style={styles.searchCapsuleRow}>
+            {[
+              { label: 'All', selected: false },
+              { label: 'Videos', selected: true },
+              { label: 'Photos', selected: false },
+            ].map((f) => (
+              <View
+                key={f.label}
+                style={[
+                  styles.searchCapsuleItem,
+                  f.selected
+                    ? [
+                        material.bubbleShadow,
+                        { backgroundColor: material.bubbleFill, borderTopColor: material.bubbleRim },
+                      ]
+                    : null,
+                ]}
+              >
+                <Text
+                  style={[
+                    typeScale.footnote,
+                    { color: f.selected ? material.label : material.labelMuted, fontWeight: f.selected ? '600' : '500' },
+                  ]}
+                >
+                  {f.label}
+                </Text>
+              </View>
+            ))}
+          </View>
+        </GlassCapsule>
+        <GlassSurface
+          scheme={scheme}
+          radius="capsule"
+          style={styles.control}
+          contentStyle={styles.searchBarSpecimenContent}
+        >
+          <Ionicons name="search" size={20} color={material.labelMuted} />
+          <Text style={[typeScale.body, { color: material.label }]}>clip</Text>
+        </GlassSurface>
+
+        <SectionLabel
+          text="Pressed states — capsule / circle / segment"
+          color={material.labelMuted}
+        />
+        <PressedStateComparison scheme={scheme} material={material} />
+
         <SectionLabel text="Sheet — radius 38" color={material.labelMuted} />
         <GlassSheet scheme={scheme} style={styles.control} contentStyle={styles.sheetBody}>
           <Text style={[typeScale.title3, { color: material.label }]}>Share link</Text>
@@ -397,6 +620,9 @@ export default function GlassGalleryScreen() {
             labelColor={material.labelMuted}
           />
         </View>
+
+        <SectionLabel text="Card-28 upload pill with ring + ETA" color={material.labelMuted} />
+        <UploadCardDemo scheme={scheme} />
 
         <SectionLabel text="Type scale" color={material.labelMuted} />
         <View
@@ -565,6 +791,21 @@ const styles = StyleSheet.create({
   control: { marginBottom: 10 },
   row: { flexDirection: 'row', alignItems: 'center', gap: 14 },
 
+  // 1338b — search bar + filter capsules specimen
+  searchCapsuleTrack: { padding: 4 },
+  searchCapsuleRow: { flexDirection: 'row', gap: 2 },
+  searchCapsuleItem: {
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    borderRadius: GLASS_RADII.capsule,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'transparent',
+  },
+  searchBarSpecimenContent: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 14, paddingHorizontal: 20 },
+
+  pressedRow: { flexDirection: 'row', gap: 14 },
+  pressedSpecimen: { alignItems: 'center', gap: 6 },
+
   capsuleBody: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -603,6 +844,13 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     position: 'relative',
   },
+
+  // 1340 — UploadActivityCard positions itself `position: 'absolute', bottom`
+  // (it floats above FilesScreen's tab bar); this box is the relatively-
+  // positioned anchor it floats inside here. No overflow: 'hidden' — the
+  // card's own drop shadow must not be clipped, and the photo-grid backdrop
+  // toggle above already provides the "busy Drive list" legibility case.
+  uploadCardDemoBox: { height: 96, position: 'relative', marginBottom: 10 },
 
   group: { overflow: 'hidden' },
   typeRow: {
