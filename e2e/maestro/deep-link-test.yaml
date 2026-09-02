@@ -31,6 +31,19 @@ appId: io.beebeeb.app
 # the picker fixes the cause rather than re-hiding it behind an ordering.
 - openLink: "beebeeb://upload"
 
+# openLink returns as soon as the link is dispatched, not once the picker has
+# finished presenting — so the runFlow.when conditional below could evaluate
+# BEFORE the picker has animated in, see no "Recents", skip the dismissal
+# entirely, and fail exactly like the original ordering bug, just intermittently
+# instead of always (PR #59 review finding). Wait for the picker itself first.
+# Per task 1344's root-cause work, `UIDocumentPickerViewController` exposes
+# only "Cancel" and the system keyboard to XCUITest/Maestro — no Recents/Browse
+# rows, no custom ids — so "Cancel" is the one reliable anchor for "the picker
+# is actually on screen now".
+- extendedWaitUntil:
+    visible: "Cancel"
+    timeout: 10000
+
 - runFlow:
     when:
       visible: "Recents"
