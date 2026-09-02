@@ -108,6 +108,17 @@ import { useKeyboardLayoutAnimation } from '../lib/useKeyboardLayoutAnimation';
 // Tracks the currently open Swipeable so we can close it when another opens.
 let _openSwipeable: Swipeable | null = null;
 
+// 1338b — plain layout literals for the floating bottom search stack, not
+// canvas-sourced (see DEVIATIONS.md "Phase 3"): the gap between the stack
+// and the tab bar it floats above, and a fallback height for the one frame
+// before the stack's own onLayout has measured it (same class as
+// `SCROLL_EDGE.chromeFallback`'s job for `headerHeight`). The fallback is
+// sized for the TALLEST realistic case — filter row + "N matches elsewhere"
+// hint + input pill — so that first frame never hides the last list row;
+// once measured, the real height always wins.
+const SEARCH_STACK_GAP = 12;
+const SEARCH_STACK_FALLBACK_HEIGHT = 168;
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -1541,6 +1552,12 @@ export default function FilesScreen() {
   // each change it, and the list's top inset has to track it or content hides
   // under the chrome.
   const [headerHeight, setHeaderHeight] = useState(0);
+  // 1338b — same pattern, for the floating bottom search stack (filter
+  // capsules + optional "N matches elsewhere" hint + input pill). It is not
+  // a fixed height either: the hint row only renders sometimes, and Dynamic
+  // Type changes the capsule/input row heights. The list's bottom inset has
+  // to track it or the last row(s) hide under the glass.
+  const [searchStackHeight, setSearchStackHeight] = useState(0);
 
   // Resolve filenames for the current folder (task 0807 — folder-load perf).
   //
@@ -4206,7 +4223,16 @@ export default function FilesScreen() {
           contentContainerStyle={[
             displayedFiles.length === 0 ? styles.emptyList : undefined,
             viewMode === 'grid' ? styles.gridContent : undefined,
-            { paddingTop: headerHeight, paddingBottom: 80 + insets.bottom },
+            {
+              paddingTop: headerHeight,
+              // 1338b — while search is active, the floating bottom stack
+              // (filter capsules + optional hint + input pill) replaces the
+              // FAB as what the list must clear; the FAB is hidden then (see
+              // below), so `80` (its own clearance) does not apply.
+              paddingBottom: searchActive
+                ? (searchStackHeight || SEARCH_STACK_FALLBACK_HEIGHT) + SEARCH_STACK_GAP
+                : 80 + insets.bottom,
+            },
           ]}
           removeClippedSubviews={true}
           windowSize={5}
@@ -4238,6 +4264,18 @@ export default function FilesScreen() {
           pointerEvents="box-none"
           behavior={Platform.OS === 'ios' ? 'padding' : undefined}
           style={styles.searchBottomWrap}
+        >
+        {/* 1338b — measured on an INNER view, not the KeyboardAvoidingView
+            itself: `behavior="padding"` grows the outer view's own height
+            once the keyboard is up, which would inflate this measurement
+            and over-pad the list. This inner box is just the content (filter
+            row + optional hint + input row), so `searchStackHeight` tracks
+            the space the FlatList must clear regardless of keyboard state. */}
+        <View
+          onLayout={(e) => {
+            const h = Math.round(e.nativeEvent.layout.height);
+            setSearchStackHeight((prev) => (Math.abs(prev - h) > 1 ? h : prev));
+          }}
         >
           {/* Filter capsules — ONE shared glass track (GlassCapsule) with the
               selected kind in its own bubbleFill/bubbleShadow/bubbleRim,
@@ -4343,6 +4381,7 @@ export default function FilesScreen() {
               <Text style={{ color: c.amberDeep, fontSize: 15, fontWeight: '600' }}>Cancel</Text>
             </TouchableOpacity>
           </View>
+        </View>
         </KeyboardAvoidingView>
       )}
 
@@ -4628,10 +4667,10 @@ const styles = StyleSheet.create({
   searchButton: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
 
   // 1338b — bottom search bar (replaces the old below-header strip above).
-  // `bottom: 12` is a plain DERIVED gap above the tab bar, not a canvas
-  // value — the canvas's Search.dc.html has no tab bar to clear at all
-  // (recorded in DEVIATIONS.md).
-  searchBottomWrap: { position: 'absolute', left: spacing.lg, right: spacing.lg, bottom: 12 },
+  // `SEARCH_STACK_GAP` is a plain DERIVED gap above the tab bar, not a
+  // canvas value — the canvas's Search.dc.html has no tab bar to clear at
+  // all (recorded in DEVIATIONS.md).
+  searchBottomWrap: { position: 'absolute', left: spacing.lg, right: spacing.lg, bottom: SEARCH_STACK_GAP },
   searchFiltersWrap: { marginBottom: 10 },
   searchFiltersTrack: { padding: 4 },
   searchFiltersRow: { flexDirection: 'row', gap: 2 },
