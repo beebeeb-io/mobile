@@ -226,6 +226,24 @@ dev-client preference (not repo state), so it must be set again on any new sim, 
   `id:` won't find an element you can see is there, fall back to a `.*`-anchored text regex for the
   scroll only — this is the "regex where you must" case the rule below already describes, not a new
   exception to it.
+- **A `launchApp` can leave a stale accessibility-bridge attach that makes the very next
+  interaction fail against a screen that is visibly correct.** Symptom: `extendedWaitUntil`/`tapOn`
+  on an element that is plainly on screen (and present in a `maestro hierarchy` dump) times out or
+  hangs — not "element not found because it's covered", but present-and-still-not-found. A full
+  `xcrun simctl terminate <udid> io.beebeeb.app` followed by `xcrun simctl launch <udid>
+  io.beebeeb.app` **before** the flow's own `launchApp` clears it reliably — confirmed directly:
+  a `dark-mode-test.yaml` run hung for 10+ minutes at almost 0% CPU right after `launchApp`, killing
+  it and doing the terminate+launch cycle first made every subsequent run (5 in a row, across three
+  different flows) start clean. `launchApp`'s own relaunch does not fix this on its own; the
+  external `simctl` cycle does.
+- **`pressKey: Enter` on the password field submits the sign-in form reliably** — confirmed
+  directly (`LoginScreen.tsx`: the password `TextInput`, `testID="password-input"`, wires
+  `onSubmitEditing={handleLogin}`) — and is a cleaner alternative to the documented coordinate tap
+  that dismisses the keyboard before tapping `sign-in-button`. In this session's own testing that
+  coordinate tap was reliable every time (5/5 across `login-test.yaml` and
+  `local-qa-signin-unlock.yaml` runs today), so this isn't "the tap is broken" — but if you hit the
+  keyboard-covers-the-button or clears-the-field failure another lane saw, `pressKey: Enter` right
+  after typing the password is the fix, and it's one step instead of two.
 
 ## QA account hygiene (task 1356)
 
