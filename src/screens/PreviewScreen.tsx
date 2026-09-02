@@ -3820,17 +3820,32 @@ const styles = StyleSheet.create({
   // media header's forced-dark one-off 0.40 literal): this header follows
   // the app's resolved scheme, so the colour must flip with it and is set
   // inline from `docMaterial.labelMuted` at the call site instead.
+  // flexShrink: 1 + minWidth: 0 (review finding, 1344): without them this
+  // Text refuses to shrink below its own content width inside headerSubRow's
+  // row, so on a narrow screen or with enlarged text the langBadge sitting
+  // beside it (fixed intrinsic width, no flexShrink) gets pushed past the
+  // capsule's clipped bounds and silently disappears instead of the subtitle
+  // truncating first. numberOfLines={1} already ellipsizes; these two just
+  // let that truncation actually engage before the badge is squeezed out.
   docHeaderSubtitle: {
     maxWidth: '100%',
     marginTop: 2,
     fontSize: 10,
     lineHeight: 13,
+    flexShrink: 1,
+    minWidth: 0,
   },
+  // width: '100%' (review finding, 1344): bounds this row to the capsule's
+  // own available content width so the subtitle Text above has something
+  // concrete to shrink against — without it the row is free to size itself
+  // to its children's natural (unshrunk) width, which is the other half of
+  // the same clipped-badge bug docHeaderSubtitle's flexShrink fixes.
   headerSubRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
     marginTop: 2,
+    width: '100%',
   },
   langBadge: {
     paddingHorizontal: 6,
