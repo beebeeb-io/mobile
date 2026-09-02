@@ -511,13 +511,17 @@ export default function GlassGalleryScreen() {
           style={styles.control}
         />
 
-        {/* 1338b — the iOS 26 bottom search bar's two pieces: the filter
-            capsule row (one shared glass track, the selected kind in its own
-            bubbleFill — the same active-item pattern as Segment above) and
-            the query pill (`Search.dc.html:89`: radius 999, padding 14/20,
-            17px text — lifted verbatim). See FilesScreen.tsx for the live,
-            keyboard-avoiding version anchored above the tab bar. */}
-        <SectionLabel text="Search bar + filter capsules" color={material.labelMuted} />
+        {/* 1357 — Guus's layout ruling split the old 1338b bottom stack into
+            two separate pieces, shown here as two separate specimens: the
+            filter capsule row (one shared glass track, the selected kind in
+            its own bubbleFill — the same active-item pattern as Segment
+            above) now lives at the TOP of FilesScreen's content area, and
+            the bar below is no longer a small floating pill — it's a FLUSH,
+            edge-to-edge surface (radius 0, elevated false, same class as the
+            "Batch action bar" specimen further down) that REPLACES
+            `GlassTabBar` in its own footprint, with Cancel now living inside
+            it. See FilesScreen.tsx for the live, keyboard-avoiding version. */}
+        <SectionLabel text="Search — filter capsules (top of content)" color={material.labelMuted} />
         <GlassCapsule scheme={scheme} contentStyle={styles.searchCapsuleTrack} style={styles.control}>
           <View style={styles.searchCapsuleRow}>
             {[
@@ -549,14 +553,17 @@ export default function GlassGalleryScreen() {
             ))}
           </View>
         </GlassCapsule>
+        <SectionLabel text="Search — bottom bar (replaces the tab bar, Cancel inside)" color={material.labelMuted} />
         <GlassSurface
           scheme={scheme}
-          radius="capsule"
+          radius={0}
+          elevated={false}
           style={styles.control}
           contentStyle={styles.searchBarSpecimenContent}
         >
           <Ionicons name="search" size={20} color={material.labelMuted} />
-          <Text style={[typeScale.body, { color: material.label }]}>clip</Text>
+          <Text style={[typeScale.body, { color: material.label, flex: 1 }]}>clip</Text>
+          <Text style={[typeScale.subhead, { color: colors.amber, fontWeight: '600' }]}>Cancel</Text>
         </GlassSurface>
 
         <SectionLabel

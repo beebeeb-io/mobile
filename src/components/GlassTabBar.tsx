@@ -40,6 +40,7 @@ import {
   View,
   type StyleProp,
   type TextStyle,
+  type ViewStyle,
 } from 'react-native';
 import type { BottomTabBarProps } from '@react-navigation/bottom-tabs';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -57,6 +58,26 @@ export function GlassTabBar({ state, descriptors, navigation }: BottomTabBarProp
   const insets = useSafeAreaInsets();
   const { resolved } = useTheme();
   const material = glassMaterial(resolved);
+
+  // 1357 — Guus's layout ruling: while Files search is active, the bottom
+  // search bar REPLACES this bar in its own footprint rather than floating
+  // above it, so this bar must not render at all (not just be covered) —
+  // its space has to be reclaimed by the screen for the search bar to
+  // "fill the menu bar at the bottom completely" (Guus, verbatim). A custom
+  // `tabBar` render prop (this whole component) means react-navigation does
+  // NOT interpret `tabBarStyle` for us the way its default bar would — see
+  // this file's own doc comment above on `tabBarButtonTestID`/badges being
+  // the same story — so `navigation.setOptions({ tabBarStyle: { display:
+  // 'none' } })` (FilesScreen.tsx) only does anything because this checks
+  // for it by hand, against the FOCUSED route's own options.
+  const focusedOptions = descriptors[state.routes[state.index].key].options;
+  // `tabBarStyle`'s declared type allows an Animated value, which is never
+  // actually passed here (FilesScreen.tsx only ever sets a plain
+  // `{ display: 'none' }` object) — narrowed for the one field this reads.
+  const focusedBarStyle = StyleSheet.flatten(focusedOptions.tabBarStyle) as ViewStyle | undefined;
+  if (focusedBarStyle?.display === 'none') {
+    return null;
+  }
 
   const openSearch = () => {
     // Same contract the beebeeb://search shortcut uses: Files reads the param
