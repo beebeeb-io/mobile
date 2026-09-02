@@ -184,6 +184,49 @@ turn "Tools button" off in the in-app dev menu on each sim you drive with Maestr
 dev-client preference (not repo state), so it must be set again on any new sim, including a fresh
 `bb-qa-N` created via the copy procedure above.
 
+## Maestro — shared-driver limits, native pickers, and selector gotchas (task 1350)
+
+- **One `maestro test` at a time, machine-wide.** Extra simulators (see "two QA sims" above) do not
+  buy parallel e2e — the XCUITest driver and CPU are the shared resource, not the simulator. Three
+  lanes driving three sims at once took the load average past 40, with taps taking 30-90s and
+  elements reported "not found" that were plainly on screen. Only one lane may hold the Maestro
+  driver at a time, granted by the lead; `xcrun simctl io` screenshots may still overlap freely.
+- **An idle-but-still-attached driver on ANY simulator poisons new driver bootstraps on ALL of
+  them.** `xcodebuild test-without-building` and its `maestro-driver-iosUITests-Runner` arbitrate
+  through one host-level `testmanagerd`, so this is machine-wide, not per-device. Symptom: a brand
+  new run backgrounds the app to the Home Screen before the flow's first assertion, and Maestro
+  reports "found nothing to terminate". Proven by controlled test (2026-09-02): a cold, never-driven
+  sim failed identically until an orphaned driver on a *different* device was killed, then ran clean.
+  After every run, check `pgrep -f 'xcodebuild test-without-building'` and kill only your own
+  orphan by PID (verify its `-destination id=` first) — never `pkill -f xcodebuild`, which takes out
+  other lanes and this Mac's other projects too.
+- **The row "…" overflow menu is a native menu Maestro cannot tap.** `tapOn` reports COMPLETED, the
+  menu stays open, and it blocks all further input until the app is terminated. Its items also carry
+  a leading `", "` in their accessible name. Route to the share sheet with a row swipe RIGHT
+  ("Share <filename>") instead.
+- **`UIDocumentPickerViewController` exposes only "Cancel" and the system keyboard to XCUITest** —
+  no Recents/Browse rows, independent of file type, so a document cannot be seeded into the app by
+  automation at all (confirmed by hierarchy dump, not just a flaky tap). Workaround: copy the file
+  directly into the simulator's local File Provider storage so it appears under "On My iPhone", then
+  a human finishes with two taps. `xcrun simctl addmedia` rejects anything non-media
+  (`File type unsupported`) so it can't shortcut this for docs.
+- **Never `simctl openurl` a dev-client deep link into an already-running app.** It can orphan the
+  native view — a solid white screen that survives a simulator reboot while JS keeps running
+  underneath. Terminate the app first, then `openurl`.
+- **`scrollUntilVisible` + `tapOn` with an `id:` selector can fail to find a row that is genuinely
+  off-screen, even though the same `id:` resolves fine once the row is already on screen.**
+  Reproduced directly on `dark-mode-test.yaml` (task 1352): from a cold launch, the Appearance
+  control is several screens below the fold (Account/Storage/Backup/Devices render above it), and
+  `scrollUntilVisible: { element: { id: "appearance-dark" } }` failed 3/3 real attempts —
+  `maestro hierarchy` confirmed the `resource-id` was present and correct the whole time, so this
+  isn't a missing/renamed testID. Swapping only the *scroll* target to a `text:` regex
+  (`"Dark theme.*"`, the row's accessibilityLabel) fixed it 3/3, while the `tapOn` and the
+  post-tap `assertVisible` stayed on `id:`. Lesson: prefer `id:` for the tap and the assertion (an
+  `id:` lookup against the CURRENT hierarchy is reliable), but if a `scrollUntilVisible` targeting an
+  `id:` won't find an element you can see is there, fall back to a `.*`-anchored text regex for the
+  scroll only — this is the "regex where you must" case the rule below already describes, not a new
+  exception to it.
+
 ## Stack
 
 React Native + Expo (managed workflow) + TypeScript. Package manager: **bun**.
