@@ -35,7 +35,15 @@ import * as MediaLibrary from 'expo-media-library/legacy';
 import * as Clipboard from 'expo-clipboard';
 import { fonts, radii, spacing, shadows } from '../theme';
 import { useTheme } from '../lib/theme-context';
-import { SCROLL_EDGE, ScrollEdgeBlur, modalScrim } from '../components/glass';
+import {
+  GlassCircle,
+  GlassSurface,
+  SCROLL_EDGE,
+  ScrollEdgeBlur,
+  cssShadow,
+  glassMaterial,
+  modalScrim,
+} from '../components/glass';
 import { UploadActivityCard } from '../components/UploadActivityCard';
 import type { UploadActivityState, UploadStage } from '../components/UploadActivityCard';
 import { useToast } from '../lib/toast-context';
@@ -3779,6 +3787,9 @@ export default function FilesScreen() {
 
   const allDisplayedIds = displayedFiles.map((f) => f.id);
   const allSelected = selectedIds.size === allDisplayedIds.length && allDisplayedIds.length > 0;
+  // 1341 — on-glass ink for the select-mode action bar (see the GlassSurface
+  // note at its render site below).
+  const actionBarMaterial = glassMaterial(themeScheme);
 
   return (
     <View style={[styles.root, { backgroundColor: c.paper }]}>
@@ -3816,12 +3827,27 @@ export default function FilesScreen() {
       ) : (
         <View style={styles.header}>
           {folderStack.length > 1 && !searchActive && (
+            // 1341 — was a flat backgroundColor: c.paper2 / borderColor: c.line
+            // circle (styles.backButton radius 15). This is a floating chrome
+            // control over the scrolling list (same as the header itself since
+            // 1313), so it now reads through the shared glassMaterial(scheme)
+            // instead of the opaque theme fill — the same material the tab bar
+            // and every other floating circle use. No canvas artboard samples a
+            // back-chevron circle at this exact 30pt size; DERIVED by extending
+            // the recipe rather than sampled (see DEVIATIONS.md).
+            // The TouchableOpacity is the OUTER element wrapping GlassCircle
+            // (not nested inside it) — RN clips hitSlop to the parent view's
+            // bounds, so an inner pressable's hitSlop would be clipped to the
+            // fixed 30×30 circle instead of extending the touch target.
             <TouchableOpacity
-              style={[styles.backButton, { backgroundColor: c.paper2, borderColor: c.line }]}
               onPress={() => navigateToBreadcrumb(folderStack.length - 2)}
               hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              accessibilityRole="button"
+              accessibilityLabel="Back"
             >
-              <Text style={[styles.backButtonText, { color: c.ink2 }]}>{'‹'}</Text>
+              <GlassCircle scheme={themeScheme} size={30}>
+                <Text style={[styles.backButtonText, { color: glassMaterial(themeScheme).label }]}>{'‹'}</Text>
+              </GlassCircle>
             </TouchableOpacity>
           )}
           {/* 0800 — single line, tail-truncated (never stacks vertically);
@@ -4120,34 +4146,49 @@ export default function FilesScreen() {
         <UploadActivityCard upload={upload} bottom={16 + insets.bottom + 64} />
       )}
 
-      {/* Batch action bar — shown in select mode */}
+      {/* Batch action bar — shown in select mode.
+          1341 — was a flat View with backgroundColor: c.paper / borderTopColor:
+          c.line + a hand-rolled borderTopWidth hairline (styles.actionBar).
+          It floats over the file list exactly like the header does, so it now
+          reads through the same glassMaterial(scheme) as the header and the
+          tab bar below it, via GlassSurface (radius 0 — flush to all three
+          screen edges, not a floating inset shape, so `elevated` stays off;
+          the material's own rim border replaces the old flat hairline). No
+          canvas artboard shows Drive's select mode, so this is DERIVED by
+          extending the shared recipe to an analogous floating control bar,
+          not sampled from a canvas pixel value — recorded in DEVIATIONS.md.
+          Icon/label tint follows the same on-glass fix GlassTabBar already
+          made: c.ink2/c.ink4 were tuned for the old OPAQUE bar and read flat
+          on glass, so enabled swaps to material.label and disabled to
+          material.labelMuted; the destructive Trash red stays c.red exactly
+          like the tab bar's active amber stays literal amber on glass. */}
       {selectMode && (
-        <View style={[styles.actionBar, { backgroundColor: c.paper, borderTopColor: c.line }]}>
+        <GlassSurface scheme={themeScheme} radius={0} elevated={false} style={styles.actionBar} contentStyle={styles.actionBarRow}>
           <TouchableOpacity
             style={styles.actionBarButton}
             onPress={handleBatchShare}
             disabled={selectedIds.size === 0}
           >
-            <Icon name="share" size={22} color={selectedIds.size === 0 ? c.ink4 : c.ink2} />
-            <Text style={[styles.actionBarLabel, { color: selectedIds.size === 0 ? c.ink4 : c.ink2 }]}>Share</Text>
+            <Icon name="share" size={22} color={selectedIds.size === 0 ? actionBarMaterial.labelMuted : actionBarMaterial.label} />
+            <Text style={[styles.actionBarLabel, { color: selectedIds.size === 0 ? actionBarMaterial.labelMuted : actionBarMaterial.label }]}>Share</Text>
           </TouchableOpacity>
           <TouchableOpacity
             style={styles.actionBarButton}
             onPress={() => void handleBatchMove()}
             disabled={selectedIds.size === 0}
           >
-            <Icon name="folder" size={22} color={selectedIds.size === 0 ? c.ink4 : c.ink2} />
-            <Text style={[styles.actionBarLabel, { color: selectedIds.size === 0 ? c.ink4 : c.ink2 }]}>Move</Text>
+            <Icon name="folder" size={22} color={selectedIds.size === 0 ? actionBarMaterial.labelMuted : actionBarMaterial.label} />
+            <Text style={[styles.actionBarLabel, { color: selectedIds.size === 0 ? actionBarMaterial.labelMuted : actionBarMaterial.label }]}>Move</Text>
           </TouchableOpacity>
           <TouchableOpacity
             style={styles.actionBarButton}
             onPress={handleBatchTrash}
             disabled={selectedIds.size === 0}
           >
-            <Icon name="trash" size={22} color={selectedIds.size === 0 ? c.ink4 : c.red} />
-            <Text style={[styles.actionBarLabel, { color: selectedIds.size === 0 ? c.ink4 : c.red }]}>Trash</Text>
+            <Icon name="trash" size={22} color={selectedIds.size === 0 ? actionBarMaterial.labelMuted : c.red} />
+            <Text style={[styles.actionBarLabel, { color: selectedIds.size === 0 ? actionBarMaterial.labelMuted : c.red }]}>Trash</Text>
           </TouchableOpacity>
-        </View>
+        </GlassSurface>
       )}
 
       {/* Floating action button — hidden in select mode. Opens the native iOS
@@ -4374,7 +4415,9 @@ const styles = StyleSheet.create({
   headerArea: { position: 'absolute', top: 0, left: 0, right: 0, zIndex: 10 },
   header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: spacing.lg, paddingVertical: spacing.sm, gap: 8 },
   selectTitle: { flex: 1, fontSize: 16, fontWeight: '600', textAlign: 'center' },
-  backButton: { width: 30, height: 30, borderRadius: 15, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
+  // 1341 — the 30×30 circle itself is now a GlassCircle (glass-recipe.ts),
+  // which centers its own children; the outer TouchableOpacity (rendered
+  // inline above) just wraps it for an unclipped hitSlop.
   backButtonText: { fontSize: 20, fontWeight: '600', marginTop: -2 },
   // 0800 — flexShrink lets a long folder name yield space to the trailing
   // action icons (truncating with "…") instead of wrapping to a second line.
@@ -4405,12 +4448,21 @@ const styles = StyleSheet.create({
   breadcrumbPopover: {
     position: 'absolute',
     borderWidth: StyleSheet.hairlineWidth,
+    // 1341 — radius 12 has no canvas artboard or named GLASS_RADII behind it
+    // (closest neighbours are GLASS_RADII.inner=13 and .tile=18, both a real
+    // size change from 12) and this is an OPAQUE content card (a list of
+    // folder names — the same "content sheet, not glass" class the ShareSheet
+    // ruling #1 established), not a floating glass surface. Left as a literal
+    // rather than silently snapped to a nearby recipe value.
     borderRadius: 12,
     paddingVertical: 6,
-    shadowColor: '#000',
-    shadowOpacity: 0.18,
-    shadowRadius: 16,
-    shadowOffset: { width: 0, height: 6 },
+    // Was a hand-rolled shadowColor/Opacity/Radius/Offset with no cssShadow()
+    // call. Same pixel-for-pixel shadow (shadowRadius 16 = cssBlur 32 halved,
+    // offset 6, opacity 0.18), now expressed through the recipe's converter —
+    // `elevation` is overridden back to the original 8 because cssShadow()
+    // derives elevation from offsetY (round(6)=6), which would have quietly
+    // changed the Android-only shadow depth; kept pixel-identical instead.
+    ...cssShadow(6, 32, '#000', 0.18),
     elevation: 8,
   },
   breadcrumbPopoverRow: { flexDirection: 'row', alignItems: 'center', paddingRight: 14, paddingVertical: 10 },
@@ -4425,7 +4477,10 @@ const styles = StyleSheet.create({
 
   // Multi-select
   checkbox: { width: 22, height: 22, borderRadius: 11, borderWidth: 1.5, alignItems: 'center', justifyContent: 'center' },
-  actionBar: { position: 'absolute', bottom: 0, left: 0, right: 0, flexDirection: 'row', borderTopWidth: StyleSheet.hairlineWidth },
+  // 1341 — flexDirection/row moved to actionBarRow (GlassSurface contentStyle);
+  // the old borderTopWidth hairline is gone, replaced by the material's own rim.
+  actionBar: { position: 'absolute', bottom: 0, left: 0, right: 0 },
+  actionBarRow: { flexDirection: 'row' },
   actionBarButton: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: 12, gap: 3 },
   actionBarLabel: { fontSize: 10, fontWeight: '600' },
 
@@ -4573,8 +4628,23 @@ const styles = StyleSheet.create({
   },
   backupContinueButtonText: { fontSize: 12, fontWeight: '700' },
 
-  // FAB — standard iOS size 56x56
-  fab: { position: 'absolute', right: 20, width: 56, height: 56, borderRadius: 28, alignItems: 'center', justifyContent: 'center', ...shadows.lg },
+  // FAB — standard iOS size 56x56. The fill stays solid amber (not glass —
+  // this is the ONE brand-accent primary action per the brand rule, matching
+  // the canvas's own amber-filled icon tile, not the canvas's glass "+"
+  // circle in the header, which this app's FAB doesn't correspond to 1:1).
+  // 1341 — was the generic ink-coloured `shadows.lg` theme token; the canvas
+  // amber tile at `Main.dc.html` box-shadow `0 6px 18px rgba(245,184,0,0.30)`
+  // is now lifted verbatim via cssShadow(6, 18, '#F5B800', 0.30) instead.
+  fab: {
+    position: 'absolute',
+    right: 20,
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...cssShadow(6, 18, '#F5B800', 0.30),
+  },
   fabInner: { width: '100%', height: '100%', alignItems: 'center', justifyContent: 'center' },
   fabText: { fontSize: 28, fontWeight: '600', marginTop: -2 },
 
