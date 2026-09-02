@@ -3041,49 +3041,121 @@ export default function PreviewScreen() {
     );
   }
 
+  // 1344 — unlike the media header (forced scheme="dark": the ground is
+  // always the near-black mediaRoot behind arbitrary photo/video content),
+  // this doc/PDF header follows the app's own resolved theme. The doc
+  // content area already does — DocxRenderer/XlsxRenderer/ZipRenderer/
+  // ArchiveRenderer/PptxRenderer all read `colors={c}` and the HTML toggle
+  // bar/WebView read `c.paper`/`c.line`/`c.ink` — only the chrome (this
+  // header) had been left as plain always-dark views. A document page is
+  // usually a white sheet, not a theater-dark stage, so forcing dark glass
+  // here would float a mismatched dark bar over an otherwise light screen in
+  // light mode. `styles.root`'s own background and the various renderers'
+  // error-state text colours stay forced dark for now — out of scope for
+  // this task (header only, per the dispatch); see DEVIATIONS.md "Phase 3 —
+  // Preview doc header (1344)" for the flagged hand-off to 1346's full
+  // light/dark rationale.
+  const docMaterial = glassMaterial(resolved);
+
   return (
     <View style={[styles.root, { paddingTop: insets.top }]}>
       {/* ---- Header ---- */}
       <View style={styles.header}>
+        {/* 1344 — outer TouchableOpacity wraps the fixed-size GlassCircle so
+            hitSlop is not clipped to the disc (the hitSlop-clip bug 1343 just
+            fixed on this screen's own media header, and 1341/1342 fixed on
+            FilesScreen/TrashScreen — RN clips hitSlop to the parent's bounds
+            when the touchable is nested INSIDE a fixed-size view, not
+            wrapping it). Icon matches the media header's chevron-down
+            exactly: Preview.dc.html only samples the media/video preview, so
+            this doc header has no artboard of its own — extending the media
+            header's icon choice by analogy is the same DERIVED class as
+            1341/1342's non-canvas circles (DEVIATIONS.md). testID unchanged
+            from 1336 — same value as the media header's close control, so a
+            test can assert the preview is open without knowing which of the
+            two headers rendered. */}
         <TouchableOpacity
           onPress={handleClose}
-          style={styles.closeButton}
           hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
-          // 1336 — same testID as the MEDIA header's close control below, so a
-          // test can assert the preview is open without knowing which of the
-          // two headers rendered. Preview had no testIDs at all.
           testID="preview-close"
           accessibilityLabel="Close preview"
         >
-          <Text style={styles.closeIcon}>{'×'}</Text>
+          <GlassCircle scheme={resolved} size={GLASS_CIRCLE_SIZES.action}>
+            <Ionicons name="chevron-down" size={22} color={docMaterial.label} />
+          </GlassCircle>
         </TouchableOpacity>
 
+        {/* 1344 — same GlassCapsule shape/padding (7px 18px, radius 999) as
+            the media header, but scheme=resolved instead of forced "dark" —
+            see the scheme note above `docMaterial`. Subtitle colour reads
+            `docMaterial.labelMuted`, a real recipe token (not the media
+            header's one-off 0.40 literal), because it has to flip legibly
+            between light and dark rather than always sit on a dark fill. */}
         <View style={styles.headerCenter}>
-          <Text style={styles.headerTitle} numberOfLines={1}>
-            {previewFileName}
-          </Text>
-          <View style={styles.headerSubRow}>
-            <Text style={styles.headerSub}>
-              {CATEGORY_LABELS[category] ?? 'File'}
-              {currentSizeBytes != null ? `  ·  ${formatSize(currentSizeBytes)}` : ''}
+          <GlassCapsule
+            scheme={resolved}
+            style={styles.docHeaderCapsule}
+            contentStyle={styles.docHeaderCapsuleBody}
+          >
+            <Text
+              style={[styles.docHeaderTitle, { color: docMaterial.label }]}
+              numberOfLines={1}
+            >
+              {previewFileName}
             </Text>
-            {isText && codeLanguage !== 'plaintext' && (
-              <View style={styles.langBadge}>
-                <Text style={styles.langBadgeText}>{codeLanguageLabel}</Text>
-              </View>
-            )}
-          </View>
+            <View style={styles.headerSubRow}>
+              <Text
+                style={[styles.docHeaderSubtitle, styles.mono, { color: docMaterial.labelMuted }]}
+                numberOfLines={1}
+              >
+                {CATEGORY_LABELS[category] ?? 'File'}
+                {currentSizeBytes != null ? ` · ${formatSize(currentSizeBytes)}` : ''}
+              </Text>
+              {isText && codeLanguage !== 'plaintext' && (
+                <View style={styles.langBadge}>
+                  <Text style={styles.langBadgeText}>{codeLanguageLabel}</Text>
+                </View>
+              )}
+            </View>
+          </GlassCapsule>
         </View>
 
         <TouchableOpacity
           onPress={handlePreviewOptions}
           disabled={downloading || trashing}
-          style={[styles.headerIconButton, (downloading || trashing) && styles.disabledIconButton]}
           hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
           accessibilityLabel="Open file options"
         >
-          <Ionicons name="ellipsis-horizontal" size={21} color={colors.white} />
+          <GlassCircle
+            scheme={resolved}
+            size={GLASS_CIRCLE_SIZES.action}
+            style={(downloading || trashing) ? styles.disabledIconButton : undefined}
+          >
+            <Ionicons name="ellipsis-horizontal" size={21} color={docMaterial.label} />
+          </GlassCircle>
         </TouchableOpacity>
+      </View>
+
+      {/* 1344 — canvas.json n-preview: "e2e lock as quiet mono badge" applies
+          to every previewed file, not just media — a document is exactly as
+          end-to-end encrypted as a photo, and the badge's own copy ("e2e")
+          names the property, not the file type, so the media-only rationale
+          in 1343's notes doesn't hold up under scrutiny. Reuses the media
+          badge's exact shape/position/offset — both branches render the same
+          DetailsSheet with the same COLLAPSED_VISIBLE_HEIGHT, so the +40
+          bottom clearance 1343 tuned applies unchanged here — but
+          scheme=resolved to match this header's own scheme decision above. */}
+      <View
+        pointerEvents="none"
+        style={[styles.e2eBadgeWrap, { bottom: Math.max(insets.bottom, 16) + 40 }]}
+        testID="preview-e2e-badge"
+      >
+        <GlassCapsule scheme={resolved} contentStyle={styles.e2eBadgeBody}>
+          <Ionicons name="lock-closed" size={14} color={colors.amber} />
+          <Text style={[styles.e2eBadgeText, styles.mono, { color: docMaterial.labelMuted }]}>
+            e2e
+          </Text>
+        </GlassCapsule>
       </View>
 
       <PreviewOptionsPopover
@@ -3711,46 +3783,69 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     gap: 12,
   },
-  closeButton: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: 'rgba(255,255,255,0.1)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  closeIcon: {
-    fontSize: 18,
-    fontWeight: '400',
-    color: colors.white,
-  },
-  headerIconButton: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: 'rgba(255,255,255,0.1)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
+  // 1344 — closeButton/closeIcon/headerIconButton (plain circles, no glass)
+  // retired: the close/options controls are now GlassCircle (see the JSX),
+  // matching 1343's media header. disabledIconButton (below) stays — it's
+  // shared with the media header's GlassCircle disabled state too.
   headerCenter: {
     flex: 1,
     alignItems: 'center',
+    // Matches 1343's mediaHeaderText: minWidth: 0 lets this flex:1 child
+    // shrink below its content size in the row, which is what makes the
+    // capsule's own numberOfLines={1} truncation actually engage for a long
+    // filename instead of the row just overflowing.
+    minWidth: 0,
   },
-  headerTitle: {
+  // 1344 — the title/subtitle capsule's own shape: maxWidth: '100%' (not
+  // width/flex) so it hugs a short filename and only stretches to the row's
+  // full available width for a long one, same reasoning as 1343's
+  // mediaHeaderCapsule. Padding 7px 18px is the same canvas value 1343 lifted
+  // for the media header (Preview.dc.html:49) — there is no separate doc
+  // artboard, so this is DERIVED-by-extension, not a fresh sample.
+  docHeaderCapsule: {
+    maxWidth: '100%',
+  },
+  docHeaderCapsuleBody: {
+    alignItems: 'center',
+    paddingHorizontal: 18,
+    paddingVertical: 7,
+  },
+  docHeaderTitle: {
+    maxWidth: '100%',
     fontSize: 14,
+    lineHeight: 18,
     fontWeight: '600',
-    color: colors.white,
   },
-  headerSub: {
-    fontSize: 11,
-    color: 'rgba(255,255,255,0.5)',
+  // No baked-in colour (unlike 1343's mediaHeaderSubtitle, which bakes the
+  // media header's forced-dark one-off 0.40 literal): this header follows
+  // the app's resolved scheme, so the colour must flip with it and is set
+  // inline from `docMaterial.labelMuted` at the call site instead.
+  // flexShrink: 1 + minWidth: 0 (review finding, 1344): without them this
+  // Text refuses to shrink below its own content width inside headerSubRow's
+  // row, so on a narrow screen or with enlarged text the langBadge sitting
+  // beside it (fixed intrinsic width, no flexShrink) gets pushed past the
+  // capsule's clipped bounds and silently disappears instead of the subtitle
+  // truncating first. numberOfLines={1} already ellipsizes; these two just
+  // let that truncation actually engage before the badge is squeezed out.
+  docHeaderSubtitle: {
+    maxWidth: '100%',
     marginTop: 2,
+    fontSize: 10,
+    lineHeight: 13,
+    flexShrink: 1,
+    minWidth: 0,
   },
+  // width: '100%' (review finding, 1344): bounds this row to the capsule's
+  // own available content width so the subtitle Text above has something
+  // concrete to shrink against — without it the row is free to size itself
+  // to its children's natural (unshrunk) width, which is the other half of
+  // the same clipped-badge bug docHeaderSubtitle's flexShrink fixes.
   headerSubRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
     marginTop: 2,
+    width: '100%',
   },
   langBadge: {
     paddingHorizontal: 6,
