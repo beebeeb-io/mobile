@@ -135,6 +135,7 @@ container off an already-built one instead of running `expo run:ios` again:
 ```sh
 xcrun simctl create bb-qa-N "iPhone 17 Pro" com.apple.CoreSimulator.SimRuntime.iOS-26-2
 xcrun simctl boot <new-udid>
+xcrun simctl bootstatus -b <new-udid>  # blocks until boot has finished
 APP=$(xcrun simctl get_app_container <source-udid> io.beebeeb.app)
 xcrun simctl install <new-udid> "$APP"
 xcrun simctl launch <new-udid> io.beebeeb.app
