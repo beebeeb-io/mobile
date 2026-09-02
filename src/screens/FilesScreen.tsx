@@ -99,6 +99,7 @@ import {
 import {
   SEARCH_FILTER_KINDS,
   matchesSearchFilterKind,
+  mergeRankedSearchResults,
   splitForHighlight,
   type SearchFilterKind,
 } from '../lib/search-filter';
@@ -3471,6 +3472,14 @@ export default function FilesScreen() {
       const cutoff = Date.now() - 24 * 60 * 60 * 1000;
       result = result.filter((f) => !f.is_folder && new Date(f.updated_at).getTime() >= cutoff);
     }
+    // 1338b — the bottom bar's filter capsules narrow client-side over
+    // `fileCategory` (mime-based, already-decrypted). There is no
+    // server-side kind filter; this is a plain subtractive .filter(), so it
+    // never disturbs whatever order its input already has.
+    const applyKindFilter = (rows: FileEntry[]) =>
+      searchActive && searchFilterKind !== 'all'
+        ? rows.filter((f) => matchesSearchFilterKind(fileCategory(withDecryptedMime(f)), searchFilterKind))
+        : rows;
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase();
       const seen = new Set<string>();
@@ -3483,17 +3492,22 @@ export default function FilesScreen() {
         const name = decryptedNames[f.id] ?? displayName(f);
         return name.toLowerCase().includes(q);
       });
-      if (vaultResults.length > 0) result = uniqueFileEntries([...vaultResults, ...localFallback]);
-      else result = localFallback;
+      if (vaultResults.length > 0) {
+        // The encrypted search index already ranks these by relevance
+        // (searchIndex() sorts by score) — `mergeRankedSearchResults` has no
+        // sort concept at all, so returning its result directly (never
+        // through `applySortOrder`) is what keeps that ranking intact. See
+        // its doc comment: this is the exact fix for a real regression.
+        return mergeRankedSearchResults(
+          vaultResults,
+          localFallback,
+          (f) => fileCategory(withDecryptedMime(f)),
+          searchActive ? searchFilterKind : 'all',
+        );
+      }
+      result = localFallback;
     }
-    // 1338b — the bottom bar's filter capsules narrow client-side over
-    // `fileCategory` (mime-based, already-decrypted). There is no
-    // server-side kind filter; this runs on exactly the same rows the search
-    // match itself already filtered.
-    if (searchActive && searchFilterKind !== 'all') {
-      result = result.filter((f) => matchesSearchFilterKind(fileCategory(withDecryptedMime(f)), searchFilterKind));
-    }
-    return applySortOrder(result, sortOrder, decryptedNames);
+    return applySortOrder(applyKindFilter(result), sortOrder, decryptedNames);
   }, [files, searchQuery, decryptedNames, sortOrder, vaultSearchMatches, recentFilterActive, searchActive, searchFilterKind, withDecryptedMime]);
 
   // ------------------------------------------------------------------

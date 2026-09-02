@@ -1,6 +1,11 @@
 // @ts-nocheck
 import { describe, expect, test } from 'bun:test';
-import { matchesSearchFilterKind, splitForHighlight, SEARCH_FILTER_KINDS } from './search-filter';
+import {
+  matchesSearchFilterKind,
+  mergeRankedSearchResults,
+  splitForHighlight,
+  SEARCH_FILTER_KINDS,
+} from './search-filter';
 
 const ALL_CATEGORIES = ['folder', 'image', 'pdf', 'audio', 'video', 'doc', 'file'] as const;
 
@@ -45,6 +50,49 @@ describe('search filter kinds', () => {
     for (const { value } of SEARCH_FILTER_KINDS) {
       expect(() => matchesSearchFilterKind('file', value)).not.toThrow();
     }
+  });
+});
+
+describe('mergeRankedSearchResults', () => {
+  type Item = { id: string; category: 'image' | 'video' | 'doc' };
+  const categoryOf = (i: Item) => i.category;
+
+  test('preserves the vault index relevance order — regression for a real bug', () => {
+    // The FIRST 1338b draft ran `applySortOrder` over this merged list,
+    // which silently re-sorted a relevance-ranked result by the ambient
+    // browsing sortOrder (date-desc by default) — the best match could sink
+    // to last. This function has no sort concept at all: feeding it a
+    // deliberately date-losing rank order and asserting that order survives
+    // verbatim is the regression test.
+    const vaultResults: Item[] = [
+      { id: 'best-match-but-oldest', category: 'doc' },
+      { id: 'second-match', category: 'doc' },
+      { id: 'worst-match-but-newest', category: 'doc' },
+    ];
+    const merged = mergeRankedSearchResults(vaultResults, [], categoryOf, 'all');
+    expect(merged.map((m) => m.id)).toEqual([
+      'best-match-but-oldest',
+      'second-match',
+      'worst-match-but-newest',
+    ]);
+  });
+
+  test('appends local fallback matches after the ranked vault results, deduped by id', () => {
+    const vaultResults: Item[] = [{ id: 'a', category: 'doc' }, { id: 'b', category: 'doc' }];
+    const localFallback: Item[] = [{ id: 'b', category: 'doc' }, { id: 'c', category: 'doc' }];
+    const merged = mergeRankedSearchResults(vaultResults, localFallback, categoryOf, 'all');
+    expect(merged.map((m) => m.id)).toEqual(['a', 'b', 'c']);
+  });
+
+  test('applies the kind filter as a pure subtraction that does not reorder survivors', () => {
+    const vaultResults: Item[] = [
+      { id: 'doc-1', category: 'doc' },
+      { id: 'image-1', category: 'image' },
+      { id: 'doc-2', category: 'doc' },
+      { id: 'video-1', category: 'video' },
+    ];
+    const merged = mergeRankedSearchResults(vaultResults, [], categoryOf, 'documents');
+    expect(merged.map((m) => m.id)).toEqual(['doc-1', 'doc-2']);
   });
 });
 

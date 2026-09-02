@@ -47,6 +47,42 @@ export function matchesSearchFilterKind(category: FileKind, kind: SearchFilterKi
   }
 }
 
+/**
+ * Merge relevance-ranked encrypted-search-index matches with unranked local
+ * name-substring fallback matches, then apply the kind filter — as PURE,
+ * order-preserving operations only. This function's whole reason to exist is
+ * that it cannot call any kind of "sort by date/name/size" — there is no
+ * `sortOrder` parameter, nothing to accidentally thread one through. Ranking
+ * is the caller's contract: `vaultResults` must already be in the order the
+ * search index wants shown (best match first), and this function preserves
+ * that order verbatim for every item that survives the kind filter, only
+ * appending `localFallback` items (in their own given order) after it.
+ *
+ * This exists because `FilesScreen.tsx`'s first 1338b draft called
+ * `applySortOrder` over the merged, already-ranked list — which reads as
+ * harmless (it is the same list, just re-sorted) but silently threw away
+ * relevance in favour of the user's ambient browsing sort (date-desc by
+ * default), so the best match for a query could sink to the bottom of the
+ * results. Routing the merge through here, with no sort concept in scope,
+ * makes that regression impossible to reintroduce without deleting this
+ * function's only job.
+ */
+export function mergeRankedSearchResults<T extends { id: string }>(
+  vaultResults: readonly T[],
+  localFallback: readonly T[],
+  categoryOf: (item: T) => FileKind,
+  kind: SearchFilterKind,
+): T[] {
+  const seen = new Set<string>()
+  const merged: T[] = []
+  for (const item of [...vaultResults, ...localFallback]) {
+    if (seen.has(item.id)) continue
+    seen.add(item.id)
+    merged.push(item)
+  }
+  return kind === 'all' ? merged : merged.filter((item) => matchesSearchFilterKind(categoryOf(item), kind))
+}
+
 export interface HighlightSplit {
   before: string
   match: string
