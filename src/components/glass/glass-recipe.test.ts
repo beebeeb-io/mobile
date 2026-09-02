@@ -1,5 +1,7 @@
 // @ts-nocheck — bun runs this; `bun:test` types aren't in the Expo tsconfig
 import { describe, expect, it } from 'bun:test';
+import { readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import {
   BLUR_PX_AT_FULL_INTENSITY,
   GLASS_RADII,
@@ -129,6 +131,57 @@ describe('MODAL_SCRIM', () => {
 
     const rgbOf = (rgba: string) => rgba.slice(rgba.indexOf('(') + 1).split(',').slice(0, 3).join(',');
     expect(rgbOf(MODAL_SCRIM.light)).toBe(rgbOf(SCROLL_EDGE.lightTint));
+  });
+});
+
+describe('SCROLL_EDGE.chromeFallback', () => {
+  it('derives chromeFallback from the canvas height', () => {
+    // Task 1348: the fallback used while a screen's own headerHeight is not
+    // yet measured is the canvas's total band height (128), not a second
+    // hand-picked literal — so it MOVES with `height` rather than drifting
+    // from it over time.
+    expect(SCROLL_EDGE.chromeFallback).toBe(SCROLL_EDGE.height);
+  });
+});
+
+describe('scroll-edge chromeFallback grep-guard', () => {
+  // GlassGalleryScreen is the ONE allowed exception: it deliberately renders
+  // ScrollEdgeBlur at hand-picked literal heights (including > 128) to demo
+  // banding cases side by side — see its "tall-header ScrollEdgeBlur > 128
+  // banding case" section. Every real screen must read SCROLL_EDGE.chromeFallback
+  // instead of inventing its own `insets.top + N`, or the literal zoo this
+  // task removed (N = 52…120 across nine screens) will just regrow.
+  const ALLOWLIST = new Set(['GlassGalleryScreen.tsx']);
+
+  it('forbids new insets.top + <N> literal fallbacks outside the GlassGalleryScreen demo', () => {
+    const screensDir = join(import.meta.dir, '..', '..', 'screens');
+    const files = readdirSync(screensDir).filter((f) => f.endsWith('.tsx'));
+
+    const offenders: string[] = [];
+    for (const file of files) {
+      if (ALLOWLIST.has(file)) continue;
+      const content = readFileSync(join(screensDir, file), 'utf8');
+      // Match each `<ScrollEdgeBlur ... />` tag (props may span lines, though
+      // today they don't) and inspect only its `height={...}` prop.
+      const tagPattern = /<ScrollEdgeBlur\b[\s\S]*?\/?>/g;
+      let tagMatch: RegExpExecArray | null;
+      while ((tagMatch = tagPattern.exec(content))) {
+        const tag = tagMatch[0];
+        const heightMatch = tag.match(/height=\{([^}]*)\}/);
+        if (!heightMatch) continue;
+        if (/insets\.top\s*\+\s*\d+/.test(heightMatch[1])) {
+          const line = content.slice(0, tagMatch.index).split('\n').length;
+          offenders.push(`${file}:${line}`);
+        }
+      }
+    }
+
+    expect(
+      offenders,
+      offenders.length
+        ? `insets.top + <N> literal fallback(s) found outside the allowlist (use SCROLL_EDGE.chromeFallback):\n${offenders.join('\n')}`
+        : undefined,
+    ).toEqual([]);
   });
 });
 
