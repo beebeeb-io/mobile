@@ -147,19 +147,35 @@ without touching the UI:
 xcrun simctl openurl <udid> "beebeeb://expo-development-client/?url=http%3A%2F%2Flocalhost%3A<port>"
 ```
 
-**Gotcha — first open on a fresh install shows a system confirmation, and it cannot be dismissed
-headlessly.** On a simulator that has never had this URL scheme opened before, `openurl` raises
-iOS's native `Open in "Beebeeb"?` (Cancel/Open) alert instead of connecting directly — confirmed on
-`bb-qa-2`'s first connect (2026-09-02). This is a one-time-per-install OS prompt, not a repo bug.
-There is no headless way to dismiss it on this Mac: the built-in display reports `Display Asleep:
-Yes`, Simulator.app opens no enumerable window even via `open -a Simulator --args
--CurrentDeviceUDID <udid>` (`System Events` reports 0 windows for the process), and neither `idb`
-nor `cliclick` is installed — so `simctl`, which only touches the framebuffer, cannot substitute
-for a tap. **A human with GUI/screen-share access must tap "Open" once per fresh install**; after
-that first confirmation the scheme is remembered and later `openurl` calls to the same app connect
-silently. Do not reach for Maestro to dismiss this on a lane's live sim — it can send input to the
-wrong device if two lanes are running; only use it in a QA flow that already owns that sim for the
-session.
+**Gotcha — first open on a fresh install raises two one-time prompts, dismissable headlessly via
+Maestro `--udid`.** On a simulator that has never had this URL scheme opened before, `openurl`
+raises iOS's native `Open in "Beebeeb"?` (Cancel/Open) alert instead of connecting directly —
+confirmed on `bb-qa-2`'s first connect (2026-09-02). Dismissing it does **not** need a human at the
+screen — a one-line Maestro flow scoped to that one device with `--udid` does it:
+
+```yaml
+# tap-open.yaml
+appId: io.beebeeb.app
+---
+- tapOn: "Open"
+```
+
+```sh
+env -u NODE_OPTIONS maestro --udid <udid> test tap-open.yaml
+```
+
+Once dismissed, the app connects to Metro and immediately shows the dev-client's first-run
+"developer menu" explainer sheet ("This is the developer menu…") — a **second**, separate one-time
+prompt. Dismiss it the same way with a `tapOn: "Continue"` flow. After both, the app is running the
+Metro bundle and the in-app dev menu (Reload / Go home / Tools) responds normally — screenshots
+`docs/_qa-evidence/glass-wave-2/1353-bb-qa-2-connected.png` (the "developer menu" sheet, mid-dismiss)
+and `1353-bb-qa-2-app.png` (dev menu live, `Tools button` toggle visible and ON). Neither prompt
+reappears on that device once dismissed once.
+
+**Always pass `--udid` naming the sim the lane owns.** A bare `maestro test` picks whatever
+simulator Maestro finds, which can be the WRONG one when two lanes are running — see "one lane per
+sim" above. This is exactly why `bb-qa-1310` must never be touched by a lane that doesn't own it:
+an un-scoped Maestro command is the mechanism that would leak input onto it.
 
 **The expo-dev-client floating "Tools" gear is a tap trap.** It sits at roughly `(8%, 47%)` and
 silently swallows taps in that region (Maestro `tapOn` reports COMPLETED but nothing happens) —
