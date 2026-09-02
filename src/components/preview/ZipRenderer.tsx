@@ -24,7 +24,11 @@ import JSZip from 'jszip';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import { Alert } from 'react-native';
-import { colors, radii } from '../../theme';
+// 1346 — the static `colors` (light-only) import that used to live here was
+// removed: it was shadowing the `c` prop (`colors: c` below, the real
+// scheme-aware palette) and got read by mistake in three error/loading
+// states.
+import { radii } from '../../theme';
 import type { Colors } from '../../theme';
 import { type ZipEntry, type ZipRow, levelRows, isMacOsNoise } from '../../lib/zip-tree';
 import { formatBytes } from '../../lib/format';
@@ -178,12 +182,19 @@ export function ZipRenderer({ data, colors: c }: ZipRendererProps) {
   const segments = useMemo(() => prefix.split('/').filter(Boolean), [prefix]);
 
   if (error) {
+    // 1346 review finding — `colors` here was the module-level STATIC
+    // import from '../../theme' (light-only), silently shadowing the `c`
+    // prop (`colors: c` in the component signature below, the real
+    // scheme-aware palette). White-on-PreviewScreen's-doc-root (now
+    // c.paper since this task) was invisible in light mode. Fixed to `c`'s
+    // ink tokens, matching every other colour in this file (c.line, c.ink,
+    // c.ink3 throughout the row/header rendering below).
     return (
       <View style={styles.imageStatus}>
-        <Text style={[styles.imageStatusTitle, { color: colors.white }]}>
+        <Text style={[styles.imageStatusTitle, { color: c.ink }]}>
           Couldn't open archive
         </Text>
-        <Text style={styles.imageStatusSub}>{error}</Text>
+        <Text style={[styles.imageStatusSub, { color: c.ink3 }]}>{error}</Text>
       </View>
     );
   }
@@ -192,7 +203,7 @@ export function ZipRenderer({ data, colors: c }: ZipRendererProps) {
     return (
       <View style={styles.imageStatus}>
         <ActivityIndicator color={c.amber} />
-        <Text style={[styles.imageStatusSub, { color: colors.white }]}>Reading archive…</Text>
+        <Text style={[styles.imageStatusSub, { color: c.ink3 }]}>Reading archive…</Text>
       </View>
     );
   }
@@ -209,6 +220,12 @@ export function ZipRenderer({ data, colors: c }: ZipRendererProps) {
           accessibilityRole="button"
           accessibilityLabel={`${item.name}, folder, open`}
         >
+          {/* 1346 — #FFFFFF reviewed, not part of the review finding above:
+              this icon sits on its own solid `c.amberDeep` tile (below), not
+              on PreviewScreen's doc root — amberDeep is the same hex in both
+              palettes (theme.ts), so this tile's contrast never changes with
+              scheme. Different bug class from the colors.white/root-text
+              finding this task fixed. */}
           <View style={[styles.zipIcon, { backgroundColor: c.amberDeep }]}>
             <Ionicons name="folder" size={16} color="#FFFFFF" />
           </View>
@@ -262,6 +279,14 @@ export function ZipRenderer({ data, colors: c }: ZipRendererProps) {
         accessibilityLabel={`${entry.name}, extract and preview`}
         testID={`zip-entry-${entry.path}`}
       >
+        {/* 1346 — #FFFFFF reviewed, not part of the review finding above:
+            this icon sits on its own solid `c.ink3` tile, not on
+            PreviewScreen's doc root. `c.ink3` is a medium-toned gray in
+            BOTH palettes (#7d7770 light / #8a867f dark, theme.ts) — never
+            near-white — so this tile keeps workable contrast in either
+            scheme; it never approaches the invisible white-on-#faf8f5 case
+            this task fixed. Pre-existing, unrelated to the root-background
+            decision. */}
         <View style={[styles.zipIcon, { backgroundColor: c.ink3 }]}>
           <Ionicons name={zipEntryIcon(entry)} size={16} color="#FFFFFF" />
         </View>
@@ -339,10 +364,10 @@ export function ZipRenderer({ data, colors: c }: ZipRendererProps) {
 
       {summary.entries.length === 0 ? (
         <View style={styles.imageStatus}>
-          <Text style={[styles.imageStatusTitle, { color: colors.white }]}>
+          <Text style={[styles.imageStatusTitle, { color: c.ink }]}>
             Empty archive
           </Text>
-          <Text style={styles.imageStatusSub}>This ZIP contains no files.</Text>
+          <Text style={[styles.imageStatusSub, { color: c.ink3 }]}>This ZIP contains no files.</Text>
         </View>
       ) : (
         <FlatList
