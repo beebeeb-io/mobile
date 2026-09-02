@@ -74,6 +74,39 @@ export interface NativeResumeCandidate {
  * the exact chunk layout `beebeeb-core` produces for this file — the encryptor
  * is rebuilt from scratch and must land on the same frame boundaries.
  */
+/**
+ * Thrown by `assertNativeUploadEncryptedUnderSessionId` when the id the
+ * native bridge encrypted chunks under has drifted from the upload
+ * session's file id. Distinct from `ApiError` so this stays a pure,
+ * dependency-free check — `uploadEncryptedFileNative` (api.ts) wraps it.
+ */
+export class NativeUploadIdMismatchError extends Error {
+  constructor(public readonly encryptedUnderFileId: string, public readonly sessionFileId: string) {
+    super(
+      `Native upload encrypted under file id "${encryptedUnderFileId}" but its ` +
+      `upload session is "${sessionFileId}" — refusing to mark it complete.`,
+    )
+    this.name = 'NativeUploadIdMismatchError'
+  }
+}
+
+/**
+ * Belt-and-braces guard (task 1351). The native bridge never reports back
+ * which id it actually encrypted chunks under — `uploadChunksNative`'s
+ * result carries transfer stats only, not the key material's derivation
+ * input — so this re-asserts JS's own bookkeeping: the id handed to the
+ * bridge must be the same one the upload session (and `finalizeUpload`) is
+ * keyed on. This is exactly the invariant task 1351's bug violated (chunks
+ * encrypted under the client id while the file lived under the server id).
+ * Call this AFTER the chunk upload and BEFORE `complete` — never mark an
+ * upload complete whose encryption id and session id have drifted apart.
+ */
+export function assertNativeUploadEncryptedUnderSessionId(encryptedUnderFileId: string, sessionFileId: string): void {
+  if (encryptedUnderFileId !== sessionFileId) {
+    throw new NativeUploadIdMismatchError(encryptedUnderFileId, sessionFileId)
+  }
+}
+
 export function resumeStateMatchesNativePlan(
   state: NativeResumeCandidate | null | undefined,
   expected: { plaintextSizeBytes: number; parentId?: string; chunkSizeBytes: number; chunkCount: number },

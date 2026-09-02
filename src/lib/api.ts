@@ -14,7 +14,7 @@ import { clearCachedFileIndex } from './file-index-cache';
 import { collectPaged, findInPages } from './paginate';
 import { rateLimitedFetch } from './rate-limited-fetch';
 import { isNativeUploadAvailable, planUploadChunksNative, uploadChunksNative } from '../../modules/beebeeb-crypto';
-import { nativeProgressToUploadProgress, parseNativeUploadError, resumeStateMatchesNativePlan } from './native-upload-bridge';
+import { assertNativeUploadEncryptedUnderSessionId, nativeProgressToUploadProgress, parseNativeUploadError, resumeStateMatchesNativePlan } from './native-upload-bridge';
 import { getDeviceId } from './sync-client';
 import { setAnnouncement, clearAnnouncement } from './announcement-context';
 
@@ -1337,13 +1337,18 @@ export async function uploadEncryptedFileNative(params: {
   persistResume(startChunkIndex - 1)
   let lastPersistedChunk = startChunkIndex - 1
 
+  // The id the bridge will derive the AES file key from. Named separately
+  // from `serverFileId` (rather than inlined) so the belt-and-braces check
+  // below is a real assertion against the call site, not a tautology —
+  // task 1351's bug was exactly this argument silently using the wrong id.
+  const nativeEncryptionFileId = serverFileId
   try {
     await uploadChunksNative(
       {
         handleId: masterKeyHandleId,
         apiUrl: BASE_URL,
         token,
-        fileId: serverFileId,
+        fileId: nativeEncryptionFileId,
         inputUri,
         uploadSessionId,
         chunkSizeBytes: plan.chunkSizeBytes,
@@ -1363,6 +1368,19 @@ export async function uploadEncryptedFileNative(params: {
     )
   } catch (err) {
     throw nativeUploadErrorToApiError(err)
+  }
+
+  // Belt and braces (task 1351): never complete an upload whose encryption
+  // id and session id have drifted apart — the native bridge can't tell us
+  // itself, so this is the last checkpoint before the file is marked done.
+  try {
+    assertNativeUploadEncryptedUnderSessionId(nativeEncryptionFileId, serverFileId)
+  } catch (err) {
+    throw new ApiError(
+      500,
+      err instanceof Error ? err.message : 'Native upload encrypted under an id that does not match its upload session',
+      'native_upload_id_mismatch',
+    )
   }
 
   onProgress?.({
