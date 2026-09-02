@@ -4296,7 +4296,12 @@ export default function FilesScreen() {
             contentStyle={styles.searchFiltersTrack}
             style={styles.searchFiltersWrap}
           >
-            <View style={styles.searchFiltersRow} testID="search-filters">
+            <View
+              style={styles.searchFiltersRow}
+              testID="search-filters"
+              accessibilityRole="tablist"
+              accessibilityLabel="Filter search results"
+            >
               {SEARCH_FILTER_KINDS.map((kind) => {
                 const selected = searchFilterKind === kind.value;
                 return (
@@ -4304,9 +4309,14 @@ export default function FilesScreen() {
                     key={kind.value}
                     testID={`search-filter-${kind.value}`}
                     onPress={() => setSearchFilterKind(kind.value)}
-                    accessibilityRole="button"
+                    accessibilityRole="tab"
                     accessibilityState={{ selected }}
                     accessibilityLabel={kind.label}
+                    // 1338b — the capsule itself is ~32-34pt tall (paddingVertical 8
+                    // + a 13px label), under the 44pt minimum touch target. Vertical
+                    // hitSlop only — items sit `gap: 2` apart, so horizontal hitSlop
+                    // would overlap the neighbouring capsule's hit area.
+                    hitSlop={{ top: 8, bottom: 8, left: 0, right: 0 }}
                     style={[
                       styles.searchFilterItem,
                       selected
