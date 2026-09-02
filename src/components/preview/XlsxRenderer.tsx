@@ -16,7 +16,10 @@ import {
   View,
 } from 'react-native';
 import * as XLSX from '@e965/xlsx';
-import { colors, radii } from '../../theme';
+// 1346 — the static `colors` (light-only) import that used to live here was
+// removed: it was shadowing the `c` prop (`colors: c` below, the real
+// scheme-aware palette) and got read by mistake in two error states.
+import { radii } from '../../theme';
 import type { Colors } from '../../theme';
 
 interface SpreadsheetData {
@@ -71,12 +74,17 @@ export function XlsxRenderer({ data, colors: c }: XlsxRendererProps) {
   }, [data]);
 
   if (!parsed) {
+    // 1346 review finding — `colors` was the module-level STATIC import
+    // (light-only), shadowing the `c` prop below (`colors: c`, the real
+    // scheme-aware palette). White-on-PreviewScreen's-doc-root (now
+    // c.paper) was invisible in light mode. Fixed to `c`'s ink tokens,
+    // matching every other colour in this file.
     return (
       <View style={styles.imageStatus}>
-        <Text style={[styles.imageStatusTitle, { color: colors.white }]}>
+        <Text style={[styles.imageStatusTitle, { color: c.ink }]}>
           Couldn't open spreadsheet
         </Text>
-        <Text style={styles.imageStatusSub}>The file appears to be corrupted.</Text>
+        <Text style={[styles.imageStatusSub, { color: c.ink3 }]}>The file appears to be corrupted.</Text>
       </View>
     );
   }
@@ -89,10 +97,10 @@ export function XlsxRenderer({ data, colors: c }: XlsxRendererProps) {
   if (rows.length === 0) {
     return (
       <View style={styles.imageStatus}>
-        <Text style={[styles.imageStatusTitle, { color: colors.white }]}>
+        <Text style={[styles.imageStatusTitle, { color: c.ink }]}>
           Empty spreadsheet
         </Text>
-        <Text style={styles.imageStatusSub}>
+        <Text style={[styles.imageStatusSub, { color: c.ink3 }]}>
           {sheetName ? `Sheet "${sheetName}" has no data.` : 'This file has no data.'}
         </Text>
       </View>

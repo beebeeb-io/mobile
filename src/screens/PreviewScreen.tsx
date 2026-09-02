@@ -556,6 +556,14 @@ function throwIfPreviewAborted(signal?: AbortSignal): void {
 
 function PreviewProgressStatus({
   color,
+  // 1346 — textColor/trackColor are required, not defaulted: this component
+  // has no useTheme() of its own (it takes its palette from the caller, same
+  // as `color`), and both PreviewScreen call sites always sit on a ground
+  // that's either forced dark (the media pager/stage) or scheme-following
+  // (the doc branch's renderer Suspense fallbacks) — there is no safe
+  // default that would be right for both, so the caller must decide.
+  textColor,
+  trackColor,
   isUnlocked,
   isVideo,
   progress,
@@ -563,6 +571,8 @@ function PreviewProgressStatus({
   sizeBytes,
 }: {
   color: string;
+  textColor: string;
+  trackColor: string;
   isUnlocked: boolean;
   isVideo: boolean;
   progress: PreviewProgressState;
@@ -573,10 +583,10 @@ function PreviewProgressStatus({
   return (
     <View style={styles.previewProgressWrap}>
       <ActivityIndicator color={color} size="large" />
-      <View style={styles.previewProgressTrack}>
+      <View style={[styles.previewProgressTrack, { backgroundColor: trackColor }]}>
         <View style={[styles.previewProgressFill, { width: `${Math.round(fraction * 100)}%`, backgroundColor: color }]} />
       </View>
-      <Text style={styles.imageStatusSub}>
+      <Text style={[styles.imageStatusSub, { color: textColor }]}>
       {progressStageText(progress, isUnlocked, isVideo, sizeBytes, profile ?? null)}
       </Text>
     </View>
@@ -1525,9 +1535,15 @@ const PhotoPage = React.memo(function PhotoPage({
         />
       ) : (
         <View style={styles.photoPageStatus}>
+          {/* 1346 — textColor/trackColor forced dark: this pager page is
+              always inside mediaRoot's forced-dark ground (only reachable
+              from isMediaPreview), same argument as the mediaMaterial
+              comment above `if (isMediaPreview)` in the main component. */}
           {loading || shouldLoadFull ? (
             <PreviewProgressStatus
               color={c.amber}
+              textColor={glassMaterial('dark').labelMuted}
+              trackColor="rgba(255,255,255,0.16)"
               isUnlocked={isUnlocked}
               isVideo={isVideoEntry}
               progress={progress.stage ? progress : { ...progress, stage }}
@@ -2798,9 +2814,22 @@ export default function PreviewScreen() {
     [activePhotoPageIndexes, currentPhotoIndex, originalPhotoRequest, performanceStorageProfile],
   );
 
+  // 1346 — this loading-state status is shared by BOTH the media branch
+  // (always forced dark — mediaMaterial comment above `if (isMediaPreview)`)
+  // and the doc branch's renderer Suspense fallbacks (now scheme={resolved}
+  // per 1344). It has no branch of its own to carry a comment at each call
+  // site (20 call sites), so the decision lives here, once: pass the same
+  // forced-dark tokens the media header uses when isMediaPreview, otherwise
+  // the doc branch's own c.ink3/c.line — the identical decision already
+  // made for the error-state text below, just for the "still loading" text
+  // instead of the "failed to load" text. Leaving this un-themed would have
+  // shipped exactly the dark-on-light regression 1344 warned about: the doc
+  // root now follows scheme, so its "still loading" text has to as well.
   const renderSharedProgress = (isVideoProgress = false) => (
     <PreviewProgressStatus
       color={c.amber}
+      textColor={isMediaPreview ? glassMaterial('dark').labelMuted : c.ink3}
+      trackColor={isMediaPreview ? 'rgba(255,255,255,0.16)' : c.line}
       isUnlocked={isUnlocked}
       isVideo={isVideoProgress}
       progress={loadProgress.stage ? loadProgress : emptyPreviewProgress('downloading')}
@@ -2812,9 +2841,21 @@ export default function PreviewScreen() {
   if (isMediaPreview) {
     // When a photo list is provided, show a horizontal swipeable pager
     const showPager = hasSwipe && (isImage || isVideo);
-    // The media view forces dark glass regardless of app theme (the ground
-    // is always the near-black mediaRoot, never the light grouped surface —
-    // same reasoning as ScrollEdgeBlur/GlassCircle's own scheme="dark" below).
+    // 1346 — every scheme="dark" below (ScrollEdgeBlur, both GlassCircles,
+    // the title/subtitle GlassCapsule, the e2e badge GlassCapsule) and every
+    // colors.white/rgba(255,255,255,…) literal in this media branch is
+    // ARGUED, not compared to a canvas: light mode has no artboard for this
+    // screen at all, so there is no light-mode sample to lift or even
+    // compare against. The argument is the ground itself — mediaRoot's
+    // backgroundColor is the fixed near-black '#020203' no matter the app
+    // scheme, because it sits under ARBITRARY decrypted photo/video pixels
+    // (unlike every other screen's root, which sits under known, themed
+    // content). Chrome floating over an unknown, uncontrolled background
+    // needs one predictable contrast, not two — that's the same honesty
+    // class as `SCROLL_EDGE.lightTint` and `MODAL_SCRIM.light` in
+    // glass-recipe.ts: both are DERIVED values invented because the canvas
+    // never sampled a light equivalent, not lifted from one. See
+    // DEVIATIONS.md "Phase 4 — Preview light-mode rationale (1346)".
     const mediaMaterial = glassMaterial('dark');
 
     return (
@@ -2822,7 +2863,9 @@ export default function PreviewScreen() {
         {/* 1314 — the canvas floats Preview's chrome as glass over the media
             instead of a flat black bar. The scrim becomes a progressive blur
             so the title stays legible over bright images, and the controls
-            become glass circles. */}
+            become glass circles.
+            1346 — scheme="dark" forced: mediaMaterial comment above (media
+            ground is always near-black, not a light/dark toggle). */}
         <ScrollEdgeBlur scheme="dark" height={SCROLL_EDGE.chromeFallback} />
         <View style={[styles.mediaHeader, { paddingTop: insets.top + 8 }]}>
           {/* 1343 — outer TouchableOpacity wraps the fixed-size GlassCircle so
@@ -2831,7 +2874,8 @@ export default function PreviewScreen() {
               follow-up commit to learn, task 1341 / PR #51). Size is now
               GLASS_CIRCLE_SIZES.action (42, canvas verbatim) — 1314 had kept
               this screen's pre-glass literal 38 without ever routing it
-              through the recipe's own default (DEVIATIONS.md). */}
+              through the recipe's own default (DEVIATIONS.md).
+              1346 — scheme="dark" forced: mediaMaterial comment above. */}
           <TouchableOpacity
             onPress={handleClose}
             hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
@@ -2849,7 +2893,8 @@ export default function PreviewScreen() {
               1314 (DEVIATIONS.md). maxWidth: '100%' on the capsule lets it
               hug short filenames and still cap at the row's available width
               for long ones, so the existing numberOfLines={1} truncation on
-              both lines keeps working unchanged. */}
+              both lines keeps working unchanged.
+              1346 — scheme="dark" forced: mediaMaterial comment above. */}
           <View style={styles.mediaHeaderText}>
             <GlassCapsule
               scheme="dark"
@@ -2871,6 +2916,8 @@ export default function PreviewScreen() {
             </GlassCapsule>
           </View>
 
+          {/* 1346 — scheme="dark" forced: mediaMaterial comment above (mirrors
+              the close button; same GlassCircle, same forced ground). */}
           <TouchableOpacity
             onPress={handlePreviewOptions}
             disabled={downloading || trashing}
@@ -2903,7 +2950,9 @@ export default function PreviewScreen() {
             safeBottom, DetailsSheet.tsx COLLAPSED_VISIBLE_HEIGHT) with a
             16pt margin rather than sitting flush against it — verified on
             sim, the first-try 14pt-over-safeBottom offset visibly touched
-            the sheet's drag handle. */}
+            the sheet's drag handle.
+
+            1346 — scheme="dark" forced: mediaMaterial comment above. */}
         <View
           pointerEvents="none"
           style={[styles.e2eBadgeWrap, { bottom: Math.max(insets.bottom, 16) + 40 }]}
@@ -2956,6 +3005,12 @@ export default function PreviewScreen() {
           >
             {isImage ? (
               imageError ? (
+                // 1346 — colors.white forced: this status sits on mediaStage,
+                // itself painted over mediaRoot's forced-dark ground (see
+                // mediaMaterial comment above `if (isMediaPreview)`). Left as
+                // the plain literal rather than switched to
+                // mediaMaterial.label — it's status content, not chrome, but
+                // the same forced-ground argument applies unchanged.
                 <View style={styles.imageStatus}>
                   <Text style={[styles.imageStatusTitle, { color: colors.white }]}>Couldn't load image</Text>
                   <Text style={styles.imageStatusSub}>{imageError}</Text>
@@ -3002,6 +3057,8 @@ export default function PreviewScreen() {
                 allowsPictureInPicture
               />
             ) : videoError ? (
+              // 1346 — colors.white forced: same mediaStage/mediaRoot ground
+              // argument as the image error above.
               <View style={styles.imageStatus}>
                 <Text style={[styles.imageStatusTitle, { color: colors.white }]}>Couldn't load video</Text>
                 <Text style={styles.imageStatusSub}>{videoError}</Text>
@@ -3050,15 +3107,28 @@ export default function PreviewScreen() {
   // header) had been left as plain always-dark views. A document page is
   // usually a white sheet, not a theater-dark stage, so forcing dark glass
   // here would float a mismatched dark bar over an otherwise light screen in
-  // light mode. `styles.root`'s own background and the various renderers'
-  // error-state text colours stay forced dark for now — out of scope for
-  // this task (header only, per the dispatch); see DEVIATIONS.md "Phase 3 —
-  // Preview doc header (1344)" for the flagged hand-off to 1346's full
-  // light/dark rationale.
+  // light mode.
+  //
+  // 1346 — the two things 1344 explicitly handed off (DEVIATIONS.md "Phase 3
+  // — Preview doc header (1344)"): `styles.root`'s own background, and the
+  // renderers' error-state text. The argument that holds for the header
+  // holds here too, harder: unlike the media header (which has no light-mode
+  // artboard to argue from at all), this root sits under content that is
+  // ALREADY scheme-aware on both sides of it — the header above follows
+  // `resolved`, DocxRenderer/XlsxRenderer/ZipRenderer/ArchiveRenderer/
+  // PptxRenderer/the HTML WebView all already paint `c.paper`. A forced-dark
+  // root between two already-themed layers isn't "one predictable contrast
+  // over unknown media" (the media-root argument) — it's a dark stripe left
+  // over from before the doc header existed, that would show through at
+  // insets.top (root's own paddingTop, before anything else paints) and
+  // around any renderer that doesn't fully cover previewArea. Switched to
+  // `c.paper`, the same root-background token every other screen in this
+  // app uses (SettingsScreen, FilesScreen, LoginScreen, …). See
+  // DEVIATIONS.md "Phase 4 — Preview light-mode rationale (1346)".
   const docMaterial = glassMaterial(resolved);
 
   return (
-    <View style={[styles.root, { paddingTop: insets.top }]}>
+    <View style={[styles.root, { paddingTop: insets.top, backgroundColor: c.paper }]}>
       {/* ---- Header ---- */}
       <View style={styles.header}>
         {/* 1344 — outer TouchableOpacity wraps the fixed-size GlassCircle so
@@ -3166,7 +3236,26 @@ export default function PreviewScreen() {
         top={insets.top + 58}
       />
 
-      {/* ---- Preview area ---- */}
+      {/* ---- Preview area ----
+          1346 — the nine reachable error-state Texts below (isSvg through
+          isPptx) switch from the forced `colors.white` (1344's flagged
+          hand-off, DEVIATIONS.md "Phase 3 — Preview doc header (1344)") to
+          `c.ink`/`c.ink3`: with `styles.root` now `c.paper` (see the
+          docMaterial comment above `return (`), the old white-on-forced-
+          dark text would have gone invisible white-on-paper in light mode —
+          exactly the regression 1344 warned a half-fix would create. The
+          paired imageStatusSub subtext gets the same c.ink3 treatment
+          inline per site, since its base style (see imageStatusSub's own
+          comment) has no scheme of its own to read.
+
+          NOT touched: the isImage and isVideo branches immediately below
+          are DEAD CODE in this doc branch — isMediaPreview
+          (`= isImage || isVideo`) already returned early above, in the
+          `if (isMediaPreview)` block, so isImage/isVideo are always false
+          by the time this switch runs. Left as colors.white rather than
+          silently "fixed": they never render, so there is nothing to
+          regress, and touching unreachable code isn't part of this
+          decision. */}
       <View style={styles.previewArea}>
         {isImage ? (
           imageError ? (
@@ -3220,10 +3309,10 @@ export default function PreviewScreen() {
             />
           ) : svgError ? (
             <View style={styles.imageStatus}>
-              <Text style={[styles.imageStatusTitle, { color: colors.white }]}>
+              <Text style={[styles.imageStatusTitle, { color: c.ink }]}>
                 Couldn't load SVG
               </Text>
-              <Text style={styles.imageStatusSub}>{svgError}</Text>
+              <Text style={[styles.imageStatusSub, { color: c.ink3 }]}>{svgError}</Text>
             </View>
           ) : (
             <View style={styles.imageStatus}>
@@ -3237,10 +3326,10 @@ export default function PreviewScreen() {
             </Suspense>
           ) : pdfError ? (
             <View style={styles.imageStatus}>
-              <Text style={[styles.imageStatusTitle, { color: colors.white }]}>
+              <Text style={[styles.imageStatusTitle, { color: c.ink }]}>
                 Couldn't load PDF
               </Text>
-              <Text style={styles.imageStatusSub}>{pdfError}</Text>
+              <Text style={[styles.imageStatusSub, { color: c.ink3 }]}>{pdfError}</Text>
             </View>
           ) : (
             <View style={styles.imageStatus}>
@@ -3276,10 +3365,10 @@ export default function PreviewScreen() {
             </Suspense>
           ) : textError ? (
             <View style={styles.imageStatus}>
-              <Text style={[styles.imageStatusTitle, { color: colors.white }]}>
+              <Text style={[styles.imageStatusTitle, { color: c.ink }]}>
                 Couldn't load file
               </Text>
-              <Text style={styles.imageStatusSub}>{textError}</Text>
+              <Text style={[styles.imageStatusSub, { color: c.ink3 }]}>{textError}</Text>
             </View>
           ) : (
             <View style={styles.imageStatus}>
@@ -3293,10 +3382,10 @@ export default function PreviewScreen() {
             </Suspense>
           ) : docxError ? (
             <View style={styles.imageStatus}>
-              <Text style={[styles.imageStatusTitle, { color: colors.white }]}>
+              <Text style={[styles.imageStatusTitle, { color: c.ink }]}>
                 Couldn't open document
               </Text>
-              <Text style={styles.imageStatusSub}>{docxError}</Text>
+              <Text style={[styles.imageStatusSub, { color: c.ink3 }]}>{docxError}</Text>
             </View>
           ) : (
             <View style={styles.imageStatus}>
@@ -3310,10 +3399,10 @@ export default function PreviewScreen() {
             </Suspense>
           ) : sheetError ? (
             <View style={styles.imageStatus}>
-              <Text style={[styles.imageStatusTitle, { color: colors.white }]}>
+              <Text style={[styles.imageStatusTitle, { color: c.ink }]}>
                 Couldn't open spreadsheet
               </Text>
-              <Text style={styles.imageStatusSub}>{sheetError}</Text>
+              <Text style={[styles.imageStatusSub, { color: c.ink3 }]}>{sheetError}</Text>
             </View>
           ) : (
             <View style={styles.imageStatus}>
@@ -3364,8 +3453,21 @@ export default function PreviewScreen() {
               </View>
 
               {htmlShowSource ? (
+                // 1346 — was `backgroundColor: colors.darkBg` (forced): the
+                // code line numbers/text right below already read
+                // `c.ink3`/`c.ink` (scheme-aware, unchanged by this task),
+                // so in light mode this was DARK TEXT ON A FORCED-DARK
+                // BACKGROUND read against a forced-dark scroll surface —
+                // i.e. it was already correct only by accident, because
+                // `styles.root` behind it was ALSO forced dark before this
+                // task. Once root moved to `c.paper` (docMaterial comment
+                // above `return (`) this would have flipped to dark-on-dark
+                // and gone illegible — the argument for forcing dark never
+                // held here (this is the code view's own opaque background,
+                // not chrome over arbitrary media), so it now matches the
+                // sibling WebView branch's own `c.paper` a few lines below.
                 <ScrollView
-                  style={[styles.codeScroll, { backgroundColor: colors.darkBg, borderRadius: 0 }]}
+                  style={[styles.codeScroll, { backgroundColor: c.paper, borderRadius: 0 }]}
                   contentContainerStyle={styles.codeScrollContent}
                 >
                   <ScrollView horizontal contentContainerStyle={styles.codeHorizontal}>
@@ -3398,10 +3500,10 @@ export default function PreviewScreen() {
             </View>
           ) : htmlError ? (
             <View style={styles.imageStatus}>
-              <Text style={[styles.imageStatusTitle, { color: colors.white }]}>
+              <Text style={[styles.imageStatusTitle, { color: c.ink }]}>
                 Couldn't load page
               </Text>
-              <Text style={styles.imageStatusSub}>{htmlError}</Text>
+              <Text style={[styles.imageStatusSub, { color: c.ink3 }]}>{htmlError}</Text>
             </View>
           ) : (
             <View style={styles.imageStatus}>
@@ -3415,10 +3517,10 @@ export default function PreviewScreen() {
             </Suspense>
           ) : zipError ? (
             <View style={styles.imageStatus}>
-              <Text style={[styles.imageStatusTitle, { color: colors.white }]}>
+              <Text style={[styles.imageStatusTitle, { color: c.ink }]}>
                 Couldn't open archive
               </Text>
-              <Text style={styles.imageStatusSub}>{zipError}</Text>
+              <Text style={[styles.imageStatusSub, { color: c.ink3 }]}>{zipError}</Text>
             </View>
           ) : (
             <View style={styles.imageStatus}>
@@ -3436,10 +3538,10 @@ export default function PreviewScreen() {
             </Suspense>
           ) : archiveError ? (
             <View style={styles.imageStatus}>
-              <Text style={[styles.imageStatusTitle, { color: colors.white }]}>
+              <Text style={[styles.imageStatusTitle, { color: c.ink }]}>
                 Couldn't open archive
               </Text>
-              <Text style={styles.imageStatusSub}>{archiveError}</Text>
+              <Text style={[styles.imageStatusSub, { color: c.ink3 }]}>{archiveError}</Text>
             </View>
           ) : (
             <View style={styles.imageStatus}>
@@ -3453,10 +3555,10 @@ export default function PreviewScreen() {
             </Suspense>
           ) : pptxError ? (
             <View style={styles.imageStatus}>
-              <Text style={[styles.imageStatusTitle, { color: colors.white }]}>
+              <Text style={[styles.imageStatusTitle, { color: c.ink }]}>
                 Couldn't open presentation
               </Text>
-              <Text style={styles.imageStatusSub}>{pptxError}</Text>
+              <Text style={[styles.imageStatusSub, { color: c.ink3 }]}>{pptxError}</Text>
             </View>
           ) : (
             <View style={styles.imageStatus}>
@@ -3465,13 +3567,28 @@ export default function PreviewScreen() {
           )
         ) : (
           <View style={styles.genericPlaceholder}>
+            {/* 1346 — genericIconText stays colors.white: this badge's
+                background (categoryAccent, just above) is ALREADY
+                theme-aware (c.amber/c.red/c.green/c.ink2/c.ink3 per
+                category — "Theme-aware accent for non-image category
+                badge" comment above categoryAccent's definition), and
+                predates this task. A solid coloured tile with a fixed
+                light glyph is an established, self-contained badge
+                pattern (matches the FAB and other coloured icon tiles
+                elsewhere in the app) — independent of styles.root, so
+                unaffected by this task's root-background decision. Not
+                touched. */}
             <View style={[styles.genericIcon, { backgroundColor: categoryAccent }]}>
               <Text style={styles.genericIconText}>
                 {CATEGORY_BADGE[category] ?? 'FILE'}
               </Text>
             </View>
-            <Text style={styles.genericTitle}>{CATEGORY_LABELS[category] ?? 'File'}</Text>
-            <Text style={styles.genericSub}>
+            {/* 1346 — title/sub WERE colors.white/rgba(255,255,255,0.5): sit
+                directly on styles.root (now c.paper, docMaterial comment
+                above `return (`), same regression class as the
+                error-state text above. Switched to c.ink/c.ink3. */}
+            <Text style={[styles.genericTitle, { color: c.ink }]}>{CATEGORY_LABELS[category] ?? 'File'}</Text>
+            <Text style={[styles.genericSub, { color: c.ink3 }]}>
               {isUnlocked
                 ? 'Download to decrypt and open this file.'
                 : 'Unlock your vault to decrypt this file.'}
@@ -3502,6 +3619,20 @@ export default function PreviewScreen() {
   );
 }
 
+// 1346 — reviewed, NOT touched: this popover (rendered from both the media
+// branch, line ~3070ish, and the doc branch, ~line 3235ish) is entirely
+// unschemed — a self-contained dark panel (rgba(37,35,31,0.94) fill, white-
+// ish text, styles below) with no useTheme() of its own. It floats above
+// both branches and doesn't depend on `styles.root`, so this task's root-
+// background change doesn't newly break it — it was already forced dark
+// before and after. 1344's hand-off named exactly two elements (`styles.
+// root`'s background and the renderers' error-state text); this popover
+// wasn't one of them, and re-theming a whole separate floating-menu
+// component is a bigger decision than "attribute or flip a colour" —
+// flagging as a candidate for its own follow-up task rather than folding it
+// in here unannounced. Same class of gap: `src/components/preview/
+// DetailsSheet.tsx` (a SEPARATE FILE, out of this dispatch's scope
+// entirely) is also entirely unschemed and used by both branches.
 interface PreviewOptionsPopoverProps {
   visible: boolean;
   filename: string;
@@ -3693,6 +3824,10 @@ const styles = StyleSheet.create({
     gap: 12,
     paddingHorizontal: 28,
   },
+  // 1346 — colors.white/rgba(255,255,255,…) forced: only ever rendered
+  // inside the swipeable photo pager, which is only reachable from
+  // isMediaPreview — same forced-dark-ground argument as mediaMaterial
+  // above `if (isMediaPreview)` in the main component.
   photoPageStatusTitle: {
     color: colors.white,
     fontSize: 16,
@@ -3770,9 +3905,11 @@ const styles = StyleSheet.create({
   },
   // (Media details sheet styles removed — now handled by DetailsSheet component)
 
+  // 1346 — backgroundColor moved to an inline `c.paper` at the JSX call
+  // site (was baked-in colors.darkBg, forced regardless of scheme — see the
+  // docMaterial comment above `return (`).
   root: {
     flex: 1,
-    backgroundColor: colors.darkBg,
   },
 
   // ---- Header ----
@@ -3889,6 +4026,11 @@ const styles = StyleSheet.create({
 
   image: { width: '100%', height: '100%' },
   video: { width: '100%', height: '100%' },
+  // 1346 — reviewed, not touched: forced WHITE (not dark), pre-existing and
+  // unrelated to this task. Most SVGs assume a light/transparent canvas
+  // (that's the format's own convention, same reason browsers letterbox
+  // transparent SVGs onto white), independent of the app's own scheme —
+  // the opposite of the forced-dark question this task answers.
   svgWebView: { width: '100%', height: '100%', backgroundColor: '#ffffff', borderRadius: radii.md },
 
   // ---- HTML viewer ----
@@ -3942,6 +4084,15 @@ const styles = StyleSheet.create({
   },
 
   imageStatus: { alignItems: 'center', gap: 12 },
+  // 1346 — neither imageStatusTitle nor this base imageStatusSub bakes a
+  // scheme-aware colour: this pair is shared verbatim by the always-dark
+  // media branch (mediaStage error text) AND the doc branch (renderer error
+  // text, now scheme={resolved} per 1344). The media branch's two call
+  // sites rely on this base rgba(255,255,255,0.6) unmodified (still correct
+  // — the media ground never changes); the doc branch's nine reachable
+  // call sites override colour inline per-Text with c.ink/c.ink3 instead
+  // (see the "Preview area" switch below) rather than this style flipping
+  // for everyone, since it has no scheme of its own to read.
   imageStatusTitle: { fontSize: 16, fontWeight: '600' },
   imageStatusSub: {
     fontSize: 13,
@@ -3954,12 +4105,16 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 12,
   },
+  // 1346 — backgroundColor moved to an inline `trackColor` at the two call
+  // sites: this track is shared by the always-dark media pager/stage and
+  // the scheme-following doc branch, and the old baked
+  // 'rgba(255,255,255,0.16)' would have washed out to near-invisible over
+  // the doc root's light-mode c.paper (see PreviewProgressStatus).
   previewProgressTrack: {
     width: '100%',
     height: 4,
     borderRadius: 2,
     overflow: 'hidden',
-    backgroundColor: 'rgba(255,255,255,0.16)',
   },
   previewProgressFill: {
     height: '100%',
@@ -3968,6 +4123,11 @@ const styles = StyleSheet.create({
   },
   // Task 0799 — slim "bytes arriving" bar pinned to the top of the frame during
   // the View-Original download phase.
+  // 1346 — rgba(255,255,255,0.14) forced: ProgressiveOriginalImage's only
+  // reachable caller is the media branch (the doc branch's own isImage tree
+  // is dead code — isMediaPreview = isImage || isVideo already returns
+  // early above it, see the "Preview area" switch's own note). Chrome over
+  // arbitrary media, same forced-ground argument as mediaMaterial.
   progressiveBarTrack: {
     position: 'absolute',
     top: 0,
@@ -3993,16 +4153,19 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  // 1346 — colors.white kept: see the comment at this style's JSX call
+  // site (independent, already-theme-aware badge, predates this task).
   genericIconText: {
     fontSize: 16,
     fontWeight: '800',
     color: colors.white,
     letterSpacing: 0.5,
   },
-  genericTitle: { fontSize: 18, fontWeight: '600', color: colors.white },
+  // 1346 — colour moved to an inline c.ink/c.ink3 at the JSX call site (was
+  // baked-in colors.white/rgba(255,255,255,0.5) — see the comment there).
+  genericTitle: { fontSize: 18, fontWeight: '600' },
   genericSub: {
     fontSize: 13,
-    color: 'rgba(255,255,255,0.5)',
     textAlign: 'center',
     lineHeight: 20,
   },

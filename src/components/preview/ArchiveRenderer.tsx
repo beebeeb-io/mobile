@@ -406,6 +406,15 @@ function ArchiveContents({ summary, colors: c }: ArchiveContentsProps) {
 
         return (
           <View style={[styles.row, { borderBottomColor: c.line }]}>
+            {/* 1346 — #FFFFFF reviewed: this icon sits on its own solid
+                `iconBg` tile (c.amberDeep or c.ink3, both above), not on
+                PreviewScreen's doc root. amberDeep is identical hex in both
+                palettes; ink3 is a medium-toned gray in both (never
+                near-white) — this tile's contrast doesn't change with
+                scheme. Different bug class from the colors.white/root-text
+                finding this task fixed elsewhere (this file's own error/
+                loading/empty states already correctly read c.ink/c.ink3,
+                no shadowing bug here). */}
             <View style={[styles.rowIcon, { backgroundColor: iconBg }]}>
               <Ionicons name={iconName} size={16} color="#FFFFFF" />
             </View>

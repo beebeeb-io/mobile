@@ -51,12 +51,18 @@ export function PdfRenderer({ filePath }: PdfRendererProps) {
   }, []);
 
   if (hasError) {
+    // 1346 review finding — this status sits directly on PreviewScreen's
+    // doc-branch `styles.root`, which follows the app's resolved scheme
+    // (c.paper) since this task. `colors` here comes from useTheme(), so
+    // it's already scheme-aware — the bug was reading `.white` (a fixed
+    // extreme, #FFFFFF in both palettes) instead of the semantic
+    // `.ink`/`.ink3` text tokens PreviewScreen's own error states use.
     return (
       <View style={styles.imageStatus}>
-        <Text style={[styles.imageStatusTitle, { color: colors.white }]}>
+        <Text style={[styles.imageStatusTitle, { color: colors.ink }]}>
           Couldn't open PDF
         </Text>
-        <Text style={[styles.imageStatusSub, { color: colors.white }]}>
+        <Text style={[styles.imageStatusSub, { color: colors.ink3 }]}>
           This file may be damaged or unsupported.
         </Text>
       </View>

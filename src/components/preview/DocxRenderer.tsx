@@ -16,7 +16,11 @@ import {
 import { WebView } from 'react-native-webview';
 // @ts-ignore — mammoth/mammoth.browser ships no .d.ts.
 import mammoth from 'mammoth/mammoth.browser';
-import { colors, radii } from '../../theme';
+// 1346 — the static `colors` (light-only) import that used to live here was
+// removed: it was shadowing the `c` prop (`colors: c` below, the real
+// scheme-aware palette) and got read by mistake in two error/loading
+// states, see the comment at those sites.
+import { radii } from '../../theme';
 import type { Colors } from '../../theme';
 
 interface DocxRendererProps {
@@ -109,12 +113,22 @@ export function DocxRenderer({ data, colors: c, isDark }: DocxRendererProps) {
   }, [data, c, isDark]);
 
   if (error) {
+    // 1346 review finding — `colors` here was the module-level STATIC
+    // import from '../../theme' (line ~19), silently shadowing the `c`
+    // prop (the real, scheme-aware palette this component was given —
+    // see `colors: c` in the destructure below). `colors.white` is a
+    // fixed #FFFFFF in both palettes, so this read as white text on
+    // PreviewScreen's doc-branch root, which follows the app's resolved
+    // scheme (c.paper) since this task — invisible in light mode. Fixed
+    // to use the `c` prop's semantic ink tokens, same as every other
+    // colour in this file already correctly does (buildDocxHtml, the
+    // WebView background below).
     return (
       <View style={styles.imageStatus}>
-        <Text style={[styles.imageStatusTitle, { color: colors.white }]}>
+        <Text style={[styles.imageStatusTitle, { color: c.ink }]}>
           Couldn't open document
         </Text>
-        <Text style={styles.imageStatusSub}>{error}</Text>
+        <Text style={[styles.imageStatusSub, { color: c.ink3 }]}>{error}</Text>
       </View>
     );
   }
@@ -123,7 +137,7 @@ export function DocxRenderer({ data, colors: c, isDark }: DocxRendererProps) {
     return (
       <View style={styles.imageStatus}>
         <ActivityIndicator color={c.amber} />
-        <Text style={[styles.imageStatusSub, { color: colors.white }]}>Converting document…</Text>
+        <Text style={[styles.imageStatusSub, { color: c.ink3 }]}>Converting document…</Text>
       </View>
     );
   }

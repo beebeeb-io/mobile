@@ -7,6 +7,18 @@
  *
  * Follows the same dark-overlay styling as the existing media details sheet
  * in PreviewScreen.tsx.
+ *
+ * 1346 — reviewed for the "does this white text/icon now sit on a light
+ * ground" review finding (PdfRenderer/DocxRenderer/XlsxRenderer/ZipRenderer
+ * all had it): this sheet does NOT. Its own `styles.sheet` background is a
+ * fixed, self-contained `rgba(22,22,24,0.96)` panel — not derived from
+ * PreviewScreen's `styles.root`/`c.paper` at all, and rendered identically
+ * from both the media branch (forced dark) and the doc branch (now
+ * scheme-following). Every white/rgba(255,255,255,…) value below sits on
+ * THIS panel, which never changes with app scheme, so they stay correct in
+ * both. Same class as `PreviewOptionsPopover` in PreviewScreen.tsx (also
+ * reviewed, also left alone) — a self-contained floating dark surface, not
+ * a case of "root went light, chrome forgot to follow." Not touched.
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
