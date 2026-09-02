@@ -20,9 +20,22 @@ appId: io.beebeeb.app
 # folder and no preview ever opened. That is why it failed before the redesign
 # as well; it has nothing to do with the chrome.
 #
-# Matching on a filename EXTENSION is account-agnostic: folders do not have one.
+# It then moved to matching a filename EXTENSION as free text (account-agnostic:
+# folders do not have one) — but that regex is a FULL match against ANY visible
+# accessible name ending in a supported extension, and two other things end in
+# one too: the "Recent" section's cards ("Open recent file <name>.<ext>", which
+# render ABOVE the list and have no id) and the row's own "..." actions button
+# ("Actions for <name>.<ext>", `file-row-actions-${id}`). Both are earlier in
+# the hierarchy than a genuine row for some layouts, so the tap could land on
+# either — reproduced directly (`maestro hierarchy` + the resolved-element log
+# line both showed a Recent card getting tapped, not a row; task 1350).
+#
+# `file-row-${id}` (task 1350, FilesScreen.tsx) is set on FILE rows only —
+# folders and the Recent cards carry no id at all, so they're excluded by
+# construction, and the regex is anchored to hex right after `file-row-` so it
+# cannot match `file-row-actions-${id}` (`a`/`c` are hex but "tions-" isn't).
 - tapOn:
-    text: ".*\\.(jpe?g|png|pdf|mp4|mov)"
+    id: "file-row-[0-9a-f]{8}-.*"
 
 # Preview is open. There are TWO preview headers — a "×" for documents and a
 # chevron for media — so assert the shared testID rather than either glyph.

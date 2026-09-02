@@ -18,19 +18,32 @@ appId: io.beebeeb.app
     visible: "Settings"
     timeout: 5000
 
-# Scroll to the Appearance control and pick Dark. Two traps here, both
-# pre-dating the tab-bar work (this fails the same way on ab20926):
-#  1. Target the option, not the "Appearance" section header — the header
-#     scrolls into view while the Light/Dark/System control is still below
-#     the fold, so scrolling to it and then tapping fails.
-#  2. The option's accessibilityLabel is "Dark theme" (plus ", selected" when
-#     active), NOT "Dark". Maestro's text selector is a FULL-match regex, so
-#     "Dark" never matches. Hence "Dark theme.*".
+# Scroll to the Appearance control and pick Dark. The row itself is driven by
+# the stable `appearance-{light,dark,system}` testIDs (task 1352), not by the
+# old "Dark theme.*" text match this flow used to make — nothing about dark
+# mode itself is broken, the redesign just turns the control into icon
+# buttons the old selector no longer reliably drives.
+#
+# scrollUntilVisible still targets TEXT, not `id:`, and that's deliberate:
+# verified directly (three cold-launch runs) that `scrollUntilVisible` +
+# `tapOn` with an `id:` selector fail to locate this row while it's still
+# off-screen — id lookups work fine once the row is already on screen, but
+# not while scrollUntilVisible is actively paging down to reach it. Text
+# scrolling has no such issue and this row's accessibilityLabel ("Dark
+# theme"/"Light theme"/"System theme") is stable and current — this is the
+# CLAUDE.md-sanctioned fallback ("Use id: where you can, and a .*-anchored
+# regex where you must"), not a reversion to the original bug.
+#
+# Trap that still applies: target the option itself, not the "Appearance"
+# section header — the header scrolls into view while the control is still
+# below the fold (this screen now starts with Account/Storage/Backup/Devices
+# above it, so real scrolling is required from a cold launch), so scrolling
+# to the header and then tapping fails.
 - scrollUntilVisible:
     element:
       text: "Dark theme.*"
     direction: DOWN
-    timeout: 10000
+    timeout: 15000
     # centerElement: the floating tab bar (task 1312) overlays the bottom ~110pt
     # of every scrollable screen, and scrollUntilVisible has no concept of it —
     # it stops as soon as the target is inside the SCROLL VIEW's bounds, which
@@ -39,7 +52,18 @@ appId: io.beebeeb.app
     # clears the chrome. Required for any scrollUntilVisible on a tabbed screen.
     centerElement: true
 
-- tapOn: "Dark theme.*"
+- tapOn:
+    id: "appearance-dark"
+
+# Real assertion that dark actually applied, not just that a control was
+# tapped. `themePreference` (SettingsScreen.tsx) and the derived `resolved`
+# scheme (theme-context.tsx) are set synchronously from the same state update,
+# so the accessibilityLabel below only reads "Dark theme, selected" once the
+# app has genuinely switched — a no-op tap leaves it at "Dark theme" and this
+# assertion (matched by id AND text together) fails the run.
+- assertVisible:
+    id: "appearance-dark"
+    text: "Dark theme, selected"
 
 - takeScreenshot: "dark-01-settings"
 
@@ -74,7 +98,7 @@ appId: io.beebeeb.app
     element:
       text: "System theme.*"
     direction: DOWN
-    timeout: 10000
+    timeout: 15000
     # centerElement: the floating tab bar (task 1312) overlays the bottom ~110pt
     # of every scrollable screen, and scrollUntilVisible has no concept of it —
     # it stops as soon as the target is inside the SCROLL VIEW's bounds, which
@@ -83,6 +107,11 @@ appId: io.beebeeb.app
     # clears the chrome. Required for any scrollUntilVisible on a tabbed screen.
     centerElement: true
 
-- tapOn: "System theme.*"
+- tapOn:
+    id: "appearance-system"
+
+- assertVisible:
+    id: "appearance-system"
+    text: "System theme, selected"
 
 - takeScreenshot: "dark-06-back-to-system"

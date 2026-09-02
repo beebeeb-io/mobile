@@ -15,29 +15,47 @@ appId: io.beebeeb.app
 - takeScreenshot: "deep-link-01-photos"
 
 # beebeeb://upload is intercepted by the deep-link handler and triggers the
-# upload action on the Files tab (file picker / upload sheet).
-- openLink: "beebeeb://upload"
-
-- extendedWaitUntil:
-    visible: "Drive"
-    timeout: 15000
-
-- takeScreenshot: "deep-link-02-upload-on-files"
-
-# beebeeb://upload opens the SYSTEM document picker, which is modal: until it is
-# dismissed the next deep link cannot take effect and every later assertion
-# fails against a sheet that is still on screen.
+# upload action on the Files tab (file picker / upload sheet), which opens the
+# SYSTEM document picker on top of it. The picker is modal: until it is
+# dismissed the next deep link cannot take effect and every assertion below
+# would fail against a sheet that is still on screen (failure screenshot
+# `~/.maestro/tests/2026-09-02_091302/`: "Recents / No Recents"). So the
+# dismissal runs immediately after the link fires, before any assertion —
+# NOT after the "Drive" assert like the previous ordering, which only passed
+# when the picker happened to animate in slower than the assert's timeout
+# (task 1350; passed once, failed twice on that ordering).
 #
 # This is why the flow's original ordering was already broken before the
 # redesign. Task 1324 reordered it and accidentally stopped exercising the
 # problem; task 1321 restored the original order and with it the bug. Dismissing
 # the picker fixes the cause rather than re-hiding it behind an ordering.
+- openLink: "beebeeb://upload"
+
+# openLink returns as soon as the link is dispatched, not once the picker has
+# finished presenting — so the runFlow.when conditional below could evaluate
+# BEFORE the picker has animated in, see no "Recents", skip the dismissal
+# entirely, and fail exactly like the original ordering bug, just intermittently
+# instead of always (PR #59 review finding). Wait for the picker itself first.
+# Per task 1344's root-cause work, `UIDocumentPickerViewController` exposes
+# only "Cancel" and the system keyboard to XCUITest/Maestro — no Recents/Browse
+# rows, no custom ids — so "Cancel" is the one reliable anchor for "the picker
+# is actually on screen now".
+- extendedWaitUntil:
+    visible: "Cancel"
+    timeout: 10000
+
 - runFlow:
     when:
       visible: "Recents"
     commands:
       - tapOn:
           point: "77%,13%"
+
+- extendedWaitUntil:
+    visible: "Drive"
+    timeout: 15000
+
+- takeScreenshot: "deep-link-02-upload-on-files"
 
 # beebeeb://shared lands on the Shared tab via React Navigation linking.
 # Segments were renamed in-product to "With me" / "By me"; the trailing .*
