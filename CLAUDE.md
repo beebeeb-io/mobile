@@ -120,6 +120,53 @@ Running the iOS app on the Simulator for QA hits several env-specific walls. Wor
 - **Local QA account:** `qa0688content@beebeeb.io` / `BeebeebQA0688content!` (OPAQUE, seeded files/
   photos; see `.claude/skills/beebeeb-test-accounts.md`).
 
+## Simulators — two QA sims, one lane per sim (task 1353)
+
+One shared simulator serialized every QA lane and caused real collisions (1348/1351 both drove
+`bb-qa-1310` the same morning). There are now **two** sims so two lanes can verify in parallel —
+**never share one sim across two lanes; claim one per lane for the session.**
+
+- `bb-qa-1310` — `5F8915EB-2FE7-449E-9524-9E7306029ADD`, iOS 26.2, iPhone 17 Pro.
+- `bb-qa-2` — `D7A6B303-B138-4EF5-ABEC-E23AEEE503FC`, iOS 26.2, iPhone 17 Pro.
+
+**Dev-client copy procedure (no rebuild).** A new sim can get the dev client by copying the app
+container off an already-built one instead of running `expo run:ios` again:
+
+```sh
+xcrun simctl create bb-qa-N "iPhone 17 Pro" com.apple.CoreSimulator.SimRuntime.iOS-26-2
+xcrun simctl boot <new-udid>
+APP=$(xcrun simctl get_app_container <source-udid> io.beebeeb.app)
+xcrun simctl install <new-udid> "$APP"
+xcrun simctl launch <new-udid> io.beebeeb.app
+```
+
+**Stale-bundle / wrong-Metro deep-link refresh.** Point a booted dev client at a specific Metro
+without touching the UI:
+
+```sh
+xcrun simctl openurl <udid> "beebeeb://expo-development-client/?url=http%3A%2F%2Flocalhost%3A<port>"
+```
+
+**Gotcha — first open on a fresh install shows a system confirmation, and it cannot be dismissed
+headlessly.** On a simulator that has never had this URL scheme opened before, `openurl` raises
+iOS's native `Open in "Beebeeb"?` (Cancel/Open) alert instead of connecting directly — confirmed on
+`bb-qa-2`'s first connect (2026-09-02). This is a one-time-per-install OS prompt, not a repo bug.
+There is no headless way to dismiss it on this Mac: the built-in display reports `Display Asleep:
+Yes`, Simulator.app opens no enumerable window even via `open -a Simulator --args
+-CurrentDeviceUDID <udid>` (`System Events` reports 0 windows for the process), and neither `idb`
+nor `cliclick` is installed — so `simctl`, which only touches the framebuffer, cannot substitute
+for a tap. **A human with GUI/screen-share access must tap "Open" once per fresh install**; after
+that first confirmation the scheme is remembered and later `openurl` calls to the same app connect
+silently. Do not reach for Maestro to dismiss this on a lane's live sim — it can send input to the
+wrong device if two lanes are running; only use it in a QA flow that already owns that sim for the
+session.
+
+**The expo-dev-client floating "Tools" gear is a tap trap.** It sits at roughly `(8%, 47%)` and
+silently swallows taps in that region (Maestro `tapOn` reports COMPLETED but nothing happens) —
+turn "Tools button" off in the in-app dev menu on each sim you drive with Maestro. It's a per-device
+dev-client preference (not repo state), so it must be set again on any new sim, including a fresh
+`bb-qa-N` created via the copy procedure above.
+
 ## Stack
 
 React Native + Expo (managed workflow) + TypeScript. Package manager: **bun**.
