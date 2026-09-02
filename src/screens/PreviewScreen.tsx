@@ -30,10 +30,10 @@ import { useVideoPlayer, VideoView } from 'expo-video';
 import NetInfo from '@react-native-community/netinfo';
 import { Ionicons } from '@expo/vector-icons';
 import type { RootStackParamList } from '../App';
-import { colors, radii, shadows } from '../theme';
+import { colors, fonts, radii, shadows } from '../theme';
 import type { Colors } from '../theme';
 import { useTheme } from '../lib/theme-context';
-import { GlassCircle, SCROLL_EDGE, ScrollEdgeBlur } from '../components/glass';
+import { GLASS_CIRCLE_SIZES, GlassCapsule, GlassCircle, SCROLL_EDGE, ScrollEdgeBlur, glassMaterial } from '../components/glass';
 import { useToast } from '../lib/toast-context';
 import { getToken, friendlyError, trustLocation, trashFiles } from '../lib/api';
 import { useCrypto } from '../lib/crypto-context';
@@ -2812,6 +2812,10 @@ export default function PreviewScreen() {
   if (isMediaPreview) {
     // When a photo list is provided, show a horizontal swipeable pager
     const showPager = hasSwipe && (isImage || isVideo);
+    // The media view forces dark glass regardless of app theme (the ground
+    // is always the near-black mediaRoot, never the light grouped surface —
+    // same reasoning as ScrollEdgeBlur/GlassCircle's own scheme="dark" below).
+    const mediaMaterial = glassMaterial('dark');
 
     return (
       <View style={styles.mediaRoot}>
@@ -2821,43 +2825,90 @@ export default function PreviewScreen() {
             become glass circles. */}
         <ScrollEdgeBlur scheme="dark" height={SCROLL_EDGE.chromeFallback} />
         <View style={[styles.mediaHeader, { paddingTop: insets.top + 8 }]}>
-          <GlassCircle scheme="dark" size={38}>
-            <TouchableOpacity
-              onPress={handleClose}
-              style={styles.glassHit}
-              hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
-              testID="preview-close"
-              accessibilityLabel="Close preview"
-            >
-              <Ionicons name="chevron-down" size={22} color={colors.white} />
-            </TouchableOpacity>
-          </GlassCircle>
+          {/* 1343 — outer TouchableOpacity wraps the fixed-size GlassCircle so
+              hitSlop is not clipped to the disc (RN clips hitSlop to the
+              parent's bounds — the lesson FilesScreen's back-button needed a
+              follow-up commit to learn, task 1341 / PR #51). Size is now
+              GLASS_CIRCLE_SIZES.action (42, canvas verbatim) — 1314 had kept
+              this screen's pre-glass literal 38 without ever routing it
+              through the recipe's own default (DEVIATIONS.md). */}
+          <TouchableOpacity
+            onPress={handleClose}
+            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+            testID="preview-close"
+            accessibilityLabel="Close preview"
+          >
+            <GlassCircle scheme="dark" size={GLASS_CIRCLE_SIZES.action}>
+              <Ionicons name="chevron-down" size={22} color={mediaMaterial.label} />
+            </GlassCircle>
+          </TouchableOpacity>
 
+          {/* 1343 — Preview.dc.html wraps the title/subtitle in its own glass
+              capsule (radius 999, padding 7px 18px — both lifted verbatim);
+              the shipped header had left this block bare on the scrim since
+              1314 (DEVIATIONS.md). maxWidth: '100%' on the capsule lets it
+              hug short filenames and still cap at the row's available width
+              for long ones, so the existing numberOfLines={1} truncation on
+              both lines keeps working unchanged. */}
           <View style={styles.mediaHeaderText}>
-            <Text style={styles.mediaHeaderTitle} numberOfLines={1}>{previewFileName}</Text>
-            <Text style={styles.mediaHeaderSubtitle} numberOfLines={1}>
-              {showPager
-                ? `${currentPhotoIndex + 1} of ${photoList.length}`
-                : `${CATEGORY_LABELS[category]}${currentSizeBytes != null ? ` · ${formatSize(currentSizeBytes)}` : ''}`
-              }
-            </Text>
+            <GlassCapsule
+              scheme="dark"
+              style={styles.mediaHeaderCapsule}
+              contentStyle={styles.mediaHeaderCapsuleBody}
+            >
+              <Text
+                style={[styles.mediaHeaderTitle, { color: mediaMaterial.label }]}
+                numberOfLines={1}
+              >
+                {previewFileName}
+              </Text>
+              <Text style={[styles.mediaHeaderSubtitle, styles.mono]} numberOfLines={1}>
+                {showPager
+                  ? `${currentPhotoIndex + 1} of ${photoList.length}`
+                  : `${CATEGORY_LABELS[category]}${currentSizeBytes != null ? ` · ${formatSize(currentSizeBytes)}` : ''}`
+                }
+              </Text>
+            </GlassCapsule>
           </View>
 
-          <GlassCircle
-            scheme="dark"
-            size={38}
-            style={(downloading || trashing) ? styles.disabledIconButton : undefined}
+          <TouchableOpacity
+            onPress={handlePreviewOptions}
+            disabled={downloading || trashing}
+            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+            accessibilityLabel="Open file options"
           >
-            <TouchableOpacity
-              onPress={handlePreviewOptions}
-              disabled={downloading || trashing}
-              style={styles.glassHit}
-              hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
-              accessibilityLabel="Open file options"
+            <GlassCircle
+              scheme="dark"
+              size={GLASS_CIRCLE_SIZES.action}
+              style={(downloading || trashing) ? styles.disabledIconButton : undefined}
             >
-              <Ionicons name="ellipsis-horizontal" size={21} color={colors.white} />
-            </TouchableOpacity>
-          </GlassCircle>
+              <Ionicons name="ellipsis-horizontal" size={21} color={mediaMaterial.label} />
+            </GlassCircle>
+          </TouchableOpacity>
+        </View>
+
+        {/* 1343 — canvas.json n-preview: "e2e lock as quiet mono badge". The
+            canvas samples it as the center item of a 5-icon bottom dock, but
+            the dock itself is OUT (Guus, 1314/1343 notes) — so this ships
+            only the one badge, floating over the media at the dock's own
+            bottom-center position, not the surrounding 4 action icons.
+            Position/padding are DERIVED (no isolated-badge artboard to
+            sample); icon colour, text colour and font are LIFTED VERBATIM
+            from the recipe: colors.amber === canvas #F5B800, this scheme's
+            labelMuted === canvas's own rgba(240,238,233,0.62) badge text,
+            fonts.mono + 10.5px match the canvas span exactly. See
+            DEVIATIONS.md. */}
+        <View
+          pointerEvents="none"
+          style={[styles.e2eBadgeWrap, { bottom: Math.max(insets.bottom, 16) + 14 }]}
+          testID="preview-e2e-badge"
+        >
+          <GlassCapsule scheme="dark" contentStyle={styles.e2eBadgeBody}>
+            <Ionicons name="lock-closed" size={14} color={colors.amber} />
+            <Text style={[styles.e2eBadgeText, styles.mono, { color: mediaMaterial.labelMuted }]}>
+              e2e
+            </Text>
+          </GlassCapsule>
         </View>
 
         {showPager ? (
@@ -3466,17 +3517,6 @@ const styles = StyleSheet.create({
     paddingBottom: 12,
     gap: 12,
   },
-  mediaIconButton: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: 'rgba(255,255,255,0.11)',
-  },
-  // 1314 — fills a GlassCircle; the material supplies the disc, this is the
-  // touch target inside it.
-  glassHit: { width: '100%', height: '100%', alignItems: 'center', justifyContent: 'center' },
   disabledIconButton: {
     opacity: 0.48,
   },
@@ -3485,19 +3525,65 @@ const styles = StyleSheet.create({
     minWidth: 0,
     alignItems: 'center',
   },
+  // 1343 — maxWidth: '100%' (not width/flex) so the capsule hugs a short
+  // filename instead of always stretching to the row's full available
+  // width, while still capping at that width for a long one (percentage
+  // resolves against mediaHeaderText's flex-resolved px width, so the
+  // Title/Subtitle Texts' own numberOfLines={1} keeps truncating correctly).
+  mediaHeaderCapsule: {
+    maxWidth: '100%',
+  },
+  // Canvas Preview.dc.html: `border-radius: 999px; padding: 7px 18px` —
+  // lifted verbatim (GlassCapsule already defaults radius to GLASS_RADII.capsule).
+  mediaHeaderCapsuleBody: {
+    alignItems: 'center',
+    paddingHorizontal: 18,
+    paddingVertical: 7,
+  },
   mediaHeaderTitle: {
     maxWidth: '100%',
-    color: colors.white,
     fontSize: 14,
     lineHeight: 18,
-    fontWeight: '700',
+    fontWeight: '600',
   },
+  // 1343 — mono (canvas: class="mono"), fontSize 10, and the 0.40-alpha
+  // colour are all lifted verbatim from Preview.dc.html's own subtitle span.
+  // That 0.40 is a one-off artboard value, not the shared glassMaterial()
+  // labelMuted token (which is 0.62 elsewhere in this same canvas — the
+  // e2e badge below uses that one instead) — see DEVIATIONS.md.
   mediaHeaderSubtitle: {
     maxWidth: '100%',
     marginTop: 2,
-    color: 'rgba(255,255,255,0.58)',
-    fontSize: 11,
-    lineHeight: 14,
+    color: 'rgba(240,238,233,0.40)',
+    fontSize: 10,
+    lineHeight: 13,
+  },
+  // 1343 — DERIVED: no canvas artboard isolates this badge from the rest of
+  // its 5-icon dock, so position + padding are a reasoned standalone
+  // treatment, not a sampled value (see the JSX comment above and
+  // DEVIATIONS.md). pointerEvents="none" on the wrapper is load-bearing: the
+  // badge is informational, not a control, and must not steal touches from
+  // the Pressable/pager media stage beneath it.
+  e2eBadgeWrap: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    alignItems: 'center',
+    zIndex: 15,
+  },
+  e2eBadgeBody: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+  },
+  // Canvas: font-size 10.5px, lifted verbatim.
+  e2eBadgeText: {
+    fontSize: 10.5,
+  },
+  mono: {
+    fontFamily: fonts.mono,
   },
   mediaStage: {
     flex: 1,
