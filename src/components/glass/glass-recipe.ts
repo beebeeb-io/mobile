@@ -310,7 +310,7 @@ export function modalScrim(scheme: GlassScheme): string {
  * the canvas's 52% — the fraction of the height that stays fully blurred
  * before the fade begins.
  */
-export const SCROLL_EDGE = {
+const SCROLL_EDGE_BASE = {
   height: 128,
   cssBlurPx: 18,
   cssSaturate: 1.6,
@@ -319,6 +319,26 @@ export const SCROLL_EDGE = {
   darkTint: 'rgba(12,12,13,0.30)',
   /** DERIVED (canvas is dark-only): the warm `paper` at the same 0.30 alpha. */
   lightTint: 'rgba(250,248,245,0.30)',
+} as const;
+
+export const SCROLL_EDGE = {
+  ...SCROLL_EDGE_BASE,
+  /**
+   * The fallback height every screen renders its `ScrollEdgeBlur` at BEFORE
+   * its own `headerHeight` has been measured (task 1348). This is the TOTAL
+   * band height from the screen edge — the canvas 128 — not an offset added
+   * on top of the safe-area inset. Measured `headerHeight` always wins where
+   * it exists; this constant only covers the first frame(s) before layout.
+   *
+   * Nine screens were each hand-rolling their own `insets.top + N` literal
+   * (N = 52…120, no canvas backing) — a zoo with no source of truth. This is
+   * DERIVED from `height`, not a second literal, so it cannot drift from the
+   * canvas value the way the nine did. A grep-guard test in
+   * `glass-recipe.test.ts` forbids new `insets.top + N` literals from
+   * regrowing the zoo (GlassGalleryScreen's demo section is the one allowed
+   * exception). Recorded in `design/ios26-canvas/DEVIATIONS.md`.
+   */
+  chromeFallback: SCROLL_EDGE_BASE.height,
 } as const;
 
 /** `BlurView.intensity` for one band of the scroll-edge stack. */

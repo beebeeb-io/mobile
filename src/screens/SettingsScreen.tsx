@@ -45,7 +45,7 @@ import { useAuth } from '../lib/auth';
 import { useBackup } from '../lib/backup-context';
 import { useCrypto } from '../lib/crypto-context';
 import { useTheme, type ThemeMode } from '../lib/theme-context';
-import { ScrollEdgeBlur } from '../components/glass';
+import { SCROLL_EDGE, ScrollEdgeBlur } from '../components/glass';
 import { useToast } from '../lib/toast-context';
 import { useNetworkStatus } from '../lib/useNetworkStatus';
 import { recordRuntimeTrace } from '../lib/runtime-trace';
@@ -1777,7 +1777,7 @@ export default function SettingsScreen() {
     <View style={[layout.root, { backgroundColor: surfaces.groupedBg }]}>
       {/* 1314 — content runs under the chrome; the title floats with a
           scroll-edge blur behind it, the same pattern Drive uses (1313). */}
-      {isScrolled ? <ScrollEdgeBlur height={headerHeight || insets.top + 52} /> : null}
+      {isScrolled ? <ScrollEdgeBlur height={headerHeight || SCROLL_EDGE.chromeFallback} /> : null}
       <View
         style={layout.floatingTitle}
         onLayout={(e) => {

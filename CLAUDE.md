@@ -120,6 +120,70 @@ Running the iOS app on the Simulator for QA hits several env-specific walls. Wor
 - **Local QA account:** `qa0688content@beebeeb.io` / `BeebeebQA0688content!` (OPAQUE, seeded files/
   photos; see `.claude/skills/beebeeb-test-accounts.md`).
 
+## Simulators — two QA sims, one lane per sim (task 1353)
+
+One shared simulator serialized every QA lane and caused real collisions (1348/1351 both drove
+`bb-qa-1310` the same morning). There are now **two** sims so two lanes can verify in parallel —
+**never share one sim across two lanes; claim one per lane for the session.**
+
+- `bb-qa-1310` — `5F8915EB-2FE7-449E-9524-9E7306029ADD`, iOS 26.2, iPhone 17 Pro.
+- `bb-qa-2` — `D7A6B303-B138-4EF5-ABEC-E23AEEE503FC`, iOS 26.2, iPhone 17 Pro.
+
+**Dev-client copy procedure (no rebuild).** A new sim can get the dev client by copying the app
+container off an already-built one instead of running `expo run:ios` again:
+
+```sh
+xcrun simctl create bb-qa-N "iPhone 17 Pro" com.apple.CoreSimulator.SimRuntime.iOS-26-2
+xcrun simctl boot <new-udid>
+xcrun simctl bootstatus -b <new-udid>  # blocks until boot has finished
+APP=$(xcrun simctl get_app_container <source-udid> io.beebeeb.app)
+xcrun simctl install <new-udid> "$APP"
+xcrun simctl launch <new-udid> io.beebeeb.app
+```
+
+**Stale-bundle / wrong-Metro deep-link refresh.** Point a booted dev client at a specific Metro
+without touching the UI:
+
+```sh
+xcrun simctl openurl <udid> "beebeeb://expo-development-client/?url=http%3A%2F%2Flocalhost%3A<port>"
+```
+
+**Gotcha — first open on a fresh install raises two one-time prompts, dismissable headlessly via
+Maestro `--udid`.** On a simulator that has never had this URL scheme opened before, `openurl`
+raises iOS's native `Open in "Beebeeb"?` (Cancel/Open) alert instead of connecting directly —
+confirmed on `bb-qa-2`'s first connect (2026-09-02). Dismissing it does **not** need a human at the
+screen — a one-line Maestro flow scoped to that one device with `--udid` does it:
+
+```yaml
+# tap-open.yaml
+appId: io.beebeeb.app
+---
+- tapOn: "Open"
+```
+
+```sh
+env -u NODE_OPTIONS maestro --udid <udid> test tap-open.yaml
+```
+
+Once dismissed, the app connects to Metro and immediately shows the dev-client's first-run
+"developer menu" explainer sheet ("This is the developer menu…") — a **second**, separate one-time
+prompt. Dismiss it the same way with a `tapOn: "Continue"` flow. After both, the app is running the
+Metro bundle and the in-app dev menu (Reload / Go home / Tools) responds normally — screenshots
+`docs/_qa-evidence/glass-wave-2/1353-bb-qa-2-connected.png` (the "developer menu" sheet, mid-dismiss)
+and `1353-bb-qa-2-app.png` (dev menu live, `Tools button` toggle visible and ON). Neither prompt
+reappears on that device once dismissed once.
+
+**Always pass `--udid` naming the sim the lane owns.** A bare `maestro test` picks whatever
+simulator Maestro finds, which can be the WRONG one when two lanes are running — see "one lane per
+sim" above. This is exactly why `bb-qa-1310` must never be touched by a lane that doesn't own it:
+an un-scoped Maestro command is the mechanism that would leak input onto it.
+
+**The expo-dev-client floating "Tools" gear is a tap trap.** It sits at roughly `(8%, 47%)` and
+silently swallows taps in that region (Maestro `tapOn` reports COMPLETED but nothing happens) —
+turn "Tools button" off in the in-app dev menu on each sim you drive with Maestro. It's a per-device
+dev-client preference (not repo state), so it must be set again on any new sim, including a fresh
+`bb-qa-N` created via the copy procedure above.
+
 ## Stack
 
 React Native + Expo (managed workflow) + TypeScript. Package manager: **bun**.

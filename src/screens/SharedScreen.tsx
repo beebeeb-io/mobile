@@ -15,7 +15,7 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { radii, shadows, spacing } from '../theme';
 import { useTheme } from '../lib/theme-context';
-import { GlassSegment, ScrollEdgeBlur } from '../components/glass';
+import { GlassSegment, SCROLL_EDGE, ScrollEdgeBlur } from '../components/glass';
 import { useToast } from '../lib/toast-context';
 import SkeletonRow from '../components/SkeletonRow';
 import { useCrypto } from '../lib/crypto-context';
@@ -728,7 +728,7 @@ export default function SharedScreen() {
     <View style={[styles.root, { backgroundColor: c.paper }]}>
       {/* 1314 — content runs under the chrome; the header floats with a
           scroll-edge blur, replacing the hairline border it used to draw. */}
-      {isScrolled ? <ScrollEdgeBlur height={headerHeight || insets.top + 120} /> : null}
+      {isScrolled ? <ScrollEdgeBlur height={headerHeight || SCROLL_EDGE.chromeFallback} /> : null}
       <View
         style={[styles.floatingHeader, { paddingTop: insets.top }]}
         onLayout={(e) => {

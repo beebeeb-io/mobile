@@ -35,7 +35,7 @@ import * as MediaLibrary from 'expo-media-library/legacy';
 import * as Clipboard from 'expo-clipboard';
 import { fonts, radii, spacing, shadows } from '../theme';
 import { useTheme } from '../lib/theme-context';
-import { ScrollEdgeBlur, modalScrim } from '../components/glass';
+import { SCROLL_EDGE, ScrollEdgeBlur, modalScrim } from '../components/glass';
 import { UploadActivityCard } from '../components/UploadActivityCard';
 import type { UploadActivityState, UploadStage } from '../components/UploadActivityCard';
 import { useToast } from '../lib/toast-context';
@@ -496,6 +496,9 @@ interface FileRowItemProps {
   hasProof: boolean;
   isShared: boolean;
   isLocked: boolean;
+  // 1338 step a — set only while showing search results (search-result-<id>);
+  // undefined during normal browsing, so this row's testID is unchanged then.
+  testID?: string;
 }
 
 const FileRowItem = React.memo(function FileRowItem({
@@ -514,6 +517,7 @@ const FileRowItem = React.memo(function FileRowItem({
   hasProof,
   isShared,
   isLocked,
+  testID,
 }: FileRowItemProps) {
   const { colors: c } = useTheme();
   const swipeableRef = useRef<Swipeable>(null);
@@ -577,6 +581,7 @@ const FileRowItem = React.memo(function FileRowItem({
 
   const rowContent = (
     <TouchableOpacity
+      testID={testID}
       style={[styles.fileRow, { borderBottomColor: c.line, backgroundColor: c.paper }]}
       activeOpacity={0.6}
       onPress={() => selectMode ? onToggleSelect(item) : onPress(item)}
@@ -722,6 +727,9 @@ interface FileGridItemProps {
   hasProof: boolean;
   isShared: boolean;
   isLocked: boolean;
+  // 1338 step a — set only while showing search results (search-result-<id>);
+  // undefined during normal browsing, so this card's testID is unchanged then.
+  testID?: string;
 }
 
 const FileGridItem = React.memo(function FileGridItem({
@@ -739,6 +747,7 @@ const FileGridItem = React.memo(function FileGridItem({
   hasProof,
   isShared,
   isLocked,
+  testID,
 }: FileGridItemProps) {
   const { colors: c } = useTheme();
   const category = fileCategory(item);
@@ -759,6 +768,7 @@ const FileGridItem = React.memo(function FileGridItem({
 
   return (
     <TouchableOpacity
+      testID={testID}
       style={[
         styles.gridCard,
         {
@@ -3654,6 +3664,11 @@ export default function FilesScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [offlineVersion, folderDescendantFileIds]);
 
+  // 1338 step a — stable anchor for e2e over search result rows, keyed by the
+  // file id (matching the `file-row-actions-${item.id}` convention already in
+  // this file); undefined outside search so normal browsing rows are unchanged.
+  const isShowingSearchResults = searchActive && !!searchQuery.trim();
+
   const renderFileRow = useCallback(({ item }: { item: FileEntry }) => (
     <FileRowItem
       item={withDecryptedMime(item)}
@@ -3671,8 +3686,9 @@ export default function FilesScreen() {
       hasProof={!!proofs[item.id]}
       isShared={item.is_folder && (item.share_count ?? 0) > 0}
       isLocked={lockedFileIds.has(item.id)}
+      testID={isShowingSearchResults ? `search-result-${item.id}` : undefined}
     />
-  ), [decryptedNames, withDecryptedMime, openFile, handleLongPress, handleSwipeShare, handleSwipeDelete, openTrust, selectMode, selectedIds, toggleSelect, sortOrder, offlineStatusFor, proofs, lockedFileIds]);
+  ), [decryptedNames, withDecryptedMime, openFile, handleLongPress, handleSwipeShare, handleSwipeDelete, openTrust, selectMode, selectedIds, toggleSelect, sortOrder, offlineStatusFor, proofs, lockedFileIds, isShowingSearchResults]);
 
   // Grid sizing — 3 columns, evenly spaced, responsive to screen width
   const GRID_COLUMNS = 3;
@@ -3699,8 +3715,9 @@ export default function FilesScreen() {
       hasProof={!!proofs[item.id]}
       isShared={item.is_folder && (item.share_count ?? 0) > 0}
       isLocked={lockedFileIds.has(item.id)}
+      testID={isShowingSearchResults ? `search-result-${item.id}` : undefined}
     />
-  ), [decryptedNames, withDecryptedMime, openFile, handleLongPress, openTrust, selectMode, selectedIds, toggleSelect, sortOrder, gridCardWidth, offlineStatusFor, proofs, lockedFileIds]);
+  ), [decryptedNames, withDecryptedMime, openFile, handleLongPress, openTrust, selectMode, selectedIds, toggleSelect, sortOrder, gridCardWidth, offlineStatusFor, proofs, lockedFileIds, isShowingSearchResults]);
 
   const renderEmpty = () => {
     if (loading) return null;
@@ -3770,7 +3787,7 @@ export default function FilesScreen() {
           what iOS does; at rest the header sits on the page colour and a blur
           band would just be a tint. `isScrolled` used to drive a hairline
           border here — the blur replaces it. */}
-      {isScrolled ? <ScrollEdgeBlur height={headerHeight || insets.top + 56} /> : null}
+      {isScrolled ? <ScrollEdgeBlur height={headerHeight || SCROLL_EDGE.chromeFallback} /> : null}
       <View
         style={[styles.headerArea, { paddingTop: insets.top }]}
         onLayout={(e) => {
@@ -3982,8 +3999,9 @@ export default function FilesScreen() {
       {/* Search bar — slides in below header when active */}
       {searchActive && !selectMode && (
         <>
-          <View style={styles.searchBar}>
+          <View style={styles.searchBar} testID="search-bar">
             <TextInput
+              testID="search-input"
               ref={searchInputRef}
               style={[styles.searchInput, { backgroundColor: c.paper2, borderColor: c.line, color: c.ink }]}
               value={searchQuery}
@@ -3996,6 +4014,7 @@ export default function FilesScreen() {
               clearButtonMode="while-editing"
             />
             <TouchableOpacity
+              testID="search-cancel"
               onPress={handleSearchToggle}
               hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
               accessibilityLabel="Cancel search"
@@ -4040,6 +4059,9 @@ export default function FilesScreen() {
         </View>
       ) : (
         <FlatList
+          // 1338 step a — search-results anchor only while actually showing
+          // search matches; undefined during normal browsing (unchanged then).
+          testID={isShowingSearchResults ? 'search-results' : undefined}
           // FlatList does not allow numColumns to change at runtime — remount with a key
           key={viewMode}
           data={displayedFiles}
