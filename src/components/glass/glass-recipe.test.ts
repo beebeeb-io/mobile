@@ -3,10 +3,12 @@ import { describe, expect, it } from 'bun:test';
 import {
   BLUR_PX_AT_FULL_INTENSITY,
   GLASS_RADII,
+  MODAL_SCRIM,
   SCROLL_EDGE,
   cssShadow,
   glassMaterial,
   intensityForCssBlur,
+  modalScrim,
   scrollEdgeBandHeights,
   scrollEdgeBandIntensity,
 } from './glass-recipe';
@@ -104,6 +106,29 @@ describe('glassMaterial', () => {
     for (const scheme of ['light', 'dark']) {
       expect(glassMaterial(scheme).sheen).toHaveLength(3);
     }
+  });
+});
+
+describe('MODAL_SCRIM', () => {
+  it('exposes the canvas modal scrim verbatim for dark', () => {
+    // Canvas ground truth: ShareSheet.dc.html:82 — the ONLY backdrop sample in
+    // the whole canvas. Four screens were hand-rolling 0.35/0.40/0.40/0.45.
+    expect(MODAL_SCRIM.dark).toBe('rgba(6,6,8,0.5)');
+    expect(modalScrim('dark')).toBe(MODAL_SCRIM.dark);
+  });
+
+  it('derives the light scrim at the same alpha (honesty class, like lightTint)', () => {
+    // The canvas is dark-only, so light is DERIVED, not lifted — exactly the
+    // honesty class of SCROLL_EDGE.lightTint: same warm `paper` RGB, and the
+    // canvas alpha carried over unchanged so the two schemes dim equally.
+    expect(MODAL_SCRIM.light).toBe('rgba(250,248,245,0.5)');
+    expect(modalScrim('light')).toBe(MODAL_SCRIM.light);
+
+    const alphaOf = (rgba: string) => Number(rgba.split(',').pop().replace(')', ''));
+    expect(alphaOf(MODAL_SCRIM.light)).toBe(alphaOf(MODAL_SCRIM.dark));
+
+    const rgbOf = (rgba: string) => rgba.slice(rgba.indexOf('(') + 1).split(',').slice(0, 3).join(',');
+    expect(rgbOf(MODAL_SCRIM.light)).toBe(rgbOf(SCROLL_EDGE.lightTint));
   });
 });
 

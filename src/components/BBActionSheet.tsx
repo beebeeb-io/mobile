@@ -31,6 +31,7 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../lib/theme-context';
+import { modalScrim } from './glass';
 import { fonts, radii, shadows } from '../theme';
 
 type IoniconName = React.ComponentProps<typeof Ionicons>['name'];
@@ -71,7 +72,7 @@ const CLOSE_THRESHOLD = 0.3; // fraction of sheet height dragged → dismiss
 const LEADING_INSET = 54; // 20 (pad) + 22 (icon) + 12 (gap) — separators align under the label
 
 export function BBActionSheet({ visible, onClose, title, header, rows }: BBActionSheetProps) {
-  const { colors: c } = useTheme();
+  const { colors: c, resolved } = useTheme();
   const insets = useSafeAreaInsets();
 
   const [rendered, setRendered] = useState(false);
@@ -102,9 +103,11 @@ export function BBActionSheet({ visible, onClose, title, header, rows }: BBActio
     }
   }, [visible, rendered, translateY, animateTo]);
 
+  // The veil itself is MODAL_SCRIM (alpha 0.5); this only fades it in as the
+  // sheet springs up, so the token's own alpha is what lands at rest.
   const scrimOpacity = translateY.interpolate({
     inputRange: [0, SCREEN_H],
-    outputRange: [0.4, 0],
+    outputRange: [1, 0],
     extrapolate: 'clamp',
   });
 
@@ -144,7 +147,9 @@ export function BBActionSheet({ visible, onClose, title, header, rows }: BBActio
   return (
     <Modal transparent visible={rendered} animationType="none" onRequestClose={onClose} statusBarTranslucent>
       <View style={styles.fill}>
-        <Animated.View style={[styles.scrim, { opacity: scrimOpacity }]}>
+        <Animated.View
+          style={[styles.scrim, { backgroundColor: modalScrim(resolved), opacity: scrimOpacity }]}
+        >
           <Pressable style={styles.fill} onPress={onClose} accessibilityLabel="Dismiss menu" />
         </Animated.View>
 
@@ -223,7 +228,7 @@ export function BBActionSheet({ visible, onClose, title, header, rows }: BBActio
 
 const styles = StyleSheet.create({
   fill: { flex: 1 },
-  scrim: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: '#000000' },
+  scrim: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 },
   sheet: {
     position: 'absolute',
     left: 0,

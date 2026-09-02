@@ -266,6 +266,37 @@ export function glassMaterial(scheme: GlassScheme): GlassMaterial {
 }
 
 /**
+ * The flat scrim behind a modal — the canvas's ONE backdrop sample.
+ *
+ * Ground truth: `design/ios26-canvas/ShareSheet.dc.html:82` — `rgba(6,6,8,0.5)`.
+ * Four surfaces were each hand-rolling their own black alpha with no canvas
+ * backing (ShareSheet 0.35, ConfirmActionPrompt 0.40, the Drive new-folder
+ * modal 0.40, TrustDetailsSheet 0.45). They all read from here now, and the
+ * delta is written down in `design/ios26-canvas/DEVIATIONS.md` rather than
+ * silently absorbed.
+ *
+ * A GLASS backdrop — a blurred full-screen primitive instead of a flat fill —
+ * was considered and DECLINED pending ruling #2. The canvas shows a flat
+ * scrim here, and the redesign's rule is that glass is the floating CONTROL
+ * layer, not a full-screen wash. If #2 rules the other way, this constant is
+ * where that change starts.
+ *
+ * `light` is DERIVED, not lifted: the canvas is dark-only. Same honesty class
+ * as `SCROLL_EDGE.lightTint` below — the warm `paper` RGB carried at the
+ * canvas's own alpha, so a light page recedes toward paper rather than toward
+ * black while both schemes veil by the same amount.
+ */
+export const MODAL_SCRIM = {
+  dark: 'rgba(6,6,8,0.5)',
+  light: 'rgba(250,248,245,0.5)',
+} as const;
+
+/** Resolve the modal backdrop scrim for a colour scheme. */
+export function modalScrim(scheme: GlassScheme): string {
+  return scheme === 'dark' ? MODAL_SCRIM.dark : MODAL_SCRIM.light;
+}
+
+/**
  * The progressive scroll-edge blur, from the canvas `.topfade` rule:
  *
  *   height: 128px;

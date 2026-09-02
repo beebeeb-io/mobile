@@ -26,10 +26,12 @@ export { ScrollEdgeBlur, type ScrollEdgeBlurProps } from './ScrollEdgeBlur';
 export {
   BLUR_PX_AT_FULL_INTENSITY,
   GLASS_RADII,
+  MODAL_SCRIM,
   SCROLL_EDGE,
   cssShadow,
   glassMaterial,
   intensityForCssBlur,
+  modalScrim,
   scrollEdgeBandHeights,
   scrollEdgeBandIntensity,
   type GlassMaterial,

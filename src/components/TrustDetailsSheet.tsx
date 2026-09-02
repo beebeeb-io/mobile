@@ -22,6 +22,7 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Device from 'expo-device';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { fonts, radii, spacing } from '../theme';
+import { modalScrim } from './glass';
 import { useTheme } from '../lib/theme-context';
 import { trustLocation, type FileEntry } from '../lib/api';
 import { formatBytes as formatSize } from '../lib/format';
@@ -83,7 +84,7 @@ function DetailRow({ label, value, mono, inkLabel, inkValue, border }: RowProps)
 }
 
 export default function TrustDetailsSheet({ file, fileName, onClose }: Props) {
-  const { colors: c } = useTheme();
+  const { colors: c, resolved } = useTheme();
   const insets = useSafeAreaInsets();
   const [proofOpen, setProofOpen] = useState(false);
 
@@ -102,7 +103,11 @@ export default function TrustDetailsSheet({ file, fileName, onClose }: Props) {
         onRequestClose={onClose}
       >
         <View style={styles.overlay}>
-          <TouchableOpacity activeOpacity={1} style={styles.backdrop} onPress={onClose} />
+          <TouchableOpacity
+            activeOpacity={1}
+            style={[styles.backdrop, { backgroundColor: modalScrim(resolved) }]}
+            onPress={onClose}
+          />
           <View
             style={[
               styles.sheet,
@@ -234,7 +239,7 @@ export default function TrustDetailsSheet({ file, fileName, onClose }: Props) {
 
 const styles = StyleSheet.create({
   overlay: { flex: 1, justifyContent: 'flex-end' },
-  backdrop: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.45)' },
+  backdrop: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 },
   sheet: {
     borderTopLeftRadius: radii.xl,
     borderTopRightRadius: radii.xl,
