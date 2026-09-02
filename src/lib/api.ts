@@ -1343,7 +1343,7 @@ export async function uploadEncryptedFileNative(params: {
         handleId: masterKeyHandleId,
         apiUrl: BASE_URL,
         token,
-        fileId,
+        fileId: serverFileId,
         inputUri,
         uploadSessionId,
         chunkSizeBytes: plan.chunkSizeBytes,
