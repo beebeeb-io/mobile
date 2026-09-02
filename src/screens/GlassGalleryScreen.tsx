@@ -36,6 +36,7 @@ import {
   GlassCircle,
   GlassSegment,
   GlassSheet,
+  SCROLL_EDGE,
   ScrollEdgeBlur,
   glassMaterial,
   type GlassMaterial,
@@ -214,6 +215,43 @@ function SheetMaterialComparison({
   );
 }
 
+/**
+ * Tall-header banding-case demo (task 1348).
+ *
+ * `SCROLL_EDGE.chromeFallback` (the canvas 128) is the fallback height every
+ * real screen renders at before its own `headerHeight` is measured; once
+ * measured, the taller value wins outright (a screen never clamps down to
+ * 128). This puts the two side by side over the SAME photo backdrop the
+ * canvas floats real chrome over, so the band's lower edge — where the fade
+ * meets content — can be judged for a visible step between the two heights,
+ * in both colour schemes. 180 stands in for a screen whose measured header
+ * genuinely runs taller than the canvas default (SharedScreen is the likely
+ * real-world case; see DEVIATIONS.md).
+ */
+function TallHeaderBandingDemo({
+  scheme,
+  height,
+  label,
+  labelColor,
+}: {
+  scheme: GlassScheme;
+  height: number;
+  label: string;
+  labelColor: string;
+}) {
+  return (
+    <View style={styles.bandingDemo}>
+      <View style={styles.bandingDemoCanvas}>
+        <PhotoGridBackdrop />
+        <ScrollEdgeBlur scheme={scheme} height={height} />
+      </View>
+      <Text style={[typeScale.caption2, styles.mono, styles.variantLabel, { color: labelColor }]}>
+        {label}
+      </Text>
+    </View>
+  );
+}
+
 // ---------------------------------------------------------------------------
 
 export default function GlassGalleryScreen() {
@@ -340,6 +378,25 @@ export default function GlassGalleryScreen() {
           color={material.labelMuted}
         />
         <SheetMaterialComparison scheme={scheme} c={c} material={material} />
+
+        <SectionLabel
+          text="Tall-header ScrollEdgeBlur > 128 banding case"
+          color={material.labelMuted}
+        />
+        <View style={styles.bandingRow}>
+          <TallHeaderBandingDemo
+            scheme={scheme}
+            height={SCROLL_EDGE.chromeFallback}
+            label={`chromeFallback ${SCROLL_EDGE.chromeFallback}`}
+            labelColor={material.labelMuted}
+          />
+          <TallHeaderBandingDemo
+            scheme={scheme}
+            height={180}
+            label="measured 180 (tall header)"
+            labelColor={material.labelMuted}
+          />
+        </View>
 
         <SectionLabel text="Type scale" color={material.labelMuted} />
         <View
@@ -536,6 +593,15 @@ const styles = StyleSheet.create({
     paddingVertical: 7,
     borderRadius: 999,
     borderWidth: StyleSheet.hairlineWidth,
+  },
+
+  bandingRow: { flexDirection: 'row', gap: 10, marginBottom: 10 },
+  bandingDemo: { flex: 1 },
+  bandingDemoCanvas: {
+    height: 220,
+    borderRadius: GLASS_RADII.group,
+    overflow: 'hidden',
+    position: 'relative',
   },
 
   group: { overflow: 'hidden' },

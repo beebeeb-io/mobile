@@ -17,7 +17,7 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import * as Haptics from 'expo-haptics';
 import { radii, spacing } from '../theme';
 import { useTheme } from '../lib/theme-context';
-import { ScrollEdgeBlur } from '../components/glass';
+import { SCROLL_EDGE, ScrollEdgeBlur } from '../components/glass';
 import { useToast } from '../lib/toast-context';
 import { onFilesDeleted } from '../lib/delete-cascade';
 import {
@@ -383,7 +383,7 @@ export default function TrashScreen() {
   return (
     <View style={[styles.root, { backgroundColor: c.paper }]}>
       {/* 1315 — content runs under the chrome. */}
-      {isScrolled ? <ScrollEdgeBlur height={headerHeight || insets.top + 64} /> : null}
+      {isScrolled ? <ScrollEdgeBlur height={headerHeight || SCROLL_EDGE.chromeFallback} /> : null}
       <View
         style={[styles.header, styles.floatingHeader, { paddingTop: insets.top }]}
         onLayout={(e) => {

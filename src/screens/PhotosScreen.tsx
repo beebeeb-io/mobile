@@ -30,7 +30,7 @@ import * as Sharing from 'expo-sharing';
 import { NativePhotosGridView, type NativePhotoGridItem } from '../../modules/beebeeb-crypto';
 import { radii, spacing } from '../theme';
 import { useTheme } from '../lib/theme-context';
-import { ScrollEdgeBlur } from '../components/glass';
+import { SCROLL_EDGE, ScrollEdgeBlur } from '../components/glass';
 import { ApiError, getAllImages, getFileIndex, friendlyError, trashFiles } from '../lib/api';
 import type { FileEntry } from '../lib/api';
 import { guessMimeType } from '../lib/media';
@@ -2141,7 +2141,7 @@ export default function PhotosScreen() {
           platform we ship `isScrolled` has been permanently false since the
           native grid landed — the hairline border it used to gate was dead
           too. Without the blur the title is unreadable over bright photos. */}
-      <ScrollEdgeBlur height={headerHeight || insets.top + 56} />
+      <ScrollEdgeBlur height={headerHeight || SCROLL_EDGE.chromeFallback} />
       <View
         style={[styles.floatingHeader, { paddingTop: insets.top }]}
         onLayout={(e) => {

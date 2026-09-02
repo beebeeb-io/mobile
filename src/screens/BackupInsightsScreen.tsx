@@ -27,7 +27,7 @@ import * as Haptics from 'expo-haptics';
 import { useNavigation } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../lib/theme-context';
-import { ScrollEdgeBlur } from '../components/glass';
+import { SCROLL_EDGE, ScrollEdgeBlur } from '../components/glass';
 import { fonts, spacing, type Colors } from '../theme';
 import {
   getStatusCounts,
@@ -626,7 +626,7 @@ export default function BackupInsightsScreen() {
   return (
     <View style={[layout.root, { backgroundColor: c.paper }]}>
       {/* 1315 — content runs under the chrome. */}
-      {isScrolled ? <ScrollEdgeBlur height={headerHeight || insets.top + 80} /> : null}
+      {isScrolled ? <ScrollEdgeBlur height={headerHeight || SCROLL_EDGE.chromeFallback} /> : null}
       <View
         style={{
           position: 'absolute',

@@ -33,7 +33,7 @@ import type { RootStackParamList } from '../App';
 import { colors, radii, shadows } from '../theme';
 import type { Colors } from '../theme';
 import { useTheme } from '../lib/theme-context';
-import { GlassCircle, ScrollEdgeBlur } from '../components/glass';
+import { GlassCircle, SCROLL_EDGE, ScrollEdgeBlur } from '../components/glass';
 import { useToast } from '../lib/toast-context';
 import { getToken, friendlyError, trustLocation, trashFiles } from '../lib/api';
 import { useCrypto } from '../lib/crypto-context';
@@ -2819,7 +2819,7 @@ export default function PreviewScreen() {
             instead of a flat black bar. The scrim becomes a progressive blur
             so the title stays legible over bright images, and the controls
             become glass circles. */}
-        <ScrollEdgeBlur scheme="dark" height={insets.top + 64} />
+        <ScrollEdgeBlur scheme="dark" height={SCROLL_EDGE.chromeFallback} />
         <View style={[styles.mediaHeader, { paddingTop: insets.top + 8 }]}>
           <GlassCircle scheme="dark" size={38}>
             <TouchableOpacity
