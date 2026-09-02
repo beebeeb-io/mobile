@@ -1,6 +1,7 @@
 // @ts-nocheck
 import { describe, expect, test } from 'bun:test';
 import {
+  countMatchesElsewhere,
   matchesSearchFilterKind,
   mergeRankedSearchResults,
   splitForHighlight,
@@ -149,5 +150,33 @@ describe('search match highlighting', () => {
       match: '(draft)',
       after: '.pdf',
     });
+  });
+});
+
+describe('countMatchesElsewhere', () => {
+  const entries = [
+    { id: 'in-folder-doc', category: 'doc' as const },
+    { id: 'elsewhere-doc', category: 'doc' as const },
+    { id: 'elsewhere-image', category: 'image' as const },
+    { id: 'elsewhere-video', category: 'video' as const },
+  ];
+  const visibleIds = new Set(['in-folder-doc']);
+
+  test('counts only matches outside the visible set when kind is "all"', () => {
+    expect(countMatchesElsewhere(entries, visibleIds, 'all')).toBe(3);
+  });
+
+  test('respects the active filter capsule — regression for a real bug', () => {
+    // The hint used to count every elsewhere-match regardless of which
+    // capsule was selected, so it could promise "2 matches elsewhere" while
+    // the active "Photos" filter would only ever show 1 of them.
+    expect(countMatchesElsewhere(entries, visibleIds, 'photos')).toBe(1);
+    expect(countMatchesElsewhere(entries, visibleIds, 'videos')).toBe(1);
+    expect(countMatchesElsewhere(entries, visibleIds, 'documents')).toBe(1);
+    expect(countMatchesElsewhere(entries, visibleIds, 'folders')).toBe(0);
+  });
+
+  test('a visible match never counts as elsewhere, in any kind', () => {
+    expect(countMatchesElsewhere(entries, visibleIds, 'documents')).not.toBe(2);
   });
 });

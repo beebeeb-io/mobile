@@ -98,6 +98,7 @@ import {
 } from '../lib/folder-navigation';
 import {
   SEARCH_FILTER_KINDS,
+  countMatchesElsewhere,
   matchesSearchFilterKind,
   mergeRankedSearchResults,
   splitForHighlight,
@@ -4343,7 +4344,15 @@ export default function FilesScreen() {
             const q = searchQuery.trim();
             if (!q) return null;
             const inFolderIds = new Set(files.map((f) => f.id));
-            const elsewhere = vaultSearchMatches.filter((m) => !inFolderIds.has(m.id)).length;
+            // 1338b — must respect the active capsule too, or the hint
+            // promises matches a tap on "elsewhere" wouldn't actually show
+            // once the same filter narrows them away (`countMatchesElsewhere`
+            // is unit tested against exactly this).
+            const elsewhere = countMatchesElsewhere(
+              vaultSearchMatches.map((m) => ({ id: m.id, category: fileCategory(searchResultToFileEntry(m)) })),
+              inFolderIds,
+              searchFilterKind,
+            );
             if (elsewhere === 0) return null;
             return (
               <View style={styles.searchHintWrap}>

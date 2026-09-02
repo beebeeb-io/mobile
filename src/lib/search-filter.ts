@@ -83,6 +83,22 @@ export function mergeRankedSearchResults<T extends { id: string }>(
   return kind === 'all' ? merged : merged.filter((item) => matchesSearchFilterKind(categoryOf(item), kind))
 }
 
+/**
+ * Count of `entries` not already visible in `visibleIds`, optionally
+ * narrowed to `kind` — the exact arithmetic behind the "N matches elsewhere
+ * in your vault" hint. Extracted so "the hint ignores the active filter
+ * capsule" (a real 1338b bug: the count was computed before the kind filter
+ * existed, and stayed that way after) has a unit test that would have
+ * caught it.
+ */
+export function countMatchesElsewhere(
+  entries: readonly { id: string; category: FileKind }[],
+  visibleIds: ReadonlySet<string>,
+  kind: SearchFilterKind,
+): number {
+  return entries.filter((e) => !visibleIds.has(e.id) && matchesSearchFilterKind(e.category, kind)).length
+}
+
 export interface HighlightSplit {
   before: string
   match: string
