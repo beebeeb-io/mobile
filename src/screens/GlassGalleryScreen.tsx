@@ -216,6 +216,104 @@ function SheetMaterialComparison({
 }
 
 /**
+ * Pressed states — capsule / circle / segment (task 1342).
+ *
+ * `GlassCapsule` and `GlassCircle` are plain `GlassSurface` wrappers: neither
+ * has an `onPress` prop, and `glass-recipe.ts` defines no pressed material for
+ * them. Every real call site (FilesScreen / PhotosScreen / TrashScreen's
+ * back-buttons and select-mode action bars, all task 1341/1342) wraps them in
+ * an OUTER `TouchableOpacity`, so the only press feedback either primitive
+ * ever gets is that wrapper's `activeOpacity` — a generic RN behaviour, not a
+ * glass-specific style. Rather than invent a fake "pressed material," this
+ * dims a second specimen to the 0.7 `activeOpacity` this app's call sites use
+ * and labels it as exactly that.
+ *
+ * `GlassSegment` is different: it DOES have a real recipe-defined
+ * pressed/selected style — `material.bubbleFill` / `bubbleRim` /
+ * `bubbleShadow` on whichever item is `value`. So its pair below is not a
+ * simulation; it is the same component rendered twice with a different
+ * `value`, showing the actual bubble move from one item to the other.
+ */
+function PressedStateComparison({
+  scheme,
+  material,
+}: {
+  scheme: GlassScheme;
+  material: GlassMaterial;
+}) {
+  return (
+    <>
+      <Text style={[typeScale.caption2, styles.mono, styles.variantLabel, { color: material.labelMuted }]}>
+        {'Capsule / Circle — neither defines a pressed material (plain GlassSurface wrappers, no onPress). Real usage wraps them in an outer TouchableOpacity; the 0.7 opacity below is that wrapper’s activeOpacity, not a recipe value.'}
+      </Text>
+      <View style={styles.pressedRow}>
+        <View style={styles.pressedSpecimen}>
+          <GlassCapsule scheme={scheme} contentStyle={styles.capsuleBody}>
+            <Ionicons name="lock-closed" size={17} color={colors.amber} />
+            <Text style={[typeScale.subhead, { color: material.label }]}>Capsule</Text>
+          </GlassCapsule>
+          <Text style={[typeScale.caption2, styles.mono, { color: material.labelMuted }]}>at rest</Text>
+        </View>
+        <View style={[styles.pressedSpecimen, { opacity: 0.7 }]}>
+          <GlassCapsule scheme={scheme} contentStyle={styles.capsuleBody}>
+            <Ionicons name="lock-closed" size={17} color={colors.amber} />
+            <Text style={[typeScale.subhead, { color: material.label }]}>Capsule</Text>
+          </GlassCapsule>
+          <Text style={[typeScale.caption2, styles.mono, { color: material.labelMuted }]}>pressed (0.7 activeOpacity)</Text>
+        </View>
+      </View>
+
+      <View style={[styles.pressedRow, { marginTop: 12 }]}>
+        <View style={styles.pressedSpecimen}>
+          <GlassCircle scheme={scheme} size={GLASS_CIRCLE_SIZES.action}>
+            <Ionicons name="close" size={18} color={material.label} />
+          </GlassCircle>
+          <Text style={[typeScale.caption2, styles.mono, { color: material.labelMuted }]}>at rest</Text>
+        </View>
+        <View style={[styles.pressedSpecimen, { opacity: 0.7 }]}>
+          <GlassCircle scheme={scheme} size={GLASS_CIRCLE_SIZES.action}>
+            <Ionicons name="close" size={18} color={material.label} />
+          </GlassCircle>
+          <Text style={[typeScale.caption2, styles.mono, { color: material.labelMuted }]}>pressed (0.7 activeOpacity)</Text>
+        </View>
+      </View>
+
+      <Text style={[typeScale.caption2, styles.mono, styles.variantLabel, { color: material.labelMuted, marginTop: 14 }]}>
+        {'Segment — the one primitive with a REAL recipe-defined pressed/selected style (material.bubbleFill / bubbleRim / bubbleShadow). Not a simulation: the same GlassSegment, value flipped.'}
+      </Text>
+      <View style={styles.pressedRow}>
+        <View style={{ flex: 1 }}>
+          <GlassSegment
+            scheme={scheme}
+            options={[
+              { value: 'a', label: 'Files' },
+              { value: 'b', label: 'Photos' },
+            ]}
+            value="a"
+            onChange={() => {}}
+            accessibilityLabel="Segment specimen — before press"
+          />
+          <Text style={[typeScale.caption2, styles.mono, styles.variantLabel, { color: material.labelMuted }]}>before press</Text>
+        </View>
+        <View style={{ flex: 1 }}>
+          <GlassSegment
+            scheme={scheme}
+            options={[
+              { value: 'a', label: 'Files' },
+              { value: 'b', label: 'Photos' },
+            ]}
+            value="b"
+            onChange={() => {}}
+            accessibilityLabel="Segment specimen — after press"
+          />
+          <Text style={[typeScale.caption2, styles.mono, styles.variantLabel, { color: material.labelMuted }]}>after press</Text>
+        </View>
+      </View>
+    </>
+  );
+}
+
+/**
  * Tall-header banding-case demo (task 1348).
  *
  * `SCROLL_EDGE.chromeFallback` (the canvas 128) is the fallback height every
@@ -341,6 +439,12 @@ export default function GlassGalleryScreen() {
           accessibilityLabel="Segment specimen"
           style={styles.control}
         />
+
+        <SectionLabel
+          text="Pressed states — capsule / circle / segment"
+          color={material.labelMuted}
+        />
+        <PressedStateComparison scheme={scheme} material={material} />
 
         <SectionLabel text="Sheet — radius 38" color={material.labelMuted} />
         <GlassSheet scheme={scheme} style={styles.control} contentStyle={styles.sheetBody}>
@@ -564,6 +668,9 @@ const styles = StyleSheet.create({
   },
   control: { marginBottom: 10 },
   row: { flexDirection: 'row', alignItems: 'center', gap: 14 },
+
+  pressedRow: { flexDirection: 'row', gap: 14 },
+  pressedSpecimen: { alignItems: 'center', gap: 6 },
 
   capsuleBody: {
     flexDirection: 'row',
