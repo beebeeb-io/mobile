@@ -1,9 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
-import { BlurView } from 'expo-blur';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../lib/theme-context';
-import { fonts } from '../theme';
+import { colors, darkColors, fonts } from '../theme';
+import { GLASS_RADII, GlassSurface, glassMaterial, type GlassScheme } from './glass';
 import { RateMeter, etaSeconds, formatEta, formatRate, ringRotations } from '../lib/upload-metrics';
 
 /**
@@ -139,11 +139,29 @@ function ProgressRing({ size, stroke, progress, color, trackColor, holeColor, ch
 interface UploadActivityCardProps {
   upload: UploadActivityState;
   bottom: number;
+  /**
+   * Override the resolved colour scheme. Every real call site (FilesScreen)
+   * omits this and gets the app's live theme, unchanged. It exists only so
+   * GlassGalleryScreen can show both schemes side by side without touching
+   * the live app theme — the same `scheme?: GlassScheme` escape hatch every
+   * other glass primitive (`GlassSurface`, `GlassCapsule`, `GlassCircle`,
+   * `GlassSegment`) already exposes for exactly this reason.
+   */
+  scheme?: GlassScheme;
 }
 
-export const UploadActivityCard = React.memo(function UploadActivityCard({ upload, bottom }: UploadActivityCardProps) {
-  const { colors: c, resolved } = useTheme();
-  const dark = resolved === 'dark';
+export const UploadActivityCard = React.memo(function UploadActivityCard({ upload, bottom, scheme }: UploadActivityCardProps) {
+  const { resolved: liveScheme } = useTheme();
+  const resolvedScheme = scheme ?? liveScheme;
+  const dark = resolvedScheme === 'dark';
+  // 1340 — the card's own hand-rolled blur/fill/border/shadow are gone; the
+  // whole surface now reads through the shared glassMaterial(scheme), the
+  // same recipe the tab bar and every other floating control uses.
+  const material = glassMaterial(resolvedScheme);
+  // Equivalent to useTheme().colors (theme-context.tsx computes it the same
+  // way) but derived from resolvedScheme so a gallery override also repaints
+  // the amber/ink literals below, not just the glass material.
+  const c = dark ? darkColors : colors;
 
   // Smoothed network rate from bytesUploaded deltas. The meter lives across
   // renders; a batch's next file restarts the counter and the meter absorbs it.
@@ -186,29 +204,34 @@ export const UploadActivityCard = React.memo(function UploadActivityCard({ uploa
     !done && upload.stage === 2 && upload.bytesTotal && upload.bytesUploaded != null
       ? formatEta(etaSeconds(upload.bytesTotal - upload.bytesUploaded, netRate))?.slice(1) ?? null
       : null;
-  const hairline = dark ? 'rgba(255,255,255,0.13)' : 'rgba(0,0,0,0.10)';
   const track = dark ? 'rgba(255,255,255,0.10)' : 'rgba(0,0,0,0.08)';
-  const tint = dark ? 'rgba(18,18,20,0.72)' : 'rgba(250,248,245,0.72)';
   const hole = dark ? '#1c1c20' : '#f2efe9';
 
   return (
+    // 1340 — position/size only; the glass fill, blur, rim and shadow all
+    // live on GlassSurface below (glassMaterial(scheme)). The old hairline
+    // border and the amber border-on-done are both gone — "done" is now
+    // signalled purely by content (the ring completing solid amber + the
+    // checkmark), the same way it always was for the ring's own colour;
+    // there is no recipe-defined border to carry that cue instead. See
+    // design/ios26-canvas/DEVIATIONS.md, "Phase 4 — upload card (1340)".
     <View
-      style={[styles.wrap, { bottom, borderColor: done ? c.amber : hairline, shadowOpacity: dark ? 0.45 : 0.18 }]}
+      style={[styles.wrap, { bottom }]}
       accessibilityRole="progressbar"
       accessibilityLabel={`Uploading ${upload.fileName}, ${pct} percent`}
       testID="upload-activity-card"
     >
-      <BlurView intensity={40} tint={dark ? 'dark' : 'light'} style={StyleSheet.absoluteFill} />
-      <View style={[StyleSheet.absoluteFill, { backgroundColor: tint }]} />
-      <View style={styles.row}>
+      <GlassSurface scheme={resolvedScheme} radius="card" contentStyle={styles.row}>
         {/* Brand mark */}
         <View style={[styles.mark, { backgroundColor: c.amber }]}>
           <Text style={styles.markGlyph}>b</Text>
         </View>
 
-        {/* Name + bar + data line */}
+        {/* Name + bar + data line — on-glass ink from glassMaterial(),
+            matching the tab bar / FilesScreen / PhotosScreen convention
+            (c.ink/c.ink3 were tuned for opaque paper, not this fill). */}
         <View style={styles.middle}>
-          <Text style={[styles.fileName, { color: c.ink }]} numberOfLines={1}>
+          <Text style={[styles.fileName, { color: material.label }]} numberOfLines={1}>
             {upload.fileName}
           </Text>
           <View style={[styles.barTrack, { backgroundColor: track }]}>
@@ -219,7 +242,7 @@ export const UploadActivityCard = React.memo(function UploadActivityCard({ uploa
               ]}
             />
           </View>
-          <Text style={[styles.dataLine, { color: c.ink3 }]} numberOfLines={1}>
+          <Text style={[styles.dataLine, { color: material.labelMuted }]} numberOfLines={1}>
             {line}
           </Text>
         </View>
@@ -229,26 +252,22 @@ export const UploadActivityCard = React.memo(function UploadActivityCard({ uploa
           {done ? (
             <Ionicons name="checkmark" size={18} color={c.amber} />
           ) : (
-            <Text style={[styles.ringPct, { color: c.ink }]}>{ringEta ?? pct}</Text>
+            <Text style={[styles.ringPct, { color: material.label }]}>{ringEta ?? pct}</Text>
           )}
         </ProgressRing>
-      </View>
+      </GlassSurface>
     </View>
   );
 });
 
 const styles = StyleSheet.create({
+  // 1340 — position/size only. Radius, fill, blur, rim and shadow all moved
+  // onto GlassSurface (radius="card", GLASS_RADII.card = 28); this wrapper no
+  // longer paints anything itself.
   wrap: {
     position: 'absolute',
     left: 14,
     right: 14,
-    borderRadius: 26,
-    borderWidth: StyleSheet.hairlineWidth,
-    overflow: 'hidden',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 12 },
-    shadowRadius: 30,
-    elevation: 12,
   },
   row: {
     flexDirection: 'row',
@@ -260,7 +279,9 @@ const styles = StyleSheet.create({
   mark: {
     width: 44,
     height: 44,
-    borderRadius: 12,
+    // 1340 — was a literal 12 with no canvas backing; GLASS_RADII.inner (13)
+    // is the recipe's own name for "the logo tile inside the upload card".
+    borderRadius: GLASS_RADII.inner,
     alignItems: 'center',
     justifyContent: 'center',
   },
