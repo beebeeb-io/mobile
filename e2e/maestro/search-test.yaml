@@ -47,13 +47,17 @@ appId: io.beebeeb.app
 # the clip-1080p*.mp4 videos on this account, so a Videos-only assertion
 # here would pass identically whether or not the capsule does anything).
 # Photos has ZERO overlap with "clip": narrowing to it must empty the list.
+# NOTE: `search-results` is the FlatList's OWN testID, present whenever
+# search is showing results at all (query or kind filter) — it does not
+# disappear for zero rows, only ListEmptyComponent's "No results" text
+# appears instead. "No results" is the real discriminator here.
 - tapOn:
     id: "search-filter-photos"
 
-- assertNotVisible:
-    id: "search-results"
-
 - assertVisible: "No results"
+
+- assertNotVisible:
+    id: "search-match"
 
 - takeScreenshot: "search-04a-filtered-photos-empty"
 
