@@ -3808,6 +3808,22 @@ export default function FilesScreen() {
   // not plain browsing, so the same anchors and empty-state apply.
   const isShowingSearchResults = searchActive && (!!searchQuery.trim() || searchFilterKind !== 'all');
 
+  // 1350 — the plain-browsing counterpart to the search-result anchor above:
+  // `file-row-${item.id}` on FILE rows only (folders stay untagged; nothing
+  // needs to select "a folder" by id today). This is what file-preview-test.yaml
+  // now taps instead of matching filename extensions as free text, which was
+  // ambiguous — the same regex also matched the Recent section's "Open recent
+  // file <name>" cards (which render above the list and have no id) and
+  // `file-row-actions-${item.id}` (the "..." menu button), so the tap could
+  // land on either instead of the row. `file-row-${item.id}` never collides
+  // with `file-row-actions-${item.id}` because "actions-" isn't a valid prefix
+  // of a UUID, so an id regex anchored to hex digits right after `file-row-`
+  // cannot match the actions button.
+  const fileRowTestId = useCallback(
+    (item: FileEntry) => (item.is_folder ? undefined : `file-row-${item.id}`),
+    [],
+  );
+
   // 1338b — the query to amber-highlight in result rows; undefined outside
   // search results so normal browsing renders names exactly as before.
   const searchHighlightQuery = isShowingSearchResults ? searchQuery.trim() || undefined : undefined;
@@ -3829,10 +3845,10 @@ export default function FilesScreen() {
       hasProof={!!proofs[item.id]}
       isShared={item.is_folder && (item.share_count ?? 0) > 0}
       isLocked={lockedFileIds.has(item.id)}
-      testID={isShowingSearchResults ? `search-result-${item.id}` : undefined}
+      testID={isShowingSearchResults ? `search-result-${item.id}` : fileRowTestId(item)}
       highlightQuery={searchHighlightQuery}
     />
-  ), [decryptedNames, withDecryptedMime, openFile, handleLongPress, handleSwipeShare, handleSwipeDelete, openTrust, selectMode, selectedIds, toggleSelect, sortOrder, offlineStatusFor, proofs, lockedFileIds, isShowingSearchResults, searchHighlightQuery]);
+  ), [decryptedNames, withDecryptedMime, openFile, handleLongPress, handleSwipeShare, handleSwipeDelete, openTrust, selectMode, selectedIds, toggleSelect, sortOrder, offlineStatusFor, proofs, lockedFileIds, isShowingSearchResults, searchHighlightQuery, fileRowTestId]);
 
   // Grid sizing — 3 columns, evenly spaced, responsive to screen width
   const GRID_COLUMNS = 3;
@@ -3859,10 +3875,10 @@ export default function FilesScreen() {
       hasProof={!!proofs[item.id]}
       isShared={item.is_folder && (item.share_count ?? 0) > 0}
       isLocked={lockedFileIds.has(item.id)}
-      testID={isShowingSearchResults ? `search-result-${item.id}` : undefined}
+      testID={isShowingSearchResults ? `search-result-${item.id}` : fileRowTestId(item)}
       highlightQuery={searchHighlightQuery}
     />
-  ), [decryptedNames, withDecryptedMime, openFile, handleLongPress, openTrust, selectMode, selectedIds, toggleSelect, sortOrder, gridCardWidth, offlineStatusFor, proofs, lockedFileIds, isShowingSearchResults, searchHighlightQuery]);
+  ), [decryptedNames, withDecryptedMime, openFile, handleLongPress, openTrust, selectMode, selectedIds, toggleSelect, sortOrder, gridCardWidth, offlineStatusFor, proofs, lockedFileIds, isShowingSearchResults, searchHighlightQuery, fileRowTestId]);
 
   const renderEmpty = () => {
     if (loading) return null;
