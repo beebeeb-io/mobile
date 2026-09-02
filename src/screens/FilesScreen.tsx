@@ -1441,12 +1441,19 @@ export default function FilesScreen() {
               const payload = encryptedMetadataPayloadToBytes(node.name_encrypted ?? '');
               if (!payload) return;
               const plaintext = await decryptMetadata(node.id, payload.nonce, payload.ciphertext);
-              const { name } = parseDecryptedMetadata(plaintext);
+              const { name, mimeType } = parseDecryptedMetadata(plaintext);
               if (cancelled || !name) return;
               indexFile(node.id, {
                 name,
                 path: name,
-                type: node.is_folder ? 'folder' : '',
+                // 1338b — was always '' for files (mimeType was parsed then
+                // discarded), so `searchResultToFileEntry` → `fileCategory`
+                // had no real mime for a vault-search result and the bottom
+                // bar's kind filter fell back to guessing from the filename
+                // extension for every reconciled node. Thread the real,
+                // already-decrypted type through — same field `toSearchIndexEntry`
+                // (above) already fills correctly for indexed-on-write nodes.
+                type: node.is_folder ? 'folder' : (mimeType ?? ''),
                 size: node.size_bytes ?? 0,
                 parent: node.parent_id,
                 starred: false,
