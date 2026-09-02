@@ -227,6 +227,39 @@ dev-client preference (not repo state), so it must be set again on any new sim, 
   scroll only — this is the "regex where you must" case the rule below already describes, not a new
   exception to it.
 
+## QA account hygiene (task 1356)
+
+The local QA account (`qa0688content@beebeeb.io`) got silted up with lanes' throwaway test data
+and had to be cleaned — 17 files moved to Trash. What's left is a deliberate fixture set: **do not
+touch, duplicate, or delete any of these "because it looks like junk"** — every one below is load-
+bearing for a specific flow, and a fixture with no stated purpose is the first thing a future lane
+deletes by mistake.
+
+- `qa-red.png` / `qa-blue.png` / `qa-green.png` — small photo fixtures for pin, offline, and
+  thumbnail tests.
+- `medium-photo.jpeg` — the 2 MB perf-baseline tier (task 1345).
+- `big-photo.jpeg` — the large photo fixture.
+- `clip-1080p.mp4` — the short video fixture; `search-test.yaml` searches "clip" against this
+  file's exact name.
+- `clip-1080p (3).mp4` — the 40 MB perf-baseline tier (task 1345). A SEPARATE file from
+  `clip-1080p.mp4` above, on purpose: the perf comparison needs the same file run over run, so it
+  can't share a name/identity with the search-test fixture.
+- `qa-1301-video.mp4` — the 213 MB throughput fixture.
+- `qa-hevc.mp4` — HEVC decode coverage.
+- `qa-video.mp4` — a 23 kB fixture for a fast round-trip check.
+- The empty folder named `Quarterly Financial Reports And Tax Documents 2026 Archive` — the
+  absurd length IS the point, it's the truncation/breadcrumb fixture for task 1341. Do not rename
+  or shorten it.
+
+Rules for lanes using this account:
+
+- Prefix any throwaway upload with your task id, so the next cleanup can tell what's safe to trash.
+- Delete your own throwaway uploads at the end of your lane, whether it succeeded or failed —
+  `bb rm <id>` is reversible (Trash, not purge).
+- Never repurpose one of the fixtures above for something else, even temporarily.
+- If a file fails to decrypt and it isn't already documented as broken by tasks 1349/1351, stop
+  and flag it — don't upload past it and mask the failure.
+
 ## Stack
 
 React Native + Expo (managed workflow) + TypeScript. Package manager: **bun**.
