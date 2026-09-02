@@ -14,7 +14,7 @@ import { clearCachedFileIndex } from './file-index-cache';
 import { collectPaged, findInPages } from './paginate';
 import { rateLimitedFetch } from './rate-limited-fetch';
 import { isNativeUploadAvailable, planUploadChunksNative, uploadChunksNative } from '../../modules/beebeeb-crypto';
-import { assertNativeUploadEncryptedUnderSessionId, nativeProgressToUploadProgress, parseNativeUploadError, resumeStateMatchesNativePlan } from './native-upload-bridge';
+import { assertNativeUploadEncryptedUnderSessionId, nativeProgressToUploadProgress, parseNativeUploadError, resumeStateMatchesNativePlan, uploadChunksNativeTracked } from './native-upload-bridge';
 import { getDeviceId } from './sync-client';
 import { setAnnouncement, clearAnnouncement } from './announcement-context';
 
@@ -1337,18 +1337,19 @@ export async function uploadEncryptedFileNative(params: {
   persistResume(startChunkIndex - 1)
   let lastPersistedChunk = startChunkIndex - 1
 
-  // The id the bridge will derive the AES file key from. Named separately
-  // from `serverFileId` (rather than inlined) so the belt-and-braces check
-  // below is a real assertion against the call site, not a tautology —
-  // task 1351's bug was exactly this argument silently using the wrong id.
-  const nativeEncryptionFileId = serverFileId
+  // The id the bridge will derive the AES file key from — fed straight into
+  // the request object below (never aliased through a second binding), so
+  // `uploadChunksNativeTracked`'s outcome and the belt-and-braces check that
+  // reads it are checking the id the call was ACTUALLY made with.
+  let nativeOutcome: Awaited<ReturnType<typeof uploadChunksNativeTracked>>
   try {
-    await uploadChunksNative(
+    nativeOutcome = await uploadChunksNativeTracked(
+      uploadChunksNative,
       {
         handleId: masterKeyHandleId,
         apiUrl: BASE_URL,
         token,
-        fileId: nativeEncryptionFileId,
+        fileId: serverFileId,
         inputUri,
         uploadSessionId,
         chunkSizeBytes: plan.chunkSizeBytes,
@@ -1373,8 +1374,12 @@ export async function uploadEncryptedFileNative(params: {
   // Belt and braces (task 1351): never complete an upload whose encryption
   // id and session id have drifted apart — the native bridge can't tell us
   // itself, so this is the last checkpoint before the file is marked done.
+  // `nativeOutcome.encryptedUnderFileId` is read off the SAME params object
+  // actually forwarded to the bridge (`uploadChunksNativeTracked`,
+  // native-upload-bridge.ts) — a real assertion against the call, not a
+  // comparison of two names for the same untouched value.
   try {
-    assertNativeUploadEncryptedUnderSessionId(nativeEncryptionFileId, serverFileId)
+    assertNativeUploadEncryptedUnderSessionId(nativeOutcome.encryptedUnderFileId, serverFileId)
   } catch (err) {
     throw new ApiError(
       500,
