@@ -2326,6 +2326,12 @@ export default function SettingsScreen() {
                 return (
                   <TouchableOpacity
                     key={pref}
+                    // 1352 — stable id for Maestro/E2E (RN testID → iOS accessibilityIdentifier).
+                    // The accessibilityLabel below is the real cross-check: it flips to include
+                    // ", selected" only once `themePreference` (and therefore the derived
+                    // `resolved` scheme in theme-context.tsx) has actually changed, so a no-op
+                    // tap can't pass an assertion against it.
+                    testID={`appearance-${pref}`}
                     style={[
                       layout.themeOption,
                       {

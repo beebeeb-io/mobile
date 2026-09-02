@@ -184,6 +184,100 @@ turn "Tools button" off in the in-app dev menu on each sim you drive with Maestr
 dev-client preference (not repo state), so it must be set again on any new sim, including a fresh
 `bb-qa-N` created via the copy procedure above.
 
+## Maestro — shared-driver limits, native pickers, and selector gotchas (task 1350)
+
+- **One `maestro test` at a time, machine-wide.** Extra simulators (see "two QA sims" above) do not
+  buy parallel e2e — the XCUITest driver and CPU are the shared resource, not the simulator. Three
+  lanes driving three sims at once took the load average past 40, with taps taking 30-90s and
+  elements reported "not found" that were plainly on screen. Only one lane may hold the Maestro
+  driver at a time, granted by the lead; `xcrun simctl io` screenshots may still overlap freely.
+- **An idle-but-still-attached driver on ANY simulator poisons new driver bootstraps on ALL of
+  them.** `xcodebuild test-without-building` and its `maestro-driver-iosUITests-Runner` arbitrate
+  through one host-level `testmanagerd`, so this is machine-wide, not per-device. Symptom: a brand
+  new run backgrounds the app to the Home Screen before the flow's first assertion, and Maestro
+  reports "found nothing to terminate". Proven by controlled test (2026-09-02): a cold, never-driven
+  sim failed identically until an orphaned driver on a *different* device was killed, then ran clean.
+  After every run, check `pgrep -f 'xcodebuild test-without-building'` and kill only your own
+  orphan by PID (verify its `-destination id=` first) — never `pkill -f xcodebuild`, which takes out
+  other lanes and this Mac's other projects too.
+- **The row "…" overflow menu is a native menu Maestro cannot tap.** `tapOn` reports COMPLETED, the
+  menu stays open, and it blocks all further input until the app is terminated. Its items also carry
+  a leading `", "` in their accessible name. Route to the share sheet with a row swipe RIGHT
+  ("Share <filename>") instead.
+- **`UIDocumentPickerViewController` exposes only "Cancel" and the system keyboard to XCUITest** —
+  no Recents/Browse rows, independent of file type, so a document cannot be seeded into the app by
+  automation at all (confirmed by hierarchy dump, not just a flaky tap). Workaround: copy the file
+  directly into the simulator's local File Provider storage so it appears under "On My iPhone", then
+  a human finishes with two taps. `xcrun simctl addmedia` rejects anything non-media
+  (`File type unsupported`) so it can't shortcut this for docs.
+- **Never `simctl openurl` a dev-client deep link into an already-running app.** It can orphan the
+  native view — a solid white screen that survives a simulator reboot while JS keeps running
+  underneath. Terminate the app first, then `openurl`.
+- **`scrollUntilVisible` + `tapOn` with an `id:` selector can fail to find a row that is genuinely
+  off-screen, even though the same `id:` resolves fine once the row is already on screen.**
+  Reproduced directly on `dark-mode-test.yaml` (task 1352): from a cold launch, the Appearance
+  control is several screens below the fold (Account/Storage/Backup/Devices render above it), and
+  `scrollUntilVisible: { element: { id: "appearance-dark" } }` failed 3/3 real attempts —
+  `maestro hierarchy` confirmed the `resource-id` was present and correct the whole time, so this
+  isn't a missing/renamed testID. Swapping only the *scroll* target to a `text:` regex
+  (`"Dark theme.*"`, the row's accessibilityLabel) fixed it 3/3, while the `tapOn` and the
+  post-tap `assertVisible` stayed on `id:`. Lesson: prefer `id:` for the tap and the assertion (an
+  `id:` lookup against the CURRENT hierarchy is reliable), but if a `scrollUntilVisible` targeting an
+  `id:` won't find an element you can see is there, fall back to a `.*`-anchored text regex for the
+  scroll only — this is the "regex where you must" case the rule below already describes, not a new
+  exception to it.
+- **A `launchApp` can leave a stale accessibility-bridge attach that makes the very next
+  interaction fail against a screen that is visibly correct.** Symptom: `extendedWaitUntil`/`tapOn`
+  on an element that is plainly on screen (and present in a `maestro hierarchy` dump) times out or
+  hangs — not "element not found because it's covered", but present-and-still-not-found. A full
+  `xcrun simctl terminate <udid> io.beebeeb.app` followed by `xcrun simctl launch <udid>
+  io.beebeeb.app` **before** the flow's own `launchApp` clears it reliably — confirmed directly:
+  a `dark-mode-test.yaml` run hung for 10+ minutes at almost 0% CPU right after `launchApp`, killing
+  it and doing the terminate+launch cycle first made every subsequent run (5 in a row, across three
+  different flows) start clean. `launchApp`'s own relaunch does not fix this on its own; the
+  external `simctl` cycle does.
+- **`pressKey: Enter` on the password field submits the sign-in form reliably** — confirmed
+  directly (`LoginScreen.tsx`: the password `TextInput`, `testID="password-input"`, wires
+  `onSubmitEditing={handleLogin}`) — and is a cleaner alternative to the documented coordinate tap
+  that dismisses the keyboard before tapping `sign-in-button`. In this session's own testing that
+  coordinate tap was reliable every time (5/5 across `login-test.yaml` and
+  `local-qa-signin-unlock.yaml` runs today), so this isn't "the tap is broken" — but if you hit the
+  keyboard-covers-the-button or clears-the-field failure another lane saw, `pressKey: Enter` right
+  after typing the password is the fix, and it's one step instead of two.
+
+## QA account hygiene (task 1356)
+
+The local QA account (`qa0688content@beebeeb.io`) got silted up with lanes' throwaway test data
+and had to be cleaned — 17 files moved to Trash. What's left is a deliberate fixture set: **do not
+touch, duplicate, or delete any of these "because it looks like junk"** — every one below is load-
+bearing for a specific flow, and a fixture with no stated purpose is the first thing a future lane
+deletes by mistake.
+
+- `qa-red.png` / `qa-blue.png` / `qa-green.png` — small photo fixtures for pin, offline, and
+  thumbnail tests.
+- `medium-photo.jpeg` — the 2 MB perf-baseline tier (task 1345).
+- `big-photo.jpeg` — the large photo fixture.
+- `clip-1080p.mp4` — the short video fixture; `search-test.yaml` searches "clip" against this
+  file's exact name.
+- `clip-1080p (3).mp4` — the 40 MB perf-baseline tier (task 1345). A SEPARATE file from
+  `clip-1080p.mp4` above, on purpose: the perf comparison needs the same file run over run, so it
+  can't share a name/identity with the search-test fixture.
+- `qa-1301-video.mp4` — the 213 MB throughput fixture.
+- `qa-hevc.mp4` — HEVC decode coverage.
+- `qa-video.mp4` — a 23 kB fixture for a fast round-trip check.
+- The empty folder named `Quarterly Financial Reports And Tax Documents 2026 Archive` — the
+  absurd length IS the point, it's the truncation/breadcrumb fixture for task 1341. Do not rename
+  or shorten it.
+
+Rules for lanes using this account:
+
+- Prefix any throwaway upload with your task id, so the next cleanup can tell what's safe to trash.
+- Delete your own throwaway uploads at the end of your lane, whether it succeeded or failed —
+  `bb rm <id>` is reversible (Trash, not purge).
+- Never repurpose one of the fixtures above for something else, even temporarily.
+- If a file fails to decrypt and it isn't already documented as broken by tasks 1349/1351, stop
+  and flag it — don't upload past it and mask the failure.
+
 ## Stack
 
 React Native + Expo (managed workflow) + TypeScript. Package manager: **bun**.
