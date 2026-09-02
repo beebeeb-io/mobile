@@ -28,6 +28,14 @@ appId: io.beebeeb.app
 - assertVisible:
     id: "search-filters"
 
+# 1357 — Guus's layout ruling: the bottom search bar REPLACES GlassTabBar in
+# its own footprint, not floats above a still-visible one ("fill the menu
+# bar at the bottom completely"). `tab-photos` lives inside GlassTabBar, so
+# its absence is the real, discriminating proof the tab bar itself is gone —
+# not just visually crowded by the search bar sitting in front of it.
+- assertNotVisible:
+    id: "tab-photos"
+
 - takeScreenshot: "search-02-bar-empty"
 
 # "clip" matches the seeded clip-1080p*.mp4 videos on the QA account.
@@ -86,5 +94,10 @@ appId: io.beebeeb.app
 
 - assertNotVisible:
     id: "search-bar"
+
+# 1357 — the reverse of the tab-bar-hidden assertion above: cancel must
+# restore GlassTabBar, not just clear the search surface.
+- assertVisible:
+    id: "tab-photos"
 
 - takeScreenshot: "search-05-after-cancel"
