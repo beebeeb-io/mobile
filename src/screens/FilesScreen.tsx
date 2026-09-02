@@ -104,7 +104,7 @@ import {
   splitForHighlight,
   type SearchFilterKind,
 } from '../lib/search-filter';
-import { useKeyboardLayoutAnimation } from '../lib/useKeyboardLayoutAnimation';
+import { computeSearchStackBottomPadding, useKeyboardLayoutAnimation } from '../lib/useKeyboardLayoutAnimation';
 
 // Tracks the currently open Swipeable so we can close it when another opens.
 let _openSwipeable: Swipeable | null = null;
@@ -1270,8 +1270,13 @@ export default function FilesScreen() {
   }, [searchActive]);
   // 1338b — the bottom bar keeps its own smooth show/hide, matching the
   // ShareSheetScreen/SignupScreen precedent for a floating element the
-  // keyboard must not cover.
-  useKeyboardLayoutAnimation();
+  // keyboard must not cover. `keyboardHeight` also feeds the FlatList's
+  // paddingBottom below (review MAJOR 2, reopened) — the search stack lifts
+  // itself above the keyboard via KeyboardAvoidingView, but the FlatList is
+  // a sibling with no visibility into that, so it needs the keyboard's own
+  // height added explicitly or the last row(s) stay trapped behind the
+  // stack for as long as the keyboard is up.
+  const { keyboardHeight } = useKeyboardLayoutAnimation();
 
   // Sort state
   const [sortOrder, setSortOrder] = useState<SortOrder>('date-desc');
@@ -4237,8 +4242,23 @@ export default function FilesScreen() {
               // (filter capsules + optional hint + input pill) replaces the
               // FAB as what the list must clear; the FAB is hidden then (see
               // below), so `80` (its own clearance) does not apply.
+              //
+              // review MAJOR 2, reopened — `keyboardHeight` is required, not
+              // optional: KeyboardAvoidingView lifts the stack above the
+              // keyboard, but this FlatList is a sibling with no visibility
+              // into that lift, so without adding the keyboard's own height
+              // here the last row(s) sit permanently behind the stack for as
+              // long as the keyboard is up, regardless of scroll position —
+              // see computeSearchStackBottomPadding's doc comment for the
+              // on-device proof. It is 0 the moment the keyboard is
+              // dismissed (search-input blurred, search stays open).
               paddingBottom: searchActive
-                ? (searchStackHeight || SEARCH_STACK_FALLBACK_HEIGHT) + SEARCH_STACK_GAP
+                ? computeSearchStackBottomPadding({
+                    stackHeight: searchStackHeight,
+                    fallbackHeight: SEARCH_STACK_FALLBACK_HEIGHT,
+                    gap: SEARCH_STACK_GAP,
+                    keyboardHeight,
+                  })
                 : 80 + insets.bottom,
             },
           ]}
