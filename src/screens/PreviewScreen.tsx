@@ -2897,10 +2897,16 @@ export default function PreviewScreen() {
             from the recipe: colors.amber === canvas #F5B800, this scheme's
             labelMuted === canvas's own rgba(240,238,233,0.62) badge text,
             fonts.mono + 10.5px match the canvas span exactly. See
-            DEVIATIONS.md. */}
+            DEVIATIONS.md.
+
+            Bottom offset clears DetailsSheet's collapsed peek (24 +
+            safeBottom, DetailsSheet.tsx COLLAPSED_VISIBLE_HEIGHT) with a
+            16pt margin rather than sitting flush against it — verified on
+            sim, the first-try 14pt-over-safeBottom offset visibly touched
+            the sheet's drag handle. */}
         <View
           pointerEvents="none"
-          style={[styles.e2eBadgeWrap, { bottom: Math.max(insets.bottom, 16) + 14 }]}
+          style={[styles.e2eBadgeWrap, { bottom: Math.max(insets.bottom, 16) + 40 }]}
           testID="preview-e2e-badge"
         >
           <GlassCapsule scheme="dark" contentStyle={styles.e2eBadgeBody}>
