@@ -89,10 +89,25 @@ export interface HighlightSplit {
   after: string
 }
 
+/** Escape regex metacharacters so a raw query can be used as a literal match. */
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
 /**
  * Split `name` around the first case-insensitive occurrence of `query`, for
  * the amber match highlight in a search result row. Returns null when there
  * is no query or no match — the caller renders the plain name then.
+ *
+ * Matches with a regex against the ORIGINAL string, never against a
+ * lowercased copy: `name.toLowerCase().indexOf(...)` looks correct but is
+ * unsafe for names with non-ASCII casing — `toLowerCase()` can change a
+ * string's LENGTH (e.g. Turkish `İ` → `i̇`, two UTF-16 units), which shifts
+ * every index found in the lowercased copy out from under the original
+ * string it gets sliced from. `'İstanbul Trip.pdf'` searched for `'Trip'`
+ * demonstrated this: the old code returned `match: 'rip.'`. The `'iu'`
+ * regex flags do the case folding internally without ever materializing a
+ * second, differently-sized string.
  *
  * Only the first occurrence is highlighted (matching the single-term queries
  * this bar is built for); a name with no match still renders correctly since
@@ -101,11 +116,12 @@ export interface HighlightSplit {
 export function splitForHighlight(name: string, query: string): HighlightSplit | null {
   const q = query.trim()
   if (!q) return null
-  const index = name.toLowerCase().indexOf(q.toLowerCase())
-  if (index === -1) return null
+  const match = new RegExp(escapeRegExp(q), 'iu').exec(name)
+  if (!match) return null
+  const index = match.index
   return {
     before: name.slice(0, index),
-    match: name.slice(index, index + q.length),
-    after: name.slice(index + q.length),
+    match: name.slice(index, index + match[0].length),
+    after: name.slice(index + match[0].length),
   }
 }

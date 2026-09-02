@@ -129,4 +129,25 @@ describe('search match highlighting', () => {
       after: '-photo-final.jpg',
     });
   });
+
+  test('non-ASCII casing does not shift the match — regression for a real bug', () => {
+    // Turkish İ (U+0130) lowercases to "i̇" (i + combining dot above, TWO
+    // UTF-16 units), which used to shift every index found via
+    // `name.toLowerCase().indexOf(query.toLowerCase())` out from under the
+    // original (shorter) string. The buggy implementation returned
+    // `match: 'rip.'` here instead of 'Trip'.
+    expect(splitForHighlight('İstanbul Trip.pdf', 'Trip')).toEqual({
+      before: 'İstanbul ',
+      match: 'Trip',
+      after: '.pdf',
+    });
+  });
+
+  test('a query containing regex metacharacters is treated as a literal string', () => {
+    expect(splitForHighlight('Q1 (draft).pdf', '(draft)')).toEqual({
+      before: 'Q1 ',
+      match: '(draft)',
+      after: '.pdf',
+    });
+  });
 });
