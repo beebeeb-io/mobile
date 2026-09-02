@@ -12,31 +12,59 @@ appId: io.beebeeb.app
 
 - takeScreenshot: "search-01-before"
 
-# Tap the search icon at the top-right of the Files header.
-# Was a coordinate tap; the header is being moved by the iOS 26 work, so it
-# rots the same way the tab-bar taps did. testID added in FilesScreen.
+# 1338b — enter search via the iOS 26 orb beside the tab bar (task 1312),
+# NOT the header icon. This is the entry point the redesigned bottom bar
+# owns; 1308 later re-homes the entry into a native tab role without
+# touching this UI.
 - tapOn:
-    id: "files-header-search"
+    id: "tab-search"
 
-# Search input has autoFocus — type the query
-- inputText: "demo"
+- assertVisible:
+    id: "search-bar"
 
-- takeScreenshot: "search-02-results"
+# The filter capsule row only exists once the new bottom bar ships (step b).
+# On the old top-bar mode this element does not exist, so this is the RED
+# assertion before the UI is built.
+- assertVisible:
+    id: "search-filters"
 
-# Verify search executed (screenshot captures results or empty state)
+- takeScreenshot: "search-02-bar-empty"
 
-# Navigating to another tab and back is a reliable way to leave search;
-# tapping the in-header Cancel triggers a flaky iOS background event in this build.
+# "clip" matches the seeded clip-1080p*.mp4 videos on the QA account.
 - tapOn:
-    id: "tab-photos"
-- extendedWaitUntil:
-    visible: "Photos"
-    timeout: 5000
+    id: "search-input"
+- inputText: "clip"
 
+- assertVisible:
+    id: "search-results"
+
+- assertVisible:
+    id: "search-match"
+
+- takeScreenshot: "search-03-results-highlighted"
+
+# Narrow to Videos — the amber match must survive the narrower list.
 - tapOn:
-    id: "tab-files"
+    id: "search-filter-videos"
+
+- assertVisible:
+    id: "search-results"
+
+- assertVisible:
+    id: "search-match"
+
+- takeScreenshot: "search-04-filtered-videos"
+
+# Cancel returns to plain Drive browsing — the bottom bar is gone, and the
+# old top-bar mode does not reappear (there is only one search surface now).
+- tapOn:
+    id: "search-cancel"
+
 - extendedWaitUntil:
     visible: "Drive"
     timeout: 5000
 
-- takeScreenshot: "search-03-after-cancel"
+- assertNotVisible:
+    id: "search-bar"
+
+- takeScreenshot: "search-05-after-cancel"
