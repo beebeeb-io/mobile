@@ -43,7 +43,23 @@ appId: io.beebeeb.app
 
 - takeScreenshot: "search-03-results-highlighted"
 
-# Narrow to Videos — the amber match must survive the narrower list.
+# Discriminating step (this is NOT tautological — "clip" only ever matches
+# the clip-1080p*.mp4 videos on this account, so a Videos-only assertion
+# here would pass identically whether or not the capsule does anything).
+# Photos has ZERO overlap with "clip": narrowing to it must empty the list.
+- tapOn:
+    id: "search-filter-photos"
+
+- assertNotVisible:
+    id: "search-results"
+
+- assertVisible: "No results"
+
+- takeScreenshot: "search-04a-filtered-photos-empty"
+
+# Narrow to Videos — the amber match must survive the narrower list, and
+# switching capsules must actually re-narrow (proven by the Photos step
+# above emptying the same query first).
 - tapOn:
     id: "search-filter-videos"
 
