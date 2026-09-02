@@ -21,7 +21,7 @@
  * comparable. The thin stripe tiles make the blur radius directly readable.
  */
 
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
@@ -29,6 +29,7 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import type { RootStackParamList } from '../App';
+import { UploadActivityCard, type UploadActivityState } from '../components/UploadActivityCard';
 import {
   GLASS_CIRCLE_SIZES,
   GLASS_RADII,
@@ -350,6 +351,75 @@ function TallHeaderBandingDemo({
   );
 }
 
+/**
+ * Card-28 upload pill with ring + ETA (task 1340).
+ *
+ * `canvas.json` `n-drive`'s only reference to this card is textual — "C2
+ * upload card floats as a Live-Activity-style glass pill with the ETA
+ * countdown in the ring" — no artboard ever samples it in pixels, so every
+ * value `UploadActivityCard` now carries (radius 28, blur, shadow, fill) is
+ * DERIVED from the shared recipe, not lifted (see DEVIATIONS.md, "Phase 4 —
+ * upload card").
+ *
+ * This renders the REAL component, not a simulation: `bytesUploaded` ticks
+ * on a local interval so the card's own internal `RateMeter` gets genuine
+ * deltas to smooth into a rate — that smoothed rate is what actually drives
+ * the ring's ETA text (`ringEta`). A single static prop set would leave the
+ * ring showing a bare percent forever, because the meter's first sample has
+ * nothing to compare against yet.
+ */
+function UploadCardDemo({ scheme }: { scheme: GlassScheme }) {
+  const TOTAL_BYTES = 128_000_000; // a plausible large-photo/video export
+  const [bytesUploaded, setBytesUploaded] = useState(0);
+
+  useEffect(() => {
+    setBytesUploaded(0);
+    const step = TOTAL_BYTES / 24;
+    const id = setInterval(() => {
+      setBytesUploaded((prev) => Math.min(TOTAL_BYTES, prev + step));
+    }, 400);
+    return () => clearInterval(id);
+  }, []);
+
+  const uploading: UploadActivityState = {
+    fileName: 'Quarterly-Report-2026.pdf',
+    stage: 2,
+    percent: Math.round((bytesUploaded / TOTAL_BYTES) * 100),
+    city: 'Falkenstein',
+    region: 'eu-de',
+    bytesUploaded,
+    bytesTotal: TOTAL_BYTES,
+    cryptoBytesPerSec: 420_000_000,
+  };
+  const done: UploadActivityState = {
+    fileName: 'Quarterly-Report-2026.pdf',
+    stage: 'done',
+    percent: 100,
+    city: 'Falkenstein',
+    region: 'eu-de',
+  };
+
+  const labelColor = glassMaterial(scheme).labelMuted;
+
+  return (
+    <>
+      <View style={styles.uploadCardDemoBox}>
+        <UploadActivityCard upload={uploading} bottom={0} scheme={scheme} />
+      </View>
+      <Text style={[typeScale.caption2, styles.mono, styles.variantLabel, { color: labelColor }]}>
+        uploading — bar + ring animate live; ETA fills in once the on-card RateMeter has two samples
+      </Text>
+      <View style={styles.uploadCardDemoBox}>
+        <UploadActivityCard upload={done} bottom={0} scheme={scheme} />
+      </View>
+      <Text style={[typeScale.caption2, styles.mono, styles.variantLabel, { color: labelColor }]}>
+        done — no border (removed, task 1340); the cue is content only — the ring going solid amber
+        + the checkmark + the data line switching to "Stored in …"
+      </Text>
+    </>
+  );
+}
+
 // ---------------------------------------------------------------------------
 
 export default function GlassGalleryScreen() {
@@ -501,6 +571,9 @@ export default function GlassGalleryScreen() {
             labelColor={material.labelMuted}
           />
         </View>
+
+        <SectionLabel text="Card-28 upload pill with ring + ETA" color={material.labelMuted} />
+        <UploadCardDemo scheme={scheme} />
 
         <SectionLabel text="Type scale" color={material.labelMuted} />
         <View
@@ -710,6 +783,13 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     position: 'relative',
   },
+
+  // 1340 — UploadActivityCard positions itself `position: 'absolute', bottom`
+  // (it floats above FilesScreen's tab bar); this box is the relatively-
+  // positioned anchor it floats inside here. No overflow: 'hidden' — the
+  // card's own drop shadow must not be clipped, and the photo-grid backdrop
+  // toggle above already provides the "busy Drive list" legibility case.
+  uploadCardDemoBox: { height: 96, position: 'relative', marginBottom: 10 },
 
   group: { overflow: 'hidden' },
   typeRow: {
