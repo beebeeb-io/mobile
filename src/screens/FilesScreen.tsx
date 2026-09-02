@@ -35,7 +35,7 @@ import * as MediaLibrary from 'expo-media-library/legacy';
 import * as Clipboard from 'expo-clipboard';
 import { fonts, radii, spacing, shadows } from '../theme';
 import { useTheme } from '../lib/theme-context';
-import { ScrollEdgeBlur, modalScrim } from '../components/glass';
+import { SCROLL_EDGE, ScrollEdgeBlur, modalScrim } from '../components/glass';
 import { UploadActivityCard } from '../components/UploadActivityCard';
 import type { UploadActivityState, UploadStage } from '../components/UploadActivityCard';
 import { useToast } from '../lib/toast-context';
@@ -3770,7 +3770,7 @@ export default function FilesScreen() {
           what iOS does; at rest the header sits on the page colour and a blur
           band would just be a tint. `isScrolled` used to drive a hairline
           border here — the blur replaces it. */}
-      {isScrolled ? <ScrollEdgeBlur height={headerHeight || insets.top + 56} /> : null}
+      {isScrolled ? <ScrollEdgeBlur height={headerHeight || SCROLL_EDGE.chromeFallback} /> : null}
       <View
         style={[styles.headerArea, { paddingTop: insets.top }]}
         onLayout={(e) => {
