@@ -36,6 +36,7 @@ import {
   GlassCircle,
   GlassSegment,
   GlassSheet,
+  GlassSurface,
   SCROLL_EDGE,
   ScrollEdgeBlur,
   glassMaterial,
@@ -440,6 +441,54 @@ export default function GlassGalleryScreen() {
           style={styles.control}
         />
 
+        {/* 1338b — the iOS 26 bottom search bar's two pieces: the filter
+            capsule row (one shared glass track, the selected kind in its own
+            bubbleFill — the same active-item pattern as Segment above) and
+            the query pill (`Search.dc.html:89`: radius 999, padding 14/20,
+            17px text — lifted verbatim). See FilesScreen.tsx for the live,
+            keyboard-avoiding version anchored above the tab bar. */}
+        <SectionLabel text="Search bar + filter capsules" color={material.labelMuted} />
+        <GlassCapsule scheme={scheme} contentStyle={styles.searchCapsuleTrack} style={styles.control}>
+          <View style={styles.searchCapsuleRow}>
+            {[
+              { label: 'All', selected: false },
+              { label: 'Videos', selected: true },
+              { label: 'Photos', selected: false },
+            ].map((f) => (
+              <View
+                key={f.label}
+                style={[
+                  styles.searchCapsuleItem,
+                  f.selected
+                    ? [
+                        material.bubbleShadow,
+                        { backgroundColor: material.bubbleFill, borderTopColor: material.bubbleRim },
+                      ]
+                    : null,
+                ]}
+              >
+                <Text
+                  style={[
+                    typeScale.footnote,
+                    { color: f.selected ? material.label : material.labelMuted, fontWeight: f.selected ? '600' : '500' },
+                  ]}
+                >
+                  {f.label}
+                </Text>
+              </View>
+            ))}
+          </View>
+        </GlassCapsule>
+        <GlassSurface
+          scheme={scheme}
+          radius="capsule"
+          style={styles.control}
+          contentStyle={styles.searchBarSpecimenContent}
+        >
+          <Ionicons name="search" size={20} color={material.labelMuted} />
+          <Text style={[typeScale.body, { color: material.label }]}>clip</Text>
+        </GlassSurface>
+
         <SectionLabel
           text="Pressed states — capsule / circle / segment"
           color={material.labelMuted}
@@ -668,6 +717,18 @@ const styles = StyleSheet.create({
   },
   control: { marginBottom: 10 },
   row: { flexDirection: 'row', alignItems: 'center', gap: 14 },
+
+  // 1338b — search bar + filter capsules specimen
+  searchCapsuleTrack: { padding: 4 },
+  searchCapsuleRow: { flexDirection: 'row', gap: 2 },
+  searchCapsuleItem: {
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    borderRadius: GLASS_RADII.capsule,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'transparent',
+  },
+  searchBarSpecimenContent: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 14, paddingHorizontal: 20 },
 
   pressedRow: { flexDirection: 'row', gap: 14 },
   pressedSpecimen: { alignItems: 'center', gap: 6 },

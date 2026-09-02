@@ -15,6 +15,8 @@ import {
   TextInput,
   TouchableOpacity,
   View,
+  type StyleProp,
+  type TextStyle,
 } from 'react-native';
 import { Swipeable } from 'react-native-gesture-handler';
 import { Ionicons } from '@expo/vector-icons';
@@ -36,6 +38,8 @@ import * as Clipboard from 'expo-clipboard';
 import { fonts, radii, spacing, shadows } from '../theme';
 import { useTheme } from '../lib/theme-context';
 import {
+  GLASS_RADII,
+  GlassCapsule,
   GlassCircle,
   GlassSurface,
   SCROLL_EDGE,
@@ -92,6 +96,13 @@ import {
   shouldApplyFolderRequestToVisibleState,
   type BreadcrumbEntry,
 } from '../lib/folder-navigation';
+import {
+  SEARCH_FILTER_KINDS,
+  matchesSearchFilterKind,
+  splitForHighlight,
+  type SearchFilterKind,
+} from '../lib/search-filter';
+import { useKeyboardLayoutAnimation } from '../lib/useKeyboardLayoutAnimation';
 
 // Tracks the currently open Swipeable so we can close it when another opens.
 let _openSwipeable: Swipeable | null = null;
@@ -484,6 +495,52 @@ const FileIcon = React.memo(function FileIcon({
   );
 });
 
+/**
+ * 1338b — amber match highlight for a search result row/card. The amber
+ * COLOUR wraps only the matched substring; the `search-match` testID sits on
+ * the outer name text (see the on-device note inline below for why). Names
+ * that don't contain the query (e.g. a vault-index path/tag match) render
+ * plain — `splitForHighlight` returns null and this falls back to the bare
+ * name, with no `search-match` id at all.
+ */
+function HighlightedName({
+  name,
+  query,
+  style,
+  matchColor,
+  numberOfLines,
+}: {
+  name: string;
+  query: string | undefined;
+  style: StyleProp<TextStyle>;
+  matchColor: string;
+  numberOfLines?: number;
+}) {
+  const split = query ? splitForHighlight(name, query) : null;
+  if (!split) {
+    return (
+      <Text style={style} numberOfLines={numberOfLines}>
+        {name}
+      </Text>
+    );
+  }
+  // A nested <Text> inside another <Text> renders as ONE flattened native
+  // text view on iOS (there is no separate accessibility node for the inline
+  // span), so a `testID` on the inner span is not independently queryable by
+  // Maestro — confirmed on-device (assertVisible found nothing even though
+  // the amber colour range rendered correctly). `search-match` goes on the
+  // OUTER text node instead, only for rows that actually have a highlight;
+  // the amber colour range itself is unaffected and still wraps ONLY the
+  // matched substring.
+  return (
+    <Text testID="search-match" style={style} numberOfLines={numberOfLines}>
+      {split.before}
+      <Text style={{ color: matchColor, fontWeight: '700' }}>{split.match}</Text>
+      {split.after}
+    </Text>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // File row item (memoized to prevent unnecessary re-renders in FlatList)
 // ---------------------------------------------------------------------------
@@ -507,6 +564,9 @@ interface FileRowItemProps {
   // 1338 step a — set only while showing search results (search-result-<id>);
   // undefined during normal browsing, so this row's testID is unchanged then.
   testID?: string;
+  // 1338b — the trimmed search query while showing search results; undefined
+  // during normal browsing, so the name renders exactly as before then.
+  highlightQuery?: string;
 }
 
 const FileRowItem = React.memo(function FileRowItem({
@@ -526,6 +586,7 @@ const FileRowItem = React.memo(function FileRowItem({
   isShared,
   isLocked,
   testID,
+  highlightQuery,
 }: FileRowItemProps) {
   const { colors: c } = useTheme();
   const swipeableRef = useRef<Swipeable>(null);
@@ -614,12 +675,13 @@ const FileRowItem = React.memo(function FileRowItem({
           {isEncryptedFallback ? (
             <View style={{ height: 14, width: 100 + (item.id.charCodeAt(0) % 100), borderRadius: 4, backgroundColor: c.line }} />
           ) : (
-            <Text
+            <HighlightedName
+              name={nameText}
+              query={highlightQuery}
               style={[styles.fileName, { color: c.ink }]}
+              matchColor={c.amberDeep}
               numberOfLines={2}
-            >
-              {nameText}
-            </Text>
+            />
           )}
           {isShared && (
             <Ionicons
@@ -738,6 +800,9 @@ interface FileGridItemProps {
   // 1338 step a — set only while showing search results (search-result-<id>);
   // undefined during normal browsing, so this card's testID is unchanged then.
   testID?: string;
+  // 1338b — the trimmed search query while showing search results; undefined
+  // during normal browsing, so the name renders exactly as before then.
+  highlightQuery?: string;
 }
 
 const FileGridItem = React.memo(function FileGridItem({
@@ -756,6 +821,7 @@ const FileGridItem = React.memo(function FileGridItem({
   isShared,
   isLocked,
   testID,
+  highlightQuery,
 }: FileGridItemProps) {
   const { colors: c } = useTheme();
   const category = fileCategory(item);
@@ -811,12 +877,13 @@ const FileGridItem = React.memo(function FileGridItem({
           {isEncryptedFallback ? (
             <View style={{ height: 12, width: 60 + (item.id.charCodeAt(0) % 40), borderRadius: 3, backgroundColor: c.line }} />
           ) : (
-            <Text
+            <HighlightedName
+              name={nameText}
+              query={highlightQuery}
               style={[styles.gridName, { color: c.ink }]}
+              matchColor={c.amberDeep}
               numberOfLines={2}
-            >
-              {nameText}
-            </Text>
+            />
           )}
           {isShared && (
             <Ionicons
@@ -1182,6 +1249,16 @@ export default function FilesScreen() {
   const [searchActive, setSearchActive] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const searchInputRef = useRef<TextInput>(null);
+  // 1338b — the bottom bar's filter capsule row. Resets to 'all' whenever
+  // search closes, so re-opening it never surfaces a stale narrower filter.
+  const [searchFilterKind, setSearchFilterKind] = useState<SearchFilterKind>('all');
+  useEffect(() => {
+    if (!searchActive) setSearchFilterKind('all');
+  }, [searchActive]);
+  // 1338b — the bottom bar keeps its own smooth show/hide, matching the
+  // ShareSheetScreen/SignupScreen precedent for a floating element the
+  // keyboard must not cover.
+  useKeyboardLayoutAnimation();
 
   // Sort state
   const [sortOrder, setSortOrder] = useState<SortOrder>('date-desc');
@@ -3406,11 +3483,18 @@ export default function FilesScreen() {
         const name = decryptedNames[f.id] ?? displayName(f);
         return name.toLowerCase().includes(q);
       });
-      if (vaultResults.length > 0) return uniqueFileEntries([...vaultResults, ...localFallback]);
-      result = localFallback;
+      if (vaultResults.length > 0) result = uniqueFileEntries([...vaultResults, ...localFallback]);
+      else result = localFallback;
+    }
+    // 1338b — the bottom bar's filter capsules narrow client-side over
+    // `fileCategory` (mime-based, already-decrypted). There is no
+    // server-side kind filter; this runs on exactly the same rows the search
+    // match itself already filtered.
+    if (searchActive && searchFilterKind !== 'all') {
+      result = result.filter((f) => matchesSearchFilterKind(fileCategory(withDecryptedMime(f)), searchFilterKind));
     }
     return applySortOrder(result, sortOrder, decryptedNames);
-  }, [files, searchQuery, decryptedNames, sortOrder, vaultSearchMatches, recentFilterActive]);
+  }, [files, searchQuery, decryptedNames, sortOrder, vaultSearchMatches, recentFilterActive, searchActive, searchFilterKind, withDecryptedMime]);
 
   // ------------------------------------------------------------------
   // Render helpers
@@ -3675,7 +3759,14 @@ export default function FilesScreen() {
   // 1338 step a — stable anchor for e2e over search result rows, keyed by the
   // file id (matching the `file-row-actions-${item.id}` convention already in
   // this file); undefined outside search so normal browsing rows are unchanged.
-  const isShowingSearchResults = searchActive && !!searchQuery.trim();
+  // 1338b — also true with no query once a filter capsule narrows the list
+  // (e.g. "Photos" with nothing typed): that is still a search-surfaced view,
+  // not plain browsing, so the same anchors and empty-state apply.
+  const isShowingSearchResults = searchActive && (!!searchQuery.trim() || searchFilterKind !== 'all');
+
+  // 1338b — the query to amber-highlight in result rows; undefined outside
+  // search results so normal browsing renders names exactly as before.
+  const searchHighlightQuery = isShowingSearchResults ? searchQuery.trim() || undefined : undefined;
 
   const renderFileRow = useCallback(({ item }: { item: FileEntry }) => (
     <FileRowItem
@@ -3695,8 +3786,9 @@ export default function FilesScreen() {
       isShared={item.is_folder && (item.share_count ?? 0) > 0}
       isLocked={lockedFileIds.has(item.id)}
       testID={isShowingSearchResults ? `search-result-${item.id}` : undefined}
+      highlightQuery={searchHighlightQuery}
     />
-  ), [decryptedNames, withDecryptedMime, openFile, handleLongPress, handleSwipeShare, handleSwipeDelete, openTrust, selectMode, selectedIds, toggleSelect, sortOrder, offlineStatusFor, proofs, lockedFileIds, isShowingSearchResults]);
+  ), [decryptedNames, withDecryptedMime, openFile, handleLongPress, handleSwipeShare, handleSwipeDelete, openTrust, selectMode, selectedIds, toggleSelect, sortOrder, offlineStatusFor, proofs, lockedFileIds, isShowingSearchResults, searchHighlightQuery]);
 
   // Grid sizing — 3 columns, evenly spaced, responsive to screen width
   const GRID_COLUMNS = 3;
@@ -3724,18 +3816,25 @@ export default function FilesScreen() {
       isShared={item.is_folder && (item.share_count ?? 0) > 0}
       isLocked={lockedFileIds.has(item.id)}
       testID={isShowingSearchResults ? `search-result-${item.id}` : undefined}
+      highlightQuery={searchHighlightQuery}
     />
-  ), [decryptedNames, withDecryptedMime, openFile, handleLongPress, openTrust, selectMode, selectedIds, toggleSelect, sortOrder, gridCardWidth, offlineStatusFor, proofs, lockedFileIds, isShowingSearchResults]);
+  ), [decryptedNames, withDecryptedMime, openFile, handleLongPress, openTrust, selectMode, selectedIds, toggleSelect, sortOrder, gridCardWidth, offlineStatusFor, proofs, lockedFileIds, isShowingSearchResults, searchHighlightQuery]);
 
   const renderEmpty = () => {
     if (loading) return null;
-    if (searchQuery.trim()) {
+    // 1338b — an honest empty state for the bottom search bar, covering both
+    // "no query matches" and "a filter capsule narrowed the query to zero"
+    // (or zero with no query typed at all — just browsing "Photos" here).
+    if (searchActive && (searchQuery.trim() || searchFilterKind !== 'all')) {
+      const query = searchQuery.trim();
+      const kindLabel = SEARCH_FILTER_KINDS.find((k) => k.value === searchFilterKind)?.label;
+      const subtitle = query
+        ? `Nothing matches "${query}"${kindLabel && searchFilterKind !== 'all' ? ` in ${kindLabel}` : ''}`
+        : `No ${(kindLabel ?? '').toLowerCase()} here`;
       return (
         <View style={styles.emptyContainer}>
           <Text style={[styles.emptyTitle, { color: c.ink2 }]}>No results</Text>
-          <Text style={[styles.emptySubtitle, { color: c.ink3 }]}>
-            Nothing matches "{searchQuery.trim()}"
-          </Text>
+          <Text style={[styles.emptySubtitle, { color: c.ink3 }]}>{subtitle}</Text>
         </View>
       );
     }
@@ -4022,54 +4121,14 @@ export default function FilesScreen() {
         <ExportProgressBanner ref={exportBannerRef} name={exporting.name} />
       )}
 
-      {/* Search bar — slides in below header when active */}
-      {searchActive && !selectMode && (
-        <>
-          <View style={styles.searchBar} testID="search-bar">
-            <TextInput
-              testID="search-input"
-              ref={searchInputRef}
-              style={[styles.searchInput, { backgroundColor: c.paper2, borderColor: c.line, color: c.ink }]}
-              value={searchQuery}
-              onChangeText={setSearchQuery}
-              placeholder="Search your vault..."
-              placeholderTextColor={c.ink4}
-              returnKeyType="search"
-              autoCapitalize="none"
-              autoCorrect={false}
-              clearButtonMode="while-editing"
-            />
-            <TouchableOpacity
-              testID="search-cancel"
-              onPress={handleSearchToggle}
-              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-              accessibilityLabel="Cancel search"
-              accessibilityRole="button"
-            >
-              <Text style={{ color: c.amberDeep, fontSize: 14, fontWeight: '600' }}>Cancel</Text>
-            </TouchableOpacity>
-          </View>
-          {/* Vault-wide search hint — surfaces matches outside the current
-              folder so users know there's more to find than the local
-              filter shows. Falls back silently when the index isn't
-              loaded yet (vault still locked) or when there are no extra
-              matches. */}
-          {(() => {
-            const q = searchQuery.trim()
-            if (!q) return null
-            const inFolderIds = new Set(files.map((f) => f.id))
-            const elsewhere = vaultSearchMatches.filter((m) => !inFolderIds.has(m.id)).length
-            if (elsewhere === 0) return null
-            return (
-              <View style={{ paddingHorizontal: 16, paddingBottom: 8 }}>
-                <Text style={{ color: c.ink3, fontSize: 12 }}>
-                  {elsewhere} match{elsewhere === 1 ? '' : 'es'} elsewhere in your vault
-                </Text>
-              </View>
-            )
-          })()}
-        </>
-      )}
+      {/* 1338b — the search input + Cancel used to slide in here, below the
+          header. The canvas puts search at the bottom (iOS 26 bottom search
+          bar, decision 1334), so that whole surface — filter capsules, the
+          input pill, and the "N matches elsewhere in your vault" hint — now
+          floats above the tab bar (see the bottom search bar block below,
+          rendered as a sibling of the FlatList). This header area no longer
+          renders anything for search; only the toggle icon
+          (`files-header-search`, in the row above) opens/closes it. */}
 
       {/* Breadcrumbs (only show when navigated into a folder, not during search or select) */}
       {folderStack.length > 1 && !searchActive && !selectMode && renderBreadcrumbs()}
@@ -4141,9 +4200,136 @@ export default function FilesScreen() {
         />
       )}
 
-      {/* 1301 — Live-Activity upload card (C2): measured AES rate + net rate + ETA */}
-      {upload && !selectMode && (
+      {/* 1301 — Live-Activity upload card (C2): measured AES rate + net rate
+          + ETA. 1338b hides it while search is active — its resting position
+          (bottom + 64) sits inside the bottom search bar's own floating
+          stack, and the two together would overlap. */}
+      {upload && !selectMode && !searchActive && (
         <UploadActivityCard upload={upload} bottom={16 + insets.bottom + 64} />
+      )}
+
+      {/* 1338b — the iOS 26 bottom search bar: filter capsules + the input
+          pill, floating above the tab bar. `GlassTabBar` renders IN FLOW
+          (its own doc comment: "the navigator still reserves its height"),
+          so this screen's own container already ends right where the tab
+          bar begins — `bottom: 0` here needs no manual tab-bar-height
+          offset, it already clears the ~110pt the bar occupies. Material
+          values are glass-recipe.ts only; the handful of plain layout
+          numbers below (gap above the tab bar, the filter row living here at
+          all instead of the canvas's top-of-content position) are recorded
+          in DEVIATIONS.md — the canvas puts this whole surface at the top of
+          Search.dc.html, not anchored to a tab bar it doesn't have. */}
+      {searchActive && !selectMode && (
+        <KeyboardAvoidingView
+          pointerEvents="box-none"
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          style={styles.searchBottomWrap}
+        >
+          {/* Filter capsules — ONE shared glass track (GlassCapsule) with the
+              selected kind in its own bubbleFill/bubbleShadow/bubbleRim,
+              mirroring the active-item pattern GlassSegment and GlassTabBar
+              already established. The canvas's inactive chips are a flat,
+              unblurred rgba(255,255,255,0.07) with no recipe token behind
+              it — recorded in DEVIATIONS.md rather than inventing one. */}
+          <GlassCapsule
+            scheme={themeScheme}
+            contentStyle={styles.searchFiltersTrack}
+            style={styles.searchFiltersWrap}
+          >
+            <View style={styles.searchFiltersRow} testID="search-filters">
+              {SEARCH_FILTER_KINDS.map((kind) => {
+                const selected = searchFilterKind === kind.value;
+                return (
+                  <TouchableOpacity
+                    key={kind.value}
+                    testID={`search-filter-${kind.value}`}
+                    onPress={() => setSearchFilterKind(kind.value)}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected }}
+                    accessibilityLabel={kind.label}
+                    style={[
+                      styles.searchFilterItem,
+                      selected
+                        ? [
+                            actionBarMaterial.bubbleShadow,
+                            {
+                              backgroundColor: actionBarMaterial.bubbleFill,
+                              borderTopColor: actionBarMaterial.bubbleRim,
+                            },
+                          ]
+                        : null,
+                    ]}
+                  >
+                    <Text
+                      numberOfLines={1}
+                      style={[
+                        styles.searchFilterLabel,
+                        {
+                          color: selected ? actionBarMaterial.label : actionBarMaterial.labelMuted,
+                          fontWeight: selected ? '600' : '500',
+                        },
+                      ]}
+                    >
+                      {kind.label}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          </GlassCapsule>
+
+          {/* Vault-wide hint — surfaces matches outside the current folder,
+              relocated verbatim from the old top-bar mode. */}
+          {(() => {
+            const q = searchQuery.trim();
+            if (!q) return null;
+            const inFolderIds = new Set(files.map((f) => f.id));
+            const elsewhere = vaultSearchMatches.filter((m) => !inFolderIds.has(m.id)).length;
+            if (elsewhere === 0) return null;
+            return (
+              <View style={styles.searchHintWrap}>
+                <Text style={[styles.searchHintText, { color: actionBarMaterial.labelMuted }]}>
+                  {elsewhere} match{elsewhere === 1 ? '' : 'es'} elsewhere in your vault
+                </Text>
+              </View>
+            );
+          })()}
+
+          <View style={styles.searchInputRow}>
+            <View testID="search-bar" style={styles.searchBarWrap}>
+              <GlassSurface
+                scheme={themeScheme}
+                radius="capsule"
+                contentStyle={styles.searchBarGlassContent}
+              >
+                <Ionicons name="search" size={20} color={actionBarMaterial.labelMuted} />
+                <TextInput
+                  testID="search-input"
+                  ref={searchInputRef}
+                  style={[styles.searchBarInput, { color: actionBarMaterial.label }]}
+                  value={searchQuery}
+                  onChangeText={setSearchQuery}
+                  placeholder="Search your vault..."
+                  placeholderTextColor={actionBarMaterial.labelMuted}
+                  returnKeyType="search"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  clearButtonMode="while-editing"
+                />
+              </GlassSurface>
+            </View>
+            <TouchableOpacity
+              testID="search-cancel"
+              onPress={handleSearchToggle}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              accessibilityLabel="Cancel search"
+              accessibilityRole="button"
+              style={styles.searchCancelButton}
+            >
+              <Text style={{ color: c.amberDeep, fontSize: 15, fontWeight: '600' }}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </KeyboardAvoidingView>
       )}
 
       {/* Batch action bar — shown in select mode.
@@ -4193,8 +4379,10 @@ export default function FilesScreen() {
 
       {/* Floating action button — hidden in select mode. Opens the native iOS
           UIMenu pull-down (0789). While an upload is in flight the FAB is a plain
-          disabled button so the menu can't fire mid-upload. */}
-      {!selectMode && (
+          disabled button so the menu can't fire mid-upload. 1338b also hides it
+          while search is active — it shares the same bottom-right corner the
+          new search bar now occupies. */}
+      {!selectMode && !searchActive && (
         uploadingName ? (
           <TouchableOpacity
             style={[styles.fab, { bottom: 16, backgroundColor: c.amber }]}
@@ -4423,9 +4611,36 @@ const styles = StyleSheet.create({
   // action icons (truncating with "…") instead of wrapping to a second line.
   titleMenu: { flexShrink: 1 },
   title: { fontSize: 28, fontWeight: '700', flexShrink: 1 },
-  searchBar: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: spacing.lg, paddingBottom: spacing.sm, gap: 10 },
-  searchInput: { flex: 1, height: 36, borderRadius: radii.md, paddingHorizontal: 12, fontSize: 15, borderWidth: 1 },
   searchButton: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
+
+  // 1338b — bottom search bar (replaces the old below-header strip above).
+  // `bottom: 12` is a plain DERIVED gap above the tab bar, not a canvas
+  // value — the canvas's Search.dc.html has no tab bar to clear at all
+  // (recorded in DEVIATIONS.md).
+  searchBottomWrap: { position: 'absolute', left: spacing.lg, right: spacing.lg, bottom: 12 },
+  searchFiltersWrap: { marginBottom: 10 },
+  searchFiltersTrack: { padding: 4 },
+  searchFiltersRow: { flexDirection: 'row', gap: 2 },
+  searchFilterItem: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 8,
+    paddingHorizontal: 8,
+    borderRadius: GLASS_RADII.capsule,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'transparent',
+  },
+  searchFilterLabel: { fontSize: 13, letterSpacing: -0.1 },
+  searchHintWrap: { paddingHorizontal: 4, paddingBottom: 8 },
+  searchHintText: { fontSize: 12 },
+  searchInputRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  searchBarWrap: { flex: 1 },
+  // Canvas `Search.dc.html:89` pill: `border-radius: 999px; padding: 14px 20px`.
+  searchBarGlassContent: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 14, paddingHorizontal: 20 },
+  // Canvas query text is `font-size: 17px` — lifted verbatim.
+  searchBarInput: { flex: 1, fontSize: 17, padding: 0 },
+  searchCancelButton: { paddingVertical: 8, paddingHorizontal: 2 },
 
   // Pinned folders
   pinnedSection: { paddingTop: 8, paddingBottom: 4, borderBottomWidth: StyleSheet.hairlineWidth },
