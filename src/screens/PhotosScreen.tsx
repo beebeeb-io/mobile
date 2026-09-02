@@ -30,7 +30,7 @@ import * as Sharing from 'expo-sharing';
 import { NativePhotosGridView, type NativePhotoGridItem } from '../../modules/beebeeb-crypto';
 import { radii, spacing } from '../theme';
 import { useTheme } from '../lib/theme-context';
-import { SCROLL_EDGE, ScrollEdgeBlur } from '../components/glass';
+import { GlassCircle, GlassSurface, SCROLL_EDGE, ScrollEdgeBlur, glassMaterial } from '../components/glass';
 import { ApiError, getAllImages, getFileIndex, friendlyError, trashFiles } from '../lib/api';
 import type { FileEntry } from '../lib/api';
 import { guessMimeType } from '../lib/media';
@@ -862,7 +862,7 @@ function AutoBackupBanner() {
 
 export default function PhotosScreen() {
   const insets = useSafeAreaInsets();
-  const { colors: c } = useTheme();
+  const { colors: c, resolved: themeScheme } = useTheme();
   const { getFileKeyBytes, getMasterKeyHandleId, isUnlocked, decryptMetadata } = useCrypto();
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const [isScrolled, setIsScrolled] = useState(false);
@@ -2130,6 +2130,11 @@ export default function PhotosScreen() {
     </View>
   );
 
+  // 1342 — on-glass ink for the header close button and select-mode action
+  // bar (see the GlassCircle / GlassSurface usage below), same pattern
+  // FilesScreen's actionBarMaterial established.
+  const chromeMaterial = glassMaterial(themeScheme);
+
   return (
     <View style={[styles.root, { backgroundColor: c.paper }]}>
       {/* 1322 — the grid bleeds edge-to-edge, so the blur is ALWAYS on rather
@@ -2155,14 +2160,24 @@ export default function PhotosScreen() {
           </Text>
           <View style={{ flex: 1 }} />
           {selectMode ? (
+            // 1342 — was a flat borderColor: c.line / backgroundColor: c.paper2
+            // circle (the same off-recipe shape FilesScreen's header
+            // back-button had before 1341). Now a GlassCircle reading the
+            // shared glassMaterial(). The TouchableOpacity is the OUTER
+            // element wrapping GlassCircle (not nested inside it) — RN clips
+            // hitSlop to the parent view's bounds, so an inner pressable's
+            // hitSlop would be clipped to the fixed 34×34 circle instead of
+            // extending the touch target.
             <TouchableOpacity
               activeOpacity={0.7}
               onPress={clearSelection}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
               accessibilityRole="button"
               accessibilityLabel="Cancel selection"
-              style={[styles.headerIconButton, { borderColor: c.line, backgroundColor: c.paper2 }]}
             >
-              <Ionicons name="close" size={18} color={c.ink2} />
+              <GlassCircle scheme={themeScheme} size={34}>
+                <Ionicons name="close" size={18} color={chromeMaterial.label} />
+              </GlassCircle>
             </TouchableOpacity>
           ) : null}
         </View>
@@ -2259,8 +2274,24 @@ export default function PhotosScreen() {
       )}
 
       {selectMode ? (
-        <View style={[styles.selectionBar, { backgroundColor: c.paper2, borderTopColor: c.line }]}>
-          <Text style={[styles.selectionStatus, { color: c.ink2 }]} numberOfLines={1}>
+        // 1342 — was a flat backgroundColor: c.paper2 / borderTopColor: c.line
+        // View + a hand-rolled borderTopWidth hairline (the same off-recipe
+        // shape FilesScreen's select-mode action bar had before 1341). Now a
+        // GlassSurface (radius 0, flush to the three screen edges,
+        // elevated=false — this bar sits flush in the flow between the grid
+        // and the auto-backup banner, not floating). The per-button border
+        // reads chromeMaterial.rimSide (the recipe's on-glass border colour)
+        // instead of the flat theme c.line; the status text reads
+        // chromeMaterial.label. Share/Delete icon+text stay literal
+        // c.amber/c.red — semantic action colour, same as FilesScreen's
+        // literal destructive Trash red.
+        <GlassSurface
+          scheme={themeScheme}
+          radius={0}
+          elevated={false}
+          contentStyle={styles.selectionBarRow}
+        >
+          <Text style={[styles.selectionStatus, { color: chromeMaterial.label }]} numberOfLines={1}>
             {bulkStatus ?? `${selectedIds.size} selected`}
           </Text>
           <TouchableOpacity
@@ -2271,7 +2302,7 @@ export default function PhotosScreen() {
             accessibilityLabel="Share selected photos as a ZIP"
             style={[
               styles.selectionAction,
-              { borderColor: c.line, opacity: bulkAction !== null || selectedIds.size === 0 ? 0.5 : 1 },
+              { borderColor: chromeMaterial.rimSide, opacity: bulkAction !== null || selectedIds.size === 0 ? 0.5 : 1 },
             ]}
           >
             {bulkAction === 'share' ? (
@@ -2289,7 +2320,7 @@ export default function PhotosScreen() {
             accessibilityLabel="Delete selected photos from Beebeeb"
             style={[
               styles.selectionAction,
-              { borderColor: c.line, opacity: bulkAction !== null || selectedIds.size === 0 ? 0.5 : 1 },
+              { borderColor: chromeMaterial.rimSide, opacity: bulkAction !== null || selectedIds.size === 0 ? 0.5 : 1 },
             ]}
           >
             {bulkAction === 'delete' ? (
@@ -2299,7 +2330,7 @@ export default function PhotosScreen() {
             )}
             <Text style={[styles.selectionActionText, { color: c.red }]}>Delete</Text>
           </TouchableOpacity>
-        </View>
+        </GlassSurface>
       ) : null}
 
       <AutoBackupBanner />
@@ -2319,7 +2350,9 @@ const styles = StyleSheet.create({
   // Header
   header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: spacing.lg, paddingTop: 6, paddingBottom: 4, gap: 8 },
   title: { fontSize: 28, fontWeight: '700', letterSpacing: -0.5 },
-  headerIconButton: { width: 34, height: 34, borderRadius: 17, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
+  // 1342 — the 34×34 circle itself is now a GlassCircle (glass-recipe.ts);
+  // the outer TouchableOpacity (rendered inline above) just wraps it for an
+  // unclipped hitSlop.
 
   // Section rows
   sectionHeader: { height: SECTION_HEADER_HEIGHT, flexDirection: 'row', alignItems: 'flex-end', paddingHorizontal: spacing.lg, paddingBottom: 6, gap: 8 },
@@ -2411,7 +2444,11 @@ const styles = StyleSheet.create({
   progressFill: { height: '100%', borderRadius: 2 },
 
   // Selection actions
-  selectionBar: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: spacing.lg, paddingVertical: 10, borderTopWidth: 1, gap: 8 },
+  // 1342 — the bar itself is now a GlassSurface (radius 0, elevated=false);
+  // this is just the row layout that used to live directly on the bar,
+  // moved into contentStyle per GlassSurface's own contract (no
+  // flexDirection on the outer `style`).
+  selectionBarRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: spacing.lg, paddingVertical: 10, gap: 8 },
   selectionStatus: { flex: 1, fontSize: 12, fontWeight: '600' },
   selectionAction: { minHeight: 36, paddingHorizontal: 12, borderRadius: radii.md, borderWidth: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 },
   selectionActionText: { fontSize: 12, fontWeight: '700' },
