@@ -278,18 +278,57 @@ dev-client preference (not repo state), so it must be set again on any new sim, 
   and artifacts, not silently absorbed.
 
   **This pattern is only safe when the tapped action is idempotent — "set to state X", not
-  "toggle".** Every control wrapped so far (enter select mode, select a search filter, cancel out of
-  search, close a preview) is a one-way move: tapping it again after it already worked is a harmless
-  no-op, because the `while` condition is already false and the loop exits before a second tap ever
-  fires. A **toggle** control (flips between two states on each tap) is NOT safe to wrap this way: if
-  the first tap actually lands but the visibility check races it — the check runs before the UI has
-  finished updating — the loop can fire a second tap that flips the toggle straight back, and the
-  flow fails with the exact same "COMPLETED, no state change" shape as this fault, except the cause
-  this time is the retry itself undoing a tap that worked. That failure is very hard to tell apart
-  from the real bridge fault by symptom alone, so do not add this pattern to a toggle control without
-  first picking a `while` condition that is unambiguous about which of the toggle's two states is
-  the *pre*-tap one — and prove it live, the same way the `search-cancel` mistake below was caught by
-  running the flow, not by reading the YAML.
+  "toggle" — from the loop's point of view, which is a property of the WHILE CONDITION, not just
+  the underlying handler.** `enter select mode` and `select a search filter` are genuinely
+  one-way: tapping again after success is a harmless no-op because their `while` conditions
+  track state that can only move in one direction. `search-cancel` is different: its handler
+  (`handleSearchToggle`) is a literal toggle (`setSearchActive((prev) => !prev)`), which makes it
+  **actively dangerous** to wrap without care — a `while` condition that doesn't track the exact
+  moment the toggle flipped can let a retry fire a second tap that flips it straight back,
+  producing the exact same "COMPLETED, no state change" shape as this fault, except the cause
+  this time is the retry undoing a tap that worked. This is not a hypothetical: it shipped once in
+  this branch and was caught by review, not by running the flow — see the worked example right
+  below. Do not add this pattern to a toggle control without first picking a `while` condition
+  that is unambiguous about which of the toggle's two states is the *pre*-tap one, and proving it
+  live.
+
+  **The sharper form of that rule, and we shipped an instance of it before catching it: a
+  retry's exit condition must be driven by the same render as the action, never by an effect
+  that follows it.** An effect-driven condition creates a real window where the action has
+  already succeeded and the loop cannot tell — it isn't a theoretical risk, a code review caught
+  exactly this in the first `search-cancel` retry in `search-test.yaml`. `handleSearchToggle` is
+  a toggle (`setSearchActive((prev) => !prev)`), and the retry's original condition,
+  `notVisible: id: "tab-photos"`, tracks `tab-photos`'s visibility — which comes back through a
+  `navigation.setOptions` **effect** (the `tabBarStyle` `useEffect` in FilesScreen.tsx) that runs
+  one render AFTER the render that actually clears `searchActive`. In that gap, `searchActive` is
+  already `false` but `tab-photos` hasn't appeared yet — a retry firing here would re-tap
+  `search-cancel`, flip the toggle straight back, and reopen search, undoing a tap that already
+  worked. Fixed by switching to `while: visible: id: "search-bar"` — `search-bar` is gated
+  directly by `{searchActive && !selectMode && (...)}` in JSX, so it unmounts on the *exact same
+  render* as `searchActive` going false, no effect in between, no window. `tab-photos` stays as
+  the real assertion afterward; only the retry's own exit condition changed.
+
+  **When no same-render signal exists at all, fix the action instead of chasing the condition.**
+  `preview-close`'s `handleClose` just calls `navigation.goBack()`, and `goBack()` is not
+  idempotent either — a second tap that lands before the pop completes would advance the
+  navigator an extra step. But there is no JS-render signal to key a `while:` on here the way
+  `search-bar` worked for `search-cancel`: the preview modal's dismiss (`presentation: 'modal',
+  animation: 'slide_from_bottom'`) is a **native animation**, so `preview-close` itself can stay
+  mounted and hit-testable for the whole transition — checking `preview-close`'s own visibility
+  instead of `"Drive"` would not have closed the race, it would just check a different fact with
+  the same lag, since the delay is native/async, not React-render-order. The fix here is a
+  `closedRef` guard inside `handleClose` (PreviewScreen.tsx) so a second delivered call is a
+  harmless no-op — making the action itself idempotent, since no amount of clever polling from
+  outside the component can substitute for that when the delay is native, not a JS render tick.
+  As a side effect this also closes a latent real-user bug (a genuine fast double-tap on close had
+  the same double-pop risk, with nothing to do with Maestro at all).
+
+  **The general lesson: before wrapping a tap in this retry pattern, ask whether the state your
+  `while:` condition reads changes on the SAME render/commit as the action, or later** (through an
+  effect, or worse, a native transition). Same render → a `while:` condition can safely close the
+  race, the way it does for `select-mode-enter`, `search-cancel`, and the search filter capsules.
+  Later → a YAML condition cannot fix this at all, no matter how cleverly chosen, and the actual
+  fix is at the source: make the handler idempotent.
 
   Picking the `while` condition is the one place this is easy to get subtly wrong — validate it
   live before trusting it. The first attempt at wrapping the second `search-cancel` tap in
