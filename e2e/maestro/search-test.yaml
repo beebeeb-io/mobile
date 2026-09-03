@@ -12,6 +12,62 @@ appId: io.beebeeb.app
 
 - takeScreenshot: "search-01-before"
 
+# 1357 review fix — the third state in the tab-bar-visibility family, beside
+# "hidden while searching" and "restored on cancel" below: neither bar may
+# ever be on screen at once. Real, verified-reachable repro (NOT a
+# long-press — `enterSelectMode(item.id)` via long-press is not currently
+# wired to any row's `onLongPress`, see FilesScreen.tsx's own note beside the
+# tabBarStyle effect): enter select mode from plain browsing (the orb is
+# still visible — select-mode-alone doesn't hide the tab bar), then open
+# search via that still-visible orb. `action:'search'` sets `searchActive`
+# without touching `selectMode`, so both land true together — the search bar
+# stays unmounted (its own `!selectMode` gate), and a `searchActive`-only
+# hide condition would leave the tab bar ALSO hidden: a dead end escapable
+# only by leaving select mode.
+- tapOn:
+    id: "select-mode-enter"
+
+# Synchronization checkpoint (lead's finding, 2026-09-03 02:57 failure):
+# without this, the very next tap can fire before select mode has actually
+# rendered, so `tab-search` sometimes lands while `searchActive` and
+# `selectMode` are both still false — the assertions below would then pass
+# for the WRONG reason (search-bar not visible because search never opened
+# at all, not because the fix suppressed it). Asserting the select-mode
+# header exists first makes the state real before the next tap depends on it.
+- assertVisible:
+    id: "select-mode-cancel"
+
+- tapOn:
+    id: "tab-search"
+
+- assertNotVisible:
+    id: "search-bar"
+
+- assertVisible:
+    id: "tab-photos"
+
+# Leaving select mode (query/filter never touched — search was never
+# actually shown) must restore the search bar and re-hide the tab bar,
+# exactly the reverse transition.
+- tapOn:
+    id: "select-mode-cancel"
+
+- assertVisible:
+    id: "search-bar"
+
+- assertNotVisible:
+    id: "tab-photos"
+
+- tapOn:
+    id: "search-cancel"
+
+- assertVisible:
+    id: "tab-photos"
+
+- extendedWaitUntil:
+    visible: "Drive"
+    timeout: 5000
+
 # 1338b — enter search via the iOS 26 orb beside the tab bar (task 1312),
 # NOT the header icon. This is the entry point the redesigned bottom bar
 # owns; 1308 later re-homes the entry into a native tab role without
@@ -27,6 +83,14 @@ appId: io.beebeeb.app
 # assertion before the UI is built.
 - assertVisible:
     id: "search-filters"
+
+# 1357 — Guus's layout ruling: the bottom search bar REPLACES GlassTabBar in
+# its own footprint, not floats above a still-visible one ("fill the menu
+# bar at the bottom completely"). `tab-photos` lives inside GlassTabBar, so
+# its absence is the real, discriminating proof the tab bar itself is gone —
+# not just visually crowded by the search bar sitting in front of it.
+- assertNotVisible:
+    id: "tab-photos"
 
 - takeScreenshot: "search-02-bar-empty"
 
@@ -86,5 +150,10 @@ appId: io.beebeeb.app
 
 - assertNotVisible:
     id: "search-bar"
+
+# 1357 — the reverse of the tab-bar-hidden assertion above: cancel must
+# restore GlassTabBar, not just clear the search surface.
+- assertVisible:
+    id: "tab-photos"
 
 - takeScreenshot: "search-05-after-cancel"

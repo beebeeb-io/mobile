@@ -109,16 +109,16 @@ import { computeSearchStackBottomPadding, useKeyboardLayoutAnimation } from '../
 // Tracks the currently open Swipeable so we can close it when another opens.
 let _openSwipeable: Swipeable | null = null;
 
-// 1338b — plain layout literals for the floating bottom search stack, not
-// canvas-sourced (see DEVIATIONS.md "Phase 3"): the gap between the stack
-// and the tab bar it floats above, and a fallback height for the one frame
-// before the stack's own onLayout has measured it (same class as
-// `SCROLL_EDGE.chromeFallback`'s job for `headerHeight`). The fallback is
-// sized for the TALLEST realistic case — filter row + "N matches elsewhere"
-// hint + input pill — so that first frame never hides the last list row;
-// once measured, the real height always wins.
-const SEARCH_STACK_GAP = 12;
-const SEARCH_STACK_FALLBACK_HEIGHT = 168;
+// 1357 — a fallback height for the bottom search bar's one frame before its
+// own onLayout has measured it (same class as `SCROLL_EDGE.chromeFallback`'s
+// job for `headerHeight`), not canvas-sourced (see DEVIATIONS.md "Phase 5").
+// 1338b's stack had a filter row + hint + input pill to size for; Guus's
+// layout ruling moved the filters (and the hint that rides with them) to the
+// TOP of the content area (folded into `headerHeight`), so this bar is now
+// one row — search icon + input + Cancel — plus the bottom safe-area inset,
+// a much shorter estimate than the old 168. Once measured, the real height
+// always wins; this only matters for that first frame.
+const SEARCH_BAR_FALLBACK_HEIGHT = 70;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1288,6 +1288,44 @@ export default function FilesScreen() {
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
+  // 1357 — Guus's layout ruling: the search bar must "fill the menu bar at
+  // the bottom completely", not float above it. `GlassTabBar` renders IN
+  // FLOW as a sibling of this whole screen (its own doc comment), so this
+  // screen's container only grows to include the tab bar's footprint once
+  // that space is actually reclaimed — `tabBarStyle: { display: 'none' }`
+  // removes GlassTabBar from the navigator's layout entirely while
+  // searching (GlassTabBar checks this option by hand; see its own doc
+  // comment on why a custom `tabBar` render prop needs that). `Nav` is typed
+  // as the ROOT stack (`FilesScreen.tsx:1214`'s own comment), but at runtime
+  // this screen is rendered as a `Tab.Screen`, so `setOptions` here actually
+  // reaches the Files route's tab options — the same permissive escape
+  // hatch `GlassTabBar.tsx`'s `navigation.navigate as any` already uses for
+  // the same static-vs-runtime-type gap.
+  //
+  // Review fix — the hide condition MUST match the search bar's own render
+  // condition (`searchActive && !selectMode`, below), not `searchActive`
+  // alone. Reachable today via: enter select mode from plain browsing
+  // (`select-mode-enter`, still visible since `!searchActive`) — the tab bar
+  // stays up because select-mode-alone doesn't hide it — then tap the still-
+  // visible `tab-search` orb. `action:'search'` sets `searchActive` true
+  // unconditionally, without touching `selectMode`, so both flags land true
+  // together: the search bar's own `!selectMode` gate keeps IT from
+  // rendering, but a `searchActive`-only hide condition would still hide
+  // `GlassTabBar` too — neither bar on screen, a dead end only escapable by
+  // leaving select mode. (`handleRowLongPress`/`enterSelectMode(item.id)` —
+  // long-press entering select mode directly — is NOT currently wired to any
+  // row's `onLongPress`, reverted back to the `handleLongPress` action sheet
+  // by `b6e7d03`; that's a separate, pre-existing loose end, not this
+  // task's to fix.) Matching the two conditions means every transition
+  // (enter select mode while searching, leave select mode back into search)
+  // restores the tab bar exactly when the search bar itself disappears, and
+  // hides it again exactly when the search bar reappears.
+  useEffect(() => {
+    (navigation.setOptions as (options: unknown) => void)({
+      tabBarStyle: searchActive && !selectMode ? { display: 'none' } : undefined,
+    });
+  }, [navigation, searchActive, selectMode]);
+
   // Pinned folders
   const [pinnedFolders, setPinnedFolders] = useState<{ id: string; name: string }[]>([]);
 
@@ -1565,12 +1603,13 @@ export default function FilesScreen() {
   // each change it, and the list's top inset has to track it or content hides
   // under the chrome.
   const [headerHeight, setHeaderHeight] = useState(0);
-  // 1338b — same pattern, for the floating bottom search stack (filter
-  // capsules + optional "N matches elsewhere" hint + input pill). It is not
-  // a fixed height either: the hint row only renders sometimes, and Dynamic
-  // Type changes the capsule/input row heights. The list's bottom inset has
-  // to track it or the last row(s) hide under the glass.
-  const [searchStackHeight, setSearchStackHeight] = useState(0);
+  // 1357 — same pattern, for the bottom search bar (search icon + input +
+  // Cancel, now that Guus's layout ruling moved the filter capsules to the
+  // top of the content area — see `headerHeight` above). It is not a fixed
+  // height either: Dynamic Type changes the input row's height, and the
+  // safe-area bottom inset varies by device. The list's bottom inset has to
+  // track it or the last row(s) hide under the glass (1338b review MAJOR 2).
+  const [searchBarHeight, setSearchBarHeight] = useState(0);
 
   // Resolve filenames for the current folder (task 0807 — folder-load perf).
   //
@@ -3968,7 +4007,7 @@ export default function FilesScreen() {
       {/* Header — select mode vs normal mode */}
       {selectMode ? (
         <View style={styles.header}>
-          <TouchableOpacity onPress={exitSelectMode} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+          <TouchableOpacity testID="select-mode-cancel" onPress={exitSelectMode} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
             <Text style={{ color: c.amberDeep, fontSize: 16, fontWeight: '500' }}>Cancel</Text>
           </TouchableOpacity>
           <Text style={[styles.selectTitle, { color: c.ink }]}>
@@ -4036,6 +4075,7 @@ export default function FilesScreen() {
           <View style={{ flex: 1 }} />
           {!searchActive && files.length > 0 && (
             <TouchableOpacity
+              testID="select-mode-enter"
               onPress={() => enterSelectMode()}
               hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
               style={styles.searchButton}
@@ -4181,14 +4221,113 @@ export default function FilesScreen() {
         <ExportProgressBanner ref={exportBannerRef} name={exporting.name} />
       )}
 
-      {/* 1338b — the search input + Cancel used to slide in here, below the
-          header. The canvas puts search at the bottom (iOS 26 bottom search
-          bar, decision 1334), so that whole surface — filter capsules, the
-          input pill, and the "N matches elsewhere in your vault" hint — now
-          floats above the tab bar (see the bottom search bar block below,
-          rendered as a sibling of the FlatList). This header area no longer
-          renders anything for search; only the toggle icon
-          (`files-header-search`, in the row above) opens/closes it. */}
+      {/* 1357 — Guus's layout ruling (verbatim, 2026-09-03): "the file type
+          menu should actually be at the top & the search bar should only
+          show up whenever someone clicks search." This supersedes 1338b's
+          floating stack, which put the filter capsules at the bottom next to
+          the input pill (DEVIATIONS.md "Phase 5"). The capsule row (and the
+          "N matches elsewhere" hint that goes with it) now lives HERE, inside
+          `headerArea` — the same floating chrome block as the title row and
+          breadcrumbs — so it stays fixed while the list scrolls beneath it,
+          and `headerHeight`'s own onLayout measurement (on the OUTER
+          `headerArea` View) already grows to include it: the list's
+          `paddingTop: headerHeight` and `ScrollEdgeBlur`'s height both track
+          it automatically, no separate plumbing needed (task 1348's existing
+          pattern). The input pill + Cancel are a separate concern now — see
+          the bottom search bar block below, which REPLACES `GlassTabBar`
+          rather than floating above it. */}
+      {searchActive && !selectMode && (
+        <View style={styles.searchFiltersSection}>
+          {/* Filter capsules — ONE shared glass track (GlassCapsule) with the
+              selected kind in its own bubbleFill/bubbleShadow/bubbleRim,
+              mirroring the active-item pattern GlassSegment and GlassTabBar
+              already established. The canvas's inactive chips are a flat,
+              unblurred rgba(255,255,255,0.07) with no recipe token behind
+              it — recorded in DEVIATIONS.md rather than inventing one. */}
+          <GlassCapsule
+            scheme={themeScheme}
+            contentStyle={styles.searchFiltersTrack}
+            style={styles.searchFiltersWrap}
+          >
+            <View
+              style={styles.searchFiltersRow}
+              testID="search-filters"
+              accessibilityRole="tablist"
+              accessibilityLabel="Filter search results"
+            >
+              {SEARCH_FILTER_KINDS.map((kind) => {
+                const selected = searchFilterKind === kind.value;
+                return (
+                  <TouchableOpacity
+                    key={kind.value}
+                    testID={`search-filter-${kind.value}`}
+                    onPress={() => setSearchFilterKind(kind.value)}
+                    accessibilityRole="tab"
+                    accessibilityState={{ selected }}
+                    accessibilityLabel={kind.label}
+                    // 1338b — the capsule itself is ~32-34pt tall (paddingVertical 8
+                    // + a 13px label), under the 44pt minimum touch target. Vertical
+                    // hitSlop only — items sit `gap: 2` apart, so horizontal hitSlop
+                    // would overlap the neighbouring capsule's hit area.
+                    hitSlop={{ top: 8, bottom: 8, left: 0, right: 0 }}
+                    style={[
+                      styles.searchFilterItem,
+                      selected
+                        ? [
+                            actionBarMaterial.bubbleShadow,
+                            {
+                              backgroundColor: actionBarMaterial.bubbleFill,
+                              borderTopColor: actionBarMaterial.bubbleRim,
+                            },
+                          ]
+                        : null,
+                    ]}
+                  >
+                    <Text
+                      numberOfLines={1}
+                      style={[
+                        styles.searchFilterLabel,
+                        {
+                          color: selected ? actionBarMaterial.label : actionBarMaterial.labelMuted,
+                          fontWeight: selected ? '600' : '500',
+                        },
+                      ]}
+                    >
+                      {kind.label}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          </GlassCapsule>
+
+          {/* Vault-wide hint — surfaces matches outside the current folder,
+              relocated verbatim from the old top-bar mode, then again from
+              1338b's bottom stack — it belongs with the filter it describes. */}
+          {(() => {
+            const q = searchQuery.trim();
+            if (!q) return null;
+            const inFolderIds = new Set(files.map((f) => f.id));
+            // 1338b — must respect the active capsule too, or the hint
+            // promises matches a tap on "elsewhere" wouldn't actually show
+            // once the same filter narrows them away (`countMatchesElsewhere`
+            // is unit tested against exactly this).
+            const elsewhere = countMatchesElsewhere(
+              vaultSearchMatches.map((m) => ({ id: m.id, category: fileCategory(searchResultToFileEntry(m)) })),
+              inFolderIds,
+              searchFilterKind,
+            );
+            if (elsewhere === 0) return null;
+            return (
+              <View style={styles.searchHintWrap}>
+                <Text style={[styles.searchHintText, { color: actionBarMaterial.labelMuted }]}>
+                  {elsewhere} match{elsewhere === 1 ? '' : 'es'} elsewhere in your vault
+                </Text>
+              </View>
+            );
+          })()}
+        </View>
+      )}
 
       {/* Breadcrumbs (only show when navigated into a folder, not during search or select) */}
       {folderStack.length > 1 && !searchActive && !selectMode && renderBreadcrumbs()}
@@ -4254,25 +4393,27 @@ export default function FilesScreen() {
             viewMode === 'grid' ? styles.gridContent : undefined,
             {
               paddingTop: headerHeight,
-              // 1338b — while search is active, the floating bottom stack
-              // (filter capsules + optional hint + input pill) replaces the
-              // FAB as what the list must clear; the FAB is hidden then (see
-              // below), so `80` (its own clearance) does not apply.
+              // 1357 — while search is active, the flush bottom search bar
+              // (which REPLACES `GlassTabBar` in its own footprint — see the
+              // bar's own doc comment below) replaces the FAB as what the
+              // list must clear; the FAB is hidden then (see below), so `80`
+              // (its own clearance) does not apply. The filter capsules no
+              // longer factor in here at all — they moved to the TOP of the
+              // content area (`headerHeight` already accounts for them).
               //
               // review MAJOR 2, reopened — `keyboardHeight` is required, not
-              // optional: KeyboardAvoidingView lifts the stack above the
+              // optional: KeyboardAvoidingView lifts the bar above the
               // keyboard, but this FlatList is a sibling with no visibility
               // into that lift, so without adding the keyboard's own height
-              // here the last row(s) sit permanently behind the stack for as
+              // here the last row(s) sit permanently behind the bar for as
               // long as the keyboard is up, regardless of scroll position —
               // see computeSearchStackBottomPadding's doc comment for the
               // on-device proof. It is 0 the moment the keyboard is
               // dismissed (search-input blurred, search stays open).
               paddingBottom: searchActive
                 ? computeSearchStackBottomPadding({
-                    stackHeight: searchStackHeight,
-                    fallbackHeight: SEARCH_STACK_FALLBACK_HEIGHT,
-                    gap: SEARCH_STACK_GAP,
+                    barHeight: searchBarHeight,
+                    fallbackHeight: SEARCH_BAR_FALLBACK_HEIGHT,
                     keyboardHeight,
                   })
                 : 80 + insets.bottom,
@@ -4285,153 +4426,87 @@ export default function FilesScreen() {
       )}
 
       {/* 1301 — Live-Activity upload card (C2): measured AES rate + net rate
-          + ETA. 1338b hides it while search is active — its resting position
-          (bottom + 64) sits inside the bottom search bar's own floating
-          stack, and the two together would overlap. */}
+          + ETA. Hidden while search is active — its resting position
+          (bottom + 64) sits inside the bottom search bar's own footprint
+          (1357: the bar now occupies the whole tab-bar band, not just a
+          floating stack above it), and the two together would overlap. */}
       {upload && !selectMode && !searchActive && (
         <UploadActivityCard upload={upload} bottom={16 + insets.bottom + 64} />
       )}
 
-      {/* 1338b — the iOS 26 bottom search bar: filter capsules + the input
-          pill, floating above the tab bar. `GlassTabBar` renders IN FLOW
+      {/* 1357 — Guus's layout ruling (verbatim, 2026-09-03): "...the search
+          bar should only show up whenever someone clicks search. It at that
+          moment should fill the menu bar at the bottom completely and
+          including a cancel button too." This REPLACES `GlassTabBar` in its
+          own footprint rather than floating a fixed gap above it (1338b's
+          shape — see DEVIATIONS.md "Phase 5" for the superseded lines).
+
+          `GlassTabBar` renders IN FLOW as a SIBLING of this whole screen
           (its own doc comment: "the navigator still reserves its height"),
-          so this screen's own container already ends right where the tab
-          bar begins — `bottom: 0` here needs no manual tab-bar-height
-          offset, it already clears the ~110pt the bar occupies. Material
-          values are glass-recipe.ts only; the handful of plain layout
-          numbers below (gap above the tab bar, the filter row living here at
-          all instead of the canvas's top-of-content position) are recorded
-          in DEVIATIONS.md — the canvas puts this whole surface at the top of
-          Search.dc.html, not anchored to a tab bar it doesn't have. */}
+          so before today this screen's own container already ended right
+          where the tab bar began — a floating element positioned inside
+          THIS screen could sit just above that boundary, but could never
+          occupy the tab bar's own space, because that space belonged to a
+          sibling this screen doesn't render. "Replace the tab bar" needs the
+          tab bar's space reclaimed first: the `tabBarStyle: { display: 'none'
+          }` effect above (`navigation.setOptions`) removes GlassTabBar from
+          the navigator's layout entirely while searching (a custom `tabBar`
+          render prop means react-navigation doesn't act on `tabBarStyle` by
+          itself — GlassTabBar checks it by hand, see its own doc comment).
+          Only once that space is actually reclaimed does this screen's own
+          container grow to include it, and `bottom: 0` below lands exactly
+          in the tab bar's old footprint — edge to edge, same total height —
+          rather than merely floating above a still-visible bar. One flush
+          `GlassSurface` (radius 0, elevated false) holds the icon + input +
+          Cancel, the same "flush to all three screen edges" pattern the
+          select-mode action bar below already established for this file. */}
       {searchActive && !selectMode && (
         <KeyboardAvoidingView
           pointerEvents="box-none"
           behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-          style={styles.searchBottomWrap}
+          style={styles.searchBarDock}
         >
         {/* 1338b — measured on an INNER view, not the KeyboardAvoidingView
             itself: `behavior="padding"` grows the outer view's own height
             once the keyboard is up, which would inflate this measurement
-            and over-pad the list. This inner box is just the content (filter
-            row + optional hint + input row), so `searchStackHeight` tracks
-            the space the FlatList must clear regardless of keyboard state. */}
+            and over-pad the list. `searchBarHeight` tracks the space the
+            FlatList must clear regardless of keyboard state — the keyboard's
+            own contribution is added separately, in `keyboardHeight`. */}
         <View
+          testID="search-bar"
           onLayout={(e) => {
             const h = Math.round(e.nativeEvent.layout.height);
-            setSearchStackHeight((prev) => (Math.abs(prev - h) > 1 ? h : prev));
+            setSearchBarHeight((prev) => (Math.abs(prev - h) > 1 ? h : prev));
           }}
         >
-          {/* Filter capsules — ONE shared glass track (GlassCapsule) with the
-              selected kind in its own bubbleFill/bubbleShadow/bubbleRim,
-              mirroring the active-item pattern GlassSegment and GlassTabBar
-              already established. The canvas's inactive chips are a flat,
-              unblurred rgba(255,255,255,0.07) with no recipe token behind
-              it — recorded in DEVIATIONS.md rather than inventing one. */}
-          <GlassCapsule
+          <GlassSurface
             scheme={themeScheme}
-            contentStyle={styles.searchFiltersTrack}
-            style={styles.searchFiltersWrap}
+            radius={0}
+            elevated={false}
+            contentStyle={[
+              styles.searchBarContent,
+              // The removed tab bar used to reserve its own safe-area
+              // clearance; this bar, sitting flush in that exact space, has
+              // to reserve it itself now — `Math.max(insets.bottom, 12)`
+              // mirrors GlassTabBar's own `insets.bottom || 12` fallback for
+              // devices with no home-indicator inset.
+              { paddingBottom: Math.max(insets.bottom, 12) },
+            ]}
           >
-            <View
-              style={styles.searchFiltersRow}
-              testID="search-filters"
-              accessibilityRole="tablist"
-              accessibilityLabel="Filter search results"
-            >
-              {SEARCH_FILTER_KINDS.map((kind) => {
-                const selected = searchFilterKind === kind.value;
-                return (
-                  <TouchableOpacity
-                    key={kind.value}
-                    testID={`search-filter-${kind.value}`}
-                    onPress={() => setSearchFilterKind(kind.value)}
-                    accessibilityRole="tab"
-                    accessibilityState={{ selected }}
-                    accessibilityLabel={kind.label}
-                    // 1338b — the capsule itself is ~32-34pt tall (paddingVertical 8
-                    // + a 13px label), under the 44pt minimum touch target. Vertical
-                    // hitSlop only — items sit `gap: 2` apart, so horizontal hitSlop
-                    // would overlap the neighbouring capsule's hit area.
-                    hitSlop={{ top: 8, bottom: 8, left: 0, right: 0 }}
-                    style={[
-                      styles.searchFilterItem,
-                      selected
-                        ? [
-                            actionBarMaterial.bubbleShadow,
-                            {
-                              backgroundColor: actionBarMaterial.bubbleFill,
-                              borderTopColor: actionBarMaterial.bubbleRim,
-                            },
-                          ]
-                        : null,
-                    ]}
-                  >
-                    <Text
-                      numberOfLines={1}
-                      style={[
-                        styles.searchFilterLabel,
-                        {
-                          color: selected ? actionBarMaterial.label : actionBarMaterial.labelMuted,
-                          fontWeight: selected ? '600' : '500',
-                        },
-                      ]}
-                    >
-                      {kind.label}
-                    </Text>
-                  </TouchableOpacity>
-                );
-              })}
-            </View>
-          </GlassCapsule>
-
-          {/* Vault-wide hint — surfaces matches outside the current folder,
-              relocated verbatim from the old top-bar mode. */}
-          {(() => {
-            const q = searchQuery.trim();
-            if (!q) return null;
-            const inFolderIds = new Set(files.map((f) => f.id));
-            // 1338b — must respect the active capsule too, or the hint
-            // promises matches a tap on "elsewhere" wouldn't actually show
-            // once the same filter narrows them away (`countMatchesElsewhere`
-            // is unit tested against exactly this).
-            const elsewhere = countMatchesElsewhere(
-              vaultSearchMatches.map((m) => ({ id: m.id, category: fileCategory(searchResultToFileEntry(m)) })),
-              inFolderIds,
-              searchFilterKind,
-            );
-            if (elsewhere === 0) return null;
-            return (
-              <View style={styles.searchHintWrap}>
-                <Text style={[styles.searchHintText, { color: actionBarMaterial.labelMuted }]}>
-                  {elsewhere} match{elsewhere === 1 ? '' : 'es'} elsewhere in your vault
-                </Text>
-              </View>
-            );
-          })()}
-
-          <View style={styles.searchInputRow}>
-            <View testID="search-bar" style={styles.searchBarWrap}>
-              <GlassSurface
-                scheme={themeScheme}
-                radius="capsule"
-                contentStyle={styles.searchBarGlassContent}
-              >
-                <Ionicons name="search" size={20} color={actionBarMaterial.labelMuted} />
-                <TextInput
-                  testID="search-input"
-                  ref={searchInputRef}
-                  style={[styles.searchBarInput, { color: actionBarMaterial.label }]}
-                  value={searchQuery}
-                  onChangeText={setSearchQuery}
-                  placeholder="Search your vault..."
-                  placeholderTextColor={actionBarMaterial.labelMuted}
-                  returnKeyType="search"
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  clearButtonMode="while-editing"
-                />
-              </GlassSurface>
-            </View>
+            <Ionicons name="search" size={20} color={actionBarMaterial.labelMuted} />
+            <TextInput
+              testID="search-input"
+              ref={searchInputRef}
+              style={[styles.searchBarInput, { color: actionBarMaterial.label }]}
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+              placeholder="Search your vault..."
+              placeholderTextColor={actionBarMaterial.labelMuted}
+              returnKeyType="search"
+              autoCapitalize="none"
+              autoCorrect={false}
+              clearButtonMode="while-editing"
+            />
             <TouchableOpacity
               testID="search-cancel"
               onPress={handleSearchToggle}
@@ -4442,7 +4517,7 @@ export default function FilesScreen() {
             >
               <Text style={{ color: c.amberDeep, fontSize: 15, fontWeight: '600' }}>Cancel</Text>
             </TouchableOpacity>
-          </View>
+          </GlassSurface>
         </View>
         </KeyboardAvoidingView>
       )}
@@ -4494,9 +4569,10 @@ export default function FilesScreen() {
 
       {/* Floating action button — hidden in select mode. Opens the native iOS
           UIMenu pull-down (0789). While an upload is in flight the FAB is a plain
-          disabled button so the menu can't fire mid-upload. 1338b also hides it
-          while search is active — it shares the same bottom-right corner the
-          new search bar now occupies. */}
+          disabled button so the menu can't fire mid-upload. Also hides while
+          search is active — 1357's bottom search bar now occupies the FAB's
+          whole bottom-right corner (the entire tab-bar band, not just a
+          floating stack beside it). */}
       {!selectMode && !searchActive && (
         uploadingName ? (
           <TouchableOpacity
@@ -4728,11 +4804,12 @@ const styles = StyleSheet.create({
   title: { fontSize: 28, fontWeight: '700', flexShrink: 1 },
   searchButton: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
 
-  // 1338b — bottom search bar (replaces the old below-header strip above).
-  // `SEARCH_STACK_GAP` is a plain DERIVED gap above the tab bar, not a
-  // canvas value — the canvas's Search.dc.html has no tab bar to clear at
-  // all (recorded in DEVIATIONS.md).
-  searchBottomWrap: { position: 'absolute', left: spacing.lg, right: spacing.lg, bottom: SEARCH_STACK_GAP },
+  // 1357 — the filter capsule row (+ its "N matches elsewhere" hint) now
+  // lives at the TOP of the content area, inside `headerArea`, per Guus's
+  // layout ruling. It has no canvas-sourced horizontal inset of its own
+  // (`Search.dc.html` has no tab bar to clear at all — recorded in
+  // DEVIATIONS.md) — `spacing.lg` matches the header row's own rhythm above.
+  searchFiltersSection: { paddingHorizontal: spacing.lg, paddingTop: spacing.xs, paddingBottom: spacing.xs },
   searchFiltersWrap: { marginBottom: 10 },
   searchFiltersTrack: { padding: 4 },
   searchFiltersRow: { flexDirection: 'row', gap: 2 },
@@ -4749,10 +4826,17 @@ const styles = StyleSheet.create({
   searchFilterLabel: { fontSize: 13, letterSpacing: -0.1 },
   searchHintWrap: { paddingHorizontal: 4, paddingBottom: 8 },
   searchHintText: { fontSize: 12 },
-  searchInputRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  searchBarWrap: { flex: 1 },
-  // Canvas `Search.dc.html:89` pill: `border-radius: 999px; padding: 14px 20px`.
-  searchBarGlassContent: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 14, paddingHorizontal: 20 },
+  // 1357 — the bottom search bar. It REPLACES `GlassTabBar` in its own
+  // footprint (`tabBarStyle: { display: 'none' }` reclaims the space, see
+  // the bar's own doc comment), so it docks edge to edge at the screen's
+  // true bottom — no `spacing.lg` side margins, no floating gap above
+  // anything, unlike 1338b's stack (DEVIATIONS.md "Phase 5").
+  searchBarDock: { position: 'absolute', left: 0, right: 0, bottom: 0 },
+  // Canvas `Search.dc.html:89` pill padding (`14px 20px`) carried over as
+  // the flush bar's own content padding — there is no separate nested pill
+  // any more (one glass surface, not glass-inside-glass); `paddingBottom`
+  // is added dynamically (safe-area inset) at the call site.
+  searchBarContent: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingTop: 14, paddingHorizontal: spacing.lg },
   // Canvas query text is `font-size: 17px` — lifted verbatim.
   searchBarInput: { flex: 1, fontSize: 17, padding: 0 },
   searchCancelButton: { paddingVertical: 8, paddingHorizontal: 2 },
