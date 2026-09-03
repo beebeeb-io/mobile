@@ -49,7 +49,28 @@ import { GlassCapsule, GlassCircle, GLASS_CIRCLE_SIZES, glassMaterial } from './
 import { useTheme } from '../lib/theme-context';
 import { colors } from '../theme';
 
-/** Canvas: the bar sits 22pt above the bottom edge, inset 18pt either side. */
+/**
+ * Canvas: container inset 18pt either side, 22pt from the screen BOTTOM
+ * EDGE (`bottom: 22px` in `design/ios26-canvas/ios26.py`'s `tabbar()`).
+ *
+ * That value is measured on a bare 390×844 frame that models no safe area at
+ * all — no home indicator, no status bar; its only concession to device
+ * chrome is a hardcoded top padding — so 22 cannot be taken literally on a
+ * device whose bottom inset is 34 (task 1362). `paddingBottom` below FLOORS
+ * at `BAR_BOTTOM` (`Math.max(insets.bottom, BAR_BOTTOM)`) rather than adding
+ * the inset on top of it: that keeps the canvas's 22 meaningful on the only
+ * device class it was ever measured for (zero-inset), while every device
+ * with a real home indicator gets the capsule sitting exactly ON the
+ * safe-area line, the way a native iOS 26 bar does. The old `(insets.bottom
+ * || 12) + BAR_BOTTOM - 12` expression added the inset ON TOP of the canvas
+ * gap instead — 44pt on an iPhone 17 Pro, floating the bar ~10pt above where
+ * it should tuck in. See DEVIATIONS.md for the full record.
+ *
+ * This also aligns the bar with the search bar that replaces it in the same
+ * footprint (task 1357 — `FilesScreen.tsx` uses `Math.max(insets.bottom,
+ * 12)`): before this fix the two surfaces sat 10pt apart despite occupying
+ * identical space; flooring both to their own safe-area collapses that.
+ */
 const BAR_INSET_X = 18;
 const BAR_BOTTOM = 22;
 const BAR_GAP = 12;
@@ -95,7 +116,7 @@ export function GlassTabBar({ state, descriptors, navigation }: BottomTabBarProp
         {
           paddingLeft: BAR_INSET_X,
           paddingRight: BAR_INSET_X,
-          paddingBottom: (insets.bottom || 12) + BAR_BOTTOM - 12,
+          paddingBottom: Math.max(insets.bottom, BAR_BOTTOM),
           paddingTop: 6,
         },
       ]}
