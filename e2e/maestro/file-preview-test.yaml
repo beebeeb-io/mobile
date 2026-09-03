@@ -46,8 +46,34 @@ appId: io.beebeeb.app
 
 - takeScreenshot: "preview-02-open"
 
-- tapOn:
-    id: "preview-close"
+# Task 1360 — INTERIM MITIGATION, pending a Maestro upgrade (see CLAUDE.md, "ROOT CAUSE
+# FOUND"). This is the flow behind task 1355, which was misdiagnosed as a possible product bug
+# ("a preview you cannot leave") until instrumented logging proved the touch never reached
+# `handleClose` — 9 of 15 runs on this flow failed this exact tap on the installed Maestro
+# 2.5.1, and an isolated 2.10.0 binary passed the identical flow 15/15 with zero retries.
+# `~/.maestro` upgrade is queued for Guus (shared install, other projects depend on it); until
+# then this retries the ACTION, not the assertion below — the loop stops as soon as "Drive" is
+# actually visible, and if it never is, `extendedWaitUntil` below still fails for real. Never
+# widen that wait to "fix" a red run here. Once `maestro --version` is past 2.5.1, remove this
+# `repeat` wrapper and go back to a plain `tapOn`.
+#
+# SOURCE FIX (Codex review, same class of bug as `search-cancel`'s while-condition fix, but a
+# different remedy) — `goBack()` is not idempotent, and unlike `search-cancel` there is no
+# same-render JS signal to key a `while:` condition on here: the preview modal's dismiss is a
+# NATIVE animation (`slide_from_bottom`), so `preview-close` can stay mounted and hit-testable
+# for the whole transition regardless of which testID on this screen the condition checks —
+# switching the condition to `preview-close`'s own visibility would NOT have closed the race,
+# it would just check a different fact with the same lag. Made `handleClose` itself idempotent
+# instead (`closedRef` guard, PreviewScreen.tsx) so a second delivered tap in that window is a
+# harmless no-op rather than a double `goBack()`. `notVisible: "Drive"` below is safe to keep
+# as the retry condition now that the action it retries can't double-fire.
+- repeat:
+    times: 5
+    while:
+      notVisible: "Drive"
+    commands:
+      - tapOn:
+          id: "preview-close"
 
 - extendedWaitUntil:
     visible: "Drive"
