@@ -46,14 +46,16 @@ appId: io.beebeeb.app
 
 - takeScreenshot: "preview-02-open"
 
-# Task 1360 — `preview-close` (`handleClose`) is confirmed to hit the silent
-# accessibility-bridge fault: 9 of 15 runs this session had the tap report COMPLETED with
-# `handleClose`'s own instrumented log line never firing — not even late, confirmed with
-# deliberate multi-second settle windows. This is a retry of the ACTION, not the assertion
-# below — the loop stops as soon as "Drive" is actually visible, and if it never is,
-# `extendedWaitUntil` below still fails for real. Never widen that wait to "fix" a red run
-# here; this is the flow behind task 1355, which was misdiagnosed as a product bug until this
-# instrumentation proved the touch never reached the app.
+# Task 1360 — INTERIM MITIGATION, pending a Maestro upgrade (see CLAUDE.md, "ROOT CAUSE
+# FOUND"). This is the flow behind task 1355, which was misdiagnosed as a possible product bug
+# ("a preview you cannot leave") until instrumented logging proved the touch never reached
+# `handleClose` — 9 of 15 runs on this flow failed this exact tap on the installed Maestro
+# 2.5.1, and an isolated 2.10.0 binary passed the identical flow 15/15 with zero retries.
+# `~/.maestro` upgrade is queued for Guus (shared install, other projects depend on it); until
+# then this retries the ACTION, not the assertion below — the loop stops as soon as "Drive" is
+# actually visible, and if it never is, `extendedWaitUntil` below still fails for real. Never
+# widen that wait to "fix" a red run here. Once `maestro --version` is past 2.5.1, remove this
+# `repeat` wrapper and go back to a plain `tapOn`.
 - repeat:
     times: 5
     while:

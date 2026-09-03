@@ -24,12 +24,15 @@ appId: io.beebeeb.app
 # stays unmounted (its own `!selectMode` gate), and a `searchActive`-only
 # hide condition would leave the tab bar ALSO hidden: a dead end escapable
 # only by leaving select mode.
-# Task 1360 — `select-mode-enter` is one of the four controls confirmed to hit the silent
-# accessibility-bridge fault (CLAUDE.md, "the bridge also fails SILENTLY"): the tap reports
-# COMPLETED but the JS `onPress` never runs, confirmed by instrumented logging. This is a
-# retry of the ACTION, not the assertion below — the loop stops as soon as select mode is
-# actually visible, and if it never is, `assertVisible` below still fails for real. Never
-# widen that assertion to "fix" a red run here.
+# Task 1360 — INTERIM MITIGATION, pending a Maestro upgrade (see CLAUDE.md, "ROOT CAUSE
+# FOUND"). Root cause is the installed Maestro 2.5.1 being four months stale — an isolated
+# 2.10.0 binary passed this same flow 15/15 with zero retries where 2.5.1 failed 9/15. Until
+# `~/.maestro` is upgraded (queued for Guus — shared install, not this workspace's call to
+# make), the tap reports COMPLETED but the JS `onPress` never runs. This retries the ACTION,
+# not the assertion below — the loop stops as soon as select mode is actually visible, and if
+# it never is, `assertVisible` below still fails for real. Never widen that assertion to "fix"
+# a red run here. Once `maestro --version` is past 2.5.1, remove this `repeat` wrapper and go
+# back to a plain `tapOn`.
 - repeat:
     times: 5
     while:
@@ -70,9 +73,9 @@ appId: io.beebeeb.app
 - assertNotVisible:
     id: "tab-photos"
 
-# Task 1360 — same driver fault as `select-mode-enter` above; `search-cancel` is confirmed
-# affected too (lead's screenshot evidence, `2026-09-03_032136`). Retry the tap, not the
-# assert.
+# Task 1360 — interim mitigation, same stale-Maestro root cause as `select-mode-enter` above
+# (remove once `~/.maestro` is past 2.5.1). `search-cancel` is confirmed affected too (lead's
+# screenshot evidence, `2026-09-03_032136`). Retry the tap, not the assert.
 - repeat:
     times: 5
     while:
@@ -136,9 +139,10 @@ appId: io.beebeeb.app
 # search is showing results at all (query or kind filter) — it does not
 # disappear for zero rows, only ListEmptyComponent's "No results" text
 # appears instead. "No results" is the real discriminator here.
-# Task 1360 — `search-filter-photos`/`search-filter-videos` are the reproducer we caught
-# directly this session: `setSearchFilterKind` never ran on the failing taps, confirmed by
-# instrumented logging with zero late fires. Retry the tap, not the assert.
+# Task 1360 — interim mitigation, same stale-Maestro root cause (see CLAUDE.md; remove once
+# `~/.maestro` is past 2.5.1). `search-filter-photos`/`search-filter-videos` are the reproducer
+# caught directly this session: `setSearchFilterKind` never ran on the failing taps. Retry the
+# tap, not the assert.
 - repeat:
     times: 5
     while:
@@ -157,7 +161,7 @@ appId: io.beebeeb.app
 # Narrow to Videos — the amber match must survive the narrower list, and
 # switching capsules must actually re-narrow (proven by the Photos step
 # above emptying the same query first).
-# Task 1360 — same fault, same remedy shape.
+# Task 1360 — same fault, same interim-mitigation shape (remove on Maestro upgrade).
 - repeat:
     times: 5
     while:
@@ -178,7 +182,8 @@ appId: io.beebeeb.app
 # Cancel returns to plain Drive browsing — the bottom bar is gone, and the
 # old top-bar mode does not reappear (there is only one search surface now).
 #
-# Task 1360 — this is the second `search-cancel` occurrence in this flow; both are affected.
+# Task 1360 — interim mitigation (remove on Maestro upgrade); this is the second
+# `search-cancel` occurrence in this flow, both are affected.
 # NOTE: `notVisible: "Drive"` was tried here first and was WRONG — the folder title stays
 # rendered in the header throughout active search, so that condition is already false before
 # the tap and the whole repeat block gets SKIPPED (proven live: the skip left search-cancel
