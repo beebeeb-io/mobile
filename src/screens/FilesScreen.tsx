@@ -1268,24 +1268,6 @@ export default function FilesScreen() {
   useEffect(() => {
     if (!searchActive) setSearchFilterKind('all');
   }, [searchActive]);
-  // 1357 — Guus's layout ruling: the search bar must "fill the menu bar at
-  // the bottom completely", not float above it. `GlassTabBar` renders IN
-  // FLOW as a sibling of this whole screen (its own doc comment), so this
-  // screen's container only grows to include the tab bar's footprint once
-  // that space is actually reclaimed — `tabBarStyle: { display: 'none' }`
-  // removes GlassTabBar from the navigator's layout entirely while
-  // searching (GlassTabBar checks this option by hand; see its own doc
-  // comment on why a custom `tabBar` render prop needs that). `Nav` is typed
-  // as the ROOT stack (`FilesScreen.tsx:1214`'s own comment), but at runtime
-  // this screen is rendered as a `Tab.Screen`, so `setOptions` here actually
-  // reaches the Files route's tab options — the same permissive escape
-  // hatch `GlassTabBar.tsx`'s `navigation.navigate as any` already uses for
-  // the same static-vs-runtime-type gap.
-  useEffect(() => {
-    (navigation.setOptions as (options: unknown) => void)({
-      tabBarStyle: searchActive ? { display: 'none' } : undefined,
-    });
-  }, [navigation, searchActive]);
   // 1338b — the bottom bar keeps its own smooth show/hide, matching the
   // ShareSheetScreen/SignupScreen precedent for a floating element the
   // keyboard must not cover. `keyboardHeight` also feeds the FlatList's
@@ -1305,6 +1287,44 @@ export default function FilesScreen() {
   // Multi-select state
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+
+  // 1357 — Guus's layout ruling: the search bar must "fill the menu bar at
+  // the bottom completely", not float above it. `GlassTabBar` renders IN
+  // FLOW as a sibling of this whole screen (its own doc comment), so this
+  // screen's container only grows to include the tab bar's footprint once
+  // that space is actually reclaimed — `tabBarStyle: { display: 'none' }`
+  // removes GlassTabBar from the navigator's layout entirely while
+  // searching (GlassTabBar checks this option by hand; see its own doc
+  // comment on why a custom `tabBar` render prop needs that). `Nav` is typed
+  // as the ROOT stack (`FilesScreen.tsx:1214`'s own comment), but at runtime
+  // this screen is rendered as a `Tab.Screen`, so `setOptions` here actually
+  // reaches the Files route's tab options — the same permissive escape
+  // hatch `GlassTabBar.tsx`'s `navigation.navigate as any` already uses for
+  // the same static-vs-runtime-type gap.
+  //
+  // Review fix — the hide condition MUST match the search bar's own render
+  // condition (`searchActive && !selectMode`, below), not `searchActive`
+  // alone. Reachable today via: enter select mode from plain browsing
+  // (`select-mode-enter`, still visible since `!searchActive`) — the tab bar
+  // stays up because select-mode-alone doesn't hide it — then tap the still-
+  // visible `tab-search` orb. `action:'search'` sets `searchActive` true
+  // unconditionally, without touching `selectMode`, so both flags land true
+  // together: the search bar's own `!selectMode` gate keeps IT from
+  // rendering, but a `searchActive`-only hide condition would still hide
+  // `GlassTabBar` too — neither bar on screen, a dead end only escapable by
+  // leaving select mode. (`handleRowLongPress`/`enterSelectMode(item.id)` —
+  // long-press entering select mode directly — is NOT currently wired to any
+  // row's `onLongPress`, reverted back to the `handleLongPress` action sheet
+  // by `b6e7d03`; that's a separate, pre-existing loose end, not this
+  // task's to fix.) Matching the two conditions means every transition
+  // (enter select mode while searching, leave select mode back into search)
+  // restores the tab bar exactly when the search bar itself disappears, and
+  // hides it again exactly when the search bar reappears.
+  useEffect(() => {
+    (navigation.setOptions as (options: unknown) => void)({
+      tabBarStyle: searchActive && !selectMode ? { display: 'none' } : undefined,
+    });
+  }, [navigation, searchActive, selectMode]);
 
   // Pinned folders
   const [pinnedFolders, setPinnedFolders] = useState<{ id: string; name: string }[]>([]);
@@ -3987,7 +4007,7 @@ export default function FilesScreen() {
       {/* Header — select mode vs normal mode */}
       {selectMode ? (
         <View style={styles.header}>
-          <TouchableOpacity onPress={exitSelectMode} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+          <TouchableOpacity testID="select-mode-cancel" onPress={exitSelectMode} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
             <Text style={{ color: c.amberDeep, fontSize: 16, fontWeight: '500' }}>Cancel</Text>
           </TouchableOpacity>
           <Text style={[styles.selectTitle, { color: c.ink }]}>
@@ -4055,6 +4075,7 @@ export default function FilesScreen() {
           <View style={{ flex: 1 }} />
           {!searchActive && files.length > 0 && (
             <TouchableOpacity
+              testID="select-mode-enter"
               onPress={() => enterSelectMode()}
               hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
               style={styles.searchButton}
