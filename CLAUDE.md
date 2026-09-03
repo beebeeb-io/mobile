@@ -200,6 +200,21 @@ dev-client preference (not repo state), so it must be set again on any new sim, 
   After every run, check `pgrep -f 'xcodebuild test-without-building'` and kill only your own
   orphan by PID (verify its `-destination id=` first) — never `pkill -f xcodebuild`, which takes out
   other lanes and this Mac's other projects too.
+- **The bridge also fails SILENTLY: a tap reports COMPLETED and the app never changes state.**
+  This is the same fault as the "stale accessibility-bridge attach" below, but without an error —
+  Maestro resolves the element, taps it, reports COMPLETED, and the next assertion fails against a
+  screen identical to the one before the tap. It is NOT "element not found" and NOT "element
+  covered". Observed on 2026-09-03 on merged main, one sim, no competing driver, across **three
+  unrelated controls**: `select-mode-enter` (twice), `search-cancel`, and `preview-close` (task
+  1355, three lanes, two sims, including a raw coordinate tap). `search-test.yaml` went red, green,
+  red on identical code in one batch. Three separate handlers cannot all be intermittently broken;
+  this is a delivery-layer fault, tracked as **task 1360**.
+  **Do not "fix" this by loosening an assertion.** If a flow fails this way, re-read the failure
+  screenshot first: if the screen shows the PRE-tap state, you are looking at this fault, not a
+  regression. The open question — whether the app's handler runs at all when this happens — is
+  settled by logging inside the handler, which task 1360 specifies. Until then, treat a single red
+  run of a flow that is otherwise green as unproven rather than as either a pass or a bug.
+
 - **The row "…" overflow menu is a native menu Maestro cannot tap.** `tapOn` reports COMPLETED, the
   menu stays open, and it blocks all further input until the app is terminated. Its items also carry
   a leading `", "` in their accessible name. Route to the share sheet with a row swipe RIGHT
