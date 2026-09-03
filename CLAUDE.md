@@ -308,6 +308,17 @@ dev-client preference (not repo state), so it must be set again on any new sim, 
   way (instrument the handler, confirm the log is absent not late, confirm the screenshot shows the
   pre-tap state) before assuming it's covered by analogy, then add the same `repeat...while` shape.
 
+  **HYPOTHESIS, not a claim — check this when the upgrade lands, don't act on it before then.**
+  Every "gotcha" documented in this Maestro section was written against 2.5.1. Now that one of them
+  turned out to be version-level rather than a fact about the tool, a few of the others read the
+  same way, and are worth re-testing on 2.10.0 rather than assuming permanent: the **stale
+  accessibility-bridge attach after `launchApp`** (below — identical "visibly correct screen,
+  interaction fails" shape), the **orphaned driver poisoning new bootstraps machine-wide**, and
+  `scrollUntilVisible` **failing to find an element by `id:` that a fresh hierarchy dump shows is
+  genuinely present.** Nobody has re-tested any of these on 2.10.0. Do not remove any of these
+  workarounds on the strength of this paragraph alone — confirm each one still reproduces on the
+  new version first, the same way this task's own retries were validated live rather than assumed.
+
 - **The row "…" overflow menu is a native menu Maestro cannot tap.** `tapOn` reports COMPLETED, the
   menu stays open, and it blocks all further input until the app is terminated. Its items also carry
   a leading `", "` in their accessible name. Route to the share sheet with a row swipe RIGHT
