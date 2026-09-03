@@ -200,20 +200,85 @@ dev-client preference (not repo state), so it must be set again on any new sim, 
   After every run, check `pgrep -f 'xcodebuild test-without-building'` and kill only your own
   orphan by PID (verify its `-destination id=` first) — never `pkill -f xcodebuild`, which takes out
   other lanes and this Mac's other projects too.
-- **The bridge also fails SILENTLY: a tap reports COMPLETED and the app never changes state.**
-  This is the same fault as the "stale accessibility-bridge attach" below, but without an error —
-  Maestro resolves the element, taps it, reports COMPLETED, and the next assertion fails against a
-  screen identical to the one before the tap. It is NOT "element not found" and NOT "element
-  covered". Observed on 2026-09-03 on merged main, one sim, no competing driver, across **three
-  unrelated controls**: `select-mode-enter` (twice), `search-cancel`, and `preview-close` (task
-  1355, three lanes, two sims, including a raw coordinate tap). `search-test.yaml` went red, green,
-  red on identical code in one batch. Three separate handlers cannot all be intermittently broken;
-  this is a delivery-layer fault, tracked as **task 1360**.
-  **Do not "fix" this by loosening an assertion.** If a flow fails this way, re-read the failure
-  screenshot first: if the screen shows the PRE-tap state, you are looking at this fault, not a
-  regression. The open question — whether the app's handler runs at all when this happens — is
-  settled by logging inside the handler, which task 1360 specifies. Until then, treat a single red
-  run of a flow that is otherwise green as unproven rather than as either a pass or a bug.
+- **The bridge also fails SILENTLY: a tap reports COMPLETED and the app never changes state — this
+  is SETTLED, not open (task 1360, 2026-09-03).** Maestro resolves the element, taps it, reports
+  COMPLETED, and the next assertion fails against a screen identical to the one before the tap. It
+  is NOT "element not found" and NOT "element covered".
+
+  **Diagnose before you touch anything.** Read the failure screenshot first. If it shows the
+  PRE-tap state — the exact same screen the flow was already on — you are looking at this fault,
+  not a regression. A genuine regression looks different: a partially-applied state, an error, or a
+  screen that changed but changed *wrong*. Every failure instance collected for task 1360 (12+
+  screenshots across `select-mode-enter`, `search-cancel`, the search kind-filter capsules, and
+  `preview-close`) showed a clean pre-tap freeze, never a different-looking broken screen. If yours
+  doesn't match that shape, stop — you may have a real bug, not this fault.
+
+  **The mechanism is confirmed, not inferred.** A temporary `console.log` at the top of the handler
+  (`handleClose` in PreviewScreen, `enterSelectMode`/`handleSearchToggle`/the kind-filter `onPress`
+  in FilesScreen) proved the JS callback **never runs** on a failing tap — absent from the Metro log
+  every single time, present every time the tap actually worked. It also proved this is not a
+  slow-JS-thread problem: on 5 deliberate 8-second post-failure holds (plus one accidental 2-minute
+  hold when a harness script crashed and left the app untouched) the handler log never showed up
+  late either. The touch is lost before it reaches React Native's responder system — this is the
+  driver/accessibility-bridge layer, not app code, and not a performance defect in our JS. Four
+  unrelated controls in unrelated components, all showing the identical shape, rule out a product
+  bug independently existing in all four.
+
+  **The fix: retry the ACTION, never the assertion.** `search-test.yaml` and
+  `file-preview-test.yaml` wrap every affected tap in a bounded `repeat...while` that re-taps up to
+  5 times while the expected post-tap state is still absent, followed by the ORIGINAL, unmodified,
+  single-shot assertion:
+  ```yaml
+  - repeat:
+      times: 5
+      while:
+        notVisible:
+          id: "select-mode-cancel"
+      commands:
+        - tapOn:
+            id: "select-mode-enter"
+  - assertVisible:
+      id: "select-mode-cancel"
+  ```
+  If the tap keeps failing to land, this fails for real — a genuine regression still goes red, it
+  just takes up to 5 attempts to prove it consistently isn't landing rather than one unlucky tap.
+  **Never retry the assertion itself** (no widening a timeout, no `extendedWaitUntil` bolted onto an
+  assertion that used to be immediate, no swallowing the failure) — that is a loosened test wearing
+  a disguise, and it is exactly how a real regression would get through unnoticed. Any retry is also
+  **loud by construction**: Maestro's own CLI output prints `Repeat while ... (up to N times)` plus
+  one line per attempted tap, so a flow that needed 2 or 3 attempts is visible in the run's own log
+  and artifacts, not silently absorbed.
+
+  **This pattern is only safe when the tapped action is idempotent — "set to state X", not
+  "toggle".** Every control wrapped so far (enter select mode, select a search filter, cancel out of
+  search, close a preview) is a one-way move: tapping it again after it already worked is a harmless
+  no-op, because the `while` condition is already false and the loop exits before a second tap ever
+  fires. A **toggle** control (flips between two states on each tap) is NOT safe to wrap this way: if
+  the first tap actually lands but the visibility check races it — the check runs before the UI has
+  finished updating — the loop can fire a second tap that flips the toggle straight back, and the
+  flow fails with the exact same "COMPLETED, no state change" shape as this fault, except the cause
+  this time is the retry itself undoing a tap that worked. That failure is very hard to tell apart
+  from the real bridge fault by symptom alone, so do not add this pattern to a toggle control without
+  first picking a `while` condition that is unambiguous about which of the toggle's two states is
+  the *pre*-tap one — and prove it live, the same way the `search-cancel` mistake below was caught by
+  running the flow, not by reading the YAML.
+
+  Picking the `while` condition is the one place this is easy to get subtly wrong — validate it
+  live before trusting it. The first attempt at wrapping the second `search-cancel` tap in
+  `search-test.yaml` used `notVisible: "Drive"`, which looked right by analogy to a neighboring
+  `extendedWaitUntil: visible: "Drive"` — but the folder title stays rendered in the header
+  throughout active search, so that condition was **already false before the tap**, and Maestro's
+  `repeat` correctly but unhelpfully **skips the whole body** when `while` starts false — the tap
+  never fired at all. Caught by actually running the flow, not by reading the YAML. Use whatever
+  element genuinely flips state across the tap (here, `search-bar`'s own visibility), and prove it
+  by running the flow, not by pattern-matching a neighboring block.
+
+  Controls covered so far: `select-mode-enter`, both `search-cancel` occurrences, and
+  `search-filter-photos`/`search-filter-videos` in `search-test.yaml`; `preview-close` in
+  `file-preview-test.yaml`. This fault is a bridge-level problem, not specific to these controls —
+  if you hit the same COMPLETED-but-frozen shape on a control not listed here, diagnose it the same
+  way (instrument the handler, confirm the log is absent not late, confirm the screenshot shows the
+  pre-tap state) before assuming it's covered by analogy, then add the same `repeat...while` shape.
 
 - **The row "…" overflow menu is a native menu Maestro cannot tap.** `tapOn` reports COMPLETED, the
   menu stays open, and it blocks all further input until the app is terminated. Its items also carry
