@@ -1897,7 +1897,6 @@ export default function PreviewScreen() {
   ]);
 
   const handleClose = useCallback(() => {
-    console.log('TASK1360_HANDLER_FIRED preview-close', Date.now()); // TEMP — task 1360 tap-delivery experiment, remove before merge
     navigation.goBack();
   }, [navigation]);
 

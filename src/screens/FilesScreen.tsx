@@ -2699,7 +2699,6 @@ export default function FilesScreen() {
   // ------------------------------------------------------------------
 
   const enterSelectMode = useCallback((initialId?: string) => {
-    console.log('TASK1360_HANDLER_FIRED select-mode-enter', Date.now()); // TEMP — task 1360 tap-delivery experiment, remove before merge
     _openSwipeable?.close();
     _openSwipeable = null;
     setSelectMode(true);
@@ -2975,7 +2974,6 @@ export default function FilesScreen() {
   }, [selectedIds, openMovePicker]);
 
   const handleSearchToggle = useCallback(() => {
-    console.log('TASK1360_HANDLER_FIRED search-cancel/search-toggle', Date.now()); // TEMP — task 1360 tap-delivery experiment, remove before merge
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setSearchActive((prev) => {
       if (!prev) donateSiriShortcut('search');
@@ -4263,10 +4261,7 @@ export default function FilesScreen() {
                   <TouchableOpacity
                     key={kind.value}
                     testID={`search-filter-${kind.value}`}
-                    onPress={() => {
-                      console.log('TASK1360_HANDLER_FIRED search-filter-' + kind.value, Date.now()); // TEMP — task 1360 tap-delivery experiment, remove before merge
-                      setSearchFilterKind(kind.value);
-                    }}
+                    onPress={() => setSearchFilterKind(kind.value)}
                     accessibilityRole="tab"
                     accessibilityState={{ selected }}
                     accessibilityLabel={kind.label}
