@@ -200,10 +200,35 @@ dev-client preference (not repo state), so it must be set again on any new sim, 
   After every run, check `pgrep -f 'xcodebuild test-without-building'` and kill only your own
   orphan by PID (verify its `-destination id=` first) — never `pkill -f xcodebuild`, which takes out
   other lanes and this Mac's other projects too.
-- **The bridge also fails SILENTLY: a tap reports COMPLETED and the app never changes state — this
-  is SETTLED, not open (task 1360, 2026-09-03).** Maestro resolves the element, taps it, reports
-  COMPLETED, and the next assertion fails against a screen identical to the one before the tap. It
-  is NOT "element not found" and NOT "element covered".
+- **ROOT CAUSE FOUND (task 1360, 2026-09-03): a tap reports COMPLETED and the app never changes
+  state because the installed Maestro CLI is FOUR MONTHS OUT OF DATE.** Maestro resolves the
+  element, taps it, reports COMPLETED, and the next assertion fails against a screen identical to
+  the one before the tap. It is NOT "element not found" and NOT "element covered", NOT a product
+  bug, and NOT device state — **it is the driver.** The Mac's shared install is
+  **Maestro 2.5.1** (`~/.maestro`, installed 1 May); upstream is **2.10.0** (2026-08-31), five
+  minors and about four months ahead. Same simulator (`bb-qa-1310`), same flow
+  (`file-preview-test.yaml`), no retries either side: **2.5.1 failed 9 of 15 runs; an isolated
+  2.10.0 binary passed 15 of 15.** Runs were also ~30% faster on 2.10.0 (~23s apart vs. 28-38s). A
+  second simulator, `bb-qa-2`, was checked too and was *worse* under 2.5.1 (10 failures in 10
+  completed runs, 2 more that never reached a verdict) — ruling out "one simulator has bad state"
+  before the version test even ran.
+
+  **The shared install has NOT been upgraded.** `~/.maestro` (2.5.1) is used by other projects on
+  this machine, so this workspace does not upgrade it unilaterally — that decision is queued for
+  Guus. Until he decides, **the flows below carry a bounded retry as an interim mitigation** (see
+  below). If you're reading this after the upgrade landed, the retries are stale scaffolding for a
+  fault that no longer exists — remove them and go back to a plain `tapOn` + single assertion; check
+  `maestro --version` first to confirm you're actually past 2.5.1 before you rip them out.
+
+  **Two traps if you re-run this comparison yourself (both cost real time to find):**
+  1. `grep -i repeat` on a 2.10.0 run's log is USELESS for checking "did it retry" — it returns
+     dozens of hits that are all `repeatable=` fields inside `CommandMetadata` log noise, none of
+     them an actual retry command. Check `commands.json` for a real `repeatCommand` entry instead,
+     or count `Tap on id: X` occurrences for the control you care about.
+  2. **2.10.0 changed the artifact layout**: it writes a `<flow-name>/` **directory** where 2.5.1
+     wrote a single `commands-(<flow-name>.yaml).json` file. A script that greps for the old
+     filename shape will silently find nothing and undercount — this produced a false "zero runs"
+     read on the first attempt at this comparison.
 
   **Diagnose before you touch anything.** Read the failure screenshot first. If it shows the
   PRE-tap state — the exact same screen the flow was already on — you are looking at this fault,
@@ -213,21 +238,24 @@ dev-client preference (not repo state), so it must be set again on any new sim, 
   `preview-close`) showed a clean pre-tap freeze, never a different-looking broken screen. If yours
   doesn't match that shape, stop — you may have a real bug, not this fault.
 
-  **The mechanism is confirmed, not inferred.** A temporary `console.log` at the top of the handler
-  (`handleClose` in PreviewScreen, `enterSelectMode`/`handleSearchToggle`/the kind-filter `onPress`
-  in FilesScreen) proved the JS callback **never runs** on a failing tap — absent from the Metro log
-  every single time, present every time the tap actually worked. It also proved this is not a
-  slow-JS-thread problem: on 5 deliberate 8-second post-failure holds (plus one accidental 2-minute
-  hold when a harness script crashed and left the app untouched) the handler log never showed up
-  late either. The touch is lost before it reaches React Native's responder system — this is the
-  driver/accessibility-bridge layer, not app code, and not a performance defect in our JS. Four
-  unrelated controls in unrelated components, all showing the identical shape, rule out a product
-  bug independently existing in all four.
+  **The mechanism was confirmed at the JS level too, before the version was known to be the cause.**
+  A temporary `console.log` at the top of the handler (`handleClose` in PreviewScreen,
+  `enterSelectMode`/`handleSearchToggle`/the kind-filter `onPress` in FilesScreen) proved the JS
+  callback **never runs** on a failing tap — absent from the Metro log every single time, present
+  every time the tap actually worked. It also proved this is not a slow-JS-thread problem: on 5
+  deliberate 8-second post-failure holds (plus one accidental 2-minute hold when a harness script
+  crashed and left the app untouched) the handler log never showed up late either. The touch was
+  lost before it reached React Native's responder system — consistent with a driver-level fault, and
+  now explained by one: the old CLI. That instrumentation has been removed (its job is done); do not
+  re-add it to chase this specific fault — the version gap is the answer.
 
-  **The fix: retry the ACTION, never the assertion.** `search-test.yaml` and
-  `file-preview-test.yaml` wrap every affected tap in a bounded `repeat...while` that re-taps up to
-  5 times while the expected post-tap state is still absent, followed by the ORIGINAL, unmodified,
-  single-shot assertion:
+  **Interim mitigation (remove once `~/.maestro` is upgraded past 2.5.1): retry the ACTION, never
+  the assertion.** `search-test.yaml` and `file-preview-test.yaml` wrap every affected tap in a
+  bounded `repeat...while` that re-taps up to 5 times while the expected post-tap state is still
+  absent, followed by the ORIGINAL, unmodified, single-shot assertion. This is a workaround, not a
+  fix — it absorbs the fault rather than removing it, and a retry loop would just as easily mask a
+  real intermittent product bug of the same shape, which is exactly what upgrading avoids. Prefer
+  the upgrade over extending this pattern to new controls if the upgrade decision lands first.
   ```yaml
   - repeat:
       times: 5
