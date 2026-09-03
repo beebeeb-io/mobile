@@ -4263,7 +4263,10 @@ export default function FilesScreen() {
                   <TouchableOpacity
                     key={kind.value}
                     testID={`search-filter-${kind.value}`}
-                    onPress={() => setSearchFilterKind(kind.value)}
+                    onPress={() => {
+                      console.log('TASK1360_HANDLER_FIRED search-filter-' + kind.value, Date.now()); // TEMP — task 1360 tap-delivery experiment, remove before merge
+                      setSearchFilterKind(kind.value);
+                    }}
                     accessibilityRole="tab"
                     accessibilityState={{ selected }}
                     accessibilityLabel={kind.label}
