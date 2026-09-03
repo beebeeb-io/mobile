@@ -56,6 +56,17 @@ appId: io.beebeeb.app
 # actually visible, and if it never is, `extendedWaitUntil` below still fails for real. Never
 # widen that wait to "fix" a red run here. Once `maestro --version` is past 2.5.1, remove this
 # `repeat` wrapper and go back to a plain `tapOn`.
+#
+# SOURCE FIX (Codex review, same class of bug as `search-cancel`'s while-condition fix, but a
+# different remedy) — `goBack()` is not idempotent, and unlike `search-cancel` there is no
+# same-render JS signal to key a `while:` condition on here: the preview modal's dismiss is a
+# NATIVE animation (`slide_from_bottom`), so `preview-close` can stay mounted and hit-testable
+# for the whole transition regardless of which testID on this screen the condition checks —
+# switching the condition to `preview-close`'s own visibility would NOT have closed the race,
+# it would just check a different fact with the same lag. Made `handleClose` itself idempotent
+# instead (`closedRef` guard, PreviewScreen.tsx) so a second delivered tap in that window is a
+# harmless no-op rather than a double `goBack()`. `notVisible: "Drive"` below is safe to keep
+# as the retry condition now that the action it retries can't double-fire.
 - repeat:
     times: 5
     while:

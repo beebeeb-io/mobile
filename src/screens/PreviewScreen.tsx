@@ -1896,7 +1896,19 @@ export default function PreviewScreen() {
     currentVersionNumber,
   ]);
 
+  // Task 1360 — `goBack()` is NOT idempotent: the modal's dismiss transition
+  // (`presentation: 'modal', animation: 'slide_from_bottom'`, App.tsx) is a native
+  // animation, so this screen can still be mounted and hit-testable for the ~300-500ms it
+  // takes to slide away after the first call. A second real tap landing in that window
+  // (e.g. a genuine rapid double-tap, or a test-harness retry compensating for a stale
+  // Maestro driver — see CLAUDE.md) would call `goBack()` again against a navigator that has
+  // already advanced past this screen, popping an EXTRA one. `closedRef` makes this call
+  // idempotent regardless of how many times it fires — a fresh `false` per mount, since
+  // Preview is a routed screen that fully unmounts/remounts on each open.
+  const closedRef = useRef(false);
   const handleClose = useCallback(() => {
+    if (closedRef.current) return;
+    closedRef.current = true;
     navigation.goBack();
   }, [navigation]);
 
