@@ -1,10 +1,57 @@
+# Why this file is not the default.
+#
+# On 2026-09-03 six Dependabot PRs were closed rather than merged. Five of them
+# would have moved the repo BACKWARDS: they were opened 2026-05-28, sat four
+# months, and by the time anyone looked, the repo had gone to Expo SDK 57 while
+# the PRs still proposed SDK-56-era versions. Merging them would have dropped
+# expo-media-library, expo-document-picker, expo-constants and expo-haptics a
+# full SDK major below the `expo` runtime, and put react-dom ahead of react.
+#
+# They did not look like downgrades: Dependabot's title still quotes the "from"
+# version it read in May, so each one reads as an upgrade at a glance. That is
+# the failure mode this config is written against.
 version: 2
 updates:
+  # GitHub Actions — keep these coming. Actions are a supply-chain surface and
+  # this repo pins them by commit SHA, so a bump is a real security event worth
+  # seeing promptly. Grouped so one PR carries the week's actions rather than one
+  # PR per action.
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+
   - package-ecosystem: "npm"
     directory: "/"
     schedule:
       interval: "weekly"
+    # Bound the queue. An unbounded list is how six PRs sat until they inverted
+    # their own meaning; a small cap forces them to be dealt with or closed.
+    open-pull-requests-limit: 5
+    groups:
+      # One PR for the week's minor/patch work instead of one per package. Majors
+      # still arrive separately, because a major deserves to be read on its own.
+      npm-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+    ignore:
+      # The Expo SDK owns these versions, not Dependabot. On an SDK-managed
+      # project the correct upgrade path is `expo install --fix` against a chosen
+      # SDK, which moves every expo-* package together to versions the runtime
+      # actually supports. A per-package bump here is not merely noisy, it is
+      # wrong: it is what produced the four downgrade PRs above.
+      - dependency-name: "expo"
+      - dependency-name: "expo-*"
+      # React and React Native are pinned by the SDK for the same reason, and
+      # react/react-dom must move as a pair. PR #8 proposed react-dom 19.2.6
+      # against react 19.2.3, which is exactly the mismatch this prevents.
+      - dependency-name: "react"
+      - dependency-name: "react-dom"
+      - dependency-name: "react-native"
+      - dependency-name: "react-native-*"
