@@ -27,6 +27,16 @@ appId: io.beebeeb.app
 - tapOn:
     id: "select-mode-enter"
 
+# Synchronization checkpoint (lead's finding, 2026-09-03 02:57 failure):
+# without this, the very next tap can fire before select mode has actually
+# rendered, so `tab-search` sometimes lands while `searchActive` and
+# `selectMode` are both still false — the assertions below would then pass
+# for the WRONG reason (search-bar not visible because search never opened
+# at all, not because the fix suppressed it). Asserting the select-mode
+# header exists first makes the state real before the next tap depends on it.
+- assertVisible:
+    id: "select-mode-cancel"
+
 - tapOn:
     id: "tab-search"
 
