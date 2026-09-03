@@ -76,11 +76,23 @@ appId: io.beebeeb.app
 # Task 1360 — interim mitigation, same stale-Maestro root cause as `select-mode-enter` above
 # (remove once `~/.maestro` is past 2.5.1). `search-cancel` is confirmed affected too (lead's
 # screenshot evidence, `2026-09-03_032136`). Retry the tap, not the assert.
+#
+# FIX (Codex review) — the while-condition below WAS `notVisible: id: "tab-photos"`, and that
+# was a real bug, not just a style nit: `handleSearchToggle` is a TOGGLE
+# (`setSearchActive((prev) => !prev)`), and `tab-photos`'s own visibility comes back through a
+# `navigation.setOptions` effect (FilesScreen.tsx, the `tabBarStyle` useEffect) that runs ONE
+# RENDER AFTER the one that actually clears `searchActive`. That gap is a real window: the tap
+# already worked, `searchActive` is already false, but `tab-photos` hasn't appeared yet — the
+# retry fires a second tap into that window, flips the toggle straight back, and REOPENS
+# search. `search-bar` has no such gap: it's gated by `{searchActive && !selectMode && (...)}`
+# directly in JSX (FilesScreen.tsx ~4463), so it unmounts on the exact same render that clears
+# `searchActive` — no effect in between, no window for a live tap to land in. `tab-photos`
+# stays as the real assertion below; only the retry's exit condition changed.
 - repeat:
     times: 5
     while:
-      notVisible:
-        id: "tab-photos"
+      visible:
+        id: "search-bar"
     commands:
       - tapOn:
           id: "search-cancel"
