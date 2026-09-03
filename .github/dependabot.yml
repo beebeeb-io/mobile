@@ -55,3 +55,22 @@ updates:
       - dependency-name: "react-dom"
       - dependency-name: "react-native"
       - dependency-name: "react-native-*"
+      # SCOPED packages, added 2026-09-03 after the first version of this file
+      # missed them. `react-native-*` does NOT match `@react-native-community/x`,
+      # so Dependabot opened a PR to move
+      # `@react-native-async-storage/async-storage` from 2.2.0 to 3.1.1 while
+      # Expo SDK 57 pins it at exactly 2.2.0 (`expo/bundledNativeModules.json`).
+      # That is a native module a full major above what the runtime expects —
+      # a native crash, not a clean install failure. Same class of bug as the
+      # five PRs closed earlier that day, reached through a different door.
+      #
+      # These prefixes cover the scoped modules Expo's bundled-native-modules
+      # list owns. Verified against that list rather than assumed:
+      # async-storage 2.2.0, netinfo 12.0.1, slider 5.2.0 are all MANAGED.
+      # `@react-native-menu/menu` is deliberately NOT here — Expo does not
+      # manage it, so a bump there is a real upgrade worth a human reading it.
+      - dependency-name: "@react-native-async-storage/*"
+      - dependency-name: "@react-native-community/*"
+      - dependency-name: "@react-native-masked-view/*"
+      - dependency-name: "@react-native-picker/*"
+      - dependency-name: "@react-native-segmented-control/*"
