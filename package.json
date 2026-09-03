@@ -74,7 +74,7 @@
     "react-native-sse": "^1.2.1",
     "react-native-web": "^0.21.2",
     "react-native-webview": "13.16.1",
-    "uuid": "9.0.1"
+    "uuid": "14.0.2"
   },
   "devDependencies": {
     "@types/jest": "29.5.14",
@@ -86,6 +86,6 @@
   },
   "private": true,
   "overrides": {
-    "uuid": "9.0.1"
+    "uuid": "14.0.2"
   }
 }
