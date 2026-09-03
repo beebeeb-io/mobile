@@ -24,8 +24,20 @@ appId: io.beebeeb.app
 # stays unmounted (its own `!selectMode` gate), and a `searchActive`-only
 # hide condition would leave the tab bar ALSO hidden: a dead end escapable
 # only by leaving select mode.
-- tapOn:
-    id: "select-mode-enter"
+# Task 1360 — `select-mode-enter` is one of the four controls confirmed to hit the silent
+# accessibility-bridge fault (CLAUDE.md, "the bridge also fails SILENTLY"): the tap reports
+# COMPLETED but the JS `onPress` never runs, confirmed by instrumented logging. This is a
+# retry of the ACTION, not the assertion below — the loop stops as soon as select mode is
+# actually visible, and if it never is, `assertVisible` below still fails for real. Never
+# widen that assertion to "fix" a red run here.
+- repeat:
+    times: 5
+    while:
+      notVisible:
+        id: "select-mode-cancel"
+    commands:
+      - tapOn:
+          id: "select-mode-enter"
 
 # Synchronization checkpoint (lead's finding, 2026-09-03 02:57 failure):
 # without this, the very next tap can fire before select mode has actually
@@ -58,8 +70,17 @@ appId: io.beebeeb.app
 - assertNotVisible:
     id: "tab-photos"
 
-- tapOn:
-    id: "search-cancel"
+# Task 1360 — same driver fault as `select-mode-enter` above; `search-cancel` is confirmed
+# affected too (lead's screenshot evidence, `2026-09-03_032136`). Retry the tap, not the
+# assert.
+- repeat:
+    times: 5
+    while:
+      notVisible:
+        id: "tab-photos"
+    commands:
+      - tapOn:
+          id: "search-cancel"
 
 - assertVisible:
     id: "tab-photos"
@@ -115,8 +136,16 @@ appId: io.beebeeb.app
 # search is showing results at all (query or kind filter) — it does not
 # disappear for zero rows, only ListEmptyComponent's "No results" text
 # appears instead. "No results" is the real discriminator here.
-- tapOn:
-    id: "search-filter-photos"
+# Task 1360 — `search-filter-photos`/`search-filter-videos` are the reproducer we caught
+# directly this session: `setSearchFilterKind` never ran on the failing taps, confirmed by
+# instrumented logging with zero late fires. Retry the tap, not the assert.
+- repeat:
+    times: 5
+    while:
+      notVisible: "No results"
+    commands:
+      - tapOn:
+          id: "search-filter-photos"
 
 - assertVisible: "No results"
 
@@ -128,8 +157,15 @@ appId: io.beebeeb.app
 # Narrow to Videos — the amber match must survive the narrower list, and
 # switching capsules must actually re-narrow (proven by the Photos step
 # above emptying the same query first).
-- tapOn:
-    id: "search-filter-videos"
+# Task 1360 — same fault, same remedy shape.
+- repeat:
+    times: 5
+    while:
+      notVisible:
+        id: "search-match"
+    commands:
+      - tapOn:
+          id: "search-filter-videos"
 
 - assertVisible:
     id: "search-results"
@@ -141,8 +177,21 @@ appId: io.beebeeb.app
 
 # Cancel returns to plain Drive browsing — the bottom bar is gone, and the
 # old top-bar mode does not reappear (there is only one search surface now).
-- tapOn:
-    id: "search-cancel"
+#
+# Task 1360 — this is the second `search-cancel` occurrence in this flow; both are affected.
+# NOTE: `notVisible: "Drive"` was tried here first and was WRONG — the folder title stays
+# rendered in the header throughout active search, so that condition is already false before
+# the tap and the whole repeat block gets SKIPPED (proven live: the skip left search-cancel
+# never tapped at all, and the very next assertion failed for an unrelated reason). `search-bar`
+# is the thing actually up before this tap and gone after, so that is the correct condition.
+- repeat:
+    times: 5
+    while:
+      visible:
+        id: "search-bar"
+    commands:
+      - tapOn:
+          id: "search-cancel"
 
 - extendedWaitUntil:
     visible: "Drive"

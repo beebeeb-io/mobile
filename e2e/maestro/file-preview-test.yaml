@@ -46,8 +46,21 @@ appId: io.beebeeb.app
 
 - takeScreenshot: "preview-02-open"
 
-- tapOn:
-    id: "preview-close"
+# Task 1360 — `preview-close` (`handleClose`) is confirmed to hit the silent
+# accessibility-bridge fault: 9 of 15 runs this session had the tap report COMPLETED with
+# `handleClose`'s own instrumented log line never firing — not even late, confirmed with
+# deliberate multi-second settle windows. This is a retry of the ACTION, not the assertion
+# below — the loop stops as soon as "Drive" is actually visible, and if it never is,
+# `extendedWaitUntil` below still fails for real. Never widen that wait to "fix" a red run
+# here; this is the flow behind task 1355, which was misdiagnosed as a product bug until this
+# instrumentation proved the touch never reached the app.
+- repeat:
+    times: 5
+    while:
+      notVisible: "Drive"
+    commands:
+      - tapOn:
+          id: "preview-close"
 
 - extendedWaitUntil:
     visible: "Drive"
