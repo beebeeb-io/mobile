@@ -61,7 +61,8 @@ scan() { # scan <label> <ci|cs> <ERE> <origin|claims> <pathspec...>
   local label="$1" case="$2" re="$3" exclset="$4"; shift 4
   local flags="-nEI" gflags="-oE"
   [ "$case" = "ci" ] && { flags="-nEIi"; gflags="-oEi"; }
-  local -a excl=(':(exclude)docs/*' ':(exclude,glob)**/graphify-out/**')
+  local -a excl=(':(exclude)docs/*' ':(exclude,glob)**/graphify-out/**'
+                 ':(exclude,glob)**/node_modules/**' ':(exclude,glob)**/target/**' ':(exclude,glob)**/dist/**')
   if [ "$exclset" = "origin" ]; then
     excl+=(':(exclude)*.md')
   else
@@ -91,7 +92,8 @@ check_hosts() {
       report "host-allowlist  $path  unknown host: $host"
       printf '      allow with: %s|%s|<why this host is in the data path>\n' "$path" "$host"
     done < <(printf '%s\n' "$hit" | grep -oE 'https?://[A-Za-z0-9._-]+' | sed -E 's#^https?://##' | sort -u)
-  done < <(git -C "$ROOT" grep -nEI -e 'https?://[A-Za-z0-9._-]+' -- "${RUNTIME_PATHS[@]}" ':(exclude)*.md' ':(exclude)docs/*' ':(exclude,glob)**/graphify-out/**' 2>/dev/null || true)
+  done < <(git -C "$ROOT" grep -nEI -e 'https?://[A-Za-z0-9._-]+' -- "${RUNTIME_PATHS[@]}" ':(exclude)*.md' ':(exclude)docs/*' ':(exclude,glob)**/graphify-out/**' \
+           ':(exclude,glob)**/node_modules/**' ':(exclude,glob)**/target/**' ':(exclude,glob)**/dist/**' 2>/dev/null || true)
 }
 
 check_canon() { # check_canon <file>
