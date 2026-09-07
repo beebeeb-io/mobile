@@ -358,6 +358,13 @@ dev-client preference (not repo state), so it must be set again on any new sim, 
   workarounds on the strength of this paragraph alone — confirm each one still reproduces on the
   new version first, the same way this task's own retries were validated live rather than assumed.
 
+- **`tapOn: "Dismiss menu"` on `BBActionSheet` can navigate into the wrong screen.** The scrim's
+  accessibility label resolves Maestro's tap to the CENTER of its full-screen bounding box, which
+  lands on whatever row is underneath at that point (observed: it hit a row and navigated into
+  ShareSheetScreen instead of dismissing). A point tap at `50%,15%` — near the top of the screen,
+  above any sheet content — dismisses reliably instead. `maestro hierarchy` shows why the center
+  point is unsafe here: the status bar `[0,0][402,54]` already swallows taps in that band, so the
+  scrim's true dismiss-safe area is smaller than its reported bounding box suggests.
 - **The row "…" overflow menu is a native menu Maestro cannot tap.** `tapOn` reports COMPLETED, the
   menu stays open, and it blocks all further input until the app is terminated. Its items also carry
   a leading `", "` in their accessible name. Route to the share sheet with a row swipe RIGHT
