@@ -1,19 +1,20 @@
 /**
  * Amber Constellation — WebView renderer.
  *
- * Returns a self-contained HTML document that loads Three.js from a CDN and
- * draws the animated constellation: 55 outer + 12 inner amber nodes on
- * fibonacci spheres, edges between nearby nodes, a breathing ring, and
- * ambient amber dust. React Native pushes per-frame brightness updates via
- * `webViewRef.current.postMessage(JSON.stringify(frame))`; the page listens on
- * `window.addEventListener('message', ...)` and applies them to the live scene.
+ * Returns a self-contained HTML document that loads a vendored copy of
+ * Three.js and draws the animated constellation: 55 outer + 12 inner amber
+ * nodes on fibonacci spheres, edges between nearby nodes, a breathing ring,
+ * and ambient amber dust. React Native pushes per-frame brightness updates
+ * via `webViewRef.current.postMessage(JSON.stringify(frame))`; the page
+ * listens on `window.addEventListener('message', ...)` and applies them to
+ * the live scene.
  */
+
+import { THREE_MIN_JS_B64 } from './vendor/three-min-b64'
 
 export interface ConstellationRendererOptions {
   /** Background color hex. Defaults to #0C0C0D. */
   background?: string
-  /** Three.js CDN URL. Pinned to a known r158 build by default. */
-  threeCdn?: string
   /** Initial node count for the outer sphere (kind=0). */
   outerNodeCount?: number
   /** Initial node count for the inner core (kind=1). */
@@ -26,7 +27,6 @@ export interface ConstellationRendererOptions {
 
 const DEFAULTS: Required<ConstellationRendererOptions> = {
   background: '#0C0C0D',
-  threeCdn: 'https://unpkg.com/three@0.158.0/build/three.min.js',
   outerNodeCount: 55,
   innerNodeCount: 12,
   maxEdges: 220,
@@ -35,6 +35,10 @@ const DEFAULTS: Required<ConstellationRendererOptions> = {
 
 export function generateConstellationHTML(options: ConstellationRendererOptions = {}): string {
   const cfg = { ...DEFAULTS, ...options }
+  // three.js is inlined from the vendored copy — nothing is fetched at
+  // runtime, so the pairing screen works offline and touches no third-party
+  // CDN.
+  const threeTag = `<script src="data:text/javascript;base64,${THREE_MIN_JS_B64}"></script>`
 
   return `<!doctype html>
 <html lang="en">
@@ -57,7 +61,7 @@ export function generateConstellationHTML(options: ConstellationRendererOptions 
 <body>
 <canvas id="canvas"></canvas>
 <div id="fallback">Initialising constellation…</div>
-<script src="${cfg.threeCdn}" crossorigin="anonymous"></script>
+${threeTag}
 <script>
 (function () {
   'use strict';
