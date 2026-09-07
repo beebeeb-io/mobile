@@ -24,9 +24,12 @@ let Contacts: any = {
   getPermissionsAsync: async () => ({ status: 'undetermined', granted: false }),
   requestPermissionsAsync: async () => ({ status: 'undetermined', granted: false }),
 };
+// SDK 57 renamed expo-calendar's root permission functions (dropped the
+// `Async` suffix) and turned the old names into shims that throw when called
+// — see the rationale + task-1390 fix in `../lib/calendar-permissions.ts`.
 let Calendar: any = {
-  getCalendarPermissionsAsync: async () => ({ status: 'undetermined', granted: false }),
-  requestCalendarPermissionsAsync: async () => ({ status: 'undetermined', granted: false }),
+  getCalendarPermissions: async () => ({ status: 'undetermined', granted: false }),
+  requestCalendarPermissions: async () => ({ status: 'undetermined', granted: false }),
 };
 let Constants: any = { expoConfig: null };
 
@@ -49,6 +52,7 @@ import { SCROLL_EDGE, ScrollEdgeBlur } from '../components/glass';
 import { useToast } from '../lib/toast-context';
 import { useNetworkStatus } from '../lib/useNetworkStatus';
 import { recordRuntimeTrace } from '../lib/runtime-trace';
+import { ensureCalendarPermission } from '../lib/calendar-permissions';
 import { formatBytes } from '../lib/format';
 import {
   DEFAULT_BACKUP_NOTIFICATION_SETTINGS,
@@ -225,21 +229,6 @@ async function ensureContactsPermission(): Promise<boolean> {
 
   const requested = typeof Contacts.requestPermissionsAsync === 'function'
     ? await Contacts.requestPermissionsAsync()
-    : null;
-  return permissionGranted(requested);
-}
-
-async function ensureCalendarPermission(): Promise<boolean> {
-  const getPermission = Calendar.getCalendarPermissionsAsync ?? Calendar.getPermissionsAsync;
-  const requestPermission = Calendar.requestCalendarPermissionsAsync ?? Calendar.requestPermissionsAsync;
-
-  const current = typeof getPermission === 'function'
-    ? await getPermission()
-    : null;
-  if (permissionGranted(current)) return true;
-
-  const requested = typeof requestPermission === 'function'
-    ? await requestPermission()
     : null;
   return permissionGranted(requested);
 }
@@ -1493,7 +1482,22 @@ export default function SettingsScreen() {
   const handleToggleCalendarBackup = useCallback(async () => {
     const enabling = !isCalendarBackupEnabled;
     if (enabling) {
-      const granted = await ensureCalendarPermission();
+      let granted: boolean;
+      try {
+        granted = await ensureCalendarPermission(Calendar);
+      } catch (err) {
+        // The permissions module itself failed (e.g. an expo-calendar API
+        // mismatch) — distinct from the user denying access. Surface it
+        // explicitly rather than leaving the toggle in a silent no-op.
+        recordRuntimeTrace('settings.calendar_toggle.permission_error', {
+          message: err instanceof Error ? err.message : String(err),
+        });
+        showToast({
+          type: 'error',
+          message: 'Could not check calendar access — try again.',
+        });
+        return;
+      }
       if (!granted) {
         Alert.alert(
           'Calendar access needed',
@@ -1511,7 +1515,7 @@ export default function SettingsScreen() {
     }
     await toggleCalendarBackup();
     await syncBackupCategory('calendar', enabling);
-  }, [isCalendarBackupEnabled, toggleCalendarBackup, syncBackupCategory]);
+  }, [isCalendarBackupEnabled, toggleCalendarBackup, syncBackupCategory, showToast]);
 
   const handleIncludeVideosChange = useCallback(async (value: boolean) => {
     await setIncludeVideos(value);
