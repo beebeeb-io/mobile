@@ -18,6 +18,14 @@
 #     CHANGELOG.md/CLAUDE.md/RELEASE_NOTES.md are excluded explicitly wherever
 #     they'd otherwise be swept in under src/public (changelogs and agent docs
 #     legitimately discuss banned words in the negative/historical sense).
+#     Markdown anywhere under a `marketing/` dir is excluded the same way
+#     (task 1367 follow-up): that glob was added for mobile's App Store
+#     artwork/shipped mockups, not internal notes, and a marketing/*.md file
+#     (voice guides, competitive-intel scratch notes, this workspace's own
+#     `marketing/`) legitimately names banned words/providers to document
+#     them, same as CHANGELOG/CLAUDE/RELEASE_NOTES. Non-.md files under
+#     marketing/ (.svg/.html/.strings/.txt/...) are NOT excluded — shipped
+#     copy there still gets scanned.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -116,7 +124,8 @@ scan() { # scan <label> <ci|cs> <ERE> <origin|claims> <pathspec...>
     excl+=(':(exclude)*.md')
   else
     excl+=(':(exclude)CHANGELOG.md' ':(exclude)CLAUDE.md' ':(exclude)RELEASE_NOTES.md'
-           ':(exclude,glob)**/CHANGELOG.md' ':(exclude,glob)**/CLAUDE.md' ':(exclude,glob)**/RELEASE_NOTES.md')
+           ':(exclude,glob)**/CHANGELOG.md' ':(exclude,glob)**/CLAUDE.md' ':(exclude,glob)**/RELEASE_NOTES.md'
+           ':(exclude,glob)**/marketing/**/*.md')
   fi
   local hit path rest matched outfile
   outfile="$(new_tmp)"
