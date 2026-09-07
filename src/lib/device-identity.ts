@@ -20,7 +20,7 @@
  * already keys server-side state — never a freshly minted one for an existing
  * install.
  *
- * Audited (2026-06-25), the four sources key the server as follows:
+ * Reviewed in house (2026-06-25), the four sources key the server as follows:
  *   - sync-client `bb_sync_device_id` → CRDT op origin AND the
  *     `X-Beebeeb-Device-Id` header on `photoBackupClearAssociation`, which the
  *     server uses to scope its `photo_backup_state` PhotoKit-dedup table
