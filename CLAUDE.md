@@ -533,6 +533,24 @@ Consumes `beebeeb-core` via UniFFI-generated Swift/Kotlin bindings. Crypto runs 
   the upload path.
 
 
+## How we work (evidence, design, done, parallel agents)
+
+The full rules live in the workspace `CLAUDE.md` → "How we work" (also summarised in the workspace `AGENTS.md`). Read them; they apply here. The repo-specific instantiation:
+
+- **The count-shaped truth line:** `bun run test 2>&1 | tee /tmp/bb-mobile-test.log` must end in
+  `isolated: N pass, 0 fail across F files` — assert N (as of 2026-09-12: 272 across 35) not the word
+  "ok". `bunx tsc --noEmit; echo exit=$?` — assert the exit code, not silence. For Maestro, the
+  per-flow lines of `run-all.yaml` are the evidence, pasted into the task file; a flow that reports
+  COMPLETED against an unchanged screenshot is the driver fault documented above, not a pass.
+- **Simulators by UDID, always** (`bb-qa-1310` / `bb-qa-2` above), `--udid` on every Maestro call.
+  Maestro is one driver machine-wide — that IS the build semaphore here; the lead grants it.
+- **Design before code:** `design/ios26-canvas/` + `DEVIATIONS.md`. A ruling from Guus supersedes the
+  canvas (precedent 1357) — the DEVIATIONS.md line rides the same commit as the code.
+- **Done means the declared rung ran.** `tsc` + `bun run test` never close a simulator, Maestro, or
+  device rung; a Linux session parks the task in `in-review/` naming the open rungs.
+- **`expo prebuild` is a destructive command in this tree** (see the vendored-restore rule above) —
+  treat it like `git clean`: never in a tree you did not allocate.
+
 ## Graphify
 
 This repo has a knowledge graph at graphify-out/.
