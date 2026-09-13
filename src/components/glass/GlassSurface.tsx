@@ -2,8 +2,11 @@
  * GlassSurface — the base every glass primitive renders through (task 1311).
  *
  * Layer order, bottom to top, matching the canvas `.lg` rule:
- *   1. BlurView            — backdrop-filter: blur(…)
- *   2. fill                — background: rgba(44,44,50,0.46)
+ *   1. BlurView or GlassView — backdrop-filter: blur(…) (task 1308c: a real
+ *      `GlassView` when `isLiquidGlassAvailable()`, else the `BlurView` +
+ *      flat-fill approximation — see `glass-recipe.ts` gap 1)
+ *   2. fill                — background: rgba(44,44,50,0.46) (BlurView path
+ *      only; GlassView supplies its own material fill natively)
  *   3. sheen               — .lg::after, the 118deg specular sweep
  *   4. rim                 — the inset 1px highlight that sells it as glass
  *   5. children
@@ -31,6 +34,7 @@ import {
   type ViewStyle,
 } from 'react-native';
 import { BlurView } from 'expo-blur';
+import { GlassView, isLiquidGlassAvailable } from 'expo-glass-effect';
 
 import { useTheme } from '../../lib/theme-context';
 import {
@@ -154,18 +158,41 @@ export function GlassSurface({
   // zero-width, which puts the rim exactly where it has always been.
   const inset = material.rimOuterWidth;
 
+  // Task 1308c: real system material when the device/OS actually has it.
+  // `isLiquidGlassAvailable()` is false by construction on iOS < 26 and on
+  // every non-iOS platform (the library's own cross-platform stub always
+  // returns false and `GlassView` there is a plain, unstyled `View`), so this
+  // never needs an extra `Platform.OS` guard alongside it.
+  const useNativeGlass = isLiquidGlassAvailable();
+
   const inner = (
     <View style={[styles.clip, { borderRadius: r }, contentStyle]}>
-      <BlurView
-        intensity={material.blurIntensity}
-        tint={material.tint}
-        style={StyleSheet.absoluteFill}
-        pointerEvents="none"
-      />
-      <View
-        pointerEvents="none"
-        style={[StyleSheet.absoluteFill, { backgroundColor: material.fill }]}
-      />
+      {useNativeGlass ? (
+        // Real material: no separate `fill` layer needed, GlassView paints
+        // its own. `colorScheme` is passed explicitly (never 'auto') so a
+        // caller-forced `scheme` prop — the dev gallery's whole reason to
+        // exist, rendering both schemes side by side regardless of the
+        // system setting — is honoured the same way it already is for every
+        // literal colour below.
+        <GlassView
+          glassEffectStyle="regular"
+          colorScheme={activeScheme}
+          style={StyleSheet.absoluteFill}
+        />
+      ) : (
+        <>
+          <BlurView
+            intensity={material.blurIntensity}
+            tint={material.tint}
+            style={StyleSheet.absoluteFill}
+            pointerEvents="none"
+          />
+          <View
+            pointerEvents="none"
+            style={[StyleSheet.absoluteFill, { backgroundColor: material.fill }]}
+          />
+        </>
+      )}
       <Sheen material={material} />
       {inset > 0 ? (
         <View
