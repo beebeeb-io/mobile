@@ -2530,7 +2530,7 @@ export default function SettingsScreen() {
                         {r.label}
                       </Text>
                       <Text style={{ fontSize: 11, color: c.ink3, marginTop: 1 }}>
-                        {r.subtitle}{!r.available ? ' · Coming soon' : ''}
+                        {r.available ? r.subtitle : 'Coming soon'}
                       </Text>
                     </View>
                     {!r.available && (
