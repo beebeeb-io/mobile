@@ -1037,6 +1037,13 @@ public class BeebeebCryptoModule: Module {
       return PlaintextStorageProtection.audit()
     }
 
+    // Task 1399 follow-up (Codex P1): permanently delete every registered
+    // plaintext path. See PlaintextStorageProtection.purgeAll() doc comment.
+    AsyncFunction("purgePlaintextStorage") { () -> [String: Int] in
+      let result = PlaintextStorageProtection.purgeAll()
+      return ["removed": result.removed, "failed": result.failed]
+    }
+
     AsyncFunction("generateRandomBytes") { (length: Int) throws -> Data in
       guard length > 0, length <= 4096 else {
         throw NSError(

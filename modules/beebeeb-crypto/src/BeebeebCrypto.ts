@@ -116,6 +116,29 @@ export async function auditPlaintextStorage(): Promise<PlaintextStorageAuditRow[
   }
 }
 
+export interface PlaintextStoragePurgeResult {
+  removed: number
+  failed: number
+}
+
+/**
+ * Permanently delete every registered plaintext path (task 1399 follow-up,
+ * Codex P1 "Purge plaintext caches after deleting the account"). Called on
+ * every sign-out — not just account deletion — because a zero-knowledge app
+ * must not leave one user's decrypted thumbnails/names/caches on disk for
+ * whoever signs in next on the same device (the exact gap 0300's own audit
+ * registry exists to close). Never throws; a purge failure must not block
+ * sign-out. No-op off iOS.
+ */
+export async function purgePlaintextStorage(): Promise<PlaintextStoragePurgeResult> {
+  if (typeof BeebeebCryptoModule.purgePlaintextStorage !== 'function') return { removed: 0, failed: 0 }
+  try {
+    return (await BeebeebCryptoModule.purgePlaintextStorage()) as PlaintextStoragePurgeResult
+  } catch {
+    return { removed: 0, failed: 0 }
+  }
+}
+
 function bytesToBase64(bytes: Uint8Array): string {
   let binary = ''
   for (let i = 0; i < bytes.length; i++) {

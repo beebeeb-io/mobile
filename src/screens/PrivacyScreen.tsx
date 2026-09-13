@@ -5,7 +5,7 @@
  *   1. Activity tracking toggle (GET/PUT /api/v1/me/tracking)
  *   2. Download my data (POST /api/v1/me/data-export + status poll)
  *   3. Freeze account (POST /api/v1/me/freeze / /me/unfreeze)
- *   4. Delete account (directs to web)
+ *   4. Delete account (in-app flow — task 1399, App Review 5.1.1(v))
  *   5. Your rights (static + privacy policy link)
  */
 
@@ -26,10 +26,12 @@ import * as Haptics from 'expo-haptics';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import { useNavigation } from '@react-navigation/native';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../lib/theme-context';
 import { fonts, spacing, type Colors } from '../theme';
 import { NativeSwitch } from '../components/NativeSwitch';
+import type { RootStackParamList } from '../App';
 import {
   getToken,
   getTrackingPreference,
@@ -366,9 +368,11 @@ function FreezeRow({ c }: { c: C }) {
 
 // ── Main screen ───────────────────────────────────────────────────────────────
 
+type Nav = NativeStackNavigationProp<RootStackParamList>;
+
 export default function PrivacyScreen() {
   const { colors: c } = useTheme();
-  const navigation = useNavigation();
+  const navigation = useNavigation<Nav>();
   const insets = useSafeAreaInsets();
 
   return (
@@ -448,19 +452,7 @@ export default function PrivacyScreen() {
               subtitle="Permanent — all data destroyed"
               icon="trash-outline"
               danger
-              onPress={() => {
-                Alert.alert(
-                  'Delete on web',
-                  'For security, account deletion must be done on the web app. Visit app.beebeeb.io/settings/account.',
-                  [
-                    { text: 'Cancel', style: 'cancel' },
-                    {
-                      text: 'Open web app',
-                      onPress: () => Linking.openURL('https://app.beebeeb.io/settings/account').catch(() => {}),
-                    },
-                  ],
-                );
-              }}
+              onPress={() => navigation.navigate('DeleteAccount')}
               c={c}
             />
           </View>

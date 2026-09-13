@@ -44,6 +44,7 @@ import * as BeebeebCrypto from '../modules/beebeeb-crypto';
 import { populateFileProviderCache } from './lib/file-provider-mount';
 import { initLocalIdentifierMap } from './lib/local-identifier-map';
 import { resetThumbnailSelfRepairState } from './lib/thumbnail-self-repair';
+import { purgeAllPlaintextCaches } from './lib/account-cleanup';
 import {
   setupNotificationHandler,
   registerForPushNotifications,
@@ -84,6 +85,7 @@ import SharedViewScreen from './screens/SharedViewScreen';
 import TrashScreen from './screens/TrashScreen';
 import BackupGuidesScreen from './screens/BackupGuidesScreen';
 import PrivacyScreen from './screens/PrivacyScreen';
+import DeleteAccountScreen from './screens/DeleteAccountScreen';
 import StorageScreen from './screens/StorageScreen';
 import RecoveryPhraseVerifyScreen from './screens/RecoveryPhraseVerifyScreen';
 import RecoveryUnlockScreen from './screens/RecoveryUnlockScreen';
@@ -104,6 +106,7 @@ import PhotoLibrarySettingsScreen from './screens/PhotoLibrarySettingsScreen';
 // __DEV__-only glass primitives gallery (task 1311). Registered below only
 // when __DEV__, so it is unreachable in a production build.
 import GlassGalleryScreen from './screens/GlassGalleryScreen';
+import DevPlaintextPurgeScreen from './screens/DevPlaintextPurgeScreen';
 import { GlassTabBar } from './components/GlassTabBar';
 import { navigationThemeFor } from './lib/navigation-theme';
 import FileRequestsScreen from './screens/FileRequestsScreen';
@@ -291,6 +294,7 @@ export type RootStackParamList = {
   RecoveryPhraseVerify: { phrase: string[] };
   RecoveryUnlock: undefined;
   Privacy: undefined;
+  DeleteAccount: undefined;
   Storage: undefined;
   // Device pairing (Amber Constellation)
   DevicePairing: undefined;
@@ -308,6 +312,7 @@ export type RootStackParamList = {
   PhotoLibrarySettings: undefined;
   /** `__DEV__` only — the iOS 26 glass primitives gallery (task 1311). */
   GlassGallery: undefined;
+  DevPlaintextPurge: undefined;
 };
 
 // ---------------------------------------------------------------------------
@@ -326,7 +331,19 @@ const linking = {
       // (task 1311), so the material can be screenshotted reproducibly with
       //   xcrun simctl openurl <udid> beebeeb://dev/glass
       // rather than tapped through Settings. Absent from release builds.
-      ...(__DEV__ ? { GlassGallery: 'dev/glass' } : null),
+      // Same pattern extended (task 1399) to Storage/Privacy/DeleteAccount so
+      // a headless QA lane (no Maestro, no tap simulator) can screenshot the
+      // App Review compliance screens reproducibly:
+      //   xcrun simctl openurl <udid> beebeeb://dev/storage
+      //   xcrun simctl openurl <udid> beebeeb://dev/privacy
+      //   xcrun simctl openurl <udid> beebeeb://dev/delete-account
+      ...(__DEV__ ? {
+        GlassGallery: 'dev/glass',
+        Storage: 'dev/storage',
+        Privacy: 'dev/privacy',
+        DeleteAccount: 'dev/delete-account',
+        DevPlaintextPurge: 'dev/purge-plaintext-caches',
+      } : null),
       Tabs: {
         // Bare tab name → its tab. beebeeb://photos lands on Photos,
         // beebeeb://shared on Shared, etc. Files keeps the empty path so
@@ -898,6 +915,11 @@ export default function App() {
     await SecureStore.deleteItemAsync(MASTER_KEY_CHECK_LABEL).catch(() => {});
     await SecureStore.deleteItemAsync(MASTER_KEY_FALLBACK_LABEL).catch(() => {});
     await FileSystem.deleteAsync(SIMULATOR_MASTER_KEY_FILE, { idempotent: true }).catch(() => {});
+    // Task 1399 follow-up (Codex P1): a zero-knowledge app must not leave
+    // decrypted thumbnails/names/caches on disk for whoever signs in next on
+    // this device. Every ordinary sign-out purges them, not just deletion —
+    // see account-cleanup.ts. Never throws; never blocks sign-out.
+    await purgeAllPlaintextCaches().catch(() => ({ removed: 0, failed: 0 }));
     setUser(null);
   }, []);
 
@@ -1391,6 +1413,7 @@ export default function App() {
                   <Stack.Screen name="CreateFileRequest" component={CreateFileRequestScreen} />
                   <Stack.Screen name="BackupGuides" component={BackupGuidesScreen} />
                   <Stack.Screen name="Privacy" component={PrivacyScreen} options={{ headerShown: false }} />
+                  <Stack.Screen name="DeleteAccount" component={DeleteAccountScreen} options={{ headerShown: false }} />
                   <Stack.Screen name="Storage" component={StorageScreen} options={{ headerShown: false }} />
                   <Stack.Screen
                     name="RecoveryPhrase"
@@ -1444,6 +1467,13 @@ export default function App() {
                     <Stack.Screen
                       name="GlassGallery"
                       component={GlassGalleryScreen}
+                      options={{ headerShown: false }}
+                    />
+                  ) : null}
+                  {__DEV__ ? (
+                    <Stack.Screen
+                      name="DevPlaintextPurge"
+                      component={DevPlaintextPurgeScreen}
                       options={{ headerShown: false }}
                     />
                   ) : null}

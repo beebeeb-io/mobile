@@ -1,14 +1,17 @@
 /**
- * Storage & Plan screen — usage breakdown + plan upgrade.
- * Billing actions (upgrade / manage) open the web billing page in the system
- * browser — App Store policy + a single web billing surface (Mollie).
+ * Storage & Plan screen — usage breakdown + read-only plan facts.
+ *
+ * No purchase or subscription-management call to action lives on this screen
+ * (task 1400, App Review 3.1.1(a)): the app has no In-App Purchase product
+ * configured, and a button/link to an external purchasing mechanism is not
+ * allowed on most storefronts. Plan/price/storage facts are shown as
+ * information only, with one line of non-tappable copy telling the user
+ * plans are managed from their account on the web — no URL is rendered.
  */
 
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
-  Linking,
   Platform,
   ScrollView,
   StyleSheet,
@@ -17,7 +20,6 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import * as Haptics from 'expo-haptics';
 import { useNavigation } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../lib/theme-context';
@@ -34,7 +36,6 @@ import {
 import { loadCachedBilling, saveCachedBilling } from '../lib/billing-cache';
 
 type C = Colors;
-type BillingCycle = 'monthly' | 'yearly';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -52,15 +53,6 @@ function planLabel(slug: string): string {
   };
   return map[slug.toLowerCase()] ?? slug;
 }
-
-const UPGRADE_CHAIN: Record<string, string> = {
-  free: 'basic',
-  basic: 'pro',
-  pro: 'business',
-  // Legacy slug aliases.
-  personal: 'pro',
-  data_hoarder: 'business',
-};
 
 /**
  * Derive the storage-usage view-model from the subscription payload. The
@@ -84,6 +76,26 @@ function usageFromSubscription(sub: Subscription | null): StorageUsage | null {
 function visiblePlans(all: Plan[]): Plan[] {
   return all.filter((pl) => pl.is_active !== false && pl.id !== 'free');
 }
+
+/**
+ * Non-interactive copy shown in place of every removed purchase/manage
+ * button (task 1400) — the Kindle/Netflix pattern: informational text that
+ * names no URL and is not a call to action, so it sits outside App Review
+ * guideline 3.1.1(a).
+ */
+const PLAN_MANAGEMENT_NOTE = 'Plans are managed from your account on the web.';
+
+/**
+ * Task 1400 follow-up (lead review on PR #80): a full price list sitting
+ * directly under PLAN_MANAGEMENT_NOTE still reads as a call to action to buy
+ * elsewhere, even with no button attached — a reviewer can read "here are the
+ * prices" + "managed on the web" as directions to a purchase mechanism
+ * (3.1.1(a)). For the first submission, hide the plan catalog entirely and
+ * show only Storage usage + Current plan + the one sentence. Flip this back
+ * to `true` in one place once the EU External Purchase Link entitlement (or
+ * real IAP) makes showing prices safe again — no other code changes needed.
+ */
+const SHOW_PLAN_CATALOG = false;
 
 // ── Layout ────────────────────────────────────────────────────────────────────
 
@@ -183,12 +195,10 @@ function StorageUsageCard({
 // ── Current plan card ─────────────────────────────────────────────────────────
 
 function CurrentPlanCard({
-  subscription, usage, onManage, managing, c,
+  subscription, usage, c,
 }: {
   subscription: Subscription | null;
   usage: StorageUsage | null;
-  onManage: () => void;
-  managing: boolean;
   c: C;
 }) {
   const planSlug = subscription?.plan ?? usage?.plan_name ?? 'free';
@@ -216,55 +226,22 @@ function CurrentPlanCard({
         )}
       </View>
 
-      {!isFree && (
-        <TouchableOpacity
-          activeOpacity={0.7}
-          disabled={managing}
-          onPress={() => { Haptics.selectionAsync(); onManage(); }}
-          style={{
-            flexDirection: 'row',
-            alignItems: 'center',
-            justifyContent: 'center',
-            backgroundColor: c.paper2,
-            borderRadius: 8,
-            borderWidth: 1,
-            borderColor: c.line,
-            paddingVertical: 9,
-            gap: 6,
-          }}
-          accessibilityRole="button"
-          accessibilityLabel="Manage subscription"
-        >
-          {managing
-            ? <ActivityIndicator size="small" color={c.amber} />
-            : <>
-                <Ionicons name="card-outline" size={15} color={c.ink3} />
-                <Text style={{ fontSize: 13, fontWeight: '500', color: c.ink }}>
-                  Manage subscription
-                </Text>
-              </>
-          }
-        </TouchableOpacity>
-      )}
+      {/* No "Manage subscription" call to action here (task 1400) — informational
+          plan facts only. See PLAN_MANAGEMENT_NOTE below the card. */}
     </View>
   );
 }
 
-// ── Plan upgrade card ─────────────────────────────────────────────────────────
+// ── Plan info card (read-only — no purchase CTA, task 1400) ───────────────────
 
 function PlanCard({
-  plan, currentPlanSlug, onUpgrade, upgrading, c,
+  plan, currentPlanSlug, c,
 }: {
   plan: Plan;
   currentPlanSlug: string;
-  onUpgrade: (planId: string, billingCycle: BillingCycle) => void;
-  upgrading: string | null;
   c: C;
 }) {
   const isCurrent = plan.id === currentPlanSlug;
-  const monthlyKey = `${plan.id}:monthly`;
-  const yearlyKey = `${plan.id}:yearly`;
-  const hasYearly = plan.price_yearly_eur > 0;
 
   return (
     <View style={{
@@ -300,66 +277,7 @@ function PlanCard({
         </Text>
       )}
 
-      {/* Upgrade buttons → open the web billing page (logic lives on the web) */}
-      {!isCurrent && (
-        <View style={{ flexDirection: 'row', gap: 8, marginTop: 2 }}>
-          <TouchableOpacity
-            activeOpacity={0.8}
-            disabled={!!upgrading}
-            onPress={() => { Haptics.selectionAsync(); onUpgrade(plan.id, 'monthly'); }}
-            style={{
-              flex: 1,
-              backgroundColor: c.paper2,
-              borderColor: c.line,
-              borderWidth: 1,
-              borderRadius: 8,
-              paddingVertical: 9,
-              alignItems: 'center',
-              justifyContent: 'center',
-              flexDirection: 'row',
-              gap: 6,
-            }}
-            accessibilityRole="button"
-            accessibilityLabel={`Upgrade to ${plan.name} monthly`}
-            accessibilityState={{ disabled: !!upgrading }}
-          >
-            {upgrading === monthlyKey
-              ? <ActivityIndicator size="small" color={c.amber} />
-              : <Text style={{ fontSize: 13, fontWeight: '700', color: c.ink }}>Monthly</Text>
-            }
-          </TouchableOpacity>
-          {hasYearly && (
-            <TouchableOpacity
-              activeOpacity={0.8}
-              disabled={!!upgrading}
-              onPress={() => { Haptics.selectionAsync(); onUpgrade(plan.id, 'yearly'); }}
-              style={{
-                flex: 1,
-                backgroundColor: c.amber,
-                borderColor: c.amber,
-                borderWidth: 0,
-                borderRadius: 8,
-                paddingVertical: 9,
-                alignItems: 'center',
-                justifyContent: 'center',
-                flexDirection: 'row',
-                gap: 6,
-              }}
-              accessibilityRole="button"
-              accessibilityLabel={`Upgrade to ${plan.name} yearly`}
-              accessibilityState={{ disabled: !!upgrading }}
-            >
-              {upgrading === yearlyKey
-                ? <ActivityIndicator size="small" color={c.ink} />
-                : <>
-                    <Text style={{ fontSize: 13, fontWeight: '700', color: c.ink }}>Yearly</Text>
-                    <Ionicons name="chevron-forward" size={14} color={c.ink} />
-                  </>
-              }
-            </TouchableOpacity>
-          )}
-        </View>
-      )}
+      {/* No upgrade/purchase call to action here (task 1400) — plan facts only. */}
 
       {isCurrent && (
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
@@ -384,8 +302,6 @@ export default function StorageScreen() {
   const [subscription, setSubscription] = useState<Subscription | null>(null);
   const [plans, setPlans] = useState<Plan[]>([]);
   const [loading, setLoading] = useState(true);
-  const [upgrading, setUpgrading] = useState<string | null>(null);
-  const [managing, setManaging] = useState(false);
 
   // Storage usage is derived from the subscription payload (used_bytes +
   // quota_bytes are embedded there), so there is no separate usage round-trip.
@@ -435,39 +351,8 @@ export default function StorageScreen() {
 
   const currentPlanSlug = subscription?.plan ?? usage?.plan_name ?? 'free';
   const isFree = currentPlanSlug.toLowerCase() === 'free';
-  // Billing logic lives on the web (App Store policy + single Mollie surface):
-  // this screen presents the plans + usage natively, but checkout and
-  // subscription management open the web billing page in the system browser.
-  const openWebBilling = useCallback(async () => {
-    try {
-      await Linking.openURL('https://app.beebeeb.io/settings/billing');
-    } catch {
-      Alert.alert(
-        'Couldn’t open billing',
-        'Manage your subscription on the web at app.beebeeb.io/settings/billing.',
-      );
-    }
-  }, []);
-
-  // Upgrade / Manage → open the web billing page (it handles the actual checkout
-  // and subscription changes). The busy state gives immediate tap feedback.
-  const handleUpgrade = useCallback(async (planId: string, billingCycle: BillingCycle) => {
-    setUpgrading(`${planId}:${billingCycle}`);
-    try {
-      await openWebBilling();
-    } finally {
-      setUpgrading(null);
-    }
-  }, [openWebBilling]);
-
-  const handleManage = useCallback(async () => {
-    setManaging(true);
-    try {
-      await openWebBilling();
-    } finally {
-      setManaging(false);
-    }
-  }, [openWebBilling]);
+  // Task 1400: no purchase/manage call to action lives in this screen — see
+  // the file header comment and PLAN_MANAGEMENT_NOTE.
 
   return (
     <View style={[layout.root, { backgroundColor: c.paper }]}>
@@ -537,56 +422,50 @@ export default function StorageScreen() {
               <CurrentPlanCard
                 subscription={subscription}
                 usage={usage}
-                onManage={handleManage}
-                managing={managing}
                 c={c}
               />
             </View>
+            <Text
+              style={[layout.noteText, { color: c.ink3 }]}
+              testID="storage-plan-management-note"
+            >
+              {PLAN_MANAGEMENT_NOTE}
+            </Text>
           </View>
 
-          {/* Upgrade options — shown for free users or when plans are available */}
-          {plans.length > 0 && (
+          {/* Available plans — informational only, shown for free users or when
+              plans are available. No purchase/upgrade call to action (task 1400).
+              Gated off entirely behind SHOW_PLAN_CATALOG for the first submission
+              (lead review on PR #80): a price list directly under
+              PLAN_MANAGEMENT_NOTE still reads as directions to buy elsewhere. */}
+          {SHOW_PLAN_CATALOG && plans.length > 0 && (
             <View style={layout.section}>
-              <SectionHeader title={isFree ? 'Upgrade your plan' : 'Available plans'} c={c} />
+              <SectionHeader title={isFree ? 'Plans' : 'Available plans'} c={c} />
               <View style={{ gap: 8 }}>
                 {plans.map(plan => (
                   <PlanCard
                     key={plan.id}
                     plan={plan}
                     currentPlanSlug={currentPlanSlug}
-                    onUpgrade={handleUpgrade}
-                    upgrading={upgrading}
                     c={c}
                   />
                 ))}
               </View>
               <Text style={[layout.noteText, { color: c.ink3, marginTop: 8 }]}>
-                Prices in EUR. Annual billing includes a discount. Checkout and
-                subscription management open securely on the web at beebeeb.io.
+                Prices in EUR. Annual billing includes a discount.
               </Text>
             </View>
           )}
 
-          {/* Note when no plans loaded */}
-          {plans.length === 0 && isFree && (
+          {/* Note when no plans loaded — informational text, not a call to action.
+              Also gated: with the catalog hidden, PLAN_MANAGEMENT_NOTE already
+              shown once under Current plan is enough; a second copy here would
+              be a redundant duplicate. */}
+          {SHOW_PLAN_CATALOG && plans.length === 0 && isFree && (
             <View style={layout.section}>
-              <TouchableOpacity
-                activeOpacity={0.7}
-                onPress={() => Linking.openURL('https://beebeeb.io/pricing').catch(() => {})}
-                style={{
-                  backgroundColor: c.amber,
-                  borderRadius: 10,
-                  padding: 14,
-                  alignItems: 'center',
-                  gap: 4,
-                }}
-                accessibilityRole="link"
-              >
-                <Text style={{ fontSize: 15, fontWeight: '700', color: c.ink }}>View plans</Text>
-                <Text style={{ fontSize: 12, color: c.ink, opacity: 0.75 }}>
-                  Basic · Pro · Business
-                </Text>
-              </TouchableOpacity>
+              <Text style={[layout.noteText, { color: c.ink3 }]}>
+                {PLAN_MANAGEMENT_NOTE}
+              </Text>
             </View>
           )}
         </ScrollView>
