@@ -210,6 +210,8 @@ PODS:
     - ExpoModulesCore
   - ExpoFont (57.0.2):
     - ExpoModulesCore
+  - ExpoGlassEffect (57.0.3):
+    - ExpoModulesCore
   - ExpoHaptics (57.0.2):
     - ExpoModulesCore
   - ExpoImageManipulator (57.0.14):
@@ -1788,6 +1790,53 @@ PODS:
     - ReactCommon/turbomodule/core
     - ReactNativeDependencies
     - Yoga
+  - react-native-bottom-tabs (1.4.0):
+    - hermes-engine
+    - RCTRequired
+    - RCTTypeSafety
+    - React-Core
+    - React-Core-prebuilt
+    - React-debug
+    - React-Fabric
+    - React-featureflags
+    - React-graphics
+    - React-ImageManager
+    - React-jsi
+    - react-native-bottom-tabs/common (= 1.4.0)
+    - React-NativeModulesApple
+    - React-RCTFabric
+    - React-renderercss
+    - React-rendererdebug
+    - React-utils
+    - ReactCodegen
+    - ReactCommon/turbomodule/bridging
+    - ReactCommon/turbomodule/core
+    - ReactNativeDependencies
+    - SwiftUIIntrospect (~> 1.0)
+    - Yoga
+  - react-native-bottom-tabs/common (1.4.0):
+    - hermes-engine
+    - RCTRequired
+    - RCTTypeSafety
+    - React-Core
+    - React-Core-prebuilt
+    - React-debug
+    - React-Fabric
+    - React-featureflags
+    - React-graphics
+    - React-ImageManager
+    - React-jsi
+    - React-NativeModulesApple
+    - React-RCTFabric
+    - React-renderercss
+    - React-rendererdebug
+    - React-utils
+    - ReactCodegen
+    - ReactCommon/turbomodule/bridging
+    - ReactCommon/turbomodule/core
+    - ReactNativeDependencies
+    - SwiftUIIntrospect (~> 1.0)
+    - Yoga
   - react-native-menu (1.2.4):
     - hermes-engine
     - RCTRequired
@@ -2482,6 +2531,7 @@ PODS:
   - SDWebImageWebPCoder (0.15.0):
     - libwebp (~> 1.0)
     - SDWebImage/Core (~> 5.17)
+  - SwiftUIIntrospect (1.3.0)
   - Yoga (0.0.0)
 
 DEPENDENCIES:
@@ -2508,6 +2558,7 @@ DEPENDENCIES:
   - "ExpoDomWebView (from `../node_modules/@expo/dom-webview/ios`)"
   - ExpoFileSystem (from `../node_modules/expo-file-system/ios/ExpoFileSystem.podspec`)
   - ExpoFont (from `../node_modules/expo-font/ios/ExpoFont.podspec`)
+  - ExpoGlassEffect (from `../node_modules/expo-glass-effect/ios`)
   - ExpoHaptics (from `../node_modules/expo-haptics/ios`)
   - ExpoImageManipulator (from `../node_modules/expo-image-manipulator/ios/ExpoImageManipulator.podspec`)
   - ExpoImagePicker (from `../node_modules/expo-image-picker/ios`)
@@ -2572,6 +2623,7 @@ DEPENDENCIES:
   - React-mutationobservernativemodule (from `../node_modules/react-native/ReactCommon/react/nativemodule/mutationobserver`)
   - react-native-blob-util (from `../node_modules/react-native-blob-util`)
   - react-native-blurhash (from `../node_modules/react-native-blurhash`)
+  - react-native-bottom-tabs (from `../node_modules/react-native-bottom-tabs`)
   - "react-native-menu (from `../node_modules/@react-native-menu/menu`)"
   - "react-native-netinfo (from `../node_modules/@react-native-community/netinfo`)"
   - react-native-pdf (from `../node_modules/react-native-pdf`)
@@ -2624,6 +2676,7 @@ SPEC REPOS:
     - ReachabilitySwift
     - SDWebImage
     - SDWebImageWebPCoder
+    - SwiftUIIntrospect
 
 EXTERNAL SOURCES:
   BeebeebCrypto:
@@ -2672,6 +2725,8 @@ EXTERNAL SOURCES:
     :podspec: "../node_modules/expo-file-system/ios/ExpoFileSystem.podspec"
   ExpoFont:
     :podspec: "../node_modules/expo-font/ios/ExpoFont.podspec"
+  ExpoGlassEffect:
+    :path: "../node_modules/expo-glass-effect/ios"
   ExpoHaptics:
     :path: "../node_modules/expo-haptics/ios"
   ExpoImageManipulator:
@@ -2799,6 +2854,8 @@ EXTERNAL SOURCES:
     :path: "../node_modules/react-native-blob-util"
   react-native-blurhash:
     :path: "../node_modules/react-native-blurhash"
+  react-native-bottom-tabs:
+    :path: "../node_modules/react-native-bottom-tabs"
   react-native-menu:
     :path: "../node_modules/@react-native-menu/menu"
   react-native-netinfo:
@@ -2914,6 +2971,7 @@ SPEC CHECKSUMS:
   ExpoDomWebView: beaec034e51bd028428b98bb1f2633ab79c6d095
   ExpoFileSystem: cc500f33804065aacc7b3366007267b84deca8c8
   ExpoFont: 02ab7433c23831e76b98aa1e2de67b404eeebc4a
+  ExpoGlassEffect: ac454a05346de8610d61dc1324d624893ca22d14
   ExpoHaptics: bc5461002fc97e53c213a1af6c88c8f95965b734
   ExpoImageManipulator: 777c68e56abb4fb62c28fb774d3287b417077d1d
   ExpoImagePicker: 850f80e4ebdf8d542aed910bae3f50142110ba43
@@ -2921,7 +2979,7 @@ SPEC CHECKSUMS:
   ExpoLocalAuthentication: 96989637e567a10cdeabe61e5c6026d30c0dc53f
   ExpoLogBox: 80957303325cd4439137765c90a87d7f22aaf2ff
   ExpoMediaLibrary: 344f5b528a71f34794e9d7396e32589531df146e
-  ExpoModulesCore: 492fd35e2f38f5a4d85ed7a32507feba742f12b4
+  ExpoModulesCore: ddab38cce829b84a6b160d8a480c4e72540f6c84
   ExpoModulesJSI: 1529d4289b9a3647d8901a27b41f1af173598b45
   ExpoModulesWorklets: 57a11e6ae984c2680e7967b785ded96199caed8c
   ExpoNotifications: dd1288ca85d320ea163105e5efdf0a1cc05760f8
@@ -2979,6 +3037,7 @@ SPEC CHECKSUMS:
   React-mutationobservernativemodule: 530bff1bba9511a5133e3cf8170e3b2c0df49e89
   react-native-blob-util: fee8f26813fcc4cb01008ba7f5b485b290d33bcc
   react-native-blurhash: 994932753df8d58ec605388c96df9e6a039bc60e
+  react-native-bottom-tabs: 9bffa8adc0a08a3b278f824b3569d5ba74cea880
   react-native-menu: 9393a56c538bdc1831f88a193766d9a52ba23281
   react-native-netinfo: 2f906d5d9a639090ed1c079135d6485a95f749f1
   react-native-pdf: 2bc0989bc44ef7e5221c49c0f1bb464a2c27640b
@@ -3025,6 +3084,7 @@ SPEC CHECKSUMS:
   RNScreens: 7118cd7715c226856125b5bece3c4d9abec90356
   SDWebImage: e9fc87c1aab89a8ab1bbd74eba378c6f53be8abf
   SDWebImageWebPCoder: 0e06e365080397465cc73a7a9b472d8a3bd0f377
+  SwiftUIIntrospect: fee9aa07293ee280373a591e1824e8ddc869ba5d
   Yoga: 18b74b3ade30bebc1904004dfaceae1dd02a330a
 
 PODFILE CHECKSUM: 0a3229c81ba33c3f37c26889a8880be94b425fee
