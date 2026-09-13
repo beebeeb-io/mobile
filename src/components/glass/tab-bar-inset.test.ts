@@ -1,44 +1,28 @@
 // @ts-nocheck — bun runs this; `bun:test` types aren't in the Expo tsconfig
 import { describe, expect, it, mock } from 'bun:test';
 
-// The module under test also exports the `useTabBarBottomInset` hook, which
-// imports `useSafeAreaInsets` from 'react-native-safe-area-context' at module
-// load time — that package pulls in RN's real Flow-typed source, which bun's
-// test runner can't parse (same fix as useKeyboardLayoutAnimation.test.ts).
-// Mock it so this file can import the two pure functions below directly.
-mock.module('react-native-safe-area-context', () => ({
-  useSafeAreaInsets: () => ({ top: 0, right: 0, bottom: 0, left: 0 }),
+// 1308a rewrite: the geometry this file used to compute by hand (for the
+// now-deleted GlassTabBar) is gone — `useTabBarBottomInset` just adds a
+// small clearance on top of the native bar's own measured height.
+// `addTabBarClearance` itself is pure and never calls the native hook, but
+// the MODULE still has a top-level `import { useBottomTabBarHeight } from
+// 'react-native-bottom-tabs'` that runs on load regardless of which export
+// a test actually calls — that package pulls in RN's real Flow-typed
+// source, which bun's test runner can't parse (same fix as
+// useKeyboardLayoutAnimation.test.ts / the pre-1308a version of this file).
+mock.module('react-native-bottom-tabs', () => ({
+  useBottomTabBarHeight: () => 0,
 }));
 
-const {
-  TAB_BAR_BOTTOM_OFFSET,
-  TAB_BAR_CAPSULE_HEIGHT,
-  TAB_BAR_TOP_PADDING,
-  tabBarSafeAreaPadding,
-  tabBarTotalHeight,
-} = await import('./tab-bar-inset');
+const { addTabBarClearance } = await import('./tab-bar-inset');
 
-describe('tabBarSafeAreaPadding', () => {
-  it('mirrors GlassTabBar.tsx own pre-1394 inline formula exactly', () => {
-    // (insets.bottom || 12) + BAR_BOTTOM - 12, for a real home-indicator device
-    expect(tabBarSafeAreaPadding(34)).toBe(34 + TAB_BAR_BOTTOM_OFFSET - 12);
-    expect(tabBarSafeAreaPadding(34)).toBe(44);
+describe('addTabBarClearance', () => {
+  it('adds the fixed content clearance on top of the measured native bar height', () => {
+    expect(addTabBarClearance(83)).toBe(95);
+    expect(addTabBarClearance(49)).toBe(61);
   });
 
-  it('falls back to 12 when insets.bottom is 0 (no home indicator)', () => {
-    expect(tabBarSafeAreaPadding(0)).toBe(12 + TAB_BAR_BOTTOM_OFFSET - 12);
-    expect(tabBarSafeAreaPadding(0)).toBe(TAB_BAR_BOTTOM_OFFSET);
-  });
-});
-
-describe('tabBarTotalHeight', () => {
-  it('adds the fixed top padding + capsule height to the safe-area padding', () => {
-    expect(tabBarTotalHeight(34)).toBe(TAB_BAR_TOP_PADDING + TAB_BAR_CAPSULE_HEIGHT + 44);
-    expect(tabBarTotalHeight(34)).toBe(110);
-  });
-
-  it('never returns less than the fixed geometry, even at insets.bottom = 0', () => {
-    expect(tabBarTotalHeight(0)).toBe(TAB_BAR_TOP_PADDING + TAB_BAR_CAPSULE_HEIGHT + TAB_BAR_BOTTOM_OFFSET);
-    expect(tabBarTotalHeight(0)).toBe(88);
+  it('still adds clearance at zero bar height (e.g. a mid-measurement frame)', () => {
+    expect(addTabBarClearance(0)).toBe(12);
   });
 });

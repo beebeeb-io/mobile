@@ -24,23 +24,44 @@ const SOURCE_FILES = [
   'Constants.swift',
   'SyncEngine.swift',
 ];
-// PlaintextStorageProtection.swift (pre-mortem 12 / task 0300) is added
-// directly to ios/Beebeeb.xcodeproj/project.pbxproj's BeebeebFileProvider
-// Sources build phase rather than through this list: it lives at
-// modules/beebeeb-crypto/ios/PlaintextStorageProtection.swift, outside
-// targets/file-provider/, which is the one directory this generator's path
-// template (`../targets/file-provider/${file}`) assumes. Do not add it here
-// — doing so would resolve to a path that does not exist and break prebuild.
-// A clean `expo prebuild` will NOT drop the hand-added pbxproj entry (see
-// `ensureBuildPhase` above, which only appends missing files and never
-// removes existing ones) unless prebuild regenerates ios/ from scratch — if
-// it ever does, re-add the two pbxproj entries by hand (see git history for
-// this file's commit that introduced them) and re-run
-// `scripts/restore-vendored-ios.sh`.
+// PlaintextStorageProtection.swift (pre-mortem 12 / task 0300) and
+// RuntimeTrace.swift (diagnostics, task 8170a56) live outside
+// targets/file-provider/ (at modules/beebeeb-crypto/ios/), so they can't go
+// through SOURCE_FILES' `../targets/file-provider/${file}` path template.
+// Constants.swift calls `PlaintextStorageProtection.protect(dir)`, and
+// PlaintextStorageProtection itself calls `RuntimeTrace.event(...)`, so both
+// must compile directly into the BeebeebFileProvider target's own Sources
+// build phase. The extension has no Podfile target of its own (it isn't
+// listed in ios/Podfile), so unlike the app/Share targets it never links the
+// BeebeebCrypto pod that would otherwise pick these files up for free via
+// CocoaPods' `**/*.swift` podspec glob.
+//
+// Wired the same way as `beebeeb_uniffi.swift` below: an explicit
+// path+name entry, resolved relative to `ios/` (this group has no `path` of
+// its own, so it inherits the main group's location), added to both
+// EXTENSION_FILES (Xcode group visibility) and to `sourceBuildFiles` in
+// `ensureExtensionWiring` (actually compiled). Task 1308a found these two
+// hand-wired directly into project.pbxproj outside any generator — a
+// `--clean` prebuild silently dropped that hand wiring and broke the build;
+// this generator entry is the durable fix so `expo prebuild --clean` +
+// `scripts/restore-vendored-ios.sh` reproduces a building ios/ with NO
+// manual pbxproj edits.
+const CRYPTO_SHARED_FILES = [
+  {
+    path: '../modules/beebeeb-crypto/ios/PlaintextStorageProtection.swift',
+    name: 'PlaintextStorageProtection.swift',
+  },
+  { path: '../modules/beebeeb-crypto/ios/RuntimeTrace.swift', name: 'RuntimeTrace.swift' },
+];
 const EXTENSION_FILES = [
   ...SOURCE_FILES.map((file) => ({
     path: `../targets/file-provider/${file}`,
     name: file,
+    fileType: 'sourcecode.swift',
+    buildPhase: 'PBXSourcesBuildPhase',
+  })),
+  ...CRYPTO_SHARED_FILES.map((file) => ({
+    ...file,
     fileType: 'sourcecode.swift',
     buildPhase: 'PBXSourcesBuildPhase',
   })),
@@ -426,6 +447,18 @@ function ensureExtensionWiring(project) {
       comment: `${file} in Sources`,
     };
   });
+
+  for (const file of CRYPTO_SHARED_FILES) {
+    const fileRef = ensureFileReference(project, {
+      path: file.path,
+      name: file.name,
+      fileType: 'sourcecode.swift',
+    });
+    sourceBuildFiles.push({
+      value: ensureBuildFile(project, fileRef, `${file.name} in Sources`, undefined, owned),
+      comment: `${file.name} in Sources`,
+    });
+  }
 
   const uniffiRef = ensureFileReference(project, {
     path: 'Beebeeb/beebeeb_uniffi.swift',

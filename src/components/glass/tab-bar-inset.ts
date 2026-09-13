@@ -1,71 +1,43 @@
 /**
- * tab-bar-inset — single source of truth for the floating GlassTabBar's own
- * height (task 1394).
+ * tab-bar-inset — single source of truth for the space every tab screen
+ * must reserve at its own bottom edge so content/controls don't render
+ * behind the tab bar (task 1394, rewritten for 1308a).
  *
- * GlassTabBar became an absolute overlay in 1394 — previously it rendered IN
- * FLOW and react-navigation's `BottomTabView` reserved its height for every
- * tab screen automatically (a flex sibling with intrinsic height shrinks the
- * `flex: 1` screen container next to it). An absolutely-positioned sibling is
- * removed from that flex flow, so the screen container now expands to the
- * FULL height of the tab — every scrollable list, FAB, progress card and
- * bottom-pinned control has to reserve the bar's footprint itself or it
- * renders clipped behind the glass capsule.
- *
- * This collapses three different ad-hoc numbers that predate 1394:
- *   - PhotosScreen: `TAB_BAR_RESERVED = 96`
- *   - Files/Shared/Settings: `insets.bottom + 120`
- *   - The Files FAB: a bare `bottom: 16`, not insets-aware at all (it worked
- *     only because the screen's own bottom edge already excluded the bar)
- *
- * Geometry mirrors GlassTabBar.tsx's own layout exactly — read/change both
- * files together:
- *   - `paddingTop: 6` on the bar's outer row (`TAB_BAR_TOP_PADDING`)
- *   - the capsule's content height: 5pt track padding (top+bottom) + a 50pt
- *     item (7 top padding + 23 icon + 2 gap + ~13 label line + 5 bottom
- *     padding) = 60pt total (`TAB_BAR_CAPSULE_HEIGHT`). Canvas pt sizes are
- *     fixed, not Dynamic-Type-scaled, so this is a constant, not something
- *     that needs to be measured at runtime.
- *   - `paddingBottom: (insets.bottom || 12) + 22 - 12` — the bar's own
- *     safe-area clearance (`TAB_BAR_BOTTOM_OFFSET` = GlassTabBar's old local
- *     `BAR_BOTTOM`).
- * Cross-checked against on-device screenshots in docs/_qa-evidence/1394/.
+ * 1394 introduced this file to compute `GlassTabBar`'s height by hand from
+ * its own drawn geometry (padding, capsule dimensions, a Dynamic-Type
+ * font-scaling cap) because that bar was a custom-drawn absolute overlay —
+ * nothing else knew its real size. 1308a replaced `GlassTabBar` with the
+ * SYSTEM tab bar via `createNativeBottomTabNavigator`
+ * (`@bottom-tabs/react-navigation`), so that hand-computed geometry is gone
+ * along with the component it described. The native bar's real height —
+ * whatever iOS actually renders, including safe-area inset, Liquid Glass
+ * sizing and Dynamic Type — is available directly as a LIVE measurement via
+ * `useBottomTabBarHeight()` (`react-native-bottom-tabs`): traced to
+ * `TabView.tsx`'s `handleTabBarMeasured`, fed by a real native
+ * `onTabBarMeasured` event, not something to approximate ourselves.
  */
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useBottomTabBarHeight } from 'react-native-bottom-tabs';
 
-export const TAB_BAR_TOP_PADDING = 6;
-/**
- * Fixed, not measured — this depends on `GlassTabBar.tsx` capping its label
- * `Text` at `maxFontSizeMultiplier={1.3}` (task 1394, Codex P2 review). At
- * the platform Dynamic Type maximum an uncapped label would grow well past
- * the ~13pt this constant assumes; 1.3x keeps the real item height (~54pt)
- * within the `CONTENT_CLEARANCE` slack below. If that cap is ever removed,
- * this needs to become a measured value (the `headerHeight` pattern) instead
- * of a constant.
- */
-export const TAB_BAR_CAPSULE_HEIGHT = 60;
-/** Mirrors GlassTabBar's own bottom-offset constant. Keep both in sync. */
-export const TAB_BAR_BOTTOM_OFFSET = 22;
-/** Small clearance so scrollable content doesn't touch the capsule's edge. */
+/** Small clearance so scrollable content doesn't touch the bar's edge. */
 const CONTENT_CLEARANCE = 12;
 
-/** The bar's own bottom padding — GlassTabBar uses this directly. */
-export function tabBarSafeAreaPadding(insetsBottom: number): number {
-  return (insetsBottom || 12) + TAB_BAR_BOTTOM_OFFSET - 12;
-}
-
-/** The bar's total rendered height, from the screen's bottom edge up. */
-export function tabBarTotalHeight(insetsBottom: number): number {
-  return TAB_BAR_TOP_PADDING + TAB_BAR_CAPSULE_HEIGHT + tabBarSafeAreaPadding(insetsBottom);
+/**
+ * Pure half of `useTabBarBottomInset`, split out so it's unit-testable
+ * without a React render context — `useBottomTabBarHeight()` reads a
+ * context value via `useContext`, which (correctly) throws outside of one,
+ * the same reason `useKeyboardLayoutAnimation.ts` keeps its own arithmetic
+ * (`computeSearchStackBottomPadding`) as a separate plain export.
+ */
+export function addTabBarClearance(nativeBarHeight: number): number {
+  return nativeBarHeight + CONTENT_CLEARANCE;
 }
 
 /**
  * What every tab screen's scrollable content — and any bottom-pinned control
- * that isn't already `position: 'absolute'` relative to the bar itself, e.g.
- * a FAB, a Live-Activity-style progress card, a batch action bar — must
- * reserve at its own bottom edge so it never renders behind the overlaid
- * GlassTabBar.
+ * that isn't already positioned relative to the bar itself, e.g. a FAB, a
+ * Live-Activity-style progress card, a batch action bar — must reserve at
+ * its own bottom edge so it never renders behind the native tab bar.
  */
 export function useTabBarBottomInset(): number {
-  const insets = useSafeAreaInsets();
-  return tabBarTotalHeight(insets.bottom) + CONTENT_CLEARANCE;
+  return addTabBarClearance(useBottomTabBarHeight());
 }
