@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		0C3D515CF4524FD4B75E2C46 /* BeebeebKeychainCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03BBD1276F7C4EE1AB64B5A0 /* BeebeebKeychainCore.swift */; };
 		13B07FBF1A68108700A75B9A /* Images.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 13B07FB51A68108700A75B9A /* Images.xcassets */; };
+		190536D0932A1740FB6787AD /* RuntimeTrace.swift in Sources */ = {isa = PBXBuildFile; fileRef = 537BE98504760F66DD478BFA /* RuntimeTrace.swift */; };
 		3E1C75ED5DCB46E4A82E6EDA /* BeebeebWidget.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = A62671E80DE14F679A98D6CE /* BeebeebWidget.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		3E461D99554A48A4959DE609 /* SplashScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = AA286B85B6C04FC6940260E9 /* SplashScreen.storyboard */; };
 		432E85E5544143A8AD034276 /* beebeeb_uniffi.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A602025E4744176B9B524AF /* beebeeb_uniffi.swift */; };
@@ -17,7 +18,6 @@
 		49D02DE3ECE3426F8ACAA2C7 /* BeebeebKeychainCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03F631D2343640FCB0B8C039 /* BeebeebKeychainCore.swift */; };
 		50C6EF9CF1084681BF37C715 /* FileProviderItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 32E674A2AFBE4506854DE569 /* FileProviderItem.swift */; };
 		5D5225308CEE1C718C5FE8D3 /* PlaintextStorageProtection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28A12B84E5E152F9B362DF59 /* PlaintextStorageProtection.swift */; };
-		190536D0932A1740FB6787AD /* RuntimeTrace.swift in Sources */ = {isa = PBXBuildFile; fileRef = 537BE98504760F66DD478BFA /* RuntimeTrace.swift */; };
 		63CBA88C915A490C8BB74A76 /* FileProviderExtension.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9BBBAA72D7964D949999638E /* FileProviderExtension.swift */; };
 		66DEF451BCAF4C4680C00722 /* BeebeebWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = 70AEFEB5071843C8AB30EC33 /* BeebeebWidget.swift */; };
 		7485981DCDD5371DF7C4731F /* libPods-Beebeeb.a in Frameworks */ = {isa = PBXBuildFile; fileRef = A44C9C2DFAE22658FE9D00F9 /* libPods-Beebeeb.a */; };
@@ -92,13 +92,13 @@
 		13B07FB61A68108700A75B9A /* Info.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = Info.plist; path = Beebeeb/Info.plist; sourceTree = "<group>"; };
 		1A602025E4744176B9B524AF /* beebeeb_uniffi.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = beebeeb_uniffi.swift; path = Beebeeb/beebeeb_uniffi.swift; sourceTree = "<group>"; };
 		28A12B84E5E152F9B362DF59 /* PlaintextStorageProtection.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = PlaintextStorageProtection.swift; path = "../modules/beebeeb-crypto/ios/PlaintextStorageProtection.swift"; sourceTree = "<group>"; };
-		537BE98504760F66DD478BFA /* RuntimeTrace.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = RuntimeTrace.swift; path = "../modules/beebeeb-crypto/ios/RuntimeTrace.swift"; sourceTree = "<group>"; };
 		2B98F240CD0B4F70888AB93E /* FileProviderEnumerator.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = FileProviderEnumerator.swift; path = "../targets/file-provider/FileProviderEnumerator.swift"; sourceTree = "<group>"; };
 		2EAC30BEE9001D651166B6C4 /* Pods-Beebeeb.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Beebeeb.release.xcconfig"; path = "Target Support Files/Pods-Beebeeb/Pods-Beebeeb.release.xcconfig"; sourceTree = "<group>"; };
 		32E674A2AFBE4506854DE569 /* FileProviderItem.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = FileProviderItem.swift; path = "../targets/file-provider/FileProviderItem.swift"; sourceTree = "<group>"; };
 		3A50923D10BE4116BEB205C9 /* BeebeebFileProvider.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = BeebeebFileProvider.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		4B8DC2F2D54448BC9DBA8F21 /* BeebeebCore.xcframework */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = wrapper.xcframework; name = BeebeebCore.xcframework; path = BeebeebCore.xcframework; sourceTree = "<group>"; };
 		50F2249133D24105B84E13E3 /* BeebeebCryptoShim.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = BeebeebCryptoShim.swift; path = BeebeebShare/BeebeebCryptoShim.swift; sourceTree = "<group>"; };
+		537BE98504760F66DD478BFA /* RuntimeTrace.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = RuntimeTrace.swift; path = "../modules/beebeeb-crypto/ios/RuntimeTrace.swift"; sourceTree = "<group>"; };
 		70AEFEB5071843C8AB30EC33 /* BeebeebWidget.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = BeebeebWidget.swift; path = BeebeebWidget/BeebeebWidget.swift; sourceTree = "<group>"; };
 		7B79994A73174E15ADFB0D72 /* BeebeebWidget.entitlements */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.entitlements; name = BeebeebWidget.entitlements; path = BeebeebWidget/BeebeebWidget.entitlements; sourceTree = "<group>"; };
 		7BEBEE27F1AE4BE489AA1268 /* Constants.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = Constants.swift; path = "../targets/file-provider/Constants.swift"; sourceTree = "<group>"; };
@@ -749,7 +749,7 @@
 				SWIFT_OBJC_BRIDGING_HEADER = "Beebeeb/Beebeeb-Bridging-Header.h";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1,2";
+				TARGETED_DEVICE_FAMILY = 1;
 				VERSIONING_SYSTEM = "apple-generic";
 			};
 			name = Debug;
@@ -789,7 +789,7 @@
 				PRODUCT_NAME = Beebeeb;
 				SWIFT_OBJC_BRIDGING_HEADER = "Beebeeb/Beebeeb-Bridging-Header.h";
 				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1,2";
+				TARGETED_DEVICE_FAMILY = 1;
 				VERSIONING_SYSTEM = "apple-generic";
 			};
 			name = Release;
@@ -835,7 +835,7 @@
 				SKIP_INSTALL = YES;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 5;
-				TARGETED_DEVICE_FAMILY = "1,2";
+				TARGETED_DEVICE_FAMILY = 1;
 			};
 			name = Debug;
 		};
@@ -875,7 +875,7 @@
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
 				SWIFT_VERSION = 5;
-				TARGETED_DEVICE_FAMILY = "1,2";
+				TARGETED_DEVICE_FAMILY = 1;
 			};
 			name = Release;
 		};
@@ -1064,7 +1064,7 @@
 				SKIP_INSTALL = YES;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 5;
-				TARGETED_DEVICE_FAMILY = "1,2";
+				TARGETED_DEVICE_FAMILY = 1;
 			};
 			name = Debug;
 		};
@@ -1109,7 +1109,7 @@
 				SKIP_INSTALL = YES;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 5;
-				TARGETED_DEVICE_FAMILY = "1,2";
+				TARGETED_DEVICE_FAMILY = 1;
 			};
 			name = Debug;
 		};
@@ -1157,7 +1157,7 @@
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
 				SWIFT_VERSION = 5;
-				TARGETED_DEVICE_FAMILY = "1,2";
+				TARGETED_DEVICE_FAMILY = 1;
 			};
 			name = Release;
 		};
@@ -1197,7 +1197,7 @@
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
 				SWIFT_VERSION = 5;
-				TARGETED_DEVICE_FAMILY = "1,2";
+				TARGETED_DEVICE_FAMILY = 1;
 			};
 			name = Release;
 		};
