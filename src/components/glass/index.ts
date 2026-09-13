@@ -22,14 +22,7 @@ export {
   type GlassSegmentProps,
 } from './GlassSegment';
 export { ScrollEdgeBlur, type ScrollEdgeBlurProps } from './ScrollEdgeBlur';
-export {
-  TAB_BAR_BOTTOM_OFFSET,
-  TAB_BAR_CAPSULE_HEIGHT,
-  TAB_BAR_TOP_PADDING,
-  tabBarSafeAreaPadding,
-  tabBarTotalHeight,
-  useTabBarBottomInset,
-} from './tab-bar-inset';
+export { useTabBarBottomInset } from './tab-bar-inset';
 
 export {
   BLUR_PX_AT_FULL_INTENSITY,

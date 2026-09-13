@@ -7,12 +7,12 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SecureStore from 'expo-secure-store';
 import * as FileSystem from 'expo-file-system/legacy';
 import { NavigationContainer, createNavigationContainerRef } from '@react-navigation/native';
-import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
+import { createNativeBottomTabNavigator } from '@bottom-tabs/react-navigation';
+import type { SFSymbol } from 'sf-symbols-typescript';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Text } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { Icon } from './components/Icon';
 import { colors } from './theme';
 import * as Font from 'expo-font';
 import { ThemeProvider, useTheme } from './lib/theme-context';
@@ -107,7 +107,6 @@ import PhotoLibrarySettingsScreen from './screens/PhotoLibrarySettingsScreen';
 // when __DEV__, so it is unreachable in a production build.
 import GlassGalleryScreen from './screens/GlassGalleryScreen';
 import DevPlaintextPurgeScreen from './screens/DevPlaintextPurgeScreen';
-import { GlassTabBar } from './components/GlassTabBar';
 import { navigationThemeFor } from './lib/navigation-theme';
 import FileRequestsScreen from './screens/FileRequestsScreen';
 import CreateFileRequestScreen from './screens/CreateFileRequestScreen';
@@ -236,6 +235,12 @@ export type TabParamList = {
   Shared: undefined;
   Photos: undefined;
   Settings: undefined;
+  // 1308a — the iOS 26 native search-role tab (Apple's own "bar morphs into a
+  // search field" behaviour, replacing 1312's glass search orb). Its own
+  // tabPress is always intercepted (`preventsDefault` + a listener) and
+  // redirected into Files' existing `{action:'search'}` contract (1338/1357)
+  // — this route's own screen is never actually shown.
+  Search: undefined;
 };
 
 export type RootStackParamList = {
@@ -364,7 +369,7 @@ const linking = {
   },
 };
 
-const Tab = createBottomTabNavigator<TabParamList>();
+const Tab = createNativeBottomTabNavigator<TabParamList>();
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
 // Module-level nav ref so non-component code (deep-link handler / quick
@@ -442,29 +447,25 @@ const offlineStyles = StyleSheet.create({
 });
 
 // ---------------------------------------------------------------------------
-// Tab icon — Beebeeb Icon component (Feather stroke style, matches web)
+// Tab icons — SF Symbols (task 1308a). The native tab bar renders + tints
+// these itself (tabBarActiveTintColor/tabBarInactiveTintColor), so there is
+// no `color`/`focused` prop to thread through a wrapper component the way
+// the old Feather-based TabIcon needed — just the outline/filled pair.
 // ---------------------------------------------------------------------------
 
-import type { IconName } from './components/Icon';
-
-const TAB_ICON_MAP: Record<string, IconName> = {
-  Files:    'folder',
-  Shared:   'share',
-  Photos:   'image',
-  Settings: 'settings',
+const TAB_SF_SYMBOLS: Record<string, { focused: SFSymbol; unfocused: SFSymbol }> = {
+  Files: { focused: 'folder.fill', unfocused: 'folder' },
+  Shared: { focused: 'person.2.fill', unfocused: 'person.2' },
+  Photos: { focused: 'photo.fill', unfocused: 'photo' },
+  Settings: { focused: 'gearshape.fill', unfocused: 'gearshape' },
+  // Apple's own search tabs use the plain (non-filled) magnifying glass in
+  // both states — there is no "magnifyingglass.fill" symbol.
+  Search: { focused: 'magnifyingglass', unfocused: 'magnifyingglass' },
 };
 
-function TabIcon({ name, focused, color }: { name: string; focused: boolean; color: string }) {
-  const iconName = TAB_ICON_MAP[name] ?? 'file';
-  // Feather doesn't have filled variants; increase strokeWidth on focus for visual weight
-  return (
-    <Icon
-      name={iconName}
-      size={22}
-      color={color}
-      style={{ opacity: focused ? 1 : 0.7 }}
-    />
-  );
+function tabAppleIcon(routeName: string, focused: boolean): { sfSymbol: SFSymbol } {
+  const pair = TAB_SF_SYMBOLS[routeName];
+  return { sfSymbol: focused ? (pair?.focused ?? 'questionmark') : (pair?.unfocused ?? 'questionmark') };
 }
 
 // ---------------------------------------------------------------------------
@@ -764,20 +765,29 @@ function TabNavigator() {
     ['preparing', 'encrypting', 'uploading'].includes(backup.backupProgress.state) ||
     backup.backupProgress.inProgress > 0;
   const backupFailed = backup.backupProgress.failed > 0;
-  const settingsBadge = backupFailed
-    ? { tabBarBadge: ' ', tabBarBadgeStyle: { backgroundColor: c.red, minWidth: 10, maxHeight: 10, borderRadius: 5, fontSize: 1 } }
-    : backupRunning
-      ? { tabBarBadge: ' ', tabBarBadgeStyle: { backgroundColor: c.amber, minWidth: 10, maxHeight: 10, borderRadius: 5, fontSize: 1 } }
-      : storageWarning
-        ? { tabBarBadge: '!', tabBarBadgeStyle: { backgroundColor: c.amberDeep, fontSize: 9 } }
-        : {};
+  // 1308a — native tab badges take ONLY a string; there is no per-badge
+  // background/text colour hook on iOS at all (`tabBarBadgeBackgroundColor`/
+  // `tabBarBadgeTextColor` are Android-only — confirmed reading the
+  // installed library's types, see the 1308a gate notes in the task file).
+  // The old red-vs-amber DOT distinction between "backup failed" and
+  // "backup running" has no native equivalent to fall back to. Guus's
+  // ruling (via lead, 2026-09-13): failed shows the OS's own red "!" pill;
+  // a merely-running backup shows no badge at all — silent progress is
+  // fine, a failure is the thing that needs the interrupt. storageWarning
+  // already rendered as an unstyled-by-color "!" before this change (its
+  // `amberDeep` fill was the only thing distinguishing it from "failed", and
+  // that distinction is exactly what's gone now), so folding it into the
+  // same string loses no legible signal that survives this library's badge
+  // model. Recorded in DEVIATIONS.md.
+  const settingsBadge: string | undefined = backupFailed || storageWarning ? '!' : undefined;
 
   return (
     <Tab.Navigator
-      // 1312: the floating iOS 26 glass capsule replaces the stock opaque bar.
-      // GlassTabBar re-applies `tabBarButtonTestID` and the badge options by
-      // hand — a custom tabBar means react-navigation no longer does.
-      tabBar={(props) => <GlassTabBar {...props} />}
+      tabBarActiveTintColor={c.amber}
+      // No effect on iOS 26+ (Liquid Glass tabs don't tint inactive icons by
+      // colour) — kept for iOS <26 devices, which still get the stock
+      // UITabBar (native, overlay, correctly aligned; just not glass).
+      tabBarInactiveTintColor={c.ink4}
       screenListeners={{
         tabPress: () => {
           Keyboard.dismiss();
@@ -785,10 +795,7 @@ function TabNavigator() {
         },
       }}
       screenOptions={({ route }) => ({
-        headerShown: false,
-        tabBarIcon: ({ focused, color }) => <TabIcon name={route.name} focused={focused} color={color} />,
-        tabBarActiveTintColor: c.amber,
-        tabBarInactiveTintColor: c.ink4,
+        tabBarIcon: ({ focused }) => tabAppleIcon(route.name, focused),
         // The scene must not paint under the capsule's rounded corners.
         sceneStyle: { backgroundColor: c.paper },
       })}
@@ -812,7 +819,25 @@ function TabNavigator() {
       <Tab.Screen
         name="Settings"
         component={SettingsScreen}
-        options={{ ...settingsBadge, tabBarButtonTestID: 'tab-settings' }}
+        options={{ tabBarBadge: settingsBadge, tabBarButtonTestID: 'tab-settings' }}
+      />
+      {/* 1308a/1308b — the native iOS 26 search-role tab. Tapping it is Apple's
+          own "bar morphs into a search field with a Cancel" behaviour — the
+          exact thing 1357's ruling asked for, now native instead of a JS
+          reconstruction. This route's OWN screen never actually shows:
+          `preventsDefault` plus the `tabPress` listener below redirect every
+          activation into the Files tab's existing `{action:'search'}`
+          contract (1338/1357) before the default tab switch completes. */}
+      <Tab.Screen
+        name="Search"
+        component={FilesScreen}
+        options={{ role: 'search', tabBarButtonTestID: 'tab-search', preventsDefault: true }}
+        listeners={({ navigation }) => ({
+          tabPress: (e) => {
+            e.preventDefault();
+            navigation.navigate('Files', { action: 'search' });
+          },
+        })}
       />
     </Tab.Navigator>
   );
