@@ -16,6 +16,8 @@
 		478AE14193E84F1B94B2C520 /* BeebeebCryptoShim.swift in Sources */ = {isa = PBXBuildFile; fileRef = 50F2249133D24105B84E13E3 /* BeebeebCryptoShim.swift */; };
 		49D02DE3ECE3426F8ACAA2C7 /* BeebeebKeychainCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03F631D2343640FCB0B8C039 /* BeebeebKeychainCore.swift */; };
 		50C6EF9CF1084681BF37C715 /* FileProviderItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 32E674A2AFBE4506854DE569 /* FileProviderItem.swift */; };
+		5D5225308CEE1C718C5FE8D3 /* PlaintextStorageProtection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28A12B84E5E152F9B362DF59 /* PlaintextStorageProtection.swift */; };
+		190536D0932A1740FB6787AD /* RuntimeTrace.swift in Sources */ = {isa = PBXBuildFile; fileRef = 537BE98504760F66DD478BFA /* RuntimeTrace.swift */; };
 		63CBA88C915A490C8BB74A76 /* FileProviderExtension.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9BBBAA72D7964D949999638E /* FileProviderExtension.swift */; };
 		66DEF451BCAF4C4680C00722 /* BeebeebWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = 70AEFEB5071843C8AB30EC33 /* BeebeebWidget.swift */; };
 		7485981DCDD5371DF7C4731F /* libPods-Beebeeb.a in Frameworks */ = {isa = PBXBuildFile; fileRef = A44C9C2DFAE22658FE9D00F9 /* libPods-Beebeeb.a */; };
@@ -30,7 +32,6 @@
 		9C400CF7B4134768A7BCCA22 /* CacheManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B79FCF07765F473DA905024A /* CacheManager.swift */; };
 		A92679FD71224FF68EE18F15 /* BeebeebShare.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = 9BAB909F4AB84399985EACCF /* BeebeebShare.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		B61136E89FE94FA2808A14E8 /* Constants.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7BEBEE27F1AE4BE489AA1268 /* Constants.swift */; };
-		5D5225308CEE1C718C5FE8D3 /* PlaintextStorageProtection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28A12B84E5E152F9B362DF59 /* PlaintextStorageProtection.swift */; };
 		BB2F792D24A3F905000567C9 /* Expo.plist in Resources */ = {isa = PBXBuildFile; fileRef = BB2F792C24A3F905000567C9 /* Expo.plist */; };
 		BFF81A8815FA404184447785 /* ShareUploader.swift in Sources */ = {isa = PBXBuildFile; fileRef = E369BE6CEC334C77916D8326 /* ShareUploader.swift */; };
 		C626FF19BD074DCEA5BC14A1 /* SyncEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF171892E6A2427B8BF9CA94 /* SyncEngine.swift */; };
@@ -90,6 +91,8 @@
 		13B07FB51A68108700A75B9A /* Images.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; name = Images.xcassets; path = Beebeeb/Images.xcassets; sourceTree = "<group>"; };
 		13B07FB61A68108700A75B9A /* Info.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = Info.plist; path = Beebeeb/Info.plist; sourceTree = "<group>"; };
 		1A602025E4744176B9B524AF /* beebeeb_uniffi.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = beebeeb_uniffi.swift; path = Beebeeb/beebeeb_uniffi.swift; sourceTree = "<group>"; };
+		28A12B84E5E152F9B362DF59 /* PlaintextStorageProtection.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = PlaintextStorageProtection.swift; path = "../modules/beebeeb-crypto/ios/PlaintextStorageProtection.swift"; sourceTree = "<group>"; };
+		537BE98504760F66DD478BFA /* RuntimeTrace.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = RuntimeTrace.swift; path = "../modules/beebeeb-crypto/ios/RuntimeTrace.swift"; sourceTree = "<group>"; };
 		2B98F240CD0B4F70888AB93E /* FileProviderEnumerator.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = FileProviderEnumerator.swift; path = "../targets/file-provider/FileProviderEnumerator.swift"; sourceTree = "<group>"; };
 		2EAC30BEE9001D651166B6C4 /* Pods-Beebeeb.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Beebeeb.release.xcconfig"; path = "Target Support Files/Pods-Beebeeb/Pods-Beebeeb.release.xcconfig"; sourceTree = "<group>"; };
 		32E674A2AFBE4506854DE569 /* FileProviderItem.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = FileProviderItem.swift; path = "../targets/file-provider/FileProviderItem.swift"; sourceTree = "<group>"; };
@@ -99,7 +102,6 @@
 		70AEFEB5071843C8AB30EC33 /* BeebeebWidget.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = BeebeebWidget.swift; path = BeebeebWidget/BeebeebWidget.swift; sourceTree = "<group>"; };
 		7B79994A73174E15ADFB0D72 /* BeebeebWidget.entitlements */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.entitlements; name = BeebeebWidget.entitlements; path = BeebeebWidget/BeebeebWidget.entitlements; sourceTree = "<group>"; };
 		7BEBEE27F1AE4BE489AA1268 /* Constants.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = Constants.swift; path = "../targets/file-provider/Constants.swift"; sourceTree = "<group>"; };
-		28A12B84E5E152F9B362DF59 /* PlaintextStorageProtection.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = PlaintextStorageProtection.swift; path = "../modules/beebeeb-crypto/ios/PlaintextStorageProtection.swift"; sourceTree = "<group>"; };
 		8A16B6BED4A54DE889D61C19 /* ShareViewController.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = ShareViewController.swift; path = BeebeebShare/ShareViewController.swift; sourceTree = "<group>"; };
 		8E3998BC768C48138B588406 /* Info.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = Info.plist; path = BeebeebShare/Info.plist; sourceTree = "<group>"; };
 		9BAB909F4AB84399985EACCF /* BeebeebShare.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = BeebeebShare.appex; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -205,6 +207,7 @@
 				03BBD1276F7C4EE1AB64B5A0 /* BeebeebKeychainCore.swift */,
 				7BEBEE27F1AE4BE489AA1268 /* Constants.swift */,
 				28A12B84E5E152F9B362DF59 /* PlaintextStorageProtection.swift */,
+				537BE98504760F66DD478BFA /* RuntimeTrace.swift */,
 				BF171892E6A2427B8BF9CA94 /* SyncEngine.swift */,
 				1A602025E4744176B9B524AF /* beebeeb_uniffi.swift */,
 				08EE6E8C76E44247A93D3709 /* Info.plist */,
@@ -665,6 +668,7 @@
 				0C3D515CF4524FD4B75E2C46 /* BeebeebKeychainCore.swift in Sources */,
 				B61136E89FE94FA2808A14E8 /* Constants.swift in Sources */,
 				5D5225308CEE1C718C5FE8D3 /* PlaintextStorageProtection.swift in Sources */,
+				190536D0932A1740FB6787AD /* RuntimeTrace.swift in Sources */,
 				C626FF19BD074DCEA5BC14A1 /* SyncEngine.swift in Sources */,
 				432E85E5544143A8AD034276 /* beebeeb_uniffi.swift in Sources */,
 			);

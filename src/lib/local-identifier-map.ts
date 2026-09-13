@@ -20,6 +20,7 @@
 
 import * as FileSystem from 'expo-file-system/legacy';
 import { fetchPhotoBackupIdentifierMap, photoBackupClearAssociation } from './api';
+import { notePlaintextPathCreated } from './plaintext-storage';
 import { invalidateCachedThumbnail } from './thumbnail-cache';
 import { invalidateInMemoryThumbCache } from './thumbnail';
 import { onAssociationCleared } from './thumbnail-events';
@@ -260,6 +261,7 @@ async function loadFromDisk(): Promise<void> {
 async function saveToDisk(payload: PersistedMap): Promise<void> {
   try {
     await FileSystem.writeAsStringAsync(STORAGE_FILE, JSON.stringify(payload));
+    notePlaintextPathCreated();
   } catch (err) {
     console.warn('[local-identifier-map] disk save failed', err);
   }
