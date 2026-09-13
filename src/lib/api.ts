@@ -2677,6 +2677,35 @@ export async function unfreezeAccount(): Promise<{ frozen: boolean }> {
   return request<{ frozen: boolean }>('POST', '/api/v1/me/unfreeze');
 }
 
+export interface DeleteAccountResponse {
+  message: string;
+  /** ISO-8601 timestamp — when the encrypted blobs are permanently shredded. */
+  shred_after: string;
+}
+
+/**
+ * DELETE /api/v1/auth/account — permanent, irreversible account deletion
+ * (task 1399, App Review 5.1.1(v)). Mirrors the web client's
+ * `deleteAccountPermanently` (`repos/web/src/lib/api.ts`) byte-for-byte:
+ * the server requires the literal string `"DELETE"` as `confirmation` AND a
+ * step-up `X-Confirm-Token` (see `confirmAction`/`requestConfirmation`) — a
+ * request with either missing/wrong is rejected by the server (400/403)
+ * before anything is mutated. Never send this without a confirmation token
+ * from a caller-verified password.
+ */
+export async function deleteAccountPermanently(
+  confirmation: string,
+  confirmToken: string,
+): Promise<DeleteAccountResponse> {
+  return request<DeleteAccountResponse>(
+    'DELETE',
+    '/api/v1/auth/account',
+    { confirmation },
+    true,
+    { 'X-Confirm-Token': confirmToken },
+  );
+}
+
 // ─── Plans + billing checkout ─────────────────────────────────────────────────
 
 export interface Plan {

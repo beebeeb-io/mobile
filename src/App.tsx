@@ -84,6 +84,7 @@ import SharedViewScreen from './screens/SharedViewScreen';
 import TrashScreen from './screens/TrashScreen';
 import BackupGuidesScreen from './screens/BackupGuidesScreen';
 import PrivacyScreen from './screens/PrivacyScreen';
+import DeleteAccountScreen from './screens/DeleteAccountScreen';
 import StorageScreen from './screens/StorageScreen';
 import RecoveryPhraseVerifyScreen from './screens/RecoveryPhraseVerifyScreen';
 import RecoveryUnlockScreen from './screens/RecoveryUnlockScreen';
@@ -291,6 +292,7 @@ export type RootStackParamList = {
   RecoveryPhraseVerify: { phrase: string[] };
   RecoveryUnlock: undefined;
   Privacy: undefined;
+  DeleteAccount: undefined;
   Storage: undefined;
   // Device pairing (Amber Constellation)
   DevicePairing: undefined;
@@ -326,7 +328,18 @@ const linking = {
       // (task 1311), so the material can be screenshotted reproducibly with
       //   xcrun simctl openurl <udid> beebeeb://dev/glass
       // rather than tapped through Settings. Absent from release builds.
-      ...(__DEV__ ? { GlassGallery: 'dev/glass' } : null),
+      // Same pattern extended (task 1399) to Storage/Privacy/DeleteAccount so
+      // a headless QA lane (no Maestro, no tap simulator) can screenshot the
+      // App Review compliance screens reproducibly:
+      //   xcrun simctl openurl <udid> beebeeb://dev/storage
+      //   xcrun simctl openurl <udid> beebeeb://dev/privacy
+      //   xcrun simctl openurl <udid> beebeeb://dev/delete-account
+      ...(__DEV__ ? {
+        GlassGallery: 'dev/glass',
+        Storage: 'dev/storage',
+        Privacy: 'dev/privacy',
+        DeleteAccount: 'dev/delete-account',
+      } : null),
       Tabs: {
         // Bare tab name → its tab. beebeeb://photos lands on Photos,
         // beebeeb://shared on Shared, etc. Files keeps the empty path so
@@ -1391,6 +1404,7 @@ export default function App() {
                   <Stack.Screen name="CreateFileRequest" component={CreateFileRequestScreen} />
                   <Stack.Screen name="BackupGuides" component={BackupGuidesScreen} />
                   <Stack.Screen name="Privacy" component={PrivacyScreen} options={{ headerShown: false }} />
+                  <Stack.Screen name="DeleteAccount" component={DeleteAccountScreen} options={{ headerShown: false }} />
                   <Stack.Screen name="Storage" component={StorageScreen} options={{ headerShown: false }} />
                   <Stack.Screen
                     name="RecoveryPhrase"

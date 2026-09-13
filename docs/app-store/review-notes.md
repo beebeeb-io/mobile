@@ -10,13 +10,14 @@ of pretending they're done:
 
 | Task | What it changes | Status as of 2026-09-13 |
 |---|---|---|
-| 1400 | Removes the two tappable billing links (`StorageScreen.tsx:443,575`); sets `supportsTablet: false` | **backlog** — links are still live in `main` today |
-| 1399 | In-app account deletion (replaces the "Delete on web" alert in `PrivacyScreen.tsx:442-465`) | **backlog** — web-redirect alert still live in `main` today |
-| 1401 | Flips `ITSAppUsesNonExemptEncryption` to `true`; writes `docs/export-compliance.md` | **backlog** — `app.json` still has it `false` today |
+| 1400 | Removes the tappable billing/upgrade CTAs from `StorageScreen.tsx`; sets `supportsTablet: false` + `TARGETED_DEVICE_FAMILY = 1` on every target | **implemented, PR open** (`feat/1399-app-review-compliance`) — not yet merged to `main` |
+| 1399 | In-app account deletion (replaces the "Delete on web" alert in `PrivacyScreen.tsx`) | **implemented, PR open** (`feat/1399-app-review-compliance`) — not yet merged to `main` |
+| 1401 | Flips `ITSAppUsesNonExemptEncryption` to `true`; writes `docs/export-compliance.md` | **implemented, PR open** (`feat/1399-app-review-compliance`) — not yet merged to `main` |
 
 The reviewer walkthrough and the "no purchases in-app" / "deletion is in-app" claims below are
-written for the build that ships **after** 1399 and 1400 land — do not attach this document to a
-build that predates them.
+written for the build that ships once this PR merges — do not attach this document to a build that
+predates it. Verify the merge landed (`git log main` for the PR's squash/merge commit) before
+attaching this file to an actual App Review submission.
 
 ## 1. Reviewer walkthrough
 
@@ -115,24 +116,22 @@ this pass confirms it against the questionnaire rather than assuming it.
 
 Matches `docs/app-store-listing.md` §12 and the header metadata line — no change needed.
 
-## 4. Export compliance — cross-referenced to task 1401
+## 4. Export compliance — see `repos/mobile/docs/export-compliance.md`
 
-Task 1401 (backlog, not yet done) is the source of truth for the actual questionnaire answers and
-the code-cited algorithm inventory — it will produce `repos/mobile/docs/export-compliance.md`.
-This section exists so the review-notes document doesn't contradict it once it lands:
+Task 1401 is implemented (PR `feat/1399-app-review-compliance`): `repos/mobile/docs/export-compliance.md`
+is now the source of truth for the questionnaire answers and the code-cited algorithm inventory.
+This section is kept short so the two documents don't drift:
 
-- `app.json` today (`:35`) has `"ITSAppUsesNonExemptEncryption": false`. Per Apple's own guidance
-  (quoted in 1401's "Why"), that is **wrong**: beebeeb's AES-256-GCM / Argon2id / OPAQUE are
-  standard, published algorithms, but they run in the Rust core via UniFFI, not through
-  CryptoKit/CommonCrypto — so the OS-built-in exemption does not apply, and the key must be `true`.
-  1401 flips it and writes the questionnaire answers.
-- **Do not submit for App Review with the key still `false`** — that would be a materially false
-  declaration to Apple, not just an internal inconsistency. 1401 must land before TestFlight 209
-  (already recorded as its blocking relationship in its own task file) and, separately, before this
-  submission.
-- Once 1401 lands and Apple issues an `ITSEncryptionExportComplianceCode`, decision 1398 §6 names
-  the one remaining Guus-facing step (paste the code into `app.json`, or authorize the lead to do
-  it once the ASC API key exists).
+- `app.json` and `ios/Beebeeb/Info.plist` both now carry `ITSAppUsesNonExemptEncryption: true` —
+  beebeeb's AES-256-GCM / Argon2id / OPAQUE are standard, published algorithms, but they run in the
+  Rust core via UniFFI, not through CryptoKit/CommonCrypto, so the OS-built-in exemption does not
+  apply.
+- **Do not submit for App Review before this PR merges** — a build with the key still `false` would
+  be a materially false declaration to Apple, not just an internal inconsistency.
+- Once this PR merges and Apple issues an `ITSEncryptionExportComplianceCode` (after the ASC
+  questionnaire is answered once), decision 1398 §6 names the one remaining Guus-facing step (paste
+  the code into `app.json` + `export-compliance.md` §4, or authorize the lead to do it once the ASC
+  API key exists).
 - This document's review-notes narrative above ("why the server cannot show files") is consistent
   with 1401's inventory in spirit — both describe the same client-side AES-256-GCM/Argon2id/OPAQUE
   stack — but 1401's file is the one with file:line citations into `repos/core` and the actual ASC
