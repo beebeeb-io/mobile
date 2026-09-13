@@ -1,6 +1,12 @@
 # Dependencies & vendor
 node_modules/
 vendor/
+# Exception: src/lib/vendor/ holds a generated-but-committed source file (the
+# base64 three.js payload the constellation WebView imports at build time —
+# task 1367, scripts/vendor-three.sh regenerates it). It is source, not a
+# fetched dependency, so the blanket vendor/ rule above must not hide it.
+!src/lib/vendor/
+!src/lib/vendor/**
 .pnpm-store/
 bun.lockb
 
