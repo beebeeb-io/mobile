@@ -1,7 +1,7 @@
 import { BBLogo } from "../components/BBLogo";
 import { BBWordmark } from "../components/BBWordmark";
 import { GlassCapsule } from '../components/glass';
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   ScrollView,
@@ -18,8 +18,10 @@ import {
   opaqueLoginStart,
   opaqueLoginFinish,
   friendlyError,
+  formatAccountDeletedMessage,
   TwoFactorRequiredError,
 } from '../lib/api';
+import { consumeAccountDeletedNotice } from '../lib/account-deleted-notice';
 import { useAuth } from '../lib/auth';
 import { useTheme } from '../lib/theme-context';
 import * as Haptics from 'expo-haptics';
@@ -39,6 +41,30 @@ export default function LoginScreen() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+
+  // Task 1405 — real path: a live session's account got deleted elsewhere.
+  // App.tsx's account-deleted handler stashed the notice right before
+  // clearing the session and resetting to this screen. One-shot by design
+  // (consumeAccountDeletedNotice clears it) — mount-only is correct here.
+  useEffect(() => {
+    const notice = consumeAccountDeletedNotice();
+    if (notice) {
+      setError(formatAccountDeletedMessage(notice.deletedAt, notice.shredAfter));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Task 1405 — __DEV__ only: beebeeb://dev/login-error?deleted_at=...&shred_after=...
+  // renders the exact error state with real body values, for a QA lane with
+  // no way to type credentials into the simulator. Keyed on the params (not
+  // mount-only) so re-opening the deep link on an already-mounted Login
+  // screen re-applies it — React Navigation updates params in place rather
+  // than remounting when the target route is already active.
+  useEffect(() => {
+    if (__DEV__ && route.params?.deleted_at && route.params?.shred_after) {
+      setError(formatAccountDeletedMessage(route.params.deleted_at, route.params.shred_after));
+    }
+  }, [route.params?.deleted_at, route.params?.shred_after]);
 
   const styles = useMemo(() => StyleSheet.create({
     root: { flex: 1, backgroundColor: c.paper },
