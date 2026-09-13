@@ -85,6 +85,18 @@ function visiblePlans(all: Plan[]): Plan[] {
  */
 const PLAN_MANAGEMENT_NOTE = 'Plans are managed from your account on the web.';
 
+/**
+ * Task 1400 follow-up (lead review on PR #80): a full price list sitting
+ * directly under PLAN_MANAGEMENT_NOTE still reads as a call to action to buy
+ * elsewhere, even with no button attached — a reviewer can read "here are the
+ * prices" + "managed on the web" as directions to a purchase mechanism
+ * (3.1.1(a)). For the first submission, hide the plan catalog entirely and
+ * show only Storage usage + Current plan + the one sentence. Flip this back
+ * to `true` in one place once the EU External Purchase Link entitlement (or
+ * real IAP) makes showing prices safe again — no other code changes needed.
+ */
+const SHOW_PLAN_CATALOG = false;
+
 // ── Layout ────────────────────────────────────────────────────────────────────
 
 const layout = StyleSheet.create({
@@ -422,8 +434,11 @@ export default function StorageScreen() {
           </View>
 
           {/* Available plans — informational only, shown for free users or when
-              plans are available. No purchase/upgrade call to action (task 1400). */}
-          {plans.length > 0 && (
+              plans are available. No purchase/upgrade call to action (task 1400).
+              Gated off entirely behind SHOW_PLAN_CATALOG for the first submission
+              (lead review on PR #80): a price list directly under
+              PLAN_MANAGEMENT_NOTE still reads as directions to buy elsewhere. */}
+          {SHOW_PLAN_CATALOG && plans.length > 0 && (
             <View style={layout.section}>
               <SectionHeader title={isFree ? 'Plans' : 'Available plans'} c={c} />
               <View style={{ gap: 8 }}>
@@ -442,8 +457,11 @@ export default function StorageScreen() {
             </View>
           )}
 
-          {/* Note when no plans loaded — informational text, not a call to action. */}
-          {plans.length === 0 && isFree && (
+          {/* Note when no plans loaded — informational text, not a call to action.
+              Also gated: with the catalog hidden, PLAN_MANAGEMENT_NOTE already
+              shown once under Current plan is enough; a second copy here would
+              be a redundant duplicate. */}
+          {SHOW_PLAN_CATALOG && plans.length === 0 && isFree && (
             <View style={layout.section}>
               <Text style={[layout.noteText, { color: c.ink3 }]}>
                 {PLAN_MANAGEMENT_NOTE}
