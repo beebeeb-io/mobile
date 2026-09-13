@@ -30,7 +30,7 @@ import * as Sharing from 'expo-sharing';
 import { NativePhotosGridView, type NativePhotoGridItem } from '../../modules/beebeeb-crypto';
 import { radii, spacing } from '../theme';
 import { useTheme } from '../lib/theme-context';
-import { GlassCircle, GlassSurface, SCROLL_EDGE, ScrollEdgeBlur, glassMaterial } from '../components/glass';
+import { GlassCircle, GlassSurface, SCROLL_EDGE, ScrollEdgeBlur, glassMaterial, useTabBarBottomInset } from '../components/glass';
 import { ApiError, getAllImages, getFileIndex, friendlyError, trashFiles } from '../lib/api';
 import type { FileEntry } from '../lib/api';
 import { guessMimeType } from '../lib/media';
@@ -290,14 +290,6 @@ const SCREEN_WIDTH = Dimensions.get('window').width;
 const GRID_GAP = 2;
 const DEFAULT_COLS = DEFAULT_PHOTO_GRID_COLUMNS;
 const SECTION_HEADER_HEIGHT = 28;
-/**
- * 1322 — vertical space the floating tab bar occupies above the safe area
- * (capsule height plus the canvas's 22pt bottom offset and the bar's own
- * padding). Added to the grid's bottom inset so the last row can be scrolled
- * clear of the capsule instead of sitting under it.
- */
-const TAB_BAR_RESERVED = 96;
-
 const LIST_FOOTER_HEIGHT = 12;
 const PHOTO_PREVIEW_WINDOW_RADIUS = 12;
 const METADATA_DECRYPT_BATCH_SIZE = 8;
@@ -862,6 +854,11 @@ function AutoBackupBanner() {
 
 export default function PhotosScreen() {
   const insets = useSafeAreaInsets();
+  // 1394 — GlassTabBar is now an absolute overlay; this screen's own root
+  // View extends behind it, so the grid's contentInsetBottom and the
+  // AutoBackupBanner/selection-bar's own reserved space (they sit in normal
+  // flow, at the true bottom of that now-taller container) both need it.
+  const tabBarBottomInset = useTabBarBottomInset();
   const { colors: c, resolved: themeScheme } = useTheme();
   const { getFileKeyBytes, getMasterKeyHandleId, isUnlocked, decryptMetadata } = useCrypto();
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
@@ -2205,7 +2202,7 @@ export default function PhotosScreen() {
           headerTextColor={c.ink}
           headerCountColor={c.ink3}
           contentInsetTop={headerHeight}
-          contentInsetBottom={insets.bottom + TAB_BAR_RESERVED}
+          contentInsetBottom={tabBarBottomInset}
           onPhotoPress={handleNativePhotoPress}
           onSelectionChange={handleNativeSelectionChange}
           onVisiblePhotoIdsChange={handleNativeVisibleIdsChange}
@@ -2333,7 +2330,15 @@ export default function PhotosScreen() {
         </GlassSurface>
       ) : null}
 
-      <AutoBackupBanner />
+      {/* 1394 — AutoBackupBanner (and the selection bar above it, in select
+          mode) render in normal flow, not as an absolute overlay, so they
+          land wherever this flex column's own bottom edge is. That edge used
+          to be the in-flow tab bar's top edge; now that the bar is an
+          overlay it's the true screen bottom, so this wrapper reserves the
+          same shared inset to keep the banner clear of the glass capsule. */}
+      <View style={{ paddingBottom: tabBarBottomInset }}>
+        <AutoBackupBanner />
+      </View>
     </View>
   );
 }

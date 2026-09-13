@@ -47,6 +47,7 @@ import {
   cssShadow,
   glassMaterial,
   modalScrim,
+  useTabBarBottomInset,
 } from '../components/glass';
 import { UploadActivityCard } from '../components/UploadActivityCard';
 import type { UploadActivityState, UploadStage } from '../components/UploadActivityCard';
@@ -119,6 +120,19 @@ let _openSwipeable: Swipeable | null = null;
 // a much shorter estimate than the old 168. Once measured, the real height
 // always wins; this only matters for that first frame.
 const SEARCH_BAR_FALLBACK_HEIGHT = 70;
+
+// 1394 — the FAB no longer sits at a bare `bottom: 16` (that only worked
+// because the in-flow GlassTabBar already excluded itself from the screen's
+// own height). It now floats `FAB_BOTTOM_GAP` above the shared
+// `useTabBarBottomInset()` value. `LIST_BOTTOM_CLEARANCE` is the same "clear
+// the FAB" budget the pre-1394 `80 + insets.bottom` gave the list, kept as
+// its own named constant and added on TOP of the tab-bar inset (which is the
+// genuinely new space the overlay bar no longer reserves for us).
+const FAB_BOTTOM_GAP = 16;
+const FAB_SIZE = 56;
+const LIST_BOTTOM_CLEARANCE = FAB_BOTTOM_GAP + FAB_SIZE + 16;
+/** UploadActivityCard rests just above the FAB, not touching it. */
+const UPLOAD_CARD_GAP_ABOVE_FAB = 8;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1217,6 +1231,10 @@ export default function FilesScreen() {
   const navigation = useNavigation<Nav>();
   const route = useRoute<RouteProp<TabParamList, 'Files'>>();
   const insets = useSafeAreaInsets();
+  // 1394 — GlassTabBar is now an absolute overlay; this screen's own flex
+  // height extends behind it, so the list, FAB, upload card and select-mode
+  // action bar all reserve this same shared inset themselves.
+  const tabBarBottomInset = useTabBarBottomInset();
   const { colors: c, resolved: themeScheme } = useTheme();
   const { showToast } = useToast();
   const { user, phraseVerified } = useAuth();
@@ -4416,7 +4434,7 @@ export default function FilesScreen() {
                     fallbackHeight: SEARCH_BAR_FALLBACK_HEIGHT,
                     keyboardHeight,
                   })
-                : 80 + insets.bottom,
+                : tabBarBottomInset + LIST_BOTTOM_CLEARANCE,
             },
           ]}
           removeClippedSubviews={true}
@@ -4431,7 +4449,10 @@ export default function FilesScreen() {
           (1357: the bar now occupies the whole tab-bar band, not just a
           floating stack above it), and the two together would overlap. */}
       {upload && !selectMode && !searchActive && (
-        <UploadActivityCard upload={upload} bottom={16 + insets.bottom + 64} />
+        <UploadActivityCard
+          upload={upload}
+          bottom={tabBarBottomInset + FAB_BOTTOM_GAP + FAB_SIZE + UPLOAD_CARD_GAP_ABOVE_FAB}
+        />
       )}
 
       {/* 1357 — Guus's layout ruling (verbatim, 2026-09-03): "...the search
@@ -4539,7 +4560,17 @@ export default function FilesScreen() {
           material.labelMuted; the destructive Trash red stays c.red exactly
           like the tab bar's active amber stays literal amber on glass. */}
       {selectMode && (
-        <GlassSurface scheme={themeScheme} radius={0} elevated={false} style={styles.actionBar} contentStyle={styles.actionBarRow}>
+        <GlassSurface
+          scheme={themeScheme}
+          radius={0}
+          elevated={false}
+          // 1394 — was flush `bottom: 0`, correct only while the tab bar
+          // reserved its own flow height right below this screen's edge. The
+          // overlay bar no longer does, so this floats the same shared inset
+          // above it instead of landing underneath/behind the capsule.
+          style={[styles.actionBar, { bottom: tabBarBottomInset }]}
+          contentStyle={styles.actionBarRow}
+        >
           <TouchableOpacity
             style={styles.actionBarButton}
             onPress={handleBatchShare}
@@ -4576,7 +4607,7 @@ export default function FilesScreen() {
       {!selectMode && !searchActive && (
         uploadingName ? (
           <TouchableOpacity
-            style={[styles.fab, { bottom: 16, backgroundColor: c.amber }]}
+            style={[styles.fab, { bottom: tabBarBottomInset + FAB_BOTTOM_GAP, backgroundColor: c.amber }]}
             activeOpacity={0.8}
             disabled
             testID="fab-add"
@@ -4594,7 +4625,7 @@ export default function FilesScreen() {
             actions={addMenuActions}
             shouldOpenOnLongPress={false}
             themeVariant={themeScheme}
-            style={[styles.fab, { bottom: 16, backgroundColor: c.amber }]}
+            style={[styles.fab, { bottom: tabBarBottomInset + FAB_BOTTOM_GAP, backgroundColor: c.amber }]}
           >
             <View
               style={styles.fabInner}

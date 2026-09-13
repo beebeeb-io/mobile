@@ -48,7 +48,7 @@ import { useAuth } from '../lib/auth';
 import { useBackup } from '../lib/backup-context';
 import { useCrypto } from '../lib/crypto-context';
 import { useTheme, type ThemeMode } from '../lib/theme-context';
-import { SCROLL_EDGE, ScrollEdgeBlur } from '../components/glass';
+import { SCROLL_EDGE, ScrollEdgeBlur, useTabBarBottomInset } from '../components/glass';
 import { useToast } from '../lib/toast-context';
 import { useNetworkStatus } from '../lib/useNetworkStatus';
 import { recordRuntimeTrace } from '../lib/runtime-trace';
@@ -645,6 +645,9 @@ type Nav = NativeStackNavigationProp<RootStackParamList>;
 export default function SettingsScreen() {
   const navigation = useNavigation<Nav>();
   const insets = useSafeAreaInsets();
+  // 1394 — GlassTabBar now overlays this screen instead of reserving flow
+  // height for it.
+  const tabBarBottomInset = useTabBarBottomInset();
   const { user, signOut } = useAuth();
   const crypto = useCrypto();
   const {
@@ -1799,7 +1802,7 @@ export default function SettingsScreen() {
 
       <ScrollView
         style={layout.scroll}
-        contentContainerStyle={[layout.scrollContent, { paddingTop: headerHeight, paddingBottom: insets.bottom + 120 }]}
+        contentContainerStyle={[layout.scrollContent, { paddingTop: headerHeight, paddingBottom: tabBarBottomInset }]}
         onScroll={(e) => setIsScrolled(e.nativeEvent.contentOffset.y > 0)}
         scrollEventThrottle={100}
         showsVerticalScrollIndicator={false}

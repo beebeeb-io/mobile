@@ -23,12 +23,15 @@
  * below, and there is a Maestro tab-switch run in the task's evidence proving
  * all four still resolve.
  *
- * The bar renders IN FLOW rather than absolutely positioned, so the navigator
- * still reserves its height. PhotosScreen and SharedScreen only set
- * `contentContainerStyle` when their lists are EMPTY, so an absolute bar would
- * hide their last row — and restyling their lists belongs to 1313–1315. The
- * capsule still floats visually inside its reserved band; what it gives up is
- * list rows showing through the glass, which the canvas does have.
+ * 1394 — the bar is now an absolute overlay (`position: 'absolute'` on its
+ * outer row), not in-flow. Removing it from flex flow means the navigator no
+ * longer reserves its height for the scene beneath it, so every tab screen's
+ * scrollable content, FAB, progress card and bottom-pinned control has to
+ * reserve that same height itself — `useTabBarBottomInset()` in
+ * `./glass/tab-bar-inset.ts` is the single shared source for it (both this
+ * file and every tab screen read the same geometry). The payoff is exactly
+ * what the canvas has and the pre-1394 version gave up: list rows scrolling
+ * through the glass instead of stopping at a solid paper band under it.
  */
 
 import React from 'react';
@@ -45,13 +48,12 @@ import {
 import type { BottomTabBarProps } from '@react-navigation/bottom-tabs';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { GlassCapsule, GlassCircle, GLASS_CIRCLE_SIZES, glassMaterial } from './glass';
+import { GlassCapsule, GlassCircle, GLASS_CIRCLE_SIZES, glassMaterial, tabBarSafeAreaPadding } from './glass';
 import { useTheme } from '../lib/theme-context';
 import { colors } from '../theme';
 
 /** Canvas: the bar sits 22pt above the bottom edge, inset 18pt either side. */
 const BAR_INSET_X = 18;
-const BAR_BOTTOM = 22;
 const BAR_GAP = 12;
 
 export function GlassTabBar({ state, descriptors, navigation }: BottomTabBarProps) {
@@ -95,7 +97,7 @@ export function GlassTabBar({ state, descriptors, navigation }: BottomTabBarProp
         {
           paddingLeft: BAR_INSET_X,
           paddingRight: BAR_INSET_X,
-          paddingBottom: (insets.bottom || 12) + BAR_BOTTOM - 12,
+          paddingBottom: tabBarSafeAreaPadding(insets.bottom),
           paddingTop: 6,
         },
       ]}
@@ -247,7 +249,9 @@ const SEARCH_ICON = (color: string) => (
 );
 
 const styles = StyleSheet.create({
-  bar: { flexDirection: 'row', alignItems: 'center' },
+  // 1394 — absolute overlay, anchored to the three bottom edges, so it no
+  // longer reserves flex flow height in BottomTabView's column layout.
+  bar: { position: 'absolute', left: 0, right: 0, bottom: 0, flexDirection: 'row', alignItems: 'center' },
   capsule: { flex: 1 },
   track: { flexDirection: 'row', padding: 5, gap: 2 },
   item: {
