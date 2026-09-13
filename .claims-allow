@@ -5,9 +5,13 @@
 # titled "CORRECT DR-1 model" correction) says the mobile REGIONS array
 # (europe + falkenstein-de available:true, helsinki-fi + ede-nl available:
 # false) "is correct — leave it." Helsinki and Ede are real, committed future
-# regions, clearly marked not-yet-available (`available: false`, "Preference
-# or force" subtitle only shown for available rows) — never implying either
-# stores data or is selectable today. This file does NOT clear
+# regions, clearly marked not-yet-available: `available: false` renders a
+# "Soon" badge, and the row's subtitle shows "Coming soon" (not the
+# selectable-only "Preference or force" copy — SettingsScreen.tsx's
+# `{r.available ? r.subtitle : 'Coming soon'}` render, fixed alongside this
+# file per a Codex review that correctly caught the evidence not matching
+# the code at the time) — never implying either stores data or is selectable
+# today. This file does NOT clear
 # marketing/mockups.html's Helsinki/region-claim hits (out of scope, untouched
 # — those are App Store design mockups, not shipped app code) or any
 # provider-name/capability-claim hit (none exist in mobile src today; per
