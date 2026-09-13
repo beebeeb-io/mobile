@@ -44,10 +44,17 @@ function statusOf(r: FileRequest): Status {
 // `contentInsetTop` (task 1393): when embedded, the Shared tab's header is
 // absolutely positioned over this list, so the host passes its measured header
 // height and the list starts below it instead of underneath it.
+// `contentInsetBottom` (task 1394): only meaningful when embedded — the
+// STANDALONE stack push (RootStackParamList's `FileRequests` route) has no
+// tab bar to clear at all, so it keeps its own `insets.bottom + 32`. Embedded
+// inside the Shared TAB, GlassTabBar floats over this list too, so the host
+// passes the same shared `useTabBarBottomInset()` value every other tab
+// screen uses.
 export default function FileRequestsScreen({
   embedded = false,
   contentInsetTop = 0,
-}: { embedded?: boolean; contentInsetTop?: number } = {}) {
+  contentInsetBottom,
+}: { embedded?: boolean; contentInsetTop?: number; contentInsetBottom?: number } = {}) {
   const navigation = useNavigation<Nav>();
   const insets = useSafeAreaInsets();
   const { colors: c } = useTheme();
@@ -157,7 +164,7 @@ export default function FileRequestsScreen({
         contentContainerStyle={{
           padding: 16,
           paddingTop: 16 + contentInsetTop,
-          paddingBottom: insets.bottom + 32,
+          paddingBottom: contentInsetBottom ?? insets.bottom + 32,
         }}
         refreshControl={<RefreshControl refreshing={false} onRefresh={refresh} tintColor={c.amber} />}
       >

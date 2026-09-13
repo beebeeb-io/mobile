@@ -15,7 +15,7 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { radii, shadows, spacing } from '../theme';
 import { useTheme } from '../lib/theme-context';
-import { GlassSegment, SCROLL_EDGE, ScrollEdgeBlur } from '../components/glass';
+import { GlassSegment, SCROLL_EDGE, ScrollEdgeBlur, useTabBarBottomInset } from '../components/glass';
 import { useToast } from '../lib/toast-context';
 import SkeletonRow from '../components/SkeletonRow';
 import { useCrypto } from '../lib/crypto-context';
@@ -288,6 +288,10 @@ type ByMeItem =
 export default function SharedScreen() {
   const { colors: c } = useTheme();
   const insets = useSafeAreaInsets();
+  // 1394 — shared bottom inset for the three FlatLists and the embedded
+  // File Requests list, now that GlassTabBar floats over this screen instead
+  // of reserving its own flow height.
+  const tabBarBottomInset = useTabBarBottomInset();
   const navigation = useNavigation<Nav>();
   const { showToast } = useToast();
   // Tier 1: Shares vs File Requests. Tier 2 (under Shares): direction.
@@ -724,7 +728,7 @@ export default function SharedScreen() {
   };
 
   // Shared by all three dir lists so none of them can be forgotten.
-  const listInset = { paddingTop: headerHeight, paddingBottom: insets.bottom + 120 };
+  const listInset = { paddingTop: headerHeight, paddingBottom: tabBarBottomInset };
 
   return (
     <View style={[styles.root, { backgroundColor: c.paper }]}>
@@ -813,7 +817,7 @@ export default function SharedScreen() {
       {topTab === 'requests' ? (
         /* File Requests — the existing list, rendered inline (own header
            suppressed, keeps its own empty/error/refresh). */
-        <FileRequestsScreen embedded contentInsetTop={headerHeight} />
+        <FileRequestsScreen embedded contentInsetTop={headerHeight} contentInsetBottom={tabBarBottomInset} />
       ) : currentError ? (
         renderError(currentError, onRetry)
       ) : currentLoading ? (

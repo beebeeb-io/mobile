@@ -65,6 +65,27 @@ Invariant the helper enforces: a `PBXBuildFile` belongs to exactly ONE build pha
 files per owning target, never globally by fileRef, or `pod install` fails in Xcodeproj's
 `project.save` ("Consistency issue: no parent for object …").
 
+## Worktree `.env` — copy it by hand, or the app silently defaults to production (task 1394)
+
+`git worktree add` does **not** copy the primary checkout's gitignored `.env`
+(`EXPO_PUBLIC_API_URL=http://localhost:3001`). A fresh worktree with no `.env` falls back to the
+app's compiled-in default — **production** — with no error, no crash, and no visual difference in
+the dev-client chrome. The only tell is the Metro/console boot line:
+
+```
+[Beebeeb] API environment: Production (https://api.beebeeb.io)   # WRONG — missing .env
+[Beebeeb] API environment: Local (http://localhost:3001)         # correct
+```
+
+**Before the first simulator run in any new worktree:** `cp <primary-checkout>/.env .env` (or
+write `EXPO_PUBLIC_API_URL=http://localhost:3001` directly), then start/restart Metro (the URL is
+inlined at bundle time, so an already-running Metro needs a restart, not just a reload, to pick up
+a `.env` written after it started). Treat that boot log line as required evidence in the task's
+`## Verification evidence` / Notes — a "wrong password" or "account not found" result against a
+documented localhost-only QA account is a strong signal this was missed, not that the account or
+its credentials actually changed (task 1394 chased a false "password drifted" report for exactly
+this reason before finding the missing `.env`).
+
 ## Local simulator QA — environment gotchas on this Mac (verified 2026-06-29)
 
 Running the iOS app on the Simulator for QA hits several env-specific walls. Workarounds:
