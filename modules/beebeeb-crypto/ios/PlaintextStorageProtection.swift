@@ -162,6 +162,39 @@ public enum PlaintextStorageProtection {
     }
   }
 
+  /// Permanently delete every registered plaintext path. Called on sign-out
+  /// (task 1399 follow-up — Codex flagged that the generic `signOut()` left
+  /// decrypted thumbnails/names on disk for whoever signs in next on the
+  /// same device) and, before that, explicitly from the account-deletion
+  /// success path. A zero-knowledge app must not leave one user's decrypted
+  /// data recoverable on disk once they have signed out.
+  ///
+  /// Idempotent and never throws: a path that does not exist counts toward
+  /// `removed` (already clean, not a failure), so re-running this after a
+  /// partial failure only retries the entries that actually failed last
+  /// time. A removal failure is traced (path leaf name only — no user data)
+  /// but never aborts the sweep of the remaining entries, and must never
+  /// block the caller's sign-out.
+  @discardableResult
+  public static func purgeAll() -> (removed: Int, failed: Int) {
+    var removed = 0
+    var failed = 0
+    for entry in registry() {
+      guard FileManager.default.fileExists(atPath: entry.url.path) else {
+        removed += 1 // already absent - counts as clean, not a failure
+        continue
+      }
+      do {
+        try FileManager.default.removeItem(at: entry.url)
+        removed += 1
+      } catch {
+        RuntimeTrace.event("storage.purge.failed", ["path": entry.url.lastPathComponent])
+        failed += 1
+      }
+    }
+    return (removed, failed)
+  }
+
   /// Write the audit to `Library/Caches/beebeeb-plaintext-audit.json` so the
   /// simulator verification script can read it off the app container. `Caches`
   /// is itself excluded from backup by iOS.

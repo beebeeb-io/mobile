@@ -39,6 +39,7 @@ import { radii, spacing, type Colors } from '../theme';
 import { useAuth } from '../lib/auth';
 import { requestConfirmation } from '../lib/confirm-action';
 import { deleteAccountPermanently, friendlyError } from '../lib/api';
+import { purgeAllPlaintextCaches, purgeThenSignOut } from '../lib/account-cleanup';
 
 type C = Colors;
 
@@ -105,7 +106,13 @@ export default function DeleteAccountScreen() {
           [{ text: 'OK', onPress: () => resolve() }],
         );
       });
-      await signOut();
+      // Purge every on-disk plaintext cache BEFORE signing out (Codex P1 —
+      // the account is deleted server-side, but decrypted thumbnails/names/
+      // caches from this session must not survive on the device either).
+      // signOut() also purges internally (every ordinary sign-out does), but
+      // this call makes the deletion flow's own cleanup guarantee explicit
+      // rather than solely dependent on signOut()'s internal step order.
+      await purgeThenSignOut({ purge: purgeAllPlaintextCaches, signOut });
     } catch (err) {
       setError(friendlyError(err));
       setLoading(false);

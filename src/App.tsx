@@ -44,6 +44,7 @@ import * as BeebeebCrypto from '../modules/beebeeb-crypto';
 import { populateFileProviderCache } from './lib/file-provider-mount';
 import { initLocalIdentifierMap } from './lib/local-identifier-map';
 import { resetThumbnailSelfRepairState } from './lib/thumbnail-self-repair';
+import { purgeAllPlaintextCaches } from './lib/account-cleanup';
 import {
   setupNotificationHandler,
   registerForPushNotifications,
@@ -105,6 +106,7 @@ import PhotoLibrarySettingsScreen from './screens/PhotoLibrarySettingsScreen';
 // __DEV__-only glass primitives gallery (task 1311). Registered below only
 // when __DEV__, so it is unreachable in a production build.
 import GlassGalleryScreen from './screens/GlassGalleryScreen';
+import DevPlaintextPurgeScreen from './screens/DevPlaintextPurgeScreen';
 import { GlassTabBar } from './components/GlassTabBar';
 import { navigationThemeFor } from './lib/navigation-theme';
 import FileRequestsScreen from './screens/FileRequestsScreen';
@@ -310,6 +312,7 @@ export type RootStackParamList = {
   PhotoLibrarySettings: undefined;
   /** `__DEV__` only — the iOS 26 glass primitives gallery (task 1311). */
   GlassGallery: undefined;
+  DevPlaintextPurge: undefined;
 };
 
 // ---------------------------------------------------------------------------
@@ -339,6 +342,7 @@ const linking = {
         Storage: 'dev/storage',
         Privacy: 'dev/privacy',
         DeleteAccount: 'dev/delete-account',
+        DevPlaintextPurge: 'dev/purge-plaintext-caches',
       } : null),
       Tabs: {
         // Bare tab name → its tab. beebeeb://photos lands on Photos,
@@ -911,6 +915,11 @@ export default function App() {
     await SecureStore.deleteItemAsync(MASTER_KEY_CHECK_LABEL).catch(() => {});
     await SecureStore.deleteItemAsync(MASTER_KEY_FALLBACK_LABEL).catch(() => {});
     await FileSystem.deleteAsync(SIMULATOR_MASTER_KEY_FILE, { idempotent: true }).catch(() => {});
+    // Task 1399 follow-up (Codex P1): a zero-knowledge app must not leave
+    // decrypted thumbnails/names/caches on disk for whoever signs in next on
+    // this device. Every ordinary sign-out purges them, not just deletion —
+    // see account-cleanup.ts. Never throws; never blocks sign-out.
+    await purgeAllPlaintextCaches().catch(() => ({ removed: 0, failed: 0 }));
     setUser(null);
   }, []);
 
@@ -1458,6 +1467,13 @@ export default function App() {
                     <Stack.Screen
                       name="GlassGallery"
                       component={GlassGalleryScreen}
+                      options={{ headerShown: false }}
+                    />
+                  ) : null}
+                  {__DEV__ ? (
+                    <Stack.Screen
+                      name="DevPlaintextPurge"
+                      component={DevPlaintextPurgeScreen}
                       options={{ headerShown: false }}
                     />
                   ) : null}
