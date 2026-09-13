@@ -4,8 +4,13 @@
  * `theme.ts` (`surfaces` / `darkSurfaces`), never on glass.
  *
  * The material itself lives in `glass-recipe.ts`. That is the only file to
- * change to retune the look or to swap `expo-blur` for `expo-glass-effect`
- * once it has a stable SDK 57/58 release (see task 1311's recorded decision).
+ * change to retune the look. `GlassSurface` (and everything built on it —
+ * `GlassCapsule`/`GlassCircle`/`GlassSheet`/`GlassSegment`/
+ * `UploadActivityCard`) already swaps `expo-blur` for a real `GlassView` from
+ * `expo-glass-effect` when `isLiquidGlassAvailable()` (task 1308c, closing
+ * gap 1 recorded in task 1311's original decision). `ScrollEdgeBlur` stays on
+ * `BlurView` unconditionally — its progressive fade has no `GlassView`
+ * equivalent, see its own file comment and `glass-recipe.ts` gap 4.
  *
  * A `__DEV__` gallery rendering every primitive over a photo and a plain
  * surface, in both schemes, lives at `src/screens/GlassGalleryScreen.tsx` —

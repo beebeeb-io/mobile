@@ -17,20 +17,40 @@
  *
  * ── Fidelity gaps against the canvas (honest list) ─────────────────────────
  * 1. `saturate(1.6–1.9)` is NOT expressible with `expo-blur`. A `BlurView` has
- *    `intensity` and `tint` and no saturation control. iOS `UIVisualEffectView`
- *    system materials carry their own vibrancy, so some of the effect is
- *    inherent on-device, but it is not the canvas's exact 1.9. Closing this
- *    properly needs `expo-glass-effect` (refraction + real material), which
- *    ships canary-only for SDK 57/58 — see the decision recorded in task 1311.
- *    Switching `BLUR_TINT` below to `systemThinMaterialDark` /
- *    `systemThinMaterialLight` trades our exact canvas fill for the native
- *    material's built-in vibrancy; that is the one-line experiment.
+ *    `intensity` and `tint` and no saturation control. **CLOSED for
+ *    `GlassSurface`, task 1308c**: when `isLiquidGlassAvailable()` (iOS 26+,
+ *    `expo-glass-effect` 57.0.3, stable since 1308a's dependency add —
+ *    superseding the "canary-only" note this gap carried from task 1311),
+ *    `GlassSurface` renders a real `GlassView` instead of `BlurView` + a flat
+ *    fill: genuine system material with its own refraction and vibrancy, not
+ *    an approximation of it. `BlurView` stays as the fallback for iOS < 26
+ *    (and any platform where `isLiquidGlassAvailable()` is false by
+ *    construction — see its cross-platform stub). The sheen and rim overlays
+ *    are UNCHANGED in both paths: they are the canvas's own style choices
+ *    (a static specular sweep, a structural edge hairline), not stand-ins for
+ *    material realism, so real glass doesn't replace them — it only replaces
+ *    what `BlurView`+fill were approximating underneath.
+ *    NOT closed for `ScrollEdgeBlur` (see gap 4 below) — GlassView has no
+ *    continuous-intensity control, so the technique it uses (stacking blur
+ *    bands to fake a progressive mask-fade) has no GlassView equivalent.
  * 2. CSS blur is in pixels, `BlurView.intensity` is an unitless 1–100.
  *    `intensityForCssBlur()` below maps between them through a single
- *    calibration constant.
+ *    calibration constant. Only relevant to the `BlurView` fallback path.
  * 3. RN has no `inset` box-shadow, so the specular rim is drawn as real
  *    hairline edges by `GlassSurface`, and no `mask-image`, so `ScrollEdgeBlur`
  *    fakes the progressive fade by stacking blur bands.
+ * 4. `GlassView` (`expo-glass-effect`) has exactly three discrete states
+ *    (`glassEffectStyle`: 'clear' | 'regular' | 'none') and no numeric
+ *    intensity/blur-radius prop at all — by design, since it renders a real
+ *    system material rather than a tunable blur. `ScrollEdgeBlur`'s fade
+ *    depends on a CONTINUOUS intensity gradient (`scrollEdgeBandIntensity`),
+ *    which is structurally impossible to express through a binary glass
+ *    style, not merely unimplemented. It stays on `BlurView`'s band-stack
+ *    technique unconditionally — swapping it for a stack of full-strength
+ *    `GlassView`s would render a uniform hard edge where the canvas asks for
+ *    a progressive one, which is a worse fidelity result than the current
+ *    approximation, not a better one. Flagged precisely rather than forced;
+ *    revisit only if `expo-glass-effect` ever ships a graduated variant.
  */
 
 import type { ViewStyle } from 'react-native';

@@ -16,6 +16,13 @@
  * bottom. The tint is a matching stepped gradient. The seam between bands is
  * invisible because each layer's contribution is small and the blur of a blur
  * is still a blur — but this is an approximation of a mask, not a mask.
+ *
+ * Task 1308c deliberately does NOT swap this to `expo-glass-effect`'s
+ * `GlassView`, unlike `GlassSurface`: `GlassView` has exactly three discrete
+ * states (`glassEffectStyle`) and no continuous intensity control, so it
+ * cannot express the graduated fade this component's whole technique depends
+ * on — see `glass-recipe.ts`'s fidelity gap 4 for the full reasoning. Stays on
+ * `BlurView` unconditionally, regardless of `isLiquidGlassAvailable()`.
  */
 
 import React, { useMemo } from 'react';

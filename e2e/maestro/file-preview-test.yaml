@@ -2,9 +2,16 @@ appId: io.beebeeb.app
 ---
 - launchApp
 
-# Make sure we're on the Files tab and signed in
-- tapOn:
-    id: "tab-files"
+# Make sure we're on the Files tab and signed in.
+# 1308d — task 1360: `id: "tab-files"` against the native SwiftUI tab bar
+# (1308a) is unreliable here — a hard "Element not found" even though
+# `maestro hierarchy` dumped moments earlier shows `resource-id: "tab-files"`
+# genuinely present. A plain TEXT selector on the tab's own label resolved and
+# tapped correctly 3/3 runs with zero waiting instead — see login-test.yaml
+# for the full live comparison (repeat/wait wrappers tried and ruled out) and
+# docs/maestro-driver-fault-1360.md for the general fault this native-tab-bar
+# variant sits beside.
+- tapOn: "Files"
 
 - extendedWaitUntil:
     visible: "Drive"

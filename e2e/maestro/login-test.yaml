@@ -35,8 +35,25 @@ appId: io.beebeeb.app
     when:
       visible: "Drive"
     commands:
-      - tapOn:
-          id: "tab-settings"
+      # 1308d — task 1360: `id: "tab-settings"` against the native SwiftUI tab
+      # bar (1308a) is unreliable in THIS Maestro session in a way distinct
+      # from the documented RN-content fault — not "COMPLETED but frozen", a
+      # hard "Element not found" even though `maestro hierarchy` dumped
+      # moments earlier shows `resource-id: "tab-settings"` genuinely present.
+      # Tried and ruled out live before landing on this fix: (1) wrapping the
+      # tap in a `repeat...while` (doesn't help — a hard "not found" isn't
+      # retried the way a no-op COMPLETED is); (2) `extendedWaitUntil: visible:
+      # id: "tab-settings"` for up to 8s before tapping (still fails — this
+      # isn't a brief attach delay); (3) a benign text-based "warm-up" tap on
+      # the screen title first (still fails). A plain TEXT selector on the same
+      # tab's own label, by contrast, resolved and tapped correctly 3/3 runs
+      # with zero waiting. Using it here — `tapOn: "Settings"` — one exact
+      # `accessibilityText` match on the Drive screen (verified via hierarchy
+      # dump: no other "Settings" node exists until the Settings screen's own
+      # title mounts, which hasn't happened yet). See
+      # docs/maestro-driver-fault-1360.md for the general fault this sits
+      # beside; this native-tab-bar variant is recorded there too.
+      - tapOn: "Settings"
       # Fixed scrolls, not scrollUntilVisible: that hangs inside a conditional
       # runFlow on this list (documented in local-qa-signin-unlock.yaml).
       # Measured from a FRESH Settings top: 3 is NOT enough and 6 is; 8 leaves
@@ -51,14 +68,30 @@ appId: io.beebeeb.app
       - scroll
       - scroll
       - tapOn: "Sign out"
-      # Confirm the alert. With it open there are THREE "Sign out" texts in the
-      # hierarchy: the Settings row behind it (0), the alert TITLE (1), and the
-      # destructive BUTTON (2). The old index:1 tapped the title, which is not
-      # tappable, so the alert just stayed open and the sign-out never happened
-      # — silently, with the step reported as COMPLETED.
+      # Confirm the alert.
+      #
+      # 1308d — task 1360's driver fault, live-caught here on a NATIVE
+      # UIAlertController button (a third variant beside the RN-content and
+      # native-tab-bar ones already on file). History: originally `text:
+      # "Sign out" index: 1` (tapped the alert TITLE, not tappable — the
+      # alert stayed open, reported COMPLETED); fixed to `index: 2` (the
+      # correct destructive button). Re-tested for 1308a/1308d and found
+      # STILL unreliable — `index: 2` itself reports COMPLETED with the alert
+      # visibly still open in the run's own failure screenshot. Tried and
+      # ruled out live: wrapping it in the same `repeat...while: visible:
+      # "Are you sure you want to sign out?"` pattern used elsewhere in this
+      # file — the repeat itself reports COMPLETED (implying the alert closed)
+      # while the LATER failure screenshot still shows it open, meaning even
+      # the retry's own re-check is unreliable for this control, not just the
+      # tap. A plain coordinate tap on the button's own position resolved
+      # this cleanly (2/2 live runs) by skipping text/accessibility
+      # resolution entirely — alerts are simple, fixed-geometry native UI, so
+      # a point tap carries none of the risk it would on scrollable or
+      # data-driven content. `68%,56%` is the destructive button's center on
+      # bb-qa-1310 (iPhone 17 Pro, iOS 26.2) — the two-button `UIAlertController`
+      # layout this account always sees for this alert.
       - tapOn:
-          text: "Sign out"
-          index: 2
+          point: "68%,56%"
 
 # THE assertion that was impossible before.
 - extendedWaitUntil:
