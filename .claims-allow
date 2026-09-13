@@ -1,0 +1,18 @@
+# path|token|evidence (evidence is mandatory and is what a reviewer reads)
+#
+# Phantom-region hits only (decision 1413, 2026-09-13): docs/canon/data-
+# residency.md's "The truth" section (git 37a15d6d, the LATER, explicitly-
+# titled "CORRECT DR-1 model" correction) says the mobile REGIONS array
+# (europe + falkenstein-de available:true, helsinki-fi + ede-nl available:
+# false) "is correct — leave it." Helsinki and Ede are real, committed future
+# regions, clearly marked not-yet-available (`available: false`, "Preference
+# or force" subtitle only shown for available rows) — never implying either
+# stores data or is selectable today. This file does NOT clear
+# marketing/mockups.html's Helsinki/region-claim hits (out of scope, untouched
+# — those are App Store design mockups, not shipped app code) or any
+# provider-name/capability-claim hit (none exist in mobile src today; per
+# decision 1413 those would still get fixed, never allow-listed).
+src/screens/SettingsScreen.tsx|helsinki|docs/canon/data-residency.md "The truth" (37a15d6d) + decision 1413 — REGIONS entry for a real, clearly-marked coming-soon region (available: false)
+src/screens/SettingsScreen.tsx|Helsinki|docs/canon/data-residency.md "The truth" (37a15d6d) + decision 1413 — REGIONS entry for a real, clearly-marked coming-soon region (available: false)
+src/screens/SettingsScreen.tsx|'ede-|docs/canon/data-residency.md "The truth" (37a15d6d) + decision 1413 — REGIONS entry for a real, clearly-marked coming-soon region (available: false)
+src/screens/SettingsScreen.tsx|'Ede'|docs/canon/data-residency.md "The truth" (37a15d6d) + decision 1413 — REGIONS entry for a real, clearly-marked coming-soon region (available: false)
