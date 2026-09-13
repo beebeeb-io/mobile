@@ -31,7 +31,8 @@ const SEEDED_KEY_PREFIX = 'beebeeb_welcome_seeded';
 export const WELCOME_FILENAME = 'welcome.md';
 
 // Voice rules in `repos/core/brand/README.md`: honest over reassuring, name
-// the city (Falkenstein), no flag emojis, no "bank-grade security."
+// the city (Falkenstein), no flag emojis, no unmeasurable security-marketing
+// adjectives.
 export const WELCOME_MARKDOWN = `# Welcome to Beebeeb
 
 This is your vault. Every file you upload is encrypted on this device with a key only you control — Beebeeb's servers never see plaintext, ever.
