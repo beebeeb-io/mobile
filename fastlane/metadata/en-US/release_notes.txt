@@ -1,0 +1,12 @@
+Welcome to Beebeeb.
+
+This is our first public release.
+
+— End-to-end encrypted file storage
+— Automatic photo, contact, and calendar backup
+— Encrypted sharing with expiry, passphrase, and open limits
+— Face ID lock with configurable timer
+— Europe-first storage with region preferences
+— Dark mode, VoiceOver, 3D Touch quick actions
+
+We built this because we wanted it to exist. Thank you for trying it.

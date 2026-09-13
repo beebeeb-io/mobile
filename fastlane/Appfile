@@ -1,0 +1,11 @@
+# Beebeeb iOS — fastlane Appfile
+#
+# Authentication uses an App Store Connect API key (see Fastfile), not an
+# Apple ID + 2FA session, so `apple_id` / `itc_team_id` are intentionally not
+# set here — they would only matter for the legacy Apple-ID auth path.
+# The API key itself (.p8) lives outside every repo at
+# `~/.private_keys/AuthKey_<KEY_ID>.p8` (task 1402) and is read from env vars
+# by the Fastfile — never committed.
+
+app_identifier("io.beebeeb.app")
+team_id("R8352WDJJR") # Apple Developer Team ID (repos/mobile/app.json → ios.appleTeamId)

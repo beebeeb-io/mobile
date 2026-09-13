@@ -1,0 +1,70 @@
+Beebeeb is encrypted cloud storage that actually keeps your files private.
+
+Every file, every photo, every folder name is encrypted on your device before it ever leaves it. We can't read your files. We can't recover them if you lose your password. That's the point.
+
+Made in Europe. Stored in Europe. Operated by Initlabs B.V. from the Netherlands.
+
+
+WHY BEEBEEB
+
+— True end-to-end encryption (AES-256-GCM)
+— Zero-knowledge: we never see your keys, your files, or your filenames
+— Stored in Europe, with region preferences where available
+— No tracking, no ads, no data brokers
+— Open about what we do and what we don't
+
+
+WHAT YOU CAN DO
+
+Files
+— Upload, download, search, sort, rename, move
+— Multi-select, swipe to share, swipe to trash
+— Pinned folders for quick access
+— Recent files at a glance
+— PDF and image preview built in
+— Native iOS share sheet to send anywhere
+
+Photos
+— Automatic camera roll backup in the background
+— Browse encrypted photos by date
+— Optional Wi-Fi only mode
+
+Sharing
+— Encrypted links with optional passphrase
+— Set expiry dates and maximum opens
+— Revoke at any time
+
+Backup beyond files
+— Contact backup
+— Calendar backup
+— Everything encrypted before upload
+
+Privacy & access
+— Face ID / Touch ID lock with configurable timer
+— Dark mode (system, light, or dark)
+— 3D Touch quick actions for upload, search, photos
+— Full VoiceOver support
+
+
+PRIVACY THAT DOES NOT NEGOTIATE
+
+The way most cloud storage works: they hold the keys. They can read your files. Their employees can read your files. Their government can subpoena your files. A breach exposes your files.
+
+The way Beebeeb works: you hold the keys. We store encrypted ciphertext we cannot decrypt. A breach reveals nothing useful. A subpoena gets nothing useful. We designed it this way on purpose.
+
+If you forget your password, we cannot recover it. We will not pretend otherwise.
+
+
+EUROPEAN BY CHOICE
+
+Beebeeb is built and operated in the European Union. Your vault is stored in Europe by default, with region preferences where available. No US CLOUD Act exposure. No transatlantic transfers.
+
+
+PRICING
+
+Beebeeb is free to start. Paid plans unlock more storage and features. No ads, ever, on any plan.
+
+
+Made in Europe by Initlabs B.V. — Wijchen, Netherlands.
+Privacy: https://beebeeb.io/privacy
+Support: https://beebeeb.io/support

@@ -1,0 +1,53 @@
+# Beebeeb iOS — fastlane lanes
+#
+# Task 1402: prepare (but do not run) the App Store Connect metadata/
+# screenshot upload. Builds are produced separately via
+# `eas build --platform ios --profile production --local` (see
+# repos/mobile/CLAUDE.md) — this Fastfile does NOT build or submit a binary.
+#
+# Auth: an App Store Connect API key, never an Apple ID + 2FA session.
+# Decision 1398 §1 has Guus generate the key in App Store Connect →
+# Users and Access → Integrations → App Store Connect API → Team Keys,
+# download the .p8 ONCE to `~/.private_keys/AuthKey_<KEY_ID>.p8` (outside
+# every repo — never commit it), and hand the lead the Key ID + Issuer ID
+# (not secrets; the .p8 file is the secret). Until that key exists, every
+# lane below fails at `app_store_connect_api_key` — that is expected and
+# is exactly why this lane is prepared, not executed, in this task.
+
+default_platform(:ios)
+
+platform :ios do
+  desc "Upload App Store metadata + screenshots to App Store Connect. " \
+       "Does NOT upload a binary and does NOT submit for review — " \
+       "see decision 1398 for who is authorized to actually run this."
+  lane :deliver_metadata do
+    api_key = app_store_connect_api_key(
+      key_id: ENV["ASC_KEY_ID"],
+      issuer_id: ENV["ASC_ISSUER_ID"],
+      key_filepath: ENV["ASC_KEY_PATH"], # e.g. ~/.private_keys/AuthKey_<KEY_ID>.p8
+    )
+
+    deliver(
+      api_key: api_key,
+      app_identifier: "io.beebeeb.app",
+
+      # This lane only ever uploads store-listing assets. A binary is built
+      # and uploaded separately (`eas build` + `eas submit`), and review is
+      # a deliberate, Guus-gated action (decision 1398) — never a side
+      # effect of a metadata sync.
+      skip_binary_upload: true,
+      skip_screenshots: false,
+      skip_metadata: false,
+      overwrite_screenshots: true,
+      submit_for_review: false,
+      automatic_release: false,
+      force: false, # keep the interactive HTML-diff confirmation — never auto-confirm
+
+      # No IAP exists in the app (task 1400 removes even the web billing
+      # links from being tappable in-app) — precheck must not go looking
+      # for in-app-purchase metadata that will never exist.
+      precheck_include_in_app_purchases: false,
+      run_precheck_before_submit: false,
+    )
+  end
+end
