@@ -20,6 +20,3 @@ src/screens/SettingsScreen.tsx|helsinki|docs/canon/data-residency.md "The truth"
 src/screens/SettingsScreen.tsx|Helsinki|docs/canon/data-residency.md "The truth" (37a15d6d) + decision 1413 — REGIONS entry for a real, clearly-marked coming-soon region (available: false)
 src/screens/SettingsScreen.tsx|'ede-|docs/canon/data-residency.md "The truth" (37a15d6d) + decision 1413 — REGIONS entry for a real, clearly-marked coming-soon region (available: false)
 src/screens/SettingsScreen.tsx|'Ede'|docs/canon/data-residency.md "The truth" (37a15d6d) + decision 1413 — REGIONS entry for a real, clearly-marked coming-soon region (available: false)
-
-# 2026-09-13 (task 1367 Task 8, green run).
-src/lib/welcome-seed.ts|bank-grade|a code comment quoting the brand rule that forbids the phrase ("no \"bank-grade security.\""); never rendered
