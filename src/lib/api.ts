@@ -120,6 +120,27 @@ export function registerSessionExpiredHandler(fn: SessionExpiredHandler): void {
 }
 
 // ---------------------------------------------------------------------------
+// Account-deleted callback (registered by AuthProvider) — task 1405
+// ---------------------------------------------------------------------------
+
+/**
+ * Fired when `request()` sees a 403 `account_deleted` on a call that carried
+ * a live session (an already-signed-in device whose account got deleted
+ * elsewhere — web, another device, or an admin action). The login-time path
+ * (password/OPAQUE, `auth=false`) does NOT go through this handler — those
+ * calls throw `AccountDeletedError` directly to the caller (LoginScreen),
+ * which is already showing an error surface. This handler exists for the
+ * surprise case: a screen open on a now-deleted account. Mirrors
+ * `registerSessionExpiredHandler` above.
+ */
+type AccountDeletedHandler = (deletedAt: string, shredAfter: string) => void;
+let onAccountDeleted: AccountDeletedHandler | null = null;
+
+export function registerAccountDeletedHandler(fn: AccountDeletedHandler): void {
+  onAccountDeleted = fn;
+}
+
+// ---------------------------------------------------------------------------
 // Token persistence
 // ---------------------------------------------------------------------------
 
@@ -219,8 +240,37 @@ export class TwoFactorRequiredError extends Error {
   }
 }
 
+/**
+ * Thrown by `request()` on any 403 `{"error":"account_deleted",...}` body —
+ * password login, OPAQUE login-finish, and any authenticated call against a
+ * session whose account was soft-deleted (server task 1403). Carries both
+ * RFC3339 dates from the server so the UI never has to guess or hardcode the
+ * 30-day retention window.
+ */
+export class AccountDeletedError extends Error {
+  constructor(public deletedAt: string, public shredAfter: string) {
+    super('account_deleted');
+    this.name = 'AccountDeletedError';
+  }
+}
+
+/**
+ * Exact copy for the account_deleted state (task 1405, mirrors web task 1404
+ * verbatim). Dates are formatted in the device locale, date only — no time
+ * fragment, matching the web copy so the same account tells the same story
+ * on every client.
+ */
+export function formatAccountDeletedMessage(deletedAt: string, shredAfter: string): string {
+  const dateOnly = (iso: string): string =>
+    new Date(iso).toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' });
+  return `This account was deleted on ${dateOnly(deletedAt)}. Its encrypted data will be shredded on ${dateOnly(shredAfter)}. We can't recover it.`;
+}
+
 /** Return a human-friendly message for common API errors. */
 export function friendlyError(err: unknown): string {
+  if (err instanceof AccountDeletedError) {
+    return formatAccountDeletedMessage(err.deletedAt, err.shredAfter);
+  }
   if (err instanceof ApiError) {
     // Typed quota errors come back with a machine-readable `code` so we don't
     // pattern-match the human message. Branch on these first, before the
@@ -325,6 +375,30 @@ async function request<T>(
 
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
+
+    // 403 account_deleted (server task 1403): a typed body carrying both
+    // retention dates, distinct from the generic 401 wrong-credentials path
+    // above (anti-enumeration is unaffected — the server only returns this
+    // AFTER credentials are proven, on login-finish, never on login-start).
+    if (
+      res.status === 403 &&
+      err.error === 'account_deleted' &&
+      typeof err.deleted_at === 'string' &&
+      typeof err.shred_after === 'string'
+    ) {
+      // An authenticated call (auth=true) whose CURRENT session belongs to
+      // the now-deleted account: clear the token and notify AuthProvider so
+      // it can sign out locally and stash the notice for LoginScreen — the
+      // same current-session-snapshot guard as the 401 branch above, so a
+      // stale in-flight request from a since-replaced session can't fire a
+      // spurious sign-out.
+      if (auth && authSnapshot && authSnapshot.token != null && isCurrentSessionSnapshot(authSnapshot)) {
+        await clearToken();
+        onAccountDeleted?.(err.deleted_at, err.shred_after);
+      }
+      throw new AccountDeletedError(err.deleted_at, err.shred_after);
+    }
+
     throw new ApiError(res.status, err.error ?? err.message ?? res.statusText);
   }
 

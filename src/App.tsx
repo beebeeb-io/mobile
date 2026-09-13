@@ -30,8 +30,10 @@ import {
   logout,
   getStorageUsage,
   registerSessionExpiredHandler,
+  registerAccountDeletedHandler,
 } from './lib/api';
 import type { User } from './lib/api';
+import { stashAccountDeletedNotice } from './lib/account-deleted-notice';
 import { AuthContext } from './lib/auth';
 import { CryptoProvider, SIMULATOR_MASTER_KEY_FILE, useCrypto, usesSoftwareVaultFallback } from './lib/crypto-context';
 import { markUnlocked, wasRecentlyUnlocked } from './lib/lock-state';
@@ -245,7 +247,14 @@ export type TabParamList = {
 
 export type RootStackParamList = {
   // Auth screens
-  Login: { returnTo?: 'DevicePairingScan' } | undefined;
+  Login: {
+    returnTo?: 'DevicePairingScan';
+    // __DEV__-only deep-link params (task 1405) — render the account_deleted
+    // error state with real body values without typing credentials into the
+    // simulator. See beebeeb://dev/login-error in the linking config below.
+    deleted_at?: string;
+    shred_after?: string;
+  } | undefined;
   TwoFactorChallenge: { partialToken: string };
   Signup: undefined;
   // Main app
@@ -342,12 +351,17 @@ const linking = {
       //   xcrun simctl openurl <udid> beebeeb://dev/storage
       //   xcrun simctl openurl <udid> beebeeb://dev/privacy
       //   xcrun simctl openurl <udid> beebeeb://dev/delete-account
+      // Task 1405 extends the same pattern to the account_deleted login
+      // error: query params ride straight into route.params (React
+      // Navigation's default behavior for a bare path with no :segments).
+      //   xcrun simctl openurl <udid> "beebeeb://dev/login-error?deleted_at=2026-09-13T00:00:00Z&shred_after=2026-10-13T00:00:00Z"
       ...(__DEV__ ? {
         GlassGallery: 'dev/glass',
         Storage: 'dev/storage',
         Privacy: 'dev/privacy',
         DeleteAccount: 'dev/delete-account',
         DevPlaintextPurge: 'dev/purge-plaintext-caches',
+        Login: 'dev/login-error',
       } : null),
       Tabs: {
         // Bare tab name → its tab. beebeeb://photos lands on Photos,
@@ -1165,6 +1179,18 @@ export default function App() {
   // Register session-expired handler so 401s auto-sign-out
   useEffect(() => {
     registerSessionExpiredHandler(() => {
+      setUser(null);
+    });
+  }, []);
+
+  // Register account-deleted handler (task 1405) — fires when a live
+  // session's account got deleted elsewhere. Stash the notice for
+  // LoginScreen to read on mount, then sign out locally the same lightweight
+  // way session expiry does (the token is already cleared by api.ts; there
+  // is no server session left to log out of).
+  useEffect(() => {
+    registerAccountDeletedHandler((deletedAt, shredAfter) => {
+      stashAccountDeletedNotice({ deletedAt, shredAfter });
       setUser(null);
     });
   }, []);
