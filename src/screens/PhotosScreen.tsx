@@ -867,6 +867,14 @@ export default function PhotosScreen() {
   // real contentInset so the grid scrolls UNDER the chrome instead of starting
   // below it. Not constant: the device-photos banner appears and disappears.
   const [headerHeight, setHeaderHeight] = useState(0);
+  // 1394 (Codex P1 fix) — measured height of the bottom overlay stack
+  // (AutoBackupBanner, plus the selection bar in select mode). Not a
+  // constant for the same reason headerHeight above isn't: the banner's
+  // own height varies with its content (one-line status vs the two-line
+  // progress-bar state), and select mode adds a whole extra bar on top of
+  // it. Same measure-and-feed pattern as headerHeight, applied to the
+  // bottom edge instead of the top.
+  const [bottomOverlayHeight, setBottomOverlayHeight] = useState(0);
   const [photos, setPhotos] = useState<FileEntry[]>([]);
   const photosCacheRef = useRef<FileEntry[]>([]);
   const photosCountRef = useRef(0);
@@ -2202,7 +2210,7 @@ export default function PhotosScreen() {
           headerTextColor={c.ink}
           headerCountColor={c.ink3}
           contentInsetTop={headerHeight}
-          contentInsetBottom={tabBarBottomInset}
+          contentInsetBottom={tabBarBottomInset + bottomOverlayHeight}
           onPhotoPress={handleNativePhotoPress}
           onSelectionChange={handleNativeSelectionChange}
           onVisiblePhotoIdsChange={handleNativeVisibleIdsChange}
@@ -2270,73 +2278,85 @@ export default function PhotosScreen() {
         </PinchGestureHandler>
       )}
 
-      {selectMode ? (
-        // 1342 — was a flat backgroundColor: c.paper2 / borderTopColor: c.line
-        // View + a hand-rolled borderTopWidth hairline (the same off-recipe
-        // shape FilesScreen's select-mode action bar had before 1341). Now a
-        // GlassSurface (radius 0, flush to the three screen edges,
-        // elevated=false — this bar sits flush in the flow between the grid
-        // and the auto-backup banner, not floating). The per-button border
-        // reads chromeMaterial.rimSide (the recipe's on-glass border colour)
-        // instead of the flat theme c.line; the status text reads
-        // chromeMaterial.label. Share/Delete icon+text stay literal
-        // c.amber/c.red — semantic action colour, same as FilesScreen's
-        // literal destructive Trash red.
-        <GlassSurface
-          scheme={themeScheme}
-          radius={0}
-          elevated={false}
-          contentStyle={styles.selectionBarRow}
-        >
-          <Text style={[styles.selectionStatus, { color: chromeMaterial.label }]} numberOfLines={1}>
-            {bulkStatus ?? `${selectedIds.size} selected`}
-          </Text>
-          <TouchableOpacity
-            activeOpacity={0.7}
-            onPress={shareSelectedPhotos}
-            disabled={bulkAction !== null || selectedIds.size === 0}
-            accessibilityRole="button"
-            accessibilityLabel="Share selected photos as a ZIP"
-            style={[
-              styles.selectionAction,
-              { borderColor: chromeMaterial.rimSide, opacity: bulkAction !== null || selectedIds.size === 0 ? 0.5 : 1 },
-            ]}
+      {/* 1394 (Codex P1 fix, review thread PRRT_kwDOSLX6T86h4DU5) — the
+          selection bar + AutoBackupBanner used to be normal-flow siblings of
+          the `flex: 1` grid above. That shrinks the grid's OWN frame by
+          however tall this stack is, so the grid's viewport ends ABOVE this
+          stack and NEVER reaches the tab bar at all — tiles could never
+          scroll under the glass capsule, only this stack's own (opaque)
+          background ever sat in front of it. Bottom `paddingBottom` on a
+          sibling reserves space; it doesn't make the SIBLING ABOVE it
+          taller. Fixed the same way the tab bar itself was fixed: this
+          whole stack is now `position: 'absolute'`, removed from flex flow,
+          so the grid is full-height and its own `contentInsetBottom` (fed
+          from this stack's measured height below) does the real work —
+          tiles scroll past the grid's now-full-size frame and pass behind
+          this stack and the tab bar, exactly like Files/Drive's list. */}
+      <View
+        style={[styles.bottomOverlay, { bottom: tabBarBottomInset }]}
+        onLayout={(e) => {
+          const h = Math.round(e.nativeEvent.layout.height);
+          setBottomOverlayHeight((prev) => (Math.abs(prev - h) > 1 ? h : prev));
+        }}
+      >
+        {selectMode ? (
+          // 1342 — was a flat backgroundColor: c.paper2 / borderTopColor: c.line
+          // View + a hand-rolled borderTopWidth hairline (the same off-recipe
+          // shape FilesScreen's select-mode action bar had before 1341). Now a
+          // GlassSurface (radius 0, flush to the three screen edges,
+          // elevated=false). The per-button border reads
+          // chromeMaterial.rimSide (the recipe's on-glass border colour)
+          // instead of the flat theme c.line; the status text reads
+          // chromeMaterial.label. Share/Delete icon+text stay literal
+          // c.amber/c.red — semantic action colour, same as FilesScreen's
+          // literal destructive Trash red.
+          <GlassSurface
+            scheme={themeScheme}
+            radius={0}
+            elevated={false}
+            contentStyle={styles.selectionBarRow}
           >
-            {bulkAction === 'share' ? (
-              <ActivityIndicator size="small" color={c.amber} />
-            ) : (
-              <Ionicons name="share-outline" size={18} color={c.amber} />
-            )}
-            <Text style={[styles.selectionActionText, { color: c.amber }]}>Share ZIP</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            activeOpacity={0.7}
-            onPress={deleteSelectedPhotos}
-            disabled={bulkAction !== null || selectedIds.size === 0}
-            accessibilityRole="button"
-            accessibilityLabel="Delete selected photos from Beebeeb"
-            style={[
-              styles.selectionAction,
-              { borderColor: chromeMaterial.rimSide, opacity: bulkAction !== null || selectedIds.size === 0 ? 0.5 : 1 },
-            ]}
-          >
-            {bulkAction === 'delete' ? (
-              <ActivityIndicator size="small" color={c.red} />
-            ) : (
-              <Ionicons name="trash-outline" size={18} color={c.red} />
-            )}
-            <Text style={[styles.selectionActionText, { color: c.red }]}>Delete</Text>
-          </TouchableOpacity>
-        </GlassSurface>
-      ) : null}
-
-      {/* 1394 — AutoBackupBanner (and the selection bar above it, in select
-          mode) render in normal flow, not as an absolute overlay, so they
-          land wherever this flex column's own bottom edge is. That edge used
-          to be the in-flow tab bar's top edge; now that the bar is an
-          overlay it's the true screen bottom, so this wrapper reserves the
-          same shared inset to keep the banner clear of the glass capsule. */}
-      <View style={{ paddingBottom: tabBarBottomInset }}>
+            <Text style={[styles.selectionStatus, { color: chromeMaterial.label }]} numberOfLines={1}>
+              {bulkStatus ?? `${selectedIds.size} selected`}
+            </Text>
+            <TouchableOpacity
+              activeOpacity={0.7}
+              onPress={shareSelectedPhotos}
+              disabled={bulkAction !== null || selectedIds.size === 0}
+              accessibilityRole="button"
+              accessibilityLabel="Share selected photos as a ZIP"
+              style={[
+                styles.selectionAction,
+                { borderColor: chromeMaterial.rimSide, opacity: bulkAction !== null || selectedIds.size === 0 ? 0.5 : 1 },
+              ]}
+            >
+              {bulkAction === 'share' ? (
+                <ActivityIndicator size="small" color={c.amber} />
+              ) : (
+                <Ionicons name="share-outline" size={18} color={c.amber} />
+              )}
+              <Text style={[styles.selectionActionText, { color: c.amber }]}>Share ZIP</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              activeOpacity={0.7}
+              onPress={deleteSelectedPhotos}
+              disabled={bulkAction !== null || selectedIds.size === 0}
+              accessibilityRole="button"
+              accessibilityLabel="Delete selected photos from Beebeeb"
+              style={[
+                styles.selectionAction,
+                { borderColor: chromeMaterial.rimSide, opacity: bulkAction !== null || selectedIds.size === 0 ? 0.5 : 1 },
+              ]}
+            >
+              {bulkAction === 'delete' ? (
+                <ActivityIndicator size="small" color={c.red} />
+              ) : (
+                <Ionicons name="trash-outline" size={18} color={c.red} />
+              )}
+              <Text style={[styles.selectionActionText, { color: c.red }]}>Delete</Text>
+            </TouchableOpacity>
+          </GlassSurface>
+        ) : null}
         <AutoBackupBanner />
       </View>
     </View>
@@ -2351,6 +2371,11 @@ const styles = StyleSheet.create({
   root: { flex: 1 },
   gridContainer: { flex: 1 },
   floatingHeader: { position: 'absolute', top: 0, left: 0, right: 0, zIndex: 10 },
+  // 1394 (Codex P1 fix) — the selection bar + AutoBackupBanner float as an
+  // overlay above the tab bar instead of being flex-flow siblings that
+  // shrink the grid. `bottom` is set inline (depends on the live
+  // `tabBarBottomInset` hook value, not a StyleSheet constant).
+  bottomOverlay: { position: 'absolute', left: 0, right: 0 },
 
   // Header
   header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: spacing.lg, paddingTop: 6, paddingBottom: 4, gap: 8 },

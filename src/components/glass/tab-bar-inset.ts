@@ -33,6 +33,15 @@
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 export const TAB_BAR_TOP_PADDING = 6;
+/**
+ * Fixed, not measured — this depends on `GlassTabBar.tsx` capping its label
+ * `Text` at `maxFontSizeMultiplier={1.3}` (task 1394, Codex P2 review). At
+ * the platform Dynamic Type maximum an uncapped label would grow well past
+ * the ~13pt this constant assumes; 1.3x keeps the real item height (~54pt)
+ * within the `CONTENT_CLEARANCE` slack below. If that cap is ever removed,
+ * this needs to become a measured value (the `headerHeight` pattern) instead
+ * of a constant.
+ */
 export const TAB_BAR_CAPSULE_HEIGHT = 60;
 /** Mirrors GlassTabBar's own bottom-offset constant. Keep both in sync. */
 export const TAB_BAR_BOTTOM_OFFSET = 22;

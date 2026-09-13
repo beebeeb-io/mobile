@@ -159,6 +159,24 @@ export function GlassTabBar({ state, descriptors, navigation }: BottomTabBarProp
               </View>
               <Text
                 numberOfLines={1}
+                // 1394 (Codex P2 fix, review thread PRRT_kwDOSLX6T86h4DU7) —
+                // `tab-bar-inset.ts`'s TAB_BAR_CAPSULE_HEIGHT (60) is a FIXED
+                // constant, not measured, on the stated assumption that
+                // canvas pt sizes don't scale with Dynamic Type. That's only
+                // true if this label is actually capped — uncapped, an
+                // accessibility text size could grow this line far past the
+                // ~13pt the constant assumes, understating every screen's
+                // bottom inset and hiding content behind the bar. Capped
+                // (not disabled) at 1.3x: Apple's own native UITabBar caps
+                // its label scaling too rather than reflowing the whole bar
+                // for a fixed-height chrome control, and 1.3x keeps the
+                // capsule within `tab-bar-inset.ts`'s own 12pt slack margin
+                // (measured: ~54pt item height at 1.3x vs the 50pt this
+                // constant assumes) — the alternative (onLayout measurement,
+                // like `headerHeight`) would work too but adds an
+                // extra render pass to a control whose whole point is fixed,
+                // predictable geometry every other screen reads from.
+                maxFontSizeMultiplier={1.3}
                 style={[styles.label, { color: tint, fontWeight: focused ? '600' : '500' }]}
               >
                 {label}
