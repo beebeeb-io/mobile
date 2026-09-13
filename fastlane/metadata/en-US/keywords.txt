@@ -1,0 +1,1 @@
+cloud,storage,encrypted,privacy,e2ee,backup,photos,vault,secure,files,zero knowledge,europe,gdpr
