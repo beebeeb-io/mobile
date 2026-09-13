@@ -1,0 +1,22 @@
+container: /Users/guuslangelaar/Library/Developer/CoreSimulator/Devices/D7A6B303-B138-4EF5-ABEC-E23AEEE503FC/data/Containers/Data/Application/A16F00E0-3DB4-4FC3-9D8F-6AA277B74458
+checked:   2026-09-13T10:02:16Z
+
+EXCLUDED Documents/beebeeb-thumbnails-v3  ("com.apple.MobileBackup")
+EXCLUDED Documents/beebeeb-photokit-cache  ("com.apple.MobileBackup")
+EXCLUDED Documents/offline  ("com.apple.MobileBackup")
+EXCLUDED Documents/PendingShareUploads  ("com.apple.MobileBackup")
+EXCLUDED Documents/SQLite  ("com.apple.MobileBackup")
+EXCLUDED Documents/beebeeb-name-cache-v1.json  ("com.apple.MobileBackup")
+EXCLUDED Documents/beebeeb-file-index-cache-v1.json  ("com.apple.MobileBackup")
+EXCLUDED Documents/local-id-map.json  ("com.apple.MobileBackup")
+EXCLUDED Documents/thumbnail_queue.sqlite  ("com.apple.MobileBackup")
+EXCLUDED Documents/beebeeb-simulator-master-key.txt  ("com.apple.MobileBackup")
+EXCLUDED Library/Application Support/NativeBackupStaging  ("com.apple.MobileBackup")
+EXCLUDED Library/Application Support/Beebeeb  ("com.apple.MobileBackup")
+EXCLUDED Library/Application Support/io.beebeeb.app/RCTAsyncLocalStorage_V1  ("com.apple.MobileBackup")
+SKIP     group.io.beebeeb.shared	/Users/guuslangelaar/Library/Developer/CoreSimulator/Devices/D7A6B303-B138-4EF5-ABEC-E23AEEE503FC/data/Containers/Shared/AppGroup/2F1B1E43-AC91-47E4-A057-4BF1924CF5F2/IncomingShares (not created yet)
+SKIP     group.io.beebeeb.shared	/Users/guuslangelaar/Library/Developer/CoreSimulator/Devices/D7A6B303-B138-4EF5-ABEC-E23AEEE503FC/data/Containers/Shared/AppGroup/2F1B1E43-AC91-47E4-A057-4BF1924CF5F2/widget-data.json (not created yet)
+SKIP     group.io.beebeeb.shared	/Users/guuslangelaar/Library/Developer/CoreSimulator/Devices/D7A6B303-B138-4EF5-ABEC-E23AEEE503FC/data/Containers/Shared/AppGroup/2F1B1E43-AC91-47E4-A057-4BF1924CF5F2/pinned (not created yet)
+SKIP     group.io.beebeeb.shared	/Users/guuslangelaar/Library/Developer/CoreSimulator/Devices/D7A6B303-B138-4EF5-ABEC-E23AEEE503FC/data/Containers/Shared/AppGroup/2F1B1E43-AC91-47E4-A057-4BF1924CF5F2/temp (not created yet)
+
+in-app audit: MISSING — launch the app once in __DEV__ so auditPlaintextStorage() runs
