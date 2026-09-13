@@ -41,7 +41,13 @@ function statusOf(r: FileRequest): Status {
 
 // `embedded` (task 0782): rendered inside the Shared tab's "Requests" segment —
 // suppress the screen's own header (the Shared screen provides the title + the "+").
-export default function FileRequestsScreen({ embedded = false }: { embedded?: boolean } = {}) {
+// `contentInsetTop` (task 1393): when embedded, the Shared tab's header is
+// absolutely positioned over this list, so the host passes its measured header
+// height and the list starts below it instead of underneath it.
+export default function FileRequestsScreen({
+  embedded = false,
+  contentInsetTop = 0,
+}: { embedded?: boolean; contentInsetTop?: number } = {}) {
   const navigation = useNavigation<Nav>();
   const insets = useSafeAreaInsets();
   const { colors: c } = useTheme();
@@ -148,7 +154,11 @@ export default function FileRequestsScreen({ embedded = false }: { embedded?: bo
 
       <ScrollView
         style={styles.scroll}
-        contentContainerStyle={{ padding: 16, paddingBottom: insets.bottom + 32 }}
+        contentContainerStyle={{
+          padding: 16,
+          paddingTop: 16 + contentInsetTop,
+          paddingBottom: insets.bottom + 32,
+        }}
         refreshControl={<RefreshControl refreshing={false} onRefresh={refresh} tintColor={c.amber} />}
       >
         {loading ? (

@@ -624,7 +624,9 @@ export default function SharedScreen() {
   );
 
   const renderError = (error: string, onRetry: () => void) => (
-    <View style={styles.errorContainer}>
+    // Same 1393 rule as the loading branch: the header floats, so the error
+    // state must clear it too or "Retry" sits under the segment control.
+    <View style={[styles.errorContainer, { paddingTop: headerHeight }]}>
       <Ionicons name="cloud-offline-outline" size={48} color={c.ink3} />
       <Text style={[styles.errorText, { color: c.ink2 }]}>{error}</Text>
       <TouchableOpacity
@@ -811,11 +813,16 @@ export default function SharedScreen() {
       {topTab === 'requests' ? (
         /* File Requests — the existing list, rendered inline (own header
            suppressed, keeps its own empty/error/refresh). */
-        <FileRequestsScreen embedded />
+        <FileRequestsScreen embedded contentInsetTop={headerHeight} />
       ) : currentError ? (
         renderError(currentError, onRetry)
       ) : currentLoading ? (
-        <View>
+        // 1393 — the header FLOATS (absolute, see `floatingHeader`), so every
+        // content branch must start below it, not just the three FlatLists
+        // that carry `listInset`. Without this the skeleton rows rendered
+        // from y=0, underneath the title + segment, and read as a broken
+        // half-hidden list on first load (Guus's device screenshot).
+        <View style={{ paddingTop: headerHeight }}>
           {[0, 1, 2].map((i) => <SkeletonRow key={i} />)}
         </View>
       ) : shareDir === 'with' ? (
