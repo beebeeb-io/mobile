@@ -304,6 +304,7 @@ extension ThumbnailService {
 
     let outDir = documentDirectory.appendingPathComponent("beebeeb-thumbnails-v3", isDirectory: true)
     try? FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
+    PlaintextStorageProtection.protect(outDir)
     let outURL = outDir.appendingPathComponent("\(fileId).medium.webp")
     do {
       try plaintext.write(to: outURL, options: .atomic)
