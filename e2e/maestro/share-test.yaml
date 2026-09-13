@@ -7,9 +7,16 @@ appId: io.beebeeb.app
     visible: "Drive"
     timeout: 15000
 
-# Navigate to Shared tab
-- tapOn:
-    id: "tab-shared"
+# Navigate to Shared tab.
+# 1308d — task 1360: `id: "tab-shared"` against the native SwiftUI tab bar
+# (1308a) is unreliable here — a hard "Element not found" even though
+# `maestro hierarchy` dumped moments earlier shows `resource-id: "tab-shared"`
+# genuinely present. A plain TEXT selector on the tab's own label resolved and
+# tapped correctly 3/3 runs with zero waiting instead — see login-test.yaml
+# for the full live comparison (repeat/wait wrappers tried and ruled out) and
+# docs/maestro-driver-fault-1360.md for the general fault this native-tab-bar
+# variant sits beside.
+- tapOn: "Shared"
 
 # Two segmented tabs. Renamed in-product to "With me.*" / "By me.*"
 # (SharedScreen dirTabs); this flow still asserted the old strings.

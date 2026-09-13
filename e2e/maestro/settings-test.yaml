@@ -7,9 +7,16 @@ appId: io.beebeeb.app
     visible: "Drive"
     timeout: 10000
 
-# Navigate to Settings tab
-- tapOn:
-    id: "tab-settings"
+# Navigate to Settings tab.
+# 1308d — task 1360: `id: "tab-settings"` against the native SwiftUI tab bar
+# (1308a) is unreliable here — a hard "Element not found" even though
+# `maestro hierarchy` dumped moments earlier shows `resource-id:
+# "tab-settings"` genuinely present. A plain TEXT selector on the tab's own
+# label resolved and tapped correctly 3/3 runs with zero waiting instead —
+# see login-test.yaml for the full live comparison (repeat/wait wrappers
+# tried and ruled out) and docs/maestro-driver-fault-1360.md for the general
+# fault this native-tab-bar variant sits beside.
+- tapOn: "Settings"
 
 - extendedWaitUntil:
     visible: "Settings"
