@@ -1,6 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as FileSystem from 'expo-file-system/legacy';
 import type { FileEntry } from './api';
+import { notePlaintextPathCreated } from './plaintext-storage';
 
 const FILE_INDEX_CACHE_KEY = 'beebeeb:file-index-cache:v1';
 const FILE_INDEX_CACHE_PATH = `${FileSystem.documentDirectory ?? ''}beebeeb-file-index-cache-v1.json`;
@@ -73,6 +74,7 @@ export async function saveCachedFileIndex(
   if (FileSystem.documentDirectory) {
     await ensureDocumentDirectory();
     await FileSystem.writeAsStringAsync(FILE_INDEX_CACHE_PATH, serialized);
+    notePlaintextPathCreated();
     return;
   }
   await AsyncStorage.setItem(FILE_INDEX_CACHE_KEY, serialized);

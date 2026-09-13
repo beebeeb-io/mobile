@@ -1028,6 +1028,15 @@ public class BeebeebCryptoModule: Module {
       }
     }
 
+    AsyncFunction("hardenPlaintextStorage") { () -> [String: Bool] in
+      PlaintextStorageProtection.hardenAll()
+    }
+
+    AsyncFunction("auditPlaintextStorage") { () -> [[String: Any]] in
+      PlaintextStorageProtection.writeAuditReport()
+      return PlaintextStorageProtection.audit()
+    }
+
     AsyncFunction("generateRandomBytes") { (length: Int) throws -> Data in
       guard length > 0, length <= 4096 else {
         throw NSError(

@@ -16,6 +16,8 @@
 
 import * as FileSystem from 'expo-file-system/legacy';
 
+import { notePlaintextPathCreated } from './plaintext-storage';
+
 export interface CachedName {
   name: string;
   mime: string | null;
@@ -76,6 +78,7 @@ export async function saveNameCacheNow(cache: NameCache): Promise<void> {
   if (!FileSystem.documentDirectory) return;
   try {
     await FileSystem.writeAsStringAsync(CACHE_FILE, JSON.stringify(capEntries(cache)));
+    notePlaintextPathCreated();
   } catch {
     // A failed name-cache write is non-fatal — names still resolve via the index
     // or a fresh batch decrypt next open.

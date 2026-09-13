@@ -21,6 +21,7 @@
 import * as FileSystem from 'expo-file-system/legacy';
 import { Platform } from 'react-native';
 
+import { notePlaintextPathCreated } from './plaintext-storage';
 import { THUMB_CACHE_DIR_NAME, type ThumbnailVariant } from './thumbnail-policy';
 
 const THUMB_DIR = `${FileSystem.documentDirectory}${THUMB_CACHE_DIR_NAME}/`;
@@ -126,6 +127,7 @@ export async function cacheThumbnail(
   variant: ThumbnailVariant = 'medium',
 ): Promise<string> {
   await FileSystem.makeDirectoryAsync(THUMB_DIR, { intermediates: true });
+  notePlaintextPathCreated();
   const path = variantPath(fileId, variant);
   await FileSystem.writeAsStringAsync(path, uint8ArrayToBase64(data), {
     encoding: FileSystem.EncodingType.Base64,
@@ -147,6 +149,7 @@ export async function cacheThumbnailBase64(
     throw new Error('cacheThumbnailBase64 is Android-only — iOS thumbnails are managed by the native ThumbnailService actor');
   }
   await FileSystem.makeDirectoryAsync(THUMB_DIR, { intermediates: true });
+  notePlaintextPathCreated();
   const path = variantPath(fileId, variant);
   await FileSystem.writeAsStringAsync(path, base64Data, {
     encoding: FileSystem.EncodingType.Base64,
@@ -165,6 +168,7 @@ export async function persistThumbnailFromPath(
   variant: ThumbnailVariant = 'medium',
 ): Promise<string> {
   await FileSystem.makeDirectoryAsync(THUMB_DIR, { intermediates: true });
+  notePlaintextPathCreated();
   const destPath = variantPath(fileId, variant);
   await FileSystem.copyAsync({ from: sourcePath, to: destPath });
   memoryThumbPaths.set(cacheKey(fileId, variant), destPath);

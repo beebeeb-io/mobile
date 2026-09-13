@@ -84,6 +84,38 @@ export function logDiagnostic(marker: string, payload?: Record<string, unknown>)
   }
 }
 
+export interface PlaintextStorageAuditRow {
+  name: string
+  kind: 'directory' | 'file'
+  contains: string
+  exists: boolean
+  excludedFromBackup: boolean
+  protection: string
+}
+
+/**
+ * Apply exclude-from-backup + file protection to every registered path.
+ * Idempotent and cheap (~15 stat calls). No-op off iOS.
+ */
+export async function hardenPlaintextStorage(): Promise<Record<string, boolean>> {
+  if (typeof BeebeebCryptoModule.hardenPlaintextStorage !== 'function') return {}
+  try {
+    return (await BeebeebCryptoModule.hardenPlaintextStorage()) as Record<string, boolean>
+  } catch {
+    return {}
+  }
+}
+
+/** Read the protection state back and write the QA evidence JSON. */
+export async function auditPlaintextStorage(): Promise<PlaintextStorageAuditRow[]> {
+  if (typeof BeebeebCryptoModule.auditPlaintextStorage !== 'function') return []
+  try {
+    return (await BeebeebCryptoModule.auditPlaintextStorage()) as PlaintextStorageAuditRow[]
+  } catch {
+    return []
+  }
+}
+
 function bytesToBase64(bytes: Uint8Array): string {
   let binary = ''
   for (let i = 0; i < bytes.length; i++) {

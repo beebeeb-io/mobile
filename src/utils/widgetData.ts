@@ -1,6 +1,8 @@
 import { Platform } from 'react-native'
 import { File, Paths } from 'expo-file-system'
 
+import { notePlaintextPathCreated } from '../lib/plaintext-storage'
+
 interface WidgetData {
   storageUsed: number
   storageTotal: number
@@ -38,6 +40,7 @@ export async function writeWidgetData(data: WidgetData): Promise<void> {
       file.create()
     }
     file.write(JSON.stringify(normalizeWidgetData(data)))
+    notePlaintextPathCreated()
   } catch {
     // Best-effort: widget data must never block settings or storage loading.
   }
