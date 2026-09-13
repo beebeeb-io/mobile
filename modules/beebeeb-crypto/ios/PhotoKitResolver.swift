@@ -17,6 +17,7 @@ public actor PhotoKitResolver {
     let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
     let dir = docs.appendingPathComponent("beebeeb-photokit-cache", isDirectory: true)
     try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    PlaintextStorageProtection.protect(dir)
     return dir
   }()
 

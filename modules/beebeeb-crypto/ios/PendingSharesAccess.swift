@@ -167,6 +167,7 @@ enum PendingSharesAccess {
         }
         let dir = container.appendingPathComponent(incomingDir, isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        PlaintextStorageProtection.protect(dir)
         return dir
     }
 
@@ -179,6 +180,7 @@ enum PendingSharesAccess {
         )
         let dir = docs.appendingPathComponent(stagingDir, isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        PlaintextStorageProtection.protect(dir)
         return dir
     }
 

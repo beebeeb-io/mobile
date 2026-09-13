@@ -10,6 +10,11 @@ public class BeebeebAppDelegate: ExpoAppDelegateSubscriber {
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
   ) -> Bool {
+    // Pre-mortem 12 / task 0300 — exclude every plaintext + metadata path from
+    // iCloud and Finder backups before any other subsystem can write to them.
+    // Idempotent: repairs existing installs on their first launch of this build.
+    PlaintextStorageProtection.hardenAll()
+
     // NativeBackupEngine is the active backup pipeline.
     // BGTaskScheduler.register must be called before didFinishLaunching returns.
     NativeBackupEngine.shared.registerBackgroundTask()

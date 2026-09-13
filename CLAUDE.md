@@ -383,6 +383,34 @@ Consumes `beebeeb-core` via UniFFI-generated Swift/Kotlin bindings. Crypto runs 
   fallback for callers without a key handle / servers without v2. Never reintroduce base64 file reads in
   the upload path.
 
+## On-disk storage — every new path must be registered (task 0300, pre-mortem 12)
+
+iOS backs up `Documents/`, `Library/Application Support/`, and App Group containers. It does NOT
+back up `Library/Caches/`. Any path this app writes outside `Caches/` must be registered in
+`modules/beebeeb-crypto/ios/PlaintextStorageProtection.swift` AND mirrored in
+`PROTECTED_LEAF_NAMES` in `src/lib/plaintext-storage.ts`, or `bun run test` fails.
+
+- New Swift file touching `.documentDirectory` / `.applicationSupportDirectory`? Add it to
+  `REVIEWED_NATIVE_SOURCES` and call `PlaintextStorageProtection.protect(dir)` after `createDirectory`.
+- New JS cache file? Register the leaf name and call `notePlaintextPathCreated()` after the write.
+- Prefer `FileSystem.cacheDirectory` for anything disposable — the preview path
+  (`src/lib/native-decrypt.ts:43`) is the model.
+- **The `BeebeebFileProvider` extension is a SEPARATE compiled `.appex` target** (`targets/file-provider/`,
+  not part of the `beebeeb-crypto` Expo module/CocoaPods glob) — it needed `PlaintextStorageProtection.swift`
+  hand-added to its own `PBXSourcesBuildPhase` in `ios/Beebeeb.xcodeproj/project.pbxproj` (mirroring how
+  `Constants.swift` is wired there), since `plugins/file-provider/withFileProvider.js`'s `SOURCE_FILES`
+  path template only covers files inside `targets/file-provider/`. **A same-directory Swift file is not
+  automatically available across targets:** `PlaintextStorageProtection.swift` calls
+  `RuntimeTrace.event(...)`, and a real `xcodebuild` failed with "cannot find 'RuntimeTrace' in scope" for
+  the `BeebeebFileProvider` target specifically until `RuntimeTrace.swift` was ALSO added to that target's
+  compiled sources the same way — the main app target didn't need this because its CocoaPods glob
+  (`BeebeebCrypto.podspec`'s `s.source_files = '**/*.{h,m,mm,swift}'`) already picks up every file in the
+  directory. If you add a source file to the extension target that references another same-directory type,
+  add that dependency too, or the extension target alone will fail to compile even though the main app
+  builds fine.
+- Verify with `bash scripts/verify-backup-exclusion.sh <sim-udid>`; the full inventory and the
+  accepted-plaintext rationale live in `docs/0300-plaintext-lifecycle-audit.md`.
+
 
 ## How we work (evidence, design, done, parallel agents)
 

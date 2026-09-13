@@ -75,6 +75,7 @@ enum AppGroupContainer {
   static var pinnedContentDirectory: URL {
     let dir = url.appendingPathComponent("pinned", isDirectory: true)
     try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    PlaintextStorageProtection.protect(dir)
     return dir
   }
 
@@ -82,6 +83,7 @@ enum AppGroupContainer {
   static var temporaryContentDirectory: URL {
     let dir = url.appendingPathComponent("temp", isDirectory: true)
     try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    PlaintextStorageProtection.protect(dir)
     return dir
   }
 }

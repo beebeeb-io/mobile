@@ -24,6 +24,19 @@ const SOURCE_FILES = [
   'Constants.swift',
   'SyncEngine.swift',
 ];
+// PlaintextStorageProtection.swift (pre-mortem 12 / task 0300) is added
+// directly to ios/Beebeeb.xcodeproj/project.pbxproj's BeebeebFileProvider
+// Sources build phase rather than through this list: it lives at
+// modules/beebeeb-crypto/ios/PlaintextStorageProtection.swift, outside
+// targets/file-provider/, which is the one directory this generator's path
+// template (`../targets/file-provider/${file}`) assumes. Do not add it here
+// — doing so would resolve to a path that does not exist and break prebuild.
+// A clean `expo prebuild` will NOT drop the hand-added pbxproj entry (see
+// `ensureBuildPhase` above, which only appends missing files and never
+// removes existing ones) unless prebuild regenerates ios/ from scratch — if
+// it ever does, re-add the two pbxproj entries by hand (see git history for
+// this file's commit that introduced them) and re-run
+// `scripts/restore-vendored-ios.sh`.
 const EXTENSION_FILES = [
   ...SOURCE_FILES.map((file) => ({
     path: `../targets/file-provider/${file}`,

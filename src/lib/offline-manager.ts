@@ -20,6 +20,7 @@
 import * as FileSystem from 'expo-file-system/legacy';
 import * as SecureStore from 'expo-secure-store';
 import { getDownloadUrl, getToken } from './api';
+import { notePlaintextPathCreated } from './plaintext-storage';
 
 export type OfflineState = 'queued' | 'downloading' | 'available' | 'error';
 
@@ -274,6 +275,7 @@ class OfflineManager {
       const dirInfo = await FileSystem.getInfoAsync(OFFLINE_DIR);
       if (!dirInfo.exists) {
         await FileSystem.makeDirectoryAsync(OFFLINE_DIR, { intermediates: true });
+        notePlaintextPathCreated();
       }
       const token = await getToken();
       if (!token) throw new Error('Not signed in');
