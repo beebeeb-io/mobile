@@ -21,6 +21,15 @@ mock.module('react-native', () => ({
   Platform: { OS: 'android' },
 }));
 
+// thumbnail-cache.ts calls notePlaintextPathCreated() (pre-mortem 12 / task
+// 0300) after every directory creation, which imports the generated crypto-
+// module bridge. Mock it here too — isolation means this file cannot rely on
+// another test file having registered it (mobile/CLAUDE.md "Tests").
+mock.module('../../modules/beebeeb-crypto', () => ({
+  hardenPlaintextStorage: async () => ({}),
+  auditPlaintextStorage: async () => [],
+}));
+
 mock.module('expo-file-system/legacy', () => ({
   documentDirectory: 'file:///doc/',
   cacheDirectory: 'file:///cache/',
