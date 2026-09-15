@@ -89,6 +89,10 @@ e2e/.maestro/
 !assets/icon.png
 !assets/adaptive-icon.png
 !ios/Beebeeb/Images.xcassets/AppIcon.appiconset/*.png
+# App Store screenshots (task 1402) — the actual submission deliverable the
+# `deliver` fastlane lane uploads, not a local dev/QA capture like everything
+# else the blanket *.png rule above is meant to keep out of git.
+!fastlane/screenshots/**/*.png
 
 # Google Play service account key (secret — do not commit)
 google-service-account.json
