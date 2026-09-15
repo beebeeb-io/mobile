@@ -87,10 +87,16 @@ destroyed server-side. See task 1399 for the exact flow.
 >
 > Creating this account is a **production mutation** and is gated on Guus's word per decision 1398
 > §6: either he says "create it" (the lead signs up through the public app and records the
-> credentials here, in this gitignored/placeholder section only — never in git history), or he
-> creates it himself and pastes the credentials directly into this file before submission. This
-> placeholder must not be left blank at actual submission time — App Review requires a working
-> demo account for a login-gated app.
+> credentials) or he creates it himself. Either way, the filled-in credentials — and the notes text
+> above once it quotes the account's 12-word recovery phrase for the reviewer walkthrough — go into
+> a **copy of this file kept OUTSIDE the repo**, never into this tracked placeholder (this file is
+> **not** gitignored, so anything written here goes straight into git history). The `deliver_metadata`
+> lane (`repos/mobile/fastlane/Fastfile`) reads that external copy at upload time via the
+> `ASC_REVIEW_NOTES_PATH` environment variable (its `notes` field is `File.read(ENV["ASC_REVIEW_
+> NOTES_PATH"])`) plus `ASC_REVIEW_FIRST_NAME` / `ASC_REVIEW_LAST_NAME` / `ASC_REVIEW_PHONE` /
+> `ASC_REVIEW_EMAIL` / `ASC_REVIEW_DEMO_USER` / `ASC_REVIEW_DEMO_PASSWORD` for the rest of the
+> `app_review_information` hash. This placeholder in the repo must stay exactly as written above —
+> never edit it in place to hold real credentials.
 
 ## 2. Age rating questionnaire (Apple's current content-rights questionnaire)
 
@@ -141,6 +147,12 @@ This section is kept short so the two documents don't drift:
 
 This document and `docs/app-store/privacy-labels.md` are meant to be pasted into App Store Connect
 by hand (age rating, category, and privacy labels aren't part of `fastlane deliver`'s metadata
-upload — only `fastlane/metadata/**/*.txt` fields are). The `deliver_metadata` lane in
-`repos/mobile/fastlane/Fastfile` only pushes the text fields + screenshots; it does not touch
-these.
+upload — only `fastlane/metadata/**/*.txt` fields are, plus the review-information fields below).
+The `deliver_metadata` lane in `repos/mobile/fastlane/Fastfile` pushes the text fields + screenshots
+and, when `ASC_REVIEW_DEMO_USER` is set, the App Review contact + demo account + notes (see
+"Reviewer account" above for the exact env vars, and `ASC_REVIEW_NOTES_PATH` for where the filled
+notes text — including the recovery phrase — is read from, outside this repo). It does not touch
+age rating, category, or privacy labels — those still go in by hand.
+
+Non-interactive runs (no TTY to answer the HTML-diff confirmation) set `DELIVER_FORCE=1`; an
+ordinary interactive run leaves it unset and gets the confirmation prompt as before.
