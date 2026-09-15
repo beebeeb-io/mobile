@@ -104,6 +104,22 @@ in_non_network_host() { # in_non_network_host <host> — namespace URIs and
   printf '%s\n' "${NON_NETWORK_HOSTS[@]}" | grep -qxF "$low"
 }
 
+strip_non_network_urls() { # strip_non_network_urls <line> — remove every
+  # EXACT occurrence of a NON_NETWORK_URL_PREFIXES entry (e.g. the literal
+  # Apple plist DOCTYPE URL, the literal Android XML namespace URL) from the
+  # line before host extraction, so a real, DIFFERENT reference to the same
+  # HOST elsewhere on the line (or in the file) is still examined. This is
+  # deliberately URL-prefix-scoped, not host-scoped: unlike NON_NETWORK_HOSTS
+  # (which exempts a host everywhere it appears), a host must never be
+  # blanket-exempted here — a real runtime fetch to that host would then
+  # silently slip past the guard (Codex review, task 1420).
+  local line="$1" prefix
+  for prefix in "${NON_NETWORK_URL_PREFIXES[@]}"; do
+    line="${line//$prefix/}"
+  done
+  printf '%s' "$line"
+}
+
 extract_hosts() { # extract_hosts <line> — every host referenced by a
   # network-shaped URL on the line: scheme URLs (case-insensitive; http,
   # https, ws, wss) and scheme-relative URLs (`//host`, once any real
@@ -149,7 +165,7 @@ scan() { # scan <label> <ci|cs> <ERE> <origin|claims> <pathspec...>
 }
 
 check_hosts() {
-  local hit path outfile
+  local hit path stripped outfile
   outfile="$(new_tmp)"
   git_grep_or_die "$outfile" -nEI -i -e "$HOST_URL_RE" -- "${RUNTIME_PATHS[@]}" \
     ':(exclude)*.md' ':(exclude)docs/*' ':(exclude,glob)**/graphify-out/**' \
@@ -158,6 +174,7 @@ check_hosts() {
   while IFS= read -r hit; do
     [ -n "$hit" ] || continue
     path="${hit%%:*}"
+    stripped="$(strip_non_network_urls "$hit")"
     while IFS= read -r host; do
       [ -n "$host" ] || continue
       if in_non_network_host "$host"; then continue; fi
@@ -165,7 +182,7 @@ check_hosts() {
       if is_allowed "$path" "$host"; then continue; fi
       report "host-allowlist  $path  unknown host: $host"
       printf '      allow with: %s|%s|<why this host is in the data path>\n' "$path" "$host"
-    done < <(extract_hosts "$hit" | sed -E 's/[]).,;:!?}"]+$//' | sort -u)
+    done < <(extract_hosts "$stripped" | sed -E 's/[]).,;:!?}"]+$//' | sort -u)
   done < "$outfile"
 }
 
