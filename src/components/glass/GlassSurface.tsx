@@ -34,8 +34,9 @@ import {
   type ViewStyle,
 } from 'react-native';
 import { BlurView } from 'expo-blur';
-import { GlassView, isLiquidGlassAvailable } from 'expo-glass-effect';
+import { GlassView } from 'expo-glass-effect';
 
+import { isGlassAvailable } from './glass-availability';
 import { useTheme } from '../../lib/theme-context';
 import {
   bandColorsAcross,
@@ -163,7 +164,14 @@ export function GlassSurface({
   // every non-iOS platform (the library's own cross-platform stub always
   // returns false and `GlassView` there is a plain, unstyled `View`), so this
   // never needs an extra `Platform.OS` guard alongside it.
-  const useNativeGlass = isLiquidGlassAvailable();
+  //
+  // Task 1409: go through `isGlassAvailable()` rather than the raw export —
+  // on a dev client built before 1308c (or any other binary/OTA skew) the
+  // native module isn't linked and the raw `isLiquidGlassAvailable()` THROWS
+  // `Cannot find native module 'ExpoGlassEffect'`, which took down the whole
+  // unauthenticated tree at LoginScreen mount. The guard treats "throws" the
+  // same as "unavailable" and falls back to the BlurView path below.
+  const useNativeGlass = isGlassAvailable();
 
   const inner = (
     <View style={[styles.clip, { borderRadius: r }, contentStyle]}>
