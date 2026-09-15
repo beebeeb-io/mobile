@@ -94,6 +94,16 @@ e2e/.maestro/
 # else the blanket *.png rule above is meant to keep out of git.
 !fastlane/screenshots/**/*.png
 
+# Fastlane credential-bearing / generated files (task 1402) — never commit.
+# review_information/ is where `deliver download_metadata` (or a prior
+# manual `deliver` run) would write the demo account + reviewer notes
+# (including the 12-word recovery phrase) to disk as plain text; report.xml
+# and Preview.html are per-run generated artifacts (the HTML-diff preview
+# `force:` skips, and the fastlane run report), not source.
+fastlane/metadata/review_information/
+fastlane/report.xml
+fastlane/Preview.html
+
 # Google Play service account key (secret — do not commit)
 google-service-account.json
 

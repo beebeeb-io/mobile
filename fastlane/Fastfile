@@ -27,6 +27,32 @@ platform :ios do
       key_filepath: ENV["ASC_KEY_PATH"], # e.g. ~/.private_keys/AuthKey_<KEY_ID>.p8
     )
 
+    # App Review contact + demo account, built from the environment so the
+    # filled-in values — including the demo password and the 12-word
+    # recovery phrase quoted in the notes — never touch git. Only populated
+    # when ASC_REVIEW_DEMO_USER is set; otherwise this stays `nil`, which
+    # `deliver` treats as "leave this field alone" (verified: `app_review_
+    # information` is `optional: true`, so an absent/nil value is not sent
+    # as a blanking update) — an ordinary run can't wipe out review info
+    # someone already entered by hand in App Store Connect.
+    review_information = nil
+    if ENV["ASC_REVIEW_DEMO_USER"]
+      notes_path = ENV["ASC_REVIEW_NOTES_PATH"]
+      unless notes_path && File.exist?(notes_path)
+        UI.user_error!("ASC_REVIEW_NOTES_PATH must point at the filled-in review notes file (kept OUTSIDE this repo) when ASC_REVIEW_DEMO_USER is set")
+      end
+
+      review_information = {
+        first_name: ENV["ASC_REVIEW_FIRST_NAME"],
+        last_name: ENV["ASC_REVIEW_LAST_NAME"],
+        phone_number: ENV["ASC_REVIEW_PHONE"],
+        email_address: ENV["ASC_REVIEW_EMAIL"],
+        demo_user: ENV["ASC_REVIEW_DEMO_USER"],
+        demo_password: ENV["ASC_REVIEW_DEMO_PASSWORD"],
+        notes: File.read(notes_path),
+      }
+    end
+
     deliver(
       api_key: api_key,
       app_identifier: "io.beebeeb.app",
@@ -41,13 +67,42 @@ platform :ios do
       overwrite_screenshots: true,
       submit_for_review: false,
       automatic_release: false,
-      force: false, # keep the interactive HTML-diff confirmation — never auto-confirm
+      # Default keeps the interactive HTML-diff confirmation — never
+      # auto-confirm by accident. The lead sets DELIVER_FORCE=1 deliberately
+      # for a non-TTY run (no terminal to answer the HTML-diff prompt); any
+      # normal interactive run still gets the confirmation as before.
+      force: ENV["DELIVER_FORCE"] == "1",
+
+      app_review_information: review_information,
 
       # No IAP exists in the app (task 1400 removes even the web billing
       # links from being tappable in-app) — precheck must not go looking
       # for in-app-purchase metadata that will never exist.
       precheck_include_in_app_purchases: false,
       run_precheck_before_submit: false,
+
+      # No ad identifier anywhere in the app — docs/app-store/privacy-labels.md
+      # line 101: "Advertising identifiers (no ad SDK; no IDFA/ATT usage
+      # found — `App Tracking Transparency` prompt [never shown])", and
+      # line 127: "Data Used to Track You: None. Beebeeb does not use the
+      # Advertising Identifier...".
+      # NOTE (verified against the installed fastlane 2.238.0 deliver/
+      # spaceship source, since this repo's Fastfile carries no Gemfile
+      # pin): `add_id_info_uses_idfa` is not a key this version's
+      # `submission_information` reads at all — `deliver/submit_for_review.rb`
+      # only reads `export_compliance_uses_encryption` and
+      # `content_rights_contains_third_party_content` from that hash — and
+      # the ONLY code that reads `submission_information`
+      # (`Deliver::SubmitForReview#submit!`) never runs while
+      # `submit_for_review: false` above. This line is therefore inert
+      # today; kept to document intent until either this lane submits for
+      # review or the current mechanism for declaring IDFA use (an App
+      # Store Connect "App Privacy" answer, entered by hand like age
+      # rating/category below) is confirmed. Flagged to the lead in the PR —
+      # do not read this key as a working declaration yet.
+      submission_information: {
+        add_id_info_uses_idfa: false,
+      },
     )
   end
 end
