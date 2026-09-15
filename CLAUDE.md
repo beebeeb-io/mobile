@@ -162,6 +162,18 @@ xcrun simctl install <new-udid> "$APP"
 xcrun simctl launch <new-udid> io.beebeeb.app
 ```
 
+**After any native-dependency change, refresh EVERY QA sim's dev client before the next lane
+uses it (task 1409).** A sim's copied container keeps whatever native modules were linked into
+the source binary at copy time — it does not pick up a newly added Expo module just because the
+JS bundle changes. Task 1409 was filed exactly this way: `bb-qa-2`'s dev client was still on a
+build from before `expo-glass-effect` (1308c) was added, so `GlassCapsule` → `GlassSurface` →
+`isLiquidGlassAvailable()` threw `Cannot find native module 'ExpoGlassEffect'` and blanked the
+whole unauthenticated tree at LoginScreen mount — not a real production crash (production always
+links the module), but a trap for whichever lane picks up that sim next. After adding, removing,
+or upgrading any native module, rebuild the source dev client once (`expo run:ios` or an EAS
+local build) and re-run the **dev-client copy procedure** above against BOTH `bb-qa-1310` and
+`bb-qa-2` before treating either as ready for QA.
+
 **Stale-bundle / wrong-Metro deep-link refresh.** Point a booted dev client at a specific Metro
 without touching the UI:
 
