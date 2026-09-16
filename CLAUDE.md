@@ -141,20 +141,26 @@ Running the iOS app on the Simulator for QA hits several env-specific walls. Wor
 - **Local QA account:** `qa0688content@beebeeb.io` / `BeebeebQA0688content!` (OPAQUE, seeded files/
   photos; see `.claude/skills/beebeeb-test-accounts.md`).
 
-## Simulators — two QA sims, one lane per sim (task 1353)
+## Simulators — three QA sims, one lane per sim (task 1353, recreated 1426)
 
 One shared simulator serialized every QA lane and caused real collisions (1348/1351 both drove
-`bb-qa-1310` the same morning). There are now **two** sims so two lanes can verify in parallel —
+`bb-qa-1310` the same morning). There are now **three** sims so lanes can verify in parallel —
 **never share one sim across two lanes; claim one per lane for the session.**
 
-- `bb-qa-1310` — `5F8915EB-2FE7-449E-9524-9E7306029ADD`, iOS 26.2, iPhone 17 Pro.
-- `bb-qa-2` — `D7A6B303-B138-4EF5-ABEC-E23AEEE503FC`, iOS 26.2, iPhone 17 Pro.
+**Every `bb-*` sim and the iOS 26.2 runtime they ran on vanished from this Mac on 2026-09-16**
+(likely an Xcode/runtime update or another session's `simctl delete` — task 1426). Before
+dispatching any sim-based rung, run `xcrun simctl list devices | grep bb-` and confirm all three
+are present — do not assume the table below still matches disk.
+
+- `bb-qa-1310` — `D41C3AA1-D520-4CEF-A286-5F8717A03B7F`, iOS 26.5, iPhone 17 Pro. (recreated 2026-09-16)
+- `bb-qa-2` — `C44A5FD9-42B4-4334-934C-E4D9C3D76041`, iOS 26.5, iPhone 17 Pro. (recreated 2026-09-16)
+- `bb-shots` — `B272D461-0765-4890-B08C-C894925919EA`, iOS 26.5, iPhone 17 Pro Max. (recreated 2026-09-16)
 
 **Dev-client copy procedure (no rebuild).** A new sim can get the dev client by copying the app
 container off an already-built one instead of running `expo run:ios` again:
 
 ```sh
-xcrun simctl create bb-qa-N "iPhone 17 Pro" com.apple.CoreSimulator.SimRuntime.iOS-26-2
+xcrun simctl create bb-qa-N "iPhone 17 Pro" com.apple.CoreSimulator.SimRuntime.iOS-26-5
 xcrun simctl boot <new-udid>
 xcrun simctl bootstatus -b <new-udid>  # blocks until boot has finished
 APP=$(xcrun simctl get_app_container <source-udid> io.beebeeb.app)
