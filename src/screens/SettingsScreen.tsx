@@ -71,15 +71,18 @@ import {
   getRegion,
   getNotificationPreferences,
   setNotificationPreferences,
-  getUserRegion,
-  setUserRegion,
   getApiEnvironment,
   type StorageUsage,
   type Subscription,
   type Region,
   type MobileNotificationPreferences,
-  type AvailableRegion,
 } from '../lib/api';
+import {
+  loadRegionsData,
+  selectRegion,
+  DEFAULT_REGION_ROWS,
+  type RegionRow,
+} from '../lib/regions';
 import {
   initDatabase as initBackupDb,
   getCategorySummaries,
@@ -160,17 +163,6 @@ interface NativePermissionResponse {
   status?: string;
   granted?: boolean;
 }
-
-// ---------------------------------------------------------------------------
-// Data residency regions
-// ---------------------------------------------------------------------------
-
-const REGIONS: ReadonlyArray<{ poolName: string; label: string; subtitle: string; available: boolean }> = [
-  { poolName: 'europe', label: 'Europe', subtitle: 'Anywhere in Europe', available: true },
-  { poolName: 'falkenstein-de', label: 'Falkenstein', subtitle: 'Preference or force', available: true },
-  { poolName: 'helsinki-fi', label: 'Helsinki', subtitle: 'Preference or force', available: false },
-  { poolName: 'ede-nl', label: 'Ede', subtitle: 'Preference or force', available: false },
-];
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -719,8 +711,10 @@ export default function SettingsScreen() {
   const [storageRegion, setStorageRegion] = useState<string>('europe');
   const [storageRegionMode, setStorageRegionMode] = useState<RegionMode>('preference');
   const [savingRegion, setSavingRegion] = useState(false);
-  /** Dynamic regions from /api/v1/me/region — replaces hardcoded REGIONS when available */
-  const [apiRegions, setApiRegions] = useState<AvailableRegion[] | null>(null);
+  /** Region rows derived from `/api/v1/regions` + `/me/region` (task 1422),
+   *  merged with the honest "Coming soon" rows for planned regions (1413). */
+  const [regionRows, setRegionRows] = useState<readonly RegionRow[]>(DEFAULT_REGION_ROWS);
+  const [regionsRefreshFailed, setRegionsRefreshFailed] = useState(false);
 
   // Backup per-category stats (sourced from BackupDatabase + .device.json manifest)
   const [photoStats, setPhotoStats] = useState<CategoryStats>(EMPTY_CATEGORY_STATS);
@@ -949,15 +943,19 @@ export default function SettingsScreen() {
   }, []);
 
   const loadStorageRegionPref = useCallback(async () => {
-    // Try the new /api/v1/me/region endpoint first; fall back to stored preference
-    try {
-      const data = await getUserRegion();
-      setApiRegions(null);
-      if (data.preferred_region) setStorageRegion(data.preferred_region);
+    // Task 1422: rows always come from `/api/v1/regions` + `/me/region` (with
+    // the honest "Coming soon" rows merged in for planned regions, decision
+    // 1413) — never throws; a failed fetch degrades to the static rows.
+    const data = await loadRegionsData();
+    setRegionRows(data.rows);
+    setRegionsRefreshFailed(data.refreshFailed);
+    if (data.preferredRegion) {
+      setStorageRegion(data.preferredRegion);
       return;
-    } catch {
-      // Endpoint not deployed yet — fall through to stored preference
     }
+    if (!data.refreshFailed) return; // fetched fine, user just has no preference set yet
+
+    // Live fetch failed — fall back to any locally cached preference.
     const raw = await getPreference('storage_region');
     if (!raw) return;
     try {
@@ -1603,20 +1601,19 @@ export default function SettingsScreen() {
     }
   }, []);
 
-  const handleRegionChange = useCallback(async (poolName: string) => {
-    const r = REGIONS.find(x => x.poolName === poolName);
-    if (!r?.available) return;
-    setStorageRegion(poolName);
+  const handleRegionChange = useCallback(async (row: RegionRow) => {
+    if (!row.available) return;
+    setStorageRegion(row.id);
     setSavingRegion(true);
     try {
-      await setUserRegion(poolName);
-      await setPreference('storage_region', JSON.stringify({ pool_name: poolName, mode: storageRegionMode }));
+      await selectRegion(row);
+      await setPreference('storage_region', JSON.stringify({ pool_name: row.id, mode: storageRegionMode }));
     } catch {
-      await setPreference('storage_region', JSON.stringify({ pool_name: poolName, mode: storageRegionMode })).catch(() => {});
+      await setPreference('storage_region', JSON.stringify({ pool_name: row.id, mode: storageRegionMode })).catch(() => {});
     } finally {
       setSavingRegion(false);
     }
-  }, [storageRegionMode, apiRegions]);
+  }, [storageRegionMode]);
 
   const handleRegionModeChange = useCallback(async (mode: RegionMode) => {
     setStorageRegionMode(mode);
@@ -2451,102 +2448,71 @@ export default function SettingsScreen() {
         <View style={layout.section}>
           <SectionHeader title="Data residency" c={c} />
           <View style={[layout.card, { backgroundColor: surfaces.groupedCell }]}>
-            {/* API regions when loaded — dynamic from /api/v1/me/region */}
-            {apiRegions !== null
-              ? apiRegions.map((r, i) => {
-                  const isSelected = storageRegion === r.continent;
-                  return (
-                    <React.Fragment key={r.continent}>
-                      {i > 0 && <RowDivider c={c} />}
-                      <TouchableOpacity
-                        style={layout.regionOption}
-                        activeOpacity={0.6}
-                        onPress={() => void handleRegionChange(r.continent)}
-                        disabled={savingRegion || apiRegions.length <= 1}
-                        accessibilityLabel={`${r.display_name}${isSelected ? ', selected' : ''}`}
-                        accessibilityRole="radio"
-                        accessibilityState={{ checked: isSelected }}
-                      >
-                        <View style={[
-                          layout.regionRadio,
-                          { borderColor: isSelected ? c.amber : c.line2 },
-                        ]}>
-                          {isSelected && (
-                            <View style={[layout.regionRadioDot, { backgroundColor: c.amber }]} />
+            {/* Rows derived from /api/v1/regions + /me/region (task 1422), merged
+                with the honest "Coming soon" rows for planned regions (1413). */}
+            {(() => {
+              const availableRowCount = regionRows.filter((r) => r.available).length;
+              return regionRows.map((row, i) => {
+                const isSelected = row.available && storageRegion === row.id;
+                const disabled = !row.available || savingRegion || availableRowCount <= 1;
+                return (
+                  <React.Fragment key={row.id}>
+                    {i > 0 && <RowDivider c={c} />}
+                    <TouchableOpacity
+                      style={layout.regionOption}
+                      activeOpacity={row.available ? 0.6 : 1}
+                      onPress={() => void handleRegionChange(row)}
+                      disabled={disabled}
+                      accessibilityLabel={`${row.label}${!row.available ? ', coming soon' : isSelected ? ', selected' : ''}`}
+                      accessibilityRole="radio"
+                      accessibilityState={{ checked: isSelected, disabled: !row.available }}
+                    >
+                      <View style={[
+                        layout.regionRadio,
+                        { borderColor: isSelected ? c.amber : c.line2 },
+                      ]}>
+                        {isSelected && (
+                          <View style={[layout.regionRadioDot, { backgroundColor: c.amber }]} />
+                        )}
+                      </View>
+                      <View style={layout.regionInfo}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                          <Text style={{ fontSize: 14, color: row.available ? c.ink : c.ink4, fontWeight: '400' as const }}>
+                            {row.label}
+                          </Text>
+                          {row.isDefault && (
+                            <Text style={{
+                              fontSize: 10, color: c.ink4, fontWeight: '500' as const,
+                              paddingHorizontal: 5, paddingVertical: 1,
+                              borderRadius: 4, borderWidth: 1, borderColor: c.line2,
+                              overflow: 'hidden' as const,
+                            }}>
+                              Default
+                            </Text>
                           )}
                         </View>
-                        <View style={layout.regionInfo}>
-                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                            <Text style={{ fontSize: 14, color: c.ink, fontWeight: '400' as const }}>
-                              {r.display_name}
-                            </Text>
-                            {r.is_default && (
-                              <Text style={{
-                                fontSize: 10, color: c.ink4, fontWeight: '500' as const,
-                                paddingHorizontal: 5, paddingVertical: 1,
-                                borderRadius: 4, borderWidth: 1, borderColor: c.line2,
-                                overflow: 'hidden' as const,
-                              }}>
-                                Default
-                              </Text>
-                            )}
-                          </View>
-                          <Text style={{ fontSize: 11, color: c.ink3, marginTop: 1 }}>
-                            {r.continent === 'europe'
-                              ? 'Anywhere in Europe'
-                              : (r.example_city ?? r.city ?? 'Preference or force')}
-                          </Text>
-                        </View>
-                        {isSelected && (
-                          <Ionicons name="checkmark" size={16} color={c.amber} />
-                        )}
-                      </TouchableOpacity>
-                    </React.Fragment>
-                  );
-                })
-              /* Fallback: hardcoded REGIONS while API endpoint isn't deployed */
-              : REGIONS.map((r, i) => (
-                <React.Fragment key={r.poolName}>
-                  {i > 0 && <RowDivider c={c} />}
-                  <TouchableOpacity
-                    style={layout.regionOption}
-                    activeOpacity={r.available ? 0.6 : 1}
-                    onPress={() => r.available && void handleRegionChange(r.poolName)}
-                    disabled={!r.available || savingRegion}
-                    accessibilityLabel={`${r.label}${!r.available ? ', coming soon' : storageRegion === r.poolName ? ', selected' : ''}`}
-                    accessibilityRole="radio"
-                    accessibilityState={{ checked: storageRegion === r.poolName, disabled: !r.available }}
-                  >
-                    <View style={[
-                      layout.regionRadio,
-                      { borderColor: storageRegion === r.poolName && r.available ? c.amber : c.line2 },
-                    ]}>
-                      {storageRegion === r.poolName && r.available && (
-                        <View style={[layout.regionRadioDot, { backgroundColor: c.amber }]} />
+                        <Text style={{ fontSize: 11, color: c.ink3, marginTop: 1 }}>
+                          {row.subtitle}
+                        </Text>
+                      </View>
+                      {isSelected && (
+                        <Ionicons name="checkmark" size={16} color={c.amber} />
                       )}
-                    </View>
-                    <View style={layout.regionInfo}>
-                      <Text style={{ fontSize: 14, color: r.available ? c.ink : c.ink4, fontWeight: '400' as const }}>
-                        {r.label}
-                      </Text>
-                      <Text style={{ fontSize: 11, color: c.ink3, marginTop: 1 }}>
-                        {r.available ? r.subtitle : 'Coming soon'}
-                      </Text>
-                    </View>
-                    {!r.available && (
-                      <Text style={{
-                        fontSize: 10, color: c.ink4, fontWeight: '500' as const,
-                        paddingHorizontal: 6, paddingVertical: 2,
-                        borderRadius: 4, borderWidth: 1, borderColor: c.line2,
-                        overflow: 'hidden' as const,
-                      }}>
-                        Soon
-                      </Text>
-                    )}
-                  </TouchableOpacity>
-                </React.Fragment>
-              ))
-            }
+                      {!row.available && (
+                        <Text style={{
+                          fontSize: 10, color: c.ink4, fontWeight: '500' as const,
+                          paddingHorizontal: 6, paddingVertical: 2,
+                          borderRadius: 4, borderWidth: 1, borderColor: c.line2,
+                          overflow: 'hidden' as const,
+                        }}>
+                          Soon
+                        </Text>
+                      )}
+                    </TouchableOpacity>
+                  </React.Fragment>
+                );
+              });
+            })()}
 
             {storageRegion !== 'europe' && (
               <>
@@ -2580,6 +2546,9 @@ export default function SettingsScreen() {
               : 'Preference: uploads go to your region when possible, overflow to others if needed.'}
             c={c}
           />
+          {regionsRefreshFailed && (
+            <SectionNote text="Could not refresh regions. Showing the last known list." c={c} />
+          )}
         </View>
 
         {/* ---- Support ---- */}
