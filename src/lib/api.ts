@@ -2820,6 +2820,13 @@ export interface AvailableRegion {
   is_default: boolean;
 }
 
+/** GET /api/v1/regions — every live storage region (public, no auth).
+ * Server (`routes/regions.rs::list_regions`) returns a bare JSON array, not
+ * `{regions: [...]}`. */
+export async function getAvailableRegions(): Promise<AvailableRegion[]> {
+  return request<AvailableRegion[]>('GET', '/api/v1/regions', undefined, false);
+}
+
 /** GET /api/v1/me/region — user's preferred region + available list */
 export async function getUserRegion(): Promise<{
   preferred_region: string | null;

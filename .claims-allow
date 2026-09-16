@@ -27,6 +27,26 @@ src/screens/SettingsScreen.tsx|Helsinki|docs/canon/data-residency.md "The truth"
 src/screens/SettingsScreen.tsx|'ede-|docs/canon/data-residency.md "The truth" (37a15d6d) + decision 1413 — REGIONS entry for a real, clearly-marked coming-soon region (available: false)
 src/screens/SettingsScreen.tsx|'Ede'|docs/canon/data-residency.md "The truth" (37a15d6d) + decision 1413 — REGIONS entry for a real, clearly-marked coming-soon region (available: false)
 
+# Task 1422 — the Data Residency picker now derives its rows from
+# `/api/v1/regions` + `/me/region` instead of a hardcoded array; the honest
+# "coming soon" rows for Helsinki/Ede (decision 1413) moved into the new data
+# layer (`src/lib/regions.ts`) + its unit test. Same reasoning as the
+# SettingsScreen.tsx lines above: real, committed roadmap regions, always
+# rendered with `available: false` / "Coming soon" until the live API lists
+# them — never claimed live.
+src/lib/regions.ts|Helsinki|docs/canon/data-residency.md "The truth" (37a15d6d) + decision 1413 — PLANNED_REGIONS entry for a real, clearly-marked coming-soon region (task 1422)
+src/lib/regions.ts|helsinki|docs/canon/data-residency.md "The truth" (37a15d6d) + decision 1413 — PLANNED_REGIONS id/city + COUNTRY_BY_CITY key (task 1422)
+src/lib/regions.ts| Ede |docs/canon/data-residency.md "The truth" (37a15d6d) + decision 1413 — doc-comment naming the coming-soon region (task 1422)
+src/lib/regions.ts|'Ede'|docs/canon/data-residency.md "The truth" (37a15d6d) + decision 1413 — PLANNED_REGIONS entry for a real, clearly-marked coming-soon region (task 1422)
+src/lib/regions.ts|'ede-|docs/canon/data-residency.md "The truth" (37a15d6d) + decision 1413 — PLANNED_REGIONS id ('ede-nl') (task 1422)
+src/lib/regions.ts| ede:|docs/canon/data-residency.md "The truth" (37a15d6d) + decision 1413 — COUNTRY_BY_CITY key (task 1422)
+src/lib/regions.test.ts|Helsinki|docs/canon/data-residency.md "The truth" (37a15d6d) + decision 1413 — unit test fixtures for the coming-soon row (task 1422)
+src/lib/regions.test.ts|helsinki|docs/canon/data-residency.md "The truth" (37a15d6d) + decision 1413 — unit test fixtures for the coming-soon row (task 1422)
+src/lib/regions.test.ts| Ede |docs/canon/data-residency.md "The truth" (37a15d6d) + decision 1413 — unit test fixtures for the coming-soon row (task 1422)
+src/lib/regions.test.ts| ede |docs/canon/data-residency.md "The truth" (37a15d6d) + decision 1413 — unit test fixtures for the coming-soon row (task 1422)
+src/lib/regions.test.ts|'ede-|docs/canon/data-residency.md "The truth" (37a15d6d) + decision 1413 — unit test fixture id ('ede-nl') (task 1422)
+src/lib/regions.test.ts|(ede?|docs/canon/data-residency.md "The truth" (37a15d6d) + decision 1413 — `ede?.` optional-chaining in the unit test, incidental match (task 1422)
+
 # ── host-allowlist (task 1420) ──────────────────────────────────────────────
 # Our own public GitHub org — same reasoning already accepted for site
 # (repos/site/.claims-allow: "our own public beebeeb-io org/repos").
