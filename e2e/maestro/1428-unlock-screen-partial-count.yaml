@@ -1,0 +1,37 @@
+# Task 1428 — recovery-phrase unlock, VARIANT 3: partial phrase (7 of 12
+# words), asserting the disabled Unlock button EXPLAINS itself.
+#
+# This is the direct regression test for the actual fix in task 1428: before
+# it, a disabled button just read "Unlock vault" at low opacity with zero
+# indication of why — indistinguishable from "unresponsive when tapped".
+# unlockButtonLabel() (src/lib/recovery-phrase.ts) now says "5 more words
+# needed" instead.
+#
+# See 1428-unlock-screen-reach.yaml for the fixture account, preconditions,
+# and the screen-capture screenshot caveat — read it before this file.
+appId: io.beebeeb.app
+---
+- runFlow: 1428-unlock-screen-reach.yaml
+
+# Gotcha 3 (see reach file) — tap by point, not id/placeholder.
+- tapOn:
+    point: "50%,56%"
+
+# First 7 words of the fixture's real 12-word phrase — deliberately NOT the
+# full phrase; this variant never reaches Unlock, it only proves the
+# in-progress count and copy are correct partway through entry.
+- inputText: "hen correct gospel double width cook furnace"
+
+- assertVisible: "7/12 words"
+- assertVisible: "5 more words needed"
+
+- takeScreenshot: "1428-partial-01-seven-of-twelve"
+
+# The button must still be genuinely disabled at 7/12, not just visually
+# dimmed — Maestro's tapOn on a disabled element is a no-op either way, so
+# the real proof is that the label above already told the user why (the
+# assertion above), not a race on whether this tap "did nothing".
+- tapOn: "5 more words needed"
+- assertNotVisible: "Drive"
+
+- takeScreenshot: "1428-partial-02-still-on-unlock-screen"

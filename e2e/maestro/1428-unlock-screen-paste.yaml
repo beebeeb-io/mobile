@@ -1,0 +1,69 @@
+# Task 1428 — recovery-phrase unlock, VARIANT 2: paste the whole phrase.
+#
+# Exercises the code path a real user pasting from Notes/a password manager
+# hits — onChangeText fires once with the complete string, exactly like a
+# real paste, whether the source is another app or (as here) Maestro's own
+# clipboard round-trip. Deliberately uses Maestro's documented
+# copyTextFrom + pasteText commands rather than driving the iOS system
+# "Paste" long-press menu: that menu's on-screen position is not guaranteed
+# stable across runs (font size, prior selection state, edge proximity), and
+# this flow is meant to run UNATTENDED — the whole point is not reintroducing
+# exactly the kind of flake that would make it need a human watching it.
+# `simctl pbcopy` was the other option raised for this variant; skipped for
+# the same self-containment reason (an extra host-side step outside the
+# flow file, awkward to keep in lockstep with an unattended run).
+#
+# See 1428-unlock-screen-reach.yaml for the fixture account, preconditions,
+# and the screen-capture screenshot caveat — read it before this file.
+appId: io.beebeeb.app
+---
+- runFlow: 1428-unlock-screen-reach.yaml
+
+# Gotcha 3 (see reach file) — tap by point, not id/placeholder.
+- tapOn:
+    point: "50%,56%"
+
+# Seed the field via typing first, purely so there is something on-screen to
+# copy FROM below — this is not the assertion under test, just setup.
+- inputText: "hen correct gospel double width cook furnace race creek tray butter else"
+- assertVisible: "12/12 words"
+
+- copyTextFrom:
+    point: "50%,56%"
+
+# Clear the field back to empty so the paste below is the ONLY thing that
+# fills it — proves paste alone reaches 12/12, not leftover typed state.
+- tapOn:
+    point: "50%,56%"
+- eraseText: 300
+- assertVisible: "0/12 words"
+- assertVisible: "Enter your 12-word phrase"
+
+- takeScreenshot: "1428-paste-01-cleared-before-paste"
+
+- tapOn:
+    point: "50%,56%"
+- pasteText
+
+- assertVisible: "12/12 words"
+- assertVisible: "Unlock vault"
+
+- takeScreenshot: "1428-paste-02-twelve-of-twelve-after-paste"
+
+# Gotcha 1 — dismiss the keyboard before tapping the button.
+- tapOn:
+    point: "50%,30%"
+- tapOn: "Unlock vault"
+
+- runFlow:
+    when:
+      visible: "Not Now"
+    commands:
+      - tapOn: "Not Now"
+
+- extendedWaitUntil:
+    visible: "Drive"
+    timeout: 30000
+
+- takeScreenshot: "1428-paste-03-vault-unlocked"
+- assertVisible: "Backups"

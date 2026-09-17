@@ -1,0 +1,55 @@
+# Task 1428 — recovery-phrase unlock, VARIANT 1: type all 12 words.
+#
+# Reproduces the App Review reviewer's path end to end on a RELEASE build:
+# fresh install → sign in → "Unlock your vault" → tap the field (assert the
+# keyboard actually opens — this is the "unresponsive when tapped" claim) →
+# type the phrase → 12/12 + "Unlock vault" enabled → Unlock → vault.
+#
+# See 1428-unlock-screen-reach.yaml for the fixture account, preconditions,
+# and the screen-capture screenshot caveat — read it before this file.
+appId: io.beebeeb.app
+---
+- runFlow: 1428-unlock-screen-reach.yaml
+
+# Gotcha 3 (see reach file) — tap by point, not id/placeholder.
+- tapOn:
+    point: "50%,56%"
+
+- takeScreenshot: "1428-01-field-tapped-keyboard-open"
+
+# Proves the keyboard actually opened — the core of "unresponsive when
+# tapped": the iOS system keyboard's spacebar key has accessibility label
+# "space" regardless of locale/keyboard layout, so this passes even under
+# the reviewer's Japanese-locale run (companion Japanese-locale pass is
+# launched separately by the lead with -AppleLanguages/-AppleLocale — this
+# same flow file is reused for that run unmodified).
+- assertVisible: "space"
+
+- inputText: "hen correct gospel double width cook furnace race creek tray butter else"
+
+- assertVisible: "12/12 words"
+- assertVisible: "Unlock vault"
+
+- takeScreenshot: "1428-02-twelve-of-twelve-words"
+
+# Gotcha 1 — dismiss the keyboard before tapping the button.
+- tapOn:
+    point: "50%,30%"
+- tapOn: "Unlock vault"
+
+- runFlow:
+    when:
+      visible: "Not Now"
+    commands:
+      - tapOn: "Not Now"
+
+- extendedWaitUntil:
+    visible: "Drive"
+    timeout: 30000
+
+- takeScreenshot: "1428-03-vault-unlocked"
+
+# Proves the vault is actually UNLOCKED, not merely signed in (locked rows
+# render as blank skeletons) — same assertion local-qa-signin-unlock.yaml
+# uses for this exact signal.
+- assertVisible: "Backups"

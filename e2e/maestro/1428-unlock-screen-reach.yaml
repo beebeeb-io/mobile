@@ -1,0 +1,147 @@
+# Task 1428 shared preamble — sign in with the local-only QA fixture account
+# and reach the "Unlock your vault" recovery-phrase screen. Included via
+# `runFlow` by 1428-unlock-screen.yaml, 1428-unlock-screen-paste.yaml, and
+# 1428-unlock-screen-partial-count.yaml so the three phrase-entry variants
+# don't duplicate the sign-in dance. Designed to be RE-RUNNABLE back to back
+# in one driver gap (the lead's plan is all three variants in one Release
+# install) — see the sign-out guard below for why.
+#
+# Fixture account (task 1428 Notes, created via the SAME beebeeb-wasm crypto
+# the app uses — OPAQUE registration + a real 12-word BIP39 recovery phrase —
+# against the local dev API at :3001; never the prod demo account):
+#   email:    bb-qa-1428-87e670fd60f4@beebeeb.io
+#   password: Bb1428-Qa-e988a08fefc618efcd98!
+# Recovery phrase deliberately NOT repeated here — each variant file supplies
+# its own copy of the words so a flow file is self-contained and diff-able.
+#
+# Preconditions: a RELEASE build of the app freshly installed on the target
+# simulator, local API on :3001 + Postgres on :5434 up, app's .env pointed at
+# localhost (never prod — see the mobile worktree's .env).
+#
+# NO `launchApp: clearState: true` here, deliberately — e2e/maestro/
+# login-test.yaml's header documents (task 1326) that clearState does NOT
+# sign out on this app: the master key persists in the iOS KEYCHAIN across an
+# app-data clear (working as designed — 0876 restore), so a
+# `extendedWaitUntil: visible: "Sign in"` right after clearState would hang
+# forever on a device that has ever signed in. The only thing that actually
+# clears the Keychain entry is signing out THROUGH THE UI (App.tsx's
+# `signOut()` calls `BeebeebCrypto.deleteKeyFromKeychain()` +
+# `SecureStore.deleteItemAsync(...)` explicitly) — hence the guard below,
+# copied from login-test.yaml's own bootstrap.
+#
+# Gotchas inherited from e2e/maestro/local-qa-signin-unlock.yaml (same
+# screens, same fixes — read that file's header before touching this one):
+#  1. The keyboard covers "Sign in" — tap a neutral point to dismiss it first.
+#  2. A Debug/dev-client build shows its own menu over the app; no-ops on a
+#     genuine Release build but kept as a harmless guard in case this ever
+#     runs against a dev client by mistake.
+#  3. The recovery-phrase TextInput is not reliably addressable by testID/
+#     placeholder on iOS (multiline UITextView accessibility quirk) — tap by
+#     point, not id.
+#
+# UNVERIFIED (flag, don't trust blindly): the "Sign out" confirm-alert point
+# tap below (`68%,56%`) is copied from login-test.yaml, where it was measured
+# LIVE and explicitly documented as specific to bb-qa-1310 (iPhone 17 Pro,
+# iOS 26.2)'s two-button UIAlertController layout. bb-qa-ipad is a DIFFERENT
+# device class — iPad alert geometry (centered popover, not a full-width
+# sheet) is very likely different. This was NOT re-measured on iPad (I was
+# told not to boot the sim or run Maestro while preparing this). If the
+# sign-out guard doesn't resolve on the first real run, re-measure this point
+# live on bb-qa-ipad the same way login-test.yaml's header describes doing it
+# for the iPhone, and update this file.
+#
+# CAVEAT (also not yet confirmed on-device — flag if a screenshot below comes
+# back blank/black): RecoveryUnlockScreen.tsx calls
+# usePreventScreenCapture('recovery-unlock') for the whole time this screen is
+# visible, since it's where the user types their recovery phrase. If iOS's
+# capture-prevention blanks XCTest-driven screenshots the same way it blanks
+# a real screen recording (unconfirmed — it may only intercept AirPlay/
+# QuickTime capture, not the accessibility-tree screenshot Maestro takes),
+# every takeScreenshot taken while this screen is on screen would come back
+# blank. Not something to fix here; just don't mistake a blank capture for a
+# flow failure — the assertVisible checks are the real pass/fail signal.
+appId: io.beebeeb.app
+---
+- launchApp
+
+# Gotcha 2 — dev-client menu (no-op on a Release build).
+- runFlow:
+    when:
+      visible: "Continue"
+    commands:
+      - tapOn: "Continue"
+- runFlow:
+    when:
+      visible: "Reload"
+    commands:
+      - tapOn:
+          point: "94%,43%"
+
+# Left mid-flow on the recovery screen by a prior run (crash/timeout)? Back
+# out to Sign in instead of trying to type into whatever phrase state is
+# already there (local-qa-signin-unlock.yaml's same guard).
+- runFlow:
+    when:
+      visible: "Use another account"
+    commands:
+      - tapOn: "Use another account"
+
+# Signed in AND unlocked from a prior variant's run in this same driver gap?
+# Sign out through the UI — the only thing that actually clears the Keychain
+# master key on this app (see the header comment above). Copied from
+# login-test.yaml's bootstrap, including its own documented driver-fault
+# workarounds (TEXT selector for the tab, fixed scroll count, point-tap on
+# the destructive alert button).
+- runFlow:
+    when:
+      visible: "Drive"
+    commands:
+      - tapOn: "Settings"
+      - scroll
+      - scroll
+      - scroll
+      - scroll
+      - scroll
+      - scroll
+      - scroll
+      - scroll
+      - tapOn: "Sign out"
+      - tapOn:
+          point: "68%,56%"
+
+- extendedWaitUntil:
+    visible: "Sign in"
+    timeout: 60000
+
+- takeScreenshot: "1428-reach-01-signin-screen"
+
+- tapOn:
+    id: "email-input"
+- inputText: "bb-qa-1428-87e670fd60f4@beebeeb.io"
+- tapOn:
+    id: "password-input"
+- inputText: "Bb1428-Qa-e988a08fefc618efcd98!"
+
+# Gotcha 1 — dismiss the keyboard before tapping Sign in.
+- tapOn:
+    point: "50%,28%"
+- tapOn:
+    id: "sign-in-button"
+
+# iOS offers to save the password; it covers the app.
+- runFlow:
+    when:
+      visible: "Not Now"
+    commands:
+      - tapOn: "Not Now"
+
+- extendedWaitUntil:
+    visible: "Unlock your vault"
+    timeout: 30000
+
+- takeScreenshot: "1428-reach-02-unlock-screen"
+
+# Baseline assertions task 1428 shipped: the field starts empty and the
+# button explains why it's disabled instead of reading as dead/unresponsive.
+- assertVisible: "0/12 words"
+- assertVisible: "Enter your 12-word phrase"
