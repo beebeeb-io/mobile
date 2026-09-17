@@ -1,6 +1,6 @@
 import { BBLogo } from "../components/BBLogo";
 import { BBWordmark } from "../components/BBWordmark";
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -22,13 +22,24 @@ import { useAuth } from '../lib/auth';
 import { useCrypto } from '../lib/crypto-context';
 import { useTheme } from '../lib/theme-context';
 import { useKeyboardLayoutAnimation } from '../lib/useKeyboardLayoutAnimation';
+import {
+  RECOVERY_WORD_COUNT,
+  UnlockTimeoutError,
+  normalizePhrase,
+  unlockButtonLabel,
+  withTimeout,
+  wordsFromPhrase,
+} from '../lib/recovery-phrase';
 import type { RootStackParamList } from '../App';
 
 type Nav = NativeStackNavigationProp<RootStackParamList>;
 
-function normalizePhrase(value: string): string {
-  return value.trim().toLowerCase().replace(/\s+/g, ' ');
-}
+// Local unlock is a native/FFI call with no network round trip (the recovery
+// phrase derives the key on-device), so this bound only guards against a
+// hung bridge — generous, but never infinite. Apple's reviewer reported the
+// screen "still unresponsive when we attempted to sign in" after the phrase
+// was accepted (task 1428).
+const UNLOCK_TIMEOUT_MS = 20_000;
 
 export default function RecoveryUnlockScreen() {
   // Block screenshots/screen recording — user types their recovery phrase here.
@@ -42,9 +53,32 @@ export default function RecoveryUnlockScreen() {
   const [phrase, setPhrase] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  // Codex review (PR #94): withTimeout abandons — but does not cancel — the
+  // underlying crypto.unlock() call. If it outlives our local timeout, this
+  // ref keeps pointing at that SAME native operation so a retry re-races it
+  // instead of firing a second recoverFromPhrase/createMasterKeyHandle call.
+  // crypto-context's own in-flight dedup (crypto-context.tsx ~576, ~592)
+  // only covers the no-phrase/keychain path (`!hasRecoveryPhrase`) — a
+  // phrase-based call always starts a fresh unlockOperation, so this screen
+  // has to own single-flight for the phrase path itself.
+  const unlockOperationRef = useRef<Promise<void> | null>(null);
 
-  const words = normalizePhrase(phrase).split(' ').filter(Boolean);
-  const canSubmit = words.length === 12 && !loading;
+  const words = wordsFromPhrase(phrase);
+  const canSubmit = words.length === RECOVERY_WORD_COUNT && !loading;
+
+  // Handles BOTH the normal success path and a late success that resolves
+  // after our local timeout already showed an error: crypto-context flips
+  // isUnlocked as soon as its own async work finishes, regardless of
+  // whether this screen is still awaiting it.
+  useEffect(() => {
+    if (!crypto.isUnlocked) return;
+    navigation.dispatch(
+      CommonActions.reset({
+        index: 0,
+        routes: [{ name: 'Tabs' }],
+      }),
+    );
+  }, [crypto.isUnlocked, navigation]);
 
   const styles = useMemo(() => StyleSheet.create({
     root: { flex: 1, backgroundColor: c.paper },
@@ -97,15 +131,35 @@ export default function RecoveryUnlockScreen() {
     setError(null);
     setLoading(true);
     try {
-      await crypto.unlock(normalizePhrase(phrase));
-      navigation.dispatch(
-        CommonActions.reset({
-          index: 0,
-          routes: [{ name: 'Tabs' }],
-        }),
+      // Reuse the previous attempt's still-running promise if one exists —
+      // a retry must never start a second native unlock while the first is
+      // still in flight (see the ref comment above). Only start a genuinely
+      // new operation when nothing is outstanding.
+      if (!unlockOperationRef.current) {
+        const operation = crypto.unlock(normalizePhrase(phrase));
+        unlockOperationRef.current = operation;
+        // .then(clear, clear) instead of .finally(): .finally() returns a
+        // NEW promise that still rejects whenever `operation` rejects (a
+        // wrong phrase), and nothing here consumes that new promise — an
+        // unhandled-rejection warning on every wrong phrase in dev. Both
+        // branches just clear the ref; neither needs the settled value.
+        const clear = () => {
+          if (unlockOperationRef.current === operation) {
+            unlockOperationRef.current = null;
+          }
+        };
+        operation.then(clear, clear);
+      }
+      // Success navigates via the isUnlocked effect above, not here — that
+      // effect is also what catches a LATE success (the operation resolving
+      // after this particular race times out).
+      await withTimeout(unlockOperationRef.current, UNLOCK_TIMEOUT_MS, 'Unlock timed out');
+    } catch (err) {
+      setError(
+        err instanceof UnlockTimeoutError
+          ? 'Unlock is taking too long. Close and reopen the app, then try again.'
+          : 'That recovery phrase did not unlock this vault. Check the words and order.',
       );
-    } catch {
-      setError('That recovery phrase did not unlock this vault. Check the words and order.');
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
     } finally {
       setLoading(false);
@@ -160,7 +214,7 @@ export default function RecoveryUnlockScreen() {
           testID="recovery-phrase-input"
           accessibilityLabel="Recovery phrase field"
         />
-        <Text style={styles.counter}>{words.length}/12 words</Text>
+        <Text style={styles.counter}>{words.length}/{RECOVERY_WORD_COUNT} words</Text>
 
         <TouchableOpacity
           style={[styles.button, !canSubmit && styles.buttonDisabled]}
@@ -168,9 +222,14 @@ export default function RecoveryUnlockScreen() {
           activeOpacity={0.85}
           disabled={!canSubmit}
           testID="unlock-vault-button"
-          accessibilityLabel="Unlock vault"
+          accessibilityLabel={unlockButtonLabel(words.length)}
+          accessibilityState={{ disabled: !canSubmit, busy: loading }}
         >
-          {loading ? <ActivityIndicator color={c.amber} /> : <Text style={styles.buttonText}>Unlock vault</Text>}
+          {loading ? (
+            <ActivityIndicator color={c.amber} />
+          ) : (
+            <Text style={styles.buttonText}>{unlockButtonLabel(words.length)}</Text>
+          )}
         </TouchableOpacity>
 
         <TouchableOpacity
