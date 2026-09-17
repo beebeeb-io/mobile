@@ -122,7 +122,7 @@ export default function RecoveryUnlockScreen() {
     } catch (err) {
       setError(
         err instanceof UnlockTimeoutError
-          ? "Unlock is taking too long. Check your connection and try again — or close and reopen the app."
+          ? 'Unlock is taking too long. Close and reopen the app, then try again.'
           : 'That recovery phrase did not unlock this vault. Check the words and order.',
       );
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
