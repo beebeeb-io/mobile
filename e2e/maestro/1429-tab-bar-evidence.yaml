@@ -32,11 +32,11 @@ appId: io.beebeeb.app
     when:
       visible: "Drive"
     commands:
-      - tapOn:
-          id: "tab-settings"
-      - scroll
-      - scroll
-      - scroll
+      - openLink: "beebeeb://settings"
+      - repeat:
+          times: 8
+          commands:
+            - scroll
       - tapOn: "Sign out"
       - tapOn:
           text: "Sign out"
@@ -122,8 +122,7 @@ appId: io.beebeeb.app
 - takeScreenshot: "1429-files-03-end"
 
 # --- Shared: top / mid ---
-- tapOn:
-    id: "tab-shared"
+- openLink: "beebeeb://shared"
 - extendedWaitUntil:
     visible: "With me.*"
     timeout: 10000
@@ -134,8 +133,7 @@ appId: io.beebeeb.app
 # --- Photos: default state, top / mid (whatever backup setting the
 #     account currently has — the two deliberate on/off states are
 #     captured further below after the Settings toggle) ---
-- tapOn:
-    id: "tab-photos"
+- openLink: "beebeeb://photos"
 - extendedWaitUntil:
     visible: "Photos"
     timeout: 10000
@@ -146,8 +144,7 @@ appId: io.beebeeb.app
 # --- Settings: top, then the backup toggle round-trip (order matters —
 #     do this BEFORE the mid/end scroll sweep below, so the toggle's
 #     scrollUntilVisible starts from a known, top-of-list position) ---
-- tapOn:
-    id: "tab-settings"
+- openLink: "beebeeb://settings"
 - extendedWaitUntil:
     visible: "Settings"
     timeout: 10000
@@ -162,8 +159,7 @@ appId: io.beebeeb.app
 - tapOn:
     id: "toggle-photo-backup"
 - takeScreenshot: "1429-settings-backup-toggled-off"
-- tapOn:
-    id: "tab-photos"
+- openLink: "beebeeb://photos"
 - extendedWaitUntil:
     visible: "Photos"
     timeout: 10000
@@ -171,8 +167,7 @@ appId: io.beebeeb.app
 
 # Toggle auto-backup back ON → Photos with the banner in the idle
 # "on / all backed up" state.
-- tapOn:
-    id: "tab-settings"
+- openLink: "beebeeb://settings"
 - extendedWaitUntil:
     visible: "Settings"
     timeout: 10000
@@ -184,16 +179,14 @@ appId: io.beebeeb.app
 - tapOn:
     id: "toggle-photo-backup"
 - takeScreenshot: "1429-settings-backup-toggled-on"
-- tapOn:
-    id: "tab-photos"
+- openLink: "beebeeb://photos"
 - extendedWaitUntil:
     visible: "Photos"
     timeout: 10000
 - takeScreenshot: "1429-photos-04-backup-on-idle"
 
 # --- Settings: mid / end scroll clearance (1394's guarantee must not regress) ---
-- tapOn:
-    id: "tab-settings"
+- openLink: "beebeeb://settings"
 - extendedWaitUntil:
     visible: "Settings"
     timeout: 10000
