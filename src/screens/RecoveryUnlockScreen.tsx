@@ -22,13 +22,24 @@ import { useAuth } from '../lib/auth';
 import { useCrypto } from '../lib/crypto-context';
 import { useTheme } from '../lib/theme-context';
 import { useKeyboardLayoutAnimation } from '../lib/useKeyboardLayoutAnimation';
+import {
+  RECOVERY_WORD_COUNT,
+  UnlockTimeoutError,
+  normalizePhrase,
+  unlockButtonLabel,
+  withTimeout,
+  wordsFromPhrase,
+} from '../lib/recovery-phrase';
 import type { RootStackParamList } from '../App';
 
 type Nav = NativeStackNavigationProp<RootStackParamList>;
 
-function normalizePhrase(value: string): string {
-  return value.trim().toLowerCase().replace(/\s+/g, ' ');
-}
+// Local unlock is a native/FFI call with no network round trip (the recovery
+// phrase derives the key on-device), so this bound only guards against a
+// hung bridge — generous, but never infinite. Apple's reviewer reported the
+// screen "still unresponsive when we attempted to sign in" after the phrase
+// was accepted (task 1428).
+const UNLOCK_TIMEOUT_MS = 20_000;
 
 export default function RecoveryUnlockScreen() {
   // Block screenshots/screen recording — user types their recovery phrase here.
@@ -43,8 +54,8 @@ export default function RecoveryUnlockScreen() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
-  const words = normalizePhrase(phrase).split(' ').filter(Boolean);
-  const canSubmit = words.length === 12 && !loading;
+  const words = wordsFromPhrase(phrase);
+  const canSubmit = words.length === RECOVERY_WORD_COUNT && !loading;
 
   const styles = useMemo(() => StyleSheet.create({
     root: { flex: 1, backgroundColor: c.paper },
@@ -97,15 +108,23 @@ export default function RecoveryUnlockScreen() {
     setError(null);
     setLoading(true);
     try {
-      await crypto.unlock(normalizePhrase(phrase));
+      await withTimeout(
+        crypto.unlock(normalizePhrase(phrase)),
+        UNLOCK_TIMEOUT_MS,
+        'Unlock timed out',
+      );
       navigation.dispatch(
         CommonActions.reset({
           index: 0,
           routes: [{ name: 'Tabs' }],
         }),
       );
-    } catch {
-      setError('That recovery phrase did not unlock this vault. Check the words and order.');
+    } catch (err) {
+      setError(
+        err instanceof UnlockTimeoutError
+          ? "Unlock is taking too long. Check your connection and try again — or close and reopen the app."
+          : 'That recovery phrase did not unlock this vault. Check the words and order.',
+      );
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
     } finally {
       setLoading(false);
@@ -160,7 +179,7 @@ export default function RecoveryUnlockScreen() {
           testID="recovery-phrase-input"
           accessibilityLabel="Recovery phrase field"
         />
-        <Text style={styles.counter}>{words.length}/12 words</Text>
+        <Text style={styles.counter}>{words.length}/{RECOVERY_WORD_COUNT} words</Text>
 
         <TouchableOpacity
           style={[styles.button, !canSubmit && styles.buttonDisabled]}
@@ -168,9 +187,14 @@ export default function RecoveryUnlockScreen() {
           activeOpacity={0.85}
           disabled={!canSubmit}
           testID="unlock-vault-button"
-          accessibilityLabel="Unlock vault"
+          accessibilityLabel={unlockButtonLabel(words.length)}
+          accessibilityState={{ disabled: !canSubmit, busy: loading }}
         >
-          {loading ? <ActivityIndicator color={c.amber} /> : <Text style={styles.buttonText}>Unlock vault</Text>}
+          {loading ? (
+            <ActivityIndicator color={c.amber} />
+          ) : (
+            <Text style={styles.buttonText}>{unlockButtonLabel(words.length)}</Text>
+          )}
         </TouchableOpacity>
 
         <TouchableOpacity
