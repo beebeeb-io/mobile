@@ -138,11 +138,17 @@ export default function RecoveryUnlockScreen() {
       if (!unlockOperationRef.current) {
         const operation = crypto.unlock(normalizePhrase(phrase));
         unlockOperationRef.current = operation;
-        operation.finally(() => {
+        // .then(clear, clear) instead of .finally(): .finally() returns a
+        // NEW promise that still rejects whenever `operation` rejects (a
+        // wrong phrase), and nothing here consumes that new promise — an
+        // unhandled-rejection warning on every wrong phrase in dev. Both
+        // branches just clear the ref; neither needs the settled value.
+        const clear = () => {
           if (unlockOperationRef.current === operation) {
             unlockOperationRef.current = null;
           }
-        });
+        };
+        operation.then(clear, clear);
       }
       // Success navigates via the isUnlocked effect above, not here — that
       // effect is also what catches a LATE success (the operation resolving
