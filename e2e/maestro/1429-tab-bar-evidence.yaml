@@ -1,0 +1,199 @@
+appId: io.beebeeb.app
+---
+# 1429 — tab-bar evidence: capsule geometry + "content passes behind the
+# glass" on Files/Shared/Photos/Settings, plus PhotosScreen's
+# AutoBackupBanner in the idle "on / all backed up" state AND the "off"
+# state — open review question from the lead's code-gate (task file Notes,
+# 2026-09-17): a permanent card stacked on the capsule is itself part of
+# the "tall bottom chrome" complaint, so both states must be captured for
+# Guus to judge whether the idle card should exist at all.
+#
+# Local QA account ONLY (qa0688content@beebeeb.io, seeded, localhost API) —
+# never the prod demo account (login-flow.yaml's demo@beebeeb.io is NOT
+# used here on purpose).
+#
+# One bounded attempt per the lead's driver-gap window. If any step times
+# out, STOP — do not retry blind; the failure screenshot is more useful
+# than a second blind attempt eating the same gap.
+#
+# Screenshots land in Maestro's own run output — copy the PNGs this flow
+# names (1429-*) into docs/_qa-evidence/1429/ afterward, alongside the
+# stock Files.app reference (captured separately, no driver needed:
+# `xcrun simctl launch <udid> com.apple.DocumentsApp` +
+# `xcrun simctl io <udid> screenshot`).
+
+- launchApp
+
+# If a prior session left the app signed in (any account), sign out first
+# so this flow always starts from the same known state. Pattern from
+# login-flow.yaml, index 1 because "Sign out" appears twice — the row and
+# the native Alert's confirm button.
+- runFlow:
+    when:
+      visible: "Drive"
+    commands:
+      - openLink: "beebeeb://settings"
+      - repeat:
+          times: 8
+          commands:
+            - scroll
+      - tapOn: "Sign out"
+      - tapOn:
+          text: "Sign out"
+          index: 1
+
+# Dev-client first-run menu (local-qa-signin-unlock.yaml gotcha 2 — the
+# explainer's "Continue" lands on the real Dev Menu sheet and needs a
+# second dismiss via the top-right X, approximated here by point since the
+# X has no testID either).
+- runFlow:
+    when:
+      visible: "Continue"
+    commands:
+      - tapOn: "Continue"
+- runFlow:
+    when:
+      visible: "Reload"
+    commands:
+      - tapOn:
+          point: "94%,43%"
+- runFlow:
+    when:
+      visible: "Use another account"
+    commands:
+      - tapOn: "Use another account"
+
+- extendedWaitUntil:
+    visible: "Sign in"
+    timeout: 30000
+
+- tapOn:
+    id: "email-input"
+- inputText: "qa0688content@beebeeb.io"
+- tapOn:
+    id: "password-input"
+- inputText: "BeebeebQA0688content!"
+# Gotcha 1 (local-qa-signin-unlock.yaml) — dismiss the keyboard before
+# tapping Sign in, or the tap silently lands on the keyboard and nothing
+# happens.
+- tapOn:
+    point: "50%,28%"
+- tapOn:
+    id: "sign-in-button"
+- runFlow:
+    when:
+      visible: "Not Now"
+    commands:
+      - tapOn: "Not Now"
+# On a device with no master key the vault must be restored from the
+# recovery phrase (local-qa-signin-unlock.yaml gotcha 3 — the phrase input
+# is not addressable by placeholder, tap by point).
+- runFlow:
+    when:
+      visible: "Unlock your vault"
+    commands:
+      - tapOn:
+          point: "50%,56%"
+      - inputText: "nothing dawn wheat axis group brain spirit reject beef enhance coffee truth"
+      - tapOn:
+          point: "50%,30%"
+      - tapOn: "Unlock vault"
+      - runFlow:
+          when:
+            visible: "Not Now"
+          commands:
+            - tapOn: "Not Now"
+
+- extendedWaitUntil:
+    visible: "Drive"
+    timeout: 60000
+# Proves the vault is actually unlocked, not merely signed in (blank
+# skeleton rows would still pass a bare "Drive" assertion).
+- assertVisible: "Backups"
+
+# --- Files: top / mid / end (content should visibly pass behind the capsule) ---
+- takeScreenshot: "1429-files-01-top"
+- scroll
+- takeScreenshot: "1429-files-02-mid"
+- repeat:
+    times: 6
+    commands:
+      - scroll
+- takeScreenshot: "1429-files-03-end"
+
+# --- Shared: top / mid ---
+- openLink: "beebeeb://shared"
+- extendedWaitUntil:
+    visible: "With me.*"
+    timeout: 10000
+- takeScreenshot: "1429-shared-01-top"
+- scroll
+- takeScreenshot: "1429-shared-02-mid"
+
+# --- Photos: default state, top / mid (whatever backup setting the
+#     account currently has — the two deliberate on/off states are
+#     captured further below after the Settings toggle) ---
+- openLink: "beebeeb://photos"
+- extendedWaitUntil:
+    visible: "Photos"
+    timeout: 10000
+- takeScreenshot: "1429-photos-01-top-default"
+- scroll
+- takeScreenshot: "1429-photos-02-mid-default"
+
+# --- Settings: top, then the backup toggle round-trip (order matters —
+#     do this BEFORE the mid/end scroll sweep below, so the toggle's
+#     scrollUntilVisible starts from a known, top-of-list position) ---
+- openLink: "beebeeb://settings"
+- extendedWaitUntil:
+    visible: "Settings"
+    timeout: 10000
+- takeScreenshot: "1429-settings-01-top"
+
+# Toggle auto-backup OFF → Photos with the banner in the "off" state.
+- scrollUntilVisible:
+    element:
+      id: "toggle-photo-backup"
+    direction: DOWN
+    timeout: 8000
+- tapOn:
+    id: "toggle-photo-backup"
+- takeScreenshot: "1429-settings-backup-toggled-off"
+- openLink: "beebeeb://photos"
+- extendedWaitUntil:
+    visible: "Photos"
+    timeout: 10000
+- takeScreenshot: "1429-photos-03-backup-off"
+
+# Toggle auto-backup back ON → Photos with the banner in the idle
+# "on / all backed up" state.
+- openLink: "beebeeb://settings"
+- extendedWaitUntil:
+    visible: "Settings"
+    timeout: 10000
+- scrollUntilVisible:
+    element:
+      id: "toggle-photo-backup"
+    direction: DOWN
+    timeout: 8000
+- tapOn:
+    id: "toggle-photo-backup"
+- takeScreenshot: "1429-settings-backup-toggled-on"
+- openLink: "beebeeb://photos"
+- extendedWaitUntil:
+    visible: "Photos"
+    timeout: 10000
+- takeScreenshot: "1429-photos-04-backup-on-idle"
+
+# --- Settings: mid / end scroll clearance (1394's guarantee must not regress) ---
+- openLink: "beebeeb://settings"
+- extendedWaitUntil:
+    visible: "Settings"
+    timeout: 10000
+- scroll
+- takeScreenshot: "1429-settings-02-mid"
+- repeat:
+    times: 6
+    commands:
+      - scroll
+- takeScreenshot: "1429-settings-03-end"

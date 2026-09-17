@@ -776,37 +776,58 @@ function DevicePhotosBanner() {
 function AutoBackupBanner() {
   const { isPhotoBackupEnabled, backupProgress, lastBackupAt, includeVideos } = useBackup();
   const isConnected = useNetworkStatus();
-  const { colors: c } = useTheme();
+  const { colors: c, resolved: scheme } = useTheme();
   const navigation = useNavigation<{ navigate: (name: string) => void }>();
+  // 1429 — this banner renders in EVERY state (off/paused/active/done), always
+  // floating directly above the native tab bar. Before this task it was a
+  // flat opaque `View` (backgroundColor: c.paper2/c.amberBg, borderTopWidth
+  // hairline, no radius, no horizontal inset) spanning the full screen width —
+  // exactly the "second opaque band" Guus's screenshot showed sitting above
+  // the glass capsule, off the shared glass-recipe system every other
+  // floating control in this app already reads through (the select-mode
+  // action bar right below it, the tab bar itself, FilesScreen's upload
+  // card). Now routed through the same `GlassSurface radius="card"` (28pt,
+  // "the Live-Activity-style upload card" per glass-recipe.ts) + inset
+  // margins UploadActivityCard already established, so it reads as a
+  // floating card, not a band. See DEVIATIONS.md Phase 9 follow-up.
+  const material = glassMaterial(scheme);
+  // No recipe token for an on-glass progress-track fill (same gap
+  // UploadActivityCard's own local `track` const already covers) — same
+  // literal pair reused here rather than inventing a second one.
+  const track = scheme === 'dark' ? 'rgba(255,255,255,0.10)' : 'rgba(0,0,0,0.08)';
 
   if (!isPhotoBackupEnabled) {
     return (
-      <View style={[styles.banner, { backgroundColor: c.paper2, borderColor: c.line }]}>
-        <View style={[styles.bannerDot, { backgroundColor: c.ink4 }]} />
-        <Text style={[styles.bannerText, { color: c.ink2 }]}>Auto-backup off</Text>
-        <TouchableOpacity
-          activeOpacity={0.6}
-          onPress={() => {
-            Haptics.selectionAsync();
-            navigation.navigate('Settings');
-          }}
-          accessibilityRole="link"
-          accessibilityLabel="Enable auto-backup in Settings"
-        >
-          <Text style={[styles.bannerHint, { color: c.amberDeep, textDecorationLine: 'underline' }]}>
-            Enable in Settings
-          </Text>
-        </TouchableOpacity>
+      <View style={styles.bannerWrap}>
+        <GlassSurface scheme={scheme} radius="card" contentStyle={styles.banner}>
+          <View style={[styles.bannerDot, { backgroundColor: c.ink4 }]} />
+          <Text style={[styles.bannerText, { color: material.labelMuted }]}>Auto-backup off</Text>
+          <TouchableOpacity
+            activeOpacity={0.6}
+            onPress={() => {
+              Haptics.selectionAsync();
+              navigation.navigate('Settings');
+            }}
+            accessibilityRole="link"
+            accessibilityLabel="Enable auto-backup in Settings"
+          >
+            <Text style={[styles.bannerHint, { color: c.amberDeep, textDecorationLine: 'underline' }]}>
+              Enable in Settings
+            </Text>
+          </TouchableOpacity>
+        </GlassSurface>
       </View>
     );
   }
 
   if (!isConnected) {
     return (
-      <View style={[styles.banner, { backgroundColor: c.paper2, borderColor: c.line }]}>
-        <View style={[styles.bannerDot, { backgroundColor: c.ink4 }]} />
-        <Text style={[styles.bannerText, { color: c.ink2 }]}>Backup paused</Text>
-        <Text style={[styles.bannerHint, { color: c.ink3 }]}>No connection</Text>
+      <View style={styles.bannerWrap}>
+        <GlassSurface scheme={scheme} radius="card" contentStyle={styles.banner}>
+          <View style={[styles.bannerDot, { backgroundColor: c.ink4 }]} />
+          <Text style={[styles.bannerText, { color: material.labelMuted }]}>Backup paused</Text>
+          <Text style={[styles.bannerHint, { color: material.labelMuted }]}>No connection</Text>
+        </GlassSurface>
       </View>
     );
   }
@@ -817,33 +838,37 @@ function AutoBackupBanner() {
       ? Math.min(1, Math.max(0, backupProgress.completed / backupProgress.total))
       : 0;
     return (
-      <View style={[styles.banner, styles.bannerActive, styles.bannerWithProgress, { backgroundColor: c.amberBg, borderColor: c.amber }]}>
-        <View style={styles.bannerHeaderRow}>
-          <ActivityIndicator size="small" color={c.green} style={{ marginRight: 2 }} />
-          <Text style={[styles.bannerText, { color: c.ink }]}>
-            {backupProgress.completed} of {backupProgress.total} {itemLabel} backed up
-          </Text>
-          <Text style={[styles.bannerHint, { color: c.ink2 }]}>{Math.round(ratio * 100)}%</Text>
-        </View>
-        <View style={[styles.progressTrack, { backgroundColor: c.line }]}>
-          <View style={[styles.progressFill, { width: `${ratio * 100}%`, backgroundColor: c.amber }]} />
-        </View>
+      <View style={styles.bannerWrap}>
+        <GlassSurface scheme={scheme} radius="card" contentStyle={styles.bannerWithProgress}>
+          <View style={styles.bannerHeaderRow}>
+            <ActivityIndicator size="small" color={c.green} style={{ marginRight: 2 }} />
+            <Text style={[styles.bannerText, { color: material.label }]}>
+              {backupProgress.completed} of {backupProgress.total} {itemLabel} backed up
+            </Text>
+            <Text style={[styles.bannerHint, { color: material.labelMuted }]}>{Math.round(ratio * 100)}%</Text>
+          </View>
+          <View style={[styles.progressTrack, { backgroundColor: track }]}>
+            <View style={[styles.progressFill, { width: `${ratio * 100}%`, backgroundColor: c.amber }]} />
+          </View>
+        </GlassSurface>
       </View>
     );
   }
 
   const allDone = backupProgress.total > 0 && backupProgress.completed === backupProgress.total;
   return (
-    <View style={[styles.banner, styles.bannerActive, { backgroundColor: c.amberBg, borderColor: c.amber }]}>
-      <View style={[styles.bannerDot, styles.bannerDotActive, { backgroundColor: c.green }]} />
-      <Text style={[styles.bannerText, { color: c.ink }]}>
-        {allDone ? `All ${includeVideos ? 'items' : 'photos'} backed up` : 'Auto-backup on'}
-      </Text>
-      {lastBackupAt && (
-        <Text style={[styles.bannerHint, { color: c.ink3 }]}>
-          {new Date(lastBackupAt).toLocaleDateString()}
+    <View style={styles.bannerWrap}>
+      <GlassSurface scheme={scheme} radius="card" contentStyle={styles.banner}>
+        <View style={[styles.bannerDot, { backgroundColor: c.green }]} />
+        <Text style={[styles.bannerText, { color: material.label }]}>
+          {allDone ? `All ${includeVideos ? 'items' : 'photos'} backed up` : 'Auto-backup on'}
         </Text>
-      )}
+        {lastBackupAt && (
+          <Text style={[styles.bannerHint, { color: material.labelMuted }]}>
+            {new Date(lastBackupAt).toLocaleDateString()}
+          </Text>
+        )}
+      </GlassSurface>
     </View>
   );
 }
@@ -2461,13 +2486,14 @@ const styles = StyleSheet.create({
   retryButton: { paddingHorizontal: 20, paddingVertical: 10, borderRadius: radii.md },
   retryButtonText: { fontSize: 14, fontWeight: '600' },
 
-  // Auto-backup banner (sticky at bottom of tab content)
-  banner: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: spacing.lg, paddingVertical: 10, borderTopWidth: 1, gap: 8 },
-  bannerActive: {},
-  bannerWithProgress: { flexDirection: 'column', alignItems: 'stretch', gap: 8 },
+  // Auto-backup banner — floats above the native tab bar (task 1429: was a
+  // flat, full-width, opaque strip; now a `GlassSurface radius="card"` card
+  // with side insets, matching UploadActivityCard's floating-card shape).
+  bannerWrap: { marginHorizontal: 14, marginBottom: 6 },
+  banner: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 12, gap: 8 },
+  bannerWithProgress: { flexDirection: 'column', alignItems: 'stretch', paddingHorizontal: 16, paddingVertical: 12, gap: 8 },
   bannerHeaderRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   bannerDot: { width: 6, height: 6, borderRadius: 3 },
-  bannerDotActive: {},
   bannerText: { fontSize: 11, flex: 1 },
   bannerHint: { fontSize: 10, fontWeight: '600' },
   progressTrack: { height: 3, borderRadius: 2, overflow: 'hidden' },

@@ -349,7 +349,7 @@ function SettingsRow({
 }
 
 function ToggleRow({
-  label, subtitle, value, onValueChange, disabled, indent, c,
+  label, subtitle, value, onValueChange, disabled, indent, c, testID,
 }: {
   label: string;
   subtitle?: string;
@@ -358,6 +358,7 @@ function ToggleRow({
   disabled?: boolean;
   indent?: boolean;
   c: C;
+  testID?: string;
 }) {
   return (
     <View style={[layout.row, indent && { paddingLeft: 28 }]}>
@@ -383,6 +384,7 @@ function ToggleRow({
         }}
         disabled={disabled}
         colors={c}
+        testID={testID}
       />
     </View>
   );
@@ -1944,6 +1946,7 @@ export default function SettingsScreen() {
               value={isPhotoBackupEnabled}
               onValueChange={handleTogglePhotoBackup}
               c={c}
+              testID="toggle-photo-backup"
             />
             {isPhotoBackupEnabled && (
               <TouchableOpacity
