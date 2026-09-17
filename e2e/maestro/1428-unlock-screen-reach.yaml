@@ -109,8 +109,16 @@ appId: io.beebeeb.app
       - tapOn:
           point: "68%,56%"
 
+# id-based, not text "Sign in" (which was here originally): this screen
+# renders "Sign in" THREE times at once (heading Text, button
+# accessibilityLabel, button inner Text — see LoginScreen.tsx), and while
+# that wasn't the actual cause of the bb-qa-ipad accessibility-tree-empty
+# finding below (an id selector failed there too, identically), it's a
+# strictly more specific/unambiguous check and was proven working live on
+# bb-qa-1310 (2026-09-17), so keeping it.
 - extendedWaitUntil:
-    visible: "Sign in"
+    visible:
+      id: "email-input"
     timeout: 60000
 
 - takeScreenshot: "1428-reach-01-signin-screen"
