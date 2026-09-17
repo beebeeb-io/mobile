@@ -16,6 +16,7 @@ type Props = {
   onValueChange?: (value: boolean) => void;
   accessibilityLabel?: string;
   style?: StyleProp<ViewStyle>;
+  testID?: string;
 };
 
 const TRACK_WIDTH = 51;
@@ -31,6 +32,7 @@ export function NativeSwitch({
   onValueChange,
   accessibilityLabel,
   style,
+  testID,
 }: Props) {
   const progress = useRef(new Animated.Value(value ? 1 : 0)).current;
 
@@ -64,6 +66,7 @@ export function NativeSwitch({
       hitSlop={8}
       onPress={() => onValueChange?.(!value)}
       style={[styles.pressable, disabled && styles.disabled, style]}
+      testID={testID}
     >
       <Animated.View style={[styles.track, { backgroundColor: animatedStyles.backgroundColor }]}>
         <Animated.View style={[styles.thumb, { transform: animatedStyles.thumbTransform }]} />
