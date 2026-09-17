@@ -15,6 +15,36 @@
 #
 # See 1428-unlock-screen-reach.yaml for the fixture account, preconditions,
 # and the screen-capture screenshot caveat — read it before this file.
+#
+# OPEN FINDING (live run, 2026-09-17 08:33 on bb-qa-1310, NOT yet fixed —
+# simctl went machine-wide unusable — Xcode replaced at 08:35 — before this
+# could be re-verified): 24 steps COMPLETED, then `assertVisible: "0/12
+# words"` (line ~39 below, right after the clear-the-field block) FAILED —
+# and the failure screenshot showed the app had ALREADY navigated to Drive
+# (vault unlocked), well before the intended `pasteText` step ever ran.
+#
+# Leading hypothesis (lead's read, matches the sequence exactly): the
+# `tapOn: point: "50%,56%"` right after `copyTextFrom` (meant to re-focus
+# the field before `eraseText`) landed on the "Unlock vault" BUTTON instead
+# of the field — the button is enabled at that exact moment (12/12 words
+# still present, nothing erased yet), so a stray tap there fires
+# `handleUnlock()` for real, with the correct phrase already typed. Because
+# `crypto.unlock()` is fast and fully local (no network — see PR #94's
+# notes), the unlock had already completed by the time `eraseText` and the
+# next assertion ran, so the screen had moved on to Drive underneath a
+# flow that still thought it was clearing the field. Geometry is the first
+# suspect: `copyTextFrom`'s underlying mechanism (likely a system
+# select-all/copy gesture, not a pure accessibility-value read) may leave a
+# selection callout or shift keyboard/scroll state in a way that "50%,56%"
+# no longer resolves to the phrase field afterward — this was NOT
+# re-verified with a live `hierarchy` dump before simctl broke.
+#
+# DO NOT blindly re-run this file expecting it to now pass — the fix
+# direction (not yet applied): either drop the re-tap entirely (the field
+# should still be focused from the original typing; copyTextFrom may not
+# need or want a fresh tap first), or confirm the actual on-screen point
+# via a live `maestro hierarchy` dump taken right after `copyTextFrom`
+# before trusting "50%,56%" again at that step.
 appId: io.beebeeb.app
 ---
 - runFlow: 1428-unlock-screen-reach.yaml

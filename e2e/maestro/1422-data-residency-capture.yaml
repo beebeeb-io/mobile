@@ -1,0 +1,18 @@
+# One-off capture for task 1422 (Data residency, task 1413's "Coming soon"
+# rows) — requested by the lead alongside 1428's driver gap, 2026-09-17.
+# Not a regression test: just scrolls Settings to the "Data residency"
+# section and screenshots it, for comparison against /api/v1/regions.
+appId: io.beebeeb.app
+---
+- launchApp
+- openLink: "beebeeb://settings"
+- extendedWaitUntil:
+    visible: "Settings"
+    timeout: 15000
+- scroll
+- scroll
+- scroll
+- scroll
+- scroll
+- assertVisible: "Data residency"
+- takeScreenshot: "1422-data-residency-picker"

@@ -51,15 +51,20 @@ appId: io.beebeeb.app
 
 - takeScreenshot: "1428-03-vault-unlocked"
 
-# Proves the vault is actually UNLOCKED, not merely signed in. The ORIGINAL
-# assertion here was "Backups" (a decrypted folder name), matching
-# local-qa-signin-unlock.yaml's seeded QA account — but this task's fixture
-# account is brand new with zero files, so "Backups" genuinely never
-# appears (confirmed live, 2026-09-17: 20/21 steps COMPLETED, only this
-# line FAILED, and only because of the fixture, not the app). FilesScreen's
-# empty-state copy ("No files yet") is gated on `unlockAttempted` +
-# `hasLoadedOnce` (FilesScreen.tsx ~3964), which is the closest available
-# proxy for "actually reached a settled post-unlock state" for an account
-# with nothing to decrypt — weaker than asserting a real decrypted name,
-# but the fixture has no decrypted name to assert.
-- assertVisible: "No files yet"
+# Proves the vault is actually UNLOCKED, not merely signed in (locked rows
+# render as blank skeletons) — same assertion local-qa-signin-unlock.yaml
+# uses for this exact signal.
+#
+# History (2026-09-17, both confirmed live — read before changing this
+# again): the FIRST time this flow ever ran against the fixture account
+# (brand new, zero files), this assertion legitimately failed — no Backups
+# folder existed yet, so it was swapped to "No files yet" (FilesScreen's
+# empty-state copy). The VERY NEXT run against the SAME account showed a
+# "Backups" folder had appeared, timestamped "just now" — the app
+# auto-provisions a Backups folder on an account's first successful vault
+# unlock (matches the native backup engine feature), so "Backups" is the
+# durable, repeatable assertion for every run AFTER the first, and "No
+# files yet" is what only the very first-ever run against a fresh account
+# would show. Reverted back to "Backups" since this fixture account is now
+# past its first unlock and this is what every subsequent run will see.
+- assertVisible: "Backups"
