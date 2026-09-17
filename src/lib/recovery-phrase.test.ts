@@ -101,4 +101,37 @@ describe('withTimeout', () => {
     });
     await expect(withTimeout(hangs, 10, 'unlock timed out')).rejects.toBeInstanceOf(UnlockTimeoutError);
   });
+
+  // Codex review (PR #94): withTimeout has no way to cancel the underlying
+  // promise — it can only stop WAITING on it. RecoveryUnlockScreen reuses
+  // that same still-running promise on a retry instead of starting a second
+  // native unlock call. These lock in that the underlying promise is never
+  // touched/rejected by a timed-out race, and that re-racing it later works.
+  test('a promise that resolves after its own timeout still resolves on its own — untouched by withTimeout', async () => {
+    let resolveOp!: (value: string) => void;
+    const op = new Promise<string>((resolve) => {
+      resolveOp = resolve;
+    });
+
+    await expect(withTimeout(op, 10, 'first timeout')).rejects.toBeInstanceOf(UnlockTimeoutError);
+
+    // Resolve the underlying operation well after the timeout already fired.
+    resolveOp('unlocked-late');
+    await expect(op).resolves.toBe('unlocked-late');
+  });
+
+  test('re-racing the same in-flight promise after a timeout does not time out a second time', async () => {
+    let resolveOp!: (value: string) => void;
+    const op = new Promise<string>((resolve) => {
+      resolveOp = resolve;
+    });
+
+    await expect(withTimeout(op, 10, 'first timeout')).rejects.toBeInstanceOf(UnlockTimeoutError);
+    setTimeout(() => resolveOp('unlocked-on-retry'), 5);
+
+    // A retry (RecoveryUnlockScreen's unlockOperationRef path) re-races the
+    // SAME promise with a fresh window — it must succeed, not inherit or
+    // repeat the first race's timeout.
+    await expect(withTimeout(op, 200, 'second timeout')).resolves.toBe('unlocked-on-retry');
+  });
 });
