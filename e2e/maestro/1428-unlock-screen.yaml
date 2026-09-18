@@ -1,0 +1,86 @@
+# Task 1428 — recovery-phrase unlock, VARIANT 1: type all 12 words.
+#
+# Reproduces the App Review reviewer's path end to end on a RELEASE build:
+# fresh install → sign in → "Unlock your vault" → tap the field (assert the
+# keyboard actually opens — this is the "unresponsive when tapped" claim) →
+# type the phrase → 12/12 + "Unlock vault" enabled → Unlock → vault.
+#
+# See 1428-unlock-screen-reach.yaml for the fixture account, preconditions,
+# and the screen-capture screenshot caveat — read it before this file.
+#
+# FIXED 2026-09-18 (Codex P2, PR #95): every `takeScreenshot` below now
+# writes under `${EVIDENCE_DIR}`, an env var this flow does NOT default —
+# ALWAYS invoke with `-e EVIDENCE_DIR=/abs/path`, e.g.:
+#   maestro --udid <udid> -e EVIDENCE_DIR=/Users/…/docs/_qa-evidence/1428 \
+#     test e2e/maestro/1428-unlock-screen.yaml
+# Not re-run after this change (path-only edit, no behavior under test
+# changed) — what Maestro does with an unresolved `${EVIDENCE_DIR}` if you
+# forget the `-e` flag hasn't been verified live, so don't assume it fails
+# loudly; just always pass it. See CLAUDE.md's corrected note on Maestro
+# screenshot paths for what WAS observed live in this task (relative paths
+# resolve against Maestro's cwd — they render as real files there, not
+# nothing — the previous "silently drops relative paths" claim was
+# imprecise).
+appId: io.beebeeb.app
+---
+- runFlow: 1428-unlock-screen-reach.yaml
+
+# Gotcha 3 (see reach file) — tap by point, not id/placeholder.
+- tapOn:
+    point: "50%,56%"
+
+- takeScreenshot: "${EVIDENCE_DIR}/1428-01-field-tapped-keyboard-open"
+
+# NOTE (live-run finding, 2026-09-17 08:16 on bb-qa-1310): dropped the
+# planned assertVisible keyboard-key check ("space", then "123" — both
+# failed) — the iOS SYSTEM KEYBOARD is not resolvable through Maestro's
+# normal app-scoped element queries the same way in-app elements are (every
+# other assertion in this same run, seconds before and after this line,
+# resolved fine). The screenshot above is the actual keyboard-open evidence:
+# it shows the full iOS keyboard rendered (letters, 123/emoji keys, the
+# blue return key) with the app's own content blacked out above it — that
+# blackout is usePreventScreenCapture doing its job, not a rendering bug.
+
+- inputText: "hen correct gospel double width cook furnace race creek tray butter else"
+
+- assertVisible: "12/12 words"
+- assertVisible: "Unlock vault"
+
+- takeScreenshot: "${EVIDENCE_DIR}/1428-02-twelve-of-twelve-words"
+
+# Gotcha 1 — dismiss the keyboard before tapping the button.
+- tapOn:
+    point: "50%,30%"
+- tapOn: "Unlock vault"
+
+- runFlow:
+    when:
+      visible: "Not Now"
+    commands:
+      - tapOn: "Not Now"
+
+# FIXED 2026-09-18 (eng-1428c): "Drive" renamed to "Files" (App.tsx tab
+# route) — see reach file's guard comment for the grep evidence.
+- extendedWaitUntil:
+    visible: "Files"
+    timeout: 30000
+
+- takeScreenshot: "${EVIDENCE_DIR}/1428-03-vault-unlocked"
+
+# Proves the vault is actually UNLOCKED, not merely signed in (locked rows
+# render as blank skeletons) — same assertion local-qa-signin-unlock.yaml
+# uses for this exact signal.
+#
+# History (2026-09-17, both confirmed live — read before changing this
+# again): the FIRST time this flow ever ran against the fixture account
+# (brand new, zero files), this assertion legitimately failed — no Backups
+# folder existed yet, so it was swapped to "No files yet" (FilesScreen's
+# empty-state copy). The VERY NEXT run against the SAME account showed a
+# "Backups" folder had appeared, timestamped "just now" — the app
+# auto-provisions a Backups folder on an account's first successful vault
+# unlock (matches the native backup engine feature), so "Backups" is the
+# durable, repeatable assertion for every run AFTER the first, and "No
+# files yet" is what only the very first-ever run against a fresh account
+# would show. Reverted back to "Backups" since this fixture account is now
+# past its first unlock and this is what every subsequent run will see.
+- assertVisible: "Backups"

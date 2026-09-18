@@ -119,8 +119,18 @@ Running the iOS app on the Simulator for QA hits several env-specific walls. Wor
   are inactive (`is_active=f`) migration placeholders. Upload, download, offline pinning, and
   sharing are all locally testable; only push notifications and real-device-only surfaces need
   TestFlight.
-- **Maestro `takeScreenshot`** silently drops relative paths — pass an **absolute** path, or capture
-  with `xcrun simctl io <UDID> screenshot --type=png <abs>.png`.
+- **Maestro `takeScreenshot`** does NOT drop relative paths — **corrected 2026-09-18** (this line
+  previously claimed it does; that was wrong and nobody had actually watched a run to check).
+  Live-observed twice (task 1428, `e2e/maestro/1428-*.yaml`/`1422-data-residency-capture.yaml`,
+  2026-09-18 11:xx and 14:xx runs on bb-qa-1310): a bare `takeScreenshot: "some-name"` wrote a real
+  `some-name.png` to Maestro's **current working directory** — i.e. wherever `maestro test …` was
+  invoked from, NOT the flow file's directory. So a relative name doesn't vanish, but it also
+  doesn't land anywhere predictable (files ended up scattered in a worktree root, mixed with
+  unrelated source files, easy to lose or accidentally re-commit). **Relative paths resolve
+  against the Maestro cwd — pass `EVIDENCE_DIR`**: write flows as
+  `takeScreenshot: "${EVIDENCE_DIR}/some-name"` and always invoke with
+  `-e EVIDENCE_DIR=/abs/path`, or capture with
+  `xcrun simctl io <UDID> screenshot --type=png <abs>.png` instead.
 - **NEVER tap chrome by coordinate. Use a `testID`.** This file used to advise
   `point: "x%,y%"` for labels with count badges. That advice caused a real outage of the whole e2e
   suite: task 1312 moved the tab bar up, and **22 coordinate taps across 9 flows** silently began

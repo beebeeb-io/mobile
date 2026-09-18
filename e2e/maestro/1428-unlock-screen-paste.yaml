@@ -1,0 +1,130 @@
+# Task 1428 — recovery-phrase unlock, VARIANT 2: paste the whole phrase.
+#
+# Exercises the code path a real user pasting from Notes/a password manager
+# hits — onChangeText fires once with the complete string, exactly like a
+# real paste, whether the source is another app or (as here) Maestro's own
+# clipboard round-trip. Deliberately uses Maestro's documented
+# copyTextFrom + pasteText commands rather than driving the iOS system
+# "Paste" long-press menu: that menu's on-screen position is not guaranteed
+# stable across runs (font size, prior selection state, edge proximity), and
+# this flow is meant to run UNATTENDED — the whole point is not reintroducing
+# exactly the kind of flake that would make it need a human watching it.
+# `simctl pbcopy` was the other option raised for this variant; skipped for
+# the same self-containment reason (an extra host-side step outside the
+# flow file, awkward to keep in lockstep with an unattended run).
+#
+# See 1428-unlock-screen-reach.yaml for the fixture account, preconditions,
+# and the screen-capture screenshot caveat — read it before this file.
+#
+# OPEN FINDING (live run, 2026-09-17 08:33 on bb-qa-1310, NOT yet fixed —
+# simctl went machine-wide unusable — Xcode replaced at 08:35 — before this
+# could be re-verified): 24 steps COMPLETED, then `assertVisible: "0/12
+# words"` (line ~39 below, right after the clear-the-field block) FAILED —
+# and the failure screenshot showed the app had ALREADY navigated to Drive
+# (vault unlocked), well before the intended `pasteText` step ever ran.
+#
+# Leading hypothesis (lead's read, matches the sequence exactly): the
+# `tapOn: point: "50%,56%"` right after `copyTextFrom` (meant to re-focus
+# the field before `eraseText`) landed on the "Unlock vault" BUTTON instead
+# of the field — the button is enabled at that exact moment (12/12 words
+# still present, nothing erased yet), so a stray tap there fires
+# `handleUnlock()` for real, with the correct phrase already typed. Because
+# `crypto.unlock()` is fast and fully local (no network — see PR #94's
+# notes), the unlock had already completed by the time `eraseText` and the
+# next assertion ran, so the screen had moved on to Drive underneath a
+# flow that still thought it was clearing the field. Geometry is the first
+# suspect: `copyTextFrom`'s underlying mechanism (likely a system
+# select-all/copy gesture, not a pure accessibility-value read) may leave a
+# selection callout or shift keyboard/scroll state in a way that "50%,56%"
+# no longer resolves to the phrase field afterward — this was NOT
+# re-verified with a live `hierarchy` dump before simctl broke.
+#
+# FIX APPLIED 2026-09-18 (eng-1428c) — see the removed step below. Considered
+# and rejected: switching that tap to `tapOn: id: "recovery-phrase-input"`
+# (the field DOES have that testID, RecoveryUnlockScreen.tsx:214) — rejected
+# because 1428-unlock-screen-reach.yaml's Gotcha 3 already documents this
+# specific multiline TextInput (a UITextView on iOS) as not reliably
+# addressable by testID, for tapping specifically, not just assertions; an
+# id-based tap here would trade one unverified selector for another without
+# addressing the actual suspected cause (copyTextFrom shifting on-screen
+# state, not the selector *kind* being point vs id). Went with the file's
+# own first-listed fix direction instead: drop the re-tap.
+#
+# SEPARATE FINDING, live-confirmed 2026-09-18 (eng-1428c), re-tap fix above
+# IS working (the field cleared to 0/12 cleanly, no premature unlock) — but
+# `pasteText` itself then does not fill the field. Root cause confirmed via
+# a live `maestro hierarchy` dump right after `pasteText` (no "Allow Paste"
+# system prompt — that was ruled out) plus `xcrun simctl pbpaste <udid>`
+# returning 0 bytes: `copyTextFrom` above never actually populates the
+# simulator's UIPasteboard for this field, so `pasteText` has nothing to
+# paste. Lead's call (2026-09-18): this is a MAESTRO/simulator harness
+# limitation on this widget, not an app defect — leave `copyTextFrom`/
+# `pasteText` as-is (do NOT switch to `simctl pbcopy`), and verify the
+# real paste path by hand on a physical device instead.
+#
+# EVIDENCE_DIR (Codex P2, PR #95): see 1428-unlock-screen.yaml's header for
+# the `-e EVIDENCE_DIR=/abs/path` invocation this flow's `takeScreenshot`
+# calls now require.
+appId: io.beebeeb.app
+---
+- runFlow: 1428-unlock-screen-reach.yaml
+
+# Gotcha 3 (see reach file) — tap by point, not id/placeholder.
+- tapOn:
+    point: "50%,56%"
+
+# Seed the field via typing first, purely so there is something on-screen to
+# copy FROM below — this is not the assertion under test, just setup.
+- inputText: "hen correct gospel double width cook furnace race creek tray butter else"
+- assertVisible: "12/12 words"
+
+- copyTextFrom:
+    point: "50%,56%"
+
+# Clear the field back to empty so the paste below is the ONLY thing that
+# fills it — proves paste alone reaches 12/12, not leftover typed state.
+#
+# REMOVED 2026-09-18: a `tapOn: point: "50%,56%"` used to sit here, meant to
+# re-focus the field before eraseText. Dropped — copyTextFrom above targets
+# and interacts with this same field directly (a copy/select gesture, not a
+# navigation), so it should still be focused; the removed tap is the prime
+# suspect (lead's hypothesis) for a prior run where it instead landed on the
+# enabled "Unlock vault" button and fired a real unlock mid-flow. Falsified
+# if: eraseText below doesn't actually clear the field (assertVisible "0/12
+# words" fails) — if so, re-add a re-focus step, but confirm its real
+# on-screen point with a live `maestro hierarchy` dump right after
+# copyTextFrom first, don't just restore "50%,56%" blindly.
+- eraseText: 300
+- assertVisible: "0/12 words"
+- assertVisible: "Enter your 12-word phrase"
+
+- takeScreenshot: "${EVIDENCE_DIR}/1428-paste-01-cleared-before-paste"
+
+- tapOn:
+    point: "50%,56%"
+- pasteText
+
+- assertVisible: "12/12 words"
+- assertVisible: "Unlock vault"
+
+- takeScreenshot: "${EVIDENCE_DIR}/1428-paste-02-twelve-of-twelve-after-paste"
+
+# Gotcha 1 — dismiss the keyboard before tapping the button.
+- tapOn:
+    point: "50%,30%"
+- tapOn: "Unlock vault"
+
+- runFlow:
+    when:
+      visible: "Not Now"
+    commands:
+      - tapOn: "Not Now"
+
+# FIXED 2026-09-18 (eng-1428c): "Drive" renamed to "Files" (App.tsx tab
+# route) — see reach file's guard comment for the grep evidence.
+- extendedWaitUntil:
+    visible: "Files"
+    timeout: 30000
+
+- takeScreenshot: "${EVIDENCE_DIR}/1428-paste-03-vault-unlocked"
+- assertVisible: "Backups"

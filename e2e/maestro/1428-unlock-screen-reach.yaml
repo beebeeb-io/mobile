@@ -1,0 +1,187 @@
+# Task 1428 shared preamble — sign in with the local-only QA fixture account
+# and reach the "Unlock your vault" recovery-phrase screen. Included via
+# `runFlow` by 1428-unlock-screen.yaml, 1428-unlock-screen-paste.yaml, and
+# 1428-unlock-screen-partial-count.yaml so the three phrase-entry variants
+# don't duplicate the sign-in dance. Designed to be RE-RUNNABLE back to back
+# in one driver gap (the lead's plan is all three variants in one Release
+# install) — see the sign-out guard below for why.
+#
+# Fixture account (task 1428 Notes, created via the SAME beebeeb-wasm crypto
+# the app uses — OPAQUE registration + a real 12-word BIP39 recovery phrase —
+# against the local dev API at :3001; never the prod demo account):
+#   email:    bb-qa-1428-87e670fd60f4@beebeeb.io
+#   password: Bb1428-Qa-e988a08fefc618efcd98!
+# Recovery phrase deliberately NOT repeated here — each variant file supplies
+# its own copy of the words so a flow file is self-contained and diff-able.
+#
+# Preconditions: a RELEASE build of the app freshly installed on the target
+# simulator, local API on :3001 + Postgres on :5434 up, app's .env pointed at
+# localhost (never prod — see the mobile worktree's .env).
+#
+# NO `launchApp: clearState: true` here, deliberately — e2e/maestro/
+# login-test.yaml's header documents (task 1326) that clearState does NOT
+# sign out on this app: the master key persists in the iOS KEYCHAIN across an
+# app-data clear (working as designed — 0876 restore), so a
+# `extendedWaitUntil: visible: "Sign in"` right after clearState would hang
+# forever on a device that has ever signed in. The only thing that actually
+# clears the Keychain entry is signing out THROUGH THE UI (App.tsx's
+# `signOut()` calls `BeebeebCrypto.deleteKeyFromKeychain()` +
+# `SecureStore.deleteItemAsync(...)` explicitly) — hence the guard below,
+# copied from login-test.yaml's own bootstrap.
+#
+# Gotchas inherited from e2e/maestro/local-qa-signin-unlock.yaml (same
+# screens, same fixes — read that file's header before touching this one):
+#  1. The keyboard covers "Sign in" — tap a neutral point to dismiss it first.
+#  2. A Debug/dev-client build shows its own menu over the app; no-ops on a
+#     genuine Release build but kept as a harmless guard in case this ever
+#     runs against a dev client by mistake.
+#  3. The recovery-phrase TextInput is not reliably addressable by testID/
+#     placeholder on iOS (multiline UITextView accessibility quirk) — tap by
+#     point, not id.
+#
+# SIGN-OUT TAP POINT — iPhone-measured, iPad path not exercised by Maestro
+# (Codex P2, PR #95, resolved 2026-09-18): the "Sign out" confirm-alert
+# point tap below (`68%,56%`) is copied from login-test.yaml, where it was
+# measured LIVE and documented as specific to bb-qa-1310 (iPhone 17 Pro,
+# iOS 26.2)'s two-button UIAlertController layout — this point IS correct
+# for the iPhone runs this flow actually executes (confirmed live multiple
+# times, most recently 2026-09-18: the guard fires and the alert dismisses
+# correctly every time). It was never re-measured for iPad because the iPad
+# path is a moot point here: the task's verification line was amended
+# 2026-09-18 11:35 to strike the iPad rung from Maestro entirely —
+# bb-qa-ipad returns an empty status-bar-only accessibility tree to Maestro
+# (confirmed on two separate simulator instances/sessions, surviving a full
+# reboot and an Xcode reinstall), so NO Maestro flow — this tap point
+# included — ever actually runs against an iPad in this task. The iPad
+# verification path is now (a) a hand-driven Simulator.app run once
+# Xcode's Simulator.app is available, or (b) Guus on a physical iPad via
+# TestFlight — neither goes through this file. Keeping the iPhone-measured
+# point as-is; do not "iPad-proof" a tap that iPad never reaches.
+#
+# CAVEAT (also not yet confirmed on-device — flag if a screenshot below comes
+# back blank/black): RecoveryUnlockScreen.tsx calls
+# usePreventScreenCapture('recovery-unlock') for the whole time this screen is
+# visible, since it's where the user types their recovery phrase. If iOS's
+# capture-prevention blanks XCTest-driven screenshots the same way it blanks
+# a real screen recording (unconfirmed — it may only intercept AirPlay/
+# QuickTime capture, not the accessibility-tree screenshot Maestro takes),
+# every takeScreenshot taken while this screen is on screen would come back
+# blank. Not something to fix here; just don't mistake a blank capture for a
+# flow failure — the assertVisible checks are the real pass/fail signal.
+#
+# EVIDENCE_DIR (Codex P2, PR #95): every `takeScreenshot` below now writes
+# under `${EVIDENCE_DIR}`, an env var this flow does NOT default — ALWAYS
+# invoke with `-e EVIDENCE_DIR=/abs/path`, e.g.:
+#   maestro --udid <udid> -e EVIDENCE_DIR=/Users/…/docs/_qa-evidence/1428 \
+#     test e2e/maestro/1428-unlock-screen.yaml
+# (this reach file is always run via `runFlow` from one of the four
+# variant files, so pass EVIDENCE_DIR on the top-level `maestro test`
+# invocation, not by running this file directly). Not re-run after this
+# change (path-only edit). See CLAUDE.md's corrected note on Maestro
+# screenshot paths — what was actually observed live in this task is that
+# relative paths resolve against Maestro's cwd (real files, not nothing),
+# not that they're silently dropped.
+appId: io.beebeeb.app
+---
+- launchApp
+
+# Gotcha 2 — dev-client menu (no-op on a Release build).
+- runFlow:
+    when:
+      visible: "Continue"
+    commands:
+      - tapOn: "Continue"
+- runFlow:
+    when:
+      visible: "Reload"
+    commands:
+      - tapOn:
+          point: "94%,43%"
+
+# Left mid-flow on the recovery screen by a prior run (crash/timeout)? Back
+# out to Sign in instead of trying to type into whatever phrase state is
+# already there (local-qa-signin-unlock.yaml's same guard).
+- runFlow:
+    when:
+      visible: "Use another account"
+    commands:
+      - tapOn: "Use another account"
+
+# Signed in AND unlocked from a prior variant's run in this same driver gap?
+# Sign out through the UI — the only thing that actually clears the Keychain
+# master key on this app (see the header comment above). Copied from
+# login-test.yaml's bootstrap, including its own documented driver-fault
+# workarounds (TEXT selector for the tab, fixed scroll count, point-tap on
+# the destructive alert button).
+#
+# FIXED 2026-09-18 (eng-1428c, live run on bb-qa-1310): the guard's `visible:
+# "Drive"` no longer matches ANYTHING — grepped current src/ for `"Drive"`,
+# zero hits. App.tsx's tab route is named "Files" (`tabBarButtonTestID:
+# 'tab-files'`), not "Drive" — a rename that happened after this guard was
+# written (the flow files were last known-good on 2026-09-17 against the
+# same app, so this is a real regression in the guard, not a guess). With
+# the stale guard, a still-signed-in relaunch never triggers sign-out and
+# the flow then hangs 60s waiting for a sign-in screen that never appears.
+- runFlow:
+    when:
+      visible: "Files"
+    commands:
+      - tapOn: "Settings"
+      - scroll
+      - scroll
+      - scroll
+      - scroll
+      - scroll
+      - scroll
+      - scroll
+      - scroll
+      - tapOn: "Sign out"
+      # iPhone-measured point; iPad never reaches this tap — see the header
+      # comment above ("SIGN-OUT TAP POINT") for why that's correct as-is.
+      - tapOn:
+          point: "68%,56%"
+
+# id-based, not text "Sign in" (which was here originally): this screen
+# renders "Sign in" THREE times at once (heading Text, button
+# accessibilityLabel, button inner Text — see LoginScreen.tsx), and while
+# that wasn't the actual cause of the bb-qa-ipad accessibility-tree-empty
+# finding below (an id selector failed there too, identically), it's a
+# strictly more specific/unambiguous check and was proven working live on
+# bb-qa-1310 (2026-09-17), so keeping it.
+- extendedWaitUntil:
+    visible:
+      id: "email-input"
+    timeout: 60000
+
+- takeScreenshot: "${EVIDENCE_DIR}/1428-reach-01-signin-screen"
+
+- tapOn:
+    id: "email-input"
+- inputText: "bb-qa-1428-87e670fd60f4@beebeeb.io"
+- tapOn:
+    id: "password-input"
+- inputText: "Bb1428-Qa-e988a08fefc618efcd98!"
+
+# Gotcha 1 — dismiss the keyboard before tapping Sign in.
+- tapOn:
+    point: "50%,28%"
+- tapOn:
+    id: "sign-in-button"
+
+# iOS offers to save the password; it covers the app.
+- runFlow:
+    when:
+      visible: "Not Now"
+    commands:
+      - tapOn: "Not Now"
+
+- extendedWaitUntil:
+    visible: "Unlock your vault"
+    timeout: 30000
+
+- takeScreenshot: "${EVIDENCE_DIR}/1428-reach-02-unlock-screen"
+
+# Baseline assertions task 1428 shipped: the field starts empty and the
+# button explains why it's disabled instead of reading as dead/unresponsive.
+- assertVisible: "0/12 words"
+- assertVisible: "Enter your 12-word phrase"
