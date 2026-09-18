@@ -7,6 +7,20 @@
 #
 # See 1428-unlock-screen-reach.yaml for the fixture account, preconditions,
 # and the screen-capture screenshot caveat — read it before this file.
+#
+# FIXED 2026-09-18 (Codex P2, PR #95): every `takeScreenshot` below now
+# writes under `${EVIDENCE_DIR}`, an env var this flow does NOT default —
+# ALWAYS invoke with `-e EVIDENCE_DIR=/abs/path`, e.g.:
+#   maestro --udid <udid> -e EVIDENCE_DIR=/Users/…/docs/_qa-evidence/1428 \
+#     test e2e/maestro/1428-unlock-screen.yaml
+# Not re-run after this change (path-only edit, no behavior under test
+# changed) — what Maestro does with an unresolved `${EVIDENCE_DIR}` if you
+# forget the `-e` flag hasn't been verified live, so don't assume it fails
+# loudly; just always pass it. See CLAUDE.md's corrected note on Maestro
+# screenshot paths for what WAS observed live in this task (relative paths
+# resolve against Maestro's cwd — they render as real files there, not
+# nothing — the previous "silently drops relative paths" claim was
+# imprecise).
 appId: io.beebeeb.app
 ---
 - runFlow: 1428-unlock-screen-reach.yaml
@@ -15,7 +29,7 @@ appId: io.beebeeb.app
 - tapOn:
     point: "50%,56%"
 
-- takeScreenshot: "1428-01-field-tapped-keyboard-open"
+- takeScreenshot: "${EVIDENCE_DIR}/1428-01-field-tapped-keyboard-open"
 
 # NOTE (live-run finding, 2026-09-17 08:16 on bb-qa-1310): dropped the
 # planned assertVisible keyboard-key check ("space", then "123" — both
@@ -32,7 +46,7 @@ appId: io.beebeeb.app
 - assertVisible: "12/12 words"
 - assertVisible: "Unlock vault"
 
-- takeScreenshot: "1428-02-twelve-of-twelve-words"
+- takeScreenshot: "${EVIDENCE_DIR}/1428-02-twelve-of-twelve-words"
 
 # Gotcha 1 — dismiss the keyboard before tapping the button.
 - tapOn:
@@ -51,7 +65,7 @@ appId: io.beebeeb.app
     visible: "Files"
     timeout: 30000
 
-- takeScreenshot: "1428-03-vault-unlocked"
+- takeScreenshot: "${EVIDENCE_DIR}/1428-03-vault-unlocked"
 
 # Proves the vault is actually UNLOCKED, not merely signed in (locked rows
 # render as blank skeletons) — same assertion local-qa-signin-unlock.yaml

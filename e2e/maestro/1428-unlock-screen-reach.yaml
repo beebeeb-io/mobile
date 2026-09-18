@@ -39,16 +39,24 @@
 #     placeholder on iOS (multiline UITextView accessibility quirk) — tap by
 #     point, not id.
 #
-# UNVERIFIED (flag, don't trust blindly): the "Sign out" confirm-alert point
-# tap below (`68%,56%`) is copied from login-test.yaml, where it was measured
-# LIVE and explicitly documented as specific to bb-qa-1310 (iPhone 17 Pro,
-# iOS 26.2)'s two-button UIAlertController layout. bb-qa-ipad is a DIFFERENT
-# device class — iPad alert geometry (centered popover, not a full-width
-# sheet) is very likely different. This was NOT re-measured on iPad (I was
-# told not to boot the sim or run Maestro while preparing this). If the
-# sign-out guard doesn't resolve on the first real run, re-measure this point
-# live on bb-qa-ipad the same way login-test.yaml's header describes doing it
-# for the iPhone, and update this file.
+# SIGN-OUT TAP POINT — iPhone-measured, iPad path not exercised by Maestro
+# (Codex P2, PR #95, resolved 2026-09-18): the "Sign out" confirm-alert
+# point tap below (`68%,56%`) is copied from login-test.yaml, where it was
+# measured LIVE and documented as specific to bb-qa-1310 (iPhone 17 Pro,
+# iOS 26.2)'s two-button UIAlertController layout — this point IS correct
+# for the iPhone runs this flow actually executes (confirmed live multiple
+# times, most recently 2026-09-18: the guard fires and the alert dismisses
+# correctly every time). It was never re-measured for iPad because the iPad
+# path is a moot point here: the task's verification line was amended
+# 2026-09-18 11:35 to strike the iPad rung from Maestro entirely —
+# bb-qa-ipad returns an empty status-bar-only accessibility tree to Maestro
+# (confirmed on two separate simulator instances/sessions, surviving a full
+# reboot and an Xcode reinstall), so NO Maestro flow — this tap point
+# included — ever actually runs against an iPad in this task. The iPad
+# verification path is now (a) a hand-driven Simulator.app run once
+# Xcode's Simulator.app is available, or (b) Guus on a physical iPad via
+# TestFlight — neither goes through this file. Keeping the iPhone-measured
+# point as-is; do not "iPad-proof" a tap that iPad never reaches.
 #
 # CAVEAT (also not yet confirmed on-device — flag if a screenshot below comes
 # back blank/black): RecoveryUnlockScreen.tsx calls
@@ -60,6 +68,19 @@
 # every takeScreenshot taken while this screen is on screen would come back
 # blank. Not something to fix here; just don't mistake a blank capture for a
 # flow failure — the assertVisible checks are the real pass/fail signal.
+#
+# EVIDENCE_DIR (Codex P2, PR #95): every `takeScreenshot` below now writes
+# under `${EVIDENCE_DIR}`, an env var this flow does NOT default — ALWAYS
+# invoke with `-e EVIDENCE_DIR=/abs/path`, e.g.:
+#   maestro --udid <udid> -e EVIDENCE_DIR=/Users/…/docs/_qa-evidence/1428 \
+#     test e2e/maestro/1428-unlock-screen.yaml
+# (this reach file is always run via `runFlow` from one of the four
+# variant files, so pass EVIDENCE_DIR on the top-level `maestro test`
+# invocation, not by running this file directly). Not re-run after this
+# change (path-only edit). See CLAUDE.md's corrected note on Maestro
+# screenshot paths — what was actually observed live in this task is that
+# relative paths resolve against Maestro's cwd (real files, not nothing),
+# not that they're silently dropped.
 appId: io.beebeeb.app
 ---
 - launchApp
@@ -115,6 +136,8 @@ appId: io.beebeeb.app
       - scroll
       - scroll
       - tapOn: "Sign out"
+      # iPhone-measured point; iPad never reaches this tap — see the header
+      # comment above ("SIGN-OUT TAP POINT") for why that's correct as-is.
       - tapOn:
           point: "68%,56%"
 
@@ -130,7 +153,7 @@ appId: io.beebeeb.app
       id: "email-input"
     timeout: 60000
 
-- takeScreenshot: "1428-reach-01-signin-screen"
+- takeScreenshot: "${EVIDENCE_DIR}/1428-reach-01-signin-screen"
 
 - tapOn:
     id: "email-input"
@@ -156,7 +179,7 @@ appId: io.beebeeb.app
     visible: "Unlock your vault"
     timeout: 30000
 
-- takeScreenshot: "1428-reach-02-unlock-screen"
+- takeScreenshot: "${EVIDENCE_DIR}/1428-reach-02-unlock-screen"
 
 # Baseline assertions task 1428 shipped: the field starts empty and the
 # button explains why it's disabled instead of reading as dead/unresponsive.

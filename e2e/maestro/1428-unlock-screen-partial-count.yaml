@@ -9,6 +9,10 @@
 #
 # See 1428-unlock-screen-reach.yaml for the fixture account, preconditions,
 # and the screen-capture screenshot caveat — read it before this file.
+#
+# EVIDENCE_DIR (Codex P2, PR #95): see 1428-unlock-screen.yaml's header for
+# the `-e EVIDENCE_DIR=/abs/path` invocation this flow's `takeScreenshot`
+# calls now require.
 appId: io.beebeeb.app
 ---
 - runFlow: 1428-unlock-screen-reach.yaml
@@ -25,7 +29,7 @@ appId: io.beebeeb.app
 - assertVisible: "7/12 words"
 - assertVisible: "5 more words needed"
 
-- takeScreenshot: "1428-partial-01-seven-of-twelve"
+- takeScreenshot: "${EVIDENCE_DIR}/1428-partial-01-seven-of-twelve"
 
 # The button must still be genuinely disabled at 7/12, not just visually
 # dimmed — Maestro's tapOn on a disabled element is a no-op either way, so
@@ -38,4 +42,4 @@ appId: io.beebeeb.app
 # regardless of actual screen state.
 - assertNotVisible: "Files"
 
-- takeScreenshot: "1428-partial-02-still-on-unlock-screen"
+- takeScreenshot: "${EVIDENCE_DIR}/1428-partial-02-still-on-unlock-screen"

@@ -49,6 +49,22 @@
 # addressing the actual suspected cause (copyTextFrom shifting on-screen
 # state, not the selector *kind* being point vs id). Went with the file's
 # own first-listed fix direction instead: drop the re-tap.
+#
+# SEPARATE FINDING, live-confirmed 2026-09-18 (eng-1428c), re-tap fix above
+# IS working (the field cleared to 0/12 cleanly, no premature unlock) — but
+# `pasteText` itself then does not fill the field. Root cause confirmed via
+# a live `maestro hierarchy` dump right after `pasteText` (no "Allow Paste"
+# system prompt — that was ruled out) plus `xcrun simctl pbpaste <udid>`
+# returning 0 bytes: `copyTextFrom` above never actually populates the
+# simulator's UIPasteboard for this field, so `pasteText` has nothing to
+# paste. Lead's call (2026-09-18): this is a MAESTRO/simulator harness
+# limitation on this widget, not an app defect — leave `copyTextFrom`/
+# `pasteText` as-is (do NOT switch to `simctl pbcopy`), and verify the
+# real paste path by hand on a physical device instead.
+#
+# EVIDENCE_DIR (Codex P2, PR #95): see 1428-unlock-screen.yaml's header for
+# the `-e EVIDENCE_DIR=/abs/path` invocation this flow's `takeScreenshot`
+# calls now require.
 appId: io.beebeeb.app
 ---
 - runFlow: 1428-unlock-screen-reach.yaml
@@ -82,7 +98,7 @@ appId: io.beebeeb.app
 - assertVisible: "0/12 words"
 - assertVisible: "Enter your 12-word phrase"
 
-- takeScreenshot: "1428-paste-01-cleared-before-paste"
+- takeScreenshot: "${EVIDENCE_DIR}/1428-paste-01-cleared-before-paste"
 
 - tapOn:
     point: "50%,56%"
@@ -91,7 +107,7 @@ appId: io.beebeeb.app
 - assertVisible: "12/12 words"
 - assertVisible: "Unlock vault"
 
-- takeScreenshot: "1428-paste-02-twelve-of-twelve-after-paste"
+- takeScreenshot: "${EVIDENCE_DIR}/1428-paste-02-twelve-of-twelve-after-paste"
 
 # Gotcha 1 — dismiss the keyboard before tapping the button.
 - tapOn:
@@ -110,5 +126,5 @@ appId: io.beebeeb.app
     visible: "Files"
     timeout: 30000
 
-- takeScreenshot: "1428-paste-03-vault-unlocked"
+- takeScreenshot: "${EVIDENCE_DIR}/1428-paste-03-vault-unlocked"
 - assertVisible: "Backups"

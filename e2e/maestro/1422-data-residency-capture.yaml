@@ -15,6 +15,10 @@
 # subsequent "Data residency" assertion failing, exactly as expected once
 # you know navigation never happened. Fixed by tapping the Settings tab by
 # id directly instead of trusting the deep link + a generic text wait.
+#
+# EVIDENCE_DIR (Codex P2, PR #95): see e2e/maestro/1428-unlock-screen.yaml's
+# header for the `-e EVIDENCE_DIR=/abs/path` invocation this flow's
+# `takeScreenshot` call now requires.
 appId: io.beebeeb.app
 ---
 - launchApp
@@ -37,4 +41,4 @@ appId: io.beebeeb.app
     direction: DOWN
     timeout: 20000
 - assertVisible: "Data residency"
-- takeScreenshot: "1422-data-residency-picker"
+- takeScreenshot: "${EVIDENCE_DIR}/1422-data-residency-picker"
