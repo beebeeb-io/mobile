@@ -32,6 +32,10 @@ appId: io.beebeeb.app
 # the real proof is that the label above already told the user why (the
 # assertion above), not a race on whether this tap "did nothing".
 - tapOn: "5 more words needed"
-- assertNotVisible: "Drive"
+# FIXED 2026-09-18 (eng-1428c): "Drive" renamed to "Files" (App.tsx tab
+# route). With the stale string this assertion was a silent no-op — "Drive"
+# never appears in the app at all now, so assertNotVisible trivially passed
+# regardless of actual screen state.
+- assertNotVisible: "Files"
 
 - takeScreenshot: "1428-partial-02-still-on-unlock-screen"

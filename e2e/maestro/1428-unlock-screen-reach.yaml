@@ -92,9 +92,18 @@ appId: io.beebeeb.app
 # login-test.yaml's bootstrap, including its own documented driver-fault
 # workarounds (TEXT selector for the tab, fixed scroll count, point-tap on
 # the destructive alert button).
+#
+# FIXED 2026-09-18 (eng-1428c, live run on bb-qa-1310): the guard's `visible:
+# "Drive"` no longer matches ANYTHING — grepped current src/ for `"Drive"`,
+# zero hits. App.tsx's tab route is named "Files" (`tabBarButtonTestID:
+# 'tab-files'`), not "Drive" — a rename that happened after this guard was
+# written (the flow files were last known-good on 2026-09-17 against the
+# same app, so this is a real regression in the guard, not a guess). With
+# the stale guard, a still-signed-in relaunch never triggers sign-out and
+# the flow then hangs 60s waiting for a sign-in screen that never appears.
 - runFlow:
     when:
-      visible: "Drive"
+      visible: "Files"
     commands:
       - tapOn: "Settings"
       - scroll

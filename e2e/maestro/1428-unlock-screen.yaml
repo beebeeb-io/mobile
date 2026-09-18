@@ -45,8 +45,10 @@ appId: io.beebeeb.app
     commands:
       - tapOn: "Not Now"
 
+# FIXED 2026-09-18 (eng-1428c): "Drive" renamed to "Files" (App.tsx tab
+# route) — see reach file's guard comment for the grep evidence.
 - extendedWaitUntil:
-    visible: "Drive"
+    visible: "Files"
     timeout: 30000
 
 - takeScreenshot: "1428-03-vault-unlocked"

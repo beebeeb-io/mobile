@@ -2,17 +2,39 @@
 # rows) — requested by the lead alongside 1428's driver gap, 2026-09-17.
 # Not a regression test: just scrolls Settings to the "Data residency"
 # section and screenshots it, for comparison against /api/v1/regions.
+#
+# FIXED 2026-09-18 (eng-1428c, live run on bb-qa-1310): `openLink:
+# "beebeeb://settings"` + `extendedWaitUntil: visible: "Settings"` looked
+# like it worked (that step reported COMPLETED) but the deep link did NOT
+# actually navigate — the app was still on the Drive tab the whole time.
+# Root cause: the bottom tab bar always shows a "Settings" label (see
+# screenshot below), so the wait matched that instead of anything on the
+# Settings screen itself — a false-positive assertion, not a real gate.
+# Evidence: docs/_qa-evidence/1422/1422-capture-failed-scroll-state.png
+# shows the Drive tab (Backups folder) after 5 no-op scrolls and the
+# subsequent "Data residency" assertion failing, exactly as expected once
+# you know navigation never happened. Fixed by tapping the Settings tab by
+# id directly instead of trusting the deep link + a generic text wait.
 appId: io.beebeeb.app
 ---
 - launchApp
-- openLink: "beebeeb://settings"
-- extendedWaitUntil:
-    visible: "Settings"
-    timeout: 15000
-- scroll
-- scroll
-- scroll
-- scroll
-- scroll
+# `id: "tab-settings"` (App.tsx's tabBarButtonTestID) was tried live first
+# and FAILED — "Element not found: Id matching regex: tab-settings" — same
+# class of id-selector unreliability already documented for the recovery
+# phrase field (1428-unlock-screen-reach.yaml Gotcha 3): React Navigation's
+# tabBarButtonTestID doesn't surface as a plain accessibility id Maestro can
+# query on this iOS build. Falling back to the tab's visible text label.
+- tapOn: "Settings"
+# A fixed `- scroll` x5 (tried live first) badly OVERSHOT: SettingsScreen.tsx
+# renders Account, Storage & plan, Backup, Devices, Files, Notifications,
+# Appearance, Security, Privacy & data — ALL before Data residency (line
+# 2449) — 5 full-screen scrolls landed near the bottom of the whole screen
+# (the Support section's "Advanced" row, right above About), well past the
+# target. scrollUntilVisible is the correct primitive here, not a guessed
+# scroll count.
+- scrollUntilVisible:
+    element: "Data residency"
+    direction: DOWN
+    timeout: 20000
 - assertVisible: "Data residency"
 - takeScreenshot: "1422-data-residency-picker"

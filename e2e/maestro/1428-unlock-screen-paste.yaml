@@ -39,12 +39,16 @@
 # no longer resolves to the phrase field afterward — this was NOT
 # re-verified with a live `hierarchy` dump before simctl broke.
 #
-# DO NOT blindly re-run this file expecting it to now pass — the fix
-# direction (not yet applied): either drop the re-tap entirely (the field
-# should still be focused from the original typing; copyTextFrom may not
-# need or want a fresh tap first), or confirm the actual on-screen point
-# via a live `maestro hierarchy` dump taken right after `copyTextFrom`
-# before trusting "50%,56%" again at that step.
+# FIX APPLIED 2026-09-18 (eng-1428c) — see the removed step below. Considered
+# and rejected: switching that tap to `tapOn: id: "recovery-phrase-input"`
+# (the field DOES have that testID, RecoveryUnlockScreen.tsx:214) — rejected
+# because 1428-unlock-screen-reach.yaml's Gotcha 3 already documents this
+# specific multiline TextInput (a UITextView on iOS) as not reliably
+# addressable by testID, for tapping specifically, not just assertions; an
+# id-based tap here would trade one unverified selector for another without
+# addressing the actual suspected cause (copyTextFrom shifting on-screen
+# state, not the selector *kind* being point vs id). Went with the file's
+# own first-listed fix direction instead: drop the re-tap.
 appId: io.beebeeb.app
 ---
 - runFlow: 1428-unlock-screen-reach.yaml
@@ -63,8 +67,17 @@ appId: io.beebeeb.app
 
 # Clear the field back to empty so the paste below is the ONLY thing that
 # fills it — proves paste alone reaches 12/12, not leftover typed state.
-- tapOn:
-    point: "50%,56%"
+#
+# REMOVED 2026-09-18: a `tapOn: point: "50%,56%"` used to sit here, meant to
+# re-focus the field before eraseText. Dropped — copyTextFrom above targets
+# and interacts with this same field directly (a copy/select gesture, not a
+# navigation), so it should still be focused; the removed tap is the prime
+# suspect (lead's hypothesis) for a prior run where it instead landed on the
+# enabled "Unlock vault" button and fired a real unlock mid-flow. Falsified
+# if: eraseText below doesn't actually clear the field (assertVisible "0/12
+# words" fails) — if so, re-add a re-focus step, but confirm its real
+# on-screen point with a live `maestro hierarchy` dump right after
+# copyTextFrom first, don't just restore "50%,56%" blindly.
 - eraseText: 300
 - assertVisible: "0/12 words"
 - assertVisible: "Enter your 12-word phrase"
@@ -91,8 +104,10 @@ appId: io.beebeeb.app
     commands:
       - tapOn: "Not Now"
 
+# FIXED 2026-09-18 (eng-1428c): "Drive" renamed to "Files" (App.tsx tab
+# route) — see reach file's guard comment for the grep evidence.
 - extendedWaitUntil:
-    visible: "Drive"
+    visible: "Files"
     timeout: 30000
 
 - takeScreenshot: "1428-paste-03-vault-unlocked"
