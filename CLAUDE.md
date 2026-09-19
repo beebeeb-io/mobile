@@ -369,6 +369,8 @@ having mocked it. Two tests were found relying on exactly that when isolation wa
 
 Backend at `http://localhost:3001`. Same endpoints as the web client — see `repos/server/CLAUDE.md` for the full API reference.
 
+`mobileClientHeaders()` in `src/lib/api.ts` sends `X-Beebeeb-Client: mobile-ios` / `mobile-android` and, since task 1436, `X-Beebeeb-Client-Version` (from `Constants.expoConfig?.version ?? '1.0.0'`, matching the existing convention in `device-registration.ts`) on the 5 unauthenticated auth-bootstrap calls (signup, login, opaque login-finish, 2FA verify, opaque register-finish) AND on all 3 upload-init call sites (`/api/v1/files/upload/init` ×2, `/api/v1/uploads/init`) — the requests that create the `object_versions` row the server records both on (server PR #23 / task 1369). **Not covered**: the native (Swift) upload/backup stack — `modules/beebeeb-crypto/ios/{NativeManualUploader,NativeBackupEngine,NativeEncryptedBackupUploader,ThumbnailEncryptUpload}.swift` and `targets/share-extension/ShareUploader.swift` / `ios/BeebeebShare/ShareUploader.swift` — build their own `URLRequest`s and send neither header today. Flagged as a known gap, not fixed by 1436.
+
 ## Design references
 
 - `../../design/hifi/hifi-ios-app.jsx` — iOS screens (Home, Photos, Preview, Share, Settings, Biometric, Camera backup)
