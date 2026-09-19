@@ -329,9 +329,15 @@ async function headers(auth = true, extra?: Record<string, string>): Promise<Req
   return { headers: h, authSnapshot };
 }
 
+// Writer-provenance (task 1436, the mobile half of 1392): the app version the
+// server records on every object_versions row it writes (server PR #23 / task
+// 1369). Mirrors the existing Constants.expoConfig?.version usage in
+// device-registration.ts / SettingsScreen.tsx — no new dependency.
+const MOBILE_CLIENT_VERSION = Constants.expoConfig?.version ?? '1.0.0';
+
 function mobileClientHeaders(): Record<string, string> | undefined {
-  if (Platform.OS === 'ios') return { 'X-Beebeeb-Client': 'mobile-ios' };
-  if (Platform.OS === 'android') return { 'X-Beebeeb-Client': 'mobile-android' };
+  if (Platform.OS === 'ios') return { 'X-Beebeeb-Client': 'mobile-ios', 'X-Beebeeb-Client-Version': MOBILE_CLIENT_VERSION };
+  if (Platform.OS === 'android') return { 'X-Beebeeb-Client': 'mobile-android', 'X-Beebeeb-Client-Version': MOBILE_CLIENT_VERSION };
   return undefined;
 }
 
@@ -1181,7 +1187,9 @@ export async function uploadEncryptedChunked(params: {
     initialNameEncrypted = await resolveNameEncrypted(fileId)
     const initRes = await rateLimitedFetch(`${BASE_URL}/api/v1/files/upload/init`, {
       method: 'POST',
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      // Writer-provenance headers (task 1436) — this call creates the
+      // object_versions row the server records them on.
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...mobileClientHeaders() },
       body: JSON.stringify({
         file_id: fileId,
         name_encrypted: initialNameEncrypted,
@@ -1529,7 +1537,9 @@ async function initUploadV2(params: {
   const chunkCount = params.chunkCount ?? Math.max(1, Math.ceil(params.fileSizeBytes / CHUNK_SIZE))
   const res = await rateLimitedFetch(`${BASE_URL}/api/v1/uploads/init`, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${params.token}`, 'Content-Type': 'application/json' },
+    // Writer-provenance headers (task 1436) — this call creates the
+    // object_versions row the server records them on.
+    headers: { Authorization: `Bearer ${params.token}`, 'Content-Type': 'application/json', ...mobileClientHeaders() },
     body: JSON.stringify({
       file_name: params.fileName,
       file_size_bytes: params.fileSizeBytes,
@@ -1622,7 +1632,9 @@ async function uploadFileChunked(
   // plaintext mime_type column.
   const initRes = await rateLimitedFetch(`${BASE_URL}/api/v1/files/upload/init`, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    // Writer-provenance headers (task 1436) — this call creates the
+    // object_versions row the server records them on.
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...mobileClientHeaders() },
     body: JSON.stringify({
       name_encrypted: metadata.name_encrypted,
       parent_id: metadata.parent_id ?? null,
