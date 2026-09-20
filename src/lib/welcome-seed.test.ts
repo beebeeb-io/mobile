@@ -17,9 +17,25 @@ mock.module('@react-native-async-storage/async-storage', () => ({
     getAllKeys: async () => [],
   },
 }));
+// Mirrors the REAL validation in the installed expo-secure-store@57.0.2
+// (node_modules/expo-secure-store/build/SecureStore.js: `ensureValidKey` /
+// `isValidKey`, regex `/^[\w.-]+$/`) — a permissive mock previously masked
+// the task-1444 "Invalid key" bug (the ':' separator in SEEDED_KEY_PREFIX)
+// because it accepted any string as a key.
+function ensureValidKeyLikeExpoSecureStore(k: string): void {
+  if (!/^[\w.-]+$/.test(k)) {
+    throw new Error(
+      'Invalid key provided to SecureStore. Keys must not be empty and contain only alphanumeric characters, ".", "-", and "_".',
+    );
+  }
+}
 mock.module('expo-secure-store', () => ({
-  getItemAsync: async (k: string) => secureStore.get(k) ?? null,
+  getItemAsync: async (k: string) => {
+    ensureValidKeyLikeExpoSecureStore(k);
+    return secureStore.get(k) ?? null;
+  },
   setItemAsync: async (k: string, v: string) => {
+    ensureValidKeyLikeExpoSecureStore(k);
     secureStore.set(k, v);
   },
 }));
@@ -81,11 +97,11 @@ describe('seedWelcomeMarkdown — root-content guard (0558)', () => {
     rootListing = [FOLDER, FILE];
     expect(await seedWelcomeMarkdown(opts())).toBe(false);
     expect(uploadCalls).toHaveLength(0);
-    expect(secureStore.get('beebeeb_welcome_seeded:user-1')).toBe('true');
+    expect(secureStore.get('beebeeb_welcome_seeded__user-1')).toBe('true');
   });
 
   test('per-device SecureStore flag short-circuits before any network call', async () => {
-    secureStore.set('beebeeb_welcome_seeded:user-1', 'true');
+    secureStore.set('beebeeb_welcome_seeded__user-1', 'true');
     rootListing = [FOLDER]; // would otherwise seed
     expect(await seedWelcomeMarkdown(opts())).toBe(false);
     expect(uploadCalls).toHaveLength(0);
@@ -95,7 +111,25 @@ describe('seedWelcomeMarkdown — root-content guard (0558)', () => {
     listThrows = true;
     expect(await seedWelcomeMarkdown(opts())).toBe(false);
     expect(uploadCalls).toHaveLength(0);
-    expect(secureStore.has('beebeeb_welcome_seeded:user-1')).toBe(false);
+    expect(secureStore.has('beebeeb_welcome_seeded__user-1')).toBe(false);
+  });
+
+  test('the SecureStore key used for the per-device flag matches Expo\'s allowed key charset (1444)', async () => {
+    // Expo SecureStore keys must match /^[\w.-]+$/ — anything else throws
+    // "Invalid key provided to SecureStore" at setItemAsync/getItemAsync
+    // (ensureValidKey/isValidKey in the installed expo-secure-store@57.0.2's
+    // SecureStore.js). The original ':' separator between SEEDED_KEY_PREFIX
+    // and the userId was NOT in that set — confirmed against the installed
+    // version by making this file's SecureStore mock enforce the same regex
+    // (previously permissive, which had silently masked the bug: 2 other
+    // tests in this file broke the moment the mock started validating keys,
+    // before this fix landed).
+    rootListing = [FOLDER];
+    await seedWelcomeMarkdown(opts());
+    expect(secureStore.size).toBeGreaterThan(0);
+    for (const key of secureStore.keys()) {
+      expect(key).toMatch(/^[A-Za-z0-9._-]+$/);
+    }
   });
 
   test('listFiles is called ROOT-scoped, non-recursive — a photo the 1443 backup race already', async () => {

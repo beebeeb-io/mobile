@@ -5,7 +5,7 @@
  * existing upload pipeline — the server never sees the plaintext copy.
  *
  * Idempotency is double-guarded:
- *  1. Per-device SecureStore flag (`beebeeb_welcome_seeded:<userId>`). A second
+ *  1. Per-device SecureStore flag (`beebeeb_welcome_seeded__<userId>`). A second
  *     sign-in on the same device short-circuits before we hit the network.
  *  2. Server-side root-content check. If the user already has a real FILE
  *     (a non-folder entry) at root (e.g. they're signing in from a second
@@ -55,9 +55,28 @@ export interface SeedWelcomeOptions {
 }
 
 function seedKey(userId: string): string {
-  // SecureStore keys must match `[A-Za-z0-9._-]+`. UUIDs already do; this
-  // sanitiser is a belt-and-braces guard for any non-UUID user IDs we might
-  // see in the future.
+  // SecureStore keys must match `[A-Za-z0-9._-]+` (Expo enforces this —
+  // `ensureValidKey`/`isValidKey` in expo-secure-store's SecureStore.js,
+  // regex `/^[\w.-]+$/` — and THROWS "Invalid key provided to SecureStore"
+  // for anything else). UUIDs already satisfy that; this sanitiser is a
+  // belt-and-braces guard for any non-UUID user IDs we might see in the
+  // future. The separator between prefix and userId must ALSO be in that
+  // set — '__' here, not ':' (task 1444: ':' is invalid, confirmed against
+  // the installed expo-secure-store version, so every getItemAsync /
+  // setItemAsync call using the old key threw. Both call sites below already
+  // swallow that throw, so this never broke seeding itself — guard 2, the
+  // server-side root-content check, was the real idempotency backstop — but
+  // this per-device fast-path never actually latched or short-circuited).
+  return `${SEEDED_KEY_PREFIX}__${userId.replace(/[^A-Za-z0-9._-]/g, '_')}`;
+}
+
+/** Pre-1444 key shape. Kept ONLY for a best-effort backward-compat read — a
+ *  platform whose SecureStore shim doesn't enforce Expo's native character
+ *  set (this repo swallows SecureStore errors elsewhere for "web") could in
+ *  principle have a flag stored under this key. A throw here is expected on
+ *  every native platform (':' is invalid) and is treated as "not seeded",
+ *  identically to any other lookup miss. */
+function legacySeedKey(userId: string): string {
   return `${SEEDED_KEY_PREFIX}:${userId.replace(/[^A-Za-z0-9._-]/g, '_')}`;
 }
 
@@ -68,7 +87,13 @@ function seedKey(userId: string): string {
 export async function hasWelcomeBeenSeeded(userId: string): Promise<boolean> {
   try {
     const v = await SecureStore.getItemAsync(seedKey(userId));
-    return v === 'true';
+    if (v === 'true') return true;
+  } catch {
+    // Fall through to the legacy-key check below.
+  }
+  try {
+    const legacy = await SecureStore.getItemAsync(legacySeedKey(userId));
+    return legacy === 'true';
   } catch {
     return false;
   }
