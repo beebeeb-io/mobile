@@ -54,26 +54,55 @@ const LEGACY_BACKUP_PREF_KEYS = [
   BACKUP_BG_UPLOAD_KEY,
 ];
 
-/** Per-user scoped SecureStore key for a backup preference. */
+/**
+ * Per-user scoped SecureStore key for a backup preference.
+ *
+ * Expo SecureStore keys may only contain letters, digits, `.`, `-` and `_`
+ * (`getItemAsync`/`setItemAsync` throw "Invalid key" on device otherwise) —
+ * so the separator is `__`, never `:`. User ids are UUIDs (hex + dashes),
+ * which are already safe under that charset.
+ */
 export function backupPrefKey(base: string, userId: string): string {
-  return `${base}:${userId}`;
+  return `${base}__${userId}`;
 }
+
+// Captured once, at module load — i.e. app cold start — BEFORE any sign-in
+// flow in THIS process could have written a session token. Module top-level
+// code runs synchronously before React ever renders, so nothing in this
+// process can have signed in before this read is dispatched: true means a
+// session was ALREADY stored when the app launched (a restored session
+// carried through the upgrade); false means whichever account ends up
+// signed in got there via an interactive sign-in/sign-up during THIS run.
+// See migrateLegacyBackupPrefs — only the former may claim an unowned
+// legacy preference.
+const sessionPresentAtLaunchPromise: Promise<boolean> = getStoredToken().then((t) => t !== null);
+
+// Guards the bootstrap ("nobody has claimed this device yet") migration path
+// to at most once per app launch — see migrateLegacyBackupPrefs.
+let legacyMigrationAttemptedThisLaunch = false;
 
 /**
  * One-time migration of the pre-1443 device-global backup preference values
  * into this user's scoped keys.
  *
- * - If nobody has claimed the legacy values yet (BACKUP_PREF_OWNER_KEY is
- *   absent — the common upgrade case: a single account has been using this
- *   device and its preference has never been read under the new scoped
- *   scheme) OR this SAME user claimed them before, the legacy values are
- *   copied into this user's scoped keys — but only where a scoped value
- *   doesn't already exist, so a preference this user already set explicitly
- *   is never clobbered — and ownership is recorded. This is what keeps an
- *   existing single-account install's backup preference ON across the
- *   upgrade to this fix.
- * - Otherwise (a DIFFERENT user already claimed the legacy values) they are
- *   ignored — never copied into this user's scoped keys.
+ * - If this SAME user already claimed the legacy values (BACKUP_PREF_OWNER_KEY
+ *   === userId), they are copied into this user's scoped keys again
+ *   (idempotent — e.g. a retry/remount without signing out).
+ * - Otherwise, an UNOWNED legacy value (BACKUP_PREF_OWNER_KEY absent) may be
+ *   claimed ONLY on the very first migration attempt this app launch, and
+ *   only when a session already existed when the app launched (i.e. this is
+ *   an upgrade of an already-signed-in install, not a fresh interactive
+ *   sign-in that happens to run first). Without both conditions, claiming
+ *   "whoever asks first" is the same shared-device leak task 1443 exists to
+ *   close — just one step later (a new account created THIS run, instead of
+ *   at the next launch).
+ * - Copying only happens where a scoped value doesn't already exist, so a
+ *   preference this user already set explicitly is never clobbered — and
+ *   ownership is recorded. This is what keeps an existing single-account
+ *   install's backup preference ON across the upgrade to this fix.
+ * - Any other case (a DIFFERENT user already claimed the legacy values, or
+ *   this is a later interactive sign-in this same launch) ignores them —
+ *   never copied into this user's scoped keys.
  *
  * Either way, the legacy keys are deleted so they are consumed exactly once
  * and can never leak into a third account later.
@@ -86,7 +115,13 @@ export async function migrateLegacyBackupPrefs(userId: string): Promise<void> {
     if (legacyValues.every((v) => v === null)) return; // nothing to migrate — fresh install / already migrated
 
     const owner = await SecureStore.getItemAsync(BACKUP_PREF_OWNER_KEY);
-    const claimable = owner === null || owner === userId;
+    const isBootstrapAttempt = !legacyMigrationAttemptedThisLaunch;
+    legacyMigrationAttemptedThisLaunch = true;
+
+    let claimable = owner === userId;
+    if (!claimable && owner === null && isBootstrapAttempt) {
+      claimable = await sessionPresentAtLaunchPromise;
+    }
 
     if (claimable) {
       await Promise.all(
