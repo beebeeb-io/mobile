@@ -91,7 +91,10 @@ async function markSeeded(userId: string): Promise<void> {
 export async function seedWelcomeMarkdown(opts: SeedWelcomeOptions): Promise<boolean> {
   const { userId, encryptChunkFn, encryptMetadataFn } = opts;
   try {
-    if (await hasWelcomeBeenSeeded(userId)) return false;
+    if (await hasWelcomeBeenSeeded(userId)) {
+      console.info('[welcome-seed] seed skipped: already seeded on this device');
+      return false;
+    }
 
     // Server-side guard: if root already has a real FILE (non-folder), the user
     // has content (second device, restore from recovery phrase, or a prior
@@ -101,22 +104,26 @@ export async function seedWelcomeMarkdown(opts: SeedWelcomeOptions): Promise<boo
     // every fresh account (task 0558). markSeeded only latches here (genuine
     // existing content) or after a successful upload — never on a transient
     // listFiles error (that path returns without latching, so it retries).
+    // `listFiles(undefined, false)` is parent-scoped to ROOT ONLY — a file the
+    // camera-roll backup already uploaded INSIDE the auto-created Backups
+    // folder (task 1443) is never returned here and must never trip this guard.
     let existing;
     try {
       existing = await listFiles(undefined, false);
     } catch (err) {
-      console.warn('[welcome-seed] could not list root files, skipping seed', err);
+      console.warn('[welcome-seed] seed skipped: could not list root files', err);
       return false;
     }
     if (existing.some((f) => !f.is_folder)) {
       await markSeeded(userId);
+      console.info('[welcome-seed] seed skipped: root already has content');
       return false;
     }
 
     // Write the markdown to a temp file the upload pipeline can read.
     const cacheDir = FileSystem.cacheDirectory;
     if (!cacheDir) {
-      console.warn('[welcome-seed] no cache directory available, skipping seed');
+      console.warn('[welcome-seed] seed skipped: no cache directory available');
       return false;
     }
     const tempUri = `${cacheDir}beebeeb-welcome-${Date.now()}.md`;
@@ -135,6 +142,7 @@ export async function seedWelcomeMarkdown(opts: SeedWelcomeOptions): Promise<boo
         encryptMetadataFn,
       });
       await markSeeded(userId);
+      console.info(`[welcome-seed] seed done: ${fileId}`);
       return true;
     } finally {
       // Best-effort cleanup of the plaintext temp file.
@@ -145,7 +153,53 @@ export async function seedWelcomeMarkdown(opts: SeedWelcomeOptions): Promise<boo
       }
     }
   } catch (err) {
-    console.warn('[welcome-seed] seed failed', err);
+    console.warn('[welcome-seed] seed failed:', err);
     return false;
   }
+}
+
+export interface EnsureUnlockedAndSeedOptions extends SeedWelcomeOptions {
+  /** Snapshot of `useCrypto().isUnlocked` at the moment the caller decided to seed. */
+  isUnlocked: boolean;
+  /** `useCrypto().unlock` — idempotent: a fast no-op if already unlocked, and
+   *  dedups with any unlock already in flight elsewhere (crypto-context.tsx's
+   *  `unlockPromiseRef`), so calling it speculatively here is always safe. */
+  unlock: () => Promise<void>;
+}
+
+/**
+ * Guards `seedWelcomeMarkdown` against the CryptoProvider remount race
+ * (task 1444).
+ *
+ * `<CryptoProvider key={user?.user_id ?? 'signed-out'}>` (App.tsx) tears down
+ * and remounts the ENTIRE crypto context the instant `user.user_id` first
+ * populates, because `SignupScreen.handleSignup` unlocks the vault BEFORE
+ * `refreshAuth()` sets `user` — the unlock happens under the transient
+ * 'signed-out' provider key. The remounted (real-user-id-keyed) instance
+ * starts locked (`isUnlocked: false`, no native key handle): its master key
+ * handle was released when the old 'signed-out' instance unmounted.
+ * `BiometricGuard`'s "post-login vault unlock" effect (App.tsx) re-unlocks
+ * the new instance from the keychain (the key WAS persisted during the
+ * original phrase unlock), but it does so fire-and-forget — unawaited by any
+ * screen. A fast verify (a scripted/Maestro run reading the phrase words and
+ * submitting in well under a second) can reach
+ * `RecoveryPhraseVerifyScreen.handleVerify` before that background unlock
+ * resolves.
+ *
+ * The bug: trusting a stale `isUnlocked` snapshot at that point silently
+ * skipped `seedWelcomeMarkdown` entirely — not even attempted, so NOTHING
+ * reached Metro, not even a warning. Fix: actively (re)unlock before
+ * deciding to skip, and log every outcome.
+ */
+export async function ensureUnlockedAndSeed(opts: EnsureUnlockedAndSeedOptions): Promise<boolean> {
+  const { isUnlocked, unlock, ...seedOpts } = opts;
+  if (!isUnlocked) {
+    try {
+      await unlock();
+    } catch (err) {
+      console.info('[welcome-seed] seed skipped: vault could not be unlocked', err);
+      return false;
+    }
+  }
+  return seedWelcomeMarkdown(seedOpts);
 }
