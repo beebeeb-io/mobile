@@ -24,6 +24,7 @@ import { useAuth } from '../lib/auth';
 import { useCrypto } from '../lib/crypto-context';
 import { mountTrustedFileProvider, populateFileProviderCache } from '../lib/file-provider-mount';
 import { useToast } from '../lib/toast-context';
+import { confirmPhraseAndSeed } from '../lib/onboarding-confirm-seed';
 import type { RootStackParamList } from '../App';
 
 type Nav = NativeStackNavigationProp<RootStackParamList>;
@@ -74,7 +75,7 @@ export default function OnboardingScreen({ route, navigation, phrase: phraseProp
   usePreventScreenCapture('onboarding-recovery-phrase');
   const insets = useSafeAreaInsets();
   const { colors: c, resolved } = useTheme();
-  const { markPhraseVerified } = useAuth();
+  const { markPhraseVerified, user } = useAuth();
   const crypto = useCrypto();
   const { showToast } = useToast();
   const words = useMemo(
@@ -338,6 +339,25 @@ export default function OnboardingScreen({ route, navigation, phrase: phraseProp
   async function handleConfirm() {
     if (!allCorrect) return;
     await markPhraseVerified();
+
+    // Fire-and-forget seed of a welcome.md into a brand-new account (task
+    // 1444). THIS is the verify step the in-app signup flow actually reaches
+    // (SignupScreen -> skipOnboarding -> App.tsx navigates to the
+    // 'RecoveryPhrase' route, which renders OnboardingScreen — NOT
+    // RecoveryPhraseVerifyScreen, which is only reached via the separate
+    // recovery / verify-later routes). `crypto.isUnlocked` here can be a
+    // stale snapshot (see onboarding-confirm-seed.ts / welcome-seed.ts for
+    // the full CryptoProvider-remount race writeup) — `confirmPhraseAndSeed`
+    // -> `ensureUnlockedAndSeed` actively (re)unlocks instead of trusting it.
+    confirmPhraseAndSeed({
+      allCorrect,
+      userId: user?.user_id,
+      isUnlocked: crypto.isUnlocked,
+      unlock: () => crypto.unlock(undefined, 'welcome_seed_verify'),
+      encryptChunkFn: crypto.encryptChunk,
+      encryptMetadataFn: crypto.encryptMetadata,
+    });
+
     if (Platform.OS === 'ios') {
       setStep('files');
       return;

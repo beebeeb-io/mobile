@@ -19,7 +19,7 @@ import { fonts, radii, spacing } from '../theme';
 import { useTheme } from '../lib/theme-context';
 import { useAuth } from '../lib/auth';
 import { useCrypto } from '../lib/crypto-context';
-import { seedWelcomeMarkdown } from '../lib/welcome-seed';
+import { ensureUnlockedAndSeed } from '../lib/welcome-seed';
 import type { RootStackParamList } from '../App';
 
 type Nav = NativeStackNavigationProp<RootStackParamList>;
@@ -46,7 +46,7 @@ export default function RecoveryPhraseVerifyScreen() {
   const { colors: c, resolved } = useTheme();
 
   const { user, markPhraseVerified } = useAuth();
-  const { encryptChunk, encryptMetadata, isUnlocked } = useCrypto();
+  const { encryptChunk, encryptMetadata, isUnlocked, unlock } = useCrypto();
   const { phrase } = route.params;
   const positions = useMemo(() => pickVerifyPositions(phrase.length), [phrase.length]);
 
@@ -98,16 +98,32 @@ export default function RecoveryPhraseVerifyScreen() {
 
     // Fire-and-forget seed of a welcome.md into a brand-new account. The
     // helper is idempotent (SecureStore flag + server-side root-empty check),
-    // gracefully no-ops on errors, and never blocks navigation. Only attempt
-    // when the vault is actually unlocked and we know the user — both are
-    // true in the signup flow, but a defensive guard keeps us safe for any
-    // future code path that lands here without an unlocked vault.
-    if (user?.user_id && isUnlocked) {
-      void seedWelcomeMarkdown({
-        userId: user.user_id,
+    // gracefully no-ops on errors, and never blocks navigation.
+    //
+    // `isUnlocked` here can be a STALE snapshot (task 1444):
+    // `<CryptoProvider key={user?.user_id ?? 'signed-out'}>` (App.tsx)
+    // remounts the whole crypto context the instant `user.user_id` first
+    // populates — SignupScreen unlocks the vault under the transient
+    // 'signed-out' key (before `user` exists), then `refreshAuth()` flips the
+    // key and React tears that instance down (releasing its native key
+    // handle) and mounts a fresh, locked one. `BiometricGuard`'s "post-login
+    // vault unlock" effect re-unlocks the new instance from the keychain, but
+    // it's fire-and-forget — a fast verify (e.g. a scripted/Maestro run) can
+    // reach here before it resolves, so trusting this snapshot silently
+    // skipped the seed with no log line at all. `ensureUnlockedAndSeed`
+    // actively (re)unlocks instead — a no-op if already unlocked, and dedups
+    // with any unlock already in flight.
+    if (user?.user_id) {
+      const userId = user.user_id;
+      void ensureUnlockedAndSeed({
+        userId,
+        isUnlocked,
+        unlock: () => unlock(undefined, 'welcome_seed_verify'),
         encryptChunkFn: encryptChunk,
         encryptMetadataFn: encryptMetadata,
       });
+    } else {
+      console.info('[welcome-seed] seed skipped: no authenticated user at verify time');
     }
 
     navigation.navigate('Tabs');
