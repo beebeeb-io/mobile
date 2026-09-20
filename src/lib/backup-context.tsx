@@ -21,6 +21,7 @@ import {
 } from '../../modules/beebeeb-crypto';
 import { ensureBackupFolders, reconcileDerivedStateAgainstServer, type BackupCategory } from '../services/BackupService';
 import { useCrypto } from './crypto-context';
+import { useAuth } from './auth';
 import { recordRuntimeTrace } from './runtime-trace';
 import { registerDevice } from './device-registration';
 import { clearMobileIosBackupClientSession, ensureMobileIosBackupClientSession } from './api';
@@ -32,6 +33,142 @@ const BACKUP_INCLUDE_VIDEOS_KEY = 'beebeeb_camera_include_videos';
 const BACKUP_WIFI_ONLY_KEY = 'beebeeb_camera_wifi_only';
 const BACKUP_BG_UPLOAD_KEY = 'beebeeb_camera_bg_upload';
 const SESSION_TOKEN_KEY = 'beebeeb_session_token';
+// Records which user id has already claimed the pre-1443 device-global
+// preference values during the one-time migration below. See
+// migrateLegacyBackupPrefs.
+const BACKUP_PREF_OWNER_KEY = 'beebeeb_backup_pref_owner';
+
+// Task 1443: before this fix, all six preferences above lived at a single
+// SecureStore key shared by EVERY account that ever signed in on this
+// device — so account B, created right after account A signed out, silently
+// inherited A's "back up camera roll: ON" and the native engine uploaded the
+// device's photo library into B's vault with no consent step. These six
+// base keys are now suffixed per-user (see backupPrefKey) and read only
+// after the signed-in user's id is known.
+const LEGACY_BACKUP_PREF_KEYS = [
+  BACKUP_PHOTO_KEY,
+  BACKUP_CONTACTS_KEY,
+  BACKUP_CALENDAR_KEY,
+  BACKUP_INCLUDE_VIDEOS_KEY,
+  BACKUP_WIFI_ONLY_KEY,
+  BACKUP_BG_UPLOAD_KEY,
+];
+
+/**
+ * Per-user scoped SecureStore key for a backup preference.
+ *
+ * Expo SecureStore keys may only contain letters, digits, `.`, `-` and `_`
+ * (`getItemAsync`/`setItemAsync` throw "Invalid key" on device otherwise) —
+ * so the separator is `__`, never `:`. User ids are UUIDs (hex + dashes),
+ * which are already safe under that charset.
+ */
+export function backupPrefKey(base: string, userId: string): string {
+  return `${base}__${userId}`;
+}
+
+// Captured once, at module load — i.e. app cold start — BEFORE any sign-in
+// flow in THIS process could have written a session token. Module top-level
+// code runs synchronously before React ever renders, so nothing in this
+// process can have signed in before this read is dispatched: true means a
+// session was ALREADY stored when the app launched (a restored session
+// carried through the upgrade); false means whichever account ends up
+// signed in got there via an interactive sign-in/sign-up during THIS run.
+// See migrateLegacyBackupPrefs — only the former may claim an unowned
+// legacy preference.
+const sessionPresentAtLaunchPromise: Promise<boolean> = getStoredToken().then((t) => t !== null);
+
+// Guards the bootstrap ("nobody has claimed this device yet") migration path
+// to at most once per app launch — see migrateLegacyBackupPrefs.
+let legacyMigrationAttemptedThisLaunch = false;
+
+/**
+ * One-time migration of the pre-1443 device-global backup preference values
+ * into this user's scoped keys.
+ *
+ * - If this SAME user already claimed the legacy values (BACKUP_PREF_OWNER_KEY
+ *   === userId), they are copied into this user's scoped keys again
+ *   (idempotent — e.g. a retry/remount without signing out).
+ * - Otherwise, an UNOWNED legacy value (BACKUP_PREF_OWNER_KEY absent) may be
+ *   claimed ONLY on the very first migration attempt this app launch, and
+ *   only when a session already existed when the app launched (i.e. this is
+ *   an upgrade of an already-signed-in install, not a fresh interactive
+ *   sign-in that happens to run first). Without both conditions, claiming
+ *   "whoever asks first" is the same shared-device leak task 1443 exists to
+ *   close — just one step later (a new account created THIS run, instead of
+ *   at the next launch).
+ * - Copying only happens where a scoped value doesn't already exist, so a
+ *   preference this user already set explicitly is never clobbered — and
+ *   ownership is recorded. This is what keeps an existing single-account
+ *   install's backup preference ON across the upgrade to this fix.
+ * - Any other case (a DIFFERENT user already claimed the legacy values, or
+ *   this is a later interactive sign-in this same launch) ignores them —
+ *   never copied into this user's scoped keys.
+ *
+ * Either way, the legacy keys are deleted so they are consumed exactly once
+ * and can never leak into a third account later.
+ */
+export async function migrateLegacyBackupPrefs(userId: string): Promise<void> {
+  try {
+    const legacyValues = await Promise.all(
+      LEGACY_BACKUP_PREF_KEYS.map((key) => SecureStore.getItemAsync(key)),
+    );
+    if (legacyValues.every((v) => v === null)) return; // nothing to migrate — fresh install / already migrated
+
+    const owner = await SecureStore.getItemAsync(BACKUP_PREF_OWNER_KEY);
+    const isBootstrapAttempt = !legacyMigrationAttemptedThisLaunch;
+    legacyMigrationAttemptedThisLaunch = true;
+
+    let claimable = owner === userId;
+    if (!claimable && owner === null && isBootstrapAttempt) {
+      claimable = await sessionPresentAtLaunchPromise;
+    }
+
+    if (claimable) {
+      await Promise.all(
+        LEGACY_BACKUP_PREF_KEYS.map(async (key, i) => {
+          const legacyValue = legacyValues[i];
+          if (legacyValue === null) return;
+          const scopedKey = backupPrefKey(key, userId);
+          const existing = await SecureStore.getItemAsync(scopedKey);
+          if (existing === null) {
+            await SecureStore.setItemAsync(scopedKey, legacyValue);
+          }
+        }),
+      );
+      await SecureStore.setItemAsync(BACKUP_PREF_OWNER_KEY, userId);
+    }
+
+    await Promise.all(LEGACY_BACKUP_PREF_KEYS.map((key) => SecureStore.deleteItemAsync(key)));
+  } catch {
+    // SecureStore unavailable (web / unit tests) — nothing to migrate.
+  }
+}
+
+/** Persists a scoped preference value and records who currently owns this
+ * device's backup preferences, so a future different user's migration check
+ * (see migrateLegacyBackupPrefs) correctly ignores stale legacy state. */
+async function setScopedBackupPref(base: string, userId: string, value: string): Promise<void> {
+  await SecureStore.setItemAsync(backupPrefKey(base, userId), value);
+  await SecureStore.setItemAsync(BACKUP_PREF_OWNER_KEY, userId).catch(() => {});
+}
+
+/**
+ * Stops every native backup engine and clears the mirrored client session.
+ * Called when a BackupProvider instance unmounts (sign-out, or sign-in as a
+ * different user — see the useEffect cleanup below) so the native engines
+ * never keep running against a session token that no longer belongs to the
+ * account that enabled them (task 1443). Exported standalone so it is unit
+ * testable without rendering the provider.
+ */
+export async function stopBackupEngines(): Promise<void> {
+  if (Platform.OS === 'web') return;
+  await Promise.all([
+    disablePhotoBackup().catch(() => {}),
+    disableContactsBackup().catch(() => {}),
+    disableCalendarBackup().catch(() => {}),
+    clearMobileIosBackupClientSession().catch(() => {}),
+  ]);
+}
 
 interface BackupProgress {
   total: number;
@@ -126,6 +263,8 @@ async function mirrorBackupSessionForNative(): Promise<void> {
 
 export function BackupProvider({ children }: { children: React.ReactNode }) {
   const { isUnlocked } = useCrypto();
+  const { user } = useAuth();
+  const userId = user?.user_id;
   const [isPhotoBackupEnabled, setIsPhotoBackupEnabled] = useState(false);
   const [isContactsBackupEnabled, setIsContactsBackupEnabled] = useState(false);
   const [isCalendarBackupEnabled, setIsCalendarBackupEnabled] = useState(false);
@@ -201,17 +340,22 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
     }
   }, [isUnlocked]);
 
-  // Load persisted preferences on mount
+  // Load persisted preferences on mount — scoped to the signed-in user
+  // (task 1443). No userId means this instance is the signed-out slot
+  // (CryptoProvider key='signed-out'): there is nothing to load and nothing
+  // should auto-enable, so the initial `false` defaults stand.
   useEffect(() => {
+    if (!userId) return;
     (async () => {
       try {
+        await migrateLegacyBackupPrefs(userId);
         const [photo, contacts, calendar, videos, wifi, bgUpload] = await Promise.all([
-          SecureStore.getItemAsync(BACKUP_PHOTO_KEY),
-          SecureStore.getItemAsync(BACKUP_CONTACTS_KEY),
-          SecureStore.getItemAsync(BACKUP_CALENDAR_KEY),
-          SecureStore.getItemAsync(BACKUP_INCLUDE_VIDEOS_KEY),
-          SecureStore.getItemAsync(BACKUP_WIFI_ONLY_KEY),
-          SecureStore.getItemAsync(BACKUP_BG_UPLOAD_KEY),
+          SecureStore.getItemAsync(backupPrefKey(BACKUP_PHOTO_KEY, userId)),
+          SecureStore.getItemAsync(backupPrefKey(BACKUP_CONTACTS_KEY, userId)),
+          SecureStore.getItemAsync(backupPrefKey(BACKUP_CALENDAR_KEY, userId)),
+          SecureStore.getItemAsync(backupPrefKey(BACKUP_INCLUDE_VIDEOS_KEY, userId)),
+          SecureStore.getItemAsync(backupPrefKey(BACKUP_WIFI_ONLY_KEY, userId)),
+          SecureStore.getItemAsync(backupPrefKey(BACKUP_BG_UPLOAD_KEY, userId)),
         ]);
         setIsPhotoBackupEnabled(photo === 'true');
         setIsContactsBackupEnabled(contacts === 'true');
@@ -254,7 +398,23 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
         // SecureStore unavailable (web / unit tests)
       }
     })();
-  }, [enableNativeBackup]);
+  }, [enableNativeBackup, userId]);
+
+  // Stop the native backup engines when this instance unmounts. CryptoProvider
+  // is keyed by user id (`user?.user_id ?? 'signed-out'` in App.tsx), so BOTH
+  // a sign-out AND a sign-in as a different user fully unmount this provider
+  // before the next one mounts. Without an explicit stop here, the native
+  // engines — which keep running independently of the JS component tree once
+  // started — kept running against whatever session token SecureStore
+  // happened to hold when the NEXT instance mounted, uploading the device's
+  // photo library into a different account's vault with no consent step
+  // (task 1443). This mirrors the pattern crypto-context.tsx already uses to
+  // release the native master-key handle on the same kind of remount.
+  useEffect(() => {
+    return () => {
+      void stopBackupEngines();
+    };
+  }, []);
 
   // Poll native backup progress every 5 s when photo backup is enabled
   useEffect(() => {
@@ -298,10 +458,11 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
   }, [isPhotoBackupEnabled, refreshNativeProgress]);
 
   const togglePhotoBackup = useCallback(async () => {
+    if (!userId) return; // signed-out instance — nothing to persist against
     const next = !isPhotoBackupEnabled;
     setIsPhotoBackupEnabled(next);
     try {
-      await SecureStore.setItemAsync(BACKUP_PHOTO_KEY, next ? 'true' : 'false');
+      await setScopedBackupPref(BACKUP_PHOTO_KEY, userId, next ? 'true' : 'false');
       if (Platform.OS !== 'web') {
         if (next) {
           await enableNativeBackup('camera_roll');
@@ -316,13 +477,14 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
     } catch {
       // Native module not linked yet
     }
-  }, [enableNativeBackup, isPhotoBackupEnabled, refreshNativeProgress]);
+  }, [enableNativeBackup, isPhotoBackupEnabled, refreshNativeProgress, userId]);
 
   const toggleContactsBackup = useCallback(async () => {
+    if (!userId) return;
     const next = !isContactsBackupEnabled;
     setIsContactsBackupEnabled(next);
     try {
-      await SecureStore.setItemAsync(BACKUP_CONTACTS_KEY, next ? 'true' : 'false');
+      await setScopedBackupPref(BACKUP_CONTACTS_KEY, userId, next ? 'true' : 'false');
       if (Platform.OS !== 'web') {
         if (next) {
           await enableNativeBackup('contacts');
@@ -334,13 +496,14 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
     } catch {
       // Native module not linked yet
     }
-  }, [enableNativeBackup, isContactsBackupEnabled]);
+  }, [enableNativeBackup, isContactsBackupEnabled, userId]);
 
   const toggleCalendarBackup = useCallback(async () => {
+    if (!userId) return;
     const next = !isCalendarBackupEnabled;
     setIsCalendarBackupEnabled(next);
     try {
-      await SecureStore.setItemAsync(BACKUP_CALENDAR_KEY, next ? 'true' : 'false');
+      await setScopedBackupPref(BACKUP_CALENDAR_KEY, userId, next ? 'true' : 'false');
       if (Platform.OS !== 'web') {
         if (next) {
           await enableNativeBackup('calendar');
@@ -352,38 +515,38 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
     } catch {
       // Native module not linked yet
     }
-  }, [enableNativeBackup, isCalendarBackupEnabled]);
+  }, [enableNativeBackup, isCalendarBackupEnabled, userId]);
 
   const setIncludeVideos = useCallback(async (value: boolean) => {
     includeVideosRef.current = value;
     setIncludeVideosState(value);
     try {
-      await SecureStore.setItemAsync(BACKUP_INCLUDE_VIDEOS_KEY, value ? 'true' : 'false');
+      if (userId) await setScopedBackupPref(BACKUP_INCLUDE_VIDEOS_KEY, userId, value ? 'true' : 'false');
     } catch {
       // SecureStore unavailable
     }
     if (Platform.OS === 'ios') {
       await setPhotoBackupIncludeVideos(value).catch(() => false);
     }
-  }, []);
+  }, [userId]);
 
   const setWifiOnly = useCallback(async (value: boolean) => {
     setWifiOnlyState(value);
     try {
-      await SecureStore.setItemAsync(BACKUP_WIFI_ONLY_KEY, value ? 'true' : 'false');
+      if (userId) await setScopedBackupPref(BACKUP_WIFI_ONLY_KEY, userId, value ? 'true' : 'false');
     } catch {
       // SecureStore unavailable
     }
-  }, []);
+  }, [userId]);
 
   const setBackgroundUpload = useCallback(async (value: boolean) => {
     setBackgroundUploadState(value);
     try {
-      await SecureStore.setItemAsync(BACKUP_BG_UPLOAD_KEY, value ? 'true' : 'false');
+      if (userId) await setScopedBackupPref(BACKUP_BG_UPLOAD_KEY, userId, value ? 'true' : 'false');
     } catch {
       // SecureStore unavailable
     }
-  }, []);
+  }, [userId]);
 
   const triggerBackupNow = useCallback(async () => {
     try {
