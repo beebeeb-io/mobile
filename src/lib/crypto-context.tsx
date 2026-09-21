@@ -33,6 +33,7 @@ import {
   type RequestFileFields,
   type RequestKeyResolver,
 } from './file-request-crypto'
+import { verifyRecoveryPhraseAgainstStoredCheck } from './recovery-phrase-verify'
 
 // ─── Master key cache lifecycle (task 0556) ────────────────────────────────
 //
@@ -492,6 +493,15 @@ interface CryptoContextValue {
    * request upload.
    */
   getRequestContentKey: (file: RequestFileFields) => Promise<Uint8Array>
+  /**
+   * Task 1445 (ruling 2): verify a typed recovery phrase against the master
+   * key ALREADY persisted for this account, without ever writing to the
+   * keychain. Returns true only if the phrase derives the same key. Unlike
+   * `unlock(phrase)`, a wrong phrase here is inert — it can never overwrite
+   * the real stored key (see `recovery-phrase-verify.ts` for the safety
+   * contract). Never throws.
+   */
+  verifyRecoveryPhrase: (phrase: string) => Promise<boolean>
 }
 
 const CryptoContext = createContext<CryptoContextValue | null>(null)
@@ -1012,6 +1022,14 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
     }
   }, [isUnlocked, unlockAttempted])
 
+  const verifyRecoveryPhraseFn = useCallback(async (phrase: string): Promise<boolean> => {
+    return verifyRecoveryPhraseAgainstStoredCheck(phrase, {
+      getStoredCheckBase64: () => SecureStore.getItemAsync(MASTER_KEY_CHECK_LABEL).catch(() => null),
+      recoverFromPhraseFn: recoverFromPhrase,
+      computeRecoveryCheckFn: computeRecoveryCheck,
+    })
+  }, [])
+
   // ── File requests (0643) ──
 
   const createRequestKeypairFn = useCallback(
@@ -1109,6 +1127,7 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
         createRequestKeypair: createRequestKeypairFn,
         rebuildRequestPublicKey: rebuildRequestPublicKeyFn,
         getRequestContentKey: getRequestContentKeyFn,
+        verifyRecoveryPhrase: verifyRecoveryPhraseFn,
       }}
     >
       {children}
