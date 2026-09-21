@@ -108,19 +108,20 @@ Also not collected, confirmed by the absence of any code path that reads or tran
 - Purchases — no In-App Purchase exists in the app at all (see task 1400; `grep -rniE
   "storekit|react-native-iap|in.?app.?purchase" repos/mobile/src repos/mobile/package.json` → 0 hits)
 
-## Reminders — an open loose end, flagged not fixed
+## Reminders — resolved (task 1446, 2026-09-21)
 
-`app.json` declares `NSRemindersUsageDescription` and `NSRemindersFullAccessUsageDescription`
-(`app.json:32-33`, mirrored into `ios/Beebeeb/Info.plist`), but there is **no Reminders-backup
-feature in the code** — `grep -rniE "reminder" src` (excluding the unrelated `GlassSegment` UI
-false-positive) returns nothing beyond these two permission strings. This is dead permission
-surface: the app declares an intent (Reminders access) it never acts on. It doesn't change the
-privacy label (an unused, never-triggered permission collects nothing), but:
-
-- App Review can flag a usage-description string that never corresponds to an actual permission
-  prompt.
-- This is outside this task's scope (metadata/privacy-labels/review-notes only, no code changes) —
-  flagging for the lead to route to a follow-up task (remove the two keys, or ship the feature).
+`app.json` declared `NSRemindersUsageDescription` and `NSRemindersFullAccessUsageDescription`
+(formerly `app.json:32-33`, mirrored into `ios/Beebeeb/Info.plist`), but there was **no
+Reminders-backup feature in the code** — `grep -rniE "reminder" src` (excluding the unrelated
+`GlassSegment` UI false-positive) returned nothing beyond these two permission strings, and a
+targeted re-check for `EKEntityTypeReminder`/`EKReminder`/`requestRemindersPermissionsAsync`
+across `src`, `modules`, and `targets` confirmed there was no EventKit Reminders code path at all
+— `expo-calendar` is used only for Calendar permissions. This was dead permission surface: the app
+declared an intent (Reminders access) it never acted on. It didn't change the privacy label (an
+unused, never-triggered permission collects nothing), but App Review can flag a usage-description
+string that never corresponds to an actual permission prompt. Task 1446 removed both keys from
+`app.json` and `ios/Beebeeb/Info.plist` (the only Info.plist that carried them — extension targets
+never did); no test or script asserted these keys, so nothing else needed updating.
 
 ## Tracking
 
@@ -176,4 +177,4 @@ not used for tracking. Crash Data and Performance Data stay **Not Collected** (n
 
 **Consequence for App Store Connect:** the App Privacy answers entered from the 2026-09-13 table are
 incomplete; the two rows added to the summary table above must be entered in ASC (App Privacy has no API;
-Guus, see 1398). The Reminders dead-permission loose end above is now task 1446.
+Guus, see 1398). The Reminders dead-permission loose end above was resolved by task 1446.
