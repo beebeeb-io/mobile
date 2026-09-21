@@ -136,4 +136,44 @@ prompt: **not shown, correctly** — there is nothing that requires it.
 | Contact Info | Email Address (account holder) | Yes | No | App Functionality |
 | Contact Info | Email Address (share recipient) | Yes (tied to the sharer's account action) | No | App Functionality |
 | Identifiers | Device ID | Yes | No | App Functionality |
+| Diagnostics | Other Diagnostic Data (server-side failed-request capture keyed by user id; per-upload client name + version) | Yes | No | App Functionality — added 2026-09-21, see the reconciliation update below |
+| Other Data | IP address in `audit_log` / `share_invite_activity` (server-side, security/audit) | Yes | No | App Functionality — checkbox choice flagged to Guus, see below |
 | — | Everything else | — | — | Not Collected |
+
+## Reconciliation update — 2026-09-21 (lead gate on this document; mobile main d47342f, server main 1c082ac)
+
+**Citation drift (fixed here, the claims themselves still hold):** `src/lib/api.ts` moved. `signup` is now at
+`api.ts:449`, `login` at `api.ts:455`, `opaqueLoginStart` at `api.ts:2284` (this doc's `369-370`, `375-379`,
+`2198-2213` were the 2026-09-13 lines). `device-registration.ts:79-84` and `push-notifications.ts:122-132`
+still resolve to `registerClientDevice` and `getExpoPushTokenAsync`.
+
+**Correction, left visible:** the section "No analytics / crash / ad SDK" ends with "**Do not check any
+Diagnostics box in App Store Connect.**" That was written against the *client* and is still true for
+crash/analytics SDKs (none), but Apple's labels cover data the developer collects from the app **including
+server-side**, and two server-side collections exist that are linked to the user:
+
+1. **Failed-request diagnostics keyed by user id.** `repos/server/beebeeb-api/src/error_capture.rs:71-81`
+   resolves the user id from the request's bearer token and stores an `error_events` row for every failed
+   API call (`db.rs:2235-2245`: `source, category, error_code, http_status, endpoint, user_id, request_id,
+   detail`), pruned by `error_events_cleanup.rs` (default retention 90 days, boot log
+   "retention 90d"). No stack traces from the device, no device model, no crash reports — but it is
+   diagnostics data linked to an identifiable account.
+2. **Writer provenance per upload.** Since mobile PR #96 (2026-09-19) every request from `src/lib/api.ts`
+   carries `X-Beebeeb-Client: mobile-ios` and `X-Beebeeb-Client-Version: <app version>`; the server stores
+   them on every `object_versions` row (`created_by_client`, `created_by_client_version`;
+   `repos/server/beebeeb-api/src/routes/uploads.rs`, `routes/files.rs`). Linked to the user through their
+   files; used only to attribute which client build wrote a version (blast-radius queries).
+   Native uploads (task 1439) will carry the same two headers once that lands.
+
+→ **Declare:** Diagnostics → *Other Diagnostic Data* — **Linked to You** — purpose *App Functionality* —
+not used for tracking. Crash Data and Performance Data stay **Not Collected** (no SDK; unchanged).
+
+3. **IP addresses (server-side).** `audit_log.ip_address` (`db.rs:274`) and `share_invite_activity.ip_address`
+   (`db.rs:818`) store the caller's IP for account-audit and share-activity rows. Apple's data-type list has
+   no "IP address" entry; the honest placement is **Other Data Types → Other Data Types — Linked to You — App
+   Functionality (security / audit)**. Which box to tick is a product/legal call → flagged to Guus in
+   decision 1398 rather than chosen here.
+
+**Consequence for App Store Connect:** the App Privacy answers entered from the 2026-09-13 table are
+incomplete; the two rows added to the summary table above must be entered in ASC (App Privacy has no API;
+Guus, see 1398). The Reminders dead-permission loose end above is now task 1446.
