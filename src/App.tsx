@@ -97,6 +97,7 @@ import DevicePairingShowScreen from './screens/DevicePairingShowScreen';
 import ConstellationSendScreen from './screens/ConstellationSendScreen';
 import BiometricLockScreen from './screens/BiometricLockScreen';
 import OnboardingScreen from './screens/OnboardingScreen';
+import PhraseNotConfirmedScreen from './screens/PhraseNotConfirmedScreen';
 import DocumentScannerScreen from './screens/DocumentScannerScreen';
 import TwoFactorSetupScreen from './screens/TwoFactorSetupScreen';
 import BackupInsightsScreen from './screens/BackupInsightsScreen';
@@ -124,6 +125,7 @@ import { useToast } from './lib/toast-context';
 import { clearWidgetData } from './utils/widgetData';
 import { ensureDevicePerformanceProfile } from './lib/device-performance';
 import { shouldKeepStartupRestoring, type StartupAuthState } from './lib/startup-auth';
+import { shouldClearPendingMarkerOnBoot, shouldRouteToPhraseGate } from './lib/phrase-confirmation-gate';
 import AndroidThumbnailRepairWorker from './lib/AndroidThumbnailRepairWorker';
 import { BeebeebThumbnails } from '../modules/beebeeb-crypto';
 
@@ -307,6 +309,8 @@ export type RootStackParamList = {
   RecoveryPhrase: { phrase?: string[] };
   RecoveryPhraseVerify: { phrase: string[] };
   RecoveryUnlock: undefined;
+  // Task 1445 (ruling 2) — cold relaunch mid-onboarding, phrase words gone.
+  PhraseNotConfirmed: undefined;
   Privacy: undefined;
   DeleteAccount: undefined;
   Storage: undefined;
@@ -696,6 +700,38 @@ function VaultRecoveryGate({ enabled, navReady, navReadyEpoch }: { enabled: bool
   return null;
 }
 
+// Task 1445 (ruling 2) — routes a cold relaunch that lands mid-onboarding
+// (session + master key already persisted, phrase never confirmed) to the
+// blocking PhraseNotConfirmed screen instead of the vault. `enabled` is
+// pre-gated by App() on `shouldRouteToPhraseGate` (App.tsx below), which is
+// deliberately disjoint from the live-signup `pendingRecoveryPhrase` path —
+// that path still shows the real words via OnboardingScreen; this gate only
+// fires once the words are genuinely gone (see phrase-confirmation-gate.ts).
+// Mirrors VaultRecoveryGate's shape exactly, including the navReadyEpoch
+// re-fire-on-remount fix (1283) — the same CryptoProvider user-keyed remount
+// that motivated it here can swallow a navigate() here too.
+function PhraseGate({ enabled, navReady, navReadyEpoch }: { enabled: boolean; navReady: boolean; navReadyEpoch: number }) {
+  useEffect(() => {
+    if (!enabled) return;
+    if (!navReady || !navigationRef.isReady()) return;
+
+    const currentRoute = navigationRef.getCurrentRoute()?.name;
+    if (
+      currentRoute === 'PhraseNotConfirmed' ||
+      currentRoute === 'RecoveryPhrase' ||
+      currentRoute === 'RecoveryPhraseVerify' ||
+      currentRoute === 'RecoveryUnlock' ||
+      currentRoute === 'DeleteAccount'
+    ) {
+      return;
+    }
+
+    navigationRef.navigate('PhraseNotConfirmed');
+  }, [enabled, navReady, navReadyEpoch]);
+
+  return null;
+}
+
 function FileProviderDomainRegistrar({ enabled }: { enabled: boolean }) {
   const crypto = useCrypto();
   const registeringRef = useRef(false);
@@ -959,6 +995,17 @@ export default function App() {
     // this device. Every ordinary sign-out purges them, not just deletion —
     // see account-cleanup.ts. Never throws; never blocks sign-out.
     await purgeAllPlaintextCaches().catch(() => ({ removed: 0, failed: 0 }));
+    // Task 1445 (ruling 2): PHRASE_VERIFIED_KEY is device-global, not
+    // per-account (same reasoning as the loadPreferences boot-clear above).
+    // Without this, signing out of an interrupted signup and logging into a
+    // DIFFERENT, already-verified account in the SAME app session (no
+    // relaunch, so the boot-time clear never runs) would incorrectly gate
+    // that unrelated account behind PhraseNotConfirmedScreen. This was a
+    // real, pre-existing gap — ruling 2 asked to "confirm and cite" that
+    // sign-out already clears it; it did not, until this line.
+    await SecureStore.deleteItemAsync(PHRASE_VERIFIED_KEY).catch(() => {});
+    setPhraseVerified(true);
+    setPendingRecoveryPhrase(null);
     setUser(null);
   }, []);
 
@@ -1003,9 +1050,22 @@ export default function App() {
     // Existing users who pre-date the phrase flow are treated as verified.
     try {
       const phraseKey = await SecureStore.getItemAsync(PHRASE_VERIFIED_KEY);
-      // 'pending' means signup set the flag but verification wasn't completed.
-      // Absent key (legacy user) or 'verified' both mean verified = true.
-      setPhraseVerified(phraseKey !== 'pending');
+      // Task 1445 (ruling 2): PHRASE_VERIFIED_KEY is a single, device-global
+      // key, not namespaced per account. A 'pending' marker with NO session
+      // on this boot belongs to whatever signup was interrupted last (or
+      // this is a fresh install that inherited Keychain state iOS can carry
+      // across a reinstall) — it must not leak forward and incorrectly gate
+      // whichever account logs in next. `signOut()` also clears this
+      // explicitly for the in-session account-switch case this boot check
+      // can't see.
+      if (shouldClearPendingMarkerOnBoot({ tokenExists, phraseKey: phraseKey as 'pending' | 'verified' | null })) {
+        await SecureStore.deleteItemAsync(PHRASE_VERIFIED_KEY).catch(() => {});
+        setPhraseVerified(true);
+      } else {
+        // 'pending' means signup set the flag but verification wasn't completed.
+        // Absent key (legacy user) or 'verified' both mean verified = true.
+        setPhraseVerified(phraseKey !== 'pending');
+      }
     } catch {
       setPhraseVerified(true);
     }
@@ -1331,6 +1391,18 @@ export default function App() {
 
   const isAuthenticated = user !== null;
 
+  // Task 1445 (ruling 2). Deliberately disjoint from the effect right below:
+  // that one fires while pendingRecoveryPhrase still holds the real words
+  // (live signup, same JS session) and shows them via OnboardingScreen. This
+  // fires only once the words are genuinely gone (a real relaunch reset the
+  // in-memory state) — see phrase-confirmation-gate.ts for why the two must
+  // never both be true at once.
+  const needsPhraseGate = shouldRouteToPhraseGate({
+    isAuthenticated,
+    phraseVerified,
+    hasInMemoryPendingPhrase: pendingRecoveryPhrase != null,
+  });
+
   useEffect(() => {
     if (!isAuthenticated || phraseVerified || !pendingRecoveryPhrase || !navReady) return;
     let attempts = 0;
@@ -1423,6 +1495,7 @@ export default function App() {
           onStateChange={handleNavigationStateChange}
         >
             <VaultRecoveryGate enabled={isAuthenticated && startupLockChecked && !locked} navReady={navReady} navReadyEpoch={navReadyEpoch} />
+            <PhraseGate enabled={needsPhraseGate && startupLockChecked && !locked} navReady={navReady} navReadyEpoch={navReadyEpoch} />
             <DevicePerformanceCalibrator enabled={isAuthenticated && startupLockChecked && !locked} />
             {isAuthenticated && startupLockChecked && !locked && Platform.OS === 'android'
               ? <AndroidThumbnailRepairWorker enabled />
@@ -1474,6 +1547,11 @@ export default function App() {
                   <Stack.Screen
                     name="RecoveryPhraseVerify"
                     component={RecoveryPhraseVerifyScreen}
+                    options={{ gestureEnabled: false }}
+                  />
+                  <Stack.Screen
+                    name="PhraseNotConfirmed"
+                    component={PhraseNotConfirmedScreen}
                     options={{ gestureEnabled: false }}
                   />
                   <Stack.Screen name="DevicePairing" component={DevicePairingScreen} />
