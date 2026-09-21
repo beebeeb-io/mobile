@@ -263,6 +263,7 @@ final class NativeManualUploader {
       throw NativeUploadFailure(status: 0, code: "invalid_url", message: "Invalid API URL")
     }
     var request = URLRequest(url: url)
+    ProvenanceHeaders.apply(to: &request)
     request.httpMethod = "PUT"
     request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
     request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")

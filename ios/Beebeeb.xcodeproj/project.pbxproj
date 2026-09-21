@@ -40,6 +40,11 @@
 		EC3B62F526E54811AD145949 /* RuntimeTrace.swift in Sources */ = {isa = PBXBuildFile; fileRef = 933B199EF3464E86BCBE6052 /* RuntimeTrace.swift */; };
 		F11748422D0307B40044C1D9 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = F11748412D0307B40044C1D9 /* AppDelegate.swift */; };
 		FBD7ABDD371246952840112B /* libPods-Beebeeb.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 72EE02093869AAC5E338128F /* libPods-Beebeeb.a */; };
+		8D3B58D4E244814A61B36AA7 /* ProvenanceHeaders.swift in Sources */ = {isa = PBXBuildFile; fileRef = C68A4E414B8A7F5FBD26837F /* ProvenanceHeaders.swift */; };
+		E4DFFE5E660F2F3CA4C2B60C /* ProvenanceHeaders.swift in Sources */ = {isa = PBXBuildFile; fileRef = C68A4E414B8A7F5FBD26837F /* ProvenanceHeaders.swift */; };
+		30FEF7F7B3C6D78C7A457B87 /* ProvenanceHeaders.swift in Sources */ = {isa = PBXBuildFile; fileRef = C68A4E414B8A7F5FBD26837F /* ProvenanceHeaders.swift */; };
+		0B2952C929FB8E18C8B1010C /* ProvenanceHeadersTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAB9E899CBD4862A8E27AF57 /* ProvenanceHeadersTests.swift */; };
+		C400CC321F77EE6F47A4288F /* XCTest.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 613FA9088873D69615AF7702 /* XCTest.framework */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -125,6 +130,10 @@
 		F11748412D0307B40044C1D9 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppDelegate.swift; path = Beebeeb/AppDelegate.swift; sourceTree = "<group>"; };
 		F11748442D0722820044C1D9 /* Beebeeb-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = "Beebeeb-Bridging-Header.h"; path = "Beebeeb/Beebeeb-Bridging-Header.h"; sourceTree = "<group>"; };
 		FF3B3ED2491E4CA589B68A78 /* SyncEngine.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = SyncEngine.swift; path = "../targets/file-provider/SyncEngine.swift"; sourceTree = "<group>"; };
+		C68A4E414B8A7F5FBD26837F /* ProvenanceHeaders.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = ProvenanceHeaders.swift; path = "../modules/beebeeb-crypto/ios/ProvenanceHeaders.swift"; sourceTree = "<group>"; };
+		AAB9E899CBD4862A8E27AF57 /* ProvenanceHeadersTests.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = ProvenanceHeadersTests.swift; path = BeebeebNativeTests/ProvenanceHeadersTests.swift; sourceTree = "<group>"; };
+		613FA9088873D69615AF7702 /* XCTest.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = XCTest.framework; path = Platforms/iPhoneOS.platform/Developer/Library/Frameworks/XCTest.framework; sourceTree = DEVELOPER_DIR; };
+		8D0496FFF8CEFCB41CEF8044 /* ProvenanceHeadersTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ProvenanceHeadersTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -160,6 +169,14 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		F2EA0B123C970BFB910353EE /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				C400CC321F77EE6F47A4288F /* XCTest.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -177,11 +194,20 @@
 				FF3B3ED2491E4CA589B68A78 /* SyncEngine.swift */,
 				0F12C74BB3AC4E1BB12CD1DF /* PlaintextStorageProtection.swift */,
 				933B199EF3464E86BCBE6052 /* RuntimeTrace.swift */,
+				C68A4E414B8A7F5FBD26837F /* ProvenanceHeaders.swift */,
 				E9B7A14F2F464F1D89721EB9 /* beebeeb_uniffi.swift */,
 				329117D739344957AE687286 /* Info.plist */,
 				02B24B018D434B488ECE949D /* BeebeebFileProvider.entitlements */,
 			);
 			name = BeebeebFileProvider;
+			sourceTree = "<group>";
+		};
+		EF7796A24AAFB8F7363DD0DE /* ProvenanceHeadersTests */ = {
+			isa = PBXGroup;
+			children = (
+				AAB9E899CBD4862A8E27AF57 /* ProvenanceHeadersTests.swift */,
+			);
+			name = ProvenanceHeadersTests;
 			sourceTree = "<group>";
 		};
 		13B07FAE1A68108700A75B9A /* Beebeeb */ = {
@@ -276,6 +302,7 @@
 				19DF21D5BCD040D0B2A8640B /* BeebeebWidget */,
 				55DDB8E3B0F34C298A7F30BD /* BeebeebShare */,
 				06FA7AFC722B49B5A1195C00 /* BeebeebFileProvider */,
+				EF7796A24AAFB8F7363DD0DE /* ProvenanceHeadersTests */,
 				504676717A9E2F1605DD8410 /* Pods */,
 				6012BE3D948355ECBF12C78A /* ExpoModulesProviders */,
 			);
@@ -291,6 +318,7 @@
 				417BA060800D49C79AA801B4 /* BeebeebWidget.appex */,
 				B91816913FBF47D99F9BBC1E /* BeebeebShare.appex */,
 				B627860D9DD8474EB94E1093 /* BeebeebFileProvider.appex */,
+				8D0496FFF8CEFCB41CEF8044 /* ProvenanceHeadersTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -368,6 +396,23 @@
 			productReference = B91816913FBF47D99F9BBC1E /* BeebeebShare.appex */;
 			productType = "com.apple.product-type.app-extension";
 		};
+		F92CFBFF45C9A30A50B2A0FD /* ProvenanceHeadersTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = BD55F232820016554A019345 /* Build configuration list for PBXNativeTarget "ProvenanceHeadersTests" */;
+			buildPhases = (
+				5FB97EA86FFF5BC2EEB7AE52 /* Sources */,
+				F2EA0B123C970BFB910353EE /* Frameworks */,
+				90D10BE64BCEAFEEADCE8742 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = ProvenanceHeadersTests;
+			productName = ProvenanceHeadersTests;
+			productReference = 8D0496FFF8CEFCB41CEF8044 /* ProvenanceHeadersTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 		CEA9DBADADA845109DA8CD18 /* BeebeebWidget */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 28E7CEF4966A4015A0BB11FD /* Build configuration list for PBXNativeTarget "BeebeebWidget" */;
@@ -415,6 +460,7 @@
 				CEA9DBADADA845109DA8CD18 /* BeebeebWidget */,
 				CD67030F8A474E979D596CFF /* BeebeebShare */,
 				2EBB43A3FDD3407CBFAA4376 /* BeebeebFileProvider */,
+				F92CFBFF45C9A30A50B2A0FD /* ProvenanceHeadersTests */,
 			);
 		};
 /* End PBXProject section */
@@ -446,6 +492,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		EDD21513FD8D4B4C812C251F /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		90D10BE64BCEAFEEADCE8742 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -657,6 +710,7 @@
 				89337F23BDAD4C75AB73EF81 /* BeebeebKeychainCore.swift in Sources */,
 				A0A3BFA5E3AA437992C186BB /* FolderFetcher.swift in Sources */,
 				822D3A12265B41CDB9F95A33 /* beebeeb_uniffi.swift in Sources */,
+				E4DFFE5E660F2F3CA4C2B60C /* ProvenanceHeaders.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -676,6 +730,7 @@
 				B75F326AD74D4DE09F2ACCD8 /* PlaintextStorageProtection.swift in Sources */,
 				EC3B62F526E54811AD145949 /* RuntimeTrace.swift in Sources */,
 				2F39996DA7DB4CD9B11F0208 /* beebeeb_uniffi.swift in Sources */,
+				8D3B58D4E244814A61B36AA7 /* ProvenanceHeaders.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -684,6 +739,15 @@
 			buildActionMask = 2147483647;
 			files = (
 				76570584F9DD4074BA2FB653 /* BeebeebWidget.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		5FB97EA86FFF5BC2EEB7AE52 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				0B2952C929FB8E18C8B1010C /* ProvenanceHeadersTests.swift in Sources */,
+				30FEF7F7B3C6D78C7A457B87 /* ProvenanceHeaders.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1201,6 +1265,45 @@
 			};
 			name = Debug;
 		};
+		E51F3C8AB0E38A3C429BB07D /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGNING_REQUIRED = NO;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				MARKETING_VERSION = 1.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = io.beebeeb.app.ProvenanceHeadersTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		FDDEBE30F63FBB338927B5A9 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGNING_REQUIRED = NO;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				MARKETING_VERSION = 1.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = io.beebeeb.app.ProvenanceHeadersTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -1245,6 +1348,15 @@
 			buildConfigurations = (
 				5408E4749D0B4B69818253F4 /* Debug */,
 				85087DD78F1146E6A068814F /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		BD55F232820016554A019345 /* Build configuration list for PBXNativeTarget "ProvenanceHeadersTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E51F3C8AB0E38A3C429BB07D /* Debug */,
+				FDDEBE30F63FBB338927B5A9 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

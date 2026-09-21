@@ -197,6 +197,7 @@ final class NativeEncryptedBackupUploader {
     }
 
     var request = URLRequest(url: url)
+    ProvenanceHeaders.apply(to: &request)
     request.httpMethod = "POST"
     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
     request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
@@ -225,6 +226,7 @@ final class NativeEncryptedBackupUploader {
     }
 
     var request = URLRequest(url: url)
+    ProvenanceHeaders.apply(to: &request)
     request.httpMethod = "PUT"
     request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
     request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
@@ -242,6 +244,7 @@ final class NativeEncryptedBackupUploader {
       throw NativeEncryptedBackupUploadError.invalidBaseURL
     }
     var request = URLRequest(url: url)
+    ProvenanceHeaders.apply(to: &request)
     request.httpMethod = "POST"
     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
     request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")

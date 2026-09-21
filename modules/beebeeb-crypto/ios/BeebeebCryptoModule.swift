@@ -2584,6 +2584,7 @@ public class BeebeebCryptoModule: Module {
 
       let downloadUrl = URL(string: "\(apiUrl.trimmingCharacters(in: CharacterSet(charactersIn: "/")))/api/v1/files/\(fileId)/download")!
       var request = URLRequest(url: downloadUrl)
+      ProvenanceHeaders.apply(to: &request)
       request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
 
       progress.emitProgress(stage: "downloading", bytesDownloaded: 0, bytesTotal: 0)
@@ -2840,6 +2841,7 @@ public class BeebeebCryptoModule: Module {
       // 1. Fetch file metadata to learn chunk_count and size_bytes
       let metaUrl = URL(string: "\(apiUrl)/api/v1/files/\(fileId)")!
       var metaReq = URLRequest(url: metaUrl)
+      ProvenanceHeaders.apply(to: &metaReq)
       metaReq.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
       let (metaData, metaResp) = try await URLSession.shared.data(for: metaReq)
       guard let httpMeta = metaResp as? HTTPURLResponse, httpMeta.statusCode == 200 else {
@@ -2854,6 +2856,7 @@ public class BeebeebCryptoModule: Module {
       // 2. Download the full encrypted blob to a temp file
       let downloadUrl = URL(string: "\(apiUrl)/api/v1/files/\(fileId)/download")!
       var dlReq = URLRequest(url: downloadUrl)
+      ProvenanceHeaders.apply(to: &dlReq)
       dlReq.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
       let (dlData, dlResp) = try await URLSession.shared.data(for: dlReq)
       guard let httpDl = dlResp as? HTTPURLResponse, httpDl.statusCode == 200 else {
@@ -2924,6 +2927,7 @@ public class BeebeebCryptoModule: Module {
       // 7. Upload encrypted thumbnail via PUT
       let thumbUrl = URL(string: "\(apiUrl)/api/v1/files/\(fileId)/thumbnail")!
       var thumbReq = URLRequest(url: thumbUrl)
+      ProvenanceHeaders.apply(to: &thumbReq)
       thumbReq.httpMethod = "PUT"
       thumbReq.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
       thumbReq.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
@@ -2982,6 +2986,7 @@ public class BeebeebCryptoModule: Module {
         return false
       }
       var request = URLRequest(url: thumbUrl)
+      ProvenanceHeaders.apply(to: &request)
       request.httpMethod = "PUT"
       request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
       request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")

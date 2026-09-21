@@ -209,6 +209,7 @@ final class ApiClient {
   private func authedRequest(url: URL, method: String) throws -> URLRequest {
     guard let token = sessionToken else { throw ApiError.notAuthenticated }
     var request = URLRequest(url: url)
+    ProvenanceHeaders.apply(to: &request)
     request.httpMethod = method
     request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
     return request
