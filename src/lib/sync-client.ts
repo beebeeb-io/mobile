@@ -336,23 +336,59 @@ export class SyncClient {
         // the last known-good FULL listing — before replaying ops, so
         // catch-up applies its deltas on top of a real base instead of
         // nothing.
+        //
+        // 1302 follow-up (Codex review on PR #103 — both real, both closed
+        // by the two checks below):
+        //   1. Cursor staleness — `lastSeq` is persisted SYNCHRONOUSLY per
+        //      op (`applyRemoteOp` → `saveLastSeq`), but the cache write
+        //      (`persistCacheNow`) is debounced ~800ms behind it. A kill
+        //      inside that window leaves an on-disk cache OLDER than
+        //      `lastSeq`; catch-up only asks the server for ops AFTER
+        //      `lastSeq`, so seeding from that stale cache would
+        //      PERMANENTLY miss the ops in the gap (they're never
+        //      re-requested) while still producing a non-empty tree that
+        //      skips the snapshot fallback. `persistCacheNow` now stamps the
+        //      cursor it was written at (`CachedFileIndex.seq`); only trust
+        //      the cache as a seed when that cursor exactly equals
+        //      `lastSeq` — otherwise treat it exactly like "no cache" and
+        //      always fetch a full, authoritative snapshot instead of
+        //      attempting an ops-only reconstruction (which can never be
+        //      proven complete without a cursor-matched base).
+        //   2. Tombstones — the cache's source (`/files/index`) excludes
+        //      trashed rows, so even a cursor-matched seed has no record of
+        //      anything already trashed as of that snapshot. An op that
+        //      targets such a node (e.g. `file_restore`) hits
+        //      `applyOpToTree`'s `if (!existing) return;` guard and silently
+        //      no-ops — the restored file would never reappear, and because
+        //      the tree isn't empty the snapshot fallback wouldn't catch it
+        //      either. Detect any op that targets a node absent from the
+        //      seeded tree and escalate to a full snapshot instead of
+        //      leaving a hole — the check is deliberately coarse (flags the
+        //      op types that mutate an existing node, without also
+        //      replaying `applyRemoteOp`'s own seq/echo filtering), so the
+        //      worst case is one extra-but-safe snapshot fetch, never an
+        //      incomplete tree.
         try {
           const cachedIndex = await loadCachedFileIndex();
-          const seededFromCache = !!cachedIndex && cachedIndex.files.length > 0;
-          if (cachedIndex) {
+          const seededFromCache =
+            !!cachedIndex && cachedIndex.files.length > 0 && cachedIndex.seq === this.lastSeq;
+
+          let needsSnapshot = !seededFromCache;
+          if (cachedIndex && seededFromCache) {
             this.seedTreeFromCachedIndex(cachedIndex.files);
+            const ops = await getSyncOps(this.lastSeq);
+            for (const op of ops) {
+              if (!needsSnapshot && opTargetsNodeMissingFromTree(op, this.tree)) {
+                needsSnapshot = true;
+              }
+              await this.applyRemoteOp(op);
+            }
+            if (this.tree.size === 0) needsSnapshot = true;
           }
-          const ops = await getSyncOps(this.lastSeq);
-          for (const op of ops) {
-            await this.applyRemoteOp(op);
-          }
-          // No usable cached base AND catch-up itself produced nothing — we
-          // cannot trust the tree as complete (this is the original guard:
-          // SecureStore can preserve lastSeq across reinstalls/relaunches, so
-          // a catch-up with no ops and no cache may otherwise mark an empty
-          // tree as ready).
-          if (!seededFromCache && this.tree.size === 0) {
+
+          if (needsSnapshot) {
             const snap = await getSnapshot();
+            this.tree.clear();
             this.applySnapshot(snap);
           }
         } catch (err) {
@@ -649,11 +685,18 @@ export class SyncClient {
     // Persist the on-disk index cache (FileEntry-shaped). Reuse the existing
     // cache hash when present so the next getFileIndex() conditional fetch still
     // short-circuits; fall back to a sentinel that forces a refetch otherwise.
+    //
+    // 1302 follow-up — stamp the sync cursor (`this.lastSeq`) this write
+    // reflects. `start()`'s catch-up only trusts this cache as a seed when
+    // that stamped cursor exactly matches the freshly-loaded `lastSeq` — see
+    // the comment there for why (the cache write is debounced behind the
+    // synchronous `lastSeq` persist, so a kill mid-debounce can leave the
+    // cache older than `lastSeq`).
     try {
       const existing = await loadCachedFileIndex().catch(() => null);
       const hash = existing?.hash ?? 'live-writethrough';
       const files = liveNodes.map(syncNodeToFileEntry);
-      await saveCachedFileIndex(hash, files);
+      await saveCachedFileIndex(hash, files, Date.now(), this.lastSeq);
     } catch {
       // disk write best-effort; the next full fetch reconciles
     }
@@ -1010,6 +1053,46 @@ export function fileEntryToSyncNode(entry: FileEntry): SyncNode {
     created_at: entry.created_at,
     updated_at: entry.updated_at,
   };
+}
+
+/**
+ * 1302 follow-up (Codex review, "Retain tombstones when using the index as a
+ * replay base") — true when `op` mutates an EXISTING node (move/rename/
+ * trash/restore/update/delete) that isn't present in `tree`.
+ * `applyOpToTree`'s branches for these op types look up
+ * `existing = this.tree.get(id)` and silently no-op when it's missing —
+ * exactly wrong for a tree seeded from the on-disk file-index cache, which
+ * excludes trashed rows: a node already trashed as of the cache's snapshot
+ * has no tombstone to update, so e.g. a `file_restore` on it would
+ * otherwise vanish instead of reappearing. `file_create`/`folder_create`
+ * (which ADD a node) and the notification-only `share_create`/
+ * `share_revoke` never need an existing node, so they're excluded.
+ *
+ * Deliberately coarse: it doesn't replay `applyRemoteOp`'s own seq/echo
+ * filtering, so it can occasionally flag an op that would have been a
+ * no-op anyway. That only costs one extra (but always safe and correct)
+ * snapshot fetch — never an incomplete tree — which is the right tradeoff
+ * for keeping this check small.
+ */
+function opTargetsNodeMissingFromTree(
+  op: SyncOp,
+  tree: ReadonlyMap<string, SyncNode>,
+): boolean {
+  switch (op.op_type) {
+    case 'file_update':
+    case 'file_move':
+    case 'folder_move':
+    case 'file_rename':
+    case 'folder_rename':
+    case 'file_trash':
+    case 'file_restore':
+    case 'file_delete': {
+      const id = op.payload?.id as string | undefined;
+      return !!id && !tree.has(id);
+    }
+    default:
+      return false;
+  }
 }
 
 function payloadToNode(

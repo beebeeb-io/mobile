@@ -10,6 +10,18 @@ export interface CachedFileIndex {
   hash: string;
   files: FileEntry[];
   storedAt: number;
+  /**
+   * The CRDT sync cursor (`SyncClient.lastSeq`) this cache was written at,
+   * when the writer is `sync-client.ts`'s `persistCacheNow` — undefined for
+   * writes from the REST `/files/index` path (FilesScreen and friends),
+   * which have no sync cursor to stamp. Task 1302 follow-up: a
+   * returning-device catch-up may only seed its in-memory tree from this
+   * cache when `seq` exactly equals the freshly-loaded `lastSeq` — the cache
+   * write is debounced ~800ms behind the synchronous `lastSeq` persist, so a
+   * kill mid-debounce can leave the cache older than `lastSeq`, and without
+   * this check that gap would be silently, permanently skipped.
+   */
+  seq?: number;
 }
 
 function isFileEntry(value: unknown): value is FileEntry {
@@ -38,7 +50,7 @@ export async function loadCachedFileIndex(): Promise<CachedFileIndex | null> {
       await AsyncStorage.removeItem(FILE_INDEX_CACHE_KEY);
       return null;
     }
-    await saveCachedFileIndex(parsed.hash, parsed.files, parsed.storedAt).catch(() => {});
+    await saveCachedFileIndex(parsed.hash, parsed.files, parsed.storedAt, parsed.seq).catch(() => {});
     await AsyncStorage.removeItem(FILE_INDEX_CACHE_KEY).catch(() => {});
     return parsed;
   } catch {
@@ -68,8 +80,9 @@ export async function saveCachedFileIndex(
   hash: string,
   files: FileEntry[],
   storedAt = Date.now(),
+  seq?: number,
 ): Promise<void> {
-  const payload: CachedFileIndex = { hash, files, storedAt };
+  const payload: CachedFileIndex = { hash, files, storedAt, ...(seq !== undefined ? { seq } : {}) };
   const serialized = JSON.stringify(payload);
   if (FileSystem.documentDirectory) {
     await ensureDocumentDirectory();
@@ -114,11 +127,17 @@ function parseCachedFileIndex(raw: string): CachedFileIndex | null {
       typeof parsed.hash !== 'string' ||
       !Array.isArray(parsed.files) ||
       typeof parsed.storedAt !== 'number' ||
-      !parsed.files.every(isFileEntry)
+      !parsed.files.every(isFileEntry) ||
+      (parsed.seq !== undefined && typeof parsed.seq !== 'number')
     ) {
       return null;
     }
-    return { hash: parsed.hash, files: parsed.files, storedAt: parsed.storedAt };
+    return {
+      hash: parsed.hash,
+      files: parsed.files,
+      storedAt: parsed.storedAt,
+      ...(parsed.seq !== undefined ? { seq: parsed.seq } : {}),
+    };
   } catch {
     return null;
   }

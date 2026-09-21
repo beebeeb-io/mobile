@@ -67,13 +67,13 @@ mock.module('./api', () => ({
   },
 }));
 
-let cachedIndex: { hash: string; files: unknown[]; storedAt: number } | null = null;
-const savedIndexCalls: Array<{ hash: string; files: unknown[] }> = [];
+let cachedIndex: { hash: string; files: unknown[]; storedAt: number; seq?: number } | null = null;
+const savedIndexCalls: Array<{ hash: string; files: unknown[]; storedAt?: number; seq?: number }> = [];
 
 mock.module('./file-index-cache', () => ({
   loadCachedFileIndex: async () => cachedIndex,
-  saveCachedFileIndex: async (hash: string, files: unknown[]) => {
-    savedIndexCalls.push({ hash, files });
+  saveCachedFileIndex: async (hash: string, files: unknown[], storedAt?: number, seq?: number) => {
+    savedIndexCalls.push({ hash, files, storedAt, seq });
   },
   clearCachedFileIndex: async () => {},
 }));
@@ -102,6 +102,26 @@ function fileEntry(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function syncNode(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'node-1',
+    name_encrypted: 'enc-node-1',
+    parent_id: null,
+    is_folder: false,
+    size_bytes: 1,
+    content_hash: null,
+    version_number: 1,
+    has_thumbnail: false,
+    storage_pool_id: null,
+    is_trashed: false,
+    is_starred: false,
+    chunk_count: 1,
+    created_at: '2026-09-20T00:00:00.000Z',
+    updated_at: '2026-09-20T00:00:00.000Z',
+    ...overrides,
+  };
+}
+
 beforeEach(() => {
   secureStore.clear();
   getSnapshotCalls = 0;
@@ -121,6 +141,7 @@ describe('SyncClient catch-up (task 1302)', () => {
     cachedIndex = {
       hash: 'old-hash',
       storedAt: Date.now(),
+      seq: 5, // matches lastSeq — persistCacheNow wrote this cache AT lastSeq.
       files: [
         fileEntry({ id: 'old-1', name_encrypted: 'enc-old-1' }),
         fileEntry({ id: 'old-2', name_encrypted: 'enc-old-2' }),
@@ -158,37 +179,25 @@ describe('SyncClient catch-up (task 1302)', () => {
     expect(getSyncOpsCalls).toEqual([5]);
   });
 
-  test('falls back to a full snapshot when there is no cache AND catch-up itself returns nothing (existing empty-tree guard)', async () => {
+  test('falls back to a full snapshot when there is no cache at all (existing empty-tree guard, generalized)', async () => {
     secureStore.set('bb_sync_last_seq', '5');
     cachedIndex = null;
-    getSyncOpsImpl = async () => [];
-    getSnapshotImpl = async () => ({
-      seq_id: 10,
-      nodes: [
-        { id: 'snap-1', name_encrypted: 'enc-snap-1', parent_id: null, is_folder: false, size_bytes: 1, content_hash: null, version_number: 1, has_thumbnail: false, storage_pool_id: null, is_trashed: false, is_starred: false, chunk_count: 1, created_at: '2026-09-20T00:00:00.000Z', updated_at: '2026-09-20T00:00:00.000Z' },
-      ],
-    });
+    getSnapshotImpl = async () => ({ seq_id: 10, nodes: [syncNode({ id: 'snap-1' })] });
 
     const client = new SyncClient();
     await client.start();
 
     expect(getSnapshotCalls).toBe(1);
+    // No cache to safely seed from — the (unsafe) ops-only path is never
+    // even attempted.
+    expect(getSyncOpsCalls).toEqual([]);
     expect(client.getAllNodes().map((n: { id: string }) => n.id)).toEqual(['snap-1']);
   });
 
   test('a fresh device (lastSeq === 0) always loads the full snapshot, cache or not', async () => {
     // No bb_sync_last_seq set → loadLastSeq() returns 0.
-    cachedIndex = {
-      hash: 'stale-hash',
-      storedAt: Date.now(),
-      files: [fileEntry({ id: 'stale-1' })],
-    };
-    getSnapshotImpl = async () => ({
-      seq_id: 1,
-      nodes: [
-        { id: 'fresh-1', name_encrypted: 'enc-fresh-1', parent_id: null, is_folder: false, size_bytes: 1, content_hash: null, version_number: 1, has_thumbnail: false, storage_pool_id: null, is_trashed: false, is_starred: false, chunk_count: 1, created_at: '2026-09-20T00:00:00.000Z', updated_at: '2026-09-20T00:00:00.000Z' },
-      ],
-    });
+    cachedIndex = { hash: 'stale-hash', storedAt: Date.now(), seq: 1, files: [fileEntry({ id: 'stale-1' })] };
+    getSnapshotImpl = async () => ({ seq_id: 1, nodes: [syncNode({ id: 'fresh-1' })] });
 
     const client = new SyncClient();
     await client.start();
@@ -196,6 +205,99 @@ describe('SyncClient catch-up (task 1302)', () => {
     expect(getSnapshotCalls).toBe(1);
     expect(getSyncOpsCalls).toEqual([]);
     expect(client.getAllNodes().map((n: { id: string }) => n.id)).toEqual(['fresh-1']);
+  });
+
+  // --- Codex review on PR #103 (two P1s) ---------------------------------
+
+  test('does NOT seed from a cache whose cursor is behind lastSeq — the cache write is debounced ~800ms behind the synchronous lastSeq persist, so a kill mid-debounce can leave the cache stale', async () => {
+    secureStore.set('bb_sync_last_seq', '6');
+    cachedIndex = {
+      hash: 'stale-cursor-hash',
+      storedAt: Date.now(),
+      // Behind lastSeq=6: an op with seq_id 5 (e.g. a file_create for
+      // 'mid-1') was applied and its lastSeq persisted synchronously, but
+      // the app was killed before persistCacheNow's debounced write caught
+      // up — so the cache still reflects state as of seq 4.
+      seq: 4,
+      files: [
+        fileEntry({ id: 'old-1', name_encrypted: 'enc-old-1' }),
+        fileEntry({ id: 'old-2', name_encrypted: 'enc-old-2' }),
+      ],
+    };
+    // getSyncOps(6) only returns ops AFTER 6 — 'mid-1' (seq 5) is already
+    // "consumed" per lastSeq bookkeeping and is NEVER re-sent. If seeding
+    // from the stale cache were allowed anyway, 'mid-1' would be silently,
+    // permanently missing from the tree.
+    getSyncOpsImpl = async () => [];
+    getSnapshotImpl = async () => ({
+      seq_id: 6,
+      nodes: [syncNode({ id: 'old-1' }), syncNode({ id: 'old-2' }), syncNode({ id: 'mid-1' })],
+    });
+
+    const client = new SyncClient();
+    await client.start();
+
+    // Treated exactly like "no cache" — always an authoritative snapshot,
+    // never an unsafe ops-only reconstruction off a stale base.
+    expect(getSnapshotCalls).toBe(1);
+    expect(getSyncOpsCalls).toEqual([]);
+    const ids = client.getAllNodes().map((n: { id: string }) => n.id).sort();
+    expect(ids).toEqual(['mid-1', 'old-1', 'old-2']);
+  });
+
+  test('escalates to a full snapshot when a catch-up op targets a node missing from the seeded tree (a tombstone the cache excluded)', async () => {
+    secureStore.set('bb_sync_last_seq', '5');
+    cachedIndex = {
+      hash: 'cursor-matched-hash',
+      storedAt: Date.now(),
+      seq: 5, // matches lastSeq — normally eligible to seed.
+      files: [
+        fileEntry({ id: 'old-1' }),
+        fileEntry({ id: 'old-2' }),
+        // 'trashed-1' was already trashed as of this cache snapshot, so
+        // /files/index (the cache's source) excluded it — no tombstone was
+        // ever cached for it.
+      ],
+    };
+    getSyncOpsImpl = async () => [
+      { seq_id: 6, op_type: 'file_restore', payload: { id: 'trashed-1' } },
+    ];
+    getSnapshotImpl = async () => ({
+      seq_id: 6,
+      nodes: [syncNode({ id: 'old-1' }), syncNode({ id: 'old-2' }), syncNode({ id: 'trashed-1' })],
+    });
+
+    const client = new SyncClient();
+    await client.start();
+
+    expect(getSnapshotCalls).toBe(1);
+    const ids = client.getAllNodes().map((n: { id: string }) => n.id).sort();
+    expect(ids).toEqual(['old-1', 'old-2', 'trashed-1']);
+  });
+
+  test('does NOT escalate to a snapshot for an ordinary catch-up that only creates/updates nodes already covered by the seed', async () => {
+    // Regression guard: opTargetsNodeMissingFromTree must not false-positive
+    // on the common, correct path (would silently defeat the whole
+    // optimization if it did).
+    secureStore.set('bb_sync_last_seq', '5');
+    cachedIndex = {
+      hash: 'cursor-matched-hash-2',
+      storedAt: Date.now(),
+      seq: 5,
+      files: [fileEntry({ id: 'old-1' })],
+    };
+    getSyncOpsImpl = async () => [
+      { seq_id: 6, op_type: 'file_create', payload: { id: 'new-1', parent_id: null, name_encrypted: 'enc-new-1' } },
+      { seq_id: 7, op_type: 'file_rename', payload: { id: 'old-1', new_name_encrypted: 'enc-renamed' } },
+    ];
+
+    const client = new SyncClient();
+    await client.start();
+
+    expect(getSnapshotCalls).toBe(0);
+    const ids = client.getAllNodes().map((n: { id: string }) => n.id).sort();
+    expect(ids).toEqual(['new-1', 'old-1']);
+    expect(client.getNode('old-1')?.name_encrypted).toBe('enc-renamed');
   });
 });
 
