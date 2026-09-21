@@ -230,6 +230,7 @@ final class ShareUploader {
         body["parent_id"] = parentId ?? NSNull()
 
         var request = URLRequest(url: url)
+        ProvenanceHeaders.apply(to: &request)
         request.httpMethod = "POST"
         request.setValue("Bearer \(sessionToken)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -251,6 +252,7 @@ final class ShareUploader {
             throw UploadError.networkError(URLError(.badURL))
         }
         var request = URLRequest(url: url)
+        ProvenanceHeaders.apply(to: &request)
         request.httpMethod = "PUT"
         request.setValue("Bearer \(sessionToken)", forHTTPHeaderField: "Authorization")
         request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
@@ -268,6 +270,7 @@ final class ShareUploader {
             throw UploadError.networkError(URLError(.badURL))
         }
         var request = URLRequest(url: url)
+        ProvenanceHeaders.apply(to: &request)
         request.httpMethod = "POST"
         request.setValue("Bearer \(sessionToken)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")

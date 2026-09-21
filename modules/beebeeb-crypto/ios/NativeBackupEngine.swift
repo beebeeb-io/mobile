@@ -954,6 +954,7 @@ final class NativeBackupEngine: NSObject {
     }
 
     var request = URLRequest(url: url)
+    ProvenanceHeaders.apply(to: &request)
     request.httpMethod = "POST"
     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
     request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
@@ -2659,6 +2660,7 @@ final class NativeBackupEngine: NSObject {
     }
 
     var request = URLRequest(url: url)
+    ProvenanceHeaders.apply(to: &request)
     request.httpMethod = "GET"
     request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
 
@@ -2716,6 +2718,7 @@ final class NativeBackupEngine: NSObject {
     }
 
     var request = URLRequest(url: url)
+    ProvenanceHeaders.apply(to: &request)
     request.httpMethod = "PUT"
     request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
     request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
@@ -2907,6 +2910,7 @@ final class NativeBackupEngine: NSObject {
     }
 
     var request = URLRequest(url: url)
+    ProvenanceHeaders.apply(to: &request)
     request.httpMethod = "POST"
     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
     request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
@@ -2973,6 +2977,7 @@ final class NativeBackupEngine: NSObject {
     }
 
     var request = URLRequest(url: url)
+    ProvenanceHeaders.apply(to: &request)
     request.httpMethod = "POST"
     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
     request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
@@ -3943,6 +3948,7 @@ final class NativeBackupEngine: NSObject {
       }
       guard let thumbUrl = URL(string: urlString) else { return }
       var request = URLRequest(url: thumbUrl)
+      ProvenanceHeaders.apply(to: &request)
       request.httpMethod = "PUT"
       request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
       request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")

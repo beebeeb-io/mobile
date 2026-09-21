@@ -223,6 +223,7 @@ extension ThumbnailService {
 
     let thumbnailURL = baseURL.appendingPathComponent("api/v1/files/\(fileId)/thumbnail")
     var request = URLRequest(url: thumbnailURL)
+    ProvenanceHeaders.apply(to: &request)
     request.httpMethod = "GET"
     request.setValue("Bearer \(sessionToken)", forHTTPHeaderField: "Authorization")
 

@@ -38,6 +38,7 @@ public enum ThumbnailEncryptUpload {
 
         let thumbnailURL = baseURL.appendingPathComponent("api/v1/files/\(fileId)/thumbnail")
         var req = URLRequest(url: thumbnailURL)
+        ProvenanceHeaders.apply(to: &req)
         req.httpMethod = "PUT"
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         req.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")

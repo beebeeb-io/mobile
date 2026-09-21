@@ -50,6 +50,7 @@ final class FolderFetcher {
         }
 
         var request = URLRequest(url: url)
+        ProvenanceHeaders.apply(to: &request)
         request.httpMethod = "GET"
         request.setValue("Bearer \(sessionToken)", forHTTPHeaderField: "Authorization")
         request.timeoutInterval = 10
