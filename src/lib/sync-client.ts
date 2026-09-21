@@ -321,15 +321,37 @@ export class SyncClient {
         this.applySnapshot(snap);
       } else {
         // Returning device — catch up on missed ops.
+        //
+        // 1302 — the mobile tree is in-memory only (never persisted across
+        // process restarts, unlike the SQLite-backed tree the design doc
+        // assumes), so `this.tree` starts EMPTY here on every launch.
+        // Replaying only the ops since `lastSeq` onto an empty tree can
+        // reconstruct nodes an op actually TOUCHED, but silently drops every
+        // pre-existing file/folder that no op referenced since lastSeq — e.g.
+        // a device that relaunches and immediately uploads a file ends up
+        // with a tree containing EXACTLY that one new file, which
+        // FilesScreen then renders as if it were the complete folder
+        // (`sync.ready` + non-empty `sync.children()` were treated as
+        // authoritative). Seed the tree from the on-disk file-index cache —
+        // the last known-good FULL listing — before replaying ops, so
+        // catch-up applies its deltas on top of a real base instead of
+        // nothing.
         try {
+          const cachedIndex = await loadCachedFileIndex();
+          const seededFromCache = !!cachedIndex && cachedIndex.files.length > 0;
+          if (cachedIndex) {
+            this.seedTreeFromCachedIndex(cachedIndex.files);
+          }
           const ops = await getSyncOps(this.lastSeq);
           for (const op of ops) {
             await this.applyRemoteOp(op);
           }
-          // The mobile tree is in-memory only. SecureStore can preserve
-          // lastSeq across reinstalls/relaunches, so a catch-up with no ops
-          // may otherwise mark an empty tree as ready.
-          if (this.tree.size === 0) {
+          // No usable cached base AND catch-up itself produced nothing — we
+          // cannot trust the tree as complete (this is the original guard:
+          // SecureStore can preserve lastSeq across reinstalls/relaunches, so
+          // a catch-up with no ops and no cache may otherwise mark an empty
+          // tree as ready).
+          if (!seededFromCache && this.tree.size === 0) {
             const snap = await getSnapshot();
             this.applySnapshot(snap);
           }
@@ -386,6 +408,20 @@ export class SyncClient {
     this.lastSeq = snap.seq_id;
     void saveLastSeq(this.lastSeq);
     this.emit({ type: 'snapshot' });
+  }
+
+  /**
+   * 1302 — seed the in-memory tree from the on-disk file-index cache (the
+   * last known-good FULL folder listing, maintained by FilesScreen's
+   * `fetchFiles` and by this class's own `persistCacheNow` write-through).
+   * Used only on a returning-device catch-up (`start()`), so replaying the
+   * ops since `lastSeq` lands on a real base instead of an empty Map. Does
+   * NOT bump `lastSeq` or emit — it's a pre-catch-up seed, not a sync event.
+   */
+  private seedTreeFromCachedIndex(files: FileEntry[]): void {
+    for (const entry of files) {
+      this.tree.set(entry.id, fileEntryToSyncNode(entry));
+    }
   }
 
   private async openStream(): Promise<void> {
@@ -941,6 +977,38 @@ function syncNodeToFileEntry(node: SyncNode): FileEntry {
     storage_pool_id: node.storage_pool_id ?? null,
     has_thumbnail: node.has_thumbnail,
     is_starred: node.is_starred,
+  };
+}
+
+/**
+ * Reverse of `syncNodeToFileEntry` — project a cached FileEntry (from the
+ * on-disk file-index cache) onto the sync tree's SyncNode shape, so a
+ * returning-device catch-up (task 1302) can seed the in-memory tree from a
+ * known-good local base before replaying the ops it missed. Fields the
+ * cache doesn't carry get the same safe defaults `payloadToNode` below uses
+ * for a freshly-created node: `content_hash` is metadata-only and unused by
+ * any op-application path a seeded node needs; `is_trashed` is always false
+ * because the server's `/files/index` (the cache's source) already excludes
+ * trashed rows.
+ */
+export function fileEntryToSyncNode(entry: FileEntry): SyncNode {
+  return {
+    id: entry.id,
+    name_encrypted: entry.name_encrypted,
+    parent_id: entry.parent_id ?? null,
+    is_folder: entry.is_folder,
+    is_uploading: entry.is_uploading,
+    size_bytes: entry.size_bytes,
+    mime_type: entry.mime_type ?? null,
+    content_hash: null,
+    version_number: entry.version_number ?? 1,
+    has_thumbnail: entry.has_thumbnail ?? false,
+    storage_pool_id: entry.storage_pool_id ?? null,
+    is_trashed: false,
+    is_starred: entry.is_starred ?? false,
+    chunk_count: entry.chunk_count,
+    created_at: entry.created_at,
+    updated_at: entry.updated_at,
   };
 }
 
