@@ -66,33 +66,54 @@ echo "kat-ios.sh: log at $LOG"
 attempt=0
 max_attempts=10
 while true; do
-  if "$WITH_LOCK" ios-build -- xcodebuild test \
+  # Do NOT gate on this command's own process exit status (see the note below the loop for why)
+  # — `set +e`/`set -e` bracket it so a nonzero return never trips this script's own `errexit`.
+  set +e
+  "$WITH_LOCK" ios-build -- xcodebuild test \
       -project "$REPO_ROOT/ios/Beebeeb.xcodeproj" \
       -scheme CoreVectorsKATTests \
       -destination "id=$UDID" \
       -derivedDataPath "$DERIVED_DATA" \
-      > "$LOG" 2>&1; then
-    break
-  fi
+      > "$LOG" 2>&1
   status=$?
+  set -e
+
   if grep -q "is locked" "$LOG" 2>/dev/null && [ "$attempt" -lt "$max_attempts" ]; then
     attempt=$((attempt + 1))
     echo "kat-ios.sh: ios-build semaphore busy, retry $attempt/$max_attempts in 60s..." >&2
     sleep 60
     continue
   fi
-  echo "kat-ios.sh: xcodebuild test failed (exit $status) — see $LOG" >&2
-  tail -n 80 "$LOG" >&2
-  exit "$status"
+  break
 done
 
-# A check must prove it did something before it may report success — assert the count, never
-# just the absence of "FAILED".
-if grep -qE "Executed [0-9]+ test" "$LOG"; then
-  grep -E "Executed [0-9]+ test" "$LOG"
-  echo "kat-ios.sh: PASS — full log at $LOG"
-else
-  echo "kat-ios.sh: no 'Executed N tests' line found in $LOG — treat as RED, the harness never proved it ran anything" >&2
+# Do NOT trust $status as the pass/fail signal. Reproduced directly (task 1382 Codex review):
+# `xcodebuild test` against this host-less bundle.unit-test target returns process exit 0 even for
+# a hard failure ("xcodebuild: error: Unable to find a device matching the provided destination
+# specifier") when invoked as the condition of a shell `if` inside a script — the SAME command run
+# directly at a prompt correctly returns 70. Confirmed with `bash -x` + manual instrumentation:
+# `status=$?` really does read 0 immediately after the failed command, with nothing in between that
+# could reset it. Root cause not fully pinned (this Mac's Xcode is an iOS/watchOS 27 beta — plausibly
+# a reporting quirk there), and not worth chasing further: the fix is to stop depending on a process
+# exit code we've proven unreliable, and gate on the one signal xcodebuild always writes truthfully —
+# the structured "Executed N tests, with S skipped and F failures (U unexpected)" summary line.
+#
+# A check must prove it did something before it may report success — assert the count, never just
+# the absence of "FAILED" or a trusted-blindly exit code.
+SUMMARY_LINE="$(grep -E "Executed [0-9]+ test" "$LOG" | tail -1 || true)"
+
+if [ -z "$SUMMARY_LINE" ]; then
+  echo "kat-ios.sh: no 'Executed N tests' line found in $LOG (process exit was $status) — treat as RED, the harness never proved it ran anything" >&2
   tail -n 80 "$LOG" >&2
   exit 1
 fi
+
+echo "$SUMMARY_LINE"
+
+if echo "$SUMMARY_LINE" | grep -qE "[1-9][0-9]* failures?"; then
+  echo "kat-ios.sh: RED — summary line reports a nonzero failure count (process exit was $status, not trusted — see comment above)" >&2
+  tail -n 80 "$LOG" >&2
+  exit 1
+fi
+
+echo "kat-ios.sh: PASS — full log at $LOG"
