@@ -926,6 +926,21 @@ RustBuffer uniffi_beebeeb_uniffi_fn_func_sha256(RustBuffer data, RustCallStatus 
 RustBuffer uniffi_beebeeb_uniffi_fn_func_storage_format_si(int64_t bytes, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_BEEBEEB_UNIFFI_FN_FUNC_TRANSFER_DERIVE_KEY
+#define UNIFFI_FFIDEF_UNIFFI_BEEBEEB_UNIFFI_FN_FUNC_TRANSFER_DERIVE_KEY
+RustBuffer uniffi_beebeeb_uniffi_fn_func_transfer_derive_key(RustBuffer shared_secret, RustBuffer session_id, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_BEEBEEB_UNIFFI_FN_FUNC_TRANSFER_DERIVE_SAS_BYTES
+#define UNIFFI_FFIDEF_UNIFFI_BEEBEEB_UNIFFI_FN_FUNC_TRANSFER_DERIVE_SAS_BYTES
+RustBuffer uniffi_beebeeb_uniffi_fn_func_transfer_derive_sas_bytes(RustBuffer shared_secret, RustBuffer session_id, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_BEEBEEB_UNIFFI_FN_FUNC_TRANSFER_SAS_TO_WORDS
+#define UNIFFI_FFIDEF_UNIFFI_BEEBEEB_UNIFFI_FN_FUNC_TRANSFER_SAS_TO_WORDS
+RustBuffer uniffi_beebeeb_uniffi_fn_func_transfer_sas_to_words(RustBuffer sas_bytes, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_BEEBEEB_UNIFFI_FN_FUNC_UNWRAP_REQUEST_PRIVATE
 #define UNIFFI_FFIDEF_UNIFFI_BEEBEEB_UNIFFI_FN_FUNC_UNWRAP_REQUEST_PRIVATE
 RustBuffer uniffi_beebeeb_uniffi_fn_func_unwrap_request_private(RustBuffer master_key, RustBuffer request_id, RustBuffer wrapped, RustBuffer nonce, RustCallStatus *_Nonnull out_status
@@ -1515,6 +1530,24 @@ uint16_t uniffi_beebeeb_uniffi_checksum_func_sha256(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_BEEBEEB_UNIFFI_CHECKSUM_FUNC_STORAGE_FORMAT_SI
 #define UNIFFI_FFIDEF_UNIFFI_BEEBEEB_UNIFFI_CHECKSUM_FUNC_STORAGE_FORMAT_SI
 uint16_t uniffi_beebeeb_uniffi_checksum_func_storage_format_si(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_BEEBEEB_UNIFFI_CHECKSUM_FUNC_TRANSFER_DERIVE_KEY
+#define UNIFFI_FFIDEF_UNIFFI_BEEBEEB_UNIFFI_CHECKSUM_FUNC_TRANSFER_DERIVE_KEY
+uint16_t uniffi_beebeeb_uniffi_checksum_func_transfer_derive_key(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_BEEBEEB_UNIFFI_CHECKSUM_FUNC_TRANSFER_DERIVE_SAS_BYTES
+#define UNIFFI_FFIDEF_UNIFFI_BEEBEEB_UNIFFI_CHECKSUM_FUNC_TRANSFER_DERIVE_SAS_BYTES
+uint16_t uniffi_beebeeb_uniffi_checksum_func_transfer_derive_sas_bytes(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_BEEBEEB_UNIFFI_CHECKSUM_FUNC_TRANSFER_SAS_TO_WORDS
+#define UNIFFI_FFIDEF_UNIFFI_BEEBEEB_UNIFFI_CHECKSUM_FUNC_TRANSFER_SAS_TO_WORDS
+uint16_t uniffi_beebeeb_uniffi_checksum_func_transfer_sas_to_words(void
     
 );
 #endif
