@@ -365,6 +365,35 @@ other — e.g. `api-client-session.test.ts` registers an empty `expo-file-system
 **every test file must mock every native module it needs itself** — never rely on another file
 having mocked it. Two tests were found relying on exactly that when isolation was introduced.
 
+### Native crypto KAT — `scripts/kat-ios.sh` (task 1382, audit item K2) — LOCAL GATE, NOT CI
+
+`ios/BeebeebNativeTests/CoreVectorsKATTests.swift` is a second host-less XCTest target (mirrors
+`ProvenanceHeadersTests`, task 1439 — no app host, no Pods, no Expo) that drives
+`repos/core/test-vectors/vectors.json` (vendored at `ios/BeebeebNativeTests/Vectors/core-vectors.v4.json`,
+sha256-pinned in the test file, with a second check against the sibling `repos/core` checkout when
+one is present next to this repo) through the SAME production UniFFI Swift bindings the app links —
+proving mobile decrypts/derives byte-identically to core, not just that it compiles against it.
+11 of core's 12 vector families are asserted (every family the UniFFI surface exposes); the 12th,
+`envelope_serialization` (`OpaqueEnvelope::to_bytes`/`from_bytes`), has no UniFFI export and is an
+explicit `XCTSkip` naming the gap, not a silent omission.
+
+Run: `scripts/kat-ios.sh` (defaults to sim `bb-qa-2`; serializes under `scripts/coord/with-lock.sh
+ios-build` and retries on lock contention). **This does NOT run in CI** — the mobile repo's GitHub
+Actions workflow runs `typecheck` only (macOS runners are not enabled for Actions-minutes reasons),
+so run this by hand after touching `beebeeb_uniffi.swift`, `BeebeebCore.xcframework`, or
+`repos/core/test-vectors/vectors.json`.
+
+**Known standing failure, task 1450 [P0], not caused by this KAT:** `testMasterKeyFromPassword`
+currently fails — mobile's vendored `BeebeebCore.xcframework` was last regenerated 2026-06-16, 8
+days before core commit `ce16525` raised `derive_master_key`'s Argon2id params to the canonical
+strong set, and has never been regenerated since (16 core crypto-relevant commits behind as of
+2026-09-22). Left RED on purpose (not skipped/weakened) — that's the true state of the shipped
+binary. The free `deriveMasterKey(password:salt:)` UniFFI export does not appear to be reachable
+from any mobile UI flow today (mobile login goes through OPAQUE, a separate primitive — see task
+1450 for the full grep evidence), so this is not believed to be an active prod vulnerability, but
+the binary needs regenerating via `build-ios.sh` + a full re-QA pass regardless. Track via task
+1450, not here.
+
 ## API
 
 Backend at `http://localhost:3001`. Same endpoints as the web client — see `repos/server/CLAUDE.md` for the full API reference.

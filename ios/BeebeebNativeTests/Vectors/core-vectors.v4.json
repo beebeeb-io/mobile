@@ -1,0 +1,99 @@
+{
+  "generated_by": "beebeeb-core test vector generator",
+  "vectors": [
+    {
+      "expected_master_key_hex": "bd03192a42f0f7b3b38514c69cee88336a67993712e7d1a6bc7e630ba87f18c9",
+      "name": "master_key_from_password",
+      "password": "correct-horse-battery-staple",
+      "salt_hex": "626565626565622d746573742d73616c742d313662"
+    },
+    {
+      "expected_file_key_hex": "55e11db680c9a4d9c58e8b64de76cdd76566e518f3665360c35fc6a93d1170ae",
+      "file_id_hex": "35353065383430302d653239622d343164342d613731362d343436363535343430303030",
+      "master_key_hex": "bd03192a42f0f7b3b38514c69cee88336a67993712e7d1a6bc7e630ba87f18c9",
+      "name": "file_key_derivation"
+    },
+    {
+      "ciphertext_hex": "5a3977b2221d3b1bafa68ac900083bbf44510403889ba48637001b071dc00aca67a71338e078caef7627ecbe1eed9c",
+      "file_key_hex": "55e11db680c9a4d9c58e8b64de76cdd76566e518f3665360c35fc6a93d1170ae",
+      "name": "chunk_encrypt_decrypt",
+      "nonce_hex": "7ecb3cbf57d650614110e414",
+      "note": "nonce is random — use this vector for decrypt-only testing. To verify encrypt, check that decrypt(encrypt(plaintext)) == plaintext.",
+      "plaintext_hex": "48656c6c6f2c2042656562656562212054686973206973206120746573742e"
+    },
+    {
+      "expected_x25519_private_hex": "6a4d95cf23171c6c6718be4636804ded891d742ded2b96220d222223d7cd8837",
+      "expected_x25519_public_hex": "75f57a0b7ca0e2427317f800286dd098ce08abd3f29b29240e4f8764beef0f17",
+      "master_key_hex": "bd03192a42f0f7b3b38514c69cee88336a67993712e7d1a6bc7e630ba87f18c9",
+      "name": "x25519_identity_keypair"
+    },
+    {
+      "alice_master_key_hex": "bd03192a42f0f7b3b38514c69cee88336a67993712e7d1a6bc7e630ba87f18c9",
+      "alice_x25519_public_hex": "75f57a0b7ca0e2427317f800286dd098ce08abd3f29b29240e4f8764beef0f17",
+      "bob_master_key_hex": "b32818d88c7feec881de1e0d47066dc7da54e574ee28614799c4dbb8257f0e14",
+      "bob_x25519_public_hex": "4a84123436a753a8edb38614e1249e3bb2dffd68b4b5cf5559cc2956f1fa5b33",
+      "expected_share_key_hex": "e6625247cc62262e520c567da87290157300d561ca339997c1b2ff7ea4232266",
+      "expected_shared_secret_hex": "d279e16bad8c2d555d3753c6a9e07ba936a4ae71e0e29507880e7467765a541c",
+      "file_id_hex": "35353065383430302d653239622d343164342d613731362d343436363535343430303030",
+      "name": "x25519_share_key_exchange"
+    },
+    {
+      "expected_recovery_check_hex": "43db9aaae145f38686be16a30e8af87bec6382dd0a9ae1d2498f2d55fdd55e83",
+      "master_key_hex": "bd03192a42f0f7b3b38514c69cee88336a67993712e7d1a6bc7e630ba87f18c9",
+      "name": "recovery_check"
+    },
+    {
+      "expected_envelope_hex": "bd03192a42f0f7b3b38514c69cee88336a67993712e7d1a6bc7e630ba87f18c96a4d95cf23171c6c6718be4636804ded891d742ded2b96220d222223d7cd883743db9aaae145f38686be16a30e8af87bec6382dd0a9ae1d2498f2d55fdd55e83",
+      "master_key_hex": "bd03192a42f0f7b3b38514c69cee88336a67993712e7d1a6bc7e630ba87f18c9",
+      "name": "envelope_serialization",
+      "recovery_check_hex": "43db9aaae145f38686be16a30e8af87bec6382dd0a9ae1d2498f2d55fdd55e83",
+      "x25519_private_hex": "6a4d95cf23171c6c6718be4636804ded891d742ded2b96220d222223d7cd8837"
+    },
+    {
+      "expected_master_key_hex": "ad6a5e4a441039ba0e8749a22b36fb73f9ed046331a83f3ba16cb70f4fcb2bc4",
+      "mnemonic": "hockey shallow swim case minimum artist refuse beauty party twelve swap small",
+      "name": "recovery_phrase_roundtrip",
+      "note": "mnemonic is random — use this to verify recover_from_phrase(phrase) produces the expected key."
+    },
+    {
+      "ciphertext_hex": "8c5a83be50f4a2c01c51264f3719c8a925a6f4a4a5a5aba2a6a6d873c4b6c45eb8172a0b9bac1111416ef44fd56210ff9622bc6504c13be5",
+      "file_key_hex": "55e11db680c9a4d9c58e8b64de76cdd76566e518f3665360c35fc6a93d1170ae",
+      "metadata": "photos/vacation/2025-summer/IMG_0042.jpg",
+      "name": "metadata_encrypt_decrypt",
+      "nonce_hex": "9603467161a492931251275c",
+      "note": "nonce is random — use this vector for decrypt-only testing. To verify encrypt, check that decrypt(encrypt(metadata)) == metadata."
+    },
+    {
+      "content_key_hex": "4242424242424242424242424242424242424242424242424242424242424242",
+      "e_pub_hex": "7f1b890e41eea731bda362bc968fd48e587f8d81b10547a6a782558d0fd0b820",
+      "expected_wrap_key_hex": "bda0f3ebb8dbed08eeadc839689973a49c9bf0ebb99f7b3c550d6a42c9829caf",
+      "file_id_hex": "66696c652d726571756573742d75706c6f616465642d66696c652d303031",
+      "master_key_hex": "bd03192a42f0f7b3b38514c69cee88336a67993712e7d1a6bc7e630ba87f18c9",
+      "name": "file_request_seal_open",
+      "note": "wrap_key is deterministic. e_pub/wrapped_key (random ephemeral+nonce) verify open_request_upload(r_priv,e_pub,file_id,wrapped_key)==content_key; wrapped_private/wrap_nonce (random nonce) verify unwrap_request_private==r_priv.",
+      "r_priv_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+      "r_pub_hex": "7b4e909bbe7ffe44c465a220037d608ee35897d31ef972f07f74892cb0f73f13",
+      "request_id_hex": "7265712d35353065383430302d653239622d343164342d613731362d343436363535343430303939",
+      "wrap_nonce_hex": "88dd159459300907cd3c5ed4",
+      "wrapped_key_hex": "575e2fde6c5b4f344c5e9fd54d87187794a5ced72f902f1e87498a5c19eda304885a36631ec7fd9d3eaa8bf07030445ef4294f669d8ad6cfcf103c80",
+      "wrapped_private_hex": "2aa57ac9630879381a649e3ed4f779c1302aa43b3f218b03d30381db53e3241ef64c245b379a597cbb39622ffdfe4ed3"
+    },
+    {
+      "ciphertext_hex": "296c608d2b6150057284434cacb9ac684db811891e0e5b4cdb39cdec3ce53f99f1b5611f75edd9b75c2614e32bb5c596",
+      "key_to_wrap_hex": "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+      "name": "share_key_wrap",
+      "nonce_hex": "174e5553a15305c56b28ae60",
+      "note": "K3: pins web's wrapKeyForShare/unwrapKeyFromShare wire format — nonce(12) || AES-256-GCM ciphertext with 16-byte tag = 60 bytes for a 32-byte wrapped key, no AAD. nonce is random — use this vector for decrypt-only testing. To verify encrypt, check that decrypt(encrypt(key_to_wrap)) == key_to_wrap.",
+      "wrap_key_hex": "a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5"
+    },
+    {
+      "ciphertext_hex": "ed73ba72618da058fbbb948ef9cf749a09b7813bfe2f1f95f72fb54414282ea1cbbb2f0bfb8ed1e183b9514a85a48f56646a99bec4e09a6161e6931fe2cc20aeb3c5598a80c6604271479fb5b6991a2aa0da50eaa363b779797d14059ce402ff07ceae7c72718f4f85cef76fabacb5f95776a178e2f85174fd792104ccaad6bbe8dfb1cae1d35ed7b652e28f40094c7f",
+      "file_key_hex": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+      "name": "thumbnail_encrypt",
+      "nonce_hex": "a38f61c267c45539d71f941d",
+      "note": "K3: pins web's thumbnail.ts encrypt/decrypt wire format — nonce(12) || AES-256-GCM ciphertext, no AAD, over arbitrary-length plaintext. plaintext is a placeholder byte sequence, not a real WebP — the format is codec-agnostic. nonce is random — use this vector for decrypt-only testing. To verify encrypt, check that decrypt(encrypt(plaintext)) == plaintext.",
+      "plaintext_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f"
+    }
+  ],
+  "version": 4
+}
