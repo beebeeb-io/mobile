@@ -5956,9 +5956,11 @@ public func decryptChunksToFile(key: Data, chunks: [EncryptedChunkData], outputP
  * Streams chunk-by-chunk — peak memory is one plaintext chunk, not the
  * full file. Returns the total number of plaintext bytes written.
  *
- * On `Err`, the output file may exist on disk in a partially-written
- * state — the caller is responsible for deleting it so a downstream
- * cache layer does not treat the partial file as complete.
+ * **Atomic output:** core writes plaintext to a sibling `.tmp` and renames it
+ * to `output_path` only on full success; on any error the `.tmp` is removed and
+ * `output_path` is never created/overwritten. Callers no longer need to clean
+ * up a partial file on `Err`, and an existence-based cache cannot serve a
+ * truncated decrypt.
  */
 public func decryptContiguousToFile(fileKey: Data, body: Data, chunkSize: UInt64, outputPath: String)throws  -> UInt64  {
     return try  FfiConverterUInt64.lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
@@ -6049,6 +6051,10 @@ public func deriveRequestWrapKey(masterKey: Data, requestId: Data)throws  -> Dat
  *
  * Used for SAS word derivation — the word list lookup stays in JS/Swift.
  * `info` is typically `b"beebeeb-sas-v1"` or similar context string.
+ *
+ * NOTE: this is the SALT-LESS (salt = None) helper. For the Constellation
+ * transfer channel use `transfer_derive_sas_bytes` below, which is SALTED with
+ * the session id — the two are NOT interchangeable.
  */
 public func deriveSasBytes(sharedSecret: Data, info: Data, length: UInt32) -> Data  {
     return try!  FfiConverterData.lift(try! rustCall() {
@@ -6493,6 +6499,48 @@ public func storageFormatSi(bytes: Int64) -> String  {
 })
 }
 /**
+ * Derive the 32-byte AES-256 transfer key from a shared secret + session id.
+ *
+ * `HKDF-SHA256(ikm = shared_secret, salt = session_id, info = "beebeeb-transfer-v1")`.
+ * SALTED with `session_id`. `shared_secret` must be 32 bytes, `session_id` 16.
+ */
+public func transferDeriveKey(sharedSecret: Data, sessionId: Data)throws  -> Data  {
+    return try  FfiConverterData.lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
+    uniffi_beebeeb_uniffi_fn_func_transfer_derive_key(
+        FfiConverterData.lower(sharedSecret),
+        FfiConverterData.lower(sessionId),$0
+    )
+})
+}
+/**
+ * Derive the 4-byte SAS material from a shared secret + session id.
+ *
+ * `HKDF-SHA256(ikm = shared_secret, salt = session_id, info = "beebeeb-sas-v1")`.
+ * SALTED with `session_id` — distinct from the salt-less `derive_sas_bytes`.
+ * Both devices computing the same 4 bytes (4 SAS words) is the MITM check.
+ */
+public func transferDeriveSasBytes(sharedSecret: Data, sessionId: Data)throws  -> Data  {
+    return try  FfiConverterData.lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
+    uniffi_beebeeb_uniffi_fn_func_transfer_derive_sas_bytes(
+        FfiConverterData.lower(sharedSecret),
+        FfiConverterData.lower(sessionId),$0
+    )
+})
+}
+/**
+ * Map 4 SAS bytes to the 4 canonical transfer words.
+ *
+ * Keeps the 256-word transfer wordlist single-sourced in core so Swift/Kotlin
+ * and web render identical words for the same SAS bytes. Input must be 4 bytes.
+ */
+public func transferSasToWords(sasBytes: Data)throws  -> [String]  {
+    return try  FfiConverterSequenceString.lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
+    uniffi_beebeeb_uniffi_fn_func_transfer_sas_to_words(
+        FfiConverterData.lower(sasBytes),$0
+    )
+})
+}
+/**
  * Unwrap a request's X25519 private key. Returns 32 bytes.
  */
 public func unwrapRequestPrivate(masterKey: Data, requestId: Data, wrapped: Data, nonce: Data)throws  -> Data  {
@@ -6592,7 +6640,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_beebeeb_uniffi_checksum_func_decrypt_chunks_to_file() != 41753) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_beebeeb_uniffi_checksum_func_decrypt_contiguous_to_file() != 37405) {
+    if (uniffi_beebeeb_uniffi_checksum_func_decrypt_contiguous_to_file() != 62659) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_beebeeb_uniffi_checksum_func_decrypt_metadata() != 59510) {
@@ -6613,7 +6661,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_beebeeb_uniffi_checksum_func_derive_request_wrap_key() != 57226) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_beebeeb_uniffi_checksum_func_derive_sas_bytes() != 47034) {
+    if (uniffi_beebeeb_uniffi_checksum_func_derive_sas_bytes() != 8382) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_beebeeb_uniffi_checksum_func_derive_share_key() != 10175) {
@@ -6722,6 +6770,15 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_beebeeb_uniffi_checksum_func_storage_format_si() != 41780) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_func_transfer_derive_key() != 24308) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_func_transfer_derive_sas_bytes() != 31888) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_func_transfer_sas_to_words() != 50502) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_beebeeb_uniffi_checksum_func_unwrap_request_private() != 44962) {

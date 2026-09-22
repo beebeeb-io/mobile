@@ -383,16 +383,20 @@ Actions workflow runs `typecheck` only (macOS runners are not enabled for Action
 so run this by hand after touching `beebeeb_uniffi.swift`, `BeebeebCore.xcframework`, or
 `repos/core/test-vectors/vectors.json`.
 
-**Known standing failure, task 1450 [P0], not caused by this KAT:** `testMasterKeyFromPassword`
-currently fails — mobile's vendored `BeebeebCore.xcframework` was last regenerated 2026-06-16, 8
-days before core commit `ce16525` raised `derive_master_key`'s Argon2id params to the canonical
-strong set, and has never been regenerated since (16 core crypto-relevant commits behind as of
-2026-09-22). Left RED on purpose (not skipped/weakened) — that's the true state of the shipped
-binary. The free `deriveMasterKey(password:salt:)` UniFFI export does not appear to be reachable
-from any mobile UI flow today (mobile login goes through OPAQUE, a separate primitive — see task
-1450 for the full grep evidence), so this is not believed to be an active prod vulnerability, but
-the binary needs regenerating via `build-ios.sh` + a full re-QA pass regardless. Track via task
-1450, not here.
+**Regenerated 2026-09-22 (task 1450 [P0]) from `repos/core` main `95da81b`.** The prior binary was
+last regenerated 2026-06-16 — 8 days before core commit `ce16525` raised `derive_master_key`'s
+Argon2id params to the canonical strong set — which made `testMasterKeyFromPassword` genuinely
+fail against the vectors this KAT (task 1382) was checking in on the untampered vector: mobile's
+Argon2id derivation was stale, not tampered data. The free `deriveMasterKey(password:salt:)` UniFFI
+export did not appear reachable from any mobile UI flow (mobile login goes through OPAQUE, a
+separate primitive — see task 1450 for the full grep evidence), so this was not believed to be an
+active prod vulnerability, but the binary was 3+ months / 16 core commits stale regardless. The
+regen is additive-only at the FFI symbol level: 124→127 exported functions, 3 new (Constellation
+transfer crypto, `transfer_derive_key`/`transfer_derive_sas_bytes`/`transfer_sas_to_words`, task
+0855a), 0 removed. All KAT families now pass for real, including `master_key_from_password` — no
+`XCTExpectFailure` wrapper remains in the suite. **After any future regen, re-run this section's
+symbol-diff check (`git diff` the two `beebeeb_uniffiFFI.h` files, or `comm` the sorted
+`uniffi_beebeeb_uniffi_fn_*` symbol lists) before shipping — the 0426 12-symbol-drift lesson.**
 
 ## API
 
