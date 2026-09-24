@@ -19,7 +19,7 @@
   <img src="marketing/01-files-drive.png" alt="beebeeb mobile — encrypted Drive on iOS" width="280" />
 </p>
 
-> **In active development — iOS-first.** Core screens and navigation are implemented; crypto integration (UniFFI) and camera backup are in progress. **iOS ships at launch; Android comes after launch** — the Android crypto module is currently a stub (every native crypto/keychain call throws `NotLinkedException`), so the app is not yet functional on Android.
+> **In active development — iOS-first.** Core screens and native encryption (UniFFI bindings to core) are implemented; the iOS app is in TestFlight testing. **iOS ships at launch; Android comes after launch** — the Android crypto module is currently a stub (every native crypto/keychain call throws `NotLinkedException`), so the app is not yet functional on Android.
 
 The [beebeeb](https://beebeeb.io) mobile app — browse, preview, back up, and share your encrypted files from your phone. All encryption runs natively via UniFFI bindings to [core](https://github.com/beebeeb-io/core) (Swift on iOS; the Kotlin/Android binding is a post-launch stub), not in JavaScript. The master key never leaves Rust and the keychain; the server only ever sees ciphertext.
 
@@ -28,8 +28,8 @@ The [beebeeb](https://beebeeb.io) mobile app — browse, preview, back up, and s
 Not on the App Store yet — the iOS build is currently **TestFlight only**. Android isn't
 functional yet (see the platform table below). [beebeeb.io/download](https://beebeeb.io/download)
 is the canonical place to check current availability across every platform; until iOS is
-public there, use [app.beebeeb.io](https://app.beebeeb.io) or the [CLI](https://github.com/beebeeb-io/cli)
-from a phone's browser.
+public there, use [app.beebeeb.io](https://app.beebeeb.io) in your phone's browser (or the
+[CLI](https://github.com/beebeeb-io/cli) on a computer).
 
 ## Features (planned and in progress)
 
