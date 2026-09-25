@@ -256,6 +256,11 @@ export type RootStackParamList = {
     // simulator. See beebeeb://dev/login-error in the linking config below.
     deleted_at?: string;
     shred_after?: string;
+    // Task 1551 — server task 1525's "you already have an account" signup
+    // email links to `{APP_URL}/login?email=<address>`. Prefilled by
+    // LoginScreen when present. See the production `login` path in the
+    // linking config below.
+    email?: string;
   } | undefined;
   TwoFactorChallenge: { partialToken: string };
   Signup: undefined;
@@ -366,7 +371,19 @@ const linking = {
         DeleteAccount: 'dev/delete-account',
         DevPlaintextPurge: 'dev/purge-plaintext-caches',
         Login: 'dev/login-error',
-      } : null),
+      } : {
+        // Task 1551 — server task 1525's "you already have an account"
+        // signup email links to `{APP_URL}/login?email=<address>`;
+        // app.beebeeb.io is already a universal-link domain (see
+        // SharedView/BackupInsights below), so this just needs a path
+        // registered for LoginScreen to read `route.params.email` and
+        // prefill the field. Kept OUT of the __DEV__ branch on purpose: one
+        // screen name can only own one linking path, and __DEV__ builds
+        // already depend on `dev/login-error` above for QA (task 1405) —
+        // real device QA / TestFlight (where __DEV__ is false) is what
+        // exercises this path. See task 1551 Notes for the open rung.
+        Login: 'login',
+      }),
       Tabs: {
         // Bare tab name → its tab. beebeeb://photos lands on Photos,
         // beebeeb://shared on Shared, etc. Files keeps the empty path so
