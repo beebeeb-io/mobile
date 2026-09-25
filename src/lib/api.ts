@@ -180,12 +180,29 @@ export async function clearToken(): Promise<void> {
   sessionGeneration += 1;
   cachedToken = null;
   cachedDeviceConfirmationSecret = null;
+  // Task 1531 [P1] (round 5 delta security review): clear the native
+  // App-Group mirror FIRST, before any JS-side token store removal.
+  // `mirrorSessionToAppGroup(null, null)` is what unbinds
+  // `NativeBackupEngine.currentAccountId` (see the CLEAR branch in
+  // BeebeebCryptoModule.swift). Corrected (round 6, finding N1): that CLEAR
+  // branch does NOT drop the cached master-key handle — it only writes
+  // `currentAccountId = nil` via the plain property setter, which never
+  // touches `masterKeyHandle`. The handle is released separately, by
+  // `NativeBackupEngine.stop()` (called from `disablePhotoBackup()` /
+  // `teardownAllBackup()` in the sign-out path — see `stopBackupEngines()`,
+  // backup-context.tsx) or by `clearAccountAndPurgeStaged()`/`bindAccount()`.
+  // If the process is killed mid sign-out, the ORIGINAL order (native
+  // clear last) could leave the JS token store already cleared while the
+  // native token/account mirror still held the outgoing account's — this
+  // order can only ever leave native cleared while JS still holds the old
+  // token, which every caller of `clearToken` already treats as "signed
+  // out" and will call again on the next launch/retry.
+  await BeebeebCrypto.mirrorSessionToAppGroup(null, null).catch(() => false);
   await tokenStore.remove(TOKEN_KEY);
   await tokenStore.remove(DEVICE_CONFIRMATION_SECRET_KEY);
   await clearCachedFileIndex().catch(() => {});
   await tokenStore.remove(MOBILE_IOS_BACKUP_CLIENT_SESSION_KEY);
   await BeebeebCrypto.mirrorBackupClientSession(null).catch(() => false);
-  await BeebeebCrypto.mirrorSessionToAppGroup(null, null).catch(() => false);
 }
 
 /** Fast check: is there a stored session token? */

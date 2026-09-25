@@ -84,8 +84,21 @@ final class PhotoBackupManager: NSObject {
 
   // MARK: - Enable / Disable
 
-  func enable(authToken: String, completion: (() -> Void)? = nil) {
+  func enable(authToken: String, userId: String, completion: (() -> Void)? = nil) {
     storedAuthToken = authToken
+    // Task 1531 [P2] round 6 (delta review 3, finding N6): removed the
+    // direct `NativeBackupEngine.shared.currentAccountId = userId` write
+    // that used to live here. This legacy manager's `enable(authToken:
+    // userId:completion:)` has no callers anywhere in the app (only
+    // `configure(parentFolderId:)` is ever called on `PhotoBackupManager
+    // .shared` — see BeebeebCryptoModule.swift's `configureBackupFolder`
+    // AsyncFunction) — `NativeBackupEngine` is the live camera-roll backup
+    // path, reached through `bindAccount(userId:)` (see that method's doc
+    // comment), which additionally purges mismatched staged ciphertext and
+    // drops the cached master-key handle that a bare property write here
+    // never did. `userId` is intentionally unused below now; kept as a
+    // parameter for API shape only, since this function has no live caller
+    // to break.
     PHPhotoLibrary.requestAuthorization(for: .readWrite) { [weak self] status in
       guard let self, status == .authorized || status == .limited else {
         completion?()
@@ -377,6 +390,19 @@ final class PhotoBackupManager: NSObject {
       completion(false)
       return
     }
+    // Task 1531 [P0]: `NativeEncryptedBackupUploader` refuses without an
+    // accountId — read it fresh right here, at the point the upload is
+    // actually kicked off, from the single shared source of truth (see
+    // `enable(authToken:userId:completion:)` above).
+    guard let accountId = NativeBackupEngine.shared.currentAccountId, !accountId.isEmpty else {
+      NSLog("[Beebeeb] photo backup aborted for \(localIdentifier): no current account id")
+      dbQueue.async {
+        guard let db = self.db else { return }
+        self.updateStatus(db: db, localIdentifier: localIdentifier, status: "failed", error: "No current account id")
+      }
+      completion(false)
+      return
+    }
 
     dbQueue.async {
       guard let db = self.db else { return }
@@ -389,7 +415,8 @@ final class PhotoBackupManager: NSObject {
       mimeType: mimeType,
       parentFolderId: parentFolderId,
       authToken: token,
-      serverBaseURL: serverBaseURL
+      serverBaseURL: serverBaseURL,
+      accountId: accountId
     ) { [weak self] result in
       guard let self else { completion(false); return }
       self.dbQueue.async {

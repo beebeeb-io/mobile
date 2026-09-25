@@ -7,6 +7,7 @@ import {
   disablePhotoBackup,
   disableContactsBackup,
   disableCalendarBackup,
+  teardownAllBackup,
   enablePhotoBackup,
   enableContactsBackup,
   enableCalendarBackup,
@@ -153,19 +154,46 @@ async function setScopedBackupPref(base: string, userId: string, value: string):
 }
 
 /**
+ * Task 1531 [P0]: whether `enableNativeBackup`'s camera_roll branch may call
+ * the native `enablePhotoBackup(token, userId)` bridge. The native engine
+ * tags every newly-staged asset with `userId` and, on `start()`, purges any
+ * staged-but-unuploaded asset tagged for a DIFFERENT account left over on
+ * this device (`purgeMismatchedStagedAssets` in NativeBackupEngine.swift) —
+ * without a known userId there is nothing to tag or compare, so the native
+ * call must not happen. Exported standalone (same pattern as
+ * backupPrefKey/stopBackupEngines below) so this guard is unit testable
+ * without rendering BackupProvider.
+ */
+export function canEnableNativeCameraBackup(userId: string | undefined | null): userId is string {
+  return typeof userId === 'string' && userId.length > 0;
+}
+
+/**
  * Stops every native backup engine and clears the mirrored client session.
  * Called when a BackupProvider instance unmounts (sign-out, or sign-in as a
  * different user — see the useEffect cleanup below) so the native engines
  * never keep running against a session token that no longer belongs to the
  * account that enabled them (task 1443). Exported standalone so it is unit
  * testable without rendering the provider.
+ *
+ * Task 1531 [P1] round 6 (delta review 3, finding N1): this used to call
+ * `disablePhotoBackup`/`disableContactsBackup`/`disableCalendarBackup`
+ * separately via `Promise.all`. `disablePhotoBackup`'s native body only
+ * purges staged ciphertext + clears the shared account when NEITHER
+ * Contacts nor Calendar is still bound — and Expo dispatches these native
+ * calls serially IN THE ORDER THEY WERE CALLED, so `disablePhotoBackup`
+ * (called first in that array) ALWAYS ran before
+ * `disableContactsBackup`/`disableCalendarBackup` had cleared their own
+ * bound state. The purge was therefore skipped on every sign-out with
+ * Contacts or Calendar backup enabled — not occasionally, every time.
+ * `teardownAllBackup()` disables all three surfaces and purges
+ * unconditionally in one native call, so there is no cross-call order left
+ * to get wrong.
  */
 export async function stopBackupEngines(): Promise<void> {
   if (Platform.OS === 'web') return;
   await Promise.all([
-    disablePhotoBackup().catch(() => {}),
-    disableContactsBackup().catch(() => {}),
-    disableCalendarBackup().catch(() => {}),
+    teardownAllBackup().catch(() => {}),
     clearMobileIosBackupClientSession().catch(() => {}),
   ]);
 }
@@ -322,23 +350,59 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
     });
 
     if (category === 'camera_roll') {
+      // Task 1531 [P0]: userId tags newly-staged assets with the account
+      // they were encrypted for, and lets the native engine purge any
+      // staged-but-unuploaded asset left over from a DIFFERENT account on
+      // this device before draining anything under this session. Without a
+      // known userId there is nothing to tag/compare against, so skip
+      // rather than call the native side with an empty account id.
+      if (!canEnableNativeCameraBackup(userId)) {
+        recordRuntimeTrace('backup.native.enable.deferred', {
+          category,
+          reason: 'no_user_id',
+          runNow: options.runNow !== false,
+        });
+        return;
+      }
       await setPhotoBackupIncludeVideos(includeVideosRef.current).catch(() => false);
       await mirrorBackupSessionForNative();
-      await enablePhotoBackup(token);
+      await enablePhotoBackup(token, userId);
     } else if (category === 'contacts') {
+      // Task 1531 [P0]: same account-binding rationale as camera_roll above
+      // — `canEnableNativeCameraBackup` is just a non-empty-string check
+      // despite its name, reused here so Contacts uploads are bound to an
+      // account the same way. Without a known userId there is nothing to
+      // bind, so skip rather than call the native side with no account id.
+      if (!canEnableNativeCameraBackup(userId)) {
+        recordRuntimeTrace('backup.native.enable.deferred', {
+          category,
+          reason: 'no_user_id',
+          runNow: options.runNow !== false,
+        });
+        return;
+      }
       if (options.runNow === false) {
-        await resumeContactsBackup(token);
+        await resumeContactsBackup(token, userId);
       } else {
-        await enableContactsBackup(token);
+        await enableContactsBackup(token, userId);
       }
     } else {
+      // Task 1531 [P0]: same account-binding rationale as camera_roll above.
+      if (!canEnableNativeCameraBackup(userId)) {
+        recordRuntimeTrace('backup.native.enable.deferred', {
+          category,
+          reason: 'no_user_id',
+          runNow: options.runNow !== false,
+        });
+        return;
+      }
       if (options.runNow === false) {
-        await resumeCalendarBackup(token);
+        await resumeCalendarBackup(token, userId);
       } else {
-        await enableCalendarBackup(token);
+        await enableCalendarBackup(token, userId);
       }
     }
-  }, [isUnlocked]);
+  }, [isUnlocked, userId]);
 
   // Load persisted preferences on mount — scoped to the signed-in user
   // (task 1443). No userId means this instance is the signed-out slot
@@ -567,22 +631,30 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
 
       const token = await getStoredToken();
       if (!token) return;
+      // Task 1531 [P2-4]: `triggerImmediateBackup` binds/checks the engine's
+      // account with `userId` the same way `enablePhotoBackup` does — without
+      // a known userId there is nothing to bind, so skip rather than call
+      // the native side with no account id (mirrors the `canEnableNativeCameraBackup`
+      // guard already used for `enablePhotoBackup` below).
+      if (!canEnableNativeCameraBackup(userId)) return;
       try {
         const { categoryFolderId } = await ensureBackupFolders('camera_roll');
         await configureBackupFolder('camera_roll', categoryFolderId);
         await setPhotoBackupIncludeVideos(includeVideosRef.current).catch(() => false);
         await mirrorBackupSessionForNative();
-        const progress = await triggerImmediateBackup(token);
+        const progress = await triggerImmediateBackup(token, userId);
         applyNativeProgress(progress);
       } catch (err) {
         console.warn('[backup] native photo backup warm-up failed:', err);
-        await enablePhotoBackup(token);
+        if (canEnableNativeCameraBackup(userId)) {
+          await enablePhotoBackup(token, userId);
+        }
         await refreshNativeProgress().catch(() => {});
       }
     } catch (err) {
       console.warn('[backup] triggerBackupNow failed:', err);
     }
-  }, [applyNativeProgress, refreshNativeProgress, wifiOnly]);
+  }, [applyNativeProgress, refreshNativeProgress, wifiOnly, userId]);
 
   const value: BackupContextValue = {
     isPhotoBackupEnabled,

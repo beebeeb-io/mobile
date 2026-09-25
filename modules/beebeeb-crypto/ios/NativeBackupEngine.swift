@@ -1,5 +1,6 @@
 import AVFoundation
 import ActivityKit
+import CryptoKit
 import Foundation
 import Photos
 import SDWebImage
@@ -21,6 +22,7 @@ private let backupReminderLastSentKey = "io.beebeeb.backupNotifications.openAppR
 private let backupReminderCooldownSeconds: TimeInterval = 24 * 60 * 60
 private let backupReminderDelaySeconds: TimeInterval = 15 * 60
 private let backupClientSessionIdKey = "io.beebeeb.backupClientSessionId"
+private let backupCurrentAccountIdKey = "io.beebeeb.backupCurrentAccountId"
 private let backupHeartbeatCadenceSeconds: TimeInterval = 30
 private let backupSelectedAlbumIdsKey = "io.beebeeb.photoBackupSelectedAlbumIds"
 private let backupIncludeVideosKey = "io.beebeeb.photoBackupIncludeVideos"
@@ -89,6 +91,12 @@ enum BackupError: LocalizedError {
   case databaseUnavailable
   case noMasterKey
   case notConfigured
+  /// Task 1531 [P0] round 3: `currentAccountId` is nil/empty — refused
+  /// because there is nothing to tag a newly-staged asset with or compare
+  /// an already-staged asset's `staged_account_id` against. Distinct from
+  /// `.notConfigured` (missing token/API URL) so the log/diagnostic trail
+  /// tells the two conditions apart.
+  case accountUnknown
   case invalidServerURL
   case invalidResponse
   case httpStatus(Int, String)
@@ -112,6 +120,7 @@ enum BackupError: LocalizedError {
     case .databaseUnavailable: return "Backup database unavailable"
     case .noMasterKey: return "Master key not available — sign in required"
     case .notConfigured: return "Backup engine not configured (missing token or API URL)"
+    case .accountUnknown: return "Backup engine has no current account id — refusing to stage or upload"
     case .invalidServerURL: return "Invalid server URL for backup"
     case .invalidResponse: return "Invalid server response"
     case .httpStatus(let code, let body):
@@ -150,6 +159,19 @@ struct BackupAssetRow {
   /// chunks and completes against the SAME session. `remoteFileId` is still used
   /// for the GET /files/{id} completion check and thumbnails.
   let stagedUploadSessionId: String?
+  /// The signed-in account (user id) whose master key encrypted the staged
+  /// chunks + name envelope, captured at STAGE time (task 1531 [P0]). `nil`
+  /// for rows staged before this column existed (pre-migration) or when no
+  /// account id was available at stage time. Lead review on this task
+  /// (2026-09-25) corrected an earlier version of this fix that trusted a
+  /// `nil` tag: a device that staged under account A pre-migration, then
+  /// switched to account B, has exactly this NULL-tagged state — nil does
+  /// NOT mean "same account", it means "unknown", and unknown staged
+  /// ciphertext must never be uploaded under a session that didn't encrypt
+  /// it. `purgeMismatchedStagedAssets` therefore treats `nil` the same as a
+  /// non-nil mismatch: both get dropped and re-staged. Only a value EQUAL to
+  /// the current session's account id is trusted.
+  let stagedAccountId: String?
 }
 
 private struct BackgroundChunkTaskDescription: Codable {
@@ -284,6 +306,16 @@ final class NativeBackupEngine: NSObject {
 
   private let queue = DispatchQueue(label: "io.beebeeb.backup.engine", qos: .utility)
   private let dbQueue = DispatchQueue(label: "io.beebeeb.backup.engine.db", qos: .utility)
+  /// Task 1531 [P2-C] (round 5 delta review): guards the read-compare-write
+  /// of `currentAccountId` + the `accountGeneration` bump together. Without
+  /// it, two near-simultaneous writers (e.g. a JS-driven `bindAccount` call
+  /// racing a `BGProcessingTask`'s own account guard reading the property)
+  /// could interleave a Keychain read from one with a Keychain write from
+  /// the other, corrupting the "only bump on a REAL change" comparison
+  /// below, and `accountGeneration` itself (a plain `Int`, not atomic) has
+  /// no other synchronization — every read of it also goes through
+  /// `accountGenerationSnapshot()` below rather than the bare property.
+  private let accountIdLock = NSLock()
   private var backgroundSession: URLSession!
   private var metadataSession: URLSession!
   private var db: OpaquePointer?
@@ -293,6 +325,16 @@ final class NativeBackupEngine: NSObject {
   private var uploadTaskMap: [Int: String] = [:] // URLSessionTask.taskIdentifier -> localAssetId
   private var drainTask: Task<Void, Never>?
   private var drainLoopGeneration = 0
+  /// Task 1531 [P1-3]: bumped every time `currentAccountId` is written (set
+  /// to a new account OR cleared to nil) — see that property's setter. A
+  /// `BGProcessingTask` can capture this at entry and, after the account/
+  /// purge guard passes, compare again before flipping `isRunning` off at
+  /// its own exit: if a NEWER `start()`/account-switch has begun in the
+  /// meantime the captured generation is stale, and the exit must NOT stop
+  /// what is now a different (or differently-scoped) engine run. Mirrors the
+  /// existing `drainLoopGeneration` pattern above, one level up (account
+  /// epoch rather than drain-loop instance).
+  private var accountGeneration = 0
   private var pendingDrainWakeReason: String?
   private let batchProcessingQueue = DispatchQueue(label: "io.beebeeb.backup.engine.batch", qos: .utility)
   // PHKit picks its own callback queue (often main when the app is foregrounded).
@@ -415,6 +457,59 @@ final class NativeBackupEngine: NSObject {
         KeychainManager.deleteString(key: backupClientSessionIdKey)
       }
     }
+  }
+
+  /// The user id of the account the engine is currently authorized to upload
+  /// for (task 1531 [P0]). Set by `enablePhotoBackup(authToken:userId:)`
+  /// alongside `token`, and — like `token`/`apiBaseUrl` — persisted in the
+  /// Keychain rather than an in-memory var: a `BGProcessingTask` can relaunch
+  /// this singleton in the background after the app process was killed, and
+  /// an in-memory-only value would read back `nil` there, defeating the
+  /// mismatch check in `purgeMismatchedStagedAssets` / `uploadSingleAsset`
+  /// below on exactly the resumed-background-upload path task 1443 already
+  /// had to fix once for the analogous "keep running against a different
+  /// account's token" bug.
+  var currentAccountId: String? {
+    get { KeychainManager.loadString(key: backupCurrentAccountIdKey) }
+    set {
+      accountIdLock.lock()
+      defer { accountIdLock.unlock() }
+      // Task 1531 [P2-C] (round 5 delta review): normalize empty-string the
+      // same way the get side effectively does (an empty string can never
+      // be read back — `KeychainManager.loadString` never returns "", and
+      // the delete-branch below is taken for "" too), so the "did this
+      // actually change" comparison just below can't be fooled by a
+      // nil-vs-"" mismatch that isn't a real change.
+      let normalizedNew: String? = (newValue?.isEmpty == false) ? newValue : nil
+      let previous = KeychainManager.loadString(key: backupCurrentAccountIdKey)
+      guard previous != normalizedNew else { return }
+      if let normalizedNew {
+        try? KeychainManager.storeString(normalizedNew, key: backupCurrentAccountIdKey)
+      } else {
+        KeychainManager.deleteString(key: backupCurrentAccountIdKey)
+      }
+      // Task 1531 [P1-3]: a REAL change is a new account epoch — see
+      // `accountGeneration`'s doc comment above. Round 5 (P2-C) narrowed
+      // this from "every write" to "every write that actually changes the
+      // value": a redundant re-assignment of the SAME account id (e.g. a
+      // second `bindAccount` call for an already-bound user prior to that
+      // method's own no-op guard, or any other direct-assignment call site)
+      // used to bump the epoch anyway, which could invalidate a
+      // `BGProcessingTask`'s just-captured `taskGeneration` for no real
+      // account change and spuriously stop it from flipping `isRunning`
+      // back off at its own exit (see `handleBackgroundTask`).
+      accountGeneration += 1
+    }
+  }
+
+  /// Thread-safe read of `accountGeneration` — see `accountIdLock`'s doc
+  /// comment. Every comparison against a previously-captured generation
+  /// value (the `BGProcessingTask` staleness check in `handleBackgroundTask`)
+  /// goes through this rather than the bare property.
+  private func accountGenerationSnapshot() -> Int {
+    accountIdLock.lock()
+    defer { accountIdLock.unlock() }
+    return accountGeneration
   }
 
   var selectedPhotoAlbumIds: [String] {
@@ -1164,12 +1259,139 @@ final class NativeBackupEngine: NSObject {
     metadataSession = URLSession(configuration: config)
   }
 
+  // MARK: - Account binding
+
+  /// Task 1531 [P0] round 5 (delta security review, finding P1-A): the
+  /// single engine-owned entry point every "backup is now authorized for
+  /// THIS account" call must funnel through. Before this method existed,
+  /// `enablePhotoBackup` wrote `currentAccountId = userId` directly (and
+  /// relied on `start()`'s own purge), while `enableContactsBackup` /
+  /// `enableCalendarBackup` never touched `currentAccountId` at all — only
+  /// `ContactsBackupManager`/`CalendarBackupManager`'s own PRIVATE
+  /// `accountId` var. `NativeEncryptedBackupUploader.requireAccountBinding`
+  /// reads ONLY this engine's `currentAccountId` (see that file), so a
+  /// Contacts-only user (Camera Roll backup never enabled) had
+  /// `currentAccountId == nil` forever and every Contacts/Calendar upload
+  /// refused with `.accountMismatch` — "Contacts/Calendar never back up
+  /// unless Camera Roll backup is on".
+  ///
+  /// Idempotent when `userId` already matches the stored account (the
+  /// common case: re-enabling the same surface, or a second manual trigger
+  /// mid-session) — it does nothing, so the in-memory `masterKeyHandle`
+  /// stays warm and no redundant purge sweep runs. On an actual account
+  /// change (including the very first bind, where the stored value is
+  /// nil):
+  ///   1. purge every staged-but-unuploaded asset whose `staged_account_id`
+  ///      doesn't (yet) match `userId` — reuses `purgeMismatchedStagedAssets`,
+  ///      the SAME sweep `start()` runs on its own account guard, so a
+  ///      `bindAccount` immediately followed by `start()` (as
+  ///      `enablePhotoBackup` now does) makes the second sweep a cheap
+  ///      single-query no-op;
+  ///   2. persists the new account id (bumps `accountGeneration` — see its
+  ///      setter — only because this IS a real change);
+  ///   3. drops the cached `masterKeyHandle` (closes P2-D): a handle warmed
+  ///      for the PREVIOUS account must never be reused to encrypt/stage a
+  ///      byte under the new one.
+  ///
+  /// Must NOT be called from `dbQueue` — it calls `dbQueue.sync` itself.
+  ///
+  /// Task 1531 [P2] round 6 (delta review 3, finding N4): the
+  /// `currentAccountId != userId` check and the `currentAccountId = userId`
+  /// write below are NOT wrapped in a single critical section — the getter
+  /// takes no lock at all (only the setter takes `accountIdLock`, and only
+  /// around its own compare-and-write), so this method's check-then-set is
+  /// not atomic against a concurrent caller on its own. That is safe today
+  /// ONLY because every call site is reached from an Expo `AsyncFunction`
+  /// closure (`enablePhotoBackup`/`enableContactsBackup`/
+  /// `enableCalendarBackup`/`resumeContactsBackup`/`resumeCalendarBackup` in
+  /// BeebeebCryptoModule.swift, or `ContactsBackupManager.enable`/
+  /// `CalendarBackupManager.enable` called synchronously from inside one of
+  /// those) — Expo Modules dispatches `AsyncFunction` bodies one at a time,
+  /// in call order, on a single serial queue (see the round-6 finding this
+  /// note documents, N1: `stopBackupEngines`'s `disablePhotoBackup` vs.
+  /// `disableContactsBackup`/`disableCalendarBackup` race analysis relies
+  /// on the SAME guarantee). If a future call site ever invokes
+  /// `bindAccount` from anywhere OTHER than that serial queue (a
+  /// `BGProcessingTask` handler, a raw `DispatchQueue.global` hop, etc.),
+  /// this check-then-set becomes a real TOCTOU race and must be wrapped
+  /// under `accountIdLock` (using a re-entrant lock, since the
+  /// `currentAccountId` setter already acquires the same lock internally —
+  /// a plain `NSLock` here would deadlock).
+  func bindAccount(userId: String) {
+    guard !userId.isEmpty else { return }
+    guard currentAccountId != userId else { return }
+    dbQueue.sync { purgeMismatchedStagedAssets(currentAccountId: userId) }
+    currentAccountId = userId
+    masterKeyHandle = nil
+    // Task 1531 [P2] round 6 (finding N6): `RuntimeTrace.sanitize` redacts
+    // token/password/secret/key/cipher-/plaintext-named fields but NOT
+    // "userId" — the raw account id was landing unredacted in the on-device
+    // log (NSLog + os.log, always-on in DEBUG). Hash it, same SHA-256 hex
+    // pattern as `ContactsBackupManager.hashKey`/
+    // `CalendarBackupManager.stateKeyComponent`: still useful to correlate
+    // repeated binds for the SAME account across trace events, without
+    // logging the id itself.
+    let hashedUserId = SHA256.hash(data: Data(userId.utf8)).map { String(format: "%02x", $0) }.joined()
+    RuntimeTrace.event("backup.native.bind_account", ["userIdHash": hashedUserId])
+  }
+
+  /// Drop the engine's OWN cached `MasterKeyHandle` without touching
+  /// `BeebeebCryptoBridge`'s separate app-wide cache (that one has its own
+  /// lifecycle — sign-out / `releaseHandle` — and callers that need to
+  /// invalidate it use `BeebeebCryptoBridge.clearCachedMasterKey()`
+  /// directly). Exposed for call sites that must invalidate the engine's
+  /// copy WITHOUT going through `bindAccount` or
+  /// `clearAccountAndPurgeStaged` — task 1531 [P1] round 5:
+  /// `mirrorSessionToAppGroup`'s token-changed branch in
+  /// BeebeebCryptoModule.swift, where a brand-new login token arrives with
+  /// no `userId` to bind to yet.
+  func dropCachedMasterKeyHandle() {
+    masterKeyHandle = nil
+  }
+
   // MARK: - Lifecycle
 
   /// Start the backup engine. Loads the master key from keychain, registers
   /// the photo library observer, and begins draining the upload queue.
+  ///
+  /// Task 1531 [P0] round 3 (lead review): refuses outright — no master-key
+  /// load, no purge, no drain — when `currentAccountId` is nil/empty. Without
+  /// a known account there is nothing to tag a newly-staged asset with or
+  /// compare an already-staged one against, so `purgeMismatchedStagedAssets`
+  /// itself already no-ops on a nil accountId (see its guard) — starting
+  /// anyway would have skipped the purge sweep and let `processBatch` reach
+  /// `uploadSingleAsset` with no account to check against. The queue is left
+  /// untouched (not failed, not cleared) so a subsequent `enablePhotoBackup`
+  /// call — which sets `currentAccountId` immediately before calling this —
+  /// picks the same pending rows back up.
   func start() {
+    guard let accountId = currentAccountId, !accountId.isEmpty else {
+      RuntimeTrace.event("backup.native.start.refused_no_account", [
+        "isRunning": isRunning
+      ])
+      NSLog("[NativeBackupEngine] No current account id — refusing to start (queue kept for later)")
+      return
+    }
+
     if isRunning {
+      // Task 1531 [P2-C] (round 5 delta review): `handleBackgroundTask`
+      // (the `BGProcessingTask` handler) can flip `isRunning = true`
+      // directly, on a code path that never calls this method — it does
+      // NOT register the photo-library change observer or start the
+      // network-path monitor. A subsequent JS-driven `start()` call (e.g.
+      // `enablePhotoBackup` after the app is foregrounded) used to see
+      // `isRunning == true` here and return after only waking the drain
+      // loop, leaving BOTH unregistered for the rest of the app session —
+      // camera-roll changes made while foregrounded would go undetected
+      // until the next full relaunch. Finish that setup now; both helpers
+      // are idempotent/guarded so calling them on an already-running
+      // engine that DID go through the full path below is a cheap no-op.
+      registerPhotoObserver()
+      #if os(iOS)
+      if networkMonitor == nil {
+        startNetworkMonitor()
+      }
+      #endif
       wakeDrainLoop(reason: "start")
       return
     }
@@ -1201,6 +1423,17 @@ final class NativeBackupEngine: NSObject {
       return
     }
 
+    // Task 1531 [P0]: before draining anything, drop any staged asset whose
+    // ciphertext was encrypted for a DIFFERENT account than the one about to
+    // upload (`currentAccountId`, set by `enablePhotoBackup(authToken:userId:)`
+    // just before this call). Closes the window where the very first batch
+    // for a newly-signed-in account resumes another account's stale staged
+    // upload. See purgeMismatchedStagedAssets for the full root-cause note.
+    // Uses the SAME `accountId` the guard above just validated (rather than
+    // re-reading the Keychain) so the purge can never run against a value
+    // that changed between the guard and here.
+    dbQueue.sync { purgeMismatchedStagedAssets(currentAccountId: accountId) }
+
     isRunning = true
     perfLog("start", [
       "total": totalAssets,
@@ -1226,6 +1459,25 @@ final class NativeBackupEngine: NSObject {
   /// biometric prompt. In-flight NSURLSession background uploads continue
   /// independently.
   func stop() {
+    // Task 1531 [P1-3]: release the engine-owned master-key handle and
+    // cancel any in-flight BGProcessingTask work FIRST, unconditionally —
+    // BEFORE the `isRunning` early-return below. The old code put both
+    // inside the `guard isRunning else { return }` block, so a second
+    // `stop()` call (or a `BGProcessingTask` that set `masterKeyHandle`
+    // directly — see `handleBackgroundTask` — without ever setting
+    // `isRunning` via `start()`) skipped this release entirely: the OLD
+    // account's key handle could sit in `masterKeyHandle` past the point
+    // its caller believed the engine was fully stopped. Keep the app-wide
+    // `BeebeebCryptoBridge` cache — that one is intentionally retained while
+    // the user stays unlocked (see the doc comment below).
+    masterKeyHandle = nil
+    backgroundTaskHandle?.cancel()
+    backgroundTaskHandle = nil
+    RuntimeTrace.event("backup.native.stop.master_key_handle_released", [
+      "bridgeCacheRetained": BeebeebCryptoBridge.hasCachedMasterKey(),
+      "wasRunning": isRunning
+    ])
+
     guard isRunning else { return }
     isRunning = false
     isPaused = false
@@ -1240,11 +1492,6 @@ final class NativeBackupEngine: NSObject {
     }
     stopNetworkMonitor()
 
-    // Clear engine-owned state, but keep the app-wide unlocked-session cache.
-    masterKeyHandle = nil
-    RuntimeTrace.event("backup.native.stop.master_key_handle_released", [
-      "bridgeCacheRetained": BeebeebCryptoBridge.hasCachedMasterKey()
-    ])
     uploadTaskMap.removeAll()
 
     // Recover any rows stuck in 'uploading' state
@@ -1456,8 +1703,43 @@ final class NativeBackupEngine: NSObject {
         self.backgroundTaskHandle = nil
       }
 
+      // Task 1531 [P0] round 3 (lead review): this handler is a SEPARATE
+      // engine entry point from `start()` — the `BGTaskScheduler` can invoke
+      // it directly after an app relaunch, before any JS call (including
+      // `enablePhotoBackup`) has run this session, and it sets `isRunning`
+      // itself below rather than going through `start()`'s guard. Without an
+      // independent check here, a stale/no-account state would still be able
+      // to reach `processBatch` → `uploadSingleAsset` from this path. Checked
+      // and purged FIRST, before the master-key work, so a nil account
+      // refuses outright — no master key touched, no staging, no upload —
+      // and the OS-scheduled task simply completes as a no-op.
+      guard let accountId = self.currentAccountId, !accountId.isEmpty else {
+        RuntimeTrace.event("backup.native.background_task.refused_no_account")
+        NSLog("[NativeBackupEngine] Background task: no current account id — refusing to run")
+        self.completeBackgroundTaskOnce(task, success: false)
+        return
+      }
+      // Task 1531 [P1-3]: captured AFTER the account guard above, so this is
+      // "the account epoch this task is entitled to act under". Compared
+      // again before this task's exit is allowed to flip `isRunning` off
+      // (below) — see `accountGeneration`'s doc comment.
+      let taskGeneration = self.accountGenerationSnapshot()
+      self.dbQueue.sync { self.purgeMismatchedStagedAssets(currentAccountId: accountId) }
+
       // Ensure master key is available for background processing
       if self.masterKeyHandle == nil {
+        // Task 1531 [P1-3]: re-check `currentAccountId` immediately before
+        // adopting the bridge's cached handle — the account guard above ran
+        // moments earlier and is not itself atomic with this read. A handle
+        // adopted for the wrong account is exactly the bug `processBatch`'s
+        // `batchAccountId` binding guards against downstream, but refusing
+        // here means a switch in this narrow window never gets as far as
+        // touching a key at all.
+        guard self.currentAccountId == accountId else {
+          RuntimeTrace.event("backup.native.background_task.refused_account_changed")
+          self.completeBackgroundTaskOnce(task, success: false)
+          return
+        }
         if let cached = BeebeebCryptoBridge.cachedMasterKeyIfAvailable() {
           self.masterKeyHandle = cached
           RuntimeTrace.event("backup.native.background_task.master_key_ready", [
@@ -1508,7 +1790,12 @@ final class NativeBackupEngine: NSObject {
         self.completeBackgroundTaskOnce(task, success: false)
       }
 
-      if !batchStart {
+      // Task 1531 [P1-3]: only THIS task's own idle→running transition gets
+      // to idle it back. If `self.accountGeneration` has moved since
+      // `taskGeneration` was captured, a newer `start()`/account-switch
+      // began while this task's `processBatch` was awaiting — that newer
+      // run owns `isRunning` now, and this stale task must not stop it.
+      if !batchStart && self.accountGenerationSnapshot() == taskGeneration {
         self.isRunning = false
         self.updateBackupStatusSurfaces()
         self.scheduleOpenAppReminderIfNeeded()
@@ -1886,6 +2173,25 @@ final class NativeBackupEngine: NSObject {
     guard let authToken = token, let baseURL = apiBaseUrl else {
       throw BackupError.notConfigured
     }
+    // Task 1531 [P1-2]: captured ONCE, in the same breath as `masterKey` and
+    // `authToken` above, and threaded through as `batchAccountId` to every
+    // asset this batch processes — instead of `uploadSingleAsset` /
+    // `stageEncryptedAsset` re-reading `currentAccountId` fresh at their own,
+    // later call time. Without this, an in-flight batch that started under
+    // account A (its `masterKey`/`authToken` are A's, captured right here)
+    // could have `currentAccountId` flip to B mid-batch — e.g. a fast
+    // sign-out/sign-in-as-B while this batch's long encrypt/upload work is
+    // still in progress — and a later, fresh re-read would tag the
+    // A-encrypted staged row as belonging to B. `batchAccountId` is what
+    // gets WRITTEN to `staged_account_id`; the LIVE `currentAccountId` is
+    // still re-checked before staging and before each upload (see
+    // `uploadSingleAsset`), so a genuine switch mid-batch is refused rather
+    // than mis-tagged.
+    guard let batchAccountId = currentAccountId, !batchAccountId.isEmpty else {
+      RuntimeTrace.event("backup.native.batch.refused_no_account")
+      NSLog("[NativeBackupEngine] processBatch: no current account id — refusing batch")
+      return 0
+    }
 
     if !beginBatchProcessing() {
       perfLog("batch.skip", ["reason": "already-processing", "limit": limit])
@@ -1930,7 +2236,8 @@ final class NativeBackupEngine: NSObject {
               asset,
               masterKey: masterKey,
               authToken: authToken,
-              baseURL: baseURL
+              baseURL: baseURL,
+              batchAccountId: batchAccountId
             )
           }
         }
@@ -2052,9 +2359,38 @@ final class NativeBackupEngine: NSObject {
     _ asset: BackupAssetRow,
     masterKey: MasterKeyHandle,
     authToken: String,
-    baseURL: String
+    baseURL: String,
+    /// Task 1531 [P1-2]: the account `masterKey`/`authToken` were captured
+    /// for, frozen once at `processBatch`'s own start — NOT a fresh read of
+    /// `currentAccountId` here. Used both as the value newly-staged rows get
+    /// tagged with, and as the baseline the LIVE `currentAccountId` must
+    /// still match at each checkpoint below.
+    batchAccountId: String
   ) async -> Bool {
     guard isRunning && !Task.isCancelled else { return false }
+
+    // Task 1531 [P1-2]: refuse outright — no staging, no upload — unless the
+    // LIVE `currentAccountId` still matches the account this batch's
+    // `masterKey`/`authToken` were captured for. Before this, the guard only
+    // checked that `currentAccountId` was non-nil (a fresh read at THIS
+    // call's own time, not the batch's), which could pass even after the
+    // account switched mid-batch — an `if let runningAccount =
+    // currentAccountId, staged.stagedAccountId != runningAccount` further
+    // down would then tag/compare against the NEW account while still
+    // encrypting/uploading with the OLD batch's key+token. A nil OR
+    // different account is not "no opinion, upload it anyway"; it is
+    // "cannot prove this ciphertext still belongs to the account it's about
+    // to be tagged/uploaded as".
+    guard let runningAccountId = currentAccountId, runningAccountId == batchAccountId else {
+      RuntimeTrace.event("backup.native.upload.refused_no_account", [
+        "assetType": asset.assetType,
+        "batchAccount": batchAccountId,
+        "liveAccount": currentAccountId ?? "(nil)"
+      ])
+      NSLog("[NativeBackupEngine] Account changed since batch start — refusing to upload/stage: \(asset.localAssetId)")
+      return false
+    }
+
     perfLog("asset.start", [
       "assetType": asset.assetType,
       "retry": asset.retryCount
@@ -2062,12 +2398,43 @@ final class NativeBackupEngine: NSObject {
 
     do {
       if let staged = dbQueue.sync(execute: { getStagedAsset(localAssetId: asset.localAssetId) }) {
+        // Task 1531 [P0] belt-and-braces: `start()` already sweeps mismatched
+        // (and untagged/NULL — lead review 2026-09-25) staged assets before
+        // the drain loop can reach them, but re-check here too so this path
+        // is safe even if it's ever reached without going through `start()`
+        // first (defense in depth, not the primary fix — see
+        // purgeMismatchedStagedAssets). `batchAccountId` is guaranteed
+        // non-empty by the guard above, so `staged.stagedAccountId !=
+        // batchAccountId` is a plain String vs Optional<String> compare: a
+        // `nil` stagedAccountId is UNTRUSTED, not "same account", so it
+        // compares unequal and gets refused exactly like an explicit
+        // mismatch.
+        if staged.stagedAccountId != batchAccountId {
+          RuntimeTrace.event("backup.native.staged_account_mismatch.refused_upload", [
+            "stagedForAccount": staged.stagedAccountId ?? "(untagged/pre-migration)",
+            "currentAccount": batchAccountId
+          ])
+          dbQueue.sync {
+            if let stagedDir = staged.stagedDir {
+              removeStagedDirectory(stagedDir: stagedDir, fileId: staged.stagedFileId ?? "")
+            }
+            clearStagedStateForRestage(
+              assetId: asset.localAssetId,
+              error: "Re-encrypting: staged ciphertext not verified for this account"
+            )
+          }
+          onFileStatus?(asset.localAssetId, "pending", nil, nil)
+          NSLog("[NativeBackupEngine] Refused to upload staged asset encrypted for a different account: \(asset.localAssetId)")
+          return false
+        }
+
         updateBackupStatusSurfaces(reason: "Uploading encrypted backup")
         return try await uploadStagedAsset(
           staged,
           authToken: authToken,
           baseURL: baseURL,
-          masterKey: masterKey
+          masterKey: masterKey,
+          batchAccountId: batchAccountId
         )
       }
 
@@ -2184,7 +2551,8 @@ final class NativeBackupEngine: NSObject {
         nameEncrypted: nameEncrypted,
         mimeType: mimeType,
         originalSize: resolvedOriginalSize,
-        chunkPaths: chunkPaths
+        chunkPaths: chunkPaths,
+        accountId: batchAccountId
       )
       chunkPaths.removeAll()
       updateBackupStatusSurfaces(reason: "Uploading encrypted backup")
@@ -2193,7 +2561,8 @@ final class NativeBackupEngine: NSObject {
         staged,
         authToken: authToken,
         baseURL: baseURL,
-        masterKey: masterKey
+        masterKey: masterKey,
+        batchAccountId: batchAccountId
       )
 
     } catch BackupError.assetNotFound {
@@ -2358,14 +2727,42 @@ final class NativeBackupEngine: NSObject {
     return stagedBytesOnDisk() + needed <= maxStagedBackupBytes
   }
 
+  /// Task 1531 [P1-2]: belt-and-braces re-check, same reasoning as
+  /// `uploadSingleAsset`'s top-of-function guard — this is the ONLY place a
+  /// fresh staged row is created (`stagedAccountId:` below), so it must
+  /// refuse independently of its caller having already checked. Refuses
+  /// BEFORE any chunk file is moved into the staging directory (no disk
+  /// write, no DB row) rather than staging untagged and hoping a later sweep
+  /// catches it.
+  ///
+  /// `accountId` is the caller's `batchAccountId` (the account
+  /// `processBatch` captured its `masterKey`/`authToken` for) — NOT a fresh
+  /// read taken here. It is what gets WRITTEN as `stagedAccountId` below, so
+  /// the tag always matches the key that actually did the encrypting. The
+  /// LIVE `currentAccountId` is re-checked against it right here, right
+  /// before the write, so an account switch between `processBatch`'s
+  /// capture and this exact moment (the encrypt step above can take a
+  /// while for a large video) is refused rather than silently tagged with
+  /// a value that no longer describes who's signed in.
   private func stageEncryptedAsset(
     asset: BackupAssetRow,
     fileId: String,
     nameEncrypted: String,
     mimeType: String?,
     originalSize: Int,
-    chunkPaths: [String]
+    chunkPaths: [String],
+    accountId: String
   ) throws -> BackupAssetRow {
+    guard !accountId.isEmpty, currentAccountId == accountId else {
+      RuntimeTrace.event("backup.native.stage.refused_no_account", [
+        "assetId": asset.localAssetId,
+        "batchAccount": accountId,
+        "liveAccount": currentAccountId ?? "(nil)"
+      ])
+      NSLog("[NativeBackupEngine] Account changed since batch start — refusing to stage: \(asset.localAssetId)")
+      throw BackupError.accountUnknown
+    }
+
     let root = try stagingRootDirectory()
     let dir = root.appendingPathComponent(fileId, isDirectory: true)
     try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -2389,7 +2786,8 @@ final class NativeBackupEngine: NSObject {
         isMediaValue: mediaFlag(assetType: asset.assetType, mimeType: mimeType),
         originalSize: Int64(originalSize),
         chunkCount: stagedPaths.count,
-        stagedDir: dir.path
+        stagedDir: dir.path,
+        stagedAccountId: accountId
       )
       replaceStagedChunks(
         assetId: asset.localAssetId,
@@ -2407,12 +2805,28 @@ final class NativeBackupEngine: NSObject {
     _ asset: BackupAssetRow,
     authToken: String,
     baseURL: String,
-    masterKey: MasterKeyHandle
+    masterKey: MasterKeyHandle,
+    /// Task 1531 [P1-2]: the account this batch (and this specific staged
+    /// row — both call sites already verified `asset.stagedAccountId ==
+    /// batchAccountId` before calling in) is trusted for. Re-checked against
+    /// the LIVE `currentAccountId` right before any network call below, and
+    /// again right before the upload is marked complete — the loop that PUTs
+    /// chunks can run long enough for the account to change mid-upload.
+    batchAccountId: String
   ) async throws -> Bool {
     guard let fileId = asset.stagedFileId,
           let nameEncrypted = asset.stagedNameEncrypted,
           let stagedDir = asset.stagedDir else {
       dbQueue.sync { markPending(assetId: asset.localAssetId, error: "Missing staged backup metadata") }
+      return false
+    }
+    guard currentAccountId == batchAccountId else {
+      RuntimeTrace.event("backup.native.upload_staged.refused_account_changed", [
+        "assetId": asset.localAssetId,
+        "batchAccount": batchAccountId,
+        "liveAccount": currentAccountId ?? "(nil)"
+      ])
+      NSLog("[NativeBackupEngine] Account changed since batch start — refusing to upload staged asset: \(asset.localAssetId)")
       return false
     }
 
@@ -2591,6 +3005,25 @@ final class NativeBackupEngine: NSObject {
       let unreconciled = dbQueue.sync { getPendingStagedChunks(assetId: asset.localAssetId) }
         .map { $0.index }
       throw BackupError.unreconciledChunks(unreconciled)
+    }
+
+    // Task 1531 [P1-2]: re-check right before the one irreversible step. The
+    // chunk PUT loop above can run long enough (large video, slow network)
+    // for the account to change mid-upload; refusing here — before
+    // `upload/complete` and before `markUploadComplete` writes the local
+    // row as done — means a stale upload never gets marked finished under
+    // the wrong account's bookkeeping. The already-PUT chunks on the server
+    // are reaped by the server's stale-upload cleanup, same as any other
+    // abandoned session.
+    guard currentAccountId == batchAccountId else {
+      RuntimeTrace.event("backup.native.upload_staged.refused_account_changed", [
+        "assetId": asset.localAssetId,
+        "batchAccount": batchAccountId,
+        "liveAccount": currentAccountId ?? "(nil)",
+        "stage": "pre_complete"
+      ])
+      NSLog("[NativeBackupEngine] Account changed mid-upload — refusing to complete: \(asset.localAssetId)")
+      return false
     }
 
     try await completeUpload(
@@ -3076,6 +3509,9 @@ final class NativeBackupEngine: NSObject {
       "ALTER TABLE backup_assets ADD COLUMN staged_at INTEGER",
       "ALTER TABLE backup_assets ADD COLUMN upload_session_id TEXT",
       "ALTER TABLE backup_assets ADD COLUMN selected_for_backup INTEGER DEFAULT 1",
+      // Task 1531 [P0]: tags which account's master key encrypted the staged
+      // chunks + name envelope. See purgeMismatchedStagedAssets below.
+      "ALTER TABLE backup_assets ADD COLUMN staged_account_id TEXT",
     ]
     for migration in migrations {
       sqlite3_exec(db, migration, nil, nil, nil)
@@ -3213,7 +3649,7 @@ final class NativeBackupEngine: NSObject {
            COALESCE(retry_count, 0), error_message,
            staged_file_id, staged_name_encrypted, staged_mime_type,
            COALESCE(staged_is_media, 0), COALESCE(staged_original_size, 0),
-           COALESCE(staged_chunk_count, 0), staged_dir, upload_session_id
+           COALESCE(staged_chunk_count, 0), staged_dir, upload_session_id, staged_account_id
     FROM backup_assets
     WHERE status IN ('pending_upload', 'pending_reupload', 'staging', 'staged_upload', 'uploading')
       AND COALESCE(selected_for_backup, 1) = 1
@@ -3277,6 +3713,9 @@ final class NativeBackupEngine: NSObject {
         : nil,
       stagedUploadSessionId: sqlite3_column_type(stmt, 15) != SQLITE_NULL
         ? String(cString: sqlite3_column_text(stmt, 15))
+        : nil,
+      stagedAccountId: sqlite3_column_type(stmt, 16) != SQLITE_NULL
+        ? String(cString: sqlite3_column_text(stmt, 16))
         : nil
     )
   }
@@ -3288,7 +3727,7 @@ final class NativeBackupEngine: NSObject {
            COALESCE(retry_count, 0), error_message,
            staged_file_id, staged_name_encrypted, staged_mime_type,
            COALESCE(staged_is_media, 0), COALESCE(staged_original_size, 0),
-           COALESCE(staged_chunk_count, 0), staged_dir, upload_session_id
+           COALESCE(staged_chunk_count, 0), staged_dir, upload_session_id, staged_account_id
     FROM backup_assets
     WHERE local_asset_id = ?
       AND staged_file_id IS NOT NULL
@@ -3399,7 +3838,8 @@ final class NativeBackupEngine: NSObject {
     isMediaValue: Bool,
     originalSize: Int64,
     chunkCount: Int,
-    stagedDir: String
+    stagedDir: String,
+    stagedAccountId: String?
   ) {
     guard let db = db else { return }
     let sql = """
@@ -3414,6 +3854,7 @@ final class NativeBackupEngine: NSObject {
         staged_dir = ?,
         staged_at = ?,
         file_size = ?,
+        staged_account_id = ?,
         error_message = NULL
     WHERE local_asset_id = ?
     """
@@ -3433,7 +3874,12 @@ final class NativeBackupEngine: NSObject {
     sqlite3_bind_text(stmt, 7, (stagedDir as NSString).utf8String, -1, nil)
     sqlite3_bind_int64(stmt, 8, nowMs())
     sqlite3_bind_int64(stmt, 9, originalSize)
-    sqlite3_bind_text(stmt, 10, (assetId as NSString).utf8String, -1, nil)
+    if let stagedAccountId {
+      sqlite3_bind_text(stmt, 10, (stagedAccountId as NSString).utf8String, -1, nil)
+    } else {
+      sqlite3_bind_null(stmt, 10)
+    }
+    sqlite3_bind_text(stmt, 11, (assetId as NSString).utf8String, -1, nil)
     sqlite3_step(stmt)
   }
 
@@ -3726,6 +4172,214 @@ final class NativeBackupEngine: NSObject {
       let sql = "UPDATE backup_upload_chunks SET status = 'pending', task_id = NULL WHERE status = 'uploading' AND (task_id IS NULL OR task_id NOT IN (\(keep)))"
       sqlite3_exec(db, sql, nil, nil, nil)
     }
+  }
+
+  /// Task 1531 [P0]: drop every already-encrypted staged asset whose
+  /// `staged_account_id` is NOT PROVEN to be `accountId` — the account the
+  /// engine is about to upload as. That means both an explicit mismatch
+  /// (tagged for a different account) AND a NULL tag (untagged: staged
+  /// before this migration, or before any account id was known at stage
+  /// time) are purged. Only a `staged_account_id` that is EQUAL to
+  /// `accountId` is trusted.
+  ///
+  /// Root cause this closes: `backup_assets` is one on-disk queue shared by
+  /// every account that has ever signed in on this device (no account
+  /// scoping existed before this task). Staging encrypts a photo's chunks +
+  /// name envelope to disk under whichever master key was cached AT THAT
+  /// MOMENT (`uploadSingleAsset` → `stageEncryptedAsset`); if the app signs
+  /// out (or switches accounts) before the matching upload completes, the
+  /// ciphertext and its `backup_assets`/`backup_upload_chunks` rows are never
+  /// purged by sign-out (`purgeAllPlaintextCaches()` only sweeps *plaintext*
+  /// paths — this is ciphertext, so it was never in scope). The next account
+  /// to enable photo backup on this device would otherwise have its very
+  /// first `processBatch()` resume that stale row (`uploadSingleAsset` finds
+  /// `getStagedAsset(...)` non-nil and calls `uploadStagedAsset` directly,
+  /// which never re-derives the key — it PUTs the on-disk ciphertext as-is),
+  /// uploading a file that unwraps under the new account's own
+  /// `derive_file_key` share-wrap but was never actually encrypted with that
+  /// key — the exact "share unwraps, decrypt fails" shape reported in 1531/1534.
+  ///
+  /// Called proactively from `start()` (before the first `processBatch()` can
+  /// run for the newly-current account) and defensively from
+  /// `uploadSingleAsset` immediately before an already-staged row is PUT, so
+  /// the fix does not depend on `start()` always running first (e.g. a
+  /// `BGProcessingTask` resume).
+  ///
+  /// Lead review on this task (2026-09-25) corrected an earlier version that
+  /// left a NULL `staged_account_id` untouched, reasoning it meant
+  /// "pre-migration / single-account device, trust it". That is exactly the
+  /// founder's reported device state: rows staged under account A BEFORE
+  /// this column existed (so tagged NULL by the migration, which cannot
+  /// retroactively know who staged them) are still NULL after signing in as
+  /// account B on the same, now-updated build — the old logic would upload
+  /// them into B untouched, reproducing 1531 through the "trusted" branch.
+  /// A NULL tag carries no proof of which account encrypted the bytes, so it
+  /// is UNTRUSTED, not "same account". Re-staging is cheap (the source is
+  /// still the Photos library asset — only the ciphertext is discarded), so
+  /// purging on ANY unproven tag is strictly safer than uploading it. This
+  /// intentionally purges every NULL-tagged staged row exactly once per
+  /// device history: `stageEncryptedAsset` always writes a non-nil
+  /// `staged_account_id` going forward (see below), so once a row is purged
+  /// and re-staged it can never come back as NULL. Only ever-uploaded rows
+  /// (`status = 'uploaded'`, `staged_file_id IS NULL`) are untouched by this
+  /// query — completed history is not "staged" and is never re-encrypted or
+  /// re-uploaded by this sweep.
+  ///
+  /// MUST be called from `dbQueue` (matches every other `db`-touching method
+  /// here) — it does not wrap itself, so a caller that is not already on
+  /// `dbQueue` must do `dbQueue.sync { purgeMismatchedStagedAssets(...) }`
+  /// (see `start()`), not call it directly.
+  @discardableResult
+  func purgeMismatchedStagedAssets(currentAccountId accountId: String?) -> Int {
+    guard let db = db, let accountId, !accountId.isEmpty else { return 0 }
+
+    let selectSql = """
+    SELECT local_asset_id, staged_dir, staged_file_id, staged_account_id
+    FROM backup_assets
+    WHERE staged_file_id IS NOT NULL
+      AND (staged_account_id IS NULL OR staged_account_id != ?)
+    """
+    var selectStmt: OpaquePointer?
+    guard sqlite3_prepare_v2(db, selectSql, -1, &selectStmt, nil) == SQLITE_OK else { return 0 }
+    sqlite3_bind_text(selectStmt, 1, (accountId as NSString).utf8String, -1, nil)
+
+    var mismatched: [(assetId: String, stagedDir: String?, fileId: String, otherAccount: String?)] = []
+    while sqlite3_step(selectStmt) == SQLITE_ROW {
+      let assetId = String(cString: sqlite3_column_text(selectStmt, 0))
+      let stagedDir: String? = sqlite3_column_type(selectStmt, 1) != SQLITE_NULL
+        ? String(cString: sqlite3_column_text(selectStmt, 1))
+        : nil
+      let fileId = String(cString: sqlite3_column_text(selectStmt, 2))
+      // Untagged (pre-migration) rows are exactly what this query now also
+      // selects, so `staged_account_id` (column 3) may itself be NULL here —
+      // reading it with `sqlite3_column_text` unconditionally on a NULL
+      // column returns a null pointer, and `String(cString:)` on that is
+      // undefined behavior, so it MUST be NULL-checked like every other
+      // nullable column above.
+      let otherAccount: String? = sqlite3_column_type(selectStmt, 3) != SQLITE_NULL
+        ? String(cString: sqlite3_column_text(selectStmt, 3))
+        : nil
+      mismatched.append((assetId, stagedDir, fileId, otherAccount))
+    }
+    sqlite3_finalize(selectStmt)
+
+    guard !mismatched.isEmpty else { return 0 }
+
+    for row in mismatched {
+      if let stagedDir = row.stagedDir {
+        removeStagedDirectory(stagedDir: stagedDir, fileId: row.fileId)
+      }
+      clearStagedStateForRestage(
+        assetId: row.assetId,
+        error: "Re-encrypting: staged ciphertext not verified for this account"
+      )
+      RuntimeTrace.event("backup.native.staged_account_mismatch.purged", [
+        "stagedForAccount": row.otherAccount ?? "(untagged/pre-migration)",
+        "currentAccount": accountId
+      ])
+    }
+
+    NSLog("[NativeBackupEngine] Purged \(mismatched.count) staged asset(s) encrypted for a different (or unproven) account")
+    return mismatched.count
+  }
+
+  /// Task 1531 [P0] round 3 (lead review): purge EVERY staged asset,
+  /// unconditionally — not account-scoped like `purgeMismatchedStagedAssets`
+  /// above. Called from `clearAccountAndPurgeStaged()` (sign-out / account
+  /// switch teardown, via `disablePhotoBackup` in BeebeebCryptoModule.swift),
+  /// the point at which `currentAccountId` is about to become nil.
+  ///
+  /// `purgeMismatchedStagedAssets` cannot do this job: it *requires* a
+  /// non-nil `accountId` to compare rows against and is a deliberate no-op
+  /// once there is none (see its guard — a nil accountId there means "cannot
+  /// prove anything", not "purge everything"). Left to that function alone,
+  /// whatever the outgoing account had staged would sit on disk, still
+  /// tagged for that account, until the NEXT sign-in's `start()` happens to
+  /// discover the mismatch — an open window between sign-out and the next
+  /// sign-in during which the ciphertext is neither trusted nor removed.
+  /// Purging unconditionally here closes that window immediately instead of
+  /// deferring it to the next `start()`.
+  ///
+  /// MUST be called from `dbQueue` (matches purgeMismatchedStagedAssets).
+  @discardableResult
+  private func purgeAllStagedAssets() -> Int {
+    guard let db = db else { return 0 }
+
+    let selectSql = """
+    SELECT local_asset_id, staged_dir, staged_file_id, staged_account_id
+    FROM backup_assets
+    WHERE staged_file_id IS NOT NULL
+    """
+    var selectStmt: OpaquePointer?
+    guard sqlite3_prepare_v2(db, selectSql, -1, &selectStmt, nil) == SQLITE_OK else { return 0 }
+
+    var staged: [(assetId: String, stagedDir: String?, fileId: String, forAccount: String?)] = []
+    while sqlite3_step(selectStmt) == SQLITE_ROW {
+      let assetId = String(cString: sqlite3_column_text(selectStmt, 0))
+      let stagedDir: String? = sqlite3_column_type(selectStmt, 1) != SQLITE_NULL
+        ? String(cString: sqlite3_column_text(selectStmt, 1))
+        : nil
+      let fileId = String(cString: sqlite3_column_text(selectStmt, 2))
+      let forAccount: String? = sqlite3_column_type(selectStmt, 3) != SQLITE_NULL
+        ? String(cString: sqlite3_column_text(selectStmt, 3))
+        : nil
+      staged.append((assetId, stagedDir, fileId, forAccount))
+    }
+    sqlite3_finalize(selectStmt)
+
+    guard !staged.isEmpty else { return 0 }
+
+    for row in staged {
+      if let stagedDir = row.stagedDir {
+        removeStagedDirectory(stagedDir: stagedDir, fileId: row.fileId)
+      }
+      clearStagedStateForRestage(
+        assetId: row.assetId,
+        error: "Re-encrypting: account signed out before upload completed"
+      )
+      RuntimeTrace.event("backup.native.sign_out.staged_purged", [
+        "stagedForAccount": row.forAccount ?? "(untagged/pre-migration)"
+      ])
+    }
+
+    NSLog("[NativeBackupEngine] Sign-out: purged \(staged.count) staged asset(s)")
+    return staged.count
+  }
+
+  /// Task 1531 [P0] round 3 (lead review): sign-out / account-switch
+  /// teardown. Called from `disablePhotoBackup()` (the single-surface
+  /// Camera Roll toggle-off path, gated on Contacts/Calendar's `isBound`)
+  /// and, unconditionally, from `teardownAllBackup()` (round 6 finding N1 —
+  /// the full sign-out / account-switch path) in BeebeebCryptoModule.swift.
+  ///
+  /// Task 1531 [P2-E] (round 5 delta review): clears `currentAccountId` to
+  /// nil FIRST, THEN purges — the previous order (purge, then clear) left a
+  /// window, for as long as `purgeAllStagedAssets` takes to enumerate and
+  /// delete staged directories on `dbQueue`, during which `currentAccountId`
+  /// still read the OUTGOING account as valid. Every other engine entry
+  /// point that reads `currentAccountId` (`start()`'s guard,
+  /// `handleBackgroundTask`'s guard, `bindAccount`'s comparison) treats nil
+  /// as "refuse outright" — clearing first means nothing can begin
+  /// staging/uploading against the outgoing account while the sweep is
+  /// still in flight, closing that window rather than merely hoping nothing
+  /// races it. Reordering does NOT change what gets purged or logged:
+  /// `purgeAllStagedAssets` is already unconditional (not scoped to
+  /// `currentAccountId`), and its diagnostic (`row.forAccount` above) reads
+  /// each row's OWN `staged_account_id` column, never the live
+  /// `currentAccountId` — the previous doc comment's claim that purging
+  /// first was needed to preserve that diagnostic was itself mistaken.
+  func clearAccountAndPurgeStaged() {
+    currentAccountId = nil
+    dbQueue.sync { purgeAllStagedAssets() }
+    // Task 1531 [P1-3] (lead review, round 4): belt-and-braces — `stop()`
+    // (called right before this, in `disablePhotoBackup()`) now releases
+    // `masterKeyHandle` and cancels `backgroundTaskHandle` unconditionally,
+    // but this function has exactly one call site today and is documented
+    // as safe to call independently (see the doc comment above); don't rely
+    // on caller ordering to keep that true.
+    masterKeyHandle = nil
+    backgroundTaskHandle?.cancel()
+    backgroundTaskHandle = nil
   }
 
   /// Refresh progress counters from the database.

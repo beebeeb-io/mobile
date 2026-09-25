@@ -1229,26 +1229,69 @@ export async function setPhotoBackupIncludeVideos(includeVideos: boolean): Promi
   return BeebeebCryptoModule.setPhotoBackupIncludeVideos(includeVideos)
 }
 
-/** Start camera roll backup. Registers PHPhotoLibrary observer and schedules BGProcessingTask. */
-export async function enablePhotoBackup(authToken: string): Promise<void> {
-  return BeebeebCryptoModule.enablePhotoBackup(authToken)
+/**
+ * Start camera roll backup. Registers PHPhotoLibrary observer and schedules BGProcessingTask.
+ *
+ * `userId` (task 1531 [P0]) tags every newly-staged asset with the account it
+ * was encrypted for and, before this call's `start()` drains anything, sweeps
+ * any staged asset left over from a DIFFERENT account on this device — see
+ * `purgeMismatchedStagedAssets` in NativeBackupEngine.swift. Always pass the
+ * currently signed-in user's id, never a cached/stale one.
+ */
+export async function enablePhotoBackup(authToken: string, userId: string): Promise<void> {
+  return BeebeebCryptoModule.enablePhotoBackup(authToken, userId)
 }
 
 export async function disablePhotoBackup(): Promise<void> {
   return BeebeebCryptoModule.disablePhotoBackup()
 }
 
-/** Start contacts backup. Requests CNContactStore access and uploads an encrypted vCard. */
-export async function enableContactsBackup(authToken: string): Promise<void> {
-  return BeebeebCryptoModule.enableContactsBackup(authToken)
+/**
+ * Task 1531 [P1] round 6 (delta review 3, finding N1): full sign-out /
+ * account-switch teardown. Disables Contacts, Calendar and Camera Roll
+ * backup and THEN unconditionally clears the shared native account +
+ * purges every staged-but-unuploaded asset in one native call — unlike
+ * calling `disablePhotoBackup`/`disableContactsBackup`/
+ * `disableCalendarBackup` separately (still correct for the single-surface
+ * Camera Roll toggle, but NOT for full teardown: `disablePhotoBackup`'s
+ * purge is conditional on Contacts/Calendar's own `isBound` state, and
+ * Expo dispatches these three native calls serially in call order, so
+ * `disablePhotoBackup` always ran BEFORE the other two cleared their own
+ * state — the purge was skipped on every sign-out with Contacts/Calendar
+ * backup on). Falls back to disabling each surface separately on older
+ * native builds that don't expose this yet.
+ */
+export async function teardownAllBackup(): Promise<void> {
+  if (typeof BeebeebCryptoModule.teardownAllBackup !== 'function') {
+    await Promise.all([
+      disablePhotoBackup().catch(() => {}),
+      disableContactsBackup().catch(() => {}),
+      disableCalendarBackup().catch(() => {}),
+    ]);
+    return;
+  }
+  return BeebeebCryptoModule.teardownAllBackup()
+}
+
+/**
+ * Start contacts backup. Requests CNContactStore access and uploads an
+ * encrypted vCard.
+ *
+ * `userId` (task 1531 [P0]) binds every upload to the account it was
+ * exported for — `NativeEncryptedBackupUploader` refuses to upload when it
+ * no longer matches the device's current account. Always pass the currently
+ * signed-in user's id, never a cached/stale one.
+ */
+export async function enableContactsBackup(authToken: string, userId: string): Promise<void> {
+  return BeebeebCryptoModule.enableContactsBackup(authToken, userId)
 }
 
 /** Resume contacts backup observers without forcing an immediate export. */
-export async function resumeContactsBackup(authToken: string): Promise<void> {
+export async function resumeContactsBackup(authToken: string, userId: string): Promise<void> {
   if (typeof BeebeebCryptoModule.resumeContactsBackup !== 'function') {
-    return BeebeebCryptoModule.enableContactsBackup(authToken)
+    return BeebeebCryptoModule.enableContactsBackup(authToken, userId)
   }
-  return BeebeebCryptoModule.resumeContactsBackup(authToken)
+  return BeebeebCryptoModule.resumeContactsBackup(authToken, userId)
 }
 
 export async function disableContactsBackup(): Promise<void> {
@@ -1280,17 +1323,25 @@ export async function resetContactsBackup(): Promise<void> {
   return BeebeebCryptoModule.resetContactsBackup()
 }
 
-/** Start calendar backup. Requests EKEventStore access and uploads an encrypted iCal. */
-export async function enableCalendarBackup(authToken: string): Promise<void> {
-  return BeebeebCryptoModule.enableCalendarBackup(authToken)
+/**
+ * Start calendar backup. Requests EKEventStore access and uploads an
+ * encrypted iCal.
+ *
+ * `userId` (task 1531 [P0]) binds every upload to the account it was
+ * exported for — `NativeEncryptedBackupUploader` refuses to upload when it
+ * no longer matches the device's current account. Always pass the currently
+ * signed-in user's id, never a cached/stale one.
+ */
+export async function enableCalendarBackup(authToken: string, userId: string): Promise<void> {
+  return BeebeebCryptoModule.enableCalendarBackup(authToken, userId)
 }
 
 /** Resume calendar backup observers without forcing an immediate export. */
-export async function resumeCalendarBackup(authToken: string): Promise<void> {
+export async function resumeCalendarBackup(authToken: string, userId: string): Promise<void> {
   if (typeof BeebeebCryptoModule.resumeCalendarBackup !== 'function') {
-    return BeebeebCryptoModule.enableCalendarBackup(authToken)
+    return BeebeebCryptoModule.enableCalendarBackup(authToken, userId)
   }
-  return BeebeebCryptoModule.resumeCalendarBackup(authToken)
+  return BeebeebCryptoModule.resumeCalendarBackup(authToken, userId)
 }
 
 export async function disableCalendarBackup(): Promise<void> {
@@ -1358,9 +1409,18 @@ export async function getNativeBackupDiagnostics(): Promise<NativeBackupDiagnost
   return BeebeebCryptoModule.getNativeBackupDiagnostics()
 }
 
-/** Trigger an immediate native scan + batch, then leave the native watcher running. */
-export async function triggerImmediateBackup(authToken: string): Promise<NativeBackupProgress> {
-  return BeebeebCryptoModule.triggerImmediateBackup(authToken)
+/**
+ * Trigger an immediate native scan + batch, then leave the native watcher
+ * running.
+ *
+ * `userId` (task 1531 [P2-4]) is checked against the engine's already-bound
+ * account (if any) and the call refused on a mismatch — otherwise a manual
+ * trigger could write a token for a different account than the one
+ * `currentAccountId` is bound to. Always pass the currently signed-in user's
+ * id, never a cached/stale one.
+ */
+export async function triggerImmediateBackup(authToken: string, userId: string): Promise<NativeBackupProgress> {
+  return BeebeebCryptoModule.triggerImmediateBackup(authToken, userId)
 }
 
 // ─── Share Extension dropbox (iOS only) ─────────────────────────────────────

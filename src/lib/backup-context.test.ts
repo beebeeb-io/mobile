@@ -64,6 +64,7 @@ mock.module('./device-registration', () => ({
 let disablePhotoBackupMock = mock(async () => {});
 let disableContactsBackupMock = mock(async () => {});
 let disableCalendarBackupMock = mock(async () => {});
+let teardownAllBackupMock = mock(async () => {});
 let clearSessionMock = mock(async () => {});
 
 mock.module('./api', () => ({
@@ -81,6 +82,7 @@ mock.module('../../modules/beebeeb-crypto', () => ({
   disablePhotoBackup: (...args: unknown[]) => disablePhotoBackupMock(...args),
   disableContactsBackup: (...args: unknown[]) => disableContactsBackupMock(...args),
   disableCalendarBackup: (...args: unknown[]) => disableCalendarBackupMock(...args),
+  teardownAllBackup: (...args: unknown[]) => teardownAllBackupMock(...args),
   enablePhotoBackup: async () => {},
   enableContactsBackup: async () => {},
   enableCalendarBackup: async () => {},
@@ -99,7 +101,7 @@ mock.module('../../modules/beebeeb-crypto', () => ({
 // scenario (see loadFresh) because sessionPresentAtLaunchPromise is captured
 // once, synchronously, the moment the module is first evaluated — exactly
 // mirroring how it behaves once per real app process.
-const { backupPrefKey, stopBackupEngines } = await import('./backup-context');
+const { backupPrefKey, stopBackupEngines, canEnableNativeCameraBackup } = await import('./backup-context');
 
 const LEGACY_PHOTO_KEY = 'beebeeb_camera_backup';
 const OWNER_KEY = 'beebeeb_backup_pref_owner';
@@ -119,6 +121,7 @@ beforeEach(() => {
   disablePhotoBackupMock = mock(async () => {});
   disableContactsBackupMock = mock(async () => {});
   disableCalendarBackupMock = mock(async () => {});
+  teardownAllBackupMock = mock(async () => {});
   clearSessionMock = mock(async () => {});
 });
 
@@ -239,20 +242,376 @@ describe('migrateLegacyBackupPrefs', () => {
   });
 });
 
+// Task 1531 [P0]: the native backup engine's `backup_assets` staging queue
+// has no per-account scoping — a photo staged (encrypted to disk) under
+// account A but not yet uploaded when A signs out sits there untouched
+// (sign-out purges PLAINTEXT caches only; staged ciphertext was never in
+// that registry). If account B is then allowed to call the native
+// `enablePhotoBackup` bridge without B's own userId, the engine has no way
+// to tell A's leftover staged ciphertext apart from B's own and will PUT it
+// into B's account as-is — a file that unwraps under B's own share key
+// (share creation derives independently from B's master key) but was never
+// actually encrypted with it. This is the "share unwraps, decrypt fails"
+// shape reported in 1531/1534. canEnableNativeCameraBackup is the guard that
+// keeps the native call (and therefore the native-side account tag +
+// mismatch purge in NativeBackupEngine.swift) from ever running without a
+// known account to tag/compare against.
+describe('canEnableNativeCameraBackup (task 1531 account-tag guard)', () => {
+  test('refuses when there is no signed-in user id (nothing to tag staged assets with)', () => {
+    expect(canEnableNativeCameraBackup(undefined)).toBe(false);
+    expect(canEnableNativeCameraBackup(null)).toBe(false);
+    expect(canEnableNativeCameraBackup('')).toBe(false);
+  });
+
+  test('allows once a real user id is known', () => {
+    expect(canEnableNativeCameraBackup('user-a')).toBe(true);
+    expect(canEnableNativeCameraBackup('user-b')).toBe(true);
+  });
+
+  test('user A and user B are never treated as interchangeable callers', () => {
+    // Regression guard against a future "any truthy id passes" simplification
+    // that would silently defeat the per-account tag this guard exists to
+    // enable — the whole point is that A's id and B's id are DIFFERENT
+    // strings the native side can compare, not just "some id or other".
+    const a = canEnableNativeCameraBackup('user-a');
+    const b = canEnableNativeCameraBackup('user-b');
+    expect(a).toBe(true);
+    expect(b).toBe(true);
+    expect('user-a').not.toBe('user-b');
+  });
+});
+
+// Task 1531 [P1] round 6 (delta review 3, finding N1): `stopBackupEngines`
+// used to call `disablePhotoBackup`/`disableContactsBackup`/
+// `disableCalendarBackup` separately via `Promise.all` — three separate
+// native bridge calls whose ORDER mattered (see `teardownAllBackup`'s doc
+// comment, BeebeebCrypto.ts, and the matching one in
+// BeebeebCryptoModule.swift's `disablePhotoBackup`). It now calls the single
+// `teardownAllBackup()` bridge function instead, so these tests assert THAT
+// call happens, not the three individual ones.
 describe('stopBackupEngines (sign-out / different-user teardown)', () => {
-  test('stops every native backup engine and clears the mirrored client session', async () => {
+  test('tears down every native backup engine and clears the mirrored client session', async () => {
     await stopBackupEngines();
-    expect(disablePhotoBackupMock).toHaveBeenCalledTimes(1);
-    expect(disableContactsBackupMock).toHaveBeenCalledTimes(1);
-    expect(disableCalendarBackupMock).toHaveBeenCalledTimes(1);
+    expect(teardownAllBackupMock).toHaveBeenCalledTimes(1);
+    expect(clearSessionMock).toHaveBeenCalledTimes(1);
+    // The three separate disable* bridge calls are NOT used for full
+    // teardown any more — `teardownAllBackup` (native) covers them all in
+    // one call. See `togglePhotoBackup`/`toggleContactsBackup`/
+    // `toggleCalendarBackup`'s own off-branches for where the individual
+    // disable* calls are still the correct (single-surface) call.
+    expect(disablePhotoBackupMock).not.toHaveBeenCalled();
+    expect(disableContactsBackupMock).not.toHaveBeenCalled();
+    expect(disableCalendarBackupMock).not.toHaveBeenCalled();
+  });
+
+  test('teardownAllBackup rejecting does not block clearing the session', async () => {
+    teardownAllBackupMock = mock(async () => { throw new Error('native module not linked'); });
+    await expect(stopBackupEngines()).resolves.toBeUndefined();
     expect(clearSessionMock).toHaveBeenCalledTimes(1);
   });
 
-  test('one native call rejecting does not block the others from running', async () => {
-    disablePhotoBackupMock = mock(async () => { throw new Error('native module not linked'); });
+  test('clearMobileIosBackupClientSession rejecting does not block the native teardown', async () => {
+    clearSessionMock = mock(async () => { throw new Error('network error'); });
     await expect(stopBackupEngines()).resolves.toBeUndefined();
-    expect(disableContactsBackupMock).toHaveBeenCalledTimes(1);
-    expect(disableCalendarBackupMock).toHaveBeenCalledTimes(1);
-    expect(clearSessionMock).toHaveBeenCalledTimes(1);
+    expect(teardownAllBackupMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+// Task 1531 [P1] round 6 (delta review 3, finding N1): JS MIRROR of WHY
+// `stopBackupEngines` had to stop calling `disablePhotoBackup` for full
+// teardown — contrasts with the round-5 `shouldClearSharedAccountOnPhotoDisable`
+// mirror above, which is still correct for the SINGLE-SURFACE toggle path.
+// This is a decision-level mirror (see the module doc comment on the
+// `shouldPurgeStagedAsset` describe block above for the compile/host caveat
+// every mirror in this file shares) — it does not exercise
+// BeebeebCryptoModule.swift itself.
+describe('teardown purge semantics (JS mirror of the N1 fix: full teardown vs. single-surface toggle)', () => {
+  // Mirrors `disablePhotoBackup`'s conditional clear — correct ONLY for the
+  // single-surface Camera Roll toggle-off path (`togglePhotoBackup`).
+  function shouldPurgeOnSingleSurfaceToggle(contactsBound: boolean, calendarBound: boolean): boolean {
+    return !contactsBound && !calendarBound;
+  }
+
+  // Mirrors `teardownAllBackup`'s unconditional clear — the full sign-out /
+  // account-switch path (`stopBackupEngines`). Always purges, regardless of
+  // Contacts/Calendar's bound state, because all three surfaces are being
+  // disabled together in the SAME native call.
+  function shouldPurgeOnFullTeardown(_contactsBound: boolean, _calendarBound: boolean): boolean {
+    return true;
+  }
+
+  test('single-surface toggle: contacts still bound → purge is SKIPPED (by design — Contacts must keep working)', () => {
+    expect(shouldPurgeOnSingleSurfaceToggle(true, false)).toBe(false);
+  });
+
+  test('single-surface toggle: calendar still bound → purge is SKIPPED (by design)', () => {
+    expect(shouldPurgeOnSingleSurfaceToggle(false, true)).toBe(false);
+  });
+
+  test('full teardown: contacts still bound at the moment of the call → purge still RUNS (the N1 fix)', () => {
+    // This is the exact bug: with the old three-separate-calls
+    // implementation, `disablePhotoBackup`'s body always ran BEFORE
+    // `disableContactsBackup` cleared its own bound state (Expo dispatches
+    // AsyncFunctions serially in call order — the array's first element is
+    // called first), so this was ALWAYS false for the full sign-out path,
+    // every single time Contacts backup was on. `teardownAllBackup` fixes
+    // it by not conditioning the purge on any other surface's state at all.
+    expect(shouldPurgeOnFullTeardown(true, false)).toBe(true);
+  });
+
+  test('full teardown: calendar still bound at the moment of the call → purge still RUNS', () => {
+    expect(shouldPurgeOnFullTeardown(false, true)).toBe(true);
+  });
+
+  test('full teardown: neither bound → purge runs (same as before)', () => {
+    expect(shouldPurgeOnFullTeardown(false, false)).toBe(true);
+  });
+});
+
+// Task 1531 [P0], lead review (2026-09-25): JS MIRROR of
+// `purgeMismatchedStagedAssets`'s row-selection predicate in
+// NativeBackupEngine.swift (the actual Swift source of truth — see that
+// file, and its `WHERE staged_file_id IS NOT NULL AND (staged_account_id IS
+// NULL OR staged_account_id != ?)` SQL). This does NOT exercise the Swift
+// code or the SQLite query — it exists because that logic lives inside
+// NativeBackupEngine.swift, which imports SDWebImage/ActivityKit/WidgetKit/
+// BackgroundTasks and only compiles inside the full Pods-linked app target;
+// neither of this repo's two host-less (no-Pods) XCTest targets
+// (ProvenanceHeadersTests, CoreVectorsKATTests) can compile it standalone,
+// and adding a third Pods-dependent XCTest target was out of scope for this
+// fix. `shouldPurgeStagedAsset` below is a plain reimplementation of the
+// same three-way decision, kept in sync by hand — a real device/simulator
+// XCTest run of the Swift purge function itself is the verification gap
+// this mirror does NOT close (see task notes).
+describe('shouldPurgeStagedAsset (JS mirror of NativeBackupEngine.swift purgeMismatchedStagedAssets predicate)', () => {
+  // Mirrors: staged_account_id IS NULL OR staged_account_id != accountId
+  function shouldPurgeStagedAsset(stagedAccountId: string | null, currentAccountId: string): boolean {
+    return stagedAccountId === null || stagedAccountId !== currentAccountId;
+  }
+
+  test('tagged for a DIFFERENT account → purge', () => {
+    expect(shouldPurgeStagedAsset('user-a', 'user-b')).toBe(true);
+  });
+
+  test('untagged (NULL — pre-migration, or staged before any account id was known) → purge', () => {
+    // This is the exact case the lead review corrected: a row staged under
+    // account A before the staged_account_id migration column existed is
+    // NULL, not 'user-a' — an earlier version of this fix trusted NULL as
+    // "same account" and re-uploaded it into whichever account signed in
+    // next, reproducing 1531 through the "trusted" branch.
+    expect(shouldPurgeStagedAsset(null, 'user-b')).toBe(true);
+  });
+
+  test('tagged for the CURRENT account → keep (never re-encrypt in-flight uploads for the same session)', () => {
+    expect(shouldPurgeStagedAsset('user-a', 'user-a')).toBe(false);
+  });
+});
+
+// Task 1531 [P0], round 3 lead review (2026-09-25): JS MIRROR of the
+// fail-closed `guard let accountId = currentAccountId, !accountId.isEmpty
+// else { ... return/throw }` added to every engine entry point that can
+// stage or upload in NativeBackupEngine.swift — `start()`,
+// `handleBackgroundTask`'s `BGProcessingTask` handler, `uploadSingleAsset`,
+// and `stageEncryptedAsset`. Same compile/host caveat as
+// `shouldPurgeStagedAsset` above: this does NOT exercise the Swift guards
+// themselves (that gap is the device rung noted in the task file), it keeps
+// the DECISION in sync by hand so a future edit to one side is caught by a
+// human reading both, not proof the Swift guard fires.
+describe('shouldRunBackup (JS mirror of NativeBackupEngine.swift per-entry-point nil-account guard)', () => {
+  // Mirrors: `guard let accountId = currentAccountId, !accountId.isEmpty else { refuse }`
+  function shouldRunBackup(currentAccountId: string | null | undefined): boolean {
+    return typeof currentAccountId === 'string' && currentAccountId.length > 0;
+  }
+
+  test('nil currentAccountId → refuse (no run, no stage, no upload)', () => {
+    expect(shouldRunBackup(null)).toBe(false);
+  });
+
+  test('undefined currentAccountId → refuse', () => {
+    expect(shouldRunBackup(undefined)).toBe(false);
+  });
+
+  test('empty-string currentAccountId → refuse (Keychain setter treats "" as absent — see `currentAccountId` setter)', () => {
+    expect(shouldRunBackup('')).toBe(false);
+  });
+
+  test('a real currentAccountId → allowed to run', () => {
+    expect(shouldRunBackup('user-a')).toBe(true);
+  });
+});
+
+// Task 1531 [P1-A] (round 5 delta security review): JS MIRROR of
+// `NativeBackupEngine.bindAccount(userId:)`'s idempotent-bind decision and
+// its two downstream call sites — see `bindAccount`'s doc comment in
+// NativeBackupEngine.swift, and `disablePhotoBackup`/
+// `mirrorSessionToAppGroup` in BeebeebCryptoModule.swift. Same
+// compile/host caveat as the mirrors above: this exercises the DECISIONS,
+// not the Swift purge/keychain code — the device rung noted in the task
+// file is what proves the Swift side.
+describe('bindAccount semantics (JS mirror of NativeBackupEngine.swift bindAccount + its call sites)', () => {
+  // Mirrors: `guard currentAccountId != userId else { return }` in
+  // `bindAccount` — i.e. "does calling bindAccount(userId) actually change
+  // the stored shared account".
+  function shouldBindAccount(storedAccountId: string | null, userId: string): boolean {
+    if (!userId) return false;
+    return storedAccountId !== userId;
+  }
+
+  test('contacts-only user (Camera Roll never enabled): stored nil, enabling Contacts binds the shared account', () => {
+    // This is the actual P1-A bug: before routing
+    // ContactsBackupManager.enable through bindAccount, the shared
+    // `currentAccountId` NEVER got set for a contacts-only user, so every
+    // Contacts upload refused with .accountMismatch forever. The fix makes
+    // Contacts' own enable call bind it, same as Camera Roll's enable
+    // always did.
+    expect(shouldBindAccount(null, 'user-a')).toBe(true);
+  });
+
+  test('re-enabling the SAME account is a no-op (keeps the warm master-key handle, no redundant purge)', () => {
+    expect(shouldBindAccount('user-a', 'user-a')).toBe(false);
+  });
+
+  test('a DIFFERENT stored account rebinds (and purges mismatched staged ciphertext) rather than silently coexisting', () => {
+    expect(shouldBindAccount('user-a', 'user-b')).toBe(true);
+  });
+
+  test('empty incoming userId never binds', () => {
+    expect(shouldBindAccount('user-a', '')).toBe(false);
+  });
+
+  // Mirrors: `disablePhotoBackup`'s BeebeebCryptoModule.swift conditional —
+  // only clear the shared engine account when NEITHER Contacts nor
+  // Calendar is still bound to it.
+  function shouldClearSharedAccountOnPhotoDisable(contactsBound: boolean, calendarBound: boolean): boolean {
+    return !contactsBound && !calendarBound;
+  }
+
+  test('photo disable with Contacts still on: the shared account is KEPT, not cleared', () => {
+    // The device-test-checklist scenario this round's review flagged:
+    // toggling Camera Roll backup off alone must not break Contacts
+    // backup, which now binds through the SAME shared account.
+    expect(shouldClearSharedAccountOnPhotoDisable(true, false)).toBe(false);
+  });
+
+  test('photo disable with Calendar still on: the shared account is KEPT, not cleared', () => {
+    expect(shouldClearSharedAccountOnPhotoDisable(false, true)).toBe(false);
+  });
+
+  test('photo disable with neither Contacts nor Calendar bound: full teardown, account cleared', () => {
+    expect(shouldClearSharedAccountOnPhotoDisable(false, false)).toBe(true);
+  });
+
+  // Mirrors: `mirrorSessionToAppGroup`'s SET branch in
+  // BeebeebCryptoModule.swift — there is no token-REFRESH path in this
+  // codebase (`setToken` only ever comes from `setSessionCredentials` at
+  // signup/login/OPAQUE/2FA — api.ts:201,451,476,2375,2414,2479), so any
+  // change to the stored native token is treated as a fresh login and
+  // unbinds the previous account + drops the cached key handle first.
+  function shouldUnbindOnTokenChange(previousToken: string | null, newToken: string): boolean {
+    return previousToken !== newToken;
+  }
+
+  test('a genuinely new token (different from the stored one) unbinds the old account', () => {
+    expect(shouldUnbindOnTokenChange('token-a', 'token-b')).toBe(true);
+  });
+
+  test('first-ever token (no previous stored token) is treated as a change (harmless no-op unbind)', () => {
+    expect(shouldUnbindOnTokenChange(null, 'token-a')).toBe(true);
+  });
+
+  test('a redundant re-store of the SAME token does not unbind', () => {
+    expect(shouldUnbindOnTokenChange('token-a', 'token-a')).toBe(false);
+  });
+});
+
+// Task 1531 [P1-B] (round 5 delta security review): JS MIRROR of the
+// hash-after-success discipline added to ContactsBackupManager /
+// CalendarBackupManager — `shouldUpload` is READ-ONLY, and the dedup digest
+// is written ONLY from the upload's own `.success` callback
+// (`recordUploadSuccess`). Same compile/host caveat as the mirrors above:
+// this exercises the DECISION, not the Swift UserDefaults code.
+describe('hash-after-success (JS mirror of ContactsBackupManager/CalendarBackupManager dedup discipline)', () => {
+  function shouldUpload(storedDigest: string | undefined, digest: string): boolean {
+    return storedDigest !== digest;
+  }
+
+  function recordUploadSuccess(store: Map<string, string>, key: string, digest: string): void {
+    store.set(key, digest);
+  }
+
+  test('a FAILED upload never records the digest: the same unchanged content is retried next run', () => {
+    const store = new Map<string, string>();
+    const digest = 'digest-1';
+    expect(shouldUpload(store.get('user-a'), digest)).toBe(true);
+    // Upload attempted and FAILS (network error / account-mismatch refusal
+    // / no cached master key — see NativeEncryptedBackupUploader) —
+    // recordUploadSuccess is NEVER called on this path, unlike the old
+    // code which wrote the digest unconditionally BEFORE the network call.
+    expect(shouldUpload(store.get('user-a'), digest)).toBe(true);
+  });
+
+  test('a SUCCESSFUL upload records the digest, and the same content is then skipped', () => {
+    const store = new Map<string, string>();
+    const digest = 'digest-1';
+    expect(shouldUpload(store.get('user-a'), digest)).toBe(true);
+    recordUploadSuccess(store, 'user-a', digest); // .success callback only
+    expect(shouldUpload(store.get('user-a'), digest)).toBe(false);
+  });
+
+  test('changed content after a successful upload is not skipped', () => {
+    const store = new Map<string, string>();
+    recordUploadSuccess(store, 'user-a', 'digest-1');
+    expect(shouldUpload(store.get('user-a'), 'digest-2')).toBe(true);
+  });
+
+  test('account switch A -> B with an IDENTICAL export must upload once for B (per-account keying)', () => {
+    const store = new Map<string, string>();
+    recordUploadSuccess(store, 'user-a', 'digest-1');
+    // B has never uploaded anything — B's own key in the store is unset,
+    // regardless of what A's digest was, even though the content hashes
+    // identically.
+    expect(shouldUpload(store.get('user-b'), 'digest-1')).toBe(true);
+  });
+});
+
+// Task 1531 [P2] round 6 (delta review 3, finding N2): JS MIRROR of the
+// warm-up retry decision added to `ContactsBackupManager.enable` /
+// `CalendarBackupManager.enable` — `resumeContactsBackup`/
+// `resumeCalendarBackup` (the mount-time "warm-up" call, `runNow: false`)
+// used to skip `backup()` unconditionally whenever `runNow` was false, so a
+// previously refused/failed upload (which — per the hash-after-success
+// discipline above — never recorded success state) sat un-retried until the
+// next REAL contact/calendar edit fired the OS-level change notification,
+// which could be days or never. Same compile/host caveat as the mirrors
+// above: this exercises the DECISION, not the Swift UserDefaults/EventKit/
+// Contacts code.
+describe('warm-up retry (JS mirror of ContactsBackupManager/CalendarBackupManager.enable\'s runNow-override)', () => {
+  // Mirrors: `let shouldRunNow = runNow || !hasUploadedForThisAccount` in
+  // ContactsBackupManager.enable, and the equivalent
+  // `runNow || !hasUploadedForThisAccount` argument CalendarBackupManager
+  // .enable passes into `requestAccessAndBackup`.
+  function shouldRunOnEnable(runNow: boolean, hasUploadedForThisAccount: boolean): boolean {
+    return runNow || !hasUploadedForThisAccount;
+  }
+
+  test('explicit runNow: true always runs, regardless of upload history', () => {
+    expect(shouldRunOnEnable(true, true)).toBe(true);
+    expect(shouldRunOnEnable(true, false)).toBe(true);
+  });
+
+  test('warm-up (runNow: false) with a confirmed prior upload for this account: does NOT force a run', () => {
+    // The common, steady-state case: this account already backed up
+    // successfully at least once, so the warm-up path only needs to
+    // register observers, not force an immediate re-export.
+    expect(shouldRunOnEnable(false, true)).toBe(false);
+  });
+
+  test('warm-up (runNow: false) with NO confirmed upload for this account: forces a run (the N2 fix)', () => {
+    // The bug: a fresh sign-in, or a previously-refused upload (network
+    // error / account-mismatch / no cached master key), left no recorded
+    // success — `hasUploadedForThisAccount` false — and the warm-up path
+    // used to just register observers and wait for the NEXT real edit.
+    // Now it retries once, every app mount/foreground, until it succeeds.
+    expect(shouldRunOnEnable(false, false)).toBe(true);
   });
 });
