@@ -125,7 +125,8 @@ review submission `6c8670cc`. Build 141 finishes OPAQUE login with the legacy Id
 ignores the `ksf_version` that login-start returns. Every account registered since 2026-05-23 is
 KSF v1 (Argon2id), and that includes the demo account created 2026-09-13. For those accounts the
 envelope cannot open on the device, so the app shows an error before it ever sends login-finish.
-Apple's server logs show no failed attempt. The server cannot fix this: the KSF runs on the
+Our production server logs show no failed login attempt for this rejection, which is consistent
+with the client never reaching login-finish. The server cannot fix this: the KSF runs on the
 client, and re-registering the demo account under v0 would switch off password stretching.
 
 Rules for any future submission:
