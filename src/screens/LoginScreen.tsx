@@ -66,6 +66,17 @@ export default function LoginScreen() {
     }
   }, [route.params?.deleted_at, route.params?.shred_after]);
 
+  // Task 1551 — server task 1525's "you already have an account" signup
+  // email links to `{APP_URL}/login?email=<address>` (production `login`
+  // path in App.tsx's linking config). Keyed on the param (not mount-only,
+  // same reasoning as the 1405 effect above) so re-opening the link on an
+  // already-mounted Login screen re-applies it.
+  useEffect(() => {
+    if (route.params?.email) {
+      setEmail(route.params.email);
+    }
+  }, [route.params?.email]);
+
   const styles = useMemo(() => StyleSheet.create({
     root: { flex: 1, backgroundColor: c.paper },
     scrollContent: { flexGrow: 1, justifyContent: 'center', paddingHorizontal: spacing.xl, paddingVertical: 40 },
