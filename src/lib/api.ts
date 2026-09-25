@@ -405,7 +405,17 @@ async function request<T>(
       throw new AccountDeletedError(err.deleted_at, err.shred_after);
     }
 
-    throw new ApiError(res.status, err.error ?? err.message ?? res.statusText);
+    // Task 1540 finding 7: prefer the server's human-readable `message` over
+    // the machine `error` code when both are present — e.g. billing_read_only
+    // / billing_suspended (error.rs) always send both, and a 403 on this path
+    // (check_billing_state, reached from any upload/file-mutation attempt)
+    // was surfacing the literal code string "billing_read_only" to the user
+    // instead of the actionable sentence. Falls back to `err.error` when no
+    // `message` field exists (e.g. the plain BadRequest("upload already
+    // completed") body only ever sends `error`), so no existing caller that
+    // reads `.message` loses data — see FilesScreen.tsx's `/upload already
+    // completed/i.test(err.message)` regex, unaffected by this reorder.
+    throw new ApiError(res.status, err.message ?? err.error ?? res.statusText);
   }
 
   // Read server-sent announcement header (percent-encoded UTF-8 string).
@@ -720,7 +730,10 @@ async function confirmActionPlaintext(
   }
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
-    throw new ApiError(res.status, err.error ?? err.message ?? res.statusText);
+    // Task 1540 continuation (PR #108): prefer the server's human-readable
+    // `message` over the machine `error` code, same as request() (finding
+    // 7) — this direct-fetch path had the two swapped.
+    throw new ApiError(res.status, err.message ?? err.error ?? res.statusText);
   }
   return res.json() as Promise<ConfirmActionResponse>;
 }
@@ -2053,7 +2066,9 @@ export async function verifySharePassphrase(token: string, passphrase: string): 
   }
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
-    const raw = err.error ?? err.message ?? `Passphrase verification failed: ${res.status}`;
+    // message-over-error precedence matches task 1540's convention (PR #108,
+    // request()/downloadSharedFileBlob) — see the comment there.
+    const raw = err.message ?? err.error ?? `Passphrase verification failed: ${res.status}`;
     throw new ApiError(res.status, shareAuthErrorMessage(res.status, raw));
   }
   return res.json() as Promise<ShareInfo>;
@@ -2088,7 +2103,13 @@ export async function downloadSharedFileBlob(
   }
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
-    const raw = err.error ?? err.message ?? `Share download failed: ${res.status}`;
+    // Task 1540 continuation (PR #108): prefer the server's human-readable
+    // `message` over the machine `error` code, same as request() (finding
+    // 7) — this direct-fetch path had the two swapped. Task 1539 (finding
+    // 4): still remap 401 specifically — shares.rs's ONLY message for a 401
+    // here is the generic `"unauthorized"`, which is neither field's fault
+    // to prefer, so shareAuthErrorMessage still overrides it either way.
+    const raw = err.message ?? err.error ?? `Share download failed: ${res.status}`;
     throw new ApiError(res.status, shareAuthErrorMessage(res.status, raw));
   }
 
@@ -2233,6 +2254,13 @@ export interface Subscription {
   region?: string;
   status: string;
   current_period_end: string | null;
+  /**
+   * Set only while `status === 'trialing'` (server `trial.rs::start_trial`).
+   * Equal to `current_period_end` for a trialing row today, but carried
+   * separately so a trial-specific UI (task 1540) doesn't have to assume
+   * that equality holds forever.
+   */
+  trial_ends_at?: string | null;
   is_mock?: boolean;
   quota_bytes?: number;
   used_bytes?: number;
