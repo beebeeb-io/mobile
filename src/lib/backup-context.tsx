@@ -153,6 +153,21 @@ async function setScopedBackupPref(base: string, userId: string, value: string):
 }
 
 /**
+ * Task 1531 [P0]: whether `enableNativeBackup`'s camera_roll branch may call
+ * the native `enablePhotoBackup(token, userId)` bridge. The native engine
+ * tags every newly-staged asset with `userId` and, on `start()`, purges any
+ * staged-but-unuploaded asset tagged for a DIFFERENT account left over on
+ * this device (`purgeMismatchedStagedAssets` in NativeBackupEngine.swift) —
+ * without a known userId there is nothing to tag or compare, so the native
+ * call must not happen. Exported standalone (same pattern as
+ * backupPrefKey/stopBackupEngines below) so this guard is unit testable
+ * without rendering BackupProvider.
+ */
+export function canEnableNativeCameraBackup(userId: string | undefined | null): userId is string {
+  return typeof userId === 'string' && userId.length > 0;
+}
+
+/**
  * Stops every native backup engine and clears the mirrored client session.
  * Called when a BackupProvider instance unmounts (sign-out, or sign-in as a
  * different user — see the useEffect cleanup below) so the native engines
@@ -322,9 +337,23 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
     });
 
     if (category === 'camera_roll') {
+      // Task 1531 [P0]: userId tags newly-staged assets with the account
+      // they were encrypted for, and lets the native engine purge any
+      // staged-but-unuploaded asset left over from a DIFFERENT account on
+      // this device before draining anything under this session. Without a
+      // known userId there is nothing to tag/compare against, so skip
+      // rather than call the native side with an empty account id.
+      if (!canEnableNativeCameraBackup(userId)) {
+        recordRuntimeTrace('backup.native.enable.deferred', {
+          category,
+          reason: 'no_user_id',
+          runNow: options.runNow !== false,
+        });
+        return;
+      }
       await setPhotoBackupIncludeVideos(includeVideosRef.current).catch(() => false);
       await mirrorBackupSessionForNative();
-      await enablePhotoBackup(token);
+      await enablePhotoBackup(token, userId);
     } else if (category === 'contacts') {
       if (options.runNow === false) {
         await resumeContactsBackup(token);
@@ -338,7 +367,7 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
         await enableCalendarBackup(token);
       }
     }
-  }, [isUnlocked]);
+  }, [isUnlocked, userId]);
 
   // Load persisted preferences on mount — scoped to the signed-in user
   // (task 1443). No userId means this instance is the signed-out slot
@@ -576,13 +605,15 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
         applyNativeProgress(progress);
       } catch (err) {
         console.warn('[backup] native photo backup warm-up failed:', err);
-        await enablePhotoBackup(token);
+        if (canEnableNativeCameraBackup(userId)) {
+          await enablePhotoBackup(token, userId);
+        }
         await refreshNativeProgress().catch(() => {});
       }
     } catch (err) {
       console.warn('[backup] triggerBackupNow failed:', err);
     }
-  }, [applyNativeProgress, refreshNativeProgress, wifiOnly]);
+  }, [applyNativeProgress, refreshNativeProgress, wifiOnly, userId]);
 
   const value: BackupContextValue = {
     isPhotoBackupEnabled,

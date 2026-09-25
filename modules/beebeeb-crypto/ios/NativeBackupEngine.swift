@@ -21,6 +21,7 @@ private let backupReminderLastSentKey = "io.beebeeb.backupNotifications.openAppR
 private let backupReminderCooldownSeconds: TimeInterval = 24 * 60 * 60
 private let backupReminderDelaySeconds: TimeInterval = 15 * 60
 private let backupClientSessionIdKey = "io.beebeeb.backupClientSessionId"
+private let backupCurrentAccountIdKey = "io.beebeeb.backupCurrentAccountId"
 private let backupHeartbeatCadenceSeconds: TimeInterval = 30
 private let backupSelectedAlbumIdsKey = "io.beebeeb.photoBackupSelectedAlbumIds"
 private let backupIncludeVideosKey = "io.beebeeb.photoBackupIncludeVideos"
@@ -150,6 +151,14 @@ struct BackupAssetRow {
   /// chunks and completes against the SAME session. `remoteFileId` is still used
   /// for the GET /files/{id} completion check and thumbnails.
   let stagedUploadSessionId: String?
+  /// The signed-in account (user id) whose master key encrypted the staged
+  /// chunks + name envelope, captured at STAGE time (task 1531 [P0]). `nil`
+  /// for rows staged before this column existed (pre-migration) or when no
+  /// account id was available at stage time — treated as "unknown, trust it"
+  /// so a single-account device's in-flight uploads are never disrupted by
+  /// the upgrade. A NON-nil value that differs from the current session's
+  /// account id is the cross-account-reuse signal this task fixes.
+  let stagedAccountId: String?
 }
 
 private struct BackgroundChunkTaskDescription: Codable {
@@ -413,6 +422,27 @@ final class NativeBackupEngine: NSObject {
         try? KeychainManager.storeString(value, key: backupClientSessionIdKey)
       } else {
         KeychainManager.deleteString(key: backupClientSessionIdKey)
+      }
+    }
+  }
+
+  /// The user id of the account the engine is currently authorized to upload
+  /// for (task 1531 [P0]). Set by `enablePhotoBackup(authToken:userId:)`
+  /// alongside `token`, and — like `token`/`apiBaseUrl` — persisted in the
+  /// Keychain rather than an in-memory var: a `BGProcessingTask` can relaunch
+  /// this singleton in the background after the app process was killed, and
+  /// an in-memory-only value would read back `nil` there, defeating the
+  /// mismatch check in `purgeMismatchedStagedAssets` / `uploadSingleAsset`
+  /// below on exactly the resumed-background-upload path task 1443 already
+  /// had to fix once for the analogous "keep running against a different
+  /// account's token" bug.
+  var currentAccountId: String? {
+    get { KeychainManager.loadString(key: backupCurrentAccountIdKey) }
+    set {
+      if let value = newValue, !value.isEmpty {
+        try? KeychainManager.storeString(value, key: backupCurrentAccountIdKey)
+      } else {
+        KeychainManager.deleteString(key: backupCurrentAccountIdKey)
       }
     }
   }
@@ -1200,6 +1230,15 @@ final class NativeBackupEngine: NSObject {
       NSLog("[NativeBackupEngine] Missing token or apiBaseUrl — cannot start")
       return
     }
+
+    // Task 1531 [P0]: before draining anything, drop any staged asset whose
+    // ciphertext was encrypted for a DIFFERENT account than the one about to
+    // upload (`currentAccountId`, set by `enablePhotoBackup(authToken:userId:)`
+    // just before this call). Closes the window where the very first batch
+    // for a newly-signed-in account resumes another account's stale staged
+    // upload. See purgeMismatchedStagedAssets for the full root-cause note.
+    let accountIdForThisRun = currentAccountId
+    dbQueue.sync { purgeMismatchedStagedAssets(currentAccountId: accountIdForThisRun) }
 
     isRunning = true
     perfLog("start", [
@@ -2062,6 +2101,32 @@ final class NativeBackupEngine: NSObject {
 
     do {
       if let staged = dbQueue.sync(execute: { getStagedAsset(localAssetId: asset.localAssetId) }) {
+        // Task 1531 [P0] belt-and-braces: `start()` already sweeps mismatched
+        // staged assets before the drain loop can reach them, but re-check
+        // here too so this path is safe even if it's ever reached without
+        // going through `start()` first (defense in depth, not the primary
+        // fix — see purgeMismatchedStagedAssets).
+        if let stagedAccount = staged.stagedAccountId,
+           let runningAccount = currentAccountId,
+           stagedAccount != runningAccount {
+          RuntimeTrace.event("backup.native.staged_account_mismatch.refused_upload", [
+            "stagedForAccount": stagedAccount,
+            "currentAccount": runningAccount
+          ])
+          dbQueue.sync {
+            if let stagedDir = staged.stagedDir {
+              removeStagedDirectory(stagedDir: stagedDir, fileId: staged.stagedFileId ?? "")
+            }
+            clearStagedStateForRestage(
+              assetId: asset.localAssetId,
+              error: "Re-encrypting: previously staged under a different account"
+            )
+          }
+          onFileStatus?(asset.localAssetId, "pending", nil, nil)
+          NSLog("[NativeBackupEngine] Refused to upload staged asset encrypted for a different account: \(asset.localAssetId)")
+          return false
+        }
+
         updateBackupStatusSurfaces(reason: "Uploading encrypted backup")
         return try await uploadStagedAsset(
           staged,
@@ -2389,7 +2454,8 @@ final class NativeBackupEngine: NSObject {
         isMediaValue: mediaFlag(assetType: asset.assetType, mimeType: mimeType),
         originalSize: Int64(originalSize),
         chunkCount: stagedPaths.count,
-        stagedDir: dir.path
+        stagedDir: dir.path,
+        stagedAccountId: self.currentAccountId
       )
       replaceStagedChunks(
         assetId: asset.localAssetId,
@@ -3076,6 +3142,9 @@ final class NativeBackupEngine: NSObject {
       "ALTER TABLE backup_assets ADD COLUMN staged_at INTEGER",
       "ALTER TABLE backup_assets ADD COLUMN upload_session_id TEXT",
       "ALTER TABLE backup_assets ADD COLUMN selected_for_backup INTEGER DEFAULT 1",
+      // Task 1531 [P0]: tags which account's master key encrypted the staged
+      // chunks + name envelope. See purgeMismatchedStagedAssets below.
+      "ALTER TABLE backup_assets ADD COLUMN staged_account_id TEXT",
     ]
     for migration in migrations {
       sqlite3_exec(db, migration, nil, nil, nil)
@@ -3213,7 +3282,7 @@ final class NativeBackupEngine: NSObject {
            COALESCE(retry_count, 0), error_message,
            staged_file_id, staged_name_encrypted, staged_mime_type,
            COALESCE(staged_is_media, 0), COALESCE(staged_original_size, 0),
-           COALESCE(staged_chunk_count, 0), staged_dir, upload_session_id
+           COALESCE(staged_chunk_count, 0), staged_dir, upload_session_id, staged_account_id
     FROM backup_assets
     WHERE status IN ('pending_upload', 'pending_reupload', 'staging', 'staged_upload', 'uploading')
       AND COALESCE(selected_for_backup, 1) = 1
@@ -3277,6 +3346,9 @@ final class NativeBackupEngine: NSObject {
         : nil,
       stagedUploadSessionId: sqlite3_column_type(stmt, 15) != SQLITE_NULL
         ? String(cString: sqlite3_column_text(stmt, 15))
+        : nil,
+      stagedAccountId: sqlite3_column_type(stmt, 16) != SQLITE_NULL
+        ? String(cString: sqlite3_column_text(stmt, 16))
         : nil
     )
   }
@@ -3288,7 +3360,7 @@ final class NativeBackupEngine: NSObject {
            COALESCE(retry_count, 0), error_message,
            staged_file_id, staged_name_encrypted, staged_mime_type,
            COALESCE(staged_is_media, 0), COALESCE(staged_original_size, 0),
-           COALESCE(staged_chunk_count, 0), staged_dir, upload_session_id
+           COALESCE(staged_chunk_count, 0), staged_dir, upload_session_id, staged_account_id
     FROM backup_assets
     WHERE local_asset_id = ?
       AND staged_file_id IS NOT NULL
@@ -3399,7 +3471,8 @@ final class NativeBackupEngine: NSObject {
     isMediaValue: Bool,
     originalSize: Int64,
     chunkCount: Int,
-    stagedDir: String
+    stagedDir: String,
+    stagedAccountId: String?
   ) {
     guard let db = db else { return }
     let sql = """
@@ -3414,6 +3487,7 @@ final class NativeBackupEngine: NSObject {
         staged_dir = ?,
         staged_at = ?,
         file_size = ?,
+        staged_account_id = ?,
         error_message = NULL
     WHERE local_asset_id = ?
     """
@@ -3433,7 +3507,12 @@ final class NativeBackupEngine: NSObject {
     sqlite3_bind_text(stmt, 7, (stagedDir as NSString).utf8String, -1, nil)
     sqlite3_bind_int64(stmt, 8, nowMs())
     sqlite3_bind_int64(stmt, 9, originalSize)
-    sqlite3_bind_text(stmt, 10, (assetId as NSString).utf8String, -1, nil)
+    if let stagedAccountId {
+      sqlite3_bind_text(stmt, 10, (stagedAccountId as NSString).utf8String, -1, nil)
+    } else {
+      sqlite3_bind_null(stmt, 10)
+    }
+    sqlite3_bind_text(stmt, 11, (assetId as NSString).utf8String, -1, nil)
     sqlite3_step(stmt)
   }
 
@@ -3726,6 +3805,91 @@ final class NativeBackupEngine: NSObject {
       let sql = "UPDATE backup_upload_chunks SET status = 'pending', task_id = NULL WHERE status = 'uploading' AND (task_id IS NULL OR task_id NOT IN (\(keep)))"
       sqlite3_exec(db, sql, nil, nil, nil)
     }
+  }
+
+  /// Task 1531 [P0]: drop every already-encrypted staged asset whose
+  /// `staged_account_id` does not match `accountId` — the account the engine
+  /// is about to upload as.
+  ///
+  /// Root cause this closes: `backup_assets` is one on-disk queue shared by
+  /// every account that has ever signed in on this device (no account
+  /// scoping existed before this task). Staging encrypts a photo's chunks +
+  /// name envelope to disk under whichever master key was cached AT THAT
+  /// MOMENT (`uploadSingleAsset` → `stageEncryptedAsset`); if the app signs
+  /// out (or switches accounts) before the matching upload completes, the
+  /// ciphertext and its `backup_assets`/`backup_upload_chunks` rows are never
+  /// purged by sign-out (`purgeAllPlaintextCaches()` only sweeps *plaintext*
+  /// paths — this is ciphertext, so it was never in scope). The next account
+  /// to enable photo backup on this device would otherwise have its very
+  /// first `processBatch()` resume that stale row (`uploadSingleAsset` finds
+  /// `getStagedAsset(...)` non-nil and calls `uploadStagedAsset` directly,
+  /// which never re-derives the key — it PUTs the on-disk ciphertext as-is),
+  /// uploading a file that unwraps under the new account's own
+  /// `derive_file_key` share-wrap but was never actually encrypted with that
+  /// key — the exact "share unwraps, decrypt fails" shape reported in 1531/1534.
+  ///
+  /// Called proactively from `start()` (before the first `processBatch()` can
+  /// run for the newly-current account) and defensively from
+  /// `uploadSingleAsset` immediately before an already-staged row is PUT, so
+  /// the fix does not depend on `start()` always running first (e.g. a
+  /// `BGProcessingTask` resume).
+  ///
+  /// A row with a NULL `staged_account_id` (pre-migration, or staged before
+  /// any account id was known) is left untouched — treated as "same account,
+  /// trust it" so an ordinary single-account device's in-flight uploads are
+  /// never disrupted by this fix. This is intentionally asymmetric with the
+  /// mismatch case: we only ever DROP work we can prove belongs to a
+  /// different account, never work we merely can't attribute.
+  ///
+  /// MUST be called from `dbQueue` (matches every other `db`-touching method
+  /// here) — it does not wrap itself, so a caller that is not already on
+  /// `dbQueue` must do `dbQueue.sync { purgeMismatchedStagedAssets(...) }`
+  /// (see `start()`), not call it directly.
+  @discardableResult
+  func purgeMismatchedStagedAssets(currentAccountId accountId: String?) -> Int {
+    guard let db = db, let accountId, !accountId.isEmpty else { return 0 }
+
+    let selectSql = """
+    SELECT local_asset_id, staged_dir, staged_file_id, staged_account_id
+    FROM backup_assets
+    WHERE staged_file_id IS NOT NULL
+      AND staged_account_id IS NOT NULL
+      AND staged_account_id != ?
+    """
+    var selectStmt: OpaquePointer?
+    guard sqlite3_prepare_v2(db, selectSql, -1, &selectStmt, nil) == SQLITE_OK else { return 0 }
+    sqlite3_bind_text(selectStmt, 1, (accountId as NSString).utf8String, -1, nil)
+
+    var mismatched: [(assetId: String, stagedDir: String?, fileId: String, otherAccount: String)] = []
+    while sqlite3_step(selectStmt) == SQLITE_ROW {
+      let assetId = String(cString: sqlite3_column_text(selectStmt, 0))
+      let stagedDir: String? = sqlite3_column_type(selectStmt, 1) != SQLITE_NULL
+        ? String(cString: sqlite3_column_text(selectStmt, 1))
+        : nil
+      let fileId = String(cString: sqlite3_column_text(selectStmt, 2))
+      let otherAccount = String(cString: sqlite3_column_text(selectStmt, 3))
+      mismatched.append((assetId, stagedDir, fileId, otherAccount))
+    }
+    sqlite3_finalize(selectStmt)
+
+    guard !mismatched.isEmpty else { return 0 }
+
+    for row in mismatched {
+      if let stagedDir = row.stagedDir {
+        removeStagedDirectory(stagedDir: stagedDir, fileId: row.fileId)
+      }
+      clearStagedStateForRestage(
+        assetId: row.assetId,
+        error: "Re-encrypting: previously staged under a different account"
+      )
+      RuntimeTrace.event("backup.native.staged_account_mismatch.purged", [
+        "stagedForAccount": row.otherAccount,
+        "currentAccount": accountId
+      ])
+    }
+
+    NSLog("[NativeBackupEngine] Purged \(mismatched.count) staged asset(s) encrypted for a different account")
+    return mismatched.count
   }
 
   /// Refresh progress counters from the database.

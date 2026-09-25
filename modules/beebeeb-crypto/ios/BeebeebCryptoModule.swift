@@ -1567,6 +1567,15 @@ public class BeebeebCryptoModule: Module {
 
     AsyncFunction("deleteKeyFromKeychain") { () throws -> Bool in
       KeychainManager.delete()
+      // Task 1531 [P0] defense in depth: the app-wide in-process master-key
+      // cache (`BeebeebCryptoBridge`) was previously cleared ONLY as a side
+      // effect of `releaseHandle` emptying `masterKeyHandles` — a path that
+      // depends on JS calling `releaseHandle` for every outstanding handle
+      // before/around sign-out. Clearing it explicitly here, at the same
+      // moment the persisted keychain key is destroyed, means the in-process
+      // cache can never outlive the keychain key it was read from, regardless
+      // of handle-refcount bookkeeping on the JS side.
+      BeebeebCryptoBridge.clearCachedMasterKey()
       return true
     }
 
@@ -2272,9 +2281,13 @@ public class BeebeebCryptoModule: Module {
       return true
     }
 
-    AsyncFunction("enablePhotoBackup") { (authToken: String) in
+    AsyncFunction("enablePhotoBackup") { (authToken: String, userId: String) in
       let engine = NativeBackupEngine.shared
       engine.token = authToken
+      // Task 1531 [P0]: set BEFORE start() so purgeMismatchedStagedAssets
+      // (called first thing inside start()) sweeps any staged asset left
+      // over from a previous, different account on this device.
+      engine.currentAccountId = userId
       if engine.apiBaseUrl == nil {
         engine.apiBaseUrl = KeychainManager.loadString(key: "io.beebeeb.serverURL")
       }

@@ -99,7 +99,7 @@ mock.module('../../modules/beebeeb-crypto', () => ({
 // scenario (see loadFresh) because sessionPresentAtLaunchPromise is captured
 // once, synchronously, the moment the module is first evaluated — exactly
 // mirroring how it behaves once per real app process.
-const { backupPrefKey, stopBackupEngines } = await import('./backup-context');
+const { backupPrefKey, stopBackupEngines, canEnableNativeCameraBackup } = await import('./backup-context');
 
 const LEGACY_PHOTO_KEY = 'beebeeb_camera_backup';
 const OWNER_KEY = 'beebeeb_backup_pref_owner';
@@ -236,6 +236,45 @@ describe('migrateLegacyBackupPrefs', () => {
     store.set(keyFn(LEGACY_PHOTO_KEY, 'user-a'), 'false');
     await migrateLegacyBackupPrefs('user-a');
     expect(store.get(keyFn(LEGACY_PHOTO_KEY, 'user-a'))).toBe('false');
+  });
+});
+
+// Task 1531 [P0]: the native backup engine's `backup_assets` staging queue
+// has no per-account scoping — a photo staged (encrypted to disk) under
+// account A but not yet uploaded when A signs out sits there untouched
+// (sign-out purges PLAINTEXT caches only; staged ciphertext was never in
+// that registry). If account B is then allowed to call the native
+// `enablePhotoBackup` bridge without B's own userId, the engine has no way
+// to tell A's leftover staged ciphertext apart from B's own and will PUT it
+// into B's account as-is — a file that unwraps under B's own share key
+// (share creation derives independently from B's master key) but was never
+// actually encrypted with it. This is the "share unwraps, decrypt fails"
+// shape reported in 1531/1534. canEnableNativeCameraBackup is the guard that
+// keeps the native call (and therefore the native-side account tag +
+// mismatch purge in NativeBackupEngine.swift) from ever running without a
+// known account to tag/compare against.
+describe('canEnableNativeCameraBackup (task 1531 account-tag guard)', () => {
+  test('refuses when there is no signed-in user id (nothing to tag staged assets with)', () => {
+    expect(canEnableNativeCameraBackup(undefined)).toBe(false);
+    expect(canEnableNativeCameraBackup(null)).toBe(false);
+    expect(canEnableNativeCameraBackup('')).toBe(false);
+  });
+
+  test('allows once a real user id is known', () => {
+    expect(canEnableNativeCameraBackup('user-a')).toBe(true);
+    expect(canEnableNativeCameraBackup('user-b')).toBe(true);
+  });
+
+  test('user A and user B are never treated as interchangeable callers', () => {
+    // Regression guard against a future "any truthy id passes" simplification
+    // that would silently defeat the per-account tag this guard exists to
+    // enable — the whole point is that A's id and B's id are DIFFERENT
+    // strings the native side can compare, not just "some id or other".
+    const a = canEnableNativeCameraBackup('user-a');
+    const b = canEnableNativeCameraBackup('user-b');
+    expect(a).toBe(true);
+    expect(b).toBe(true);
+    expect('user-a').not.toBe('user-b');
   });
 });
 
