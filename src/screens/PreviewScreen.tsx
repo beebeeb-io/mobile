@@ -25,6 +25,7 @@ import * as Clipboard from 'expo-clipboard';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import * as Haptics from 'expo-haptics';
+import * as LocalAuthentication from 'expo-local-authentication';
 import { WebView } from 'react-native-webview';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import NetInfo from '@react-native-community/netinfo';
@@ -70,6 +71,7 @@ import {
 import { DetailsSheet } from '../components/preview/DetailsSheet';
 import { recordRuntimeTrace } from '../lib/runtime-trace';
 import { formatBytes as formatSize } from '../lib/format';
+import { checkLockedFileIds, isPreviewGated } from '../lib/preview-lock-gate';
 
 // Preview renderers are lazy-loaded so that the libraries each one depends on
 // (jszip, xlsx, mammoth, pako, react-native-pdf, highlight.js) only enter
@@ -552,6 +554,29 @@ function throwIfPreviewAborted(signal?: AbortSignal): void {
   const error = new Error('Preview load cancelled.');
   error.name = 'AbortError';
   throw error;
+}
+
+/**
+ * Task 1539 (finding 1, P0): thrown by `fetchAndDecrypt` when the current
+ * file is locked and not yet authenticated this session. This is the single
+ * choke point every single-file preview path (image/pdf/video/docx/
+ * spreadsheet/html/zip/text/pptx/"view original") funnels through, so
+ * guarding it here means none of those ~10 call sites can ever start a
+ * download+decrypt for a locked file — not just hide the result behind an
+ * overlay. Effects that see this error do not surface it as a load failure
+ * (the dedicated lock-gate UI, not an error card, is what's shown); it is
+ * recognized by name, matching the existing `AbortError` convention just
+ * above.
+ */
+class PreviewLockedError extends Error {
+  constructor() {
+    super('This file is locked.');
+    this.name = 'PreviewLockedError';
+  }
+}
+
+function isPreviewLockedError(err: unknown): boolean {
+  return err instanceof Error && err.name === 'PreviewLockedError';
 }
 
 function PreviewProgressStatus({
@@ -1162,6 +1187,9 @@ const PhotoPage = React.memo(function PhotoPage({
   width,
   previewProfile,
   originalRequestNonce,
+  locked,
+  unlocking,
+  onRequestUnlock,
 }: {
   entry: PhotoPageEntry;
   shouldLoadFull: boolean;
@@ -1169,6 +1197,17 @@ const PhotoPage = React.memo(function PhotoPage({
   width: number;
   previewProfile: PerformanceStorageProfile;
   originalRequestNonce: number;
+  /**
+   * Task 1539 (finding 1, P0): true when this specific swipe-pager entry is
+   * locked and not yet authenticated this session. This is the enforcement
+   * point for "swipe to a locked neighbor bypasses the gate" — every effect
+   * below that would start a thumbnail or full decrypt checks this FIRST,
+   * per entry.id, independent of every other page in the pager.
+   */
+  locked: boolean;
+  /** True while THIS entry's Face ID prompt is in flight (disables its own unlock control only). */
+  unlocking: boolean;
+  onRequestUnlock: (fileId: string) => void;
 }) {
   const { colors: c } = useTheme();
   const { isUnlocked, getFileKeyBytes, getMasterKeyHandleId } = useCrypto();
@@ -1236,6 +1275,13 @@ const PhotoPage = React.memo(function PhotoPage({
   }, [entry.id]);
 
   useEffect(() => {
+    // Task 1539 (finding 1, P0): this effect used to run unconditionally for
+    // EVERY page in the pager, including off-screen neighbors, and it seeds
+    // `thumbnailUri` straight from `entry.thumbnail_uri` (handed over by
+    // PhotosScreen) or a local cache — no `shouldLoadFull`/decrypt gate at
+    // all. A locked neighbor's thumbnail would render the instant it entered
+    // the pager's preload window, before the user even swiped to it.
+    if (locked) return;
     let cancelled = false;
     const seeded = entry.thumbnail_uri ?? null;
     if (seeded) setThumbnailUri(seeded);
@@ -1253,10 +1299,14 @@ const PhotoPage = React.memo(function PhotoPage({
         if (!cancelled) setThumbnailUri(null);
       });
     return () => { cancelled = true; };
-  }, [entry.id]);
+  }, [entry.id, locked]);
 
   useEffect(() => {
     if (!shouldLoadFull) return;
+    // Task 1539 (finding 1, P0): the full-resolution/original decrypt path —
+    // gates `loadDecryptedPhotoForViewer`, the same function the single-file
+    // (non-swipe) effects above call directly.
+    if (locked) return;
     if (uri) return;
     if (Platform.OS === 'web') return;
 
@@ -1324,10 +1374,15 @@ const PhotoPage = React.memo(function PhotoPage({
       cancelled = true;
       controller.abort();
     };
-  }, [shouldLoadFull, uri, entry, isUnlocked, getFileKeyBytes, getMasterKeyHandleId, isVideoEntry, previewProfile]);
+  }, [shouldLoadFull, uri, entry, isUnlocked, getFileKeyBytes, getMasterKeyHandleId, isVideoEntry, previewProfile, locked]);
 
   useEffect(() => {
     if (!shouldLoadFull || !isCurrent) return;
+    // Task 1539 (finding 1, P0): transitively protected too (`uri` only gets
+    // set by the already-gated effect above), guarded explicitly for the
+    // same defense-in-depth reasons as the single-file large-thumbnail
+    // effect in the main component.
+    if (locked) return;
     if (previewProfile !== 'smooth' || isVideoEntry || uriKind !== 'thumbnail' || !uri) return;
     if (Platform.OS === 'web') return;
     const attemptKey = `${entry.id}:${uri}`;
@@ -1366,10 +1421,14 @@ const PhotoPage = React.memo(function PhotoPage({
       cancelled = true;
       controller.abort();
     };
-  }, [entry, getFileKeyBytes, isCurrent, isUnlocked, isVideoEntry, previewProfile, shouldLoadFull, uri, uriKind]);
+  }, [entry, getFileKeyBytes, isCurrent, isUnlocked, isVideoEntry, previewProfile, shouldLoadFull, uri, uriKind, locked]);
 
   useEffect(() => {
     if (!originalRequestNonce || !isCurrent || isVideoEntry) return;
+    // Task 1539 (finding 1, P0): defense-in-depth — the "View Original"
+    // trigger this responds to only ever fires from within the already-
+    // unlocked content UI, but gate it explicitly rather than rely on that.
+    if (locked) return;
     if (uriKind === 'original') return;
     if (Platform.OS === 'web') return;
 
@@ -1463,7 +1522,7 @@ const PhotoPage = React.memo(function PhotoPage({
       cancelled = true;
       controller.abort();
     };
-  }, [entry, getFileKeyBytes, getMasterKeyHandleId, isCurrent, isUnlocked, isVideoEntry, originalRequestNonce, previewProfile, uriKind]);
+  }, [entry, getFileKeyBytes, getMasterKeyHandleId, isCurrent, isUnlocked, isVideoEntry, originalRequestNonce, previewProfile, uriKind, locked]);
 
   useEffect(() => {
     if (!uri) {
@@ -1492,7 +1551,27 @@ const PhotoPage = React.memo(function PhotoPage({
 
   return (
     <View style={[styles.photoPage, { width }]}>
-      {thumbnailUri && !uri && !error ? (
+      {locked ? (
+        // Task 1539 (finding 1, P0): what a swipe onto a locked neighbor
+        // shows now, instead of silently decrypting and displaying it. No
+        // thumbnail/uri render branch below is even reachable here — every
+        // effect that could populate them is gated above, so this is not
+        // just a visual cover-up over content that already loaded.
+        <Pressable
+          style={styles.photoPageStatus}
+          onPress={() => onRequestUnlock(entry.id)}
+          disabled={unlocking}
+          accessibilityRole="button"
+          accessibilityLabel="Locked file — tap to authenticate"
+          testID="preview-locked-page"
+        >
+          <Ionicons name="lock-closed" size={32} color={colors.amber} />
+          <Text style={styles.photoPageStatusTitle}>Locked</Text>
+          <Text style={styles.photoPageStatusSub}>
+            {unlocking ? 'Authenticating...' : 'Tap to authenticate and view this file.'}
+          </Text>
+        </Pressable>
+      ) : thumbnailUri && !uri && !error ? (
         <Image
           source={{ uri: thumbnailUri }}
           style={styles.photoPageThumbnail}
@@ -1629,6 +1708,85 @@ export default function PreviewScreen() {
   const currentChunkCount = currentEntry?.chunk_count ?? chunkCount;
   const currentVersionNumber = currentEntry?.version_number ?? versionNumber;
   const currentStoragePoolId = currentEntry?.storage_pool_id ?? storagePoolId;
+
+  // ---------------------------------------------------------------------
+  // Task 1539 (finding 1, P0): "Lock file" enforcement.
+  //
+  // Before this, PreviewScreen never checked `isFileLocked` at all — the
+  // ONLY gate anywhere in the app was FilesScreen's tap handler, so opening
+  // a locked file via the Photos tab, or swiping to a locked neighbor in
+  // THIS pager, decrypted and displayed it with no Face ID prompt. This is
+  // the enforcement point the fix hint asks for: PreviewScreen owns the
+  // check itself, on mount AND on every pager index change (re-evaluated
+  // below via `isPreviewGated(currentFileId, ...)`, which recomputes on
+  // every render including a `currentPhotoIndex` change from a swipe).
+  //
+  // `lockedFileIds` is checked ONCE for the whole bounded id set this
+  // screen instance can ever show (`fileId` + every id in `photoList` — the
+  // same bounded swipe window PhotosScreen/FilesScreen already hand over),
+  // not per-swipe, so paging doesn't re-hit SecureStore on every frame.
+  // `authenticatedFileIds` tracks which of those the user has already
+  // proven Face ID for THIS screen session, so re-visiting an unlocked
+  // (this session) file by swiping back doesn't re-prompt every time —
+  // each NEW locked id, e.g. a different locked neighbor, still gates
+  // independently (verified directly by preview-lock-gate.test.ts's
+  // "swiping to a DIFFERENT locked neighbor re-gates" case).
+  const lockCandidateIds = useMemo(() => {
+    const ids = photoList.length > 0 ? photoList.map((p) => p.id) : [fileId];
+    return Array.from(new Set(ids));
+  }, [photoList, fileId]);
+  const [lockedFileIds, setLockedFileIds] = useState<Set<string>>(new Set());
+  const [lockCheckReady, setLockCheckReady] = useState(false);
+  const [authenticatedFileIds, setAuthenticatedFileIds] = useState<Set<string>>(new Set());
+  const [unlockingFileId, setUnlockingFileId] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLockCheckReady(false);
+    checkLockedFileIds(lockCandidateIds)
+      .then((locked) => {
+        if (cancelled) return;
+        setLockedFileIds(locked);
+        setLockCheckReady(true);
+      })
+      .catch(() => {
+        // Fail closed: an unreadable lock store must not be treated as
+        // "nothing is locked". Every candidate id gates until the user
+        // authenticates, same as file-locks.ts's own isFileLocked() would
+        // report for a store it can't read.
+        if (cancelled) return;
+        setLockedFileIds(new Set(lockCandidateIds));
+        setLockCheckReady(true);
+      });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- lockCandidateIds is a bounded, mount-stable list (photoList/fileId don't change after route params are set).
+  }, []);
+
+  // Gates the CURRENT file — recomputed every render, so a pager swipe
+  // (currentPhotoIndex -> currentFileId change) re-evaluates it fresh.
+  // Before the initial SecureStore read resolves, fail closed rather than
+  // let a decrypt start while lock status is still unknown.
+  const contentLocked = !lockCheckReady || isPreviewGated(currentFileId, lockedFileIds, authenticatedFileIds);
+
+  const handleUnlockCurrent = useCallback(async (targetFileId: string) => {
+    setUnlockingFileId(targetFileId);
+    try {
+      const result = await LocalAuthentication.authenticateAsync({
+        promptMessage: 'Authenticate to open this file',
+        disableDeviceFallback: true,
+      });
+      if (result.success) {
+        setAuthenticatedFileIds((prev) => {
+          const next = new Set(prev);
+          next.add(targetFileId);
+          return next;
+        });
+      }
+    } finally {
+      setUnlockingFileId(null);
+    }
+  }, []);
+  // ---------------------------------------------------------------------
 
   const [downloading, setDownloading] = useState(false);
   const [trashing, setTrashing] = useState(false);
@@ -1919,6 +2077,14 @@ export default function PreviewScreen() {
    */
   const fetchAndDecrypt = useCallback(async (options: { signal?: AbortSignal } = {}): Promise<string> => {
     throwIfPreviewAborted(options.signal);
+    // Task 1539 (finding 1, P0): every single-file decrypt path funnels
+    // through this function — see PreviewLockedError's doc comment. Checked
+    // AFTER the abort check (an already-cancelled load shouldn't masquerade
+    // as a lock error) and BEFORE any network/decrypt work starts.
+    if (contentLocked) {
+      recordRuntimeTrace('preview.original.blocked_locked', { fileId: currentFileId });
+      throw new PreviewLockedError();
+    }
     const startedAt = Date.now();
     recordRuntimeTrace('preview.original.fetch_start', {
       fileId: currentFileId,
@@ -2029,6 +2195,7 @@ export default function PreviewScreen() {
   }, [
     cacheFileName,
     category,
+    contentLocked,
     currentChunkCount,
     currentFileId,
     currentMimeType,
@@ -2081,6 +2248,14 @@ export default function PreviewScreen() {
   useEffect(() => {
     if (!isImage) return;
     if (hasSwipe) return;
+    // Task 1539 (finding 1, P0): the single-file image path calls
+    // `loadDecryptedPhotoForViewer` DIRECTLY — it never went through
+    // `fetchAndDecrypt`, so guarding that function alone would have missed
+    // this, the most common preview path (images/videos are the bulk of
+    // what Photos opens). This is the same function PhotoPage's own
+    // `shouldLoadFull` effect calls for the swipe pager, gated there via its
+    // `locked` prop.
+    if (contentLocked) return;
     if (Platform.OS === 'web') return;
     const controller = new AbortController();
     let cancelled = false;
@@ -2138,6 +2313,7 @@ export default function PreviewScreen() {
       controller.abort();
     };
   }, [
+    contentLocked,
     currentFileId,
     currentPhotoPageEntry,
     getFileKeyBytes,
@@ -2150,6 +2326,10 @@ export default function PreviewScreen() {
 
   useEffect(() => {
     if (!isImage || hasSwipe) return;
+    // Task 1539 (finding 1, P0): same direct-call bypass as the effect
+    // above — belt-and-suspenders here since `imageUri` (required below)
+    // only gets set by that already-gated effect in the first place.
+    if (contentLocked) return;
     if (performanceStorageProfile !== 'smooth' || imagePreviewKind !== 'thumbnail' || !imageUri) return;
     if (Platform.OS === 'web') return;
     const attemptKey = `${currentFileId}:${imageUri}`;
@@ -2189,6 +2369,7 @@ export default function PreviewScreen() {
       controller.abort();
     };
   }, [
+    contentLocked,
     currentFileId,
     currentPhotoPageEntry,
     getFileKeyBytes,
@@ -2203,6 +2384,11 @@ export default function PreviewScreen() {
   // Auto-load PDFs inline on mount — uses native decrypt + PdfRenderer.
   useEffect(() => {
     if (!isPdf) return;
+    // Task 1539 (finding 1, P0): PDFs call `decryptToTempFile` DIRECTLY —
+    // another `fetchAndDecrypt` bypass, and unlike the image effects above
+    // this one isn't even implicitly protected by a downstream `!imageUri`
+    // check, so it needed its own explicit guard.
+    if (contentLocked) return;
     if (Platform.OS === 'web') return;
     if (!isUnlocked) return;
     const controller = new AbortController();
@@ -2245,7 +2431,7 @@ export default function PreviewScreen() {
       cancelled = true;
       controller.abort();
     };
-  }, [isPdf, isUnlocked, currentFileId, getFileKeyBytes, getMasterKeyHandleId, resolveDecryptKey, currentSizeBytes, currentChunkCount]);
+  }, [contentLocked, isPdf, isUnlocked, currentFileId, getFileKeyBytes, getMasterKeyHandleId, resolveDecryptKey, currentSizeBytes, currentChunkCount]);
 
   // Auto-load text/code/JSON inline on mount — read decrypted file as UTF-8
   useEffect(() => {
@@ -2821,9 +3007,21 @@ export default function PreviewScreen() {
         width={SCREEN_WIDTH}
         previewProfile={performanceStorageProfile}
         originalRequestNonce={originalPhotoRequest?.fileId === item.id ? originalPhotoRequest.nonce : 0}
+        locked={isPreviewGated(item.id, lockedFileIds, authenticatedFileIds)}
+        unlocking={unlockingFileId === item.id}
+        onRequestUnlock={handleUnlockCurrent}
       />
     ),
-    [activePhotoPageIndexes, currentPhotoIndex, originalPhotoRequest, performanceStorageProfile],
+    [
+      activePhotoPageIndexes,
+      authenticatedFileIds,
+      currentPhotoIndex,
+      handleUnlockCurrent,
+      lockedFileIds,
+      originalPhotoRequest,
+      performanceStorageProfile,
+      unlockingFileId,
+    ],
   );
 
   // 1346 — this loading-state status is shared by BOTH the media branch
@@ -3005,6 +3203,37 @@ export default function PreviewScreen() {
               style={{ flex: 1 }}
             />
           </View>
+        ) : contentLocked ? (
+          // Task 1539 (finding 1, P0): the single-file (non-swipe) content
+          // area, gated the same way as every pager page. Every effect that
+          // could populate imageUri/videoUri for THIS file is gated above
+          // (`contentLocked` in their dependency arrays), so this replaces
+          // what would otherwise be an indefinite loading spinner — not an
+          // overlay hiding content that already started loading underneath.
+          <Pressable
+            style={[
+              styles.mediaStage,
+              {
+                paddingTop: insets.top + 64,
+                paddingBottom: 24 + Math.max(insets.bottom, 16),
+                alignItems: 'center',
+                justifyContent: 'center',
+              },
+            ]}
+            onPress={() => { void handleUnlockCurrent(currentFileId); }}
+            disabled={unlockingFileId === currentFileId}
+            accessibilityRole="button"
+            accessibilityLabel="Locked file — tap to authenticate"
+            testID="preview-locked-single"
+          >
+            <View style={styles.imageStatus}>
+              <Ionicons name="lock-closed" size={40} color={colors.amber} />
+              <Text style={[styles.imageStatusTitle, { color: colors.white }]}>Locked</Text>
+              <Text style={styles.imageStatusSub}>
+                {unlockingFileId === currentFileId ? 'Authenticating...' : 'Tap to authenticate and view this file.'}
+              </Text>
+            </View>
+          </Pressable>
         ) : (
           <Pressable
             style={[
@@ -3269,7 +3498,26 @@ export default function PreviewScreen() {
           regress, and touching unreachable code isn't part of this
           decision. */}
       <View style={styles.previewArea}>
-        {isImage ? (
+        {contentLocked ? (
+          // Task 1539 (finding 1, P0): the doc branch (pdf/docx/spreadsheet/
+          // html/zip/archive/text/pptx/svg) — every content-loading effect
+          // for these categories is gated the same way as the media branch
+          // above, via `contentLocked` in their dependency arrays.
+          <Pressable
+            style={styles.imageStatus}
+            onPress={() => { void handleUnlockCurrent(currentFileId); }}
+            disabled={unlockingFileId === currentFileId}
+            accessibilityRole="button"
+            accessibilityLabel="Locked file — tap to authenticate"
+            testID="preview-locked-doc"
+          >
+            <Ionicons name="lock-closed" size={40} color={c.amber} />
+            <Text style={[styles.imageStatusTitle, { color: c.ink }]}>Locked</Text>
+            <Text style={[styles.imageStatusSub, { color: c.ink3 }]}>
+              {unlockingFileId === currentFileId ? 'Authenticating...' : 'Tap to authenticate and view this file.'}
+            </Text>
+          </Pressable>
+        ) : isImage ? (
           imageError ? (
             <View style={styles.imageStatus}>
               <Text style={[styles.imageStatusTitle, { color: colors.white }]}>
