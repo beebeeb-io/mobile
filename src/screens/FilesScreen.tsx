@@ -64,6 +64,7 @@ import { useThumbnail } from '../lib/use-thumbnail';
 import { maybeSelfRepairThumbnailFromLocalFile } from '../lib/thumbnail-self-repair';
 import { getCachedThumbnail } from '../lib/thumbnail-cache';
 import { getLocalIdentifier } from '../lib/local-identifier-map';
+import { PLAN_MANAGEMENT_NOTE } from '../lib/billing-copy';
 import type { FileEntry, StorageUsage, ProofOfExistence, PresenceUser, SyncNode } from '../lib/api';
 import type { RootStackParamList, TabParamList } from '../App';
 import { useCrypto } from '../lib/crypto-context';
@@ -4166,15 +4167,21 @@ export default function FilesScreen() {
         const ratio = usage.used_bytes / usage.plan_limit_bytes;
         if (ratio < 0.9) return null;
         const isFull = ratio >= 1;
+        // Task 1540 findings 5, 8, 9: the previous copy/hint here promised an
+        // in-app purchase action that does not exist (task 1400, App Review
+        // 3.1.1(a) — no purchase mechanism anywhere in the app). "Delete
+        // files" stays because it's the one thing the user can actually do
+        // here; the rest points at the same non-tappable web note
+        // StorageScreen already shows.
         const message = isFull
-          ? 'Storage full — delete files or upgrade'
+          ? 'Storage full — delete files to continue'
           : `Storage almost full — ${formatSize(usage.used_bytes)} of ${formatSize(usage.plan_limit_bytes)} used`;
         return (
           <TouchableOpacity
             activeOpacity={0.7}
             onPress={() => Alert.alert(
               isFull ? 'Storage full' : 'Storage almost full',
-              'Free up space by deleting files or upgrade your plan in Settings.',
+              `Free up space by deleting files. ${PLAN_MANAGEMENT_NOTE}`,
             )}
             style={[
               styles.storageBanner,
@@ -4196,7 +4203,7 @@ export default function FilesScreen() {
               {message}
             </Text>
             <Text style={[styles.storageBannerHint, { color: isFull ? '#fff' : c.amberDeep }]}>
-              {isFull ? 'Upgrade' : 'Manage'}
+              Manage
             </Text>
           </TouchableOpacity>
         );

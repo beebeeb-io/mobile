@@ -77,6 +77,7 @@ import {
   type Region,
   type MobileNotificationPreferences,
 } from '../lib/api';
+import { billingStatusView } from '../lib/billing-status';
 import {
   loadRegionsData,
   selectRegion,
@@ -856,9 +857,13 @@ export default function SettingsScreen() {
         if (tier > lastQuotaAlertRef.current) {
           lastQuotaAlertRef.current = tier;
           if (tier === 100) {
-            showToast({ type: 'error', message: 'Storage full — uploads will fail until you free space or upgrade.' });
+            // Task 1540 findings 5, 8: the previous copy here named an
+            // in-app action that doesn't exist. Free space or manage the
+            // plan on the web (see PLAN_MANAGEMENT_NOTE) are the two things
+            // a user can actually do.
+            showToast({ type: 'error', message: 'Storage full — uploads will fail until you free space or manage your plan.' });
           } else if (tier === 90) {
-            showToast({ type: 'error', message: 'Storage 90% full — consider upgrading or clearing the trash.' });
+            showToast({ type: 'error', message: 'Storage 90% full — free up space or manage your plan.' });
           } else if (tier === 75) {
             showToast({ type: 'info', message: 'Storage 75% full.' });
           }
@@ -1626,10 +1631,12 @@ export default function SettingsScreen() {
     }
   }, [storageRegion]);
 
-  const handleUpgrade = useCallback(() => {
-    Haptics.selectionAsync();
-    navigation.navigate('Storage');
-  }, [navigation]);
+  // Task 1540 findings 3, 5, 9: this used to be a callback wiring an amber
+  // primary-CTA button below to `navigation.navigate('Storage')` — but
+  // StorageScreen has no purchase mechanism of any kind (task 1400, App
+  // Review 3.1.1(a)), so the button was a dead end. Removed entirely rather
+  // than reworded: the "Storage & plan" row further down this screen already
+  // navigates to the same place for a user who wants to see their plan.
 
   const handleReportBug = useCallback(() => {
     Linking.openURL('https://beebeeb.io/support');
@@ -1693,12 +1700,17 @@ export default function SettingsScreen() {
   const initials = userInitials(email);
   const planNameRaw = subscription?.plan ?? usage?.plan_name ?? null;
   const planName = planNameRaw ? planLabel(planNameRaw) : null;
-  const isFreePlan = (planNameRaw ?? '').toLowerCase() === 'free';
-  const renewalDate = subscription?.current_period_end
-    ? new Date(subscription.current_period_end).toLocaleDateString('en-US', {
-        month: 'short', day: 'numeric', year: 'numeric',
-      })
-    : null;
+  // Task 1540 findings 1, 2, 4, 6: read subscription.status, not just the
+  // plan slug — a status='cancelling' or 'trialing' subscription must not
+  // say "Renews {date}" (see src/lib/billing-status.ts for the full server
+  // evidence). Shared with StorageScreen.tsx's CurrentPlanCard so the two
+  // can't drift apart again.
+  const billingView = billingStatusView(planNameRaw ? {
+    plan: planNameRaw,
+    status: subscription?.status ?? null,
+    current_period_end: subscription?.current_period_end ?? null,
+    trial_ends_at: subscription?.trial_ends_at ?? null,
+  } : null);
   const serverRegionLabel = serverRegion?.region ? regionDisplayName(serverRegion.region) : null;
   const cameraBackupActive =
     ['preparing', 'encrypting', 'uploading'].includes(backupProgress.state) ||
@@ -1858,7 +1870,7 @@ export default function SettingsScreen() {
                     style={{ marginRight: 12, width: 20 }}
                   />
                   <View style={{ flex: 1 }}>
-                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                       <Text style={{ fontSize: 14, fontWeight: '400' as const, color: c.ink }}>
                         Subscription
                       </Text>
@@ -1874,31 +1886,33 @@ export default function SettingsScreen() {
                           {planName.toUpperCase()}
                         </Text>
                       </View>
+                      {billingView.badgeKind && (
+                        <View style={{
+                          backgroundColor: c.amberBg,
+                          borderColor: c.amber,
+                          borderWidth: 1,
+                          paddingHorizontal: 7,
+                          paddingVertical: 1,
+                          borderRadius: 4,
+                        }}>
+                          <Text style={{ fontSize: 10, fontWeight: '700' as const, color: c.amberDeep, letterSpacing: 0.3 }}>
+                            {billingView.badgeKind === 'trial' ? 'TRIAL' : 'CANCELLING'}
+                          </Text>
+                        </View>
+                      )}
                     </View>
-                    {renewalDate && !isFreePlan && (
+                    {billingView.statusLine && (
                       <Text style={{ fontSize: 11, color: c.ink3, marginTop: 3 }}>
-                        Renews {renewalDate}
+                        {billingView.statusLine}
                       </Text>
                     )}
                   </View>
-                  {isFreePlan && (
-                    <TouchableOpacity
-                      onPress={handleUpgrade}
-                      activeOpacity={0.7}
-                      accessibilityRole="button"
-                      accessibilityLabel="Upgrade plan"
-                      style={{
-                        backgroundColor: c.amber,
-                        paddingHorizontal: 12,
-                        paddingVertical: 6,
-                        borderRadius: 6,
-                      }}
-                    >
-                      <Text style={{ fontSize: 12, fontWeight: '700' as const, color: c.ink, letterSpacing: 0.2 }}>
-                        Upgrade
-                      </Text>
-                    </TouchableOpacity>
-                  )}
+                  {/* Task 1540 findings 3, 5, 9: the amber primary-CTA button
+                      that lived here navigated to StorageScreen, which (task
+                      1400, App Review 3.1.1(a)) has no purchase mechanism of
+                      any kind — the button was a dead end. Removed, not
+                      reworded; the "Storage & plan" row below already reaches
+                      the same screen for a user who wants to see their plan. */}
                 </View>
               </>
             )}

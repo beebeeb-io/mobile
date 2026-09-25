@@ -34,6 +34,8 @@ import {
   type Plan,
 } from '../lib/api';
 import { loadCachedBilling, saveCachedBilling } from '../lib/billing-cache';
+import { billingStatusView } from '../lib/billing-status';
+import { PLAN_MANAGEMENT_NOTE } from '../lib/billing-copy';
 
 type C = Colors;
 
@@ -76,14 +78,6 @@ function usageFromSubscription(sub: Subscription | null): StorageUsage | null {
 function visiblePlans(all: Plan[]): Plan[] {
   return all.filter((pl) => pl.is_active !== false && pl.id !== 'free');
 }
-
-/**
- * Non-interactive copy shown in place of every removed purchase/manage
- * button (task 1400) — the Kindle/Netflix pattern: informational text that
- * names no URL and is not a call to action, so it sits outside App Review
- * guideline 3.1.1(a).
- */
-const PLAN_MANAGEMENT_NOTE = 'Plans are managed from your account on the web.';
 
 /**
  * Task 1400 follow-up (lead review on PR #80): a full price list sitting
@@ -202,17 +196,20 @@ function CurrentPlanCard({
   c: C;
 }) {
   const planSlug = subscription?.plan ?? usage?.plan_name ?? 'free';
-  const isFree = planSlug.toLowerCase() === 'free';
   const label = planLabel(planSlug);
-  const renewalDate = subscription?.current_period_end
-    ? new Date(subscription.current_period_end).toLocaleDateString('en-US', {
-        month: 'short', day: 'numeric', year: 'numeric',
-      })
-    : null;
+  // Task 1540 findings 1, 2, 4, 6: the plan chip must reflect subscription
+  // status, not just the plan slug — a status='cancelling' or 'trialing'
+  // subscription is NOT "Renews {date}", it lapses to Free on that date.
+  const { badgeKind, statusLine } = billingStatusView({
+    plan: planSlug,
+    status: subscription?.status ?? null,
+    current_period_end: subscription?.current_period_end ?? null,
+    trial_ends_at: subscription?.trial_ends_at ?? null,
+  });
 
   return (
     <View style={{ padding: 14, gap: 8 }}>
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
         <View style={{
           backgroundColor: c.amberBg, borderColor: c.amber, borderWidth: 1,
           paddingHorizontal: 8, paddingVertical: 2, borderRadius: 5,
@@ -221,8 +218,18 @@ function CurrentPlanCard({
             {label.toUpperCase()}
           </Text>
         </View>
-        {renewalDate && !isFree && (
-          <Text style={{ fontSize: 11, color: c.ink3 }}>Renews {renewalDate}</Text>
+        {badgeKind && (
+          <View style={{
+            backgroundColor: c.amberBg, borderColor: c.amber, borderWidth: 1,
+            paddingHorizontal: 8, paddingVertical: 2, borderRadius: 5,
+          }}>
+            <Text style={{ fontSize: 11, fontWeight: '700', color: c.amberDeep, letterSpacing: 0.3 }}>
+              {badgeKind === 'trial' ? 'TRIAL' : 'CANCELLING'}
+            </Text>
+          </View>
+        )}
+        {statusLine && (
+          <Text style={{ fontSize: 11, color: c.ink3 }}>{statusLine}</Text>
         )}
       </View>
 

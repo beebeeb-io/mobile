@@ -405,7 +405,17 @@ async function request<T>(
       throw new AccountDeletedError(err.deleted_at, err.shred_after);
     }
 
-    throw new ApiError(res.status, err.error ?? err.message ?? res.statusText);
+    // Task 1540 finding 7: prefer the server's human-readable `message` over
+    // the machine `error` code when both are present — e.g. billing_read_only
+    // / billing_suspended (error.rs) always send both, and a 403 on this path
+    // (check_billing_state, reached from any upload/file-mutation attempt)
+    // was surfacing the literal code string "billing_read_only" to the user
+    // instead of the actionable sentence. Falls back to `err.error` when no
+    // `message` field exists (e.g. the plain BadRequest("upload already
+    // completed") body only ever sends `error`), so no existing caller that
+    // reads `.message` loses data — see FilesScreen.tsx's `/upload already
+    // completed/i.test(err.message)` regex, unaffected by this reorder.
+    throw new ApiError(res.status, err.message ?? err.error ?? res.statusText);
   }
 
   // Read server-sent announcement header (percent-encoded UTF-8 string).
@@ -2178,6 +2188,13 @@ export interface Subscription {
   region?: string;
   status: string;
   current_period_end: string | null;
+  /**
+   * Set only while `status === 'trialing'` (server `trial.rs::start_trial`).
+   * Equal to `current_period_end` for a trialing row today, but carried
+   * separately so a trial-specific UI (task 1540) doesn't have to assume
+   * that equality holds forever.
+   */
+  trial_ends_at?: string | null;
   is_mock?: boolean;
   quota_bytes?: number;
   used_bytes?: number;
