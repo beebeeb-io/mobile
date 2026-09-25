@@ -22,11 +22,23 @@ const CHECKS: DiagnosticCheck[] = [
   { id: 'vault', label: 'Vault state', status: 'pending' },
 ]
 
+/**
+ * Host (and port, when present) of the configured API URL — what the DNS
+ * check and its summary name. Parsed by hand: React Native's URL polyfill does
+ * not implement `host`/`hostname`.
+ */
+export function apiHostOf(apiUrl: string): string {
+  const m = /^[a-z][a-z0-9+.-]*:\/\/([^/?#]+)/i.exec(apiUrl.trim())
+  const authority = m ? m[1] : apiUrl.trim()
+  return authority.replace(/^[^@]*@/, '') || apiUrl
+}
+
 export async function* runDiagnostics(
   apiUrl: string,
   checkVault?: () => Promise<string>,
 ): AsyncGenerator<DiagnosticResult> {
   const checks = CHECKS.map(c => ({ ...c }))
+  const apiHost = apiHostOf(apiUrl)
 
   const update = (id: string, status: CheckStatus, detail?: string, ms?: number) => {
     const c = checks.find(c => c.id === id)!
@@ -37,7 +49,7 @@ export async function* runDiagnostics(
 
   const result = (): DiagnosticResult => ({
     checks: checks.map(c => ({ ...c })),
-    summary: buildSummary(checks),
+    summary: buildSummary(checks, apiHost),
     canRetry: true,
   })
 
@@ -66,7 +78,7 @@ export async function* runDiagnostics(
     // If internet worked but this failed, likely DNS
     const internetOk = checks.find(c => c.id === 'internet')?.status === 'pass'
     if (internetOk) {
-      update('dns', 'fail', 'cannot resolve api.beebeeb.io')
+      update('dns', 'fail', `cannot resolve ${apiHost}`)
     } else {
       update('dns', 'skip', 'no internet')
     }
@@ -129,7 +141,7 @@ export async function* runDiagnostics(
   yield result()
 }
 
-function buildSummary(checks: DiagnosticCheck[]): string {
+function buildSummary(checks: DiagnosticCheck[], apiHost: string): string {
   const internet = checks.find(c => c.id === 'internet')
   const api = checks.find(c => c.id === 'api')
   const dns = checks.find(c => c.id === 'dns')
@@ -138,7 +150,7 @@ function buildSummary(checks: DiagnosticCheck[]): string {
     return 'No internet connection. Check your WiFi or cellular data.'
   }
   if (dns?.status === 'fail') {
-    return "Can't resolve api.beebeeb.io. Your DNS might be blocking us."
+    return `Can't resolve ${apiHost}. Your DNS might be blocking us.`
   }
   if (api?.status === 'fail' && api.detail === 'timeout') {
     return 'Our servers are taking too long to respond. We\'re looking into it.'
