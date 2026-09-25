@@ -19,6 +19,14 @@ bun install
 cd ios && pod install && cd ..
 ```
 
+## Which API the app talks to
+
+The beebeeb API server is not open source, so a clone of this repo cannot run the full
+stack locally. Dev builds default to the hosted API at `https://api.beebeeb.io`
+(`app.json` `expo.extra.apiUrl`), which means you sign in with a real beebeeb account and
+every action you take is real. Use an account you are happy to test with. Setting
+`EXPO_PUBLIC_API_URL` to a local server only helps maintainers, who have one.
+
 ## Native build commands
 
 Use the local Expo development builds for day-to-day verification:
