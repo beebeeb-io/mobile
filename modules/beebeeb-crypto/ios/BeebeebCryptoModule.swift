@@ -2295,8 +2295,18 @@ public class BeebeebCryptoModule: Module {
     }
 
     AsyncFunction("disablePhotoBackup") { () in
-      NativeBackupEngine.shared.stop()
-      NativeBackupEngine.shared.backupClientSessionId = nil
+      let engine = NativeBackupEngine.shared
+      engine.stop()
+      engine.backupClientSessionId = nil
+      // Task 1531 [P0] round 3 (lead review): sign-out / account-switch
+      // teardown — see `clearAccountAndPurgeStaged` in NativeBackupEngine.swift.
+      // Purges every staged-but-unuploaded asset and clears `currentAccountId`
+      // so nothing this account staged can survive to be uploaded into
+      // whichever account signs in next on this device. `stopBackupEngines()`
+      // in src/lib/backup-context.tsx calls `disablePhotoBackup()` on EVERY
+      // BackupProvider unmount (sign-out AND sign-in-as-different-user), so
+      // this runs on both paths.
+      engine.clearAccountAndPurgeStaged()
     }
 
     AsyncFunction("enableContactsBackup") { (authToken: String) in

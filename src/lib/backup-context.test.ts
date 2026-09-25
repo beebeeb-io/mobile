@@ -334,3 +334,36 @@ describe('shouldPurgeStagedAsset (JS mirror of NativeBackupEngine.swift purgeMis
     expect(shouldPurgeStagedAsset('user-a', 'user-a')).toBe(false);
   });
 });
+
+// Task 1531 [P0], round 3 lead review (2026-09-25): JS MIRROR of the
+// fail-closed `guard let accountId = currentAccountId, !accountId.isEmpty
+// else { ... return/throw }` added to every engine entry point that can
+// stage or upload in NativeBackupEngine.swift — `start()`,
+// `handleBackgroundTask`'s `BGProcessingTask` handler, `uploadSingleAsset`,
+// and `stageEncryptedAsset`. Same compile/host caveat as
+// `shouldPurgeStagedAsset` above: this does NOT exercise the Swift guards
+// themselves (that gap is the device rung noted in the task file), it keeps
+// the DECISION in sync by hand so a future edit to one side is caught by a
+// human reading both, not proof the Swift guard fires.
+describe('shouldRunBackup (JS mirror of NativeBackupEngine.swift per-entry-point nil-account guard)', () => {
+  // Mirrors: `guard let accountId = currentAccountId, !accountId.isEmpty else { refuse }`
+  function shouldRunBackup(currentAccountId: string | null | undefined): boolean {
+    return typeof currentAccountId === 'string' && currentAccountId.length > 0;
+  }
+
+  test('nil currentAccountId → refuse (no run, no stage, no upload)', () => {
+    expect(shouldRunBackup(null)).toBe(false);
+  });
+
+  test('undefined currentAccountId → refuse', () => {
+    expect(shouldRunBackup(undefined)).toBe(false);
+  });
+
+  test('empty-string currentAccountId → refuse (Keychain setter treats "" as absent — see `currentAccountId` setter)', () => {
+    expect(shouldRunBackup('')).toBe(false);
+  });
+
+  test('a real currentAccountId → allowed to run', () => {
+    expect(shouldRunBackup('user-a')).toBe(true);
+  });
+});

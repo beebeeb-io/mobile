@@ -90,6 +90,12 @@ enum BackupError: LocalizedError {
   case databaseUnavailable
   case noMasterKey
   case notConfigured
+  /// Task 1531 [P0] round 3: `currentAccountId` is nil/empty — refused
+  /// because there is nothing to tag a newly-staged asset with or compare
+  /// an already-staged asset's `staged_account_id` against. Distinct from
+  /// `.notConfigured` (missing token/API URL) so the log/diagnostic trail
+  /// tells the two conditions apart.
+  case accountUnknown
   case invalidServerURL
   case invalidResponse
   case httpStatus(Int, String)
@@ -113,6 +119,7 @@ enum BackupError: LocalizedError {
     case .databaseUnavailable: return "Backup database unavailable"
     case .noMasterKey: return "Master key not available — sign in required"
     case .notConfigured: return "Backup engine not configured (missing token or API URL)"
+    case .accountUnknown: return "Backup engine has no current account id — refusing to stage or upload"
     case .invalidServerURL: return "Invalid server URL for backup"
     case .invalidResponse: return "Invalid server response"
     case .httpStatus(let code, let body):
@@ -1203,7 +1210,26 @@ final class NativeBackupEngine: NSObject {
 
   /// Start the backup engine. Loads the master key from keychain, registers
   /// the photo library observer, and begins draining the upload queue.
+  ///
+  /// Task 1531 [P0] round 3 (lead review): refuses outright — no master-key
+  /// load, no purge, no drain — when `currentAccountId` is nil/empty. Without
+  /// a known account there is nothing to tag a newly-staged asset with or
+  /// compare an already-staged one against, so `purgeMismatchedStagedAssets`
+  /// itself already no-ops on a nil accountId (see its guard) — starting
+  /// anyway would have skipped the purge sweep and let `processBatch` reach
+  /// `uploadSingleAsset` with no account to check against. The queue is left
+  /// untouched (not failed, not cleared) so a subsequent `enablePhotoBackup`
+  /// call — which sets `currentAccountId` immediately before calling this —
+  /// picks the same pending rows back up.
   func start() {
+    guard let accountId = currentAccountId, !accountId.isEmpty else {
+      RuntimeTrace.event("backup.native.start.refused_no_account", [
+        "isRunning": isRunning
+      ])
+      NSLog("[NativeBackupEngine] No current account id — refusing to start (queue kept for later)")
+      return
+    }
+
     if isRunning {
       wakeDrainLoop(reason: "start")
       return
@@ -1242,8 +1268,10 @@ final class NativeBackupEngine: NSObject {
     // just before this call). Closes the window where the very first batch
     // for a newly-signed-in account resumes another account's stale staged
     // upload. See purgeMismatchedStagedAssets for the full root-cause note.
-    let accountIdForThisRun = currentAccountId
-    dbQueue.sync { purgeMismatchedStagedAssets(currentAccountId: accountIdForThisRun) }
+    // Uses the SAME `accountId` the guard above just validated (rather than
+    // re-reading the Keychain) so the purge can never run against a value
+    // that changed between the guard and here.
+    dbQueue.sync { purgeMismatchedStagedAssets(currentAccountId: accountId) }
 
     isRunning = true
     perfLog("start", [
@@ -1499,6 +1527,24 @@ final class NativeBackupEngine: NSObject {
         self.isBackgroundTaskActive = false
         self.backgroundTaskHandle = nil
       }
+
+      // Task 1531 [P0] round 3 (lead review): this handler is a SEPARATE
+      // engine entry point from `start()` — the `BGTaskScheduler` can invoke
+      // it directly after an app relaunch, before any JS call (including
+      // `enablePhotoBackup`) has run this session, and it sets `isRunning`
+      // itself below rather than going through `start()`'s guard. Without an
+      // independent check here, a stale/no-account state would still be able
+      // to reach `processBatch` → `uploadSingleAsset` from this path. Checked
+      // and purged FIRST, before the master-key work, so a nil account
+      // refuses outright — no master key touched, no staging, no upload —
+      // and the OS-scheduled task simply completes as a no-op.
+      guard let accountId = self.currentAccountId, !accountId.isEmpty else {
+        RuntimeTrace.event("backup.native.background_task.refused_no_account")
+        NSLog("[NativeBackupEngine] Background task: no current account id — refusing to run")
+        self.completeBackgroundTaskOnce(task, success: false)
+        return
+      }
+      self.dbQueue.sync { self.purgeMismatchedStagedAssets(currentAccountId: accountId) }
 
       // Ensure master key is available for background processing
       if self.masterKeyHandle == nil {
@@ -2099,6 +2145,23 @@ final class NativeBackupEngine: NSObject {
     baseURL: String
   ) async -> Bool {
     guard isRunning && !Task.isCancelled else { return false }
+
+    // Task 1531 [P0] round 3 (lead review): refuse outright — no staging, no
+    // upload — when `currentAccountId` is nil. Before this guard, the
+    // mismatch check below was `if let runningAccount = currentAccountId,
+    // staged.stagedAccountId != runningAccount` — an `if let` that SKIPPED
+    // the whole comparison (and fell straight through to
+    // `uploadStagedAsset`) whenever `currentAccountId` was nil, instead of
+    // refusing. A nil account is not "no opinion, upload it anyway"; it is
+    // "cannot prove this ciphertext belongs to anyone signed in right now".
+    guard let runningAccountId = currentAccountId, !runningAccountId.isEmpty else {
+      RuntimeTrace.event("backup.native.upload.refused_no_account", [
+        "assetType": asset.assetType
+      ])
+      NSLog("[NativeBackupEngine] No current account id — refusing to upload/stage: \(asset.localAssetId)")
+      return false
+    }
+
     perfLog("asset.start", [
       "assetType": asset.assetType,
       "retry": asset.retryCount
@@ -2111,15 +2174,16 @@ final class NativeBackupEngine: NSObject {
         // the drain loop can reach them, but re-check here too so this path
         // is safe even if it's ever reached without going through `start()`
         // first (defense in depth, not the primary fix — see
-        // purgeMismatchedStagedAssets). `staged.stagedAccountId != runningAccount`
-        // is deliberately an Optional<String> vs String comparison: a `nil`
-        // stagedAccountId is UNTRUSTED, not "same account", so it compares
-        // unequal and gets refused exactly like an explicit mismatch.
-        if let runningAccount = currentAccountId,
-           staged.stagedAccountId != runningAccount {
+        // purgeMismatchedStagedAssets). `runningAccountId` is guaranteed
+        // non-nil by the guard above, so `staged.stagedAccountId !=
+        // runningAccountId` is a plain String vs Optional<String> compare: a
+        // `nil` stagedAccountId is UNTRUSTED, not "same account", so it
+        // compares unequal and gets refused exactly like an explicit
+        // mismatch.
+        if staged.stagedAccountId != runningAccountId {
           RuntimeTrace.event("backup.native.staged_account_mismatch.refused_upload", [
             "stagedForAccount": staged.stagedAccountId ?? "(untagged/pre-migration)",
-            "currentAccount": runningAccount
+            "currentAccount": runningAccountId
           ])
           dbQueue.sync {
             if let stagedDir = staged.stagedDir {
@@ -2431,6 +2495,13 @@ final class NativeBackupEngine: NSObject {
     return stagedBytesOnDisk() + needed <= maxStagedBackupBytes
   }
 
+  /// Task 1531 [P0] round 3 (lead review): belt-and-braces re-check, same
+  /// reasoning as `uploadSingleAsset`'s top-of-function guard — this is the
+  /// ONLY place a fresh staged row is created (`stagedAccountId:` below), so
+  /// it must refuse independently of its caller having already checked.
+  /// Refuses BEFORE any chunk file is moved into the staging directory (no
+  /// disk write, no DB row) rather than staging untagged and hoping a later
+  /// sweep catches it.
   private func stageEncryptedAsset(
     asset: BackupAssetRow,
     fileId: String,
@@ -2439,6 +2510,14 @@ final class NativeBackupEngine: NSObject {
     originalSize: Int,
     chunkPaths: [String]
   ) throws -> BackupAssetRow {
+    guard let accountId = currentAccountId, !accountId.isEmpty else {
+      RuntimeTrace.event("backup.native.stage.refused_no_account", [
+        "assetId": asset.localAssetId
+      ])
+      NSLog("[NativeBackupEngine] No current account id — refusing to stage: \(asset.localAssetId)")
+      throw BackupError.accountUnknown
+    }
+
     let root = try stagingRootDirectory()
     let dir = root.appendingPathComponent(fileId, isDirectory: true)
     try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -2463,7 +2542,7 @@ final class NativeBackupEngine: NSObject {
         originalSize: Int64(originalSize),
         chunkCount: stagedPaths.count,
         stagedDir: dir.path,
-        stagedAccountId: self.currentAccountId
+        stagedAccountId: accountId
       )
       replaceStagedChunks(
         assetId: asset.localAssetId,
@@ -3922,6 +4001,84 @@ final class NativeBackupEngine: NSObject {
 
     NSLog("[NativeBackupEngine] Purged \(mismatched.count) staged asset(s) encrypted for a different (or unproven) account")
     return mismatched.count
+  }
+
+  /// Task 1531 [P0] round 3 (lead review): purge EVERY staged asset,
+  /// unconditionally — not account-scoped like `purgeMismatchedStagedAssets`
+  /// above. Called from `clearAccountAndPurgeStaged()` (sign-out / account
+  /// switch teardown, via `disablePhotoBackup` in BeebeebCryptoModule.swift),
+  /// the point at which `currentAccountId` is about to become nil.
+  ///
+  /// `purgeMismatchedStagedAssets` cannot do this job: it *requires* a
+  /// non-nil `accountId` to compare rows against and is a deliberate no-op
+  /// once there is none (see its guard — a nil accountId there means "cannot
+  /// prove anything", not "purge everything"). Left to that function alone,
+  /// whatever the outgoing account had staged would sit on disk, still
+  /// tagged for that account, until the NEXT sign-in's `start()` happens to
+  /// discover the mismatch — an open window between sign-out and the next
+  /// sign-in during which the ciphertext is neither trusted nor removed.
+  /// Purging unconditionally here closes that window immediately instead of
+  /// deferring it to the next `start()`.
+  ///
+  /// MUST be called from `dbQueue` (matches purgeMismatchedStagedAssets).
+  @discardableResult
+  private func purgeAllStagedAssets() -> Int {
+    guard let db = db else { return 0 }
+
+    let selectSql = """
+    SELECT local_asset_id, staged_dir, staged_file_id, staged_account_id
+    FROM backup_assets
+    WHERE staged_file_id IS NOT NULL
+    """
+    var selectStmt: OpaquePointer?
+    guard sqlite3_prepare_v2(db, selectSql, -1, &selectStmt, nil) == SQLITE_OK else { return 0 }
+
+    var staged: [(assetId: String, stagedDir: String?, fileId: String, forAccount: String?)] = []
+    while sqlite3_step(selectStmt) == SQLITE_ROW {
+      let assetId = String(cString: sqlite3_column_text(selectStmt, 0))
+      let stagedDir: String? = sqlite3_column_type(selectStmt, 1) != SQLITE_NULL
+        ? String(cString: sqlite3_column_text(selectStmt, 1))
+        : nil
+      let fileId = String(cString: sqlite3_column_text(selectStmt, 2))
+      let forAccount: String? = sqlite3_column_type(selectStmt, 3) != SQLITE_NULL
+        ? String(cString: sqlite3_column_text(selectStmt, 3))
+        : nil
+      staged.append((assetId, stagedDir, fileId, forAccount))
+    }
+    sqlite3_finalize(selectStmt)
+
+    guard !staged.isEmpty else { return 0 }
+
+    for row in staged {
+      if let stagedDir = row.stagedDir {
+        removeStagedDirectory(stagedDir: stagedDir, fileId: row.fileId)
+      }
+      clearStagedStateForRestage(
+        assetId: row.assetId,
+        error: "Re-encrypting: account signed out before upload completed"
+      )
+      RuntimeTrace.event("backup.native.sign_out.staged_purged", [
+        "stagedForAccount": row.forAccount ?? "(untagged/pre-migration)"
+      ])
+    }
+
+    NSLog("[NativeBackupEngine] Sign-out: purged \(staged.count) staged asset(s)")
+    return staged.count
+  }
+
+  /// Task 1531 [P0] round 3 (lead review): sign-out / account-switch
+  /// teardown. Called from `disablePhotoBackup()` (BeebeebCryptoModule.swift)
+  /// — purges every staged-but-unuploaded asset FIRST (see
+  /// `purgeAllStagedAssets`), then clears `currentAccountId` so the next
+  /// `enablePhotoBackup(authToken:userId:)` call is the only way to re-arm
+  /// staging/upload for this device. Order matters the other way round too:
+  /// purging first means the sweep still has a `staged_account_id` to log
+  /// against for diagnostics (`row.forAccount` above) — clearing the account
+  /// id first would not change WHAT gets purged (`purgeAllStagedAssets` is
+  /// unconditional), only what gets logged.
+  func clearAccountAndPurgeStaged() {
+    dbQueue.sync { purgeAllStagedAssets() }
+    currentAccountId = nil
   }
 
   /// Refresh progress counters from the database.
