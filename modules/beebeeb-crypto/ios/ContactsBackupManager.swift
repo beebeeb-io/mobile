@@ -15,6 +15,16 @@ final class ContactsBackupManager {
   private static let lastScanAtKey = "io.beebeeb.contactsBackupLastScanAt"
   private static let lastScanCountKey = "io.beebeeb.contactsBackupLastScanCount"
   private static let lastUploadAtKey = "io.beebeeb.contactsBackupLastUploadAt"
+  /// Task 1531 [P2] round 6 (delta review 3, finding N5): the SINGLE fixed
+  /// (non-per-account) digest key this class wrote before the [P1-B]
+  /// (round 5) per-account `lastHashPrefix` scoping. No code has read or
+  /// written it since that round, but nothing ever deleted it either — an
+  /// orphaned leftover on any device that had Contacts backup enabled
+  /// before round 5. Cleaned up once in `reset()` and once at `init()` (see
+  /// both below). Deliberately NOT `lastHashPrefix`-prefixed (it predates
+  /// the prefix, and has no trailing `.`), so the `hasPrefix(lastHashPrefix)`
+  /// sweeps elsewhere in this file never touch it.
+  private static let legacyLastHashKey = "io.beebeeb.contactsBackupLastHash"
 
   private var authToken: String?
   /// Task 1531 [P0]: the account `authToken` belongs to. Set alongside
@@ -60,11 +70,34 @@ final class ContactsBackupManager {
       guard self?.authToken != nil, self?.accountId != nil else { return }
       self?.backup()
     }
+    // Task 1531 [P2] round 6 (finding N5): one-time cleanup of the orphaned
+    // pre-[P1-B] legacy digest key — see `legacyLastHashKey`'s doc comment.
+    // `removeObject` is a no-op once the key is gone, so calling this on
+    // every process launch (this initializer runs exactly once per process,
+    // being a lazy static singleton) is cheap and doesn't need its own
+    // "already migrated" flag.
+    UserDefaults.standard.removeObject(forKey: Self.legacyLastHashKey)
   }
 
   func enable(authToken: String, userId: String, runNow: Bool = true) {
     self.authToken = authToken
     self.accountId = userId
+    // Task 1531 [P2] round 6 (delta review 3, finding N3): also mirror the
+    // token into the ENGINE's own Keychain slot (`io.beebeeb.backupToken`,
+    // via `NativeBackupEngine.token`'s setter) — not just this manager's
+    // private `authToken` above. `enablePhotoBackup` already does this
+    // (`engine.token = authToken` in BeebeebCryptoModule.swift); without
+    // it here, a Contacts/Calendar-only user (Camera Roll backup never
+    // enabled) left that Keychain slot nil forever, so the NEXT
+    // `mirrorSessionToAppGroup(token, …)` call (BeebeebCryptoModule.swift —
+    // fires on nearly every app foreground/token mirror, not just sign-in)
+    // compared its stored `previousToken` (nil) against the current token,
+    // always saw a "change", and spuriously unbound `currentAccountId` +
+    // dropped the cached master-key handle — even though the SAME token
+    // had been in use the whole time. See that function's "no token-REFRESH
+    // path" doc comment (round 5, P1) for why any stored-token diff is
+    // otherwise correctly treated as a fresh sign-in.
+    NativeBackupEngine.shared.token = authToken
     // Task 1531 [P1-A] (round 5 delta review): bind at the ENGINE level
     // too — `NativeEncryptedBackupUploader.requireAccountBinding` reads
     // `NativeBackupEngine.shared.currentAccountId`, NOT this class's own
@@ -77,10 +110,25 @@ final class ContactsBackupManager {
     // surface is enabled first.
     NativeBackupEngine.shared.bindAccount(userId: userId)
     RuntimeTrace.event("backup.contacts.enable", ["runNow": runNow])
+    // Task 1531 [P2] round 6 (finding N2): a refused/failed upload never
+    // records the dedup hash (P1-B, round 5 — `shouldUpload`/
+    // `recordUploadSuccess` above), but the warm-up path
+    // (`resumeContactsBackup`, `runNow: false` — called from
+    // backup-context.tsx's mount-time sequencing) skips `backup()` entirely
+    // when `runNow` is false. A refused export (account-mismatch while a
+    // stale token was cached, offline, no master key yet, …) therefore sat
+    // un-retried until the NEXT genuine contacts edit fired
+    // `CNContactStoreDidChangeNotification` — which could be days, or
+    // never. Run once on warm-up too when there is no recorded successful
+    // upload for THIS account yet, so a previously-refused (or
+    // never-attempted) export gets retried on every app mount/foreground,
+    // not just on the next real contact-list change.
+    let hasUploadedForThisAccount = UserDefaults.standard.string(forKey: Self.hashKey(for: userId)) != nil
+    let shouldRunNow = runNow || !hasUploadedForThisAccount
     CNContactStore().requestAccess(for: .contacts) { [weak self] granted, _ in
       RuntimeTrace.event("backup.contacts.permission", ["granted": granted])
       guard granted else { return }
-      if runNow {
+      if shouldRunNow {
         self?.backup()
       }
     }
@@ -105,6 +153,9 @@ final class ContactsBackupManager {
     defaults.removeObject(forKey: Self.lastScanAtKey)
     defaults.removeObject(forKey: Self.lastScanCountKey)
     defaults.removeObject(forKey: Self.lastUploadAtKey)
+    // Task 1531 [P2] round 6 (finding N5): see `legacyLastHashKey`'s doc
+    // comment — belt-and-braces cleanup alongside the `init()` sweep.
+    defaults.removeObject(forKey: Self.legacyLastHashKey)
     RuntimeTrace.event("backup.contacts.reset")
   }
 
@@ -142,9 +193,14 @@ final class ContactsBackupManager {
 
   func status() -> [String: Any] {
     let defaults = UserDefaults.standard
-    let hasStoredHash = defaults.dictionaryRepresentation().keys.contains { key in
-      key.hasPrefix(Self.lastHashPrefix)
-    }
+    // Task 1531 [P2] round 6 (delta review 3, finding N6): was `hasPrefix`
+    // across EVERY account's dedup key ever written on this device — a
+    // PREVIOUS account's leftover hash key (round 5's per-account
+    // `lastHashPrefix` scoping never deletes an outgoing account's key)
+    // made `hasStoredHash`/`hasKnownBackupState` read `true` for a
+    // brand-new account on the same device that has never itself uploaded
+    // a single contact. Scope to the currently bound account's own key.
+    let hasStoredHash = accountId.map { defaults.string(forKey: Self.hashKey(for: $0)) != nil } ?? false
     let hasKnownBackupState =
       hasStoredHash ||
       defaults.string(forKey: Self.lastScanAtKey) != nil ||

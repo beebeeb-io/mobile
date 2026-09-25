@@ -1247,6 +1247,33 @@ export async function disablePhotoBackup(): Promise<void> {
 }
 
 /**
+ * Task 1531 [P1] round 6 (delta review 3, finding N1): full sign-out /
+ * account-switch teardown. Disables Contacts, Calendar and Camera Roll
+ * backup and THEN unconditionally clears the shared native account +
+ * purges every staged-but-unuploaded asset in one native call — unlike
+ * calling `disablePhotoBackup`/`disableContactsBackup`/
+ * `disableCalendarBackup` separately (still correct for the single-surface
+ * Camera Roll toggle, but NOT for full teardown: `disablePhotoBackup`'s
+ * purge is conditional on Contacts/Calendar's own `isBound` state, and
+ * Expo dispatches these three native calls serially in call order, so
+ * `disablePhotoBackup` always ran BEFORE the other two cleared their own
+ * state — the purge was skipped on every sign-out with Contacts/Calendar
+ * backup on). Falls back to disabling each surface separately on older
+ * native builds that don't expose this yet.
+ */
+export async function teardownAllBackup(): Promise<void> {
+  if (typeof BeebeebCryptoModule.teardownAllBackup !== 'function') {
+    await Promise.all([
+      disablePhotoBackup().catch(() => {}),
+      disableContactsBackup().catch(() => {}),
+      disableCalendarBackup().catch(() => {}),
+    ]);
+    return;
+  }
+  return BeebeebCryptoModule.teardownAllBackup()
+}
+
+/**
  * Start contacts backup. Requests CNContactStore access and uploads an
  * encrypted vCard.
  *

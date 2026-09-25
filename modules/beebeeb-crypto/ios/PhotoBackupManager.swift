@@ -86,12 +86,19 @@ final class PhotoBackupManager: NSObject {
 
   func enable(authToken: String, userId: String, completion: (() -> Void)? = nil) {
     storedAuthToken = authToken
-    // Task 1531 [P0]: this legacy manager shares its token keychain slot
-    // (`io.beebeeb.backupToken`) with `NativeBackupEngine` — both read/write
-    // the exact same key. Share the account binding too, rather than invent
-    // a second keychain key, so `NativeEncryptedBackupUploader`'s account
-    // check has ONE source of truth regardless of which manager called it.
-    NativeBackupEngine.shared.currentAccountId = userId
+    // Task 1531 [P2] round 6 (delta review 3, finding N6): removed the
+    // direct `NativeBackupEngine.shared.currentAccountId = userId` write
+    // that used to live here. This legacy manager's `enable(authToken:
+    // userId:completion:)` has no callers anywhere in the app (only
+    // `configure(parentFolderId:)` is ever called on `PhotoBackupManager
+    // .shared` — see BeebeebCryptoModule.swift's `configureBackupFolder`
+    // AsyncFunction) — `NativeBackupEngine` is the live camera-roll backup
+    // path, reached through `bindAccount(userId:)` (see that method's doc
+    // comment), which additionally purges mismatched staged ciphertext and
+    // drops the cached master-key handle that a bare property write here
+    // never did. `userId` is intentionally unused below now; kept as a
+    // parameter for API shape only, since this function has no live caller
+    // to break.
     PHPhotoLibrary.requestAuthorization(for: .readWrite) { [weak self] status in
       guard let self, status == .authorized || status == .limited else {
         completion?()

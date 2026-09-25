@@ -7,6 +7,7 @@ import {
   disablePhotoBackup,
   disableContactsBackup,
   disableCalendarBackup,
+  teardownAllBackup,
   enablePhotoBackup,
   enableContactsBackup,
   enableCalendarBackup,
@@ -174,13 +175,25 @@ export function canEnableNativeCameraBackup(userId: string | undefined | null): 
  * never keep running against a session token that no longer belongs to the
  * account that enabled them (task 1443). Exported standalone so it is unit
  * testable without rendering the provider.
+ *
+ * Task 1531 [P1] round 6 (delta review 3, finding N1): this used to call
+ * `disablePhotoBackup`/`disableContactsBackup`/`disableCalendarBackup`
+ * separately via `Promise.all`. `disablePhotoBackup`'s native body only
+ * purges staged ciphertext + clears the shared account when NEITHER
+ * Contacts nor Calendar is still bound — and Expo dispatches these native
+ * calls serially IN THE ORDER THEY WERE CALLED, so `disablePhotoBackup`
+ * (called first in that array) ALWAYS ran before
+ * `disableContactsBackup`/`disableCalendarBackup` had cleared their own
+ * bound state. The purge was therefore skipped on every sign-out with
+ * Contacts or Calendar backup enabled — not occasionally, every time.
+ * `teardownAllBackup()` disables all three surfaces and purges
+ * unconditionally in one native call, so there is no cross-call order left
+ * to get wrong.
  */
 export async function stopBackupEngines(): Promise<void> {
   if (Platform.OS === 'web') return;
   await Promise.all([
-    disablePhotoBackup().catch(() => {}),
-    disableContactsBackup().catch(() => {}),
-    disableCalendarBackup().catch(() => {}),
+    teardownAllBackup().catch(() => {}),
     clearMobileIosBackupClientSession().catch(() => {}),
   ]);
 }

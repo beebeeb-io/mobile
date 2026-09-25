@@ -8,6 +8,17 @@ final class CalendarBackupManager {
   private static let lastScanAtKey = "io.beebeeb.calendarBackupLastScanAt"
   private static let lastScanCountKey = "io.beebeeb.calendarBackupLastScanCount"
   private static let lastUploadAtKey = "io.beebeeb.calendarBackupLastUploadAt"
+  /// Task 1531 [P2] round 6 (delta review 3, finding N2): per-calendar dedup
+  /// keys (`stateKeyComponent`) fold the calendar title AND the account id
+  /// into ONE digest, so there is no single "has THIS account ever
+  /// successfully uploaded" key to check directly — unlike
+  /// `ContactsBackupManager.hashKey(for:)`, which IS already scoped to just
+  /// the account. Recorded on every successful upload (`recordUploadSuccess`
+  /// below) so `enable()`'s warm-up path can tell "never successfully
+  /// uploaded for this account" apart from "uploaded, just no NEW calendar
+  /// changes since" WITHOUT enumerating every calendar before EventKit
+  /// access has even been granted.
+  private static let lastUploadedAccountKey = "io.beebeeb.calendarBackupLastUploadedAccount"
 
   private let store = EKEventStore()
   private var authToken: String?
@@ -50,6 +61,17 @@ final class CalendarBackupManager {
   func enable(authToken: String, userId: String, runNow: Bool = true) {
     self.authToken = authToken
     self.accountId = userId
+    // Task 1531 [P2] round 6 (delta review 3, finding N3): also mirror the
+    // token into the ENGINE's own Keychain slot (`io.beebeeb.backupToken`,
+    // via `NativeBackupEngine.token`'s setter) — not just this manager's
+    // private `authToken` above. See `ContactsBackupManager.enable`'s
+    // matching comment for the full rationale: without this, a
+    // Calendar-only user (Camera Roll backup never enabled) left that
+    // Keychain slot nil forever, so every later `mirrorSessionToAppGroup`
+    // call compared a nil `previousToken` against the current token, always
+    // saw a "change", and spuriously unbound `currentAccountId` + dropped
+    // the cached master-key handle.
+    NativeBackupEngine.shared.token = authToken
     // Task 1531 [P1-A] (round 5 delta review): bind at the ENGINE level
     // too — `NativeEncryptedBackupUploader.requireAccountBinding` reads
     // `NativeBackupEngine.shared.currentAccountId`, NOT this class's own
@@ -62,7 +84,16 @@ final class CalendarBackupManager {
     // surface is enabled first.
     NativeBackupEngine.shared.bindAccount(userId: userId)
     RuntimeTrace.event("backup.calendar.enable", ["runNow": runNow])
-    requestAccessAndBackup(runNow: runNow)
+    // Task 1531 [P2] round 6 (finding N2): see the matching comment in
+    // ContactsBackupManager.enable — a refused/failed upload never records
+    // success state (P1-B, round 5), but the warm-up path
+    // (`resumeCalendarBackup`, `runNow: false`) skips `backup()` entirely,
+    // so a refused export sits un-retried until the next real calendar
+    // edit fires an EventKit notification. Run once on warm-up too when
+    // this account has never recorded a successful calendar upload at all.
+    let hasUploadedForThisAccount =
+      UserDefaults.standard.string(forKey: Self.lastUploadedAccountKey) == Self.accountDigest(userId)
+    requestAccessAndBackup(runNow: runNow || !hasUploadedForThisAccount)
   }
 
   func disable() {
@@ -291,6 +322,15 @@ final class CalendarBackupManager {
     SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
   }
 
+  /// Task 1531 [P2] round 6 (finding N2): SHA-256 hex digest of a bare
+  /// account id — see `lastUploadedAccountKey`'s doc comment. Deliberately
+  /// a SEPARATE hash from `stateKeyComponent` (which mixes in the calendar
+  /// title too): this one must be reproducible from `userId` ALONE, before
+  /// any calendar has even been enumerated.
+  private static func accountDigest(_ accountId: String) -> String {
+    SHA256.hash(data: Data(accountId.utf8)).map { String(format: "%02x", $0) }.joined()
+  }
+
   /// Task 1531 [P1-B] (round 5 delta review): READ-ONLY — reports whether
   /// `digest` differs from the digest last SUCCESSFULLY uploaded for this
   /// `stateKey` (already scoped by calendar + account — see
@@ -319,11 +359,18 @@ final class CalendarBackupManager {
   /// Task 1531 [P1-B] (round 5 delta review): records the dedup digest ONLY
   /// on confirmed upload success — see `upload()`'s `.success` branch, the
   /// sole caller. `shouldUpload` above never writes state itself.
-  private func recordUploadSuccess(digest: String, stateKey: String) {
+  ///
+  /// Task 1531 [P2] round 6 (finding N2): also records `accountId` — hashed
+  /// via `accountDigest` — under `lastUploadedAccountKey`, so `enable()`'s
+  /// warm-up path can tell "this account has uploaded at least one
+  /// calendar successfully" without needing to enumerate every calendar's
+  /// own `stateKeyComponent` key first.
+  private func recordUploadSuccess(digest: String, stateKey: String, accountId: String) {
     let now = ISO8601DateFormatter().string(from: Date())
     let defaults = UserDefaults.standard
     defaults.set(now, forKey: Self.lastUploadAtKey)
     defaults.set(digest, forKey: stateKey)
+    defaults.set(Self.accountDigest(accountId), forKey: Self.lastUploadedAccountKey)
   }
 
   private func icalEscape(_ s: String) -> String {
@@ -360,7 +407,7 @@ final class CalendarBackupManager {
     ) { result in
       switch result {
       case .success:
-        self.recordUploadSuccess(digest: digest, stateKey: stateKey)
+        self.recordUploadSuccess(digest: digest, stateKey: stateKey, accountId: accountId)
         RuntimeTrace.event("backup.calendar.upload_success")
         NSLog("[BeebeebBackup] calendar upload succeeded")
       case .failure(let error):

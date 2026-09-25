@@ -1,5 +1,6 @@
 import AVFoundation
 import ActivityKit
+import CryptoKit
 import Foundation
 import Photos
 import SDWebImage
@@ -1293,13 +1294,45 @@ final class NativeBackupEngine: NSObject {
   ///      byte under the new one.
   ///
   /// Must NOT be called from `dbQueue` — it calls `dbQueue.sync` itself.
+  ///
+  /// Task 1531 [P2] round 6 (delta review 3, finding N4): the
+  /// `currentAccountId != userId` check and the `currentAccountId = userId`
+  /// write below are NOT wrapped in a single critical section — the getter
+  /// takes no lock at all (only the setter takes `accountIdLock`, and only
+  /// around its own compare-and-write), so this method's check-then-set is
+  /// not atomic against a concurrent caller on its own. That is safe today
+  /// ONLY because every call site is reached from an Expo `AsyncFunction`
+  /// closure (`enablePhotoBackup`/`enableContactsBackup`/
+  /// `enableCalendarBackup`/`resumeContactsBackup`/`resumeCalendarBackup` in
+  /// BeebeebCryptoModule.swift, or `ContactsBackupManager.enable`/
+  /// `CalendarBackupManager.enable` called synchronously from inside one of
+  /// those) — Expo Modules dispatches `AsyncFunction` bodies one at a time,
+  /// in call order, on a single serial queue (see the round-6 finding this
+  /// note documents, N1: `stopBackupEngines`'s `disablePhotoBackup` vs.
+  /// `disableContactsBackup`/`disableCalendarBackup` race analysis relies
+  /// on the SAME guarantee). If a future call site ever invokes
+  /// `bindAccount` from anywhere OTHER than that serial queue (a
+  /// `BGProcessingTask` handler, a raw `DispatchQueue.global` hop, etc.),
+  /// this check-then-set becomes a real TOCTOU race and must be wrapped
+  /// under `accountIdLock` (using a re-entrant lock, since the
+  /// `currentAccountId` setter already acquires the same lock internally —
+  /// a plain `NSLock` here would deadlock).
   func bindAccount(userId: String) {
     guard !userId.isEmpty else { return }
     guard currentAccountId != userId else { return }
     dbQueue.sync { purgeMismatchedStagedAssets(currentAccountId: userId) }
     currentAccountId = userId
     masterKeyHandle = nil
-    RuntimeTrace.event("backup.native.bind_account", ["userId": userId])
+    // Task 1531 [P2] round 6 (finding N6): `RuntimeTrace.sanitize` redacts
+    // token/password/secret/key/cipher-/plaintext-named fields but NOT
+    // "userId" — the raw account id was landing unredacted in the on-device
+    // log (NSLog + os.log, always-on in DEBUG). Hash it, same SHA-256 hex
+    // pattern as `ContactsBackupManager.hashKey`/
+    // `CalendarBackupManager.stateKeyComponent`: still useful to correlate
+    // repeated binds for the SAME account across trace events, without
+    // logging the id itself.
+    let hashedUserId = SHA256.hash(data: Data(userId.utf8)).map { String(format: "%02x", $0) }.joined()
+    RuntimeTrace.event("backup.native.bind_account", ["userIdHash": hashedUserId])
   }
 
   /// Drop the engine's OWN cached `MasterKeyHandle` without touching
@@ -4314,7 +4347,10 @@ final class NativeBackupEngine: NSObject {
   }
 
   /// Task 1531 [P0] round 3 (lead review): sign-out / account-switch
-  /// teardown. Called from `disablePhotoBackup()` (BeebeebCryptoModule.swift).
+  /// teardown. Called from `disablePhotoBackup()` (the single-surface
+  /// Camera Roll toggle-off path, gated on Contacts/Calendar's `isBound`)
+  /// and, unconditionally, from `teardownAllBackup()` (round 6 finding N1 —
+  /// the full sign-out / account-switch path) in BeebeebCryptoModule.swift.
   ///
   /// Task 1531 [P2-E] (round 5 delta review): clears `currentAccountId` to
   /// nil FIRST, THEN purges — the previous order (purge, then clear) left a

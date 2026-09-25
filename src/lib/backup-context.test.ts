@@ -64,6 +64,7 @@ mock.module('./device-registration', () => ({
 let disablePhotoBackupMock = mock(async () => {});
 let disableContactsBackupMock = mock(async () => {});
 let disableCalendarBackupMock = mock(async () => {});
+let teardownAllBackupMock = mock(async () => {});
 let clearSessionMock = mock(async () => {});
 
 mock.module('./api', () => ({
@@ -81,6 +82,7 @@ mock.module('../../modules/beebeeb-crypto', () => ({
   disablePhotoBackup: (...args: unknown[]) => disablePhotoBackupMock(...args),
   disableContactsBackup: (...args: unknown[]) => disableContactsBackupMock(...args),
   disableCalendarBackup: (...args: unknown[]) => disableCalendarBackupMock(...args),
+  teardownAllBackup: (...args: unknown[]) => teardownAllBackupMock(...args),
   enablePhotoBackup: async () => {},
   enableContactsBackup: async () => {},
   enableCalendarBackup: async () => {},
@@ -119,6 +121,7 @@ beforeEach(() => {
   disablePhotoBackupMock = mock(async () => {});
   disableContactsBackupMock = mock(async () => {});
   disableCalendarBackupMock = mock(async () => {});
+  teardownAllBackupMock = mock(async () => {});
   clearSessionMock = mock(async () => {});
 });
 
@@ -278,21 +281,90 @@ describe('canEnableNativeCameraBackup (task 1531 account-tag guard)', () => {
   });
 });
 
+// Task 1531 [P1] round 6 (delta review 3, finding N1): `stopBackupEngines`
+// used to call `disablePhotoBackup`/`disableContactsBackup`/
+// `disableCalendarBackup` separately via `Promise.all` — three separate
+// native bridge calls whose ORDER mattered (see `teardownAllBackup`'s doc
+// comment, BeebeebCrypto.ts, and the matching one in
+// BeebeebCryptoModule.swift's `disablePhotoBackup`). It now calls the single
+// `teardownAllBackup()` bridge function instead, so these tests assert THAT
+// call happens, not the three individual ones.
 describe('stopBackupEngines (sign-out / different-user teardown)', () => {
-  test('stops every native backup engine and clears the mirrored client session', async () => {
+  test('tears down every native backup engine and clears the mirrored client session', async () => {
     await stopBackupEngines();
-    expect(disablePhotoBackupMock).toHaveBeenCalledTimes(1);
-    expect(disableContactsBackupMock).toHaveBeenCalledTimes(1);
-    expect(disableCalendarBackupMock).toHaveBeenCalledTimes(1);
+    expect(teardownAllBackupMock).toHaveBeenCalledTimes(1);
+    expect(clearSessionMock).toHaveBeenCalledTimes(1);
+    // The three separate disable* bridge calls are NOT used for full
+    // teardown any more — `teardownAllBackup` (native) covers them all in
+    // one call. See `togglePhotoBackup`/`toggleContactsBackup`/
+    // `toggleCalendarBackup`'s own off-branches for where the individual
+    // disable* calls are still the correct (single-surface) call.
+    expect(disablePhotoBackupMock).not.toHaveBeenCalled();
+    expect(disableContactsBackupMock).not.toHaveBeenCalled();
+    expect(disableCalendarBackupMock).not.toHaveBeenCalled();
+  });
+
+  test('teardownAllBackup rejecting does not block clearing the session', async () => {
+    teardownAllBackupMock = mock(async () => { throw new Error('native module not linked'); });
+    await expect(stopBackupEngines()).resolves.toBeUndefined();
     expect(clearSessionMock).toHaveBeenCalledTimes(1);
   });
 
-  test('one native call rejecting does not block the others from running', async () => {
-    disablePhotoBackupMock = mock(async () => { throw new Error('native module not linked'); });
+  test('clearMobileIosBackupClientSession rejecting does not block the native teardown', async () => {
+    clearSessionMock = mock(async () => { throw new Error('network error'); });
     await expect(stopBackupEngines()).resolves.toBeUndefined();
-    expect(disableContactsBackupMock).toHaveBeenCalledTimes(1);
-    expect(disableCalendarBackupMock).toHaveBeenCalledTimes(1);
-    expect(clearSessionMock).toHaveBeenCalledTimes(1);
+    expect(teardownAllBackupMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+// Task 1531 [P1] round 6 (delta review 3, finding N1): JS MIRROR of WHY
+// `stopBackupEngines` had to stop calling `disablePhotoBackup` for full
+// teardown — contrasts with the round-5 `shouldClearSharedAccountOnPhotoDisable`
+// mirror above, which is still correct for the SINGLE-SURFACE toggle path.
+// This is a decision-level mirror (see the module doc comment on the
+// `shouldPurgeStagedAsset` describe block above for the compile/host caveat
+// every mirror in this file shares) — it does not exercise
+// BeebeebCryptoModule.swift itself.
+describe('teardown purge semantics (JS mirror of the N1 fix: full teardown vs. single-surface toggle)', () => {
+  // Mirrors `disablePhotoBackup`'s conditional clear — correct ONLY for the
+  // single-surface Camera Roll toggle-off path (`togglePhotoBackup`).
+  function shouldPurgeOnSingleSurfaceToggle(contactsBound: boolean, calendarBound: boolean): boolean {
+    return !contactsBound && !calendarBound;
+  }
+
+  // Mirrors `teardownAllBackup`'s unconditional clear — the full sign-out /
+  // account-switch path (`stopBackupEngines`). Always purges, regardless of
+  // Contacts/Calendar's bound state, because all three surfaces are being
+  // disabled together in the SAME native call.
+  function shouldPurgeOnFullTeardown(_contactsBound: boolean, _calendarBound: boolean): boolean {
+    return true;
+  }
+
+  test('single-surface toggle: contacts still bound → purge is SKIPPED (by design — Contacts must keep working)', () => {
+    expect(shouldPurgeOnSingleSurfaceToggle(true, false)).toBe(false);
+  });
+
+  test('single-surface toggle: calendar still bound → purge is SKIPPED (by design)', () => {
+    expect(shouldPurgeOnSingleSurfaceToggle(false, true)).toBe(false);
+  });
+
+  test('full teardown: contacts still bound at the moment of the call → purge still RUNS (the N1 fix)', () => {
+    // This is the exact bug: with the old three-separate-calls
+    // implementation, `disablePhotoBackup`'s body always ran BEFORE
+    // `disableContactsBackup` cleared its own bound state (Expo dispatches
+    // AsyncFunctions serially in call order — the array's first element is
+    // called first), so this was ALWAYS false for the full sign-out path,
+    // every single time Contacts backup was on. `teardownAllBackup` fixes
+    // it by not conditioning the purge on any other surface's state at all.
+    expect(shouldPurgeOnFullTeardown(true, false)).toBe(true);
+  });
+
+  test('full teardown: calendar still bound at the moment of the call → purge still RUNS', () => {
+    expect(shouldPurgeOnFullTeardown(false, true)).toBe(true);
+  });
+
+  test('full teardown: neither bound → purge runs (same as before)', () => {
+    expect(shouldPurgeOnFullTeardown(false, false)).toBe(true);
   });
 });
 
@@ -499,5 +571,47 @@ describe('hash-after-success (JS mirror of ContactsBackupManager/CalendarBackupM
     // regardless of what A's digest was, even though the content hashes
     // identically.
     expect(shouldUpload(store.get('user-b'), 'digest-1')).toBe(true);
+  });
+});
+
+// Task 1531 [P2] round 6 (delta review 3, finding N2): JS MIRROR of the
+// warm-up retry decision added to `ContactsBackupManager.enable` /
+// `CalendarBackupManager.enable` — `resumeContactsBackup`/
+// `resumeCalendarBackup` (the mount-time "warm-up" call, `runNow: false`)
+// used to skip `backup()` unconditionally whenever `runNow` was false, so a
+// previously refused/failed upload (which — per the hash-after-success
+// discipline above — never recorded success state) sat un-retried until the
+// next REAL contact/calendar edit fired the OS-level change notification,
+// which could be days or never. Same compile/host caveat as the mirrors
+// above: this exercises the DECISION, not the Swift UserDefaults/EventKit/
+// Contacts code.
+describe('warm-up retry (JS mirror of ContactsBackupManager/CalendarBackupManager.enable\'s runNow-override)', () => {
+  // Mirrors: `let shouldRunNow = runNow || !hasUploadedForThisAccount` in
+  // ContactsBackupManager.enable, and the equivalent
+  // `runNow || !hasUploadedForThisAccount` argument CalendarBackupManager
+  // .enable passes into `requestAccessAndBackup`.
+  function shouldRunOnEnable(runNow: boolean, hasUploadedForThisAccount: boolean): boolean {
+    return runNow || !hasUploadedForThisAccount;
+  }
+
+  test('explicit runNow: true always runs, regardless of upload history', () => {
+    expect(shouldRunOnEnable(true, true)).toBe(true);
+    expect(shouldRunOnEnable(true, false)).toBe(true);
+  });
+
+  test('warm-up (runNow: false) with a confirmed prior upload for this account: does NOT force a run', () => {
+    // The common, steady-state case: this account already backed up
+    // successfully at least once, so the warm-up path only needs to
+    // register observers, not force an immediate re-export.
+    expect(shouldRunOnEnable(false, true)).toBe(false);
+  });
+
+  test('warm-up (runNow: false) with NO confirmed upload for this account: forces a run (the N2 fix)', () => {
+    // The bug: a fresh sign-in, or a previously-refused upload (network
+    // error / account-mismatch / no cached master key), left no recorded
+    // success — `hasUploadedForThisAccount` false — and the warm-up path
+    // used to just register observers and wait for the NEXT real edit.
+    // Now it retries once, every app mount/foreground, until it succeeds.
+    expect(shouldRunOnEnable(false, false)).toBe(true);
   });
 });

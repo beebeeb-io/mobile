@@ -2339,10 +2339,7 @@ public class BeebeebCryptoModule: Module {
       // teardown — see `clearAccountAndPurgeStaged` in NativeBackupEngine.swift.
       // Purges every staged-but-unuploaded asset and clears `currentAccountId`
       // so nothing this account staged can survive to be uploaded into
-      // whichever account signs in next on this device. `stopBackupEngines()`
-      // in src/lib/backup-context.tsx calls `disablePhotoBackup()` on EVERY
-      // BackupProvider unmount (sign-out AND sign-in-as-different-user), so
-      // this runs on both paths.
+      // whichever account signs in next on this device.
       //
       // Task 1531 [P1-A follow-up] (round 5 delta review): this function is
       // ALSO called on its own — with Contacts/Calendar left running — when
@@ -2356,25 +2353,53 @@ public class BeebeebCryptoModule: Module {
       // NEITHER Contacts nor Calendar is still bound to it — i.e. this
       // really is a full teardown, not a single-surface toggle.
       //
-      // Residual gap (accepted, self-healing): `stopBackupEngines()` fires
-      // this alongside `disableContactsBackup`/`disableCalendarBackup` via
-      // `Promise.all` — concurrent, unordered native calls. If this body
-      // runs BEFORE either of those has cleared its own `accountId`, this
-      // check sees them as still "bound" and skips the clear, leaving
-      // `currentAccountId` stale in the Keychain past this sign-out. That
-      // is inert, not a leak: `stop()` above already halted this engine,
-      // and Contacts/Calendar's OWN `disable()` (clearing their private
-      // `authToken`/`accountId`) is what actually stops them uploading —
-      // independent of this check. The stale value is corrected by the
-      // very next `bindAccount` call (any of the three `enable*` entry
-      // points), which detects the mismatch against the new account and
-      // purges + rebinds, same as any other stale-account recovery in this
-      // file.
+      // Task 1531 [P1] round 6 (delta review 3, finding N1): this
+      // isBound-conditional clear is now SINGLE-SURFACE-TOGGLE ONLY.
+      // `stopBackupEngines()` (src/lib/backup-context.tsx) no longer calls
+      // this function for the full sign-out / account-switch teardown — it
+      // calls `teardownAllBackup()` below instead. The previous wording
+      // here called the "runs before Contacts/Calendar clear their own
+      // accountId" ordering a possible race that left a merely "inert"
+      // stale value; it was neither. Expo dispatches `AsyncFunction` bodies
+      // serially IN CALL ORDER (see `bindAccount`'s doc comment,
+      // NativeBackupEngine.swift, N4), and `stopBackupEngines`'s
+      // `Promise.all([disablePhotoBackup(), disableContactsBackup(),
+      // disableCalendarBackup(), …])` calls `disablePhotoBackup()` FIRST —
+      // so this body ran, and the isBound check below saw Contacts/Calendar
+      // as "still bound", EVERY SINGLE TIME sign-out happened with either
+      // enabled, not occasionally. `clearAccountAndPurgeStaged()` was
+      // therefore skipped on every such sign-out — the outgoing account's
+      // staged-but-unuploaded ciphertext was never wiped from disk at
+      // sign-out, only (if ever) on a LATER, genuinely different account's
+      // first bind on this device. `teardownAllBackup()` closes that by
+      // disabling all three surfaces and purging unconditionally in one
+      // native call, with no cross-call ordering to get wrong.
       if ContactsBackupManager.shared.isBound || CalendarBackupManager.shared.isBound {
         RuntimeTrace.event("backup.native.disable_photo.account_kept_for_other_surface")
       } else {
         engine.clearAccountAndPurgeStaged()
       }
+    }
+
+    // Task 1531 [P1] round 6 (delta review 3, finding N1): the full sign-out
+    // / account-switch teardown entry point. Disables all three backup
+    // surfaces and THEN unconditionally clears the shared account + purges
+    // every staged-but-unuploaded asset — unlike `disablePhotoBackup` above
+    // (kept for the single-surface Camera Roll toggle, where the purge must
+    // stay conditional on Contacts/Calendar's `isBound` state), this never
+    // gates the purge on any other surface's state, so it cannot be skipped
+    // by the call-order behavior described in `disablePhotoBackup`'s
+    // comment above. Called from `stopBackupEngines()`
+    // (src/lib/backup-context.tsx) on EVERY BackupProvider unmount
+    // (sign-out AND sign-in-as-different-user).
+    AsyncFunction("teardownAllBackup") { () in
+      let engine = NativeBackupEngine.shared
+      ContactsBackupManager.shared.disable()
+      CalendarBackupManager.shared.disable()
+      engine.stop()
+      engine.backupClientSessionId = nil
+      engine.clearAccountAndPurgeStaged()
+      RuntimeTrace.event("backup.native.teardown_all")
     }
 
     AsyncFunction("enableContactsBackup") { (authToken: String, userId: String) in
