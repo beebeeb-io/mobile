@@ -20,6 +20,7 @@ import * as Sharing from 'expo-sharing';
 import { radii, spacing } from '../theme';
 import { useTheme } from '../lib/theme-context';
 import { downloadSharedFileBlob, getShareByToken, verifySharePassphrase, friendlyError } from '../lib/api';
+import { isStaleShareVerification } from '../lib/share-verify-gate';
 import type { ShareInfo } from '../lib/api';
 import { makeShareKeyResolver } from '../lib/share-key-store';
 import { formatBytes as formatSize } from '../lib/format';
@@ -201,9 +202,17 @@ export default function SharedViewScreen() {
   const [passphrase, setPassphrase] = useState('');
   const [verifying, setVerifying] = useState(false);
   const [verifyError, setVerifyError] = useState<string | null>(null);
+  // Task 1539 (Codex P2 follow-up, PR #109 review): the token this screen
+  // CURRENTLY shows, kept in sync with the effect below (set synchronously,
+  // before any await, same as that effect's own `cancelled` local). Read by
+  // `handleVerifyPassphrase` after its async call resolves so a stale
+  // verification for a share the user has since navigated away from can be
+  // discarded instead of overwriting the new share's freshly-reset state.
+  const currentTokenRef = useRef(token);
 
   useEffect(() => {
     let cancelled = false;
+    currentTokenRef.current = token;
     // `token` changed → this is a DIFFERENT share. React Navigation re-renders
     // (does not remount) this screen, so every piece of per-share state must be
     // reset or the previous share leaks into this one. The shareKey is handled
@@ -252,18 +261,28 @@ export default function SharedViewScreen() {
    * replace the gate-only `info` (id/share_type/requires_passphrase/expires_at)
    * with the full metadata the server only reveals once verified — mirrors
    * the web client's `handleVerify`.
+   *
+   * Codex P2 follow-up (PR #109 review): `requestToken` is snapshotted at
+   * call time and checked against `currentTokenRef` after the await — if
+   * another share deep link changed the screen's token while this request
+   * was in flight, every state update below (`setInfo`, `setVerifyError`,
+   * and clearing `verifying`) is skipped, so this stale completion can
+   * never overwrite the new share's already-reset state.
    */
   const handleVerifyPassphrase = useCallback(async (): Promise<void> => {
     if (!passphrase.trim()) return;
+    const requestToken = token;
     setVerifying(true);
     setVerifyError(null);
     try {
-      const full = await verifySharePassphrase(token, passphrase);
+      const full = await verifySharePassphrase(requestToken, passphrase);
+      if (isStaleShareVerification(requestToken, currentTokenRef.current)) return;
       setInfo(full);
     } catch (err) {
+      if (isStaleShareVerification(requestToken, currentTokenRef.current)) return;
       setVerifyError(friendlyError(err));
     } finally {
-      setVerifying(false);
+      if (!isStaleShareVerification(requestToken, currentTokenRef.current)) setVerifying(false);
     }
   }, [token, passphrase]);
 

@@ -30,6 +30,7 @@ import * as SecureStore from 'expo-secure-store';
 import * as LocalAuthentication from 'expo-local-authentication';
 import * as DocumentPicker from 'expo-document-picker';
 import { isFileLocked, lockFile, unlockFile } from '../lib/file-locks';
+import { lockedToastMessage } from '../lib/lock-copy';
 import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
@@ -3482,7 +3483,12 @@ export default function FilesScreen() {
             await lockFile(item.id);
             setLockedFileIds((prev) => new Set([...prev, item.id]));
             Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-            showToast({ type: 'success', message: `"${name}" is now locked` });
+            // Task 1539 (finding 5, lead decision — PR #109 review): was the
+            // unqualified "is now locked" — dishonest, since the lock has no
+            // keychainAccessGroup and is not visible to the File Provider
+            // extension, so the SAME file opened through the iOS Files app
+            // is not locked. See lock-copy.ts for the full context.
+            showToast({ type: 'success', message: lockedToastMessage(name) });
           })();
           return;
         case 'Unlock file':

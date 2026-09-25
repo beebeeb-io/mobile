@@ -21,7 +21,19 @@ export type TwoFactorSetupStep = 1 | 2 | 3;
  * step 2 has already started activating TOTP server-side, and step 3 shows
  * backup codes that are never shown again. Only step 1 — before anything is
  * committed — may be left freely.
+ *
+ * `completed` (Codex P1 follow-up, PR #109 review) is the explicit escape
+ * for the step-3 Done button: without it, the SAME `beforeRemove` listener
+ * that correctly blocks a swipe/tap-away from step 3 also blocks the
+ * `navigation.goBack()` Done itself calls once 2FA is enabled and the user
+ * has acknowledged the backup codes — trapping them on the screen with no
+ * way off it. The screen sets `completed` right before calling `goBack()`
+ * from Done, and nowhere else.
  */
-export function shouldBlockTwoFactorSetupBack(step: TwoFactorSetupStep): boolean {
+export function shouldBlockTwoFactorSetupBack(
+  step: TwoFactorSetupStep,
+  completed: boolean = false,
+): boolean {
+  if (completed) return false;
   return step > 1;
 }

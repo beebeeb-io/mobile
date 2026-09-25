@@ -23,7 +23,7 @@ mock.module('expo-secure-store', () => ({
 // so `expo-secure-store` would load for real and crash on react-native's
 // Flow syntax. Matches the pattern every other api.ts/backup-context.ts test
 // in this repo already uses for exactly this reason.
-const { checkLockedFileIds, isPreviewGated } = await import('./preview-lock-gate');
+const { checkLockedFileIds, isPreviewGated, isPagerPageGated } = await import('./preview-lock-gate');
 const { lockFile } = await import('./file-locks');
 
 beforeEach(() => {
@@ -98,5 +98,31 @@ describe('isPreviewGated — the decision PhotosScreen/PreviewScreen skipped ent
     const locked = new Set(['file-1']);
     expect(isPreviewGated(null, locked, new Set())).toBe(false);
     expect(isPreviewGated(undefined, locked, new Set())).toBe(false);
+  });
+});
+
+describe('isPagerPageGated — startup-window fail-closed (PR #109 Codex P1 follow-up)', () => {
+  test('gates EVERY page while the lock lookup has not resolved yet, even one not in the (still-empty) locked set', () => {
+    const locked = new Set<string>(); // the initial state before checkLockedFileIds resolves
+    const authenticated = new Set<string>();
+    expect(isPagerPageGated('file-1', locked, authenticated, false)).toBe(true);
+  });
+
+  test('once ready, defers entirely to isPreviewGated for an unlocked file', () => {
+    const locked = new Set(['some-other-file']);
+    const authenticated = new Set<string>();
+    expect(isPagerPageGated('file-1', locked, authenticated, true)).toBe(false);
+  });
+
+  test('once ready, still gates a locked-and-unauthenticated file', () => {
+    const locked = new Set(['file-1']);
+    const authenticated = new Set<string>();
+    expect(isPagerPageGated('file-1', locked, authenticated, true)).toBe(true);
+  });
+
+  test('once ready, does not re-gate a locked file already authenticated this session', () => {
+    const locked = new Set(['file-1']);
+    const authenticated = new Set(['file-1']);
+    expect(isPagerPageGated('file-1', locked, authenticated, true)).toBe(false);
   });
 });

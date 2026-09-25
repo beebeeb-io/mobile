@@ -55,3 +55,24 @@ export function isPreviewGated(
   if (!fileId) return false;
   return lockedIds.has(fileId) && !authenticatedIds.has(fileId);
 }
+
+/**
+ * Task 1539 (Codex P1 follow-up, PR #109 review): combines `isPreviewGated`
+ * with the async lock-check's readiness flag, for every per-page gate that
+ * decides whether a swipe-pager page may start loading content.
+ *
+ * `lockedIds` starts as an EMPTY set while `checkLockedFileIds` is still in
+ * flight, so `isPreviewGated` alone reports every page "unlocked" during
+ * that startup window — a locked file's thumbnail/decrypt could start
+ * before we even know it's locked. This fails closed instead: nothing may
+ * be treated as unlocked until the lookup has actually resolved once.
+ */
+export function isPagerPageGated(
+  fileId: string | null | undefined,
+  lockedIds: ReadonlySet<string>,
+  authenticatedIds: ReadonlySet<string>,
+  lockCheckReady: boolean,
+): boolean {
+  if (!lockCheckReady) return true;
+  return isPreviewGated(fileId, lockedIds, authenticatedIds);
+}

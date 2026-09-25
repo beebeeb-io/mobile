@@ -24,4 +24,23 @@ describe('shouldBlockTwoFactorSetupBack', () => {
   test('step 3 (one-time backup codes, TOTP already active server-side) is blocked', () => {
     expect(shouldBlockTwoFactorSetupBack(3)).toBe(true);
   });
+
+  // Codex P1 follow-up (PR #109 review): the `beforeRemove` listener this
+  // gate drives blocks EVERY goBack() while step > 1 — including the one
+  // the step-3 Done button calls after the user has acknowledged their
+  // backup codes and 2FA is fully enabled. Without an explicit escape, Done
+  // silently does nothing and the user is trapped on the screen.
+  test('step 3 with completed=true (Done pressed) is NOT blocked — the trap this fixes', () => {
+    expect(shouldBlockTwoFactorSetupBack(3, true)).toBe(false);
+  });
+
+  test('step 2 with completed=true is also not blocked (defensive — Done only exists on step 3, but the flag should win regardless of step)', () => {
+    expect(shouldBlockTwoFactorSetupBack(2, true)).toBe(false);
+  });
+
+  test('completed defaults to false — omitting it preserves the existing step>1 behavior', () => {
+    expect(shouldBlockTwoFactorSetupBack(3)).toBe(true);
+    expect(shouldBlockTwoFactorSetupBack(2)).toBe(true);
+    expect(shouldBlockTwoFactorSetupBack(1)).toBe(false);
+  });
 });

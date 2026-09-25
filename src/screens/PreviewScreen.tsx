@@ -71,7 +71,8 @@ import {
 import { DetailsSheet } from '../components/preview/DetailsSheet';
 import { recordRuntimeTrace } from '../lib/runtime-trace';
 import { formatBytes as formatSize } from '../lib/format';
-import { checkLockedFileIds, isPreviewGated } from '../lib/preview-lock-gate';
+import { checkLockedFileIds, isPagerPageGated } from '../lib/preview-lock-gate';
+import { FILES_APP_LOCK_CAVEAT } from '../lib/lock-copy';
 
 // Preview renderers are lazy-loaded so that the libraries each one depends on
 // (jszip, xlsx, mammoth, pako, react-native-pdf, highlight.js) only enter
@@ -1553,10 +1554,15 @@ const PhotoPage = React.memo(function PhotoPage({
     <View style={[styles.photoPage, { width }]}>
       {locked ? (
         // Task 1539 (finding 1, P0): what a swipe onto a locked neighbor
-        // shows now, instead of silently decrypting and displaying it. No
-        // thumbnail/uri render branch below is even reachable here — every
-        // effect that could populate them is gated above, so this is not
-        // just a visual cover-up over content that already loaded.
+        // shows now, instead of silently decrypting and displaying it. Every
+        // effect that could populate `thumbnailUri`/`uri` is gated above,
+        // so this is not just a visual cover-up over content that already
+        // loaded — and (Codex P1 follow-up, PR #109 review) the render
+        // branch below that WOULD show `uri`/`thumbnailUri`/`error` is now
+        // also gated on `!locked`, so a value set by an in-flight load that
+        // was already running before `locked` flipped true (e.g. the
+        // startup window before `lockCheckReady`) can never surface
+        // alongside or underneath this prompt either.
         <Pressable
           style={styles.photoPageStatus}
           onPress={() => onRequestUnlock(entry.id)}
@@ -1570,67 +1576,76 @@ const PhotoPage = React.memo(function PhotoPage({
           <Text style={styles.photoPageStatusSub}>
             {unlocking ? 'Authenticating...' : 'Tap to authenticate and view this file.'}
           </Text>
+          {/* Task 1539 (finding 5, lead decision — PR #109 review): the lock
+              has no keychainAccessGroup, so it is not visible to the File
+              Provider extension — say so wherever there is room next to the
+              explainer, rather than let "Locked" imply full coverage. */}
+          <Text style={styles.photoPageStatusSub}>{FILES_APP_LOCK_CAVEAT}</Text>
         </Pressable>
-      ) : thumbnailUri && !uri && !error ? (
-        <Image
-          source={{ uri: thumbnailUri }}
-          style={styles.photoPageThumbnail}
-          resizeMode="contain"
-        />
-      ) : null}
-      {error ? (
-        <View style={styles.photoPageStatus}>
-          <Text style={styles.photoPageStatusTitle}>
-            {isVideoEntry ? "Couldn't load video" : "Couldn't load image"}
-          </Text>
-          <Text style={styles.photoPageStatusSub}>
-            {error}
-          </Text>
-        </View>
-      ) : uri && isVideoEntry ? (
-        <VideoView
-          player={player}
-          style={styles.photoPageImage}
-          contentFit="contain"
-          nativeControls
-          fullscreenOptions={{ enable: true }}
-          allowsPictureInPicture
-        />
-      ) : uri ? (
-        <ProgressiveOriginalImage
-          baseUri={uri}
-          originalUri={originalUri}
-          progress={progress}
-          active={originalActive}
-          cacheHit={originalCacheHit}
-          reduceMotion={reduceMotion}
-          amber={c.amber}
-          containerStyle={StyleSheet.absoluteFill}
-          imageStyle={styles.photoPageImage}
-          baseOpacity={fullImageOpacity}
-          onPromote={promoteOriginal}
-          onImageLoad={() => setImageLoaded(true)}
-          onImageError={() => setError((prev) => prev ?? "This image couldn't be displayed.")}
-        />
       ) : (
-        <View style={styles.photoPageStatus}>
-          {/* 1346 — textColor/trackColor forced dark: this pager page is
-              always inside mediaRoot's forced-dark ground (only reachable
-              from isMediaPreview), same argument as the mediaMaterial
-              comment above `if (isMediaPreview)` in the main component. */}
-          {loading || shouldLoadFull ? (
-            <PreviewProgressStatus
-              color={c.amber}
-              textColor={glassMaterial('dark').labelMuted}
-              trackColor="rgba(255,255,255,0.16)"
-              isUnlocked={isUnlocked}
-              isVideo={isVideoEntry}
-              progress={progress.stage ? progress : { ...progress, stage }}
-              profile={performanceProfile}
-              sizeBytes={entry.size_bytes}
+        <>
+          {thumbnailUri && !uri && !error ? (
+            <Image
+              source={{ uri: thumbnailUri }}
+              style={styles.photoPageThumbnail}
+              resizeMode="contain"
             />
           ) : null}
-        </View>
+          {error ? (
+            <View style={styles.photoPageStatus}>
+              <Text style={styles.photoPageStatusTitle}>
+                {isVideoEntry ? "Couldn't load video" : "Couldn't load image"}
+              </Text>
+              <Text style={styles.photoPageStatusSub}>
+                {error}
+              </Text>
+            </View>
+          ) : uri && isVideoEntry ? (
+            <VideoView
+              player={player}
+              style={styles.photoPageImage}
+              contentFit="contain"
+              nativeControls
+              fullscreenOptions={{ enable: true }}
+              allowsPictureInPicture
+            />
+          ) : uri ? (
+            <ProgressiveOriginalImage
+              baseUri={uri}
+              originalUri={originalUri}
+              progress={progress}
+              active={originalActive}
+              cacheHit={originalCacheHit}
+              reduceMotion={reduceMotion}
+              amber={c.amber}
+              containerStyle={StyleSheet.absoluteFill}
+              imageStyle={styles.photoPageImage}
+              baseOpacity={fullImageOpacity}
+              onPromote={promoteOriginal}
+              onImageLoad={() => setImageLoaded(true)}
+              onImageError={() => setError((prev) => prev ?? "This image couldn't be displayed.")}
+            />
+          ) : (
+            <View style={styles.photoPageStatus}>
+              {/* 1346 — textColor/trackColor forced dark: this pager page is
+                  always inside mediaRoot's forced-dark ground (only reachable
+                  from isMediaPreview), same argument as the mediaMaterial
+                  comment above `if (isMediaPreview)` in the main component. */}
+              {loading || shouldLoadFull ? (
+                <PreviewProgressStatus
+                  color={c.amber}
+                  textColor={glassMaterial('dark').labelMuted}
+                  trackColor="rgba(255,255,255,0.16)"
+                  isUnlocked={isUnlocked}
+                  isVideo={isVideoEntry}
+                  progress={progress.stage ? progress : { ...progress, stage }}
+                  profile={performanceProfile}
+                  sizeBytes={entry.size_bytes}
+                />
+              ) : null}
+            </View>
+          )}
+        </>
       )}
     </View>
   );
@@ -1718,7 +1733,7 @@ export default function PreviewScreen() {
   // THIS pager, decrypted and displayed it with no Face ID prompt. This is
   // the enforcement point the fix hint asks for: PreviewScreen owns the
   // check itself, on mount AND on every pager index change (re-evaluated
-  // below via `isPreviewGated(currentFileId, ...)`, which recomputes on
+  // below via `isPagerPageGated(currentFileId, ...)`, which recomputes on
   // every render including a `currentPhotoIndex` change from a swipe).
   //
   // `lockedFileIds` is checked ONCE for the whole bounded id set this
@@ -1765,8 +1780,10 @@ export default function PreviewScreen() {
   // Gates the CURRENT file — recomputed every render, so a pager swipe
   // (currentPhotoIndex -> currentFileId change) re-evaluates it fresh.
   // Before the initial SecureStore read resolves, fail closed rather than
-  // let a decrypt start while lock status is still unknown.
-  const contentLocked = !lockCheckReady || isPreviewGated(currentFileId, lockedFileIds, authenticatedFileIds);
+  // let a decrypt start while lock status is still unknown (isPagerPageGated
+  // — Codex P1 follow-up, PR #109 review — encodes this same "not ready yet
+  // ⇒ gated" rule the swipe-pager's per-page gate below also needs).
+  const contentLocked = isPagerPageGated(currentFileId, lockedFileIds, authenticatedFileIds, lockCheckReady);
 
   const handleUnlockCurrent = useCallback(async (targetFileId: string) => {
     setUnlockingFileId(targetFileId);
@@ -3007,7 +3024,13 @@ export default function PreviewScreen() {
         width={SCREEN_WIDTH}
         previewProfile={performanceStorageProfile}
         originalRequestNonce={originalPhotoRequest?.fileId === item.id ? originalPhotoRequest.nonce : 0}
-        locked={isPreviewGated(item.id, lockedFileIds, authenticatedFileIds)}
+        // Task 1539 (Codex P1 follow-up, PR #109 review): was bare
+        // `isPreviewGated`, which reports every page "unlocked" during the
+        // startup window before `checkLockedFileIds` resolves (`lockedFileIds`
+        // starts empty) — a locked neighbor could start a thumbnail/decrypt
+        // before we even knew it was locked. `isPagerPageGated` fails closed
+        // until `lockCheckReady`.
+        locked={isPagerPageGated(item.id, lockedFileIds, authenticatedFileIds, lockCheckReady)}
         unlocking={unlockingFileId === item.id}
         onRequestUnlock={handleUnlockCurrent}
       />
@@ -3017,6 +3040,7 @@ export default function PreviewScreen() {
       authenticatedFileIds,
       currentPhotoIndex,
       handleUnlockCurrent,
+      lockCheckReady,
       lockedFileIds,
       originalPhotoRequest,
       performanceStorageProfile,
@@ -3232,6 +3256,10 @@ export default function PreviewScreen() {
               <Text style={styles.imageStatusSub}>
                 {unlockingFileId === currentFileId ? 'Authenticating...' : 'Tap to authenticate and view this file.'}
               </Text>
+              {/* Task 1539 (finding 5, lead decision — PR #109 review): see
+                  lock-copy.ts — the lock is not visible to the File
+                  Provider extension, so say so wherever there is room. */}
+              <Text style={styles.imageStatusSub}>{FILES_APP_LOCK_CAVEAT}</Text>
             </View>
           </Pressable>
         ) : (
@@ -3516,6 +3544,10 @@ export default function PreviewScreen() {
             <Text style={[styles.imageStatusSub, { color: c.ink3 }]}>
               {unlockingFileId === currentFileId ? 'Authenticating...' : 'Tap to authenticate and view this file.'}
             </Text>
+            {/* Task 1539 (finding 5, lead decision — PR #109 review): see
+                lock-copy.ts — the lock is not visible to the File Provider
+                extension, so say so wherever there is room. */}
+            <Text style={[styles.imageStatusSub, { color: c.ink3 }]}>{FILES_APP_LOCK_CAVEAT}</Text>
           </Pressable>
         ) : isImage ? (
           imageError ? (

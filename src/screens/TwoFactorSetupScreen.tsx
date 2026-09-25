@@ -458,9 +458,22 @@ export default function TwoFactorSetupScreen() {
   // edge-swipe gesture) regardless of which one fires, so it's the actual
   // enforcement point; the gestureEnabled + hidden-button changes below are
   // the visible affordance that matches it.
+  //
+  // Codex P1 follow-up (PR #109 review): that same blanket enforcement also
+  // caught the step-3 Done button's OWN `navigation.goBack()` once 2FA was
+  // successfully enabled, trapping the user on the screen with no way off
+  // it — tapping Done did nothing. `completedRef` is the explicit escape:
+  // `handleDone` sets it right before navigating, and the listener (which
+  // re-reads it on every fire via the ref, not a stale closure) lets that
+  // one `goBack()` through while continuing to block everything else.
+  const completedRef = useRef(false);
   useEffect(() => {
     if (!shouldBlockTwoFactorSetupBack(step)) return undefined;
     const unsubscribe = navigation.addListener('beforeRemove', (e) => {
+      // Read completedRef fresh on every fire (not a stale render-time
+      // value) — Done can flip it after this listener was already
+      // installed for the current step.
+      if (!shouldBlockTwoFactorSetupBack(step, completedRef.current)) return;
       e.preventDefault();
     });
     return unsubscribe;
@@ -476,6 +489,7 @@ export default function TwoFactorSetupScreen() {
   }, [navigation, step]);
 
   const handleDone = useCallback(() => {
+    completedRef.current = true;
     navigation.goBack();
   }, [navigation]);
 

@@ -25,7 +25,6 @@ import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import * as Haptics from 'expo-haptics';
-import * as LocalAuthentication from 'expo-local-authentication';
 import * as MediaLibrary from 'expo-media-library/legacy';
 import * as Sharing from 'expo-sharing';
 import { NativePhotosGridView, type NativePhotoGridItem } from '../../modules/beebeeb-crypto';
@@ -57,7 +56,6 @@ import { decryptToTempFile } from '../lib/native-decrypt';
 import { prunePhotoCacheForRemoteFiles } from '../lib/photo-cache';
 import { onFilesDeleted } from '../lib/delete-cascade';
 import { removeFromFileProviderCache } from '../lib/file-provider-mount';
-import { isFileLocked } from '../lib/file-locks';
 import { loadCachedFileIndex, saveCachedFileIndex, type CachedFileIndex } from '../lib/file-index-cache';
 import { getRemoteCreatedAtMap, getRemoteToLocalMap, markRemoteDeleted } from '../services/BackupDatabase';
 import { encryptedMetadataPayloadToBytes } from '../lib/encrypted-metadata';
@@ -1351,21 +1349,18 @@ export default function PhotosScreen() {
   const openPhoto = useCallback(
     async (entry: FileEntry) => {
       Haptics.selectionAsync();
-      // Task 1539 (finding 1, P0): the Photos tab's own tap handler never
-      // checked "Lock file" at all — grep confirmed `isFileLocked` was
-      // imported ONLY in FilesScreen.tsx, so a locked photo opened here with
-      // no Face ID prompt even though the SAME file, opened from the Files
-      // tab, was gated. Mirrors FilesScreen.openFile's pre-navigation check.
-      // PreviewScreen also re-checks on its own now (the swipe-pager half of
-      // this finding), so this is defense-in-depth, not the sole gate: it
-      // additionally stops the tap from even starting a navigation.
-      if (await isFileLocked(entry.id)) {
-        const result = await LocalAuthentication.authenticateAsync({
-          promptMessage: 'Authenticate to open this file',
-          disableDeviceFallback: true,
-        });
-        if (!result.success) return;
-      }
+      // Task 1539 (finding 1, P0) originally added an `isFileLocked` +
+      // `authenticateAsync` pre-check here, mirroring FilesScreen.openFile,
+      // as defense-in-depth alongside PreviewScreen's own gate.
+      //
+      // Removed (Codex P2 follow-up, PR #109 review): PreviewScreen now
+      // fully enforces the lock itself on mount — fail-closed before its
+      // SecureStore check resolves (`isPagerPageGated`), then requiring an
+      // explicit tap-to-authenticate for a genuinely locked file — so this
+      // pre-check bought no additional safety, only a redundant SECOND
+      // Face ID prompt for the same file the user just authenticated for
+      // here. Preview is the single enforcement point; navigation always
+      // proceeds and Preview's own "Locked" UI takes over if needed.
       const index = flatPhotos.findIndex((p) => p.id === entry.id);
       const selectedIndex = index >= 0 ? index : 0;
       const windowStart = Math.max(0, selectedIndex - PHOTO_PREVIEW_WINDOW_RADIUS);
