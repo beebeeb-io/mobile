@@ -54,6 +54,7 @@ import { useNetworkStatus } from '../lib/useNetworkStatus';
 import { recordRuntimeTrace } from '../lib/runtime-trace';
 import { ensureCalendarPermission } from '../lib/calendar-permissions';
 import { formatBytes } from '../lib/format';
+import { PLAN_MANAGEMENT_NOTE } from '../lib/billing-copy';
 import {
   DEFAULT_BACKUP_NOTIFICATION_SETTINGS,
   type BackupNotificationSettings,
@@ -861,9 +862,15 @@ export default function SettingsScreen() {
             // in-app action that doesn't exist. Free space or manage the
             // plan on the web (see PLAN_MANAGEMENT_NOTE) are the two things
             // a user can actually do.
-            showToast({ type: 'error', message: 'Storage full — uploads will fail until you free space or manage your plan.' });
+            //
+            // Codex review on PR #108: naming plan management without
+            // saying where it happens still reads as an in-app action.
+            // PLAN_MANAGEMENT_NOTE spells out "on the web", same as
+            // FilesScreen's storage-full Alert and StorageScreen's
+            // disclaimer.
+            showToast({ type: 'error', message: `Storage full — uploads will fail until you free space. ${PLAN_MANAGEMENT_NOTE}` });
           } else if (tier === 90) {
-            showToast({ type: 'error', message: 'Storage 90% full — free up space or manage your plan.' });
+            showToast({ type: 'error', message: `Storage 90% full — free up space. ${PLAN_MANAGEMENT_NOTE}` });
           } else if (tier === 75) {
             showToast({ type: 'info', message: 'Storage 75% full.' });
           }

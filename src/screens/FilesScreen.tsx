@@ -4173,6 +4173,11 @@ export default function FilesScreen() {
         // files" stays because it's the one thing the user can actually do
         // here; the rest points at the same non-tappable web note
         // StorageScreen already shows.
+        //
+        // Codex review on PR #108: the hint text still said "Manage", which
+        // reads as a call to action even though the TouchableOpacity only
+        // opens the informational Alert below (no navigation, no purchase
+        // path). "Details" accurately names what tapping does.
         const message = isFull
           ? 'Storage full — delete files to continue'
           : `Storage almost full — ${formatSize(usage.used_bytes)} of ${formatSize(usage.plan_limit_bytes)} used`;
@@ -4203,7 +4208,7 @@ export default function FilesScreen() {
               {message}
             </Text>
             <Text style={[styles.storageBannerHint, { color: isFull ? '#fff' : c.amberDeep }]}>
-              Manage
+              Details
             </Text>
           </TouchableOpacity>
         );

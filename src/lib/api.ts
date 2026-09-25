@@ -730,7 +730,10 @@ async function confirmActionPlaintext(
   }
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
-    throw new ApiError(res.status, err.error ?? err.message ?? res.statusText);
+    // Task 1540 continuation (PR #108): prefer the server's human-readable
+    // `message` over the machine `error` code, same as request() (finding
+    // 7) — this direct-fetch path had the two swapped.
+    throw new ApiError(res.status, err.message ?? err.error ?? res.statusText);
   }
   return res.json() as Promise<ConfirmActionResponse>;
 }
@@ -2044,7 +2047,10 @@ export async function downloadSharedFileBlob(
   }
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
-    throw new ApiError(res.status, err.error ?? err.message ?? `Share download failed: ${res.status}`);
+    // Task 1540 continuation (PR #108): prefer the server's human-readable
+    // `message` over the machine `error` code, same as request() (finding
+    // 7) — this direct-fetch path had the two swapped.
+    throw new ApiError(res.status, err.message ?? err.error ?? `Share download failed: ${res.status}`);
   }
 
   const arrayBuf = await res.arrayBuffer();

@@ -83,3 +83,38 @@ describe('findings 5, 8: FilesScreen — the storage-full banner no longer promi
 // own verification grep (`upgrade|pricing|subscribe`) checked for tappable
 // CTAs, not a literal zero-substring bar — so holding StorageScreen.tsx to
 // that stricter bar here would be scope creep past what was found broken.
+
+// --- PR #108 Codex review (task 1540 continuation) --------------------------
+//
+// The "zero upgrad" bar above didn't catch two narrower dead-CTA/imprecise-
+// copy regressions the same sweep introduced: FilesScreen's storage banner
+// kept a "Manage" hint on a TouchableOpacity that only opens an informational
+// Alert (no real destination — still a dead action, just not spelled
+// "upgrade"), and SettingsScreen's quota toasts said "manage your plan"
+// without ever saying where that happens, which reads as an in-app action
+// the app doesn't have. Both tests below are RED on the pre-fix head.
+
+describe('FilesScreen — the storage banner hint is not a dead "Manage" CTA', () => {
+  const source = read(FILES_SCREEN);
+
+  test('the storageBannerHint <Text> does not read "Manage" — the TouchableOpacity only opens an informational Alert, no navigation or web link', () => {
+    const match = source.match(/storageBannerHint[\s\S]{0,120}?>\s*\r?\n\s*(\S+)\s*\r?\n/);
+    expect(match).not.toBeNull();
+    expect(match![1]).not.toBe('Manage');
+  });
+});
+
+describe('SettingsScreen — quota toasts do not say "manage your plan" without saying where', () => {
+  const source = read(SETTINGS_SCREEN);
+
+  test('the file never contains the bare phrase "manage your plan" (the qualified PLAN_MANAGEMENT_NOTE sentence replaces it)', () => {
+    expect(source).not.toMatch(/manage your plan/i);
+  });
+
+  test('PLAN_MANAGEMENT_NOTE is imported from billing-copy and used by the quota toasts', () => {
+    expect(source).toContain("import { PLAN_MANAGEMENT_NOTE } from '../lib/billing-copy';");
+    const usages = source.match(/\$\{PLAN_MANAGEMENT_NOTE\}/g) ?? [];
+    // One for the 100% tier toast, one for the 90% tier toast.
+    expect(usages.length).toBeGreaterThanOrEqual(2);
+  });
+});
