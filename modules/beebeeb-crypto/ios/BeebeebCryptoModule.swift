@@ -1648,6 +1648,27 @@ public class BeebeebCryptoModule: Module {
       // a separate keychain item used only by `NativeBackupEngine`
       // running in the main app address space (task 0430).
       if let token, !token.isEmpty {
+        // Task 1531 [P1] (round 5 delta security review): there is NO
+        // token-REFRESH path in this codebase — `setToken` is only ever
+        // called from `setSessionCredentials` at signup/login/OPAQUE/2FA
+        // (api.ts:201, 451, 476, 2375, 2414, 2479) — so any change to the
+        // stored `io.beebeeb.backupToken` here is a fresh sign-in, not a
+        // silent renewal of the SAME session. Unbind the OLD account + drop
+        // the engine's cached master-key handle BEFORE persisting the new
+        // token, so nothing already-running can keep using the OLD
+        // account/key pairing under the NEW token for even one tick.
+        // `enablePhotoBackup`/`enableContactsBackup`/`enableCalendarBackup`
+        // (all now routed through `bindAccount`) re-establish the correct
+        // binding for whichever account this new token belongs to, right
+        // after this call, from JS. A no-op re-store of the SAME token
+        // (this function can be called redundantly, e.g. on app resume)
+        // does nothing extra here.
+        let previousToken = KeychainManager.loadString(key: "io.beebeeb.backupToken")
+        if previousToken != token {
+          NativeBackupEngine.shared.currentAccountId = nil
+          NativeBackupEngine.shared.dropCachedMasterKeyHandle()
+          RuntimeTrace.event("backup.native.mirror_session.token_changed_unbind")
+        }
         try? BeebeebKeychainCore.storeString(token, key: sharedSessionTokenKey)
         try? KeychainManager.storeString(token, key: "io.beebeeb.backupToken")
       } else {
@@ -2298,10 +2319,12 @@ public class BeebeebCryptoModule: Module {
     AsyncFunction("enablePhotoBackup") { (authToken: String, userId: String) in
       let engine = NativeBackupEngine.shared
       engine.token = authToken
-      // Task 1531 [P0]: set BEFORE start() so purgeMismatchedStagedAssets
-      // (called first thing inside start()) sweeps any staged asset left
-      // over from a previous, different account on this device.
-      engine.currentAccountId = userId
+      // Task 1531 [P1-A] (round 5 delta review): route through the shared
+      // `bindAccount` entry point (purge mismatched staged assets + set
+      // `currentAccountId` + drop any stale cached key handle) instead of
+      // writing `currentAccountId` directly — see that method's doc
+      // comment in NativeBackupEngine.swift.
+      engine.bindAccount(userId: userId)
       if engine.apiBaseUrl == nil {
         engine.apiBaseUrl = KeychainManager.loadString(key: "io.beebeeb.serverURL")
       }
@@ -2320,7 +2343,38 @@ public class BeebeebCryptoModule: Module {
       // in src/lib/backup-context.tsx calls `disablePhotoBackup()` on EVERY
       // BackupProvider unmount (sign-out AND sign-in-as-different-user), so
       // this runs on both paths.
-      engine.clearAccountAndPurgeStaged()
+      //
+      // Task 1531 [P1-A follow-up] (round 5 delta review): this function is
+      // ALSO called on its own — with Contacts/Calendar left running — when
+      // the user toggles Camera Roll backup off alone (`togglePhotoBackup`'s
+      // off-branch, backup-context.tsx). Now that Contacts/Calendar bind
+      // through the SAME `engine.currentAccountId` (`bindAccount`, this
+      // round's P1-A fix), unconditionally clearing it here would silently
+      // break Contacts/Calendar backup the moment Camera Roll is toggled
+      // off — the "camera roll off with contacts on" scenario in this
+      // round's device-test checklist. Only clear the shared account when
+      // NEITHER Contacts nor Calendar is still bound to it — i.e. this
+      // really is a full teardown, not a single-surface toggle.
+      //
+      // Residual gap (accepted, self-healing): `stopBackupEngines()` fires
+      // this alongside `disableContactsBackup`/`disableCalendarBackup` via
+      // `Promise.all` — concurrent, unordered native calls. If this body
+      // runs BEFORE either of those has cleared its own `accountId`, this
+      // check sees them as still "bound" and skips the clear, leaving
+      // `currentAccountId` stale in the Keychain past this sign-out. That
+      // is inert, not a leak: `stop()` above already halted this engine,
+      // and Contacts/Calendar's OWN `disable()` (clearing their private
+      // `authToken`/`accountId`) is what actually stops them uploading —
+      // independent of this check. The stale value is corrected by the
+      // very next `bindAccount` call (any of the three `enable*` entry
+      // points), which detects the mismatch against the new account and
+      // purges + rebinds, same as any other stale-account recovery in this
+      // file.
+      if ContactsBackupManager.shared.isBound || CalendarBackupManager.shared.isBound {
+        RuntimeTrace.event("backup.native.disable_photo.account_kept_for_other_surface")
+      } else {
+        engine.clearAccountAndPurgeStaged()
+      }
     }
 
     AsyncFunction("enableContactsBackup") { (authToken: String, userId: String) in
@@ -2424,18 +2478,23 @@ public class BeebeebCryptoModule: Module {
       // independent keychain slots written from independent call sites. If an
       // account is already bound and it is NOT this call's account, refuse
       // outright rather than silently overwrite the token for a different
-      // identity than the one the engine is authorized for. If no account is
-      // bound yet, bind it here — same effect as `enablePhotoBackup`.
-      if let boundAccountId = engine.currentAccountId, !boundAccountId.isEmpty {
-        guard boundAccountId == userId else {
-          RuntimeTrace.event("backup.native.trigger_immediate.refused_account_mismatch", [
-            "boundAccount": boundAccountId
-          ])
-          throw BackupError.accountUnknown
-        }
-      } else {
-        engine.currentAccountId = userId
+      // identity than the one the engine is authorized for.
+      //
+      // Task 1531 [P1-A] (round 5 delta review): the "bind if not yet bound"
+      // branch now routes through `bindAccount` instead of writing
+      // `currentAccountId` directly — same purge-first + stale-key-handle-
+      // drop discipline every other enable entry point gets. The refuse-on-
+      // mismatch behavior above is UNCHANGED: a manual trigger must never
+      // silently rebind to a different account; `bindAccount` itself is
+      // also a no-op when `userId` already matches, so this is safe to call
+      // unconditionally once the mismatch case above has already thrown.
+      if let boundAccountId = engine.currentAccountId, !boundAccountId.isEmpty, boundAccountId != userId {
+        RuntimeTrace.event("backup.native.trigger_immediate.refused_account_mismatch", [
+          "boundAccount": boundAccountId
+        ])
+        throw BackupError.accountUnknown
       }
+      engine.bindAccount(userId: userId)
       engine.token = authToken
       if engine.apiBaseUrl == nil {
         engine.apiBaseUrl = KeychainManager.loadString(key: "io.beebeeb.serverURL")
@@ -2516,13 +2575,14 @@ public class BeebeebCryptoModule: Module {
 
     // ── Native Backup Engine ──────────────────────────────────────────────
 
-    AsyncFunction("startNativeBackup") { (authToken: String, apiBaseUrl: String, parentFolderId: String?) in
-      let engine = NativeBackupEngine.shared
-      engine.token = authToken
-      engine.apiBaseUrl = apiBaseUrl
-      engine.parentFolderId = parentFolderId
-      engine.start()
-    }
+    // Task 1531 [P1] (round 5 delta security review): `startNativeBackup`
+    // deleted — it wrote `engine.token` (and started the engine) with NO
+    // `userId` parameter at all, so it could never route through
+    // `bindAccount`/`currentAccountId` and had no way to be fixed to do so.
+    // Confirmed dead: no JS caller anywhere in this repo (grepped src/,
+    // modules/beebeeb-crypto/src/); `enablePhotoBackup(authToken:userId:)`
+    // is the real, account-bound entry point every JS call site already
+    // uses.
 
     AsyncFunction("stopNativeBackup") { () in
       NativeBackupEngine.shared.stop()

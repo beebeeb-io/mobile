@@ -4,7 +4,14 @@ import CryptoKit
 
 final class ContactsBackupManager {
   static let shared = ContactsBackupManager()
-  private static let lastHashKey = "io.beebeeb.contactsBackupLastHash"
+  /// Task 1531 [P1-B] (round 5 delta review): was a single fixed key with
+  /// NO account dimension — an account switch (A → B) with an identical
+  /// contact list hash-matched A's last upload and was silently skipped for
+  /// B, even though B's vault has nothing in it. Now a prefix; the actual
+  /// key is derived from `lastHashPrefix` + a hash of the account id (see
+  /// `hashKey(for:)`), so the dedup digest is scoped per account, mirroring
+  /// `CalendarBackupManager.lastHashPrefix`'s existing per-calendar scoping.
+  private static let lastHashPrefix = "io.beebeeb.contactsBackupLastHash."
   private static let lastScanAtKey = "io.beebeeb.contactsBackupLastScanAt"
   private static let lastScanCountKey = "io.beebeeb.contactsBackupLastScanCount"
   private static let lastUploadAtKey = "io.beebeeb.contactsBackupLastUploadAt"
@@ -16,6 +23,15 @@ final class ContactsBackupManager {
   /// so a stale in-flight export can't land in the wrong account's vault
   /// after an account switch — see `NativeEncryptedBackupUploader.upload`.
   private var accountId: String?
+
+  /// Whether this manager currently believes Contacts backup is enabled
+  /// (has a bound account). Read by `disablePhotoBackup`
+  /// (BeebeebCryptoModule.swift) — task 1531 [P1-A follow-up], round 5 —
+  /// to decide whether turning off Camera Roll backup ALONE may also clear
+  /// the shared `NativeBackupEngine.currentAccountId` that Contacts backup
+  /// now binds to via `bindAccount`.
+  var isBound: Bool { accountId != nil }
+
   private var parentFolderId: String? {
     get { UserDefaults.standard.string(forKey: "io.beebeeb.contactsBackupParentFolderId") }
     set {
@@ -49,6 +65,17 @@ final class ContactsBackupManager {
   func enable(authToken: String, userId: String, runNow: Bool = true) {
     self.authToken = authToken
     self.accountId = userId
+    // Task 1531 [P1-A] (round 5 delta review): bind at the ENGINE level
+    // too — `NativeEncryptedBackupUploader.requireAccountBinding` reads
+    // `NativeBackupEngine.shared.currentAccountId`, NOT this class's own
+    // `accountId` above. Without this call a Contacts-only user (Camera
+    // Roll backup never enabled) had `currentAccountId == nil` forever and
+    // every upload refused with `.accountMismatch`. Also purges any staged
+    // Camera-Roll ciphertext left by a DIFFERENT previous account on this
+    // device as a side effect — the same purge `enablePhotoBackup` already
+    // triggers via `start()`, now guaranteed regardless of which backup
+    // surface is enabled first.
+    NativeBackupEngine.shared.bindAccount(userId: userId)
     RuntimeTrace.event("backup.contacts.enable", ["runNow": runNow])
     CNContactStore().requestAccess(for: .contacts) { [weak self] granted, _ in
       RuntimeTrace.event("backup.contacts.permission", ["granted": granted])
@@ -65,13 +92,16 @@ final class ContactsBackupManager {
   }
 
   /// Task 0819: self-heal after the server-side backup copy is gone. Clears the
-  /// scan/upload timestamps AND the SHA-256 dedup digest (`lastHashKey`) so the
-  /// NEXT backup run RE-UPLOADS instead of being suppressed as "unchanged", and
-  /// the status tile resets. Data-safe — only local UserDefaults bookkeeping is
-  /// cleared; the contacts themselves and the configured parent folder are kept.
+  /// scan/upload timestamps AND every per-account SHA-256 dedup digest (all
+  /// keys under `lastHashPrefix`) so the NEXT backup run RE-UPLOADS instead
+  /// of being suppressed as "unchanged", and the status tile resets.
+  /// Data-safe — only local UserDefaults bookkeeping is cleared; the
+  /// contacts themselves and the configured parent folder are kept.
   func reset() {
     let defaults = UserDefaults.standard
-    defaults.removeObject(forKey: Self.lastHashKey)
+    for key in defaults.dictionaryRepresentation().keys where key.hasPrefix(Self.lastHashPrefix) {
+      defaults.removeObject(forKey: key)
+    }
     defaults.removeObject(forKey: Self.lastScanAtKey)
     defaults.removeObject(forKey: Self.lastScanCountKey)
     defaults.removeObject(forKey: Self.lastUploadAtKey)
@@ -97,11 +127,12 @@ final class ContactsBackupManager {
           "bytes": export.data.count,
           "contactCount": export.count
         ])
-        guard self.shouldUpload(data: export.data, stateKey: Self.lastHashKey) else {
+        let digest = Self.contentDigest(data: export.data)
+        guard self.shouldUpload(digest: digest, accountId: accountId) else {
           RuntimeTrace.event("backup.contacts.skipped_unchanged")
           return
         }
-        self.upload(data: export.data, fileName: "contacts.vcf", mimeType: "text/vcard", token: token, accountId: accountId)
+        self.upload(data: export.data, fileName: "contacts.vcf", mimeType: "text/vcard", token: token, accountId: accountId, digest: digest)
       } catch {
         RuntimeTrace.event("backup.contacts.failed", ["error": error.localizedDescription])
         // Contact export failed — permissions not granted or empty contacts
@@ -111,8 +142,11 @@ final class ContactsBackupManager {
 
   func status() -> [String: Any] {
     let defaults = UserDefaults.standard
+    let hasStoredHash = defaults.dictionaryRepresentation().keys.contains { key in
+      key.hasPrefix(Self.lastHashPrefix)
+    }
     let hasKnownBackupState =
-      defaults.string(forKey: Self.lastHashKey) != nil ||
+      hasStoredHash ||
       defaults.string(forKey: Self.lastScanAtKey) != nil ||
       defaults.string(forKey: Self.lastUploadAtKey) != nil
     return [
@@ -149,23 +183,56 @@ final class ContactsBackupManager {
     ])
   }
 
-  private func recordUploadSuccess() {
+  /// Task 1531 [P1-B] (round 5 delta review): records the dedup digest ONLY
+  /// on confirmed upload success — see `upload()`'s `.success` branch,
+  /// the sole caller. `shouldUpload` below never writes state itself.
+  private func recordUploadSuccess(digest: String, accountId: String) {
     let now = ISO8601DateFormatter().string(from: Date())
-    UserDefaults.standard.set(now, forKey: Self.lastUploadAtKey)
+    let defaults = UserDefaults.standard
+    defaults.set(now, forKey: Self.lastUploadAtKey)
+    defaults.set(digest, forKey: Self.hashKey(for: accountId))
   }
 
-  private func shouldUpload(data: Data, stateKey: String) -> Bool {
-    let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-    guard UserDefaults.standard.string(forKey: stateKey) != digest else { return false }
-    UserDefaults.standard.set(digest, forKey: stateKey)
-    return true
+  /// SHA-256 hex digest of an export, used as the per-account dedup key.
+  /// Pure — computing it never writes state (see `shouldUpload` below).
+  private static func contentDigest(data: Data) -> String {
+    SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+  }
+
+  /// Per-account UserDefaults key for the dedup digest. Hashes `accountId`
+  /// (mirrors `CalendarBackupManager.stateKeyComponent(for:)`) rather than
+  /// interpolating it raw — defensive against a future account-id format
+  /// that isn't UserDefaults-key-safe, and consistent with the existing
+  /// per-calendar key derivation.
+  private static func hashKey(for accountId: String) -> String {
+    lastHashPrefix + SHA256.hash(data: Data(accountId.utf8)).map { String(format: "%02x", $0) }.joined()
+  }
+
+  /// Task 1531 [P1-B] (round 5 delta review): READ-ONLY — reports whether
+  /// `digest` differs from the digest last SUCCESSFULLY uploaded for THIS
+  /// `accountId`. The previous version wrote the digest here, BEFORE the
+  /// upload ran, so a refused/failed upload (network error, account-
+  /// mismatch refusal, no cached master key — see
+  /// `NativeEncryptedBackupUploader`) was indistinguishable from a
+  /// completed one: the export was silently treated as "already backed up"
+  /// forever, or until the contact list changed again. State is now
+  /// written only by `recordUploadSuccess`, from the upload's own success
+  /// callback.
+  ///
+  /// Keyed per-account: switching from account A to account B with an
+  /// IDENTICAL contact list must still upload once for B — the old single
+  /// fixed key had no account dimension, so an export that happened to
+  /// hash-match A's last upload was skipped for B even though B's vault
+  /// has nothing in it.
+  private func shouldUpload(digest: String, accountId: String) -> Bool {
+    UserDefaults.standard.string(forKey: Self.hashKey(for: accountId)) != digest
   }
 
   // TODO: Migrate to Rust uploadEncryptedFile() — requires encrypting chunks to
   // temp files and calling the Rust upload function instead of the Swift HTTP
   // uploader. NativeBackupEngine already demonstrates the pattern. For now this
   // continues using the legacy Swift uploader which still works correctly.
-  private func upload(data: Data, fileName: String, mimeType: String, token: String, accountId: String) {
+  private func upload(data: Data, fileName: String, mimeType: String, token: String, accountId: String, digest: String) {
     guard let serverBaseURL else {
       RuntimeTrace.event("backup.contacts.upload_aborted", ["reason": "missing_server_url"])
       NSLog("[BeebeebBackup] contacts upload aborted: serverURL not configured in keychain (sign in again to set)")
@@ -187,7 +254,7 @@ final class ContactsBackupManager {
     ) { result in
       switch result {
       case .success:
-        self.recordUploadSuccess()
+        self.recordUploadSuccess(digest: digest, accountId: accountId)
         RuntimeTrace.event("backup.contacts.upload_success")
         NSLog("[BeebeebBackup] contacts upload succeeded")
       case .failure(let error):

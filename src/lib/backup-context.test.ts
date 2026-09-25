@@ -367,3 +367,137 @@ describe('shouldRunBackup (JS mirror of NativeBackupEngine.swift per-entry-point
     expect(shouldRunBackup('user-a')).toBe(true);
   });
 });
+
+// Task 1531 [P1-A] (round 5 delta security review): JS MIRROR of
+// `NativeBackupEngine.bindAccount(userId:)`'s idempotent-bind decision and
+// its two downstream call sites — see `bindAccount`'s doc comment in
+// NativeBackupEngine.swift, and `disablePhotoBackup`/
+// `mirrorSessionToAppGroup` in BeebeebCryptoModule.swift. Same
+// compile/host caveat as the mirrors above: this exercises the DECISIONS,
+// not the Swift purge/keychain code — the device rung noted in the task
+// file is what proves the Swift side.
+describe('bindAccount semantics (JS mirror of NativeBackupEngine.swift bindAccount + its call sites)', () => {
+  // Mirrors: `guard currentAccountId != userId else { return }` in
+  // `bindAccount` — i.e. "does calling bindAccount(userId) actually change
+  // the stored shared account".
+  function shouldBindAccount(storedAccountId: string | null, userId: string): boolean {
+    if (!userId) return false;
+    return storedAccountId !== userId;
+  }
+
+  test('contacts-only user (Camera Roll never enabled): stored nil, enabling Contacts binds the shared account', () => {
+    // This is the actual P1-A bug: before routing
+    // ContactsBackupManager.enable through bindAccount, the shared
+    // `currentAccountId` NEVER got set for a contacts-only user, so every
+    // Contacts upload refused with .accountMismatch forever. The fix makes
+    // Contacts' own enable call bind it, same as Camera Roll's enable
+    // always did.
+    expect(shouldBindAccount(null, 'user-a')).toBe(true);
+  });
+
+  test('re-enabling the SAME account is a no-op (keeps the warm master-key handle, no redundant purge)', () => {
+    expect(shouldBindAccount('user-a', 'user-a')).toBe(false);
+  });
+
+  test('a DIFFERENT stored account rebinds (and purges mismatched staged ciphertext) rather than silently coexisting', () => {
+    expect(shouldBindAccount('user-a', 'user-b')).toBe(true);
+  });
+
+  test('empty incoming userId never binds', () => {
+    expect(shouldBindAccount('user-a', '')).toBe(false);
+  });
+
+  // Mirrors: `disablePhotoBackup`'s BeebeebCryptoModule.swift conditional —
+  // only clear the shared engine account when NEITHER Contacts nor
+  // Calendar is still bound to it.
+  function shouldClearSharedAccountOnPhotoDisable(contactsBound: boolean, calendarBound: boolean): boolean {
+    return !contactsBound && !calendarBound;
+  }
+
+  test('photo disable with Contacts still on: the shared account is KEPT, not cleared', () => {
+    // The device-test-checklist scenario this round's review flagged:
+    // toggling Camera Roll backup off alone must not break Contacts
+    // backup, which now binds through the SAME shared account.
+    expect(shouldClearSharedAccountOnPhotoDisable(true, false)).toBe(false);
+  });
+
+  test('photo disable with Calendar still on: the shared account is KEPT, not cleared', () => {
+    expect(shouldClearSharedAccountOnPhotoDisable(false, true)).toBe(false);
+  });
+
+  test('photo disable with neither Contacts nor Calendar bound: full teardown, account cleared', () => {
+    expect(shouldClearSharedAccountOnPhotoDisable(false, false)).toBe(true);
+  });
+
+  // Mirrors: `mirrorSessionToAppGroup`'s SET branch in
+  // BeebeebCryptoModule.swift — there is no token-REFRESH path in this
+  // codebase (`setToken` only ever comes from `setSessionCredentials` at
+  // signup/login/OPAQUE/2FA — api.ts:201,451,476,2375,2414,2479), so any
+  // change to the stored native token is treated as a fresh login and
+  // unbinds the previous account + drops the cached key handle first.
+  function shouldUnbindOnTokenChange(previousToken: string | null, newToken: string): boolean {
+    return previousToken !== newToken;
+  }
+
+  test('a genuinely new token (different from the stored one) unbinds the old account', () => {
+    expect(shouldUnbindOnTokenChange('token-a', 'token-b')).toBe(true);
+  });
+
+  test('first-ever token (no previous stored token) is treated as a change (harmless no-op unbind)', () => {
+    expect(shouldUnbindOnTokenChange(null, 'token-a')).toBe(true);
+  });
+
+  test('a redundant re-store of the SAME token does not unbind', () => {
+    expect(shouldUnbindOnTokenChange('token-a', 'token-a')).toBe(false);
+  });
+});
+
+// Task 1531 [P1-B] (round 5 delta security review): JS MIRROR of the
+// hash-after-success discipline added to ContactsBackupManager /
+// CalendarBackupManager — `shouldUpload` is READ-ONLY, and the dedup digest
+// is written ONLY from the upload's own `.success` callback
+// (`recordUploadSuccess`). Same compile/host caveat as the mirrors above:
+// this exercises the DECISION, not the Swift UserDefaults code.
+describe('hash-after-success (JS mirror of ContactsBackupManager/CalendarBackupManager dedup discipline)', () => {
+  function shouldUpload(storedDigest: string | undefined, digest: string): boolean {
+    return storedDigest !== digest;
+  }
+
+  function recordUploadSuccess(store: Map<string, string>, key: string, digest: string): void {
+    store.set(key, digest);
+  }
+
+  test('a FAILED upload never records the digest: the same unchanged content is retried next run', () => {
+    const store = new Map<string, string>();
+    const digest = 'digest-1';
+    expect(shouldUpload(store.get('user-a'), digest)).toBe(true);
+    // Upload attempted and FAILS (network error / account-mismatch refusal
+    // / no cached master key — see NativeEncryptedBackupUploader) —
+    // recordUploadSuccess is NEVER called on this path, unlike the old
+    // code which wrote the digest unconditionally BEFORE the network call.
+    expect(shouldUpload(store.get('user-a'), digest)).toBe(true);
+  });
+
+  test('a SUCCESSFUL upload records the digest, and the same content is then skipped', () => {
+    const store = new Map<string, string>();
+    const digest = 'digest-1';
+    expect(shouldUpload(store.get('user-a'), digest)).toBe(true);
+    recordUploadSuccess(store, 'user-a', digest); // .success callback only
+    expect(shouldUpload(store.get('user-a'), digest)).toBe(false);
+  });
+
+  test('changed content after a successful upload is not skipped', () => {
+    const store = new Map<string, string>();
+    recordUploadSuccess(store, 'user-a', 'digest-1');
+    expect(shouldUpload(store.get('user-a'), 'digest-2')).toBe(true);
+  });
+
+  test('account switch A -> B with an IDENTICAL export must upload once for B (per-account keying)', () => {
+    const store = new Map<string, string>();
+    recordUploadSuccess(store, 'user-a', 'digest-1');
+    // B has never uploaded anything — B's own key in the store is unset,
+    // regardless of what A's digest was, even though the content hashes
+    // identically.
+    expect(shouldUpload(store.get('user-b'), 'digest-1')).toBe(true);
+  });
+});

@@ -11,6 +11,11 @@ enum NativeEncryptedBackupUploadError: LocalizedError {
   /// (the account this device is currently authorized to upload for) — see
   /// the account-binding check in `performUpload`.
   case accountMismatch
+  /// Task 1531 [P2-F] (round 5 delta security review): no in-process
+  /// master-key cache was available and this uploader refused to fall back
+  /// to a direct Keychain read (see `currentMasterKey()`) rather than risk
+  /// an unprompted biometric sheet from a background/silent caller.
+  case noCachedMasterKey
 
   var errorDescription: String? {
     switch self {
@@ -26,6 +31,8 @@ enum NativeEncryptedBackupUploadError: LocalizedError {
       return "Could not encode backup upload request"
     case .accountMismatch:
       return "Backup upload refused: signed-in account changed"
+    case .noCachedMasterKey:
+      return "Backup upload refused: no unlocked master key available (open Beebeeb to continue)"
     }
   }
 }
@@ -56,11 +63,28 @@ final class NativeEncryptedBackupUploader {
   // already invalidated on sign-out by `deleteKeyFromKeychain` and by
   // `releaseHandle` once no handles remain (BeebeebCryptoModule.swift). This
   // class reads it fresh — never caches its own copy — on every upload.
+  //
+  // Task 1531 [P2-F] (round 5 delta security review): NEVER fall through to
+  // `BeebeebCryptoBridge.requireMasterKey()` here. That call reads the
+  // Keychain directly and, per its own doc comment, "may trigger a
+  // biometric/passcode prompt if SE access control requires it". This
+  // uploader backs Contacts/Calendar (and legacy Photo) backup, which can
+  // run from a `CNContactStoreDidChangeNotification`/`EKEventStoreChanged`
+  // callback or a background task with no foreground UI context to receive
+  // a Face ID sheet — surfacing one unprompted is exactly the "surprise
+  // prompt" class of bug task 0556 fixed for keychain access-control
+  // changes. Refuse instead. The in-process cache is populated whenever the
+  // user unlocks in the foreground (`loadKeyFromKeychainAsHandle`/
+  // `createMasterKeyHandle` in BeebeebCryptoModule.swift, and
+  // `NativeBackupEngine.start()`), so a real foreground app session will
+  // already have it warm; a cold cache means this call is refused, not
+  // silently escalated to a prompt.
   private func currentMasterKey() throws -> MasterKeyHandle {
-    if let cached = BeebeebCryptoBridge.cachedMasterKeyIfAvailable() {
-      return cached
+    guard let cached = BeebeebCryptoBridge.cachedMasterKeyIfAvailable() else {
+      RuntimeTrace.event("backup.legacy_uploader.no_cached_master_key_refused")
+      throw NativeEncryptedBackupUploadError.noCachedMasterKey
     }
-    return try BeebeebCryptoBridge.requireMasterKey()
+    return cached
   }
 
   func upload(

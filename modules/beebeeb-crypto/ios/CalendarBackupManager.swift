@@ -17,6 +17,15 @@ final class CalendarBackupManager {
   /// so a stale in-flight export can't land in the wrong account's vault
   /// after an account switch — see `NativeEncryptedBackupUploader.upload`.
   private var accountId: String?
+
+  /// Whether this manager currently believes Calendar backup is enabled
+  /// (has a bound account). Read by `disablePhotoBackup`
+  /// (BeebeebCryptoModule.swift) — task 1531 [P1-A follow-up], round 5 —
+  /// to decide whether turning off Camera Roll backup ALONE may also clear
+  /// the shared `NativeBackupEngine.currentAccountId` that Calendar backup
+  /// now binds to via `bindAccount`.
+  var isBound: Bool { accountId != nil }
+
   private var parentFolderId: String? {
     get { UserDefaults.standard.string(forKey: "io.beebeeb.calendarBackupParentFolderId") }
     set {
@@ -41,6 +50,17 @@ final class CalendarBackupManager {
   func enable(authToken: String, userId: String, runNow: Bool = true) {
     self.authToken = authToken
     self.accountId = userId
+    // Task 1531 [P1-A] (round 5 delta review): bind at the ENGINE level
+    // too — `NativeEncryptedBackupUploader.requireAccountBinding` reads
+    // `NativeBackupEngine.shared.currentAccountId`, NOT this class's own
+    // `accountId` above. Without this call a Calendar-only user (Camera
+    // Roll backup never enabled) had `currentAccountId == nil` forever and
+    // every upload refused with `.accountMismatch`. Also purges any staged
+    // Camera-Roll ciphertext left by a DIFFERENT previous account on this
+    // device as a side effect — the same purge `enablePhotoBackup` already
+    // triggers via `start()`, now guaranteed regardless of which backup
+    // surface is enabled first.
+    NativeBackupEngine.shared.bindAccount(userId: userId)
     RuntimeTrace.event("backup.calendar.enable", ["runNow": runNow])
     requestAccessAndBackup(runNow: runNow)
   }
@@ -91,13 +111,19 @@ final class CalendarBackupManager {
         if events.isEmpty { continue }
         let ical = self.exportICal(calendar: cal, events: events)
         guard let data = ical.data(using: .utf8) else { continue }
-        let stateKey = Self.lastHashPrefix + self.stateKeyComponent(for: cal.title)
-        guard self.shouldUpload(data: data, stateKey: stateKey) else {
+        // Task 1531 [P1-B] (round 5 delta review): the per-calendar dedup
+        // key now also folds in `accountId` (see `stateKeyComponent`) — an
+        // account switch (A → B) with an identical calendar must still
+        // upload once for B, not skip because it hash-matches A's last
+        // upload of the SAME calendar title.
+        let stateKey = Self.lastHashPrefix + self.stateKeyComponent(for: cal.title, accountId: accountId)
+        let digest = Self.contentDigest(data: data)
+        guard self.shouldUpload(digest: digest, stateKey: stateKey) else {
           RuntimeTrace.event("backup.calendar.skipped_unchanged", ["eventCount": events.count])
           continue
         }
         let fileName = self.safeFileName(cal.title) + ".ics"
-        self.upload(data: data, fileName: fileName, token: token, accountId: accountId)
+        self.upload(data: data, fileName: fileName, token: token, accountId: accountId, stateKey: stateKey, digest: digest)
       }
       self.recordScan(count: scannedEventCount)
     }
@@ -247,19 +273,36 @@ final class CalendarBackupManager {
     return cleaned.isEmpty ? "Calendar" : cleaned
   }
 
-  /// Hash a calendar title to a stable ASCII-safe component for the
-  /// per-calendar dedup key in UserDefaults. Calendar titles can contain
-  /// any character; the SHA-256 hex keeps the key well-formed regardless.
-  private func stateKeyComponent(for title: String) -> String {
-    let digest = SHA256.hash(data: Data(title.utf8))
+  /// Hash a calendar title + account id to a stable ASCII-safe component
+  /// for the per-calendar, per-account dedup key in UserDefaults. Calendar
+  /// titles can contain any character; the SHA-256 hex keeps the key
+  /// well-formed regardless. Task 1531 [P1-B] (round 5 delta review): now
+  /// also folds in `accountId` — a NUL separator keeps the two inputs from
+  /// ever colliding (neither a calendar title nor a server-issued account
+  /// id can contain a NUL byte) — so an account switch (A → B) with an
+  /// identical calendar no longer hash-matches A's last upload and gets
+  /// silently skipped for B.
+  private func stateKeyComponent(for title: String, accountId: String) -> String {
+    let digest = SHA256.hash(data: Data("\(accountId)\u{0}\(title)".utf8))
     return digest.map { String(format: "%02x", $0) }.joined()
   }
 
-  private func shouldUpload(data: Data, stateKey: String) -> Bool {
-    let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-    guard UserDefaults.standard.string(forKey: stateKey) != digest else { return false }
-    UserDefaults.standard.set(digest, forKey: stateKey)
-    return true
+  private static func contentDigest(data: Data) -> String {
+    SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+  }
+
+  /// Task 1531 [P1-B] (round 5 delta review): READ-ONLY — reports whether
+  /// `digest` differs from the digest last SUCCESSFULLY uploaded for this
+  /// `stateKey` (already scoped by calendar + account — see
+  /// `stateKeyComponent`). The previous version wrote the digest here,
+  /// BEFORE the upload ran, so a refused/failed upload (network error,
+  /// account-mismatch refusal, no cached master key — see
+  /// `NativeEncryptedBackupUploader`) was indistinguishable from a
+  /// completed one: the export was silently treated as "already backed up"
+  /// forever, or until that calendar changed again. State is now written
+  /// only by `recordUploadSuccess`, from the upload's own success callback.
+  private func shouldUpload(digest: String, stateKey: String) -> Bool {
+    UserDefaults.standard.string(forKey: stateKey) != digest
   }
 
   private func recordScan(count: Int) {
@@ -273,9 +316,14 @@ final class CalendarBackupManager {
     ])
   }
 
-  private func recordUploadSuccess() {
+  /// Task 1531 [P1-B] (round 5 delta review): records the dedup digest ONLY
+  /// on confirmed upload success — see `upload()`'s `.success` branch, the
+  /// sole caller. `shouldUpload` above never writes state itself.
+  private func recordUploadSuccess(digest: String, stateKey: String) {
     let now = ISO8601DateFormatter().string(from: Date())
-    UserDefaults.standard.set(now, forKey: Self.lastUploadAtKey)
+    let defaults = UserDefaults.standard
+    defaults.set(now, forKey: Self.lastUploadAtKey)
+    defaults.set(digest, forKey: stateKey)
   }
 
   private func icalEscape(_ s: String) -> String {
@@ -289,7 +337,7 @@ final class CalendarBackupManager {
   // temp files and calling the Rust upload function instead of the Swift HTTP
   // uploader. NativeBackupEngine already demonstrates the pattern. For now this
   // continues using the legacy Swift uploader which still works correctly.
-  private func upload(data: Data, fileName: String, token: String, accountId: String) {
+  private func upload(data: Data, fileName: String, token: String, accountId: String, stateKey: String, digest: String) {
     guard let serverBaseURL else {
       RuntimeTrace.event("backup.calendar.upload_aborted", ["reason": "missing_server_url"])
       NSLog("[BeebeebBackup] calendar upload aborted: serverURL not configured in keychain (sign in again to set)")
@@ -312,7 +360,7 @@ final class CalendarBackupManager {
     ) { result in
       switch result {
       case .success:
-        self.recordUploadSuccess()
+        self.recordUploadSuccess(digest: digest, stateKey: stateKey)
         RuntimeTrace.event("backup.calendar.upload_success")
         NSLog("[BeebeebBackup] calendar upload succeeded")
       case .failure(let error):

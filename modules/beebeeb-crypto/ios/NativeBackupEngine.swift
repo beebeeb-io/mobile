@@ -305,6 +305,16 @@ final class NativeBackupEngine: NSObject {
 
   private let queue = DispatchQueue(label: "io.beebeeb.backup.engine", qos: .utility)
   private let dbQueue = DispatchQueue(label: "io.beebeeb.backup.engine.db", qos: .utility)
+  /// Task 1531 [P2-C] (round 5 delta review): guards the read-compare-write
+  /// of `currentAccountId` + the `accountGeneration` bump together. Without
+  /// it, two near-simultaneous writers (e.g. a JS-driven `bindAccount` call
+  /// racing a `BGProcessingTask`'s own account guard reading the property)
+  /// could interleave a Keychain read from one with a Keychain write from
+  /// the other, corrupting the "only bump on a REAL change" comparison
+  /// below, and `accountGeneration` itself (a plain `Int`, not atomic) has
+  /// no other synchronization — every read of it also goes through
+  /// `accountGenerationSnapshot()` below rather than the bare property.
+  private let accountIdLock = NSLock()
   private var backgroundSession: URLSession!
   private var metadataSession: URLSession!
   private var db: OpaquePointer?
@@ -461,15 +471,44 @@ final class NativeBackupEngine: NSObject {
   var currentAccountId: String? {
     get { KeychainManager.loadString(key: backupCurrentAccountIdKey) }
     set {
-      if let value = newValue, !value.isEmpty {
-        try? KeychainManager.storeString(value, key: backupCurrentAccountIdKey)
+      accountIdLock.lock()
+      defer { accountIdLock.unlock() }
+      // Task 1531 [P2-C] (round 5 delta review): normalize empty-string the
+      // same way the get side effectively does (an empty string can never
+      // be read back — `KeychainManager.loadString` never returns "", and
+      // the delete-branch below is taken for "" too), so the "did this
+      // actually change" comparison just below can't be fooled by a
+      // nil-vs-"" mismatch that isn't a real change.
+      let normalizedNew: String? = (newValue?.isEmpty == false) ? newValue : nil
+      let previous = KeychainManager.loadString(key: backupCurrentAccountIdKey)
+      guard previous != normalizedNew else { return }
+      if let normalizedNew {
+        try? KeychainManager.storeString(normalizedNew, key: backupCurrentAccountIdKey)
       } else {
         KeychainManager.deleteString(key: backupCurrentAccountIdKey)
       }
-      // Task 1531 [P1-3]: every write is a new account epoch — see
-      // `accountGeneration`'s doc comment above.
+      // Task 1531 [P1-3]: a REAL change is a new account epoch — see
+      // `accountGeneration`'s doc comment above. Round 5 (P2-C) narrowed
+      // this from "every write" to "every write that actually changes the
+      // value": a redundant re-assignment of the SAME account id (e.g. a
+      // second `bindAccount` call for an already-bound user prior to that
+      // method's own no-op guard, or any other direct-assignment call site)
+      // used to bump the epoch anyway, which could invalidate a
+      // `BGProcessingTask`'s just-captured `taskGeneration` for no real
+      // account change and spuriously stop it from flipping `isRunning`
+      // back off at its own exit (see `handleBackgroundTask`).
       accountGeneration += 1
     }
+  }
+
+  /// Thread-safe read of `accountGeneration` — see `accountIdLock`'s doc
+  /// comment. Every comparison against a previously-captured generation
+  /// value (the `BGProcessingTask` staleness check in `handleBackgroundTask`)
+  /// goes through this rather than the bare property.
+  private func accountGenerationSnapshot() -> Int {
+    accountIdLock.lock()
+    defer { accountIdLock.unlock() }
+    return accountGeneration
   }
 
   var selectedPhotoAlbumIds: [String] {
@@ -1219,6 +1258,64 @@ final class NativeBackupEngine: NSObject {
     metadataSession = URLSession(configuration: config)
   }
 
+  // MARK: - Account binding
+
+  /// Task 1531 [P0] round 5 (delta security review, finding P1-A): the
+  /// single engine-owned entry point every "backup is now authorized for
+  /// THIS account" call must funnel through. Before this method existed,
+  /// `enablePhotoBackup` wrote `currentAccountId = userId` directly (and
+  /// relied on `start()`'s own purge), while `enableContactsBackup` /
+  /// `enableCalendarBackup` never touched `currentAccountId` at all — only
+  /// `ContactsBackupManager`/`CalendarBackupManager`'s own PRIVATE
+  /// `accountId` var. `NativeEncryptedBackupUploader.requireAccountBinding`
+  /// reads ONLY this engine's `currentAccountId` (see that file), so a
+  /// Contacts-only user (Camera Roll backup never enabled) had
+  /// `currentAccountId == nil` forever and every Contacts/Calendar upload
+  /// refused with `.accountMismatch` — "Contacts/Calendar never back up
+  /// unless Camera Roll backup is on".
+  ///
+  /// Idempotent when `userId` already matches the stored account (the
+  /// common case: re-enabling the same surface, or a second manual trigger
+  /// mid-session) — it does nothing, so the in-memory `masterKeyHandle`
+  /// stays warm and no redundant purge sweep runs. On an actual account
+  /// change (including the very first bind, where the stored value is
+  /// nil):
+  ///   1. purge every staged-but-unuploaded asset whose `staged_account_id`
+  ///      doesn't (yet) match `userId` — reuses `purgeMismatchedStagedAssets`,
+  ///      the SAME sweep `start()` runs on its own account guard, so a
+  ///      `bindAccount` immediately followed by `start()` (as
+  ///      `enablePhotoBackup` now does) makes the second sweep a cheap
+  ///      single-query no-op;
+  ///   2. persists the new account id (bumps `accountGeneration` — see its
+  ///      setter — only because this IS a real change);
+  ///   3. drops the cached `masterKeyHandle` (closes P2-D): a handle warmed
+  ///      for the PREVIOUS account must never be reused to encrypt/stage a
+  ///      byte under the new one.
+  ///
+  /// Must NOT be called from `dbQueue` — it calls `dbQueue.sync` itself.
+  func bindAccount(userId: String) {
+    guard !userId.isEmpty else { return }
+    guard currentAccountId != userId else { return }
+    dbQueue.sync { purgeMismatchedStagedAssets(currentAccountId: userId) }
+    currentAccountId = userId
+    masterKeyHandle = nil
+    RuntimeTrace.event("backup.native.bind_account", ["userId": userId])
+  }
+
+  /// Drop the engine's OWN cached `MasterKeyHandle` without touching
+  /// `BeebeebCryptoBridge`'s separate app-wide cache (that one has its own
+  /// lifecycle — sign-out / `releaseHandle` — and callers that need to
+  /// invalidate it use `BeebeebCryptoBridge.clearCachedMasterKey()`
+  /// directly). Exposed for call sites that must invalidate the engine's
+  /// copy WITHOUT going through `bindAccount` or
+  /// `clearAccountAndPurgeStaged` — task 1531 [P1] round 5:
+  /// `mirrorSessionToAppGroup`'s token-changed branch in
+  /// BeebeebCryptoModule.swift, where a brand-new login token arrives with
+  /// no `userId` to bind to yet.
+  func dropCachedMasterKeyHandle() {
+    masterKeyHandle = nil
+  }
+
   // MARK: - Lifecycle
 
   /// Start the backup engine. Loads the master key from keychain, registers
@@ -1244,6 +1341,24 @@ final class NativeBackupEngine: NSObject {
     }
 
     if isRunning {
+      // Task 1531 [P2-C] (round 5 delta review): `handleBackgroundTask`
+      // (the `BGProcessingTask` handler) can flip `isRunning = true`
+      // directly, on a code path that never calls this method — it does
+      // NOT register the photo-library change observer or start the
+      // network-path monitor. A subsequent JS-driven `start()` call (e.g.
+      // `enablePhotoBackup` after the app is foregrounded) used to see
+      // `isRunning == true` here and return after only waking the drain
+      // loop, leaving BOTH unregistered for the rest of the app session —
+      // camera-roll changes made while foregrounded would go undetected
+      // until the next full relaunch. Finish that setup now; both helpers
+      // are idempotent/guarded so calling them on an already-running
+      // engine that DID go through the full path below is a cheap no-op.
+      registerPhotoObserver()
+      #if os(iOS)
+      if networkMonitor == nil {
+        startNetworkMonitor()
+      }
+      #endif
       wakeDrainLoop(reason: "start")
       return
     }
@@ -1575,7 +1690,7 @@ final class NativeBackupEngine: NSObject {
       // "the account epoch this task is entitled to act under". Compared
       // again before this task's exit is allowed to flip `isRunning` off
       // (below) — see `accountGeneration`'s doc comment.
-      let taskGeneration = self.accountGeneration
+      let taskGeneration = self.accountGenerationSnapshot()
       self.dbQueue.sync { self.purgeMismatchedStagedAssets(currentAccountId: accountId) }
 
       // Ensure master key is available for background processing
@@ -1647,7 +1762,7 @@ final class NativeBackupEngine: NSObject {
       // `taskGeneration` was captured, a newer `start()`/account-switch
       // began while this task's `processBatch` was awaiting — that newer
       // run owns `isRunning` now, and this stale task must not stop it.
-      if !batchStart && self.accountGeneration == taskGeneration {
+      if !batchStart && self.accountGenerationSnapshot() == taskGeneration {
         self.isRunning = false
         self.updateBackupStatusSurfaces()
         self.scheduleOpenAppReminderIfNeeded()
@@ -4199,18 +4314,27 @@ final class NativeBackupEngine: NSObject {
   }
 
   /// Task 1531 [P0] round 3 (lead review): sign-out / account-switch
-  /// teardown. Called from `disablePhotoBackup()` (BeebeebCryptoModule.swift)
-  /// — purges every staged-but-unuploaded asset FIRST (see
-  /// `purgeAllStagedAssets`), then clears `currentAccountId` so the next
-  /// `enablePhotoBackup(authToken:userId:)` call is the only way to re-arm
-  /// staging/upload for this device. Order matters the other way round too:
-  /// purging first means the sweep still has a `staged_account_id` to log
-  /// against for diagnostics (`row.forAccount` above) — clearing the account
-  /// id first would not change WHAT gets purged (`purgeAllStagedAssets` is
-  /// unconditional), only what gets logged.
+  /// teardown. Called from `disablePhotoBackup()` (BeebeebCryptoModule.swift).
+  ///
+  /// Task 1531 [P2-E] (round 5 delta review): clears `currentAccountId` to
+  /// nil FIRST, THEN purges — the previous order (purge, then clear) left a
+  /// window, for as long as `purgeAllStagedAssets` takes to enumerate and
+  /// delete staged directories on `dbQueue`, during which `currentAccountId`
+  /// still read the OUTGOING account as valid. Every other engine entry
+  /// point that reads `currentAccountId` (`start()`'s guard,
+  /// `handleBackgroundTask`'s guard, `bindAccount`'s comparison) treats nil
+  /// as "refuse outright" — clearing first means nothing can begin
+  /// staging/uploading against the outgoing account while the sweep is
+  /// still in flight, closing that window rather than merely hoping nothing
+  /// races it. Reordering does NOT change what gets purged or logged:
+  /// `purgeAllStagedAssets` is already unconditional (not scoped to
+  /// `currentAccountId`), and its diagnostic (`row.forAccount` above) reads
+  /// each row's OWN `staged_account_id` column, never the live
+  /// `currentAccountId` — the previous doc comment's claim that purging
+  /// first was needed to preserve that diagnostic was itself mistaken.
   func clearAccountAndPurgeStaged() {
-    dbQueue.sync { purgeAllStagedAssets() }
     currentAccountId = nil
+    dbQueue.sync { purgeAllStagedAssets() }
     // Task 1531 [P1-3] (lead review, round 4): belt-and-braces — `stop()`
     // (called right before this, in `disablePhotoBackup()`) now releases
     // `masterKeyHandle` and cancels `backgroundTaskHandle` unconditionally,
