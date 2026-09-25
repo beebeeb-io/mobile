@@ -10,6 +10,14 @@ export interface NativePhotoGridItem {
   monthLabel: string
   thumbnailUri?: string | null
   localAssetId?: string | null
+  /**
+   * Flow iOS-core issue 3 — draw no image for this tile. The native cell
+   * loads thumbnails itself by file id, so a null thumbnailUri alone is not
+   * enough; this flag stops the load.
+   */
+  hideThumbnail?: boolean
+  /** Draw the lock glyph (the file is in the "Lock file" list). */
+  isLocked?: boolean
   placeholderColor: string
   isVideo: boolean
   isFromBackup: boolean

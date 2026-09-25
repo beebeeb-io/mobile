@@ -11,6 +11,10 @@ private struct NativePhotoGridItem: Hashable {
   let monthLabel: String
   let thumbnailUri: String?
   let localAssetId: String?
+  // Flow iOS-core issue 3 — hide the image (locked file, or lock list not
+  // read yet) and draw the lock glyph (known locked).
+  let hideThumbnail: Bool
+  let isLocked: Bool
   let placeholderColor: UIColor
   let isVideo: Bool
   let isFromBackup: Bool
@@ -1192,6 +1196,8 @@ public final class NativePhotosGridView: ExpoView {
       monthLabel: monthLabel,
       thumbnailUri: raw["thumbnailUri"] as? String,
       localAssetId: raw["localAssetId"] as? String,
+      hideThumbnail: raw["hideThumbnail"] as? Bool ?? false,
+      isLocked: raw["isLocked"] as? Bool ?? false,
       placeholderColor: UIColor(hexString: raw["placeholderColor"] as? String) ?? UIColor(white: 0.82, alpha: 1),
       isVideo: raw["isVideo"] as? Bool ?? false,
       isFromBackup: raw["isFromBackup"] as? Bool ?? false
@@ -1208,6 +1214,8 @@ public final class NativePhotosGridView: ExpoView {
         item.monthLabel,
         item.thumbnailUri ?? "",
         item.localAssetId ?? "",
+        item.hideThumbnail ? "1" : "0",
+        item.isLocked ? "1" : "0",
         item.isVideo ? "1" : "0",
         item.isFromBackup ? "1" : "0"
       ].joined(separator: "\u{1f}")
@@ -1340,7 +1348,7 @@ extension NativePhotosGridView: UICollectionViewDataSourcePrefetching {
     ])
     let side = collectionView.bounds.width / CGFloat(max(currentColumns, 1))
     let targetSize = CGSize(width: side, height: side)
-    for item in items {
+    for item in items where !item.hideThumbnail {
       let fileId = item.id
       guard thumbnailPrefetchTasks[fileId] == nil else { continue }
       let task = Task(priority: .utility) { [weak self] in
@@ -1402,6 +1410,7 @@ private final class PhotoGridCell: UICollectionViewCell {
   private let imageView = UIImageView()
   private let originBadge = UIImageView(image: UIImage(systemName: "camera.fill"))
   private let videoBadge = UIImageView(image: UIImage(systemName: "play.fill"))
+  private let lockGlyph = UIImageView(image: UIImage(systemName: "lock.fill"))
   private let selectionOverlay = UIView()
   private let selectionBadge = UIView()
   private let selectionCheck = UIImageView(image: UIImage(systemName: "checkmark"))
@@ -1430,6 +1439,15 @@ private final class PhotoGridCell: UICollectionViewCell {
     videoBadge.layer.borderWidth = 0.5
     videoBadge.layer.borderColor = UIColor.white.withAlphaComponent(0.45).cgColor
     contentView.addSubview(videoBadge)
+
+    // Flow iOS-core issue 3 — centred lock glyph over the neutral placeholder
+    // for a locked file. Ink-3 grey, not amber (amber is reserved for
+    // encryption state and primary actions).
+    lockGlyph.tintColor = UIColor(white: 0.47, alpha: 1)
+    lockGlyph.contentMode = .center
+    lockGlyph.isHidden = true
+    lockGlyph.isUserInteractionEnabled = false
+    contentView.addSubview(lockGlyph)
 
     selectionOverlay.backgroundColor = UIColor(red: 0.965, green: 0.753, blue: 0.227, alpha: 0.25)
     selectionOverlay.layer.borderWidth = 2
@@ -1476,6 +1494,7 @@ private final class PhotoGridCell: UICollectionViewCell {
     originBadge.frame = CGRect(x: bounds.width - 20, y: bounds.height - 20, width: 16, height: 16)
     videoBadge.frame = CGRect(x: bounds.width - 27, y: 5, width: 22, height: 22)
     videoBadge.layer.cornerRadius = 11
+    lockGlyph.frame = contentView.bounds
     selectionBadge.frame = CGRect(x: 6, y: 6, width: 24, height: 24)
     selectionCheck.frame = selectionBadge.bounds
   }
@@ -1506,6 +1525,22 @@ private final class PhotoGridCell: UICollectionViewCell {
     let showOverlay = columns <= 4
     originBadge.isHidden = !showOverlay || !item.isFromBackup
     videoBadge.isHidden = !item.isVideo
+    lockGlyph.isHidden = !item.isLocked
+    accessibilityIdentifier = item.isLocked ? "photo-tile-locked-\(fileId)" : nil
+
+    if item.hideThumbnail {
+      // Never load, and drop any image already shown — including the stale
+      // image prepareForReuse deliberately keeps as a placeholder.
+      thumbnailLoadTask?.cancel()
+      thumbnailLoadTask = nil
+      inFlightLoadId = nil
+      imageView.image = nil
+      RuntimeTrace.event("photos.native.cell.thumbnail_hidden", [
+        "fileId": fileId,
+        "isLocked": item.isLocked
+      ])
+      return
+    }
 
     let cellSize = max(bounds.width, bounds.height)
     let targetSize = CGSize(width: cellSize, height: cellSize)
