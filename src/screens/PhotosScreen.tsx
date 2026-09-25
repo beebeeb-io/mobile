@@ -1347,8 +1347,20 @@ export default function PhotosScreen() {
   }, [flatPhotos, selectMode, selectedIds.size]);
 
   const openPhoto = useCallback(
-    (entry: FileEntry) => {
+    async (entry: FileEntry) => {
       Haptics.selectionAsync();
+      // Task 1539 (finding 1, P0) originally added an `isFileLocked` +
+      // `authenticateAsync` pre-check here, mirroring FilesScreen.openFile,
+      // as defense-in-depth alongside PreviewScreen's own gate.
+      //
+      // Removed (Codex P2 follow-up, PR #109 review): PreviewScreen now
+      // fully enforces the lock itself on mount — fail-closed before its
+      // SecureStore check resolves (`isPagerPageGated`), then requiring an
+      // explicit tap-to-authenticate for a genuinely locked file — so this
+      // pre-check bought no additional safety, only a redundant SECOND
+      // Face ID prompt for the same file the user just authenticated for
+      // here. Preview is the single enforcement point; navigation always
+      // proceeds and Preview's own "Locked" UI takes over if needed.
       const index = flatPhotos.findIndex((p) => p.id === entry.id);
       const selectedIndex = index >= 0 ? index : 0;
       const windowStart = Math.max(0, selectedIndex - PHOTO_PREVIEW_WINDOW_RADIUS);
@@ -2088,7 +2100,7 @@ export default function PhotosScreen() {
     const { id } = event.nativeEvent;
     recordRuntimeTrace('photos.native.photo_press', { fileId: id });
     const photo = photosById.get(id);
-    if (photo) openPhoto(photo);
+    if (photo) void openPhoto(photo);
   }, [openPhoto, photosById]);
 
   const handleNativeSelectionChange = useCallback((event: { nativeEvent: { selectedIds: string[]; selectionMode: boolean } }) => {
