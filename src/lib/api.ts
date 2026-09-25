@@ -2067,6 +2067,14 @@ export async function resolveSharingContact(query: string): Promise<SharingConta
 
 export interface ShareInfo {
   token: string;
+  /**
+   * The file's encrypted metadata envelope (`{cipher_suite, nonce,
+   * ciphertext}` under the FILE key) — the field the server actually sends on
+   * GET /shares/:token and POST /shares/:token/verify. Decrypt with
+   * `decryptShareFileName` (src/lib/share-file-name.ts).
+   */
+  name_encrypted?: string | null;
+  /** Legacy client-side spelling the server never sends; read only as a fallback. */
   file_name_encrypted?: string;
   size_bytes?: number;
   mime_type?: string | null;
