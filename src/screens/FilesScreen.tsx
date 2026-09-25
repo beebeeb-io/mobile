@@ -29,7 +29,8 @@ import * as Haptics from 'expo-haptics';
 import * as SecureStore from 'expo-secure-store';
 import * as LocalAuthentication from 'expo-local-authentication';
 import * as DocumentPicker from 'expo-document-picker';
-import { isFileLocked, lockFile, unlockFile } from '../lib/file-locks';
+import { lockFile, unlockFile } from '../lib/file-locks';
+import { passesOpenLockGate } from '../lib/open-lock-gate';
 import { lockedToastMessage } from '../lib/lock-copy';
 import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system/legacy';
@@ -2246,14 +2247,9 @@ export default function FilesScreen() {
   const openFile = useCallback(
     async (file: FileEntry) => {
       try {
-        // Per-file Face ID lock check — applies to both files and folders.
-        if (await isFileLocked(file.id)) {
-          const result = await LocalAuthentication.authenticateAsync({
-            promptMessage: 'Authenticate to open this file',
-            disableDeviceFallback: true,
-          });
-          if (!result.success) return;
-        }
+        // Locked folders prompt here; locked files are gated by PreviewScreen
+        // alone (a second prompt here asked for Face ID twice) — open-lock-gate.ts.
+        if (!(await passesOpenLockGate(file))) return;
         if (file.is_folder) {
           navigateToFolder(file);
         } else if (file.is_uploading === true) {
