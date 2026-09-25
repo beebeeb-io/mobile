@@ -6,6 +6,11 @@ enum NativeEncryptedBackupUploadError: LocalizedError {
   case missingParentFolder
   case httpStatus(Int, String)
   case jsonEncoding
+  /// Task 1531 [P0]: the caller's `accountId` (the account these bytes were
+  /// produced for) no longer matches `NativeBackupEngine.currentAccountId`
+  /// (the account this device is currently authorized to upload for) — see
+  /// the account-binding check in `performUpload`.
+  case accountMismatch
 
   var errorDescription: String? {
     switch self {
@@ -19,6 +24,8 @@ enum NativeEncryptedBackupUploadError: LocalizedError {
       return body.isEmpty ? "Backup upload failed with HTTP \(status)" : "Backup upload failed with HTTP \(status): \(body)"
     case .jsonEncoding:
       return "Could not encode backup upload request"
+    case .accountMismatch:
+      return "Backup upload refused: signed-in account changed"
     }
   }
 }
@@ -34,31 +41,26 @@ final class NativeEncryptedBackupUploader {
 
   private let session: URLSession
 
-  /// Cached master key handle — loaded once per batch to avoid repeated
-  /// keychain access (and Face ID prompts when biometric policy is active).
-  private var cachedMasterKey: MasterKeyHandle?
-  private let keyLock = NSLock()
-
   init(session: URLSession = .shared) {
     self.session = session
   }
 
-  /// Load the master key once and cache it for the duration of the batch.
-  /// Thread-safe via keyLock.
-  private func getMasterKey() throws -> MasterKeyHandle {
-    keyLock.lock()
-    defer { keyLock.unlock() }
-    if let cached = cachedMasterKey { return cached }
-    let key = try BeebeebCryptoBridge.requireMasterKey()
-    cachedMasterKey = key
-    return key
-  }
-
-  /// Clear the cached master key (e.g. on sign-out).
-  func clearCachedKey() {
-    keyLock.lock()
-    defer { keyLock.unlock() }
-    cachedMasterKey = nil
+  // Task 1531 [P0]: this class used to keep its OWN private `cachedMasterKey`
+  // (loaded once, on first use, and never re-checked) alongside the app-wide
+  // `BeebeebCryptoBridge` cache. `clearCachedKey()` existed to invalidate it
+  // but had ZERO callers, so after an A→B account switch without an app
+  // restart this second cache kept serving A's key to every subsequent
+  // Contacts/Calendar/legacy-photo upload — B's contacts/calendar ended up
+  // encrypted under A's master key and stored in B's account. There is now
+  // exactly ONE master-key cache in this process: `BeebeebCryptoBridge`'s,
+  // already invalidated on sign-out by `deleteKeyFromKeychain` and by
+  // `releaseHandle` once no handles remain (BeebeebCryptoModule.swift). This
+  // class reads it fresh — never caches its own copy — on every upload.
+  private func currentMasterKey() throws -> MasterKeyHandle {
+    if let cached = BeebeebCryptoBridge.cachedMasterKeyIfAvailable() {
+      return cached
+    }
+    return try BeebeebCryptoBridge.requireMasterKey()
   }
 
   func upload(
@@ -68,6 +70,16 @@ final class NativeEncryptedBackupUploader {
     parentFolderId: String?,
     authToken: String,
     serverBaseURL: String,
+    /// Task 1531 [P0]: the account this plaintext was produced for (the
+    /// caller's own signed-in account id, e.g. `ContactsBackupManager`'s
+    /// `accountId`). Checked against `NativeBackupEngine.currentAccountId`
+    /// — the single keychain-persisted source of truth for "which account
+    /// is this device currently authorized to upload for" already used by
+    /// the photo engine's own staged-asset binding — before the master key
+    /// is touched, and again immediately before the upload is marked
+    /// complete, so an account switch mid-upload is refused rather than
+    /// silently completed under the wrong identity.
+    accountId: String,
     completion: @escaping (Result<String, Error>) -> Void
   ) {
     guard let parentFolderId, !parentFolderId.isEmpty else {
@@ -83,7 +95,8 @@ final class NativeEncryptedBackupUploader {
           mimeType: mimeType,
           parentFolderId: parentFolderId,
           authToken: authToken,
-          serverBaseURL: serverBaseURL
+          serverBaseURL: serverBaseURL,
+          accountId: accountId
         )
         completion(.success(serverFileId))
       } catch {
@@ -106,10 +119,17 @@ final class NativeEncryptedBackupUploader {
     mimeType: String,
     parentFolderId: String,
     authToken: String,
-    serverBaseURL: String
+    serverBaseURL: String,
+    accountId: String
   ) throws -> String {
+    // Task 1531 [P0]: refuse BEFORE the master key is even loaded when this
+    // plaintext's account is not the account this device is currently
+    // authorized to upload for. A caller with no opinion (empty accountId)
+    // is not "trust it" — it refuses exactly like a proven mismatch.
+    try Self.requireAccountBinding(accountId)
+
     let fileId = UUID().uuidString.lowercased()
-    let masterKey = try getMasterKey()
+    let masterKey = try currentMasterKey()
     let nameEncrypted = try masterKey.encryptName(fileId: fileId, filename: fileName, mimeType: mimeType)
 
     let encryptor = try ChunkEncryptorHandle.forPush(
@@ -158,6 +178,14 @@ final class NativeEncryptedBackupUploader {
     //    server the upload is complete.
     _ = try encryptor.finish()
 
+    // Task 1531 [P0]: re-check right before telling the server this upload
+    // is done. The chunk loop above can take a while for a large export; if
+    // the signed-in account changed mid-upload, the ciphertext was already
+    // encrypted under the OLD account's key by this point — completing the
+    // upload can't be undone by refusing later, so refuse HERE, before the
+    // one irreversible step, rather than let a stale upload land.
+    try Self.requireAccountBinding(accountId)
+
     // 4. upload/complete.
     try completeUpload(
       serverFileId: serverFileId,
@@ -166,6 +194,22 @@ final class NativeEncryptedBackupUploader {
     )
 
     return serverFileId
+  }
+
+  /// Task 1531 [P0]: refuse unless `accountId` (the account this plaintext
+  /// belongs to) is the account `NativeBackupEngine` currently believes this
+  /// device is signed in as. A caller with an empty/unknown accountId is
+  /// UNTRUSTED, not "no opinion" — it refuses exactly like a proven mismatch.
+  private static func requireAccountBinding(_ accountId: String) throws {
+    guard !accountId.isEmpty,
+          let runningAccountId = NativeBackupEngine.shared.currentAccountId,
+          runningAccountId == accountId
+    else {
+      RuntimeTrace.event("backup.legacy_uploader.account_mismatch_refused", [
+        "callerAccount": accountId.isEmpty ? "(empty)" : accountId
+      ])
+      throw NativeEncryptedBackupUploadError.accountMismatch
+    }
   }
 
   private func initUpload(

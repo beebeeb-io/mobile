@@ -11,6 +11,12 @@ final class CalendarBackupManager {
 
   private let store = EKEventStore()
   private var authToken: String?
+  /// Task 1531 [P0]: the account `authToken` belongs to. Set alongside
+  /// `authToken` by `enable(authToken:userId:)`, cleared alongside it by
+  /// `disable()`. Passed to `NativeEncryptedBackupUploader` on every upload
+  /// so a stale in-flight export can't land in the wrong account's vault
+  /// after an account switch — see `NativeEncryptedBackupUploader.upload`.
+  private var accountId: String?
   private var parentFolderId: String? {
     get { UserDefaults.standard.string(forKey: "io.beebeeb.calendarBackupParentFolderId") }
     set {
@@ -32,14 +38,16 @@ final class CalendarBackupManager {
 
   private init() {}
 
-  func enable(authToken: String, runNow: Bool = true) {
+  func enable(authToken: String, userId: String, runNow: Bool = true) {
     self.authToken = authToken
+    self.accountId = userId
     RuntimeTrace.event("backup.calendar.enable", ["runNow": runNow])
     requestAccessAndBackup(runNow: runNow)
   }
 
   func disable() {
     authToken = nil
+    accountId = nil
   }
 
   /// Task 0819: self-heal after the server-side backup copy is gone. Clears the
@@ -67,7 +75,7 @@ final class CalendarBackupManager {
   }
 
   func backup() {
-    guard let token = authToken else { return }
+    guard let token = authToken, let accountId, !accountId.isEmpty else { return }
     RuntimeTrace.event("backup.calendar.start")
     DispatchQueue.global(qos: .background).async { [weak self] in
       guard let self else { return }
@@ -89,7 +97,7 @@ final class CalendarBackupManager {
           continue
         }
         let fileName = self.safeFileName(cal.title) + ".ics"
-        self.upload(data: data, fileName: fileName, token: token)
+        self.upload(data: data, fileName: fileName, token: token, accountId: accountId)
       }
       self.recordScan(count: scannedEventCount)
     }
@@ -281,7 +289,7 @@ final class CalendarBackupManager {
   // temp files and calling the Rust upload function instead of the Swift HTTP
   // uploader. NativeBackupEngine already demonstrates the pattern. For now this
   // continues using the legacy Swift uploader which still works correctly.
-  private func upload(data: Data, fileName: String, token: String) {
+  private func upload(data: Data, fileName: String, token: String, accountId: String) {
     guard let serverBaseURL else {
       RuntimeTrace.event("backup.calendar.upload_aborted", ["reason": "missing_server_url"])
       NSLog("[BeebeebBackup] calendar upload aborted: serverURL not configured in keychain (sign in again to set)")
@@ -299,7 +307,8 @@ final class CalendarBackupManager {
       mimeType: mimeType,
       parentFolderId: parentFolderId,
       authToken: token,
-      serverBaseURL: serverBaseURL
+      serverBaseURL: serverBaseURL,
+      accountId: accountId
     ) { result in
       switch result {
       case .success:

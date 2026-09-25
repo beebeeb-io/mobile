@@ -1654,6 +1654,20 @@ public class BeebeebCryptoModule: Module {
         BeebeebKeychainCore.deleteString(key: sharedSessionTokenKey)
         KeychainManager.deleteString(key: "io.beebeeb.backupToken")
         NativeBackupEngine.shared.backupClientSessionId = nil
+        // Task 1531 [P2-4]: this is the sign-out call (App.tsx `signOut()` /
+        // `clearToken()` call `mirrorSessionToAppGroup(null, null)`). Clear
+        // `currentAccountId` in the SAME call that wipes the shared backup
+        // token, rather than relying only on `disablePhotoBackup()` /
+        // `clearAccountAndPurgeStaged()` running first — belt-and-braces so
+        // this token clear and the account binding it guards can never drift
+        // out of sync regardless of call ordering elsewhere in the sign-out
+        // path. (The reverse — binding a NEW account here on the SET branch
+        // — is intentionally NOT done: this function has no `userId`, and
+        // most of its callers (api.ts's token-refresh path in particular)
+        // have no user context to pass one; `enablePhotoBackup`/
+        // `triggerImmediateBackup` remain the only places a NEW binding is
+        // established.)
+        NativeBackupEngine.shared.currentAccountId = nil
       }
       if let baseUrl, !baseUrl.isEmpty {
         try? BeebeebKeychainCore.storeString(baseUrl, key: sharedAPIBaseURLKey)
@@ -2309,12 +2323,12 @@ public class BeebeebCryptoModule: Module {
       engine.clearAccountAndPurgeStaged()
     }
 
-    AsyncFunction("enableContactsBackup") { (authToken: String) in
-      ContactsBackupManager.shared.enable(authToken: authToken, runNow: true)
+    AsyncFunction("enableContactsBackup") { (authToken: String, userId: String) in
+      ContactsBackupManager.shared.enable(authToken: authToken, userId: userId, runNow: true)
     }
 
-    AsyncFunction("resumeContactsBackup") { (authToken: String) in
-      ContactsBackupManager.shared.enable(authToken: authToken, runNow: false)
+    AsyncFunction("resumeContactsBackup") { (authToken: String, userId: String) in
+      ContactsBackupManager.shared.enable(authToken: authToken, userId: userId, runNow: false)
     }
 
     AsyncFunction("disableContactsBackup") { () in
@@ -2331,12 +2345,12 @@ public class BeebeebCryptoModule: Module {
       ContactsBackupManager.shared.reset()
     }
 
-    AsyncFunction("enableCalendarBackup") { (authToken: String) in
-      CalendarBackupManager.shared.enable(authToken: authToken, runNow: true)
+    AsyncFunction("enableCalendarBackup") { (authToken: String, userId: String) in
+      CalendarBackupManager.shared.enable(authToken: authToken, userId: userId, runNow: true)
     }
 
-    AsyncFunction("resumeCalendarBackup") { (authToken: String) in
-      CalendarBackupManager.shared.enable(authToken: authToken, runNow: false)
+    AsyncFunction("resumeCalendarBackup") { (authToken: String, userId: String) in
+      CalendarBackupManager.shared.enable(authToken: authToken, userId: userId, runNow: false)
     }
 
     AsyncFunction("disableCalendarBackup") { () in
@@ -2401,8 +2415,27 @@ public class BeebeebCryptoModule: Module {
       )
     }
 
-    AsyncFunction("triggerImmediateBackup") { (authToken: String) async throws -> [String: Any] in
+    AsyncFunction("triggerImmediateBackup") { (authToken: String, userId: String) async throws -> [String: Any] in
       let engine = NativeBackupEngine.shared
+      // Task 1531 [P2-4]: unlike `enablePhotoBackup`, this entry point used to
+      // write `engine.token` WITHOUT touching `currentAccountId` — a manual
+      // trigger could desync the two (a new token for account B written while
+      // `currentAccountId` still read A) since `token`/`currentAccountId` are
+      // independent keychain slots written from independent call sites. If an
+      // account is already bound and it is NOT this call's account, refuse
+      // outright rather than silently overwrite the token for a different
+      // identity than the one the engine is authorized for. If no account is
+      // bound yet, bind it here — same effect as `enablePhotoBackup`.
+      if let boundAccountId = engine.currentAccountId, !boundAccountId.isEmpty {
+        guard boundAccountId == userId else {
+          RuntimeTrace.event("backup.native.trigger_immediate.refused_account_mismatch", [
+            "boundAccount": boundAccountId
+          ])
+          throw BackupError.accountUnknown
+        }
+      } else {
+        engine.currentAccountId = userId
+      }
       engine.token = authToken
       if engine.apiBaseUrl == nil {
         engine.apiBaseUrl = KeychainManager.loadString(key: "io.beebeeb.serverURL")

@@ -84,8 +84,14 @@ final class PhotoBackupManager: NSObject {
 
   // MARK: - Enable / Disable
 
-  func enable(authToken: String, completion: (() -> Void)? = nil) {
+  func enable(authToken: String, userId: String, completion: (() -> Void)? = nil) {
     storedAuthToken = authToken
+    // Task 1531 [P0]: this legacy manager shares its token keychain slot
+    // (`io.beebeeb.backupToken`) with `NativeBackupEngine` — both read/write
+    // the exact same key. Share the account binding too, rather than invent
+    // a second keychain key, so `NativeEncryptedBackupUploader`'s account
+    // check has ONE source of truth regardless of which manager called it.
+    NativeBackupEngine.shared.currentAccountId = userId
     PHPhotoLibrary.requestAuthorization(for: .readWrite) { [weak self] status in
       guard let self, status == .authorized || status == .limited else {
         completion?()
@@ -377,6 +383,19 @@ final class PhotoBackupManager: NSObject {
       completion(false)
       return
     }
+    // Task 1531 [P0]: `NativeEncryptedBackupUploader` refuses without an
+    // accountId — read it fresh right here, at the point the upload is
+    // actually kicked off, from the single shared source of truth (see
+    // `enable(authToken:userId:completion:)` above).
+    guard let accountId = NativeBackupEngine.shared.currentAccountId, !accountId.isEmpty else {
+      NSLog("[Beebeeb] photo backup aborted for \(localIdentifier): no current account id")
+      dbQueue.async {
+        guard let db = self.db else { return }
+        self.updateStatus(db: db, localIdentifier: localIdentifier, status: "failed", error: "No current account id")
+      }
+      completion(false)
+      return
+    }
 
     dbQueue.async {
       guard let db = self.db else { return }
@@ -389,7 +408,8 @@ final class PhotoBackupManager: NSObject {
       mimeType: mimeType,
       parentFolderId: parentFolderId,
       authToken: token,
-      serverBaseURL: serverBaseURL
+      serverBaseURL: serverBaseURL,
+      accountId: accountId
     ) { [weak self] result in
       guard let self else { completion(false); return }
       self.dbQueue.async {

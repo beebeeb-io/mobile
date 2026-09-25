@@ -10,6 +10,12 @@ final class ContactsBackupManager {
   private static let lastUploadAtKey = "io.beebeeb.contactsBackupLastUploadAt"
 
   private var authToken: String?
+  /// Task 1531 [P0]: the account `authToken` belongs to. Set alongside
+  /// `authToken` by `enable(authToken:userId:)`, cleared alongside it by
+  /// `disable()`. Passed to `NativeEncryptedBackupUploader` on every upload
+  /// so a stale in-flight export can't land in the wrong account's vault
+  /// after an account switch — see `NativeEncryptedBackupUploader.upload`.
+  private var accountId: String?
   private var parentFolderId: String? {
     get { UserDefaults.standard.string(forKey: "io.beebeeb.contactsBackupParentFolderId") }
     set {
@@ -35,13 +41,14 @@ final class ContactsBackupManager {
       object: nil,
       queue: .main
     ) { [weak self] _ in
-      guard self?.authToken != nil else { return }
+      guard self?.authToken != nil, self?.accountId != nil else { return }
       self?.backup()
     }
   }
 
-  func enable(authToken: String, runNow: Bool = true) {
+  func enable(authToken: String, userId: String, runNow: Bool = true) {
     self.authToken = authToken
+    self.accountId = userId
     RuntimeTrace.event("backup.contacts.enable", ["runNow": runNow])
     CNContactStore().requestAccess(for: .contacts) { [weak self] granted, _ in
       RuntimeTrace.event("backup.contacts.permission", ["granted": granted])
@@ -54,6 +61,7 @@ final class ContactsBackupManager {
 
   func disable() {
     authToken = nil
+    accountId = nil
   }
 
   /// Task 0819: self-heal after the server-side backup copy is gone. Clears the
@@ -78,7 +86,7 @@ final class ContactsBackupManager {
   }
 
   func backup() {
-    guard let token = authToken else { return }
+    guard let token = authToken, let accountId, !accountId.isEmpty else { return }
     RuntimeTrace.event("backup.contacts.start")
     DispatchQueue.global(qos: .background).async { [weak self] in
       guard let self else { return }
@@ -93,7 +101,7 @@ final class ContactsBackupManager {
           RuntimeTrace.event("backup.contacts.skipped_unchanged")
           return
         }
-        self.upload(data: export.data, fileName: "contacts.vcf", mimeType: "text/vcard", token: token)
+        self.upload(data: export.data, fileName: "contacts.vcf", mimeType: "text/vcard", token: token, accountId: accountId)
       } catch {
         RuntimeTrace.event("backup.contacts.failed", ["error": error.localizedDescription])
         // Contact export failed — permissions not granted or empty contacts
@@ -157,7 +165,7 @@ final class ContactsBackupManager {
   // temp files and calling the Rust upload function instead of the Swift HTTP
   // uploader. NativeBackupEngine already demonstrates the pattern. For now this
   // continues using the legacy Swift uploader which still works correctly.
-  private func upload(data: Data, fileName: String, mimeType: String, token: String) {
+  private func upload(data: Data, fileName: String, mimeType: String, token: String, accountId: String) {
     guard let serverBaseURL else {
       RuntimeTrace.event("backup.contacts.upload_aborted", ["reason": "missing_server_url"])
       NSLog("[BeebeebBackup] contacts upload aborted: serverURL not configured in keychain (sign in again to set)")
@@ -174,7 +182,8 @@ final class ContactsBackupManager {
       mimeType: mimeType,
       parentFolderId: parentFolderId,
       authToken: token,
-      serverBaseURL: serverBaseURL
+      serverBaseURL: serverBaseURL,
+      accountId: accountId
     ) { result in
       switch result {
       case .success:

@@ -355,16 +355,38 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
       await mirrorBackupSessionForNative();
       await enablePhotoBackup(token, userId);
     } else if (category === 'contacts') {
+      // Task 1531 [P0]: same account-binding rationale as camera_roll above
+      // — `canEnableNativeCameraBackup` is just a non-empty-string check
+      // despite its name, reused here so Contacts uploads are bound to an
+      // account the same way. Without a known userId there is nothing to
+      // bind, so skip rather than call the native side with no account id.
+      if (!canEnableNativeCameraBackup(userId)) {
+        recordRuntimeTrace('backup.native.enable.deferred', {
+          category,
+          reason: 'no_user_id',
+          runNow: options.runNow !== false,
+        });
+        return;
+      }
       if (options.runNow === false) {
-        await resumeContactsBackup(token);
+        await resumeContactsBackup(token, userId);
       } else {
-        await enableContactsBackup(token);
+        await enableContactsBackup(token, userId);
       }
     } else {
+      // Task 1531 [P0]: same account-binding rationale as camera_roll above.
+      if (!canEnableNativeCameraBackup(userId)) {
+        recordRuntimeTrace('backup.native.enable.deferred', {
+          category,
+          reason: 'no_user_id',
+          runNow: options.runNow !== false,
+        });
+        return;
+      }
       if (options.runNow === false) {
-        await resumeCalendarBackup(token);
+        await resumeCalendarBackup(token, userId);
       } else {
-        await enableCalendarBackup(token);
+        await enableCalendarBackup(token, userId);
       }
     }
   }, [isUnlocked, userId]);
@@ -596,12 +618,18 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
 
       const token = await getStoredToken();
       if (!token) return;
+      // Task 1531 [P2-4]: `triggerImmediateBackup` binds/checks the engine's
+      // account with `userId` the same way `enablePhotoBackup` does — without
+      // a known userId there is nothing to bind, so skip rather than call
+      // the native side with no account id (mirrors the `canEnableNativeCameraBackup`
+      // guard already used for `enablePhotoBackup` below).
+      if (!canEnableNativeCameraBackup(userId)) return;
       try {
         const { categoryFolderId } = await ensureBackupFolders('camera_roll');
         await configureBackupFolder('camera_roll', categoryFolderId);
         await setPhotoBackupIncludeVideos(includeVideosRef.current).catch(() => false);
         await mirrorBackupSessionForNative();
-        const progress = await triggerImmediateBackup(token);
+        const progress = await triggerImmediateBackup(token, userId);
         applyNativeProgress(progress);
       } catch (err) {
         console.warn('[backup] native photo backup warm-up failed:', err);
