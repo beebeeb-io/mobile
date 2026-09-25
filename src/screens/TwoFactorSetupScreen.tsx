@@ -25,6 +25,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../lib/theme-context';
 import { fonts, spacing, type Colors } from '../theme';
 import { setupTotp, enableTotp, friendlyError, type TotpSetup } from '../lib/api';
+import { shouldBlockTwoFactorSetupBack } from '../lib/two-factor-setup-gate';
 
 let Clipboard: { setStringAsync: (s: string) => Promise<void> } = {
   setStringAsync: async () => {},
@@ -449,6 +450,31 @@ export default function TwoFactorSetupScreen() {
     return () => { cancelledRef.current = true; };
   }, [fetchSetup]);
 
+  // Task 1539 (finding 2): the custom back button's step>1 branch used to
+  // call the exact same navigation.goBack() as step 1 — a dead conditional
+  // that let a user swipe/tap away from step 3 (one-time backup codes,
+  // already-active 2FA) and lose them permanently. `beforeRemove` blocks
+  // EVERY removal path (header back, this custom button, and iOS's native
+  // edge-swipe gesture) regardless of which one fires, so it's the actual
+  // enforcement point; the gestureEnabled + hidden-button changes below are
+  // the visible affordance that matches it.
+  useEffect(() => {
+    if (!shouldBlockTwoFactorSetupBack(step)) return undefined;
+    const unsubscribe = navigation.addListener('beforeRemove', (e) => {
+      e.preventDefault();
+    });
+    return unsubscribe;
+  }, [navigation, step]);
+
+  // Belt-and-suspenders: also disable the native iOS edge-swipe-back gesture
+  // directly (native-stack supports updating this per-screen), matching how
+  // TwoFactorChallenge/RecoveryUnlock are registered in App.tsx. This can't
+  // be a static `gestureEnabled: false` on the Stack.Screen the way those
+  // are, because step 1 must stay dismissable.
+  useEffect(() => {
+    navigation.setOptions({ gestureEnabled: !shouldBlockTwoFactorSetupBack(step) });
+  }, [navigation, step]);
+
   const handleDone = useCallback(() => {
     navigation.goBack();
   }, [navigation]);
@@ -465,24 +491,23 @@ export default function TwoFactorSetupScreen() {
         ]}
         keyboardShouldPersistTaps="handled"
       >
-        {/* Back button */}
-        <TouchableOpacity
-          style={layout.backButton}
-          onPress={() => {
-            Haptics.selectionAsync();
-            if (step > 1) {
-              // Only allow going back from step 1 (steps 2-3 are forward-only after enabling)
+        {/* Back button — hidden once navigation is blocked (step > 1); the
+            beforeRemove listener above is the real enforcement, this just
+            avoids showing a button that would silently do nothing. */}
+        {!shouldBlockTwoFactorSetupBack(step) && (
+          <TouchableOpacity
+            style={layout.backButton}
+            onPress={() => {
+              Haptics.selectionAsync();
               navigation.goBack();
-            } else {
-              navigation.goBack();
-            }
-          }}
-          accessibilityRole="button"
-          accessibilityLabel="Go back"
-        >
-          <Ionicons name="chevron-back" size={20} color={c.amber} />
-          <Text style={{ color: c.amber, fontSize: 16, fontFamily: fonts.sans }}>Back</Text>
-        </TouchableOpacity>
+            }}
+            accessibilityRole="button"
+            accessibilityLabel="Go back"
+          >
+            <Ionicons name="chevron-back" size={20} color={c.amber} />
+            <Text style={{ color: c.amber, fontSize: 16, fontFamily: fonts.sans }}>Back</Text>
+          </TouchableOpacity>
+        )}
 
         <StepIndicator step={step} c={c} />
 

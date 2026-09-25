@@ -1981,7 +1981,15 @@ export interface ShareInfo {
   mime_type?: string | null;
   sender_email?: string;
   expires_at?: string | null;
-  passphrase_required?: boolean;
+  /**
+   * True when the share is passphrase-gated and the passphrase has not yet
+   * been verified for this screen instance. The server's ONLY spelling for
+   * this field is `requires_passphrase` (`repos/server/.../shares.rs`) — task
+   * 1539 (finding 4): the client used to declare `passphrase_required`, a
+   * field the server never sends, so the gate silently never rendered and
+   * `/download` 401'd with no passphrase UI anywhere in the app.
+   */
+  requires_passphrase?: boolean;
   is_folder?: boolean;
   /**
    * True when the share was created in double-encrypted mode.
@@ -2003,6 +2011,52 @@ export interface ShareInfo {
 /** Fetch public share metadata by token — no auth required. */
 export async function getShareByToken(token: string): Promise<ShareInfo> {
   return request<ShareInfo>('GET', `/api/v1/shares/${token}`, undefined, false);
+}
+
+/**
+ * Task 1539 (finding 4): every 401 the shares routes return — missing
+ * `X-Share-Passphrase` header (shares.rs:1223-1227/1400s) or a wrong one
+ * (`check_passphrase_with_lockout`'s `Err(ApiError::Unauthorized)`,
+ * shares.rs:1975) — serializes to the SAME generic body,
+ * `{"error":"unauthorized"}` (error.rs:668). Both call sites below forwarded
+ * that raw string straight to the user (SharedViewScreen's catch only
+ * rewrites `/CryptoError/i`), so a wrong or missing passphrase literally
+ * showed the word "unauthorized". Every other status this function can see
+ * (404/410/403/429/500) already carries a real, specific server message, so
+ * this only remaps 401 — the one status shares.rs uses exclusively for the
+ * passphrase gate.
+ */
+function shareAuthErrorMessage(status: number, rawMessage: string): string {
+  if (status === 401) return 'Incorrect passphrase. Check it and try again.';
+  return rawMessage;
+}
+
+/**
+ * Verify a share's passphrase and, on success, receive the full share
+ * metadata the server withholds until the passphrase is confirmed (the GET
+ * above returns only `{id, share_type, requires_passphrase: true,
+ * expires_at}` for a gated share — no name, size, or wrapped key). Mirrors
+ * the web client's `verifySharePassphrase` (`repos/web/src/lib/api.ts`) and
+ * the server's `POST /api/v1/shares/:token/verify`. Public endpoint — no
+ * auth header required.
+ */
+export async function verifySharePassphrase(token: string, passphrase: string): Promise<ShareInfo> {
+  let res: Response;
+  try {
+    res = await rateLimitedFetch(`${BASE_URL}/api/v1/shares/${token}/verify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ passphrase }),
+    });
+  } catch (_err) {
+    throw new ApiError(0, 'Could not reach the server. Check your connection and try again.');
+  }
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    const raw = err.error ?? err.message ?? `Passphrase verification failed: ${res.status}`;
+    throw new ApiError(res.status, shareAuthErrorMessage(res.status, raw));
+  }
+  return res.json() as Promise<ShareInfo>;
 }
 
 /**
@@ -2034,7 +2088,8 @@ export async function downloadSharedFileBlob(
   }
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
-    throw new ApiError(res.status, err.error ?? err.message ?? `Share download failed: ${res.status}`);
+    const raw = err.error ?? err.message ?? `Share download failed: ${res.status}`;
+    throw new ApiError(res.status, shareAuthErrorMessage(res.status, raw));
   }
 
   const arrayBuf = await res.arrayBuffer();

@@ -10,8 +10,8 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { useRoute } from '@react-navigation/native';
-import type { NativeStackScreenProps } from '@react-navigation/native-stack';
+import { useNavigation, useRoute } from '@react-navigation/native';
+import type { NativeStackNavigationProp, NativeStackScreenProps } from '@react-navigation/native-stack';
 import * as Haptics from 'expo-haptics';
 import { BBLogo } from '../components/BBLogo';
 import { SixDigitInput, type SixDigitInputHandle } from '../components/SixDigitInput';
@@ -23,9 +23,11 @@ import { markUnlocked } from '../lib/lock-state';
 import type { RootStackParamList } from '../App';
 
 type RouteProps = NativeStackScreenProps<RootStackParamList, 'TwoFactorChallenge'>['route'];
+type Nav = NativeStackNavigationProp<RootStackParamList>;
 
 export default function TwoFactorChallengeScreen() {
   const route = useRoute<RouteProps>();
+  const navigation = useNavigation<Nav>();
   const { partialToken } = route.params;
   const { refreshAuth } = useAuth();
   const { colors: c, resolved } = useTheme();
@@ -109,7 +111,8 @@ export default function TwoFactorChallengeScreen() {
         },
         buttonDisabled: { opacity: 0.6 },
         buttonText: { color: c.paper, fontSize: 14, fontWeight: '600' },
-        footerRow: { flexDirection: 'row', justifyContent: 'center', marginTop: spacing.lg },
+        footerRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: spacing.lg },
+        cancelLink: { fontSize: 13, color: c.ink3, fontWeight: '600' },
         footerLink: { fontSize: 13, color: c.amberDeep, fontWeight: '600' },
       }),
     [c, resolved],
@@ -145,6 +148,17 @@ export default function TwoFactorChallengeScreen() {
       setLoading(false);
       submittingRef.current = false;
     }
+  }
+
+  // Task 1539 (finding 3): this screen had no escape route at all — headerShown
+  // and gestureEnabled are both false (App.tsx) and there was no in-screen
+  // Cancel/Back element, so a user who couldn't complete 2FA (wrong account,
+  // authenticator not handy) had to force-quit the app. `partialToken` lives
+  // only in this route's params (never persisted to storage — grepped), so
+  // there is nothing to explicitly clear beyond navigating away from it.
+  function handleCancel() {
+    if (loading) return;
+    navigation.goBack();
   }
 
   return (
@@ -223,6 +237,15 @@ export default function TwoFactorChallengeScreen() {
           )}
         </TouchableOpacity>
         <View style={styles.footerRow}>
+          <TouchableOpacity
+            onPress={handleCancel}
+            disabled={loading}
+            accessibilityRole="button"
+            accessibilityLabel="Cancel and return to sign in"
+            testID="two-factor-cancel"
+          >
+            <Text style={styles.cancelLink}>Cancel</Text>
+          </TouchableOpacity>
           <TouchableOpacity
             onPress={() => {
               setUseBackup(!useBackup);

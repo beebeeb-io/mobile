@@ -1,9 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  KeyboardAvoidingView,
   Linking,
+  Platform,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
@@ -16,7 +19,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import { radii, spacing } from '../theme';
 import { useTheme } from '../lib/theme-context';
-import { downloadSharedFileBlob, getShareByToken, friendlyError } from '../lib/api';
+import { downloadSharedFileBlob, getShareByToken, verifySharePassphrase, friendlyError } from '../lib/api';
 import type { ShareInfo } from '../lib/api';
 import { makeShareKeyResolver } from '../lib/share-key-store';
 import { formatBytes as formatSize } from '../lib/format';
@@ -189,6 +192,16 @@ export default function SharedViewScreen() {
   const [decryptError, setDecryptError] = useState<string | null>(null);
   const [decryptedUri, setDecryptedUri] = useState<string | null>(null);
 
+  // Task 1539 (finding 4): passphrase-gate state. `getShareByToken` returns
+  // only `{id, share_type, requires_passphrase: true, expires_at}` for a
+  // gated share — no name/size/key — so there is nothing to show until this
+  // verifies. `passphrase` is kept in state (not cleared on success) because
+  // `handleDecrypt` below needs to forward the SAME value again as
+  // `X-Share-Passphrase` on the download call — mirrors the web client.
+  const [passphrase, setPassphrase] = useState('');
+  const [verifying, setVerifying] = useState(false);
+  const [verifyError, setVerifyError] = useState<string | null>(null);
+
   useEffect(() => {
     let cancelled = false;
     // `token` changed → this is a DIFFERENT share. React Navigation re-renders
@@ -200,6 +213,9 @@ export default function SharedViewScreen() {
     // share's already-decrypted file under the new share — a wrong-file leak,
     // the same re-navigation class as the stale-shareKey bug (task 0710).
     setLoading(true);
+    setPassphrase('');
+    setVerifying(false);
+    setVerifyError(null);
     setError(null);
     setInfo(null);
     setDecryptedUri(null);
@@ -232,6 +248,26 @@ export default function SharedViewScreen() {
   }, [token, shareKey]);
 
   /**
+   * Task 1539 (finding 4): verify the passphrase against the server, then
+   * replace the gate-only `info` (id/share_type/requires_passphrase/expires_at)
+   * with the full metadata the server only reveals once verified — mirrors
+   * the web client's `handleVerify`.
+   */
+  const handleVerifyPassphrase = useCallback(async (): Promise<void> => {
+    if (!passphrase.trim()) return;
+    setVerifying(true);
+    setVerifyError(null);
+    try {
+      const full = await verifySharePassphrase(token, passphrase);
+      setInfo(full);
+    } catch (err) {
+      setVerifyError(friendlyError(err));
+    } finally {
+      setVerifying(false);
+    }
+  }, [token, passphrase]);
+
+  /**
    * Download the encrypted blob, derive the file key (unwrapping K_c → file
    * key for double-encrypted shares), decrypt the chunks natively, write the
    * plaintext to the cache directory, then hand it to the system share sheet
@@ -252,8 +288,13 @@ export default function SharedViewScreen() {
     setDecryptError(null);
 
     try {
+      // Task 1539 (finding 4): forward the passphrase that was verified
+      // above — a passphrase-gated share also requires it on THIS call
+      // (shares.rs's /download re-checks it independently of /verify).
+      // Was called with no second argument at all, so /download 401'd for
+      // every passphrase-gated share regardless of the gate UI.
       const { encryptedBytes, chunkCount, chunkSize, originalSize } =
-        await downloadSharedFileBlob(token);
+        await downloadSharedFileBlob(token, passphrase || undefined);
 
       // 1. Resolve the per-file AES-256-GCM key.
       let fileKey: Uint8Array;
@@ -339,7 +380,7 @@ export default function SharedViewScreen() {
     } finally {
       setDecrypting(false);
     }
-  }, [info, shareKey, token]);
+  }, [info, shareKey, token, passphrase]);
 
   /** Re-open the share sheet for an already-decrypted file. */
   const handleOpenDecrypted = useCallback(async (): Promise<void> => {
@@ -394,6 +435,69 @@ export default function SharedViewScreen() {
             <Text style={[styles.primaryBtnText, { color: c.ink }]}>Try in browser</Text>
           </TouchableOpacity>
         </View>
+      ) : info?.requires_passphrase === true ? (
+        // Task 1539 (finding 4): the server withholds every field but
+        // {id, share_type, requires_passphrase, expires_at} until this is
+        // verified (shares.rs:742-750/965-969), so there is nothing to show
+        // in the normal file-details body yet — mirrors web's share-view.tsx
+        // "Password protected" gate.
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          style={{ flex: 1 }}
+        >
+          <View style={styles.body}>
+            <View style={[styles.fileIconBox, { backgroundColor: c.amberBg }]}>
+              <Ionicons name="lock-closed" size={36} color={c.amberDeep} />
+            </View>
+            <Text style={[styles.fileName, { color: c.ink }]}>Password protected</Text>
+            <Text style={[styles.errorSub, { color: c.ink3 }]}>
+              This file is protected with a passphrase. Enter it below to access the file.
+            </Text>
+            <TextInput
+              value={passphrase}
+              onChangeText={(text) => {
+                setPassphrase(text);
+                setVerifyError(null);
+              }}
+              onSubmitEditing={() => { void handleVerifyPassphrase(); }}
+              placeholder="Enter passphrase"
+              placeholderTextColor={c.ink4}
+              secureTextEntry
+              autoCapitalize="none"
+              autoCorrect={false}
+              returnKeyType="go"
+              editable={!verifying}
+              style={[
+                styles.passphraseInput,
+                { borderColor: verifyError ? c.red : c.line, color: c.ink, backgroundColor: c.paper },
+              ]}
+              accessibilityLabel="Share passphrase"
+              testID="share-passphrase-input"
+            />
+            {verifyError && (
+              <Text style={[styles.errorSub, { color: c.red }]}>{verifyError}</Text>
+            )}
+            <TouchableOpacity
+              style={[
+                styles.primaryBtn,
+                { backgroundColor: verifying || !passphrase.trim() ? c.line2 : c.amber, opacity: verifying ? 0.6 : 1 },
+              ]}
+              onPress={() => { void handleVerifyPassphrase(); }}
+              disabled={verifying || !passphrase.trim()}
+              activeOpacity={0.8}
+              testID="share-passphrase-submit"
+            >
+              <Ionicons name={verifying ? 'hourglass-outline' : 'lock-open-outline'} size={16} color={c.ink} />
+              <Text style={[styles.primaryBtnText, { color: c.ink }]}>
+                {verifying ? 'Verifying...' : 'Unlock file'}
+              </Text>
+            </TouchableOpacity>
+            <View style={[styles.encBadge, { backgroundColor: c.amberBg, borderColor: c.amber }]}>
+              <View style={[styles.encDot, { backgroundColor: c.amber }]} />
+              <Text style={[styles.encText, { color: c.amberDeep }]}>End-to-end encrypted · AES-256-GCM</Text>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
       ) : info ? (
         <View style={styles.body}>
           {/* File icon */}
@@ -436,7 +540,12 @@ export default function SharedViewScreen() {
                 <Text style={[styles.metaValue, { color: c.ink }]}>{formatExpiry(info.expires_at)}</Text>
               </View>
             )}
-            {info.passphrase_required && (
+            {/* Task 1539 (finding 4): renamed from `passphrase_required` (a field
+                the server never sends — see the ShareInfo doc comment). This
+                branch is defense-in-depth only: the dedicated passphrase gate
+                below renders before this body is ever reached while
+                requires_passphrase is true. */}
+            {info.requires_passphrase && (
               <View style={styles.metaRow}>
                 <Ionicons name="lock-closed-outline" size={14} color={c.amber} />
                 <Text style={[styles.metaLabel, { color: c.ink3 }]}>Passphrase</Text>
@@ -570,6 +679,15 @@ const styles = StyleSheet.create({
   loadingText: { fontSize: 13 },
   errorTitle: { fontSize: 18, fontWeight: '700', marginTop: 4 },
   errorSub: { fontSize: 13, textAlign: 'center', lineHeight: 18 },
+  // Task 1539 (finding 4): passphrase-gate text input.
+  passphraseInput: {
+    width: '100%',
+    height: 46,
+    borderWidth: 1,
+    borderRadius: radii.md,
+    paddingHorizontal: 14,
+    fontSize: 15,
+  },
 
   body: {
     flex: 1,
