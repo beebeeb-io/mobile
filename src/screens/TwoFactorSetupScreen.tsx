@@ -228,6 +228,7 @@ function StepSecret({
           <Text
             style={[layout.secretText, { color: c.ink, fontFamily: fonts.mono }]}
             selectable
+            testID="totp-setup-secret"
           >
             {setup.secret}
           </Text>

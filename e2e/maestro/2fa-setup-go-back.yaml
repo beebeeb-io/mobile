@@ -7,9 +7,11 @@ appId: io.beebeeb.app
 # GREEN: Back on step 2 returns to step 1 with the same secret on screen.
 - launchApp
 
+# 90 s: a dev-client cold start that has to re-download a changed bundle
+# takes ~40 s before the first screen renders.
 - extendedWaitUntil:
     visible: "Drive"
-    timeout: 10000
+    timeout: 90000
 
 - tapOn: "Settings"
 - scrollUntilVisible:
@@ -20,6 +22,12 @@ appId: io.beebeeb.app
 - extendedWaitUntil:
     visible: "Set up authenticator"
     timeout: 10000
+# Remember the secret shown on step 1 so Back can be proven to show the SAME
+# one (the setup is kept, not re-fetched — a new secret would orphan the key
+# the user may already have added to an authenticator).
+- copyTextFrom:
+    id: "totp-setup-secret"
+- evalScript: ${output.secretBefore = maestro.copiedText}
 - tapOn: "Continue"
 
 # Step 2: Verify. Back must be offered here.
@@ -33,4 +41,7 @@ appId: io.beebeeb.app
 - assertVisible: "Set up authenticator"
 - assertVisible: "Copy secret"
 - assertVisible: "Continue"
+- assertVisible:
+    id: "totp-setup-secret"
+    text: ${output.secretBefore}
 - takeScreenshot: "2fa-setup-go-back-step1"
