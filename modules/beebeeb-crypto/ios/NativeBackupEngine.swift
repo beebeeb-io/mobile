@@ -154,10 +154,15 @@ struct BackupAssetRow {
   /// The signed-in account (user id) whose master key encrypted the staged
   /// chunks + name envelope, captured at STAGE time (task 1531 [P0]). `nil`
   /// for rows staged before this column existed (pre-migration) or when no
-  /// account id was available at stage time — treated as "unknown, trust it"
-  /// so a single-account device's in-flight uploads are never disrupted by
-  /// the upgrade. A NON-nil value that differs from the current session's
-  /// account id is the cross-account-reuse signal this task fixes.
+  /// account id was available at stage time. Lead review on this task
+  /// (2026-09-25) corrected an earlier version of this fix that trusted a
+  /// `nil` tag: a device that staged under account A pre-migration, then
+  /// switched to account B, has exactly this NULL-tagged state — nil does
+  /// NOT mean "same account", it means "unknown", and unknown staged
+  /// ciphertext must never be uploaded under a session that didn't encrypt
+  /// it. `purgeMismatchedStagedAssets` therefore treats `nil` the same as a
+  /// non-nil mismatch: both get dropped and re-staged. Only a value EQUAL to
+  /// the current session's account id is trusted.
   let stagedAccountId: String?
 }
 
@@ -2102,15 +2107,18 @@ final class NativeBackupEngine: NSObject {
     do {
       if let staged = dbQueue.sync(execute: { getStagedAsset(localAssetId: asset.localAssetId) }) {
         // Task 1531 [P0] belt-and-braces: `start()` already sweeps mismatched
-        // staged assets before the drain loop can reach them, but re-check
-        // here too so this path is safe even if it's ever reached without
-        // going through `start()` first (defense in depth, not the primary
-        // fix — see purgeMismatchedStagedAssets).
-        if let stagedAccount = staged.stagedAccountId,
-           let runningAccount = currentAccountId,
-           stagedAccount != runningAccount {
+        // (and untagged/NULL — lead review 2026-09-25) staged assets before
+        // the drain loop can reach them, but re-check here too so this path
+        // is safe even if it's ever reached without going through `start()`
+        // first (defense in depth, not the primary fix — see
+        // purgeMismatchedStagedAssets). `staged.stagedAccountId != runningAccount`
+        // is deliberately an Optional<String> vs String comparison: a `nil`
+        // stagedAccountId is UNTRUSTED, not "same account", so it compares
+        // unequal and gets refused exactly like an explicit mismatch.
+        if let runningAccount = currentAccountId,
+           staged.stagedAccountId != runningAccount {
           RuntimeTrace.event("backup.native.staged_account_mismatch.refused_upload", [
-            "stagedForAccount": stagedAccount,
+            "stagedForAccount": staged.stagedAccountId ?? "(untagged/pre-migration)",
             "currentAccount": runningAccount
           ])
           dbQueue.sync {
@@ -2119,7 +2127,7 @@ final class NativeBackupEngine: NSObject {
             }
             clearStagedStateForRestage(
               assetId: asset.localAssetId,
-              error: "Re-encrypting: previously staged under a different account"
+              error: "Re-encrypting: staged ciphertext not verified for this account"
             )
           }
           onFileStatus?(asset.localAssetId, "pending", nil, nil)
@@ -3808,8 +3816,12 @@ final class NativeBackupEngine: NSObject {
   }
 
   /// Task 1531 [P0]: drop every already-encrypted staged asset whose
-  /// `staged_account_id` does not match `accountId` — the account the engine
-  /// is about to upload as.
+  /// `staged_account_id` is NOT PROVEN to be `accountId` — the account the
+  /// engine is about to upload as. That means both an explicit mismatch
+  /// (tagged for a different account) AND a NULL tag (untagged: staged
+  /// before this migration, or before any account id was known at stage
+  /// time) are purged. Only a `staged_account_id` that is EQUAL to
+  /// `accountId` is trusted.
   ///
   /// Root cause this closes: `backup_assets` is one on-disk queue shared by
   /// every account that has ever signed in on this device (no account
@@ -3834,12 +3846,25 @@ final class NativeBackupEngine: NSObject {
   /// the fix does not depend on `start()` always running first (e.g. a
   /// `BGProcessingTask` resume).
   ///
-  /// A row with a NULL `staged_account_id` (pre-migration, or staged before
-  /// any account id was known) is left untouched — treated as "same account,
-  /// trust it" so an ordinary single-account device's in-flight uploads are
-  /// never disrupted by this fix. This is intentionally asymmetric with the
-  /// mismatch case: we only ever DROP work we can prove belongs to a
-  /// different account, never work we merely can't attribute.
+  /// Lead review on this task (2026-09-25) corrected an earlier version that
+  /// left a NULL `staged_account_id` untouched, reasoning it meant
+  /// "pre-migration / single-account device, trust it". That is exactly the
+  /// founder's reported device state: rows staged under account A BEFORE
+  /// this column existed (so tagged NULL by the migration, which cannot
+  /// retroactively know who staged them) are still NULL after signing in as
+  /// account B on the same, now-updated build — the old logic would upload
+  /// them into B untouched, reproducing 1531 through the "trusted" branch.
+  /// A NULL tag carries no proof of which account encrypted the bytes, so it
+  /// is UNTRUSTED, not "same account". Re-staging is cheap (the source is
+  /// still the Photos library asset — only the ciphertext is discarded), so
+  /// purging on ANY unproven tag is strictly safer than uploading it. This
+  /// intentionally purges every NULL-tagged staged row exactly once per
+  /// device history: `stageEncryptedAsset` always writes a non-nil
+  /// `staged_account_id` going forward (see below), so once a row is purged
+  /// and re-staged it can never come back as NULL. Only ever-uploaded rows
+  /// (`status = 'uploaded'`, `staged_file_id IS NULL`) are untouched by this
+  /// query — completed history is not "staged" and is never re-encrypted or
+  /// re-uploaded by this sweep.
   ///
   /// MUST be called from `dbQueue` (matches every other `db`-touching method
   /// here) — it does not wrap itself, so a caller that is not already on
@@ -3853,21 +3878,28 @@ final class NativeBackupEngine: NSObject {
     SELECT local_asset_id, staged_dir, staged_file_id, staged_account_id
     FROM backup_assets
     WHERE staged_file_id IS NOT NULL
-      AND staged_account_id IS NOT NULL
-      AND staged_account_id != ?
+      AND (staged_account_id IS NULL OR staged_account_id != ?)
     """
     var selectStmt: OpaquePointer?
     guard sqlite3_prepare_v2(db, selectSql, -1, &selectStmt, nil) == SQLITE_OK else { return 0 }
     sqlite3_bind_text(selectStmt, 1, (accountId as NSString).utf8String, -1, nil)
 
-    var mismatched: [(assetId: String, stagedDir: String?, fileId: String, otherAccount: String)] = []
+    var mismatched: [(assetId: String, stagedDir: String?, fileId: String, otherAccount: String?)] = []
     while sqlite3_step(selectStmt) == SQLITE_ROW {
       let assetId = String(cString: sqlite3_column_text(selectStmt, 0))
       let stagedDir: String? = sqlite3_column_type(selectStmt, 1) != SQLITE_NULL
         ? String(cString: sqlite3_column_text(selectStmt, 1))
         : nil
       let fileId = String(cString: sqlite3_column_text(selectStmt, 2))
-      let otherAccount = String(cString: sqlite3_column_text(selectStmt, 3))
+      // Untagged (pre-migration) rows are exactly what this query now also
+      // selects, so `staged_account_id` (column 3) may itself be NULL here —
+      // reading it with `sqlite3_column_text` unconditionally on a NULL
+      // column returns a null pointer, and `String(cString:)` on that is
+      // undefined behavior, so it MUST be NULL-checked like every other
+      // nullable column above.
+      let otherAccount: String? = sqlite3_column_type(selectStmt, 3) != SQLITE_NULL
+        ? String(cString: sqlite3_column_text(selectStmt, 3))
+        : nil
       mismatched.append((assetId, stagedDir, fileId, otherAccount))
     }
     sqlite3_finalize(selectStmt)
@@ -3880,15 +3912,15 @@ final class NativeBackupEngine: NSObject {
       }
       clearStagedStateForRestage(
         assetId: row.assetId,
-        error: "Re-encrypting: previously staged under a different account"
+        error: "Re-encrypting: staged ciphertext not verified for this account"
       )
       RuntimeTrace.event("backup.native.staged_account_mismatch.purged", [
-        "stagedForAccount": row.otherAccount,
+        "stagedForAccount": row.otherAccount ?? "(untagged/pre-migration)",
         "currentAccount": accountId
       ])
     }
 
-    NSLog("[NativeBackupEngine] Purged \(mismatched.count) staged asset(s) encrypted for a different account")
+    NSLog("[NativeBackupEngine] Purged \(mismatched.count) staged asset(s) encrypted for a different (or unproven) account")
     return mismatched.count
   }
 

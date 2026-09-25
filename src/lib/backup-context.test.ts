@@ -295,3 +295,42 @@ describe('stopBackupEngines (sign-out / different-user teardown)', () => {
     expect(clearSessionMock).toHaveBeenCalledTimes(1);
   });
 });
+
+// Task 1531 [P0], lead review (2026-09-25): JS MIRROR of
+// `purgeMismatchedStagedAssets`'s row-selection predicate in
+// NativeBackupEngine.swift (the actual Swift source of truth — see that
+// file, and its `WHERE staged_file_id IS NOT NULL AND (staged_account_id IS
+// NULL OR staged_account_id != ?)` SQL). This does NOT exercise the Swift
+// code or the SQLite query — it exists because that logic lives inside
+// NativeBackupEngine.swift, which imports SDWebImage/ActivityKit/WidgetKit/
+// BackgroundTasks and only compiles inside the full Pods-linked app target;
+// neither of this repo's two host-less (no-Pods) XCTest targets
+// (ProvenanceHeadersTests, CoreVectorsKATTests) can compile it standalone,
+// and adding a third Pods-dependent XCTest target was out of scope for this
+// fix. `shouldPurgeStagedAsset` below is a plain reimplementation of the
+// same three-way decision, kept in sync by hand — a real device/simulator
+// XCTest run of the Swift purge function itself is the verification gap
+// this mirror does NOT close (see task notes).
+describe('shouldPurgeStagedAsset (JS mirror of NativeBackupEngine.swift purgeMismatchedStagedAssets predicate)', () => {
+  // Mirrors: staged_account_id IS NULL OR staged_account_id != accountId
+  function shouldPurgeStagedAsset(stagedAccountId: string | null, currentAccountId: string): boolean {
+    return stagedAccountId === null || stagedAccountId !== currentAccountId;
+  }
+
+  test('tagged for a DIFFERENT account → purge', () => {
+    expect(shouldPurgeStagedAsset('user-a', 'user-b')).toBe(true);
+  });
+
+  test('untagged (NULL — pre-migration, or staged before any account id was known) → purge', () => {
+    // This is the exact case the lead review corrected: a row staged under
+    // account A before the staged_account_id migration column existed is
+    // NULL, not 'user-a' — an earlier version of this fix trusted NULL as
+    // "same account" and re-uploaded it into whichever account signed in
+    // next, reproducing 1531 through the "trusted" branch.
+    expect(shouldPurgeStagedAsset(null, 'user-b')).toBe(true);
+  });
+
+  test('tagged for the CURRENT account → keep (never re-encrypt in-flight uploads for the same session)', () => {
+    expect(shouldPurgeStagedAsset('user-a', 'user-a')).toBe(false);
+  });
+});
