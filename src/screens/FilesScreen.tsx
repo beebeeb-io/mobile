@@ -30,7 +30,7 @@ import * as SecureStore from 'expo-secure-store';
 import * as LocalAuthentication from 'expo-local-authentication';
 import * as DocumentPicker from 'expo-document-picker';
 import { lockFile, unlockFile } from '../lib/file-locks';
-import { passesOpenLockGate } from '../lib/open-lock-gate';
+import { openFilesEntry } from '../lib/open-lock-gate';
 import { lockedToastMessage } from '../lib/lock-copy';
 import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system/legacy';
@@ -2247,35 +2247,33 @@ export default function FilesScreen() {
   const openFile = useCallback(
     async (file: FileEntry) => {
       try {
-        // Locked folders prompt here; locked files are gated by PreviewScreen
-        // alone (a second prompt here asked for Face ID twice) — open-lock-gate.ts.
-        if (!(await passesOpenLockGate(file))) return;
-        if (file.is_folder) {
-          navigateToFolder(file);
-        } else if (file.is_uploading === true) {
-          await handlePendingUpload(file);
-          return;
-        } else {
-          if (!(await ensureFileReady(file))) return;
-          navigation.navigate('Preview', {
-            fileId: file.id,
-            fileName: decryptedNames[file.id] ?? displayName(file),
-            mimeType: mimeTypeFor(file) ?? undefined,
-            sizeBytes: file.size_bytes,
-            createdAt: file.created_at,
-            chunkCount: file.chunk_count,
-            versionNumber: file.version_number,
-            storagePoolId: file.storage_pool_id ?? null,
-            // 0883 — let Preview auto self-repair a missing thumbnail for this
-            // owner media file from the downloaded plaintext (undefined ⇒ skip).
-            hasThumbnail: file.has_thumbnail,
-            // File-request uploads (0643): pass the sealed-key fields so Preview
-            // decrypts with the request content key, not the master-key path.
-            fileRequestId: file.file_request_id ?? null,
-            senderEphemeralPubkey: file.sender_ephemeral_pubkey ?? null,
-            wrappedContentKey: file.wrapped_content_key ?? null,
-          });
-        }
+        // Locked folders prompt inside openFilesEntry; locked files are gated
+        // by PreviewScreen alone (a prompt here too asked for Face ID twice).
+        // Keep ALL gating in open-lock-gate.ts — its test source-checks this body.
+        await openFilesEntry(file, {
+          navigateToFolder,
+          handlePendingUpload,
+          ensureFileReady,
+          openPreview: (f) =>
+            navigation.navigate('Preview', {
+              fileId: f.id,
+              fileName: decryptedNames[f.id] ?? displayName(f),
+              mimeType: mimeTypeFor(f) ?? undefined,
+              sizeBytes: f.size_bytes,
+              createdAt: f.created_at,
+              chunkCount: f.chunk_count,
+              versionNumber: f.version_number,
+              storagePoolId: f.storage_pool_id ?? null,
+              // 0883 — let Preview auto self-repair a missing thumbnail for this
+              // owner media file from the downloaded plaintext (undefined ⇒ skip).
+              hasThumbnail: f.has_thumbnail,
+              // File-request uploads (0643): pass the sealed-key fields so Preview
+              // decrypts with the request content key, not the master-key path.
+              fileRequestId: f.file_request_id ?? null,
+              senderEphemeralPubkey: f.sender_ephemeral_pubkey ?? null,
+              wrappedContentKey: f.wrapped_content_key ?? null,
+            }),
+        });
       } catch {
         showToast({ type: 'error', message: "Couldn't open file" });
       }
