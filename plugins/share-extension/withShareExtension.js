@@ -31,6 +31,21 @@ const SOURCE_FILES = [
   'FolderFetcher.swift',
 ];
 
+// ProvenanceHeaders.swift (task 1439, writer-provenance upload headers) lives
+// at modules/beebeeb-crypto/ios/ (canonical location, shared with the main
+// app + BeebeebFileProvider) rather than under targets/share-extension/, so
+// it can't go through SOURCE_FILES' copy-then-wire path above — referenced
+// directly by relative path instead, same pattern as BeebeebFileProvider's
+// CRYPTO_SHARED_FILES. This target has no Podfile entry of its own (see
+// ios/Podfile — only `target 'Beebeeb'` exists), so it never gets this file
+// "for free" via a pod. Found missing from a from-scratch `expo prebuild
+// --clean` while verifying the iOS 27 UIScene-lifecycle fix: the committed
+// project.pbxproj had it wired by hand (task 1439), which a clean prebuild
+// silently drops.
+const CRYPTO_SHARED_FILES = [
+  { path: '../modules/beebeeb-crypto/ios/ProvenanceHeaders.swift', name: 'ProvenanceHeaders.swift' },
+];
+
 function withShareExtension(config) {
   // Step 1: ensure the main-app Info.plist tells iOS the share UI looks
   // good in dark mode (the extension uses system colors).
@@ -149,7 +164,10 @@ function withShareExtension(config) {
       name: targetName,
       bundleId: EXTENSION_BUNDLE_ID,
       teamId: TEAM_ID,
-      sources: SOURCE_FILES.map((file) => ({ path: `${targetName}/${file}`, name: file })),
+      sources: [
+        ...SOURCE_FILES.map((file) => ({ path: `${targetName}/${file}`, name: file })),
+        ...CRYPTO_SHARED_FILES,
+      ],
       includeUniffiBindings: true,
       linkRustFramework: true,
       deploymentTarget: '16.0',
