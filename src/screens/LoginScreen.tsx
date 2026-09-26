@@ -77,6 +77,44 @@ export default function LoginScreen() {
     }
   }, [route.params?.email]);
 
+  // Task 1564 — __DEV__ only: headless OPAQUE login for a QA lane with no
+  // way to type credentials into the simulator (Maestro's testmanagerd
+  // driver was owned by another lane; computer-use is reserved for the
+  // lead). Runs the SAME production `opaqueLoginStart`/`opaqueLoginFinish`
+  // call as handleLogin below — this is not a bypass of auth, it is that
+  // real flow triggered by a deep link instead of a button tap. Credentials
+  // ride in the deep link's own query string, never hardcoded in source:
+  //   xcrun simctl openurl <udid> "beebeeb://dev/login-error?qa_autologin=1&qa_email=<email>&qa_password=<password>"
+  // REMOVE before this task's PR ships unless a future headless QA lane
+  // wants it kept — it is a diagnostic tool, not a feature.
+  useEffect(() => {
+    if (!__DEV__ || route.params?.qa_autologin !== '1') return;
+    const qaEmail = route.params?.qa_email;
+    const qaPassword = route.params?.qa_password;
+    if (!qaEmail || !qaPassword) return;
+    let cancelled = false;
+    (async () => {
+      setEmail(qaEmail);
+      setPassword(qaPassword);
+      setError(null);
+      setLoading(true);
+      try {
+        const { state, serverMessage, serverState, ksf_version } = await opaqueLoginStart(qaEmail, qaPassword);
+        await opaqueLoginFinish(qaEmail, qaPassword, state, serverMessage, serverState, ksf_version);
+        markUnlocked();
+        await refreshAuth();
+      } catch (err) {
+        if (!cancelled) setError(friendlyError(err));
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [route.params?.qa_autologin, route.params?.qa_email, route.params?.qa_password]);
+
   const styles = useMemo(() => StyleSheet.create({
     root: { flex: 1, backgroundColor: c.paper },
     scrollContent: { flexGrow: 1, justifyContent: 'center', paddingHorizontal: spacing.xl, paddingVertical: 40 },

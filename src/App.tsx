@@ -110,6 +110,9 @@ import PhotoLibrarySettingsScreen from './screens/PhotoLibrarySettingsScreen';
 // when __DEV__, so it is unreachable in a production build.
 import GlassGalleryScreen from './screens/GlassGalleryScreen';
 import DevPlaintextPurgeScreen from './screens/DevPlaintextPurgeScreen';
+// __DEV__-only WebView mount repro harness (task 1564). Same "unreachable in
+// production" pattern as GlassGallery above.
+import WebViewReproScreen from './screens/WebViewReproScreen';
 import { navigationThemeFor } from './lib/navigation-theme';
 import FileRequestsScreen from './screens/FileRequestsScreen';
 import CreateFileRequestScreen from './screens/CreateFileRequestScreen';
@@ -258,6 +261,14 @@ export type RootStackParamList = {
     // LoginScreen when present. See the production `login` path in the
     // linking config below.
     email?: string;
+    // Task 1564 — __DEV__-only headless OPAQUE login for a QA lane with no
+    // way to type credentials into the simulator (Maestro unavailable/owned
+    // by another lane). Credentials ride in the deep link's own query
+    // string, never hardcoded in source. See LoginScreen's qa_autologin
+    // effect and beebeeb://dev/login-error in the linking config below.
+    qa_autologin?: string;
+    qa_email?: string;
+    qa_password?: string;
   } | undefined;
   TwoFactorChallenge: { partialToken: string };
   Signup: undefined;
@@ -333,6 +344,8 @@ export type RootStackParamList = {
   /** `__DEV__` only — the iOS 26 glass primitives gallery (task 1311). */
   GlassGallery: undefined;
   DevPlaintextPurge: undefined;
+  /** `__DEV__` only — minimal WebView-mount repro harness (task 1564). */
+  WebViewRepro: undefined;
 };
 
 // ---------------------------------------------------------------------------
@@ -368,6 +381,9 @@ const linking = {
         DeleteAccount: 'dev/delete-account',
         DevPlaintextPurge: 'dev/purge-plaintext-caches',
         Login: 'dev/login-error',
+        // Task 1564 — headless WebView-mount repro:
+        //   xcrun simctl openurl <udid> beebeeb://dev/webview-repro
+        WebViewRepro: 'dev/webview-repro',
       } : {
         // Task 1551 — server task 1525's "you already have an account"
         // signup email links to `{APP_URL}/login?email=<address>`;
@@ -910,6 +926,13 @@ function TabNavigator() {
 // ---------------------------------------------------------------------------
 // Root App
 // ---------------------------------------------------------------------------
+
+// (Task 1564's investigation scaffolding — 7 throwaway boot-override repro
+// variants used to bisect the root cause of the react-native-webview iOS 27
+// blank-paint bug — lived here and was removed before this task's PR. See
+// PreviewScreen.tsx's SVG branch and DocxRenderer.tsx for the fix + the full
+// root-cause writeup, and the task file's Notes for how each variant's
+// result narrowed it down.)
 
 export default function App() {
   const { colors: c, resolved } = useTheme();
@@ -1629,6 +1652,13 @@ export default function App() {
                     <Stack.Screen
                       name="DevPlaintextPurge"
                       component={DevPlaintextPurgeScreen}
+                      options={{ headerShown: false }}
+                    />
+                  ) : null}
+                  {__DEV__ ? (
+                    <Stack.Screen
+                      name="WebViewRepro"
+                      component={WebViewReproScreen}
                       options={{ headerShown: false }}
                     />
                   ) : null}
