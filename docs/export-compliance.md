@@ -178,3 +178,55 @@ content the same way the main app does), but they carry no
 `ITSAppUsesNonExemptEncryption` key of their own — 1 file has the key set to
 `true`, 3 extension Info.plists have no key at all, matching Apple's
 documented behavior of evaluating export compliance at the app-bundle level.
+
+## 7. 2026-09-26 — France removed from sale; key dropped for build 213 (Option A)
+
+**Superseded by this section: §3's row 5 answer ("Yes, worldwide storefront") and §4's
+"not yet issued" framing.** Both described the app while it was still offered in France
+under declaration `35c912e6`. As of today the app is not sold in France, and the plan below
+does not need or wait on that declaration's approval.
+
+### What happened
+Builds 210–212 were rejected by `eas submit` with a 409 — *"Invalid Export Compliance
+Code… key value [] doesn't match the app's export compliance documentation"* — because
+`ITSAppUsesNonExemptEncryption = true` requires a matching `ITSEncryptionExportComplianceCode`,
+and the app's only encryption declaration (`35c912e6`, filed 2026-09-15, France = yes) has sat
+`IN_REVIEW` with no `codeValue` for 11 days (task `.claude/tasks/backlog/1447-*.md`). A second
+attempt to create a **new** declaration scoped to standard crypto with `availableOnFrenchStore:
+false` was refused by Apple's own API: `409 Cannot create appEncryptionDeclarations unless
+either containsProprietaryCryptography is True or containsThirdPartyCryptography and
+availableOnFrenchStore are both True`. Read literally: for an app using only standard,
+non-proprietary algorithms (§2 of this document) that is **not** available in France, Apple's
+API does not let you file a declaration at all — because none is required. The
+`ITSAppUsesNonExemptEncryption` questionnaire only needs answering, and a code is only ever
+issued, when the France condition applies.
+
+### The decision (Guus, 2026-09-26, "Sure lets do it")
+1. **France removed from sale** — the app's `territoryAvailabilities` for `FRA` set to
+   `available: false` / `contentStatuses: [CANNOT_SELL]` via the App Store Connect API. The app
+   is no longer offered on the French storefront.
+2. **`ITSAppUsesNonExemptEncryption` removed** from `app.json` (`ios.infoPlist`) and
+   `ios/Beebeeb/Info.plist` for build 213 onward, rather than set to a value. With the key
+   absent, App Store Connect asks Apple's standard export-compliance questions **per build**,
+   after upload, instead of requiring a pre-filed declaration + code up front.
+3. **Per-build answers** (given truthfully in App Store Connect for each future build,
+   matching §2/§3 of this document): uses encryption — yes; proprietary/non-standard
+   algorithms — no; standard algorithms only (AES-256-GCM, Argon2id, OPAQUE, X25519, HKDF-SHA256,
+   all per §2); available in France — **no**.
+4. **Declaration `35c912e6` stays `IN_REVIEW`, untouched.** It is not withdrawn, not
+   superseded, not relied upon. Nothing in this plan depends on Apple ever approving it.
+
+### Re-enabling France
+France can be re-enabled once `35c912e6` (or a successor filed the same way) reaches
+`APPROVED` with a `codeValue`. At that point: set `territoryAvailabilities.FRA.available = true`
+again, and put `ITSAppUsesNonExemptEncryption: true` **and** `ITSEncryptionExportComplianceCode:
+"<code>"` back into `app.json`/`Info.plist` together (both keys — the code is meaningless
+without the flag, and Apple rejects the flag alone once a declaration exists). Do not re-add the
+`ITSAppUsesNonExemptEncryption` key without the code, or builds will regress to the 210–212
+409 rejection for the France storefront.
+
+### What did not change
+The ANSSI cryptology declaration for France (§5 above; LCEN art. 30) and the BIS annual
+self-classification report (§5) are unaffected by this section — both are Initlabs B.V.
+filings independent of Apple's per-app questionnaire, and remain owed regardless of whether
+the app is sold in France.
