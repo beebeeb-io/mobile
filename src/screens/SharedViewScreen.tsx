@@ -23,6 +23,13 @@ import { downloadSharedFileBlob, getShareByToken, verifySharePassphrase, friendl
 import { isStaleShareVerification } from '../lib/share-verify-gate';
 import type { ShareInfo } from '../lib/api';
 import { makeShareKeyResolver } from '../lib/share-key-store';
+import {
+  decryptShareFileName,
+  displayFileName,
+  resolveShareFileKey,
+  sharedCacheFileName,
+} from '../lib/share-file-name';
+import type { DecryptedShareName } from '../lib/share-file-name';
 import { formatBytes as formatSize } from '../lib/format';
 import {
   decryptEncryptedBytes,
@@ -74,26 +81,9 @@ function fileTypeBg(mime?: string | null, isFolder?: boolean, colors?: { amberDe
   return colors.ink3;
 }
 
-function displayFileName(info: ShareInfo): string {
-  const raw = info.file_name_encrypted;
-  if (!raw) return info.is_folder ? 'Shared folder' : 'Shared file';
-  if (raw.startsWith('{')) return info.is_folder ? 'Encrypted folder' : 'Encrypted file';
-  if (raw.length > 48) return raw.slice(0, 40) + '...';
-  return raw;
-}
-
 // ---------------------------------------------------------------------------
 // Binary helpers
 // ---------------------------------------------------------------------------
-
-function base64ToUint8Array(b64: string): Uint8Array {
-  const binary = atob(b64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i);
-  }
-  return bytes;
-}
 
 function uint8ArrayToBase64(bytes: Uint8Array): string {
   let binary = '';
@@ -101,20 +91,6 @@ function uint8ArrayToBase64(bytes: Uint8Array): string {
     binary += String.fromCharCode(bytes[i]);
   }
   return btoa(binary);
-}
-
-/**
- * Decode a key from the URL #key= fragment. The web client emits base64url
- * (URL-safe, unpadded) for double-encrypted shares but standard base64 for
- * legacy links — accept both by normalizing to base64.
- */
-function fragmentKeyToBytes(key: string): Uint8Array {
-  let normalized = key.replace(/-/g, '+').replace(/_/g, '/');
-  // Re-add padding if it was stripped (base64url convention).
-  const pad = normalized.length % 4;
-  if (pad === 2) normalized += '==';
-  else if (pad === 3) normalized += '=';
-  return base64ToUint8Array(normalized);
 }
 
 function splitShareTokenParam(rawToken: string): { token: string; shareKey: string | null } {
@@ -127,15 +103,6 @@ function splitShareTokenParam(rawToken: string): { token: string; shareKey: stri
   const hash = rawToken.slice(hashIndex + 1);
   const key = new URLSearchParams(hash).get('key');
   return { token, shareKey: key ? decodeURIComponent(key) : null };
-}
-
-/** Sanitise the saved file's basename so it survives the fs cache path. */
-function safeBasename(name: string | undefined, fallback: string): string {
-  const raw = (name ?? fallback).trim();
-  const cleaned = raw.replace(/[^\w.\-]+/g, '_');
-  if (cleaned.length === 0) return fallback;
-  if (cleaned.length > 64) return cleaned.slice(0, 64);
-  return cleaned;
 }
 
 // ---------------------------------------------------------------------------
@@ -192,6 +159,11 @@ export default function SharedViewScreen() {
   const [decrypting, setDecrypting] = useState(false);
   const [decryptError, setDecryptError] = useState<string | null>(null);
   const [decryptedUri, setDecryptedUri] = useState<string | null>(null);
+  // The share's decrypted {name, mimeType} — the server only sends the
+  // encrypted `name_encrypted` envelope (under the file key), so the name is
+  // decrypted client-side once the metadata and the #key= fragment are both
+  // known, exactly as web share-view does. null = not (yet) decryptable.
+  const [decryptedName, setDecryptedName] = useState<DecryptedShareName | null>(null);
 
   // Task 1539 (finding 4): passphrase-gate state. `getShareByToken` returns
   // only `{id, share_type, requires_passphrase: true, expires_at}` for a
@@ -228,6 +200,7 @@ export default function SharedViewScreen() {
     setError(null);
     setInfo(null);
     setDecryptedUri(null);
+    setDecryptedName(null);
     setDecryptError(null);
     setDecrypting(false);
     (async () => {
@@ -242,6 +215,20 @@ export default function SharedViewScreen() {
     })();
     return () => { cancelled = true; };
   }, [token]);
+
+  // Decrypt the filename as soon as the (verified) metadata and the key are
+  // both available. A passphrase-gated share has no `name_encrypted` until
+  // /verify replaces `info`, so this re-runs then.
+  useEffect(() => {
+    setDecryptedName(null);
+    if (!info || info.requires_passphrase === true || !shareKey) return;
+    if (!BeebeebCrypto.isNativeAvailable) return;
+    let cancelled = false;
+    void decryptShareFileName(info, shareKey, BeebeebCrypto).then((result) => {
+      if (!cancelled) setDecryptedName(result);
+    });
+    return () => { cancelled = true; };
+  }, [info, shareKey]);
 
   const handleClose = useCallback(() => {
     if (navigation.canGoBack()) navigation.goBack();
@@ -315,26 +302,14 @@ export default function SharedViewScreen() {
       const { encryptedBytes, chunkCount, chunkSize, originalSize } =
         await downloadSharedFileBlob(token, passphrase || undefined);
 
-      // 1. Resolve the per-file AES-256-GCM key.
-      let fileKey: Uint8Array;
-      const kcBytes = fragmentKeyToBytes(shareKey);
+      // 1. Resolve the per-file AES-256-GCM key (unwrapping K_c for a
+      // double-encrypted share; the fragment IS the file key otherwise).
+      const fileKey = await resolveShareFileKey(info, shareKey, BeebeebCrypto.decryptChunk);
 
-      if (info.double_encrypted) {
-        if (!info.wrapped_file_key) {
-          throw new Error('Double-encrypted share is missing its wrapped key.');
-        }
-        // wrapped_file_key = base64( nonce(12) || ciphertext(file_key + GCM tag) )
-        const wrapped = base64ToUint8Array(info.wrapped_file_key);
-        if (wrapped.length < 13) {
-          throw new Error('Wrapped key blob is too small to decrypt.');
-        }
-        const nonce = wrapped.slice(0, 12);
-        const ciphertext = wrapped.slice(12);
-        fileKey = await BeebeebCrypto.decryptChunk(kcBytes, nonce, ciphertext);
-      } else {
-        // Standard share: the URL fragment IS the file key.
-        fileKey = kcBytes;
-      }
+      // The decrypted name drives the saved file's name + extension. The
+      // effect above normally has it already; decrypt here if it has not
+      // landed yet so the saved file is never extension-less.
+      const name = decryptedName ?? (await decryptShareFileName(info, shareKey, BeebeebCrypto));
 
       // 2. Resolve canonical chunk metadata. Prefer authoritative server
       // headers, fall back to the share-info `chunk_count`, then to byte-math
@@ -366,8 +341,7 @@ export default function SharedViewScreen() {
 
       // 4. Persist plaintext to the cache directory so the system share sheet
       // can hand it off to other apps (Files / Photos / Mail).
-      const baseName = safeBasename(info.file_name_encrypted, `shared_${token}`);
-      const decUri = `${FileSystem.cacheDirectory}shared_${token}_${baseName}`;
+      const decUri = `${FileSystem.cacheDirectory}${sharedCacheFileName(info, name, token)}`;
       try {
         await FileSystem.deleteAsync(decUri, { idempotent: true });
       } catch {
@@ -381,8 +355,8 @@ export default function SharedViewScreen() {
       // 5. Try the share sheet immediately so the user can save / open it.
       if (await Sharing.isAvailableAsync()) {
         await Sharing.shareAsync(decUri, {
-          mimeType: info.mime_type ?? 'application/octet-stream',
-          dialogTitle: baseName,
+          mimeType: name?.mimeType ?? info.mime_type ?? 'application/octet-stream',
+          dialogTitle: name?.name ?? displayFileName(info, null),
         });
       }
     } catch (e) {
@@ -399,7 +373,7 @@ export default function SharedViewScreen() {
     } finally {
       setDecrypting(false);
     }
-  }, [info, shareKey, token, passphrase]);
+  }, [info, shareKey, token, passphrase, decryptedName]);
 
   /** Re-open the share sheet for an already-decrypted file. */
   const handleOpenDecrypted = useCallback(async (): Promise<void> => {
@@ -407,17 +381,18 @@ export default function SharedViewScreen() {
     try {
       if (await Sharing.isAvailableAsync()) {
         await Sharing.shareAsync(decryptedUri, {
-          mimeType: info?.mime_type ?? 'application/octet-stream',
-          dialogTitle: info?.file_name_encrypted,
+          mimeType: decryptedName?.mimeType ?? info?.mime_type ?? 'application/octet-stream',
+          dialogTitle: decryptedName?.name ?? (info ? displayFileName(info, null) : undefined),
         });
       }
     } catch {
       // Share sheet dismissal is not an error worth surfacing.
     }
-  }, [decryptedUri, info]);
+  }, [decryptedUri, info, decryptedName]);
 
-  const iconName = fileTypeIcon(info?.mime_type, info?.is_folder);
-  const iconBg = fileTypeBg(info?.mime_type, info?.is_folder, c);
+  const effectiveMime = decryptedName?.mimeType ?? info?.mime_type;
+  const iconName = fileTypeIcon(effectiveMime, info?.is_folder);
+  const iconBg = fileTypeBg(effectiveMime, info?.is_folder, c);
 
   return (
     <View style={[styles.root, { paddingTop: insets.top, paddingBottom: insets.bottom, backgroundColor: c.paper2 }]}>
@@ -526,7 +501,7 @@ export default function SharedViewScreen() {
 
           {/* File name */}
           <Text style={[styles.fileName, { color: c.ink }]} numberOfLines={3}>
-            {displayFileName(info)}
+            {displayFileName(info, decryptedName)}
           </Text>
 
           {/* Meta card */}
@@ -538,11 +513,11 @@ export default function SharedViewScreen() {
                 <Text style={[styles.metaValue, { color: c.ink }]}>{formatSize(info.size_bytes)}</Text>
               </View>
             )}
-            {info.mime_type && (
+            {effectiveMime && (
               <View style={styles.metaRow}>
                 <Ionicons name="document-outline" size={14} color={c.ink3} />
                 <Text style={[styles.metaLabel, { color: c.ink3 }]}>Type</Text>
-                <Text style={[styles.metaValue, { color: c.ink }]} numberOfLines={1}>{info.mime_type}</Text>
+                <Text style={[styles.metaValue, { color: c.ink }]} numberOfLines={1}>{effectiveMime}</Text>
               </View>
             )}
             {info.sender_email && (

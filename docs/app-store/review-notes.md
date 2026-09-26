@@ -98,6 +98,54 @@ destroyed server-side. See task 1399 for the exact flow.
 > `app_review_information` hash. This placeholder in the repo must stay exactly as written above —
 > never edit it in place to hold real credentials.
 
+**Signing in with the demo account (the reviewer's path — iOS, as of mobile `main` 2026-09-25):**
+
+These are the screens the iOS app actually shows. They were checked against a Release build on an
+iPhone simulator with the demo account (task 1557, Maestro run: "Unlock your vault" visible,
+"Set up this device" not shown). The credentials and the 12-word phrase live only in the private
+notes copy that `ASC_REVIEW_NOTES_PATH` points at, never here.
+
+1. Launch the app. The sign-in screen opens. Enter the demo email and password and tap **Sign in**.
+2. If iOS asks about notifications, either answer works.
+3. The app opens **"Unlock your vault"**. The vault key never leaves a device that holds it, so a
+   new device unlocks with the recovery phrase. Tap the large text box and type or paste the 12
+   words (lowercase, single spaces). The counter reads **"12/12 words"**.
+4. Tap **Unlock vault**. The Files screen opens.
+
+The iOS app does **not** show a "Set up this device" chooser (passkey / QR / recovery phrase).
+That screen exists only in the web app (`repos/web/src/components/device-provision.tsx`). The
+private review notes submitted in September 2026 described it. Keep the private notes on the
+four steps above.
+
+**Which build may be attached to a submission (task 1557, 2026-09-25):**
+
+Apple's 2026-09-25 rejection ("unable to login: tapped login → error message", iPad Air M3,
+iPadOS 27) was a re-test of **build 141**. That build is from May 2026 and was still attached to
+review submission `6c8670cc`. Build 141 finishes OPAQUE login with the legacy Identity KSF and
+ignores the `ksf_version` that login-start returns. Every account registered since 2026-05-23 is
+KSF v1 (Argon2id), and that includes the demo account created 2026-09-13. For those accounts the
+envelope cannot open on the device, so the app shows an error before it ever sends login-finish.
+Our production server logs show no failed login attempt for this rejection, which is consistent
+with the client never reaching login-finish. The server cannot fix this: the KSF runs on the
+client, and re-registering the demo account under v0 would switch off password stretching.
+
+Rules for any future submission:
+
+- **Never re-submit build 141 or anything below the dual-KSF client (mobile `29dffa9`, build 164).**
+  The regression test `src/lib/api.opaque-ksf-threading.test.ts` pins the contract: a v1 account
+  must reach the native finish with `ksf_version = 1`, a v0 account with 0, and an absent field
+  must default to 1.
+- **Do not attach builds 205–208 either** (uploaded 2026-08-31). They are older than tasks 1399
+  (in-app deletion), 1400 (iPhone-only, no billing CTAs) and 1401
+  (`ITSAppUsesNonExemptEncryption = true`). Submitting one would reopen those review items and
+  make a false export declaration.
+- The next submittable build is the first one from `main` that carries
+  `ITSEncryptionExportComplianceCode` (task 1447; EAS will number it **213**).
+- Before submitting, sign in on an iPhone simulator with the demo account against production, all
+  the way to the Files screen. With `supportsTablet: false`, iPad runs the app in iPhone
+  compatibility mode. Apple reviews on iPad, so repeat the sign-in on an iPad simulator and take
+  `simctl` screenshots, because Maestro's hierarchy is empty on iPad simulators on this Mac.
+
 ## 2. Age rating questionnaire (Apple's current content-rights questionnaire)
 
 Beebeeb is a private file-storage utility with no user-facing content the app itself produces or
