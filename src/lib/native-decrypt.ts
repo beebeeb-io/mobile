@@ -728,3 +728,28 @@ export async function clearPreviewCache(): Promise<void> {
     // Best-effort cleanup
   }
 }
+
+/**
+ * Task 1563 — evict ONE file's cached decrypted preview, keyed the same way
+ * `decryptToTempFile` builds `outputPath` (fileId + extension). Every prior
+ * caller of this cache only ever produced a NEW plaintext for a fileId that
+ * had never been decrypted before (a fresh upload, a different file); the
+ * text editor's Save is the first flow that replaces the content BEHIND an
+ * already-cached fileId while the app is still running. Without this,
+ * reopening the file right after a save served the stale pre-edit bytes
+ * from disk — confirmed on-device (bb-ios27): the server's `size_bytes`
+ * updated correctly, but `decryptToTempFile`'s cache-hit rung
+ * (`cachedSize` in the runtime trace) still reported the OLD size. Call
+ * this right after a save succeeds, for every extension the file could
+ * plausibly have been opened under this session (cheap — deleting a
+ * nonexistent path is a no-op).
+ */
+export async function invalidatePreviewCache(fileId: string, extension: string): Promise<void> {
+  try {
+    const ext = extension.replace(/^\./, '');
+    await FileSystem.deleteAsync(`${PREVIEW_CACHE_DIR}${fileId}.${ext}`, { idempotent: true });
+  } catch {
+    // Best-effort — a failed delete just means the next open re-decrypts
+    // into a fresh temp file's normal cache-miss path instead of reusing this one.
+  }
+}

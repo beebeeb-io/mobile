@@ -36,9 +36,17 @@ import type { Colors } from '../theme';
 import { useTheme } from '../lib/theme-context';
 import { GLASS_CIRCLE_SIZES, GlassCapsule, GlassCircle, SCROLL_EDGE, ScrollEdgeBlur, glassMaterial } from '../components/glass';
 import { useToast } from '../lib/toast-context';
-import { getToken, friendlyError, trustLocation, trashFiles } from '../lib/api';
+import { getToken, friendlyError, trustLocation, trashFiles, getFile, getFileCurrentVersion, type UploadProgress } from '../lib/api';
 import { useCrypto } from '../lib/crypto-context';
-import { decryptToTempFile } from '../lib/native-decrypt';
+import { generateFileId } from '../lib/encrypted-upload';
+import { encryptedMetadataToJson, fileMetadataPlaintext } from '../lib/encrypted-metadata';
+import { evaluateTextEditGate } from '../lib/text-edit-gate';
+import {
+  buildKeepBothName,
+  isStaleVersionConflict,
+  saveTextFileVersion,
+} from '../lib/text-file-save';
+import { decryptToTempFile, invalidatePreviewCache } from '../lib/native-decrypt';
 import { offlineManager } from '../lib/offline-manager';
 import { maybeSelfRepairThumbnailFromLocalFile } from '../lib/thumbnail-self-repair';
 import { BeebeebThumbnails, type PreviewLoadProgressEvent } from '../../modules/beebeeb-crypto';
@@ -105,6 +113,14 @@ const ZipRenderer = React.lazy(async () => {
 const CodeRenderer = React.lazy(async () => {
   const m = await import('../components/preview/CodeRenderer');
   return { default: m.CodeRenderer };
+});
+const MarkdownRenderer = React.lazy(async () => {
+  const m = await import('../components/preview/MarkdownRenderer');
+  return { default: m.MarkdownRenderer };
+});
+const TextEditorView = React.lazy(async () => {
+  const m = await import('../components/preview/TextEditorView');
+  return { default: m.TextEditorView };
 });
 
 // ---------------------------------------------------------------------------
@@ -1869,6 +1885,23 @@ export default function PreviewScreen() {
   const [textLoading, setTextLoading] = useState(false);
   const [textError, setTextError] = useState<string | null>(null);
 
+  // Task 1563 — text/markdown/code EDIT mode state. `savedVersionNumber`/
+  // `savedAt` override the route-provided version once a save succeeds (this
+  // screen never re-fetches route params), and `fileMeta` carries the fields
+  // a save needs that route.params never had (the file's CURRENT encrypted
+  // name — reused byte-for-byte, never re-derived — and its parent folder,
+  // needed only for "Keep both"). Fetched lazily on first entry into edit
+  // mode, not on every keystroke or every save.
+  const [editMode, setEditMode] = useState(false);
+  const [editText, setEditText] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [savedVersionNumber, setSavedVersionNumber] = useState<number | null>(null);
+  const [savedAt, setSavedAt] = useState<Date | null>(null);
+  const [fileMeta, setFileMeta] = useState<{ nameEncrypted: string; parentId: string | null; versionNumber: number } | null>(null);
+  const [fileMetaError, setFileMetaError] = useState<string | null>(null);
+  const [loadingFileMeta, setLoadingFileMeta] = useState(false);
+  const [conflict, setConflict] = useState<{ freshVersionNumber: number } | null>(null);
+
   // Video inline preview state — `videoUri` is the on-disk decrypted file
   // that the VideoView plays from; cleaned up on unmount / when changed.
   const [videoUri, setVideoUri] = useState<string | null>(null);
@@ -1923,7 +1956,7 @@ export default function PreviewScreen() {
     }).catch(() => {});
   }, []);
 
-  const { isUnlocked, getFileKeyBytes, getMasterKeyHandleId, getRequestContentKey } = useCrypto();
+  const { isUnlocked, getFileKeyBytes, getMasterKeyHandleId, getRequestContentKey, encryptChunk, encryptMetadata } = useCrypto();
 
   // Resolve the key provider + master-key handle for decryptToTempFile. For a
   // file-request upload (0643) we hand it the request content key C and a null
@@ -2020,6 +2053,242 @@ export default function PreviewScreen() {
     [codeLanguage, currentFileName],
   );
   // Code highlighting moved into the lazy CodeRenderer — keep raw text here.
+  const isMarkdown = isText && codeLanguage === 'markdown';
+
+  // ---------------------------------------------------------------------
+  // Task 1563 — markdown preview + native text/code editor.
+  // ---------------------------------------------------------------------
+
+  const effectiveVersionNumber = savedVersionNumber ?? currentVersionNumber ?? 1;
+
+  const editGate = useMemo(
+    () => evaluateTextEditGate({
+      sizeBytes: currentSizeBytes,
+      decodedText: textContent,
+      decodeFailed: !!textError,
+    }),
+    [currentSizeBytes, textContent, textError],
+  );
+  const canEditText = isText && editGate.editable;
+
+  const isDirty = editMode && editText != null && editText !== (textContent ?? '');
+
+  const statusLine = useMemo(() => {
+    if (!savedAt) return null;
+    const hh = savedAt.getHours().toString().padStart(2, '0');
+    const mm = savedAt.getMinutes().toString().padStart(2, '0');
+    return `Encrypted · version ${effectiveVersionNumber} · ${hh}:${mm}`;
+  }, [savedAt, effectiveVersionNumber]);
+
+  // Lazily fetch the fields a save needs that route.params never carried
+  // (the file's CURRENT encrypted name — reused byte-for-byte — and its
+  // parent id, needed only for "Keep both"). Runs once per preview open,
+  // the first time the user actually enters edit mode; re-run after a
+  // conflict is resolved so the next attempt starts from the true current
+  // state.
+  const loadFileMeta = useCallback(async (): Promise<{ nameEncrypted: string; parentId: string | null; versionNumber: number } | null> => {
+    setLoadingFileMeta(true);
+    setFileMetaError(null);
+    try {
+      // Task 1563 (found while verifying the conflict flow, evidence pasted
+      // in the task Notes): `GET /api/v1/files/:id` never selects
+      // `version_number` server-side, so `fresh.version_number` is always
+      // `undefined` — using it (with a stale-state fallback) silently fed a
+      // WRONG "current version" into a real conflict retry. `/versions`'s
+      // `current_version` is the reliable source (see `getFileCurrentVersion`'s
+      // doc comment) — an existing endpoint, not a new one.
+      const [fresh, currentVersion] = await Promise.all([
+        getFile(currentFileId),
+        getFileCurrentVersion(currentFileId),
+      ]);
+      const meta = {
+        nameEncrypted: fresh.name_encrypted,
+        parentId: fresh.parent_id ?? null,
+        versionNumber: currentVersion,
+      };
+      setFileMeta(meta);
+      return meta;
+    } catch (err) {
+      setFileMetaError(friendlyError(err));
+      return null;
+    } finally {
+      setLoadingFileMeta(false);
+    }
+  }, [currentFileId]);
+
+  const handleEnterEditMode = useCallback(() => {
+    if (!canEditText || textContent == null) return;
+    setEditText(textContent);
+    setEditMode(true);
+    setOptionsVisible(false);
+    if (!fileMeta) void loadFileMeta();
+  }, [canEditText, textContent, fileMeta, loadFileMeta]);
+
+  const handleExitEditMode = useCallback(() => {
+    if (isDirty) {
+      Alert.alert(
+        'Discard unsaved changes?',
+        'Your edits since the last save will be lost.',
+        [
+          { text: 'Keep editing', style: 'cancel' },
+          {
+            text: 'Discard',
+            style: 'destructive',
+            onPress: () => {
+              setEditMode(false);
+              setEditText(null);
+              setOptionsVisible(false);
+            },
+          },
+        ],
+      );
+      return;
+    }
+    setEditMode(false);
+    setOptionsVisible(false);
+  }, [isDirty]);
+
+  const attemptSave = useCallback(async (opts: {
+    text: string;
+    targetFileId: string;
+    nameEncrypted: string;
+    parentId: string | null;
+    versionReplace: { baseVersionNumber: number } | null;
+  }): Promise<{ ok: true } | { ok: false; conflict: boolean }> => {
+    try {
+      const updated = await saveTextFileVersion({
+        fileId: opts.targetFileId,
+        nameEncrypted: opts.nameEncrypted,
+        parentId: opts.parentId ?? undefined,
+        text: opts.text,
+        encryptChunkFn: encryptChunk,
+        versionReplace: opts.versionReplace ?? undefined,
+      });
+      const newVersion = updated.version_number ?? (opts.versionReplace ? opts.versionReplace.baseVersionNumber + 1 : 1);
+      // Task 1563 — `decryptToTempFile`'s preview cache is keyed by fileId +
+      // extension only, with no version awareness (every caller before this
+      // one only ever produced a NEW plaintext for a fileId the cache had
+      // never seen). A version-replace writes NEW bytes behind an
+      // ALREADY-cached fileId, so without this, reopening the file in the
+      // same session served the stale pre-edit content — confirmed
+      // on-device (bb-ios27): server size_bytes updated, cached preview
+      // did not. `extensionForMime(..., 'doc')` matches exactly what the
+      // isText read-view's own `fetchAndDecrypt` call caches under.
+      await invalidatePreviewCache(opts.targetFileId, extensionForMime(currentMimeType, category).replace(/^\./, ''));
+      setSavedVersionNumber(newVersion);
+      setSavedAt(new Date());
+      setTextContent(opts.text);
+      setEditText(opts.text);
+      setFileMeta({ nameEncrypted: opts.nameEncrypted, parentId: opts.parentId, versionNumber: newVersion });
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      return { ok: true };
+    } catch (err) {
+      if (isStaleVersionConflict(err)) {
+        return { ok: false, conflict: true };
+      }
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      Alert.alert('Save failed', friendlyError(err));
+      return { ok: false, conflict: false };
+    }
+  }, [encryptChunk, currentMimeType, category]);
+
+  const handleSaveEdit = useCallback(async () => {
+    if (editText == null || saving) return;
+    setSaving(true);
+    try {
+      let meta = fileMeta;
+      if (!meta) meta = await loadFileMeta();
+      if (!meta) {
+        Alert.alert('Save failed', fileMetaError ?? 'Could not read the file before saving.');
+        return;
+      }
+      const result = await attemptSave({
+        text: editText,
+        targetFileId: currentFileId,
+        nameEncrypted: meta.nameEncrypted,
+        parentId: meta.parentId,
+        versionReplace: { baseVersionNumber: meta.versionNumber },
+      });
+      if (!result.ok && result.conflict) {
+        // Learn the real current version so "Save as new version" retries
+        // against the right base instead of guessing +1.
+        const refreshed = await loadFileMeta();
+        setConflict({ freshVersionNumber: refreshed?.versionNumber ?? meta.versionNumber + 1 });
+      }
+    } finally {
+      setSaving(false);
+    }
+  }, [editText, saving, fileMeta, loadFileMeta, fileMetaError, attemptSave, currentFileId]);
+
+  const handleConflictChoice = useCallback(async (choice: 'keep-both' | 'new-version' | 'discard') => {
+    if (editText == null) return;
+    setConflict(null);
+    if (choice === 'discard') {
+      setEditMode(false);
+      setEditText(null);
+      return;
+    }
+    setSaving(true);
+    try {
+      const refreshed = await loadFileMeta();
+      if (!refreshed) {
+        Alert.alert('Save failed', fileMetaError ?? 'Could not read the file before saving.');
+        return;
+      }
+      if (choice === 'new-version') {
+        const result = await attemptSave({
+          text: editText,
+          targetFileId: currentFileId,
+          nameEncrypted: refreshed.nameEncrypted,
+          parentId: refreshed.parentId,
+          versionReplace: { baseVersionNumber: refreshed.versionNumber },
+        });
+        if (!result.ok && result.conflict) {
+          // Someone saved again in the tiny window between the refetch and
+          // this retry — surface the dialog again rather than looping.
+          const again = await loadFileMeta();
+          setConflict({ freshVersionNumber: (again?.versionNumber ?? refreshed.versionNumber) + 1 });
+        }
+      } else {
+        // Keep both — a brand-new file, same folder, suffixed name. Never
+        // touches the OTHER device's version at all.
+        const newFileId = await generateFileId();
+        const keptName = buildKeepBothName(previewFileName, 'iPhone');
+        const metadataPlain = fileMetadataPlaintext(keptName, currentMimeType ?? null, null);
+        const encName = await encryptMetadata(newFileId, metadataPlain);
+        const nameEncrypted = encryptedMetadataToJson(encName);
+        await attemptSave({
+          text: editText,
+          targetFileId: newFileId,
+          nameEncrypted,
+          parentId: refreshed.parentId,
+          versionReplace: null,
+        });
+        showToast({ type: 'success', message: `Saved as "${keptName}"` });
+      }
+    } finally {
+      setSaving(false);
+    }
+  }, [editText, loadFileMeta, fileMetaError, attemptSave, currentFileId, previewFileName, currentMimeType, encryptMetadata, showToast]);
+
+  const showConflictDialog = useCallback(() => {
+    if (!conflict) return;
+    Alert.alert(
+      'A newer version was saved on another device',
+      `Version ${conflict.freshVersionNumber} exists on the server. Your changes are still here — choose what happens next.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Discard my changes', style: 'destructive', onPress: () => { void handleConflictChoice('discard'); } },
+        { text: 'Keep both', onPress: () => { void handleConflictChoice('keep-both'); } },
+        { text: 'Save as new version', onPress: () => { void handleConflictChoice('new-version'); } },
+      ],
+    );
+  }, [conflict, handleConflictChoice]);
+
+  useEffect(() => {
+    if (conflict) showConflictDialog();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- fires once per conflict object identity, not per render of showConflictDialog.
+  }, [conflict]);
 
   // Theme-aware accent for non-image category badge
   const categoryAccent = (() => {
@@ -2086,6 +2355,39 @@ export default function PreviewScreen() {
     closedRef.current = true;
     navigation.goBack();
   }, [navigation]);
+
+  // Task 1563 (item 7 — unsaved-changes guard). `beforeRemove` fires for
+  // EVERY way this screen can leave — the close button above, the modal's
+  // own swipe-to-dismiss gesture, and Android hardware back — not just one
+  // button handler, so this is the one place that actually covers "leaving
+  // the screen" rather than just "tapping this specific control".
+  useEffect(() => {
+    const unsubscribe = navigation.addListener('beforeRemove', (e) => {
+      if (!isDirty) return;
+      e.preventDefault();
+      Alert.alert(
+        'Discard unsaved changes?',
+        'Your edits since the last save will be lost.',
+        [
+          {
+            text: 'Keep editing',
+            style: 'cancel',
+            // `handleClose` above latches `closedRef` before this listener
+            // ever runs (it calls `goBack()` unconditionally); un-latch it
+            // here so a cancelled leave doesn't permanently disable the
+            // close button for the rest of this screen's lifetime.
+            onPress: () => { closedRef.current = false; },
+          },
+          {
+            text: 'Discard',
+            style: 'destructive',
+            onPress: () => navigation.dispatch(e.data.action),
+          },
+        ],
+      );
+    });
+    return unsubscribe;
+  }, [navigation, isDirty]);
 
   /**
    * Download the encrypted file to cache and decrypt it (when the vault is
@@ -2994,14 +3296,35 @@ export default function PreviewScreen() {
     );
   }, [currentFileId, navigation, previewFileName, trashing, isImage, isVideo]);
 
+  // Task 1563 — Guus's ruling (2026-09-26 18:50) overrides the mockup's
+  // Edit/Preview segmented control: Edit is reached from THIS existing ⋯
+  // menu, not a new control. While editing, the same slot flips to
+  // "Preview" (markdown — go back to the formatted view) or "Done"
+  // (plain text/code — go back to the highlighted read view). No item at
+  // all when the file fails the edit gate (no Edit button, per the size/
+  // UTF-8 limit) and the file hasn't been opened for editing.
+  const editMenuAction = useMemo<PreviewOptionAction | null>(() => {
+    if (!isText) return null;
+    if (editMode) {
+      return {
+        label: isMarkdown ? 'Preview' : 'Done',
+        icon: isMarkdown ? 'eye-outline' : 'checkmark-outline',
+        run: handleExitEditMode,
+      };
+    }
+    if (!canEditText) return null;
+    return { label: 'Edit', icon: 'pencil-outline', run: handleEnterEditMode };
+  }, [isText, editMode, isMarkdown, canEditText, handleExitEditMode, handleEnterEditMode]);
+
   const previewActions = useMemo<PreviewOptionAction[]>(() => [
     ...(isImage ? [{ label: 'View Original', icon: 'image-outline' as const, run: handleViewOriginal }] : []),
+    ...(editMenuAction ? [editMenuAction] : []),
     { label: 'Share Beebeeb Link', icon: 'link-outline', run: handleShare },
     { label: 'Save Original…', icon: 'share-outline', run: handleDownload },
     { label: 'Copy File Name', icon: 'copy-outline', run: handleCopyName },
     { label: 'Duplicate', icon: 'duplicate-outline', run: handleDuplicate },
     { label: 'Move to Trash', icon: 'trash-outline', destructive: true, run: handleMoveToTrash },
-  ], [handleCopyName, handleDownload, handleDuplicate, handleMoveToTrash, handleShare, handleViewOriginal, isImage]);
+  ], [handleCopyName, handleDownload, handleDuplicate, handleMoveToTrash, handleShare, handleViewOriginal, isImage, editMenuAction]);
 
   const handlePreviewOptions = useCallback(() => {
     if (Platform.OS === 'ios') {
@@ -3679,10 +4002,52 @@ export default function PreviewScreen() {
             </View>
           )
         ) : isText ? (
-          textContent != null ? (
-            <Suspense fallback={<View style={styles.imageStatus}>{renderSharedProgress(false)}</View>}>
-              <CodeRenderer code={textContent} language={codeLanguage} />
-            </Suspense>
+          editMode ? (
+            // Task 1563 — `previewArea`'s `alignItems:'center'`/`justifyContent:'center'`
+            // (tuned for centering a small spinner/error message) shrinks any
+            // ordinary `flex:1` child to its CONTENT width, not the screen's —
+            // confirmed on-device (bb-ios27): the editor rendered as a narrow
+            // floating column instead of full-bleed. `textAreaFill` escapes
+            // that via absolute positioning, the same technique CodeRenderer's
+            // own `root` style already uses for exactly this reason.
+            <View style={styles.textAreaFill}>
+              <Suspense fallback={<View style={styles.imageStatus}>{renderSharedProgress(false)}</View>}>
+                <TextEditorView
+                  initialText={editText ?? textContent ?? ''}
+                  language={codeLanguage}
+                  dirty={isDirty}
+                  saving={saving}
+                  statusLine={statusLine}
+                  onChangeText={setEditText}
+                  onSave={() => { void handleSaveEdit(); }}
+                  bottomInset={Math.max(insets.bottom, 16) + 40}
+                />
+              </Suspense>
+            </View>
+          ) : textContent != null ? (
+            <View style={styles.textAreaFill}>
+              {/* Task 1563 limit (item 6): an honest notice, no Edit button,
+                  when the file loaded fine for READING but fails the edit
+                  gate (over 2 MB, or content that looks like a lossy UTF-8
+                  decode) — never a silently-disabled control with no reason. */}
+              {editGate.reason && (
+                <View style={[styles.readOnlyBanner, { backgroundColor: c.paper2, borderColor: c.line }]} testID="text-readonly-notice">
+                  <Ionicons name="information-circle-outline" size={16} color={c.ink3} />
+                  <Text style={[styles.readOnlyBannerText, { color: c.ink2 }]}>{editGate.reason}</Text>
+                </View>
+              )}
+              {isMarkdown ? (
+                <ScrollView style={styles.markdownScroll} showsVerticalScrollIndicator>
+                  <Suspense fallback={<View style={styles.imageStatus}>{renderSharedProgress(false)}</View>}>
+                    <MarkdownRenderer markdown={textContent} colors={c} />
+                  </Suspense>
+                </ScrollView>
+              ) : (
+                <Suspense fallback={<View style={styles.imageStatus}>{renderSharedProgress(false)}</View>}>
+                  <CodeRenderer code={textContent} language={codeLanguage} />
+                </Suspense>
+              )}
+            </View>
           ) : textError ? (
             <View style={styles.imageStatus}>
               <Text style={[styles.imageStatusTitle, { color: c.ink }]}>
@@ -4033,6 +4398,29 @@ const styles = StyleSheet.create({
   mediaRoot: {
     flex: 1,
     backgroundColor: '#020203',
+  },
+  textAreaFill: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+  },
+  markdownScroll: {
+    flex: 1,
+  },
+  readOnlyBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  readOnlyBannerText: {
+    flex: 1,
+    fontSize: 12.5,
+    lineHeight: 17,
   },
   mediaHeader: {
     position: 'absolute',
