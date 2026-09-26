@@ -131,6 +131,27 @@ one per lane" rule applies. Runtime download is the expensive part (~8 GB,
 `xcodebuild -downloadPlatform iOS`) — if it's already vanished (see the 2026-09-16 note below about
 sims disappearing), re-downloading is the only way back, not a quick `simctl create`.
 
+## react-native-webview paints nothing under a centered parent, iOS 27 (task 1564)
+
+A `<WebView>` whose **direct parent** View sets `justifyContent:'center'`/`alignItems:'center'`
+never paints anything on iOS 27 (Fabric, RN 0.86.3, react-native-webview 13.16.1) — not even its
+own background — **regardless of the WebView's own sizing**: `flex:1`, percentage `width`/`height`,
+and percentage plus an explicit `alignSelf:'stretch'` on the child all fail identically. The same
+child style renders correctly the instant the direct parent's centering is removed. Confirmed by
+an isolated 7-step bisection on a dedicated iOS 27 sim (Release config, `__DEV__=false`) — see task
+1564's Notes for every screenshot. This was the real cause of PR #121's pre-fix `CodeRenderer` blank
+WebView AND the build-215 SVG-preview bug (both were direct children of `PreviewScreen`'s centered
+`previewArea`) — **not** a Fabric registration issue, not the dev-client, and not (solely) upstream
+`react-native-webview#3994`'s missing `backgroundColor` forward (that bug is real and still
+unfixed upstream but doesn't on its own explain a fully opaque HTML body painting nothing).
+
+**Fix pattern**: wrap the WebView in its own plain, non-centered `flex:1` View instead of touching
+`react-native-webview` or changing the shared centered parent (which other children — image/video/
+pdf — may depend on for their own layout). See `PreviewScreen.tsx`'s `svgWebViewWrap` / `DocxRenderer.tsx`'s
+`docxWebViewWrap` for the pattern. **Any new WebView usage inside a `justifyContent`/`alignItems:
+'center'` container needs this wrapper** — `DevicePairingShowScreen`/`ConstellationSendScreen`
+were checked and are fine (already non-centered parents), but this is now a real trap for future code.
+
 ## Worktree `.env` — copy it by hand, or the app silently defaults to production (task 1394)
 
 `git worktree add` does **not** copy the primary checkout's gitignored `.env`

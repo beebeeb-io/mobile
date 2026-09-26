@@ -143,16 +143,31 @@ export function DocxRenderer({ data, colors: c, isDark }: DocxRendererProps) {
   }
 
   return (
-    <WebView
-      originWhitelist={['*']}
-      source={{ html }}
-      style={[styles.docxWebView, { backgroundColor: c.paper }]}
-      showsVerticalScrollIndicator
-    />
+    // Task 1564 — DocxRenderer's caller (PreviewScreen's `previewArea`) sets
+    // justifyContent:'center'/alignItems:'center'; Suspense (the only thing
+    // between them) adds no native view, so without this wrapper the WebView
+    // WAS a direct child of that centered container. Confirmed by isolated
+    // repro that a centered direct parent stops react-native-webview's
+    // Fabric-mounted WKWebView from painting at all on iOS 27, regardless of
+    // the WebView's own sizing — see the matching comment + fix in
+    // PreviewScreen.tsx's SVG branch for the full root-cause writeup. Plain
+    // flex:1 (default align:'stretch') is the fix.
+    <View style={styles.docxWebViewWrap}>
+      <WebView
+        originWhitelist={['*']}
+        source={{ html }}
+        style={[styles.docxWebView, { backgroundColor: c.paper }]}
+        showsVerticalScrollIndicator
+      />
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
+  docxWebViewWrap: {
+    flex: 1,
+    width: '100%',
+  },
   docxWebView: {
     flex: 1,
     width: '100%',

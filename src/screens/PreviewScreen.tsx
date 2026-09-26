@@ -3619,14 +3619,28 @@ export default function PreviewScreen() {
           )
         ) : isSvg ? (
           wrappedSvgHtml ? (
-            <WebView
-              originWhitelist={['*']}
-              source={{ html: wrappedSvgHtml }}
-              style={styles.svgWebView}
-              scalesPageToFit
-              showsHorizontalScrollIndicator={false}
-              showsVerticalScrollIndicator={false}
-            />
+            // Task 1564 — root cause: `previewArea` (this branch's direct
+            // parent) sets justifyContent:'center'/alignItems:'center'.
+            // Confirmed by isolated repro (7 build/device iterations on iOS
+            // 27, bb-1564 sim) that react-native-webview's Fabric-mounted
+            // WKWebView never paints — not even its own background — when
+            // its DIRECT parent centers it, regardless of the WebView's own
+            // sizing (flex:1, percentage, or percentage+alignSelf:'stretch'
+            // all failed identically; the SAME child style renders correctly
+            // once the direct parent drops centering). This plain flex:1
+            // wrapper (default align:'stretch') is the fix — give the
+            // WebView a non-centered direct parent instead of touching
+            // react-native-webview itself.
+            <View style={styles.svgWebViewWrap}>
+              <WebView
+                originWhitelist={['*']}
+                source={{ html: wrappedSvgHtml }}
+                style={styles.svgWebView}
+                scalesPageToFit
+                showsHorizontalScrollIndicator={false}
+                showsVerticalScrollIndicator={false}
+              />
+            </View>
           ) : svgError ? (
             <View style={styles.imageStatus}>
               <Text style={[styles.imageStatusTitle, { color: c.ink }]}>
@@ -4352,6 +4366,10 @@ const styles = StyleSheet.create({
   // transparent SVGs onto white), independent of the app's own scheme —
   // the opposite of the forced-dark question this task answers.
   svgWebView: { width: '100%', height: '100%', backgroundColor: '#ffffff', borderRadius: radii.md },
+  // Task 1564 — plain flex:1 (default align:'stretch'), deliberately NOT
+  // centered like `previewArea` above it. See the JSX comment at the SVG
+  // WebView call site for why this wrapper exists.
+  svgWebViewWrap: { flex: 1, width: '100%' },
 
   // ---- HTML viewer ----
   htmlContainer: { flex: 1, width: '100%', borderRadius: radii.md, overflow: 'hidden' },
