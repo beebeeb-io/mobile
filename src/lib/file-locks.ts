@@ -13,6 +13,11 @@ async function getLockedFileIds(): Promise<Set<string>> {
   }
 }
 
+/** Every locked file id (flow iOS-core issue 3: grids hide these thumbnails). */
+export async function listLockedFileIds(): Promise<Set<string>> {
+  return getLockedFileIds()
+}
+
 export async function isFileLocked(fileId: string): Promise<boolean> {
   const locked = await getLockedFileIds()
   return locked.has(fileId)

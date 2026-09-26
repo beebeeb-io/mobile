@@ -44,6 +44,9 @@ import {
   refreshLocalIdentifierMap,
 } from '../lib/local-identifier-map';
 import { ThumbnailImage } from '../components/ThumbnailImage';
+import { Icon } from '../components/Icon';
+import { listLockedFileIds } from '../lib/file-locks';
+import { lockAwareThumbnailFields } from '../lib/locked-thumbnail';
 import {
   cacheLocalThumbnail,
   ensureThumbnailForImage,
@@ -489,7 +492,7 @@ function extensionForPhoto(entry: FileEntry, displayName: string, mimeType?: str
   return 'jpg';
 }
 
-function sameIdSet(a: Set<string>, b: Set<string>): boolean {
+function sameIdSet(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
   if (a.size !== b.size) return false;
   for (const id of a) {
     if (!b.has(id)) return false;
@@ -535,6 +538,7 @@ const PhotoCell = React.memo(function PhotoCell({
   isSelected,
   selectMode,
   onLongPress,
+  isLocked = false,
 }: {
   fileId: string;
   hasThumbnail?: boolean;
@@ -553,6 +557,8 @@ const PhotoCell = React.memo(function PhotoCell({
   isSelected: boolean;
   selectMode: boolean;
   onLongPress?: () => void;
+  /** Flow iOS-core issue 3 — draw the lock placeholder instead of an image. */
+  isLocked?: boolean;
 }) {
   const { colors: c } = useTheme();
   const showOverlay = columns <= 4;
@@ -580,6 +586,15 @@ const PhotoCell = React.memo(function PhotoCell({
         style={StyleSheet.absoluteFill}
         accessibilityLabel={accessibilityLabel}
       />
+      {isLocked ? (
+        <View
+          testID={`photo-tile-locked-${fileId}`}
+          style={[StyleSheet.absoluteFill, styles.lockedTile, { backgroundColor: c.paper2 }]}
+          pointerEvents="none"
+        >
+          <Icon name="lock" size={columns <= 4 ? 20 : 14} color={c.ink3} />
+        </View>
+      ) : null}
       {showOverlay && isFromBackup && (
         <View style={[styles.originBadge, { backgroundColor: c.amber }]}>
           <Ionicons name="camera" size={10} color={c.ink} />
@@ -636,6 +651,8 @@ const PhotoRow = React.memo(function PhotoRow({
   columns,
   cellSize,
   seedOffset,
+  lockedIds,
+  lockStateReady,
 }: {
   photos: FileEntry[];
   photosFolderId: string | null;
@@ -652,6 +669,8 @@ const PhotoRow = React.memo(function PhotoRow({
   columns: number;
   cellSize: number;
   seedOffset: number;
+  lockedIds: ReadonlySet<string>;
+  lockStateReady: boolean;
 }) {
   return (
     <View style={[styles.photoRow, { height: cellSize + GRID_GAP }]}>
@@ -663,17 +682,25 @@ const PhotoRow = React.memo(function PhotoRow({
         const isVideo = !!mimeType?.startsWith('video/');
         const mediaLabel = isVideo ? 'Video' : 'Photo';
         const isSelected = selectedIds.has(photo.id);
+        // Flow iOS-core issue 3 — a locked photo shows no image of any kind.
+        const gated = lockAwareThumbnailFields(
+          photo.id,
+          { localAssetId: localAssetUri, blurhash: photo.blurhash },
+          lockedIds,
+          lockStateReady,
+        );
         return (
           <PhotoCell
             key={photo.id}
             fileId={photo.id}
             hasThumbnail={photo.has_thumbnail}
-            loadThumbnail={activeThumbnailIds.size === 0 || activeThumbnailIds.has(photo.id)}
+            loadThumbnail={!gated.hideThumbnail && (activeThumbnailIds.size === 0 || activeThumbnailIds.has(photo.id))}
             seed={seedOffset + i}
             isFromBackup={photosFolderId !== null && photo.parent_id === photosFolderId}
-            localAssetUri={localAssetUri}
+            localAssetUri={gated.localAssetId}
             mimeType={mimeType}
-            blurhash={photo.blurhash}
+            blurhash={gated.blurhash}
+            isLocked={gated.isLocked}
             onThumbnailUnavailable={onThumbnailUnavailable}
             accessibilityLabel={decryptedNames[photo.id] ? `${mediaLabel}: ${decryptedNames[photo.id]}` : mediaLabel}
             onPress={() => (selectMode ? onTogglePhoto(photo) : onOpenPhoto(photo))}
@@ -927,6 +954,11 @@ export default function PhotosScreen() {
   const [decryptedNames, setDecryptedNames] = useState<Record<string, string>>({});
   const [decryptedMimeTypes, setDecryptedMimeTypes] = useState<Record<string, string>>({});
   const [thumbnailUris, setThumbnailUris] = useState<Record<string, string>>({});
+  // Flow iOS-core issue 3 — "Lock file" ids, re-read on every focus (a file
+  // can be locked from the Files tab while this screen is mounted). Tiles
+  // show no thumbnail until the first read resolves (fail closed).
+  const [lockedFileIds, setLockedFileIds] = useState<ReadonlySet<string>>(() => new Set());
+  const [lockStateReady, setLockStateReady] = useState(false);
   const [thumbnailRetryTick, setThumbnailRetryTick] = useState(0);
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
@@ -1174,6 +1206,15 @@ export default function PhotosScreen() {
       isPhotosFocusedRef.current = true;
       setIsPhotosFocused(true);
       recordRuntimeTrace('photos.screen.focus');
+      void listLockedFileIds()
+        .then((ids) => {
+          if (cancelled) return;
+          setLockedFileIds((prev) => (sameIdSet(prev, ids) ? prev : ids));
+        })
+        .catch(() => {})
+        .finally(() => {
+          if (!cancelled) setLockStateReady(true);
+        });
       void getPerformanceStorageSettings()
         .then((settings) => {
           if (cancelled) return;
@@ -1311,14 +1352,25 @@ export default function PhotosScreen() {
     for (const group of groups) {
       for (const photo of group.data) {
         const mimeType = decryptedMimeTypes[photo.id] ?? mediaMimeType(photo);
+        // Flow iOS-core issue 3 — the native cell loads the thumbnail itself
+        // by file id, so a locked tile must be told to hide (not just handed
+        // a null uri).
+        const gated = lockAwareThumbnailFields(
+          photo.id,
+          { thumbnailUri: thumbnailUris[photo.id], localAssetId: photoKitAssetMap.get(photo.id) },
+          lockedFileIds,
+          lockStateReady,
+        );
         items.push({
           id: photo.id,
           displayName: decryptedNames[photo.id] ?? null,
           mimeType,
           monthKey: group.key,
           monthLabel: group.label,
-          thumbnailUri: thumbnailUris[photo.id] ?? null,
-          localAssetId: photoKitAssetMap.get(photo.id) ?? null,
+          thumbnailUri: gated.thumbnailUri,
+          localAssetId: gated.localAssetId,
+          hideThumbnail: gated.hideThumbnail,
+          isLocked: gated.isLocked,
           placeholderColor: swatch(seed),
           isVideo: !!mimeType?.startsWith('video/'),
           isFromBackup: photosFolderId !== null && photo.parent_id === photosFolderId,
@@ -1327,7 +1379,7 @@ export default function PhotosScreen() {
       }
     }
     return items;
-  }, [decryptedMimeTypes, decryptedNames, groups, photoKitAssetMap, photosFolderId, thumbnailUris]);
+  }, [decryptedMimeTypes, decryptedNames, groups, lockStateReady, lockedFileIds, photoKitAssetMap, photosFolderId, thumbnailUris]);
   const selectedPhotos = useMemo(
     () => flatPhotos.filter((photo) => selectedIds.has(photo.id)),
     [flatPhotos, selectedIds],
@@ -2036,10 +2088,14 @@ export default function PhotosScreen() {
         selectMode={selectMode}
         columns={columns}
         cellSize={cellSize}
+        lockedIds={lockedFileIds}
+        lockStateReady={lockStateReady}
       />
     );
   }, [
     activeThumbnailIds,
+    lockStateReady,
+    lockedFileIds,
     c.ink,
     c.ink3,
     cellSize,
@@ -2453,6 +2509,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  lockedTile: { alignItems: 'center', justifyContent: 'center' },
   videoBadge: {
     position: 'absolute',
     top: 5,

@@ -62,7 +62,7 @@ import ExportProgressBanner, { type ExportProgressBannerHandle } from '../compon
 import { ApiError, listAllFiles, getFileIndex, createFolder, deleteFile, trashFiles, renameFile, moveFile, uploadFile, friendlyError, getStorageUsage, createProofOfExistence, storageLocation, trustLocation, getFolderPresence, getUploadStatus, getApiUrl, getToken } from '../lib/api';
 import { guessMimeType, fileCategory as fileCategoryFromMime } from '../lib/media';
 import { generateAndUploadThumbnail } from '../lib/thumbnail';
-import { useThumbnail } from '../lib/use-thumbnail';
+import { FileIcon } from '../components/FileIcon';
 import { maybeSelfRepairThumbnailFromLocalFile } from '../lib/thumbnail-self-repair';
 import { getCachedThumbnail } from '../lib/thumbnail-cache';
 import { getLocalIdentifier } from '../lib/local-identifier-map';
@@ -335,18 +335,6 @@ function fileCategory(entry: FileEntry): 'folder' | 'image' | 'pdf' | 'audio' | 
   return fileCategoryFromMime(entry.mime_type, entry.is_folder);
 }
 
-type IoniconName = React.ComponentProps<typeof Ionicons>['name'];
-
-const CATEGORY_ICONS: Record<string, IoniconName> = {
-  folder: 'folder',
-  image: 'image',
-  pdf: 'document-text',
-  audio: 'musical-notes',
-  video: 'videocam',
-  doc: 'document',
-  file: 'document-outline',
-};
-
 // ---------------------------------------------------------------------------
 // Duplicate-file conflict helpers
 // ---------------------------------------------------------------------------
@@ -473,58 +461,6 @@ const OfflineIndicator = React.memo(function OfflineIndicator({
 // Breadcrumb item
 // ---------------------------------------------------------------------------
 
-// ---------------------------------------------------------------------------
-// File icon component
-// ---------------------------------------------------------------------------
-
-const FileIcon = React.memo(function FileIcon({
-  category, size = 32, fileId, hasThumbnail,
-}: { category: string; size?: number; fileId?: string; hasThumbnail?: boolean }) {
-  const { colors: c } = useTheme();
-
-  // 1321 — was a hand-rolled effect calling fetchDecryptedThumbnailUri, which
-  // throws unconditionally on iOS since the BeebeebThumbnails migration. It was
-  // wrapped in `catch { /* non-fatal */ }`, so instead of failing it silently
-  // returned no thumbnail for EVERY non-PhotoKit file and the row fell back to
-  // a category icon. useThumbnail is the migrated path: it routes iOS through
-  // the native service and keeps the PhotoKit short-circuit that task 0563
-  // added (never overwrite the higher-quality PhotoKit render with the
-  // lower-quality server thumbnail).
-  const { uri: thumbUri } = useThumbnail(fileId ?? '', {
-    enabled: Boolean(fileId && hasThumbnail),
-    hasThumbnail: Boolean(hasThumbnail),
-    width: size * 3,
-    height: size * 3,
-  });
-  const CATEGORY_COLORS: Record<string, string> = {
-    folder: c.amberDeep,
-    image: c.amber,
-    pdf: c.red,
-    audio: c.green,
-    video: c.ink2,
-    doc: c.ink2,
-    file: c.ink3,
-  };
-  const bg = CATEGORY_COLORS[category] ?? c.ink3;
-  const icon: IoniconName = CATEGORY_ICONS[category] ?? 'document-outline';
-  const iconSize = Math.round(size * 0.5);
-  const borderRadius = size >= 48 ? radii.lg : size >= 40 ? radii.md : radii.sm;
-  if (thumbUri) {
-    return (
-      <Image
-        source={{ uri: thumbUri }}
-        style={[styles.fileIcon, { width: size, height: size, borderRadius }]}
-        resizeMode="cover"
-      />
-    );
-  }
-  return (
-    <View style={[styles.fileIcon, { backgroundColor: bg, width: size, height: size, borderRadius }]}>
-      <Ionicons name={icon} size={iconSize} color="#FFFFFF" />
-    </View>
-  );
-});
-
 /**
  * 1338b — amber match highlight for a search result row/card. The amber
  * COLOUR wraps only the matched substring; the `search-match` testID sits on
@@ -591,6 +527,9 @@ interface FileRowItemProps {
   hasProof: boolean;
   isShared: boolean;
   isLocked: boolean;
+  // Flow iOS-core issue 3 — false until the lock list has been read; the
+  // thumbnail stays hidden (fail closed) until then.
+  lockStateReady: boolean;
   // 1338 step a — set only while showing search results (search-result-<id>);
   // undefined during normal browsing, so this row's testID is unchanged then.
   testID?: string;
@@ -615,6 +554,7 @@ const FileRowItem = React.memo(function FileRowItem({
   hasProof,
   isShared,
   isLocked,
+  lockStateReady,
   testID,
   highlightQuery,
 }: FileRowItemProps) {
@@ -699,7 +639,7 @@ const FileRowItem = React.memo(function FileRowItem({
           {isSelected && <Icon name="check" size={13} color="#fff" />}
         </View>
       )}
-      <FileIcon category={category} fileId={item.id} hasThumbnail={item.has_thumbnail} />
+      <FileIcon category={category} fileId={item.id} hasThumbnail={item.has_thumbnail} locked={isLocked} lockStateReady={lockStateReady} />
       <View style={styles.fileInfo}>
         <View style={styles.fileNameRow}>
           {isEncryptedFallback ? (
@@ -827,6 +767,9 @@ interface FileGridItemProps {
   hasProof: boolean;
   isShared: boolean;
   isLocked: boolean;
+  // Flow iOS-core issue 3 — false until the lock list has been read; the
+  // thumbnail stays hidden (fail closed) until then.
+  lockStateReady: boolean;
   // 1338 step a — set only while showing search results (search-result-<id>);
   // undefined during normal browsing, so this card's testID is unchanged then.
   testID?: string;
@@ -850,6 +793,7 @@ const FileGridItem = React.memo(function FileGridItem({
   hasProof,
   isShared,
   isLocked,
+  lockStateReady,
   testID,
   highlightQuery,
 }: FileGridItemProps) {
@@ -900,7 +844,7 @@ const FileGridItem = React.memo(function FileGridItem({
         </View>
       )}
       <View style={styles.gridIconWrap}>
-        <FileIcon category={category} size={isFolder ? 56 : 48} fileId={item.id} hasThumbnail={item.has_thumbnail} />
+        <FileIcon category={category} size={isFolder ? 56 : 48} fileId={item.id} hasThumbnail={item.has_thumbnail} locked={isLocked} lockStateReady={lockStateReady} />
       </View>
       <View style={styles.gridTextWrap}>
         <View style={styles.gridNameRow}>
@@ -1368,6 +1312,9 @@ export default function FilesScreen() {
   // Per-file Face ID locks — set of file/folder IDs that require an extra
   // biometric confirmation before opening. Persisted in SecureStore via file-locks.ts.
   const [lockedFileIds, setLockedFileIds] = useState<Set<string>>(new Set());
+  // Flow iOS-core issue 3 — thumbnails stay hidden until the lock list has
+  // been read once, so a locked file's image never flashes on a cold launch.
+  const [lockStateReady, setLockStateReady] = useState(false);
 
   // Presence — collaborators currently viewing the folder we're inside.
   // Empty for the root view; only populated when navigated into a shared folder.
@@ -1815,7 +1762,8 @@ export default function FilesScreen() {
   useEffect(() => {
     SecureStore.getItemAsync('beebeeb.locked_files')
       .then((raw) => { if (raw) setLockedFileIds(new Set(JSON.parse(raw) as string[])); })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => setLockStateReady(true));
   }, []);
 
   // Persist pinned folders whenever they change
@@ -3744,7 +3692,13 @@ export default function FilesScreen() {
                 accessibilityLabel={`Open recent file ${name}`}
                 accessibilityRole="button"
               >
-                <FileIcon category={category} fileId={item.id} hasThumbnail={item.has_thumbnail} />
+                <FileIcon
+                  category={category}
+                  fileId={item.id}
+                  hasThumbnail={item.has_thumbnail}
+                  locked={lockedFileIds.has(item.id)}
+                  lockStateReady={lockStateReady}
+                />
                 {name ? (
                   <Text style={[styles.recentName, { color: c.ink }]} numberOfLines={1}>
                     {name}
@@ -3903,10 +3857,11 @@ export default function FilesScreen() {
       hasProof={!!proofs[item.id]}
       isShared={item.is_folder && (item.share_count ?? 0) > 0}
       isLocked={lockedFileIds.has(item.id)}
+      lockStateReady={lockStateReady}
       testID={isShowingSearchResults ? `search-result-${item.id}` : fileRowTestId(item)}
       highlightQuery={searchHighlightQuery}
     />
-  ), [decryptedNames, withDecryptedMime, openFile, handleLongPress, handleSwipeShare, handleSwipeDelete, openTrust, selectMode, selectedIds, toggleSelect, sortOrder, offlineStatusFor, proofs, lockedFileIds, isShowingSearchResults, searchHighlightQuery, fileRowTestId]);
+  ), [decryptedNames, withDecryptedMime, openFile, handleLongPress, handleSwipeShare, handleSwipeDelete, openTrust, selectMode, selectedIds, toggleSelect, sortOrder, offlineStatusFor, proofs, lockedFileIds, lockStateReady, isShowingSearchResults, searchHighlightQuery, fileRowTestId]);
 
   // Grid sizing — 3 columns, evenly spaced, responsive to screen width
   const GRID_COLUMNS = 3;
@@ -3933,10 +3888,11 @@ export default function FilesScreen() {
       hasProof={!!proofs[item.id]}
       isShared={item.is_folder && (item.share_count ?? 0) > 0}
       isLocked={lockedFileIds.has(item.id)}
+      lockStateReady={lockStateReady}
       testID={isShowingSearchResults ? `search-result-${item.id}` : fileRowTestId(item)}
       highlightQuery={searchHighlightQuery}
     />
-  ), [decryptedNames, withDecryptedMime, openFile, handleLongPress, openTrust, selectMode, selectedIds, toggleSelect, sortOrder, gridCardWidth, offlineStatusFor, proofs, lockedFileIds, isShowingSearchResults, searchHighlightQuery, fileRowTestId]);
+  ), [decryptedNames, withDecryptedMime, openFile, handleLongPress, openTrust, selectMode, selectedIds, toggleSelect, sortOrder, gridCardWidth, offlineStatusFor, proofs, lockedFileIds, lockStateReady, isShowingSearchResults, searchHighlightQuery, fileRowTestId]);
 
   const renderEmpty = () => {
     if (loading) return null;
@@ -4943,7 +4899,6 @@ const styles = StyleSheet.create({
 
   // File list
   fileRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, paddingHorizontal: spacing.lg, borderBottomWidth: 1, gap: 12 },
-  fileIcon: { alignItems: 'center', justifyContent: 'center' },
   fileInfo: { flex: 1, minWidth: 0 },
   fileNameRow: { flexDirection: 'row', alignItems: 'center', gap: 4, minWidth: 0 },
   lockIcon: { flexShrink: 0 },
