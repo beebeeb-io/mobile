@@ -94,6 +94,7 @@
       "./plugins/file-provider/withFileProvider.js",
       "./plugins/share-extension/withShareExtension.js",
       "./plugins/uniffi-bridge/withUniffiBridge.js",
+      "./plugins/scene-lifecycle/withSceneLifecycle.js",
       "./plugins/withWidget",
       "./plugins/fmt-patch/withFmtPatch.js",
       "./plugins/shortcut-bridge/withShortcutBridge.js",

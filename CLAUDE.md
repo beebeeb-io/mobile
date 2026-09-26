@@ -65,6 +65,72 @@ Invariant the helper enforces: a `PBXBuildFile` belongs to exactly ONE build pha
 files per owning target, never globally by fileRef, or `pod install` fails in Xcodeproj's
 `project.save` ("Consistency issue: no parent for object …").
 
+**`expo prebuild --clean` currently DESTROYS the `ProvenanceHeadersTests` and `CoreVectorsKATTests`
+native test targets** (found while verifying the iOS 27 UIScene fix below, 2026-09-26). Both
+targets — plus `ProvenanceHeaders.swift`'s 3rd wiring into them, and the vendored
+`core-vectors.v4.json` — were hand-added to `project.pbxproj` (tasks 1382/1439) with no config
+plugin behind them, unlike every other extension target. A clean prebuild silently drops the whole
+`ios/BeebeebNativeTests/` group and both targets from the regenerated project — `scripts/kat-ios.sh`
+then fails outright (scheme not found) with no warning that anything is missing. `ProvenanceHeaders.swift`'s
+wiring into `BeebeebShare`/`BeebeebFileProvider` (2 of its 3 targets) IS now plugin-owned
+(`CRYPTO_SHARED_FILES` in `withShareExtension.js`/`withFileProvider.js`) — only the
+`ProvenanceHeadersTests`/`CoreVectorsKATTests` XCTest targets themselves remain unfixed. **Until a
+plugin owns them: after any `--clean` prebuild, restore by hand before committing** —
+`git checkout -- ios/Beebeeb.xcodeproj/project.pbxproj ios/BeebeebNativeTests/` reverts the whole
+regenerated project, which also reverts anything else prebuild touched (re-apply those diffs by
+hand — see the SceneDelegate wiring below for exactly this recipe). No task filed yet for the
+proper plugin fix — surfaced here so the next `--clean` prebuild doesn't silently commit the loss.
+
+## iOS 27 UIScene lifecycle adoption (task: build-213 App Review crash, fixed for build 214)
+
+Build 213 (first build linked against the iOS 27 / Xcode 27 SDK) was killed at launch on every iOS
+27 device: `EXC_BREAKPOINT` in UIKitCore `_UIApplicationEvaluateRuntimeIssueForNoSceneLifecycleAdoption`,
+called from `-[UIApplication workspace:didCreateScene:withTransitionContext:completion:]` —
+"UIScene life cycle is required for apps built with this SDK." Reproduced identically on a fresh
+`bb-ios27` simulator (iPhone 17 Pro, iOS 27.0 runtime — `xcodebuild -downloadPlatform iOS`, ~8 GB)
+before the fix, confirmed clean after. Neither Expo 57 nor RN 0.86 ship any scene-delegate support
+(`grep -r Scene node_modules/expo/ios node_modules/react-native/Libraries/AppDelegate` — nothing);
+this had to be hand-rolled.
+
+**Fix**: `plugins/scene-lifecycle/withSceneLifecycle.js` (+ `SceneDelegate.swift` alongside it) —
+declares one `UIWindowSceneSessionRoleApplication` scene in Info.plist
+(`UIApplicationSceneManifest`), adds `ios/Beebeeb/SceneDelegate.swift` to the main app target, and
+edits the stock `AppDelegate.swift` template to drop the bare `UIWindow(frame:)` + `startReactNative`
+call (now scene-owned) and the now-unreachable `application(_:open:)` /
+`application(_:continue:restorationHandler:)` overrides. What moved where:
+
+| Was on AppDelegate | Now on SceneDelegate |
+|---|---|
+| `UIWindow(frame:)` + `factory.startReactNative` | `scene(_:willConnectTo:options:)` |
+| `application(_:open:options:)` (beebeeb://, exp+beebeeb://) | `scene(_:openURLContexts:)` |
+| `application(_:continue:restorationHandler:)` (universal links) | `scene(_:continue:)` |
+
+**Cold-launch deep link gotcha** (the one real bug found in testing): `RCTLinkingManager.getInitialURL()`
+— what React Navigation's linking config calls on JS mount to resolve the initial route — reads
+`bridge.launchOptions[.url]` directly; it does NOT fire an event. Posting the open-URL notification
+(`RCTLinkingManager.application(_:open:options:)`) right after `factory.startReactNative` is a
+no-op on cold launch because nothing has registered a JS listener yet — `startReactNative` only
+kicks bridge bring-up off, it doesn't block until `App.tsx` mounts. Confirmed directly: a cold
+`xcrun simctl openurl … beebeeb://shared` landed on the default Files tab instead of Shared until
+`connectionOptions.urlContexts`/`.userActivities` were folded into the `launchOptions` dictionary
+passed to `factory.startReactNative` itself. Everything else stayed on AppDelegate unaffected —
+BGTaskScheduler registration (`BeebeebAppDelegate`, an `ExpoAppDelegateSubscriber` — still fires
+from `didFinishLaunchingWithOptions` regardless of scenes), remote-notification registration/receipt,
+and `AppState`-driven privacy-lock in JS (`RCTAppState` observes `UIApplication`-level notifications,
+which UIKit still posts for a single-scene app) — verified empirically via a Maestro
+Home-key-background → relaunch cycle on both `bb-ios27` and `bb-qa-2`, not just by reading the docs.
+
+**Not verified on simulator**: the Face-ID-gated privacy lock screen itself (`BiometricLockScreen`) —
+enabling it requires a successful biometric prompt, which requires Face ID "Enrolled" via
+Simulator's Features menu (no `simctl` equivalent found); real push delivery is the other standard
+simulator gap. Both are pre-existing simulator limitations, not new from this change.
+
+**`bb-ios27`** — a fourth simulator, `iPhone 17 Pro`, iOS 27.0 runtime (24A434). Kept alongside the
+three `bb-qa-*` sims in the section below since iOS 27 SDK-linkage issues will recur; same "claim
+one per lane" rule applies. Runtime download is the expensive part (~8 GB,
+`xcodebuild -downloadPlatform iOS`) — if it's already vanished (see the 2026-09-16 note below about
+sims disappearing), re-downloading is the only way back, not a quick `simctl create`.
+
 ## Worktree `.env` — copy it by hand, or the app silently defaults to production (task 1394)
 
 `git worktree add` does **not** copy the primary checkout's gitignored `.env`
@@ -165,6 +231,8 @@ are present — do not assume the table below still matches disk.
 - `bb-qa-1310` — `D41C3AA1-D520-4CEF-A286-5F8717A03B7F`, iOS 26.5, iPhone 17 Pro. (recreated 2026-09-16)
 - `bb-qa-2` — `C44A5FD9-42B4-4334-934C-E4D9C3D76041`, iOS 26.5, iPhone 17 Pro. (recreated 2026-09-16)
 - `bb-shots` — `B272D461-0765-4890-B08C-C894925919EA`, iOS 26.5, iPhone 17 Pro Max. (recreated 2026-09-16)
+- `bb-ios27` — `6A2C9171-813B-443E-A19D-B7869D5D0A20`, iOS 27.0, iPhone 17 Pro. (created 2026-09-26,
+  see "iOS 27 UIScene lifecycle adoption" above — the runtime is the expensive part to replace, ~8 GB)
 
 **Dev-client copy procedure (no rebuild).** A new sim can get the dev client by copying the app
 container off an already-built one instead of running `expo run:ios` again:

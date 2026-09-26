@@ -1,0 +1,23 @@
+# Regression coverage for the iOS 27 UIScene lifecycle adoption
+# (plugins/scene-lifecycle/withSceneLifecycle.js, CLAUDE.md "iOS 27 UIScene
+# lifecycle adoption"). Backgrounding now transitions through
+# SceneDelegate's implicit scene lifecycle instead of AppDelegate's
+# applicationWillResignActive/DidEnterBackground/WillEnterForeground — this
+# proves that transition doesn't crash or blank the screen, and that state
+# (which tab you were on) survives it. It does NOT exercise the Face-ID
+# privacy-lock screen itself: enabling Face ID lock requires a successful
+# biometric prompt, which requires Face ID "Enrolled" via Simulator's
+# Features menu (no `simctl` equivalent) — see CLAUDE.md for that gap.
+appId: io.beebeeb.app
+---
+- launchApp
+- assertVisible: "Photos"
+- pressKey: Home
+- extendedWaitUntil:
+    notVisible: "Photos"
+    timeout: 5000
+# Relaunching a merely-backgrounded (not terminated) app brings it back to
+# the foreground rather than cold-launching it — this is the
+# sceneWillEnterForeground/sceneDidBecomeActive path.
+- launchApp
+- assertVisible: "Photos"

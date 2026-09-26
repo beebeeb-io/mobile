@@ -20,35 +20,19 @@ class AppDelegate: ExpoAppDelegate {
     reactNativeDelegate = delegate
     reactNativeFactory = factory
 
-#if os(iOS) || os(tvOS)
-    window = UIWindow(frame: UIScreen.main.bounds)
-    factory.startReactNative(
-      withModuleName: "main",
-      in: window,
-      launchOptions: launchOptions)
-#endif
+    // @beebeeb-uiscene-lifecycle: window creation + factory.startReactNative now happen in
+    // SceneDelegate.scene(_:willConnectTo:options:) once UIKit connects the
+    // scene. Creating a bare UIWindow here (no windowScene) is exactly what
+    // iOS 27 kills the app for — see UIApplicationSceneManifest in Info.plist.
 
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
   }
 
-  // Linking API
-  public override func application(
-    _ app: UIApplication,
-    open url: URL,
-    options: [UIApplication.OpenURLOptionsKey: Any] = [:]
-  ) -> Bool {
-    return super.application(app, open: url, options: options) || RCTLinkingManager.application(app, open: url, options: options)
-  }
-
-  // Universal Links
-  public override func application(
-    _ application: UIApplication,
-    continue userActivity: NSUserActivity,
-    restorationHandler: @escaping ([UIUserActivityRestoring]?) -> Void
-  ) -> Bool {
-    let result = RCTLinkingManager.application(application, continue: userActivity, restorationHandler: restorationHandler)
-    return super.application(application, continue: userActivity, restorationHandler: restorationHandler) || result
-  }
+  // @beebeeb-uiscene-lifecycle: Linking API (beebeeb://, exp+beebeeb://) and Universal Links
+  // moved to SceneDelegate.scene(_:openURLContexts:) / scene(_:continue:).
+  // Once a UIWindowSceneSessionRoleApplication scene delegate implements
+  // these, UIKit stops calling the app-delegate versions above for the app's
+  // running scene, so leaving them here would be unreachable.
 }
 
 class ReactNativeDelegate: ExpoReactNativeFactoryDelegate {

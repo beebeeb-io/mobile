@@ -46,12 +46,21 @@ const SOURCE_FILES = [
 // this generator entry is the durable fix so `expo prebuild --clean` +
 // `scripts/restore-vendored-ios.sh` reproduces a building ios/ with NO
 // manual pbxproj edits.
+// ProvenanceHeaders.swift (task 1439, writer-provenance upload headers) is
+// ALSO used by this extension's ApiClient.swift / SyncEngine.swift, and hits
+// the exact same "no Podfile target of its own" gap as the two files above —
+// added here rather than left hand-wired in project.pbxproj (found missing
+// from a from-scratch `expo prebuild --clean` while verifying the iOS 27
+// UIScene-lifecycle fix; the committed pbxproj had it wired by hand, which a
+// clean prebuild silently drops, same failure mode this file already
+// documents for PlaintextStorageProtection/RuntimeTrace).
 const CRYPTO_SHARED_FILES = [
   {
     path: '../modules/beebeeb-crypto/ios/PlaintextStorageProtection.swift',
     name: 'PlaintextStorageProtection.swift',
   },
   { path: '../modules/beebeeb-crypto/ios/RuntimeTrace.swift', name: 'RuntimeTrace.swift' },
+  { path: '../modules/beebeeb-crypto/ios/ProvenanceHeaders.swift', name: 'ProvenanceHeaders.swift' },
 ];
 const EXTENSION_FILES = [
   ...SOURCE_FILES.map((file) => ({
