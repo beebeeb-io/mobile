@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<fixture task="1565" purpose="preview-matrix">
+  <nonAscii>café naïve 日本語 Ελληνικά Москва €19.99</nonAscii>
+  <longLine>0123456789 0123456789 0123456789 0123456789 0123456789 0123456789 0123456789 0123456789 0123456789 end-of-long-line</longLine>
+  <items>
+    <item id="1">one</item>
+    <item id="2">two</item>
+  </items>
+</fixture>
