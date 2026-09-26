@@ -1028,6 +1028,27 @@ export async function getFile(id: string): Promise<FileEntry> {
 }
 
 /**
+ * Task 1563 — the authoritative CURRENT `version_number` for a file.
+ *
+ * `GET /api/v1/files/:id` does NOT select `version_number` at all (confirmed
+ * by reading the server's `get_file` handler, `files.rs`) — `FileEntry.
+ * version_number` on that response is always `undefined` in practice, even
+ * though the TYPE marks it optional as if it might sometimes be present.
+ * The text editor's conflict-retry path ("Save as new version") needs a
+ * TRUE current version to retry against, not a stale client-side guess, so
+ * it goes through this — the EXISTING `/versions` endpoint (no new server
+ * endpoint), whose `current_version` field IS the live `files.version_number`
+ * column (`versions.rs`, `current_version: i32 = SELECT version_number FROM files …`).
+ */
+export async function getFileCurrentVersion(id: string): Promise<number> {
+  const data = await request<{ file_id: string; current_version: number }>(
+    'GET',
+    `/api/v1/files/${id}/versions`,
+  );
+  return data.current_version;
+}
+
+/**
  * GET /api/v1/files/index — whole-vault metadata index with a stable hash.
  * If `hash` still matches, the server returns `changed: false` without files.
  */
@@ -1195,6 +1216,16 @@ export async function uploadEncryptedChunked(params: {
   onProgress?: (p: UploadProgress) => void
   /** Called once per chunk index — must return nonce||ciphertext bytes */
   readEncryptedChunk: (index: number, chunkSizeBytes: number, fileId: string) => Promise<Uint8Array>
+  /**
+   * Task 1563 (text editor Save) — explicit, id-based version-replace with
+   * an optimistic-concurrency guard. When present, `fileId` is sent to the
+   * server as `file_id` (not just used locally for key derivation) and
+   * `baseVersionNumber` rides along as `base_version_number`: the server
+   * 409s (`ApiError.status === 409`) if the file's current version has
+   * moved on since the caller read it. Every other caller leaves this
+   * unset and keeps today's byte-match-on-`v2InitNameEncrypted` behavior.
+   */
+  versionReplace?: { fileId: string; baseVersionNumber: number }
 }): Promise<FileEntry> {
   const {
     fileId,
@@ -1208,6 +1239,7 @@ export async function uploadEncryptedChunked(params: {
     resumeKey,
     onProgress,
     readEncryptedChunk,
+    versionReplace,
   } = params
   const token = await getToken()
   const resolveNameEncrypted = async (id: string) =>
@@ -1242,6 +1274,8 @@ export async function uploadEncryptedChunked(params: {
       parentId,
       isMedia,
       createdAt,
+      fileId: versionReplace?.fileId,
+      baseVersionNumber: versionReplace?.baseVersionNumber,
     })
     if (v2Init) {
       protocol = 'v2'
@@ -1623,6 +1657,18 @@ async function initUploadV2(params: {
   /** Client chunk plan; defaults to the JS loop's fixed 4 MiB layout. */
   chunkSizeBytes?: number;
   chunkCount?: number;
+  /**
+   * Task 1563 — explicit version-replace target (text editor Save). Distinct
+   * from the existing name-byte-match replace path (`v2InitNameEncrypted`):
+   * this passes the file's own id straight through as `file_id`, paired
+   * with `baseVersionNumber` for the server's optimistic-concurrency check
+   * (beebeeb-api.md: "Version-replace by file_id … base_version_number …
+   * A stale base_version_number → 409"). Omitted by every OTHER caller —
+   * purely additive; JSON.stringify drops both when undefined, so no
+   * existing request body changes shape.
+   */
+  fileId?: string;
+  baseVersionNumber?: number;
 }): Promise<UploadV2InitResponse | null> {
   const chunkSizeBytes = params.chunkSizeBytes ?? CHUNK_SIZE
   const chunkCount = params.chunkCount ?? Math.max(1, Math.ceil(params.fileSizeBytes / CHUNK_SIZE))
@@ -1632,6 +1678,7 @@ async function initUploadV2(params: {
     // object_versions row the server records them on.
     headers: { Authorization: `Bearer ${params.token}`, 'Content-Type': 'application/json', ...mobileClientHeaders() },
     body: JSON.stringify({
+      file_id: params.fileId,
       file_name: params.fileName,
       file_size_bytes: params.fileSizeBytes,
       parent_id: params.parentId ?? null,
@@ -1642,6 +1689,7 @@ async function initUploadV2(params: {
       chunk_size_bytes: chunkSizeBytes,
       chunk_count: chunkCount,
       created_at: params.createdAt ?? null,
+      base_version_number: params.baseVersionNumber,
     }),
   })
   if (res.status === 404 || res.status === 405) return null

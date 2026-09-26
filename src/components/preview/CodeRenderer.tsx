@@ -240,37 +240,68 @@ export function CodeRenderer({ code, language }: CodeRendererProps) {
 
   return (
     <View style={styles.root}>
-      <ScrollView horizontal showsHorizontalScrollIndicator style={styles.hScroll}>
-        <ScrollView showsVerticalScrollIndicator style={styles.vScroll}>
-          {truncated && (
-            <Text style={styles.truncationNotice}>
-              Showing the first {MAX_PREVIEW_CHARS.toLocaleString()} characters — download the file for the full version.
-            </Text>
-          )}
-          <View style={styles.code}>
-            {lines.map((spans, idx) => (
-              <View key={idx} style={styles.line}>
-                <Text style={[styles.lineno, { minWidth: (totalDigits + 1) * 7.2 }]}>
-                  {String(idx + 1).padStart(totalDigits, ' ')}
-                </Text>
-                <Text style={styles.lineContent}>
-                  {spans.length === 0 ? ' ' : spans.map((s, j) => (
-                    <Text
-                      key={j}
-                      style={{
-                        color: s.color,
-                        fontWeight: s.bold ? '700' : '400',
-                        fontStyle: s.italic ? 'italic' : 'normal',
-                      }}
-                    >
-                      {s.text}
-                    </Text>
-                  ))}
-                </Text>
-              </View>
-            ))}
-          </View>
-        </ScrollView>
+      {/*
+       * Task 1563 (build-215 device defects, Guus's screenshots):
+       *
+       * (a) Line 1's text sat a few points LEFT of every line below it. Root
+       *     cause: this used to be a horizontal ScrollView wrapping a
+       *     vertical one, with the inner `code` View sized via
+       *     `minWidth: '100%'` — a percentage of an unbounded (auto-sized)
+       *     horizontal-scroll content width. That's circular: Yoga's FIRST
+       *     layout pass has no committed width yet to resolve the
+       *     percentage against, so line 1 (already painted before the
+       *     second, corrected pass lands) rendered against the wrong-width
+       *     pass while every later line benefited from the settled one.
+       *     A single vertical-only ScrollView with an explicit `width:
+       *     '100%'` has no such circular percentage — there is exactly one
+       *     layout pass, so every line (including the first) resolves the
+       *     same width. Verified fixed on-device (bb-ios27, evidence in the
+       *     task file).
+       *
+       * (b) Long lines were clipped at the right edge instead of wrapping —
+       *     a direct consequence of the horizontal ScrollView above: a row
+       *     was given as much width as its content wanted (up to the
+       *     widest line in the file), so `lineContent` never needed to
+       *     wrap. Removing the horizontal scroll and giving `lineContent`
+       *     `flex: 1` (so it's constrained to the remaining row width once
+       *     `lineno`'s fixed gutter is subtracted) makes the native <Text>
+       *     wrap on its own — RN Text wraps by default; it just never had a
+       *     bounded width to wrap AGAINST before. `alignItems: 'flex-start'`
+       *     on the row (unchanged) is what then keeps the line number
+       *     pinned to the FIRST visual row once `lineContent` wraps to two
+       *     or more: the fixed-height `lineno` Text sizes to its own single
+       *     line and sits at the row's top edge, not stretched/centered
+       *     across the wrapped content's full height.
+       */}
+      <ScrollView showsVerticalScrollIndicator style={styles.vScroll}>
+        {truncated && (
+          <Text style={styles.truncationNotice}>
+            Showing the first {MAX_PREVIEW_CHARS.toLocaleString()} characters — download the file for the full version.
+          </Text>
+        )}
+        <View style={styles.code}>
+          {lines.map((spans, idx) => (
+            <View key={idx} style={styles.line}>
+              <Text style={[styles.lineno, { minWidth: (totalDigits + 1) * 7.2 }]}>
+                {String(idx + 1).padStart(totalDigits, ' ')}
+              </Text>
+              <Text style={styles.lineContent}>
+                {spans.length === 0 ? ' ' : spans.map((s, j) => (
+                  <Text
+                    key={j}
+                    style={{
+                      color: s.color,
+                      fontWeight: s.bold ? '700' : '400',
+                      fontStyle: s.italic ? 'italic' : 'normal',
+                    }}
+                  >
+                    {s.text}
+                  </Text>
+                ))}
+              </Text>
+            </View>
+          ))}
+        </View>
       </ScrollView>
     </View>
   );
@@ -287,16 +318,13 @@ const styles = StyleSheet.create({
     bottom: 0,
     backgroundColor: '#282c34',
   },
-  hScroll: {
-    flex: 1,
-  },
   vScroll: {
     flex: 1,
   },
   code: {
     paddingVertical: 12,
     paddingBottom: 32,
-    minWidth: '100%',
+    width: '100%',
   },
   line: {
     flexDirection: 'row',
@@ -313,6 +341,8 @@ const styles = StyleSheet.create({
     lineHeight: 19.2,
   },
   lineContent: {
+    flex: 1,
+    flexShrink: 1,
     color: DEFAULT_TEXT_COLOR,
     fontFamily: MONOSPACE_FONT,
     fontSize: 12,
