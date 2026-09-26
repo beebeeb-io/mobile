@@ -73,18 +73,59 @@ TextInput has no JS-callable native undo).
 
 ## Task 1563 follow-up (preview redesign) — tap-to-hide is scoped to PDF, image, video, and text/markdown/code; not wired for SVG, HTML, DOCX/Office previews, the multi-photo swipe pager, or the generic fallback card
 
+**UPDATE (next pass, head `03c7420` → this pass):** 1564 merged to main
+(`beebeeb-io/mobile#124`, `c2b291d`) while this lane was still working, and
+this branch rebased cleanly on top of it — the isolation reason below no
+longer applies. This pass wired full-bleed + tap-to-hide on **every**
+remaining branch: `isSvg`, `isDocx`, `isSpreadsheet` (xlsx), `isHtml`,
+`isZip`, `isArchive`, `isPptx`, the multi-photo `FlatList` pager, and the
+generic/fallback card (tap-to-hide only for the fallback card — see below).
+The original entry is kept below for the record of why it was scoped out
+THEN; it is no longer the shipped state.
+
+**Rule preserved from 1564:** a WebView must never have a centering DIRECT
+parent. Every WebView-based branch (SVG, DOCX via `DocxRenderer`) got a
+`Pressable` **ancestor** for tap-to-hide, with 1564's own non-centering
+`flex:1` wrapper (`svgWebViewWrap` / `docxWebViewWrap`) kept as the
+WebView's unchanged direct parent — confirmed unbroken by
+`PreviewScreen.webview-parent.test.ts` (still 7/7 green on this pass's
+head).
+
+**Real regression found and fixed on-device (not assumed):** wrapping the
+photo pager's `FlatList` in a `Pressable` (the same pattern used everywhere
+else) reliably swallowed every swipe — bisected with a real device repro,
+not a guess: with the `Pressable` wrapper, a swipe gesture never advanced
+past page 1 (screenshot proof, page counter stuck at "1 / 13"); reverting
+to a plain `View` and re-running the identical swipe advanced to "2 / 13"
+immediately. Fixed WITHOUT a wrapping `Pressable` at all — raw
+`onTouchStart`/`onTouchEnd` handlers directly on the `FlatList`, tracking
+touch start position/time and calling `handleContentTap` only for a short,
+low-movement gesture (a tap), letting a real swipe pass through untouched.
+Both swipe-to-page and tap-to-hide verified working together on the SAME
+build afterward (screenshots `17-pager-fixed-p1.png` →
+`17b-pager-fixed-p2-swiped.png` → `17c-pager-tap-hide.png`).
+
+**Fallback card:** tap-to-hide wired (a `Pressable` ancestor, default
+layout, no style override), but the card's own CENTERED layout is
+UNCHANGED — see the original entry below for why the fallback card is not
+forced full-bleed. This narrows (does not reverse) that entry: the card
+now participates in the tap gesture, but not in the full-bleed frame.
+
+---
+
 **Design:** `design/preview-redesign-ios.html` section 01 — "Tap the content
 to hide both bars" is described for the frame generally, and section 03
 claims "Same frame for every type... only the content area changes."
 
-**What shipped:** `handleContentTap` (toggles `barsVisible`) is wired on:
+**What shipped (superseded by the UPDATE above):** `handleContentTap`
+(toggles `barsVisible`) is wired on:
 the PDF Pressable, the text/markdown/code read-view Pressable, and the
 media branch's single-file (non-pager) Pressable (covers image + video).
 It is deliberately NOT wired on: the `isSvg`/`isHtml` WebView branches, the
 DOCX/XLSX/PPTX/ZIP/Archive renderer branches, the multi-photo `FlatList`
 pager (`PhotoPage.tsx`), or the generic/error/fallback card.
 
-**Why:**
+**Why (at the time):**
 - SVG/HTML: task 1564 (parallel worktree, `mobile-1564`, uncommitted at the
   time of this work) is actively fixing a blank-WebView bug in these EXACT
   branches (`PreviewScreen.tsx`'s `isSvg` block, `DocxRenderer.tsx`). Adding
@@ -109,23 +150,41 @@ pager (`PhotoPage.tsx`), or the generic/error/fallback card.
   responder without reading and testing that component's existing gesture
   logic risked breaking "keep... gestures... working" (this task's own
   top-line constraint) for the sake of one more surface's tap-to-hide.
+  **Turned out to be a real risk, not a hypothetical one — see the UPDATE
+  above: PhotoPage.tsx itself has no gestures, but the wrapping Pressable
+  broke swipe anyway.**
 - Fallback card: the design's own section 03 "good" list separates "100%
   of the screen for the file" (full-bleed content) from the card pattern —
   a centered card with a Format/Type/Download message is not itself
   full-bleed content in any of the mockups, so there is nothing here for a
   tap to reveal/hide additional pixels of.
 
-**Follow-up:** a dedicated small task per surface (read `PhotoPage.tsx`
-first for the pager; confirm 1564 has merged before touching the SVG/HTML/
-DOCX branches) would close this gap without the same risk, once done in
-isolation with its own on-device gesture verification.
-
 ## Task 1563 follow-up (preview redesign) — ⋯ menu is missing "Move to…"
+
+**UPDATE (next pass, head `03c7420` → this pass): SHIPPED, not missing
+anymore.** The claim below ("no existing folder-picker flow ... this lane
+found to reuse") was WRONG — left visible per the workspace convention
+("when you are wrong, leave the wrong claim visible, write the correction
+beneath it") rather than quietly edited away. `FilesScreen.tsx` already has
+a full "Move" flow (`FolderPickerModal` component + `buildPickerFolders` +
+`moveFile` API call) — this pass found it by reading `FilesScreen.tsx`
+directly, reused the SAME `FolderPickerModal` component and the SAME
+`moveFile` endpoint, and wrote a smaller, Preview-appropriate folder-tree
+fetch (`src/lib/move-picker-folders.ts::collectAllFolders`, unit-tested +
+mutation-proven) since Preview has no sync engine to source
+`FilesScreen`'s own `sync.allNodes()` cache from, and moves a single FILE
+(not a folder), so the descendant-exclusion step `FilesScreen`'s version
+needs doesn't apply. "Move to…" now sits in the ⋯ menu (between Duplicate
+and Move to Trash, matching the mock's ordering) and opens the same native
+folder-picker sheet, verified on-device (screenshot: the ⋯ menu showing
+"Move to..." between Duplicate and Move to Trash).
+
+---
 
 **Design:** section 02's ⋯ menu mock lists `Edit / Show source / Copy share
 link / Move to… / Version history / Move to Trash`.
 
-**What shipped:** `Edit` (existing), `Show Source`/`Show Preview` (new,
+**What shipped (superseded by the UPDATE above):** `Edit` (existing), `Show Source`/`Show Preview` (new,
 markdown only), `Share Beebeeb Link` (existing — same action as the mock's
 "Copy share link", not relabeled), `Save Original…` (existing), `Copy File
 Name` (existing, not in the mock), `Duplicate` (existing, not in the mock),
@@ -133,7 +192,7 @@ Name` (existing, not in the mock), `Duplicate` (existing, not in the mock),
 it opens the same Info sheet the bottom bar's "Versions" button does (the
 sheet's own Versions section, item 5). **No "Move to…" item.**
 
-**Why:** there is no existing folder-picker flow in this screen or a
+**Why (at the time — WRONG, see UPDATE above):** there is no existing folder-picker flow in this screen or a
 sibling one this lane found to reuse within this task's time budget, and
 building a new folder-picker screen from scratch is a bigger, separate
 piece of work than the redesign's own scope (chrome, bars, Info sheet,

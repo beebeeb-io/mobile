@@ -27,6 +27,12 @@ import * as Sharing from 'expo-sharing';
 import * as Haptics from 'expo-haptics';
 import * as LocalAuthentication from 'expo-local-authentication';
 import { StatusBar } from 'expo-status-bar';
+import {
+  PanGestureHandler,
+  State,
+  type PanGestureHandlerGestureEvent,
+  type PanGestureHandlerStateChangeEvent,
+} from 'react-native-gesture-handler';
 import { WebView } from 'react-native-webview';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import NetInfo from '@react-native-community/netinfo';
@@ -37,10 +43,12 @@ import type { Colors } from '../theme';
 import { useTheme } from '../lib/theme-context';
 import { GLASS_CIRCLE_SIZES, GlassCapsule, GlassCircle, SCROLL_EDGE, ScrollEdgeBlur, glassMaterial } from '../components/glass';
 import { useToast } from '../lib/toast-context';
-import { getToken, friendlyError, trustLocation, trashFiles, getFile, getFileCurrentVersion, type UploadProgress } from '../lib/api';
+import { getToken, friendlyError, trustLocation, trashFiles, getFile, getFileCurrentVersion, listAllFiles, moveFile, type UploadProgress } from '../lib/api';
 import { useCrypto } from '../lib/crypto-context';
 import { generateFileId } from '../lib/encrypted-upload';
-import { encryptedMetadataToJson, fileMetadataPlaintext } from '../lib/encrypted-metadata';
+import { encryptedMetadataToJson, encryptedMetadataPayloadToBytes, fileMetadataPlaintext } from '../lib/encrypted-metadata';
+import { collectAllFolders, movePickerFolderFallbackName, type MovePickerFolderNode } from '../lib/move-picker-folders';
+import FolderPickerModal, { type PickerFolder } from '../components/FolderPickerModal';
 import { evaluateTextEditGate } from '../lib/text-edit-gate';
 import {
   buildKeepBothName,
@@ -1727,6 +1735,19 @@ export default function PreviewScreen() {
     clampPhotoIndex(initialPhotoIndex ?? 0, photoList.length)
   ));
   const pagerRef = useRef<FlatList<PhotoPageEntry>>(null);
+  // Preview redesign item 3 — tap-to-hide on the swipe pager, WITHOUT a
+  // wrapping `Pressable` ancestor. Verified on-device (bisected): a
+  // `Pressable` wrapping this FlatList reliably swallowed every swipe (the
+  // pager never advanced past page 1, confirmed with a fresh screenshot per
+  // attempt) even though it never fires `onPress` on a real drag — RN's
+  // responder negotiation did NOT let the paging ScrollView win the
+  // horizontal pan here, for whatever Fabric/UIKit-version reason. Reverted
+  // to a plain `View` wrapper and instrument the FlatList's own raw touch
+  // events instead: `onTouchStart`/`onTouchEnd` fire on this view
+  // regardless of who ends up owning the gesture, so a short, low-movement
+  // touch (a tap) can be told apart from a real swipe without adding a
+  // second responder to race the FlatList's own.
+  const pagerTouchStartRef = useRef<{ x: number; y: number; t: number } | null>(null);
   const activePhotoPageIndexes = useMemo(
     () => activePhotoPageIndices(currentPhotoIndex, photoList.length, 0),
     [currentPhotoIndex, photoList.length],
@@ -1959,7 +1980,7 @@ export default function PreviewScreen() {
     }).catch(() => {});
   }, []);
 
-  const { isUnlocked, getFileKeyBytes, getMasterKeyHandleId, getRequestContentKey, encryptChunk, encryptMetadata } = useCrypto();
+  const { isUnlocked, getFileKeyBytes, getMasterKeyHandleId, getRequestContentKey, encryptChunk, encryptMetadata, decryptMetadata } = useCrypto();
 
   // Resolve the key provider + master-key handle for decryptToTempFile. For a
   // file-request upload (0643) we hand it the request content key C and a null
@@ -2403,6 +2424,54 @@ export default function PreviewScreen() {
     closedRef.current = true;
     navigation.goBack();
   }, [navigation]);
+
+  // Preview redesign item 1 — the screen is now presented as a genuine
+  // `fullScreenModal` (App.tsx), which on iOS maps to
+  // `UIModalPresentationFullScreen`. Unlike `modal`/`pageSheet`, that
+  // presentation style has NO built-in interactive dismiss gesture, so the
+  // swipe-down-to-close the old `modal` sheet gave for free has to be
+  // rebuilt in JS. Scoped to the glass header row only (not the whole
+  // screen): the doc/media content below is a mix of vertical ScrollViews
+  // (markdown/code/HTML source), a horizontal FlatList (photo pager) and a
+  // native PdfRenderer — a PanGestureHandler wrapping ALL of that would
+  // race each of their own pan recognizers for every scroll-up gesture, not
+  // just a dismiss swipe (there is no cheap way to ask an arbitrary nested
+  // scrollable "are you at the top?" across that many renderer types). The
+  // header has no competing gesture of its own, so grabbing it and dragging
+  // down is unambiguous — same idiom as BBActionSheet's own grabber drag.
+  // `handleClose` (above) already routes through the `beforeRemove`
+  // unsaved-changes guard via `navigation.goBack()`, so a swipe-dismiss
+  // while editing gets the same discard confirmation as every other close
+  // path — nothing extra to wire here.
+  const closeTranslateY = useRef(new Animated.Value(0)).current;
+  const onCloseGestureEvent = useMemo(
+    () => Animated.event(
+      [{ nativeEvent: { translationY: closeTranslateY } }],
+      { useNativeDriver: true },
+    ),
+    [closeTranslateY],
+  );
+  const onCloseHandlerStateChange = useCallback((event: PanGestureHandlerStateChangeEvent) => {
+    if (event.nativeEvent.oldState !== State.ACTIVE) return;
+    const { translationY, velocityY } = event.nativeEvent;
+    if (translationY > 120 || velocityY > 800) {
+      handleClose();
+      return;
+    }
+    Animated.spring(closeTranslateY, {
+      toValue: 0,
+      useNativeDriver: true,
+      bounciness: 4,
+    }).start();
+  }, [closeTranslateY, handleClose]);
+  const closeTranslateYClamped = useMemo(
+    () => closeTranslateY.interpolate({
+      inputRange: [-1, 0, 4000],
+      outputRange: [0, 0, 4000],
+      extrapolate: 'clamp',
+    }),
+    [closeTranslateY],
+  );
 
   // Task 1563 (item 7 — unsaved-changes guard). `beforeRemove` fires for
   // EVERY way this screen can leave — the close button above, the modal's
@@ -3315,6 +3384,76 @@ export default function PreviewScreen() {
     );
   }, []);
 
+  // Preview redesign item 4 — "Move to…" (design section 02's ⋯ menu).
+  // FilesScreen already ships a "Move" flow for possibly-FOLDER items
+  // (`FolderPickerModal` + `buildPickerFolders` + `moveFile`) — reused here
+  // verbatim (the SAME component + the SAME `moveFile` endpoint). What's
+  // rebuilt is only the folder-tree FETCH: FilesScreen's version prefers a
+  // cached `sync.allNodes()` tree that this screen has no access to (no
+  // sync engine is wired into Preview), and its OWN fallback for when that
+  // cache isn't ready is a flat ROOT-ONLY `listAllFiles()` — not good
+  // enough as Preview's ONLY path, since a picker that can't be drilled
+  // into past the root would be a materially worse "Move to…" than the one
+  // FilesScreen already ships. `collectAllFolders` (lib/move-picker-folders,
+  // unit-tested + mutation-proven) walks the WHOLE tree instead. The
+  // descendant-exclusion step FilesScreen's version needs (so a folder
+  // can't move into its own subtree) does not apply here — Preview only
+  // ever moves a single FILE, which has no descendants.
+  const [movePicker, setMovePicker] = useState<{ folders: PickerFolder[]; currentParentId: string | null } | null>(null);
+  const [moveBusy, setMoveBusy] = useState(false);
+
+  const handleOpenMovePicker = useCallback(async () => {
+    setOptionsVisible(false);
+    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    try {
+      const [fresh, folderNodes] = await Promise.all([
+        getFile(currentFileId),
+        collectAllFolders((parentId) => listAllFiles(parentId ?? undefined)),
+      ]);
+      const folders: PickerFolder[] = await Promise.all(
+        folderNodes.map(async (node: MovePickerFolderNode) => {
+          let name = movePickerFolderFallbackName(node);
+          try {
+            const payload = encryptedMetadataPayloadToBytes(node.name_encrypted);
+            if (payload) {
+              const plaintext = await decryptMetadata(node.id, payload.nonce, payload.ciphertext);
+              const parsed = JSON.parse(plaintext) as { name?: unknown };
+              if (parsed && typeof parsed.name === 'string' && parsed.name.trim()) {
+                name = parsed.name.trim();
+              }
+            }
+          } catch {
+            // Keep the fallback name — a folder failing to decrypt is not a
+            // reason to block the whole picker from opening.
+          }
+          return { id: node.id, name, parentId: node.parent_id };
+        }),
+      );
+      setMovePicker({ folders, currentParentId: fresh.parent_id ?? null });
+    } catch (err) {
+      Alert.alert('Error', friendlyError(err));
+    }
+  }, [currentFileId, decryptMetadata]);
+
+  const handleConfirmMove = useCallback(async (targetId: string | null) => {
+    if (moveBusy) return;
+    setMoveBusy(true);
+    try {
+      await moveFile(currentFileId, targetId);
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      const destName = targetId === null
+        ? 'Drive'
+        : movePicker?.folders.find((f) => f.id === targetId)?.name ?? 'folder';
+      showToast({ type: 'success', message: `Moved to ${destName}` });
+      setMovePicker(null);
+    } catch (err) {
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      Alert.alert('Move failed', friendlyError(err));
+    } finally {
+      setMoveBusy(false);
+    }
+  }, [currentFileId, moveBusy, movePicker, showToast]);
+
   const handleMoveToTrash = useCallback(() => {
     if (trashing) return;
 
@@ -3382,8 +3521,14 @@ export default function PreviewScreen() {
     { label: 'Save Original…', icon: 'share-outline', run: handleDownload },
     { label: 'Copy File Name', icon: 'copy-outline', run: handleCopyName },
     { label: 'Duplicate', icon: 'duplicate-outline', run: handleDuplicate },
+    // Preview redesign item 4 — design section 02's ⋯ mock order is
+    // Edit / Show source / Copy share link / Move to… / Version history /
+    // Move to Trash; "Move to…" was the one entry with no reuse path in an
+    // earlier pass (see DEVIATIONS.md history) until this pass found and
+    // wired FilesScreen's existing FolderPickerModal + moveFile flow.
+    { label: 'Move to…', icon: 'folder-outline', run: () => { void handleOpenMovePicker(); } },
     { label: 'Move to Trash', icon: 'trash-outline', destructive: true, run: handleMoveToTrash },
-  ], [handleCopyName, handleDownload, handleDuplicate, handleMoveToTrash, handleShare, handleViewOriginal, isImage, editMenuAction, isMarkdown, editMode, textContent, showSource]);
+  ], [handleCopyName, handleDownload, handleDuplicate, handleMoveToTrash, handleOpenMovePicker, handleShare, handleViewOriginal, isImage, editMenuAction, isMarkdown, editMode, textContent, showSource]);
 
   const handlePreviewOptions = useCallback(() => {
     if (Platform.OS === 'ios') {
@@ -3503,7 +3648,7 @@ export default function PreviewScreen() {
     const mediaMaterial = glassMaterial('dark');
 
     return (
-      <View style={styles.mediaRoot}>
+      <Animated.View style={[styles.mediaRoot, { transform: [{ translateY: closeTranslateYClamped }] }]}>
         {/* 1314 — the canvas floats Preview's chrome as glass over the media
             instead of a flat black bar. The scrim becomes a progressive blur
             so the title stays legible over bright images, and the controls
@@ -3516,6 +3661,15 @@ export default function PreviewScreen() {
           pointerEvents={chromeVisible ? 'auto' : 'none'}
         >
         <ScrollEdgeBlur scheme="dark" height={SCROLL_EDGE.chromeFallback} />
+        {/* Preview redesign item 1 — swipe-down-to-close (see the
+            `closeTranslateY` comment by `handleClose`): the header row is
+            the gesture's hit area. */}
+        <PanGestureHandler
+          onGestureEvent={onCloseGestureEvent}
+          onHandlerStateChange={onCloseHandlerStateChange}
+          activeOffsetY={[-1000, 8]}
+          failOffsetX={[-20, 20]}
+        >
         <View style={[styles.mediaHeader, { paddingTop: insets.top + 8 }]}>
           {/* 1343 — outer TouchableOpacity wraps the fixed-size GlassCircle so
               hitSlop is not clipped to the disc (RN clips hitSlop to the
@@ -3587,14 +3741,24 @@ export default function PreviewScreen() {
             </GlassCircle>
           </TouchableOpacity>
         </View>
+        </PanGestureHandler>
 
         {/* Preview redesign item 6 — floating page counter, shown/hidden
             with the rest of the chrome (design's "Tap to hide" mock omits
             the pill along with the bars). Reused verbatim for the photo
             swipe-pager via `formatPdfPageCounter` (see that function's doc
-            comment) — same "N / total" shape, same position. */}
+            comment) — same "N / total" shape, same position.
+            Bug found verifying this pass: `top: insets.top + 8` put this
+            pill at the EXACT same top offset as `mediaHeader` itself (which
+            also uses `paddingTop: insets.top + 8`), so it rendered directly
+            on top of the ⋯ circle instead of below the bar the comment
+            above already claimed. `insets.top + 62` matches the offset this
+            same header already uses for its own options popover
+            (`PreviewOptionsPopover`'s `top` prop below) — i.e., the header's
+            own already-established "just under the bar" anchor, not a new
+            magic number. */}
         {pageCounterLabel && (
-          <View style={[styles.pageCounterWrap, { top: insets.top + 8 }]} pointerEvents="none">
+          <View style={[styles.pageCounterWrap, { top: insets.top + 62 }]} pointerEvents="none">
             <GlassCapsule scheme="dark" contentStyle={styles.pageCounterBody}>
               <Text style={[styles.pageCounterText, styles.mono]}>{pageCounterLabel}</Text>
             </GlassCapsule>
@@ -3609,6 +3773,15 @@ export default function PreviewScreen() {
             badge; see DEVIATIONS.md for the removal note. */}
 
         {showPager ? (
+          // Preview redesign item 3 — tap-to-hide on the swipe pager too.
+          // See the `pagerTouchStartRef` comment above (by `pagerRef`) for
+          // why this is raw `onTouchStart`/`onTouchEnd` on the FlatList
+          // itself, not a wrapping `Pressable` — bisected on-device: a
+          // `Pressable` ancestor reliably ate every swipe (screenshot proof:
+          // the page counter stayed "1 / 13" after a real swipe gesture,
+          // both with Maestro's coordinate-swipe and its direction-swipe);
+          // removing it and using the plain `View` below restored paging
+          // immediately (counter advanced to "2 / 13" on the same gesture).
           <View
             style={[
               styles.mediaStage,
@@ -3629,6 +3802,26 @@ export default function PreviewScreen() {
               renderItem={renderPhotoPage}
               showsHorizontalScrollIndicator={false}
               onMomentumScrollEnd={handlePagerScroll}
+              onTouchStart={(e) => {
+                const { pageX, pageY } = e.nativeEvent;
+                pagerTouchStartRef.current = { x: pageX, y: pageY, t: Date.now() };
+              }}
+              onTouchEnd={(e) => {
+                const start = pagerTouchStartRef.current;
+                pagerTouchStartRef.current = null;
+                if (!start) return;
+                const { pageX, pageY } = e.nativeEvent;
+                const dx = Math.abs(pageX - start.x);
+                const dy = Math.abs(pageY - start.y);
+                const dt = Date.now() - start.t;
+                // A real swipe (paging) travels most of the screen width in
+                // this same gesture; a tap moves only a few points. 500ms
+                // covers a normal tap without also matching a slow drag.
+                if (dx < 10 && dy < 10 && dt < 500) {
+                  handleContentTap();
+                }
+              }}
+              testID="preview-content-tap"
               windowSize={3}
               maxToRenderPerBatch={3}
               removeClippedSubviews
@@ -3797,7 +3990,18 @@ export default function PreviewScreen() {
           onClose={() => setOptionsVisible(false)}
           top={insets.top + 62}
         />
-      </View>
+        {/* Preview redesign item 4 — "Move to…", reusing FilesScreen's own
+            FolderPickerModal (see the `handleOpenMovePicker` comment). */}
+        <FolderPickerModal
+          visible={movePicker !== null}
+          title="Move"
+          folders={movePicker?.folders ?? []}
+          currentParentId={movePicker?.currentParentId ?? null}
+          busy={moveBusy}
+          onCancel={() => setMovePicker(null)}
+          onConfirm={(targetId) => { void handleConfirmMove(targetId); }}
+        />
+      </Animated.View>
     );
   }
 
@@ -3831,7 +4035,7 @@ export default function PreviewScreen() {
   const docMaterial = glassMaterial(resolved);
 
   return (
-    <View style={[styles.root, { paddingTop: insets.top, backgroundColor: c.paper }]}>
+    <Animated.View style={[styles.root, { paddingTop: insets.top, backgroundColor: c.paper }, { transform: [{ translateY: closeTranslateYClamped }] }]}>
       <StatusBar hidden={!chromeVisible} animated />
       <Animated.View style={{ opacity: barsOpacity }} pointerEvents={chromeVisible ? 'auto' : 'none'}>
       {/* ---- Header ----
@@ -3841,7 +4045,16 @@ export default function PreviewScreen() {
           Save (right, amber, `handleSaveEdit`) instead of close/title/⋯ —
           and stays fully opaque regardless of `barsVisible` (item 7: "no
           bottom bar while editing"; `chromeVisible` above is forced true by
-          `editMode`). */}
+          `editMode`). Preview redesign item 1 — swipe-down-to-close on the
+          header row (see the `closeTranslateY` comment by `handleClose`);
+          covers both header variants below since PanGestureHandler forwards
+          the ternary's single resolved child either way. */}
+      <PanGestureHandler
+        onGestureEvent={onCloseGestureEvent}
+        onHandlerStateChange={onCloseHandlerStateChange}
+        activeOffsetY={[-1000, 8]}
+        failOffsetX={[-20, 20]}
+      >
       {editMode ? (
         <View style={styles.header} testID="preview-edit-topbar">
           <TouchableOpacity
@@ -3941,13 +4154,16 @@ export default function PreviewScreen() {
                   style={[styles.docHeaderSubtitle, styles.mono, { color: docMaterial.labelMuted }]}
                   numberOfLines={1}
                 >
-                  {`Encrypted · ${CATEGORY_LABELS[category] ?? 'File'}${currentSizeBytes != null ? ` · ${formatSize(currentSizeBytes)}` : ''}`}
+                  {/* Preview redesign item 2 — the separate "MARKDOWN"-style
+                      lang badge (removed below) truncated the size on the
+                      same row. A text file's type now reads from
+                      `codeLanguageLabel` ("Markdown", "TypeScript", "Plain
+                      text", …) INSTEAD OF the generic `CATEGORY_LABELS['doc']`
+                      ("Document") it fell into before — one accurate word in
+                      the subline, matching design section 02's "Encrypted ·
+                      Markdown · 184 B", rather than a second chip. */}
+                  {`Encrypted · ${isText ? codeLanguageLabel : (CATEGORY_LABELS[category] ?? 'File')}${currentSizeBytes != null ? ` · ${formatSize(currentSizeBytes)}` : ''}`}
                 </Text>
-                {isText && codeLanguage !== 'plaintext' && (
-                  <View style={styles.langBadge}>
-                    <Text style={styles.langBadgeText}>{codeLanguageLabel}</Text>
-                  </View>
-                )}
               </View>
             </GlassCapsule>
           </View>
@@ -3968,16 +4184,14 @@ export default function PreviewScreen() {
           </TouchableOpacity>
         </View>
       )}
+      </PanGestureHandler>
 
       {/* Preview redesign item 6 — floating page counter (PDF), same
-          fade-with-chrome behaviour as the media branch's pill. */}
-      {!editMode && pageCounterLabel && (
-        <View style={[styles.pageCounterWrap, { top: insets.top + 8 }]} pointerEvents="none">
-          <GlassCapsule scheme={resolved} contentStyle={styles.pageCounterBody}>
-            <Text style={[styles.pageCounterText, styles.mono, { color: docMaterial.label }]}>{pageCounterLabel}</Text>
-          </GlassCapsule>
-        </View>
-      )}
+          fade-with-chrome behaviour as the media branch's pill.
+          Same fix as the media branch's matching pill above: `insets.top + 58`
+          matches THIS header's own `PreviewOptionsPopover` anchor below —
+          "just under the bar," not `insets.top + 8` (the header's own top,
+          which visually collided with the ⋯ circle). */}
       </Animated.View>
 
       {/* Preview redesign item 3 — the "e2e" pill is retired (see the media
@@ -3990,6 +4204,17 @@ export default function PreviewScreen() {
         actions={previewActions}
         onClose={() => setOptionsVisible(false)}
         top={insets.top + 58}
+      />
+      {/* Preview redesign item 4 — "Move to…", reusing FilesScreen's own
+          FolderPickerModal (see the `handleOpenMovePicker` comment). */}
+      <FolderPickerModal
+        visible={movePicker !== null}
+        title="Move"
+        folders={movePicker?.folders ?? []}
+        currentParentId={movePicker?.currentParentId ?? null}
+        busy={moveBusy}
+        onCancel={() => setMovePicker(null)}
+        onConfirm={(targetId) => { void handleConfirmMove(targetId); }}
       />
 
       {/* ---- Preview area ----
@@ -4097,16 +4322,24 @@ export default function PreviewScreen() {
             // wrapper (default align:'stretch') is the fix — give the
             // WebView a non-centered direct parent instead of touching
             // react-native-webview itself.
-            <View style={styles.svgWebViewWrap}>
-              <WebView
-                originWhitelist={['*']}
-                source={{ html: wrappedSvgHtml }}
-                style={styles.svgWebView}
-                scalesPageToFit
-                showsHorizontalScrollIndicator={false}
-                showsVerticalScrollIndicator={false}
-              />
-            </View>
+            //
+            // Preview redesign item 3 — 1564 is merged, so this branch now
+            // also gets the same full-bleed + tap-to-hide frame as every
+            // other type. `Pressable` sits ABOVE `svgWebViewWrap`, which
+            // stays the WebView's unchanged DIRECT parent (still plain
+            // flex:1, still not centering) — the fix above is untouched.
+            <Pressable style={styles.fullBleedFill} onPress={handleContentTap} testID="preview-content-tap">
+              <View style={styles.svgWebViewWrap}>
+                <WebView
+                  originWhitelist={['*']}
+                  source={{ html: wrappedSvgHtml }}
+                  style={styles.svgWebView}
+                  scalesPageToFit
+                  showsHorizontalScrollIndicator={false}
+                  showsVerticalScrollIndicator={false}
+                />
+              </View>
+            </Pressable>
           ) : svgError ? (
             <View style={styles.imageStatus}>
               <Text style={[styles.imageStatusTitle, { color: c.ink }]}>
@@ -4237,9 +4470,16 @@ export default function PreviewScreen() {
           )
         ) : isDocx ? (
           docxData ? (
-            <Suspense fallback={<View style={styles.imageStatus}>{renderSharedProgress(false)}</View>}>
-              <DocxRenderer data={docxData} colors={c} isDark={resolved === 'dark'} />
-            </Suspense>
+            // Preview redesign item 3 — full-bleed + tap-to-hide, same frame
+            // as every other type. `Pressable` is an ANCESTOR of
+            // `DocxRenderer`, not its direct parent — its own internal
+            // WebView already has its own non-centering flex:1 wrapper
+            // (task 1564), untouched by this.
+            <Pressable style={styles.fullBleedFill} onPress={handleContentTap} testID="preview-content-tap">
+              <Suspense fallback={<View style={styles.imageStatus}>{renderSharedProgress(false)}</View>}>
+                <DocxRenderer data={docxData} colors={c} isDark={resolved === 'dark'} />
+              </Suspense>
+            </Pressable>
           ) : docxError ? (
             <View style={styles.imageStatus}>
               <Text style={[styles.imageStatusTitle, { color: c.ink }]}>
@@ -4254,9 +4494,13 @@ export default function PreviewScreen() {
           )
         ) : isSpreadsheet ? (
           sheetData ? (
-            <Suspense fallback={<View style={styles.imageStatus}>{renderSharedProgress(false)}</View>}>
-              <XlsxRenderer data={sheetData} colors={c} />
-            </Suspense>
+            // Preview redesign item 3 — full-bleed + tap-to-hide (no WebView
+            // in this renderer, so no direct-parent-centering concern).
+            <Pressable style={styles.fullBleedFill} onPress={handleContentTap} testID="preview-content-tap">
+              <Suspense fallback={<View style={styles.imageStatus}>{renderSharedProgress(false)}</View>}>
+                <XlsxRenderer data={sheetData} colors={c} />
+              </Suspense>
+            </Pressable>
           ) : sheetError ? (
             <View style={styles.imageStatus}>
               <Text style={[styles.imageStatusTitle, { color: c.ink }]}>
@@ -4271,6 +4515,12 @@ export default function PreviewScreen() {
           )
         ) : isHtml ? (
           htmlContent != null ? (
+            // Preview redesign item 3 — full-bleed + tap-to-hide.
+            // `htmlContainer` (flex:1, unchanged) stays the WebView's DIRECT
+            // parent in the "Rendered" toggle state — it never centered its
+            // children, so task 1564's fix was never needed here; `Pressable`
+            // is only an ancestor of that, same as every other branch above.
+            <Pressable style={styles.fullBleedFill} onPress={handleContentTap} testID="preview-content-tap">
             <View style={styles.htmlContainer}>
               {/* Toggle: rendered ↔ source. Sticky bar on top of the view. */}
               <View style={[styles.htmlToggleBar, { borderBottomColor: c.line, backgroundColor: c.paper }]}>
@@ -4358,6 +4608,7 @@ export default function PreviewScreen() {
                 />
               )}
             </View>
+            </Pressable>
           ) : htmlError ? (
             <View style={styles.imageStatus}>
               <Text style={[styles.imageStatusTitle, { color: c.ink }]}>
@@ -4372,9 +4623,13 @@ export default function PreviewScreen() {
           )
         ) : isZip ? (
           zipData ? (
-            <Suspense fallback={<View style={styles.imageStatus}>{renderSharedProgress(false)}</View>}>
-              <ZipRenderer data={zipData} colors={c} />
-            </Suspense>
+            // Preview redesign item 3 — full-bleed + tap-to-hide (no WebView
+            // in this renderer).
+            <Pressable style={styles.fullBleedFill} onPress={handleContentTap} testID="preview-content-tap">
+              <Suspense fallback={<View style={styles.imageStatus}>{renderSharedProgress(false)}</View>}>
+                <ZipRenderer data={zipData} colors={c} />
+              </Suspense>
+            </Pressable>
           ) : zipError ? (
             <View style={styles.imageStatus}>
               <Text style={[styles.imageStatusTitle, { color: c.ink }]}>
@@ -4389,13 +4644,17 @@ export default function PreviewScreen() {
           )
         ) : isArchive ? (
           archiveData ? (
-            <Suspense fallback={<View style={styles.imageStatus}>{renderSharedProgress(false)}</View>}>
-              <ArchiveRenderer
-                data={archiveData}
-                extension={(currentFileName ?? '').toLowerCase().split('.').pop() ?? 'tar'}
-                colors={c}
-              />
-            </Suspense>
+            // Preview redesign item 3 — full-bleed + tap-to-hide (no WebView
+            // in this renderer).
+            <Pressable style={styles.fullBleedFill} onPress={handleContentTap} testID="preview-content-tap">
+              <Suspense fallback={<View style={styles.imageStatus}>{renderSharedProgress(false)}</View>}>
+                <ArchiveRenderer
+                  data={archiveData}
+                  extension={(currentFileName ?? '').toLowerCase().split('.').pop() ?? 'tar'}
+                  colors={c}
+                />
+              </Suspense>
+            </Pressable>
           ) : archiveError ? (
             <View style={styles.imageStatus}>
               <Text style={[styles.imageStatusTitle, { color: c.ink }]}>
@@ -4410,9 +4669,13 @@ export default function PreviewScreen() {
           )
         ) : isPptx ? (
           pptxData ? (
-            <Suspense fallback={<View style={styles.imageStatus}>{renderSharedProgress(false)}</View>}>
-              <PptxRenderer data={pptxData} colors={c} />
-            </Suspense>
+            // Preview redesign item 3 — full-bleed + tap-to-hide (no WebView
+            // in this renderer).
+            <Pressable style={styles.fullBleedFill} onPress={handleContentTap} testID="preview-content-tap">
+              <Suspense fallback={<View style={styles.imageStatus}>{renderSharedProgress(false)}</View>}>
+                <PptxRenderer data={pptxData} colors={c} />
+              </Suspense>
+            </Pressable>
           ) : pptxError ? (
             <View style={styles.imageStatus}>
               <Text style={[styles.imageStatusTitle, { color: c.ink }]}>
@@ -4426,6 +4689,14 @@ export default function PreviewScreen() {
             </View>
           )
         ) : (
+          // Preview redesign item 3 — tap-to-hide only (no full-bleed):
+          // per DEVIATIONS.md, the fallback card is a centered card by
+          // design (section 03's own "good" list separates full-bleed
+          // content from the card pattern — there is no mock of this card
+          // running edge to edge), so `previewArea`'s centering stays;
+          // `Pressable` just adds the same tap gesture every other type
+          // now has, without changing the card's own layout.
+          <Pressable onPress={handleContentTap} testID="preview-content-tap">
           <View style={styles.genericPlaceholder}>
             {/* 1346 — genericIconText stays colors.white: this badge's
                 background (categoryAccent, just above) is ALREADY
@@ -4454,8 +4725,31 @@ export default function PreviewScreen() {
                 : 'Unlock your vault to decrypt this file.'}
             </Text>
           </View>
+          </Pressable>
         )}
       </View>
+
+      {/* Preview redesign item 6 — floating page counter (PDF). Bug found
+          verifying rung (g) on-device with a real multi-page PDF: this used
+          to render INSIDE the header's own chrome wrapper, BEFORE
+          `previewArea` in the tree — confirmed via instrumented
+          `onLoadComplete`/`onPageChanged` logs that `pdfPageInfo` (and so
+          `pageCounterLabel`) was correctly populated ("1 / 4"), yet the pill
+          was never visible on screen. `react-native-pdf`'s native view
+          consistently painted over it regardless of the pill's own
+          `zIndex: 14` — a zIndex only reorders siblings sharing the SAME
+          parent, and the real competing siblings here are the whole chrome
+          wrapper vs. `previewArea`, neither of which had one set. Moved to
+          a genuine sibling AFTER `previewArea` closes instead — the exact
+          position the bottom bar below already uses successfully (proven
+          visible over the very same PDF in every screenshot this pass). */}
+      {!editMode && pageCounterLabel && (
+        <View style={[styles.pageCounterWrap, { top: insets.top + 58 }]} pointerEvents="none">
+          <GlassCapsule scheme={resolved} contentStyle={styles.pageCounterBody}>
+            <Text style={[styles.pageCounterText, styles.mono, { color: docMaterial.label }]}>{pageCounterLabel}</Text>
+          </GlassCapsule>
+        </View>
+      )}
 
       {/* ---- Details sheet (handle-only, pull up to expand) ---- */}
       {/* ---- Bottom bar + Info sheet (item 3/5) ----
@@ -4497,7 +4791,7 @@ export default function PreviewScreen() {
           ...(currentMimeType ? [{ label: 'Type', value: currentMimeType }] : []),
         ]}
       />
-    </View>
+    </Animated.View>
   );
 }
 
@@ -4619,7 +4913,26 @@ const styles = StyleSheet.create({
   markdownScroll: {
     flex: 1,
   },
+  // Rung (f) bug found verifying this pass: this banner used to be a plain
+  // NORMAL-FLOW sibling before CodeRenderer in the JSX, expecting to sit
+  // above it and push it down. But `CodeRenderer`'s own root is
+  // `position:'absolute', top:0,...` with an OPAQUE background (its own
+  // fullBleedFill escape from `previewArea`'s centering, same class of fix
+  // as this screen's) — a later-JSX absolutely-positioned opaque sibling
+  // paints OVER an earlier normal-flow one at the same top edge, so the
+  // read-only notice rendered (proven: `editGate.reason` was correctly
+  // truthy, `canEditText` correctly hid the ⋯ menu's Edit item) but was
+  // never actually VISIBLE — confirmed on-device with a real >2 MB file
+  // (screenshot showed only CodeRenderer's own unrelated 300k-char
+  // truncation notice). Fixed by pulling this banner OUT of flow too, with
+  // an explicit `zIndex` above CodeRenderer's implicit 0, so it floats on
+  // top instead of losing a z-order fight it can't win by JSX order alone.
   readOnlyBanner: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    zIndex: 5,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
