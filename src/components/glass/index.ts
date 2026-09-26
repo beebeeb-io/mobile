@@ -33,6 +33,7 @@ export {
   BLUR_PX_AT_FULL_INTENSITY,
   GLASS_RADII,
   MODAL_SCRIM,
+  PREVIEW_CHROME_MATERIAL,
   SCROLL_EDGE,
   cssShadow,
   glassMaterial,

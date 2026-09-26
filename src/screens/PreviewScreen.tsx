@@ -41,7 +41,7 @@ import type { RootStackParamList } from '../App';
 import { colors, fonts, radii, shadows } from '../theme';
 import type { Colors } from '../theme';
 import { useTheme } from '../lib/theme-context';
-import { GLASS_CIRCLE_SIZES, GlassCapsule, GlassCircle, SCROLL_EDGE, ScrollEdgeBlur, glassMaterial } from '../components/glass';
+import { GLASS_CIRCLE_SIZES, GlassCapsule, GlassCircle, PREVIEW_CHROME_MATERIAL, SCROLL_EDGE, ScrollEdgeBlur, glassMaterial } from '../components/glass';
 import { useToast } from '../lib/toast-context';
 import { getToken, friendlyError, trustLocation, trashFiles, getFile, getFileCurrentVersion, listAllFiles, moveFile, type UploadProgress } from '../lib/api';
 import { useCrypto } from '../lib/crypto-context';
@@ -3645,7 +3645,13 @@ export default function PreviewScreen() {
     // glass-recipe.ts: both are DERIVED values invented because the canvas
     // never sampled a light equivalent, not lifted from one. See
     // DEVIATIONS.md "Phase 4 — Preview light-mode rationale (1346)".
-    const mediaMaterial = glassMaterial('dark');
+    //
+    // Round 4 (lead review, see `PREVIEW_CHROME_MATERIAL`'s own doc comment):
+    // `glassMaterial('dark')` alone is not enough even here — a bright/white
+    // photo washes out its 0.46-alpha fill exactly like the doc header's did
+    // over a white PDF page. `PREVIEW_CHROME_MATERIAL` is the fix for BOTH
+    // branches, not a doc-only patch.
+    const mediaMaterial = PREVIEW_CHROME_MATERIAL;
 
     return (
       <Animated.View style={[styles.mediaRoot, { transform: [{ translateY: closeTranslateYClamped }] }]}>
@@ -3685,7 +3691,7 @@ export default function PreviewScreen() {
             testID="preview-close"
             accessibilityLabel="Close preview"
           >
-            <GlassCircle scheme="dark" size={GLASS_CIRCLE_SIZES.action}>
+            <GlassCircle scheme="dark" materialOverride={mediaMaterial} size={GLASS_CIRCLE_SIZES.action}>
               <Ionicons name="chevron-down" size={22} color={mediaMaterial.label} />
             </GlassCircle>
           </TouchableOpacity>
@@ -3706,6 +3712,7 @@ export default function PreviewScreen() {
           <View style={styles.mediaHeaderText}>
             <GlassCapsule
               scheme="dark"
+              materialOverride={mediaMaterial}
               style={styles.mediaHeaderCapsule}
               contentStyle={styles.mediaHeaderCapsuleBody}
             >
@@ -3717,7 +3724,7 @@ export default function PreviewScreen() {
               </Text>
               <View style={styles.encSubRow}>
                 <Ionicons name="lock-closed" size={10} color={colors.amber} />
-                <Text style={[styles.mediaHeaderSubtitle, styles.mono]} numberOfLines={1}>
+                <Text style={[styles.mediaHeaderSubtitle, styles.mono, { color: mediaMaterial.labelMuted }]} numberOfLines={1}>
                   {`Encrypted · ${CATEGORY_LABELS[category]}${currentSizeBytes != null ? ` · ${formatSize(currentSizeBytes)}` : ''}`}
                 </Text>
               </View>
@@ -3734,6 +3741,7 @@ export default function PreviewScreen() {
           >
             <GlassCircle
               scheme="dark"
+              materialOverride={mediaMaterial}
               size={GLASS_CIRCLE_SIZES.action}
               style={(downloading || trashing) ? styles.disabledIconButton : undefined}
             >
@@ -3759,8 +3767,8 @@ export default function PreviewScreen() {
             magic number. */}
         {pageCounterLabel && (
           <View style={[styles.pageCounterWrap, { top: insets.top + 62 }]} pointerEvents="none">
-            <GlassCapsule scheme="dark" contentStyle={styles.pageCounterBody}>
-              <Text style={[styles.pageCounterText, styles.mono]}>{pageCounterLabel}</Text>
+            <GlassCapsule scheme="dark" materialOverride={mediaMaterial} contentStyle={styles.pageCounterBody}>
+              <Text style={[styles.pageCounterText, styles.mono, { color: mediaMaterial.label }]}>{pageCounterLabel}</Text>
             </GlassCapsule>
           </View>
         )}
@@ -4032,12 +4040,35 @@ export default function PreviewScreen() {
   // `c.paper`, the same root-background token every other screen in this
   // app uses (SettingsScreen, FilesScreen, LoginScreen, …). See
   // DEVIATIONS.md "Phase 4 — Preview light-mode rationale (1346)".
-  const docMaterial = glassMaterial(resolved);
+  //
+  // CORRECTION, round 4 (lead review of round 3's own PDF screenshot,
+  // `evidence-1563-redesign-r3/23-pdf-counter-1of4-FIXED.png`): the
+  // paragraph above is right about `styles.root`'s OWN background
+  // (`c.paper`, untouched below) but WRONG about the header/bottom-bar
+  // CHROME following `resolved`. A PDF's own bytes render a literal white
+  // page independent of the app's theme — unlike DocxRenderer/XlsxRenderer,
+  // it never paints `c.paper`. On a device in dark mode, `resolved` picked
+  // `glassMaterial('dark')`, whose 0.46-alpha fill washed out to a ~3.7:1
+  // grey-on-grey bar over that white page — the exact screenshot the lead
+  // flagged. Left here rather than deleted, per this workspace's "leave the
+  // wrong claim visible, correct beneath it" convention. Chrome now always
+  // renders through `PREVIEW_CHROME_MATERIAL` (see its own doc comment in
+  // `glass-recipe.ts`) — measured safe over white/black/mid-grey, not just
+  // argued from the (correct, for CONTENT) theme-tracking logic above.
+  const docMaterial = PREVIEW_CHROME_MATERIAL;
 
   return (
-    <Animated.View style={[styles.root, { paddingTop: insets.top, backgroundColor: c.paper }, { transform: [{ translateY: closeTranslateYClamped }] }]}>
+    <Animated.View style={[styles.root, { backgroundColor: c.paper }, { transform: [{ translateY: closeTranslateYClamped }] }]}>
       <StatusBar hidden={!chromeVisible} animated />
-      <Animated.View style={{ opacity: barsOpacity }} pointerEvents={chromeVisible ? 'auto' : 'none'}>
+      {/* Round 4 fix — see `header`'s own style comment for the two bugs
+          this exact shape fixes (a stacking bug, then an accessibility-tree
+          bug from the first attempt at fixing it). This wrapper floats over
+          `previewArea` (now full-bleed); `header` inside it stays a plain,
+          normally-sized row. */}
+      <Animated.View
+        style={{ opacity: barsOpacity, position: 'absolute', top: 0, left: 0, right: 0, zIndex: 20 }}
+        pointerEvents={chromeVisible ? 'auto' : 'none'}
+      >
       {/* ---- Header ----
           Preview redesign item 7 — while editing a text file, this row
           becomes Done (left, the SAME dirty-guard exit as the ⋯ menu's
@@ -4056,21 +4087,22 @@ export default function PreviewScreen() {
         failOffsetX={[-20, 20]}
       >
       {editMode ? (
-        <View style={styles.header} testID="preview-edit-topbar">
+        <View style={[styles.header, { paddingTop: insets.top + 8 }]} testID="preview-edit-topbar">
           <TouchableOpacity
             onPress={handleExitEditMode}
             hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
             testID="preview-edit-done"
             accessibilityLabel="Stop editing"
           >
-            <GlassCapsule scheme={resolved} contentStyle={styles.editTopBarPillBody}>
+            <GlassCapsule scheme="dark" materialOverride={docMaterial} contentStyle={styles.editTopBarPillBody}>
               <Text style={[styles.editTopBarPillText, { color: docMaterial.label }]}>Done</Text>
             </GlassCapsule>
           </TouchableOpacity>
 
           <View style={styles.headerCenter}>
             <GlassCapsule
-              scheme={resolved}
+              scheme="dark"
+              materialOverride={docMaterial}
               style={styles.docHeaderCapsule}
               contentStyle={styles.docHeaderCapsuleBody}
             >
@@ -4103,7 +4135,7 @@ export default function PreviewScreen() {
           </TouchableOpacity>
         </View>
       ) : (
-        <View style={styles.header}>
+        <View style={[styles.header, { paddingTop: insets.top + 8 }]}>
           {/* 1344 — outer TouchableOpacity wraps the fixed-size GlassCircle so
               hitSlop is not clipped to the disc (the hitSlop-clip bug 1343 just
               fixed on this screen's own media header, and 1341/1342 fixed on
@@ -4123,22 +4155,25 @@ export default function PreviewScreen() {
             testID="preview-close"
             accessibilityLabel="Close preview"
           >
-            <GlassCircle scheme={resolved} size={GLASS_CIRCLE_SIZES.action}>
+            <GlassCircle scheme="dark" materialOverride={docMaterial} size={GLASS_CIRCLE_SIZES.action}>
               <Ionicons name="chevron-down" size={22} color={docMaterial.label} />
             </GlassCircle>
           </TouchableOpacity>
 
           {/* 1344 — same GlassCapsule shape/padding (7px 18px, radius 999) as
-              the media header, but scheme=resolved instead of forced "dark" —
-              see the scheme note above `docMaterial`. Subtitle colour reads
-              `docMaterial.labelMuted`, a real recipe token (not the media
-              header's one-off 0.40 literal), because it has to flip legibly
-              between light and dark rather than always sit on a dark fill.
+              the media header. Round 4 CORRECTION: this used to pass
+              scheme=resolved instead of forced "dark" — see the CORRECTION
+              note above `docMaterial`'s declaration for why that no longer
+              holds for the CHROME (the `c.paper` content-background argument
+              a few paragraphs up is still correct and unrelated). Subtitle
+              colour reads `docMaterial.labelMuted` (now `PREVIEW_CHROME_MATERIAL`'s
+              token, not `glassMaterial(resolved)`'s).
               Preview redesign item 2 — subtitle gets a lock icon + "Encrypted"
               prefix (design: amber lock icon, "Encrypted · Type · size"). */}
           <View style={styles.headerCenter}>
             <GlassCapsule
-              scheme={resolved}
+              scheme="dark"
+              materialOverride={docMaterial}
               style={styles.docHeaderCapsule}
               contentStyle={styles.docHeaderCapsuleBody}
             >
@@ -4175,7 +4210,8 @@ export default function PreviewScreen() {
             accessibilityLabel="Open file options"
           >
             <GlassCircle
-              scheme={resolved}
+              scheme="dark"
+              materialOverride={docMaterial}
               size={GLASS_CIRCLE_SIZES.action}
               style={(downloading || trashing) ? styles.disabledIconButton : undefined}
             >
@@ -4745,7 +4781,7 @@ export default function PreviewScreen() {
           visible over the very same PDF in every screenshot this pass). */}
       {!editMode && pageCounterLabel && (
         <View style={[styles.pageCounterWrap, { top: insets.top + 58 }]} pointerEvents="none">
-          <GlassCapsule scheme={resolved} contentStyle={styles.pageCounterBody}>
+          <GlassCapsule scheme="dark" materialOverride={docMaterial} contentStyle={styles.pageCounterBody}>
             <Text style={[styles.pageCounterText, styles.mono, { color: docMaterial.label }]}>{pageCounterLabel}</Text>
           </GlassCapsule>
         </View>
@@ -4763,7 +4799,7 @@ export default function PreviewScreen() {
           pointerEvents={chromeVisible ? 'auto' : 'none'}
         >
           <PreviewBottomBar
-            scheme={resolved}
+            scheme="dark"
             actions={[
               { key: 'share', label: 'Share', icon: 'share-outline', onPress: handleShare, testID: 'preview-bar-share' },
               { key: 'save', label: 'Save', icon: 'download-outline', disabled: downloading, onPress: handleDownload, testID: 'preview-bar-save' },
@@ -5157,11 +5193,43 @@ const styles = StyleSheet.create({
   },
 
   // ---- Header ----
+  // Round 4 (lead review): this used to be a plain in-flow row, sized by
+  // `root`'s own `paddingTop: insets.top` above it — which meant
+  // `previewArea` below (a normal-flow sibling) started BELOW both the
+  // inset AND this row's own height, painting `root`'s opaque
+  // `backgroundColor` behind that whole span. That's the "header sits on an
+  // opaque dark band, content starts at y≈310/2000" bug — the design says
+  // content runs UNDER the translucent bars, not after them. `root` no
+  // longer sets `paddingTop` at all, and `previewArea` below is now a
+  // full-screen absolute layer, so content reaches y=0.
+  //
+  // The float-above-content positioning (`position:'absolute', top/left/
+  // right:0, zIndex:20`) lives on the WRAPPING `<Animated.View>` at the JSX
+  // call site, not here on `header` itself — two on-device bugs, in order:
+  // (1) first attempt put it here on `header`. `previewArea` is a sibling of
+  // that OUTER wrapper, not of `header` (`header` is nested one more level
+  // in, inside `PanGestureHandler`) — zIndex only resolves stacking among
+  // siblings sharing one parent, so `header`'s zIndex never even entered the
+  // comparison against `previewArea`'s; the header vanished completely
+  // behind the (correctly full-bleed) PDF page, confirmed on-device
+  // (`evidence-1563-redesign-r4/01-pdf-fixed.png`).
+  // (2) moving position:absolute here (to `header`) instead of the wrapper
+  // fixed the visual stacking (the wrapper itself got the zIndex) but then
+  // made THIS view the one with zero contributed size — its own parent
+  // chain (wrapper > PanGestureHandler > header) collapsed to a zero
+  // accessibility frame, and Maestro/XCUITest could no longer find ANY
+  // element inside it (`maestro hierarchy` showed the close/⋯ circles
+  // rendering on screen but absent from the accessibility tree entirely —
+  // confirmed by dumping the hierarchy and finding nothing in the header's
+  // screen region). Fixed by keeping `header` a plain, normally-sized
+  // in-flow row and putting the absolute positioning + zIndex on the
+  // wrapper instead — the wrapper's frame now comes from `header`'s real
+  // (non-zero) content size, same as any ordinary floating-header pattern.
   header: {
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingBottom: 12,
     gap: 12,
   },
   // 1344 — closeButton/closeIcon/headerIconButton (plain circles, no glass)
@@ -5295,8 +5363,23 @@ const styles = StyleSheet.create({
   },
 
   // ---- Preview area ----
+  // Round 4 (lead review) — `flex: 1` sized this to whatever space was left
+  // BELOW `header` in normal flow (the actual dead-band bug; see `header`'s
+  // own comment). Absolute + inset 0 makes this span the WHOLE root
+  // regardless of the header floating above it, so every `fullBleedFill`
+  // child inside it (already proven to escape `justifyContent`/`alignItems`/
+  // `paddingHorizontal` here — see the `fullBleedFill` style comment) now
+  // reaches all four edges of the SCREEN, not just of the old, header-
+  // shrunk remainder. The non-full-bleed states (locked/error/fallback
+  // cards) still center within this box — now centered on the whole screen,
+  // which is the same "content runs under the bars" behaviour, just applied
+  // to a small card instead of a full-bleed page.
   previewArea: {
-    flex: 1,
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
     justifyContent: 'center',
     alignItems: 'center',
     paddingHorizontal: 24,

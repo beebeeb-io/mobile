@@ -19,7 +19,7 @@ import React from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import type { StyleProp, ViewStyle } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { GlassCapsule, type GlassScheme } from '../glass';
+import { GlassCapsule, PREVIEW_CHROME_MATERIAL, type GlassScheme } from '../glass';
 
 export interface PreviewBottomBarAction {
   key: string;
@@ -34,6 +34,13 @@ export interface PreviewBottomBarAction {
 }
 
 interface PreviewBottomBarProps {
+  /**
+   * Kept for the glass TEXTURE only (blur tint/native `colorScheme`) — task
+   * 1563 round 4: this bar always renders through `PREVIEW_CHROME_MATERIAL`
+   * for fill/border/label colour regardless of `scheme`, because it floats
+   * over arbitrary content (a white PDF page, a black photo, ...), not a
+   * known themed ground. See `PREVIEW_CHROME_MATERIAL`'s doc comment.
+   */
   scheme: GlassScheme;
   actions: PreviewBottomBarAction[];
   /** The caller (PreviewScreen) owns SCREEN positioning — this component's
@@ -45,11 +52,16 @@ interface PreviewBottomBarProps {
 }
 
 export function PreviewBottomBar({ scheme, actions, style }: PreviewBottomBarProps) {
-  const iconColor = scheme === 'dark' ? 'rgba(236,232,223,0.92)' : undefined;
-  const labelColor = scheme === 'dark' ? 'rgba(207,201,190,0.92)' : undefined;
+  const iconColor = PREVIEW_CHROME_MATERIAL.label;
+  const labelColor = PREVIEW_CHROME_MATERIAL.labelMuted;
 
   return (
-    <GlassCapsule scheme={scheme} style={[styles.bar, style]} contentStyle={styles.barContent}>
+    <GlassCapsule
+      scheme={scheme}
+      materialOverride={PREVIEW_CHROME_MATERIAL}
+      style={[styles.bar, style]}
+      contentStyle={styles.barContent}
+    >
       {actions.map((action) => (
         <TouchableOpacity
           key={action.key}
@@ -61,17 +73,12 @@ export function PreviewBottomBar({ scheme, actions, style }: PreviewBottomBarPro
           accessibilityLabel={action.label}
           testID={action.testID}
         >
-          <Ionicons
-            name={action.icon}
-            size={22}
-            color={action.active ? '#F5B800' : iconColor}
-            style={!iconColor && !action.active ? styles.iconLight : undefined}
-          />
+          <Ionicons name={action.icon} size={22} color={action.active ? '#F5B800' : iconColor} />
           <Text
             style={[
               styles.label,
               action.active && styles.labelActive,
-              labelColor ? { color: labelColor } : undefined,
+              !action.active ? { color: labelColor } : undefined,
             ]}
             numberOfLines={1}
           >
@@ -103,12 +110,6 @@ const styles = StyleSheet.create({
   itemDisabled: {
     opacity: 0.4,
   },
-  // GlassSurface's own scheme (light/dark/system) already tints icons in
-  // `iconColor` for scheme='dark'; a light-scheme bar over unknown content
-  // (rare — most callers pass 'dark', matching the media/doc grounds this
-  // screen renders over) falls back to the theme's own ink token instead of
-  // hardcoding a colour with no artboard to sample it from.
-  iconLight: {},
   label: {
     fontSize: 10.5,
     fontWeight: '600',

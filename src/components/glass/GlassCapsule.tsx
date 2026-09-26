@@ -10,10 +10,12 @@ import React from 'react';
 import { type StyleProp, type ViewStyle } from 'react-native';
 
 import { GlassSurface } from './GlassSurface';
-import { type GlassRadiusName, type GlassScheme } from './glass-recipe';
+import { type GlassMaterial, type GlassRadiusName, type GlassScheme } from './glass-recipe';
 
 export type GlassCapsuleProps = {
   scheme?: GlassScheme;
+  /** See `GlassSurfaceProps.materialOverride` (task 1563 round 4). */
+  materialOverride?: GlassMaterial;
   /** Defaults to the full capsule radius; override for a softer pill. */
   radius?: number | GlassRadiusName;
   style?: StyleProp<ViewStyle>;
@@ -24,6 +26,7 @@ export type GlassCapsuleProps = {
 
 export function GlassCapsule({
   scheme,
+  materialOverride,
   radius = 'capsule',
   style,
   contentStyle,
@@ -33,6 +36,7 @@ export function GlassCapsule({
   return (
     <GlassSurface
       scheme={scheme}
+      materialOverride={materialOverride}
       radius={radius}
       style={style}
       contentStyle={contentStyle}

@@ -9,13 +9,15 @@ import React from 'react';
 import { StyleSheet, type StyleProp, type ViewStyle } from 'react-native';
 
 import { GlassSurface } from './GlassSurface';
-import { type GlassScheme } from './glass-recipe';
+import { type GlassMaterial, type GlassScheme } from './glass-recipe';
 
 /** The two circle sizes the canvas uses. */
 export const GLASS_CIRCLE_SIZES = { action: 42, search: 56 } as const;
 
 export type GlassCircleProps = {
   scheme?: GlassScheme;
+  /** See `GlassSurfaceProps.materialOverride` (task 1563 round 4). */
+  materialOverride?: GlassMaterial;
   /** Diameter in points. Defaults to the canvas's 42pt chrome action. */
   size?: number;
   style?: StyleProp<ViewStyle>;
@@ -25,6 +27,7 @@ export type GlassCircleProps = {
 
 export function GlassCircle({
   scheme,
+  materialOverride,
   size = GLASS_CIRCLE_SIZES.action,
   style,
   elevated = true,
@@ -33,6 +36,7 @@ export function GlassCircle({
   return (
     <GlassSurface
       scheme={scheme}
+      materialOverride={materialOverride}
       radius={size / 2}
       style={[{ width: size, height: size }, style]}
       contentStyle={[styles.center, { width: size, height: size }]}

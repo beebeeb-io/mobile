@@ -216,3 +216,73 @@ it later — nothing currently imports it outside this file.
 deletion of previously-shipped, always-visible chrome, not an addition —
 per the workspace CLAUDE.md's "ask before you delete or collapse" spirit,
 flagging it explicitly rather than letting a `git diff` be the only record.
+
+## Task 1563 round 4 (mobile) — Preview's floating chrome no longer follows the app's light/dark theme
+
+**Design:** `design/preview-redesign-ios.html`'s `.glass` rule is a single,
+fixed dark-tinted material — every phone mock in that file uses the same
+look, none of them vary it by light/dark scheme.
+
+**Prior ruling (task 1344/1346, corrected in place in `PreviewScreen.tsx` —
+see the `docMaterial` comment marked "CORRECTION, round 4"):** the doc/PDF
+header was switched from a forced-dark material to `glassMaterial(resolved)`
+(follow the app's own theme), reasoned from "a document page is usually a
+white sheet... forcing dark glass would float a mismatched dark bar over an
+otherwise light screen." That reasoning is right for `DocxRenderer`/
+`XlsxRenderer`/markdown/code, which DO paint a themed background — but wrong
+for a PDF's own bytes, which render a literal (usually white) page
+regardless of the app's theme.
+
+**What the lead's round-3 review found:** on a device in dark mode, opening
+a PDF put `glassMaterial('dark')`'s 0.46-alpha fill over a white page —
+`evidence-1563-redesign-r3/23-pdf-counter-1of4-FIXED.png` shows the result:
+a washed-out grey bar with near-invisible labels, ~3.7:1 contrast (below
+WCAG AA's 4.5:1), reproduced in `src/lib/contrast.test.ts`.
+
+**What shipped:** a new, single, content-adaptive-safe material
+(`PREVIEW_CHROME_MATERIAL`, `glass-recipe.ts`) — a much more opaque
+(0.90-alpha) near-black fill plus a real border — used for EVERY floating
+control on the Preview screen (both the doc/PDF branch, corrected here, and
+the media/image/video branch, which had the identical latent bug: forcing
+`scheme="dark"` alone does not fix a washed-out bar over a bright ground,
+since `glassMaterial('dark')`'s fill is only 46% opaque either way). This is
+now ONE fixed look for Preview's chrome, matching the design's own choice
+not to vary it by scheme — verified over a white PDF page, a dark markdown
+background, and colourful image/video content, and measured (not just
+eyeballed) against white/black/mid-grey via `worstCaseBarContrast()`
+(`glass-recipe.test.ts`).
+
+**Secondary change, same commit:** the media header's subtitle used a
+one-off literal (`rgba(240,238,233,0.40)`, task 1343) instead of the
+material's own `labelMuted` token — deliberately faint, matching the design
+mock. Against the OLD 0.46-alpha fill this was already borderline; against
+the new material's near-opaque near-black fill, 0.40 alpha is comfortably
+readable, but the point of a "safe" material is not to reintroduce a
+borderline value at a different fill — switched to `PREVIEW_CHROME_MATERIAL.labelMuted`
+(0.82 alpha), which `glass-recipe.test.ts` also asserts clears AA.
+
+## Task 1563 round 4 (mobile) — media (video/image) ⋯ and close controls are invisible to Maestro/XCUITest (found, not fixed)
+
+Not a deviation from the design — a testability gap found while verifying
+this round's fix, recorded because it blocks a future Maestro pass the same
+way the round-3 dev-client FAB did.
+
+`maestro hierarchy` over an open video or image preview shows NO element for
+"Close preview" or "Open file options" at all — only the bottom bar's
+Share/Save/Versions/Info survive. The SAME two controls, using the SAME
+`GlassCircle`+`TouchableOpacity`+`accessibilityLabel` pattern, ARE present
+and tappable for every doc-branch type (PDF, markdown, code, docx, xlsx,
+pptx, svg) in the identical layout position. The hierarchy dump's own
+top-level accessibility text for the video case reads "Video, Liftable
+subject available" — consistent with iOS's Visual Look Up / Live Text
+subject-lifting analysis attaching to the native `VideoView`/`Image`
+surface and shadowing sibling accessibility elements at the SAME screen
+region, though this was not instrumented further to confirm the exact
+mechanism. Pre-existing: `mediaHeader`'s `position:'absolute'`/`zIndex:20`
+layout is untouched by this round (only its MATERIAL changed), so this is
+not a round-4 regression — visual verification (screenshots
+`16-mp4.png`/`19-heic.png`) confirms the controls render correctly and are
+presumably reachable by a real tap/VoiceOver on-device; only the
+Maestro/XCUITest accessibility-tree path is affected. Worked around this
+round via `xcrun simctl terminate`+`launch` instead of driving the close
+button. Not investigated further — out of scope for a chrome-material task.
