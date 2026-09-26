@@ -124,7 +124,16 @@ import { discardAllPendingShares, processPendingShares } from '../plugins/share-
 import { useToast } from './lib/toast-context';
 import { clearWidgetData } from './utils/widgetData';
 import { ensureDevicePerformanceProfile } from './lib/device-performance';
-import { shouldKeepStartupRestoring, type StartupAuthState } from './lib/startup-auth';
+import {
+  classifyStartupError,
+  SecureStorageReadError,
+  shouldKeepStartupRestoring,
+  startupAuthStateForError,
+  StartupTokenReadRecoveryError,
+  decideStartupAuthUi,
+  type StartupAuthState,
+} from './lib/startup-auth';
+import { SecureStoragePanel } from './components/SecureStoragePanel';
 import { shouldClearPendingMarkerOnBoot, shouldRouteToPhraseGate } from './lib/phrase-confirmation-gate';
 import AndroidThumbnailRepairWorker from './lib/AndroidThumbnailRepairWorker';
 import { BeebeebThumbnails } from '../modules/beebeeb-crypto';
@@ -147,17 +156,6 @@ type StartupDiagnosticResult =
   | 'recovery-timeout'
   | 'failed';
 
-function classifyStartupError(err: unknown): string {
-  if (err instanceof ApiError) {
-    if (err.status === 0) return 'network';
-    if (err.status === 401) return 'invalid-token';
-    return `api-${err.status}`;
-  }
-  if (err instanceof StartupTokenReadRecoveryError) return 'token-read-timeout';
-  if (err instanceof Error && err.message === 'timeout') return 'timeout';
-  return 'exception';
-}
-
 function logStartupDiagnostic(
   stage: string,
   result: StartupDiagnosticResult,
@@ -171,13 +169,6 @@ function logStartupDiagnostic(
     console.info(message);
   } else {
     console.warn(message);
-  }
-}
-
-class StartupTokenReadRecoveryError extends Error {
-  constructor() {
-    super('startup_token_read_recovery_timeout');
-    this.name = 'StartupTokenReadRecoveryError';
   }
 }
 
@@ -198,7 +189,13 @@ async function readStartupTokenWithRecovery(): Promise<string | null> {
   });
 
   try {
-    const token = await Promise.race([getToken(), recoveryTimeout]);
+    // A rejection from getToken() is the secure store itself failing (Keychain
+    // locked before first unlock, protected-data race, no keychain access) —
+    // tag it so startup shows the secure-storage state, not network diagnostics.
+    const tokenRead = getToken().catch((err: unknown) => {
+      throw new SecureStorageReadError(err);
+    });
+    const token = await Promise.race([tokenRead, recoveryTimeout]);
     logStartupDiagnostic(stage, token !== null ? 'token-present' : 'no-token', startedAt);
     return token;
   } catch (err) {
@@ -921,6 +918,7 @@ export default function App() {
   const [loadingStatus, setLoadingStatus] = useState('');
   const [loadingFailed, setLoadingFailed] = useState(false);
   const [showDiagnostics, setShowDiagnostics] = useState(false);
+  const [showSecureStorageError, setShowSecureStorageError] = useState(false);
 
   const [fontsLoaded] = Font.useFonts(optionalFontAssets);
   // fontsLoaded is false until fonts resolve — app renders fine either way
@@ -1091,6 +1089,7 @@ export default function App() {
   // Full startup flow — extracted so the diagnostic panel's Retry can rerun it
   const runStartup = useCallback(async () => {
     setShowDiagnostics(false);
+    setShowSecureStorageError(false);
     setLoadingFailed(false);
     setLoadingStatus('Restoring session...');
     setChecking(true);
@@ -1181,15 +1180,23 @@ export default function App() {
 
       setChecking(false);
     } catch (err) {
-      if (err instanceof StartupTokenReadRecoveryError) {
-        startupAuthState = 'token-read-timeout';
-      }
+      startupAuthState = startupAuthStateForError(err, startupAuthState);
+      const decision = decideStartupAuthUi(startupAuthState);
+      const fallback = decision === 'show-secure-storage-error'
+        ? 'secure-storage'
+        : shouldKeepStartupRestoring(startupAuthState) ? 'diagnostics' : 'signed-out';
       console.warn(
-        `[Beebeeb][StartupAuth] stage=startup result=failed fallback=${shouldKeepStartupRestoring(startupAuthState) ? 'diagnostics' : 'signed-out'} reason=${classifyStartupError(err)}`,
+        `[Beebeeb][StartupAuth] stage=startup result=failed fallback=${fallback} reason=${classifyStartupError(err)}`,
       );
       if (!isCurrentStartupRun()) return;
       setLoadingStatus('');
-      if (shouldKeepStartupRestoring(startupAuthState)) {
+      if (decision === 'show-secure-storage-error') {
+        // Stay on the splash surface: the stored session may be perfectly
+        // valid once the device is unlocked, so this is not a sign-out.
+        setShowDiagnostics(false);
+        setShowSecureStorageError(true);
+        setChecking(true);
+      } else if (shouldKeepStartupRestoring(startupAuthState)) {
         setShowDiagnostics(true);
         setChecking(true);
       } else {
@@ -1449,13 +1456,15 @@ export default function App() {
   }, [user, refreshAuth]);
 
   // Loading splash while checking auth, or diagnostic panel when server is unreachable
-  if (checking || showDiagnostics) {
+  if (checking || showDiagnostics || showSecureStorageError) {
     return (
       <SafeAreaProvider>
-        <View style={{ flex: 1, backgroundColor: c.paper, alignItems: 'center', justifyContent: 'center', paddingHorizontal: showDiagnostics ? 0 : 32 }}>
+        <View style={{ flex: 1, backgroundColor: c.paper, alignItems: 'center', justifyContent: 'center', paddingHorizontal: showDiagnostics || showSecureStorageError ? 0 : 32 }}>
           <BBLogo size={48} />
           <View style={{ height: 20 }} />
-          {showDiagnostics ? (
+          {showSecureStorageError ? (
+            <SecureStoragePanel onRetry={() => void runStartup()} />
+          ) : showDiagnostics ? (
             <DiagnosticPanel
               onRetry={() => void runStartup()}
               onSignIn={() => {
