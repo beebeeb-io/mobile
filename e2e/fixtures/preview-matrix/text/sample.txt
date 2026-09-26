@@ -1,0 +1,14 @@
+Beebeeb preview-matrix fixture — plain text (task 1565)
+
+This file exists to prove that the mobile and web preview surfaces can open
+a plain .txt file end to end: decrypt, decode, and render as monospace text.
+
+Non-ASCII coverage: café, naïve, Zürich, Kraków, "typographic quotes",
+日本語のテキスト, Ελληνικά, Москва, €19.99, £42, ° ± × ÷.
+
+A deliberately long line follows, to check horizontal scrolling / wrapping behaviour in the text renderer without any manual line breaks inserted by the fixture author so that the component's own wrapping or horizontal-scroll logic is the only thing doing the work here, all the way out past what most phone screens can show in one glance: 0123456789 0123456789 0123456789 0123456789 0123456789 0123456789 0123456789 0123456789 end-of-long-line
+
+Multiple paragraphs, blank lines, and trailing whitespace
+are all present on purpose.
+
+Stored in Falkenstein.

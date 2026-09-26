@@ -1,0 +1,17 @@
+/* Beebeeb preview-matrix fixture — CSS (task 1565). */
+/* non-ASCII in a comment: café naïve 日本語 Ελληνικά Москва €19.99 */
+
+.fixture-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px;
+  border-radius: 10px;
+  background: var(--paper, #fdfaf5);
+  color: var(--ink, #1a1a1a);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06), 0 2px 8px rgba(0, 0, 0, 0.04), 0 8px 24px rgba(0, 0, 0, 0.02);
+}
+
+.fixture-card__long-line {
+  content: "0123456789 0123456789 0123456789 0123456789 0123456789 0123456789 0123456789 0123456789 0123456789 end-of-long-line";
+}

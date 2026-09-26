@@ -119,3 +119,10 @@ google-service-account.json
 # Marketing app-store screenshots are intentionally tracked
 # (override the broad *.png rule above)
 !marketing/app-store/**/*.png
+
+# Task 1565 preview-matrix fixtures are intentionally tracked — deliberate,
+# small, purpose-built test files, not local dev/QA captures (override the
+# broad *.png/*.mp4/*.mov rules above).
+!e2e/fixtures/preview-matrix/**/*.png
+!e2e/fixtures/preview-matrix/**/*.mp4
+!e2e/fixtures/preview-matrix/**/*.mov
