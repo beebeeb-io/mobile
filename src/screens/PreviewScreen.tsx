@@ -2450,9 +2450,28 @@ export default function PreviewScreen() {
     };
   }, [contentLocked, isPdf, isUnlocked, currentFileId, getFileKeyBytes, getMasterKeyHandleId, resolveDecryptKey, currentSizeBytes, currentChunkCount]);
 
-  // Auto-load text/code/JSON inline on mount — read decrypted file as UTF-8
+  // Auto-load text/code/JSON inline on mount — read decrypted file as UTF-8.
+  //
+  // Task 1563 (App Review blocker, build 214): gated on `lockCheckReady`, not
+  // just `isText`. `contentLocked` (isPagerPageGated) fails CLOSED for every
+  // file — including ones that are not actually locked — until the async
+  // `checkLockedFileIds` lookup resolves (see task 1539). Before this fix,
+  // this effect fired the moment `isText` became true, regardless of
+  // `lockCheckReady`: on an unlocked file it would (a) call fetchAndDecrypt()
+  // while contentLocked was still provisionally true, drawing a thrown
+  // PreviewLockedError and a wasted `setTextError('This file is locked.')`,
+  // then (b) re-fire microseconds later once lockCheckReady flipped and
+  // contentLocked resolved to false, immediately clearing that error and
+  // re-decrypting. Both the wasted first attempt and the effect re-mount it
+  // forces are pure overhead — the outcome (this file is not locked) was
+  // never in doubt, we just hadn't been told yet. Waiting the extra tens of
+  // milliseconds for `lockCheckReady` removes the double-fire entirely: the
+  // effect now runs exactly once, after the lock status is actually known,
+  // for every file — matching how `contentLocked` itself is already
+  // documented to behave ("fails closed until ready").
   useEffect(() => {
     if (!isText) return;
+    if (!lockCheckReady) return;
     if (Platform.OS === 'web') return;
     const controller = new AbortController();
     let cancelled = false;
@@ -2468,7 +2487,16 @@ export default function PreviewScreen() {
         if (!cancelled) setTextContent(content);
       })
       .catch((err) => {
-        if (!cancelled && !isAbortError(err)) setTextError(friendlyError(err));
+        // A PreviewLockedError here means `contentLocked` flipped true again
+        // between this effect starting and fetchAndDecrypt's own check —
+        // e.g. the user tapped "Lock file" while the decrypt was in flight.
+        // The locked-doc render branch (gated on `contentLocked` itself, not
+        // on `textError`) already owns showing that state, so surfacing it
+        // as a text-pane error too would just be a second, redundant UI for
+        // the same fact.
+        if (!cancelled && !isAbortError(err) && !isPreviewLockedError(err)) {
+          setTextError(friendlyError(err));
+        }
       })
       .finally(() => {
         if (!cancelled) {
@@ -2480,7 +2508,7 @@ export default function PreviewScreen() {
       cancelled = true;
       controller.abort();
     };
-  }, [isText, fetchAndDecrypt]);
+  }, [isText, lockCheckReady, fetchAndDecrypt]);
 
   // Auto-load video on mount; track the on-disk URI so we can delete it on unmount
   useEffect(() => {
