@@ -25,7 +25,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../lib/theme-context';
 import { fonts, spacing, type Colors } from '../theme';
 import { setupTotp, enableTotp, friendlyError, type TotpSetup } from '../lib/api';
-import { shouldBlockTwoFactorSetupBack } from '../lib/two-factor-setup-gate';
+import { shouldBlockTwoFactorSetupBack, twoFactorSetupBackAction } from '../lib/two-factor-setup-gate';
 
 let Clipboard: { setStringAsync: (s: string) => Promise<void> } = {
   setStringAsync: async () => {},
@@ -228,6 +228,7 @@ function StepSecret({
           <Text
             style={[layout.secretText, { color: c.ink, fontFamily: fonts.mono }]}
             selectable
+            testID="totp-setup-secret"
           >
             {setup.secret}
           </Text>
@@ -248,9 +249,12 @@ function StepSecret({
 
 function StepVerify({
   onSuccess,
+  onVerifyingChange,
   c,
 }: {
   onSuccess: () => void;
+  /** Reports the enable request's in-flight state so the screen can block leaving meanwhile. */
+  onVerifyingChange: (verifying: boolean) => void;
   c: C;
 }) {
   const [digits, setDigits] = useState<string[]>(['', '', '', '', '', '']);
@@ -288,6 +292,7 @@ function StepVerify({
   const handleEnable = useCallback(async () => {
     if (!ready) return;
     setLoading(true);
+    onVerifyingChange(true);
     try {
       await enableTotp(code);
       onSuccess();
@@ -295,8 +300,9 @@ function StepVerify({
       Alert.alert('Verification failed', friendlyError(err));
     } finally {
       setLoading(false);
+      onVerifyingChange(false);
     }
-  }, [code, ready, onSuccess]);
+  }, [code, ready, onSuccess, onVerifyingChange]);
 
   return (
     <>
@@ -427,6 +433,9 @@ export default function TwoFactorSetupScreen() {
   const [setup, setSetup] = useState<TotpSetup | null>(null);
   const [loadingSetup, setLoadingSetup] = useState(true);
   const [setupError, setSetupError] = useState<string | null>(null);
+  // True while StepVerify's enable request is in flight — the server may
+  // activate 2FA at any moment, so leaving is blocked until it settles.
+  const [verifying, setVerifying] = useState(false);
 
   // Fetch secret on mount; re-runs via the error state's Retry button (1297).
   const cancelledRef = useRef(false);
@@ -468,16 +477,16 @@ export default function TwoFactorSetupScreen() {
   // one `goBack()` through while continuing to block everything else.
   const completedRef = useRef(false);
   useEffect(() => {
-    if (!shouldBlockTwoFactorSetupBack(step)) return undefined;
+    if (!shouldBlockTwoFactorSetupBack(step, false, verifying)) return undefined;
     const unsubscribe = navigation.addListener('beforeRemove', (e) => {
       // Read completedRef fresh on every fire (not a stale render-time
       // value) — Done can flip it after this listener was already
       // installed for the current step.
-      if (!shouldBlockTwoFactorSetupBack(step, completedRef.current)) return;
+      if (!shouldBlockTwoFactorSetupBack(step, completedRef.current, verifying)) return;
       e.preventDefault();
     });
     return unsubscribe;
-  }, [navigation, step]);
+  }, [navigation, step, verifying]);
 
   // Belt-and-suspenders: also disable the native iOS edge-swipe-back gesture
   // directly (native-stack supports updating this per-screen), matching how
@@ -485,8 +494,10 @@ export default function TwoFactorSetupScreen() {
   // be a static `gestureEnabled: false` on the Stack.Screen the way those
   // are, because step 1 must stay dismissable.
   useEffect(() => {
-    navigation.setOptions({ gestureEnabled: !shouldBlockTwoFactorSetupBack(step) });
-  }, [navigation, step]);
+    navigation.setOptions({ gestureEnabled: !shouldBlockTwoFactorSetupBack(step, false, verifying) });
+  }, [navigation, step, verifying]);
+
+  const backAction = twoFactorSetupBackAction(step, verifying);
 
   const handleDone = useCallback(() => {
     completedRef.current = true;
@@ -505,15 +516,17 @@ export default function TwoFactorSetupScreen() {
         ]}
         keyboardShouldPersistTaps="handled"
       >
-        {/* Back button — hidden once navigation is blocked (step > 1); the
-            beforeRemove listener above is the real enforcement, this just
-            avoids showing a button that would silently do nothing. */}
-        {!shouldBlockTwoFactorSetupBack(step) && (
+        {/* Back button — step 1 leaves; step 2 returns to step 1 (same
+            secret, so it can be added to an authenticator); hidden at step 3
+            and while verifying, where the beforeRemove listener above is the
+            real enforcement and a button would silently do nothing. */}
+        {backAction !== 'none' && (
           <TouchableOpacity
             style={layout.backButton}
             onPress={() => {
               Haptics.selectionAsync();
-              navigation.goBack();
+              if (backAction === 'previous-step') setStep(1);
+              else navigation.goBack();
             }}
             accessibilityRole="button"
             accessibilityLabel="Go back"
@@ -570,7 +583,7 @@ export default function TwoFactorSetupScreen() {
         )}
 
         {!loadingSetup && setup != null && step === 2 && (
-          <StepVerify onSuccess={() => setStep(3)} c={c} />
+          <StepVerify onSuccess={() => setStep(3)} onVerifyingChange={setVerifying} c={c} />
         )}
 
         {!loadingSetup && setup != null && step === 3 && (

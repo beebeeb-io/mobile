@@ -10,15 +10,27 @@
 // That failure — not a passing-but-wrong assertion — is the RED this test
 // was written against. See the task Notes for the pasted failure.
 import { describe, expect, test } from 'bun:test';
-import { shouldBlockTwoFactorSetupBack } from './two-factor-setup-gate';
+import { shouldBlockTwoFactorSetupBack, twoFactorSetupBackAction } from './two-factor-setup-gate';
 
 describe('shouldBlockTwoFactorSetupBack', () => {
   test('step 1 (viewing the secret, nothing committed) may leave freely', () => {
     expect(shouldBlockTwoFactorSetupBack(1)).toBe(false);
   });
 
-  test('step 2 (mid-verification) is blocked', () => {
-    expect(shouldBlockTwoFactorSetupBack(2)).toBe(true);
+  // Flow fix (iOS core journeys, P1): step 2 used to be blocked, which
+  // trapped a user who pressed Continue before adding the key to their
+  // authenticator — no Back, swipe-back disabled, secret never shown again;
+  // the only escape was force-quitting. Nothing is committed server-side at
+  // step 2 (enableTotp only runs when the code is submitted, and success
+  // moves straight to step 3), so step 2 must NOT block removal.
+  test('step 2 (entering the code, nothing enabled yet) is NOT blocked — the trap this fixes', () => {
+    expect(shouldBlockTwoFactorSetupBack(2)).toBe(false);
+  });
+
+  // While the enable request is in flight the server may activate 2FA at
+  // any moment; leaving then would lose the one-time backup codes.
+  test('step 2 while the enable request is in flight IS blocked', () => {
+    expect(shouldBlockTwoFactorSetupBack(2, false, true)).toBe(true);
   });
 
   test('step 3 (one-time backup codes, TOTP already active server-side) is blocked', () => {
@@ -38,9 +50,27 @@ describe('shouldBlockTwoFactorSetupBack', () => {
     expect(shouldBlockTwoFactorSetupBack(2, true)).toBe(false);
   });
 
-  test('completed defaults to false — omitting it preserves the existing step>1 behavior', () => {
+  test('defaults (completed=false, verifying=false): only step 3 blocks', () => {
     expect(shouldBlockTwoFactorSetupBack(3)).toBe(true);
-    expect(shouldBlockTwoFactorSetupBack(2)).toBe(true);
+    expect(shouldBlockTwoFactorSetupBack(2)).toBe(false);
     expect(shouldBlockTwoFactorSetupBack(1)).toBe(false);
+  });
+});
+
+describe('twoFactorSetupBackAction (the visible Back button)', () => {
+  test('step 1 leaves the screen', () => {
+    expect(twoFactorSetupBackAction(1)).toBe('leave');
+  });
+
+  test('step 2 returns to step 1 so the secret can be seen and copied again', () => {
+    expect(twoFactorSetupBackAction(2)).toBe('previous-step');
+  });
+
+  test('step 2 while verifying has no Back', () => {
+    expect(twoFactorSetupBackAction(2, true)).toBe('none');
+  });
+
+  test('step 3 (one-time backup codes) has no Back — Done is the only way out', () => {
+    expect(twoFactorSetupBackAction(3)).toBe('none');
   });
 });
