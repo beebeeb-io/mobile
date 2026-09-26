@@ -1,0 +1,59 @@
+# Flow iOS-core issue 3 (PR #116): "Lock file" must hide the file's thumbnail
+# everywhere inside the app — the Files row, the Recent tile and the native
+# Photos grid tile — not only the full-size preview.
+#
+# Preconditions: signed in on the Files tab, with two uploaded photos that
+# both appear in the Photos tab. FILE_ID is the photo to lock (currently
+# unlocked); CONTROL_ID stays unlocked and must keep its image.
+#
+#   maestro --udid <udid> test -e FILE_ID=<id> -e CONTROL_ID=<id> \
+#     e2e/maestro/locked-thumbnail-hidden.yaml
+#
+# Leaves FILE_ID locked. Unlocking needs a Face ID match (on a simulator:
+# `xcrun simctl spawn <udid> notifyutil -p com.apple.BiometricKit_Sim.pearl.match`
+# right after tapping "Unlock file"), so it is not part of this flow.
+appId: io.beebeeb.app
+---
+- tapOn:
+    id: "tab-files"
+- waitForAnimationToEnd
+- extendedWaitUntil:
+    visible:
+      id: "file-row-${FILE_ID}"
+    timeout: 30000
+- assertNotVisible:
+    id: "file-icon-locked-${FILE_ID}"
+- tapOn:
+    id: "tab-photos"
+- waitForAnimationToEnd
+- assertNotVisible:
+    id: "photo-tile-locked-${FILE_ID}"
+- takeScreenshot: "locked-thumbnail-01-photos-before"
+- tapOn:
+    id: "tab-files"
+- waitForAnimationToEnd
+- longPressOn:
+    id: "file-row-${FILE_ID}"
+- waitForAnimationToEnd
+- tapOn:
+    id: "sheet-action-lock"
+- waitForAnimationToEnd
+# Files row + Recent tile: lock placeholder, no thumbnail.
+- extendedWaitUntil:
+    visible:
+      id: "file-icon-locked-${FILE_ID}"
+    timeout: 10000
+- assertNotVisible:
+    id: "file-icon-locked-${CONTROL_ID}"
+- takeScreenshot: "locked-thumbnail-02-files-after"
+# Native Photos grid: lock glyph tile for FILE_ID, CONTROL_ID untouched.
+- tapOn:
+    id: "tab-photos"
+- waitForAnimationToEnd
+- extendedWaitUntil:
+    visible:
+      id: "photo-tile-locked-${FILE_ID}"
+    timeout: 20000
+- assertNotVisible:
+    id: "photo-tile-locked-${CONTROL_ID}"
+- takeScreenshot: "locked-thumbnail-03-photos-after"
