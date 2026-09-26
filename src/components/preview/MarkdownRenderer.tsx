@@ -21,7 +21,7 @@ import { fonts } from '../../theme';
 import type { Colors } from '../../theme';
 import { parseMarkdown } from '../../lib/markdown/parse';
 import type { MdBlock, MdInline, MdListNode } from '../../lib/markdown/types';
-import { computeCodeView } from './CodeRenderer';
+import { computeCodeView, MAX_PREVIEW_CHARS } from './CodeRenderer';
 
 interface MarkdownRendererProps {
   markdown: string;
@@ -267,11 +267,33 @@ function renderBlock(block: MdBlock, colors: Colors, key: string): React.ReactNo
 // Component
 // ---------------------------------------------------------------------------
 
+// Codex review (PR #123, P1): markdown is deliberately allowed to open
+// read-only above the 2 MB EDIT limit (`evaluateTextEditGate`), but this
+// component had no preview-size cap of its own — unlike CodeRenderer, whose
+// `MAX_PREVIEW_CHARS` truncation this reuses verbatim (same constant, same
+// notice wording) rather than inventing a second budget. Truncating the RAW
+// text before it ever reaches `parseMarkdown` bounds both the lexer work and
+// the resulting AST/native-node count in one place — a multi-megabyte,
+// newline-heavy document can no longer produce hundreds of thousands of
+// mounted blocks.
+function truncateForPreview(markdown: string): { text: string; truncated: boolean } {
+  if (markdown.length <= MAX_PREVIEW_CHARS) return { text: markdown, truncated: false };
+  return { text: markdown.slice(0, MAX_PREVIEW_CHARS), truncated: true };
+}
+
 export function MarkdownRenderer({ markdown, colors }: MarkdownRendererProps) {
-  const blocks = useMemo(() => parseMarkdown(markdown), [markdown]);
+  const { blocks, truncated } = useMemo(() => {
+    const { text, truncated: didTruncate } = truncateForPreview(markdown);
+    return { blocks: parseMarkdown(text), truncated: didTruncate };
+  }, [markdown]);
   return (
     <View style={[styles.root, { backgroundColor: colors.paper }]}>
       {blocks.map((block, i) => renderBlock(block, colors, `b-${i}`))}
+      {truncated && (
+        <Text style={[styles.truncationNotice, { color: colors.ink3 }]} testID="markdown-truncation-notice">
+          Showing the first {MAX_PREVIEW_CHARS.toLocaleString()} characters — download the file for the full version.
+        </Text>
+      )}
     </View>
   );
 }
@@ -281,6 +303,13 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingVertical: 20,
     paddingBottom: 48,
+  },
+  truncationNotice: {
+    fontFamily: fonts.mono,
+    fontSize: 11,
+    textAlign: 'center',
+    paddingVertical: 10,
+    paddingHorizontal: 16,
   },
   heading: {
     fontFamily: fonts.sans,

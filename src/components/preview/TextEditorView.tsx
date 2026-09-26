@@ -63,18 +63,19 @@ interface TextEditorViewProps {
   initialText: string;
   /** From `detectCodeLanguage` — markdown files get the markdown key group. */
   language: string;
-  dirty: boolean;
-  saving: boolean;
-  statusLine: string | null;
   onChangeText: (text: string) => void;
-  onSave: () => void;
   /**
-   * Extra bottom clearance so the (non-scrolling, tappable) Save bar never
-   * sits under the always-present `DetailsSheet` collapsed peek — same
-   * `Math.max(insets.bottom, 16) + 40` PreviewScreen already uses for its
-   * own e2e badge, for exactly this reason. Confirmed needed on-device
-   * (bb-ios27): without it the status bar rendered flush against the
-   * screen bottom, right under the peek's peek row.
+   * Preview redesign item 7 (design section 02, "Edit" phone) — Done,
+   * "Edited · not saved"/saved status, and Save all moved to PreviewScreen's
+   * OWN edit-mode top bar, which is never covered by the keyboard (it's
+   * pinned above it, unlike this component's old internal Save row — see
+   * the removed `statusBar`'s history below). This view is now just the
+   * text area + the key row above the keyboard; dirty/save state lives one
+   * level up.
+   *
+   * Extra bottom clearance so the last line of text can scroll clear of the
+   * home indicator / safe-area bottom, now that there's no bottom bar of
+   * any kind while editing (item 7).
    */
   bottomInset?: number;
 }
@@ -106,11 +107,7 @@ function AccessoryButton({
 export function TextEditorView({
   initialText,
   language,
-  dirty,
-  saving,
-  statusLine,
   onChangeText,
-  onSave,
   bottomInset = 0,
 }: TextEditorViewProps) {
   const isMarkdown = language === 'markdown';
@@ -212,7 +209,7 @@ export function TextEditorView({
         </View>
         <TextInput
           testID="text-editor-input"
-          style={styles.input}
+          style={[styles.input, bottomInset ? { paddingBottom: 32 + bottomInset } : null]}
           multiline
           autoCapitalize="none"
           autoCorrect={false}
@@ -225,29 +222,6 @@ export function TextEditorView({
           textAlignVertical="top"
           accessibilityLabel="File contents editor"
         />
-      </View>
-
-      <View style={[styles.statusBar, { paddingBottom: 10 + bottomInset }]}>
-        {dirty ? (
-          <View style={styles.dirtyRow}>
-            <View style={styles.dirtyDot} />
-            <Text style={styles.dirtyLabel}>Unsaved changes</Text>
-          </View>
-        ) : statusLine ? (
-          <Text style={styles.savedLabel}>{statusLine}</Text>
-        ) : (
-          <Text style={styles.savedLabel}>No changes yet</Text>
-        )}
-        <TouchableOpacity
-          testID="text-editor-save"
-          onPress={onSave}
-          disabled={!dirty || saving}
-          style={[styles.saveButton, (!dirty || saving) ? styles.saveButtonDisabled : null]}
-          accessibilityRole="button"
-          accessibilityLabel="Save"
-        >
-          <Text style={styles.saveButtonLabel}>{saving ? 'Saving…' : 'Save'}</Text>
-        </TouchableOpacity>
       </View>
 
       {Platform.OS === 'ios' && (
@@ -294,14 +268,13 @@ export function TextEditorView({
               </>
             )}
             <View style={styles.accSep} />
-            {/* Task 1563 — the Save bar below sits BELOW the keyboard/accessory
-                view (no reliable way to keep a separate fixed row above an
-                InputAccessoryView-paired keyboard on iOS; KeyboardAvoidingView
-                does not resize this column while an inputAccessoryViewID is
-                attached — confirmed on-device, bb-ios27). "Done" dismisses
-                the keyboard so the status bar's own Save button becomes
-                reachable, without losing the draft (still in-memory state). */}
-            <AccessoryButton onPress={() => Keyboard.dismiss()} accessibilityLabel="Done editing, show keyboard">
+            {/* Preview redesign item 7 — Save now lives in PreviewScreen's
+                edit-mode top bar (always above the keyboard, unlike this
+                component's old internal Save row it replaced — see this
+                prop's own doc comment). This key is now a plain
+                dismiss-the-keyboard convenience, same as any text editor's
+                "Done" key, not a workaround for reaching a hidden button. */}
+            <AccessoryButton onPress={() => Keyboard.dismiss()} accessibilityLabel="Dismiss keyboard">
               <Text style={styles.accKeyLabelMd}>Done</Text>
             </AccessoryButton>
           </ScrollView>
@@ -349,52 +322,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingBottom: 32,
   },
-  statusBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: '#3a3f4b',
-    backgroundColor: '#21262d',
-  },
-  dirtyRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  dirtyDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: '#f5b800',
-    marginRight: 6,
-  },
-  dirtyLabel: {
-    color: '#8b949e',
-    fontFamily: fonts.mono,
-    fontSize: 11,
-  },
-  savedLabel: {
-    color: '#8b949e',
-    fontFamily: fonts.mono,
-    fontSize: 11,
-  },
-  saveButton: {
-    backgroundColor: '#f5b800',
-    borderRadius: 8,
-    paddingHorizontal: 16,
-    paddingVertical: 7,
-  },
-  saveButtonDisabled: {
-    backgroundColor: '#4b5263',
-  },
-  saveButtonLabel: {
-    color: '#1e1e22',
-    fontFamily: fonts.sans,
-    fontSize: 13,
-    fontWeight: '700',
-  },
+  // statusBar/dirtyRow/dirtyDot/dirtyLabel/savedLabel/saveButton*: removed
+  // (preview redesign item 7 — this component no longer owns Save/status
+  // UI; see the `bottomInset` prop's doc comment for where it moved).
   accessoryBar: {
     flexDirection: 'row',
     alignItems: 'center',

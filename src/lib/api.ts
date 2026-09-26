@@ -1049,6 +1049,34 @@ export async function getFileCurrentVersion(id: string): Promise<number> {
 }
 
 /**
+ * Task 1563 (preview redesign, item 5 — the Info sheet's version list).
+ * The full version history for a file: same `/versions` endpoint
+ * `getFileCurrentVersion` already reads, just keeping the `versions` array
+ * this time instead of discarding it. Each entry is the union of the V1
+ * (`file_versions`) and V2 (`object_versions`) snapshot models — see the
+ * server's `list_versions` handler (`beebeeb-api/src/routes/versions.rs`) —
+ * both tagged with a `source` field; both restorable. No device/platform
+ * name is returned by either model, so the client cannot show "from iPhone"
+ * / "from web" next to a version (see DEVIATIONS.md).
+ */
+export interface FileVersionEntry {
+  id: string;
+  version_number: number;
+  size_bytes: number;
+  chunk_count: number;
+  created_at: string;
+  source: 'object_version' | 'file_version';
+}
+
+export async function listFileVersions(id: string): Promise<FileVersionEntry[]> {
+  const data = await request<{ file_id: string; current_version: number; versions: FileVersionEntry[] }>(
+    'GET',
+    `/api/v1/files/${id}/versions`,
+  );
+  return data.versions ?? [];
+}
+
+/**
  * GET /api/v1/files/index — whole-vault metadata index with a stable hash.
  * If `hash` still matches, the server returns `changed: false` without files.
  */

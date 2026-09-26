@@ -2,53 +2,33 @@
  * PdfRenderer — multi-page PDF viewer with vertical scroll.
  *
  * Uses react-native-pdf for native rendering with pinch-to-zoom.
- * Floating page indicator appears while scrolling and fades after 2 seconds.
+ *
+ * Preview redesign (task 1563 follow-up, design item 6): the page counter
+ * used to be this component's OWN floating pill (bottom-center, auto-fading
+ * after 2s). That's gone — PreviewScreen now renders ONE persistent pill,
+ * top-right under the glass top bar, tied to the SAME `barsVisible` state as
+ * the rest of the chrome rather than its own timer (and reused verbatim for
+ * the photo swipe-pager's position counter — see `formatPdfPageCounter` in
+ * `lib/preview-chrome.ts`). This component's only job now is to report page
+ * info upward via `onPageInfo`.
  */
 
-import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Animated, StyleSheet, Text, View } from 'react-native';
+import React, { useState } from 'react';
+import { StyleSheet, Text, View } from 'react-native';
 import Pdf from 'react-native-pdf';
-import { fonts } from '../../theme';
 import { useTheme } from '../../lib/theme-context';
 
 interface PdfRendererProps {
   filePath: string;
+  /** Fires on load and on every page change — current page (1-based) and
+   * total page count. PreviewScreen owns the visible pill; this component
+   * renders none of its own. */
+  onPageInfo?: (info: { current: number; total: number }) => void;
 }
 
-const INDICATOR_FADE_MS = 2000;
-
-export function PdfRenderer({ filePath }: PdfRendererProps) {
-  const [currentPage, setCurrentPage] = useState(1);
-  const [totalPages, setTotalPages] = useState(0);
+export function PdfRenderer({ filePath, onPageInfo }: PdfRendererProps) {
   const [hasError, setHasError] = useState(false);
   const { colors } = useTheme();
-
-  const fadeAnim = useRef(new Animated.Value(0)).current;
-  const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const showIndicator = useCallback(() => {
-    if (hideTimer.current) clearTimeout(hideTimer.current);
-
-    Animated.timing(fadeAnim, {
-      toValue: 1,
-      duration: 150,
-      useNativeDriver: true,
-    }).start();
-
-    hideTimer.current = setTimeout(() => {
-      Animated.timing(fadeAnim, {
-        toValue: 0,
-        duration: 300,
-        useNativeDriver: true,
-      }).start();
-    }, INDICATOR_FADE_MS);
-  }, [fadeAnim]);
-
-  useEffect(() => {
-    return () => {
-      if (hideTimer.current) clearTimeout(hideTimer.current);
-    };
-  }, []);
 
   if (hasError) {
     // 1346 review finding — this status sits directly on PreviewScreen's
@@ -80,33 +60,16 @@ export function PdfRenderer({ filePath }: PdfRendererProps) {
         spacing={8}
         enableAntialiasing
         onLoadComplete={(numberOfPages) => {
-          setTotalPages(numberOfPages);
+          onPageInfo?.({ current: 1, total: numberOfPages });
         }}
-        onPageChanged={(page) => {
-          setCurrentPage(page);
-          if (totalPages > 1) showIndicator();
+        onPageChanged={(page, numberOfPages) => {
+          onPageInfo?.({ current: page, total: numberOfPages });
         }}
         onError={(error) => {
           console.error('PDF render error:', error);
           setHasError(true);
         }}
       />
-      {totalPages > 1 && (
-        <Animated.View
-          style={[
-            styles.pageIndicator,
-            {
-              backgroundColor: colors.paper2,
-              opacity: fadeAnim,
-            },
-          ]}
-          pointerEvents="none"
-        >
-          <Text style={[styles.pageText, { color: colors.ink2 }]}>
-            Page {currentPage} of {totalPages}
-          </Text>
-        </Animated.View>
-      )}
     </View>
   );
 }
@@ -118,24 +81,6 @@ const styles = StyleSheet.create({
   },
   pdf: {
     flex: 1,
-  },
-  pageIndicator: {
-    position: 'absolute',
-    bottom: 16,
-    alignSelf: 'center',
-    paddingHorizontal: 14,
-    paddingVertical: 6,
-    borderRadius: 16,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.15,
-    shadowRadius: 4,
-    elevation: 3,
-  },
-  pageText: {
-    fontSize: 12,
-    fontFamily: fonts.mono,
-    fontVariant: ['tabular-nums'],
   },
   imageStatus: {
     alignItems: 'center',

@@ -124,4 +124,31 @@ describe('undo/redo history', () => {
     expect(canUndo(h)).toBe(false)
     expect(h.present.selection).toEqual({ start: 3, end: 3 })
   })
+
+  // Codex review (PR #123, P1): the count-only cap (100 snapshots) doesn't
+  // bound memory for large files — this proves the byte budget actually
+  // evicts old snapshots well before 100 edits when each one is big.
+  test('near-2MB-sized snapshots are evicted by BYTES long before the 100-snapshot count cap', () => {
+    // ~200 KB per snapshot (UTF-16 → ~400 KB/snapshot): 8MB / 400KB ≈ 20
+    // snapshots fit; pushing 60 must keep well under 100.
+    const big = (n: number) => 'x'.repeat(200_000) + n
+    let h = initHistory({ text: big(0), selection: { start: 0, end: 0 } })
+    for (let i = 1; i <= 60; i++) {
+      h = pushHistory(h, { text: big(i), selection: { start: 0, end: 0 } })
+    }
+    expect(h.past.length).toBeLessThan(30)
+    expect(h.past.length).toBeGreaterThan(0)
+    // The most recent past entries are kept (oldest evicted first) — undo
+    // still lands on real, recent prior text, not garbage.
+    const last = h.past[h.past.length - 1]!
+    expect(last.text).toBe(big(59))
+  })
+
+  test('a single-file/tiny-edit workflow is still bounded by the 100-snapshot count cap', () => {
+    let h = initHistory({ text: '', selection: { start: 0, end: 0 } })
+    for (let i = 1; i <= 150; i++) {
+      h = pushHistory(h, { text: 'a'.repeat(i), selection: { start: i, end: i } })
+    }
+    expect(h.past.length).toBe(100)
+  })
 })

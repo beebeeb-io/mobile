@@ -79,6 +79,23 @@ function mapInlineToken(token: Token): MdInline | null {
  * `text` node (our `MdInline` type has no such variant), so unwrap it here
  * instead: a `text` token with nested tokens maps to THOSE tokens directly.
  */
+/**
+ * Codex review (PR #123, P2): with `breaks: false` (this parser's default —
+ * see `parseMarkdown` below), a single source newline inside a paragraph is
+ * a SOFT break — CommonMark renders it as whitespace, not a line break.
+ * `marked`'s lexer leaves that newline embedded verbatim in the leaf `text`
+ * token's `.text` string (it only produces a SEPARATE `br` token — handled
+ * above, `case 'br'` — for an EXPLICIT hard break: two trailing spaces or a
+ * backslash before the newline). React Native's `Text` has no CSS
+ * `white-space: normal` collapsing of its own, so an embedded `\n` renders
+ * as a real forced line break — collapse it to a single space here, in the
+ * one place every leaf text token passes through, rather than per call
+ * site.
+ */
+function collapseSoftNewlines(text: string): string {
+  return text.replace(/\s*\n\s*/g, ' ');
+}
+
 function mapInline(tokens: Token[] | undefined): MdInline[] {
   if (!tokens) return [];
   const out: MdInline[] = [];
@@ -89,7 +106,7 @@ function mapInline(tokens: Token[] | undefined): MdInline[] {
         out.push(...mapInline(t.tokens));
         continue;
       }
-      out.push({ kind: 'text', text: t.text });
+      out.push({ kind: 'text', text: collapseSoftNewlines(t.text) });
       continue;
     }
     const mapped = mapInlineToken(token);

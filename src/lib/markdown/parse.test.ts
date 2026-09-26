@@ -54,6 +54,27 @@ describe('parseMarkdown — headings, paragraphs, bold/italic', () => {
     const para = blocks[0] as Extract<MdBlock, { kind: 'paragraph' }>
     expect(para.inline).toEqual([{ kind: 'strike', children: [{ kind: 'text', text: 'gone' }] }])
   })
+
+  // Codex review (PR #123, P2): a plain source newline inside a paragraph is
+  // a SOFT break (breaks:false, CommonMark) and must render as whitespace —
+  // React Native's Text has no CSS line-collapsing of its own, so a literal
+  // embedded '\n' from `marked`'s leaf text token would render as a forced
+  // line break if left unnormalized.
+  test('collapses a plain (soft-break) newline inside a paragraph to a space', () => {
+    const blocks = parseMarkdown('First line\nsecond line.')
+    const para = blocks[0] as Extract<MdBlock, { kind: 'paragraph' }>
+    expect(para.inline).toEqual([{ kind: 'text', text: 'First line second line.' }])
+  })
+
+  test('an EXPLICIT hard break (two trailing spaces + newline) is untouched — a separate break node, not text', () => {
+    const blocks = parseMarkdown('First line  \nsecond line.')
+    const para = blocks[0] as Extract<MdBlock, { kind: 'paragraph' }>
+    expect(para.inline).toEqual([
+      { kind: 'text', text: 'First line' },
+      { kind: 'break' },
+      { kind: 'text', text: 'second line.' },
+    ])
+  })
 })
 
 describe('parseMarkdown — lists + GFM task lists', () => {
@@ -108,8 +129,11 @@ describe('parseMarkdown — blockquotes, fenced code, tables, hr', () => {
     const blocks = parseMarkdown('> a quote\n> with two lines\n')
     expect(blocks[0]?.kind).toBe('blockquote')
     const bq = blocks[0] as Extract<MdBlock, { kind: 'blockquote' }>
+    // Codex review (PR #123, P2) — the embedded newline between the two
+    // quoted lines is a SOFT break, collapsed to a space; see the dedicated
+    // soft-newline tests above.
     expect(bq.blocks).toEqual([
-      { kind: 'paragraph', inline: [{ kind: 'text', text: 'a quote\nwith two lines' }] },
+      { kind: 'paragraph', inline: [{ kind: 'text', text: 'a quote with two lines' }] },
     ])
   })
 

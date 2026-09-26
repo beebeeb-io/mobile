@@ -109,6 +109,33 @@ export interface EditorHistory {
 
 const MAX_HISTORY = 100;
 
+// Codex review (PR #123, P1): the snapshot-count cap alone doesn't bound
+// memory — every keystroke stores a full-text snapshot, and for a file near
+// the 2 MB edit limit, 100 UTF-16 snapshots can approach ~400 MB. Bound by
+// approximate byte size too (2 bytes/UTF-16 code unit, the same arithmetic
+// the finding used), evicting the OLDEST snapshots first — same "least
+// useful history goes first" policy MAX_HISTORY already applies, just
+// measured in bytes instead of only entries. 8 MB is generous undo depth
+// for real editing (thousands of small-file edits, or dozens of near-limit
+// ones) while staying two orders of magnitude below the failure mode.
+const MAX_HISTORY_BYTES = 8 * 1024 * 1024;
+
+function approxByteSize(edit: TextEdit): number {
+  return edit.text.length * 2;
+}
+
+/** Drop the oldest entries until `past` fits the byte budget (always keeps
+ * at least the single most recent entry, even if it alone exceeds it). */
+function trimHistoryByBytes(past: TextEdit[]): TextEdit[] {
+  let total = past.reduce((sum, edit) => sum + approxByteSize(edit), 0);
+  let start = 0;
+  while (total > MAX_HISTORY_BYTES && start < past.length - 1) {
+    total -= approxByteSize(past[start]!);
+    start += 1;
+  }
+  return start === 0 ? past : past.slice(start);
+}
+
 export function initHistory(present: TextEdit): EditorHistory {
   return { past: [], present, future: [] };
 }
@@ -119,7 +146,7 @@ export function pushHistory(history: EditorHistory, next: TextEdit): EditorHisto
     // Selection-only change (e.g. tapping around) — don't grow the undo stack.
     return { ...history, present: next };
   }
-  const past = [...history.past, history.present].slice(-MAX_HISTORY);
+  const past = trimHistoryByBytes([...history.past, history.present].slice(-MAX_HISTORY));
   return { past, present: next, future: [] };
 }
 
