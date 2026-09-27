@@ -98,3 +98,35 @@ describe('Info sheet content', () => {
     expect(body).toContain('setInfoVisible(false)');
   });
 });
+
+// Guus, device 2026-09-27: "Why does it seem that the info sheet is not full
+// width?" Design section 03: `.sheet2{left:0;right:0;bottom:0;
+// border-radius:9cqw 9cqw 0 0}` — edge to edge, bottom attached, top corners only.
+describe('Info sheet geometry (design section 03)', () => {
+  function sheetStyle(): string {
+    const m = infoSheetSource.match(/\n    sheet:\s*\{([^}]*)\}/s);
+    if (!m) throw new Error('InfoSheet "sheet" style not found');
+    return m[1];
+  }
+
+  test('full width and attached to the bottom edge', () => {
+    const s = sheetStyle();
+    expect(s).toMatch(/\bleft:\s*0,/);
+    expect(s).toMatch(/\bright:\s*0,/);
+    expect(s).toMatch(/\bbottom:\s*0,/);
+  });
+
+  test('top corners rounded with the sheet token, bottom corners square', () => {
+    const s = sheetStyle();
+    expect(s).not.toMatch(/\bborderRadius:/);
+    expect(s).toMatch(/borderTopLeftRadius:\s*GLASS_RADII\.sheet/);
+    expect(s).toMatch(/borderTopRightRadius:\s*GLASS_RADII\.sheet/);
+    expect(s).toMatch(/borderBottomLeftRadius:\s*0,/);
+    expect(s).toMatch(/borderBottomRightRadius:\s*0,/);
+  });
+
+  test('the home-indicator inset is padding inside the sheet', () => {
+    expect(infoSheetSource).toMatch(/const safeBottom = Math\.max\(insets\.bottom,/);
+    expect(infoSheetSource).toMatch(/paddingBottom:\s*safeBottom/);
+  });
+});

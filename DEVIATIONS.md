@@ -489,5 +489,16 @@ detail or contradicted the card above them. Against the section 03 mock:
 - **Versions, one home.** The mock keeps a Versions bar button AND a versions list in the
   sheet. Both stay; the button now opens the sheet scrolled to the Versions section
   (before, it opened the same sheet at the top as Info did).
-- **Still deviating (unchanged from 1563):** an opaque `c.paper` sheet, inset with four
-  rounded corners, not the mock's edge-to-edge glass sheet.
+- ~~**Still deviating (unchanged from 1563):** an opaque `c.paper` sheet, inset with four
+  rounded corners, not the mock's edge-to-edge glass sheet.~~
+  **Geometry fixed 2026-09-27** (Guus, device: "Why does it seem that the info sheet is not
+  full width?"): the sheet is now full width (left/right 0), attached to the bottom edge
+  (bottom 0, home-indicator inset as padding inside the sheet), top corners only at
+  `GLASS_RADII.sheet` (38pt — the mock's 9cqw is ~38.8pt on a 402pt screen).
+  **Still deviating:** the material — opaque `c.paper`, not the mock's
+  `rgba(30,30,29,.92)` + 24px blur — and no 1px top hairline (the mock's
+  `border-top: rgba(255,255,255,.08)`); the sheet height stays 72% (capped below the
+  header) rather than the mock's 62%, so the Versions list has room. The ⋯ menu was
+  checked against section 02: the mock draws it as a right-anchored popover
+  (`.menu{right:3.5cqw;width:58cqw}`), not a sheet, and the code's
+  `PreviewOptionsPopover` matches that — unchanged.
