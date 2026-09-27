@@ -21,7 +21,7 @@ function harness(overrides = {}) {
       return 'file:///cache/preview/f.jpg';
     },
     readPrefix: async (_path, length) => new Uint8Array(length).fill(0x41),
-    deleteFile: async (path) => { log.deletes.push(path); },
+    releaseCopy: async () => { log.deletes.push('released'); },
     fetchCiphertextPrefix: async (length, signal) => {
       log.prefixFetches.push(length);
       log.signals.push(signal);
@@ -47,11 +47,11 @@ describe('startProofSession', () => {
     expect(log.cipher.at(-1).bytes.length).toBe(PROOF_BYTES);
   });
 
-  test('deletes the plaintext copy it decrypted itself after the 512-byte read', async () => {
+  test('gives back (releases) the plaintext copy it decrypted itself after the 512-byte read', async () => {
     const { deps, log } = harness();
     startProofSession(deps);
     await tick();
-    expect(log.deletes).toEqual(['file:///cache/preview/f.jpg']);
+    expect(log.deletes).toEqual(['released']);
   });
 
   test('leaves a preview-cache hit (or a shared decrypt) alone', async () => {
@@ -108,6 +108,13 @@ describe('startProofSession', () => {
     expect(src).toMatch(/return \(\) => session\.close\(\);/);
   });
 
+  test('the component gives its copy back through releasePreviewCopy under the SAME key it decrypted (P2-F)', () => {
+    const src = require('node:fs').readFileSync(require('node:path').join(import.meta.dir, '../components/EncryptionProof.tsx'), 'utf8');
+    expect(src).toMatch(/releaseCopy: \(\) => releasePreviewCopy\(file\.id, cacheExt\),/);
+    expect(src).toMatch(/decryptToTempFile\(\s*file\.id,[^;]*?cacheExt,/);
+    expect(src).not.toMatch(/deleteAsync\([^)]*preview/i);
+  });
+
   test('too large to decrypt: no decrypt at all, still only the ranged ciphertext fetch', async () => {
     const { deps, log } = harness({ sizeBytes: PROOF_DECRYPT_MAX_BYTES + 1 });
     startProofSession(deps);
@@ -150,6 +157,26 @@ describe('fetchCiphertextPrefix', () => {
     const body = new Uint8Array(512).map((_, i) => i & 0xff);
     const out = await fetchCiphertextPrefix('u', 't', 512, async () => new Response(body, { status: 206 }));
     expect(out).toEqual(body);
+  });
+
+  test('206 with an over-long body (P2-D): reads only 512 bytes from the stream and cancels', async () => {
+    const stats = { pulled: 0, cancelled: false };
+    let requestSignal;
+    const out = await fetchCiphertextPrefix('u', 't', 512, async (_u, init) => {
+      requestSignal = init.signal;
+      return new Response(bigStream(stats), { status: 206 });
+    });
+    expect(out.length).toBe(512);
+    expect(stats.cancelled).toBe(true);
+    expect(stats.pulled).toBeLessThanOrEqual(64 * 1024);
+    expect(requestSignal.aborted).toBe(true);
+  });
+
+  test('206 without a readable stream is refused, never buffered whole (P2-D)', async () => {
+    let buffered = false;
+    const res = { ok: true, status: 206, body: null, arrayBuffer: async () => { buffered = true; return new ArrayBuffer(10 * 1024 * 1024); } };
+    await expect(fetchCiphertextPrefix('u', 't', 512, async () => res)).rejects.toThrow();
+    expect(buffered).toBe(false);
   });
 
   test('200 (server ignored Range): reads only the first 512 bytes and cancels the transfer', async () => {

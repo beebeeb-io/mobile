@@ -319,7 +319,7 @@ function DocumentScannerCameraScreen({ camera }: { camera: CameraModule }) {
     setSaving(true);
     const fileId = await generateFileId();
     const fileName = scannedPdfName();
-    const pdfUri = `${FileSystem.cacheDirectory ?? ''}${fileId}.pdf`;
+    const pdfUri = `${FileSystem.cacheDirectory ?? ''}beebeeb-scan-${fileId}.pdf`; // task 1593: registered caches prefix
     pdfUriRef.current = pdfUri;
 
     try {

@@ -10,6 +10,7 @@ import { beforeEach, describe, expect, mock, test } from 'bun:test';
 
 const files = new Map<string, number>(); // uri -> size
 const deletes: string[] = [];
+let readDirHook: null | (() => void) = null;
 mock.module('expo-file-system/legacy', () => ({
   cacheDirectory: 'file:///cache/',
   getInfoAsync: async (uri) => {
@@ -17,7 +18,10 @@ mock.module('expo-file-system/legacy', () => ({
     return files.has(uri) ? { exists: true, size: files.get(uri), modificationTime: Date.now() / 1000 } : { exists: false };
   },
   makeDirectoryAsync: async () => {},
-  readDirectoryAsync: async (dir) => [...files.keys()].filter((k) => k.startsWith(dir)).map((k) => k.slice(dir.length)),
+  readDirectoryAsync: async (dir) => {
+    readDirHook?.();
+    return [...files.keys()].filter((k) => k.startsWith(dir)).map((k) => k.slice(dir.length));
+  },
   deleteAsync: async (uri) => {
     deletes.push(uri);
     for (const k of [...files.keys()]) if (k === uri || (uri.endsWith('/') && k.startsWith(uri))) files.delete(k);
@@ -80,6 +84,70 @@ beforeEach(() => {
   files.clear();
   deletes.length = 0;
   nativeCalls.length = 0;
+  readDirHook = null;
+});
+
+describe('task 1593 round 2 — P2-C: a close in the window after the last abort check', () => {
+  test('the only caller closing during the post-decrypt prune leaves NO plaintext file', async () => {
+    const c = new AbortController();
+    const p = nd.decryptToTempFile('g1', null, 'pdf', 5000, 1, 7, { signal: c.signal });
+    await until(() => nativeCalls.length === 1);
+    // prunePreviewCache reads the directory right after the native decrypt
+    // returned and after the `signal.aborted` check — close the sheet there.
+    readDirHook = () => { readDirHook = null; c.abort(); };
+    nativeCalls[0].finish();
+    await expect(p).rejects.toMatchObject({ name: 'AbortError' });
+    await until(() => !files.has('file:///cache/preview/g1.pdf'));
+    expect(files.has('file:///cache/preview/g1.pdf')).toBe(false);
+  });
+
+  test('a cache hit abandoned at the last moment is the preview\'s copy and stays', async () => {
+    files.set('file:///cache/preview/g2.pdf', 5000);
+    const c = new AbortController();
+    const p = nd.decryptToTempFile('g2', null, 'pdf', 5000, 1, 7, {
+      signal: c.signal,
+      // Fired on the cache-hit path just before it returns.
+      onProgress: (e) => { if (e.stage === 'complete') c.abort(); },
+    });
+    await expect(p).rejects.toMatchObject({ name: 'AbortError' });
+    for (let i = 0; i < 10; i++) await tick();
+    expect(files.has('file:///cache/preview/g2.pdf')).toBe(true);
+  });
+});
+
+describe('task 1593 round 2 — P2-F: releasePreviewCopy never deletes a copy someone else uses', () => {
+  test('sole caller (Prove it on an unopened file): the copy it decrypted is deleted', async () => {
+    const p = nd.decryptToTempFile('h1', null, 'pdf', 5000, 1, 7);
+    await until(() => nativeCalls.length === 1);
+    nativeCalls[0].finish();
+    await p;
+    expect(await nd.releasePreviewCopy('h1', 'pdf')).toBe(true);
+    expect(files.has('file:///cache/preview/h1.pdf')).toBe(false);
+  });
+
+  test('the preview JOINED the decrypt: releasing Prove it\'s lease keeps the file', async () => {
+    const proveIt = nd.decryptToTempFile('h2', null, 'pdf', 5000, 1, 7);
+    await until(() => nativeCalls.length === 1);
+    const preview = nd.decryptToTempFile('h2', null, 'pdf', 5000, 1, 7);
+    await tick();
+    nativeCalls[0].finish();
+    await proveIt;
+    await preview;
+    expect(await nd.releasePreviewCopy('h2', 'pdf')).toBe(false);
+    expect(files.has('file:///cache/preview/h2.pdf')).toBe(true);
+  });
+
+  test('the preview cache-HIT the copy after Prove it decrypted it: the file stays', async () => {
+    const proveIt = nd.decryptToTempFile('h3', null, 'jpg', 5000, 1, 7);
+    await until(() => nativeCalls.length === 1);
+    nativeCalls[0].finish();
+    await proveIt;
+    const sources = [];
+    await nd.decryptToTempFile('h3', null, 'jpg', 5000, 1, 7, { onSource: (s) => sources.push(s) });
+    expect(sources).toEqual(['cache']);
+    expect(await nd.releasePreviewCopy('h3', 'jpg')).toBe(false);
+    expect(files.has('file:///cache/preview/h3.jpg')).toBe(true);
+  });
 });
 
 describe('decryptToTempFile — one in-flight decrypt per cache path', () => {

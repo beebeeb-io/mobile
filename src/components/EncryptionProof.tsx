@@ -38,7 +38,7 @@ import { useTheme } from '../lib/theme-context';
 import { useCrypto } from '../lib/crypto-context';
 import { fetch as streamingFetch } from 'expo/fetch';
 import { downloadFile, getDownloadUrl, getToken, trustLocation, type FileEntry } from '../lib/api';
-import { decryptToTempFile } from '../lib/native-decrypt';
+import { decryptToTempFile, releasePreviewCopy } from '../lib/native-decrypt';
 import { previewDecryptExtension } from '../lib/preview-cache-key';
 import {
   CLOSED_CIPHER_STATE,
@@ -100,13 +100,14 @@ export default function EncryptionProof({ file, fileName, mimeType, visible, onC
     }
     setDownloadError(null);
     const request = isRequestUpload(file);
+    const cacheExt = previewDecryptExtension(mimeType ?? file.mime_type ?? guessMimeType(fileName), fileName);
     const session = startProofSession({
       sizeBytes: file.size_bytes,
       decrypt: (signal, onSource) =>
         decryptToTempFile(
           file.id,
           request ? () => getRequestContentKey(file) : () => getFileKeyBytes(file.id),
-          previewDecryptExtension(mimeType ?? file.mime_type ?? guessMimeType(fileName), fileName),
+          cacheExt,
           file.size_bytes,
           file.chunk_count,
           request ? null : getMasterKeyHandleId(),
@@ -120,7 +121,7 @@ export default function EncryptionProof({ file, fileName, mimeType, visible, onC
             length,
           }),
         ),
-      deleteFile: (path) => FileSystem.deleteAsync(path, { idempotent: true }),
+      releaseCopy: () => releasePreviewCopy(file.id, cacheExt),
       fetchCiphertextPrefix: async (length, signal) => {
         const token = await getToken();
         if (!token) throw new Error('Not signed in');
@@ -139,6 +140,7 @@ export default function EncryptionProof({ file, fileName, mimeType, visible, onC
       const buf = await res.arrayBuffer();
       const all = new Uint8Array(buf);
       const safeName = fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
+      // caches-registry: example=report.pdf.beebeeb.enc
       const target = `${FileSystem.cacheDirectory}${safeName}.beebeeb.enc`;
       await FileSystem.writeAsStringAsync(target, bytesToBase64(all), {
         encoding: FileSystem.EncodingType.Base64,

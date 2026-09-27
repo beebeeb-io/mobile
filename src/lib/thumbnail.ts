@@ -619,6 +619,7 @@ export async function pruneThumbnailCache(maxItems = MAX_THUMB_CACHE_ITEMS): Pro
       const names = await FileSystem.readDirectoryAsync(FileSystem.cacheDirectory);
       const legacyThumbs = names.filter((name) => /^thumb_[^/]+\.(webp|jpg)$/.test(name));
       for (const name of legacyThumbs) {
+        // caches-registry: example=thumb_legacy.jpg
         const uri = `${FileSystem.cacheDirectory}${name}`;
         await FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => {});
       }

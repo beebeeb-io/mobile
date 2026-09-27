@@ -182,6 +182,7 @@ async function prunePreviewCache(keepPath?: string): Promise<void> {
         kept += 1;
 
         if (expired || kept > MAX_PREVIEW_CACHE_ITEMS || totalBytes > MAX_PREVIEW_CACHE_BYTES) {
+          previewLeases.delete(entry.uri);
           await FileSystem.deleteAsync(entry.uri, { idempotent: true }).catch(() => {});
         }
       }),
@@ -234,6 +235,10 @@ export async function decryptToTempFile(
     onOfflineFallback: options.onOfflineFallback,
   };
   listeners.add(listener);
+  // Task 1593 round 2 (P2-F) — one lease per caller that asked for this path.
+  // `releasePreviewCopy` only deletes the file when no other caller holds one.
+  previewLeases.set(outputPath, (previewLeases.get(outputPath) ?? 0) + 1);
+  let leased = true;
   try {
     const { value, joined } = await previewDecrypts.run(
       outputPath,
@@ -259,12 +264,28 @@ export async function decryptToTempFile(
             },
           },
         );
+        // Task 1593 round 2 (P2-C) — every caller walked away (or the
+        // sign-out purge aborted the job) while the decrypt was finishing:
+        // the late `signal.aborted` checks inside the unshared path have a
+        // window after them (prunePreviewCache), and nobody will ever receive
+        // this path to delete it. A file this job decrypted is removed here;
+        // a cache hit is the preview's copy and stays.
+        if (signal.aborted) {
+          if (!cacheHit) {
+            await FileSystem.deleteAsync(outputPath, { idempotent: true }).catch(() => {});
+          }
+          throw abortError();
+        }
         return { path, cacheHit };
       },
       options.signal,
     );
     options.onSource?.(joined ? 'joined' : value.cacheHit ? 'cache' : 'decrypted');
+    leased = false;
     return value.path;
+  } catch (error) {
+    if (leased) dropLease(outputPath);
+    throw error;
   } finally {
     listeners.delete(listener);
     if (listeners.size === 0 && sharedListeners.get(outputPath) === listeners) {
@@ -279,6 +300,29 @@ interface SharedListener {
 }
 
 const previewDecrypts = createInFlightShare<{ path: string; cacheHit: boolean }>();
+/** Per cache path: callers that asked for it since the file was last removed. */
+const previewLeases = new Map<string, number>();
+
+function dropLease(path: string): number {
+  const left = (previewLeases.get(path) ?? 0) - 1;
+  if (left > 0) previewLeases.set(path, left);
+  else previewLeases.delete(path);
+  return Math.max(left, 0);
+}
+
+/**
+ * Task 1593 round 2 (P2-F) — give back ONE caller's lease on the preview-cache
+ * copy of (fileId, extension) and delete the file only if no other caller
+ * holds one. "Prove it" used to delete a copy it had decrypted itself even
+ * when the preview had joined that decrypt (or cache-hit it right after) and
+ * was rendering from it. Returns true when the file was deleted.
+ */
+export async function releasePreviewCopy(fileId: string, extension: string): Promise<boolean> {
+  const path = previewCachePath(fileId, extension);
+  if (dropLease(path) > 0) return false;
+  await FileSystem.deleteAsync(path, { idempotent: true }).catch(() => {});
+  return true;
+}
 const sharedListeners = new Map<string, Set<SharedListener>>();
 
 async function decryptToTempFileUnshared(
@@ -833,6 +877,7 @@ const PREVIEW_ABORT_SETTLE_MS = 3_000;
  */
 export async function clearPreviewCache(): Promise<void> {
   const remove = () => FileSystem.deleteAsync(PREVIEW_CACHE_DIR, { idempotent: true }).catch(() => {});
+  previewLeases.clear();
   await remove();
   let timer: ReturnType<typeof setTimeout> | undefined;
   await Promise.race([
@@ -863,6 +908,7 @@ export async function clearPreviewCache(): Promise<void> {
 export async function invalidatePreviewCache(fileId: string, extension: string): Promise<void> {
   try {
     const ext = extension.replace(/^\./, '');
+    previewLeases.delete(`${PREVIEW_CACHE_DIR}${fileId}.${ext}`);
     await FileSystem.deleteAsync(`${PREVIEW_CACHE_DIR}${fileId}.${ext}`, { idempotent: true });
   } catch {
     // Best-effort — a failed delete just means the next open re-decrypts

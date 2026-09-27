@@ -2906,6 +2906,7 @@ export default function PreviewScreen() {
 
     // Keep the original extension on the cache filename — RN's <Image>,
     // expo-video, and the WebView pick the decoder from the URI suffix.
+    // caches-registry: example=00000000-0000-0000-0000-000000000000_x.jpg (legacy <fileId>_<name>)
     const cacheUri = `${FileSystem.cacheDirectory}${currentFileId}_${cacheFileName}`;
 
     // Remove any stale copy so a previous failed download (e.g. a JSON error

@@ -341,6 +341,7 @@ export default function SharedViewScreen() {
 
       // 4. Persist plaintext to the cache directory so the system share sheet
       // can hand it off to other apps (Files / Photos / Mail).
+      // caches-registry: example=shared_token_name.pdf (sharedCacheFileName always starts with shared_)
       const decUri = `${FileSystem.cacheDirectory}${sharedCacheFileName(info, name, token)}`;
       try {
         await FileSystem.deleteAsync(decUri, { idempotent: true });

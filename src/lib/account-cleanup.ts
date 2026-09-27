@@ -15,7 +15,8 @@
  * zero-knowledge app must not leave any of it behind for whoever signs in
  * next on the same device.
  *
- * This combines both halves (+ the preview cache, task 1593):
+ * This combines both halves (+ every Library/Caches plaintext, task 1593 —
+ * see `purgeDecryptedCaches`):
  * - `clearThumbnailCache()` / `clearNameCache()` — these ALSO reset
  *   in-memory JS state (the thumbnail path map, the name-cache save timer)
  *   that a native-only purge cannot reach, since that state lives in this
@@ -29,30 +30,40 @@
  * native purge is idempotent and treats an already-absent path as clean.
  */
 import { purgePlaintextStorage, type PlaintextStoragePurgeResult } from '../../modules/beebeeb-crypto';
+import { purgeCachesPlaintext } from './caches-plaintext-registry';
 import { clearNameCache } from './name-cache';
 import { clearPreviewCache } from './native-decrypt';
+import { clearPhotoCache } from './photo-cache';
 import { clearThumbnailCache } from './thumbnail-cache';
 
 export type { PlaintextStoragePurgeResult };
 
-export async function purgeAllPlaintextCaches(): Promise<PlaintextStoragePurgeResult> {
-  // Task 1593 (P1): `clearPreviewCache()` — the decrypted full-file previews
-  // in `Library/Caches/preview/`. The native registry below deliberately
-  // excludes `Library/Caches/`, so without this every file opened this
-  // session stayed on disk in the clear after sign-out.
-  await Promise.allSettled([clearThumbnailCache(), clearNameCache(), clearPreviewCache()]);
-  return purgePlaintextStorage();
+/**
+ * Every decrypted-content cache this JS process owns, incl. all of
+ * `Library/Caches/` that the native registry deliberately skips:
+ * - `clearPreviewCache()` — `Library/Caches/preview/`; also aborts decrypts
+ *   still in flight so none writes a file after the purge (task 1593).
+ * - `clearPhotoCache()` — `Library/Caches/beebeeb-photo-cache/` (decrypted
+ *   photo/video originals from the Photos pager) + its in-memory map
+ *   (task 1593 round 2, P1-A: it had zero callers).
+ * - `purgeCachesPlaintext()` — every other plaintext writer registered in
+ *   `caches-plaintext-registry.ts` (task 1593 round 2, P2-E). Runs LAST so it
+ *   also catches anything written while the two above were aborting.
+ * Never throws.
+ */
+export async function purgeDecryptedCaches(): Promise<void> {
+  await Promise.allSettled([
+    clearThumbnailCache(),
+    clearNameCache(),
+    clearPreviewCache(),
+    clearPhotoCache(),
+  ]);
+  await purgeCachesPlaintext().catch(() => []);
 }
 
-/**
- * Task 1593 — nobody is signed in (a cold launch with no stored session, a
- * rejected token, a session that expired or an account deleted elsewhere):
- * whatever the last session decrypted into the preview cache must not stay
- * on disk — the previous session may have ended in a crash or a forced
- * sign-out that never reached `signOut()`'s purge. Never throws.
- */
-export async function purgePreviewPlaintextWhileSignedOut(): Promise<void> {
-  await clearPreviewCache().catch(() => {});
+export async function purgeAllPlaintextCaches(): Promise<PlaintextStoragePurgeResult> {
+  await purgeDecryptedCaches();
+  return purgePlaintextStorage();
 }
 
 export interface PurgeThenSignOutDeps {

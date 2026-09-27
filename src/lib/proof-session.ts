@@ -36,7 +36,12 @@ export interface ProofSessionDeps {
   decrypt: (signal: AbortSignal, onSource: (source: PreviewDecryptSource) => void) => Promise<string>;
   /** Read the first `length` bytes of a local file. */
   readPrefix: (path: string, length: number) => Promise<Uint8Array>;
-  deleteFile: (path: string) => Promise<void>;
+  /**
+   * Give back this session's lease on the copy it decrypted
+   * (`releasePreviewCopy`): the file is deleted only when no other caller —
+   * e.g. the preview, which may have joined this decrypt — still holds it.
+   */
+  releaseCopy: () => Promise<unknown>;
   /** The first `length` ciphertext bytes (see fetchCiphertextPrefix). */
   fetchCiphertextPrefix: (length: number, signal: AbortSignal) => Promise<Uint8Array>;
   onPlain: (state: PlaintextPrefixState) => void;
@@ -73,9 +78,10 @@ export function startProofSession(deps: ProofSessionDeps): ProofSession {
       } catch {
         if (!closed) deps.onPlain({ status: 'failed' });
       } finally {
-        // Only the copy THIS session created is ours to delete.
+        // Only the copy THIS session created is ours to give back — and it is
+        // deleted only if nobody else is using it (task 1593 round 2, P2-F).
         if (path && source === 'decrypted') {
-          await deps.deleteFile(path).catch(() => {});
+          await deps.releaseCopy().catch(() => {});
         }
       }
     })();
@@ -107,11 +113,11 @@ type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
 /**
  * The first `length` bytes of the stored ciphertext, without downloading the
- * rest: asks for `Range: bytes=0-(length-1)`. A 206 is read whole (it is only
- * `length` bytes). A 200 means the server ignored the Range header — the body
- * is then read from the stream only until `length` bytes have arrived, and
- * the stream + request are cancelled. With no readable stream it fails rather
- * than falling back to buffering the whole object.
+ * rest: asks for `Range: bytes=0-(length-1)`. Whatever the status (206, or a
+ * 200 when the server ignored the Range header), the body is read from the
+ * stream only until `length` bytes have arrived, and the stream + request are
+ * cancelled — a 206 is not trusted to be `length` bytes long. With no
+ * readable stream it fails rather than falling back to buffering the body.
  */
 export async function fetchCiphertextPrefix(
   url: string,
@@ -133,9 +139,8 @@ export async function fetchCiphertextPrefix(
       signal: controller.signal,
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    if (res.status === 206) {
-      return new Uint8Array(await res.arrayBuffer()).slice(0, length);
-    }
+    // 200 AND 206 go through the same capped stream read (task 1593 round 2,
+    // P2-D): a 206 is not trusted to be only `length` bytes long.
     const reader = res.body?.getReader();
     if (!reader) {
       controller.abort();

@@ -181,6 +181,12 @@ async function copyPhotoAssetToUploadCache(sourceUri: string, fileId: string, na
   return targetUri;
 }
 
+/** Task 1593 — delete the upload-* copy (never the picker's own source file). */
+async function discardUploadCacheCopy(copyUri: string, sourceUri: string): Promise<void> {
+  if (copyUri === sourceUri) return;
+  await FileSystem.deleteAsync(copyUri, { idempotent: true }).catch(() => {});
+}
+
 /**
  * Fallback display name for an encrypted filename when crypto is unavailable.
  * Returns a friendly label for JSON-encrypted names instead of raw ciphertext.
@@ -2469,10 +2475,13 @@ export default function FilesScreen() {
       const display = total > 1 ? `${name} (${i + 1}/${total})` : name;
       lastName = display;
       setUpload({ fileName: display, stage: 1, percent: 0, city: lastLoc.city, region: lastLoc.region });
+      // Task 1593 — the pre-encryption copy in Library/Caches (upload-*) is
+      // plaintext: delete it once the upload and both thumbnails are done.
+      let uploadUri: string | null = null;
       try {
         const fileId = shouldVersion && conflict ? conflict.id : await generateFileId();
         const v2InitNameEncrypted = shouldVersion && conflict ? conflict.name_encrypted : undefined;
-        const uploadUri = await copyPhotoAssetToUploadCache(asset.uri, fileId, name);
+        uploadUri = await copyPhotoAssetToUploadCache(asset.uri, fileId, name);
         const uploaded = await encryptedUpload({
           fileId,
           uri: uploadUri,
@@ -2508,10 +2517,15 @@ export default function FilesScreen() {
         setFiles((prev) => upsertFileEntry(prev, uploaded));
         indexFile(uploaded.id, toSearchIndexEntry(uploaded, name, currentFolder.id));
         // Fire-and-forget: image picker only returns images, so always thumbnail (medium + large).
-        void generateAndUploadThumbnail(uploaded.id, uploadUri, asset.mimeType ?? 'image/jpeg', getFileKeyBytes);
-        void generateAndUploadThumbnail(uploaded.id, uploadUri, asset.mimeType ?? 'image/jpeg', getFileKeyBytes, 'large');
+        const copyUri = uploadUri;
+        uploadUri = null;
+        void Promise.allSettled([
+          generateAndUploadThumbnail(uploaded.id, copyUri, asset.mimeType ?? 'image/jpeg', getFileKeyBytes),
+          generateAndUploadThumbnail(uploaded.id, copyUri, asset.mimeType ?? 'image/jpeg', getFileKeyBytes, 'large'),
+        ]).then(() => discardUploadCacheCopy(copyUri, asset.uri));
         successCount += 1;
       } catch (err) {
+        if (uploadUri) void discardUploadCacheCopy(uploadUri, asset.uri);
         console.warn('[UPLOAD] Error type:', typeof err, err instanceof Error ? err.constructor.name : 'unknown');
         console.warn('[UPLOAD] Error message:', err instanceof Error ? err.message : String(err));
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
@@ -3398,9 +3412,13 @@ export default function FilesScreen() {
         return;
       }
       const safeName = (name.replace(/[^a-zA-Z0-9._()-]/g, '_') || 'file');
-      const namedUri = `${FileSystem.cacheDirectory}${safeName}`;
+      // Task 1593 — under a registered caches dir (lib/caches-plaintext-registry.ts)
+      // so a copy a crash left behind is swept on sign-out.
+      const exportDir = `${FileSystem.cacheDirectory}beebeeb-export/`;
+      const namedUri = `${exportDir}${safeName}`;
       setExporting({ name });
       try {
+        await FileSystem.makeDirectoryAsync(exportDir, { intermediates: true }).catch(() => {});
         const decryptedUri = await decryptForSave();
         // Copy to a correctly-named temp so the saved file keeps its real name
         // (the decrypt cache keys files by id), then drop the copy afterwards.

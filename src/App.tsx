@@ -46,7 +46,8 @@ import * as BeebeebCrypto from '../modules/beebeeb-crypto';
 import { populateFileProviderCache } from './lib/file-provider-mount';
 import { initLocalIdentifierMap } from './lib/local-identifier-map';
 import { resetThumbnailSelfRepairState } from './lib/thumbnail-self-repair';
-import { purgeAllPlaintextCaches, purgePreviewPlaintextWhileSignedOut } from './lib/account-cleanup';
+import { purgeAllPlaintextCaches, purgeDecryptedCaches } from './lib/account-cleanup';
+import { createSignedOutPurger } from './lib/signed-out-purge';
 import {
   setupNotificationHandler,
   registerForPushNotifications,
@@ -511,6 +512,12 @@ function tabAppleIcon(routeName: string, focused: boolean): { sfSymbol: SFSymbol
 // imported counts, and depends on `user` so we never upload while signed out.
 // ---------------------------------------------------------------------------
 
+// Task 1593 — see the signed-out effect in App().
+const signedOutPurger = createSignedOutPurger({
+  full: () => purgeAllPlaintextCaches(),
+  leftover: () => purgeDecryptedCaches(),
+});
+
 function ShareSheetImporter({ enabled }: { enabled: boolean }) {
   const { showToast } = useToast();
   const { isUnlocked, encryptChunk, encryptMetadata } = useCrypto();
@@ -955,6 +962,9 @@ export default function App() {
 
   const refreshAuth = useCallback(async () => {
     try {
+      // Task 1593 — never let a signed-out purge still running delete the new
+      // session's first cache writes.
+      await signedOutPurger.settled();
       const me = await getMe();
       setUser(me);
       SecureStore.setItemAsync(LAST_CONNECTED_KEY, new Date().toISOString()).catch(() => {});
@@ -1113,10 +1123,6 @@ export default function App() {
       if (!isCurrentStartupRun()) return;
       const tokenExists = token !== null;
       startupAuthState = tokenExists ? 'token-present' : 'no-token';
-      // Task 1593 — a launch with nobody signed in: the last session may have
-      // ended without signOut()'s purge (a crash, a force-quit mid sign-out),
-      // so sweep any decrypted previews it left in Library/Caches/preview/.
-      if (!tokenExists) void purgePreviewPlaintextWhileSignedOut();
 
       if (tokenExists) {
         setLoadingStatus('Contacting server...');
@@ -1135,7 +1141,6 @@ export default function App() {
             startupAuthState = 'invalid-token';
             logStartupDiagnostic('fetch-profile', 'invalid-token', profileStartedAt);
             setUser(null);
-            void purgePreviewPlaintextWhileSignedOut(); // task 1593
             setLoadingStatus('Loading preferences...');
             await withStartupTimeout(loadPreferences(false), undefined, 'load-preferences');
             if (!isCurrentStartupRun()) return;
@@ -1274,9 +1279,7 @@ export default function App() {
   // Register session-expired handler so 401s auto-sign-out
   useEffect(() => {
     registerSessionExpiredHandler(() => {
-      // Task 1593 — a forced sign-out never reaches signOut()'s purge.
-      void purgePreviewPlaintextWhileSignedOut();
-      setUser(null);
+      setUser(null); // plaintext purge: the signed-out effect (task 1593)
     });
   }, []);
 
@@ -1288,10 +1291,24 @@ export default function App() {
   useEffect(() => {
     registerAccountDeletedHandler((deletedAt, shredAfter) => {
       stashAccountDeletedNotice({ deletedAt, shredAfter });
-      void purgePreviewPlaintextWhileSignedOut(); // task 1593
-      setUser(null);
+      setUser(null); // plaintext purge: the signed-out effect (task 1593)
     });
   }, []);
+
+  // Task 1593 (round 2) — THE one place decrypted plaintext is purged when the
+  // app reaches its signed-out surface, whatever got it there: signOut(), a
+  // 401 in refreshAuth, session expiry, account deleted elsewhere, a rejected
+  // token or no token at launch, the startup-failure fallback, diagnostics →
+  // "Sign in". A session that ended this process gets the full signOut()
+  // purge; a launch with nobody signed in gets the decrypted-content purge
+  // (src/lib/signed-out-purge.ts).
+  useEffect(() => {
+    signedOutPurger.noteUser(user != null);
+  }, [user]);
+  const onSignedOutSurface = !checking && !showDiagnostics && !showSecureStorageError && user == null;
+  useEffect(() => {
+    if (onSignedOutSurface) void signedOutPurger.enterSignedOut();
+  }, [onSignedOutSurface]);
 
   // Lock the app when it goes to background and biometric pref is on.
   // The user-configurable delay (BIOMETRIC_DELAY_KEY, in ms) lets a quick
