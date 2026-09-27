@@ -79,7 +79,7 @@ describe('no bottom sheet floats inset', () => {
 });
 
 describe('every partial-height sheet renders through the shared BottomSheet', () => {
-  const consumers = ['components/preview/InfoSheet.tsx', 'screens/ShareSheetScreen.tsx', 'components/TrustDetailsSheet.tsx'];
+  const consumers = ['components/preview/InfoSheet.tsx', 'screens/ShareSheetScreen.tsx', 'components/TrustDetailsSheet.tsx', 'components/NewFileSheet.tsx'];
   for (const rel of consumers) {
     test(rel, () => {
       const f = files.find((x) => x.rel === rel);

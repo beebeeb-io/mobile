@@ -297,6 +297,12 @@ export type RootStackParamList = {
     fileRequestId?: string | null;
     senderEphemeralPubkey?: string | null;
     wrappedContentKey?: string | null;
+    /**
+     * Task 1587 — open straight in the text editor (a file just created from
+     * the Files "+" menu). Honoured once, only if the file passes the normal
+     * edit gate once its text has loaded; otherwise the read view shows.
+     */
+    startInEditMode?: boolean;
   };
   ShareSheet: {
     fileId: string;

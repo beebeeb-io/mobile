@@ -32,7 +32,7 @@ export type RawFormatLabel =
  * by 'dng' — see task 1565's Notes on why no separate ProRAW fixture exists
  * (raw.pixls.us has none; a real one needs an actual iPhone 12 Pro+ photo).
  */
-const RAW_EXTENSIONS = new Set(['cr2', 'cr3', 'arw', 'nef', 'raf', 'dng']);
+export const RAW_EXTENSIONS: ReadonlySet<string> = new Set(['cr2', 'cr3', 'arw', 'nef', 'raf', 'dng']);
 
 const RAW_LABEL_BY_EXTENSION: Record<string, RawFormatLabel> = {
   cr2: 'Canon RAW',

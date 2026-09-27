@@ -76,6 +76,10 @@ import { encryptedMetadataPayloadToBytes, encryptedMetadataToJson, fileMetadataP
 import { syncDecryptedEntriesToFileProvider, removeFromFileProviderCache } from '../lib/file-provider-mount';
 import { useAuth } from '../lib/auth';
 import { encryptedUpload, generateFileId } from '../lib/encrypted-upload';
+import { buildAddMenuActions, NEW_FILE_ACTION_ID } from '../lib/new-document';
+import { createNewDocumentFile, decryptFolderNames, previewParamsForNewDocument } from '../lib/create-new-document';
+import { abandonTextFileUpload } from '../lib/text-file-save';
+import NewFileSheet, { type NewFileRequest } from '../components/NewFileSheet';
 import { useSync } from '../lib/sync-context';
 import { useSearchIndex } from '../lib/use-search-index';
 import { onFilesDeleted } from '../lib/delete-cascade';
@@ -1321,7 +1325,7 @@ export default function FilesScreen() {
   const [presence, setPresence] = useState<PresenceUser[]>([]);
 
   // Crypto
-  const { isUnlocked, unlockAttempted, decryptMetadata, decryptNames, encryptChunk, encryptMetadata, getFileKeyBytes, getRequestContentKey, getMasterKeyHandleId } = useCrypto();
+  const { isUnlocked, unlock, unlockAttempted, decryptMetadata, decryptNames, encryptChunk, encryptMetadata, getFileKeyBytes, getRequestContentKey, getMasterKeyHandleId } = useCrypto();
   const [decryptedNames, setDecryptedNames] = useState<Record<string, string>>({});
   // Task 0807: persistent (fileId,version) name cache + a ref mirror of
   // decryptedNames so the per-folder decrypt effect can read the latest names
@@ -1552,6 +1556,10 @@ export default function FilesScreen() {
   const [newFolderOpen, setNewFolderOpen] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
   const [creatingFolder, setCreatingFolder] = useState(false);
+
+  // Task 1587 — "+" → New file: the type picker + name step (NewFileSheet,
+  // on the shared BottomSheet). Errors are shown inline in the sheet.
+  const [newFileOpen, setNewFileOpen] = useState(false);
 
   // Export state (1177) — a top-of-Files "Exporting…" indicator shown for the
   // whole prepare phase (download + decrypt → temp) of Save to Files / Save to
@@ -2580,6 +2588,145 @@ export default function FilesScreen() {
     }
   }, [submitNewFolder]);
 
+  // ── Task 1587 — "+" → New file (NewFileSheet) ─────────────────────────────
+  /** Decrypted names of EVERY sibling in the current folder (folders too: a
+   *  file and a folder with the same name side by side do not survive a sync
+   *  to a case-insensitive file system). */
+  const currentFolderNames = useCallback((): string[] => {
+    const out: string[] = [];
+    for (const f of files) {
+      const n = decryptedNames[f.id];
+      if (n) out.push(n);
+    }
+    return out;
+  }, [files, decryptedNames]);
+
+  /** "+" → New file. The same gates as every other upload: a verified
+   *  recovery phrase, and an unlocked vault — a locked vault is offered an
+   *  unlock (Face ID / keychain) rather than a plaintext path. */
+  const openNewFileSheet = useCallback(() => {
+    if (!phraseVerified) {
+      Alert.alert(
+        'Save your recovery phrase first',
+        'Verify your recovery phrase before creating files. Go to Settings → Security to complete verification.',
+        [{ text: 'OK' }],
+      );
+      return;
+    }
+    if (!isUnlocked) {
+      Alert.alert(
+        'Unlock to create a file',
+        'New files are encrypted on this phone before they leave it, so the vault has to be unlocked first.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Unlock',
+            onPress: () => {
+              // unlock() can resolve without unlocking (an unlock already in
+              // flight that then fails, a cancelled Face ID) — open the sheet
+              // only when the vault really is open (task 1587 review).
+              void unlock(undefined, 'new_file_sheet')
+                .then(() => {
+                  let open = false;
+                  try { open = getMasterKeyHandleId() != null; } catch { open = false; }
+                  if (open) setNewFileOpen(true);
+                })
+                .catch(() => {});
+            },
+          },
+        ],
+      );
+      return;
+    }
+    setNewFileOpen(true);
+  }, [phraseVerified, isUnlocked, unlock, getMasterKeyHandleId]);
+
+  /**
+   * Every decryptable name in a FRESH, complete listing of the folder — the
+   * on-screen list can lag a sibling added or renamed from another device,
+   * and the server cannot check names itself: it only ever sees encrypted
+   * ones. Every row is decrypted now on the folder-name effect's paths
+   * (request uploads via getRequestContentKey); the on-screen cache is only a
+   * fallback for a failed decrypt — lib/create-new-document.ts
+   * `decryptFolderNames`, unit-tested.
+   */
+  const freshFolderNames = useCallback(async (parentId: string | null): Promise<string[]> => {
+    const siblings = await listAllFiles(parentId ?? undefined);
+    return decryptFolderNames(siblings, {
+      isRequestUpload,
+      decryptNormalNames: async (normal) => {
+        const results = await decryptNames(
+          normal.map((f) => ({ fileId: f.id, nameEncrypted: f.name_encrypted ?? '' })),
+        );
+        return normal.map((_, i) => {
+          const r = results[i];
+          return r && !r.error && r.name ? r.name : null;
+        });
+      },
+      decryptRequestUploadName: async (f) => {
+        const payload = encryptedMetadataPayloadToBytes(f.name_encrypted ?? '');
+        if (!payload) throw new Error('unreadable metadata');
+        const plaintext = await decryptMetadataWithKey(
+          await getRequestContentKey(f),
+          payload.nonce,
+          payload.ciphertext,
+        );
+        return parseDecryptedMetadata(plaintext).name;
+      },
+      cachedName: (f) => decryptedNamesRef.current[f.id],
+    });
+  }, [decryptNames, getRequestContentKey]);
+
+  /**
+   * NewFileSheet's `onCreate`: the flow itself (fresh-listing clash check,
+   * starter file, encrypted upload through the SAME path as "Upload file",
+   * abandon on failure) is lib/create-new-document.ts, unit-tested with
+   * mocks; this wires the real deps and does the UI side. Throws a
+   * user-facing Error on failure; the sheet shows it inline.
+   */
+  const createNewDocument = useCallback(async (req: NewFileRequest) => {
+    const parentId = currentFolder.id ?? null;
+    const uploaded = await createNewDocumentFile(
+      req,
+      parentId,
+      {
+        isUnlocked: () => isUnlocked,
+        listFolderNames: freshFolderNames,
+        generateFileId,
+        writeTempFile: async (fileId, content) => {
+          if (!FileSystem.cacheDirectory) throw new Error('No cache directory available');
+          // Named after the file id, never the (plaintext) name.
+          const uri = `${FileSystem.cacheDirectory}new-${fileId}`;
+          await FileSystem.writeAsStringAsync(uri, content, { encoding: FileSystem.EncodingType.UTF8 });
+          return uri;
+        },
+        deleteTempFile: (uri) => FileSystem.deleteAsync(uri, { idempotent: true }),
+        upload: ({ fileId, uri, name, parentId: pid, mimeType }) => encryptedUpload({
+          fileId,
+          uri,
+          name,
+          parentId: pid ?? undefined,
+          mimeType,
+          encryptChunkFn: encryptChunk,
+          encryptMetadataFn: encryptMetadata,
+          masterKeyHandleId: getMasterKeyHandleId(),
+        }),
+        abandonUpload: abandonTextFileUpload,
+      },
+      friendlyError,
+    );
+    const { name, mimeType } = req;
+    setFiles((prev) => upsertFileEntry(prev, uploaded));
+    setDecryptedNames((prev) => ({ ...prev, [uploaded.id]: name }));
+    setDecryptedMimeTypes((prev) => ({ ...prev, [uploaded.id]: mimeType }));
+    indexFile(uploaded.id, toSearchIndexEntry(uploaded, name, parentId));
+    setNewFileOpen(false);
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    showToast({ type: 'success', message: `${name} created · encrypted` });
+    fetchFiles(parentId, true);
+    navigation.navigate('Preview', previewParamsForNewDocument(uploaded, req));
+  }, [isUnlocked, currentFolder.id, freshFolderNames, encryptChunk, encryptMetadata, getMasterKeyHandleId, indexFile, fetchFiles, navigation, showToast]);
+
   // 0789 — "+" add menu as native iOS UIMenu items, with trailing SF Symbols.
   // (Placed after all four upload handlers are declared.)
   // 0791 — `imageColor` MUST be set explicitly. On the New Architecture the
@@ -2587,13 +2734,11 @@ export default function FilesScreen() {
   // int that defaults to 0 when JS omits it); native then tints the symbol with
   // `RCTConvert.uiColor(0)` = fully transparent, so the glyph renders blank with
   // its space reserved. Passing the label color tints it visibly on both arches.
+  // 1587 — the table (and its order: uploads, then an inline "create" section
+  // with New file / New folder) lives in
+  // lib/new-document.ts so it is unit-tested.
   const addMenuActions = useMemo<MenuAction[]>(
-    () => [
-      { id: 'photo', title: 'Upload photo or video', image: 'photo.on.rectangle', imageColor: c.ink },
-      { id: 'file', title: 'Upload file', image: 'doc', imageColor: c.ink },
-      { id: 'scan', title: 'Scan document', image: 'doc.viewfinder', imageColor: c.ink },
-      { id: 'folder', title: 'New folder', image: 'folder.badge.plus', imageColor: c.ink },
-    ],
+    () => buildAddMenuActions(c.ink, Platform.OS) as MenuAction[],
     [c.ink],
   );
 
@@ -2604,7 +2749,8 @@ export default function FilesScreen() {
       case 'scan': openDocumentScanner(); return;
       case 'folder': showNewFolderPrompt(); return;
     }
-  }, [pickAndUploadPhotos, pickAndUploadFile, openDocumentScanner, showNewFolderPrompt]);
+    if (nativeEvent.event === NEW_FILE_ACTION_ID) openNewFileSheet();
+  }, [pickAndUploadPhotos, pickAndUploadFile, openDocumentScanner, showNewFolderPrompt, openNewFileSheet]);
 
   const confirmNewFolderModal = useCallback(async () => {
     const trimmed = newFolderName.trim();
@@ -4684,6 +4830,15 @@ export default function FilesScreen() {
           </View>
         </KeyboardAvoidingView>
       </Modal>
+
+      {/* 1587 — "+" → New file: the D3 type picker + name step. */}
+      <NewFileSheet
+        visible={newFileOpen}
+        onClose={() => setNewFileOpen(false)}
+        existingNames={currentFolderNames}
+        folderLabel={currentFolder.name}
+        onCreate={createNewDocument}
+      />
 
       {/* Breadcrumb collapsed-path popover — indented tree of the in-between
           folders, anchored under the "…" chip. The native UIMenu can't draw an
