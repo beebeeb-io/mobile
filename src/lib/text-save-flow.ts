@@ -18,9 +18,10 @@
  *
  * `classifySaveConflict` tells them apart, `runTextSave` recovers from the
  * first (abandon the stuck upload via `POST /files/:id/upload/abandon`, then
- * retry once) and applies the lead's ruling for the second (setting "Ask when
- * a file changed on another device", default OFF: save on top of the latest
- * version automatically; ON: hand back to the dialog).
+ * retry once) and hands the second back to the caller, which shows the
+ * existing conflict dialog exactly as before (lead correction, 2026-09-27:
+ * no setting — the popup Guus reported was the `file_updated` push, not
+ * this dialog).
  */
 
 export type SaveConflictKind = 'stale-version' | 'upload-in-progress'
@@ -67,9 +68,8 @@ export interface TextSaveDeps {
 }
 
 export type TextSaveResult =
-  /** Saved. `rebasedFrom` is set when a real conflict was resolved automatically. */
-  | { kind: 'saved'; versionNumber: number; rebasedFrom?: number }
-  /** A real stale-version conflict and the user asked to be asked. */
+  | { kind: 'saved'; versionNumber: number }
+  /** A real stale-version conflict: another device saved first. */
   | { kind: 'conflict'; freshVersionNumber: number }
   /** An earlier save of this file is still in flight and could not be cleared. */
   | { kind: 'busy' }
@@ -77,8 +77,6 @@ export type TextSaveResult =
 
 export interface TextSaveOptions {
   baseVersionNumber: number
-  /** The "Ask when a file changed on another device" setting (default OFF). */
-  askOnConflict: boolean
 }
 
 async function safeAbandon(deps: TextSaveDeps): Promise<void> {
@@ -91,22 +89,18 @@ async function safeAbandon(deps: TextSaveDeps): Promise<void> {
 
 /**
  * Runs one Save. Always settles: every branch either returns or awaits a
- * bounded number of dependency calls (at most three upload attempts), and
+ * bounded number of dependency calls (at most two upload attempts), and
  * dependency rejections are turned into `{ kind: 'error' }` — never rethrown —
  * so the caller's `finally { setSaving(false) }` always runs.
  */
 export async function runTextSave(deps: TextSaveDeps, opts: TextSaveOptions): Promise<TextSaveResult> {
-  let base = opts.baseVersionNumber
+  const base = opts.baseVersionNumber
   let clearedStuckUpload = false
-  let rebasedFrom: number | undefined
-  // At most: original attempt, one retry after clearing a stuck upload, one
-  // retry on top of the latest version after a real conflict.
-  for (let attempt = 0; attempt < 3; attempt++) {
+  // At most: the original attempt, plus one retry after clearing a stuck upload.
+  for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const versionNumber = await deps.save(base)
-      return rebasedFrom === undefined
-        ? { kind: 'saved', versionNumber }
-        : { kind: 'saved', versionNumber, rebasedFrom }
+      return { kind: 'saved', versionNumber }
     } catch (err) {
       const kind = classifySaveConflict(err)
       if (kind === 'upload-in-progress') {
@@ -116,21 +110,11 @@ export async function runTextSave(deps: TextSaveDeps, opts: TextSaveOptions): Pr
         continue
       }
       if (kind === 'stale-version') {
-        let fresh: number
         try {
-          fresh = await deps.readCurrentVersion()
+          return { kind: 'conflict', freshVersionNumber: await deps.readCurrentVersion() }
         } catch (readErr) {
           return { kind: 'error', error: readErr }
         }
-        if (opts.askOnConflict) return { kind: 'conflict', freshVersionNumber: fresh }
-        if (rebasedFrom !== undefined) {
-          // Already rebased once and the file moved again underneath us —
-          // do not loop; surface it as an error instead of a modal.
-          return { kind: 'error', error: err }
-        }
-        rebasedFrom = base
-        base = fresh
-        continue
       }
       // Any other failure: if this attempt got past `init`, it left the file
       // marked as uploading — clear it now so the NEXT save does not 409.

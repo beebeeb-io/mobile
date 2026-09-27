@@ -59,7 +59,6 @@ import {
   saveFailedAfterUploadStarted,
   saveTextFileVersion,
 } from '../lib/text-file-save';
-import { getAskOnRemoteChange } from '../lib/editor-conflict-setting';
 import { decryptToTempFile, invalidatePreviewCache } from '../lib/native-decrypt';
 import { offlineManager } from '../lib/offline-manager';
 import { maybeSelfRepairThumbnailFromLocalFile } from '../lib/thumbnail-self-repair';
@@ -2657,14 +2656,12 @@ export default function PreviewScreen() {
    * Task 1578 — save `text` as a new version of THIS file via `runTextSave`
    * (see `text-save-flow.ts`): a stuck in-flight upload from an interrupted
    * earlier save is abandoned and retried instead of being reported as
-   * another device's change; a REAL stale-version conflict follows the
-   * "Ask when a file changed on another device" setting (default OFF =
-   * save on top of the latest version + a quiet toast).
+   * another device's change; a REAL stale-version conflict opens the
+   * conflict dialog, as before.
    */
   const saveAsNewVersion = useCallback(async (opts: {
     text: string;
     meta: { nameEncrypted: string; parentId: string | null; versionNumber: number };
-    askOnConflict: boolean;
   }): Promise<void> => {
     const { text, meta } = opts;
     const result = await runTextSave(
@@ -2684,7 +2681,7 @@ export default function PreviewScreen() {
         abandon: () => abandonTextFileUpload(currentFileId),
         readCurrentVersion: () => getFileCurrentVersion(currentFileId),
       },
-      { baseVersionNumber: meta.versionNumber, askOnConflict: opts.askOnConflict },
+      { baseVersionNumber: meta.versionNumber },
     );
     switch (result.kind) {
       case 'saved':
@@ -2695,12 +2692,6 @@ export default function PreviewScreen() {
           parentId: meta.parentId,
           versionNumber: result.versionNumber,
         });
-        if (result.rebasedFrom !== undefined) {
-          showToast({
-            type: 'info',
-            message: `Saved as version ${result.versionNumber}. Another device saved a newer version first; it's kept in version history.`,
-          });
-        }
         return;
       case 'conflict':
         setFileMeta({ ...meta, versionNumber: result.freshVersionNumber });
@@ -2713,7 +2704,7 @@ export default function PreviewScreen() {
         showSaveFailed(friendlyError(result.error));
         return;
     }
-  }, [currentFileId, encryptChunk, applySavedVersion, showToast, showSaveFailed]);
+  }, [currentFileId, encryptChunk, applySavedVersion, showSaveFailed]);
 
   const handleSaveEdit = useCallback(async () => {
     if (editText == null) return;
@@ -2727,8 +2718,7 @@ export default function PreviewScreen() {
           showSaveFailed(fileMetaError ?? 'Could not read the file before saving.');
           return;
         }
-        const askOnConflict = await getAskOnRemoteChange();
-        await saveAsNewVersion({ text, meta, askOnConflict });
+        await saveAsNewVersion({ text, meta });
       } finally {
         setSaving(false);
       }
@@ -2753,8 +2743,7 @@ export default function PreviewScreen() {
           return;
         }
         if (choice === 'new-version') {
-          // The user already chose — never bounce them back into the dialog.
-          await saveAsNewVersion({ text, meta: refreshed, askOnConflict: false });
+          await saveAsNewVersion({ text, meta: refreshed });
           return;
         }
         // Keep both — a brand-new file, same folder, suffixed name. Never

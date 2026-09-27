@@ -460,18 +460,3 @@ chunk+spread either. Neither of these two bugs individually was sufficient
 to explain the symptom alone; both were real, both are fixed, and the
 `sample.cr2` preview was independently re-verified correct in the simulator
 after each.
-
-## Task 1578 (mobile) — editor conflict prompt becomes a setting, default OFF
-
-**Design:** `design/editor-1563.html` shows the stale-version conflict dialog
-("A newer version was saved on another device" — Keep both / Save as new
-version / Discard) as the ONLY behaviour on a conflicting save.
-
-**Ruling (Guus, verbatim, 2026-09-27, TestFlight build 218):** "do i want to get
-notifications from that?, make it an option but disabled by default". Lead's
-recorded ruling (task 1578): a Settings → Files toggle "Ask when a file changed
-on another device", default OFF. OFF: a real stale-version conflict is saved as
-a new version on top of the latest one (the other device's version stays in
-version history) and a quiet info toast says so. ON: the design's dialog,
-unchanged. The toast copy and the toggle subtitle are not in any design
-artefact.

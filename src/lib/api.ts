@@ -18,6 +18,7 @@ import { assertNativeUploadEncryptedUnderSessionId, nativeProgressToUploadProgre
 import { getDeviceId } from './sync-client';
 import { setAnnouncement, clearAnnouncement } from './announcement-context';
 import { withSignupTicket } from './signup-email-code';
+import { normalizeNotificationPreferences, type NotificationPreferences } from './notification-prefs';
 
 // API target. Override at build time with EXPO_PUBLIC_API_URL or via
 // expoConfig.extra.apiUrl (e.g. through eas.json env or app.config.ts).
@@ -2956,21 +2957,16 @@ export async function unregisterDeviceToken(deviceId: string): Promise<void> {
 
 // ─── Notification preferences ─────────────────────────────────────────────────
 
-export interface MobileNotificationPreferences {
-  file_updated: boolean;
-  share_received: boolean;
-  storage_warning: boolean;
-  new_device_login: boolean;
-  backup_complete: boolean;
-}
+export type MobileNotificationPreferences = NotificationPreferences;
 
-/** GET /api/v1/notifications/preferences */
+/** GET /api/v1/notifications/preferences — missing keys fall back to the
+ * mobile defaults (`file_updated` OFF, task 1578). */
 export async function getNotificationPreferences(): Promise<MobileNotificationPreferences> {
   const response = await request<MobileNotificationPreferences | { preferences: MobileNotificationPreferences }>(
     'GET',
     '/api/v1/notifications/preferences',
   );
-  return 'preferences' in response ? response.preferences : response;
+  return normalizeNotificationPreferences('preferences' in response ? response.preferences : response);
 }
 
 /** PUT /api/v1/notifications/preferences */
@@ -2982,7 +2978,7 @@ export async function setNotificationPreferences(
     '/api/v1/notifications/preferences',
     prefs,
   );
-  return 'preferences' in response ? response.preferences : response;
+  return normalizeNotificationPreferences('preferences' in response ? response.preferences : response);
 }
 
 // ─── Privacy / DSAR (spec 025) ────────────────────────────────────────────────

@@ -66,7 +66,7 @@ describe('classifySaveConflict', () => {
 describe('runTextSave — stuck upload from an interrupted earlier save (Issue 1)', () => {
   test('in-progress 409 -> abandon the stuck upload, retry on the SAME base, save; never a conflict', async () => {
     const { deps, calls } = makeDeps([() => IN_PROGRESS(), (base) => base + 1])
-    const result = await runTextSave(deps, { baseVersionNumber: 4, askOnConflict: true })
+    const result = await runTextSave(deps, { baseVersionNumber: 4 })
     expect(result).toEqual({ kind: 'saved', versionNumber: 5 })
     expect(calls.abandon).toBe(1)
     expect(calls.save).toEqual([4, 4])
@@ -75,7 +75,7 @@ describe('runTextSave — stuck upload from an interrupted earlier save (Issue 1
 
   test('in-progress again after one abandon -> busy (bounded, no loop, no dialog)', async () => {
     const { deps, calls } = makeDeps([() => IN_PROGRESS()])
-    const result = await runTextSave(deps, { baseVersionNumber: 4, askOnConflict: true })
+    const result = await runTextSave(deps, { baseVersionNumber: 4 })
     expect(result).toEqual({ kind: 'busy' })
     expect(calls.save).toHaveLength(2)
     expect(calls.abandon).toBe(1)
@@ -83,14 +83,14 @@ describe('runTextSave — stuck upload from an interrupted earlier save (Issue 1
 
   test('a save that fails AFTER init succeeded abandons its own upload so the next save is not refused', async () => {
     const { deps, calls } = makeDeps([() => withMarker(NETWORK(), true)])
-    const result = await runTextSave(deps, { baseVersionNumber: 2, askOnConflict: false })
+    const result = await runTextSave(deps, { baseVersionNumber: 2 })
     expect(result.kind).toBe('error')
     expect(calls.abandon).toBe(1)
   })
 
   test('a save that fails BEFORE init does not abandon (it never marked the file uploading)', async () => {
     const { deps, calls } = makeDeps([() => withMarker(NETWORK(), false)])
-    const result = await runTextSave(deps, { baseVersionNumber: 2, askOnConflict: false })
+    const result = await runTextSave(deps, { baseVersionNumber: 2 })
     expect(result.kind).toBe('error')
     expect(calls.abandon).toBe(0)
   })
@@ -100,32 +100,28 @@ describe('runTextSave — stuck upload from an interrupted earlier save (Issue 1
     deps.abandon = async () => {
       throw new Error('404')
     }
-    const result = await runTextSave(deps, { baseVersionNumber: 1, askOnConflict: false })
+    const result = await runTextSave(deps, { baseVersionNumber: 1 })
     expect(result).toEqual({ kind: 'saved', versionNumber: 2 })
   })
 })
 
-describe('runTextSave — real stale-version conflict and the setting (ruling 2026-09-27)', () => {
-  test('setting OFF (default): rebases onto the server current version and saves, no dialog', async () => {
+describe('runTextSave — real stale-version conflict (dialog, as on main)', () => {
+  test('hands the server current version back for the dialog and does not save again', async () => {
     const { deps, calls } = makeDeps([() => STALE(), (base) => base + 1], { current: 7 })
-    const result = await runTextSave(deps, { baseVersionNumber: 4, askOnConflict: false })
-    expect(result).toEqual({ kind: 'saved', versionNumber: 8, rebasedFrom: 4 })
-    expect(calls.save).toEqual([4, 7])
+    const result = await runTextSave(deps, { baseVersionNumber: 4 })
+    expect(result).toEqual({ kind: 'conflict', freshVersionNumber: 7 })
+    expect(calls.save).toEqual([4])
+    expect(calls.readCurrent).toBe(1)
     expect(calls.abandon).toBe(0)
   })
 
-  test('setting ON: hands the fresh version back for the dialog and does not save', async () => {
-    const { deps, calls } = makeDeps([() => STALE()], { current: 7 })
-    const result = await runTextSave(deps, { baseVersionNumber: 4, askOnConflict: true })
-    expect(result).toEqual({ kind: 'conflict', freshVersionNumber: 7 })
-    expect(calls.save).toEqual([4])
-  })
-
-  test('setting OFF, the file moves AGAIN after the rebase -> error, not a loop and not a modal', async () => {
-    const { deps, calls } = makeDeps([() => STALE()], { current: 9 })
-    const result = await runTextSave(deps, { baseVersionNumber: 4, askOnConflict: false })
+  test('a stale conflict whose version read fails is an error, not a dialog with a made-up version', async () => {
+    const { deps } = makeDeps([() => STALE()])
+    deps.readCurrentVersion = async () => {
+      throw NETWORK()
+    }
+    const result = await runTextSave(deps, { baseVersionNumber: 4 })
     expect(result.kind).toBe('error')
-    expect(calls.save).toEqual([4, 9])
   })
 })
 
@@ -143,7 +139,7 @@ describe('runTextSave always settles (Issue 2 — the Save spinner must clear)',
         throw NETWORK()
       }
       const settled = await Promise.race([
-        runTextSave(deps, { baseVersionNumber: 1, askOnConflict: false }).then(() => 'settled'),
+        runTextSave(deps, { baseVersionNumber: 1 }).then(() => 'settled'),
         new Promise((resolve) => setTimeout(() => resolve('hung'), 500)),
       ])
       expect(settled).toBe('settled')
