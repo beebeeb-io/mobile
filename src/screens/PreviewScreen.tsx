@@ -1884,7 +1884,25 @@ const PhotoPage = React.memo(function PhotoPage({
 // beneath")
 // ---------------------------------------------------------------------------
 
-const PREVIEW_TOP_SCRIM_BANDS = 12;
+// TestFlight build 217 (iPhone, iOS 27): "the gradient at the top ... is not
+// nice at all, it's blocky" — visible stepped grey bands behind the status
+// bar over bright content (a white PDF/SVG page makes each band's edge a
+// hard-contrast line). Root cause: 12 bands spread over up to 0.50 alpha is
+// a ~0.05 jump per band in the steepest (0 → 0.55) segment — more than 6×
+// `GlassSurface` Sheen's per-band delta (20 bands over ≤0.10 alpha, ~0.005)
+// and over 2× `ScrollEdgeBlur`'s tint (14 bands over 0.30 alpha, ~0.021),
+// both of which ship with no reported banding. 64 bands brings this scrim's
+// worst-case per-band delta to ~0.012 — finer than `ScrollEdgeBlur`'s
+// precedent and in the same imperceptible range as the Sheen. Plain `View`
+// bands (no blur) is not a shortcut: the ground-truth canvas's `.topfade`
+// (`design/preview-redesign-ios.html`) is itself a flat CSS
+// `linear-gradient`, no `backdrop-filter` — the header's own glass pills
+// (`GlassCapsule`/title pill), painted ON TOP of this scrim in the same
+// wrapper, are what supplies the frosted-material texture; adding blur HERE
+// would double it up and deviate from the canvas. So: same technique
+// (`bandColors`, no new dependency, no dev-client rebuild), just enough
+// resolution that the steps fall below the eye's threshold.
+const PREVIEW_TOP_SCRIM_BANDS = 64;
 // Dark/light scrim tracks the APP's resolved scheme, not the underlying
 // document's colours — same reasoning `PREVIEW_CHROME_MATERIAL` already
 // documents for the bars themselves: this backs the OS status bar (clock/
@@ -1907,6 +1925,10 @@ const PREVIEW_TOP_SCRIM_STOPS_LIGHT: Stop[] = [
  * aspect ratio) — this is a vertical stack of `bandColors` bands, same
  * technique (no `expo-linear-gradient` — see `gradient.ts`'s own doc
  * comment), simpler case: no rotation, no measured width, just height.
+ *
+ * No `BlurView` either — see `PREVIEW_TOP_SCRIM_BANDS`'s doc comment: the
+ * canvas's `.topfade` this backs is itself unblurred, and the header content
+ * painted on top of this component already carries its own glass.
  */
 function PreviewTopScrim({ height, dark }: { height: number; dark: boolean }) {
   const bands = useMemo(
