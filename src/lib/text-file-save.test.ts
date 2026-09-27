@@ -8,16 +8,6 @@ let uploadImpl: (params: Record<string, unknown>) => Promise<unknown> = async ()
 const abandonCalls: string[] = []
 let abandonFails = false
 
-const store = new Map<string, string>()
-mock.module('@react-native-async-storage/async-storage', () => ({
-  default: {
-    getItem: async (key: string) => store.get(key) ?? null,
-    setItem: async (key: string, value: string) => {
-      store.set(key, value)
-    },
-  },
-}))
-
 class ApiError extends Error {
   constructor(public status: number, message: string, public code?: string) {
     super(message)
@@ -39,7 +29,6 @@ mock.module('./api', () => ({
 const {
   abandonTextFileUpload,
   isStaleVersionConflict,
-  ownsInFlightUpload,
   saveFailedAfterUploadStarted,
   saveTextFileVersion,
 } = await import('./text-file-save')
@@ -51,7 +40,6 @@ beforeEach(() => {
   abandonCalls.length = 0
   uploadImpl = async () => ({ id: 'f', version_number: 2 })
   abandonFails = false
-  store.clear()
 })
 
 const progress = (params: Record<string, unknown>) =>
@@ -97,47 +85,27 @@ describe('abandonTextFileUpload', () => {
   })
 })
 
-describe('owned-upload ledger (Codex P1: never abandon another device\'s upload)', () => {
-  test('an upload interrupted after init is recorded as ours', async () => {
-    uploadImpl = async (params) => {
-      progress(params)
-      throw new ApiError(0, 'Could not reach the server.')
-    }
-    await saveTextFileVersion({ fileId: 'f1', nameEncrypted: 'n', text: 'hi', encryptChunkFn }).catch(() => {})
-    expect(await ownsInFlightUpload('f1')).toBe(true)
-    expect(await ownsInFlightUpload('other')).toBe(false)
-  })
-
-  test('a completed upload is no longer ours', async () => {
-    uploadImpl = async (params) => {
-      progress(params)
-      return { id: 'f1', version_number: 3 }
-    }
-    await saveTextFileVersion({ fileId: 'f1', nameEncrypted: 'n', text: 'hi', encryptChunkFn })
-    expect(await ownsInFlightUpload('f1')).toBe(false)
-  })
-
-  test('an init-time "already in progress" 409 is never recorded as ours, even after a pre-init progress event (v1 path)', async () => {
+describe('upload-started marker is per attempt, never persisted (Codex P1/P2, PR #134)', () => {
+  test('an init-time "already in progress" 409 is never marked started, even after a pre-init progress event (v1 path)', async () => {
     uploadImpl = async (params) => {
       progress(params)
       throw new ApiError(409, 'upload is already in progress for this file', 'upload is already in progress for this file')
     }
     const err = await saveTextFileVersion({ fileId: 'f1', nameEncrypted: 'n', text: 'hi', encryptChunkFn }).catch((e) => e)
-    expect(await ownsInFlightUpload('f1')).toBe(false)
     expect(saveFailedAfterUploadStarted(err)).toBe(false)
   })
 
-  test('a successful abandon clears ownership; a failed one keeps it for the next try', async () => {
+  test('a later attempt that is refused at init carries no marker from an earlier interrupted attempt', async () => {
     uploadImpl = async (params) => {
       progress(params)
       throw new ApiError(0, 'offline')
     }
-    await saveTextFileVersion({ fileId: 'f1', nameEncrypted: 'n', text: 'hi', encryptChunkFn }).catch(() => {})
-    abandonFails = true
-    await abandonTextFileUpload('f1')
-    expect(await ownsInFlightUpload('f1')).toBe(true)
-    abandonFails = false
-    await abandonTextFileUpload('f1')
-    expect(await ownsInFlightUpload('f1')).toBe(false)
+    const first = await saveTextFileVersion({ fileId: 'f1', nameEncrypted: 'n', text: 'hi', encryptChunkFn }).catch((e) => e)
+    expect(saveFailedAfterUploadStarted(first)).toBe(true)
+    uploadImpl = async () => {
+      throw new ApiError(409, 'upload is already in progress for this file', 'upload is already in progress for this file')
+    }
+    const second = await saveTextFileVersion({ fileId: 'f1', nameEncrypted: 'n', text: 'hi', encryptChunkFn }).catch((e) => e)
+    expect(saveFailedAfterUploadStarted(second)).toBe(false)
   })
 })

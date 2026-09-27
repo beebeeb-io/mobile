@@ -23,7 +23,7 @@ function withMarker(err: Error, uploadStarted: boolean) {
   return err
 }
 
-function makeDeps(script: Array<(base: number) => number | Error>, opts: { current?: number; owned?: boolean } = {}) {
+function makeDeps(script: Array<(base: number) => number | Error>, opts: { current?: number } = {}) {
   const calls = { save: [] as number[], abandon: 0, readCurrent: 0 }
   let i = 0
   const deps = {
@@ -38,7 +38,6 @@ function makeDeps(script: Array<(base: number) => number | Error>, opts: { curre
     abandon: async () => {
       calls.abandon++
     },
-    ownsInFlightUpload: async () => opts.owned ?? true,
     readCurrentVersion: async () => {
       calls.readCurrent++
       return opts.current ?? 7
@@ -64,29 +63,22 @@ describe('classifySaveConflict', () => {
   })
 })
 
-describe('runTextSave — stuck upload from an interrupted earlier save (Issue 1)', () => {
-  test('in-progress 409 -> abandon the stuck upload, retry on the SAME base, save; never a conflict', async () => {
+describe('runTextSave — "upload is already in progress" (Issue 1 + Codex P1/P2, PR #134)', () => {
+  test('in-progress 409 -> ALWAYS needs confirmation: nothing abandoned, no retry, never a conflict', async () => {
     const { deps, calls } = makeDeps([() => IN_PROGRESS(), (base) => base + 1])
     const result = await runTextSave(deps, { baseVersionNumber: 4 })
-    expect(result).toEqual({ kind: 'saved', versionNumber: 5 })
-    expect(calls.abandon).toBe(1)
-    expect(calls.save).toEqual([4, 4])
+    expect(result).toEqual({ kind: 'needs-confirmation' })
+    expect(calls.abandon).toBe(0)
+    expect(calls.save).toEqual([4])
     expect(calls.readCurrent).toBe(0)
   })
 
-  test('in-progress again after one abandon -> busy (bounded, no loop, no dialog)', async () => {
-    const { deps, calls } = makeDeps([() => IN_PROGRESS()])
-    const result = await runTextSave(deps, { baseVersionNumber: 4 })
-    expect(result).toEqual({ kind: 'busy' })
-    expect(calls.save).toHaveLength(2)
-    expect(calls.abandon).toBe(1)
-  })
-
-  test('a save that fails AFTER init succeeded abandons its own upload so the next save is not refused', async () => {
+  test('a save that fails AFTER init succeeded abandons its OWN upload so the next save is not refused', async () => {
     const { deps, calls } = makeDeps([() => withMarker(NETWORK(), true)])
     const result = await runTextSave(deps, { baseVersionNumber: 2 })
     expect(result.kind).toBe('error')
     expect(calls.abandon).toBe(1)
+    expect(calls.save).toEqual([2])
   })
 
   test('a save that fails BEFORE init does not abandon (it never marked the file uploading)', async () => {
@@ -95,40 +87,11 @@ describe('runTextSave — stuck upload from an interrupted earlier save (Issue 1
     expect(result.kind).toBe('error')
     expect(calls.abandon).toBe(0)
   })
-
-  test('an abandon that rejects does not break the flow', async () => {
-    const { deps } = makeDeps([() => IN_PROGRESS(), (base) => base + 1])
-    deps.abandon = async () => {
-      throw new Error('404')
-    }
-    const result = await runTextSave(deps, { baseVersionNumber: 1 })
-    expect(result).toEqual({ kind: 'saved', versionNumber: 2 })
-  })
 })
 
-describe('runTextSave — an upload started on ANOTHER device (Codex P1, PR #134)', () => {
-  test('in-progress 409 for an upload this device did not start -> needs confirmation, never abandoned silently', async () => {
-    const { deps, calls } = makeDeps([() => IN_PROGRESS(), (base) => base + 1], { owned: false })
-    const result = await runTextSave(deps, { baseVersionNumber: 4 })
-    expect(result).toEqual({ kind: 'needs-confirmation' })
-    expect(calls.abandon).toBe(0)
-    expect(calls.save).toEqual([4])
-  })
-
-  test('an ownership check that throws is treated as not ours', async () => {
-    const { deps, calls } = makeDeps([() => IN_PROGRESS()])
-    deps.ownsInFlightUpload = async () => {
-      throw new Error('storage unavailable')
-    }
-    const result = await runTextSave(deps, { baseVersionNumber: 4 })
-    expect(result).toEqual({ kind: 'needs-confirmation' })
-    expect(calls.abandon).toBe(0)
-  })
-})
-
-describe('runTextSaveConfirmingClear — an upload this device cannot prove it started (build-218 orphan)', () => {
-  test('the user confirms -> abandon once, retry on the SAME base, saved', async () => {
-    const { deps, calls } = makeDeps([() => IN_PROGRESS(), () => IN_PROGRESS(), (base) => base + 1], { owned: false })
+describe('runTextSaveConfirmingClear — the user decides whether to clear an in-flight upload', () => {
+  test('the user confirms -> re-check, abandon once, retry on the SAME base, saved', async () => {
+    const { deps, calls } = makeDeps([() => IN_PROGRESS(), () => IN_PROGRESS(), (base) => base + 1])
     let asked = 0
     const result = await runTextSaveConfirmingClear(deps, { baseVersionNumber: 4 }, async () => {
       asked++
@@ -138,10 +101,11 @@ describe('runTextSaveConfirmingClear — an upload this device cannot prove it s
     expect(asked).toBe(1)
     expect(calls.abandon).toBe(1)
     expect(calls.save).toEqual([4, 4, 4])
+    expect(calls.readCurrent).toBe(0)
   })
 
   test('the user cancels -> nothing abandoned, no second save, and the save gate (spinner) releases', async () => {
-    const { deps, calls } = makeDeps([() => IN_PROGRESS(), (base) => base + 1], { owned: false })
+    const { deps, calls } = makeDeps([() => IN_PROGRESS(), (base) => base + 1])
     const gate = createSingleFlight()
     let saving = false
     const result = await gate.run(async () => {
@@ -160,7 +124,7 @@ describe('runTextSaveConfirmingClear — an upload this device cannot prove it s
   })
 
   test('a confirm prompt that rejects counts as cancel', async () => {
-    const { deps, calls } = makeDeps([() => IN_PROGRESS()], { owned: false })
+    const { deps, calls } = makeDeps([() => IN_PROGRESS()])
     const result = await runTextSaveConfirmingClear(deps, { baseVersionNumber: 4 }, async () => {
       throw new Error('alert failed')
     })
@@ -169,23 +133,39 @@ describe('runTextSaveConfirmingClear — an upload this device cannot prove it s
   })
 
   test('confirmed, but the retry is refused again -> busy (bounded: one abandon, no loop)', async () => {
-    const { deps, calls } = makeDeps([() => IN_PROGRESS()], { owned: false })
+    const { deps, calls } = makeDeps([() => IN_PROGRESS()])
     const result = await runTextSaveConfirmingClear(deps, { baseVersionNumber: 4 }, async () => true)
     expect(result).toEqual({ kind: 'busy' })
     expect(calls.abandon).toBe(1)
     expect(calls.save).toEqual([4, 4, 4])
   })
 
-  test('an upload this device DID start is cleared silently — the user is never asked', async () => {
-    const { deps, calls } = makeDeps([() => IN_PROGRESS(), (base) => base + 1], { owned: true })
+  test('confirmed, and the other upload finished meanwhile -> saved without abandoning anything', async () => {
+    const { deps, calls } = makeDeps([() => IN_PROGRESS(), (base) => base + 1])
+    const result = await runTextSaveConfirmingClear(deps, { baseVersionNumber: 4 }, async () => true)
+    expect(result).toEqual({ kind: 'saved', versionNumber: 5 })
+    expect(calls.abandon).toBe(0)
+  })
+
+  test('an abandon that rejects does not break the confirmed retry', async () => {
+    const { deps } = makeDeps([() => IN_PROGRESS(), () => IN_PROGRESS(), (base) => base + 1])
+    deps.abandon = async () => {
+      throw new Error('404')
+    }
+    const result = await runTextSaveConfirmingClear(deps, { baseVersionNumber: 1 }, async () => true)
+    expect(result).toEqual({ kind: 'saved', versionNumber: 2 })
+  })
+
+  test('a stale-version conflict is never turned into the clear prompt', async () => {
+    const { deps, calls } = makeDeps([() => STALE()], { current: 9 })
     let asked = 0
     const result = await runTextSaveConfirmingClear(deps, { baseVersionNumber: 4 }, async () => {
       asked++
       return true
     })
-    expect(result).toEqual({ kind: 'saved', versionNumber: 5 })
+    expect(result).toEqual({ kind: 'conflict', freshVersionNumber: 9 })
     expect(asked).toBe(0)
-    expect(calls.abandon).toBe(1)
+    expect(calls.abandon).toBe(0)
   })
 })
 

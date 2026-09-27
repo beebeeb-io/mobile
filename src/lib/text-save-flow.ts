@@ -16,15 +16,18 @@
  *   - "stale base version for replacement upload" — the real optimistic-
  *     concurrency conflict: someone else saved first.
  *
- * `classifySaveConflict` tells them apart, `runTextSave` recovers from the
- * first when THIS device started the stuck upload (abandon it via
- * `POST /files/:id/upload/abandon`, then retry once). An upload this device
- * cannot prove it started (another device's live save, or an orphan left by
- * build 218 before the ownership ledger existed) is never abandoned silently:
- * the flow returns `needs-confirmation` and abandons only after the user
- * says so (`runTextSaveConfirmingClear`). The second 409 goes back to the
- * caller, which shows the
- * existing conflict dialog exactly as before (lead correction, 2026-09-27:
+ * `classifySaveConflict` tells them apart. The in-progress 409 is NEVER
+ * cleared silently: the server cannot say whose upload it is (an orphan from
+ * this device's interrupted save, or another device saving right now) and
+ * `POST /files/:id/upload/abandon` is file-scoped, so the flow returns
+ * `needs-confirmation` and abandons + retries once only after the user says
+ * so (`runTextSaveConfirmingClear`). Codex P1/P2 on PR #134: an earlier
+ * persisted "uploads this device started" ledger was keyed by file id only
+ * and could authorise abandoning another device's live upload — it was
+ * removed. The only silent abandon left is this attempt's OWN upload, right
+ * after it failed past `init` (known in memory, never persisted). The
+ * stale-version 409 goes back to the caller, which shows the existing
+ * conflict dialog exactly as before (lead correction, 2026-09-27:
  * no setting — the popup Guus reported was the `file_updated` push, not
  * this dialog).
  */
@@ -68,12 +71,6 @@ export interface TextSaveDeps {
   uploadStarted: (err: unknown) => boolean
   /** `POST /files/:id/upload/abandon` — best-effort, must never throw into the flow. */
   abandon: () => Promise<void>
-  /**
-   * True only when THIS device started the file's in-flight upload (see
-   * `owned-upload-ledger.ts`). The abandon endpoint is file-scoped, so an
-   * upload running on another device must never be abandoned from here.
-   */
-  ownsInFlightUpload: () => Promise<boolean>
   /** The file's CURRENT version on the server (`GET /files/:id/versions`). */
   readCurrentVersion: () => Promise<number>
 }
@@ -83,10 +80,9 @@ export type TextSaveResult =
   /** A real stale-version conflict: another device saved first. */
   | { kind: 'conflict'; freshVersionNumber: number }
   /**
-   * The file is marked as uploading and this device did not start that upload
-   * (or can't prove it did): an orphan from an interrupted save, or another
-   * device saving right now. Only the user can tell those apart — ask before
-   * clearing it.
+   * The file is marked as uploading by an upload this attempt did not start:
+   * an orphan from an interrupted save, or another device saving right now.
+   * Only the user can tell those apart — ask before clearing it.
    */
   | { kind: 'needs-confirmation' }
   /** The user declined to clear the in-flight upload. Nothing was abandoned. */
@@ -98,10 +94,10 @@ export type TextSaveResult =
 export interface TextSaveOptions {
   baseVersionNumber: number
   /**
-   * The user confirmed clearing an in-flight upload this device did not
-   * start: abandon it and retry once, exactly as for one of our own.
+   * The user confirmed clearing the file's in-flight upload: on an
+   * "already in progress" 409, abandon it and retry once.
    */
-  clearUnownedUpload?: boolean
+  clearInFlightUpload?: boolean
 }
 
 async function safeAbandon(deps: TextSaveDeps): Promise<void> {
@@ -121,7 +117,7 @@ async function safeAbandon(deps: TextSaveDeps): Promise<void> {
 export async function runTextSave(deps: TextSaveDeps, opts: TextSaveOptions): Promise<TextSaveResult> {
   const base = opts.baseVersionNumber
   let clearedStuckUpload = false
-  // At most: the original attempt, plus one retry after clearing a stuck upload.
+  // At most: the original attempt, plus one retry after a user-confirmed clear.
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const versionNumber = await deps.save(base)
@@ -130,15 +126,7 @@ export async function runTextSave(deps: TextSaveDeps, opts: TextSaveOptions): Pr
       const kind = classifySaveConflict(err)
       if (kind === 'upload-in-progress') {
         if (clearedStuckUpload) return { kind: 'busy' }
-        if (!opts.clearUnownedUpload) {
-          let owned = false
-          try {
-            owned = await deps.ownsInFlightUpload()
-          } catch {
-            owned = false
-          }
-          if (!owned) return { kind: 'needs-confirmation' }
-        }
+        if (!opts.clearInFlightUpload) return { kind: 'needs-confirmation' }
         clearedStuckUpload = true
         await safeAbandon(deps)
         continue
@@ -161,9 +149,8 @@ export async function runTextSave(deps: TextSaveDeps, opts: TextSaveOptions): Pr
 
 /**
  * `runTextSave`, plus the one question only the user can answer: when the
- * file is marked as uploading by an upload this device did not start,
- * `confirmClear` asks whether to clear it. Yes → abandon + retry once (the
- * owned-upload path); no → `cancelled`, nothing abandoned. Always settles; a
+ * file is marked as uploading, `confirmClear` asks whether to clear it.
+ * Yes → abandon + retry once; no → `cancelled`, nothing abandoned. Always settles; a
  * rejecting `confirmClear` counts as no.
  */
 export async function runTextSaveConfirmingClear(
@@ -180,7 +167,7 @@ export async function runTextSaveConfirmingClear(
     confirmed = false
   }
   if (!confirmed) return { kind: 'cancelled' }
-  return runTextSave(deps, { ...opts, clearUnownedUpload: true })
+  return runTextSave(deps, { ...opts, clearInFlightUpload: true })
 }
 
 /**

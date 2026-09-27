@@ -16,9 +16,7 @@
  * to the network — re-exported here so callers only need one import.
  */
 
-import AsyncStorage from '@react-native-async-storage/async-storage'
 import { abandonFileUpload, uploadEncryptedChunked } from './api'
-import { createOwnedUploadLedger } from './owned-upload-ledger'
 import { classifySaveConflict } from './text-save-flow'
 import type { EncryptedData } from '../../modules/beebeeb-crypto'
 import type { FileEntry, UploadProgress } from './api'
@@ -54,14 +52,6 @@ export function isStaleVersionConflict(err: unknown): boolean {
 
 const UPLOAD_STARTED = Symbol.for('beebeeb.textSave.uploadStarted')
 
-/** Uploads this device started and has not yet seen complete or abandoned. */
-const ownedUploads = createOwnedUploadLedger(AsyncStorage)
-
-/** True only when THIS device started `fileId`'s in-flight upload (Codex P1, PR #134). */
-export function ownsInFlightUpload(fileId: string): Promise<boolean> {
-  return ownedUploads.has(fileId)
-}
-
 /** True when a `saveTextFileVersion` rejection happened AFTER the server accepted `init`. */
 export function saveFailedAfterUploadStarted(err: unknown): boolean {
   return !!err && typeof err === 'object' && (err as Record<symbol, unknown>)[UPLOAD_STARTED] === true
@@ -78,10 +68,8 @@ export async function abandonTextFileUpload(fileId: string): Promise<void> {
   try {
     await abandonFileUpload(fileId)
   } catch {
-    // Best-effort by design. The ledger entry stays, so a later save may retry.
-    return
+    // Best-effort by design. The server's 7-day stale-upload sweep is the backstop.
   }
-  await ownedUploads.remove(fileId)
 }
 
 function combineNonceCiphertext(enc: EncryptedData): Uint8Array {
@@ -118,28 +106,23 @@ export async function saveTextFileVersion(params: SaveTextFileVersionParams): Pr
   const bytes = new TextEncoder().encode(params.text)
   // `uploadEncryptedChunked` emits its first progress event only after the v2
   // `init` succeeded (the server has set `is_uploading`), so the first event
-  // marks "an interrupted attempt now needs an abandon" and records the
-  // upload as ours. (On the legacy v1 fallback the first event precedes init;
-  // an init-time 409 is therefore never treated as started, below.)
+  // marks "THIS attempt's own upload is now in flight and needs an abandon if
+  // it fails". That knowledge lives only in memory, for this one attempt —
+  // nothing is persisted, so it can never be mistaken for a later upload
+  // (task 1578: the persisted ownership ledger was removed after Codex P1/P2
+  // on PR #134). On the legacy v1 fallback the first event precedes init, so
+  // an init-time 409 is never treated as started, below.
   let uploadStarted = false
-  let recorded: Promise<void> = Promise.resolve()
   try {
-    const entry = await uploadText(params, bytes, (p) => {
-      if (!uploadStarted) recorded = ownedUploads.add(params.fileId).catch(() => {})
+    return await uploadText(params, bytes, (p) => {
       uploadStarted = true
       params.onProgress?.(p)
     })
-    await recorded
-    await ownedUploads.remove(params.fileId).catch(() => {})
-    return entry
   } catch (err) {
-    await recorded
     // A 409 from init means the server refused to start this upload: nothing
-    // of ours is in flight, and the in-flight one (if any) is not ours.
+    // of this attempt is in flight, so there is nothing of ours to abandon.
     const refusedAtInit = classifySaveConflict(err) !== null
-    if (refusedAtInit) {
-      if (uploadStarted) await ownedUploads.remove(params.fileId).catch(() => {})
-    } else if (uploadStarted && err && typeof err === 'object') {
+    if (!refusedAtInit && uploadStarted && err && typeof err === 'object') {
       try {
         Object.defineProperty(err, UPLOAD_STARTED, { value: true, enumerable: false })
       } catch {

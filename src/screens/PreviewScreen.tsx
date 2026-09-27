@@ -55,7 +55,6 @@ import {
   abandonTextFileUpload,
   buildKeepBothName,
   createSingleFlight,
-  ownsInFlightUpload,
   runTextSaveConfirmingClear,
   saveFailedAfterUploadStarted,
   saveTextFileVersion,
@@ -2654,13 +2653,13 @@ export default function PreviewScreen() {
   const saveGateRef = useRef(createSingleFlight());
 
   /**
-   * Task 1578 — the file is marked as uploading by an upload this device did
-   * not start (or can't prove it did: an orphan from build 218, which had no
-   * ownership ledger, looks exactly like another device's live save). Only
-   * the user knows whether they are saving it somewhere else, so ask before
-   * clearing it. Resolves false on Cancel or when the alert is dismissed.
+   * Task 1578 — the file is marked as uploading ("upload is already in
+   * progress"). The server cannot say whose upload that is — an orphan from
+   * an interrupted save looks exactly like another device's live save — so
+   * it is never cleared silently: only the user knows whether they are
+   * saving it somewhere else. Resolves false on Cancel or when the alert is dismissed.
    */
-  const confirmClearUnownedUpload = useCallback(
+  const confirmClearInFlightUpload = useCallback(
     () =>
       new Promise<boolean>((resolve) => {
         Alert.alert(
@@ -2678,9 +2677,8 @@ export default function PreviewScreen() {
 
   /**
    * Task 1578 — save `text` as a new version of THIS file via `runTextSave`
-   * (see `text-save-flow.ts`): a stuck in-flight upload from an interrupted
-   * earlier save is abandoned and retried instead of being reported as
-   * another device's change; a REAL stale-version conflict opens the
+   * (see `text-save-flow.ts`): a file still marked as uploading asks the user
+   * before clearing it (never reported as another device's change); a REAL stale-version conflict opens the
    * conflict dialog, as before.
    */
   const saveAsNewVersion = useCallback(async (opts: {
@@ -2703,11 +2701,10 @@ export default function PreviewScreen() {
         },
         uploadStarted: saveFailedAfterUploadStarted,
         abandon: () => abandonTextFileUpload(currentFileId),
-        ownsInFlightUpload: () => ownsInFlightUpload(currentFileId),
         readCurrentVersion: () => getFileCurrentVersion(currentFileId),
       },
       { baseVersionNumber: meta.versionNumber },
-      confirmClearUnownedUpload,
+      confirmClearInFlightUpload,
     );
     switch (result.kind) {
       case 'saved':
@@ -2735,7 +2732,7 @@ export default function PreviewScreen() {
         showSaveFailed(friendlyError(result.error));
         return;
     }
-  }, [currentFileId, encryptChunk, applySavedVersion, showSaveFailed, confirmClearUnownedUpload]);
+  }, [currentFileId, encryptChunk, applySavedVersion, showSaveFailed, confirmClearInFlightUpload]);
 
   const handleSaveEdit = useCallback(async () => {
     if (editText == null) return;
