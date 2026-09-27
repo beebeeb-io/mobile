@@ -76,13 +76,9 @@ import { encryptedMetadataPayloadToBytes, encryptedMetadataToJson, fileMetadataP
 import { syncDecryptedEntriesToFileProvider, removeFromFileProviderCache } from '../lib/file-provider-mount';
 import { useAuth } from '../lib/auth';
 import { encryptedUpload, generateFileId } from '../lib/encrypted-upload';
-import {
-  buildAddMenuActions,
-  foldName,
-  initialDocumentContent,
-  NEW_FILE_ACTION_ID,
-  NewDocumentNameClashError,
-} from '../lib/new-document';
+import { buildAddMenuActions, NEW_FILE_ACTION_ID } from '../lib/new-document';
+import { createNewDocumentFile, previewParamsForNewDocument } from '../lib/create-new-document';
+import { abandonTextFileUpload } from '../lib/text-file-save';
 import NewFileSheet, { type NewFileRequest } from '../components/NewFileSheet';
 import { useSync } from '../lib/sync-context';
 import { useSearchIndex } from '../lib/use-search-index';
@@ -2626,8 +2622,15 @@ export default function FilesScreen() {
           {
             text: 'Unlock',
             onPress: () => {
+              // unlock() can resolve without unlocking (an unlock already in
+              // flight that then fails, a cancelled Face ID) — open the sheet
+              // only when the vault really is open (task 1587 review).
               void unlock(undefined, 'new_file_sheet')
-                .then(() => setNewFileOpen(true))
+                .then(() => {
+                  let open = false;
+                  try { open = getMasterKeyHandleId() != null; } catch { open = false; }
+                  if (open) setNewFileOpen(true);
+                })
                 .catch(() => {});
             },
           },
@@ -2636,18 +2639,17 @@ export default function FilesScreen() {
       return;
     }
     setNewFileOpen(true);
-  }, [phraseVerified, isUnlocked, unlock]);
+  }, [phraseVerified, isUnlocked, unlock, getMasterKeyHandleId]);
 
   /**
-   * Authoritative clash check against a FRESH, complete listing of the folder,
-   * every name decrypted now — the on-screen list can lag a sibling added or
-   * renamed from another device, and the server cannot check this itself: it
-   * only ever sees encrypted names. Undecryptable rows cannot clash with a
-   * name we can see, so they are skipped (same rule as web 1582).
+   * Every decryptable name in a FRESH, complete listing of the folder — the
+   * on-screen list can lag a sibling added or renamed from another device,
+   * and the server cannot check names itself: it only ever sees encrypted
+   * ones. Undecryptable rows cannot clash with a name we can see, so they are
+   * skipped (same rule as web 1582); file-request uploads use the cached name.
    */
-  const assertNameFreeInFolder = useCallback(async (name: string, parentId: string | null) => {
+  const freshFolderNames = useCallback(async (parentId: string | null): Promise<string[]> => {
     const siblings = await listAllFiles(parentId ?? undefined);
-    const wanted = foldName(name);
     const names: string[] = [];
     const normal = siblings.filter((f) => !isRequestUpload(f));
     if (normal.length > 0) {
@@ -2661,66 +2663,58 @@ export default function FilesScreen() {
       const cached = decryptedNamesRef.current[f.id];
       if (cached) names.push(cached);
     }
-    if (names.some((n) => foldName(n) === wanted)) throw new NewDocumentNameClashError(name);
+    return names;
   }, [decryptNames]);
 
   /**
-   * NewFileSheet's `onCreate`: re-list the folder and check the name (the
-   * server only ever sees encrypted names, so it cannot), write a tiny
-   * starter file to the cache, encrypt + upload it through the SAME path as
-   * "Upload file" (encryptedUpload: the chunk and the name are encrypted on
-   * this phone before anything is sent), then open it — in the editor when
-   * the extension opens there. Throws a user-facing Error on failure; the
-   * sheet shows it inline.
+   * NewFileSheet's `onCreate`: the flow itself (fresh-listing clash check,
+   * starter file, encrypted upload through the SAME path as "Upload file",
+   * abandon on failure) is lib/create-new-document.ts, unit-tested with
+   * mocks; this wires the real deps and does the UI side. Throws a
+   * user-facing Error on failure; the sheet shows it inline.
    */
-  const createNewDocument = useCallback(async ({ type, name, mimeType, opensInEditor }: NewFileRequest) => {
-    if (!isUnlocked) throw new Error('The vault locked. Unlock it, then try again.');
-    const parentId = currentFolder.id;
-    let tempUri: string | null = null;
-    try {
-      await assertNameFreeInFolder(name, parentId);
-      const fileId = await generateFileId();
-      // A near-empty starter file (initialDocumentContent: never 0 bytes, the
-      // preview decrypt path refuses those); the text editor fills it.
-      if (!FileSystem.cacheDirectory) throw new Error('No cache directory available');
-      tempUri = `${FileSystem.cacheDirectory}new-${fileId}`;
-      await FileSystem.writeAsStringAsync(tempUri, initialDocumentContent(type, name), { encoding: FileSystem.EncodingType.UTF8 });
-      const uploaded = await encryptedUpload({
-        fileId,
-        uri: tempUri,
-        name,
-        parentId: parentId ?? undefined,
-        mimeType,
-        encryptChunkFn: encryptChunk,
-        encryptMetadataFn: encryptMetadata,
-        masterKeyHandleId: getMasterKeyHandleId(),
-      });
-      setFiles((prev) => upsertFileEntry(prev, uploaded));
-      setDecryptedNames((prev) => ({ ...prev, [uploaded.id]: name }));
-      setDecryptedMimeTypes((prev) => ({ ...prev, [uploaded.id]: mimeType }));
-      indexFile(uploaded.id, toSearchIndexEntry(uploaded, name, parentId));
-      setNewFileOpen(false);
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      showToast({ type: 'success', message: `${name} created · encrypted` });
-      fetchFiles(parentId, true);
-      navigation.navigate('Preview', {
-        fileId: uploaded.id,
-        fileName: name,
-        mimeType,
-        sizeBytes: uploaded.size_bytes ?? 0,
-        createdAt: uploaded.created_at,
-        chunkCount: uploaded.chunk_count,
-        versionNumber: uploaded.version_number,
-        storagePoolId: uploaded.storage_pool_id ?? null,
-        startInEditMode: opensInEditor,
-      });
-    } catch (err) {
-      if (err instanceof NewDocumentNameClashError) throw err;
-      throw new Error(`Couldn't create the file: ${friendlyError(err)}`);
-    } finally {
-      if (tempUri) void FileSystem.deleteAsync(tempUri, { idempotent: true }).catch(() => {});
-    }
-  }, [isUnlocked, currentFolder.id, assertNameFreeInFolder, encryptChunk, encryptMetadata, getMasterKeyHandleId, indexFile, fetchFiles, navigation, showToast]);
+  const createNewDocument = useCallback(async (req: NewFileRequest) => {
+    const parentId = currentFolder.id ?? null;
+    const uploaded = await createNewDocumentFile(
+      req,
+      parentId,
+      {
+        isUnlocked: () => isUnlocked,
+        listFolderNames: freshFolderNames,
+        generateFileId,
+        writeTempFile: async (fileId, content) => {
+          if (!FileSystem.cacheDirectory) throw new Error('No cache directory available');
+          // Named after the file id, never the (plaintext) name.
+          const uri = `${FileSystem.cacheDirectory}new-${fileId}`;
+          await FileSystem.writeAsStringAsync(uri, content, { encoding: FileSystem.EncodingType.UTF8 });
+          return uri;
+        },
+        deleteTempFile: (uri) => FileSystem.deleteAsync(uri, { idempotent: true }),
+        upload: ({ fileId, uri, name, parentId: pid, mimeType }) => encryptedUpload({
+          fileId,
+          uri,
+          name,
+          parentId: pid ?? undefined,
+          mimeType,
+          encryptChunkFn: encryptChunk,
+          encryptMetadataFn: encryptMetadata,
+          masterKeyHandleId: getMasterKeyHandleId(),
+        }),
+        abandonUpload: abandonTextFileUpload,
+      },
+      friendlyError,
+    );
+    const { name, mimeType } = req;
+    setFiles((prev) => upsertFileEntry(prev, uploaded));
+    setDecryptedNames((prev) => ({ ...prev, [uploaded.id]: name }));
+    setDecryptedMimeTypes((prev) => ({ ...prev, [uploaded.id]: mimeType }));
+    indexFile(uploaded.id, toSearchIndexEntry(uploaded, name, parentId));
+    setNewFileOpen(false);
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    showToast({ type: 'success', message: `${name} created · encrypted` });
+    fetchFiles(parentId, true);
+    navigation.navigate('Preview', previewParamsForNewDocument(uploaded, req));
+  }, [isUnlocked, currentFolder.id, freshFolderNames, encryptChunk, encryptMetadata, getMasterKeyHandleId, indexFile, fetchFiles, navigation, showToast]);
 
   // 0789 — "+" add menu as native iOS UIMenu items, with trailing SF Symbols.
   // (Placed after all four upload handlers are declared.)
@@ -2733,7 +2727,7 @@ export default function FilesScreen() {
   // with New file / New folder) lives in
   // lib/new-document.ts so it is unit-tested.
   const addMenuActions = useMemo<MenuAction[]>(
-    () => buildAddMenuActions(c.ink) as MenuAction[],
+    () => buildAddMenuActions(c.ink, Platform.OS) as MenuAction[],
     [c.ink],
   );
 

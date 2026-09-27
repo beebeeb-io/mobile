@@ -18,6 +18,7 @@
  */
 
 import { TEXT_EXTENSION_MIME, isTextPreview } from './code-text-preview'
+import { fileCategory, type Category } from './file-category'
 
 // ─── The picker's type table ─────────────────────────────────────────────────
 
@@ -50,6 +51,40 @@ export const NEW_FILE_TYPES: readonly NewFileTypeTile[] = [
 /** What sits inside the outline document icon: the extension, uppercase. */
 export function tileIconLabel(t: NewFileTypeTile): string {
   return t.ext.toUpperCase()
+}
+
+/** The label's advance per character, as a fraction of the font size —
+ *  MEASURED, not the font's nominal 0.6: on the first build's simulator
+ *  screenshot "DOCX" at 6.35pt spanned ~20pt, i.e. ~0.79 em per character.
+ *  0.8 is the conservative value the fit test uses. */
+export const ICON_LABEL_ADVANCE_EM = 0.8
+
+/** Clear space kept between the label and the outline's stroke, in
+ *  viewBox units (×iconWidth/30). */
+export const ICON_LABEL_MARGIN_UNITS = 1.5
+
+/**
+ * Size + inset of the extension printed inside the outline document icon,
+ * for an icon `iconWidth` wide (the mock's 30-unit viewBox; the document
+ * body is 22 units wide with a 1.5-unit stroke). Four letters ("DOCX") get a
+ * smaller size and no tracking, and the text box is inset
+ * ICON_LABEL_MARGIN_UNITS from each stroke, so the label never touches the outline (Guus's screenshot of
+ * the first build: "DOCX" ran edge to edge).
+ */
+export function docIconLabelMetrics(iconWidth: number, label: string): {
+  fontSize: number
+  letterSpacing: number
+  /** Distance from the document's outer left/right edge to the text box. */
+  inset: number
+  /** Width the text box has between the insets. */
+  boxWidth: number
+} {
+  const s = iconWidth / 30
+  const stroke = Math.max(1, 1.5 * s)
+  const inset = stroke + ICON_LABEL_MARGIN_UNITS * s
+  const fontSize = (label.length >= 4 ? 4.3 : label.length === 3 ? 5.4 : 7.2) * s
+  const letterSpacing = label.length >= 4 ? 0 : 0.2
+  return { fontSize, letterSpacing, inset, boxWidth: 22 * s - 2 * inset }
 }
 
 /** VoiceOver label for a tile. "Soon" tiles say it in words, because the
@@ -106,53 +141,76 @@ export function documentTypeForTile(t: NewFileTypeTile): NewDocumentType | null 
 /** The suggestion chips under the extension segment, in order. */
 export const TEXT_EXTENSION_SUGGESTIONS: readonly string[] = ['txt', 'py', 'js', 'json', 'sh', 'log', 'csv']
 
-type RefusedKind = 'office' | 'odf' | 'pdf' | 'binary'
+type RefusedKind = 'office' | 'iwork' | 'odf' | 'pdf' | 'binary'
 
 /**
- * Extensions a plain-text file may not take: the name would claim a format
- * the bytes are not, and every viewer (ours included) would then fail to
- * open it. Office and ODF get their own reason (they are "coming soon" as
- * real types); the rest are binary containers.
+ * Extensions a plain-text file may not take, on top of what the preview's
+ * routing already rules out (see `checkTextExtension`): the name would claim
+ * a format the bytes are not, and other apps would then mis-handle the file.
+ * Office and ODF get their own reason (Office is "coming soon" as real
+ * types); Apple iWork its own ("not supported yet"); the rest are binary
+ * containers. `.key` is deliberately NOT here: it is also the usual
+ * extension of a plain-text PEM private key (task 1587 review).
  */
 export const REFUSED_TEXT_EXTENSIONS: Readonly<Record<string, RefusedKind>> = {
-  // Microsoft Office (modern + legacy + templates/macro variants)
-  docx: 'office', doc: 'office', docm: 'office', dotx: 'office', dot: 'office',
-  xlsx: 'office', xls: 'office', xlsm: 'office', xltx: 'office', xlsb: 'office',
-  pptx: 'office', ppt: 'office', pptm: 'office', potx: 'office', ppsx: 'office',
-  pub: 'office', accdb: 'office', mdb: 'office', one: 'office', vsdx: 'office',
-  pages: 'office', numbers: 'office', key: 'office',
-  // OpenDocument / LibreOffice
-  odt: 'odf', ods: 'odf', odp: 'odf', odg: 'odf', odf: 'odf', odb: 'odf', ott: 'odf',
+  // Microsoft Office — modern, legacy, templates, macro-enabled, add-ins, shows
+  docx: 'office', doc: 'office', docm: 'office', dotx: 'office', dotm: 'office', dot: 'office',
+  xlsx: 'office', xls: 'office', xlsm: 'office', xlsb: 'office', xltx: 'office', xltm: 'office',
+  xlt: 'office', xlam: 'office', xla: 'office',
+  pptx: 'office', ppt: 'office', pptm: 'office', potx: 'office', potm: 'office', pot: 'office',
+  ppsx: 'office', ppsm: 'office', pps: 'office', ppam: 'office', ppa: 'office',
+  pub: 'office', accdb: 'office', mdb: 'office', one: 'office', vsdx: 'office', vsd: 'office',
+  vsdm: 'office', vstx: 'office', vstm: 'office', vss: 'office', vst: 'office', mpp: 'office',
+  // Apple iWork (Keynote's `.key` is allowed — see above)
+  pages: 'iwork', numbers: 'iwork',
+  // OpenDocument / LibreOffice (documents + templates)
+  odt: 'odf', ods: 'odf', odp: 'odf', odg: 'odf', odf: 'odf', odb: 'odf', odc: 'odf', odm: 'odf',
+  ott: 'odf', ots: 'odf', otp: 'odf', otg: 'odf',
   // PDF
   pdf: 'pdf',
-  // Images
+  // Images (the preview's own image/RAW lists are refused by routing too)
   png: 'binary', jpg: 'binary', jpeg: 'binary', heic: 'binary', heif: 'binary', gif: 'binary',
-  webp: 'binary', bmp: 'binary', tif: 'binary', tiff: 'binary', ico: 'binary', dng: 'binary',
-  raw: 'binary', cr2: 'binary', cr3: 'binary', nef: 'binary', arw: 'binary', psd: 'binary',
+  webp: 'binary', avif: 'binary', jxl: 'binary', jp2: 'binary', bmp: 'binary', tif: 'binary',
+  tiff: 'binary', ico: 'binary', icns: 'binary', dng: 'binary', raw: 'binary', cr2: 'binary',
+  cr3: 'binary', nef: 'binary', arw: 'binary', raf: 'binary', orf: 'binary', rw2: 'binary',
+  psd: 'binary', ai: 'binary', sketch: 'binary', xcf: 'binary',
   // Video / audio
   mp4: 'binary', mov: 'binary', m4v: 'binary', avi: 'binary', mkv: 'binary', webm: 'binary',
+  mpg: 'binary', mpeg: 'binary', wmv: 'binary', flv: 'binary', '3gp': 'binary',
   mp3: 'binary', m4a: 'binary', aac: 'binary', wav: 'binary', flac: 'binary', ogg: 'binary',
-  // Archives / disk images / executables
+  opus: 'binary', wma: 'binary', aif: 'binary', aiff: 'binary', caf: 'binary', mid: 'binary', midi: 'binary',
+  // Fonts
+  ttf: 'binary', otf: 'binary', ttc: 'binary', woff: 'binary', woff2: 'binary', eot: 'binary',
+  // Archives / disk images / packages
   zip: 'binary', gz: 'binary', tgz: 'binary', tar: 'binary', rar: 'binary', '7z': 'binary',
-  bz2: 'binary', xz: 'binary', dmg: 'binary', iso: 'binary', exe: 'binary', dll: 'binary',
-  app: 'binary', apk: 'binary', ipa: 'binary', bin: 'binary', so: 'binary', dylib: 'binary',
-  // Other binary document formats
-  epub: 'binary', sqlite: 'binary', db: 'binary',
+  bz2: 'binary', xz: 'binary', zst: 'binary', lz4: 'binary', cab: 'binary', dmg: 'binary',
+  iso: 'binary', img: 'binary', deb: 'binary', rpm: 'binary', msi: 'binary', pkg: 'binary',
+  // Executables / compiled code / bytecode
+  exe: 'binary', dll: 'binary', app: 'binary', apk: 'binary', aab: 'binary', ipa: 'binary',
+  bin: 'binary', so: 'binary', dylib: 'binary', o: 'binary', a: 'binary', lib: 'binary',
+  jar: 'binary', war: 'binary', class: 'binary', wasm: 'binary', pyc: 'binary',
+  // Other binary document / data formats
+  epub: 'binary', mobi: 'binary', sqlite: 'binary', sqlite3: 'binary', db: 'binary',
 }
 
 /**
- * Plain-text extensions that the preview routes to ANOTHER viewer (a table,
- * a web view, an image) instead of the text editor — see PreviewScreen's
- * `fileCategory`. Allowed (the file is honest plain text), but the name step
- * says it will not open in the editor, and the flow opens the viewer.
+ * The preview categories a text file may land in without being refused,
+ * and what the name step says for the ones that are not the editor. Every
+ * OTHER category (image, raw, pdf, audio, video, zip, archive, docx, pptx,
+ * a non-csv spreadsheet, a plain "file" card) is refused: `fileCategory` is
+ * the preview's own routing, so a new list entry there is refused here with
+ * no second list to keep in step.
  */
-export const TEXT_EXTENSIONS_OPEN_ELSEWHERE: Readonly<Record<string, string>> = {
-  csv: 'the table view',
-  tsv: 'the table view',
+const TEXT_CATEGORIES_OPEN_ELSEWHERE: Readonly<Partial<Record<Category, string>>> = {
+  spreadsheet: 'the table view',
   html: 'the web view',
-  htm: 'the web view',
   svg: 'the image view',
 }
+
+/** Plain-text extensions whose preview routing is NOT the editor, but which
+ *  are honest plain text (csv/tsv → table, html → web view, svg → image).
+ *  Kept as a named set so the table view's xlsx/xls (binary) never qualify. */
+const TEXT_EXTENSIONS_OPEN_ELSEWHERE = new Set(['csv', 'tsv', 'html', 'htm', 'svg'])
 
 /** Letters, digits, `-`, `_`; 1–16 characters (after dropping one leading dot). */
 const EXTENSION_SHAPE = /^[a-z0-9_-]{1,16}$/
@@ -166,9 +224,27 @@ export function normalizeExtension(input: string): string {
   return input.trim().replace(/^\.+/, '').toLowerCase()
 }
 
+function refusedReason(kind: RefusedKind, ext: string): string {
+  switch (kind) {
+    case 'office':
+      return `.${ext} is an Office format, not plain text. Office files are coming soon.`
+    case 'iwork':
+      return `.${ext} is an Apple iWork format, not plain text. It is not supported yet.`
+    case 'odf':
+      return `.${ext} is a LibreOffice format, not plain text.`
+    case 'pdf':
+      return '.pdf is not plain text, so a text file cannot be one.'
+    case 'binary':
+      return `.${ext} is a binary format, not plain text.`
+  }
+}
+
 /**
  * The Text type's extension rule. Anything plain-text-shaped is allowed;
- * Office / ODF / PDF / binary extensions are refused with a one-line reason.
+ * Office / iWork / ODF / PDF / binary extensions are refused with a one-line
+ * reason — both the explicit list above and anything the preview would
+ * route to a non-text viewer (derived from `fileCategory`, so they cannot
+ * drift).
  */
 export function checkTextExtension(input: string): ExtensionCheck {
   const ext = normalizeExtension(input)
@@ -177,23 +253,23 @@ export function checkTextExtension(input: string): ExtensionCheck {
     return { ok: false, reason: 'An extension is letters and numbers only, like .py.' }
   }
   const refused = REFUSED_TEXT_EXTENSIONS[ext]
-  if (refused === 'office') {
-    return { ok: false, reason: `.${ext} is an Office format, not plain text. Office files are coming soon.` }
+  if (refused) return { ok: false, reason: refusedReason(refused, ext) }
+
+  // Derived from the preview's routing: what would this exact file open in?
+  const mime = mimeTypeForTextExtension(ext)
+  const category = fileCategory(mime, `x.${ext}`)
+  if (category === 'doc' && isTextPreview(mime, `x.${ext}`)) {
+    return { ok: true, ext, opensInEditor: true, note: null }
   }
-  if (refused === 'odf') {
-    return { ok: false, reason: `.${ext} is a LibreOffice format, not plain text.` }
-  }
-  if (refused === 'pdf') {
-    return { ok: false, reason: '.pdf is not plain text, so a text file cannot be one.' }
-  }
-  if (refused === 'binary') {
-    return { ok: false, reason: `.${ext} is a binary format, not plain text.` }
-  }
-  const elsewhere = TEXT_EXTENSIONS_OPEN_ELSEWHERE[ext]
-  if (elsewhere) {
+  const elsewhere = TEXT_CATEGORIES_OPEN_ELSEWHERE[category]
+  if (elsewhere && TEXT_EXTENSIONS_OPEN_ELSEWHERE.has(ext)) {
     return { ok: true, ext, opensInEditor: false, note: `.${ext} opens in ${elsewhere}, not the editor, on iPhone.` }
   }
-  return { ok: true, ext, opensInEditor: true, note: null }
+  if (category === 'docx' || category === 'pptx' || category === 'spreadsheet') {
+    return { ok: false, reason: refusedReason('office', ext) }
+  }
+  if (category === 'pdf') return { ok: false, reason: refusedReason('pdf', ext) }
+  return { ok: false, reason: refusedReason('binary', ext) }
 }
 
 /**
@@ -226,28 +302,30 @@ export interface AddMenuAction {
 export const NEW_FILE_ACTION_ID = 'new-file'
 
 /**
- * The FilesScreen "+" menu, in order. Uploads first; then one inline section
- * (a native divider, not a submenu) for the things you CREATE here: a file,
- * a folder.
+ * The FilesScreen "+" menu, in order. Uploads first; then the things you
+ * CREATE here: a file, a folder.
+ *
+ * iOS: the create pair is one inline section (`displayInline` — a native
+ * divider, not a submenu). Android: @react-native-menu/menu's MenuView.kt has
+ * no `displayInline`, so the same untitled group would show as a BLANK row
+ * that opens a submenu, hiding New folder behind it (task 1587 review) — so
+ * Android gets the flat list.
  *
  * `imageColor` is always set (0791: Fabric forwards an omitted imageColor as
  * 0 = fully transparent, so the glyph would render blank).
  */
-export function buildAddMenuActions(imageColor: string): AddMenuAction[] {
-  return [
+export function buildAddMenuActions(imageColor: string, platform: 'ios' | 'android' | string = 'ios'): AddMenuAction[] {
+  const uploads: AddMenuAction[] = [
     { id: 'photo', title: 'Upload photo or video', image: 'photo.on.rectangle', imageColor },
     { id: 'file', title: 'Upload file', image: 'doc', imageColor },
     { id: 'scan', title: 'Scan document', image: 'doc.viewfinder', imageColor },
-    {
-      id: 'create',
-      title: '',
-      displayInline: true,
-      subactions: [
-        { id: NEW_FILE_ACTION_ID, title: 'New file', image: 'doc.badge.plus', imageColor },
-        { id: 'folder', title: 'New folder', image: 'folder.badge.plus', imageColor },
-      ],
-    },
   ]
+  const create: AddMenuAction[] = [
+    { id: NEW_FILE_ACTION_ID, title: 'New file', image: 'doc.badge.plus', imageColor },
+    { id: 'folder', title: 'New folder', image: 'folder.badge.plus', imageColor },
+  ]
+  if (platform === 'android') return [...uploads, ...create]
+  return [...uploads, { id: 'create', title: '', displayInline: true, subactions: create }]
 }
 
 // ─── Initial content ─────────────────────────────────────────────────────────
@@ -276,11 +354,33 @@ export function initialDocumentContent(type: NewDocumentType, fileName: string):
 
 // ─── Names ───────────────────────────────────────────────────────────────────
 
-/** Locale-independent case fold for name comparisons (`toLocaleLowerCase`
- *  under a Turkish locale maps "I" to dotless "ı" and would let "TITLE.md"
- *  and "title.md" coexist — web PR #117 review). */
+/** The fold every name comparison uses. Two parts:
+ *   - Unicode NFC first: "Café" typed as one "é" (NFC) and as "e" + a
+ *     combining accent (NFD, common in names from macOS) are the same name on
+ *     APFS, so they must clash here too (task 1587 review).
+ *   - A locale-independent lower-case (`toLowerCase`, NEVER `toLocale…`:
+ *     under a Turkish locale "I" maps to dotless "ı" and would let "TITLE.md"
+ *     and "title.md" coexist — web PR #117 review). */
 export function foldName(name: string): string {
-  return name.toLowerCase()
+  return name.normalize('NFC').toLowerCase()
+}
+
+/** A file name's size limit on the file systems these files sync to
+ *  (APFS, ext4, NTFS all cap one path component at 255 bytes/units). */
+export const MAX_NAME_BYTES = 255
+
+/** C0 (U+0000–U+001F), DEL and C1 (U+0080–U+009F) control characters — a
+ *  pasted line break or tab included. */
+const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f]/
+
+/** UTF-8 byte length (Hermes has TextEncoder; this avoids depending on it). */
+export function utf8ByteLength(s: string): number {
+  let n = 0
+  for (const ch of s) {
+    const cp = ch.codePointAt(0) ?? 0
+    n += cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4
+  }
+  return n
 }
 
 function splitExt(name: string): { base: string; ext: string } {
@@ -361,7 +461,18 @@ export function checkNewDocumentName(
   }
   if (!base) return { ok: false, reason: 'Give the file a name.', field: 'name' }
   if (/[/\\]/.test(base)) return { ok: false, reason: 'A name cannot contain / or \\.', field: 'name' }
+  if (CONTROL_CHARS.test(base)) {
+    return { ok: false, reason: 'A name cannot contain line breaks or other control characters.', field: 'name' }
+  }
   const name = `${base}.${ext}`
+  const bytes = utf8ByteLength(name)
+  if (bytes > MAX_NAME_BYTES) {
+    return {
+      ok: false,
+      reason: `That name is too long: ${bytes} bytes, and the limit is ${MAX_NAME_BYTES} (letters with accents and emoji count as more than one).`,
+      field: 'name',
+    }
+  }
   for (const n of existingNames) {
     if (foldName(n) === foldName(name)) return { ok: false, reason: nameClashMessage(name), field: 'name' }
   }

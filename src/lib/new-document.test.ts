@@ -8,6 +8,7 @@ import {
   NEW_FILE_ACTION_ID,
   NEW_FILE_TYPES,
   NewDocumentNameClashError,
+  MAX_NAME_BYTES,
   REFUSED_TEXT_EXTENSIONS,
   TEXT_EXTENSION_SUGGESTIONS,
   buildAddMenuActions,
@@ -22,7 +23,12 @@ import {
   tileAccessibilityLabel,
   tileIconLabel,
   uniqueFileName,
+  utf8ByteLength,
 } from './new-document'
+import { AUDIO_EXTENSIONS, IMAGE_EXTENSIONS, VIDEO_EXTENSIONS, fileCategory } from './file-category'
+import { RAW_EXTENSIONS } from './raw-format'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 
 const txt = NEW_DOCUMENT_TYPES.txt
 const md = NEW_DOCUMENT_TYPES.md
@@ -133,6 +139,70 @@ describe('Text: your own extension', () => {
     }
   })
 
+  test('Office template / macro / add-in variants are refused with the Office reason', () => {
+    for (const e of ['dotm', 'dotx', 'pps', 'ppsx', 'pot', 'potx', 'potm', 'ppsm', 'xlt', 'xltx', 'xltm', 'xlam', 'ppam', 'vsd', 'vsdx']) {
+      expect(checkTextExtension(e)).toEqual({ ok: false, reason: `.${e} is an Office format, not plain text. Office files are coming soon.` })
+    }
+  })
+
+  test('ODF templates are refused with the LibreOffice reason', () => {
+    for (const e of ['ots', 'ott', 'otp', 'odg']) {
+      expect(checkTextExtension(e)).toEqual({ ok: false, reason: `.${e} is a LibreOffice format, not plain text.` })
+    }
+  })
+
+  test('obvious binaries are refused: jar, wasm, fonts, avif, …', () => {
+    for (const e of ['jar', 'wasm', 'ttf', 'otf', 'woff', 'woff2', 'avif', 'class', 'pyc', 'deb', 'msi']) {
+      expect(checkTextExtension(e)).toEqual({ ok: false, reason: `.${e} is a binary format, not plain text.` })
+    }
+  })
+
+  test('Apple iWork .pages / .numbers get their own honest reason (not "Office, coming soon")', () => {
+    for (const e of ['pages', 'numbers']) {
+      expect(checkTextExtension(e)).toEqual({ ok: false, reason: `.${e} is an Apple iWork format, not plain text. It is not supported yet.` })
+    }
+  })
+
+  test('.key is allowed: it is the usual extension of a plain-text PEM key', () => {
+    expect(checkTextExtension('key')).toEqual({ ok: true, ext: 'key', opensInEditor: true, note: null })
+    expect(checkNewDocumentName('server', 'key', txt, [])).toMatchObject({ ok: true, name: 'server.key', opensInEditor: true })
+  })
+
+  test('.raf (Fujifilm RAW) is refused — the preview routes it to the RAW viewer', () => {
+    expect(checkTextExtension('raf')).toEqual({ ok: false, reason: '.raf is a binary format, not plain text.' })
+  })
+
+  test('no drift from the preview routing: every RAW / image / audio / video extension is refused', () => {
+    const routed = [...RAW_EXTENSIONS, ...IMAGE_EXTENSIONS, ...AUDIO_EXTENSIONS, ...VIDEO_EXTENSIONS]
+    expect(routed.length).toBeGreaterThan(20)
+    for (const e of routed) expect(checkTextExtension(e).ok).toBe(false)
+  })
+
+  test('no drift, the other way: an allowed extension opens exactly where the preview routes it', () => {
+    const sample = ['txt', 'py', 'js', 'json', 'sh', 'log', 'md', 'key', 'xyz', 'csv', 'tsv', 'html', 'htm', 'svg', 'yaml', 'sql', 'xml', 'ini']
+    for (const e of sample) {
+      const r = checkTextExtension(e)
+      expect(r.ok).toBe(true)
+      const cat = fileCategory(mimeTypeForTextExtension(e), `x.${e}`)
+      expect([e, r.opensInEditor]).toEqual([e, cat === 'doc'])
+      if (!r.opensInEditor) expect(['spreadsheet', 'html', 'svg']).toContain(cat)
+    }
+  })
+
+  test('the refusal is derived from routing, not only the list: an extension routed to a viewer but absent from the list is refused', () => {
+    // Every routed extension; drop it from the explicit list for the check.
+    const routed = [...RAW_EXTENSIONS, ...IMAGE_EXTENSIONS, ...AUDIO_EXTENSIONS, ...VIDEO_EXTENSIONS, 'pdf', 'zip', 'tar', 'gz', 'tgz', 'docx', 'pptx', 'xlsx', 'xls']
+    for (const e of routed) {
+      const saved = REFUSED_TEXT_EXTENSIONS[e]
+      delete REFUSED_TEXT_EXTENSIONS[e]
+      try {
+        expect([e, checkTextExtension(e).ok]).toEqual([e, false])
+      } finally {
+        if (saved) REFUSED_TEXT_EXTENSIONS[e] = saved
+      }
+    }
+  })
+
   test('empty and malformed extensions are refused', () => {
     expect(checkTextExtension('')).toEqual({ ok: false, reason: 'Add an extension, like .txt.' })
     expect(checkTextExtension(' . ')).toEqual({ ok: false, reason: 'Add an extension, like .txt.' })
@@ -153,6 +223,28 @@ describe('Text: your own extension', () => {
     expect(mimeTypeForTextExtension('txt')).toBe('text/plain')
     expect(mimeTypeForTextExtension('md')).toBe('text/markdown')
     expect(mimeTypeForTextExtension('xyz')).toBe('text/plain')
+  })
+})
+
+describe('buildAddMenuActions — Android is flat', () => {
+  test('Android: no untitled inline group (MenuView.kt has no displayInline); New file + New folder are top-level', () => {
+    const a = buildAddMenuActions('#123456', 'android')
+    expect(a.map((x) => [x.id, x.title])).toEqual([
+      ['photo', 'Upload photo or video'],
+      ['file', 'Upload file'],
+      ['scan', 'Scan document'],
+      [NEW_FILE_ACTION_ID, 'New file'],
+      ['folder', 'New folder'],
+    ])
+    for (const x of a) {
+      expect(x.title).not.toBe('')
+      expect(x.subactions).toBeUndefined()
+      expect(x.imageColor).toBe('#123456')
+    }
+  })
+  test('iOS (and the default) keep the inline section', () => {
+    expect(buildAddMenuActions('#1', 'ios').map((x) => x.id)).toEqual(['photo', 'file', 'scan', 'create'])
+    expect(buildAddMenuActions('#1').map((x) => x.id)).toEqual(['photo', 'file', 'scan', 'create'])
   })
 })
 
@@ -188,8 +280,23 @@ describe('buildAddMenuActions (the "+" menu table)', () => {
 })
 
 describe('foldName', () => {
-  test('is a locale-independent lower-case fold', () => {
+  test('lower-cases', () => {
     expect(foldName('TITLE.MD')).toBe('title.md')
+  })
+  test('is locale-independent: no toLocale* call in the fold (a Turkish locale maps "I" to dotless "ı")', () => {
+    // bun runs under an en locale, where toLocaleLowerCase('I') === 'i' too,
+    // so a behaviour check alone cannot catch a switch to toLocaleLowerCase.
+    // The fold's own source is the thing to pin; the Turkish mapping shows why.
+    expect('I'.toLocaleLowerCase('tr')).toBe('ı')
+    expect(foldName.toString()).not.toMatch(/toLocale/)
+    const src = readFileSync(join(import.meta.dir, 'new-document.ts'), 'utf-8')
+    expect(src.replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, '')).not.toMatch(/toLocale(Lower|Upper)Case/)
+  })
+  test('Unicode NFC: "Café" (one é) and "Cafe\u0301" (e + combining accent) fold the same', () => {
+    const nfc = 'Caf\u00e9.md'
+    const nfd = 'Cafe\u0301.md'
+    expect(nfc).not.toBe(nfd)
+    expect(foldName(nfc)).toBe(foldName(nfd))
   })
 })
 
@@ -250,6 +357,47 @@ describe('checkNewDocumentName', () => {
   test('refuses a slash or backslash', () => {
     expect(checkNewDocumentName('a/b', 'txt', txt, [])).toEqual({ ok: false, reason: 'A name cannot contain / or \\.', field: 'name' })
     expect(checkNewDocumentName('a\\b', 'txt', txt, [])).toEqual({ ok: false, reason: 'A name cannot contain / or \\.', field: 'name' })
+  })
+
+  test('refuses a pasted line break, a tab and other C0/C1 control characters', () => {
+    const reason = 'A name cannot contain line breaks or other control characters.'
+    expect(checkNewDocumentName('Groceries\nlist', '', md, [])).toEqual({ ok: false, reason, field: 'name' })
+    expect(checkNewDocumentName('a\tb', 'txt', txt, [])).toEqual({ ok: false, reason, field: 'name' })
+    expect(checkNewDocumentName('a\u0085b', 'txt', txt, [])).toEqual({ ok: false, reason, field: 'name' })
+    expect(checkNewDocumentName('a\u0000b', 'txt', txt, [])).toEqual({ ok: false, reason, field: 'name' })
+  })
+
+  test('a pasted trailing newline is trimmed, not refused', () => {
+    expect(checkNewDocumentName('Groceries\n', '', md, [])).toMatchObject({ ok: true, name: 'Groceries.md' })
+  })
+
+  test('refuses a name over 255 UTF-8 bytes (base + extension)', () => {
+    const r = checkNewDocumentName('x'.repeat(400), 'txt', txt, [])
+    expect(r).toEqual({
+      ok: false,
+      field: 'name',
+      reason: 'That name is too long: 404 bytes, and the limit is 255 (letters with accents and emoji count as more than one).',
+    })
+    // Exactly 255 bytes passes; 256 does not.
+    expect(checkNewDocumentName('x'.repeat(251), 'txt', txt, [])).toMatchObject({ ok: true })
+    expect(checkNewDocumentName('x'.repeat(252), 'txt', txt, [])).toMatchObject({ ok: false, field: 'name' })
+    // Bytes, not characters: 100 × "é" = 200 bytes + ".md" fits; 127 × "é" (254) + ".md" does not.
+    expect(checkNewDocumentName('\u00e9'.repeat(100), '', md, [])).toMatchObject({ ok: true })
+    expect(checkNewDocumentName('\u00e9'.repeat(127), '', md, [])).toMatchObject({ ok: false, field: 'name' })
+    expect(MAX_NAME_BYTES).toBe(255)
+  })
+
+  test('utf8ByteLength counts UTF-8 bytes', () => {
+    expect(utf8ByteLength('abc')).toBe(3)
+    expect(utf8ByteLength('\u00e9')).toBe(2)
+    expect(utf8ByteLength('\u20ac')).toBe(3)
+    expect(utf8ByteLength('\u{1F600}')).toBe(4)
+    expect(utf8ByteLength('é'.repeat(3))).toBe(new TextEncoder().encode('é'.repeat(3)).length)
+  })
+
+  test('the clash check folds Unicode: NFC "Café" clashes with an NFD "Café" sibling', () => {
+    expect(checkNewDocumentName('Caf\u00e9', '', md, ['Cafe\u0301.md'])).toMatchObject({ ok: false, field: 'name' })
+    expect(checkNewDocumentName('Cafe\u0301', 'txt', txt, ['CAF\u00c9.TXT'])).toMatchObject({ ok: false, field: 'name' })
   })
 
   test('refuses a case-insensitive clash, never silently renames', () => {

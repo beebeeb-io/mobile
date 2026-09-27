@@ -47,6 +47,7 @@ import {
   checkNewDocumentName,
   checkTextExtension,
   defaultNewDocumentBase,
+  docIconLabelMetrics,
   documentTypeForTile,
   normalizeExtension,
   tileAccessibilityLabel,
@@ -99,7 +100,10 @@ function DocOutlineIcon({ width, color, label }: { width: number; color: string;
   const f = 7.5 * s;
   const t = Math.max(1, 1.5 * s);
   const diag = f * Math.SQRT2;
-  const fontSize = (label.length >= 4 ? 5.6 : label.length === 3 ? 6.4 : 7.2) * s;
+  // Label size + inset: lib/new-document.ts `docIconLabelMetrics` (unit-tested
+  // to keep "DOCX" off the outline). adjustsFontSizeToFit is the backstop if
+  // the mono font is not loaded yet and a wider fallback renders.
+  const { fontSize, letterSpacing, inset } = docIconLabelMetrics(width, label);
   return (
     <View style={{ width: 30 * s, height: 38 * s, alignItems: 'center', justifyContent: 'center' }}>
       <View style={{ width: W, height: H }}>
@@ -123,17 +127,19 @@ function DocOutlineIcon({ width, color, label }: { width: number; color: string;
         <Text
           allowFontScaling={false}
           numberOfLines={1}
+          adjustsFontSizeToFit
+          minimumFontScale={0.7}
           style={{
             position: 'absolute',
-            left: 0,
-            right: 0,
+            left: inset,
+            right: inset,
             top: H * 0.56,
             textAlign: 'center',
             color,
             fontFamily: MONO_MEDIUM,
             fontSize,
             lineHeight: fontSize * 1.25,
-            letterSpacing: 0.2,
+            letterSpacing,
           }}
         >
           {label}

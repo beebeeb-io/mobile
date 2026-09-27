@@ -529,3 +529,33 @@ VoiceOver-adjustable handle. Deliberate exceptions:
   its tallest detent (not verified on the simulator — it runs with the hardware keyboard).
 - **`GlassSheet` / the glass gallery's sheet specimens** keep their floating geometry: they are
   material swatches on a __DEV__ page, not presented sheets.
+
+## Task 1587 (mobile) — "+" → New file (D3 "icon wells" picker + name step)
+
+**Design:** `design/ios-new-file-d-variants.html` V3 "D3" (Guus's pick, 2026-09-27) for the
+picker; `design/ios-new-file.html` step 3 for the name step. The brief says a new file is
+created **empty**.
+
+**What shipped instead, and why (none of these was ruled on by Guus; recorded so they are
+reviewed, not discovered):**
+
+- **The new file is not empty.** A Markdown note starts as `# <name>\n\n` (a level-1 heading
+  from the name, then a blank line); a Text file (any extension) starts as a single `\n`.
+  Reason: the preview decrypt path (native `downloadAndDecryptFileNative` and the JS fallback)
+  refuses a 0-byte plaintext ("Invalid download size metadata"), so an empty file could be
+  created but never opened — found on bb-qa-2 while verifying. The 0-byte decrypt gap itself
+  (which also bites when a user clears a note and saves) is follow-up item 9 in workspace task
+  1585, not fixed here. `lib/new-document.ts` `initialDocumentContent`.
+- **Label sizes:** the tile name under the well is 12pt and "SOON" 9.5pt; the mock is about 9pt
+  and 7pt at phone scale, chosen by the implementing lane for legibility on a phone.
+- **The outline document icon is drawn with Views** (seven hairline Views + a Text), not the
+  mock's SVG path: there is no SVG library in the tree and no new native deps were allowed.
+  The extension inside it is smaller than the mock's (4.3/5.4/7.2 units for 4/3/2 letters, no
+  tracking for 4) with 1.5 units of clear space to each stroke, because the first build's
+  "DOCX" ran edge to edge (Guus's screenshot) — `docIconLabelMetrics`, unit-tested.
+- **No "Stored in" row on the name step.** The mock shows where the file is stored; before the
+  upload there is no storage pool to name, and naming a city we have not yet chosen would be a
+  claim we cannot check. The step shows "Saves to <folder>" only.
+- **Android "+" menu is flat** (Upload photo, Upload file, Scan, New file, New folder) instead of
+  iOS's inline "create" section: `@react-native-menu/menu`'s Android side has no
+  `displayInline`, so the section would render as a blank row opening a submenu.

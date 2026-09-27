@@ -6,6 +6,7 @@
 import { describe, expect, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { ICON_LABEL_ADVANCE_EM, ICON_LABEL_MARGIN_UNITS, docIconLabelMetrics } from '../lib/new-document'
 
 const sheet = readFileSync(join(import.meta.dir, 'NewFileSheet.tsx'), 'utf-8')
 const files = readFileSync(join(import.meta.dir, '../screens/FilesScreen.tsx'), 'utf-8')
@@ -49,12 +50,53 @@ describe('FilesScreen wiring', () => {
     expect(files).toContain('<NewFileSheet')
   })
 
-  test('creation goes through encryptedUpload, never a plaintext upload', () => {
-    const fn = files.slice(files.indexOf('const createNewDocument'), files.indexOf('const createNewDocument') + 4000)
-    expect(fn).toContain('await assertNameFreeInFolder(name, parentId)')
-    expect(fn).toContain('await encryptedUpload({')
+  test('creation is the tested flow (lib/create-new-document.ts) wired to encryptedUpload + abandon', () => {
+    // The behaviour (fresh re-list clash, abandon on failure, the Preview
+    // params) is tested with mocks in create-new-document.test.ts; this only
+    // pins that FilesScreen wires the REAL encrypted path and abandon into it.
+    const start = files.indexOf('const createNewDocument = useCallback')
+    const fn = files.slice(start, files.indexOf('}, [isUnlocked, currentFolder.id, freshFolderNames', start))
+    expect(fn).toContain('await createNewDocumentFile(')
+    expect(fn).toMatch(/upload: \(\{[^}]*\}\) => encryptedUpload\(\{/)
     expect(fn).toContain('encryptChunkFn: encryptChunk')
-    expect(fn).toContain('startInEditMode: opensInEditor')
-    expect(fn).toContain('created · encrypted')
+    expect(fn).toContain('abandonUpload: abandonTextFileUpload')
+    expect(fn).toContain('listFolderNames: freshFolderNames')
+    expect(fn).toContain("navigation.navigate('Preview', previewParamsForNewDocument(uploaded, req))")
+    expect(fn).not.toMatch(/uploadEncryptedChunked|uploadFile\(/)
+  })
+
+  test('the unlock path opens the sheet only when the vault really is open', () => {
+    const start = files.indexOf('const openNewFileSheet = useCallback')
+    const fn = files.slice(start, files.indexOf('}, [phraseVerified, isUnlocked, unlock', start))
+    expect(fn).toMatch(/\.then\(\(\) => \{[\s\S]*getMasterKeyHandleId\(\)[\s\S]*if \(open\) setNewFileOpen\(true\);/)
+    expect(fn).not.toContain('.then(() => setNewFileOpen(true))')
+  })
+
+  test('the "+" menu passes the platform (Android gets the flat list)', () => {
+    expect(files).toContain('buildAddMenuActions(c.ink, Platform.OS)')
+  })
+})
+
+describe('DocOutlineIcon label fit', () => {
+  test('the sheet takes its label size + inset from docIconLabelMetrics', () => {
+    expect(sheet).toContain('docIconLabelMetrics(width, label)')
+    expect(sheet).toMatch(/left: inset,\s*right: inset,/)
+    expect(sheet).toContain('adjustsFontSizeToFit')
+  })
+
+  test('"DOCX" / "XLSX" / "PPTX" / "TXT" / "MD" fit inside the outline with a margin, at every icon size the sheet uses', () => {
+    // The sheet's icon is round(well × 0.494), well = min(72, colW × 0.83):
+    // 375-pt to 440-pt wide phones and the 72-pt cap.
+    for (const iconW of [30, 32, 34, 36]) {
+      const s = iconW / 30
+      const stroke = Math.max(1, 1.5 * s)
+      for (const label of ['DOCX', 'XLSX', 'PPTX', 'TXT', 'MD']) {
+        const m = docIconLabelMetrics(iconW, label)
+        const textW = label.length * ICON_LABEL_ADVANCE_EM * m.fontSize + (label.length - 1) * m.letterSpacing
+        expect([label, iconW, textW <= m.boxWidth]).toEqual([label, iconW, true])
+        // At least ICON_LABEL_MARGIN_UNITS of clear space from each stroke.
+        expect(m.inset - stroke).toBeGreaterThanOrEqual(ICON_LABEL_MARGIN_UNITS * s - 1e-9)
+      }
+    }
   })
 })
