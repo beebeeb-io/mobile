@@ -1,0 +1,72 @@
+# Task 1565 — reusable subflow: open ONE seeded fixture's preview, screenshot
+# it, best-effort-assert the type-specific render landed, close, and get back
+# to Drive — never hard-failing the whole run over one fixture's outcome
+# (mirrors the task's own verification method: "take one screenshot per type
+# ... the lead looks at every screenshot", not an all-or-nothing assertion
+# chain — see e2e/scripts/gen-preview-matrix-flow.mjs, which generates
+# run.yaml's 59 `runFlow` calls into this file).
+#
+# Params (passed via `runFlow: { file: ..., env: {...} } }`):
+#   FILE_NAME        — exact uploaded filename (e2e/scripts/seed-preview-matrix-web.mjs
+#                       and e2e/scripts/preview-matrix-fixtures.mjs are the source of truth)
+#   EXPECT_ID_REGEX  — one of the preview-render-* testIDs added by this same
+#                       task (or an alternation of two — see
+#                       preview-matrix-fixtures.mjs's header comment for why
+#                       some rows are legitimately "either of two outcomes")
+#   SHOT_NAME         — screenshot basename (no extension), written under
+#                       ${EVIDENCE_DIR}
+#
+# CLAUDE.md gotchas this subflow deliberately follows:
+#   - text selectors need a FULL-match regex, not a substring — every
+#     fixture name gets `.*name.*` here, not a bare `name`.
+#   - `takeScreenshot` resolves relative paths against Maestro's CWD, not the
+#     flow's directory — always pass ${EVIDENCE_DIR} (absolute) via `-e`.
+#   - `preview-close`'s dismiss can race the slide-down animation — reuse the
+#     same `repeat while notVisible: Drive` pattern as file-preview-test.yaml
+#     instead of a single tapOn.
+appId: io.beebeeb.app
+---
+- scrollUntilVisible:
+    element:
+      text: ".*${FILE_NAME}.*"
+    direction: DOWN
+    timeout: 20000
+
+- tapOn:
+    text: ".*${FILE_NAME}.*"
+
+# Some preview opened at all — non-optional. If THIS fails, the file never
+# opened (a harness/seeding problem, not a per-type render problem), and the
+# flow is right to stop here rather than silently skip 58 more fixtures.
+- extendedWaitUntil:
+    visible:
+      id: "preview-close"
+    timeout: 15000
+
+# Give async decrypt/render its full budget before judging anything — matches
+# the 25s poll budget the web spec's `waitForOutcome` uses for the same
+# reason (mammoth/SheetJS/exifr/Shiki are all async). `optional: true` on
+# `assertVisible` (not `extendedWaitUntil`, which has no documented optional
+# form) is what keeps a wrong/missing render from aborting the other 58
+# fixtures — Maestro logs it as a failed-but-optional step and moves on; the
+# runner script's summary (e2e/scripts/run-preview-matrix.sh) greps stdout
+# for exactly that line per fixture.
+- assertVisible:
+    id: "${EXPECT_ID_REGEX}"
+    timeout: 20000
+    optional: true
+
+- takeScreenshot: "${EVIDENCE_DIR}/${SHOT_NAME}"
+
+- repeat:
+    times: 5
+    while:
+      notVisible: "Drive"
+    commands:
+      - tapOn:
+          id: "preview-close"
+          optional: true
+
+- extendedWaitUntil:
+    visible: "Drive"
+    timeout: 5000
