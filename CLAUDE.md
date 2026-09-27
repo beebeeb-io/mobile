@@ -131,6 +131,30 @@ one per lane" rule applies. Runtime download is the expensive part (~8 GB,
 `xcodebuild -downloadPlatform iOS`) — if it's already vanished (see the 2026-09-16 note below about
 sims disappearing), re-downloading is the only way back, not a quick `simctl create`.
 
+## iPad (iPhone compatibility mode) — window controls + how to drive it (task 1588)
+
+The app is iPhone-only (`supportsTablet: false`); on iPadOS 26+ it runs in a system WINDOW
+(410 pt wide on an iPad Air 11" M3, resizable down to 375 pt) whose close/minimise/tile controls
+sit over the window's top-leading corner. That is how App Review tests it.
+
+- **The plain safe area does not include the window controls.** Before task 1588 every screen
+  title sat under them and the preview's Close button was a dead tap (the tap expanded the window
+  controls). `SceneDelegate.swift`'s `WindowControlsAwareWindow` adds the difference between
+  `.safeArea(cornerAdaptation: .vertical)` and the plain safe area (43 pt on that iPad, 0 on an
+  iPhone) to the root VC's `additionalSafeAreaInsets.top`, so `useSafeAreaInsets().top` already
+  clears them. **Any top chrome must be laid out from `insets.top`, never from a fixed offset or
+  y=0** (the Trash swipe hint was a normal-flow sibling at y=0 — it now lives in the list header).
+- **Driver: AXe, with the window offset added.** Maestro sees the SpringBoard hierarchy, not the
+  app ("Element not found" for ids that exist) — that is the "Maestro taps do nothing on iPad"
+  of task 1557. `axe describe-ui` returns frames in WINDOW coordinates; the window is centred, so
+  tap at `x + (820 - windowWidth)/2` (portrait iPad Air 11"). `axe tap --id` taps the unshifted
+  point and misses. Out-of-process UI (document picker, photo picker, share sheet, system alerts)
+  is not in the tree — tap it by screenshot coordinates. Maestro `setOrientation` reports
+  COMPLETED on iPad but does not rotate; this Xcode has no Simulator.app, so rotation is not
+  drivable here.
+- **An edge swipe starting on the window's left edge resizes the window** (to 375 pt). After
+  that the simulator's accessibility tree once came back empty for every app until a sim reboot.
+
 ## react-native-webview paints nothing under a centered parent, iOS 27 (task 1564)
 
 A `<WebView>` whose **direct parent** View sets `justifyContent:'center'`/`alignItems:'center'`
