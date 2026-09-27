@@ -31,6 +31,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as FileSystem from 'expo-file-system/legacy';
+import { gatedPlaintextWrite } from '../lib/plaintext-gate';
 import * as Sharing from 'expo-sharing';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { fonts, onAmber, radii, spacing } from '../theme';
@@ -142,9 +143,12 @@ export default function EncryptionProof({ file, fileName, mimeType, visible, onC
       const safeName = fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
       // caches-registry: example=report.pdf.beebeeb.enc
       const target = `${FileSystem.cacheDirectory}${safeName}.beebeeb.enc`;
-      await FileSystem.writeAsStringAsync(target, bytesToBase64(all), {
-        encoding: FileSystem.EncodingType.Base64,
-      });
+      // Task 1593 round 3 — plaintext writer, gated by the sign-out purge.
+      await gatedPlaintextWrite('ciphertext export', target, FileSystem, () =>
+        FileSystem.writeAsStringAsync(target, bytesToBase64(all), {
+          encoding: FileSystem.EncodingType.Base64,
+        }),
+      );
       if (await Sharing.isAvailableAsync()) {
         await Sharing.shareAsync(target, {
           mimeType: 'application/octet-stream',

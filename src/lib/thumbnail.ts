@@ -25,6 +25,7 @@ import {
   generateAndUploadPhotoLibraryThumbnailNative,
 } from '../../modules/beebeeb-crypto';
 import * as FileSystem from 'expo-file-system/legacy';
+import { gatedPlaintextWrite } from './plaintext-gate';
 import * as MediaLibrary from 'expo-media-library/legacy';
 import { EncodingType } from 'expo-file-system/legacy';
 import {
@@ -474,9 +475,13 @@ export async function ensureThumbnailForImage(
                   : 'jpg';
       const safeName = (fileName ?? fileId).replace(/[^a-zA-Z0-9._()-]/g, '_').slice(0, 64);
       sourceUri = `${FileSystem.cacheDirectory}thumb_source_${fileId}_${safeName || 'media'}.${ext}`;
-      await FileSystem.writeAsStringAsync(sourceUri, bytesToBase64(plaintext), {
-        encoding: EncodingType.Base64,
-      });
+      // Task 1593 round 3 — plaintext writer, gated by the sign-out purge.
+      const thumbSourceUri = sourceUri;
+      await gatedPlaintextWrite('thumbnail repair source', thumbSourceUri, FileSystem, () =>
+        FileSystem.writeAsStringAsync(thumbSourceUri, bytesToBase64(plaintext), {
+          encoding: EncodingType.Base64,
+        }),
+      );
 
       const thumb = await generateThumbnailForMedia(sourceUri, mimeType);
       if (!thumb) return false;
@@ -565,7 +570,9 @@ async function cachedThumbnailUri(fileId: string): Promise<string | null> {
         await FileSystem.makeDirectoryAsync(PERSISTENT_THUMB_DIR, { intermediates: true });
         const destPath = thumbPath(fileId);
         if (destPath) {
-          await FileSystem.copyAsync({ from: legacy, to: destPath });
+          await gatedPlaintextWrite('legacy thumbnail migration', destPath, FileSystem, () =>
+            FileSystem.copyAsync({ from: legacy, to: destPath }),
+          );
           thumbCache.set(fileId, destPath);
           // Clean up old volatile copy
           await FileSystem.deleteAsync(legacy, { idempotent: true }).catch(() => {});

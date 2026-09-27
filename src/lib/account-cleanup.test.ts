@@ -44,6 +44,7 @@ mock.module('../../modules/beebeeb-crypto', () => ({
 }));
 
 const { purgeThenSignOut, purgeAllPlaintextCaches, purgeDecryptedCaches } = await import('./account-cleanup');
+const { plaintextGate } = await import('./plaintext-gate');
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -69,10 +70,32 @@ describe('purgeAllPlaintextCaches (task 1593 — plaintext survived sign-out)', 
     previewClear = async () => { purgeCalls.push('previews'); };
   });
 
-  test('purgeDecryptedCaches (nobody signed in) clears decrypted content but not the native registry', async () => {
+  test('purgeDecryptedCaches clears decrypted content but not the native registry', async () => {
     purgeCalls.length = 0;
     await purgeDecryptedCaches();
     expect([...purgeCalls].sort()).toEqual(['caches-registry', 'names', 'photos', 'previews', 'thumbnails']);
+  });
+});
+
+describe('task 1593 round 3 (#141 Codex P1) — the purge drains every plaintext writer before it sweeps', () => {
+  test('a writer holding a lease: NOTHING is swept until it settles, and it cannot write after', async () => {
+    plaintextGate.open();
+    purgeCalls.length = 0;
+    const lease = plaintextGate.acquire('SharedView decrypt');
+    let done = false;
+    const purge = purgeAllPlaintextCaches().then(() => { done = true; });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(purgeCalls).toEqual([]); // still draining — no sweep yet
+    expect(done).toBe(false);
+    expect(lease.valid).toBe(false); // the writer's late write will be refused
+    lease.release();
+    await purge;
+    expect(purgeCalls).toContain('caches-registry');
+    expect(purgeCalls).toContain('native');
+    // The gate stays closed after the sweep: no writer can start behind it.
+    expect(plaintextGate.isOpen()).toBe(false);
+    expect(() => plaintextGate.acquire('late')).toThrow();
+    plaintextGate.open();
   });
 });
 
@@ -83,11 +106,12 @@ describe('App.tsx purges in ONE place — the signed-out surface (task 1593 roun
     expect(app).toMatch(/const onSignedOutSurface = !checking && !showDiagnostics && !showSecureStorageError && user == null;/);
     expect(app).toMatch(/if \(onSignedOutSurface\) void signedOutPurger\.enterSignedOut\(\);\s*\}, \[onSignedOutSurface\]\);/);
   });
-  test('a session that ended gets the FULL purge; nobody-signed-in gets the decrypted-content purge', () => {
-    expect(app).toMatch(/createSignedOutPurger\(\{\s*full: \(\) => purgeAllPlaintextCaches\(\),\s*leftover: \(\) => purgeDecryptedCaches\(\),/);
+  test('round 3: EVERY signed-out arrival (cold launch too) gets the FULL purge incl. the native registry', () => {
+    expect(app).toMatch(/createSignedOutPurger\(\{\s*full: \(\) => purgeAllPlaintextCaches\(\),\s*\}\);/);
+    expect(app).not.toMatch(/purgeDecryptedCaches/);
   });
-  test('sign-in waits for a purge still running', () => {
-    expect(app).toMatch(/const refreshAuth = useCallback\(async \(\) => \{\s*try \{[\s\S]{0,200}await signedOutPurger\.settled\(\);\s*const me = await getMe\(\);/);
+  test('sign-in waits for a purge still running, then reopens the plaintext gate before setUser', () => {
+    expect(app).toMatch(/const refreshAuth = useCallback\(async \(\) => \{\s*try \{[\s\S]{0,200}await signedOutPurger\.settled\(\);\s*const me = await getMe\(\);\s*signedOutPurger\.sessionStarted\(\);[^\n]*\n\s*setUser\(me\);/);
   });
   test('no per-call-site preview-only sweep is left', () => {
     expect(app).not.toMatch(/purgePreviewPlaintextWhileSignedOut/);

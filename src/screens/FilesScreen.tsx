@@ -34,6 +34,7 @@ import { openFilesEntry } from '../lib/open-lock-gate';
 import { lockedToastMessage } from '../lib/lock-copy';
 import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system/legacy';
+import { gatedPlaintextWrite } from '../lib/plaintext-gate';
 import * as Sharing from 'expo-sharing';
 import * as MediaLibrary from 'expo-media-library/legacy';
 import * as Clipboard from 'expo-clipboard';
@@ -177,7 +178,10 @@ async function copyPhotoAssetToUploadCache(sourceUri: string, fileId: string, na
   const safeName = name.replace(/[^a-zA-Z0-9._()-]/g, '_');
   const targetUri = `${FileSystem.cacheDirectory}upload-${fileId}-${safeName || 'photo.jpg'}`;
   await FileSystem.deleteAsync(targetUri, { idempotent: true }).catch(() => {});
-  await FileSystem.copyAsync({ from: sourceUri, to: targetUri });
+  // Task 1593 round 3 — plaintext writer, gated by the sign-out purge.
+  await gatedPlaintextWrite('upload copy', targetUri, FileSystem, () =>
+    FileSystem.copyAsync({ from: sourceUri, to: targetUri }),
+  );
   return targetUri;
 }
 
@@ -1058,7 +1062,9 @@ function ProofDetailModal({ proof, fileName, onClose, showToast }: ProofDetailMo
       if (await Sharing.isAvailableAsync()) {
         // Write to a temp .txt file so the share sheet treats it as a document
         const tmpPath = `${FileSystem.cacheDirectory}beebeeb-proof-${proof.proofId.slice(0, 8)}.txt`;
-        await FileSystem.writeAsStringAsync(tmpPath, proofText, { encoding: FileSystem.EncodingType.UTF8 });
+        await gatedPlaintextWrite('proof export', tmpPath, FileSystem, () =>
+          FileSystem.writeAsStringAsync(tmpPath, proofText, { encoding: FileSystem.EncodingType.UTF8 }),
+        );
         await Sharing.shareAsync(tmpPath, {
           mimeType: 'text/plain',
           dialogTitle: 'Share proof',
@@ -2759,7 +2765,9 @@ export default function FilesScreen() {
           if (!FileSystem.cacheDirectory) throw new Error('No cache directory available');
           // Named after the file id, never the (plaintext) name.
           const uri = `${FileSystem.cacheDirectory}new-${fileId}`;
-          await FileSystem.writeAsStringAsync(uri, content, { encoding: FileSystem.EncodingType.UTF8 });
+          await gatedPlaintextWrite('new text file', uri, FileSystem, () =>
+            FileSystem.writeAsStringAsync(uri, content, { encoding: FileSystem.EncodingType.UTF8 }),
+          );
           return uri;
         },
         deleteTempFile: (uri) => FileSystem.deleteAsync(uri, { idempotent: true }),
@@ -3423,7 +3431,10 @@ export default function FilesScreen() {
         // Copy to a correctly-named temp so the saved file keeps its real name
         // (the decrypt cache keys files by id), then drop the copy afterwards.
         await FileSystem.deleteAsync(namedUri, { idempotent: true }).catch(() => {});
-        await FileSystem.copyAsync({ from: decryptedUri, to: namedUri });
+        // Task 1593 round 3 — plaintext writer, gated by the sign-out purge.
+        await gatedPlaintextWrite('Save to Files copy', namedUri, FileSystem, () =>
+          FileSystem.copyAsync({ from: decryptedUri, to: namedUri }),
+        );
         // Prepare phase done — dismiss the indicator the moment the native
         // sheet opens (shareAsync only resolves once it's dismissed).
         setExporting(null);

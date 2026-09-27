@@ -27,6 +27,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as FileSystem from 'expo-file-system/legacy';
+import { gatedPlaintextWrite } from '../lib/plaintext-gate';
 import * as Sharing from 'expo-sharing';
 import * as Haptics from 'expo-haptics';
 import { useNavigation } from '@react-navigation/native';
@@ -237,9 +238,12 @@ export function ConstellationScannerScreen() {
         await FileSystem.makeDirectoryAsync(transferDir, { intermediates: true }).catch(() => {});
         const localUri = `${transferDir}${fileName}`;
         const base64 = bytesToBase64(bytes);
-        await FileSystem.writeAsStringAsync(localUri, base64, {
-          encoding: FileSystem.EncodingType.Base64,
-        });
+        // Task 1593 round 3 — plaintext writer, gated by the sign-out purge.
+        await gatedPlaintextWrite('transfer receive', localUri, FileSystem, () =>
+          FileSystem.writeAsStringAsync(localUri, base64, {
+            encoding: FileSystem.EncodingType.Base64,
+          }),
+        );
 
         if (cancelled) return;
         setSavedUri(localUri);

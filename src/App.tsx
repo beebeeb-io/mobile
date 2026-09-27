@@ -46,7 +46,7 @@ import * as BeebeebCrypto from '../modules/beebeeb-crypto';
 import { populateFileProviderCache } from './lib/file-provider-mount';
 import { initLocalIdentifierMap } from './lib/local-identifier-map';
 import { resetThumbnailSelfRepairState } from './lib/thumbnail-self-repair';
-import { purgeAllPlaintextCaches, purgeDecryptedCaches } from './lib/account-cleanup';
+import { purgeAllPlaintextCaches } from './lib/account-cleanup';
 import { createSignedOutPurger } from './lib/signed-out-purge';
 import {
   setupNotificationHandler,
@@ -515,7 +515,6 @@ function tabAppleIcon(routeName: string, focused: boolean): { sfSymbol: SFSymbol
 // Task 1593 — see the signed-out effect in App().
 const signedOutPurger = createSignedOutPurger({
   full: () => purgeAllPlaintextCaches(),
-  leftover: () => purgeDecryptedCaches(),
 });
 
 function ShareSheetImporter({ enabled }: { enabled: boolean }) {
@@ -966,6 +965,7 @@ export default function App() {
       // session's first cache writes.
       await signedOutPurger.settled();
       const me = await getMe();
+      signedOutPurger.sessionStarted(); // task 1593 r3: reopen the plaintext gate
       setUser(me);
       SecureStore.setItemAsync(LAST_CONNECTED_KEY, new Date().toISOString()).catch(() => {});
       // Register this device with the clients API first so we can thread
@@ -1299,9 +1299,8 @@ export default function App() {
   // app reaches its signed-out surface, whatever got it there: signOut(), a
   // 401 in refreshAuth, session expiry, account deleted elsewhere, a rejected
   // token or no token at launch, the startup-failure fallback, diagnostics →
-  // "Sign in". A session that ended this process gets the full signOut()
-  // purge; a launch with nobody signed in gets the decrypted-content purge
-  // (src/lib/signed-out-purge.ts).
+  // "Sign in". Every case gets the full signOut() purge incl. the native
+  // registry (round 3: a cold signed-out launch too) — src/lib/signed-out-purge.ts.
   useEffect(() => {
     signedOutPurger.noteUser(user != null);
   }, [user]);

@@ -24,6 +24,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import * as FileSystem from 'expo-file-system/legacy';
+import { gatedPlaintextWrite } from '../lib/plaintext-gate';
 import * as Sharing from 'expo-sharing';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -259,9 +260,12 @@ function DataExportRow({ c }: { c: C }) {
       // in a URL — the server endpoint is Bearer-scoped to the caller's own export.
       const token = await getToken();
       const dest = `${FileSystem.cacheDirectory}beebeeb-data-export-${exportStatus?.export_id ?? 'latest'}.zip`;
-      const { uri, status } = await FileSystem.downloadAsync(url, dest, {
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-      });
+      // Task 1593 round 3 — plaintext writer, gated by the sign-out purge.
+      const { uri, status } = await gatedPlaintextWrite('data export', dest, FileSystem, () =>
+        FileSystem.downloadAsync(url, dest, {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        }),
+      );
       if (status !== 200) throw new Error(`download failed (${status})`);
       if (await Sharing.isAvailableAsync()) {
         await Sharing.shareAsync(uri, {

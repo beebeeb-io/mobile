@@ -105,3 +105,28 @@ describe('createInFlightShare', () => {
     await a; await b;
   });
 });
+
+describe('task 1593 round 3 — with a plaintext gate (#141 Codex P1)', () => {
+  test('a purge aborts the job, and a caller arriving during it is refused instead of queued', async () => {
+    const { createPlaintextGate } = await import('./plaintext-gate');
+    const gate = createPlaintextGate();
+    const share = createInFlightShare<string>({ gate, label: 'test' });
+    const d = deferred<string>();
+    let starts = 0;
+    let firstSignal;
+    const start = (signal) => { starts += 1; firstSignal ??= signal; return d.promise; };
+    const a = share.run('k', start).catch((e) => e);
+    let release;
+    const purge = gate.purge(() => new Promise((r) => { release = r; }));
+    expect(firstSignal.aborted).toBe(true);
+    const b = await share.run('k', start).catch((e) => e);
+    expect(b.name).toBe('AbortError');
+    d.reject(Object.assign(new Error('x'), { name: 'AbortError' }));
+    await a;
+    await new Promise((r) => setTimeout(r, 0));
+    release();
+    await purge;
+    expect(starts).toBe(1);
+    expect(gate.held()).toBe(0); // the job's lease was released when it settled
+  });
+});

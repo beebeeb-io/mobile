@@ -35,6 +35,7 @@ import { clearNameCache } from './name-cache';
 import { clearPreviewCache } from './native-decrypt';
 import { clearPhotoCache } from './photo-cache';
 import { clearThumbnailCache } from './thumbnail-cache';
+import { plaintextGate } from './plaintext-gate';
 
 export type { PlaintextStoragePurgeResult };
 
@@ -51,7 +52,7 @@ export type { PlaintextStoragePurgeResult };
  *   also catches anything written while the two above were aborting.
  * Never throws.
  */
-export async function purgeDecryptedCaches(): Promise<void> {
+async function sweepDecryptedCaches(): Promise<void> {
   await Promise.allSettled([
     clearThumbnailCache(),
     clearNameCache(),
@@ -61,9 +62,25 @@ export async function purgeDecryptedCaches(): Promise<void> {
   await purgeCachesPlaintext().catch(() => []);
 }
 
+/**
+ * Task 1593 round 3 (#141 Codex P1) — both purges run INSIDE
+ * `plaintextGate.purge()`: the gate closes (no plaintext writer may start or
+ * finish a write any more), every writer holding a lease is drained (bounded;
+ * a writer past the bound discards its own output), and only then does the
+ * sweep run. The gate stays closed until the next session opens it, so the
+ * sweep cannot be followed by a write — a single sweep is a guarantee again.
+ */
+export async function purgeDecryptedCaches(): Promise<void> {
+  await plaintextGate.purge(sweepDecryptedCaches).catch(() => undefined);
+}
+
 export async function purgeAllPlaintextCaches(): Promise<PlaintextStoragePurgeResult> {
-  await purgeDecryptedCaches();
-  return purgePlaintextStorage();
+  return plaintextGate
+    .purge(async () => {
+      await sweepDecryptedCaches();
+      return purgePlaintextStorage();
+    })
+    .catch(() => ({ removed: 0, failed: 1 }));
 }
 
 export interface PurgeThenSignOutDeps {

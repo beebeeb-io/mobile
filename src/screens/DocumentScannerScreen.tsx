@@ -11,6 +11,7 @@ import {
   View,
 } from 'react-native';
 import * as FileSystem from 'expo-file-system/legacy';
+import { gatedPlaintextWrite } from '../lib/plaintext-gate';
 import * as Haptics from 'expo-haptics';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import type { RouteProp } from '@react-navigation/native';
@@ -329,9 +330,12 @@ function DocumentScannerCameraScreen({ camera }: { camera: CameraModule }) {
         height: page.height,
       }));
       const pdfBytes = buildJpegPdfBytes(pdfPages);
-      await FileSystem.writeAsStringAsync(pdfUri, uint8ArrayToBase64(pdfBytes), {
-        encoding: FileSystem.EncodingType.Base64,
-      });
+      // Task 1593 round 3 — plaintext writer, gated by the sign-out purge.
+      await gatedPlaintextWrite('scanned PDF', pdfUri, FileSystem, () =>
+        FileSystem.writeAsStringAsync(pdfUri, uint8ArrayToBase64(pdfBytes), {
+          encoding: FileSystem.EncodingType.Base64,
+        }),
+      );
 
       // Task 0802: attach the on-device OCR note + local summary to the file's
       // E2E-encrypted metadata (unless the user cleared it). All computed on

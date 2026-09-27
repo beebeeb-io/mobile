@@ -12,50 +12,82 @@
  *  - `noteUser(signedIn)` — every value `user` takes.
  *  - `enterSignedOut()` — the signed-out surface (login) is now showing.
  *
- * If a user was signed in during this process since the last purge, their
- * session just ended (any cause) → the FULL purge (`purgeAllPlaintextCaches`,
- * what `signOut()` runs). Otherwise nobody signed in this process — a cold
- * launch with no session, a rejected token, diagnostics → "Sign in" — and the
- * previous session may have ended in a crash before its purge → the
- * decrypted-content purge (`purgeDecryptedCaches`), which leaves the native
- * registry's non-cache paths alone so that files shared into the app while
- * signed out (App Group `IncomingShares/`) are still there to upload after
- * sign-in.
+ * Round 3 (#141 Codex P1, "Purge native plaintext on cold signed-out
+ * launches"): EVERY arrival on the signed-out surface runs the FULL purge
+ * (`purgeAllPlaintextCaches`, what `signOut()` runs), including the native
+ * registry. Round 2 ran only the decrypted-content purge when nobody had
+ * signed in this process (cold launch with no session, a rejected token,
+ * diagnostics → "Sign in") — but that is exactly the launch after a crash or
+ * a revoked session, and the native registry holds decrypted content outside
+ * `Library/Caches`: PhotoKit PNG renders (`Documents/beebeeb-photokit-cache`),
+ * the File Provider's decrypted `pinned`/`temp` App Group directories, the
+ * decrypted-name JSON, the thumbnail store. The next account to sign in on
+ * this device would inherit all of it.
  *
- * `settled()` lets the sign-in path wait for a purge still running, so a
- * purge can never delete the NEW session's first cache writes.
+ * Decision on `IncomingShares/` (the Share Extension inbox, also in the
+ * native registry): PURGED too, no selective keep. The extension refuses to
+ * accept anything without a session ("Sign in to Beebeeb first",
+ * targets/share-extension/ShareViewController.swift:118 — it needs both the
+ * master key and a session token), so a payload found at a
+ * signed-out launch was dropped under a PREVIOUS session that then crashed or
+ * was revoked — we cannot know which account it was meant for, and uploading
+ * it into whoever signs in next is the leak Codex describes. The user can
+ * share it again after signing in.
+ *
+ * `hadUser` survives only as the trace reason (`lastReason()`).
+ *
+ * `settled()` lets the sign-in path wait for a purge still running (incl. one
+ * `signOut()` started directly), so a purge can never delete the NEW session's
+ * first cache writes; `sessionStarted()` then reopens the plaintext gate
+ * (src/lib/plaintext-gate.ts) that the purge left closed.
  */
+import { plaintextGate as defaultGate, type PlaintextGate } from './plaintext-gate';
 
 export interface SignedOutPurgeDeps {
-  /** A session ended: everything signOut() purges. */
+  /** Everything signOut() purges: decrypted caches + the native registry. */
   full: () => Promise<unknown>;
-  /** Nobody signed in this process: decrypted content left by a previous one. */
-  leftover: () => Promise<unknown>;
+  /** Plaintext-writer gate; defaults to the app-wide one. */
+  gate?: Pick<PlaintextGate, 'open' | 'idle'>;
 }
+
+export type SignedOutReason = 'session-ended' | 'no-session-this-process';
 
 export interface SignedOutPurger {
   noteUser: (signedIn: boolean) => void;
   enterSignedOut: () => Promise<void>;
   settled: () => Promise<void>;
+  /** A new session was established: reopen the plaintext gate. */
+  sessionStarted: () => void;
+  lastReason: () => SignedOutReason | null;
 }
 
 export function createSignedOutPurger(deps: SignedOutPurgeDeps): SignedOutPurger {
+  const gate = deps.gate ?? defaultGate;
   let hadUser = false;
+  let reason: SignedOutReason | null = null;
   let pending: Promise<void> = Promise.resolve();
 
   return {
     noteUser(signedIn) {
-      if (signedIn) hadUser = true;
+      if (signedIn) {
+        hadUser = true;
+        // Safety net for any sign-in path that did not call sessionStarted().
+        gate.open();
+      }
     },
     enterSignedOut() {
-      const run = hadUser ? deps.full : deps.leftover;
+      reason = hadUser ? 'session-ended' : 'no-session-this-process';
       hadUser = false;
       // Chain so two quick transitions never run two purges at once.
-      pending = pending.then(() => run()).then(() => undefined, () => undefined);
+      pending = pending.then(() => deps.full()).then(() => undefined, () => undefined);
       return pending;
     },
     settled() {
-      return pending;
+      return pending.then(() => gate.idle());
     },
+    sessionStarted() {
+      gate.open();
+    },
+    lastReason: () => reason,
   };
 }

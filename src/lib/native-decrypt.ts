@@ -38,6 +38,7 @@ import {
 import { rateLimitedFetch } from './rate-limited-fetch';
 import { recordRuntimeTrace } from './runtime-trace';
 import { createInFlightShare } from './inflight-share';
+import { PLAINTEXT_DRAIN_TIMEOUT_MS, plaintextGate, withPlaintextLease } from './plaintext-gate';
 import { offlineManager, offlineFilePath } from './offline-manager';
 import NetInfo from '@react-native-community/netinfo';
 
@@ -299,7 +300,14 @@ interface SharedListener {
   onOfflineFallback?: PreviewDecryptOptions['onOfflineFallback'];
 }
 
-const previewDecrypts = createInFlightShare<{ path: string; cacheHit: boolean }>();
+// Task 1593 round 3 (#141 Codex P1) — every preview decrypt holds a lease from
+// the plaintext gate: a sign-out purge aborts them all, waits for them to
+// settle, and while it runs (and until the next session) new ones are REFUSED
+// rather than queued behind the aborted job.
+const previewDecrypts = createInFlightShare<{ path: string; cacheHit: boolean }>({
+  gate: plaintextGate,
+  label: 'preview decrypt',
+});
 /** Per cache path: callers that asked for it since the file was last removed. */
 const previewLeases = new Map<string, number>();
 
@@ -733,6 +741,35 @@ export async function decryptLocalFileToTempFile(
   chunkSize?: number | null,
   options: PreviewDecryptOptions = {},
 ): Promise<string> {
+  // Task 1593 round 3 — a plaintext writer: hold a gate lease; a purge closing
+  // the gate aborts this exactly like a cancelled caller (every write below is
+  // followed by an abort check that deletes the output).
+  return withPlaintextLease('offline decrypt', (lease) => {
+    const controller = new AbortController();
+    const forward = () => controller.abort();
+    if (options.signal?.aborted || lease.signal.aborted) controller.abort();
+    options.signal?.addEventListener('abort', forward, { once: true });
+    lease.signal.addEventListener('abort', forward, { once: true });
+    return decryptLocalFileLeased(
+      fileId, fileKey, extension, localEncryptedUri, sizeBytes, chunkCount, chunkSize,
+      { ...options, signal: controller.signal },
+    ).finally(() => {
+      options.signal?.removeEventListener('abort', forward);
+      lease.signal.removeEventListener('abort', forward);
+    });
+  });
+}
+
+async function decryptLocalFileLeased(
+  fileId: string,
+  fileKey: Uint8Array | (() => Promise<Uint8Array>) | null,
+  extension: string,
+  localEncryptedUri: string,
+  sizeBytes: number | null | undefined,
+  chunkCount: number | null | undefined,
+  chunkSize: number | null | undefined,
+  options: PreviewDecryptOptions,
+): Promise<string> {
   await ensureCacheDir();
   throwIfAborted(options.signal);
 
@@ -858,7 +895,6 @@ export async function decryptToString(
   });
 }
 
-const PREVIEW_ABORT_SETTLE_MS = 3_000;
 
 /**
  * Clear all cached preview files — every decrypted plaintext copy under
@@ -871,9 +907,15 @@ const PREVIEW_ABORT_SETTLE_MS = 3_000;
  * launch / session end with nobody signed in (App.tsx).
  *
  * Order: delete the directory, abort every decrypt still in flight and wait
- * (bounded) for them to settle — an in-flight download would otherwise finish
- * AFTER the purge and write a fresh plaintext file — then delete again to
- * catch anything written in between. Never throws.
+ * for them to settle — an in-flight download would otherwise finish AFTER the
+ * purge and write a fresh plaintext file — then delete again to catch
+ * anything written in between. Never throws.
+ *
+ * Round 3 (#141 Codex P1): this runs INSIDE `plaintextGate.purge()` (see
+ * account-cleanup.ts), which has already closed the gate — so no replacement
+ * decrypt can be queued behind an aborted one — and drained every job's lease
+ * (bounded by PLAINTEXT_DRAIN_TIMEOUT_MS, not the old fixed 3 s). A job still
+ * running past that bound finds its lease invalid and deletes its own output.
  */
 export async function clearPreviewCache(): Promise<void> {
   const remove = () => FileSystem.deleteAsync(PREVIEW_CACHE_DIR, { idempotent: true }).catch(() => {});
@@ -883,7 +925,7 @@ export async function clearPreviewCache(): Promise<void> {
   await Promise.race([
     previewDecrypts.abortAll(),
     new Promise<void>((resolve) => {
-      timer = setTimeout(resolve, PREVIEW_ABORT_SETTLE_MS);
+      timer = setTimeout(resolve, PLAINTEXT_DRAIN_TIMEOUT_MS);
     }),
   ]).catch(() => {});
   if (timer) clearTimeout(timer);

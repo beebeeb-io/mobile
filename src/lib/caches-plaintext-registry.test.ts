@@ -136,3 +136,33 @@ describe('writers that must delete their own copy', () => {
     expect(files).toMatch(/\} catch \(err\) \{\s*if \(uploadUri\) void discardUploadCacheCopy\(uploadUri, asset\.uri\);/);
   });
 });
+
+describe('task 1593 round 3 — every plaintext writer goes through the purge gate', () => {
+  // A registered plaintext writer that does not take a lease from
+  // lib/plaintext-gate.ts can write AFTER the sign-out sweep (#141 Codex P1).
+  const writers = cachesWriters();
+  test('every file that writes a registered plaintext Library/Caches path imports plaintext-gate', () => {
+    const offenders = [];
+    const checked = new Set();
+    for (const w of writers) {
+      const entry = w.example ? cachesEntryFor(w.example) : null;
+      if (!entry?.plaintext) continue;
+      if (/cleanup only/.test(entry.writer)) continue; // deletes, never writes
+      const file = w.where.replace(/:\d+$/, '');
+      checked.add(file);
+      const src = readFileSync(join(SRC, file), 'utf8');
+      if (!/from '[./]*(?:lib\/)?plaintext-gate'/.test(src)) {
+        offenders.push(w.where);
+      }
+    }
+    // The scan must have checked the known writers, or it proves nothing.
+    expect(checked.size).toBeGreaterThanOrEqual(12);
+    expect(offenders).toEqual([]);
+  });
+
+  test('the JS writers of the NATIVE plaintext registry are gated too (thumbnails, names)', () => {
+    for (const f of ['lib/thumbnail-cache.ts', 'lib/name-cache.ts']) {
+      expect(readFileSync(join(SRC, f), 'utf8')).toMatch(/gatedPlaintextWrite\(/);
+    }
+  });
+});

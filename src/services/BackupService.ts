@@ -18,6 +18,7 @@
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as FileSystem from 'expo-file-system/legacy';
+import { gatedPlaintextWrite } from '../lib/plaintext-gate';
 import * as SecureStore from 'expo-secure-store';
 import { Platform } from 'react-native';
 
@@ -1153,7 +1154,10 @@ async function writeManifest(manifest: DeviceManifest, deviceFolderId: string): 
   const uri = `${FileSystem.cacheDirectory}device_manifest_${fileId}.json`;
   const enc = requireEncryption();
 
-  await FileSystem.writeAsStringAsync(uri, json);
+  // Task 1593 round 3 — plaintext writer, gated by the sign-out purge.
+  await gatedPlaintextWrite('device manifest', uri, FileSystem, () =>
+    FileSystem.writeAsStringAsync(uri, json),
+  );
   try {
     await encryptedUpload({
       fileId,

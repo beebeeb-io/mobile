@@ -17,7 +17,15 @@
  * aborted (but before it finished cleaning up) waits for that job to settle
  * and then starts a fresh one, so the doomed job's cleanup (deleting its
  * partial output) can never delete the fresh job's output.
+ *
+ * Task 1593 round 3 (#141 Codex P1): with a `gate`, every job holds a
+ * plaintext-writer lease for its whole life. A purge closing the gate aborts
+ * every job, and — the part `abortAll()` alone could not guarantee — `run()`
+ * then REFUSES new work (rejects with `PlaintextGateClosedError`) instead of
+ * queueing a replacement decrypt behind the aborted one, until the gate
+ * reopens for a new session.
  */
+import type { PlaintextGate, PlaintextLease } from './plaintext-gate';
 
 export type JobStart<T> = (signal: AbortSignal) => Promise<T>;
 
@@ -40,11 +48,25 @@ function abortError(): Error {
   return error;
 }
 
-export function createInFlightShare<T>() {
+export interface InFlightShareOptions {
+  /** Plaintext-writer gate (task 1593 round 3); each job holds one lease. */
+  gate?: PlaintextGate;
+  /** Lease label, for the refusal message. */
+  label?: string;
+}
+
+export function createInFlightShare<T>(options: InFlightShareOptions = {}) {
   const inFlight = new Map<string, Entry<T>>();
+  const { gate, label = 'decrypt' } = options;
 
   function launch(key: string, start: JobStart<T>, after?: Promise<unknown>): Entry<T> {
+    // Throws while a purge has the gate closed — nothing is queued.
+    const lease: PlaintextLease | undefined = gate?.acquire(label);
     const controller = new AbortController();
+    if (lease) {
+      if (lease.signal.aborted) controller.abort();
+      else lease.signal.addEventListener('abort', () => controller.abort(), { once: true });
+    }
     const entry: Entry<T> = {
       controller,
       waiters: 0,
@@ -59,6 +81,7 @@ export function createInFlightShare<T>() {
       : start(controller.signal);
     entry.promise = run.finally(() => {
       entry.settled = true;
+      lease?.release();
       if (inFlight.get(key) === entry) inFlight.delete(key);
     });
     // The shared promise must never surface as an unhandled rejection when
@@ -77,7 +100,11 @@ export function createInFlightShare<T>() {
     } else {
       // No job, or a job every caller abandoned that is still cleaning up:
       // start a fresh one, sequenced after the doomed one.
-      entry = launch(key, start, entry?.promise);
+      try {
+        entry = launch(key, start, entry?.promise);
+      } catch (error) {
+        return Promise.reject(error);
+      }
     }
     const shared = entry;
     shared.waiters += 1;

@@ -33,6 +33,7 @@ mock.module('expo-file-system/legacy', () => ({
 
 type Pending = { outputPath: string; signal?: AbortSignal; finish: () => void; fail: (e) => void };
 const nativeCalls: Pending[] = [];
+let ignoreAbort = false;
 mock.module('../../modules/beebeeb-crypto', () => ({
   isNativeAvailable: true,
   downloadAndDecryptFileNative: (_h, _api, _tok, _id, outputPath, opts) =>
@@ -45,7 +46,9 @@ mock.module('../../modules/beebeeb-crypto', () => ({
         finish: () => { files.set(outputPath, 5000); resolve({ outputUri: outputPath, plaintextSize: 5000, chunksDecrypted: 1 }); },
         fail: reject,
       };
-      opts?.signal?.addEventListener('abort', () => reject(Object.assign(new Error('cancelled'), { name: 'AbortError' })));
+      // A cancellation-RESISTANT job (round 3) ignores the abort and finishes
+      // (writing its whole plaintext) when the test says so.
+      if (!ignoreAbort) opts?.signal?.addEventListener('abort', () => reject(Object.assign(new Error('cancelled'), { name: 'AbortError' })));
       nativeCalls.push(entry);
     }),
 }));
@@ -74,6 +77,7 @@ mock.module('./offline-manager', () => ({
 mock.module('@react-native-community/netinfo', () => ({ default: { fetch: async () => ({ isConnected: true }) } }));
 
 const nd = await import('./native-decrypt');
+const { plaintextGate } = await import('./plaintext-gate');
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
 async function until(pred: () => boolean) {
@@ -85,6 +89,8 @@ beforeEach(() => {
   deletes.length = 0;
   nativeCalls.length = 0;
   readDirHook = null;
+  ignoreAbort = false;
+  plaintextGate.open(); // a previous test's purge leaves it closed
 });
 
 describe('task 1593 round 2 — P2-C: a close in the window after the last abort check', () => {
@@ -219,5 +225,59 @@ describe('clearPreviewCache — the sign-out purge of decrypted previews', () =>
     expect(nativeCalls[0].signal.aborted).toBe(true);
     expect((await p).name).toBe('AbortError');
     expect(files.has('file:///cache/preview/f5.pdf')).toBe(false);
+  });
+});
+
+describe('task 1593 round 3 — #141 Codex P1: no replacement decrypt behind the sign-out purge', () => {
+  // The purge exactly as account-cleanup.ts runs it.
+  const signOutPurge = () => plaintextGate.purge(() => nd.clearPreviewCache());
+
+  test('a caller arriving while the purge runs is REFUSED — nothing is queued behind the aborted job', async () => {
+    ignoreAbort = true;
+    const a = nd.decryptToTempFile('r1', null, 'pdf', 5000, 1, 7).catch((e) => e);
+    await until(() => nativeCalls.length === 1);
+    const purge = signOutPurge();
+    await tick();
+    const b = nd.decryptToTempFile('r1', null, 'pdf', 5000, 1, 7).catch((e) => e);
+    nativeCalls[0].finish();
+    await purge;
+    expect((await a).name).toBe('AbortError');
+    for (let i = 0; i < 10; i++) await tick();
+    expect(nativeCalls.length).toBe(1); // no replacement download ever started
+    expect(files.has('file:///cache/preview/r1.pdf')).toBe(false);
+    expect((await b).name).toBe('AbortError');
+    // …and the gate stays closed until a new session opens it.
+    const c = await nd.decryptToTempFile('r1', null, 'pdf', 5000, 1, 7).catch((e) => e);
+    expect(c.name).toBe('AbortError');
+    expect(nativeCalls.length).toBe(1);
+  });
+
+  test('a cancellation-resistant native job slower than the old 3 s wait still ends with NO plaintext file', async () => {
+    ignoreAbort = true;
+    const a = nd.decryptToTempFile('r2', null, 'pdf', 5000, 1, 7).catch((e) => e);
+    await until(() => nativeCalls.length === 1);
+    let purgeDone = false;
+    const purge = signOutPurge().then(() => { purgeDone = true; });
+    await tick();
+    // Codex's sequence: a caller arrives after the job was aborted.
+    const b = nd.decryptToTempFile('r2', null, 'pdf', 5000, 1, 7).catch((e) => e);
+    await new Promise((r) => setTimeout(r, 3_300));
+    expect(purgeDone).toBe(false); // the purge waits for the job, not a fixed 3 s
+    nativeCalls[0].finish(); // the native job writes its whole plaintext now
+    await purge;
+    expect((await a).name).toBe('AbortError');
+    expect((await b).name).toBe('AbortError');
+    for (let i = 0; i < 20; i++) await tick();
+    expect(nativeCalls.length).toBe(1);
+    expect(files.has('file:///cache/preview/r2.pdf')).toBe(false);
+  }, 10_000);
+
+  test('a new session reopens the gate: previews decrypt again', async () => {
+    await signOutPurge();
+    plaintextGate.open();
+    const p = nd.decryptToTempFile('r3', null, 'pdf', 5000, 1, 7);
+    await until(() => nativeCalls.length === 1);
+    nativeCalls[0].finish();
+    expect(await p).toBe('file:///cache/preview/r3.pdf');
   });
 });
