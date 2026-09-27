@@ -296,6 +296,101 @@ export function findLargestJpegSpan(bytes: Uint8Array): JpegSpan | null {
   return null;
 }
 
+/**
+ * The FIRST read attempt's byte length, when scanning a RAW file for its
+ * embedded preview (task 1569 P1 fix, Codex review on PRs #126/#127 — see
+ * `scanForLargestJpegSpan`'s own doc comment for the bug this replaces).
+ * Chosen from real measurement, not a guess: scanning all 6 of this task's
+ * real fixtures (`e2e/fixtures/preview-matrix/raw/`, CR2/CR3/ARW/NEF/RAF/DNG)
+ * for their own largest qualifying embedded-JPEG span found the span's own
+ * trailing byte offset (i.e. how far into the file you must read to have
+ * captured the WHOLE preview) at 7.0% / 27.6% / 14.3% / 3.6% / 7.2% / 33.4%
+ * of each file's total size — every one comfortably inside a fixed 8MB for
+ * these (2.4-6.9MB) fixtures, and the absolute end-offset (not just the
+ * percentage) tops out at 1.45MB (CR3). Preview JPEG size scales with the
+ * camera's OUTPUT resolution, not with total file size (which mostly grows
+ * with raw sensor bit depth/compression) — a 45MP body's preview is larger
+ * than these fixtures' but not proportionally to a 150MB RAW file, so 8MB
+ * carries wide margin for real-world files this size too, not just these
+ * exact samples.
+ */
+export const RAW_PREVIEW_SCAN_INITIAL_BYTES = 8 * 1024 * 1024;
+
+/**
+ * The hard ceiling `scanForLargestJpegSpan` will never read past, no matter
+ * how large the file or how many growth steps it takes. This is the actual
+ * fix for the P1 finding: regardless of a 50-150MB (or larger) camera RAW's
+ * true size, this function will request at most this many bytes from disk —
+ * bounding peak JS-heap usage to a small, fixed multiple of THIS constant
+ * (base64 string + decoded binary string + Uint8Array), never of the file's
+ * own size. Four steps of `RAW_PREVIEW_SCAN_GROWTH_FACTOR` (×4) growth from
+ * the initial 8MB reaches this cap (8 -> 32 -> 128MB, so the cap below sits
+ * between the 2nd and 3rd step) — wide margin above the ~1.5MB worst-case
+ * real offset measured above for a layout this reader has never actually
+ * seen, without ever approaching "read the whole file" territory again.
+ */
+export const RAW_PREVIEW_SCAN_MAX_BYTES = 32 * 1024 * 1024;
+
+/** How much each retry multiplies the previous read length by, when the
+ * previous (smaller) read found no qualifying preview. 4x reaches the cap in
+ * one growth step from the initial 8MB (8MB -> 32MB) — this reader is a
+ * safety net for a RAW layout convention this task's 6 real fixtures never
+ * exhibited (every one of them found its preview inside the FIRST read), not
+ * a path expected to run often, so a fast ramp to the cap beats many small
+ * steps that each cost a full re-read of everything read so far. */
+const RAW_PREVIEW_SCAN_GROWTH_FACTOR = 4;
+
+/** Reads up to `length` bytes from the start of the file being scanned.
+ * Implemented by `raw-extract.ts` as a single bounded
+ * `FileSystem.readAsStringAsync(uri, { encoding: Base64, position: 0, length
+ * })` call, decoded to bytes — never a read of the whole file. */
+export type BoundedByteReader = (length: number) => Promise<Uint8Array>;
+
+/**
+ * Drives `readBytes` with a geometrically growing length — starting at
+ * `RAW_PREVIEW_SCAN_INITIAL_BYTES`, multiplying by `RAW_PREVIEW_SCAN_GROWTH_FACTOR`
+ * on each retry, always clamped to both `capBytes` and `fileSizeBytes` —
+ * stopping the instant `findLargestJpegSpan` finds a qualifying span in what
+ * has been read so far, or once neither the cap nor the file's own size
+ * allow reading any more. This is the fix for the P1 Codex finding on PRs
+ * #126/#127: `raw-extract.ts`'s `readFileBytes` used to call
+ * `FileSystem.readAsStringAsync` with NO `length` at all, base64-round-
+ * tripping the entire RAW file — for an ordinary 50-150MB camera RAW, that
+ * is several hundred MB of live JS-heap strings/arrays at once (the base64
+ * string, `atob`'s decoded binary string, and the final `Uint8Array`, all
+ * proportional to the FULL file size), which froze or crashed the preview.
+ * This function instead bounds every single read to at most `capBytes`
+ * (`RAW_PREVIEW_SCAN_MAX_BYTES` by default) regardless of how large the file
+ * claims to be — verified by a dedicated unit test that never sees a
+ * requested length exceed the cap even for a 500MB synthetic file that never
+ * yields a qualifying span at all (the adversarial case: a naive "keep
+ * growing until found" loop would otherwise march all the way up to the
+ * full file size).
+ *
+ * Kept here (not in the impure `raw-extract.ts`) specifically so it stays
+ * unit-testable with a mock `readBytes` — see this file's own top comment on
+ * why importing `expo-file-system/legacy` at module scope segfaults `bun
+ * test`; this function takes the read as a plain injected callback instead,
+ * so it has no such import and no such problem.
+ */
+export async function scanForLargestJpegSpan(
+  fileSizeBytes: number,
+  readBytes: BoundedByteReader,
+  capBytes: number = RAW_PREVIEW_SCAN_MAX_BYTES,
+  initialBytes: number = RAW_PREVIEW_SCAN_INITIAL_BYTES,
+): Promise<{ bytes: Uint8Array; span: JpegSpan | null }> {
+  let length = Math.max(0, Math.min(initialBytes, fileSizeBytes, capBytes));
+  let bytes: Uint8Array = new Uint8Array(0);
+  for (;;) {
+    bytes = length > 0 ? await readBytes(length) : new Uint8Array(0);
+    const span = findLargestJpegSpan(bytes);
+    if (span || length >= capBytes || length >= fileSizeBytes) {
+      return { bytes, span };
+    }
+    length = Math.min(length * RAW_PREVIEW_SCAN_GROWTH_FACTOR, capBytes, fileSizeBytes);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Minimal TIFF/EXIF tag reader — see this file's top doc comment for why
 // this exists instead of a third-party library (exifr's only RN-resolvable

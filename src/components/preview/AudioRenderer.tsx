@@ -73,9 +73,24 @@ export function AudioRenderer({
   const togglePlayback = () => {
     if (isPlaying) {
       player.pause();
-    } else {
-      player.play();
+      return;
     }
+    // Task 1568 (Codex P2 follow-up, PR #125 review): once a track reaches
+    // the end, `status.playing` becomes false but `status.currentTime` stays
+    // parked AT `duration` — this branch showed a Play button, but calling
+    // `player.play()` from that end position does not rewind the underlying
+    // native player, so pressing Play did nothing audible. `didJustFinish` is
+    // an edge-triggered flag (only true for the status tick right at the
+    // end, not any time after), so it alone isn't enough if the user waits
+    // before pressing Play again — `currentTime >= duration` is the
+    // level-triggered check that stays true the whole time the track sits at
+    // its end, so this ORs both rather than relying on either alone.
+    const finished = status.didJustFinish || (duration > 0 && status.currentTime >= duration);
+    if (finished) {
+      void player.seekTo(0).then(() => player.play());
+      return;
+    }
+    player.play();
   };
 
   return (

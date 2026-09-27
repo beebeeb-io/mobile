@@ -14,6 +14,9 @@ import {
   findLargestJpegSpan,
   mapExifToRawInfo,
   parseTiffExifTags,
+  RAW_PREVIEW_SCAN_INITIAL_BYTES,
+  RAW_PREVIEW_SCAN_MAX_BYTES,
+  scanForLargestJpegSpan,
 } from './raw-preview';
 
 // ---------------------------------------------------------------------------
@@ -227,6 +230,122 @@ describe('findLargestJpegSpan', () => {
     expect(span).not.toBeNull();
     expect(span!.end - span!.start).toBe(large.length);
     expect(span!.start).toBe(small.length + 2); // after the 2 junk bytes
+  });
+});
+
+// ---------------------------------------------------------------------------
+// scanForLargestJpegSpan — bounded/adaptive read loop (task 1569 P1 fix,
+// Codex review on PRs #126/#127): `raw-extract.ts`'s `extractRawPreview` used
+// to hand `readFileBytes` no `length` at all, base64-round-tripping the
+// ENTIRE RAW file into JS (several × its on-disk size once you count the b64
+// string, the `atob`-decoded binary string, and the final `Uint8Array` — a
+// 50-150MB camera RAW could hold multiple hundred-MB strings on the JS heap
+// at once). This function is the fix: it drives a caller-supplied
+// `readBytes(length)` with a geometrically growing length (starting at
+// `RAW_PREVIEW_SCAN_INITIAL_BYTES`, capped at `RAW_PREVIEW_SCAN_MAX_BYTES`
+// AND at the file's own size), stopping the moment `findLargestJpegSpan`
+// finds a qualifying span in what's been read so far — never reading more of
+// the file than it needs to, and NEVER requesting more than the cap
+// regardless of how large the file claims to be. The impure counterpart
+// (`raw-extract.ts`) cannot be imported here — see this file's own top
+// comment on why importing `expo-file-system/legacy` at module scope
+// segfaults `bun test` — so the read itself is injected as a plain async
+// callback, keeping this function (and this test) fully pure.
+// ---------------------------------------------------------------------------
+
+describe('scanForLargestJpegSpan', () => {
+  test('never requests more than the hard cap from a huge synthetic file, even when no JPEG is ever found', async () => {
+    // A 500MB file that RETURNS ONLY ZERO BYTES (no JPEG anywhere) is the
+    // adversarial case this test exists for: with no qualifying span ever
+    // found, the old "just read the whole thing" approach — and a naive
+    // "keep growing forever" reader — would both march the requested length
+    // all the way up to the full (here: fictional) 500MB file size. This
+    // proves the growth loop stops itself at the cap instead.
+    const hugeFileSize = 500 * 1024 * 1024;
+    const requestedLengths: number[] = [];
+    const readBytes = async (length: number) => {
+      requestedLengths.push(length);
+      return new Uint8Array(length); // all zero bytes — never a JPEG marker
+    };
+
+    const { span } = await scanForLargestJpegSpan(hugeFileSize, readBytes);
+
+    expect(span).toBeNull();
+    expect(requestedLengths.length).toBeGreaterThan(0);
+    for (const length of requestedLengths) {
+      expect(length).toBeLessThanOrEqual(RAW_PREVIEW_SCAN_MAX_BYTES);
+    }
+    // The loop must actually have grown past the initial chunk (proving it
+    // adapts, not just reads one fixed-size chunk and gives up) and must
+    // have stopped exactly at the cap (proving it doesn't grow forever).
+    expect(requestedLengths[0]).toBe(RAW_PREVIEW_SCAN_INITIAL_BYTES);
+    expect(requestedLengths[requestedLengths.length - 1]).toBe(RAW_PREVIEW_SCAN_MAX_BYTES);
+  });
+
+  test('finds a qualifying span in the initial read and never grows further', async () => {
+    const filler = (n: number) => new Array(n).fill(0);
+    const jpeg = buildFakeJpeg(filler(5000)); // well over MIN_EMBEDDED_JPEG_BYTES
+    const fileBytes = new Uint8Array(jpeg);
+    const requestedLengths: number[] = [];
+    const readBytes = async (length: number) => {
+      requestedLengths.push(length);
+      return fileBytes.subarray(0, Math.min(length, fileBytes.length));
+    };
+
+    const { span, bytes } = await scanForLargestJpegSpan(fileBytes.length, readBytes);
+
+    expect(span).toEqual({ start: 0, end: fileBytes.length });
+    expect(bytes.length).toBeLessThanOrEqual(RAW_PREVIEW_SCAN_INITIAL_BYTES);
+    expect(requestedLengths).toEqual([Math.min(RAW_PREVIEW_SCAN_INITIAL_BYTES, fileBytes.length)]);
+  });
+
+  test('grows past the initial read only when the first attempt found nothing, then stops as soon as a span is found', async () => {
+    // A qualifying JPEG that only exists past the INITIAL read window —
+    // proves the adaptive growth actually finds it rather than giving up
+    // after the first (too-small) attempt.
+    const filler = (n: number) => new Array(n).fill(0);
+    const paddingBeforeJpeg = RAW_PREVIEW_SCAN_INITIAL_BYTES + 1024; // just past the first read
+    const jpeg = buildFakeJpeg(filler(5000));
+    const fileBytes = new Uint8Array([...filler(paddingBeforeJpeg), ...jpeg]);
+    const requestedLengths: number[] = [];
+    const readBytes = async (length: number) => {
+      requestedLengths.push(length);
+      return fileBytes.subarray(0, Math.min(length, fileBytes.length));
+    };
+
+    const { span } = await scanForLargestJpegSpan(fileBytes.length, readBytes);
+
+    expect(span).toEqual({ start: paddingBeforeJpeg, end: paddingBeforeJpeg + jpeg.length });
+    expect(requestedLengths.length).toBeGreaterThan(1); // had to grow at least once
+    expect(requestedLengths[requestedLengths.length - 1]).toBeLessThanOrEqual(RAW_PREVIEW_SCAN_MAX_BYTES);
+  });
+
+  test('never issues a read at all for an empty (zero-byte) file', async () => {
+    const requestedLengths: number[] = [];
+    const readBytes = async (length: number) => {
+      requestedLengths.push(length);
+      return new Uint8Array(length);
+    };
+
+    const { span, bytes } = await scanForLargestJpegSpan(0, readBytes);
+
+    expect(span).toBeNull();
+    expect(bytes.length).toBe(0);
+    expect(requestedLengths).toEqual([]);
+  });
+
+  test('a file smaller than the initial chunk is read exactly once, for its own full size (not the initial constant)', async () => {
+    const tinyFileSize = 1234; // smaller than RAW_PREVIEW_SCAN_INITIAL_BYTES
+    const requestedLengths: number[] = [];
+    const readBytes = async (length: number) => {
+      requestedLengths.push(length);
+      return new Uint8Array(length);
+    };
+
+    const { span } = await scanForLargestJpegSpan(tinyFileSize, readBytes);
+
+    expect(span).toBeNull();
+    expect(requestedLengths).toEqual([tinyFileSize]);
   });
 });
 

@@ -1078,6 +1078,47 @@ async function loadDecryptedPhotoForViewer(
   }
 }
 
+/**
+ * Task 1570 (Codex P2 follow-up, PR #126 review): decrypts a swipe-pager
+ * entry's RAW source file to a per-session temp file, for `PhotoPage` to hand
+ * to `RawRenderer` — the per-entry counterpart to the single-file `isRaw`
+ * effect's `fetchAndDecrypt()` call, which is bound to the CURRENT file only
+ * and can't be reused per swipe-pager entry. Deliberately NOT routed through
+ * `loadDecryptedPhotoForViewer`'s thumbnail-first / persistent-photo-cache
+ * logic above: `<Image>` can't decode camera RAW sensor data at all, so
+ * there is no thumbnail rung to try, and RAW's own preview is extracted by
+ * `RawRenderer`+`raw-extract.ts` from this decrypted SOURCE file, not cached
+ * as a directly-displayable photo — matching the existing single-file `isRaw`
+ * effect's own temp-file (not persistent-cache) pattern exactly, including
+ * its caller-owns-cleanup contract (`PhotoPage`'s own cleanup effect, mirror
+ * of `PreviewScreen`'s `tempRawUriRef`).
+ */
+async function loadDecryptedRawSourceForViewer(
+  entry: PhotoPageEntry,
+  getFileKeyBytes: FileKeyLoader,
+  getMasterKeyHandleId: MasterKeyHandleLoader,
+  onStage?: (stage: PhotoLoadStage) => void,
+  onProgress?: (event: PreviewLoadProgressEvent) => void,
+  signal?: AbortSignal,
+): Promise<{ uri: string; kind: ImagePreviewKind }> {
+  throwIfPreviewAborted(signal);
+  const entryFileName = entry.display_name ?? entry.name_encrypted;
+  const ext = extensionForRaw(entryFileName);
+  onStage?.('downloading');
+  onStage?.('decrypting');
+  const decryptedUri = await decryptToTempFile(
+    entry.id,
+    () => getFileKeyBytes(entry.id),
+    ext,
+    entry.size_bytes,
+    entry.chunk_count,
+    getMasterKeyHandleId(),
+    { onProgress, signal },
+  );
+  throwIfPreviewAborted(signal);
+  return { uri: decryptedUri, kind: 'original' };
+}
+
 // ---------------------------------------------------------------------------
 // Task 0799 — "View Original" progressive de-blur
 // ---------------------------------------------------------------------------
@@ -1299,6 +1340,7 @@ const PhotoPage = React.memo(function PhotoPage({
   locked,
   unlocking,
   onRequestUnlock,
+  onExifInfo,
 }: {
   entry: PhotoPageEntry;
   shouldLoadFull: boolean;
@@ -1317,10 +1359,26 @@ const PhotoPage = React.memo(function PhotoPage({
   /** True while THIS entry's Face ID prompt is in flight (disables its own unlock control only). */
   unlocking: boolean;
   onRequestUnlock: (fileId: string) => void;
+  /**
+   * Task 1570 (Codex P2 follow-up, PR #126 review): bubbles a RAW entry's
+   * parsed EXIF summary up to `PreviewScreen`'s Info sheet, same contract as
+   * `RawRenderer`'s own `onExifInfo` prop (this just forwards it) — every
+   * page gets the SAME parent state setter, but only the current page's
+   * `shouldLoadFull` gate ever actually mounts a `RawRenderer` that calls it.
+   */
+  onExifInfo?: (info: RawExifInfo | null) => void;
 }) {
   const { colors: c } = useTheme();
   const { isUnlocked, getFileKeyBytes, getMasterKeyHandleId } = useCrypto();
   const isVideoEntry = !!entry.mime_type && entry.mime_type.startsWith('video/');
+  // Task 1570 — RAW (CR2/CR3/ARW/NEF/RAF/DNG) joining the swipe pager (Codex
+  // P2 follow-up, PR #126 review: `showPager` used to be `isImage || isVideo`
+  // only, so opening a RAW file from a multi-item Photos `photoList` dropped
+  // out of the pager into the single-file RAW branch, losing the ability to
+  // swipe to adjacent photos). `entry.display_name` is already the decrypted
+  // name (same fallback `currentFileName` uses below for the CURRENT entry).
+  const entryFileName = entry.display_name ?? entry.name_encrypted;
+  const isRawEntry = fileCategory(entry.mime_type ?? undefined, entryFileName) === 'raw';
   const [uri, setUri] = useState<string | null>(null);
   const [uriKind, setUriKind] = useState<ImagePreviewKind | null>(null);
   const [thumbnailUri, setThumbnailUri] = useState<string | null>(null);
@@ -1340,6 +1398,13 @@ const PhotoPage = React.memo(function PhotoPage({
   // so the failsafe watchdog can tell "rendered" from "spinning forever".
   const [imageLoaded, setImageLoaded] = useState(false);
   const sawOriginalProgressRef = useRef(false);
+  // Task 1570 — this page's own decrypted RAW SOURCE temp file (distinct from
+  // `RawRenderer`'s own extracted-preview temp file, which it cleans up
+  // itself). Per-session temp file, not the persistent photo cache (see
+  // `loadDecryptedRawSourceForViewer`'s doc comment) — cleaned up on unmount
+  // below, mirroring `PreviewScreen`'s own `tempRawUriRef` for the single-file
+  // case.
+  const tempRawSourceUriRef = useRef<string | null>(null);
   const player = useVideoPlayer(isVideoEntry && uri ? uri : null, (p) => {
     p.loop = false;
   });
@@ -1429,34 +1494,61 @@ const PhotoPage = React.memo(function PhotoPage({
       if (!cancelled) setPerformanceProfile(profile);
     });
 
-    loadDecryptedPhotoForViewer(
-      entry,
-      isUnlocked,
-      getFileKeyBytes,
-      getMasterKeyHandleId,
-      {
-        profile: previewProfile,
-        allowOriginal: isVideoEntry,
-        forceOriginal: false,
-      },
-      (nextStage) => {
-        if (!cancelled) {
-          setStage(nextStage);
-          setProgress((prev) => ({ ...prev, stage: nextStage }));
-        }
-      },
-      (event) => {
-        if (!cancelled) applyNativeProgress(event, setProgress);
-      },
-      controller.signal,
-    )
+    // Task 1570 — RAW joining the pager: a RAW entry skips the thumbnail-
+    // first/persistent-cache logic `loadDecryptedPhotoForViewer` uses for
+    // images/video entirely (there is no thumbnail rung for `<Image>` to try
+    // — it can't decode RAW sensor data) and goes straight to
+    // `loadDecryptedRawSourceForViewer`'s plain decrypt-to-temp-file, same
+    // shape (`{ uri, kind }`) so every `.then`/`.catch`/`.finally` handler
+    // below stays shared between both branches.
+    const loadPromise = isRawEntry
+      ? loadDecryptedRawSourceForViewer(
+          entry,
+          getFileKeyBytes,
+          getMasterKeyHandleId,
+          (nextStage) => {
+            if (!cancelled) {
+              setStage(nextStage);
+              setProgress((prev) => ({ ...prev, stage: nextStage }));
+            }
+          },
+          (event) => {
+            if (!cancelled) applyNativeProgress(event, setProgress);
+          },
+          controller.signal,
+        )
+      : loadDecryptedPhotoForViewer(
+          entry,
+          isUnlocked,
+          getFileKeyBytes,
+          getMasterKeyHandleId,
+          {
+            profile: previewProfile,
+            allowOriginal: isVideoEntry,
+            forceOriginal: false,
+          },
+          (nextStage) => {
+            if (!cancelled) {
+              setStage(nextStage);
+              setProgress((prev) => ({ ...prev, stage: nextStage }));
+            }
+          },
+          (event) => {
+            if (!cancelled) applyNativeProgress(event, setProgress);
+          },
+          controller.signal,
+        );
+
+    loadPromise
       .then((loaded) => {
         if (!cancelled) {
           recordRuntimeTrace('preview.photo_page.render_ready', {
             fileId: entry.id,
             isVideo: isVideoEntry,
+            isRaw: isRawEntry,
             kind: loaded.kind,
           });
+          if (isRawEntry) tempRawSourceUriRef.current = loaded.uri;
           setUri(loaded.uri);
           setUriKind(loaded.kind);
         }
@@ -1466,6 +1558,7 @@ const PhotoPage = React.memo(function PhotoPage({
           recordRuntimeTrace('preview.photo_page.load_failed', {
             fileId: entry.id,
             isVideo: isVideoEntry,
+            isRaw: isRawEntry,
             ...previewErrorTraceFields(err),
           });
           setError(friendlyError(err));
@@ -1483,7 +1576,17 @@ const PhotoPage = React.memo(function PhotoPage({
       cancelled = true;
       controller.abort();
     };
-  }, [shouldLoadFull, uri, entry, isUnlocked, getFileKeyBytes, getMasterKeyHandleId, isVideoEntry, previewProfile, locked]);
+  }, [shouldLoadFull, uri, entry, isUnlocked, getFileKeyBytes, getMasterKeyHandleId, isVideoEntry, isRawEntry, previewProfile, locked]);
+
+  // Delete this page's own decrypted RAW SOURCE temp file on unmount — same
+  // pattern as `PreviewScreen`'s own `tempRawUriRef` cleanup for the
+  // single-file case (`RawRenderer` owns cleaning up its OWN separate
+  // extracted-preview temp file, not this one).
+  useEffect(() => {
+    return () => {
+      void cleanupTrackedTempFile(tempRawSourceUriRef, FileSystem.deleteAsync);
+    };
+  }, []);
 
   useEffect(() => {
     if (!shouldLoadFull || !isCurrent) return;
@@ -1650,13 +1753,18 @@ const PhotoPage = React.memo(function PhotoPage({
   // window something is wrong (undecodable bytes, oversized texture). Surface an
   // error instead of an endless spinner. Skips video (its own player) and waits
   // for the load/error callbacks that clear or trip it.
+  // Task 1570 — also skips RAW: `RawRenderer` manages its own internal
+  // loading/ready/failed state (extraction, then its OWN `<Image>` load) and
+  // never sets THIS component's `imageLoaded`, so without this exclusion the
+  // watchdog would always fire for a RAW page and show "This image couldn't
+  // be displayed" over a RawRenderer that is actually working fine.
   useEffect(() => {
-    if (!uri || isVideoEntry || imageLoaded || error) return;
+    if (!uri || isVideoEntry || isRawEntry || imageLoaded || error) return;
     const t = setTimeout(() => {
       setError((prev) => prev ?? "This image couldn't be displayed.");
     }, IMAGE_RENDER_WATCHDOG_MS);
     return () => clearTimeout(t);
-  }, [uri, isVideoEntry, imageLoaded, error]);
+  }, [uri, isVideoEntry, isRawEntry, imageLoaded, error]);
 
   return (
     <View style={[styles.photoPage, { width }]}>
@@ -1702,7 +1810,7 @@ const PhotoPage = React.memo(function PhotoPage({
           {error ? (
             <View style={styles.photoPageStatus}>
               <Text style={styles.photoPageStatusTitle}>
-                {isVideoEntry ? "Couldn't load video" : "Couldn't load image"}
+                {isVideoEntry ? "Couldn't load video" : isRawEntry ? "Couldn't load RAW file" : "Couldn't load image"}
               </Text>
               <Text style={styles.photoPageStatusSub}>
                 {error}
@@ -1716,6 +1824,18 @@ const PhotoPage = React.memo(function PhotoPage({
               nativeControls
               fullscreenOptions={{ enable: true }}
               allowsPictureInPicture
+            />
+          ) : uri && isRawEntry ? (
+            // Task 1570 — RAW joining the pager. `RawRenderer` owns its own
+            // loading/extraction/fallback states once handed this decrypted
+            // SOURCE uri (mirrors the single-file `isRaw` branch exactly);
+            // `error` above only ever covers the DECRYPT step failing.
+            <RawRenderer
+              uri={uri}
+              fileName={entryFileName}
+              formatLabel={rawFormatLabel(entryFileName, entry.mime_type)}
+              cacheKey={entry.id}
+              onExifInfo={onExifInfo}
             />
           ) : uri ? (
             <ProgressiveOriginalImage
@@ -2339,7 +2459,10 @@ export default function PreviewScreen() {
   // photo swipe-pager's position — see `formatPdfPageCounter`'s doc comment.
   const pageCounterLabel = isPdf
     ? (pdfPageInfo ? formatPdfPageCounter(pdfPageInfo.current, pdfPageInfo.total) : null)
-    : (hasSwipe && (isImage || isVideo) ? formatPdfPageCounter(currentPhotoIndex + 1, photoList.length) : null);
+    // Task 1570 — isRaw added: RAW now joins the swipe pager (see
+    // `showPager` below), so the "N / total" pill must show for a RAW page
+    // too, not just vanish for the one category that just gained paging.
+    : (hasSwipe && (isImage || isVideo || isRaw) ? formatPdfPageCounter(currentPhotoIndex + 1, photoList.length) : null);
 
   // ---------------------------------------------------------------------
   // Task 1563 — markdown preview + native text/code editor.
@@ -3923,6 +4046,12 @@ export default function PreviewScreen() {
         locked={isPagerPageGated(item.id, lockedFileIds, authenticatedFileIds, lockCheckReady)}
         unlocking={unlockingFileId === item.id}
         onRequestUnlock={handleUnlockCurrent}
+        // Task 1570 — RAW joining the pager: every page gets the SAME parent
+        // setter (matches the single-file branch's own `onExifInfo={setRawExifInfo}`
+        // for `RawRenderer`), but only the current page's `shouldLoadFull`
+        // gate ever actually mounts a `RawRenderer` that calls it — see
+        // `PhotoPage`'s own `onExifInfo` prop doc comment.
+        onExifInfo={setRawExifInfo}
       />
     ),
     [
@@ -3964,7 +4093,17 @@ export default function PreviewScreen() {
 
   if (isMediaPreview) {
     // When a photo list is provided, show a horizontal swipeable pager
-    const showPager = hasSwipe && (isImage || isVideo);
+    // Task 1570 (Codex P2 follow-up, PR #126 review): isRaw added. This was
+    // `isImage || isVideo` only, so opening a RAW file from a multi-item
+    // Photos `photoList` (DNG shows up in Photos as `image/x-adobe-dng`, and
+    // other RAW extensions are media candidates too) fell out of the pager
+    // into the single-file RAW branch below (`isRaw` render branch further
+    // down, ~line 4390) instead — swiping to adjacent photos was lost
+    // entirely. `PhotoPage` now handles a RAW entry itself (its own
+    // `isRawEntry` branch: decrypt the source file, hand it to
+    // `RawRenderer`), so RAW can safely join the pager the same way
+    // image/video already do.
+    const showPager = hasSwipe && (isImage || isVideo || isRaw);
     // 1346 — every scheme="dark" below (ScrollEdgeBlur, both GlassCircles,
     // the title/subtitle GlassCapsule, the e2e badge GlassCapsule) and every
     // colors.white/rgba(255,255,255,…) literal in this media branch is

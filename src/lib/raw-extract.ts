@@ -16,18 +16,31 @@ import {
   base64ToBytes,
   bytesToBase64,
   findJpegExifTiffOffset,
-  findLargestJpegSpan,
   mapExifToRawInfo,
   parseTiffExifTags,
+  scanForLargestJpegSpan,
   type RawExifInfo,
 } from './raw-preview';
 
 export type { RawExifInfo };
 
-/** Reads a local file into a Uint8Array via the same base64-roundtrip
- * `PreviewScreen.tsx`'s private `readFileAsArrayBuffer` uses. */
-async function readFileBytes(uri: string): Promise<Uint8Array> {
-  const b64 = await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 });
+/**
+ * Reads at most `length` bytes from the START of a local file via a single
+ * BOUNDED `readAsStringAsync({ position: 0, length })` call — never the
+ * whole file. This is the one primitive `scanForLargestJpegSpan` drives with
+ * a growing `length` (see that function's own doc comment for the full P1
+ * fix this replaces: reading the ENTIRE RAW file through base64->atob-
+ * >Uint8Array, several × its on-disk size on the JS heap for an ordinary
+ * 50-150MB camera RAW). `position`/`length` are expo-file-system's own
+ * documented bounded-range-read options (both required together — neither
+ * has an effect alone, per that library's own types).
+ */
+async function readFileBytesBounded(uri: string, length: number): Promise<Uint8Array> {
+  const b64 = await FileSystem.readAsStringAsync(uri, {
+    encoding: FileSystem.EncodingType.Base64,
+    position: 0,
+    length,
+  });
   return base64ToBytes(b64);
 }
 
@@ -56,9 +69,22 @@ export async function extractRawPreview(
   cacheDir: string,
   cacheKey: string,
 ): Promise<RawPreviewResult> {
-  const bytes = await readFileBytes(sourceUri);
+  // P1 fix (Codex review, PRs #126/#127): this used to be a single
+  // `readFileBytes(sourceUri)` with no length limit at all — the ENTIRE RAW
+  // file, base64-round-tripped through JS (see `readFileBytesBounded`'s own
+  // doc comment for exactly how many times over its own size that put on the
+  // JS heap). `scanForLargestJpegSpan` drives `readFileBytesBounded` with a
+  // small initial bounded read that grows only if needed, capped at
+  // `RAW_PREVIEW_SCAN_MAX_BYTES` regardless of `fileSizeBytes` — see that
+  // function's own doc comment (`raw-preview.ts`) for the real-fixture
+  // measurements behind the specific byte constants. `getInfoAsync` itself
+  // reads only filesystem metadata (stat), never file contents.
+  const info = await FileSystem.getInfoAsync(sourceUri);
+  const fileSizeBytes = info.exists ? info.size : 0;
+  const { bytes, span } = await scanForLargestJpegSpan(fileSizeBytes, (length) =>
+    readFileBytesBounded(sourceUri, length),
+  );
 
-  const span = findLargestJpegSpan(bytes);
   let previewUri: string | null = null;
   let jpegBytes: Uint8Array | null = null;
   if (span) {
