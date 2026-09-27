@@ -18,7 +18,7 @@ import { usePreventScreenCapture } from 'expo-screen-capture';
 import type { RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { fonts, radii, spacing } from '../theme';
+import { fonts, onAmber, radii, spacing } from '../theme';
 import { useTheme } from '../lib/theme-context';
 import { useAuth } from '../lib/auth';
 import { useCrypto } from '../lib/crypto-context';
@@ -97,18 +97,19 @@ export default function OnboardingScreen({ route, navigation, phrase: phraseProp
       paddingTop: insets.top + 22,
       paddingBottom: insets.bottom + 28,
     },
+    // Task 1591 bug 4 — the 48 pt BBLogo sat in a 44 pt wrapper box with no
+    // gap to the wordmark, so the mark overhung its box and ran into
+    // "beebeeb". The mark (already an amber tile) and the wordmark are now two
+    // siblings in a centered row with a fixed gap.
     header: {
       flexDirection: 'row',
       alignItems: 'center',
       marginBottom: spacing.xl,
     },
-    logoWrap: {
-      width: 44,
-      height: 44,
-      borderRadius: 12,
-      backgroundColor: c.ink,
+    brand: {
+      flexDirection: 'row',
       alignItems: 'center',
-      justifyContent: 'center',
+      gap: 10,
     },
     progress: {
       marginLeft: 'auto',
@@ -159,7 +160,11 @@ export default function OnboardingScreen({ route, navigation, phrase: phraseProp
       marginBottom: spacing.md,
     },
     wordCell: {
-      width: '47%',
+      // 1591 — `width: '47%'` left the right column short of the card's
+      // right padding (visible in the store capture); two cells now share
+      // the row exactly.
+      flexBasis: '40%',
+      flexGrow: 1,
       minHeight: 44,
       flexDirection: 'row',
       alignItems: 'center',
@@ -266,7 +271,8 @@ export default function OnboardingScreen({ route, navigation, phrase: phraseProp
     },
     buttonDisabled: { opacity: 0.45 },
     buttonText: {
-      color: c.ink,
+      // 1591 — text on the amber primary: fixed dark ink in both themes.
+      color: onAmber,
       fontSize: 15,
       fontWeight: '800',
       textAlign: 'center',
@@ -405,10 +411,10 @@ export default function OnboardingScreen({ route, navigation, phrase: phraseProp
         showsVerticalScrollIndicator={false}
       >
         <View style={styles.header}>
-          <View style={styles.logoWrap}>
-            <BBLogo size={48} />
+          <View style={styles.brand} testID="onboarding-brand">
+            <BBLogo size={36} />
+            <BBWordmark size={20} />
           </View>
-          <BBWordmark size={22} style={{ marginTop: 12, alignSelf: 'center' }} />
           <View style={styles.progress} accessibilityLabel={`Step ${stepNumber} of 4`}>
             {[1, 2, 3, 4].map((item) => (
               <View
@@ -455,14 +461,17 @@ export default function OnboardingScreen({ route, navigation, phrase: phraseProp
                 </View>
 
                 <View style={styles.buttonStack}>
+                  {/* Task 1591 bug 4 — ONE amber primary per screen (brand
+                      rule): "I've saved my recovery phrase" is the primary;
+                      copying is secondary. */}
                   <TouchableOpacity
-                    style={[styles.button, styles.primaryButton]}
+                    style={[styles.button, styles.secondaryButton]}
                     onPress={() => { void handleCopyWords(); }}
                     activeOpacity={0.82}
                     accessibilityRole="button"
                     accessibilityLabel="Copy all recovery words"
                   >
-                    <Text style={styles.buttonText}>
+                    <Text style={styles.secondaryButtonText}>
                       {copied ? 'Copied' : 'Copy all words'}
                     </Text>
                   </TouchableOpacity>
@@ -593,7 +602,7 @@ export default function OnboardingScreen({ route, navigation, phrase: phraseProp
                 accessibilityState={{ disabled: mountingFiles }}
               >
                 {mountingFiles ? (
-                  <ActivityIndicator color={c.ink} />
+                  <ActivityIndicator color={onAmber} />
                 ) : (
                   <Text style={styles.buttonText}>Enable Files access</Text>
                 )}

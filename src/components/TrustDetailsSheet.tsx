@@ -11,35 +11,29 @@
 import React, { useEffect, useState } from 'react';
 import {
   Modal,
-  Platform,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import * as Device from 'expo-device';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
-import { fonts, radii, spacing } from '../theme';
+import { fonts, onAmber, radii, spacing } from '../theme';
 import { BottomSheet, BottomSheetScrollView } from './sheet/BottomSheet';
 import { useTheme } from '../lib/theme-context';
 import { trustLocation, type FileEntry } from '../lib/api';
 import { formatBytes as formatSize } from '../lib/format';
 import EncryptionProof from './EncryptionProof';
+import {
+  TRUST_ENCRYPTED_ON_LABEL,
+  trustEncryptedOnValue,
+  trustKeySourceLabel,
+} from '../lib/trust-details';
 
 interface Props {
   file: FileEntry | null;
   fileName: string;
   onClose: () => void;
-}
-
-function deviceLabel(): string {
-  if (Platform.OS === 'web') return 'This browser';
-  const name = Device.deviceName?.trim();
-  if (name && name.length > 0) return name;
-  if (Platform.OS === 'ios') return 'This iPhone';
-  if (Platform.OS === 'android') return Device.modelName ? `This ${Device.modelName}` : 'This Android';
-  return 'This device';
 }
 
 function formatTimestamp(iso: string | null | undefined): string {
@@ -105,7 +99,6 @@ export default function TrustDetailsSheet({ file: fileProp, fileName: fileNamePr
   const { file, fileName } = shown;
 
   const loc = trustLocation(file.storage_pool_id);
-  const dev = deviceLabel();
   const sheetVisible = !!fileProp && !proofOpen;
 
   const header = (
@@ -162,7 +155,7 @@ export default function TrustDetailsSheet({ file: fileProp, fileName: fileNamePr
               />
               <DetailRow
                 label="Key source"
-                value="Derived from file ID"
+                value={trustKeySourceLabel(file)}
                 inkLabel={c.ink3}
                 inkValue={c.ink}
                 border={c.line}
@@ -175,8 +168,8 @@ export default function TrustDetailsSheet({ file: fileProp, fileName: fileNamePr
                 border={c.line}
               />
               <DetailRow
-                label="Encrypted by"
-                value={dev}
+                label={TRUST_ENCRYPTED_ON_LABEL}
+                value={trustEncryptedOnValue(file)}
                 inkLabel={c.ink3}
                 inkValue={c.ink}
                 border={c.line}
@@ -219,8 +212,8 @@ export default function TrustDetailsSheet({ file: fileProp, fileName: fileNamePr
                   accessibilityRole="button"
                   accessibilityLabel="Prove it"
                 >
-                  <Ionicons name="shield-checkmark" size={16} color={c.ink} />
-                  <Text style={[styles.proveBtnText, { color: c.ink }]}>Prove it</Text>
+                  <Ionicons name="shield-checkmark" size={16} color={onAmber} />
+                  <Text style={[styles.proveBtnText, { color: onAmber }]}>Prove it</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
                   style={[styles.rawBtn, { borderColor: c.line2 }]}

@@ -1,14 +1,16 @@
 /**
- * "Prove it" — split hex-dump comparison and raw-ciphertext download.
+ * "Prove it" — the decrypted file next to the stored ciphertext, plus the
+ * raw-ciphertext download.
  *
- * Shows the first 512 bytes of the file as it is stored on the server.
- * On the left, a readable-text view ("what you see"); on the right, the
- * raw hex dump ("what we store"). Once client-side AES-256-GCM ships,
- * the right side becomes random bytes and the comparison gets sharper.
+ * Left ("What you see"): the first 512 bytes of the file DECRYPTED on this
+ * device, read as text. Right ("What our server stores"): the first 512
+ * bytes of the ciphertext as the server holds it, as hex.
  *
- * This screen does not decrypt anything — the bytes shown on the left are
- * the same bytes shown on the right, decoded best-effort. The point is the
- * UX scaffolding: the panels light up automatically when crypto is real.
+ * Task 1591 (bug 2): this screen used to decrypt nothing — both panes showed
+ * the ciphertext, so "What you see" was noise too. It also printed the API
+ * download URL (a local dev address in a dev build) above the button; infrastructure
+ * URLs are not shown to users. The pane logic lives in
+ * src/lib/encryption-proof.ts.
  */
 
 import React, { useEffect, useState } from 'react';
@@ -26,39 +28,25 @@ import { Ionicons } from '@expo/vector-icons';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { fonts, radii, spacing } from '../theme';
+import { fonts, onAmber, radii, spacing } from '../theme';
 import { useTheme } from '../lib/theme-context';
-import { downloadFile, getDownloadUrl, trustLocation, type FileEntry } from '../lib/api';
+import { useCrypto } from '../lib/crypto-context';
+import { downloadFile, trustLocation, type FileEntry } from '../lib/api';
+import { decryptToTempFile } from '../lib/native-decrypt';
+import { isRequestUpload } from '../lib/file-request-crypto';
+import {
+  PROOF_BYTES,
+  PROOF_DECRYPT_MAX_BYTES,
+  bytesToHex,
+  proofSeePane,
+  type PlaintextPrefixState,
+} from '../lib/encryption-proof';
 
 interface Props {
   file: FileEntry;
   fileName: string;
   visible: boolean;
   onClose: () => void;
-}
-
-const PROOF_BYTES = 512;
-
-function bytesToHex(bytes: Uint8Array): string {
-  const out: string[] = [];
-  for (let i = 0; i < bytes.length; i++) {
-    out.push(bytes[i].toString(16).padStart(2, '0'));
-  }
-  return out.join(' ');
-}
-
-function bytesToReadable(bytes: Uint8Array): string {
-  const out: string[] = [];
-  for (let i = 0; i < bytes.length; i++) {
-    const b = bytes[i];
-    // Printable ASCII + common whitespace; everything else collapses to '.'
-    if ((b >= 0x20 && b < 0x7f) || b === 0x0a || b === 0x09) {
-      out.push(String.fromCharCode(b));
-    } else {
-      out.push('.');
-    }
-  }
-  return out.join('');
 }
 
 function base64ToBytes(b64: string): Uint8Array {
@@ -81,6 +69,44 @@ export default function EncryptionProof({ file, fileName, visible, onClose }: Pr
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [downloading, setDownloading] = useState(false);
+  const [plain, setPlain] = useState<PlaintextPrefixState>({ status: 'loading' });
+  const { getFileKeyBytes, getMasterKeyHandleId, getRequestContentKey } = useCrypto();
+
+  // The left pane: decrypt on this device (the same native path the preview
+  // uses, so a file that was just previewed is served from its decrypted
+  // cache) and keep only the first PROOF_BYTES.
+  useEffect(() => {
+    if (!visible) return;
+    let cancelled = false;
+    if (file.size_bytes > PROOF_DECRYPT_MAX_BYTES) {
+      setPlain({ status: 'too-large' });
+      return;
+    }
+    setPlain({ status: 'loading' });
+    (async () => {
+      try {
+        const request = isRequestUpload(file);
+        const ext = (fileName.includes('.') ? fileName.split('.').pop() : '')?.toLowerCase() || 'bin';
+        const path = await decryptToTempFile(
+          file.id,
+          request ? () => getRequestContentKey(file) : () => getFileKeyBytes(file.id),
+          ext,
+          file.size_bytes,
+          file.chunk_count,
+          request ? null : getMasterKeyHandleId(),
+        );
+        const b64 = await FileSystem.readAsStringAsync(path, {
+          encoding: FileSystem.EncodingType.Base64,
+          position: 0,
+          length: PROOF_BYTES,
+        });
+        if (!cancelled) setPlain({ status: 'ready', plaintext: base64ToBytes(b64) });
+      } catch {
+        if (!cancelled) setPlain({ status: 'failed' });
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [file, fileName, visible, getFileKeyBytes, getMasterKeyHandleId, getRequestContentKey]);
 
   useEffect(() => {
     if (!visible) return;
@@ -130,7 +156,7 @@ export default function EncryptionProof({ file, fileName, visible, onClose }: Pr
   };
 
   const hex = bytes ? bytesToHex(bytes) : '';
-  const readable = bytes ? bytesToReadable(bytes) : '';
+  const seePane = proofSeePane(plain);
   const totalBytes = file.size_bytes;
   const loc = trustLocation(file.storage_pool_id);
 
@@ -159,8 +185,10 @@ export default function EncryptionProof({ file, fileName, visible, onClose }: Pr
           contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + 100 }]}
         >
           <Text style={[styles.lead, { color: c.ink2 }]}>
-            First {PROOF_BYTES.toLocaleString()} bytes of {totalBytes.toLocaleString()}.
-            Inspect with any hex editor to confirm what we store.
+            {totalBytes > PROOF_BYTES
+              ? `First ${PROOF_BYTES.toLocaleString()} bytes of ${totalBytes.toLocaleString()}.`
+              : `All ${totalBytes.toLocaleString()} bytes.`}
+            {' '}Inspect with any hex editor to confirm what we store.
           </Text>
 
           {loading && (
@@ -180,12 +208,17 @@ export default function EncryptionProof({ file, fileName, visible, onClose }: Pr
                   <Ionicons name="eye-outline" size={14} color={c.ink2} />
                   <Text style={[styles.paneLabel, { color: c.ink2 }]}>What you see</Text>
                 </View>
-                <Text style={[styles.paneNote, { color: c.ink3 }]}>
-                  The file's bytes interpreted as text. Readable structure is visible.
+                <Text style={[styles.paneNote, { color: c.ink3 }]} testID="proof-see-note">
+                  {seePane.note}
                 </Text>
-                <Text style={[styles.monoBlock, { color: c.ink, borderColor: c.line }]} selectable>
-                  {readable}
-                </Text>
+                {plain.status === 'loading' && (
+                  <ActivityIndicator color={c.ink3} style={styles.paneSpinner} />
+                )}
+                {seePane.body != null && (
+                  <Text style={[styles.monoBlock, { color: c.ink, borderColor: c.line }]} selectable testID="proof-see-body">
+                    {seePane.body}
+                  </Text>
+                )}
               </View>
 
               <View style={styles.divider}>
@@ -216,9 +249,6 @@ export default function EncryptionProof({ file, fileName, visible, onClose }: Pr
         </ScrollView>
 
         <View style={[styles.footer, { backgroundColor: c.paper, borderTopColor: c.line, paddingBottom: insets.bottom || spacing.md }]}>
-          <Text style={[styles.urlLabel, { color: c.ink4 }]} numberOfLines={1}>
-            {getDownloadUrl(file.id)}
-          </Text>
           <TouchableOpacity
             style={[styles.downloadBtn, { backgroundColor: c.amber, opacity: downloading ? 0.6 : 1 }]}
             onPress={handleDownload}
@@ -227,11 +257,11 @@ export default function EncryptionProof({ file, fileName, visible, onClose }: Pr
             accessibilityLabel="Download raw ciphertext"
           >
             {downloading ? (
-              <ActivityIndicator color={c.ink} size="small" />
+              <ActivityIndicator color={onAmber} size="small" />
             ) : (
-              <Ionicons name="download-outline" size={16} color={c.ink} />
+              <Ionicons name="download-outline" size={16} color={onAmber} />
             )}
-            <Text style={[styles.downloadBtnText, { color: c.ink }]}>
+            <Text style={[styles.downloadBtnText, { color: onAmber }]}>
               {downloading ? 'Preparing...' : 'Download raw ciphertext'}
             </Text>
           </TouchableOpacity>
@@ -270,6 +300,7 @@ const styles = StyleSheet.create({
   paneHeader: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   paneLabel: { fontSize: 11, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.5 },
   paneNote: { fontSize: 11, lineHeight: 15 },
+  paneSpinner: { alignSelf: 'flex-start', marginTop: 4 },
   monoBlock: {
     fontFamily: fonts.mono,
     fontSize: 10,
@@ -289,7 +320,6 @@ const styles = StyleSheet.create({
     paddingTop: spacing.md,
     gap: spacing.sm,
   },
-  urlLabel: { fontSize: 10, fontFamily: fonts.mono },
   downloadBtn: {
     flexDirection: 'row',
     alignItems: 'center',

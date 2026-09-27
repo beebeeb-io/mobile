@@ -120,6 +120,7 @@ import { fileCategory, type Category } from '../lib/file-category';
 // no lazy) is used instead.
 import { RawRenderer } from '../components/preview/RawRenderer';
 import { ZoomableImage } from '../components/preview/ZoomableImage';
+import { previewSurfaceIsDark, statusBarStyleFor } from '../lib/status-bar-style';
 
 // Preview renderers are lazy-loaded so that the libraries each one depends on
 // (jszip, xlsx, mammoth, pako, react-native-pdf, highlight.js) only enter
@@ -2353,6 +2354,20 @@ export default function PreviewScreen() {
   // (design section 02, "Show source" — Guus's 18:50 ruling put Edit in
   // this same menu; this is the sibling read-only view it also asked for).
   const [showSource, setShowSource] = useState(false);
+  // Task 1591 bug 1 — the status bar's content style follows the surface it
+  // sits on (media stage / code + editor surfaces are dark in BOTH themes),
+  // not only the app theme the root <StatusBar> in App.tsx uses. See
+  // src/lib/status-bar-style.ts.
+  const surfaceIsDark = previewSurfaceIsDark({
+    isMediaPreview,
+    isText,
+    editMode,
+    textLoaded: textContent != null,
+    isMarkdown,
+    showSource,
+    appScheme: resolved === 'dark' ? 'dark' : 'light',
+  });
+  const statusBarStyle = statusBarStyleFor(surfaceIsDark);
   const [pdfPageInfo, setPdfPageInfo] = useState<{ current: number; total: number } | null>(null);
   const barsOpacity = useRef(new Animated.Value(1)).current;
 
@@ -4167,7 +4182,7 @@ export default function PreviewScreen() {
             become glass circles.
             1346 — scheme="dark" forced: mediaMaterial comment above (media
             ground is always near-black, not a light/dark toggle). */}
-        <StatusBar hidden={!chromeVisible} animated />
+        <StatusBar style={statusBarStyle} hidden={!chromeVisible} animated />
 
         {/* Preview redesign item 3 — the "e2e" pill (design's "00 TODAY"
             complaint: "it covers the content, and 'e2e' is jargon") is
@@ -4625,7 +4640,7 @@ export default function PreviewScreen() {
 
   return (
     <Animated.View style={[styles.root, { backgroundColor: c.paper }, { transform: [{ translateY: closeTranslateYClamped }] }]}>
-      <StatusBar hidden={!chromeVisible} animated />
+      <StatusBar style={statusBarStyle} hidden={!chromeVisible} animated />
       {/* Round 4 fix — see `header`'s own style comment for the two bugs
           this exact shape fixes (a stacking bug, then an accessibility-tree
           bug from the first attempt at fixing it). This wrapper floats over
@@ -4660,7 +4675,7 @@ export default function PreviewScreen() {
           `PREVIEW_CHROME_MATERIAL` already applies to the bars themselves).
           Sized to the header's own measured height so it fades out exactly
           where the header's content ends, not into the page below it. */}
-      <PreviewTopScrim height={docHeaderHeight ?? insets.top + 58} dark={resolved === 'dark'} />
+      <PreviewTopScrim height={docHeaderHeight ?? insets.top + 58} dark={surfaceIsDark} />
       {/* ---- Header ----
           Preview redesign item 7 — while editing a text file, this row
           becomes Done (left, the SAME dirty-guard exit as the ⋯ menu's

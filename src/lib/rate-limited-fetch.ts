@@ -18,6 +18,28 @@ const DEFAULT_BUCKET_SPACING_MS: Record<RateLimitBucket, number> = {
   external: 0,
 };
 
+/**
+ * Task 1591 (bug 3) — the longest this client will silently hold a request
+ * back because an earlier response asked it to wait.
+ *
+ * Before 1591 a 429's `Retry-After` paused the WHOLE bucket for however long
+ * the server said. The signup limiter (3/hour per IP, server
+ * `SignupLimiter`) answers with `Retry-After: 3600`, so after one 429 the
+ * next signup attempt — and every other request in that bucket — sat in
+ * `sleep()` for up to an hour before it was even sent: the Create-account
+ * button spun for minutes with no message
+ * (`_qa-evidence/1573/captures/work/ipad-signup-stuck-spinner-after-429.png`).
+ *
+ * A Retry-After up to one minute is throughput pacing (the per-IP / per-user
+ * sliding windows are 60 s) and is still honoured for the whole bucket. A
+ * longer one is a per-endpoint policy lockout: the bucket is NOT paused for
+ * it — other requests keep flowing, the retried request goes out, the server
+ * answers 429 again at once, and the caller shows the retry-after to the user
+ * (`ApiError.retryAfterSeconds` + `friendlyError`). So no request is ever held
+ * back silently for more than a minute.
+ */
+export const MAX_PACING_PAUSE_MS = 60_000;
+
 interface RateLimitedFetchOptions {
   fetchImpl?: FetchLike;
   sleep?: SleepFn;
@@ -93,6 +115,9 @@ export function createRateLimitedFetch(options: RateLimitedFetchOptions = {}): F
 
   function pauseBucket(bucket: RateLimitBucket, pauseMs: number): void {
     if (pauseMs <= 0) return;
+    // A pause longer than the cap is a policy lockout, not pacing — never
+    // hold requests back silently for it (see MAX_PACING_PAUSE_MS).
+    if (pauseMs > MAX_PACING_PAUSE_MS) return;
     const state = stateFor(bucket);
     state.nextAt = Math.max(state.nextAt, now() + pauseMs);
   }

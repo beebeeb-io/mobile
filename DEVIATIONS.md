@@ -559,3 +559,22 @@ reviewed, not discovered):**
 - **Android "+" menu is flat** (Upload photo, Upload file, Scan, New file, New folder) instead of
   iOS's inline "create" section: `@react-native-menu/menu`'s Android side has no
   `displayInline`, so the section would render as a blank row opening a submenu.
+
+## Task 1591 — store-blocking UI fixes (App Store capture pass, 2026-09-27)
+
+- **Recovery phrase header / buttons (no artboard).** No canvas artboard exists for the
+  onboarding screens (see the 1445 line above). Changed to the brand rule, not to a design:
+  the mark (36 pt) and wordmark (20 pt) sit in one row with a 10 pt gap (the 48 pt mark used
+  to overhang a 44 pt box into the wordmark), and "Copy all words" became the secondary
+  (outlined) button so "I've saved my recovery phrase" is the screen's ONE amber primary.
+- **Preview status bar follows the surface, not only the theme.** Photo/video/RAW stage and
+  the code/editor surfaces (`#282c34`) are dark in both themes, so the status bar is
+  light-content there and the doc header's top scrim uses its dark stops over them.
+  `lib/status-bar-style.ts`.
+- **Encryption details copy.** "Key source" now states core's derivation (HKDF-SHA256 from
+  your master key, per file; sealed request key for file-request uploads) and "Encrypted by
+  <this device's name>" became "Encrypted on — Your device, before upload": the server keeps
+  no record of which client encrypted a file, so naming this device was false for any file
+  another client uploaded. `lib/trust-details.ts`.
+- **Prove it** shows the decrypted first 512 bytes on the left (it showed the ciphertext on
+  both sides) and no longer prints the API download URL. `lib/encryption-proof.ts`.
