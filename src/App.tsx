@@ -49,6 +49,7 @@ import { populateFileProviderCache } from './lib/file-provider-mount';
 import { initLocalIdentifierMap } from './lib/local-identifier-map';
 import { resetThumbnailSelfRepairState } from './lib/thumbnail-self-repair';
 import { purgeAllPlaintextCaches } from './lib/account-cleanup';
+import { createSignedOutPurger } from './lib/signed-out-purge';
 import {
   setupNotificationHandler,
   registerForPushNotifications,
@@ -513,6 +514,11 @@ function tabAppleIcon(routeName: string, focused: boolean): { sfSymbol: SFSymbol
 // imported counts, and depends on `user` so we never upload while signed out.
 // ---------------------------------------------------------------------------
 
+// Task 1593 — see the signed-out effect in App().
+const signedOutPurger = createSignedOutPurger({
+  full: () => purgeAllPlaintextCaches(),
+});
+
 function ShareSheetImporter({ enabled }: { enabled: boolean }) {
   const { showToast } = useToast();
   const { isUnlocked, encryptChunk, encryptMetadata } = useCrypto();
@@ -957,7 +963,11 @@ export default function App() {
 
   const refreshAuth = useCallback(async () => {
     try {
+      // Task 1593 — never let a signed-out purge still running delete the new
+      // session's first cache writes.
+      await signedOutPurger.settled();
       const me = await getMe();
+      signedOutPurger.sessionStarted(); // task 1593 r3: reopen the plaintext gate
       setUser(me);
       SecureStore.setItemAsync(LAST_CONNECTED_KEY, new Date().toISOString()).catch(() => {});
       // Register this device with the clients API first so we can thread
@@ -1272,7 +1282,7 @@ export default function App() {
   // Register session-expired handler so 401s auto-sign-out
   useEffect(() => {
     registerSessionExpiredHandler(() => {
-      setUser(null);
+      setUser(null); // plaintext purge: the signed-out effect (task 1593)
     });
   }, []);
 
@@ -1284,9 +1294,23 @@ export default function App() {
   useEffect(() => {
     registerAccountDeletedHandler((deletedAt, shredAfter) => {
       stashAccountDeletedNotice({ deletedAt, shredAfter });
-      setUser(null);
+      setUser(null); // plaintext purge: the signed-out effect (task 1593)
     });
   }, []);
+
+  // Task 1593 (round 2) — THE one place decrypted plaintext is purged when the
+  // app reaches its signed-out surface, whatever got it there: signOut(), a
+  // 401 in refreshAuth, session expiry, account deleted elsewhere, a rejected
+  // token or no token at launch, the startup-failure fallback, diagnostics →
+  // "Sign in". Every case gets the full signOut() purge incl. the native
+  // registry (round 3: a cold signed-out launch too) — src/lib/signed-out-purge.ts.
+  useEffect(() => {
+    signedOutPurger.noteUser(user != null);
+  }, [user]);
+  const onSignedOutSurface = !checking && !showDiagnostics && !showSecureStorageError && user == null;
+  useEffect(() => {
+    if (onSignedOutSurface) void signedOutPurger.enterSignedOut();
+  }, [onSignedOutSurface]);
 
   // Lock the app when it goes to background and biometric pref is on.
   // The user-configurable delay (BIOMETRIC_DELAY_KEY, in ms) lets a quick

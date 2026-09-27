@@ -15,6 +15,7 @@
  */
 
 import * as FileSystem from 'expo-file-system/legacy';
+import { gatedPlaintextWrite } from './plaintext-gate';
 
 import { notePlaintextPathCreated } from './plaintext-storage';
 
@@ -77,7 +78,11 @@ function capEntries(cache: NameCache): NameCache {
 export async function saveNameCacheNow(cache: NameCache): Promise<void> {
   if (!FileSystem.documentDirectory) return;
   try {
-    await FileSystem.writeAsStringAsync(CACHE_FILE, JSON.stringify(capEntries(cache)));
+    // Task 1593 round 3 — decrypted names are plaintext: a write racing a
+    // sign-out purge is refused / discarded (caught below like any failure).
+    await gatedPlaintextWrite('name cache', CACHE_FILE, FileSystem, () =>
+      FileSystem.writeAsStringAsync(CACHE_FILE, JSON.stringify(capEntries(cache))),
+    );
     notePlaintextPathCreated();
   } catch {
     // A failed name-cache write is non-fatal — names still resolve via the index

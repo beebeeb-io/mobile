@@ -34,6 +34,7 @@ import { openFilesEntry } from '../lib/open-lock-gate';
 import { lockedToastMessage } from '../lib/lock-copy';
 import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system/legacy';
+import { gatedPlaintextWrite } from '../lib/plaintext-gate';
 import * as Sharing from 'expo-sharing';
 import * as MediaLibrary from 'expo-media-library/legacy';
 import * as Clipboard from 'expo-clipboard';
@@ -177,8 +178,17 @@ async function copyPhotoAssetToUploadCache(sourceUri: string, fileId: string, na
   const safeName = name.replace(/[^a-zA-Z0-9._()-]/g, '_');
   const targetUri = `${FileSystem.cacheDirectory}upload-${fileId}-${safeName || 'photo.jpg'}`;
   await FileSystem.deleteAsync(targetUri, { idempotent: true }).catch(() => {});
-  await FileSystem.copyAsync({ from: sourceUri, to: targetUri });
+  // Task 1593 round 3 — plaintext writer, gated by the sign-out purge.
+  await gatedPlaintextWrite('upload copy', targetUri, FileSystem, () =>
+    FileSystem.copyAsync({ from: sourceUri, to: targetUri }),
+  );
   return targetUri;
+}
+
+/** Task 1593 — delete the upload-* copy (never the picker's own source file). */
+async function discardUploadCacheCopy(copyUri: string, sourceUri: string): Promise<void> {
+  if (copyUri === sourceUri) return;
+  await FileSystem.deleteAsync(copyUri, { idempotent: true }).catch(() => {});
 }
 
 /**
@@ -1052,7 +1062,9 @@ function ProofDetailModal({ proof, fileName, onClose, showToast }: ProofDetailMo
       if (await Sharing.isAvailableAsync()) {
         // Write to a temp .txt file so the share sheet treats it as a document
         const tmpPath = `${FileSystem.cacheDirectory}beebeeb-proof-${proof.proofId.slice(0, 8)}.txt`;
-        await FileSystem.writeAsStringAsync(tmpPath, proofText, { encoding: FileSystem.EncodingType.UTF8 });
+        await gatedPlaintextWrite('proof export', tmpPath, FileSystem, () =>
+          FileSystem.writeAsStringAsync(tmpPath, proofText, { encoding: FileSystem.EncodingType.UTF8 }),
+        );
         await Sharing.shareAsync(tmpPath, {
           mimeType: 'text/plain',
           dialogTitle: 'Share proof',
@@ -2469,10 +2481,13 @@ export default function FilesScreen() {
       const display = total > 1 ? `${name} (${i + 1}/${total})` : name;
       lastName = display;
       setUpload({ fileName: display, stage: 1, percent: 0, city: lastLoc.city, region: lastLoc.region });
+      // Task 1593 — the pre-encryption copy in Library/Caches (upload-*) is
+      // plaintext: delete it once the upload and both thumbnails are done.
+      let uploadUri: string | null = null;
       try {
         const fileId = shouldVersion && conflict ? conflict.id : await generateFileId();
         const v2InitNameEncrypted = shouldVersion && conflict ? conflict.name_encrypted : undefined;
-        const uploadUri = await copyPhotoAssetToUploadCache(asset.uri, fileId, name);
+        uploadUri = await copyPhotoAssetToUploadCache(asset.uri, fileId, name);
         const uploaded = await encryptedUpload({
           fileId,
           uri: uploadUri,
@@ -2508,10 +2523,15 @@ export default function FilesScreen() {
         setFiles((prev) => upsertFileEntry(prev, uploaded));
         indexFile(uploaded.id, toSearchIndexEntry(uploaded, name, currentFolder.id));
         // Fire-and-forget: image picker only returns images, so always thumbnail (medium + large).
-        void generateAndUploadThumbnail(uploaded.id, uploadUri, asset.mimeType ?? 'image/jpeg', getFileKeyBytes);
-        void generateAndUploadThumbnail(uploaded.id, uploadUri, asset.mimeType ?? 'image/jpeg', getFileKeyBytes, 'large');
+        const copyUri = uploadUri;
+        uploadUri = null;
+        void Promise.allSettled([
+          generateAndUploadThumbnail(uploaded.id, copyUri, asset.mimeType ?? 'image/jpeg', getFileKeyBytes),
+          generateAndUploadThumbnail(uploaded.id, copyUri, asset.mimeType ?? 'image/jpeg', getFileKeyBytes, 'large'),
+        ]).then(() => discardUploadCacheCopy(copyUri, asset.uri));
         successCount += 1;
       } catch (err) {
+        if (uploadUri) void discardUploadCacheCopy(uploadUri, asset.uri);
         console.warn('[UPLOAD] Error type:', typeof err, err instanceof Error ? err.constructor.name : 'unknown');
         console.warn('[UPLOAD] Error message:', err instanceof Error ? err.message : String(err));
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
@@ -2745,7 +2765,9 @@ export default function FilesScreen() {
           if (!FileSystem.cacheDirectory) throw new Error('No cache directory available');
           // Named after the file id, never the (plaintext) name.
           const uri = `${FileSystem.cacheDirectory}new-${fileId}`;
-          await FileSystem.writeAsStringAsync(uri, content, { encoding: FileSystem.EncodingType.UTF8 });
+          await gatedPlaintextWrite('new text file', uri, FileSystem, () =>
+            FileSystem.writeAsStringAsync(uri, content, { encoding: FileSystem.EncodingType.UTF8 }),
+          );
           return uri;
         },
         deleteTempFile: (uri) => FileSystem.deleteAsync(uri, { idempotent: true }),
@@ -3398,14 +3420,21 @@ export default function FilesScreen() {
         return;
       }
       const safeName = (name.replace(/[^a-zA-Z0-9._()-]/g, '_') || 'file');
-      const namedUri = `${FileSystem.cacheDirectory}${safeName}`;
+      // Task 1593 — under a registered caches dir (lib/caches-plaintext-registry.ts)
+      // so a copy a crash left behind is swept on sign-out.
+      const exportDir = `${FileSystem.cacheDirectory}beebeeb-export/`;
+      const namedUri = `${exportDir}${safeName}`;
       setExporting({ name });
       try {
+        await FileSystem.makeDirectoryAsync(exportDir, { intermediates: true }).catch(() => {});
         const decryptedUri = await decryptForSave();
         // Copy to a correctly-named temp so the saved file keeps its real name
         // (the decrypt cache keys files by id), then drop the copy afterwards.
         await FileSystem.deleteAsync(namedUri, { idempotent: true }).catch(() => {});
-        await FileSystem.copyAsync({ from: decryptedUri, to: namedUri });
+        // Task 1593 round 3 — plaintext writer, gated by the sign-out purge.
+        await gatedPlaintextWrite('Save to Files copy', namedUri, FileSystem, () =>
+          FileSystem.copyAsync({ from: decryptedUri, to: namedUri }),
+        );
         // Prepare phase done — dismiss the indicator the moment the native
         // sheet opens (shareAsync only resolves once it's dismissed).
         setExporting(null);
@@ -4966,6 +4995,7 @@ export default function FilesScreen() {
       <TrustDetailsSheet
         file={trustFile}
         fileName={trustFileName}
+        mimeType={trustFile ? mimeTypeFor(trustFile) : null}
         onClose={closeTrust}
       />
 

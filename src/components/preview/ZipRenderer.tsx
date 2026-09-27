@@ -22,6 +22,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import JSZip from 'jszip';
 import * as FileSystem from 'expo-file-system/legacy';
+import { withPlaintextLease, writePlaintext } from '../../lib/plaintext-gate';
 import * as Sharing from 'expo-sharing';
 import { Alert } from 'react-native';
 // 1346 — the static `colors` (light-only) import that used to live here was
@@ -147,7 +148,12 @@ async function extractAndShare(data: ArrayBuffer, entry: ZipEntry): Promise<void
   const dir = `${FileSystem.cacheDirectory}zip-extract/`;
   await FileSystem.makeDirectoryAsync(dir, { intermediates: true }).catch(() => {});
   const target = `${dir}${Date.now()}-${safeName}`;
-  await FileSystem.writeAsStringAsync(target, b64, { encoding: FileSystem.EncodingType.Base64 });
+  // Task 1593 round 3 — plaintext writer: gated by the sign-out purge.
+  await withPlaintextLease('ZIP entry extract', (lease) =>
+    writePlaintext(lease, target, FileSystem, () =>
+      FileSystem.writeAsStringAsync(target, b64, { encoding: FileSystem.EncodingType.Base64 }),
+    ),
+  );
   try {
     await Sharing.shareAsync(target);
   } finally {

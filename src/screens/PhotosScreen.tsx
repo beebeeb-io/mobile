@@ -15,6 +15,7 @@ import {
   View,
 } from 'react-native';
 import * as FileSystem from 'expo-file-system/legacy';
+import { gatedPlaintextWrite } from '../lib/plaintext-gate';
 import {
   PinchGestureHandler,
   State,
@@ -1611,9 +1612,12 @@ export default function PhotosScreen() {
       setBulkStatus('Opening share sheet...');
       const zipBase64 = await zip.generateAsync({ type: 'base64', compression: 'STORE' });
       const zipUri = `${cacheDir}beebeeb-photos-${Date.now()}.zip`;
-      await FileSystem.writeAsStringAsync(zipUri, zipBase64, {
-        encoding: FileSystem.EncodingType.Base64,
-      });
+      // Task 1593 round 3 — plaintext writer, gated by the sign-out purge.
+      await gatedPlaintextWrite('photos share zip', zipUri, FileSystem, () =>
+        FileSystem.writeAsStringAsync(zipUri, zipBase64, {
+          encoding: FileSystem.EncodingType.Base64,
+        }),
+      );
       await Sharing.shareAsync(zipUri, {
         mimeType: 'application/zip',
         dialogTitle: 'Share Beebeeb photos',

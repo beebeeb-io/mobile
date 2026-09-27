@@ -37,6 +37,8 @@ import {
 } from './api';
 import { rateLimitedFetch } from './rate-limited-fetch';
 import { recordRuntimeTrace } from './runtime-trace';
+import { createInFlightShare } from './inflight-share';
+import { PLAINTEXT_DRAIN_TIMEOUT_MS, plaintextGate, withPlaintextLease } from './plaintext-gate';
 import { offlineManager, offlineFilePath } from './offline-manager';
 import NetInfo from '@react-native-community/netinfo';
 
@@ -49,6 +51,23 @@ export interface PreviewDecryptOptions {
   onProgress?: (event: PreviewLoadProgressEvent) => void;
   onOfflineFallback?: (event: { fileId: string; reason: string }) => void;
   signal?: AbortSignal;
+  /**
+   * Task 1593 — where the returned plaintext came from:
+   * - `cache`     an existing decrypted copy was reused;
+   * - `joined`    another caller was already decrypting this exact file +
+   *               extension and this call shared its result;
+   * - `decrypted` THIS call downloaded + decrypted it (the caller that owns
+   *               the fresh copy — "Prove it" deletes it after its 512-byte
+   *               read in that case only).
+   */
+  onSource?: (source: PreviewDecryptSource) => void;
+}
+
+export type PreviewDecryptSource = 'cache' | 'joined' | 'decrypted';
+
+/** `Library/Caches/preview/<fileId>.<ext>` — the preview cache key. */
+export function previewCachePath(fileId: string, extension: string): string {
+  return `${PREVIEW_CACHE_DIR}${fileId}.${extension.replace(/^\./, '')}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -164,6 +183,7 @@ async function prunePreviewCache(keepPath?: string): Promise<void> {
         kept += 1;
 
         if (expired || kept > MAX_PREVIEW_CACHE_ITEMS || totalBytes > MAX_PREVIEW_CACHE_BYTES) {
+          previewLeases.delete(entry.uri);
           await FileSystem.deleteAsync(entry.uri, { idempotent: true }).catch(() => {});
         }
       }),
@@ -200,6 +220,128 @@ export async function decryptToTempFile(
   masterKeyHandleId?: number | null,
   options: PreviewDecryptOptions = {},
 ): Promise<string> {
+  throwIfAborted(options.signal);
+  const outputPath = previewCachePath(fileId, extension);
+  // Task 1593 — one in-flight decrypt per output path. See inflight-share.ts:
+  // a second caller joins the first instead of racing it into the same file
+  // (or returning its half-written file as a "cache hit"), and the shared job
+  // is aborted only once EVERY caller's signal has aborted.
+  let listeners = sharedListeners.get(outputPath);
+  if (!listeners) {
+    listeners = new Set();
+    sharedListeners.set(outputPath, listeners);
+  }
+  const listener: SharedListener = {
+    onProgress: options.onProgress,
+    onOfflineFallback: options.onOfflineFallback,
+  };
+  listeners.add(listener);
+  // Task 1593 round 2 (P2-F) — one lease per caller that asked for this path.
+  // `releasePreviewCopy` only deletes the file when no other caller holds one.
+  previewLeases.set(outputPath, (previewLeases.get(outputPath) ?? 0) + 1);
+  let leased = true;
+  try {
+    const { value, joined } = await previewDecrypts.run(
+      outputPath,
+      async (signal) => {
+        let cacheHit = false;
+        const path = await decryptToTempFileUnshared(
+          fileId,
+          fileKey,
+          extension,
+          sizeBytes,
+          chunkCount,
+          masterKeyHandleId,
+          {
+            signal,
+            onProgress: (event) => {
+              sharedListeners.get(outputPath)?.forEach((l) => l.onProgress?.(event));
+            },
+            onOfflineFallback: (event) => {
+              sharedListeners.get(outputPath)?.forEach((l) => l.onOfflineFallback?.(event));
+            },
+            onSource: (source) => {
+              cacheHit = source === 'cache';
+            },
+          },
+        );
+        // Task 1593 round 2 (P2-C) — every caller walked away (or the
+        // sign-out purge aborted the job) while the decrypt was finishing:
+        // the late `signal.aborted` checks inside the unshared path have a
+        // window after them (prunePreviewCache), and nobody will ever receive
+        // this path to delete it. A file this job decrypted is removed here;
+        // a cache hit is the preview's copy and stays.
+        if (signal.aborted) {
+          if (!cacheHit) {
+            await FileSystem.deleteAsync(outputPath, { idempotent: true }).catch(() => {});
+          }
+          throw abortError();
+        }
+        return { path, cacheHit };
+      },
+      options.signal,
+    );
+    options.onSource?.(joined ? 'joined' : value.cacheHit ? 'cache' : 'decrypted');
+    leased = false;
+    return value.path;
+  } catch (error) {
+    if (leased) dropLease(outputPath);
+    throw error;
+  } finally {
+    listeners.delete(listener);
+    if (listeners.size === 0 && sharedListeners.get(outputPath) === listeners) {
+      sharedListeners.delete(outputPath);
+    }
+  }
+}
+
+interface SharedListener {
+  onProgress?: PreviewDecryptOptions['onProgress'];
+  onOfflineFallback?: PreviewDecryptOptions['onOfflineFallback'];
+}
+
+// Task 1593 round 3 (#141 Codex P1) — every preview decrypt holds a lease from
+// the plaintext gate: a sign-out purge aborts them all, waits for them to
+// settle, and while it runs (and until the next session) new ones are REFUSED
+// rather than queued behind the aborted job.
+const previewDecrypts = createInFlightShare<{ path: string; cacheHit: boolean }>({
+  gate: plaintextGate,
+  label: 'preview decrypt',
+});
+/** Per cache path: callers that asked for it since the file was last removed. */
+const previewLeases = new Map<string, number>();
+
+function dropLease(path: string): number {
+  const left = (previewLeases.get(path) ?? 0) - 1;
+  if (left > 0) previewLeases.set(path, left);
+  else previewLeases.delete(path);
+  return Math.max(left, 0);
+}
+
+/**
+ * Task 1593 round 2 (P2-F) — give back ONE caller's lease on the preview-cache
+ * copy of (fileId, extension) and delete the file only if no other caller
+ * holds one. "Prove it" used to delete a copy it had decrypted itself even
+ * when the preview had joined that decrypt (or cache-hit it right after) and
+ * was rendering from it. Returns true when the file was deleted.
+ */
+export async function releasePreviewCopy(fileId: string, extension: string): Promise<boolean> {
+  const path = previewCachePath(fileId, extension);
+  if (dropLease(path) > 0) return false;
+  await FileSystem.deleteAsync(path, { idempotent: true }).catch(() => {});
+  return true;
+}
+const sharedListeners = new Map<string, Set<SharedListener>>();
+
+async function decryptToTempFileUnshared(
+  fileId: string,
+  fileKey: Uint8Array | (() => Promise<Uint8Array>) | null,
+  extension: string,
+  sizeBytes: number | null | undefined,
+  chunkCount: number | null | undefined,
+  masterKeyHandleId: number | null | undefined,
+  options: PreviewDecryptOptions,
+): Promise<string> {
   if (!isNativeAvailable) {
     recordRuntimeTrace('preview.decrypt.native_unavailable', { fileId });
     throw new Error('Preview requires a dev client build with native crypto.');
@@ -231,6 +373,7 @@ export async function decryptToTempFile(
       cachedSize: cached.size,
       elapsedMs: Date.now() - startedAt,
     });
+    options.onSource?.('cache');
     options.onProgress?.({ requestId: '', fileId, stage: 'complete' });
     return outputPath;
   }
@@ -316,6 +459,11 @@ export async function decryptToTempFile(
       });
       return result.outputUri || outputPath;
     } catch (error) {
+      // Task 1593 — never leave a partial plaintext behind: a cancelled or
+      // failed decrypt may have written part of outputPath, which the next
+      // open would otherwise serve as a (corrupt) cache hit. Safe: the
+      // in-flight share guarantees no other decrypt owns this path now.
+      await FileSystem.deleteAsync(outputPath, { idempotent: true }).catch(() => {});
       const message = error instanceof Error ? error.message : String(error);
       if (!message.includes('downloadAndDecryptFileNative is not available')) {
         recordRuntimeTrace('preview.decrypt.native.failed', {
@@ -593,6 +741,35 @@ export async function decryptLocalFileToTempFile(
   chunkSize?: number | null,
   options: PreviewDecryptOptions = {},
 ): Promise<string> {
+  // Task 1593 round 3 — a plaintext writer: hold a gate lease; a purge closing
+  // the gate aborts this exactly like a cancelled caller (every write below is
+  // followed by an abort check that deletes the output).
+  return withPlaintextLease('offline decrypt', (lease) => {
+    const controller = new AbortController();
+    const forward = () => controller.abort();
+    if (options.signal?.aborted || lease.signal.aborted) controller.abort();
+    options.signal?.addEventListener('abort', forward, { once: true });
+    lease.signal.addEventListener('abort', forward, { once: true });
+    return decryptLocalFileLeased(
+      fileId, fileKey, extension, localEncryptedUri, sizeBytes, chunkCount, chunkSize,
+      { ...options, signal: controller.signal },
+    ).finally(() => {
+      options.signal?.removeEventListener('abort', forward);
+      lease.signal.removeEventListener('abort', forward);
+    });
+  });
+}
+
+async function decryptLocalFileLeased(
+  fileId: string,
+  fileKey: Uint8Array | (() => Promise<Uint8Array>) | null,
+  extension: string,
+  localEncryptedUri: string,
+  sizeBytes: number | null | undefined,
+  chunkCount: number | null | undefined,
+  chunkSize: number | null | undefined,
+  options: PreviewDecryptOptions,
+): Promise<string> {
   await ensureCacheDir();
   throwIfAborted(options.signal);
 
@@ -718,15 +895,41 @@ export async function decryptToString(
   });
 }
 
+
 /**
- * Clear all cached preview files. Call on sign-out or when freeing space.
+ * Clear all cached preview files — every decrypted plaintext copy under
+ * `Library/Caches/preview/`.
+ *
+ * Task 1593 (P1): this had ZERO callers, and the native sign-out purge
+ * (`purgePlaintextStorage`) deliberately skips `Library/Caches/`, so up to
+ * 512 MiB / 24 files of decrypted previews survived sign-out. It is now part
+ * of `purgeAllPlaintextCaches()` (sign-out, account deletion) and runs on a
+ * launch / session end with nobody signed in (App.tsx).
+ *
+ * Order: delete the directory, abort every decrypt still in flight and wait
+ * for them to settle — an in-flight download would otherwise finish AFTER the
+ * purge and write a fresh plaintext file — then delete again to catch
+ * anything written in between. Never throws.
+ *
+ * Round 3 (#141 Codex P1): this runs INSIDE `plaintextGate.purge()` (see
+ * account-cleanup.ts), which has already closed the gate — so no replacement
+ * decrypt can be queued behind an aborted one — and drained every job's lease
+ * (bounded by PLAINTEXT_DRAIN_TIMEOUT_MS, not the old fixed 3 s). A job still
+ * running past that bound finds its lease invalid and deletes its own output.
  */
 export async function clearPreviewCache(): Promise<void> {
-  try {
-    await FileSystem.deleteAsync(PREVIEW_CACHE_DIR, { idempotent: true });
-  } catch {
-    // Best-effort cleanup
-  }
+  const remove = () => FileSystem.deleteAsync(PREVIEW_CACHE_DIR, { idempotent: true }).catch(() => {});
+  previewLeases.clear();
+  await remove();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([
+    previewDecrypts.abortAll(),
+    new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, PLAINTEXT_DRAIN_TIMEOUT_MS);
+    }),
+  ]).catch(() => {});
+  if (timer) clearTimeout(timer);
+  await remove();
 }
 
 /**
@@ -747,6 +950,7 @@ export async function clearPreviewCache(): Promise<void> {
 export async function invalidatePreviewCache(fileId: string, extension: string): Promise<void> {
   try {
     const ext = extension.replace(/^\./, '');
+    previewLeases.delete(`${PREVIEW_CACHE_DIR}${fileId}.${ext}`);
     await FileSystem.deleteAsync(`${PREVIEW_CACHE_DIR}${fileId}.${ext}`, { idempotent: true });
   } catch {
     // Best-effort — a failed delete just means the next open re-decrypts

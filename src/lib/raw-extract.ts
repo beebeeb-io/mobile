@@ -12,6 +12,7 @@
  */
 
 import * as FileSystem from 'expo-file-system/legacy';
+import { withPlaintextLease, writePlaintext } from './plaintext-gate';
 import {
   base64ToBytes,
   bytesToBase64,
@@ -100,9 +101,16 @@ export async function extractRawPreview(
     // `fetchAndDecrypt` created it before this component ever mounts).
     const uniqueSuffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const outUri = `${cacheDir}preview/${cacheKey}-${uniqueSuffix}.raw-preview.jpg`;
-    await FileSystem.writeAsStringAsync(outUri, bytesToBase64(jpegBytes), {
-      encoding: FileSystem.EncodingType.Base64,
-    });
+    // Task 1593 round 3 — a plaintext writer: lease from the purge gate, so a
+    // sign-out purge can never be followed by this write.
+    const bytesToWrite = jpegBytes;
+    await withPlaintextLease('RAW preview extract', (lease) =>
+      writePlaintext(lease, outUri, FileSystem, () =>
+        FileSystem.writeAsStringAsync(outUri, bytesToBase64(bytesToWrite), {
+          encoding: FileSystem.EncodingType.Base64,
+        }),
+      ),
+    );
     previewUri = outUri;
   }
 

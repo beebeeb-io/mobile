@@ -11,16 +11,14 @@
 import React, { useEffect, useState } from 'react';
 import {
   Modal,
-  Platform,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import * as Device from 'expo-device';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
-import { fonts, radii, spacing } from '../theme';
+import { fonts, onAmber, radii, spacing } from '../theme';
 import { BottomSheet, BottomSheetScrollView } from './sheet/BottomSheet';
 import { useTheme } from '../lib/theme-context';
 import { trustLocation, type FileEntry } from '../lib/api';
@@ -28,20 +26,22 @@ import { formatBytes as formatSize } from '../lib/format';
 import { useRegionCity } from '../lib/storage-region';
 import { storageLocationLabel } from '../lib/preview-info';
 import EncryptionProof from './EncryptionProof';
+import {
+  TRUST_ENCRYPTED_ON_LABEL,
+  trustEncryptedOnValue,
+  trustKeySourceLabel,
+} from '../lib/trust-details';
 
 interface Props {
   file: FileEntry | null;
   fileName: string;
+  /**
+   * Task 1593 — the mime the preview uses for this file (FilesScreen's
+   * `mimeTypeFor`), so "Prove it" reads the preview's cached copy instead of
+   * decrypting a second one under another extension.
+   */
+  mimeType?: string | null;
   onClose: () => void;
-}
-
-function deviceLabel(): string {
-  if (Platform.OS === 'web') return 'This browser';
-  const name = Device.deviceName?.trim();
-  if (name && name.length > 0) return name;
-  if (Platform.OS === 'ios') return 'This iPhone';
-  if (Platform.OS === 'android') return Device.modelName ? `This ${Device.modelName}` : 'This Android';
-  return 'This device';
 }
 
 function formatTimestamp(iso: string | null | undefined): string {
@@ -84,19 +84,19 @@ function DetailRow({ label, value, mono, inkLabel, inkValue, border }: RowProps)
   );
 }
 
-export default function TrustDetailsSheet({ file: fileProp, fileName: fileNameProp, onClose }: Props) {
+export default function TrustDetailsSheet({ file: fileProp, fileName: fileNameProp, mimeType: mimeTypeProp, onClose }: Props) {
   const { colors: c } = useTheme();
   const [proofOpen, setProofOpen] = useState(false);
   // 1586 — the sheet slides down (shared BottomSheet) before its Modal goes
   // away, so the last file stays rendered through the close animation.
-  const [shown, setShown] = useState<{ file: FileEntry; fileName: string } | null>(
-    fileProp ? { file: fileProp, fileName: fileNameProp } : null,
+  const [shown, setShown] = useState<{ file: FileEntry; fileName: string; mimeType?: string | null } | null>(
+    fileProp ? { file: fileProp, fileName: fileNameProp, mimeType: mimeTypeProp } : null,
   );
   const [modalMounted, setModalMounted] = useState(!!fileProp);
   useEffect(() => {
-    if (fileProp) setShown({ file: fileProp, fileName: fileNameProp });
+    if (fileProp) setShown({ file: fileProp, fileName: fileNameProp, mimeType: mimeTypeProp });
     if (fileProp && !proofOpen) setModalMounted(true);
-  }, [fileProp, fileNameProp, proofOpen]);
+  }, [fileProp, fileNameProp, mimeTypeProp, proofOpen]);
   // Closed (e.g. Android back) while "Prove it" was handing off: the proof
   // must not open once the sheet's Modal is gone (1586 review #6).
   useEffect(() => {
@@ -108,10 +108,9 @@ export default function TrustDetailsSheet({ file: fileProp, fileName: fileNamePr
   const regionCity = useRegionCity(!!fileProp);
 
   if (!shown) return null;
-  const { file, fileName } = shown;
+  const { file, fileName, mimeType } = shown;
 
   const loc = trustLocation(file.storage_pool_id);
-  const dev = deviceLabel();
   const sheetVisible = !!fileProp && !proofOpen;
 
   const header = (
@@ -168,7 +167,7 @@ export default function TrustDetailsSheet({ file: fileProp, fileName: fileNamePr
               />
               <DetailRow
                 label="Key source"
-                value="Derived from file ID"
+                value={trustKeySourceLabel(file)}
                 inkLabel={c.ink3}
                 inkValue={c.ink}
                 border={c.line}
@@ -181,8 +180,8 @@ export default function TrustDetailsSheet({ file: fileProp, fileName: fileNamePr
                 border={c.line}
               />
               <DetailRow
-                label="Encrypted by"
-                value={dev}
+                label={TRUST_ENCRYPTED_ON_LABEL}
+                value={trustEncryptedOnValue(file)}
                 inkLabel={c.ink3}
                 inkValue={c.ink}
                 border={c.line}
@@ -225,8 +224,8 @@ export default function TrustDetailsSheet({ file: fileProp, fileName: fileNamePr
                   accessibilityRole="button"
                   accessibilityLabel="Prove it"
                 >
-                  <Ionicons name="shield-checkmark" size={16} color={c.ink} />
-                  <Text style={[styles.proveBtnText, { color: c.ink }]}>Prove it</Text>
+                  <Ionicons name="shield-checkmark" size={16} color={onAmber} />
+                  <Text style={[styles.proveBtnText, { color: onAmber }]}>Prove it</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
                   style={[styles.rawBtn, { borderColor: c.line2 }]}
@@ -248,6 +247,7 @@ export default function TrustDetailsSheet({ file: fileProp, fileName: fileNamePr
       <EncryptionProof
         file={file}
         fileName={fileName}
+        mimeType={mimeType}
         visible={proofOpen && !modalMounted}
         onClose={() => setProofOpen(false)}
       />

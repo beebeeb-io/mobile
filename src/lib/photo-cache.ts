@@ -16,6 +16,7 @@ import {
   planPhotoCacheEvictions,
   type PhotoCacheDiskEntry,
 } from './photo-cache-policy';
+import { withPlaintextLease, writePlaintext } from './plaintext-gate';
 
 const CACHE_DIR = `${FileSystem.cacheDirectory}beebeeb-photo-cache/`;
 const MAX_MEMORY_ITEMS = 6;
@@ -116,11 +117,18 @@ export async function cachePhotoWithExtension(
   sourceUri: string,
   extension?: string | null,
 ): Promise<string> {
-  await FileSystem.makeDirectoryAsync(CACHE_DIR, { intermediates: true });
   const key = cacheKey(fileId, extension);
   const diskPath = cachePath(fileId, extension);
-  await FileSystem.deleteAsync(diskPath, { idempotent: true }).catch(() => {});
-  await FileSystem.copyAsync({ from: sourceUri, to: diskPath });
+  // Task 1593 round 3 — a plaintext writer: refused (and its copy discarded)
+  // once a sign-out purge has closed the plaintext gate.
+  await withPlaintextLease('photo cache', async (lease) => {
+    lease.assertValid();
+    await FileSystem.makeDirectoryAsync(CACHE_DIR, { intermediates: true });
+    await FileSystem.deleteAsync(diskPath, { idempotent: true }).catch(() => {});
+    await writePlaintext(lease, diskPath, FileSystem, () =>
+      FileSystem.copyAsync({ from: sourceUri, to: diskPath }),
+    );
+  });
 
   const info = await FileSystem.getInfoAsync(diskPath);
   const sizeBytes = info.exists && 'size' in info ? (info.size ?? 0) : 0;

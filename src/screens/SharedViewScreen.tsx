@@ -16,6 +16,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import * as FileSystem from 'expo-file-system/legacy';
+import { isPlaintextGateClosed } from '../lib/plaintext-gate';
+import { decryptSharedFileToCache } from '../lib/shared-view-decrypt';
 import * as Sharing from 'expo-sharing';
 import { radii, spacing } from '../theme';
 import { useTheme } from '../lib/theme-context';
@@ -297,58 +299,23 @@ export default function SharedViewScreen() {
       // Task 1539 (finding 4): forward the passphrase that was verified
       // above — a passphrase-gated share also requires it on THIS call
       // (shares.rs's /download re-checks it independently of /verify).
-      // Was called with no second argument at all, so /download 401'd for
-      // every passphrase-gated share regardless of the gate UI.
-      const { encryptedBytes, chunkCount, chunkSize, originalSize } =
-        await downloadSharedFileBlob(token, passphrase || undefined);
-
-      // 1. Resolve the per-file AES-256-GCM key (unwrapping K_c for a
-      // double-encrypted share; the fragment IS the file key otherwise).
-      const fileKey = await resolveShareFileKey(info, shareKey, BeebeebCrypto.decryptChunk);
-
-      // The decrypted name drives the saved file's name + extension. The
-      // effect above normally has it already; decrypt here if it has not
-      // landed yet so the saved file is never extension-less.
-      const name = decryptedName ?? (await decryptShareFileName(info, shareKey, BeebeebCrypto));
-
-      // 2. Resolve canonical chunk metadata. Prefer authoritative server
-      // headers, fall back to the share-info `chunk_count`, then to byte-math
-      // inference (same precedence the PreviewScreen uses for owned files).
-      const effectiveOriginalSize =
-        originalSize ?? info.size_bytes ?? encryptedBytes.length - 28;
-      if (effectiveOriginalSize <= 0) {
-        throw new Error('Could not determine plaintext size for decryption.');
-      }
-
-      const inferred = inferChunkCountFromEncryptedSize(
-        encryptedBytes.length,
-        effectiveOriginalSize,
-      );
-      const effectiveChunkCount =
-        chunkCount ?? info.chunk_count ?? inferred ?? 1;
-      const effectiveChunkSize =
-        chunkSize && chunkSize > 0 ? chunkSize : undefined;
-
-      // 3. Decrypt natively — runs through the JSI bridge to the AES-GCM
-      // implementation in beebeeb-core.
-      const decrypted = await decryptEncryptedBytes(
-        fileKey,
-        encryptedBytes,
-        effectiveChunkCount,
-        effectiveOriginalSize,
-        effectiveChunkSize,
-      );
-
-      // 4. Persist plaintext to the cache directory so the system share sheet
-      // can hand it off to other apps (Files / Photos / Mail).
-      const decUri = `${FileSystem.cacheDirectory}${sharedCacheFileName(info, name, token)}`;
-      try {
-        await FileSystem.deleteAsync(decUri, { idempotent: true });
-      } catch {
-        // Best-effort — continue regardless.
-      }
-      await FileSystem.writeAsStringAsync(decUri, uint8ArrayToBase64(decrypted), {
-        encoding: FileSystem.EncodingType.Base64,
+      // Task 1593 round 3 (#141 Codex P1): download → decrypt → write runs as a
+      // plaintext writer under the sign-out purge gate — see
+      // lib/shared-view-decrypt.ts. A purge mid-flight means nothing is written.
+      const { uri: decUri, name } = await decryptSharedFileToCache(info, {
+        download: () => downloadSharedFileBlob(token, passphrase || undefined),
+        resolveFileKey: () => resolveShareFileKey(info, shareKey, BeebeebCrypto.decryptChunk),
+        resolveName: async () => decryptedName ?? (await decryptShareFileName(info, shareKey, BeebeebCrypto)),
+        decryptBytes: decryptEncryptedBytes,
+        inferChunkCount: inferChunkCountFromEncryptedSize,
+        // caches-registry: example=shared_token_name.pdf (sharedCacheFileName always starts with shared_)
+        cacheUri: (n) => `${FileSystem.cacheDirectory}${sharedCacheFileName(info, n, token)}`,
+        toBase64: uint8ArrayToBase64,
+        fs: {
+          deleteAsync: (uri, opts) => FileSystem.deleteAsync(uri, opts),
+          writeBase64: (uri, b64) =>
+            FileSystem.writeAsStringAsync(uri, b64, { encoding: FileSystem.EncodingType.Base64 }),
+        },
       });
       setDecryptedUri(decUri);
 
@@ -360,6 +327,8 @@ export default function SharedViewScreen() {
         });
       }
     } catch (e) {
+      // Signed out mid-decrypt: the purge discarded it; nothing to tell.
+      if (isPlaintextGateClosed(e)) return;
       // Map the native crypto failure to honest, actionable copy — a raw
       // `BeebeebCrypto.CryptoError.Decryption` string is not something a user can
       // act on (task 0710 / 0726). A decryption failure here means the key in the
