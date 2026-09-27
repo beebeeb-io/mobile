@@ -663,6 +663,7 @@ export default function SettingsScreen() {
     backupProgress,
     lastBackupAt,
     triggerBackupNow,
+    backupBlockedReason,
   } = useBackup();
   const { showToast } = useToast();
   const isOnline = useNetworkStatus();
@@ -1741,6 +1742,8 @@ export default function SettingsScreen() {
     (backupStatsLoading || calendarNativeStatus === null) &&
     !categoryStatsHasEvidence(displayCalendarStats);
   const cameraRollSummary = (() => {
+    // Task 1594: a stopped backup says why, before any progress line.
+    if (backupBlockedReason) return backupBlockedReason;
     if (backupPaused) {
       return `Paused · waiting for Wi-Fi${cameraTotalCount > 0 ? ` · ${cameraBackedUpCount.toLocaleString()} of ${cameraTotalCount.toLocaleString()} ${cameraItemLabel}` : ''}${cameraIssueSuffix}`;
     }
@@ -1766,7 +1769,7 @@ export default function SettingsScreen() {
 
     return 'Waiting for first scan';
   })();
-  const cameraRollSummaryColor = cameraIssueCount > 0 && !cameraBackupActive
+  const cameraRollSummaryColor = backupBlockedReason || (cameraIssueCount > 0 && !cameraBackupActive)
     ? c.red
     : c.ink3;
   const cameraRollStatusDotColor = backupPaused

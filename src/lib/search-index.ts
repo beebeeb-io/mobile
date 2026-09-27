@@ -16,6 +16,7 @@
 import { encryptChunk, decryptChunk } from '../../modules/beebeeb-crypto'
 import { getApiUrl, getToken } from './api'
 import { rateLimitedFetch } from './rate-limited-fetch'
+import { expectedUserHeaders } from './expected-user'
 
 export interface SearchIndexEntry {
   name: string
@@ -138,6 +139,8 @@ export async function saveIndex(
   const headers: Record<string, string> = {
     Authorization: `Bearer ${token}`,
     'Content-Type': 'application/octet-stream',
+    // Task 1594 fix 4 — a mutation: name the unlocked key's owner (server 1554).
+    ...expectedUserHeaders(),
   }
   if (etag) headers['If-Match'] = etag
 

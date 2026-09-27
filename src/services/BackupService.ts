@@ -61,6 +61,8 @@ import {
 } from '../lib/thumbnail-cache';
 import { loadNameCache, pruneNameCache } from '../lib/name-cache';
 import { getDeviceId } from '../lib/device-identity';
+// Task 1594: stop (never fork the tree) when this key can't read the names.
+import { VaultKeyMismatchError } from './vault-key-mismatch';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -372,8 +374,23 @@ async function findChildFolder(parentId: string | undefined, name: string): Prom
   // Early-exit cursor walk: stop at the first matching folder but never miss one
   // past page 1. A capped single page here let ensureFolder create DUPLICATE
   // backup folder trees when a parent had >200 children (task 0755).
-  const match = await findFile(parentId, async (f) => f.is_folder && (await decryptName(f)) === name);
-  return match ?? null;
+  let undecryptableFolders = 0;
+  const match = await findFile(parentId, async (f) => {
+    if (!f.is_folder) return false;
+    const decrypted = await decryptName(f);
+    if (decrypted === null) {
+      undecryptableFolders += 1;
+      return false;
+    }
+    return decrypted === name;
+  });
+  if (match) return match;
+  // Task 1594: "no match" is only trustworthy when every folder name here
+  // could be read. Otherwise the needed folder may be one of the unreadable
+  // ones — creating a new one would fork the tree under a key that cannot read
+  // the old one. Stop.
+  if (undecryptableFolders > 0) throw new VaultKeyMismatchError(undecryptableFolders);
+  return null;
 }
 
 // In-flight find-or-create coalescing (0811). The find-then-create in

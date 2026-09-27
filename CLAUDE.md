@@ -629,6 +629,25 @@ Consumes `beebeeb-core` via UniFFI-generated Swift/Kotlin bindings. Crypto runs 
   fallback for callers without a key handle / servers without v2. Never reintroduce base64 file reads in
   the upload path.
 
+## Vault key ownership (task 1594) — a stored key is only used for its owner
+
+The keychain master key carries an owner record (`io.beebeeb.master-key-owner`, the user id) —
+`src/lib/key-ownership.ts`. `CryptoProvider` gets `userId` from App.tsx and, on a keychain unlock:
+refuses with no signed-in user; purges key + check + fallback + simulator file + owner BEFORE loading
+when the owner is someone else; and proves the key once per sign-in with
+`POST /api/v1/auth/verify-recovery-check` (the stored HMAC check, never the key). A 400 there is
+ambiguous (legacy accounts have no stored check) and is settled by the account's X25519 public key.
+A recovery phrase is verified the same way before it is stored. Never add a key-load path that
+skips this. `X-Beebeeb-Expected-User` (server 1554) is sent on authenticated mutations from
+`src/lib/expected-user.ts`; a 409 `account_mismatch` ends the local session. BackupService stops
+with `VaultKeyMismatchError` instead of creating folders over names it cannot decrypt.
+
+**Driving a dev client to your own Metro on iOS 27 sims:** deep links (`simctl openurl
+…expo-development-client…`) are ignored at cold start and the launcher auto-loads whatever Metro
+answers on 8081. Use the launch argument instead:
+`xcrun simctl launch <udid> io.beebeeb.app --initialUrl http://127.0.0.1:<port>` (and never
+`launchApp` inside that Maestro flow — it relaunches without the argument).
+
 ## On-disk storage — every new path must be registered (task 0300, pre-mortem 12)
 
 iOS backs up `Documents/`, `Library/Application Support/`, and App Group containers. It does NOT

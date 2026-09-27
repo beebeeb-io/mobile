@@ -34,6 +34,26 @@ import {
   type RequestKeyResolver,
 } from './file-request-crypto'
 import { verifyRecoveryPhraseAgainstStoredCheck } from './recovery-phrase-verify'
+import {
+  MASTER_KEY_CHECK_LABEL,
+  MASTER_KEY_FALLBACK_LABEL,
+  MASTER_KEY_LABEL,
+  OWNERSHIP_UNREACHABLE_MESSAGE,
+  PHRASE_WRONG_ACCOUNT_MESSAGE,
+  SIMULATOR_MASTER_KEY_FILE,
+  VAULT_NEEDS_PHRASE_MESSAGE,
+  clearKeyOwner,
+  precheckKeyOwner,
+  purgeStoredVaultKey,
+  verifyKeyBelongsToAccount,
+  writeKeyOwner,
+  type OwnershipVerdict,
+} from './key-ownership'
+import { getExpectedUserId, setExpectedUserId } from './expected-user'
+
+// Task 1594: the labels moved to key-ownership.ts (the purge needs them too);
+// re-exported so existing importers (App.tsx, tests) keep working.
+export { SIMULATOR_MASTER_KEY_FILE }
 
 // ─── Master key cache lifecycle (task 0556) ────────────────────────────────
 //
@@ -66,13 +86,9 @@ import { verifyRecoveryPhraseAgainstStoredCheck } from './recovery-phrase-verify
 // Diagnostic logging must never receive raw bytes. The handle ID is
 // opaque and fine to log.
 
-const MASTER_KEY_LABEL = 'io.beebeeb.master-key'
-const MASTER_KEY_CHECK_LABEL = 'io.beebeeb.master-key-check'
-// Fallback storage key used when the Secure Enclave is unavailable (simulator,
-// older devices). SecureStore uses the software Keychain which is still
-// protected by the device passcode but lacks SE hardware binding.
-const MASTER_KEY_FALLBACK_LABEL = 'io.beebeeb.master-key.fallback'
-export const SIMULATOR_MASTER_KEY_FILE = `${FileSystem.documentDirectory ?? ''}beebeeb-simulator-master-key.txt`
+// MASTER_KEY_LABEL / MASTER_KEY_CHECK_LABEL / MASTER_KEY_FALLBACK_LABEL (the
+// SecureStore fallback used when the Secure Enclave is unavailable: simulator,
+// older devices) / SIMULATOR_MASTER_KEY_FILE live in key-ownership.ts (1594).
 
 /**
  * True when the master key is NOT stored behind a biometric-gated Secure
@@ -116,7 +132,16 @@ function constantTimeEqual(a: Uint8Array, b: Uint8Array): boolean {
   return diff === 0
 }
 
-async function storeMasterKey(masterKey: Uint8Array): Promise<void> {
+/**
+ * Persist the master key. `ownerUserId` is the account it was PROVEN to belong
+ * to (task 1594), or null when no session exists yet (signup stores the key
+ * before refreshAuth) — an unbound key is verified against the server on the
+ * next unlock before it is used. The old owner record is cleared FIRST so a
+ * crash mid-store can only ever leave an unbound key (verified next time),
+ * never a new key labelled with a previous account's id.
+ */
+async function storeMasterKey(masterKey: Uint8Array, ownerUserId: string | null): Promise<void> {
+  await clearKeyOwner()
   const encoded = uint8ToBase64(masterKey)
   const softwareFallbackRuntime = usesSoftwareVaultFallback()
   let nativeKeychainStored = false
@@ -144,6 +169,17 @@ async function storeMasterKey(masterKey: Uint8Array): Promise<void> {
   }
   const check = await computeRecoveryCheck(masterKey)
   await SecureStore.setItemAsync(MASTER_KEY_CHECK_LABEL, uint8ToBase64(check))
+  if (ownerUserId) await writeKeyOwner(ownerUserId)
+}
+
+/** X25519 public key of the key behind `handleId`; the private scalar is zeroed. */
+async function publicKeyFromHandle(handleId: number): Promise<Uint8Array> {
+  const priv = await handleDeriveX25519Private(handleId)
+  try {
+    return await deriveX25519PublicFromPrivate(priv)
+  } finally {
+    priv.fill(0)
+  }
 }
 
 /**
@@ -506,7 +542,7 @@ interface CryptoContextValue {
 
 const CryptoContext = createContext<CryptoContextValue | null>(null)
 
-export function CryptoProvider({ children }: { children: React.ReactNode }) {
+export function CryptoProvider({ children, userId }: { children: React.ReactNode; userId?: string | null }) {
   const [isUnlocked, setIsUnlocked] = useState(false)
   // True once the first unlock() attempt has settled (success or failure).
   // Used by FilesScreen to distinguish "still loading key" from "locked".
@@ -525,6 +561,12 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
   // File-request owner-decrypt resolver (0643). Lazily created; caches unwrapped
   // R_priv per request. Cleared + zeroized on lock() alongside the master key.
   const requestResolverRef = useRef<RequestKeyResolver | null>(null)
+  // Task 1594: the signed-in account this provider instance serves. App.tsx
+  // keys CryptoProvider by user id, so a mount == one sign-in (or one cold
+  // launch restoring a session); `ownershipVerifiedRef` therefore means "the
+  // key was proven against the server once during this sign-in".
+  const ownerUserId = userId ?? null
+  const ownershipVerifiedRef = useRef(false)
 
   useEffect(() => {
     updateVaultUnlockDiagnostics({
@@ -551,7 +593,9 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
       }
       requestResolverRef.current?.clear()
       requestResolverRef.current = null
+      if (ownerUserId != null && getExpectedUserId() === ownerUserId) setExpectedUserId(null)
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const unlock = useCallback(async (phrase?: string, source: VaultUnlockSource = phrase != null ? 'recovery_phrase' : 'keychain') => {
@@ -647,24 +691,63 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
           // load a handle and zero the raw bytes.
           const result = await recoverFromPhrase(phrase)
           const masterKey = result.masterKey
-          // Persist before reporting phrase unlock as complete. The iOS
-          // simulator falls back to SecureStore because Secure Enclave is not
-          // available; if this races with a dev reload the next launch asks for
-          // the recovery phrase again.
-          await storeMasterKey(masterKey)
-          let handleId: number
+          let handleId: number | null = null
+          let adopted = false
           try {
             handleId = await createMasterKeyHandle(masterKey)
+            const phraseHandleId = handleId
+            // Task 1594: a checksum-valid phrase derives SOME key — prove it is
+            // the signed-in account's before it is stored or used (the same
+            // gate web runs, recovery-validation.ts). Without a session yet
+            // (signup, before refreshAuth) there is nothing to prove against:
+            // the key is stored UNBOUND and verified on the next unlock.
+            if (ownerUserId != null) {
+              const verdict = await verifyKeyBelongsToAccount({
+                userId: ownerUserId,
+                recoveryCheckB64: uint8ToBase64(await computeRecoveryCheck(masterKey)),
+                derivePublicKey: () => publicKeyFromHandle(phraseHandleId),
+              })
+              if (verdict === 'mismatch' || verdict === 'unreachable') {
+                throw new Error(verdict === 'mismatch' ? PHRASE_WRONG_ACCOUNT_MESSAGE : OWNERSHIP_UNREACHABLE_MESSAGE)
+              }
+              // 'match', or 'unverifiable' (the account has nothing on the
+              // server to prove against — the typed phrase is the only proof
+              // there is, as before 1594).
+              ownershipVerifiedRef.current = true
+            }
+            // Persist before reporting phrase unlock as complete. The iOS
+            // simulator falls back to SecureStore because Secure Enclave is not
+            // available; if this races with a dev reload the next launch asks for
+            // the recovery phrase again.
+            await storeMasterKey(masterKey, ownerUserId)
+            adopted = true
           } finally {
             // Zero the raw bytes — they're now persisted for future unlocks and
             // represented by an opaque native handle for this session.
             masterKey.fill(0)
+            // A refused (or failed) phrase never keeps a native handle.
+            if (!adopted && handleId != null) await releaseHandle(handleId).catch(() => {})
           }
           masterKeyHandleId.current = handleId
           // A successful phrase unlock provisions a key — clear any prior
           // needs-recovery state.
           setNeedsRecoveryPhrase(false)
         } else {
+          // Task 1594: a stored key is only ever used for the account it
+          // belongs to. No signed-in account → nothing to bind to: do not load
+          // it at all (the signed-out provider's cold-launch silent unlock).
+          if (ownerUserId == null) {
+            recordRuntimeTrace('vault.key_ownership.no_signed_in_user', { source })
+            throw new Error('Sign in to unlock the vault')
+          }
+          // Owner recorded and it is someone else → purge BEFORE the key is
+          // loaded (no Face ID prompt, no native handle for the backup engine
+          // to adopt) and ask for this account's recovery phrase.
+          const precheck = await precheckKeyOwner(ownerUserId)
+          if (precheck === 'purged') {
+            setNeedsRecoveryPhrase(true)
+            throw new Error(VAULT_NEEDS_PHRASE_MESSAGE)
+          }
           let result = await loadVerifiedMasterKeyHandle()
 
           // Backoff ONLY for `transient` — the Secure-Enclave / auth subsystem
@@ -695,13 +778,56 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
           }
 
           if ('handleId' in result) {
-            masterKeyHandleId.current = result.handleId
+            const handleId = result.handleId
+            // Task 1594: prove the key against the server once per sign-in.
+            // The stored check value is the key's own recovery_check (just
+            // re-proven equal to the key by loadVerifiedMasterKeyHandle), so
+            // only that HMAC is sent — never the key.
+            if (!ownershipVerifiedRef.current) {
+              const checkB64 = await SecureStore.getItemAsync(MASTER_KEY_CHECK_LABEL).catch(() => null)
+              const verdict: OwnershipVerdict = checkB64
+                ? await verifyKeyBelongsToAccount({
+                  userId: ownerUserId,
+                  recoveryCheckB64: checkB64,
+                  derivePublicKey: () => publicKeyFromHandle(handleId),
+                })
+                : 'unreachable'
+              recordRuntimeTrace('vault.key_ownership.keychain_verdict', { source, verdict, precheck })
+              if (verdict === 'match') {
+                if (precheck !== 'bound') await writeKeyOwner(ownerUserId)
+                ownershipVerifiedRef.current = true
+              } else if (verdict === 'mismatch') {
+                // Another account's key: lock, purge, ask for the phrase.
+                await releaseHandle(handleId).catch(() => {})
+                await purgeStoredVaultKey('server_mismatch')
+                setNeedsRecoveryPhrase(true)
+                throw new Error(VAULT_NEEDS_PHRASE_MESSAGE)
+              } else if (precheck === 'bound') {
+                // Bound to this account by an earlier proven unlock; the
+                // server has nothing new to say ('unverifiable') or cannot be
+                // reached right now ('unreachable') — the binding stands.
+                if (verdict === 'unverifiable') ownershipVerifiedRef.current = true
+              } else if (verdict === 'unverifiable') {
+                // An unbound key and an account the server cannot prove any
+                // key against: do not use a key of unknown ownership. Ask for
+                // the phrase (not purged — the phrase unlock replaces it).
+                await releaseHandle(handleId).catch(() => {})
+                setNeedsRecoveryPhrase(true)
+                throw new Error(VAULT_NEEDS_PHRASE_MESSAGE)
+              } else {
+                // Unbound + unreachable: no verdict. Never read as valid, and
+                // never a reason to destroy the key — retry later.
+                await releaseHandle(handleId).catch(() => {})
+                throw new Error(OWNERSHIP_UNREACHABLE_MESSAGE)
+              }
+            }
+            masterKeyHandleId.current = handleId
             setNeedsRecoveryPhrase(false)
           } else if (result.reason === 'no_key') {
             // Genuine: no key was ever provisioned here (Debug-sim / device
             // restore). This is the ONLY path that arms the recovery prompt.
             setNeedsRecoveryPhrase(true)
-            throw new Error('No master key in keychain — provide a recovery phrase to restore')
+            throw new Error(VAULT_NEEDS_PHRASE_MESSAGE)
           } else if (
             result.reason === 'auth_canceled' ||
             result.reason === 'auth_failed' ||
@@ -733,6 +859,9 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
         }
 
         setIsUnlocked(true)
+        // Task 1594 fix 4: authenticated mutations now name the key's owner
+        // (X-Beebeeb-Expected-User). Null when no session exists yet (signup).
+        setExpectedUserId(ownerUserId)
         updateVaultUnlockDiagnostics({
           isUnlocked: true,
           unlockAttempted: true,
@@ -789,6 +918,7 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
     })()
     unlockPromiseRef.current = unlockOperation
     await unlockOperation
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [unlockAttempted])
 
   const lock = useCallback(() => {
@@ -804,6 +934,7 @@ export function CryptoProvider({ children }: { children: React.ReactNode }) {
     requestResolverRef.current?.clear()
     requestResolverRef.current = null
     setIsUnlocked(false)
+    if (getExpectedUserId() === ownerUserId) setExpectedUserId(null)
     // A manual/signout lock is not a missing-key condition — clear the
     // recovery signal so a subsequent unlock starts from a clean slate.
     setNeedsRecoveryPhrase(false)

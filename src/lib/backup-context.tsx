@@ -21,6 +21,7 @@ import {
   type NativeBackupProgress,
 } from '../../modules/beebeeb-crypto';
 import { ensureBackupFolders, reconcileDerivedStateAgainstServer, type BackupCategory } from '../services/BackupService';
+import { isVaultKeyMismatchError } from '../services/vault-key-mismatch';
 import { useCrypto } from './crypto-context';
 import { useAuth } from './auth';
 import { recordRuntimeTrace } from './runtime-trace';
@@ -228,6 +229,12 @@ export interface BackupContextValue {
   backupProgress: BackupProgress;
   lastBackupAt: string | null;
   triggerBackupNow: () => Promise<void>;
+  /**
+   * Task 1594: set when the backup refused to run because this device's vault
+   * key cannot read the account's folder names (a wrong key — never build a
+   * new tree then). The honest message to show; null when not blocked.
+   */
+  backupBlockedReason: string | null;
   // Legacy alias for components that used the old API
   isBackupEnabled: boolean;
   toggleBackup: () => Promise<void>;
@@ -259,6 +266,7 @@ export const BackupContext = createContext<BackupContextValue>({
   backupProgress: EMPTY_PROGRESS,
   lastBackupAt: null,
   triggerBackupNow: async () => {},
+  backupBlockedReason: null,
   isBackupEnabled: false,
   toggleBackup: async () => {},
 });
@@ -301,6 +309,7 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
   const [backgroundUpload, setBackgroundUploadState] = useState(true);
   const [backupProgress, setBackupProgress] = useState<BackupProgress>(EMPTY_PROGRESS);
   const [lastBackupAt, setLastBackupAt] = useState<string | null>(null);
+  const [backupBlockedReason, setBackupBlockedReason] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const includeVideosRef = useRef(true);
 
@@ -341,7 +350,20 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
       return;
     }
 
-    const { categoryFolderId } = await ensureBackupFolders(category);
+    let categoryFolderId: string;
+    try {
+      ({ categoryFolderId } = await ensureBackupFolders(category));
+    } catch (err) {
+      // Task 1594: a vault key that cannot read the folder names must stop the
+      // backup — surface why instead of the silent catch the callers have.
+      if (isVaultKeyMismatchError(err)) {
+        setBackupBlockedReason(err.message);
+        recordRuntimeTrace('backup.native.enable.blocked', { category, reason: 'vault_key_mismatch' });
+        return;
+      }
+      throw err;
+    }
+    setBackupBlockedReason(null);
     await configureBackupFolder(category, categoryFolderId);
     recordRuntimeTrace('backup.native.folder_configured', {
       category,
@@ -645,6 +667,13 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
         const progress = await triggerImmediateBackup(token, userId);
         applyNativeProgress(progress);
       } catch (err) {
+        if (isVaultKeyMismatchError(err)) {
+          // Task 1594: never fall back to starting the engine over a tree this
+          // key cannot read.
+          setBackupBlockedReason(err.message);
+          recordRuntimeTrace('backup.native.trigger.blocked', { reason: 'vault_key_mismatch' });
+          return;
+        }
         console.warn('[backup] native photo backup warm-up failed:', err);
         if (canEnableNativeCameraBackup(userId)) {
           await enablePhotoBackup(token, userId);
@@ -672,6 +701,7 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
     backupProgress,
     lastBackupAt,
     triggerBackupNow,
+    backupBlockedReason,
     // Legacy alias
     isBackupEnabled: isPhotoBackupEnabled,
     toggleBackup: togglePhotoBackup,

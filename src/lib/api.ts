@@ -20,6 +20,8 @@ import { deviceIdHeader } from './upload-device-header';
 import { setAnnouncement, clearAnnouncement } from './announcement-context';
 import { withSignupTicket } from './signup-email-code';
 import { normalizeNotificationPreferences, type NotificationPreferences } from './notification-prefs';
+// Task 1594 fix 4: the unlocked key's owner, sent on authenticated mutations.
+import { expectedUserHeaders, isMutatingMethod } from './expected-user';
 
 // API target. Override at build time with EXPO_PUBLIC_API_URL or via
 // expoConfig.extra.apiUrl (e.g. through eas.json env or app.config.ts).
@@ -382,6 +384,11 @@ async function request<T>(
   try {
     const requestHeaders = await headers(auth, extraHeaders);
     authSnapshot = requestHeaders.authSnapshot;
+    // Task 1594 fix 4 (server 1554): name the account the unlocked master key
+    // belongs to on every authenticated MUTATION, so the server refuses (409
+    // account_mismatch) a write whose session is not that account. Mutations
+    // only, exactly like web (packages/shared/src/api/request.ts).
+    if (auth && isMutatingMethod(method)) Object.assign(requestHeaders.headers, expectedUserHeaders());
     res = await rateLimitedFetch(`${BASE_URL}${path}`, {
       method,
       headers: requestHeaders.headers,
@@ -432,6 +439,20 @@ async function request<T>(
         onAccountDeleted?.(err.deleted_at, err.shred_after);
       }
       throw new AccountDeletedError(err.deleted_at, err.shred_after);
+    }
+
+    // Task 1594 fix 4 / server 1554: the server refused a mutation because the
+    // unlocked key's owner (X-Beebeeb-Expected-User) is not this session's
+    // user. The key/session pairing is wrong — end the local session the same
+    // way a 401 does (web locks the key and routes to login) so the next
+    // sign-in re-runs the key-ownership check. Same current-session guard as
+    // the 401 branch above.
+    if (res.status === 409 && err.error === 'account_mismatch') {
+      if (auth && authSnapshot && authSnapshot.token != null && isCurrentSessionSnapshot(authSnapshot)) {
+        await clearToken();
+        onSessionExpired?.();
+      }
+      throw new ApiError(409, err.message ?? 'This session does not match the account of the vault key on this device.', 'account_mismatch');
     }
 
     // Task 1540 finding 7: prefer the server's human-readable `message` over
@@ -583,6 +604,55 @@ export async function logout(): Promise<void> {
 
 export async function getMe(): Promise<User> {
   return request<User>('GET', '/api/v1/auth/me');
+}
+
+// ---------------------------------------------------------------------------
+// Key ownership (task 1594) — prove a master key belongs to THIS account.
+// ---------------------------------------------------------------------------
+
+/**
+ * `POST /api/v1/auth/verify-recovery-check` (server `routes/recovery.rs`
+ * `verify_recovery_check`): a constant-time compare of `recovery_check`
+ * (base64 `HMAC-SHA256(master_key, "beebeeb-recovery-check")`, the value
+ * signup stored) against the SESSION's account. Resolves on a match; throws
+ * `ApiError(400, 'invalid_recovery_phrase')` on a mismatch — and ALSO when the
+ * account has no stored check (legacy, task 0875), which the caller must
+ * disambiguate. Same request web sends (`recovery-validation.ts`). Only the
+ * HMAC leaves the device — never the key or the phrase.
+ */
+export async function verifyRecoveryCheck(recoveryCheckB64: string): Promise<void> {
+  await request<{ valid: boolean }>('POST', '/api/v1/auth/verify-recovery-check', {
+    recovery_check: recoveryCheckB64,
+  });
+}
+
+/**
+ * `GET /api/v1/auth/public-key/{user_id}` — the account's X25519 public key
+ * (base64), set once at signup from the real master key (server 1554 made it
+ * set-once). `null` when the account has none (404).
+ */
+export async function getUserPublicKey(userId: string): Promise<string | null> {
+  try {
+    const res = await request<{ user_id: string; public_key: string }>(
+      'GET',
+      `/api/v1/auth/public-key/${encodeURIComponent(userId)}`,
+    );
+    return typeof res.public_key === 'string' && res.public_key.length > 0 ? res.public_key : null;
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 404) return null;
+    throw err;
+  }
+}
+
+/**
+ * `POST /api/v1/auth/recovery-check` — sets the account's `recovery_check`
+ * ONLY if it is currently NULL (server set-once-if-absent, task 0875). Call it
+ * only with a key already PROVEN to be the account's.
+ */
+export async function setRecoveryCheckIfAbsent(recoveryCheckB64: string): Promise<{ updated: boolean }> {
+  return request<{ updated: boolean }>('POST', '/api/v1/auth/recovery-check', {
+    recovery_check: recoveryCheckB64,
+  });
 }
 
 export async function changePassword(currentPassword: string, newPassword: string): Promise<void> {
@@ -1151,7 +1221,7 @@ async function putBinaryBytes(url: string, token: string | null, bytes: Uint8Arr
   status: number;
   error: () => Promise<{ error?: string }>;
 }> {
-  const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/octet-stream' };
+  const headers = { Authorization: `Bearer ${token}`, ...expectedUserHeaders(), 'Content-Type': 'application/octet-stream' };
   if (Platform.OS !== 'web' && FileSystem.cacheDirectory) {
     const chunkUri = `${FileSystem.cacheDirectory}beebeeb-upload-${Date.now()}-${Math.random().toString(36).slice(2)}.bin`;
     try {
@@ -1228,7 +1298,7 @@ async function uploadFileSimple(
 
   const res = await rateLimitedFetch(`${BASE_URL}/api/v1/files/upload`, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${token}` },
+    headers: { Authorization: `Bearer ${token}`, ...expectedUserHeaders() },
     body: form,
   });
   if (!res.ok) {
@@ -1374,7 +1444,7 @@ export async function uploadEncryptedChunked(params: {
       method: 'POST',
       // Writer-provenance headers (task 1436) — this call creates the
       // object_versions row the server records them on.
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...mobileClientHeaders(), ...(await uploadDeviceHeader()) },
+      headers: { Authorization: `Bearer ${token}`, ...expectedUserHeaders(), 'Content-Type': 'application/json', ...mobileClientHeaders(), ...(await uploadDeviceHeader()) },
       body: JSON.stringify({
         file_id: fileId,
         name_encrypted: initialNameEncrypted,
@@ -1487,7 +1557,7 @@ async function finalizeUpload(params: {
     : `/api/v1/files/${serverFileId}/upload/complete`
   const completeRes = await rateLimitedFetch(`${BASE_URL}${completePath}`, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...(await uploadDeviceHeader()) },
+    headers: { Authorization: `Bearer ${token}`, ...expectedUserHeaders(), 'Content-Type': 'application/json', ...(await uploadDeviceHeader()) },
     body: JSON.stringify({}),
   })
   if (!completeRes.ok) {
@@ -1736,7 +1806,7 @@ async function initUploadV2(params: {
     method: 'POST',
     // Writer-provenance headers (task 1436) — this call creates the
     // object_versions row the server records them on.
-    headers: { Authorization: `Bearer ${params.token}`, 'Content-Type': 'application/json', ...mobileClientHeaders(), ...(await uploadDeviceHeader()) },
+    headers: { Authorization: `Bearer ${params.token}`, ...expectedUserHeaders(), 'Content-Type': 'application/json', ...mobileClientHeaders(), ...(await uploadDeviceHeader()) },
     body: JSON.stringify({
       file_id: params.fileId,
       file_name: params.fileName,
@@ -1833,7 +1903,7 @@ async function uploadFileChunked(
     method: 'POST',
     // Writer-provenance headers (task 1436) — this call creates the
     // object_versions row the server records them on.
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...mobileClientHeaders(), ...(await uploadDeviceHeader()) },
+    headers: { Authorization: `Bearer ${token}`, ...expectedUserHeaders(), 'Content-Type': 'application/json', ...mobileClientHeaders(), ...(await uploadDeviceHeader()) },
     body: JSON.stringify({
       name_encrypted: metadata.name_encrypted,
       parent_id: metadata.parent_id ?? null,
@@ -1855,7 +1925,7 @@ async function uploadFileChunked(
 
     const chunkRes = await rateLimitedFetch(`${BASE_URL}/api/v1/files/${file_id}/chunks/${i}`, {
       method: 'PUT',
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/octet-stream' },
+      headers: { Authorization: `Bearer ${token}`, ...expectedUserHeaders(), 'Content-Type': 'application/octet-stream' },
       body: chunk,
     });
     if (!chunkRes.ok) {
@@ -1880,7 +1950,7 @@ async function uploadFileChunked(
 
   const completeRes = await rateLimitedFetch(`${BASE_URL}/api/v1/files/${file_id}/upload/complete`, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...(await uploadDeviceHeader()) },
+    headers: { Authorization: `Bearer ${token}`, ...expectedUserHeaders(), 'Content-Type': 'application/json', ...(await uploadDeviceHeader()) },
     body: JSON.stringify({}),
   });
   if (!completeRes.ok) {
