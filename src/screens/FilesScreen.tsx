@@ -77,7 +77,7 @@ import { syncDecryptedEntriesToFileProvider, removeFromFileProviderCache } from 
 import { useAuth } from '../lib/auth';
 import { encryptedUpload, generateFileId } from '../lib/encrypted-upload';
 import { buildAddMenuActions, NEW_FILE_ACTION_ID } from '../lib/new-document';
-import { createNewDocumentFile, previewParamsForNewDocument } from '../lib/create-new-document';
+import { createNewDocumentFile, decryptFolderNames, previewParamsForNewDocument } from '../lib/create-new-document';
 import { abandonTextFileUpload } from '../lib/text-file-save';
 import NewFileSheet, { type NewFileRequest } from '../components/NewFileSheet';
 import { useSync } from '../lib/sync-context';
@@ -2645,26 +2645,37 @@ export default function FilesScreen() {
    * Every decryptable name in a FRESH, complete listing of the folder — the
    * on-screen list can lag a sibling added or renamed from another device,
    * and the server cannot check names itself: it only ever sees encrypted
-   * ones. Undecryptable rows cannot clash with a name we can see, so they are
-   * skipped (same rule as web 1582); file-request uploads use the cached name.
+   * ones. Every row is decrypted now on the folder-name effect's paths
+   * (request uploads via getRequestContentKey); the on-screen cache is only a
+   * fallback for a failed decrypt — lib/create-new-document.ts
+   * `decryptFolderNames`, unit-tested.
    */
   const freshFolderNames = useCallback(async (parentId: string | null): Promise<string[]> => {
     const siblings = await listAllFiles(parentId ?? undefined);
-    const names: string[] = [];
-    const normal = siblings.filter((f) => !isRequestUpload(f));
-    if (normal.length > 0) {
-      const results = await decryptNames(
-        normal.map((f) => ({ fileId: f.id, nameEncrypted: f.name_encrypted ?? '' })),
-      );
-      results.forEach((r) => { if (r && !r.error && r.name) names.push(r.name); });
-    }
-    for (const f of siblings) {
-      if (!isRequestUpload(f)) continue;
-      const cached = decryptedNamesRef.current[f.id];
-      if (cached) names.push(cached);
-    }
-    return names;
-  }, [decryptNames]);
+    return decryptFolderNames(siblings, {
+      isRequestUpload,
+      decryptNormalNames: async (normal) => {
+        const results = await decryptNames(
+          normal.map((f) => ({ fileId: f.id, nameEncrypted: f.name_encrypted ?? '' })),
+        );
+        return normal.map((_, i) => {
+          const r = results[i];
+          return r && !r.error && r.name ? r.name : null;
+        });
+      },
+      decryptRequestUploadName: async (f) => {
+        const payload = encryptedMetadataPayloadToBytes(f.name_encrypted ?? '');
+        if (!payload) throw new Error('unreadable metadata');
+        const plaintext = await decryptMetadataWithKey(
+          await getRequestContentKey(f),
+          payload.nonce,
+          payload.ciphertext,
+        );
+        return parseDecryptedMetadata(plaintext).name;
+      },
+      cachedName: (f) => decryptedNamesRef.current[f.id],
+    });
+  }, [decryptNames, getRequestContentKey]);
 
   /**
    * NewFileSheet's `onCreate`: the flow itself (fresh-listing clash check,

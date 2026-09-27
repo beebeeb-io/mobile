@@ -109,6 +109,57 @@ export async function createNewDocumentFile<E extends CreatedFileEntry>(
   }
 }
 
+/**
+ * Codex review, PR #139 (P2) — the names behind the clash check, from a FRESH
+ * listing. Every row is decrypted NOW, on the same paths FilesScreen's
+ * folder-name effect uses: normal files through the vault-key batch, file-
+ * request uploads one by one with their request content key. The on-screen
+ * cache (`cachedName`) is only a fallback for a row whose decrypt failed —
+ * never the primary source, because it cannot know about a request upload
+ * (or a rename) that arrived from another device after the folder rendered.
+ *
+ * A row that neither decrypts nor is cached is unknown: it cannot match a
+ * name, so it adds nothing, and the loop keeps going. Nothing is logged —
+ * neither the names nor which rows failed. A failure of the whole batch
+ * (vault locked, native module missing) propagates, so the create fails
+ * closed instead of skipping every normal sibling.
+ */
+export interface FolderNameSources<F> {
+  isRequestUpload: (f: F) => boolean
+  /** Vault-key batch decrypt; one result per input, in order (null = failed). */
+  decryptNormalNames: (files: F[]) => Promise<(string | null | undefined)[]>
+  /** Request-upload decrypt via its request content key; throws on failure. */
+  decryptRequestUploadName: (f: F) => Promise<string>
+  /** The name already on screen for this id, if any. */
+  cachedName: (f: F) => string | undefined
+}
+
+export async function decryptFolderNames<F>(listing: F[], src: FolderNameSources<F>): Promise<string[]> {
+  const normal = listing.filter((f) => !src.isRequestUpload(f))
+  const requests = listing.filter((f) => src.isRequestUpload(f))
+  const names: string[] = []
+  const add = (f: F, fresh: string | null | undefined) => {
+    const name = fresh || src.cachedName(f)
+    if (name) names.push(name)
+  }
+  if (normal.length > 0) {
+    const results = await src.decryptNormalNames(normal)
+    normal.forEach((f, i) => add(f, results[i]))
+  }
+  await Promise.all(
+    requests.map(async (f) => {
+      let fresh: string | null = null
+      try {
+        fresh = await src.decryptRequestUploadName(f)
+      } catch {
+        // Unknown for now: fall back to the cache, else it cannot match.
+      }
+      add(f, fresh)
+    }),
+  )
+  return names
+}
+
 /** The Preview route params for a just-created file (opened in the editor
  *  when its extension opens there). */
 export function previewParamsForNewDocument(uploaded: CreatedFileEntry, req: NewDocumentCreateRequest) {

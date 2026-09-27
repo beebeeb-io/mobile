@@ -6,6 +6,7 @@ import { describe, expect, mock, test } from 'bun:test'
 import {
   NewDocumentCreateError,
   createNewDocumentFile,
+  decryptFolderNames,
   previewParamsForNewDocument,
 } from './create-new-document'
 import { NEW_DOCUMENT_TYPES, NewDocumentNameClashError } from './new-document'
@@ -101,6 +102,50 @@ describe('createNewDocumentFile', () => {
     await expect(createNewDocumentFile(mdReq, null, deps)).rejects.toThrow('The vault locked. Unlock it, then try again.')
     expect(deps.listFolderNames).not.toHaveBeenCalled()
     expect(deps.upload).not.toHaveBeenCalled()
+  })
+})
+
+// Codex PR #139 P2: the fresh clash check decrypts request uploads itself
+// (getRequestContentKey path) instead of trusting the possibly stale cache.
+describe('decryptFolderNames (fresh clash names)', () => {
+  const listing = [
+    { id: 'n1', req: false, enc: 'e-n1' },
+    { id: 'r1', req: true, enc: 'e-r1' }, // arrived from another device: NOT in the cache
+  ]
+  function sources(over = {}) {
+    return {
+      isRequestUpload: (f) => f.req,
+      decryptNormalNames: mock(async (fs) => fs.map((f) => (f.id === 'n1' ? 'Other.md' : null))),
+      decryptRequestUploadName: mock(async (f) => (f.id === 'r1' ? 'Notes.md' : 'x')),
+      cachedName: () => undefined,
+      ...over,
+    }
+  }
+
+  test('a request upload missing from the cache is decrypted with its own key and clashes: creating "notes.md" is refused', async () => {
+    const src = sources()
+    const { deps } = makeDeps({ listFolderNames: mock(async () => decryptFolderNames(listing, src)) })
+    await expect(createNewDocumentFile({ ...mdReq, name: 'notes.md' }, 'folder-1', deps)).rejects.toBeInstanceOf(NewDocumentNameClashError)
+    expect(src.decryptRequestUploadName).toHaveBeenCalledTimes(1)
+    expect(deps.upload).not.toHaveBeenCalled()
+  })
+
+  test('the fresh decrypt wins over a stale cached name (renamed elsewhere)', async () => {
+    const names = await decryptFolderNames(listing, sources({ cachedName: (f) => (f.id === 'r1' ? 'Old.md' : undefined) }))
+    expect(names.sort()).toEqual(['Notes.md', 'Other.md'])
+  })
+
+  test('one undecryptable request upload is unknown (cache fallback, else nothing); the rest still count', async () => {
+    const two = [...listing, { id: 'r2', req: true, enc: 'bad' }]
+    const failR2 = mock(async (f) => { if (f.id === 'r2') throw new Error('bad key'); return 'Notes.md' })
+    expect((await decryptFolderNames(two, sources({ decryptRequestUploadName: failR2 }))).sort()).toEqual(['Notes.md', 'Other.md'])
+    const cachedR2 = sources({ decryptRequestUploadName: failR2, cachedName: (f) => (f.id === 'r2' ? 'Seen.md' : undefined) })
+    expect((await decryptFolderNames(two, cachedR2)).sort()).toEqual(['Notes.md', 'Other.md', 'Seen.md'])
+  })
+
+  test('a failed normal-batch decrypt fails closed (propagates) instead of skipping every sibling', async () => {
+    const src = sources({ decryptNormalNames: mock(async () => { throw new Error('locked') }) })
+    await expect(decryptFolderNames(listing, src)).rejects.toThrow('locked')
   })
 })
 
