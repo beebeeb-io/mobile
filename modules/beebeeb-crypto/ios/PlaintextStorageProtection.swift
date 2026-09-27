@@ -1,4 +1,5 @@
 import Foundation
+import SQLite3
 
 /// Task 0300 / pre-mortem item 12 — the single source of truth for every
 /// on-disk location this app writes that iOS would otherwise include in an
@@ -31,6 +32,28 @@ public enum PlaintextStorageProtection {
     /// Short, non-identifying description of what lives here. Used in the audit
     /// report and in `docs/0300-plaintext-lifecycle-audit.md`.
     public let contains: String
+    /// Task 1593 round 4 — true for a SQLite database a SECOND process (the
+    /// File Provider extension, `targets/file-provider/CacheManager.swift`)
+    /// may hold open via its own live connection. `purgeAll()` must not
+    /// `removeItem` such a path: unlinking it leaves the extension's already-
+    /// open file descriptor (and whatever rows are resident on it) completely
+    /// unaffected, so the "purge" would not actually reach the data, and the
+    /// extension would go on serving decrypted names from its still-open
+    /// handle. Instead its rows are deleted transactionally through a SEPARATE
+    /// short-lived connection and the WAL is checkpointed+truncated in place
+    /// (same technique as `resetFileProviderCacheDatabase` in
+    /// `BeebeebCryptoModule.swift`, which cannot be called from here directly
+    /// — that file compiles only into the main app's `BeebeebCrypto` pod,
+    /// while this file is ALSO compiled directly into the `BeebeebFileProvider`
+    /// extension target, see the header comment above).
+    public let resettableInPlace: Bool
+
+    public init(url: URL, kind: Kind, contains: String, resettableInPlace: Bool = false) {
+      self.url = url
+      self.kind = kind
+      self.contains = contains
+      self.resettableInPlace = resettableInPlace
+    }
   }
 
   private static let appGroupIdentifier = "group.io.beebeeb.shared"
@@ -94,6 +117,18 @@ public enum PlaintextStorageProtection {
       entries.append(Entry(url: group.appendingPathComponent("temp", isDirectory: true),
                            kind: .directory,
                            contains: "File Provider extension — decrypted transient fetchContents blobs"))
+      // Task 1593 round 4 (security re-review of #141, P1-1) — the File
+      // Provider's decrypted-name cache. Written by BOTH processes: the main
+      // app's `syncFileProviderCache` (src/lib/file-provider-mount.ts) and the
+      // extension's `CacheManager` keep a live connection to the SAME file, so
+      // this entry must reset in place rather than unlink (see
+      // `resettableInPlace` above). Without a registry entry the full purge
+      // (`purgeAll`, run from EVERY sign-out incl. forced ones) never reset
+      // it, and only a normal `signOut()`'s `removeFileProviderAccess` did.
+      entries.append(Entry(url: group.appendingPathComponent("file-provider-cache.sqlite", isDirectory: false),
+                           kind: .file,
+                           contains: "File Provider extension — decrypted file names + metadata cache",
+                           resettableInPlace: true))
     }
 
     return entries
@@ -184,6 +219,15 @@ public enum PlaintextStorageProtection {
         removed += 1 // already absent - counts as clean, not a failure
         continue
       }
+      if entry.resettableInPlace {
+        if resetSQLiteInPlace(entry.url) {
+          removed += 1
+        } else {
+          RuntimeTrace.event("storage.purge.failed", ["path": entry.url.lastPathComponent])
+          failed += 1
+        }
+        continue
+      }
       do {
         try FileManager.default.removeItem(at: entry.url)
         removed += 1
@@ -193,6 +237,64 @@ public enum PlaintextStorageProtection {
       }
     }
     return (removed, failed)
+  }
+
+  /// Empty every user table of a SQLite database IN PLACE (same inode, same
+  /// path) instead of unlinking it, so a second process's already-open
+  /// connection to this exact file (the File Provider extension's
+  /// `CacheManager`) observes the empty tables on its next read instead of
+  /// continuing to serve rows from a file descriptor this purge never
+  /// touched. Falls back to deleting the file + its `-wal`/`-shm` siblings
+  /// when the database cannot be opened at all (corrupt / not yet created —
+  /// there is then no live connection to preserve).
+  @discardableResult
+  private static func resetSQLiteInPlace(_ url: URL) -> Bool {
+    var db: OpaquePointer?
+    guard sqlite3_open_v2(
+      url.path, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, nil
+    ) == SQLITE_OK, let db else {
+      sqlite3_close(db)
+      let fileManager = FileManager.default
+      var ok = true
+      for suffix in ["", "-wal", "-shm"] {
+        let sibling = URL(fileURLWithPath: url.path + suffix)
+        guard fileManager.fileExists(atPath: sibling.path) else { continue }
+        do {
+          try fileManager.removeItem(at: sibling)
+        } catch {
+          ok = false
+        }
+      }
+      return ok
+    }
+    defer { sqlite3_close(db) }
+
+    // Discover the user tables rather than hardcoding schema here: this file
+    // is compiled into two SEPARATE targets (the main app pod and the
+    // BeebeebFileProvider extension) and must not drift from whichever one
+    // last changed the schema in BeebeebCryptoModule.swift / CacheManager.swift.
+    var tables: [String] = []
+    var stmt: OpaquePointer?
+    if sqlite3_prepare_v2(
+      db, "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'", -1, &stmt, nil
+    ) == SQLITE_OK {
+      while sqlite3_step(stmt) == SQLITE_ROW {
+        if let cName = sqlite3_column_text(stmt, 0) {
+          tables.append(String(cString: cName))
+        }
+      }
+    }
+    sqlite3_finalize(stmt)
+
+    sqlite3_exec(db, "BEGIN", nil, nil, nil)
+    for table in tables {
+      sqlite3_exec(db, "DELETE FROM \"\(table)\"", nil, nil, nil)
+    }
+    sqlite3_exec(db, "COMMIT", nil, nil, nil)
+    // Truncate the WAL so no old page holding decrypted names lingers on disk
+    // once the empty transaction above has been checkpointed.
+    sqlite3_exec(db, "PRAGMA wal_checkpoint(TRUNCATE)", nil, nil, nil)
+    return true
   }
 
   /// Write the audit to `Library/Caches/beebeeb-plaintext-audit.json` so the

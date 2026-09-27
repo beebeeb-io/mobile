@@ -7,6 +7,7 @@ import type { FileEntry } from './api';
 import { encryptedMetadataPayloadToBytes } from './encrypted-metadata';
 import { requestDeviceOwnerAuth } from './device-owner-auth';
 import { wasRecentlyUnlocked } from './lock-state';
+import { isPlaintextGateClosed, plaintextGate, withPlaintextLease } from './plaintext-gate';
 
 type MountTrustedFileProviderOptions = {
   vaultUnlocked?: boolean;
@@ -66,6 +67,15 @@ export async function removeTrustedFileProvider(): Promise<FileProviderDomainReg
  *
  * Call this after the main app has fetched + decrypted a directory listing.
  * The native side upserts rows and signals the File Provider to re-enumerate.
+ *
+ * Task 1593 round 4 — this is the ONE JS call site of the native write
+ * (`BeebeebCrypto.syncFileProviderCache`, enforced by
+ * `caches-plaintext-registry.test.ts`), so gating it HERE covers every caller
+ * (the BFS walk below, FilesScreen's per-folder push, the sync write-through)
+ * without each one having to remember to. A purge closing the gate mid-call
+ * refuses the write before it reaches native; the resolution is 0 pushed
+ * rather than a rejection, since every caller already treats "nothing to
+ * sync" as a normal, retryable outcome (the next enumeration reconciles).
  */
 export async function syncDecryptedEntriesToFileProvider(
   files: FileEntry[],
@@ -101,7 +111,16 @@ export async function syncDecryptedEntriesToFileProvider(
   const pruneParents = prune
     ? options.pruneParents ?? [parentId ?? null]
     : null;
-  return BeebeebCrypto.syncFileProviderCache(entries, prune, pruneParents);
+
+  try {
+    return await withPlaintextLease('file provider cache push', async (lease) => {
+      lease.assertValid();
+      return BeebeebCrypto.syncFileProviderCache(entries, prune, pruneParents);
+    });
+  } catch (err) {
+    if (isPlaintextGateClosed(err)) return 0;
+    throw err;
+  }
 }
 
 /**
@@ -139,11 +158,27 @@ function parseDecryptedName(plaintext: string): string {
 /**
  * Fetch a directory listing, decrypt all names, and push the result into the
  * File Provider cache. Used during mount and as a periodic refresh.
+ *
+ * Task 1593 round 4 — this can be a long BFS across the whole vault, so it
+ * holds ONE lease from the plaintext gate for its entire span (rather than
+ * one per push): a sign-out purge invalidates it immediately and `drain()`
+ * waits (bounded) for the walk to notice, instead of the sweep racing a walk
+ * that keeps recreating rows underneath it. `lease.valid` is checked before
+ * every folder's push to native — and again right after the decrypt span,
+ * which is async — so the walk stops queueing/pushing MORE folders the
+ * moment a purge starts, rather than only refusing the final push.
  */
 export async function populateFileProviderCache(
   decryptMetadata: (fileId: string, nonce: Uint8Array, ct: Uint8Array) => Promise<string>,
 ): Promise<number> {
   if (Platform.OS !== 'ios') return 0;
+  let lease;
+  try {
+    lease = plaintextGate.acquire('file provider cache walk');
+  } catch {
+    // Gate already closed (signed out) — nothing to populate.
+    return 0;
+  }
   try {
     let totalSynced = 0;
 
@@ -152,6 +187,7 @@ export async function populateFileProviderCache(
     // a full-vault traversal.
     const queue: (string | undefined)[] = [undefined]; // start with root
     while (queue.length > 0) {
+      if (!lease.valid) break;
       const parentId = queue.shift();
       try {
         // Full cursor walk — the Files.app BFS must see EVERY child of each
@@ -177,6 +213,10 @@ export async function populateFileProviderCache(
           }
         }));
 
+        // Re-check: the decrypt span above is async, and a purge may have
+        // closed the gate while it ran.
+        if (!lease.valid) break;
+
         // `listAllFiles` returns the COMPLETE child set for this folder (full
         // cursor walk), so prune is safe here — rows for children that no
         // longer exist remotely (e.g. trashed on the web) are deleted.
@@ -195,5 +235,7 @@ export async function populateFileProviderCache(
     return totalSynced;
   } catch {
     return 0;
+  } finally {
+    lease.release();
   }
 }

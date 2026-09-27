@@ -166,3 +166,67 @@ describe('task 1593 round 3 — every plaintext writer goes through the purge ga
     }
   });
 });
+
+describe('task 1593 round 4 (P2-3) — the File Provider NAME cache writer is gated too', () => {
+  // Round 3's "every writer imports plaintext-gate" check above only scans
+  // `${FileSystem.cacheDirectory}…` / `${cacheDir}…` literals, so it never
+  // looked at `<AppGroup>/file-provider-cache.sqlite` — a decrypted-name
+  // cache written straight through the native bridge
+  // (`BeebeebCrypto.syncFileProviderCache`), not through expo-file-system at
+  // all. That gap is exactly how P1-1 (file-provider-mount.ts) shipped
+  // ungated: a per-file import check would have passed for a file that never
+  // imports `FileSystem` in the first place. This scans for the underlying
+  // native call SITE BY SITE instead of trusting a whole-file import.
+  const NATIVE_CALL_LITERAL = '.syncFileProviderCache(';
+  const GATED_WRAPPER = 'lib/file-provider-mount.ts';
+  // The generated bridge module itself (the plain pass-through the wrapper
+  // calls into) is not a "writer" — it has no gate to skip.
+  const BRIDGE_DEFINITION = 'modules/beebeeb-crypto/src/BeebeebCrypto.ts';
+
+  function nativeFileProviderCacheCallSites() {
+    const found: string[] = [];
+    for (const file of sourceFiles(SRC)) {
+      const rel = relative(SRC, file);
+      readFileSync(file, 'utf8').split('\n').forEach((line, i) => {
+        if (line.includes(NATIVE_CALL_LITERAL)) found.push(`${rel}:${i + 1}`);
+      });
+    }
+    // The bridge module itself lives one level up from `SRC` (src/lib/..) —
+    // `sourceFiles(SRC)` never walks there, so it can't appear in `found`;
+    // scan it too so a NEW direct caller anywhere can't hide by defining its
+    // own pass-through next to the bridge.
+    const bridgePath = join(SRC, '..', BRIDGE_DEFINITION);
+    readFileSync(bridgePath, 'utf8').split('\n').forEach((line, i) => {
+      if (line.includes(NATIVE_CALL_LITERAL)) found.push(`../${BRIDGE_DEFINITION}:${i + 1}`);
+    });
+    return found;
+  }
+
+  test('the scan finds the real call site (a scan that matches nothing proves nothing)', () => {
+    const sites = nativeFileProviderCacheCallSites();
+    expect(sites.some((s) => s.startsWith(`${GATED_WRAPPER}:`))).toBe(true);
+  });
+
+  test('EVERY call site is the one gated wrapper — no bypass writes the native name cache directly', () => {
+    const offenders = nativeFileProviderCacheCallSites()
+      .filter((s) => !s.startsWith(`${GATED_WRAPPER}:`) && !s.startsWith(`../${BRIDGE_DEFINITION}:`));
+    expect(offenders).toEqual([]);
+  });
+
+  test('the gated wrapper actually takes a lease around the native call', () => {
+    const src = readFileSync(join(SRC, GATED_WRAPPER), 'utf8');
+    expect(src).toMatch(/from '\.\/plaintext-gate'/);
+    expect(src).toMatch(/withPlaintextLease\(/);
+  });
+
+  test('the BFS walk (populateFileProviderCache) holds its OWN lease for the whole walk, not just per push', () => {
+    const src = readFileSync(join(SRC, GATED_WRAPPER), 'utf8');
+    const start = src.indexOf('export async function populateFileProviderCache');
+    expect(start).toBeGreaterThan(-1);
+    const body = src.slice(start, src.indexOf('\n}', start));
+    expect(body).toMatch(/plaintextGate\.acquire\(/);
+    // Checked before a folder push AND again after the async decrypt span.
+    expect((body.match(/lease\.valid/g) ?? []).length).toBeGreaterThanOrEqual(2);
+    expect(body).toMatch(/lease\.release\(\)/);
+  });
+});

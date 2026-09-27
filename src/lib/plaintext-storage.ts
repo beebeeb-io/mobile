@@ -35,6 +35,7 @@ export const PROTECTED_LEAF_NAMES = [
   'widget-data.json',
   'pinned',
   'temp',
+  'file-provider-cache.sqlite',
 ] as const;
 
 /**
