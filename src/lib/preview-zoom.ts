@@ -10,7 +10,12 @@
  */
 
 export const MIN_ZOOM_SCALE = 1;
-export const MAX_ZOOM_SCALE = 5;
+/**
+ * Pinch ceiling (Guus, task 1579 ruling 2): 100x. Zooming is a gesture to
+ * look closer, not a sharpness promise — the bitmap is simply upscaled; no
+ * full-resolution re-decode happens at high scales.
+ */
+export const MAX_ZOOM_SCALE = 100;
 /** Double-tap from 1x lands here (iOS Photos uses a similar ~2-3x step). */
 export const DOUBLE_TAP_ZOOM_SCALE = 2.5;
 /**

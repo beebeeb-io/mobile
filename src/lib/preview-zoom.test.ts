@@ -19,11 +19,14 @@ const W = 400;
 const H = 800;
 
 describe('clampZoomScale', () => {
-  test('keeps the scale inside 1x..5x', () => {
+  test('keeps the scale inside 1x..100x', () => {
+    expect(MAX_ZOOM_SCALE).toBe(100);
     expect(clampZoomScale(0.4)).toBe(1);
     expect(clampZoomScale(3)).toBe(3);
-    expect(clampZoomScale(9)).toBe(MAX_ZOOM_SCALE);
-    expect(MAX_ZOOM_SCALE).toBe(5);
+    expect(clampZoomScale(9)).toBe(9);
+    expect(clampZoomScale(50)).toBe(50);
+    expect(clampZoomScale(100)).toBe(100);
+    expect(clampZoomScale(150)).toBe(100);
   });
   test('treats a non-finite scale as 1x', () => {
     expect(clampZoomScale(Number.NaN)).toBe(1);
@@ -78,9 +81,10 @@ describe('doubleTapZoomRect', () => {
     expect(r).toEqual({ x: 0, y: 0, width: W, height: H });
   });
 
-  test('a target scale above the max is clamped to 5x', () => {
-    const r = doubleTapZoomRect({ viewportWidth: W, viewportHeight: H, tapX: 200, tapY: 400, currentScale: 1, targetScale: 20 });
-    expect(r.width).toBeCloseTo(W / 5);
+  test('a target scale above the max is clamped to 100x', () => {
+    const r = doubleTapZoomRect({ viewportWidth: W, viewportHeight: H, tapX: 200, tapY: 400, currentScale: 1, targetScale: 150 });
+    expect(r.width).toBeCloseTo(W / 100);
+    expect(r.height).toBeCloseTo(H / 100);
   });
 
   test('an unmeasured viewport yields an empty rect instead of NaN', () => {
