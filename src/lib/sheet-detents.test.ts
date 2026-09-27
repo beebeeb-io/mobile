@@ -3,6 +3,10 @@
 // Mutation evidence is in task 1586's Notes.
 import { describe, expect, test } from 'bun:test';
 import {
+  CONTENT_PAN_IDLE,
+  contentPanMove,
+  contentPanRelease,
+  resolveVisibilityAction,
   SHEET_DISMISS_FRACTION,
   SHEET_FLING_DISMISS_VELOCITY,
   SHEET_TOP_GAP,
@@ -137,5 +141,102 @@ describe('VoiceOver adjustable handle', () => {
     expect(detentAccessibilityValue('half')).toBe('Half height');
     expect(detentAccessibilityValue('default')).toBe('Default height');
     expect(detentAccessibilityValue('large')).toBe('Full height');
+  });
+});
+
+
+// ---- 1586 review fixes: gesture + visibility decisions as behaviour ----
+
+/** Feed a content-pan gesture (translationY samples while ACTIVE, the
+ * scroll view's offset) and return the release decision. */
+function gesture(samples: number[], scrollY = 0) {
+  let state = CONTENT_PAN_IDLE;
+  const effects: string[] = [];
+  for (const t of samples) {
+    const r = contentPanMove(state, t, scrollY);
+    state = r.state;
+    effects.push(r.effect.kind);
+  }
+  return { effects, release: contentPanRelease(state, samples[samples.length - 1] ?? 0) };
+}
+
+describe('content pan hand-over (review P1 #1)', () => {
+  test('list at its top, pull down 60 then back up past the start, release → the sheet re-seats', () => {
+    const { effects, release } = gesture([10, 30, 60, 20, -5, -40]);
+    expect(effects).toEqual(['handoff', 'drag', 'drag', 'drag', 'home', 'none']);
+    // The hand-over stopped the spring + un-padded the frame; the release must
+    // spring back to the detent, which restores the padding.
+    expect(release).toEqual({ kind: 'reseat' });
+  });
+
+  test('a pull that ends below its start resolves through the detent math', () => {
+    expect(gesture([10, 40, 90]).release).toEqual({ kind: 'finish', translation: 80 });
+  });
+
+  test('pull down, back up, down again: the second hand-over counts from its own start', () => {
+    const { effects, release } = gesture([10, 50, -5, 20, 70]);
+    expect(effects).toEqual(['handoff', 'drag', 'home', 'handoff', 'drag']);
+    expect(release).toEqual({ kind: 'finish', translation: 50 });
+  });
+
+  test('a scrolled list owns the gesture: no hand-over, nothing on release', () => {
+    const { effects, release } = gesture([10, 60, -40], 120);
+    expect(effects).toEqual(['none', 'none', 'none']);
+    expect(release).toEqual({ kind: 'none' });
+  });
+
+  test('an upward scroll never hands over', () => {
+    expect(gesture([-10, -60]).release).toEqual({ kind: 'none' });
+  });
+});
+
+describe('visibility decisions (review #3, #4)', () => {
+  const closedY = 827;
+  const base = {
+    wasVisible: false,
+    closeInFlight: false,
+    lastTarget: null as number | null,
+    pendingDismissVelocity: null as number | null,
+  };
+
+  test('#4 a sheet mounted closed never reports onDismissed', () => {
+    const a = resolveVisibilityAction({ ...base, visible: false, target: closedY });
+    expect(a.kind === 'close' && a.notifyDismissed).toBe(false);
+  });
+
+  test('#4 a re-layout while closed (closedY moves) does not report onDismissed either', () => {
+    const a = resolveVisibilityAction({ ...base, visible: false, lastTarget: closedY, target: 900 });
+    expect(a).toEqual({ kind: 'close', velocity: 0, notifyDismissed: false });
+    expect(resolveVisibilityAction({ ...base, visible: false, lastTarget: 900, target: 900 })).toEqual({ kind: 'none' });
+  });
+
+  test('#4 but a re-layout mid-close of an OPEN sheet still reports it', () => {
+    const a = resolveVisibilityAction({ ...base, visible: false, closeInFlight: true, lastTarget: closedY, target: 900 });
+    expect(a).toEqual({ kind: 'close', velocity: 0, notifyDismissed: true });
+  });
+
+  test('closing an open sheet reports onDismissed', () => {
+    const a = resolveVisibilityAction({ ...base, visible: false, wasVisible: true, lastTarget: 190, target: closedY });
+    expect(a).toEqual({ kind: 'close', velocity: 0, notifyDismissed: true });
+  });
+
+  test('#3 drag-dismiss accepted: the parent flips visible → close with the fling velocity', () => {
+    const a = resolveVisibilityAction({
+      ...base, visible: false, wasVisible: true, lastTarget: 190, target: closedY, pendingDismissVelocity: 2400,
+    });
+    expect(a).toEqual({ kind: 'close', velocity: 2400, notifyDismissed: true });
+  });
+
+  test('#3 drag-dismiss refused: visible stays true → the sheet springs back to its detent', () => {
+    const a = resolveVisibilityAction({
+      ...base, visible: true, wasVisible: true, lastTarget: 190, target: 190, pendingDismissVelocity: 2400,
+    });
+    expect(a).toEqual({ kind: 'reseat' });
+  });
+
+  test('open / re-layout while open / no change', () => {
+    expect(resolveVisibilityAction({ ...base, visible: true, target: 190 })).toEqual({ kind: 'open' });
+    expect(resolveVisibilityAction({ ...base, visible: true, wasVisible: true, lastTarget: 190, target: 200 })).toEqual({ kind: 'reseat' });
+    expect(resolveVisibilityAction({ ...base, visible: true, wasVisible: true, lastTarget: 190, target: 190 })).toEqual({ kind: 'none' });
   });
 });

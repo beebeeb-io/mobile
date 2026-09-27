@@ -69,14 +69,19 @@ import { GLASS_RADII, modalScrim } from '../glass';
 import { shadows } from '../../theme';
 import { useTheme } from '../../lib/theme-context';
 import {
+  CONTENT_PAN_IDLE,
   adjustDetent,
   computeDetents,
+  contentPanMove,
+  contentPanRelease,
   detentAccessibilityValue,
   displayedTranslate,
   resolveSheetSnap,
+  resolveVisibilityAction,
   rubberBandInterpolation,
   sheetLayoutHeight,
   translateForDetent,
+  type ContentPanState,
   type SheetDetentName,
   type SheetSnap,
 } from '../../lib/sheet-detents';
@@ -216,39 +221,65 @@ export function BottomSheet({
     [base, closedY],
   );
 
+  // An open→closed close whose `onDismissed` has not fired yet (survives a
+  // re-layout that restarts the close spring).
+  const closeInFlightRef = useRef(false);
   const close = useCallback(
-    (velocity = 0) => {
+    (velocity: number, notifyDismissed: boolean) => {
+      closeInFlightRef.current = notifyDismissed;
       animateTo(closedY, velocity, (finished) => {
-        if (finished) onDismissedRef.current?.();
+        if (finished && notifyDismissed) {
+          closeInFlightRef.current = false;
+          onDismissedRef.current?.();
+        }
       });
     },
     [animateTo, closedY],
   );
 
+  // A drag / fling asked the parent to close; the sheet waits for its answer
+  // (review #3). `dismissRequest` re-runs the effect below in the same render
+  // as the parent's `visible` flip (React batches both updates).
+  const pendingDismissVelocityRef = useRef<number | null>(null);
+  const [dismissRequest, setDismissRequest] = useState(0);
+
   // Open / close / re-layout: rest where `visible` + the current detent say.
   const target = visible ? restFor(safeIndex) : closedY;
   const wasVisibleRef = useRef(false);
   useEffect(() => {
-    if (visible && !wasVisibleRef.current) {
-      // Every open starts at the initial detent.
-      indexRef.current = initialIndex;
-      setIndex(initialIndex);
-      const openTarget = restFor(initialIndex);
-      setRestHidden(openTarget);
-      wasVisibleRef.current = true;
-      animateTo(openTarget);
-      return;
-    }
+    const action = resolveVisibilityAction({
+      visible,
+      wasVisible: wasVisibleRef.current,
+      closeInFlight: closeInFlightRef.current,
+      lastTarget: lastTargetRef.current,
+      target,
+      pendingDismissVelocity: pendingDismissVelocityRef.current,
+    });
     wasVisibleRef.current = visible;
-    if (lastTargetRef.current === target) return;
-    if (!visible) {
-      close();
-      return;
+    pendingDismissVelocityRef.current = null;
+    switch (action.kind) {
+      case 'open': {
+        // Every open starts at the initial detent.
+        closeInFlightRef.current = false;
+        indexRef.current = initialIndex;
+        setIndex(initialIndex);
+        const openTarget = restFor(initialIndex);
+        setRestHidden(openTarget);
+        animateTo(openTarget);
+        return;
+      }
+      case 'close':
+        close(action.velocity, action.notifyDismissed);
+        return;
+      case 'reseat':
+        setRestHidden((h) => Math.min(h, target));
+        animateTo(target);
+        return;
+      default:
+        return;
     }
-    setRestHidden((h) => Math.min(h, target));
-    animateTo(target);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visible, target]);
+  }, [visible, target, dismissRequest]);
 
   // Keyboard: sit on top of it and grow to the tallest detent.
   useEffect(() => {
@@ -276,7 +307,10 @@ export function BottomSheet({
       base.setValue(raw);
       drag.setValue(0);
       if (snap.kind === 'dismiss') {
-        close(velocityY);
+        // Only ASK: the parent's `visible` flip closes the sheet with this
+        // velocity; a refusal springs it back (review #3).
+        pendingDismissVelocityRef.current = velocityY;
+        setDismissRequest((n) => n + 1);
         onRequestClose();
         return;
       }
@@ -284,7 +318,7 @@ export function BottomSheet({
       setIndex(snap.index);
       animateTo(restFor(snap.index), velocityY);
     },
-    [animateTo, base, close, detents, drag, onRequestClose, restFor, sheetHeight],
+    [animateTo, base, detents, drag, onRequestClose, restFor, sheetHeight],
   );
 
   const beginDrag = useCallback(() => {
@@ -316,39 +350,52 @@ export function BottomSheet({
   // Content: hand over from the scroll view when it is at its top.
   const contentPanRef = useRef<PanGestureHandler | null>(null);
   const scrollYRef = useRef(0);
-  const contentDraggingRef = useRef(false);
-  const handoffRef = useRef(0);
+  // The hand-over decisions are pure (`contentPanMove` / `contentPanRelease`
+  // in sheet-detents.ts); this only applies them.
+  const contentPanStateRef = useRef<ContentPanState>(CONTENT_PAN_IDLE);
   const onContentGesture = useCallback(
     (e: PanGestureHandlerGestureEvent) => {
-      const { translationY } = e.nativeEvent;
-      if (!contentDraggingRef.current) {
-        if (scrollYRef.current > 0.5 || translationY <= 0) return;
-        contentDraggingRef.current = true;
-        handoffRef.current = translationY;
-        beginDrag();
+      const { state, effect } = contentPanMove(
+        contentPanStateRef.current,
+        e.nativeEvent.translationY,
+        scrollYRef.current,
+      );
+      contentPanStateRef.current = state;
+      switch (effect.kind) {
+        case 'handoff':
+          beginDrag();
+          drag.setValue(effect.drag);
+          return;
+        case 'drag':
+          drag.setValue(effect.drag);
+          return;
+        case 'home':
+          // Back above where the hand-over started: the scroll view takes the
+          // rest of the gesture; the release re-seats the sheet.
+          drag.setValue(0);
+          return;
+        default:
+          return;
       }
-      const d = translationY - handoffRef.current;
-      if (d < 0) {
-        // Back above where the hand-over started: the sheet is home, the
-        // scroll view takes the rest of the gesture.
-        contentDraggingRef.current = false;
-        drag.setValue(0);
-        return;
-      }
-      drag.setValue(d);
     },
     [beginDrag, drag],
   );
   const onContentStateChange = useCallback(
     (e: PanGestureHandlerStateChangeEvent) => {
       const { state, oldState, translationY, velocityY } = e.nativeEvent;
-      if (state === State.BEGAN) contentDraggingRef.current = false;
-      if (oldState === State.ACTIVE && contentDraggingRef.current) {
-        contentDraggingRef.current = false;
-        finishDrag(translationY - handoffRef.current, velocityY);
+      if (state === State.BEGAN) contentPanStateRef.current = CONTENT_PAN_IDLE;
+      if (oldState !== State.ACTIVE) return;
+      const release = contentPanRelease(contentPanStateRef.current, translationY);
+      contentPanStateRef.current = CONTENT_PAN_IDLE;
+      if (release.kind === 'finish') {
+        finishDrag(release.translation, velocityY);
+      } else if (release.kind === 'reseat') {
+        // Review P1 #1: a reversed pull stopped the spring and un-padded the
+        // content frame — spring back to the detent (restores the padding).
+        animateTo(restFor(indexRef.current));
       }
     },
-    [finishDrag],
+    [animateTo, finishDrag, restFor],
   );
 
   const contextValue = useMemo<SheetContextValue>(
@@ -429,11 +476,23 @@ export function BottomSheet({
           },
         ]}
         testID={testID}
+        // VoiceOver stays inside the sheet; the two-finger Z closes it from
+        // any element (review #9).
+        accessibilityViewIsModal
+        onAccessibilityEscape={onRequestClose}
       >
+        {/* Paper below the bottom edge: an over-drag past the tallest detent
+            lifts the sheet, and this fills the gap instead of scrim (review #2). */}
+        <View
+          pointerEvents="none"
+          style={[sheetStyles.underfill, { height: sheetHeight, backgroundColor: backgroundColor ?? c.paper }]}
+        />
         <PanGestureHandler
           onGestureEvent={onHandleGesture}
           onHandlerStateChange={onHandleStateChange}
-          activeOffsetY={[-4, 4]}
+          // ±10: a tap on a header button that drifts a few points is still
+          // a tap (review #5).
+          activeOffsetY={[-10, 10]}
         >
           <Animated.View>
             <View
@@ -499,6 +558,7 @@ export const BottomSheetScrollView = forwardRef<React.ElementRef<typeof GestureS
             style={style}
             // A pull at the top moves the sheet, not an overscroll.
             bounces={false}
+            overScrollMode="never"
             scrollEventThrottle={16}
             onScroll={handleScroll}
             {...rest}
@@ -528,6 +588,7 @@ export const sheetStyles = StyleSheet.create({
   handleRow: { alignItems: 'center', paddingTop: 8, paddingBottom: 10, minHeight: 28 },
   grabber: { width: 36, height: 5, borderRadius: 2.5 },
   body: { flex: 1 },
+  underfill: { position: 'absolute', top: '100%', left: 0, right: 0 },
   scrollWrap: { flex: 1 },
 });
 

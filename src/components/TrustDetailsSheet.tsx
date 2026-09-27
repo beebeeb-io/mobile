@@ -95,6 +95,11 @@ export default function TrustDetailsSheet({ file: fileProp, fileName: fileNamePr
     if (fileProp) setShown({ file: fileProp, fileName: fileNameProp });
     if (fileProp && !proofOpen) setModalMounted(true);
   }, [fileProp, fileNameProp, proofOpen]);
+  // Closed (e.g. Android back) while "Prove it" was handing off: the proof
+  // must not open once the sheet's Modal is gone (1586 review #6).
+  useEffect(() => {
+    if (!fileProp) setProofOpen(false);
+  }, [fileProp]);
 
   if (!shown) return null;
   const { file, fileName } = shown;

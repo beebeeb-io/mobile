@@ -182,3 +182,114 @@ export function detentAccessibilityValue(name: SheetDetentName): string {
       return 'Default height';
   }
 }
+
+// ---------------------------------------------------------------------------
+// Gesture + visibility decisions (1586 review fixes). Pure so they are
+// tested as behaviour, not as source text; `BottomSheet.tsx` only applies
+// the returned effect.
+// ---------------------------------------------------------------------------
+
+/** The content pan's hand-over state across one gesture. */
+export interface ContentPanState {
+  /** The sheet currently follows the finger. */
+  dragging: boolean;
+  /** A hand-over happened at some point in THIS gesture (it stopped the
+   * spring and gave the content frame its full height), even if the finger
+   * has since gone back above the start and the scroll view took over. */
+  handedOff: boolean;
+  /** translationY at the (latest) hand-over. */
+  handoffAt: number;
+}
+
+export const CONTENT_PAN_IDLE: ContentPanState = { dragging: false, handedOff: false, handoffAt: 0 };
+
+export type ContentPanMove =
+  /** Nothing for the sheet to do (the scroll view owns the gesture). */
+  | { kind: 'none' }
+  /** Hand-over now: stop the spring, full content frame, then follow `drag`. */
+  | { kind: 'handoff'; drag: number }
+  /** Follow the finger. */
+  | { kind: 'drag'; drag: number }
+  /** Back above the hand-over point: the sheet's finger offset returns to 0. */
+  | { kind: 'home' };
+
+/** A content-pan move while ACTIVE. */
+export function contentPanMove(
+  state: ContentPanState,
+  translationY: number,
+  scrollY: number,
+): { state: ContentPanState; effect: ContentPanMove } {
+  let next = state;
+  let handoff = false;
+  if (!next.dragging) {
+    if (scrollY > 0.5 || translationY <= 0) return { state: next, effect: { kind: 'none' } };
+    next = { dragging: true, handedOff: true, handoffAt: translationY };
+    handoff = true;
+  }
+  const d = translationY - next.handoffAt;
+  if (d < 0) return { state: { ...next, dragging: false }, effect: { kind: 'home' } };
+  return { state: next, effect: handoff ? { kind: 'handoff', drag: d } : { kind: 'drag', drag: d } };
+}
+
+export type ContentPanRelease =
+  /** The scroll view owned the whole gesture — nothing to do. */
+  | { kind: 'none' }
+  /** The sheet was following the finger: resolve the release (detent / dismiss). */
+  | { kind: 'finish'; translation: number }
+  /** A hand-over happened but was reversed before release: the spring was
+   * stopped and the content frame un-padded, so spring back to the current
+   * detent (which also restores the padding). Review P1 #1. */
+  | { kind: 'reseat' };
+
+/** The content pan left ACTIVE (end / cancel / fail). */
+export function contentPanRelease(state: ContentPanState, translationY: number): ContentPanRelease {
+  if (state.dragging) return { kind: 'finish', translation: translationY - state.handoffAt };
+  if (state.handedOff) return { kind: 'reseat' };
+  return { kind: 'none' };
+}
+
+export type SheetVisibilityAction =
+  | { kind: 'none' }
+  /** Opening: jump to the initial detent. */
+  | { kind: 'open' }
+  /** Spring to closed; `notifyDismissed` = call `onDismissed` when it lands. */
+  | { kind: 'close'; velocity: number; notifyDismissed: boolean }
+  /** Spring to the current detent (a re-layout, or a refused dismiss). */
+  | { kind: 'reseat' };
+
+/**
+ * What the sheet does after a render, from `visible` and what it last did.
+ *
+ * - `pendingDismissVelocity`: a drag / fling asked the parent to close
+ *   (`onRequestClose`) and the sheet has NOT moved yet. If the parent flips
+ *   `visible` the sheet closes with that velocity; if it refuses (`visible`
+ *   stays true) the sheet springs back to its detent — no invisible layer
+ *   left over the screen (review #3).
+ * - `onDismissed` fires only for a close of a sheet that was open (or whose
+ *   close from open was still in flight): a sheet mounted closed, or
+ *   re-laid-out while closed, never reports a dismissal (review #4).
+ */
+export function resolveVisibilityAction(s: {
+  visible: boolean;
+  wasVisible: boolean;
+  /** An open→closed close has started and its `onDismissed` has not fired. */
+  closeInFlight: boolean;
+  lastTarget: number | null;
+  target: number;
+  pendingDismissVelocity: number | null;
+}): SheetVisibilityAction {
+  if (s.visible && !s.wasVisible) return { kind: 'open' };
+  if (!s.visible) {
+    // Already heading to / parked at this closed position.
+    if (!s.wasVisible && s.lastTarget === s.target) return { kind: 'none' };
+    const fromOpen = s.wasVisible || s.closeInFlight;
+    return {
+      kind: 'close',
+      velocity: s.wasVisible ? s.pendingDismissVelocity ?? 0 : 0,
+      notifyDismissed: fromOpen,
+    };
+  }
+  if (s.pendingDismissVelocity != null) return { kind: 'reseat' };
+  if (s.lastTarget === s.target) return { kind: 'none' };
+  return { kind: 'reseat' };
+}

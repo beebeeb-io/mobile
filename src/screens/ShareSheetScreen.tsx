@@ -14,7 +14,7 @@ import * as Clipboard from 'expo-clipboard';
 import * as Haptics from 'expo-haptics';
 import type { RouteProp } from '@react-navigation/native';
 import type { RootStackParamList } from '../App';
-import { radii, spacing, shadows } from '../theme';
+import { radii, spacing } from '../theme';
 import { BottomSheet, BottomSheetScrollView } from '../components/sheet/BottomSheet';
 import { useTheme } from '../lib/theme-context';
 import { useToast } from '../lib/toast-context';

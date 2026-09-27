@@ -74,7 +74,9 @@ describe('BottomSheet — draggable by the handle (Guus, build 221)', () => {
 
   test('a release goes through the detent math (nearest by position + velocity, dismiss)', () => {
     expect(src).toMatch(/resolveSheetSnap\(\{ visibleHeight: shown, velocityY, detents \}\)/);
-    expect(src).toMatch(/if \(snap\.kind === 'dismiss'\) \{\s*close\(velocityY\);\s*onRequestClose\(\);/);
+    // a dismiss only ASKS the parent (review #3; the decision is unit-tested
+    // as resolveVisibilityAction in sheet-detents.test.ts)
+    expect(src).toMatch(/pendingDismissVelocityRef\.current = velocityY;\s*setDismissRequest\(\(n\) => n \+ 1\);\s*onRequestClose\(\);/);
   });
 
   test('past the tallest detent the sheet is rubber-banded', () => {
@@ -89,7 +91,8 @@ describe('BottomSheet — draggable by the handle (Guus, build 221)', () => {
     expect(src).toMatch(/simultaneousHandlers=\{innerRef\}/);
     expect(src).toMatch(/simultaneousHandlers=\{ctx\.contentPanRef\}/);
     // … and only takes over when the scroll view is at its top, pulling down
-    expect(src).toMatch(/if \(scrollYRef\.current > 0\.5 \|\| translationY <= 0\) return;/);
+    // (the hand-over itself is unit-tested as contentPanMove / contentPanRelease)
+    expect(src).toMatch(/contentPanMove\(\s*contentPanStateRef\.current,\s*e\.nativeEvent\.translationY,\s*scrollYRef\.current,/);
     expect(src).toMatch(/bounces=\{false\}/);
   });
 
@@ -102,5 +105,31 @@ describe('BottomSheet — draggable by the handle (Guus, build 221)', () => {
     expect(tag).toContain("{ name: 'increment' }, { name: 'decrement' }");
     expect(tag).toContain('onAccessibilityAction={onHandleAccessibilityAction}');
     expect(src).toMatch(/adjustDetent\(indexRef\.current, name, detents\.length\)/);
+  });
+});
+
+describe('BottomSheet — review fixes wiring (decisions unit-tested in sheet-detents.test.ts)', () => {
+  test('#1 a reversed hand-over re-seats the sheet at its detent on release', () => {
+    expect(src).toMatch(/release\.kind === 'reseat'\) \{[^}]*animateTo\(restFor\(indexRef\.current\)\);/s);
+  });
+  test('#2 a paper underfill sits below the bottom edge', () => {
+    expect(styleBlock('underfill')).toMatch(/top:\s*'100%'/);
+    expect(src).toMatch(/sheetStyles\.underfill, \{ height: sheetHeight, backgroundColor: backgroundColor \?\? c\.paper \}/);
+  });
+  test('#3/#4 the effect applies resolveVisibilityAction', () => {
+    expect(src).toMatch(/const action = resolveVisibilityAction\(\{/);
+    expect(src).toMatch(/close\(action\.velocity, action\.notifyDismissed\)/);
+  });
+  test('#5 the handle activates at ±10', () => {
+    expect(src).toMatch(/activeOffsetY=\{\[-10, 10\]\}/);
+  });
+  test('#8 no Android overscroll stretch on the inner scroll', () => {
+    expect(src).toMatch(/overScrollMode="never"/);
+  });
+  test('#9 the sheet is a VoiceOver modal and escapes from anywhere', () => {
+    const at = src.indexOf('testID={testID}\n');
+    const tag = src.slice(at, src.indexOf('>', at));
+    expect(tag).toContain('accessibilityViewIsModal');
+    expect(tag).toContain('onAccessibilityEscape={onRequestClose}');
   });
 });
