@@ -16,8 +16,10 @@ import { rateLimitedFetch } from './rate-limited-fetch';
 import { isNativeUploadAvailable, planUploadChunksNative, uploadChunksNative } from '../../modules/beebeeb-crypto';
 import { assertNativeUploadEncryptedUnderSessionId, nativeProgressToUploadProgress, parseNativeUploadError, resumeStateMatchesNativePlan, uploadChunksNativeTracked } from './native-upload-bridge';
 import { getDeviceId } from './sync-client';
+import { deviceIdHeader } from './upload-device-header';
 import { setAnnouncement, clearAnnouncement } from './announcement-context';
 import { withSignupTicket } from './signup-email-code';
+import { normalizeNotificationPreferences, type NotificationPreferences } from './notification-prefs';
 
 // API target. Override at build time with EXPO_PUBLIC_API_URL or via
 // expoConfig.extra.apiUrl (e.g. through eas.json env or app.config.ts).
@@ -352,6 +354,15 @@ async function headers(auth = true, extra?: Record<string, string>): Promise<Req
 // 1369). Mirrors the existing Constants.expoConfig?.version usage in
 // device-registration.ts / SettingsScreen.tsx — no new dependency.
 const MOBILE_CLIENT_VERSION = Constants.expoConfig?.version ?? '1.0.0';
+
+/**
+ * Task 1578 (for 1580): `X-Beebeeb-Device-Id` on upload init + complete, so the
+ * server knows which device wrote a version. Best-effort — see
+ * `upload-device-header.ts`.
+ */
+function uploadDeviceHeader(): Promise<Record<string, string>> {
+  return deviceIdHeader(getDeviceId)
+}
 
 function mobileClientHeaders(): Record<string, string> | undefined {
   if (Platform.OS === 'ios') return { 'X-Beebeeb-Client': 'mobile-ios', 'X-Beebeeb-Client-Version': MOBILE_CLIENT_VERSION };
@@ -1028,6 +1039,15 @@ export async function getFile(id: string): Promise<FileEntry> {
 }
 
 /**
+ * Task 1578 — `POST /api/v1/files/:id/upload/abandon` (server task 1571):
+ * clears an in-flight version upload (`files.is_uploading`) and makes the
+ * previous completed version current again. Owner-scoped server-side.
+ */
+export async function abandonFileUpload(id: string): Promise<void> {
+  await request<unknown>('POST', `/api/v1/files/${id}/upload/abandon`);
+}
+
+/**
  * Task 1563 — the authoritative CURRENT `version_number` for a file.
  *
  * `GET /api/v1/files/:id` does NOT select `version_number` at all (confirmed
@@ -1126,7 +1146,7 @@ function bytesToBlob(bytes: Uint8Array): Blob {
   return new Blob([copy.buffer as ArrayBuffer], { type: 'application/octet-stream' });
 }
 
-async function putBinaryBytes(url: string, token: string | null, bytes: Uint8Array): Promise<{
+async function putBinaryBytes(url: string, token: string | null, bytes: Uint8Array, foregroundTransfer = false): Promise<{
   ok: boolean;
   status: number;
   error: () => Promise<{ error?: string }>;
@@ -1142,6 +1162,9 @@ async function putBinaryBytes(url: string, token: string | null, bytes: Uint8Arr
         httpMethod: 'PUT',
         headers,
         uploadType: FileSystem.FileSystemUploadType.BINARY_CONTENT,
+        // Task 1578: expo-file-system's default is a BACKGROUND URLSession,
+        // whose tasks iOS may defer. Interactive saves opt into FOREGROUND.
+        ...(foregroundTransfer ? { sessionType: FileSystem.FileSystemSessionType.FOREGROUND } : {}),
       });
       return {
         ok: res.status >= 200 && res.status < 300,
@@ -1254,6 +1277,14 @@ export async function uploadEncryptedChunked(params: {
    * unset and keeps today's byte-match-on-`v2InitNameEncrypted` behavior.
    */
   versionReplace?: { fileId: string; baseVersionNumber: number }
+  /**
+   * Task 1578 — send chunk PUTs over a FOREGROUND URLSession instead of the
+   * expo-file-system default BACKGROUND one. For an upload the user is
+   * actively waiting on (the text editor's Save): background-session tasks
+   * run in `nsurlsessiond` and iOS may defer them, which left the editor's
+   * Save spinner running on device. Every other caller keeps the default.
+   */
+  foregroundTransfer?: boolean
 }): Promise<FileEntry> {
   const {
     fileId,
@@ -1268,6 +1299,7 @@ export async function uploadEncryptedChunked(params: {
     onProgress,
     readEncryptedChunk,
     versionReplace,
+    foregroundTransfer,
   } = params
   const token = await getToken()
   const resolveNameEncrypted = async (id: string) =>
@@ -1342,7 +1374,7 @@ export async function uploadEncryptedChunked(params: {
       method: 'POST',
       // Writer-provenance headers (task 1436) — this call creates the
       // object_versions row the server records them on.
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...mobileClientHeaders() },
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...mobileClientHeaders(), ...(await uploadDeviceHeader()) },
       body: JSON.stringify({
         file_id: fileId,
         name_encrypted: initialNameEncrypted,
@@ -1385,7 +1417,7 @@ export async function uploadEncryptedChunked(params: {
     const chunkPath = protocol === 'v2' && uploadSessionId
       ? `/api/v1/uploads/${uploadSessionId}/chunks/${i}`
       : `/api/v1/files/${serverFileId}/chunks/${i}`
-    const chunkRes = await putBinaryBytes(`${BASE_URL}${chunkPath}`, token, encBytes)
+    const chunkRes = await putBinaryBytes(`${BASE_URL}${chunkPath}`, token, encBytes, foregroundTransfer === true)
     if (!chunkRes.ok) {
       const err = (await chunkRes.error()) as { error?: string; message?: string }
       // Carry the machine code (e.g. `object_budget_exceeded`, `quota_exceeded`)
@@ -1455,7 +1487,7 @@ async function finalizeUpload(params: {
     : `/api/v1/files/${serverFileId}/upload/complete`
   const completeRes = await rateLimitedFetch(`${BASE_URL}${completePath}`, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...(await uploadDeviceHeader()) },
     body: JSON.stringify({}),
   })
   if (!completeRes.ok) {
@@ -1704,7 +1736,7 @@ async function initUploadV2(params: {
     method: 'POST',
     // Writer-provenance headers (task 1436) — this call creates the
     // object_versions row the server records them on.
-    headers: { Authorization: `Bearer ${params.token}`, 'Content-Type': 'application/json', ...mobileClientHeaders() },
+    headers: { Authorization: `Bearer ${params.token}`, 'Content-Type': 'application/json', ...mobileClientHeaders(), ...(await uploadDeviceHeader()) },
     body: JSON.stringify({
       file_id: params.fileId,
       file_name: params.fileName,
@@ -1801,7 +1833,7 @@ async function uploadFileChunked(
     method: 'POST',
     // Writer-provenance headers (task 1436) — this call creates the
     // object_versions row the server records them on.
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...mobileClientHeaders() },
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...mobileClientHeaders(), ...(await uploadDeviceHeader()) },
     body: JSON.stringify({
       name_encrypted: metadata.name_encrypted,
       parent_id: metadata.parent_id ?? null,
@@ -1848,7 +1880,7 @@ async function uploadFileChunked(
 
   const completeRes = await rateLimitedFetch(`${BASE_URL}/api/v1/files/${file_id}/upload/complete`, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...(await uploadDeviceHeader()) },
     body: JSON.stringify({}),
   });
   if (!completeRes.ok) {
@@ -2935,21 +2967,16 @@ export async function unregisterDeviceToken(deviceId: string): Promise<void> {
 
 // ─── Notification preferences ─────────────────────────────────────────────────
 
-export interface MobileNotificationPreferences {
-  file_updated: boolean;
-  share_received: boolean;
-  storage_warning: boolean;
-  new_device_login: boolean;
-  backup_complete: boolean;
-}
+export type MobileNotificationPreferences = NotificationPreferences;
 
-/** GET /api/v1/notifications/preferences */
+/** GET /api/v1/notifications/preferences — missing keys fall back to the
+ * mobile defaults (`file_updated` OFF, task 1578). */
 export async function getNotificationPreferences(): Promise<MobileNotificationPreferences> {
   const response = await request<MobileNotificationPreferences | { preferences: MobileNotificationPreferences }>(
     'GET',
     '/api/v1/notifications/preferences',
   );
-  return 'preferences' in response ? response.preferences : response;
+  return normalizeNotificationPreferences('preferences' in response ? response.preferences : response);
 }
 
 /** PUT /api/v1/notifications/preferences */
@@ -2961,7 +2988,7 @@ export async function setNotificationPreferences(
     '/api/v1/notifications/preferences',
     prefs,
   );
-  return 'preferences' in response ? response.preferences : response;
+  return normalizeNotificationPreferences('preferences' in response ? response.preferences : response);
 }
 
 // ─── Privacy / DSAR (spec 025) ────────────────────────────────────────────────

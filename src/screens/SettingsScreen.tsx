@@ -112,6 +112,7 @@ import { markUnlocked } from '../lib/lock-state';
 import { mountTrustedFileProvider, populateFileProviderCache, removeTrustedFileProvider } from '../lib/file-provider-mount';
 import { NOTIFICATIONS_OPT_OUT_KEY, registerForPushNotifications, unregisterPushToken } from '../lib/push-notifications';
 import * as BeebeebCrypto from '../../modules/beebeeb-crypto';
+import { DEFAULT_NOTIFICATION_PREFERENCES } from '../lib/notification-prefs';
 
 const BIOMETRIC_PREF_KEY = 'beebeeb_biometric_lock';
 const BIOMETRIC_DELAY_KEY = 'beebeeb_biometric_delay';
@@ -694,11 +695,7 @@ export default function SettingsScreen() {
   // Notifications
   const [notificationsEnabled, setNotificationsEnabled] = useState(false);
   const [notifPrefs, setNotifPrefs] = useState<MobileNotificationPreferences>({
-    file_updated: true,
-    share_received: true,
-    storage_warning: true,
-    new_device_login: true,
-    backup_complete: false,
+    ...DEFAULT_NOTIFICATION_PREFERENCES,
   });
   const [notifPrefsLoading, setNotifPrefsLoading] = useState(false);
   const [backupNotifPrefs, setBackupNotifPrefs] = useState<BackupNotificationSettings>(
