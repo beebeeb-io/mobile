@@ -8,11 +8,11 @@
  * ⋯ menu's "Version history", or a swipe-up on the content) — see design
  * note: "Details on demand, not a permanent bar."
  *
- * Content surface, not control-layer glass (task 1315's own rule, followed
- * verbatim from the app's one PROVEN bottom-sheet precedent,
- * `ShareSheetScreen.tsx`): opaque `c.paper`, backdrop via `modalScrim`.
- * Geometry follows the design (not ShareSheetScreen): full width, bottom edge
- * attached, top corners only at `GLASS_RADII.sheet` (38).
+ * Content surface, not control-layer glass (task 1315's own rule): opaque
+ * `c.paper`, backdrop via `modalScrim`. Since task 1586 it renders through
+ * the shared `BottomSheet` (src/components/sheet/BottomSheet.tsx): full
+ * width, bottom edge attached, top corners only at `GLASS_RADII.sheet` (38),
+ * draggable by the handle between half / default (72 %) / large detents.
  * `GlassSheet` (task 1311) was considered and rejected here —
  * it is unused anywhere outside the dev gallery, and its glass material is
  * documented as "the floating CONTROL layer", not a content surface; reusing
@@ -23,24 +23,19 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  Animated,
-  Dimensions,
-  PanResponder,
-  ScrollView,
   StyleSheet,
   Text,
-  TouchableOpacity,
   View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { fonts, radii, shadows } from '../../theme';
+import { fonts, radii } from '../../theme';
 import type { Colors } from '../../theme';
 import { useTheme } from '../../lib/theme-context';
 import { useCrypto } from '../../lib/crypto-context';
 import { getFile, getRegion, listFileVersions, type FileVersionEntry } from '../../lib/api';
 import { encryptedMetadataPayloadToBytes } from '../../lib/encrypted-metadata';
-import { GLASS_RADII, modalScrim } from '../glass';
+import { BottomSheet, BottomSheetScrollView } from '../sheet/BottomSheet';
 import { formatBytes as formatSize } from '../../lib/format';
 import { buildInfoSubline, formatShareStatus, resolveFolderLabel } from '../../lib/preview-chrome';
 import { storageLocationLabel, type InfoSheetFocus } from '../../lib/preview-info';
@@ -54,6 +49,11 @@ import { storageLocationLabel, type InfoSheetFocus } from '../../lib/preview-inf
  * the design's section 03 mock (top bar visible, sheet over the bottom bar).
  */
 export const INFO_SHEET_Z_INDEX = 18;
+
+/** Task 1586 — the preview's top chrome row (48pt capsule + its top offset)
+ * plus a gap, below the top inset: the Info sheet's large detent stops here
+ * so its handle is never under the close / title / ⋯ buttons. */
+const PREVIEW_CHROME_CLEARANCE = 68;
 
 /** `GET /api/v1/region` rarely changes; one fetch per app run is enough. */
 let cachedRegionCity: string | null | undefined;
@@ -123,9 +123,8 @@ export function InfoSheet({
   focus = 'info',
 }: InfoSheetProps) {
   const insets = useSafeAreaInsets();
-  const { colors: c, resolved } = useTheme();
+  const { colors: c } = useTheme();
   const { decryptMetadata } = useCrypto();
-  const { height: windowHeight } = Dimensions.get('window');
 
   const [parentId, setParentId] = useState<string | null | undefined>(undefined);
   const [shareCount, setShareCount] = useState<number | null>(null);
@@ -140,7 +139,7 @@ export function InfoSheet({
    * hold the previous open's values during the first render after opening). */
   const versionsLoadedRef = useRef(false);
   const [regionCity, setRegionCity] = useState<string | null | undefined>(cachedRegionCity);
-  const scrollRef = useRef<ScrollView>(null);
+  const scrollRef = useRef<React.ElementRef<typeof BottomSheetScrollView>>(null);
   const [versionsY, setVersionsY] = useState<number | null>(null);
 
   // Task 1583 — "Stored in" names the city (brand rule), from the server's
@@ -251,35 +250,6 @@ export function InfoSheet({
     };
   }, [visible, fileId, decryptMetadata]);
 
-  // ---- Presentation (slide up / down, drag-to-dismiss) ----
-  const anim = useRef(new Animated.Value(0)).current;
-  useEffect(() => {
-    Animated.spring(anim, {
-      toValue: visible ? 1 : 0,
-      damping: 26,
-      stiffness: 240,
-      mass: 0.9,
-      useNativeDriver: true,
-    }).start();
-  }, [anim, visible]);
-
-  const safeBottom = Math.max(insets.bottom, 16);
-  const sheetHeight = Math.min(Math.round(windowHeight * 0.72), windowHeight - insets.top - 40);
-  const translateY = anim.interpolate({ inputRange: [0, 1], outputRange: [sheetHeight + 40, 0] });
-  const backdropOpacity = anim;
-
-  const panResponder = useMemo(
-    () =>
-      PanResponder.create({
-        onMoveShouldSetPanResponder: (_evt, gesture) =>
-          gesture.dy > 8 && Math.abs(gesture.dy) > Math.abs(gesture.dx),
-        onPanResponderRelease: (_evt, gesture) => {
-          if (gesture.dy > 40 || gesture.vy > 0.7) onClose();
-        },
-      }),
-    [onClose],
-  );
-
   const subline = buildInfoSubline({
     kindLabel,
     sizeLabel: sizeBytes != null ? formatSize(sizeBytes) : null,
@@ -292,99 +262,84 @@ export function InfoSheet({
   const locationLabel = storageLocationLabel({ city: regionCity ?? null });
 
   return (
-    <View
-      style={[StyleSheet.absoluteFill, { zIndex: INFO_SHEET_Z_INDEX }]}
-      pointerEvents={visible ? 'auto' : 'none'}
-      testID="preview-info-layer"
+    <BottomSheet
+      visible={visible}
+      onRequestClose={onClose}
+      zIndex={INFO_SHEET_Z_INDEX}
+      // The top chrome (close / title / ⋯, zIndex above the sheet) stays
+      // usable, so even the large detent stops below it.
+      topClearance={insets.top + PREVIEW_CHROME_CLEARANCE}
+      detents={['half', 'default', 'large']}
+      initialDetent="default"
+      contentStyle={styles.body}
+      handleAccessibilityLabel="File info sheet"
+      scrimAccessibilityLabel="Close file info"
+      testID="preview-info-sheet"
+      layerTestID="preview-info-layer"
+      scrimTestID="preview-info-backdrop"
     >
-      <Animated.View style={[StyleSheet.absoluteFill, { opacity: backdropOpacity }]}>
-        <TouchableOpacity
-          style={[StyleSheet.absoluteFill, { backgroundColor: modalScrim(resolved) }]}
-          activeOpacity={1}
-          onPress={onClose}
-          accessibilityLabel="Close file info"
-          testID="preview-info-backdrop"
-        />
-      </Animated.View>
-
-      <Animated.View
-        style={[
-          styles.sheet,
-          {
-            height: sheetHeight,
-            paddingBottom: safeBottom,
-            transform: [{ translateY }],
-          },
-        ]}
-        testID="preview-info-sheet"
+      <BottomSheetScrollView
+        ref={scrollRef}
+        style={styles.scroll}
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={styles.scrollContent}
+        onContentSizeChange={scrollToVersionsIfPending}
+        testID="preview-info-scroll"
       >
-        <View {...panResponder.panHandlers}>
-          <View style={styles.grabber} />
+        <Text style={styles.title} numberOfLines={2}>{filename}</Text>
+        <Text style={styles.subline}>{subline}</Text>
+
+        <View style={styles.encBox}>
+          <Ionicons name="lock-closed" size={20} color={c.amber} />
+          <View style={{ flex: 1 }}>
+            <Text style={styles.encTitle}>Encrypted on your device</Text>
+            <Text style={styles.encBody}>
+              Only your devices hold the key. We store it in Europe and cannot read it.
+            </Text>
+          </View>
         </View>
 
-        <ScrollView
-          ref={scrollRef}
-          style={styles.scroll}
-          showsVerticalScrollIndicator={false}
-          contentContainerStyle={styles.scrollContent}
-          onContentSizeChange={scrollToVersionsIfPending}
-          testID="preview-info-scroll"
-        >
-          <Text style={styles.title} numberOfLines={2}>{filename}</Text>
-          <Text style={styles.subline}>{subline}</Text>
-
-          <View style={styles.encBox}>
-            <Ionicons name="lock-closed" size={20} color={c.amber} />
-            <View style={{ flex: 1 }}>
-              <Text style={styles.encTitle}>Encrypted on your device</Text>
-              <Text style={styles.encBody}>
-                Only your devices hold the key. We store it in Europe and cannot read it.
-              </Text>
-            </View>
+        {metaError ? (
+          <Text style={styles.errorText}>{metaError}</Text>
+        ) : (
+          <View style={styles.kvBlock}>
+            <KvRow styles={styles} label="Modified" value={modifiedLabel ?? (metaLoading ? '…' : '—')} />
+            <KvRow styles={styles} label="Folder" value={folderLabel} />
+            <KvRow styles={styles} label="Shared" value={shareLabel} />
+            {extraRows.map((row) => (
+              <KvRow styles={styles} key={row.label} label={row.label} value={row.value} mono={row.mono} />
+            ))}
+            <KvRow styles={styles} label="Stored in" value={locationLabel} testID="preview-info-stored-in" />
           </View>
+        )}
 
-          {metaError ? (
-            <Text style={styles.errorText}>{metaError}</Text>
-          ) : (
-            <View style={styles.kvBlock}>
-              <KvRow styles={styles} label="Modified" value={modifiedLabel ?? (metaLoading ? '…' : '—')} />
-              <KvRow styles={styles} label="Folder" value={folderLabel} />
-              <KvRow styles={styles} label="Shared" value={shareLabel} />
-              {extraRows.map((row) => (
-                <KvRow styles={styles} key={row.label} label={row.label} value={row.value} mono={row.mono} />
-              ))}
-              <KvRow styles={styles} label="Stored in" value={locationLabel} testID="preview-info-stored-in" />
-            </View>
-          )}
-
-          <Text
-            style={styles.sectionHeading}
-            testID="preview-info-versions-heading"
-            onLayout={(e) => setVersionsY(e.nativeEvent.layout.y)}
-          >
-            Versions
-          </Text>
-          {versionsLoading ? (
-            <ActivityIndicator color={c.amber} style={{ marginTop: 8 }} />
-          ) : versionsError ? (
-            <Text style={styles.errorText}>{versionsError}</Text>
-          ) : versions && versions.length > 0 ? (
-            <View style={styles.versionsBlock}>
-              {versions.map((v) => (
-                <View key={v.id} style={styles.versionRow}>
-                  <Text style={styles.versionLabel}>Version {v.version_number}</Text>
-                  <Text style={styles.versionMeta}>
-                    {formatVersionDate(v.created_at)} · {formatSize(v.size_bytes)}
-                  </Text>
-                </View>
-              ))}
-            </View>
-          ) : (
-            <Text style={styles.versionEmpty}>No earlier versions.</Text>
-          )}
-        </ScrollView>
-      </Animated.View>
-    </View>
+        <Text
+          style={styles.sectionHeading}
+          testID="preview-info-versions-heading"
+          onLayout={(e) => setVersionsY(e.nativeEvent.layout.y)}
+        >
+          Versions
+        </Text>
+        {versionsLoading ? (
+          <ActivityIndicator color={c.amber} style={{ marginTop: 8 }} />
+        ) : versionsError ? (
+          <Text style={styles.errorText}>{versionsError}</Text>
+        ) : versions && versions.length > 0 ? (
+          <View style={styles.versionsBlock}>
+            {versions.map((v) => (
+              <View key={v.id} style={styles.versionRow}>
+                <Text style={styles.versionLabel}>Version {v.version_number}</Text>
+                <Text style={styles.versionMeta}>
+                  {formatVersionDate(v.created_at)} · {formatSize(v.size_bytes)}
+                </Text>
+              </View>
+            ))}
+          </View>
+        ) : (
+          <Text style={styles.versionEmpty}>No earlier versions.</Text>
+        )}
+      </BottomSheetScrollView>
+    </BottomSheet>
   );
 }
 
@@ -411,36 +366,11 @@ function KvRow({
 
 function infoSheetStyles(c: Colors) {
   return StyleSheet.create({
-    // Full width, attached to the bottom edge, top corners rounded only —
-    // design section 03 `.sheet2{left:0;right:0;bottom:0;border-radius:9cqw
-    // 9cqw 0 0}`. 9cqw of the 300px mock phone is 27px on a 280px screen
-    // (9.6 %), ~38.8pt on a 402pt iPhone: the `GLASS_RADII.sheet` token (38).
-    // The home-indicator inset is the sheet's own paddingBottom (safeBottom),
-    // so content never sits under it. Guus, device 2026-09-27: "Why does it
-    // seem that the info sheet is not full width?" (was left/right/bottom 10,
-    // all four corners 38).
-    sheet: {
-      position: 'absolute',
-      left: 0,
-      right: 0,
-      bottom: 0,
-      borderTopLeftRadius: GLASS_RADII.sheet,
-      borderTopRightRadius: GLASS_RADII.sheet,
-      borderBottomLeftRadius: 0,
-      borderBottomRightRadius: 0,
-      backgroundColor: c.paper,
-      paddingTop: 12,
-      paddingHorizontal: 20,
-      ...shadows.lg,
-    },
-    grabber: {
-      width: 36,
-      height: 4,
-      borderRadius: 2,
-      backgroundColor: c.line2,
-      alignSelf: 'center',
-      marginBottom: 14,
-    },
+    // Task 1586 — the sheet itself (full width, bottom attached, top corners
+    // at GLASS_RADII.sheet, the home-indicator inset inside it, the draggable
+    // handle and detents) is the shared `BottomSheet`; #137's geometry moved
+    // there verbatim. This is only the area below the handle.
+    body: { paddingHorizontal: 20 },
     scroll: { flex: 1 },
     scrollContent: { paddingBottom: 12 },
     // Task 1583 — Guus's device: the labels were near-invisible (no colour at

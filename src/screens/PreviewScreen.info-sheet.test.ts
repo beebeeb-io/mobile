@@ -15,6 +15,12 @@ const infoSheetSource = readFileSync(
   join(import.meta.dir, '../components/preview/InfoSheet.tsx'),
   'utf-8',
 );
+// Task 1586 — the Info sheet renders through the shared BottomSheet; the
+// geometry and the layer's zIndex slot are applied there.
+const bottomSheetSource = readFileSync(
+  join(import.meta.dir, '../components/sheet/BottomSheet.tsx'),
+  'utf-8',
+);
 
 function styleZ(src: string, styleName: string): number {
   const m = src.match(new RegExp(`\\n  ${styleName}\\s*:\\s*\\{([^}]*)\\}`, 's'));
@@ -52,7 +58,9 @@ describe('Info sheet stacking', () => {
   const sheetZ = Number(infoSheetSource.match(/INFO_SHEET_Z_INDEX = (\d+)/)?.[1] ?? 0);
 
   test('the sheet layer carries its zIndex on the root view', () => {
-    expect(infoSheetSource).toMatch(/StyleSheet\.absoluteFill, \{ zIndex: INFO_SHEET_Z_INDEX \}/);
+    // InfoSheet hands its slot to the shared sheet, which puts it on its root.
+    expect(infoSheetSource).toMatch(/<BottomSheet[^>]*zIndex=\{INFO_SHEET_Z_INDEX\}/s);
+    expect(bottomSheetSource).toMatch(/style=\{\[StyleSheet\.absoluteFill, zIndex != null \? \{ zIndex \} : null\]\}/);
   });
 
   test('the sheet sits above the floating bottom bar (the bar covered the Versions list)', () => {
@@ -61,6 +69,12 @@ describe('Info sheet stacking', () => {
 
   test('the top chrome stays above the sheet (close and ⋯ work while it is open)', () => {
     expect(styleZ(source, 'chromeLayer')).toBeGreaterThan(sheetZ);
+  });
+
+  test('even the large detent stops below the top chrome (sim: the handle hid under the title capsule)', () => {
+    expect(infoSheetSource).toMatch(/topClearance=\{insets\.top \+ PREVIEW_CHROME_CLEARANCE\}/);
+    expect(Number(infoSheetSource.match(/PREVIEW_CHROME_CLEARANCE = (\d+)/)?.[1] ?? 0)).toBeGreaterThanOrEqual(64);
+    expect(bottomSheetSource).toMatch(/computeDetents\(detentNames, containerHeight - keyboardHeight, topClearance \?\? insets\.top\)/);
   });
 
   test('the ⋯ menu stays above the sheet', () => {
@@ -103,11 +117,20 @@ describe('Info sheet content', () => {
 // width?" Design section 03: `.sheet2{left:0;right:0;bottom:0;
 // border-radius:9cqw 9cqw 0 0}` — edge to edge, bottom attached, top corners only.
 describe('Info sheet geometry (design section 03)', () => {
+  // Since 1586 the geometry lives in the shared BottomSheet (its own tests in
+  // src/components/sheet/BottomSheet.test.ts); here: the Info sheet uses it
+  // and does not re-style the sheet.
   function sheetStyle(): string {
-    const m = infoSheetSource.match(/\n    sheet:\s*\{([^}]*)\}/s);
-    if (!m) throw new Error('InfoSheet "sheet" style not found');
+    const m = bottomSheetSource.match(/\n  sheet:\s*\{([^}]*)\}/s);
+    if (!m) throw new Error('BottomSheet "sheet" style not found');
     return m[1];
   }
+
+  test('the Info sheet renders through the shared BottomSheet', () => {
+    expect(infoSheetSource).toContain('<BottomSheet');
+    expect(infoSheetSource).toContain('<BottomSheetScrollView');
+    expect(infoSheetSource).not.toMatch(/\n    sheet:\s*\{/);
+  });
 
   test('full width and attached to the bottom edge', () => {
     const s = sheetStyle();
@@ -126,7 +149,8 @@ describe('Info sheet geometry (design section 03)', () => {
   });
 
   test('the home-indicator inset is padding inside the sheet', () => {
-    expect(infoSheetSource).toMatch(/const safeBottom = Math\.max\(insets\.bottom,/);
-    expect(infoSheetSource).toMatch(/paddingBottom:\s*safeBottom/);
+    expect(bottomSheetSource).toMatch(/const safeBottom = sheetSafeBottom\(insets\.bottom\)/);
+    expect(bottomSheetSource).toMatch(/return Math\.max\(insetBottom, 16\)/);
+    expect(bottomSheetSource).toMatch(/paddingBottom:\s*bottomPad \+ restHidden/);
   });
 });

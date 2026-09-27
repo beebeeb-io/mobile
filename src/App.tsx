@@ -1557,9 +1557,12 @@ export default function App() {
                   <Stack.Screen
                     name="ShareSheet"
                     component={ShareSheetScreen}
+                    // 1586 — the sheet animates itself (shared BottomSheet:
+                    // slide up, drag between detents, slide down, THEN pop),
+                    // so the route has no transition of its own.
                     options={{
                       presentation: 'transparentModal',
-                      animation: 'slide_from_bottom',
+                      animation: 'none',
                       contentStyle: { backgroundColor: 'transparent' },
                     }}
                   />

@@ -634,6 +634,18 @@ back up `Library/Caches/`. Any path this app writes outside `Caches/` must be re
   accepted-plaintext rationale live in `docs/0300-plaintext-lifecycle-audit.md`.
 
 
+## Bottom sheets — one primitive (task 1586)
+
+Every partial-height sheet renders through `src/components/sheet/BottomSheet.tsx` (+
+`BottomSheetScrollView` for its content): full width, bottom attached, top corners
+`GLASS_RADII.sheet`, home-indicator inset inside, draggable handle/header with detents
+(`src/lib/sheet-detents.ts`: half / default 72 % / large 90 %), fling-to-dismiss, scroll hand-over
+at the top, VoiceOver-adjustable handle. RN Animated (native driver) + gesture-handler; no
+Reanimated. Inside an RN `Modal`, wrap it in a `GestureHandlerRootView` (see `TrustDetailsSheet`).
+A routed sheet (`ShareSheet`) uses `animation: 'none'` and pops in `onDismissed`.
+`src/components/sheet/sheet-sweep.test.ts` fails if a sheet style floats inset again. Exceptions
+are listed in DEVIATIONS.md → "Task 1586".
+
 ## How we work (evidence, design, done, parallel agents)
 
 The full rules live in the workspace `CLAUDE.md` → "How we work" (also summarised in the workspace `AGENTS.md`). Read them; they apply here. The repo-specific instantiation:

@@ -1,10 +1,7 @@
 import React, { useCallback, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
-  KeyboardAvoidingView,
   Platform,
-  Pressable,
-  ScrollView,
   Share,
   StyleSheet,
   Text,
@@ -13,13 +10,12 @@ import {
   View,
 } from 'react-native';
 import { useNavigation, useRoute } from '@react-navigation/native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Clipboard from 'expo-clipboard';
 import * as Haptics from 'expo-haptics';
 import type { RouteProp } from '@react-navigation/native';
 import type { RootStackParamList } from '../App';
 import { radii, spacing, shadows } from '../theme';
-import { modalScrim } from '../components/glass';
+import { BottomSheet, BottomSheetScrollView } from '../components/sheet/BottomSheet';
 import { useTheme } from '../lib/theme-context';
 import { useToast } from '../lib/toast-context';
 import { useKeyboardLayoutAnimation } from '../lib/useKeyboardLayoutAnimation';
@@ -170,7 +166,6 @@ const APP_URL = 'https://app.beebeeb.io';
 export default function ShareSheetScreen() {
   const navigation = useNavigation();
   const route = useRoute<ShareRoute>();
-  const insets = useSafeAreaInsets();
   const { colors: c, resolved } = useTheme();
   const { fileId, fileName, mimeType, sizeBytes } = route.params;
   const { getFileKeyBytes, deriveX25519PrivateFromHandle, getMasterKeyHandleId, isUnlocked } = useCrypto();
@@ -199,30 +194,22 @@ export default function ShareSheetScreen() {
   const badge = makeFileTypeBadge(mimeType, c);
 
   const styles = useMemo(() => StyleSheet.create({
-    root: { flex: 1, backgroundColor: 'transparent', justifyContent: 'flex-end' },
-    backdrop: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: modalScrim(resolved) },
-    // 1315 — the canvas floats the share sheet rather than pinning it flush to
-    // the bottom: all four corners at GLASS_RADII.sheet (38), inset from the
-    // screen edges. Kept opaque — this is a CONTENT surface (link settings,
-    // expiry), and the redesign's rule is that glass is the control layer only.
-    sheet: {
-      backgroundColor: c.paper,
-      borderRadius: 38,
-      marginHorizontal: 10,
-      paddingHorizontal: spacing.lg,
-      paddingTop: 12,
-      maxHeight: '90%',
-      ...shadows.lg,
-    },
-    handle: { width: 36, height: 4, borderRadius: 2, backgroundColor: c.line2, alignSelf: 'center', marginBottom: 14 },
+    // 1586 — the sheet itself is the shared BottomSheet: full width, bottom
+    // attached, top corners at GLASS_RADII.sheet, the home-indicator inset
+    // inside it, draggable by the handle (+ the file row) between half /
+    // default / large. Was (1315): inset 10pt, all four corners 38, content
+    // height capped at 90 %. Guus, build 221: "Only the share sheet is not
+    // full width". Kept opaque — a CONTENT surface (link settings, expiry);
+    // glass is the control layer only.
+    body: { paddingHorizontal: spacing.lg },
     fileRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 16 },
     fileIcon: { width: 36, height: 36, borderRadius: radii.md, alignItems: 'center', justifyContent: 'center' },
     fileIconText: { color: '#FFFFFF', fontSize: 9, fontWeight: '700', letterSpacing: 0.4 },
     fileInfo: { flex: 1, minWidth: 0 },
     fileName: { fontSize: 14, fontWeight: '600', color: c.ink },
     fileMeta: { fontSize: 11, color: c.ink3, marginTop: 2 },
-    scroll: { maxHeight: 480 },
-    scrollContent: { paddingBottom: 8 },
+    scroll: { flex: 1 },
+    scrollContent: { paddingBottom: 24 },
     sectionLabel: { fontSize: 11, fontWeight: '600', color: c.ink3, textTransform: 'uppercase', letterSpacing: 0.6, marginTop: 8, marginBottom: 8 },
     chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 6 },
     chip: { paddingHorizontal: 12, paddingVertical: 7, borderRadius: radii.round, backgroundColor: c.paper2, borderWidth: 1, borderColor: c.line },
@@ -272,7 +259,13 @@ export default function ShareSheetScreen() {
     doneButtonText: { fontSize: 14, fontWeight: '600', color: c.ink3 },
   }), [c, resolved]);
 
+  // 1586 — closing animates the sheet down first; the route pops once it is
+  // off screen (`onDismissed`). The route itself has no animation (App.tsx).
+  const [open, setOpen] = useState(true);
   const handleClose = useCallback(() => {
+    setOpen(false);
+  }, []);
+  const handleDismissed = useCallback(() => {
     navigation.goBack();
   }, [navigation]);
 
@@ -465,31 +458,42 @@ export default function ShareSheetScreen() {
     }
   }, [displayUrl]);
 
+  const fileRow = (
+    <View style={styles.fileRow}>
+      <View style={[styles.fileIcon, { backgroundColor: badge.color }]}>
+        <Text style={styles.fileIconText}>{badge.label}</Text>
+      </View>
+      <View style={styles.fileInfo}>
+        <Text style={styles.fileName} numberOfLines={1}>{fileName}</Text>
+        <Text style={styles.fileMeta}>
+          {sizeBytes != null ? `${formatSize(sizeBytes)} · ` : ''}encrypted
+        </Text>
+      </View>
+    </View>
+  );
+
   return (
-    <KeyboardAvoidingView
-      style={styles.root}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+    <BottomSheet
+      visible={open}
+      onRequestClose={handleClose}
+      onDismissed={handleDismissed}
+      detents={['half', 'default', 'large']}
+      initialDetent="default"
+      header={fileRow}
+      avoidKeyboard
+      contentStyle={styles.body}
+      handleAccessibilityLabel="Share sheet"
+      scrimAccessibilityLabel="Close share sheet"
+      testID="share-sheet"
+      scrimTestID="share-sheet-backdrop"
     >
-      {/* Backdrop */}
-      <Pressable style={styles.backdrop} onPress={handleClose} />
-
-      {/* Sheet */}
-      <View style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, 16) + 16 }]}>
-        <View style={styles.handle} />
-
-        {/* File row */}
-        <View style={styles.fileRow}>
-          <View style={[styles.fileIcon, { backgroundColor: badge.color }]}>
-            <Text style={styles.fileIconText}>{badge.label}</Text>
-          </View>
-          <View style={styles.fileInfo}>
-            <Text style={styles.fileName} numberOfLines={1}>{fileName}</Text>
-            <Text style={styles.fileMeta}>
-              {sizeBytes != null ? `${formatSize(sizeBytes)} · ` : ''}encrypted
-            </Text>
-          </View>
-        </View>
-
+      <BottomSheetScrollView
+        style={styles.scroll}
+        contentContainerStyle={styles.scrollContent}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+        testID="share-sheet-scroll"
+      >
         {share ? (
           /* ---- Share created — show URL + key as two distinct items ---- */
           <View style={styles.successCard}>
@@ -600,12 +604,7 @@ export default function ShareSheetScreen() {
           </View>
         ) : (
           /* ---- Configure share settings ---- */
-          <ScrollView
-            style={styles.scroll}
-            contentContainerStyle={styles.scrollContent}
-            keyboardShouldPersistTaps="handled"
-            showsVerticalScrollIndicator={false}
-          >
+          <View>
             <View style={styles.modeRow} accessibilityRole="tablist">
               <TouchableOpacity
                 style={[styles.modeButton, mode === 'link' && styles.modeButtonActive]}
@@ -757,9 +756,9 @@ export default function ShareSheetScreen() {
                 ? 'End-to-end encrypted — Beebeeb cannot decrypt. The recipient needs both the link and the key.'
                 : 'Email invites appear as pending until the recipient can accept them.'}
             </Text>
-          </ScrollView>
+          </View>
         )}
-      </View>
-    </KeyboardAvoidingView>
+      </BottomSheetScrollView>
+    </BottomSheet>
   );
 }
