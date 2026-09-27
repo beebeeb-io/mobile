@@ -117,6 +117,33 @@ export function withWrapCount(
 }
 
 /**
+ * Drop cached counts for texts that are no longer lines of the document
+ * (PR #132 review). Each edit mounts a new line version under a new text key;
+ * without pruning, every intermediate version stays in the cache for the
+ * whole session and every `withWrapCount` clone grows with it. O(keep +
+ * cache). Returns the SAME map when nothing is dropped, so a React state
+ * setter still bails out. After this call the cache holds at most the
+ * distinct texts in `keep`.
+ */
+export function retainWrapCounts(
+  prev: ReadonlyMap<string, number>,
+  keep: ReadonlyArray<string>,
+): ReadonlyMap<string, number> {
+  const live = new Set(keep);
+  let stale = false;
+  for (const k of prev.keys()) {
+    if (!live.has(k)) {
+      stale = true;
+      break;
+    }
+  }
+  if (!stale) return prev;
+  const next = new Map<string, number>();
+  for (const [k, v] of prev) if (live.has(k)) next.set(k, v);
+  return next;
+}
+
+/**
  * Distinct line texts to measure, in first-seen order, capped at `max` so a
  * pathological file cannot mount an unbounded number of hidden Text nodes
  * (lines past the cap simply fall back to one row — the pre-1578 model).

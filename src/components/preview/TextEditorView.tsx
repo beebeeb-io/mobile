@@ -73,6 +73,7 @@ import {
 import { clampGutterOffset, computeEditorContentPadding } from '../../lib/text-editor-inset';
 import {
   computeGutterLayout,
+  retainWrapCounts,
   splitLogicalLines,
   uniqueLinesToMeasure,
   withWrapCount,
@@ -85,6 +86,18 @@ const GUTTER_WIDTH = 34;
 const INPUT_PADDING_H = 12;
 /** Distinct line texts measured for soft-wrap (task 1578); beyond this, one row each. */
 const MAX_MEASURED_LINES = 4000;
+/**
+ * Task 1578 (PR #132 review) — line-breaking props shared by the TextInput
+ * AND the hidden measuring Text, so both break a line at the same place.
+ * Android: Text defaults to `highQuality`, TextInput to `simple`; left at the
+ * defaults, prose near a wrap boundary measures a different row count than
+ * the editor draws and the gutter drifts again. iOS: pinned to the shared
+ * default `none` so neither side can diverge silently. Font, size and
+ * lineHeight come from the one `editorText` style both components use;
+ * neither sets letterSpacing.
+ */
+const TEXT_BREAK_STRATEGY = 'simple' as const;
+const LINE_BREAK_STRATEGY_IOS = 'none' as const;
 
 /**
  * Task 1578 — one hidden, identically-styled Text per DISTINCT line text,
@@ -101,7 +114,9 @@ const MeasureLine = memo(function MeasureLine({
 }) {
   return (
     <Text
-      style={styles.measureLine}
+      style={styles.editorText}
+      textBreakStrategy={TEXT_BREAK_STRATEGY}
+      lineBreakStrategyIOS={LINE_BREAK_STRATEGY_IOS}
       onTextLayout={(e: NativeSyntheticEvent<TextLayoutEventData>) =>
         onWraps(text, e.nativeEvent.lines.length)
       }
@@ -207,6 +222,9 @@ export function TextEditorView({
   // once per frame instead of re-rendering the gutter per line.
   const pendingWraps = useRef<Array<[string, number]>>([]);
   const flushHandle = useRef<number | null>(null);
+  // The lines currently measured; the flush prunes the cache to these so old
+  // versions of edited lines do not accumulate (PR #132 review).
+  const measuredLinesRef = useRef<ReadonlyArray<string>>([]);
   useEffect(
     () => () => {
       if (flushHandle.current != null) cancelAnimationFrame(flushHandle.current);
@@ -225,6 +243,7 @@ export function TextEditorView({
           // A width change invalidates every cached count (rotation, split view).
           let byText = prev.width === textWidth ? prev.byText : new Map<string, number>();
           for (const [t, w] of batch) byText = withWrapCount(byText, t, w);
+          byText = retainWrapCounts(byText, measuredLinesRef.current);
           return byText === prev.byText && prev.width === textWidth ? prev : { width: textWidth, byText };
         });
       });
@@ -235,6 +254,7 @@ export function TextEditorView({
     () => (textWidth > 0 ? uniqueLinesToMeasure(lines, MAX_MEASURED_LINES) : []),
     [lines, textWidth],
   );
+  measuredLinesRef.current = measuredLines;
   const gutterLayout = useMemo(
     () =>
       computeGutterLayout(
@@ -373,6 +393,7 @@ export function TextEditorView({
         <TextInput
           testID="text-editor-input"
           style={[
+            styles.editorText,
             styles.input,
             { paddingTop: contentPadding.paddingTop, paddingBottom: contentPadding.paddingBottom },
           ]}
@@ -386,6 +407,8 @@ export function TextEditorView({
           onScroll={handleScroll}
           inputAccessoryViewID={Platform.OS === 'ios' ? ACCESSORY_ID : undefined}
           textAlignVertical="top"
+          textBreakStrategy={TEXT_BREAK_STRATEGY}
+          lineBreakStrategyIOS={LINE_BREAK_STRATEGY_IOS}
           accessibilityLabel="File contents editor"
           onLayout={handleInputLayout}
         />
@@ -493,12 +516,16 @@ const styles = StyleSheet.create({
     fontSize: FONT_SIZE,
     lineHeight: LINE_HEIGHT,
   },
-  input: {
-    flex: 1,
-    color: '#abb2bf',
+  // Task 1578 — the ONE text style the TextInput and the measuring Text
+  // share (see TEXT_BREAK_STRATEGY), so their metrics cannot drift apart.
+  editorText: {
     fontFamily: fonts.mono,
     fontSize: FONT_SIZE,
     lineHeight: LINE_HEIGHT,
+  },
+  input: {
+    flex: 1,
+    color: '#abb2bf',
     // paddingTop/paddingBottom are set inline from
     // `computeEditorContentPadding` (build 217 fix) — see the JSX call site.
     paddingHorizontal: INPUT_PADDING_H,
@@ -512,11 +539,6 @@ const styles = StyleSheet.create({
     left: GUTTER_WIDTH + INPUT_PADDING_H,
     opacity: 0,
     zIndex: -1,
-  },
-  measureLine: {
-    fontFamily: fonts.mono,
-    fontSize: FONT_SIZE,
-    lineHeight: LINE_HEIGHT,
   },
   // statusBar/dirtyRow/dirtyDot/dirtyLabel/savedLabel/saveButton*: removed
   // (preview redesign item 7 — this component no longer owns Save/status

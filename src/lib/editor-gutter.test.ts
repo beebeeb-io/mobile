@@ -7,6 +7,7 @@ import {
   countLogicalLines,
   normalizeWrapCount,
   splitLogicalLines,
+  retainWrapCounts,
   uniqueLinesToMeasure,
   withWrapCount,
 } from './editor-gutter'
@@ -108,5 +109,57 @@ describe('withWrapCount / uniqueLinesToMeasure', () => {
   test('dedupes line texts in order and respects the cap', () => {
     expect(uniqueLinesToMeasure(['a', '', 'a', 'b', ''], 10)).toEqual(['a', '', 'b'])
     expect(uniqueLinesToMeasure(['a', 'b', 'c'], 2)).toEqual(['a', 'b'])
+  })
+})
+
+describe('retainWrapCounts — the cache stays bounded while editing (PR #132 review)', () => {
+  // Mirrors TextEditorView's flush: record the batch, then prune to the
+  // lines currently measured.
+  function flush(prev, batch, text) {
+    let m = prev
+    for (const [t, w] of batch) m = withWrapCount(m, t, w)
+    return retainWrapCounts(m, uniqueLinesToMeasure(splitLogicalLines(text), 4000))
+  }
+
+  test('typing "hello" on line 2 keeps only the current versions of the lines', () => {
+    let cache = new Map()
+    let text = 'title\n'
+    cache = flush(cache, [['title', 1], ['', 1]], text)
+    for (const typed of ['h', 'he', 'hel', 'hell', 'hello']) {
+      text = 'title\n' + typed
+      cache = flush(cache, [[typed, 1]], text)
+    }
+    // Two distinct current lines: 'title' and 'hello'. Without pruning the
+    // cache would hold 7 keys ('title', '', 'h', 'he', 'hel', 'hell', 'hello').
+    expect(cache.size).toBe(2)
+    expect([...cache.keys()].sort()).toEqual(['hello', 'title'])
+    expect(cache.get('hello')).toBe(1)
+  })
+
+  test('200 edits of a 3-line file never leave more than 3 entries', () => {
+    let cache = new Map()
+    let max = 0
+    for (let i = 0; i < 200; i++) {
+      const text = `a\nline ${i}\nb`
+      cache = flush(cache, [['a', 1], [`line ${i}`, 2], ['b', 1]], text)
+      max = Math.max(max, cache.size)
+    }
+    expect(max).toBe(3)
+    expect(cache.get('line 199')).toBe(2)
+  })
+
+  test('a late measurement for a line that no longer exists is not kept', () => {
+    const cache = flush(new Map([['keep', 1]]), [['gone', 4]], 'keep')
+    expect(cache.has('gone')).toBe(false)
+    expect(cache.size).toBe(1)
+  })
+
+  test('returns the SAME map when nothing is stale (no extra re-render)', () => {
+    const m = new Map([['a', 1], ['b', 2]])
+    expect(retainWrapCounts(m, ['a', 'b', 'c'])).toBe(m)
+    const pruned = retainWrapCounts(m, ['b'])
+    expect(pruned).not.toBe(m)
+    expect([...pruned.entries()]).toEqual([['b', 2]])
+    expect(m.size).toBe(2)
   })
 })
