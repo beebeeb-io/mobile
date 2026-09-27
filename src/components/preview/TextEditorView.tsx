@@ -22,6 +22,12 @@
  *   transform at its own content bounds so it stays visible (pinned at its
  *   last line) instead of vanishing — the drift limitation itself is
  *   unchanged and still needs the full text-layout engine to fix properly.
+ *   Task 1578 (build 218, Guus: "i see 20 on the left but not 21 on the
+ *   line that i'm at") replaced the 1-number-per-row model: each distinct
+ *   line's soft-wrapped row count is now measured by a hidden Text at the
+ *   TextInput's real text width, and gutter row N gets logical line N's
+ *   wrapped height (`lib/editor-gutter.ts`). The clamp above now works on
+ *   visual rows, so it no longer pins the numbers short of the text.
  * - Live per-token syntax colouring while typing: NOT shipped — keeping a
  *   colour overlay pixel-aligned with a live-editing native TextInput
  *   (cursor, IME, autocorrect, selection) needs a measured-per-character
@@ -34,13 +40,15 @@
  *   button into.
  */
 
-import React, { useCallback, useMemo, useRef, useState } from 'react';
+import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   InputAccessoryView,
   Keyboard,
   KeyboardAvoidingView,
   NativeSyntheticEvent,
   Platform,
+  type LayoutChangeEvent,
+  type TextLayoutEventData,
   ScrollView,
   StyleSheet,
   Text,
@@ -63,10 +71,45 @@ import {
   type EditorHistory,
 } from '../../lib/editor-key-actions';
 import { clampGutterOffset, computeEditorContentPadding } from '../../lib/text-editor-inset';
+import {
+  computeGutterLayout,
+  splitLogicalLines,
+  uniqueLinesToMeasure,
+  withWrapCount,
+} from '../../lib/editor-gutter';
 
 const ACCESSORY_ID = 'beebeeb-editor-accessory';
 const LINE_HEIGHT = 19.2;
 const FONT_SIZE = 12;
+const GUTTER_WIDTH = 34;
+const INPUT_PADDING_H = 12;
+/** Distinct line texts measured for soft-wrap (task 1578); beyond this, one row each. */
+const MAX_MEASURED_LINES = 4000;
+
+/**
+ * Task 1578 — one hidden, identically-styled Text per DISTINCT line text,
+ * laid out at the TextInput's real text width, so its `onTextLayout` line
+ * count is exactly how many visual rows the TextInput wraps that line into.
+ * Memoised + keyed by text: pressing return re-measures only the new line.
+ */
+const MeasureLine = memo(function MeasureLine({
+  text,
+  onWraps,
+}: {
+  text: string;
+  onWraps: (text: string, wraps: number) => void;
+}) {
+  return (
+    <Text
+      style={styles.measureLine}
+      onTextLayout={(e: NativeSyntheticEvent<TextLayoutEventData>) =>
+        onWraps(text, e.nativeEvent.lines.length)
+      }
+    >
+      {text}
+    </Text>
+  );
+});
 
 interface TextEditorViewProps {
   initialText: string;
@@ -146,13 +189,73 @@ export function TextEditorView({
     [topInset, bottomInset],
   );
 
-  const lineCount = useMemo(() => history.present.text.split('\n').length, [history.present.text]);
+  // Task 1578 — soft-wrap-aware gutter. `lines` is the live text split the
+  // way the native text view breaks paragraphs (CRLF = one break; a trailing
+  // break is its own, numbered, empty line). Each distinct line's wrapped
+  // row count is measured at the TextInput's real text width (hidden
+  // MeasureLine column below) and cached BY TEXT; the gutter gives number N
+  // the height of logical line N, so a wrapped line above can no longer push
+  // the caret's line out from beside its own number.
+  const lines = useMemo(() => splitLogicalLines(history.present.text), [history.present.text]);
+  const lineCount = lines.length;
+  const [textWidth, setTextWidth] = useState(0);
+  const [wraps, setWraps] = useState<{ width: number; byText: ReadonlyMap<string, number> }>(() => ({
+    width: 0,
+    byText: new Map(),
+  }));
+  // Measurements arrive as one native event per line; buffer them and apply
+  // once per frame instead of re-rendering the gutter per line.
+  const pendingWraps = useRef<Array<[string, number]>>([]);
+  const flushHandle = useRef<number | null>(null);
+  useEffect(
+    () => () => {
+      if (flushHandle.current != null) cancelAnimationFrame(flushHandle.current);
+    },
+    [],
+  );
+  const handleWraps = useCallback(
+    (text: string, n: number) => {
+      pendingWraps.current.push([text, n]);
+      if (flushHandle.current != null) return;
+      flushHandle.current = requestAnimationFrame(() => {
+        flushHandle.current = null;
+        const batch = pendingWraps.current;
+        pendingWraps.current = [];
+        setWraps((prev) => {
+          // A width change invalidates every cached count (rotation, split view).
+          let byText = prev.width === textWidth ? prev.byText : new Map<string, number>();
+          for (const [t, w] of batch) byText = withWrapCount(byText, t, w);
+          return byText === prev.byText && prev.width === textWidth ? prev : { width: textWidth, byText };
+        });
+      });
+    },
+    [textWidth],
+  );
+  const measuredLines = useMemo(
+    () => (textWidth > 0 ? uniqueLinesToMeasure(lines, MAX_MEASURED_LINES) : []),
+    [lines, textWidth],
+  );
+  const gutterLayout = useMemo(
+    () =>
+      computeGutterLayout(
+        lines,
+        wraps.width === textWidth ? wraps.byText : new Map<string, number>(),
+        LINE_HEIGHT,
+      ),
+    [lines, wraps, textWidth],
+  );
+  const handleInputLayout = useCallback((e: LayoutChangeEvent) => {
+    const w = Math.max(0, e.nativeEvent.layout.width - INPUT_PADDING_H * 2);
+    setTextWidth((prev) => (prev === w ? prev : w));
+  }, []);
   const totalDigits = Math.max(2, String(lineCount).length);
   const clampedGutterOffset = useMemo(
     () =>
       clampGutterOffset(
         gutterOffset,
-        lineCount,
+        // Visual rows, not logical lines: the TextInput's real scrollable
+        // height includes every soft wrap (task 1578).
+        gutterLayout.visualRowCount,
         LINE_HEIGHT,
         contentPadding.paddingTop,
         contentPadding.paddingBottom,
@@ -160,7 +263,7 @@ export function TextEditorView({
       ),
     [
       gutterOffset,
-      lineCount,
+      gutterLayout.visualRowCount,
       contentPadding.paddingTop,
       contentPadding.paddingBottom,
       gutterViewportHeight,
@@ -230,8 +333,12 @@ export function TextEditorView({
   );
 
   const lineNumbers = useMemo(
-    () => Array.from({ length: lineCount }, (_, i) => String(i + 1).padStart(totalDigits, ' ')),
-    [lineCount, totalDigits],
+    () =>
+      gutterLayout.rows.map((r) => ({
+        label: String(r.lineNumber).padStart(totalDigits, ' '),
+        height: r.height,
+      })),
+    [gutterLayout, totalDigits],
   );
 
   return (
@@ -257,7 +364,9 @@ export function TextEditorView({
         >
           <View style={[styles.gutterInner, { transform: [{ translateY: -clampedGutterOffset }] }]}>
             {lineNumbers.map((n, i) => (
-              <Text key={i} style={styles.gutterLine}>{n}</Text>
+              // Row height = the wrapped height of this logical line, so the
+              // number stays at the top of ITS line (task 1578).
+              <Text key={i} style={[styles.gutterLine, { height: n.height }]}>{n.label}</Text>
             ))}
           </View>
         </View>
@@ -278,7 +387,20 @@ export function TextEditorView({
           inputAccessoryViewID={Platform.OS === 'ios' ? ACCESSORY_ID : undefined}
           textAlignVertical="top"
           accessibilityLabel="File contents editor"
+          onLayout={handleInputLayout}
         />
+        {textWidth > 0 && (
+          <View
+            style={[styles.measureColumn, { width: textWidth }]}
+            pointerEvents="none"
+            accessibilityElementsHidden
+            importantForAccessibility="no-hide-descendants"
+          >
+            {measuredLines.map((t) => (
+              <MeasureLine key={t} text={t} onWraps={handleWraps} />
+            ))}
+          </View>
+        )}
       </View>
 
       {Platform.OS === 'ios' && (
@@ -351,7 +473,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
   },
   gutterClip: {
-    width: 34,
+    width: GUTTER_WIDTH,
     overflow: 'hidden',
     // paddingTop is set inline from `computeEditorContentPadding` (build 217
     // fix) so it always matches the TextInput's own top padding exactly —
@@ -379,7 +501,22 @@ const styles = StyleSheet.create({
     lineHeight: LINE_HEIGHT,
     // paddingTop/paddingBottom are set inline from
     // `computeEditorContentPadding` (build 217 fix) — see the JSX call site.
-    paddingHorizontal: 12,
+    paddingHorizontal: INPUT_PADDING_H,
+  },
+  // Task 1578 — off-screen measuring column. Same font / size / lineHeight
+  // as `input`, at the input's text width (its width minus both horizontal
+  // paddings; RN sets lineFragmentPadding = 0, so that IS the text width).
+  measureColumn: {
+    position: 'absolute',
+    top: 0,
+    left: GUTTER_WIDTH + INPUT_PADDING_H,
+    opacity: 0,
+    zIndex: -1,
+  },
+  measureLine: {
+    fontFamily: fonts.mono,
+    fontSize: FONT_SIZE,
+    lineHeight: LINE_HEIGHT,
   },
   // statusBar/dirtyRow/dirtyDot/dirtyLabel/savedLabel/saveButton*: removed
   // (preview redesign item 7 — this component no longer owns Save/status
