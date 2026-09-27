@@ -94,6 +94,25 @@ import { checkLockedFileIds, isPagerPageGated } from '../lib/preview-lock-gate';
 import { computePreviewContentInset } from '../lib/preview-content-inset';
 import { FILES_APP_LOCK_CAVEAT } from '../lib/lock-copy';
 import { formatPdfPageCounter, nextBarsVisible } from '../lib/preview-chrome';
+import { extensionForAudio } from '../lib/audio-format';
+import { extensionForRaw, isRawExtension, rawFormatLabel } from '../lib/raw-format';
+import type { RawExifInfo } from '../lib/raw-preview';
+import { cleanupTrackedTempFile } from '../lib/preview-temp-file';
+import { isConfidentlyNonTextMimeType, isTextLikeExtension, isTextPreview } from '../lib/code-text-preview';
+// Task 1569 — imported EAGERLY (not React.lazy, unlike every other renderer
+// below), and rendered directly (no Suspense) in the JSX. Found on-device
+// (bb-ios27, Release): `<Suspense><RawRenderer/></Suspense>` inside
+// `mediaStage` rendered NOTHING — no fallback, no content, silently — while
+// a plain hardcoded View in the exact same JSX slot rendered correctly.
+// Every OTHER lazy-loaded renderer below is used from the DOC branch's
+// `previewArea`; isImage/isVideo (the only two pre-existing MEDIA branch
+// categories) never use React.lazy/Suspense at all — RawRenderer would have
+// been the first inside `mediaStage`. Given the isolated proof the plain
+// JSX slot itself works fine, and this task's time budget not allowing
+// root-causing Suspense-in-mediaStage further, the lower-risk fix matching
+// the media branch's own existing precedent (isImage/isVideo: eager import,
+// no lazy) is used instead.
+import { RawRenderer } from '../components/preview/RawRenderer';
 
 // Preview renderers are lazy-loaded so that the libraries each one depends on
 // (jszip, xlsx, mammoth, pako, react-native-pdf, highlight.js) only enter
@@ -126,6 +145,10 @@ const ZipRenderer = React.lazy(async () => {
 const CodeRenderer = React.lazy(async () => {
   const m = await import('../components/preview/CodeRenderer');
   return { default: m.CodeRenderer };
+});
+const AudioRenderer = React.lazy(async () => {
+  const m = await import('../components/preview/AudioRenderer');
+  return { default: m.AudioRenderer };
 });
 const MarkdownRenderer = React.lazy(async () => {
   const m = await import('../components/preview/MarkdownRenderer');
@@ -165,7 +188,7 @@ function isEncryptedMetadataName(name: string): boolean {
   return name.trim().startsWith('{');
 }
 
-function extensionForMime(mimeType?: string, category?: Category): string {
+function extensionForMime(mimeType?: string, category?: Category, fileName?: string): string {
   const mime = (mimeType ?? '').toLowerCase();
   if (mime === 'image/jpeg') return '.jpg';
   if (mime === 'image/png') return '.png';
@@ -188,11 +211,12 @@ function extensionForMime(mimeType?: string, category?: Category): string {
   if (mime === 'application/json') return '.json';
   if (mime === 'application/xml' || mime === 'text/xml') return '.xml';
   if (mime === 'application/zip') return '.zip';
-  if (mime.startsWith('audio/')) return '.mp3';
+  if (mime.startsWith('audio/')) return extensionForAudio(mime, fileName);
   if (category === 'image') return '.jpg';
   if (category === 'video') return '.mp4';
   if (category === 'pdf') return '.pdf';
-  if (category === 'audio') return '.mp3';
+  if (category === 'audio') return extensionForAudio(mime, fileName);
+  if (category === 'raw') return extensionForRaw(fileName);
   if (category === 'docx') return '.docx';
   if (category === 'spreadsheet') return '.xlsx';
   if (category === 'html') return '.html';
@@ -218,13 +242,14 @@ function previewCacheName(fileName: string, mimeType: string | undefined, catego
   let safeName = displayName.replace(/[^a-zA-Z0-9._\-]/g, '_');
   if (!safeName) safeName = category === 'image' ? 'Photo' : 'Preview';
   if (!/\.[a-zA-Z0-9]{2,5}$/.test(safeName)) {
-    safeName += extensionForMime(mimeType, category);
+    safeName += extensionForMime(mimeType, category, fileName);
   }
   return safeName;
 }
 
 type Category =
   | 'image'
+  | 'raw'
   | 'svg'
   | 'pdf'
   | 'audio'
@@ -244,6 +269,18 @@ function fileCategory(mimeType?: string, fileName?: string): Category {
 
   // SVG before generic image — needs WebView, not <Image>, for proper render
   if (mime === 'image/svg+xml' || ext === 'svg') return 'svg';
+
+  // RAW before the generic image check — task 1569. Extension-first, not
+  // mime-first: whether the OS reports a RAW extension's mime as `image/*`
+  // at all is unreliable (task 1565 finding 4 — mobile uploads have no
+  // extension-based mime fallback), and even when it does (DNG's
+  // `image/x-adobe-dng` IS explicitly mapped in `media.ts`, just never
+  // consulted at upload), the generic `<Image>` component still can't
+  // decode CR2/CR3/ARW/NEF/RAF/DNG sensor data — only `RawRenderer`'s
+  // embedded-JPEG extraction can. Mirrors web's own `PREVIEWABLE_EXTENSIONS`
+  // RAW block, which is extension-driven for the same reason.
+  if (isRawExtension(ext)) return 'raw';
+
   if (
     mime.startsWith('image/') ||
     ['jpg', 'jpeg', 'png', 'gif', 'webp', 'heic', 'heif'].includes(ext)
@@ -312,11 +349,25 @@ function fileCategory(mimeType?: string, fileName?: string): Category {
   }
 
   if (mime.startsWith('text/') || mime.includes('document')) return 'doc';
+
+  // Task 1570 — a mime_type that isn't confidently something ELSE (image/
+  // video/audio/pdf/zip/archive/office — all already ruled out by the
+  // branches above) no longer falls through to the generic "file" card for
+  // a known text/code extension, whether that mime_type is nil (the OS's
+  // UTType lookup on the phone), the CLI/browser's generic
+  // `application/octet-stream`/empty, OR a SPECIFIC-but-not-`text/`-
+  // prefixed guess this app's own `media.ts` already substituted upstream
+  // (e.g. `application/sql`) — see `code-text-preview.ts`'s `isTextPreview`
+  // doc comment for the real bug this widening fixed (a literal
+  // generic-mime-only gate missed exactly that last case for `sample.sql`).
+  if (!isConfidentlyNonTextMimeType(mime) && isTextLikeExtension(ext)) return 'doc';
+
   return 'file';
 }
 
 const CATEGORY_LABELS: Record<Category, string> = {
   image: 'Image',
+  raw: 'RAW Image',
   svg: 'SVG Image',
   pdf: 'PDF Document',
   audio: 'Audio',
@@ -333,6 +384,7 @@ const CATEGORY_LABELS: Record<Category, string> = {
 
 const CATEGORY_BADGE: Record<Category, string> = {
   image: 'IMG',
+  raw: 'RAW',
   svg: 'SVG',
   pdf: 'PDF',
   audio: 'AUD',
@@ -430,6 +482,19 @@ const EXT_TO_HLJS: Record<string, string> = {
   yaml: 'yaml', yml: 'yaml',
   sh: 'bash', bash: 'bash', zsh: 'bash',
   sql: 'sql',
+  // Task 1570 — the remaining `code-text-preview.ts` extensions that need a
+  // highlight.js grammar too (added in `CodeRenderer.tsx` alongside these).
+  c: 'c', h: 'c',
+  cpp: 'cpp', cc: 'cpp', cxx: 'cpp', hpp: 'cpp', hxx: 'cpp',
+  cs: 'csharp',
+  rb: 'ruby',
+  php: 'php',
+  // hljs's `ini` grammar covers TOML too (it registers `toml` as an alias
+  // of the same grammar) — `languageDisplayLabel` below still shows "TOML"
+  // vs "INI" per the real extension, same pattern as its existing xml/html
+  // override.
+  ini: 'ini', cfg: 'ini', toml: 'ini',
+  dockerfile: 'dockerfile',
 };
 
 const MIME_TO_HLJS: Record<string, string> = {
@@ -476,6 +541,13 @@ const LANGUAGE_LABELS: Record<string, string> = {
   yaml: 'YAML',
   bash: 'Bash',
   sql: 'SQL',
+  c: 'C',
+  cpp: 'C++',
+  csharp: 'C#',
+  ruby: 'Ruby',
+  php: 'PHP',
+  ini: 'INI',
+  dockerfile: 'Dockerfile',
   plaintext: 'Plain text',
 };
 
@@ -493,6 +565,13 @@ function languageDisplayLabel(hljsId: string, fileName?: string): string {
     const ext = (fileName ?? '').toLowerCase().split('.').pop() ?? '';
     if (ext === 'html' || ext === 'htm' || ext === 'xhtml') return 'HTML';
     return 'XML';
+  }
+  // Task 1570 — hljs's `ini` grammar renders TOML too (registered as an
+  // alias), but the two extensions should still show their own real name.
+  if (hljsId === 'ini') {
+    const ext = (fileName ?? '').toLowerCase().split('.').pop() ?? '';
+    if (ext === 'toml') return 'TOML';
+    return 'INI';
   }
   return LANGUAGE_LABELS[hljsId] ?? hljsId.toUpperCase();
 }
@@ -999,6 +1078,47 @@ async function loadDecryptedPhotoForViewer(
   }
 }
 
+/**
+ * Task 1570 (Codex P2 follow-up, PR #126 review): decrypts a swipe-pager
+ * entry's RAW source file to a per-session temp file, for `PhotoPage` to hand
+ * to `RawRenderer` — the per-entry counterpart to the single-file `isRaw`
+ * effect's `fetchAndDecrypt()` call, which is bound to the CURRENT file only
+ * and can't be reused per swipe-pager entry. Deliberately NOT routed through
+ * `loadDecryptedPhotoForViewer`'s thumbnail-first / persistent-photo-cache
+ * logic above: `<Image>` can't decode camera RAW sensor data at all, so
+ * there is no thumbnail rung to try, and RAW's own preview is extracted by
+ * `RawRenderer`+`raw-extract.ts` from this decrypted SOURCE file, not cached
+ * as a directly-displayable photo — matching the existing single-file `isRaw`
+ * effect's own temp-file (not persistent-cache) pattern exactly, including
+ * its caller-owns-cleanup contract (`PhotoPage`'s own cleanup effect, mirror
+ * of `PreviewScreen`'s `tempRawUriRef`).
+ */
+async function loadDecryptedRawSourceForViewer(
+  entry: PhotoPageEntry,
+  getFileKeyBytes: FileKeyLoader,
+  getMasterKeyHandleId: MasterKeyHandleLoader,
+  onStage?: (stage: PhotoLoadStage) => void,
+  onProgress?: (event: PreviewLoadProgressEvent) => void,
+  signal?: AbortSignal,
+): Promise<{ uri: string; kind: ImagePreviewKind }> {
+  throwIfPreviewAborted(signal);
+  const entryFileName = entry.display_name ?? entry.name_encrypted;
+  const ext = extensionForRaw(entryFileName);
+  onStage?.('downloading');
+  onStage?.('decrypting');
+  const decryptedUri = await decryptToTempFile(
+    entry.id,
+    () => getFileKeyBytes(entry.id),
+    ext,
+    entry.size_bytes,
+    entry.chunk_count,
+    getMasterKeyHandleId(),
+    { onProgress, signal },
+  );
+  throwIfPreviewAborted(signal);
+  return { uri: decryptedUri, kind: 'original' };
+}
+
 // ---------------------------------------------------------------------------
 // Task 0799 — "View Original" progressive de-blur
 // ---------------------------------------------------------------------------
@@ -1220,6 +1340,7 @@ const PhotoPage = React.memo(function PhotoPage({
   locked,
   unlocking,
   onRequestUnlock,
+  onExifInfo,
 }: {
   entry: PhotoPageEntry;
   shouldLoadFull: boolean;
@@ -1238,10 +1359,26 @@ const PhotoPage = React.memo(function PhotoPage({
   /** True while THIS entry's Face ID prompt is in flight (disables its own unlock control only). */
   unlocking: boolean;
   onRequestUnlock: (fileId: string) => void;
+  /**
+   * Task 1570 (Codex P2 follow-up, PR #126 review): bubbles a RAW entry's
+   * parsed EXIF summary up to `PreviewScreen`'s Info sheet, same contract as
+   * `RawRenderer`'s own `onExifInfo` prop (this just forwards it) — every
+   * page gets the SAME parent state setter, but only the current page's
+   * `shouldLoadFull` gate ever actually mounts a `RawRenderer` that calls it.
+   */
+  onExifInfo?: (info: RawExifInfo | null) => void;
 }) {
   const { colors: c } = useTheme();
   const { isUnlocked, getFileKeyBytes, getMasterKeyHandleId } = useCrypto();
   const isVideoEntry = !!entry.mime_type && entry.mime_type.startsWith('video/');
+  // Task 1570 — RAW (CR2/CR3/ARW/NEF/RAF/DNG) joining the swipe pager (Codex
+  // P2 follow-up, PR #126 review: `showPager` used to be `isImage || isVideo`
+  // only, so opening a RAW file from a multi-item Photos `photoList` dropped
+  // out of the pager into the single-file RAW branch, losing the ability to
+  // swipe to adjacent photos). `entry.display_name` is already the decrypted
+  // name (same fallback `currentFileName` uses below for the CURRENT entry).
+  const entryFileName = entry.display_name ?? entry.name_encrypted;
+  const isRawEntry = fileCategory(entry.mime_type ?? undefined, entryFileName) === 'raw';
   const [uri, setUri] = useState<string | null>(null);
   const [uriKind, setUriKind] = useState<ImagePreviewKind | null>(null);
   const [thumbnailUri, setThumbnailUri] = useState<string | null>(null);
@@ -1261,6 +1398,13 @@ const PhotoPage = React.memo(function PhotoPage({
   // so the failsafe watchdog can tell "rendered" from "spinning forever".
   const [imageLoaded, setImageLoaded] = useState(false);
   const sawOriginalProgressRef = useRef(false);
+  // Task 1570 — this page's own decrypted RAW SOURCE temp file (distinct from
+  // `RawRenderer`'s own extracted-preview temp file, which it cleans up
+  // itself). Per-session temp file, not the persistent photo cache (see
+  // `loadDecryptedRawSourceForViewer`'s doc comment) — cleaned up on unmount
+  // below, mirroring `PreviewScreen`'s own `tempRawUriRef` for the single-file
+  // case.
+  const tempRawSourceUriRef = useRef<string | null>(null);
   const player = useVideoPlayer(isVideoEntry && uri ? uri : null, (p) => {
     p.loop = false;
   });
@@ -1350,34 +1494,61 @@ const PhotoPage = React.memo(function PhotoPage({
       if (!cancelled) setPerformanceProfile(profile);
     });
 
-    loadDecryptedPhotoForViewer(
-      entry,
-      isUnlocked,
-      getFileKeyBytes,
-      getMasterKeyHandleId,
-      {
-        profile: previewProfile,
-        allowOriginal: isVideoEntry,
-        forceOriginal: false,
-      },
-      (nextStage) => {
-        if (!cancelled) {
-          setStage(nextStage);
-          setProgress((prev) => ({ ...prev, stage: nextStage }));
-        }
-      },
-      (event) => {
-        if (!cancelled) applyNativeProgress(event, setProgress);
-      },
-      controller.signal,
-    )
+    // Task 1570 — RAW joining the pager: a RAW entry skips the thumbnail-
+    // first/persistent-cache logic `loadDecryptedPhotoForViewer` uses for
+    // images/video entirely (there is no thumbnail rung for `<Image>` to try
+    // — it can't decode RAW sensor data) and goes straight to
+    // `loadDecryptedRawSourceForViewer`'s plain decrypt-to-temp-file, same
+    // shape (`{ uri, kind }`) so every `.then`/`.catch`/`.finally` handler
+    // below stays shared between both branches.
+    const loadPromise = isRawEntry
+      ? loadDecryptedRawSourceForViewer(
+          entry,
+          getFileKeyBytes,
+          getMasterKeyHandleId,
+          (nextStage) => {
+            if (!cancelled) {
+              setStage(nextStage);
+              setProgress((prev) => ({ ...prev, stage: nextStage }));
+            }
+          },
+          (event) => {
+            if (!cancelled) applyNativeProgress(event, setProgress);
+          },
+          controller.signal,
+        )
+      : loadDecryptedPhotoForViewer(
+          entry,
+          isUnlocked,
+          getFileKeyBytes,
+          getMasterKeyHandleId,
+          {
+            profile: previewProfile,
+            allowOriginal: isVideoEntry,
+            forceOriginal: false,
+          },
+          (nextStage) => {
+            if (!cancelled) {
+              setStage(nextStage);
+              setProgress((prev) => ({ ...prev, stage: nextStage }));
+            }
+          },
+          (event) => {
+            if (!cancelled) applyNativeProgress(event, setProgress);
+          },
+          controller.signal,
+        );
+
+    loadPromise
       .then((loaded) => {
         if (!cancelled) {
           recordRuntimeTrace('preview.photo_page.render_ready', {
             fileId: entry.id,
             isVideo: isVideoEntry,
+            isRaw: isRawEntry,
             kind: loaded.kind,
           });
+          if (isRawEntry) tempRawSourceUriRef.current = loaded.uri;
           setUri(loaded.uri);
           setUriKind(loaded.kind);
         }
@@ -1387,6 +1558,7 @@ const PhotoPage = React.memo(function PhotoPage({
           recordRuntimeTrace('preview.photo_page.load_failed', {
             fileId: entry.id,
             isVideo: isVideoEntry,
+            isRaw: isRawEntry,
             ...previewErrorTraceFields(err),
           });
           setError(friendlyError(err));
@@ -1404,7 +1576,17 @@ const PhotoPage = React.memo(function PhotoPage({
       cancelled = true;
       controller.abort();
     };
-  }, [shouldLoadFull, uri, entry, isUnlocked, getFileKeyBytes, getMasterKeyHandleId, isVideoEntry, previewProfile, locked]);
+  }, [shouldLoadFull, uri, entry, isUnlocked, getFileKeyBytes, getMasterKeyHandleId, isVideoEntry, isRawEntry, previewProfile, locked]);
+
+  // Delete this page's own decrypted RAW SOURCE temp file on unmount — same
+  // pattern as `PreviewScreen`'s own `tempRawUriRef` cleanup for the
+  // single-file case (`RawRenderer` owns cleaning up its OWN separate
+  // extracted-preview temp file, not this one).
+  useEffect(() => {
+    return () => {
+      void cleanupTrackedTempFile(tempRawSourceUriRef, FileSystem.deleteAsync);
+    };
+  }, []);
 
   useEffect(() => {
     if (!shouldLoadFull || !isCurrent) return;
@@ -1571,13 +1753,18 @@ const PhotoPage = React.memo(function PhotoPage({
   // window something is wrong (undecodable bytes, oversized texture). Surface an
   // error instead of an endless spinner. Skips video (its own player) and waits
   // for the load/error callbacks that clear or trip it.
+  // Task 1570 — also skips RAW: `RawRenderer` manages its own internal
+  // loading/ready/failed state (extraction, then its OWN `<Image>` load) and
+  // never sets THIS component's `imageLoaded`, so without this exclusion the
+  // watchdog would always fire for a RAW page and show "This image couldn't
+  // be displayed" over a RawRenderer that is actually working fine.
   useEffect(() => {
-    if (!uri || isVideoEntry || imageLoaded || error) return;
+    if (!uri || isVideoEntry || isRawEntry || imageLoaded || error) return;
     const t = setTimeout(() => {
       setError((prev) => prev ?? "This image couldn't be displayed.");
     }, IMAGE_RENDER_WATCHDOG_MS);
     return () => clearTimeout(t);
-  }, [uri, isVideoEntry, imageLoaded, error]);
+  }, [uri, isVideoEntry, isRawEntry, imageLoaded, error]);
 
   return (
     <View style={[styles.photoPage, { width }]}>
@@ -1623,7 +1810,7 @@ const PhotoPage = React.memo(function PhotoPage({
           {error ? (
             <View style={styles.photoPageStatus}>
               <Text style={styles.photoPageStatusTitle}>
-                {isVideoEntry ? "Couldn't load video" : "Couldn't load image"}
+                {isVideoEntry ? "Couldn't load video" : isRawEntry ? "Couldn't load RAW file" : "Couldn't load image"}
               </Text>
               <Text style={styles.photoPageStatusSub}>
                 {error}
@@ -1637,6 +1824,18 @@ const PhotoPage = React.memo(function PhotoPage({
               nativeControls
               fullscreenOptions={{ enable: true }}
               allowsPictureInPicture
+            />
+          ) : uri && isRawEntry ? (
+            // Task 1570 — RAW joining the pager. `RawRenderer` owns its own
+            // loading/extraction/fallback states once handed this decrypted
+            // SOURCE uri (mirrors the single-file `isRaw` branch exactly);
+            // `error` above only ever covers the DECRYPT step failing.
+            <RawRenderer
+              uri={uri}
+              fileName={entryFileName}
+              formatLabel={rawFormatLabel(entryFileName, entry.mime_type)}
+              cacheKey={entry.id}
+              onExifInfo={onExifInfo}
             />
           ) : uri ? (
             <ProgressiveOriginalImage
@@ -1983,6 +2182,28 @@ export default function PreviewScreen() {
   const [videoError, setVideoError] = useState<string | null>(null);
   const tempVideoUriRef = useRef<string | null>(null);
 
+  // Task 1568 — audio inline preview state, same shape as video's above:
+  // `audioUri` is the on-disk decrypted file AudioRenderer plays from,
+  // tracked in a ref so the unmount cleanup effect (below) always sees the
+  // latest value without re-subscribing, and deleted on unmount / when the
+  // previewed file changes.
+  const [audioUri, setAudioUri] = useState<string | null>(null);
+  const [audioLoading, setAudioLoading] = useState(false);
+  const [audioError, setAudioError] = useState<string | null>(null);
+  const tempAudioUriRef = useRef<string | null>(null);
+
+  // Task 1569 — RAW inline preview state, same shape as video/audio's
+  // above: `rawUri` is the on-disk DECRYPTED SOURCE raw file (RawRenderer
+  // reads it and writes its OWN separate extracted-preview temp file,
+  // which it cleans up itself — see RawRenderer.tsx). `rawExifInfo` is
+  // bubbled up from RawRenderer's extraction for the Info sheet's extra
+  // rows (Camera/Lens/ISO/Shutter/Aperture/Focal length).
+  const [rawUri, setRawUri] = useState<string | null>(null);
+  const [rawLoading, setRawLoading] = useState(false);
+  const [rawError, setRawError] = useState<string | null>(null);
+  const [rawExifInfo, setRawExifInfo] = useState<RawExifInfo | null>(null);
+  const tempRawUriRef = useRef<string | null>(null);
+
   // DOCX inline preview state — `docxData` holds the raw arrayBuffer; the
   // mammoth conversion runs inside the lazy DocxRenderer so the lib is not
   // bundled into the main chunk.
@@ -2051,12 +2272,31 @@ export default function PreviewScreen() {
   // Use current* values so derived state updates when swiping between photos
   const category = fileCategory(currentMimeType, currentFileName);
   const isImage = category === 'image';
+  // Task 1569 — RAW (CR2/CR3/ARW/NEF/RAF/DNG) joins the MEDIA branch, same
+  // full-bleed black stage as photos ("images/RAW on black" — see the
+  // isImage render branch's own comment, which already anticipated this).
+  // Unlike audio, a RAW file's content IS a photo once extracted, so it
+  // belongs on the same visual frame as isImage, not the doc branch's
+  // themed card.
+  const isRaw = category === 'raw';
   const isSvg = category === 'svg';
   const isPdf = category === 'pdf';
   const isVideo = !!currentMimeType && currentMimeType.startsWith('video/');
   const isArchive = category === 'archive';
   const isPptx = category === 'pptx';
-  const isMediaPreview = isImage || isVideo;
+  // Task 1568 — audio gets its own doc-branch render (native player), not
+  // the media (isImage||isVideo) branch: it has no visual frame of its own
+  // to bleed edge-to-edge, so it belongs with the doc-root's themed
+  // header/background, same class of decision as PDF/DOCX/etc.
+  const isAudio = category === 'audio';
+  const isMediaPreview = isImage || isVideo || isRaw;
+  // "Canon RAW" / "Sony RAW" / … — the manufacturer-specific override for
+  // CATEGORY_LABELS['raw'] wherever the title pill / Info sheet shows the
+  // file's kind, same override pattern as isText's codeLanguageLabel.
+  const rawFormatLabelValue = useMemo(
+    () => rawFormatLabel(currentFileName, currentMimeType),
+    [currentFileName, currentMimeType],
+  );
 
   // Task 0885 (FIX #3): reset the decode flag whenever the displayed image uri
   // changes so the watchdog re-arms for the new source.
@@ -2091,6 +2331,15 @@ export default function PreviewScreen() {
   const isSpreadsheet = category === 'spreadsheet';
   const isHtml = category === 'html';
   const isZip = category === 'zip';
+  // Task 1570 — `isTextPreview` also accepts any mime_type that isn't
+  // CONFIDENTLY something else (image/video/audio/pdf/zip/archive/office)
+  // on a known text/code extension (py/go/rs/ts/tsx/js/jsx/java/kt/swift/c/
+  // cpp/h/cs/rb/php/sh/sql/css/toml/ini/Dockerfile/…), not just a confident
+  // text/json/xml mime_type — see that module's doc comment for why the
+  // fallback lives here (preview time, not only the upload path) and for
+  // the real `sample.sql` bug a narrower "only when mime is generic" gate
+  // missed (a non-generic-but-still-not-text guess this app's own upstream
+  // mime lookup can produce).
   const isText =
     !isDocx &&
     !isSpreadsheet &&
@@ -2099,10 +2348,7 @@ export default function PreviewScreen() {
     !isZip &&
     !isArchive &&
     !isPptx &&
-    !!currentMimeType &&
-    (currentMimeType.startsWith('text/') ||
-      currentMimeType === 'application/json' ||
-      currentMimeType === 'application/xml');
+    isTextPreview(currentMimeType, currentFileName);
   const previewFileName = useMemo(
     () => previewDisplayName(currentFileName, category),
     [category, currentFileName],
@@ -2115,6 +2361,19 @@ export default function PreviewScreen() {
     const ext = previewFileName.includes('.') ? previewFileName.split('.').pop() : null;
     return ext ? `.${ext.toUpperCase()}` : null;
   }, [previewFileName]);
+
+  // Task 1568 — the format chip AudioRenderer shows must match the REAL
+  // extension the decrypted temp file was written with (`extensionForAudio`,
+  // same function `fetchAndDecrypt` uses for the `ext` it hands
+  // `decryptToTempFile` — see that call site), not just whatever extension
+  // happens to be on the ORIGINAL filename (`fileFormat` above) — the two
+  // only diverge in the rare case where the OS-reported mime disagrees with
+  // the filename, but when they do, this is the one that's actually true of
+  // the bytes being played.
+  const audioFormatLabel = useMemo(
+    () => extensionForAudio(currentMimeType, currentFileName).replace(/^\./, '').toUpperCase(),
+    [currentMimeType, currentFileName],
+  );
 
   // Code highlighting — language id + display label come from the filename
   // and mime; the highlighted HTML is rebuilt only when the loaded text changes.
@@ -2200,7 +2459,10 @@ export default function PreviewScreen() {
   // photo swipe-pager's position — see `formatPdfPageCounter`'s doc comment.
   const pageCounterLabel = isPdf
     ? (pdfPageInfo ? formatPdfPageCounter(pdfPageInfo.current, pdfPageInfo.total) : null)
-    : (hasSwipe && (isImage || isVideo) ? formatPdfPageCounter(currentPhotoIndex + 1, photoList.length) : null);
+    // Task 1570 — isRaw added: RAW now joins the swipe pager (see
+    // `showPager` below), so the "N / total" pill must show for a RAW page
+    // too, not just vanish for the one category that just gained paging.
+    : (hasSwipe && (isImage || isVideo || isRaw) ? formatPdfPageCounter(currentPhotoIndex + 1, photoList.length) : null);
 
   // ---------------------------------------------------------------------
   // Task 1563 — markdown preview + native text/code editor.
@@ -2466,7 +2728,7 @@ export default function PreviewScreen() {
     const storage = trustLocation(currentStoragePoolId);
     const rows: Array<{ label: string; value: string }> = [
       { label: 'Name', value: previewFileName },
-      { label: 'Kind', value: CATEGORY_LABELS[category] ?? 'File' },
+      { label: 'Kind', value: category === 'raw' ? rawFormatLabelValue : (CATEGORY_LABELS[category] ?? 'File') },
     ];
     if (fileFormat) rows.push({ label: 'Format', value: fileFormat });
     if (currentMimeType) rows.push({ label: 'Type', value: currentMimeType });
@@ -2474,6 +2736,19 @@ export default function PreviewScreen() {
     if (currentCreatedAt) rows.push({ label: 'Created', value: formatDate(currentCreatedAt) });
     if (currentVersionNumber != null) rows.push({ label: 'Version', value: `v${currentVersionNumber}` });
     if (currentChunkCount != null) rows.push({ label: 'Chunks', value: String(currentChunkCount) });
+    // Task 1569 — EXIF summary, only when RawRenderer's extraction actually
+    // found something ("where the EXIF has them" — the task's own phrasing;
+    // CR3 in particular has no path to real EXIF here, see raw-preview.ts's
+    // doc comment, so this section is simply omitted for it rather than
+    // showing six blank rows).
+    if (category === 'raw' && rawExifInfo) {
+      if (rawExifInfo.cameraModel) rows.push({ label: 'Camera', value: rawExifInfo.cameraModel });
+      if (rawExifInfo.lensModel) rows.push({ label: 'Lens', value: rawExifInfo.lensModel });
+      if (rawExifInfo.iso) rows.push({ label: 'ISO', value: rawExifInfo.iso });
+      if (rawExifInfo.shutterSpeed) rows.push({ label: 'Shutter', value: rawExifInfo.shutterSpeed });
+      if (rawExifInfo.aperture) rows.push({ label: 'Aperture', value: rawExifInfo.aperture });
+      if (rawExifInfo.focalLength) rows.push({ label: 'Focal length', value: rawExifInfo.focalLength });
+    }
     rows.push({
       label: 'Encryption',
       value: isUnlocked ? 'Decrypted on this device' : 'Client-side encrypted',
@@ -2491,6 +2766,8 @@ export default function PreviewScreen() {
     currentSizeBytes,
     currentStoragePoolId,
     currentVersionNumber,
+    rawExifInfo,
+    rawFormatLabelValue,
   ]);
 
   // Task 1360 — `goBack()` is NOT idempotent: the modal's dismiss transition
@@ -2648,7 +2925,7 @@ export default function PreviewScreen() {
     }
 
     if (isUnlocked) {
-      const ext = extensionForMime(currentMimeType, category);
+      const ext = extensionForMime(currentMimeType, category, currentFileName);
       let decryptedUri: string;
       try {
         recordRuntimeTrace('preview.original.decrypt_request', {
@@ -2718,6 +2995,7 @@ export default function PreviewScreen() {
     contentLocked,
     currentChunkCount,
     currentFileId,
+    currentFileName,
     currentMimeType,
     currentSizeBytes,
     fileId,
@@ -3064,6 +3342,102 @@ export default function PreviewScreen() {
   const player = useVideoPlayer(videoUri, (p) => {
     p.loop = false;
   });
+
+  // Task 1568 — auto-load audio on mount; same shape as video's loader
+  // above (fetchAndDecrypt → track the on-disk temp URI → delete it once the
+  // screen unmounts or the load is aborted before it lands).
+  useEffect(() => {
+    if (!isAudio) return;
+    if (Platform.OS === 'web') return;
+    const controller = new AbortController();
+    let cancelled = false;
+    setAudioLoading(true);
+    setAudioError(null);
+    fetchAndDecrypt({ signal: controller.signal })
+      .then((uri) => {
+        if (cancelled || controller.signal.aborted) {
+          // Screen already unmounted by the time the decrypt completed —
+          // delete the file directly since the cleanup effect below never
+          // sees a uri it was never handed.
+          FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => {});
+          return;
+        }
+        tempAudioUriRef.current = uri;
+        setAudioUri(uri);
+      })
+      .catch((err) => {
+        if (!cancelled && !isAbortError(err)) setAudioError(friendlyError(err));
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setAudioLoading(false);
+          setDownloadProgress(0);
+        }
+      });
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [isAudio, fetchAndDecrypt]);
+
+  // Delete the temp audio file when the screen unmounts (i.e. on close —
+  // `handleClose` calls `navigation.goBack()`, which unmounts this screen;
+  // see that function's own comment). Routed through the extracted
+  // `cleanupTrackedTempFile` helper (`lib/preview-temp-file.ts`) rather than
+  // inlined like video's equivalent effect above, specifically so this
+  // exact "temp file is deleted" behaviour has a real, mutation-proven unit
+  // test — PreviewScreen.tsx itself cannot be unit-tested (no React
+  // reconciler in this project's test runner; see
+  // PreviewScreen.webview-parent.test.ts's doc comment).
+  useEffect(() => {
+    return () => {
+      void cleanupTrackedTempFile(tempAudioUriRef, FileSystem.deleteAsync);
+    };
+  }, []);
+
+  // Task 1569 — auto-load the RAW source file on mount; same shape as
+  // audio's loader above. RawRenderer reads this decrypted SOURCE file and
+  // writes its OWN separate extracted-preview temp file (cleaned up by
+  // RawRenderer itself, not here — see that component's doc comment).
+  useEffect(() => {
+    if (!isRaw) return;
+    if (Platform.OS === 'web') return;
+    const controller = new AbortController();
+    let cancelled = false;
+    setRawLoading(true);
+    setRawError(null);
+    setRawExifInfo(null);
+    fetchAndDecrypt({ signal: controller.signal })
+      .then((uri) => {
+        if (cancelled || controller.signal.aborted) {
+          FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => {});
+          return;
+        }
+        tempRawUriRef.current = uri;
+        setRawUri(uri);
+      })
+      .catch((err) => {
+        if (!cancelled && !isAbortError(err)) setRawError(friendlyError(err));
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setRawLoading(false);
+          setDownloadProgress(0);
+        }
+      });
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [isRaw, fetchAndDecrypt]);
+
+  // Delete the temp SOURCE raw file when the screen unmounts — same
+  // extracted-helper pattern as audio's equivalent effect above.
+  useEffect(() => {
+    return () => {
+      void cleanupTrackedTempFile(tempRawUriRef, FileSystem.deleteAsync);
+    };
+  }, []);
 
   // Auto-load DOCX inline — fetch the decrypted bytes and hand them to the
   // lazy DocxRenderer, which owns the mammoth import.
@@ -3672,6 +4046,12 @@ export default function PreviewScreen() {
         locked={isPagerPageGated(item.id, lockedFileIds, authenticatedFileIds, lockCheckReady)}
         unlocking={unlockingFileId === item.id}
         onRequestUnlock={handleUnlockCurrent}
+        // Task 1570 — RAW joining the pager: every page gets the SAME parent
+        // setter (matches the single-file branch's own `onExifInfo={setRawExifInfo}`
+        // for `RawRenderer`), but only the current page's `shouldLoadFull`
+        // gate ever actually mounts a `RawRenderer` that calls it — see
+        // `PhotoPage`'s own `onExifInfo` prop doc comment.
+        onExifInfo={setRawExifInfo}
       />
     ),
     [
@@ -3713,7 +4093,17 @@ export default function PreviewScreen() {
 
   if (isMediaPreview) {
     // When a photo list is provided, show a horizontal swipeable pager
-    const showPager = hasSwipe && (isImage || isVideo);
+    // Task 1570 (Codex P2 follow-up, PR #126 review): isRaw added. This was
+    // `isImage || isVideo` only, so opening a RAW file from a multi-item
+    // Photos `photoList` (DNG shows up in Photos as `image/x-adobe-dng`, and
+    // other RAW extensions are media candidates too) fell out of the pager
+    // into the single-file RAW branch below (`isRaw` render branch further
+    // down, ~line 4390) instead — swiping to adjacent photos was lost
+    // entirely. `PhotoPage` now handles a RAW entry itself (its own
+    // `isRawEntry` branch: decrypt the source file, hand it to
+    // `RawRenderer`), so RAW can safely join the pager the same way
+    // image/video already do.
+    const showPager = hasSwipe && (isImage || isVideo || isRaw);
     // 1346 — every scheme="dark" below (ScrollEdgeBlur, both GlassCircles,
     // the title/subtitle GlassCapsule, the e2e badge GlassCapsule) and every
     // colors.white/rgba(255,255,255,…) literal in this media branch is
@@ -3809,7 +4199,7 @@ export default function PreviewScreen() {
               <View style={styles.encSubRow}>
                 <Ionicons name="lock-closed" size={10} color={colors.amber} />
                 <Text style={[styles.mediaHeaderSubtitle, styles.mono, { color: mediaMaterial.labelMuted }]} numberOfLines={1}>
-                  {`Encrypted · ${CATEGORY_LABELS[category]}${currentSizeBytes != null ? ` · ${formatSize(currentSizeBytes)}` : ''}`}
+                  {`Encrypted · ${category === 'raw' ? rawFormatLabelValue : CATEGORY_LABELS[category]}${currentSizeBytes != null ? ` · ${formatSize(currentSizeBytes)}` : ''}`}
                 </Text>
               </View>
             </GlassCapsule>
@@ -4011,6 +4401,29 @@ export default function PreviewScreen() {
                   {renderSharedProgress(false)}
                 </View>
               )
+            ) : isRaw ? (
+              // Task 1569 — RAW (CR2/CR3/ARW/NEF/RAF/DNG). RawRenderer owns
+              // its own loading/fallback states internally once handed a
+              // decrypted source uri; rawError only covers the DECRYPT step
+              // failing outright (mirrors audio/video's own error branch).
+              rawError ? (
+                <View style={styles.imageStatus}>
+                  <Text style={[styles.imageStatusTitle, { color: colors.white }]}>Couldn't load RAW file</Text>
+                  <Text style={styles.imageStatusSub}>{rawError}</Text>
+                </View>
+              ) : rawUri ? (
+                <RawRenderer
+                  uri={rawUri}
+                  fileName={previewFileName}
+                  formatLabel={rawFormatLabelValue}
+                  cacheKey={currentFileId}
+                  onExifInfo={setRawExifInfo}
+                />
+              ) : (
+                <View style={styles.imageStatus}>
+                  {renderSharedProgress(false)}
+                </View>
+              )
             ) : videoUri ? (
               <VideoView
                 player={player}
@@ -4062,7 +4475,7 @@ export default function PreviewScreen() {
           onClose={() => setInfoVisible(false)}
           fileId={currentFileId}
           filename={previewFileName}
-          kindLabel={CATEGORY_LABELS[category] ?? 'File'}
+          kindLabel={category === 'raw' ? rawFormatLabelValue : (CATEGORY_LABELS[category] ?? 'File')}
           sizeBytes={currentSizeBytes ?? null}
           storageLocation={(() => {
             const storage = trustLocation(currentStoragePoolId);
@@ -4558,6 +4971,38 @@ export default function PreviewScreen() {
           ) : (
             <View style={styles.imageStatus}>
               {renderSharedProgress(true)}
+            </View>
+          )
+        ) : isAudio ? (
+          // Task 1568 — native audio player. `Pressable` gives the same
+          // tap-to-hide-chrome gesture every other doc-branch renderer has;
+          // AudioRenderer itself has no WebView (task 1564's centered-parent
+          // trap doesn't apply here) and honours `docContentInset` as
+          // container padding, same convention as every other renderer's
+          // topInset/bottomInset props.
+          audioUri ? (
+            <Pressable style={styles.fullBleedFill} onPress={handleContentTap} testID="preview-content-tap">
+              <Suspense fallback={<View style={styles.imageStatus}>{renderSharedProgress(false)}</View>}>
+                <AudioRenderer
+                  uri={audioUri}
+                  fileName={previewFileName}
+                  formatLabel={audioFormatLabel}
+                  colors={c}
+                  topInset={docContentInset.top}
+                  bottomInset={docContentInset.bottom}
+                />
+              </Suspense>
+            </Pressable>
+          ) : audioError ? (
+            <View style={styles.imageStatus}>
+              <Text style={[styles.imageStatusTitle, { color: c.ink }]}>
+                Couldn't load audio
+              </Text>
+              <Text style={[styles.imageStatusSub, { color: c.ink3 }]}>{audioError}</Text>
+            </View>
+          ) : (
+            <View style={styles.imageStatus}>
+              {renderSharedProgress(false)}
             </View>
           )
         ) : isText ? (

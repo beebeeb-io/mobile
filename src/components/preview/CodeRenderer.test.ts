@@ -145,3 +145,57 @@ describe('computeCodeView', () => {
     expect(elapsedMs).toBeLessThan(2000); // generous CI-safe bound; a hang would blow well past this
   });
 });
+
+// ---------------------------------------------------------------------------
+// Task 1570 — the new hljs grammars registered alongside the mime/extension
+// fallback fix (c/cpp/csharp/php/ruby/ini/dockerfile), so the 21 code
+// fixtures don't just fall back to unhighlighted plaintext once `isText`
+// correctly turns on for them. Each snippet has an obvious keyword/string;
+// asserting a NON-default color proves the grammar is actually registered
+// and doing something, not silently falling back to plaintext (a
+// registration typo throws at import time — already covered by the module
+// successfully importing above — but a WRONG language id per extension
+// would silently produce uncolored output, which this catches).
+// ---------------------------------------------------------------------------
+
+describe('computeCodeView — new task 1570 languages actually highlight', () => {
+  const DEFAULT_TEXT_COLOR = '#abb2bf';
+
+  function hasNonDefaultColor(view: ReturnType<typeof computeCodeView>): boolean {
+    return view.lines.some((line) => line.some((span) => span.color !== DEFAULT_TEXT_COLOR));
+  }
+
+  test('c', () => {
+    expect(hasNonDefaultColor(computeCodeView('#include <stdio.h>\nint main() { return 0; }', 'c'))).toBe(true);
+  });
+
+  test('cpp', () => {
+    expect(hasNonDefaultColor(computeCodeView('class Foo { public:\n  int x = 0;\n};', 'cpp'))).toBe(true);
+  });
+
+  test('csharp', () => {
+    expect(hasNonDefaultColor(computeCodeView('public class Foo {\n  public int X = 0;\n}', 'csharp'))).toBe(true);
+  });
+
+  test('php', () => {
+    expect(hasNonDefaultColor(computeCodeView('<?php\nfunction foo() { return true; }', 'php'))).toBe(true);
+  });
+
+  test('ruby', () => {
+    expect(hasNonDefaultColor(computeCodeView('def foo\n  return true\nend', 'ruby'))).toBe(true);
+  });
+
+  test('ini (also used for toml)', () => {
+    expect(hasNonDefaultColor(computeCodeView('[section]\nkey = "value"', 'ini'))).toBe(true);
+  });
+
+  test('dockerfile', () => {
+    expect(hasNonDefaultColor(computeCodeView('FROM node:20\nRUN echo "hi"', 'dockerfile'))).toBe(true);
+  });
+
+  test('an unregistered language id falls back to plain (unhighlighted) text without throwing', () => {
+    const view = computeCodeView('anything', 'not-a-real-language');
+    expect(hasNonDefaultColor(view)).toBe(false);
+    expect(view.lines[0][0].text).toBe('anything');
+  });
+});

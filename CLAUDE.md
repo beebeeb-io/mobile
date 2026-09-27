@@ -152,6 +152,53 @@ pdf — may depend on for their own layout). See `PreviewScreen.tsx`'s `svgWebVi
 'center'` container needs this wrapper** — `DevicePairingShowScreen`/`ConstellationSendScreen`
 were checked and are fine (already non-centered parents), but this is now a real trap for future code.
 
+**Attempted broadening (task 1569, 2026-09-27) — WRONG, corrected below rather than deleted.** A
+plain `View` using `flex:1` as the direct child of `mediaStage` (the SAME centered parent) rendered
+fully BLANK (no content, no error, no crash) at one point in that task, which looked like the same
+WebView-under-a-centered-parent mechanism above hitting an ordinary View. It is NOT: switching that
+View's style to percentage `width:'100%'/height:'100%'` did not fix the blank area (still blank,
+identically, after the change), and a plain hardcoded `flex:1` colored box placed in the exact same
+JSX slot rendered correctly, filling the parent with no shrink-to-content problem at all. The real
+cause in that task was unrelated — a JPEG byte-extraction bug (`raw-preview.ts`'s
+`findLargestJpegSpan`) handed `<Image>` a genuinely corrupt source, which iOS renders as nothing,
+not an error. **This WebView-specific trap is still real and still applies to WebView** (the
+original repro above stands); it does **not** generalize to ordinary Views/Images the way this note
+previously claimed — see task 1569's `DEVIATIONS.md` entry for the full corrected account. Do not
+cite this section as precedent for a plain-View blank-area bug; check for a bad data source first.
+
+## Preview text-detection: this app's OWN upload-time mime guess can outrank the extension (task 1570)
+
+`PreviewScreen.tsx`'s `isText` decides "confident non-text mime_type, never override by extension"
+using a **too-broad** definition of "confident" for one release: anything that wasn't literally
+generic (`''`/`application/octet-stream`) blocked the extension-based fallback that task 1570 added.
+That broke `sample.sql` specifically — reproduced live on-device, not just in a unit test:
+
+1. Chrome's `File.type` for a `.sql` file is `""` (confirmed directly with a throwaway
+   `<input type=file>` test page — this Mac has no app registering a UTI/mime for `.sql`).
+2. `encrypted-upload.ts` (web) stores `mime_type: file.type || null` → `null` for this file.
+3. On mobile, `FilesScreen.tsx`'s `mimeTypeFor` does `file.mime_type ?? guessMimeType(name)` —
+   the `null` triggers the fallback, and `media.ts`'s `guessMimeType('sample.sql')` (which spreads
+   in `code-text-preview.ts`'s own table) resolves to `'application/sql'` — a **specific-looking**
+   value, substituted **upstream of `PreviewScreen`**, before `isText` ever runs.
+4. `'application/sql'` is neither generic nor `text/`-prefixed, so the OLD "only defer to the
+   extension when mime is generic" gate refused to override it → the file fell to the honest
+   fallback card ("Type: File" / "Download to decrypt") despite `sample.sql`'s extension being
+   exactly the kind of file this task exists to fix.
+
+`.js`/`.sh`/`.rb`/`.py` dodged this by coincidence, not design: this Mac's UTI database DOES
+register real `text/*`-prefixed mimes for those extensions (`text/javascript`, `text/x-sh`,
+`text/x-ruby-script`, `text/x-python-script`), so the browser's own `File.type` short-circuits
+`isText`'s first check and `guessMimeType`'s fallback value is never consulted at all. Extensions
+whose `TEXT_EXTENSION_MIME` value is a bare `application/*` string (not `text/*`) AND whose
+`File.type` a browser leaves empty (`sql`, `mjs`/`cjs`, `bash`/`zsh`, `graphql`) are the exact
+extensions this bites — **test the mime an UPSTREAM guess actually produces, not just `''`/
+`application/octet-stream`, whenever you add a fallback that layers on top of another one.**
+
+**Fix**: gate on an ALLOWLIST-of-exclusions ("is this confidently something ELSE — image/video/
+audio/pdf/zip/archive/office") instead of an ALLOWLIST-of-inclusions ("is this mime literally
+generic") — see `code-text-preview.ts`'s `isConfidentlyNonTextMimeType` / `isTextPreview` doc
+comments for the full account and the regression tests that pin this down.
+
 ## Worktree `.env` — copy it by hand, or the app silently defaults to production (task 1394)
 
 `git worktree add` does **not** copy the primary checkout's gitignored `.env`

@@ -335,3 +335,128 @@ so a scroll's touch-up still fires `onPress`. Worked around for evidence
 capture with an extra tap after scrolling (which only toggles the bars back
 on, not the scroll position) — not fixed, since it is pre-existing and out
 of scope for a content-inset task.
+
+## Task 1568 (mobile) — audio player has no design mock; look derived by analogy
+
+**Design:** `design/preview-redesign-ios.html` has no audio mock at all — the
+same gap task 1565 (finding 2) and 1563's own notes already flagged for
+video ("there is no separate video mock… DERIVED by analogy to the photo
+one"). Confirmed again for this task: `grep -i audio design/
+preview-redesign-ios.html` matches nothing.
+
+**What shipped:** a centered card (icon, title, format+duration, play/pause,
+scrub bar, elapsed/remaining in JetBrains Mono) sitting on the doc-branch's
+themed root (`c.paper`), not the media branch's forced-dark full-bleed stage
+— audio has no visual content of its own to bleed edge-to-edge, so it
+belongs with PDF/DOCX/etc.'s doc header and background, not image/video's.
+Amber is used ONLY on the play button while `status.playing` is true (brand
+rule: amber reserved for encryption state + primary actions) — paused/
+loading states stay on neutral `paper2`/`ink`/`ink3` tokens, no color
+otherwise added to the design. See `AudioRenderer.tsx`'s own doc comment for
+the full reasoning, including why the "playing" icon uses a fixed `#000000`
+literal rather than the theme's `c.ink` token (amber's hex value is fixed
+across light/dark, so the icon riding on it needs to be too).
+
+**Also found while building this** (not a design deviation, a correctness
+bug, fixed as part of this task): `extensionForMime()` collapsed EVERY audio
+mime/extension to a hardcoded `'.mp3'` before this task, regardless of the
+file's real container — a `.wav`/`.m4a`/`.aac` upload was being decrypted to
+a temp file literally named `*.mp3`. Fixed via the new `extensionForAudio()`
+(`lib/audio-format.ts`), mime-mapped first with a filename fallback. Proven
+end-to-end on-device (not just by the unit tests): with the FLAC preview
+open, `xcrun simctl get_app_container … data` + `ls Library/Caches/preview/`
+showed the live temp file as `<uuid>.flac`, and after closing the preview
+the file was gone from that same listing — see this task's Notes for the
+exact commands/output.
+
+**expo-audio config plugin, minimal permissions:** `expo-audio`'s config
+plugin defaults to requesting `NSMicrophoneUsageDescription` (iOS) and
+`RECORD_AUDIO` (Android) and enabling background-playback capability
+(`UIBackgroundModes: ['audio']`, Android foreground-service permissions) —
+none of which this app needs (playback-only, background audio explicitly
+"not required" per the brief). `app.json`'s plugin entry sets
+`microphonePermission: false`, `recordAudioAndroid: false`,
+`enableBackgroundPlayback: false` so none of those permissions/capabilities
+are added — consistent with the product's privacy stance of never asking
+for a permission the app doesn't use.
+
+## Task 1569 (mobile) — RAW camera preview
+
+**No design mock exists** (`grep -i raw design/preview-redesign-ios.html`
+matches nothing) — derived by analogy to the existing photo branch, since an
+earlier comment in `PreviewScreen.tsx` ("images/RAW on black") already
+anticipated RAW joining the same full-bleed black media stage as photos/
+video, not the doc branch's themed card. `RawRenderer` reuses that exact
+visual frame (media header, `imageBleedBg` black background, bottom bar).
+
+**Route considered and set aside: `exifr` (both for the thumbnail AND the
+EXIF half).** See `src/lib/raw-preview.ts`'s own top doc comment for the
+full account — short version: `exifr.thumbnail()` only produced a usable
+image for 2 of this task's 6 real fixtures, and even after switching to a
+hand-rolled "largest embedded JPEG" byte scanner for the image (which DOES
+work for all 6), `exifr`'s EXIF parsing broke the Release build outright —
+its only RN-resolvable build contains an internal dynamic `import()` that
+Hermes cannot compile ("Invalid expression encountered"), reproduced and
+confirmed on this exact build before being replaced with a ~150-line
+hand-rolled TIFF/EXIF reader (`parseTiffExifTags`/`findJpegExifTiffOffset`,
+unit-tested, zero third-party bundle risk). `exifr` was removed from
+`package.json` entirely.
+
+**Investigated on-device (bb-ios27, Release) — a claim below turned out
+WRONG, corrected here rather than rewritten (workspace CLAUDE.md's own
+"leave the wrong claim visible" rule):** early in this task the screen
+rendered its header/bottom bar chrome correctly but a fully BLANK BLACK
+content area — no spinner, no image, no error text, no crash. At the time
+`RawRenderer`'s root `View` used `flex: 1`, and `PreviewScreen.tsx`'s
+`mediaStage` (this component's direct parent) sets `alignItems:'center'/
+justifyContent:'center'` — the same shape as the WebView-under-a-centered-
+parent trap this repo's `CLAUDE.md` already documents — so switching `fill`/
+`center` to percentage `width:'100%'/height:'100%'` (matching `mediaImage`'s
+own style) looked like the fix and was documented as one, including a
+broadened `CLAUDE.md` note generalizing the WebView trap to "any `flex:1`
+child."
+
+**That diagnosis was wrong.** The blank area persisted identically AFTER the
+percentage-sizing change (still fully black, still no error). Root-caused
+properly a few iterations later, with an on-screen debug harness (console
+output is not observable in this Release/simulator setup — no capture method
+tried surfaced JS `console.*` at all): the REAL bug was `findLargestJpegSpan`
+picking a structurally-valid-looking but WRONG span (see that function's own
+doc comment and the "Real bug" note below) — the `<Image>` was being handed
+a genuinely corrupt/wrong JPEG, which iOS's image view renders as nothing,
+not an error. A hardcoded `flex:1` colored box placed in the exact same JSX
+slot DID fill the screen correctly, proving the centering-parent theory was
+never the cause here. **The percentage-sizing change and the broadened
+CLAUDE.md note are left in place** (harmless, and consistent with the
+sibling `isImage` branch's own established pattern) **but did not fix
+anything** — flagging this so a future reader doesn't cite this task as a
+second confirmed case of the WebView-class bug affecting plain Views; it
+isn't one.
+
+**Real bug found and fixed (the actual one): `findLargestJpegSpan` picked
+the wrong span for `sample.cr2`.** RAW sensor data following the real
+embedded preview can, by byte-pattern coincidence, form a complete,
+well-formed-looking JPEG (valid SOI/markers/EOI) that is LARGER than the
+genuine preview but decodes (confirmed with both Pillow and ImageMagick) to
+a flat, wrong, noise-banded image. "Largest span wins" alone picked this
+false positive 92% of the time it mattered (1 of this task's 6 fixtures hit
+it directly; the other 5 never had a competing false-positive span large
+enough to matter). Fixed by rejecting candidate spans whose own declared
+SOF dimensions are implausible for their byte size (over ~1.0 bytes/pixel —
+every genuine preview across all 6 fixtures measured 0.05–0.83) before
+falling through to the next-largest candidate. See `findLargestJpegSpan`'s
+own doc comment in `raw-preview.ts` for the full account, byte offsets, and
+measured ratios.
+
+**Second real bug found and fixed, same investigation: `bytesToBase64` used
+`String.fromCharCode(...chunk)` in 0x8000-byte chunks** — correct under
+Bun/V8 (verified: byte-for-byte identical to Node's `Buffer` encoding, even
+for the full 4.45MB real file), but produced a subtly corrupted encoding
+under Hermes on-device that a header-only check (`sips`/`file`) does not
+catch (dimensions still report correctly; only a real decode fails). Fixed
+by switching to a plain one-character-at-a-time loop, matching this
+codebase's OTHER base64 encoders (`transfer-api.ts`) exactly — none of them
+chunk+spread either. Neither of these two bugs individually was sufficient
+to explain the symptom alone; both were real, both are fixed, and the
+`sample.cr2` preview was independently re-verified correct in the simulator
+after each.
