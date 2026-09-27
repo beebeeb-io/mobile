@@ -5,7 +5,7 @@
 // RED/GREEN mutation proof for this file is pasted in
 // .claude/tasks/backlog/1568-mobile-audio-preview-player.md's Notes section.
 import { describe, expect, test } from 'bun:test';
-import { extensionForAudio, formatAudioRemaining, formatAudioTime } from './audio-format';
+import { extensionForAudio, formatAudioRemaining, formatAudioTime, isTrackFinished } from './audio-format';
 
 describe('extensionForAudio', () => {
   test('maps audio/mpeg to .mp3', () => {
@@ -117,5 +117,40 @@ describe('formatAudioRemaining', () => {
 
   test('reads -0:00 for a NaN duration', () => {
     expect(formatAudioRemaining(0, NaN)).toBe('-0:00');
+  });
+});
+
+describe('isTrackFinished', () => {
+  // Task 1568 (Codex P2 follow-up, PR #125 review): pressing Play after a
+  // track ends did nothing audible — `player.play()` from the parked end
+  // position doesn't rewind. This predicate is the fix's decision logic,
+  // extracted so it's unit-testable (AudioRenderer.tsx itself can't be —
+  // see this file's own top comment).
+  test('true when currentTime has reached duration exactly', () => {
+    expect(isTrackFinished(false, 185, 185)).toBe(true);
+  });
+
+  test('true when currentTime has drifted a hair past duration', () => {
+    expect(isTrackFinished(false, 185.05, 185)).toBe(true);
+  });
+
+  test('true via didJustFinish even if currentTime has not visibly caught up yet', () => {
+    expect(isTrackFinished(true, 184.9, 185)).toBe(true);
+  });
+
+  test('false mid-playback, well before the end', () => {
+    expect(isTrackFinished(false, 60, 185)).toBe(false);
+  });
+
+  test('false right after a seek-to-0 restart (currentTime resets, duration unchanged)', () => {
+    expect(isTrackFinished(false, 0, 185)).toBe(false);
+  });
+
+  test('false before the player has loaded (both currentTime and duration are 0) — must not treat unloaded as finished', () => {
+    expect(isTrackFinished(false, 0, 0)).toBe(false);
+  });
+
+  test('false when duration is not yet known (0) even if currentTime is somehow nonzero', () => {
+    expect(isTrackFinished(false, 5, 0)).toBe(false);
   });
 });

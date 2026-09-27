@@ -92,3 +92,25 @@ export function formatAudioRemaining(currentTime: number, duration: number): str
   const remaining = Math.max(0, duration - currentTime);
   return `-${formatAudioTime(remaining)}`;
 }
+
+/**
+ * True when a track has played to its end and needs an explicit seek-to-0
+ * before Play will audibly restart it (task 1568, Codex P2 follow-up on PR
+ * #125's review: once `expo-audio` reaches the end, `playing` goes false but
+ * `currentTime` stays PARKED at `duration` — calling `player.play()` from
+ * that position does nothing, since the native player was never rewound).
+ *
+ * ORs two signals rather than trusting either alone:
+ * - `didJustFinish` is EDGE-triggered — `expo-audio`'s own status only
+ *   reports it `true` for the single status tick right at completion, so a
+ *   user who waits a few seconds before pressing Play again would see it
+ *   already back to `false` even though the track is still sitting at the
+ *   end.
+ * - `currentTime >= duration` is LEVEL-triggered — true for as long as the
+ *   player sits at the end, independent of timing — but needs `duration > 0`
+ *   guarded explicitly: before the player has loaded, both are `0`, and
+ *   `0 >= 0` would otherwise misreport an unloaded track as "finished".
+ */
+export function isTrackFinished(didJustFinish: boolean, currentTime: number, duration: number): boolean {
+  return didJustFinish || (duration > 0 && currentTime >= duration);
+}
