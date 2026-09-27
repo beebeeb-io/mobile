@@ -15,14 +15,23 @@ import CryptoKit
 /// repo's GitHub Actions workflow runs `typecheck` only; macOS runners are not enabled for Actions
 /// minutes reasons, so this suite does NOT run in CI. See `CLAUDE.md` "Tests" section.
 ///
+/// This file (and its sibling `ProvenanceHeadersTests.swift`) lives at `targets/native-tests/` —
+/// OUTSIDE `ios/` — and is wired into `ios/Beebeeb.xcodeproj` by `plugins/native-tests/
+/// withNativeTestTargets.js` via a relative `../targets/native-tests/…` PBXFileReference (task
+/// 1562), the same "reference the canonical file directly, never copy it into ios/" pattern
+/// `withFileProvider.js` already uses. This is deliberate: `expo prebuild --clean` wipes the whole
+/// `ios/` tree before regenerating it, so anything that lived only inside `ios/` (as this file did
+/// pre-1562, hand-added straight into the pbxproj with no owning plugin) was destroyed on every
+/// clean prebuild with no warning short of `kat-ios.sh` failing outright ("scheme not found").
+///
 /// ## Refreshing the vendored vector file
 /// `Vectors/core-vectors.v4.json` is a vendored COPY of `repos/core/test-vectors/vectors.json` — it
 /// has to be a copy (not a symlink out of the repo) so this xctest bundle can embed it as a Resource.
 /// To refresh after core bumps the vector file:
-/// 1. `cp ../../core/test-vectors/vectors.json ios/BeebeebNativeTests/Vectors/core-vectors.v4.json`
-///    (run from the mobile repo's `ios/` directory in the standard `<workspace>/repos/{core,mobile}`
-///    layout — NOT from an isolated `git worktree`, which has no sibling `repos/core` checkout).
-/// 2. `shasum -a 256 ios/BeebeebNativeTests/Vectors/core-vectors.v4.json` and paste the new hex into
+/// 1. `cp ../../core/test-vectors/vectors.json targets/native-tests/Vectors/core-vectors.v4.json`
+///    (run from the mobile repo's root in the standard `<workspace>/repos/{core,mobile}` layout —
+///    NOT from an isolated `git worktree`, which has no sibling `repos/core` checkout).
+/// 2. `shasum -a 256 targets/native-tests/Vectors/core-vectors.v4.json` and paste the new hex into
 ///    `expectedSha256Hex` below.
 /// 3. If core bumped `version`, update `expectedVersion` and `requiredVectorNames` here to match
 ///    `vector_file_version_check` in `cross_platform_vectors.rs`.
@@ -109,14 +118,17 @@ final class CoreVectorsKATTests: XCTestCase {
         return data
     }
 
-    /// `<repo>/ios/BeebeebNativeTests/CoreVectorsKATTests.swift` -> two levels up from `ios/` is
-    /// `../../core/test-vectors/vectors.json`, matching the standard `<workspace>/repos/{core,mobile}`
-    /// sibling layout (not present in an isolated `git worktree` checkout — that case is skipped,
-    /// not failed, by `testVendoredVectorsMatchSiblingCoreRepoWhenPresent`).
+    /// `<repo>/targets/native-tests/CoreVectorsKATTests.swift` (task 1562 moved this file out of
+    /// `ios/` so a config plugin — not a hand pbxproj edit — could own it; see the file header) is
+    /// the SAME directory depth from the repo root as the pre-1562 `ios/BeebeebNativeTests/…` used
+    /// to be (two directories, then the filename), so the same four `deletingLastPathComponent()`
+    /// calls still land on `../../core/test-vectors/vectors.json`, matching the standard
+    /// `<workspace>/repos/{core,mobile}` sibling layout (not present in an isolated `git worktree`
+    /// checkout — that case is skipped, not failed, by `testVendoredVectorsMatchSiblingCoreRepoWhenPresent`).
     private static func siblingCoreVectorsURL() -> URL {
         URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent() // BeebeebNativeTests/
-            .deletingLastPathComponent() // ios/
+            .deletingLastPathComponent() // native-tests/
+            .deletingLastPathComponent() // targets/
             .deletingLastPathComponent() // repo root
             .deletingLastPathComponent() // parent of repo root (sibling of repos/core)
             .appendingPathComponent("core/test-vectors/vectors.json")

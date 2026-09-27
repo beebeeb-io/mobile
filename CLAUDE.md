@@ -65,21 +65,27 @@ Invariant the helper enforces: a `PBXBuildFile` belongs to exactly ONE build pha
 files per owning target, never globally by fileRef, or `pod install` fails in Xcodeproj's
 `project.save` ("Consistency issue: no parent for object …").
 
-**`expo prebuild --clean` currently DESTROYS the `ProvenanceHeadersTests` and `CoreVectorsKATTests`
-native test targets** (found while verifying the iOS 27 UIScene fix below, 2026-09-26). Both
-targets — plus `ProvenanceHeaders.swift`'s 3rd wiring into them, and the vendored
-`core-vectors.v4.json` — were hand-added to `project.pbxproj` (tasks 1382/1439) with no config
-plugin behind them, unlike every other extension target. A clean prebuild silently drops the whole
-`ios/BeebeebNativeTests/` group and both targets from the regenerated project — `scripts/kat-ios.sh`
-then fails outright (scheme not found) with no warning that anything is missing. `ProvenanceHeaders.swift`'s
-wiring into `BeebeebShare`/`BeebeebFileProvider` (2 of its 3 targets) IS now plugin-owned
-(`CRYPTO_SHARED_FILES` in `withShareExtension.js`/`withFileProvider.js`) — only the
-`ProvenanceHeadersTests`/`CoreVectorsKATTests` XCTest targets themselves remain unfixed. **Until a
-plugin owns them: after any `--clean` prebuild, restore by hand before committing** —
-`git checkout -- ios/Beebeeb.xcodeproj/project.pbxproj ios/BeebeebNativeTests/` reverts the whole
-regenerated project, which also reverts anything else prebuild touched (re-apply those diffs by
-hand — see the SceneDelegate wiring below for exactly this recipe). No task filed yet for the
-proper plugin fix — surfaced here so the next `--clean` prebuild doesn't silently commit the loss.
+**`ProvenanceHeadersTests` and `CoreVectorsKATTests` (the native XCTest targets) now survive
+`expo prebuild --clean`** (task 1562, fixing the gap found 2026-09-26 while verifying the iOS 27
+UIScene fix below). Both targets were originally hand-added to `project.pbxproj` (tasks 1382/1439)
+with no config plugin behind them, unlike every other extension target, so a clean prebuild
+silently dropped the whole `ios/BeebeebNativeTests/` group and both targets from the regenerated
+project — `scripts/kat-ios.sh` then failed outright (scheme not found) with no warning. Fix:
+- Canonical sources moved OUT of `ios/` entirely, to `targets/native-tests/` (mirroring
+  `targets/share-extension/`, `targets/file-provider/`) — a clean prebuild wipes the whole `ios/`
+  tree first, so anything that lived only inside it was destroyed with no plugin to reproduce it.
+- `plugins/native-tests/withNativeTestTargets.js` wires both targets into the pbxproj on every
+  prebuild via `plugins/lib/xctest-target.js` (a new low-level helper, alongside
+  `plugins/lib/extension-target.js`, for host-less XCTest bundle targets — no test host, no Pods,
+  no entitlements, no Info.plist file, never embedded into the app, unlike an app-extension target).
+  Registered in `app.json`'s plugin list.
+- Verify: `scripts/check-prebuild-test-targets.sh` runs a clean prebuild + `restore-vendored-ios.sh`
+  and asserts both targets AND their autocreated schemes survive it (via `xcodebuild -list`, not a
+  text grep of the pbxproj) plus the 3 source files on disk. LOCAL gate only, same as `kat-ios.sh`
+  (no macOS CI runners).
+- `ProvenanceHeaders.swift`'s wiring into `BeebeebShare`/`BeebeebFileProvider`/the new
+  `ProvenanceHeadersTests` target is plugin-owned (`CRYPTO_SHARED_FILES` in
+  `withShareExtension.js`/`withFileProvider.js`; `withNativeTestTargets.js`'s own `sources` list).
 
 ## iOS 27 UIScene lifecycle adoption (task: build-213 App Review crash, fixed for build 214)
 
@@ -456,11 +462,13 @@ having mocked it. Two tests were found relying on exactly that when isolation wa
 
 ### Native crypto KAT — `scripts/kat-ios.sh` (task 1382, audit item K2) — LOCAL GATE, NOT CI
 
-`ios/BeebeebNativeTests/CoreVectorsKATTests.swift` is a second host-less XCTest target (mirrors
-`ProvenanceHeadersTests`, task 1439 — no app host, no Pods, no Expo) that drives
-`repos/core/test-vectors/vectors.json` (vendored at `ios/BeebeebNativeTests/Vectors/core-vectors.v4.json`,
-sha256-pinned in the test file, with a second check against the sibling `repos/core` checkout when
-one is present next to this repo) through the SAME production UniFFI Swift bindings the app links —
+`targets/native-tests/CoreVectorsKATTests.swift` is a second host-less XCTest target (mirrors
+`ProvenanceHeadersTests`, task 1439 — no app host, no Pods, no Expo; both live at
+`targets/native-tests/` and are wired into the project by `plugins/native-tests/
+withNativeTestTargets.js`, task 1562) that drives `repos/core/test-vectors/vectors.json` (vendored
+at `targets/native-tests/Vectors/core-vectors.v4.json`, sha256-pinned in the test file, with a
+second check against the sibling `repos/core` checkout when one is present next to this repo)
+through the SAME production UniFFI Swift bindings the app links —
 proving mobile decrypts/derives byte-identically to core, not just that it compiles against it.
 11 of core's 12 vector families are asserted (every family the UniFFI surface exposes); the 12th,
 `envelope_serialization` (`OpaqueEnvelope::to_bytes`/`from_bytes`), has no UniFFI export and is an
@@ -493,7 +501,7 @@ Backend at `http://localhost:3001`. Same endpoints as the web client — see `re
 
 `mobileClientHeaders()` in `src/lib/api.ts` sends `X-Beebeeb-Client: mobile-ios` / `mobile-android` and, since task 1436, `X-Beebeeb-Client-Version` (from `Constants.expoConfig?.version ?? '1.0.0'`, matching the existing convention in `device-registration.ts`) on the 5 unauthenticated auth-bootstrap calls (signup, login, opaque login-finish, 2FA verify, opaque register-finish) AND on all 3 upload-init call sites (`/api/v1/files/upload/init` ×2, `/api/v1/uploads/init`) — the requests that create the `object_versions` row the server records both on (server PR #23 / task 1369).
 
-**Native (Swift) stack — covered as of task 1439.** Every native `URLRequest` construction site (26 sites across `modules/beebeeb-crypto/ios/{NativeManualUploader,NativeBackupEngine,NativeEncryptedBackupUploader,ThumbnailEncryptUpload,ThumbnailService,BeebeebCryptoModule}.swift`, both `ShareUploader.swift`/`FolderFetcher.swift` copies (`ios/BeebeebShare/` + `targets/share-extension/`), and `targets/file-provider/ApiClient.swift`) now goes through a single shared helper, `ProvenanceHeaders.apply(to:)` in `modules/beebeeb-crypto/ios/ProvenanceHeaders.swift` — it is the ONLY place the two header names or the `"mobile-ios"` literal may appear. The main app target picks it up via the `BeebeebCrypto` podspec glob; the Share Extension and File Provider Extension targets reference the same physical file directly in `ios/Beebeeb.xcodeproj/project.pbxproj` (same cross-target pattern as `PlaintextStorageProtection.swift`/`RuntimeTrace.swift`) — there is no per-target duplicate copy of the helper. `Bundle.main` inside each target's own compiled code correctly resolves to that target's own bundle, so each extension reports its own build's version. Unit-tested by the new standalone `ProvenanceHeadersTests` XCTest target (`ios/BeebeebNativeTests/ProvenanceHeadersTests.swift`, no test host, no Pods dependency — run it directly: `xcodebuild test -project ios/Beebeeb.xcodeproj -scheme ProvenanceHeadersTests -destination 'id=<sim-udid>'`).
+**Native (Swift) stack — covered as of task 1439.** Every native `URLRequest` construction site (26 sites across `modules/beebeeb-crypto/ios/{NativeManualUploader,NativeBackupEngine,NativeEncryptedBackupUploader,ThumbnailEncryptUpload,ThumbnailService,BeebeebCryptoModule}.swift`, both `ShareUploader.swift`/`FolderFetcher.swift` copies (`ios/BeebeebShare/` + `targets/share-extension/`), and `targets/file-provider/ApiClient.swift`) now goes through a single shared helper, `ProvenanceHeaders.apply(to:)` in `modules/beebeeb-crypto/ios/ProvenanceHeaders.swift` — it is the ONLY place the two header names or the `"mobile-ios"` literal may appear. The main app target picks it up via the `BeebeebCrypto` podspec glob; the Share Extension and File Provider Extension targets reference the same physical file directly in `ios/Beebeeb.xcodeproj/project.pbxproj` (same cross-target pattern as `PlaintextStorageProtection.swift`/`RuntimeTrace.swift`) — there is no per-target duplicate copy of the helper. `Bundle.main` inside each target's own compiled code correctly resolves to that target's own bundle, so each extension reports its own build's version. Unit-tested by the new standalone `ProvenanceHeadersTests` XCTest target (`targets/native-tests/ProvenanceHeadersTests.swift`, no test host, no Pods dependency — run it directly: `xcodebuild test -project ios/Beebeeb.xcodeproj -scheme ProvenanceHeadersTests -destination 'id=<sim-udid>'`).
 
 ## Design references
 
