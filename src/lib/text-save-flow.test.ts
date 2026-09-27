@@ -3,7 +3,7 @@
 // dialog on a single device, then a Save that never finished). Pure module,
 // no mocking needed.
 import { describe, expect, test } from 'bun:test'
-import { classifySaveConflict, createSingleFlight, runTextSave } from './text-save-flow'
+import { classifySaveConflict, createSingleFlight, runTextSave, runTextSaveConfirmingClear } from './text-save-flow'
 
 // The exact wire texts of the server's two init-time 409s
 // (beebeeb-api/src/routes/uploads.rs, init_upload) as the mobile ApiError
@@ -77,7 +77,7 @@ describe('runTextSave — stuck upload from an interrupted earlier save (Issue 1
   test('in-progress again after one abandon -> busy (bounded, no loop, no dialog)', async () => {
     const { deps, calls } = makeDeps([() => IN_PROGRESS()])
     const result = await runTextSave(deps, { baseVersionNumber: 4 })
-    expect(result).toEqual({ kind: 'busy', elsewhere: false })
+    expect(result).toEqual({ kind: 'busy' })
     expect(calls.save).toHaveLength(2)
     expect(calls.abandon).toBe(1)
   })
@@ -107,10 +107,10 @@ describe('runTextSave — stuck upload from an interrupted earlier save (Issue 1
 })
 
 describe('runTextSave — an upload started on ANOTHER device (Codex P1, PR #134)', () => {
-  test('in-progress 409 for an upload this device did not start -> busy elsewhere, never abandoned', async () => {
+  test('in-progress 409 for an upload this device did not start -> needs confirmation, never abandoned silently', async () => {
     const { deps, calls } = makeDeps([() => IN_PROGRESS(), (base) => base + 1], { owned: false })
     const result = await runTextSave(deps, { baseVersionNumber: 4 })
-    expect(result).toEqual({ kind: 'busy', elsewhere: true })
+    expect(result).toEqual({ kind: 'needs-confirmation' })
     expect(calls.abandon).toBe(0)
     expect(calls.save).toEqual([4])
   })
@@ -121,8 +121,71 @@ describe('runTextSave — an upload started on ANOTHER device (Codex P1, PR #134
       throw new Error('storage unavailable')
     }
     const result = await runTextSave(deps, { baseVersionNumber: 4 })
-    expect(result).toEqual({ kind: 'busy', elsewhere: true })
+    expect(result).toEqual({ kind: 'needs-confirmation' })
     expect(calls.abandon).toBe(0)
+  })
+})
+
+describe('runTextSaveConfirmingClear — an upload this device cannot prove it started (build-218 orphan)', () => {
+  test('the user confirms -> abandon once, retry on the SAME base, saved', async () => {
+    const { deps, calls } = makeDeps([() => IN_PROGRESS(), () => IN_PROGRESS(), (base) => base + 1], { owned: false })
+    let asked = 0
+    const result = await runTextSaveConfirmingClear(deps, { baseVersionNumber: 4 }, async () => {
+      asked++
+      return true
+    })
+    expect(result).toEqual({ kind: 'saved', versionNumber: 5 })
+    expect(asked).toBe(1)
+    expect(calls.abandon).toBe(1)
+    expect(calls.save).toEqual([4, 4, 4])
+  })
+
+  test('the user cancels -> nothing abandoned, no second save, and the save gate (spinner) releases', async () => {
+    const { deps, calls } = makeDeps([() => IN_PROGRESS(), (base) => base + 1], { owned: false })
+    const gate = createSingleFlight()
+    let saving = false
+    const result = await gate.run(async () => {
+      saving = true
+      try {
+        return await runTextSaveConfirmingClear(deps, { baseVersionNumber: 4 }, async () => false)
+      } finally {
+        saving = false
+      }
+    })
+    expect(result).toEqual({ kind: 'cancelled' })
+    expect(calls.abandon).toBe(0)
+    expect(calls.save).toEqual([4])
+    expect(saving).toBe(false)
+    expect(gate.busy).toBe(false)
+  })
+
+  test('a confirm prompt that rejects counts as cancel', async () => {
+    const { deps, calls } = makeDeps([() => IN_PROGRESS()], { owned: false })
+    const result = await runTextSaveConfirmingClear(deps, { baseVersionNumber: 4 }, async () => {
+      throw new Error('alert failed')
+    })
+    expect(result).toEqual({ kind: 'cancelled' })
+    expect(calls.abandon).toBe(0)
+  })
+
+  test('confirmed, but the retry is refused again -> busy (bounded: one abandon, no loop)', async () => {
+    const { deps, calls } = makeDeps([() => IN_PROGRESS()], { owned: false })
+    const result = await runTextSaveConfirmingClear(deps, { baseVersionNumber: 4 }, async () => true)
+    expect(result).toEqual({ kind: 'busy' })
+    expect(calls.abandon).toBe(1)
+    expect(calls.save).toEqual([4, 4, 4])
+  })
+
+  test('an upload this device DID start is cleared silently — the user is never asked', async () => {
+    const { deps, calls } = makeDeps([() => IN_PROGRESS(), (base) => base + 1], { owned: true })
+    let asked = 0
+    const result = await runTextSaveConfirmingClear(deps, { baseVersionNumber: 4 }, async () => {
+      asked++
+      return true
+    })
+    expect(result).toEqual({ kind: 'saved', versionNumber: 5 })
+    expect(asked).toBe(0)
+    expect(calls.abandon).toBe(1)
   })
 })
 

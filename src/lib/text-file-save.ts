@@ -37,6 +37,7 @@ export {
   classifySaveConflict,
   createSingleFlight,
   runTextSave,
+  runTextSaveConfirmingClear,
   type SaveConflictKind,
   type TextSaveResult,
 } from './text-save-flow'

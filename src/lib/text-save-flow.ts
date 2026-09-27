@@ -18,8 +18,12 @@
  *
  * `classifySaveConflict` tells them apart, `runTextSave` recovers from the
  * first when THIS device started the stuck upload (abandon it via
- * `POST /files/:id/upload/abandon`, then retry once; an upload started
- * elsewhere is never abandoned) and hands the second back to the caller, which shows the
+ * `POST /files/:id/upload/abandon`, then retry once). An upload this device
+ * cannot prove it started (another device's live save, or an orphan left by
+ * build 218 before the ownership ledger existed) is never abandoned silently:
+ * the flow returns `needs-confirmation` and abandons only after the user
+ * says so (`runTextSaveConfirmingClear`). The second 409 goes back to the
+ * caller, which shows the
  * existing conflict dialog exactly as before (lead correction, 2026-09-27:
  * no setting — the popup Guus reported was the `file_updated` push, not
  * this dialog).
@@ -79,15 +83,25 @@ export type TextSaveResult =
   /** A real stale-version conflict: another device saved first. */
   | { kind: 'conflict'; freshVersionNumber: number }
   /**
-   * An upload of this file is still in flight and was not cleared:
-   * `elsewhere` when this device did not start it (another device, or an
-   * upload whose ownership can't be proven), else our own retry hit it again.
+   * The file is marked as uploading and this device did not start that upload
+   * (or can't prove it did): an orphan from an interrupted save, or another
+   * device saving right now. Only the user can tell those apart — ask before
+   * clearing it.
    */
-  | { kind: 'busy'; elsewhere: boolean }
+  | { kind: 'needs-confirmation' }
+  /** The user declined to clear the in-flight upload. Nothing was abandoned. */
+  | { kind: 'cancelled' }
+  /** An in-flight upload was cleared once and the retry hit one again. */
+  | { kind: 'busy' }
   | { kind: 'error'; error: unknown }
 
 export interface TextSaveOptions {
   baseVersionNumber: number
+  /**
+   * The user confirmed clearing an in-flight upload this device did not
+   * start: abandon it and retry once, exactly as for one of our own.
+   */
+  clearUnownedUpload?: boolean
 }
 
 async function safeAbandon(deps: TextSaveDeps): Promise<void> {
@@ -115,14 +129,16 @@ export async function runTextSave(deps: TextSaveDeps, opts: TextSaveOptions): Pr
     } catch (err) {
       const kind = classifySaveConflict(err)
       if (kind === 'upload-in-progress') {
-        if (clearedStuckUpload) return { kind: 'busy', elsewhere: false }
-        let owned = false
-        try {
-          owned = await deps.ownsInFlightUpload()
-        } catch {
-          owned = false
+        if (clearedStuckUpload) return { kind: 'busy' }
+        if (!opts.clearUnownedUpload) {
+          let owned = false
+          try {
+            owned = await deps.ownsInFlightUpload()
+          } catch {
+            owned = false
+          }
+          if (!owned) return { kind: 'needs-confirmation' }
         }
-        if (!owned) return { kind: 'busy', elsewhere: true }
         clearedStuckUpload = true
         await safeAbandon(deps)
         continue
@@ -140,7 +156,31 @@ export async function runTextSave(deps: TextSaveDeps, opts: TextSaveOptions): Pr
       return { kind: 'error', error: err }
     }
   }
-  return { kind: 'busy', elsewhere: false }
+  return { kind: 'busy' }
+}
+
+/**
+ * `runTextSave`, plus the one question only the user can answer: when the
+ * file is marked as uploading by an upload this device did not start,
+ * `confirmClear` asks whether to clear it. Yes → abandon + retry once (the
+ * owned-upload path); no → `cancelled`, nothing abandoned. Always settles; a
+ * rejecting `confirmClear` counts as no.
+ */
+export async function runTextSaveConfirmingClear(
+  deps: TextSaveDeps,
+  opts: TextSaveOptions,
+  confirmClear: () => Promise<boolean>,
+): Promise<TextSaveResult> {
+  const first = await runTextSave(deps, opts)
+  if (first.kind !== 'needs-confirmation') return first
+  let confirmed = false
+  try {
+    confirmed = await confirmClear()
+  } catch {
+    confirmed = false
+  }
+  if (!confirmed) return { kind: 'cancelled' }
+  return runTextSave(deps, { ...opts, clearUnownedUpload: true })
 }
 
 /**

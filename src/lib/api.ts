@@ -16,6 +16,7 @@ import { rateLimitedFetch } from './rate-limited-fetch';
 import { isNativeUploadAvailable, planUploadChunksNative, uploadChunksNative } from '../../modules/beebeeb-crypto';
 import { assertNativeUploadEncryptedUnderSessionId, nativeProgressToUploadProgress, parseNativeUploadError, resumeStateMatchesNativePlan, uploadChunksNativeTracked } from './native-upload-bridge';
 import { getDeviceId } from './sync-client';
+import { deviceIdHeader } from './upload-device-header';
 import { setAnnouncement, clearAnnouncement } from './announcement-context';
 import { withSignupTicket } from './signup-email-code';
 import { normalizeNotificationPreferences, type NotificationPreferences } from './notification-prefs';
@@ -353,6 +354,15 @@ async function headers(auth = true, extra?: Record<string, string>): Promise<Req
 // 1369). Mirrors the existing Constants.expoConfig?.version usage in
 // device-registration.ts / SettingsScreen.tsx — no new dependency.
 const MOBILE_CLIENT_VERSION = Constants.expoConfig?.version ?? '1.0.0';
+
+/**
+ * Task 1578 (for 1580): `X-Beebeeb-Device-Id` on upload init + complete, so the
+ * server knows which device wrote a version. Best-effort — see
+ * `upload-device-header.ts`.
+ */
+function uploadDeviceHeader(): Promise<Record<string, string>> {
+  return deviceIdHeader(getDeviceId)
+}
 
 function mobileClientHeaders(): Record<string, string> | undefined {
   if (Platform.OS === 'ios') return { 'X-Beebeeb-Client': 'mobile-ios', 'X-Beebeeb-Client-Version': MOBILE_CLIENT_VERSION };
@@ -1364,7 +1374,7 @@ export async function uploadEncryptedChunked(params: {
       method: 'POST',
       // Writer-provenance headers (task 1436) — this call creates the
       // object_versions row the server records them on.
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...mobileClientHeaders() },
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...mobileClientHeaders(), ...(await uploadDeviceHeader()) },
       body: JSON.stringify({
         file_id: fileId,
         name_encrypted: initialNameEncrypted,
@@ -1477,7 +1487,7 @@ async function finalizeUpload(params: {
     : `/api/v1/files/${serverFileId}/upload/complete`
   const completeRes = await rateLimitedFetch(`${BASE_URL}${completePath}`, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...(await uploadDeviceHeader()) },
     body: JSON.stringify({}),
   })
   if (!completeRes.ok) {
@@ -1726,7 +1736,7 @@ async function initUploadV2(params: {
     method: 'POST',
     // Writer-provenance headers (task 1436) — this call creates the
     // object_versions row the server records them on.
-    headers: { Authorization: `Bearer ${params.token}`, 'Content-Type': 'application/json', ...mobileClientHeaders() },
+    headers: { Authorization: `Bearer ${params.token}`, 'Content-Type': 'application/json', ...mobileClientHeaders(), ...(await uploadDeviceHeader()) },
     body: JSON.stringify({
       file_id: params.fileId,
       file_name: params.fileName,
@@ -1823,7 +1833,7 @@ async function uploadFileChunked(
     method: 'POST',
     // Writer-provenance headers (task 1436) — this call creates the
     // object_versions row the server records them on.
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...mobileClientHeaders() },
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...mobileClientHeaders(), ...(await uploadDeviceHeader()) },
     body: JSON.stringify({
       name_encrypted: metadata.name_encrypted,
       parent_id: metadata.parent_id ?? null,
@@ -1870,7 +1880,7 @@ async function uploadFileChunked(
 
   const completeRes = await rateLimitedFetch(`${BASE_URL}/api/v1/files/${file_id}/upload/complete`, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...(await uploadDeviceHeader()) },
     body: JSON.stringify({}),
   });
   if (!completeRes.ok) {

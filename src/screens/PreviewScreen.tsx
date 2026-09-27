@@ -56,7 +56,7 @@ import {
   buildKeepBothName,
   createSingleFlight,
   ownsInFlightUpload,
-  runTextSave,
+  runTextSaveConfirmingClear,
   saveFailedAfterUploadStarted,
   saveTextFileVersion,
 } from '../lib/text-file-save';
@@ -2654,6 +2654,29 @@ export default function PreviewScreen() {
   const saveGateRef = useRef(createSingleFlight());
 
   /**
+   * Task 1578 — the file is marked as uploading by an upload this device did
+   * not start (or can't prove it did: an orphan from build 218, which had no
+   * ownership ledger, looks exactly like another device's live save). Only
+   * the user knows whether they are saving it somewhere else, so ask before
+   * clearing it. Resolves false on Cancel or when the alert is dismissed.
+   */
+  const confirmClearUnownedUpload = useCallback(
+    () =>
+      new Promise<boolean>((resolve) => {
+        Alert.alert(
+          'This file is still marked as uploading',
+          'An earlier save did not finish, or another device is saving this file right now. If you are not saving it somewhere else, you can clear it and save.',
+          [
+            { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
+            { text: 'Clear and save', style: 'destructive', onPress: () => resolve(true) },
+          ],
+          { cancelable: true, onDismiss: () => resolve(false) },
+        );
+      }),
+    [],
+  );
+
+  /**
    * Task 1578 — save `text` as a new version of THIS file via `runTextSave`
    * (see `text-save-flow.ts`): a stuck in-flight upload from an interrupted
    * earlier save is abandoned and retried instead of being reported as
@@ -2665,7 +2688,7 @@ export default function PreviewScreen() {
     meta: { nameEncrypted: string; parentId: string | null; versionNumber: number };
   }): Promise<void> => {
     const { text, meta } = opts;
-    const result = await runTextSave(
+    const result = await runTextSaveConfirmingClear(
       {
         save: async (baseVersionNumber) => {
           const updated = await saveTextFileVersion({
@@ -2684,6 +2707,7 @@ export default function PreviewScreen() {
         readCurrentVersion: () => getFileCurrentVersion(currentFileId),
       },
       { baseVersionNumber: meta.versionNumber },
+      confirmClearUnownedUpload,
     );
     switch (result.kind) {
       case 'saved':
@@ -2699,18 +2723,19 @@ export default function PreviewScreen() {
         setFileMeta({ ...meta, versionNumber: result.freshVersionNumber });
         setConflict({ freshVersionNumber: result.freshVersionNumber });
         return;
+      case 'cancelled':
+      case 'needs-confirmation':
+        // The user chose not to clear the in-flight upload. Their edit stays
+        // in the editor; nothing was abandoned.
+        return;
       case 'busy':
-        showSaveFailed(
-          result.elsewhere
-            ? 'Another upload of this file is still in progress, possibly from another device. Try again in a moment.'
-            : 'An earlier save of this file is still finishing. Try again in a moment.',
-        );
+        showSaveFailed('An earlier save of this file is still finishing. Try again in a moment.');
         return;
       case 'error':
         showSaveFailed(friendlyError(result.error));
         return;
     }
-  }, [currentFileId, encryptChunk, applySavedVersion, showSaveFailed]);
+  }, [currentFileId, encryptChunk, applySavedVersion, showSaveFailed, confirmClearUnownedUpload]);
 
   const handleSaveEdit = useCallback(async () => {
     if (editText == null) return;
