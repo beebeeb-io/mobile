@@ -287,7 +287,7 @@ export function MarkdownRenderer({ markdown, colors }: MarkdownRendererProps) {
     return { blocks: parseMarkdown(text), truncated: didTruncate };
   }, [markdown]);
   return (
-    <View style={[styles.root, { backgroundColor: colors.paper }]}>
+    <View style={[styles.root, { backgroundColor: colors.paper }]} testID="preview-render-markdown">
       {blocks.map((block, i) => renderBlock(block, colors, `b-${i}`))}
       {truncated && (
         <Text style={[styles.truncationNotice, { color: colors.ink3 }]} testID="markdown-truncation-notice">

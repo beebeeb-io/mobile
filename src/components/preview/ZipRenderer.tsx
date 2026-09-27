@@ -308,7 +308,7 @@ export function ZipRenderer({ data, colors: c }: ZipRendererProps) {
   };
 
   return (
-    <View style={[styles.zipContainer, { backgroundColor: c.paper }]}>
+    <View style={[styles.zipContainer, { backgroundColor: c.paper }]} testID="preview-render-zip">
       <View style={[styles.zipHeader, { borderBottomColor: c.line }]}>
         <View style={styles.zipHeaderRow}>
           <Text style={[styles.zipHeaderTitle, { color: c.ink }]}>

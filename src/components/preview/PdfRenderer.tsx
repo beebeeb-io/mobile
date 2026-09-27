@@ -70,7 +70,10 @@ export function PdfRenderer({ filePath, onPageInfo, topInset = 0, bottomInset = 
   }
 
   return (
-    <View style={[styles.container, { paddingTop: topInset, paddingBottom: bottomInset }]}>
+    <View
+      style={[styles.container, { paddingTop: topInset, paddingBottom: bottomInset }]}
+      testID="preview-render-pdf"
+    >
       <Pdf
         source={{ uri: filePath }}
         style={styles.pdf}

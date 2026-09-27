@@ -441,7 +441,7 @@ function ArchiveContents({ summary, colors: c }: ArchiveContentsProps) {
   );
 
   return (
-    <View style={[styles.container, { backgroundColor: c.paper }]}>
+    <View style={[styles.container, { backgroundColor: c.paper }]} testID="preview-render-archive">
       <View style={[styles.header, { borderBottomColor: c.line }]}>
         <View style={styles.headerRow}>
           <Text style={[styles.headerTitle, { color: c.ink }]}>

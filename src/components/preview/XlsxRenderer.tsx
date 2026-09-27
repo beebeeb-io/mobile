@@ -160,7 +160,10 @@ export function XlsxRenderer({ data, colors: c, topInset = 0, bottomInset = 0 }:
   };
 
   return (
-    <View style={[styles.sheetContainer, { backgroundColor: c.paper, paddingTop: topInset }]}>
+    <View
+      style={[styles.sheetContainer, { backgroundColor: c.paper, paddingTop: topInset }]}
+      testID="preview-render-spreadsheet"
+    >
       {sheetNames.length > 1 ? (
         <View style={[styles.sheetTabs, { borderBottomColor: c.line }]}>
           <Text style={[styles.sheetTabsText, { color: c.ink3 }]} numberOfLines={1}>
