@@ -502,3 +502,30 @@ detail or contradicted the card above them. Against the section 03 mock:
   checked against section 02: the mock draws it as a right-anchored popover
   (`.menu{right:3.5cqw;width:58cqw}`), not a sheet, and the code's
   `PreviewOptionsPopover` matches that — unchanged.
+
+## Task 1586 (mobile) — every bottom sheet full width + draggable by the handle
+
+Guus, build 221 (verbatim): "Only the share sheet is not full width, but make sure that every
+sheet going from bottom to 70%-isch, is full width" and "Oh and sheets should be draggable by the
+handle right. The top handle. So you can drop it more down/halfway etc".
+
+All partial-height sheets (Info, Share, Encryption details) now render through ONE primitive,
+`src/components/sheet/BottomSheet.tsx`: left/right/bottom 0, top corners `GLASS_RADII.sheet`,
+home-indicator inset inside, grab handle (+ header) draggable between detents (half 50 % /
+default 72 % / large 90 %, `src/lib/sheet-detents.ts`), fling or low release dismisses,
+rubber-band above the top detent, content scrolls at every detent with hand-over at its top,
+VoiceOver-adjustable handle. Deliberate exceptions:
+
+- **The Share sheet** floated inset 10pt with four 38pt corners (1315, "the canvas floats the
+  share sheet"). Guus's ruling above supersedes the canvas: it is full width now.
+- **`BBActionSheet`** (file-row long-press menu) stays on its own implementation: it was already
+  full width and bottom-attached, and a content-height action menu has no half/default/large to
+  snap between — the whole sheet already drags down to dismiss (0777). Radius stays `radii.xl`.
+- **Encryption details** (`TrustDetailsSheet`) gets half + default only; its content is shorter
+  than a 90 % sheet.
+- **Info sheet large detent** stops below the preview's top chrome (close / title / ⋯ stay above
+  the sheet and usable, 1583) — ~84 % on an iPhone 17 Pro instead of 90 %.
+- **Share sheet + keyboard:** while the software keyboard is up the sheet sits on it and grows to
+  its tallest detent (not verified on the simulator — it runs with the hardware keyboard).
+- **`GlassSheet` / the glass gallery's sheet specimens** keep their floating geometry: they are
+  material swatches on a __DEV__ page, not presented sheets.

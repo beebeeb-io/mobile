@@ -8,11 +8,10 @@
  * Brand voice: honest, name the city, don't reassure.
  */
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Modal,
   Platform,
-  ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -20,9 +19,9 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Device from 'expo-device';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { fonts, radii, spacing } from '../theme';
-import { modalScrim } from './glass';
+import { BottomSheet, BottomSheetScrollView } from './sheet/BottomSheet';
 import { useTheme } from '../lib/theme-context';
 import { trustLocation, type FileEntry } from '../lib/api';
 import { formatBytes as formatSize } from '../lib/format';
@@ -83,65 +82,76 @@ function DetailRow({ label, value, mono, inkLabel, inkValue, border }: RowProps)
   );
 }
 
-export default function TrustDetailsSheet({ file, fileName, onClose }: Props) {
-  const { colors: c, resolved } = useTheme();
-  const insets = useSafeAreaInsets();
+export default function TrustDetailsSheet({ file: fileProp, fileName: fileNameProp, onClose }: Props) {
+  const { colors: c } = useTheme();
   const [proofOpen, setProofOpen] = useState(false);
+  // 1586 — the sheet slides down (shared BottomSheet) before its Modal goes
+  // away, so the last file stays rendered through the close animation.
+  const [shown, setShown] = useState<{ file: FileEntry; fileName: string } | null>(
+    fileProp ? { file: fileProp, fileName: fileNameProp } : null,
+  );
+  const [modalMounted, setModalMounted] = useState(!!fileProp);
+  useEffect(() => {
+    if (fileProp) setShown({ file: fileProp, fileName: fileNameProp });
+    if (fileProp && !proofOpen) setModalMounted(true);
+  }, [fileProp, fileNameProp, proofOpen]);
+  // Closed (e.g. Android back) while "Prove it" was handing off: the proof
+  // must not open once the sheet's Modal is gone (1586 review #6).
+  useEffect(() => {
+    if (!fileProp) setProofOpen(false);
+  }, [fileProp]);
 
-  if (!file) return null;
+  if (!shown) return null;
+  const { file, fileName } = shown;
 
   const loc = trustLocation(file.storage_pool_id);
   const dev = deviceLabel();
-  const sheetVisible = !!file && !proofOpen;
+  const sheetVisible = !!fileProp && !proofOpen;
+
+  const header = (
+    <View style={styles.headerRow}>
+      <View style={[styles.lockBadge, { backgroundColor: c.amberBg, borderColor: c.amber }]}>
+        <Ionicons name="lock-closed" size={16} color={c.amberDeep} />
+      </View>
+      <View style={{ flex: 1 }}>
+        <Text style={[styles.title, { color: c.ink }]}>Encryption details</Text>
+        <Text style={[styles.subtitle, { color: c.ink3 }]} numberOfLines={1}>
+          {fileName}
+        </Text>
+      </View>
+      <TouchableOpacity
+        onPress={onClose}
+        accessibilityLabel="Close"
+        style={styles.closeBtn}
+      >
+        <Ionicons name="close" size={20} color={c.ink3} />
+      </TouchableOpacity>
+    </View>
+  );
 
   return (
     <>
       <Modal
-        visible={sheetVisible}
-        animationType="slide"
+        visible={modalMounted}
+        animationType="none"
         transparent
+        statusBarTranslucent
         onRequestClose={onClose}
       >
-        <View style={styles.overlay}>
-          <TouchableOpacity
-            activeOpacity={1}
-            style={[styles.backdrop, { backgroundColor: modalScrim(resolved) }]}
-            onPress={onClose}
-          />
-          <View
-            style={[
-              styles.sheet,
-              {
-                backgroundColor: c.paper,
-                borderColor: c.line,
-                paddingBottom: (insets.bottom || spacing.md) + spacing.sm,
-              },
-            ]}
+        <GestureHandlerRootView style={styles.fill}>
+          <BottomSheet
+            visible={sheetVisible}
+            onRequestClose={onClose}
+            onDismissed={() => setModalMounted(false)}
+            detents={['half', 'default']}
+            initialDetent="default"
+            header={header}
+            contentStyle={styles.body}
+            handleAccessibilityLabel="Encryption details sheet"
+            scrimAccessibilityLabel="Close encryption details"
+            testID="trust-details-sheet"
           >
-            <View style={styles.handle}>
-              <View style={[styles.handleBar, { backgroundColor: c.line2 }]} />
-            </View>
-
-            <View style={styles.headerRow}>
-              <View style={[styles.lockBadge, { backgroundColor: c.amberBg, borderColor: c.amber }]}>
-                <Ionicons name="lock-closed" size={16} color={c.amberDeep} />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={[styles.title, { color: c.ink }]}>Encryption details</Text>
-                <Text style={[styles.subtitle, { color: c.ink3 }]} numberOfLines={1}>
-                  {fileName}
-                </Text>
-              </View>
-              <TouchableOpacity
-                onPress={onClose}
-                accessibilityLabel="Close"
-                style={styles.closeBtn}
-              >
-                <Ionicons name="close" size={20} color={c.ink3} />
-              </TouchableOpacity>
-            </View>
-
-            <ScrollView style={styles.scroll} contentContainerStyle={{ paddingBottom: spacing.md }}>
+            <BottomSheetScrollView style={styles.scroll} contentContainerStyle={{ paddingBottom: spacing.md }}>
               <DetailRow
                 label="Algorithm"
                 value="AES-256-GCM"
@@ -192,45 +202,47 @@ export default function TrustDetailsSheet({ file, fileName, onClose }: Props) {
                 inkValue={c.ink}
                 border={c.transparent}
               />
-            </ScrollView>
 
-            <View style={[styles.divider, { backgroundColor: c.line }]} />
+              <View style={[styles.divider, { backgroundColor: c.line }]} />
 
-            <View style={styles.copyBlock}>
-              <Text style={[styles.copyLine, { color: c.ink2 }]}>Key never left your device.</Text>
-              <Text style={[styles.copyLine, { color: c.ink2 }]}>
-                We store ciphertext. We can't read it.
-              </Text>
-            </View>
+              <View style={styles.copyBlock}>
+                <Text style={[styles.copyLine, { color: c.ink2 }]}>Key never left your device.</Text>
+                <Text style={[styles.copyLine, { color: c.ink2 }]}>
+                  We store ciphertext. We can't read it.
+                </Text>
+              </View>
 
-            <View style={styles.actions}>
-              <TouchableOpacity
-                style={[styles.proveBtn, { backgroundColor: c.amber }]}
-                onPress={() => setProofOpen(true)}
-                accessibilityRole="button"
-                accessibilityLabel="Prove it"
-              >
-                <Ionicons name="shield-checkmark" size={16} color={c.ink} />
-                <Text style={[styles.proveBtnText, { color: c.ink }]}>Prove it</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.rawBtn, { borderColor: c.line2 }]}
-                onPress={() => setProofOpen(true)}
-                accessibilityRole="button"
-                accessibilityLabel="Download raw ciphertext"
-              >
-                <Ionicons name="download-outline" size={16} color={c.ink2} />
-                <Text style={[styles.rawBtnText, { color: c.ink2 }]}>Download raw</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </View>
+              <View style={styles.actions}>
+                <TouchableOpacity
+                  style={[styles.proveBtn, { backgroundColor: c.amber }]}
+                  onPress={() => setProofOpen(true)}
+                  accessibilityRole="button"
+                  accessibilityLabel="Prove it"
+                >
+                  <Ionicons name="shield-checkmark" size={16} color={c.ink} />
+                  <Text style={[styles.proveBtnText, { color: c.ink }]}>Prove it</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.rawBtn, { borderColor: c.line2 }]}
+                  onPress={() => setProofOpen(true)}
+                  accessibilityRole="button"
+                  accessibilityLabel="Download raw ciphertext"
+                >
+                  <Ionicons name="download-outline" size={16} color={c.ink2} />
+                  <Text style={[styles.rawBtnText, { color: c.ink2 }]}>Download raw</Text>
+                </TouchableOpacity>
+              </View>
+            </BottomSheetScrollView>
+          </BottomSheet>
+        </GestureHandlerRootView>
       </Modal>
 
+      {/* Presented only once the sheet's Modal is gone — two iOS modals
+          presenting/dismissing at once dismiss each other. */}
       <EncryptionProof
         file={file}
         fileName={fileName}
-        visible={proofOpen}
+        visible={proofOpen && !modalMounted}
         onClose={() => setProofOpen(false)}
       />
     </>
@@ -238,20 +250,12 @@ export default function TrustDetailsSheet({ file, fileName, onClose }: Props) {
 }
 
 const styles = StyleSheet.create({
-  overlay: { flex: 1, justifyContent: 'flex-end' },
-  backdrop: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 },
-  sheet: {
-    borderTopLeftRadius: radii.xl,
-    borderTopRightRadius: radii.xl,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderLeftWidth: StyleSheet.hairlineWidth,
-    borderRightWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: spacing.lg,
-    paddingTop: spacing.sm,
-    maxHeight: '85%',
-  },
-  handle: { alignItems: 'center', paddingVertical: 6 },
-  handleBar: { width: 36, height: 4, borderRadius: 2 },
+  // 1586 — the sheet itself is the shared BottomSheet (full width, top
+  // corners GLASS_RADII.sheet, home-indicator inset inside, draggable handle
+  // + header between half / default). Was: radii.xl corners, content height
+  // capped at 85 %, a hairline border, drag did nothing.
+  fill: { flex: 1 },
+  body: { paddingHorizontal: spacing.lg },
   headerRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -270,7 +274,7 @@ const styles = StyleSheet.create({
   title: { fontSize: 17, fontWeight: '700' },
   subtitle: { fontSize: 12, marginTop: 1 },
   closeBtn: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
-  scroll: { maxHeight: 320 },
+  scroll: { flex: 1 },
   row: {
     flexDirection: 'row',
     alignItems: 'flex-start',
