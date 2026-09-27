@@ -166,7 +166,7 @@ export function DocxRenderer({ data, colors: c, isDark, topInset = 0, bottomInse
     // the WebView's own sizing — see the matching comment + fix in
     // PreviewScreen.tsx's SVG branch for the full root-cause writeup. Plain
     // flex:1 (default align:'stretch') is the fix.
-    <View style={styles.docxWebViewWrap}>
+    <View style={styles.docxWebViewWrap} testID="preview-render-docx-webview">
       <WebView
         originWhitelist={['*']}
         source={{ html }}

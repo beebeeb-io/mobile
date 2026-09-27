@@ -264,7 +264,7 @@ export function PptxRenderer({ data, colors: c, topInset = 0, bottomInset = 0 }:
   }
 
   return (
-    <View style={styles.container}>
+    <View style={styles.container} testID="preview-render-pptx">
       <FlatList
         data={slides}
         keyExtractor={(item) => `slide-${item.number}`}

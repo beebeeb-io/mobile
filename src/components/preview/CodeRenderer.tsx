@@ -253,7 +253,7 @@ export function CodeRenderer({ code, language, topInset = 0, bottomInset = 0 }: 
   const totalDigits = Math.max(2, String(lines.length).length);
 
   return (
-    <View style={styles.root}>
+    <View style={styles.root} testID="preview-render-code">
       {/*
        * Task 1563 (build-215 device defects, Guus's screenshots):
        *

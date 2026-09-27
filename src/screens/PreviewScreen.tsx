@@ -4004,6 +4004,7 @@ export default function PreviewScreen() {
                     accessibilityLabel={previewFileName}
                     onLoad={() => setImageLoaded(true)}
                     onError={() => setImageError((prev) => prev ?? "This image couldn't be displayed.")}
+                    testID="preview-render-image"
                   />
                 )
               ) : (
@@ -4016,6 +4017,7 @@ export default function PreviewScreen() {
                 player={player}
                 style={styles.mediaVideo}
                 contentFit="contain"
+                testID="preview-render-video"
                 nativeControls
                 fullscreenOptions={{ enable: true }}
                 allowsPictureInPicture
@@ -4475,7 +4477,7 @@ export default function PreviewScreen() {
             // stays the WebView's unchanged DIRECT parent (still plain
             // flex:1, still not centering) — the fix above is untouched.
             <Pressable style={styles.fullBleedFill} onPress={handleContentTap} testID="preview-content-tap">
-              <View style={styles.svgWebViewWrap}>
+              <View style={styles.svgWebViewWrap} testID="preview-render-svg-webview">
                 <WebView
                   originWhitelist={['*']}
                   source={{ html: wrappedSvgHtml }}
@@ -4794,6 +4796,7 @@ export default function PreviewScreen() {
                   originWhitelist={['*']}
                   source={{ html: htmlContent }}
                   style={[styles.htmlWebView, { backgroundColor: c.paper }]}
+                  testID="preview-render-html-webview"
                   // Sandbox: keep external network requests off so encrypted
                   // assets can't accidentally leak through embedded URLs.
                   // (HTML may include <img src="https://..."> tags.)
@@ -4896,7 +4899,7 @@ export default function PreviewScreen() {
           // `Pressable` just adds the same tap gesture every other type
           // now has, without changing the card's own layout.
           <Pressable onPress={handleContentTap} testID="preview-content-tap">
-          <View style={styles.genericPlaceholder}>
+          <View style={styles.genericPlaceholder} testID="preview-render-fallback">
             {/* 1346 — genericIconText stays colors.white: this badge's
                 background (categoryAccent, just above) is ALREADY
                 theme-aware (c.amber/c.red/c.green/c.ink2/c.ink3 per
