@@ -95,7 +95,23 @@ import { computePreviewContentInset } from '../lib/preview-content-inset';
 import { FILES_APP_LOCK_CAVEAT } from '../lib/lock-copy';
 import { formatPdfPageCounter, nextBarsVisible } from '../lib/preview-chrome';
 import { extensionForAudio } from '../lib/audio-format';
+import { extensionForRaw, isRawExtension, rawFormatLabel } from '../lib/raw-format';
+import type { RawExifInfo } from '../lib/raw-preview';
 import { cleanupTrackedTempFile } from '../lib/preview-temp-file';
+// Task 1569 — imported EAGERLY (not React.lazy, unlike every other renderer
+// below), and rendered directly (no Suspense) in the JSX. Found on-device
+// (bb-ios27, Release): `<Suspense><RawRenderer/></Suspense>` inside
+// `mediaStage` rendered NOTHING — no fallback, no content, silently — while
+// a plain hardcoded View in the exact same JSX slot rendered correctly.
+// Every OTHER lazy-loaded renderer below is used from the DOC branch's
+// `previewArea`; isImage/isVideo (the only two pre-existing MEDIA branch
+// categories) never use React.lazy/Suspense at all — RawRenderer would have
+// been the first inside `mediaStage`. Given the isolated proof the plain
+// JSX slot itself works fine, and this task's time budget not allowing
+// root-causing Suspense-in-mediaStage further, the lower-risk fix matching
+// the media branch's own existing precedent (isImage/isVideo: eager import,
+// no lazy) is used instead.
+import { RawRenderer } from '../components/preview/RawRenderer';
 
 // Preview renderers are lazy-loaded so that the libraries each one depends on
 // (jszip, xlsx, mammoth, pako, react-native-pdf, highlight.js) only enter
@@ -199,6 +215,7 @@ function extensionForMime(mimeType?: string, category?: Category, fileName?: str
   if (category === 'video') return '.mp4';
   if (category === 'pdf') return '.pdf';
   if (category === 'audio') return extensionForAudio(mime, fileName);
+  if (category === 'raw') return extensionForRaw(fileName);
   if (category === 'docx') return '.docx';
   if (category === 'spreadsheet') return '.xlsx';
   if (category === 'html') return '.html';
@@ -231,6 +248,7 @@ function previewCacheName(fileName: string, mimeType: string | undefined, catego
 
 type Category =
   | 'image'
+  | 'raw'
   | 'svg'
   | 'pdf'
   | 'audio'
@@ -250,6 +268,18 @@ function fileCategory(mimeType?: string, fileName?: string): Category {
 
   // SVG before generic image — needs WebView, not <Image>, for proper render
   if (mime === 'image/svg+xml' || ext === 'svg') return 'svg';
+
+  // RAW before the generic image check — task 1569. Extension-first, not
+  // mime-first: whether the OS reports a RAW extension's mime as `image/*`
+  // at all is unreliable (task 1565 finding 4 — mobile uploads have no
+  // extension-based mime fallback), and even when it does (DNG's
+  // `image/x-adobe-dng` IS explicitly mapped in `media.ts`, just never
+  // consulted at upload), the generic `<Image>` component still can't
+  // decode CR2/CR3/ARW/NEF/RAF/DNG sensor data — only `RawRenderer`'s
+  // embedded-JPEG extraction can. Mirrors web's own `PREVIEWABLE_EXTENSIONS`
+  // RAW block, which is extension-driven for the same reason.
+  if (isRawExtension(ext)) return 'raw';
+
   if (
     mime.startsWith('image/') ||
     ['jpg', 'jpeg', 'png', 'gif', 'webp', 'heic', 'heif'].includes(ext)
@@ -323,6 +353,7 @@ function fileCategory(mimeType?: string, fileName?: string): Category {
 
 const CATEGORY_LABELS: Record<Category, string> = {
   image: 'Image',
+  raw: 'RAW Image',
   svg: 'SVG Image',
   pdf: 'PDF Document',
   audio: 'Audio',
@@ -339,6 +370,7 @@ const CATEGORY_LABELS: Record<Category, string> = {
 
 const CATEGORY_BADGE: Record<Category, string> = {
   image: 'IMG',
+  raw: 'RAW',
   svg: 'SVG',
   pdf: 'PDF',
   audio: 'AUD',
@@ -1999,6 +2031,18 @@ export default function PreviewScreen() {
   const [audioError, setAudioError] = useState<string | null>(null);
   const tempAudioUriRef = useRef<string | null>(null);
 
+  // Task 1569 — RAW inline preview state, same shape as video/audio's
+  // above: `rawUri` is the on-disk DECRYPTED SOURCE raw file (RawRenderer
+  // reads it and writes its OWN separate extracted-preview temp file,
+  // which it cleans up itself — see RawRenderer.tsx). `rawExifInfo` is
+  // bubbled up from RawRenderer's extraction for the Info sheet's extra
+  // rows (Camera/Lens/ISO/Shutter/Aperture/Focal length).
+  const [rawUri, setRawUri] = useState<string | null>(null);
+  const [rawLoading, setRawLoading] = useState(false);
+  const [rawError, setRawError] = useState<string | null>(null);
+  const [rawExifInfo, setRawExifInfo] = useState<RawExifInfo | null>(null);
+  const tempRawUriRef = useRef<string | null>(null);
+
   // DOCX inline preview state — `docxData` holds the raw arrayBuffer; the
   // mammoth conversion runs inside the lazy DocxRenderer so the lib is not
   // bundled into the main chunk.
@@ -2067,6 +2111,13 @@ export default function PreviewScreen() {
   // Use current* values so derived state updates when swiping between photos
   const category = fileCategory(currentMimeType, currentFileName);
   const isImage = category === 'image';
+  // Task 1569 — RAW (CR2/CR3/ARW/NEF/RAF/DNG) joins the MEDIA branch, same
+  // full-bleed black stage as photos ("images/RAW on black" — see the
+  // isImage render branch's own comment, which already anticipated this).
+  // Unlike audio, a RAW file's content IS a photo once extracted, so it
+  // belongs on the same visual frame as isImage, not the doc branch's
+  // themed card.
+  const isRaw = category === 'raw';
   const isSvg = category === 'svg';
   const isPdf = category === 'pdf';
   const isVideo = !!currentMimeType && currentMimeType.startsWith('video/');
@@ -2077,7 +2128,14 @@ export default function PreviewScreen() {
   // to bleed edge-to-edge, so it belongs with the doc-root's themed
   // header/background, same class of decision as PDF/DOCX/etc.
   const isAudio = category === 'audio';
-  const isMediaPreview = isImage || isVideo;
+  const isMediaPreview = isImage || isVideo || isRaw;
+  // "Canon RAW" / "Sony RAW" / … — the manufacturer-specific override for
+  // CATEGORY_LABELS['raw'] wherever the title pill / Info sheet shows the
+  // file's kind, same override pattern as isText's codeLanguageLabel.
+  const rawFormatLabelValue = useMemo(
+    () => rawFormatLabel(currentFileName, currentMimeType),
+    [currentFileName, currentMimeType],
+  );
 
   // Task 0885 (FIX #3): reset the decode flag whenever the displayed image uri
   // changes so the watchdog re-arms for the new source.
@@ -2500,7 +2558,7 @@ export default function PreviewScreen() {
     const storage = trustLocation(currentStoragePoolId);
     const rows: Array<{ label: string; value: string }> = [
       { label: 'Name', value: previewFileName },
-      { label: 'Kind', value: CATEGORY_LABELS[category] ?? 'File' },
+      { label: 'Kind', value: category === 'raw' ? rawFormatLabelValue : (CATEGORY_LABELS[category] ?? 'File') },
     ];
     if (fileFormat) rows.push({ label: 'Format', value: fileFormat });
     if (currentMimeType) rows.push({ label: 'Type', value: currentMimeType });
@@ -2508,6 +2566,19 @@ export default function PreviewScreen() {
     if (currentCreatedAt) rows.push({ label: 'Created', value: formatDate(currentCreatedAt) });
     if (currentVersionNumber != null) rows.push({ label: 'Version', value: `v${currentVersionNumber}` });
     if (currentChunkCount != null) rows.push({ label: 'Chunks', value: String(currentChunkCount) });
+    // Task 1569 — EXIF summary, only when RawRenderer's extraction actually
+    // found something ("where the EXIF has them" — the task's own phrasing;
+    // CR3 in particular has no path to real EXIF here, see raw-preview.ts's
+    // doc comment, so this section is simply omitted for it rather than
+    // showing six blank rows).
+    if (category === 'raw' && rawExifInfo) {
+      if (rawExifInfo.cameraModel) rows.push({ label: 'Camera', value: rawExifInfo.cameraModel });
+      if (rawExifInfo.lensModel) rows.push({ label: 'Lens', value: rawExifInfo.lensModel });
+      if (rawExifInfo.iso) rows.push({ label: 'ISO', value: rawExifInfo.iso });
+      if (rawExifInfo.shutterSpeed) rows.push({ label: 'Shutter', value: rawExifInfo.shutterSpeed });
+      if (rawExifInfo.aperture) rows.push({ label: 'Aperture', value: rawExifInfo.aperture });
+      if (rawExifInfo.focalLength) rows.push({ label: 'Focal length', value: rawExifInfo.focalLength });
+    }
     rows.push({
       label: 'Encryption',
       value: isUnlocked ? 'Decrypted on this device' : 'Client-side encrypted',
@@ -2525,6 +2596,8 @@ export default function PreviewScreen() {
     currentSizeBytes,
     currentStoragePoolId,
     currentVersionNumber,
+    rawExifInfo,
+    rawFormatLabelValue,
   ]);
 
   // Task 1360 — `goBack()` is NOT idempotent: the modal's dismiss transition
@@ -3149,6 +3222,50 @@ export default function PreviewScreen() {
   useEffect(() => {
     return () => {
       void cleanupTrackedTempFile(tempAudioUriRef, FileSystem.deleteAsync);
+    };
+  }, []);
+
+  // Task 1569 — auto-load the RAW source file on mount; same shape as
+  // audio's loader above. RawRenderer reads this decrypted SOURCE file and
+  // writes its OWN separate extracted-preview temp file (cleaned up by
+  // RawRenderer itself, not here — see that component's doc comment).
+  useEffect(() => {
+    if (!isRaw) return;
+    if (Platform.OS === 'web') return;
+    const controller = new AbortController();
+    let cancelled = false;
+    setRawLoading(true);
+    setRawError(null);
+    setRawExifInfo(null);
+    fetchAndDecrypt({ signal: controller.signal })
+      .then((uri) => {
+        if (cancelled || controller.signal.aborted) {
+          FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => {});
+          return;
+        }
+        tempRawUriRef.current = uri;
+        setRawUri(uri);
+      })
+      .catch((err) => {
+        if (!cancelled && !isAbortError(err)) setRawError(friendlyError(err));
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setRawLoading(false);
+          setDownloadProgress(0);
+        }
+      });
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [isRaw, fetchAndDecrypt]);
+
+  // Delete the temp SOURCE raw file when the screen unmounts — same
+  // extracted-helper pattern as audio's equivalent effect above.
+  useEffect(() => {
+    return () => {
+      void cleanupTrackedTempFile(tempRawUriRef, FileSystem.deleteAsync);
     };
   }, []);
 
@@ -3896,7 +4013,7 @@ export default function PreviewScreen() {
               <View style={styles.encSubRow}>
                 <Ionicons name="lock-closed" size={10} color={colors.amber} />
                 <Text style={[styles.mediaHeaderSubtitle, styles.mono, { color: mediaMaterial.labelMuted }]} numberOfLines={1}>
-                  {`Encrypted · ${CATEGORY_LABELS[category]}${currentSizeBytes != null ? ` · ${formatSize(currentSizeBytes)}` : ''}`}
+                  {`Encrypted · ${category === 'raw' ? rawFormatLabelValue : CATEGORY_LABELS[category]}${currentSizeBytes != null ? ` · ${formatSize(currentSizeBytes)}` : ''}`}
                 </Text>
               </View>
             </GlassCapsule>
@@ -4098,6 +4215,29 @@ export default function PreviewScreen() {
                   {renderSharedProgress(false)}
                 </View>
               )
+            ) : isRaw ? (
+              // Task 1569 — RAW (CR2/CR3/ARW/NEF/RAF/DNG). RawRenderer owns
+              // its own loading/fallback states internally once handed a
+              // decrypted source uri; rawError only covers the DECRYPT step
+              // failing outright (mirrors audio/video's own error branch).
+              rawError ? (
+                <View style={styles.imageStatus}>
+                  <Text style={[styles.imageStatusTitle, { color: colors.white }]}>Couldn't load RAW file</Text>
+                  <Text style={styles.imageStatusSub}>{rawError}</Text>
+                </View>
+              ) : rawUri ? (
+                <RawRenderer
+                  uri={rawUri}
+                  fileName={previewFileName}
+                  formatLabel={rawFormatLabelValue}
+                  cacheKey={currentFileId}
+                  onExifInfo={setRawExifInfo}
+                />
+              ) : (
+                <View style={styles.imageStatus}>
+                  {renderSharedProgress(false)}
+                </View>
+              )
             ) : videoUri ? (
               <VideoView
                 player={player}
@@ -4149,7 +4289,7 @@ export default function PreviewScreen() {
           onClose={() => setInfoVisible(false)}
           fileId={currentFileId}
           filename={previewFileName}
-          kindLabel={CATEGORY_LABELS[category] ?? 'File'}
+          kindLabel={category === 'raw' ? rawFormatLabelValue : (CATEGORY_LABELS[category] ?? 'File')}
           sizeBytes={currentSizeBytes ?? null}
           storageLocation={(() => {
             const storage = trustLocation(currentStoragePoolId);

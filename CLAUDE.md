@@ -152,6 +152,20 @@ pdf — may depend on for their own layout). See `PreviewScreen.tsx`'s `svgWebVi
 'center'` container needs this wrapper** — `DevicePairingShowScreen`/`ConstellationSendScreen`
 were checked and are fine (already non-centered parents), but this is now a real trap for future code.
 
+**Attempted broadening (task 1569, 2026-09-27) — WRONG, corrected below rather than deleted.** A
+plain `View` using `flex:1` as the direct child of `mediaStage` (the SAME centered parent) rendered
+fully BLANK (no content, no error, no crash) at one point in that task, which looked like the same
+WebView-under-a-centered-parent mechanism above hitting an ordinary View. It is NOT: switching that
+View's style to percentage `width:'100%'/height:'100%'` did not fix the blank area (still blank,
+identically, after the change), and a plain hardcoded `flex:1` colored box placed in the exact same
+JSX slot rendered correctly, filling the parent with no shrink-to-content problem at all. The real
+cause in that task was unrelated — a JPEG byte-extraction bug (`raw-preview.ts`'s
+`findLargestJpegSpan`) handed `<Image>` a genuinely corrupt source, which iOS renders as nothing,
+not an error. **This WebView-specific trap is still real and still applies to WebView** (the
+original repro above stands); it does **not** generalize to ordinary Views/Images the way this note
+previously claimed — see task 1569's `DEVIATIONS.md` entry for the full corrected account. Do not
+cite this section as precedent for a plain-View blank-area bug; check for a bad data source first.
+
 ## Worktree `.env` — copy it by hand, or the app silently defaults to production (task 1394)
 
 `git worktree add` does **not** copy the primary checkout's gitignored `.env`
