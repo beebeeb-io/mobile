@@ -20,6 +20,10 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const source = readFileSync(join(import.meta.dir, 'PreviewScreen.tsx'), 'utf-8');
+const scrollEdgeBlurSource = readFileSync(
+  join(import.meta.dir, '../components/glass/ScrollEdgeBlur.tsx'),
+  'utf-8',
+);
 
 function styleObjectBody(styleName: string): string {
   const re = new RegExp(`\\n  ${styleName}\\s*:\\s*\\{([^}]*)\\}`, 's');
@@ -67,5 +71,13 @@ describe('PreviewScreen top chrome — floats above the content and stays tappab
     for (const name of ['mediaHeader', 'header']) {
       expect(styleObjectBody(name)).not.toMatch(/position:\s*'absolute'/);
     }
+  });
+
+  test('the media header row stacks above its sibling ScrollEdgeBlur (else the blur frosts the controls)', () => {
+    const blurRoot = scrollEdgeBlurSource.match(/root:\s*\{([^}]*)\}/)?.[1] ?? '';
+    const blurZ = Number(blurRoot.match(/zIndex:\s*(\d+)/)?.[1] ?? 0);
+    const headerZ = Number(styleObjectBody('mediaHeader').match(/zIndex:\s*(\d+)/)?.[1] ?? 0);
+    expect(blurZ).toBeGreaterThan(0);
+    expect(headerZ).toBeGreaterThan(blurZ);
   });
 });

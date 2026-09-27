@@ -5717,7 +5717,11 @@ const styles = StyleSheet.create({
   // A plain in-flow row inside `chromeLayer` — NOT absolute: an absolute row
   // here collapses its ancestors to a zero frame, which hides the close/⋯
   // controls from the accessibility tree (and, pre-fix, from touches).
+  // It still needs its OWN zIndex: its sibling `ScrollEdgeBlur` is absolute
+  // with zIndex 5, and without this the blur paints over the glass controls
+  // (seen on bb-qa-2 while verifying this fix: a frosted, unreadable header).
   mediaHeader: {
+    zIndex: 20,
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 14,
