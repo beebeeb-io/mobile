@@ -5043,6 +5043,15 @@ export default function PreviewScreen() {
                   language={codeLanguage}
                   onChangeText={setEditText}
                   bottomInset={Math.max(insets.bottom, 16)}
+                  // Build 217 bug fix — reuses the SAME measured header
+                  // height CodeRenderer's read-only sibling already gets via
+                  // its own `topInset` prop a few branches up (`docHeaderHeight`
+                  // is measured off the SAME wrapper for both the normal and
+                  // edit-mode header — see that `onLayout`'s own comment).
+                  // Edit mode's header row is a plain (non-scrolling) header
+                  // like the normal one, just with different content, so the
+                  // exact same inset applies.
+                  topInset={docContentInset.top}
                 />
               </Suspense>
             </View>
