@@ -3,6 +3,7 @@ import { describe, expect, test } from 'bun:test';
 import {
   bucketForUrl,
   createRateLimitedFetch,
+  MAX_PACING_PAUSE_MS,
   parseRetryAfterMs,
 } from './rate-limited-fetch';
 
@@ -98,6 +99,31 @@ describe('rate-limited fetch', () => {
     await fetcher('https://api.beebeeb.io/api/v1/files/b');
 
     expect(calls).toEqual([5_000, 7_000]);
+  });
+
+  // Task 1593 (#141 review P2): a lockout-length Retry-After must still pace
+  // the bucket — capped at MAX_PACING_PAUSE_MS, not dropped.
+  test('caps a lockout-length Retry-After at MAX_PACING_PAUSE_MS instead of dropping the pause', async () => {
+    let now = 5_000;
+    const calls: number[] = [];
+    const fetcher = createRateLimitedFetch({
+      fetchImpl: async () => {
+        calls.push(now);
+        if (calls.length === 1) {
+          return new Response('{}', { status: 429, headers: { 'Retry-After': '3600' } });
+        }
+        return new Response('{}', { status: 200 });
+      },
+      now: () => now,
+      sleep: async (ms) => { now += ms; },
+      bucketSpacingMs: { files: 80, general: 0, auth: 0, shares: 0, external: 0 },
+    });
+
+    await fetcher('https://api.beebeeb.io/api/v1/files/a');
+    await fetcher('https://api.beebeeb.io/api/v1/files/b');
+
+    // Paced for exactly the cap: not 0 (dropped), not 3_600_000 (the lockout).
+    expect(calls[1] - calls[0]).toBe(MAX_PACING_PAUSE_MS);
   });
 
   test('parses Retry-After seconds and dates', () => {

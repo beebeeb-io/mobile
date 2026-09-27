@@ -19,6 +19,7 @@
  */
 
 import * as FileSystem from 'expo-file-system/legacy';
+import { gatedPlaintextWrite } from './plaintext-gate';
 import { Platform } from 'react-native';
 
 import { notePlaintextPathCreated } from './plaintext-storage';
@@ -129,9 +130,12 @@ export async function cacheThumbnail(
   await FileSystem.makeDirectoryAsync(THUMB_DIR, { intermediates: true });
   notePlaintextPathCreated();
   const path = variantPath(fileId, variant);
-  await FileSystem.writeAsStringAsync(path, uint8ArrayToBase64(data), {
-    encoding: FileSystem.EncodingType.Base64,
-  });
+  // Task 1593 round 3 — decrypted thumbnail: gated by the sign-out purge.
+  await gatedPlaintextWrite('thumbnail cache', path, FileSystem, () =>
+    FileSystem.writeAsStringAsync(path, uint8ArrayToBase64(data), {
+      encoding: FileSystem.EncodingType.Base64,
+    }),
+  );
   memoryThumbPaths.set(cacheKey(fileId, variant), path);
   return path;
 }
@@ -151,9 +155,11 @@ export async function cacheThumbnailBase64(
   await FileSystem.makeDirectoryAsync(THUMB_DIR, { intermediates: true });
   notePlaintextPathCreated();
   const path = variantPath(fileId, variant);
-  await FileSystem.writeAsStringAsync(path, base64Data, {
-    encoding: FileSystem.EncodingType.Base64,
-  });
+  await gatedPlaintextWrite('thumbnail cache', path, FileSystem, () =>
+    FileSystem.writeAsStringAsync(path, base64Data, {
+      encoding: FileSystem.EncodingType.Base64,
+    }),
+  );
   memoryThumbPaths.set(cacheKey(fileId, variant), path);
   return path;
 }
@@ -170,7 +176,9 @@ export async function persistThumbnailFromPath(
   await FileSystem.makeDirectoryAsync(THUMB_DIR, { intermediates: true });
   notePlaintextPathCreated();
   const destPath = variantPath(fileId, variant);
-  await FileSystem.copyAsync({ from: sourcePath, to: destPath });
+  await gatedPlaintextWrite('thumbnail cache', destPath, FileSystem, () =>
+    FileSystem.copyAsync({ from: sourcePath, to: destPath }),
+  );
   memoryThumbPaths.set(cacheKey(fileId, variant), destPath);
   return destPath;
 }

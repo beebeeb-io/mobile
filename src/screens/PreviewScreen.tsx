@@ -60,7 +60,7 @@ import {
   saveFailedAfterUploadStarted,
   saveTextFileVersion,
 } from '../lib/text-file-save';
-import { decryptToTempFile, invalidatePreviewCache } from '../lib/native-decrypt';
+import { decryptToTempFile, invalidatePreviewCache, releasePreviewCopy } from '../lib/native-decrypt';
 import { offlineManager } from '../lib/offline-manager';
 import { maybeSelfRepairThumbnailFromLocalFile } from '../lib/thumbnail-self-repair';
 import { BeebeebThumbnails, type PreviewLoadProgressEvent } from '../../modules/beebeeb-crypto';
@@ -107,6 +107,7 @@ import type { RawExifInfo } from '../lib/raw-preview';
 import { cleanupTrackedTempFile } from '../lib/preview-temp-file';
 import { isTextPreview } from '../lib/code-text-preview';
 import { fileCategory, type Category } from '../lib/file-category';
+import { extensionForMime, previewCacheName, previewDecryptExtension, previewDisplayName } from '../lib/preview-cache-key';
 // Task 1569 — imported EAGERLY (not React.lazy, unlike every other renderer
 // below), and rendered directly (no Suspense) in the JSX. Found on-device
 // (bb-ios27, Release): `<Suspense><RawRenderer/></Suspense>` inside
@@ -122,6 +123,7 @@ import { fileCategory, type Category } from '../lib/file-category';
 // no lazy) is used instead.
 import { RawRenderer } from '../components/preview/RawRenderer';
 import { ZoomableImage } from '../components/preview/ZoomableImage';
+import { previewSurfaceIsDark, statusBarStyleFor } from '../lib/status-bar-style';
 
 // Preview renderers are lazy-loaded so that the libraries each one depends on
 // (jszip, xlsx, mammoth, pako, react-native-pdf, highlight.js) only enter
@@ -193,67 +195,9 @@ function formatDate(iso: string): string {
   return `${month} ${day}, ${year} at ${hours}:${mins}`;
 }
 
-function isEncryptedMetadataName(name: string): boolean {
-  return name.trim().startsWith('{');
-}
-
-function extensionForMime(mimeType?: string, category?: Category, fileName?: string): string {
-  const mime = (mimeType ?? '').toLowerCase();
-  if (mime === 'image/jpeg') return '.jpg';
-  if (mime === 'image/png') return '.png';
-  if (mime === 'image/webp') return '.webp';
-  if (mime === 'image/gif') return '.gif';
-  if (mime === 'image/heic') return '.heic';
-  if (mime === 'image/heif') return '.heif';
-  if (mime === 'image/svg+xml') return '.svg';
-  if (mime === 'video/mp4') return '.mp4';
-  if (mime === 'video/quicktime') return '.mov';
-  if (mime === 'video/x-m4v') return '.m4v';
-  if (mime === 'video/webm') return '.webm';
-  if (mime === 'application/pdf') return '.pdf';
-  if (mime === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') return '.docx';
-  if (mime === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet') return '.xlsx';
-  if (mime === 'application/vnd.ms-excel') return '.xls';
-  if (mime === 'text/csv') return '.csv';
-  if (mime === 'text/html') return '.html';
-  if (mime === 'text/plain') return '.txt';
-  if (mime === 'application/json') return '.json';
-  if (mime === 'application/xml' || mime === 'text/xml') return '.xml';
-  if (mime === 'application/zip') return '.zip';
-  if (mime.startsWith('audio/')) return extensionForAudio(mime, fileName);
-  if (category === 'image') return '.jpg';
-  if (category === 'video') return '.mp4';
-  if (category === 'pdf') return '.pdf';
-  if (category === 'audio') return extensionForAudio(mime, fileName);
-  if (category === 'raw') return extensionForRaw(fileName);
-  if (category === 'docx') return '.docx';
-  if (category === 'spreadsheet') return '.xlsx';
-  if (category === 'html') return '.html';
-  if (category === 'zip') return '.zip';
-  if (category === 'doc') return '.txt';
-  return '';
-}
-
 function mediaCacheExtension(mimeType: string | null | undefined, category: Category): string | null {
   const ext = extensionForMime(mimeType ?? undefined, category).replace(/^\./, '');
   return ext || null;
-}
-
-function previewDisplayName(fileName: string, category: Category): string {
-  if (!isEncryptedMetadataName(fileName)) return fileName;
-  if (category === 'image') return 'Photo';
-  if (category === 'video') return 'Video';
-  return 'Encrypted file';
-}
-
-function previewCacheName(fileName: string, mimeType: string | undefined, category: Category): string {
-  const displayName = previewDisplayName(fileName, category);
-  let safeName = displayName.replace(/[^a-zA-Z0-9._\-]/g, '_');
-  if (!safeName) safeName = category === 'image' ? 'Photo' : 'Preview';
-  if (!/\.[a-zA-Z0-9]{2,5}$/.test(safeName)) {
-    safeName += extensionForMime(mimeType, category, fileName);
-  }
-  return safeName;
 }
 
 const CATEGORY_LABELS: Record<Category, string> = {
@@ -924,7 +868,9 @@ async function loadDecryptedPhotoForViewer(
       { onProgress, signal },
     );
     if (signal?.aborted) {
-      await FileSystem.deleteAsync(decryptedUri, { idempotent: true }).catch(() => {});
+      // Task 1593 round 2 (P2-F) — give the shared preview copy back instead of
+      // deleting it: the full preview or "Prove it" may be using the same file.
+      await releasePreviewCopy(entry.id, ext);
       recordRuntimeTrace('preview.photo_page.original.aborted_after_decrypt', { fileId: entry.id });
       throwIfPreviewAborted(signal);
     }
@@ -934,7 +880,7 @@ async function loadDecryptedPhotoForViewer(
       ? await cachePhotoWithExtension(entry.id, decryptedUri, cacheExt)
       : await cachePhoto(entry.id, decryptedUri);
     if (cachedUri !== decryptedUri) {
-      await FileSystem.deleteAsync(decryptedUri, { idempotent: true }).catch(() => {});
+      await releasePreviewCopy(entry.id, ext); // task 1593 round 2 (P2-F)
     }
     throwIfPreviewAborted(signal);
     recordRuntimeTrace('preview.photo_page.original.success', {
@@ -2364,6 +2310,20 @@ export default function PreviewScreen() {
   // (design section 02, "Show source" — Guus's 18:50 ruling put Edit in
   // this same menu; this is the sibling read-only view it also asked for).
   const [showSource, setShowSource] = useState(false);
+  // Task 1591 bug 1 — the status bar's content style follows the surface it
+  // sits on (media stage / code + editor surfaces are dark in BOTH themes),
+  // not only the app theme the root <StatusBar> in App.tsx uses. See
+  // src/lib/status-bar-style.ts.
+  const surfaceIsDark = previewSurfaceIsDark({
+    isMediaPreview,
+    isText,
+    editMode,
+    textLoaded: textContent != null,
+    isMarkdown,
+    showSource,
+    appScheme: resolved === 'dark' ? 'dark' : 'light',
+  });
+  const statusBarStyle = statusBarStyleFor(surfaceIsDark);
   const [pdfPageInfo, setPdfPageInfo] = useState<{ current: number; total: number } | null>(null);
   const barsOpacity = useRef(new Animated.Value(1)).current;
 
@@ -2948,6 +2908,7 @@ export default function PreviewScreen() {
 
     // Keep the original extension on the cache filename — RN's <Image>,
     // expo-video, and the WebView pick the decoder from the URI suffix.
+    // caches-registry: example=00000000-0000-0000-0000-000000000000_x.jpg (legacy <fileId>_<name>)
     const cacheUri = `${FileSystem.cacheDirectory}${currentFileId}_${cacheFileName}`;
 
     // Remove any stale copy so a previous failed download (e.g. a JSON error
@@ -2967,20 +2928,21 @@ export default function PreviewScreen() {
     }
 
     if (isUnlocked) {
-      const ext = extensionForMime(currentMimeType, category, currentFileName);
+      // Task 1593 — the shared preview cache key ("Prove it" uses the same).
+      const decryptExt = previewDecryptExtension(currentMimeType, currentFileName);
       let decryptedUri: string;
       try {
         recordRuntimeTrace('preview.original.decrypt_request', {
           fileId: currentFileId,
           category,
-          extension: ext || cacheFileName,
+          extension: decryptExt,
         });
         {
           const { keyProvider, handleId } = resolveDecryptKey(currentFileId);
           decryptedUri = await decryptToTempFile(
             currentFileId,
             keyProvider,
-            ext || cacheFileName,
+            decryptExt,
             currentSizeBytes,
             currentChunkCount,
             handleId,
@@ -3830,7 +3792,8 @@ export default function PreviewScreen() {
       try {
         const cachedUri = await cachePhoto(currentFileId, decryptedUri);
         if (cachedUri !== decryptedUri) {
-          await FileSystem.deleteAsync(decryptedUri, { idempotent: true }).catch(() => {});
+          // Task 1593 round 2 (P2-F) — release, never delete, the shared preview copy.
+          await releasePreviewCopy(currentFileId, previewDecryptExtension(currentMimeType, currentFileName));
         }
         resolvedUri = cachedUri;
       } catch {
@@ -4231,7 +4194,7 @@ export default function PreviewScreen() {
             become glass circles.
             1346 — scheme="dark" forced: mediaMaterial comment above (media
             ground is always near-black, not a light/dark toggle). */}
-        <StatusBar hidden={!chromeVisible} animated />
+        <StatusBar style={statusBarStyle} hidden={!chromeVisible} animated />
 
         {/* Preview redesign item 3 — the "e2e" pill (design's "00 TODAY"
             complaint: "it covers the content, and 'e2e' is jargon") is
@@ -4680,7 +4643,7 @@ export default function PreviewScreen() {
 
   return (
     <Animated.View style={[styles.root, { backgroundColor: c.paper }, { transform: [{ translateY: closeTranslateYClamped }] }]}>
-      <StatusBar hidden={!chromeVisible} animated />
+      <StatusBar style={statusBarStyle} hidden={!chromeVisible} animated />
       {/* Round 4 fix — see `header`'s own style comment for the two bugs
           this exact shape fixes (a stacking bug, then an accessibility-tree
           bug from the first attempt at fixing it). This wrapper floats over
@@ -4715,7 +4678,7 @@ export default function PreviewScreen() {
           `PREVIEW_CHROME_MATERIAL` already applies to the bars themselves).
           Sized to the header's own measured height so it fades out exactly
           where the header's content ends, not into the page below it. */}
-      <PreviewTopScrim height={docHeaderHeight ?? insets.top + 58} dark={resolved === 'dark'} />
+      <PreviewTopScrim height={docHeaderHeight ?? insets.top + 58} dark={surfaceIsDark} />
       {/* ---- Header ----
           Preview redesign item 7 — while editing a text file, this row
           becomes Done (left, the SAME dirty-guard exit as the ⋯ menu's

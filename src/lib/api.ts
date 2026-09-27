@@ -241,10 +241,42 @@ export class ApiError extends Error {
    * without notice. Optional + additive — existing `(status, message)` callers
    * are unaffected.
    */
-  constructor(public status: number, message: string, public code?: string) {
+  constructor(
+    public status: number,
+    message: string,
+    public code?: string,
+    /**
+     * Seconds until the server will accept the request again — parsed from a
+     * 429's `Retry-After` header (task 1591). Undefined when absent.
+     */
+    public retryAfterSeconds?: number,
+  ) {
     super(message);
     this.name = 'ApiError';
   }
+}
+
+/**
+ * "about 45 seconds" / "about 3 minutes" / "about 1 hour" — rounded UP so the
+ * user never retries too early (task 1591).
+ */
+export function formatRetryAfter(seconds: number): string {
+  const s = Math.max(1, Math.ceil(seconds));
+  if (s < 60) return `about ${s} second${s === 1 ? '' : 's'}`;
+  const m = Math.ceil(s / 60);
+  if (m < 60) return `about ${m} minute${m === 1 ? '' : 's'}`;
+  const h = Math.ceil(m / 60);
+  return `about ${h} hour${h === 1 ? '' : 's'}`;
+}
+
+/** Parse a `Retry-After` header value (delta-seconds or HTTP date) to seconds. */
+export function retryAfterSecondsFromHeader(value: string | null, nowMs = Date.now()): number | undefined {
+  if (!value) return undefined;
+  const n = Number(value);
+  if (Number.isFinite(n) && n >= 0) return n;
+  const at = Date.parse(value);
+  if (Number.isFinite(at)) return Math.max(0, Math.ceil((at - nowMs) / 1000));
+  return undefined;
 }
 
 /**
@@ -310,7 +342,12 @@ export function friendlyError(err: unknown): string {
     }
     if (err.status === 409) return err.message || 'A resource with that name already exists.';
     if (err.status === 422) return err.message || 'Invalid input. Please check your details.';
-    if (err.status === 429) return 'Too many requests. Wait a moment, then try again.';
+    if (err.status === 429) {
+      if (err.retryAfterSeconds != null && err.retryAfterSeconds > 0) {
+        return `Too many attempts. Try again in ${formatRetryAfter(err.retryAfterSeconds)}.`;
+      }
+      return 'Too many requests. Wait a moment, then try again.';
+    }
     // 503 = service-side unavailability (storage pools, DB, S3 backend). Server emits
     // "all storage pools are full or unavailable" for the StorageUnavailable variant;
     // either way, the user just needs to retry shortly.
@@ -444,7 +481,12 @@ async function request<T>(
     // completed") body only ever sends `error`), so no existing caller that
     // reads `.message` loses data — see FilesScreen.tsx's `/upload already
     // completed/i.test(err.message)` regex, unaffected by this reorder.
-    throw new ApiError(res.status, err.message ?? err.error ?? res.statusText);
+    throw new ApiError(
+      res.status,
+      err.message ?? err.error ?? res.statusText,
+      undefined,
+      res.status === 429 ? retryAfterSecondsFromHeader(res.headers.get('Retry-After')) : undefined,
+    );
   }
 
   // Read server-sent announcement header (percent-encoded UTF-8 string).

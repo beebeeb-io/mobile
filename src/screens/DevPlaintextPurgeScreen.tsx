@@ -24,6 +24,7 @@ import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../lib/theme-context';
 import { purgeAllPlaintextCaches, type PlaintextStoragePurgeResult } from '../lib/account-cleanup';
+import { plaintextGate } from '../lib/plaintext-gate';
 
 type Status =
   | { kind: 'running' }
@@ -39,6 +40,9 @@ export default function DevPlaintextPurgeScreen() {
     let cancelled = false;
     purgeAllPlaintextCaches()
       .then((result) => {
+        // Task 1593 r3: the purge leaves the plaintext gate closed until a new
+        // session; this dev screen runs while still signed in, so reopen it.
+        plaintextGate.open();
         if (!cancelled) setStatus({ kind: 'done', result });
       })
       .catch((err) => {
