@@ -171,6 +171,24 @@ export async function runTextSaveConfirmingClear(
 }
 
 /**
+ * `readCurrentVersion` for the editor after a REAL stale-version conflict:
+ * refresh ALL of the file's metadata (name, parent, version), not just the
+ * version. The conflicting save may also have renamed or moved the file; a
+ * later Save sends the cached `nameEncrypted`/`parentId` in the replacement
+ * init and would silently revert that (Codex P2, PR #134 — main already did
+ * a full `loadFileMeta()` here). `load` resolves null on failure; that is
+ * turned into a rejection so `runTextSave` reports an error instead of a
+ * conflict dialog with a made-up version.
+ */
+export async function refreshMetaForConflict(
+  load: () => Promise<{ versionNumber: number } | null>,
+): Promise<number> {
+  const fresh = await load()
+  if (!fresh) throw new Error("Could not read this file's current version. Try again.")
+  return fresh.versionNumber
+}
+
+/**
  * A synchronous single-flight gate. React state (`saving`) is read from a
  * render closure, so two taps landing before the re-render both saw
  * `saving === false` and started two concurrent uploads of the same file —

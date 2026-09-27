@@ -55,6 +55,7 @@ import {
   abandonTextFileUpload,
   buildKeepBothName,
   createSingleFlight,
+  refreshMetaForConflict,
   runTextSaveConfirmingClear,
   saveFailedAfterUploadStarted,
   saveTextFileVersion,
@@ -2701,7 +2702,10 @@ export default function PreviewScreen() {
         },
         uploadStarted: saveFailedAfterUploadStarted,
         abandon: () => abandonTextFileUpload(currentFileId),
-        readCurrentVersion: () => getFileCurrentVersion(currentFileId),
+        // Codex P2 (PR #134): after a real conflict, refresh name + parent +
+        // version (loadFileMeta sets fileMeta), so a later Save cannot revert
+        // a rename or move made by the conflicting save.
+        readCurrentVersion: () => refreshMetaForConflict(loadFileMeta),
       },
       { baseVersionNumber: meta.versionNumber },
       confirmClearInFlightUpload,
@@ -2717,7 +2721,7 @@ export default function PreviewScreen() {
         });
         return;
       case 'conflict':
-        setFileMeta({ ...meta, versionNumber: result.freshVersionNumber });
+        // fileMeta was already replaced by the fresh copy in readCurrentVersion.
         setConflict({ freshVersionNumber: result.freshVersionNumber });
         return;
       case 'cancelled':
@@ -2732,7 +2736,7 @@ export default function PreviewScreen() {
         showSaveFailed(friendlyError(result.error));
         return;
     }
-  }, [currentFileId, encryptChunk, applySavedVersion, showSaveFailed, confirmClearInFlightUpload]);
+  }, [currentFileId, encryptChunk, applySavedVersion, showSaveFailed, confirmClearInFlightUpload, loadFileMeta]);
 
   const handleSaveEdit = useCallback(async () => {
     if (editText == null) return;

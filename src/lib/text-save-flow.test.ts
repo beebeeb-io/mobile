@@ -3,7 +3,7 @@
 // dialog on a single device, then a Save that never finished). Pure module,
 // no mocking needed.
 import { describe, expect, test } from 'bun:test'
-import { classifySaveConflict, createSingleFlight, runTextSave, runTextSaveConfirmingClear } from './text-save-flow'
+import { classifySaveConflict, createSingleFlight, refreshMetaForConflict, runTextSave, runTextSaveConfirmingClear } from './text-save-flow'
 
 // The exact wire texts of the server's two init-time 409s
 // (beebeeb-api/src/routes/uploads.rs, init_upload) as the mobile ApiError
@@ -184,6 +184,32 @@ describe('runTextSave — real stale-version conflict (dialog, as on main)', () 
     deps.readCurrentVersion = async () => {
       throw NETWORK()
     }
+    const result = await runTextSave(deps, { baseVersionNumber: 4 })
+    expect(result.kind).toBe('error')
+  })
+})
+
+describe('refreshMetaForConflict — a conflict refreshes name + parent + version (Codex P2, PR #134)', () => {
+  test('a stale-version conflict reloads the FULL metadata once and hands its version to the dialog', async () => {
+    const { deps, calls } = makeDeps([() => STALE()])
+    let meta = { nameEncrypted: 'old-name', parentId: 'old-parent', versionNumber: 4 }
+    let loads = 0
+    const load = async () => {
+      loads++
+      meta = { nameEncrypted: 'renamed-elsewhere', parentId: 'moved-elsewhere', versionNumber: 6 }
+      return meta
+    }
+    deps.readCurrentVersion = () => refreshMetaForConflict(load)
+    const result = await runTextSave(deps, { baseVersionNumber: 4 })
+    expect(result).toEqual({ kind: 'conflict', freshVersionNumber: 6 })
+    expect(loads).toBe(1)
+    expect(meta).toEqual({ nameEncrypted: 'renamed-elsewhere', parentId: 'moved-elsewhere', versionNumber: 6 })
+    expect(calls.abandon).toBe(0)
+  })
+
+  test('a metadata reload that fails is an error, not a conflict dialog with a made-up version', async () => {
+    const { deps } = makeDeps([() => STALE()])
+    deps.readCurrentVersion = () => refreshMetaForConflict(async () => null)
     const result = await runTextSave(deps, { baseVersionNumber: 4 })
     expect(result.kind).toBe('error')
   })

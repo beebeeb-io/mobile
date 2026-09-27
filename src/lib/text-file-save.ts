@@ -34,6 +34,7 @@ export {
 export {
   classifySaveConflict,
   createSingleFlight,
+  refreshMetaForConflict,
   runTextSave,
   runTextSaveConfirmingClear,
   type SaveConflictKind,
