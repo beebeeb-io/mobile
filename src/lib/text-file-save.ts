@@ -16,7 +16,8 @@
  * to the network — re-exported here so callers only need one import.
  */
 
-import { ApiError, uploadEncryptedChunked } from './api'
+import { abandonFileUpload, uploadEncryptedChunked } from './api'
+import { classifySaveConflict } from './text-save-flow'
 import type { EncryptedData } from '../../modules/beebeeb-crypto'
 import type { FileEntry, UploadProgress } from './api'
 
@@ -30,9 +31,44 @@ export {
   type SaveNextAction,
 } from './text-save-decision'
 
-/** True when `err` is the server's typed 409 for a stale `base_version_number`. */
+export {
+  classifySaveConflict,
+  createSingleFlight,
+  runTextSave,
+  type SaveConflictKind,
+  type TextSaveResult,
+} from './text-save-flow'
+
+/**
+ * True ONLY for the server's stale-`base_version_number` 409. Task 1578: this
+ * used to be `status === 409`, which also matched "upload is already in
+ * progress for this file" — a single-device state left behind by an
+ * interrupted save — and told the user another device had saved.
+ */
 export function isStaleVersionConflict(err: unknown): boolean {
-  return err instanceof ApiError && err.status === 409
+  return classifySaveConflict(err) === 'stale-version'
+}
+
+const UPLOAD_STARTED = Symbol.for('beebeeb.textSave.uploadStarted')
+
+/** True when a `saveTextFileVersion` rejection happened AFTER the server accepted `init`. */
+export function saveFailedAfterUploadStarted(err: unknown): boolean {
+  return !!err && typeof err === 'object' && (err as Record<symbol, unknown>)[UPLOAD_STARTED] === true
+}
+
+/**
+ * Task 1578 — clear this file's in-flight upload (`files.is_uploading`) so the
+ * next save is not refused with "upload is already in progress". Server-side
+ * this reverts to the previous completed version (task 1571); it never touches
+ * a completed version. Best-effort: a server without the route (404) or a
+ * network failure resolves quietly.
+ */
+export async function abandonTextFileUpload(fileId: string): Promise<void> {
+  try {
+    await abandonFileUpload(fileId)
+  } catch {
+    // Best-effort by design.
+  }
 }
 
 function combineNonceCiphertext(enc: EncryptedData): Uint8Array {
@@ -67,6 +103,32 @@ export interface SaveTextFileVersionParams {
  */
 export async function saveTextFileVersion(params: SaveTextFileVersionParams): Promise<FileEntry> {
   const bytes = new TextEncoder().encode(params.text)
+  // `uploadEncryptedChunked` emits its first progress event only after `init`
+  // succeeded (the server has set `is_uploading`), so the first event marks
+  // "an interrupted attempt now needs an abandon".
+  let uploadStarted = false
+  try {
+    return await uploadText(params, bytes, (p) => {
+      uploadStarted = true
+      params.onProgress?.(p)
+    })
+  } catch (err) {
+    if (uploadStarted && err && typeof err === 'object') {
+      try {
+        Object.defineProperty(err, UPLOAD_STARTED, { value: true, enumerable: false })
+      } catch {
+        // Frozen error object — the caller just will not abandon.
+      }
+    }
+    throw err
+  }
+}
+
+function uploadText(
+  params: SaveTextFileVersionParams,
+  bytes: Uint8Array,
+  onProgress: (p: UploadProgress) => void,
+): Promise<FileEntry> {
   return uploadEncryptedChunked({
     fileId: params.fileId,
     nameEncrypted: params.nameEncrypted,
@@ -77,7 +139,12 @@ export async function saveTextFileVersion(params: SaveTextFileVersionParams): Pr
     versionReplace: params.versionReplace
       ? { fileId: params.fileId, baseVersionNumber: params.versionReplace.baseVersionNumber }
       : undefined,
-    onProgress: params.onProgress,
+    onProgress,
+    // Task 1578: an interactive save the user is waiting on. The default
+    // chunk transport is a BACKGROUND URLSession (expo-file-system legacy
+    // default), which iOS may defer at its own discretion — on device that
+    // left the Save spinner running with the file stuck mid-upload.
+    foregroundTransfer: true,
     readEncryptedChunk: async (index, chunkSizeBytes, effectiveFileId) => {
       const start = index * chunkSizeBytes
       const end = Math.min(bytes.byteLength, start + chunkSizeBytes)

@@ -1028,6 +1028,15 @@ export async function getFile(id: string): Promise<FileEntry> {
 }
 
 /**
+ * Task 1578 — `POST /api/v1/files/:id/upload/abandon` (server task 1571):
+ * clears an in-flight version upload (`files.is_uploading`) and makes the
+ * previous completed version current again. Owner-scoped server-side.
+ */
+export async function abandonFileUpload(id: string): Promise<void> {
+  await request<unknown>('POST', `/api/v1/files/${id}/upload/abandon`);
+}
+
+/**
  * Task 1563 — the authoritative CURRENT `version_number` for a file.
  *
  * `GET /api/v1/files/:id` does NOT select `version_number` at all (confirmed
@@ -1126,7 +1135,7 @@ function bytesToBlob(bytes: Uint8Array): Blob {
   return new Blob([copy.buffer as ArrayBuffer], { type: 'application/octet-stream' });
 }
 
-async function putBinaryBytes(url: string, token: string | null, bytes: Uint8Array): Promise<{
+async function putBinaryBytes(url: string, token: string | null, bytes: Uint8Array, foregroundTransfer = false): Promise<{
   ok: boolean;
   status: number;
   error: () => Promise<{ error?: string }>;
@@ -1142,6 +1151,9 @@ async function putBinaryBytes(url: string, token: string | null, bytes: Uint8Arr
         httpMethod: 'PUT',
         headers,
         uploadType: FileSystem.FileSystemUploadType.BINARY_CONTENT,
+        // Task 1578: expo-file-system's default is a BACKGROUND URLSession,
+        // whose tasks iOS may defer. Interactive saves opt into FOREGROUND.
+        ...(foregroundTransfer ? { sessionType: FileSystem.FileSystemSessionType.FOREGROUND } : {}),
       });
       return {
         ok: res.status >= 200 && res.status < 300,
@@ -1254,6 +1266,14 @@ export async function uploadEncryptedChunked(params: {
    * unset and keeps today's byte-match-on-`v2InitNameEncrypted` behavior.
    */
   versionReplace?: { fileId: string; baseVersionNumber: number }
+  /**
+   * Task 1578 — send chunk PUTs over a FOREGROUND URLSession instead of the
+   * expo-file-system default BACKGROUND one. For an upload the user is
+   * actively waiting on (the text editor's Save): background-session tasks
+   * run in `nsurlsessiond` and iOS may defer them, which left the editor's
+   * Save spinner running on device. Every other caller keeps the default.
+   */
+  foregroundTransfer?: boolean
 }): Promise<FileEntry> {
   const {
     fileId,
@@ -1268,6 +1288,7 @@ export async function uploadEncryptedChunked(params: {
     onProgress,
     readEncryptedChunk,
     versionReplace,
+    foregroundTransfer,
   } = params
   const token = await getToken()
   const resolveNameEncrypted = async (id: string) =>
@@ -1385,7 +1406,7 @@ export async function uploadEncryptedChunked(params: {
     const chunkPath = protocol === 'v2' && uploadSessionId
       ? `/api/v1/uploads/${uploadSessionId}/chunks/${i}`
       : `/api/v1/files/${serverFileId}/chunks/${i}`
-    const chunkRes = await putBinaryBytes(`${BASE_URL}${chunkPath}`, token, encBytes)
+    const chunkRes = await putBinaryBytes(`${BASE_URL}${chunkPath}`, token, encBytes, foregroundTransfer === true)
     if (!chunkRes.ok) {
       const err = (await chunkRes.error()) as { error?: string; message?: string }
       // Carry the machine code (e.g. `object_budget_exceeded`, `quota_exceeded`)

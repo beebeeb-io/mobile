@@ -112,6 +112,7 @@ import { markUnlocked } from '../lib/lock-state';
 import { mountTrustedFileProvider, populateFileProviderCache, removeTrustedFileProvider } from '../lib/file-provider-mount';
 import { NOTIFICATIONS_OPT_OUT_KEY, registerForPushNotifications, unregisterPushToken } from '../lib/push-notifications';
 import * as BeebeebCrypto from '../../modules/beebeeb-crypto';
+import { DEFAULT_ASK_ON_REMOTE_CHANGE, getAskOnRemoteChange, setAskOnRemoteChange } from '../lib/editor-conflict-setting';
 
 const BIOMETRIC_PREF_KEY = 'beebeeb_biometric_lock';
 const BIOMETRIC_DELAY_KEY = 'beebeeb_biometric_delay';
@@ -690,6 +691,22 @@ export default function SettingsScreen() {
   const [fileProviderMounted, setFileProviderMounted] = useState(false);
   const [loadingFileProvider, setLoadingFileProvider] = useState(Platform.OS === 'ios');
   const [updatingFileProviderMount, setUpdatingFileProviderMount] = useState(false);
+
+  // Task 1578 — text editor: ask before saving over another device's newer version (default OFF).
+  const [askOnRemoteChange, setAskOnRemoteChangeState] = useState(DEFAULT_ASK_ON_REMOTE_CHANGE);
+  useEffect(() => {
+    let cancelled = false;
+    void getAskOnRemoteChange().then((value) => {
+      if (!cancelled) setAskOnRemoteChangeState(value);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const handleAskOnRemoteChangeToggle = useCallback((value: boolean) => {
+    setAskOnRemoteChangeState(value);
+    void setAskOnRemoteChange(value);
+  }, []);
 
   // Notifications
   const [notificationsEnabled, setNotificationsEnabled] = useState(false);
@@ -2249,6 +2266,18 @@ export default function SettingsScreen() {
                 <RowDivider c={c} />
               </>
             )}
+            <ToggleRow
+              label="Ask when a file changed on another device"
+              subtitle={
+                askOnRemoteChange
+                  ? 'When you save an edited file and another device saved it first, you choose what happens.'
+                  : 'Off: your save becomes the newest version. The other device\'s version stays in version history.'
+              }
+              value={askOnRemoteChange}
+              onValueChange={handleAskOnRemoteChangeToggle}
+              c={c}
+            />
+            <RowDivider c={c} />
             <SettingsRow
               label="Trash"
               icon="trash-outline"

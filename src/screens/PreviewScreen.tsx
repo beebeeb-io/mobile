@@ -52,10 +52,14 @@ import { collectAllFolders, movePickerFolderFallbackName, type MovePickerFolderN
 import FolderPickerModal, { type PickerFolder } from '../components/FolderPickerModal';
 import { evaluateTextEditGate } from '../lib/text-edit-gate';
 import {
+  abandonTextFileUpload,
   buildKeepBothName,
-  isStaleVersionConflict,
+  createSingleFlight,
+  runTextSave,
+  saveFailedAfterUploadStarted,
   saveTextFileVersion,
 } from '../lib/text-file-save';
+import { getAskOnRemoteChange } from '../lib/editor-conflict-setting';
 import { decryptToTempFile, invalidatePreviewCache } from '../lib/native-decrypt';
 import { offlineManager } from '../lib/offline-manager';
 import { maybeSelfRepairThumbnailFromLocalFile } from '../lib/thumbnail-self-repair';
@@ -2611,108 +2615,148 @@ export default function PreviewScreen() {
     setOptionsVisible(false);
   }, [isDirty]);
 
-  const attemptSave = useCallback(async (opts: {
+  // Task 1563 — the post-success state update shared by every save path.
+  const applySavedVersion = useCallback(async (opts: {
     text: string;
     targetFileId: string;
     nameEncrypted: string;
     parentId: string | null;
-    versionReplace: { baseVersionNumber: number } | null;
-  }): Promise<{ ok: true } | { ok: false; conflict: boolean }> => {
-    try {
-      const updated = await saveTextFileVersion({
-        fileId: opts.targetFileId,
-        nameEncrypted: opts.nameEncrypted,
-        parentId: opts.parentId ?? undefined,
-        text: opts.text,
-        encryptChunkFn: encryptChunk,
-        versionReplace: opts.versionReplace ?? undefined,
-      });
-      const newVersion = updated.version_number ?? (opts.versionReplace ? opts.versionReplace.baseVersionNumber + 1 : 1);
-      // Task 1563 — `decryptToTempFile`'s preview cache is keyed by fileId +
-      // extension only, with no version awareness (every caller before this
-      // one only ever produced a NEW plaintext for a fileId the cache had
-      // never seen). A version-replace writes NEW bytes behind an
-      // ALREADY-cached fileId, so without this, reopening the file in the
-      // same session served the stale pre-edit content — confirmed
-      // on-device (bb-ios27): server size_bytes updated, cached preview
-      // did not. `extensionForMime(..., 'doc')` matches exactly what the
-      // isText read-view's own `fetchAndDecrypt` call caches under.
-      await invalidatePreviewCache(opts.targetFileId, extensionForMime(currentMimeType, category).replace(/^\./, ''));
-      setSavedVersionNumber(newVersion);
-      setSavedAt(new Date());
-      setTextContent(opts.text);
-      setEditText(opts.text);
-      setFileMeta({ nameEncrypted: opts.nameEncrypted, parentId: opts.parentId, versionNumber: newVersion });
-      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      return { ok: true };
-    } catch (err) {
-      if (isStaleVersionConflict(err)) {
-        return { ok: false, conflict: true };
-      }
-      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      Alert.alert('Save failed', friendlyError(err));
-      return { ok: false, conflict: false };
+    versionNumber: number;
+  }) => {
+    // Task 1563 — `decryptToTempFile`'s preview cache is keyed by fileId +
+    // extension only, with no version awareness (every caller before this
+    // one only ever produced a NEW plaintext for a fileId the cache had
+    // never seen). A version-replace writes NEW bytes behind an
+    // ALREADY-cached fileId, so without this, reopening the file in the
+    // same session served the stale pre-edit content — confirmed
+    // on-device (bb-ios27): server size_bytes updated, cached preview
+    // did not. `extensionForMime(..., 'doc')` matches exactly what the
+    // isText read-view's own `fetchAndDecrypt` call caches under.
+    await invalidatePreviewCache(opts.targetFileId, extensionForMime(currentMimeType, category).replace(/^\./, ''));
+    setSavedVersionNumber(opts.versionNumber);
+    setSavedAt(new Date());
+    setTextContent(opts.text);
+    setEditText(opts.text);
+    setFileMeta({ nameEncrypted: opts.nameEncrypted, parentId: opts.parentId, versionNumber: opts.versionNumber });
+    await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+  }, [currentMimeType, category]);
+
+  const showSaveFailed = useCallback((message: string) => {
+    void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => {});
+    Alert.alert('Save failed', message);
+  }, []);
+
+  // Task 1578 — one synchronous gate for every save path. React's `saving`
+  // is read from a render closure, so two taps before the re-render both
+  // passed the old `if (saving) return` guard and raced two uploads of the
+  // same file; the loser got "upload already in progress" (a 409), which
+  // was shown as "a newer version was saved on another device".
+  const saveGateRef = useRef(createSingleFlight());
+
+  /**
+   * Task 1578 — save `text` as a new version of THIS file via `runTextSave`
+   * (see `text-save-flow.ts`): a stuck in-flight upload from an interrupted
+   * earlier save is abandoned and retried instead of being reported as
+   * another device's change; a REAL stale-version conflict follows the
+   * "Ask when a file changed on another device" setting (default OFF =
+   * save on top of the latest version + a quiet toast).
+   */
+  const saveAsNewVersion = useCallback(async (opts: {
+    text: string;
+    meta: { nameEncrypted: string; parentId: string | null; versionNumber: number };
+    askOnConflict: boolean;
+  }): Promise<void> => {
+    const { text, meta } = opts;
+    const result = await runTextSave(
+      {
+        save: async (baseVersionNumber) => {
+          const updated = await saveTextFileVersion({
+            fileId: currentFileId,
+            nameEncrypted: meta.nameEncrypted,
+            parentId: meta.parentId ?? undefined,
+            text,
+            encryptChunkFn: encryptChunk,
+            versionReplace: { baseVersionNumber },
+          });
+          return updated.version_number ?? baseVersionNumber + 1;
+        },
+        uploadStarted: saveFailedAfterUploadStarted,
+        abandon: () => abandonTextFileUpload(currentFileId),
+        readCurrentVersion: () => getFileCurrentVersion(currentFileId),
+      },
+      { baseVersionNumber: meta.versionNumber, askOnConflict: opts.askOnConflict },
+    );
+    switch (result.kind) {
+      case 'saved':
+        await applySavedVersion({
+          text,
+          targetFileId: currentFileId,
+          nameEncrypted: meta.nameEncrypted,
+          parentId: meta.parentId,
+          versionNumber: result.versionNumber,
+        });
+        if (result.rebasedFrom !== undefined) {
+          showToast({
+            type: 'info',
+            message: `Saved as version ${result.versionNumber}. Another device saved a newer version first; it's kept in version history.`,
+          });
+        }
+        return;
+      case 'conflict':
+        setFileMeta({ ...meta, versionNumber: result.freshVersionNumber });
+        setConflict({ freshVersionNumber: result.freshVersionNumber });
+        return;
+      case 'busy':
+        showSaveFailed('An earlier save of this file is still finishing. Try again in a moment.');
+        return;
+      case 'error':
+        showSaveFailed(friendlyError(result.error));
+        return;
     }
-  }, [encryptChunk, currentMimeType, category]);
+  }, [currentFileId, encryptChunk, applySavedVersion, showToast, showSaveFailed]);
 
   const handleSaveEdit = useCallback(async () => {
-    if (editText == null || saving) return;
-    setSaving(true);
-    try {
-      let meta = fileMeta;
-      if (!meta) meta = await loadFileMeta();
-      if (!meta) {
-        Alert.alert('Save failed', fileMetaError ?? 'Could not read the file before saving.');
-        return;
-      }
-      const result = await attemptSave({
-        text: editText,
-        targetFileId: currentFileId,
-        nameEncrypted: meta.nameEncrypted,
-        parentId: meta.parentId,
-        versionReplace: { baseVersionNumber: meta.versionNumber },
-      });
-      if (!result.ok && result.conflict) {
-        // Learn the real current version so "Save as new version" retries
-        // against the right base instead of guessing +1.
-        const refreshed = await loadFileMeta();
-        setConflict({ freshVersionNumber: refreshed?.versionNumber ?? meta.versionNumber + 1 });
-      }
-    } finally {
-      setSaving(false);
-    }
-  }, [editText, saving, fileMeta, loadFileMeta, fileMetaError, attemptSave, currentFileId]);
-
-  const handleConflictChoice = useCallback(async (choice: 'keep-both' | 'new-version' | 'discard') => {
     if (editText == null) return;
+    const text = editText;
+    await saveGateRef.current.run(async () => {
+      setSaving(true);
+      try {
+        let meta = fileMeta;
+        if (!meta) meta = await loadFileMeta();
+        if (!meta) {
+          showSaveFailed(fileMetaError ?? 'Could not read the file before saving.');
+          return;
+        }
+        const askOnConflict = await getAskOnRemoteChange();
+        await saveAsNewVersion({ text, meta, askOnConflict });
+      } finally {
+        setSaving(false);
+      }
+    });
+  }, [editText, fileMeta, loadFileMeta, fileMetaError, saveAsNewVersion, showSaveFailed]);
+
+  const handleConflictChoice = useCallback(async (choice: 'keep-both' | 'new-version' | 'discard' | 'cancel') => {
     setConflict(null);
+    if (choice === 'cancel' || editText == null) return;
     if (choice === 'discard') {
       setEditMode(false);
       setEditText(null);
       return;
     }
-    setSaving(true);
-    try {
-      const refreshed = await loadFileMeta();
-      if (!refreshed) {
-        Alert.alert('Save failed', fileMetaError ?? 'Could not read the file before saving.');
-        return;
-      }
-      if (choice === 'new-version') {
-        const result = await attemptSave({
-          text: editText,
-          targetFileId: currentFileId,
-          nameEncrypted: refreshed.nameEncrypted,
-          parentId: refreshed.parentId,
-          versionReplace: { baseVersionNumber: refreshed.versionNumber },
-        });
-        if (!result.ok && result.conflict) {
-          // Someone saved again in the tiny window between the refetch and
-          // this retry — surface the dialog again rather than looping.
-          const again = await loadFileMeta();
-          setConflict({ freshVersionNumber: (again?.versionNumber ?? refreshed.versionNumber) + 1 });
+    const text = editText;
+    await saveGateRef.current.run(async () => {
+      setSaving(true);
+      try {
+        const refreshed = await loadFileMeta();
+        if (!refreshed) {
+          showSaveFailed(fileMetaError ?? 'Could not read the file before saving.');
+          return;
         }
-      } else {
+        if (choice === 'new-version') {
+          // The user already chose — never bounce them back into the dialog.
+          await saveAsNewVersion({ text, meta: refreshed, askOnConflict: false });
+          return;
+        }
         // Keep both — a brand-new file, same folder, suffixed name. Never
         // touches the OTHER device's version at all.
         const newFileId = await generateFileId();
@@ -2720,25 +2764,28 @@ export default function PreviewScreen() {
         const metadataPlain = fileMetadataPlaintext(keptName, currentMimeType ?? null, null);
         const encName = await encryptMetadata(newFileId, metadataPlain);
         const nameEncrypted = encryptedMetadataToJson(encName);
-        // Codex review (PR #123, P2): `attemptSave`'s result was being
-        // discarded here — on a failed upload it already shows its own
-        // "Save failed" alert (see that function), but this toast fired
-        // regardless, telling the user a copy was saved when none exists.
-        const result = await attemptSave({
-          text: editText,
-          targetFileId: newFileId,
-          nameEncrypted,
-          parentId: refreshed.parentId,
-          versionReplace: null,
-        });
-        if (result.ok) {
+        try {
+          await saveTextFileVersion({
+            fileId: newFileId,
+            nameEncrypted,
+            parentId: refreshed.parentId ?? undefined,
+            text,
+            encryptChunkFn: encryptChunk,
+          });
+          // The edited text now lives in the NEW file and THIS file is
+          // unchanged, so leave the editor showing this file as it is.
+          setEditMode(false);
+          setEditText(null);
+          await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
           showToast({ type: 'success', message: `Saved as "${keptName}"` });
+        } catch (err) {
+          showSaveFailed(friendlyError(err));
         }
+      } finally {
+        setSaving(false);
       }
-    } finally {
-      setSaving(false);
-    }
-  }, [editText, loadFileMeta, fileMetaError, attemptSave, currentFileId, previewFileName, currentMimeType, encryptMetadata, showToast]);
+    });
+  }, [editText, loadFileMeta, fileMetaError, saveAsNewVersion, previewFileName, currentMimeType, encryptMetadata, encryptChunk, showToast, showSaveFailed]);
 
   const showConflictDialog = useCallback(() => {
     if (!conflict) return;
@@ -2746,7 +2793,7 @@ export default function PreviewScreen() {
       'A newer version was saved on another device',
       `Version ${conflict.freshVersionNumber} exists on the server. Your changes are still here — choose what happens next.`,
       [
-        { text: 'Cancel', style: 'cancel' },
+        { text: 'Cancel', style: 'cancel', onPress: () => { void handleConflictChoice('cancel'); } },
         { text: 'Discard my changes', style: 'destructive', onPress: () => { void handleConflictChoice('discard'); } },
         { text: 'Keep both', onPress: () => { void handleConflictChoice('keep-both'); } },
         { text: 'Save as new version', onPress: () => { void handleConflictChoice('new-version'); } },
