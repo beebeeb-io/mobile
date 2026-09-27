@@ -4261,8 +4261,21 @@ export default function PreviewScreen() {
             1346 — scheme="dark" forced: mediaMaterial comment above (media
             ground is always near-black, not a light/dark toggle). */}
         <StatusBar hidden={!chromeVisible} animated />
+        {/* Fix: dead close/⋯ in the single-file media preview. Since #123
+            (1563) wrapped the header in this opacity fade, the floating
+            positioning + zIndex sat on `mediaHeader` INSIDE the wrapper, and
+            this wrapper was a zero-height, un-z-indexed normal-flow sibling
+            that comes BEFORE the content stage. zIndex only orders siblings,
+            so the single-file stage (a `Pressable` — never flattened away by
+            Fabric, unlike the pager's plain layout `View`) sat on top of the
+            header and took every tap, and the zero-frame chain dropped the
+            controls from the accessibility tree. Same two bugs, same fix, as
+            the doc branch's header (see `header`'s style comment):
+            `chromeLayer` (absolute + zIndex) on the wrapper, `mediaHeader`
+            a plain in-flow row. Guarded by
+            PreviewScreen.chrome-layer.test.ts. */}
         <Animated.View
-          style={{ opacity: barsOpacity }}
+          style={[styles.chromeLayer, { opacity: barsOpacity }]}
           pointerEvents={chromeVisible ? 'auto' : 'none'}
         >
         <ScrollEdgeBlur scheme="dark" height={SCROLL_EDGE.chromeFallback} />
@@ -4712,7 +4725,7 @@ export default function PreviewScreen() {
           `previewArea` (now full-bleed); `header` inside it stays a plain,
           normally-sized row. */}
       <Animated.View
-        style={{ opacity: barsOpacity, position: 'absolute', top: 0, left: 0, right: 0, zIndex: 20 }}
+        style={[styles.chromeLayer, { opacity: barsOpacity }]}
         pointerEvents={chromeVisible ? 'auto' : 'none'}
         onLayout={(e) => {
           // Round 5 — the REAL rendered height of this wrapper (from y=0,
@@ -5757,11 +5770,25 @@ const styles = StyleSheet.create({
     fontSize: 12.5,
     lineHeight: 17,
   },
-  mediaHeader: {
+  // The floating top-chrome layer, shared by the media and doc branches:
+  // it must be the view carrying position + zIndex, because it is the one
+  // that is a SIBLING of the full-screen content (zIndex only orders
+  // siblings). See the comment at the media branch's wrapper and `header`'s
+  // style comment for the on-device bugs this shape fixes.
+  chromeLayer: {
     position: 'absolute',
+    top: 0,
     left: 0,
     right: 0,
-    top: 0,
+    zIndex: 20,
+  },
+  // A plain in-flow row inside `chromeLayer` — NOT absolute: an absolute row
+  // here collapses its ancestors to a zero frame, which hides the close/⋯
+  // controls from the accessibility tree (and, pre-fix, from touches).
+  // It still needs its OWN zIndex: its sibling `ScrollEdgeBlur` is absolute
+  // with zIndex 5, and without this the blur paints over the glass controls
+  // (seen on bb-qa-2 while verifying this fix: a frosted, unreadable header).
+  mediaHeader: {
     zIndex: 20,
     flexDirection: 'row',
     alignItems: 'center',
