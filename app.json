@@ -110,7 +110,8 @@
           "backgroundColor": "#FAF8F5",
           "resizeMode": "contain"
         }
-      ]
+      ],
+      "./plugins/dev-menu-fab/withDevMenuNoFab.js"
     ],
     "extra": {
       "apiUrl": "https://api.beebeeb.io",

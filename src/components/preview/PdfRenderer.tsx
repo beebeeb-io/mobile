@@ -2,53 +2,53 @@
  * PdfRenderer — multi-page PDF viewer with vertical scroll.
  *
  * Uses react-native-pdf for native rendering with pinch-to-zoom.
- * Floating page indicator appears while scrolling and fades after 2 seconds.
+ *
+ * Preview redesign (task 1563 follow-up, design item 6): the page counter
+ * used to be this component's OWN floating pill (bottom-center, auto-fading
+ * after 2s). That's gone — PreviewScreen now renders ONE persistent pill,
+ * top-right under the glass top bar, tied to the SAME `barsVisible` state as
+ * the rest of the chrome rather than its own timer (and reused verbatim for
+ * the photo swipe-pager's position counter — see `formatPdfPageCounter` in
+ * `lib/preview-chrome.ts`). This component's only job now is to report page
+ * info upward via `onPageInfo`.
  */
 
-import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Animated, StyleSheet, Text, View } from 'react-native';
+import React, { useState } from 'react';
+import { StyleSheet, Text, View } from 'react-native';
 import Pdf from 'react-native-pdf';
-import { fonts } from '../../theme';
 import { useTheme } from '../../lib/theme-context';
 
 interface PdfRendererProps {
   filePath: string;
+  /** Fires on load and on every page change — current page (1-based) and
+   * total page count. PreviewScreen owns the visible pill; this component
+   * renders none of its own. */
+  onPageInfo?: (info: { current: number; total: number }) => void;
+  /**
+   * Round 5 (task 1563, PR #123) — space to leave clear at the top/bottom so
+   * page 1 doesn't start under the floating header/bottom bar. Applied as
+   * padding on the CONTAINER (react-native-pdf 7.0.4 has no `contentInset`/
+   * content-padding prop of its own — confirmed against its `PdfProps`
+   * typings, no such prop exists), which necessarily also shrinks `<Pdf>`'s
+   * own internal scroll viewport by the same amount.
+   *
+   * KNOWN LIMITATION, documented rather than hidden (found, not silently
+   * "fixed"): this satisfies "content starts below the bar AT REST" but NOT
+   * "content is visible under the translucent bar AFTER SCROLLING" — that
+   * needs the SCROLLABLE CONTENT to have extra padding while the VIEWPORT
+   * stays full-bleed (exactly what `contentContainerStyle` gives the other
+   * renderers), and this library exposes no such lever. The padding bands
+   * show this component's own page-gutter colour (`pdfBleedBg`, set by the
+   * caller) at rest and while scrolled, never actual page content — a real,
+   * library-level gap, not an oversight. See DEVIATIONS.md.
+   */
+  topInset?: number;
+  bottomInset?: number;
 }
 
-const INDICATOR_FADE_MS = 2000;
-
-export function PdfRenderer({ filePath }: PdfRendererProps) {
-  const [currentPage, setCurrentPage] = useState(1);
-  const [totalPages, setTotalPages] = useState(0);
+export function PdfRenderer({ filePath, onPageInfo, topInset = 0, bottomInset = 0 }: PdfRendererProps) {
   const [hasError, setHasError] = useState(false);
   const { colors } = useTheme();
-
-  const fadeAnim = useRef(new Animated.Value(0)).current;
-  const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const showIndicator = useCallback(() => {
-    if (hideTimer.current) clearTimeout(hideTimer.current);
-
-    Animated.timing(fadeAnim, {
-      toValue: 1,
-      duration: 150,
-      useNativeDriver: true,
-    }).start();
-
-    hideTimer.current = setTimeout(() => {
-      Animated.timing(fadeAnim, {
-        toValue: 0,
-        duration: 300,
-        useNativeDriver: true,
-      }).start();
-    }, INDICATOR_FADE_MS);
-  }, [fadeAnim]);
-
-  useEffect(() => {
-    return () => {
-      if (hideTimer.current) clearTimeout(hideTimer.current);
-    };
-  }, []);
 
   if (hasError) {
     // 1346 review finding — this status sits directly on PreviewScreen's
@@ -70,7 +70,7 @@ export function PdfRenderer({ filePath }: PdfRendererProps) {
   }
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { paddingTop: topInset, paddingBottom: bottomInset }]}>
       <Pdf
         source={{ uri: filePath }}
         style={styles.pdf}
@@ -80,33 +80,16 @@ export function PdfRenderer({ filePath }: PdfRendererProps) {
         spacing={8}
         enableAntialiasing
         onLoadComplete={(numberOfPages) => {
-          setTotalPages(numberOfPages);
+          onPageInfo?.({ current: 1, total: numberOfPages });
         }}
-        onPageChanged={(page) => {
-          setCurrentPage(page);
-          if (totalPages > 1) showIndicator();
+        onPageChanged={(page, numberOfPages) => {
+          onPageInfo?.({ current: page, total: numberOfPages });
         }}
         onError={(error) => {
           console.error('PDF render error:', error);
           setHasError(true);
         }}
       />
-      {totalPages > 1 && (
-        <Animated.View
-          style={[
-            styles.pageIndicator,
-            {
-              backgroundColor: colors.paper2,
-              opacity: fadeAnim,
-            },
-          ]}
-          pointerEvents="none"
-        >
-          <Text style={[styles.pageText, { color: colors.ink2 }]}>
-            Page {currentPage} of {totalPages}
-          </Text>
-        </Animated.View>
-      )}
     </View>
   );
 }
@@ -118,24 +101,6 @@ const styles = StyleSheet.create({
   },
   pdf: {
     flex: 1,
-  },
-  pageIndicator: {
-    position: 'absolute',
-    bottom: 16,
-    alignSelf: 'center',
-    paddingHorizontal: 14,
-    paddingVertical: 6,
-    borderRadius: 16,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.15,
-    shadowRadius: 4,
-    elevation: 3,
-  },
-  pageText: {
-    fontSize: 12,
-    fontFamily: fonts.mono,
-    fontVariant: ['tabular-nums'],
   },
   imageStatus: {
     alignItems: 'center',

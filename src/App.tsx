@@ -1539,10 +1539,20 @@ export default function App() {
                   <Stack.Screen
                     name="Preview"
                     component={PreviewScreen}
-                    // 'modal' (not 'fullScreenModal') so iOS gives users the
-                    // native swipe-down-to-dismiss gesture — runbook expects
-                    // it and there's no PanResponder fallback inside Preview.
-                    options={{ presentation: 'modal', animation: 'slide_from_bottom' }}
+                    // Preview redesign (design/preview-redesign-ios.html,
+                    // section 00/01) — 'modal' maps to
+                    // UIModalPresentationPageSheet on iOS, which is exactly
+                    // the "~130pt unused" bug the design calls out: a
+                    // rounded card that starts below the status bar, with
+                    // the title bar floating lower still. 'fullScreenModal'
+                    // (UIModalPresentationFullScreen) removes both — content
+                    // now runs from y=0. That presentation style has no
+                    // built-in interactive dismiss, so PreviewScreen now
+                    // implements its own swipe-down-to-close via a
+                    // PanGestureHandler on the glass header row (see the
+                    // `closeTranslateY` comment next to `handleClose` in
+                    // PreviewScreen.tsx) instead of relying on the sheet.
+                    options={{ presentation: 'fullScreenModal', animation: 'slide_from_bottom' }}
                   />
                   <Stack.Screen
                     name="ShareSheet"

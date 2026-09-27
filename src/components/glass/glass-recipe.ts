@@ -286,6 +286,61 @@ export function glassMaterial(scheme: GlassScheme): GlassMaterial {
 }
 
 /**
+ * Preview chrome material — task 1563 round 4 ("preview redesign" follow-up,
+ * lead's round-3 review).
+ *
+ * Every OTHER glass surface in this file sits over a KNOWN, themed ground
+ * (see this file's own top comment: "content sits on the opaque grouped
+ * surfaces ... never on glass"), so `DARK_MATERIAL`/`LIGHT_MATERIAL` can
+ * afford to be genuinely translucent — the app already controls what's
+ * behind them. The Preview screen's floating top/bottom bars are the one
+ * exception: they float over ARBITRARY, uncontrolled content — a white PDF
+ * page, a black photo, a mid-grey image, a light OR dark markdown/code
+ * background depending on the app's theme.
+ *
+ * Round 3 shipped the doc-branch header/bottom bar as `glassMaterial(resolved)`
+ * (the app's own light/dark theme) on the theory that a document page tracks
+ * the app theme the way DocxRenderer/XlsxRenderer do (see the `docMaterial`
+ * comment in `PreviewScreen.tsx`, task 1344/1346). That reasoning holds for
+ * those renderers, which DO paint `c.paper`/a themed background — but it does
+ * NOT hold for a PDF's own bytes, which render a literal (usually white) page
+ * independent of the app's theme entirely. On a device in dark mode,
+ * `glassMaterial('dark').fill` — `rgba(44,44,50,0.46)` — composited over a
+ * white PDF page blends to roughly rgb(158,158,161): a washed-out light grey
+ * with the SAME material's near-white label (`#F2F1EE`) landing at ~3.7:1
+ * contrast, below WCAG AA's 4.5:1 for normal text (confirmed in
+ * `evidence-1563-redesign-r3/23-pdf-counter-1of4-FIXED.png` and reproduced in
+ * `contrast.test.ts`'s "OLD doc-branch material fails WCAG AA" case). Simply
+ * forcing `scheme="dark"` unconditionally (matching the media branch) does
+ * NOT fix this — the media branch's own material has the identical 0.46-alpha
+ * fill and would wash out exactly the same way over a bright/white ground.
+ *
+ * The fix: a fill opaque enough that the GROUND barely shows through at all
+ * (a "stronger backdrop", not a lighter/darker TINT), plus a real border
+ * (dark mode's `rimOuterWidth` is 0 elsewhere — invisible by design over a
+ * KNOWN dark ground, but this chrome needs a visible edge over an unknown
+ * one). `worstCaseBarContrast` in `../../lib/contrast.ts` computes the exact
+ * ratio this material achieves over white/black/mid-grey — see
+ * `glass-recipe.test.ts`'s coverage of this constant for the mutation proof.
+ *
+ * This is intentionally ONE fixed material, not scheme-dependent: unlike the
+ * rest of the app's chrome, Preview's bars cannot assume which theme makes
+ * their ground brighter, so there is no single "follow resolved" answer that
+ * is safe in both directions. This also matches the design's own
+ * `design/preview-redesign-ios.html` `.glass` rule, which is not scheme-
+ * varied either (every phone mock in that file uses the one glass look).
+ */
+export const PREVIEW_CHROME_MATERIAL: GlassMaterial = {
+  ...DARK_MATERIAL,
+  fill: 'rgba(12,12,14,0.90)',
+  rimOuter: 'rgba(255,255,255,0.16)',
+  rimOuterWidth: 1,
+  shadow: cssShadow(10, 28, '#000000', 0.38),
+  label: '#F7F6F2',
+  labelMuted: 'rgba(247,246,242,0.82)',
+};
+
+/**
  * The flat scrim behind a modal — the canvas's ONE backdrop sample.
  *
  * Ground truth: `design/ios26-canvas/ShareSheet.dc.html:82` — `rgba(6,6,8,0.5)`.

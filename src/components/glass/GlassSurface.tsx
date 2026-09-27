@@ -123,6 +123,21 @@ export type GlassSurfaceProps = {
    * pass it explicitly only to render both schemes at once (the dev gallery).
    */
   scheme?: GlassScheme;
+  /**
+   * Replace the resolved `glassMaterial(scheme)` outright (task 1563 round 4
+   * — Preview's content-safe chrome, `PREVIEW_CHROME_MATERIAL`). For a
+   * surface that floats over ARBITRARY, uncontrolled content rather than a
+   * known themed ground, `scheme` alone cannot guarantee legibility (a
+   * bright/white ground washes out `DARK_MATERIAL`'s translucent fill just
+   * as easily as a light one). When set, this ALSO forces the explicit fill
+   * layer on top of a native `GlassView` (normally native glass paints its
+   * own fill and skips this app's `material.fill` entirely) — a native
+   * system material's own content-adaptive rendering is not something this
+   * component controls or can guarantee meets WCAG contrast, so an override
+   * always gets a deterministic, measured-safe layer instead of trusting it.
+   * Every other caller omits this and is completely unaffected.
+   */
+  materialOverride?: GlassMaterial;
   /** A concentric radius name from the canvas, or a raw point value. */
   radius?: number | GlassRadiusName;
   /**
@@ -143,6 +158,7 @@ export type GlassSurfaceProps = {
 
 export function GlassSurface({
   scheme,
+  materialOverride,
   radius = 'capsule',
   style,
   contentStyle,
@@ -151,7 +167,7 @@ export function GlassSurface({
 }: GlassSurfaceProps) {
   const { resolved } = useTheme();
   const activeScheme = scheme ?? resolved;
-  const material = glassMaterial(activeScheme);
+  const material = materialOverride ?? glassMaterial(activeScheme);
   const r = resolveRadius(radius);
 
   // The specular rim sits just inside the structural outline, so the two read
@@ -188,19 +204,22 @@ export function GlassSurface({
           style={StyleSheet.absoluteFill}
         />
       ) : (
-        <>
-          <BlurView
-            intensity={material.blurIntensity}
-            tint={material.tint}
-            style={StyleSheet.absoluteFill}
-            pointerEvents="none"
-          />
-          <View
-            pointerEvents="none"
-            style={[StyleSheet.absoluteFill, { backgroundColor: material.fill }]}
-          />
-        </>
+        <BlurView
+          intensity={material.blurIntensity}
+          tint={material.tint}
+          style={StyleSheet.absoluteFill}
+          pointerEvents="none"
+        />
       )}
+      {/* `materialOverride` forces this fill even over native `GlassView` —
+          see the prop's own doc comment above. Every other caller only
+          reaches this on the `BlurView` fallback path, unchanged. */}
+      {(materialOverride || !useNativeGlass) ? (
+        <View
+          pointerEvents="none"
+          style={[StyleSheet.absoluteFill, { backgroundColor: material.fill }]}
+        />
+      ) : null}
       <Sheen material={material} />
       {inset > 0 ? (
         <View

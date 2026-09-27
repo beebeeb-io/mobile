@@ -6,6 +6,7 @@ import {
   BLUR_PX_AT_FULL_INTENSITY,
   GLASS_RADII,
   MODAL_SCRIM,
+  PREVIEW_CHROME_MATERIAL,
   SCROLL_EDGE,
   cssShadow,
   glassMaterial,
@@ -14,6 +15,7 @@ import {
   scrollEdgeBandHeights,
   scrollEdgeBandIntensity,
 } from './glass-recipe';
+import { BLACK, MID_GREY, WCAG_AA_NORMAL_TEXT, WHITE, worstCaseBarContrast } from '../../lib/contrast';
 
 describe('intensityForCssBlur', () => {
   it('maps the canvas control blur (26px) into the BlurView range', () => {
@@ -227,6 +229,46 @@ describe('scrollEdgeBandHeights', () => {
   it('degenerates safely to a single band', () => {
     expect(scrollEdgeBandHeights(128, 1)).toEqual([128]);
     expect(scrollEdgeBandHeights(128, 0)).toEqual([128]);
+  });
+});
+
+describe('PREVIEW_CHROME_MATERIAL', () => {
+  // Task 1563 round 4 — the Preview screen's floating bars sit over
+  // ARBITRARY content, unlike every other glass surface in this file (see
+  // this constant's own doc comment). The round-3 bug: `docMaterial =
+  // glassMaterial(resolved)` washed out over a white PDF page. This material
+  // is the fix, and this test is what keeps it a fix — not an assertion, a
+  // measurement (`worstCaseBarContrast`, `../../lib/contrast.ts`).
+  it('clears WCAG AA (4.5:1) for its label over white, black, and mid-grey', () => {
+    const ratio = worstCaseBarContrast(
+      PREVIEW_CHROME_MATERIAL.fill,
+      PREVIEW_CHROME_MATERIAL.label,
+      [WHITE, BLACK, MID_GREY],
+    );
+    expect(ratio).toBeGreaterThanOrEqual(WCAG_AA_NORMAL_TEXT);
+  });
+
+  it('clears WCAG AA for its MUTED label too (the subtitle/page-counter token)', () => {
+    const ratio = worstCaseBarContrast(
+      PREVIEW_CHROME_MATERIAL.fill,
+      PREVIEW_CHROME_MATERIAL.labelMuted,
+      [WHITE, BLACK, MID_GREY],
+    );
+    expect(ratio).toBeGreaterThanOrEqual(WCAG_AA_NORMAL_TEXT);
+  });
+
+  it('is dark enough that the ground barely shows through, even white', () => {
+    // A washed-out grey is exactly what round 3 shipped — assert the fix is
+    // a real fill-opacity change, not a rounding artifact of the contrast
+    // math above. rgb 60 on a 0-255 scale is still clearly "a dark bar".
+    const parsedAlpha = Number(PREVIEW_CHROME_MATERIAL.fill.match(/,\s*([\d.]+)\)/)?.[1]);
+    expect(parsedAlpha).toBeGreaterThanOrEqual(0.85);
+  });
+
+  it('draws a real border, unlike DARK_MATERIAL (invisible-by-design over a KNOWN dark ground)', () => {
+    expect(PREVIEW_CHROME_MATERIAL.rimOuterWidth).toBeGreaterThan(0);
+    expect(PREVIEW_CHROME_MATERIAL.rimOuter).not.toBe('transparent');
+    expect(glassMaterial('dark').rimOuterWidth).toBe(0);
   });
 });
 

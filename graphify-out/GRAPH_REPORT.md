@@ -1,12 +1,12 @@
-# Graph Report - mobile-uiscene  (2026-09-26)
+# Graph Report - mobile-1563  (2026-09-27)
 
 ## Corpus Check
-- 18279 files · ~14,099,271 words
+- 18304 files · ~18,269,079 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 23357 nodes · 34527 edges · 976 communities detected
-- Extraction: 88% EXTRACTED · 12% INFERRED · 0% AMBIGUOUS · INFERRED: 4181 edges (avg confidence: 0.8)
+- 23444 nodes · 34620 edges · 982 communities detected
+- Extraction: 88% EXTRACTED · 12% INFERRED · 0% AMBIGUOUS · INFERRED: 4184 edges (avg confidence: 0.8)
 - Token cost: 0 input · 0 output
 
 ## Community Hubs (Navigation)
@@ -72,8 +72,8 @@
 - [[_COMMUNITY_Community 59|Community 59]]
 - [[_COMMUNITY_Community 60|Community 60]]
 - [[_COMMUNITY_Community 61|Community 61]]
-- [[_COMMUNITY_Community 62|Community 62]]
 - [[_COMMUNITY_Community 63|Community 63]]
+- [[_COMMUNITY_Community 64|Community 64]]
 - [[_COMMUNITY_Community 65|Community 65]]
 - [[_COMMUNITY_Community 66|Community 66]]
 - [[_COMMUNITY_Community 67|Community 67]]
@@ -182,10 +182,10 @@
 - [[_COMMUNITY_Community 170|Community 170]]
 - [[_COMMUNITY_Community 171|Community 171]]
 - [[_COMMUNITY_Community 172|Community 172]]
-- [[_COMMUNITY_Community 174|Community 174]]
+- [[_COMMUNITY_Community 173|Community 173]]
 - [[_COMMUNITY_Community 175|Community 175]]
 - [[_COMMUNITY_Community 176|Community 176]]
-- [[_COMMUNITY_Community 178|Community 178]]
+- [[_COMMUNITY_Community 177|Community 177]]
 - [[_COMMUNITY_Community 179|Community 179]]
 - [[_COMMUNITY_Community 180|Community 180]]
 - [[_COMMUNITY_Community 181|Community 181]]
@@ -200,9 +200,9 @@
 - [[_COMMUNITY_Community 190|Community 190]]
 - [[_COMMUNITY_Community 191|Community 191]]
 - [[_COMMUNITY_Community 192|Community 192]]
+- [[_COMMUNITY_Community 193|Community 193]]
 - [[_COMMUNITY_Community 194|Community 194]]
 - [[_COMMUNITY_Community 195|Community 195]]
-- [[_COMMUNITY_Community 196|Community 196]]
 - [[_COMMUNITY_Community 197|Community 197]]
 - [[_COMMUNITY_Community 198|Community 198]]
 - [[_COMMUNITY_Community 199|Community 199]]
@@ -246,9 +246,9 @@
 - [[_COMMUNITY_Community 237|Community 237]]
 - [[_COMMUNITY_Community 238|Community 238]]
 - [[_COMMUNITY_Community 239|Community 239]]
+- [[_COMMUNITY_Community 240|Community 240]]
 - [[_COMMUNITY_Community 241|Community 241]]
 - [[_COMMUNITY_Community 242|Community 242]]
-- [[_COMMUNITY_Community 243|Community 243]]
 - [[_COMMUNITY_Community 244|Community 244]]
 - [[_COMMUNITY_Community 245|Community 245]]
 - [[_COMMUNITY_Community 246|Community 246]]
@@ -657,10 +657,10 @@
 - [[_COMMUNITY_Community 649|Community 649]]
 - [[_COMMUNITY_Community 650|Community 650]]
 - [[_COMMUNITY_Community 651|Community 651]]
+- [[_COMMUNITY_Community 652|Community 652]]
+- [[_COMMUNITY_Community 653|Community 653]]
+- [[_COMMUNITY_Community 654|Community 654]]
 - [[_COMMUNITY_Community 655|Community 655]]
-- [[_COMMUNITY_Community 656|Community 656]]
-- [[_COMMUNITY_Community 657|Community 657]]
-- [[_COMMUNITY_Community 658|Community 658]]
 - [[_COMMUNITY_Community 659|Community 659]]
 - [[_COMMUNITY_Community 660|Community 660]]
 - [[_COMMUNITY_Community 661|Community 661]]
@@ -711,18 +711,18 @@
 - [[_COMMUNITY_Community 706|Community 706]]
 - [[_COMMUNITY_Community 707|Community 707]]
 - [[_COMMUNITY_Community 708|Community 708]]
+- [[_COMMUNITY_Community 709|Community 709]]
 - [[_COMMUNITY_Community 710|Community 710]]
 - [[_COMMUNITY_Community 711|Community 711]]
 - [[_COMMUNITY_Community 712|Community 712]]
 - [[_COMMUNITY_Community 713|Community 713]]
 - [[_COMMUNITY_Community 714|Community 714]]
+- [[_COMMUNITY_Community 715|Community 715]]
 - [[_COMMUNITY_Community 717|Community 717]]
+- [[_COMMUNITY_Community 718|Community 718]]
+- [[_COMMUNITY_Community 719|Community 719]]
 - [[_COMMUNITY_Community 720|Community 720]]
-- [[_COMMUNITY_Community 721|Community 721]]
-- [[_COMMUNITY_Community 722|Community 722]]
 - [[_COMMUNITY_Community 723|Community 723]]
-- [[_COMMUNITY_Community 724|Community 724]]
-- [[_COMMUNITY_Community 725|Community 725]]
 - [[_COMMUNITY_Community 726|Community 726]]
 - [[_COMMUNITY_Community 727|Community 727]]
 - [[_COMMUNITY_Community 728|Community 728]]
@@ -771,31 +771,29 @@
 - [[_COMMUNITY_Community 771|Community 771]]
 - [[_COMMUNITY_Community 772|Community 772]]
 - [[_COMMUNITY_Community 773|Community 773]]
+- [[_COMMUNITY_Community 774|Community 774]]
+- [[_COMMUNITY_Community 775|Community 775]]
 - [[_COMMUNITY_Community 776|Community 776]]
 - [[_COMMUNITY_Community 777|Community 777]]
+- [[_COMMUNITY_Community 778|Community 778]]
 - [[_COMMUNITY_Community 779|Community 779]]
-- [[_COMMUNITY_Community 780|Community 780]]
-- [[_COMMUNITY_Community 781|Community 781]]
-- [[_COMMUNITY_Community 783|Community 783]]
-- [[_COMMUNITY_Community 785|Community 785]]
+- [[_COMMUNITY_Community 782|Community 782]]
+- [[_COMMUNITY_Community 784|Community 784]]
 - [[_COMMUNITY_Community 786|Community 786]]
 - [[_COMMUNITY_Community 787|Community 787]]
 - [[_COMMUNITY_Community 788|Community 788]]
-- [[_COMMUNITY_Community 789|Community 789]]
-- [[_COMMUNITY_Community 790|Community 790]]
 - [[_COMMUNITY_Community 791|Community 791]]
-- [[_COMMUNITY_Community 792|Community 792]]
 - [[_COMMUNITY_Community 793|Community 793]]
 - [[_COMMUNITY_Community 794|Community 794]]
 - [[_COMMUNITY_Community 795|Community 795]]
-- [[_COMMUNITY_Community 804|Community 804]]
-- [[_COMMUNITY_Community 805|Community 805]]
-- [[_COMMUNITY_Community 806|Community 806]]
-- [[_COMMUNITY_Community 807|Community 807]]
-- [[_COMMUNITY_Community 808|Community 808]]
-- [[_COMMUNITY_Community 809|Community 809]]
-- [[_COMMUNITY_Community 810|Community 810]]
-- [[_COMMUNITY_Community 811|Community 811]]
+- [[_COMMUNITY_Community 796|Community 796]]
+- [[_COMMUNITY_Community 797|Community 797]]
+- [[_COMMUNITY_Community 798|Community 798]]
+- [[_COMMUNITY_Community 799|Community 799]]
+- [[_COMMUNITY_Community 800|Community 800]]
+- [[_COMMUNITY_Community 801|Community 801]]
+- [[_COMMUNITY_Community 802|Community 802]]
+- [[_COMMUNITY_Community 803|Community 803]]
 - [[_COMMUNITY_Community 812|Community 812]]
 - [[_COMMUNITY_Community 813|Community 813]]
 - [[_COMMUNITY_Community 814|Community 814]]
@@ -974,18 +972,26 @@
 - [[_COMMUNITY_Community 987|Community 987]]
 - [[_COMMUNITY_Community 988|Community 988]]
 - [[_COMMUNITY_Community 989|Community 989]]
+- [[_COMMUNITY_Community 990|Community 990]]
+- [[_COMMUNITY_Community 991|Community 991]]
+- [[_COMMUNITY_Community 992|Community 992]]
 - [[_COMMUNITY_Community 993|Community 993]]
 - [[_COMMUNITY_Community 994|Community 994]]
 - [[_COMMUNITY_Community 995|Community 995]]
 - [[_COMMUNITY_Community 996|Community 996]]
-- [[_COMMUNITY_Community 1000|Community 1000]]
+- [[_COMMUNITY_Community 997|Community 997]]
+- [[_COMMUNITY_Community 1001|Community 1001]]
+- [[_COMMUNITY_Community 1002|Community 1002]]
+- [[_COMMUNITY_Community 1003|Community 1003]]
 - [[_COMMUNITY_Community 1004|Community 1004]]
-- [[_COMMUNITY_Community 1007|Community 1007]]
 - [[_COMMUNITY_Community 1008|Community 1008]]
-- [[_COMMUNITY_Community 1010|Community 1010]]
-- [[_COMMUNITY_Community 1014|Community 1014]]
-- [[_COMMUNITY_Community 1162|Community 1162]]
-- [[_COMMUNITY_Community 1163|Community 1163]]
+- [[_COMMUNITY_Community 1012|Community 1012]]
+- [[_COMMUNITY_Community 1015|Community 1015]]
+- [[_COMMUNITY_Community 1016|Community 1016]]
+- [[_COMMUNITY_Community 1018|Community 1018]]
+- [[_COMMUNITY_Community 1022|Community 1022]]
+- [[_COMMUNITY_Community 1170|Community 1170]]
+- [[_COMMUNITY_Community 1171|Community 1171]]
 
 ## God Nodes (most connected - your core abstractions)
 1. `undefined()` - 155 edges
@@ -1002,44 +1008,44 @@
 ## Surprising Connections (you probably didn't know these)
 - `next()` --calls--> `releaseSlot()`  [INFERRED]
   ios/Pods/Headers/Public/ReactNativeDependencies/folly/AtomicIntrusiveLinkedList.h → src/lib/thumbnail-self-repair.ts
+- `folly()` --calls--> `update()`  [INFERRED]
+  ios/Pods/Headers/Public/ReactNativeDependencies/folly/Fingerprint.h → src/lib/diagnostics.ts
 - `isNativeUploadAvailable()` --calls--> `uploadEncryptedFileNative()`  [INFERRED]
   modules/beebeeb-crypto/src/BeebeebCrypto.ts → src/lib/api.ts
 - `planUploadChunksNative()` --calls--> `uploadEncryptedFileNative()`  [INFERRED]
   modules/beebeeb-crypto/src/BeebeebCrypto.ts → src/lib/api.ts
 - `processPendingShares()` --calls--> `consumePendingShare()`  [INFERRED]
   plugins/share-extension/PendingSharesHandler.ts → modules/beebeeb-crypto/src/BeebeebCrypto.ts
-- `processPendingShares()` --calls--> `encryptedUpload()`  [INFERRED]
-  plugins/share-extension/PendingSharesHandler.ts → src/lib/encrypted-upload.ts
 
 ## Communities
 
 ### Community 0 - "Community 0"
 Cohesion: 0.01
-Nodes (849): AllocateAlphaPlane(), ALPHDecode(), ALPHDelete(), ALPHInit(), ALPHNew(), VP8DecompressAlphaRows(), WebPDeallocateAlphaMemory(), AllocateBuffer() (+841 more)
+Nodes (836): AllocateAlphaPlane(), ALPHDecode(), ALPHDelete(), ALPHInit(), ALPHNew(), VP8DecompressAlphaRows(), WebPDeallocateAlphaMemory(), AllocateBuffer() (+828 more)
 
 ### Community 1 - "Community 1"
 Cohesion: 0.0
-Nodes (202): animatedNodeTag(), childTag(), facebook(), nodeTag(), offset(), value(), viewTag(), facebook() (+194 more)
+Nodes (207): animatedNodeTag(), childTag(), facebook(), nodeTag(), offset(), value(), viewTag(), facebook() (+199 more)
 
 ### Community 2 - "Community 2"
 Cohesion: 0.01
-Nodes (437): AnyObject, ArchiveEntryDto, BatchNameItem, BatchNameResult, CachedFileEntryData, ChunkDecryptorHandle, ChunkDecryptorHandleProtocol, ChunkEncryptorHandle (+429 more)
+Nodes (452): AnyObject, ArchiveEntryDto, BatchNameItem, BatchNameResult, CachedFileEntryData, ChunkDecryptorHandle, ChunkDecryptorHandleProtocol, ChunkEncryptorHandle (+444 more)
 
 ### Community 3 - "Community 3"
 Cohesion: 0.01
-Nodes (387): ActivityAttributes, Data, UniffiInternalError, bufferOverflow, incompleteData, rustPanic, unexpectedEnumCase, unexpectedNullPointer (+379 more)
+Nodes (392): ActivityAttributes, AppDelegate, ReactNativeDelegate, Data, BeebeebCryptoShim, CryptoError, encryptionFailed, noMasterKey (+384 more)
 
 ### Community 4 - "Community 4"
 Cohesion: 0.01
-Nodes (333): bytesToBase64(), handleDownload(), handleChange(), handleResend(), categoryUserText(), classifyError(), getThumbnailRepairSettings(), getThumbnailRepairStatus() (+325 more)
+Nodes (423): bytesToBase64(), handleDownload(), handleChange(), handleResend(), purgeAllPlaintextCaches(), categoryUserText(), classifyError(), getThumbnailRepairSettings() (+415 more)
 
 ### Community 5 - "Community 5"
 Cohesion: 0.01
-Nodes (318): fromRawValue(), toDynamic(), toString(), folly(), begin(), contains(), containsEqualValue(), count() (+310 more)
+Nodes (160): FolderCell, array, array< T, 0 >, hash_value(), swap(), folly(), IntermediateType(), max() (+152 more)
 
 ### Community 6 - "Community 6"
 Cohesion: 0.01
-Nodes (212): facebook(), weak_ptr, facebook(), T(), facebook(), IAsyncEventEmitter(), toJs(), call() (+204 more)
+Nodes (226): facebook(), facebook(), T(), facebook(), IAsyncEventEmitter(), toJs(), call(), callWithArgs() (+218 more)
 
 ### Community 7 - "Community 7"
 Cohesion: 0.03
@@ -1051,200 +1057,188 @@ Nodes (303): IntrospectableViewType, facebook(), ButtonType, IntrospectableViewT
 
 ### Community 9 - "Community 9"
 Cohesion: 0.01
-Nodes (152): FolderCell, array, array< T, 0 >, hash_value(), swap(), check(), folly(), IntermediateType() (+144 more)
+Nodes (186): CoreVectorsKATTests, Data, ProvenanceHeadersTests, handleChange(), handleKeyPress(), sanitize(), handleChange(), handleKeyPress() (+178 more)
 
 ### Community 10 - "Community 10"
 Cohesion: 0.01
-Nodes (188): CoreVectorsKATTests, Data, ProvenanceHeadersTests, handleChange(), handleKeyPress(), sanitize(), handleChange(), handleKeyPress() (+180 more)
+Nodes (254): detail(), folly(), clear(), contains_index(), contains_value(), data_(), erase_value(), folly() (+246 more)
 
 ### Community 11 - "Community 11"
-Cohesion: 0.01
-Nodes (201): PodsDummy_BeebeebCrypto, SDImageWebPCoder, -animatedImageData, -animatedImageDurationAtIndex, -animatedImageFrameAtIndex, -animatedImageFrameCount, -animatedImageLoopCount, -canDecodeFromData (+193 more)
+Cohesion: 0.02
+Nodes (238): fromRawValue(), toDynamic(), toString(), begin(), end(), eraseImpl(), exists(), find() (+230 more)
 
 ### Community 12 - "Community 12"
 Cohesion: 0.02
-Nodes (223): detail(), folly(), clear(), contains_index(), contains_value(), data_(), erase_value(), folly() (+215 more)
+Nodes (228): allocate_node(), BOOST_CATCH(), BOOST_NOEXCEPT(), BOOST_TRY(), check_invariant_(), clear_(), construct_value(), copy_construct_from() (+220 more)
 
 ### Community 13 - "Community 13"
-Cohesion: 0.02
-Nodes (191): allocate_node(), BOOST_CATCH(), BOOST_NOEXCEPT(), BOOST_TRY(), check_invariant_(), clear_(), construct_value(), copy_construct_from() (+183 more)
+Cohesion: 0.01
+Nodes (201): PodsDummy_BeebeebCrypto, SDImageWebPCoder, -animatedImageData, -animatedImageDurationAtIndex, -animatedImageFrameAtIndex, -animatedImageFrameCount, -animatedImageLoopCount, -canDecodeFromData (+193 more)
 
 ### Community 14 - "Community 14"
-Cohesion: 0.02
-Nodes (214): VP8HorizontalAdd8b(), VP8Transpose_2_4x4_16b(), HE4_C(), ComplexMask_SSE2(), DC16_SSE2(), DC16NoLeft_SSE2(), DC16NoTop_SSE2(), DC16NoTopLeft_SSE2() (+206 more)
+Cohesion: 0.01
+Nodes (165): mem_fn(), A1, A2, A3, A4, A5, A6, A7 (+157 more)
 
 ### Community 15 - "Community 15"
 Cohesion: 0.02
-Nodes (151): mem_fn(), A1, A2, A3, A4, A5, A6, A7 (+143 more)
+Nodes (174): EmitSampledRGB(), VP8L32bToPlanar_SSE41(), VP8PlanarTo24b_SSE41(), Clip8(), YuvToArgb(), YuvToBgr(), YuvToBgra(), YuvToRgb() (+166 more)
 
 ### Community 16 - "Community 16"
 Cohesion: 0.02
-Nodes (65): MainApplication, ThumbnailService, ThumbnailServiceModule, getDownloadUrl(), decryptChunksToFile(), DecryptToFileUnavailableError, isDecryptToFileReady(), nativeBridge() (+57 more)
+Nodes (164): VP8HorizontalAdd8b(), VP8Transpose_2_4x4_16b(), VP8InitClipTables(), abs_mips32(), do_filter2(), do_filter4(), do_filter6(), FilterLoop24() (+156 more)
 
 ### Community 17 - "Community 17"
-Cohesion: 0.03
-Nodes (168): begin(), end(), eraseImpl(), exists(), find(), findWithoutPromotion(), folly(), getPruneHook() (+160 more)
+Cohesion: 0.02
+Nodes (67): MainApplication, FrameProcessorPlugin, ConstellationFrameProcessorPlugin, ThumbnailService, ThumbnailServiceModule, getDownloadUrl(), decryptChunksToFile(), DecryptToFileUnavailableError (+59 more)
 
 ### Community 18 - "Community 18"
 Cohesion: 0.02
-Nodes (142): EmitSampledRGB(), VP8L32bToPlanar_SSE41(), VP8PlanarTo24b_SSE41(), WebPInitUpsamplersMIPSdspR2(), WebPInitYUV444ConvertersMIPSdspR2(), Clip8(), WebPInitUpsamplersMSA(), YuvToArgb() (+134 more)
+Nodes (142): VP8L32bToPlanar_SSE2(), VP8PlanarTo24b_SSE2(), AddSubtractComponentFull(), AddSubtractComponentHalf(), Average2(), Average3(), Average4(), Average2_m256i() (+134 more)
 
 ### Community 19 - "Community 19"
 Cohesion: 0.03
-Nodes (150): adaptive_merge(), adaptive_merge_combine_blocks(), adaptive_merge_final_merge(), adaptive_merge_impl(), adaptive_merge_n_keys_intbuf(), adaptive_merge_n_keys_with_external_keys(), adaptive_merge_n_keys_without_external_keys(), adaptive_sort() (+142 more)
+Nodes (163): a(), at(), begin(), clear(), cont_(), contains(), count(), data() (+155 more)
 
 ### Community 20 - "Community 20"
 Cohesion: 0.02
-Nodes (135): VP8L32bToPlanar_SSE2(), VP8PlanarTo24b_SSE2(), AddSubtractComponentFull(), AddSubtractComponentHalf(), Average2(), Average3(), Average4(), ClampedAddSubtractFull() (+127 more)
+Nodes (129): accept(), bind_t, BOOST_BIND(), eval(), function_equal(), function_equal_impl(), implementation, list0 (+121 more)
 
 ### Community 21 - "Community 21"
 Cohesion: 0.02
-Nodes (78): FetchError, decodingError, httpError, networkError, noToken, Folder, FolderFetcher, RecentFolder (+70 more)
+Nodes (150): HE4_C(), TransformWHT_NEON(), clip_8b(), clip_max(), CollectHistogram_C(), Copy(), Copy16x8_C(), Copy4x4_C() (+142 more)
 
 ### Community 22 - "Community 22"
-Cohesion: 0.03
-Nodes (90): facebook(), checkValueType(), RawValue(), T(), call(), const_pow(), fill_array_int(), fill_array_int_impl() (+82 more)
+Cohesion: 0.02
+Nodes (132): AUX_WRAPPER_NAME(), impl(), folly(), folly(), addressof(), addrof_ref, BOOST_NOEXCEPT(), T() (+124 more)
 
 ### Community 23 - "Community 23"
 Cohesion: 0.04
-Nodes (105): AppDelegate, ReactNativeDelegate, InitResponse, ShareUploader, UploadError, cryptoUnavailable, fileReadFailed, networkError (+97 more)
+Nodes (77): facebook(), toJs(), EventEmitter(), SharedObject(), asBigInt(), asNumber(), BigIntKind(), buffer() (+69 more)
 
 ### Community 24 - "Community 24"
-Cohesion: 0.05
-Nodes (123): equal(), equal_impl(), broadcast(), loadu(), unsafeLoadu(), end(), facebook(), equal() (+115 more)
+Cohesion: 0.03
+Nodes (127): asNode(), asT(), compare(), contains(), erase(), folly(), merge(), push() (+119 more)
 
 ### Community 25 - "Community 25"
 Cohesion: 0.03
 Nodes (141): GetResidualCost_C(), GetResidualCost_MIPS32(), VP8EncDspCostInitMIPS32(), GetResidualCost_MIPSdspR2(), VP8EncDspCostInitMIPSdspR2(), GetResidualCost_NEON(), VP8EncDspCostInitNEON(), GetResidualCost_SSE2() (+133 more)
 
 ### Community 26 - "Community 26"
-Cohesion: 0.03
-Nodes (113): BOOST_CORE_SWAP_NOEXCEPT_IF(), adl_swap(), auto_space(), swap(), chunkAllocSize(), computeCapacity(), f14(), F14HashToken() (+105 more)
+Cohesion: 0.06
+Nodes (122): equal(), equal_impl(), broadcast(), loadu(), unsafeLoadu(), end(), facebook(), to_underlying() (+114 more)
 
 ### Community 27 - "Community 27"
 Cohesion: 0.03
-Nodes (118): asNode(), asT(), compare(), contains(), erase(), folly(), merge(), push() (+110 more)
+Nodes (88): convertRawProp(), fontVariantFromCSSFontVariant(), fromRawValue(), toMapBuffer(), toString(), formatTimestamp(), copysign(), copysign_impl() (+80 more)
 
 ### Community 28 - "Community 28"
 Cohesion: 0.04
-Nodes (73): EventEmitter(), SharedObject(), asBigInt(), asNumber(), BigIntKind(), buffer(), byteLength(), byteOffset() (+65 more)
+Nodes (123): adaptive_merge(), adaptive_merge_combine_blocks(), adaptive_merge_final_merge(), adaptive_merge_impl(), adaptive_merge_n_keys_intbuf(), adaptive_merge_n_keys_with_external_keys(), adaptive_merge_n_keys_without_external_keys(), adaptive_sort() (+115 more)
 
 ### Community 29 - "Community 29"
-Cohesion: 0.02
-Nodes (39): facebook(), begin(), end(), folly(), rbegin(), rend(), setMaxTotalWeight(), weight() (+31 more)
+Cohesion: 0.03
+Nodes (75): checkValueType(), RawValue(), T(), call(), const_pow(), fill_array_int(), fill_array_int_impl(), fill_array_real() (+67 more)
 
 ### Community 30 - "Community 30"
-Cohesion: 0.03
-Nodes (65): facebook(), convertRawProp(), fontVariantFromCSSFontVariant(), fromRawValue(), toMapBuffer(), toString(), formatTimestamp(), copysign() (+57 more)
+Cohesion: 0.02
+Nodes (39): facebook(), begin(), end(), folly(), rbegin(), rend(), setMaxTotalWeight(), weight() (+31 more)
 
 ### Community 31 - "Community 31"
 Cohesion: 0.06
 Nodes (102): cloneProps(), facebook(), defaultSharedProps(), facebook(), initialStateData(), setStateData(), getComponentHandle(), hasParent_() (+94 more)
 
 ### Community 32 - "Community 32"
-Cohesion: 0.03
-Nodes (82): purgeAllPlaintextCaches(), photoBackupClearAssociation(), onFilesDeleted(), emitMapChanged(), getLocalIdentifier(), initLocalIdentifierMap(), loadFromDisk(), refreshLocalIdentifierMap() (+74 more)
+Cohesion: 0.04
+Nodes (95): BlendChannelNonPremult(), BlendPixelNonPremult(), BlendPixelPremult(), BlendPixelRowNonPremult(), BlendPixelRowPremult(), ChannelwiseMultiply(), CopyCanvas(), DefaultDecoderOptions() (+87 more)
 
 ### Community 33 - "Community 33"
-Cohesion: 0.03
-Nodes (84): AUX_WRAPPER_NAME(), impl(), begin(), end(), folly(), addressof(), addrof_ref, BOOST_NOEXCEPT() (+76 more)
+Cohesion: 0.06
+Nodes (76): View, facebook(), render(), View(), facebook(), accessibilityExtraExtraLarge(), accessibilityLarge(), alert() (+68 more)
 
 ### Community 34 - "Community 34"
 Cohesion: 0.04
-Nodes (107): Add4x4_NEON(), ApplyFilter2_NEON(), ApplyFilter2NoFlip_NEON(), ApplyFilter4_NEON(), ApplyFilter6_NEON(), ConvertU8ToS16_NEON(), DC16_NEON(), DC16NoLeft_NEON() (+99 more)
+Nodes (78): BOOST_CORE_SWAP_NOEXCEPT_IF(), adl_swap(), auto_space(), swap(), chunkAllocSize(), computeCapacity(), f14(), F14HashToken() (+70 more)
 
 ### Community 35 - "Community 35"
 Cohesion: 0.03
-Nodes (81): B, empty_base, T, U, clip_8b(), DC16_C(), DC16NoLeft_C(), DC16NoTop_C() (+73 more)
+Nodes (50): facebook(), facebook(), facebook(), BOOST_NOEXCEPT(), common_slist_algorithms, detach_and_dispose(), stable_partition(), unlink_after_and_dispose() (+42 more)
 
 ### Community 36 - "Community 36"
 Cohesion: 0.03
-Nodes (58): VP8InitClipTables(), abs_mips32(), do_filter2(), do_filter4(), do_filter6(), FilterLoop24(), FilterLoop26(), hev() (+50 more)
-
-### Community 37 - "Community 37"
-Cohesion: 0.03
 Nodes (61): VP8LFastSLog2(), Average2_m256i(), CombinedShannonEntropy_AVX2(), GetSumAbsDiff32_AVX2(), PredictorSub10_AVX2(), PredictorSub11_AVX2(), PredictorSub5_AVX2(), VP8LEncDspInitAVX2() (+53 more)
 
-### Community 38 - "Community 38"
+### Community 37 - "Community 37"
 Cohesion: 0.12
 Nodes (84): expo(), after(), all_after(), all_before(), around(), bigintIsInt64(), bigintIsUint64(), bigintToString() (+76 more)
 
-### Community 39 - "Community 39"
-Cohesion: 0.05
-Nodes (75): BlendChannelNonPremult(), BlendPixelNonPremult(), BlendPixelPremult(), BlendPixelRowNonPremult(), BlendPixelRowPremult(), ChannelwiseMultiply(), CopyCanvas(), DefaultDecoderOptions() (+67 more)
-
-### Community 40 - "Community 40"
+### Community 38 - "Community 38"
 Cohesion: 0.04
 Nodes (76): CSSKeyword(), CSSLinearGradientDirectionKeyword(), CSSLinearGradientFunction(), if(), is_iequal(), is_iless(), is_not_igreater(), erase_all() (+68 more)
 
-### Community 41 - "Community 41"
-Cohesion: 0.05
-Nodes (70): Clamp(), clip(), clip_8b(), clip_bit_depth(), ConvertWRGBToYUV(), DoSharpArgbToYuv(), clip(), SharpYuvFilterRow_C() (+62 more)
-
-### Community 42 - "Community 42"
+### Community 39 - "Community 39"
 Cohesion: 0.04
 Nodes (55): hardware_timestamp(), hardware_timestamp_measurement_stop(), facebook(), isTurn(), TryWaitResult(), add_native(), fast_float(), is_truncated() (+47 more)
 
-### Community 43 - "Community 43"
-Cohesion: 0.04
-Nodes (47): accept(), bind_t, BOOST_BIND(), eval(), function_equal(), function_equal_impl(), implementation, list0 (+39 more)
+### Community 40 - "Community 40"
+Cohesion: 0.06
+Nodes (65): Add4x4_NEON(), ApplyFilter2_NEON(), ApplyFilter2NoFlip_NEON(), ApplyFilter4_NEON(), ApplyFilter6_NEON(), ConvertU8ToS16_NEON(), DC16_NEON(), DC16NoLeft_NEON() (+57 more)
 
-### Community 44 - "Community 44"
+### Community 41 - "Community 41"
 Cohesion: 0.05
 Nodes (60): DoGradientFilter_C(), DoHorizontalFilter_C(), DoVerticalFilter_C(), GradientFilter_C(), GradientPredictor_C(), GradientUnfilter_C(), HorizontalFilter_C(), HorizontalUnfilter_C() (+52 more)
 
-### Community 45 - "Community 45"
+### Community 42 - "Community 42"
 Cohesion: 0.03
 Nodes (60): SDImageCache, -applicationDidEnterBackground, -applicationWillTerminate, -_archivedDataWithImageforKey, -cachePathForKey, -calculateSizeWithCompletionBlock, -clearDiskOnCompletion, -clearMemory (+52 more)
 
-### Community 46 - "Community 46"
-Cohesion: 0.06
-Nodes (30): add(), bigint(), compare(), fast_float(), mul(), pow10(), pow2(), pow5() (+22 more)
-
-### Community 47 - "Community 47"
+### Community 43 - "Community 43"
 Cohesion: 0.07
 Nodes (46): walk(), aboutRow(), appHeader(), appleBezelHref(), brandLogoHref(), brandMark(), docGlyph(), driveCard() (+38 more)
 
-### Community 48 - "Community 48"
+### Community 44 - "Community 44"
 Cohesion: 0.1
 Nodes (44): Data(), emplace_equal(), emplace_hint_equal(), emplace_hint_unique(), emplace_unique(), enable_if_transparent<key_compare, K, bool>::type
          contains(), enable_if_transparent<key_compare, K, const_iterator>::type
       find(), enable_if_transparent<key_compare, K, const_iterator>::type
          lower_bound() (+36 more)
 
-### Community 49 - "Community 49"
+### Community 45 - "Community 45"
 Cohesion: 0.08
 Nodes (46): clearAllData(), getAllUploadedIds(), getAllUploadedRemoteIds(), getCategorySummaries(), getDb(), getDeadLetterItems(), getFailedAssets(), getLastVerification() (+38 more)
 
-### Community 50 - "Community 50"
+### Community 46 - "Community 46"
 Cohesion: 0.08
 Nodes (45): any_base_hook, any_member_hook, avl_multiset, avl_set, avl_set_base_hook, avl_set_member_hook, avltree, avltree_algorithms (+37 more)
 
-### Community 51 - "Community 51"
+### Community 47 - "Community 47"
 Cohesion: 0.08
 Nodes (39): BOOST_NOEXCEPT_OR_NOTHROW(), priv_construct(), select_on_container_copy_construction(), small_vector_allocator, adaptive_pool, allocator, basic_string, deque (+31 more)
 
-### Community 52 - "Community 52"
+### Community 48 - "Community 48"
 Cohesion: 0.09
 Nodes (34): BOOST_OVERRIDE(), BOOST_SYMBOL_VISIBLE, copy_from(), get_throw_location(), rethrow(), throw_exception(), throw_exception_assert_compatibility(), throw_location() (+26 more)
 
-### Community 53 - "Community 53"
+### Community 49 - "Community 49"
 Cohesion: 0.05
 Nodes (42): SDImageBaseTransformer, -init, -transformedImageWithImageforKey, -transformerKey, SDImageBlurTransformer, -transformedImageWithImageforKey, -transformerKey, -transformerWithRadius (+34 more)
 
-### Community 54 - "Community 54"
+### Community 50 - "Community 50"
+Cohesion: 0.1
+Nodes (27): Comparable, base(), base_logging(), glog_internal_namespace_(), google(), GOOGLE_GLOG_DLL_DECL(), LogAtLevel(), MakeCheckOpString() (+19 more)
+
+### Community 51 - "Community 51"
 Cohesion: 0.05
 Nodes (41): SDWebImageDownloader, -cancelAllDownloads, -canRequestImageForURL, -canRequestImageForURLoptionscontext, -createDownloaderOperationWithUrloptionscontext, -currentDownloadCount, -dealloc, -downloadImageWithURLcompleted (+33 more)
 
-### Community 55 - "Community 55"
-Cohesion: 0.11
-Nodes (26): Comparable, base(), base_logging(), glog_internal_namespace_(), google(), GOOGLE_GLOG_DLL_DECL(), LogAtLevel(), MakeCheckOpString() (+18 more)
-
-### Community 56 - "Community 56"
+### Community 52 - "Community 52"
 Cohesion: 0.05
 Nodes (38): SDAnimatedImage, -animatedImageData, -animatedImageDurationAtIndex, -animatedImageFormat, -animatedImageFrameAtIndex, -animatedImageFrameCount, -animatedImageLoopCount, -encodeWithCoder (+30 more)
 
-### Community 57 - "Community 57"
+### Community 53 - "Community 53"
+Cohesion: 0.08
+Nodes (19): buffered_file(), descriptor(), detail(), ostream(), pipe(), system_category(), Entry, Kind (+11 more)
+
+### Community 54 - "Community 54"
 Cohesion: 0.11
 Nodes (25): facebook(), adl_begin(), adl_end(), assign(), copy_range(), enable_if<
             mpl::not_<boost::is_base_and_derived<iterator_range_detail::iterator_range_tag, ForwardRange> >,
@@ -1256,165 +1250,177 @@ Nodes (25): facebook(), adl_begin(), adl_end(), assign(), copy_range(), enable_i
         >::type
         operator==(), equal() (+17 more)
 
-### Community 58 - "Community 58"
+### Community 55 - "Community 55"
 Cohesion: 0.1
 Nodes (7): apply(), generate(), seed(), subtract_with_carry, subtract_with_carry_01, subtract_with_carry_01_engine, subtract_with_carry_engine
 
-### Community 59 - "Community 59"
+### Community 56 - "Community 56"
+Cohesion: 0.06
+Nodes (18): BBWordmark(), SkeletonRow(), useAuth(), BackupProvider(), SyncProvider(), useTheme(), useToast(), PdfRenderer() (+10 more)
+
+### Community 57 - "Community 57"
 Cohesion: 0.11
 Nodes (28): iswalnum(), iswalpha(), iswcntrl(), iswdigit(), iswgraph(), iswlower(), iswprint(), iswpunct() (+20 more)
 
-### Community 60 - "Community 60"
+### Community 58 - "Community 58"
 Cohesion: 0.08
 Nodes (15): ApplyAlphaMultiply4444_C(), ApplyAlphaMultiply_16b_C(), dither_hi(), dither_lo(), GetScale(), MakeARGB32(), Mult(), multiply() (+7 more)
 
-### Community 61 - "Community 61"
+### Community 59 - "Community 59"
 Cohesion: 0.06
 Nodes (32): SDWebImageCombinedOperation, -cancel, -isCancelled, SDWebImageManager, -cacheKeyForURL, -cacheKeyForURLcontext, -callCacheProcessForOperationurloptionscontextprogresscompleted, -callCompletionBlockForOperationcompletionerrorqueueurl (+24 more)
 
-### Community 62 - "Community 62"
-Cohesion: 0.07
-Nodes (17): BBWordmark(), SkeletonRow(), useAuth(), BackupProvider(), SyncProvider(), useTheme(), useToast(), DifficultyBadge() (+9 more)
-
-### Community 63 - "Community 63"
+### Community 60 - "Community 60"
 Cohesion: 0.09
 Nodes (14): basic_ios_all_saver, basic_ios_exception_saver, basic_ios_fill_saver, basic_ios_iostate_saver, basic_ios_locale_saver, basic_ios_rdbuf_saver, basic_ios_tie_saver, ios_all_word_saver (+6 more)
 
-### Community 65 - "Community 65"
+### Community 61 - "Community 61"
+Cohesion: 0.11
+Nodes (21): duplicates_iterator, advance(), bidirectional_iter_adaptor_base, decrement(), dereference(), distance_to(), equal(), forward_iter_adaptor_base (+13 more)
+
+### Community 63 - "Community 63"
 Cohesion: 0.13
 Nodes (26): is_alnum(), is_alpha(), is_any_of(), is_classified(), is_cntrl(), is_digit(), is_from_range(), is_graph() (+18 more)
 
-### Community 66 - "Community 66"
+### Community 64 - "Community 64"
 Cohesion: 0.13
 Nodes (27): A1, A2, A3, A4, A5, A6, A7, A8 (+19 more)
 
-### Community 67 - "Community 67"
+### Community 65 - "Community 65"
 Cohesion: 0.1
 Nodes (17): AuthFailureReason, authFailed, biometryLockout, notAvailable, notWarm, userCanceled, BeebeebKeychainCore, LoadError (+9 more)
 
-### Community 68 - "Community 68"
+### Community 66 - "Community 66"
 Cohesion: 0.15
 Nodes (23): attach(), check_belongs_in_some_index(), check_decrementable_iterator(), check_dereferenceable_iterator(), check_different_container(), check_equal_allocators(), check_in_bounds(), check_incrementable_iterator() (+15 more)
 
-### Community 69 - "Community 69"
+### Community 67 - "Community 67"
 Cohesion: 0.31
 Nodes (23): animating(), backgroundColor(), color(), disabled(), drawerBackgroundColor(), drawerLockMode(), drawerWidth(), fromRawValue() (+15 more)
 
-### Community 70 - "Community 70"
+### Community 68 - "Community 68"
+Cohesion: 0.12
+Nodes (20): begin(), end(), folly(), advance(), decrement(), dereference(), distance_from(), equal() (+12 more)
+
+### Community 69 - "Community 69"
 Cohesion: 0.07
 Nodes (27): SDAnimatedImageRep, SDImageCoderHelper, -animatedImageWithFrames, -CGImageContainsAlpha, -CGImageCreateDecoded, -CGImageCreateDecodedorientation, -CGImageCreateScaledsize, -CGImageIsHardwareSupported (+19 more)
 
-### Community 71 - "Community 71"
+### Community 70 - "Community 70"
 Cohesion: 0.1
 Nodes (17): AuthFailureReason, authFailed, biometryLockout, notAvailable, notWarm, userCanceled, BeebeebKeychainCore, LoadError (+9 more)
 
-### Community 72 - "Community 72"
+### Community 71 - "Community 71"
 Cohesion: 0.11
 Nodes (19): CustomStringConvertible, Connection, cellular, unavailable, wifi, NetworkStatus, notReachable, reachableViaWiFi (+11 more)
 
-### Community 73 - "Community 73"
-Cohesion: 0.17
-Nodes (19): lightweight_mutex, scoped_lock, ChangeState(), End(), Execute(), Launch(), pthread_cond_destroy(), pthread_cond_init() (+11 more)
-
-### Community 74 - "Community 74"
+### Community 72 - "Community 72"
 Cohesion: 0.08
 Nodes (25): SDCallbackQueue, SDWebImagePrefetcher, -addRunningToken, -callCompletionBlockForToken, -callProgressBlockForTokenimageURL, -cancelPrefetching, -countOfRunningTokens, -delegateQueue (+17 more)
 
-### Community 75 - "Community 75"
+### Community 73 - "Community 73"
 Cohesion: 0.48
 Nodes (16): alwaysBounceHorizontal(), alwaysBounceVertical(), automaticallyAdjustContentInsets(), centerContent(), contentInset(), contentOffset(), directionalLockEnabled(), endDraggingSensitivityMultiplier() (+8 more)
 
-### Community 76 - "Community 76"
+### Community 74 - "Community 74"
 Cohesion: 0.16
 Nodes (21): bitCount(), folly(), getNthLSBit(), getNthLSByte(), isLoopback(), isNonroutable(), mask(), std() (+13 more)
 
-### Community 77 - "Community 77"
+### Community 75 - "Community 75"
 Cohesion: 0.08
 Nodes (24): SDImageCachesManager, -addCache, -caches, -clearWithCacheTypecompletion, -concurrentClearWithCacheTypecompletionenumeratoroperation, -concurrentContainsImageForKeycacheTypecompletionenumeratoroperation, -concurrentQueryImageForKeyoptionscontextcacheTypecompletionenumeratoroperation, -concurrentRemoveImageForKeycacheTypecompletionenumeratoroperation (+16 more)
 
-### Community 78 - "Community 78"
+### Community 76 - "Community 76"
 Cohesion: 0.08
 Nodes (23): NSButton, -sd_cancelCurrentAlternateImageLoad, -sd_cancelCurrentImageLoad, -sd_currentAlternateImageURL, -sd_currentImageURL, -sd_setAlternateImageWithURL, -sd_setAlternateImageWithURLcompleted, -sd_setAlternateImageWithURLplaceholderImage (+15 more)
 
-### Community 79 - "Community 79"
-Cohesion: 0.38
-Nodes (18): RCTCATransform3DFromTransformMatrix(), RCTCGPointFromPoint(), RCTCGRectFromRect(), RCTCGSizeFromSize(), RCTCreateCGColorRefFromSharedColor(), RCTEdgeInsetsFromUIEdgeInsets(), RCTFloatFromCGFloat(), RCTHighResTimeStampFromSeconds() (+10 more)
+### Community 77 - "Community 77"
+Cohesion: 0.14
+Nodes (17): clip(), SharpYuvFilterRow_C(), SharpYuvInitDsp(), SharpYuvUpdateY_C(), clip_NEON(), InitSharpYuvNEON(), SharpYuvFilterRow16_NEON(), SharpYuvFilterRow32_NEON() (+9 more)
 
-### Community 80 - "Community 80"
+### Community 78 - "Community 78"
 Cohesion: 0.09
 Nodes (21): SDAnimatedImagePlayer, -calculateMaxBufferCountWithFrame, -clearFrameBuffer, -dealloc, -defaultRunLoopMode, -displayDidRefresh, -displayLink, -handleFrameChange (+13 more)
 
-### Community 81 - "Community 81"
+### Community 79 - "Community 79"
 Cohesion: 0.19
 Nodes (18): gcd_evaluator, integer_traits, integer_traits< bool >, integer_traits<  ::boost::long_long_type>, integer_traits<  ::boost::ulong_long_type >, integer_traits< char >, integer_traits< int >, integer_traits<__int64> (+10 more)
 
+### Community 80 - "Community 80"
+Cohesion: 0.18
+Nodes (12): invalid_utf32_code_point(), is_high_surrogate(), is_low_surrogate(), is_surrogate(), u16_to_u32_iterator, u32_to_u16_iterator, u32_to_u8_iterator, u8_to_u32_iterator (+4 more)
+
+### Community 81 - "Community 81"
+Cohesion: 0.18
+Nodes (12): invalid_utf32_code_point(), is_high_surrogate(), is_low_surrogate(), is_surrogate(), u16_to_u32_iterator, u32_to_u16_iterator, u32_to_u8_iterator, u8_to_u32_iterator (+4 more)
+
 ### Community 82 - "Community 82"
-Cohesion: 0.18
-Nodes (12): invalid_utf32_code_point(), is_high_surrogate(), is_low_surrogate(), is_surrogate(), u16_to_u32_iterator, u32_to_u16_iterator, u32_to_u8_iterator, u8_to_u32_iterator (+4 more)
-
-### Community 83 - "Community 83"
-Cohesion: 0.18
-Nodes (12): invalid_utf32_code_point(), is_high_surrogate(), is_low_surrogate(), is_surrogate(), u16_to_u32_iterator, u32_to_u16_iterator, u32_to_u8_iterator, u8_to_u32_iterator (+4 more)
-
-### Community 84 - "Community 84"
 Cohesion: 0.1
 Nodes (19): SDWebImageActivityIndicator, -commonInit, -grayIndicator, -grayLargeIndicator, -init, -largeIndicator, -mediumIndicator, -startAnimatingIndicator (+11 more)
 
-### Community 85 - "Community 85"
+### Community 83 - "Community 83"
+Cohesion: 0.14
+Nodes (10): OptionSet, IntrospectionScope, IntrospectModifier, NSWindow, PlatformEntity, PlatformView, PlatformViewController, UIPresentationController (+2 more)
+
+### Community 84 - "Community 84"
 Cohesion: 0.51
 Nodes (14): endian32(), endian64(), FBxxHash64(), fetch32(), fetch64(), fetch8(), finalize(), h32bytes() (+6 more)
 
-### Community 86 - "Community 86"
+### Community 85 - "Community 85"
 Cohesion: 0.2
 Nodes (17): integer_traits, integer_traits_base, integer_traits<bool>, integer_traits< ::boost::long_long_type>, integer_traits< ::boost::ulong_long_type>, integer_traits<char>, integer_traits<int>, integer_traits< __int64> (+9 more)
 
-### Community 87 - "Community 87"
+### Community 86 - "Community 86"
 Cohesion: 0.19
 Nodes (6): generate(), linear_congruential, linear_congruential_engine, rand48, read(), seed()
+
+### Community 87 - "Community 87"
+Cohesion: 0.46
+Nodes (14): areAttributedStringFragmentsEquivalentDisplayWise(), areAttributedStringFragmentsEquivalentLayoutWise(), areAttributedStringsEquivalentDisplayWise(), areAttributedStringsEquivalentLayoutWise(), areTextAttributesEquivalentLayoutWise(), attributedStringFragmentHashDisplayWise(), attributedStringFragmentHashLayoutWise(), attributedStringHashLayoutWise() (+6 more)
 
 ### Community 88 - "Community 88"
 Cohesion: 0.11
 Nodes (18): SDDiskCache, -cachePathForKey, -cachePathForKeyinPath, -commonInit, -containsDataForKey, -createDirectory, -dataForKey, -extendedDataForKey (+10 more)
 
 ### Community 89 - "Community 89"
-Cohesion: 0.26
-Nodes (11): View, color(), T(), vprint(), blurRadius(), color(), inset(), offsetX() (+3 more)
-
-### Community 90 - "Community 90"
 Cohesion: 0.41
 Nodes (17): addCommented(), ensureBuildConfigurations(), ensureBuildFile(), ensureBuildPhase(), ensureExtensionTarget(), ensureFileReference(), ensureGroup(), ensureNativeTarget() (+9 more)
 
-### Community 91 - "Community 91"
+### Community 90 - "Community 90"
 Cohesion: 0.2
 Nodes (14): allocator_multialloc_chain_node_deallocator, allocator_node_destroyer, allocator_node_destroyer_and_chain_builder, null_scoped_array_deallocator(), null_scoped_deallocator(), null_scoped_destructor, scoped_array_deallocator(), scoped_deallocator() (+6 more)
 
-### Community 92 - "Community 92"
+### Community 91 - "Community 91"
 Cohesion: 0.11
 Nodes (17): SDWeakProxy, -class, -conformsToProtocol, -debugDescription, -description, -forwardingTargetForSelector, -forwardInvocation, -hash (+9 more)
 
-### Community 93 - "Community 93"
+### Community 92 - "Community 92"
 Cohesion: 0.39
 Nodes (14): addCommented(), ensureBuildFile(), ensureBuildPhase(), ensureExtensionBuildConfigurations(), ensureExtensionWiring(), ensureFileReference(), ensureGroup(), ensureProductReference() (+6 more)
 
-### Community 94 - "Community 94"
+### Community 93 - "Community 93"
 Cohesion: 0.19
 Nodes (4): generate(), linear_feedback_shift, linear_feedback_shift_engine, seed()
 
-### Community 95 - "Community 95"
+### Community 94 - "Community 94"
 Cohesion: 0.12
 Nodes (16): SDWebImageTransition, -curlDownTransition, -curlDownTransitionWithDuration, -curlUpTransition, -curlUpTransitionWithDuration, -fadeTransition, -fadeTransitionWithDuration, -flipFromBottomTransition (+8 more)
 
-### Community 96 - "Community 96"
+### Community 95 - "Community 95"
 Cohesion: 0.5
 Nodes (11): alphaFromHostPlatformColor(), blueFromHostPlatformColor(), Color(), colorComponentsFromHostPlatformColor(), getColorComponents(), greenFromHostPlatformColor(), HostPlatformColor(), hostPlatformColorFromComponents() (+3 more)
 
-### Community 97 - "Community 97"
+### Community 96 - "Community 96"
 Cohesion: 0.23
 Nodes (14): basic_ios_all_saver, basic_ios_exception_saver, basic_ios_fill_saver, basic_ios_iostate_saver, basic_ios_locale_saver, basic_ios_rdbuf_saver, basic_ios_tie_saver, ios_all_word_saver (+6 more)
 
-### Community 98 - "Community 98"
+### Community 97 - "Community 97"
 Cohesion: 0.12
 Nodes (15): SDImageFramePool, -currentFrameCount, -dealloc, -didReceiveMemoryWarning, -frameAtIndex, -init, -initialize, -prefetchFrameAtIndex (+7 more)
+
+### Community 98 - "Community 98"
+Cohesion: 0.15
+Nodes (6): bytesPerSecondToMbps(), formatLastRunTime(), formatMs(), formatNetworkType(), mbpsFromStoredMBps(), shouldRunLargeSample()
 
 ### Community 99 - "Community 99"
 Cohesion: 0.19
@@ -1425,28 +1431,28 @@ Cohesion: 0.48
 Nodes (10): color(), facebook(), fontSize(), fromRawValue(), inlineImagePadding(), numberOfLines(), textShadowColor(), textShadowOffset() (+2 more)
 
 ### Community 101 - "Community 101"
-Cohesion: 0.27
-Nodes (13): BOOST_CONTAINER_CATCH(), copy_n_and_update(), get_insert_value_proxy(), insert_copy_proxy(), insert_emplace_proxy(), insert_emplace_proxy_arg1(), insert_move_proxy(), insert_n_copies_proxy() (+5 more)
-
-### Community 102 - "Community 102"
 Cohesion: 0.22
 Nodes (10): bind1st(), bind2nd(), binder1st, binder2nd, find_end(), find_first_of(), find_if(), not1() (+2 more)
 
-### Community 103 - "Community 103"
+### Community 102 - "Community 102"
 Cohesion: 0.2
 Nodes (4): generate(), seed(), xor_combine, xor_combine_engine
 
-### Community 104 - "Community 104"
+### Community 103 - "Community 103"
 Cohesion: 0.2
 Nodes (4): additive_combine, additive_combine_engine, generate(), seed()
 
-### Community 105 - "Community 105"
+### Community 104 - "Community 104"
 Cohesion: 0.21
 Nodes (4): generate(), inversive_congruential, inversive_congruential_engine, seed()
 
-### Community 106 - "Community 106"
+### Community 105 - "Community 105"
 Cohesion: 0.22
 Nodes (5): check_params(), check_probabilities(), check_rates(), hyperexponential_distribution, param_type
+
+### Community 106 - "Community 106"
+Cohesion: 0.27
+Nodes (13): BOOST_CONTAINER_CATCH(), copy_n_and_update(), get_insert_value_proxy(), insert_copy_proxy(), insert_emplace_proxy(), insert_emplace_proxy_arg1(), insert_move_proxy(), insert_n_copies_proxy() (+5 more)
 
 ### Community 107 - "Community 107"
 Cohesion: 0.13
@@ -1465,20 +1471,20 @@ Cohesion: 0.22
 Nodes (10): getAssetStatus(), getBackupStatus(), isBridgeReady(), migrateLegacyBackupState(), nativeBridge(), subscribeBackupStatus(), chunkRows(), hasMigrated() (+2 more)
 
 ### Community 111 - "Community 111"
-Cohesion: 0.22
-Nodes (11): AccumulateSSE_SSE2(), HorizontalAdd16b_SSE2(), HorizontalAdd32b_SSE2(), SSIMGet_SSE2(), SubtractAndSquare_SSE2(), VP8SSIMDspInitSSE2(), SSIMCalculation(), SSIMGet_C() (+3 more)
-
-### Community 112 - "Community 112"
 Cohesion: 0.37
 Nodes (10): apply_bigskip(), fmodmulM61(), generate(), iterate_raw_vec(), mixmax_engine, modadd(), MULWU(), seed() (+2 more)
 
-### Community 113 - "Community 113"
+### Community 112 - "Community 112"
 Cohesion: 0.14
 Nodes (13): SDImageAWebPCoder, -canDecodeFromData, -canEncodeToFormat, -canIncrementalDecodeFromData, -defaultLoopCount, -delayTimeProperty, -dictionaryProperty, -imageFormat (+5 more)
 
-### Community 114 - "Community 114"
+### Community 113 - "Community 113"
 Cohesion: 0.14
 Nodes (13): UIImage, -sd_blurredImageWithRadius, -sd_colorAtPoint, -sd_colorsWithRect, -sd_croppedImageWithRect, -sd_drawInRectcontextscaleModeclipsToBounds, -sd_filteredImageWithFilter, -sd_flippedImageWithHorizontalvertical (+5 more)
+
+### Community 114 - "Community 114"
+Cohesion: 0.21
+Nodes (8): applyAccessoryKey(), approxByteSize(), insertAtCursor(), lineStart(), prefixLine(), pushHistory(), trimHistoryByBytes(), wrapSelection()
 
 ### Community 115 - "Community 115"
 Cohesion: 0.18
@@ -1619,52 +1625,52 @@ Cohesion: 0.18
 Nodes (2): ensureContactsPermission(), permissionGranted()
 
 ### Community 145 - "Community 145"
-Cohesion: 0.55
-Nodes (6): adjustsFontSizeToFit(), android_hyphenationFrequency(), ellipsizeMode(), maximumFontSize(), maximumNumberOfLines(), std()
+Cohesion: 0.35
+Nodes (10): collapseSoftNewlines(), isTokenArray(), mapBlocks(), mapBlockToken(), mapInline(), mapInlineToken(), mapList(), mapListItem() (+2 more)
 
 ### Community 146 - "Community 146"
 Cohesion: 0.55
-Nodes (6): accessibilityLabelledBy(), canonicalImportantForAccessibility_(), onAccessibilityAction(), onAccessibilityEscape(), onAccessibilityMagicTap(), onAccessibilityTap()
+Nodes (6): adjustsFontSizeToFit(), android_hyphenationFrequency(), ellipsizeMode(), maximumFontSize(), maximumNumberOfLines(), std()
 
 ### Community 147 - "Community 147"
+Cohesion: 0.55
+Nodes (6): accessibilityLabelledBy(), canonicalImportantForAccessibility_(), onAccessibilityAction(), onAccessibilityEscape(), onAccessibilityMagicTap(), onAccessibilityTap()
+
+### Community 148 - "Community 148"
 Cohesion: 0.51
 Nodes (7): animatedValueTag_(), currentIteration_(), getAnimatedValueTag(), id_(), isStarted_(), iterations_(), markNodeUpdated()
 
-### Community 148 - "Community 148"
+### Community 149 - "Community 149"
 Cohesion: 0.55
 Nodes (6): RCTAndroidDrawerLayoutHandleCommand(), RCTAndroidSwipeRefreshLayoutHandleCommand(), RCTAndroidSwitchHandleCommand(), RCTDebuggingOverlayHandleCommand(), RCTPullToRefreshViewHandleCommand(), RCTSwitchHandleCommand()
 
-### Community 149 - "Community 149"
+### Community 150 - "Community 150"
 Cohesion: 0.33
 Nodes (9): _1(), _2(), _3(), _4(), _5(), _6(), _7(), _8() (+1 more)
 
-### Community 150 - "Community 150"
+### Community 151 - "Community 151"
 Cohesion: 0.27
 Nodes (7): folly(), grow_capacity_by(), reserve_if_available(), detail(), folly(), prepareDelim(), toOrIgnore()
 
-### Community 151 - "Community 151"
+### Community 152 - "Community 152"
 Cohesion: 0.18
 Nodes (10): SDAnimatedImageView, -sd_setImageWithURL, -sd_setImageWithURLcompleted, -sd_setImageWithURLplaceholderImage, -sd_setImageWithURLplaceholderImagecompleted, -sd_setImageWithURLplaceholderImageoptions, -sd_setImageWithURLplaceholderImageoptionscompleted, -sd_setImageWithURLplaceholderImageoptionscontext (+2 more)
 
-### Community 152 - "Community 152"
+### Community 153 - "Community 153"
 Cohesion: 0.18
 Nodes (10): UIImageView, -sd_cancelCurrentHighlightedImageLoad, -sd_currentHighlightedImageURL, -sd_setHighlightedImageWithURL, -sd_setHighlightedImageWithURLcompleted, -sd_setHighlightedImageWithURLoptions, -sd_setHighlightedImageWithURLoptionscompleted, -sd_setHighlightedImageWithURLoptionscontext (+2 more)
 
-### Community 153 - "Community 153"
+### Community 154 - "Community 154"
 Cohesion: 0.56
 Nodes (5): blurRadius(), CSSInsetShadowKeyword(), inset(), offsetY(), spreadDistance()
 
-### Community 154 - "Community 154"
-Cohesion: 0.53
-Nodes (4): debugger(), getGCExecTrace(), hermes(), sampling_profiler()
-
 ### Community 155 - "Community 155"
-Cohesion: 0.2
-Nodes (1): facebook()
+Cohesion: 0.56
+Nodes (5): facebook(), fr(), length(), minmax(), percent()
 
 ### Community 156 - "Community 156"
-Cohesion: 0.2
-Nodes (1): facebook()
+Cohesion: 0.53
+Nodes (4): debugger(), getGCExecTrace(), hermes(), sampling_profiler()
 
 ### Community 157 - "Community 157"
 Cohesion: 0.2
@@ -1696,221 +1702,229 @@ Nodes (1): facebook()
 
 ### Community 164 - "Community 164"
 Cohesion: 0.2
-Nodes (1): ContentInsetAdjustmentBehavior()
+Nodes (1): facebook()
 
 ### Community 165 - "Community 165"
 Cohesion: 0.2
 Nodes (1): facebook()
 
 ### Community 166 - "Community 166"
-Cohesion: 0.56
-Nodes (5): facebook(), fr(), length(), minmax(), percent()
+Cohesion: 0.2
+Nodes (1): ContentInsetAdjustmentBehavior()
 
 ### Community 167 - "Community 167"
+Cohesion: 0.2
+Nodes (1): facebook()
+
+### Community 168 - "Community 168"
 Cohesion: 0.33
 Nodes (7): forward_as_tuple_impl(), get(), get_impl, get_impl<0, tuple<Head, Values...> >, get_impl<I, tuple<Head, Values...> >, tuple, tuple<Head, Tail...>
 
-### Community 168 - "Community 168"
+### Community 169 - "Community 169"
 Cohesion: 0.2
 Nodes (9): SDImageAPNGCoder, -defaultLoopCount, -delayTimeProperty, -dictionaryProperty, -imageFormat, -imageUTType, -loopCountProperty, -sharedCoder (+1 more)
 
-### Community 169 - "Community 169"
+### Community 170 - "Community 170"
 Cohesion: 0.2
 Nodes (9): SDImageGIFCoder, -defaultLoopCount, -delayTimeProperty, -dictionaryProperty, -imageFormat, -imageUTType, -loopCountProperty, -sharedCoder (+1 more)
 
-### Community 170 - "Community 170"
+### Community 171 - "Community 171"
 Cohesion: 0.2
 Nodes (9): SDAsyncBlockOperation, -blockOperationWithBlock, -cancel, -complete, -initWithBlock, -isAsynchronous, -setExecuting, -setFinished (+1 more)
 
-### Community 171 - "Community 171"
+### Community 172 - "Community 172"
 Cohesion: 0.56
 Nodes (4): backgroundColor(), foregroundColor(), lineHeight(), std()
 
-### Community 172 - "Community 172"
+### Community 173 - "Community 173"
 Cohesion: 0.56
 Nodes (4): inputAccessoryViewButtonLabel(), inputAccessoryViewID(), onKeyPressSync(), traits()
 
-### Community 174 - "Community 174"
+### Community 175 - "Community 175"
 Cohesion: 0.39
 Nodes (7): get(), tuple, tuple_element< I, boost::tuples::cons<H, T> >, tuple_element< I, boost::tuples::tuple<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10> >, tuple_size< boost::tuples::cons<H, T> >, tuple_size< boost::tuples::null_type >, tuple_size< boost::tuples::tuple<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10> >
 
-### Community 175 - "Community 175"
+### Community 176 - "Community 176"
 Cohesion: 0.42
 Nodes (6): add(), add_track(), get_node(), index_saver, save(), save_node()
 
-### Community 176 - "Community 176"
+### Community 177 - "Community 177"
 Cohesion: 0.33
 Nodes (5): mod_pow_x(), polynomial, polynomial_ops, reference, sparse_mod()
 
-### Community 178 - "Community 178"
+### Community 179 - "Community 179"
 Cohesion: 0.22
 Nodes (8): UIImage, -sd_imageData, -sd_imageDataAsFormat, -sd_imageDataAsFormatcompressionQuality, -sd_imageDataAsFormatcompressionQualityfirstFrameOnly, -sd_imageWithData, -sd_imageWithDatascale, -sd_imageWithDatascalefirstFrameOnly
 
-### Community 179 - "Community 179"
+### Community 180 - "Community 180"
 Cohesion: 0.22
 Nodes (8): SDWebImageDownloaderResponseModifier, -initWithBlock, -initWithHeaders, -initWithStatusCode, -initWithStatusCodeversionheaders, -initWithVersion, -modifiedResponseWithResponse, -responseModifierWithBlock
 
-### Community 180 - "Community 180"
+### Community 181 - "Community 181"
 Cohesion: 0.22
 Nodes (8): SDWebImageDownloaderRequestModifier, -initWithBlock, -initWithBody, -initWithHeaders, -initWithMethod, -initWithMethodheadersbody, -modifiedRequestWithRequest, -requestModifierWithBlock
 
-### Community 181 - "Community 181"
+### Community 182 - "Community 182"
 Cohesion: 0.22
 Nodes (8): SDImageAssetManager, -dealloc, -didReceiveMemoryWarning, -getPathForNamebundlepreferredScale, -imageForName, -init, -sharedAssetManager, -storeImageforName
 
-### Community 182 - "Community 182"
+### Community 183 - "Community 183"
 Cohesion: 0.22
 Nodes (2): IntrospectionSelector, PlatformViewController
 
-### Community 183 - "Community 183"
+### Community 184 - "Community 184"
+Cohesion: 0.42
+Nodes (8): blendOver(), contrastRatio(), parseColor(), parseHexColor(), parseRgbaColor(), relativeLuminance(), srgbToLinear(), worstCaseBarContrast()
+
+### Community 185 - "Community 185"
 Cohesion: 0.29
 Nodes (4): SceneDelegate, SceneDelegate, UIResponder, UIWindowSceneDelegate
 
-### Community 184 - "Community 184"
+### Community 186 - "Community 186"
 Cohesion: 0.54
 Nodes (3): currentTask_(), getShouldYield(), performanceEntryReporter_()
 
-### Community 185 - "Community 185"
+### Community 187 - "Community 187"
 Cohesion: 0.54
 Nodes (3): EnumArray(), jsinspector_modern(), operator()
 
-### Community 186 - "Community 186"
+### Community 188 - "Community 188"
 Cohesion: 0.54
 Nodes (3): borderWidth(), getPaddingFrame(), wasLeftAndRightSwapped()
 
-### Community 187 - "Community 187"
+### Community 189 - "Community 189"
 Cohesion: 0.54
 Nodes (3): Cursor(), facebook(), horizontal()
 
-### Community 188 - "Community 188"
+### Community 190 - "Community 190"
 Cohesion: 0.57
 Nodes (4): inputAccessoryViewButtonLabel(), inputAccessoryViewID(), onKeyPressSync(), traits()
 
-### Community 189 - "Community 189"
+### Community 191 - "Community 191"
 Cohesion: 0.54
 Nodes (3): Identity(), isZero(), TransformOperationType()
 
-### Community 190 - "Community 190"
+### Community 192 - "Community 192"
 Cohesion: 0.54
 Nodes (3): folly(), InstanceCallback(), JSCallInvoker()
 
-### Community 191 - "Community 191"
+### Community 193 - "Community 193"
 Cohesion: 0.57
 Nodes (6): AdaptableBinaryFunction(), AdaptableUnaryFunction(), BOOST_CONCEPT_USAGE(), ignore_unused_variable_warning(), require_boolean_expr(), test()
 
-### Community 192 - "Community 192"
+### Community 194 - "Community 194"
 Cohesion: 0.36
 Nodes (4): antistable(), inverse, negate, unantistable()
 
-### Community 194 - "Community 194"
+### Community 195 - "Community 195"
 Cohesion: 0.43
 Nodes (6): is_any_ofF(), is_classifiedF(), is_from_rangeF(), pred_andF(), pred_notF(), pred_orF()
 
-### Community 195 - "Community 195"
+### Community 197 - "Community 197"
 Cohesion: 0.25
 Nodes (7): NSImage, -CGImage, -CIImage, -initWithCGImagescaleorientation, -initWithCIImagescaleorientation, -initWithDatascale, -scale
 
-### Community 196 - "Community 196"
+### Community 198 - "Community 198"
 Cohesion: 0.25
 Nodes (7): SDCallbackQueue, -async, -currentQueue, -globalQueue, -initWithDispatchQueue, -mainQueue, -sync
 
-### Community 197 - "Community 197"
+### Community 199 - "Community 199"
 Cohesion: 0.29
 Nodes (2): formatCategoryBackupState(), timeAgo()
 
-### Community 198 - "Community 198"
+### Community 200 - "Community 200"
 Cohesion: 0.43
 Nodes (4): withCopyArtifacts(), withPodfileSearchPaths(), withUniffiBridge(), withXcodeProjectWiring()
 
-### Community 199 - "Community 199"
+### Community 201 - "Community 201"
 Cohesion: 0.29
 Nodes (2): ModulesProvider, ExpoModulesProvider
 
-### Community 200 - "Community 200"
+### Community 202 - "Community 202"
 Cohesion: 0.48
 Nodes (2): facebook(), syntaxParser()
 
-### Community 201 - "Community 201"
+### Community 203 - "Community 203"
 Cohesion: 0.48
 Nodes (2): CSSColor(), facebook()
 
-### Community 202 - "Community 202"
+### Community 204 - "Community 204"
 Cohesion: 0.48
 Nodes (2): facebook(), inexactEquals()
 
-### Community 203 - "Community 203"
+### Community 205 - "Community 205"
 Cohesion: 0.48
 Nodes (2): jsinspector_modern(), std()
-
-### Community 204 - "Community 204"
-Cohesion: 0.29
-Nodes (1): facebook()
-
-### Community 205 - "Community 205"
-Cohesion: 0.29
-Nodes (1): facebook()
 
 ### Community 206 - "Community 206"
 Cohesion: 0.29
 Nodes (1): facebook()
 
 ### Community 207 - "Community 207"
-Cohesion: 0.48
-Nodes (2): longTaskBuffer_(), PerformanceEntryReporter()
+Cohesion: 0.29
+Nodes (1): facebook()
 
 ### Community 208 - "Community 208"
-Cohesion: 0.48
-Nodes (2): contextOrigin(), shadowView()
+Cohesion: 0.29
+Nodes (1): facebook()
 
 ### Community 209 - "Community 209"
 Cohesion: 0.48
-Nodes (2): ShadowTree(), source()
+Nodes (2): longTaskBuffer_(), PerformanceEntryReporter()
 
 ### Community 210 - "Community 210"
 Cohesion: 0.48
-Nodes (2): onAccessibilityTap(), wasDispatched()
+Nodes (2): contextOrigin(), shadowView()
 
 ### Community 211 - "Community 211"
 Cohesion: 0.48
-Nodes (2): animationDelegate_(), delegate_()
+Nodes (2): ShadowTree(), source()
 
 ### Community 212 - "Community 212"
 Cohesion: 0.48
-Nodes (2): RCTUnwrapEventEmitter(), RCTWrapEventEmitter()
+Nodes (2): onAccessibilityTap(), wasDispatched()
 
 ### Community 213 - "Community 213"
 Cohesion: 0.48
-Nodes (2): HermesRuntimeSamplingProfileSerializer(), tracing()
+Nodes (2): animationDelegate_(), delegate_()
 
 ### Community 214 - "Community 214"
 Cohesion: 0.48
-Nodes (2): facebook(), HermesExecutor()
+Nodes (2): RCTUnwrapEventEmitter(), RCTWrapEventEmitter()
 
 ### Community 215 - "Community 215"
 Cohesion: 0.48
-Nodes (2): facebook(), std()
+Nodes (2): HermesRuntimeSamplingProfileSerializer(), tracing()
 
 ### Community 216 - "Community 216"
 Cohesion: 0.48
-Nodes (2): RuntimeSamplingProfileTraceEventSerializer(), tracing()
+Nodes (2): facebook(), HermesExecutor()
 
 ### Community 217 - "Community 217"
 Cohesion: 0.48
-Nodes (2): Delegate(), enable()
+Nodes (2): facebook(), std()
 
 ### Community 218 - "Community 218"
 Cohesion: 0.48
-Nodes (2): RCTComponentViewDescriptor(), shouldBeRecycled()
+Nodes (2): RuntimeSamplingProfileTraceEventSerializer(), tracing()
 
 ### Community 219 - "Community 219"
 Cohesion: 0.48
-Nodes (2): facebook(), folly()
+Nodes (2): Delegate(), enable()
 
 ### Community 220 - "Community 220"
 Cohesion: 0.48
-Nodes (2): facebook(), getConstants()
+Nodes (2): RCTComponentViewDescriptor(), shouldBeRecycled()
 
 ### Community 221 - "Community 221"
+Cohesion: 0.48
+Nodes (2): facebook(), folly()
+
+### Community 222 - "Community 222"
+Cohesion: 0.48
+Nodes (2): facebook(), getConstants()
+
+### Community 223 - "Community 223"
 Cohesion: 0.48
 Nodes (5): boost::move_detail::enable_if_c
             < !::boost::move_detail::is_nothrow_move_constructible_or_uncopyable<T>::value, const T&>::type
@@ -1930,90 +1944,82 @@ Nodes (5): boost::move_detail::enable_if_c
       >::type
          move_if_noexcept()
 
-### Community 222 - "Community 222"
+### Community 224 - "Community 224"
 Cohesion: 0.43
 Nodes (4): iterator_arrow_result(), make_reverse_iterator(), move_detail::enable_if_convertible<OtherIt, It, reverse_iterator &>::type
          operator=(), reverse_iterator
 
-### Community 223 - "Community 223"
+### Community 225 - "Community 225"
 Cohesion: 0.43
 Nodes (4): core_typeid_(), core_typeid_lib_id(), demangled_name(), typeinfo
 
-### Community 224 - "Community 224"
+### Community 226 - "Community 226"
 Cohesion: 0.38
 Nodes (3): new_allocator, new_allocator<void>, swap()
 
-### Community 225 - "Community 225"
+### Community 227 - "Community 227"
 Cohesion: 0.43
 Nodes (4): distance_to(), equal(), iterator_adaptor, iterator_adaptor_assert_traversal()
 
-### Community 226 - "Community 226"
+### Community 228 - "Community 228"
 Cohesion: 0.38
 Nodes (2): list_iterator, nat
 
-### Community 227 - "Community 227"
+### Community 229 - "Community 229"
 Cohesion: 0.43
 Nodes (4): bidir_node_iterator, load(), save(), serialize()
 
-### Community 228 - "Community 228"
+### Community 230 - "Community 230"
 Cohesion: 0.38
 Nodes (3): backward_compatible_uniform_01, new_uniform_01, uniform_01
 
-### Community 229 - "Community 229"
+### Community 231 - "Community 231"
 Cohesion: 0.29
 Nodes (6): UIImage, -sd_decodedAndScaledDownImageWithImage, -sd_decodedAndScaledDownImageWithImagelimitBytes, -sd_decodedImageWithImage, -sd_isDecoded, -setSd_isDecoded
 
-### Community 230 - "Community 230"
+### Community 232 - "Community 232"
 Cohesion: 0.29
 Nodes (6): SDWebImageLoadState, UIView, -sd_imageLoadStateDictionary, -sd_imageLoadStateForKey, -sd_removeImageLoadStateForKey, -sd_setImageLoadStateforKey
 
-### Community 231 - "Community 231"
+### Community 233 - "Community 233"
 Cohesion: 0.29
 Nodes (6): SDAnimatedImageRep, -copyWithZone, -dealloc, -imageRepWithData, -initWithData, -setPropertywithValue
 
-### Community 232 - "Community 232"
+### Community 234 - "Community 234"
 Cohesion: 0.29
 Nodes (6): SDWebImageOptionsProcessor, -initWithBlock, -optionsProcessorWithBlock, -processedResultForURLoptionscontext, SDWebImageOptionsResult, -initWithOptionscontext
 
-### Community 233 - "Community 233"
+### Community 235 - "Community 235"
 Cohesion: 0.29
 Nodes (6): UIView, -sd_cancelImageLoadOperationWithKey, -sd_imageLoadOperationForKey, -sd_operationDictionary, -sd_removeImageLoadOperationWithKey, -sd_setImageLoadOperationforKey
 
-### Community 234 - "Community 234"
+### Community 236 - "Community 236"
 Cohesion: 0.29
 Nodes (6): SDDeviceHelper, -freeMemory, -screenEDR, -screenMaxEDR, -screenScale, -totalMemory
 
-### Community 235 - "Community 235"
+### Community 237 - "Community 237"
 Cohesion: 0.29
 Nodes (6): SDFileAttributeHelper, -extendedAttributeatPathtraverseLinkerror, -extendedAttributeNamesAtPathtraverseLinkerror, -hasExtendedAttributeatPathtraverseLinkerror, -removeExtendedAttributeatPathtraverseLinkerror, -setExtendedAttributevalueatPathtraverseLinkoverwriteerror
 
-### Community 236 - "Community 236"
+### Community 238 - "Community 238"
 Cohesion: 0.29
 Nodes (1): MainApplication
 
-### Community 237 - "Community 237"
+### Community 239 - "Community 239"
 Cohesion: 0.33
 Nodes (2): intensityForCssBlur(), scrollEdgeBandIntensity()
 
-### Community 238 - "Community 238"
+### Community 240 - "Community 240"
 Cohesion: 0.38
 Nodes (3): ensureDevicePerformanceProfile(), getDevicePerformanceProfile(), runBackgroundDecryptCalibration()
 
-### Community 239 - "Community 239"
-Cohesion: 0.33
-Nodes (2): bucketForUrl(), inputToUrl()
-
 ### Community 241 - "Community 241"
 Cohesion: 0.33
-Nodes (1): facebook()
+Nodes (2): nextBarsVisible(), shouldToggleBarsOnTap()
 
 ### Community 242 - "Community 242"
 Cohesion: 0.33
-Nodes (1): facebook()
-
-### Community 243 - "Community 243"
-Cohesion: 0.33
-Nodes (1): facebook()
+Nodes (2): bucketForUrl(), inputToUrl()
 
 ### Community 244 - "Community 244"
 Cohesion: 0.33
@@ -2073,7 +2079,7 @@ Nodes (1): facebook()
 
 ### Community 258 - "Community 258"
 Cohesion: 0.33
-Nodes (1): CSS_HANDLE_KEYWORD()
+Nodes (1): facebook()
 
 ### Community 259 - "Community 259"
 Cohesion: 0.33
@@ -2085,7 +2091,7 @@ Nodes (1): facebook()
 
 ### Community 261 - "Community 261"
 Cohesion: 0.33
-Nodes (1): facebook()
+Nodes (1): CSS_HANDLE_KEYWORD()
 
 ### Community 262 - "Community 262"
 Cohesion: 0.33
@@ -2177,7 +2183,7 @@ Nodes (1): facebook()
 
 ### Community 284 - "Community 284"
 Cohesion: 0.33
-Nodes (1): Type()
+Nodes (1): facebook()
 
 ### Community 285 - "Community 285"
 Cohesion: 0.33
@@ -2185,19 +2191,19 @@ Nodes (1): facebook()
 
 ### Community 286 - "Community 286"
 Cohesion: 0.33
-Nodes (1): resolve()
+Nodes (1): facebook()
 
 ### Community 287 - "Community 287"
 Cohesion: 0.33
-Nodes (1): facebook()
+Nodes (1): Type()
 
 ### Community 288 - "Community 288"
 Cohesion: 0.33
-Nodes (1): mainDim()
+Nodes (1): facebook()
 
 ### Community 289 - "Community 289"
 Cohesion: 0.33
-Nodes (1): facebook()
+Nodes (1): resolve()
 
 ### Community 290 - "Community 290"
 Cohesion: 0.33
@@ -2205,7 +2211,7 @@ Nodes (1): facebook()
 
 ### Community 291 - "Community 291"
 Cohesion: 0.33
-Nodes (1): facebook()
+Nodes (1): mainDim()
 
 ### Community 292 - "Community 292"
 Cohesion: 0.33
@@ -2237,7 +2243,7 @@ Nodes (1): facebook()
 
 ### Community 299 - "Community 299"
 Cohesion: 0.33
-Nodes (1): computedWidth()
+Nodes (1): facebook()
 
 ### Community 300 - "Community 300"
 Cohesion: 0.33
@@ -2249,7 +2255,7 @@ Nodes (1): facebook()
 
 ### Community 302 - "Community 302"
 Cohesion: 0.33
-Nodes (1): facebook()
+Nodes (1): computedWidth()
 
 ### Community 303 - "Community 303"
 Cohesion: 0.33
@@ -2265,15 +2271,15 @@ Nodes (1): facebook()
 
 ### Community 306 - "Community 306"
 Cohesion: 0.33
-Nodes (1): jsinspector_modern()
+Nodes (1): facebook()
 
 ### Community 307 - "Community 307"
 Cohesion: 0.33
-Nodes (1): jsinspector_modern()
+Nodes (1): facebook()
 
 ### Community 308 - "Community 308"
 Cohesion: 0.33
-Nodes (1): jsinspector_modern()
+Nodes (1): facebook()
 
 ### Community 309 - "Community 309"
 Cohesion: 0.33
@@ -2309,7 +2315,7 @@ Nodes (1): jsinspector_modern()
 
 ### Community 317 - "Community 317"
 Cohesion: 0.33
-Nodes (1): isEligibleForBackgroundTrace()
+Nodes (1): jsinspector_modern()
 
 ### Community 318 - "Community 318"
 Cohesion: 0.33
@@ -2321,7 +2327,7 @@ Nodes (1): jsinspector_modern()
 
 ### Community 320 - "Community 320"
 Cohesion: 0.33
-Nodes (1): reconnectPending_()
+Nodes (1): isEligibleForBackgroundTrace()
 
 ### Community 321 - "Community 321"
 Cohesion: 0.33
@@ -2333,7 +2339,7 @@ Nodes (1): jsinspector_modern()
 
 ### Community 323 - "Community 323"
 Cohesion: 0.33
-Nodes (1): jsinspector_modern()
+Nodes (1): reconnectPending_()
 
 ### Community 324 - "Community 324"
 Cohesion: 0.33
@@ -2353,15 +2359,15 @@ Nodes (1): jsinspector_modern()
 
 ### Community 328 - "Community 328"
 Cohesion: 0.33
-Nodes (1): facebook()
+Nodes (1): jsinspector_modern()
 
 ### Community 329 - "Community 329"
 Cohesion: 0.33
-Nodes (1): RCTBaseTextShadowView()
+Nodes (1): jsinspector_modern()
 
 ### Community 330 - "Community 330"
 Cohesion: 0.33
-Nodes (1): facebook()
+Nodes (1): jsinspector_modern()
 
 ### Community 331 - "Community 331"
 Cohesion: 0.33
@@ -2369,7 +2375,7 @@ Nodes (1): facebook()
 
 ### Community 332 - "Community 332"
 Cohesion: 0.33
-Nodes (1): facebook()
+Nodes (1): RCTBaseTextShadowView()
 
 ### Community 333 - "Community 333"
 Cohesion: 0.33
@@ -2377,7 +2383,7 @@ Nodes (1): facebook()
 
 ### Community 334 - "Community 334"
 Cohesion: 0.33
-Nodes (1): RCTIsReactRootView()
+Nodes (1): facebook()
 
 ### Community 335 - "Community 335"
 Cohesion: 0.33
@@ -2389,7 +2395,7 @@ Nodes (1): facebook()
 
 ### Community 337 - "Community 337"
 Cohesion: 0.33
-Nodes (1): RCTLayoutMetricsEqualToLayoutMetrics()
+Nodes (1): RCTIsReactRootView()
 
 ### Community 338 - "Community 338"
 Cohesion: 0.33
@@ -2397,11 +2403,11 @@ Nodes (1): facebook()
 
 ### Community 339 - "Community 339"
 Cohesion: 0.33
-Nodes (1): jsinspector_modern()
+Nodes (1): facebook()
 
 ### Community 340 - "Community 340"
 Cohesion: 0.33
-Nodes (1): RCTFunctionDescriptorFromType()
+Nodes (1): RCTLayoutMetricsEqualToLayoutMetrics()
 
 ### Community 341 - "Community 341"
 Cohesion: 0.33
@@ -2409,11 +2415,11 @@ Nodes (1): facebook()
 
 ### Community 342 - "Community 342"
 Cohesion: 0.33
-Nodes (1): facebook()
+Nodes (1): jsinspector_modern()
 
 ### Community 343 - "Community 343"
 Cohesion: 0.33
-Nodes (1): RCTStringViewFromNSString()
+Nodes (1): RCTFunctionDescriptorFromType()
 
 ### Community 344 - "Community 344"
 Cohesion: 0.33
@@ -2421,11 +2427,11 @@ Nodes (1): facebook()
 
 ### Community 345 - "Community 345"
 Cohesion: 0.33
-Nodes (1): TurboModulePerfLogger()
+Nodes (1): facebook()
 
 ### Community 346 - "Community 346"
 Cohesion: 0.33
-Nodes (1): facebook()
+Nodes (1): RCTStringViewFromNSString()
 
 ### Community 347 - "Community 347"
 Cohesion: 0.33
@@ -2433,7 +2439,7 @@ Nodes (1): facebook()
 
 ### Community 348 - "Community 348"
 Cohesion: 0.33
-Nodes (1): facebook()
+Nodes (1): TurboModulePerfLogger()
 
 ### Community 349 - "Community 349"
 Cohesion: 0.33
@@ -2561,7 +2567,7 @@ Nodes (1): facebook()
 
 ### Community 380 - "Community 380"
 Cohesion: 0.33
-Nodes (1): LayoutDirection()
+Nodes (1): facebook()
 
 ### Community 381 - "Community 381"
 Cohesion: 0.33
@@ -2573,7 +2579,7 @@ Nodes (1): facebook()
 
 ### Community 383 - "Community 383"
 Cohesion: 0.33
-Nodes (1): facebook()
+Nodes (1): LayoutDirection()
 
 ### Community 384 - "Community 384"
 Cohesion: 0.33
@@ -2593,7 +2599,7 @@ Nodes (1): facebook()
 
 ### Community 388 - "Community 388"
 Cohesion: 0.33
-Nodes (1): extractValue()
+Nodes (1): facebook()
 
 ### Community 389 - "Community 389"
 Cohesion: 0.33
@@ -2605,7 +2611,7 @@ Nodes (1): facebook()
 
 ### Community 391 - "Community 391"
 Cohesion: 0.33
-Nodes (1): facebook()
+Nodes (1): extractValue()
 
 ### Community 392 - "Community 392"
 Cohesion: 0.33
@@ -2709,7 +2715,7 @@ Nodes (1): facebook()
 
 ### Community 417 - "Community 417"
 Cohesion: 0.33
-Nodes (1): animationbackend()
+Nodes (1): facebook()
 
 ### Community 418 - "Community 418"
 Cohesion: 0.33
@@ -2721,7 +2727,7 @@ Nodes (1): facebook()
 
 ### Community 420 - "Community 420"
 Cohesion: 0.33
-Nodes (1): facebook()
+Nodes (1): animationbackend()
 
 ### Community 421 - "Community 421"
 Cohesion: 0.33
@@ -2749,11 +2755,11 @@ Nodes (1): facebook()
 
 ### Community 427 - "Community 427"
 Cohesion: 0.33
-Nodes (1): getMode()
+Nodes (1): facebook()
 
 ### Community 428 - "Community 428"
 Cohesion: 0.33
-Nodes (1): isAttachment()
+Nodes (1): facebook()
 
 ### Community 429 - "Community 429"
 Cohesion: 0.33
@@ -2761,19 +2767,19 @@ Nodes (1): facebook()
 
 ### Community 430 - "Community 430"
 Cohesion: 0.33
-Nodes (1): HyphenationFrequency()
+Nodes (1): getMode()
 
 ### Community 431 - "Community 431"
 Cohesion: 0.33
-Nodes (1): facebook()
+Nodes (1): isAttachment()
 
 ### Community 432 - "Community 432"
 Cohesion: 0.33
-Nodes (1): RCTScrollViewHandleCommand()
+Nodes (1): facebook()
 
 ### Community 433 - "Community 433"
 Cohesion: 0.33
-Nodes (1): facebook()
+Nodes (1): HyphenationFrequency()
 
 ### Community 434 - "Community 434"
 Cohesion: 0.33
@@ -2781,7 +2787,7 @@ Nodes (1): facebook()
 
 ### Community 435 - "Community 435"
 Cohesion: 0.33
-Nodes (1): facebook()
+Nodes (1): RCTScrollViewHandleCommand()
 
 ### Community 436 - "Community 436"
 Cohesion: 0.33
@@ -2845,7 +2851,7 @@ Nodes (1): facebook()
 
 ### Community 451 - "Community 451"
 Cohesion: 0.33
-Nodes (1): HostPlatformViewTraitsInitializer()
+Nodes (1): facebook()
 
 ### Community 452 - "Community 452"
 Cohesion: 0.33
@@ -2857,7 +2863,7 @@ Nodes (1): facebook()
 
 ### Community 454 - "Community 454"
 Cohesion: 0.33
-Nodes (1): facebook()
+Nodes (1): HostPlatformViewTraitsInitializer()
 
 ### Community 455 - "Community 455"
 Cohesion: 0.33
@@ -2933,7 +2939,7 @@ Nodes (1): facebook()
 
 ### Community 473 - "Community 473"
 Cohesion: 0.33
-Nodes (1): AnimationConfigurationType()
+Nodes (1): facebook()
 
 ### Community 474 - "Community 474"
 Cohesion: 0.33
@@ -2945,15 +2951,15 @@ Nodes (1): facebook()
 
 ### Community 476 - "Community 476"
 Cohesion: 0.33
-Nodes (1): facebook()
+Nodes (1): AnimationConfigurationType()
 
 ### Community 477 - "Community 477"
 Cohesion: 0.33
 Nodes (1): facebook()
 
 ### Community 478 - "Community 478"
-Cohesion: 0.53
-Nodes (2): getValue(), value_()
+Cohesion: 0.33
+Nodes (1): facebook()
 
 ### Community 479 - "Community 479"
 Cohesion: 0.33
@@ -3209,23 +3215,23 @@ Nodes (1): facebook()
 
 ### Community 542 - "Community 542"
 Cohesion: 0.33
-Nodes (1): jsinspector_modern()
+Nodes (1): facebook()
 
 ### Community 543 - "Community 543"
 Cohesion: 0.33
-Nodes (1): jsinspector_modern()
+Nodes (1): facebook()
 
 ### Community 544 - "Community 544"
 Cohesion: 0.33
-Nodes (1): facebook()
+Nodes (1): jsinspector_modern()
 
 ### Community 545 - "Community 545"
 Cohesion: 0.33
-Nodes (1): facebook()
+Nodes (1): jsinspector_modern()
 
 ### Community 546 - "Community 546"
 Cohesion: 0.33
-Nodes (1): LegacyUIManagerConstantsProviderBinding()
+Nodes (1): facebook()
 
 ### Community 547 - "Community 547"
 Cohesion: 0.33
@@ -3233,7 +3239,7 @@ Nodes (1): facebook()
 
 ### Community 548 - "Community 548"
 Cohesion: 0.33
-Nodes (1): facebook()
+Nodes (1): LegacyUIManagerConstantsProviderBinding()
 
 ### Community 549 - "Community 549"
 Cohesion: 0.33
@@ -3277,19 +3283,19 @@ Nodes (1): facebook()
 
 ### Community 559 - "Community 559"
 Cohesion: 0.33
-Nodes (1): toString()
+Nodes (1): facebook()
 
 ### Community 560 - "Community 560"
 Cohesion: 0.33
-Nodes (1): GradientKeyword()
+Nodes (1): facebook()
 
 ### Community 561 - "Community 561"
 Cohesion: 0.33
-Nodes (1): facebook()
+Nodes (1): toString()
 
 ### Community 562 - "Community 562"
 Cohesion: 0.33
-Nodes (1): facebook()
+Nodes (1): GradientKeyword()
 
 ### Community 563 - "Community 563"
 Cohesion: 0.33
@@ -3309,7 +3315,7 @@ Nodes (1): facebook()
 
 ### Community 567 - "Community 567"
 Cohesion: 0.33
-Nodes (1): RCTResizeModeFromUIViewContentMode()
+Nodes (1): facebook()
 
 ### Community 568 - "Community 568"
 Cohesion: 0.33
@@ -3317,7 +3323,7 @@ Nodes (1): facebook()
 
 ### Community 569 - "Community 569"
 Cohesion: 0.33
-Nodes (1): facebook()
+Nodes (1): RCTResizeModeFromUIViewContentMode()
 
 ### Community 570 - "Community 570"
 Cohesion: 0.33
@@ -3337,7 +3343,7 @@ Nodes (1): facebook()
 
 ### Community 574 - "Community 574"
 Cohesion: 0.33
-Nodes (1): BridgeNativeModulePerfLogger()
+Nodes (1): facebook()
 
 ### Community 575 - "Community 575"
 Cohesion: 0.33
@@ -3345,7 +3351,7 @@ Nodes (1): facebook()
 
 ### Community 576 - "Community 576"
 Cohesion: 0.33
-Nodes (1): facebook()
+Nodes (1): BridgeNativeModulePerfLogger()
 
 ### Community 577 - "Community 577"
 Cohesion: 0.33
@@ -3369,11 +3375,11 @@ Nodes (1): facebook()
 
 ### Community 582 - "Community 582"
 Cohesion: 0.33
-Nodes (1): tracing()
+Nodes (1): facebook()
 
 ### Community 583 - "Community 583"
 Cohesion: 0.33
-Nodes (1): tracing()
+Nodes (1): facebook()
 
 ### Community 584 - "Community 584"
 Cohesion: 0.33
@@ -3417,15 +3423,15 @@ Nodes (1): tracing()
 
 ### Community 594 - "Community 594"
 Cohesion: 0.33
-Nodes (1): facebook()
+Nodes (1): tracing()
 
 ### Community 595 - "Community 595"
 Cohesion: 0.33
-Nodes (1): facebook()
+Nodes (1): tracing()
 
 ### Community 596 - "Community 596"
 Cohesion: 0.33
-Nodes (1): property()
+Nodes (1): facebook()
 
 ### Community 597 - "Community 597"
 Cohesion: 0.33
@@ -3433,7 +3439,7 @@ Nodes (1): facebook()
 
 ### Community 598 - "Community 598"
 Cohesion: 0.33
-Nodes (1): facebook()
+Nodes (1): property()
 
 ### Community 599 - "Community 599"
 Cohesion: 0.33
@@ -3441,7 +3447,7 @@ Nodes (1): facebook()
 
 ### Community 600 - "Community 600"
 Cohesion: 0.33
-Nodes (1): LowPriorityExecutor()
+Nodes (1): facebook()
 
 ### Community 601 - "Community 601"
 Cohesion: 0.33
@@ -3449,7 +3455,7 @@ Nodes (1): facebook()
 
 ### Community 602 - "Community 602"
 Cohesion: 0.33
-Nodes (1): facebook()
+Nodes (1): LowPriorityExecutor()
 
 ### Community 603 - "Community 603"
 Cohesion: 0.33
@@ -3485,23 +3491,23 @@ Nodes (1): facebook()
 
 ### Community 611 - "Community 611"
 Cohesion: 0.33
-Nodes (1): shouldBeRecycled()
+Nodes (1): facebook()
 
 ### Community 612 - "Community 612"
 Cohesion: 0.33
-Nodes (1): RCTMountingTransactionObserverCoordinator()
+Nodes (1): facebook()
 
 ### Community 613 - "Community 613"
 Cohesion: 0.33
-Nodes (1): facebook()
+Nodes (1): shouldBeRecycled()
 
 ### Community 614 - "Community 614"
 Cohesion: 0.33
-Nodes (1): facebook()
+Nodes (1): RCTMountingTransactionObserverCoordinator()
 
 ### Community 615 - "Community 615"
 Cohesion: 0.33
-Nodes (1): RCTTextInputHandleCommand()
+Nodes (1): facebook()
 
 ### Community 616 - "Community 616"
 Cohesion: 0.33
@@ -3509,7 +3515,7 @@ Nodes (1): facebook()
 
 ### Community 617 - "Community 617"
 Cohesion: 0.33
-Nodes (1): facebook()
+Nodes (1): RCTTextInputHandleCommand()
 
 ### Community 618 - "Community 618"
 Cohesion: 0.33
@@ -3560,136 +3566,136 @@ Cohesion: 0.33
 Nodes (1): facebook()
 
 ### Community 630 - "Community 630"
-Cohesion: 0.53
-Nodes (4): make_unique(), make_unique_definit(), make_unique_nothrow(), make_unique_nothrow_definit()
+Cohesion: 0.33
+Nodes (1): facebook()
 
 ### Community 631 - "Community 631"
-Cohesion: 0.4
-Nodes (2): lightweight_mutex, scoped_lock
+Cohesion: 0.33
+Nodes (1): facebook()
 
 ### Community 632 - "Community 632"
-Cohesion: 0.4
-Nodes (2): lightweight_mutex, scoped_lock
+Cohesion: 0.53
+Nodes (2): getValue(), value_()
 
 ### Community 633 - "Community 633"
 Cohesion: 0.53
-Nodes (4): find_format(), find_format_all(), find_format_all_copy(), find_format_copy()
+Nodes (4): make_unique(), make_unique_definit(), make_unique_nothrow(), make_unique_nothrow_definit()
 
 ### Community 634 - "Community 634"
-Cohesion: 0.53
-Nodes (4): has_const_time_erase, has_const_time_insert, has_native_replace, has_stable_iterators
+Cohesion: 0.4
+Nodes (2): lightweight_mutex, scoped_lock
 
 ### Community 635 - "Community 635"
-Cohesion: 0.53
-Nodes (4): to_lowerF(), to_upperF(), transform_range(), transform_range_copy()
+Cohesion: 0.4
+Nodes (2): lightweight_mutex, scoped_lock
 
 ### Community 636 - "Community 636"
 Cohesion: 0.53
-Nodes (4): assign_alloc(), BOOST_NOEXCEPT_OR_NOTHROW(), move_alloc(), swap_alloc()
+Nodes (4): find_format(), find_format_all(), find_format_all_copy(), find_format_copy()
 
 ### Community 637 - "Community 637"
 Cohesion: 0.53
-Nodes (4): load(), save(), serialization_version(), serialize()
+Nodes (4): has_const_time_erase, has_const_time_insert, has_native_replace, has_stable_iterators
 
 ### Community 638 - "Community 638"
-Cohesion: 0.4
-Nodes (2): param_type, uniform_real
+Cohesion: 0.53
+Nodes (4): to_lowerF(), to_upperF(), transform_range(), transform_range_copy()
 
 ### Community 639 - "Community 639"
-Cohesion: 0.4
-Nodes (2): param_type, uniform_int
+Cohesion: 0.53
+Nodes (4): assign_alloc(), BOOST_NOEXCEPT_OR_NOTHROW(), move_alloc(), swap_alloc()
 
 ### Community 640 - "Community 640"
-Cohesion: 0.47
-Nodes (3): base_from_member(), base_from_member<MemberType&, UniqueID>, BOOST_NOEXCEPT_IF()
+Cohesion: 0.53
+Nodes (4): load(), save(), serialization_version(), serialize()
 
 ### Community 641 - "Community 641"
-Cohesion: 0.6
-Nodes (4): detail(), FOLLY_GCC_DISABLE_WARNING(), unrollUntil(), unrollUntilImpl()
-
-### Community 642 - "Community 642"
-Cohesion: 0.53
-Nodes (4): folly(), operator(), operator_delete(), operator_new()
-
-### Community 643 - "Community 643"
-Cohesion: 0.53
-Nodes (4): folly(), to_ascii_decimal(), to_ascii_size_decimal(), to_ascii_with()
-
-### Community 644 - "Community 644"
-Cohesion: 0.53
-Nodes (4): to_lower(), to_lower_copy(), to_upper(), to_upper_copy()
-
-### Community 645 - "Community 645"
-Cohesion: 0.53
-Nodes (4): assign_in_place(), construct_in_place(), default_init_construct_iterator, emplace_iterator
-
-### Community 646 - "Community 646"
 Cohesion: 0.53
 Nodes (4): any_container_view, begin_for(), end_for(), vtable_for()
 
-### Community 647 - "Community 647"
+### Community 642 - "Community 642"
+Cohesion: 0.4
+Nodes (2): param_type, uniform_real
+
+### Community 643 - "Community 643"
+Cohesion: 0.4
+Nodes (2): param_type, uniform_int
+
+### Community 644 - "Community 644"
+Cohesion: 0.47
+Nodes (3): base_from_member(), base_from_member<MemberType&, UniqueID>, BOOST_NOEXCEPT_IF()
+
+### Community 645 - "Community 645"
+Cohesion: 0.6
+Nodes (4): detail(), FOLLY_GCC_DISABLE_WARNING(), unrollUntil(), unrollUntilImpl()
+
+### Community 646 - "Community 646"
 Cohesion: 0.53
 Nodes (4): cacheline_align_v(), folly(), max_align_v(), operator()
 
+### Community 647 - "Community 647"
+Cohesion: 0.53
+Nodes (4): folly(), operator(), operator_delete(), operator_new()
+
 ### Community 648 - "Community 648"
+Cohesion: 0.53
+Nodes (4): folly(), to_ascii_decimal(), to_ascii_size_decimal(), to_ascii_with()
+
+### Community 649 - "Community 649"
+Cohesion: 0.53
+Nodes (4): blockingRead(), folly(), read(), tuple()
+
+### Community 650 - "Community 650"
+Cohesion: 0.53
+Nodes (4): to_lower(), to_lower_copy(), to_upper(), to_upper_copy()
+
+### Community 651 - "Community 651"
+Cohesion: 0.53
+Nodes (4): assign_in_place(), construct_in_place(), default_init_construct_iterator, emplace_iterator
+
+### Community 652 - "Community 652"
 Cohesion: 0.33
 Nodes (5): SDWebImageDownloaderDecryptor, -base64Decryptor, -decryptedDataWithDataresponse, -decryptorWithBlock, -initWithBlock
 
-### Community 649 - "Community 649"
+### Community 653 - "Community 653"
 Cohesion: 0.33
 Nodes (5): SDWebImageDownloaderConfig, -copyWithZone, -defaultDownloaderConfig, -init, -setOperationClass
 
-### Community 650 - "Community 650"
-Cohesion: 0.33
-Nodes (1): MainActivity
-
-### Community 651 - "Community 651"
+### Community 654 - "Community 654"
 Cohesion: 0.33
 Nodes (1): MainActivity
 
 ### Community 655 - "Community 655"
+Cohesion: 0.33
+Nodes (1): MainActivity
+
+### Community 659 - "Community 659"
+Cohesion: 0.47
+Nodes (3): computeCodeView(), highlightCode(), highlightToLines()
+
+### Community 660 - "Community 660"
 Cohesion: 0.47
 Nodes (3): getPerformanceStorageSettings(), normalizeSettings(), setPerformanceStorageSettings()
 
-### Community 656 - "Community 656"
-Cohesion: 0.4
-Nodes (2): escapeRegExp(), splitForHighlight()
-
-### Community 657 - "Community 657"
-Cohesion: 0.53
-Nodes (4): aesGcmEncrypt(), b64(), b64url(), nameEnvelope()
-
-### Community 658 - "Community 658"
-Cohesion: 0.4
-Nodes (1): RCTBaseTextShadowView()
-
-### Community 659 - "Community 659"
-Cohesion: 0.4
-Nodes (1): RCTResizeModeFromUIViewContentMode()
-
-### Community 660 - "Community 660"
-Cohesion: 0.4
-Nodes (1): facebook()
-
 ### Community 661 - "Community 661"
 Cohesion: 0.4
-Nodes (1): facebook()
+Nodes (3): collectAllFolders(), entry(), listChildren()
 
 ### Community 662 - "Community 662"
 Cohesion: 0.4
-Nodes (1): facebook()
+Nodes (2): escapeRegExp(), splitForHighlight()
 
 ### Community 663 - "Community 663"
-Cohesion: 0.4
-Nodes (1): facebook()
+Cohesion: 0.53
+Nodes (4): aesGcmEncrypt(), b64(), b64url(), nameEnvelope()
 
 ### Community 664 - "Community 664"
 Cohesion: 0.4
-Nodes (1): facebook()
+Nodes (1): RCTBaseTextShadowView()
 
 ### Community 665 - "Community 665"
 Cohesion: 0.4
-Nodes (1): facebook()
+Nodes (1): RCTResizeModeFromUIViewContentMode()
 
 ### Community 666 - "Community 666"
 Cohesion: 0.4
@@ -3725,7 +3731,7 @@ Nodes (1): facebook()
 
 ### Community 674 - "Community 674"
 Cohesion: 0.4
-Nodes (1): parentTag_()
+Nodes (1): facebook()
 
 ### Community 675 - "Community 675"
 Cohesion: 0.4
@@ -3749,7 +3755,7 @@ Nodes (1): facebook()
 
 ### Community 680 - "Community 680"
 Cohesion: 0.4
-Nodes (1): facebook()
+Nodes (1): parentTag_()
 
 ### Community 681 - "Community 681"
 Cohesion: 0.4
@@ -3772,403 +3778,395 @@ Cohesion: 0.4
 Nodes (1): facebook()
 
 ### Community 686 - "Community 686"
+Cohesion: 0.4
+Nodes (1): facebook()
+
+### Community 687 - "Community 687"
+Cohesion: 0.4
+Nodes (1): facebook()
+
+### Community 688 - "Community 688"
+Cohesion: 0.4
+Nodes (1): facebook()
+
+### Community 689 - "Community 689"
+Cohesion: 0.4
+Nodes (1): facebook()
+
+### Community 690 - "Community 690"
+Cohesion: 0.4
+Nodes (1): facebook()
+
+### Community 691 - "Community 691"
+Cohesion: 0.4
+Nodes (1): facebook()
+
+### Community 692 - "Community 692"
 Cohesion: 0.6
 Nodes (3): move(), move_backward(), uninitialized_move()
 
-### Community 687 - "Community 687"
+### Community 693 - "Community 693"
 Cohesion: 0.6
 Nodes (3): false_t, is_convertible, rv
 
-### Community 688 - "Community 688"
+### Community 694 - "Community 694"
 Cohesion: 0.6
 Nodes (3): iterator_to_pointer(), movelib::detail::iterator_to_element_ptr<Iterator>::type
    iterator_to_raw_pointer(), movelib::iterator_traits<Iterator>::pointer
    iterator_to_pointer()
 
-### Community 689 - "Community 689"
+### Community 695 - "Community 695"
 Cohesion: 0.6
 Nodes (3): alignment_dummy, boost_move_tt_is_assignable, boost_move_tt_is_constructible
 
-### Community 690 - "Community 690"
+### Community 696 - "Community 696"
 Cohesion: 0.4
 Nodes (1): ignore()
 
-### Community 691 - "Community 691"
+### Community 697 - "Community 697"
 Cohesion: 0.5
 Nodes (2): make_nvp(), nvp
 
-### Community 692 - "Community 692"
+### Community 698 - "Community 698"
 Cohesion: 0.6
 Nodes (3): has_const_time_erase< ::std::list<T,AllocT> >, has_const_time_insert< ::std::list<T,AllocT> >, has_stable_iterators< ::std::list<T,AllocT> >
 
-### Community 693 - "Community 693"
+### Community 699 - "Community 699"
 Cohesion: 0.6
 Nodes (3): has_const_time_erase< BOOST_STD_EXTENSION_NAMESPACE::slist<T,AllocT> >, has_const_time_insert< BOOST_STD_EXTENSION_NAMESPACE::slist<T,AllocT> >, has_stable_iterators< BOOST_STD_EXTENSION_NAMESPACE::slist<T,AllocT> >
 
-### Community 694 - "Community 694"
+### Community 700 - "Community 700"
 Cohesion: 0.6
 Nodes (3): erase(), insert(), replace()
 
-### Community 695 - "Community 695"
+### Community 701 - "Community 701"
 Cohesion: 0.5
 Nodes (2): check_find_result(), find_format_store
 
-### Community 696 - "Community 696"
+### Community 702 - "Community 702"
 Cohesion: 0.8
 Nodes (3): BOOST_CONCEPT_USAGE(), interop_rand_access_constraints(), interop_single_pass_constraints()
 
-### Community 697 - "Community 697"
+### Community 703 - "Community 703"
 Cohesion: 0.7
 Nodes (3): BOOST_NOEXCEPT(), destructor_impl(), ~generic_hook()
 
-### Community 698 - "Community 698"
+### Community 704 - "Community 704"
 Cohesion: 0.6
 Nodes (2): unbounded(), unbounded_helper
 
-### Community 699 - "Community 699"
+### Community 705 - "Community 705"
 Cohesion: 0.6
 Nodes (3): index_access_sequence(), index_access_sequence_normal(), index_access_sequence_terminal()
 
-### Community 700 - "Community 700"
+### Community 706 - "Community 706"
 Cohesion: 0.5
 Nodes (2): generate(), generator_seed_seq
 
-### Community 701 - "Community 701"
+### Community 707 - "Community 707"
 Cohesion: 0.8
 Nodes (3): muldiv(), muldivmod(), mulmod()
 
-### Community 702 - "Community 702"
+### Community 708 - "Community 708"
 Cohesion: 0.6
 Nodes (2): same_type(), SameTypeConcept
 
-### Community 703 - "Community 703"
+### Community 709 - "Community 709"
 Cohesion: 0.5
 Nodes (2): dm, mem_fn()
 
-### Community 704 - "Community 704"
+### Community 710 - "Community 710"
 Cohesion: 0.6
 Nodes (3): google(), OUTPUT_FOUR_ARG_CONTAINER(), std()
 
-### Community 705 - "Community 705"
+### Community 711 - "Community 711"
 Cohesion: 0.6
 Nodes (3): double_conversion(), StringToDoubleConverter(), StringToFloat()
 
-### Community 706 - "Community 706"
+### Community 712 - "Community 712"
 Cohesion: 0.6
 Nodes (3): folly(), from_time_t(), to_time_t()
 
-### Community 707 - "Community 707"
-Cohesion: 0.6
-Nodes (3): detail(), folly(), mallctlCall()
-
-### Community 708 - "Community 708"
-Cohesion: 0.6
-Nodes (3): closelog(), openlog(), syslog()
-
-### Community 710 - "Community 710"
+### Community 713 - "Community 713"
 Cohesion: 0.6
 Nodes (3): folly(), scope_(), std()
 
-### Community 711 - "Community 711"
+### Community 714 - "Community 714"
+Cohesion: 0.6
+Nodes (3): detail(), folly(), mallctlCall()
+
+### Community 715 - "Community 715"
+Cohesion: 0.6
+Nodes (3): closelog(), openlog(), syslog()
+
+### Community 717 - "Community 717"
 Cohesion: 0.4
 Nodes (4): SDWebImageCacheSerializer, -cacheDataWithImageoriginalDataimageURL, -cacheSerializerWithBlock, -initWithBlock
 
-### Community 712 - "Community 712"
+### Community 718 - "Community 718"
 Cohesion: 0.4
 Nodes (4): NSData, -sd_imageFormatForImageData, -sd_imageFormatFromUTType, -sd_UTTypeFromImageFormat
 
-### Community 713 - "Community 713"
+### Community 719 - "Community 719"
 Cohesion: 0.4
 Nodes (4): SDImageCacheConfig, -copyWithZone, -defaultCacheConfig, -init
 
-### Community 714 - "Community 714"
+### Community 720 - "Community 720"
 Cohesion: 0.4
 Nodes (4): SDWebImageCacheKeyFilter, -cacheKeyFilterWithBlock, -cacheKeyForURL, -initWithBlock
 
-### Community 717 - "Community 717"
+### Community 723 - "Community 723"
 Cohesion: 0.67
 Nodes (2): expo(), facebook()
 
-### Community 720 - "Community 720"
+### Community 726 - "Community 726"
+Cohesion: 0.67
+Nodes (2): numeric_limits<BOOST_LLT>, numeric_limits<BOOST_ULLT>
+
+### Community 727 - "Community 727"
 Cohesion: 0.83
 Nodes (2): function_equal(), function_equal_impl()
 
-### Community 721 - "Community 721"
+### Community 728 - "Community 728"
 Cohesion: 0.67
 Nodes (2): call_delete(), default_delete()
 
-### Community 722 - "Community 722"
+### Community 729 - "Community 729"
 Cohesion: 0.5
 Nodes (1): destruct_n
 
-### Community 723 - "Community 723"
+### Community 730 - "Community 730"
 Cohesion: 0.67
 Nodes (2): movelib::pointer_element<Pointer>::type*
 to_raw_pointer(const Pointer &p)(), to_raw_pointer()
 
-### Community 724 - "Community 724"
+### Community 731 - "Community 731"
 Cohesion: 0.67
 Nodes (2): checked_array_delete(), checked_delete()
 
-### Community 725 - "Community 725"
+### Community 732 - "Community 732"
 Cohesion: 0.5
 Nodes (1): aligned_storage
 
-### Community 726 - "Community 726"
+### Community 733 - "Community 733"
 Cohesion: 0.67
 Nodes (2): R, T
 
-### Community 727 - "Community 727"
+### Community 734 - "Community 734"
+Cohesion: 0.67
+Nodes (2): R, T
+
+### Community 735 - "Community 735"
 Cohesion: 0.5
 Nodes (1): find_iterator_base
 
-### Community 728 - "Community 728"
-Cohesion: 0.67
-Nodes (2): const_formatF(), dissect_formatF()
-
-### Community 729 - "Community 729"
+### Community 736 - "Community 736"
 Cohesion: 0.5
 Nodes (1): back_emplacer
 
-### Community 730 - "Community 730"
+### Community 737 - "Community 737"
 Cohesion: 0.67
 Nodes (2): advance(), advance_impl()
 
-### Community 731 - "Community 731"
+### Community 738 - "Community 738"
 Cohesion: 0.67
 Nodes (2): linear_slist_algorithms, size_t detach_and_dispose()
 
-### Community 732 - "Community 732"
+### Community 739 - "Community 739"
 Cohesion: 0.67
 Nodes (2): slist_base_hook, slist_member_hook
 
-### Community 733 - "Community 733"
+### Community 740 - "Community 740"
 Cohesion: 0.67
 Nodes (2): circular_slist_algorithms, size_t detach_and_dispose()
 
-### Community 734 - "Community 734"
+### Community 741 - "Community 741"
 Cohesion: 0.83
 Nodes (2): BOOST_NOEXCEPT(), to_raw_pointer()
 
-### Community 735 - "Community 735"
+### Community 742 - "Community 742"
 Cohesion: 0.67
 Nodes (2): list_base_hook, list_member_hook
 
-### Community 736 - "Community 736"
+### Community 743 - "Community 743"
 Cohesion: 0.5
 Nodes (1): array_initializer
 
-### Community 737 - "Community 737"
+### Community 744 - "Community 744"
 Cohesion: 0.67
 Nodes (2): default_header_holder(), get_node()
 
-### Community 738 - "Community 738"
+### Community 745 - "Community 745"
 Cohesion: 0.67
 Nodes (2): init_disposer, null_disposer
 
-### Community 739 - "Community 739"
-Cohesion: 0.5
-Nodes (1): equal_to_value
-
-### Community 740 - "Community 740"
-Cohesion: 0.67
-Nodes (2): algo_equal(), algo_lexicographical_compare()
-
-### Community 741 - "Community 741"
-Cohesion: 0.5
-Nodes (1): exception_disposer
-
-### Community 742 - "Community 742"
-Cohesion: 0.67
-Nodes (2): AUX778076_SPEC_NAME(), i_()
-
-### Community 743 - "Community 743"
-Cohesion: 0.67
-Nodes (2): _null_step(), _step()
-
-### Community 744 - "Community 744"
-Cohesion: 0.67
-Nodes (2): _null_step(), _step()
-
-### Community 745 - "Community 745"
-Cohesion: 0.67
-Nodes (2): _chooser(), _impl()
-
 ### Community 746 - "Community 746"
-Cohesion: 0.83
-Nodes (2): integer_log2(), integer_log2_impl()
+Cohesion: 0.67
+Nodes (2): parent_from_member(), ptrdiff_t offset_from_pointer_to_member()
 
 ### Community 747 - "Community 747"
 Cohesion: 0.5
-Nodes (1): scoped_bilock
+Nodes (1): equal_to_value
 
 ### Community 748 - "Community 748"
 Cohesion: 0.67
-Nodes (2): color_ref(), parent_ref()
+Nodes (2): algo_equal(), algo_lexicographical_compare()
 
 ### Community 749 - "Community 749"
-Cohesion: 0.5
-Nodes (1): random_number_generator
+Cohesion: 0.67
+Nodes (2): to_node_ptr(), to_value_ptr()
 
 ### Community 750 - "Community 750"
 Cohesion: 0.5
-Nodes (1): variate_generator
+Nodes (1): exception_disposer
 
 ### Community 751 - "Community 751"
-Cohesion: 0.5
-Nodes (1): shuffle_output
+Cohesion: 0.67
+Nodes (2): AUX778076_SPEC_NAME(), i_()
 
 ### Community 752 - "Community 752"
 Cohesion: 0.67
-Nodes (2): print_vector(), read_vector()
+Nodes (2): _null_step(), _step()
 
 ### Community 753 - "Community 753"
+Cohesion: 0.67
+Nodes (2): _chooser(), _impl()
+
+### Community 754 - "Community 754"
+Cohesion: 0.83
+Nodes (2): integer_log2(), integer_log2_impl()
+
+### Community 755 - "Community 755"
+Cohesion: 0.5
+Nodes (1): scoped_bilock
+
+### Community 756 - "Community 756"
+Cohesion: 0.5
+Nodes (1): random_number_generator
+
+### Community 757 - "Community 757"
+Cohesion: 0.5
+Nodes (1): variate_generator
+
+### Community 758 - "Community 758"
+Cohesion: 0.5
+Nodes (1): shuffle_output
+
+### Community 759 - "Community 759"
+Cohesion: 0.67
+Nodes (2): print_vector(), read_vector()
+
+### Community 760 - "Community 760"
 Cohesion: 0.83
 Nodes (2): generate_int_float_pair(), generate_one_digit()
 
-### Community 754 - "Community 754"
+### Community 761 - "Community 761"
 Cohesion: 0.5
 Nodes (1): uniform_int_float
 
-### Community 755 - "Community 755"
+### Community 762 - "Community 762"
 Cohesion: 0.67
 Nodes (2): type
 const_rbegin(), type
 rbegin()
 
-### Community 756 - "Community 756"
-Cohesion: 0.67
-Nodes (2): type
-const_rend(), type
-rend()
-
-### Community 757 - "Community 757"
-Cohesion: 0.67
-Nodes (2): folly(), storeValue()
-
-### Community 758 - "Community 758"
-Cohesion: 0.67
-Nodes (2): checkpoint_(), custom_stop_watch()
-
-### Community 759 - "Community 759"
-Cohesion: 0.67
-Nodes (2): MoveWrapper(), value()
-
-### Community 760 - "Community 760"
-Cohesion: 0.67
-Nodes (2): folly(), std()
-
-### Community 761 - "Community 761"
-Cohesion: 0.67
-Nodes (2): folly(), operator()
-
-### Community 762 - "Community 762"
-Cohesion: 0.67
-Nodes (2): numeric_limits<BOOST_LLT>, numeric_limits<BOOST_ULLT>
-
 ### Community 763 - "Community 763"
-Cohesion: 0.67
-Nodes (2): R, T
-
-### Community 764 - "Community 764"
-Cohesion: 0.67
-Nodes (2): parent_from_member(), ptrdiff_t offset_from_pointer_to_member()
-
-### Community 765 - "Community 765"
-Cohesion: 0.67
-Nodes (2): to_node_ptr(), to_value_ptr()
-
-### Community 766 - "Community 766"
 Cohesion: 0.67
 Nodes (2): iterator_range, sub_range
 
-### Community 767 - "Community 767"
+### Community 764 - "Community 764"
+Cohesion: 0.67
+Nodes (2): folly(), storeValue()
+
+### Community 765 - "Community 765"
 Cohesion: 0.67
 Nodes (2): bool(), exception_wrapper()
+
+### Community 766 - "Community 766"
+Cohesion: 0.67
+Nodes (2): checkpoint_(), custom_stop_watch()
+
+### Community 767 - "Community 767"
+Cohesion: 0.67
+Nodes (2): MoveWrapper(), value()
 
 ### Community 768 - "Community 768"
 Cohesion: 0.67
 Nodes (2): folly(), partial_ordering_()
 
 ### Community 769 - "Community 769"
+Cohesion: 0.67
+Nodes (2): const_formatF(), dissect_formatF()
+
+### Community 770 - "Community 770"
+Cohesion: 0.67
+Nodes (2): _null_step(), _step()
+
+### Community 771 - "Community 771"
+Cohesion: 0.67
+Nodes (2): color_ref(), parent_ref()
+
+### Community 772 - "Community 772"
+Cohesion: 0.67
+Nodes (2): type
+const_rend(), type
+rend()
+
+### Community 773 - "Community 773"
+Cohesion: 0.67
+Nodes (2): folly(), std()
+
+### Community 774 - "Community 774"
+Cohesion: 0.67
+Nodes (2): folly(), operator()
+
+### Community 775 - "Community 775"
 Cohesion: 0.5
 Nodes (3): UIImage, -sd_extendedObject, -setSd_extendedObject
 
-### Community 770 - "Community 770"
+### Community 776 - "Community 776"
 Cohesion: 0.5
 Nodes (3): SDImageFrame, -frameWithImageduration, -initWithImageduration
 
-### Community 771 - "Community 771"
+### Community 777 - "Community 777"
 Cohesion: 0.5
 Nodes (3): UIImage, -sd_memoryCost, -setSd_memoryCost
 
-### Community 772 - "Community 772"
+### Community 778 - "Community 778"
 Cohesion: 0.5
 Nodes (2): ExpoAppDelegateSubscriber, BeebeebAppDelegate
 
-### Community 773 - "Community 773"
+### Community 779 - "Community 779"
 Cohesion: 0.5
 Nodes (2): BeebeebCryptoModule, NotLinkedException
 
-### Community 776 - "Community 776"
+### Community 782 - "Community 782"
 Cohesion: 0.67
 Nodes (2): extractTextFromXml(), parsePptx()
 
-### Community 777 - "Community 777"
+### Community 784 - "Community 784"
 Cohesion: 0.83
 Nodes (3): base64ToUint8(), constantTimeEqual(), verifyRecoveryPhraseAgainstStoredCheck()
 
-### Community 779 - "Community 779"
+### Community 786 - "Community 786"
 Cohesion: 0.83
 Nodes (3): buildRecoveryKitHTML(), esc(), generateRecoveryKitPDF()
 
-### Community 780 - "Community 780"
+### Community 787 - "Community 787"
 Cohesion: 0.83
 Nodes (3): getExcludedPhotoFolderIds(), setExcludedPhotoFolderIds(), setPhotoFolderExcluded()
 
-### Community 781 - "Community 781"
+### Community 788 - "Community 788"
 Cohesion: 0.83
 Nodes (3): activePhotoPageIndices(), clampPhotoIndex(), photoPrefetchOrder()
 
-### Community 783 - "Community 783"
+### Community 791 - "Community 791"
 Cohesion: 0.67
 Nodes (2): AppGroupContainer, BeebeebConstants
 
-### Community 785 - "Community 785"
-Cohesion: 0.67
-Nodes (1): expo()
-
-### Community 786 - "Community 786"
-Cohesion: 0.67
-Nodes (1): expo()
-
-### Community 787 - "Community 787"
-Cohesion: 0.67
-Nodes (1): expo()
-
-### Community 788 - "Community 788"
-Cohesion: 0.67
-Nodes (1): expo()
-
-### Community 789 - "Community 789"
-Cohesion: 0.67
-Nodes (1): SharedRef()
-
-### Community 790 - "Community 790"
-Cohesion: 0.67
-Nodes (1): expo()
-
-### Community 791 - "Community 791"
-Cohesion: 0.67
-Nodes (1): NativeModule()
-
-### Community 792 - "Community 792"
-Cohesion: 0.67
-Nodes (1): expo()
-
 ### Community 793 - "Community 793"
 Cohesion: 0.67
-Nodes (1): TypedArrayKind()
+Nodes (1): expo()
 
 ### Community 794 - "Community 794"
 Cohesion: 0.67
@@ -4178,167 +4176,199 @@ Nodes (1): expo()
 Cohesion: 0.67
 Nodes (1): expo()
 
-### Community 804 - "Community 804"
+### Community 796 - "Community 796"
 Cohesion: 0.67
-Nodes (1): fast_float()
+Nodes (1): expo()
 
-### Community 805 - "Community 805"
+### Community 797 - "Community 797"
 Cohesion: 0.67
-Nodes (1): fast_float()
+Nodes (1): SharedRef()
 
-### Community 806 - "Community 806"
+### Community 798 - "Community 798"
 Cohesion: 0.67
-Nodes (1): current_function_helper()
+Nodes (1): expo()
 
-### Community 807 - "Community 807"
+### Community 799 - "Community 799"
 Cohesion: 0.67
-Nodes (1): visit_each()
+Nodes (1): NativeModule()
 
-### Community 808 - "Community 808"
+### Community 800 - "Community 800"
 Cohesion: 0.67
-Nodes (1): get_pointer()
+Nodes (1): expo()
 
-### Community 809 - "Community 809"
+### Community 801 - "Community 801"
 Cohesion: 0.67
-Nodes (1): multi_index_container
+Nodes (1): TypedArrayKind()
 
-### Community 810 - "Community 810"
+### Community 802 - "Community 802"
 Cohesion: 0.67
-Nodes (1): unique()
+Nodes (1): expo()
 
-### Community 811 - "Community 811"
+### Community 803 - "Community 803"
 Cohesion: 0.67
-Nodes (1): operator()()
+Nodes (1): expo()
 
 ### Community 812 - "Community 812"
 Cohesion: 0.67
-Nodes (1): force_ptr()
+Nodes (1): fast_float()
 
 ### Community 813 - "Community 813"
 Cohesion: 0.67
-Nodes (1): addressof()
+Nodes (1): fast_float()
 
 ### Community 814 - "Community 814"
 Cohesion: 0.67
-Nodes (1): mref()
+Nodes (1): current_function_helper()
 
 ### Community 815 - "Community 815"
 Cohesion: 0.67
-Nodes (1): noncopyable
+Nodes (1): visit_each()
 
 ### Community 816 - "Community 816"
 Cohesion: 0.67
-Nodes (1): is_convertible_basic_impl<From, To, false>
+Nodes (1): get_pointer()
 
 ### Community 817 - "Community 817"
 Cohesion: 0.67
-Nodes (1): T
+Nodes (1): multi_index_container
 
 ### Community 818 - "Community 818"
 Cohesion: 0.67
-Nodes (1): T
+Nodes (1): unique()
 
 ### Community 819 - "Community 819"
 Cohesion: 0.67
-Nodes (1): Ret
+Nodes (1): operator()()
 
 ### Community 820 - "Community 820"
 Cohesion: 0.67
-Nodes (1): Ret
+Nodes (1): force_ptr()
 
 ### Community 821 - "Community 821"
 Cohesion: 0.67
-Nodes (1): bind_t
+Nodes (1): addressof()
 
 ### Community 822 - "Community 822"
 Cohesion: 0.67
-Nodes (1): bounded_copy()
+Nodes (1): mref()
 
 ### Community 823 - "Community 823"
 Cohesion: 0.67
-Nodes (1): default_next_capacity
+Nodes (1): noncopyable
 
 ### Community 824 - "Community 824"
 Cohesion: 0.67
-Nodes (1): clamp_by_stored_size_type()
+Nodes (1): is_convertible_basic_impl<From, To, false>
 
 ### Community 825 - "Community 825"
 Cohesion: 0.67
-Nodes (1): tuple
+Nodes (1): T
 
 ### Community 826 - "Community 826"
 Cohesion: 0.67
-Nodes (1): value_init()
+Nodes (1): T
 
 ### Community 827 - "Community 827"
 Cohesion: 0.67
-Nodes (1): insert_iterator
+Nodes (1): Ret
 
 ### Community 828 - "Community 828"
 Cohesion: 0.67
-Nodes (1): foo()
+Nodes (1): Ret
 
 ### Community 829 - "Community 829"
 Cohesion: 0.67
-Nodes (1): any()
+Nodes (1): bind_t
 
 ### Community 830 - "Community 830"
 Cohesion: 0.67
-Nodes (1): inverted_typelist()
+Nodes (1): bounded_copy()
 
 ### Community 831 - "Community 831"
 Cohesion: 0.67
-Nodes (1): get_parent_from_member()
+Nodes (1): default_next_capacity
 
 ### Community 832 - "Community 832"
 Cohesion: 0.67
-Nodes (1): get_ptr()
+Nodes (1): clamp_by_stored_size_type()
 
 ### Community 833 - "Community 833"
 Cohesion: 0.67
-Nodes (1): BOOST_INTRUSIVE_HAS_MEMBER_FUNCTION_CALLABLE_WITH_FUNCNAME()
+Nodes (1): tuple
 
 ### Community 834 - "Community 834"
 Cohesion: 0.67
-Nodes (1): twin()
+Nodes (1): value_init()
 
 ### Community 835 - "Community 835"
 Cohesion: 0.67
-Nodes (1): node_cloner()
+Nodes (1): insert_iterator
 
 ### Community 836 - "Community 836"
 Cohesion: 0.67
-Nodes (1): tree_value_compare()
+Nodes (1): foo()
 
 ### Community 837 - "Community 837"
 Cohesion: 0.67
-Nodes (1): uncast()
+Nodes (1): any()
 
 ### Community 838 - "Community 838"
 Cohesion: 0.67
-Nodes (1): usage_requirements()
+Nodes (1): inverted_typelist()
 
 ### Community 839 - "Community 839"
 Cohesion: 0.67
-Nodes (1): integral_c_tag()
+Nodes (1): get_parent_from_member()
 
 ### Community 840 - "Community 840"
 Cohesion: 0.67
-Nodes (1): i_()
+Nodes (1): get_ptr()
 
 ### Community 841 - "Community 841"
 Cohesion: 0.67
-Nodes (1): namespace()
+Nodes (1): BOOST_INTRUSIVE_HAS_MEMBER_FUNCTION_CALLABLE_WITH_FUNCNAME()
 
 ### Community 842 - "Community 842"
 Cohesion: 0.67
-Nodes (1): i_()
+Nodes (1): twin()
 
 ### Community 843 - "Community 843"
 Cohesion: 0.67
-Nodes (1): struct()
+Nodes (1): node_cloner()
 
 ### Community 844 - "Community 844"
+Cohesion: 0.67
+Nodes (1): tree_value_compare()
+
+### Community 845 - "Community 845"
+Cohesion: 0.67
+Nodes (1): uncast()
+
+### Community 846 - "Community 846"
+Cohesion: 0.67
+Nodes (1): usage_requirements()
+
+### Community 847 - "Community 847"
+Cohesion: 0.67
+Nodes (1): integral_c_tag()
+
+### Community 848 - "Community 848"
+Cohesion: 0.67
+Nodes (1): i_()
+
+### Community 849 - "Community 849"
+Cohesion: 0.67
+Nodes (1): namespace()
+
+### Community 850 - "Community 850"
+Cohesion: 0.67
+Nodes (1): i_()
+
+### Community 851 - "Community 851"
+Cohesion: 0.67
+Nodes (1): struct()
+
+### Community 852 - "Community 852"
 Cohesion: 0.67
 Nodes (1): template apply<N1,N2>::type
 #else
@@ -4351,166 +4381,134 @@ Nodes (1): template apply<N1,N2>::type
         , N2
         >::type >::type()
 
-### Community 845 - "Community 845"
+### Community 853 - "Community 853"
 Cohesion: 0.67
 Nodes (1): _wknd()
 
-### Community 846 - "Community 846"
+### Community 854 - "Community 854"
 Cohesion: 0.67
 Nodes (1): i_()
 
-### Community 847 - "Community 847"
+### Community 855 - "Community 855"
 Cohesion: 0.67
 Nodes (1): _count_args()
 
-### Community 848 - "Community 848"
+### Community 856 - "Community 856"
 Cohesion: 0.67
 Nodes (1): namespace()
 
-### Community 849 - "Community 849"
-Cohesion: 0.67
-Nodes (1): reference_wrapper
-
-### Community 850 - "Community 850"
-Cohesion: 0.67
-Nodes (1): reference_wrapper
-
-### Community 851 - "Community 851"
-Cohesion: 0.67
-Nodes (1): value_comparison()
-
-### Community 852 - "Community 852"
-Cohesion: 0.67
-Nodes (1): modify_key_adaptor()
-
-### Community 853 - "Community 853"
-Cohesion: 0.67
-Nodes (1): ordered_index
-
-### Community 854 - "Community 854"
-Cohesion: 0.67
-Nodes (1): raw_ptr()
-
-### Community 855 - "Community 855"
-Cohesion: 0.67
-Nodes (1): bad_archive_exception()
-
-### Community 856 - "Community 856"
-Cohesion: 0.67
-Nodes (1): ranlux_documentation
-
 ### Community 857 - "Community 857"
 Cohesion: 0.67
-Nodes (1): const_mod
+Nodes (1): reference_wrapper
 
 ### Community 858 - "Community 858"
 Cohesion: 0.67
-Nodes (1): BOOST_CONCEPT_USAGE()
+Nodes (1): reference_wrapper
 
 ### Community 859 - "Community 859"
+Cohesion: 0.67
+Nodes (1): value_comparison()
+
+### Community 860 - "Community 860"
+Cohesion: 0.67
+Nodes (1): modify_key_adaptor()
+
+### Community 861 - "Community 861"
+Cohesion: 0.67
+Nodes (1): ordered_index
+
+### Community 862 - "Community 862"
+Cohesion: 0.67
+Nodes (1): raw_ptr()
+
+### Community 863 - "Community 863"
+Cohesion: 0.67
+Nodes (1): bad_archive_exception()
+
+### Community 864 - "Community 864"
+Cohesion: 0.67
+Nodes (1): ranlux_documentation
+
+### Community 865 - "Community 865"
+Cohesion: 0.67
+Nodes (1): const_mod
+
+### Community 866 - "Community 866"
+Cohesion: 0.67
+Nodes (1): BOOST_CONCEPT_USAGE()
+
+### Community 867 - "Community 867"
 Cohesion: 0.67
 Nodes (1): range_difference<T>::type
         distance()
 
-### Community 860 - "Community 860"
+### Community 868 - "Community 868"
 Cohesion: 0.67
 Nodes (1): has_size_type
 
-### Community 861 - "Community 861"
+### Community 869 - "Community 869"
 Cohesion: 0.67
 Nodes (1): safe_bool
 
-### Community 862 - "Community 862"
+### Community 870 - "Community 870"
 Cohesion: 0.67
 Nodes (1): range
 
-### Community 863 - "Community 863"
-Cohesion: 0.67
-Nodes (1): BOOST_BIND()
-
-### Community 864 - "Community 864"
-Cohesion: 0.67
-Nodes (1): BOOST_BIND()
-
-### Community 865 - "Community 865"
-Cohesion: 0.67
-Nodes (1): BOOST_BIND()
-
-### Community 866 - "Community 866"
-Cohesion: 0.67
-Nodes (1): arg()
-
-### Community 867 - "Community 867"
-Cohesion: 0.67
-Nodes (1): test_class
-
-### Community 868 - "Community 868"
-Cohesion: 0.67
-Nodes (1): test_class
-
-### Community 869 - "Community 869"
-Cohesion: 0.67
-Nodes (1): google()
-
-### Community 870 - "Community 870"
-Cohesion: 0.67
-Nodes (1): double_conversion()
-
 ### Community 871 - "Community 871"
 Cohesion: 0.67
-Nodes (1): double_conversion()
+Nodes (1): BOOST_BIND()
 
 ### Community 872 - "Community 872"
 Cohesion: 0.67
-Nodes (1): double_conversion()
+Nodes (1): BOOST_BIND()
 
 ### Community 873 - "Community 873"
 Cohesion: 0.67
-Nodes (1): double_conversion()
+Nodes (1): BOOST_BIND()
 
 ### Community 874 - "Community 874"
 Cohesion: 0.67
-Nodes (1): double_conversion()
+Nodes (1): arg()
 
 ### Community 875 - "Community 875"
 Cohesion: 0.67
-Nodes (1): double_conversion()
+Nodes (1): test_class
 
 ### Community 876 - "Community 876"
 Cohesion: 0.67
-Nodes (1): double_conversion()
+Nodes (1): test_class
 
 ### Community 877 - "Community 877"
 Cohesion: 0.67
-Nodes (1): folly()
+Nodes (1): google()
 
 ### Community 878 - "Community 878"
 Cohesion: 0.67
-Nodes (1): folly()
+Nodes (1): double_conversion()
 
 ### Community 879 - "Community 879"
 Cohesion: 0.67
-Nodes (1): folly()
+Nodes (1): double_conversion()
 
 ### Community 880 - "Community 880"
 Cohesion: 0.67
-Nodes (1): folly()
+Nodes (1): double_conversion()
 
 ### Community 881 - "Community 881"
 Cohesion: 0.67
-Nodes (1): folly()
+Nodes (1): double_conversion()
 
 ### Community 882 - "Community 882"
 Cohesion: 0.67
-Nodes (1): folly()
+Nodes (1): double_conversion()
 
 ### Community 883 - "Community 883"
 Cohesion: 0.67
-Nodes (1): folly()
+Nodes (1): double_conversion()
 
 ### Community 884 - "Community 884"
 Cohesion: 0.67
-Nodes (1): folly()
+Nodes (1): double_conversion()
 
 ### Community 885 - "Community 885"
 Cohesion: 0.67
@@ -4570,7 +4568,7 @@ Nodes (1): folly()
 
 ### Community 899 - "Community 899"
 Cohesion: 0.67
-Nodes (1): arena_index_()
+Nodes (1): folly()
 
 ### Community 900 - "Community 900"
 Cohesion: 0.67
@@ -4598,11 +4596,11 @@ Nodes (1): folly()
 
 ### Community 906 - "Community 906"
 Cohesion: 0.67
-Nodes (1): chrono()
+Nodes (1): folly()
 
 ### Community 907 - "Community 907"
 Cohesion: 0.67
-Nodes (1): folly()
+Nodes (1): arena_index_()
 
 ### Community 908 - "Community 908"
 Cohesion: 0.67
@@ -4630,7 +4628,7 @@ Nodes (1): folly()
 
 ### Community 914 - "Community 914"
 Cohesion: 0.67
-Nodes (1): folly()
+Nodes (1): chrono()
 
 ### Community 915 - "Community 915"
 Cohesion: 0.67
@@ -4642,7 +4640,7 @@ Nodes (1): folly()
 
 ### Community 917 - "Community 917"
 Cohesion: 0.67
-Nodes (1): detail()
+Nodes (1): folly()
 
 ### Community 918 - "Community 918"
 Cohesion: 0.67
@@ -4662,7 +4660,7 @@ Nodes (1): folly()
 
 ### Community 922 - "Community 922"
 Cohesion: 0.67
-Nodes (1): noexcept()
+Nodes (1): folly()
 
 ### Community 923 - "Community 923"
 Cohesion: 0.67
@@ -4674,7 +4672,7 @@ Nodes (1): folly()
 
 ### Community 925 - "Community 925"
 Cohesion: 0.67
-Nodes (1): folly()
+Nodes (1): detail()
 
 ### Community 926 - "Community 926"
 Cohesion: 0.67
@@ -4694,7 +4692,7 @@ Nodes (1): folly()
 
 ### Community 930 - "Community 930"
 Cohesion: 0.67
-Nodes (1): folly()
+Nodes (1): noexcept()
 
 ### Community 931 - "Community 931"
 Cohesion: 0.67
@@ -4818,7 +4816,7 @@ Nodes (1): folly()
 
 ### Community 961 - "Community 961"
 Cohesion: 0.67
-Nodes (1): detail()
+Nodes (1): folly()
 
 ### Community 962 - "Community 962"
 Cohesion: 0.67
@@ -4882,7 +4880,7 @@ Nodes (1): folly()
 
 ### Community 977 - "Community 977"
 Cohesion: 0.67
-Nodes (1): folly()
+Nodes (1): detail()
 
 ### Community 978 - "Community 978"
 Cohesion: 0.67
@@ -4930,53 +4928,85 @@ Nodes (1): folly()
 
 ### Community 989 - "Community 989"
 Cohesion: 0.67
-Nodes (1): __sync_fetch_and_add()
+Nodes (1): folly()
+
+### Community 990 - "Community 990"
+Cohesion: 0.67
+Nodes (1): folly()
+
+### Community 991 - "Community 991"
+Cohesion: 0.67
+Nodes (1): folly()
+
+### Community 992 - "Community 992"
+Cohesion: 0.67
+Nodes (1): folly()
 
 ### Community 993 - "Community 993"
 Cohesion: 0.67
-Nodes (2): UIImage, -sd_imageWithWebPData
+Nodes (1): folly()
 
 ### Community 994 - "Community 994"
 Cohesion: 0.67
-Nodes (2): UIImage, -sd_imageWithGIFData
+Nodes (1): folly()
 
 ### Community 995 - "Community 995"
 Cohesion: 0.67
-Nodes (2): NSBezierPath, -sd_bezierPathWithRoundedRectbyRoundingCornerscornerRadius
+Nodes (1): folly()
 
 ### Community 996 - "Community 996"
 Cohesion: 0.67
-Nodes (1): Weak
+Nodes (1): folly()
 
-### Community 1000 - "Community 1000"
-Cohesion: 1.0
-Nodes (2): addTabBarClearance(), useTabBarBottomInset()
+### Community 997 - "Community 997"
+Cohesion: 0.67
+Nodes (1): __sync_fetch_and_add()
+
+### Community 1001 - "Community 1001"
+Cohesion: 0.67
+Nodes (2): UIImage, -sd_imageWithWebPData
+
+### Community 1002 - "Community 1002"
+Cohesion: 0.67
+Nodes (2): UIImage, -sd_imageWithGIFData
+
+### Community 1003 - "Community 1003"
+Cohesion: 0.67
+Nodes (2): NSBezierPath, -sd_bezierPathWithRoundedRectbyRoundingCornerscornerRadius
 
 ### Community 1004 - "Community 1004"
-Cohesion: 1.0
-Nodes (2): shouldBlockTwoFactorSetupBack(), twoFactorSetupBackAction()
-
-### Community 1007 - "Community 1007"
-Cohesion: 1.0
-Nodes (2): fileThumbnailState(), lockAwareThumbnailFields()
+Cohesion: 0.67
+Nodes (1): Weak
 
 ### Community 1008 - "Community 1008"
 Cohesion: 1.0
+Nodes (2): addTabBarClearance(), useTabBarBottomInset()
+
+### Community 1012 - "Community 1012"
+Cohesion: 1.0
+Nodes (2): shouldBlockTwoFactorSetupBack(), twoFactorSetupBackAction()
+
+### Community 1015 - "Community 1015"
+Cohesion: 1.0
+Nodes (2): fileThumbnailState(), lockAwareThumbnailFields()
+
+### Community 1016 - "Community 1016"
+Cohesion: 1.0
 Nodes (2): deriveSasWords(), fnv1a()
 
-### Community 1010 - "Community 1010"
+### Community 1018 - "Community 1018"
 Cohesion: 1.0
 Nodes (2): calendarPermissionGranted(), ensureCalendarPermission()
 
-### Community 1014 - "Community 1014"
+### Community 1022 - "Community 1022"
 Cohesion: 1.0
 Nodes (2): billingStatusView(), formatBillingDate()
 
-### Community 1162 - "Community 1162"
+### Community 1170 - "Community 1170"
 Cohesion: 1.0
 Nodes (1): NSOperation
 
-### Community 1163 - "Community 1163"
+### Community 1171 - "Community 1171"
 Cohesion: 1.0
 Nodes (1): IntrospectableViewType
 
@@ -5009,1162 +5039,1164 @@ Nodes (1): IntrospectableViewType
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
 - **Thin community `Community 144`** (12 nodes): `biometricDelayLabel()`, `ensureContactsPermission()`, `errorMessage()`, `formatDate()`, `permissionGranted()`, `planLabel()`, `regionDisplayName()`, `SectionHeader()`, `timeAgo()`, `userInitials()`, `withTimeout()`, `SettingsScreen.tsx`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 155`** (10 nodes): `facebook()`, `ScopedShadowTreeRevisionLock.h`, `ScopedShadowTreeRevisionLock.h`, `ScopedShadowTreeRevisionLock.h`, `ScopedShadowTreeRevisionLock.h`, `ScopedShadowTreeRevisionLock.h`, `ScopedShadowTreeRevisionLock.h`, `ScopedShadowTreeRevisionLock.h`, `ScopedShadowTreeRevisionLock.h`, `ScopedShadowTreeRevisionLock.h`
+- **Thin community `Community 157`** (10 nodes): `facebook()`, `ScopedShadowTreeRevisionLock.h`, `ScopedShadowTreeRevisionLock.h`, `ScopedShadowTreeRevisionLock.h`, `ScopedShadowTreeRevisionLock.h`, `ScopedShadowTreeRevisionLock.h`, `ScopedShadowTreeRevisionLock.h`, `ScopedShadowTreeRevisionLock.h`, `ScopedShadowTreeRevisionLock.h`, `ScopedShadowTreeRevisionLock.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 156`** (10 nodes): `facebook()`, `ShadowTreeRevisionConsistencyManager.h`, `ShadowTreeRevisionConsistencyManager.h`, `ShadowTreeRevisionConsistencyManager.h`, `ShadowTreeRevisionConsistencyManager.h`, `ShadowTreeRevisionConsistencyManager.h`, `ShadowTreeRevisionConsistencyManager.h`, `ShadowTreeRevisionConsistencyManager.h`, `ShadowTreeRevisionConsistencyManager.h`, `ShadowTreeRevisionConsistencyManager.h`
+- **Thin community `Community 158`** (10 nodes): `facebook()`, `ShadowTreeRevisionConsistencyManager.h`, `ShadowTreeRevisionConsistencyManager.h`, `ShadowTreeRevisionConsistencyManager.h`, `ShadowTreeRevisionConsistencyManager.h`, `ShadowTreeRevisionConsistencyManager.h`, `ShadowTreeRevisionConsistencyManager.h`, `ShadowTreeRevisionConsistencyManager.h`, `ShadowTreeRevisionConsistencyManager.h`, `ShadowTreeRevisionConsistencyManager.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 157`** (10 nodes): `conversions.h`, `conversions.h`, `conversions.h`, `conversions.h`, `conversions.h`, `conversions.h`, `conversions.h`, `conversions.h`, `conversions.h`, `facebook()`
+- **Thin community `Community 159`** (10 nodes): `conversions.h`, `conversions.h`, `conversions.h`, `conversions.h`, `conversions.h`, `conversions.h`, `conversions.h`, `conversions.h`, `conversions.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 158`** (10 nodes): `ScrollEvent.h`, `ScrollEvent.h`, `ScrollEvent.h`, `ScrollEvent.h`, `ScrollEvent.h`, `ScrollEvent.h`, `ScrollEvent.h`, `ScrollEvent.h`, `ScrollEvent.h`, `facebook()`
+- **Thin community `Community 160`** (10 nodes): `ScrollEvent.h`, `ScrollEvent.h`, `ScrollEvent.h`, `ScrollEvent.h`, `ScrollEvent.h`, `ScrollEvent.h`, `ScrollEvent.h`, `ScrollEvent.h`, `ScrollEvent.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 159`** (10 nodes): `ScrollViewState.h`, `ScrollViewState.h`, `ScrollViewState.h`, `ScrollViewState.h`, `ScrollViewState.h`, `ScrollViewState.h`, `ScrollViewState.h`, `ScrollViewState.h`, `ScrollViewState.h`, `facebook()`
+- **Thin community `Community 161`** (10 nodes): `ScrollViewState.h`, `ScrollViewState.h`, `ScrollViewState.h`, `ScrollViewState.h`, `ScrollViewState.h`, `ScrollViewState.h`, `ScrollViewState.h`, `ScrollViewState.h`, `ScrollViewState.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 160`** (10 nodes): `ScrollViewEventEmitter.h`, `ScrollViewEventEmitter.h`, `ScrollViewEventEmitter.h`, `ScrollViewEventEmitter.h`, `ScrollViewEventEmitter.h`, `ScrollViewEventEmitter.h`, `ScrollViewEventEmitter.h`, `ScrollViewEventEmitter.h`, `ScrollViewEventEmitter.h`, `facebook()`
+- **Thin community `Community 162`** (10 nodes): `ScrollViewEventEmitter.h`, `ScrollViewEventEmitter.h`, `ScrollViewEventEmitter.h`, `ScrollViewEventEmitter.h`, `ScrollViewEventEmitter.h`, `ScrollViewEventEmitter.h`, `ScrollViewEventEmitter.h`, `ScrollViewEventEmitter.h`, `ScrollViewEventEmitter.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 161`** (10 nodes): `HostPlatformScrollViewProps.h`, `HostPlatformScrollViewProps.h`, `HostPlatformScrollViewProps.h`, `HostPlatformScrollViewProps.h`, `HostPlatformScrollViewProps.h`, `HostPlatformScrollViewProps.h`, `HostPlatformScrollViewProps.h`, `HostPlatformScrollViewProps.h`, `HostPlatformScrollViewProps.h`, `facebook()`
+- **Thin community `Community 163`** (10 nodes): `HostPlatformScrollViewProps.h`, `HostPlatformScrollViewProps.h`, `HostPlatformScrollViewProps.h`, `HostPlatformScrollViewProps.h`, `HostPlatformScrollViewProps.h`, `HostPlatformScrollViewProps.h`, `HostPlatformScrollViewProps.h`, `HostPlatformScrollViewProps.h`, `HostPlatformScrollViewProps.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 162`** (10 nodes): `ScrollViewShadowNode.h`, `ScrollViewShadowNode.h`, `ScrollViewShadowNode.h`, `ScrollViewShadowNode.h`, `ScrollViewShadowNode.h`, `ScrollViewShadowNode.h`, `ScrollViewShadowNode.h`, `ScrollViewShadowNode.h`, `ScrollViewShadowNode.h`, `facebook()`
+- **Thin community `Community 164`** (10 nodes): `ScrollViewShadowNode.h`, `ScrollViewShadowNode.h`, `ScrollViewShadowNode.h`, `ScrollViewShadowNode.h`, `ScrollViewShadowNode.h`, `ScrollViewShadowNode.h`, `ScrollViewShadowNode.h`, `ScrollViewShadowNode.h`, `ScrollViewShadowNode.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 163`** (10 nodes): `ScrollViewComponentDescriptor.h`, `ScrollViewComponentDescriptor.h`, `ScrollViewComponentDescriptor.h`, `ScrollViewComponentDescriptor.h`, `ScrollViewComponentDescriptor.h`, `ScrollViewComponentDescriptor.h`, `ScrollViewComponentDescriptor.h`, `ScrollViewComponentDescriptor.h`, `ScrollViewComponentDescriptor.h`, `facebook()`
+- **Thin community `Community 165`** (10 nodes): `ScrollViewComponentDescriptor.h`, `ScrollViewComponentDescriptor.h`, `ScrollViewComponentDescriptor.h`, `ScrollViewComponentDescriptor.h`, `ScrollViewComponentDescriptor.h`, `ScrollViewComponentDescriptor.h`, `ScrollViewComponentDescriptor.h`, `ScrollViewComponentDescriptor.h`, `ScrollViewComponentDescriptor.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 164`** (10 nodes): `primitives.h`, `primitives.h`, `primitives.h`, `primitives.h`, `primitives.h`, `primitives.h`, `primitives.h`, `primitives.h`, `primitives.h`, `ContentInsetAdjustmentBehavior()`
+- **Thin community `Community 166`** (10 nodes): `primitives.h`, `primitives.h`, `primitives.h`, `primitives.h`, `primitives.h`, `primitives.h`, `primitives.h`, `primitives.h`, `primitives.h`, `ContentInsetAdjustmentBehavior()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 165`** (10 nodes): `ScrollViewProps.h`, `ScrollViewProps.h`, `ScrollViewProps.h`, `ScrollViewProps.h`, `ScrollViewProps.h`, `ScrollViewProps.h`, `ScrollViewProps.h`, `ScrollViewProps.h`, `ScrollViewProps.h`, `facebook()`
+- **Thin community `Community 167`** (10 nodes): `ScrollViewProps.h`, `ScrollViewProps.h`, `ScrollViewProps.h`, `ScrollViewProps.h`, `ScrollViewProps.h`, `ScrollViewProps.h`, `ScrollViewProps.h`, `ScrollViewProps.h`, `ScrollViewProps.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 182`** (9 nodes): `IntrospectionSelector.swift`, `IntrospectionSelector`, `.callAsFunction()`, `.from()`, `.init()`, `.withAncestorSelector()`, `.withReceiverSelector()`, `PlatformViewController`, `.`as`()`
+- **Thin community `Community 183`** (9 nodes): `IntrospectionSelector.swift`, `IntrospectionSelector`, `.callAsFunction()`, `.from()`, `.init()`, `.withAncestorSelector()`, `.withReceiverSelector()`, `PlatformViewController`, `.`as`()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 197`** (8 nodes): `emptyStatusCounts()`, `formatCategoryBackupState()`, `formatDateLabel()`, `formatTimeRemaining()`, `SectionHeader()`, `timeAgo()`, `withTimeout()`, `BackupInsightsScreen.tsx`
+- **Thin community `Community 199`** (8 nodes): `emptyStatusCounts()`, `formatCategoryBackupState()`, `formatDateLabel()`, `formatTimeRemaining()`, `SectionHeader()`, `timeAgo()`, `withTimeout()`, `BackupInsightsScreen.tsx`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 199`** (7 nodes): `ExpoModulesProvider.swift`, `ModulesProvider`, `ExpoModulesProvider`, `.getAppCodeSignEntitlements()`, `.getAppDelegateSubscribers()`, `.getModuleClasses()`, `.getReactDelegateHandlers()`
+- **Thin community `Community 201`** (7 nodes): `ExpoModulesProvider.swift`, `ModulesProvider`, `ExpoModulesProvider`, `.getAppCodeSignEntitlements()`, `.getAppDelegateSubscribers()`, `.getModuleClasses()`, `.getReactDelegateHandlers()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 200`** (7 nodes): `facebook()`, `syntaxParser()`, `CSSValueParser.h`, `CSSValueParser.h`, `CSSValueParser.h`, `CSSValueParser.h`, `CSSValueParser.h`
+- **Thin community `Community 202`** (7 nodes): `facebook()`, `syntaxParser()`, `CSSValueParser.h`, `CSSValueParser.h`, `CSSValueParser.h`, `CSSValueParser.h`, `CSSValueParser.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 201`** (7 nodes): `CSSColor()`, `facebook()`, `CSSColor.h`, `CSSColor.h`, `CSSColor.h`, `CSSColor.h`, `CSSColor.h`
+- **Thin community `Community 203`** (7 nodes): `CSSColor()`, `facebook()`, `CSSColor.h`, `CSSColor.h`, `CSSColor.h`, `CSSColor.h`, `CSSColor.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 202`** (7 nodes): `Comparison.h`, `Comparison.h`, `Comparison.h`, `Comparison.h`, `Comparison.h`, `facebook()`, `inexactEquals()`
+- **Thin community `Community 204`** (7 nodes): `Comparison.h`, `Comparison.h`, `Comparison.h`, `Comparison.h`, `Comparison.h`, `facebook()`, `inexactEquals()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 203`** (7 nodes): `UniqueMonostate.h`, `UniqueMonostate.h`, `UniqueMonostate.h`, `UniqueMonostate.h`, `UniqueMonostate.h`, `jsinspector_modern()`, `std()`
+- **Thin community `Community 205`** (7 nodes): `UniqueMonostate.h`, `UniqueMonostate.h`, `UniqueMonostate.h`, `UniqueMonostate.h`, `UniqueMonostate.h`, `jsinspector_modern()`, `std()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 204`** (7 nodes): `JSIDynamic.h`, `JSIDynamic.h`, `JSIDynamic.h`, `JSIDynamic.h`, `JSIDynamic.h`, `JSIDynamic.h`, `facebook()`
+- **Thin community `Community 206`** (7 nodes): `JSIDynamic.h`, `JSIDynamic.h`, `JSIDynamic.h`, `JSIDynamic.h`, `JSIDynamic.h`, `JSIDynamic.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 205`** (7 nodes): `threadsafe.h`, `threadsafe.h`, `threadsafe.h`, `threadsafe.h`, `threadsafe.h`, `threadsafe.h`, `facebook()`
+- **Thin community `Community 207`** (7 nodes): `threadsafe.h`, `threadsafe.h`, `threadsafe.h`, `threadsafe.h`, `threadsafe.h`, `threadsafe.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 206`** (7 nodes): `jsilib.h`, `jsilib.h`, `jsilib.h`, `jsilib.h`, `jsilib.h`, `jsilib.h`, `facebook()`
+- **Thin community `Community 208`** (7 nodes): `jsilib.h`, `jsilib.h`, `jsilib.h`, `jsilib.h`, `jsilib.h`, `jsilib.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 207`** (7 nodes): `PerformanceEntryReporter.h`, `PerformanceEntryReporter.h`, `PerformanceEntryReporter.h`, `PerformanceEntryReporter.h`, `PerformanceEntryReporter.h`, `longTaskBuffer_()`, `PerformanceEntryReporter()`
+- **Thin community `Community 209`** (7 nodes): `PerformanceEntryReporter.h`, `PerformanceEntryReporter.h`, `PerformanceEntryReporter.h`, `PerformanceEntryReporter.h`, `PerformanceEntryReporter.h`, `longTaskBuffer_()`, `PerformanceEntryReporter()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 208`** (7 nodes): `ShadowViewNodePair.h`, `ShadowViewNodePair.h`, `ShadowViewNodePair.h`, `ShadowViewNodePair.h`, `ShadowViewNodePair.h`, `contextOrigin()`, `shadowView()`
+- **Thin community `Community 210`** (7 nodes): `ShadowViewNodePair.h`, `ShadowViewNodePair.h`, `ShadowViewNodePair.h`, `ShadowViewNodePair.h`, `ShadowViewNodePair.h`, `contextOrigin()`, `shadowView()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 209`** (7 nodes): `ShadowTree.h`, `ShadowTree.h`, `ShadowTree.h`, `ShadowTree.h`, `ShadowTree.h`, `ShadowTree()`, `source()`
+- **Thin community `Community 211`** (7 nodes): `ShadowTree.h`, `ShadowTree.h`, `ShadowTree.h`, `ShadowTree.h`, `ShadowTree.h`, `ShadowTree()`, `source()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 210`** (7 nodes): `BaseViewEventEmitter.h`, `BaseViewEventEmitter.h`, `BaseViewEventEmitter.h`, `BaseViewEventEmitter.h`, `BaseViewEventEmitter.h`, `onAccessibilityTap()`, `wasDispatched()`
+- **Thin community `Community 212`** (7 nodes): `BaseViewEventEmitter.h`, `BaseViewEventEmitter.h`, `BaseViewEventEmitter.h`, `BaseViewEventEmitter.h`, `BaseViewEventEmitter.h`, `onAccessibilityTap()`, `wasDispatched()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 211`** (7 nodes): `UIManager.h`, `UIManager.h`, `UIManager.h`, `UIManager.h`, `UIManager.h`, `animationDelegate_()`, `delegate_()`
+- **Thin community `Community 213`** (7 nodes): `UIManager.h`, `UIManager.h`, `UIManager.h`, `UIManager.h`, `UIManager.h`, `animationDelegate_()`, `delegate_()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 212`** (7 nodes): `RCTAttributedTextUtils.h`, `RCTAttributedTextUtils.h`, `RCTAttributedTextUtils.h`, `RCTAttributedTextUtils.h`, `RCTAttributedTextUtils.h`, `RCTUnwrapEventEmitter()`, `RCTWrapEventEmitter()`
+- **Thin community `Community 214`** (7 nodes): `RCTAttributedTextUtils.h`, `RCTAttributedTextUtils.h`, `RCTAttributedTextUtils.h`, `RCTAttributedTextUtils.h`, `RCTAttributedTextUtils.h`, `RCTUnwrapEventEmitter()`, `RCTWrapEventEmitter()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 213`** (7 nodes): `HermesRuntimeSamplingProfileSerializer.h`, `HermesRuntimeSamplingProfileSerializer.h`, `HermesRuntimeSamplingProfileSerializer.h`, `HermesRuntimeSamplingProfileSerializer.h`, `HermesRuntimeSamplingProfileSerializer.h`, `HermesRuntimeSamplingProfileSerializer()`, `tracing()`
+- **Thin community `Community 215`** (7 nodes): `HermesRuntimeSamplingProfileSerializer.h`, `HermesRuntimeSamplingProfileSerializer.h`, `HermesRuntimeSamplingProfileSerializer.h`, `HermesRuntimeSamplingProfileSerializer.h`, `HermesRuntimeSamplingProfileSerializer.h`, `HermesRuntimeSamplingProfileSerializer()`, `tracing()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 214`** (7 nodes): `HermesExecutorFactory.h`, `HermesExecutorFactory.h`, `HermesExecutorFactory.h`, `HermesExecutorFactory.h`, `HermesExecutorFactory.h`, `facebook()`, `HermesExecutor()`
+- **Thin community `Community 216`** (7 nodes): `HermesExecutorFactory.h`, `HermesExecutorFactory.h`, `HermesExecutorFactory.h`, `HermesExecutorFactory.h`, `HermesExecutorFactory.h`, `facebook()`, `HermesExecutor()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 215`** (7 nodes): `facebook()`, `std()`, `Point.h`, `Point.h`, `Point.h`, `Point.h`, `Point.h`
+- **Thin community `Community 217`** (7 nodes): `facebook()`, `std()`, `Point.h`, `Point.h`, `Point.h`, `Point.h`, `Point.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 216`** (7 nodes): `RuntimeSamplingProfileTraceEventSerializer.h`, `RuntimeSamplingProfileTraceEventSerializer.h`, `RuntimeSamplingProfileTraceEventSerializer.h`, `RuntimeSamplingProfileTraceEventSerializer.h`, `RuntimeSamplingProfileTraceEventSerializer.h`, `RuntimeSamplingProfileTraceEventSerializer()`, `tracing()`
+- **Thin community `Community 218`** (7 nodes): `RuntimeSamplingProfileTraceEventSerializer.h`, `RuntimeSamplingProfileTraceEventSerializer.h`, `RuntimeSamplingProfileTraceEventSerializer.h`, `RuntimeSamplingProfileTraceEventSerializer.h`, `RuntimeSamplingProfileTraceEventSerializer.h`, `RuntimeSamplingProfileTraceEventSerializer()`, `tracing()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 217`** (7 nodes): `RunLoopObserver.h`, `RunLoopObserver.h`, `RunLoopObserver.h`, `RunLoopObserver.h`, `RunLoopObserver.h`, `Delegate()`, `enable()`
+- **Thin community `Community 219`** (7 nodes): `RunLoopObserver.h`, `RunLoopObserver.h`, `RunLoopObserver.h`, `RunLoopObserver.h`, `RunLoopObserver.h`, `Delegate()`, `enable()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 218`** (7 nodes): `RCTComponentViewDescriptor.h`, `RCTComponentViewDescriptor.h`, `RCTComponentViewDescriptor.h`, `RCTComponentViewDescriptor.h`, `RCTComponentViewDescriptor.h`, `RCTComponentViewDescriptor()`, `shouldBeRecycled()`
+- **Thin community `Community 220`** (7 nodes): `RCTComponentViewDescriptor.h`, `RCTComponentViewDescriptor.h`, `RCTComponentViewDescriptor.h`, `RCTComponentViewDescriptor.h`, `RCTComponentViewDescriptor.h`, `RCTComponentViewDescriptor()`, `shouldBeRecycled()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 219`** (7 nodes): `facebook()`, `folly()`, `NativeToJsBridge.h`, `NativeToJsBridge.h`, `NativeToJsBridge.h`, `NativeToJsBridge.h`, `NativeToJsBridge.h`
+- **Thin community `Community 221`** (7 nodes): `facebook()`, `folly()`, `NativeToJsBridge.h`, `NativeToJsBridge.h`, `NativeToJsBridge.h`, `NativeToJsBridge.h`, `NativeToJsBridge.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 220`** (7 nodes): `facebook()`, `getConstants()`, `CxxModule.h`, `CxxModule.h`, `CxxModule.h`, `CxxModule.h`, `CxxModule.h`
+- **Thin community `Community 222`** (7 nodes): `facebook()`, `getConstants()`, `CxxModule.h`, `CxxModule.h`, `CxxModule.h`, `CxxModule.h`, `CxxModule.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 226`** (7 nodes): `list_iterator`, `.get_value_traits()`, `.list_iterator()`, `.unconst()`, `nat`, `list_iterator.hpp`, `list_iterator.hpp`
+- **Thin community `Community 228`** (7 nodes): `list_iterator`, `.get_value_traits()`, `.list_iterator()`, `.unconst()`, `nat`, `list_iterator.hpp`, `list_iterator.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 236`** (7 nodes): `MainApplication.kt`, `getJSMainModuleName()`, `getPackages()`, `getUseDeveloperSupport()`, `MainApplication`, `.onConfigurationChanged()`, `.onCreate()`
+- **Thin community `Community 238`** (7 nodes): `MainApplication.kt`, `getJSMainModuleName()`, `getPackages()`, `getUseDeveloperSupport()`, `MainApplication`, `.onConfigurationChanged()`, `.onCreate()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 237`** (7 nodes): `cssShadow()`, `glassMaterial()`, `intensityForCssBlur()`, `modalScrim()`, `scrollEdgeBandHeights()`, `scrollEdgeBandIntensity()`, `glass-recipe.ts`
+- **Thin community `Community 239`** (7 nodes): `cssShadow()`, `glassMaterial()`, `intensityForCssBlur()`, `modalScrim()`, `scrollEdgeBandHeights()`, `scrollEdgeBandIntensity()`, `glass-recipe.ts`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 239`** (7 nodes): `bucketForUrl()`, `createRateLimitedFetch()`, `defaultSleep()`, `inputToUrl()`, `parseResetPauseMs()`, `parseRetryAfterMs()`, `rate-limited-fetch.ts`
+- **Thin community `Community 241`** (7 nodes): `buildInfoSubline()`, `formatPdfPageCounter()`, `formatShareStatus()`, `nextBarsVisible()`, `resolveFolderLabel()`, `shouldToggleBarsOnTap()`, `preview-chrome.ts`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 241`** (6 nodes): `RuntimeSchedulerBinding.h`, `RuntimeSchedulerBinding.h`, `RuntimeSchedulerBinding.h`, `RuntimeSchedulerBinding.h`, `RuntimeSchedulerBinding.h`, `facebook()`
+- **Thin community `Community 242`** (7 nodes): `bucketForUrl()`, `createRateLimitedFetch()`, `defaultSleep()`, `inputToUrl()`, `parseResetPauseMs()`, `parseRetryAfterMs()`, `rate-limited-fetch.ts`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 242`** (6 nodes): `RuntimeSchedulerIntersectionObserverDelegate.h`, `RuntimeSchedulerIntersectionObserverDelegate.h`, `RuntimeSchedulerIntersectionObserverDelegate.h`, `RuntimeSchedulerIntersectionObserverDelegate.h`, `RuntimeSchedulerIntersectionObserverDelegate.h`, `facebook()`
+- **Thin community `Community 244`** (6 nodes): `RuntimeSchedulerBinding.h`, `RuntimeSchedulerBinding.h`, `RuntimeSchedulerBinding.h`, `RuntimeSchedulerBinding.h`, `RuntimeSchedulerBinding.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 243`** (6 nodes): `RuntimeSchedulerCallInvoker.h`, `RuntimeSchedulerCallInvoker.h`, `RuntimeSchedulerCallInvoker.h`, `RuntimeSchedulerCallInvoker.h`, `RuntimeSchedulerCallInvoker.h`, `facebook()`
+- **Thin community `Community 245`** (6 nodes): `RuntimeSchedulerIntersectionObserverDelegate.h`, `RuntimeSchedulerIntersectionObserverDelegate.h`, `RuntimeSchedulerIntersectionObserverDelegate.h`, `RuntimeSchedulerIntersectionObserverDelegate.h`, `RuntimeSchedulerIntersectionObserverDelegate.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 244`** (6 nodes): `primitives.h`, `primitives.h`, `primitives.h`, `primitives.h`, `primitives.h`, `facebook()`
+- **Thin community `Community 246`** (6 nodes): `RuntimeSchedulerCallInvoker.h`, `RuntimeSchedulerCallInvoker.h`, `RuntimeSchedulerCallInvoker.h`, `RuntimeSchedulerCallInvoker.h`, `RuntimeSchedulerCallInvoker.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 245`** (6 nodes): `RuntimeSchedulerEventTimingDelegate.h`, `RuntimeSchedulerEventTimingDelegate.h`, `RuntimeSchedulerEventTimingDelegate.h`, `RuntimeSchedulerEventTimingDelegate.h`, `RuntimeSchedulerEventTimingDelegate.h`, `facebook()`
+- **Thin community `Community 247`** (6 nodes): `primitives.h`, `primitives.h`, `primitives.h`, `primitives.h`, `primitives.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 246`** (6 nodes): `SchedulerPriorityUtils.h`, `SchedulerPriorityUtils.h`, `SchedulerPriorityUtils.h`, `SchedulerPriorityUtils.h`, `SchedulerPriorityUtils.h`, `facebook()`
+- **Thin community `Community 248`** (6 nodes): `RuntimeSchedulerEventTimingDelegate.h`, `RuntimeSchedulerEventTimingDelegate.h`, `RuntimeSchedulerEventTimingDelegate.h`, `RuntimeSchedulerEventTimingDelegate.h`, `RuntimeSchedulerEventTimingDelegate.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 247`** (6 nodes): `RCTConvertHelpers.h`, `RCTConvertHelpers.h`, `RCTConvertHelpers.h`, `RCTConvertHelpers.h`, `RCTConvertHelpers.h`, `facebook()`
+- **Thin community `Community 249`** (6 nodes): `SchedulerPriorityUtils.h`, `SchedulerPriorityUtils.h`, `SchedulerPriorityUtils.h`, `SchedulerPriorityUtils.h`, `SchedulerPriorityUtils.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 248`** (6 nodes): `facebook()`, `ReactNativeFeatureFlagsDefaults.h`, `ReactNativeFeatureFlagsDefaults.h`, `ReactNativeFeatureFlagsDefaults.h`, `ReactNativeFeatureFlagsDefaults.h`, `ReactNativeFeatureFlagsDefaults.h`
+- **Thin community `Community 250`** (6 nodes): `RCTConvertHelpers.h`, `RCTConvertHelpers.h`, `RCTConvertHelpers.h`, `RCTConvertHelpers.h`, `RCTConvertHelpers.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 249`** (6 nodes): `facebook()`, `ReactNativeFeatureFlagsOverridesOSSExperimental.h`, `ReactNativeFeatureFlagsOverridesOSSExperimental.h`, `ReactNativeFeatureFlagsOverridesOSSExperimental.h`, `ReactNativeFeatureFlagsOverridesOSSExperimental.h`, `ReactNativeFeatureFlagsOverridesOSSExperimental.h`
+- **Thin community `Community 251`** (6 nodes): `facebook()`, `ReactNativeFeatureFlagsDefaults.h`, `ReactNativeFeatureFlagsDefaults.h`, `ReactNativeFeatureFlagsDefaults.h`, `ReactNativeFeatureFlagsDefaults.h`, `ReactNativeFeatureFlagsDefaults.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 250`** (6 nodes): `facebook()`, `ReactNativeFeatureFlagsProvider.h`, `ReactNativeFeatureFlagsProvider.h`, `ReactNativeFeatureFlagsProvider.h`, `ReactNativeFeatureFlagsProvider.h`, `ReactNativeFeatureFlagsProvider.h`
+- **Thin community `Community 252`** (6 nodes): `facebook()`, `ReactNativeFeatureFlagsOverridesOSSExperimental.h`, `ReactNativeFeatureFlagsOverridesOSSExperimental.h`, `ReactNativeFeatureFlagsOverridesOSSExperimental.h`, `ReactNativeFeatureFlagsOverridesOSSExperimental.h`, `ReactNativeFeatureFlagsOverridesOSSExperimental.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 251`** (6 nodes): `facebook()`, `ReactNativeFeatureFlagsOverridesOSSCanary.h`, `ReactNativeFeatureFlagsOverridesOSSCanary.h`, `ReactNativeFeatureFlagsOverridesOSSCanary.h`, `ReactNativeFeatureFlagsOverridesOSSCanary.h`, `ReactNativeFeatureFlagsOverridesOSSCanary.h`
+- **Thin community `Community 253`** (6 nodes): `facebook()`, `ReactNativeFeatureFlagsProvider.h`, `ReactNativeFeatureFlagsProvider.h`, `ReactNativeFeatureFlagsProvider.h`, `ReactNativeFeatureFlagsProvider.h`, `ReactNativeFeatureFlagsProvider.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 252`** (6 nodes): `facebook()`, `ReactNativeFeatureFlagsOverridesOSSStable.h`, `ReactNativeFeatureFlagsOverridesOSSStable.h`, `ReactNativeFeatureFlagsOverridesOSSStable.h`, `ReactNativeFeatureFlagsOverridesOSSStable.h`, `ReactNativeFeatureFlagsOverridesOSSStable.h`
+- **Thin community `Community 254`** (6 nodes): `facebook()`, `ReactNativeFeatureFlagsOverridesOSSCanary.h`, `ReactNativeFeatureFlagsOverridesOSSCanary.h`, `ReactNativeFeatureFlagsOverridesOSSCanary.h`, `ReactNativeFeatureFlagsOverridesOSSCanary.h`, `ReactNativeFeatureFlagsOverridesOSSCanary.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 253`** (6 nodes): `facebook()`, `CSSNumber.h`, `CSSNumber.h`, `CSSNumber.h`, `CSSNumber.h`, `CSSNumber.h`
+- **Thin community `Community 255`** (6 nodes): `facebook()`, `ReactNativeFeatureFlagsOverridesOSSStable.h`, `ReactNativeFeatureFlagsOverridesOSSStable.h`, `ReactNativeFeatureFlagsOverridesOSSStable.h`, `ReactNativeFeatureFlagsOverridesOSSStable.h`, `ReactNativeFeatureFlagsOverridesOSSStable.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 254`** (6 nodes): `facebook()`, `CSSFilter.h`, `CSSFilter.h`, `CSSFilter.h`, `CSSFilter.h`, `CSSFilter.h`
+- **Thin community `Community 256`** (6 nodes): `facebook()`, `CSSNumber.h`, `CSSNumber.h`, `CSSNumber.h`, `CSSNumber.h`, `CSSNumber.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 255`** (6 nodes): `facebook()`, `CSSLengthPercentage.h`, `CSSLengthPercentage.h`, `CSSLengthPercentage.h`, `CSSLengthPercentage.h`, `CSSLengthPercentage.h`
+- **Thin community `Community 257`** (6 nodes): `facebook()`, `CSSFilter.h`, `CSSFilter.h`, `CSSFilter.h`, `CSSFilter.h`, `CSSFilter.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 256`** (6 nodes): `facebook()`, `CSSAngleUnit.h`, `CSSAngleUnit.h`, `CSSAngleUnit.h`, `CSSAngleUnit.h`, `CSSAngleUnit.h`
+- **Thin community `Community 258`** (6 nodes): `facebook()`, `CSSLengthPercentage.h`, `CSSLengthPercentage.h`, `CSSLengthPercentage.h`, `CSSLengthPercentage.h`, `CSSLengthPercentage.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 257`** (6 nodes): `facebook()`, `CSSAngle.h`, `CSSAngle.h`, `CSSAngle.h`, `CSSAngle.h`, `CSSAngle.h`
+- **Thin community `Community 259`** (6 nodes): `facebook()`, `CSSAngleUnit.h`, `CSSAngleUnit.h`, `CSSAngleUnit.h`, `CSSAngleUnit.h`, `CSSAngleUnit.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 258`** (6 nodes): `CSS_HANDLE_KEYWORD()`, `CSSKeyword.h`, `CSSKeyword.h`, `CSSKeyword.h`, `CSSKeyword.h`, `CSSKeyword.h`
+- **Thin community `Community 260`** (6 nodes): `facebook()`, `CSSAngle.h`, `CSSAngle.h`, `CSSAngle.h`, `CSSAngle.h`, `CSSAngle.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 259`** (6 nodes): `facebook()`, `CSSCompoundDataType.h`, `CSSCompoundDataType.h`, `CSSCompoundDataType.h`, `CSSCompoundDataType.h`, `CSSCompoundDataType.h`
+- **Thin community `Community 261`** (6 nodes): `CSS_HANDLE_KEYWORD()`, `CSSKeyword.h`, `CSSKeyword.h`, `CSSKeyword.h`, `CSSKeyword.h`, `CSSKeyword.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 260`** (6 nodes): `facebook()`, `CSSLength.h`, `CSSLength.h`, `CSSLength.h`, `CSSLength.h`, `CSSLength.h`
+- **Thin community `Community 262`** (6 nodes): `facebook()`, `CSSCompoundDataType.h`, `CSSCompoundDataType.h`, `CSSCompoundDataType.h`, `CSSCompoundDataType.h`, `CSSCompoundDataType.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 261`** (6 nodes): `facebook()`, `CSSDataType.h`, `CSSDataType.h`, `CSSDataType.h`, `CSSDataType.h`, `CSSDataType.h`
+- **Thin community `Community 263`** (6 nodes): `facebook()`, `CSSLength.h`, `CSSLength.h`, `CSSLength.h`, `CSSLength.h`, `CSSLength.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 262`** (6 nodes): `facebook()`, `CSSLengthUnit.h`, `CSSLengthUnit.h`, `CSSLengthUnit.h`, `CSSLengthUnit.h`, `CSSLengthUnit.h`
+- **Thin community `Community 264`** (6 nodes): `facebook()`, `CSSDataType.h`, `CSSDataType.h`, `CSSDataType.h`, `CSSDataType.h`, `CSSDataType.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 263`** (6 nodes): `facebook()`, `CSSFontVariant.h`, `CSSFontVariant.h`, `CSSFontVariant.h`, `CSSFontVariant.h`, `CSSFontVariant.h`
+- **Thin community `Community 265`** (6 nodes): `facebook()`, `CSSLengthUnit.h`, `CSSLengthUnit.h`, `CSSLengthUnit.h`, `CSSLengthUnit.h`, `CSSLengthUnit.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 264`** (6 nodes): `facebook()`, `CSSZero.h`, `CSSZero.h`, `CSSZero.h`, `CSSZero.h`, `CSSZero.h`
+- **Thin community `Community 266`** (6 nodes): `facebook()`, `CSSFontVariant.h`, `CSSFontVariant.h`, `CSSFontVariant.h`, `CSSFontVariant.h`, `CSSFontVariant.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 265`** (6 nodes): `facebook()`, `CSSPercentage.h`, `CSSPercentage.h`, `CSSPercentage.h`, `CSSPercentage.h`, `CSSPercentage.h`
+- **Thin community `Community 267`** (6 nodes): `facebook()`, `CSSZero.h`, `CSSZero.h`, `CSSZero.h`, `CSSZero.h`, `CSSZero.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 266`** (6 nodes): `facebook()`, `Config.h`, `Config.h`, `Config.h`, `Config.h`, `Config.h`
+- **Thin community `Community 268`** (6 nodes): `facebook()`, `CSSPercentage.h`, `CSSPercentage.h`, `CSSPercentage.h`, `CSSPercentage.h`, `CSSPercentage.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 267`** (6 nodes): `facebook()`, `BoxSizing.h`, `BoxSizing.h`, `BoxSizing.h`, `BoxSizing.h`, `BoxSizing.h`
+- **Thin community `Community 269`** (6 nodes): `facebook()`, `Config.h`, `Config.h`, `Config.h`, `Config.h`, `Config.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 268`** (6 nodes): `facebook()`, `Gutter.h`, `Gutter.h`, `Gutter.h`, `Gutter.h`, `Gutter.h`
+- **Thin community `Community 270`** (6 nodes): `facebook()`, `BoxSizing.h`, `BoxSizing.h`, `BoxSizing.h`, `BoxSizing.h`, `BoxSizing.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 269`** (6 nodes): `facebook()`, `ExperimentalFeature.h`, `ExperimentalFeature.h`, `ExperimentalFeature.h`, `ExperimentalFeature.h`, `ExperimentalFeature.h`
+- **Thin community `Community 271`** (6 nodes): `facebook()`, `Gutter.h`, `Gutter.h`, `Gutter.h`, `Gutter.h`, `Gutter.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 270`** (6 nodes): `facebook()`, `FlexDirection.h`, `FlexDirection.h`, `FlexDirection.h`, `FlexDirection.h`, `FlexDirection.h`
+- **Thin community `Community 272`** (6 nodes): `facebook()`, `ExperimentalFeature.h`, `ExperimentalFeature.h`, `ExperimentalFeature.h`, `ExperimentalFeature.h`, `ExperimentalFeature.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 271`** (6 nodes): `facebook()`, `Errata.h`, `Errata.h`, `Errata.h`, `Errata.h`, `Errata.h`
+- **Thin community `Community 273`** (6 nodes): `facebook()`, `FlexDirection.h`, `FlexDirection.h`, `FlexDirection.h`, `FlexDirection.h`, `FlexDirection.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 272`** (6 nodes): `facebook()`, `Direction.h`, `Direction.h`, `Direction.h`, `Direction.h`, `Direction.h`
+- **Thin community `Community 274`** (6 nodes): `facebook()`, `Errata.h`, `Errata.h`, `Errata.h`, `Errata.h`, `Errata.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 273`** (6 nodes): `facebook()`, `MeasureMode.h`, `MeasureMode.h`, `MeasureMode.h`, `MeasureMode.h`, `MeasureMode.h`
+- **Thin community `Community 275`** (6 nodes): `facebook()`, `Direction.h`, `Direction.h`, `Direction.h`, `Direction.h`, `Direction.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 274`** (6 nodes): `facebook()`, `PhysicalEdge.h`, `PhysicalEdge.h`, `PhysicalEdge.h`, `PhysicalEdge.h`, `PhysicalEdge.h`
+- **Thin community `Community 276`** (6 nodes): `facebook()`, `MeasureMode.h`, `MeasureMode.h`, `MeasureMode.h`, `MeasureMode.h`, `MeasureMode.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 275`** (6 nodes): `facebook()`, `Display.h`, `Display.h`, `Display.h`, `Display.h`, `Display.h`
+- **Thin community `Community 277`** (6 nodes): `facebook()`, `PhysicalEdge.h`, `PhysicalEdge.h`, `PhysicalEdge.h`, `PhysicalEdge.h`, `PhysicalEdge.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 276`** (6 nodes): `facebook()`, `NodeType.h`, `NodeType.h`, `NodeType.h`, `NodeType.h`, `NodeType.h`
+- **Thin community `Community 278`** (6 nodes): `facebook()`, `Display.h`, `Display.h`, `Display.h`, `Display.h`, `Display.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 277`** (6 nodes): `facebook()`, `PositionType.h`, `PositionType.h`, `PositionType.h`, `PositionType.h`, `PositionType.h`
+- **Thin community `Community 279`** (6 nodes): `facebook()`, `NodeType.h`, `NodeType.h`, `NodeType.h`, `NodeType.h`, `NodeType.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 278`** (6 nodes): `facebook()`, `Overflow.h`, `Overflow.h`, `Overflow.h`, `Overflow.h`, `Overflow.h`
+- **Thin community `Community 280`** (6 nodes): `facebook()`, `PositionType.h`, `PositionType.h`, `PositionType.h`, `PositionType.h`, `PositionType.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 279`** (6 nodes): `facebook()`, `Dimension.h`, `Dimension.h`, `Dimension.h`, `Dimension.h`, `Dimension.h`
+- **Thin community `Community 281`** (6 nodes): `facebook()`, `Overflow.h`, `Overflow.h`, `Overflow.h`, `Overflow.h`, `Overflow.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 280`** (6 nodes): `facebook()`, `GridTrackType.h`, `GridTrackType.h`, `GridTrackType.h`, `GridTrackType.h`, `GridTrackType.h`
+- **Thin community `Community 282`** (6 nodes): `facebook()`, `Dimension.h`, `Dimension.h`, `Dimension.h`, `Dimension.h`, `Dimension.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 281`** (6 nodes): `facebook()`, `Wrap.h`, `Wrap.h`, `Wrap.h`, `Wrap.h`, `Wrap.h`
+- **Thin community `Community 283`** (6 nodes): `facebook()`, `GridTrackType.h`, `GridTrackType.h`, `GridTrackType.h`, `GridTrackType.h`, `GridTrackType.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 282`** (6 nodes): `SmallValueBuffer.h`, `SmallValueBuffer.h`, `SmallValueBuffer.h`, `SmallValueBuffer.h`, `SmallValueBuffer.h`, `facebook()`
+- **Thin community `Community 284`** (6 nodes): `facebook()`, `Wrap.h`, `Wrap.h`, `Wrap.h`, `Wrap.h`, `Wrap.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 283`** (6 nodes): `GridLine.h`, `GridLine.h`, `GridLine.h`, `GridLine.h`, `GridLine.h`, `facebook()`
+- **Thin community `Community 285`** (6 nodes): `SmallValueBuffer.h`, `SmallValueBuffer.h`, `SmallValueBuffer.h`, `SmallValueBuffer.h`, `SmallValueBuffer.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 284`** (6 nodes): `StyleValueHandle.h`, `StyleValueHandle.h`, `StyleValueHandle.h`, `StyleValueHandle.h`, `StyleValueHandle.h`, `Type()`
+- **Thin community `Community 286`** (6 nodes): `GridLine.h`, `GridLine.h`, `GridLine.h`, `GridLine.h`, `GridLine.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 285`** (6 nodes): `StyleValuePool.h`, `StyleValuePool.h`, `StyleValuePool.h`, `StyleValuePool.h`, `StyleValuePool.h`, `facebook()`
+- **Thin community `Community 287`** (6 nodes): `StyleValueHandle.h`, `StyleValueHandle.h`, `StyleValueHandle.h`, `StyleValueHandle.h`, `StyleValueHandle.h`, `Type()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 286`** (6 nodes): `StyleSizeLength.h`, `StyleSizeLength.h`, `StyleSizeLength.h`, `StyleSizeLength.h`, `StyleSizeLength.h`, `resolve()`
+- **Thin community `Community 288`** (6 nodes): `StyleValuePool.h`, `StyleValuePool.h`, `StyleValuePool.h`, `StyleValuePool.h`, `StyleValuePool.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 287`** (6 nodes): `facebook()`, `Baseline.h`, `Baseline.h`, `Baseline.h`, `Baseline.h`, `Baseline.h`
+- **Thin community `Community 289`** (6 nodes): `StyleSizeLength.h`, `StyleSizeLength.h`, `StyleSizeLength.h`, `StyleSizeLength.h`, `StyleSizeLength.h`, `resolve()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 288`** (6 nodes): `mainDim()`, `FlexLine.h`, `FlexLine.h`, `FlexLine.h`, `FlexLine.h`, `FlexLine.h`
+- **Thin community `Community 290`** (6 nodes): `facebook()`, `Baseline.h`, `Baseline.h`, `Baseline.h`, `Baseline.h`, `Baseline.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 289`** (6 nodes): `facebook()`, `BoundAxis.h`, `BoundAxis.h`, `BoundAxis.h`, `BoundAxis.h`, `BoundAxis.h`
+- **Thin community `Community 291`** (6 nodes): `mainDim()`, `FlexLine.h`, `FlexLine.h`, `FlexLine.h`, `FlexLine.h`, `FlexLine.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 290`** (6 nodes): `facebook()`, `SizingMode.h`, `SizingMode.h`, `SizingMode.h`, `SizingMode.h`, `SizingMode.h`
+- **Thin community `Community 292`** (6 nodes): `facebook()`, `BoundAxis.h`, `BoundAxis.h`, `BoundAxis.h`, `BoundAxis.h`, `BoundAxis.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 291`** (6 nodes): `facebook()`, `Align.h`, `Align.h`, `Align.h`, `Align.h`, `Align.h`
+- **Thin community `Community 293`** (6 nodes): `facebook()`, `SizingMode.h`, `SizingMode.h`, `SizingMode.h`, `SizingMode.h`, `SizingMode.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 292`** (6 nodes): `facebook()`, `Cache.h`, `Cache.h`, `Cache.h`, `Cache.h`, `Cache.h`
+- **Thin community `Community 294`** (6 nodes): `facebook()`, `Align.h`, `Align.h`, `Align.h`, `Align.h`, `Align.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 293`** (6 nodes): `facebook()`, `FlexDirection.h`, `FlexDirection.h`, `FlexDirection.h`, `FlexDirection.h`, `FlexDirection.h`
+- **Thin community `Community 295`** (6 nodes): `facebook()`, `Cache.h`, `Cache.h`, `Cache.h`, `Cache.h`, `Cache.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 294`** (6 nodes): `facebook()`, `TrailingPosition.h`, `TrailingPosition.h`, `TrailingPosition.h`, `TrailingPosition.h`, `TrailingPosition.h`
+- **Thin community `Community 296`** (6 nodes): `facebook()`, `FlexDirection.h`, `FlexDirection.h`, `FlexDirection.h`, `FlexDirection.h`, `FlexDirection.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 295`** (6 nodes): `facebook()`, `CalculateLayout.h`, `CalculateLayout.h`, `CalculateLayout.h`, `CalculateLayout.h`, `CalculateLayout.h`
+- **Thin community `Community 297`** (6 nodes): `facebook()`, `TrailingPosition.h`, `TrailingPosition.h`, `TrailingPosition.h`, `TrailingPosition.h`, `TrailingPosition.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 296`** (6 nodes): `facebook()`, `PixelGrid.h`, `PixelGrid.h`, `PixelGrid.h`, `PixelGrid.h`, `PixelGrid.h`
+- **Thin community `Community 298`** (6 nodes): `facebook()`, `CalculateLayout.h`, `CalculateLayout.h`, `CalculateLayout.h`, `CalculateLayout.h`, `CalculateLayout.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 297`** (6 nodes): `facebook()`, `AbsoluteLayout.h`, `AbsoluteLayout.h`, `AbsoluteLayout.h`, `AbsoluteLayout.h`, `AbsoluteLayout.h`
+- **Thin community `Community 299`** (6 nodes): `facebook()`, `PixelGrid.h`, `PixelGrid.h`, `PixelGrid.h`, `PixelGrid.h`, `PixelGrid.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 298`** (6 nodes): `LayoutResults.h`, `LayoutResults.h`, `LayoutResults.h`, `LayoutResults.h`, `LayoutResults.h`, `facebook()`
+- **Thin community `Community 300`** (6 nodes): `facebook()`, `AbsoluteLayout.h`, `AbsoluteLayout.h`, `AbsoluteLayout.h`, `AbsoluteLayout.h`, `AbsoluteLayout.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 299`** (6 nodes): `CachedMeasurement.h`, `CachedMeasurement.h`, `CachedMeasurement.h`, `CachedMeasurement.h`, `CachedMeasurement.h`, `computedWidth()`
+- **Thin community `Community 301`** (6 nodes): `LayoutResults.h`, `LayoutResults.h`, `LayoutResults.h`, `LayoutResults.h`, `LayoutResults.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 300`** (6 nodes): `facebook()`, `event.h`, `event.h`, `event.h`, `event.h`, `event.h`
+- **Thin community `Community 302`** (6 nodes): `CachedMeasurement.h`, `CachedMeasurement.h`, `CachedMeasurement.h`, `CachedMeasurement.h`, `CachedMeasurement.h`, `computedWidth()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 301`** (6 nodes): `facebook()`, `AssertFatal.h`, `AssertFatal.h`, `AssertFatal.h`, `AssertFatal.h`, `AssertFatal.h`
+- **Thin community `Community 303`** (6 nodes): `facebook()`, `event.h`, `event.h`, `event.h`, `event.h`, `event.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 302`** (6 nodes): `facebook()`, `Log.h`, `Log.h`, `Log.h`, `Log.h`, `Log.h`
+- **Thin community `Community 304`** (6 nodes): `facebook()`, `AssertFatal.h`, `AssertFatal.h`, `AssertFatal.h`, `AssertFatal.h`, `AssertFatal.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 303`** (6 nodes): `RCTHermesInstance.h`, `RCTHermesInstance.h`, `RCTHermesInstance.h`, `RCTHermesInstance.h`, `RCTHermesInstance.h`, `facebook()`
+- **Thin community `Community 305`** (6 nodes): `facebook()`, `Log.h`, `Log.h`, `Log.h`, `Log.h`, `Log.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 304`** (6 nodes): `RCTLegacyUIManagerConstantsProvider.h`, `RCTLegacyUIManagerConstantsProvider.h`, `RCTLegacyUIManagerConstantsProvider.h`, `RCTLegacyUIManagerConstantsProvider.h`, `RCTLegacyUIManagerConstantsProvider.h`, `facebook()`
+- **Thin community `Community 306`** (6 nodes): `RCTHermesInstance.h`, `RCTHermesInstance.h`, `RCTHermesInstance.h`, `RCTHermesInstance.h`, `RCTHermesInstance.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 305`** (6 nodes): `primitives.h`, `primitives.h`, `primitives.h`, `primitives.h`, `primitives.h`, `facebook()`
+- **Thin community `Community 307`** (6 nodes): `RCTLegacyUIManagerConstantsProvider.h`, `RCTLegacyUIManagerConstantsProvider.h`, `RCTLegacyUIManagerConstantsProvider.h`, `RCTLegacyUIManagerConstantsProvider.h`, `RCTLegacyUIManagerConstantsProvider.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 306`** (6 nodes): `ConsoleTask.h`, `ConsoleTask.h`, `ConsoleTask.h`, `ConsoleTask.h`, `ConsoleTask.h`, `jsinspector_modern()`
+- **Thin community `Community 308`** (6 nodes): `primitives.h`, `primitives.h`, `primitives.h`, `primitives.h`, `primitives.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 307`** (6 nodes): `FallbackRuntimeAgentDelegate.h`, `FallbackRuntimeAgentDelegate.h`, `FallbackRuntimeAgentDelegate.h`, `FallbackRuntimeAgentDelegate.h`, `FallbackRuntimeAgentDelegate.h`, `jsinspector_modern()`
+- **Thin community `Community 309`** (6 nodes): `ConsoleTask.h`, `ConsoleTask.h`, `ConsoleTask.h`, `ConsoleTask.h`, `ConsoleTask.h`, `jsinspector_modern()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 308`** (6 nodes): `HostTargetTraceRecording.h`, `HostTargetTraceRecording.h`, `HostTargetTraceRecording.h`, `HostTargetTraceRecording.h`, `HostTargetTraceRecording.h`, `jsinspector_modern()`
+- **Thin community `Community 310`** (6 nodes): `FallbackRuntimeAgentDelegate.h`, `FallbackRuntimeAgentDelegate.h`, `FallbackRuntimeAgentDelegate.h`, `FallbackRuntimeAgentDelegate.h`, `FallbackRuntimeAgentDelegate.h`, `jsinspector_modern()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 309`** (6 nodes): `StackTrace.h`, `StackTrace.h`, `StackTrace.h`, `StackTrace.h`, `StackTrace.h`, `jsinspector_modern()`
+- **Thin community `Community 311`** (6 nodes): `HostTargetTraceRecording.h`, `HostTargetTraceRecording.h`, `HostTargetTraceRecording.h`, `HostTargetTraceRecording.h`, `HostTargetTraceRecording.h`, `jsinspector_modern()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 310`** (6 nodes): `HostCommand.h`, `HostCommand.h`, `HostCommand.h`, `HostCommand.h`, `HostCommand.h`, `jsinspector_modern()`
+- **Thin community `Community 312`** (6 nodes): `StackTrace.h`, `StackTrace.h`, `StackTrace.h`, `StackTrace.h`, `StackTrace.h`, `jsinspector_modern()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 311`** (6 nodes): `InspectorUtilities.h`, `InspectorUtilities.h`, `InspectorUtilities.h`, `InspectorUtilities.h`, `InspectorUtilities.h`, `jsinspector_modern()`
+- **Thin community `Community 313`** (6 nodes): `HostCommand.h`, `HostCommand.h`, `HostCommand.h`, `HostCommand.h`, `HostCommand.h`, `jsinspector_modern()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 312`** (6 nodes): `ConsoleTaskOrchestrator.h`, `ConsoleTaskOrchestrator.h`, `ConsoleTaskOrchestrator.h`, `ConsoleTaskOrchestrator.h`, `ConsoleTaskOrchestrator.h`, `jsinspector_modern()`
+- **Thin community `Community 314`** (6 nodes): `InspectorUtilities.h`, `InspectorUtilities.h`, `InspectorUtilities.h`, `InspectorUtilities.h`, `InspectorUtilities.h`, `jsinspector_modern()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 313`** (6 nodes): `RuntimeTargetTracingStateObserver.h`, `RuntimeTargetTracingStateObserver.h`, `RuntimeTargetTracingStateObserver.h`, `RuntimeTargetTracingStateObserver.h`, `RuntimeTargetTracingStateObserver.h`, `jsinspector_modern()`
+- **Thin community `Community 315`** (6 nodes): `ConsoleTaskOrchestrator.h`, `ConsoleTaskOrchestrator.h`, `ConsoleTaskOrchestrator.h`, `ConsoleTaskOrchestrator.h`, `ConsoleTaskOrchestrator.h`, `jsinspector_modern()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 314`** (6 nodes): `ExecutionContextManager.h`, `ExecutionContextManager.h`, `ExecutionContextManager.h`, `ExecutionContextManager.h`, `ExecutionContextManager.h`, `jsinspector_modern()`
+- **Thin community `Community 316`** (6 nodes): `RuntimeTargetTracingStateObserver.h`, `RuntimeTargetTracingStateObserver.h`, `RuntimeTargetTracingStateObserver.h`, `RuntimeTargetTracingStateObserver.h`, `RuntimeTargetTracingStateObserver.h`, `jsinspector_modern()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 315`** (6 nodes): `InstanceTarget.h`, `InstanceTarget.h`, `InstanceTarget.h`, `InstanceTarget.h`, `InstanceTarget.h`, `jsinspector_modern()`
+- **Thin community `Community 317`** (6 nodes): `ExecutionContextManager.h`, `ExecutionContextManager.h`, `ExecutionContextManager.h`, `ExecutionContextManager.h`, `ExecutionContextManager.h`, `jsinspector_modern()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 316`** (6 nodes): `TracingAgent.h`, `TracingAgent.h`, `TracingAgent.h`, `TracingAgent.h`, `TracingAgent.h`, `jsinspector_modern()`
+- **Thin community `Community 318`** (6 nodes): `InstanceTarget.h`, `InstanceTarget.h`, `InstanceTarget.h`, `InstanceTarget.h`, `InstanceTarget.h`, `jsinspector_modern()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 317`** (6 nodes): `HostAgent.h`, `HostAgent.h`, `HostAgent.h`, `HostAgent.h`, `HostAgent.h`, `isEligibleForBackgroundTrace()`
+- **Thin community `Community 319`** (6 nodes): `TracingAgent.h`, `TracingAgent.h`, `TracingAgent.h`, `TracingAgent.h`, `TracingAgent.h`, `jsinspector_modern()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 318`** (6 nodes): `EmulationAgent.h`, `EmulationAgent.h`, `EmulationAgent.h`, `EmulationAgent.h`, `EmulationAgent.h`, `jsinspector_modern()`
+- **Thin community `Community 320`** (6 nodes): `HostAgent.h`, `HostAgent.h`, `HostAgent.h`, `HostAgent.h`, `HostAgent.h`, `isEligibleForBackgroundTrace()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 319`** (6 nodes): `InspectorFlags.h`, `InspectorFlags.h`, `InspectorFlags.h`, `InspectorFlags.h`, `InspectorFlags.h`, `jsinspector_modern()`
+- **Thin community `Community 321`** (6 nodes): `EmulationAgent.h`, `EmulationAgent.h`, `EmulationAgent.h`, `EmulationAgent.h`, `EmulationAgent.h`, `jsinspector_modern()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 320`** (6 nodes): `InspectorPackagerConnectionImpl.h`, `InspectorPackagerConnectionImpl.h`, `InspectorPackagerConnectionImpl.h`, `InspectorPackagerConnectionImpl.h`, `InspectorPackagerConnectionImpl.h`, `reconnectPending_()`
+- **Thin community `Community 322`** (6 nodes): `InspectorFlags.h`, `InspectorFlags.h`, `InspectorFlags.h`, `InspectorFlags.h`, `InspectorFlags.h`, `jsinspector_modern()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 321`** (6 nodes): `RuntimeTargetGlobalStateObserver.h`, `RuntimeTargetGlobalStateObserver.h`, `RuntimeTargetGlobalStateObserver.h`, `RuntimeTargetGlobalStateObserver.h`, `RuntimeTargetGlobalStateObserver.h`, `jsinspector_modern()`
+- **Thin community `Community 323`** (6 nodes): `InspectorPackagerConnectionImpl.h`, `InspectorPackagerConnectionImpl.h`, `InspectorPackagerConnectionImpl.h`, `InspectorPackagerConnectionImpl.h`, `InspectorPackagerConnectionImpl.h`, `reconnectPending_()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 322`** (6 nodes): `RuntimeTarget.h`, `RuntimeTarget.h`, `RuntimeTarget.h`, `RuntimeTarget.h`, `RuntimeTarget.h`, `jsinspector_modern()`
+- **Thin community `Community 324`** (6 nodes): `RuntimeTargetGlobalStateObserver.h`, `RuntimeTargetGlobalStateObserver.h`, `RuntimeTargetGlobalStateObserver.h`, `RuntimeTargetGlobalStateObserver.h`, `RuntimeTargetGlobalStateObserver.h`, `jsinspector_modern()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 323`** (6 nodes): `RuntimeAgentDelegate.h`, `RuntimeAgentDelegate.h`, `RuntimeAgentDelegate.h`, `RuntimeAgentDelegate.h`, `RuntimeAgentDelegate.h`, `jsinspector_modern()`
+- **Thin community `Community 325`** (6 nodes): `RuntimeTarget.h`, `RuntimeTarget.h`, `RuntimeTarget.h`, `RuntimeTarget.h`, `RuntimeTarget.h`, `jsinspector_modern()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 324`** (6 nodes): `InstanceAgent.h`, `InstanceAgent.h`, `InstanceAgent.h`, `InstanceAgent.h`, `InstanceAgent.h`, `jsinspector_modern()`
+- **Thin community `Community 326`** (6 nodes): `RuntimeAgentDelegate.h`, `RuntimeAgentDelegate.h`, `RuntimeAgentDelegate.h`, `RuntimeAgentDelegate.h`, `RuntimeAgentDelegate.h`, `jsinspector_modern()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 325`** (6 nodes): `Utf8.h`, `Utf8.h`, `Utf8.h`, `Utf8.h`, `Utf8.h`, `jsinspector_modern()`
+- **Thin community `Community 327`** (6 nodes): `InstanceAgent.h`, `InstanceAgent.h`, `InstanceAgent.h`, `InstanceAgent.h`, `InstanceAgent.h`, `jsinspector_modern()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 326`** (6 nodes): `ConsoleMessage.h`, `ConsoleMessage.h`, `ConsoleMessage.h`, `ConsoleMessage.h`, `ConsoleMessage.h`, `jsinspector_modern()`
+- **Thin community `Community 328`** (6 nodes): `Utf8.h`, `Utf8.h`, `Utf8.h`, `Utf8.h`, `Utf8.h`, `jsinspector_modern()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 327`** (6 nodes): `RuntimeAgent.h`, `RuntimeAgent.h`, `RuntimeAgent.h`, `RuntimeAgent.h`, `RuntimeAgent.h`, `jsinspector_modern()`
+- **Thin community `Community 329`** (6 nodes): `ConsoleMessage.h`, `ConsoleMessage.h`, `ConsoleMessage.h`, `ConsoleMessage.h`, `ConsoleMessage.h`, `jsinspector_modern()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 328`** (6 nodes): `JsErrorHandler.h`, `JsErrorHandler.h`, `JsErrorHandler.h`, `JsErrorHandler.h`, `JsErrorHandler.h`, `facebook()`
+- **Thin community `Community 330`** (6 nodes): `RuntimeAgent.h`, `RuntimeAgent.h`, `RuntimeAgent.h`, `RuntimeAgent.h`, `RuntimeAgent.h`, `jsinspector_modern()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 329`** (6 nodes): `RCTBaseTextShadowView.h`, `RCTBaseTextShadowView.h`, `RCTBaseTextShadowView.h`, `RCTBaseTextShadowView.h`, `RCTBaseTextShadowView.h`, `RCTBaseTextShadowView()`
+- **Thin community `Community 331`** (6 nodes): `JsErrorHandler.h`, `JsErrorHandler.h`, `JsErrorHandler.h`, `JsErrorHandler.h`, `JsErrorHandler.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 330`** (6 nodes): `RCTObjcExecutor.h`, `RCTObjcExecutor.h`, `RCTObjcExecutor.h`, `RCTObjcExecutor.h`, `RCTObjcExecutor.h`, `facebook()`
+- **Thin community `Community 332`** (6 nodes): `RCTBaseTextShadowView.h`, `RCTBaseTextShadowView.h`, `RCTBaseTextShadowView.h`, `RCTBaseTextShadowView.h`, `RCTBaseTextShadowView.h`, `RCTBaseTextShadowView()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 331`** (6 nodes): `NSDataBigString.h`, `NSDataBigString.h`, `NSDataBigString.h`, `NSDataBigString.h`, `NSDataBigString.h`, `facebook()`
+- **Thin community `Community 333`** (6 nodes): `RCTObjcExecutor.h`, `RCTObjcExecutor.h`, `RCTObjcExecutor.h`, `RCTObjcExecutor.h`, `RCTObjcExecutor.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 332`** (6 nodes): `RCTDefaultCxxLogFunction.h`, `RCTDefaultCxxLogFunction.h`, `RCTDefaultCxxLogFunction.h`, `RCTDefaultCxxLogFunction.h`, `RCTDefaultCxxLogFunction.h`, `facebook()`
+- **Thin community `Community 334`** (6 nodes): `NSDataBigString.h`, `NSDataBigString.h`, `NSDataBigString.h`, `NSDataBigString.h`, `NSDataBigString.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 333`** (6 nodes): `RCTNativeModule.h`, `RCTNativeModule.h`, `RCTNativeModule.h`, `RCTNativeModule.h`, `RCTNativeModule.h`, `facebook()`
+- **Thin community `Community 335`** (6 nodes): `RCTDefaultCxxLogFunction.h`, `RCTDefaultCxxLogFunction.h`, `RCTDefaultCxxLogFunction.h`, `RCTDefaultCxxLogFunction.h`, `RCTDefaultCxxLogFunction.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 334`** (6 nodes): `RCTComponent.h`, `RCTComponent.h`, `RCTComponent.h`, `RCTComponent.h`, `RCTComponent.h`, `RCTIsReactRootView()`
+- **Thin community `Community 336`** (6 nodes): `RCTNativeModule.h`, `RCTNativeModule.h`, `RCTNativeModule.h`, `RCTNativeModule.h`, `RCTNativeModule.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 335`** (6 nodes): `RCTJSIExecutorRuntimeInstaller.h`, `RCTJSIExecutorRuntimeInstaller.h`, `RCTJSIExecutorRuntimeInstaller.h`, `RCTJSIExecutorRuntimeInstaller.h`, `RCTJSIExecutorRuntimeInstaller.h`, `facebook()`
+- **Thin community `Community 337`** (6 nodes): `RCTComponent.h`, `RCTComponent.h`, `RCTComponent.h`, `RCTComponent.h`, `RCTComponent.h`, `RCTIsReactRootView()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 336`** (6 nodes): `RCTMessageThread.h`, `RCTMessageThread.h`, `RCTMessageThread.h`, `RCTMessageThread.h`, `RCTMessageThread.h`, `facebook()`
+- **Thin community `Community 338`** (6 nodes): `RCTJSIExecutorRuntimeInstaller.h`, `RCTJSIExecutorRuntimeInstaller.h`, `RCTJSIExecutorRuntimeInstaller.h`, `RCTJSIExecutorRuntimeInstaller.h`, `RCTJSIExecutorRuntimeInstaller.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 337`** (6 nodes): `RCTLayout.h`, `RCTLayout.h`, `RCTLayout.h`, `RCTLayout.h`, `RCTLayout.h`, `RCTLayoutMetricsEqualToLayoutMetrics()`
+- **Thin community `Community 339`** (6 nodes): `RCTMessageThread.h`, `RCTMessageThread.h`, `RCTMessageThread.h`, `RCTMessageThread.h`, `RCTMessageThread.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 338`** (6 nodes): `RCTCxxBridgeDelegate.h`, `RCTCxxBridgeDelegate.h`, `RCTCxxBridgeDelegate.h`, `RCTCxxBridgeDelegate.h`, `RCTCxxBridgeDelegate.h`, `facebook()`
+- **Thin community `Community 340`** (6 nodes): `RCTLayout.h`, `RCTLayout.h`, `RCTLayout.h`, `RCTLayout.h`, `RCTLayout.h`, `RCTLayoutMetricsEqualToLayoutMetrics()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 339`** (6 nodes): `RCTCxxInspectorPackagerConnectionDelegate.h`, `RCTCxxInspectorPackagerConnectionDelegate.h`, `RCTCxxInspectorPackagerConnectionDelegate.h`, `RCTCxxInspectorPackagerConnectionDelegate.h`, `RCTCxxInspectorPackagerConnectionDelegate.h`, `jsinspector_modern()`
+- **Thin community `Community 341`** (6 nodes): `RCTCxxBridgeDelegate.h`, `RCTCxxBridgeDelegate.h`, `RCTCxxBridgeDelegate.h`, `RCTCxxBridgeDelegate.h`, `RCTCxxBridgeDelegate.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 340`** (6 nodes): `RCTBridgeMethod.h`, `RCTBridgeMethod.h`, `RCTBridgeMethod.h`, `RCTBridgeMethod.h`, `RCTBridgeMethod.h`, `RCTFunctionDescriptorFromType()`
+- **Thin community `Community 342`** (6 nodes): `RCTCxxInspectorPackagerConnectionDelegate.h`, `RCTCxxInspectorPackagerConnectionDelegate.h`, `RCTCxxInspectorPackagerConnectionDelegate.h`, `RCTCxxInspectorPackagerConnectionDelegate.h`, `RCTCxxInspectorPackagerConnectionDelegate.h`, `jsinspector_modern()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 341`** (6 nodes): `DispatchMessageQueueThread.h`, `DispatchMessageQueueThread.h`, `DispatchMessageQueueThread.h`, `DispatchMessageQueueThread.h`, `DispatchMessageQueueThread.h`, `facebook()`
+- **Thin community `Community 343`** (6 nodes): `RCTBridgeMethod.h`, `RCTBridgeMethod.h`, `RCTBridgeMethod.h`, `RCTBridgeMethod.h`, `RCTBridgeMethod.h`, `RCTFunctionDescriptorFromType()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 342`** (6 nodes): `RCTCxxUtils.h`, `RCTCxxUtils.h`, `RCTCxxUtils.h`, `RCTCxxUtils.h`, `RCTCxxUtils.h`, `facebook()`
+- **Thin community `Community 344`** (6 nodes): `DispatchMessageQueueThread.h`, `DispatchMessageQueueThread.h`, `DispatchMessageQueueThread.h`, `DispatchMessageQueueThread.h`, `DispatchMessageQueueThread.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 343`** (6 nodes): `RCTNetworkConversions.h`, `RCTNetworkConversions.h`, `RCTNetworkConversions.h`, `RCTNetworkConversions.h`, `RCTNetworkConversions.h`, `RCTStringViewFromNSString()`
+- **Thin community `Community 345`** (6 nodes): `RCTCxxUtils.h`, `RCTCxxUtils.h`, `RCTCxxUtils.h`, `RCTCxxUtils.h`, `RCTCxxUtils.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 344`** (6 nodes): `TurboModuleWithJSIBindings.h`, `TurboModuleWithJSIBindings.h`, `TurboModuleWithJSIBindings.h`, `TurboModuleWithJSIBindings.h`, `TurboModuleWithJSIBindings.h`, `facebook()`
+- **Thin community `Community 346`** (6 nodes): `RCTNetworkConversions.h`, `RCTNetworkConversions.h`, `RCTNetworkConversions.h`, `RCTNetworkConversions.h`, `RCTNetworkConversions.h`, `RCTStringViewFromNSString()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 345`** (6 nodes): `TurboModulePerfLogger.h`, `TurboModulePerfLogger.h`, `TurboModulePerfLogger.h`, `TurboModulePerfLogger.h`, `TurboModulePerfLogger.h`, `TurboModulePerfLogger()`
+- **Thin community `Community 347`** (6 nodes): `TurboModuleWithJSIBindings.h`, `TurboModuleWithJSIBindings.h`, `TurboModuleWithJSIBindings.h`, `TurboModuleWithJSIBindings.h`, `TurboModuleWithJSIBindings.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 346`** (6 nodes): `facebook()`, `Error.h`, `Error.h`, `Error.h`, `Error.h`, `Error.h`
+- **Thin community `Community 348`** (6 nodes): `TurboModulePerfLogger.h`, `TurboModulePerfLogger.h`, `TurboModulePerfLogger.h`, `TurboModulePerfLogger.h`, `TurboModulePerfLogger.h`, `TurboModulePerfLogger()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 347`** (6 nodes): `facebook()`, `HighResTimeStamp.h`, `HighResTimeStamp.h`, `HighResTimeStamp.h`, `HighResTimeStamp.h`, `HighResTimeStamp.h`
+- **Thin community `Community 349`** (6 nodes): `facebook()`, `Error.h`, `Error.h`, `Error.h`, `Error.h`, `Error.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 348`** (6 nodes): `facebook()`, `Bool.h`, `Bool.h`, `Bool.h`, `Bool.h`, `Bool.h`
+- **Thin community `Community 350`** (6 nodes): `facebook()`, `HighResTimeStamp.h`, `HighResTimeStamp.h`, `HighResTimeStamp.h`, `HighResTimeStamp.h`, `HighResTimeStamp.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 349`** (6 nodes): `facebook()`, `Dynamic.h`, `Dynamic.h`, `Dynamic.h`, `Dynamic.h`, `Dynamic.h`
+- **Thin community `Community 351`** (6 nodes): `facebook()`, `Bool.h`, `Bool.h`, `Bool.h`, `Bool.h`, `Bool.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 350`** (6 nodes): `facebook()`, `LongLivedObject.h`, `LongLivedObject.h`, `LongLivedObject.h`, `LongLivedObject.h`, `LongLivedObject.h`
+- **Thin community `Community 352`** (6 nodes): `facebook()`, `Dynamic.h`, `Dynamic.h`, `Dynamic.h`, `Dynamic.h`, `Dynamic.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 351`** (6 nodes): `facebook()`, `Array.h`, `Array.h`, `Array.h`, `Array.h`, `Array.h`
+- **Thin community `Community 353`** (6 nodes): `facebook()`, `LongLivedObject.h`, `LongLivedObject.h`, `LongLivedObject.h`, `LongLivedObject.h`, `LongLivedObject.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 352`** (6 nodes): `facebook()`, `CallbackWrapper.h`, `CallbackWrapper.h`, `CallbackWrapper.h`, `CallbackWrapper.h`, `CallbackWrapper.h`
+- **Thin community `Community 354`** (6 nodes): `facebook()`, `Array.h`, `Array.h`, `Array.h`, `Array.h`, `Array.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 353`** (6 nodes): `facebook()`, `Number.h`, `Number.h`, `Number.h`, `Number.h`, `Number.h`
+- **Thin community `Community 355`** (6 nodes): `facebook()`, `CallbackWrapper.h`, `CallbackWrapper.h`, `CallbackWrapper.h`, `CallbackWrapper.h`, `CallbackWrapper.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 354`** (6 nodes): `PerformanceEntryBuffer.h`, `PerformanceEntryBuffer.h`, `PerformanceEntryBuffer.h`, `PerformanceEntryBuffer.h`, `PerformanceEntryBuffer.h`, `facebook()`
+- **Thin community `Community 356`** (6 nodes): `facebook()`, `Number.h`, `Number.h`, `Number.h`, `Number.h`, `Number.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 355`** (6 nodes): `PerformanceEntryKeyedBuffer.h`, `PerformanceEntryKeyedBuffer.h`, `PerformanceEntryKeyedBuffer.h`, `PerformanceEntryKeyedBuffer.h`, `PerformanceEntryKeyedBuffer.h`, `facebook()`
+- **Thin community `Community 357`** (6 nodes): `PerformanceEntryBuffer.h`, `PerformanceEntryBuffer.h`, `PerformanceEntryBuffer.h`, `PerformanceEntryBuffer.h`, `PerformanceEntryBuffer.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 356`** (6 nodes): `PerformanceEntryCircularBuffer.h`, `PerformanceEntryCircularBuffer.h`, `PerformanceEntryCircularBuffer.h`, `PerformanceEntryCircularBuffer.h`, `PerformanceEntryCircularBuffer.h`, `facebook()`
+- **Thin community `Community 358`** (6 nodes): `PerformanceEntryKeyedBuffer.h`, `PerformanceEntryKeyedBuffer.h`, `PerformanceEntryKeyedBuffer.h`, `PerformanceEntryKeyedBuffer.h`, `PerformanceEntryKeyedBuffer.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 357`** (6 nodes): `PerformanceObserverRegistry.h`, `PerformanceObserverRegistry.h`, `PerformanceObserverRegistry.h`, `PerformanceObserverRegistry.h`, `PerformanceObserverRegistry.h`, `facebook()`
+- **Thin community `Community 359`** (6 nodes): `PerformanceEntryCircularBuffer.h`, `PerformanceEntryCircularBuffer.h`, `PerformanceEntryCircularBuffer.h`, `PerformanceEntryCircularBuffer.h`, `PerformanceEntryCircularBuffer.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 358`** (6 nodes): `facebook()`, `HermesInstance.h`, `HermesInstance.h`, `HermesInstance.h`, `HermesInstance.h`, `HermesInstance.h`
+- **Thin community `Community 360`** (6 nodes): `PerformanceObserverRegistry.h`, `PerformanceObserverRegistry.h`, `PerformanceObserverRegistry.h`, `PerformanceObserverRegistry.h`, `PerformanceObserverRegistry.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 359`** (6 nodes): `RCTBlobCollector.h`, `RCTBlobCollector.h`, `RCTBlobCollector.h`, `RCTBlobCollector.h`, `RCTBlobCollector.h`, `facebook()`
+- **Thin community `Community 361`** (6 nodes): `facebook()`, `HermesInstance.h`, `HermesInstance.h`, `HermesInstance.h`, `HermesInstance.h`, `HermesInstance.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 360`** (6 nodes): `OSCompat.h`, `OSCompat.h`, `OSCompat.h`, `OSCompat.h`, `OSCompat.h`, `facebook()`
+- **Thin community `Community 362`** (6 nodes): `RCTBlobCollector.h`, `RCTBlobCollector.h`, `RCTBlobCollector.h`, `RCTBlobCollector.h`, `RCTBlobCollector.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 361`** (6 nodes): `facebook()`, `ImageTelemetry.h`, `ImageTelemetry.h`, `ImageTelemetry.h`, `ImageTelemetry.h`, `ImageTelemetry.h`
+- **Thin community `Community 363`** (6 nodes): `OSCompat.h`, `OSCompat.h`, `OSCompat.h`, `OSCompat.h`, `OSCompat.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 362`** (6 nodes): `facebook()`, `ImageRequest.h`, `ImageRequest.h`, `ImageRequest.h`, `ImageRequest.h`, `ImageRequest.h`
+- **Thin community `Community 364`** (6 nodes): `facebook()`, `ImageTelemetry.h`, `ImageTelemetry.h`, `ImageTelemetry.h`, `ImageTelemetry.h`, `ImageTelemetry.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 363`** (6 nodes): `facebook()`, `ImageResponseObserverCoordinator.h`, `ImageResponseObserverCoordinator.h`, `ImageResponseObserverCoordinator.h`, `ImageResponseObserverCoordinator.h`, `ImageResponseObserverCoordinator.h`
+- **Thin community `Community 365`** (6 nodes): `facebook()`, `ImageRequest.h`, `ImageRequest.h`, `ImageRequest.h`, `ImageRequest.h`, `ImageRequest.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 364`** (6 nodes): `facebook()`, `ImageManager.h`, `ImageManager.h`, `ImageManager.h`, `ImageManager.h`, `ImageManager.h`
+- **Thin community `Community 366`** (6 nodes): `facebook()`, `ImageResponseObserverCoordinator.h`, `ImageResponseObserverCoordinator.h`, `ImageResponseObserverCoordinator.h`, `ImageResponseObserverCoordinator.h`, `ImageResponseObserverCoordinator.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 365`** (6 nodes): `facebook()`, `ImageResponse.h`, `ImageResponse.h`, `ImageResponse.h`, `ImageResponse.h`, `ImageResponse.h`
+- **Thin community `Community 367`** (6 nodes): `facebook()`, `ImageManager.h`, `ImageManager.h`, `ImageManager.h`, `ImageManager.h`, `ImageManager.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 366`** (6 nodes): `facebook()`, `ImageResponseObserver.h`, `ImageResponseObserver.h`, `ImageResponseObserver.h`, `ImageResponseObserver.h`, `ImageResponseObserver.h`
+- **Thin community `Community 368`** (6 nodes): `facebook()`, `ImageResponse.h`, `ImageResponse.h`, `ImageResponse.h`, `ImageResponse.h`, `ImageResponse.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 367`** (6 nodes): `facebook()`, `EventLogger.h`, `EventLogger.h`, `EventLogger.h`, `EventLogger.h`, `EventLogger.h`
+- **Thin community `Community 369`** (6 nodes): `facebook()`, `ImageResponseObserver.h`, `ImageResponseObserver.h`, `ImageResponseObserver.h`, `ImageResponseObserver.h`, `ImageResponseObserver.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 368`** (6 nodes): `facebook()`, `RawPropsParser.h`, `RawPropsParser.h`, `RawPropsParser.h`, `RawPropsParser.h`, `RawPropsParser.h`
+- **Thin community `Community 370`** (6 nodes): `facebook()`, `EventLogger.h`, `EventLogger.h`, `EventLogger.h`, `EventLogger.h`, `EventLogger.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 369`** (6 nodes): `facebook()`, `conversions.h`, `conversions.h`, `conversions.h`, `conversions.h`, `conversions.h`
+- **Thin community `Community 371`** (6 nodes): `facebook()`, `RawPropsParser.h`, `RawPropsParser.h`, `RawPropsParser.h`, `RawPropsParser.h`, `RawPropsParser.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 370`** (6 nodes): `facebook()`, `ComponentDescriptor.h`, `ComponentDescriptor.h`, `ComponentDescriptor.h`, `ComponentDescriptor.h`, `ComponentDescriptor.h`
+- **Thin community `Community 372`** (6 nodes): `facebook()`, `conversions.h`, `conversions.h`, `conversions.h`, `conversions.h`, `conversions.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 371`** (6 nodes): `facebook()`, `PropsParserContext.h`, `PropsParserContext.h`, `PropsParserContext.h`, `PropsParserContext.h`, `PropsParserContext.h`
+- **Thin community `Community 373`** (6 nodes): `facebook()`, `ComponentDescriptor.h`, `ComponentDescriptor.h`, `ComponentDescriptor.h`, `ComponentDescriptor.h`, `ComponentDescriptor.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 372`** (6 nodes): `facebook()`, `EventQueue.h`, `EventQueue.h`, `EventQueue.h`, `EventQueue.h`, `EventQueue.h`
+- **Thin community `Community 374`** (6 nodes): `facebook()`, `PropsParserContext.h`, `PropsParserContext.h`, `PropsParserContext.h`, `PropsParserContext.h`, `PropsParserContext.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 373`** (6 nodes): `facebook()`, `ShadowNodeFragment.h`, `ShadowNodeFragment.h`, `ShadowNodeFragment.h`, `ShadowNodeFragment.h`, `ShadowNodeFragment.h`
+- **Thin community `Community 375`** (6 nodes): `facebook()`, `EventQueue.h`, `EventQueue.h`, `EventQueue.h`, `EventQueue.h`, `EventQueue.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 374`** (6 nodes): `facebook()`, `StateData.h`, `StateData.h`, `StateData.h`, `StateData.h`, `StateData.h`
+- **Thin community `Community 376`** (6 nodes): `facebook()`, `ShadowNodeFragment.h`, `ShadowNodeFragment.h`, `ShadowNodeFragment.h`, `ShadowNodeFragment.h`, `ShadowNodeFragment.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 375`** (6 nodes): `facebook()`, `ReactEventPriority.h`, `ReactEventPriority.h`, `ReactEventPriority.h`, `ReactEventPriority.h`, `ReactEventPriority.h`
+- **Thin community `Community 377`** (6 nodes): `facebook()`, `StateData.h`, `StateData.h`, `StateData.h`, `StateData.h`, `StateData.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 376`** (6 nodes): `facebook()`, `ValueFactoryEventPayload.h`, `ValueFactoryEventPayload.h`, `ValueFactoryEventPayload.h`, `ValueFactoryEventPayload.h`, `ValueFactoryEventPayload.h`
+- **Thin community `Community 378`** (6 nodes): `facebook()`, `ReactEventPriority.h`, `ReactEventPriority.h`, `ReactEventPriority.h`, `ReactEventPriority.h`, `ReactEventPriority.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 377`** (6 nodes): `facebook()`, `EventTarget.h`, `EventTarget.h`, `EventTarget.h`, `EventTarget.h`, `EventTarget.h`
+- **Thin community `Community 379`** (6 nodes): `facebook()`, `ValueFactoryEventPayload.h`, `ValueFactoryEventPayload.h`, `ValueFactoryEventPayload.h`, `ValueFactoryEventPayload.h`, `ValueFactoryEventPayload.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 378`** (6 nodes): `facebook()`, `ReactRootViewTagGenerator.h`, `ReactRootViewTagGenerator.h`, `ReactRootViewTagGenerator.h`, `ReactRootViewTagGenerator.h`, `ReactRootViewTagGenerator.h`
+- **Thin community `Community 380`** (6 nodes): `facebook()`, `EventTarget.h`, `EventTarget.h`, `EventTarget.h`, `EventTarget.h`, `EventTarget.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 379`** (6 nodes): `facebook()`, `DynamicEventPayload.h`, `DynamicEventPayload.h`, `DynamicEventPayload.h`, `DynamicEventPayload.h`, `DynamicEventPayload.h`
+- **Thin community `Community 381`** (6 nodes): `facebook()`, `ReactRootViewTagGenerator.h`, `ReactRootViewTagGenerator.h`, `ReactRootViewTagGenerator.h`, `ReactRootViewTagGenerator.h`, `ReactRootViewTagGenerator.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 380`** (6 nodes): `LayoutDirection()`, `LayoutPrimitives.h`, `LayoutPrimitives.h`, `LayoutPrimitives.h`, `LayoutPrimitives.h`, `LayoutPrimitives.h`
+- **Thin community `Community 382`** (6 nodes): `facebook()`, `DynamicEventPayload.h`, `DynamicEventPayload.h`, `DynamicEventPayload.h`, `DynamicEventPayload.h`, `DynamicEventPayload.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 381`** (6 nodes): `facebook()`, `DynamicPropsUtilities.h`, `DynamicPropsUtilities.h`, `DynamicPropsUtilities.h`, `DynamicPropsUtilities.h`, `DynamicPropsUtilities.h`
+- **Thin community `Community 383`** (6 nodes): `LayoutDirection()`, `LayoutPrimitives.h`, `LayoutPrimitives.h`, `LayoutPrimitives.h`, `LayoutPrimitives.h`, `LayoutPrimitives.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 382`** (6 nodes): `facebook()`, `InstanceHandle.h`, `InstanceHandle.h`, `InstanceHandle.h`, `InstanceHandle.h`, `InstanceHandle.h`
+- **Thin community `Community 384`** (6 nodes): `facebook()`, `DynamicPropsUtilities.h`, `DynamicPropsUtilities.h`, `DynamicPropsUtilities.h`, `DynamicPropsUtilities.h`, `DynamicPropsUtilities.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 383`** (6 nodes): `facebook()`, `DynamicPointerEvent.h`, `DynamicPointerEvent.h`, `DynamicPointerEvent.h`, `DynamicPointerEvent.h`, `DynamicPointerEvent.h`
+- **Thin community `Community 385`** (6 nodes): `facebook()`, `InstanceHandle.h`, `InstanceHandle.h`, `InstanceHandle.h`, `InstanceHandle.h`, `InstanceHandle.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 384`** (6 nodes): `facebook()`, `EventPayloadType.h`, `EventPayloadType.h`, `EventPayloadType.h`, `EventPayloadType.h`, `EventPayloadType.h`
+- **Thin community `Community 386`** (6 nodes): `facebook()`, `DynamicPointerEvent.h`, `DynamicPointerEvent.h`, `DynamicPointerEvent.h`, `DynamicPointerEvent.h`, `DynamicPointerEvent.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 385`** (6 nodes): `facebook()`, `EventBeat.h`, `EventBeat.h`, `EventBeat.h`, `EventBeat.h`, `EventBeat.h`
+- **Thin community `Community 387`** (6 nodes): `facebook()`, `EventPayloadType.h`, `EventPayloadType.h`, `EventPayloadType.h`, `EventPayloadType.h`, `EventPayloadType.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 386`** (6 nodes): `facebook()`, `RawPropsKeyMap.h`, `RawPropsKeyMap.h`, `RawPropsKeyMap.h`, `RawPropsKeyMap.h`, `RawPropsKeyMap.h`
+- **Thin community `Community 388`** (6 nodes): `facebook()`, `EventBeat.h`, `EventBeat.h`, `EventBeat.h`, `EventBeat.h`, `EventBeat.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 387`** (6 nodes): `facebook()`, `LayoutContext.h`, `LayoutContext.h`, `LayoutContext.h`, `LayoutContext.h`, `LayoutContext.h`
+- **Thin community `Community 389`** (6 nodes): `facebook()`, `RawPropsKeyMap.h`, `RawPropsKeyMap.h`, `RawPropsKeyMap.h`, `RawPropsKeyMap.h`, `RawPropsKeyMap.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 388`** (6 nodes): `extractValue()`, `EventPayload.h`, `EventPayload.h`, `EventPayload.h`, `EventPayload.h`, `EventPayload.h`
+- **Thin community `Community 390`** (6 nodes): `facebook()`, `LayoutContext.h`, `LayoutContext.h`, `LayoutContext.h`, `LayoutContext.h`, `LayoutContext.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 389`** (6 nodes): `facebook()`, `EventEmitter.h`, `EventEmitter.h`, `EventEmitter.h`, `EventEmitter.h`, `EventEmitter.h`
+- **Thin community `Community 391`** (6 nodes): `extractValue()`, `EventPayload.h`, `EventPayload.h`, `EventPayload.h`, `EventPayload.h`, `EventPayload.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 390`** (6 nodes): `facebook()`, `Sealable.h`, `Sealable.h`, `Sealable.h`, `Sealable.h`, `Sealable.h`
+- **Thin community `Community 392`** (6 nodes): `facebook()`, `EventEmitter.h`, `EventEmitter.h`, `EventEmitter.h`, `EventEmitter.h`, `EventEmitter.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 391`** (6 nodes): `facebook()`, `EventQueueProcessor.h`, `EventQueueProcessor.h`, `EventQueueProcessor.h`, `EventQueueProcessor.h`, `EventQueueProcessor.h`
+- **Thin community `Community 393`** (6 nodes): `facebook()`, `Sealable.h`, `Sealable.h`, `Sealable.h`, `Sealable.h`, `Sealable.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 392`** (6 nodes): `facebook()`, `LayoutableShadowNode.h`, `LayoutableShadowNode.h`, `LayoutableShadowNode.h`, `LayoutableShadowNode.h`, `LayoutableShadowNode.h`
+- **Thin community `Community 394`** (6 nodes): `facebook()`, `EventQueueProcessor.h`, `EventQueueProcessor.h`, `EventQueueProcessor.h`, `EventQueueProcessor.h`, `EventQueueProcessor.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 393`** (6 nodes): `facebook()`, `State.h`, `State.h`, `State.h`, `State.h`, `State.h`
+- **Thin community `Community 395`** (6 nodes): `facebook()`, `LayoutableShadowNode.h`, `LayoutableShadowNode.h`, `LayoutableShadowNode.h`, `LayoutableShadowNode.h`, `LayoutableShadowNode.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 394`** (6 nodes): `facebook()`, `EventDispatcher.h`, `EventDispatcher.h`, `EventDispatcher.h`, `EventDispatcher.h`, `EventDispatcher.h`
+- **Thin community `Community 396`** (6 nodes): `facebook()`, `State.h`, `State.h`, `State.h`, `State.h`, `State.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 395`** (6 nodes): `facebook()`, `StateUpdate.h`, `StateUpdate.h`, `StateUpdate.h`, `StateUpdate.h`, `StateUpdate.h`
+- **Thin community `Community 397`** (6 nodes): `facebook()`, `EventDispatcher.h`, `EventDispatcher.h`, `EventDispatcher.h`, `EventDispatcher.h`, `EventDispatcher.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 396`** (6 nodes): `facebook()`, `ShadowNodeTraits.h`, `ShadowNodeTraits.h`, `ShadowNodeTraits.h`, `ShadowNodeTraits.h`, `ShadowNodeTraits.h`
+- **Thin community `Community 398`** (6 nodes): `facebook()`, `StateUpdate.h`, `StateUpdate.h`, `StateUpdate.h`, `StateUpdate.h`, `StateUpdate.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 397`** (6 nodes): `sliceChildShadowNodeViewPairs.h`, `sliceChildShadowNodeViewPairs.h`, `sliceChildShadowNodeViewPairs.h`, `sliceChildShadowNodeViewPairs.h`, `sliceChildShadowNodeViewPairs.h`, `facebook()`
+- **Thin community `Community 399`** (6 nodes): `facebook()`, `ShadowNodeTraits.h`, `ShadowNodeTraits.h`, `ShadowNodeTraits.h`, `ShadowNodeTraits.h`, `ShadowNodeTraits.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 398`** (6 nodes): `ShadowTreeDelegate.h`, `ShadowTreeDelegate.h`, `ShadowTreeDelegate.h`, `ShadowTreeDelegate.h`, `ShadowTreeDelegate.h`, `facebook()`
+- **Thin community `Community 400`** (6 nodes): `sliceChildShadowNodeViewPairs.h`, `sliceChildShadowNodeViewPairs.h`, `sliceChildShadowNodeViewPairs.h`, `sliceChildShadowNodeViewPairs.h`, `sliceChildShadowNodeViewPairs.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 399`** (6 nodes): `MountingOverrideDelegate.h`, `MountingOverrideDelegate.h`, `MountingOverrideDelegate.h`, `MountingOverrideDelegate.h`, `MountingOverrideDelegate.h`, `facebook()`
+- **Thin community `Community 401`** (6 nodes): `ShadowTreeDelegate.h`, `ShadowTreeDelegate.h`, `ShadowTreeDelegate.h`, `ShadowTreeDelegate.h`, `ShadowTreeDelegate.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 400`** (6 nodes): `CullingContext.h`, `CullingContext.h`, `CullingContext.h`, `CullingContext.h`, `CullingContext.h`, `facebook()`
+- **Thin community `Community 402`** (6 nodes): `MountingOverrideDelegate.h`, `MountingOverrideDelegate.h`, `MountingOverrideDelegate.h`, `MountingOverrideDelegate.h`, `MountingOverrideDelegate.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 401`** (6 nodes): `ShadowTreeRegistry.h`, `ShadowTreeRegistry.h`, `ShadowTreeRegistry.h`, `ShadowTreeRegistry.h`, `ShadowTreeRegistry.h`, `facebook()`
+- **Thin community `Community 403`** (6 nodes): `CullingContext.h`, `CullingContext.h`, `CullingContext.h`, `CullingContext.h`, `CullingContext.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 402`** (6 nodes): `LongestIncreasingSubsequence.h`, `LongestIncreasingSubsequence.h`, `LongestIncreasingSubsequence.h`, `LongestIncreasingSubsequence.h`, `LongestIncreasingSubsequence.h`, `facebook()`
+- **Thin community `Community 404`** (6 nodes): `ShadowTreeRegistry.h`, `ShadowTreeRegistry.h`, `ShadowTreeRegistry.h`, `ShadowTreeRegistry.h`, `ShadowTreeRegistry.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 403`** (6 nodes): `StubView.h`, `StubView.h`, `StubView.h`, `StubView.h`, `StubView.h`, `facebook()`
+- **Thin community `Community 405`** (6 nodes): `LongestIncreasingSubsequence.h`, `LongestIncreasingSubsequence.h`, `LongestIncreasingSubsequence.h`, `LongestIncreasingSubsequence.h`, `LongestIncreasingSubsequence.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 404`** (6 nodes): `Differentiator.h`, `Differentiator.h`, `Differentiator.h`, `Differentiator.h`, `Differentiator.h`, `facebook()`
+- **Thin community `Community 406`** (6 nodes): `StubView.h`, `StubView.h`, `StubView.h`, `StubView.h`, `StubView.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 405`** (6 nodes): `MountingTransaction.h`, `MountingTransaction.h`, `MountingTransaction.h`, `MountingTransaction.h`, `MountingTransaction.h`, `facebook()`
+- **Thin community `Community 407`** (6 nodes): `Differentiator.h`, `Differentiator.h`, `Differentiator.h`, `Differentiator.h`, `Differentiator.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 406`** (6 nodes): `StubViewTree.h`, `StubViewTree.h`, `StubViewTree.h`, `StubViewTree.h`, `StubViewTree.h`, `facebook()`
+- **Thin community `Community 408`** (6 nodes): `MountingTransaction.h`, `MountingTransaction.h`, `MountingTransaction.h`, `MountingTransaction.h`, `MountingTransaction.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 407`** (6 nodes): `ShadowView.h`, `ShadowView.h`, `ShadowView.h`, `ShadowView.h`, `ShadowView.h`, `facebook()`
+- **Thin community `Community 409`** (6 nodes): `StubViewTree.h`, `StubViewTree.h`, `StubViewTree.h`, `StubViewTree.h`, `StubViewTree.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 408`** (6 nodes): `stubs.h`, `stubs.h`, `stubs.h`, `stubs.h`, `stubs.h`, `facebook()`
+- **Thin community `Community 410`** (6 nodes): `ShadowView.h`, `ShadowView.h`, `ShadowView.h`, `ShadowView.h`, `ShadowView.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 409`** (6 nodes): `ShadowTreeRevision.h`, `ShadowTreeRevision.h`, `ShadowTreeRevision.h`, `ShadowTreeRevision.h`, `ShadowTreeRevision.h`, `facebook()`
+- **Thin community `Community 411`** (6 nodes): `stubs.h`, `stubs.h`, `stubs.h`, `stubs.h`, `stubs.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 410`** (6 nodes): `updateMountedFlag.h`, `updateMountedFlag.h`, `updateMountedFlag.h`, `updateMountedFlag.h`, `updateMountedFlag.h`, `facebook()`
+- **Thin community `Community 412`** (6 nodes): `ShadowTreeRevision.h`, `ShadowTreeRevision.h`, `ShadowTreeRevision.h`, `ShadowTreeRevision.h`, `ShadowTreeRevision.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 411`** (6 nodes): `DiffMap.h`, `DiffMap.h`, `DiffMap.h`, `DiffMap.h`, `DiffMap.h`, `facebook()`
+- **Thin community `Community 413`** (6 nodes): `updateMountedFlag.h`, `updateMountedFlag.h`, `updateMountedFlag.h`, `updateMountedFlag.h`, `updateMountedFlag.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 412`** (6 nodes): `MountingCoordinator.h`, `MountingCoordinator.h`, `MountingCoordinator.h`, `MountingCoordinator.h`, `MountingCoordinator.h`, `facebook()`
+- **Thin community `Community 414`** (6 nodes): `DiffMap.h`, `DiffMap.h`, `DiffMap.h`, `DiffMap.h`, `DiffMap.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 413`** (6 nodes): `ShadowViewMutation.h`, `ShadowViewMutation.h`, `ShadowViewMutation.h`, `ShadowViewMutation.h`, `ShadowViewMutation.h`, `facebook()`
+- **Thin community `Community 415`** (6 nodes): `MountingCoordinator.h`, `MountingCoordinator.h`, `MountingCoordinator.h`, `MountingCoordinator.h`, `MountingCoordinator.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 414`** (6 nodes): `facebook()`, `AnimationBackendCommitHook.h`, `AnimationBackendCommitHook.h`, `AnimationBackendCommitHook.h`, `AnimationBackendCommitHook.h`, `AnimationBackendCommitHook.h`
+- **Thin community `Community 416`** (6 nodes): `ShadowViewMutation.h`, `ShadowViewMutation.h`, `ShadowViewMutation.h`, `ShadowViewMutation.h`, `ShadowViewMutation.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 415`** (6 nodes): `facebook()`, `AnimatedPropsBuilder.h`, `AnimatedPropsBuilder.h`, `AnimatedPropsBuilder.h`, `AnimatedPropsBuilder.h`, `AnimatedPropsBuilder.h`
+- **Thin community `Community 417`** (6 nodes): `facebook()`, `AnimationBackendCommitHook.h`, `AnimationBackendCommitHook.h`, `AnimationBackendCommitHook.h`, `AnimationBackendCommitHook.h`, `AnimationBackendCommitHook.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 416`** (6 nodes): `facebook()`, `AnimatedProps.h`, `AnimatedProps.h`, `AnimatedProps.h`, `AnimatedProps.h`, `AnimatedProps.h`
+- **Thin community `Community 418`** (6 nodes): `facebook()`, `AnimatedPropsBuilder.h`, `AnimatedPropsBuilder.h`, `AnimatedPropsBuilder.h`, `AnimatedPropsBuilder.h`, `AnimatedPropsBuilder.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 417`** (6 nodes): `animationbackend()`, `AnimatedPropsSerializer.h`, `AnimatedPropsSerializer.h`, `AnimatedPropsSerializer.h`, `AnimatedPropsSerializer.h`, `AnimatedPropsSerializer.h`
+- **Thin community `Community 419`** (6 nodes): `facebook()`, `AnimatedProps.h`, `AnimatedProps.h`, `AnimatedProps.h`, `AnimatedProps.h`, `AnimatedProps.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 418`** (6 nodes): `facebook()`, `AnimationBackend.h`, `AnimationBackend.h`, `AnimationBackend.h`, `AnimationBackend.h`, `AnimationBackend.h`
+- **Thin community `Community 420`** (6 nodes): `animationbackend()`, `AnimatedPropsSerializer.h`, `AnimatedPropsSerializer.h`, `AnimatedPropsSerializer.h`, `AnimatedPropsSerializer.h`, `AnimatedPropsSerializer.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 419`** (6 nodes): `facebook()`, `AnimationChoreographer.h`, `AnimationChoreographer.h`, `AnimationChoreographer.h`, `AnimationChoreographer.h`, `AnimationChoreographer.h`
+- **Thin community `Community 421`** (6 nodes): `facebook()`, `AnimationBackend.h`, `AnimationBackend.h`, `AnimationBackend.h`, `AnimationBackend.h`, `AnimationBackend.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 420`** (6 nodes): `facebook()`, `AnimatedPropsRegistry.h`, `AnimatedPropsRegistry.h`, `AnimatedPropsRegistry.h`, `AnimatedPropsRegistry.h`, `AnimatedPropsRegistry.h`
+- **Thin community `Community 422`** (6 nodes): `facebook()`, `AnimationChoreographer.h`, `AnimationChoreographer.h`, `AnimationChoreographer.h`, `AnimationChoreographer.h`, `AnimationChoreographer.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 421`** (6 nodes): `InspectorData.h`, `InspectorData.h`, `InspectorData.h`, `InspectorData.h`, `InspectorData.h`, `facebook()`
+- **Thin community `Community 423`** (6 nodes): `facebook()`, `AnimatedPropsRegistry.h`, `AnimatedPropsRegistry.h`, `AnimatedPropsRegistry.h`, `AnimatedPropsRegistry.h`, `AnimatedPropsRegistry.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 422`** (6 nodes): `SchedulerToolbox.h`, `SchedulerToolbox.h`, `SchedulerToolbox.h`, `SchedulerToolbox.h`, `SchedulerToolbox.h`, `facebook()`
+- **Thin community `Community 424`** (6 nodes): `InspectorData.h`, `InspectorData.h`, `InspectorData.h`, `InspectorData.h`, `InspectorData.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 423`** (6 nodes): `SurfaceManager.h`, `SurfaceManager.h`, `SurfaceManager.h`, `SurfaceManager.h`, `SurfaceManager.h`, `facebook()`
+- **Thin community `Community 425`** (6 nodes): `SchedulerToolbox.h`, `SchedulerToolbox.h`, `SchedulerToolbox.h`, `SchedulerToolbox.h`, `SchedulerToolbox.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 424`** (6 nodes): `Scheduler.h`, `Scheduler.h`, `Scheduler.h`, `Scheduler.h`, `Scheduler.h`, `facebook()`
+- **Thin community `Community 426`** (6 nodes): `SurfaceManager.h`, `SurfaceManager.h`, `SurfaceManager.h`, `SurfaceManager.h`, `SurfaceManager.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 425`** (6 nodes): `SchedulerDelegate.h`, `SchedulerDelegate.h`, `SchedulerDelegate.h`, `SchedulerDelegate.h`, `SchedulerDelegate.h`, `facebook()`
+- **Thin community `Community 427`** (6 nodes): `Scheduler.h`, `Scheduler.h`, `Scheduler.h`, `Scheduler.h`, `Scheduler.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 426`** (6 nodes): `SurfaceHandler.h`, `SurfaceHandler.h`, `SurfaceHandler.h`, `SurfaceHandler.h`, `SurfaceHandler.h`, `facebook()`
+- **Thin community `Community 428`** (6 nodes): `SchedulerDelegate.h`, `SchedulerDelegate.h`, `SchedulerDelegate.h`, `SchedulerDelegate.h`, `SchedulerDelegate.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 427`** (6 nodes): `getMode()`, `AttributedStringBox.h`, `AttributedStringBox.h`, `AttributedStringBox.h`, `AttributedStringBox.h`, `AttributedStringBox.h`
+- **Thin community `Community 429`** (6 nodes): `SurfaceHandler.h`, `SurfaceHandler.h`, `SurfaceHandler.h`, `SurfaceHandler.h`, `SurfaceHandler.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 428`** (6 nodes): `isAttachment()`, `AttributedString.h`, `AttributedString.h`, `AttributedString.h`, `AttributedString.h`, `AttributedString.h`
+- **Thin community `Community 430`** (6 nodes): `getMode()`, `AttributedStringBox.h`, `AttributedStringBox.h`, `AttributedStringBox.h`, `AttributedStringBox.h`, `AttributedStringBox.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 429`** (6 nodes): `facebook()`, `PlaceholderAttributedString.h`, `PlaceholderAttributedString.h`, `PlaceholderAttributedString.h`, `PlaceholderAttributedString.h`, `PlaceholderAttributedString.h`
+- **Thin community `Community 431`** (6 nodes): `isAttachment()`, `AttributedString.h`, `AttributedString.h`, `AttributedString.h`, `AttributedString.h`, `AttributedString.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 430`** (6 nodes): `HyphenationFrequency()`, `primitives.h`, `primitives.h`, `primitives.h`, `primitives.h`, `primitives.h`
+- **Thin community `Community 432`** (6 nodes): `facebook()`, `PlaceholderAttributedString.h`, `PlaceholderAttributedString.h`, `PlaceholderAttributedString.h`, `PlaceholderAttributedString.h`, `PlaceholderAttributedString.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 431`** (6 nodes): `WeakFamilyRegistry.h`, `WeakFamilyRegistry.h`, `WeakFamilyRegistry.h`, `WeakFamilyRegistry.h`, `WeakFamilyRegistry.h`, `facebook()`
+- **Thin community `Community 433`** (6 nodes): `HyphenationFrequency()`, `primitives.h`, `primitives.h`, `primitives.h`, `primitives.h`, `primitives.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 432`** (6 nodes): `RCTComponentViewHelpers.h`, `RCTComponentViewHelpers.h`, `RCTComponentViewHelpers.h`, `RCTComponentViewHelpers.h`, `RCTComponentViewHelpers.h`, `RCTScrollViewHandleCommand()`
+- **Thin community `Community 434`** (6 nodes): `WeakFamilyRegistry.h`, `WeakFamilyRegistry.h`, `WeakFamilyRegistry.h`, `WeakFamilyRegistry.h`, `WeakFamilyRegistry.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 433`** (6 nodes): `TouchEventEmitter.h`, `TouchEventEmitter.h`, `TouchEventEmitter.h`, `TouchEventEmitter.h`, `TouchEventEmitter.h`, `facebook()`
+- **Thin community `Community 435`** (6 nodes): `RCTComponentViewHelpers.h`, `RCTComponentViewHelpers.h`, `RCTComponentViewHelpers.h`, `RCTComponentViewHelpers.h`, `RCTComponentViewHelpers.h`, `RCTScrollViewHandleCommand()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 434`** (6 nodes): `BackgroundImagePropsConversions.h`, `BackgroundImagePropsConversions.h`, `BackgroundImagePropsConversions.h`, `BackgroundImagePropsConversions.h`, `BackgroundImagePropsConversions.h`, `facebook()`
+- **Thin community `Community 436`** (6 nodes): `TouchEventEmitter.h`, `TouchEventEmitter.h`, `TouchEventEmitter.h`, `TouchEventEmitter.h`, `TouchEventEmitter.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 435`** (6 nodes): `ViewComponentDescriptor.h`, `ViewComponentDescriptor.h`, `ViewComponentDescriptor.h`, `ViewComponentDescriptor.h`, `ViewComponentDescriptor.h`, `facebook()`
+- **Thin community `Community 437`** (6 nodes): `BackgroundImagePropsConversions.h`, `BackgroundImagePropsConversions.h`, `BackgroundImagePropsConversions.h`, `BackgroundImagePropsConversions.h`, `BackgroundImagePropsConversions.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 436`** (6 nodes): `accessibilityPropsConversions.h`, `accessibilityPropsConversions.h`, `accessibilityPropsConversions.h`, `accessibilityPropsConversions.h`, `accessibilityPropsConversions.h`, `facebook()`
+- **Thin community `Community 438`** (6 nodes): `ViewComponentDescriptor.h`, `ViewComponentDescriptor.h`, `ViewComponentDescriptor.h`, `ViewComponentDescriptor.h`, `ViewComponentDescriptor.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 437`** (6 nodes): `YogaStylableProps.h`, `YogaStylableProps.h`, `YogaStylableProps.h`, `YogaStylableProps.h`, `YogaStylableProps.h`, `facebook()`
+- **Thin community `Community 439`** (6 nodes): `accessibilityPropsConversions.h`, `accessibilityPropsConversions.h`, `accessibilityPropsConversions.h`, `accessibilityPropsConversions.h`, `accessibilityPropsConversions.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 438`** (6 nodes): `BaseTouch.h`, `BaseTouch.h`, `BaseTouch.h`, `BaseTouch.h`, `BaseTouch.h`, `facebook()`
+- **Thin community `Community 440`** (6 nodes): `YogaStylableProps.h`, `YogaStylableProps.h`, `YogaStylableProps.h`, `YogaStylableProps.h`, `YogaStylableProps.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 439`** (6 nodes): `LayoutConformanceProps.h`, `LayoutConformanceProps.h`, `LayoutConformanceProps.h`, `LayoutConformanceProps.h`, `LayoutConformanceProps.h`, `facebook()`
+- **Thin community `Community 441`** (6 nodes): `BaseTouch.h`, `BaseTouch.h`, `BaseTouch.h`, `BaseTouch.h`, `BaseTouch.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 440`** (6 nodes): `HostPlatformTouch.h`, `HostPlatformTouch.h`, `HostPlatformTouch.h`, `HostPlatformTouch.h`, `HostPlatformTouch.h`, `facebook()`
+- **Thin community `Community 442`** (6 nodes): `LayoutConformanceProps.h`, `LayoutConformanceProps.h`, `LayoutConformanceProps.h`, `LayoutConformanceProps.h`, `LayoutConformanceProps.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 441`** (6 nodes): `Touch.h`, `Touch.h`, `Touch.h`, `Touch.h`, `Touch.h`, `facebook()`
+- **Thin community `Community 443`** (6 nodes): `HostPlatformTouch.h`, `HostPlatformTouch.h`, `HostPlatformTouch.h`, `HostPlatformTouch.h`, `HostPlatformTouch.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 442`** (6 nodes): `PointerEvent.h`, `PointerEvent.h`, `PointerEvent.h`, `PointerEvent.h`, `PointerEvent.h`, `facebook()`
+- **Thin community `Community 444`** (6 nodes): `Touch.h`, `Touch.h`, `Touch.h`, `Touch.h`, `Touch.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 443`** (6 nodes): `LayoutConformanceShadowNode.h`, `LayoutConformanceShadowNode.h`, `LayoutConformanceShadowNode.h`, `LayoutConformanceShadowNode.h`, `LayoutConformanceShadowNode.h`, `facebook()`
+- **Thin community `Community 445`** (6 nodes): `PointerEvent.h`, `PointerEvent.h`, `PointerEvent.h`, `PointerEvent.h`, `PointerEvent.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 444`** (6 nodes): `ViewProps.h`, `ViewProps.h`, `ViewProps.h`, `ViewProps.h`, `ViewProps.h`, `facebook()`
+- **Thin community `Community 446`** (6 nodes): `LayoutConformanceShadowNode.h`, `LayoutConformanceShadowNode.h`, `LayoutConformanceShadowNode.h`, `LayoutConformanceShadowNode.h`, `LayoutConformanceShadowNode.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 445`** (6 nodes): `HostPlatformViewEventEmitter.h`, `HostPlatformViewEventEmitter.h`, `HostPlatformViewEventEmitter.h`, `HostPlatformViewEventEmitter.h`, `HostPlatformViewEventEmitter.h`, `facebook()`
+- **Thin community `Community 447`** (6 nodes): `ViewProps.h`, `ViewProps.h`, `ViewProps.h`, `ViewProps.h`, `ViewProps.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 446`** (6 nodes): `ViewPropsInterpolation.h`, `ViewPropsInterpolation.h`, `ViewPropsInterpolation.h`, `ViewPropsInterpolation.h`, `ViewPropsInterpolation.h`, `facebook()`
+- **Thin community `Community 448`** (6 nodes): `HostPlatformViewEventEmitter.h`, `HostPlatformViewEventEmitter.h`, `HostPlatformViewEventEmitter.h`, `HostPlatformViewEventEmitter.h`, `HostPlatformViewEventEmitter.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 447`** (6 nodes): `HostPlatformViewProps.h`, `HostPlatformViewProps.h`, `HostPlatformViewProps.h`, `HostPlatformViewProps.h`, `HostPlatformViewProps.h`, `facebook()`
+- **Thin community `Community 449`** (6 nodes): `ViewPropsInterpolation.h`, `ViewPropsInterpolation.h`, `ViewPropsInterpolation.h`, `ViewPropsInterpolation.h`, `ViewPropsInterpolation.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 448`** (6 nodes): `TouchEvent.h`, `TouchEvent.h`, `TouchEvent.h`, `TouchEvent.h`, `TouchEvent.h`, `facebook()`
+- **Thin community `Community 450`** (6 nodes): `HostPlatformViewProps.h`, `HostPlatformViewProps.h`, `HostPlatformViewProps.h`, `HostPlatformViewProps.h`, `HostPlatformViewProps.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 449`** (6 nodes): `CSSConversions.h`, `CSSConversions.h`, `CSSConversions.h`, `CSSConversions.h`, `CSSConversions.h`, `facebook()`
+- **Thin community `Community 451`** (6 nodes): `TouchEvent.h`, `TouchEvent.h`, `TouchEvent.h`, `TouchEvent.h`, `TouchEvent.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 450`** (6 nodes): `LayoutConformanceComponentDescriptor.h`, `LayoutConformanceComponentDescriptor.h`, `LayoutConformanceComponentDescriptor.h`, `LayoutConformanceComponentDescriptor.h`, `LayoutConformanceComponentDescriptor.h`, `facebook()`
+- **Thin community `Community 452`** (6 nodes): `CSSConversions.h`, `CSSConversions.h`, `CSSConversions.h`, `CSSConversions.h`, `CSSConversions.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 451`** (6 nodes): `HostPlatformViewTraitsInitializer.h`, `HostPlatformViewTraitsInitializer.h`, `HostPlatformViewTraitsInitializer.h`, `HostPlatformViewTraitsInitializer.h`, `HostPlatformViewTraitsInitializer.h`, `HostPlatformViewTraitsInitializer()`
+- **Thin community `Community 453`** (6 nodes): `LayoutConformanceComponentDescriptor.h`, `LayoutConformanceComponentDescriptor.h`, `LayoutConformanceComponentDescriptor.h`, `LayoutConformanceComponentDescriptor.h`, `LayoutConformanceComponentDescriptor.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 452`** (6 nodes): `ViewEventEmitter.h`, `ViewEventEmitter.h`, `ViewEventEmitter.h`, `ViewEventEmitter.h`, `ViewEventEmitter.h`, `facebook()`
+- **Thin community `Community 454`** (6 nodes): `HostPlatformViewTraitsInitializer.h`, `HostPlatformViewTraitsInitializer.h`, `HostPlatformViewTraitsInitializer.h`, `HostPlatformViewTraitsInitializer.h`, `HostPlatformViewTraitsInitializer.h`, `HostPlatformViewTraitsInitializer()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 453`** (6 nodes): `YogaLayoutableShadowNode.h`, `YogaLayoutableShadowNode.h`, `YogaLayoutableShadowNode.h`, `YogaLayoutableShadowNode.h`, `YogaLayoutableShadowNode.h`, `facebook()`
+- **Thin community `Community 455`** (6 nodes): `ViewEventEmitter.h`, `ViewEventEmitter.h`, `ViewEventEmitter.h`, `ViewEventEmitter.h`, `ViewEventEmitter.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 454`** (6 nodes): `ViewShadowNode.h`, `ViewShadowNode.h`, `ViewShadowNode.h`, `ViewShadowNode.h`, `ViewShadowNode.h`, `facebook()`
+- **Thin community `Community 456`** (6 nodes): `YogaLayoutableShadowNode.h`, `YogaLayoutableShadowNode.h`, `YogaLayoutableShadowNode.h`, `YogaLayoutableShadowNode.h`, `YogaLayoutableShadowNode.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 455`** (6 nodes): `RootShadowNode.h`, `RootShadowNode.h`, `RootShadowNode.h`, `RootShadowNode.h`, `RootShadowNode.h`, `facebook()`
+- **Thin community `Community 457`** (6 nodes): `ViewShadowNode.h`, `ViewShadowNode.h`, `ViewShadowNode.h`, `ViewShadowNode.h`, `ViewShadowNode.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 456`** (6 nodes): `RootComponentDescriptor.h`, `RootComponentDescriptor.h`, `RootComponentDescriptor.h`, `RootComponentDescriptor.h`, `RootComponentDescriptor.h`, `facebook()`
+- **Thin community `Community 458`** (6 nodes): `RootShadowNode.h`, `RootShadowNode.h`, `RootShadowNode.h`, `RootShadowNode.h`, `RootShadowNode.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 457`** (6 nodes): `RootProps.h`, `RootProps.h`, `RootProps.h`, `RootProps.h`, `RootProps.h`, `facebook()`
+- **Thin community `Community 459`** (6 nodes): `RootComponentDescriptor.h`, `RootComponentDescriptor.h`, `RootComponentDescriptor.h`, `RootComponentDescriptor.h`, `RootComponentDescriptor.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 458`** (6 nodes): `LegacyViewManagerInteropShadowNode.h`, `LegacyViewManagerInteropShadowNode.h`, `LegacyViewManagerInteropShadowNode.h`, `LegacyViewManagerInteropShadowNode.h`, `LegacyViewManagerInteropShadowNode.h`, `facebook()`
+- **Thin community `Community 460`** (6 nodes): `RootProps.h`, `RootProps.h`, `RootProps.h`, `RootProps.h`, `RootProps.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 459`** (6 nodes): `UnstableLegacyViewManagerAutomaticShadowNode.h`, `UnstableLegacyViewManagerAutomaticShadowNode.h`, `UnstableLegacyViewManagerAutomaticShadowNode.h`, `UnstableLegacyViewManagerAutomaticShadowNode.h`, `UnstableLegacyViewManagerAutomaticShadowNode.h`, `facebook()`
+- **Thin community `Community 461`** (6 nodes): `LegacyViewManagerInteropShadowNode.h`, `LegacyViewManagerInteropShadowNode.h`, `LegacyViewManagerInteropShadowNode.h`, `LegacyViewManagerInteropShadowNode.h`, `LegacyViewManagerInteropShadowNode.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 460`** (6 nodes): `LegacyViewManagerInteropViewProps.h`, `LegacyViewManagerInteropViewProps.h`, `LegacyViewManagerInteropViewProps.h`, `LegacyViewManagerInteropViewProps.h`, `LegacyViewManagerInteropViewProps.h`, `facebook()`
+- **Thin community `Community 462`** (6 nodes): `UnstableLegacyViewManagerAutomaticShadowNode.h`, `UnstableLegacyViewManagerAutomaticShadowNode.h`, `UnstableLegacyViewManagerAutomaticShadowNode.h`, `UnstableLegacyViewManagerAutomaticShadowNode.h`, `UnstableLegacyViewManagerAutomaticShadowNode.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 461`** (6 nodes): `LegacyViewManagerInteropState.h`, `LegacyViewManagerInteropState.h`, `LegacyViewManagerInteropState.h`, `LegacyViewManagerInteropState.h`, `LegacyViewManagerInteropState.h`, `facebook()`
+- **Thin community `Community 463`** (6 nodes): `LegacyViewManagerInteropViewProps.h`, `LegacyViewManagerInteropViewProps.h`, `LegacyViewManagerInteropViewProps.h`, `LegacyViewManagerInteropViewProps.h`, `LegacyViewManagerInteropViewProps.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 462`** (6 nodes): `UnstableLegacyViewManagerInteropComponentDescriptor.h`, `UnstableLegacyViewManagerInteropComponentDescriptor.h`, `UnstableLegacyViewManagerInteropComponentDescriptor.h`, `UnstableLegacyViewManagerInteropComponentDescriptor.h`, `UnstableLegacyViewManagerInteropComponentDescriptor.h`, `facebook()`
+- **Thin community `Community 464`** (6 nodes): `LegacyViewManagerInteropState.h`, `LegacyViewManagerInteropState.h`, `LegacyViewManagerInteropState.h`, `LegacyViewManagerInteropState.h`, `LegacyViewManagerInteropState.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 463`** (6 nodes): `LegacyViewManagerInteropComponentDescriptor.h`, `LegacyViewManagerInteropComponentDescriptor.h`, `LegacyViewManagerInteropComponentDescriptor.h`, `LegacyViewManagerInteropComponentDescriptor.h`, `LegacyViewManagerInteropComponentDescriptor.h`, `facebook()`
+- **Thin community `Community 465`** (6 nodes): `UnstableLegacyViewManagerInteropComponentDescriptor.h`, `UnstableLegacyViewManagerInteropComponentDescriptor.h`, `UnstableLegacyViewManagerInteropComponentDescriptor.h`, `UnstableLegacyViewManagerInteropComponentDescriptor.h`, `UnstableLegacyViewManagerInteropComponentDescriptor.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 464`** (6 nodes): `facebook()`, `bridging.h`, `bridging.h`, `bridging.h`, `bridging.h`, `bridging.h`
+- **Thin community `Community 466`** (6 nodes): `LegacyViewManagerInteropComponentDescriptor.h`, `LegacyViewManagerInteropComponentDescriptor.h`, `LegacyViewManagerInteropComponentDescriptor.h`, `LegacyViewManagerInteropComponentDescriptor.h`, `LegacyViewManagerInteropComponentDescriptor.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 465`** (6 nodes): `facebook()`, `ComponentDescriptorRegistry.h`, `ComponentDescriptorRegistry.h`, `ComponentDescriptorRegistry.h`, `ComponentDescriptorRegistry.h`, `ComponentDescriptorRegistry.h`
+- **Thin community `Community 467`** (6 nodes): `facebook()`, `bridging.h`, `bridging.h`, `bridging.h`, `bridging.h`, `bridging.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 466`** (6 nodes): `facebook()`, `ComponentDescriptorFactory.h`, `ComponentDescriptorFactory.h`, `ComponentDescriptorFactory.h`, `ComponentDescriptorFactory.h`, `ComponentDescriptorFactory.h`
+- **Thin community `Community 468`** (6 nodes): `facebook()`, `ComponentDescriptorRegistry.h`, `ComponentDescriptorRegistry.h`, `ComponentDescriptorRegistry.h`, `ComponentDescriptorRegistry.h`, `ComponentDescriptorRegistry.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 467`** (6 nodes): `TransactionTelemetry.h`, `TransactionTelemetry.h`, `TransactionTelemetry.h`, `TransactionTelemetry.h`, `TransactionTelemetry.h`, `facebook()`
+- **Thin community `Community 469`** (6 nodes): `facebook()`, `ComponentDescriptorFactory.h`, `ComponentDescriptorFactory.h`, `ComponentDescriptorFactory.h`, `ComponentDescriptorFactory.h`, `ComponentDescriptorFactory.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 468`** (6 nodes): `SurfaceTelemetry.h`, `SurfaceTelemetry.h`, `SurfaceTelemetry.h`, `SurfaceTelemetry.h`, `SurfaceTelemetry.h`, `facebook()`
+- **Thin community `Community 470`** (6 nodes): `TransactionTelemetry.h`, `TransactionTelemetry.h`, `TransactionTelemetry.h`, `TransactionTelemetry.h`, `TransactionTelemetry.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 469`** (6 nodes): `facebook()`, `EventPerformanceLogger.h`, `EventPerformanceLogger.h`, `EventPerformanceLogger.h`, `EventPerformanceLogger.h`, `EventPerformanceLogger.h`
+- **Thin community `Community 471`** (6 nodes): `SurfaceTelemetry.h`, `SurfaceTelemetry.h`, `SurfaceTelemetry.h`, `SurfaceTelemetry.h`, `SurfaceTelemetry.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 470`** (6 nodes): `facebook()`, `utils.h`, `utils.h`, `utils.h`, `utils.h`, `utils.h`
+- **Thin community `Community 472`** (6 nodes): `facebook()`, `EventPerformanceLogger.h`, `EventPerformanceLogger.h`, `EventPerformanceLogger.h`, `EventPerformanceLogger.h`, `EventPerformanceLogger.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 471`** (6 nodes): `facebook()`, `conversions.h`, `conversions.h`, `conversions.h`, `conversions.h`, `conversions.h`
+- **Thin community `Community 473`** (6 nodes): `facebook()`, `utils.h`, `utils.h`, `utils.h`, `utils.h`, `utils.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 472`** (6 nodes): `facebook()`, `LayoutAnimationDriver.h`, `LayoutAnimationDriver.h`, `LayoutAnimationDriver.h`, `LayoutAnimationDriver.h`, `LayoutAnimationDriver.h`
+- **Thin community `Community 474`** (6 nodes): `facebook()`, `conversions.h`, `conversions.h`, `conversions.h`, `conversions.h`, `conversions.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 473`** (6 nodes): `AnimationConfigurationType()`, `primitives.h`, `primitives.h`, `primitives.h`, `primitives.h`, `primitives.h`
+- **Thin community `Community 475`** (6 nodes): `facebook()`, `LayoutAnimationDriver.h`, `LayoutAnimationDriver.h`, `LayoutAnimationDriver.h`, `LayoutAnimationDriver.h`, `LayoutAnimationDriver.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 474`** (6 nodes): `facebook()`, `LayoutAnimationCallbackWrapper.h`, `LayoutAnimationCallbackWrapper.h`, `LayoutAnimationCallbackWrapper.h`, `LayoutAnimationCallbackWrapper.h`, `LayoutAnimationCallbackWrapper.h`
+- **Thin community `Community 476`** (6 nodes): `AnimationConfigurationType()`, `primitives.h`, `primitives.h`, `primitives.h`, `primitives.h`, `primitives.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 475`** (6 nodes): `facebook()`, `LayoutAnimationKeyFrameManager.h`, `LayoutAnimationKeyFrameManager.h`, `LayoutAnimationKeyFrameManager.h`, `LayoutAnimationKeyFrameManager.h`, `LayoutAnimationKeyFrameManager.h`
+- **Thin community `Community 477`** (6 nodes): `facebook()`, `LayoutAnimationCallbackWrapper.h`, `LayoutAnimationCallbackWrapper.h`, `LayoutAnimationCallbackWrapper.h`, `LayoutAnimationCallbackWrapper.h`, `LayoutAnimationCallbackWrapper.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 476`** (6 nodes): `facebook()`, `MergedValueDispatcher.h`, `MergedValueDispatcher.h`, `MergedValueDispatcher.h`, `MergedValueDispatcher.h`, `MergedValueDispatcher.h`
+- **Thin community `Community 478`** (6 nodes): `facebook()`, `LayoutAnimationKeyFrameManager.h`, `LayoutAnimationKeyFrameManager.h`, `LayoutAnimationKeyFrameManager.h`, `LayoutAnimationKeyFrameManager.h`, `LayoutAnimationKeyFrameManager.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 477`** (6 nodes): `facebook()`, `NativeAnimatedNodesManagerProvider.h`, `NativeAnimatedNodesManagerProvider.h`, `NativeAnimatedNodesManagerProvider.h`, `NativeAnimatedNodesManagerProvider.h`, `NativeAnimatedNodesManagerProvider.h`
+- **Thin community `Community 479`** (6 nodes): `facebook()`, `MergedValueDispatcher.h`, `MergedValueDispatcher.h`, `MergedValueDispatcher.h`, `MergedValueDispatcher.h`, `MergedValueDispatcher.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 478`** (6 nodes): `getValue()`, `value_()`, `ValueAnimatedNode.h`, `ValueAnimatedNode.h`, `ValueAnimatedNode.h`, `ValueAnimatedNode.h`
+- **Thin community `Community 480`** (6 nodes): `facebook()`, `NativeAnimatedNodesManagerProvider.h`, `NativeAnimatedNodesManagerProvider.h`, `NativeAnimatedNodesManagerProvider.h`, `NativeAnimatedNodesManagerProvider.h`, `NativeAnimatedNodesManagerProvider.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 479`** (6 nodes): `UIManagerBinding.h`, `UIManagerBinding.h`, `UIManagerBinding.h`, `UIManagerBinding.h`, `UIManagerBinding.h`, `facebook()`
+- **Thin community `Community 481`** (6 nodes): `UIManagerBinding.h`, `UIManagerBinding.h`, `UIManagerBinding.h`, `UIManagerBinding.h`, `UIManagerBinding.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 480`** (6 nodes): `UIManagerMountHook.h`, `UIManagerMountHook.h`, `UIManagerMountHook.h`, `UIManagerMountHook.h`, `UIManagerMountHook.h`, `facebook()`
+- **Thin community `Community 482`** (6 nodes): `UIManagerMountHook.h`, `UIManagerMountHook.h`, `UIManagerMountHook.h`, `UIManagerMountHook.h`, `UIManagerMountHook.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 481`** (6 nodes): `LayoutAnimationStatusDelegate.h`, `LayoutAnimationStatusDelegate.h`, `LayoutAnimationStatusDelegate.h`, `LayoutAnimationStatusDelegate.h`, `LayoutAnimationStatusDelegate.h`, `facebook()`
+- **Thin community `Community 483`** (6 nodes): `LayoutAnimationStatusDelegate.h`, `LayoutAnimationStatusDelegate.h`, `LayoutAnimationStatusDelegate.h`, `LayoutAnimationStatusDelegate.h`, `LayoutAnimationStatusDelegate.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 482`** (6 nodes): `UIManagerViewTransitionDelegate.h`, `UIManagerViewTransitionDelegate.h`, `UIManagerViewTransitionDelegate.h`, `UIManagerViewTransitionDelegate.h`, `UIManagerViewTransitionDelegate.h`, `facebook()`
+- **Thin community `Community 484`** (6 nodes): `UIManagerViewTransitionDelegate.h`, `UIManagerViewTransitionDelegate.h`, `UIManagerViewTransitionDelegate.h`, `UIManagerViewTransitionDelegate.h`, `UIManagerViewTransitionDelegate.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 483`** (6 nodes): `UIManagerNativeAnimatedDelegate.h`, `UIManagerNativeAnimatedDelegate.h`, `UIManagerNativeAnimatedDelegate.h`, `UIManagerNativeAnimatedDelegate.h`, `UIManagerNativeAnimatedDelegate.h`, `facebook()`
+- **Thin community `Community 485`** (6 nodes): `UIManagerNativeAnimatedDelegate.h`, `UIManagerNativeAnimatedDelegate.h`, `UIManagerNativeAnimatedDelegate.h`, `UIManagerNativeAnimatedDelegate.h`, `UIManagerNativeAnimatedDelegate.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 484`** (6 nodes): `UIManagerCommitHook.h`, `UIManagerCommitHook.h`, `UIManagerCommitHook.h`, `UIManagerCommitHook.h`, `UIManagerCommitHook.h`, `facebook()`
+- **Thin community `Community 486`** (6 nodes): `UIManagerCommitHook.h`, `UIManagerCommitHook.h`, `UIManagerCommitHook.h`, `UIManagerCommitHook.h`, `UIManagerCommitHook.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 485`** (6 nodes): `UIManagerAnimationDelegate.h`, `UIManagerAnimationDelegate.h`, `UIManagerAnimationDelegate.h`, `UIManagerAnimationDelegate.h`, `UIManagerAnimationDelegate.h`, `facebook()`
+- **Thin community `Community 487`** (6 nodes): `UIManagerAnimationDelegate.h`, `UIManagerAnimationDelegate.h`, `UIManagerAnimationDelegate.h`, `UIManagerAnimationDelegate.h`, `UIManagerAnimationDelegate.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 486`** (6 nodes): `AppRegistryBinding.h`, `AppRegistryBinding.h`, `AppRegistryBinding.h`, `AppRegistryBinding.h`, `AppRegistryBinding.h`, `facebook()`
+- **Thin community `Community 488`** (6 nodes): `AppRegistryBinding.h`, `AppRegistryBinding.h`, `AppRegistryBinding.h`, `AppRegistryBinding.h`, `AppRegistryBinding.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 487`** (6 nodes): `UIManagerDelegate.h`, `UIManagerDelegate.h`, `UIManagerDelegate.h`, `UIManagerDelegate.h`, `UIManagerDelegate.h`, `facebook()`
+- **Thin community `Community 489`** (6 nodes): `UIManagerDelegate.h`, `UIManagerDelegate.h`, `UIManagerDelegate.h`, `UIManagerDelegate.h`, `UIManagerDelegate.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 488`** (6 nodes): `UIManagerAnimationBackend.h`, `UIManagerAnimationBackend.h`, `UIManagerAnimationBackend.h`, `UIManagerAnimationBackend.h`, `UIManagerAnimationBackend.h`, `facebook()`
+- **Thin community `Community 490`** (6 nodes): `UIManagerAnimationBackend.h`, `UIManagerAnimationBackend.h`, `UIManagerAnimationBackend.h`, `UIManagerAnimationBackend.h`, `UIManagerAnimationBackend.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 489`** (6 nodes): `PointerHoverTracker.h`, `PointerHoverTracker.h`, `PointerHoverTracker.h`, `PointerHoverTracker.h`, `PointerHoverTracker.h`, `facebook()`
+- **Thin community `Community 491`** (6 nodes): `PointerHoverTracker.h`, `PointerHoverTracker.h`, `PointerHoverTracker.h`, `PointerHoverTracker.h`, `PointerHoverTracker.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 490`** (6 nodes): `facebook()`, `ShadowTreeRevisionProvider.h`, `ShadowTreeRevisionProvider.h`, `ShadowTreeRevisionProvider.h`, `ShadowTreeRevisionProvider.h`, `ShadowTreeRevisionProvider.h`
+- **Thin community `Community 492`** (6 nodes): `facebook()`, `ShadowTreeRevisionProvider.h`, `ShadowTreeRevisionProvider.h`, `ShadowTreeRevisionProvider.h`, `ShadowTreeRevisionProvider.h`, `ShadowTreeRevisionProvider.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 491`** (6 nodes): `facebook()`, `LazyShadowTreeRevisionConsistencyManager.h`, `LazyShadowTreeRevisionConsistencyManager.h`, `LazyShadowTreeRevisionConsistencyManager.h`, `LazyShadowTreeRevisionConsistencyManager.h`, `LazyShadowTreeRevisionConsistencyManager.h`
+- **Thin community `Community 493`** (6 nodes): `facebook()`, `LazyShadowTreeRevisionConsistencyManager.h`, `LazyShadowTreeRevisionConsistencyManager.h`, `LazyShadowTreeRevisionConsistencyManager.h`, `LazyShadowTreeRevisionConsistencyManager.h`, `LazyShadowTreeRevisionConsistencyManager.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 492`** (6 nodes): `facebook()`, `DefaultTurboModules.h`, `DefaultTurboModules.h`, `DefaultTurboModules.h`, `DefaultTurboModules.h`, `DefaultTurboModules.h`
+- **Thin community `Community 494`** (6 nodes): `facebook()`, `DefaultTurboModules.h`, `DefaultTurboModules.h`, `DefaultTurboModules.h`, `DefaultTurboModules.h`, `DefaultTurboModules.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 493`** (6 nodes): `TextLayoutManagerExtended.h`, `TextLayoutManagerExtended.h`, `TextLayoutManagerExtended.h`, `TextLayoutManagerExtended.h`, `TextLayoutManagerExtended.h`, `facebook()`
+- **Thin community `Community 495`** (6 nodes): `TextLayoutManagerExtended.h`, `TextLayoutManagerExtended.h`, `TextLayoutManagerExtended.h`, `TextLayoutManagerExtended.h`, `TextLayoutManagerExtended.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 494`** (6 nodes): `TextLayoutManager.h`, `TextLayoutManager.h`, `TextLayoutManager.h`, `TextLayoutManager.h`, `TextLayoutManager.h`, `facebook()`
+- **Thin community `Community 496`** (6 nodes): `TextLayoutManager.h`, `TextLayoutManager.h`, `TextLayoutManager.h`, `TextLayoutManager.h`, `TextLayoutManager.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 495`** (6 nodes): `SafeAreaViewComponentDescriptor.h`, `SafeAreaViewComponentDescriptor.h`, `SafeAreaViewComponentDescriptor.h`, `SafeAreaViewComponentDescriptor.h`, `SafeAreaViewComponentDescriptor.h`, `facebook()`
+- **Thin community `Community 497`** (6 nodes): `SafeAreaViewComponentDescriptor.h`, `SafeAreaViewComponentDescriptor.h`, `SafeAreaViewComponentDescriptor.h`, `SafeAreaViewComponentDescriptor.h`, `SafeAreaViewComponentDescriptor.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 496`** (6 nodes): `SafeAreaViewState.h`, `SafeAreaViewState.h`, `SafeAreaViewState.h`, `SafeAreaViewState.h`, `SafeAreaViewState.h`, `facebook()`
+- **Thin community `Community 498`** (6 nodes): `SafeAreaViewState.h`, `SafeAreaViewState.h`, `SafeAreaViewState.h`, `SafeAreaViewState.h`, `SafeAreaViewState.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 497`** (6 nodes): `SafeAreaViewShadowNode.h`, `SafeAreaViewShadowNode.h`, `SafeAreaViewShadowNode.h`, `SafeAreaViewShadowNode.h`, `SafeAreaViewShadowNode.h`, `facebook()`
+- **Thin community `Community 499`** (6 nodes): `SafeAreaViewShadowNode.h`, `SafeAreaViewShadowNode.h`, `SafeAreaViewShadowNode.h`, `SafeAreaViewShadowNode.h`, `SafeAreaViewShadowNode.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 498`** (6 nodes): `AndroidTextInputState.h`, `AndroidTextInputState.h`, `AndroidTextInputState.h`, `AndroidTextInputState.h`, `AndroidTextInputState.h`, `facebook()`
+- **Thin community `Community 500`** (6 nodes): `AndroidTextInputState.h`, `AndroidTextInputState.h`, `AndroidTextInputState.h`, `AndroidTextInputState.h`, `AndroidTextInputState.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 499`** (6 nodes): `TextInputComponentDescriptor.h`, `TextInputComponentDescriptor.h`, `TextInputComponentDescriptor.h`, `TextInputComponentDescriptor.h`, `TextInputComponentDescriptor.h`, `facebook()`
+- **Thin community `Community 501`** (6 nodes): `TextInputComponentDescriptor.h`, `TextInputComponentDescriptor.h`, `TextInputComponentDescriptor.h`, `TextInputComponentDescriptor.h`, `TextInputComponentDescriptor.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 500`** (6 nodes): `conversions.h`, `conversions.h`, `conversions.h`, `conversions.h`, `conversions.h`, `facebook()`
+- **Thin community `Community 502`** (6 nodes): `conversions.h`, `conversions.h`, `conversions.h`, `conversions.h`, `conversions.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 501`** (6 nodes): `TextInputState.h`, `TextInputState.h`, `TextInputState.h`, `TextInputState.h`, `TextInputState.h`, `facebook()`
+- **Thin community `Community 503`** (6 nodes): `TextInputState.h`, `TextInputState.h`, `TextInputState.h`, `TextInputState.h`, `TextInputState.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 502`** (6 nodes): `propsConversions.h`, `propsConversions.h`, `propsConversions.h`, `propsConversions.h`, `propsConversions.h`, `facebook()`
+- **Thin community `Community 504`** (6 nodes): `propsConversions.h`, `propsConversions.h`, `propsConversions.h`, `propsConversions.h`, `propsConversions.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 503`** (6 nodes): `TextInputShadowNode.h`, `TextInputShadowNode.h`, `TextInputShadowNode.h`, `TextInputShadowNode.h`, `TextInputShadowNode.h`, `facebook()`
+- **Thin community `Community 505`** (6 nodes): `TextInputShadowNode.h`, `TextInputShadowNode.h`, `TextInputShadowNode.h`, `TextInputShadowNode.h`, `TextInputShadowNode.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 504`** (6 nodes): `AndroidTextInputShadowNode.h`, `AndroidTextInputShadowNode.h`, `AndroidTextInputShadowNode.h`, `AndroidTextInputShadowNode.h`, `AndroidTextInputShadowNode.h`, `facebook()`
+- **Thin community `Community 506`** (6 nodes): `AndroidTextInputShadowNode.h`, `AndroidTextInputShadowNode.h`, `AndroidTextInputShadowNode.h`, `AndroidTextInputShadowNode.h`, `AndroidTextInputShadowNode.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 505`** (6 nodes): `AndroidTextInputEventEmitter.h`, `AndroidTextInputEventEmitter.h`, `AndroidTextInputEventEmitter.h`, `AndroidTextInputEventEmitter.h`, `AndroidTextInputEventEmitter.h`, `facebook()`
+- **Thin community `Community 507`** (6 nodes): `AndroidTextInputEventEmitter.h`, `AndroidTextInputEventEmitter.h`, `AndroidTextInputEventEmitter.h`, `AndroidTextInputEventEmitter.h`, `AndroidTextInputEventEmitter.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 506`** (6 nodes): `basePrimitives.h`, `basePrimitives.h`, `basePrimitives.h`, `basePrimitives.h`, `basePrimitives.h`, `facebook()`
+- **Thin community `Community 508`** (6 nodes): `basePrimitives.h`, `basePrimitives.h`, `basePrimitives.h`, `basePrimitives.h`, `basePrimitives.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 507`** (6 nodes): `TextInputEventEmitter.h`, `TextInputEventEmitter.h`, `TextInputEventEmitter.h`, `TextInputEventEmitter.h`, `TextInputEventEmitter.h`, `facebook()`
+- **Thin community `Community 509`** (6 nodes): `TextInputEventEmitter.h`, `TextInputEventEmitter.h`, `TextInputEventEmitter.h`, `TextInputEventEmitter.h`, `TextInputEventEmitter.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 508`** (6 nodes): `UnimplementedViewProps.h`, `UnimplementedViewProps.h`, `UnimplementedViewProps.h`, `UnimplementedViewProps.h`, `UnimplementedViewProps.h`, `facebook()`
+- **Thin community `Community 510`** (6 nodes): `UnimplementedViewProps.h`, `UnimplementedViewProps.h`, `UnimplementedViewProps.h`, `UnimplementedViewProps.h`, `UnimplementedViewProps.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 509`** (6 nodes): `UnimplementedViewComponentDescriptor.h`, `UnimplementedViewComponentDescriptor.h`, `UnimplementedViewComponentDescriptor.h`, `UnimplementedViewComponentDescriptor.h`, `UnimplementedViewComponentDescriptor.h`, `facebook()`
+- **Thin community `Community 511`** (6 nodes): `UnimplementedViewComponentDescriptor.h`, `UnimplementedViewComponentDescriptor.h`, `UnimplementedViewComponentDescriptor.h`, `UnimplementedViewComponentDescriptor.h`, `UnimplementedViewComponentDescriptor.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 510`** (6 nodes): `UnimplementedViewShadowNode.h`, `UnimplementedViewShadowNode.h`, `UnimplementedViewShadowNode.h`, `UnimplementedViewShadowNode.h`, `UnimplementedViewShadowNode.h`, `facebook()`
+- **Thin community `Community 512`** (6 nodes): `UnimplementedViewShadowNode.h`, `UnimplementedViewShadowNode.h`, `UnimplementedViewShadowNode.h`, `UnimplementedViewShadowNode.h`, `UnimplementedViewShadowNode.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 511`** (6 nodes): `VirtualViewComponentDescriptor.h`, `VirtualViewComponentDescriptor.h`, `VirtualViewComponentDescriptor.h`, `VirtualViewComponentDescriptor.h`, `VirtualViewComponentDescriptor.h`, `facebook()`
+- **Thin community `Community 513`** (6 nodes): `VirtualViewComponentDescriptor.h`, `VirtualViewComponentDescriptor.h`, `VirtualViewComponentDescriptor.h`, `VirtualViewComponentDescriptor.h`, `VirtualViewComponentDescriptor.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 512`** (6 nodes): `VirtualViewShadowNode.h`, `VirtualViewShadowNode.h`, `VirtualViewShadowNode.h`, `VirtualViewShadowNode.h`, `VirtualViewShadowNode.h`, `facebook()`
+- **Thin community `Community 514`** (6 nodes): `VirtualViewShadowNode.h`, `VirtualViewShadowNode.h`, `VirtualViewShadowNode.h`, `VirtualViewShadowNode.h`, `VirtualViewShadowNode.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 513`** (6 nodes): `facebook()`, `InputAccessoryComponentDescriptor.h`, `InputAccessoryComponentDescriptor.h`, `InputAccessoryComponentDescriptor.h`, `InputAccessoryComponentDescriptor.h`, `InputAccessoryComponentDescriptor.h`
+- **Thin community `Community 515`** (6 nodes): `facebook()`, `InputAccessoryComponentDescriptor.h`, `InputAccessoryComponentDescriptor.h`, `InputAccessoryComponentDescriptor.h`, `InputAccessoryComponentDescriptor.h`, `InputAccessoryComponentDescriptor.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 514`** (6 nodes): `facebook()`, `InputAccessoryState.h`, `InputAccessoryState.h`, `InputAccessoryState.h`, `InputAccessoryState.h`, `InputAccessoryState.h`
+- **Thin community `Community 516`** (6 nodes): `facebook()`, `InputAccessoryState.h`, `InputAccessoryState.h`, `InputAccessoryState.h`, `InputAccessoryState.h`, `InputAccessoryState.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 515`** (6 nodes): `facebook()`, `InputAccessoryShadowNode.h`, `InputAccessoryShadowNode.h`, `InputAccessoryShadowNode.h`, `InputAccessoryShadowNode.h`, `InputAccessoryShadowNode.h`
+- **Thin community `Community 517`** (6 nodes): `facebook()`, `InputAccessoryShadowNode.h`, `InputAccessoryShadowNode.h`, `InputAccessoryShadowNode.h`, `InputAccessoryShadowNode.h`, `InputAccessoryShadowNode.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 516`** (6 nodes): `AppleSwitchComponentDescriptor.h`, `AppleSwitchComponentDescriptor.h`, `AppleSwitchComponentDescriptor.h`, `AppleSwitchComponentDescriptor.h`, `AppleSwitchComponentDescriptor.h`, `facebook()`
+- **Thin community `Community 518`** (6 nodes): `AppleSwitchComponentDescriptor.h`, `AppleSwitchComponentDescriptor.h`, `AppleSwitchComponentDescriptor.h`, `AppleSwitchComponentDescriptor.h`, `AppleSwitchComponentDescriptor.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 517`** (6 nodes): `AppleSwitchShadowNode.h`, `AppleSwitchShadowNode.h`, `AppleSwitchShadowNode.h`, `AppleSwitchShadowNode.h`, `AppleSwitchShadowNode.h`, `facebook()`
+- **Thin community `Community 519`** (6 nodes): `AppleSwitchShadowNode.h`, `AppleSwitchShadowNode.h`, `AppleSwitchShadowNode.h`, `AppleSwitchShadowNode.h`, `AppleSwitchShadowNode.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 518`** (6 nodes): `TextComponentDescriptor.h`, `TextComponentDescriptor.h`, `TextComponentDescriptor.h`, `TextComponentDescriptor.h`, `TextComponentDescriptor.h`, `facebook()`
+- **Thin community `Community 520`** (6 nodes): `TextComponentDescriptor.h`, `TextComponentDescriptor.h`, `TextComponentDescriptor.h`, `TextComponentDescriptor.h`, `TextComponentDescriptor.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 519`** (6 nodes): `BaseParagraphComponentDescriptor.h`, `BaseParagraphComponentDescriptor.h`, `BaseParagraphComponentDescriptor.h`, `BaseParagraphComponentDescriptor.h`, `BaseParagraphComponentDescriptor.h`, `facebook()`
+- **Thin community `Community 521`** (6 nodes): `BaseParagraphComponentDescriptor.h`, `BaseParagraphComponentDescriptor.h`, `BaseParagraphComponentDescriptor.h`, `BaseParagraphComponentDescriptor.h`, `BaseParagraphComponentDescriptor.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 520`** (6 nodes): `ParagraphShadowNode.h`, `ParagraphShadowNode.h`, `ParagraphShadowNode.h`, `ParagraphShadowNode.h`, `ParagraphShadowNode.h`, `facebook()`
+- **Thin community `Community 522`** (6 nodes): `ParagraphShadowNode.h`, `ParagraphShadowNode.h`, `ParagraphShadowNode.h`, `ParagraphShadowNode.h`, `ParagraphShadowNode.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 521`** (6 nodes): `stateConversions.h`, `stateConversions.h`, `stateConversions.h`, `stateConversions.h`, `stateConversions.h`, `facebook()`
+- **Thin community `Community 523`** (6 nodes): `stateConversions.h`, `stateConversions.h`, `stateConversions.h`, `stateConversions.h`, `stateConversions.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 522`** (6 nodes): `ParagraphState.h`, `ParagraphState.h`, `ParagraphState.h`, `ParagraphState.h`, `ParagraphState.h`, `facebook()`
+- **Thin community `Community 524`** (6 nodes): `ParagraphState.h`, `ParagraphState.h`, `ParagraphState.h`, `ParagraphState.h`, `ParagraphState.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 523`** (6 nodes): `RawTextProps.h`, `RawTextProps.h`, `RawTextProps.h`, `RawTextProps.h`, `RawTextProps.h`, `facebook()`
+- **Thin community `Community 525`** (6 nodes): `RawTextProps.h`, `RawTextProps.h`, `RawTextProps.h`, `RawTextProps.h`, `RawTextProps.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 524`** (6 nodes): `RawTextComponentDescriptor.h`, `RawTextComponentDescriptor.h`, `RawTextComponentDescriptor.h`, `RawTextComponentDescriptor.h`, `RawTextComponentDescriptor.h`, `facebook()`
+- **Thin community `Community 526`** (6 nodes): `RawTextComponentDescriptor.h`, `RawTextComponentDescriptor.h`, `RawTextComponentDescriptor.h`, `RawTextComponentDescriptor.h`, `RawTextComponentDescriptor.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 525`** (6 nodes): `BaseTextProps.h`, `BaseTextProps.h`, `BaseTextProps.h`, `BaseTextProps.h`, `BaseTextProps.h`, `facebook()`
+- **Thin community `Community 527`** (6 nodes): `BaseTextProps.h`, `BaseTextProps.h`, `BaseTextProps.h`, `BaseTextProps.h`, `BaseTextProps.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 526`** (6 nodes): `BaseTextShadowNode.h`, `BaseTextShadowNode.h`, `BaseTextShadowNode.h`, `BaseTextShadowNode.h`, `BaseTextShadowNode.h`, `facebook()`
+- **Thin community `Community 528`** (6 nodes): `BaseTextShadowNode.h`, `BaseTextShadowNode.h`, `BaseTextShadowNode.h`, `BaseTextShadowNode.h`, `BaseTextShadowNode.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 527`** (6 nodes): `RawTextShadowNode.h`, `RawTextShadowNode.h`, `RawTextShadowNode.h`, `RawTextShadowNode.h`, `RawTextShadowNode.h`, `facebook()`
+- **Thin community `Community 529`** (6 nodes): `RawTextShadowNode.h`, `RawTextShadowNode.h`, `RawTextShadowNode.h`, `RawTextShadowNode.h`, `RawTextShadowNode.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 528`** (6 nodes): `HostPlatformParagraphProps.h`, `HostPlatformParagraphProps.h`, `HostPlatformParagraphProps.h`, `HostPlatformParagraphProps.h`, `HostPlatformParagraphProps.h`, `facebook()`
+- **Thin community `Community 530`** (6 nodes): `HostPlatformParagraphProps.h`, `HostPlatformParagraphProps.h`, `HostPlatformParagraphProps.h`, `HostPlatformParagraphProps.h`, `HostPlatformParagraphProps.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 529`** (6 nodes): `SelectableParagraphComponentDescriptor.h`, `SelectableParagraphComponentDescriptor.h`, `SelectableParagraphComponentDescriptor.h`, `SelectableParagraphComponentDescriptor.h`, `SelectableParagraphComponentDescriptor.h`, `facebook()`
+- **Thin community `Community 531`** (6 nodes): `SelectableParagraphComponentDescriptor.h`, `SelectableParagraphComponentDescriptor.h`, `SelectableParagraphComponentDescriptor.h`, `SelectableParagraphComponentDescriptor.h`, `SelectableParagraphComponentDescriptor.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 530`** (6 nodes): `ParagraphProps.h`, `ParagraphProps.h`, `ParagraphProps.h`, `ParagraphProps.h`, `ParagraphProps.h`, `facebook()`
+- **Thin community `Community 532`** (6 nodes): `ParagraphProps.h`, `ParagraphProps.h`, `ParagraphProps.h`, `ParagraphProps.h`, `ParagraphProps.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 531`** (6 nodes): `BaseParagraphProps.h`, `BaseParagraphProps.h`, `BaseParagraphProps.h`, `BaseParagraphProps.h`, `BaseParagraphProps.h`, `facebook()`
+- **Thin community `Community 533`** (6 nodes): `BaseParagraphProps.h`, `BaseParagraphProps.h`, `BaseParagraphProps.h`, `BaseParagraphProps.h`, `BaseParagraphProps.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 532`** (6 nodes): `ParagraphEventEmitter.h`, `ParagraphEventEmitter.h`, `ParagraphEventEmitter.h`, `ParagraphEventEmitter.h`, `ParagraphEventEmitter.h`, `facebook()`
+- **Thin community `Community 534`** (6 nodes): `ParagraphEventEmitter.h`, `ParagraphEventEmitter.h`, `ParagraphEventEmitter.h`, `ParagraphEventEmitter.h`, `ParagraphEventEmitter.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 533`** (6 nodes): `SelectableParagraphShadowNode.h`, `SelectableParagraphShadowNode.h`, `SelectableParagraphShadowNode.h`, `SelectableParagraphShadowNode.h`, `SelectableParagraphShadowNode.h`, `facebook()`
+- **Thin community `Community 535`** (6 nodes): `SelectableParagraphShadowNode.h`, `SelectableParagraphShadowNode.h`, `SelectableParagraphShadowNode.h`, `SelectableParagraphShadowNode.h`, `SelectableParagraphShadowNode.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 534`** (6 nodes): `ParagraphComponentDescriptor.h`, `ParagraphComponentDescriptor.h`, `ParagraphComponentDescriptor.h`, `ParagraphComponentDescriptor.h`, `ParagraphComponentDescriptor.h`, `facebook()`
+- **Thin community `Community 536`** (6 nodes): `ParagraphComponentDescriptor.h`, `ParagraphComponentDescriptor.h`, `ParagraphComponentDescriptor.h`, `ParagraphComponentDescriptor.h`, `ParagraphComponentDescriptor.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 535`** (6 nodes): `TextProps.h`, `TextProps.h`, `TextProps.h`, `TextProps.h`, `TextProps.h`, `facebook()`
+- **Thin community `Community 537`** (6 nodes): `TextProps.h`, `TextProps.h`, `TextProps.h`, `TextProps.h`, `TextProps.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 536`** (6 nodes): `ModalHostViewShadowNode.h`, `ModalHostViewShadowNode.h`, `ModalHostViewShadowNode.h`, `ModalHostViewShadowNode.h`, `ModalHostViewShadowNode.h`, `facebook()`
+- **Thin community `Community 538`** (6 nodes): `ModalHostViewShadowNode.h`, `ModalHostViewShadowNode.h`, `ModalHostViewShadowNode.h`, `ModalHostViewShadowNode.h`, `ModalHostViewShadowNode.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 537`** (6 nodes): `ModalHostViewComponentDescriptor.h`, `ModalHostViewComponentDescriptor.h`, `ModalHostViewComponentDescriptor.h`, `ModalHostViewComponentDescriptor.h`, `ModalHostViewComponentDescriptor.h`, `facebook()`
+- **Thin community `Community 539`** (6 nodes): `ModalHostViewComponentDescriptor.h`, `ModalHostViewComponentDescriptor.h`, `ModalHostViewComponentDescriptor.h`, `ModalHostViewComponentDescriptor.h`, `ModalHostViewComponentDescriptor.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 538`** (6 nodes): `ModalHostViewState.h`, `ModalHostViewState.h`, `ModalHostViewState.h`, `ModalHostViewState.h`, `ModalHostViewState.h`, `facebook()`
+- **Thin community `Community 540`** (6 nodes): `ModalHostViewState.h`, `ModalHostViewState.h`, `ModalHostViewState.h`, `ModalHostViewState.h`, `ModalHostViewState.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 539`** (6 nodes): `ModalHostViewUtils.h`, `ModalHostViewUtils.h`, `ModalHostViewUtils.h`, `ModalHostViewUtils.h`, `ModalHostViewUtils.h`, `facebook()`
+- **Thin community `Community 541`** (6 nodes): `ModalHostViewUtils.h`, `ModalHostViewUtils.h`, `ModalHostViewUtils.h`, `ModalHostViewUtils.h`, `ModalHostViewUtils.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 540`** (6 nodes): `JSRuntimeFactory.h`, `JSRuntimeFactory.h`, `JSRuntimeFactory.h`, `JSRuntimeFactory.h`, `JSRuntimeFactory.h`, `facebook()`
+- **Thin community `Community 542`** (6 nodes): `JSRuntimeFactory.h`, `JSRuntimeFactory.h`, `JSRuntimeFactory.h`, `JSRuntimeFactory.h`, `JSRuntimeFactory.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 541`** (6 nodes): `NativeMutationObserver.h`, `NativeMutationObserver.h`, `NativeMutationObserver.h`, `NativeMutationObserver.h`, `NativeMutationObserver.h`, `facebook()`
+- **Thin community `Community 543`** (6 nodes): `NativeMutationObserver.h`, `NativeMutationObserver.h`, `NativeMutationObserver.h`, `NativeMutationObserver.h`, `NativeMutationObserver.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 542`** (6 nodes): `HermesRuntimeAgentDelegate.h`, `HermesRuntimeAgentDelegate.h`, `HermesRuntimeAgentDelegate.h`, `HermesRuntimeAgentDelegate.h`, `HermesRuntimeAgentDelegate.h`, `jsinspector_modern()`
+- **Thin community `Community 544`** (6 nodes): `HermesRuntimeAgentDelegate.h`, `HermesRuntimeAgentDelegate.h`, `HermesRuntimeAgentDelegate.h`, `HermesRuntimeAgentDelegate.h`, `HermesRuntimeAgentDelegate.h`, `jsinspector_modern()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 543`** (6 nodes): `HermesRuntimeTargetDelegate.h`, `HermesRuntimeTargetDelegate.h`, `HermesRuntimeTargetDelegate.h`, `HermesRuntimeTargetDelegate.h`, `HermesRuntimeTargetDelegate.h`, `jsinspector_modern()`
+- **Thin community `Community 545`** (6 nodes): `HermesRuntimeTargetDelegate.h`, `HermesRuntimeTargetDelegate.h`, `HermesRuntimeTargetDelegate.h`, `HermesRuntimeTargetDelegate.h`, `HermesRuntimeTargetDelegate.h`, `jsinspector_modern()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 544`** (6 nodes): `BindingsInstaller.h`, `BindingsInstaller.h`, `BindingsInstaller.h`, `BindingsInstaller.h`, `BindingsInstaller.h`, `facebook()`
+- **Thin community `Community 546`** (6 nodes): `BindingsInstaller.h`, `BindingsInstaller.h`, `BindingsInstaller.h`, `BindingsInstaller.h`, `BindingsInstaller.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 545`** (6 nodes): `PlatformTimerRegistry.h`, `PlatformTimerRegistry.h`, `PlatformTimerRegistry.h`, `PlatformTimerRegistry.h`, `PlatformTimerRegistry.h`, `facebook()`
+- **Thin community `Community 547`** (6 nodes): `PlatformTimerRegistry.h`, `PlatformTimerRegistry.h`, `PlatformTimerRegistry.h`, `PlatformTimerRegistry.h`, `PlatformTimerRegistry.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 546`** (6 nodes): `LegacyUIManagerConstantsProviderBinding.h`, `LegacyUIManagerConstantsProviderBinding.h`, `LegacyUIManagerConstantsProviderBinding.h`, `LegacyUIManagerConstantsProviderBinding.h`, `LegacyUIManagerConstantsProviderBinding.h`, `LegacyUIManagerConstantsProviderBinding()`
+- **Thin community `Community 548`** (6 nodes): `LegacyUIManagerConstantsProviderBinding.h`, `LegacyUIManagerConstantsProviderBinding.h`, `LegacyUIManagerConstantsProviderBinding.h`, `LegacyUIManagerConstantsProviderBinding.h`, `LegacyUIManagerConstantsProviderBinding.h`, `LegacyUIManagerConstantsProviderBinding()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 547`** (6 nodes): `TimerManager.h`, `TimerManager.h`, `TimerManager.h`, `TimerManager.h`, `TimerManager.h`, `facebook()`
+- **Thin community `Community 549`** (6 nodes): `TimerManager.h`, `TimerManager.h`, `TimerManager.h`, `TimerManager.h`, `TimerManager.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 548`** (6 nodes): `BufferedRuntimeExecutor.h`, `BufferedRuntimeExecutor.h`, `BufferedRuntimeExecutor.h`, `BufferedRuntimeExecutor.h`, `BufferedRuntimeExecutor.h`, `facebook()`
+- **Thin community `Community 550`** (6 nodes): `BufferedRuntimeExecutor.h`, `BufferedRuntimeExecutor.h`, `BufferedRuntimeExecutor.h`, `BufferedRuntimeExecutor.h`, `BufferedRuntimeExecutor.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 549`** (6 nodes): `BridgelessNativeMethodCallInvoker.h`, `BridgelessNativeMethodCallInvoker.h`, `BridgelessNativeMethodCallInvoker.h`, `BridgelessNativeMethodCallInvoker.h`, `BridgelessNativeMethodCallInvoker.h`, `facebook()`
+- **Thin community `Community 551`** (6 nodes): `BridgelessNativeMethodCallInvoker.h`, `BridgelessNativeMethodCallInvoker.h`, `BridgelessNativeMethodCallInvoker.h`, `BridgelessNativeMethodCallInvoker.h`, `BridgelessNativeMethodCallInvoker.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 550`** (6 nodes): `facebook()`, `Size.h`, `Size.h`, `Size.h`, `Size.h`, `Size.h`
+- **Thin community `Community 552`** (6 nodes): `facebook()`, `Size.h`, `Size.h`, `Size.h`, `Size.h`, `Size.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 551`** (6 nodes): `facebook()`, `ColorComponents.h`, `ColorComponents.h`, `ColorComponents.h`, `ColorComponents.h`, `ColorComponents.h`
+- **Thin community `Community 553`** (6 nodes): `facebook()`, `ColorComponents.h`, `ColorComponents.h`, `ColorComponents.h`, `ColorComponents.h`, `ColorComponents.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 552`** (6 nodes): `facebook()`, `RCTPlatformColorUtils.h`, `RCTPlatformColorUtils.h`, `RCTPlatformColorUtils.h`, `RCTPlatformColorUtils.h`, `RCTPlatformColorUtils.h`
+- **Thin community `Community 554`** (6 nodes): `facebook()`, `RCTPlatformColorUtils.h`, `RCTPlatformColorUtils.h`, `RCTPlatformColorUtils.h`, `RCTPlatformColorUtils.h`, `RCTPlatformColorUtils.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 553`** (6 nodes): `facebook()`, `Float.h`, `Float.h`, `Float.h`, `Float.h`, `Float.h`
+- **Thin community `Community 555`** (6 nodes): `facebook()`, `Float.h`, `Float.h`, `Float.h`, `Float.h`, `Float.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 554`** (6 nodes): `facebook()`, `BackgroundSize.h`, `BackgroundSize.h`, `BackgroundSize.h`, `BackgroundSize.h`, `BackgroundSize.h`
+- **Thin community `Community 556`** (6 nodes): `facebook()`, `BackgroundSize.h`, `BackgroundSize.h`, `BackgroundSize.h`, `BackgroundSize.h`, `BackgroundSize.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 555`** (6 nodes): `facebook()`, `PlatformColorParser.h`, `PlatformColorParser.h`, `PlatformColorParser.h`, `PlatformColorParser.h`, `PlatformColorParser.h`
+- **Thin community `Community 557`** (6 nodes): `facebook()`, `PlatformColorParser.h`, `PlatformColorParser.h`, `PlatformColorParser.h`, `PlatformColorParser.h`, `PlatformColorParser.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 556`** (6 nodes): `facebook()`, `Isolation.h`, `Isolation.h`, `Isolation.h`, `Isolation.h`, `Isolation.h`
+- **Thin community `Community 558`** (6 nodes): `facebook()`, `Isolation.h`, `Isolation.h`, `Isolation.h`, `Isolation.h`, `Isolation.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 557`** (6 nodes): `facebook()`, `TransformUtils.h`, `TransformUtils.h`, `TransformUtils.h`, `TransformUtils.h`, `TransformUtils.h`
+- **Thin community `Community 559`** (6 nodes): `facebook()`, `TransformUtils.h`, `TransformUtils.h`, `TransformUtils.h`, `TransformUtils.h`, `TransformUtils.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 558`** (6 nodes): `facebook()`, `BackgroundImage.h`, `BackgroundImage.h`, `BackgroundImage.h`, `BackgroundImage.h`, `BackgroundImage.h`
+- **Thin community `Community 560`** (6 nodes): `facebook()`, `BackgroundImage.h`, `BackgroundImage.h`, `BackgroundImage.h`, `BackgroundImage.h`, `BackgroundImage.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 559`** (6 nodes): `toString()`, `ColorStop.h`, `ColorStop.h`, `ColorStop.h`, `ColorStop.h`, `ColorStop.h`
+- **Thin community `Community 561`** (6 nodes): `toString()`, `ColorStop.h`, `ColorStop.h`, `ColorStop.h`, `ColorStop.h`, `ColorStop.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 560`** (6 nodes): `GradientKeyword()`, `LinearGradient.h`, `LinearGradient.h`, `LinearGradient.h`, `LinearGradient.h`, `LinearGradient.h`
+- **Thin community `Community 562`** (6 nodes): `GradientKeyword()`, `LinearGradient.h`, `LinearGradient.h`, `LinearGradient.h`, `LinearGradient.h`, `LinearGradient.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 561`** (6 nodes): `facebook()`, `BackgroundPosition.h`, `BackgroundPosition.h`, `BackgroundPosition.h`, `BackgroundPosition.h`, `BackgroundPosition.h`
+- **Thin community `Community 563`** (6 nodes): `facebook()`, `BackgroundPosition.h`, `BackgroundPosition.h`, `BackgroundPosition.h`, `BackgroundPosition.h`, `BackgroundPosition.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 562`** (6 nodes): `facebook()`, `BackgroundRepeat.h`, `BackgroundRepeat.h`, `BackgroundRepeat.h`, `BackgroundRepeat.h`, `BackgroundRepeat.h`
+- **Thin community `Community 564`** (6 nodes): `facebook()`, `BackgroundRepeat.h`, `BackgroundRepeat.h`, `BackgroundRepeat.h`, `BackgroundRepeat.h`, `BackgroundRepeat.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 563`** (6 nodes): `facebook()`, `BlendMode.h`, `BlendMode.h`, `BlendMode.h`, `BlendMode.h`, `BlendMode.h`
+- **Thin community `Community 565`** (6 nodes): `facebook()`, `BlendMode.h`, `BlendMode.h`, `BlendMode.h`, `BlendMode.h`, `BlendMode.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 564`** (6 nodes): `facebook()`, `RadialGradient.h`, `RadialGradient.h`, `RadialGradient.h`, `RadialGradient.h`, `RadialGradient.h`
+- **Thin community `Community 566`** (6 nodes): `facebook()`, `RadialGradient.h`, `RadialGradient.h`, `RadialGradient.h`, `RadialGradient.h`, `RadialGradient.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 565`** (6 nodes): `facebook()`, `Vector.h`, `Vector.h`, `Vector.h`, `Vector.h`, `Vector.h`
+- **Thin community `Community 567`** (6 nodes): `facebook()`, `Vector.h`, `Vector.h`, `Vector.h`, `Vector.h`, `Vector.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 566`** (6 nodes): `facebook()`, `fromRawValueShared.h`, `fromRawValueShared.h`, `fromRawValueShared.h`, `fromRawValueShared.h`, `fromRawValueShared.h`
+- **Thin community `Community 568`** (6 nodes): `facebook()`, `fromRawValueShared.h`, `fromRawValueShared.h`, `fromRawValueShared.h`, `fromRawValueShared.h`, `fromRawValueShared.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 567`** (6 nodes): `RCTResizeMode.h`, `RCTResizeMode.h`, `RCTResizeMode.h`, `RCTResizeMode.h`, `RCTResizeMode.h`, `RCTResizeModeFromUIViewContentMode()`
+- **Thin community `Community 569`** (6 nodes): `RCTResizeMode.h`, `RCTResizeMode.h`, `RCTResizeMode.h`, `RCTResizeMode.h`, `RCTResizeMode.h`, `RCTResizeModeFromUIViewContentMode()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 568`** (6 nodes): `facebook()`, `conversions.h`, `conversions.h`, `conversions.h`, `conversions.h`, `conversions.h`
+- **Thin community `Community 570`** (6 nodes): `facebook()`, `conversions.h`, `conversions.h`, `conversions.h`, `conversions.h`, `conversions.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 569`** (6 nodes): `facebook()`, `ImageState.h`, `ImageState.h`, `ImageState.h`, `ImageState.h`, `ImageState.h`
+- **Thin community `Community 571`** (6 nodes): `facebook()`, `ImageState.h`, `ImageState.h`, `ImageState.h`, `ImageState.h`, `ImageState.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 570`** (6 nodes): `facebook()`, `ImageEventEmitter.h`, `ImageEventEmitter.h`, `ImageEventEmitter.h`, `ImageEventEmitter.h`, `ImageEventEmitter.h`
+- **Thin community `Community 572`** (6 nodes): `facebook()`, `ImageEventEmitter.h`, `ImageEventEmitter.h`, `ImageEventEmitter.h`, `ImageEventEmitter.h`, `ImageEventEmitter.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 571`** (6 nodes): `facebook()`, `ImageComponentDescriptor.h`, `ImageComponentDescriptor.h`, `ImageComponentDescriptor.h`, `ImageComponentDescriptor.h`, `ImageComponentDescriptor.h`
+- **Thin community `Community 573`** (6 nodes): `facebook()`, `ImageComponentDescriptor.h`, `ImageComponentDescriptor.h`, `ImageComponentDescriptor.h`, `ImageComponentDescriptor.h`, `ImageComponentDescriptor.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 572`** (6 nodes): `facebook()`, `ImageShadowNode.h`, `ImageShadowNode.h`, `ImageShadowNode.h`, `ImageShadowNode.h`, `ImageShadowNode.h`
+- **Thin community `Community 574`** (6 nodes): `facebook()`, `ImageShadowNode.h`, `ImageShadowNode.h`, `ImageShadowNode.h`, `ImageShadowNode.h`, `ImageShadowNode.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 573`** (6 nodes): `FuseboxTracer.h`, `FuseboxTracer.h`, `FuseboxTracer.h`, `FuseboxTracer.h`, `FuseboxTracer.h`, `facebook()`
+- **Thin community `Community 575`** (6 nodes): `FuseboxTracer.h`, `FuseboxTracer.h`, `FuseboxTracer.h`, `FuseboxTracer.h`, `FuseboxTracer.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 574`** (6 nodes): `BridgeNativeModulePerfLogger.h`, `BridgeNativeModulePerfLogger.h`, `BridgeNativeModulePerfLogger.h`, `BridgeNativeModulePerfLogger.h`, `BridgeNativeModulePerfLogger.h`, `BridgeNativeModulePerfLogger()`
+- **Thin community `Community 576`** (6 nodes): `BridgeNativeModulePerfLogger.h`, `BridgeNativeModulePerfLogger.h`, `BridgeNativeModulePerfLogger.h`, `BridgeNativeModulePerfLogger.h`, `BridgeNativeModulePerfLogger.h`, `BridgeNativeModulePerfLogger()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 575`** (6 nodes): `ReactPerfettoLogger.h`, `ReactPerfettoLogger.h`, `ReactPerfettoLogger.h`, `ReactPerfettoLogger.h`, `ReactPerfettoLogger.h`, `facebook()`
+- **Thin community `Community 577`** (6 nodes): `ReactPerfettoLogger.h`, `ReactPerfettoLogger.h`, `ReactPerfettoLogger.h`, `ReactPerfettoLogger.h`, `ReactPerfettoLogger.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 576`** (6 nodes): `HermesPerfettoDataSource.h`, `HermesPerfettoDataSource.h`, `HermesPerfettoDataSource.h`, `HermesPerfettoDataSource.h`, `HermesPerfettoDataSource.h`, `facebook()`
+- **Thin community `Community 578`** (6 nodes): `HermesPerfettoDataSource.h`, `HermesPerfettoDataSource.h`, `HermesPerfettoDataSource.h`, `HermesPerfettoDataSource.h`, `HermesPerfettoDataSource.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 577`** (6 nodes): `FuseboxPerfettoDataSource.h`, `FuseboxPerfettoDataSource.h`, `FuseboxPerfettoDataSource.h`, `FuseboxPerfettoDataSource.h`, `FuseboxPerfettoDataSource.h`, `facebook()`
+- **Thin community `Community 579`** (6 nodes): `FuseboxPerfettoDataSource.h`, `FuseboxPerfettoDataSource.h`, `FuseboxPerfettoDataSource.h`, `FuseboxPerfettoDataSource.h`, `FuseboxPerfettoDataSource.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 578`** (6 nodes): `NativeModulePerfLogger.h`, `NativeModulePerfLogger.h`, `NativeModulePerfLogger.h`, `NativeModulePerfLogger.h`, `NativeModulePerfLogger.h`, `facebook()`
+- **Thin community `Community 580`** (6 nodes): `NativeModulePerfLogger.h`, `NativeModulePerfLogger.h`, `NativeModulePerfLogger.h`, `NativeModulePerfLogger.h`, `NativeModulePerfLogger.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 579`** (6 nodes): `RCTAppSetupUtils.h`, `RCTAppSetupUtils.h`, `RCTAppSetupUtils.h`, `RCTAppSetupUtils.h`, `RCTAppSetupUtils.h`, `facebook()`
+- **Thin community `Community 581`** (6 nodes): `RCTAppSetupUtils.h`, `RCTAppSetupUtils.h`, `RCTAppSetupUtils.h`, `RCTAppSetupUtils.h`, `RCTAppSetupUtils.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 580`** (6 nodes): `MapBufferBuilder.h`, `MapBufferBuilder.h`, `MapBufferBuilder.h`, `MapBufferBuilder.h`, `MapBufferBuilder.h`, `facebook()`
+- **Thin community `Community 582`** (6 nodes): `MapBufferBuilder.h`, `MapBufferBuilder.h`, `MapBufferBuilder.h`, `MapBufferBuilder.h`, `MapBufferBuilder.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 581`** (6 nodes): `facebook()`, `NativeIdleCallbacks.h`, `NativeIdleCallbacks.h`, `NativeIdleCallbacks.h`, `NativeIdleCallbacks.h`, `NativeIdleCallbacks.h`
+- **Thin community `Community 583`** (6 nodes): `facebook()`, `NativeIdleCallbacks.h`, `NativeIdleCallbacks.h`, `NativeIdleCallbacks.h`, `NativeIdleCallbacks.h`, `NativeIdleCallbacks.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 582`** (6 nodes): `HostTracingProfile.h`, `HostTracingProfile.h`, `HostTracingProfile.h`, `HostTracingProfile.h`, `HostTracingProfile.h`, `tracing()`
+- **Thin community `Community 584`** (6 nodes): `HostTracingProfile.h`, `HostTracingProfile.h`, `HostTracingProfile.h`, `HostTracingProfile.h`, `HostTracingProfile.h`, `tracing()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 583`** (6 nodes): `TraceEventSerializer.h`, `TraceEventSerializer.h`, `TraceEventSerializer.h`, `TraceEventSerializer.h`, `TraceEventSerializer.h`, `tracing()`
+- **Thin community `Community 585`** (6 nodes): `TraceEventSerializer.h`, `TraceEventSerializer.h`, `TraceEventSerializer.h`, `TraceEventSerializer.h`, `TraceEventSerializer.h`, `tracing()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 584`** (6 nodes): `TracingMode.h`, `TracingMode.h`, `TracingMode.h`, `TracingMode.h`, `TracingMode.h`, `tracing()`
+- **Thin community `Community 586`** (6 nodes): `TracingMode.h`, `TracingMode.h`, `TracingMode.h`, `TracingMode.h`, `TracingMode.h`, `tracing()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 585`** (6 nodes): `FrameTimingSequence.h`, `FrameTimingSequence.h`, `FrameTimingSequence.h`, `FrameTimingSequence.h`, `FrameTimingSequence.h`, `tracing()`
+- **Thin community `Community 587`** (6 nodes): `FrameTimingSequence.h`, `FrameTimingSequence.h`, `FrameTimingSequence.h`, `FrameTimingSequence.h`, `FrameTimingSequence.h`, `tracing()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 586`** (6 nodes): `Timing.h`, `Timing.h`, `Timing.h`, `Timing.h`, `Timing.h`, `tracing()`
+- **Thin community `Community 588`** (6 nodes): `Timing.h`, `Timing.h`, `Timing.h`, `Timing.h`, `Timing.h`, `tracing()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 587`** (6 nodes): `InstanceTracingProfile.h`, `InstanceTracingProfile.h`, `InstanceTracingProfile.h`, `InstanceTracingProfile.h`, `InstanceTracingProfile.h`, `tracing()`
+- **Thin community `Community 589`** (6 nodes): `InstanceTracingProfile.h`, `InstanceTracingProfile.h`, `InstanceTracingProfile.h`, `InstanceTracingProfile.h`, `InstanceTracingProfile.h`, `tracing()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 588`** (6 nodes): `TargetTracingAgent.h`, `TargetTracingAgent.h`, `TargetTracingAgent.h`, `TargetTracingAgent.h`, `TargetTracingAgent.h`, `tracing()`
+- **Thin community `Community 590`** (6 nodes): `TargetTracingAgent.h`, `TargetTracingAgent.h`, `TargetTracingAgent.h`, `TargetTracingAgent.h`, `TargetTracingAgent.h`, `tracing()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 589`** (6 nodes): `PerformanceTracer.h`, `PerformanceTracer.h`, `PerformanceTracer.h`, `PerformanceTracer.h`, `PerformanceTracer.h`, `tracing()`
+- **Thin community `Community 591`** (6 nodes): `PerformanceTracer.h`, `PerformanceTracer.h`, `PerformanceTracer.h`, `PerformanceTracer.h`, `PerformanceTracer.h`, `tracing()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 590`** (6 nodes): `ProfileTreeNode.h`, `ProfileTreeNode.h`, `ProfileTreeNode.h`, `ProfileTreeNode.h`, `ProfileTreeNode.h`, `tracing()`
+- **Thin community `Community 592`** (6 nodes): `ProfileTreeNode.h`, `ProfileTreeNode.h`, `ProfileTreeNode.h`, `ProfileTreeNode.h`, `ProfileTreeNode.h`, `tracing()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 591`** (6 nodes): `TraceEventGenerator.h`, `TraceEventGenerator.h`, `TraceEventGenerator.h`, `TraceEventGenerator.h`, `TraceEventGenerator.h`, `tracing()`
+- **Thin community `Community 593`** (6 nodes): `TraceEventGenerator.h`, `TraceEventGenerator.h`, `TraceEventGenerator.h`, `TraceEventGenerator.h`, `TraceEventGenerator.h`, `tracing()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 592`** (6 nodes): `EventLoopReporter.h`, `EventLoopReporter.h`, `EventLoopReporter.h`, `EventLoopReporter.h`, `EventLoopReporter.h`, `tracing()`
+- **Thin community `Community 594`** (6 nodes): `EventLoopReporter.h`, `EventLoopReporter.h`, `EventLoopReporter.h`, `EventLoopReporter.h`, `EventLoopReporter.h`, `tracing()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 593`** (6 nodes): `HostTracingProfileSerializer.h`, `HostTracingProfileSerializer.h`, `HostTracingProfileSerializer.h`, `HostTracingProfileSerializer.h`, `HostTracingProfileSerializer.h`, `tracing()`
+- **Thin community `Community 595`** (6 nodes): `HostTracingProfileSerializer.h`, `HostTracingProfileSerializer.h`, `HostTracingProfileSerializer.h`, `HostTracingProfileSerializer.h`, `HostTracingProfileSerializer.h`, `tracing()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 594`** (6 nodes): `to_underlying.h`, `to_underlying.h`, `to_underlying.h`, `to_underlying.h`, `to_underlying.h`, `facebook()`
+- **Thin community `Community 596`** (6 nodes): `to_underlying.h`, `to_underlying.h`, `to_underlying.h`, `to_underlying.h`, `to_underlying.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 595`** (6 nodes): `hash_combine.h`, `hash_combine.h`, `hash_combine.h`, `hash_combine.h`, `hash_combine.h`, `facebook()`
+- **Thin community `Community 597`** (6 nodes): `hash_combine.h`, `hash_combine.h`, `hash_combine.h`, `hash_combine.h`, `hash_combine.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 596`** (6 nodes): `ManagedObjectWrapper.h`, `ManagedObjectWrapper.h`, `ManagedObjectWrapper.h`, `ManagedObjectWrapper.h`, `ManagedObjectWrapper.h`, `property()`
+- **Thin community `Community 598`** (6 nodes): `ManagedObjectWrapper.h`, `ManagedObjectWrapper.h`, `ManagedObjectWrapper.h`, `ManagedObjectWrapper.h`, `ManagedObjectWrapper.h`, `property()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 597`** (6 nodes): `PackTraits.h`, `PackTraits.h`, `PackTraits.h`, `PackTraits.h`, `PackTraits.h`, `facebook()`
+- **Thin community `Community 599`** (6 nodes): `PackTraits.h`, `PackTraits.h`, `PackTraits.h`, `PackTraits.h`, `PackTraits.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 598`** (6 nodes): `toLower.h`, `toLower.h`, `toLower.h`, `toLower.h`, `toLower.h`, `facebook()`
+- **Thin community `Community 600`** (6 nodes): `toLower.h`, `toLower.h`, `toLower.h`, `toLower.h`, `toLower.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 599`** (6 nodes): `fnv1a.h`, `fnv1a.h`, `fnv1a.h`, `fnv1a.h`, `fnv1a.h`, `facebook()`
+- **Thin community `Community 601`** (6 nodes): `fnv1a.h`, `fnv1a.h`, `fnv1a.h`, `fnv1a.h`, `fnv1a.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 600`** (6 nodes): `LowPriorityExecutor.h`, `LowPriorityExecutor.h`, `LowPriorityExecutor.h`, `LowPriorityExecutor.h`, `LowPriorityExecutor.h`, `LowPriorityExecutor()`
+- **Thin community `Community 602`** (6 nodes): `LowPriorityExecutor.h`, `LowPriorityExecutor.h`, `LowPriorityExecutor.h`, `LowPriorityExecutor.h`, `LowPriorityExecutor.h`, `LowPriorityExecutor()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 601`** (6 nodes): `iequals.h`, `iequals.h`, `iequals.h`, `iequals.h`, `iequals.h`, `facebook()`
+- **Thin community `Community 603`** (6 nodes): `iequals.h`, `iequals.h`, `iequals.h`, `iequals.h`, `iequals.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 602`** (6 nodes): `TemplateStringLiteral.h`, `TemplateStringLiteral.h`, `TemplateStringLiteral.h`, `TemplateStringLiteral.h`, `TemplateStringLiteral.h`, `facebook()`
+- **Thin community `Community 604`** (6 nodes): `TemplateStringLiteral.h`, `TemplateStringLiteral.h`, `TemplateStringLiteral.h`, `TemplateStringLiteral.h`, `TemplateStringLiteral.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 603`** (6 nodes): `FollyConvert.h`, `FollyConvert.h`, `FollyConvert.h`, `FollyConvert.h`, `FollyConvert.h`, `facebook()`
+- **Thin community `Community 605`** (6 nodes): `FollyConvert.h`, `FollyConvert.h`, `FollyConvert.h`, `FollyConvert.h`, `FollyConvert.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 604`** (6 nodes): `facebook()`, `ImageRequestParams.h`, `ImageRequestParams.h`, `ImageRequestParams.h`, `ImageRequestParams.h`, `ImageRequestParams.h`
+- **Thin community `Community 606`** (6 nodes): `facebook()`, `ImageRequestParams.h`, `ImageRequestParams.h`, `ImageRequestParams.h`, `ImageRequestParams.h`, `ImageRequestParams.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 605`** (6 nodes): `facebook()`, `NativeIntersectionObserver.h`, `NativeIntersectionObserver.h`, `NativeIntersectionObserver.h`, `NativeIntersectionObserver.h`, `NativeIntersectionObserver.h`
+- **Thin community `Community 607`** (6 nodes): `facebook()`, `NativeIntersectionObserver.h`, `NativeIntersectionObserver.h`, `NativeIntersectionObserver.h`, `NativeIntersectionObserver.h`, `NativeIntersectionObserver.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 606`** (6 nodes): `facebook()`, `ComponentDescriptors.h`, `ComponentDescriptors.h`, `ComponentDescriptors.h`, `ComponentDescriptors.h`, `ComponentDescriptors.h`
+- **Thin community `Community 608`** (6 nodes): `facebook()`, `ComponentDescriptors.h`, `ComponentDescriptors.h`, `ComponentDescriptors.h`, `ComponentDescriptors.h`, `ComponentDescriptors.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 607`** (6 nodes): `facebook()`, `ShadowNodes.h`, `ShadowNodes.h`, `ShadowNodes.h`, `ShadowNodes.h`, `ShadowNodes.h`
+- **Thin community `Community 609`** (6 nodes): `facebook()`, `ShadowNodes.h`, `ShadowNodes.h`, `ShadowNodes.h`, `ShadowNodes.h`, `ShadowNodes.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 608`** (6 nodes): `facebook()`, `EventEmitters.h`, `EventEmitters.h`, `EventEmitters.h`, `EventEmitters.h`, `EventEmitters.h`
+- **Thin community `Community 610`** (6 nodes): `facebook()`, `EventEmitters.h`, `EventEmitters.h`, `EventEmitters.h`, `EventEmitters.h`, `EventEmitters.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 609`** (6 nodes): `facebook()`, `States.h`, `States.h`, `States.h`, `States.h`, `States.h`
+- **Thin community `Community 611`** (6 nodes): `facebook()`, `States.h`, `States.h`, `States.h`, `States.h`, `States.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 610`** (6 nodes): `PlatformRunLoopObserver.h`, `PlatformRunLoopObserver.h`, `PlatformRunLoopObserver.h`, `PlatformRunLoopObserver.h`, `PlatformRunLoopObserver.h`, `facebook()`
+- **Thin community `Community 612`** (6 nodes): `PlatformRunLoopObserver.h`, `PlatformRunLoopObserver.h`, `PlatformRunLoopObserver.h`, `PlatformRunLoopObserver.h`, `PlatformRunLoopObserver.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 611`** (6 nodes): `RCTComponentViewClassDescriptor.h`, `RCTComponentViewClassDescriptor.h`, `RCTComponentViewClassDescriptor.h`, `RCTComponentViewClassDescriptor.h`, `RCTComponentViewClassDescriptor.h`, `shouldBeRecycled()`
+- **Thin community `Community 613`** (6 nodes): `RCTComponentViewClassDescriptor.h`, `RCTComponentViewClassDescriptor.h`, `RCTComponentViewClassDescriptor.h`, `RCTComponentViewClassDescriptor.h`, `RCTComponentViewClassDescriptor.h`, `shouldBeRecycled()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 612`** (6 nodes): `RCTMountingTransactionObserverCoordinator.h`, `RCTMountingTransactionObserverCoordinator.h`, `RCTMountingTransactionObserverCoordinator.h`, `RCTMountingTransactionObserverCoordinator.h`, `RCTMountingTransactionObserverCoordinator.h`, `RCTMountingTransactionObserverCoordinator()`
+- **Thin community `Community 614`** (6 nodes): `RCTMountingTransactionObserverCoordinator.h`, `RCTMountingTransactionObserverCoordinator.h`, `RCTMountingTransactionObserverCoordinator.h`, `RCTMountingTransactionObserverCoordinator.h`, `RCTMountingTransactionObserverCoordinator.h`, `RCTMountingTransactionObserverCoordinator()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 613`** (6 nodes): `RCTIdentifierPool.h`, `RCTIdentifierPool.h`, `RCTIdentifierPool.h`, `RCTIdentifierPool.h`, `RCTIdentifierPool.h`, `facebook()`
+- **Thin community `Community 615`** (6 nodes): `RCTIdentifierPool.h`, `RCTIdentifierPool.h`, `RCTIdentifierPool.h`, `RCTIdentifierPool.h`, `RCTIdentifierPool.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 614`** (6 nodes): `AppleEventBeat.h`, `AppleEventBeat.h`, `AppleEventBeat.h`, `AppleEventBeat.h`, `AppleEventBeat.h`, `facebook()`
+- **Thin community `Community 616`** (6 nodes): `AppleEventBeat.h`, `AppleEventBeat.h`, `AppleEventBeat.h`, `AppleEventBeat.h`, `AppleEventBeat.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 615`** (6 nodes): `RCTTextInputNativeCommands.h`, `RCTTextInputNativeCommands.h`, `RCTTextInputNativeCommands.h`, `RCTTextInputNativeCommands.h`, `RCTTextInputNativeCommands.h`, `RCTTextInputHandleCommand()`
+- **Thin community `Community 617`** (6 nodes): `RCTTextInputNativeCommands.h`, `RCTTextInputNativeCommands.h`, `RCTTextInputNativeCommands.h`, `RCTTextInputNativeCommands.h`, `RCTTextInputNativeCommands.h`, `RCTTextInputHandleCommand()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 616`** (6 nodes): `facebook()`, `CdpInteractionTypes.h`, `CdpInteractionTypes.h`, `CdpInteractionTypes.h`, `CdpInteractionTypes.h`, `CdpInteractionTypes.h`
+- **Thin community `Community 618`** (6 nodes): `facebook()`, `CdpInteractionTypes.h`, `CdpInteractionTypes.h`, `CdpInteractionTypes.h`, `CdpInteractionTypes.h`, `CdpInteractionTypes.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 617`** (6 nodes): `facebook()`, `CdpPerfIssuesReporter.h`, `CdpPerfIssuesReporter.h`, `CdpPerfIssuesReporter.h`, `CdpPerfIssuesReporter.h`, `CdpPerfIssuesReporter.h`
+- **Thin community `Community 619`** (6 nodes): `facebook()`, `CdpPerfIssuesReporter.h`, `CdpPerfIssuesReporter.h`, `CdpPerfIssuesReporter.h`, `CdpPerfIssuesReporter.h`, `CdpPerfIssuesReporter.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 618`** (6 nodes): `facebook()`, `CdpMetricsReporter.h`, `CdpMetricsReporter.h`, `CdpMetricsReporter.h`, `CdpMetricsReporter.h`, `CdpMetricsReporter.h`
+- **Thin community `Community 620`** (6 nodes): `facebook()`, `CdpMetricsReporter.h`, `CdpMetricsReporter.h`, `CdpMetricsReporter.h`, `CdpMetricsReporter.h`, `CdpMetricsReporter.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 619`** (6 nodes): `SchedulerPriority.h`, `SchedulerPriority.h`, `SchedulerPriority.h`, `SchedulerPriority.h`, `SchedulerPriority.h`, `facebook()`
+- **Thin community `Community 621`** (6 nodes): `SchedulerPriority.h`, `SchedulerPriority.h`, `SchedulerPriority.h`, `SchedulerPriority.h`, `SchedulerPriority.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 620`** (6 nodes): `TestCallInvoker.h`, `TestCallInvoker.h`, `TestCallInvoker.h`, `TestCallInvoker.h`, `TestCallInvoker.h`, `facebook()`
+- **Thin community `Community 622`** (6 nodes): `TestCallInvoker.h`, `TestCallInvoker.h`, `TestCallInvoker.h`, `TestCallInvoker.h`, `TestCallInvoker.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 621`** (6 nodes): `RuntimeExecutorSyncUIThreadUtils.h`, `RuntimeExecutorSyncUIThreadUtils.h`, `RuntimeExecutorSyncUIThreadUtils.h`, `RuntimeExecutorSyncUIThreadUtils.h`, `RuntimeExecutorSyncUIThreadUtils.h`, `facebook()`
+- **Thin community `Community 623`** (6 nodes): `RuntimeExecutorSyncUIThreadUtils.h`, `RuntimeExecutorSyncUIThreadUtils.h`, `RuntimeExecutorSyncUIThreadUtils.h`, `RuntimeExecutorSyncUIThreadUtils.h`, `RuntimeExecutorSyncUIThreadUtils.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 622`** (6 nodes): `facebook()`, `SystraceSection.h`, `SystraceSection.h`, `SystraceSection.h`, `SystraceSection.h`, `SystraceSection.h`
+- **Thin community `Community 624`** (6 nodes): `facebook()`, `SystraceSection.h`, `SystraceSection.h`, `SystraceSection.h`, `SystraceSection.h`, `SystraceSection.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 623`** (6 nodes): `facebook()`, `ErrorUtils.h`, `ErrorUtils.h`, `ErrorUtils.h`, `ErrorUtils.h`, `ErrorUtils.h`
+- **Thin community `Community 625`** (6 nodes): `facebook()`, `ErrorUtils.h`, `ErrorUtils.h`, `ErrorUtils.h`, `ErrorUtils.h`, `ErrorUtils.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 624`** (6 nodes): `facebook()`, `JSBundleType.h`, `JSBundleType.h`, `JSBundleType.h`, `JSBundleType.h`, `JSBundleType.h`
+- **Thin community `Community 626`** (6 nodes): `facebook()`, `JSBundleType.h`, `JSBundleType.h`, `JSBundleType.h`, `JSBundleType.h`, `JSBundleType.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 625`** (6 nodes): `facebook()`, `RAMBundleRegistry.h`, `RAMBundleRegistry.h`, `RAMBundleRegistry.h`, `RAMBundleRegistry.h`, `RAMBundleRegistry.h`
+- **Thin community `Community 627`** (6 nodes): `facebook()`, `RAMBundleRegistry.h`, `RAMBundleRegistry.h`, `RAMBundleRegistry.h`, `RAMBundleRegistry.h`, `RAMBundleRegistry.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 626`** (6 nodes): `facebook()`, `MessageQueueThread.h`, `MessageQueueThread.h`, `MessageQueueThread.h`, `MessageQueueThread.h`, `MessageQueueThread.h`
+- **Thin community `Community 628`** (6 nodes): `facebook()`, `MessageQueueThread.h`, `MessageQueueThread.h`, `MessageQueueThread.h`, `MessageQueueThread.h`, `MessageQueueThread.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 627`** (6 nodes): `facebook()`, `ModuleRegistry.h`, `ModuleRegistry.h`, `ModuleRegistry.h`, `ModuleRegistry.h`, `ModuleRegistry.h`
+- **Thin community `Community 629`** (6 nodes): `facebook()`, `ModuleRegistry.h`, `ModuleRegistry.h`, `ModuleRegistry.h`, `ModuleRegistry.h`, `ModuleRegistry.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 628`** (6 nodes): `NativeMicrotasks.h`, `NativeMicrotasks.h`, `NativeMicrotasks.h`, `NativeMicrotasks.h`, `NativeMicrotasks.h`, `facebook()`
+- **Thin community `Community 630`** (6 nodes): `NativeMicrotasks.h`, `NativeMicrotasks.h`, `NativeMicrotasks.h`, `NativeMicrotasks.h`, `NativeMicrotasks.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 629`** (6 nodes): `facebook()`, `NativeReactNativeFeatureFlags.h`, `NativeReactNativeFeatureFlags.h`, `NativeReactNativeFeatureFlags.h`, `NativeReactNativeFeatureFlags.h`, `NativeReactNativeFeatureFlags.h`
+- **Thin community `Community 631`** (6 nodes): `facebook()`, `NativeReactNativeFeatureFlags.h`, `NativeReactNativeFeatureFlags.h`, `NativeReactNativeFeatureFlags.h`, `NativeReactNativeFeatureFlags.h`, `NativeReactNativeFeatureFlags.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 631`** (6 nodes): `lightweight_mutex`, `.lightweight_mutex()`, `scoped_lock`, `.scoped_lock()`, `lwm_win32_cs.hpp`, `lwm_win32_cs.hpp`
+- **Thin community `Community 632`** (6 nodes): `getValue()`, `value_()`, `ValueAnimatedNode.h`, `ValueAnimatedNode.h`, `ValueAnimatedNode.h`, `ValueAnimatedNode.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 632`** (6 nodes): `lightweight_mutex`, `.lightweight_mutex()`, `scoped_lock`, `.scoped_lock()`, `lwm_std_mutex.hpp`, `lwm_std_mutex.hpp`
+- **Thin community `Community 634`** (6 nodes): `lightweight_mutex`, `.lightweight_mutex()`, `scoped_lock`, `.scoped_lock()`, `lwm_win32_cs.hpp`, `lwm_win32_cs.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 638`** (6 nodes): `uniform_real.hpp`, `uniform_real.hpp`, `param_type`, `.param_type()`, `uniform_real`, `.uniform_real()`
+- **Thin community `Community 635`** (6 nodes): `lightweight_mutex`, `.lightweight_mutex()`, `scoped_lock`, `.scoped_lock()`, `lwm_std_mutex.hpp`, `lwm_std_mutex.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 639`** (6 nodes): `uniform_int.hpp`, `uniform_int.hpp`, `param_type`, `.param_type()`, `uniform_int`, `.uniform_int()`
+- **Thin community `Community 642`** (6 nodes): `uniform_real.hpp`, `uniform_real.hpp`, `param_type`, `.param_type()`, `uniform_real`, `.uniform_real()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 650`** (6 nodes): `MainActivity.kt`, `MainActivity`, `.createReactActivityDelegate()`, `.getMainComponentName()`, `.invokeDefaultOnBackPressed()`, `.onCreate()`
+- **Thin community `Community 643`** (6 nodes): `uniform_int.hpp`, `uniform_int.hpp`, `param_type`, `.param_type()`, `uniform_int`, `.uniform_int()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 651`** (6 nodes): `MainActivity.kt`, `MainActivity`, `.createReactActivityDelegate()`, `.getMainComponentName()`, `.invokeDefaultOnBackPressed()`, `.onCreate()`
+- **Thin community `Community 654`** (6 nodes): `MainActivity.kt`, `MainActivity`, `.createReactActivityDelegate()`, `.getMainComponentName()`, `.invokeDefaultOnBackPressed()`, `.onCreate()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 656`** (6 nodes): `countMatchesElsewhere()`, `escapeRegExp()`, `matchesSearchFilterKind()`, `mergeRankedSearchResults()`, `splitForHighlight()`, `search-filter.ts`
+- **Thin community `Community 655`** (6 nodes): `MainActivity.kt`, `MainActivity`, `.createReactActivityDelegate()`, `.getMainComponentName()`, `.invokeDefaultOnBackPressed()`, `.onCreate()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 658`** (5 nodes): `RCTBaseTextShadowView.h`, `RCTBaseTextShadowView.h`, `RCTBaseTextShadowView.h`, `RCTBaseTextShadowView.h`, `RCTBaseTextShadowView()`
+- **Thin community `Community 662`** (6 nodes): `countMatchesElsewhere()`, `escapeRegExp()`, `matchesSearchFilterKind()`, `mergeRankedSearchResults()`, `splitForHighlight()`, `search-filter.ts`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 659`** (5 nodes): `RCTResizeMode.h`, `RCTResizeMode.h`, `RCTResizeMode.h`, `RCTResizeMode.h`, `RCTResizeModeFromUIViewContentMode()`
+- **Thin community `Community 664`** (5 nodes): `RCTBaseTextShadowView.h`, `RCTBaseTextShadowView.h`, `RCTBaseTextShadowView.h`, `RCTBaseTextShadowView.h`, `RCTBaseTextShadowView()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 660`** (5 nodes): `facebook()`, `TrackingAnimatedNode.h`, `TrackingAnimatedNode.h`, `TrackingAnimatedNode.h`, `TrackingAnimatedNode.h`
+- **Thin community `Community 665`** (5 nodes): `RCTResizeMode.h`, `RCTResizeMode.h`, `RCTResizeMode.h`, `RCTResizeMode.h`, `RCTResizeModeFromUIViewContentMode()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 661`** (5 nodes): `facebook()`, `RoundAnimatedNode.h`, `RoundAnimatedNode.h`, `RoundAnimatedNode.h`, `RoundAnimatedNode.h`
+- **Thin community `Community 666`** (5 nodes): `facebook()`, `TrackingAnimatedNode.h`, `TrackingAnimatedNode.h`, `TrackingAnimatedNode.h`, `TrackingAnimatedNode.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 662`** (5 nodes): `facebook()`, `FrameAnimationDriver.h`, `FrameAnimationDriver.h`, `FrameAnimationDriver.h`, `FrameAnimationDriver.h`
+- **Thin community `Community 667`** (5 nodes): `facebook()`, `RoundAnimatedNode.h`, `RoundAnimatedNode.h`, `RoundAnimatedNode.h`, `RoundAnimatedNode.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 663`** (5 nodes): `facebook()`, `AnimationDriverUtils.h`, `AnimationDriverUtils.h`, `AnimationDriverUtils.h`, `AnimationDriverUtils.h`
+- **Thin community `Community 668`** (5 nodes): `facebook()`, `FrameAnimationDriver.h`, `FrameAnimationDriver.h`, `FrameAnimationDriver.h`, `FrameAnimationDriver.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 664`** (5 nodes): `facebook()`, `MultiplicationAnimatedNode.h`, `MultiplicationAnimatedNode.h`, `MultiplicationAnimatedNode.h`, `MultiplicationAnimatedNode.h`
+- **Thin community `Community 669`** (5 nodes): `facebook()`, `AnimationDriverUtils.h`, `AnimationDriverUtils.h`, `AnimationDriverUtils.h`, `AnimationDriverUtils.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 665`** (5 nodes): `facebook()`, `StyleAnimatedNode.h`, `StyleAnimatedNode.h`, `StyleAnimatedNode.h`, `StyleAnimatedNode.h`
+- **Thin community `Community 670`** (5 nodes): `facebook()`, `MultiplicationAnimatedNode.h`, `MultiplicationAnimatedNode.h`, `MultiplicationAnimatedNode.h`, `MultiplicationAnimatedNode.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 666`** (5 nodes): `facebook()`, `ColorAnimatedNode.h`, `ColorAnimatedNode.h`, `ColorAnimatedNode.h`, `ColorAnimatedNode.h`
+- **Thin community `Community 671`** (5 nodes): `facebook()`, `StyleAnimatedNode.h`, `StyleAnimatedNode.h`, `StyleAnimatedNode.h`, `StyleAnimatedNode.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 667`** (5 nodes): `facebook()`, `DivisionAnimatedNode.h`, `DivisionAnimatedNode.h`, `DivisionAnimatedNode.h`, `DivisionAnimatedNode.h`
+- **Thin community `Community 672`** (5 nodes): `facebook()`, `ColorAnimatedNode.h`, `ColorAnimatedNode.h`, `ColorAnimatedNode.h`, `ColorAnimatedNode.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 668`** (5 nodes): `facebook()`, `AnimatedMountingOverrideDelegate.h`, `AnimatedMountingOverrideDelegate.h`, `AnimatedMountingOverrideDelegate.h`, `AnimatedMountingOverrideDelegate.h`
+- **Thin community `Community 673`** (5 nodes): `facebook()`, `DivisionAnimatedNode.h`, `DivisionAnimatedNode.h`, `DivisionAnimatedNode.h`, `DivisionAnimatedNode.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 669`** (5 nodes): `facebook()`, `DiffClampAnimatedNode.h`, `DiffClampAnimatedNode.h`, `DiffClampAnimatedNode.h`, `DiffClampAnimatedNode.h`
+- **Thin community `Community 674`** (5 nodes): `facebook()`, `AnimatedMountingOverrideDelegate.h`, `AnimatedMountingOverrideDelegate.h`, `AnimatedMountingOverrideDelegate.h`, `AnimatedMountingOverrideDelegate.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 670`** (5 nodes): `facebook()`, `SubtractionAnimatedNode.h`, `SubtractionAnimatedNode.h`, `SubtractionAnimatedNode.h`, `SubtractionAnimatedNode.h`
+- **Thin community `Community 675`** (5 nodes): `facebook()`, `DiffClampAnimatedNode.h`, `DiffClampAnimatedNode.h`, `DiffClampAnimatedNode.h`, `DiffClampAnimatedNode.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 671`** (5 nodes): `facebook()`, `DecayAnimationDriver.h`, `DecayAnimationDriver.h`, `DecayAnimationDriver.h`, `DecayAnimationDriver.h`
+- **Thin community `Community 676`** (5 nodes): `facebook()`, `SubtractionAnimatedNode.h`, `SubtractionAnimatedNode.h`, `SubtractionAnimatedNode.h`, `SubtractionAnimatedNode.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 672`** (5 nodes): `facebook()`, `TransformAnimatedNode.h`, `TransformAnimatedNode.h`, `TransformAnimatedNode.h`, `TransformAnimatedNode.h`
+- **Thin community `Community 677`** (5 nodes): `facebook()`, `DecayAnimationDriver.h`, `DecayAnimationDriver.h`, `DecayAnimationDriver.h`, `DecayAnimationDriver.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 673`** (5 nodes): `facebook()`, `AnimatedNode.h`, `AnimatedNode.h`, `AnimatedNode.h`, `AnimatedNode.h`
+- **Thin community `Community 678`** (5 nodes): `facebook()`, `TransformAnimatedNode.h`, `TransformAnimatedNode.h`, `TransformAnimatedNode.h`, `TransformAnimatedNode.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 674`** (5 nodes): `parentTag_()`, `InterpolationAnimatedNode.h`, `InterpolationAnimatedNode.h`, `InterpolationAnimatedNode.h`, `InterpolationAnimatedNode.h`
+- **Thin community `Community 679`** (5 nodes): `facebook()`, `AnimatedNode.h`, `AnimatedNode.h`, `AnimatedNode.h`, `AnimatedNode.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 675`** (5 nodes): `facebook()`, `primitives.h`, `primitives.h`, `primitives.h`, `primitives.h`
+- **Thin community `Community 680`** (5 nodes): `parentTag_()`, `InterpolationAnimatedNode.h`, `InterpolationAnimatedNode.h`, `InterpolationAnimatedNode.h`, `InterpolationAnimatedNode.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 676`** (5 nodes): `facebook()`, `ObjectAnimatedNode.h`, `ObjectAnimatedNode.h`, `ObjectAnimatedNode.h`, `ObjectAnimatedNode.h`
+- **Thin community `Community 681`** (5 nodes): `facebook()`, `primitives.h`, `primitives.h`, `primitives.h`, `primitives.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 677`** (5 nodes): `facebook()`, `ModulusAnimatedNode.h`, `ModulusAnimatedNode.h`, `ModulusAnimatedNode.h`, `ModulusAnimatedNode.h`
+- **Thin community `Community 682`** (5 nodes): `facebook()`, `ObjectAnimatedNode.h`, `ObjectAnimatedNode.h`, `ObjectAnimatedNode.h`, `ObjectAnimatedNode.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 678`** (5 nodes): `facebook()`, `AdditionAnimatedNode.h`, `AdditionAnimatedNode.h`, `AdditionAnimatedNode.h`, `AdditionAnimatedNode.h`
+- **Thin community `Community 683`** (5 nodes): `facebook()`, `ModulusAnimatedNode.h`, `ModulusAnimatedNode.h`, `ModulusAnimatedNode.h`, `ModulusAnimatedNode.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 679`** (5 nodes): `TextInputComponentDescriptor.h`, `TextInputComponentDescriptor.h`, `TextInputComponentDescriptor.h`, `TextInputComponentDescriptor.h`, `facebook()`
+- **Thin community `Community 684`** (5 nodes): `facebook()`, `AdditionAnimatedNode.h`, `AdditionAnimatedNode.h`, `AdditionAnimatedNode.h`, `AdditionAnimatedNode.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 680`** (5 nodes): `conversions.h`, `conversions.h`, `conversions.h`, `conversions.h`, `facebook()`
+- **Thin community `Community 685`** (5 nodes): `TextInputComponentDescriptor.h`, `TextInputComponentDescriptor.h`, `TextInputComponentDescriptor.h`, `TextInputComponentDescriptor.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 681`** (5 nodes): `TextInputState.h`, `TextInputState.h`, `TextInputState.h`, `TextInputState.h`, `facebook()`
+- **Thin community `Community 686`** (5 nodes): `conversions.h`, `conversions.h`, `conversions.h`, `conversions.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 682`** (5 nodes): `propsConversions.h`, `propsConversions.h`, `propsConversions.h`, `propsConversions.h`, `facebook()`
+- **Thin community `Community 687`** (5 nodes): `TextInputState.h`, `TextInputState.h`, `TextInputState.h`, `TextInputState.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 683`** (5 nodes): `TextInputShadowNode.h`, `TextInputShadowNode.h`, `TextInputShadowNode.h`, `TextInputShadowNode.h`, `facebook()`
+- **Thin community `Community 688`** (5 nodes): `propsConversions.h`, `propsConversions.h`, `propsConversions.h`, `propsConversions.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 684`** (5 nodes): `basePrimitives.h`, `basePrimitives.h`, `basePrimitives.h`, `basePrimitives.h`, `facebook()`
+- **Thin community `Community 689`** (5 nodes): `TextInputShadowNode.h`, `TextInputShadowNode.h`, `TextInputShadowNode.h`, `TextInputShadowNode.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 685`** (5 nodes): `TextInputEventEmitter.h`, `TextInputEventEmitter.h`, `TextInputEventEmitter.h`, `TextInputEventEmitter.h`, `facebook()`
+- **Thin community `Community 690`** (5 nodes): `basePrimitives.h`, `basePrimitives.h`, `basePrimitives.h`, `basePrimitives.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 690`** (5 nodes): `ignore()`, `workaround.hpp`, `workaround.hpp`, `workaround.hpp`, `workaround.hpp`
+- **Thin community `Community 691`** (5 nodes): `TextInputEventEmitter.h`, `TextInputEventEmitter.h`, `TextInputEventEmitter.h`, `TextInputEventEmitter.h`, `facebook()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 691`** (5 nodes): `make_nvp()`, `nvp`, `.nvp()`, `nvp.hpp`, `nvp.hpp`
+- **Thin community `Community 696`** (5 nodes): `ignore()`, `workaround.hpp`, `workaround.hpp`, `workaround.hpp`, `workaround.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 695`** (5 nodes): `check_find_result()`, `find_format_store`, `.find_format_store()`, `find_format_store.hpp`, `find_format_store.hpp`
+- **Thin community `Community 697`** (5 nodes): `make_nvp()`, `nvp`, `.nvp()`, `nvp.hpp`, `nvp.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 698`** (5 nodes): `unbounded()`, `unbounded_helper`, `.unbounded_helper()`, `unbounded.hpp`, `unbounded.hpp`
+- **Thin community `Community 701`** (5 nodes): `check_find_result()`, `find_format_store`, `.find_format_store()`, `find_format_store.hpp`, `find_format_store.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 700`** (5 nodes): `generate()`, `generator_seed_seq`, `.generator_seed_seq()`, `generator_seed_seq.hpp`, `generator_seed_seq.hpp`
+- **Thin community `Community 704`** (5 nodes): `unbounded()`, `unbounded_helper`, `.unbounded_helper()`, `unbounded.hpp`, `unbounded.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 702`** (5 nodes): `same_type()`, `SameTypeConcept`, `.BOOST_CONCEPT_USAGE()`, `misc_concept.hpp`, `misc_concept.hpp`
+- **Thin community `Community 706`** (5 nodes): `generate()`, `generator_seed_seq`, `.generator_seed_seq()`, `generator_seed_seq.hpp`, `generator_seed_seq.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 703`** (5 nodes): `dm`, `.dm()`, `mem_fn()`, `mem_fn.hpp`, `mem_fn.hpp`
+- **Thin community `Community 708`** (5 nodes): `same_type()`, `SameTypeConcept`, `.BOOST_CONCEPT_USAGE()`, `misc_concept.hpp`, `misc_concept.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 717`** (4 nodes): `expo()`, `facebook()`, `EXReactSchedulerDispatch.h`, `EXReactSchedulerDispatch.h`
+- **Thin community `Community 709`** (5 nodes): `dm`, `.dm()`, `mem_fn()`, `mem_fn.hpp`, `mem_fn.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 720`** (4 nodes): `function_equal()`, `function_equal_impl()`, `function_equal.hpp`, `function_equal.hpp`
+- **Thin community `Community 723`** (4 nodes): `expo()`, `facebook()`, `EXReactSchedulerDispatch.h`, `EXReactSchedulerDispatch.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 721`** (4 nodes): `default_delete.hpp`, `default_delete.hpp`, `call_delete()`, `default_delete()`
+- **Thin community `Community 726`** (4 nodes): `numeric_limits<BOOST_LLT>`, `numeric_limits<BOOST_ULLT>`, `limits.hpp`, `limits.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 722`** (4 nodes): `destruct_n`, `.destruct_n()`, `destruct_n.hpp`, `destruct_n.hpp`
+- **Thin community `Community 727`** (4 nodes): `function_equal()`, `function_equal_impl()`, `function_equal.hpp`, `function_equal.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 723`** (4 nodes): `movelib::pointer_element<Pointer>::type*
+- **Thin community `Community 728`** (4 nodes): `default_delete.hpp`, `default_delete.hpp`, `call_delete()`, `default_delete()`
+  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
+- **Thin community `Community 729`** (4 nodes): `destruct_n`, `.destruct_n()`, `destruct_n.hpp`, `destruct_n.hpp`
+  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
+- **Thin community `Community 730`** (4 nodes): `movelib::pointer_element<Pointer>::type*
 to_raw_pointer(const Pointer &p)()`, `to_raw_pointer()`, `to_raw_pointer.hpp`, `to_raw_pointer.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 724`** (4 nodes): `checked_array_delete()`, `checked_delete()`, `checked_delete.hpp`, `checked_delete.hpp`
+- **Thin community `Community 731`** (4 nodes): `checked_array_delete()`, `checked_delete()`, `checked_delete.hpp`, `checked_delete.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 725`** (4 nodes): `aligned_storage.hpp`, `aligned_storage.hpp`, `aligned_storage`, `.aligned_storage()`
+- **Thin community `Community 732`** (4 nodes): `aligned_storage.hpp`, `aligned_storage.hpp`, `aligned_storage`, `.aligned_storage()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 726`** (4 nodes): `R`, `T`, `is_function_ptr_helper.hpp`, `is_function_ptr_helper.hpp`
+- **Thin community `Community 733`** (4 nodes): `R`, `T`, `is_function_ptr_tester.hpp`, `is_function_ptr_tester.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 727`** (4 nodes): `find_iterator_base`, `.BOOST_DEFAULTED_FUNCTION()`, `find_iterator.hpp`, `find_iterator.hpp`
+- **Thin community `Community 734`** (4 nodes): `R`, `T`, `is_function_ptr_helper.hpp`, `is_function_ptr_helper.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 728`** (4 nodes): `const_formatF()`, `dissect_formatF()`, `formatter.hpp`, `formatter.hpp`
+- **Thin community `Community 735`** (4 nodes): `find_iterator_base`, `.BOOST_DEFAULTED_FUNCTION()`, `find_iterator.hpp`, `find_iterator.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 729`** (4 nodes): `back_emplacer`, `.back_emplacer()`, `iterator.hpp`, `iterator.hpp`
+- **Thin community `Community 736`** (4 nodes): `back_emplacer`, `.back_emplacer()`, `iterator.hpp`, `iterator.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 730`** (4 nodes): `advance.hpp`, `advance.hpp`, `advance()`, `advance_impl()`
+- **Thin community `Community 737`** (4 nodes): `advance.hpp`, `advance.hpp`, `advance()`, `advance_impl()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 731`** (4 nodes): `linear_slist_algorithms`, `size_t detach_and_dispose()`, `linear_slist_algorithms.hpp`, `linear_slist_algorithms.hpp`
+- **Thin community `Community 738`** (4 nodes): `linear_slist_algorithms`, `size_t detach_and_dispose()`, `linear_slist_algorithms.hpp`, `linear_slist_algorithms.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 732`** (4 nodes): `slist_base_hook`, `slist_member_hook`, `slist_hook.hpp`, `slist_hook.hpp`
+- **Thin community `Community 739`** (4 nodes): `slist_base_hook`, `slist_member_hook`, `slist_hook.hpp`, `slist_hook.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 733`** (4 nodes): `circular_slist_algorithms`, `size_t detach_and_dispose()`, `circular_slist_algorithms.hpp`, `circular_slist_algorithms.hpp`
+- **Thin community `Community 740`** (4 nodes): `circular_slist_algorithms`, `size_t detach_and_dispose()`, `circular_slist_algorithms.hpp`, `circular_slist_algorithms.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 734`** (4 nodes): `BOOST_NOEXCEPT()`, `to_raw_pointer()`, `pointer_traits.hpp`, `pointer_traits.hpp`
+- **Thin community `Community 741`** (4 nodes): `BOOST_NOEXCEPT()`, `to_raw_pointer()`, `pointer_traits.hpp`, `pointer_traits.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 735`** (4 nodes): `list_base_hook`, `list_member_hook`, `list_hook.hpp`, `list_hook.hpp`
+- **Thin community `Community 742`** (4 nodes): `list_base_hook`, `list_member_hook`, `list_hook.hpp`, `list_hook.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 736`** (4 nodes): `array_initializer`, `.array_initializer()`, `array_initializer.hpp`, `array_initializer.hpp`
+- **Thin community `Community 743`** (4 nodes): `array_initializer`, `.array_initializer()`, `array_initializer.hpp`, `array_initializer.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 737`** (4 nodes): `default_header_holder()`, `get_node()`, `default_header_holder.hpp`, `default_header_holder.hpp`
+- **Thin community `Community 744`** (4 nodes): `default_header_holder()`, `get_node()`, `default_header_holder.hpp`, `default_header_holder.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 738`** (4 nodes): `init_disposer`, `null_disposer`, `simple_disposers.hpp`, `simple_disposers.hpp`
+- **Thin community `Community 745`** (4 nodes): `init_disposer`, `null_disposer`, `simple_disposers.hpp`, `simple_disposers.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 739`** (4 nodes): `equal_to_value`, `.equal_to_value()`, `equal_to_value.hpp`, `equal_to_value.hpp`
+- **Thin community `Community 746`** (4 nodes): `parent_from_member()`, `ptrdiff_t offset_from_pointer_to_member()`, `parent_from_member.hpp`, `parent_from_member.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 740`** (4 nodes): `algo_equal()`, `algo_lexicographical_compare()`, `algorithm.hpp`, `algorithm.hpp`
+- **Thin community `Community 747`** (4 nodes): `equal_to_value`, `.equal_to_value()`, `equal_to_value.hpp`, `equal_to_value.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 741`** (4 nodes): `exception_disposer`, `.exception_disposer()`, `exception_disposer.hpp`, `exception_disposer.hpp`
+- **Thin community `Community 748`** (4 nodes): `algo_equal()`, `algo_lexicographical_compare()`, `algorithm.hpp`, `algorithm.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 742`** (4 nodes): `bind.hpp`, `bind.hpp`, `AUX778076_SPEC_NAME()`, `i_()`
+- **Thin community `Community 749`** (4 nodes): `to_node_ptr()`, `to_value_ptr()`, `hook_traits.hpp`, `hook_traits.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 743`** (4 nodes): `_null_step()`, `_step()`, `reverse_fold_impl_body.hpp`, `reverse_fold_impl_body.hpp`
+- **Thin community `Community 750`** (4 nodes): `exception_disposer`, `.exception_disposer()`, `exception_disposer.hpp`, `exception_disposer.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 744`** (4 nodes): `_null_step()`, `_step()`, `fold_impl_body.hpp`, `fold_impl_body.hpp`
+- **Thin community `Community 751`** (4 nodes): `bind.hpp`, `bind.hpp`, `AUX778076_SPEC_NAME()`, `i_()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 745`** (4 nodes): `_chooser()`, `_impl()`, `sequence_wrapper.hpp`, `sequence_wrapper.hpp`
+- **Thin community `Community 752`** (4 nodes): `_null_step()`, `_step()`, `fold_impl_body.hpp`, `fold_impl_body.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 746`** (4 nodes): `integer_log2()`, `integer_log2_impl()`, `integer_log2.hpp`, `integer_log2.hpp`
+- **Thin community `Community 753`** (4 nodes): `_chooser()`, `_impl()`, `sequence_wrapper.hpp`, `sequence_wrapper.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 747`** (4 nodes): `scoped_bilock`, `.scoped_bilock()`, `scoped_bilock.hpp`, `scoped_bilock.hpp`
+- **Thin community `Community 754`** (4 nodes): `integer_log2()`, `integer_log2_impl()`, `integer_log2.hpp`, `integer_log2.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 748`** (4 nodes): `color_ref()`, `parent_ref()`, `ord_index_node.hpp`, `ord_index_node.hpp`
+- **Thin community `Community 755`** (4 nodes): `scoped_bilock`, `.scoped_bilock()`, `scoped_bilock.hpp`, `scoped_bilock.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 749`** (4 nodes): `random_number_generator.hpp`, `random_number_generator.hpp`, `random_number_generator`, `.random_number_generator()`
+- **Thin community `Community 756`** (4 nodes): `random_number_generator.hpp`, `random_number_generator.hpp`, `random_number_generator`, `.random_number_generator()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 750`** (4 nodes): `variate_generator.hpp`, `variate_generator.hpp`, `variate_generator`, `.variate_generator()`
+- **Thin community `Community 757`** (4 nodes): `variate_generator.hpp`, `variate_generator.hpp`, `variate_generator`, `.variate_generator()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 751`** (4 nodes): `shuffle_output.hpp`, `shuffle_output.hpp`, `shuffle_output`, `.shuffle_output()`
+- **Thin community `Community 758`** (4 nodes): `shuffle_output.hpp`, `shuffle_output.hpp`, `shuffle_output`, `.shuffle_output()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 752`** (4 nodes): `print_vector()`, `read_vector()`, `vector_io.hpp`, `vector_io.hpp`
+- **Thin community `Community 759`** (4 nodes): `print_vector()`, `read_vector()`, `vector_io.hpp`, `vector_io.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 753`** (4 nodes): `generate_int_float_pair()`, `generate_one_digit()`, `int_float_pair.hpp`, `int_float_pair.hpp`
+- **Thin community `Community 760`** (4 nodes): `generate_int_float_pair()`, `generate_one_digit()`, `int_float_pair.hpp`, `int_float_pair.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 754`** (4 nodes): `uniform_int_float`, `.uniform_int_float()`, `uniform_int_float.hpp`, `uniform_int_float.hpp`
+- **Thin community `Community 761`** (4 nodes): `uniform_int_float`, `.uniform_int_float()`, `uniform_int_float.hpp`, `uniform_int_float.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 755`** (4 nodes): `rbegin.hpp`, `rbegin.hpp`, `type
+- **Thin community `Community 762`** (4 nodes): `rbegin.hpp`, `rbegin.hpp`, `type
 const_rbegin()`, `type
 rbegin()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 756`** (4 nodes): `rend.hpp`, `rend.hpp`, `type
-const_rend()`, `type
-rend()`
+- **Thin community `Community 763`** (4 nodes): `range_fwd.hpp`, `range_fwd.hpp`, `iterator_range`, `sub_range`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 757`** (4 nodes): `folly()`, `storeValue()`, `MicroLock.h`, `MicroLock.h`
+- **Thin community `Community 764`** (4 nodes): `folly()`, `storeValue()`, `MicroLock.h`, `MicroLock.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 758`** (4 nodes): `checkpoint_()`, `custom_stop_watch()`, `stop_watch.h`, `stop_watch.h`
+- **Thin community `Community 765`** (4 nodes): `bool()`, `exception_wrapper()`, `ExceptionWrapper.h`, `ExceptionWrapper.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 759`** (4 nodes): `MoveWrapper()`, `value()`, `MoveWrapper.h`, `MoveWrapper.h`
+- **Thin community `Community 766`** (4 nodes): `checkpoint_()`, `custom_stop_watch()`, `stop_watch.h`, `stop_watch.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 760`** (4 nodes): `NetworkSocket.h`, `NetworkSocket.h`, `folly()`, `std()`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 761`** (4 nodes): `folly()`, `operator()`, `DiscriminatedPtrDetail.h`, `DiscriminatedPtrDetail.h`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 762`** (4 nodes): `numeric_limits<BOOST_LLT>`, `numeric_limits<BOOST_ULLT>`, `limits.hpp`, `limits.hpp`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 763`** (4 nodes): `R`, `T`, `is_function_ptr_tester.hpp`, `is_function_ptr_tester.hpp`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 764`** (4 nodes): `parent_from_member()`, `ptrdiff_t offset_from_pointer_to_member()`, `parent_from_member.hpp`, `parent_from_member.hpp`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 765`** (4 nodes): `to_node_ptr()`, `to_value_ptr()`, `hook_traits.hpp`, `hook_traits.hpp`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 766`** (4 nodes): `range_fwd.hpp`, `range_fwd.hpp`, `iterator_range`, `sub_range`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 767`** (4 nodes): `bool()`, `exception_wrapper()`, `ExceptionWrapper.h`, `ExceptionWrapper.h`
+- **Thin community `Community 767`** (4 nodes): `MoveWrapper()`, `value()`, `MoveWrapper.h`, `MoveWrapper.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
 - **Thin community `Community 768`** (4 nodes): `Ordering.h`, `Ordering.h`, `folly()`, `partial_ordering_()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 772`** (4 nodes): `ExpoAppDelegateSubscriber`, `BeebeebAppDelegate`, `.application()`, `BeebeebAppDelegate.swift`
+- **Thin community `Community 769`** (4 nodes): `const_formatF()`, `dissect_formatF()`, `formatter.hpp`, `formatter.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 773`** (4 nodes): `BeebeebCryptoModule`, `.definition()`, `NotLinkedException`, `BeebeebCryptoModule.kt`
+- **Thin community `Community 770`** (4 nodes): `_null_step()`, `_step()`, `reverse_fold_impl_body.hpp`, `reverse_fold_impl_body.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 776`** (4 nodes): `decodeXmlEntities()`, `extractTextFromXml()`, `parsePptx()`, `PptxRenderer.tsx`
+- **Thin community `Community 771`** (4 nodes): `color_ref()`, `parent_ref()`, `ord_index_node.hpp`, `ord_index_node.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 783`** (3 nodes): `AppGroupContainer`, `BeebeebConstants`, `Constants.swift`
+- **Thin community `Community 772`** (4 nodes): `rend.hpp`, `rend.hpp`, `type
+const_rend()`, `type
+rend()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 785`** (3 nodes): `expo()`, `ExpoViewProps.h`, `ExpoViewProps.h`
+- **Thin community `Community 773`** (4 nodes): `NetworkSocket.h`, `NetworkSocket.h`, `folly()`, `std()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 786`** (3 nodes): `expo()`, `EXJSIConversions.h`, `EXJSIConversions.h`
+- **Thin community `Community 774`** (4 nodes): `folly()`, `operator()`, `DiscriminatedPtrDetail.h`, `DiscriminatedPtrDetail.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 787`** (3 nodes): `expo()`, `ContentOriginRegistry.h`, `ContentOriginRegistry.h`
+- **Thin community `Community 778`** (4 nodes): `ExpoAppDelegateSubscriber`, `BeebeebAppDelegate`, `.application()`, `BeebeebAppDelegate.swift`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 788`** (3 nodes): `expo()`, `SwiftUIViewProps.h`, `SwiftUIViewProps.h`
+- **Thin community `Community 779`** (4 nodes): `BeebeebCryptoModule`, `.definition()`, `NotLinkedException`, `BeebeebCryptoModule.kt`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 789`** (3 nodes): `SharedRef()`, `SharedRef.h`, `SharedRef.h`
+- **Thin community `Community 782`** (4 nodes): `decodeXmlEntities()`, `extractTextFromXml()`, `parsePptx()`, `PptxRenderer.tsx`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 790`** (3 nodes): `expo()`, `BridgelessJSCallInvoker.h`, `BridgelessJSCallInvoker.h`
+- **Thin community `Community 791`** (3 nodes): `AppGroupContainer`, `BeebeebConstants`, `Constants.swift`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 791`** (3 nodes): `NativeModule()`, `NativeModule.h`, `NativeModule.h`
+- **Thin community `Community 793`** (3 nodes): `expo()`, `ExpoViewProps.h`, `ExpoViewProps.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 792`** (3 nodes): `expo()`, `ExpoViewEventEmitter.h`, `ExpoViewEventEmitter.h`
+- **Thin community `Community 794`** (3 nodes): `expo()`, `EXJSIConversions.h`, `EXJSIConversions.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 793`** (3 nodes): `TypedArrayKind()`, `TypedArray.h`, `TypedArray.h`
+- **Thin community `Community 795`** (3 nodes): `expo()`, `ContentOriginRegistry.h`, `ContentOriginRegistry.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 794`** (3 nodes): `expo()`, `TestingSyncJSCallInvoker.h`, `TestingSyncJSCallInvoker.h`
+- **Thin community `Community 796`** (3 nodes): `expo()`, `SwiftUIViewProps.h`, `SwiftUIViewProps.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 795`** (3 nodes): `expo()`, `ExpoViewState.h`, `ExpoViewState.h`
+- **Thin community `Community 797`** (3 nodes): `SharedRef()`, `SharedRef.h`, `SharedRef.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 804`** (3 nodes): `fast_float()`, `fast_float.h`, `fast_float.h`
+- **Thin community `Community 798`** (3 nodes): `expo()`, `BridgelessJSCallInvoker.h`, `BridgelessJSCallInvoker.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 805`** (3 nodes): `fast_float()`, `decimal_to_binary.h`, `decimal_to_binary.h`
+- **Thin community `Community 799`** (3 nodes): `NativeModule()`, `NativeModule.h`, `NativeModule.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 806`** (3 nodes): `current_function_helper()`, `current_function.hpp`, `current_function.hpp`
+- **Thin community `Community 800`** (3 nodes): `expo()`, `ExpoViewEventEmitter.h`, `ExpoViewEventEmitter.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 807`** (3 nodes): `visit_each()`, `visit_each.hpp`, `visit_each.hpp`
+- **Thin community `Community 801`** (3 nodes): `TypedArrayKind()`, `TypedArray.h`, `TypedArray.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 808`** (3 nodes): `get_pointer()`, `get_pointer.hpp`, `get_pointer.hpp`
+- **Thin community `Community 802`** (3 nodes): `expo()`, `TestingSyncJSCallInvoker.h`, `TestingSyncJSCallInvoker.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 809`** (3 nodes): `multi_index_container`, `multi_index_container_fwd.hpp`, `multi_index_container_fwd.hpp`
+- **Thin community `Community 803`** (3 nodes): `expo()`, `ExpoViewState.h`, `ExpoViewState.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 810`** (3 nodes): `unique()`, `unique.hpp`, `unique.hpp`
+- **Thin community `Community 812`** (3 nodes): `fast_float()`, `fast_float.h`, `fast_float.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 811`** (3 nodes): `operator()()`, `basic_op.hpp`, `basic_op.hpp`
+- **Thin community `Community 813`** (3 nodes): `fast_float()`, `decimal_to_binary.h`, `decimal_to_binary.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 812`** (3 nodes): `force_ptr()`, `force_ptr.hpp`, `force_ptr.hpp`
+- **Thin community `Community 814`** (3 nodes): `current_function_helper()`, `current_function.hpp`, `current_function.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 813`** (3 nodes): `addressof()`, `addressof.hpp`, `addressof.hpp`
+- **Thin community `Community 815`** (3 nodes): `visit_each()`, `visit_each.hpp`, `visit_each.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 814`** (3 nodes): `mref()`, `fwd_macros.hpp`, `fwd_macros.hpp`
+- **Thin community `Community 816`** (3 nodes): `get_pointer()`, `get_pointer.hpp`, `get_pointer.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 815`** (3 nodes): `noncopyable`, `noncopyable.hpp`, `noncopyable.hpp`
+- **Thin community `Community 817`** (3 nodes): `multi_index_container`, `multi_index_container_fwd.hpp`, `multi_index_container_fwd.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 816`** (3 nodes): `is_convertible.hpp`, `is_convertible.hpp`, `is_convertible_basic_impl<From, To, false>`
+- **Thin community `Community 818`** (3 nodes): `unique()`, `unique.hpp`, `unique.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 817`** (3 nodes): `T`, `is_mem_fun_pointer_tester.hpp`, `is_mem_fun_pointer_tester.hpp`
+- **Thin community `Community 819`** (3 nodes): `operator()()`, `basic_op.hpp`, `basic_op.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 818`** (3 nodes): `T`, `is_mem_fun_pointer_impl.hpp`, `is_mem_fun_pointer_impl.hpp`
+- **Thin community `Community 820`** (3 nodes): `force_ptr()`, `force_ptr.hpp`, `force_ptr.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 819`** (3 nodes): `Ret`, `has_binary_operator.hpp`, `has_binary_operator.hpp`
+- **Thin community `Community 821`** (3 nodes): `addressof()`, `addressof.hpp`, `addressof.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 820`** (3 nodes): `Ret`, `has_prefix_operator.hpp`, `has_prefix_operator.hpp`
+- **Thin community `Community 822`** (3 nodes): `mref()`, `fwd_macros.hpp`, `fwd_macros.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 821`** (3 nodes): `bind_t`, `epilogue.hpp`, `epilogue.hpp`
+- **Thin community `Community 823`** (3 nodes): `noncopyable`, `noncopyable.hpp`, `noncopyable.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 822`** (3 nodes): `bounded_copy()`, `util.hpp`, `util.hpp`
+- **Thin community `Community 824`** (3 nodes): `is_convertible.hpp`, `is_convertible.hpp`, `is_convertible_basic_impl<From, To, false>`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 823`** (3 nodes): `default_next_capacity`, `options.hpp`, `options.hpp`
+- **Thin community `Community 825`** (3 nodes): `T`, `is_mem_fun_pointer_tester.hpp`, `is_mem_fun_pointer_tester.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 824`** (3 nodes): `clamp_by_stored_size_type()`, `next_capacity.hpp`, `next_capacity.hpp`
+- **Thin community `Community 826`** (3 nodes): `T`, `is_mem_fun_pointer_impl.hpp`, `is_mem_fun_pointer_impl.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 825`** (3 nodes): `tuple`, `is_pair.hpp`, `is_pair.hpp`
+- **Thin community `Community 827`** (3 nodes): `Ret`, `has_binary_operator.hpp`, `has_binary_operator.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 826`** (3 nodes): `value_init()`, `value_init.hpp`, `value_init.hpp`
+- **Thin community `Community 828`** (3 nodes): `Ret`, `has_prefix_operator.hpp`, `has_prefix_operator.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 827`** (3 nodes): `insert_iterator`, `std_fwd.hpp`, `std_fwd.hpp`
+- **Thin community `Community 829`** (3 nodes): `bind_t`, `epilogue.hpp`, `epilogue.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 828`** (3 nodes): `foo()`, `config_def.hpp`, `config_def.hpp`
+- **Thin community `Community 830`** (3 nodes): `bounded_copy()`, `util.hpp`, `util.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 829`** (3 nodes): `any()`, `pointer_rebind.hpp`, `pointer_rebind.hpp`
+- **Thin community `Community 831`** (3 nodes): `default_next_capacity`, `options.hpp`, `options.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 830`** (3 nodes): `inverted_typelist()`, `pack_options.hpp`, `pack_options.hpp`
+- **Thin community `Community 832`** (3 nodes): `clamp_by_stored_size_type()`, `next_capacity.hpp`, `next_capacity.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 831`** (3 nodes): `get_parent_from_member()`, `parent_from_member.hpp`, `parent_from_member.hpp`
+- **Thin community `Community 833`** (3 nodes): `tuple`, `is_pair.hpp`, `is_pair.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 832`** (3 nodes): `get_ptr()`, `iiterator.hpp`, `iiterator.hpp`
+- **Thin community `Community 834`** (3 nodes): `value_init()`, `value_init.hpp`, `value_init.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 833`** (3 nodes): `BOOST_INTRUSIVE_HAS_MEMBER_FUNCTION_CALLABLE_WITH_FUNCNAME()`, `has_member_function_callable_with.hpp`, `has_member_function_callable_with.hpp`
+- **Thin community `Community 835`** (3 nodes): `insert_iterator`, `std_fwd.hpp`, `std_fwd.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 834`** (3 nodes): `twin()`, `twin.hpp`, `twin.hpp`
+- **Thin community `Community 836`** (3 nodes): `foo()`, `config_def.hpp`, `config_def.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 835`** (3 nodes): `node_cloner()`, `node_cloner_disposer.hpp`, `node_cloner_disposer.hpp`
+- **Thin community `Community 837`** (3 nodes): `any()`, `pointer_rebind.hpp`, `pointer_rebind.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 836`** (3 nodes): `tree_value_compare()`, `tree_value_compare.hpp`, `tree_value_compare.hpp`
+- **Thin community `Community 838`** (3 nodes): `inverted_typelist()`, `pack_options.hpp`, `pack_options.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 837`** (3 nodes): `uncast()`, `uncast.hpp`, `uncast.hpp`
+- **Thin community `Community 839`** (3 nodes): `get_parent_from_member()`, `parent_from_member.hpp`, `parent_from_member.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 838`** (3 nodes): `usage_requirements()`, `usage.hpp`, `usage.hpp`
+- **Thin community `Community 840`** (3 nodes): `get_ptr()`, `iiterator.hpp`, `iiterator.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 839`** (3 nodes): `integral_c_tag.hpp`, `integral_c_tag.hpp`, `integral_c_tag()`
+- **Thin community `Community 841`** (3 nodes): `BOOST_INTRUSIVE_HAS_MEMBER_FUNCTION_CALLABLE_WITH_FUNCNAME()`, `has_member_function_callable_with.hpp`, `has_member_function_callable_with.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 840`** (3 nodes): `quote.hpp`, `quote.hpp`, `i_()`
+- **Thin community `Community 842`** (3 nodes): `twin()`, `twin.hpp`, `twin.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 841`** (3 nodes): `placeholders.hpp`, `placeholders.hpp`, `namespace()`
+- **Thin community `Community 843`** (3 nodes): `node_cloner()`, `node_cloner_disposer.hpp`, `node_cloner_disposer.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 842`** (3 nodes): `apply_wrap.hpp`, `apply_wrap.hpp`, `i_()`
+- **Thin community `Community 844`** (3 nodes): `tree_value_compare()`, `tree_value_compare.hpp`, `tree_value_compare.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 843`** (3 nodes): `struct()`, `na_fwd.hpp`, `na_fwd.hpp`
+- **Thin community `Community 845`** (3 nodes): `uncast()`, `uncast.hpp`, `uncast.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 844`** (3 nodes): `template apply<N1,N2>::type
+- **Thin community `Community 846`** (3 nodes): `usage_requirements()`, `usage.hpp`, `usage.hpp`
+  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
+- **Thin community `Community 847`** (3 nodes): `integral_c_tag.hpp`, `integral_c_tag.hpp`, `integral_c_tag()`
+  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
+- **Thin community `Community 848`** (3 nodes): `quote.hpp`, `quote.hpp`, `i_()`
+  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
+- **Thin community `Community 849`** (3 nodes): `placeholders.hpp`, `placeholders.hpp`, `namespace()`
+  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
+- **Thin community `Community 850`** (3 nodes): `apply_wrap.hpp`, `apply_wrap.hpp`, `i_()`
+  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
+- **Thin community `Community 851`** (3 nodes): `struct()`, `na_fwd.hpp`, `na_fwd.hpp`
+  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
+- **Thin community `Community 852`** (3 nodes): `template apply<N1,N2>::type
 #else
     : aux::msvc_eti_base< typename apply_wrap2<
           AUX778076_OP_IMPL_NAME<
@@ -6175,333 +6207,333 @@ rend()`
         , N2
         >::type >::type()`, `numeric_op.hpp`, `numeric_op.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 845`** (3 nodes): `_wknd()`, `arithmetic_op.hpp`, `arithmetic_op.hpp`
+- **Thin community `Community 853`** (3 nodes): `_wknd()`, `arithmetic_op.hpp`, `arithmetic_op.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 846`** (3 nodes): `i_()`, `full_lambda.hpp`, `full_lambda.hpp`
+- **Thin community `Community 854`** (3 nodes): `i_()`, `full_lambda.hpp`, `full_lambda.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 847`** (3 nodes): `_count_args()`, `count_args.hpp`, `count_args.hpp`
+- **Thin community `Community 855`** (3 nodes): `_count_args()`, `count_args.hpp`, `count_args.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 848`** (3 nodes): `namespace()`, `placeholders.hpp`, `placeholders.hpp`
+- **Thin community `Community 856`** (3 nodes): `namespace()`, `placeholders.hpp`, `placeholders.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 849`** (3 nodes): `member.hpp`, `member.hpp`, `reference_wrapper`
+- **Thin community `Community 857`** (3 nodes): `member.hpp`, `member.hpp`, `reference_wrapper`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 850`** (3 nodes): `identity.hpp`, `identity.hpp`, `reference_wrapper`
+- **Thin community `Community 858`** (3 nodes): `identity.hpp`, `identity.hpp`, `reference_wrapper`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 851`** (3 nodes): `value_comparison()`, `value_compare.hpp`, `value_compare.hpp`
+- **Thin community `Community 859`** (3 nodes): `value_comparison()`, `value_compare.hpp`, `value_compare.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 852`** (3 nodes): `modify_key_adaptor()`, `modify_key_adaptor.hpp`, `modify_key_adaptor.hpp`
+- **Thin community `Community 860`** (3 nodes): `modify_key_adaptor()`, `modify_key_adaptor.hpp`, `modify_key_adaptor.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 853`** (3 nodes): `ordered_index`, `ord_index_impl_fwd.hpp`, `ord_index_impl_fwd.hpp`
+- **Thin community `Community 861`** (3 nodes): `ordered_index`, `ord_index_impl_fwd.hpp`, `ord_index_impl_fwd.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 854`** (3 nodes): `raw_ptr()`, `raw_ptr.hpp`, `raw_ptr.hpp`
+- **Thin community `Community 862`** (3 nodes): `raw_ptr()`, `raw_ptr.hpp`, `raw_ptr.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 855`** (3 nodes): `bad_archive_exception()`, `bad_archive_exception.hpp`, `bad_archive_exception.hpp`
+- **Thin community `Community 863`** (3 nodes): `bad_archive_exception()`, `bad_archive_exception.hpp`, `bad_archive_exception.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 856`** (3 nodes): `ranlux.hpp`, `ranlux.hpp`, `ranlux_documentation`
+- **Thin community `Community 864`** (3 nodes): `ranlux.hpp`, `ranlux.hpp`, `ranlux_documentation`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 857`** (3 nodes): `const_mod`, `const_mod.hpp`, `const_mod.hpp`
+- **Thin community `Community 865`** (3 nodes): `const_mod`, `const_mod.hpp`, `const_mod.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 858`** (3 nodes): `concepts.hpp`, `concepts.hpp`, `BOOST_CONCEPT_USAGE()`
+- **Thin community `Community 866`** (3 nodes): `concepts.hpp`, `concepts.hpp`, `BOOST_CONCEPT_USAGE()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 859`** (3 nodes): `distance.hpp`, `distance.hpp`, `range_difference<T>::type
+- **Thin community `Community 867`** (3 nodes): `distance.hpp`, `distance.hpp`, `range_difference<T>::type
         distance()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 860`** (3 nodes): `size_type.hpp`, `size_type.hpp`, `has_size_type`
+- **Thin community `Community 868`** (3 nodes): `size_type.hpp`, `size_type.hpp`, `has_size_type`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 861`** (3 nodes): `safe_bool`, `safe_bool.hpp`, `safe_bool.hpp`
+- **Thin community `Community 869`** (3 nodes): `safe_bool`, `safe_bool.hpp`, `safe_bool.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 862`** (3 nodes): `range`, `common.hpp`, `common.hpp`
+- **Thin community `Community 870`** (3 nodes): `range`, `common.hpp`, `common.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 863`** (3 nodes): `BOOST_BIND()`, `bind_mf_cc.hpp`, `bind_mf_cc.hpp`
+- **Thin community `Community 871`** (3 nodes): `BOOST_BIND()`, `bind_mf_cc.hpp`, `bind_mf_cc.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 864`** (3 nodes): `BOOST_BIND()`, `bind_cc.hpp`, `bind_cc.hpp`
+- **Thin community `Community 872`** (3 nodes): `BOOST_BIND()`, `bind_cc.hpp`, `bind_cc.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 865`** (3 nodes): `BOOST_BIND()`, `bind_mf2_cc.hpp`, `bind_mf2_cc.hpp`
+- **Thin community `Community 873`** (3 nodes): `BOOST_BIND()`, `bind_mf2_cc.hpp`, `bind_mf2_cc.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 866`** (3 nodes): `arg()`, `arg.hpp`, `arg.hpp`
+- **Thin community `Community 874`** (3 nodes): `arg()`, `arg.hpp`, `arg.hpp`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 867`** (3 nodes): `master.hpp`, `master.hpp`, `test_class`
+- **Thin community `Community 875`** (3 nodes): `master.hpp`, `master.hpp`, `test_class`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 868`** (3 nodes): `preprocessed.hpp`, `preprocessed.hpp`, `test_class`
+- **Thin community `Community 876`** (3 nodes): `preprocessed.hpp`, `preprocessed.hpp`, `test_class`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 869`** (3 nodes): `google()`, `raw_logging.h`, `raw_logging.h`
+- **Thin community `Community 877`** (3 nodes): `google()`, `raw_logging.h`, `raw_logging.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 870`** (3 nodes): `double_conversion()`, `fixed-dtoa.h`, `fixed-dtoa.h`
+- **Thin community `Community 878`** (3 nodes): `double_conversion()`, `fixed-dtoa.h`, `fixed-dtoa.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 871`** (3 nodes): `double_conversion()`, `bignum-dtoa.h`, `bignum-dtoa.h`
+- **Thin community `Community 879`** (3 nodes): `double_conversion()`, `bignum-dtoa.h`, `bignum-dtoa.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 872`** (3 nodes): `double_conversion()`, `strtod.h`, `strtod.h`
+- **Thin community `Community 880`** (3 nodes): `double_conversion()`, `strtod.h`, `strtod.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 873`** (3 nodes): `double_conversion()`, `diy-fp.h`, `diy-fp.h`
+- **Thin community `Community 881`** (3 nodes): `double_conversion()`, `diy-fp.h`, `diy-fp.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 874`** (3 nodes): `double_conversion()`, `cached-powers.h`, `cached-powers.h`
+- **Thin community `Community 882`** (3 nodes): `double_conversion()`, `cached-powers.h`, `cached-powers.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 875`** (3 nodes): `double_conversion()`, `bignum.h`, `bignum.h`
+- **Thin community `Community 883`** (3 nodes): `double_conversion()`, `bignum.h`, `bignum.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 876`** (3 nodes): `double_conversion()`, `fast-dtoa.h`, `fast-dtoa.h`
+- **Thin community `Community 884`** (3 nodes): `double_conversion()`, `fast-dtoa.h`, `fast-dtoa.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 877`** (3 nodes): `folly()`, `Random-inl.h`, `Random-inl.h`
+- **Thin community `Community 885`** (3 nodes): `folly()`, `Random-inl.h`, `Random-inl.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 878`** (3 nodes): `folly()`, `ExceptionString.h`, `ExceptionString.h`
+- **Thin community `Community 886`** (3 nodes): `folly()`, `ExceptionString.h`, `ExceptionString.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 879`** (3 nodes): `folly()`, `MaybeManagedPtr.h`, `MaybeManagedPtr.h`
+- **Thin community `Community 887`** (3 nodes): `folly()`, `MaybeManagedPtr.h`, `MaybeManagedPtr.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 880`** (3 nodes): `folly()`, `Varint.h`, `Varint.h`
+- **Thin community `Community 888`** (3 nodes): `folly()`, `Varint.h`, `Varint.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 881`** (3 nodes): `folly()`, `SpinLock.h`, `SpinLock.h`
+- **Thin community `Community 889`** (3 nodes): `folly()`, `SpinLock.h`, `SpinLock.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 882`** (3 nodes): `folly()`, `Demangle.h`, `Demangle.h`
+- **Thin community `Community 890`** (3 nodes): `folly()`, `Demangle.h`, `Demangle.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 883`** (3 nodes): `folly()`, `CpuId.h`, `CpuId.h`
+- **Thin community `Community 891`** (3 nodes): `folly()`, `CpuId.h`, `CpuId.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 884`** (3 nodes): `folly()`, `Singleton-inl.h`, `Singleton-inl.h`
+- **Thin community `Community 892`** (3 nodes): `folly()`, `Singleton-inl.h`, `Singleton-inl.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 885`** (3 nodes): `folly()`, `FollyMemset.h`, `FollyMemset.h`
+- **Thin community `Community 893`** (3 nodes): `folly()`, `FollyMemset.h`, `FollyMemset.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 886`** (3 nodes): `folly()`, `PolyException.h`, `PolyException.h`
+- **Thin community `Community 894`** (3 nodes): `folly()`, `PolyException.h`, `PolyException.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 887`** (3 nodes): `folly()`, `FollyMemcpy.h`, `FollyMemcpy.h`
+- **Thin community `Community 895`** (3 nodes): `folly()`, `FollyMemcpy.h`, `FollyMemcpy.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 888`** (3 nodes): `folly()`, `Portability.h`, `Portability.h`
+- **Thin community `Community 896`** (3 nodes): `folly()`, `Portability.h`, `Portability.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 889`** (3 nodes): `folly()`, `ClockGettimeWrappers.h`, `ClockGettimeWrappers.h`
+- **Thin community `Community 897`** (3 nodes): `folly()`, `ClockGettimeWrappers.h`, `ClockGettimeWrappers.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 890`** (3 nodes): `folly()`, `Lazy.h`, `Lazy.h`
+- **Thin community `Community 898`** (3 nodes): `folly()`, `Lazy.h`, `Lazy.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 891`** (3 nodes): `folly()`, `TimeoutQueue.h`, `TimeoutQueue.h`
+- **Thin community `Community 899`** (3 nodes): `folly()`, `TimeoutQueue.h`, `TimeoutQueue.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 892`** (3 nodes): `folly()`, `FormatTraits.h`, `FormatTraits.h`
+- **Thin community `Community 900`** (3 nodes): `folly()`, `FormatTraits.h`, `FormatTraits.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 893`** (3 nodes): `folly()`, `BenchmarkUtil.h`, `BenchmarkUtil.h`
+- **Thin community `Community 901`** (3 nodes): `folly()`, `BenchmarkUtil.h`, `BenchmarkUtil.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 894`** (3 nodes): `NetOpsDispatcher.h`, `NetOpsDispatcher.h`, `folly()`
+- **Thin community `Community 902`** (3 nodes): `NetOpsDispatcher.h`, `NetOpsDispatcher.h`, `folly()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 895`** (3 nodes): `TcpInfoDispatcher.h`, `TcpInfoDispatcher.h`, `folly()`
+- **Thin community `Community 903`** (3 nodes): `TcpInfoDispatcher.h`, `TcpInfoDispatcher.h`, `folly()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 896`** (3 nodes): `TcpInfoTypes.h`, `TcpInfoTypes.h`, `folly()`
+- **Thin community `Community 904`** (3 nodes): `TcpInfoTypes.h`, `TcpInfoTypes.h`, `folly()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 897`** (3 nodes): `NetOps.h`, `NetOps.h`, `folly()`
+- **Thin community `Community 905`** (3 nodes): `NetOps.h`, `NetOps.h`, `folly()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 898`** (3 nodes): `folly()`, `SocketFileDescriptorMap.h`, `SocketFileDescriptorMap.h`
+- **Thin community `Community 906`** (3 nodes): `folly()`, `SocketFileDescriptorMap.h`, `SocketFileDescriptorMap.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 899`** (3 nodes): `JemallocNodumpAllocator.h`, `JemallocNodumpAllocator.h`, `arena_index_()`
+- **Thin community `Community 907`** (3 nodes): `JemallocNodumpAllocator.h`, `JemallocNodumpAllocator.h`, `arena_index_()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 900`** (3 nodes): `ThreadCachedArena.h`, `ThreadCachedArena.h`, `folly()`
+- **Thin community `Community 908`** (3 nodes): `ThreadCachedArena.h`, `ThreadCachedArena.h`, `folly()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 901`** (3 nodes): `SanitizeLeak.h`, `SanitizeLeak.h`, `folly()`
+- **Thin community `Community 909`** (3 nodes): `SanitizeLeak.h`, `SanitizeLeak.h`, `folly()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 902`** (3 nodes): `ReentrantAllocator.h`, `ReentrantAllocator.h`, `folly()`
+- **Thin community `Community 910`** (3 nodes): `ReentrantAllocator.h`, `ReentrantAllocator.h`, `folly()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 903`** (3 nodes): `MemoryResource.h`, `MemoryResource.h`, `folly()`
+- **Thin community `Community 911`** (3 nodes): `MemoryResource.h`, `MemoryResource.h`, `folly()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 904`** (3 nodes): `SanitizeAddress.h`, `SanitizeAddress.h`, `folly()`
+- **Thin community `Community 912`** (3 nodes): `SanitizeAddress.h`, `SanitizeAddress.h`, `folly()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 905`** (3 nodes): `not_null-inl.h`, `not_null-inl.h`, `folly()`
+- **Thin community `Community 913`** (3 nodes): `not_null-inl.h`, `not_null-inl.h`, `folly()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 906`** (3 nodes): `chrono()`, `Clock.h`, `Clock.h`
+- **Thin community `Community 914`** (3 nodes): `chrono()`, `Clock.h`, `Clock.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 907`** (3 nodes): `folly()`, `SpookyHashV1.h`, `SpookyHashV1.h`
+- **Thin community `Community 915`** (3 nodes): `folly()`, `SpookyHashV1.h`, `SpookyHashV1.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 908`** (3 nodes): `folly()`, `traits.h`, `traits.h`
+- **Thin community `Community 916`** (3 nodes): `folly()`, `traits.h`, `traits.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 909`** (3 nodes): `folly()`, `SpookyHashV2.h`, `SpookyHashV2.h`
+- **Thin community `Community 917`** (3 nodes): `folly()`, `SpookyHashV2.h`, `SpookyHashV2.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 910`** (3 nodes): `folly()`, `FarmHash.h`, `FarmHash.h`
+- **Thin community `Community 918`** (3 nodes): `folly()`, `FarmHash.h`, `FarmHash.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 911`** (3 nodes): `folly()`, `MurmurHash.h`, `MurmurHash.h`
+- **Thin community `Community 919`** (3 nodes): `folly()`, `MurmurHash.h`, `MurmurHash.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 912`** (3 nodes): `folly()`, `Checksum.h`, `Checksum.h`
+- **Thin community `Community 920`** (3 nodes): `folly()`, `Checksum.h`, `Checksum.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 913`** (3 nodes): `Ignore.h`, `Ignore.h`, `folly()`
+- **Thin community `Community 921`** (3 nodes): `Ignore.h`, `Ignore.h`, `folly()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 914`** (3 nodes): `Contains.h`, `Contains.h`, `folly()`
+- **Thin community `Community 922`** (3 nodes): `Contains.h`, `Contains.h`, `folly()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 915`** (3 nodes): `FindFixed.h`, `FindFixed.h`, `folly()`
+- **Thin community `Community 923`** (3 nodes): `FindFixed.h`, `FindFixed.h`, `folly()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 916`** (3 nodes): `folly()`, `SimdAnyOf.h`, `SimdAnyOf.h`
+- **Thin community `Community 924`** (3 nodes): `folly()`, `SimdAnyOf.h`, `SimdAnyOf.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 917`** (3 nodes): `detail()`, `ContainsImpl.h`, `ContainsImpl.h`
+- **Thin community `Community 925`** (3 nodes): `detail()`, `ContainsImpl.h`, `ContainsImpl.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 918`** (3 nodes): `Pretty.h`, `Pretty.h`, `folly()`
+- **Thin community `Community 926`** (3 nodes): `Pretty.h`, `Pretty.h`, `folly()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 919`** (3 nodes): `SafeAssert.h`, `SafeAssert.h`, `folly()`
+- **Thin community `Community 927`** (3 nodes): `SafeAssert.h`, `SafeAssert.h`, `folly()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 920`** (3 nodes): `Builtin.h`, `Builtin.h`, `folly()`
+- **Thin community `Community 928`** (3 nodes): `Builtin.h`, `Builtin.h`, `folly()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 921`** (3 nodes): `Hint.h`, `Hint.h`, `folly()`
+- **Thin community `Community 929`** (3 nodes): `Hint.h`, `Hint.h`, `folly()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 922`** (3 nodes): `Badge.h`, `Badge.h`, `noexcept()`
+- **Thin community `Community 930`** (3 nodes): `Badge.h`, `Badge.h`, `noexcept()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 923`** (3 nodes): `CArray.h`, `CArray.h`, `folly()`
+- **Thin community `Community 931`** (3 nodes): `CArray.h`, `CArray.h`, `folly()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 924`** (3 nodes): `Assume.h`, `Assume.h`, `folly()`
+- **Thin community `Community 932`** (3 nodes): `Assume.h`, `Assume.h`, `folly()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 925`** (3 nodes): `Keep.h`, `Keep.h`, `folly()`
+- **Thin community `Community 933`** (3 nodes): `Keep.h`, `Keep.h`, `folly()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 926`** (3 nodes): `CString.h`, `CString.h`, `folly()`
+- **Thin community `Community 934`** (3 nodes): `CString.h`, `CString.h`, `folly()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 927`** (3 nodes): `Access.h`, `Access.h`, `folly()`
+- **Thin community `Community 935`** (3 nodes): `Access.h`, `Access.h`, `folly()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 928`** (3 nodes): `Hint-inl.h`, `Hint-inl.h`, `folly()`
+- **Thin community `Community 936`** (3 nodes): `Hint-inl.h`, `Hint-inl.h`, `folly()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 929`** (3 nodes): `Thunk.h`, `Thunk.h`, `folly()`
+- **Thin community `Community 937`** (3 nodes): `Thunk.h`, `Thunk.h`, `folly()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 930`** (3 nodes): `StaticConst.h`, `StaticConst.h`, `folly()`
+- **Thin community `Community 938`** (3 nodes): `StaticConst.h`, `StaticConst.h`, `folly()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 931`** (3 nodes): `TypeInfo.h`, `TypeInfo.h`, `folly()`
+- **Thin community `Community 939`** (3 nodes): `TypeInfo.h`, `TypeInfo.h`, `folly()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 932`** (3 nodes): `Bits.h`, `Bits.h`, `folly()`
+- **Thin community `Community 940`** (3 nodes): `Bits.h`, `Bits.h`, `folly()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 933`** (3 nodes): `folly()`, `range_traits.h`, `range_traits.h`
+- **Thin community `Community 941`** (3 nodes): `folly()`, `range_traits.h`, `range_traits.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 934`** (3 nodes): `folly()`, `IntrusiveList.h`, `IntrusiveList.h`
+- **Thin community `Community 942`** (3 nodes): `folly()`, `IntrusiveList.h`, `IntrusiveList.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 935`** (3 nodes): `folly()`, `SparseByteSet.h`, `SparseByteSet.h`
+- **Thin community `Community 943`** (3 nodes): `folly()`, `SparseByteSet.h`, `SparseByteSet.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 936`** (3 nodes): `folly()`, `View.h`, `View.h`
+- **Thin community `Community 944`** (3 nodes): `folly()`, `View.h`, `View.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 937`** (3 nodes): `folly()`, `F14Set-fwd.h`, `F14Set-fwd.h`
+- **Thin community `Community 945`** (3 nodes): `folly()`, `F14Set-fwd.h`, `F14Set-fwd.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 938`** (3 nodes): `folly()`, `Access.h`, `Access.h`
+- **Thin community `Community 946`** (3 nodes): `folly()`, `Access.h`, `Access.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 939`** (3 nodes): `folly()`, `F14Map-fwd.h`, `F14Map-fwd.h`
+- **Thin community `Community 947`** (3 nodes): `folly()`, `F14Map-fwd.h`, `F14Map-fwd.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 940`** (3 nodes): `folly()`, `Foreach.h`, `Foreach.h`
+- **Thin community `Community 948`** (3 nodes): `folly()`, `Foreach.h`, `Foreach.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 941`** (3 nodes): `folly()`, `HeterogeneousAccess-fwd.h`, `HeterogeneousAccess-fwd.h`
+- **Thin community `Community 949`** (3 nodes): `folly()`, `HeterogeneousAccess-fwd.h`, `HeterogeneousAccess-fwd.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 942`** (3 nodes): `folly()`, `Foreach-inl.h`, `Foreach-inl.h`
+- **Thin community `Community 950`** (3 nodes): `folly()`, `Foreach-inl.h`, `Foreach-inl.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 943`** (3 nodes): `folly()`, `BitIteratorDetail.h`, `BitIteratorDetail.h`
+- **Thin community `Community 951`** (3 nodes): `folly()`, `BitIteratorDetail.h`, `BitIteratorDetail.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 944`** (3 nodes): `folly()`, `F14IntrinsicsAvailability.h`, `F14IntrinsicsAvailability.h`
+- **Thin community `Community 952`** (3 nodes): `folly()`, `F14IntrinsicsAvailability.h`, `F14IntrinsicsAvailability.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 945`** (3 nodes): `folly()`, `F14Defaults.h`, `F14Defaults.h`
+- **Thin community `Community 953`** (3 nodes): `folly()`, `F14Defaults.h`, `F14Defaults.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 946`** (3 nodes): `folly()`, `F14Mask.h`, `F14Mask.h`
+- **Thin community `Community 954`** (3 nodes): `folly()`, `F14Mask.h`, `F14Mask.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 947`** (3 nodes): `AtFork.h`, `AtFork.h`, `folly()`
+- **Thin community `Community 955`** (3 nodes): `AtFork.h`, `AtFork.h`, `folly()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 948`** (3 nodes): `HardwareConcurrency.h`, `HardwareConcurrency.h`, `folly()`
+- **Thin community `Community 956`** (3 nodes): `HardwareConcurrency.h`, `HardwareConcurrency.h`, `folly()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 949`** (3 nodes): `AuxVector.h`, `AuxVector.h`, `folly()`
+- **Thin community `Community 957`** (3 nodes): `AuxVector.h`, `AuxVector.h`, `folly()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 950`** (3 nodes): `Pid.h`, `Pid.h`, `folly()`
+- **Thin community `Community 958`** (3 nodes): `Pid.h`, `Pid.h`, `folly()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 951`** (3 nodes): `ThreadId.h`, `ThreadId.h`, `folly()`
+- **Thin community `Community 959`** (3 nodes): `ThreadId.h`, `ThreadId.h`, `folly()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 952`** (3 nodes): `folly()`, `AsyncTrace.h`, `AsyncTrace.h`
+- **Thin community `Community 960`** (3 nodes): `folly()`, `AsyncTrace.h`, `AsyncTrace.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 953`** (3 nodes): `folly()`, `FingerprintPolynomial.h`, `FingerprintPolynomial.h`
+- **Thin community `Community 961`** (3 nodes): `folly()`, `FingerprintPolynomial.h`, `FingerprintPolynomial.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 954`** (3 nodes): `folly()`, `SimpleSimdStringUtils.h`, `SimpleSimdStringUtils.h`
+- **Thin community `Community 962`** (3 nodes): `folly()`, `SimpleSimdStringUtils.h`, `SimpleSimdStringUtils.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 955`** (3 nodes): `folly()`, `FileUtilVectorDetail.h`, `FileUtilVectorDetail.h`
+- **Thin community `Community 963`** (3 nodes): `folly()`, `FileUtilVectorDetail.h`, `FileUtilVectorDetail.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 956`** (3 nodes): `folly()`, `SocketFastOpen.h`, `SocketFastOpen.h`
+- **Thin community `Community 964`** (3 nodes): `folly()`, `SocketFastOpen.h`, `SocketFastOpen.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 957`** (3 nodes): `folly()`, `AtomicUnorderedMapUtils.h`, `AtomicUnorderedMapUtils.h`
+- **Thin community `Community 965`** (3 nodes): `folly()`, `AtomicUnorderedMapUtils.h`, `AtomicUnorderedMapUtils.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 958`** (3 nodes): `folly()`, `Singleton.h`, `Singleton.h`
+- **Thin community `Community 966`** (3 nodes): `folly()`, `Singleton.h`, `Singleton.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 959`** (3 nodes): `folly()`, `Futex.h`, `Futex.h`
+- **Thin community `Community 967`** (3 nodes): `folly()`, `Futex.h`, `Futex.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 960`** (3 nodes): `folly()`, `AtomicHashUtils.h`, `AtomicHashUtils.h`
+- **Thin community `Community 968`** (3 nodes): `folly()`, `AtomicHashUtils.h`, `AtomicHashUtils.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 961`** (3 nodes): `detail()`, `TrapOnAvx512.h`, `TrapOnAvx512.h`
+- **Thin community `Community 969`** (3 nodes): `detail()`, `TrapOnAvx512.h`, `TrapOnAvx512.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 962`** (3 nodes): `folly()`, `UniqueInstance.h`, `UniqueInstance.h`
+- **Thin community `Community 970`** (3 nodes): `folly()`, `UniqueInstance.h`, `UniqueInstance.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 963`** (3 nodes): `folly()`, `SlowFingerprint.h`, `SlowFingerprint.h`
+- **Thin community `Community 971`** (3 nodes): `folly()`, `SlowFingerprint.h`, `SlowFingerprint.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 964`** (3 nodes): `folly()`, `SimpleSimdStringUtilsImpl.h`, `SimpleSimdStringUtilsImpl.h`
+- **Thin community `Community 972`** (3 nodes): `folly()`, `SimpleSimdStringUtilsImpl.h`, `SimpleSimdStringUtilsImpl.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 965`** (3 nodes): `folly()`, `RangeSse42.h`, `RangeSse42.h`
+- **Thin community `Community 973`** (3 nodes): `folly()`, `RangeSse42.h`, `RangeSse42.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 966`** (3 nodes): `folly()`, `Futex-inl.h`, `Futex-inl.h`
+- **Thin community `Community 974`** (3 nodes): `folly()`, `Futex-inl.h`, `Futex-inl.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 967`** (3 nodes): `folly()`, `Sse.h`, `Sse.h`
+- **Thin community `Community 975`** (3 nodes): `folly()`, `Sse.h`, `Sse.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 968`** (3 nodes): `folly()`, `Iterators.h`, `Iterators.h`
+- **Thin community `Community 976`** (3 nodes): `folly()`, `Iterators.h`, `Iterators.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 969`** (3 nodes): `detail()`, `thread_local_globals.h`, `thread_local_globals.h`
+- **Thin community `Community 977`** (3 nodes): `detail()`, `thread_local_globals.h`, `thread_local_globals.h`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 970`** (3 nodes): `JsonMockUtil.h`, `JsonMockUtil.h`, `folly()`
+- **Thin community `Community 978`** (3 nodes): `JsonMockUtil.h`, `JsonMockUtil.h`, `folly()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 971`** (3 nodes): `JSONSchema.h`, `JSONSchema.h`, `folly()`
+- **Thin community `Community 979`** (3 nodes): `JSONSchema.h`, `JSONSchema.h`, `folly()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 972`** (3 nodes): `Filesystem.h`, `Filesystem.h`, `folly()`
+- **Thin community `Community 980`** (3 nodes): `Filesystem.h`, `Filesystem.h`, `folly()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 973`** (3 nodes): `SysSyscall.h`, `SysSyscall.h`, `folly()`
+- **Thin community `Community 981`** (3 nodes): `SysSyscall.h`, `SysSyscall.h`, `folly()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 974`** (3 nodes): `Stdlib.h`, `Stdlib.h`, `folly()`
+- **Thin community `Community 982`** (3 nodes): `Stdlib.h`, `Stdlib.h`, `folly()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 975`** (3 nodes): `SysMembarrier.h`, `SysMembarrier.h`, `folly()`
+- **Thin community `Community 983`** (3 nodes): `SysMembarrier.h`, `SysMembarrier.h`, `folly()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 976`** (3 nodes): `Unistd.h`, `Unistd.h`, `folly()`
+- **Thin community `Community 984`** (3 nodes): `Unistd.h`, `Unistd.h`, `folly()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 977`** (3 nodes): `Fcntl.h`, `Fcntl.h`, `folly()`
+- **Thin community `Community 985`** (3 nodes): `Fcntl.h`, `Fcntl.h`, `folly()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 978`** (3 nodes): `Libgen.h`, `Libgen.h`, `folly()`
+- **Thin community `Community 986`** (3 nodes): `Libgen.h`, `Libgen.h`, `folly()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 979`** (3 nodes): `Asm.h`, `Asm.h`, `folly()`
+- **Thin community `Community 987`** (3 nodes): `Asm.h`, `Asm.h`, `folly()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 980`** (3 nodes): `Sockets.h`, `Sockets.h`, `folly()`
+- **Thin community `Community 988`** (3 nodes): `Sockets.h`, `Sockets.h`, `folly()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 981`** (3 nodes): `Sched.h`, `Sched.h`, `folly()`
+- **Thin community `Community 989`** (3 nodes): `Sched.h`, `Sched.h`, `folly()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 982`** (3 nodes): `PThread.h`, `PThread.h`, `folly()`
+- **Thin community `Community 990`** (3 nodes): `PThread.h`, `PThread.h`, `folly()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 983`** (3 nodes): `Math.h`, `Math.h`, `folly()`
+- **Thin community `Community 991`** (3 nodes): `Math.h`, `Math.h`, `folly()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 984`** (3 nodes): `Memory.h`, `Memory.h`, `folly()`
+- **Thin community `Community 992`** (3 nodes): `Memory.h`, `Memory.h`, `folly()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 985`** (3 nodes): `SourceLocation.h`, `SourceLocation.h`, `folly()`
+- **Thin community `Community 993`** (3 nodes): `SourceLocation.h`, `SourceLocation.h`, `folly()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 986`** (3 nodes): `SysStat.h`, `SysStat.h`, `folly()`
+- **Thin community `Community 994`** (3 nodes): `SysStat.h`, `SysStat.h`, `folly()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 987`** (3 nodes): `SysUio.h`, `SysUio.h`, `folly()`
+- **Thin community `Community 995`** (3 nodes): `SysUio.h`, `SysUio.h`, `folly()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 988`** (3 nodes): `Constexpr.h`, `Constexpr.h`, `folly()`
+- **Thin community `Community 996`** (3 nodes): `Constexpr.h`, `Constexpr.h`, `folly()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 989`** (3 nodes): `Atomic.h`, `Atomic.h`, `__sync_fetch_and_add()`
+- **Thin community `Community 997`** (3 nodes): `Atomic.h`, `Atomic.h`, `__sync_fetch_and_add()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 993`** (3 nodes): `UIImage`, `-sd_imageWithWebPData`, `UIImage+WebP.m`
+- **Thin community `Community 1001`** (3 nodes): `UIImage`, `-sd_imageWithWebPData`, `UIImage+WebP.m`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 994`** (3 nodes): `UIImage`, `-sd_imageWithGIFData`, `UIImage+GIF.m`
+- **Thin community `Community 1002`** (3 nodes): `UIImage`, `-sd_imageWithGIFData`, `UIImage+GIF.m`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 995`** (3 nodes): `NSBezierPath+SDRoundedCorners.m`, `NSBezierPath`, `-sd_bezierPathWithRoundedRectbyRoundingCornerscornerRadius`
+- **Thin community `Community 1003`** (3 nodes): `NSBezierPath+SDRoundedCorners.m`, `NSBezierPath`, `-sd_bezierPathWithRoundedRectbyRoundingCornerscornerRadius`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 996`** (3 nodes): `Weak.swift`, `Weak`, `.init()`
+- **Thin community `Community 1004`** (3 nodes): `Weak.swift`, `Weak`, `.init()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 1000`** (3 nodes): `addTabBarClearance()`, `useTabBarBottomInset()`, `tab-bar-inset.ts`
+- **Thin community `Community 1008`** (3 nodes): `addTabBarClearance()`, `useTabBarBottomInset()`, `tab-bar-inset.ts`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 1004`** (3 nodes): `shouldBlockTwoFactorSetupBack()`, `twoFactorSetupBackAction()`, `two-factor-setup-gate.ts`
+- **Thin community `Community 1012`** (3 nodes): `shouldBlockTwoFactorSetupBack()`, `twoFactorSetupBackAction()`, `two-factor-setup-gate.ts`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 1007`** (3 nodes): `fileThumbnailState()`, `lockAwareThumbnailFields()`, `locked-thumbnail.ts`
+- **Thin community `Community 1015`** (3 nodes): `fileThumbnailState()`, `lockAwareThumbnailFields()`, `locked-thumbnail.ts`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 1008`** (3 nodes): `deriveSasWords()`, `fnv1a()`, `sas-words.ts`
+- **Thin community `Community 1016`** (3 nodes): `deriveSasWords()`, `fnv1a()`, `sas-words.ts`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 1010`** (3 nodes): `calendarPermissionGranted()`, `ensureCalendarPermission()`, `calendar-permissions.ts`
+- **Thin community `Community 1018`** (3 nodes): `calendarPermissionGranted()`, `ensureCalendarPermission()`, `calendar-permissions.ts`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 1014`** (3 nodes): `billingStatusView()`, `formatBillingDate()`, `billing-status.ts`
+- **Thin community `Community 1022`** (3 nodes): `billingStatusView()`, `formatBillingDate()`, `billing-status.ts`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 1162`** (2 nodes): `NSOperation`, `SDWebImageOperation.m`
+- **Thin community `Community 1170`** (2 nodes): `NSOperation`, `SDWebImageOperation.m`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 1163`** (2 nodes): `IntrospectableViewType.swift`, `IntrospectableViewType`
+- **Thin community `Community 1171`** (2 nodes): `IntrospectableViewType.swift`, `IntrospectableViewType`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `move()` connect `Community 6` to `Community 1`, `Community 3`, `Community 5`, `Community 7`, `Community 9`, `Community 12`, `Community 13`, `Community 15`, `Community 17`, `Community 21`, `Community 22`, `Community 24`, `Community 26`, `Community 29`, `Community 31`, `Community 33`, `Community 38`, `Community 40`, `Community 57`?**
-  _High betweenness centrality (0.033) - this node is a cross-community bridge._
-- **Why does `namespace()` connect `Community 2` to `Community 1`, `Community 9`, `Community 12`, `Community 15`, `Community 29`, `Community 30`?**
-  _High betweenness centrality (0.014) - this node is a cross-community bridge._
-- **Why does `tracing()` connect `Community 6` to `Community 9`, `Community 28`, `Community 1`?**
-  _High betweenness centrality (0.013) - this node is a cross-community bridge._
-- **Are the 73 inferred relationships involving `String` (e.g. with `.formatFileSize()` and `.initUpload()`) actually correct?**
-  _`String` has 73 INFERRED edges - model-reasoned connections that need verification._
+- **Why does `move()` connect `Community 6` to `Community 1`, `Community 2`, `Community 7`, `Community 10`, `Community 11`, `Community 12`, `Community 14`, `Community 19`, `Community 22`, `Community 23`, `Community 26`, `Community 27`, `Community 29`, `Community 30`, `Community 31`, `Community 34`, `Community 37`, `Community 38`, `Community 53`, `Community 54`, `Community 68`?**
+  _High betweenness centrality (0.029) - this node is a cross-community bridge._
+- **Why does `tracing()` connect `Community 23` to `Community 1`, `Community 5`, `Community 6`?**
+  _High betweenness centrality (0.018) - this node is a cross-community bridge._
+- **Why does `namespace()` connect `Community 2` to `Community 1`, `Community 10`, `Community 14`, `Community 27`, `Community 30`?**
+  _High betweenness centrality (0.012) - this node is a cross-community bridge._
+- **Are the 72 inferred relationships involving `String` (e.g. with `.formatFileSize()` and `.initUpload()`) actually correct?**
+  _`String` has 72 INFERRED edges - model-reasoned connections that need verification._
 - **Are the 148 inferred relationships involving `undefined()` (e.g. with `common()` and `facebook()`) actually correct?**
   _`undefined()` has 148 INFERRED edges - model-reasoned connections that need verification._
 - **Are the 116 inferred relationships involving `move()` (e.g. with `expo()` and `CSSLinearGradientFunction()`) actually correct?**

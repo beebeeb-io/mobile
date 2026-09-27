@@ -26,6 +26,13 @@ import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import * as Haptics from 'expo-haptics';
 import * as LocalAuthentication from 'expo-local-authentication';
+import { StatusBar } from 'expo-status-bar';
+import {
+  PanGestureHandler,
+  State,
+  type PanGestureHandlerGestureEvent,
+  type PanGestureHandlerStateChangeEvent,
+} from 'react-native-gesture-handler';
 import { WebView } from 'react-native-webview';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import NetInfo from '@react-native-community/netinfo';
@@ -34,11 +41,22 @@ import type { RootStackParamList } from '../App';
 import { colors, fonts, radii, shadows } from '../theme';
 import type { Colors } from '../theme';
 import { useTheme } from '../lib/theme-context';
-import { GLASS_CIRCLE_SIZES, GlassCapsule, GlassCircle, SCROLL_EDGE, ScrollEdgeBlur, glassMaterial } from '../components/glass';
+import { GLASS_CIRCLE_SIZES, GlassCapsule, GlassCircle, PREVIEW_CHROME_MATERIAL, SCROLL_EDGE, ScrollEdgeBlur, glassMaterial } from '../components/glass';
+import { bandColors, type Stop } from '../components/glass/gradient';
 import { useToast } from '../lib/toast-context';
-import { getToken, friendlyError, trustLocation, trashFiles } from '../lib/api';
+import { getToken, friendlyError, trustLocation, trashFiles, getFile, getFileCurrentVersion, listAllFiles, moveFile, type UploadProgress } from '../lib/api';
 import { useCrypto } from '../lib/crypto-context';
-import { decryptToTempFile } from '../lib/native-decrypt';
+import { generateFileId } from '../lib/encrypted-upload';
+import { encryptedMetadataToJson, encryptedMetadataPayloadToBytes, fileMetadataPlaintext } from '../lib/encrypted-metadata';
+import { collectAllFolders, movePickerFolderFallbackName, type MovePickerFolderNode } from '../lib/move-picker-folders';
+import FolderPickerModal, { type PickerFolder } from '../components/FolderPickerModal';
+import { evaluateTextEditGate } from '../lib/text-edit-gate';
+import {
+  buildKeepBothName,
+  isStaleVersionConflict,
+  saveTextFileVersion,
+} from '../lib/text-file-save';
+import { decryptToTempFile, invalidatePreviewCache } from '../lib/native-decrypt';
 import { offlineManager } from '../lib/offline-manager';
 import { maybeSelfRepairThumbnailFromLocalFile } from '../lib/thumbnail-self-repair';
 import { BeebeebThumbnails, type PreviewLoadProgressEvent } from '../../modules/beebeeb-crypto';
@@ -68,11 +86,14 @@ import {
   activePhotoPageIndices,
   clampPhotoIndex,
 } from '../lib/photo-viewer-window';
-import { DetailsSheet } from '../components/preview/DetailsSheet';
+import { InfoSheet } from '../components/preview/InfoSheet';
+import { PreviewBottomBar } from '../components/preview/PreviewBottomBar';
 import { recordRuntimeTrace } from '../lib/runtime-trace';
 import { formatBytes as formatSize } from '../lib/format';
 import { checkLockedFileIds, isPagerPageGated } from '../lib/preview-lock-gate';
+import { computePreviewContentInset } from '../lib/preview-content-inset';
 import { FILES_APP_LOCK_CAVEAT } from '../lib/lock-copy';
+import { formatPdfPageCounter, nextBarsVisible } from '../lib/preview-chrome';
 
 // Preview renderers are lazy-loaded so that the libraries each one depends on
 // (jszip, xlsx, mammoth, pako, react-native-pdf, highlight.js) only enter
@@ -105,6 +126,14 @@ const ZipRenderer = React.lazy(async () => {
 const CodeRenderer = React.lazy(async () => {
   const m = await import('../components/preview/CodeRenderer');
   return { default: m.CodeRenderer };
+});
+const MarkdownRenderer = React.lazy(async () => {
+  const m = await import('../components/preview/MarkdownRenderer');
+  return { default: m.MarkdownRenderer };
+});
+const TextEditorView = React.lazy(async () => {
+  const m = await import('../components/preview/TextEditorView');
+  return { default: m.TextEditorView };
 });
 
 // ---------------------------------------------------------------------------
@@ -1652,6 +1681,54 @@ const PhotoPage = React.memo(function PhotoPage({
 });
 
 // ---------------------------------------------------------------------------
+// Top scrim (round 5 — "the clock stays legible when content scrolls
+// beneath")
+// ---------------------------------------------------------------------------
+
+const PREVIEW_TOP_SCRIM_BANDS = 12;
+// Dark/light scrim tracks the APP's resolved scheme, not the underlying
+// document's colours — same reasoning `PREVIEW_CHROME_MATERIAL` already
+// documents for the bars themselves: this backs the OS status bar (clock/
+// battery/signal), which is itself always rendered in the app's own
+// light/dark style, never adapting to page content.
+const PREVIEW_TOP_SCRIM_STOPS_DARK: Stop[] = [
+  { pos: 0, color: 'rgba(0,0,0,0.50)' },
+  { pos: 0.55, color: 'rgba(0,0,0,0.18)' },
+  { pos: 1, color: 'rgba(0,0,0,0)' },
+];
+const PREVIEW_TOP_SCRIM_STOPS_LIGHT: Stop[] = [
+  { pos: 0, color: 'rgba(255,255,255,0.55)' },
+  { pos: 0.55, color: 'rgba(255,255,255,0.20)' },
+  { pos: 1, color: 'rgba(255,255,255,0)' },
+];
+
+/**
+ * A plain top-to-bottom gradient needs none of `GlassSurface`'s Sheen
+ * geometry (that machinery exists for an ANGLED sweep over an arbitrary
+ * aspect ratio) — this is a vertical stack of `bandColors` bands, same
+ * technique (no `expo-linear-gradient` — see `gradient.ts`'s own doc
+ * comment), simpler case: no rotation, no measured width, just height.
+ */
+function PreviewTopScrim({ height, dark }: { height: number; dark: boolean }) {
+  const bands = useMemo(
+    () => bandColors(dark ? PREVIEW_TOP_SCRIM_STOPS_DARK : PREVIEW_TOP_SCRIM_STOPS_LIGHT, PREVIEW_TOP_SCRIM_BANDS),
+    [dark],
+  );
+  if (height <= 0) return null;
+  return (
+    <View
+      style={{ position: 'absolute', top: 0, left: 0, right: 0, height }}
+      pointerEvents="none"
+      testID="preview-top-scrim"
+    >
+      {bands.map((color, i) => (
+        <View key={i} style={{ flex: 1, backgroundColor: color }} />
+      ))}
+    </View>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Screen
 // ---------------------------------------------------------------------------
 
@@ -1708,6 +1785,19 @@ export default function PreviewScreen() {
     clampPhotoIndex(initialPhotoIndex ?? 0, photoList.length)
   ));
   const pagerRef = useRef<FlatList<PhotoPageEntry>>(null);
+  // Preview redesign item 3 — tap-to-hide on the swipe pager, WITHOUT a
+  // wrapping `Pressable` ancestor. Verified on-device (bisected): a
+  // `Pressable` wrapping this FlatList reliably swallowed every swipe (the
+  // pager never advanced past page 1, confirmed with a fresh screenshot per
+  // attempt) even though it never fires `onPress` on a real drag — RN's
+  // responder negotiation did NOT let the paging ScrollView win the
+  // horizontal pan here, for whatever Fabric/UIKit-version reason. Reverted
+  // to a plain `View` wrapper and instrument the FlatList's own raw touch
+  // events instead: `onTouchStart`/`onTouchEnd` fire on this view
+  // regardless of who ends up owning the gesture, so a short, low-movement
+  // touch (a tap) can be told apart from a real swipe without adding a
+  // second responder to race the FlatList's own.
+  const pagerTouchStartRef = useRef<{ x: number; y: number; t: number } | null>(null);
   const activePhotoPageIndexes = useMemo(
     () => activePhotoPageIndices(currentPhotoIndex, photoList.length, 0),
     [currentPhotoIndex, photoList.length],
@@ -1869,6 +1959,23 @@ export default function PreviewScreen() {
   const [textLoading, setTextLoading] = useState(false);
   const [textError, setTextError] = useState<string | null>(null);
 
+  // Task 1563 — text/markdown/code EDIT mode state. `savedVersionNumber`/
+  // `savedAt` override the route-provided version once a save succeeds (this
+  // screen never re-fetches route params), and `fileMeta` carries the fields
+  // a save needs that route.params never had (the file's CURRENT encrypted
+  // name — reused byte-for-byte, never re-derived — and its parent folder,
+  // needed only for "Keep both"). Fetched lazily on first entry into edit
+  // mode, not on every keystroke or every save.
+  const [editMode, setEditMode] = useState(false);
+  const [editText, setEditText] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [savedVersionNumber, setSavedVersionNumber] = useState<number | null>(null);
+  const [savedAt, setSavedAt] = useState<Date | null>(null);
+  const [fileMeta, setFileMeta] = useState<{ nameEncrypted: string; parentId: string | null; versionNumber: number } | null>(null);
+  const [fileMetaError, setFileMetaError] = useState<string | null>(null);
+  const [loadingFileMeta, setLoadingFileMeta] = useState(false);
+  const [conflict, setConflict] = useState<{ freshVersionNumber: number } | null>(null);
+
   // Video inline preview state — `videoUri` is the on-disk decrypted file
   // that the VideoView plays from; cleaned up on unmount / when changed.
   const [videoUri, setVideoUri] = useState<string | null>(null);
@@ -1923,7 +2030,7 @@ export default function PreviewScreen() {
     }).catch(() => {});
   }, []);
 
-  const { isUnlocked, getFileKeyBytes, getMasterKeyHandleId, getRequestContentKey } = useCrypto();
+  const { isUnlocked, getFileKeyBytes, getMasterKeyHandleId, getRequestContentKey, encryptChunk, encryptMetadata, decryptMetadata } = useCrypto();
 
   // Resolve the key provider + master-key handle for decryptToTempFile. For a
   // file-request upload (0643) we hand it the request content key C and a null
@@ -2020,6 +2127,321 @@ export default function PreviewScreen() {
     [codeLanguage, currentFileName],
   );
   // Code highlighting moved into the lazy CodeRenderer — keep raw text here.
+  const isMarkdown = isText && codeLanguage === 'markdown';
+
+  // ---------------------------------------------------------------------
+  // Preview redesign (task 1563 follow-up, `design/preview-redesign-ios.html`,
+  // approved 2026-09-26 21:00 — "Love the redesign! Go with it. It feels
+  // like notion, thats perfect"). Full-bleed content under glass bars that
+  // tap to hide, an on-demand Info sheet instead of a permanent Details
+  // bar, and a floating page counter. See `lib/preview-chrome.ts` for the
+  // pure logic these read.
+  // ---------------------------------------------------------------------
+  const [barsVisible, setBarsVisible] = useState(true);
+  const [infoVisible, setInfoVisible] = useState(false);
+  // A .md file's ⋯ menu can show the RAW source without entering Edit
+  // (design section 02, "Show source" — Guus's 18:50 ruling put Edit in
+  // this same menu; this is the sibling read-only view it also asked for).
+  const [showSource, setShowSource] = useState(false);
+  const [pdfPageInfo, setPdfPageInfo] = useState<{ current: number; total: number } | null>(null);
+  const barsOpacity = useRef(new Animated.Value(1)).current;
+
+  // Round 5 (lead review of round 4's own screenshots): round 4 fixed the
+  // "opaque dark band" bug by making `previewArea` a full-screen absolute
+  // layer, but overcorrected — with NO inset, a document's first line now
+  // sits UNDER the floating top bar (PDF title colliding with the clock,
+  // DOCX's first two lines hidden behind the title pill). Required
+  // behaviour (Photos/Files/Notion): at rest, content starts just BELOW the
+  // floating bar; scrolling moves content UNDER the translucent bar. See
+  // `computePreviewContentInset`'s own doc comment for the full reasoning.
+  //
+  // `docHeaderHeight`/`docBottomBarHeight` are the REAL, on-screen measured
+  // heights of the doc branch's own floating chrome (via `onLayout` at each
+  // JSX call site below) — not eyeballed constants, per this workspace's
+  // "measured, not eyeballed" rule. `null` until the first layout pass
+  // fires; `computePreviewContentInset` has a documented, derived fallback
+  // for that one frame so content never flashes at y=0.
+  const [docHeaderHeight, setDocHeaderHeight] = useState<number | null>(null);
+  const [docBottomBarHeight, setDocBottomBarHeight] = useState<number | null>(null);
+  // The ">2MB / lossy-decode" read-only notice (`readOnlyBanner` below) is
+  // its OWN floating absolute overlay, above the code/markdown content, so
+  // when it's showing, the SCROLLABLE content needs an extra top offset
+  // equal to the banner's own real height too — otherwise the banner just
+  // moves the collision from "under the header" to "under the banner".
+  const [readOnlyBannerHeight, setReadOnlyBannerHeight] = useState<number | null>(null);
+  const docContentInset = useMemo(
+    () =>
+      computePreviewContentInset({
+        safeAreaTop: insets.top,
+        safeAreaBottom: insets.bottom,
+        headerHeight: docHeaderHeight,
+        bottomBarHeight: docBottomBarHeight,
+      }),
+    [insets.top, insets.bottom, docHeaderHeight, docBottomBarHeight],
+  );
+
+  const handleContentTap = useCallback(() => {
+    setBarsVisible((prev) => nextBarsVisible(prev, { editMode, infoVisible, optionsVisible }));
+  }, [editMode, infoVisible, optionsVisible]);
+
+  // Bars are always fully visible while editing (there's no bottom bar to
+  // hide, and the top bar becomes the Done/Save row — item 7) regardless of
+  // the last `barsVisible` value from before Edit was entered.
+  const chromeVisible = editMode || barsVisible;
+  useEffect(() => {
+    Animated.timing(barsOpacity, {
+      toValue: chromeVisible ? 1 : 0,
+      duration: 220,
+      useNativeDriver: true,
+    }).start();
+  }, [chromeVisible, barsOpacity]);
+
+  // One floating "N / total" pill, reused for a multi-page PDF and for the
+  // photo swipe-pager's position — see `formatPdfPageCounter`'s doc comment.
+  const pageCounterLabel = isPdf
+    ? (pdfPageInfo ? formatPdfPageCounter(pdfPageInfo.current, pdfPageInfo.total) : null)
+    : (hasSwipe && (isImage || isVideo) ? formatPdfPageCounter(currentPhotoIndex + 1, photoList.length) : null);
+
+  // ---------------------------------------------------------------------
+  // Task 1563 — markdown preview + native text/code editor.
+  // ---------------------------------------------------------------------
+
+  const effectiveVersionNumber = savedVersionNumber ?? currentVersionNumber ?? 1;
+
+  const editGate = useMemo(
+    () => evaluateTextEditGate({
+      sizeBytes: currentSizeBytes,
+      decodedText: textContent,
+      decodeFailed: !!textError,
+    }),
+    [currentSizeBytes, textContent, textError],
+  );
+  const canEditText = isText && editGate.editable;
+
+  const isDirty = editMode && editText != null && editText !== (textContent ?? '');
+
+  const statusLine = useMemo(() => {
+    if (!savedAt) return null;
+    const hh = savedAt.getHours().toString().padStart(2, '0');
+    const mm = savedAt.getMinutes().toString().padStart(2, '0');
+    return `Encrypted · version ${effectiveVersionNumber} · ${hh}:${mm}`;
+  }, [savedAt, effectiveVersionNumber]);
+
+  // Lazily fetch the fields a save needs that route.params never carried
+  // (the file's CURRENT encrypted name — reused byte-for-byte — and its
+  // parent id, needed only for "Keep both"). Runs once per preview open,
+  // the first time the user actually enters edit mode; re-run after a
+  // conflict is resolved so the next attempt starts from the true current
+  // state.
+  const loadFileMeta = useCallback(async (): Promise<{ nameEncrypted: string; parentId: string | null; versionNumber: number } | null> => {
+    setLoadingFileMeta(true);
+    setFileMetaError(null);
+    try {
+      // Task 1563 (found while verifying the conflict flow, evidence pasted
+      // in the task Notes): `GET /api/v1/files/:id` never selects
+      // `version_number` server-side, so `fresh.version_number` is always
+      // `undefined` — using it (with a stale-state fallback) silently fed a
+      // WRONG "current version" into a real conflict retry. `/versions`'s
+      // `current_version` is the reliable source (see `getFileCurrentVersion`'s
+      // doc comment) — an existing endpoint, not a new one.
+      const [fresh, currentVersion] = await Promise.all([
+        getFile(currentFileId),
+        getFileCurrentVersion(currentFileId),
+      ]);
+      const meta = {
+        nameEncrypted: fresh.name_encrypted,
+        parentId: fresh.parent_id ?? null,
+        versionNumber: currentVersion,
+      };
+      setFileMeta(meta);
+      return meta;
+    } catch (err) {
+      setFileMetaError(friendlyError(err));
+      return null;
+    } finally {
+      setLoadingFileMeta(false);
+    }
+  }, [currentFileId]);
+
+  const handleEnterEditMode = useCallback(() => {
+    if (!canEditText || textContent == null) return;
+    setEditText(textContent);
+    setEditMode(true);
+    setOptionsVisible(false);
+    if (!fileMeta) void loadFileMeta();
+  }, [canEditText, textContent, fileMeta, loadFileMeta]);
+
+  const handleExitEditMode = useCallback(() => {
+    if (isDirty) {
+      Alert.alert(
+        'Discard unsaved changes?',
+        'Your edits since the last save will be lost.',
+        [
+          { text: 'Keep editing', style: 'cancel' },
+          {
+            text: 'Discard',
+            style: 'destructive',
+            onPress: () => {
+              setEditMode(false);
+              setEditText(null);
+              setOptionsVisible(false);
+            },
+          },
+        ],
+      );
+      return;
+    }
+    setEditMode(false);
+    setOptionsVisible(false);
+  }, [isDirty]);
+
+  const attemptSave = useCallback(async (opts: {
+    text: string;
+    targetFileId: string;
+    nameEncrypted: string;
+    parentId: string | null;
+    versionReplace: { baseVersionNumber: number } | null;
+  }): Promise<{ ok: true } | { ok: false; conflict: boolean }> => {
+    try {
+      const updated = await saveTextFileVersion({
+        fileId: opts.targetFileId,
+        nameEncrypted: opts.nameEncrypted,
+        parentId: opts.parentId ?? undefined,
+        text: opts.text,
+        encryptChunkFn: encryptChunk,
+        versionReplace: opts.versionReplace ?? undefined,
+      });
+      const newVersion = updated.version_number ?? (opts.versionReplace ? opts.versionReplace.baseVersionNumber + 1 : 1);
+      // Task 1563 — `decryptToTempFile`'s preview cache is keyed by fileId +
+      // extension only, with no version awareness (every caller before this
+      // one only ever produced a NEW plaintext for a fileId the cache had
+      // never seen). A version-replace writes NEW bytes behind an
+      // ALREADY-cached fileId, so without this, reopening the file in the
+      // same session served the stale pre-edit content — confirmed
+      // on-device (bb-ios27): server size_bytes updated, cached preview
+      // did not. `extensionForMime(..., 'doc')` matches exactly what the
+      // isText read-view's own `fetchAndDecrypt` call caches under.
+      await invalidatePreviewCache(opts.targetFileId, extensionForMime(currentMimeType, category).replace(/^\./, ''));
+      setSavedVersionNumber(newVersion);
+      setSavedAt(new Date());
+      setTextContent(opts.text);
+      setEditText(opts.text);
+      setFileMeta({ nameEncrypted: opts.nameEncrypted, parentId: opts.parentId, versionNumber: newVersion });
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      return { ok: true };
+    } catch (err) {
+      if (isStaleVersionConflict(err)) {
+        return { ok: false, conflict: true };
+      }
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      Alert.alert('Save failed', friendlyError(err));
+      return { ok: false, conflict: false };
+    }
+  }, [encryptChunk, currentMimeType, category]);
+
+  const handleSaveEdit = useCallback(async () => {
+    if (editText == null || saving) return;
+    setSaving(true);
+    try {
+      let meta = fileMeta;
+      if (!meta) meta = await loadFileMeta();
+      if (!meta) {
+        Alert.alert('Save failed', fileMetaError ?? 'Could not read the file before saving.');
+        return;
+      }
+      const result = await attemptSave({
+        text: editText,
+        targetFileId: currentFileId,
+        nameEncrypted: meta.nameEncrypted,
+        parentId: meta.parentId,
+        versionReplace: { baseVersionNumber: meta.versionNumber },
+      });
+      if (!result.ok && result.conflict) {
+        // Learn the real current version so "Save as new version" retries
+        // against the right base instead of guessing +1.
+        const refreshed = await loadFileMeta();
+        setConflict({ freshVersionNumber: refreshed?.versionNumber ?? meta.versionNumber + 1 });
+      }
+    } finally {
+      setSaving(false);
+    }
+  }, [editText, saving, fileMeta, loadFileMeta, fileMetaError, attemptSave, currentFileId]);
+
+  const handleConflictChoice = useCallback(async (choice: 'keep-both' | 'new-version' | 'discard') => {
+    if (editText == null) return;
+    setConflict(null);
+    if (choice === 'discard') {
+      setEditMode(false);
+      setEditText(null);
+      return;
+    }
+    setSaving(true);
+    try {
+      const refreshed = await loadFileMeta();
+      if (!refreshed) {
+        Alert.alert('Save failed', fileMetaError ?? 'Could not read the file before saving.');
+        return;
+      }
+      if (choice === 'new-version') {
+        const result = await attemptSave({
+          text: editText,
+          targetFileId: currentFileId,
+          nameEncrypted: refreshed.nameEncrypted,
+          parentId: refreshed.parentId,
+          versionReplace: { baseVersionNumber: refreshed.versionNumber },
+        });
+        if (!result.ok && result.conflict) {
+          // Someone saved again in the tiny window between the refetch and
+          // this retry — surface the dialog again rather than looping.
+          const again = await loadFileMeta();
+          setConflict({ freshVersionNumber: (again?.versionNumber ?? refreshed.versionNumber) + 1 });
+        }
+      } else {
+        // Keep both — a brand-new file, same folder, suffixed name. Never
+        // touches the OTHER device's version at all.
+        const newFileId = await generateFileId();
+        const keptName = buildKeepBothName(previewFileName, 'iPhone');
+        const metadataPlain = fileMetadataPlaintext(keptName, currentMimeType ?? null, null);
+        const encName = await encryptMetadata(newFileId, metadataPlain);
+        const nameEncrypted = encryptedMetadataToJson(encName);
+        // Codex review (PR #123, P2): `attemptSave`'s result was being
+        // discarded here — on a failed upload it already shows its own
+        // "Save failed" alert (see that function), but this toast fired
+        // regardless, telling the user a copy was saved when none exists.
+        const result = await attemptSave({
+          text: editText,
+          targetFileId: newFileId,
+          nameEncrypted,
+          parentId: refreshed.parentId,
+          versionReplace: null,
+        });
+        if (result.ok) {
+          showToast({ type: 'success', message: `Saved as "${keptName}"` });
+        }
+      }
+    } finally {
+      setSaving(false);
+    }
+  }, [editText, loadFileMeta, fileMetaError, attemptSave, currentFileId, previewFileName, currentMimeType, encryptMetadata, showToast]);
+
+  const showConflictDialog = useCallback(() => {
+    if (!conflict) return;
+    Alert.alert(
+      'A newer version was saved on another device',
+      `Version ${conflict.freshVersionNumber} exists on the server. Your changes are still here — choose what happens next.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Discard my changes', style: 'destructive', onPress: () => { void handleConflictChoice('discard'); } },
+        { text: 'Keep both', onPress: () => { void handleConflictChoice('keep-both'); } },
+        { text: 'Save as new version', onPress: () => { void handleConflictChoice('new-version'); } },
+      ],
+    );
+  }, [conflict, handleConflictChoice]);
+
+  useEffect(() => {
+    if (conflict) showConflictDialog();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- fires once per conflict object identity, not per render of showConflictDialog.
+  }, [conflict]);
 
   // Theme-aware accent for non-image category badge
   const categoryAccent = (() => {
@@ -2086,6 +2508,87 @@ export default function PreviewScreen() {
     closedRef.current = true;
     navigation.goBack();
   }, [navigation]);
+
+  // Preview redesign item 1 — the screen is now presented as a genuine
+  // `fullScreenModal` (App.tsx), which on iOS maps to
+  // `UIModalPresentationFullScreen`. Unlike `modal`/`pageSheet`, that
+  // presentation style has NO built-in interactive dismiss gesture, so the
+  // swipe-down-to-close the old `modal` sheet gave for free has to be
+  // rebuilt in JS. Scoped to the glass header row only (not the whole
+  // screen): the doc/media content below is a mix of vertical ScrollViews
+  // (markdown/code/HTML source), a horizontal FlatList (photo pager) and a
+  // native PdfRenderer — a PanGestureHandler wrapping ALL of that would
+  // race each of their own pan recognizers for every scroll-up gesture, not
+  // just a dismiss swipe (there is no cheap way to ask an arbitrary nested
+  // scrollable "are you at the top?" across that many renderer types). The
+  // header has no competing gesture of its own, so grabbing it and dragging
+  // down is unambiguous — same idiom as BBActionSheet's own grabber drag.
+  // `handleClose` (above) already routes through the `beforeRemove`
+  // unsaved-changes guard via `navigation.goBack()`, so a swipe-dismiss
+  // while editing gets the same discard confirmation as every other close
+  // path — nothing extra to wire here.
+  const closeTranslateY = useRef(new Animated.Value(0)).current;
+  const onCloseGestureEvent = useMemo(
+    () => Animated.event(
+      [{ nativeEvent: { translationY: closeTranslateY } }],
+      { useNativeDriver: true },
+    ),
+    [closeTranslateY],
+  );
+  const onCloseHandlerStateChange = useCallback((event: PanGestureHandlerStateChangeEvent) => {
+    if (event.nativeEvent.oldState !== State.ACTIVE) return;
+    const { translationY, velocityY } = event.nativeEvent;
+    if (translationY > 120 || velocityY > 800) {
+      handleClose();
+      return;
+    }
+    Animated.spring(closeTranslateY, {
+      toValue: 0,
+      useNativeDriver: true,
+      bounciness: 4,
+    }).start();
+  }, [closeTranslateY, handleClose]);
+  const closeTranslateYClamped = useMemo(
+    () => closeTranslateY.interpolate({
+      inputRange: [-1, 0, 4000],
+      outputRange: [0, 0, 4000],
+      extrapolate: 'clamp',
+    }),
+    [closeTranslateY],
+  );
+
+  // Task 1563 (item 7 — unsaved-changes guard). `beforeRemove` fires for
+  // EVERY way this screen can leave — the close button above, the modal's
+  // own swipe-to-dismiss gesture, and Android hardware back — not just one
+  // button handler, so this is the one place that actually covers "leaving
+  // the screen" rather than just "tapping this specific control".
+  useEffect(() => {
+    const unsubscribe = navigation.addListener('beforeRemove', (e) => {
+      if (!isDirty) return;
+      e.preventDefault();
+      Alert.alert(
+        'Discard unsaved changes?',
+        'Your edits since the last save will be lost.',
+        [
+          {
+            text: 'Keep editing',
+            style: 'cancel',
+            // `handleClose` above latches `closedRef` before this listener
+            // ever runs (it calls `goBack()` unconditionally); un-latch it
+            // here so a cancelled leave doesn't permanently disable the
+            // close button for the rest of this screen's lifetime.
+            onPress: () => { closedRef.current = false; },
+          },
+          {
+            text: 'Discard',
+            style: 'destructive',
+            onPress: () => navigation.dispatch(e.data.action),
+          },
+        ],
+      );
+    });
+    return unsubscribe;
+  }, [navigation, isDirty]);
 
   /**
    * Download the encrypted file to cache and decrypt it (when the vault is
@@ -2965,6 +3468,76 @@ export default function PreviewScreen() {
     );
   }, []);
 
+  // Preview redesign item 4 — "Move to…" (design section 02's ⋯ menu).
+  // FilesScreen already ships a "Move" flow for possibly-FOLDER items
+  // (`FolderPickerModal` + `buildPickerFolders` + `moveFile`) — reused here
+  // verbatim (the SAME component + the SAME `moveFile` endpoint). What's
+  // rebuilt is only the folder-tree FETCH: FilesScreen's version prefers a
+  // cached `sync.allNodes()` tree that this screen has no access to (no
+  // sync engine is wired into Preview), and its OWN fallback for when that
+  // cache isn't ready is a flat ROOT-ONLY `listAllFiles()` — not good
+  // enough as Preview's ONLY path, since a picker that can't be drilled
+  // into past the root would be a materially worse "Move to…" than the one
+  // FilesScreen already ships. `collectAllFolders` (lib/move-picker-folders,
+  // unit-tested + mutation-proven) walks the WHOLE tree instead. The
+  // descendant-exclusion step FilesScreen's version needs (so a folder
+  // can't move into its own subtree) does not apply here — Preview only
+  // ever moves a single FILE, which has no descendants.
+  const [movePicker, setMovePicker] = useState<{ folders: PickerFolder[]; currentParentId: string | null } | null>(null);
+  const [moveBusy, setMoveBusy] = useState(false);
+
+  const handleOpenMovePicker = useCallback(async () => {
+    setOptionsVisible(false);
+    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    try {
+      const [fresh, folderNodes] = await Promise.all([
+        getFile(currentFileId),
+        collectAllFolders((parentId) => listAllFiles(parentId ?? undefined)),
+      ]);
+      const folders: PickerFolder[] = await Promise.all(
+        folderNodes.map(async (node: MovePickerFolderNode) => {
+          let name = movePickerFolderFallbackName(node);
+          try {
+            const payload = encryptedMetadataPayloadToBytes(node.name_encrypted);
+            if (payload) {
+              const plaintext = await decryptMetadata(node.id, payload.nonce, payload.ciphertext);
+              const parsed = JSON.parse(plaintext) as { name?: unknown };
+              if (parsed && typeof parsed.name === 'string' && parsed.name.trim()) {
+                name = parsed.name.trim();
+              }
+            }
+          } catch {
+            // Keep the fallback name — a folder failing to decrypt is not a
+            // reason to block the whole picker from opening.
+          }
+          return { id: node.id, name, parentId: node.parent_id };
+        }),
+      );
+      setMovePicker({ folders, currentParentId: fresh.parent_id ?? null });
+    } catch (err) {
+      Alert.alert('Error', friendlyError(err));
+    }
+  }, [currentFileId, decryptMetadata]);
+
+  const handleConfirmMove = useCallback(async (targetId: string | null) => {
+    if (moveBusy) return;
+    setMoveBusy(true);
+    try {
+      await moveFile(currentFileId, targetId);
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      const destName = targetId === null
+        ? 'Drive'
+        : movePicker?.folders.find((f) => f.id === targetId)?.name ?? 'folder';
+      showToast({ type: 'success', message: `Moved to ${destName}` });
+      setMovePicker(null);
+    } catch (err) {
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      Alert.alert('Move failed', friendlyError(err));
+    } finally {
+      setMoveBusy(false);
+    }
+  }, [currentFileId, moveBusy, movePicker, showToast]);
+
   const handleMoveToTrash = useCallback(() => {
     if (trashing) return;
 
@@ -2994,14 +3567,52 @@ export default function PreviewScreen() {
     );
   }, [currentFileId, navigation, previewFileName, trashing, isImage, isVideo]);
 
+  // Task 1563 — Guus's ruling (2026-09-26 18:50) overrides the mockup's
+  // Edit/Preview segmented control: Edit is reached from THIS existing ⋯
+  // menu, not a new control. While editing, the same slot flips to
+  // "Preview" (markdown — go back to the formatted view) or "Done"
+  // (plain text/code — go back to the highlighted read view). No item at
+  // all when the file fails the edit gate (no Edit button, per the size/
+  // UTF-8 limit) and the file hasn't been opened for editing.
+  const editMenuAction = useMemo<PreviewOptionAction | null>(() => {
+    if (!isText) return null;
+    if (editMode) {
+      return {
+        label: isMarkdown ? 'Preview' : 'Done',
+        icon: isMarkdown ? 'eye-outline' : 'checkmark-outline',
+        run: handleExitEditMode,
+      };
+    }
+    if (!canEditText) return null;
+    return { label: 'Edit', icon: 'pencil-outline', run: handleEnterEditMode };
+  }, [isText, editMode, isMarkdown, canEditText, handleExitEditMode, handleEnterEditMode]);
+
   const previewActions = useMemo<PreviewOptionAction[]>(() => [
     ...(isImage ? [{ label: 'View Original', icon: 'image-outline' as const, run: handleViewOriginal }] : []),
+    ...(editMenuAction ? [editMenuAction] : []),
+    // Preview redesign, design section 02 — a markdown file's ⋯ menu also
+    // offers the raw source without entering Edit (item 3: "⋯ keeps ...
+    // Show source (markdown)"). Not shown while editing (the editor IS the
+    // raw source) or once the file has fallen back to error/loading states.
+    ...(isMarkdown && !editMode && textContent != null
+      ? [{
+          label: showSource ? 'Show Preview' : 'Show Source',
+          icon: 'eye-outline' as const,
+          run: () => setShowSource((prev) => !prev),
+        }]
+      : []),
     { label: 'Share Beebeeb Link', icon: 'link-outline', run: handleShare },
     { label: 'Save Original…', icon: 'share-outline', run: handleDownload },
     { label: 'Copy File Name', icon: 'copy-outline', run: handleCopyName },
     { label: 'Duplicate', icon: 'duplicate-outline', run: handleDuplicate },
+    // Preview redesign item 4 — design section 02's ⋯ mock order is
+    // Edit / Show source / Copy share link / Move to… / Version history /
+    // Move to Trash; "Move to…" was the one entry with no reuse path in an
+    // earlier pass (see DEVIATIONS.md history) until this pass found and
+    // wired FilesScreen's existing FolderPickerModal + moveFile flow.
+    { label: 'Move to…', icon: 'folder-outline', run: () => { void handleOpenMovePicker(); } },
     { label: 'Move to Trash', icon: 'trash-outline', destructive: true, run: handleMoveToTrash },
-  ], [handleCopyName, handleDownload, handleDuplicate, handleMoveToTrash, handleShare, handleViewOriginal, isImage]);
+  ], [handleCopyName, handleDownload, handleDuplicate, handleMoveToTrash, handleOpenMovePicker, handleShare, handleViewOriginal, isImage, editMenuAction, isMarkdown, editMode, textContent, showSource]);
 
   const handlePreviewOptions = useCallback(() => {
     if (Platform.OS === 'ios') {
@@ -3118,17 +3729,37 @@ export default function PreviewScreen() {
     // glass-recipe.ts: both are DERIVED values invented because the canvas
     // never sampled a light equivalent, not lifted from one. See
     // DEVIATIONS.md "Phase 4 — Preview light-mode rationale (1346)".
-    const mediaMaterial = glassMaterial('dark');
+    //
+    // Round 4 (lead review, see `PREVIEW_CHROME_MATERIAL`'s own doc comment):
+    // `glassMaterial('dark')` alone is not enough even here — a bright/white
+    // photo washes out its 0.46-alpha fill exactly like the doc header's did
+    // over a white PDF page. `PREVIEW_CHROME_MATERIAL` is the fix for BOTH
+    // branches, not a doc-only patch.
+    const mediaMaterial = PREVIEW_CHROME_MATERIAL;
 
     return (
-      <View style={styles.mediaRoot}>
+      <Animated.View style={[styles.mediaRoot, { transform: [{ translateY: closeTranslateYClamped }] }]}>
         {/* 1314 — the canvas floats Preview's chrome as glass over the media
             instead of a flat black bar. The scrim becomes a progressive blur
             so the title stays legible over bright images, and the controls
             become glass circles.
             1346 — scheme="dark" forced: mediaMaterial comment above (media
             ground is always near-black, not a light/dark toggle). */}
+        <StatusBar hidden={!chromeVisible} animated />
+        <Animated.View
+          style={{ opacity: barsOpacity }}
+          pointerEvents={chromeVisible ? 'auto' : 'none'}
+        >
         <ScrollEdgeBlur scheme="dark" height={SCROLL_EDGE.chromeFallback} />
+        {/* Preview redesign item 1 — swipe-down-to-close (see the
+            `closeTranslateY` comment by `handleClose`): the header row is
+            the gesture's hit area. */}
+        <PanGestureHandler
+          onGestureEvent={onCloseGestureEvent}
+          onHandlerStateChange={onCloseHandlerStateChange}
+          activeOffsetY={[-1000, 8]}
+          failOffsetX={[-20, 20]}
+        >
         <View style={[styles.mediaHeader, { paddingTop: insets.top + 8 }]}>
           {/* 1343 — outer TouchableOpacity wraps the fixed-size GlassCircle so
               hitSlop is not clipped to the disc (RN clips hitSlop to the
@@ -3144,7 +3775,7 @@ export default function PreviewScreen() {
             testID="preview-close"
             accessibilityLabel="Close preview"
           >
-            <GlassCircle scheme="dark" size={GLASS_CIRCLE_SIZES.action}>
+            <GlassCircle scheme="dark" materialOverride={mediaMaterial} size={GLASS_CIRCLE_SIZES.action}>
               <Ionicons name="chevron-down" size={22} color={mediaMaterial.label} />
             </GlassCircle>
           </TouchableOpacity>
@@ -3156,10 +3787,16 @@ export default function PreviewScreen() {
               hug short filenames and still cap at the row's available width
               for long ones, so the existing numberOfLines={1} truncation on
               both lines keeps working unchanged.
-              1346 — scheme="dark" forced: mediaMaterial comment above. */}
+              1346 — scheme="dark" forced: mediaMaterial comment above.
+              Preview redesign item 2 — the subtitle's "N of total" pager
+              text moves to the floating `pageCounterLabel` pill (design item
+              6, generalized to the photo pager — see that state's own
+              comment), freeing this line for "Encrypted · Type · size" on
+              every file, paged or not. */}
           <View style={styles.mediaHeaderText}>
             <GlassCapsule
               scheme="dark"
+              materialOverride={mediaMaterial}
               style={styles.mediaHeaderCapsule}
               contentStyle={styles.mediaHeaderCapsuleBody}
             >
@@ -3169,12 +3806,12 @@ export default function PreviewScreen() {
               >
                 {previewFileName}
               </Text>
-              <Text style={[styles.mediaHeaderSubtitle, styles.mono]} numberOfLines={1}>
-                {showPager
-                  ? `${currentPhotoIndex + 1} of ${photoList.length}`
-                  : `${CATEGORY_LABELS[category]}${currentSizeBytes != null ? ` · ${formatSize(currentSizeBytes)}` : ''}`
-                }
-              </Text>
+              <View style={styles.encSubRow}>
+                <Ionicons name="lock-closed" size={10} color={colors.amber} />
+                <Text style={[styles.mediaHeaderSubtitle, styles.mono, { color: mediaMaterial.labelMuted }]} numberOfLines={1}>
+                  {`Encrypted · ${CATEGORY_LABELS[category]}${currentSizeBytes != null ? ` · ${formatSize(currentSizeBytes)}` : ''}`}
+                </Text>
+              </View>
             </GlassCapsule>
           </View>
 
@@ -3188,6 +3825,7 @@ export default function PreviewScreen() {
           >
             <GlassCircle
               scheme="dark"
+              materialOverride={mediaMaterial}
               size={GLASS_CIRCLE_SIZES.action}
               style={(downloading || trashing) ? styles.disabledIconButton : undefined}
             >
@@ -3195,40 +3833,47 @@ export default function PreviewScreen() {
             </GlassCircle>
           </TouchableOpacity>
         </View>
+        </PanGestureHandler>
 
-        {/* 1343 — canvas.json n-preview: "e2e lock as quiet mono badge". The
-            canvas samples it as the center item of a 5-icon bottom dock, but
-            the dock itself is OUT (Guus, 1314/1343 notes) — so this ships
-            only the one badge, floating over the media at the dock's own
-            bottom-center position, not the surrounding 4 action icons.
-            Position/padding are DERIVED (no isolated-badge artboard to
-            sample); icon colour, text colour and font are LIFTED VERBATIM
-            from the recipe: colors.amber === canvas #F5B800, this scheme's
-            labelMuted === canvas's own rgba(240,238,233,0.62) badge text,
-            fonts.mono + 10.5px match the canvas span exactly. See
-            DEVIATIONS.md.
+        {/* Preview redesign item 6 — floating page counter, shown/hidden
+            with the rest of the chrome (design's "Tap to hide" mock omits
+            the pill along with the bars). Reused verbatim for the photo
+            swipe-pager via `formatPdfPageCounter` (see that function's doc
+            comment) — same "N / total" shape, same position.
+            Bug found verifying this pass: `top: insets.top + 8` put this
+            pill at the EXACT same top offset as `mediaHeader` itself (which
+            also uses `paddingTop: insets.top + 8`), so it rendered directly
+            on top of the ⋯ circle instead of below the bar the comment
+            above already claimed. `insets.top + 62` matches the offset this
+            same header already uses for its own options popover
+            (`PreviewOptionsPopover`'s `top` prop below) — i.e., the header's
+            own already-established "just under the bar" anchor, not a new
+            magic number. */}
+        {pageCounterLabel && (
+          <View style={[styles.pageCounterWrap, { top: insets.top + 62 }]} pointerEvents="none">
+            <GlassCapsule scheme="dark" materialOverride={mediaMaterial} contentStyle={styles.pageCounterBody}>
+              <Text style={[styles.pageCounterText, styles.mono, { color: mediaMaterial.label }]}>{pageCounterLabel}</Text>
+            </GlassCapsule>
+          </View>
+        )}
+        </Animated.View>
 
-            Bottom offset clears DetailsSheet's collapsed peek (24 +
-            safeBottom, DetailsSheet.tsx COLLAPSED_VISIBLE_HEIGHT) with a
-            16pt margin rather than sitting flush against it — verified on
-            sim, the first-try 14pt-over-safeBottom offset visibly touched
-            the sheet's drag handle.
-
-            1346 — scheme="dark" forced: mediaMaterial comment above. */}
-        <View
-          pointerEvents="none"
-          style={[styles.e2eBadgeWrap, { bottom: Math.max(insets.bottom, 16) + 40 }]}
-          testID="preview-e2e-badge"
-        >
-          <GlassCapsule scheme="dark" contentStyle={styles.e2eBadgeBody}>
-            <Ionicons name="lock-closed" size={14} color={colors.amber} />
-            <Text style={[styles.e2eBadgeText, styles.mono, { color: mediaMaterial.labelMuted }]}>
-              e2e
-            </Text>
-          </GlassCapsule>
-        </View>
+        {/* Preview redesign item 3 — the "e2e" pill (design's "00 TODAY"
+            complaint: "it covers the content, and 'e2e' is jargon") is
+            retired. The encryption state now lives in the header subtitle
+            ("Encrypted · Type · size", item 2) instead of a second floating
+            badge; see DEVIATIONS.md for the removal note. */}
 
         {showPager ? (
+          // Preview redesign item 3 — tap-to-hide on the swipe pager too.
+          // See the `pagerTouchStartRef` comment above (by `pagerRef`) for
+          // why this is raw `onTouchStart`/`onTouchEnd` on the FlatList
+          // itself, not a wrapping `Pressable` — bisected on-device: a
+          // `Pressable` ancestor reliably ate every swipe (screenshot proof:
+          // the page counter stayed "1 / 13" after a real swipe gesture,
+          // both with Maestro's coordinate-swipe and its direction-swipe);
+          // removing it and using the plain `View` below restored paging
+          // immediately (counter advanced to "2 / 13" on the same gesture).
           <View
             style={[
               styles.mediaStage,
@@ -3249,6 +3894,26 @@ export default function PreviewScreen() {
               renderItem={renderPhotoPage}
               showsHorizontalScrollIndicator={false}
               onMomentumScrollEnd={handlePagerScroll}
+              onTouchStart={(e) => {
+                const { pageX, pageY } = e.nativeEvent;
+                pagerTouchStartRef.current = { x: pageX, y: pageY, t: Date.now() };
+              }}
+              onTouchEnd={(e) => {
+                const start = pagerTouchStartRef.current;
+                pagerTouchStartRef.current = null;
+                if (!start) return;
+                const { pageX, pageY } = e.nativeEvent;
+                const dx = Math.abs(pageX - start.x);
+                const dy = Math.abs(pageY - start.y);
+                const dt = Date.now() - start.t;
+                // A real swipe (paging) travels most of the screen width in
+                // this same gesture; a tap moves only a few points. 500ms
+                // covers a normal tap without also matching a slow drag.
+                if (dx < 10 && dy < 10 && dt < 500) {
+                  handleContentTap();
+                }
+              }}
+              testID="preview-content-tap"
               windowSize={3}
               maxToRenderPerBatch={3}
               removeClippedSubviews
@@ -3299,6 +3964,8 @@ export default function PreviewScreen() {
                 paddingBottom: 24 + Math.max(insets.bottom, 16),
               },
             ]}
+            onPress={handleContentTap}
+            testID="preview-content-tap"
           >
             {isImage ? (
               imageError ? (
@@ -3368,21 +4035,45 @@ export default function PreviewScreen() {
           </Pressable>
         )}
 
-        <DetailsSheet
+        {/* Preview redesign item 3/5 — DetailsSheet's permanent collapsed
+            peek is retired; Info is now on-demand (bottom bar "Info", or a
+            swipe up on the content — item 4). Same fields it showed today,
+            carried over via `extraRows` below — see InfoSheet's own doc
+            comment for why it's the opaque-content-surface pattern, not a
+            second glass sheet. */}
+        {!editMode && (
+          <Animated.View
+            style={[styles.bottomBarWrap, { opacity: barsOpacity, bottom: Math.max(insets.bottom, 16) + 8 }]}
+            pointerEvents={chromeVisible ? 'auto' : 'none'}
+          >
+            <PreviewBottomBar
+              scheme="dark"
+              actions={[
+                { key: 'share', label: 'Share', icon: 'share-outline', onPress: handleShare, testID: 'preview-bar-share' },
+                { key: 'save', label: 'Save', icon: 'download-outline', disabled: downloading, onPress: handleDownload, testID: 'preview-bar-save' },
+                { key: 'versions', label: 'Versions', icon: 'time-outline', onPress: () => setInfoVisible(true), testID: 'preview-bar-versions' },
+                { key: 'info', label: 'Info', icon: 'information-circle-outline', onPress: () => setInfoVisible(true), testID: 'preview-bar-info' },
+              ]}
+            />
+          </Animated.View>
+        )}
+        <InfoSheet
+          visible={infoVisible}
+          onClose={() => setInfoVisible(false)}
+          fileId={currentFileId}
           filename={previewFileName}
-          kind={CATEGORY_LABELS[category] ?? 'File'}
-          size={currentSizeBytes != null ? formatSize(currentSizeBytes) : 'Unknown'}
-          created={currentCreatedAt ? formatDate(currentCreatedAt) : undefined}
-          extraInfo={mediaDetailsRows
-            .filter((r) => !['Name', 'Kind', 'Size', 'Created', 'Storage'].includes(r.label))
-            .map((r) => ({ label: r.label, value: r.value }))}
+          kindLabel={CATEGORY_LABELS[category] ?? 'File'}
+          sizeBytes={currentSizeBytes ?? null}
           storageLocation={(() => {
             const storage = trustLocation(currentStoragePoolId);
             return `${storage.region} · ${storage.city}`;
           })()}
-          onShare={handleShare}
-          onDownload={handleDownload}
-          downloading={downloading}
+          extraRows={[
+            ...(currentCreatedAt ? [{ label: 'Created', value: formatDate(currentCreatedAt) }] : []),
+            ...mediaDetailsRows
+              .filter((r) => !['Name', 'Kind', 'Size', 'Created', 'Storage'].includes(r.label))
+              .map((r) => ({ label: r.label, value: r.value })),
+          ]}
         />
         <PreviewOptionsPopover
           visible={optionsVisible}
@@ -3391,7 +4082,18 @@ export default function PreviewScreen() {
           onClose={() => setOptionsVisible(false)}
           top={insets.top + 62}
         />
-      </View>
+        {/* Preview redesign item 4 — "Move to…", reusing FilesScreen's own
+            FolderPickerModal (see the `handleOpenMovePicker` comment). */}
+        <FolderPickerModal
+          visible={movePicker !== null}
+          title="Move"
+          folders={movePicker?.folders ?? []}
+          currentParentId={movePicker?.currentParentId ?? null}
+          busy={moveBusy}
+          onCancel={() => setMovePicker(null)}
+          onConfirm={(targetId) => { void handleConfirmMove(targetId); }}
+        />
+      </Animated.View>
     );
   }
 
@@ -3422,108 +4124,225 @@ export default function PreviewScreen() {
   // `c.paper`, the same root-background token every other screen in this
   // app uses (SettingsScreen, FilesScreen, LoginScreen, …). See
   // DEVIATIONS.md "Phase 4 — Preview light-mode rationale (1346)".
-  const docMaterial = glassMaterial(resolved);
+  //
+  // CORRECTION, round 4 (lead review of round 3's own PDF screenshot,
+  // `evidence-1563-redesign-r3/23-pdf-counter-1of4-FIXED.png`): the
+  // paragraph above is right about `styles.root`'s OWN background
+  // (`c.paper`, untouched below) but WRONG about the header/bottom-bar
+  // CHROME following `resolved`. A PDF's own bytes render a literal white
+  // page independent of the app's theme — unlike DocxRenderer/XlsxRenderer,
+  // it never paints `c.paper`. On a device in dark mode, `resolved` picked
+  // `glassMaterial('dark')`, whose 0.46-alpha fill washed out to a ~3.7:1
+  // grey-on-grey bar over that white page — the exact screenshot the lead
+  // flagged. Left here rather than deleted, per this workspace's "leave the
+  // wrong claim visible, correct beneath it" convention. Chrome now always
+  // renders through `PREVIEW_CHROME_MATERIAL` (see its own doc comment in
+  // `glass-recipe.ts`) — measured safe over white/black/mid-grey, not just
+  // argued from the (correct, for CONTENT) theme-tracking logic above.
+  const docMaterial = PREVIEW_CHROME_MATERIAL;
 
   return (
-    <View style={[styles.root, { paddingTop: insets.top, backgroundColor: c.paper }]}>
-      {/* ---- Header ---- */}
-      <View style={styles.header}>
-        {/* 1344 — outer TouchableOpacity wraps the fixed-size GlassCircle so
-            hitSlop is not clipped to the disc (the hitSlop-clip bug 1343 just
-            fixed on this screen's own media header, and 1341/1342 fixed on
-            FilesScreen/TrashScreen — RN clips hitSlop to the parent's bounds
-            when the touchable is nested INSIDE a fixed-size view, not
-            wrapping it). Icon matches the media header's chevron-down
-            exactly: Preview.dc.html only samples the media/video preview, so
-            this doc header has no artboard of its own — extending the media
-            header's icon choice by analogy is the same DERIVED class as
-            1341/1342's non-canvas circles (DEVIATIONS.md). testID unchanged
-            from 1336 — same value as the media header's close control, so a
-            test can assert the preview is open without knowing which of the
-            two headers rendered. */}
-        <TouchableOpacity
-          onPress={handleClose}
-          hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
-          testID="preview-close"
-          accessibilityLabel="Close preview"
-        >
-          <GlassCircle scheme={resolved} size={GLASS_CIRCLE_SIZES.action}>
-            <Ionicons name="chevron-down" size={22} color={docMaterial.label} />
-          </GlassCircle>
-        </TouchableOpacity>
-
-        {/* 1344 — same GlassCapsule shape/padding (7px 18px, radius 999) as
-            the media header, but scheme=resolved instead of forced "dark" —
-            see the scheme note above `docMaterial`. Subtitle colour reads
-            `docMaterial.labelMuted`, a real recipe token (not the media
-            header's one-off 0.40 literal), because it has to flip legibly
-            between light and dark rather than always sit on a dark fill. */}
-        <View style={styles.headerCenter}>
-          <GlassCapsule
-            scheme={resolved}
-            style={styles.docHeaderCapsule}
-            contentStyle={styles.docHeaderCapsuleBody}
+    <Animated.View style={[styles.root, { backgroundColor: c.paper }, { transform: [{ translateY: closeTranslateYClamped }] }]}>
+      <StatusBar hidden={!chromeVisible} animated />
+      {/* Round 4 fix — see `header`'s own style comment for the two bugs
+          this exact shape fixes (a stacking bug, then an accessibility-tree
+          bug from the first attempt at fixing it). This wrapper floats over
+          `previewArea` (now full-bleed); `header` inside it stays a plain,
+          normally-sized row. */}
+      <Animated.View
+        style={{ opacity: barsOpacity, position: 'absolute', top: 0, left: 0, right: 0, zIndex: 20 }}
+        pointerEvents={chromeVisible ? 'auto' : 'none'}
+        onLayout={(e) => {
+          // Round 5 — the REAL rendered height of this wrapper (from y=0,
+          // since it's `position:'absolute', top:0`) already bakes in
+          // `insets.top` via the header's own inline `paddingTop`. Feeds
+          // `computePreviewContentInset` above; see that function's doc
+          // comment for why a measured height beats a guessed constant.
+          const h = e.nativeEvent.layout.height;
+          setDocHeaderHeight((prev) => (prev === h ? prev : h));
+        }}
+      >
+      {/* Round 5 — a subtle top gradient scrim behind the status bar + this
+          header (design requirement: "the clock stays legible when content
+          scrolls beneath"). The header's own glass pills already clear WCAG
+          AA via `PREVIEW_CHROME_MATERIAL` (round 4), but the strip ABOVE
+          them — the real system status bar, y=0 to insets.top — has no
+          background of its own: it's fully transparent, so once content
+          scrolls, arbitrary document pixels can land directly behind the
+          system clock/battery icons with no legibility guarantee at all.
+          Banded Views (no `expo-linear-gradient` — see `gradient.ts`'s own
+          doc comment for why this app never added that native module), one
+          flat colour per scheme (dark scrim in dark mode, light in light —
+          this backs the OS clock, which follows the app's OWN appearance,
+          not the underlying document's colours, same reasoning as
+          `PREVIEW_CHROME_MATERIAL` already applies to the bars themselves).
+          Sized to the header's own measured height so it fades out exactly
+          where the header's content ends, not into the page below it. */}
+      <PreviewTopScrim height={docHeaderHeight ?? insets.top + 58} dark={resolved === 'dark'} />
+      {/* ---- Header ----
+          Preview redesign item 7 — while editing a text file, this row
+          becomes Done (left, the SAME dirty-guard exit as the ⋯ menu's
+          "Done"/"Preview" item, `handleExitEditMode`) / status (center) /
+          Save (right, amber, `handleSaveEdit`) instead of close/title/⋯ —
+          and stays fully opaque regardless of `barsVisible` (item 7: "no
+          bottom bar while editing"; `chromeVisible` above is forced true by
+          `editMode`). Preview redesign item 1 — swipe-down-to-close on the
+          header row (see the `closeTranslateY` comment by `handleClose`);
+          covers both header variants below since PanGestureHandler forwards
+          the ternary's single resolved child either way. */}
+      <PanGestureHandler
+        onGestureEvent={onCloseGestureEvent}
+        onHandlerStateChange={onCloseHandlerStateChange}
+        activeOffsetY={[-1000, 8]}
+        failOffsetX={[-20, 20]}
+      >
+      {editMode ? (
+        <View style={[styles.header, { paddingTop: insets.top + 8 }]} testID="preview-edit-topbar">
+          <TouchableOpacity
+            onPress={handleExitEditMode}
+            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+            testID="preview-edit-done"
+            accessibilityLabel="Stop editing"
           >
-            <Text
-              style={[styles.docHeaderTitle, { color: docMaterial.label }]}
-              numberOfLines={1}
+            <GlassCapsule scheme="dark" materialOverride={docMaterial} contentStyle={styles.editTopBarPillBody}>
+              <Text style={[styles.editTopBarPillText, { color: docMaterial.label }]}>Done</Text>
+            </GlassCapsule>
+          </TouchableOpacity>
+
+          <View style={styles.headerCenter}>
+            <GlassCapsule
+              scheme="dark"
+              materialOverride={docMaterial}
+              style={styles.docHeaderCapsule}
+              contentStyle={styles.docHeaderCapsuleBody}
             >
-              {previewFileName}
-            </Text>
-            <View style={styles.headerSubRow}>
-              <Text
-                style={[styles.docHeaderSubtitle, styles.mono, { color: docMaterial.labelMuted }]}
-                numberOfLines={1}
-              >
-                {CATEGORY_LABELS[category] ?? 'File'}
-                {currentSizeBytes != null ? ` · ${formatSize(currentSizeBytes)}` : ''}
+              <Text style={[styles.docHeaderTitle, { color: docMaterial.label }]} numberOfLines={1}>
+                {previewFileName}
               </Text>
-              {isText && codeLanguage !== 'plaintext' && (
-                <View style={styles.langBadge}>
-                  <Text style={styles.langBadgeText}>{codeLanguageLabel}</Text>
-                </View>
+              <View style={styles.headerSubRow}>
+                <View style={[styles.editDirtyDot, { backgroundColor: docMaterial.label }]} />
+                <Text style={[styles.docHeaderSubtitle, styles.mono, { color: docMaterial.labelMuted }]} numberOfLines={1}>
+                  {isDirty ? 'Edited · not saved' : (statusLine ?? 'Editing')}
+                </Text>
+              </View>
+            </GlassCapsule>
+          </View>
+
+          <TouchableOpacity
+            onPress={() => { void handleSaveEdit(); }}
+            disabled={!isDirty || saving}
+            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+            testID="preview-edit-save"
+            accessibilityLabel="Save"
+          >
+            <View style={[styles.editSavePill, (!isDirty || saving) && styles.editSavePillDisabled]}>
+              {saving ? (
+                <ActivityIndicator size="small" color="#1A1405" />
+              ) : (
+                <Text style={styles.editSavePillText}>Save</Text>
               )}
             </View>
-          </GlassCapsule>
+          </TouchableOpacity>
         </View>
-
-        <TouchableOpacity
-          onPress={handlePreviewOptions}
-          disabled={downloading || trashing}
-          hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
-          accessibilityLabel="Open file options"
-        >
-          <GlassCircle
-            scheme={resolved}
-            size={GLASS_CIRCLE_SIZES.action}
-            style={(downloading || trashing) ? styles.disabledIconButton : undefined}
+      ) : (
+        <View style={[styles.header, { paddingTop: insets.top + 8 }]}>
+          {/* 1344 — outer TouchableOpacity wraps the fixed-size GlassCircle so
+              hitSlop is not clipped to the disc (the hitSlop-clip bug 1343 just
+              fixed on this screen's own media header, and 1341/1342 fixed on
+              FilesScreen/TrashScreen — RN clips hitSlop to the parent's bounds
+              when the touchable is nested INSIDE a fixed-size view, not
+              wrapping it). Icon matches the media header's chevron-down
+              exactly: Preview.dc.html only samples the media/video preview, so
+              this doc header has no artboard of its own — extending the media
+              header's icon choice by analogy is the same DERIVED class as
+              1341/1342's non-canvas circles (DEVIATIONS.md). testID unchanged
+              from 1336 — same value as the media header's close control, so a
+              test can assert the preview is open without knowing which of the
+              two headers rendered. */}
+          <TouchableOpacity
+            onPress={handleClose}
+            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+            testID="preview-close"
+            accessibilityLabel="Close preview"
           >
-            <Ionicons name="ellipsis-horizontal" size={21} color={docMaterial.label} />
-          </GlassCircle>
-        </TouchableOpacity>
-      </View>
+            <GlassCircle scheme="dark" materialOverride={docMaterial} size={GLASS_CIRCLE_SIZES.action}>
+              <Ionicons name="chevron-down" size={22} color={docMaterial.label} />
+            </GlassCircle>
+          </TouchableOpacity>
 
-      {/* 1344 — canvas.json n-preview: "e2e lock as quiet mono badge" applies
-          to every previewed file, not just media — a document is exactly as
-          end-to-end encrypted as a photo, and the badge's own copy ("e2e")
-          names the property, not the file type, so the media-only rationale
-          in 1343's notes doesn't hold up under scrutiny. Reuses the media
-          badge's exact shape/position/offset — both branches render the same
-          DetailsSheet with the same COLLAPSED_VISIBLE_HEIGHT, so the +40
-          bottom clearance 1343 tuned applies unchanged here — but
-          scheme=resolved to match this header's own scheme decision above. */}
-      <View
-        pointerEvents="none"
-        style={[styles.e2eBadgeWrap, { bottom: Math.max(insets.bottom, 16) + 40 }]}
-        testID="preview-e2e-badge"
-      >
-        <GlassCapsule scheme={resolved} contentStyle={styles.e2eBadgeBody}>
-          <Ionicons name="lock-closed" size={14} color={colors.amber} />
-          <Text style={[styles.e2eBadgeText, styles.mono, { color: docMaterial.labelMuted }]}>
-            e2e
-          </Text>
-        </GlassCapsule>
-      </View>
+          {/* 1344 — same GlassCapsule shape/padding (7px 18px, radius 999) as
+              the media header. Round 4 CORRECTION: this used to pass
+              scheme=resolved instead of forced "dark" — see the CORRECTION
+              note above `docMaterial`'s declaration for why that no longer
+              holds for the CHROME (the `c.paper` content-background argument
+              a few paragraphs up is still correct and unrelated). Subtitle
+              colour reads `docMaterial.labelMuted` (now `PREVIEW_CHROME_MATERIAL`'s
+              token, not `glassMaterial(resolved)`'s).
+              Preview redesign item 2 — subtitle gets a lock icon + "Encrypted"
+              prefix (design: amber lock icon, "Encrypted · Type · size"). */}
+          <View style={styles.headerCenter}>
+            <GlassCapsule
+              scheme="dark"
+              materialOverride={docMaterial}
+              style={styles.docHeaderCapsule}
+              contentStyle={styles.docHeaderCapsuleBody}
+            >
+              <Text
+                style={[styles.docHeaderTitle, { color: docMaterial.label }]}
+                numberOfLines={1}
+              >
+                {previewFileName}
+              </Text>
+              <View style={styles.headerSubRow}>
+                <Ionicons name="lock-closed" size={10} color={colors.amber} />
+                <Text
+                  style={[styles.docHeaderSubtitle, styles.mono, { color: docMaterial.labelMuted }]}
+                  numberOfLines={1}
+                >
+                  {/* Preview redesign item 2 — the separate "MARKDOWN"-style
+                      lang badge (removed below) truncated the size on the
+                      same row. A text file's type now reads from
+                      `codeLanguageLabel` ("Markdown", "TypeScript", "Plain
+                      text", …) INSTEAD OF the generic `CATEGORY_LABELS['doc']`
+                      ("Document") it fell into before — one accurate word in
+                      the subline, matching design section 02's "Encrypted ·
+                      Markdown · 184 B", rather than a second chip. */}
+                  {`Encrypted · ${isText ? codeLanguageLabel : (CATEGORY_LABELS[category] ?? 'File')}${currentSizeBytes != null ? ` · ${formatSize(currentSizeBytes)}` : ''}`}
+                </Text>
+              </View>
+            </GlassCapsule>
+          </View>
+
+          <TouchableOpacity
+            onPress={handlePreviewOptions}
+            disabled={downloading || trashing}
+            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+            accessibilityLabel="Open file options"
+          >
+            <GlassCircle
+              scheme="dark"
+              materialOverride={docMaterial}
+              size={GLASS_CIRCLE_SIZES.action}
+              style={(downloading || trashing) ? styles.disabledIconButton : undefined}
+            >
+              <Ionicons name="ellipsis-horizontal" size={21} color={docMaterial.label} />
+            </GlassCircle>
+          </TouchableOpacity>
+        </View>
+      )}
+      </PanGestureHandler>
+
+      {/* Preview redesign item 6 — floating page counter (PDF), same
+          fade-with-chrome behaviour as the media branch's pill.
+          Same fix as the media branch's matching pill above: `insets.top + 58`
+          matches THIS header's own `PreviewOptionsPopover` anchor below —
+          "just under the bar," not `insets.top + 8` (the header's own top,
+          which visually collided with the ⋯ circle). */}
+      </Animated.View>
+
+      {/* Preview redesign item 3 — the "e2e" pill is retired (see the media
+          branch's matching removal note); the lock now lives in the header
+          subtitle above. */}
 
       <PreviewOptionsPopover
         visible={optionsVisible}
@@ -3531,6 +4350,17 @@ export default function PreviewScreen() {
         actions={previewActions}
         onClose={() => setOptionsVisible(false)}
         top={insets.top + 58}
+      />
+      {/* Preview redesign item 4 — "Move to…", reusing FilesScreen's own
+          FolderPickerModal (see the `handleOpenMovePicker` comment). */}
+      <FolderPickerModal
+        visible={movePicker !== null}
+        title="Move"
+        folders={movePicker?.folders ?? []}
+        currentParentId={movePicker?.currentParentId ?? null}
+        busy={moveBusy}
+        onCancel={() => setMovePicker(null)}
+        onConfirm={(targetId) => { void handleConfirmMove(targetId); }}
       />
 
       {/* ---- Preview area ----
@@ -3586,32 +4416,39 @@ export default function PreviewScreen() {
               <Text style={styles.imageStatusSub}>{imageError}</Text>
             </View>
           ) : imageUri ? (
-            originalImageActive ? (
-              <ProgressiveOriginalImage
-                baseUri={originalImageBase ?? imageUri}
-                originalUri={originalImagePending}
-                progress={loadProgress}
-                active={originalImageActive}
-                cacheHit={originalImageCacheHit}
-                reduceMotion={reduceMotion}
-                amber={c.amber}
-                containerStyle={styles.image}
-                imageStyle={styles.image}
-                accessibilityLabel={previewFileName}
-                onPromote={promoteOriginalImage}
-                onImageLoad={() => setImageLoaded(true)}
-                onImageError={() => setImageError((prev) => prev ?? "This image couldn't be displayed.")}
-              />
-            ) : (
-              <Image
-                source={{ uri: imageUri }}
-                style={styles.image}
-                resizeMode="contain"
-                accessibilityLabel={previewFileName}
-                onLoad={() => setImageLoaded(true)}
-                onError={() => setImageError((prev) => prev ?? "This image couldn't be displayed.")}
-              />
-            )
+            // Preview redesign item 1 ("images/RAW on black") — `#000`
+            // lifted verbatim from `design/preview-redesign-ios.html`'s
+            // `.photo{background:#000}`; see the `fullBleedFill` style
+            // comment for why this escapes `previewArea`'s centering
+            // instead of changing it.
+            <View style={[styles.fullBleedFill, styles.imageBleedBg]}>
+              {originalImageActive ? (
+                <ProgressiveOriginalImage
+                  baseUri={originalImageBase ?? imageUri}
+                  originalUri={originalImagePending}
+                  progress={loadProgress}
+                  active={originalImageActive}
+                  cacheHit={originalImageCacheHit}
+                  reduceMotion={reduceMotion}
+                  amber={c.amber}
+                  containerStyle={styles.image}
+                  imageStyle={styles.image}
+                  accessibilityLabel={previewFileName}
+                  onPromote={promoteOriginalImage}
+                  onImageLoad={() => setImageLoaded(true)}
+                  onImageError={() => setImageError((prev) => prev ?? "This image couldn't be displayed.")}
+                />
+              ) : (
+                <Image
+                  source={{ uri: imageUri }}
+                  style={styles.image}
+                  resizeMode="contain"
+                  accessibilityLabel={previewFileName}
+                  onLoad={() => setImageLoaded(true)}
+                  onError={() => setImageError((prev) => prev ?? "This image couldn't be displayed.")}
+                />
+              )}
+            </View>
           ) : (
             <View style={styles.imageStatus}>
               {renderSharedProgress(false)}
@@ -3631,16 +4468,24 @@ export default function PreviewScreen() {
             // wrapper (default align:'stretch') is the fix — give the
             // WebView a non-centered direct parent instead of touching
             // react-native-webview itself.
-            <View style={styles.svgWebViewWrap}>
-              <WebView
-                originWhitelist={['*']}
-                source={{ html: wrappedSvgHtml }}
-                style={styles.svgWebView}
-                scalesPageToFit
-                showsHorizontalScrollIndicator={false}
-                showsVerticalScrollIndicator={false}
-              />
-            </View>
+            //
+            // Preview redesign item 3 — 1564 is merged, so this branch now
+            // also gets the same full-bleed + tap-to-hide frame as every
+            // other type. `Pressable` sits ABOVE `svgWebViewWrap`, which
+            // stays the WebView's unchanged DIRECT parent (still plain
+            // flex:1, still not centering) — the fix above is untouched.
+            <Pressable style={styles.fullBleedFill} onPress={handleContentTap} testID="preview-content-tap">
+              <View style={styles.svgWebViewWrap}>
+                <WebView
+                  originWhitelist={['*']}
+                  source={{ html: wrappedSvgHtml }}
+                  style={styles.svgWebView}
+                  scalesPageToFit
+                  showsHorizontalScrollIndicator={false}
+                  showsVerticalScrollIndicator={false}
+                />
+              </View>
+            </Pressable>
           ) : svgError ? (
             <View style={styles.imageStatus}>
               <Text style={[styles.imageStatusTitle, { color: c.ink }]}>
@@ -3655,9 +4500,25 @@ export default function PreviewScreen() {
           )
         ) : isPdf ? (
           pdfUri ? (
-            <Suspense fallback={<View style={styles.imageStatus}>{renderSharedProgress(false)}</View>}>
-              <PdfRenderer filePath={pdfUri} />
-            </Suspense>
+            // Preview redesign item 1 ("PDF pages full width") + item 6
+            // (floating page counter, wired via `onPageInfo` — see the
+            // `pageCounterLabel`/`pdfPageInfo` state above and the pill
+            // rendered in the header block). `#2A2A28` lifted verbatim from
+            // the design's `.pdf{background:#2A2A28}` page-gutter colour.
+            <Pressable
+              style={[styles.fullBleedFill, styles.pdfBleedBg]}
+              onPress={handleContentTap}
+              testID="preview-content-tap"
+            >
+              <Suspense fallback={<View style={styles.imageStatus}>{renderSharedProgress(false)}</View>}>
+                <PdfRenderer
+                  filePath={pdfUri}
+                  onPageInfo={setPdfPageInfo}
+                  topInset={docContentInset.top}
+                  bottomInset={docContentInset.bottom}
+                />
+              </Suspense>
+            </Pressable>
           ) : pdfError ? (
             <View style={styles.imageStatus}>
               <Text style={[styles.imageStatusTitle, { color: c.ink }]}>
@@ -3672,14 +4533,21 @@ export default function PreviewScreen() {
           )
         ) : isVideo ? (
           videoUri ? (
-            <VideoView
-              player={player}
-              style={styles.video}
-              contentFit="contain"
-              nativeControls
-              fullscreenOptions={{ enable: true }}
-              allowsPictureInPicture
-            />
+            // Preview redesign item 1 ("video" full-bleed) — same black
+            // ground as the image branch above (design's `.photo{background:
+            // #000}`; there is no separate video mock, so this is DERIVED by
+            // analogy to the photo one, same class as PdfRenderer's onPageInfo
+            // extension).
+            <View style={[styles.fullBleedFill, styles.imageBleedBg]}>
+              <VideoView
+                player={player}
+                style={styles.video}
+                contentFit="contain"
+                nativeControls
+                fullscreenOptions={{ enable: true }}
+                allowsPictureInPicture
+              />
+            </View>
           ) : videoError ? (
             <View style={styles.imageStatus}>
               <Text style={[styles.imageStatusTitle, { color: colors.white }]}>
@@ -3693,10 +4561,84 @@ export default function PreviewScreen() {
             </View>
           )
         ) : isText ? (
-          textContent != null ? (
-            <Suspense fallback={<View style={styles.imageStatus}>{renderSharedProgress(false)}</View>}>
-              <CodeRenderer code={textContent} language={codeLanguage} />
-            </Suspense>
+          editMode ? (
+            // Task 1563 — `previewArea`'s `alignItems:'center'`/`justifyContent:'center'`
+            // (tuned for centering a small spinner/error message) shrinks any
+            // ordinary `flex:1` child to its CONTENT width, not the screen's —
+            // confirmed on-device (bb-ios27): the editor rendered as a narrow
+            // floating column instead of full-bleed. `fullBleedFill` escapes
+            // that via absolute positioning, the same technique CodeRenderer's
+            // own `root` style already uses for exactly this reason.
+            <View style={styles.fullBleedFill}>
+              <Suspense fallback={<View style={styles.imageStatus}>{renderSharedProgress(false)}</View>}>
+                <TextEditorView
+                  initialText={editText ?? textContent ?? ''}
+                  language={codeLanguage}
+                  onChangeText={setEditText}
+                  bottomInset={Math.max(insets.bottom, 16)}
+                />
+              </Suspense>
+            </View>
+          ) : textContent != null ? (
+            <Pressable style={styles.fullBleedFill} onPress={handleContentTap} testID="preview-content-tap">
+              {/* Task 1563 limit (item 6): an honest notice, no Edit button,
+                  when the file loaded fine for READING but fails the edit
+                  gate (over 2 MB, or content that looks like a lossy UTF-8
+                  decode) — never a silently-disabled control with no reason. */}
+              {editGate.reason && (
+                // Round 5 — this banner is its OWN floating overlay above the
+                // scrollable content below, so it needs the same top inset
+                // the header itself does (`top: 0` used to sit it directly
+                // under the header, i.e. exactly the collision this task
+                // fixes, just moved one layer down). Its onLayout feeds the
+                // content's OWN extra offset just below, so content starts
+                // below the banner, not under it.
+                <View
+                  style={[styles.readOnlyBanner, { top: docContentInset.top, backgroundColor: c.paper2, borderColor: c.line }]}
+                  testID="text-readonly-notice"
+                  onLayout={(e) => {
+                    const h = e.nativeEvent.layout.height;
+                    setReadOnlyBannerHeight((prev) => (prev === h ? prev : h));
+                  }}
+                >
+                  <Ionicons name="information-circle-outline" size={16} color={c.ink3} />
+                  <Text style={[styles.readOnlyBannerText, { color: c.ink2 }]}>{editGate.reason}</Text>
+                </View>
+              )}
+              {/* Preview redesign / DEVIATIONS.md — the ⋯ menu's "Show
+                  source" (design section 02) shows a markdown file's raw
+                  text via the SAME CodeRenderer the plain-text/code path
+                  already uses, without leaving the rendered-preview screen. */}
+              {isMarkdown && !showSource ? (
+                <ScrollView
+                  style={styles.markdownScroll}
+                  showsVerticalScrollIndicator
+                  // Round 5 — on `contentContainerStyle` (not a prop into
+                  // MarkdownRenderer itself), same reasoning as
+                  // CodeRenderer's own ScrollView: the viewport stays full-
+                  // bleed, only the CONTENT gets the extra padding, so
+                  // scrolling moves the rendered markdown UNDER the
+                  // translucent bars instead of clipping at a shrunk edge.
+                  contentContainerStyle={{
+                    paddingTop: docContentInset.top + (editGate.reason ? (readOnlyBannerHeight ?? 44) : 0),
+                    paddingBottom: docContentInset.bottom,
+                  }}
+                >
+                  <Suspense fallback={<View style={styles.imageStatus}>{renderSharedProgress(false)}</View>}>
+                    <MarkdownRenderer markdown={textContent} colors={c} />
+                  </Suspense>
+                </ScrollView>
+              ) : (
+                <Suspense fallback={<View style={styles.imageStatus}>{renderSharedProgress(false)}</View>}>
+                  <CodeRenderer
+                    code={textContent}
+                    language={codeLanguage}
+                    topInset={docContentInset.top + (editGate.reason ? (readOnlyBannerHeight ?? 44) : 0)}
+                    bottomInset={docContentInset.bottom}
+                  />
+                </Suspense>
+              )}
+            </Pressable>
           ) : textError ? (
             <View style={styles.imageStatus}>
               <Text style={[styles.imageStatusTitle, { color: c.ink }]}>
@@ -3711,9 +4653,22 @@ export default function PreviewScreen() {
           )
         ) : isDocx ? (
           docxData ? (
-            <Suspense fallback={<View style={styles.imageStatus}>{renderSharedProgress(false)}</View>}>
-              <DocxRenderer data={docxData} colors={c} isDark={resolved === 'dark'} />
-            </Suspense>
+            // Preview redesign item 3 — full-bleed + tap-to-hide, same frame
+            // as every other type. `Pressable` is an ANCESTOR of
+            // `DocxRenderer`, not its direct parent — its own internal
+            // WebView already has its own non-centering flex:1 wrapper
+            // (task 1564), untouched by this.
+            <Pressable style={styles.fullBleedFill} onPress={handleContentTap} testID="preview-content-tap">
+              <Suspense fallback={<View style={styles.imageStatus}>{renderSharedProgress(false)}</View>}>
+                <DocxRenderer
+                  data={docxData}
+                  colors={c}
+                  isDark={resolved === 'dark'}
+                  topInset={docContentInset.top}
+                  bottomInset={docContentInset.bottom}
+                />
+              </Suspense>
+            </Pressable>
           ) : docxError ? (
             <View style={styles.imageStatus}>
               <Text style={[styles.imageStatusTitle, { color: c.ink }]}>
@@ -3728,9 +4683,18 @@ export default function PreviewScreen() {
           )
         ) : isSpreadsheet ? (
           sheetData ? (
-            <Suspense fallback={<View style={styles.imageStatus}>{renderSharedProgress(false)}</View>}>
-              <XlsxRenderer data={sheetData} colors={c} />
-            </Suspense>
+            // Preview redesign item 3 — full-bleed + tap-to-hide (no WebView
+            // in this renderer, so no direct-parent-centering concern).
+            <Pressable style={styles.fullBleedFill} onPress={handleContentTap} testID="preview-content-tap">
+              <Suspense fallback={<View style={styles.imageStatus}>{renderSharedProgress(false)}</View>}>
+                <XlsxRenderer
+                  data={sheetData}
+                  colors={c}
+                  topInset={docContentInset.top}
+                  bottomInset={docContentInset.bottom}
+                />
+              </Suspense>
+            </Pressable>
           ) : sheetError ? (
             <View style={styles.imageStatus}>
               <Text style={[styles.imageStatusTitle, { color: c.ink }]}>
@@ -3745,6 +4709,12 @@ export default function PreviewScreen() {
           )
         ) : isHtml ? (
           htmlContent != null ? (
+            // Preview redesign item 3 — full-bleed + tap-to-hide.
+            // `htmlContainer` (flex:1, unchanged) stays the WebView's DIRECT
+            // parent in the "Rendered" toggle state — it never centered its
+            // children, so task 1564's fix was never needed here; `Pressable`
+            // is only an ancestor of that, same as every other branch above.
+            <Pressable style={styles.fullBleedFill} onPress={handleContentTap} testID="preview-content-tap">
             <View style={styles.htmlContainer}>
               {/* Toggle: rendered ↔ source. Sticky bar on top of the view. */}
               <View style={[styles.htmlToggleBar, { borderBottomColor: c.line, backgroundColor: c.paper }]}>
@@ -3832,6 +4802,7 @@ export default function PreviewScreen() {
                 />
               )}
             </View>
+            </Pressable>
           ) : htmlError ? (
             <View style={styles.imageStatus}>
               <Text style={[styles.imageStatusTitle, { color: c.ink }]}>
@@ -3846,9 +4817,13 @@ export default function PreviewScreen() {
           )
         ) : isZip ? (
           zipData ? (
-            <Suspense fallback={<View style={styles.imageStatus}>{renderSharedProgress(false)}</View>}>
-              <ZipRenderer data={zipData} colors={c} />
-            </Suspense>
+            // Preview redesign item 3 — full-bleed + tap-to-hide (no WebView
+            // in this renderer).
+            <Pressable style={styles.fullBleedFill} onPress={handleContentTap} testID="preview-content-tap">
+              <Suspense fallback={<View style={styles.imageStatus}>{renderSharedProgress(false)}</View>}>
+                <ZipRenderer data={zipData} colors={c} />
+              </Suspense>
+            </Pressable>
           ) : zipError ? (
             <View style={styles.imageStatus}>
               <Text style={[styles.imageStatusTitle, { color: c.ink }]}>
@@ -3863,13 +4838,17 @@ export default function PreviewScreen() {
           )
         ) : isArchive ? (
           archiveData ? (
-            <Suspense fallback={<View style={styles.imageStatus}>{renderSharedProgress(false)}</View>}>
-              <ArchiveRenderer
-                data={archiveData}
-                extension={(currentFileName ?? '').toLowerCase().split('.').pop() ?? 'tar'}
-                colors={c}
-              />
-            </Suspense>
+            // Preview redesign item 3 — full-bleed + tap-to-hide (no WebView
+            // in this renderer).
+            <Pressable style={styles.fullBleedFill} onPress={handleContentTap} testID="preview-content-tap">
+              <Suspense fallback={<View style={styles.imageStatus}>{renderSharedProgress(false)}</View>}>
+                <ArchiveRenderer
+                  data={archiveData}
+                  extension={(currentFileName ?? '').toLowerCase().split('.').pop() ?? 'tar'}
+                  colors={c}
+                />
+              </Suspense>
+            </Pressable>
           ) : archiveError ? (
             <View style={styles.imageStatus}>
               <Text style={[styles.imageStatusTitle, { color: c.ink }]}>
@@ -3884,9 +4863,18 @@ export default function PreviewScreen() {
           )
         ) : isPptx ? (
           pptxData ? (
-            <Suspense fallback={<View style={styles.imageStatus}>{renderSharedProgress(false)}</View>}>
-              <PptxRenderer data={pptxData} colors={c} />
-            </Suspense>
+            // Preview redesign item 3 — full-bleed + tap-to-hide (no WebView
+            // in this renderer).
+            <Pressable style={styles.fullBleedFill} onPress={handleContentTap} testID="preview-content-tap">
+              <Suspense fallback={<View style={styles.imageStatus}>{renderSharedProgress(false)}</View>}>
+                <PptxRenderer
+                  data={pptxData}
+                  colors={c}
+                  topInset={docContentInset.top}
+                  bottomInset={docContentInset.bottom}
+                />
+              </Suspense>
+            </Pressable>
           ) : pptxError ? (
             <View style={styles.imageStatus}>
               <Text style={[styles.imageStatusTitle, { color: c.ink }]}>
@@ -3900,6 +4888,14 @@ export default function PreviewScreen() {
             </View>
           )
         ) : (
+          // Preview redesign item 3 — tap-to-hide only (no full-bleed):
+          // per DEVIATIONS.md, the fallback card is a centered card by
+          // design (section 03's own "good" list separates full-bleed
+          // content from the card pattern — there is no mock of this card
+          // running edge to edge), so `previewArea`'s centering stays;
+          // `Pressable` just adds the same tap gesture every other type
+          // now has, without changing the card's own layout.
+          <Pressable onPress={handleContentTap} testID="preview-content-tap">
           <View style={styles.genericPlaceholder}>
             {/* 1346 — genericIconText stays colors.white: this badge's
                 background (categoryAccent, just above) is ALREADY
@@ -3928,28 +4924,79 @@ export default function PreviewScreen() {
                 : 'Unlock your vault to decrypt this file.'}
             </Text>
           </View>
+          </Pressable>
         )}
       </View>
 
+      {/* Preview redesign item 6 — floating page counter (PDF). Bug found
+          verifying rung (g) on-device with a real multi-page PDF: this used
+          to render INSIDE the header's own chrome wrapper, BEFORE
+          `previewArea` in the tree — confirmed via instrumented
+          `onLoadComplete`/`onPageChanged` logs that `pdfPageInfo` (and so
+          `pageCounterLabel`) was correctly populated ("1 / 4"), yet the pill
+          was never visible on screen. `react-native-pdf`'s native view
+          consistently painted over it regardless of the pill's own
+          `zIndex: 14` — a zIndex only reorders siblings sharing the SAME
+          parent, and the real competing siblings here are the whole chrome
+          wrapper vs. `previewArea`, neither of which had one set. Moved to
+          a genuine sibling AFTER `previewArea` closes instead — the exact
+          position the bottom bar below already uses successfully (proven
+          visible over the very same PDF in every screenshot this pass). */}
+      {!editMode && pageCounterLabel && (
+        <View style={[styles.pageCounterWrap, { top: insets.top + 58 }]} pointerEvents="none">
+          <GlassCapsule scheme="dark" materialOverride={docMaterial} contentStyle={styles.pageCounterBody}>
+            <Text style={[styles.pageCounterText, styles.mono, { color: docMaterial.label }]}>{pageCounterLabel}</Text>
+          </GlassCapsule>
+        </View>
+      )}
+
       {/* ---- Details sheet (handle-only, pull up to expand) ---- */}
-      <DetailsSheet
+      {/* ---- Bottom bar + Info sheet (item 3/5) ----
+          Same removal as the media branch: DetailsSheet's permanent
+          collapsed peek is retired in favour of an on-demand Info sheet,
+          reached from here or the ⋯ menu's "Version history". No bottom
+          bar while editing (item 7). */}
+      {!editMode && (
+        <Animated.View
+          style={[styles.bottomBarWrap, { opacity: barsOpacity, bottom: Math.max(insets.bottom, 16) + 8 }]}
+          pointerEvents={chromeVisible ? 'auto' : 'none'}
+          onLayout={(e) => {
+            // Round 5 — the bar's OWN height (not its offset from the safe
+            // area, which `computePreviewContentInset` adds separately).
+            const h = e.nativeEvent.layout.height;
+            setDocBottomBarHeight((prev) => (prev === h ? prev : h));
+          }}
+        >
+          <PreviewBottomBar
+            scheme="dark"
+            actions={[
+              { key: 'share', label: 'Share', icon: 'share-outline', onPress: handleShare, testID: 'preview-bar-share' },
+              { key: 'save', label: 'Save', icon: 'download-outline', disabled: downloading, onPress: handleDownload, testID: 'preview-bar-save' },
+              { key: 'versions', label: 'Versions', icon: 'time-outline', onPress: () => setInfoVisible(true), testID: 'preview-bar-versions' },
+              { key: 'info', label: 'Info', icon: 'information-circle-outline', onPress: () => setInfoVisible(true), testID: 'preview-bar-info' },
+            ]}
+          />
+        </Animated.View>
+      )}
+      <InfoSheet
+        visible={infoVisible}
+        onClose={() => setInfoVisible(false)}
+        fileId={currentFileId}
         filename={previewFileName}
-        kind={CATEGORY_LABELS[category] ?? 'File'}
-        size={currentSizeBytes != null ? formatSize(currentSizeBytes) : 'Unknown'}
-        created={currentCreatedAt ? formatDate(currentCreatedAt) : undefined}
-        extraInfo={[
-          ...(fileFormat ? [{ label: 'Format', value: fileFormat }] : []),
-          ...(currentMimeType ? [{ label: 'Type', value: currentMimeType }] : []),
-        ]}
+        kindLabel={CATEGORY_LABELS[category] ?? 'File'}
+        sizeBytes={currentSizeBytes ?? null}
+        pageCount={pdfPageInfo?.total ?? null}
         storageLocation={(() => {
           const storage = trustLocation(currentStoragePoolId);
           return `${storage.region} · ${storage.city}`;
         })()}
-        onShare={handleShare}
-        onDownload={handleDownload}
-        downloading={downloading}
+        extraRows={[
+          ...(currentCreatedAt ? [{ label: 'Created', value: formatDate(currentCreatedAt) }] : []),
+          ...(fileFormat ? [{ label: 'Format', value: fileFormat }] : []),
+          ...(currentMimeType ? [{ label: 'Type', value: currentMimeType }] : []),
+        ]}
       />
-    </View>
+    </Animated.View>
   );
 }
 
@@ -4048,6 +5095,65 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#020203',
   },
+  // Preview redesign (task 1563 follow-up, design item 1 — "every preview
+  // type runs edge to edge"): `previewArea` below centers its children
+  // (tuned for a small spinner/error message) and shrinks any ordinary
+  // `flex:1` child to its CONTENT width rather than the screen's — confirmed
+  // on-device for the text editor (comment at that call site). Absolute
+  // positioning escapes it without touching `previewArea` itself, so the
+  // generic/fallback/error states (which DO want centering — a "card" is
+  // supposed to be a card) are untouched, and so is the isSvg/isHtml WebView
+  // branch below (task 1564, in flight in a sibling worktree, touches those
+  // exact lines — see DEVIATIONS.md). Used by the editor, and now also by
+  // the image/PDF/video branches for the same full-bleed requirement.
+  fullBleedFill: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+  },
+  imageBleedBg: { backgroundColor: '#000000' },
+  pdfBleedBg: { backgroundColor: '#2A2A28' },
+  markdownScroll: {
+    flex: 1,
+  },
+  // Rung (f) bug found verifying this pass: this banner used to be a plain
+  // NORMAL-FLOW sibling before CodeRenderer in the JSX, expecting to sit
+  // above it and push it down. But `CodeRenderer`'s own root is
+  // `position:'absolute', top:0,...` with an OPAQUE background (its own
+  // fullBleedFill escape from `previewArea`'s centering, same class of fix
+  // as this screen's) — a later-JSX absolutely-positioned opaque sibling
+  // paints OVER an earlier normal-flow one at the same top edge, so the
+  // read-only notice rendered (proven: `editGate.reason` was correctly
+  // truthy, `canEditText` correctly hid the ⋯ menu's Edit item) but was
+  // never actually VISIBLE — confirmed on-device with a real >2 MB file
+  // (screenshot showed only CodeRenderer's own unrelated 300k-char
+  // truncation notice). Fixed by pulling this banner OUT of flow too, with
+  // an explicit `zIndex` above CodeRenderer's implicit 0, so it floats on
+  // top instead of losing a z-order fight it can't win by JSX order alone.
+  readOnlyBanner: {
+    position: 'absolute',
+    // `top: 0` here is only the pre-round-5 default; every real call site
+    // overrides it inline with `docContentInset.top` (see the JSX call
+    // site's own comment) so the banner sits below the floating header
+    // instead of under it.
+    top: 0,
+    left: 0,
+    right: 0,
+    zIndex: 5,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  readOnlyBannerText: {
+    flex: 1,
+    fontSize: 12.5,
+    lineHeight: 17,
+  },
   mediaHeader: {
     position: 'absolute',
     left: 0,
@@ -4092,8 +5198,7 @@ const styles = StyleSheet.create({
   // 1343 — mono (canvas: class="mono"), fontSize 10, and the 0.40-alpha
   // colour are all lifted verbatim from Preview.dc.html's own subtitle span.
   // That 0.40 is a one-off artboard value, not the shared glassMaterial()
-  // labelMuted token (which is 0.62 elsewhere in this same canvas — the
-  // e2e badge below uses that one instead) — see DEVIATIONS.md.
+  // labelMuted token (0.62 elsewhere in this canvas) — see DEVIATIONS.md.
   mediaHeaderSubtitle: {
     maxWidth: '100%',
     marginTop: 2,
@@ -4101,29 +5206,43 @@ const styles = StyleSheet.create({
     fontSize: 10,
     lineHeight: 13,
   },
-  // 1343 — DERIVED: no canvas artboard isolates this badge from the rest of
-  // its 5-icon dock, so position + padding are a reasoned standalone
-  // treatment, not a sampled value (see the JSX comment above and
-  // DEVIATIONS.md). pointerEvents="none" on the wrapper is load-bearing: the
-  // badge is informational, not a control, and must not steal touches from
-  // the Pressable/pager media stage beneath it.
-  e2eBadgeWrap: {
+  // e2eBadgeWrap/e2eBadgeBody/e2eBadgeText: removed (preview redesign item
+  // 3 — the "e2e" pill is retired; see the JSX removal notes in both
+  // branches and DEVIATIONS.md).
+  // Preview redesign item 2 — the header subtitle's lock icon + "Encrypted"
+  // row (design: `<svg class="lk">` + `<span class="enc">Encrypted</span>`).
+  encSubRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginTop: 2,
+  },
+  // Preview redesign item 6 — the floating page-counter pill. Position
+  // DERIVED (top-right, under the bar) from the design's `.pgind` (right:
+  // 4cqw, top: 27cqw on a 300pt-wide phone artboard ≈ just under the header);
+  // this app has a real safe-area inset instead of a fixed cqw offset.
+  pageCounterWrap: {
+    position: 'absolute',
+    right: 16,
+    zIndex: 14,
+  },
+  pageCounterBody: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  pageCounterText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#ECE8DF',
+  },
+  // Preview redesign item 3 — the glass bottom bar's positioning wrapper
+  // (the bar itself, `PreviewBottomBar`, is unschemed/reusable; only its
+  // screen position is this screen's concern).
+  bottomBarWrap: {
     position: 'absolute',
     left: 0,
     right: 0,
-    alignItems: 'center',
     zIndex: 15,
-  },
-  e2eBadgeBody: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 7,
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-  },
-  // Canvas: font-size 10.5px, lifted verbatim.
-  e2eBadgeText: {
-    fontSize: 10.5,
   },
   mono: {
     fontFamily: fonts.mono,
@@ -4247,11 +5366,43 @@ const styles = StyleSheet.create({
   },
 
   // ---- Header ----
+  // Round 4 (lead review): this used to be a plain in-flow row, sized by
+  // `root`'s own `paddingTop: insets.top` above it — which meant
+  // `previewArea` below (a normal-flow sibling) started BELOW both the
+  // inset AND this row's own height, painting `root`'s opaque
+  // `backgroundColor` behind that whole span. That's the "header sits on an
+  // opaque dark band, content starts at y≈310/2000" bug — the design says
+  // content runs UNDER the translucent bars, not after them. `root` no
+  // longer sets `paddingTop` at all, and `previewArea` below is now a
+  // full-screen absolute layer, so content reaches y=0.
+  //
+  // The float-above-content positioning (`position:'absolute', top/left/
+  // right:0, zIndex:20`) lives on the WRAPPING `<Animated.View>` at the JSX
+  // call site, not here on `header` itself — two on-device bugs, in order:
+  // (1) first attempt put it here on `header`. `previewArea` is a sibling of
+  // that OUTER wrapper, not of `header` (`header` is nested one more level
+  // in, inside `PanGestureHandler`) — zIndex only resolves stacking among
+  // siblings sharing one parent, so `header`'s zIndex never even entered the
+  // comparison against `previewArea`'s; the header vanished completely
+  // behind the (correctly full-bleed) PDF page, confirmed on-device
+  // (`evidence-1563-redesign-r4/01-pdf-fixed.png`).
+  // (2) moving position:absolute here (to `header`) instead of the wrapper
+  // fixed the visual stacking (the wrapper itself got the zIndex) but then
+  // made THIS view the one with zero contributed size — its own parent
+  // chain (wrapper > PanGestureHandler > header) collapsed to a zero
+  // accessibility frame, and Maestro/XCUITest could no longer find ANY
+  // element inside it (`maestro hierarchy` showed the close/⋯ circles
+  // rendering on screen but absent from the accessibility tree entirely —
+  // confirmed by dumping the hierarchy and finding nothing in the header's
+  // screen region). Fixed by keeping `header` a plain, normally-sized
+  // in-flow row and putting the absolute positioning + zIndex on the
+  // wrapper instead — the wrapper's frame now comes from `header`'s real
+  // (non-zero) content size, same as any ordinary floating-header pattern.
   header: {
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingBottom: 12,
     gap: 12,
   },
   // 1344 — closeButton/closeIcon/headerIconButton (plain circles, no glass)
@@ -4350,9 +5501,58 @@ const styles = StyleSheet.create({
     color: colors.white,
   },
 
+  // ---- Edit-mode top bar (preview redesign item 7) ----
+  editTopBarPillBody: {
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+  },
+  editTopBarPillText: {
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  editDirtyDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+  },
+  // Amber, matching the design's "Save" pill exactly (`background:var(--amber)`)
+  // — the app's ONE accent colour, used here for its brand-canonical purpose
+  // (a primary action), per the workspace's own "one accent colour" rule.
+  editSavePill: {
+    backgroundColor: colors.amber,
+    borderRadius: 999,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    minWidth: 58,
+    alignItems: 'center',
+  },
+  editSavePillDisabled: {
+    opacity: 0.4,
+  },
+  editSavePillText: {
+    color: '#1A1405',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+
   // ---- Preview area ----
+  // Round 4 (lead review) — `flex: 1` sized this to whatever space was left
+  // BELOW `header` in normal flow (the actual dead-band bug; see `header`'s
+  // own comment). Absolute + inset 0 makes this span the WHOLE root
+  // regardless of the header floating above it, so every `fullBleedFill`
+  // child inside it (already proven to escape `justifyContent`/`alignItems`/
+  // `paddingHorizontal` here — see the `fullBleedFill` style comment) now
+  // reaches all four edges of the SCREEN, not just of the old, header-
+  // shrunk remainder. The non-full-bleed states (locked/error/fallback
+  // cards) still center within this box — now centered on the whole screen,
+  // which is the same "content runs under the bars" behaviour, just applied
+  // to a small card instead of a full-bleed page.
   previewArea: {
-    flex: 1,
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
     justifyContent: 'center',
     alignItems: 'center',
     paddingHorizontal: 24,
