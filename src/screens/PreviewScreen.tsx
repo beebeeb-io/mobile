@@ -60,7 +60,7 @@ import {
   saveFailedAfterUploadStarted,
   saveTextFileVersion,
 } from '../lib/text-file-save';
-import { decryptToTempFile, invalidatePreviewCache } from '../lib/native-decrypt';
+import { decryptToTempFile, invalidatePreviewCache, releasePreviewCopy } from '../lib/native-decrypt';
 import { offlineManager } from '../lib/offline-manager';
 import { maybeSelfRepairThumbnailFromLocalFile } from '../lib/thumbnail-self-repair';
 import { BeebeebThumbnails, type PreviewLoadProgressEvent } from '../../modules/beebeeb-crypto';
@@ -868,7 +868,9 @@ async function loadDecryptedPhotoForViewer(
       { onProgress, signal },
     );
     if (signal?.aborted) {
-      await FileSystem.deleteAsync(decryptedUri, { idempotent: true }).catch(() => {});
+      // Task 1593 round 2 (P2-F) — give the shared preview copy back instead of
+      // deleting it: the full preview or "Prove it" may be using the same file.
+      await releasePreviewCopy(entry.id, ext);
       recordRuntimeTrace('preview.photo_page.original.aborted_after_decrypt', { fileId: entry.id });
       throwIfPreviewAborted(signal);
     }
@@ -878,7 +880,7 @@ async function loadDecryptedPhotoForViewer(
       ? await cachePhotoWithExtension(entry.id, decryptedUri, cacheExt)
       : await cachePhoto(entry.id, decryptedUri);
     if (cachedUri !== decryptedUri) {
-      await FileSystem.deleteAsync(decryptedUri, { idempotent: true }).catch(() => {});
+      await releasePreviewCopy(entry.id, ext); // task 1593 round 2 (P2-F)
     }
     throwIfPreviewAborted(signal);
     recordRuntimeTrace('preview.photo_page.original.success', {
@@ -3790,7 +3792,8 @@ export default function PreviewScreen() {
       try {
         const cachedUri = await cachePhoto(currentFileId, decryptedUri);
         if (cachedUri !== decryptedUri) {
-          await FileSystem.deleteAsync(decryptedUri, { idempotent: true }).catch(() => {});
+          // Task 1593 round 2 (P2-F) — release, never delete, the shared preview copy.
+          await releasePreviewCopy(currentFileId, previewDecryptExtension(currentMimeType, currentFileName));
         }
         resolvedUri = cachedUri;
       } catch {

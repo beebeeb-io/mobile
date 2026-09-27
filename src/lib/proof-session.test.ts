@@ -115,6 +115,13 @@ describe('startProofSession', () => {
     expect(src).not.toMatch(/deleteAsync\([^)]*preview/i);
   });
 
+  test('the Photos pager gives its preview copy back too, never deletes the shared file (P2-F)', () => {
+    const src = require('node:fs').readFileSync(require('node:path').join(import.meta.dir, '../screens/PreviewScreen.tsx'), 'utf8');
+    expect(src).toMatch(/if \(cachedUri !== decryptedUri\) \{\s*await releasePreviewCopy\(entry\.id, ext\);/);
+    expect(src).toMatch(/if \(signal\?\.aborted\) \{[\s\S]{0,250}await releasePreviewCopy\(entry\.id, ext\);/);
+    expect(src).not.toMatch(/deleteAsync\(decryptedUri/);
+  });
+
   test('too large to decrypt: no decrypt at all, still only the ranged ciphertext fetch', async () => {
     const { deps, log } = harness({ sizeBytes: PROOF_DECRYPT_MAX_BYTES + 1 });
     startProofSession(deps);
