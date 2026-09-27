@@ -559,3 +559,21 @@ reviewed, not discovered):**
 - **Android "+" menu is flat** (Upload photo, Upload file, Scan, New file, New folder) instead of
   iOS's inline "create" section: `@react-native-menu/menu`'s Android side has no
   `displayInline`, so the section would render as a blank row opening a submenu.
+
+## Task 1592 (mobile) — iOS polish for build 223 (from the build-222 regression)
+
+No design mock covers these states; recorded so they are reviewed, not discovered (none was
+ruled on by Guus):
+
+- **Failed preview load → "Try again".** Every renderer's "Couldn't load …" state now carries
+  an outline "Try again" button (secondary action, so not amber — brand rule). A file whose
+  row is still marked as uploading reads "Still uploading" / "This file is still uploading.
+  Try again in a moment." instead of the raw native exception. `lib/preview-load-error.ts`.
+- **A name that cannot be decrypted** reads "Folder — name unavailable" / "File — name
+  unavailable" in ink3 italic instead of the grey placeholder bar forever. `lib/row-name.ts`.
+- **Info sheet "Shared" row:** "…" while loading; hidden (not "Not shared") when the share
+  state cannot be read (e.g. a share recipient). `lib/preview-info.ts` `resolveInfoShareCount`.
+- **Dates** in the share-link expiry, file-request expiry, last-backup date and ZIP/archive
+  entries use the device locale with a spelled month ("4 Oct 2026 at 23:28" on en-GB,
+  "Oct 4, 2026, 11:28 PM" on en-US) instead of all-numeric or hard-coded English.
+  `lib/date-format.ts`. Other dates in the app keep their existing (English month) format.

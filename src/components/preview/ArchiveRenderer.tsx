@@ -21,6 +21,7 @@ import pako from 'pako';
 import { radii } from '../../theme';
 import type { Colors } from '../../theme';
 import { formatBytes } from '../../lib/format';
+import { formatDate as formatLocaleDate, zipDosDateAsLocal } from '../../lib/date-format';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -162,7 +163,8 @@ async function parseZip(arrayBuffer: ArrayBuffer): Promise<ArchiveSummary> {
       name,
       isFolder: !!f.dir,
       size,
-      modifiedAt: f.date ?? null,
+      // Task 1592 — a ZIP time is zone-less local time; JSZip decodes it as UTC.
+      modifiedAt: zipDosDateAsLocal(f.date),
       ext,
     });
   });
@@ -263,12 +265,9 @@ function entryIcon(entry: ArchiveEntry): IoniconName {
 // Formatting helpers
 // ---------------------------------------------------------------------------
 
+// Task 1592 — the device locale's date form (src/lib/date-format.ts).
 function formatDate(d: Date | null): string | null {
-  if (!d || isNaN(d.getTime())) return null;
-  const month = d.toLocaleString('en', { month: 'short' });
-  const day = d.getDate();
-  const year = d.getFullYear();
-  return `${month} ${day}, ${year}`;
+  return formatLocaleDate(d) || null;
 }
 
 const FORMAT_LABELS: Record<ArchiveSummary['format'], string> = {
@@ -289,9 +288,13 @@ interface ArchiveRendererProps {
   extension: string;
   /** Theme colors from useTheme() */
   colors: Colors;
+  /** Task 1592 — clearance for the preview's floating top chrome / bottom
+   * bar (full-bleed preview). Same contract as ZipRenderer's. */
+  topInset?: number;
+  bottomInset?: number;
 }
 
-export function ArchiveRenderer({ data, extension, colors: c }: ArchiveRendererProps) {
+export function ArchiveRenderer({ data, extension, colors: c, topInset = 0, bottomInset = 0 }: ArchiveRendererProps) {
   const [summary, setSummary] = useState<ArchiveSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -359,7 +362,7 @@ export function ArchiveRenderer({ data, extension, colors: c }: ArchiveRendererP
 
   if (loading) {
     return (
-      <View style={styles.centered}>
+      <View style={[styles.centered, { paddingTop: topInset }]}>
         <ActivityIndicator color={c.amber} size="large" />
         <Text style={[styles.statusText, { color: c.ink3 }]}>
           Reading archive contents...
@@ -370,7 +373,7 @@ export function ArchiveRenderer({ data, extension, colors: c }: ArchiveRendererP
 
   if (error) {
     return (
-      <View style={styles.centered}>
+      <View style={[styles.centered, { paddingTop: topInset }]}>
         <Text style={[styles.errorTitle, { color: c.ink }]}>
           Couldn't open archive
         </Text>
@@ -381,7 +384,7 @@ export function ArchiveRenderer({ data, extension, colors: c }: ArchiveRendererP
 
   if (!summary) return null;
 
-  return <ArchiveContents summary={summary} colors={c} />;
+  return <ArchiveContents summary={summary} colors={c} topInset={topInset} bottomInset={bottomInset} />;
 }
 
 // ---------------------------------------------------------------------------
@@ -391,9 +394,11 @@ export function ArchiveRenderer({ data, extension, colors: c }: ArchiveRendererP
 interface ArchiveContentsProps {
   summary: ArchiveSummary;
   colors: Colors;
+  topInset: number;
+  bottomInset: number;
 }
 
-function ArchiveContents({ summary, colors: c }: ArchiveContentsProps) {
+function ArchiveContents({ summary, colors: c, topInset, bottomInset }: ArchiveContentsProps) {
   const { entries, fileCount, folderCount, totalSize, format } = summary;
   const formatLabel = FORMAT_LABELS[format];
 
@@ -441,7 +446,7 @@ function ArchiveContents({ summary, colors: c }: ArchiveContentsProps) {
   );
 
   return (
-    <View style={[styles.container, { backgroundColor: c.paper }]}>
+    <View style={[styles.container, { backgroundColor: c.paper, paddingTop: topInset }]}>
       <View style={[styles.header, { borderBottomColor: c.line }]}>
         <View style={styles.headerRow}>
           <Text style={[styles.headerTitle, { color: c.ink }]}>
@@ -473,6 +478,7 @@ function ArchiveContents({ summary, colors: c }: ArchiveContentsProps) {
           data={entries}
           keyExtractor={(item, i) => `${i}-${item.path}`}
           renderItem={renderRow}
+          contentContainerStyle={bottomInset ? { paddingBottom: bottomInset } : undefined}
           initialNumToRender={20}
           windowSize={11}
           removeClippedSubviews
