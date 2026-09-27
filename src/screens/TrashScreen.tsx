@@ -431,15 +431,6 @@ export default function TrashScreen() {
         )}
       </View>
 
-      {/* Swipe hint — shown until first swipe */}
-      {files.length > 0 && !loading && (
-        <View style={[styles.hintBanner, { backgroundColor: c.paper2, borderBottomColor: c.line }]}>
-          <Text style={[styles.hintText, { color: c.ink3 }]}>
-            Swipe left to restore or permanently delete
-          </Text>
-        </View>
-      )}
-
       {/* Content */}
       {error ? (
         <View style={styles.errorContainer}>
@@ -461,6 +452,21 @@ export default function TrashScreen() {
           keyExtractor={(item) => item.id}
           renderItem={renderItem}
           ListEmptyComponent={renderEmpty}
+          // Swipe hint — the list's own header, so it sits BELOW the floating
+          // chrome (the contentContainer's paddingTop: headerHeight). Task 1588:
+          // it used to be a normal-flow sibling of the absolutely positioned
+          // header, which put it at y=0 — under the status bar on an iPhone and
+          // above the header, under the window controls, on an iPad (compat
+          // mode, iPadOS 27).
+          ListHeaderComponent={
+            files.length > 0 ? (
+              <View style={[styles.hintBanner, { backgroundColor: c.paper2, borderBottomColor: c.line }]}>
+                <Text style={[styles.hintText, { color: c.ink3 }]}>
+                  Swipe left to restore or permanently delete
+                </Text>
+              </View>
+            ) : null
+          }
           refreshControl={
             <RefreshControl
               refreshing={refreshing}
