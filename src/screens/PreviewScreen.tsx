@@ -94,6 +94,8 @@ import { checkLockedFileIds, isPagerPageGated } from '../lib/preview-lock-gate';
 import { computePreviewContentInset } from '../lib/preview-content-inset';
 import { FILES_APP_LOCK_CAVEAT } from '../lib/lock-copy';
 import { formatPdfPageCounter, nextBarsVisible } from '../lib/preview-chrome';
+import { extensionForAudio } from '../lib/audio-format';
+import { cleanupTrackedTempFile } from '../lib/preview-temp-file';
 
 // Preview renderers are lazy-loaded so that the libraries each one depends on
 // (jszip, xlsx, mammoth, pako, react-native-pdf, highlight.js) only enter
@@ -126,6 +128,10 @@ const ZipRenderer = React.lazy(async () => {
 const CodeRenderer = React.lazy(async () => {
   const m = await import('../components/preview/CodeRenderer');
   return { default: m.CodeRenderer };
+});
+const AudioRenderer = React.lazy(async () => {
+  const m = await import('../components/preview/AudioRenderer');
+  return { default: m.AudioRenderer };
 });
 const MarkdownRenderer = React.lazy(async () => {
   const m = await import('../components/preview/MarkdownRenderer');
@@ -165,7 +171,7 @@ function isEncryptedMetadataName(name: string): boolean {
   return name.trim().startsWith('{');
 }
 
-function extensionForMime(mimeType?: string, category?: Category): string {
+function extensionForMime(mimeType?: string, category?: Category, fileName?: string): string {
   const mime = (mimeType ?? '').toLowerCase();
   if (mime === 'image/jpeg') return '.jpg';
   if (mime === 'image/png') return '.png';
@@ -188,11 +194,11 @@ function extensionForMime(mimeType?: string, category?: Category): string {
   if (mime === 'application/json') return '.json';
   if (mime === 'application/xml' || mime === 'text/xml') return '.xml';
   if (mime === 'application/zip') return '.zip';
-  if (mime.startsWith('audio/')) return '.mp3';
+  if (mime.startsWith('audio/')) return extensionForAudio(mime, fileName);
   if (category === 'image') return '.jpg';
   if (category === 'video') return '.mp4';
   if (category === 'pdf') return '.pdf';
-  if (category === 'audio') return '.mp3';
+  if (category === 'audio') return extensionForAudio(mime, fileName);
   if (category === 'docx') return '.docx';
   if (category === 'spreadsheet') return '.xlsx';
   if (category === 'html') return '.html';
@@ -218,7 +224,7 @@ function previewCacheName(fileName: string, mimeType: string | undefined, catego
   let safeName = displayName.replace(/[^a-zA-Z0-9._\-]/g, '_');
   if (!safeName) safeName = category === 'image' ? 'Photo' : 'Preview';
   if (!/\.[a-zA-Z0-9]{2,5}$/.test(safeName)) {
-    safeName += extensionForMime(mimeType, category);
+    safeName += extensionForMime(mimeType, category, fileName);
   }
   return safeName;
 }
@@ -1983,6 +1989,16 @@ export default function PreviewScreen() {
   const [videoError, setVideoError] = useState<string | null>(null);
   const tempVideoUriRef = useRef<string | null>(null);
 
+  // Task 1568 — audio inline preview state, same shape as video's above:
+  // `audioUri` is the on-disk decrypted file AudioRenderer plays from,
+  // tracked in a ref so the unmount cleanup effect (below) always sees the
+  // latest value without re-subscribing, and deleted on unmount / when the
+  // previewed file changes.
+  const [audioUri, setAudioUri] = useState<string | null>(null);
+  const [audioLoading, setAudioLoading] = useState(false);
+  const [audioError, setAudioError] = useState<string | null>(null);
+  const tempAudioUriRef = useRef<string | null>(null);
+
   // DOCX inline preview state — `docxData` holds the raw arrayBuffer; the
   // mammoth conversion runs inside the lazy DocxRenderer so the lib is not
   // bundled into the main chunk.
@@ -2056,6 +2072,11 @@ export default function PreviewScreen() {
   const isVideo = !!currentMimeType && currentMimeType.startsWith('video/');
   const isArchive = category === 'archive';
   const isPptx = category === 'pptx';
+  // Task 1568 — audio gets its own doc-branch render (native player), not
+  // the media (isImage||isVideo) branch: it has no visual frame of its own
+  // to bleed edge-to-edge, so it belongs with the doc-root's themed
+  // header/background, same class of decision as PDF/DOCX/etc.
+  const isAudio = category === 'audio';
   const isMediaPreview = isImage || isVideo;
 
   // Task 0885 (FIX #3): reset the decode flag whenever the displayed image uri
@@ -2115,6 +2136,19 @@ export default function PreviewScreen() {
     const ext = previewFileName.includes('.') ? previewFileName.split('.').pop() : null;
     return ext ? `.${ext.toUpperCase()}` : null;
   }, [previewFileName]);
+
+  // Task 1568 — the format chip AudioRenderer shows must match the REAL
+  // extension the decrypted temp file was written with (`extensionForAudio`,
+  // same function `fetchAndDecrypt` uses for the `ext` it hands
+  // `decryptToTempFile` — see that call site), not just whatever extension
+  // happens to be on the ORIGINAL filename (`fileFormat` above) — the two
+  // only diverge in the rare case where the OS-reported mime disagrees with
+  // the filename, but when they do, this is the one that's actually true of
+  // the bytes being played.
+  const audioFormatLabel = useMemo(
+    () => extensionForAudio(currentMimeType, currentFileName).replace(/^\./, '').toUpperCase(),
+    [currentMimeType, currentFileName],
+  );
 
   // Code highlighting — language id + display label come from the filename
   // and mime; the highlighted HTML is rebuilt only when the loaded text changes.
@@ -2648,7 +2682,7 @@ export default function PreviewScreen() {
     }
 
     if (isUnlocked) {
-      const ext = extensionForMime(currentMimeType, category);
+      const ext = extensionForMime(currentMimeType, category, currentFileName);
       let decryptedUri: string;
       try {
         recordRuntimeTrace('preview.original.decrypt_request', {
@@ -2718,6 +2752,7 @@ export default function PreviewScreen() {
     contentLocked,
     currentChunkCount,
     currentFileId,
+    currentFileName,
     currentMimeType,
     currentSizeBytes,
     fileId,
@@ -3064,6 +3099,58 @@ export default function PreviewScreen() {
   const player = useVideoPlayer(videoUri, (p) => {
     p.loop = false;
   });
+
+  // Task 1568 — auto-load audio on mount; same shape as video's loader
+  // above (fetchAndDecrypt → track the on-disk temp URI → delete it once the
+  // screen unmounts or the load is aborted before it lands).
+  useEffect(() => {
+    if (!isAudio) return;
+    if (Platform.OS === 'web') return;
+    const controller = new AbortController();
+    let cancelled = false;
+    setAudioLoading(true);
+    setAudioError(null);
+    fetchAndDecrypt({ signal: controller.signal })
+      .then((uri) => {
+        if (cancelled || controller.signal.aborted) {
+          // Screen already unmounted by the time the decrypt completed —
+          // delete the file directly since the cleanup effect below never
+          // sees a uri it was never handed.
+          FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => {});
+          return;
+        }
+        tempAudioUriRef.current = uri;
+        setAudioUri(uri);
+      })
+      .catch((err) => {
+        if (!cancelled && !isAbortError(err)) setAudioError(friendlyError(err));
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setAudioLoading(false);
+          setDownloadProgress(0);
+        }
+      });
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [isAudio, fetchAndDecrypt]);
+
+  // Delete the temp audio file when the screen unmounts (i.e. on close —
+  // `handleClose` calls `navigation.goBack()`, which unmounts this screen;
+  // see that function's own comment). Routed through the extracted
+  // `cleanupTrackedTempFile` helper (`lib/preview-temp-file.ts`) rather than
+  // inlined like video's equivalent effect above, specifically so this
+  // exact "temp file is deleted" behaviour has a real, mutation-proven unit
+  // test — PreviewScreen.tsx itself cannot be unit-tested (no React
+  // reconciler in this project's test runner; see
+  // PreviewScreen.webview-parent.test.ts's doc comment).
+  useEffect(() => {
+    return () => {
+      void cleanupTrackedTempFile(tempAudioUriRef, FileSystem.deleteAsync);
+    };
+  }, []);
 
   // Auto-load DOCX inline — fetch the decrypted bytes and hand them to the
   // lazy DocxRenderer, which owns the mammoth import.
@@ -4558,6 +4645,38 @@ export default function PreviewScreen() {
           ) : (
             <View style={styles.imageStatus}>
               {renderSharedProgress(true)}
+            </View>
+          )
+        ) : isAudio ? (
+          // Task 1568 — native audio player. `Pressable` gives the same
+          // tap-to-hide-chrome gesture every other doc-branch renderer has;
+          // AudioRenderer itself has no WebView (task 1564's centered-parent
+          // trap doesn't apply here) and honours `docContentInset` as
+          // container padding, same convention as every other renderer's
+          // topInset/bottomInset props.
+          audioUri ? (
+            <Pressable style={styles.fullBleedFill} onPress={handleContentTap} testID="preview-content-tap">
+              <Suspense fallback={<View style={styles.imageStatus}>{renderSharedProgress(false)}</View>}>
+                <AudioRenderer
+                  uri={audioUri}
+                  fileName={previewFileName}
+                  formatLabel={audioFormatLabel}
+                  colors={c}
+                  topInset={docContentInset.top}
+                  bottomInset={docContentInset.bottom}
+                />
+              </Suspense>
+            </Pressable>
+          ) : audioError ? (
+            <View style={styles.imageStatus}>
+              <Text style={[styles.imageStatusTitle, { color: c.ink }]}>
+                Couldn't load audio
+              </Text>
+              <Text style={[styles.imageStatusSub, { color: c.ink3 }]}>{audioError}</Text>
+            </View>
+          ) : (
+            <View style={styles.imageStatus}>
+              {renderSharedProgress(false)}
             </View>
           )
         ) : isText ? (

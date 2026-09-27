@@ -335,3 +335,47 @@ so a scroll's touch-up still fires `onPress`. Worked around for evidence
 capture with an extra tap after scrolling (which only toggles the bars back
 on, not the scroll position) — not fixed, since it is pre-existing and out
 of scope for a content-inset task.
+
+## Task 1568 (mobile) — audio player has no design mock; look derived by analogy
+
+**Design:** `design/preview-redesign-ios.html` has no audio mock at all — the
+same gap task 1565 (finding 2) and 1563's own notes already flagged for
+video ("there is no separate video mock… DERIVED by analogy to the photo
+one"). Confirmed again for this task: `grep -i audio design/
+preview-redesign-ios.html` matches nothing.
+
+**What shipped:** a centered card (icon, title, format+duration, play/pause,
+scrub bar, elapsed/remaining in JetBrains Mono) sitting on the doc-branch's
+themed root (`c.paper`), not the media branch's forced-dark full-bleed stage
+— audio has no visual content of its own to bleed edge-to-edge, so it
+belongs with PDF/DOCX/etc.'s doc header and background, not image/video's.
+Amber is used ONLY on the play button while `status.playing` is true (brand
+rule: amber reserved for encryption state + primary actions) — paused/
+loading states stay on neutral `paper2`/`ink`/`ink3` tokens, no color
+otherwise added to the design. See `AudioRenderer.tsx`'s own doc comment for
+the full reasoning, including why the "playing" icon uses a fixed `#000000`
+literal rather than the theme's `c.ink` token (amber's hex value is fixed
+across light/dark, so the icon riding on it needs to be too).
+
+**Also found while building this** (not a design deviation, a correctness
+bug, fixed as part of this task): `extensionForMime()` collapsed EVERY audio
+mime/extension to a hardcoded `'.mp3'` before this task, regardless of the
+file's real container — a `.wav`/`.m4a`/`.aac` upload was being decrypted to
+a temp file literally named `*.mp3`. Fixed via the new `extensionForAudio()`
+(`lib/audio-format.ts`), mime-mapped first with a filename fallback. Proven
+end-to-end on-device (not just by the unit tests): with the FLAC preview
+open, `xcrun simctl get_app_container … data` + `ls Library/Caches/preview/`
+showed the live temp file as `<uuid>.flac`, and after closing the preview
+the file was gone from that same listing — see this task's Notes for the
+exact commands/output.
+
+**expo-audio config plugin, minimal permissions:** `expo-audio`'s config
+plugin defaults to requesting `NSMicrophoneUsageDescription` (iOS) and
+`RECORD_AUDIO` (Android) and enabling background-playback capability
+(`UIBackgroundModes: ['audio']`, Android foreground-service permissions) —
+none of which this app needs (playback-only, background audio explicitly
+"not required" per the brief). `app.json`'s plugin entry sets
+`microphonePermission: false`, `recordAudioAndroid: false`,
+`enableBackgroundPlayback: false` so none of those permissions/capabilities
+are added — consistent with the product's privacy stance of never asking
+for a permission the app doesn't use.

@@ -99,6 +99,14 @@
       "./plugins/fmt-patch/withFmtPatch.js",
       "./plugins/shortcut-bridge/withShortcutBridge.js",
       "expo-video",
+      [
+        "expo-audio",
+        {
+          "microphonePermission": false,
+          "recordAudioAndroid": false,
+          "enableBackgroundPlayback": false
+        }
+      ],
       "expo-image-picker",
       "./plugins/android-security/withAndroidSecurity.js",
       "expo-sharing",
