@@ -4914,6 +4914,7 @@ export default function FilesScreen() {
       <TrustDetailsSheet
         file={trustFile}
         fileName={trustFileName}
+        mimeType={trustFile ? mimeTypeFor(trustFile) : null}
         onClose={closeTrust}
       />
 

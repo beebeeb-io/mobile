@@ -11,6 +11,11 @@
  * download URL (a local dev address in a dev build) above the button; infrastructure
  * URLs are not shown to users. The pane logic lives in
  * src/lib/encryption-proof.ts.
+ *
+ * Task 1593: the data flow lives in src/lib/proof-session.ts — the plaintext
+ * is the preview's cached copy (same cache key) or ONE decrypt that is deleted
+ * after its 512-byte read, the ciphertext pane fetches only bytes 0..511, and
+ * closing the sheet aborts both and clears the plaintext from state.
  */
 
 import React, { useEffect, useState } from 'react';
@@ -31,12 +36,21 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { fonts, onAmber, radii, spacing } from '../theme';
 import { useTheme } from '../lib/theme-context';
 import { useCrypto } from '../lib/crypto-context';
-import { downloadFile, trustLocation, type FileEntry } from '../lib/api';
+import { fetch as streamingFetch } from 'expo/fetch';
+import { downloadFile, getDownloadUrl, getToken, trustLocation, type FileEntry } from '../lib/api';
 import { decryptToTempFile } from '../lib/native-decrypt';
+import { previewDecryptExtension } from '../lib/preview-cache-key';
+import {
+  CLOSED_CIPHER_STATE,
+  CLOSED_PLAIN_STATE,
+  fetchCiphertextPrefix,
+  startProofSession,
+  type CipherPrefixState,
+} from '../lib/proof-session';
 import { isRequestUpload } from '../lib/file-request-crypto';
+import { guessMimeType } from '../lib/media';
 import {
   PROOF_BYTES,
-  PROOF_DECRYPT_MAX_BYTES,
   bytesToHex,
   proofSeePane,
   type PlaintextPrefixState,
@@ -45,6 +59,8 @@ import {
 interface Props {
   file: FileEntry;
   fileName: string;
+  /** The preview's mime for this file (task 1593 — preview cache key parity). */
+  mimeType?: string | null;
   visible: boolean;
   onClose: () => void;
 }
@@ -62,73 +78,59 @@ function bytesToBase64(bytes: Uint8Array): string {
   return btoa(bin);
 }
 
-export default function EncryptionProof({ file, fileName, visible, onClose }: Props) {
+export default function EncryptionProof({ file, fileName, mimeType, visible, onClose }: Props) {
   const { colors: c } = useTheme();
   const insets = useSafeAreaInsets();
-  const [bytes, setBytes] = useState<Uint8Array | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [cipher, setCipher] = useState<CipherPrefixState>(CLOSED_CIPHER_STATE);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
   const [downloading, setDownloading] = useState(false);
-  const [plain, setPlain] = useState<PlaintextPrefixState>({ status: 'loading' });
+  const [plain, setPlain] = useState<PlaintextPrefixState>(CLOSED_PLAIN_STATE);
   const { getFileKeyBytes, getMasterKeyHandleId, getRequestContentKey } = useCrypto();
 
-  // The left pane: decrypt on this device (the same native path the preview
-  // uses, so a file that was just previewed is served from its decrypted
-  // cache) and keep only the first PROOF_BYTES.
+  // Task 1593 — one session per open (src/lib/proof-session.ts): the
+  // plaintext comes from the preview cache (same key as PreviewScreen) or ONE
+  // decrypt, the ciphertext pane fetches only bytes 0..511, and closing the
+  // sheet (visible=false, unmount, a different file) aborts both and clears
+  // the 512 plaintext bytes from state.
   useEffect(() => {
-    if (!visible) return;
-    let cancelled = false;
-    if (file.size_bytes > PROOF_DECRYPT_MAX_BYTES) {
-      setPlain({ status: 'too-large' });
+    if (!visible) {
+      setPlain(CLOSED_PLAIN_STATE);
+      setCipher(CLOSED_CIPHER_STATE);
       return;
     }
-    setPlain({ status: 'loading' });
-    (async () => {
-      try {
-        const request = isRequestUpload(file);
-        const ext = (fileName.includes('.') ? fileName.split('.').pop() : '')?.toLowerCase() || 'bin';
-        const path = await decryptToTempFile(
+    setDownloadError(null);
+    const request = isRequestUpload(file);
+    const session = startProofSession({
+      sizeBytes: file.size_bytes,
+      decrypt: (signal, onSource) =>
+        decryptToTempFile(
           file.id,
           request ? () => getRequestContentKey(file) : () => getFileKeyBytes(file.id),
-          ext,
+          previewDecryptExtension(mimeType ?? file.mime_type ?? guessMimeType(fileName), fileName),
           file.size_bytes,
           file.chunk_count,
           request ? null : getMasterKeyHandleId(),
-        );
-        const b64 = await FileSystem.readAsStringAsync(path, {
-          encoding: FileSystem.EncodingType.Base64,
-          position: 0,
-          length: PROOF_BYTES,
-        });
-        if (!cancelled) setPlain({ status: 'ready', plaintext: base64ToBytes(b64) });
-      } catch {
-        if (!cancelled) setPlain({ status: 'failed' });
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [file, fileName, visible, getFileKeyBytes, getMasterKeyHandleId, getRequestContentKey]);
-
-  useEffect(() => {
-    if (!visible) return;
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-    setBytes(null);
-    (async () => {
-      try {
-        const res = await downloadFile(file.id);
-        const buf = await res.arrayBuffer();
-        if (cancelled) return;
-        const all = new Uint8Array(buf);
-        setBytes(all.slice(0, PROOF_BYTES));
-      } catch {
-        if (!cancelled) setError('Could not load proof bytes.');
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [file.id, visible]);
+          { signal, onSource },
+        ),
+      readPrefix: async (path, length) =>
+        base64ToBytes(
+          await FileSystem.readAsStringAsync(path, {
+            encoding: FileSystem.EncodingType.Base64,
+            position: 0,
+            length,
+          }),
+        ),
+      deleteFile: (path) => FileSystem.deleteAsync(path, { idempotent: true }),
+      fetchCiphertextPrefix: async (length, signal) => {
+        const token = await getToken();
+        if (!token) throw new Error('Not signed in');
+        return fetchCiphertextPrefix(getDownloadUrl(file.id), token, length, streamingFetch, signal);
+      },
+      onPlain: setPlain,
+      onCipher: setCipher,
+    });
+    return () => session.close();
+  }, [file, fileName, mimeType, visible, getFileKeyBytes, getMasterKeyHandleId, getRequestContentKey]);
 
   const handleDownload = async () => {
     setDownloading(true);
@@ -149,12 +151,15 @@ export default function EncryptionProof({ file, fileName, visible, onClose }: Pr
         });
       }
     } catch {
-      setError('Download failed.');
+      setDownloadError('Download failed.');
     } finally {
       setDownloading(false);
     }
   };
 
+  const bytes = cipher.status === 'ready' ? cipher.bytes : null;
+  const loading = cipher.status === 'loading';
+  const error = cipher.status === 'failed' ? 'Could not load proof bytes.' : downloadError;
   const hex = bytes ? bytesToHex(bytes) : '';
   const seePane = proofSeePane(plain);
   const totalBytes = file.size_bytes;

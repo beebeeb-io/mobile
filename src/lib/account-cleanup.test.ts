@@ -19,17 +19,64 @@
  */
 import { describe, expect, mock, test } from 'bun:test';
 
+const purgeCalls: string[] = [];
 mock.module('./name-cache', () => ({
-  clearNameCache: async () => {},
+  clearNameCache: async () => { purgeCalls.push('names'); },
 }));
 mock.module('./thumbnail-cache', () => ({
-  clearThumbnailCache: async () => {},
+  clearThumbnailCache: async () => { purgeCalls.push('thumbnails'); },
+}));
+// Task 1593 — the decrypted preview cache (Library/Caches/preview/).
+let previewClear: () => Promise<void> = async () => { purgeCalls.push('previews'); };
+mock.module('./native-decrypt', () => ({
+  clearPreviewCache: () => previewClear(),
 }));
 mock.module('../../modules/beebeeb-crypto', () => ({
-  purgePlaintextStorage: async () => ({ removed: 0, failed: 0 }),
+  purgePlaintextStorage: async () => { purgeCalls.push('native'); return { removed: 0, failed: 0 }; },
 }));
 
-const { purgeThenSignOut } = await import('./account-cleanup');
+const { purgeThenSignOut, purgeAllPlaintextCaches, purgePreviewPlaintextWhileSignedOut } = await import('./account-cleanup');
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
+describe('purgeAllPlaintextCaches (task 1593 — preview plaintext survived sign-out)', () => {
+  test('clears the decrypted preview cache along with thumbnails, names and the native registry', async () => {
+    purgeCalls.length = 0;
+    await purgeAllPlaintextCaches();
+    expect(purgeCalls).toContain('previews');
+    expect(purgeCalls.indexOf('previews')).toBeLessThan(purgeCalls.indexOf('native'));
+    expect(purgeCalls.sort()).toEqual(['names', 'native', 'previews', 'thumbnails']);
+  });
+
+  test('a failing preview purge never blocks the rest of sign-out', async () => {
+    purgeCalls.length = 0;
+    previewClear = async () => { throw new Error('disk'); };
+    await expect(purgeAllPlaintextCaches()).resolves.toEqual({ removed: 0, failed: 0 });
+    await expect(purgePreviewPlaintextWhileSignedOut()).resolves.toBeUndefined();
+    previewClear = async () => { purgeCalls.push('previews'); };
+  });
+
+  test('purgePreviewPlaintextWhileSignedOut clears the preview cache', async () => {
+    purgeCalls.length = 0;
+    await purgePreviewPlaintextWhileSignedOut();
+    expect(purgeCalls).toEqual(['previews']);
+  });
+});
+
+describe('App.tsx runs the preview sweep whenever nobody is signed in (task 1593)', () => {
+  const app = readFileSync(join(import.meta.dir, '..', 'App.tsx'), 'utf8');
+  test('cold launch with no stored session', () => {
+    expect(app).toMatch(/if \(!tokenExists\) void purgePreviewPlaintextWhileSignedOut\(\);/);
+  });
+  test('rejected token at launch, session expiry, and an account deleted elsewhere', () => {
+    expect(app).toMatch(/startupAuthState = 'invalid-token';[\s\S]{0,200}setUser\(null\);\s*void purgePreviewPlaintextWhileSignedOut\(\);/);
+    expect(app).toMatch(/registerSessionExpiredHandler\(\(\) => \{[\s\S]{0,200}void purgePreviewPlaintextWhileSignedOut\(\);\s*setUser\(null\);/);
+    expect(app).toMatch(/stashAccountDeletedNotice\(\{ deletedAt, shredAfter \}\);\s*void purgePreviewPlaintextWhileSignedOut\(\);/);
+  });
+  test('ordinary sign-out goes through purgeAllPlaintextCaches (which now includes previews)', () => {
+    expect(app).toMatch(/await purgeAllPlaintextCaches\(\)/);
+  });
+});
 
 describe('purgeThenSignOut', () => {
   test('purges plaintext caches before signing out', async () => {

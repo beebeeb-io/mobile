@@ -31,12 +31,18 @@ const DEFAULT_BUCKET_SPACING_MS: Record<RateLimitBucket, number> = {
  * (`_qa-evidence/1573/captures/work/ipad-signup-stuck-spinner-after-429.png`).
  *
  * A Retry-After up to one minute is throughput pacing (the per-IP / per-user
- * sliding windows are 60 s) and is still honoured for the whole bucket. A
- * longer one is a per-endpoint policy lockout: the bucket is NOT paused for
- * it — other requests keep flowing, the retried request goes out, the server
- * answers 429 again at once, and the caller shows the retry-after to the user
- * (`ApiError.retryAfterSeconds` + `friendlyError`). So no request is ever held
- * back silently for more than a minute.
+ * sliding windows are 60 s) and is honoured in full for the whole bucket. A
+ * longer one is a per-endpoint policy lockout: the bucket is paused for at
+ * most this cap — other requests resume after it, the retried request goes
+ * out, the server answers 429 again at once, and the caller shows the
+ * retry-after to the user (`ApiError.retryAfterSeconds` + `friendlyError`).
+ * So no request is ever held back silently for more than a minute.
+ *
+ * Task 1593 (#141 review P2): 1591 first DROPPED a longer pause entirely,
+ * which left a bucket that had just been told to back off completely
+ * unpaced — a background loop (thumbnail/photo sync in the `files` bucket)
+ * then hammered the server at its normal 120 ms cadence straight into the
+ * lockout. Capping keeps the bucket paced without the hour-long silent wait.
  */
 export const MAX_PACING_PAUSE_MS = 60_000;
 
@@ -115,11 +121,12 @@ export function createRateLimitedFetch(options: RateLimitedFetchOptions = {}): F
 
   function pauseBucket(bucket: RateLimitBucket, pauseMs: number): void {
     if (pauseMs <= 0) return;
-    // A pause longer than the cap is a policy lockout, not pacing — never
-    // hold requests back silently for it (see MAX_PACING_PAUSE_MS).
-    if (pauseMs > MAX_PACING_PAUSE_MS) return;
+    // A pause longer than the cap is a policy lockout, not pacing — pause the
+    // bucket for the cap only, never silently for the whole lockout (see
+    // MAX_PACING_PAUSE_MS).
+    const cappedMs = Math.min(pauseMs, MAX_PACING_PAUSE_MS);
     const state = stateFor(bucket);
-    state.nextAt = Math.max(state.nextAt, now() + pauseMs);
+    state.nextAt = Math.max(state.nextAt, now() + cappedMs);
   }
 
   function applyResponsePacing(bucket: RateLimitBucket, response: Response): void {

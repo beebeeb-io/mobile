@@ -105,6 +105,7 @@ import type { RawExifInfo } from '../lib/raw-preview';
 import { cleanupTrackedTempFile } from '../lib/preview-temp-file';
 import { isTextPreview } from '../lib/code-text-preview';
 import { fileCategory, type Category } from '../lib/file-category';
+import { extensionForMime, previewCacheName, previewDecryptExtension, previewDisplayName } from '../lib/preview-cache-key';
 // Task 1569 — imported EAGERLY (not React.lazy, unlike every other renderer
 // below), and rendered directly (no Suspense) in the JSX. Found on-device
 // (bb-ios27, Release): `<Suspense><RawRenderer/></Suspense>` inside
@@ -192,67 +193,9 @@ function formatDate(iso: string): string {
   return `${month} ${day}, ${year} at ${hours}:${mins}`;
 }
 
-function isEncryptedMetadataName(name: string): boolean {
-  return name.trim().startsWith('{');
-}
-
-function extensionForMime(mimeType?: string, category?: Category, fileName?: string): string {
-  const mime = (mimeType ?? '').toLowerCase();
-  if (mime === 'image/jpeg') return '.jpg';
-  if (mime === 'image/png') return '.png';
-  if (mime === 'image/webp') return '.webp';
-  if (mime === 'image/gif') return '.gif';
-  if (mime === 'image/heic') return '.heic';
-  if (mime === 'image/heif') return '.heif';
-  if (mime === 'image/svg+xml') return '.svg';
-  if (mime === 'video/mp4') return '.mp4';
-  if (mime === 'video/quicktime') return '.mov';
-  if (mime === 'video/x-m4v') return '.m4v';
-  if (mime === 'video/webm') return '.webm';
-  if (mime === 'application/pdf') return '.pdf';
-  if (mime === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') return '.docx';
-  if (mime === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet') return '.xlsx';
-  if (mime === 'application/vnd.ms-excel') return '.xls';
-  if (mime === 'text/csv') return '.csv';
-  if (mime === 'text/html') return '.html';
-  if (mime === 'text/plain') return '.txt';
-  if (mime === 'application/json') return '.json';
-  if (mime === 'application/xml' || mime === 'text/xml') return '.xml';
-  if (mime === 'application/zip') return '.zip';
-  if (mime.startsWith('audio/')) return extensionForAudio(mime, fileName);
-  if (category === 'image') return '.jpg';
-  if (category === 'video') return '.mp4';
-  if (category === 'pdf') return '.pdf';
-  if (category === 'audio') return extensionForAudio(mime, fileName);
-  if (category === 'raw') return extensionForRaw(fileName);
-  if (category === 'docx') return '.docx';
-  if (category === 'spreadsheet') return '.xlsx';
-  if (category === 'html') return '.html';
-  if (category === 'zip') return '.zip';
-  if (category === 'doc') return '.txt';
-  return '';
-}
-
 function mediaCacheExtension(mimeType: string | null | undefined, category: Category): string | null {
   const ext = extensionForMime(mimeType ?? undefined, category).replace(/^\./, '');
   return ext || null;
-}
-
-function previewDisplayName(fileName: string, category: Category): string {
-  if (!isEncryptedMetadataName(fileName)) return fileName;
-  if (category === 'image') return 'Photo';
-  if (category === 'video') return 'Video';
-  return 'Encrypted file';
-}
-
-function previewCacheName(fileName: string, mimeType: string | undefined, category: Category): string {
-  const displayName = previewDisplayName(fileName, category);
-  let safeName = displayName.replace(/[^a-zA-Z0-9._\-]/g, '_');
-  if (!safeName) safeName = category === 'image' ? 'Photo' : 'Preview';
-  if (!/\.[a-zA-Z0-9]{2,5}$/.test(safeName)) {
-    safeName += extensionForMime(mimeType, category, fileName);
-  }
-  return safeName;
 }
 
 const CATEGORY_LABELS: Record<Category, string> = {
@@ -2966,20 +2909,21 @@ export default function PreviewScreen() {
     }
 
     if (isUnlocked) {
-      const ext = extensionForMime(currentMimeType, category, currentFileName);
+      // Task 1593 — the shared preview cache key ("Prove it" uses the same).
+      const decryptExt = previewDecryptExtension(currentMimeType, currentFileName);
       let decryptedUri: string;
       try {
         recordRuntimeTrace('preview.original.decrypt_request', {
           fileId: currentFileId,
           category,
-          extension: ext || cacheFileName,
+          extension: decryptExt,
         });
         {
           const { keyProvider, handleId } = resolveDecryptKey(currentFileId);
           decryptedUri = await decryptToTempFile(
             currentFileId,
             keyProvider,
-            ext || cacheFileName,
+            decryptExt,
             currentSizeBytes,
             currentChunkCount,
             handleId,

@@ -47,12 +47,18 @@ describe('EncryptionProof component wiring', () => {
   });
 
   test('the left pane is fed by an on-device decrypt', () => {
+    // Task 1593: the session (src/lib/proof-session.ts) owns the flow; the
+    // component hands it decryptToTempFile and the plaintext pane setter.
     expect(source).toMatch(/decryptToTempFile\(/);
-    expect(source).toMatch(/setPlain\(\{ status: 'ready', plaintext:/);
+    expect(source).toMatch(/startProofSession\(/);
+    expect(source).toMatch(/onPlain: setPlain,/);
   });
 
   test('no infrastructure URL is shown to the user', () => {
-    expect(source).not.toContain('getDownloadUrl');
+    // Task 1593: the download URL is used for the 512-byte ranged request
+    // (the fetch argument) and nowhere else — never rendered.
+    expect(source.match(/getDownloadUrl\(/g) ?? []).toHaveLength(1);
+    expect(source).toMatch(/fetchCiphertextPrefix\(getDownloadUrl\(file\.id\),/);
     expect(source).not.toContain('getApiUrl');
     expect(source).not.toMatch(/localhost|https?:\/\//);
   });

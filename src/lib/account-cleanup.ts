@@ -15,7 +15,7 @@
  * zero-knowledge app must not leave any of it behind for whoever signs in
  * next on the same device.
  *
- * This combines both halves:
+ * This combines both halves (+ the preview cache, task 1593):
  * - `clearThumbnailCache()` / `clearNameCache()` — these ALSO reset
  *   in-memory JS state (the thumbnail path map, the name-cache save timer)
  *   that a native-only purge cannot reach, since that state lives in this
@@ -30,13 +30,29 @@
  */
 import { purgePlaintextStorage, type PlaintextStoragePurgeResult } from '../../modules/beebeeb-crypto';
 import { clearNameCache } from './name-cache';
+import { clearPreviewCache } from './native-decrypt';
 import { clearThumbnailCache } from './thumbnail-cache';
 
 export type { PlaintextStoragePurgeResult };
 
 export async function purgeAllPlaintextCaches(): Promise<PlaintextStoragePurgeResult> {
-  await Promise.allSettled([clearThumbnailCache(), clearNameCache()]);
+  // Task 1593 (P1): `clearPreviewCache()` — the decrypted full-file previews
+  // in `Library/Caches/preview/`. The native registry below deliberately
+  // excludes `Library/Caches/`, so without this every file opened this
+  // session stayed on disk in the clear after sign-out.
+  await Promise.allSettled([clearThumbnailCache(), clearNameCache(), clearPreviewCache()]);
   return purgePlaintextStorage();
+}
+
+/**
+ * Task 1593 — nobody is signed in (a cold launch with no stored session, a
+ * rejected token, a session that expired or an account deleted elsewhere):
+ * whatever the last session decrypted into the preview cache must not stay
+ * on disk — the previous session may have ended in a crash or a forced
+ * sign-out that never reached `signOut()`'s purge. Never throws.
+ */
+export async function purgePreviewPlaintextWhileSignedOut(): Promise<void> {
+  await clearPreviewCache().catch(() => {});
 }
 
 export interface PurgeThenSignOutDeps {

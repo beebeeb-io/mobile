@@ -46,7 +46,7 @@ import * as BeebeebCrypto from '../modules/beebeeb-crypto';
 import { populateFileProviderCache } from './lib/file-provider-mount';
 import { initLocalIdentifierMap } from './lib/local-identifier-map';
 import { resetThumbnailSelfRepairState } from './lib/thumbnail-self-repair';
-import { purgeAllPlaintextCaches } from './lib/account-cleanup';
+import { purgeAllPlaintextCaches, purgePreviewPlaintextWhileSignedOut } from './lib/account-cleanup';
 import {
   setupNotificationHandler,
   registerForPushNotifications,
@@ -1113,6 +1113,10 @@ export default function App() {
       if (!isCurrentStartupRun()) return;
       const tokenExists = token !== null;
       startupAuthState = tokenExists ? 'token-present' : 'no-token';
+      // Task 1593 — a launch with nobody signed in: the last session may have
+      // ended without signOut()'s purge (a crash, a force-quit mid sign-out),
+      // so sweep any decrypted previews it left in Library/Caches/preview/.
+      if (!tokenExists) void purgePreviewPlaintextWhileSignedOut();
 
       if (tokenExists) {
         setLoadingStatus('Contacting server...');
@@ -1131,6 +1135,7 @@ export default function App() {
             startupAuthState = 'invalid-token';
             logStartupDiagnostic('fetch-profile', 'invalid-token', profileStartedAt);
             setUser(null);
+            void purgePreviewPlaintextWhileSignedOut(); // task 1593
             setLoadingStatus('Loading preferences...');
             await withStartupTimeout(loadPreferences(false), undefined, 'load-preferences');
             if (!isCurrentStartupRun()) return;
@@ -1269,6 +1274,8 @@ export default function App() {
   // Register session-expired handler so 401s auto-sign-out
   useEffect(() => {
     registerSessionExpiredHandler(() => {
+      // Task 1593 — a forced sign-out never reaches signOut()'s purge.
+      void purgePreviewPlaintextWhileSignedOut();
       setUser(null);
     });
   }, []);
@@ -1281,6 +1288,7 @@ export default function App() {
   useEffect(() => {
     registerAccountDeletedHandler((deletedAt, shredAfter) => {
       stashAccountDeletedNotice({ deletedAt, shredAfter });
+      void purgePreviewPlaintextWhileSignedOut(); // task 1593
       setUser(null);
     });
   }, []);

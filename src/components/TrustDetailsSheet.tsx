@@ -33,6 +33,12 @@ import {
 interface Props {
   file: FileEntry | null;
   fileName: string;
+  /**
+   * Task 1593 — the mime the preview uses for this file (FilesScreen's
+   * `mimeTypeFor`), so "Prove it" reads the preview's cached copy instead of
+   * decrypting a second one under another extension.
+   */
+  mimeType?: string | null;
   onClose: () => void;
 }
 
@@ -76,19 +82,19 @@ function DetailRow({ label, value, mono, inkLabel, inkValue, border }: RowProps)
   );
 }
 
-export default function TrustDetailsSheet({ file: fileProp, fileName: fileNameProp, onClose }: Props) {
+export default function TrustDetailsSheet({ file: fileProp, fileName: fileNameProp, mimeType: mimeTypeProp, onClose }: Props) {
   const { colors: c } = useTheme();
   const [proofOpen, setProofOpen] = useState(false);
   // 1586 — the sheet slides down (shared BottomSheet) before its Modal goes
   // away, so the last file stays rendered through the close animation.
-  const [shown, setShown] = useState<{ file: FileEntry; fileName: string } | null>(
-    fileProp ? { file: fileProp, fileName: fileNameProp } : null,
+  const [shown, setShown] = useState<{ file: FileEntry; fileName: string; mimeType?: string | null } | null>(
+    fileProp ? { file: fileProp, fileName: fileNameProp, mimeType: mimeTypeProp } : null,
   );
   const [modalMounted, setModalMounted] = useState(!!fileProp);
   useEffect(() => {
-    if (fileProp) setShown({ file: fileProp, fileName: fileNameProp });
+    if (fileProp) setShown({ file: fileProp, fileName: fileNameProp, mimeType: mimeTypeProp });
     if (fileProp && !proofOpen) setModalMounted(true);
-  }, [fileProp, fileNameProp, proofOpen]);
+  }, [fileProp, fileNameProp, mimeTypeProp, proofOpen]);
   // Closed (e.g. Android back) while "Prove it" was handing off: the proof
   // must not open once the sheet's Modal is gone (1586 review #6).
   useEffect(() => {
@@ -96,7 +102,7 @@ export default function TrustDetailsSheet({ file: fileProp, fileName: fileNamePr
   }, [fileProp]);
 
   if (!shown) return null;
-  const { file, fileName } = shown;
+  const { file, fileName, mimeType } = shown;
 
   const loc = trustLocation(file.storage_pool_id);
   const sheetVisible = !!fileProp && !proofOpen;
@@ -235,6 +241,7 @@ export default function TrustDetailsSheet({ file: fileProp, fileName: fileNamePr
       <EncryptionProof
         file={file}
         fileName={fileName}
+        mimeType={mimeType}
         visible={proofOpen && !modalMounted}
         onClose={() => setProofOpen(false)}
       />

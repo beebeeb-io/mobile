@@ -37,6 +37,7 @@ import {
 } from './api';
 import { rateLimitedFetch } from './rate-limited-fetch';
 import { recordRuntimeTrace } from './runtime-trace';
+import { createInFlightShare } from './inflight-share';
 import { offlineManager, offlineFilePath } from './offline-manager';
 import NetInfo from '@react-native-community/netinfo';
 
@@ -49,6 +50,23 @@ export interface PreviewDecryptOptions {
   onProgress?: (event: PreviewLoadProgressEvent) => void;
   onOfflineFallback?: (event: { fileId: string; reason: string }) => void;
   signal?: AbortSignal;
+  /**
+   * Task 1593 — where the returned plaintext came from:
+   * - `cache`     an existing decrypted copy was reused;
+   * - `joined`    another caller was already decrypting this exact file +
+   *               extension and this call shared its result;
+   * - `decrypted` THIS call downloaded + decrypted it (the caller that owns
+   *               the fresh copy — "Prove it" deletes it after its 512-byte
+   *               read in that case only).
+   */
+  onSource?: (source: PreviewDecryptSource) => void;
+}
+
+export type PreviewDecryptSource = 'cache' | 'joined' | 'decrypted';
+
+/** `Library/Caches/preview/<fileId>.<ext>` — the preview cache key. */
+export function previewCachePath(fileId: string, extension: string): string {
+  return `${PREVIEW_CACHE_DIR}${fileId}.${extension.replace(/^\./, '')}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -200,6 +218,78 @@ export async function decryptToTempFile(
   masterKeyHandleId?: number | null,
   options: PreviewDecryptOptions = {},
 ): Promise<string> {
+  throwIfAborted(options.signal);
+  const outputPath = previewCachePath(fileId, extension);
+  // Task 1593 — one in-flight decrypt per output path. See inflight-share.ts:
+  // a second caller joins the first instead of racing it into the same file
+  // (or returning its half-written file as a "cache hit"), and the shared job
+  // is aborted only once EVERY caller's signal has aborted.
+  let listeners = sharedListeners.get(outputPath);
+  if (!listeners) {
+    listeners = new Set();
+    sharedListeners.set(outputPath, listeners);
+  }
+  const listener: SharedListener = {
+    onProgress: options.onProgress,
+    onOfflineFallback: options.onOfflineFallback,
+  };
+  listeners.add(listener);
+  try {
+    const { value, joined } = await previewDecrypts.run(
+      outputPath,
+      async (signal) => {
+        let cacheHit = false;
+        const path = await decryptToTempFileUnshared(
+          fileId,
+          fileKey,
+          extension,
+          sizeBytes,
+          chunkCount,
+          masterKeyHandleId,
+          {
+            signal,
+            onProgress: (event) => {
+              sharedListeners.get(outputPath)?.forEach((l) => l.onProgress?.(event));
+            },
+            onOfflineFallback: (event) => {
+              sharedListeners.get(outputPath)?.forEach((l) => l.onOfflineFallback?.(event));
+            },
+            onSource: (source) => {
+              cacheHit = source === 'cache';
+            },
+          },
+        );
+        return { path, cacheHit };
+      },
+      options.signal,
+    );
+    options.onSource?.(joined ? 'joined' : value.cacheHit ? 'cache' : 'decrypted');
+    return value.path;
+  } finally {
+    listeners.delete(listener);
+    if (listeners.size === 0 && sharedListeners.get(outputPath) === listeners) {
+      sharedListeners.delete(outputPath);
+    }
+  }
+}
+
+interface SharedListener {
+  onProgress?: PreviewDecryptOptions['onProgress'];
+  onOfflineFallback?: PreviewDecryptOptions['onOfflineFallback'];
+}
+
+const previewDecrypts = createInFlightShare<{ path: string; cacheHit: boolean }>();
+const sharedListeners = new Map<string, Set<SharedListener>>();
+
+async function decryptToTempFileUnshared(
+  fileId: string,
+  fileKey: Uint8Array | (() => Promise<Uint8Array>) | null,
+  extension: string,
+  sizeBytes: number | null | undefined,
+  chunkCount: number | null | undefined,
+  masterKeyHandleId: number | null | undefined,
+  options: PreviewDecryptOptions,
+): Promise<string> {
   if (!isNativeAvailable) {
     recordRuntimeTrace('preview.decrypt.native_unavailable', { fileId });
     throw new Error('Preview requires a dev client build with native crypto.');
@@ -231,6 +321,7 @@ export async function decryptToTempFile(
       cachedSize: cached.size,
       elapsedMs: Date.now() - startedAt,
     });
+    options.onSource?.('cache');
     options.onProgress?.({ requestId: '', fileId, stage: 'complete' });
     return outputPath;
   }
@@ -316,6 +407,11 @@ export async function decryptToTempFile(
       });
       return result.outputUri || outputPath;
     } catch (error) {
+      // Task 1593 — never leave a partial plaintext behind: a cancelled or
+      // failed decrypt may have written part of outputPath, which the next
+      // open would otherwise serve as a (corrupt) cache hit. Safe: the
+      // in-flight share guarantees no other decrypt owns this path now.
+      await FileSystem.deleteAsync(outputPath, { idempotent: true }).catch(() => {});
       const message = error instanceof Error ? error.message : String(error);
       if (!message.includes('downloadAndDecryptFileNative is not available')) {
         recordRuntimeTrace('preview.decrypt.native.failed', {
@@ -718,15 +814,35 @@ export async function decryptToString(
   });
 }
 
+const PREVIEW_ABORT_SETTLE_MS = 3_000;
+
 /**
- * Clear all cached preview files. Call on sign-out or when freeing space.
+ * Clear all cached preview files — every decrypted plaintext copy under
+ * `Library/Caches/preview/`.
+ *
+ * Task 1593 (P1): this had ZERO callers, and the native sign-out purge
+ * (`purgePlaintextStorage`) deliberately skips `Library/Caches/`, so up to
+ * 512 MiB / 24 files of decrypted previews survived sign-out. It is now part
+ * of `purgeAllPlaintextCaches()` (sign-out, account deletion) and runs on a
+ * launch / session end with nobody signed in (App.tsx).
+ *
+ * Order: delete the directory, abort every decrypt still in flight and wait
+ * (bounded) for them to settle — an in-flight download would otherwise finish
+ * AFTER the purge and write a fresh plaintext file — then delete again to
+ * catch anything written in between. Never throws.
  */
 export async function clearPreviewCache(): Promise<void> {
-  try {
-    await FileSystem.deleteAsync(PREVIEW_CACHE_DIR, { idempotent: true });
-  } catch {
-    // Best-effort cleanup
-  }
+  const remove = () => FileSystem.deleteAsync(PREVIEW_CACHE_DIR, { idempotent: true }).catch(() => {});
+  await remove();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([
+    previewDecrypts.abortAll(),
+    new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, PREVIEW_ABORT_SETTLE_MS);
+    }),
+  ]).catch(() => {});
+  if (timer) clearTimeout(timer);
+  await remove();
 }
 
 /**
