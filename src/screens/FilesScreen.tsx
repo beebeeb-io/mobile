@@ -76,6 +76,16 @@ import { encryptedMetadataPayloadToBytes, encryptedMetadataToJson, fileMetadataP
 import { syncDecryptedEntriesToFileProvider, removeFromFileProviderCache } from '../lib/file-provider-mount';
 import { useAuth } from '../lib/auth';
 import { encryptedUpload, generateFileId } from '../lib/encrypted-upload';
+import {
+  buildAddMenuActions,
+  checkNewDocumentName,
+  defaultNewDocumentName,
+  foldName,
+  initialDocumentContent,
+  NewDocumentNameClashError,
+  newDocumentTypeForAction,
+  type NewDocumentType,
+} from '../lib/new-document';
 import { useSync } from '../lib/sync-context';
 import { useSearchIndex } from '../lib/use-search-index';
 import { onFilesDeleted } from '../lib/delete-cascade';
@@ -1553,6 +1563,12 @@ export default function FilesScreen() {
   const [newFolderName, setNewFolderName] = useState('');
   const [creatingFolder, setCreatingFolder] = useState(false);
 
+  // Task 1587 — "+" → New text file / New Markdown note: the name prompt.
+  // One Modal on both platforms (not Alert.prompt) so a clash or an invalid
+  // name is shown inline and the user can fix it without starting over.
+  const [newDoc, setNewDoc] = useState<{ type: NewDocumentType; name: string; error: string | null } | null>(null);
+  const [creatingDoc, setCreatingDoc] = useState(false);
+
   // Export state (1177) — a top-of-Files "Exporting…" indicator shown for the
   // whole prepare phase (download + decrypt → temp) of Save to Files / Save to
   // Photos, so a large file no longer looks frozen before the native sheet.
@@ -2580,6 +2596,123 @@ export default function FilesScreen() {
     }
   }, [submitNewFolder]);
 
+  // ── Task 1587 — New text file / New Markdown note ─────────────────────────
+  /** Decrypted names of EVERY sibling in the current folder (folders too: a
+   *  file and a folder with the same name side by side do not survive a sync
+   *  to a case-insensitive file system). */
+  const currentFolderNames = useCallback((): string[] => {
+    const out: string[] = [];
+    for (const f of files) {
+      const n = decryptedNames[f.id];
+      if (n) out.push(n);
+    }
+    return out;
+  }, [files, decryptedNames]);
+
+  const showNewDocumentPrompt = useCallback((type: NewDocumentType) => {
+    if (!phraseVerified) {
+      Alert.alert(
+        'Save your recovery phrase first',
+        'Verify your recovery phrase before creating files. Go to Settings → Security to complete verification.',
+        [{ text: 'OK' }],
+      );
+      return;
+    }
+    if (!isUnlocked) {
+      Alert.alert('Vault is locked', 'Unlock the vault before creating files.');
+      return;
+    }
+    setCreatingDoc(false);
+    setNewDoc({ type, name: defaultNewDocumentName(type, currentFolderNames()), error: null });
+  }, [phraseVerified, isUnlocked, currentFolderNames]);
+
+  /**
+   * Authoritative clash check against a FRESH, complete listing of the folder,
+   * every name decrypted now — the on-screen list can lag a sibling added or
+   * renamed from another device, and the server cannot check this itself: it
+   * only ever sees encrypted names. Undecryptable rows cannot clash with a
+   * name we can see, so they are skipped (same rule as web 1582).
+   */
+  const assertNameFreeInFolder = useCallback(async (name: string, parentId: string | null) => {
+    const siblings = await listAllFiles(parentId ?? undefined);
+    const wanted = foldName(name);
+    const names: string[] = [];
+    const normal = siblings.filter((f) => !isRequestUpload(f));
+    if (normal.length > 0) {
+      const results = await decryptNames(
+        normal.map((f) => ({ fileId: f.id, nameEncrypted: f.name_encrypted ?? '' })),
+      );
+      results.forEach((r) => { if (r && !r.error && r.name) names.push(r.name); });
+    }
+    for (const f of siblings) {
+      if (!isRequestUpload(f)) continue;
+      const cached = decryptedNamesRef.current[f.id];
+      if (cached) names.push(cached);
+    }
+    if (names.some((n) => foldName(n) === wanted)) throw new NewDocumentNameClashError(name);
+  }, [decryptNames]);
+
+  const confirmNewDocument = useCallback(async () => {
+    if (!newDoc || creatingDoc) return;
+    const { type } = newDoc;
+    const check = checkNewDocumentName(newDoc.name, type, currentFolderNames());
+    if (!check.ok) {
+      setNewDoc((cur) => (cur ? { ...cur, error: check.reason } : cur));
+      return;
+    }
+    const name = check.name;
+    const parentId = currentFolder.id;
+    setCreatingDoc(true);
+    let tempUri: string | null = null;
+    try {
+      await assertNameFreeInFolder(name, parentId);
+      const fileId = await generateFileId();
+      // A near-empty starter file (initialDocumentContent: never 0 bytes, the
+      // preview decrypt path refuses those); the text editor fills it. The
+      // plaintext never leaves the device — encryptedUpload encrypts the chunk
+      // and the name before anything is sent, exactly like "Upload file".
+      if (!FileSystem.cacheDirectory) throw new Error('No cache directory available');
+      tempUri = `${FileSystem.cacheDirectory}new-${fileId}.${type.ext}`;
+      await FileSystem.writeAsStringAsync(tempUri, initialDocumentContent(type, name), { encoding: FileSystem.EncodingType.UTF8 });
+      const uploaded = await encryptedUpload({
+        fileId,
+        uri: tempUri,
+        name,
+        parentId: parentId ?? undefined,
+        mimeType: type.mimeType,
+        encryptChunkFn: encryptChunk,
+        encryptMetadataFn: encryptMetadata,
+        masterKeyHandleId: getMasterKeyHandleId(),
+      });
+      setFiles((prev) => upsertFileEntry(prev, uploaded));
+      setDecryptedNames((prev) => ({ ...prev, [uploaded.id]: name }));
+      setDecryptedMimeTypes((prev) => ({ ...prev, [uploaded.id]: type.mimeType }));
+      indexFile(uploaded.id, toSearchIndexEntry(uploaded, name, parentId));
+      setNewDoc(null);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      fetchFiles(parentId, true);
+      navigation.navigate('Preview', {
+        fileId: uploaded.id,
+        fileName: name,
+        mimeType: type.mimeType,
+        sizeBytes: uploaded.size_bytes ?? 0,
+        createdAt: uploaded.created_at,
+        chunkCount: uploaded.chunk_count,
+        versionNumber: uploaded.version_number,
+        storagePoolId: uploaded.storage_pool_id ?? null,
+        startInEditMode: true,
+      });
+    } catch (err) {
+      const reason = err instanceof NewDocumentNameClashError
+        ? err.message
+        : `Couldn't create the file: ${friendlyError(err)}`;
+      setNewDoc((cur) => (cur ? { ...cur, error: reason } : cur));
+    } finally {
+      setCreatingDoc(false);
+      if (tempUri) void FileSystem.deleteAsync(tempUri, { idempotent: true }).catch(() => {});
+    }
+  }, [newDoc, creatingDoc, currentFolderNames, currentFolder.id, assertNameFreeInFolder, encryptChunk, encryptMetadata, getMasterKeyHandleId, indexFile, fetchFiles, navigation]);
+
   // 0789 — "+" add menu as native iOS UIMenu items, with trailing SF Symbols.
   // (Placed after all four upload handlers are declared.)
   // 0791 — `imageColor` MUST be set explicitly. On the New Architecture the
@@ -2587,13 +2720,11 @@ export default function FilesScreen() {
   // int that defaults to 0 when JS omits it); native then tints the symbol with
   // `RCTConvert.uiColor(0)` = fully transparent, so the glyph renders blank with
   // its space reserved. Passing the label color tints it visibly on both arches.
+  // 1587 — the table (and its order: uploads, then an inline "create" section
+  // with New folder / New text file / New Markdown note) lives in
+  // lib/new-document.ts so it is unit-tested.
   const addMenuActions = useMemo<MenuAction[]>(
-    () => [
-      { id: 'photo', title: 'Upload photo or video', image: 'photo.on.rectangle', imageColor: c.ink },
-      { id: 'file', title: 'Upload file', image: 'doc', imageColor: c.ink },
-      { id: 'scan', title: 'Scan document', image: 'doc.viewfinder', imageColor: c.ink },
-      { id: 'folder', title: 'New folder', image: 'folder.badge.plus', imageColor: c.ink },
-    ],
+    () => buildAddMenuActions(c.ink) as MenuAction[],
     [c.ink],
   );
 
@@ -2604,7 +2735,9 @@ export default function FilesScreen() {
       case 'scan': openDocumentScanner(); return;
       case 'folder': showNewFolderPrompt(); return;
     }
-  }, [pickAndUploadPhotos, pickAndUploadFile, openDocumentScanner, showNewFolderPrompt]);
+    const docType = newDocumentTypeForAction(nativeEvent.event);
+    if (docType) showNewDocumentPrompt(docType);
+  }, [pickAndUploadPhotos, pickAndUploadFile, openDocumentScanner, showNewFolderPrompt, showNewDocumentPrompt]);
 
   const confirmNewFolderModal = useCallback(async () => {
     const trimmed = newFolderName.trim();
@@ -4685,6 +4818,74 @@ export default function FilesScreen() {
         </KeyboardAvoidingView>
       </Modal>
 
+      {/* 1587 — New text file / New Markdown note name prompt. Same card as the
+          new-folder modal above; the only amber is the primary action. */}
+      <Modal
+        visible={newDoc !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => { if (!creatingDoc) setNewDoc(null); }}
+      >
+        <KeyboardAvoidingView
+          style={styles.modalOverlay}
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        >
+          <TouchableOpacity
+            activeOpacity={1}
+            style={[styles.modalBackdrop, { backgroundColor: modalScrim(themeScheme) }]}
+            onPress={() => { if (!creatingDoc) setNewDoc(null); }}
+          />
+          <View style={[styles.modalCard, { backgroundColor: c.paper, borderColor: c.line }]}>
+            <Text style={[styles.modalTitle, { color: c.ink }]}>{newDoc?.type.title ?? ''}</Text>
+            <Text style={[styles.modalBody, { color: c.ink3 }]}>
+              It opens in the editor. The name and contents are encrypted on this phone.
+            </Text>
+            <TextInput
+              value={newDoc?.name ?? ''}
+              onChangeText={(text) => setNewDoc((cur) => (cur ? { ...cur, name: text, error: null } : cur))}
+              placeholder="File name"
+              placeholderTextColor={c.ink4}
+              autoFocus
+              selectTextOnFocus
+              autoCapitalize="sentences"
+              autoCorrect={false}
+              returnKeyType="done"
+              onSubmitEditing={() => void confirmNewDocument()}
+              editable={!creatingDoc}
+              style={[styles.modalInput, { color: c.ink, borderColor: newDoc?.error ? c.red : c.line2, backgroundColor: c.paper2 }]}
+              testID="new-document-name-input"
+              accessibilityLabel="File name"
+            />
+            {newDoc?.error ? (
+              <Text style={[styles.modalError, { color: c.red }]} testID="new-document-error" accessibilityLiveRegion="polite">
+                {newDoc.error}
+              </Text>
+            ) : null}
+            <View style={styles.modalActions}>
+              <TouchableOpacity
+                style={styles.modalSecondary}
+                onPress={() => setNewDoc(null)}
+                disabled={creatingDoc}
+                accessibilityRole="button"
+                accessibilityLabel="Cancel"
+              >
+                <Text style={[styles.modalSecondaryText, { color: c.ink2 }]}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.modalPrimary, { backgroundColor: c.amber, opacity: !newDoc?.name.trim() || creatingDoc ? 0.5 : 1 }]}
+                onPress={() => void confirmNewDocument()}
+                disabled={!newDoc?.name.trim() || creatingDoc}
+                testID="new-document-confirm"
+                accessibilityRole="button"
+                accessibilityLabel="Create file"
+              >
+                <Text style={[styles.modalPrimaryText, { color: c.ink }]}>{creatingDoc ? 'Encrypting…' : 'Create'}</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
       {/* Breadcrumb collapsed-path popover — indented tree of the in-between
           folders, anchored under the "…" chip. The native UIMenu can't draw an
           indent, so we render our own. Indent caps at 3 columns; folders deeper
@@ -5083,6 +5284,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 10,
     fontSize: 16,
+  },
+  modalError: {
+    marginTop: 8,
+    fontSize: 13,
+    lineHeight: 18,
   },
   modalActions: { flexDirection: 'row', justifyContent: 'flex-end', alignItems: 'center', gap: 12, marginTop: 4 },
   modalSecondary: { paddingVertical: 8, paddingHorizontal: 12 },

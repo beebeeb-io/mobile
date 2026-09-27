@@ -2005,6 +2005,7 @@ export default function PreviewScreen() {
     fileRequestId,
     senderEphemeralPubkey,
     wrappedContentKey,
+    startInEditMode,
   } = route.params;
 
   // File-request uploads (0643): when all three sealed-key fields are present
@@ -2599,6 +2600,17 @@ export default function PreviewScreen() {
     setOptionsVisible(false);
     if (!fileMeta) void loadFileMeta();
   }, [canEditText, textContent, fileMeta, loadFileMeta]);
+
+  // Task 1587 — a file just created from the Files "+" menu opens straight in
+  // the editor. Fires once, after the (empty) text has loaded and the normal
+  // edit gate agrees; never re-enters after the user leaves edit mode.
+  const autoEditConsumedRef = useRef(false);
+  useEffect(() => {
+    if (!startInEditMode || autoEditConsumedRef.current) return;
+    if (!canEditText || textContent == null) return;
+    autoEditConsumedRef.current = true;
+    handleEnterEditMode();
+  }, [startInEditMode, canEditText, textContent, handleEnterEditMode]);
 
   const handleExitEditMode = useCallback(() => {
     if (isDirty) {
