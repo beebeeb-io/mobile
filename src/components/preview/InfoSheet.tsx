@@ -10,9 +10,10 @@
  *
  * Content surface, not control-layer glass (task 1315's own rule, followed
  * verbatim from the app's one PROVEN bottom-sheet precedent,
- * `ShareSheetScreen.tsx`): opaque `c.paper`, all four corners at
- * `GLASS_RADII.sheet` (38), inset from the screen edges, backdrop via
- * `modalScrim`. `GlassSheet` (task 1311) was considered and rejected here —
+ * `ShareSheetScreen.tsx`): opaque `c.paper`, backdrop via `modalScrim`.
+ * Geometry follows the design (not ShareSheetScreen): full width, bottom edge
+ * attached, top corners only at `GLASS_RADII.sheet` (38).
+ * `GlassSheet` (task 1311) was considered and rejected here —
  * it is unused anywhere outside the dev gallery, and its glass material is
  * documented as "the floating CONTROL layer", not a content surface; reusing
  * the proven opaque pattern instead of the unproven glass one is the lower-risk
@@ -39,7 +40,7 @@ import { useTheme } from '../../lib/theme-context';
 import { useCrypto } from '../../lib/crypto-context';
 import { getFile, getRegion, listFileVersions, type FileVersionEntry } from '../../lib/api';
 import { encryptedMetadataPayloadToBytes } from '../../lib/encrypted-metadata';
-import { modalScrim } from '../glass';
+import { GLASS_RADII, modalScrim } from '../glass';
 import { formatBytes as formatSize } from '../../lib/format';
 import { buildInfoSubline, formatShareStatus, resolveFolderLabel } from '../../lib/preview-chrome';
 import { storageLocationLabel, type InfoSheetFocus } from '../../lib/preview-info';
@@ -410,12 +411,23 @@ function KvRow({
 
 function infoSheetStyles(c: Colors) {
   return StyleSheet.create({
+    // Full width, attached to the bottom edge, top corners rounded only —
+    // design section 03 `.sheet2{left:0;right:0;bottom:0;border-radius:9cqw
+    // 9cqw 0 0}`. 9cqw of the 300px mock phone is 27px on a 280px screen
+    // (9.6 %), ~38.8pt on a 402pt iPhone: the `GLASS_RADII.sheet` token (38).
+    // The home-indicator inset is the sheet's own paddingBottom (safeBottom),
+    // so content never sits under it. Guus, device 2026-09-27: "Why does it
+    // seem that the info sheet is not full width?" (was left/right/bottom 10,
+    // all four corners 38).
     sheet: {
       position: 'absolute',
-      left: 10,
-      right: 10,
-      bottom: 10,
-      borderRadius: 38,
+      left: 0,
+      right: 0,
+      bottom: 0,
+      borderTopLeftRadius: GLASS_RADII.sheet,
+      borderTopRightRadius: GLASS_RADII.sheet,
+      borderBottomLeftRadius: 0,
+      borderBottomRightRadius: 0,
       backgroundColor: c.paper,
       paddingTop: 12,
       paddingHorizontal: 20,
