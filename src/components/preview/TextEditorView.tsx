@@ -13,7 +13,15 @@
  *   wrapped (very long) line will drift the gutter's 1-number-per-line
  *   assumption below that point — acceptable for a first step; the same
  *   limitation any single-column gutter has without a full text-layout
- *   engine (CodeMirror/Monaco) underneath it.
+ *   engine (CodeMirror/Monaco) underneath it. Task 1575 (build 217 fix)
+ *   found this drift gets much worse than "drift" on a real long file: past
+ *   the gutter's own (un-wrapped, therefore too-short) content height, the
+ *   raw scroll offset pushes EVERY number off the top of the clipped
+ *   viewport at once — a fully blank gutter, not just misaligned ones.
+ *   `clampGutterOffset` (lib/text-editor-inset.ts) caps the gutter's own
+ *   transform at its own content bounds so it stays visible (pinned at its
+ *   last line) instead of vanishing — the drift limitation itself is
+ *   unchanged and still needs the full text-layout engine to fix properly.
  * - Live per-token syntax colouring while typing: NOT shipped — keeping a
  *   colour overlay pixel-aligned with a live-editing native TextInput
  *   (cursor, IME, autocorrect, selection) needs a measured-per-character
@@ -54,6 +62,7 @@ import {
   type AccessoryKey,
   type EditorHistory,
 } from '../../lib/editor-key-actions';
+import { clampGutterOffset, computeEditorContentPadding } from '../../lib/text-editor-inset';
 
 const ACCESSORY_ID = 'beebeeb-editor-accessory';
 const LINE_HEIGHT = 19.2;
@@ -78,6 +87,17 @@ interface TextEditorViewProps {
    * any kind while editing (item 7).
    */
   bottomInset?: number;
+  /**
+   * Build 217 bug fix — the floating Done/title/Save bar's own real height
+   * (from `computePreviewContentInset(...).top` at the call site, the SAME
+   * value CodeRenderer's read-only sibling already uses via its own
+   * `topInset` prop). Before this fix, edit mode passed nothing here: the
+   * TextInput and gutter had a bare 12pt top padding with no allowance for
+   * the header, so line 1 sat under it and, since the un-padded content was
+   * often shorter than the viewport, there was nothing to scroll either.
+   * See `computeEditorContentPadding`'s own doc comment for the mechanism.
+   */
+  topInset?: number;
 }
 
 function AccessoryButton({
@@ -109,6 +129,7 @@ export function TextEditorView({
   language,
   onChangeText,
   bottomInset = 0,
+  topInset = 0,
 }: TextEditorViewProps) {
   const isMarkdown = language === 'markdown';
   const [history, setHistory] = useState<EditorHistory>(() =>
@@ -116,9 +137,28 @@ export function TextEditorView({
   );
   const selectionRef = useRef(history.present.selection);
   const [gutterOffset, setGutterOffset] = useState(0);
+  // Measured real height of `gutterClip` (its own `onLayout`) — the gutter's
+  // own visible viewport, needed to clamp `gutterOffset` to the gutter's own
+  // content bounds (see `clampGutterOffset`'s doc comment for why).
+  const [gutterViewportHeight, setGutterViewportHeight] = useState(0);
+  const contentPadding = useMemo(
+    () => computeEditorContentPadding(topInset, bottomInset),
+    [topInset, bottomInset],
+  );
 
   const lineCount = useMemo(() => history.present.text.split('\n').length, [history.present.text]);
   const totalDigits = Math.max(2, String(lineCount).length);
+  const clampedGutterOffset = useMemo(
+    () =>
+      clampGutterOffset(
+        gutterOffset,
+        lineCount,
+        LINE_HEIGHT,
+        contentPadding.paddingTop,
+        gutterViewportHeight,
+      ),
+    [gutterOffset, lineCount, contentPadding.paddingTop, gutterViewportHeight],
+  );
 
   const applyEdit = useCallback(
     (next: { text: string; selection: { start: number; end: number } }) => {
@@ -200,8 +240,15 @@ export function TextEditorView({
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
       <View style={styles.body}>
-        <View style={styles.gutterClip} pointerEvents="none">
-          <View style={[styles.gutterInner, { transform: [{ translateY: -gutterOffset }] }]}>
+        <View
+          style={[styles.gutterClip, { paddingTop: contentPadding.paddingTop }]}
+          pointerEvents="none"
+          onLayout={(e) => {
+            const h = e.nativeEvent.layout.height;
+            setGutterViewportHeight((prev) => (prev === h ? prev : h));
+          }}
+        >
+          <View style={[styles.gutterInner, { transform: [{ translateY: -clampedGutterOffset }] }]}>
             {lineNumbers.map((n, i) => (
               <Text key={i} style={styles.gutterLine}>{n}</Text>
             ))}
@@ -209,7 +256,10 @@ export function TextEditorView({
         </View>
         <TextInput
           testID="text-editor-input"
-          style={[styles.input, bottomInset ? { paddingBottom: 32 + bottomInset } : null]}
+          style={[
+            styles.input,
+            { paddingTop: contentPadding.paddingTop, paddingBottom: contentPadding.paddingBottom },
+          ]}
           multiline
           autoCapitalize="none"
           autoCorrect={false}
@@ -296,7 +346,9 @@ const styles = StyleSheet.create({
   gutterClip: {
     width: 34,
     overflow: 'hidden',
-    paddingTop: 12,
+    // paddingTop is set inline from `computeEditorContentPadding` (build 217
+    // fix) so it always matches the TextInput's own top padding exactly —
+    // see the JSX call site.
     backgroundColor: '#282c34',
     borderRightWidth: StyleSheet.hairlineWidth,
     borderRightColor: '#3a3f4b',
@@ -318,9 +370,9 @@ const styles = StyleSheet.create({
     fontFamily: fonts.mono,
     fontSize: FONT_SIZE,
     lineHeight: LINE_HEIGHT,
-    paddingTop: 12,
+    // paddingTop/paddingBottom are set inline from
+    // `computeEditorContentPadding` (build 217 fix) — see the JSX call site.
     paddingHorizontal: 12,
-    paddingBottom: 32,
   },
   // statusBar/dirtyRow/dirtyDot/dirtyLabel/savedLabel/saveButton*: removed
   // (preview redesign item 7 — this component no longer owns Save/status
