@@ -2480,6 +2480,9 @@ export interface Region {
   region: string;
   operator: string;
   jurisdiction: string;
+  /** The default pool's city ("Falkenstein") — the server's documented
+   * source for "stored in {city}" (server routes/health.rs `region`). */
+  city?: string | null;
 }
 
 export async function getRegion(): Promise<Region> {
