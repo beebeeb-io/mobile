@@ -5,7 +5,17 @@
  * get the same results without crossing the native bridge. Once the native
  * module exposes `guessMimeType` and `isMedia` we can swap to native calls;
  * until then this is the single source of truth for the mobile app.
+ *
+ * Task 1570: the text/code extensions (txt/md/py/go/rs/…) live in
+ * `code-text-preview.ts`, not duplicated here — that file is the single
+ * source of truth for "which extensions are text/code" (used at Preview
+ * time to decide whether a file with a generic/missing mime_type still
+ * opens as text), and this map spreads it in so upload-time mime guessing
+ * (`FilesScreen.tsx`'s `mimeTypeFor`) agrees with Preview about the same
+ * extensions instead of keeping a second, driftable copy.
  */
+
+import { TEXT_EXTENSION_MIME } from './code-text-preview'
 
 const MIME_MAP: Record<string, string> = {
   // Images
@@ -40,17 +50,14 @@ const MIME_MAP: Record<string, string> = {
   m4a: 'audio/mp4',
   ogg: 'audio/ogg',
 
-  // Documents
+  // Documents (office formats — not text/code, so not in TEXT_EXTENSION_MIME)
   pdf: 'application/pdf',
   doc: 'application/msword',
   docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  txt: 'text/plain',
-  md: 'text/plain',
-  csv: 'text/csv',
-  json: 'application/json',
-  html: 'text/html',
-  htm: 'text/html',
+
+  // Text / code — task 1570, see code-text-preview.ts's TEXT_EXTENSION_MIME.
+  ...TEXT_EXTENSION_MIME,
 
   // Archives
   zip: 'application/zip',

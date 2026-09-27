@@ -98,6 +98,7 @@ import { extensionForAudio } from '../lib/audio-format';
 import { extensionForRaw, isRawExtension, rawFormatLabel } from '../lib/raw-format';
 import type { RawExifInfo } from '../lib/raw-preview';
 import { cleanupTrackedTempFile } from '../lib/preview-temp-file';
+import { isConfidentlyNonTextMimeType, isTextLikeExtension, isTextPreview } from '../lib/code-text-preview';
 // Task 1569 — imported EAGERLY (not React.lazy, unlike every other renderer
 // below), and rendered directly (no Suspense) in the JSX. Found on-device
 // (bb-ios27, Release): `<Suspense><RawRenderer/></Suspense>` inside
@@ -348,6 +349,19 @@ function fileCategory(mimeType?: string, fileName?: string): Category {
   }
 
   if (mime.startsWith('text/') || mime.includes('document')) return 'doc';
+
+  // Task 1570 — a mime_type that isn't confidently something ELSE (image/
+  // video/audio/pdf/zip/archive/office — all already ruled out by the
+  // branches above) no longer falls through to the generic "file" card for
+  // a known text/code extension, whether that mime_type is nil (the OS's
+  // UTType lookup on the phone), the CLI/browser's generic
+  // `application/octet-stream`/empty, OR a SPECIFIC-but-not-`text/`-
+  // prefixed guess this app's own `media.ts` already substituted upstream
+  // (e.g. `application/sql`) — see `code-text-preview.ts`'s `isTextPreview`
+  // doc comment for the real bug this widening fixed (a literal
+  // generic-mime-only gate missed exactly that last case for `sample.sql`).
+  if (!isConfidentlyNonTextMimeType(mime) && isTextLikeExtension(ext)) return 'doc';
+
   return 'file';
 }
 
@@ -468,6 +482,19 @@ const EXT_TO_HLJS: Record<string, string> = {
   yaml: 'yaml', yml: 'yaml',
   sh: 'bash', bash: 'bash', zsh: 'bash',
   sql: 'sql',
+  // Task 1570 — the remaining `code-text-preview.ts` extensions that need a
+  // highlight.js grammar too (added in `CodeRenderer.tsx` alongside these).
+  c: 'c', h: 'c',
+  cpp: 'cpp', cc: 'cpp', cxx: 'cpp', hpp: 'cpp', hxx: 'cpp',
+  cs: 'csharp',
+  rb: 'ruby',
+  php: 'php',
+  // hljs's `ini` grammar covers TOML too (it registers `toml` as an alias
+  // of the same grammar) — `languageDisplayLabel` below still shows "TOML"
+  // vs "INI" per the real extension, same pattern as its existing xml/html
+  // override.
+  ini: 'ini', cfg: 'ini', toml: 'ini',
+  dockerfile: 'dockerfile',
 };
 
 const MIME_TO_HLJS: Record<string, string> = {
@@ -514,6 +541,13 @@ const LANGUAGE_LABELS: Record<string, string> = {
   yaml: 'YAML',
   bash: 'Bash',
   sql: 'SQL',
+  c: 'C',
+  cpp: 'C++',
+  csharp: 'C#',
+  ruby: 'Ruby',
+  php: 'PHP',
+  ini: 'INI',
+  dockerfile: 'Dockerfile',
   plaintext: 'Plain text',
 };
 
@@ -531,6 +565,13 @@ function languageDisplayLabel(hljsId: string, fileName?: string): string {
     const ext = (fileName ?? '').toLowerCase().split('.').pop() ?? '';
     if (ext === 'html' || ext === 'htm' || ext === 'xhtml') return 'HTML';
     return 'XML';
+  }
+  // Task 1570 — hljs's `ini` grammar renders TOML too (registered as an
+  // alias), but the two extensions should still show their own real name.
+  if (hljsId === 'ini') {
+    const ext = (fileName ?? '').toLowerCase().split('.').pop() ?? '';
+    if (ext === 'toml') return 'TOML';
+    return 'INI';
   }
   return LANGUAGE_LABELS[hljsId] ?? hljsId.toUpperCase();
 }
@@ -2170,6 +2211,15 @@ export default function PreviewScreen() {
   const isSpreadsheet = category === 'spreadsheet';
   const isHtml = category === 'html';
   const isZip = category === 'zip';
+  // Task 1570 — `isTextPreview` also accepts any mime_type that isn't
+  // CONFIDENTLY something else (image/video/audio/pdf/zip/archive/office)
+  // on a known text/code extension (py/go/rs/ts/tsx/js/jsx/java/kt/swift/c/
+  // cpp/h/cs/rb/php/sh/sql/css/toml/ini/Dockerfile/…), not just a confident
+  // text/json/xml mime_type — see that module's doc comment for why the
+  // fallback lives here (preview time, not only the upload path) and for
+  // the real `sample.sql` bug a narrower "only when mime is generic" gate
+  // missed (a non-generic-but-still-not-text guess this app's own upstream
+  // mime lookup can produce).
   const isText =
     !isDocx &&
     !isSpreadsheet &&
@@ -2178,10 +2228,7 @@ export default function PreviewScreen() {
     !isZip &&
     !isArchive &&
     !isPptx &&
-    !!currentMimeType &&
-    (currentMimeType.startsWith('text/') ||
-      currentMimeType === 'application/json' ||
-      currentMimeType === 'application/xml');
+    isTextPreview(currentMimeType, currentFileName);
   const previewFileName = useMemo(
     () => previewDisplayName(currentFileName, category),
     [category, currentFileName],
