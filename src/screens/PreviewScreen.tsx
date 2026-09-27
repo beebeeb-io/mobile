@@ -113,6 +113,7 @@ import { isConfidentlyNonTextMimeType, isTextLikeExtension, isTextPreview } from
 // the media branch's own existing precedent (isImage/isVideo: eager import,
 // no lazy) is used instead.
 import { RawRenderer } from '../components/preview/RawRenderer';
+import { ZoomableImage } from '../components/preview/ZoomableImage';
 
 // Preview renderers are lazy-loaded so that the libraries each one depends on
 // (jszip, xlsx, mammoth, pako, react-native-pdf, highlight.js) only enter
@@ -1341,6 +1342,8 @@ const PhotoPage = React.memo(function PhotoPage({
   unlocking,
   onRequestUnlock,
   onExifInfo,
+  onZoomChange,
+  onSingleTap,
 }: {
   entry: PhotoPageEntry;
   shouldLoadFull: boolean;
@@ -1367,6 +1370,10 @@ const PhotoPage = React.memo(function PhotoPage({
    * `shouldLoadFull` gate ever actually mounts a `RawRenderer` that calls it.
    */
   onExifInfo?: (info: RawExifInfo | null) => void;
+  /** Task 1579 — the current page's image crossed 1x <-> zoomed (blocks paging). */
+  onZoomChange?: (zoomed: boolean) => void;
+  /** Task 1579 — a single tap on a zoomable page (chrome toggle); see ZoomableImage. */
+  onSingleTap?: () => void;
 }) {
   const { colors: c } = useTheme();
   const { isUnlocked, getFileKeyBytes, getMasterKeyHandleId } = useCrypto();
@@ -1830,29 +1837,47 @@ const PhotoPage = React.memo(function PhotoPage({
             // loading/extraction/fallback states once handed this decrypted
             // SOURCE uri (mirrors the single-file `isRaw` branch exactly);
             // `error` above only ever covers the DECRYPT step failing.
-            <RawRenderer
-              uri={uri}
-              fileName={entryFileName}
-              formatLabel={rawFormatLabel(entryFileName, entry.mime_type)}
-              cacheKey={entry.id}
-              onExifInfo={onExifInfo}
-            />
+            // Task 1579 — pinch/double-tap zoom; resets when paging away.
+            <ZoomableImage
+              style={StyleSheet.absoluteFill}
+              resetSignal={isCurrent}
+              onZoomChange={isCurrent ? onZoomChange : undefined}
+              onSingleTap={onSingleTap}
+              testID="preview-zoomable"
+            >
+              <RawRenderer
+                uri={uri}
+                fileName={entryFileName}
+                formatLabel={rawFormatLabel(entryFileName, entry.mime_type)}
+                cacheKey={entry.id}
+                onExifInfo={onExifInfo}
+              />
+            </ZoomableImage>
           ) : uri ? (
-            <ProgressiveOriginalImage
-              baseUri={uri}
-              originalUri={originalUri}
-              progress={progress}
-              active={originalActive}
-              cacheHit={originalCacheHit}
-              reduceMotion={reduceMotion}
-              amber={c.amber}
-              containerStyle={StyleSheet.absoluteFill}
-              imageStyle={styles.photoPageImage}
-              baseOpacity={fullImageOpacity}
-              onPromote={promoteOriginal}
-              onImageLoad={() => setImageLoaded(true)}
-              onImageError={() => setError((prev) => prev ?? "This image couldn't be displayed.")}
-            />
+            // Task 1579 — pinch/double-tap zoom; resets when paging away.
+            <ZoomableImage
+              style={StyleSheet.absoluteFill}
+              resetSignal={isCurrent}
+              onZoomChange={isCurrent ? onZoomChange : undefined}
+              onSingleTap={onSingleTap}
+              testID="preview-zoomable"
+            >
+              <ProgressiveOriginalImage
+                baseUri={uri}
+                originalUri={originalUri}
+                progress={progress}
+                active={originalActive}
+                cacheHit={originalCacheHit}
+                reduceMotion={reduceMotion}
+                amber={c.amber}
+                containerStyle={StyleSheet.absoluteFill}
+                imageStyle={styles.photoPageImage}
+                baseOpacity={fullImageOpacity}
+                onPromote={promoteOriginal}
+                onImageLoad={() => setImageLoaded(true)}
+                onImageError={() => setError((prev) => prev ?? "This image couldn't be displayed.")}
+              />
+            </ZoomableImage>
           ) : (
             <View style={styles.photoPageStatus}>
               {/* 1346 — textColor/trackColor forced dark: this pager page is
@@ -2419,6 +2444,13 @@ export default function PreviewScreen() {
   // pure logic these read.
   // ---------------------------------------------------------------------
   const [barsVisible, setBarsVisible] = useState(true);
+  // Task 1579 — true while the current image is pinch/double-tap zoomed:
+  // the pager stops paging and the header's swipe-down-to-close is off, so
+  // a drag pans the zoomed image instead. Reset on every page change.
+  const [mediaZoomed, setMediaZoomed] = useState(false);
+  useEffect(() => {
+    setMediaZoomed(false);
+  }, [currentPhotoIndex, currentFileId]);
   const [infoVisible, setInfoVisible] = useState(false);
   // A .md file's ⋯ menu can show the RAW source without entering Edit
   // (design section 02, "Show source" — Guus's 18:50 ruling put Edit in
@@ -4074,12 +4106,15 @@ export default function PreviewScreen() {
         // gate ever actually mounts a `RawRenderer` that calls it — see
         // `PhotoPage`'s own `onExifInfo` prop doc comment.
         onExifInfo={setRawExifInfo}
+        onZoomChange={setMediaZoomed}
+        onSingleTap={handleContentTap}
       />
     ),
     [
       activePhotoPageIndexes,
       authenticatedFileIds,
       currentPhotoIndex,
+      handleContentTap,
       handleUnlockCurrent,
       lockCheckReady,
       lockedFileIds,
@@ -4171,6 +4206,8 @@ export default function PreviewScreen() {
           onHandlerStateChange={onCloseHandlerStateChange}
           activeOffsetY={[-1000, 8]}
           failOffsetX={[-20, 20]}
+          // Task 1579 — swipe-down-to-close only at 1x.
+          enabled={!mediaZoomed}
         >
         <View style={[styles.mediaHeader, { paddingTop: insets.top + 8 }]}>
           {/* 1343 — outer TouchableOpacity wraps the fixed-size GlassCircle so
@@ -4306,6 +4343,8 @@ export default function PreviewScreen() {
               renderItem={renderPhotoPage}
               showsHorizontalScrollIndicator={false}
               onMomentumScrollEnd={handlePagerScroll}
+              // Task 1579 — no paging while the current image is zoomed.
+              scrollEnabled={!mediaZoomed}
               onTouchStart={(e) => {
                 const { pageX, pageY } = e.nativeEvent;
                 pagerTouchStartRef.current = { x: pageX, y: pageY, t: Date.now() };
@@ -4377,6 +4416,10 @@ export default function PreviewScreen() {
               },
             ]}
             onPress={handleContentTap}
+            // Task 1579 — a mounted ZoomableImage owns taps (single tap →
+            // handleContentTap, double-tap → zoom); a live Pressable
+            // responder here would also block its native pinch.
+            disabled={(isImage && !!imageUri && !imageError) || (isRaw && !!rawUri && !rawError)}
             testID="preview-content-tap"
           >
             {isImage ? (
@@ -4392,32 +4435,40 @@ export default function PreviewScreen() {
                   <Text style={styles.imageStatusSub}>{imageError}</Text>
                 </View>
               ) : imageUri ? (
-                originalImageActive ? (
-                  <ProgressiveOriginalImage
-                    baseUri={originalImageBase ?? imageUri}
-                    originalUri={originalImagePending}
-                    progress={loadProgress}
-                    active={originalImageActive}
-                    cacheHit={originalImageCacheHit}
-                    reduceMotion={reduceMotion}
-                    amber={c.amber}
-                    containerStyle={styles.mediaImage}
-                    imageStyle={styles.mediaImage}
-                    accessibilityLabel={previewFileName}
-                    onPromote={promoteOriginalImage}
-                    onImageLoad={() => setImageLoaded(true)}
-                    onImageError={() => setImageError((prev) => prev ?? "This image couldn't be displayed.")}
-                  />
-                ) : (
-                  <Image
-                    source={{ uri: imageUri }}
-                    style={styles.mediaImage}
-                    resizeMode="contain"
-                    accessibilityLabel={previewFileName}
-                    onLoad={() => setImageLoaded(true)}
-                    onError={() => setImageError((prev) => prev ?? "This image couldn't be displayed.")}
-                  />
-                )
+                // Task 1579 — pinch/double-tap zoom (single-file image).
+                <ZoomableImage
+                  resetSignal={currentFileId}
+                  onZoomChange={setMediaZoomed}
+                  onSingleTap={handleContentTap}
+                  testID="preview-zoomable"
+                >
+                  {originalImageActive ? (
+                    <ProgressiveOriginalImage
+                      baseUri={originalImageBase ?? imageUri}
+                      originalUri={originalImagePending}
+                      progress={loadProgress}
+                      active={originalImageActive}
+                      cacheHit={originalImageCacheHit}
+                      reduceMotion={reduceMotion}
+                      amber={c.amber}
+                      containerStyle={styles.mediaImage}
+                      imageStyle={styles.mediaImage}
+                      accessibilityLabel={previewFileName}
+                      onPromote={promoteOriginalImage}
+                      onImageLoad={() => setImageLoaded(true)}
+                      onImageError={() => setImageError((prev) => prev ?? "This image couldn't be displayed.")}
+                    />
+                  ) : (
+                    <Image
+                      source={{ uri: imageUri }}
+                      style={styles.mediaImage}
+                      resizeMode="contain"
+                      accessibilityLabel={previewFileName}
+                      onLoad={() => setImageLoaded(true)}
+                      onError={() => setImageError((prev) => prev ?? "This image couldn't be displayed.")}
+                    />
+                  )}
+                </ZoomableImage>
               ) : (
                 <View style={styles.imageStatus}>
                   {renderSharedProgress(false)}
@@ -4434,13 +4485,21 @@ export default function PreviewScreen() {
                   <Text style={styles.imageStatusSub}>{rawError}</Text>
                 </View>
               ) : rawUri ? (
-                <RawRenderer
-                  uri={rawUri}
-                  fileName={previewFileName}
-                  formatLabel={rawFormatLabelValue}
-                  cacheKey={currentFileId}
-                  onExifInfo={setRawExifInfo}
-                />
+                // Task 1579 — pinch/double-tap zoom (single-file RAW preview).
+                <ZoomableImage
+                  resetSignal={currentFileId}
+                  onZoomChange={setMediaZoomed}
+                  onSingleTap={handleContentTap}
+                  testID="preview-zoomable"
+                >
+                  <RawRenderer
+                    uri={rawUri}
+                    fileName={previewFileName}
+                    formatLabel={rawFormatLabelValue}
+                    cacheKey={currentFileId}
+                    onExifInfo={setRawExifInfo}
+                  />
+                </ZoomableImage>
               ) : (
                 <View style={styles.imageStatus}>
                   {renderSharedProgress(false)}
