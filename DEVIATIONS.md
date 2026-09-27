@@ -460,3 +460,34 @@ chunk+spread either. Neither of these two bugs individually was sufficient
 to explain the symptom alone; both were real, both are fixed, and the
 `sample.cr2` preview was independently re-verified correct in the simulator
 after each.
+
+## Task 1583 (mobile) — Info sheet: rows, "Stored in", stacking vs `design/preview-redesign-ios.html` section 03
+
+Guus's device screenshot (build 219) of the Info sheet: unreadable row labels, the
+bottom bar floating over the sheet and its Versions list, and rows that were machine
+detail or contradicted the card above them. Against the section 03 mock:
+
+- **Rows.** The mock lists Modified / Uploaded from / Folder / Shared, then versions.
+  The sheet keeps Modified / Folder / Shared and adds Format, Type (mono), Created and,
+  for RAW, the camera rows (the mock's figcaption: "Info shows camera, lens and
+  exposure"), then **Stored in** ("Falkenstein, Germany", from `GET /api/v1/region`,
+  the server's documented source for "stored in {city}"; "Europe" when unknown, never
+  the old "EU region" filler). Dropped: Chunks (machine detail), Encryption
+  ("Decrypted on this device" read as contradicting "Encrypted on your device"; the
+  card says it in words), Version (the Versions section lists every version).
+  "Uploaded from" is still absent: the client `FileEntry` / `FileVersionEntry` types carry
+  no device field (server not checked for one). Rule lives in
+  `src/lib/preview-info.ts`.
+- **Label colour.** The mock's `dt` colour (#8F8A80) is ~4.2:1 on the light paper, under
+  AA for 13pt text. Labels use `ink2` (9.2:1 dark, 6.8:1 light), values `ink`.
+- **Stacking.** The mock's sheet (z 16) covers the bottom bar (z 12) and does not reach
+  the top bar. The sheet layer now sits at zIndex 18: above `bottomBarWrap` (15), below
+  `chromeLayer` (20), so close and ⋯ stay live while it is open. The task file asked for
+  the header "dimmed or hidden" while the sheet is open; the mock keeps it undimmed and
+  Guus's report is that those buttons must work, so it stays. ⋯ with the sheet open now
+  closes the sheet and opens the menu instead of stacking the two.
+- **Versions, one home.** The mock keeps a Versions bar button AND a versions list in the
+  sheet. Both stay; the button now opens the sheet scrolled to the Versions section
+  (before, it opened the same sheet at the top as Info did).
+- **Still deviating (unchanged from 1563):** an opaque `c.paper` sheet, inset with four
+  rounded corners, not the mock's edge-to-edge glass sheet.

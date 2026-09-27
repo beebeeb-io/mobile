@@ -98,6 +98,7 @@ import { checkLockedFileIds, isPagerPageGated } from '../lib/preview-lock-gate';
 import { computePreviewContentInset } from '../lib/preview-content-inset';
 import { FILES_APP_LOCK_CAVEAT } from '../lib/lock-copy';
 import { formatPdfPageCounter, nextBarsVisible } from '../lib/preview-chrome';
+import { buildInfoSheetRows, type InfoSheetFocus } from '../lib/preview-info';
 import { extensionForAudio } from '../lib/audio-format';
 import { extensionForRaw, isRawExtension, rawFormatLabel } from '../lib/raw-format';
 import type { RawExifInfo } from '../lib/raw-preview';
@@ -2456,6 +2457,14 @@ export default function PreviewScreen() {
     setMediaZoomed(false);
   }, [currentPhotoIndex, currentFileId]);
   const [infoVisible, setInfoVisible] = useState(false);
+  // Task 1583 — the bottom bar's "Versions" opens the sheet AT the Versions
+  // section, "Info" at the top: one home for versions (the sheet's own
+  // section), two doors into it.
+  const [infoFocus, setInfoFocus] = useState<InfoSheetFocus>('info');
+  const openInfo = useCallback((focus: InfoSheetFocus) => {
+    setInfoFocus(focus);
+    setInfoVisible(true);
+  }, []);
   // A .md file's ⋯ menu can show the RAW source without entering Edit
   // (design section 02, "Show source" — Guus's 18:50 ruling put Edit in
   // this same menu; this is the sibling read-only view it also asked for).
@@ -4111,6 +4120,9 @@ export default function PreviewScreen() {
   ], [handleCopyName, handleDownload, handleDuplicate, handleMoveToTrash, handleOpenMovePicker, handleShare, handleViewOriginal, isImage, editMenuAction, isMarkdown, editMode, textContent, showSource]);
 
   const handlePreviewOptions = useCallback(() => {
+    // Task 1583 — ⋯ while the Info sheet is open swaps the sheet for the
+    // menu instead of stacking the menu on the sheet.
+    setInfoVisible(false);
     if (Platform.OS === 'ios') {
       setOptionsVisible(true);
       return;
@@ -4261,132 +4273,6 @@ export default function PreviewScreen() {
             1346 — scheme="dark" forced: mediaMaterial comment above (media
             ground is always near-black, not a light/dark toggle). */}
         <StatusBar hidden={!chromeVisible} animated />
-        {/* Fix: dead close/⋯ in the single-file media preview. Since #123
-            (1563) wrapped the header in this opacity fade, the floating
-            positioning + zIndex sat on `mediaHeader` INSIDE the wrapper, and
-            this wrapper was a zero-height, un-z-indexed normal-flow sibling
-            that comes BEFORE the content stage. zIndex only orders siblings,
-            so the single-file stage (a `Pressable` — never flattened away by
-            Fabric, unlike the pager's plain layout `View`) sat on top of the
-            header and took every tap, and the zero-frame chain dropped the
-            controls from the accessibility tree. Same two bugs, same fix, as
-            the doc branch's header (see `header`'s style comment):
-            `chromeLayer` (absolute + zIndex) on the wrapper, `mediaHeader`
-            a plain in-flow row. Guarded by
-            PreviewScreen.chrome-layer.test.ts. */}
-        <Animated.View
-          style={[styles.chromeLayer, { opacity: barsOpacity }]}
-          pointerEvents={chromeVisible ? 'auto' : 'none'}
-        >
-        <ScrollEdgeBlur scheme="dark" height={SCROLL_EDGE.chromeFallback} />
-        {/* Preview redesign item 1 — swipe-down-to-close (see the
-            `closeTranslateY` comment by `handleClose`): the header row is
-            the gesture's hit area. */}
-        <PanGestureHandler
-          onGestureEvent={onCloseGestureEvent}
-          onHandlerStateChange={onCloseHandlerStateChange}
-          activeOffsetY={[-1000, 8]}
-          failOffsetX={[-20, 20]}
-          // Task 1579 — swipe-down-to-close only at 1x.
-          enabled={!mediaZoomed}
-        >
-        <View style={[styles.mediaHeader, { paddingTop: insets.top + 8 }]}>
-          {/* 1343 — outer TouchableOpacity wraps the fixed-size GlassCircle so
-              hitSlop is not clipped to the disc (RN clips hitSlop to the
-              parent's bounds — the lesson FilesScreen's back-button needed a
-              follow-up commit to learn, task 1341 / PR #51). Size is now
-              GLASS_CIRCLE_SIZES.action (42, canvas verbatim) — 1314 had kept
-              this screen's pre-glass literal 38 without ever routing it
-              through the recipe's own default (DEVIATIONS.md).
-              1346 — scheme="dark" forced: mediaMaterial comment above. */}
-          <TouchableOpacity
-            onPress={handleClose}
-            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
-            testID="preview-close"
-            accessibilityLabel="Close preview"
-          >
-            <GlassCircle scheme="dark" materialOverride={mediaMaterial} size={GLASS_CIRCLE_SIZES.action}>
-              <Ionicons name="chevron-down" size={22} color={mediaMaterial.label} />
-            </GlassCircle>
-          </TouchableOpacity>
-
-          {/* 1343 — Preview.dc.html wraps the title/subtitle in its own glass
-              capsule (radius 999, padding 7px 18px — both lifted verbatim);
-              the shipped header had left this block bare on the scrim since
-              1314 (DEVIATIONS.md). maxWidth: '100%' on the capsule lets it
-              hug short filenames and still cap at the row's available width
-              for long ones, so the existing numberOfLines={1} truncation on
-              both lines keeps working unchanged.
-              1346 — scheme="dark" forced: mediaMaterial comment above.
-              Preview redesign item 2 — the subtitle's "N of total" pager
-              text moves to the floating `pageCounterLabel` pill (design item
-              6, generalized to the photo pager — see that state's own
-              comment), freeing this line for "Encrypted · Type · size" on
-              every file, paged or not. */}
-          <View style={styles.mediaHeaderText}>
-            <GlassCapsule
-              scheme="dark"
-              materialOverride={mediaMaterial}
-              style={styles.mediaHeaderCapsule}
-              contentStyle={styles.mediaHeaderCapsuleBody}
-            >
-              <Text
-                style={[styles.mediaHeaderTitle, { color: mediaMaterial.label }]}
-                numberOfLines={1}
-              >
-                {previewFileName}
-              </Text>
-              <View style={styles.encSubRow}>
-                <Ionicons name="lock-closed" size={10} color={colors.amber} />
-                <Text style={[styles.mediaHeaderSubtitle, styles.mono, { color: mediaMaterial.labelMuted }]} numberOfLines={1}>
-                  {`Encrypted · ${category === 'raw' ? rawFormatLabelValue : CATEGORY_LABELS[category]}${currentSizeBytes != null ? ` · ${formatSize(currentSizeBytes)}` : ''}`}
-                </Text>
-              </View>
-            </GlassCapsule>
-          </View>
-
-          {/* 1346 — scheme="dark" forced: mediaMaterial comment above (mirrors
-              the close button; same GlassCircle, same forced ground). */}
-          <TouchableOpacity
-            onPress={handlePreviewOptions}
-            disabled={downloading || trashing}
-            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
-            accessibilityLabel="Open file options"
-          >
-            <GlassCircle
-              scheme="dark"
-              materialOverride={mediaMaterial}
-              size={GLASS_CIRCLE_SIZES.action}
-              style={(downloading || trashing) ? styles.disabledIconButton : undefined}
-            >
-              <Ionicons name="ellipsis-horizontal" size={21} color={mediaMaterial.label} />
-            </GlassCircle>
-          </TouchableOpacity>
-        </View>
-        </PanGestureHandler>
-
-        {/* Preview redesign item 6 — floating page counter, shown/hidden
-            with the rest of the chrome (design's "Tap to hide" mock omits
-            the pill along with the bars). Reused verbatim for the photo
-            swipe-pager via `formatPdfPageCounter` (see that function's doc
-            comment) — same "N / total" shape, same position.
-            Bug found verifying this pass: `top: insets.top + 8` put this
-            pill at the EXACT same top offset as `mediaHeader` itself (which
-            also uses `paddingTop: insets.top + 8`), so it rendered directly
-            on top of the ⋯ circle instead of below the bar the comment
-            above already claimed. `insets.top + 62` matches the offset this
-            same header already uses for its own options popover
-            (`PreviewOptionsPopover`'s `top` prop below) — i.e., the header's
-            own already-established "just under the bar" anchor, not a new
-            magic number. */}
-        {pageCounterLabel && (
-          <View style={[styles.pageCounterWrap, { top: insets.top + 62 }]} pointerEvents="none">
-            <GlassCapsule scheme="dark" materialOverride={mediaMaterial} contentStyle={styles.pageCounterBody}>
-              <Text style={[styles.pageCounterText, styles.mono, { color: mediaMaterial.label }]}>{pageCounterLabel}</Text>
-            </GlassCapsule>
-          </View>
-        )}
-        </Animated.View>
 
         {/* Preview redesign item 3 — the "e2e" pill (design's "00 TODAY"
             complaint: "it covers the content, and 'e2e' is jargon") is
@@ -4610,6 +4496,140 @@ export default function PreviewScreen() {
           </Pressable>
         )}
 
+        {/* Task 1583 — the chrome layer is rendered AFTER the content stage,
+            not before it. zIndex (chromeLayer: 20) already puts it on top,
+            but a later sibling also wins paint and hit-test order with no
+            zIndex at all, so the header can never again end up under the
+            stage the way #123 left it (builds 216–218: the stage Pressable
+            took the close/⋯ taps and only toggled the chrome). Guarded by
+            PreviewScreen.chrome-layer.test.ts. */}
+        {/* Fix: dead close/⋯ in the single-file media preview. Since #123
+            (1563) wrapped the header in this opacity fade, the floating
+            positioning + zIndex sat on `mediaHeader` INSIDE the wrapper, and
+            this wrapper was a zero-height, un-z-indexed normal-flow sibling
+            that comes BEFORE the content stage. zIndex only orders siblings,
+            so the single-file stage (a `Pressable` — never flattened away by
+            Fabric, unlike the pager's plain layout `View`) sat on top of the
+            header and took every tap, and the zero-frame chain dropped the
+            controls from the accessibility tree. Same two bugs, same fix, as
+            the doc branch's header (see `header`'s style comment):
+            `chromeLayer` (absolute + zIndex) on the wrapper, `mediaHeader`
+            a plain in-flow row. Guarded by
+            PreviewScreen.chrome-layer.test.ts. */}
+        <Animated.View
+          style={[styles.chromeLayer, { opacity: barsOpacity }]}
+          pointerEvents={chromeVisible ? 'auto' : 'none'}
+        >
+        <ScrollEdgeBlur scheme="dark" height={SCROLL_EDGE.chromeFallback} />
+        {/* Preview redesign item 1 — swipe-down-to-close (see the
+            `closeTranslateY` comment by `handleClose`): the header row is
+            the gesture's hit area. */}
+        <PanGestureHandler
+          onGestureEvent={onCloseGestureEvent}
+          onHandlerStateChange={onCloseHandlerStateChange}
+          activeOffsetY={[-1000, 8]}
+          failOffsetX={[-20, 20]}
+          // Task 1579 — swipe-down-to-close only at 1x.
+          enabled={!mediaZoomed}
+        >
+        <View style={[styles.mediaHeader, { paddingTop: insets.top + 8 }]}>
+          {/* 1343 — outer TouchableOpacity wraps the fixed-size GlassCircle so
+              hitSlop is not clipped to the disc (RN clips hitSlop to the
+              parent's bounds — the lesson FilesScreen's back-button needed a
+              follow-up commit to learn, task 1341 / PR #51). Size is now
+              GLASS_CIRCLE_SIZES.action (42, canvas verbatim) — 1314 had kept
+              this screen's pre-glass literal 38 without ever routing it
+              through the recipe's own default (DEVIATIONS.md).
+              1346 — scheme="dark" forced: mediaMaterial comment above. */}
+          <TouchableOpacity
+            onPress={handleClose}
+            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+            testID="preview-close"
+            accessibilityLabel="Close preview"
+          >
+            <GlassCircle scheme="dark" materialOverride={mediaMaterial} size={GLASS_CIRCLE_SIZES.action}>
+              <Ionicons name="chevron-down" size={22} color={mediaMaterial.label} />
+            </GlassCircle>
+          </TouchableOpacity>
+
+          {/* 1343 — Preview.dc.html wraps the title/subtitle in its own glass
+              capsule (radius 999, padding 7px 18px — both lifted verbatim);
+              the shipped header had left this block bare on the scrim since
+              1314 (DEVIATIONS.md). maxWidth: '100%' on the capsule lets it
+              hug short filenames and still cap at the row's available width
+              for long ones, so the existing numberOfLines={1} truncation on
+              both lines keeps working unchanged.
+              1346 — scheme="dark" forced: mediaMaterial comment above.
+              Preview redesign item 2 — the subtitle's "N of total" pager
+              text moves to the floating `pageCounterLabel` pill (design item
+              6, generalized to the photo pager — see that state's own
+              comment), freeing this line for "Encrypted · Type · size" on
+              every file, paged or not. */}
+          <View style={styles.mediaHeaderText}>
+            <GlassCapsule
+              scheme="dark"
+              materialOverride={mediaMaterial}
+              style={styles.mediaHeaderCapsule}
+              contentStyle={styles.mediaHeaderCapsuleBody}
+            >
+              <Text
+                style={[styles.mediaHeaderTitle, { color: mediaMaterial.label }]}
+                numberOfLines={1}
+              >
+                {previewFileName}
+              </Text>
+              <View style={styles.encSubRow}>
+                <Ionicons name="lock-closed" size={10} color={colors.amber} />
+                <Text style={[styles.mediaHeaderSubtitle, styles.mono, { color: mediaMaterial.labelMuted }]} numberOfLines={1}>
+                  {`Encrypted · ${category === 'raw' ? rawFormatLabelValue : CATEGORY_LABELS[category]}${currentSizeBytes != null ? ` · ${formatSize(currentSizeBytes)}` : ''}`}
+                </Text>
+              </View>
+            </GlassCapsule>
+          </View>
+
+          {/* 1346 — scheme="dark" forced: mediaMaterial comment above (mirrors
+              the close button; same GlassCircle, same forced ground). */}
+          <TouchableOpacity
+            onPress={handlePreviewOptions}
+            disabled={downloading || trashing}
+            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+            accessibilityLabel="Open file options"
+          >
+            <GlassCircle
+              scheme="dark"
+              materialOverride={mediaMaterial}
+              size={GLASS_CIRCLE_SIZES.action}
+              style={(downloading || trashing) ? styles.disabledIconButton : undefined}
+            >
+              <Ionicons name="ellipsis-horizontal" size={21} color={mediaMaterial.label} />
+            </GlassCircle>
+          </TouchableOpacity>
+        </View>
+        </PanGestureHandler>
+
+        {/* Preview redesign item 6 — floating page counter, shown/hidden
+            with the rest of the chrome (design's "Tap to hide" mock omits
+            the pill along with the bars). Reused verbatim for the photo
+            swipe-pager via `formatPdfPageCounter` (see that function's doc
+            comment) — same "N / total" shape, same position.
+            Bug found verifying this pass: `top: insets.top + 8` put this
+            pill at the EXACT same top offset as `mediaHeader` itself (which
+            also uses `paddingTop: insets.top + 8`), so it rendered directly
+            on top of the ⋯ circle instead of below the bar the comment
+            above already claimed. `insets.top + 62` matches the offset this
+            same header already uses for its own options popover
+            (`PreviewOptionsPopover`'s `top` prop below) — i.e., the header's
+            own already-established "just under the bar" anchor, not a new
+            magic number. */}
+        {pageCounterLabel && (
+          <View style={[styles.pageCounterWrap, { top: insets.top + 62 }]} pointerEvents="none">
+            <GlassCapsule scheme="dark" materialOverride={mediaMaterial} contentStyle={styles.pageCounterBody}>
+              <Text style={[styles.pageCounterText, styles.mono, { color: mediaMaterial.label }]}>{pageCounterLabel}</Text>
+            </GlassCapsule>
+          </View>
+        )}
+        </Animated.View>
+
         {/* Preview redesign item 3/5 — DetailsSheet's permanent collapsed
             peek is retired; Info is now on-demand (bottom bar "Info", or a
             swipe up on the content — item 4). Same fields it showed today,
@@ -4626,8 +4646,8 @@ export default function PreviewScreen() {
               actions={[
                 { key: 'share', label: 'Share', icon: 'share-outline', onPress: handleShare, testID: 'preview-bar-share' },
                 { key: 'save', label: 'Save', icon: 'download-outline', disabled: downloading, onPress: handleDownload, testID: 'preview-bar-save' },
-                { key: 'versions', label: 'Versions', icon: 'time-outline', onPress: () => setInfoVisible(true), testID: 'preview-bar-versions' },
-                { key: 'info', label: 'Info', icon: 'information-circle-outline', onPress: () => setInfoVisible(true), testID: 'preview-bar-info' },
+                { key: 'versions', label: 'Versions', icon: 'time-outline', onPress: () => openInfo('versions'), testID: 'preview-bar-versions' },
+                { key: 'info', label: 'Info', icon: 'information-circle-outline', onPress: () => openInfo('info'), testID: 'preview-bar-info' },
               ]}
             />
           </Animated.View>
@@ -4639,16 +4659,8 @@ export default function PreviewScreen() {
           filename={previewFileName}
           kindLabel={category === 'raw' ? rawFormatLabelValue : (CATEGORY_LABELS[category] ?? 'File')}
           sizeBytes={currentSizeBytes ?? null}
-          storageLocation={(() => {
-            const storage = trustLocation(currentStoragePoolId);
-            return `${storage.region} · ${storage.city}`;
-          })()}
-          extraRows={[
-            ...(currentCreatedAt ? [{ label: 'Created', value: formatDate(currentCreatedAt) }] : []),
-            ...mediaDetailsRows
-              .filter((r) => !['Name', 'Kind', 'Size', 'Created', 'Storage'].includes(r.label))
-              .map((r) => ({ label: r.label, value: r.value })),
-          ]}
+          extraRows={buildInfoSheetRows(mediaDetailsRows)}
+          focus={infoFocus}
         />
         <PreviewOptionsPopover
           visible={optionsVisible}
@@ -5588,8 +5600,8 @@ export default function PreviewScreen() {
             actions={[
               { key: 'share', label: 'Share', icon: 'share-outline', onPress: handleShare, testID: 'preview-bar-share' },
               { key: 'save', label: 'Save', icon: 'download-outline', disabled: downloading, onPress: handleDownload, testID: 'preview-bar-save' },
-              { key: 'versions', label: 'Versions', icon: 'time-outline', onPress: () => setInfoVisible(true), testID: 'preview-bar-versions' },
-              { key: 'info', label: 'Info', icon: 'information-circle-outline', onPress: () => setInfoVisible(true), testID: 'preview-bar-info' },
+              { key: 'versions', label: 'Versions', icon: 'time-outline', onPress: () => openInfo('versions'), testID: 'preview-bar-versions' },
+              { key: 'info', label: 'Info', icon: 'information-circle-outline', onPress: () => openInfo('info'), testID: 'preview-bar-info' },
             ]}
           />
         </Animated.View>
@@ -5602,15 +5614,12 @@ export default function PreviewScreen() {
         kindLabel={CATEGORY_LABELS[category] ?? 'File'}
         sizeBytes={currentSizeBytes ?? null}
         pageCount={pdfPageInfo?.total ?? null}
-        storageLocation={(() => {
-          const storage = trustLocation(currentStoragePoolId);
-          return `${storage.region} · ${storage.city}`;
-        })()}
-        extraRows={[
+        extraRows={buildInfoSheetRows([
           ...(currentCreatedAt ? [{ label: 'Created', value: formatDate(currentCreatedAt) }] : []),
           ...(fileFormat ? [{ label: 'Format', value: fileFormat }] : []),
           ...(currentMimeType ? [{ label: 'Type', value: currentMimeType }] : []),
-        ]}
+        ])}
+        focus={infoFocus}
       />
     </Animated.View>
   );
