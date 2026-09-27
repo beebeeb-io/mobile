@@ -65,6 +65,7 @@ import { encryptedMetadataPayloadToBytes } from '../lib/encrypted-metadata';
 import { mapInBatches } from '../lib/async-batch';
 import { perfMark } from '../lib/perf-mark';
 import { recordRuntimeTrace } from '../lib/runtime-trace';
+import { formatDate } from '../lib/date-format';
 import {
   columnsForPinchScale,
   DEFAULT_PHOTO_GRID_COLUMNS,
@@ -892,7 +893,7 @@ function AutoBackupBanner() {
         </Text>
         {lastBackupAt && (
           <Text style={[styles.bannerHint, { color: material.labelMuted }]}>
-            {new Date(lastBackupAt).toLocaleDateString()}
+            {formatDate(lastBackupAt)}
           </Text>
         )}
       </GlassSurface>
