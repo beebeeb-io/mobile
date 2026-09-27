@@ -23,6 +23,8 @@ import { BottomSheet, BottomSheetScrollView } from './sheet/BottomSheet';
 import { useTheme } from '../lib/theme-context';
 import { trustLocation, type FileEntry } from '../lib/api';
 import { formatBytes as formatSize } from '../lib/format';
+import { useRegionCity } from '../lib/storage-region';
+import { storageLocationLabel } from '../lib/preview-info';
 import EncryptionProof from './EncryptionProof';
 import {
   TRUST_ENCRYPTED_ON_LABEL,
@@ -100,6 +102,10 @@ export default function TrustDetailsSheet({ file: fileProp, fileName: fileNamePr
   useEffect(() => {
     if (!fileProp) setProofOpen(false);
   }, [fileProp]);
+
+  // Task 1592 — "Stored in" from the one shared source (GET /api/v1/region),
+  // so this sheet and the Info sheet name the same place.
+  const regionCity = useRegionCity(!!fileProp);
 
   if (!shown) return null;
   const { file, fileName, mimeType } = shown;
@@ -182,7 +188,7 @@ export default function TrustDetailsSheet({ file: fileProp, fileName: fileNamePr
               />
               <DetailRow
                 label="Stored in"
-                value={`${loc.region} · ${loc.city}`}
+                value={storageLocationLabel({ city: regionCity ?? null })}
                 inkLabel={c.ink3}
                 inkValue={c.ink}
                 border={c.line}

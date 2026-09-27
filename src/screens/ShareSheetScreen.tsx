@@ -23,6 +23,7 @@ import { ApiError, approveInvite, createInvite, createShare, friendlyError, reso
 import type { Share as ShareLink } from '../lib/api';
 import { useCrypto } from '../lib/crypto-context';
 import { formatBytes as formatSize } from '../lib/format';
+import { formatDateTime } from '../lib/date-format';
 import {
   deriveShareKey,
   encryptChunk,
@@ -554,7 +555,7 @@ export default function ShareSheetScreen() {
               </Text>
               {share.expires_at && (
                 <Text style={styles.successHint}>
-                  Expires {new Date(share.expires_at).toLocaleString()}
+                  Expires {formatDateTime(share.expires_at)}
                 </Text>
               )}
               {share.max_opens != null && (

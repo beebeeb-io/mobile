@@ -94,6 +94,8 @@ import { InfoSheet } from '../components/preview/InfoSheet';
 import { PreviewBottomBar } from '../components/preview/PreviewBottomBar';
 import { recordRuntimeTrace } from '../lib/runtime-trace';
 import { formatBytes as formatSize } from '../lib/format';
+import { STILL_UPLOADING_MESSAGE, previewLoadErrorMessage } from '../lib/preview-load-error';
+import { displayedSizeBytes, savedFileMetaFrom, type SavedFileMeta } from '../lib/saved-file-meta';
 import { checkLockedFileIds, isPagerPageGated } from '../lib/preview-lock-gate';
 import { computePreviewContentInset } from '../lib/preview-content-inset';
 import { FILES_APP_LOCK_CAVEAT } from '../lib/lock-copy';
@@ -1888,6 +1890,11 @@ export default function PreviewScreen() {
   const currentFileName = currentEntry?.display_name ?? currentEntry?.name_encrypted ?? fileName;
   const currentMimeType = currentEntry?.mime_type ?? mimeType;
   const currentSizeBytes = currentEntry?.size_bytes ?? sizeBytes;
+  // Task 1592 item 5 — the size SHOWN (header pill, Info sheet, detail rows,
+  // share sheet) follows an in-app save; `currentSizeBytes` (the decrypt
+  // input) is left alone so a save never re-triggers the loaders.
+  const [savedMeta, setSavedMeta] = useState<SavedFileMeta | null>(null);
+  const shownSizeBytes = displayedSizeBytes(currentFileId, currentSizeBytes, savedMeta);
   const currentCreatedAt = currentEntry?.created_at ?? createdAt;
   const currentChunkCount = currentEntry?.chunk_count ?? chunkCount;
   const currentVersionNumber = currentEntry?.version_number ?? versionNumber;
@@ -2037,6 +2044,10 @@ export default function PreviewScreen() {
   const [textContent, setTextContent] = useState<string | null>(null);
   const [textLoading, setTextLoading] = useState(false);
   const [textError, setTextError] = useState<string | null>(null);
+  // Task 1592 item 3 — "Try again" on a failed load bumps this; it is a
+  // dependency of `fetchAndDecrypt` (so every loader effect built on it
+  // re-runs) and of the image / PDF loaders, which do not use it.
+  const [reloadNonce, setReloadNonce] = useState(0);
 
   // Task 1563 — text/markdown/code EDIT mode state. `savedVersionNumber`/
   // `savedAt` override the route-provided version once a save succeeds (this
@@ -2500,6 +2511,10 @@ export default function PreviewScreen() {
     setTextContent(opts.text);
     setEditText(opts.text);
     setFileMeta({ nameEncrypted: opts.nameEncrypted, parentId: opts.parentId, versionNumber: opts.versionNumber });
+    // Task 1592 item 5 — refresh the saved file's size (best effort; the
+    // saved text's byte length when the read fails).
+    const fresh = await getFile(opts.targetFileId).catch(() => null);
+    setSavedMeta(savedFileMetaFrom(opts.targetFileId, opts.text, fresh));
     await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
   }, [currentMimeType, category]);
 
@@ -2716,7 +2731,7 @@ export default function PreviewScreen() {
     ];
     if (fileFormat) rows.push({ label: 'Format', value: fileFormat });
     if (currentMimeType) rows.push({ label: 'Type', value: currentMimeType });
-    if (currentSizeBytes != null) rows.push({ label: 'Size', value: formatSize(currentSizeBytes) });
+    if (shownSizeBytes != null) rows.push({ label: 'Size', value: formatSize(shownSizeBytes) });
     if (currentCreatedAt) rows.push({ label: 'Created', value: formatDate(currentCreatedAt) });
     if (currentVersionNumber != null) rows.push({ label: 'Version', value: `v${currentVersionNumber}` });
     if (currentChunkCount != null) rows.push({ label: 'Chunks', value: String(currentChunkCount) });
@@ -2747,7 +2762,7 @@ export default function PreviewScreen() {
     isUnlocked,
     currentMimeType,
     previewFileName,
-    currentSizeBytes,
+    shownSizeBytes,
     currentStoragePoolId,
     currentVersionNumber,
     rawExifInfo,
@@ -2875,6 +2890,7 @@ export default function PreviewScreen() {
       chunkCount: currentChunkCount ?? null,
       isUnlocked,
       hasMasterKeyHandle: getMasterKeyHandleId() != null,
+      attempt: reloadNonce,
     });
     setLoadProgress(emptyPreviewProgress('downloading'));
     // 0803 — offline-open is handled centrally inside decryptToTempFile: it
@@ -2991,6 +3007,7 @@ export default function PreviewScreen() {
     getMasterKeyHandleId,
     resolveDecryptKey,
     isUnlocked,
+    reloadNonce,
   ]);
 
   const getExportUri = useCallback(async (): Promise<{ uri: string; reusedPreview: boolean }> => {
@@ -3082,7 +3099,7 @@ export default function PreviewScreen() {
             fileId: currentFileId,
             ...previewErrorTraceFields(err),
           });
-          setImageError(friendlyError(err));
+          setImageError(previewLoadErrorMessage(err));
         }
       })
       .finally(() => {
@@ -3105,6 +3122,7 @@ export default function PreviewScreen() {
     isImage,
     isUnlocked,
     performanceStorageProfile,
+    reloadNonce,
   ]);
 
   useEffect(() => {
@@ -3201,7 +3219,7 @@ export default function PreviewScreen() {
           setPdfUri(tempPath);
         }
       } catch (err) {
-        if (!cancelled && !isAbortError(err)) setPdfError(friendlyError(err));
+        if (!cancelled && !isAbortError(err)) setPdfError(previewLoadErrorMessage(err));
       } finally {
         if (!cancelled) {
           setPdfLoading(false);
@@ -3214,7 +3232,7 @@ export default function PreviewScreen() {
       cancelled = true;
       controller.abort();
     };
-  }, [contentLocked, isPdf, isUnlocked, currentFileId, getFileKeyBytes, getMasterKeyHandleId, resolveDecryptKey, currentSizeBytes, currentChunkCount]);
+  }, [contentLocked, isPdf, isUnlocked, currentFileId, getFileKeyBytes, getMasterKeyHandleId, resolveDecryptKey, currentSizeBytes, currentChunkCount, reloadNonce]);
 
   // Auto-load text/code/JSON inline on mount — read decrypted file as UTF-8.
   //
@@ -3261,7 +3279,7 @@ export default function PreviewScreen() {
         // as a text-pane error too would just be a second, redundant UI for
         // the same fact.
         if (!cancelled && !isAbortError(err) && !isPreviewLockedError(err)) {
-          setTextError(friendlyError(err));
+          setTextError(previewLoadErrorMessage(err));
         }
       })
       .finally(() => {
@@ -3297,7 +3315,7 @@ export default function PreviewScreen() {
         setVideoUri(uri);
       })
       .catch((err) => {
-        if (!cancelled && !isAbortError(err)) setVideoError(friendlyError(err));
+        if (!cancelled && !isAbortError(err)) setVideoError(previewLoadErrorMessage(err));
       })
       .finally(() => {
         if (!cancelled) {
@@ -3351,7 +3369,7 @@ export default function PreviewScreen() {
         setAudioUri(uri);
       })
       .catch((err) => {
-        if (!cancelled && !isAbortError(err)) setAudioError(friendlyError(err));
+        if (!cancelled && !isAbortError(err)) setAudioError(previewLoadErrorMessage(err));
       })
       .finally(() => {
         if (!cancelled) {
@@ -3402,7 +3420,7 @@ export default function PreviewScreen() {
         setRawUri(uri);
       })
       .catch((err) => {
-        if (!cancelled && !isAbortError(err)) setRawError(friendlyError(err));
+        if (!cancelled && !isAbortError(err)) setRawError(previewLoadErrorMessage(err));
       })
       .finally(() => {
         if (!cancelled) {
@@ -3444,7 +3462,7 @@ export default function PreviewScreen() {
         if (cancelled) return;
         setDocxData(arrayBuffer);
       } catch (err) {
-        if (!cancelled && !isAbortError(err)) setDocxError(friendlyError(err));
+        if (!cancelled && !isAbortError(err)) setDocxError(previewLoadErrorMessage(err));
       } finally {
         if (!cancelled) {
           setDocxLoading(false);
@@ -3478,7 +3496,7 @@ export default function PreviewScreen() {
         const arrayBuffer = await readFileAsArrayBuffer(uri);
         if (!cancelled) setSheetData(arrayBuffer);
       } catch (err) {
-        if (!cancelled && !isAbortError(err)) setSheetError(friendlyError(err));
+        if (!cancelled && !isAbortError(err)) setSheetError(previewLoadErrorMessage(err));
       } finally {
         if (!cancelled) {
           setSheetLoading(false);
@@ -3513,7 +3531,7 @@ export default function PreviewScreen() {
         if (!cancelled) setSvgContent(content);
       })
       .catch((err) => {
-        if (!cancelled && !isAbortError(err)) setSvgError(friendlyError(err));
+        if (!cancelled && !isAbortError(err)) setSvgError(previewLoadErrorMessage(err));
       })
       .finally(() => {
         if (!cancelled) {
@@ -3550,7 +3568,7 @@ export default function PreviewScreen() {
         if (!cancelled) setHtmlContent(content);
       })
       .catch((err) => {
-        if (!cancelled && !isAbortError(err)) setHtmlError(friendlyError(err));
+        if (!cancelled && !isAbortError(err)) setHtmlError(previewLoadErrorMessage(err));
       })
       .finally(() => {
         if (!cancelled) {
@@ -3589,7 +3607,7 @@ export default function PreviewScreen() {
         const arrayBuffer = await readFileAsArrayBuffer(uri);
         if (!cancelled) setZipData(arrayBuffer);
       } catch (err) {
-        if (!cancelled && !isAbortError(err)) setZipError(friendlyError(err));
+        if (!cancelled && !isAbortError(err)) setZipError(previewLoadErrorMessage(err));
       } finally {
         if (!cancelled) {
           setZipLoading(false);
@@ -3623,7 +3641,7 @@ export default function PreviewScreen() {
         throwIfPreviewAborted(controller.signal);
         if (!cancelled) setArchiveData(arrayBuffer);
       } catch (err) {
-        if (!cancelled && !isAbortError(err)) setArchiveError(friendlyError(err));
+        if (!cancelled && !isAbortError(err)) setArchiveError(previewLoadErrorMessage(err));
       } finally {
         if (!cancelled) {
           setArchiveLoading(false);
@@ -3657,7 +3675,7 @@ export default function PreviewScreen() {
         throwIfPreviewAborted(controller.signal);
         if (!cancelled) setPptxData(arrayBuffer);
       } catch (err) {
-        if (!cancelled && !isAbortError(err)) setPptxError(friendlyError(err));
+        if (!cancelled && !isAbortError(err)) setPptxError(previewLoadErrorMessage(err));
       } finally {
         if (!cancelled) {
           setPptxLoading(false);
@@ -3792,7 +3810,7 @@ export default function PreviewScreen() {
       recordRuntimeTrace('preview.image.view_original.success', { fileId: currentFileId });
     } catch (err) {
       if (!isAbortError(err)) {
-        setImageError(friendlyError(err));
+        setImageError(previewLoadErrorMessage(err));
         setOriginalImageActive(false);
         setOriginalImageBase(null);
         recordRuntimeTrace('preview.image.view_original.failed', {
@@ -3812,8 +3830,8 @@ export default function PreviewScreen() {
 
   const handleShare = useCallback(async () => {
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    navigation.navigate('ShareSheet', { fileId: currentFileId, fileName: previewFileName, mimeType: currentMimeType, sizeBytes: currentSizeBytes });
-  }, [navigation, currentFileId, previewFileName, currentMimeType, currentSizeBytes]);
+    navigation.navigate('ShareSheet', { fileId: currentFileId, fileName: previewFileName, mimeType: currentMimeType, sizeBytes: shownSizeBytes ?? undefined });
+  }, [navigation, currentFileId, previewFileName, currentMimeType, shownSizeBytes]);
 
   const handleCopyName = useCallback(async () => {
     await Clipboard.setStringAsync(previewFileName);
@@ -4069,6 +4087,52 @@ export default function PreviewScreen() {
   // instead of the "failed to load" text. Leaving this un-themed would have
   // shipped exactly the dark-on-light regression 1344 warned about: the doc
   // root now follows scheme, so its "still loading" text has to as well.
+  // Task 1592 item 3 — one failed-load view for every renderer: an honest
+  // message (previewLoadErrorMessage — never a raw native exception) and a
+  // way to try again (a file still uploading finishes in a moment).
+  // `tone: 'media'` keeps the forced-white text of the always-dark media
+  // stage (see the 1346 notes at those call sites).
+  const retryLoad = () => {
+    setImageError(null);
+    setPdfError(null);
+    setTextError(null);
+    setVideoError(null);
+    setAudioError(null);
+    setRawError(null);
+    setDocxError(null);
+    setSheetError(null);
+    setSvgError(null);
+    setHtmlError(null);
+    setZipError(null);
+    setArchiveError(null);
+    setPptxError(null);
+    setReloadNonce((n) => n + 1);
+  };
+  const renderLoadError = (title: string, message: string, tone: 'doc' | 'media' = 'doc') => {
+    const stillUploading = message === STILL_UPLOADING_MESSAGE;
+    const ink = tone === 'media' ? colors.white : c.ink;
+    return (
+      <View style={styles.imageStatus} testID="preview-load-error">
+        <Text style={[styles.imageStatusTitle, { color: ink }]}>
+          {stillUploading ? 'Still uploading' : title}
+        </Text>
+        <Text style={[styles.imageStatusSub, tone === 'doc' && { color: c.ink3 }]}>{message}</Text>
+        <TouchableOpacity
+          onPress={retryLoad}
+          style={[
+            styles.loadRetryButton,
+            { borderColor: tone === 'media' ? 'rgba(255,255,255,0.35)' : c.line },
+          ]}
+          accessibilityRole="button"
+          accessibilityLabel="Try again"
+          testID="preview-load-retry"
+        >
+          <Text style={[styles.loadRetryText, { color: ink }]}>Try again</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  };
+
   const renderSharedProgress = (isVideoProgress = false) => (
     <PreviewProgressStatus
       color={c.amber}
@@ -4251,10 +4315,7 @@ export default function PreviewScreen() {
                 // the plain literal rather than switched to
                 // mediaMaterial.label — it's status content, not chrome, but
                 // the same forced-ground argument applies unchanged.
-                <View style={styles.imageStatus}>
-                  <Text style={[styles.imageStatusTitle, { color: colors.white }]}>Couldn't load image</Text>
-                  <Text style={styles.imageStatusSub}>{imageError}</Text>
-                </View>
+                renderLoadError("Couldn't load image", imageError, 'media')
               ) : imageUri ? (
                 // Task 1579 — pinch/double-tap zoom (single-file image).
                 <ZoomableImage
@@ -4301,10 +4362,7 @@ export default function PreviewScreen() {
               // decrypted source uri; rawError only covers the DECRYPT step
               // failing outright (mirrors audio/video's own error branch).
               rawError ? (
-                <View style={styles.imageStatus}>
-                  <Text style={[styles.imageStatusTitle, { color: colors.white }]}>Couldn't load RAW file</Text>
-                  <Text style={styles.imageStatusSub}>{rawError}</Text>
-                </View>
+                renderLoadError("Couldn't load RAW file", rawError, 'media')
               ) : rawUri ? (
                 // Task 1579 — pinch/double-tap zoom (single-file RAW preview).
                 <ZoomableImage
@@ -4338,10 +4396,7 @@ export default function PreviewScreen() {
             ) : videoError ? (
               // 1346 — colors.white forced: same mediaStage/mediaRoot ground
               // argument as the image error above.
-              <View style={styles.imageStatus}>
-                <Text style={[styles.imageStatusTitle, { color: colors.white }]}>Couldn't load video</Text>
-                <Text style={styles.imageStatusSub}>{videoError}</Text>
-              </View>
+              renderLoadError("Couldn't load video", videoError, 'media')
             ) : (
               <View style={styles.imageStatus}>
                 {renderSharedProgress(true)}
@@ -4435,7 +4490,7 @@ export default function PreviewScreen() {
               <View style={styles.encSubRow}>
                 <Ionicons name="lock-closed" size={10} color={colors.amber} />
                 <Text style={[styles.mediaHeaderSubtitle, styles.mono, { color: mediaMaterial.labelMuted }]} numberOfLines={1}>
-                  {`Encrypted · ${category === 'raw' ? rawFormatLabelValue : CATEGORY_LABELS[category]}${currentSizeBytes != null ? ` · ${formatSize(currentSizeBytes)}` : ''}`}
+                  {`Encrypted · ${category === 'raw' ? rawFormatLabelValue : CATEGORY_LABELS[category]}${shownSizeBytes != null ? ` · ${formatSize(shownSizeBytes)}` : ''}`}
                 </Text>
               </View>
             </GlassCapsule>
@@ -4512,7 +4567,7 @@ export default function PreviewScreen() {
           fileId={currentFileId}
           filename={previewFileName}
           kindLabel={category === 'raw' ? rawFormatLabelValue : (CATEGORY_LABELS[category] ?? 'File')}
-          sizeBytes={currentSizeBytes ?? null}
+          sizeBytes={shownSizeBytes ?? null}
           extraRows={buildInfoSheetRows(mediaDetailsRows)}
           focus={infoFocus}
         />
@@ -4748,7 +4803,7 @@ export default function PreviewScreen() {
                       ("Document") it fell into before — one accurate word in
                       the subline, matching design section 02's "Encrypted ·
                       Markdown · 184 B", rather than a second chip. */}
-                  {`Encrypted · ${isText ? codeLanguageLabel : (CATEGORY_LABELS[category] ?? 'File')}${currentSizeBytes != null ? ` · ${formatSize(currentSizeBytes)}` : ''}`}
+                  {`Encrypted · ${isText ? codeLanguageLabel : (CATEGORY_LABELS[category] ?? 'File')}${shownSizeBytes != null ? ` · ${formatSize(shownSizeBytes)}` : ''}`}
                 </Text>
               </View>
             </GlassCapsule>
@@ -4928,12 +4983,7 @@ export default function PreviewScreen() {
               </View>
             </Pressable>
           ) : svgError ? (
-            <View style={styles.imageStatus}>
-              <Text style={[styles.imageStatusTitle, { color: c.ink }]}>
-                Couldn't load SVG
-              </Text>
-              <Text style={[styles.imageStatusSub, { color: c.ink3 }]}>{svgError}</Text>
-            </View>
+            renderLoadError("Couldn't load SVG", svgError)
           ) : (
             <View style={styles.imageStatus}>
               {renderSharedProgress(false)}
@@ -4961,12 +5011,7 @@ export default function PreviewScreen() {
               </Suspense>
             </Pressable>
           ) : pdfError ? (
-            <View style={styles.imageStatus}>
-              <Text style={[styles.imageStatusTitle, { color: c.ink }]}>
-                Couldn't load PDF
-              </Text>
-              <Text style={[styles.imageStatusSub, { color: c.ink3 }]}>{pdfError}</Text>
-            </View>
+            renderLoadError("Couldn't load PDF", pdfError)
           ) : (
             <View style={styles.imageStatus}>
               {renderSharedProgress(false)}
@@ -4990,12 +5035,7 @@ export default function PreviewScreen() {
               />
             </View>
           ) : videoError ? (
-            <View style={styles.imageStatus}>
-              <Text style={[styles.imageStatusTitle, { color: colors.white }]}>
-                Couldn't load video
-              </Text>
-              <Text style={styles.imageStatusSub}>{videoError}</Text>
-            </View>
+            renderLoadError("Couldn't load video", videoError, 'media')
           ) : (
             <View style={styles.imageStatus}>
               {renderSharedProgress(true)}
@@ -5022,12 +5062,7 @@ export default function PreviewScreen() {
               </Suspense>
             </Pressable>
           ) : audioError ? (
-            <View style={styles.imageStatus}>
-              <Text style={[styles.imageStatusTitle, { color: c.ink }]}>
-                Couldn't load audio
-              </Text>
-              <Text style={[styles.imageStatusSub, { color: c.ink3 }]}>{audioError}</Text>
-            </View>
+            renderLoadError("Couldn't load audio", audioError)
           ) : (
             <View style={styles.imageStatus}>
               {renderSharedProgress(false)}
@@ -5122,12 +5157,7 @@ export default function PreviewScreen() {
               )}
             </Pressable>
           ) : textError ? (
-            <View style={styles.imageStatus}>
-              <Text style={[styles.imageStatusTitle, { color: c.ink }]}>
-                Couldn't load file
-              </Text>
-              <Text style={[styles.imageStatusSub, { color: c.ink3 }]}>{textError}</Text>
-            </View>
+            renderLoadError("Couldn't load file", textError)
           ) : (
             <View style={styles.imageStatus}>
               {renderSharedProgress(false)}
@@ -5152,12 +5182,7 @@ export default function PreviewScreen() {
               </Suspense>
             </Pressable>
           ) : docxError ? (
-            <View style={styles.imageStatus}>
-              <Text style={[styles.imageStatusTitle, { color: c.ink }]}>
-                Couldn't open document
-              </Text>
-              <Text style={[styles.imageStatusSub, { color: c.ink3 }]}>{docxError}</Text>
-            </View>
+            renderLoadError("Couldn't open document", docxError)
           ) : (
             <View style={styles.imageStatus}>
               {renderSharedProgress(false)}
@@ -5178,12 +5203,7 @@ export default function PreviewScreen() {
               </Suspense>
             </Pressable>
           ) : sheetError ? (
-            <View style={styles.imageStatus}>
-              <Text style={[styles.imageStatusTitle, { color: c.ink }]}>
-                Couldn't open spreadsheet
-              </Text>
-              <Text style={[styles.imageStatusSub, { color: c.ink3 }]}>{sheetError}</Text>
-            </View>
+            renderLoadError("Couldn't open spreadsheet", sheetError)
           ) : (
             <View style={styles.imageStatus}>
               {renderSharedProgress(false)}
@@ -5286,12 +5306,7 @@ export default function PreviewScreen() {
             </View>
             </Pressable>
           ) : htmlError ? (
-            <View style={styles.imageStatus}>
-              <Text style={[styles.imageStatusTitle, { color: c.ink }]}>
-                Couldn't load page
-              </Text>
-              <Text style={[styles.imageStatusSub, { color: c.ink3 }]}>{htmlError}</Text>
-            </View>
+            renderLoadError("Couldn't load page", htmlError)
           ) : (
             <View style={styles.imageStatus}>
               {renderSharedProgress(false)}
@@ -5303,16 +5318,16 @@ export default function PreviewScreen() {
             // in this renderer).
             <Pressable style={styles.fullBleedFill} onPress={handleContentTap} testID="preview-content-tap">
               <Suspense fallback={<View style={styles.imageStatus}>{renderSharedProgress(false)}</View>}>
-                <ZipRenderer data={zipData} colors={c} />
+                <ZipRenderer
+                  data={zipData}
+                  colors={c}
+                  topInset={docContentInset.top}
+                  bottomInset={docContentInset.bottom}
+                />
               </Suspense>
             </Pressable>
           ) : zipError ? (
-            <View style={styles.imageStatus}>
-              <Text style={[styles.imageStatusTitle, { color: c.ink }]}>
-                Couldn't open archive
-              </Text>
-              <Text style={[styles.imageStatusSub, { color: c.ink3 }]}>{zipError}</Text>
-            </View>
+            renderLoadError("Couldn't open archive", zipError)
           ) : (
             <View style={styles.imageStatus}>
               {renderSharedProgress(false)}
@@ -5328,16 +5343,13 @@ export default function PreviewScreen() {
                   data={archiveData}
                   extension={(currentFileName ?? '').toLowerCase().split('.').pop() ?? 'tar'}
                   colors={c}
+                  topInset={docContentInset.top}
+                  bottomInset={docContentInset.bottom}
                 />
               </Suspense>
             </Pressable>
           ) : archiveError ? (
-            <View style={styles.imageStatus}>
-              <Text style={[styles.imageStatusTitle, { color: c.ink }]}>
-                Couldn't open archive
-              </Text>
-              <Text style={[styles.imageStatusSub, { color: c.ink3 }]}>{archiveError}</Text>
-            </View>
+            renderLoadError("Couldn't open archive", archiveError)
           ) : (
             <View style={styles.imageStatus}>
               {renderSharedProgress(false)}
@@ -5358,12 +5370,7 @@ export default function PreviewScreen() {
               </Suspense>
             </Pressable>
           ) : pptxError ? (
-            <View style={styles.imageStatus}>
-              <Text style={[styles.imageStatusTitle, { color: c.ink }]}>
-                Couldn't open presentation
-              </Text>
-              <Text style={[styles.imageStatusSub, { color: c.ink3 }]}>{pptxError}</Text>
-            </View>
+            renderLoadError("Couldn't open presentation", pptxError)
           ) : (
             <View style={styles.imageStatus}>
               {renderSharedProgress(false)}
@@ -5466,7 +5473,7 @@ export default function PreviewScreen() {
         fileId={currentFileId}
         filename={previewFileName}
         kindLabel={CATEGORY_LABELS[category] ?? 'File'}
-        sizeBytes={currentSizeBytes ?? null}
+        sizeBytes={shownSizeBytes ?? null}
         pageCount={pdfPageInfo?.total ?? null}
         extraRows={buildInfoSheetRows([
           ...(currentCreatedAt ? [{ label: 'Created', value: formatDate(currentCreatedAt) }] : []),
@@ -6115,6 +6122,16 @@ const styles = StyleSheet.create({
   },
 
   imageStatus: { alignItems: 'center', gap: 12 },
+  // Task 1592 — secondary action (brand rule: amber is for primary actions
+  // and encryption state only), so an outline, not a filled amber button.
+  loadRetryButton: {
+    marginTop: 4,
+    paddingHorizontal: 18,
+    paddingVertical: 9,
+    borderRadius: 999,
+    borderWidth: 1,
+  },
+  loadRetryText: { fontSize: 14, fontWeight: '600' },
   // 1346 — neither imageStatusTitle nor this base imageStatusSub bakes a
   // scheme-aware colour: this pair is shared verbatim by the always-dark
   // media branch (mediaStage error text) AND the doc branch (renderer error

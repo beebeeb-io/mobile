@@ -1,7 +1,8 @@
 // @ts-nocheck — bun runs this; `bun:test` types are not in the Expo tsconfig
 // Task 1583 — Info sheet rows + "Stored in" label.
 import { describe, expect, test } from 'bun:test';
-import { buildInfoSheetRows, storageLocationLabel } from './preview-info';
+import { buildInfoSheetRows, countActiveShareLinks, resolveInfoShareCount, storageLocationLabel } from './preview-info';
+import { formatShareStatus } from './preview-chrome';
 
 // The detail rows PreviewScreen builds for Guus's screenshot file
 // (_MGL8754.jpg, build 219), in the order `mediaDetailsRows` pushes them.
@@ -80,5 +81,45 @@ describe('storageLocationLabel', () => {
     expect(storageLocationLabel({ city: 'EU region' })).toBe('Europe');
     expect(storageLocationLabel({ city: 'Unknown' })).toBe('Europe');
     expect(storageLocationLabel({ city: ' ' })).toBe('Europe');
+  });
+});
+
+describe('resolveInfoShareCount — the Info sheet "Shared" row (task 1592 item 2)', () => {
+  const NOW = Date.parse('2026-09-27T22:00:00Z');
+  const never = async () => {
+    throw new Error('must not fetch when the server sent share_count');
+  };
+
+  test('a server with the fix: share_count on the single-file response is used as-is', async () => {
+    expect(await resolveInfoShareCount({ share_count: 2 }, never, NOW)).toBe(2);
+    expect(await resolveInfoShareCount({ share_count: 0 }, never, NOW)).toBe(0);
+  });
+
+  test('an older server (no share_count): counts the owner\'s active links instead of saying "Not shared"', async () => {
+    const links = [
+      { expires_at: null },
+      { expires_at: '2026-10-04T20:45:15Z' },
+      { expires_at: '2026-09-20T00:00:00Z' }, // expired — the listing does not count it
+    ];
+    const count = await resolveInfoShareCount({}, async () => links, NOW);
+    expect(count).toBe(2);
+    expect(formatShareStatus(count)).toBe('Shared · 2 links');
+  });
+
+  test('share state unknown (fetch fails, e.g. not the owner) → null, the row is hidden', async () => {
+    const count = await resolveInfoShareCount(
+      { share_count: undefined },
+      async () => {
+        throw new Error('404');
+      },
+      NOW,
+    );
+    expect(count).toBeNull();
+  });
+
+  test('countActiveShareLinks mirrors `expires_at IS NULL OR expires_at > NOW()`', () => {
+    expect(countActiveShareLinks([], NOW)).toBe(0);
+    expect(countActiveShareLinks([{ expires_at: '2026-09-27T22:00:00Z' }], NOW)).toBe(0);
+    expect(countActiveShareLinks([{ expires_at: '2026-09-27T22:00:01Z' }, {}], NOW)).toBe(2);
   });
 });

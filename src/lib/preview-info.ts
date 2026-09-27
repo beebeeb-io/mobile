@@ -88,3 +88,45 @@ export function storageLocationLabel(region: { city?: string | null } | null | u
 /** Where the Info sheet opens: the top, or scrolled to the Versions section
  * (the bottom bar's "Versions" button and the ⋯ menu's "Version history"). */
 export type InfoSheetFocus = 'info' | 'versions';
+
+/**
+ * Task 1592 item 2 — how many ACTIVE link shares a file has, for the Info
+ * sheet's "Shared" row.
+ *
+ * The file listings carry `share_count`, but `GET /api/v1/files/:id` did not
+ * (server PR 1592 adds it, owner only), so the sheet read `undefined` and
+ * said "Not shared" for every file — a false statement about a privacy
+ * fact. Order:
+ * 1. `share_count` on the single-file response (a server with the fix);
+ * 2. otherwise (an older server) the owner's links from
+ *    `GET /api/v1/shares/by-file/:id`, counted with the listing's own
+ *    definition (`countActiveShareLinks`);
+ * 3. otherwise `null` = unknown: the sheet hides the row rather than guess.
+ */
+export async function resolveInfoShareCount(
+  file: { share_count?: number | null },
+  fetchLinks: () => Promise<ReadonlyArray<{ expires_at?: string | null }>>,
+  now: number = Date.now(),
+): Promise<number | null> {
+  if (typeof file.share_count === 'number' && Number.isFinite(file.share_count)) {
+    return Math.max(0, file.share_count);
+  }
+  try {
+    return countActiveShareLinks(await fetchLinks(), now);
+  } catch {
+    return null;
+  }
+}
+
+/** The listing's definition of an active link: no expiry, or an expiry in
+ * the future (the server's `expires_at IS NULL OR expires_at > NOW()`). */
+export function countActiveShareLinks(
+  links: ReadonlyArray<{ expires_at?: string | null }>,
+  now: number = Date.now(),
+): number {
+  return links.filter((l) => {
+    if (!l.expires_at) return true;
+    const t = Date.parse(l.expires_at);
+    return Number.isNaN(t) ? true : t > now;
+  }).length;
+}

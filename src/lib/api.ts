@@ -2199,6 +2199,23 @@ export async function listMyShares(): Promise<MyShareLink[]> {
   return data.shares ?? [];
 }
 
+/** One of the owner's active-key link shares of a file (`GET /api/v1/shares/by-file/:id`). */
+export interface FileShareLink {
+  id: string;
+  created_at?: string;
+  expires_at?: string | null;
+}
+
+/**
+ * Task 1592 — the owner's link shares of ONE file (key present; the server
+ * does not filter expired ones — see `countActiveShareLinks`). 404 when the
+ * caller does not own the file.
+ */
+export async function listFileShareLinks(fileId: string): Promise<FileShareLink[]> {
+  const data = await request<{ shares?: FileShareLink[] }>('GET', `/api/v1/shares/by-file/${fileId}`);
+  return data.shares ?? [];
+}
+
 export interface SharingContact {
   user_id: string;
   email: string;

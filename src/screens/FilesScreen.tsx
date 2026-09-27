@@ -68,6 +68,9 @@ import { getCachedThumbnail } from '../lib/thumbnail-cache';
 import { getLocalIdentifier } from '../lib/local-identifier-map';
 import { PLAN_MANAGEMENT_NOTE } from '../lib/billing-copy';
 import type { FileEntry, StorageUsage, ProofOfExistence, PresenceUser, SyncNode } from '../lib/api';
+import { loadRegionCity } from '../lib/storage-region';
+import { storageLocationLabel } from '../lib/preview-info';
+import { rowNameDisplay } from '../lib/row-name';
 import type { RootStackParamList, TabParamList } from '../App';
 import { useCrypto } from '../lib/crypto-context';
 import { decryptMetadata as decryptMetadataWithKey } from '../../modules/beebeeb-crypto';
@@ -518,6 +521,8 @@ function HighlightedName({
 interface FileRowItemProps {
   item: FileEntry;
   decryptedName: string | undefined;
+  /** Task 1592 — the batch decrypt could not decrypt this row's name. */
+  nameUnavailable?: boolean;
   onPress: (item: FileEntry) => void;
   onLongPress: (item: FileEntry) => void;
   onShare: (item: FileEntry) => void;
@@ -545,6 +550,7 @@ interface FileRowItemProps {
 const FileRowItem = React.memo(function FileRowItem({
   item,
   decryptedName,
+  nameUnavailable = false,
   onPress,
   onLongPress,
   onShare,
@@ -565,8 +571,17 @@ const FileRowItem = React.memo(function FileRowItem({
   const { colors: c } = useTheme();
   const swipeableRef = useRef<Swipeable>(null);
   const category = fileCategory(item);
-  const isEncryptedFallback = !decryptedName && !!item.name_encrypted?.startsWith('{');
-  const nameText = decryptedName ?? displayName(item);
+  // Task 1592 — pending → placeholder bar; failed → settled words (never an
+  // endless placeholder); otherwise the name.
+  const nameDisplay = rowNameDisplay({
+    decryptedName,
+    fallbackName: displayName(item),
+    nameEncrypted: item.name_encrypted,
+    isFolder: item.is_folder,
+    nameUnavailable,
+  });
+  const isEncryptedFallback = nameDisplay.kind === 'pending';
+  const nameText = nameDisplay.kind === 'pending' ? '' : nameDisplay.text;
   const isPendingUpload = !item.is_folder && item.is_uploading === true;
 
   const handleSwipeOpen = useCallback((_dir: 'left' | 'right', swipeable: Swipeable) => {
@@ -652,7 +667,7 @@ const FileRowItem = React.memo(function FileRowItem({
             <HighlightedName
               name={nameText}
               query={highlightQuery}
-              style={[styles.fileName, { color: c.ink }]}
+              style={[styles.fileName, { color: nameDisplay.kind === 'unavailable' ? c.ink3 : c.ink }, nameDisplay.kind === 'unavailable' && styles.nameUnavailable]}
               matchColor={c.amberDeep}
               numberOfLines={2}
             />
@@ -759,6 +774,8 @@ const FileRowItem = React.memo(function FileRowItem({
 interface FileGridItemProps {
   item: FileEntry;
   decryptedName: string | undefined;
+  /** Task 1592 — the batch decrypt could not decrypt this row's name. */
+  nameUnavailable?: boolean;
   onPress: (item: FileEntry) => void;
   onLongPress: (item: FileEntry) => void;
   onTrustPress: (item: FileEntry) => void;
@@ -785,6 +802,7 @@ interface FileGridItemProps {
 const FileGridItem = React.memo(function FileGridItem({
   item,
   decryptedName,
+  nameUnavailable = false,
   onPress,
   onLongPress,
   onTrustPress,
@@ -803,8 +821,17 @@ const FileGridItem = React.memo(function FileGridItem({
 }: FileGridItemProps) {
   const { colors: c } = useTheme();
   const category = fileCategory(item);
-  const isEncryptedFallback = !decryptedName && !!item.name_encrypted?.startsWith('{');
-  const nameText = decryptedName ?? displayName(item);
+  // Task 1592 — pending → placeholder bar; failed → settled words (never an
+  // endless placeholder); otherwise the name.
+  const nameDisplay = rowNameDisplay({
+    decryptedName,
+    fallbackName: displayName(item),
+    nameEncrypted: item.name_encrypted,
+    isFolder: item.is_folder,
+    nameUnavailable,
+  });
+  const isEncryptedFallback = nameDisplay.kind === 'pending';
+  const nameText = nameDisplay.kind === 'pending' ? '' : nameDisplay.text;
   const isFolder = item.is_folder;
   const isPendingUpload = !isFolder && item.is_uploading === true;
 
@@ -858,7 +885,7 @@ const FileGridItem = React.memo(function FileGridItem({
             <HighlightedName
               name={nameText}
               query={highlightQuery}
-              style={[styles.gridName, { color: c.ink }]}
+              style={[styles.gridName, { color: nameDisplay.kind === 'unavailable' ? c.ink3 : c.ink }, nameDisplay.kind === 'unavailable' && styles.nameUnavailable]}
               matchColor={c.amberDeep}
               numberOfLines={2}
             />
@@ -1327,6 +1354,9 @@ export default function FilesScreen() {
   // Crypto
   const { isUnlocked, unlock, unlockAttempted, decryptMetadata, decryptNames, encryptChunk, encryptMetadata, getFileKeyBytes, getRequestContentKey, getMasterKeyHandleId } = useCrypto();
   const [decryptedNames, setDecryptedNames] = useState<Record<string, string>>({});
+  // Task 1592 — rows whose name the batch decrypt could not decrypt (shown as
+  // "Folder — name unavailable" instead of an endless placeholder).
+  const [unavailableNameIds, setUnavailableNameIds] = useState<Record<string, true>>({});
   // Task 0807: persistent (fileId,version) name cache + a ref mirror of
   // decryptedNames so the per-folder decrypt effect can read the latest names
   // without re-running on every name update (which would loop).
@@ -1604,6 +1634,7 @@ export default function FilesScreen() {
     if (!isUnlocked) {
       setDecryptedNames({});
       setDecryptedMimeTypes({});
+      setUnavailableNameIds({});
       return;
     }
     const folderId = currentFolder.id;
@@ -1659,6 +1690,7 @@ export default function FilesScreen() {
       const normal = misses.filter((f) => !isRequestUpload(f));
       const appliedNames: Record<string, string> = {};
       const appliedMimes: Record<string, string | null> = {};
+      const failedNames: Record<string, true> = {};
 
       if (normal.length > 0) {
         try {
@@ -1669,7 +1701,20 @@ export default function FilesScreen() {
           if (cancelled) return;
           results.forEach((r, i) => {
             const f = normal[i];
-            if (!f || !r || r.error || !r.name) return;
+            if (!f || !r) return;
+            if (r.error || !r.name) {
+              // Task 1592 — a per-row failure is settled (not "still
+              // loading"). A JS-only build without the native batch is not.
+              if (r.error !== 'decryptNames unavailable') {
+                failedNames[f.id] = true;
+                recordRuntimeTrace('files.name_decrypt_failed', {
+                  fileId: f.id,
+                  isFolder: f.is_folder,
+                  error: r.error ?? 'empty name',
+                });
+              }
+              return;
+            }
             appliedNames[f.id] = r.name;
             appliedMimes[f.id] = r.mimeType ?? null;
           });
@@ -1727,6 +1772,9 @@ export default function FilesScreen() {
 
       if (Object.keys(appliedNames).length > 0) {
         setDecryptedNames((prev) => ({ ...prev, ...appliedNames }));
+      }
+      if (Object.keys(failedNames).length > 0) {
+        setUnavailableNameIds((prev) => ({ ...prev, ...failedNames }));
       }
       if (Object.keys(appliedMimes).length > 0) {
         setDecryptedMimeTypes((prev) => ({ ...prev, ...appliedMimes }));
@@ -3508,9 +3556,11 @@ export default function FilesScreen() {
       }
     };
 
-    const showDetails = () => {
-      const loc = storageLocation(item.storage_pool_id);
-      const storedIn = loc.flag ? `${loc.flag} ${loc.label}` : loc.label;
+    const showDetails = async () => {
+      // Task 1592 — the same "Stored in" source as the Info and Encryption
+      // details sheets (GET /api/v1/region); "Europe" if it cannot be read.
+      const city = await loadRegionCity().catch(() => null);
+      const storedIn = storageLocationLabel({ city });
       const lines = item.is_folder
         ? [
             `Name:      ${name}`,
@@ -3596,7 +3646,7 @@ export default function FilesScreen() {
             showToast({ type: 'success', message: `"${name}" is now unlocked` });
           })();
           return;
-        case 'Details': showDetails(); return;
+        case 'Details': void showDetails(); return;
       }
     };
 
@@ -3990,6 +4040,7 @@ export default function FilesScreen() {
     <FileRowItem
       item={withDecryptedMime(item)}
       decryptedName={decryptedNames[item.id]}
+      nameUnavailable={!!unavailableNameIds[item.id]}
       onPress={openFile}
       onLongPress={handleLongPress}
       onShare={handleSwipeShare}
@@ -4007,7 +4058,7 @@ export default function FilesScreen() {
       testID={isShowingSearchResults ? `search-result-${item.id}` : fileRowTestId(item)}
       highlightQuery={searchHighlightQuery}
     />
-  ), [decryptedNames, withDecryptedMime, openFile, handleLongPress, handleSwipeShare, handleSwipeDelete, openTrust, selectMode, selectedIds, toggleSelect, sortOrder, offlineStatusFor, proofs, lockedFileIds, lockStateReady, isShowingSearchResults, searchHighlightQuery, fileRowTestId]);
+  ), [decryptedNames, unavailableNameIds, withDecryptedMime, openFile, handleLongPress, handleSwipeShare, handleSwipeDelete, openTrust, selectMode, selectedIds, toggleSelect, sortOrder, offlineStatusFor, proofs, lockedFileIds, lockStateReady, isShowingSearchResults, searchHighlightQuery, fileRowTestId]);
 
   // Grid sizing — 3 columns, evenly spaced, responsive to screen width
   const GRID_COLUMNS = 3;
@@ -4022,6 +4073,7 @@ export default function FilesScreen() {
     <FileGridItem
       item={withDecryptedMime(item)}
       decryptedName={decryptedNames[item.id]}
+      nameUnavailable={!!unavailableNameIds[item.id]}
       onPress={openFile}
       onLongPress={handleLongPress}
       onTrustPress={openTrust}
@@ -4038,7 +4090,7 @@ export default function FilesScreen() {
       testID={isShowingSearchResults ? `search-result-${item.id}` : fileRowTestId(item)}
       highlightQuery={searchHighlightQuery}
     />
-  ), [decryptedNames, withDecryptedMime, openFile, handleLongPress, openTrust, selectMode, selectedIds, toggleSelect, sortOrder, gridCardWidth, offlineStatusFor, proofs, lockedFileIds, lockStateReady, isShowingSearchResults, searchHighlightQuery, fileRowTestId]);
+  ), [decryptedNames, unavailableNameIds, withDecryptedMime, openFile, handleLongPress, openTrust, selectMode, selectedIds, toggleSelect, sortOrder, gridCardWidth, offlineStatusFor, proofs, lockedFileIds, lockStateReady, isShowingSearchResults, searchHighlightQuery, fileRowTestId]);
 
   const renderEmpty = () => {
     if (loading) return null;
@@ -5072,6 +5124,7 @@ const styles = StyleSheet.create({
   proofBadge: { flexShrink: 0, marginLeft: 2 },
   lockedBadge: { flexShrink: 0, marginLeft: 2 },
   fileName: { fontSize: 14, fontWeight: '500', flexShrink: 1 },
+  nameUnavailable: { fontStyle: 'italic' },
   fileNameEncrypted: { fontStyle: 'italic' },
   fileMeta: { fontSize: 11, marginTop: 2 },
   cryptoMeta: { fontFamily: fonts.mono, fontSize: 10, marginTop: 1, letterSpacing: 0.2 },

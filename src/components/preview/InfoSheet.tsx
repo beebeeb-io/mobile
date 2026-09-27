@@ -33,12 +33,13 @@ import { fonts, radii } from '../../theme';
 import type { Colors } from '../../theme';
 import { useTheme } from '../../lib/theme-context';
 import { useCrypto } from '../../lib/crypto-context';
-import { getFile, getRegion, listFileVersions, type FileVersionEntry } from '../../lib/api';
+import { getFile, listFileShareLinks, listFileVersions, type FileVersionEntry } from '../../lib/api';
+import { useRegionCity } from '../../lib/storage-region';
 import { encryptedMetadataPayloadToBytes } from '../../lib/encrypted-metadata';
 import { BottomSheet, BottomSheetScrollView } from '../sheet/BottomSheet';
 import { formatBytes as formatSize } from '../../lib/format';
 import { buildInfoSubline, formatShareStatus, resolveFolderLabel } from '../../lib/preview-chrome';
-import { storageLocationLabel, type InfoSheetFocus } from '../../lib/preview-info';
+import { resolveInfoShareCount, storageLocationLabel, type InfoSheetFocus } from '../../lib/preview-info';
 
 /**
  * Task 1583 — the stacking slot of the whole sheet layer (scrim + sheet)
@@ -54,9 +55,6 @@ export const INFO_SHEET_Z_INDEX = 18;
  * plus a gap, below the top inset: the Info sheet's large detent stops here
  * so its handle is never under the close / title / ⋯ buttons. */
 const PREVIEW_CHROME_CLEARANCE = 68;
-
-/** `GET /api/v1/region` rarely changes; one fetch per app run is enough. */
-let cachedRegionCity: string | null | undefined;
 
 export interface InfoSheetExtraRow {
   label: string;
@@ -127,7 +125,8 @@ export function InfoSheet({
   const { decryptMetadata } = useCrypto();
 
   const [parentId, setParentId] = useState<string | null | undefined>(undefined);
-  const [shareCount, setShareCount] = useState<number | null>(null);
+  /** Task 1592 — `undefined` while loading, `null` when unknown (row hidden). */
+  const [shareCount, setShareCount] = useState<number | null | undefined>(undefined);
   const [modifiedLabel, setModifiedLabel] = useState<string | null>(null);
   const [folderName, setFolderName] = useState<string | null>(null);
   const [metaLoading, setMetaLoading] = useState(false);
@@ -138,28 +137,13 @@ export function InfoSheet({
   /** True once THIS open's version fetch has settled (the state flags still
    * hold the previous open's values during the first render after opening). */
   const versionsLoadedRef = useRef(false);
-  const [regionCity, setRegionCity] = useState<string | null | undefined>(cachedRegionCity);
   const scrollRef = useRef<React.ElementRef<typeof BottomSheetScrollView>>(null);
   const [versionsY, setVersionsY] = useState<number | null>(null);
 
   // Task 1583 — "Stored in" names the city (brand rule), from the server's
   // own "stored in {city}" source. A failure leaves `null` → "Europe".
-  useEffect(() => {
-    if (!visible || cachedRegionCity !== undefined) return;
-    let cancelled = false;
-    getRegion()
-      .then((r) => {
-        const city = r.city ?? null;
-        cachedRegionCity = city;
-        if (!cancelled) setRegionCity(city);
-      })
-      .catch(() => {
-        if (!cancelled) setRegionCity(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [visible]);
+  // Task 1592 — the same shared source as the Encryption details sheet.
+  const regionCity = useRegionCity(visible);
 
   // Task 1583 — "Versions" lands on the Versions section, "Info" on the top.
   useEffect(() => {
@@ -192,13 +176,17 @@ export function InfoSheet({
     setMetaError(null);
     setParentId(undefined);
     setFolderName(null);
+    setShareCount(undefined);
     (async () => {
       try {
         const file = await getFile(fileId);
         if (cancelled) return;
         setParentId(file.parent_id ?? null);
-        setShareCount(file.share_count ?? 0);
         setModifiedLabel(formatModified(file.updated_at));
+        // Task 1592 — never "Not shared" by default (see resolveInfoShareCount).
+        void resolveInfoShareCount(file, () => listFileShareLinks(fileId)).then((count) => {
+          if (!cancelled) setShareCount(count);
+        });
 
         if (file.parent_id) {
           try {
@@ -256,7 +244,7 @@ export function InfoSheet({
     pageCount,
   });
   const folderLabel = resolveFolderLabel(parentId, folderName);
-  const shareLabel = formatShareStatus(shareCount);
+  const shareLabel = shareCount === undefined ? '…' : shareCount === null ? null : formatShareStatus(shareCount);
 
   const styles = useMemo(() => infoSheetStyles(c), [c]);
   const locationLabel = storageLocationLabel({ city: regionCity ?? null });
@@ -305,7 +293,9 @@ export function InfoSheet({
           <View style={styles.kvBlock}>
             <KvRow styles={styles} label="Modified" value={modifiedLabel ?? (metaLoading ? '…' : '—')} />
             <KvRow styles={styles} label="Folder" value={folderLabel} />
-            <KvRow styles={styles} label="Shared" value={shareLabel} />
+            {shareLabel != null && (
+              <KvRow styles={styles} label="Shared" value={shareLabel} testID="preview-info-shared" />
+            )}
             {extraRows.map((row) => (
               <KvRow styles={styles} key={row.label} label={row.label} value={row.value} mono={row.mono} />
             ))}

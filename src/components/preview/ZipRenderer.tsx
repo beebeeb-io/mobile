@@ -32,6 +32,7 @@ import { radii } from '../../theme';
 import type { Colors } from '../../theme';
 import { type ZipEntry, type ZipRow, levelRows, isMacOsNoise } from '../../lib/zip-tree';
 import { formatBytes } from '../../lib/format';
+import { formatDate, zipDosDateAsLocal } from '../../lib/date-format';
 
 interface ZipSummary {
   entries: ZipEntry[];
@@ -43,6 +44,16 @@ interface ZipSummary {
 interface ZipRendererProps {
   data: ArrayBuffer;
   colors: Colors;
+  /**
+   * Task 1592 — the preview is full-bleed (PreviewScreen's `fullBleedFill`),
+   * with the close / title / ⋯ chrome floating over the top and the action bar
+   * over the bottom. Without these the "N files · M folders" header sat under
+   * the status bar and the first row under the close button. Same contract as
+   * XlsxRenderer: `topInset` pads the whole container (header stays pinned
+   * below the chrome), `bottomInset` is the list's scroll-content inset.
+   */
+  topInset?: number;
+  bottomInset?: number;
 }
 
 type IoniconName = React.ComponentProps<typeof Ionicons>['name'];
@@ -79,7 +90,9 @@ async function parseZip(arrayBuffer: ArrayBuffer): Promise<ZipSummary> {
       name,
       isFolder: !!f.dir,
       uncompressedSize,
-      modifiedAt: f.date ?? null,
+      // Task 1592 — a ZIP time is zone-less local time; JSZip decodes it as
+      // UTC, which moved a 22:38 file to the next day east of UTC.
+      modifiedAt: zipDosDateAsLocal(f.date),
       ext,
     });
   });
@@ -111,12 +124,9 @@ function zipEntryIcon(entry: ZipEntry): IoniconName {
   return 'document-outline';
 }
 
+// Task 1592 — the device locale's date form (src/lib/date-format.ts).
 function formatZipDate(d: Date | null): string | null {
-  if (!d || isNaN(d.getTime())) return null;
-  const month = d.toLocaleString('en', { month: 'short' });
-  const day = d.getDate();
-  const year = d.getFullYear();
-  return `${month} ${day}, ${year}`;
+  return formatDate(d) || null;
 }
 
 // 1291 — single-entry extraction cap. The whole archive is already in memory (data:
@@ -147,7 +157,7 @@ async function extractAndShare(data: ArrayBuffer, entry: ZipEntry): Promise<void
   }
 }
 
-export function ZipRenderer({ data, colors: c }: ZipRendererProps) {
+export function ZipRenderer({ data, colors: c, topInset = 0, bottomInset = 0 }: ZipRendererProps) {
   const [summary, setSummary] = useState<ZipSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
   // Current folder prefix being browsed ('' = archive root, 'a/b/' = nested).
@@ -190,7 +200,7 @@ export function ZipRenderer({ data, colors: c }: ZipRendererProps) {
     // ink tokens, matching every other colour in this file (c.line, c.ink,
     // c.ink3 throughout the row/header rendering below).
     return (
-      <View style={styles.imageStatus}>
+      <View style={[styles.imageStatus, { paddingTop: topInset + 24 }]}>
         <Text style={[styles.imageStatusTitle, { color: c.ink }]}>
           Couldn't open archive
         </Text>
@@ -201,7 +211,7 @@ export function ZipRenderer({ data, colors: c }: ZipRendererProps) {
 
   if (!summary) {
     return (
-      <View style={styles.imageStatus}>
+      <View style={[styles.imageStatus, { paddingTop: topInset + 24 }]}>
         <ActivityIndicator color={c.amber} />
         <Text style={[styles.imageStatusSub, { color: c.ink3 }]}>Reading archive…</Text>
       </View>
@@ -308,7 +318,7 @@ export function ZipRenderer({ data, colors: c }: ZipRendererProps) {
   };
 
   return (
-    <View style={[styles.zipContainer, { backgroundColor: c.paper }]}>
+    <View style={[styles.zipContainer, { backgroundColor: c.paper, paddingTop: topInset }]}>
       <View style={[styles.zipHeader, { borderBottomColor: c.line }]}>
         <View style={styles.zipHeaderRow}>
           <Text style={[styles.zipHeaderTitle, { color: c.ink }]}>
@@ -376,6 +386,7 @@ export function ZipRenderer({ data, colors: c }: ZipRendererProps) {
             item.kind === 'folder' ? `d:${i}:${item.name}` : `f:${i}:${item.entry.path}`
           }
           renderItem={renderRow}
+          contentContainerStyle={bottomInset ? { paddingBottom: bottomInset } : undefined}
           initialNumToRender={20}
           windowSize={11}
           removeClippedSubviews
