@@ -55,6 +55,7 @@ import {
   abandonTextFileUpload,
   buildKeepBothName,
   createSingleFlight,
+  ownsInFlightUpload,
   runTextSave,
   saveFailedAfterUploadStarted,
   saveTextFileVersion,
@@ -2679,6 +2680,7 @@ export default function PreviewScreen() {
         },
         uploadStarted: saveFailedAfterUploadStarted,
         abandon: () => abandonTextFileUpload(currentFileId),
+        ownsInFlightUpload: () => ownsInFlightUpload(currentFileId),
         readCurrentVersion: () => getFileCurrentVersion(currentFileId),
       },
       { baseVersionNumber: meta.versionNumber },
@@ -2698,7 +2700,11 @@ export default function PreviewScreen() {
         setConflict({ freshVersionNumber: result.freshVersionNumber });
         return;
       case 'busy':
-        showSaveFailed('An earlier save of this file is still finishing. Try again in a moment.');
+        showSaveFailed(
+          result.elsewhere
+            ? 'Another upload of this file is still in progress, possibly from another device. Try again in a moment.'
+            : 'An earlier save of this file is still finishing. Try again in a moment.',
+        );
         return;
       case 'error':
         showSaveFailed(friendlyError(result.error));

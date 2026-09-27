@@ -23,7 +23,7 @@ function withMarker(err: Error, uploadStarted: boolean) {
   return err
 }
 
-function makeDeps(script: Array<(base: number) => number | Error>, opts: { current?: number } = {}) {
+function makeDeps(script: Array<(base: number) => number | Error>, opts: { current?: number; owned?: boolean } = {}) {
   const calls = { save: [] as number[], abandon: 0, readCurrent: 0 }
   let i = 0
   const deps = {
@@ -38,6 +38,7 @@ function makeDeps(script: Array<(base: number) => number | Error>, opts: { curre
     abandon: async () => {
       calls.abandon++
     },
+    ownsInFlightUpload: async () => opts.owned ?? true,
     readCurrentVersion: async () => {
       calls.readCurrent++
       return opts.current ?? 7
@@ -76,7 +77,7 @@ describe('runTextSave — stuck upload from an interrupted earlier save (Issue 1
   test('in-progress again after one abandon -> busy (bounded, no loop, no dialog)', async () => {
     const { deps, calls } = makeDeps([() => IN_PROGRESS()])
     const result = await runTextSave(deps, { baseVersionNumber: 4 })
-    expect(result).toEqual({ kind: 'busy' })
+    expect(result).toEqual({ kind: 'busy', elsewhere: false })
     expect(calls.save).toHaveLength(2)
     expect(calls.abandon).toBe(1)
   })
@@ -102,6 +103,26 @@ describe('runTextSave — stuck upload from an interrupted earlier save (Issue 1
     }
     const result = await runTextSave(deps, { baseVersionNumber: 1 })
     expect(result).toEqual({ kind: 'saved', versionNumber: 2 })
+  })
+})
+
+describe('runTextSave — an upload started on ANOTHER device (Codex P1, PR #134)', () => {
+  test('in-progress 409 for an upload this device did not start -> busy elsewhere, never abandoned', async () => {
+    const { deps, calls } = makeDeps([() => IN_PROGRESS(), (base) => base + 1], { owned: false })
+    const result = await runTextSave(deps, { baseVersionNumber: 4 })
+    expect(result).toEqual({ kind: 'busy', elsewhere: true })
+    expect(calls.abandon).toBe(0)
+    expect(calls.save).toEqual([4])
+  })
+
+  test('an ownership check that throws is treated as not ours', async () => {
+    const { deps, calls } = makeDeps([() => IN_PROGRESS()])
+    deps.ownsInFlightUpload = async () => {
+      throw new Error('storage unavailable')
+    }
+    const result = await runTextSave(deps, { baseVersionNumber: 4 })
+    expect(result).toEqual({ kind: 'busy', elsewhere: true })
+    expect(calls.abandon).toBe(0)
   })
 })
 

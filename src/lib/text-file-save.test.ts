@@ -6,6 +6,17 @@ import { beforeEach, describe, expect, mock, test } from 'bun:test'
 const uploadCalls: Array<Record<string, unknown>> = []
 let uploadImpl: (params: Record<string, unknown>) => Promise<unknown> = async () => ({ id: 'f', version_number: 2 })
 const abandonCalls: string[] = []
+let abandonFails = false
+
+const store = new Map<string, string>()
+mock.module('@react-native-async-storage/async-storage', () => ({
+  default: {
+    getItem: async (key: string) => store.get(key) ?? null,
+    setItem: async (key: string, value: string) => {
+      store.set(key, value)
+    },
+  },
+}))
 
 class ApiError extends Error {
   constructor(public status: number, message: string, public code?: string) {
@@ -21,12 +32,14 @@ mock.module('./api', () => ({
   },
   abandonFileUpload: async (id: string) => {
     abandonCalls.push(id)
+    if (abandonFails) throw new ApiError(0, 'offline')
   },
 }))
 
 const {
   abandonTextFileUpload,
   isStaleVersionConflict,
+  ownsInFlightUpload,
   saveFailedAfterUploadStarted,
   saveTextFileVersion,
 } = await import('./text-file-save')
@@ -37,7 +50,12 @@ beforeEach(() => {
   uploadCalls.length = 0
   abandonCalls.length = 0
   uploadImpl = async () => ({ id: 'f', version_number: 2 })
+  abandonFails = false
+  store.clear()
 })
+
+const progress = (params: Record<string, unknown>) =>
+  (params.onProgress as (p: unknown) => void)({ phase: 'preparing' })
 
 describe('saveTextFileVersion', () => {
   test('sends chunks over a FOREGROUND transfer (the editor is waiting on it)', async () => {
@@ -76,5 +94,50 @@ describe('abandonTextFileUpload', () => {
   test('calls the abandon endpoint and swallows its failure', async () => {
     await abandonTextFileUpload('file-1')
     expect(abandonCalls).toEqual(['file-1'])
+  })
+})
+
+describe('owned-upload ledger (Codex P1: never abandon another device\'s upload)', () => {
+  test('an upload interrupted after init is recorded as ours', async () => {
+    uploadImpl = async (params) => {
+      progress(params)
+      throw new ApiError(0, 'Could not reach the server.')
+    }
+    await saveTextFileVersion({ fileId: 'f1', nameEncrypted: 'n', text: 'hi', encryptChunkFn }).catch(() => {})
+    expect(await ownsInFlightUpload('f1')).toBe(true)
+    expect(await ownsInFlightUpload('other')).toBe(false)
+  })
+
+  test('a completed upload is no longer ours', async () => {
+    uploadImpl = async (params) => {
+      progress(params)
+      return { id: 'f1', version_number: 3 }
+    }
+    await saveTextFileVersion({ fileId: 'f1', nameEncrypted: 'n', text: 'hi', encryptChunkFn })
+    expect(await ownsInFlightUpload('f1')).toBe(false)
+  })
+
+  test('an init-time "already in progress" 409 is never recorded as ours, even after a pre-init progress event (v1 path)', async () => {
+    uploadImpl = async (params) => {
+      progress(params)
+      throw new ApiError(409, 'upload is already in progress for this file', 'upload is already in progress for this file')
+    }
+    const err = await saveTextFileVersion({ fileId: 'f1', nameEncrypted: 'n', text: 'hi', encryptChunkFn }).catch((e) => e)
+    expect(await ownsInFlightUpload('f1')).toBe(false)
+    expect(saveFailedAfterUploadStarted(err)).toBe(false)
+  })
+
+  test('a successful abandon clears ownership; a failed one keeps it for the next try', async () => {
+    uploadImpl = async (params) => {
+      progress(params)
+      throw new ApiError(0, 'offline')
+    }
+    await saveTextFileVersion({ fileId: 'f1', nameEncrypted: 'n', text: 'hi', encryptChunkFn }).catch(() => {})
+    abandonFails = true
+    await abandonTextFileUpload('f1')
+    expect(await ownsInFlightUpload('f1')).toBe(true)
+    abandonFails = false
+    await abandonTextFileUpload('f1')
+    expect(await ownsInFlightUpload('f1')).toBe(false)
   })
 })

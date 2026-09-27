@@ -17,8 +17,9 @@
  *     concurrency conflict: someone else saved first.
  *
  * `classifySaveConflict` tells them apart, `runTextSave` recovers from the
- * first (abandon the stuck upload via `POST /files/:id/upload/abandon`, then
- * retry once) and hands the second back to the caller, which shows the
+ * first when THIS device started the stuck upload (abandon it via
+ * `POST /files/:id/upload/abandon`, then retry once; an upload started
+ * elsewhere is never abandoned) and hands the second back to the caller, which shows the
  * existing conflict dialog exactly as before (lead correction, 2026-09-27:
  * no setting — the popup Guus reported was the `file_updated` push, not
  * this dialog).
@@ -63,6 +64,12 @@ export interface TextSaveDeps {
   uploadStarted: (err: unknown) => boolean
   /** `POST /files/:id/upload/abandon` — best-effort, must never throw into the flow. */
   abandon: () => Promise<void>
+  /**
+   * True only when THIS device started the file's in-flight upload (see
+   * `owned-upload-ledger.ts`). The abandon endpoint is file-scoped, so an
+   * upload running on another device must never be abandoned from here.
+   */
+  ownsInFlightUpload: () => Promise<boolean>
   /** The file's CURRENT version on the server (`GET /files/:id/versions`). */
   readCurrentVersion: () => Promise<number>
 }
@@ -71,8 +78,12 @@ export type TextSaveResult =
   | { kind: 'saved'; versionNumber: number }
   /** A real stale-version conflict: another device saved first. */
   | { kind: 'conflict'; freshVersionNumber: number }
-  /** An earlier save of this file is still in flight and could not be cleared. */
-  | { kind: 'busy' }
+  /**
+   * An upload of this file is still in flight and was not cleared:
+   * `elsewhere` when this device did not start it (another device, or an
+   * upload whose ownership can't be proven), else our own retry hit it again.
+   */
+  | { kind: 'busy'; elsewhere: boolean }
   | { kind: 'error'; error: unknown }
 
 export interface TextSaveOptions {
@@ -104,7 +115,14 @@ export async function runTextSave(deps: TextSaveDeps, opts: TextSaveOptions): Pr
     } catch (err) {
       const kind = classifySaveConflict(err)
       if (kind === 'upload-in-progress') {
-        if (clearedStuckUpload) return { kind: 'busy' }
+        if (clearedStuckUpload) return { kind: 'busy', elsewhere: false }
+        let owned = false
+        try {
+          owned = await deps.ownsInFlightUpload()
+        } catch {
+          owned = false
+        }
+        if (!owned) return { kind: 'busy', elsewhere: true }
         clearedStuckUpload = true
         await safeAbandon(deps)
         continue
@@ -122,7 +140,7 @@ export async function runTextSave(deps: TextSaveDeps, opts: TextSaveOptions): Pr
       return { kind: 'error', error: err }
     }
   }
-  return { kind: 'busy' }
+  return { kind: 'busy', elsewhere: false }
 }
 
 /**
