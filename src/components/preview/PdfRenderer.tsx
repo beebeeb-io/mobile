@@ -24,9 +24,29 @@ interface PdfRendererProps {
    * total page count. PreviewScreen owns the visible pill; this component
    * renders none of its own. */
   onPageInfo?: (info: { current: number; total: number }) => void;
+  /**
+   * Round 5 (task 1563, PR #123) — space to leave clear at the top/bottom so
+   * page 1 doesn't start under the floating header/bottom bar. Applied as
+   * padding on the CONTAINER (react-native-pdf 7.0.4 has no `contentInset`/
+   * content-padding prop of its own — confirmed against its `PdfProps`
+   * typings, no such prop exists), which necessarily also shrinks `<Pdf>`'s
+   * own internal scroll viewport by the same amount.
+   *
+   * KNOWN LIMITATION, documented rather than hidden (found, not silently
+   * "fixed"): this satisfies "content starts below the bar AT REST" but NOT
+   * "content is visible under the translucent bar AFTER SCROLLING" — that
+   * needs the SCROLLABLE CONTENT to have extra padding while the VIEWPORT
+   * stays full-bleed (exactly what `contentContainerStyle` gives the other
+   * renderers), and this library exposes no such lever. The padding bands
+   * show this component's own page-gutter colour (`pdfBleedBg`, set by the
+   * caller) at rest and while scrolled, never actual page content — a real,
+   * library-level gap, not an oversight. See DEVIATIONS.md.
+   */
+  topInset?: number;
+  bottomInset?: number;
 }
 
-export function PdfRenderer({ filePath, onPageInfo }: PdfRendererProps) {
+export function PdfRenderer({ filePath, onPageInfo, topInset = 0, bottomInset = 0 }: PdfRendererProps) {
   const [hasError, setHasError] = useState(false);
   const { colors } = useTheme();
 
@@ -50,7 +70,7 @@ export function PdfRenderer({ filePath, onPageInfo }: PdfRendererProps) {
   }
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { paddingTop: topInset, paddingBottom: bottomInset }]}>
       <Pdf
         source={{ uri: filePath }}
         style={styles.pdf}

@@ -32,6 +32,25 @@ interface SpreadsheetData {
 interface XlsxRendererProps {
   data: ArrayBuffer;
   colors: Colors;
+  /**
+   * Round 5 (task 1563, PR #123) — space to clear the floating header/bottom
+   * bar. `topInset` pads the WHOLE `sheetContainer` (tabs banner + frozen
+   * column-header row + body): those two are a static, non-scrolling block
+   * above the body `FlatList`, so they need a fixed push-down rather than a
+   * scroll-content inset. `bottomInset` goes on the `FlatList`'s own
+   * `contentContainerStyle`, which — unlike the container padding above —
+   * does NOT shrink the list's scrollable range, so the last real row can
+   * still scroll up clear of the bottom bar rather than stopping short of it.
+   *
+   * Documented limitation: because the tabs/column-header block is a static
+   * sibling ABOVE the `FlatList` (a deliberate frozen-header pattern, same
+   * as a spreadsheet app), it never scrolls, so it does not itself go
+   * "under" the top bar the way CodeRenderer's/DocxRenderer's scrollable
+   * text does — only the BODY ROWS do, once scrolled far enough to reach the
+   * list's own top edge (which sits below the frozen header, not at y=0).
+   */
+  topInset?: number;
+  bottomInset?: number;
 }
 
 const COL_WIDTH = 140;
@@ -64,7 +83,7 @@ function parseSpreadsheet(arrayBuffer: ArrayBuffer): SpreadsheetData {
   return { sheetName, sheetNames, rows: padded, columnCount };
 }
 
-export function XlsxRenderer({ data, colors: c }: XlsxRendererProps) {
+export function XlsxRenderer({ data, colors: c, topInset = 0, bottomInset = 0 }: XlsxRendererProps) {
   const parsed = useMemo(() => {
     try {
       return parseSpreadsheet(data);
@@ -141,7 +160,7 @@ export function XlsxRenderer({ data, colors: c }: XlsxRendererProps) {
   };
 
   return (
-    <View style={[styles.sheetContainer, { backgroundColor: c.paper }]}>
+    <View style={[styles.sheetContainer, { backgroundColor: c.paper, paddingTop: topInset }]}>
       {sheetNames.length > 1 ? (
         <View style={[styles.sheetTabs, { borderBottomColor: c.line }]}>
           <Text style={[styles.sheetTabsText, { color: c.ink3 }]} numberOfLines={1}>
@@ -195,6 +214,7 @@ export function XlsxRenderer({ data, colors: c }: XlsxRendererProps) {
             initialNumToRender={30}
             windowSize={11}
             removeClippedSubviews
+            contentContainerStyle={bottomInset ? { paddingBottom: bottomInset } : undefined}
           />
         </View>
       </ScrollView>

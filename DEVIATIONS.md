@@ -286,3 +286,52 @@ presumably reachable by a real tap/VoiceOver on-device; only the
 Maestro/XCUITest accessibility-tree path is affected. Worked around this
 round via `xcrun simctl terminate`+`launch` instead of driving the close
 button. Not investigated further — out of scope for a chrome-material task.
+
+## Task 1563 round 5 (mobile) — PDF cannot show content UNDER the translucent bars while scrolling (found, not fixable within this library)
+
+Round 4 made `previewArea` full-screen, which fixed the "dead band" bug but
+removed all top/bottom content inset — a document's first line then sat
+UNDER the floating header (PDF title colliding with the clock, a DOCX's
+first two lines hidden behind the title pill). Round 5's fix: content
+starts just below the floating bar at rest, and moves UNDER the translucent
+bar when scrolled (Photos/Files/Notion behaviour), implemented via
+`contentContainerStyle`/CSS-body padding on each renderer's own scroll
+surface (`src/lib/preview-content-inset.ts` computes the shared inset).
+
+For every RN-native scroll surface (CodeRenderer, MarkdownRenderer, Xlsx's
+FlatList, Pptx's FlatList) and the DOCX WebView (CSS `body` padding), this
+works exactly as intended: the scroll VIEWPORT stays full-bleed (edge to
+edge, unclipped), only the CONTENT gets extra padding, so scrolled content
+naturally passes back under the translucent header/bottom bar — confirmed
+on-device with the `1563-big-file.txt` fixture (`evidence-1563-redesign-r5/
+screenshots/bigtxt_02_scrolled.png`): scrolled lines are visibly ghosted
+behind the header pill and the read-only banner, both still legible on top.
+
+**PDF is the one exception, and it is a real library limitation, not an
+oversight:** `react-native-pdf` 7.0.4's `PdfProps` (checked against its own
+`index.d.ts`) exposes no `contentInset`/content-padding equivalent — the
+library owns both the scroll viewport AND the scrollable content as one
+native view, with no way to inset content without also shrinking the
+viewport. `PdfRenderer`'s new `topInset`/`bottomInset` props are therefore
+applied as CONTAINER padding, which correctly satisfies "first line clears
+the bar at rest" (confirmed: `evidence-1563-redesign-r5/screenshots/
+pdf_01_rest.png`) but the padding bands show the page-gutter colour
+(`pdfBleedBg`, `#2A2A28`) at ALL scroll positions, never actual page
+content — confirmed by scrolling to page 3 and finding the gutter-coloured
+band unchanged (`pdf_03_scrolled_retap.png`). Not investigated further
+(would need forking or replacing `react-native-pdf`) — out of scope for
+this task.
+
+**Testing note, same round:** driving a scroll gesture on the PDF branch
+(and, with only one slide, the PPTX branch) via Maestro's `scroll`/`swipe`
+commands toggles `barsVisible` off — the same `Pressable onPress=
+{handleContentTap}` wrapping every doc-branch renderer, whose tap-to-hide
+gesture pre-dates this round and is unrelated to the inset fix. Plain RN
+`ScrollView`/`FlatList` surfaces (CodeRenderer, MarkdownRenderer, Xlsx,
+DOCX's WebView) correctly claim the pan as a scroll and never trigger the
+tap; `react-native-pdf`'s own native scroll view apparently does not
+signal "gesture claimed" back to the wrapping RN responder the same way,
+so a scroll's touch-up still fires `onPress`. Worked around for evidence
+capture with an extra tap after scrolling (which only toggles the bars back
+on, not the scroll position) — not fixed, since it is pre-existing and out
+of scope for a content-inset task.

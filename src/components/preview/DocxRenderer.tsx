@@ -27,9 +27,23 @@ interface DocxRendererProps {
   data: ArrayBuffer;
   colors: Colors;
   isDark: boolean;
+  /**
+   * Round 5 (task 1563, PR #123) — extra top/bottom space so the document's
+   * first/last line clears the floating header/bottom bar. Injected as CSS
+   * `body` padding into the generated HTML (there is no RN-level prop for a
+   * WebView's own scroll content — this is the WebView equivalent of
+   * `contentContainerStyle` padding the other renderers use). The WebView
+   * itself stays full-bleed (`docxWebViewWrap`/`docxWebView`, unchanged), so
+   * scrolling moves the page's OWN content up under the translucent bars —
+   * the blank padding band scrolls away first, then real page content
+   * appears behind the header, same mechanism as CodeRenderer's
+   * `contentContainerStyle`, just expressed in CSS instead of RN styles.
+   */
+  topInset?: number;
+  bottomInset?: number;
 }
 
-function buildDocxHtml(bodyHtml: string, c: Colors, isDark: boolean): string {
+function buildDocxHtml(bodyHtml: string, c: Colors, isDark: boolean, topInset: number, bottomInset: number): string {
   const bg = c.paper;
   const ink = c.ink;
   const ink3 = c.ink3;
@@ -49,7 +63,7 @@ function buildDocxHtml(bodyHtml: string, c: Colors, isDark: boolean): string {
       font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', Roboto, sans-serif;
       font-size: 16px;
       line-height: 1.6;
-      padding: 24px 20px 96px;
+      padding: ${24 + topInset}px 20px ${96 + bottomInset}px;
       -webkit-text-size-adjust: 100%;
     }
     h1, h2, h3, h4, h5, h6 { color: ${ink}; line-height: 1.25; margin: 1.4em 0 0.5em; }
@@ -87,7 +101,7 @@ ${bodyHtml}
 </html>`;
 }
 
-export function DocxRenderer({ data, colors: c, isDark }: DocxRendererProps) {
+export function DocxRenderer({ data, colors: c, isDark, topInset = 0, bottomInset = 0 }: DocxRendererProps) {
   const [html, setHtml] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -100,7 +114,7 @@ export function DocxRenderer({ data, colors: c, isDark }: DocxRendererProps) {
         const result = await mammoth.convertToHtml({ arrayBuffer: data });
         if (cancelled) return;
         const body = (result?.value as string) ?? '';
-        setHtml(buildDocxHtml(body || '<p><em>This document is empty.</em></p>', c, isDark));
+        setHtml(buildDocxHtml(body || '<p><em>This document is empty.</em></p>', c, isDark, topInset, bottomInset));
       } catch (err) {
         if (!cancelled) {
           setError(err instanceof Error ? err.message : 'Failed to convert document.');
@@ -110,7 +124,7 @@ export function DocxRenderer({ data, colors: c, isDark }: DocxRendererProps) {
     return () => {
       cancelled = true;
     };
-  }, [data, c, isDark]);
+  }, [data, c, isDark, topInset, bottomInset]);
 
   if (error) {
     // 1346 review finding — `colors` here was the module-level STATIC

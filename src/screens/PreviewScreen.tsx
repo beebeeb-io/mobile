@@ -42,6 +42,7 @@ import { colors, fonts, radii, shadows } from '../theme';
 import type { Colors } from '../theme';
 import { useTheme } from '../lib/theme-context';
 import { GLASS_CIRCLE_SIZES, GlassCapsule, GlassCircle, PREVIEW_CHROME_MATERIAL, SCROLL_EDGE, ScrollEdgeBlur, glassMaterial } from '../components/glass';
+import { bandColors, type Stop } from '../components/glass/gradient';
 import { useToast } from '../lib/toast-context';
 import { getToken, friendlyError, trustLocation, trashFiles, getFile, getFileCurrentVersion, listAllFiles, moveFile, type UploadProgress } from '../lib/api';
 import { useCrypto } from '../lib/crypto-context';
@@ -90,6 +91,7 @@ import { PreviewBottomBar } from '../components/preview/PreviewBottomBar';
 import { recordRuntimeTrace } from '../lib/runtime-trace';
 import { formatBytes as formatSize } from '../lib/format';
 import { checkLockedFileIds, isPagerPageGated } from '../lib/preview-lock-gate';
+import { computePreviewContentInset } from '../lib/preview-content-inset';
 import { FILES_APP_LOCK_CAVEAT } from '../lib/lock-copy';
 import { formatPdfPageCounter, nextBarsVisible } from '../lib/preview-chrome';
 
@@ -1679,6 +1681,54 @@ const PhotoPage = React.memo(function PhotoPage({
 });
 
 // ---------------------------------------------------------------------------
+// Top scrim (round 5 — "the clock stays legible when content scrolls
+// beneath")
+// ---------------------------------------------------------------------------
+
+const PREVIEW_TOP_SCRIM_BANDS = 12;
+// Dark/light scrim tracks the APP's resolved scheme, not the underlying
+// document's colours — same reasoning `PREVIEW_CHROME_MATERIAL` already
+// documents for the bars themselves: this backs the OS status bar (clock/
+// battery/signal), which is itself always rendered in the app's own
+// light/dark style, never adapting to page content.
+const PREVIEW_TOP_SCRIM_STOPS_DARK: Stop[] = [
+  { pos: 0, color: 'rgba(0,0,0,0.50)' },
+  { pos: 0.55, color: 'rgba(0,0,0,0.18)' },
+  { pos: 1, color: 'rgba(0,0,0,0)' },
+];
+const PREVIEW_TOP_SCRIM_STOPS_LIGHT: Stop[] = [
+  { pos: 0, color: 'rgba(255,255,255,0.55)' },
+  { pos: 0.55, color: 'rgba(255,255,255,0.20)' },
+  { pos: 1, color: 'rgba(255,255,255,0)' },
+];
+
+/**
+ * A plain top-to-bottom gradient needs none of `GlassSurface`'s Sheen
+ * geometry (that machinery exists for an ANGLED sweep over an arbitrary
+ * aspect ratio) — this is a vertical stack of `bandColors` bands, same
+ * technique (no `expo-linear-gradient` — see `gradient.ts`'s own doc
+ * comment), simpler case: no rotation, no measured width, just height.
+ */
+function PreviewTopScrim({ height, dark }: { height: number; dark: boolean }) {
+  const bands = useMemo(
+    () => bandColors(dark ? PREVIEW_TOP_SCRIM_STOPS_DARK : PREVIEW_TOP_SCRIM_STOPS_LIGHT, PREVIEW_TOP_SCRIM_BANDS),
+    [dark],
+  );
+  if (height <= 0) return null;
+  return (
+    <View
+      style={{ position: 'absolute', top: 0, left: 0, right: 0, height }}
+      pointerEvents="none"
+      testID="preview-top-scrim"
+    >
+      {bands.map((color, i) => (
+        <View key={i} style={{ flex: 1, backgroundColor: color }} />
+      ))}
+    </View>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Screen
 // ---------------------------------------------------------------------------
 
@@ -2095,6 +2145,40 @@ export default function PreviewScreen() {
   const [showSource, setShowSource] = useState(false);
   const [pdfPageInfo, setPdfPageInfo] = useState<{ current: number; total: number } | null>(null);
   const barsOpacity = useRef(new Animated.Value(1)).current;
+
+  // Round 5 (lead review of round 4's own screenshots): round 4 fixed the
+  // "opaque dark band" bug by making `previewArea` a full-screen absolute
+  // layer, but overcorrected — with NO inset, a document's first line now
+  // sits UNDER the floating top bar (PDF title colliding with the clock,
+  // DOCX's first two lines hidden behind the title pill). Required
+  // behaviour (Photos/Files/Notion): at rest, content starts just BELOW the
+  // floating bar; scrolling moves content UNDER the translucent bar. See
+  // `computePreviewContentInset`'s own doc comment for the full reasoning.
+  //
+  // `docHeaderHeight`/`docBottomBarHeight` are the REAL, on-screen measured
+  // heights of the doc branch's own floating chrome (via `onLayout` at each
+  // JSX call site below) — not eyeballed constants, per this workspace's
+  // "measured, not eyeballed" rule. `null` until the first layout pass
+  // fires; `computePreviewContentInset` has a documented, derived fallback
+  // for that one frame so content never flashes at y=0.
+  const [docHeaderHeight, setDocHeaderHeight] = useState<number | null>(null);
+  const [docBottomBarHeight, setDocBottomBarHeight] = useState<number | null>(null);
+  // The ">2MB / lossy-decode" read-only notice (`readOnlyBanner` below) is
+  // its OWN floating absolute overlay, above the code/markdown content, so
+  // when it's showing, the SCROLLABLE content needs an extra top offset
+  // equal to the banner's own real height too — otherwise the banner just
+  // moves the collision from "under the header" to "under the banner".
+  const [readOnlyBannerHeight, setReadOnlyBannerHeight] = useState<number | null>(null);
+  const docContentInset = useMemo(
+    () =>
+      computePreviewContentInset({
+        safeAreaTop: insets.top,
+        safeAreaBottom: insets.bottom,
+        headerHeight: docHeaderHeight,
+        bottomBarHeight: docBottomBarHeight,
+      }),
+    [insets.top, insets.bottom, docHeaderHeight, docBottomBarHeight],
+  );
 
   const handleContentTap = useCallback(() => {
     setBarsVisible((prev) => nextBarsVisible(prev, { editMode, infoVisible, optionsVisible }));
@@ -4068,7 +4152,33 @@ export default function PreviewScreen() {
       <Animated.View
         style={{ opacity: barsOpacity, position: 'absolute', top: 0, left: 0, right: 0, zIndex: 20 }}
         pointerEvents={chromeVisible ? 'auto' : 'none'}
+        onLayout={(e) => {
+          // Round 5 — the REAL rendered height of this wrapper (from y=0,
+          // since it's `position:'absolute', top:0`) already bakes in
+          // `insets.top` via the header's own inline `paddingTop`. Feeds
+          // `computePreviewContentInset` above; see that function's doc
+          // comment for why a measured height beats a guessed constant.
+          const h = e.nativeEvent.layout.height;
+          setDocHeaderHeight((prev) => (prev === h ? prev : h));
+        }}
       >
+      {/* Round 5 — a subtle top gradient scrim behind the status bar + this
+          header (design requirement: "the clock stays legible when content
+          scrolls beneath"). The header's own glass pills already clear WCAG
+          AA via `PREVIEW_CHROME_MATERIAL` (round 4), but the strip ABOVE
+          them — the real system status bar, y=0 to insets.top — has no
+          background of its own: it's fully transparent, so once content
+          scrolls, arbitrary document pixels can land directly behind the
+          system clock/battery icons with no legibility guarantee at all.
+          Banded Views (no `expo-linear-gradient` — see `gradient.ts`'s own
+          doc comment for why this app never added that native module), one
+          flat colour per scheme (dark scrim in dark mode, light in light —
+          this backs the OS clock, which follows the app's OWN appearance,
+          not the underlying document's colours, same reasoning as
+          `PREVIEW_CHROME_MATERIAL` already applies to the bars themselves).
+          Sized to the header's own measured height so it fades out exactly
+          where the header's content ends, not into the page below it. */}
+      <PreviewTopScrim height={docHeaderHeight ?? insets.top + 58} dark={resolved === 'dark'} />
       {/* ---- Header ----
           Preview redesign item 7 — while editing a text file, this row
           becomes Done (left, the SAME dirty-guard exit as the ⋯ menu's
@@ -4401,7 +4511,12 @@ export default function PreviewScreen() {
               testID="preview-content-tap"
             >
               <Suspense fallback={<View style={styles.imageStatus}>{renderSharedProgress(false)}</View>}>
-                <PdfRenderer filePath={pdfUri} onPageInfo={setPdfPageInfo} />
+                <PdfRenderer
+                  filePath={pdfUri}
+                  onPageInfo={setPdfPageInfo}
+                  topInset={docContentInset.top}
+                  bottomInset={docContentInset.bottom}
+                />
               </Suspense>
             </Pressable>
           ) : pdfError ? (
@@ -4471,7 +4586,21 @@ export default function PreviewScreen() {
                   gate (over 2 MB, or content that looks like a lossy UTF-8
                   decode) — never a silently-disabled control with no reason. */}
               {editGate.reason && (
-                <View style={[styles.readOnlyBanner, { backgroundColor: c.paper2, borderColor: c.line }]} testID="text-readonly-notice">
+                // Round 5 — this banner is its OWN floating overlay above the
+                // scrollable content below, so it needs the same top inset
+                // the header itself does (`top: 0` used to sit it directly
+                // under the header, i.e. exactly the collision this task
+                // fixes, just moved one layer down). Its onLayout feeds the
+                // content's OWN extra offset just below, so content starts
+                // below the banner, not under it.
+                <View
+                  style={[styles.readOnlyBanner, { top: docContentInset.top, backgroundColor: c.paper2, borderColor: c.line }]}
+                  testID="text-readonly-notice"
+                  onLayout={(e) => {
+                    const h = e.nativeEvent.layout.height;
+                    setReadOnlyBannerHeight((prev) => (prev === h ? prev : h));
+                  }}
+                >
                   <Ionicons name="information-circle-outline" size={16} color={c.ink3} />
                   <Text style={[styles.readOnlyBannerText, { color: c.ink2 }]}>{editGate.reason}</Text>
                 </View>
@@ -4481,14 +4610,32 @@ export default function PreviewScreen() {
                   text via the SAME CodeRenderer the plain-text/code path
                   already uses, without leaving the rendered-preview screen. */}
               {isMarkdown && !showSource ? (
-                <ScrollView style={styles.markdownScroll} showsVerticalScrollIndicator>
+                <ScrollView
+                  style={styles.markdownScroll}
+                  showsVerticalScrollIndicator
+                  // Round 5 — on `contentContainerStyle` (not a prop into
+                  // MarkdownRenderer itself), same reasoning as
+                  // CodeRenderer's own ScrollView: the viewport stays full-
+                  // bleed, only the CONTENT gets the extra padding, so
+                  // scrolling moves the rendered markdown UNDER the
+                  // translucent bars instead of clipping at a shrunk edge.
+                  contentContainerStyle={{
+                    paddingTop: docContentInset.top + (editGate.reason ? (readOnlyBannerHeight ?? 44) : 0),
+                    paddingBottom: docContentInset.bottom,
+                  }}
+                >
                   <Suspense fallback={<View style={styles.imageStatus}>{renderSharedProgress(false)}</View>}>
                     <MarkdownRenderer markdown={textContent} colors={c} />
                   </Suspense>
                 </ScrollView>
               ) : (
                 <Suspense fallback={<View style={styles.imageStatus}>{renderSharedProgress(false)}</View>}>
-                  <CodeRenderer code={textContent} language={codeLanguage} />
+                  <CodeRenderer
+                    code={textContent}
+                    language={codeLanguage}
+                    topInset={docContentInset.top + (editGate.reason ? (readOnlyBannerHeight ?? 44) : 0)}
+                    bottomInset={docContentInset.bottom}
+                  />
                 </Suspense>
               )}
             </Pressable>
@@ -4513,7 +4660,13 @@ export default function PreviewScreen() {
             // (task 1564), untouched by this.
             <Pressable style={styles.fullBleedFill} onPress={handleContentTap} testID="preview-content-tap">
               <Suspense fallback={<View style={styles.imageStatus}>{renderSharedProgress(false)}</View>}>
-                <DocxRenderer data={docxData} colors={c} isDark={resolved === 'dark'} />
+                <DocxRenderer
+                  data={docxData}
+                  colors={c}
+                  isDark={resolved === 'dark'}
+                  topInset={docContentInset.top}
+                  bottomInset={docContentInset.bottom}
+                />
               </Suspense>
             </Pressable>
           ) : docxError ? (
@@ -4534,7 +4687,12 @@ export default function PreviewScreen() {
             // in this renderer, so no direct-parent-centering concern).
             <Pressable style={styles.fullBleedFill} onPress={handleContentTap} testID="preview-content-tap">
               <Suspense fallback={<View style={styles.imageStatus}>{renderSharedProgress(false)}</View>}>
-                <XlsxRenderer data={sheetData} colors={c} />
+                <XlsxRenderer
+                  data={sheetData}
+                  colors={c}
+                  topInset={docContentInset.top}
+                  bottomInset={docContentInset.bottom}
+                />
               </Suspense>
             </Pressable>
           ) : sheetError ? (
@@ -4709,7 +4867,12 @@ export default function PreviewScreen() {
             // in this renderer).
             <Pressable style={styles.fullBleedFill} onPress={handleContentTap} testID="preview-content-tap">
               <Suspense fallback={<View style={styles.imageStatus}>{renderSharedProgress(false)}</View>}>
-                <PptxRenderer data={pptxData} colors={c} />
+                <PptxRenderer
+                  data={pptxData}
+                  colors={c}
+                  topInset={docContentInset.top}
+                  bottomInset={docContentInset.bottom}
+                />
               </Suspense>
             </Pressable>
           ) : pptxError ? (
@@ -4797,6 +4960,12 @@ export default function PreviewScreen() {
         <Animated.View
           style={[styles.bottomBarWrap, { opacity: barsOpacity, bottom: Math.max(insets.bottom, 16) + 8 }]}
           pointerEvents={chromeVisible ? 'auto' : 'none'}
+          onLayout={(e) => {
+            // Round 5 — the bar's OWN height (not its offset from the safe
+            // area, which `computePreviewContentInset` adds separately).
+            const h = e.nativeEvent.layout.height;
+            setDocBottomBarHeight((prev) => (prev === h ? prev : h));
+          }}
         >
           <PreviewBottomBar
             scheme="dark"
@@ -4965,6 +5134,10 @@ const styles = StyleSheet.create({
   // top instead of losing a z-order fight it can't win by JSX order alone.
   readOnlyBanner: {
     position: 'absolute',
+    // `top: 0` here is only the pre-round-5 default; every real call site
+    // overrides it inline with `docContentInset.top` (see the JSX call
+    // site's own comment) so the banner sits below the floating header
+    // instead of under it.
     top: 0,
     left: 0,
     right: 0,

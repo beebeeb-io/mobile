@@ -132,9 +132,23 @@ interface PptxRendererProps {
   data: ArrayBuffer;
   /** Theme colors from useTheme() */
   colors: Colors;
+  /**
+   * Round 5 (task 1563, PR #123) — space to clear the floating header/bottom
+   * bar. Added to the (horizontal-paging) `FlatList`'s own
+   * `contentContainerStyle`, which controls the CROSS-axis extent here
+   * (vertical, since the list itself pages horizontally between slides) —
+   * `slideWrapper`'s `flex:1` then resolves to the smaller height left over,
+   * so the card sits clear of both bars instead of touching the screen edge.
+   * There is no vertical SCROLL for this renderer (it only pages
+   * horizontally between slides), so unlike the text/doc renderers there is
+   * no "content moves under the bar as you scroll" behaviour to give it —
+   * the vertical position is fixed regardless of which slide is showing.
+   */
+  topInset?: number;
+  bottomInset?: number;
 }
 
-export function PptxRenderer({ data, colors: c }: PptxRendererProps) {
+export function PptxRenderer({ data, colors: c, topInset = 0, bottomInset = 0 }: PptxRendererProps) {
   const [slides, setSlides] = useState<SlideContent[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -261,7 +275,10 @@ export function PptxRenderer({ data, colors: c }: PptxRendererProps) {
         snapToInterval={slideWidth + 16} // slideWidth + gap
         snapToAlignment="center"
         decelerationRate="fast"
-        contentContainerStyle={styles.listContent}
+        contentContainerStyle={[
+          styles.listContent,
+          { paddingTop: 16 + topInset, paddingBottom: 16 + bottomInset },
+        ]}
         ItemSeparatorComponent={() => <View style={styles.separator} />}
         onMomentumScrollEnd={(e) => {
           const index = Math.round(
@@ -273,7 +290,7 @@ export function PptxRenderer({ data, colors: c }: PptxRendererProps) {
 
       {/* Page indicator */}
       {slides.length > 1 && (
-        <View style={[styles.indicator, { backgroundColor: c.paper2 }]}>
+        <View style={[styles.indicator, { backgroundColor: c.paper2, bottom: 16 + bottomInset }]}>
           <Text style={[styles.indicatorText, { color: c.ink2 }]}>
             {currentSlide + 1} / {slides.length}
           </Text>

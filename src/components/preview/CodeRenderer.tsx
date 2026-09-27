@@ -68,6 +68,20 @@ hljs.registerLanguage('yaml', hljsYaml);
 interface CodeRendererProps {
   code: string;
   language: string;
+  /**
+   * Round 5 (task 1563, PR #123) — extra top/bottom space so the first/last
+   * line clears the floating header/bottom bar. Additive to the `code`
+   * View's own baseline breathing room (12/32) rather than replacing it, so
+   * the existing "some space above line 1" feel is preserved, just pushed
+   * further down. This component's OWN `ScrollView` viewport stays full-
+   * bleed (`root` is unchanged, `position:'absolute'`, edge to edge) — only
+   * the CONTENT gets the extra padding, so scrolling still moves lines up
+   * UNDER the translucent bars rather than clipping them at a shrunk
+   * viewport edge (unlike `PdfRenderer`, which has no such lever — see its
+   * own doc comment).
+   */
+  topInset?: number;
+  bottomInset?: number;
 }
 
 // Same Atom One Dark palette the old CSS build used, keyed by hljs class name.
@@ -234,7 +248,7 @@ export function computeCodeView(code: string, language: string): CodeView {
   return { lines: highlightCode(visibleCode, language), truncated };
 }
 
-export function CodeRenderer({ code, language }: CodeRendererProps) {
+export function CodeRenderer({ code, language, topInset = 0, bottomInset = 0 }: CodeRendererProps) {
   const { lines, truncated } = useMemo(() => computeCodeView(code, language), [code, language]);
   const totalDigits = Math.max(2, String(lines.length).length);
 
@@ -273,7 +287,20 @@ export function CodeRenderer({ code, language }: CodeRendererProps) {
        *     line and sits at the row's top edge, not stretched/centered
        *     across the wrapped content's full height.
        */}
-      <ScrollView showsVerticalScrollIndicator style={styles.vScroll}>
+      <ScrollView
+        showsVerticalScrollIndicator
+        style={styles.vScroll}
+        // Round 5 — on `contentContainerStyle`, not the inner `code` View's
+        // own padding: `truncated`'s notice is a SIBLING of `code`, rendered
+        // BEFORE it, so padding on `code` alone would leave the notice
+        // itself pinned at content-y=0 (under the header) whenever a file is
+        // actually truncated. contentContainerStyle covers both uniformly.
+        // The viewport (`vScroll`, `style` above) is untouched — still full
+        // width/height — so this only adds CONTENT padding, which is what
+        // lets scrolled lines move up UNDER the translucent bars rather than
+        // stopping at a shrunk viewport edge.
+        contentContainerStyle={{ paddingTop: topInset, paddingBottom: bottomInset }}
+      >
         {truncated && (
           <Text style={styles.truncationNotice}>
             Showing the first {MAX_PREVIEW_CHARS.toLocaleString()} characters — download the file for the full version.
