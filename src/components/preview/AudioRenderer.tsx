@@ -26,7 +26,7 @@
  * the theme's neutral ink/paper/line tokens.
  */
 
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import Slider from '@react-native-community/slider';
 import { Ionicons } from '@expo/vector-icons';
@@ -64,11 +64,35 @@ export function AudioRenderer({
   // the player keeps reporting its pre-seek position until the seek lands).
   // Cleared back to `null` (follow the player again) once the drag ends.
   const [scrubSeconds, setScrubSeconds] = useState<number | null>(null);
+  // Set true the instant a finished-track replay calls `player.replace(uri)`;
+  // cleared (and `player.play()` fired) the moment the fresh item's status
+  // reports `isLoaded`. See the effect below and `togglePlayback`'s comment
+  // for the on-device debugging that led here — a ref because it drives an
+  // imperative one-shot action, not a value the render output depends on.
+  const pendingReplayPlayRef = useRef(false);
 
   const duration = status.duration > 0 ? status.duration : 0;
   const displayedTime = scrubSeconds ?? status.currentTime;
   const sliderMax = duration > 0 ? duration : 0.1;
   const isPlaying = status.playing;
+
+  // Fires `play()` for a pending post-replace replay once (and only once)
+  // the FRESH item `replace()` swapped in actually reports ready — see
+  // `togglePlayback`'s comment for why this can't be done synchronously.
+  // Depends on the whole `status` OBJECT, not `status.isLoaded`: expo-audio
+  // emits a new status object on every native `playbackStatusUpdate` event,
+  // even when a given field's VALUE is unchanged (e.g. `isLoaded` may already
+  // read `true`, stale from the item `replace()` just tore down), so a
+  // value-only dependency could miss the transition entirely. Depending on
+  // the object means this re-checks the freshly-computed `status.isLoaded`
+  // (native `currentStatus()` always reflects the CURRENT item, never
+  // cached) on every event until the right one lands.
+  useEffect(() => {
+    if (pendingReplayPlayRef.current && status.isLoaded) {
+      pendingReplayPlayRef.current = false;
+      player.play();
+    }
+  }, [status, player]);
 
   const togglePlayback = () => {
     if (isPlaying) {
@@ -77,14 +101,66 @@ export function AudioRenderer({
     }
     // Task 1568 (Codex P2 follow-up, PR #125 review): once a track reaches
     // the end, `status.playing` becomes false but `status.currentTime` stays
-    // parked AT `duration` — this branch showed a Play button, but calling
-    // `player.play()` from that end position does not rewind the underlying
-    // native player, so pressing Play did nothing audible. See
-    // `isTrackFinished`'s own doc comment (audio-format.ts, unit-tested) for
-    // why this checks BOTH `didJustFinish` (edge-triggered) and
-    // `currentTime >= duration` (level-triggered) rather than either alone.
+    // parked AT `duration`. See `isTrackFinished`'s own doc comment
+    // (audio-format.ts, unit-tested) for why this checks BOTH
+    // `didJustFinish` (edge-triggered) and `currentTime >= duration`
+    // (level-triggered) rather than either alone.
+    //
+    // Three approaches were tried on-device (bb-ios27 sim) before this one;
+    // all three were root-caused by reading expo-audio's native source
+    // (`node_modules/expo-audio/ios/AudioPlayer.swift`), and all three
+    // failed for DIFFERENT reasons, so the reasoning is kept in full:
+    //
+    // 1. `seekTo(0).then(() => player.play())` (2bcd188): flips
+    //    `status.playing` true (Pause icon shows) but `status.currentTime`
+    //    never advances. The underlying player is an `AVQueuePlayer`; once
+    //    its one-and-only item has played to `AVPlayerItemDidPlayToEndTime`,
+    //    a `seek(to: 0)` on that SAME item resolves its completion handler
+    //    (the promise does resolve, even reporting `currentTime: 0`) but a
+    //    subsequent `play()` on the queue player never re-arms playback — a
+    //    documented AVQueuePlayer quirk once its item list has been fully
+    //    consumed, not a bug in the seek/play call sequence itself.
+    //
+    // 2. `player.replace(uri)` then `player.play()`: `replace()` DOES tear
+    //    the old item down and insert a brand-new `AVPlayerItem` (confirmed
+    //    via `log stream` — a fresh `FigFilePlayer` item id is queued),
+    //    which starts at position 0 — but that new item is not yet
+    //    `.readyToPlay` the instant `replace()` returns, and `play()`'s
+    //    native call (`ref.playImmediately(atRate:)`) requires the current
+    //    item to already be ready. Called one tick too early, it silently
+    //    no-ops: two screenshots after this sequence showed the Play icon
+    //    and the pre-replace `0:03/-0:00` completely unchanged.
+    //
+    // 3. `player.play()` THEN `player.replace(uri)` (reversed order,
+    //    intending to piggyback on `replaceCurrentSource`'s own
+    //    `wasPlaying` → `onReady { play() }` auto-resume): UNRELIABLE, not
+    //    fixed — confirmed by two DIFFERENT outcomes across repeated
+    //    on-device runs. Sometimes `ref.timeControlStatus` really did read
+    //    `.playing` at the moment `replace()` captured `wasPlaying`, and
+    //    the track played a full, correct 3.03s (`log stream` showed a
+    //    fresh item playing start-to-natural-end). Other times the capture
+    //    read `.playing` as still false (this sim was under heavy
+    //    concurrent-session load throughout — `uptime`'s 15-minute average
+    //    hit 46 on a 12-core box — so exactly how far `playImmediately` on
+    //    the dead-ended OLD item had progressed by the time `replace()` ran
+    //    the very next native call was genuinely timing-dependent), so
+    //    `replaceCurrentSource` took its plain (no auto-play) branch: the
+    //    new item loaded at a correctly-reset `0:00/-0:03`, but sat there,
+    //    Play icon showing, never starting on its own. A call sequence
+    //    whose correctness depends on a race is not a fix.
+    //
+    // What's actually deterministic: `replace()` alone (no preceding
+    // `play()` — don't touch the dead item at all), then explicitly call
+    // `player.play()` OURSELVES once `status.isLoaded` confirms the fresh
+    // item is ready, via the effect above. This is the exact same
+    // Combine-publisher-driven wait (`ref.publisher(for:
+    // \.currentItem?.status)`, filtering for `.readyToPlay`) that
+    // `replaceCurrentSource`'s own internal `onReady` helper uses — the
+    // difference is doing it explicitly from JS, which can't race a native
+    // capture of `wasPlaying` because it isn't reading one.
     if (isTrackFinished(status.didJustFinish, status.currentTime, duration)) {
-      void player.seekTo(0).then(() => player.play());
+      pendingReplayPlayRef.current = true;
+      player.replace(uri);
       return;
     }
     player.play();
