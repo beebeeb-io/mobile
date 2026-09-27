@@ -84,9 +84,17 @@ export function clampGutterOffset(
   lineCount: number,
   lineHeight: number,
   topPadding: number,
+  bottomPadding: number,
   viewportHeight: number,
 ): number {
-  const gutterContentHeight = Math.max(0, lineCount) * lineHeight + topPadding;
+  // The TextInput's scrollable content is `topPadding + lines + bottomPadding`
+  // (both paddings are textContainerInset — they scroll with the content), so
+  // its max contentOffset.y is that total minus the viewport. The gutter must
+  // reach the SAME max or, at the very end of a file, the text keeps moving
+  // up through the bottom padding while the gutter stops — the last number
+  // sits `bottomPadding` below its line (PR #131 review, Codex P2).
+  const gutterContentHeight =
+    Math.max(0, lineCount) * lineHeight + topPadding + Math.max(0, bottomPadding);
   const maxOffset = Math.max(0, gutterContentHeight - viewportHeight);
   return Math.max(0, Math.min(rawOffset, maxOffset));
 }

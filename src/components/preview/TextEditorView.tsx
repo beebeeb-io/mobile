@@ -155,9 +155,16 @@ export function TextEditorView({
         lineCount,
         LINE_HEIGHT,
         contentPadding.paddingTop,
+        contentPadding.paddingBottom,
         gutterViewportHeight,
       ),
-    [gutterOffset, lineCount, contentPadding.paddingTop, gutterViewportHeight],
+    [
+      gutterOffset,
+      lineCount,
+      contentPadding.paddingTop,
+      contentPadding.paddingBottom,
+      gutterViewportHeight,
+    ],
   );
 
   const applyEdit = useCallback(
