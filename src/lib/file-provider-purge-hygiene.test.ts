@@ -403,9 +403,19 @@ describe('R2 (round 8, P2): bumpFileProviderCacheVersion bumps PRAGMA user_versi
     expect(writeIdx).toBeLessThan(commitIdx);
   });
 
-  test('is called (result discarded) as the early purge-epoch bump in purgePlaintextStorage', () => {
+  test('is called as the early purge-epoch bump in purgePlaintextStorage, with its result checked (not discarded) — see round 12', () => {
+    // Task 1593 round 12 (Codex thread PRRT_kwDOSLX6T86mjO56, P1) changed
+    // this call's shape from a discarding `_ = bumpFileProviderCacheVersion()`
+    // to a checked, retried one — see that round's own describe block for
+    // the retry/count/trace assertions. This test's premise (the call
+    // exists here at all, before domain removal) still holds; only HOW its
+    // result is handled changed.
     const purgeBody = bracedBody(swift, 'AsyncFunction("purgePlaintextStorage") { () -> [String: Int] in');
-    expect(purgeBody).toMatch(/_ = bumpFileProviderCacheVersion\(\)/);
+    expect(purgeBody).toMatch(/if !bumpFileProviderCacheVersion\(\) \{/);
+    const bumpIdx = purgeBody.indexOf('if !bumpFileProviderCacheVersion() {');
+    const removeDomainIdx = purgeBody.indexOf('removeFileProviderDomainIfRegistered()');
+    expect(bumpIdx).toBeGreaterThan(-1);
+    expect(removeDomainIdx).toBeGreaterThan(bumpIdx);
   });
 });
 
@@ -1700,6 +1710,91 @@ describe('round 12 (Codex thread PRRT_kwDOSLX6T86mi6px, P2): a failed legacy-cac
     expect(catchIdx).toBeGreaterThan(absentIdx);
     const catchBranch = body.slice(catchIdx, catchIdx + 200);
     expect(catchBranch).toMatch(/RuntimeTrace\.event\("storage\.purge\.failed", \["path": sibling\.lastPathComponent\]\)/);
+    expect(catchBranch).toMatch(/failed \+= 1/);
+  });
+});
+
+describe('round 12 (Codex thread PRRT_kwDOSLX6T86mjO56, P1): a failed early epoch bump is counted, and pinned/temp are unconditionally resweft after the whole purge', () => {
+  const moduleSwift = readFileSync(MODULE_SWIFT_PATH, 'utf8');
+  const registrySwift = readFileSync(REGISTRY_SWIFT_PATH, 'utf8');
+
+  test('the early bumpFileProviderCacheVersion() call is no longer discarded: a double failure is traced and counted', () => {
+    const purgeBody = bracedBody(moduleSwift, 'AsyncFunction("purgePlaintextStorage") { () -> [String: Int] in');
+    // The OLD, discarding shape must be gone.
+    expect(purgeBody).not.toMatch(/_ = bumpFileProviderCacheVersion\(\)/);
+    const firstCallIdx = purgeBody.indexOf('if !bumpFileProviderCacheVersion() {');
+    expect(firstCallIdx).toBeGreaterThan(-1);
+    const removeDomainIdx = purgeBody.indexOf('removeFileProviderDomainIfRegistered()', firstCallIdx);
+    expect(removeDomainIdx).toBeGreaterThan(firstCallIdx);
+    const retryBlock = purgeBody.slice(firstCallIdx, removeDomainIdx);
+    // One retry (a second call), nested inside the first failure branch —
+    // not a loop, not a single un-retried check.
+    const secondCallIdx = retryBlock.indexOf('if !bumpFileProviderCacheVersion() {', 'if !bumpFileProviderCacheVersion() {'.length);
+    expect(secondCallIdx).toBeGreaterThan(-1);
+    expect(retryBlock).toMatch(/RuntimeTrace\.event\("storage\.purge\.failed", \["stage": "file_provider_cache_version_bump"\]\)/);
+    expect(retryBlock).toMatch(/failed \+= 1/);
+  });
+
+  test('the domain-removal ordering (C1, round 7) still holds: consent -> epoch bump -> domain removal -> purgeAll()', () => {
+    // Regression guard for the exact false-green this round's own comment
+    // draft first produced: an earlier version of this round's doc comment
+    // mentioned the literal text "PlaintextStorageProtection.purgeAll()"
+    // ABOVE the real call site, which made the round-7 C1 ordering test
+    // find that comment's occurrence instead of the true one and pass for
+    // the wrong reason. Comments in this function must never contain that
+    // exact literal ahead of the real call.
+    const purgeBody = bracedBody(moduleSwift, 'AsyncFunction("purgePlaintextStorage") { () -> [String: Int] in');
+    const consentIdx = purgeBody.indexOf('resetFileProviderShowInFilesConsent(defaults: sharedDefaults())');
+    const bumpIdx = purgeBody.indexOf('if !bumpFileProviderCacheVersion() {');
+    const removeIdx = purgeBody.indexOf('removeFileProviderDomainIfRegistered()');
+    const purgeAllIdx = purgeBody.indexOf('PlaintextStorageProtection.purgeAll()');
+    expect(consentIdx).toBeLessThan(bumpIdx);
+    expect(bumpIdx).toBeLessThan(removeIdx);
+    expect(removeIdx).toBeLessThan(purgeAllIdx);
+    // The literal call text must occur EXACTLY once in this function body —
+    // if a future comment reintroduces it above the real call, this count
+    // goes to 2 and the ordering assertions above stop meaning what they say.
+    const occurrences = purgeBody.split('PlaintextStorageProtection.purgeAll()').length - 1;
+    expect(occurrences).toBe(1);
+  });
+
+  test('purgeAll() resweeps pinned/temp unconditionally, strictly after registry(), the legacy sweep, and folds its counts in', () => {
+    const purgeAllBody = bracedBody(registrySwift, 'public static func purgeAll() -> (removed: Int, failed: Int) {');
+    const legacyIdx = purgeAllBody.indexOf('sweepLegacyFileProviderCache()');
+    const resweepCallIdx = purgeAllBody.indexOf('resweepFileProviderContentDirectories()');
+    const returnIdx = purgeAllBody.lastIndexOf('return (removed, failed)');
+    expect(legacyIdx).toBeGreaterThan(-1);
+    expect(resweepCallIdx).toBeGreaterThan(legacyIdx);
+    expect(returnIdx).toBeGreaterThan(resweepCallIdx);
+    const tail = purgeAllBody.slice(resweepCallIdx - 40);
+    expect(tail).toMatch(/removed \+= resweep\.removed/);
+    expect(tail).toMatch(/failed \+= resweep\.failed/);
+  });
+
+  test('resweepFileProviderContentDirectories targets exactly pinned and temp, checked directly against the App Group root', () => {
+    const body = bracedBody(
+      registrySwift,
+      'private static func resweepFileProviderContentDirectories() -> (removed: Int, failed: Int) {'
+    );
+    expect(body).toMatch(/for name in \["pinned", "temp"\] \{/);
+    expect(body).toMatch(/appGroupContainer/);
+    expect(body).not.toMatch(/registry\(\)/);
+  });
+
+  test('resweepFileProviderContentDirectories counts an absent directory as clean and a real removal failure toward `failed`', () => {
+    const body = bracedBody(
+      registrySwift,
+      'private static func resweepFileProviderContentDirectories() -> (removed: Int, failed: Int) {'
+    );
+    const absentIdx = body.indexOf('guard FileManager.default.fileExists(atPath: dir.path) else {');
+    expect(absentIdx).toBeGreaterThan(-1);
+    const absentBranch = body.slice(absentIdx, absentIdx + 150);
+    expect(absentBranch).toMatch(/removed \+= 1/);
+
+    const catchIdx = body.indexOf('} catch {', absentIdx);
+    expect(catchIdx).toBeGreaterThan(absentIdx);
+    const catchBranch = body.slice(catchIdx, catchIdx + 200);
+    expect(catchBranch).toMatch(/RuntimeTrace\.event\("storage\.purge\.failed", \["path": dir\.lastPathComponent\]\)/);
     expect(catchBranch).toMatch(/failed \+= 1/);
   });
 });

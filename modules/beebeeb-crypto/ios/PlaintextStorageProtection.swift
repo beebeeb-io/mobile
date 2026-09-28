@@ -503,6 +503,67 @@ public enum PlaintextStorageProtection {
     let legacy = sweepLegacyFileProviderCache()
     removed += legacy.removed
     failed += legacy.failed
+    // Task 1593 round 12 (Codex thread PRRT_kwDOSLX6T86mjO56, P1) — see
+    // `resweepFileProviderContentDirectories()`'s doc comment. Must run
+    // LAST, after everything above (the `pinned`/`temp` deletion earlier in
+    // this same loop, the SQL reset's own final epoch bump, and the legacy
+    // sweep) — a resweep placed anywhere else could not close the exact
+    // "written after pinned/temp were cleared but before the final reset"
+    // window this exists for.
+    let resweep = resweepFileProviderContentDirectories()
+    removed += resweep.removed
+    failed += resweep.failed
+    return (removed, failed)
+  }
+
+  /// Task 1593 round 12 (Codex thread PRRT_kwDOSLX6T86mjO56, P1, fresh
+  /// evidence beyond round 11's `fetchContents` thread) —
+  /// `bumpFileProviderCacheVersion()` (BeebeebCryptoModule.swift, called
+  /// BEFORE this purge even starts, specifically to invalidate any epoch an
+  /// in-flight extension fetch may already have captured) can fail open,
+  /// lock, or commit. Even when it succeeds, `registry()`'s own iteration
+  /// order processes `pinned`/`temp` — both lazily RECREATED on next access
+  /// (`AppGroupContainer.pinnedContentDirectory`/`temporaryContentDirectory`
+  /// in Constants.swift each do `createDirectory` before returning) — well
+  /// BEFORE it reaches the `file-provider-cache.sqlite` reset that performs
+  /// the purge's OWN final epoch bump. An extension write racing exactly
+  /// that gap can still pass its epoch check (the version has not moved
+  /// yet from its point of view), recreate the just-deleted directory, and
+  /// land a decrypted file that nothing downstream ever revisits — the
+  /// purge finishes believing `pinned`/`temp` are clean because they WERE,
+  /// briefly, at the moment this function looked.
+  ///
+  /// Rather than trying to make that race window provably zero (which would
+  /// need blocking every extension write on this purge's own completion —
+  /// the same class of cross-process, cooperative-pool-risking
+  /// synchronization round 7b's new-P2 explicitly declined to build without
+  /// simulator-driving rights to validate it does not itself introduce a
+  /// hang), this re-deletes `pinned`/`temp` ONE MORE TIME after EVERYTHING
+  /// else in `purgeAll()` — the registry() loop's own directory deletions,
+  /// the SQL reset's own final epoch bump, and the legacy sweep — has
+  /// already run. Anything that slipped through during this purge, whether
+  /// it raced the early bump, the domain removal, or `registry()`'s own
+  /// ordering, cannot survive a resweep that runs strictly after all of it.
+  /// Unconditional: this does not depend on `bumpFileProviderCacheVersion()`
+  /// having succeeded, so it closes the leak even when that bump failed.
+  private static func resweepFileProviderContentDirectories() -> (removed: Int, failed: Int) {
+    guard let group = appGroupContainer else { return (0, 0) }
+    var removed = 0
+    var failed = 0
+    for name in ["pinned", "temp"] {
+      let dir = group.appendingPathComponent(name, isDirectory: true)
+      guard FileManager.default.fileExists(atPath: dir.path) else {
+        removed += 1 // already absent - counts as clean, not a failure
+        continue
+      }
+      do {
+        try FileManager.default.removeItem(at: dir)
+        removed += 1
+      } catch {
+        RuntimeTrace.event("storage.purge.failed", ["path": dir.lastPathComponent])
+        failed += 1
+      }
+    }
     return (removed, failed)
   }
 

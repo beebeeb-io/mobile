@@ -1809,7 +1809,27 @@ public class BeebeebCryptoModule: Module {
         // 8 (R2) moved the epoch itself into the cache DB's own
         // `PRAGMA user_version` — see `bumpFileProviderCacheVersion`'s doc
         // comment.
-        _ = bumpFileProviderCacheVersion()
+        //
+        // Task 1593 round 12 (Codex thread PRRT_kwDOSLX6T86mjO56, P1) — this
+        // call's boolean result used to be thrown away with a bare
+        // underscore assignment. An open/lock/commit failure here meant an
+        // extension fetch that had already captured the OLD epoch kept
+        // passing its `purgeEpochUnchanged` checks (round 11) for the rest
+        // of this purge — the actual leak is closed unconditionally, below
+        // this function's own call further down, by a new resweep of the
+        // content directories that does not depend on this bump having
+        // succeeded — but discarding a real failure here was still a
+        // second, independent bug worth its own fix: one retry (the
+        // function's own 2s busy_timeout already absorbs brief lock
+        // contention; a second failure means a real, non-transient problem
+        // — corrupt DB, open failure), then an honest, counted purge
+        // failure instead of a second silent discard.
+        if !bumpFileProviderCacheVersion() {
+          if !bumpFileProviderCacheVersion() {
+            RuntimeTrace.event("storage.purge.failed", ["stage": "file_provider_cache_version_bump"])
+            failed += 1
+          }
+        }
         // Task 1593 round 6 (new-1/new-2) — a timed-out or errored domain
         // lookup/removal is now a real, counted purge failure instead of a
         // silently swallowed one.
