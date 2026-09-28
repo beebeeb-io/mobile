@@ -263,6 +263,25 @@ enum BeebeebKeychainCore {
     static let stringStorageService = "io.beebeeb.string-storage"
     static let appGroupSuiteName = "group.io.beebeeb.shared"
 
+    // Task 1594 round 2 (F3/F6): the master key's proven owner + the
+    // currently signed-in user, both stored through the generic string API
+    // above — i.e. the SAME access group + `AfterFirstUnlockThisDeviceOnly`
+    // accessibility as the master key itself (F6: the round-1 owner record
+    // lived only in the app's own default keychain via `expo-secure-store`,
+    // which the File Provider and Share Extension processes cannot read —
+    // that is why those extensions had no ownership check to run at all,
+    // F3). Written by the main app only (`BeebeebCryptoModule.swift`
+    // `mirrorKeyOwner` / `mirrorSessionUserId`); read here by every target
+    // that links this file. `masterKeyOwnerKey` mirrors
+    // `key-ownership.ts`'s `MASTER_KEY_OWNER_LABEL`'s VALUE (the account's
+    // user id), never the SecureStore label itself. `sessionUserIdKey` is
+    // cleared the instant the mirrored session token changes
+    // (`mirrorSessionToAppGroup`), so an extension can never read a STALE
+    // signed-in-user value that happens to still match an outgoing owner
+    // record.
+    static let masterKeyOwnerKey = "io.beebeeb.master-key-owner"
+    static let sessionUserIdKey = "io.beebeeb.session-user-id"
+
     /// Persist `value` under `key` in the shared Keychain. Replaces any
     /// existing value at the same key. Also clears any legacy App Group
     /// UserDefaults entry at the same key (belt-and-suspenders against the

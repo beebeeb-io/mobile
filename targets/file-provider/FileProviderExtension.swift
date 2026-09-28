@@ -22,6 +22,13 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
   /// Cached master key handle — loaded once per extension lifecycle to avoid
   /// repeated Secure Enclave access (which can trigger Face ID).
   private var cachedMasterKey: MasterKeyHandle?
+  /// Task 1594 round 2 (F3): the owner record value that was current when
+  /// `cachedMasterKey` was loaded — checked on every access so a handle
+  /// cached under one account is dropped the moment the shared owner record
+  /// changes (a sign-out, a leftover-key purge, or a different account
+  /// signing in), rather than surviving for this extension process's entire
+  /// lifetime, which is not bounded to one sign-in.
+  private var cachedForOwner: String?
 
   required init(domain: NSFileProviderDomain) {
     super.init()
@@ -29,17 +36,27 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
     _ = CacheManager.shared
   }
 
-  /// Returns the cached master key, loading from Keychain only once per
-  /// extension lifecycle. Subsequent calls reuse the in-memory handle.
+  /// Returns the cached master key, loading (and re-verifying ownership) only
+  /// when nothing is cached yet or the owner record has changed since the
+  /// cached handle was loaded.
   private func masterKey() throws -> MasterKeyHandle {
-    if let key = cachedMasterKey { return key }
+    let owner = CryptoBridge.currentKeyOwner()
+    if let key = cachedMasterKey, cachedForOwner == owner {
+      return key
+    }
+    cachedMasterKey = nil
+    cachedForOwner = nil
+    // Re-verifies ownership internally (throws `.ownerUnverified` on
+    // mismatch/missing) — never trust `owner` alone, it could itself be nil.
     let key = try CryptoBridge.loadMasterKeyHandle()
     cachedMasterKey = key
+    cachedForOwner = owner
     return key
   }
 
   func invalidate() {
     cachedMasterKey = nil
+    cachedForOwner = nil
   }
 
   // MARK: - Item lookup
@@ -482,6 +499,11 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
     if let bridge = error as? CryptoBridge.CryptoBridgeError {
       switch bridge {
       case .keyUnavailable, .decodeFailed: return NSFileProviderError(.cannotSynchronize)
+      // Task 1594 round 2 (F3): the key exists but is not (yet, or no
+      // longer) provably this account's — surface the same error Files.app
+      // shows for "not authenticated", since using it would be exactly the
+      // wrong-key bug this task exists to close.
+      case .ownerUnverified: return NSFileProviderError(.notAuthenticated)
       }
     }
     if (error as NSError).domain == NSFileProviderErrorDomain {

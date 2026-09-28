@@ -43,6 +43,7 @@ import {
   SIMULATOR_MASTER_KEY_FILE,
   VAULT_NEEDS_PHRASE_MESSAGE,
   clearKeyOwner,
+  mirrorSignedInUserId,
   precheckKeyOwner,
   purgeStoredVaultKey,
   verifyKeyBelongsToAccount,
@@ -568,6 +569,19 @@ export function CryptoProvider({ children, userId }: { children: React.ReactNode
   const ownerUserId = userId ?? null
   const ownershipVerifiedRef = useRef(false)
 
+  // F3 (round 2): mirror who is CURRENTLY signed in into the shared keychain
+  // the File Provider / Share Extension read (key-ownership.ts). Every
+  // sign-in / user change remounts this provider (App.tsx keys it by user
+  // id), so a mount-time effect is exactly "the signed-in user changed".
+  // `mirrorSessionToAppGroup` (BeebeebCryptoModule.swift) clears this same
+  // shared value the instant the session token changes, so an extension can
+  // never read a STALE session-user-id that still happens to match the
+  // outgoing owner record while this effect's write is still in flight.
+  useEffect(() => {
+    void mirrorSignedInUserId(ownerUserId)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ownerUserId])
+
   useEffect(() => {
     updateVaultUnlockDiagnostics({
       isUnlocked,
@@ -706,6 +720,10 @@ export function CryptoProvider({ children, userId }: { children: React.ReactNode
                 userId: ownerUserId,
                 recoveryCheckB64: uint8ToBase64(await computeRecoveryCheck(masterKey)),
                 derivePublicKey: () => publicKeyFromHandle(phraseHandleId),
+                // F1 case (b): a phrase the user just typed THIS attempt —
+                // sending its recovery_check leaks nothing the user didn't
+                // already type themselves.
+                mode: 'trusted',
               })
               if (verdict === 'mismatch' || verdict === 'unreachable') {
                 throw new Error(verdict === 'mismatch' ? PHRASE_WRONG_ACCOUNT_MESSAGE : OWNERSHIP_UNREACHABLE_MESSAGE)
@@ -790,6 +808,13 @@ export function CryptoProvider({ children, userId }: { children: React.ReactNode
                   userId: ownerUserId,
                   recoveryCheckB64: checkB64,
                   derivePublicKey: () => publicKeyFromHandle(handleId),
+                  // F1: only a key `precheckKeyOwner` already found BOUND to
+                  // this user may have its recovery_check sent. An 'unbound'
+                  // key (no local owner record — a pre-round-2 build, or the
+                  // very first proof) may be a DIFFERENT account's leftover
+                  // key: prove it via the public key first instead (see
+                  // key-ownership.ts doc comment).
+                  mode: precheck === 'bound' ? 'trusted' : 'unbound',
                 })
                 : 'unreachable'
               recordRuntimeTrace('vault.key_ownership.keychain_verdict', { source, verdict, precheck })

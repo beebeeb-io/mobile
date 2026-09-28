@@ -1668,12 +1668,24 @@ public class BeebeebCryptoModule: Module {
           NativeBackupEngine.shared.currentAccountId = nil
           NativeBackupEngine.shared.dropCachedMasterKeyHandle()
           RuntimeTrace.event("backup.native.mirror_session.token_changed_unbind")
+          // Task 1594 round 2 (F3): a token change is a NEW (or newly-ended)
+          // session — invalidate the shared "who is signed in" mirror in the
+          // SAME call that changes the token, before persisting it, so there
+          // is no window where the token is already usable by an extension
+          // while `sessionUserIdKey` still names the OUTGOING account. JS
+          // (`mirrorSignedInUserId`, key-ownership.ts, called from
+          // `CryptoProvider`'s mount effect) re-establishes the correct
+          // value shortly after; until it does, `sessionUserIdKey` is absent
+          // and every extension ownership check below refuses (missing),
+          // never "still matches the previous owner record".
+          BeebeebKeychainCore.deleteString(key: BeebeebKeychainCore.sessionUserIdKey)
         }
         try? BeebeebKeychainCore.storeString(token, key: sharedSessionTokenKey)
         try? KeychainManager.storeString(token, key: "io.beebeeb.backupToken")
       } else {
         BeebeebKeychainCore.deleteString(key: sharedSessionTokenKey)
         KeychainManager.deleteString(key: "io.beebeeb.backupToken")
+        BeebeebKeychainCore.deleteString(key: BeebeebKeychainCore.sessionUserIdKey)
         NativeBackupEngine.shared.backupClientSessionId = nil
         // Task 1531 [P2-4]: this is the sign-out call (App.tsx `signOut()` /
         // `clearToken()` call `mirrorSessionToAppGroup(null, null)`). Clear
@@ -1702,6 +1714,39 @@ public class BeebeebCryptoModule: Module {
 
     AsyncFunction("mirrorBackupClientSession") { (sessionId: String?) -> Bool in
       NativeBackupEngine.shared.backupClientSessionId = sessionId
+      return true
+    }
+
+    // Task 1594 round 2 (F3/F6): the vault key's proven owner, mirrored into
+    // the SHARED keychain (same access group + accessibility as the key
+    // itself) so the File Provider and Share Extension can read it without a
+    // bridge back to the main app. Called from `key-ownership.ts`
+    // `writeKeyOwner` / `clearKeyOwner` — never directly from JS elsewhere.
+    // A `nil`/empty `userId` clears it (the key was purged or never proven).
+    AsyncFunction("mirrorKeyOwner") { (userId: String?) -> Bool in
+      if let userId, !userId.isEmpty {
+        try? BeebeebKeychainCore.storeString(userId, key: BeebeebKeychainCore.masterKeyOwnerKey)
+      } else {
+        BeebeebKeychainCore.deleteString(key: BeebeebKeychainCore.masterKeyOwnerKey)
+      }
+      return true
+    }
+
+    // Task 1594 round 2 (F3/F6): who is CURRENTLY signed in, mirrored into
+    // the same shared keychain. Extensions compare this against
+    // `mirrorKeyOwner`'s value and refuse the key on any mismatch or either
+    // being absent. Called from `CryptoProvider`'s mount effect
+    // (crypto-context.tsx, via `key-ownership.ts` `mirrorSignedInUserId`) —
+    // `mirrorSessionToAppGroup` above already clears this value the instant
+    // the session token changes, so this call only ever WRITES the
+    // definitive value for the now-current session (or clears it at
+    // sign-out).
+    AsyncFunction("mirrorSessionUserId") { (userId: String?) -> Bool in
+      if let userId, !userId.isEmpty {
+        try? BeebeebKeychainCore.storeString(userId, key: BeebeebKeychainCore.sessionUserIdKey)
+      } else {
+        BeebeebKeychainCore.deleteString(key: BeebeebKeychainCore.sessionUserIdKey)
+      }
       return true
     }
 

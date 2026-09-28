@@ -138,4 +138,43 @@ describe('1594 — X-Beebeeb-Expected-User on authenticated mutations', () => {
     expect(headerValue(complete!.init, 'X-Beebeeb-Expected-User')).toBe(OWNER);
     setExpectedUserId(null);
   });
+
+  test('1594 round 2 (F5): a 409 account_mismatch on the raw-fetch simple upload also ends the local session', async () => {
+    const { setExpectedUserId } = await import('./expected-user');
+    const api = await import('./api');
+    setExpectedUserId(OWNER);
+    let expired = 0;
+    api.registerSessionExpiredHandler(() => { expired += 1; });
+
+    fetchQueue.push(async () => jsonResponse({ error: 'account_mismatch', message: 'This session does not match the account of the vault key on this device.' }, 409));
+    const blob = new Blob([new Uint8Array(10)]);
+    await expect(
+      api.uploadFile({ name_encrypted: 'x', size_bytes: 10 }, blob),
+    ).rejects.toMatchObject({ status: 409, code: 'account_mismatch' });
+
+    expect(expired).toBe(1);
+    expect(store.has('beebeeb_session_token')).toBe(false);
+    setExpectedUserId(null);
+  });
+
+  test('1594 round 2 (F5): a non-account_mismatch 409 on a raw-fetch upload does NOT end the session', async () => {
+    const { setExpectedUserId } = await import('./expected-user');
+    const api = await import('./api');
+    setExpectedUserId(OWNER);
+    let expired = 0;
+    api.registerSessionExpiredHandler(() => { expired += 1; });
+    store.set('beebeeb_session_token', 'test-token'); // reset after the prior test's clearToken
+
+    // A DIFFERENT 409 meaning (e.g. object_budget_exceeded) must still surface
+    // as a normal ApiError, with the session left intact.
+    fetchQueue.push(async () => jsonResponse({ error: 'object_budget_exceeded', message: 'Object budget exceeded' }, 409));
+    const blob = new Blob([new Uint8Array(10)]);
+    await expect(
+      api.uploadFile({ name_encrypted: 'x', size_bytes: 10 }, blob),
+    ).rejects.toMatchObject({ status: 409, code: 'object_budget_exceeded' });
+
+    expect(expired).toBe(0);
+    expect(store.get('beebeeb_session_token')).toBe('test-token');
+    setExpectedUserId(null);
+  });
 });

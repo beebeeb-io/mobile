@@ -240,14 +240,17 @@ describe('1594 — a stored key is only ever used for the account that owns it',
     expect(after.needsRecoveryPhrase).toBe(true);
   });
 
-  test("a legacy key without an owner that verify-recovery-check rejects → locked, purged, phrase required", async () => {
+  test("a legacy key without an owner, wrong account's public key → locked, purged, phrase required, recovery_check NEVER sent", async () => {
     seedStoredKey(KEY_A, null); // a pre-fix build never recorded an owner
     server.sessionUser = USER_B;
     const render = mountProvider(USER_B);
 
     await expect(render().unlock()).rejects.toThrow(/no master key in keychain/i);
 
-    expect(calls.verify).toEqual([b64(checkOf(KEY_A))]);
+    // F1 (round 2): an UNBOUND key must NEVER have its recovery_check sent —
+    // it may be a DIFFERENT account's reset credential. Ownership is proven
+    // (or here, disproven) via the public key only.
+    expect(calls.verify).toEqual([]);
     expectKeyPurged();
     // The handle loaded to derive the public key is released, never kept.
     expect(calls.released.length).toBe(calls.createHandle);
@@ -256,7 +259,7 @@ describe('1594 — a stored key is only ever used for the account that owns it',
     expect(after.needsRecoveryPhrase).toBe(true);
   });
 
-  test('a legacy key that verify-recovery-check accepts → unlocked, owner recorded', async () => {
+  test('a legacy key whose public key matches the account → unlocked, owner recorded, recovery_check NEVER sent', async () => {
     seedStoredKey(KEY_A, null);
     server.sessionUser = USER_A;
     const render = mountProvider(USER_A);
@@ -264,7 +267,9 @@ describe('1594 — a stored key is only ever used for the account that owns it',
     await render().unlock();
 
     expect(render().isUnlocked).toBe(true);
-    expect(calls.verify).toEqual([b64(checkOf(KEY_A))]);
+    // F1: unbound proof goes straight to the public key — recovery_check is
+    // never POSTed for a key with no local owner record.
+    expect(calls.verify).toEqual([]);
     expect(secure.get(OWNER)).toBe(USER_A);
     expect(calls.deleteKeychain).toBe(0);
   });
@@ -303,7 +308,12 @@ describe('1594 — a stored key is only ever used for the account that owns it',
     expect(calls.deleteKeychain).toBe(0);
     expect(secure.get(FALLBACK)).toBe(b64(KEY_A));
     expect(secure.get(OWNER)).toBe(USER_A);
-    expect(calls.verify.length).toBe(2);
+    // F1: the FIRST mount's key is unbound (seedStoredKey(..., null)), so it
+    // is proven via the public key WITHOUT ever sending recovery_check — only
+    // the SECOND mount (by then 'bound', from the first mount's write) sends
+    // it, and it matches on the first try (server.users[USER_A].check is
+    // already KEY_A's).
+    expect(calls.verify.length).toBe(1);
   });
 
   test('verification unreachable + a key with no recorded owner → not unlocked, NOT purged, no recovery prompt', async () => {
@@ -320,6 +330,7 @@ describe('1594 — a stored key is only ever used for the account that owns it',
     expect(secure.get(FALLBACK)).toBe(b64(KEY_A));
     expect(calls.deleteKeychain).toBe(0);
     expect(calls.released.length).toBe(calls.createHandle);
+    expect(calls.verify).toEqual([]); // F1: unbound never sends recovery_check
   });
 
   test('verification unreachable + the key already bound to this user → unlocks (offline-tolerant)', async () => {
@@ -355,6 +366,27 @@ describe('1594 — a stored key is only ever used for the account that owns it',
     expect(calls.createHandle).toBe(0);
     expect(calls.fallbackReads).toBe(0);
     expect(secure.get(FALLBACK)).toBe(b64(KEY_A)); // not a purge — nobody to compare with
+  });
+});
+
+describe('1594 round 2 (F1) — an unbound key never sends recovery_check', () => {
+  test('unbound key, account has no public key on file either → unverifiable, phrase required, NOT purged, recovery_check never sent', async () => {
+    seedStoredKey(KEY_A, null); // unbound
+    server.sessionUser = USER_A;
+    server.users[USER_A] = { check: null, pub: null }; // no check AND no public key
+    const render = mountProvider(USER_A);
+
+    await expect(render().unlock()).rejects.toThrow(/no master key in keychain/i);
+
+    expect(calls.verify).toEqual([]);
+    // 'unverifiable' + unbound → asks for the phrase but does NOT purge (the
+    // key might still be this account's; there is simply nothing on the
+    // server yet to prove it against).
+    expect(secure.has(CHECK)).toBe(true);
+    expect(secure.has(FALLBACK)).toBe(true);
+    expect(calls.deleteKeychain).toBe(0);
+    const after = render();
+    expect(after.needsRecoveryPhrase).toBe(true);
   });
 });
 

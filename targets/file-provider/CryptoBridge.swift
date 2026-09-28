@@ -10,6 +10,10 @@ enum CryptoBridge {
   enum CryptoBridgeError: Error {
     case decodeFailed
     case keyUnavailable
+    /// Task 1594 round 2 (F3): the shared owner record is missing, or does
+    /// not match the currently signed-in user mirrored alongside the session
+    /// token. Thrown INSTEAD of ever loading the key.
+    case ownerUnverified
   }
 
   struct DecryptedName {
@@ -17,9 +21,39 @@ enum CryptoBridge {
     let mimeType: String?
   }
 
+  // MARK: - Key ownership (task 1594 round 2, F3)
+
+  /// The vault key's proven owner (`BeebeebCryptoModule.mirrorKeyOwner`) and
+  /// the currently signed-in user (`mirrorSessionUserId`) — both written by
+  /// the MAIN APP ONLY, into the SAME shared keychain access group +
+  /// accessibility as the master key itself (F6), so this extension needs no
+  /// bridge back to the app to read them. Public so `FileProviderExtension`
+  /// can decide when a cached handle must be dropped (F3: "drop the cached
+  /// handle when the owner record changes") without loading a new one.
+  static func currentKeyOwner() -> String? {
+    BeebeebKeychainCore.loadString(key: BeebeebKeychainCore.masterKeyOwnerKey)
+  }
+
+  /// `true` only when an owner record exists AND matches the signed-in user.
+  /// Both being present-but-different, or either being absent, refuse — this
+  /// is the fix for the round-1 gap where `loadMasterKeyHandle()` used
+  /// whatever key was in the keychain with no ownership check at all, so an
+  /// unbound/unverifiable/leftover key (the exact 1594 bug class) stayed
+  /// usable by Files.app regardless of what the main app's own (JS-only)
+  /// ownership check was doing.
+  private static func ownershipVerified() -> Bool {
+    guard let owner = currentKeyOwner(), !owner.isEmpty else { return false }
+    guard let signedInUser = BeebeebKeychainCore.loadString(key: BeebeebKeychainCore.sessionUserIdKey),
+          !signedInUser.isEmpty else { return false }
+    return owner == signedInUser
+  }
+
   // MARK: - Key access
 
   static func loadMasterKeyHandle() throws -> MasterKeyHandle {
+    guard ownershipVerified() else {
+      throw CryptoBridgeError.ownerUnverified
+    }
     // File Provider must NOT fall back to the primary SE key — that key may
     // require Face ID, and Files.app can't surface a clean biometric prompt
     // from an extension. `.extensionOnly` preserves that contract (task 0436,

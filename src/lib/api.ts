@@ -375,6 +375,31 @@ function isCurrentSessionSnapshot(snapshot: RequestAuthSnapshot): boolean {
   return sessionGeneration === snapshot.generation && cachedToken === snapshot.token;
 }
 
+/**
+ * Task 1594 round 2 (F5): the SAME 409 `account_mismatch` → session-end
+ * handling `request()` runs (above), for the raw-`fetch`/`FileSystem.uploadAsync`
+ * upload paths that bypass `request()` entirely (chunk PUTs, simple uploads —
+ * `expectedUserHeaders()` is already attached to their requests; only the
+ * RESPONSE side was never wired to react to a 409 the same way). Unlike
+ * `request()`'s inline handling, this has no per-call `authSnapshot` to guard
+ * against a stale in-flight request outliving a session change — an upload
+ * that reaches this point already sent `X-Beebeeb-Expected-User` for
+ * WHATEVER session is current right now, so a 409 here is never stale in the
+ * way a slow 401 can be. Always throws; never returns.
+ */
+async function throwUploadError(
+  status: number,
+  err: { error?: string; message?: string },
+  fallbackMessage = 'Upload failed',
+): Promise<never> {
+  if (status === 409 && err.error === 'account_mismatch') {
+    await clearToken();
+    onSessionExpired?.();
+    throw new ApiError(409, err.message ?? 'This session does not match the account of the vault key on this device.', 'account_mismatch');
+  }
+  throw new ApiError(status, err.message ?? err.error ?? fallbackMessage, err.error);
+}
+
 async function headers(auth = true, extra?: Record<string, string>): Promise<RequestHeaders> {
   const h: Record<string, string> = { 'Content-Type': 'application/json' };
   let authSnapshot: RequestAuthSnapshot | null = null;
@@ -1345,7 +1370,8 @@ async function uploadFileSimple(
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
-    throw new ApiError(res.status, err.error ?? res.statusText);
+    // Task 1594 round 2 (F5): route account_mismatch the same as request().
+    await throwUploadError(res.status, err, res.statusText);
   }
 
   onProgress?.({ phase: 'finalizing', chunksTotal: 1, chunksUploaded: 1, bytesTotal: fileBlob.size, bytesUploaded: fileBlob.size });
@@ -1503,7 +1529,8 @@ export async function uploadEncryptedChunked(params: {
     })
     if (!initRes.ok) {
       const err = (await initRes.json().catch(() => ({ error: initRes.statusText }))) as { error?: string; message?: string }
-      throw new ApiError(initRes.status, err.message ?? err.error ?? initRes.statusText, err.error)
+      // Task 1594 round 2 (F5): route account_mismatch the same as request().
+      await throwUploadError(initRes.status, err, initRes.statusText)
     }
     const init = (await initRes.json()) as { file_id: string }
     serverFileId = init.file_id
@@ -1532,9 +1559,11 @@ export async function uploadEncryptedChunked(params: {
     const chunkRes = await putBinaryBytes(`${BASE_URL}${chunkPath}`, token, encBytes, foregroundTransfer === true)
     if (!chunkRes.ok) {
       const err = (await chunkRes.error()) as { error?: string; message?: string }
-      // Carry the machine code (e.g. `object_budget_exceeded`, `quota_exceeded`)
-      // so friendlyError() can show the right copy instead of the raw code.
-      throw new ApiError(chunkRes.status, err.message ?? err.error ?? `Chunk ${i} failed`, err.error)
+      // Task 1594 round 2 (F5): a 409 account_mismatch here ends the local
+      // session the same way request()'s own 409 handler does — the machine
+      // code otherwise still reaches friendlyError() via throwUploadError's
+      // fallback throw (e.g. object_budget_exceeded, quota_exceeded).
+      await throwUploadError(chunkRes.status, err, `Chunk ${i} failed`)
     }
 
     bytesUploaded += encBytes.length
@@ -1604,7 +1633,8 @@ async function finalizeUpload(params: {
   })
   if (!completeRes.ok) {
     const err = await completeRes.json().catch(() => ({ error: completeRes.statusText }))
-    throw new ApiError(completeRes.status, (err as { error?: string }).error ?? 'Finalize failed')
+    // Task 1594 round 2 (F5): route account_mismatch the same as request().
+    await throwUploadError(completeRes.status, err as { error?: string; message?: string }, 'Finalize failed')
   }
   const completed = await completeRes.json() as FileEntry
   let shouldClearResumeState = true
@@ -1867,7 +1897,8 @@ async function initUploadV2(params: {
   if (res.status === 404 || res.status === 405) return null
   if (!res.ok) {
     const err = (await res.json().catch(() => ({ error: res.statusText }))) as { error?: string; message?: string }
-    throw new ApiError(res.status, err.message ?? err.error ?? res.statusText, err.error)
+    // Task 1594 round 2 (F5): route account_mismatch the same as request().
+    await throwUploadError(res.status, err, res.statusText)
   }
   const data = await res.json() as UploadV2InitResponse
   return {
@@ -1955,7 +1986,8 @@ async function uploadFileChunked(
   });
   if (!initRes.ok) {
     const err = await initRes.json().catch(() => ({ error: initRes.statusText }));
-    throw new ApiError(initRes.status, err.message ?? err.error ?? initRes.statusText, err.error);
+    // Task 1594 round 2 (F5): route account_mismatch the same as request().
+    await throwUploadError(initRes.status, err, initRes.statusText);
   }
   const { file_id } = (await initRes.json()) as { file_id: string; chunk_count: number };
 
@@ -1972,7 +2004,8 @@ async function uploadFileChunked(
     });
     if (!chunkRes.ok) {
       const err = await chunkRes.json().catch(() => ({ error: chunkRes.statusText }));
-      throw new ApiError(chunkRes.status, err.message ?? err.error ?? `Chunk ${i} upload failed`, err.error);
+      // Task 1594 round 2 (F5): see the sibling chunk-upload path above.
+      await throwUploadError(chunkRes.status, err, `Chunk ${i} upload failed`);
     }
 
     onProgress?.({
@@ -1997,7 +2030,8 @@ async function uploadFileChunked(
   });
   if (!completeRes.ok) {
     const err = await completeRes.json().catch(() => ({ error: completeRes.statusText }));
-    throw new ApiError(completeRes.status, err.error ?? 'Failed to finalize upload');
+    // Task 1594 round 2 (F5): route account_mismatch the same as request().
+    await throwUploadError(completeRes.status, err, 'Failed to finalize upload');
   }
   return completeRes.json() as Promise<FileEntry>;
 }
@@ -2034,7 +2068,8 @@ export async function uploadThumbnail(
   const res = await putBinaryBytes(url, token, bytes);
   if (!res.ok) {
     const err = await res.error().catch(() => ({ error: undefined }));
-    throw new ApiError(res.status, err.error ?? `Thumbnail upload failed (HTTP ${res.status})`);
+    // Task 1594 round 2 (F5): route account_mismatch the same as request().
+    await throwUploadError(res.status, { error: err.error, message: undefined }, `Thumbnail upload failed (HTTP ${res.status})`);
   }
 }
 

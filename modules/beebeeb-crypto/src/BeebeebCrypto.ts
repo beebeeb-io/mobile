@@ -781,6 +781,27 @@ export async function mirrorBackupClientSession(sessionId: string | null): Promi
 }
 
 /**
+ * Task 1594 round 2 (F3/F6). Mirror the vault key's proven owner into the
+ * SHARED keychain so the File Provider / Share Extension can refuse to use a
+ * key that has not been proven to belong to the currently signed-in account.
+ * Called only from `src/lib/key-ownership.ts` (`writeKeyOwner`/`clearKeyOwner`).
+ */
+export async function mirrorKeyOwner(userId: string | null): Promise<boolean> {
+  if (typeof BeebeebCryptoModule.mirrorKeyOwner !== 'function') return false
+  return BeebeebCryptoModule.mirrorKeyOwner(userId)
+}
+
+/**
+ * Task 1594 round 2 (F3/F6). Mirror who is CURRENTLY signed in into the
+ * SHARED keychain, alongside `mirrorKeyOwner`'s value. Called only from
+ * `src/lib/key-ownership.ts` (`mirrorSignedInUserId`).
+ */
+export async function mirrorSessionUserId(userId: string | null): Promise<boolean> {
+  if (typeof BeebeebCryptoModule.mirrorSessionUserId !== 'function') return false
+  return BeebeebCryptoModule.mirrorSessionUserId(userId)
+}
+
+/**
  * Legacy cleanup shim. Older debug simulator builds mirrored the raw master key
  * into App Group defaults for File Provider QA. Current builds never persist
  * raw vault keys in App Group storage; native iOS removes any stale value and

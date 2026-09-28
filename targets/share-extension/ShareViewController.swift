@@ -82,6 +82,21 @@ final class ShareViewController: UIViewController {
 
     // MARK: - Setup
 
+    /// Task 1594 round 2 (F3/F6): `true` only when the vault key's proven
+    /// owner (mirrored by `BeebeebCryptoModule.mirrorKeyOwner`) matches the
+    /// currently signed-in user (`mirrorSessionUserId`) — both in the shared
+    /// keychain, both written by the MAIN APP ONLY. Either being absent, or
+    /// the two disagreeing, refuses: this extension is single-shot per
+    /// invocation (no persistent cache to invalidate, unlike the File
+    /// Provider's `FileProviderExtension`).
+    private static func keyOwnershipVerified() -> Bool {
+        guard let owner = BeebeebKeychainCore.loadString(key: BeebeebKeychainCore.masterKeyOwnerKey),
+              !owner.isEmpty else { return false }
+        guard let signedInUser = BeebeebKeychainCore.loadString(key: BeebeebKeychainCore.sessionUserIdKey),
+              !signedInUser.isEmpty else { return false }
+        return owner == signedInUser
+    }
+
     private func loadSharedConfig() {
         let defaults = UserDefaults(suiteName: Self.appGroup)
         sessionToken = defaults?.string(forKey: Self.sessionTokenKey)
@@ -100,7 +115,17 @@ final class ShareViewController: UIViewController {
         // MasterKeyHandle, and zero the bytes — raw key material never lives in
         // this controller beyond this scope, and never crosses into
         // ShareUploader (task 0673 key hygiene).
-        if var keyBytes = BeebeebKeychainCore.loadMasterKey(
+        //
+        // Task 1594 round 2 (F3): only do this once ownership is confirmed —
+        // the owner record (`BeebeebCryptoModule.mirrorKeyOwner`) must match
+        // the currently signed-in user (`mirrorSessionUserId`), both mirrored
+        // by the main app into the SAME shared keychain access group +
+        // accessibility as the key itself (F6). Before this fix, "Save to
+        // Beebeeb" would happily encrypt + upload a shared file under
+        // WHATEVER key sat in the keychain, with no check that it belonged to
+        // the signed-in account — the same bug class as the original 1594
+        // report, reachable from the share sheet.
+        if Self.keyOwnershipVerified(), var keyBytes = BeebeebKeychainCore.loadMasterKey(
             label: "io.beebeeb.master-key",
             mode: .extensionThenPrimary
         ) {
