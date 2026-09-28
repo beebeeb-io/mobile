@@ -26,12 +26,47 @@ import type { Plan, Subscription } from './api';
  *    the other per-account cache (`clearCachedFileIndex`) — covering sign-
  *    out, a forced 401 sign-out, and an account switch (sign-out then a
  *    different sign-in) alike.
+ *
+ * Lead review follow-up (2026-09-28): a device that ran the OLD (pre-fix)
+ * build wrote the legacy global key (`beebeeb:billing-cache:v1`, no user-id
+ * suffix at all). After this fix ships, nothing ever reads that exact key
+ * again, but nothing ever removed it either — it would sit on disk holding
+ * the previous account's plan/quota forever. Two belt-and-suspenders fixes:
+ *  - `clearCachedBilling()` also removes the exact legacy key (not just the
+ *    `...v1:` prefix), so an ordinary sign-out on an upgraded device cleans
+ *    it up;
+ *  - `loadCachedBilling`/`saveCachedBilling` best-effort remove the exact
+ *    legacy key once per process, on their first call, so it is gone even
+ *    for a user who never signs out (the legacy key is unscoped, so this is
+ *    the only correct one-time removal — it does not touch any per-user
+ *    key).
  */
 
 const BILLING_CACHE_KEY = 'beebeeb:billing-cache:v1';
 
 function cacheKeyFor(userId: string): string {
   return `${BILLING_CACHE_KEY}:${userId}`;
+}
+
+/**
+ * One-time, best-effort removal of the legacy unscoped key. Guarded by a
+ * module-level flag so it is attempted at most once per process (not on
+ * every load/save call) — never throws, never blocks the caller.
+ */
+let legacyKeyRemovalAttempted = false;
+async function removeLegacyKeyOnce(): Promise<void> {
+  if (legacyKeyRemovalAttempted) return;
+  legacyKeyRemovalAttempted = true;
+  try {
+    await AsyncStorage.removeItem(BILLING_CACHE_KEY);
+  } catch {
+    // Best-effort: never let legacy-key cleanup break a load/save.
+  }
+}
+
+/** Test seam — resets the once-per-process debounce. */
+export function resetLegacyBillingCacheKeyRemovalForTests(): void {
+  legacyKeyRemovalAttempted = false;
 }
 
 export interface CachedBilling {
@@ -43,6 +78,7 @@ export interface CachedBilling {
 
 /** A read with no signed-in user id returns nothing — there is nothing to key it by. */
 export async function loadCachedBilling(userId: string | null | undefined): Promise<CachedBilling | null> {
+  await removeLegacyKeyOnce();
   if (!userId) return null;
   try {
     const raw = await AsyncStorage.getItem(cacheKeyFor(userId));
@@ -71,6 +107,7 @@ export async function saveCachedBilling(
   plans: Plan[],
   userId: string | null | undefined,
 ): Promise<void> {
+  await removeLegacyKeyOnce();
   if (!userId) return;
   try {
     const payload: CachedBilling = { subscription, plans, cachedAt: Date.now() };
@@ -93,7 +130,7 @@ export async function clearCachedBilling(): Promise<void> {
   try {
     const keys = await AsyncStorage.getAllKeys();
     const prefix = `${BILLING_CACHE_KEY}:`;
-    const match = keys.filter((k) => k.startsWith(prefix));
+    const match = keys.filter((k) => k.startsWith(prefix) || k === BILLING_CACHE_KEY);
     if (match.length > 0) await AsyncStorage.multiRemove(match);
   } catch {
     // Best-effort — see doc comment.

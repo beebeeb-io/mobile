@@ -30,7 +30,7 @@ mock.module('@react-native-async-storage/async-storage', () => ({
   },
 }));
 
-const { loadCachedBilling, saveCachedBilling, clearCachedBilling } =
+const { loadCachedBilling, saveCachedBilling, clearCachedBilling, resetLegacyBillingCacheKeyRemovalForTests } =
   await import('./billing-cache');
 
 function plan(overrides: Record<string, unknown> = {}) {
@@ -39,6 +39,7 @@ function plan(overrides: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   asyncStore.clear();
+  resetLegacyBillingCacheKeyRemovalForTests();
 });
 
 describe('billing-cache — per-user scoping (task 1601 root cause 4)', () => {
@@ -115,5 +116,59 @@ describe('billing-cache — clearCachedBilling (sign-out cleanup)', () => {
     await clearCachedBilling();
 
     expect(asyncStore.get('beebeeb:some-other-cache:v1')).toBe('unrelated');
+  });
+});
+
+describe('billing-cache — legacy unscoped key cleanup (lead review follow-up, task 1601)', () => {
+  test('legacy key present -> clearCachedBilling() removes it', async () => {
+    asyncStore.set('beebeeb:billing-cache:v1', JSON.stringify({
+      subscription: { plan: 'pro', billing_cycle: 'monthly', status: 'active', current_period_end: null },
+      plans: [plan()],
+      cachedAt: 0,
+    }));
+
+    await clearCachedBilling();
+
+    expect(asyncStore.has('beebeeb:billing-cache:v1')).toBe(false);
+  });
+
+  test('legacy key present -> after a load it is gone', async () => {
+    asyncStore.set('beebeeb:billing-cache:v1', JSON.stringify({
+      subscription: { plan: 'pro', billing_cycle: 'monthly', status: 'active', current_period_end: null },
+      plans: [plan()],
+      cachedAt: 0,
+    }));
+
+    await loadCachedBilling('user-A');
+
+    expect(asyncStore.has('beebeeb:billing-cache:v1')).toBe(false);
+  });
+
+  test('legacy key present -> after a save it is gone', async () => {
+    asyncStore.set('beebeeb:billing-cache:v1', JSON.stringify({
+      subscription: { plan: 'pro', billing_cycle: 'monthly', status: 'active', current_period_end: null },
+      plans: [plan()],
+      cachedAt: 0,
+    }));
+
+    await saveCachedBilling({ plan: 'free', billing_cycle: null, status: 'active', current_period_end: null }, [], 'user-A');
+
+    expect(asyncStore.has('beebeeb:billing-cache:v1')).toBe(false);
+  });
+
+  test('a per-user entry for the current user survives the one-time legacy removal', async () => {
+    asyncStore.set('beebeeb:billing-cache:v1', JSON.stringify({
+      subscription: { plan: 'pro', billing_cycle: 'monthly', status: 'active', current_period_end: null },
+      plans: [plan()],
+      cachedAt: 0,
+    }));
+    await saveCachedBilling({ plan: 'business', billing_cycle: 'annual', status: 'active', current_period_end: null }, [plan()], 'user-A');
+
+    // A second load (which also attempts the now-already-gone legacy removal)
+    // must not disturb the per-user entry it just wrote.
+    const result = await loadCachedBilling('user-A');
+
+    expect(asyncStore.has('beebeeb:billing-cache:v1')).toBe(false);
+    expect(result?.subscription?.plan).toBe('business');
   });
 });
