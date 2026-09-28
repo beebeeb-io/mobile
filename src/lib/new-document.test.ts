@@ -18,6 +18,7 @@ import {
   documentTypeForTile,
   foldName,
   initialDocumentContent,
+  initialNameSelection,
   mimeTypeForTextExtension,
   normalizeExtension,
   tileAccessibilityLabel,
@@ -427,5 +428,26 @@ describe('initialDocumentContent', () => {
     expect(initialDocumentContent(txt, 'todo.txt')).toBe('\n')
     expect(initialDocumentContent(txt, 'deploy-notes.py')).toBe('\n')
     for (const t of [md, txt]) expect(initialDocumentContent(t, `x.${t.ext}`).length).toBeGreaterThan(0)
+  })
+})
+
+describe('initialNameSelection', () => {
+  // Task 1592 item 9 — the New file name field was prefilled with "Untitled
+  // note" and typed text APPENDED to it ("Untitled notev140…") instead of
+  // replacing it. This is the pure decision the field's `selection` prop is
+  // driven from: select the whole untouched default so the first keystroke
+  // replaces it; once the user has typed anything, stop dictating the cursor.
+  test('an untouched default selects the whole base, from 0 to its length', () => {
+    expect(initialNameSelection('Untitled note', false)).toEqual({ start: 0, end: 13 })
+    expect(initialNameSelection('Untitled', false)).toEqual({ start: 0, end: 8 })
+  })
+
+  test('a touched base returns undefined — never re-selects over the user\'s edit', () => {
+    expect(initialNameSelection('Untitled noteShopping list', true)).toBeUndefined()
+    expect(initialNameSelection('', true)).toBeUndefined()
+  })
+
+  test('an empty base (cleared by the user) is a no-op selection, not a crash', () => {
+    expect(initialNameSelection('', false)).toEqual({ start: 0, end: 0 })
   })
 })

@@ -8,6 +8,14 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { ICON_LABEL_ADVANCE_EM, ICON_LABEL_MARGIN_UNITS, docIconLabelMetrics } from '../lib/new-document'
 
+// The source text of the `<TextInput … />` block whose props surround `aroundIndex`
+// (e.g. the index of one of its own prop lines).
+function textInputBlock(src: string, aroundIndex: number): string {
+  const start = src.lastIndexOf('<TextInput', aroundIndex)
+  const end = src.indexOf('/>', aroundIndex)
+  return src.slice(start, end)
+}
+
 const sheet = readFileSync(join(import.meta.dir, 'NewFileSheet.tsx'), 'utf-8')
 const files = readFileSync(join(import.meta.dir, '../screens/FilesScreen.tsx'), 'utf-8')
 
@@ -74,6 +82,34 @@ describe('FilesScreen wiring', () => {
 
   test('the "+" menu passes the platform (Android gets the flat list)', () => {
     expect(files).toContain('buildAddMenuActions(c.ink, Platform.OS)')
+  })
+})
+
+describe('name field selection (task 1592 item 9)', () => {
+  test('typing replaces the default: the base field is driven by initialNameSelection, marks itself touched', () => {
+    const field = textInputBlock(sheet, sheet.indexOf('value={draft.base}'))
+    expect(field).toContain('onChangeText={(base) => setDraft({ base, touched: true })}')
+    expect(field).toContain('selection={initialNameSelection(draft.base, !!draft.touched)}')
+  })
+
+  test('a freshly opened type starts untouched', () => {
+    expect(sheet).toContain(
+      "[type.id]: { base: defaultNewDocumentBase(type, existingNames()), ext: type.ext, touched: false }",
+    )
+  })
+
+  test('the extension field (D3\'s user-editable extension) is never given a selection prop — item 9 must not touch it', () => {
+    const field = textInputBlock(sheet, sheet.indexOf('value={draft.ext}'))
+    expect(field).toContain('testID="new-file-ext-input"')
+    expect(field).not.toContain('selection=')
+    expect(field).not.toContain('selectTextOnFocus')
+  })
+})
+
+describe('name-step copy (task 1592 item 10)', () => {
+  test('the extension note reads neutrally — no device-specific "your Mac"', () => {
+    expect(sheet).not.toContain('your Mac')
+    expect(sheet).toContain('like renaming a file on any computer')
   })
 })
 

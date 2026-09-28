@@ -555,6 +555,10 @@ interface FileRowItemProps {
   // 1338b — the trimmed search query while showing search results; undefined
   // during normal browsing, so the name renders exactly as before then.
   highlightQuery?: string;
+  /** Task 1592 item 12 — the "Stored in" city (GET /api/v1/region), fetched
+   *  ONCE by the screen and passed down; `null` while loading, unknown, or on
+   *  a failed fetch (never the "EU region" filler). */
+  regionCity: string | null;
 }
 
 const FileRowItem = React.memo(function FileRowItem({
@@ -577,6 +581,7 @@ const FileRowItem = React.memo(function FileRowItem({
   lockStateReady,
   testID,
   highlightQuery,
+  regionCity,
 }: FileRowItemProps) {
   const { colors: c } = useTheme();
   const swipeableRef = useRef<Swipeable>(null);
@@ -723,7 +728,7 @@ const FileRowItem = React.memo(function FileRowItem({
           <Text style={[styles.cryptoMeta, { color: c.ink4 }]} numberOfLines={1}>
             {isPendingUpload
               ? 'Waiting for encrypted chunks'
-              : `AES-256-GCM · ${trustLocation(item.storage_pool_id).region} · ${trustLocation(item.storage_pool_id).city}`}
+              : `AES-256-GCM · ${storageLocationLabel({ city: regionCity })}`}
           </Text>
         )}
       </View>
@@ -807,6 +812,10 @@ interface FileGridItemProps {
   // 1338b — the trimmed search query while showing search results; undefined
   // during normal browsing, so the name renders exactly as before then.
   highlightQuery?: string;
+  /** Task 1592 item 12 — the "Stored in" city (GET /api/v1/region), fetched
+   *  ONCE by the screen and passed down; `null` while loading, unknown, or on
+   *  a failed fetch (never the "EU region" filler). */
+  regionCity: string | null;
 }
 
 const FileGridItem = React.memo(function FileGridItem({
@@ -828,6 +837,7 @@ const FileGridItem = React.memo(function FileGridItem({
   lockStateReady,
   testID,
   highlightQuery,
+  regionCity,
 }: FileGridItemProps) {
   const { colors: c } = useTheme();
   const category = fileCategory(item);
@@ -933,7 +943,7 @@ const FileGridItem = React.memo(function FileGridItem({
         </Text>
         {!isFolder && (
           <Text style={[styles.cryptoMetaGrid, { color: c.ink4 }]} numberOfLines={1}>
-            {isPendingUpload ? 'Waiting for chunks' : `AES-256-GCM · ${trustLocation(item.storage_pool_id).city}`}
+            {isPendingUpload ? 'Waiting for chunks' : `AES-256-GCM · ${storageLocationLabel({ city: regionCity })}`}
           </Text>
         )}
       </View>
@@ -1230,6 +1240,26 @@ export default function FilesScreen() {
   const { user, phraseVerified } = useAuth();
   const isAuthenticated = user !== null;
   const { backupProgress, includeVideos, isPhotoBackupEnabled } = useBackup();
+
+  // Task 1592 item 12 — the row/grid subtitle's "Stored in" city, from the
+  // same cached source (GET /api/v1/region) as the Info sheet, Encryption
+  // details sheet and this screen's own Details alert. ONE call for the
+  // whole screen (the module-level cache in lib/storage-region.ts also
+  // shares it with those other surfaces) — never a per-row fetch.
+  const [regionCity, setRegionCity] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    loadRegionCity()
+      .then((city) => {
+        if (!cancelled) setRegionCity(city);
+      })
+      .catch(() => {
+        if (!cancelled) setRegionCity(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Navigation state: stack of folders
   const [folderStack, setFolderStack] = useState<BreadcrumbEntry[]>([
@@ -4086,8 +4116,9 @@ export default function FilesScreen() {
       lockStateReady={lockStateReady}
       testID={isShowingSearchResults ? `search-result-${item.id}` : fileRowTestId(item)}
       highlightQuery={searchHighlightQuery}
+      regionCity={regionCity}
     />
-  ), [decryptedNames, unavailableNameIds, withDecryptedMime, openFile, handleLongPress, handleSwipeShare, handleSwipeDelete, openTrust, selectMode, selectedIds, toggleSelect, sortOrder, offlineStatusFor, proofs, lockedFileIds, lockStateReady, isShowingSearchResults, searchHighlightQuery, fileRowTestId]);
+  ), [decryptedNames, unavailableNameIds, withDecryptedMime, openFile, handleLongPress, handleSwipeShare, handleSwipeDelete, openTrust, selectMode, selectedIds, toggleSelect, sortOrder, offlineStatusFor, proofs, lockedFileIds, lockStateReady, isShowingSearchResults, searchHighlightQuery, fileRowTestId, regionCity]);
 
   // Grid sizing — 3 columns, evenly spaced, responsive to screen width
   const GRID_COLUMNS = 3;
@@ -4118,8 +4149,9 @@ export default function FilesScreen() {
       lockStateReady={lockStateReady}
       testID={isShowingSearchResults ? `search-result-${item.id}` : fileRowTestId(item)}
       highlightQuery={searchHighlightQuery}
+      regionCity={regionCity}
     />
-  ), [decryptedNames, unavailableNameIds, withDecryptedMime, openFile, handleLongPress, openTrust, selectMode, selectedIds, toggleSelect, sortOrder, gridCardWidth, offlineStatusFor, proofs, lockedFileIds, lockStateReady, isShowingSearchResults, searchHighlightQuery, fileRowTestId]);
+  ), [decryptedNames, unavailableNameIds, withDecryptedMime, openFile, handleLongPress, openTrust, selectMode, selectedIds, toggleSelect, sortOrder, gridCardWidth, offlineStatusFor, proofs, lockedFileIds, lockStateReady, isShowingSearchResults, searchHighlightQuery, fileRowTestId, regionCity]);
 
   const renderEmpty = () => {
     if (loading) return null;
