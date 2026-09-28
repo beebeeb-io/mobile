@@ -1132,10 +1132,39 @@ private let fileProviderCacheSchemaStatements = [
   """,
 ]
 
+/// Task 1593 round 11 (Codex thread PRRT_kwDOSLX6T86miVoV) — dedicated,
+/// protected directory for the SQLite cache; see `PlaintextStorageProtection
+/// .migrateFileProviderCacheDatabaseIfNeeded`'s doc comment for why a
+/// directory (not just the file) is what actually closes the sidecar-
+/// protection gap, via inheritance. Mirrors `AppGroupContainer
+/// .cacheDatabaseDirectory` (Constants.swift, the extension target) — this
+/// file cannot reference that type directly (it is declared in a different
+/// compiled target), so the same literal directory name is duplicated here,
+/// same as this file already duplicates the `"file-provider-cache.sqlite"`
+/// filename literal independently of `BeebeebConstants.cacheDatabaseFilename`.
+private func fileProviderCacheDatabaseDirectory() -> URL? {
+  guard let container = FileManager.default
+    .containerURL(forSecurityApplicationGroupIdentifier: appGroupIdentifier) else { return nil }
+  let dir = container.appendingPathComponent("file-provider-db", isDirectory: true)
+  try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+  PlaintextStorageProtection.protect(dir)
+  return dir
+}
+
+/// Task 1593 round 11 — every caller of this used to build
+/// `container.appendingPathComponent("file-provider-cache.sqlite")` at the
+/// App Group root directly (this function, plus two more inline call sites
+/// in `syncFileProviderCache` / `removeFileProviderEntries` — now routed
+/// through here too, closing the drift the direct inline computation let
+/// creep in). Migrates a pre-round-11 install's legacy top-level database
+/// into `fileProviderCacheDatabaseDirectory()` the first time this resolves.
 private func fileProviderCacheDatabaseUrl() -> URL? {
-  FileManager.default
-    .containerURL(forSecurityApplicationGroupIdentifier: appGroupIdentifier)?
-    .appendingPathComponent("file-provider-cache.sqlite")
+  guard let container = FileManager.default
+    .containerURL(forSecurityApplicationGroupIdentifier: appGroupIdentifier) else { return nil }
+  guard let dir = fileProviderCacheDatabaseDirectory() else { return nil }
+  let legacy = container.appendingPathComponent("file-provider-cache.sqlite")
+  let migrated = dir.appendingPathComponent("file-provider-cache.sqlite")
+  return PlaintextStorageProtection.migrateFileProviderCacheDatabaseIfNeeded(from: legacy, to: migrated)
 }
 
 private func ensureFileProviderCacheDatabase() -> Bool {
@@ -1277,19 +1306,20 @@ private func clearFileProviderCacheState(defaults: UserDefaults?) -> Int {
   var removed = 0
   let fileManager = FileManager.default
   if let container = fileManager.containerURL(forSecurityApplicationGroupIdentifier: appGroupIdentifier) {
-    for name in ["BeebeebFileProvider", "FileProviderCache", "file-provider-cache.sqlite"] {
+    for name in ["BeebeebFileProvider", "FileProviderCache"] {
       let url = container.appendingPathComponent(name)
-      if name == "file-provider-cache.sqlite" {
-        if resetFileProviderCacheDatabase(at: url) {
-          removed += 1
-        }
-        continue
-      }
       if fileManager.fileExists(atPath: url.path) {
         try? fileManager.removeItem(at: url)
         removed += 1
       }
     }
+  }
+  // Task 1593 round 11 — routed through the shared resolver instead of a
+  // third inline `container.appendingPathComponent("file-provider-cache
+  // .sqlite")` at the App Group root, so a legacy pre-round-11 database
+  // gets migrated (and its NEW location reset) here too.
+  if let dbUrl = fileProviderCacheDatabaseUrl(), resetFileProviderCacheDatabase(at: dbUrl) {
+    removed += 1
   }
   return removed
 }
@@ -2505,6 +2535,25 @@ public class BeebeebCryptoModule: Module {
       }
     }
 
+    // Task 1593 round 11 (Codex thread PRRT_kwDOSLX6T86miVoQ, P1) — used to
+    // hand-roll its own unconditional remove-then-add (no consent check, no
+    // registration gate, no post-add generation validate-and-undo) instead
+    // of reusing `registerMountedFileProviderDomainLocked`'s `forceReset:
+    // true` path, which already does exactly this same remove-if-existed +
+    // `clearFileProviderCacheState` + add + `ensureFileProviderCacheDatabase`
+    // + schema-stamp + signal-enumerators + status-return sequence — but
+    // WITH the guard: if a forced sign-out's purge lands while this reset's
+    // own add is suspended between removal and (re-)addition, the guarded
+    // path's consent recheck + purge-generation validate-and-undo (round
+    // 9/10) catches it and undoes the add instead of re-registering the
+    // domain after consent was reset. `mountFileProviderAccess` (this same
+    // file) already calls `registerMountedFileProviderDomain(defaults:
+    // forceReset: true)` for its own force-reset case; this is the same
+    // call, and every real caller of `resetFileProviderDomain`
+    // (`SettingsScreen.tsx`'s repair path) only invokes it when the privacy
+    // state it just read had `showInFiles == true` — i.e. consent is
+    // already expected to be on — so the guard's consent recheck is a no-op
+    // in the ordinary case and only refuses when a purge actually raced it.
     AsyncFunction("resetFileProviderDomain") { () async throws -> [String: Any] in
       guard #available(iOS 16.0, *) else {
         return [
@@ -2520,39 +2569,7 @@ public class BeebeebCryptoModule: Module {
         ]
       }
 
-      let domain = beebeebFileProviderDomain()
-      let domainsBefore = try await getFileProviderDomains()
-      let existed = domainsBefore.contains { $0.identifier == domain.identifier }
-      if existed {
-        try await removeFileProviderDomain(domain)
-      }
-      _ = clearFileProviderCacheState(defaults: sharedDefaults())
-      try await addFileProviderDomain(domain)
-      let cacheReady = ensureFileProviderCacheDatabase()
-      let defaults = sharedDefaults()
-      defaults?.set(fileProviderDomainSchemaVersion, forKey: fileProviderDomainSchemaKey)
-      defaults?.synchronize()
-
-      let rootError = await signalFileProviderEnumerator(domain: domain, itemIdentifier: .rootContainer)
-      let workingSetError = await signalFileProviderEnumerator(domain: domain, itemIdentifier: .workingSet)
-      let manager = NSFileProviderManager(for: domain)
-      let documentStorageURL = manager?.documentStorageURL.absoluteString
-      let (userVisibleRootURL, userVisibleRootError) = await fileProviderRootVisibility(domain: domain)
-      let domainsAfter = try await getFileProviderDomains()
-
-      return fileProviderDomainStatus(
-        domain: domain,
-        registered: true,
-        added: true,
-        removedBeforeAdd: existed,
-        domainCount: domainsAfter.count,
-        cacheDatabaseReady: cacheReady,
-        documentStorageURL: documentStorageURL,
-        userVisibleRootURL: userVisibleRootURL,
-        userVisibleRootError: userVisibleRootError,
-        rootEnumerationError: rootError,
-        workingSetEnumerationError: workingSetError
-      )
+      return try await registerMountedFileProviderDomain(defaults: sharedDefaults(), forceReset: true)
     }
 
     AsyncFunction("unregisterFileProviderDomain") { () async throws -> [String: Any] in
@@ -2741,12 +2758,16 @@ public class BeebeebCryptoModule: Module {
     // default is `false`, preserving the legacy upsert-only behaviour.
     AsyncFunction("syncFileProviderCache") { (entries: [[String: Any]], prune: Bool?, pruneParents: [Any]?) -> Int in
       let shouldPrune = prune ?? false
-      guard let containerUrl = FileManager.default.containerURL(
-        forSecurityApplicationGroupIdentifier: appGroupIdentifier
-      ) else {
+      // Task 1593 round 11 — routed through the shared resolver (was an
+      // inline `containerUrl.appendingPathComponent("file-provider-cache
+      // .sqlite")` at the App Group root) so this call site gets the
+      // directory-based sidecar protection AND the legacy-path migration
+      // for free, instead of drifting from `ensureFileProviderCacheDatabase`
+      // /`fileProviderCacheDatabaseUrl()`'s own path resolution.
+      guard let dbUrl = fileProviderCacheDatabaseUrl() else {
         return 0
       }
-      let dbPath = containerUrl.appendingPathComponent("file-provider-cache.sqlite").path
+      let dbPath = dbUrl.path
       var db: OpaquePointer?
       guard sqlite3_open_v2(
         dbPath,
@@ -2956,12 +2977,12 @@ public class BeebeebCryptoModule: Module {
     // from Files.app immediately instead of lingering until the next listing.
     AsyncFunction("removeFileProviderEntries") { (ids: [String]) -> Int in
       guard !ids.isEmpty else { return 0 }
-      guard let containerUrl = FileManager.default.containerURL(
-        forSecurityApplicationGroupIdentifier: appGroupIdentifier
-      ) else {
+      // Task 1593 round 11 — same resolver routing as `syncFileProviderCache`
+      // above.
+      guard let dbUrl = fileProviderCacheDatabaseUrl() else {
         return 0
       }
-      let dbPath = containerUrl.appendingPathComponent("file-provider-cache.sqlite").path
+      let dbPath = dbUrl.path
       var db: OpaquePointer?
       guard sqlite3_open_v2(
         dbPath,

@@ -48,11 +48,27 @@ public enum PlaintextStorageProtection {
     /// extension target, see the header comment above).
     public let resettableInPlace: Bool
 
-    public init(url: URL, kind: Kind, contains: String, resettableInPlace: Bool = false) {
+    /// Task 1593 round 11 (Codex thread PRRT_kwDOSLX6T86miVoV) — true for a
+    /// directory whose sole registry purpose is to carry file-protection-
+    /// class + backup-exclusion INHERITANCE for a separately-registered
+    /// `resettableInPlace` child living inside it (see the `file-provider-db`
+    /// entry pair in `registry()`). `purgeAll()` must never `removeItem` it
+    /// directly: unlinking the directory unlinks the child file's directory
+    /// entry right along with it, defeating the exact protection
+    /// `resettableInPlace` exists to give that child (a second process's
+    /// already-open connection to it going untouched by the purge).
+    /// `hardenAll()`'s existing generic directory branch (create + protect)
+    /// already does the one thing this kind of entry needs, unchanged.
+    public let containerOnly: Bool
+
+    public init(
+      url: URL, kind: Kind, contains: String, resettableInPlace: Bool = false, containerOnly: Bool = false
+    ) {
       self.url = url
       self.kind = kind
       self.contains = contains
       self.resettableInPlace = resettableInPlace
+      self.containerOnly = containerOnly
     }
   }
 
@@ -125,10 +141,52 @@ public enum PlaintextStorageProtection {
       // `resettableInPlace` above). Without a registry entry the full purge
       // (`purgeAll`, run from EVERY sign-out incl. forced ones) never reset
       // it, and only a normal `signOut()`'s `removeFileProviderAccess` did.
-      entries.append(Entry(url: group.appendingPathComponent("file-provider-cache.sqlite", isDirectory: false),
-                           kind: .file,
-                           contains: "File Provider extension — decrypted file names + metadata cache",
-                           resettableInPlace: true))
+      //
+      // Task 1593 round 11 (Codex thread PRRT_kwDOSLX6T86miVoV, P2) — rounds
+      // 4-10 protected only the `.sqlite` file itself (plus, from round 10,
+      // an explicit `protectSQLiteSidecars` call at each of the few moments
+      // this code happens to run). That missed almost every real case: the
+      // `-journal` rollback-journal sidecar this database actually uses
+      // (never WAL — see `resetSQLiteInPlace`'s doc comment) is created and
+      // deleted around every single transaction, so it is absent at both of
+      // `protectSQLiteSidecars`'s call times (DB-open, launch's
+      // `hardenAll()`) and unprotected for the whole lifetime of every OTHER
+      // transaction — a crash mid-transaction at any of those moments leaves
+      // a hot, unprotected, backup-eligible journal with decrypted bytes in
+      // it. The fix here is structural instead of timing-dependent: the
+      // database now lives inside its OWN directory (`file-provider-db`,
+      // below), and iOS INHERITS both properties from the enclosing
+      // directory for files newly created inside it — file protection class
+      // (Apple's File System Programming Guide, "Encrypting Your App's
+      // Files": "a file or directory's protection class is normally
+      // inherited from its parent directory") and backup exclusion (the
+      // backup daemon never descends into a directory marked excluded, so
+      // nothing created inside one afterward is ever visited, regardless of
+      // that new file's own attributes — the documented reason marking a
+      // DIRECTORY excluded also excludes everything under it). Protecting
+      // the directory once, at the moment it is created
+      // (`migrateFileProviderCacheDatabaseIfNeeded`'s callers,
+      // `AppGroupContainer.cacheDatabaseDirectory` /
+      // `fileProviderCacheDatabaseDirectory()`), means every sidecar SQLite
+      // ever creates inside it — at ANY point in its lifetime, not just the
+      // moments this code happens to check — is already protected the
+      // instant it exists. `protectSQLiteSidecars` (round 10) is kept as
+      // cheap belt-and-suspenders on the file itself; it is no longer load-
+      // bearing.
+      let cacheDbDir = group.appendingPathComponent("file-provider-db", isDirectory: true)
+      entries.append(Entry(
+        url: cacheDbDir,
+        kind: .directory,
+        contains: "container directory for the File Provider decrypted-name cache DB — "
+          + "protected so its SQLite sidecars inherit protection at creation time",
+        containerOnly: true
+      ))
+      entries.append(Entry(
+        url: cacheDbDir.appendingPathComponent("file-provider-cache.sqlite", isDirectory: false),
+        kind: .file,
+        contains: "File Provider extension — decrypted file names + metadata cache",
+        resettableInPlace: true
+      ))
     }
 
     return entries
@@ -221,6 +279,66 @@ public enum PlaintextStorageProtection {
     return results
   }
 
+  /// Task 1593 round 11 (Codex thread PRRT_kwDOSLX6T86miVoV) — relocates the
+  /// File Provider cache database (and any `-journal`/`-wal`/`-shm`
+  /// sidecars present) from a pre-round-11 install's top-level App Group
+  /// path into its new, dedicated, protected directory. Called from both
+  /// processes' path resolvers (`AppGroupContainer.cacheDatabaseUrl` in
+  /// Constants.swift, `fileProviderCacheDatabaseUrl()` in
+  /// BeebeebCryptoModule.swift) every time either one resolves the DB path,
+  /// so it is always applied before the first open on whichever process
+  /// gets there first after this code ships.
+  ///
+  /// `FileManager.moveItem` performs a real `rename(2)` between two paths on
+  /// the SAME volume (both inside this one App Group container), which
+  /// preserves the file's inode: a file descriptor a second process already
+  /// has open against the OLD path (the extension's long-lived
+  /// `CacheManager` connection) keeps working exactly as it did before the
+  /// rename — nothing about an already-open connection needs to "notice" a
+  /// path change mid-session. The only thing that must resolve the NEW path
+  /// is the next FRESH `sqlite3_open_v2` call, on either side, and since the
+  /// main app and this extension ship and update as one atomic app bundle,
+  /// there is no version skew window where an old-code process could still
+  /// be resolving the legacy path after this migration code is what is
+  /// running.
+  ///
+  /// Idempotent and race-safe for two processes calling this around the
+  /// same moment: if `to` already exists, this is a no-op (already migrated,
+  /// or a fresh install that never had a legacy file). If the legacy source
+  /// has vanished by the time this actually tries to move it, that means
+  /// the other process already won the race — not a failure, since the
+  /// desired end state (something now at `to`) already holds.
+  ///
+  /// A move that fails for a real reason falls back to DELETING the legacy
+  /// sibling rather than leaving it in place: this database is a rebuildable
+  /// cache (the source of truth is the encrypted core + the server), so
+  /// losing it costs one slower re-sync, whereas leaving decrypted names
+  /// sitting unprotected at an old, un-registered path forever is the exact
+  /// class of leak this task exists to close.
+  @discardableResult
+  public static func migrateFileProviderCacheDatabaseIfNeeded(from legacyUrl: URL, to newUrl: URL) -> URL {
+    let fileManager = FileManager.default
+    guard !fileManager.fileExists(atPath: newUrl.path) else { return newUrl }
+    guard fileManager.fileExists(atPath: legacyUrl.path) else { return newUrl }
+
+    for suffix in ["", "-journal", "-wal", "-shm"] {
+      let source = URL(fileURLWithPath: legacyUrl.path + suffix)
+      let destination = URL(fileURLWithPath: newUrl.path + suffix)
+      guard fileManager.fileExists(atPath: source.path) else { continue }
+      do {
+        try fileManager.moveItem(at: source, to: destination)
+      } catch {
+        try? fileManager.removeItem(at: source)
+        RuntimeTrace.event("storage.migrate.file_provider_cache_failed", [
+          "suffix": suffix.isEmpty ? "main" : suffix,
+        ])
+      }
+    }
+    protect(newUrl)
+    protectSQLiteSidecars(newUrl)
+    return newUrl
+  }
+
   /// Read the resource values back. Paths + booleans only — no user data.
   public static func audit() -> [[String: Any]] {
     registry().map { entry -> [String: Any] in
@@ -258,6 +376,13 @@ public enum PlaintextStorageProtection {
     var removed = 0
     var failed = 0
     for entry in registry() {
+      // Task 1593 round 11 — see `containerOnly`'s doc comment: this entry
+      // exists purely to protect its child via directory-level inheritance;
+      // deleting the directory itself would unlink that child's own
+      // directory entry, defeating `resettableInPlace` for it.
+      if entry.containerOnly {
+        continue
+      }
       guard FileManager.default.fileExists(atPath: entry.url.path) else {
         removed += 1 // already absent - counts as clean, not a failure
         continue

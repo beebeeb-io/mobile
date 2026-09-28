@@ -74,9 +74,28 @@ enum AppGroupContainer {
     return url
   }
 
-  /// Path to the SQLite cache.
+  /// Task 1593 round 11 (Codex thread PRRT_kwDOSLX6T86miVoV) — dedicated,
+  /// protected directory for the SQLite cache; see
+  /// `PlaintextStorageProtection.migrateFileProviderCacheDatabaseIfNeeded`'s
+  /// doc comment for why a directory (not just the file) is what actually
+  /// closes the sidecar-protection gap, via inheritance. Same
+  /// create-then-protect shape as `pinnedContentDirectory`/
+  /// `temporaryContentDirectory` above.
+  static var cacheDatabaseDirectory: URL {
+    let dir = url.appendingPathComponent("file-provider-db", isDirectory: true)
+    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    PlaintextStorageProtection.protect(dir)
+    return dir
+  }
+
+  /// Path to the SQLite cache. Task 1593 round 11 moved this from the App
+  /// Group root into `cacheDatabaseDirectory`; every resolution migrates a
+  /// pre-round-11 install's legacy top-level database the first time either
+  /// process (main app or extension) next resolves this path.
   static var cacheDatabaseUrl: URL {
-    url.appendingPathComponent(BeebeebConstants.cacheDatabaseFilename)
+    let legacy = url.appendingPathComponent(BeebeebConstants.cacheDatabaseFilename)
+    let migrated = cacheDatabaseDirectory.appendingPathComponent(BeebeebConstants.cacheDatabaseFilename)
+    return PlaintextStorageProtection.migrateFileProviderCacheDatabaseIfNeeded(from: legacy, to: migrated)
   }
 
   /// Subdirectory holding decrypted file content kept on disk for pinned items.

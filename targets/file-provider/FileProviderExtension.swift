@@ -89,6 +89,18 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
       return progress
     }
 
+    // Task 1593 round 11 (Codex thread PRRT_kwDOSLX6T86miVoN, P1) — captured
+    // synchronously, before `Task.detached` spawns, same capture-at-entry
+    // discipline round 10 applied to createItem/modifyItem/deleteItem.
+    // Removing the File Provider domain during a forced sign-out does NOT
+    // cancel this already-running detached task — `progress
+    // .cancellationHandler` only fires if the SYSTEM explicitly cancels this
+    // `Progress`, which a sign-out purge never does — so an in-flight
+    // download+decrypt could otherwise still land its plaintext writes into
+    // `temp`/`pinned` well after `PlaintextStorageProtection.purgeAll()` has
+    // already deleted those very directories for this sign-out.
+    let epochAtStart = CacheManager.shared.currentPurgeEpoch()
+
     let task = Task.detached {
       do {
         let masterKey = try self.masterKey()
@@ -105,15 +117,48 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         )
         progress.completedUnitCount = 90
 
+        // Task 1593 round 11 — re-check right after the (slow, unbounded)
+        // network + decrypt span and BEFORE the first plaintext write. A
+        // purge landing anywhere during that span must not let a decrypted
+        // temp copy reach disk at all.
+        guard CacheManager.shared.purgeEpochUnchanged(since: epochAtStart) else {
+          NSLog("[Beebeeb] fetchContents(\(cached.id)) aborted: purge epoch changed before write")
+          completionHandler(nil, nil, NSFileProviderError(.noSuchItem))
+          return
+        }
+
         let destination = AppGroupContainer.temporaryContentDirectory
           .appendingPathComponent("\(cached.id)-\(UUID().uuidString)")
         try plaintext.write(to: destination, options: [.atomic])
+
+        // Task 1593 round 11 — re-check again immediately after the write:
+        // the write itself takes real (if usually short) wall time, and a
+        // purge landing DURING it would otherwise leave this fresh temp copy
+        // on disk even though the check just above passed. Delete the
+        // partial output rather than hand it back to the system.
+        guard CacheManager.shared.purgeEpochUnchanged(since: epochAtStart) else {
+          try? FileManager.default.removeItem(at: destination)
+          NSLog("[Beebeeb] fetchContents(\(cached.id)) aborted: purge epoch changed during write")
+          completionHandler(nil, nil, NSFileProviderError(.noSuchItem))
+          return
+        }
 
         if cached.isPinned {
           let pinned = AppGroupContainer.pinnedContentDirectory.appendingPathComponent(cached.id)
           // Replace any prior pinned copy atomically.
           try? FileManager.default.removeItem(at: pinned)
           try plaintext.write(to: pinned, options: [.atomic])
+
+          // Task 1593 round 11 — this is a SECOND, later write of the same
+          // plaintext bytes into a second, independently-purged directory;
+          // the two checks above only cover the `temp` write, not this one.
+          guard CacheManager.shared.purgeEpochUnchanged(since: epochAtStart) else {
+            try? FileManager.default.removeItem(at: destination)
+            try? FileManager.default.removeItem(at: pinned)
+            NSLog("[Beebeeb] fetchContents(\(cached.id)) aborted: purge epoch changed during pinned write")
+            completionHandler(nil, nil, NSFileProviderError(.noSuchItem))
+            return
+          }
           CacheManager.shared.setMaterialized(id: cached.id, value: true)
         }
 

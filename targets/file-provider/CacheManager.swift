@@ -204,6 +204,21 @@ final class CacheManager {
     queue.sync { _currentPurgeEpoch() }
   }
 
+  /// Task 1593 round 11 (Codex thread PRRT_kwDOSLX6T86miVoN, P1) — safe
+  /// "has the epoch moved since I captured it" check for callers OUTSIDE
+  /// this class that gate a multi-step operation (`FileProviderExtension
+  /// .fetchContents`'s download→decrypt→write span) rather than a single
+  /// transactional write. Reuses `currentEpochMatches` — the same
+  /// `epochQueryFailed`-sentinel-safe comparison the three epoch-gated
+  /// writers below already use — instead of a bare `currentPurgeEpoch() ==
+  /// capturedEpoch` at the call site, so a failed read on EITHER side (the
+  /// caller's own earlier capture, or this live re-check) can never
+  /// accidentally read as "unchanged" just because both happened to produce
+  /// the same failure sentinel.
+  func purgeEpochUnchanged(since capturedEpoch: Int) -> Bool {
+    queue.sync { currentEpochMatches(capturedEpoch) }
+  }
+
   /// Task 1593 round 10 (reviewer F-b) — a failed `PRAGMA user_version`
   /// query used to return `0`, a perfectly ordinary epoch value a purge's
   /// very first bump could legitimately produce. A query failure here (a

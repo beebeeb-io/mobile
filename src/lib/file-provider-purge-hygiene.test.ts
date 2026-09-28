@@ -31,6 +31,9 @@ const CACHE_MANAGER_SWIFT_PATH = join(
 const FILE_PROVIDER_EXTENSION_SWIFT_PATH = join(
   REPO_ROOT, 'targets', 'file-provider', 'FileProviderExtension.swift',
 );
+const CONSTANTS_SWIFT_PATH = join(
+  REPO_ROOT, 'targets', 'file-provider', 'Constants.swift',
+);
 
 function functionBody(source: string, signature: string): string {
   const start = source.indexOf(signature);
@@ -1328,5 +1331,250 @@ describe('round 10 (Codex thread PRRT_kwDOSLX6T86mhUiV, P2): the stale-removal r
     expect(after).toMatch(/RuntimeTrace\.event\("storage\.purge\.file_provider_domain_stale_restore_undone", \[:\]\)/);
     expect(after).toMatch(/NSFileProviderManager\.remove\(domain, mode: \.removeAll\) \{ _, undoError in/);
     expect(after).toMatch(/storage\.purge\.file_provider_domain_stale_restore_undo_failed/);
+  });
+});
+
+describe('round 11 (Codex thread PRRT_kwDOSLX6T86miVoN, P1): fetchContents gates its plaintext writes against the purge epoch', () => {
+  const extensionSwift = readFileSync(FILE_PROVIDER_EXTENSION_SWIFT_PATH, 'utf8');
+  const body = bracedBody(extensionSwift, 'func fetchContents(');
+
+  test('captures the epoch synchronously, before Task.detached spawns (matching createItem/modifyItem/deleteItem)', () => {
+    const captureIdx = body.indexOf('let epochAtStart = CacheManager.shared.currentPurgeEpoch()');
+    const taskIdx = body.indexOf('Task.detached {');
+    expect(captureIdx).toBeGreaterThan(-1);
+    expect(taskIdx).toBeGreaterThan(-1);
+    expect(captureIdx).toBeLessThan(taskIdx);
+  });
+
+  test('re-checks the epoch after decrypt and before the first (temp) write', () => {
+    const decryptIdx = body.indexOf('CryptoBridge.decryptDownloadedFile(');
+    const firstCheckIdx = body.indexOf('CacheManager.shared.purgeEpochUnchanged(since: epochAtStart)');
+    const writeIdx = body.indexOf('plaintext.write(to: destination');
+    expect(decryptIdx).toBeGreaterThan(-1);
+    expect(firstCheckIdx).toBeGreaterThan(-1);
+    expect(writeIdx).toBeGreaterThan(-1);
+    expect(decryptIdx).toBeLessThan(firstCheckIdx);
+    expect(firstCheckIdx).toBeLessThan(writeIdx);
+  });
+
+  test('a failed pre-write check aborts without writing and reports .noSuchItem', () => {
+    const firstCheckIdx = body.indexOf('CacheManager.shared.purgeEpochUnchanged(since: epochAtStart)');
+    const after = body.slice(firstCheckIdx, firstCheckIdx + 400);
+    expect(after).toMatch(/NSFileProviderError\(\.noSuchItem\)/);
+    // The write itself must be AFTER this guard's else-branch closes, i.e.
+    // not inside the same guard block.
+    const guardCloseIdx = after.indexOf('}');
+    const writeOffset = after.indexOf('plaintext.write(to: destination');
+    expect(writeOffset === -1 || writeOffset > guardCloseIdx).toBe(true);
+  });
+
+  test('re-checks the epoch again immediately after the temp write, and deletes the partial output on a mismatch', () => {
+    const writeIdx = body.indexOf('plaintext.write(to: destination');
+    expect(writeIdx).toBeGreaterThan(-1);
+    const after = body.slice(writeIdx, writeIdx + 900);
+    const secondCheckIdx = after.indexOf('CacheManager.shared.purgeEpochUnchanged(since: epochAtStart)');
+    expect(secondCheckIdx).toBeGreaterThan(-1);
+    const branch = after.slice(secondCheckIdx, secondCheckIdx + 400);
+    expect(branch).toMatch(/removeItem\(at: destination\)/);
+    expect(branch).toMatch(/NSFileProviderError\(\.noSuchItem\)/);
+  });
+
+  test('re-checks a THIRD time for the separate pinned write, and deletes BOTH copies on a mismatch', () => {
+    const pinnedWriteIdx = body.indexOf('try plaintext.write(to: pinned, options: [.atomic])');
+    expect(pinnedWriteIdx).toBeGreaterThan(-1);
+    const after = body.slice(pinnedWriteIdx, pinnedWriteIdx + 900);
+    const thirdCheckIdx = after.indexOf('CacheManager.shared.purgeEpochUnchanged(since: epochAtStart)');
+    expect(thirdCheckIdx).toBeGreaterThan(-1);
+    const branch = after.slice(thirdCheckIdx, thirdCheckIdx + 500);
+    expect(branch).toMatch(/removeItem\(at: destination\)/);
+    expect(branch).toMatch(/removeItem\(at: pinned\)/);
+    expect(branch).toMatch(/NSFileProviderError\(\.noSuchItem\)/);
+  });
+
+  test('setMaterialized only runs after the pinned-write epoch check passes (closes round 10\'s open "not epoch-gated" note)', () => {
+    const pinnedWriteIdx = body.indexOf('try plaintext.write(to: pinned, options: [.atomic])');
+    const thirdCheckIdx = body.indexOf('CacheManager.shared.purgeEpochUnchanged(since: epochAtStart)', pinnedWriteIdx);
+    const setMaterializedIdx = body.indexOf('CacheManager.shared.setMaterialized(id: cached.id, value: true)');
+    expect(pinnedWriteIdx).toBeGreaterThan(-1);
+    expect(thirdCheckIdx).toBeGreaterThan(pinnedWriteIdx);
+    expect(setMaterializedIdx).toBeGreaterThan(thirdCheckIdx);
+  });
+
+  test('all three checks use the sentinel-safe CacheManager.purgeEpochUnchanged helper, never a bare currentPurgeEpoch() == comparison', () => {
+    const rawCompareMatches = body.match(/currentPurgeEpoch\(\)\s*==/g) ?? [];
+    expect(rawCompareMatches.length).toBe(0);
+    const safeCompareMatches = body.match(/purgeEpochUnchanged\(since: epochAtStart\)/g) ?? [];
+    expect(safeCompareMatches.length).toBe(3);
+  });
+});
+
+describe('round 11: CacheManager.purgeEpochUnchanged is sentinel-safe (reuses currentEpochMatches, not a bare comparison)', () => {
+  const cacheManagerSwift = readFileSync(CACHE_MANAGER_SWIFT_PATH, 'utf8');
+  const body = bracedBody(cacheManagerSwift, 'func purgeEpochUnchanged(since capturedEpoch: Int) -> Bool {');
+
+  test('is queue.sync-wrapped (this is a public entry point, unlike the private _currentPurgeEpoch)', () => {
+    expect(body).toMatch(/queue\.sync\s*\{\s*currentEpochMatches\(capturedEpoch\)\s*\}/);
+  });
+
+  test('delegates to currentEpochMatches rather than re-implementing its own comparison', () => {
+    expect(body).not.toMatch(/_currentPurgeEpoch\(\)\s*==/);
+    expect(body).toMatch(/currentEpochMatches\(/);
+  });
+});
+
+describe('round 11 (Codex thread PRRT_kwDOSLX6T86miVoQ, P1): resetFileProviderDomain routes through the guarded registrar', () => {
+  const moduleSwift = readFileSync(MODULE_SWIFT_PATH, 'utf8');
+  const body = bracedBody(moduleSwift, 'AsyncFunction("resetFileProviderDomain") { () async throws -> [String: Any] in');
+
+  test('no longer performs its own unconditional addFileProviderDomain / NSFileProviderManager.add', () => {
+    expect(body).not.toMatch(/addFileProviderDomain\(domain\)/);
+    expect(body).not.toMatch(/NSFileProviderManager\.add\(/);
+    expect(body).not.toMatch(/removeFileProviderDomain\(domain\)/);
+    expect(body).not.toMatch(/clearFileProviderCacheState\(/);
+  });
+
+  test('calls the guarded, serialized registrar with forceReset: true', () => {
+    expect(body).toMatch(/try await registerMountedFileProviderDomain\(defaults: sharedDefaults\(\), forceReset: true\)/);
+  });
+
+  test('the #available(iOS 16.0, *) unsupported-platform branch is unchanged (still returns before ever reaching the registrar)', () => {
+    const guardIdx = body.indexOf('guard #available(iOS 16.0, *) else {');
+    const callIdx = body.indexOf('registerMountedFileProviderDomain(');
+    expect(guardIdx).toBeGreaterThan(-1);
+    expect(callIdx).toBeGreaterThan(guardIdx);
+  });
+});
+
+describe('round 11: every addFileProviderDomain / NSFileProviderManager.add call site is accounted for (either the guarded registrar, or independently self-validating)', () => {
+  const moduleSwift = readFileSync(MODULE_SWIFT_PATH, 'utf8');
+
+  test('addFileProviderDomain(domain) is called from exactly ONE place outside its own wrapper definition: registerMountedFileProviderDomainLocked', () => {
+    // The wrapper's own definition (`private func addFileProviderDomain`) and
+    // its internal `NSFileProviderManager.add(domain) { error in` call don't
+    // match this literal (no trailing `(domain)` call-site parens on the
+    // `func` line) — this only matches actual CALL SITES.
+    const callSites = [...moduleSwift.matchAll(/\baddFileProviderDomain\(domain\)/g)];
+    expect(callSites.length).toBe(1);
+  });
+
+  test('NSFileProviderManager.add( is called from exactly TWO places: the wrapper\'s own body, and the stale-remove restore branch (which self-validates via shouldUndoFileProviderAdd)', () => {
+    const callSites = [...moduleSwift.matchAll(/NSFileProviderManager\.add\(/g)];
+    expect(callSites.length).toBe(2);
+  });
+});
+
+describe('round 11 (Codex thread PRRT_kwDOSLX6T86miVoV, P2): the File Provider cache DB lives in its own protected directory', () => {
+  const registrySwift = readFileSync(REGISTRY_SWIFT_PATH, 'utf8');
+  const moduleSwift = readFileSync(MODULE_SWIFT_PATH, 'utf8');
+  const constantsSwift = readFileSync(CONSTANTS_SWIFT_PATH, 'utf8');
+
+  test('the Entry struct has a containerOnly flag, defaulting to false', () => {
+    const structBody = bracedBody(registrySwift, 'public struct Entry {');
+    expect(structBody).toMatch(/public let containerOnly: Bool/);
+    const initBody = bracedBody(structBody, 'public init(');
+    expect(initBody).toMatch(/containerOnly: Bool = false/);
+  });
+
+  test('registry() has a containerOnly directory entry for file-provider-db, followed by the sqlite file entry nested inside it', () => {
+    const registryBody = bracedBody(registrySwift, 'public static func registry() -> [Entry] {');
+    const dirIdx = registryBody.indexOf('group.appendingPathComponent("file-provider-db", isDirectory: true)');
+    expect(dirIdx).toBeGreaterThan(-1);
+    const dirEntryIdx = registryBody.indexOf('containerOnly: true');
+    expect(dirEntryIdx).toBeGreaterThan(dirIdx);
+    const fileEntryIdx = registryBody.indexOf('cacheDbDir.appendingPathComponent("file-provider-cache.sqlite"', dirEntryIdx);
+    expect(fileEntryIdx).toBeGreaterThan(dirEntryIdx);
+    const resettableIdx = registryBody.indexOf('resettableInPlace: true', fileEntryIdx);
+    expect(resettableIdx).toBeGreaterThan(fileEntryIdx);
+  });
+
+  test('purgeAll() skips containerOnly entries before ever checking existence or calling removeItem', () => {
+    const purgeBody = bracedBody(registrySwift, 'public static func purgeAll() -> (removed: Int, failed: Int) {');
+    const forIdx = purgeBody.indexOf('for entry in registry() {');
+    const skipIdx = purgeBody.indexOf('if entry.containerOnly {');
+    const existsIdx = purgeBody.indexOf('FileManager.default.fileExists(atPath: entry.url.path)');
+    expect(forIdx).toBeGreaterThan(-1);
+    expect(skipIdx).toBeGreaterThan(forIdx);
+    expect(existsIdx).toBeGreaterThan(skipIdx);
+    const skipBranch = purgeBody.slice(skipIdx, existsIdx);
+    expect(skipBranch).toMatch(/continue/);
+  });
+
+  test('migrateFileProviderCacheDatabaseIfNeeded is a no-op when the new path already exists, and when no legacy file exists', () => {
+    const body = bracedBody(registrySwift, 'public static func migrateFileProviderCacheDatabaseIfNeeded(from legacyUrl: URL, to newUrl: URL) -> URL {');
+    const newExistsIdx = body.indexOf('guard !fileManager.fileExists(atPath: newUrl.path) else { return newUrl }');
+    const legacyExistsIdx = body.indexOf('guard fileManager.fileExists(atPath: legacyUrl.path) else { return newUrl }');
+    expect(newExistsIdx).toBeGreaterThan(-1);
+    expect(legacyExistsIdx).toBeGreaterThan(newExistsIdx);
+  });
+
+  test('migrateFileProviderCacheDatabaseIfNeeded moves the main file AND every sidecar suffix, protecting the result', () => {
+    const body = bracedBody(registrySwift, 'public static func migrateFileProviderCacheDatabaseIfNeeded(from legacyUrl: URL, to newUrl: URL) -> URL {');
+    expect(body).toMatch(/for suffix in \["", "-journal", "-wal", "-shm"\]/);
+    expect(body).toMatch(/moveItem\(at: source, to: destination\)/);
+    expect(body).toMatch(/protect\(newUrl\)/);
+    expect(body).toMatch(/protectSQLiteSidecars\(newUrl\)/);
+  });
+
+  test('a move failure falls back to deleting the legacy sidecar rather than leaving it unprotected', () => {
+    const body = bracedBody(registrySwift, 'public static func migrateFileProviderCacheDatabaseIfNeeded(from legacyUrl: URL, to newUrl: URL) -> URL {');
+    const catchIdx = body.indexOf('} catch {');
+    expect(catchIdx).toBeGreaterThan(-1);
+    const catchBranch = body.slice(catchIdx, catchIdx + 300);
+    expect(catchBranch).toMatch(/removeItem\(at: source\)/);
+  });
+
+  test('Constants.swift: AppGroupContainer.cacheDatabaseUrl routes through the migration function, via its own protected cacheDatabaseDirectory', () => {
+    const dirBody = bracedBody(constantsSwift, 'static var cacheDatabaseDirectory: URL {');
+    expect(dirBody).toMatch(/appendingPathComponent\("file-provider-db", isDirectory: true\)/);
+    expect(dirBody).toMatch(/PlaintextStorageProtection\.protect\(dir\)/);
+
+    const urlBody = bracedBody(constantsSwift, 'static var cacheDatabaseUrl: URL {');
+    expect(urlBody).toMatch(/PlaintextStorageProtection\.migrateFileProviderCacheDatabaseIfNeeded\(from: legacy, to: migrated\)/);
+    expect(urlBody).toMatch(/cacheDatabaseDirectory\.appendingPathComponent/);
+  });
+
+  test('BeebeebCryptoModule.swift: fileProviderCacheDatabaseUrl() routes through the migration function, via its own protected directory helper', () => {
+    const dirBody = bracedBody(moduleSwift, 'private func fileProviderCacheDatabaseDirectory() -> URL? {');
+    expect(dirBody).toMatch(/appendingPathComponent\("file-provider-db", isDirectory: true\)/);
+    expect(dirBody).toMatch(/PlaintextStorageProtection\.protect\(dir\)/);
+
+    const urlBody = bracedBody(moduleSwift, 'private func fileProviderCacheDatabaseUrl() -> URL? {');
+    expect(urlBody).toMatch(/PlaintextStorageProtection\.migrateFileProviderCacheDatabaseIfNeeded\(from: legacy, to: migrated\)/);
+    expect(urlBody).toMatch(/fileProviderCacheDatabaseDirectory\(\)/);
+  });
+
+  test('syncFileProviderCache and removeFileProviderEntries no longer build the db path inline — both route through fileProviderCacheDatabaseUrl()', () => {
+    const syncBody = bracedBody(moduleSwift, 'AsyncFunction("syncFileProviderCache") { (entries: [[String: Any]], prune: Bool?, pruneParents: [Any]?) -> Int in');
+    expect(syncBody).not.toMatch(/containerURL\(forSecurityApplicationGroupIdentifier: appGroupIdentifier\s*\)\s*else/);
+    expect(syncBody).toMatch(/fileProviderCacheDatabaseUrl\(\)/);
+
+    const removeBody = bracedBody(moduleSwift, 'AsyncFunction("removeFileProviderEntries") { (ids: [String]) -> Int in');
+    expect(removeBody).not.toMatch(/containerURL\(forSecurityApplicationGroupIdentifier: appGroupIdentifier\s*\)\s*else/);
+    expect(removeBody).toMatch(/fileProviderCacheDatabaseUrl\(\)/);
+  });
+
+  test('clearFileProviderCacheState resets the DB via the shared resolver instead of a third inline top-level path', () => {
+    const body = bracedBody(moduleSwift, 'private func clearFileProviderCacheState(defaults: UserDefaults?) -> Int {');
+    expect(body).not.toMatch(/"file-provider-cache\.sqlite"/);
+    expect(body).toMatch(/fileProviderCacheDatabaseUrl\(\)/);
+    expect(body).toMatch(/resetFileProviderCacheDatabase\(at: dbUrl\)/);
+  });
+
+  test('the TS mirror (PROTECTED_LEAF_NAMES) includes the new directory leaf', () => {
+    // Read the source text directly rather than importing the module: this
+    // file's own header notes it imports no app module (fs only), and
+    // `./plaintext-storage` imports `react-native` unconditionally, which
+    // needs the `mock.module` dance `plaintext-storage.test.ts` already does
+    // — pulling that in here for one string would duplicate that whole
+    // isolated-runner setup for no benefit over reading the array literal.
+    const plaintextStorageTs = readFileSync(
+      join(REPO_ROOT, 'src', 'lib', 'plaintext-storage.ts'), 'utf8'
+    );
+    const start = plaintextStorageTs.indexOf('export const PROTECTED_LEAF_NAMES = [');
+    const end = plaintextStorageTs.indexOf('] as const;', start);
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const arrayBody = plaintextStorageTs.slice(start, end);
+    expect(arrayBody).toContain("'file-provider-db'");
   });
 });

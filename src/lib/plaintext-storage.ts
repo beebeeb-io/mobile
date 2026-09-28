@@ -35,6 +35,12 @@ export const PROTECTED_LEAF_NAMES = [
   'widget-data.json',
   'pinned',
   'temp',
+  // Task 1593 round 11 — the File Provider cache DB's own dedicated
+  // directory (see PlaintextStorageProtection.swift's registry() doc
+  // comment: protecting this directory is what actually protects its
+  // SQLite sidecars, via iOS's protection-class + backup-exclusion
+  // inheritance for files created inside it).
+  'file-provider-db',
   'file-provider-cache.sqlite',
 ] as const;
 
