@@ -22,6 +22,13 @@ import { withSignupTicket } from './signup-email-code';
 import { normalizeNotificationPreferences, type NotificationPreferences } from './notification-prefs';
 // Task 1594 fix 4: the unlocked key's owner, sent on authenticated mutations.
 import { expectedUserHeaders, isMutatingMethod } from './expected-user';
+// Task 1589 — recognizing a swept v2 upload session + the typed error for a
+// second sweep in a row. Shared by the JS chunk loop and the native path.
+import { isUploadSessionGone, UploadRestartFailedError } from './upload-session-reinit';
+// Re-exported so `api.ts` (the common import surface for upload callers —
+// FilesScreen, backup-context, text-file-save) can catch it without a second
+// import.
+export { UploadRestartFailedError } from './upload-session-reinit';
 
 // API target. Override at build time with EXPO_PUBLIC_API_URL or via
 // expoConfig.extra.apiUrl (e.g. through eas.json env or app.config.ts).
@@ -1494,6 +1501,10 @@ export async function uploadEncryptedChunked(params: {
   let chunkCount = Math.max(1, Math.ceil(plaintextSizeBytes / CHUNK_SIZE))
   let startChunkIndex = 0
   let initialNameEncrypted = v2InitNameEncrypted ?? await resolveNameEncrypted(fileId)
+  // Task 1589: the server's recommended heartbeat cadence for the CURRENT
+  // session (set on every (re-)init; a resumed-from-storage session has no
+  // fresh value, so it falls back to a conservative default).
+  let heartbeatIntervalSecs = DEFAULT_HEARTBEAT_INTERVAL_SECS
 
   const resumeState = resumeKey ? await loadUploadResumeState(resumeKey) : null
   if (
@@ -1526,6 +1537,7 @@ export async function uploadEncryptedChunked(params: {
       uploadSessionId = v2Init.upload_session_id
       chunkSizeBytes = v2Init.chunk_size_bytes
       chunkCount = v2Init.chunk_count
+      heartbeatIntervalSecs = v2Init.heartbeat_interval_secs ?? DEFAULT_HEARTBEAT_INTERVAL_SECS
 
       if (chunkSizeBytes <= 0 || chunkSizeBytes > MOBILE_UPLOAD_CHUNK_SIZE_CAP_BYTES) {
         protocol = 'v1'
@@ -1594,65 +1606,147 @@ export async function uploadEncryptedChunked(params: {
     lastUploadedChunkIndex: startChunkIndex - 1,
   })
 
-  // ── Step 2: Upload each encrypted chunk sequentially ───────────────────
-  let bytesUploaded = estimateUploadedBytes(startChunkIndex, chunkSizeBytes, plaintextSizeBytes)
-  for (let i = startChunkIndex; i < chunkCount; i++) {
-    const encBytes = await readEncryptedChunk(i, chunkSizeBytes, serverFileId)
+  // ── Steps 2+3: upload every chunk, then complete ────────────────────────
+  // Task 1589: extracted so a swept v2 session (404, or the legacy 400 "not
+  // writable: expired") can be recovered by re-initing the SAME file id and
+  // re-running this from chunk 0, at most once per attempt.
+  const runChunksAndComplete = async (fromIndex: number): Promise<FileEntry> => {
+    let bytesUploaded = estimateUploadedBytes(fromIndex, chunkSizeBytes, plaintextSizeBytes)
+    for (let i = fromIndex; i < chunkCount; i++) {
+      const encBytes = await readEncryptedChunk(i, chunkSizeBytes, serverFileId)
 
-    const chunkPath = protocol === 'v2' && uploadSessionId
-      ? `/api/v1/uploads/${uploadSessionId}/chunks/${i}`
-      : `/api/v1/files/${serverFileId}/chunks/${i}`
-    const chunkRes = await putBinaryBytes(`${BASE_URL}${chunkPath}`, token, encBytes, foregroundTransfer === true)
-    if (!chunkRes.ok) {
-      const err = (await chunkRes.error()) as { error?: string; message?: string }
-      // Task 1594 round 2 (F5) / round 3 (T2, T5): a 409 account_mismatch
-      // here ends the local session the same way request()'s own 409 handler
-      // does — guarded against a session that has since moved on — the
-      // machine code otherwise still reaches friendlyError() via
-      // throwUploadError's fallback throw (e.g. object_budget_exceeded).
-      await throwUploadError(chunkRes.status, err, `Chunk ${i} failed`, authSnapshot)
+      const chunkPath = protocol === 'v2' && uploadSessionId
+        ? `/api/v1/uploads/${uploadSessionId}/chunks/${i}`
+        : `/api/v1/files/${serverFileId}/chunks/${i}`
+      const chunkRes = await putBinaryBytes(`${BASE_URL}${chunkPath}`, token, encBytes, foregroundTransfer === true)
+      if (!chunkRes.ok) {
+        const err = (await chunkRes.error()) as { error?: string; message?: string }
+        // Task 1589: the lease sweeper reclaimed this session mid-upload —
+        // signal the re-init wrapper below instead of failing outright.
+        if (protocol === 'v2' && isUploadSessionGone(chunkRes.status, err)) {
+          throw new UploadSessionGoneSignal(chunkRes.status, err)
+        }
+        // Task 1594 round 2 (F5) / round 3 (T2, T5): a 409 account_mismatch
+        // here ends the local session the same way request()'s own 409 handler
+        // does — guarded against a session that has since moved on — the
+        // machine code otherwise still reaches friendlyError() via
+        // throwUploadError's fallback throw (e.g. object_budget_exceeded).
+        await throwUploadError(chunkRes.status, err, `Chunk ${i} failed`, authSnapshot)
+      }
+
+      bytesUploaded += encBytes.length
+      saveUploadResumeStateSoon(resumeKey, {
+        protocol,
+        fileId: serverFileId,
+        uploadSessionId: uploadSessionId ?? null,
+        chunkSizeBytes,
+        chunkCount,
+        plaintextSizeBytes,
+        parentId: parentId ?? null,
+        mimeType: mimeType ?? null,
+        lastUploadedChunkIndex: i,
+      })
+      onProgress?.({
+        phase: 'uploading',
+        chunksTotal: chunkCount,
+        chunksUploaded: i + 1,
+        bytesTotal: sizeBytes,
+        bytesUploaded,
+        chunkSizeBytes,
+        uploadSessionId,
+        protocol,
+      })
+      if (i + 1 < chunkCount) {
+        await uploadPaceDelay()
+      }
     }
 
-    bytesUploaded += encBytes.length
-    saveUploadResumeStateSoon(resumeKey, {
-      protocol,
-      fileId: serverFileId,
-      uploadSessionId: uploadSessionId ?? null,
-      chunkSizeBytes,
-      chunkCount,
-      plaintextSizeBytes,
-      parentId: parentId ?? null,
-      mimeType: mimeType ?? null,
-      lastUploadedChunkIndex: i,
-    })
     onProgress?.({
-      phase: 'uploading',
+      phase: 'finalizing',
       chunksTotal: chunkCount,
-      chunksUploaded: i + 1,
+      chunksUploaded: chunkCount,
       bytesTotal: sizeBytes,
-      bytesUploaded,
+      bytesUploaded: sizeBytes,
       chunkSizeBytes,
       uploadSessionId,
       protocol,
     })
-    if (i + 1 < chunkCount) {
-      await uploadPaceDelay()
-    }
+
+    return finalizeUpload({ protocol, serverFileId, uploadSessionId, token, authSnapshot, resolveNameEncrypted, initialNameEncrypted, resumeKey })
   }
 
-  // ── Step 3: Complete ───────────────────────────────────────────────────
-  onProgress?.({
-    phase: 'finalizing',
-    chunksTotal: chunkCount,
-    chunksUploaded: chunkCount,
-    bytesTotal: sizeBytes,
-    bytesUploaded: sizeBytes,
-    chunkSizeBytes,
-    uploadSessionId,
-    protocol,
-  })
+  // Task 1589: a heartbeat while a v2 upload is active covers the GAP between
+  // requests (pacing, encrypt time, a background pause the process survives)
+  // — the in-flight renewal on the server already covers one chunk's own
+  // streaming time. Stopped on every exit path (success, re-init, failure).
+  let stopHeartbeat = protocol === 'v2' && uploadSessionId
+    ? startUploadHeartbeatPulse(uploadSessionId, token, heartbeatIntervalSecs)
+    : (): void => {}
 
-  return finalizeUpload({ protocol, serverFileId, uploadSessionId, token, authSnapshot, resolveNameEncrypted, initialNameEncrypted, resumeKey })
+  try {
+    try {
+      return await runChunksAndComplete(startChunkIndex)
+    } catch (err) {
+      if (!(err instanceof UploadSessionGoneSignal) || protocol !== 'v2') throw err
+
+      // One bounded re-init: same file id, restart from chunk 0. Never a
+      // second time in this call — a second sweep is a typed error.
+      stopHeartbeat()
+      await clearUploadResumeState(resumeKey)
+      let reinit: UploadV2InitResponse | null
+      try {
+        reinit = await initUploadV2WithRetry({
+          token,
+          authSnapshot,
+          fileName: initialNameEncrypted,
+          fileSizeBytes: plaintextSizeBytes,
+          parentId,
+          isMedia,
+          createdAt,
+          fileId: serverFileId, // takeover: server recreates/reverts under the SAME id
+          baseVersionNumber: versionReplace?.baseVersionNumber,
+        })
+      } catch {
+        reinit = null
+      }
+      if (!reinit) {
+        // Could not re-init (5xx exhausted, or a 404/405 — v2 unexpectedly
+        // unavailable mid-upload). Surface the ORIGINAL session-gone failure,
+        // shaped exactly as it would have been without this recovery path.
+        return await throwUploadError(err.status, err.body, 'Upload session expired', authSnapshot)
+      }
+
+      uploadSessionId = reinit.upload_session_id
+      serverFileId = reinit.file_id
+      chunkSizeBytes = reinit.chunk_size_bytes
+      chunkCount = reinit.chunk_count
+      heartbeatIntervalSecs = reinit.heartbeat_interval_secs ?? DEFAULT_HEARTBEAT_INTERVAL_SECS
+      saveUploadResumeStateSoon(resumeKey, {
+        protocol: 'v2',
+        fileId: serverFileId,
+        uploadSessionId,
+        chunkSizeBytes,
+        chunkCount,
+        plaintextSizeBytes,
+        parentId: parentId ?? null,
+        mimeType: mimeType ?? null,
+        lastUploadedChunkIndex: -1,
+      })
+      stopHeartbeat = startUploadHeartbeatPulse(uploadSessionId, token, heartbeatIntervalSecs)
+
+      try {
+        return await runChunksAndComplete(0)
+      } catch (err2) {
+        if (err2 instanceof UploadSessionGoneSignal) {
+          await clearUploadResumeState(resumeKey)
+          throw new UploadRestartFailedError()
+        }
+        throw err2
+      }
+    }
+  } finally {
+    stopHeartbeat()
+  }
 }
 
 /**
@@ -1680,10 +1774,17 @@ async function finalizeUpload(params: {
     body: JSON.stringify({}),
   })
   if (!completeRes.ok) {
-    const err = await completeRes.json().catch(() => ({ error: completeRes.statusText }))
+    const err = await completeRes.json().catch(() => ({ error: completeRes.statusText })) as { error?: string; message?: string }
+    // Task 1589: the lease sweeper reclaimed this session between the last
+    // chunk PUT and complete — signal the caller's re-init path instead of
+    // surfacing a generic failure. v1 has no session/lease, so this only
+    // ever applies to v2.
+    if (protocol === 'v2' && isUploadSessionGone(completeRes.status, err)) {
+      throw new UploadSessionGoneSignal(completeRes.status, err)
+    }
     // Task 1594 round 2 (F5) / round 3 (T5): route account_mismatch the same
     // as request(), guarded against a session that has since moved on.
-    await throwUploadError(completeRes.status, err as { error?: string; message?: string }, 'Finalize failed', authSnapshot)
+    await throwUploadError(completeRes.status, err, 'Finalize failed', authSnapshot)
   }
   const completed = await completeRes.json() as FileEntry
   let shouldClearResumeState = true
@@ -1749,6 +1850,9 @@ export async function uploadEncryptedFileNative(params: {
   let serverFileId: string
   let uploadSessionId: string
   let startChunkIndex = 0
+  // Task 1589: the server's recommended heartbeat cadence for the CURRENT
+  // session; a resumed-from-storage session has no fresh value.
+  let heartbeatIntervalSecs = DEFAULT_HEARTBEAT_INTERVAL_SECS
   if (resumeState && resumeStateMatchesNativePlan(resumeState, { plaintextSizeBytes, parentId, ...plan })) {
     serverFileId = resumeState.fileId
     uploadSessionId = resumeState.uploadSessionId as string
@@ -1771,6 +1875,7 @@ export async function uploadEncryptedFileNative(params: {
     }
     serverFileId = v2Init.file_id
     uploadSessionId = v2Init.upload_session_id
+    heartbeatIntervalSecs = v2Init.heartbeat_interval_secs ?? DEFAULT_HEARTBEAT_INTERVAL_SECS
   }
 
   const sizeBytes = plaintextSizeBytes + plan.chunkCount * 28
@@ -1799,70 +1904,142 @@ export async function uploadEncryptedFileNative(params: {
   persistResume(startChunkIndex - 1)
   let lastPersistedChunk = startChunkIndex - 1
 
-  // The id the bridge will derive the AES file key from — fed straight into
-  // the request object below (never aliased through a second binding), so
-  // `uploadChunksNativeTracked`'s outcome and the belt-and-braces check that
-  // reads it are checking the id the call was ACTUALLY made with.
-  let nativeOutcome: Awaited<ReturnType<typeof uploadChunksNativeTracked>>
-  try {
-    nativeOutcome = await uploadChunksNativeTracked(
-      uploadChunksNative,
-      {
-        handleId: masterKeyHandleId,
-        apiUrl: BASE_URL,
-        token,
-        fileId: serverFileId,
-        inputUri,
-        uploadSessionId,
-        chunkSizeBytes: plan.chunkSizeBytes,
-        chunkCount: plan.chunkCount,
-        startChunkIndex,
-      },
-      {
-        onProgress: (ev) => {
-          onProgress?.(nativeProgressToUploadProgress(ev, { chunkSizeBytes: plan.chunkSizeBytes, uploadSessionId }))
-          const completedIndex = ev.chunksUploaded - 1
-          if (completedIndex > lastPersistedChunk) {
-            lastPersistedChunk = completedIndex
-            persistResume(completedIndex)
-          }
+  // Task 1589: extracted so a swept v2 session (404, or the legacy 400 "not
+  // writable: expired") — surfaced from the native bridge as an `ApiError`
+  // via `nativeUploadErrorToApiError`, or from `finalizeUpload`'s complete
+  // call as `UploadSessionGoneSignal` — can be recovered by re-initing the
+  // SAME file id and re-running this from chunk 0, at most once per attempt.
+  const runNativeAttempt = async (fromIndex: number): Promise<FileEntry> => {
+    // The id the bridge will derive the AES file key from — fed straight into
+    // the request object below (never aliased through a second binding), so
+    // `uploadChunksNativeTracked`'s outcome and the belt-and-braces check that
+    // reads it are checking the id the call was ACTUALLY made with.
+    let nativeOutcome: Awaited<ReturnType<typeof uploadChunksNativeTracked>>
+    try {
+      nativeOutcome = await uploadChunksNativeTracked(
+        uploadChunksNative,
+        {
+          handleId: masterKeyHandleId,
+          apiUrl: BASE_URL,
+          token,
+          fileId: serverFileId,
+          inputUri,
+          uploadSessionId,
+          chunkSizeBytes: plan.chunkSizeBytes,
+          chunkCount: plan.chunkCount,
+          startChunkIndex: fromIndex,
         },
-      },
-    )
-  } catch (err) {
-    throw nativeUploadErrorToApiError(err)
+        {
+          onProgress: (ev) => {
+            onProgress?.(nativeProgressToUploadProgress(ev, { chunkSizeBytes: plan.chunkSizeBytes, uploadSessionId }))
+            const completedIndex = ev.chunksUploaded - 1
+            if (completedIndex > lastPersistedChunk) {
+              lastPersistedChunk = completedIndex
+              persistResume(completedIndex)
+            }
+          },
+        },
+      )
+    } catch (err) {
+      const apiErr = nativeUploadErrorToApiError(err)
+      if (apiErr instanceof ApiError && isUploadSessionGone(apiErr.status, { message: apiErr.message, error: apiErr.code })) {
+        throw new UploadSessionGoneSignal(apiErr.status, { message: apiErr.message, error: apiErr.code })
+      }
+      throw apiErr
+    }
+
+    // Belt and braces (task 1351): never complete an upload whose encryption
+    // id and session id have drifted apart — the native bridge can't tell us
+    // itself, so this is the last checkpoint before the file is marked done.
+    // `nativeOutcome.encryptedUnderFileId` is read off the SAME params object
+    // actually forwarded to the bridge (`uploadChunksNativeTracked`,
+    // native-upload-bridge.ts) — a real assertion against the call, not a
+    // comparison of two names for the same untouched value.
+    try {
+      assertNativeUploadEncryptedUnderSessionId(nativeOutcome.encryptedUnderFileId, serverFileId)
+    } catch (err) {
+      throw new ApiError(
+        500,
+        err instanceof Error ? err.message : 'Native upload encrypted under an id that does not match its upload session',
+        'native_upload_id_mismatch',
+      )
+    }
+
+    onProgress?.({
+      phase: 'finalizing',
+      chunksTotal: plan.chunkCount,
+      chunksUploaded: plan.chunkCount,
+      bytesTotal: sizeBytes,
+      bytesUploaded: sizeBytes,
+      chunkSizeBytes: plan.chunkSizeBytes,
+      uploadSessionId,
+      protocol: 'v2',
+    })
+    return finalizeUpload({
+      protocol: 'v2', serverFileId, uploadSessionId, token, authSnapshot, resolveNameEncrypted, initialNameEncrypted, resumeKey,
+    })
   }
 
-  // Belt and braces (task 1351): never complete an upload whose encryption
-  // id and session id have drifted apart — the native bridge can't tell us
-  // itself, so this is the last checkpoint before the file is marked done.
-  // `nativeOutcome.encryptedUnderFileId` is read off the SAME params object
-  // actually forwarded to the bridge (`uploadChunksNativeTracked`,
-  // native-upload-bridge.ts) — a real assertion against the call, not a
-  // comparison of two names for the same untouched value.
+  // Task 1589: heartbeat while this native transfer is in flight. The JS
+  // event loop keeps running timers while awaiting the native bridge's
+  // promise, so this fires normally even though the whole file transfers in
+  // one native call.
+  let stopHeartbeat = startUploadHeartbeatPulse(uploadSessionId, token, heartbeatIntervalSecs)
+
   try {
-    assertNativeUploadEncryptedUnderSessionId(nativeOutcome.encryptedUnderFileId, serverFileId)
-  } catch (err) {
-    throw new ApiError(
-      500,
-      err instanceof Error ? err.message : 'Native upload encrypted under an id that does not match its upload session',
-      'native_upload_id_mismatch',
-    )
-  }
+    try {
+      return await runNativeAttempt(startChunkIndex)
+    } catch (err) {
+      if (!(err instanceof UploadSessionGoneSignal)) throw err
 
-  onProgress?.({
-    phase: 'finalizing',
-    chunksTotal: plan.chunkCount,
-    chunksUploaded: plan.chunkCount,
-    bytesTotal: sizeBytes,
-    bytesUploaded: sizeBytes,
-    chunkSizeBytes: plan.chunkSizeBytes,
-    uploadSessionId,
-    protocol: 'v2',
-  })
-  return finalizeUpload({
-    protocol: 'v2', serverFileId, uploadSessionId, token, authSnapshot, resolveNameEncrypted, initialNameEncrypted, resumeKey,
-  })
+      // One bounded re-init: same file id + same native chunk plan, restart
+      // from chunk 0. Never a second time in this call.
+      stopHeartbeat()
+      await clearUploadResumeState(resumeKey)
+      let reinit: UploadV2InitResponse | null
+      try {
+        reinit = await initUploadV2WithRetry({
+          token,
+          authSnapshot,
+          fileName: initialNameEncrypted,
+          fileSizeBytes: plaintextSizeBytes,
+          parentId,
+          isMedia,
+          createdAt,
+          chunkSizeBytes: plan.chunkSizeBytes,
+          chunkCount: plan.chunkCount,
+          fileId: serverFileId, // takeover: server recreates/reverts under the SAME id
+        })
+      } catch {
+        reinit = null
+      }
+      if (!reinit || reinit.chunk_size_bytes !== plan.chunkSizeBytes || reinit.chunk_count !== plan.chunkCount) {
+        // Could not re-init cleanly (5xx exhausted, 404/405, or the server's
+        // plan drifted from the native plan). Surface the ORIGINAL
+        // session-gone failure, shaped as it would be without this recovery.
+        return await throwUploadError(err.status, err.body, 'Upload session expired', authSnapshot)
+      }
+
+      serverFileId = reinit.file_id
+      uploadSessionId = reinit.upload_session_id
+      heartbeatIntervalSecs = reinit.heartbeat_interval_secs ?? DEFAULT_HEARTBEAT_INTERVAL_SECS
+      lastPersistedChunk = -1
+      persistResume(-1)
+      stopHeartbeat = startUploadHeartbeatPulse(uploadSessionId, token, heartbeatIntervalSecs)
+
+      try {
+        return await runNativeAttempt(0)
+      } catch (err2) {
+        if (err2 instanceof UploadSessionGoneSignal) {
+          await clearUploadResumeState(resumeKey)
+          throw new UploadRestartFailedError()
+        }
+        throw err2
+      }
+    }
+  } finally {
+    stopHeartbeat()
+  }
 }
 
 /** Rebuild the `ApiError` the JS chunk loop would have thrown for the same server reply. */
@@ -1900,6 +2077,102 @@ interface UploadV2InitResponse {
   upload_session_id: string;
   chunk_size_bytes: number;
   chunk_count: number;
+  /**
+   * Task 1589 — the session's lease (server PR #120) and the server's own
+   * recommended heartbeat cadence (lease / 3). Optional so a server response
+   * from before #120 (or one that omits the fields) still parses; callers
+   * fall back to `DEFAULT_HEARTBEAT_INTERVAL_SECS`.
+   */
+  lease_seconds?: number;
+  heartbeat_interval_secs?: number;
+}
+
+/**
+ * Task 1589 — internal control-flow signal: a v2 chunk PUT or complete came
+ * back 404 (or the legacy 400 "not writable: expired"), meaning the lease
+ * sweeper reclaimed this session. Caught only by the two upload paths below,
+ * which re-init the SAME file id and restart from chunk 0, at most once per
+ * attempt. Never surfaced to a caller outside this file — `throwUploadError`
+ * is still what every OTHER failure goes through.
+ */
+class UploadSessionGoneSignal extends Error {
+  constructor(public status: number, public body: { error?: string; message?: string }) {
+    super(body.message ?? body.error ?? 'upload session gone')
+    this.name = 'UploadSessionGoneSignal'
+  }
+}
+
+/** Conservative fallback when a server response omits `heartbeat_interval_secs` (pre-1589). */
+const DEFAULT_HEARTBEAT_INTERVAL_SECS = 90
+
+/**
+ * Task 1589 — renew a v2 upload session's lease directly (server PR #120,
+ * `POST /uploads/{id}/heartbeat`), for the GAP between two requests on the
+ * same session: pacing between chunks, a background suspension the process
+ * survives, a slow encrypt. The in-flight body of a single chunk PUT already
+ * renews its own lease server-side while it streams — this covers everything
+ * else. Best-effort by design: a failed heartbeat is logged and swallowed,
+ * never thrown — a missed renewal just means the NEXT chunk/complete may see
+ * a 404 and go through the re-init path below, which is exactly the recovery
+ * this task adds. Keeps sending `X-Beebeeb-Expected-User` (task 1594/#143),
+ * same as every other authenticated mutation.
+ */
+async function sendUploadHeartbeat(uploadSessionId: string, token: string | null): Promise<void> {
+  const res = await rateLimitedFetch(`${BASE_URL}/api/v1/uploads/${uploadSessionId}/heartbeat`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, ...expectedUserHeaders(), 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  })
+  if (!res.ok) {
+    // Not thrown: a heartbeat is a best-effort renewal, not part of the
+    // upload's own success/failure path (mirrors the desktop client's
+    // "heartbeat during limiter sleeps" recommendation in the 1589 audit).
+    console.warn('[upload] heartbeat rejected', { uploadSessionId, status: res.status })
+  }
+}
+
+/**
+ * Starts a best-effort heartbeat timer for an active v2 upload session.
+ * Returns a function that stops it — every caller MUST call it in a
+ * `finally`, on both the success and the failure path, so a completed or
+ * abandoned upload never leaves a timer running.
+ */
+function startUploadHeartbeatPulse(uploadSessionId: string, token: string | null, intervalSecs: number): () => void {
+  const intervalMs = Math.max(1, intervalSecs) * 1000
+  const timer = setInterval(() => {
+    sendUploadHeartbeat(uploadSessionId, token).catch((err) => {
+      console.warn('[upload] heartbeat failed (best-effort)', {
+        uploadSessionId,
+        error: err instanceof Error ? err.message : String(err),
+      })
+    })
+  }, intervalMs)
+  return () => clearInterval(timer)
+}
+
+/**
+ * Task 1589 — bounded 5xx retry for a RE-INIT's own init call, same id every
+ * time (mirrors the CLI's `STORED_ID_INIT_RETRIES` for the identical
+ * situation, PR #50): a 5xx does not prove the stored/explicit file id is
+ * unusable, so it is retried with backoff rather than treated as "give up" or
+ * "fall back to a different id". Any 4xx (404/409/etc.) is NOT retried here —
+ * it is returned/thrown as-is for the caller to interpret.
+ */
+const REINIT_MAX_RETRIES = 3
+const REINIT_BACKOFF_BASE_MS = 150
+
+async function initUploadV2WithRetry(
+  params: Parameters<typeof initUploadV2>[0],
+): Promise<UploadV2InitResponse | null> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await initUploadV2(params)
+    } catch (err) {
+      const retryable = err instanceof ApiError && err.status >= 500 && err.status < 600
+      if (!retryable || attempt >= REINIT_MAX_RETRIES) throw err
+      await new Promise((resolve) => setTimeout(resolve, REINIT_BACKOFF_BASE_MS * 2 ** attempt))
+    }
+  }
 }
 
 async function initUploadV2(params: {
@@ -1961,6 +2234,8 @@ async function initUploadV2(params: {
     upload_session_id: data.upload_session_id,
     chunk_size_bytes: data.chunk_size_bytes,
     chunk_count: data.chunk_count,
+    lease_seconds: data.lease_seconds,
+    heartbeat_interval_secs: data.heartbeat_interval_secs,
   }
 }
 
