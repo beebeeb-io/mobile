@@ -918,7 +918,12 @@ describe('R3 (round 8, P2): FileProviderExtension captures the epoch BEFORE its 
   test('deleteItem captures the epoch before the network delete and passes it to the gated delete', () => {
     const body = bracedBody(swift, 'func deleteItem(');
     const epochIdx = body.indexOf('let epochAtStart = CacheManager.shared.currentPurgeEpoch()');
-    const deleteCallIdx = body.indexOf('try await ApiClient.shared.deleteFile(fileId: identifier.rawValue)');
+    // Task 1594 #143 merge (task 1593 round 12): deleteFile now also takes
+    // `expectedUser` (the P0 1594 key-ownership header) — this call's own
+    // epoch-gating (round 8/10) is additive to, not replaced by, that.
+    const deleteCallIdx = body.indexOf(
+      'try await ApiClient.shared.deleteFile(fileId: identifier.rawValue, expectedUser: expectedUser)'
+    );
     const cacheDeleteIdx = body.indexOf('CacheManager.shared.delete(id: identifier.rawValue, expectedEpoch: epochAtStart)');
     expect(epochIdx).toBeGreaterThan(-1);
     expect(deleteCallIdx).toBeGreaterThan(-1);
@@ -1545,7 +1550,16 @@ describe('round 11 (Codex thread PRRT_kwDOSLX6T86miVoV, P2): the File Provider c
     const body = bracedBody(registrySwift, 'public static func migrateFileProviderCacheDatabaseIfNeeded(from legacyUrl: URL, to newUrl: URL) -> URL {');
     const catchIdx = body.indexOf('} catch {');
     expect(catchIdx).toBeGreaterThan(-1);
-    const catchBranch = body.slice(catchIdx, catchIdx + 300);
+    // Task 1593 round 12 widened this from a fixed 300-char window to an
+    // anchor-bounded slice (the outer catch's own doc comment, added round
+    // 12, pushed the real code well past 300 chars) — confirmed the
+    // narrower, original 300-char window DOES still fail correctly against
+    // a real mutation (removing the fallback removeItem entirely), so this
+    // widening isn't hiding a regression, it's just no longer measured in
+    // raw characters.
+    const nextMigrateTraceIdx = body.indexOf('RuntimeTrace.event("storage.migrate.file_provider_cache_failed"', catchIdx);
+    expect(nextMigrateTraceIdx).toBeGreaterThan(catchIdx);
+    const catchBranch = body.slice(catchIdx, nextMigrateTraceIdx);
     expect(catchBranch).toMatch(/removeItem\(at: source\)/);
   });
 
@@ -1602,5 +1616,90 @@ describe('round 11 (Codex thread PRRT_kwDOSLX6T86miVoV, P2): the File Provider c
     expect(end).toBeGreaterThan(start);
     const arrayBody = plaintextStorageTs.slice(start, end);
     expect(arrayBody).toContain("'file-provider-db'");
+  });
+});
+
+describe('round 12 (Codex thread PRRT_kwDOSLX6T86mi6px, P2): a failed legacy-cache cleanup is reported and retried by the next purge', () => {
+  const registrySwift = readFileSync(REGISTRY_SWIFT_PATH, 'utf8');
+
+  test('migrateFileProviderCacheDatabaseIfNeeded traces storage.purge.failed when the fallback delete ALSO fails, on top of the narrower migrate trace', () => {
+    const body = bracedBody(
+      registrySwift,
+      'public static func migrateFileProviderCacheDatabaseIfNeeded(from legacyUrl: URL, to newUrl: URL) -> URL {'
+    );
+    const catchIdx = body.indexOf('} catch {');
+    expect(catchIdx).toBeGreaterThan(-1);
+    const catchBranch = body.slice(catchIdx, body.indexOf('\n    }', catchIdx) + 6);
+    // The fallback delete must be wrapped in its OWN do/catch — a bare
+    // `try?` (the round 4-11 shape) can never distinguish "removed" from
+    // "still there", which is exactly what let this bug through review 8
+    // times before Codex caught it.
+    expect(catchBranch).toMatch(/do \{\s*try fileManager\.removeItem\(at: source\)\s*\} catch \{/);
+    expect(catchBranch).toMatch(/RuntimeTrace\.event\("storage\.purge\.failed", \[\s*"path": source\.lastPathComponent,?\s*\]\)/);
+    // The original, narrower trace must still fire too — this is additive,
+    // not a replacement (other code/tests may still key off it).
+    expect(catchBranch).toMatch(/RuntimeTrace\.event\("storage\.migrate\.file_provider_cache_failed"/);
+  });
+
+  test('the storage.purge.failed trace on a failed fallback delete sits INSIDE the fallback\'s own catch, not the outer moveItem catch unconditionally', () => {
+    // Must fire only when the fallback delete itself throws — never
+    // unconditionally alongside every moveItem failure (that would count a
+    // successful fallback delete as a purge failure too, which is false: a
+    // successful fallback delete means the legacy path is now clean).
+    const body = bracedBody(
+      registrySwift,
+      'public static func migrateFileProviderCacheDatabaseIfNeeded(from legacyUrl: URL, to newUrl: URL) -> URL {'
+    );
+    const outerCatchIdx = body.indexOf('} catch {');
+    const innerDoIdx = body.indexOf('do {', outerCatchIdx);
+    const innerCatchIdx = body.indexOf('} catch {', innerDoIdx);
+    const purgeFailedIdx = body.indexOf('RuntimeTrace.event("storage.purge.failed"', outerCatchIdx);
+    expect(innerDoIdx).toBeGreaterThan(outerCatchIdx);
+    expect(innerCatchIdx).toBeGreaterThan(innerDoIdx);
+    expect(purgeFailedIdx).toBeGreaterThan(innerCatchIdx);
+  });
+
+  test('purgeAll() sweeps the legacy top-level cache path on every call, in addition to registry()', () => {
+    const body = bracedBody(registrySwift, 'public static func purgeAll() -> (removed: Int, failed: Int) {');
+    const sweepCallIdx = body.indexOf('sweepLegacyFileProviderCache()');
+    expect(sweepCallIdx).toBeGreaterThan(-1);
+    // Must actually fold the sweep's counts into the SAME (removed, failed)
+    // this function returns — a call whose result is discarded would not
+    // make the failure count against this purge's own accounting.
+    const tail = body.slice(sweepCallIdx - 80);
+    expect(tail).toMatch(/removed \+= legacy\.removed/);
+    expect(tail).toMatch(/failed \+= legacy\.failed/);
+    expect(tail).toMatch(/return \(removed, failed\)/);
+  });
+
+  test('sweepLegacyFileProviderCache checks the App Group root directly (not registry(), not an in-memory flag) for the main file and every sidecar suffix', () => {
+    const body = bracedBody(
+      registrySwift,
+      'private static func sweepLegacyFileProviderCache() -> (removed: Int, failed: Int) {'
+    );
+    expect(body).toMatch(/appendingPathComponent\("file-provider-cache\.sqlite", isDirectory: false\)/);
+    expect(body).toMatch(/for suffix in \["", "-journal", "-wal", "-shm"\] \{/);
+    // Must not read from registry() — this legacy path is deliberately NOT
+    // a registry() entry (see the doc comment: registry() only lists the
+    // NEW location), so a correct implementation cannot call registry()
+    // internally.
+    expect(body).not.toMatch(/registry\(\)/);
+  });
+
+  test('sweepLegacyFileProviderCache counts a real removal failure toward `failed` and traces storage.purge.failed, an absent sibling toward `removed`', () => {
+    const body = bracedBody(
+      registrySwift,
+      'private static func sweepLegacyFileProviderCache() -> (removed: Int, failed: Int) {'
+    );
+    const absentIdx = body.indexOf('guard fileManager.fileExists(atPath: sibling.path) else {');
+    expect(absentIdx).toBeGreaterThan(-1);
+    const absentBranch = body.slice(absentIdx, absentIdx + 150);
+    expect(absentBranch).toMatch(/removed \+= 1/);
+
+    const catchIdx = body.indexOf('} catch {', absentIdx);
+    expect(catchIdx).toBeGreaterThan(absentIdx);
+    const catchBranch = body.slice(catchIdx, catchIdx + 200);
+    expect(catchBranch).toMatch(/RuntimeTrace\.event\("storage\.purge\.failed", \["path": sibling\.lastPathComponent\]\)/);
+    expect(catchBranch).toMatch(/failed \+= 1/);
   });
 });

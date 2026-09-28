@@ -347,7 +347,33 @@ public enum PlaintextStorageProtection {
       do {
         try fileManager.moveItem(at: source, to: destination)
       } catch {
-        try? fileManager.removeItem(at: source)
+        // Task 1593 round 12 (Codex thread PRRT_kwDOSLX6T86mi6px, P2) — the
+        // fallback deletion below used to be a bare `try?`: if it ALSO
+        // failed (the move already failed for a real reason — permissions,
+        // a full disk — so the delete can plausibly fail too), this
+        // function fell straight through to `protect(newUrl)` / `return
+        // newUrl` as if nothing were wrong, with the legacy, decrypted-name
+        // copy still sitting at the OLD, un-registered, unprotected path.
+        // Checking the result here still can't make THIS call's return
+        // value reflect the failure (every caller is a path resolver that
+        // needs a URL back regardless, to actually open a database), so the
+        // authoritative fix is `purgeAll()`'s own `sweepLegacyFileProviderCache()`
+        // (below) checking this exact on-disk path directly, every purge —
+        // that is what makes a later purge still find and clear a leftover
+        // this call couldn't. What DOES belong here is not pretending the
+        // fallback succeeded: trace the SAME `storage.purge.failed` event
+        // `purgeAll()` itself uses (not just the narrower, easy-to-miss
+        // `storage.migrate.file_provider_cache_failed`) so this failure is
+        // visible in the same place every other purge failure is, the
+        // moment it actually happens — not only retroactively, the next
+        // time a purge's own sweep happens to run.
+        do {
+          try fileManager.removeItem(at: source)
+        } catch {
+          RuntimeTrace.event("storage.purge.failed", [
+            "path": source.lastPathComponent,
+          ])
+        }
         RuntimeTrace.event("storage.migrate.file_provider_cache_failed", [
           "suffix": suffix.isEmpty ? "main" : suffix,
         ])
@@ -356,6 +382,52 @@ public enum PlaintextStorageProtection {
     protect(newUrl)
     protectSQLiteSidecars(newUrl)
     return newUrl
+  }
+
+  /// Task 1593 round 12 (Codex thread PRRT_kwDOSLX6T86mi6px, P2) — companion
+  /// to `migrateFileProviderCacheDatabaseIfNeeded` above. That function is
+  /// only ever invoked LAZILY, from the two path resolvers
+  /// (`AppGroupContainer.cacheDatabaseUrl` / `fileProviderCacheDatabaseUrl()`),
+  /// whenever either process next opens the database — never from `purgeAll()`.
+  /// If a migration attempt there fails to fully clean up (both the move
+  /// AND the fallback delete fail for a suffix), the legacy copy keeps
+  /// sitting at the OLD, un-registered path forever: `registry()` only ever
+  /// lists the NEW `file-provider-db/` location, so an ordinary `purgeAll()`
+  /// sweep would never even look for the legacy one, let alone report the
+  /// failure — `bumpFileProviderCacheVersion()` and the NEW registry entry's
+  /// reset both treat "the new database is clean" as the whole story, while
+  /// decrypted names from a previous account sit untouched at the old path.
+  ///
+  /// Checked directly against the App Group container (never through an
+  /// in-memory flag the migration function might set): the migration and
+  /// this sweep can run in DIFFERENT processes (the extension's
+  /// `CacheManager.init()` vs. the main app's `purgePlaintextStorage`), so
+  /// only a fresh, on-disk check — the filesystem being the one thing both
+  /// processes actually share — is reliable. Called from every `purgeAll()`
+  /// invocation, so a failed migration attempt gets a fresh retry on every
+  /// sign-out, and a real, persistent failure counts against THIS purge's
+  /// own `(removed, failed)` total instead of silently vanishing.
+  private static func sweepLegacyFileProviderCache() -> (removed: Int, failed: Int) {
+    guard let group = appGroupContainer else { return (0, 0) }
+    let legacyUrl = group.appendingPathComponent("file-provider-cache.sqlite", isDirectory: false)
+    let fileManager = FileManager.default
+    var removed = 0
+    var failed = 0
+    for suffix in ["", "-journal", "-wal", "-shm"] {
+      let sibling = URL(fileURLWithPath: legacyUrl.path + suffix)
+      guard fileManager.fileExists(atPath: sibling.path) else {
+        removed += 1 // already absent - counts as clean, not a failure
+        continue
+      }
+      do {
+        try fileManager.removeItem(at: sibling)
+        removed += 1
+      } catch {
+        RuntimeTrace.event("storage.purge.failed", ["path": sibling.lastPathComponent])
+        failed += 1
+      }
+    }
+    return (removed, failed)
   }
 
   /// Read the resource values back. Paths + booleans only — no user data.
@@ -423,6 +495,14 @@ public enum PlaintextStorageProtection {
         failed += 1
       }
     }
+    // Task 1593 round 12 (Codex thread PRRT_kwDOSLX6T86mi6px, P2) — see
+    // `sweepLegacyFileProviderCache()`'s doc comment: `registry()` above
+    // only ever lists the NEW `file-provider-db/` location, so without this
+    // a legacy copy left behind by a failed migration attempt would never
+    // be visited by a purge at all, let alone counted or retried.
+    let legacy = sweepLegacyFileProviderCache()
+    removed += legacy.removed
+    failed += legacy.failed
     return (removed, failed)
   }
 
