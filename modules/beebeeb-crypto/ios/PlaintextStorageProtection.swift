@@ -303,11 +303,22 @@ public enum PlaintextStorageProtection {
   /// running.
   ///
   /// Idempotent and race-safe for two processes calling this around the
-  /// same moment: if `to` already exists, this is a no-op (already migrated,
-  /// or a fresh install that never had a legacy file). If the legacy source
-  /// has vanished by the time this actually tries to move it, that means
-  /// the other process already won the race — not a failure, since the
-  /// desired end state (something now at `to`) already holds.
+  /// same moment, AND for a process that was killed (jetsam, a crash)
+  /// partway through a previous attempt: the cheap "nothing to do" fast
+  /// path checks ALL FOUR legacy suffixes, not just the main file — an
+  /// interrupted prior run that moved the main file but was killed before
+  /// reaching `-journal` must not let that orphaned sidecar go unnoticed
+  /// forever just because the main file's own presence at `to` looked like
+  /// "already fully migrated." Each suffix is then handled independently:
+  /// a legacy sibling whose destination ALREADY exists (an earlier attempt,
+  /// possibly from a different process, already moved that one) is deleted
+  /// rather than moved — the destination is the one now-protected copy, and
+  /// leaving a leftover unprotected duplicate at the old path behind would
+  /// recreate the exact leak this migration exists to close. A legacy
+  /// source that has vanished by the time this actually checks it means the
+  /// other process already won the race for THAT suffix — not a failure,
+  /// since the desired end state (something now at `to` + that suffix)
+  /// already holds.
   ///
   /// A move that fails for a real reason falls back to DELETING the legacy
   /// sibling rather than leaving it in place: this database is a rebuildable
@@ -318,13 +329,21 @@ public enum PlaintextStorageProtection {
   @discardableResult
   public static func migrateFileProviderCacheDatabaseIfNeeded(from legacyUrl: URL, to newUrl: URL) -> URL {
     let fileManager = FileManager.default
-    guard !fileManager.fileExists(atPath: newUrl.path) else { return newUrl }
-    guard fileManager.fileExists(atPath: legacyUrl.path) else { return newUrl }
+    let suffixes = ["", "-journal", "-wal", "-shm"]
+    let legacyHasAnySibling = suffixes.contains { fileManager.fileExists(atPath: legacyUrl.path + $0) }
+    guard legacyHasAnySibling else { return newUrl }
 
-    for suffix in ["", "-journal", "-wal", "-shm"] {
+    for suffix in suffixes {
       let source = URL(fileURLWithPath: legacyUrl.path + suffix)
       let destination = URL(fileURLWithPath: newUrl.path + suffix)
       guard fileManager.fileExists(atPath: source.path) else { continue }
+      guard !fileManager.fileExists(atPath: destination.path) else {
+        // Already migrated by an earlier, partially-completed attempt — the
+        // destination is the real, protected copy; the stale legacy
+        // duplicate must not be left sitting there unprotected.
+        try? fileManager.removeItem(at: source)
+        continue
+      }
       do {
         try fileManager.moveItem(at: source, to: destination)
       } catch {

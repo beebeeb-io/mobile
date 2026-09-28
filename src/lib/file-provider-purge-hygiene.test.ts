@@ -1499,20 +1499,46 @@ describe('round 11 (Codex thread PRRT_kwDOSLX6T86miVoV, P2): the File Provider c
     expect(skipBranch).toMatch(/continue/);
   });
 
-  test('migrateFileProviderCacheDatabaseIfNeeded is a no-op when the new path already exists, and when no legacy file exists', () => {
+  test('migrateFileProviderCacheDatabaseIfNeeded is a no-op only when NONE of the 4 legacy suffixes exist (not just the main file)', () => {
+    // Task 1593 round 11 follow-up — the original fast path checked ONLY
+    // the main file's presence at the legacy path before bailing out. A
+    // process killed (jetsam/crash) between moving the main file and moving
+    // its `-journal` sibling would leave that orphaned journal at the OLD,
+    // unprotected, un-registered path FOREVER on a re-run, because the main
+    // file already existing at `to` looked like "fully migrated" — the
+    // exact class of leak this whole function exists to close. The fast
+    // path must check ALL 4 suffixes before deciding there is nothing to do.
     const body = bracedBody(registrySwift, 'public static func migrateFileProviderCacheDatabaseIfNeeded(from legacyUrl: URL, to newUrl: URL) -> URL {');
-    const newExistsIdx = body.indexOf('guard !fileManager.fileExists(atPath: newUrl.path) else { return newUrl }');
-    const legacyExistsIdx = body.indexOf('guard fileManager.fileExists(atPath: legacyUrl.path) else { return newUrl }');
-    expect(newExistsIdx).toBeGreaterThan(-1);
-    expect(legacyExistsIdx).toBeGreaterThan(newExistsIdx);
+    expect(body).toMatch(/let suffixes = \["", "-journal", "-wal", "-shm"\]/);
+    expect(body).toMatch(/legacyHasAnySibling = suffixes\.contains \{ fileManager\.fileExists\(atPath: legacyUrl\.path \+ \$0\) \}/);
+    expect(body).toMatch(/guard legacyHasAnySibling else \{ return newUrl \}/);
+    // The OLD single-suffix short-circuit must be gone — a lingering
+    // `!fileManager.fileExists(atPath: newUrl.path)` bail-out would mean
+    // the new all-suffix check was added but the old one-suffix gate never
+    // actually removed, silently keeping the exact same bug.
+    expect(body).not.toMatch(/guard !fileManager\.fileExists\(atPath: newUrl\.path\) else \{ return newUrl \}/);
   });
 
   test('migrateFileProviderCacheDatabaseIfNeeded moves the main file AND every sidecar suffix, protecting the result', () => {
     const body = bracedBody(registrySwift, 'public static func migrateFileProviderCacheDatabaseIfNeeded(from legacyUrl: URL, to newUrl: URL) -> URL {');
-    expect(body).toMatch(/for suffix in \["", "-journal", "-wal", "-shm"\]/);
+    expect(body).toMatch(/for suffix in suffixes \{/);
     expect(body).toMatch(/moveItem\(at: source, to: destination\)/);
     expect(body).toMatch(/protect\(newUrl\)/);
     expect(body).toMatch(/protectSQLiteSidecars\(newUrl\)/);
+  });
+
+  test('a suffix whose destination ALREADY exists (a partially-completed earlier migration) deletes the stale legacy duplicate instead of attempting to move it', () => {
+    const body = bracedBody(registrySwift, 'public static func migrateFileProviderCacheDatabaseIfNeeded(from legacyUrl: URL, to newUrl: URL) -> URL {');
+    const destGuardIdx = body.indexOf('guard !fileManager.fileExists(atPath: destination.path) else {');
+    expect(destGuardIdx).toBeGreaterThan(-1);
+    const branch = body.slice(destGuardIdx, destGuardIdx + 400);
+    expect(branch).toMatch(/removeItem\(at: source\)/);
+    // This branch must come BEFORE the moveItem attempt, not after — a
+    // moveItem into an existing destination throws, which would route
+    // through the failure path instead of this intentional, non-error
+    // "already migrated, clean up the stale duplicate" path.
+    const moveIdx = body.indexOf('moveItem(at: source, to: destination)');
+    expect(moveIdx).toBeGreaterThan(destGuardIdx);
   });
 
   test('a move failure falls back to deleting the legacy sidecar rather than leaving it unprotected', () => {
