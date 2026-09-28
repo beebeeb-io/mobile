@@ -26,7 +26,12 @@ import { useCrypto } from './crypto-context';
 import { useAuth } from './auth';
 import { recordRuntimeTrace } from './runtime-trace';
 import { registerDevice } from './device-registration';
-import { clearMobileIosBackupClientSession, ensureMobileIosBackupClientSession } from './api';
+import {
+  clearMobileIosBackupClientSession,
+  ensureMobileIosBackupClientSession,
+  captureRequestAuthSnapshot,
+  endSessionForAccountMismatch,
+} from './api';
 
 const BACKUP_PHOTO_KEY = 'beebeeb_camera_backup';
 const BACKUP_CONTACTS_KEY = 'beebeeb_contacts_backup';
@@ -309,6 +314,30 @@ async function mirrorBackupSessionForNative(): Promise<void> {
   }
 }
 
+/**
+ * Task 1599 followups (round 2, item 4): whether a newly-observed native
+ * `accountMismatchReason` should end the current JS session, the same way
+ * `request()`'s own 409 `account_mismatch` branch does (`api.ts`). Pure and
+ * exported standalone so it is unit-testable without a React render harness
+ * (this codebase has none for `BackupProvider` — see `backup-context.test.ts`'s
+ * own header note) — mirrors the `CachedKeyOwnership.mayAdopt` /
+ * `AccountMismatchDetection` precedent of pulling a decision out as a plain
+ * function.
+ *
+ * Edge-triggered: true only on a transition INTO a reason (null → set, or
+ * one reason string → a different one) — never on every repeated poll of
+ * the SAME still-set reason. Without this, `applyNativeProgress` (which runs
+ * on every poll tick while native reports a non-null reason) would call
+ * `endSessionForAccountMismatch` — and therefore `onSessionExpired?.()` —
+ * once per poll, not once per actual mismatch event.
+ */
+export function shouldEndSessionForNativeAccountMismatch(
+  previousReason: string | null,
+  nextReason: string | null,
+): boolean {
+  return nextReason !== null && nextReason !== previousReason;
+}
+
 export function BackupProvider({ children }: { children: React.ReactNode }) {
   const { isUnlocked } = useCrypto();
   const { user } = useAuth();
@@ -330,6 +359,12 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
   const [accountMismatchReason, setAccountMismatchReason] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const includeVideosRef = useRef(true);
+  // Task 1599 followups (round 2, item 4): mirrors `accountMismatchReason`
+  // so `applyNativeProgress` (a stable `useCallback` with an empty dep
+  // array, same reasoning as `includeVideosRef` above) can see the
+  // PREVIOUS value on the next poll tick without becoming stale or being
+  // re-created every render.
+  const accountMismatchReasonRef = useRef<string | null>(null);
 
   const applyNativeProgress = useCallback((p: NativeBackupProgress) => {
     const pending = p.pending ?? Math.max(0, p.total - p.completed - p.inProgress);
@@ -347,7 +382,28 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
       reason: p.reason ?? '',
     });
     if (p.lastBackupAt) setLastBackupAt(p.lastBackupAt);
-    setAccountMismatchReason(p.accountMismatchReason ?? null);
+    const nextAccountMismatchReason = p.accountMismatchReason ?? null;
+    // Task 1599 followups (round 2, item 4): the native engine already
+    // confirmed a 409 `account_mismatch` and stopped itself
+    // (`handleConfirmedAccountMismatch` in NativeBackupEngine.swift) — end
+    // the JS session the SAME way `request()`'s own 409 branch does
+    // (`api.ts`), so a user who just toggles backup back on
+    // (`enablePhotoBackup` rebinds `currentAccountId` immediately, with the
+    // SAME stale token) doesn't send it straight back into another 409.
+    // Guarded by the current-session snapshot
+    // (`captureRequestAuthSnapshot`/`endSessionForAccountMismatch`) so a
+    // session that has ALREADY moved on since native set this reason (e.g.
+    // the user signed in again in the meantime) is not torn down out from
+    // under them. Edge-triggered via `shouldEndSessionForNativeAccountMismatch`
+    // — fires once per NEW reason, not once per poll tick while it stays set.
+    if (shouldEndSessionForNativeAccountMismatch(accountMismatchReasonRef.current, nextAccountMismatchReason)) {
+      void (async () => {
+        const snapshot = await captureRequestAuthSnapshot();
+        await endSessionForAccountMismatch(snapshot);
+      })();
+    }
+    accountMismatchReasonRef.current = nextAccountMismatchReason;
+    setAccountMismatchReason(nextAccountMismatchReason);
   }, []);
 
   const refreshNativeProgress = useCallback(async () => {

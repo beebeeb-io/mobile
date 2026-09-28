@@ -66,10 +66,21 @@ let disableContactsBackupMock = mock(async () => {});
 let disableCalendarBackupMock = mock(async () => {});
 let teardownAllBackupMock = mock(async () => {});
 let clearSessionMock = mock(async () => {});
+// Task 1599 followups (round 2, item 4): applyNativeProgress (not exercised
+// by this file — it needs a React render harness this codebase doesn't
+// have, see the header note) calls these two on a NEW native
+// accountMismatchReason. Only shouldEndSessionForNativeAccountMismatch's
+// own pure logic is unit-tested below; these mocks exist purely so
+// importing backup-context.tsx (which now references both) doesn't throw
+// on an undefined import from the mocked './api' module.
+let captureRequestAuthSnapshotMock = mock(async () => ({ generation: 0, token: null }));
+let endSessionForAccountMismatchMock = mock(async () => {});
 
 mock.module('./api', () => ({
   clearMobileIosBackupClientSession: (...args: unknown[]) => clearSessionMock(...args),
   ensureMobileIosBackupClientSession: async () => 'session-1',
+  captureRequestAuthSnapshot: (...args: unknown[]) => captureRequestAuthSnapshotMock(...args),
+  endSessionForAccountMismatch: (...args: unknown[]) => endSessionForAccountMismatchMock(...args),
 }));
 
 mock.module('../services/BackupService', () => ({
@@ -101,7 +112,8 @@ mock.module('../../modules/beebeeb-crypto', () => ({
 // scenario (see loadFresh) because sessionPresentAtLaunchPromise is captured
 // once, synchronously, the moment the module is first evaluated — exactly
 // mirroring how it behaves once per real app process.
-const { backupPrefKey, stopBackupEngines, canEnableNativeCameraBackup } = await import('./backup-context');
+const { backupPrefKey, stopBackupEngines, canEnableNativeCameraBackup, shouldEndSessionForNativeAccountMismatch } =
+  await import('./backup-context');
 
 const LEGACY_PHOTO_KEY = 'beebeeb_camera_backup';
 const OWNER_KEY = 'beebeeb_backup_pref_owner';
@@ -613,5 +625,36 @@ describe('warm-up retry (JS mirror of ContactsBackupManager/CalendarBackupManage
     // used to just register observers and wait for the NEXT real edit.
     // Now it retries once, every app mount/foreground, until it succeeds.
     expect(shouldRunOnEnable(false, false)).toBe(true);
+  });
+});
+
+// Task 1599 followups (round 2, item 4): a native-confirmed
+// `account_mismatch` must end the JS session the same way `request()`'s own
+// 409 branch does (api.ts), so a user who just toggles backup back on
+// doesn't send the SAME stale session straight back into another 409. This
+// exercises the pure edge-trigger DECISION only — the actual
+// `endSessionForAccountMismatch`/`captureRequestAuthSnapshot` call happens
+// inside `applyNativeProgress`, a `useCallback` closure this codebase has no
+// render harness to exercise (see this file's own header note).
+describe('shouldEndSessionForNativeAccountMismatch (native account-mismatch -> JS session end, edge-triggered)', () => {
+  test('null -> a reason: true (the normal confirmed-mismatch case)', () => {
+    expect(shouldEndSessionForNativeAccountMismatch(null, 'Backup stopped: this device is signed in to a different account. Sign in again to resume.')).toBe(true);
+  });
+
+  test('the SAME reason on a later poll: false (edge-triggered, not once-per-poll)', () => {
+    const reason = 'Backup stopped: this device is signed in to a different account. Sign in again to resume.';
+    expect(shouldEndSessionForNativeAccountMismatch(reason, reason)).toBe(false);
+  });
+
+  test('a DIFFERENT reason string than the previous one: true (a fresh mismatch event)', () => {
+    expect(shouldEndSessionForNativeAccountMismatch('old reason', 'new reason')).toBe(true);
+  });
+
+  test('a reason clearing back to null: false (native resolved it — nothing to end here, bindAccount already handled the sign-in)', () => {
+    expect(shouldEndSessionForNativeAccountMismatch('some reason', null)).toBe(false);
+  });
+
+  test('null -> null: false (steady state, nothing happening)', () => {
+    expect(shouldEndSessionForNativeAccountMismatch(null, null)).toBe(false);
   });
 });

@@ -90,9 +90,39 @@ for prop in chunkUploadContinuations uploadTaskMap; do
   done < <("$GREP" -n "\b${prop}\b" "$file" | cut -d: -f2-)
 done
 
+# 6. Task 1599 followups (round 2): `accountMismatchStopReason` is written
+#    from `handleConfirmedAccountMismatch()` (URLSession delegate queue, via
+#    the upload error path) and cleared from `bindAccount(userId:)` (Expo's
+#    shared serial queue), read from `currentProgress()` (JS's poll timer
+#    queue) — the same cross-thread shape as every `engineStateLock`-backed
+#    property above. Must stay a computed property backed by a private
+#    `_accountMismatchStopReason` storage var, guarded by `engineStateLock`
+#    in both the getter and the setter — never a bare `private var
+#    accountMismatchStopReason: String?` stored property again.
+if "$GREP" -Eq '^[[:space:]]*private var accountMismatchStopReason:[[:space:]]*String\?[[:space:]]*$' "$file"; then
+  echo "'accountMismatchStopReason' is a bare stored var again — must be a computed property backed by engineStateLock (task 1599 followups round 2)" >&2
+  fail=1
+fi
+if ! "$GREP" -Eq '^[[:space:]]*private var _accountMismatchStopReason: String\?[[:space:]]*$' "$file"; then
+  echo "'_accountMismatchStopReason' backing storage not found in $file" >&2
+  fail=1
+fi
+accessor_block=$(awk '/private var accountMismatchStopReason: String\? \{/,/^  }/' "$file")
+if [ -z "$accessor_block" ]; then
+  echo "'accountMismatchStopReason' computed property accessor block not found in $file" >&2
+  fail=1
+else
+  get_line=$(echo "$accessor_block" | "$GREP" -c 'get { engineStateLock.lock(); defer { engineStateLock.unlock() }; return _accountMismatchStopReason }' || true)
+  set_line=$(echo "$accessor_block" | "$GREP" -c 'set { engineStateLock.lock(); _accountMismatchStopReason = newValue; engineStateLock.unlock() }' || true)
+  if [ "$get_line" -lt 1 ] || [ "$set_line" -lt 1 ]; then
+    echo "'accountMismatchStopReason' getter/setter no longer lock/unlock engineStateLock around the backing storage" >&2
+    fail=1
+  fi
+fi
+
 if [ "$fail" -ne 0 ]; then
   echo "FAIL: NativeBackupEngine locked-dictionary structural guard" >&2
   exit 1
 fi
 
-echo "PASS: chunkUploadContinuations and uploadTaskMap are LockedDictionary-backed, storage stays private, no raw-Dictionary regression, all call sites use the sanctioned API"
+echo "PASS: chunkUploadContinuations and uploadTaskMap are LockedDictionary-backed, accountMismatchStopReason is engineStateLock-backed, storage stays private, no raw-Dictionary regression, all call sites use the sanctioned API"

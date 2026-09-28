@@ -1766,16 +1766,58 @@ final class NativeBackupEngine: NSObject {
 
     do {
       let bridgeCacheAvailable = BeebeebCryptoBridge.hasCachedMasterKey()
+      // Task 1599 followups (round 2, item 3): a cached handle existing is
+      // NOT, by itself, proof it belongs to `accountId` — reusing the SAME
+      // `CachedKeyOwnership.mayAdopt` decision the background-task
+      // adoption site below already applies. Read the cache's recorded
+      // owner BEFORE calling `loadMasterKey()` (which would otherwise just
+      // hand back the same unverified cached handle) — a cache whose
+      // recorded owner is SET and differs from `accountId` refuses here,
+      // never reaching `masterKeyHandle`.
+      let cachedOwnerBeforeLoad = BeebeebCryptoBridge.cachedMasterKeyOwnerId()
       RuntimeTrace.event("backup.native.start.master_key_request", [
         "promptMayAppear": masterKeyHandle == nil && !bridgeCacheAvailable,
         "bridgeCacheAvailable": bridgeCacheAvailable
       ])
+      if bridgeCacheAvailable,
+         !CachedKeyOwnership.mayAdopt(cachedOwnerId: cachedOwnerBeforeLoad, currentAccountId: accountId) {
+        RuntimeTrace.event("backup.native.start.refused_cached_key_owner_mismatch")
+        NSLog("[NativeBackupEngine] Cached master key owner unconfirmed or mismatched — refusing to start")
+        return
+      }
       guard let mk = try BeebeebCryptoBridge.loadMasterKey() else {
         RuntimeTrace.event("backup.native.start.master_key_missing")
         NSLog("[NativeBackupEngine] No master key in keychain — cannot start")
         return
       }
-      masterKeyHandle = mk
+      if bridgeCacheAvailable {
+        // The guard above already confirmed the CACHE's recorded owner
+        // matches `accountId`, and `loadMasterKey()`'s cache-hit branch
+        // just handed back that SAME cached handle — nothing further to
+        // attest before trusting it.
+        masterKeyHandle = mk
+      } else {
+        // Task 1599 followups (round 2, item 3): the cache was empty, so
+        // this handle came straight off the per-app Keychain
+        // (`KeychainManager.load`, inside `loadMasterKey()`'s cache-miss
+        // branch) — there is no JS-confirmed `confirmMasterKeyHandle`
+        // ownership verdict for THIS load. Only trust it for `accountId`,
+        // and only then record that trust in the bridge cache, when the
+        // SHARED "proven vault key owner" mirror
+        // (`BeebeebKeychainCore.masterKeyOwnerKey` — written by
+        // `key-ownership.ts`'s `writeKeyOwner`, the exact signal task
+        // 1594's File Provider / Share Extension already gate their own
+        // key access on) independently agrees. Reusing
+        // `CachedKeyOwnership.mayAdopt` here too keeps "nil/mismatched
+        // owner refuses" a single decision, not two copies that can drift.
+        let mirroredOwner = BeebeebKeychainCore.loadString(key: BeebeebKeychainCore.masterKeyOwnerKey)
+        guard CachedKeyOwnership.mayAdopt(cachedOwnerId: mirroredOwner, currentAccountId: accountId) else {
+          RuntimeTrace.event("backup.native.start.refused_unmirrored_key_owner")
+          NSLog("[NativeBackupEngine] Master key owner not confirmed by the shared keychain mirror — refusing to start")
+          return
+        }
+        masterKeyHandle = mk
+      }
       // Task 1599 followup 3: `currentAccountId` here is `start()`'s OWN
       // persisted account id (Keychain-backed — see its property doc), which
       // is only ever WRITTEN by `bindAccount(userId:)`, called by JS only
@@ -1783,10 +1825,9 @@ final class NativeBackupEngine: NSObject {
       // `enablePhotoBackup`'s `currentAccountId = userId` is gated on
       // `crypto-context.tsx`'s `isUnlocked`, which flips true only right
       // after `confirmMasterKeyHandle` for that SAME owner). So re-stamping
-      // the bridge cache with it here is safe even though THIS load came
-      // straight from the Keychain, not through a fresh JS ownership check —
-      // it is attesting to an owner JS already proved earlier this
-      // sign-in, not a new, unverified one.
+      // the bridge cache with it here is safe — both branches above already
+      // proved this SPECIFIC load's owner (cache-owner match, or the shared
+      // mirror) before this line is ever reached.
       BeebeebCryptoBridge.setCachedMasterKey(mk, ownerId: currentAccountId)
       RuntimeTrace.event("backup.native.start.master_key_ready")
     } catch {
