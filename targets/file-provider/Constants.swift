@@ -50,6 +50,18 @@ enum BeebeebConstants {
   /// Same migration story as `userDefaultsApiBaseUrlKey` — see task 0447.
   static let userDefaultsSessionTokenKey = "io.beebeeb.sessionToken"
 
+  /// App Group `UserDefaults` key holding the purge-epoch counter. Bumped
+  /// by the main app's `purgePlaintextStorage` (task 1593 round 7, C1)
+  /// before it removes the File Provider domain / resets the shared cache
+  /// DB, so `SyncEngine.refreshContainer` — running in this SEPARATE
+  /// process, outside `lib/plaintext-gate.ts` and Expo's serial queue — can
+  /// tell a write it is about to commit started before a sign-out purge
+  /// and refuse to land it. Literal matches `fileProviderPurgeEpochKey` in
+  /// `BeebeebCryptoModule.swift`; see that file's header comment on why
+  /// App Group UserDefaults keys are duplicated as literals across the two
+  /// compilation targets rather than shared via one Swift symbol.
+  static let purgeEpochKey = "io.beebeeb.fileProvider.purgeEpoch"
+
   /// Logical root directory shown in the iOS Files app.
   static let rootContainerIdentifier = "io.beebeeb.root"
 }

@@ -34,6 +34,15 @@ final class CacheManager {
       return
     }
     self.db = handle
+    // Task 1593 round 7 (C2) — `SQLITE_OPEN_CREATE` above means an
+    // extension launched before the main app has ever run (or after
+    // `clearFileProviderCacheState` unlinked the file) creates this
+    // database itself. `PlaintextStorageProtection.swift` is compiled
+    // directly into this target too (see its header comment), so this
+    // extension can call the same `protect()` the main app uses instead of
+    // leaving the file backup-eligible / unprotected until the next time
+    // the main app's `hardenAll()` happens to run.
+    PlaintextStorageProtection.protect(URL(fileURLWithPath: path))
     // Task 1593 round 6 (new-3) — this connection is the extension's own
     // writer for `delete(id:)` / `_deleteChildren` (below); without
     // secure_delete a DELETE's freed b-tree page keeps the decrypted
@@ -112,13 +121,31 @@ final class CacheManager {
     }
   }
 
-  func replaceChildren(parent: String?, with items: [CachedItem]) {
+  /// Task 1593 round 7 (C1) — `expectedEpoch` is the purge-epoch value the
+  /// caller (`SyncEngine.refreshContainer`) read BEFORE starting the API
+  /// fetch these `items` came from. Re-reading the CURRENT epoch inside
+  /// this method's own serial `queue.sync`, immediately before the write,
+  /// closes the gap between "the caller checked" and "the write actually
+  /// lands" as tightly as this architecture allows — a sign-out purge that
+  /// bumps the epoch anywhere in that window makes this call a no-op
+  /// instead of reinserting decrypted names the purge is in the middle of
+  /// sweeping. Returns whether the write actually happened, so the caller
+  /// can decide whether to also update its `sync_state` anchor.
+  @discardableResult
+  func replaceChildren(parent: String?, with items: [CachedItem], expectedEpoch: Int) -> Bool {
     queue.sync {
+      guard currentPurgeEpoch() == expectedEpoch else { return false }
       execute("BEGIN")
       _deleteChildren(parent: parent, keepingIds: Set(items.map(\.id)))
       for item in items { _upsert(item) }
       execute("COMMIT")
+      return true
     }
+  }
+
+  /// See `replaceChildren(parent:with:expectedEpoch:)`'s doc comment.
+  func currentPurgeEpoch() -> Int {
+    UserDefaults(suiteName: BeebeebConstants.appGroup)?.integer(forKey: BeebeebConstants.purgeEpochKey) ?? 0
   }
 
   func item(id: String) -> CachedItem? {
