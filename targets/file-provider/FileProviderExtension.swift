@@ -170,6 +170,15 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
           : parentRaw
         let mimeType = itemTemplate.contentType?.preferredMIMEType
 
+        // Task 1593 round 8 (R3) — captured BEFORE the network upload
+        // below, which can take an arbitrary amount of time. See
+        // `CacheManager.upsert(_:expectedEpoch:)`'s doc comment: if a
+        // sign-out purge lands while this upload is in flight, the epoch
+        // gate on the cache write below refuses to insert this file's
+        // decrypted name for an account that has (or is about to have)
+        // signed out.
+        let epochAtStart = CacheManager.shared.currentPurgeEpoch()
+
         let response = try await Self.streamUpload(
           sourceUrl: url,
           fileId: fileId,
@@ -201,7 +210,14 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
           syncAnchor: Int64(Date().timeIntervalSince1970 * 1000),
           isMaterialized: false
         )
-        CacheManager.shared.upsert(cached)
+        if !CacheManager.shared.upsert(cached, expectedEpoch: epochAtStart) {
+          // Task 1593 round 8 (R3) — the upload itself already succeeded
+          // server-side; only the LOCAL cache write is skipped when a
+          // sign-out purge raced it. Still hand back the in-memory item —
+          // it never touches the DB — so the Files app sees a consistent
+          // result for the operation it actually asked for.
+          NSLog("[Beebeeb] createItem cache write discarded — purge epoch changed during upload")
+        }
 
         progress.completedUnitCount = 100
         completionHandler(FileProviderItem(cached: cached), [], false, nil)
@@ -237,6 +253,11 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
 
     let task = Task.detached {
       do {
+        // Task 1593 round 8 (R3) — captured BEFORE either network call
+        // below (`streamUpload` for a content change, `patchFile` for a
+        // rename/move), both of unbounded duration. See
+        // `CacheManager.upsert(_:expectedEpoch:)`'s doc comment.
+        let epochAtStart = CacheManager.shared.currentPurgeEpoch()
         let masterKey = try self.masterKey()
         progress.completedUnitCount = 15
 
@@ -324,7 +345,12 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
           syncAnchor: Int64(Date().timeIntervalSince1970 * 1000),
           isMaterialized: changedFields.contains(.contents) ? false : cached.isMaterialized
         )
-        CacheManager.shared.upsert(updated)
+        if !CacheManager.shared.upsert(updated, expectedEpoch: epochAtStart) {
+          // Task 1593 round 8 (R3) — see the matching note in createItem
+          // above: the server-side change already succeeded, only the
+          // local cache write is skipped.
+          NSLog("[Beebeeb] modifyItem cache write discarded — purge epoch changed during the operation")
+        }
         progress.completedUnitCount = 100
         completionHandler(FileProviderItem(cached: updated), [], false, nil)
       } catch {
@@ -349,8 +375,17 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
 
     let task = Task.detached {
       do {
+        // Task 1593 round 8 (R3) — captured BEFORE the network delete
+        // below. See `CacheManager.upsert(_:expectedEpoch:)`'s doc comment.
+        let epochAtStart = CacheManager.shared.currentPurgeEpoch()
         try await ApiClient.shared.deleteFile(fileId: identifier.rawValue)
-        CacheManager.shared.delete(id: identifier.rawValue)
+        if !CacheManager.shared.delete(id: identifier.rawValue, expectedEpoch: epochAtStart) {
+          // The remote delete already succeeded; only the local cache row
+          // removal is skipped when a sign-out purge raced it — harmless,
+          // the purge's own reset (or the next sign-in's fresh fetch)
+          // clears this row anyway.
+          NSLog("[Beebeeb] deleteItem cache removal discarded — purge epoch changed during the operation")
+        }
         progress.completedUnitCount = 1
         completionHandler(nil)
       } catch {

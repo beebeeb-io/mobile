@@ -313,11 +313,32 @@ public enum PlaintextStorageProtection {
     // `secure_delete = ON` makes every DELETE overwrite the row's bytes with
     // zeros as it deletes them, and must be set BEFORE the transaction that
     // does the deleting.
+    // Task 1593 round 8 (R2, security re-review) — this is "the purge's
+    // reset transaction" for the one `resettableInPlace` entry that carries
+    // a cross-process purge epoch (the File Provider cache DB —
+    // `BeebeebCryptoModule.swift`'s `bumpFileProviderCacheVersion`'s doc
+    // comment has the full rationale for why the epoch lives in this file's
+    // own `PRAGMA user_version` rather than App Group UserDefaults).
+    // Bumping it HERE too, inside the same BEGIN/COMMIT that empties every
+    // table, is belt-and-suspenders with that earlier bump: this is the
+    // LAST step of every purge, so anything that slipped past the earlier
+    // bump (a write already mid-transaction when that ran) is still caught
+    // — the version this reset ends on is guaranteed newer than anything
+    // any writer could have captured before this transaction committed.
+    var nextVersion: Int32 = 1
+    var versionStmt: OpaquePointer?
+    if sqlite3_prepare_v2(db, "PRAGMA user_version", -1, &versionStmt, nil) == SQLITE_OK,
+       sqlite3_step(versionStmt) == SQLITE_ROW {
+      nextVersion = sqlite3_column_int(versionStmt, 0) &+ 1
+    }
+    sqlite3_finalize(versionStmt)
+
     var ok = sqlite3_exec(db, "PRAGMA secure_delete = ON", nil, nil, nil) == SQLITE_OK
     ok = ok && sqlite3_exec(db, "BEGIN", nil, nil, nil) == SQLITE_OK
     for table in tables {
       ok = ok && sqlite3_exec(db, "DELETE FROM \"\(table)\"", nil, nil, nil) == SQLITE_OK
     }
+    ok = ok && sqlite3_exec(db, "PRAGMA user_version = \(nextVersion)", nil, nil, nil) == SQLITE_OK
     if ok {
       ok = sqlite3_exec(db, "COMMIT", nil, nil, nil) == SQLITE_OK
     } else {
@@ -342,6 +363,14 @@ public enum PlaintextStorageProtection {
     // locking rather than honouring that timeout on retry). One retry after
     // a short fixed wait is enough for that transient case; a still-BUSY
     // second attempt is a real failure, not silently swallowed.
+    //
+    // Task 1593 round 8 (R2) — VACUUM rewrites table b-tree pages, not the
+    // database header's `application_id`/`user_version` fields, so the
+    // `PRAGMA user_version` bump above survives it; verified directly (not
+    // just asserted) at _qa-evidence/1593/r8-epoch-proof.txt — the same
+    // sqlite3 CLI session that proves the BEGIN IMMEDIATE refusal also runs
+    // this exact BEGIN→DELETE→user_version-bump→COMMIT→VACUUM sequence and
+    // reads `PRAGMA user_version` back as the bumped value afterward.
     ok = ok && vacuumRetryingOnceOnBusy(db)
     return ok
   }

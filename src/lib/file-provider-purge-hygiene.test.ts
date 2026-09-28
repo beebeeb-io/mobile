@@ -333,22 +333,101 @@ describe('C1 (round 7, P1): purgePlaintextStorage resets the DB LAST, after cons
   });
 
   test('the purge epoch is bumped before the domain removal call, not after', () => {
-    const bumpIdx = purgeBody.indexOf('bumpFileProviderPurgeEpoch(defaults: sharedDefaults())');
+    // Task 1593 round 8 (R2) — the bump moved from an App Group
+    // UserDefaults counter (`bumpFileProviderPurgeEpoch`) to the cache DB's
+    // own `PRAGMA user_version` (`bumpFileProviderCacheVersion`); see the
+    // "R2" describe block below for the new mechanism's own tests. The
+    // ordering guarantee this test protects is unchanged.
+    const bumpIdx = purgeBody.indexOf('bumpFileProviderCacheVersion()');
     const removeIdx = purgeBody.indexOf('removeFileProviderDomainIfRegistered()');
     expect(bumpIdx).toBeGreaterThan(-1);
     expect(removeIdx).toBeGreaterThan(-1);
     expect(bumpIdx).toBeLessThan(removeIdx);
   });
+});
 
-  test('bumpFileProviderPurgeEpoch and the extension\'s Constants.purgeEpochKey use the same literal key', () => {
-    const cacheManagerConstants = readFileSync(
-      join(REPO_ROOT, 'targets', 'file-provider', 'Constants.swift'), 'utf8',
-    );
-    const mainAppMatch = swift.match(/fileProviderPurgeEpochKey = "([^"]+)"/);
-    const extensionMatch = cacheManagerConstants.match(/purgeEpochKey = "([^"]+)"/);
-    expect(mainAppMatch).not.toBeNull();
-    expect(extensionMatch).not.toBeNull();
-    expect(mainAppMatch![1]).toBe(extensionMatch![1]);
+// Task 1593 round 8 — independent security re-review of PR #144 (round 7).
+// R2 replaces the App Group UserDefaults purge-epoch counter with the File
+// Provider cache database's own `PRAGMA user_version`, synchronised across
+// processes with real SQLite `BEGIN IMMEDIATE` locking instead of
+// `cfprefsd`'s no-guaranteed-immediacy propagation. No macOS-runnable Swift
+// unit harness in this repo (same rationale as every describe block above),
+// so these stay structural; the behavioural proof is the sqlite3 CLI
+// session at _qa-evidence/1593/r8-epoch-proof.txt (two connections: one
+// holds `BEGIN IMMEDIATE` + a `user_version` read, the other's own
+// `BEGIN IMMEDIATE` + bump is shown refused/blocked until the first
+// releases) plus the successful xcodebuild in this round's evidence.
+describe('R2 (round 8, P2): the old App Group UserDefaults purge-epoch counter is fully gone', () => {
+  test('the fileProviderPurgeEpochKey constant / bumpFileProviderPurgeEpoch function are no longer declared', () => {
+    // Removal notes are allowed to name the old symbols for context (this
+    // file's own history does exactly that elsewhere); only the actual
+    // declarations must be gone.
+    const swift = readFileSync(MODULE_SWIFT_PATH, 'utf8');
+    expect(swift).not.toMatch(/\blet fileProviderPurgeEpochKey\b/);
+    expect(swift).not.toMatch(/\bfunc bumpFileProviderPurgeEpoch\b/);
+  });
+
+  test('the purgeEpochKey constant is no longer declared in the extension\'s Constants.swift', () => {
+    const constants = readFileSync(join(REPO_ROOT, 'targets', 'file-provider', 'Constants.swift'), 'utf8');
+    expect(constants).not.toMatch(/\blet purgeEpochKey\b/);
+  });
+
+  test('the CacheManager no longer reads the epoch from UserDefaults', () => {
+    const cacheManagerSwift = readFileSync(CACHE_MANAGER_SWIFT_PATH, 'utf8');
+    expect(cacheManagerSwift).not.toMatch(/UserDefaults\(suiteName: BeebeebConstants\.appGroup\)\?\.integer/);
+  });
+});
+
+describe('R2 (round 8, P2): bumpFileProviderCacheVersion bumps PRAGMA user_version under BEGIN IMMEDIATE', () => {
+  const swift = readFileSync(MODULE_SWIFT_PATH, 'utf8');
+  const body = bracedBody(swift, 'private func bumpFileProviderCacheVersion() -> Bool {');
+
+  test('opens a real write transaction with BEGIN IMMEDIATE, not a plain BEGIN', () => {
+    expect(body).toMatch(/sqlite3_exec\(db, "BEGIN IMMEDIATE", nil, nil, nil\)/);
+  });
+
+  test('reads the current value before writing the incremented one, and commits', () => {
+    const readIdx = body.indexOf('PRAGMA user_version');
+    const writeIdx = body.indexOf('PRAGMA user_version = \\(current');
+    const commitIdx = body.indexOf('"COMMIT"');
+    expect(readIdx).toBeGreaterThan(-1);
+    expect(writeIdx).toBeGreaterThan(-1);
+    expect(commitIdx).toBeGreaterThan(-1);
+    expect(readIdx).toBeLessThan(writeIdx);
+    expect(writeIdx).toBeLessThan(commitIdx);
+  });
+
+  test('is called (result discarded) as the early purge-epoch bump in purgePlaintextStorage', () => {
+    const purgeBody = bracedBody(swift, 'AsyncFunction("purgePlaintextStorage") { () -> [String: Int] in');
+    expect(purgeBody).toMatch(/_ = bumpFileProviderCacheVersion\(\)/);
+  });
+});
+
+describe('R2 (round 8, P2): both DB-reset functions bump PRAGMA user_version inside their own reset transaction', () => {
+  test('resetFileProviderCacheDatabase (BeebeebCryptoModule.swift) reads, increments, and writes user_version between BEGIN and COMMIT', () => {
+    const swift = readFileSync(MODULE_SWIFT_PATH, 'utf8');
+    const body = bracedBody(swift, 'private func resetFileProviderCacheDatabase(at url: URL) -> Bool {');
+    const beginIdx = body.indexOf('"BEGIN"');
+    const bumpIdx = body.indexOf('PRAGMA user_version = \\(nextVersion)');
+    const commitIdx = body.indexOf('"COMMIT"');
+    expect(beginIdx).toBeGreaterThan(-1);
+    expect(bumpIdx).toBeGreaterThan(-1);
+    expect(commitIdx).toBeGreaterThan(-1);
+    expect(beginIdx).toBeLessThan(bumpIdx);
+    expect(bumpIdx).toBeLessThan(commitIdx);
+  });
+
+  test('resetSQLiteInPlace (PlaintextStorageProtection.swift) reads, increments, and writes user_version between BEGIN and COMMIT', () => {
+    const swift = readFileSync(REGISTRY_SWIFT_PATH, 'utf8');
+    const body = bracedBody(swift, 'private static func resetSQLiteInPlace(_ url: URL) -> Bool {');
+    const beginIdx = body.indexOf('"BEGIN"');
+    const bumpIdx = body.indexOf('PRAGMA user_version = \\(nextVersion)');
+    const commitIdx = body.indexOf('"COMMIT"');
+    expect(beginIdx).toBeGreaterThan(-1);
+    expect(bumpIdx).toBeGreaterThan(-1);
+    expect(commitIdx).toBeGreaterThan(-1);
+    expect(beginIdx).toBeLessThan(bumpIdx);
+    expect(bumpIdx).toBeLessThan(commitIdx);
   });
 });
 
@@ -358,22 +437,41 @@ describe('C1 (round 7, P1): the File Provider extension refuses a write whose pu
     join(REPO_ROOT, 'targets', 'file-provider', 'SyncEngine.swift'), 'utf8',
   );
 
-  test('CacheManager.replaceChildren checks the CURRENT epoch inside its own serial queue before writing', () => {
+  test('CacheManager.replaceChildren opens BEGIN IMMEDIATE, then checks the CURRENT epoch, before writing', () => {
+    // Task 1593 round 8 (R2) — the epoch check now runs AFTER acquiring a
+    // real cross-process write lock (`BEGIN IMMEDIATE`), not merely inside
+    // this process's own serial queue: the queue only ever protected THIS
+    // process's calls to `CacheManager` from each other, never the main
+    // app's independent writes to the same file.
     const body = bracedBody(
       cacheManagerSwift,
       'func replaceChildren(parent: String?, with items: [CachedItem], expectedEpoch: Int) -> Bool {',
     );
     const queueSyncIdx = body.indexOf('queue.sync');
-    const guardIdx = body.indexOf('guard currentPurgeEpoch() == expectedEpoch else { return false }');
-    const beginIdx = body.indexOf('"BEGIN"');
+    const beginImmediateIdx = body.indexOf('guard beginImmediate() else { return false }');
+    const guardIdx = body.indexOf('guard _currentPurgeEpoch() == expectedEpoch else {');
+    const rollbackIdx = body.indexOf('execute("ROLLBACK")');
+    const commitIdx = body.indexOf('"COMMIT"');
     expect(queueSyncIdx).toBeGreaterThan(-1);
+    expect(beginImmediateIdx).toBeGreaterThan(-1);
     expect(guardIdx).toBeGreaterThan(-1);
-    expect(beginIdx).toBeGreaterThan(-1);
-    // The epoch check must run INSIDE the serial queue, before the write —
-    // checking it outside (e.g. in the caller only) would leave a gap
-    // between the check and the actual write landing on the queue.
-    expect(queueSyncIdx).toBeLessThan(guardIdx);
-    expect(guardIdx).toBeLessThan(beginIdx);
+    expect(rollbackIdx).toBeGreaterThan(-1);
+    expect(commitIdx).toBeGreaterThan(-1);
+    expect(queueSyncIdx).toBeLessThan(beginImmediateIdx);
+    expect(beginImmediateIdx).toBeLessThan(guardIdx);
+    expect(guardIdx).toBeLessThan(rollbackIdx);
+    expect(rollbackIdx).toBeLessThan(commitIdx);
+  });
+
+  test('beginImmediate() issues a real BEGIN IMMEDIATE, not a plain deferred BEGIN', () => {
+    const body = bracedBody(cacheManagerSwift, 'private func beginImmediate() -> Bool {');
+    expect(body).toMatch(/sqlite3_exec\(db, "BEGIN IMMEDIATE", nil, nil, nil\)/);
+  });
+
+  test('_currentPurgeEpoch reads PRAGMA user_version, not UserDefaults', () => {
+    const body = bracedBody(cacheManagerSwift, 'private func _currentPurgeEpoch() -> Int {');
+    expect(body).toMatch(/PRAGMA user_version/);
+    expect(body).not.toMatch(/UserDefaults/);
   });
 
   test('SyncEngine.refreshContainer captures the epoch BEFORE the network fetch, not after', () => {
@@ -503,7 +601,7 @@ describe('F2 (round 7, P2): a domain removal completion that outlives its bounde
     const body = bracedBody(swift, 'private func removeFileProviderDomainIfRegistered() -> Bool {');
     const staleCheckIdx = body.indexOf('currentFileProviderGeneration() != generationBeforeRemove');
     expect(staleCheckIdx).toBeGreaterThan(-1);
-    const after = body.slice(staleCheckIdx, staleCheckIdx + 1200);
+    const after = body.slice(staleCheckIdx, staleCheckIdx + 3400);
     expect(after).toMatch(/NSFileProviderManager\.add\(domain\)/);
     expect(after).toMatch(/RuntimeTrace\.event\("storage\.purge\.file_provider_domain_stale_remove"/);
   });
@@ -641,5 +739,169 @@ describe('new-P1 (round 7, P1, Codex auto re-review): registerMountedFileProvide
     expect(guardIdx).toBeGreaterThan(-1);
     const after = body.slice(guardIdx, guardIdx + 300);
     expect(after).toMatch(/else\s*\{\s*\n\s*return await currentFileProviderDomainStatus\(\)\s*\n\s*\}/);
+  });
+});
+
+// Task 1593 round 8 — independent security re-review of PR #144 (round 7).
+// R1 is the P1/MUST finding: the stale-`.remove`-completion re-add
+// (round 7's F2) could land AFTER a second, later purge had already reset
+// consent, mounting Files with consent off. No macOS-runnable Swift unit
+// harness in this repo, so structural + this task's mutation table (see
+// Notes) stand in for a behavioural proof, same as every describe block
+// above.
+describe('R1 (round 8, P1, MUST): a stale-remove completion only re-adds the domain when consent is still live', () => {
+  const swift = readFileSync(MODULE_SWIFT_PATH, 'utf8');
+  const removeBody = bracedBody(swift, 'private func removeFileProviderDomainIfRegistered() -> Bool {');
+
+  test('the stale-generation branch rechecks BOTH consent flags before calling .add', () => {
+    const staleIdx = removeBody.indexOf('currentFileProviderGeneration() != generationBeforeRemove');
+    expect(staleIdx).toBeGreaterThan(-1);
+    const after = removeBody.slice(staleIdx, staleIdx + 3400);
+    const guardIdx = after.search(/if \(consentDefaults\?\.bool\(forKey: fileProviderTrustedMountKey\) \?\? false\),\s*\n\s*sharedBoolDefaultTrue\(consentDefaults, key: fileProviderEnabledKey\) \{/);
+    const addIdx = after.indexOf('NSFileProviderManager.add(domain)');
+    expect(guardIdx).toBeGreaterThan(-1);
+    expect(addIdx).toBeGreaterThan(-1);
+    // The consent recheck must gate the .add call, not merely follow it.
+    expect(guardIdx).toBeLessThan(addIdx);
+  });
+
+  test('a consent-off recheck traces a distinct event and does not call .add', () => {
+    const staleIdx = removeBody.indexOf('currentFileProviderGeneration() != generationBeforeRemove');
+    expect(staleIdx).toBeGreaterThan(-1);
+    const after = removeBody.slice(staleIdx, staleIdx + 3400);
+    expect(after).toMatch(/RuntimeTrace\.event\("storage\.purge\.file_provider_domain_stale_remove_consent_off", \[:\]\)/);
+    // The consent-off trace must sit in an `else` branch of the same `if`
+    // that guards `.add`, not merely appear somewhere in the function.
+    const elseIdx = after.indexOf('} else {');
+    const consentOffIdx = after.indexOf('storage.purge.file_provider_domain_stale_remove_consent_off');
+    expect(elseIdx).toBeGreaterThan(-1);
+    expect(consentOffIdx).toBeGreaterThan(elseIdx);
+  });
+
+  test('the removal itself is still not marked failed by a consent-off skip — same invariant as F2', () => {
+    const body = bracedBody(swift, 'NSFileProviderManager.remove(domain, mode: .removeAll) { _, error in');
+    expect(body).toMatch(/if let error \{[\s\S]*?removeSucceeded = false[\s\S]*?\}\s*else if currentFileProviderGeneration/);
+  });
+});
+
+describe('R1 (round 8, P1): a consent reset also stamps the generation counter, invalidating pending stale re-adds', () => {
+  const swift = readFileSync(MODULE_SWIFT_PATH, 'utf8');
+
+  test('resetFileProviderShowInFilesConsent calls bumpFileProviderGeneration after clearing both flags', () => {
+    const body = bracedBody(swift, 'private func resetFileProviderShowInFilesConsent(defaults: UserDefaults?) {');
+    const enabledIdx = body.indexOf('defaults?.set(false, forKey: fileProviderEnabledKey)');
+    const trustedIdx = body.indexOf('defaults?.set(false, forKey: fileProviderTrustedMountKey)');
+    const bumpIdx = body.indexOf('bumpFileProviderGeneration()');
+    expect(enabledIdx).toBeGreaterThan(-1);
+    expect(trustedIdx).toBeGreaterThan(-1);
+    expect(bumpIdx).toBeGreaterThan(-1);
+    expect(enabledIdx).toBeLessThan(bumpIdx);
+    expect(trustedIdx).toBeLessThan(bumpIdx);
+  });
+});
+
+// Task 1593 round 8 — R3: the OTHER File Provider extension writers
+// (create/rename/delete) get the same purge-epoch gate `replaceChildren`
+// already has, closing the same "network call is unbounded, a purge can
+// land while it's in flight" window for THEIR cache writes.
+describe('R3 (round 8, P2): CacheManager gains epoch-gated upsert/delete variants', () => {
+  const cacheManagerSwift = readFileSync(CACHE_MANAGER_SWIFT_PATH, 'utf8');
+
+  test('upsert(_:expectedEpoch:) opens BEGIN IMMEDIATE, checks the epoch, aborts on mismatch, else writes + commits', () => {
+    const body = bracedBody(
+      cacheManagerSwift,
+      'func upsert(_ item: CachedItem, expectedEpoch: Int) -> Bool {',
+    );
+    const beginIdx = body.indexOf('guard beginImmediate() else { return false }');
+    const guardIdx = body.indexOf('guard _currentPurgeEpoch() == expectedEpoch else {');
+    const rollbackIdx = body.indexOf('execute("ROLLBACK")');
+    const upsertIdx = body.indexOf('_upsert(item)');
+    const commitIdx = body.indexOf('"COMMIT"');
+    expect(beginIdx).toBeGreaterThan(-1);
+    expect(guardIdx).toBeGreaterThan(-1);
+    expect(rollbackIdx).toBeGreaterThan(-1);
+    expect(upsertIdx).toBeGreaterThan(-1);
+    expect(commitIdx).toBeGreaterThan(-1);
+    expect(beginIdx).toBeLessThan(guardIdx);
+    expect(guardIdx).toBeLessThan(rollbackIdx);
+    expect(rollbackIdx).toBeLessThan(upsertIdx);
+    expect(upsertIdx).toBeLessThan(commitIdx);
+  });
+
+  test('delete(id:expectedEpoch:) opens BEGIN IMMEDIATE, checks the epoch, aborts on mismatch, else deletes + commits', () => {
+    const body = bracedBody(
+      cacheManagerSwift,
+      'func delete(id: String, expectedEpoch: Int) -> Bool {',
+    );
+    const beginIdx = body.indexOf('guard beginImmediate() else { return false }');
+    const guardIdx = body.indexOf('guard _currentPurgeEpoch() == expectedEpoch else {');
+    const rollbackIdx = body.indexOf('execute("ROLLBACK")');
+    const deleteIdx = body.indexOf('_delete(id: id)');
+    const commitIdx = body.indexOf('"COMMIT"');
+    expect(beginIdx).toBeGreaterThan(-1);
+    expect(guardIdx).toBeGreaterThan(-1);
+    expect(rollbackIdx).toBeGreaterThan(-1);
+    expect(deleteIdx).toBeGreaterThan(-1);
+    expect(commitIdx).toBeGreaterThan(-1);
+    expect(beginIdx).toBeLessThan(guardIdx);
+    expect(guardIdx).toBeLessThan(rollbackIdx);
+    expect(rollbackIdx).toBeLessThan(deleteIdx);
+    expect(deleteIdx).toBeLessThan(commitIdx);
+  });
+
+  test('the plain (non-gated) upsert/delete overloads are unchanged and still exist for internal cache-refresh use', () => {
+    expect(cacheManagerSwift).toMatch(/func upsert\(_ item: CachedItem\) \{\s*\n\s*queue\.sync \{ _upsert\(item\) \}/);
+    expect(cacheManagerSwift).toMatch(/func delete\(id: String\) \{\s*\n\s*queue\.sync \{ _delete\(id: id\) \}/);
+  });
+});
+
+describe('R3 (round 8, P2): FileProviderExtension captures the epoch BEFORE its network call and gates the cache write', () => {
+  const REPO_ROOT_LOCAL = REPO_ROOT;
+  const swift = readFileSync(join(REPO_ROOT_LOCAL, 'targets', 'file-provider', 'FileProviderExtension.swift'), 'utf8');
+
+  test('createItem captures the epoch before streamUpload and passes it to the gated upsert', () => {
+    const body = bracedBody(swift, 'func createItem(');
+    const epochIdx = body.indexOf('let epochAtStart = CacheManager.shared.currentPurgeEpoch()');
+    const uploadIdx = body.indexOf('try await Self.streamUpload(');
+    const upsertIdx = body.indexOf('CacheManager.shared.upsert(cached, expectedEpoch: epochAtStart)');
+    expect(epochIdx).toBeGreaterThan(-1);
+    expect(uploadIdx).toBeGreaterThan(-1);
+    expect(upsertIdx).toBeGreaterThan(-1);
+    expect(epochIdx).toBeLessThan(uploadIdx);
+    expect(uploadIdx).toBeLessThan(upsertIdx);
+  });
+
+  test('modifyItem captures the epoch before either network call (streamUpload or patchFile)', () => {
+    const body = bracedBody(swift, 'func modifyItem(');
+    const epochIdx = body.indexOf('let epochAtStart = CacheManager.shared.currentPurgeEpoch()');
+    const uploadIdx = body.indexOf('try await Self.streamUpload(');
+    const patchIdx = body.indexOf('try await ApiClient.shared.patchFile(');
+    const upsertIdx = body.indexOf('CacheManager.shared.upsert(updated, expectedEpoch: epochAtStart)');
+    expect(epochIdx).toBeGreaterThan(-1);
+    expect(uploadIdx).toBeGreaterThan(-1);
+    expect(patchIdx).toBeGreaterThan(-1);
+    expect(upsertIdx).toBeGreaterThan(-1);
+    expect(epochIdx).toBeLessThan(uploadIdx);
+    expect(epochIdx).toBeLessThan(patchIdx);
+    expect(uploadIdx).toBeLessThan(upsertIdx);
+    expect(patchIdx).toBeLessThan(upsertIdx);
+  });
+
+  test('deleteItem captures the epoch before the network delete and passes it to the gated delete', () => {
+    const body = bracedBody(swift, 'func deleteItem(');
+    const epochIdx = body.indexOf('let epochAtStart = CacheManager.shared.currentPurgeEpoch()');
+    const deleteCallIdx = body.indexOf('try await ApiClient.shared.deleteFile(fileId: identifier.rawValue)');
+    const cacheDeleteIdx = body.indexOf('CacheManager.shared.delete(id: identifier.rawValue, expectedEpoch: epochAtStart)');
+    expect(epochIdx).toBeGreaterThan(-1);
+    expect(deleteCallIdx).toBeGreaterThan(-1);
+    expect(cacheDeleteIdx).toBeGreaterThan(-1);
+    expect(epochIdx).toBeLessThan(deleteCallIdx);
+    expect(deleteCallIdx).toBeLessThan(cacheDeleteIdx);
+  });
+
+  test('none of the three call sites use the plain, non-gated upsert/delete overloads any more', () => {
+    expect(swift).not.toMatch(/CacheManager\.shared\.upsert\(cached\)\s*\n/);
+    expect(swift).not.toMatch(/CacheManager\.shared\.upsert\(updated\)\s*\n/);
+    expect(swift).not.toMatch(/CacheManager\.shared\.delete\(id: identifier\.rawValue\)\s*\n/);
   });
 });

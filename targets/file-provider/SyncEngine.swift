@@ -14,9 +14,11 @@ enum SyncEngine {
 
     // Task 1593 round 7 (C1) — read BEFORE the network fetch below, which
     // can take an arbitrary amount of time. If a sign-out purge starts
-    // while this call is in flight, `PlaintextStorageProtection.purgeAll()`
-    // running in the main app process bumps this same App Group value; the
-    // write at the bottom of this function re-checks it immediately before
+    // while this call is in flight, the main app process bumps this SAME
+    // cache database's `PRAGMA user_version` (round 8/R2 — see
+    // `CacheManager.replaceChildren`'s doc comment for why this moved out
+    // of App Group UserDefaults); the write at the bottom of this function
+    // re-checks it under a real cross-process lock immediately before
     // committing and refuses to land if it has changed, so a fetch that
     // started against the outgoing account can't reinsert its decrypted
     // names after the purge's sweep.

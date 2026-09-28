@@ -25,17 +25,18 @@ private let fileProviderTrustedMountKey = "io.beebeeb.fileProvider.trustedMountE
 private let fileProviderAuthRequiredKey = "io.beebeeb.fileProvider.requireDeviceAuth"
 private let fileProviderUnlockedUntilKey = "io.beebeeb.fileProvider.unlockedUntilMs"
 private let fileProviderEnumeratorStatePrefix = "io.beebeeb.fileProvider.enumerator."
-// Task 1593 round 7 (C1) — bumped as the FIRST action of every
-// `purgePlaintextStorage` call, before anything else runs. The File
-// Provider extension is a separate process: neither `lib/plaintext-gate.ts`
-// nor Expo's shared serial AsyncFunction queue reaches it, so a
-// `SyncEngine.refreshContainer` already in flight when a forced sign-out
-// starts can still land its `CacheManager.replaceChildren` write after this
-// purge's own steps (domain removal, in-place DB reset) have run. Matching
-// literal declared independently in `Constants.swift` for the extension
-// target — see that file's header comment on why App Group UserDefaults
-// keys are duplicated as literals rather than shared via one Swift symbol.
-private let fileProviderPurgeEpochKey = "io.beebeeb.fileProvider.purgeEpoch"
+// Task 1593 round 8 (R2) — the "purge epoch" used to live here as an App
+// Group UserDefaults counter (`fileProviderPurgeEpochKey`,
+// `bumpFileProviderPurgeEpoch`). Removed: `UserDefaults(suiteName:)` is
+// backed by `cfprefsd` with no guaranteed-immediate cross-process
+// visibility, so a `CacheManager.replaceChildren` write racing this exact
+// moment could still read the OLD value even after the bump had "landed"
+// from this process's point of view. The epoch now lives in the File
+// Provider cache database's own `PRAGMA user_version` — see
+// `bumpFileProviderCacheVersion()` below and
+// `CacheManager.currentPurgeEpoch()` in the extension target for the full
+// rationale. Nothing else referenced this key (grepped clean across both
+// Swift targets and JS before removal).
 
 // PHKit picks its own callback queue (often main when the app is foregrounded).
 // Hop here as the first line of every PhotoKit completion so the work in the
@@ -659,18 +660,47 @@ private func removeFileProviderDomainIfRegistered() -> Bool {
       // cancelled by that timeout and can complete on its own schedule).
       // A generation change between the two reads means a NEW sign-in
       // added the domain again in between: the removal that just executed
-      // undid that fresh registration, so re-add it. Best-effort and
+      // undid that fresh registration, so re-add it — best-effort and
       // fire-and-forget, matching every other completion handler in this
       // function — it must never block, and a failure here is no worse
       // than the domain staying unregistered until the next explicit
       // `registerMountedFileProviderDomain` call (e.g. app foreground).
+      //
+      // Task 1593 round 8 (R1, security re-review of round 7) — re-adding
+      // used to be unconditional on the generation change alone. Real
+      // sequence that broke: purge 1's `.remove` times out (its underlying
+      // system call keeps running); the user signs BACK in, bumping the
+      // generation to G1; the user signs OUT again (purge 2), which resets
+      // BOTH "show in Files" consent flags to false (see
+      // `resetFileProviderShowInFilesConsent`, which now also bumps the
+      // generation itself — belt and suspenders with the check below) and
+      // issues its OWN `.remove`. If purge 1's original, still-in-flight
+      // completion fires after purge 2 has already reset consent,
+      // `currentFileProviderGeneration() != generationBeforeRemove` is true
+      // (captured all the way back at G0) and this branch used to re-add
+      // the domain unconditionally — mounting Files with consent already
+      // off. The NEXT sign-in (possibly a different user on a shared
+      // device) then mirrors its session on unlock regardless of consent
+      // (`App.tsx`'s unlock-time mirror does not itself recheck it), and
+      // the extension starts decrypting that user's names into Files with
+      // no consent ever granted. Rechecking BOTH consent flags here — the
+      // same check `registerMountedFileProviderDomain` applies immediately
+      // before its own add (round 7, new-P1) — means a re-add only ever
+      // proceeds when the user currently, actively consents to the mount;
+      // never on the strength of a generation bump alone.
       RuntimeTrace.event("storage.purge.file_provider_domain_stale_remove", [:])
-      NSFileProviderManager.add(domain) { addError in
-        if let addError {
-          RuntimeTrace.event("storage.purge.file_provider_domain_restore_failed", [
-            "error": addError.localizedDescription,
-          ])
+      let consentDefaults = sharedDefaults()
+      if (consentDefaults?.bool(forKey: fileProviderTrustedMountKey) ?? false),
+         sharedBoolDefaultTrue(consentDefaults, key: fileProviderEnabledKey) {
+        NSFileProviderManager.add(domain) { addError in
+          if let addError {
+            RuntimeTrace.event("storage.purge.file_provider_domain_restore_failed", [
+              "error": addError.localizedDescription,
+            ])
+          }
         }
+      } else {
+        RuntimeTrace.event("storage.purge.file_provider_domain_stale_remove_consent_off", [:])
       }
     }
     removeSemaphore.signal()
@@ -799,18 +829,76 @@ private func clearFileProviderSharedState(defaults: UserDefaults?) -> Int {
 private func resetFileProviderShowInFilesConsent(defaults: UserDefaults?) {
   defaults?.set(false, forKey: fileProviderEnabledKey)
   defaults?.set(false, forKey: fileProviderTrustedMountKey)
+  // Task 1593 round 8 (R1) — stamp the generation here too, not only on a
+  // successful ADD (`registerMountedFileProviderDomain`). A consent reset
+  // is exactly the kind of state change a pending stale-`.remove`
+  // completion (see that function's R1 fix above) must be able to detect
+  // as "something changed since I captured generationBeforeRemove" — belt
+  // and suspenders alongside that completion's own direct consent-flag
+  // recheck: even a future change to this file that weakens the flag
+  // recheck still has a generation mismatch blocking the stale re-add.
+  bumpFileProviderGeneration()
 }
 
-/// Task 1593 round 7 (C1) — see `fileProviderPurgeEpochKey`'s doc comment.
-/// Called first, before any other purge step, so the new epoch is visible
-/// to the extension for the entire remainder of this purge (domain removal
-/// + DB reset). `SyncEngine.refreshContainer` (extension process) reads the
-/// SAME key via `UserDefaults(suiteName:)` and refuses to commit a write
-/// whose captured epoch (read before its API fetch started) no longer
-/// matches — see that file and `CacheManager.replaceChildren`.
-private func bumpFileProviderPurgeEpoch(defaults: UserDefaults?) {
-  let next = (defaults?.integer(forKey: fileProviderPurgeEpochKey) ?? 0) &+ 1
-  defaults?.set(next, forKey: fileProviderPurgeEpochKey)
+/// Task 1593 round 8 (R2, security re-review of round 7's C1) — replaces
+/// `bumpFileProviderPurgeEpoch`'s App Group UserDefaults counter (see the
+/// removal note at this file's top). Bumps the File Provider cache
+/// database's own `PRAGMA user_version` instead, under `BEGIN IMMEDIATE` —
+/// a real OS-level write lock on the file (this db is never WAL-mode, see
+/// `resetFileProviderCacheDatabase`'s doc comment, so that's the lock the
+/// default rollback journal always uses), the SAME lock
+/// `CacheManager.replaceChildren` takes with its own `BEGIN IMMEDIATE`
+/// before it ever reads `user_version` to decide whether to write. Two
+/// processes contending on one file's actual lock is a real synchronisation
+/// primitive; two independent UserDefaults suites were not.
+///
+/// Called FIRST, before domain removal, for the same reason the old
+/// UserDefaults bump was: it closes the window for a
+/// `CacheManager.replaceChildren` write already in flight when this purge
+/// starts. `resetFileProviderCacheDatabase` (this purge's LAST step, via
+/// `PlaintextStorageProtection.purgeAll()`) bumps `user_version` again
+/// inside its OWN reset transaction — belt and suspenders, so anything that
+/// slips past this early bump is still caught by the final one.
+///
+/// No-op (returns `true`) when the cache database does not exist yet —
+/// nothing has been cached for this device, so there is nothing to
+/// invalidate; the extension's next `CacheManager.init` creates it fresh
+/// at `user_version = 0`.
+@discardableResult
+private func bumpFileProviderCacheVersion() -> Bool {
+  guard let url = fileProviderCacheDatabaseUrl(),
+        FileManager.default.fileExists(atPath: url.path) else {
+    return true
+  }
+
+  var db: OpaquePointer?
+  guard sqlite3_open_v2(
+    url.path, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, nil
+  ) == SQLITE_OK, let db else {
+    sqlite3_close(db)
+    return false
+  }
+  defer { sqlite3_close(db) }
+  // The extension's own `CacheManager` connection may hold a brief lock
+  // (its own `BEGIN IMMEDIATE` in `replaceChildren`/`upsert`/`delete`);
+  // worth a short wait rather than failing this purge step outright.
+  sqlite3_busy_timeout(db, 2000)
+
+  guard sqlite3_exec(db, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK else {
+    return false
+  }
+  var current: Int32 = 0
+  var stmt: OpaquePointer?
+  if sqlite3_prepare_v2(db, "PRAGMA user_version", -1, &stmt, nil) == SQLITE_OK,
+     sqlite3_step(stmt) == SQLITE_ROW {
+    current = sqlite3_column_int(stmt, 0)
+  }
+  sqlite3_finalize(stmt)
+  guard sqlite3_exec(db, "PRAGMA user_version = \(current &+ 1)", nil, nil, nil) == SQLITE_OK else {
+    sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+    return false
+  }
+  return sqlite3_exec(db, "COMMIT", nil, nil, nil) == SQLITE_OK
 }
 
 private let fileProviderCacheSchemaStatements = [
@@ -935,11 +1023,31 @@ private func resetFileProviderCacheDatabase(at url: URL) -> Bool {
   // used to end with was a silent no-op here. VACUUM after COMMIT is what
   // actually rewrites the file and drops the freed pages instead of just
   // marking them free for reuse. Evidence: _qa-evidence/1593/r5-sqlite-bytes.txt.
+  //
+  // Task 1593 round 8 (R2) — this reset is "the purge's reset transaction"
+  // that bumps `PRAGMA user_version` (the epoch `CacheManager.replaceChildren`
+  // / `upsert` / `delete` check — see `bumpFileProviderCacheVersion`'s doc
+  // comment for the full rationale). Bumping it INSIDE this same BEGIN/COMMIT
+  // means the version change is atomic with the rows actually being gone —
+  // a reader can never observe "new version, old rows still present" or
+  // vice versa. VACUUM below preserves `user_version` (it rewrites pages,
+  // not the header pragma fields — verified directly, see
+  // _qa-evidence/1593/r8-epoch-proof.txt), so the reset sequence still ends
+  // on the bumped value even after VACUUM runs.
+  var nextVersion: Int32 = 1
+  var versionStmt: OpaquePointer?
+  if sqlite3_prepare_v2(db, "PRAGMA user_version", -1, &versionStmt, nil) == SQLITE_OK,
+     sqlite3_step(versionStmt) == SQLITE_ROW {
+    nextVersion = sqlite3_column_int(versionStmt, 0) &+ 1
+  }
+  sqlite3_finalize(versionStmt)
+
   var ok = sqlite3_exec(db, "PRAGMA secure_delete = ON", nil, nil, nil) == SQLITE_OK
   ok = ok && sqlite3_exec(db, "BEGIN", nil, nil, nil) == SQLITE_OK
   ok = ok && sqlite3_exec(db, "DELETE FROM file_cache", nil, nil, nil) == SQLITE_OK
   ok = ok && sqlite3_exec(db, "DELETE FROM sync_state", nil, nil, nil) == SQLITE_OK
   ok = ok && sqlite3_exec(db, "DELETE FROM upload_queue", nil, nil, nil) == SQLITE_OK
+  ok = ok && sqlite3_exec(db, "PRAGMA user_version = \(nextVersion)", nil, nil, nil) == SQLITE_OK
   if ok {
     ok = sqlite3_exec(db, "COMMIT", nil, nil, nil) == SQLITE_OK
   } else {
@@ -1354,7 +1462,9 @@ public class BeebeebCryptoModule: Module {
     //   2. bump the purge epoch, THEN remove the domain (bounded 5s) — the
     //      epoch bump must land before the domain removal call so ANY
     //      request the extension has in flight sees a changed epoch by the
-    //      time it goes to write (see `fileProviderPurgeEpochKey`).
+    //      time it goes to write (see `bumpFileProviderCacheVersion`; round
+    //      8/R2 moved this from an App Group UserDefaults counter into the
+    //      cache DB's own `PRAGMA user_version`).
     //   3. sweep/reset the DB in place (`purgeAll()`) — LAST, so a write
     //      that slips through both of the above (e.g. one already inside
     //      `CacheManager`'s serial queue, past the epoch check, when step 2
@@ -1383,8 +1493,11 @@ public class BeebeebCryptoModule: Module {
       if #available(iOS 16.0, *) {
         // Task 1593 round 7 (C1) — bump BEFORE the (possibly slow, up to
         // 5s) domain removal call, not after, so a write already in flight
-        // observes the new epoch as early as this purge can make it.
-        bumpFileProviderPurgeEpoch(defaults: sharedDefaults())
+        // observes the new epoch as early as this purge can make it. Round
+        // 8 (R2) moved the epoch itself into the cache DB's own
+        // `PRAGMA user_version` — see `bumpFileProviderCacheVersion`'s doc
+        // comment.
+        _ = bumpFileProviderCacheVersion()
         // Task 1593 round 6 (new-1/new-2) — a timed-out or errored domain
         // lookup/removal is now a real, counted purge failure instead of a
         // silently swallowed one.

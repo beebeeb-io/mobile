@@ -43,6 +43,15 @@ final class CacheManager {
     // leaving the file backup-eligible / unprotected until the next time
     // the main app's `hardenAll()` happens to run.
     PlaintextStorageProtection.protect(URL(fileURLWithPath: path))
+    // Task 1593 round 8 (R2) — the main app's own writers to this exact
+    // file (`bumpFileProviderCacheVersion`, `resetFileProviderCacheDatabase`,
+    // `PlaintextStorageProtection.resetSQLiteInPlace`) all take a real
+    // `BEGIN IMMEDIATE` write lock on it; this connection's own
+    // `BEGIN IMMEDIATE` calls (`replaceChildren`/`upsert(_:expectedEpoch:)`/
+    // `delete(id:expectedEpoch:)`) can therefore transiently contend with
+    // them. A short busy timeout turns that contention into a brief wait
+    // instead of an immediate SQLITE_BUSY failure.
+    sqlite3_busy_timeout(handle, 2000)
     // Task 1593 round 6 (new-3) — this connection is the extension's own
     // writer for `delete(id:)` / `_deleteChildren` (below); without
     // secure_delete a DELETE's freed b-tree page keeps the decrypted
@@ -123,19 +132,38 @@ final class CacheManager {
 
   /// Task 1593 round 7 (C1) — `expectedEpoch` is the purge-epoch value the
   /// caller (`SyncEngine.refreshContainer`) read BEFORE starting the API
-  /// fetch these `items` came from. Re-reading the CURRENT epoch inside
-  /// this method's own serial `queue.sync`, immediately before the write,
-  /// closes the gap between "the caller checked" and "the write actually
-  /// lands" as tightly as this architecture allows — a sign-out purge that
-  /// bumps the epoch anywhere in that window makes this call a no-op
-  /// instead of reinserting decrypted names the purge is in the middle of
-  /// sweeping. Returns whether the write actually happened, so the caller
-  /// can decide whether to also update its `sync_state` anchor.
+  /// fetch these `items` came from.
+  ///
+  /// Task 1593 round 8 (R2, security re-review) — the epoch itself used to
+  /// be a separate App Group `UserDefaults` counter, which is not a real
+  /// synchronisation primitive: `UserDefaults(suiteName:)` is backed by
+  /// `cfprefsd` with no guaranteed-immediate cross-process visibility, so
+  /// this method's re-check could still observe a STALE value even after
+  /// the main app's bump had already "landed" on its side. The epoch now
+  /// lives in THIS SAME database's own `PRAGMA user_version`, and this
+  /// method opens its write with `BEGIN IMMEDIATE` — a real OS-level write
+  /// lock on the file (this db is never WAL-mode, so that's the lock the
+  /// default rollback journal always uses) — before reading it. That lock
+  /// directly contends with the main app's own `BEGIN IMMEDIATE` writers
+  /// (`bumpFileProviderCacheVersion`, `resetFileProviderCacheDatabase`,
+  /// `PlaintextStorageProtection.resetSQLiteInPlace`): whichever side gets
+  /// there first finishes its whole transaction before the other's BEGIN
+  /// IMMEDIATE can even proceed, so there is no window left where "the
+  /// epoch check passed" and "the epoch changed" can straddle this write.
+  /// Aborts (ROLLBACK, returns `false`) on a mismatch instead of writing —
+  /// a sign-out purge that bumped the version anywhere before this BEGIN
+  /// IMMEDIATE acquired the lock makes this call a no-op instead of
+  /// reinserting decrypted names the purge is in the middle of sweeping.
+  /// Returns whether the write actually happened, so the caller can decide
+  /// whether to also update its `sync_state` anchor.
   @discardableResult
   func replaceChildren(parent: String?, with items: [CachedItem], expectedEpoch: Int) -> Bool {
     queue.sync {
-      guard currentPurgeEpoch() == expectedEpoch else { return false }
-      execute("BEGIN")
+      guard beginImmediate() else { return false }
+      guard _currentPurgeEpoch() == expectedEpoch else {
+        execute("ROLLBACK")
+        return false
+      }
       _deleteChildren(parent: parent, keepingIds: Set(items.map(\.id)))
       for item in items { _upsert(item) }
       execute("COMMIT")
@@ -143,9 +171,47 @@ final class CacheManager {
     }
   }
 
-  /// See `replaceChildren(parent:with:expectedEpoch:)`'s doc comment.
+  /// Task 1593 round 8 (R3) — same purge-epoch gate as `replaceChildren`,
+  /// for the OTHER writers on this cache: `FileProviderExtension.createItem`
+  /// / `modifyItem` run an unbounded-duration network call (upload/patch)
+  /// BEFORE ever touching this cache — the exact same "a sign-out purge can
+  /// land while I'm in flight" window `replaceChildren` closes for reads,
+  /// but for these operations' own cache write instead. The caller captures
+  /// `expectedEpoch` right before starting that network call.
+  @discardableResult
+  func upsert(_ item: CachedItem, expectedEpoch: Int) -> Bool {
+    queue.sync {
+      guard beginImmediate() else { return false }
+      guard _currentPurgeEpoch() == expectedEpoch else {
+        execute("ROLLBACK")
+        return false
+      }
+      _upsert(item)
+      execute("COMMIT")
+      return true
+    }
+  }
+
+  /// Public, queue-synchronized read for callers OUTSIDE this class (e.g.
+  /// `SyncEngine.refreshContainer`, which must capture this BEFORE starting
+  /// its network fetch — see `replaceChildren`'s doc comment for the full
+  /// epoch rationale). Internal call sites already inside `queue.sync` use
+  /// `_currentPurgeEpoch()` directly — this method would deadlock if called
+  /// from inside another `queue.sync` block on this same serial queue.
   func currentPurgeEpoch() -> Int {
-    UserDefaults(suiteName: BeebeebConstants.appGroup)?.integer(forKey: BeebeebConstants.purgeEpochKey) ?? 0
+    queue.sync { _currentPurgeEpoch() }
+  }
+
+  private func _currentPurgeEpoch() -> Int {
+    var stmt: OpaquePointer?
+    defer { sqlite3_finalize(stmt) }
+    guard prepare("PRAGMA user_version", &stmt), sqlite3_step(stmt) == SQLITE_ROW else { return 0 }
+    return Int(sqlite3_column_int(stmt, 0))
+  }
+
+  private func beginImmediate() -> Bool {
+    guard let db else { return false }
+    return sqlite3_exec(db, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK
   }
 
   func item(id: String) -> CachedItem? {
@@ -175,10 +241,23 @@ final class CacheManager {
   }
 
   func delete(id: String) {
+    queue.sync { _delete(id: id) }
+  }
+
+  /// Task 1593 round 8 (R3) — see `upsert(_:expectedEpoch:)`'s doc comment.
+  /// `FileProviderExtension.deleteItem` captures `expectedEpoch` right
+  /// before its `ApiClient.shared.deleteFile` network call.
+  @discardableResult
+  func delete(id: String, expectedEpoch: Int) -> Bool {
     queue.sync {
-      executeBindable("DELETE FROM file_cache WHERE id = ?") { stmt in
-        sqlite3_bind_text(stmt, 1, (id as NSString).utf8String, -1, nil)
+      guard beginImmediate() else { return false }
+      guard _currentPurgeEpoch() == expectedEpoch else {
+        execute("ROLLBACK")
+        return false
       }
+      _delete(id: id)
+      execute("COMMIT")
+      return true
     }
   }
 
@@ -270,6 +349,12 @@ final class CacheManager {
         sqlite3_bind_text(stmt, index, (id as NSString).utf8String, -1, nil)
         index += 1
       }
+    }
+  }
+
+  private func _delete(id: String) {
+    executeBindable("DELETE FROM file_cache WHERE id = ?") { stmt in
+      sqlite3_bind_text(stmt, 1, (id as NSString).utf8String, -1, nil)
     }
   }
 
