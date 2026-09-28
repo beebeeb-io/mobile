@@ -568,6 +568,17 @@ export function CryptoProvider({ children, userId }: { children: React.ReactNode
   // key was proven against the server once during this sign-in".
   const ownerUserId = userId ?? null
   const ownershipVerifiedRef = useRef(false)
+  // Task 1594 round 3 (Codex T1): flips true when THIS provider instance is
+  // torn down. App.tsx keys CryptoProvider by user id, so a sign-in as a
+  // different account (or a session ending and a new one starting) unmounts
+  // this instance and mounts a fresh one. An unlock() started here can still
+  // be awaiting the server's ownership verdict when that happens — once
+  // disposed, it must never publish anything to React state or to the
+  // module-level globals (`expected-user.ts`, the keychain owner record):
+  // a NEW provider for a possibly different account may already be relying
+  // on them, and an abandoned verdict about THIS instance's account must not
+  // overwrite what the new one just established.
+  const disposedRef = useRef(false)
 
   // F3 (round 2): mirror who is CURRENTLY signed in into the shared keychain
   // the File Provider / Share Extension read (key-ownership.ts). Every
@@ -601,6 +612,10 @@ export function CryptoProvider({ children, userId }: { children: React.ReactNode
   // the lock screen) is preserved.
   useEffect(() => {
     return () => {
+      // Task 1594 round 3 (T1): set FIRST, before anything else below — an
+      // in-flight unlock() checks this ref at its own resume points and must
+      // see it flipped the instant this cleanup starts running.
+      disposedRef.current = true
       if (masterKeyHandleId.current != null) {
         void releaseHandle(masterKeyHandleId.current).catch(() => {})
         masterKeyHandleId.current = null
@@ -728,6 +743,14 @@ export function CryptoProvider({ children, userId }: { children: React.ReactNode
               if (verdict === 'mismatch' || verdict === 'unreachable') {
                 throw new Error(verdict === 'mismatch' ? PHRASE_WRONG_ACCOUNT_MESSAGE : OWNERSHIP_UNREACHABLE_MESSAGE)
               }
+              // T1 (round 3): the provider may have unmounted (a different
+              // account signed in) while the await above was in flight. The
+              // verdict just returned is about THIS instance's ownerUserId —
+              // never act on it once disposed. `adopted` is still false here,
+              // so the outer `finally` below releases `handleId` for us.
+              if (disposedRef.current) {
+                throw new Error('Vault provider unmounted before unlock completed')
+              }
               // 'match', or 'unverifiable' (the account has nothing on the
               // server to prove against — the typed phrase is the only proof
               // there is, as before 1594).
@@ -818,8 +841,39 @@ export function CryptoProvider({ children, userId }: { children: React.ReactNode
                 })
                 : 'unreachable'
               recordRuntimeTrace('vault.key_ownership.keychain_verdict', { source, verdict, precheck })
+              // T1 (round 3): the provider may have unmounted (the account
+              // changed) while the awaits above were resolving. Whatever the
+              // server just said about THIS instance's ownerUserId, never
+              // act on it once disposed — release the handle we loaded to
+              // check it and abandon this attempt. A fresh provider for the
+              // new account already runs its own precheck/unlock.
+              if (disposedRef.current) {
+                await releaseHandle(handleId).catch(() => {})
+                throw new Error('Vault provider unmounted before unlock completed')
+              }
               if (verdict === 'match') {
-                if (precheck !== 'bound') await writeKeyOwner(ownerUserId)
+                if (precheck !== 'bound') {
+                  try {
+                    await writeKeyOwner(ownerUserId)
+                  } catch (writeErr) {
+                    // T3 (round 3): a transient SecureStore/native-mirror
+                    // failure after a successful verify must not leak the
+                    // handle we just loaded — release it exactly like every
+                    // other failure-before-adoption branch in this function
+                    // already does, then propagate the original error.
+                    await releaseHandle(handleId).catch(() => {})
+                    throw writeErr
+                  }
+                  // T1: the unmount could also have happened DURING the
+                  // (now-successful) write above — the owner record it just
+                  // wrote is harmless (it names the account the key actually
+                  // belongs to), but this instance must still not adopt the
+                  // handle or publish anything further.
+                  if (disposedRef.current) {
+                    await releaseHandle(handleId).catch(() => {})
+                    throw new Error('Vault provider unmounted before unlock completed')
+                  }
+                }
                 ownershipVerifiedRef.current = true
               } else if (verdict === 'mismatch') {
                 // Another account's key: lock, purge, ask for the phrase.
@@ -883,6 +937,18 @@ export function CryptoProvider({ children, userId }: { children: React.ReactNode
           }
         }
 
+        // T1 (round 3), final defensive gate: covers any other await in the
+        // branches above (e.g. `storeMasterKey` in the phrase path) that
+        // could still span an unmount not already caught by the checks
+        // closer to their own server round-trips. Nothing below this point
+        // may run once this instance is disposed.
+        if (disposedRef.current) {
+          if (masterKeyHandleId.current != null) {
+            await releaseHandle(masterKeyHandleId.current).catch(() => {})
+            masterKeyHandleId.current = null
+          }
+          throw new Error('Vault provider unmounted before unlock completed')
+        }
         setIsUnlocked(true)
         // Task 1594 fix 4: authenticated mutations now name the key's owner
         // (X-Beebeeb-Expected-User). Null when no session exists yet (signup).

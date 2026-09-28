@@ -177,4 +177,57 @@ describe('1594 — X-Beebeeb-Expected-User on authenticated mutations', () => {
     expect(store.get('beebeeb_session_token')).toBe('test-token');
     setExpectedUserId(null);
   });
+
+  test('1594 round 3 (Codex T5): a 409 account_mismatch on an upload whose session has since moved on does NOT end the NEW (current) session', async () => {
+    const { setExpectedUserId } = await import('./expected-user');
+    const api = await import('./api');
+    setExpectedUserId(OWNER);
+    let expired = 0;
+    api.registerSessionExpiredHandler(() => { expired += 1; });
+    store.set('beebeeb_session_token', 'token-A');
+
+    fetchQueue.push(async () => {
+      // A sign-in to a DIFFERENT account completes WHILE this upload's single
+      // request is in flight — the upload's OWN session snapshot was captured
+      // at its start, before this happened, so by the time the 409 comes
+      // back the CURRENT session is no longer the one that sent it.
+      await api.setToken('token-B');
+      return jsonResponse({ error: 'account_mismatch', message: 'stale' }, 409);
+    });
+    const blob = new Blob([new Uint8Array(10)]);
+    await expect(
+      api.uploadFile({ name_encrypted: 'x', size_bytes: 10 }, blob),
+    ).rejects.toMatchObject({ status: 409, code: 'account_mismatch' });
+
+    // B's session must NOT have been torn down by A's stale upload response.
+    expect(expired).toBe(0);
+    expect(store.get('beebeeb_session_token')).toBe('token-B');
+    setExpectedUserId(null);
+  });
+
+  test('1594 round 3 (Codex T2): the SAME session-snapshot guard applies to a chunked upload\'s chunk-PUT step, not just the simple-upload path', async () => {
+    const { setExpectedUserId } = await import('./expected-user');
+    const api = await import('./api');
+    setExpectedUserId(OWNER);
+    let expired = 0;
+    api.registerSessionExpiredHandler(() => { expired += 1; });
+    store.set('beebeeb_session_token', 'token-A');
+
+    // A blob over SIMPLE_UPLOAD_THRESHOLD (5 MB) routes through
+    // uploadFileChunked: init succeeds, then the chunk PUT is the one that
+    // sees the (by-then-stale) 409.
+    fetchQueue.push(async () => jsonResponse({ file_id: 'SERVER-ID', chunk_count: 2 })); // init
+    fetchQueue.push(async () => {
+      await api.setToken('token-B'); // account switch mid-chunked-upload
+      return jsonResponse({ error: 'account_mismatch', message: 'stale' }, 409);
+    });
+    const blob = new Blob([new Uint8Array(6 * 1024 * 1024)]);
+    await expect(
+      api.uploadFile({ name_encrypted: 'x', size_bytes: blob.size }, blob),
+    ).rejects.toMatchObject({ status: 409, code: 'account_mismatch' });
+
+    expect(expired).toBe(0);
+    expect(store.get('beebeeb_session_token')).toBe('token-B');
+    setExpectedUserId(null);
+  });
 });

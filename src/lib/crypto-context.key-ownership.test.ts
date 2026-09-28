@@ -22,7 +22,12 @@
 import { beforeEach, describe, expect, mock, test } from 'bun:test';
 
 // ─── hook host ───────────────────────────────────────────────────────────────
-let currentHost: { slots: any[]; idx: number } | null = null;
+// Task 1594 round 3 (T1): `cleanups` collects the return values of any
+// `useEffect(fn, [])` (mount-once, "on unmount" pattern) run for this host —
+// see `useEffect` below and `mountProvider().unmount()`. Every OTHER effect
+// (non-empty deps) is still never run, exactly as before this addition —
+// unchanged for all pre-existing tests in this file.
+let currentHost: { slots: any[]; idx: number; cleanups: Array<() => void> } | null = null;
 function useSlot<T>(init: () => T): T {
   const host = currentHost!;
   const i = host.idx++;
@@ -38,7 +43,19 @@ const reactMock = {
   },
   useRef: (initial: unknown) => useSlot(() => ({ current: initial })),
   useCallback: (fn: unknown) => { currentHost!.idx++; return fn; },
-  useEffect: () => { currentHost!.idx++; },
+  // Task 1594 round 3 (T1): a `[]`-deps effect (the mount-once "release on
+  // unmount" pattern) is run ONCE per host — slot-cached like any other hook
+  // — and its returned cleanup is collected so a test can invoke it later via
+  // `mountProvider(...).unmount()`, simulating a real unmount. Every other
+  // `useEffect` call (non-empty deps) is left exactly as before: never run.
+  useEffect: (fn: () => void | (() => void), deps?: unknown[]) => {
+    if (deps && deps.length === 0) {
+      const cell = useSlot(() => ({ cleanup: fn() as (() => void) | void }));
+      if (typeof cell.cleanup === 'function') currentHost!.cleanups.push(cell.cleanup);
+      return;
+    }
+    currentHost!.idx++;
+  },
   useMemo: (fn: () => unknown) => { currentHost!.idx++; return fn(); },
 };
 mock.module('react', () => ({ default: reactMock, ...reactMock }));
@@ -97,12 +114,22 @@ mock.module('expo-file-system/legacy', () => ({
   getInfoAsync: async (p: string) => ({ exists: files.has(p) }),
   makeDirectoryAsync: async () => {},
 }));
+// Task 1594 round 3 (T3): a one-shot failure injected into the NEXT write of
+// a specific SecureStore key — used to prove `writeKeyOwner()` failing after
+// a successful verify releases the handle instead of leaking it.
+let failNextWriteOf: string | null = null;
 mock.module('expo-secure-store', () => ({
   getItemAsync: async (k: string) => {
     if (k === FALLBACK) calls.fallbackReads += 1;
     return secure.get(k) ?? null;
   },
-  setItemAsync: async (k: string, v: string) => { secure.set(k, v); },
+  setItemAsync: async (k: string, v: string) => {
+    if (failNextWriteOf === k) {
+      failNextWriteOf = null;
+      throw new Error('SecureStore write failed (simulated, task 1594 T3)');
+    }
+    secure.set(k, v);
+  },
   deleteItemAsync: async (k: string) => { secure.delete(k); },
 }));
 mock.module('react-native', () => ({ Platform: { OS: 'ios' } }));
@@ -149,6 +176,23 @@ mock.module('../services/BackupService', () => ({
 mock.module('./runtime-trace', () => ({ recordRuntimeTrace: () => null }));
 mock.module('./file-request-crypto', () => ({ createRequestKeyResolver: () => ({ clear: () => {} }) }));
 mock.module('./recovery-phrase-verify', () => ({ verifyRecoveryPhraseAgainstStoredCheck: async () => false }));
+// Task 1594 round 3 (T1): a one-shot gate that pauses `verifyRecoveryCheck`
+// for ONE specific check value (keyed by value, since the endpoint itself
+// takes no user id) — lets a test hold an unlock() paused mid-server-verify
+// so it can unmount the provider before letting the verdict resolve. Every
+// OTHER call (a different check value, or when no gate is armed) is
+// untouched — the existing tests above never arm it, so they see no change.
+let gatedCheckB64: string | null = null;
+let pendingGate: Promise<void> | null = null;
+let releaseGateFn: (() => void) | null = null;
+let verifyEnteredPromise: Promise<void> | null = null;
+let resolveVerifyEntered: (() => void) | null = null;
+function armVerifyGate(checkB64: string) {
+  gatedCheckB64 = checkB64;
+  pendingGate = new Promise<void>((resolve) => { releaseGateFn = resolve; });
+  verifyEnteredPromise = new Promise<void>((resolve) => { resolveVerifyEntered = resolve; });
+}
+
 mock.module('./api', () => ({
   ApiError: FakeApiError,
   getToken: async () => 'token',
@@ -156,6 +200,11 @@ mock.module('./api', () => ({
   // POST /api/v1/auth/verify-recovery-check — mirrors the server exactly:
   // 400 invalid_recovery_phrase on a mismatch OR when no check is stored.
   verifyRecoveryCheck: async (checkB64: string) => {
+    if (gatedCheckB64 != null && checkB64 === gatedCheckB64) {
+      resolveVerifyEntered?.();
+      await pendingGate;
+      gatedCheckB64 = null; // one-shot
+    }
     calls.verify.push(checkB64);
     if (!server.reachable) throw new FakeApiError(0, 'Could not reach the server.');
     const stored = server.users[server.sessionUser]?.check ?? null;
@@ -175,8 +224,8 @@ mock.module('./api', () => ({
 const { CryptoProvider } = await import('./crypto-context');
 
 function mountProvider(userId: string | undefined) {
-  const host = { slots: [] as any[], idx: 0 };
-  return () => {
+  const host = { slots: [] as any[], idx: 0, cleanups: [] as Array<() => void> };
+  const render = () => {
     const prev = currentHost;
     currentHost = host;
     host.idx = 0;
@@ -187,6 +236,14 @@ function mountProvider(userId: string | undefined) {
       currentHost = prev;
     }
   };
+  // Task 1594 round 3 (T1): simulate a real unmount — runs every cleanup
+  // captured by a `[]`-deps `useEffect` during this host's renders (App.tsx
+  // re-keys CryptoProvider by user id, so a sign-in as a different account is
+  // exactly this: this host is never rendered again).
+  render.unmount = () => {
+    for (const cleanup of host.cleanups.splice(0)) cleanup();
+  };
+  return render;
 }
 
 /** A key as a previous (pre-fix or fixed) build left it on this simulator. */
@@ -222,6 +279,12 @@ beforeEach(() => {
     [USER_A]: { check: b64(checkOf(KEY_A)), pub: b64(pubOf(KEY_A)) },
     [USER_B]: { check: b64(checkOf(KEY_B)), pub: b64(pubOf(KEY_B)) },
   };
+  gatedCheckB64 = null;
+  pendingGate = null;
+  releaseGateFn = null;
+  verifyEnteredPromise = null;
+  resolveVerifyEntered = null;
+  failNextWriteOf = null;
 });
 
 describe('1594 — a stored key is only ever used for the account that owns it', () => {
@@ -442,5 +505,71 @@ describe('1594 — X-Beebeeb-Expected-User follows the unlocked key', () => {
     expect(getExpectedUserId()).toBe(USER_A);
     render().lock();
     expect(getExpectedUserId()).toBeNull();
+  });
+});
+
+describe('1594 round 3 (Codex T1) — an unlock abandoned by unmount never outlives its provider', () => {
+  test('provider unmounts mid ownership-verify → the abandoned unlock releases the handle and never clobbers a newer provider\'s published owner', async () => {
+    const { getExpectedUserId, setExpectedUserId } = await import('./expected-user');
+    setExpectedUserId(null);
+
+    // A's key is already BOUND (precheckKeyOwner → 'bound' → mode 'trusted'
+    // → verifyRecoveryCheck), so the gate below pauses exactly where the real
+    // bug's server round-trip was in flight.
+    seedStoredKey(KEY_A, USER_A);
+    server.sessionUser = USER_A;
+    const renderA = mountProvider(USER_A);
+    renderA(); // mount: registers the `[]`-deps unmount cleanup
+
+    armVerifyGate(b64(checkOf(KEY_A)));
+    const unlockAPromise = renderA().unlock();
+    await verifyEnteredPromise; // paused inside api.verifyRecoveryCheck for A
+    const handleForA = calls.createHandle;
+    expect(handleForA).toBeGreaterThan(0);
+    expect(calls.released).not.toContain(handleForA);
+
+    // The account changes on-device: A's provider unmounts (App.tsx re-keys
+    // CryptoProvider by user id on every sign-in / session change).
+    renderA.unmount();
+
+    // B signs in fresh (its own phrase) and completes a normal unlock WHILE
+    // A's verify is still parked server-side.
+    server.sessionUser = USER_B;
+    const renderB = mountProvider(USER_B);
+    await renderB().unlock(PHRASE_B);
+    expect(getExpectedUserId()).toBe(USER_B);
+
+    // A's abandoned verify now resolves ('match' — the key really was A's;
+    // that must not matter once the provider that started this unlock() is
+    // gone).
+    releaseGateFn!();
+    await expect(unlockAPromise).rejects.toThrow(/unmounted/i);
+
+    // The abandoned unlock must NOT have clobbered B's published owner...
+    expect(getExpectedUserId()).toBe(USER_B);
+    // ...and must have released the native handle it loaded instead of
+    // leaking it.
+    expect(calls.released).toContain(handleForA);
+  });
+});
+
+describe('1594 round 3 (Codex T3) — a failed owner-record write releases the handle', () => {
+  test('writeKeyOwner() throwing after a successful (unbound-key) verify releases the just-loaded handle instead of leaking it', async () => {
+    seedStoredKey(KEY_A, null); // unbound legacy key → precheck 'unbound' → verdict via public key → writeKeyOwner() on match
+    server.sessionUser = USER_A;
+    failNextWriteOf = OWNER; // the NEXT SecureStore.setItemAsync(OWNER, …) throws
+    const render = mountProvider(USER_A);
+
+    await expect(render().unlock()).rejects.toThrow(/SecureStore write failed/);
+
+    // The verify succeeded (public-key match) and the write was attempted —
+    // recovery_check was never sent (F1, unbound mode) — but the owner was
+    // never actually persisted, since the write itself failed.
+    expect(calls.verify).toEqual([]);
+    expect(secure.has(OWNER)).toBe(false);
+    // The handle loaded to prove ownership must be released, not leaked.
+    expect(calls.released.length).toBe(calls.createHandle);
+    const after = render();
+    expect(after.isUnlocked).toBe(false);
   });
 });

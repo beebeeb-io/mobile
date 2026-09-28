@@ -34,6 +34,15 @@ enum CryptoBridge {
     BeebeebKeychainCore.loadString(key: BeebeebKeychainCore.masterKeyOwnerKey)
   }
 
+  /// Task 1594 round 3 (Codex T4): the currently signed-in user, mirrored by
+  /// the main app alongside the owner record above. Public (like
+  /// `currentKeyOwner()`) so a caller that CACHES a loaded handle can key
+  /// that cache on BOTH values, not the owner alone — see
+  /// `FileProviderExtension.masterKey()`.
+  static func currentSignedInUser() -> String? {
+    BeebeebKeychainCore.loadString(key: BeebeebKeychainCore.sessionUserIdKey)
+  }
+
   /// `true` only when an owner record exists AND matches the signed-in user.
   /// Both being present-but-different, or either being absent, refuse — this
   /// is the fix for the round-1 gap where `loadMasterKeyHandle()` used
@@ -43,8 +52,7 @@ enum CryptoBridge {
   /// ownership check was doing.
   private static func ownershipVerified() -> Bool {
     guard let owner = currentKeyOwner(), !owner.isEmpty else { return false }
-    guard let signedInUser = BeebeebKeychainCore.loadString(key: BeebeebKeychainCore.sessionUserIdKey),
-          !signedInUser.isEmpty else { return false }
+    guard let signedInUser = currentSignedInUser(), !signedInUser.isEmpty else { return false }
     return owner == signedInUser
   }
 

@@ -29,6 +29,17 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
   /// signing in), rather than surviving for this extension process's entire
   /// lifetime, which is not bounded to one sign-in.
   private var cachedForOwner: String?
+  /// Task 1594 round 3 (Codex T4): the signed-in user value that was current
+  /// at the same moment. `mirrorSessionToAppGroup` (main app) clears+rewrites
+  /// this the INSTANT the session token changes — ahead of the owner record,
+  /// which only updates once the main app's ownership precheck/verify
+  /// round-trip finishes. Comparing the owner alone left a window where a
+  /// session already changed (A → B) but the (still-A) owner record hadn't
+  /// been purged yet: this fast path matched on owner and returned A's
+  /// cached handle for a request Files.app was now making on B's behalf.
+  /// Keying the cache on BOTH values closes that window — either changing
+  /// invalidates it and forces a fresh `ownershipVerified()` round-trip.
+  private var cachedForSignedInUser: String?
 
   required init(domain: NSFileProviderDomain) {
     super.init()
@@ -37,26 +48,36 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
   }
 
   /// Returns the cached master key, loading (and re-verifying ownership) only
-  /// when nothing is cached yet or the owner record has changed since the
-  /// cached handle was loaded.
+  /// when nothing is cached yet or the owner record OR the signed-in user has
+  /// changed since the cached handle was loaded.
   private func masterKey() throws -> MasterKeyHandle {
     let owner = CryptoBridge.currentKeyOwner()
-    if let key = cachedMasterKey, cachedForOwner == owner {
+    let signedInUser = CryptoBridge.currentSignedInUser()
+    if let key = cachedMasterKey, CachedHandleIdentity.isStillValid(
+      cachedOwner: cachedForOwner,
+      cachedSignedInUser: cachedForSignedInUser,
+      currentOwner: owner,
+      currentSignedInUser: signedInUser
+    ) {
       return key
     }
     cachedMasterKey = nil
     cachedForOwner = nil
+    cachedForSignedInUser = nil
     // Re-verifies ownership internally (throws `.ownerUnverified` on
-    // mismatch/missing) — never trust `owner` alone, it could itself be nil.
+    // mismatch/missing) — never trust `owner`/`signedInUser` alone, either
+    // could itself be nil.
     let key = try CryptoBridge.loadMasterKeyHandle()
     cachedMasterKey = key
     cachedForOwner = owner
+    cachedForSignedInUser = signedInUser
     return key
   }
 
   func invalidate() {
     cachedMasterKey = nil
     cachedForOwner = nil
+    cachedForSignedInUser = nil
   }
 
   // MARK: - Item lookup
