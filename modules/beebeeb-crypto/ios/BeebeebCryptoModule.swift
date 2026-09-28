@@ -545,32 +545,74 @@ private func removeFileProviderDomain(_ domain: NSFileProviderDomain) async thro
 /// `async` to this function, `purgePlaintextStorage`, or
 /// `syncFileProviderCache` without re-deriving this guarantee some other
 /// way first.
+/// Task 1593 round 6 (new-1) — both semaphore waits below used to block with
+/// no timeout. Expo dispatches every non-`async` `AsyncFunction` — this one
+/// included, per the P2-4 doc comment above — onto ONE shared, private,
+/// serial queue. If the system never calls either completion handler back,
+/// the unbounded wait blocks that ENTIRE queue forever: every other
+/// non-async native call, crypto included, stalls behind it,
+/// `purgePlaintextStorage` never resolves, and JS's `refreshAuth` (which
+/// awaits `settled()`) hangs sign-in — and because this runs on every
+/// signed-out arrival, it recurs on every signed-out cold launch, not once.
+/// A 5 s bound (this API call typically resolves in low milliseconds)
+/// trades a slow, rare completion for never hanging the queue; a timeout is
+/// traced (`storage.purge.failed`, no names or paths — just which stage
+/// timed out) and counted as a real purge failure by the caller
+/// (`purgePlaintextStorage`) instead of silently hanging.
+///
+/// Task 1593 round 6 (new-2) — `getDomainsWithCompletionHandler`'s error
+/// used to be discarded (`{ result, _ in ... }`). A call that genuinely
+/// failed still handed back an empty `result` array, which the
+/// "already absent" guard below then read as "domain already absent —
+/// clean, not a failure": a real lookup failure silently reported success
+/// without having checked anything. The captured error is now traced and
+/// treated as a failure before that guard runs.
 @available(iOS 16.0, *)
-private func removeFileProviderDomainIfRegistered() {
+@discardableResult
+private func removeFileProviderDomainIfRegistered() -> Bool {
   let domain = beebeebFileProviderDomain()
 
   let domainsSemaphore = DispatchSemaphore(value: 0)
   var domains: [NSFileProviderDomain] = []
-  NSFileProviderManager.getDomainsWithCompletionHandler { result, _ in
+  var domainsError: Error?
+  NSFileProviderManager.getDomainsWithCompletionHandler { result, error in
     domains = result
+    domainsError = error
     domainsSemaphore.signal()
   }
-  domainsSemaphore.wait()
-
-  guard domains.contains(where: { $0.identifier == domain.identifier }) else {
-    return // already absent - counts as clean, not a failure
+  guard domainsSemaphore.wait(timeout: .now() + 5) == .success else {
+    RuntimeTrace.event("storage.purge.failed", ["stage": "file_provider_domains_timeout"])
+    return false
   }
 
+  if let domainsError {
+    RuntimeTrace.event("storage.purge.failed", [
+      "stage": "file_provider_domains_error",
+      "error": domainsError.localizedDescription,
+    ])
+    return false
+  }
+
+  guard domains.contains(where: { $0.identifier == domain.identifier }) else {
+    return true // already absent - counts as clean, not a failure
+  }
+
+  var removeSucceeded = true
   let removeSemaphore = DispatchSemaphore(value: 0)
   NSFileProviderManager.remove(domain, mode: .removeAll) { _, error in
     if let error {
+      removeSucceeded = false
       RuntimeTrace.event("storage.purge.file_provider_domain_failed", [
         "error": error.localizedDescription,
       ])
     }
     removeSemaphore.signal()
   }
-  removeSemaphore.wait()
+  guard removeSemaphore.wait(timeout: .now() + 5) == .success else {
+    RuntimeTrace.event("storage.purge.failed", ["stage": "file_provider_domain_remove_timeout"])
+    return false
+  }
+  return removeSucceeded
 }
 
 @available(iOS 16.0, *)
@@ -673,6 +715,23 @@ private func clearFileProviderSharedState(defaults: UserDefaults?) -> Int {
   defaults?.removeObject(forKey: simulatorFileProviderMasterKeyKey)
   let removed = clearFileProviderCacheState(defaults: defaults)
   return removed
+}
+
+/// Task 1593 round 6 (new-4, privacy consent) — just the two flags that
+/// together grant the File Provider "show in Files" mount
+/// (`mountFileProviderAccess` sets both `true` together, and
+/// `fileProviderPrivacyState`'s `showInFiles` is their AND), factored out of
+/// `clearFileProviderSharedState` so `purgePlaintextStorage` — reached by
+/// every sign-out, forced or ordinary — can reset consent on every path
+/// without also touching that function's session-token / simulator-key
+/// clearing, which is out of scope here (overlaps P0 1594). Called from
+/// `purgePlaintextStorage` in addition to (not instead of) the ordinary
+/// in-app `removeFileProviderAccess()` → `clearFileProviderSharedState`
+/// path, so calling both on an ordinary sign-out just resets the same two
+/// flags to `false` twice — harmless.
+private func resetFileProviderShowInFilesConsent(defaults: UserDefaults?) {
+  defaults?.set(false, forKey: fileProviderEnabledKey)
+  defaults?.set(false, forKey: fileProviderTrustedMountKey)
 }
 
 private let fileProviderCacheSchemaStatements = [
@@ -797,8 +856,25 @@ private func resetFileProviderCacheDatabase(at url: URL) -> Bool {
   } else {
     sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
   }
-  ok = ok && sqlite3_exec(db, "VACUUM", nil, nil, nil) == SQLITE_OK
+  // Task 1593 round 6 (new-3) — same transient-lock reasoning as
+  // PlaintextStorageProtection.swift's identical helper: the File Provider
+  // extension's own live connection to this exact file can hold it just
+  // long enough to turn one VACUUM into a single SQLITE_BUSY, which is
+  // worth one short retry rather than counting as a hard purge failure.
+  ok = ok && vacuumRetryingOnceOnBusy(db)
   return ok
+}
+
+/// See the `new-3` doc comment on the `VACUUM` call site above.
+private func vacuumRetryingOnceOnBusy(_ db: OpaquePointer?) -> Bool {
+  if sqlite3_exec(db, "VACUUM", nil, nil, nil) == SQLITE_OK {
+    return true
+  }
+  guard sqlite3_errcode(db) == SQLITE_BUSY else {
+    return false
+  }
+  usleep(50_000) // 50ms
+  return sqlite3_exec(db, "VACUUM", nil, nil, nil) == SQLITE_OK
 }
 
 private func clearFileProviderCacheState(defaults: UserDefaults?) -> Int {
@@ -1143,6 +1219,20 @@ public class BeebeebCryptoModule: Module {
     // plaintext path. See PlaintextStorageProtection.purgeAll() doc comment.
     AsyncFunction("purgePlaintextStorage") { () -> [String: Int] in
       let result = PlaintextStorageProtection.purgeAll()
+      var failed = result.failed
+      // Task 1593 round 6 (new-4, privacy consent) — a forced sign-out
+      // (session expiry, account deleted elsewhere, a startup 401) reaches
+      // this function but never the ordinary in-app `removeFileProviderAccess`
+      // → `clearFileProviderSharedState` path (~line 663) that resets the
+      // "show in Files" mount consent. Left alone, a DIFFERENT account
+      // signing in next on this device inherited the previous user's
+      // consent and got the Files mount automatically, with no prompt.
+      // Deliberately narrow: only the two consent flags, not the rest of
+      // `clearFileProviderSharedState` (App Group session-mirror /
+      // simulator-key clearing) — those overlap P0 1594's forced-sign-out
+      // gap and stay out of scope for this round. The SAME user re-signing
+      // in after a forced sign-out now also has to re-enable Files.
+      resetFileProviderShowInFilesConsent(defaults: sharedDefaults())
       // Task 1593 round 5 (P1-3) — reached by EVERY sign-out, forced or
       // ordinary, unlike `removeFileProviderAccess` (only the ordinary
       // in-app signOut() calls that). Deliberately NOT `async` — see
@@ -1150,9 +1240,14 @@ public class BeebeebCryptoModule: Module {
       // function must stay an `AsyncFunctionDefinition` on Expo's shared
       // serial queue, the same one `syncFileProviderCache` runs on.
       if #available(iOS 16.0, *) {
-        removeFileProviderDomainIfRegistered()
+        // Task 1593 round 6 (new-1/new-2) — a timed-out or errored domain
+        // lookup/removal is now a real, counted purge failure instead of a
+        // silently swallowed one.
+        if !removeFileProviderDomainIfRegistered() {
+          failed += 1
+        }
       }
-      return ["removed": result.removed, "failed": result.failed]
+      return ["removed": result.removed, "failed": failed]
     }
 
     AsyncFunction("generateRandomBytes") { (length: Int) throws -> Data in
@@ -2119,6 +2214,14 @@ public class BeebeebCryptoModule: Module {
         return 0
       }
       defer { sqlite3_close(db) }
+      // Task 1593 round 6 (new-3) — this connection issues DELETEs (the
+      // prune pass below); without secure_delete the freed b-tree pages
+      // keep a pruned row's decrypted name bytes readable on disk until
+      // something VACUUMs the file (same finding as the purge path's
+      // `resetFileProviderCacheDatabase` / `resetSQLiteInPlace`, round 5
+      // P1-1) — this ordinary write path never VACUUMs, so secure_delete is
+      // the only defense it gets. Must be set before any DELETE runs.
+      sqlite3_exec(db, "PRAGMA secure_delete = ON", nil, nil, nil)
 
       // Ensure the table exists (idempotent)
       let createSql = """

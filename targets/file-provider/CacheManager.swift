@@ -34,6 +34,16 @@ final class CacheManager {
       return
     }
     self.db = handle
+    // Task 1593 round 6 (new-3) — this connection is the extension's own
+    // writer for `delete(id:)` / `_deleteChildren` (below); without
+    // secure_delete a DELETE's freed b-tree page keeps the decrypted
+    // `name_decrypted` bytes readable on disk until something VACUUMs the
+    // file, which this long-lived extension connection never does (same
+    // finding as the main app's identical fix in
+    // BeebeebCryptoModule.swift's `syncFileProviderCache`). Set this pragma
+    // ahead of the migrations that follow, so it is already in effect
+    // before this connection issues any statement.
+    execute("PRAGMA secure_delete = ON")
     runMigrations()
   }
 

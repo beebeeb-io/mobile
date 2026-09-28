@@ -333,8 +333,35 @@ public enum PlaintextStorageProtection {
     // pages entirely instead of leaving them marked free for reuse (defense
     // in depth on top of `secure_delete`, e.g. for pages freed by earlier
     // writes from before this fix shipped).
-    ok = ok && sqlite3_exec(db, "VACUUM", nil, nil, nil) == SQLITE_OK
+    //
+    // Task 1593 round 6 (new-3) — VACUUM needs the file exclusively; the
+    // File Provider extension's own live connection to this same path
+    // (`targets/file-provider/CacheManager.swift`) can transiently hold it
+    // just long enough for a single short read to return `SQLITE_BUSY` even
+    // with `sqlite3_busy_timeout` set above (VACUUM does its own internal
+    // locking rather than honouring that timeout on retry). One retry after
+    // a short fixed wait is enough for that transient case; a still-BUSY
+    // second attempt is a real failure, not silently swallowed.
+    ok = ok && vacuumRetryingOnceOnBusy(db)
     return ok
+  }
+
+  /// See the `new-3` doc comment on the `VACUUM` call site above. Shared
+  /// shape with `BeebeebCryptoModule.swift`'s identical helper for
+  /// `resetFileProviderCacheDatabase` — kept as two small private copies
+  /// rather than one shared symbol because this file, unlike that one,
+  /// compiles into both the main app pod and the File Provider `.appex`
+  /// target (see this file's header comment), and a cross-file shared
+  /// helper would need to live somewhere both targets already import.
+  private static func vacuumRetryingOnceOnBusy(_ db: OpaquePointer?) -> Bool {
+    if sqlite3_exec(db, "VACUUM", nil, nil, nil) == SQLITE_OK {
+      return true
+    }
+    guard sqlite3_errcode(db) == SQLITE_BUSY else {
+      return false
+    }
+    usleep(50_000) // 50ms
+    return sqlite3_exec(db, "VACUUM", nil, nil, nil) == SQLITE_OK
   }
 
   /// Write the audit to `Library/Caches/beebeeb-plaintext-audit.json` so the
