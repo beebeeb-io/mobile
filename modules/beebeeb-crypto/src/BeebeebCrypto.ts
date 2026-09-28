@@ -1211,6 +1211,27 @@ export interface NativeBackupProgress {
    * reason.
    */
   accountMismatchReason?: string | null
+  /**
+   * Task 1599 followups round 3 (P1) — a monotonic counter, incremented
+   * every time native sets a NEW `accountMismatchReason` (never reset). JS
+   * uses this to tell "this reason was raised during MY session" apart from
+   * "this reason is a leftover from before I started polling" — see
+   * `backup-context.tsx`'s `reduceAccountMismatchPoll` for the sign-in
+   * lockout loop this guards against. `undefined` on a build predating this
+   * field; treated as `0`.
+   */
+  accountMismatchGeneration?: number
+  /**
+   * Task 1599 followups round 3 (P2) — set when `NativeBackupEngine.start()`
+   * refuses to even attempt loading the master key because its OWN local
+   * ownership check (cached-handle owner, or the shared keychain "proven
+   * vault key owner" mirror) does not confirm the signed-in account. Unlike
+   * `accountMismatchReason` above (server-confirmed, via a 409), this never
+   * involves a network round-trip — purely local. The honest message to
+   * show; `null`/undefined when nothing is refusing to start for this
+   * reason.
+   */
+  ownerUnconfirmedReason?: string | null
 }
 
 export type NativeBackupDiagnostics = Record<string, unknown>

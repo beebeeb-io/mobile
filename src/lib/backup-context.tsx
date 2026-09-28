@@ -251,6 +251,16 @@ export interface BackupContextValue {
    * engine is running. The honest message to show; null when not blocked.
    */
   accountMismatchReason: string | null;
+  /**
+   * Task 1599 followups round 3 (P2): set when the native engine's OWN local
+   * ownership check refused to even attempt starting backup (a cached
+   * master-key handle with no confirmed/matching owner, or a keychain-
+   * sourced handle the shared "proven vault key owner" mirror doesn't
+   * confirm) — distinct from `accountMismatchReason` above, which requires a
+   * server-confirmed 409. The honest message to show; null when nothing is
+   * refusing to start for this reason.
+   */
+  ownerUnconfirmedReason: string | null;
   // Legacy alias for components that used the old API
   isBackupEnabled: boolean;
   toggleBackup: () => Promise<void>;
@@ -284,6 +294,7 @@ export const BackupContext = createContext<BackupContextValue>({
   triggerBackupNow: async () => {},
   backupBlockedReason: null,
   accountMismatchReason: null,
+  ownerUnconfirmedReason: null,
   isBackupEnabled: false,
   toggleBackup: async () => {},
 });
@@ -338,6 +349,71 @@ export function shouldEndSessionForNativeAccountMismatch(
   return nextReason !== null && nextReason !== previousReason;
 }
 
+/**
+ * Task 1599 followups round 3 (P1 — sign-in lockout loop): whether a
+ * native-reported `accountMismatchGeneration` was raised AFTER this
+ * `BackupProvider` mount established its baseline — i.e. DURING the current
+ * session — as opposed to a reason left over from a PRIOR session that
+ * native had not yet had a chance to clear.
+ *
+ * The bug this guards: a confirmed 409 sets native's sticky reason, JS ends
+ * that session (`shouldEndSessionForNativeAccountMismatch` above fires).
+ * The NEXT sign-in mounts a brand-new `BackupProvider`, whose progress poll
+ * can fire before `confirmMasterKeyHandle` (the unlock choke point that
+ * clears the reason) completes — reading the STALE reason as if it were
+ * fresh and ending the brand-new session before the user finishes signing
+ * in, forever. (`mirrorSessionToAppGroup`, BeebeebCryptoModule.swift, now
+ * also clears the reason itself on a token change and on sign-out, closing
+ * the common case; this generation check is the JS-side backstop for
+ * whatever race remains — e.g. an app relaunch with the SAME still-valid
+ * token, where no token-changed clear ever fires.)
+ *
+ * `baselineGeneration === null` means no baseline has been established yet
+ * for this mount (the very first poll) — that poll's generation becomes the
+ * baseline and is never itself "current".
+ */
+export function isAccountMismatchGenerationCurrent(
+  baselineGeneration: number | null,
+  nextGeneration: number,
+): boolean {
+  return baselineGeneration !== null && nextGeneration > baselineGeneration;
+}
+
+/** Per-mount running state `reduceAccountMismatchPoll` folds over. */
+export interface AccountMismatchPollState {
+  reason: string | null;
+  generationBaseline: number | null;
+}
+
+export const INITIAL_ACCOUNT_MISMATCH_POLL_STATE: AccountMismatchPollState = {
+  reason: null,
+  generationBaseline: null,
+};
+
+/**
+ * Task 1599 followups round 3 (P1): the single decision `applyNativeProgress`
+ * makes on every poll tick, extracted as a pure reducer so it is unit-
+ * testable as a SEQUENCE of ticks without a React render harness (this
+ * codebase has none for `BackupProvider` — see this file's own header
+ * note). Composes the two pure checks above: only a reason that is BOTH a
+ * fresh edge (`shouldEndSessionForNativeAccountMismatch`) AND raised at a
+ * generation newer than this mount's baseline
+ * (`isAccountMismatchGenerationCurrent`) ends the session.
+ */
+export function reduceAccountMismatchPoll(
+  state: AccountMismatchPollState,
+  next: { reason: string | null; generation: number },
+): { state: AccountMismatchPollState; shouldEndSession: boolean } {
+  const shouldEndSession =
+    isAccountMismatchGenerationCurrent(state.generationBaseline, next.generation) &&
+    shouldEndSessionForNativeAccountMismatch(state.reason, next.reason);
+  const generationBaseline = state.generationBaseline === null ? next.generation : state.generationBaseline;
+  return {
+    state: { reason: next.reason, generationBaseline },
+    shouldEndSession,
+  };
+}
+
 export function BackupProvider({ children }: { children: React.ReactNode }) {
   const { isUnlocked } = useCrypto();
   const { user } = useAuth();
@@ -357,14 +433,19 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
   // other; native already clears it on the same sign-in that would supersede
   // this state, so mirroring it verbatim (including back to null) is correct.
   const [accountMismatchReason, setAccountMismatchReason] = useState<string | null>(null);
+  // Task 1599 followups round 3 (P2): a LOCAL-only refusal reason (no
+  // server round-trip involved — see `ownerUnconfirmedReason`'s doc comment
+  // on `NativeBackupProgress`). Mirrored the same way `accountMismatchReason`
+  // is: a single producer (the native poll), so no writer race.
+  const [ownerUnconfirmedReason, setOwnerUnconfirmedReason] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const includeVideosRef = useRef(true);
-  // Task 1599 followups (round 2, item 4): mirrors `accountMismatchReason`
-  // so `applyNativeProgress` (a stable `useCallback` with an empty dep
-  // array, same reasoning as `includeVideosRef` above) can see the
-  // PREVIOUS value on the next poll tick without becoming stale or being
-  // re-created every render.
-  const accountMismatchReasonRef = useRef<string | null>(null);
+  // Task 1599 followups round 3 (P1): the running fold `reduceAccountMismatchPoll`
+  // carries across poll ticks for THIS mount — reset to
+  // `INITIAL_ACCOUNT_MISMATCH_POLL_STATE` (no baseline established yet) on
+  // every fresh `BackupProvider` instance, which is exactly the per-mount
+  // scoping the sign-in lockout fix needs (see that function's doc comment).
+  const accountMismatchPollStateRef = useRef<AccountMismatchPollState>(INITIAL_ACCOUNT_MISMATCH_POLL_STATE);
 
   const applyNativeProgress = useCallback((p: NativeBackupProgress) => {
     const pending = p.pending ?? Math.max(0, p.total - p.completed - p.inProgress);
@@ -383,8 +464,9 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
     });
     if (p.lastBackupAt) setLastBackupAt(p.lastBackupAt);
     const nextAccountMismatchReason = p.accountMismatchReason ?? null;
-    // Task 1599 followups (round 2, item 4): the native engine already
-    // confirmed a 409 `account_mismatch` and stopped itself
+    const nextAccountMismatchGeneration = p.accountMismatchGeneration ?? 0;
+    // Task 1599 followups (round 2, item 4) / round 3 (P1): the native
+    // engine already confirmed a 409 `account_mismatch` and stopped itself
     // (`handleConfirmedAccountMismatch` in NativeBackupEngine.swift) — end
     // the JS session the SAME way `request()`'s own 409 branch does
     // (`api.ts`), so a user who just toggles backup back on
@@ -394,16 +476,24 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
     // (`captureRequestAuthSnapshot`/`endSessionForAccountMismatch`) so a
     // session that has ALREADY moved on since native set this reason (e.g.
     // the user signed in again in the meantime) is not torn down out from
-    // under them. Edge-triggered via `shouldEndSessionForNativeAccountMismatch`
-    // — fires once per NEW reason, not once per poll tick while it stays set.
-    if (shouldEndSessionForNativeAccountMismatch(accountMismatchReasonRef.current, nextAccountMismatchReason)) {
+    // under them. `reduceAccountMismatchPoll` additionally gates on the
+    // reason having been raised at a generation newer than THIS mount's
+    // baseline — see that function's doc comment for the sign-in lockout
+    // loop this closes (a stale reason from a session that already ended
+    // must never end the NEXT one before the user finishes signing in).
+    const { state: nextPollState, shouldEndSession } = reduceAccountMismatchPoll(
+      accountMismatchPollStateRef.current,
+      { reason: nextAccountMismatchReason, generation: nextAccountMismatchGeneration },
+    );
+    accountMismatchPollStateRef.current = nextPollState;
+    if (shouldEndSession) {
       void (async () => {
         const snapshot = await captureRequestAuthSnapshot();
         await endSessionForAccountMismatch(snapshot);
       })();
     }
-    accountMismatchReasonRef.current = nextAccountMismatchReason;
     setAccountMismatchReason(nextAccountMismatchReason);
+    setOwnerUnconfirmedReason(p.ownerUnconfirmedReason ?? null);
   }, []);
 
   const refreshNativeProgress = useCallback(async () => {
@@ -778,6 +868,7 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
     triggerBackupNow,
     backupBlockedReason,
     accountMismatchReason,
+    ownerUnconfirmedReason,
     // Legacy alias
     isBackupEnabled: isPhotoBackupEnabled,
     toggleBackup: togglePhotoBackup,
