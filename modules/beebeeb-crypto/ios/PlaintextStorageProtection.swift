@@ -1,5 +1,6 @@
 import Foundation
 import SQLite3
+import Security
 
 /// Task 0300 / pre-mortem item 12 — the single source of truth for every
 /// on-disk location this app writes that iOS would otherwise include in an
@@ -438,78 +439,231 @@ public enum PlaintextStorageProtection {
     appGroupContainer?.appendingPathComponent("file-provider-db", isDirectory: true)
   }
 
-  /// Task 1593 f1 (follow-up to #144; security reviewer P2, downgraded from
-  /// P1 because it needs THREE failed epoch advances in one purge PLUS an
-  /// in-flight extension fetch racing exactly the right window to leak a
-  /// name — see `resweepFileProviderContentDirectories`'s doc comment for
-  /// round 12's narrower, probabilistic mitigation of the same gap) —
-  /// `bumpFileProviderCacheVersion()` (the early bump in
-  /// `purgePlaintextStorage`, BeebeebCryptoModule.swift) and this file's own
-  /// `resetSQLiteInPlace` (the purge's LAST, atomic epoch-bump-plus-reset
-  /// step) can each fail to durably advance `PRAGMA user_version` — a
-  /// corrupt DB, a lock the busy timeout couldn't clear, a disk-full COMMIT.
-  /// When that happens there is no proof the epoch a concurrent extension
-  /// write already captured has been invalidated, so `CacheManager`'s epoch
-  /// check alone is only PROBABILISTICALLY safe. This marker turns that
-  /// uncertainty into a hard, fail-CLOSED refusal instead of a fail-open
-  /// gap: a PLAIN FILE (deliberately no SQLite — its own creation cannot
-  /// fail the same correlated way a DB write under contention can) at
-  /// `file-provider-db/purge-pending`, inside the SAME directory the cache
-  /// DB itself lives in (the `containerOnly` registry entry above already
-  /// protects that directory on the DB's own creation path; `markPurgePending`
-  /// below still calls `protect()` on both directly, rather than assuming
-  /// that already ran, since a fresh install racing its very first purge
-  /// before the directory has ever been touched must not leave the marker
-  /// itself unprotected).
-  ///
-  /// While the marker exists, `CacheManager.beginImmediate()` /
-  /// `purgeEpochUnchanged(since:)` (targets/file-provider/CacheManager.swift)
-  /// refuse EVERY extension write outright — epoch match or not — which
-  /// transitively covers every writer that goes through them:
-  /// `replaceChildren`, `upsert(_:expectedEpoch:)`, `delete(id:expectedEpoch:)`,
-  /// and `FileProviderExtension.fetchContents`'s temp/pinned writes.
-  ///
-  /// Cleared only after a LATER epoch advance actually succeeds — never
-  /// optimistically, and never merely because the failure that set it has
-  /// passed. `bumpFileProviderCacheVersion()` clears it on its own success
-  /// (the next purge's early bump, OR — its other call site, added
-  /// alongside this marker — `ensureFileProviderCacheDatabase()` at File
-  /// Provider domain REGISTRATION time); `resetSQLiteInPlace` below clears
-  /// it on its own success too (the next purge's final reset). Any one
-  /// successful, durable bump is sufficient: it is, by construction, a
-  /// version strictly newer than anything an extension write could have
-  /// captured before that bump's own transaction committed.
-  @discardableResult
-  public static func markPurgePending() -> Bool {
-    guard let dir = fileProviderCacheDbDirectory else { return false }
-    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-    protect(dir)
-    let url = dir.appendingPathComponent(purgePendingMarkerName, isDirectory: false)
-    if !FileManager.default.fileExists(atPath: url.path) {
-      guard FileManager.default.createFile(atPath: url.path, contents: Data()) else {
-        RuntimeTrace.event("storage.purge.pending_marker_failed", [:])
-        return false
-      }
-    }
-    protect(url)
-    RuntimeTrace.event("storage.purge.pending_marked", [:])
-    return true
+  private static var fileProviderCacheDatabaseUrlForMarker: URL? {
+    fileProviderCacheDbDirectory?.appendingPathComponent("file-provider-cache.sqlite", isDirectory: false)
   }
 
-  /// See `markPurgePending()`'s doc comment for the full rationale and the
-  /// two call sites that clear this (`bumpFileProviderCacheVersion()` and
-  /// `resetSQLiteInPlace` below, both only on their OWN success).
-  public static func clearPurgePending() {
+  /// Task 1593 f2 (lead design decision: MARKER FIRST — supersedes f1's
+  /// mark-only-after-a-failed-bump design below). f1 only marked pending
+  /// AFTER an epoch advance had already failed — the window BEFORE that
+  /// (consent reset, the early bump attempt, the domain removal, opening
+  /// the DB at all) was unmarked, so an extension write racing any of THOSE
+  /// steps was never refused, only ever caught (probabilistically, per
+  /// round 12's `resweepFileProviderContentDirectories` doc comment) by a
+  /// resweep after the fact. Marking unconditionally, at the very START of
+  /// every purge — before this file's own `Entry.resettableInPlace` reset
+  /// even opens a connection — removes that window entirely: `isPurgePending()`
+  /// refuses every extension write for the ENTIRE duration of the purge,
+  /// not just the tail end of it.
+  ///
+  /// A FRESH random nonce is written every call (never "only if absent" —
+  /// f1's idempotency guard is gone on purpose): the nonce is what lets
+  /// `clearPurgePending(nonce:)` tell "MY purge is now durably finished, and
+  /// nobody has re-marked since I started" from "a DIFFERENT, concurrently-
+  /// running purge re-marked while I was mid-flight" — the second case must
+  /// NOT be cleared just because the first one happened to finish. Plain
+  /// file, deliberately no SQLite (its own creation cannot fail the same
+  /// correlated way a DB write under contention can) at
+  /// `file-provider-db/purge-pending`, in the SAME directory the cache DB
+  /// lives in (the `containerOnly` registry entry above already protects
+  /// that directory on the DB's own creation path; this still calls
+  /// `protect()` on both directly, rather than assuming that already ran,
+  /// since a fresh install racing its very first purge before the directory
+  /// has ever been touched must not leave the marker itself unprotected).
+  ///
+  /// While the marker (or its fallback, see `markPurgePendingFallback()`)
+  /// is present, `CacheManager.beginImmediate()` / `purgeEpochUnchanged(since:)`
+  /// (targets/file-provider/CacheManager.swift) refuse EVERY extension
+  /// write outright — epoch match or not — which transitively covers every
+  /// writer that goes through them: `replaceChildren`,
+  /// `upsert(_:expectedEpoch:)`, `delete(id:expectedEpoch:)`, and
+  /// `FileProviderExtension.fetchContents`'s temp/pinned writes.
+  ///
+  /// Cleared ONLY at the end, ONLY by this SAME purge's own final,
+  /// durably-committed epoch bump (`resetSQLiteInPlace` below) — via
+  /// `clearPurgePending(nonce:)`'s compare-then-delete against the exact
+  /// `Data` this call returns — or by a LATER purge/registration's own
+  /// successful bump clearing a STALE marker this one failed to clear
+  /// itself (see `resetSQLiteInPlace`'s and
+  /// `BeebeebCryptoModule.swift`'s `bumpFileProviderCacheVersion`'s doc
+  /// comments for exactly which call sites clear and why).
+  @discardableResult
+  public static func markPurgePending() -> Data? {
+    guard let dir = fileProviderCacheDbDirectory else { return nil }
+    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    protect(dir)
+    let nonce = randomPurgePendingNonce()
+    let url = dir.appendingPathComponent(purgePendingMarkerName, isDirectory: false)
+    guard FileManager.default.createFile(atPath: url.path, contents: nonce) else {
+      RuntimeTrace.event("storage.purge.pending_marker_failed", [:])
+      return markPurgePendingFallback()
+    }
+    protect(url)
+    // A fresh, successful marker-FILE write is now the authoritative
+    // pending signal for this purge. Undo any STALE chmod fallback a PAST
+    // purge left behind (disk pressure that has since cleared) so THIS
+    // purge's own reset can still open the database for write instead of
+    // falling all the way through to `resetSQLiteInPlace`'s destructive
+    // open-failure-then-unlink branch for no reason.
+    restoreFileProviderCacheDatabaseWritable()
+    RuntimeTrace.event("storage.purge.pending_marked", [:])
+    return nonce
+  }
+
+  /// 16 random bytes. Not a secret — this nonce protects nothing
+  /// confidential, it only lets `clearPurgePending(nonce:)` distinguish
+  /// "the marker still holds what I wrote" from "someone else overwrote it
+  /// since". `SecRandomCopyBytes` is backed by the system CSPRNG and does
+  /// not need any disk space to succeed; the `arc4random_buf` fallback below
+  /// is for the (essentially unreachable) case it somehow fails, and is
+  /// still fit for this non-secret, same-process-comparison purpose.
+  private static func randomPurgePendingNonce() -> Data {
+    var bytes = [UInt8](repeating: 0, count: 16)
+    let status = bytes.withUnsafeMutableBytes { buffer -> Int32 in
+      SecRandomCopyBytes(kSecRandomDefault, buffer.count, buffer.baseAddress!)
+    }
+    if status != errSecSuccess {
+      arc4random_buf(&bytes, bytes.count)
+    }
+    return Data(bytes)
+  }
+
+  /// Task 1593 f2 (Codex P2, thread PRRT_kwDOSLX6T86mkAIo) — `createFile`
+  /// can fail on a genuinely full volume: even a 16-byte file needs a free
+  /// inode and, on most filesystems, at least one data block, and every
+  /// caller of `markPurgePending()` used to just discard its `Bool`. Every
+  /// OTHER fallback in this file that must survive a full disk
+  /// (`resetSQLiteInPlace`'s own open-failure branch, `sweepLegacy
+  /// FileProviderCache`, `resweepFileProviderContentDirectories`) works
+  /// because it only ever DELETES — unlinking frees space and cannot fail
+  /// for lack of it. Creating something new does not have that property, so
+  /// this fallback needs a signal that, like those, needs zero free space.
+  ///
+  /// Chosen: chmod the File Provider cache database itself to remove the
+  /// owner-write bit (`0o400`). Changing permission bits on an EXISTING
+  /// inode is pure metadata — it allocates no new block and cannot fail for
+  /// lack of free space on any filesystem this app ships on.
+  /// `isPurgePending()` below then treats "the database exists but is not
+  /// owner-writable" the same as "the marker file exists". Two alternatives
+  /// were considered and rejected:
+  /// - Renaming the `file-provider-db` directory (or the database inside
+  ///   it) also needs zero new space, but it changes the FIXED path
+  ///   `isPurgePending()`/`beginImmediate()` check today — every reader of
+  ///   "is a purge pending" would need to learn a SECOND, moving target,
+  ///   and undoing the rename to recover is exactly as failure-prone as the
+  ///   `createFile` this fallback exists to route around.
+  /// - Deleting the database outright (also needs zero new space — it
+  ///   FREES space) was rejected because `isPurgePending()` cannot safely
+  ///   read "the database does not exist" as "a purge is pending": a
+  ///   brand-new install that has never synced anything yet has no
+  ///   database file either, and reading its absence as "pending" would
+  ///   fail-closed FOREVER for every first launch, not just this rare
+  ///   full-disk edge case. chmod has neither problem — a database that
+  ///   does not exist yet already reads as "not pending" below the same way
+  ///   it always has (nothing to check permissions on).
+  ///
+  /// Returns `Data()` (an EMPTY, distinguishable sentinel — never `nil`, so
+  /// callers can still tell "fallback engaged" from "total failure") on
+  /// success: chmod carries no content to compare, so
+  /// `clearPurgePending(nonce:)` special-cases the empty nonce to mean
+  /// "restore write access unconditionally" rather than compare-then-delete.
+  @discardableResult
+  private static func markPurgePendingFallback() -> Data? {
+    guard let dbUrl = fileProviderCacheDatabaseUrlForMarker,
+          FileManager.default.fileExists(atPath: dbUrl.path) else {
+      // Nothing to chmod either — the database has never been created, so
+      // there is no writer this purge needs to block in the first place.
+      // Still a real failure of THIS purge's own attempt to mark pending —
+      // traced so it is never silently discarded (Codex's original finding).
+      RuntimeTrace.event("storage.purge.failed", ["stage": "pending_marker_no_database"])
+      return nil
+    }
+    do {
+      try FileManager.default.setAttributes([.posixPermissions: 0o400], ofItemAtPath: dbUrl.path)
+    } catch {
+      RuntimeTrace.event("storage.purge.failed", ["stage": "pending_marker_chmod_fallback"])
+      return nil
+    }
+    RuntimeTrace.event("storage.purge.pending_marked_fallback", [:])
+    return Data()
+  }
+
+  /// Un-does `markPurgePendingFallback()`'s chmod. Safe to call whether or
+  /// not the fallback ever actually engaged (a database that is already
+  /// writable, or does not exist, is left alone — not an error).
+  @discardableResult
+  private static func restoreFileProviderCacheDatabaseWritable() -> Bool {
+    guard let dbUrl = fileProviderCacheDatabaseUrlForMarker,
+          FileManager.default.fileExists(atPath: dbUrl.path) else { return true }
+    guard let attrs = try? FileManager.default.attributesOfItem(atPath: dbUrl.path),
+          let perms = attrs[.posixPermissions] as? NSNumber,
+          perms.intValue & 0o200 == 0 else {
+      return true // already writable, or attributes unreadable — nothing to restore
+    }
+    do {
+      try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: dbUrl.path)
+      return true
+    } catch {
+      RuntimeTrace.event("storage.purge.pending_clear_failed", ["stage": "chmod_restore"])
+      return false
+    }
+  }
+
+  /// Whether the chmod fallback (`markPurgePendingFallback()`) is currently
+  /// engaged: the database exists but lacks the owner-write bit. See that
+  /// function's doc comment for why this cannot be confused with "the
+  /// database has simply never been created yet" (a missing file reads
+  /// `false` here, not `true`).
+  private static func isPurgePendingViaFallback() -> Bool {
+    guard let dbUrl = fileProviderCacheDatabaseUrlForMarker,
+          let attrs = try? FileManager.default.attributesOfItem(atPath: dbUrl.path),
+          let perms = attrs[.posixPermissions] as? NSNumber else {
+      return false
+    }
+    return perms.intValue & 0o200 == 0
+  }
+
+  /// Reads the marker's raw on-disk bytes with no side effects — used by
+  /// `BeebeebCryptoModule.swift`'s `bumpFileProviderCacheVersion(clearsPendingMarker:)`
+  /// to capture "the nonce that was pending when I started" BEFORE its own
+  /// `BEGIN IMMEDIATE`, per that function's doc comment. `nil` means nothing
+  /// is pending at all (neither the marker file nor the chmod fallback);
+  /// `Data()` mirrors `markPurgePendingFallback()`'s own empty sentinel when
+  /// only the fallback is engaged (no marker file exists to read bytes
+  /// from).
+  public static func currentPurgePendingNonce() -> Data? {
+    guard let dir = fileProviderCacheDbDirectory else { return nil }
+    let url = dir.appendingPathComponent(purgePendingMarkerName, isDirectory: false)
+    if let onDisk = try? Data(contentsOf: url) { return onDisk }
+    return isPurgePendingViaFallback() ? Data() : nil
+  }
+
+  /// Compare-then-delete. `nonce` must be the EXACT `Data` a PRIOR
+  /// `markPurgePending()` (or `currentPurgePendingNonce()`) call returned.
+  /// An empty `nonce` means the CALLER observed only the chmod fallback
+  /// pending (no marker file to compare) — restored unconditionally, since
+  /// chmod carries no content a compare could ever distinguish. Otherwise:
+  /// only removes the marker FILE if it still holds that EXACT nonce —
+  /// a mismatch means a DIFFERENT (newer) purge has since overwritten it
+  /// with its OWN fresh nonce, and that purge's own pending state must not
+  /// be cleared out from under it just because an EARLIER one happened to
+  /// finish second. An unreadable marker (can't prove either way) is left
+  /// in place too — failing CLOSED is the safe direction here.
+  public static func clearPurgePending(nonce: Data) {
+    if nonce.isEmpty {
+      _ = restoreFileProviderCacheDatabaseWritable()
+      return
+    }
     guard let dir = fileProviderCacheDbDirectory else { return }
     let url = dir.appendingPathComponent(purgePendingMarkerName, isDirectory: false)
-    guard FileManager.default.fileExists(atPath: url.path) else { return }
+    guard let onDisk = try? Data(contentsOf: url), onDisk == nonce else {
+      RuntimeTrace.event("storage.purge.pending_clear_skipped", [:])
+      return
+    }
     do {
       try FileManager.default.removeItem(at: url)
       RuntimeTrace.event("storage.purge.pending_cleared", [:])
     } catch {
-      // Left in place deliberately — see `markPurgePending()`'s doc comment:
-      // failing CLOSED (the marker survives) is the safe direction here. The
-      // next successful bump retries this same removal.
       RuntimeTrace.event("storage.purge.pending_clear_failed", [:])
     }
   }
@@ -522,9 +676,12 @@ public enum PlaintextStorageProtection {
   /// that state any MORE closed than it already is.
   public static func isPurgePending() -> Bool {
     guard let dir = fileProviderCacheDbDirectory else { return false }
-    return FileManager.default.fileExists(
+    if FileManager.default.fileExists(
       atPath: dir.appendingPathComponent(purgePendingMarkerName, isDirectory: false).path
-    )
+    ) {
+      return true
+    }
+    return isPurgePendingViaFallback()
   }
 
   /// Read the resource values back. Paths + booleans only — no user data.
@@ -559,8 +716,16 @@ public enum PlaintextStorageProtection {
   /// time. A removal failure is traced (path leaf name only — no user data)
   /// but never aborts the sweep of the remaining entries, and must never
   /// block the caller's sign-out.
+  /// Task 1593 f2 (lead design decision: MARKER FIRST) — `pendingNonce` is
+  /// the exact `Data` this purge's OWN `markPurgePending()` call returned at
+  /// the very start (before this function, or anything else this purge
+  /// does, ever ran) — `nil` only if that mark ITSELF totally failed (both
+  /// the primary marker file AND the chmod fallback). Threaded through to
+  /// `resetSQLiteInPlace` below, whose own final epoch bump is the ONLY
+  /// place THIS purge is allowed to clear it (see that function's doc
+  /// comment for the compare-then-delete rationale).
   @discardableResult
-  public static func purgeAll() -> (removed: Int, failed: Int) {
+  public static func purgeAll(pendingNonce: Data? = nil) -> (removed: Int, failed: Int) {
     var removed = 0
     var failed = 0
     for entry in registry() {
@@ -576,7 +741,7 @@ public enum PlaintextStorageProtection {
         continue
       }
       if entry.resettableInPlace {
-        if resetSQLiteInPlace(entry.url) {
+        if resetSQLiteInPlace(entry.url, pendingNonce: pendingNonce) {
           removed += 1
         } else {
           RuntimeTrace.event("storage.purge.failed", ["path": entry.url.lastPathComponent])
@@ -672,8 +837,21 @@ public enum PlaintextStorageProtection {
   /// touched. Falls back to deleting the file + its `-wal`/`-shm` siblings
   /// when the database cannot be opened at all (corrupt / not yet created —
   /// there is then no live connection to preserve).
+  ///
+  /// Task 1593 f2 (item 2, Codex P2 thread PRRT_kwDOSLX6T86mkAIp) —
+  /// `pendingNonce` is `purgeAll`'s own passthrough of the nonce THIS purge
+  /// wrote at its very start (marker-first). Neither failure branch below
+  /// (this open failure, or the table-enumeration failure further down)
+  /// calls `markPurgePending()` any more, and neither needs to: under
+  /// marker-first the marker was ALREADY set before this function — before
+  /// `purgeAll` even started iterating the registry — so every failure path
+  /// here simply leaves it exactly as it found it. Re-marking here would
+  /// actively be WRONG: it would overwrite the nonce this purge's caller
+  /// (`purgePlaintextStorage`) is holding for its own later compare-then-
+  /// delete, making a LATER successful clear fail to match and get stuck
+  /// forever even though the purge that owns it actually finished.
   @discardableResult
-  private static func resetSQLiteInPlace(_ url: URL) -> Bool {
+  private static func resetSQLiteInPlace(_ url: URL, pendingNonce: Data?) -> Bool {
     var db: OpaquePointer?
     guard sqlite3_open_v2(
       url.path, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, nil
@@ -695,6 +873,11 @@ public enum PlaintextStorageProtection {
           ok = false
         }
       }
+      // Task 1593 f2 (item 2) — the marker set at purge-start survives this
+      // branch untouched (see this function's own doc comment above): no
+      // call needed here, that IS the fail-closed behavior. Proven by
+      // `f2: the open-failure fallback leaves the pending marker untouched`
+      // in file-provider-purge-hygiene.test.ts.
       return ok
     }
     defer { sqlite3_close(db) }
@@ -719,8 +902,9 @@ public enum PlaintextStorageProtection {
       db, "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'", -1, &stmt, nil
     ) == SQLITE_OK else {
       sqlite3_finalize(stmt)
-      // Task 1593 f1 — can't enumerate tables, so no bump either.
-      markPurgePending()
+      // Task 1593 f2 (item 2) — can't enumerate tables, so no bump either;
+      // the marker set at purge-start (marker-first) is left exactly as it
+      // is, per this function's own doc comment — no re-mark call here.
       return false
     }
     while sqlite3_step(stmt) == SQLITE_ROW {
@@ -771,20 +955,28 @@ public enum PlaintextStorageProtection {
     } else {
       sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
     }
-    // Task 1593 f1 — `ok` at THIS exact point reflects whether the epoch
-    // bump itself durably committed (everything above, through COMMIT).
-    // VACUUM below is a freelist-hygiene step that runs AFTER commit and
-    // must not itself flip the fail-closed marker: a VACUUM that fails on
-    // an already-committed bump has not left a stale epoch readable
-    // anywhere, so marking pending for it would refuse every extension
-    // write for a purely cosmetic reason. Captured here, before VACUUM can
-    // touch `ok`. See `markPurgePending()`'s doc comment for the full
-    // rationale.
+    // `ok` at THIS exact point reflects whether the epoch bump itself
+    // durably committed (everything above, through COMMIT). VACUUM below is
+    // a freelist-hygiene step that runs AFTER commit and must not itself
+    // decide whether to clear the fail-closed marker: a VACUUM that fails
+    // on an already-committed bump has not left a stale epoch readable
+    // anywhere, so this must not treat that as "the bump failed". Captured
+    // here, before VACUUM can touch `ok`.
     let bumpCommitted = ok
-    if bumpCommitted {
-      clearPurgePending()
-    } else {
-      markPurgePending()
+    // Task 1593 f2 (lead design decision: MARKER FIRST) — this IS "the
+    // purge's own final epoch bump" the marker-first design lets clear the
+    // marker (see `markPurgePending()`'s doc comment). Only clears on
+    // success, and only via compare-then-delete against the EXACT nonce
+    // this purge's caller captured at its own start (`pendingNonce`, threaded
+    // in from `purgeAll`) — a `nil` pendingNonce means this purge's OWN
+    // mark-pending call totally failed, so there is nothing THIS purge can
+    // prove it is safe to clear (a stale marker from some unrelated past
+    // failure, if one exists, is left for a later purge/registration to
+    // clear instead). A failed bump leaves the marker exactly as
+    // marker-first already set it — no re-mark needed, matching every other
+    // failure branch in this function.
+    if bumpCommitted, let pendingNonce {
+      clearPurgePending(nonce: pendingNonce)
     }
     // This database is never put into WAL mode anywhere in this codebase
     // (`grep -rn "journal_mode" modules/ targets/ src/` finds it set only for
