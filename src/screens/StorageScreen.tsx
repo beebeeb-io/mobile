@@ -34,9 +34,10 @@ import {
   type Plan,
 } from '../lib/api';
 import { loadCachedBilling, saveCachedBilling } from '../lib/billing-cache';
-import { billingStatusView } from '../lib/billing-status';
-import { effectivePlan } from '../lib/effective-plan';
+import { billingBadgeLabel, billingStatusView } from '../lib/billing-status';
+import { effectivePlan, planDisplayName } from '../lib/effective-plan';
 import { PLAN_MANAGEMENT_NOTE } from '../lib/billing-copy';
+import { accountGateFor, uploadsBlocked } from '../lib/account-state';
 import { useAuth } from '../lib/auth';
 
 type C = Colors;
@@ -44,19 +45,6 @@ type C = Colors;
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 
-function planLabel(slug: string): string {
-  // Server is migrating personal -> basic and data_hoarder -> business; the
-  // legacy keys map to the new labels so a live response carrying an old slug
-  // still renders correctly.
-  const map: Record<string, string> = {
-    free: 'Free',
-    basic: 'Basic', personal: 'Basic',
-    pro: 'Pro',
-    business: 'Business', data_hoarder: 'Business',
-    team: 'Team',
-  };
-  return map[slug.toLowerCase()] ?? slug;
-}
 
 /**
  * Derive the storage-usage view-model from the subscription payload. The
@@ -128,11 +116,13 @@ function Divider({ c }: { c: C }) {
 // ── Storage bar ───────────────────────────────────────────────────────────────
 
 function StorageUsageCard({
-  usage, c,
-}: { usage: StorageUsage; c: C }) {
+  usage, readOnly, c,
+}: { usage: StorageUsage; readOnly: boolean; c: C }) {
   // plan_limit_bytes <= 0 is the "no fixed cap" sentinel (e.g. enterprise);
   // never render it as a byte value ("-1 B") and don't show a denominator/%.
-  const hasCap = usage.plan_limit_bytes > 0;
+  // Task 1037: a needs_plan / lapsed account also reports quota 0, but that
+  // means "no uploads", not "no cap". It gets the read-only line instead.
+  const hasCap = !readOnly && usage.plan_limit_bytes > 0;
   const pct = hasCap
     ? Math.min(1, usage.used_bytes / usage.plan_limit_bytes)
     : 0;
@@ -184,9 +174,18 @@ function StorageUsageCard({
         </View>
       )}
 
+      {readOnly && (
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }} testID="storage-read-only-note">
+          <Ionicons name="lock-closed-outline" size={13} color={c.amberDeep} />
+          <Text style={{ fontSize: 12, color: c.amberDeep }}>Read-only · uploads are off</Text>
+        </View>
+      )}
+
       {/* Plan label */}
       <Text style={{ fontSize: 11, color: c.ink3 }}>
-        {planLabel(usage.plan_name)} plan{hasCap ? ` · ${formatBytes(usage.plan_limit_bytes)} total` : ''}
+        {readOnly
+          ? planDisplayName(usage.plan_name)
+          : `${planDisplayName(usage.plan_name)} plan${hasCap ? ` · ${formatBytes(usage.plan_limit_bytes)} total` : ''}`}
       </Text>
     </View>
   );
@@ -207,7 +206,7 @@ function CurrentPlanCard({
   // fallback for the (never actually reachable) case subscription is null
   // but usage isn't).
   const planSlug = subscription ? effectivePlan(subscription) : usage?.plan_name ?? 'free';
-  const label = planLabel(planSlug);
+  const label = planDisplayName(planSlug);
   // Task 1540 findings 1, 2, 4, 6: the plan chip must reflect subscription
   // status, not just the plan slug — a status='cancelling' or 'trialing'
   // subscription is NOT "Renews {date}", it lapses to Free on that date.
@@ -216,6 +215,10 @@ function CurrentPlanCard({
     status: subscription?.status ?? null,
     current_period_end: subscription?.current_period_end ?? null,
     trial_ends_at: subscription?.trial_ends_at ?? null,
+    // Task 1037: lapsed / needs_plan and trial auto-conversion.
+    account_state: subscription?.account_state ?? null,
+    data_deletion_at: subscription?.data_deletion_at ?? null,
+    trial_auto_converts: subscription?.trial_auto_converts ?? null,
   });
 
   return (
@@ -235,7 +238,7 @@ function CurrentPlanCard({
             paddingHorizontal: 8, paddingVertical: 2, borderRadius: 5,
           }}>
             <Text style={{ fontSize: 11, fontWeight: '700', color: c.amberDeep, letterSpacing: 0.3 }}>
-              {badgeKind === 'trial' ? 'TRIAL' : 'CANCELLING'}
+              {billingBadgeLabel(badgeKind)}
             </Text>
           </View>
         )}
@@ -330,6 +333,8 @@ export default function StorageScreen() {
   // Storage usage is derived from the subscription payload (used_bytes +
   // quota_bytes are embedded there), so there is no separate usage round-trip.
   const usage = usageFromSubscription(subscription);
+  // Task 1037: needs_plan / lapsed. Missing account_state (older server) is ok.
+  const readOnly = uploadsBlocked(accountGateFor(subscription));
 
   useEffect(() => {
     let cancelled = false;
@@ -440,7 +445,7 @@ export default function StorageScreen() {
             <SectionHeader title="Storage usage" c={c} />
             <View style={[layout.card, { backgroundColor: c.paper, borderColor: c.line }]}>
               {usage
-                ? <StorageUsageCard usage={usage} c={c} />
+                ? <StorageUsageCard usage={usage} readOnly={readOnly} c={c} />
                 : <Text style={{ padding: 14, fontSize: 13, color: c.ink3 }}>Could not load storage info</Text>
               }
             </View>

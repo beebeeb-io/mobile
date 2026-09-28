@@ -76,6 +76,10 @@ let clearSessionMock = mock(async () => {});
 let captureRequestAuthSnapshotMock = mock(async () => ({ generation: 0, token: null }));
 let endSessionForAccountMismatchMock = mock(async () => {});
 
+// Task 1037: BackupProvider reads the account state; nothing here exercises it.
+mock.module('./account-state-context', () => ({
+  useAccountState: () => ({ ready: true, gate: { kind: 'ok' }, subscription: null, refresh: async () => ({ kind: 'ok' }) }),
+}));
 mock.module('./api', () => ({
   clearMobileIosBackupClientSession: (...args: unknown[]) => clearSessionMock(...args),
   ensureMobileIosBackupClientSession: async () => 'session-1',

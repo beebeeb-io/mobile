@@ -100,6 +100,14 @@ import { donateSiriShortcut } from '../lib/siri-shortcuts';
 import { perfMark } from '../lib/perf-mark';
 import { loadCachedFileIndex, saveCachedFileIndex, type CachedFileIndex } from '../lib/file-index-cache';
 import { formatBytes as formatSize } from '../lib/format';
+import { useAccountState } from '../lib/account-state-context';
+import {
+  READ_ONLY_TITLE,
+  isAccountRefusalCode,
+  lapsedBannerText,
+  readOnlyUploadMessage,
+  requestAccountStateRefresh,
+} from '../lib/account-state';
 import {
   appendFolderToBreadcrumbStack,
   filterSelfChildEntries,
@@ -1239,6 +1247,16 @@ export default function FilesScreen() {
   const { showToast } = useToast();
   const { user, phraseVerified } = useAuth();
   const isAuthenticated = user !== null;
+  // Task 1037: a needs_plan or lapsed account is read-only (the server
+  // refuses upload init with 409 plan_required / account_lapsed). Say so up
+  // front instead of starting an upload that fails with a generic error.
+  const { gate: accountGate } = useAccountState();
+  const blockIfReadOnly = useCallback((): boolean => {
+    const message = readOnlyUploadMessage(accountGate);
+    if (!message) return false;
+    Alert.alert(READ_ONLY_TITLE, message, [{ text: 'OK' }]);
+    return true;
+  }, [accountGate]);
   const { backupProgress, includeVideos, isPhotoBackupEnabled } = useBackup();
 
   // Task 1592 item 12 — the row/grid subtitle's "Stored in" city, from the
@@ -2346,6 +2364,7 @@ export default function FilesScreen() {
       );
       return;
     }
+    if (blockIfReadOnly()) return;
     let picked: DocumentPicker.DocumentPickerResult;
     try {
       picked = await DocumentPicker.getDocumentAsync({
@@ -2436,10 +2455,13 @@ export default function FilesScreen() {
       setTimeout(() => setUpload((cur) => (cur && cur.stage === 'done' ? null : cur)), 1800);
     } catch (err) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      // Task 1037: a trial that lapsed while the app was open shows up here
+      // first. Re-read the account so the banner and backup follow.
+      if (err instanceof ApiError && isAccountRefusalCode(err.code)) requestAccountStateRefresh();
       showToast({ type: 'error', message: `Upload failed: ${friendlyError(err)}` });
       setUpload(null);
     }
-  }, [currentFolder.id, fetchFiles, phraseVerified, showToast, findConflict, shouldAutoVersionUpload, folderFileNames, encryptChunk, encryptMetadata, indexFile]);
+  }, [currentFolder.id, fetchFiles, phraseVerified, blockIfReadOnly, showToast, findConflict, shouldAutoVersionUpload, folderFileNames, encryptChunk, encryptMetadata, indexFile]);
 
   const pickAndUploadPhotos = useCallback(async () => {
     if (!phraseVerified) {
@@ -2450,6 +2472,7 @@ export default function FilesScreen() {
       );
       return;
     }
+    if (blockIfReadOnly()) return;
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (status !== 'granted') {
       Alert.alert('Permission required', 'Allow photo library access to upload photos.');
@@ -2565,6 +2588,7 @@ export default function FilesScreen() {
         console.warn('[UPLOAD] Error type:', typeof err, err instanceof Error ? err.constructor.name : 'unknown');
         console.warn('[UPLOAD] Error message:', err instanceof Error ? err.message : String(err));
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+        if (err instanceof ApiError && isAccountRefusalCode(err.code)) requestAccountStateRefresh();
         showToast({ type: 'error', message: `${name}: ${friendlyError(err)}` });
       }
     }
@@ -2591,7 +2615,7 @@ export default function FilesScreen() {
         `${exportFailures} ${exportFailures === 1 ? 'item' : 'items'} could not be exported from your photo library. Check that originals are downloadable (iCloud) and try again.`,
       );
     }
-  }, [currentFolder.id, fetchFiles, phraseVerified, showToast, findConflict, shouldAutoVersionUpload, folderFileNames, encryptChunk, encryptMetadata, indexFile]);
+  }, [currentFolder.id, fetchFiles, phraseVerified, blockIfReadOnly, showToast, findConflict, shouldAutoVersionUpload, folderFileNames, encryptChunk, encryptMetadata, indexFile]);
 
   const openDocumentScanner = useCallback(() => {
     if (!phraseVerified) {
@@ -2602,8 +2626,9 @@ export default function FilesScreen() {
       );
       return;
     }
+    if (blockIfReadOnly()) return;
     navigation.navigate('DocumentScanner', { parentId: currentFolder.id ?? undefined });
-  }, [currentFolder.id, navigation, phraseVerified]);
+  }, [currentFolder.id, navigation, phraseVerified, blockIfReadOnly]);
 
   // 0777 — FAB button feedback (Medium), then the native add sheet.
   // 0789 — the "+" FAB opens the native iOS UIMenu pull-down (see addMenuActions /
@@ -2711,6 +2736,7 @@ export default function FilesScreen() {
       );
       return;
     }
+    if (blockIfReadOnly()) return;
     if (!isUnlocked) {
       Alert.alert(
         'Unlock to create a file',
@@ -2737,7 +2763,7 @@ export default function FilesScreen() {
       return;
     }
     setNewFileOpen(true);
-  }, [phraseVerified, isUnlocked, unlock, getMasterKeyHandleId]);
+  }, [phraseVerified, blockIfReadOnly, isUnlocked, unlock, getMasterKeyHandleId]);
 
   /**
    * Every decryptable name in a FRESH, complete listing of the folder — the
@@ -4377,6 +4403,21 @@ export default function FilesScreen() {
         </View>
       )}
 
+      {/* Task 1037: lapsed account. Persistent (no dismiss) and neutral: no
+          price and no purchase link (task 1400, App Review 3.1.1(a)). */}
+      {!selectMode && accountGate.kind === 'lapsed' && (
+        <View
+          style={[styles.readOnlyBanner, { backgroundColor: c.amberBg, borderColor: c.amber }]}
+          accessibilityRole="alert"
+          testID="lapsed-banner"
+        >
+          <Ionicons name="lock-closed-outline" size={16} color={c.amberDeep} style={styles.readOnlyBannerIcon} />
+          <Text style={[styles.readOnlyBannerText, { color: c.ink }]}>
+            {lapsedBannerText(accountGate.dataDeletionAt)}
+          </Text>
+        </View>
+      )}
+
       {/* Storage warning — shown when nearing or exceeding plan limit */}
       {!selectMode && usage && usage.plan_limit_bytes > 0 && (() => {
         const ratio = usage.used_bytes / usage.plan_limit_bytes;
@@ -5270,6 +5311,21 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   storageBannerText: { flex: 1, fontSize: 12, fontWeight: '500' },
+  // Task 1037 — lapsed (read-only) account banner. Same shape as the storage
+  // banner, but the text wraps: the deletion date must never be truncated.
+  readOnlyBanner: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    marginHorizontal: spacing.lg,
+    marginBottom: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: radii.md,
+    borderWidth: 1,
+    gap: 8,
+  },
+  readOnlyBannerIcon: { marginTop: 1 },
+  readOnlyBannerText: { flex: 1, fontSize: 12, lineHeight: 17, fontWeight: '500' },
   storageBannerHint: { fontSize: 12, fontWeight: '700' },
 
   // 1177 — top-of-Files "Exporting…" indicator (Save to Files / Save to Photos

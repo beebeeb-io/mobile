@@ -4,6 +4,7 @@ import { GlassCapsule } from '../components/glass';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Linking,
   ScrollView,
   StyleSheet,
   Text,
@@ -20,7 +21,9 @@ import {
   friendlyError,
   formatAccountDeletedMessage,
   TwoFactorRequiredError,
+  getWebAppUrl,
 } from '../lib/api';
+import { SIGNUP_PATH, WEB_ACCOUNT_LINKS_ENABLED, createAccountCopy, webAppLink } from '../lib/web-links';
 import { consumeAccountDeletedNotice } from '../lib/account-deleted-notice';
 import { useAuth } from '../lib/auth';
 import { useTheme } from '../lib/theme-context';
@@ -41,6 +44,7 @@ export default function LoginScreen() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const createAccount = createAccountCopy(WEB_ACCOUNT_LINKS_ENABLED);
 
   // Task 1405 — real path: a live session's account got deleted elsewhere.
   // App.tsx's account-deleted handler stashed the notice right before
@@ -94,6 +98,7 @@ export default function LoginScreen() {
     buttonText: { color: c.paper, fontSize: 14, fontWeight: '600' },
     footerRow: { flexDirection: 'row', justifyContent: 'center', marginTop: spacing.lg },
     footerText: { fontSize: 13, color: c.ink3 },
+    footerNote: { flex: 1, textAlign: 'center', lineHeight: 18 },
     footerLink: { fontSize: 13, color: c.amberDeep, fontWeight: '600' },
     regionRow: { alignItems: 'center', marginTop: spacing['2xl'] },
     regionText: { fontSize: 11, color: c.ink4 },
@@ -226,17 +231,28 @@ export default function LoginScreen() {
           )}
         </TouchableOpacity>
 
-        {/* Signup link */}
-        <View style={styles.footerRow}>
-          <Text style={styles.footerText}>No account yet? </Text>
-          <TouchableOpacity
-            onPress={() => navigation.navigate('Signup')}
-            disabled={loading}
-            accessibilityLabel="Open create account"
-            testID="create-account-link"
-          >
-            <Text style={styles.footerLink}>Create account</Text>
-          </TouchableOpacity>
+        {/* Task 1037: accounts are created on the web, not in the app. With
+            WEB_ACCOUNT_LINKS_ENABLED off (task 1400, App Review 3.1.1(a):
+            web sign-up shows trial prices), this is one line of plain text. */}
+        <View style={styles.footerRow} testID="create-account-note">
+          {createAccount.linkLabel ? (
+            <>
+              <Text style={styles.footerText}>{createAccount.text} </Text>
+              <TouchableOpacity
+                onPress={() => {
+                  Linking.openURL(webAppLink(getWebAppUrl(), SIGNUP_PATH)).catch(() => {});
+                }}
+                disabled={loading}
+                accessibilityRole="link"
+                accessibilityLabel="Create account on beebeeb.io"
+                testID="create-account-link"
+              >
+                <Text style={styles.footerLink}>{createAccount.linkLabel}</Text>
+              </TouchableOpacity>
+            </>
+          ) : (
+            <Text style={[styles.footerText, styles.footerNote]}>{createAccount.text}</Text>
+          )}
         </View>
 
         {/* Region */}

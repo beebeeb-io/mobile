@@ -85,3 +85,24 @@ describe('effectivePlan — server field precedence (task 1601, server half)', (
     expect(effectivePlan({ plan: 'pro', status: 'cancelled' })).toBe('free');
   });
 });
+
+describe('planDisplayName — task 1037', () => {
+  test("'none' (needs_plan / lapsed accounts) reads as \"No plan\", never the raw slug", async () => {
+    const { planDisplayName } = await import('./effective-plan');
+    expect(planDisplayName('none')).toBe('No plan');
+  });
+
+  test('known slugs and legacy aliases', async () => {
+    const { planDisplayName } = await import('./effective-plan');
+    expect(planDisplayName('free')).toBe('Free');
+    expect(planDisplayName('starter')).toBe('Starter');
+    expect(planDisplayName('personal')).toBe('Basic');
+    expect(planDisplayName('PRO')).toBe('Pro');
+    expect(planDisplayName('data_hoarder')).toBe('Business');
+  });
+
+  test('an unknown slug is shown as-is', async () => {
+    const { planDisplayName } = await import('./effective-plan');
+    expect(planDisplayName('enterprise_x')).toBe('enterprise_x');
+  });
+});

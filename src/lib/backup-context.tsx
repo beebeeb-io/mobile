@@ -24,6 +24,8 @@ import { ensureBackupFolders, reconcileDerivedStateAgainstServer, type BackupCat
 import { isVaultKeyMismatchError } from '../services/vault-key-mismatch';
 import { useCrypto } from './crypto-context';
 import { useAuth } from './auth';
+import { useAccountState } from './account-state-context';
+import { readOnlyUploadMessage } from './account-state';
 import { recordRuntimeTrace } from './runtime-trace';
 import { registerDevice } from './device-registration';
 import {
@@ -446,6 +448,18 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
   // every fresh `BackupProvider` instance, which is exactly the per-mount
   // scoping the sign-in lockout fix needs (see that function's doc comment).
   const accountMismatchPollStateRef = useRef<AccountMismatchPollState>(INITIAL_ACCOUNT_MISMATCH_POLL_STATE);
+  // Task 1037: a needs_plan / lapsed account is refused every upload (409
+  // plan_required / account_lapsed). Keep the native engines OFF while that
+  // holds: they run on their own (including BGTask runs), and would otherwise
+  // retry each asset against the server until it is dead-lettered. The user's
+  // backup choices stay saved, and the engines start again once the account
+  // can take uploads. Nothing starts before the first account read settles.
+  const { ready: accountReady, gate: accountGate } = useAccountState();
+  const accountBlockedMessage = readOnlyUploadMessage(accountGate);
+  const accountReadyRef = useRef(accountReady);
+  const accountBlockedRef = useRef<string | null>(accountBlockedMessage);
+  accountReadyRef.current = accountReady;
+  accountBlockedRef.current = accountBlockedMessage;
 
   const applyNativeProgress = useCallback((p: NativeBackupProgress) => {
     const pending = p.pending ?? Math.max(0, p.total - p.completed - p.inProgress);
@@ -504,6 +518,11 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
 
   const enableNativeBackup = useCallback(async (category: BackupCategory, options: { runNow?: boolean } = {}) => {
     if (Platform.OS === 'web') return;
+    if (accountBlockedRef.current) {
+      setBackupBlockedReason(accountBlockedRef.current);
+      recordRuntimeTrace('backup.native.enable.blocked', { category, reason: 'account_read_only' });
+      return;
+    }
     const token = await getStoredToken();
     if (!token) return;
     if (!isUnlocked) {
@@ -637,6 +656,9 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
         // background task firing alongside this). Wrapped so the mount effect
         // isn't blocked.
         void (async () => {
+          // Task 1037: wait for the account read, and never start the
+          // engines for a read-only account (see accountBlockedRef above).
+          if (!accountReadyRef.current || accountBlockedRef.current) return;
           try {
             if (photo === 'true') await enableNativeBackup('camera_roll', { runNow: false });
             if (contacts === 'true') await enableNativeBackup('contacts', { runNow: false });
@@ -649,7 +671,28 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
         // SecureStore unavailable (web / unit tests)
       }
     })();
-  }, [enableNativeBackup, userId]);
+    // accountReady / accountBlockedMessage: re-run the warm-up once the first
+    // account read lands, and again when a read-only account can upload again.
+  }, [enableNativeBackup, userId, accountReady, accountBlockedMessage]);
+
+  // Task 1037: stop the engines when the account becomes read-only, and show
+  // why in place of a progress line (Settings reads backupBlockedReason).
+  const accountReasonShownRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!userId) return;
+    if (accountBlockedMessage) {
+      accountReasonShownRef.current = accountBlockedMessage;
+      setBackupBlockedReason(accountBlockedMessage);
+      recordRuntimeTrace('backup.native.stopped', { reason: 'account_read_only', state: accountGate.kind });
+      void stopBackupEngines();
+      return;
+    }
+    const shown = accountReasonShownRef.current;
+    if (shown) {
+      accountReasonShownRef.current = null;
+      setBackupBlockedReason((prev) => (prev === shown ? null : prev));
+    }
+  }, [userId, accountBlockedMessage, accountGate.kind]);
 
   // Stop the native backup engines when this instance unmounts. CryptoProvider
   // is keyed by user id (`user?.user_id ?? 'signed-out'` in App.tsx), so BOTH
@@ -800,6 +843,10 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
   }, [userId]);
 
   const triggerBackupNow = useCallback(async () => {
+    if (accountBlockedRef.current) {
+      setBackupBlockedReason(accountBlockedRef.current);
+      return;
+    }
     try {
       // wifiOnly opt-in: refuse to start a manual backup over cellular or
       // when offline.

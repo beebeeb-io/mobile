@@ -3,24 +3,13 @@ import { describe, expect, test } from 'bun:test';
 import { shouldClearPendingMarkerOnBoot, shouldRouteToPhraseGate } from './phrase-confirmation-gate';
 
 describe('shouldRouteToPhraseGate (task 1445 ruling 2)', () => {
-  test('routes to the blocking screen: authenticated, unverified, no in-memory phrase (the cold-relaunch bug)', () => {
+  test('routes to the blocking screen: authenticated, unverified (the cold-relaunch bug; since task 1037 only legacy in-app signups)', () => {
     expect(
       shouldRouteToPhraseGate({
         isAuthenticated: true,
         phraseVerified: false,
-        hasInMemoryPendingPhrase: false,
       }),
     ).toBe(true);
-  });
-
-  test('does NOT route when the live signup flow still holds the words in memory — that goes through OnboardingScreen instead', () => {
-    expect(
-      shouldRouteToPhraseGate({
-        isAuthenticated: true,
-        phraseVerified: false,
-        hasInMemoryPendingPhrase: true,
-      }),
-    ).toBe(false);
   });
 
   test('does NOT route once verified', () => {
@@ -28,7 +17,6 @@ describe('shouldRouteToPhraseGate (task 1445 ruling 2)', () => {
       shouldRouteToPhraseGate({
         isAuthenticated: true,
         phraseVerified: true,
-        hasInMemoryPendingPhrase: false,
       }),
     ).toBe(false);
   });
@@ -38,7 +26,6 @@ describe('shouldRouteToPhraseGate (task 1445 ruling 2)', () => {
       shouldRouteToPhraseGate({
         isAuthenticated: false,
         phraseVerified: false,
-        hasInMemoryPendingPhrase: false,
       }),
     ).toBe(false);
   });

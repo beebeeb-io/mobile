@@ -50,7 +50,6 @@ import { initLocalIdentifierMap } from './lib/local-identifier-map';
 import { resetThumbnailSelfRepairState } from './lib/thumbnail-self-repair';
 import { purgeAllPlaintextCaches } from './lib/account-cleanup';
 import { createSignedOutPurger } from './lib/signed-out-purge';
-import { shouldPollForAuthToken } from './lib/signup-unlock-guard';
 import {
   setupNotificationHandler,
   registerForPushNotifications,
@@ -79,7 +78,6 @@ try {
 // Eager screens — auth entry points and tab destinations (Tab navigator handles its own lazy mounting)
 import LoginScreen from './screens/LoginScreen';
 import TwoFactorChallengeScreen from './screens/TwoFactorChallengeScreen';
-import SignupScreen from './screens/SignupScreen';
 import FilesScreen from './screens/FilesScreen';
 import SharedScreen from './screens/SharedScreen';
 import PhotosScreen from './screens/PhotosScreen';
@@ -100,7 +98,9 @@ import { ConstellationScannerScreen as DevicePairingScanScreen } from './screens
 import DevicePairingShowScreen from './screens/DevicePairingShowScreen';
 import ConstellationSendScreen from './screens/ConstellationSendScreen';
 import BiometricLockScreen from './screens/BiometricLockScreen';
-import OnboardingScreen from './screens/OnboardingScreen';
+import { NeedsPlanOverlay } from './screens/NeedsPlanScreen';
+import { AccountStateProvider, useAccountState } from './lib/account-state-context';
+import { readOnlyUploadMessage } from './lib/account-state';
 import PhraseNotConfirmedScreen from './screens/PhraseNotConfirmedScreen';
 import DocumentScannerScreen from './screens/DocumentScannerScreen';
 import TwoFactorSetupScreen from './screens/TwoFactorSetupScreen';
@@ -124,7 +124,7 @@ import { DiagnosticPanel, LAST_CONNECTED_KEY } from './components/DiagnosticPane
 import { BackupProvider, useBackup } from './lib/backup-context';
 import { AnnouncementProvider } from './lib/announcement-context';
 import AnnouncementBanner from './components/AnnouncementBanner';
-import { discardAllPendingShares, processPendingShares } from '../plugins/share-extension/PendingSharesHandler';
+import { discardAllPendingShares, getPendingSharesCount, processPendingShares } from '../plugins/share-extension/PendingSharesHandler';
 import { useToast } from './lib/toast-context';
 import { clearWidgetData } from './utils/widgetData';
 import { ensureDevicePerformanceProfile } from './lib/device-performance';
@@ -142,7 +142,6 @@ import { shouldClearPendingMarkerOnBoot, shouldRouteToPhraseGate } from './lib/p
 import AndroidThumbnailRepairWorker from './lib/AndroidThumbnailRepairWorker';
 import { BeebeebThumbnails } from '../modules/beebeeb-crypto';
 
-const ONBOARDING_KEY = 'beebeeb_onboarding_done';
 const PHRASE_VERIFIED_KEY = 'beebeeb_phrase_verified';
 const MASTER_KEY_CHECK_LABEL = 'io.beebeeb.master-key-check';
 const MASTER_KEY_FALLBACK_LABEL = 'io.beebeeb.master-key.fallback';
@@ -264,7 +263,6 @@ export type RootStackParamList = {
     email?: string;
   } | undefined;
   TwoFactorChallenge: { partialToken: string };
-  Signup: undefined;
   // Main app
   Tabs: undefined;
   Trash: undefined;
@@ -318,7 +316,6 @@ export type RootStackParamList = {
   SharedView: { token: string };
   BackupGuides: undefined;
   // Auth / onboarding upgrade screens
-  RecoveryPhrase: { phrase?: string[] };
   RecoveryPhraseVerify: { phrase: string[] };
   RecoveryUnlock: undefined;
   // Task 1445 (ruling 2) — cold relaunch mid-onboarding, phrase words gone.
@@ -520,16 +517,33 @@ const signedOutPurger = createSignedOutPurger({
   full: () => purgeAllPlaintextCaches(),
 });
 
-function ShareSheetImporter({ enabled }: { enabled: boolean }) {
+function ShareSheetImporter({ enabled: enabledProp }: { enabled: boolean }) {
   const { showToast } = useToast();
   const { isUnlocked, encryptChunk, encryptMetadata } = useCrypto();
+  // Task 1037: a needs_plan / lapsed account cannot upload. Leave the shared
+  // files in the dropbox (they import once the account can take uploads)
+  // instead of failing them on every foreground. Wait for the first account
+  // read so a blocked account never starts a drain.
+  const { ready: accountReady, gate: accountGate } = useAccountState();
+  const blockedMessage = readOnlyUploadMessage(accountGate);
+  const enabled = enabledProp && accountReady;
   const enabledRef = useRef(enabled);
+  const blockedMessageRef = useRef(blockedMessage);
+  const blockedToastShownRef = useRef(false);
   const cryptoRef = useRef({ isUnlocked, encryptChunk, encryptMetadata });
   enabledRef.current = enabled;
+  blockedMessageRef.current = blockedMessage;
   cryptoRef.current = { isUnlocked, encryptChunk, encryptMetadata };
 
   const drain = useCallback(async () => {
     if (!enabledRef.current) return;
+    if (blockedMessageRef.current) {
+      if (!blockedToastShownRef.current && (await getPendingSharesCount().catch(() => 0)) > 0) {
+        blockedToastShownRef.current = true;
+        showToast({ type: 'info', message: `Shared files were not imported. ${blockedMessageRef.current}` });
+      }
+      return;
+    }
     try {
       const crypto = cryptoRef.current;
       const result = await processPendingShares({
@@ -554,9 +568,11 @@ function ShareSheetImporter({ enabled }: { enabled: boolean }) {
   }, [showToast]);
 
   // Drain on first render once enabled, then again on every foreground.
+  // Also re-run when the account stops being read-only (Refresh after a plan
+  // was chosen) so waiting shares import straight away.
   useEffect(() => {
     if (enabled) drain();
-  }, [enabled, drain]);
+  }, [enabled, blockedMessage, drain]);
 
   useEffect(() => {
     const sub = AppState.addEventListener('change', (next) => {
@@ -714,7 +730,6 @@ function VaultRecoveryGate({ enabled, navReady, navReadyEpoch }: { enabled: bool
     const currentRoute = navigationRef.getCurrentRoute()?.name;
     if (
       currentRoute === 'RecoveryUnlock' ||
-      currentRoute === 'RecoveryPhrase' ||
       currentRoute === 'RecoveryPhraseVerify'
     ) {
       return;
@@ -732,10 +747,9 @@ function VaultRecoveryGate({ enabled, navReady, navReadyEpoch }: { enabled: bool
 // Task 1445 (ruling 2) — routes a cold relaunch that lands mid-onboarding
 // (session + master key already persisted, phrase never confirmed) to the
 // blocking PhraseNotConfirmed screen instead of the vault. `enabled` is
-// pre-gated by App() on `shouldRouteToPhraseGate` (App.tsx below), which is
-// deliberately disjoint from the live-signup `pendingRecoveryPhrase` path —
-// that path still shows the real words via OnboardingScreen; this gate only
-// fires once the words are genuinely gone (see phrase-confirmation-gate.ts).
+// pre-gated by App() on `shouldRouteToPhraseGate` (App.tsx below). Since task
+// 1037 the app no longer creates accounts, so this only still matters for an
+// account created in-app by an older build whose phrase was never confirmed.
 // Mirrors VaultRecoveryGate's shape exactly, including the navReadyEpoch
 // re-fire-on-remount fix (1283) — the same CryptoProvider user-keyed remount
 // that motivated it here can swallow a navigate() here too.
@@ -747,7 +761,6 @@ function PhraseGate({ enabled, navReady, navReadyEpoch }: { enabled: boolean; na
     const currentRoute = navigationRef.getCurrentRoute()?.name;
     if (
       currentRoute === 'PhraseNotConfirmed' ||
-      currentRoute === 'RecoveryPhrase' ||
       currentRoute === 'RecoveryPhraseVerify' ||
       currentRoute === 'RecoveryUnlock' ||
       currentRoute === 'DeleteAccount'
@@ -947,12 +960,9 @@ export default function App() {
   const backgroundAtRef = useRef<number | null>(null);
   const startupRunIdRef = useRef(0);
 
-  // Onboarding: shown once after first signup
-  const [onboardingDone, setOnboardingDone] = useState(true); // true by default, corrected in startup
   // Phrase verification: false until the user types back their recovery words.
   // Defaults to true so existing (pre-phrase-flow) users are unaffected.
   const [phraseVerified, setPhraseVerified] = useState(true);
-  const [pendingRecoveryPhrase, setPendingRecoveryPhrase] = useState<string[] | null>(null);
   const [navReady, setNavReady] = useState(false);
   // 1283 — increments on EVERY NavigationContainer onReady, including remounts (the container
   // remounts under CryptoProvider's user-keyed remount on sign-in). navReady alone is stale-true
@@ -1040,7 +1050,6 @@ export default function App() {
     // sign-out already clears it; it did not, until this line.
     await SecureStore.deleteItemAsync(PHRASE_VERIFIED_KEY).catch(() => {});
     setPhraseVerified(true);
-    setPendingRecoveryPhrase(null);
     setUser(null);
   }, []);
 
@@ -1071,16 +1080,6 @@ export default function App() {
   // Shared preferences loader — called from runStartup and also when
   // diagnostics are on screen so prefs are ready when the user retries.
   const loadPreferences = useCallback(async (tokenExists: boolean) => {
-    // Check onboarding state. A fresh install with no token should not show
-    // onboarding immediately after an existing user signs in; signup owns its
-    // recovery phrase flow explicitly.
-    try {
-      const done = await SecureStore.getItemAsync(ONBOARDING_KEY);
-      setOnboardingDone(done !== 'false' || tokenExists);
-    } catch {
-      setOnboardingDone(true); // assume done if SecureStore unavailable (web)
-    }
-
     // Check phrase verification state — only applies to new OPAQUE signups.
     // Existing users who pre-date the phrase flow are treated as verified.
     try {
@@ -1427,72 +1426,28 @@ export default function App() {
     return () => sub.remove();
   }, []);
 
-  // Called from SignupScreen when OPAQUE registration succeeds and the
-  // recovery-phrase onboarding is about to start. Prevents the welcome overlay
-  // from covering the phrase flow and marks phrase verification as pending.
-  const skipOnboarding = useCallback((phrase?: string[]) => {
-    setOnboardingDone(true);
-    setPhraseVerified(false);
-    setPendingRecoveryPhrase(phrase && phrase.length > 0 ? phrase : null);
-    SecureStore.setItemAsync(ONBOARDING_KEY, 'true').catch(() => {});
-    SecureStore.setItemAsync(PHRASE_VERIFIED_KEY, 'pending').catch(() => {});
-  }, []);
-
   // Called from RecoveryPhraseVerifyScreen on successful word verification.
   const markPhraseVerified = useCallback(async () => {
     try {
       await SecureStore.setItemAsync(PHRASE_VERIFIED_KEY, 'verified');
     } catch { /* SecureStore unavailable (web) */ }
     setPhraseVerified(true);
-    setPendingRecoveryPhrase(null);
   }, []);
 
   const isAuthenticated = user !== null;
 
-  // Task 1445 (ruling 2). Deliberately disjoint from the effect right below:
-  // that one fires while pendingRecoveryPhrase still holds the real words
-  // (live signup, same JS session) and shows them via OnboardingScreen. This
-  // fires only once the words are genuinely gone (a real relaunch reset the
-  // in-memory state) — see phrase-confirmation-gate.ts for why the two must
-  // never both be true at once.
+  // Task 1445 (ruling 2): an account whose recovery phrase was never
+  // confirmed is sent to PhraseNotConfirmed. Since task 1037 no account is
+  // created in-app, so this only applies to one made by an older build.
   const needsPhraseGate = shouldRouteToPhraseGate({
     isAuthenticated,
     phraseVerified,
-    hasInMemoryPendingPhrase: pendingRecoveryPhrase != null,
   });
 
-  useEffect(() => {
-    if (!isAuthenticated || phraseVerified || !pendingRecoveryPhrase || !navReady) return;
-    let attempts = 0;
-    const interval = setInterval(() => {
-      attempts += 1;
-      if (!navigationRef.isReady()) return;
-      const route = navigationRef.getCurrentRoute()?.name;
-      if (route === 'RecoveryPhrase' || route === 'RecoveryPhraseVerify') {
-        clearInterval(interval);
-        return;
-      }
-      navigationRef.navigate('RecoveryPhrase', { phrase: pendingRecoveryPhrase });
-      if (attempts >= 10) clearInterval(interval);
-    }, 250);
-    return () => clearInterval(interval);
-  }, [isAuthenticated, navReady, pendingRecoveryPhrase, phraseVerified]);
-
-  // Listen for successful login/signup from auth screens
+  // Listen for a successful login from the auth screens
   // by polling the token after navigation events
   const handleNavigationStateChange = useCallback(async () => {
-    // Task 1594 round 6: SignupScreen sets the session token (inside
-    // opaqueRegistrationFinish) BEFORE its own crypto.unlock(phrase) call
-    // resolves — unlike login, which never unlocks the pre-remount
-    // 'signed-out'-keyed CryptoProvider instance at all. Calling refreshAuth()
-    // here in that window would flip `user` (remounting CryptoProvider) while
-    // SignupScreen's own storeMasterKey write for the BRAND NEW account is
-    // still mid-flight, and that abandoned write can then purge the very key
-    // material signup just created. `shouldPollForAuthToken` skips this
-    // independent poll for that window — SignupScreen's own explicit,
-    // sequential refreshAuth() call (after its unlock already resolved)
-    // still runs unconditionally, so signup completes exactly as before.
-    if (!shouldPollForAuthToken(!!user)) return;
+    if (user) return;
     const tokenExists = await hasToken();
     if (tokenExists) {
       await refreshAuth();
@@ -1545,10 +1500,13 @@ export default function App() {
   }
 
   return (
-    <AuthContext.Provider value={{ user, refreshAuth, signOut, phraseVerified, skipOnboarding, markPhraseVerified }}>
+    <AuthContext.Provider value={{ user, refreshAuth, signOut, phraseVerified, markPhraseVerified }}>
       {/* Task 1594: userId binds the vault key to this account — a key owned by
           anyone else is purged before it is loaded (key-ownership.ts). */}
       <CryptoProvider key={user?.user_id ?? 'signed-out'} userId={user?.user_id ?? null}>
+      {/* Task 1037: account_state (needs_plan / lapsed) for this account.
+          Inside the user-keyed CryptoProvider so it resets on every sign-in. */}
+      <AccountStateProvider userId={user?.user_id ?? null}>
       <SafeAreaProvider>
       <SyncProvider>
       <ToastProvider>
@@ -1624,11 +1582,6 @@ export default function App() {
                   <Stack.Screen name="Privacy" component={PrivacyScreen} options={{ headerShown: false }} />
                   <Stack.Screen name="DeleteAccount" component={DeleteAccountScreen} options={{ headerShown: false }} />
                   <Stack.Screen name="Storage" component={StorageScreen} options={{ headerShown: false }} />
-                  <Stack.Screen
-                    name="RecoveryPhrase"
-                    component={OnboardingScreen}
-                    options={{ gestureEnabled: false }}
-                  />
                   <Stack.Screen
                     name="RecoveryPhraseVerify"
                     component={RecoveryPhraseVerifyScreen}
@@ -1714,7 +1667,6 @@ export default function App() {
                     component={TwoFactorChallengeScreen}
                     options={{ headerShown: false, gestureEnabled: false }}
                   />
-                  <Stack.Screen name="Signup" component={SignupScreen} />
                 </>
               )}
             </Stack.Navigator>
@@ -1726,19 +1678,10 @@ export default function App() {
         {/* Server-sent announcement banner */}
         <AnnouncementBanner />
 
-        {/* Onboarding overlay — shown once after first signup */}
-        {isAuthenticated && !onboardingDone && (
-          <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: c.paper2 }}>
-            <OnboardingScreen
-              onComplete={async () => {
-                try {
-                  await SecureStore.setItemAsync(ONBOARDING_KEY, 'true');
-                } catch { /* web */ }
-                setOnboardingDone(true);
-              }}
-            />
-          </View>
-        )}
+        {/* Task 1037: a needs_plan account cannot use the app until a plan
+            is chosen on the web. Covers the whole file UI; the biometric
+            lock below still renders on top of it. */}
+        {isAuthenticated && <NeedsPlanOverlay />}
 
         {/* Biometric lock overlay — shown when app resumes from background */}
         {isAuthenticated && (
@@ -1762,6 +1705,7 @@ export default function App() {
       </ToastProvider>
       </SyncProvider>
       </SafeAreaProvider>
+      </AccountStateProvider>
       </CryptoProvider>
     </AuthContext.Provider>
   );

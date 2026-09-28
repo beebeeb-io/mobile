@@ -157,3 +157,37 @@ describe('finding 7 regression guard: a body with ONLY `error` (no `message`) mu
     expect(err.message).toBe('upload already completed');
   });
 });
+
+describe('task 1037: 409 plan_required / account_lapsed from request() (e.g. share creation)', () => {
+  test('plan_required keeps its code and friendlyError gives the needs_plan read-only message', async () => {
+    fetchQueue.push(async () => jsonResponse({ error: 'plan_required', message: 'Choose a plan first.' }, 409));
+
+    const { ApiError, friendlyError, getMe } = await loadFreshApi();
+    const err = await getMe().catch((caught) => caught);
+
+    expect(err).toBeInstanceOf(ApiError);
+    expect(err.status).toBe(409);
+    expect(err.code).toBe('plan_required');
+    expect(friendlyError(err)).toBe('Choose your plan on the web at beebeeb.io to start uploading.');
+  });
+
+  test('account_lapsed keeps its code and friendlyError says the vault is read-only', async () => {
+    fetchQueue.push(async () => jsonResponse({ error: 'account_lapsed', message: 'Your trial ended.' }, 409));
+
+    const { friendlyError, getMe } = await loadFreshApi();
+    const err = await getMe().catch((caught) => caught);
+
+    expect(err.code).toBe('account_lapsed');
+    expect(friendlyError(err)).toMatch(/read-only/);
+  });
+
+  test('other 409 bodies are unchanged: no code, the server message wins', async () => {
+    fetchQueue.push(async () => jsonResponse({ error: 'name_taken', message: 'A file with that name exists.' }, 409));
+
+    const { friendlyError, getMe } = await loadFreshApi();
+    const err = await getMe().catch((caught) => caught);
+
+    expect(err.code).toBeUndefined();
+    expect(friendlyError(err)).toBe('A file with that name exists.');
+  });
+});

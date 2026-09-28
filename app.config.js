@@ -14,5 +14,8 @@ module.exports = {
   extra: {
     ...config.extra,
     apiUrl: process.env.EXPO_PUBLIC_API_URL ?? config.extra?.apiUrl,
+    // Task 1037: web app base URL (sign-up / plan choice happen there). Unset
+    // means derived from apiUrl, see src/lib/web-links.ts resolveWebAppUrl.
+    appUrl: process.env.EXPO_PUBLIC_APP_URL ?? config.extra?.appUrl,
   },
 };

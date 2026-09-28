@@ -11,6 +11,10 @@
  * underneath the REAL `request()` path in api.ts, and asserts that every
  * attempt settles without a long silent wait and that the user is told when
  * to retry. Mutation evidence: task 1591 Notes.
+ *
+ * Task 1037 removed in-app signup (and `signupEmailStart`/`signupEmailVerify`).
+ * The same behaviour is now driven through the other unauthenticated call in
+ * the `auth` bucket, `login()`, with `getMe()` as the unrelated request.
  */
 import { beforeEach, describe, expect, mock, test } from 'bun:test';
 
@@ -80,11 +84,11 @@ beforeEach(() => {
   sent.length = 0;
 });
 
-describe('signup after a long 429 lockout (Retry-After: 3600)', () => {
+describe('auth request after a long 429 lockout (Retry-After: 3600)', () => {
   test('every attempt settles at once and says when to retry', async () => {
     respond = () => tooMany('3600');
 
-    const first = await api.signupEmailStart('a@beebeeb.io').catch((e) => e);
+    const first = await api.login('a@beebeeb.io', 'pw').catch((e) => e);
     expect(first).toBeInstanceOf(api.ApiError);
     expect(first.status).toBe(429);
     expect(first.retryAfterSeconds).toBe(3600);
@@ -92,7 +96,7 @@ describe('signup after a long 429 lockout (Retry-After: 3600)', () => {
 
     // The user retries after the message: the request must go out without
     // being held back for the lockout (it used to sleep 3_600_000 ms).
-    const second = await api.signupEmailStart('a@beebeeb.io').catch((e) => e);
+    const second = await api.login('a@beebeeb.io', 'pw').catch((e) => e);
     expect(second).toBeInstanceOf(api.ApiError);
     expect(second.status).toBe(429);
     expect(sent.length).toBe(2);
@@ -101,10 +105,10 @@ describe('signup after a long 429 lockout (Retry-After: 3600)', () => {
   });
 
   test('the lockout does not stall unrelated requests in the same bucket', async () => {
-    respond = (url) => (url.includes('email-start') ? tooMany('3600') : new Response('{"message":"ok"}', { status: 200 }));
-    await api.signupEmailStart('b@beebeeb.io').catch(() => {});
+    respond = (url) => (url.includes('/auth/login') ? tooMany('3600') : new Response('{"message":"ok"}', { status: 200 }));
+    await api.login('b@beebeeb.io', 'pw').catch(() => {});
     const t0 = now;
-    await api.signupEmailVerify('b@beebeeb.io', '12345678').catch(() => {});
+    await api.getMe().catch(() => {});
     expect(now - t0).toBeLessThanOrEqual(real.MAX_PACING_PAUSE_MS);
   });
 });
@@ -113,8 +117,10 @@ describe('short 429 pacing is still honoured', () => {
   test('Retry-After: 30 pauses the bucket for 30 s before the next request', async () => {
     let calls = 0;
     respond = () => (++calls === 1 ? tooMany('30') : new Response('{"message":"ok"}', { status: 200 }));
-    await api.signupEmailStart('c@beebeeb.io').catch(() => {});
-    await api.signupEmailStart('c@beebeeb.io');
+    await api.login('c@beebeeb.io', 'pw').catch(() => {});
+    // The 200 body carries no session token, so login() itself rejects; only
+    // the send times matter here.
+    await api.login('c@beebeeb.io', 'pw').catch(() => {});
     expect(sent[1].at - sent[0].at).toBeGreaterThanOrEqual(30_000);
   });
 });

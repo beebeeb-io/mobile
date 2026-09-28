@@ -19,7 +19,8 @@ import { assertNativeUploadEncryptedUnderSessionId, nativeProgressToUploadProgre
 import { getDeviceId } from './sync-client';
 import { deviceIdHeader } from './upload-device-header';
 import { setAnnouncement, clearAnnouncement } from './announcement-context';
-import { withSignupTicket } from './signup-email-code';
+import { ACCOUNT_LAPSED_ERROR, PLAN_REQUIRED_ERROR, gateForRefusalCode, getCurrentAccountGate, readOnlyUploadMessage } from './account-state';
+import { resolveWebAppUrl } from './web-links';
 import { normalizeNotificationPreferences, type NotificationPreferences } from './notification-prefs';
 // Task 1594 fix 4: the unlocked key's owner, sent on authenticated mutations.
 import { expectedUserHeaders, isMutatingMethod } from './expected-user';
@@ -93,6 +94,20 @@ export function getApiUrl(): string {
 /** Runtime API environment for QA/debug surfaces. */
 export function getApiEnvironment(): ApiEnvironment {
   return API_ENVIRONMENT;
+}
+
+/**
+ * The web app for this build (task 1037). Uses `extra.appUrl` /
+ * `EXPO_PUBLIC_APP_URL` when set, otherwise derives it from the API URL (see
+ * `web-links.ts` `resolveWebAppUrl`).
+ */
+export function getWebAppUrl(): string {
+  return resolveWebAppUrl({
+    configuredAppUrl:
+      (Constants.expoConfig?.extra as { appUrl?: string } | undefined)?.appUrl ??
+      process.env.EXPO_PUBLIC_APP_URL,
+    apiUrl: BASE_URL,
+  });
 }
 
 // expo-secure-store has no web implementation — fall back to localStorage so
@@ -346,6 +361,12 @@ export function friendlyError(err: unknown): string {
       // Object-COUNT cap — distinct from the byte/storage quota below.
       return 'File limit reached. This account has hit its maximum number of files — delete some files or contact support to raise the limit.';
     }
+    // Task 1037: an account without a plan is refused with 409
+    // plan_required / account_lapsed, and has quota 0 by design. Say it is
+    // read-only instead of "Storage full" or the raw server text.
+    const refusal = gateForRefusalCode(err.code, getCurrentAccountGate());
+    const readOnly = refusal ? readOnlyUploadMessage(refusal) : null;
+    if (readOnly) return readOnly;
     if (err.code === 'quota_exceeded') {
       return 'Storage full. Free up space or upgrade your plan to keep uploading.';
     }
@@ -579,7 +600,10 @@ async function request<T>(
     throw new ApiError(
       res.status,
       err.message ?? err.error ?? res.statusText,
-      undefined,
+      // Task 1037: keep the machine code for the account-refusal 409s (share
+      // creation) so friendlyError() and callers can recognise them. Other
+      // bodies stay code-less, as before.
+      err.error === PLAN_REQUIRED_ERROR || err.error === ACCOUNT_LAPSED_ERROR ? err.error : undefined,
       res.status === 429 ? retryAfterSecondsFromHeader(res.headers.get('Retry-After')) : undefined,
     );
   }
@@ -622,71 +646,9 @@ export interface User {
   created_at: string;
 }
 
-/**
- * `POST /api/v1/auth/signup/email-start` — ALWAYS resolves with the same
- * `202 {"message": ...}` body regardless of whether `email` already has an
- * account (server-side anti-enumeration, task 0706b's invariant applied a
- * step earlier). New email → an 8-digit code email; each call adds a new
- * live code (server task 1525, round 3: resend is not a no-op — up to 3 live
- * codes per email, any of them verifies). Existing email → a "you already
- * have an account" email with a sign-in link — no code, and the caller has
- * no way to tell the two cases apart from this response alone.
- *
- * The route is unconditionally mounted (server task 1525's own router.rs
- * comment: the routes are always reachable so clients can roll ahead of the
- * `BB_SIGNUP_EMAIL_CODE` flag) — so this call either succeeds or throws a
- * `404 ApiError` on a server that predates task 1525. `SignupScreen` uses
- * that 404 as the capability signal; see `./signup-email-code.ts`'s
- * `isLegacyFallbackError`.
- */
-export async function signupEmailStart(email: string): Promise<{ message: string }> {
-  return request<{ message: string }>('POST', '/api/v1/auth/signup/email-start', { email }, false);
-}
-
-/**
- * `POST /api/v1/auth/signup/email-verify` — exchanges an 8-digit code for a
- * short-lived, single-use `signup_ticket` bound to `email`. Wrong / expired /
- * reused / attempt-cap-exhausted code all render as the SAME `400`
- * (deliberately undifferentiated — no signal about which); surface
- * `err.message` as-is via `friendlyError`, it's already honest and
- * user-facing.
- */
-export async function signupEmailVerify(
-  email: string,
-  code: string,
-): Promise<{ signup_ticket: string }> {
-  return request<{ signup_ticket: string }>(
-    'POST',
-    '/api/v1/auth/signup/email-verify',
-    { email, code },
-    false,
-  );
-}
-
-/**
- * DEPRECATED legacy JSON-password signup — `SignupScreen` uses OPAQUE
- * registration (`opaqueRegistrationStart`/`opaqueRegistrationFinish` below)
- * exclusively today; this is exported for any future/dev fallback caller and
- * for parity with the server's contract (server task 1525: legacy
- * `/auth/signup` also requires a `signup_ticket` when
- * `BB_SIGNUP_EMAIL_CODE=1`).
- *
- * `signupTicket` (task 1551): the `signup_ticket` from a successful
- * `signupEmailVerify`. Optional — harmless to omit, and REQUIRED
- * server-side only once `BB_SIGNUP_EMAIL_CODE=1` (a missing/wrong ticket
- * then renders as `403 {"error":"signup_ticket_invalid"}`).
- */
-export async function signup(email: string, password: string, signupTicket?: string): Promise<AuthResponse> {
-  const data = await request<AuthResponse>(
-    'POST',
-    '/api/v1/auth/signup',
-    withSignupTicket({ email, password }, signupTicket),
-    false,
-    mobileClientHeaders(),
-  );
-  await setSessionCredentials(data.session_token, data.device_confirmation_secret);
-  return data;
-}
+// Account creation is web-only since task 1037: "Create account" points to
+// the web app (see web-links.ts). The signup / email-code / OPAQUE
+// registration calls that lived here were removed with SignupScreen.
 
 export async function login(email: string, password: string): Promise<AuthResponse> {
   const data = await request<AuthResponse & { requires_2fa?: boolean; partial_token?: string }>(
@@ -3018,6 +2980,18 @@ export interface Subscription {
    * `effectivePlan(subscription)` instead.
    */
   effective_plan?: string | null;
+  /**
+   * Additive fields (task 1037, server half). Older servers leave them out,
+   * which reads as `ok` / null / false. See `account-state.ts`.
+   *  - `account_state`: `ok` | `needs_plan` | `lapsed`.
+   *  - `data_deletion_at`: set only for `lapsed`.
+   *  - `trial_auto_converts`: a trialing row with a payment mandate that
+   *    becomes the paid plan by itself at `trial_ends_at`.
+   * For `needs_plan` and `lapsed`, `effective_plan` is `'none'`.
+   */
+  account_state?: string | null;
+  data_deletion_at?: string | null;
+  trial_auto_converts?: boolean | null;
 }
 
 export async function getSubscription(): Promise<Subscription | null> {
@@ -3098,11 +3072,6 @@ export interface OpaqueLoginStartResult {
 
 export interface OpaqueLoginResult {
   sessionToken: string;
-}
-
-export interface OpaqueRegistrationStartResult {
-  state: Uint8Array;
-  serverMessage: Uint8Array;
 }
 
 /** Sentinel thrown when OPAQUE can't run because the native crypto module is absent. */
@@ -3252,88 +3221,6 @@ export async function completeTwoFactor(
   // No device_confirmation_secret on the 2FA path — server doesn't issue
   // one. Trash device-owner auth will require a re-confirmation later.
   await setSessionCredentials(data.session_token, undefined);
-  return { sessionToken: data.session_token };
-}
-
-/**
- * Round 1 of OPAQUE registration.
- * Throws ApiError with status 404 when server does not support OPAQUE — caller
- * should fall back to the legacy /auth/signup endpoint.
- * Throws NativeCryptoUnavailableError when running in Expo Go without the
- * native module — caller should fall back to plain signup().
- *
- * `signupTicket` (task 1551, mirrors web `opaqueRegisterStart`): the
- * `signup_ticket` from a successful `signupEmailVerify`, sent as a BODY
- * field. Only enforced server-side once `BB_SIGNUP_EMAIL_CODE=1`; harmless
- * to omit or include otherwise. register-start validates the ticket WITHOUT
- * consuming it (a caller may retry start before finish).
- */
-export async function opaqueRegistrationStart(
-  email: string,
-  password: string,
-  signupTicket?: string,
-): Promise<OpaqueRegistrationStartResult> {
-  if (!BeebeebCrypto.isNativeAvailable) throw new NativeCryptoUnavailableError('opaqueRegistrationStart');
-  let state: Uint8Array;
-  let message: Uint8Array;
-  try {
-    ({ state, message } = await BeebeebCrypto.opaqueRegistrationStart(email, password));
-  } catch (err) {
-    if (!BeebeebCrypto.isNativeAvailable) throw new NativeCryptoUnavailableError('opaqueRegistrationStart');
-    throw err;
-  }
-  const data = await request<{ server_message: string }>(
-    'POST',
-    '/api/v1/opaque/register-start',
-    withSignupTicket({ email, client_message: uint8ToBase64(message) }, signupTicket),
-    false,
-  );
-  return { state, serverMessage: base64ToUint8(data.server_message) };
-}
-
-/**
- * Round 2 of OPAQUE registration.
- * Uploads the credential record to the server and returns the session token.
- *
- * `signupTicket` (task 1551): same ticket as `opaqueRegistrationStart`, sent
- * again here — this is the call that CONSUMES it atomically server-side when
- * `BB_SIGNUP_EMAIL_CODE=1`. A missing/wrong-email/expired/consumed ticket
- * renders as `403 {"error":"signup_ticket_invalid"}` — see
- * `./signup-email-code.ts`'s `isTicketInvalidError`.
- */
-export async function opaqueRegistrationFinish(
-  email: string,
-  password: string,
-  state: Uint8Array,
-  serverMessage: Uint8Array,
-  recoveryCheck?: Uint8Array,
-  x25519PublicKey?: Uint8Array,
-  signupTicket?: string,
-): Promise<{ sessionToken: string }> {
-  if (!BeebeebCrypto.isNativeAvailable) throw new NativeCryptoUnavailableError('opaqueRegistrationFinish');
-  let record: Uint8Array;
-  try {
-    ({ record } = await BeebeebCrypto.opaqueRegistrationFinish(state, serverMessage, password));
-  } catch (err) {
-    if (!BeebeebCrypto.isNativeAvailable) throw new NativeCryptoUnavailableError('opaqueRegistrationFinish');
-    throw err;
-  }
-  const data = await request<{ session_token: string; device_confirmation_secret?: string }>(
-    'POST',
-    '/api/v1/opaque/register-finish',
-    withSignupTicket(
-      {
-        email,
-        client_message: uint8ToBase64(record),
-        ...(recoveryCheck ? { recovery_check: uint8ToBase64(recoveryCheck) } : {}),
-        ...(x25519PublicKey ? { x25519_public_key: uint8ToBase64(x25519PublicKey) } : {}),
-      },
-      signupTicket,
-    ),
-    false,
-    mobileClientHeaders(),
-  );
-  await setSessionCredentials(data.session_token, data.device_confirmation_secret);
   return { sessionToken: data.session_token };
 }
 

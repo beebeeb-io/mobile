@@ -596,3 +596,12 @@ ruled on by Guus):
   entries use the device locale with a spelled month ("4 Oct 2026 at 23:28" on en-GB,
   "Oct 4, 2026, 11:28 PM" on en-US) instead of all-numeric or hard-coded English.
   `lib/date-format.ts`. Other dates in the app keep their existing (English month) format.
+
+## Task 1037 (mobile) — no in-app signup; needs_plan screen and lapsed banner
+
+No design mock covers these states. They are recorded here so they get reviewed rather than discovered:
+
+- **In-app sign-up removed.** `SignupScreen`, `SignupEmailCodeStep` and the post-signup recovery-phrase onboarding (`OnboardingScreen`, route `RecoveryPhrase`) are gone. The Login footer is one line of plain text: "Create your account on the web at beebeeb.io, then sign in here." It has no link, because the web sign-up shows trial prices (task 1400, App Review 3.1.1(a)). `WEB_ACCOUNT_LINKS_ENABLED` in `lib/web-links.ts` turns it into a link to `{web app}/signup` once a link-out is allowed.
+- **needs_plan** (`screens/NeedsPlanScreen.tsx`): a full-screen overlay above the navigator, styled like `PhraseNotConfirmedScreen` (plain surface, brand mark, one amber primary). The primary is `Refresh`, the secondary is `Sign out`, and the copy is plain text pointing to beebeeb.io. The same switch adds an `Open beebeeb.io` link to `/choose-plan`.
+- **lapsed**: a persistent, non-dismissable amber banner at the top of Files (the storage-banner shape, with wrapping text so the deletion date is never cut off). Settings and Storage & Plan show a `READ-ONLY` badge and "Read-only · deleted on {date}". Neither has a purchase or manage link, because the app has no billing link-out anywhere.
+- **Trial with a payment mandate** (`trial_auto_converts`): "Trial ends {date} · continues automatically" under the existing `TRIAL` badge. A legacy no-card trial keeps "Trial ends {date}".
