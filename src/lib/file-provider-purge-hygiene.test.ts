@@ -905,3 +905,104 @@ describe('R3 (round 8, P2): FileProviderExtension captures the epoch BEFORE its 
     expect(swift).not.toMatch(/CacheManager\.shared\.delete\(id: identifier\.rawValue\)\s*\n/);
   });
 });
+
+// Task 1593 round 9 — Codex thread PRRT_kwDOSLX6T86mgrDZ (P1), fresh evidence
+// on top of round 7b's new-P1 fix: rechecking consent immediately before
+// `addFileProviderDomain` does not make the check-then-add atomic. Lead
+// decision: validate-and-undo instead of a blocking wait (see the extensive
+// doc comment on `registerMountedFileProviderDomain`'s call site and this
+// task's Notes for the full rationale — no code duplicated into this
+// comment). The decision itself is extracted into a pure, side-effect-free
+// function (`shouldUndoFileProviderAdd`) specifically so it can be driven
+// directly; this file's structural convention (no macOS-runnable Swift unit
+// harness in this repo, same as every describe block above) asserts its
+// exact body, and a STANDALONE behavioral proof — extracting this same
+// function verbatim from the live source and running it through the `swift`
+// interpreter against every branch of its truth table — lives at
+// `_qa-evidence/1593/r9-decision-truth-table-green.txt` (plus the two
+// mutation reds, `r9-decision-truth-table-red-M1.txt` and `-M2.txt`), not as
+// a permanently maintained duplicate-of-Swift test file (that would drift),
+// but as one-off verification re-run from `extract_fn.py` +
+// `build_and_run.sh` in this task's evidence directory.
+describe('round 9 (P1, Codex thread PRRT_kwDOSLX6T86mgrDZ): validate-and-undo replaces the unserialized consent-then-add', () => {
+  const swift = readFileSync(MODULE_SWIFT_PATH, 'utf8');
+
+  test('shouldUndoFileProviderAdd: consent off (either flag) always undoes, regardless of the generation delta', () => {
+    const body = bracedBody(
+      swift,
+      'private func shouldUndoFileProviderAdd(\n  generationBeforeAdd: Int,\n  generationAfterAdd: Int,\n  consentTrustedMount: Bool,\n  consentEnabled: Bool\n) -> Bool {',
+    );
+    expect(body).toMatch(/guard consentTrustedMount, consentEnabled else \{\s*\n\s*return true\s*\n\s*\}/);
+  });
+
+  test('shouldUndoFileProviderAdd: with consent on, undoes only when the generation moved by more than the caller\'s own +1 bump', () => {
+    const body = bracedBody(
+      swift,
+      'private func shouldUndoFileProviderAdd(\n  generationBeforeAdd: Int,\n  generationAfterAdd: Int,\n  consentTrustedMount: Bool,\n  consentEnabled: Bool\n) -> Bool {',
+    );
+    const guardIdx = body.indexOf('guard consentTrustedMount, consentEnabled else');
+    expect(guardIdx).toBeGreaterThan(-1);
+    const after = body.slice(guardIdx);
+    expect(after).toMatch(/return generationAfterAdd != generationBeforeAdd &\+ 1\s*\n\s*\}/);
+  });
+
+  test('the consent check and the "+1 allowance" both survive as separate lines — neither swallows the other', () => {
+    // Guards against a mutation that folds both conditions into one
+    // expression and silently drops one of them (e.g.
+    // `consentTrustedMount && consentEnabled && generationAfterAdd == generationBeforeAdd + 1`
+    // reads as equivalent at a glance but is a different function shape this
+    // test would then no longer be pinning).
+    const body = bracedBody(
+      swift,
+      'private func shouldUndoFileProviderAdd(\n  generationBeforeAdd: Int,\n  generationAfterAdd: Int,\n  consentTrustedMount: Bool,\n  consentEnabled: Bool\n) -> Bool {',
+    );
+    const lines = body.split('\n').map((l) => l.trim()).filter(Boolean);
+    expect(lines).toContain('guard consentTrustedMount, consentEnabled else {');
+    expect(lines).toContain('return true');
+    expect(lines).toContain('return generationAfterAdd != generationBeforeAdd &+ 1');
+  });
+
+  test('registerMountedFileProviderDomain captures the generation BEFORE the add, not after', () => {
+    const body = bracedBody(
+      swift,
+      'private func registerMountedFileProviderDomain(\n  defaults: UserDefaults?,\n  forceReset: Bool = false\n) async throws -> [String: Any] {',
+    );
+    const captureIdx = body.indexOf('let generationBeforeAdd = currentFileProviderGeneration()');
+    const addIdx = body.indexOf('try await addFileProviderDomain(domain)');
+    const bumpIdx = body.indexOf('let generationAfterAdd = bumpFileProviderGeneration()');
+    expect(captureIdx).toBeGreaterThan(-1);
+    expect(addIdx).toBeGreaterThan(-1);
+    expect(bumpIdx).toBeGreaterThan(-1);
+    expect(captureIdx).toBeLessThan(addIdx);
+    expect(addIdx).toBeLessThan(bumpIdx);
+  });
+
+  test('the undo branch traces a distinct event, calls the SAME bounded removal helper the purge uses, and reports fresh status instead of success', () => {
+    const body = bracedBody(
+      swift,
+      'private func registerMountedFileProviderDomain(\n  defaults: UserDefaults?,\n  forceReset: Bool = false\n) async throws -> [String: Any] {',
+    );
+    const callIdx = body.indexOf('if shouldUndoFileProviderAdd(');
+    expect(callIdx).toBeGreaterThan(-1);
+    const after = body.slice(callIdx, callIdx + 500);
+    expect(after).toMatch(/generationBeforeAdd: generationBeforeAdd,\s*\n\s*generationAfterAdd: generationAfterAdd,\s*\n\s*consentTrustedMount: defaults\?\.bool\(forKey: fileProviderTrustedMountKey\) \?\? false,\s*\n\s*consentEnabled: sharedBoolDefaultTrue\(defaults, key: fileProviderEnabledKey\)\s*\n\s*\) \{/);
+    expect(after).toMatch(/RuntimeTrace\.event\("storage\.purge\.file_provider_domain_add_undone", \[:\]\)/);
+    expect(after).toMatch(/_ = removeFileProviderDomainIfRegistered\(\)/);
+    expect(after).toMatch(/return await currentFileProviderDomainStatus\(\)/);
+  });
+
+  test('the consent flags passed into the undo check are freshly re-read, not the guard\'s earlier captured values', () => {
+    // The same `defaults?.bool(forKey: ...)` / `sharedBoolDefaultTrue(...)`
+    // expressions as the pre-add guard, evaluated again at THIS call site —
+    // UserDefaults reads are always live, so re-issuing the same expression
+    // (rather than reusing a variable from the guard) is what makes this a
+    // real recheck instead of trusting a stale snapshot.
+    const body = bracedBody(
+      swift,
+      'private func registerMountedFileProviderDomain(\n  defaults: UserDefaults?,\n  forceReset: Bool = false\n) async throws -> [String: Any] {',
+    );
+    const occurrences = (body.match(/defaults\?\.bool\(forKey: fileProviderTrustedMountKey\)/g) ?? []).length;
+    // Once in the pre-add guard, once in the post-add undo check.
+    expect(occurrences).toBe(2);
+  });
+});

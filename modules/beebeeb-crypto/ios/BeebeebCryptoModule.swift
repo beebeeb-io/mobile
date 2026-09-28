@@ -490,6 +490,47 @@ private func currentFileProviderGeneration() -> Int {
   return _fileProviderGeneration
 }
 
+/// Task 1593 round 9 (Codex thread PRRT_kwDOSLX6T86mgrDZ) — pure decision
+/// function for `registerMountedFileProviderDomain`'s validate-and-undo step
+/// (see that function's doc comment above its call site for the full race).
+/// Extracted as a free function, with no NSFileProviderManager/UserDefaults
+/// access of its own, specifically so a test can drive every branch
+/// directly without touching the File Provider APIs — this repo has no
+/// macOS-runnable Swift unit harness (rounds 4-8's Notes), so a pure,
+/// side-effect-free function is the most directly testable shape available;
+/// the structural source-scan tests in `file-provider-purge-hygiene.test.ts`
+/// assert this function's body, not just its call site, so a future edit
+/// that weakens either condition fails the test even if the call site is
+/// untouched.
+///
+/// `generationBeforeAdd`/`generationAfterAdd` bracket the just-completed
+/// `addFileProviderDomain` call: the caller bumps the generation counter
+/// exactly once, unconditionally, immediately after its own successful add
+/// (mirroring round 7 F2's contract that every successful add bumps it), so
+/// `generationAfterAdd` should equal `generationBeforeAdd + 1` in the
+/// non-racing case. A LARGER jump means something else — concretely, a
+/// concurrent purge's `resetFileProviderShowInFilesConsent` (round 8 R1,
+/// the only other call site of `bumpFileProviderGeneration`) — also bumped
+/// it inside the same window, i.e. a purge ran between this function's
+/// caller capturing `generationBeforeAdd` and validating here. The direct
+/// consent-flag recheck is checked FIRST and independently, because a
+/// forced sign-out's OTHER path (`clearFileProviderSharedState`, the
+/// ordinary in-app `removeFileProviderAccess()` route) sets both flags
+/// false directly without going through `resetFileProviderShowInFilesConsent`
+/// and so never bumps the generation at all — the generation check alone
+/// would miss that race; the two checks are complementary, not redundant.
+private func shouldUndoFileProviderAdd(
+  generationBeforeAdd: Int,
+  generationAfterAdd: Int,
+  consentTrustedMount: Bool,
+  consentEnabled: Bool
+) -> Bool {
+  guard consentTrustedMount, consentEnabled else {
+    return true
+  }
+  return generationAfterAdd != generationBeforeAdd &+ 1
+}
+
 @available(iOS 16.0, *)
 private func getFileProviderDomains() async throws -> [NSFileProviderDomain] {
   try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<[NSFileProviderDomain], Error>) in
@@ -1186,12 +1227,55 @@ private func registerMountedFileProviderDomain(
     else {
       return await currentFileProviderDomainStatus()
     }
+    // Task 1593 round 9 (Codex thread PRRT_kwDOSLX6T86mgrDZ, P1) —
+    // "Serialize the consent check with domain addition". Fresh evidence on
+    // top of round 7b's new-P1 fix (the guard immediately above): the
+    // recheck happening right before `addFileProviderDomain` does not make
+    // the check-then-add atomic. A forced sign-out can still start AFTER
+    // this guard passes but BEFORE (or while) `addFileProviderDomain`
+    // actually runs, reset consent, observe the domain absent (our add
+    // hasn't landed yet), and finish — then this suspended add resumes and
+    // mounts the domain for a now-signed-out user.
+    //
+    // LEAD DECISION (task 1593 Notes, round 9): do not build a blocking
+    // wait here. `registerMountedFileProviderDomain` is a Swift Task
+    // (`ConcurrentFunctionDefinition`); the purge's consent-reset-then-
+    // remove sequence deliberately stays on Expo's separate shared serial
+    // `AsyncFunctionDefinition` queue (see `removeFileProviderDomainIfRegistered`'s
+    // P2-4 doc comment) so that neither native call can ever hang behind a
+    // completion handler that never fires (round 6, new-1) — coordinating
+    // the two with a shared lock would reintroduce exactly that hang risk.
+    // Instead: validate-and-undo. Capture the generation counter
+    // immediately before the add (bracketing exactly the window the race
+    // needs), let the add complete, then re-check BOTH the live consent
+    // flags AND the generation counter. If consent is off, or the
+    // generation moved by more than our own bump, a purge landed inside
+    // that window — undo immediately via the same bounded, traced removal
+    // helper the purge itself uses (`removeFileProviderDomainIfRegistered`),
+    // and report the FRESH domain status, never the success this add
+    // technically achieved. The window where the domain actually exists in
+    // that case is bounded by one `.add` completion (typically low
+    // milliseconds — the same call round 6 measured to justify its 5s
+    // removal timeout), not by any wait this function introduces, and by
+    // the time we observe it the cache DB is already empty and the session
+    // token already cleared for the purge that raced us (rounds 4-7).
+    let generationBeforeAdd = currentFileProviderGeneration()
     try await addFileProviderDomain(domain)
     // Task 1593 round 7 (F2) — see `bumpFileProviderGeneration`'s doc
     // comment: this add is the event a stale, since-completed `.remove`
     // (from a purge whose 5s bounded wait already gave up) must not be
     // allowed to silently undo.
-    bumpFileProviderGeneration()
+    let generationAfterAdd = bumpFileProviderGeneration()
+    if shouldUndoFileProviderAdd(
+      generationBeforeAdd: generationBeforeAdd,
+      generationAfterAdd: generationAfterAdd,
+      consentTrustedMount: defaults?.bool(forKey: fileProviderTrustedMountKey) ?? false,
+      consentEnabled: sharedBoolDefaultTrue(defaults, key: fileProviderEnabledKey)
+    ) {
+      RuntimeTrace.event("storage.purge.file_provider_domain_add_undone", [:])
+      _ = removeFileProviderDomainIfRegistered()
+      return await currentFileProviderDomainStatus()
+    }
   }
   let cacheReady = ensureFileProviderCacheDatabase()
   defaults?.set(fileProviderDomainSchemaVersion, forKey: fileProviderDomainSchemaKey)
