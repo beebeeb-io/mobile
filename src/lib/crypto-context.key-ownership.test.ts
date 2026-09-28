@@ -93,6 +93,16 @@ const calls = {
   deleteKeychain: 0,
   verify: [] as string[],
   backfill: [] as string[],
+  // Task 1594 round 4 (F4): every handle id `confirmMasterKeyHandle` was
+  // called with, in call order.
+  confirmed: [] as number[],
+  // Task 1594 round 4 (R4): every value `mirrorSessionUserId` (the native
+  // call underneath `mirrorSignedInUserId`) was called with, in call order.
+  // NOTE: this test harness never runs a `useEffect` with non-empty deps
+  // (see the T1-era comment on the `useEffect` mock below), so the mount
+  // effect that also calls `mirrorSignedInUserId` never fires here — every
+  // entry recorded in a test is from `unlock()`'s own round-4 call.
+  mirroredSignedInUser: [] as (string | null)[],
 };
 const server = {
   reachable: true,
@@ -118,17 +128,54 @@ mock.module('expo-file-system/legacy', () => ({
 // a specific SecureStore key — used to prove `writeKeyOwner()` failing after
 // a successful verify releases the handle instead of leaking it.
 let failNextWriteOf: string | null = null;
+// Task 1594 round 4 (Codex P1, crypto-context.tsx:763): a one-shot PAUSE
+// (not failure) injected into the NEXT write of a specific SecureStore key —
+// lets a test hold `storeMasterKey()` itself paused mid-write (i.e. AFTER
+// its ownership verdict already resolved and its `disposedRef` check already
+// passed) so it can unmount the provider from underneath it and prove the
+// generation check inside `storeMasterKey` catches what `disposedRef`
+// (checked only before `storeMasterKey` is called) cannot.
+let pauseNextWriteOf: string | null = null;
+let writePauseGate: Promise<void> | null = null;
+let releaseWritePauseFn: (() => void) | null = null;
+let writePauseEnteredPromise: Promise<void> | null = null;
+let resolveWritePauseEntered: (() => void) | null = null;
+function armWritePause(key: string) {
+  pauseNextWriteOf = key;
+  writePauseGate = new Promise<void>((resolve) => { releaseWritePauseFn = resolve; });
+  writePauseEnteredPromise = new Promise<void>((resolve) => { resolveWritePauseEntered = resolve; });
+}
+// Task 1594 round 4: a reentrancy detector on `setItemAsync` — counts how
+// many calls are simultaneously "open" (entered but not yet returned).
+// Without serialization, two overlapping `storeMasterKey()` calls (A's
+// abandoned one, still paused; B's fresh one, running concurrently) can each
+// have a `setItemAsync` call open at the same time — `maxSecureWriteDepth`
+// would exceed 1. The round-4 queue in `crypto-context.tsx` must keep this at
+// 1: B's entire write sequence cannot start until A's has fully finished.
+let secureWriteDepth = 0;
+let maxSecureWriteDepth = 0;
 mock.module('expo-secure-store', () => ({
   getItemAsync: async (k: string) => {
     if (k === FALLBACK) calls.fallbackReads += 1;
     return secure.get(k) ?? null;
   },
   setItemAsync: async (k: string, v: string) => {
-    if (failNextWriteOf === k) {
-      failNextWriteOf = null;
-      throw new Error('SecureStore write failed (simulated, task 1594 T3)');
+    secureWriteDepth += 1;
+    maxSecureWriteDepth = Math.max(maxSecureWriteDepth, secureWriteDepth);
+    try {
+      if (failNextWriteOf === k) {
+        failNextWriteOf = null;
+        throw new Error('SecureStore write failed (simulated, task 1594 T3)');
+      }
+      if (pauseNextWriteOf === k) {
+        pauseNextWriteOf = null;
+        resolveWritePauseEntered?.();
+        await writePauseGate;
+      }
+      secure.set(k, v);
+    } finally {
+      secureWriteDepth -= 1;
     }
-    secure.set(k, v);
   },
   deleteItemAsync: async (k: string) => { secure.delete(k); },
 }));
@@ -142,8 +189,10 @@ const cryptoMock = {
     handles.set(id, new Uint8Array(k));
     return id;
   },
+  confirmMasterKeyHandle: async (h: number) => { calls.confirmed.push(h); return true; },
   createRequestKeypairWithHandle: async () => ({}),
   decryptNames: async () => [],
+  mirrorSessionUserId: async (userId: string | null) => { calls.mirroredSignedInUser.push(userId); return true; },
   deriveX25519PublicFromPrivate: async (priv: Uint8Array) => priv.map((x) => x ^ 0x77 ^ 0x33),
   handleComputeRecoveryCheck: async (h: number) => checkOf(handles.get(h)!),
   handleDecryptChunk: async () => new Uint8Array(),
@@ -273,6 +322,8 @@ beforeEach(() => {
   calls.deleteKeychain = 0;
   calls.verify = [];
   calls.backfill = [];
+  calls.confirmed = [];
+  calls.mirroredSignedInUser = [];
   server.reachable = true;
   server.sessionUser = USER_B;
   server.users = {
@@ -285,6 +336,13 @@ beforeEach(() => {
   verifyEnteredPromise = null;
   resolveVerifyEntered = null;
   failNextWriteOf = null;
+  pauseNextWriteOf = null;
+  writePauseGate = null;
+  releaseWritePauseFn = null;
+  writePauseEnteredPromise = null;
+  resolveWritePauseEntered = null;
+  secureWriteDepth = 0;
+  maxSecureWriteDepth = 0;
 });
 
 describe('1594 — a stored key is only ever used for the account that owns it', () => {
@@ -571,5 +629,210 @@ describe('1594 round 3 (Codex T3) — a failed owner-record write releases the h
     expect(calls.released.length).toBe(calls.createHandle);
     const after = render();
     expect(after.isUnlocked).toBe(false);
+  });
+});
+
+describe('1594 round 4 (Codex P1, crypto-context.tsx:763) — an abandoned phrase-unlock write cannot outlive its provider', () => {
+  test("sign-out mid storeMasterKey() write leaves no key behind — never resurrects the abandoned account's key", async () => {
+    // A's ownership verdict already resolved and its disposedRef check (the
+    // one immediately before `storeMasterKey` is called) already passed —
+    // the race here is entirely INSIDE storeMasterKey's own sequential
+    // SecureStore writes, which disposedRef (checked only before the call)
+    // cannot see. No second account is involved here — this isolates the
+    // "abandoned provider recreates A's key after sign-out" failure mode
+    // from any interleaving with a second sign-in (covered separately below).
+    server.sessionUser = USER_A;
+    const renderA = mountProvider(USER_A);
+    renderA(); // mount: registers the unmount cleanup
+
+    armWritePause(FALLBACK);
+    const unlockAPromise = renderA().unlock(PHRASE_A);
+    await writePauseEnteredPromise; // paused inside storeMasterKey's own write, for A
+
+    // Sign-out ("Use another account") while storeMasterKey is mid-write —
+    // no new provider mounts here.
+    renderA.unmount();
+    releaseWritePauseFn!();
+
+    await expect(unlockAPromise).rejects.toThrow(/unmounted/i);
+
+    // The abandoned write must not have resurrected any part of A's key.
+    expectKeyPurged();
+    // F4: an instance that never reaches adoption must never confirm its
+    // handle into the native, app-wide cache either.
+    expect(calls.confirmed).toEqual([]);
+  });
+
+  test("B's own storeMasterKey call queues behind A's abandoned one instead of racing it — never runs concurrently, never gets clobbered by A finishing late", async () => {
+    const { getExpectedUserId } = await import('./expected-user');
+
+    server.sessionUser = USER_A;
+    const renderA = mountProvider(USER_A);
+    renderA(); // mount: registers the unmount cleanup
+
+    armWritePause(FALLBACK);
+    const unlockAPromise = renderA().unlock(PHRASE_A);
+    await writePauseEnteredPromise; // paused inside storeMasterKey's own write, for A
+
+    // "Use another account": A's provider unmounts while storeMasterKey is
+    // still mid-write (the exact Codex scenario — NOT while awaiting the
+    // ownership verify, which already finished).
+    renderA.unmount();
+
+    // B signs in fresh and starts its OWN, unrelated unlock while A's write
+    // is still parked.
+    server.sessionUser = USER_B;
+    const renderB = mountProvider(USER_B);
+    const unlockBPromise = renderB().unlock(PHRASE_B);
+    let bSettled = false;
+    unlockBPromise.then(() => { bSettled = true; }, () => { bSettled = true; });
+
+    // Drain many microtask turns (not wall-clock time — deterministic) so
+    // every one of B's OWN pre-storeMasterKey steps (recoverFromPhrase,
+    // createMasterKeyHandle, the ownership verify) — and, on UNFIXED code,
+    // its entire storeMasterKey write sequence too, since nothing there
+    // blocks it — gets every chance to run while A's write is still parked.
+    // Without the round-4 queue, B's SecureStore writes have nothing stopping
+    // them from starting (and finishing) while A's stale ones are still open:
+    // `bSettled` goes true here. WITH the queue, B's storeMasterKey call
+    // cannot even start until A's turn is released, so it must still be
+    // pending.
+    for (let i = 0; i < 40; i += 1) await Promise.resolve();
+    expect(bSettled).toBe(false);
+    // No two SecureStore writes (A's stale one, B's — if it had been allowed
+    // to start) were ever simultaneously in flight during that drain.
+    expect(maxSecureWriteDepth).toBeLessThanOrEqual(1);
+
+    // Release A's paused write: it finishes its remaining local writes,
+    // notices the generation moved on, purges what IT wrote, and throws —
+    // freeing the queue for B's turn, which only then starts writing.
+    releaseWritePauseFn!();
+
+    await expect(unlockAPromise).rejects.toThrow(/unmounted/i);
+    await unlockBPromise;
+
+    // B's key is the one left standing — not recreated-A, not a corrupted mix.
+    expect(getExpectedUserId()).toBe(USER_B);
+    expect(secure.get(FALLBACK)).toBe(b64(KEY_B));
+    expect(secure.get(OWNER)).toBe(USER_B);
+    expect(secure.get(CHECK)).toBe(b64(checkOf(KEY_B)));
+    expect(renderB().isUnlocked).toBe(true);
+    // F4: only B's handle is ever confirmed into the native cache — A's
+    // abandoned one never gets there.
+    expect(calls.confirmed).toEqual([calls.createHandle]);
+  });
+});
+
+describe('1594 round 4 (F4, BeebeebCryptoModule.swift ~1547/~1562) — confirmMasterKeyHandle is called exactly on adoption, never on mismatch/unverifiable-unbound/disposed', () => {
+  test('phrase unlock at signup (no session yet, ownerUserId null) → confirmed exactly once, with the adopted handle', async () => {
+    const render = mountProvider(undefined);
+    await render().unlock(PHRASE_A);
+
+    expect(render().isUnlocked).toBe(true);
+    expect(calls.confirmed).toEqual([calls.createHandle]);
+  });
+
+  test('phrase unlock with a server "match" verdict → confirmed exactly once', async () => {
+    server.sessionUser = USER_A;
+    const render = mountProvider(USER_A);
+    await render().unlock(PHRASE_A);
+
+    expect(render().isUnlocked).toBe(true);
+    expect(calls.confirmed).toEqual([calls.createHandle]);
+  });
+
+  test('phrase unlock with a server "mismatch" verdict (wrong account\'s phrase) → refused, NEVER confirmed', async () => {
+    server.sessionUser = USER_B; // signed in as B, but A's phrase is typed
+    const render = mountProvider(USER_B);
+
+    await expect(render().unlock(PHRASE_A)).rejects.toThrow(/different account/i);
+
+    expect(calls.confirmed).toEqual([]);
+  });
+
+  test('keychain (software-fallback) unlock, key already bound to this account → confirmed exactly once', async () => {
+    seedStoredKey(KEY_A, USER_A);
+    server.sessionUser = USER_A;
+    const render = mountProvider(USER_A);
+    await render().unlock();
+
+    expect(render().isUnlocked).toBe(true);
+    expect(calls.confirmed).toEqual([calls.createHandle]);
+  });
+
+  test("keychain unlock, A's key + B signed in → purged before load, NEVER confirmed (no handle even created)", async () => {
+    seedStoredKey(KEY_A, USER_A);
+    server.sessionUser = USER_B;
+    const render = mountProvider(USER_B);
+
+    await expect(render().unlock()).rejects.toThrow(/no master key in keychain/i);
+
+    expect(calls.createHandle).toBe(0);
+    expect(calls.confirmed).toEqual([]);
+  });
+
+  test("keychain unlock, unbound key + account with no public key on file (unverifiable) → refused, handle released, NEVER confirmed", async () => {
+    seedStoredKey(KEY_A, null);
+    server.sessionUser = USER_A;
+    server.users[USER_A] = { check: null, pub: null }; // nothing to prove against
+
+    const render = mountProvider(USER_A);
+    await expect(render().unlock()).rejects.toThrow(/no master key in keychain/i);
+
+    // A handle WAS created (the software-fallback path always creates one to
+    // verify against the stored check) and then released — this is exactly
+    // the case F4 exists for: a handle that touched native code but must
+    // never reach the app-wide cache since ownership was never proven.
+    expect(calls.createHandle).toBeGreaterThan(0);
+    expect(calls.released.length).toBe(calls.createHandle);
+    expect(calls.confirmed).toEqual([]);
+  });
+});
+
+describe('1594 round 4 (R4) — the signed-in-user mirror is re-asserted after every successful unlock', () => {
+  test('a successful phrase unlock re-mirrors the signed-in user id', async () => {
+    server.sessionUser = USER_A;
+    const render = mountProvider(USER_A);
+
+    await render().unlock(PHRASE_A);
+
+    // A later `mirrorSessionToAppGroup` token-change event (api.ts, the
+    // login token arriving) DELETES this exact shared value the instant the
+    // token changes — landing any time relative to this provider's own mount
+    // effect, which also writes it once but which this harness never runs
+    // for a non-`[]`-deps effect anyway (see the `mirroredSignedInUser`
+    // fixture comment). `unlock()` re-asserting it directly, once the key is
+    // confirmed adopted, is what actually closes the race regardless of that
+    // ordering.
+    expect(calls.mirroredSignedInUser).toEqual([USER_A]);
+  });
+
+  test('a successful keychain unlock re-mirrors the signed-in user id', async () => {
+    seedStoredKey(KEY_A, USER_A);
+    server.sessionUser = USER_A;
+    const render = mountProvider(USER_A);
+
+    await render().unlock();
+
+    expect(calls.mirroredSignedInUser).toEqual([USER_A]);
+  });
+
+  test('an unlock that never adopts a key (server "mismatch" verdict) does NOT re-mirror', async () => {
+    server.sessionUser = USER_B; // signed in as B, but A's phrase is typed
+    const render = mountProvider(USER_B);
+
+    await expect(render().unlock(PHRASE_A)).rejects.toThrow(/different account/i);
+
+    expect(calls.mirroredSignedInUser).toEqual([]);
+  });
+
+  test('an unlock refused by owner-mismatch precheck (purged before any load) does NOT re-mirror', async () => {
+    seedStoredKey(KEY_A, USER_A);
+    server.sessionUser = USER_B;
+    const render = mountProvider(USER_B);
+
+    await expect(render().unlock()).rejects.toThrow(/no master key in keychain/i);
+
+    expect(calls.mirroredSignedInUser).toEqual([]);
   });
 });

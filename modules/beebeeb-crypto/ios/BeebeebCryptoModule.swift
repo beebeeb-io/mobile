@@ -1544,7 +1544,16 @@ public class BeebeebCryptoModule: Module {
       mutableData.withUnsafeMutableBytes { ptr in
         if let base = ptr.baseAddress { memset(base, 0, ptr.count) }
       }
-      BeebeebCryptoBridge.setCachedMasterKey(handle)
+      // Task 1594 round 4 (F4): do NOT populate `BeebeebCryptoBridge`'s
+      // app-wide cache here. `NativeBackupEngine` (a background task can run
+      // any time), `NativeEncryptedBackupUploader`, and `ThumbnailServiceModule`
+      // all read that cache directly — setting it before JS's ownership
+      // verdict (`crypto-context.tsx`'s `verifyKeyBelongsToAccount` / the
+      // `unbound`/`purged` precheck branches) runs meant a key that verdict
+      // was about to REJECT (or purge) was already usable by those readers
+      // for however long the verdict took. The JS side now calls
+      // `confirmMasterKeyHandle(handleId)` at every point it actually adopts
+      // a handle — see that function below.
       let handleId = self.storeHandle(handle)
       RuntimeTrace.event("keychain.bridge.load_handle.success", [
         "label": label,
@@ -1559,10 +1568,34 @@ public class BeebeebCryptoModule: Module {
       mutableData.withUnsafeMutableBytes { ptr in
         if let base = ptr.baseAddress { memset(base, 0, ptr.count) }
       }
-      BeebeebCryptoBridge.setCachedMasterKey(handle)
+      // Task 1594 round 4 (F4): see the matching comment in
+      // `loadKeyFromKeychainAsHandle` above — the cache is populated only via
+      // `confirmMasterKeyHandle`, once JS has actually adopted this handle.
       let handleId = self.storeHandle(handle)
       RuntimeTrace.event("keychain.bridge.create_handle.success", ["handleId": handleId])
       return handleId
+    }
+
+    // Task 1594 round 4 (F4): populate `BeebeebCryptoBridge`'s app-wide
+    // native-cache — the ONE thing `NativeBackupEngine` (background task),
+    // `NativeEncryptedBackupUploader`, and `ThumbnailServiceModule` read
+    // directly, bypassing the JS handle entirely — ONLY once JS has proven
+    // (or accepted, in the `unverifiable`/offline-`bound` cases the existing
+    // ownership flow already treats as usable) that this handle belongs to
+    // the signed-in account. Called from every adoption point in
+    // `crypto-context.tsx`'s `unlock()`: the phrase-unlock branch (after its
+    // ownership verdict, or immediately for a session-less signup with
+    // nothing to verify against yet) and the keychain-unlock branch (the
+    // `match` verdict, and the `bound`-precheck `unverifiable`/`unreachable`
+    // branches that keep an already-trusted binding). A handle NEVER
+    // confirmed (refused, purged, or the provider disposed first) simply sits
+    // inert in `masterKeyHandles` until `releaseHandle` removes it — the
+    // native readers never see it.
+    AsyncFunction("confirmMasterKeyHandle") { [self] (handleId: Int) throws -> Bool in
+      let handle = try self.getHandle(handleId)
+      BeebeebCryptoBridge.setCachedMasterKey(handle)
+      RuntimeTrace.event("keychain.bridge.confirm_handle", ["handleId": handleId])
+      return true
     }
 
     AsyncFunction("deleteKeyFromKeychain") { () throws -> Bool in
@@ -1576,6 +1609,18 @@ public class BeebeebCryptoModule: Module {
       // cache can never outlive the keychain key it was read from, regardless
       // of handle-refcount bookkeeping on the JS side.
       BeebeebCryptoBridge.clearCachedMasterKey()
+      // Task 1594 round 4 (F4): `BeebeebCryptoBridge.clearCachedMasterKey()`
+      // above does NOT touch `NativeBackupEngine`'s OWN separate copy
+      // (`masterKeyHandle`, warmed independently via `BeebeebCryptoBridge
+      // .loadMasterKey()` in `start()`, or adopted from the bridge cache by a
+      // background task — see `dropCachedMasterKeyHandle()`'s doc comment,
+      // task 1531). Every path that purges the persisted key (this call —
+      // `purgeStoredVaultKey`'s `key-ownership.ts`, reached on an
+      // owner-mismatch precheck or a server-proven `mismatch`) must drop that
+      // copy too, or a background backup task that already warmed
+      // `masterKeyHandle` for the PREVIOUS account keeps using it after the
+      // keychain key it came from no longer exists.
+      NativeBackupEngine.shared.dropCachedMasterKeyHandle()
       return true
     }
 

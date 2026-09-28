@@ -696,6 +696,26 @@ export async function releaseHandle(handleId: number): Promise<void> {
   return BeebeebCryptoModule.releaseHandle(handleId)
 }
 
+/**
+ * Task 1594 round 4 (F4): confirm that `handleId` — already loaded via
+ * `loadKeyFromKeychainAsHandle`/`createMasterKeyHandle` — is safe to use for
+ * this account. Populates the native, app-wide `BeebeebCryptoBridge` cache
+ * that `NativeBackupEngine` (a background task can run at any time),
+ * `NativeEncryptedBackupUploader`, and `ThumbnailServiceModule` all read
+ * DIRECTLY, bypassing this JS handle entirely — the two `AsyncFunction`s that
+ * load a handle deliberately no longer populate that cache themselves.
+ * Call this ONLY once `crypto-context.tsx`'s own ownership verdict has
+ * accepted the key for the signed-in account — never speculatively at load
+ * time, or those native readers could use a key the verdict is still in the
+ * middle of rejecting. A build with no native implementation (or a mocked
+ * test environment) no-ops to `true`, matching every other optional bridge
+ * call in this file.
+ */
+export async function confirmMasterKeyHandle(handleId: number): Promise<boolean> {
+  if (typeof BeebeebCryptoModule.confirmMasterKeyHandle !== 'function') return true
+  return BeebeebCryptoModule.confirmMasterKeyHandle(handleId)
+}
+
 // ─── Keychain ────────────────────────────────────────────────────────────────
 
 /**

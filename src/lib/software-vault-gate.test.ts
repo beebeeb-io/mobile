@@ -60,6 +60,7 @@ mock.module('react-native', () => ({
 // are plain top-level values — so every stub below is a no-op.
 mock.module('../../modules/beebeeb-crypto', () => ({
   computeRecoveryCheck: () => undefined,
+  confirmMasterKeyHandle: () => undefined,
   createMasterKeyHandle: () => undefined,
   createRequestKeypairWithHandle: () => undefined,
   decryptNames: () => undefined,

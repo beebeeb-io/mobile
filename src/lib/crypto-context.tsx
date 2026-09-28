@@ -5,6 +5,7 @@ import * as SecureStore from 'expo-secure-store'
 import { Platform } from 'react-native'
 import {
   computeRecoveryCheck,
+  confirmMasterKeyHandle,
   createMasterKeyHandle,
   createRequestKeypairWithHandle,
   decryptNames,
@@ -134,14 +135,91 @@ function constantTimeEqual(a: Uint8Array, b: Uint8Array): boolean {
 }
 
 /**
+ * Task 1594 round 4 (Codex P1, crypto-context.tsx:763): a module-level "vault
+ * generation" counter. Bumped every time a CryptoProvider instance is
+ * disposed (the unmount cleanup effect below) — App.tsx keys the provider by
+ * user id, so disposal means a different account is signing in, a sign-out
+ * is happening, or this same account's provider is being torn down and
+ * rebuilt. `storeMasterKey` captures the generation its caller observed at
+ * the START of that unlock() attempt and refuses to complete — undoing
+ * anything it already wrote — the moment the generation has moved on.
+ *
+ * This closes a window the existing `disposedRef` checks cannot: `disposedRef`
+ * is scoped to ONE React instance and is checked at resume points BEFORE
+ * `storeMasterKey` is called, but `storeMasterKey` itself is a bare module
+ * function with several of its own sequential `await`s (clearKeyOwner,
+ * native keychain store, SecureStore writes) during which the SAME instance
+ * can still be disposed — e.g. the user taps "Use another account" while a
+ * phrase unlock is inside `storeMasterKey`. Without this, the abandoned call
+ * keeps writing and can recreate the old account's key after sign-out, or
+ * (if it finishes after a new instance already wrote a fresh key) overwrite
+ * that new instance's key with the stale one.
+ */
+let vaultGeneration = 0
+
+function bumpVaultGeneration(): number {
+  vaultGeneration += 1
+  return vaultGeneration
+}
+
+function currentVaultGeneration(): number {
+  return vaultGeneration
+}
+
+const STALE_GENERATION_MESSAGE = 'Vault provider unmounted before unlock completed'
+
+/**
+ * Round 4 serialization: only one `storeMasterKey` write sequence may be in
+ * flight at a time. Without this, a stale (about to abort-and-purge) call and
+ * a fresh, already-successful one could interleave — the stale call's own
+ * "roll back what I wrote" purge would then delete the FRESH call's key
+ * (they share the same keychain/SecureStore labels), turning a rare race into
+ * real data loss instead of a no-op. Serializing means whichever call is
+ * still stale by the time it reaches the front of the queue purges into an
+ * otherwise-idle keychain — nothing else can be mid-write concurrently — and
+ * the next queued call always starts from a clean, consistent state.
+ */
+let storeMasterKeyQueue: Promise<void> = Promise.resolve()
+
+/**
  * Persist the master key. `ownerUserId` is the account it was PROVEN to belong
  * to (task 1594), or null when no session exists yet (signup stores the key
  * before refreshAuth) — an unbound key is verified against the server on the
  * next unlock before it is used. The old owner record is cleared FIRST so a
  * crash mid-store can only ever leave an unbound key (verified next time),
  * never a new key labelled with a previous account's id.
+ *
+ * `generation` is the vault generation the CALLER observed when it started
+ * unlocking (round 4, Codex P1). Checked before any write (abort cheaply, an
+ * unmount raced us before we even began) and again after every write below
+ * it (an unmount raced one of OUR OWN awaits) — the final check, after the
+ * generation-defining `writeKeyOwner` call, additionally rolls back
+ * everything this call wrote via `purgeStoredVaultKey` so a stale write never
+ * survives as apparent state, and never masquerades as "adopted" to the
+ * caller (which would otherwise keep the native handle alive too). Queued
+ * behind `storeMasterKeyQueue` (see above) so that rollback can never race a
+ * different, still-current call's writes.
  */
-async function storeMasterKey(masterKey: Uint8Array, ownerUserId: string | null): Promise<void> {
+async function storeMasterKey(masterKey: Uint8Array, ownerUserId: string | null, generation: number): Promise<void> {
+  const ourTurn = storeMasterKeyQueue.catch(() => {})
+  let releaseTurn: () => void = () => {}
+  storeMasterKeyQueue = new Promise<void>((resolve) => {
+    releaseTurn = resolve
+  })
+  await ourTurn
+  try {
+    await storeMasterKeyExclusive(masterKey, ownerUserId, generation)
+  } finally {
+    releaseTurn()
+  }
+}
+
+async function storeMasterKeyExclusive(masterKey: Uint8Array, ownerUserId: string | null, generation: number): Promise<void> {
+  const stillCurrent = () => currentVaultGeneration() === generation
+  if (!stillCurrent()) {
+    recordRuntimeTrace('vault.key_ownership.stale_generation', { stage: 'before_write' })
+    throw new Error(STALE_GENERATION_MESSAGE)
+  }
   await clearKeyOwner()
   const encoded = uint8ToBase64(masterKey)
   const softwareFallbackRuntime = usesSoftwareVaultFallback()
@@ -168,9 +246,19 @@ async function storeMasterKey(masterKey: Uint8Array, ownerUserId: string | null)
   if (softwareFallbackRuntime && FileSystem.documentDirectory) {
     await FileSystem.writeAsStringAsync(SIMULATOR_MASTER_KEY_FILE, encoded)
   }
+  if (!stillCurrent()) {
+    recordRuntimeTrace('vault.key_ownership.stale_generation', { stage: 'mid_write' })
+    await purgeStoredVaultKey('stale_generation')
+    throw new Error(STALE_GENERATION_MESSAGE)
+  }
   const check = await computeRecoveryCheck(masterKey)
   await SecureStore.setItemAsync(MASTER_KEY_CHECK_LABEL, uint8ToBase64(check))
   if (ownerUserId) await writeKeyOwner(ownerUserId)
+  if (!stillCurrent()) {
+    recordRuntimeTrace('vault.key_ownership.stale_generation', { stage: 'after_write' })
+    await purgeStoredVaultKey('stale_generation')
+    throw new Error(STALE_GENERATION_MESSAGE)
+  }
 }
 
 /** X25519 public key of the key behind `handleId`; the private scalar is zeroed. */
@@ -616,6 +704,11 @@ export function CryptoProvider({ children, userId }: { children: React.ReactNode
       // in-flight unlock() checks this ref at its own resume points and must
       // see it flipped the instant this cleanup starts running.
       disposedRef.current = true
+      // Task 1594 round 4 (Codex P1): bump the module-level vault generation
+      // in the SAME cleanup, so any storeMasterKey() write still in flight
+      // for THIS instance (which cannot see disposedRef — it is a bare
+      // module function) sees it has gone stale the next time it checks.
+      bumpVaultGeneration()
       if (masterKeyHandleId.current != null) {
         void releaseHandle(masterKeyHandleId.current).catch(() => {})
         masterKeyHandleId.current = null
@@ -629,6 +722,10 @@ export function CryptoProvider({ children, userId }: { children: React.ReactNode
 
   const unlock = useCallback(async (phrase?: string, source: VaultUnlockSource = phrase != null ? 'recovery_phrase' : 'keychain') => {
     const hasRecoveryPhrase = phrase != null
+    // Task 1594 round 4 (Codex P1): the vault generation observed at the
+    // START of this attempt. Passed to storeMasterKey so it can detect (and
+    // undo) writing on behalf of an instance that gets disposed mid-write.
+    const myGeneration = currentVaultGeneration()
     const alreadyUnlocked = masterKeyHandleId.current != null
     const promptExpected = !hasRecoveryPhrase && !alreadyUnlocked
     const inFlightAtRequest = unlockPromiseRef.current != null || unlockInFlightRef.current
@@ -760,7 +857,7 @@ export function CryptoProvider({ children, userId }: { children: React.ReactNode
             // simulator falls back to SecureStore because Secure Enclave is not
             // available; if this races with a dev reload the next launch asks for
             // the recovery phrase again.
-            await storeMasterKey(masterKey, ownerUserId)
+            await storeMasterKey(masterKey, ownerUserId, myGeneration)
             adopted = true
           } finally {
             // Zero the raw bytes — they're now persisted for future unlocks and
@@ -949,6 +1046,39 @@ export function CryptoProvider({ children, userId }: { children: React.ReactNode
           }
           throw new Error('Vault provider unmounted before unlock completed')
         }
+        // Task 1594 round 4 (F4): the ONE choke point every adoption path
+        // (phrase unlock at signup with no session yet, phrase unlock with a
+        // server verdict, keychain unlock's `match`, and the `bound`-precheck
+        // `unverifiable`/`unreachable` branches that keep an existing binding)
+        // funnels through — every check above (the ownership verdict, EVERY
+        // `disposedRef` check including the final gate just above) has
+        // already passed by this point. Only NOW does the native, app-wide
+        // cache (`BeebeebCryptoBridge`, read directly by `NativeBackupEngine`,
+        // `NativeEncryptedBackupUploader`, and `ThumbnailServiceModule`) learn
+        // about this handle — never earlier, so those readers can never see a
+        // key this verdict was still in the middle of rejecting or an
+        // abandoned instance was still in the middle of loading.
+        if (masterKeyHandleId.current != null) {
+          await confirmMasterKeyHandle(masterKeyHandleId.current).catch(() => {})
+        }
+        // Task 1594 round 4 (R4): re-mirror the signed-in user id here too,
+        // not only from this provider's mount effect (above). A fresh sign-in
+        // fires TWO independent, unordered async writes to the same shared
+        // value: this provider's mount effect (`mirrorSignedInUserId`) and
+        // api.ts's token write, which reaches `mirrorSessionToAppGroup`'s
+        // token-changed branch (BeebeebCryptoModule.swift) and DELETES that
+        // exact shared value the instant the token changes — clearing it
+        // fail-closed until JS re-establishes it, per that function's own
+        // comment. If the token write's delete lands AFTER the mount effect's
+        // write (there is no ordering guarantee between them), the shared
+        // value is left deleted even though sign-in fully succeeded, and
+        // every File Provider / Share Extension ownership check refuses
+        // (missing signed-in-user mirror) until something re-writes it. Doing
+        // it again here, once the key is confirmed adopted (necessarily after
+        // both the login token and the ownership verdict have settled),
+        // guarantees the mirror reflects reality by the time this function
+        // reports the vault unlocked.
+        await mirrorSignedInUserId(ownerUserId)
         setIsUnlocked(true)
         // Task 1594 fix 4: authenticated mutations now name the key's owner
         // (X-Beebeeb-Expected-User). Null when no session exists yet (signup).
