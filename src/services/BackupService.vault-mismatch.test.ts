@@ -33,6 +33,21 @@ function sealed(id: string, parent: string | null): Entry {
   };
 }
 
+// Task 1594 round 6 (Codex P1, BackupService.ts:440): a LEGACY PLAINTEXT
+// folder name — `name_encrypted` is a bare string, not a `{nonce,ciphertext}`
+// envelope, so `encryptedMetadataPayloadToBytes` returns null and the name is
+// used as-is without ever calling `decryptMetadataFn`. This must never count
+// as proof the currently-loaded key belongs to this account.
+function plaintextLegacy(id: string, parent: string | null, name: string): Entry {
+  return {
+    id,
+    parent_id: parent,
+    is_folder: true,
+    name_encrypted: name,
+    created_at: '2020-01-01T00:00:00Z',
+  };
+}
+
 mock.module('@react-native-async-storage/async-storage', () => ({
   default: {
     getItem: async () => null,
@@ -249,5 +264,47 @@ describe('1594 round 2 (F2) — a foreign folder at a level the key otherwise re
 
     await expect(ensureBackupFolders('camera_roll')).rejects.toThrow(/vault key/i);
     expect(attempts).toBe(1);
+  });
+});
+
+describe("1594 round 6 (Codex P1, BackupService.ts:440) — a legacy plaintext name is never proof the key works", () => {
+  test('one plaintext legacy folder + one wrong-key encrypted "Backups" folder → still throws (does not fork a new tree)', async () => {
+    // 'notes' is a pre-1594 LEGACY PLAINTEXT folder — its name never goes
+    // through decryptMetadataFn at all, so it says nothing about whether the
+    // loaded key belongs to this account. 'backups-wrong' is the REAL Backups
+    // folder, sealed under a key that is NOT the one currently loaded (never
+    // added to `readable`) — the exact 1594 shape (an unrelated plaintext
+    // folder sitting next to an unreadable real Backups tree). Before round
+    // 6, 'notes' alone made `decryptableFolders > 0`, so the mismatch guard
+    // was bypassed and a brand-new "Backups" tree was forked under the wrong
+    // key instead of stopping.
+    listings.set('root', [plaintextLegacy('notes', null, 'My Notes'), sealed('backups-wrong', null)]);
+
+    await expect(ensureBackupFolders('camera_roll')).rejects.toThrow(/vault key/i);
+    expect(created).toEqual([]);
+  });
+
+  test('a plaintext legacy folder alongside a REAL cryptographic decrypt at the same level is still skipped correctly (no false stop)', async () => {
+    // Sanity check the fix isn't overly strict: when a sibling DOES
+    // cryptographically decrypt at this level, a foreign folder (even a
+    // legacy-plaintext one) is still just skipped, not a full stop.
+    listings.set('root', [
+      plaintextLegacy('notes', null, 'My Notes'),
+      sealed('backups-real', null),
+    ]);
+    readable.set('backups-real', 'Backups');
+    listings.set('backups-real', [sealed('device-a', 'backups-real')]);
+    readable.set('device-a', 'bb-ios27');
+    listings.set('device-a', [
+      sealed('cam', 'device-a'), sealed('con', 'device-a'), sealed('cal', 'device-a'),
+    ]);
+    readable.set('cam', 'Camera Roll');
+    readable.set('con', 'Contacts');
+    readable.set('cal', 'Calendar');
+
+    const out = await ensureBackupFolders('camera_roll');
+
+    expect(out).toEqual({ deviceFolderId: 'device-a', categoryFolderId: 'cam' });
+    expect(created).toEqual([]);
   });
 });

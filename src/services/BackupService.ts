@@ -178,6 +178,20 @@ type NameDecryptResult = {
   name: string;
   mimeType: string | null;
   canonical: boolean;
+  /**
+   * Task 1594 round 6 (Codex P1, BackupService.ts:440): true only when this
+   * name was proven readable by an actual master-key decryption. A legacy
+   * PLAINTEXT `name_encrypted` value (the early-return path in
+   * `decryptNameDetails` below, taken when the value isn't even a
+   * `{nonce,ciphertext}` envelope) never touches the key at all — it is not
+   * evidence the loaded key belongs to this account, and must never count
+   * toward the "the key decrypts fine at this level" proof `findChildFolder`
+   * uses to bypass `VaultKeyMismatchError`. Without this flag, one unrelated
+   * plaintext legacy folder next to a wrong-key `Backups` tree was enough to
+   * make the wrong-key tree look "foreign but the key otherwise works here"
+   * and get silently forked, instead of blocking with a mismatch error.
+   */
+  cryptographicallyVerified: boolean;
 };
 
 // ---------------------------------------------------------------------------
@@ -358,6 +372,7 @@ async function decryptNameDetails(entry: FileEntry): Promise<NameDecryptResult |
       name: entry.name_encrypted,
       mimeType: entry.is_folder ? null : guessMimeType(entry.name_encrypted),
       canonical: false,
+      cryptographicallyVerified: false,
     };
   }
   const attemptDecrypt = () => enc.decryptMetadataFn(entry.id, parsed.nonce, parsed.ciphertext);
@@ -378,6 +393,7 @@ async function decryptNameDetails(entry: FileEntry): Promise<NameDecryptResult |
     name: metadata.name,
     mimeType: metadata.mimeType ?? (entry.is_folder ? null : guessMimeType(metadata.name)),
     canonical: metadata.canonical,
+    cryptographicallyVerified: true,
   };
 }
 
@@ -411,16 +427,20 @@ async function findChildFolder(parentId: string | undefined, name: string): Prom
   // past page 1. A capped single page here let ensureFolder create DUPLICATE
   // backup folder trees when a parent had >200 children (task 0755).
   let decryptableFolders = 0;
+  let cryptographicallyDecryptedFolders = 0;
   let undecryptableFolders = 0;
   const match = await findFile(parentId, async (f) => {
     if (!f.is_folder) return false;
-    const decrypted = await decryptName(f);
-    if (decrypted === null) {
+    const details = await decryptNameDetails(f);
+    if (details === null) {
       undecryptableFolders += 1;
       return false;
     }
     decryptableFolders += 1;
-    return decrypted === name;
+    // Task 1594 round 6 (Codex P1): a legacy PLAINTEXT name never exercised
+    // the key — it must not count as proof the key works at this level.
+    if (details.cryptographicallyVerified) cryptographicallyDecryptedFolders += 1;
+    return details.name === name;
   });
   if (match) return match;
   // Task 1594: "no match" is only trustworthy when the key has been proven to
@@ -430,14 +450,17 @@ async function findChildFolder(parentId: string | undefined, name: string): Prom
   // leftover tree sitting alongside them never will, so every future run hit
   // this same wall with advice ("sign out, sign in, enter your phrase") that
   // cannot fix a problem that isn't in this session's key. Once at least one
-  // sibling at this level DID decrypt, the key is proven to work here — any
-  // undecryptable one left is provably a FOREIGN key's folder, not possibly
-  // "ours but unreadable right now" (that ambiguity is exactly what a
-  // transient exception is retried once for, in decryptNameDetails, before it
-  // ever reaches this count). Only when EVERY folder here is unreadable do we
-  // not know whether the wanted folder is one of them — stop, same as before.
+  // sibling at this level was CRYPTOGRAPHICALLY decrypted (round 6: not
+  // merely a legacy plaintext name that never touched the key — see
+  // `cryptographicallyVerified` on `NameDecryptResult`), the key is proven to
+  // work here — any undecryptable one left is provably a FOREIGN key's folder,
+  // not possibly "ours but unreadable right now" (that ambiguity is exactly
+  // what a transient exception is retried once for, in decryptNameDetails,
+  // before it ever reaches this count). Only when NO folder here was actually
+  // decrypted with this key do we not know whether the wanted folder is one of
+  // the unreadable ones — stop, same as before.
   if (undecryptableFolders > 0) {
-    if (decryptableFolders === 0) throw new VaultKeyMismatchError(undecryptableFolders);
+    if (cryptographicallyDecryptedFolders === 0) throw new VaultKeyMismatchError(undecryptableFolders);
     // No file/folder names are logged — only the count, at this parent level.
     recordRuntimeTrace('backup.foreign_folder_skipped', {
       parentId: parentId ?? 'root',

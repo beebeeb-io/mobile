@@ -50,6 +50,7 @@ import { initLocalIdentifierMap } from './lib/local-identifier-map';
 import { resetThumbnailSelfRepairState } from './lib/thumbnail-self-repair';
 import { purgeAllPlaintextCaches } from './lib/account-cleanup';
 import { createSignedOutPurger } from './lib/signed-out-purge';
+import { shouldPollForAuthToken } from './lib/signup-unlock-guard';
 import {
   setupNotificationHandler,
   registerForPushNotifications,
@@ -1480,11 +1481,21 @@ export default function App() {
   // Listen for successful login/signup from auth screens
   // by polling the token after navigation events
   const handleNavigationStateChange = useCallback(async () => {
-    if (!user) {
-      const tokenExists = await hasToken();
-      if (tokenExists) {
-        await refreshAuth();
-      }
+    // Task 1594 round 6: SignupScreen sets the session token (inside
+    // opaqueRegistrationFinish) BEFORE its own crypto.unlock(phrase) call
+    // resolves — unlike login, which never unlocks the pre-remount
+    // 'signed-out'-keyed CryptoProvider instance at all. Calling refreshAuth()
+    // here in that window would flip `user` (remounting CryptoProvider) while
+    // SignupScreen's own storeMasterKey write for the BRAND NEW account is
+    // still mid-flight, and that abandoned write can then purge the very key
+    // material signup just created. `shouldPollForAuthToken` skips this
+    // independent poll for that window — SignupScreen's own explicit,
+    // sequential refreshAuth() call (after its unlock already resolved)
+    // still runs unconditionally, so signup completes exactly as before.
+    if (!shouldPollForAuthToken(!!user)) return;
+    const tokenExists = await hasToken();
+    if (tokenExists) {
+      await refreshAuth();
     }
   }, [user, refreshAuth]);
 

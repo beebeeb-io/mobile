@@ -128,6 +128,10 @@ mock.module('expo-file-system/legacy', () => ({
 // a specific SecureStore key — used to prove `writeKeyOwner()` failing after
 // a successful verify releases the handle instead of leaking it.
 let failNextWriteOf: string | null = null;
+// Task 1594 round 6 (reviewer follow-up): a one-shot failure injected into
+// the NEXT `confirmMasterKeyHandle` call — proves the failure is traced
+// instead of silently swallowed.
+let failNextConfirm = false;
 // Task 1594 round 4 (Codex P1, crypto-context.tsx:763): a one-shot PAUSE
 // (not failure) injected into the NEXT write of a specific SecureStore key —
 // lets a test hold `storeMasterKey()` itself paused mid-write (i.e. AFTER
@@ -189,7 +193,14 @@ const cryptoMock = {
     handles.set(id, new Uint8Array(k));
     return id;
   },
-  confirmMasterKeyHandle: async (h: number) => { calls.confirmed.push(h); return true; },
+  confirmMasterKeyHandle: async (h: number) => {
+    if (failNextConfirm) {
+      failNextConfirm = false;
+      throw new Error('confirmMasterKeyHandle failed (simulated, task 1594 round 6)');
+    }
+    calls.confirmed.push(h);
+    return true;
+  },
   createRequestKeypairWithHandle: async () => ({}),
   decryptNames: async () => [],
   mirrorSessionUserId: async (userId: string | null) => { calls.mirroredSignedInUser.push(userId); return true; },
@@ -222,7 +233,13 @@ mock.module('../services/BackupService', () => ({
   setBackupEncryption: () => {},
   getKeepVaultUnlocked: async () => false,
 }));
-mock.module('./runtime-trace', () => ({ recordRuntimeTrace: () => null }));
+// Task 1594 round 6 (reviewer follow-up): recorded (not just a no-op) so a
+// test can prove a specific trace fired — no existing test in this file
+// asserts on trace content, so this is purely additive.
+const traceCalls: Array<{ name: string; fields: Record<string, unknown> }> = [];
+mock.module('./runtime-trace', () => ({
+  recordRuntimeTrace: (name: string, fields: Record<string, unknown> = {}) => { traceCalls.push({ name, fields }); return null; },
+}));
 mock.module('./file-request-crypto', () => ({ createRequestKeyResolver: () => ({ clear: () => {} }) }));
 mock.module('./recovery-phrase-verify', () => ({ verifyRecoveryPhraseAgainstStoredCheck: async () => false }));
 // Task 1594 round 3 (T1): a one-shot gate that pauses `verifyRecoveryCheck`
@@ -336,6 +353,8 @@ beforeEach(() => {
   verifyEnteredPromise = null;
   resolveVerifyEntered = null;
   failNextWriteOf = null;
+  failNextConfirm = false;
+  traceCalls.length = 0;
   pauseNextWriteOf = null;
   writePauseGate = null;
   releaseWritePauseFn = null;
@@ -834,5 +853,96 @@ describe('1594 round 4 (R4) — the signed-in-user mirror is re-asserted after e
     await expect(render().unlock()).rejects.toThrow(/no master key in keychain/i);
 
     expect(calls.mirroredSignedInUser).toEqual([]);
+  });
+});
+
+describe('1594 round 6 (reviewer follow-up, storeMasterKeyExclusive stale-write rollback) — a SAME-account remount race must not purge a newer, already-established key', () => {
+  test("A's provider remounts (same account, no account switch) while storeMasterKey is paused mid-writeKeyOwner; the fresh remount's own keychain-unlock proves and re-records the SAME key first — the stale call must abandon quietly, not purge what the remount just established", async () => {
+    // Task 1594 round 6: round 4 only modelled the CROSS-account shape (A's
+    // abandoned write must not clobber B's fresh one) — this models the
+    // SAME-account shape the reviewer flagged: a provider can unmount and
+    // remount for the SAME user (a brief session churn, not a sign-out), and
+    // the fresh instance's KEYCHAIN-unlock path (`loadVerifiedMasterKeyHandle`
+    // + a direct `writeKeyOwner` call that does NOT go through
+    // `storeMasterKeyQueue`) can legitimately re-prove and re-record the very
+    // key the stale `storeMasterKeyExclusive` call is still mid-writing.
+    server.sessionUser = USER_A;
+    const renderA = mountProvider(USER_A);
+    renderA(); // mount: registers the unmount cleanup
+
+    // Pause storeMasterKeyExclusive's OWN `writeKeyOwner` write specifically —
+    // by this point it has ALREADY written the check label and the fallback
+    // key material (both readable by a concurrent keychain-unlock), but has
+    // NOT yet reached its own final `stillCurrent()` check.
+    armWritePause(OWNER);
+    const unlockAPromise = renderA().unlock(PHRASE_A);
+    await writePauseEnteredPromise; // paused inside storeMasterKeyExclusive's own writeKeyOwner
+
+    // The SAME account's provider unmounts and remounts (App.tsx keys
+    // CryptoProvider by user id — a session ending and a fresh one starting
+    // for the SAME user is exactly a `signed-out` → `USER_A` remount, NOT a
+    // different user id). This is what round 4's queue does not protect
+    // against: it only serializes concurrent `storeMasterKey` CALLS, and this
+    // remount's own path never calls `storeMasterKey` at all.
+    renderA.unmount();
+    const renderA2 = mountProvider(USER_A);
+    const unlockA2Promise = renderA2().unlock(); // keychain unlock, no phrase
+
+    // Drain microtask turns so the remount's own precheck → keychain load →
+    // ownership verify → writeKeyOwner sequence runs to completion while A's
+    // original call is still parked.
+    for (let i = 0; i < 40; i += 1) await Promise.resolve();
+    await unlockA2Promise; // the remount's own unlock must succeed on its own
+
+    // Sanity: the remount actually re-established ownership via ITS OWN
+    // `writeKeyOwner` call (not via `storeMasterKey`/`storeMasterKeyQueue`).
+    expect(secure.get(OWNER)).toBe(USER_A);
+    expect(renderA2().isUnlocked).toBe(true);
+    const deleteKeychainCallsBeforeRelease = calls.deleteKeychain;
+
+    // NOW release A's original, now-stale write. It resumes past its own
+    // `writeKeyOwner` call, finds the generation has moved on, and — pre-fix —
+    // unconditionally purges everything (the remount's just-established,
+    // CORRECT state included, since they share the same keychain labels).
+    releaseWritePauseFn!();
+    await expect(unlockAPromise).rejects.toThrow(/unmounted/i);
+
+    // The fix: no NEW purge happened as a result of releasing the stale
+    // write — the remount's key, check, and owner record all survive intact.
+    expect(calls.deleteKeychain).toBe(deleteKeychainCallsBeforeRelease);
+    expect(secure.get(OWNER)).toBe(USER_A);
+    expect(secure.get(CHECK)).toBe(b64(checkOf(KEY_A)));
+    expect(secure.get(FALLBACK)).toBe(b64(KEY_A));
+    expect(renderA2().isUnlocked).toBe(true);
+  });
+});
+
+describe('1594 round 6 (reviewer follow-up, crypto-context.tsx confirmMasterKeyHandle) — a failure to confirm the handle into the native cache is traced, not swallowed', () => {
+  test('confirmMasterKeyHandle rejecting during a successful phrase unlock is traced with the opaque handle id (no key material)', async () => {
+    failNextConfirm = true;
+    const render = mountProvider(USER_A);
+    server.sessionUser = USER_A;
+
+    // The unlock itself still succeeds — a failure to warm the NATIVE cache
+    // must not fail the whole unlock (backup/thumbnails degrade silently
+    // today; that gap is F4's own, separate concern) — but it must leave a
+    // trace an engineer can actually find, unlike before this fix.
+    await render().unlock(PHRASE_A);
+
+    expect(render().isUnlocked).toBe(true);
+    const trace = traceCalls.find((t) => t.name === 'vault.key_ownership.confirm_handle_failed');
+    expect(trace).toBeDefined();
+    // The handle id is an opaque native reference — never key material.
+    expect(typeof trace!.fields.handleId).toBe('number');
+    expect(JSON.stringify(trace)).not.toMatch(/phrase-of-account|a1a1a1|master.?key/i);
+  });
+
+  test('confirmMasterKeyHandle succeeding records no failure trace', async () => {
+    const render = mountProvider(USER_A);
+    server.sessionUser = USER_A;
+
+    await render().unlock(PHRASE_A);
+
+    expect(traceCalls.find((t) => t.name === 'vault.key_ownership.confirm_handle_failed')).toBeUndefined();
   });
 });

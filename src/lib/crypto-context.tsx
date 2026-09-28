@@ -166,6 +166,43 @@ function currentVaultGeneration(): number {
   return vaultGeneration
 }
 
+/**
+ * Task 1594 round 6 (reviewer follow-up on `purgeStoredVaultKey` at
+ * `storeMasterKeyExclusive`'s stale-generation checks): the generation of the
+ * MOST RECENT call — `storeMasterKeyExclusive`, or the keychain-unlock
+ * branch's own `writeKeyOwner` — that finished establishing persisted vault
+ * state without itself being stale. Round 4 only handled the CROSS-account
+ * shape (A's abandoned write must not clobber B's fresh one): it purges
+ * unconditionally once `stillCurrent()` is false, on the assumption that
+ * "stale" always means "some other write for a different account is now the
+ * only thing that matters." That assumption breaks for the SAME-account
+ * remount race: a provider can unmount and remount for the SAME user (e.g. a
+ * brief session churn), and the fresh instance's KEYCHAIN unlock (a read+
+ * `writeKeyOwner` path that does not go through `storeMasterKeyQueue`) can
+ * complete — legitimately re-proving and re-recording the very key this
+ * generation-stale `storeMasterKeyExclusive` call is mid-writing — before
+ * that stale call reaches its own `mid_write`/`after_write` check. Purging at
+ * that point would delete the fresh instance's just-established, CORRECT
+ * state, even though nothing about it was wrong (same account, same key). A
+ * plain owner/check VALUE comparison cannot tell these two cases apart (both
+ * write the identical value for the same account) — only generation ORDER
+ * can: if a strictly newer generation has already persisted successfully,
+ * this stale call's own write is superseded and must be abandoned WITHOUT
+ * touching storage, not purged.
+ */
+let lastPersistedGeneration: number | null = null
+
+function markGenerationPersisted(generation: number): void {
+  if (lastPersistedGeneration == null || generation > lastPersistedGeneration) {
+    lastPersistedGeneration = generation
+  }
+}
+
+/** True when a generation strictly newer than `generation` already persisted. */
+function newerGenerationAlreadyPersisted(generation: number): boolean {
+  return lastPersistedGeneration != null && lastPersistedGeneration > generation
+}
+
 const STALE_GENERATION_MESSAGE = 'Vault provider unmounted before unlock completed'
 
 /**
@@ -247,6 +284,15 @@ async function storeMasterKeyExclusive(masterKey: Uint8Array, ownerUserId: strin
     await FileSystem.writeAsStringAsync(SIMULATOR_MASTER_KEY_FILE, encoded)
   }
   if (!stillCurrent()) {
+    // Round 6: a same-account remount race can have ALREADY re-established
+    // (via the keychain-unlock branch's own `writeKeyOwner`, outside this
+    // queue) valid persisted state for a strictly newer generation while this
+    // call's own awaits above were in flight. Purging now would destroy that
+    // already-correct state for no reason — abandon quietly instead.
+    if (newerGenerationAlreadyPersisted(generation)) {
+      recordRuntimeTrace('vault.key_ownership.stale_write_superseded', { stage: 'mid_write' })
+      throw new Error(STALE_GENERATION_MESSAGE)
+    }
     recordRuntimeTrace('vault.key_ownership.stale_generation', { stage: 'mid_write' })
     await purgeStoredVaultKey('stale_generation')
     throw new Error(STALE_GENERATION_MESSAGE)
@@ -255,10 +301,18 @@ async function storeMasterKeyExclusive(masterKey: Uint8Array, ownerUserId: strin
   await SecureStore.setItemAsync(MASTER_KEY_CHECK_LABEL, uint8ToBase64(check))
   if (ownerUserId) await writeKeyOwner(ownerUserId)
   if (!stillCurrent()) {
+    if (newerGenerationAlreadyPersisted(generation)) {
+      recordRuntimeTrace('vault.key_ownership.stale_write_superseded', { stage: 'after_write' })
+      throw new Error(STALE_GENERATION_MESSAGE)
+    }
     recordRuntimeTrace('vault.key_ownership.stale_generation', { stage: 'after_write' })
     await purgeStoredVaultKey('stale_generation')
     throw new Error(STALE_GENERATION_MESSAGE)
   }
+  // This call's write was never superseded and completed while still current
+  // — record it so a LATER call that turns out to be stale (any of the three
+  // checks above) knows not to destroy it.
+  markGenerationPersisted(generation)
 }
 
 /** X25519 public key of the key behind `handleId`; the private scalar is zeroed. */
@@ -970,6 +1024,15 @@ export function CryptoProvider({ children, userId }: { children: React.ReactNode
                     await releaseHandle(handleId).catch(() => {})
                     throw new Error('Vault provider unmounted before unlock completed')
                   }
+                  // Round 6 (reviewer follow-up): this `writeKeyOwner` call
+                  // does not go through `storeMasterKeyQueue` — record its
+                  // success against the SAME generation ledger `storeMasterKey`
+                  // uses, so a concurrent, now-stale `storeMasterKeyExclusive`
+                  // call for this SAME account (a remount race, not an account
+                  // switch) sees a strictly newer generation already persisted
+                  // and abandons its own stale write WITHOUT purging what this
+                  // call just correctly established.
+                  markGenerationPersisted(myGeneration)
                 }
                 ownershipVerifiedRef.current = true
               } else if (verdict === 'mismatch') {
@@ -982,7 +1045,10 @@ export function CryptoProvider({ children, userId }: { children: React.ReactNode
                 // Bound to this account by an earlier proven unlock; the
                 // server has nothing new to say ('unverifiable') or cannot be
                 // reached right now ('unreachable') — the binding stands.
-                if (verdict === 'unverifiable') ownershipVerifiedRef.current = true
+                if (verdict === 'unverifiable') {
+                  ownershipVerifiedRef.current = true
+                  markGenerationPersisted(myGeneration)
+                }
               } else if (verdict === 'unverifiable') {
                 // An unbound key and an account the server cannot prove any
                 // key against: do not use a key of unknown ownership. Ask for
@@ -1059,7 +1125,18 @@ export function CryptoProvider({ children, userId }: { children: React.ReactNode
         // key this verdict was still in the middle of rejecting or an
         // abandoned instance was still in the middle of loading.
         if (masterKeyHandleId.current != null) {
-          await confirmMasterKeyHandle(masterKeyHandleId.current).catch(() => {})
+          // Round 6 (reviewer follow-up): a failure here was previously
+          // swallowed entirely — the native cache this call populates is the
+          // ONLY thing `NativeBackupEngine`/`NativeEncryptedBackupUploader`/
+          // `ThumbnailServiceModule` read, so a silent failure here means
+          // backup/thumbnails silently stop working with zero diagnostic
+          // trail. The handle id is an opaque native reference (never key
+          // material) — safe to log per this file's own contract (see the
+          // "Master key cache lifecycle" comment above).
+          const confirmHandleId = masterKeyHandleId.current
+          await confirmMasterKeyHandle(confirmHandleId).catch(() => {
+            recordRuntimeTrace('vault.key_ownership.confirm_handle_failed', { handleId: confirmHandleId })
+          })
         }
         // Task 1594 round 4 (R4): re-mirror the signed-in user id here too,
         // not only from this provider's mount effect (above). A fresh sign-in
