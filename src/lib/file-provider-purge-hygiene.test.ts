@@ -74,7 +74,7 @@ function bracedBody(source: string, signature: string): string {
 
 describe('P1-1: resetSQLiteInPlace (PlaintextStorageProtection.swift) does not leave decrypted names on the freelist', () => {
   const swift = readFileSync(REGISTRY_SWIFT_PATH, 'utf8');
-  const body = functionBody(swift, 'private static func resetSQLiteInPlace(_ url: URL) -> Bool {');
+  const body = functionBody(swift, 'private static func resetSQLiteInPlace(_ url: URL, pendingNonce: Data?) -> Bool {');
 
   test('secure_delete is turned ON (an actual executed pragma, not just a comment) before the deleting transaction begins', () => {
     // Must match the real call, not merely the word `secure_delete` — a
@@ -141,7 +141,7 @@ describe('P1-1 (same finding, second location): resetFileProviderCacheDatabase (
 
 describe('P1-2: resetSQLiteInPlace surfaces real failures instead of always returning true', () => {
   const swift = readFileSync(REGISTRY_SWIFT_PATH, 'utf8');
-  const body = functionBody(swift, 'private static func resetSQLiteInPlace(_ url: URL) -> Bool {');
+  const body = functionBody(swift, 'private static func resetSQLiteInPlace(_ url: URL, pendingNonce: Data?) -> Bool {');
 
   test('sets a busy timeout before touching the database', () => {
     expect(body).toMatch(/sqlite3_busy_timeout\(db,\s*\d+\)/);
@@ -150,8 +150,13 @@ describe('P1-2: resetSQLiteInPlace surfaces real failures instead of always retu
   test('a failed sqlite_master prepare returns false, not true', () => {
     const prepareIdx = body.indexOf('sqlite3_prepare_v2');
     expect(prepareIdx).toBeGreaterThan(-1);
-    // The guard's else-branch, up to the next top-level statement.
-    const elseSlice = body.slice(prepareIdx, prepareIdx + 400);
+    // The guard's else-branch, up to the next top-level statement. Widened
+    // from 400 to 600 (task 1593 f2) after this branch's comment grew to
+    // explain the marker-first "no re-mark call here" rationale — confirmed
+    // this still fails correctly against the ORIGINAL 400-char window
+    // before widening (i.e. the widening is not papering over a real
+    // regression), per this task's convention for widened test windows.
+    const elseSlice = body.slice(prepareIdx, prepareIdx + 600);
     expect(elseSlice).toMatch(/else\s*\{[\s\S]*?return false/);
   });
 
@@ -171,7 +176,7 @@ describe('P1-2: resetSQLiteInPlace surfaces real failures instead of always retu
     // to accidentally re-include this exact VACUUM literal after it moved,
     // which is precisely the kind of accidental pass this task's own review
     // exists to catch).
-    const preciseBody = bracedBody(swift, 'private static func resetSQLiteInPlace(_ url: URL) -> Bool {');
+    const preciseBody = bracedBody(swift, 'private static func resetSQLiteInPlace(_ url: URL, pendingNonce: Data?) -> Bool {');
     // `(?:[^"\\]|\\.)*` (not a plain `[^"]+`) so the interpolated
     // `"DELETE FROM \"\(table)\""` literal — whose escaped inner quotes a
     // simple no-quotes class would stop at — still counts as one call.
@@ -327,10 +332,12 @@ describe('C1 (round 7, P1): purgePlaintextStorage resets the DB LAST, after cons
   const swift = readFileSync(MODULE_SWIFT_PATH, 'utf8');
   const purgeBody = bracedBody(swift, 'AsyncFunction("purgePlaintextStorage") { () -> [String: Int] in');
 
-  test('order is: consent reset -> domain removal -> PlaintextStorageProtection.purgeAll()', () => {
+  test('order is: consent reset -> domain removal -> PlaintextStorageProtection.purgeAll(pendingNonce:)', () => {
+    // Task 1593 f2 — the real call site's literal text gained
+    // `pendingNonce: pendingNonce` (marker-first threads the nonce through).
     const consentIdx = purgeBody.indexOf('resetFileProviderShowInFilesConsent(defaults: sharedDefaults())');
     const removeIdx = purgeBody.indexOf('removeFileProviderDomainIfRegistered()');
-    const purgeAllIdx = purgeBody.indexOf('PlaintextStorageProtection.purgeAll()');
+    const purgeAllIdx = purgeBody.indexOf('PlaintextStorageProtection.purgeAll(pendingNonce: pendingNonce)');
     expect(consentIdx).toBeGreaterThan(-1);
     expect(removeIdx).toBeGreaterThan(-1);
     expect(purgeAllIdx).toBeGreaterThan(-1);
@@ -386,7 +393,8 @@ describe('R2 (round 8, P2): the old App Group UserDefaults purge-epoch counter i
 
 describe('R2 (round 8, P2): bumpFileProviderCacheVersion bumps PRAGMA user_version under BEGIN IMMEDIATE', () => {
   const swift = readFileSync(MODULE_SWIFT_PATH, 'utf8');
-  const body = bracedBody(swift, 'private func bumpFileProviderCacheVersion() -> Bool {');
+  // Task 1593 f2 — signature gained `clearsPendingMarker: Bool = false`.
+  const body = bracedBody(swift, 'private func bumpFileProviderCacheVersion(clearsPendingMarker: Bool = false) -> Bool {');
 
   test('opens a real write transaction with BEGIN IMMEDIATE, not a plain BEGIN', () => {
     expect(body).toMatch(/sqlite3_exec\(db, "BEGIN IMMEDIATE", nil, nil, nil\)/);
@@ -435,7 +443,7 @@ describe('R2 (round 8, P2): both DB-reset functions bump PRAGMA user_version ins
 
   test('resetSQLiteInPlace (PlaintextStorageProtection.swift) reads, increments, and writes user_version between BEGIN and COMMIT', () => {
     const swift = readFileSync(REGISTRY_SWIFT_PATH, 'utf8');
-    const body = bracedBody(swift, 'private static func resetSQLiteInPlace(_ url: URL) -> Bool {');
+    const body = bracedBody(swift, 'private static func resetSQLiteInPlace(_ url: URL, pendingNonce: Data?) -> Bool {');
     const beginIdx = body.indexOf('"BEGIN"');
     const bumpIdx = body.indexOf('PRAGMA user_version = \\(nextVersion)');
     const commitIdx = body.indexOf('"COMMIT"');
@@ -701,7 +709,7 @@ describe('new-3 (round 6, P2): secure_delete is set on EVERY connection that WRI
 
   test('resetSQLiteInPlace (PlaintextStorageProtection.swift) retries VACUUM once on SQLITE_BUSY instead of failing immediately', () => {
     const swift = readFileSync(REGISTRY_SWIFT_PATH, 'utf8');
-    const resetBody = bracedBody(swift, 'private static func resetSQLiteInPlace(_ url: URL) -> Bool {');
+    const resetBody = bracedBody(swift, 'private static func resetSQLiteInPlace(_ url: URL, pendingNonce: Data?) -> Bool {');
     expect(resetBody).toMatch(/vacuumRetryingOnceOnBusy\(db\)/);
     // The bare, unretried call must be gone from the call site, not just
     // supplemented — otherwise a mutation that reverted the retry helper's
@@ -1428,7 +1436,10 @@ describe('round 11: CacheManager.purgeEpochUnchanged is sentinel-safe (reuses cu
   const body = bracedBody(cacheManagerSwift, 'func purgeEpochUnchanged(since capturedEpoch: Int) -> Bool {');
 
   test('is queue.sync-wrapped (this is a public entry point, unlike the private _currentPurgeEpoch)', () => {
-    expect(body).toMatch(/queue\.sync\s*\{\s*currentEpochMatches\(capturedEpoch\)\s*\}/);
+    // Task 1593 f1 widened this: queue.sync now wraps a pending-marker
+    // guard (see the "f1: CacheManager refuses..." describe block) ahead of
+    // the same currentEpochMatches call this test originally checked alone.
+    expect(body).toMatch(/queue\.sync\s*\{[\s\S]*?return currentEpochMatches\(capturedEpoch\)\s*\n\s*\}/);
   });
 
   test('delegates to currentEpochMatches rather than re-implementing its own comparison', () => {
@@ -1503,7 +1514,7 @@ describe('round 11 (Codex thread PRRT_kwDOSLX6T86miVoV, P2): the File Provider c
   });
 
   test('purgeAll() skips containerOnly entries before ever checking existence or calling removeItem', () => {
-    const purgeBody = bracedBody(registrySwift, 'public static func purgeAll() -> (removed: Int, failed: Int) {');
+    const purgeBody = bracedBody(registrySwift, 'public static func purgeAll(pendingNonce: Data? = nil) -> (removed: Int, failed: Int) {');
     const forIdx = purgeBody.indexOf('for entry in registry() {');
     const skipIdx = purgeBody.indexOf('if entry.containerOnly {');
     const existsIdx = purgeBody.indexOf('FileManager.default.fileExists(atPath: entry.url.path)');
@@ -1604,7 +1615,10 @@ describe('round 11 (Codex thread PRRT_kwDOSLX6T86miVoV, P2): the File Provider c
   });
 
   test('clearFileProviderCacheState resets the DB via the shared resolver instead of a third inline top-level path', () => {
-    const body = bracedBody(moduleSwift, 'private func clearFileProviderCacheState(defaults: UserDefaults?) -> Int {');
+    const body = bracedBody(
+      moduleSwift,
+      'private func clearFileProviderCacheState(defaults: UserDefaults?) -> (removed: Int, cacheResetOk: Bool) {',
+    );
     expect(body).not.toMatch(/"file-provider-cache\.sqlite"/);
     expect(body).toMatch(/fileProviderCacheDatabaseUrl\(\)/);
     expect(body).toMatch(/resetFileProviderCacheDatabase\(at: dbUrl\)/);
@@ -1670,7 +1684,7 @@ describe('round 12 (Codex thread PRRT_kwDOSLX6T86mi6px, P2): a failed legacy-cac
   });
 
   test('purgeAll() sweeps the legacy top-level cache path on every call, in addition to registry()', () => {
-    const body = bracedBody(registrySwift, 'public static func purgeAll() -> (removed: Int, failed: Int) {');
+    const body = bracedBody(registrySwift, 'public static func purgeAll(pendingNonce: Data? = nil) -> (removed: Int, failed: Int) {');
     const sweepCallIdx = body.indexOf('sweepLegacyFileProviderCache()');
     expect(sweepCallIdx).toBeGreaterThan(-1);
     // Must actually fold the sweep's counts into the SAME (removed, failed)
@@ -1735,7 +1749,7 @@ describe('round 12 (Codex thread PRRT_kwDOSLX6T86mjO56, P1): a failed early epoc
     expect(retryBlock).toMatch(/failed \+= 1/);
   });
 
-  test('the domain-removal ordering (C1, round 7) still holds: consent -> epoch bump -> domain removal -> purgeAll()', () => {
+  test('the domain-removal ordering (C1, round 7) still holds: consent -> epoch bump -> domain removal -> purgeAll(pendingNonce:)', () => {
     // Regression guard for the exact false-green this round's own comment
     // draft first produced: an earlier version of this round's doc comment
     // mentioned the literal text "PlaintextStorageProtection.purgeAll()"
@@ -1743,23 +1757,30 @@ describe('round 12 (Codex thread PRRT_kwDOSLX6T86mjO56, P1): a failed early epoc
     // find that comment's occurrence instead of the true one and pass for
     // the wrong reason. Comments in this function must never contain that
     // exact literal ahead of the real call.
+    //
+    // Task 1593 f2 — the real call site's literal text changed from
+    // `PlaintextStorageProtection.purgeAll()` to
+    // `PlaintextStorageProtection.purgeAll(pendingNonce: pendingNonce)`
+    // (marker-first threads the nonce through); updated here to match, in
+    // place, per this task's "never silently" convention.
     const purgeBody = bracedBody(moduleSwift, 'AsyncFunction("purgePlaintextStorage") { () -> [String: Int] in');
     const consentIdx = purgeBody.indexOf('resetFileProviderShowInFilesConsent(defaults: sharedDefaults())');
     const bumpIdx = purgeBody.indexOf('if !bumpFileProviderCacheVersion() {');
     const removeIdx = purgeBody.indexOf('removeFileProviderDomainIfRegistered()');
-    const purgeAllIdx = purgeBody.indexOf('PlaintextStorageProtection.purgeAll()');
+    const purgeAllIdx = purgeBody.indexOf('PlaintextStorageProtection.purgeAll(pendingNonce: pendingNonce)');
     expect(consentIdx).toBeLessThan(bumpIdx);
     expect(bumpIdx).toBeLessThan(removeIdx);
     expect(removeIdx).toBeLessThan(purgeAllIdx);
     // The literal call text must occur EXACTLY once in this function body —
     // if a future comment reintroduces it above the real call, this count
     // goes to 2 and the ordering assertions above stop meaning what they say.
-    const occurrences = purgeBody.split('PlaintextStorageProtection.purgeAll()').length - 1;
+    const occurrences = purgeBody.split('PlaintextStorageProtection.purgeAll(pendingNonce: pendingNonce)').length - 1;
     expect(occurrences).toBe(1);
   });
 
   test('purgeAll() resweeps pinned/temp unconditionally, strictly after registry(), the legacy sweep, and folds its counts in', () => {
-    const purgeAllBody = bracedBody(registrySwift, 'public static func purgeAll() -> (removed: Int, failed: Int) {');
+    // Task 1593 f2 — signature gained `pendingNonce: Data? = nil`.
+    const purgeAllBody = bracedBody(registrySwift, 'public static func purgeAll(pendingNonce: Data? = nil) -> (removed: Int, failed: Int) {');
     const legacyIdx = purgeAllBody.indexOf('sweepLegacyFileProviderCache()');
     const resweepCallIdx = purgeAllBody.indexOf('resweepFileProviderContentDirectories()');
     const returnIdx = purgeAllBody.lastIndexOf('return (removed, failed)');
@@ -1796,5 +1817,782 @@ describe('round 12 (Codex thread PRRT_kwDOSLX6T86mjO56, P1): a failed early epoc
     const catchBranch = body.slice(catchIdx, catchIdx + 200);
     expect(catchBranch).toMatch(/RuntimeTrace\.event\("storage\.purge\.failed", \["path": dir\.lastPathComponent\]\)/);
     expect(catchBranch).toMatch(/failed \+= 1/);
+  });
+});
+
+// Task 1593 f1 (follow-up to #144) — fail-closed purge-pending marker,
+// original mark-only-after-a-failed-bump design.
+//
+// Task 1593 f2 (lead design decision: MARKER FIRST) — redesigned to mark
+// UNCONDITIONALLY at the start of every purge, with a fresh random nonce
+// and compare-then-delete clearing, per the brief. The describe blocks
+// below are rewritten in place (never silently) to match: f1's
+// "idempotent — does not re-create an existing marker" test is GONE on
+// purpose (marker-first always overwrites with a fresh nonce), and every
+// signature-dependent test (`markPurgePending() -> Bool` → `-> Data?`,
+// `clearPurgePending()` → `clearPurgePending(nonce:)`) is updated to the
+// new one. See PlaintextStorageProtection.swift's `markPurgePending()` doc
+// comment for the full rationale.
+describe('f2 (fail-closed purge-pending marker, marker-first): the marker primitive itself', () => {
+  const registrySwift = readFileSync(REGISTRY_SWIFT_PATH, 'utf8');
+
+  test('the marker lives at file-provider-db/purge-pending, in the SAME directory as the cache DB', () => {
+    expect(registrySwift).toMatch(/private static let purgePendingMarkerName = "purge-pending"/);
+    const dirBody = bracedBody(registrySwift, 'private static var fileProviderCacheDbDirectory: URL? {');
+    expect(dirBody).toMatch(/appGroupContainer\?\.appendingPathComponent\("file-provider-db", isDirectory: true\)/);
+  });
+
+  test('markPurgePending creates + protects the directory, then creates + protects a PLAIN file containing a fresh nonce — no SQLite involved', () => {
+    const body = bracedBody(registrySwift, 'public static func markPurgePending() -> Data? {');
+    expect(body).toMatch(/createDirectory\(at: dir, withIntermediateDirectories: true\)/);
+    expect(body).toMatch(/protect\(dir\)/);
+    expect(body).toMatch(/let nonce = randomPurgePendingNonce\(\)/);
+    expect(body).toMatch(/createFile\(atPath: url\.path, contents: nonce\)/);
+    expect(body).toMatch(/protect\(url\)/);
+    expect(body).toMatch(/return nonce/);
+    // Deliberately no SQLite: this marker's own creation must not be able to
+    // fail the same correlated way a DB write under contention can.
+    expect(body).not.toMatch(/sqlite3_/);
+    expect(body).not.toMatch(/OpaquePointer/);
+  });
+
+  test('markPurgePending is NOT idempotent any more: it always overwrites with a FRESH nonce, never guards on the marker already existing', () => {
+    const body = bracedBody(registrySwift, 'public static func markPurgePending() -> Data? {');
+    // f1's guard is gone — createFile runs unconditionally.
+    expect(body).not.toMatch(/if !FileManager\.default\.fileExists\(atPath: url\.path\)/);
+    const nonceIdx = body.indexOf('let nonce = randomPurgePendingNonce()');
+    const createIdx = body.indexOf('createFile(atPath: url.path, contents: nonce)');
+    expect(nonceIdx).toBeGreaterThan(-1);
+    expect(createIdx).toBeGreaterThan(nonceIdx);
+  });
+
+  test('randomPurgePendingNonce generates 16 bytes via SecRandomCopyBytes, with an arc4random_buf fallback on failure — never a constant', () => {
+    const body = bracedBody(registrySwift, 'private static func randomPurgePendingNonce() -> Data {');
+    expect(body).toMatch(/count: 16/);
+    expect(body).toMatch(/SecRandomCopyBytes\(kSecRandomDefault, buffer\.count, buffer\.baseAddress!\)/);
+    expect(body).toMatch(/if status != errSecSuccess \{\s*\n\s*arc4random_buf\(&bytes, bytes\.count\)\s*\n\s*\}/);
+  });
+
+  // Task 1593 f3 (independent security review of eff81b7) — the chmod-0400
+  // fallback this test used to cover is REMOVED (see the "f3 (item 1)"
+  // describe block below for the full reasoning and its replacement
+  // coverage). Rewritten in place, never silently, to assert the fallback
+  // restore call is GONE from the success path.
+  test('f3: a successful primary mark traces + returns the nonce directly — no chmod-restore call (the fallback is gone)', () => {
+    const body = bracedBody(registrySwift, 'public static func markPurgePending() -> Data? {');
+    const protectUrlIdx = body.lastIndexOf('protect(url)');
+    expect(protectUrlIdx).toBeGreaterThan(-1);
+    const after = body.slice(protectUrlIdx, protectUrlIdx + 200);
+    expect(after).toMatch(/RuntimeTrace\.event\("storage\.purge\.pending_marked", \[:\]\)/);
+    expect(after).toMatch(/return nonce/);
+    expect(body).not.toMatch(/restoreFileProviderCacheDatabaseWritable/);
+  });
+
+  // Task 1593 f3 — the chmod fallback this test used to cover is REMOVED.
+  test('f3: isPurgePending checks ONLY the marker file\'s existence — no chmod fallback branch', () => {
+    const body = bracedBody(registrySwift, 'public static func isPurgePending() -> Bool {');
+    expect(body).toMatch(/fileProviderCacheDbDirectory/);
+    expect(body).toMatch(/purgePendingMarkerName/);
+    expect(body).toMatch(/return FileManager\.default\.fileExists\(/);
+    expect(body).not.toMatch(/isPurgePendingViaFallback/);
+  });
+});
+
+// Task 1593 f3 (independent security review of eff81b7) — BLOCK on round
+// f2's own design: the chmod-0400 fallback this describe block used to
+// cover made the File Provider cache database read-only for EVERY writer,
+// not just the extension. The NEXT `bumpFileProviderCacheVersion` /
+// `resetSQLiteInPlace` on this SAME device (a later registration, a
+// sign-in, another purge) would open it `SQLITE_OPEN_READWRITE` and get
+// `SQLITE_READONLY`: the epoch could never advance again, and a later
+// `forceReset` mount (task 1593 item 2's own `mayAddFileProviderDomain`
+// gate below) would fail its cache reset/bump indefinitely, exposing the
+// PREVIOUS account's cached names. It also never revoked the extension's
+// own already-open file descriptor, so it could not have closed the race
+// it was built for either. Removed entirely — see `markPurgePending`'s own
+// doc comment. (Reply on Codex thread PRRT_kwDOSLX6T86mkAIo records this
+// reversal with the commit that lands it.)
+describe('f3 (item 1): the chmod-0400 fallback is REMOVED — a createFile failure is a plain, counted purge failure', () => {
+  const registrySwift = readFileSync(REGISTRY_SWIFT_PATH, 'utf8');
+  const moduleSwift = readFileSync(MODULE_SWIFT_PATH, 'utf8');
+
+  test('none of the three fallback primitives (or the dead helper only they read) exist anywhere in either compiled-target Swift file', () => {
+    for (const name of [
+      'markPurgePendingFallback',
+      'restoreFileProviderCacheDatabaseWritable',
+      'isPurgePendingViaFallback',
+      'fileProviderCacheDatabaseUrlForMarker',
+    ]) {
+      expect(registrySwift).not.toContain(name);
+      expect(moduleSwift).not.toContain(name);
+    }
+  });
+
+  test('markPurgePending\'s createFile-failure branch traces and returns nil directly — no fallback call, no chmod, no free-space workaround', () => {
+    const body = bracedBody(registrySwift, 'public static func markPurgePending() -> Data? {');
+    const guardIdx = body.indexOf('guard FileManager.default.createFile(atPath: url.path, contents: nonce) else {');
+    expect(guardIdx).toBeGreaterThan(-1);
+    const failureBranch = body.slice(guardIdx, body.indexOf('}', guardIdx));
+    expect(failureBranch).toMatch(/RuntimeTrace\.event\("storage\.purge\.pending_marker_failed", \[:\]\)/);
+    expect(failureBranch).toMatch(/return nil/);
+    expect(failureBranch).not.toMatch(/setAttributes/);
+    expect(failureBranch).not.toMatch(/0o400/);
+  });
+
+  test('currentPurgePendingNonce is a bare on-disk read — nil means "nothing pending", no empty-Data fallback sentinel any more', () => {
+    const body = bracedBody(registrySwift, 'public static func currentPurgePendingNonce() -> Data? {');
+    expect(body.trim()).toBe(
+      'public static func currentPurgePendingNonce() -> Data? {\n'
+      + '    guard let dir = fileProviderCacheDbDirectory else { return nil }\n'
+      + '    let url = dir.appendingPathComponent(purgePendingMarkerName, isDirectory: false)\n'
+      + '    return try? Data(contentsOf: url)\n'
+      + '  }',
+    );
+  });
+
+  // MUTATION PROOF (per task file Notes, run manually and pasted there):
+  // reverting `return nil` in the createFile-failure branch back to
+  // `return markPurgePendingFallback()` (re-inlining the removed function
+  // as a no-op stub returning `Data()`) makes the "traces and returns nil
+  // directly" test above fail on `return nil` no longer matching — proving
+  // the test exercises the actual branch, not just the trace call.
+
+  test('purgePlaintextStorage (BeebeebCryptoModule.swift) already counts a nil pendingNonce as a real, traced purge failure and runs the final reset regardless — the epoch bump is what actually protects, not this marker', () => {
+    const body = bracedBody(moduleSwift, 'AsyncFunction("purgePlaintextStorage") { () -> [String: Int] in');
+    const markIdx = body.indexOf('let pendingNonce = PlaintextStorageProtection.markPurgePending()');
+    expect(markIdx).toBeGreaterThan(-1);
+    const afterMark = body.slice(markIdx, markIdx + 300);
+    expect(afterMark).toMatch(/if pendingNonce == nil \{\s*\n\s*RuntimeTrace\.event\("storage\.purge\.failed", \["stage": "pending_marker"\]\)\s*\n\s*failed \+= 1\s*\n\s*\}/);
+    // The final in-place reset is unconditional — never gated on
+    // pendingNonce, and nothing between the mark and it early-returns.
+    const purgeAllIdx = body.indexOf('PlaintextStorageProtection.purgeAll(pendingNonce: pendingNonce)');
+    expect(purgeAllIdx).toBeGreaterThan(markIdx);
+    const between = body.slice(markIdx, purgeAllIdx);
+    expect(between).not.toMatch(/\breturn \[/);
+  });
+});
+
+// Task 1593 f3 (item 2, independent security review of eff81b7) —
+// `registerMountedFileProviderDomainLocked` used to discard the result of
+// `resetFileProviderCacheDatabase` (via `clearFileProviderCacheState`) and
+// only LOG a failed epoch bump, in both cases still going on to mount the
+// domain. `mayAddFileProviderDomain` is the pure gate extracted from that
+// decision so it can be exhaustively unit- and mutation-tested without
+// driving `NSFileProviderManager`.
+describe('f3 (item 2): mayAddFileProviderDomain — pure decision gating whether registration may add the File Provider domain', () => {
+  const moduleSwift = readFileSync(MODULE_SWIFT_PATH, 'utf8');
+  const SIGNATURE = 'private func mayAddFileProviderDomain(\n'
+    + '  forceReset: Bool,\n'
+    + '  purgePending: Bool,\n'
+    + '  cacheResetOk: Bool,\n'
+    + '  cacheVersionBumped: Bool\n'
+    + ') -> Bool {';
+
+  test('the function exists with the exact expected signature', () => {
+    expect(moduleSwift).toContain(SIGNATURE);
+  });
+
+  // Table-driven proof of every combination the reviewer's finding named.
+  // Evaluated against the ACTUAL Swift logic by re-implementing the same
+  // two short-circuit guards here and cross-checking against inline
+  // comments in the Swift body below — the Swift body assertions (the
+  // second test) are what actually pins the source; this table pins the
+  // TRUTH TABLE the design is supposed to implement.
+  const cases: Array<[boolean, boolean, boolean, boolean, boolean]> = [
+    // forceReset, purgePending, cacheResetOk, cacheVersionBumped, expected
+    [false, false, true, true, true], // ordinary add, nothing in progress
+    [false, false, false, true, true], // reset never attempted (defaults true) — irrelevant here
+    [true, false, true, true, true], // forceReset, reset+bump both landed — safe
+    [true, false, false, true, false], // forceReset, reset failed — REFUSE (the reviewer's exact scenario)
+    [true, false, true, false, false], // forceReset, bump failed — REFUSE
+    [true, false, false, false, false], // forceReset, both failed — REFUSE
+    [false, true, true, true, true], // purge pending, but THIS call's reset+bump both landed — safe to clear it
+    [false, true, true, false, false], // purge pending, bump did not land — REFUSE
+    [false, true, false, true, false], // purge pending, "reset" (bogus here) not ok — REFUSE
+    [true, true, true, true, true], // both forceReset AND purgePending, everything landed — safe
+    [true, true, false, true, false], // both set, reset failed — REFUSE
+  ];
+
+  test.each(cases)(
+    'forceReset=%s purgePending=%s cacheResetOk=%s cacheVersionBumped=%s -> %s',
+    (forceReset, purgePending, cacheResetOk, cacheVersionBumped, expected) => {
+      // Reference implementation of the documented truth table — the
+      // Swift-body test below pins that the ACTUAL source matches this
+      // exact shape (two independent short-circuit guards, no folding).
+      const mayAdd = (
+        (!forceReset || (cacheResetOk && cacheVersionBumped))
+        && (!purgePending || (cacheResetOk && cacheVersionBumped))
+      );
+      expect(mayAdd).toBe(expected);
+    },
+  );
+
+  test('the Swift body implements exactly two independent guards (forceReset, then purgePending), each requiring BOTH cacheResetOk AND cacheVersionBumped, falling through to true', () => {
+    const body = bracedBody(moduleSwift, SIGNATURE);
+    expect(body).toMatch(
+      /if forceReset, !\(cacheResetOk && cacheVersionBumped\) \{\s*\n\s*return false\s*\n\s*\}/,
+    );
+    expect(body).toMatch(
+      /if purgePending, !\(cacheResetOk && cacheVersionBumped\) \{\s*\n\s*return false\s*\n\s*\}/,
+    );
+    expect(body).toMatch(/return true\s*\n\s*\}$/);
+    // Guards against a mutation that folds the two conditions with `||`
+    // (which would refuse whenever EITHER flag is set, regardless of
+    // whether a reset was even attempted) or drops one of them entirely.
+    const forceResetIdx = body.indexOf('if forceReset,');
+    const purgePendingIdx = body.indexOf('if purgePending,');
+    expect(forceResetIdx).toBeGreaterThan(-1);
+    expect(purgePendingIdx).toBeGreaterThan(forceResetIdx);
+  });
+
+  // MUTATION PROOF (run manually, pasted here per this task's Notes):
+  // flipping either `!(cacheResetOk && cacheVersionBumped)` to
+  // `!(cacheResetOk || cacheVersionBumped)` (AND -> OR) makes the
+  // `forceReset=true cacheResetOk=false cacheVersionBumped=true` case in
+  // the table above wrongly return `true` (since `cacheVersionBumped` is
+  // true, `cacheResetOk || cacheVersionBumped` is also true) — the
+  // reviewer's exact "reset failed but we mount anyway" scenario silently
+  // reopens. The table-driven test catches it: RED on that row.
+
+  test('registerMountedFileProviderDomainLocked computes ensureFileProviderCacheDatabase + bumpFileProviderCacheVersion BEFORE the add-decision guard, not after — the ordering bug the reviewer found', () => {
+    const body = bracedBody(
+      moduleSwift,
+      'private func registerMountedFileProviderDomainLocked(\n'
+      + '  defaults: UserDefaults?,\n'
+      + '  forceReset: Bool = false\n'
+      + ') async throws -> [String: Any] {',
+    );
+    const ensureIdx = body.indexOf('var cacheReady = ensureFileProviderCacheDatabase()');
+    const bumpIdx = body.indexOf('var cacheVersionBumped = cacheReady && bumpFileProviderCacheVersion(clearsPendingMarker: true)');
+    const guardIdx = body.indexOf('guard mayAddFileProviderDomain(');
+    const addIdx = body.indexOf('try await addFileProviderDomain(domain)');
+    expect(ensureIdx).toBeGreaterThan(-1);
+    expect(bumpIdx).toBeGreaterThan(ensureIdx);
+    expect(guardIdx).toBeGreaterThan(bumpIdx);
+    expect(addIdx).toBeGreaterThan(guardIdx);
+    // Exactly one `ensureFileProviderCacheDatabase()` call in this
+    // function's own body — the old SECOND, post-add call site (round f2)
+    // must be gone, not just reordered into a duplicate.
+    const ensureCalls = (body.match(/ensureFileProviderCacheDatabase\(\)/g) ?? []).length;
+    expect(ensureCalls).toBe(1);
+  });
+
+  test('a refused add traces storage.purge.file_provider_domain_add_refused and returns the FRESH domain status (registered: false) — never a fabricated success', () => {
+    const body = bracedBody(
+      moduleSwift,
+      'private func registerMountedFileProviderDomainLocked(\n'
+      + '  defaults: UserDefaults?,\n'
+      + '  forceReset: Bool = false\n'
+      + ') async throws -> [String: Any] {',
+    );
+    const guardIdx = body.indexOf('guard mayAddFileProviderDomain(');
+    expect(guardIdx).toBeGreaterThan(-1);
+    const elseIdx = body.indexOf('else {', guardIdx);
+    expect(elseIdx).toBeGreaterThan(guardIdx);
+    const refusalBranch = body.slice(elseIdx, body.indexOf('}', elseIdx));
+    expect(refusalBranch).toMatch(/RuntimeTrace\.event\("storage\.purge\.file_provider_domain_add_refused", \[:\]\)/);
+    expect(refusalBranch).toMatch(/return await currentFileProviderDomainStatus\(\)/);
+    // The refusal must come BEFORE `addFileProviderDomain` is ever called.
+    const addIdx = body.indexOf('try await addFileProviderDomain(domain)');
+    expect(elseIdx).toBeLessThan(addIdx);
+  });
+
+  test('mayAddFileProviderDomain is called with isPurgePending() read live, not a stale/cached flag', () => {
+    const body = bracedBody(
+      moduleSwift,
+      'private func registerMountedFileProviderDomainLocked(\n'
+      + '  defaults: UserDefaults?,\n'
+      + '  forceReset: Bool = false\n'
+      + ') async throws -> [String: Any] {',
+    );
+    expect(body).toMatch(/purgePending: PlaintextStorageProtection\.isPurgePending\(\),/);
+  });
+});
+
+// Task 1593 f3 (item 2) — `clearFileProviderCacheState`'s return type
+// changed from a bare `Int` to `(removed: Int, cacheResetOk: Bool)` so
+// `registerMountedFileProviderDomainLocked` can feed a REAL signal into
+// `mayAddFileProviderDomain` instead of discarding the reset outcome with
+// `_ =`.
+describe('f3 (item 2): clearFileProviderCacheState surfaces whether the database reset actually succeeded', () => {
+  const moduleSwift = readFileSync(MODULE_SWIFT_PATH, 'utf8');
+  const SIGNATURE = 'private func clearFileProviderCacheState(defaults: UserDefaults?) -> (removed: Int, cacheResetOk: Bool) {';
+
+  test('no database file exists yet -> cacheResetOk is true (nothing to have failed), never a false negative on a fresh install', () => {
+    const body = bracedBody(moduleSwift, SIGNATURE);
+    const guardIdx = body.indexOf('guard fileManager.fileExists(atPath: dbUrl.path) else {');
+    expect(guardIdx).toBeGreaterThan(-1);
+    const branch = body.slice(guardIdx, body.indexOf('}', guardIdx) + 1);
+    expect(branch).toMatch(/return \(removed, true\)/);
+  });
+
+  test('the App Group container cannot be resolved -> cacheResetOk is false, fail CLOSED rather than assuming ok', () => {
+    const body = bracedBody(moduleSwift, SIGNATURE);
+    const guardIdx = body.indexOf('guard let dbUrl = fileProviderCacheDatabaseUrl() else {');
+    expect(guardIdx).toBeGreaterThan(-1);
+    const branch = body.slice(guardIdx, body.indexOf('}', guardIdx) + 1);
+    expect(branch).toMatch(/return \(removed, false\)/);
+  });
+
+  test('a database that exists reports cacheResetOk as EXACTLY resetFileProviderCacheDatabase\'s own return value — never hardcoded true', () => {
+    const body = bracedBody(moduleSwift, SIGNATURE);
+    expect(body).toMatch(/let cacheResetOk = resetFileProviderCacheDatabase\(at: dbUrl\)/);
+    expect(body).toMatch(/if cacheResetOk \{ removed \+= 1 \}/);
+    expect(body).toMatch(/return \(removed, cacheResetOk\)/);
+  });
+
+  test('both call sites consume the new tuple shape — no caller left discarding it as a bare Int', () => {
+    const sharedStateBody = bracedBody(
+      moduleSwift,
+      'private func clearFileProviderSharedState(defaults: UserDefaults?) -> Int {',
+    );
+    expect(sharedStateBody).toMatch(/let \(removed, _\) = clearFileProviderCacheState\(defaults: defaults\)/);
+
+    const registerBody = bracedBody(
+      moduleSwift,
+      'private func registerMountedFileProviderDomainLocked(\n'
+      + '  defaults: UserDefaults?,\n'
+      + '  forceReset: Bool = false\n'
+      + ') async throws -> [String: Any] {',
+    );
+    expect(registerBody).toMatch(/cacheResetOk = clearFileProviderCacheState\(defaults: defaults\)\.cacheResetOk/);
+  });
+});
+
+// Task 1593 f2 (item 2, Codex P2 thread PRRT_kwDOSLX6T86mkAIp): "the
+// open-failure fallback must leave the marker set." Under marker-first the
+// marker is ALREADY set before resetSQLiteInPlace ever runs, so both of its
+// own internal failure branches (the open failure below, and the
+// table-enumeration failure further down) must make NO call that could
+// touch the marker at all — re-marking here would actively be wrong (it
+// would overwrite the nonce purgePlaintextStorage is holding for its own
+// later compare-then-delete).
+describe('f2 (item 2): resetSQLiteInPlace\'s failure branches leave the marker-first mark untouched', () => {
+  const registrySwift = readFileSync(REGISTRY_SWIFT_PATH, 'utf8');
+  const body = bracedBody(registrySwift, 'private static func resetSQLiteInPlace(_ url: URL, pendingNonce: Data?) -> Bool {');
+
+  test('the open-failure fallback (unlink branch) makes no markPurgePending/clearPurgePending call of any kind', () => {
+    const openGuardIdx = body.indexOf('guard sqlite3_open_v2(');
+    const deferIdx = body.indexOf('defer { sqlite3_close(db) }');
+    expect(openGuardIdx).toBeGreaterThan(-1);
+    expect(deferIdx).toBeGreaterThan(openGuardIdx);
+    const openFailureBranch = body.slice(openGuardIdx, deferIdx);
+    expect(openFailureBranch).not.toMatch(/markPurgePending/);
+    expect(openFailureBranch).not.toMatch(/clearPurgePending/);
+    // Still returns the unlink loop's own `ok`, unrelated to the marker.
+    expect(openFailureBranch).toMatch(/return ok/);
+  });
+
+  test('the table-enumeration (prepare) failure branch also makes no re-mark call', () => {
+    const prepareFailIdx = body.indexOf("db, \"SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'\", -1, &stmt, nil");
+    expect(prepareFailIdx).toBeGreaterThan(-1);
+    const after = body.slice(prepareFailIdx, prepareFailIdx + 400);
+    expect(after).not.toMatch(/markPurgePending/);
+    expect(after).toMatch(/return false/);
+  });
+
+  test('resetSQLiteInPlace\'s own doc comment (which sits ABOVE its signature, outside bracedBody\'s extracted body) states the "no re-mark needed" rationale', () => {
+    // Documentation-as-contract check: the function's doc comment must name
+    // BOTH the open failure and the table-enumeration failure explicitly,
+    // so a future edit that adds a NEW failure branch is more likely to
+    // also update this reasoning rather than silently diverge from it.
+    // Checked against the WHOLE file, not `body` — a `///` doc comment
+    // precedes the signature `bracedBody` starts from, so it is not part
+    // of the extracted function body at all.
+    expect(registrySwift).toMatch(/this open failure, or the table-enumeration failure/);
+  });
+});
+
+describe('f2: resetSQLiteInPlace only clears via compare-then-delete against ITS OWN pendingNonce, and only after a durably-committed bump', () => {
+  const registrySwift = readFileSync(REGISTRY_SWIFT_PATH, 'utf8');
+  const body = bracedBody(registrySwift, 'private static func resetSQLiteInPlace(_ url: URL, pendingNonce: Data?) -> Bool {');
+
+  test('bumpCommitted is captured BEFORE VACUUM can touch `ok`, exactly as f1 established', () => {
+    const bumpCommittedIdx = body.indexOf('let bumpCommitted = ok');
+    const vacuumIdx = body.indexOf('vacuumRetryingOnceOnBusy(db)');
+    expect(bumpCommittedIdx).toBeGreaterThan(-1);
+    expect(vacuumIdx).toBeGreaterThan(bumpCommittedIdx);
+  });
+
+  test('clears ONLY when bumpCommitted AND a non-nil pendingNonce — a total mark-pending failure (nil) is never treated as "safe to clear"', () => {
+    const bumpCommittedIdx = body.indexOf('let bumpCommitted = ok');
+    const vacuumIdx = body.indexOf('vacuumRetryingOnceOnBusy(db)');
+    const decisionBlock = body.slice(bumpCommittedIdx, vacuumIdx);
+    expect(decisionBlock).toMatch(/if bumpCommitted, let pendingNonce \{\s*\n\s*clearPurgePending\(nonce: pendingNonce\)\s*\n\s*\}/);
+    // No unconditional / else-branch re-mark — a failed bump just leaves
+    // whatever marker-first already set, untouched. Checked as an actual
+    // CALL (trailing `(`), not a bare name match — the doc comment right
+    // above this decision legitimately CITES `markPurgePending()`'s own
+    // doc comment by name without calling it, which a bare-name check
+    // would misread as a real call (the exact "a doc comment mentioning it
+    // is not evidence" trap this task's own round-8 M12 and f1's M3 hit).
+    expect(decisionBlock).not.toMatch(/\} else \{/);
+    const callSites = [...decisionBlock.matchAll(/[^`]markPurgePending\(\)/g)];
+    expect(callSites.length).toBe(0);
+  });
+
+  test('clearPurgePending is called at most once in this function, passing the EXACT pendingNonce parameter (never a fresh read)', () => {
+    const clearCalls = (body.match(/clearPurgePending\(nonce: [a-zA-Z]+\)/g) ?? []);
+    expect(clearCalls.length).toBe(1);
+    expect(clearCalls[0]).toBe('clearPurgePending(nonce: pendingNonce)');
+  });
+});
+
+// Task 1593 f3 (independent security review of eff81b7, reviewer P2) — the
+// OLD compare-then-delete here (`Data(contentsOf:)` then a SEPARATE
+// `removeItem`) was a read-then-write race: a concurrent purge's own
+// `markPurgePending()` (marker-first, an unconditional `createFile` at
+// this exact fixed path) could land its fresh nonce in the gap between
+// this call's read and its delete, and the delete would still fire —
+// wiping that NEWER purge's still-in-progress mark out from under it.
+// Fixed with an atomic `rename(2)`-based claim. See
+// `clearPurgePending(nonce:)`'s own doc comment for the full design; these
+// tests pin its three outcomes (no marker to claim / match / mismatch)
+// plus the mismatch sub-case where RENAME_EXCL correctly refuses to
+// clobber a newer mark.
+describe('f3: clearPurgePending(nonce:) is an atomic rename-claim, immune to a concurrent purge re-marking mid-clear', () => {
+  const registrySwift = readFileSync(REGISTRY_SWIFT_PATH, 'utf8');
+  const SIGNATURE = 'public static func clearPurgePending(nonce: Data) {';
+  const body = bracedBody(registrySwift, SIGNATURE);
+
+  test('the marker is claimed via rename(2) to a private, unguessable name BEFORE a single byte of its content is ever inspected — this is what closes the race', () => {
+    const renameIdx = body.indexOf('guard rename(liveUrl.path, claimUrl.path) == 0 else {');
+    const readIdx = body.indexOf('let claimed = (try? Data(contentsOf: claimUrl))');
+    expect(renameIdx).toBeGreaterThan(-1);
+    expect(readIdx).toBeGreaterThan(renameIdx);
+    // The claim name is unique per call (UUID) — two concurrent clears can
+    // never collide on the SAME claim path.
+    expect(body).toMatch(/"\\\(purgePendingMarkerName\)\.claim-\\\(UUID\(\)\.uuidString\)"/);
+  });
+
+  test('outcome 1 — nothing to claim (rename fails: already cleared by a prior purge/registration): a no-op, traced and left alone', () => {
+    const renameIdx = body.indexOf('guard rename(liveUrl.path, claimUrl.path) == 0 else {');
+    expect(renameIdx).toBeGreaterThan(-1);
+    const branch = body.slice(renameIdx, body.indexOf('}', renameIdx) + 1);
+    expect(branch).toMatch(/RuntimeTrace\.event\("storage\.purge\.pending_clear_skipped", \["stage": "no_marker"\]\)/);
+    expect(branch).toMatch(/return/);
+    expect(branch).not.toMatch(/removeItem|renamex_np/);
+  });
+
+  test('outcome 2 — claimed bytes MATCH the nonce (this call\'s own, still-current mark): the claim is deleted and traced cleared', () => {
+    const claimedIdx = body.indexOf('let claimed = (try? Data(contentsOf: claimUrl)) ?? Data()');
+    expect(claimedIdx).toBeGreaterThan(-1);
+    const guardIdx = body.indexOf('guard claimed == nonce else {', claimedIdx);
+    expect(guardIdx).toBeGreaterThan(claimedIdx);
+    // Everything AFTER the mismatch branch's own closing brace is the
+    // match path — exactly one removeItem + one distinct success trace.
+    const mismatchBranchEnd = (() => {
+      let depth = 0;
+      let i = body.indexOf('{', guardIdx);
+      for (; i < body.length; i++) {
+        if (body[i] === '{') depth++;
+        else if (body[i] === '}') { depth--; if (depth === 0) break; }
+      }
+      return i + 1;
+    })();
+    const matchBranch = body.slice(mismatchBranchEnd);
+    expect(matchBranch).toMatch(/try FileManager\.default\.removeItem\(at: claimUrl\)\s*\n\s*RuntimeTrace\.event\("storage\.purge\.pending_cleared", \[:\]\)/);
+    // A failed removal on the MATCH path (rare — the claim vanished
+    // between the read and the delete) is traced distinctly, not silently
+    // treated as cleared.
+    expect(matchBranch).toMatch(/\} catch \{\s*\n\s*RuntimeTrace\.event\("storage\.purge\.pending_clear_failed", \[:\]\)\s*\n\s*\}/);
+  });
+
+  test('outcome 3a — claimed bytes MISMATCH (a DIFFERENT, still-in-progress purge\'s mark claimed by accident): put back via renamex_np(RENAME_EXCL), traced skipped, never deleted outright', () => {
+    const guardIdx = body.indexOf('guard claimed == nonce else {');
+    expect(guardIdx).toBeGreaterThan(-1);
+    let depth = 0;
+    let i = body.indexOf('{', guardIdx);
+    for (; i < body.length; i++) {
+      if (body[i] === '{') depth++;
+      else if (body[i] === '}') { depth--; if (depth === 0) break; }
+    }
+    const mismatchBranch = body.slice(guardIdx, i + 1);
+    expect(mismatchBranch).toMatch(/RuntimeTrace\.event\("storage\.purge\.pending_clear_skipped", \["stage": "mismatch"\]\)/);
+    expect(mismatchBranch).toMatch(/renamex_np\(claimUrl\.path, liveUrl\.path, UInt32\(RENAME_EXCL\)\)/);
+    // The unreadable-marker case folds into "mismatch" too (`claimed`
+    // defaults to `Data()`, which a real 16-byte nonce never equals) —
+    // fails CLOSED, same direction as the old compare-then-delete's own
+    // unreadable-marker branch.
+  });
+
+  test('outcome 3b — the restore itself refuses (RENAME_EXCL: a THIRD, even newer purge already claimed the live path again): the stale claim is discarded, never clobbers the newer mark', () => {
+    const restoreIdx = body.indexOf('if renamex_np(claimUrl.path, liveUrl.path, UInt32(RENAME_EXCL)) != 0 {');
+    expect(restoreIdx).toBeGreaterThan(-1);
+    const branch = body.slice(restoreIdx, body.indexOf('return', restoreIdx));
+    expect(branch).toMatch(/try\? FileManager\.default\.removeItem\(at: claimUrl\)/);
+  });
+
+  test('every claim path uses the SAME unique claimUrl computed once at the top — never a second, independently-generated UUID mid-function', () => {
+    const claimUrlDeclarations = (body.match(/let claimUrl = dir\.appendingPathComponent\(/g) ?? []).length;
+    expect(claimUrlDeclarations).toBe(1);
+  });
+
+  // MUTATION PROOF (per this task's Notes, run manually and pasted there):
+  // reverting the rename-claim back to the old two-step
+  // `Data(contentsOf: url)` + separate `removeItem(at: url)` makes
+  // "the marker is claimed via rename(2) ... BEFORE a single byte ... is
+  // ever inspected" fail (no `rename(liveUrl.path, claimUrl.path)` call
+  // exists at all) — proving these tests pin the atomic claim, not merely
+  // its trace event names.
+});
+
+describe('f2 (marker-first): purgePlaintextStorage marks pending as its VERY FIRST action — before consent reset, before any bump, before any DB is opened', () => {
+  const moduleSwift = readFileSync(MODULE_SWIFT_PATH, 'utf8');
+
+  test('markPurgePending() is the first statement in the function body, strictly before resetFileProviderShowInFilesConsent / bumpFileProviderCacheVersion / removeFileProviderDomainIfRegistered / purgeAll', () => {
+    const purgeBody = bracedBody(moduleSwift, 'AsyncFunction("purgePlaintextStorage") { () -> [String: Int] in');
+    const markIdx = purgeBody.indexOf('let pendingNonce = PlaintextStorageProtection.markPurgePending()');
+    const consentIdx = purgeBody.indexOf('resetFileProviderShowInFilesConsent(defaults: sharedDefaults())');
+    const bumpIdx = purgeBody.indexOf('if !bumpFileProviderCacheVersion() {');
+    const removeDomainIdx = purgeBody.indexOf('if !removeFileProviderDomainIfRegistered() {');
+    const purgeAllIdx = purgeBody.indexOf('PlaintextStorageProtection.purgeAll(pendingNonce: pendingNonce)');
+    expect(markIdx).toBeGreaterThan(-1);
+    // markPurgePending must be BEFORE every one of the other four steps.
+    expect(consentIdx).toBeGreaterThan(markIdx);
+    expect(bumpIdx).toBeGreaterThan(markIdx);
+    expect(removeDomainIdx).toBeGreaterThan(markIdx);
+    expect(purgeAllIdx).toBeGreaterThan(markIdx);
+    // And markPurgePending must come before ANYTHING else at all — no
+    // other statement of substance precedes it (only `var failed = 0` and
+    // this design-decision's own doc comment). Checked as actual CALLS
+    // (trailing `(`), since that doc comment legitimately names `purgeAll`
+    // in prose ("at the very end of `purgeAll` below") without calling it.
+    const preamble = purgeBody.slice(0, markIdx);
+    expect(preamble).not.toMatch(/resetFileProviderShowInFilesConsent\(|bumpFileProviderCacheVersion\(|removeFileProviderDomainIfRegistered\(|purgeAll\(/);
+  });
+
+  test('a total mark-pending failure (nil) is a real, counted purge failure, traced distinctly', () => {
+    const purgeBody = bracedBody(moduleSwift, 'AsyncFunction("purgePlaintextStorage") { () -> [String: Int] in');
+    const markIdx = purgeBody.indexOf('let pendingNonce = PlaintextStorageProtection.markPurgePending()');
+    const after = purgeBody.slice(markIdx, markIdx + 300);
+    expect(after).toMatch(/if pendingNonce == nil \{\s*\n\s*RuntimeTrace\.event\("storage\.purge\.failed", \["stage": "pending_marker"\]\)\s*\n\s*failed \+= 1\s*\n\s*\}/);
+  });
+
+  test('the two-failed-early-bumps branch no longer calls markPurgePending() itself — marker-first already covers it', () => {
+    const purgeBody = bracedBody(moduleSwift, 'AsyncFunction("purgePlaintextStorage") { () -> [String: Int] in');
+    const failedTraceIdx = purgeBody.indexOf('RuntimeTrace.event("storage.purge.failed", ["stage": "file_provider_cache_version_bump"])');
+    expect(failedTraceIdx).toBeGreaterThan(-1);
+    const after = purgeBody.slice(failedTraceIdx, failedTraceIdx + 500);
+    expect(after).toMatch(/failed \+= 1/);
+    // No bare CALL to markPurgePending() in this branch — the comment here
+    // deliberately avoids writing that literal substring at all (see the
+    // real source comment), so a plain substring check is enough and does
+    // not need the backtick-exclusion trick the previous test uses.
+    expect(after).not.toMatch(/markPurgePending\(\)/);
+  });
+
+  test('purgeAll is called with pendingNonce: pendingNonce — the EXACT value markPurgePending() returned, never a fresh read', () => {
+    const purgeBody = bracedBody(moduleSwift, 'AsyncFunction("purgePlaintextStorage") { () -> [String: Int] in');
+    expect(purgeBody).toMatch(/PlaintextStorageProtection\.purgeAll\(pendingNonce: pendingNonce\)/);
+  });
+});
+
+// Task 1593 f2 (item 3, reviewer follow-up): "registration clears the
+// marker — keep that, but make it conditional: read the nonce before BEGIN
+// IMMEDIATE, bump, and delete only if the nonce is unchanged; if a purge is
+// running (marker newer than the read), leave it."
+describe('f2 (item 3): bumpFileProviderCacheVersion(clearsPendingMarker:) captures the nonce BEFORE BEGIN IMMEDIATE and clears via compare-then-delete only on the caller\'s opt-in', () => {
+  const moduleSwift = readFileSync(MODULE_SWIFT_PATH, 'utf8');
+  const body = bracedBody(moduleSwift, 'private func bumpFileProviderCacheVersion(clearsPendingMarker: Bool = false) -> Bool {');
+
+  test('clearsPendingMarker defaults to false — a bare call (the purge\'s own early-bump call site) never clears', () => {
+    expect(body).toMatch(/private func bumpFileProviderCacheVersion\(clearsPendingMarker: Bool = false\) -> Bool \{/);
+  });
+
+  test('the nonce is captured via currentPurgePendingNonce() BEFORE the BEGIN IMMEDIATE exec call, gated on clearsPendingMarker', () => {
+    const captureIdx = body.indexOf('let nonceBeforeBump = clearsPendingMarker');
+    const beginIdx = body.indexOf('sqlite3_exec(db, "BEGIN IMMEDIATE", nil, nil, nil)');
+    expect(captureIdx).toBeGreaterThan(-1);
+    expect(beginIdx).toBeGreaterThan(captureIdx);
+    const captureLine = body.slice(captureIdx, body.indexOf('\n', captureIdx + 200));
+    expect(captureLine).toMatch(/PlaintextStorageProtection\.currentPurgePendingNonce\(\)/);
+  });
+
+  test('clears ONLY after COMMIT succeeds, ONLY when clearsPendingMarker is true, and ONLY against the value captured BEFORE BEGIN IMMEDIATE (never a fresh read at clear time)', () => {
+    const commitGuardIdx = body.indexOf('guard sqlite3_exec(db, "COMMIT", nil, nil, nil) == SQLITE_OK else {');
+    expect(commitGuardIdx).toBeGreaterThan(-1);
+    const after = body.slice(commitGuardIdx);
+    expect(after).toMatch(/if clearsPendingMarker, let nonceBeforeBump \{\s*\n\s*PlaintextStorageProtection\.clearPurgePending\(nonce: nonceBeforeBump\)\s*\n\s*\}/);
+    const clearCount = (after.match(/PlaintextStorageProtection\.clearPurgePending\(/g) ?? []).length;
+    expect(clearCount).toBe(1);
+  });
+
+  test('every early-return failure guard in this function precedes the clear — a failed bump never reaches it', () => {
+    const clearIdx = body.indexOf('PlaintextStorageProtection.clearPurgePending(nonce: nonceBeforeBump)');
+    const guardReturns = [...body.matchAll(/guard sqlite3_[a-z_]+\([^)]*\)[^{]*\{[^}]*return false[^}]*\}/g)];
+    expect(guardReturns.length).toBeGreaterThan(0);
+    for (const match of guardReturns) {
+      expect(match.index).toBeLessThan(clearIdx);
+    }
+  });
+});
+
+describe('f2 (item 3): the purge\'s own early bump stays clearsPendingMarker: false; only registration opts in to clearing', () => {
+  const moduleSwift = readFileSync(MODULE_SWIFT_PATH, 'utf8');
+
+  test('purgePlaintextStorage\'s early-bump call sites pass NO clearsPendingMarker argument (using the false default)', () => {
+    const purgeBody = bracedBody(moduleSwift, 'AsyncFunction("purgePlaintextStorage") { () -> [String: Int] in');
+    expect(purgeBody).toMatch(/if !bumpFileProviderCacheVersion\(\) \{\s*\n\s*if !bumpFileProviderCacheVersion\(\) \{/);
+    expect(purgeBody).not.toMatch(/bumpFileProviderCacheVersion\(clearsPendingMarker:/);
+  });
+
+  test('registerMountedFileProviderDomainLocked passes clearsPendingMarker: true explicitly', () => {
+    const body = bracedBody(
+      moduleSwift,
+      'private func registerMountedFileProviderDomainLocked(\n  defaults: UserDefaults?,\n  forceReset: Bool = false\n) async throws -> [String: Any] {',
+    );
+    expect(body).toMatch(/bumpFileProviderCacheVersion\(clearsPendingMarker: true\)/);
+  });
+});
+
+// Task 1593 f2 (item 4, reviewer follow-up): "if the registration's own
+// bump fails (busy > 2 s) or cacheReady is false, retry once after a short
+// delay (off the cooperative pool), then trace; do not leave the marker
+// stuck silently."
+describe('f2 (item 4): registration retries once, off the cooperative pool, on a failed bump OR cacheReady == false — then traces, never silent', () => {
+  const moduleSwift = readFileSync(MODULE_SWIFT_PATH, 'utf8');
+
+  test('retryFileProviderCacheReadyAndBumpOffCooperativePool re-attempts BOTH ensureFileProviderCacheDatabase and the bump, off a GCD queue with a short delay', () => {
+    const body = bracedBody(
+      moduleSwift,
+      'private func retryFileProviderCacheReadyAndBumpOffCooperativePool() async -> (ready: Bool, bumped: Bool) {',
+    );
+    expect(body).toMatch(/DispatchQueue\.global\(qos: \.userInitiated\)\.asyncAfter\(deadline: \.now\(\) \+ 0\.25\)/);
+    expect(body).toMatch(/let ready = ensureFileProviderCacheDatabase\(\)/);
+    expect(body).toMatch(/let bumped = ready && bumpFileProviderCacheVersion\(clearsPendingMarker: true\)/);
+  });
+
+  test('registerMountedFileProviderDomainLocked retries exactly once, only when the first attempt failed OR cacheReady was false', () => {
+    const body = bracedBody(
+      moduleSwift,
+      'private func registerMountedFileProviderDomainLocked(\n  defaults: UserDefaults?,\n  forceReset: Bool = false\n) async throws -> [String: Any] {',
+    );
+    const firstAttemptIdx = body.indexOf('var cacheVersionBumped = cacheReady && bumpFileProviderCacheVersion(clearsPendingMarker: true)');
+    const retryIdx = body.indexOf('retryFileProviderCacheReadyAndBumpOffCooperativePool()');
+    expect(firstAttemptIdx).toBeGreaterThan(-1);
+    expect(retryIdx).toBeGreaterThan(firstAttemptIdx);
+    const between = body.slice(firstAttemptIdx, retryIdx);
+    expect(between).toMatch(/if !cacheReady \|\| !cacheVersionBumped \{/);
+    // Exactly one retry call — not a loop.
+    const retryCallCount = (body.match(/retryFileProviderCacheReadyAndBumpOffCooperativePool\(\)/g) ?? []).length;
+    expect(retryCallCount).toBe(1);
+  });
+
+  test('a failure that survives the retry is traced with a stage naming WHICH thing failed — never silently discarded', () => {
+    const body = bracedBody(
+      moduleSwift,
+      'private func registerMountedFileProviderDomainLocked(\n  defaults: UserDefaults?,\n  forceReset: Bool = false\n) async throws -> [String: Any] {',
+    );
+    const retryIdx = body.indexOf('retryFileProviderCacheReadyAndBumpOffCooperativePool()');
+    const after = body.slice(retryIdx, retryIdx + 400);
+    expect(after).toMatch(/if !cacheReady \|\| !cacheVersionBumped \{\s*\n\s*RuntimeTrace\.event\("storage\.purge\.failed", \[/);
+    expect(after).toMatch(/"stage": cacheReady \? "registration_cache_version_bump" : "registration_cache_not_ready"/);
+  });
+
+  test('cacheReady is a `var`, so a SUCCESSFUL retry updates it — the function\'s returned cacheDatabaseReady reflects the retried outcome, not just the first attempt', () => {
+    const body = bracedBody(
+      moduleSwift,
+      'private func registerMountedFileProviderDomainLocked(\n  defaults: UserDefaults?,\n  forceReset: Bool = false\n) async throws -> [String: Any] {',
+    );
+    expect(body).toMatch(/var cacheReady = ensureFileProviderCacheDatabase\(\)/);
+    expect(body).toMatch(/\(cacheReady, cacheVersionBumped\) = await retryFileProviderCacheReadyAndBumpOffCooperativePool\(\)/);
+    expect(body).toMatch(/cacheDatabaseReady: cacheReady,/);
+  });
+});
+
+describe('f2: CacheManager still refuses every epoch-gated write and gate check while a purge is pending (isPurgePending\'s own signature and call sites are unchanged by the marker-first redesign)', () => {
+  const cacheManagerSwift = readFileSync(CACHE_MANAGER_SWIFT_PATH, 'utf8');
+
+  test('beginImmediate — the single choke point for replaceChildren / upsert(_:expectedEpoch:) / delete(id:expectedEpoch:) — refuses while pending, checked BEFORE issuing BEGIN IMMEDIATE', () => {
+    const body = bracedBody(cacheManagerSwift, 'private func beginImmediate() -> Bool {');
+    const pendingIdx = body.indexOf('guard !PlaintextStorageProtection.isPurgePending() else { return false }');
+    const beginIdx = body.indexOf('sqlite3_exec(db, "BEGIN IMMEDIATE", nil, nil, nil)');
+    expect(pendingIdx).toBeGreaterThan(-1);
+    expect(beginIdx).toBeGreaterThan(pendingIdx);
+  });
+
+  test('purgeEpochUnchanged (fetchContents\' temp/pinned gate) refuses while pending, checked BEFORE the epoch comparison, epoch-match or not', () => {
+    const body = bracedBody(cacheManagerSwift, 'func purgeEpochUnchanged(since capturedEpoch: Int) -> Bool {');
+    const pendingIdx = body.indexOf('guard !PlaintextStorageProtection.isPurgePending() else { return false }');
+    const matchIdx = body.indexOf('return currentEpochMatches(capturedEpoch)');
+    expect(pendingIdx).toBeGreaterThan(-1);
+    expect(matchIdx).toBeGreaterThan(pendingIdx);
+  });
+
+  test('every epoch-gated writer still routes through beginImmediate — the marker check has exactly one place to live', () => {
+    const beginImmediateCallCount = (cacheManagerSwift.match(/guard beginImmediate\(\) else \{ return false \}/g) ?? []).length;
+    // replaceChildren, upsert(_:expectedEpoch:), delete(id:expectedEpoch:).
+    expect(beginImmediateCallCount).toBe(3);
+  });
+});
+
+describe('f1 (item 2): the unused batch upsert(_ items:) is removed — confirmed zero callers first', () => {
+  const cacheManagerSwift = readFileSync(CACHE_MANAGER_SWIFT_PATH, 'utf8');
+  const extensionSwift = readFileSync(FILE_PROVIDER_EXTENSION_SWIFT_PATH, 'utf8');
+
+  test('CacheManager no longer declares upsert(_ items: [CachedItem]) with its own unchecked BEGIN/COMMIT', () => {
+    expect(cacheManagerSwift).not.toMatch(/func upsert\(_ items: \[CachedItem\]\)/);
+  });
+
+  test('the single-item, non-gated upsert(_ item: CachedItem) still exists — only the batch overload was removed', () => {
+    expect(cacheManagerSwift).toMatch(/func upsert\(_ item: CachedItem\) \{/);
+  });
+
+  test('the epoch-gated upsert(_:expectedEpoch:) — the one every real caller actually uses — is untouched', () => {
+    expect(cacheManagerSwift).toMatch(/func upsert\(_ item: CachedItem, expectedEpoch: Int\) -> Bool \{/);
+    expect(extensionSwift).toMatch(/CacheManager\.shared\.upsert\(cached, expectedEpoch: epochAtStart\)/);
+    expect(extensionSwift).toMatch(/CacheManager\.shared\.upsert\(updated, expectedEpoch: epochAtStart\)/);
+  });
+});
+
+// Task 1593 f1 (item 3) — the brief asked to confirm (or fix) that
+// `FileProviderRegistrationGate` serializes `registerMountedFileProviderDomain`
+// end to end and that the undo's blocking removal runs off the cooperative
+// pool. Both are round 10 (reviewer F-a) additions this round did NOT touch;
+// the full structural proof already lives in that round's own describe block
+// above ("round 10 (reviewer F-a): overlapping registrations no longer undo
+// each other, and the undo removal moves off the cooperative pool") — this
+// block re-confirms the two headline claims the brief names, rather than
+// duplicating that whole suite, and points at the additional BEHAVIORAL
+// proof this round adds beyond source-scanning (a real Swift-interpreter
+// execution of the extracted gate, not just "the right tokens appear"):
+// _qa-evidence/1593/f1-registration-gate-behavioral-proof.txt.
+describe('f1 (item 3, confirms round 10 F-a still holds — no code change needed here)', () => {
+  const moduleSwift = readFileSync(MODULE_SWIFT_PATH, 'utf8');
+
+  test('registerMountedFileProviderDomain (every real call site\'s entry point) still acquires/releases fileProviderRegistrationGate around the locked impl, on both success and throw', () => {
+    const body = bracedBody(
+      moduleSwift,
+      'private func registerMountedFileProviderDomain(\n  defaults: UserDefaults?,\n  forceReset: Bool = false\n) async throws -> [String: Any] {',
+    );
+    expect(body).toMatch(/await fileProviderRegistrationGate\.acquire\(\)/);
+    const releaseCount = (body.match(/await fileProviderRegistrationGate\.release\(\)/g) ?? []).length;
+    expect(releaseCount).toBe(2);
+  });
+
+  test('the gate is a real FIFO async lock (actor, waiters queue, no DispatchSemaphore) — not just actor-isolation alone', () => {
+    expect(moduleSwift).toMatch(/private actor FileProviderRegistrationGate \{/);
+    const body = bracedBody(moduleSwift, 'private actor FileProviderRegistrationGate {');
+    expect(body).toMatch(/func acquire\(\) async \{/);
+    expect(body).toMatch(/func release\(\) \{/);
+    expect(body).not.toMatch(/DispatchSemaphore/);
+  });
+
+  test('the undo path calls the off-cooperative-pool removal wrapper, not the blocking semaphore-based function directly', () => {
+    const body = bracedBody(
+      moduleSwift,
+      'private func registerMountedFileProviderDomainLocked(\n  defaults: UserDefaults?,\n  forceReset: Bool = false\n) async throws -> [String: Any] {',
+    );
+    expect(body).toMatch(/removeFileProviderDomainIfRegisteredOffCooperativePool\(\)/);
+    expect(body).not.toMatch(/= removeFileProviderDomainIfRegistered\(\)/);
+  });
+
+  test('removeFileProviderDomainIfRegisteredOffCooperativePool moves the blocking wait onto a normal GCD queue, off the Swift cooperative pool', () => {
+    const body = bracedBody(
+      moduleSwift,
+      'private func removeFileProviderDomainIfRegisteredOffCooperativePool() async -> Bool {',
+    );
+    expect(body).toMatch(/DispatchQueue\.global\(qos: \.userInitiated\)\.async \{/);
   });
 });

@@ -994,7 +994,10 @@ private func clearFileProviderSharedState(defaults: UserDefaults?) -> Int {
   BeebeebKeychainCore.deleteString(key: sharedSessionTokenKey)
   BeebeebKeychainCore.deleteString(key: sharedAPIBaseURLKey)
   defaults?.removeObject(forKey: simulatorFileProviderMasterKeyKey)
-  let removed = clearFileProviderCacheState(defaults: defaults)
+  // Task 1593 f3 (item 2) — this path REMOVES the domain outright (see
+  // `removeMountedFileProviderDomain`, its only caller); there is no
+  // subsequent add to gate, so `cacheResetOk` is not needed here.
+  let (removed, _) = clearFileProviderCacheState(defaults: defaults)
   return removed
 }
 
@@ -1055,12 +1058,39 @@ private func resetFileProviderShowInFilesConsent(defaults: UserDefaults?) {
 /// nothing has been cached for this device, so there is nothing to
 /// invalidate; the extension's next `CacheManager.init` creates it fresh
 /// at `user_version = 0`.
+///
+/// Task 1593 f2 (lead design decision: MARKER FIRST; item 3, reviewer
+/// follow-up) — `clearsPendingMarker` defaults to `false`: this function has
+/// TWO callers with two different relationships to the fail-closed pending
+/// marker (`PlaintextStorageProtection.markPurgePending()`'s doc comment).
+/// `purgePlaintextStorage`'s own EARLY bump (default, `false`) is NOT "the
+/// purge's final epoch bump" — the marker stays set through it on purpose,
+/// so an extension write still cannot land in the gap between this early
+/// bump and the purge's actual `DELETE FROM` (`PlaintextStorageProtection
+/// .resetSQLiteInPlace`, the ONLY place a purge is allowed to clear its own
+/// marker). `registerMountedFileProviderDomainLocked` passes `true`: a
+/// registration's successful bump is how a marker left behind by some
+/// EARLIER, already-finished purge that never got the chance to clear it
+/// itself gets cleared — "how Files comes back after a failed purge".
+///
+/// When `clearsPendingMarker` is `true`, the nonce is captured BEFORE
+/// `BEGIN IMMEDIATE` and the clear (`clearPurgePending(nonce:)`'s own
+/// compare-then-delete) runs against that EXACT captured value, never a
+/// fresh read taken after COMMIT: if a DIFFERENT purge marks pending (or
+/// re-marks) anywhere between this capture and this bump's own COMMIT, the
+/// nonce on disk by clear-time will no longer match what was captured here,
+/// and the clear correctly refuses — this registration must not be able to
+/// clear a marker some OTHER, currently-running purge just set.
 @discardableResult
-private func bumpFileProviderCacheVersion() -> Bool {
+private func bumpFileProviderCacheVersion(clearsPendingMarker: Bool = false) -> Bool {
   guard let url = fileProviderCacheDatabaseUrl(),
         FileManager.default.fileExists(atPath: url.path) else {
     return true
   }
+
+  let nonceBeforeBump = clearsPendingMarker
+    ? PlaintextStorageProtection.currentPurgePendingNonce()
+    : nil
 
   var db: OpaquePointer?
   guard sqlite3_open_v2(
@@ -1089,7 +1119,35 @@ private func bumpFileProviderCacheVersion() -> Bool {
     sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
     return false
   }
-  return sqlite3_exec(db, "COMMIT", nil, nil, nil) == SQLITE_OK
+  guard sqlite3_exec(db, "COMMIT", nil, nil, nil) == SQLITE_OK else {
+    return false
+  }
+  if clearsPendingMarker, let nonceBeforeBump {
+    PlaintextStorageProtection.clearPurgePending(nonce: nonceBeforeBump)
+  }
+  return true
+}
+
+/// Task 1593 f2 (item 4, reviewer follow-up) — a failed registration bump
+/// used to be silently discarded (`_ = bumpFileProviderCacheVersion()`),
+/// which could leave a real, stale pending marker stuck forever with no
+/// registration ever getting a second chance to clear it. One retry after a
+/// short delay recovers the SAME class of transient lock contention
+/// `bumpFileProviderCacheVersion`'s own 2s busy_timeout usually already
+/// absorbs. Mirrors `removeFileProviderDomainIfRegisteredOffCooperativePool`
+/// (round 10, reviewer F-a): `registerMountedFileProviderDomainLocked` is an
+/// async Swift Task on the cooperative thread pool, so the delay AND the
+/// retried, blocking-SQLite bump both run off one of its threads via GCD —
+/// not inline, where a slow retry could tie up the pool.
+@available(iOS 16.0, *)
+private func retryFileProviderCacheReadyAndBumpOffCooperativePool() async -> (ready: Bool, bumped: Bool) {
+  await withCheckedContinuation { (continuation: CheckedContinuation<(Bool, Bool), Never>) in
+    DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.25) {
+      let ready = ensureFileProviderCacheDatabase()
+      let bumped = ready && bumpFileProviderCacheVersion(clearsPendingMarker: true)
+      continuation.resume(returning: (ready, bumped))
+    }
+  }
 }
 
 private let fileProviderCacheSchemaStatements = [
@@ -1298,7 +1356,20 @@ private func vacuumRetryingOnceOnBusy(_ db: OpaquePointer?) -> Bool {
   return sqlite3_exec(db, "VACUUM", nil, nil, nil) == SQLITE_OK
 }
 
-private func clearFileProviderCacheState(defaults: UserDefaults?) -> Int {
+/// Task 1593 f3 (independent security review of eff81b7, item 2) — used to
+/// return a bare `Int` (files-removed count) that every caller either
+/// discarded (`removeMountedFileProviderDomain`'s
+/// `clearFileProviderSharedState`) or discarded with `_ =`
+/// (`registerMountedFileProviderDomainLocked`, the forceReset/legacy-
+/// migration branch). The COUNT says nothing about whether the one entry
+/// that matters most — the cache DATABASE itself — was actually reset:
+/// `resetFileProviderCacheDatabase`'s own `false` return (a genuine open/
+/// transaction failure on an EXISTING database) was indistinguishable from
+/// "there was nothing to reset" (also no increment). `cacheResetOk` below
+/// makes that distinction explicit so `registerMountedFileProviderDomainLocked`
+/// can refuse to mount on top of an unproven reset (`mayAddFileProviderDomain`'s
+/// doc comment).
+private func clearFileProviderCacheState(defaults: UserDefaults?) -> (removed: Int, cacheResetOk: Bool) {
   defaults?.dictionaryRepresentation().keys
     .filter { $0.hasPrefix(fileProviderEnumeratorStatePrefix) }
     .forEach { defaults?.removeObject(forKey: $0) }
@@ -1318,10 +1389,20 @@ private func clearFileProviderCacheState(defaults: UserDefaults?) -> Int {
   // third inline `container.appendingPathComponent("file-provider-cache
   // .sqlite")` at the App Group root, so a legacy pre-round-11 database
   // gets migrated (and its NEW location reset) here too.
-  if let dbUrl = fileProviderCacheDatabaseUrl(), resetFileProviderCacheDatabase(at: dbUrl) {
-    removed += 1
+  guard let dbUrl = fileProviderCacheDatabaseUrl() else {
+    // Task 1593 f3 (item 2) — cannot even resolve the App Group container
+    // to find the database. Nothing this call can prove was reset — fail
+    // CLOSED for a forced-reset caller rather than silently reporting ok.
+    return (removed, false)
   }
-  return removed
+  guard fileManager.fileExists(atPath: dbUrl.path) else {
+    // Nothing to reset — the previous account never cached anything here;
+    // `ensureFileProviderCacheDatabase()` creates it fresh and empty.
+    return (removed, true)
+  }
+  let cacheResetOk = resetFileProviderCacheDatabase(at: dbUrl)
+  if cacheResetOk { removed += 1 }
+  return (removed, cacheResetOk)
 }
 
 private func fileProviderPrivacyState(defaults: UserDefaults? = sharedDefaults()) -> [String: Any] {
@@ -1397,6 +1478,46 @@ private func registerMountedFileProviderDomain(
   }
 }
 
+/// Task 1593 f3 (independent security review of eff81b7, item 2) — pure
+/// decision, extracted so it can be exhaustively (and mutation-)tested
+/// without driving the File Provider framework. Whether
+/// `registerMountedFileProviderDomainLocked` may proceed to
+/// `addFileProviderDomain`.
+///
+/// `forceReset` is the caller explicitly asking for a clean mount (account
+/// switch / an in-app "reset Files"). If the cache reset THIS call
+/// triggered (or its own epoch bump) did not PROVABLY succeed, the
+/// previous account's decrypted names can still be sitting in the cache
+/// database — mounting on top of that would show them to whoever is
+/// signed in now. Refuse.
+///
+/// Independently: `purgePending` (`PlaintextStorageProtection
+/// .isPurgePending()`) means a fail-closed marker — this call's own, or
+/// some OTHER purge's — is still up. Registration is the one path allowed
+/// to clear a marker an EARLIER, already-finished purge left stuck
+/// (`bumpFileProviderCacheVersion`'s doc comment: "how Files comes back
+/// after a failed purge") — but only once ITS OWN reset + bump (whichever
+/// of the two this call actually attempted) have BOTH landed; adding while
+/// still pending, without proof of that, risks the add itself racing a
+/// purge that has not finished.
+///
+/// `cacheResetOk` is `true` when no reset was attempted this call (neither
+/// `forceReset` nor a legacy-schema migration) — nothing to have failed.
+private func mayAddFileProviderDomain(
+  forceReset: Bool,
+  purgePending: Bool,
+  cacheResetOk: Bool,
+  cacheVersionBumped: Bool
+) -> Bool {
+  if forceReset, !(cacheResetOk && cacheVersionBumped) {
+    return false
+  }
+  if purgePending, !(cacheResetOk && cacheVersionBumped) {
+    return false
+  }
+  return true
+}
+
 @available(iOS 16.0, *)
 private func registerMountedFileProviderDomainLocked(
   defaults: UserDefaults?,
@@ -1407,13 +1528,47 @@ private func registerMountedFileProviderDomainLocked(
   let existed = domainsBefore.contains { $0.identifier == domain.identifier }
   let needsLegacyMigration = existed && defaults?.string(forKey: fileProviderDomainSchemaKey) != fileProviderDomainSchemaVersion
 
+  var cacheResetOk = true
   if forceReset || needsLegacyMigration {
     if existed {
       try await removeFileProviderDomain(domain)
     }
-    _ = clearFileProviderCacheState(defaults: defaults)
+    cacheResetOk = clearFileProviderCacheState(defaults: defaults).cacheResetOk
   }
+
+  // Task 1593 f3 (item 2) — ensure + bump the cache DB's own epoch BEFORE
+  // ever deciding whether to add the domain. Previously this ran AFTER the
+  // add block below, so a failed reset/bump was only ever logged — the
+  // domain had already been mounted by the time anyone noticed. Runs
+  // unconditionally on every call, exactly as before: it is also how a
+  // marker left by an EARLIER, already-finished purge gets cleared
+  // (`clearsPendingMarker: true`) even on a call that isn't adding
+  // anything.
+  var cacheReady = ensureFileProviderCacheDatabase()
+  var cacheVersionBumped = cacheReady && bumpFileProviderCacheVersion(clearsPendingMarker: true)
+  if !cacheReady || !cacheVersionBumped {
+    (cacheReady, cacheVersionBumped) = await retryFileProviderCacheReadyAndBumpOffCooperativePool()
+  }
+  if !cacheReady || !cacheVersionBumped {
+    RuntimeTrace.event("storage.purge.failed", [
+      "stage": cacheReady ? "registration_cache_version_bump" : "registration_cache_not_ready",
+    ])
+  }
+
   if !existed || forceReset || needsLegacyMigration {
+    // Task 1593 f3 (item 2) — refuse the add outright when it is not safe:
+    // see `mayAddFileProviderDomain`'s doc comment. Reports the FRESH
+    // status (never a fabricated success) so JS sees `registered: false`
+    // and Settings shows Files could not be turned on.
+    guard mayAddFileProviderDomain(
+      forceReset: forceReset,
+      purgePending: PlaintextStorageProtection.isPurgePending(),
+      cacheResetOk: cacheResetOk,
+      cacheVersionBumped: cacheVersionBumped
+    ) else {
+      RuntimeTrace.event("storage.purge.file_provider_domain_add_refused", [:])
+      return await currentFileProviderDomainStatus()
+    }
     // Task 1593 round 7 (new P1, Codex auto re-review of 117e11e) — this
     // whole function is `async` (Swift Task concurrency,
     // `ConcurrentFunctionDefinition`), NOT on Expo's shared serial
@@ -1505,7 +1660,9 @@ private func registerMountedFileProviderDomainLocked(
       return await currentFileProviderDomainStatus()
     }
   }
-  let cacheReady = ensureFileProviderCacheDatabase()
+  // Task 1593 f3 (item 2) — `cacheReady`/`cacheVersionBumped` were already
+  // computed ABOVE, before the add-decision guard (see that block's doc
+  // comment for why this moved up from here).
   defaults?.set(fileProviderDomainSchemaVersion, forKey: fileProviderDomainSchemaKey)
   defaults?.synchronize()
 
@@ -1783,6 +1940,23 @@ public class BeebeebCryptoModule: Module {
     //      ran) is still wiped by this final in-place reset.
     AsyncFunction("purgePlaintextStorage") { () -> [String: Int] in
       var failed = 0
+      // Task 1593 f2 (lead design decision: MARKER FIRST) — mark pending
+      // BEFORE this purge does ANYTHING else: before the consent reset,
+      // before any epoch bump, before any database is opened. See
+      // `PlaintextStorageProtection.markPurgePending()`'s doc comment for
+      // the full rationale (supersedes f1's mark-only-after-a-failed-bump
+      // design, which left every one of the steps below unmarked). The
+      // returned nonce is this purge's own proof-of-identity for the ONE
+      // place it is allowed to clear the marker again — its own final,
+      // durably-committed epoch bump, at the very end of `purgeAll` below.
+      // A total failure here (both the marker file AND its chmod fallback)
+      // is a real, counted purge failure: nothing this purge does from this
+      // point on can prove an extension write is refused.
+      let pendingNonce = PlaintextStorageProtection.markPurgePending()
+      if pendingNonce == nil {
+        RuntimeTrace.event("storage.purge.failed", ["stage": "pending_marker"])
+        failed += 1
+      }
       // Task 1593 round 6 (new-4, privacy consent) — a forced sign-out
       // (session expiry, account deleted elsewhere, a startup 401) reaches
       // this function but never the ordinary in-app `removeFileProviderAccess`
@@ -1828,6 +2002,13 @@ public class BeebeebCryptoModule: Module {
           if !bumpFileProviderCacheVersion() {
             RuntimeTrace.event("storage.purge.failed", ["stage": "file_provider_cache_version_bump"])
             failed += 1
+            // Task 1593 f2 — no additional pending-mark call needed here:
+            // marker-first already marked at the very top of this
+            // function, BEFORE this bump was ever attempted, so this
+            // failure simply leaves that mark exactly as it is. The final
+            // in-place reset below (`purgeAll`) still gets a chance to bump
+            // and clear it; until either that or a later purge/registration
+            // succeeds, every extension write stays refused.
           }
         }
         // Task 1593 round 6 (new-1/new-2) — a timed-out or errored domain
@@ -1839,7 +2020,7 @@ public class BeebeebCryptoModule: Module {
       }
       // Task 1593 round 7 (C1) — moved LAST (was first). See the block
       // comment above this AsyncFunction for why.
-      let result = PlaintextStorageProtection.purgeAll()
+      let result = PlaintextStorageProtection.purgeAll(pendingNonce: pendingNonce)
       failed += result.failed
       return ["removed": result.removed, "failed": failed]
     }

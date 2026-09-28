@@ -126,14 +126,6 @@ final class CacheManager {
     queue.sync { _upsert(item) }
   }
 
-  func upsert(_ items: [CachedItem]) {
-    queue.sync {
-      execute("BEGIN")
-      for item in items { _upsert(item) }
-      execute("COMMIT")
-    }
-  }
-
   /// Task 1593 round 7 (C1) — `expectedEpoch` is the purge-epoch value the
   /// caller (`SyncEngine.refreshContainer`) read BEFORE starting the API
   /// fetch these `items` came from.
@@ -215,8 +207,16 @@ final class CacheManager {
   /// caller's own earlier capture, or this live re-check) can never
   /// accidentally read as "unchanged" just because both happened to produce
   /// the same failure sentinel.
+  /// Task 1593 f1 (fail-closed purge-pending marker) — checked FIRST, before
+  /// the epoch comparison: a pending marker means a purge could not prove
+  /// its own epoch advance landed, so an unchanged-looking epoch is no
+  /// longer trustworthy evidence either. See
+  /// `PlaintextStorageProtection.markPurgePending()`'s doc comment.
   func purgeEpochUnchanged(since capturedEpoch: Int) -> Bool {
-    queue.sync { currentEpochMatches(capturedEpoch) }
+    queue.sync {
+      guard !PlaintextStorageProtection.isPurgePending() else { return false }
+      return currentEpochMatches(capturedEpoch)
+    }
   }
 
   /// Task 1593 round 10 (reviewer F-b) — a failed `PRAGMA user_version`
@@ -257,8 +257,14 @@ final class CacheManager {
     return epoch != Self.epochQueryFailed && epoch == expectedEpoch
   }
 
+  /// Task 1593 f1 (fail-closed purge-pending marker) — the shared entry
+  /// point for every epoch-gated writer (`replaceChildren`,
+  /// `upsert(_:expectedEpoch:)`, `delete(id:expectedEpoch:)`): refusing here
+  /// closes all three at once. See
+  /// `PlaintextStorageProtection.markPurgePending()`'s doc comment.
   private func beginImmediate() -> Bool {
     guard let db else { return false }
+    guard !PlaintextStorageProtection.isPurgePending() else { return false }
     return sqlite3_exec(db, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK
   }
 
