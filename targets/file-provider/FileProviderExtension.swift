@@ -160,6 +160,18 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
       return progress
     }
 
+    // Task 1593 round 11 (Codex thread PRRT_kwDOSLX6T86miVoN, P1) — captured
+    // synchronously, before `Task.detached` spawns, same capture-at-entry
+    // discipline round 10 applied to createItem/modifyItem/deleteItem.
+    // Removing the File Provider domain during a forced sign-out does NOT
+    // cancel this already-running detached task — `progress
+    // .cancellationHandler` only fires if the SYSTEM explicitly cancels this
+    // `Progress`, which a sign-out purge never does — so an in-flight
+    // download+decrypt could otherwise still land its plaintext writes into
+    // `temp`/`pinned` well after `PlaintextStorageProtection.purgeAll()` has
+    // already deleted those very directories for this sign-out.
+    let epochAtStart = CacheManager.shared.currentPurgeEpoch()
+
     let task = Task.detached {
       do {
         let masterKey = try self.masterKey().handle
@@ -176,15 +188,48 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         )
         progress.completedUnitCount = 90
 
+        // Task 1593 round 11 — re-check right after the (slow, unbounded)
+        // network + decrypt span and BEFORE the first plaintext write. A
+        // purge landing anywhere during that span must not let a decrypted
+        // temp copy reach disk at all.
+        guard CacheManager.shared.purgeEpochUnchanged(since: epochAtStart) else {
+          NSLog("[Beebeeb] fetchContents(\(cached.id)) aborted: purge epoch changed before write")
+          completionHandler(nil, nil, NSFileProviderError(.noSuchItem))
+          return
+        }
+
         let destination = AppGroupContainer.temporaryContentDirectory
           .appendingPathComponent("\(cached.id)-\(UUID().uuidString)")
         try plaintext.write(to: destination, options: [.atomic])
+
+        // Task 1593 round 11 — re-check again immediately after the write:
+        // the write itself takes real (if usually short) wall time, and a
+        // purge landing DURING it would otherwise leave this fresh temp copy
+        // on disk even though the check just above passed. Delete the
+        // partial output rather than hand it back to the system.
+        guard CacheManager.shared.purgeEpochUnchanged(since: epochAtStart) else {
+          try? FileManager.default.removeItem(at: destination)
+          NSLog("[Beebeeb] fetchContents(\(cached.id)) aborted: purge epoch changed during write")
+          completionHandler(nil, nil, NSFileProviderError(.noSuchItem))
+          return
+        }
 
         if cached.isPinned {
           let pinned = AppGroupContainer.pinnedContentDirectory.appendingPathComponent(cached.id)
           // Replace any prior pinned copy atomically.
           try? FileManager.default.removeItem(at: pinned)
           try plaintext.write(to: pinned, options: [.atomic])
+
+          // Task 1593 round 11 — this is a SECOND, later write of the same
+          // plaintext bytes into a second, independently-purged directory;
+          // the two checks above only cover the `temp` write, not this one.
+          guard CacheManager.shared.purgeEpochUnchanged(since: epochAtStart) else {
+            try? FileManager.default.removeItem(at: destination)
+            try? FileManager.default.removeItem(at: pinned)
+            NSLog("[Beebeeb] fetchContents(\(cached.id)) aborted: purge epoch changed during pinned write")
+            completionHandler(nil, nil, NSFileProviderError(.noSuchItem))
+            return
+          }
           CacheManager.shared.setMaterialized(id: cached.id, value: true)
         }
 
@@ -210,6 +255,19 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
     completionHandler: @escaping (NSFileProviderItem?, NSFileProviderItemFields, Bool, Error?) -> Void
   ) -> Progress {
     let progress = Progress(totalUnitCount: 100)
+
+    // Task 1593 round 10 (Codex thread PRRT_kwDOSLX6T86mhDqK) — captured
+    // synchronously, before `Task.detached` spawns at all, for the same
+    // uniform capture-at-entry discipline as `modifyItem`/`deleteItem`
+    // below. This path creates a brand-new row rather than restoring a
+    // previously-read one, so it is not the exact stale-metadata
+    // restoration Codex's finding described, but judging every operation
+    // against the epoch that was current at the moment the Files app
+    // handed it to us — not whatever epoch happens to be current whenever
+    // the scheduler gets around to running the detached task body — is the
+    // same discipline applied uniformly, and closes the window between
+    // task-spawn and the previous (later, in-task) capture point.
+    let epochAtStart = CacheManager.shared.currentPurgeEpoch()
 
     let task = Task.detached {
       do {
@@ -241,6 +299,13 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
           ? nil
           : parentRaw
         let mimeType = itemTemplate.contentType?.preferredMIMEType
+
+        // Task 1593 round 8 (R3) — `epochAtStart` (captured synchronously
+        // above, before this task ever spawned — round 10) gates the cache
+        // write below against the unbounded-duration network upload that
+        // follows: if a sign-out purge lands while this upload is in
+        // flight, the epoch gate refuses to insert this file's decrypted
+        // name for an account that has (or is about to have) signed out.
 
         let response = try await Self.streamUpload(
           sourceUrl: url,
@@ -274,7 +339,14 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
           syncAnchor: Int64(Date().timeIntervalSince1970 * 1000),
           isMaterialized: false
         )
-        CacheManager.shared.upsert(cached)
+        if !CacheManager.shared.upsert(cached, expectedEpoch: epochAtStart) {
+          // Task 1593 round 8 (R3) — the upload itself already succeeded
+          // server-side; only the LOCAL cache write is skipped when a
+          // sign-out purge raced it. Still hand back the in-memory item —
+          // it never touches the DB — so the Files app sees a consistent
+          // result for the operation it actually asked for.
+          NSLog("[Beebeeb] createItem cache write discarded — purge epoch changed during upload")
+        }
 
         progress.completedUnitCount = 100
         completionHandler(FileProviderItem(cached: cached), [], false, nil)
@@ -301,6 +373,22 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
   ) -> Progress {
     let progress = Progress(totalUnitCount: 100)
 
+    // Task 1593 round 10 (Codex thread PRRT_kwDOSLX6T86mhDqK, P1) —
+    // captured synchronously, in the same synchronous scope as (and
+    // immediately before) the `cached` read below, before `Task.detached`
+    // ever spawns. The previous capture point was INSIDE the detached
+    // task — on the cooperative pool, at some later, unpredictable time —
+    // so if a sign-out purge landed in the gap between reading `cached`
+    // (with its still-current, pre-purge `nameDecrypted`) and the task
+    // actually running, that later capture observed the FRESH, post-purge
+    // epoch, matched it to itself, and the gated `upsert` below happily
+    // "succeeded" at reinserting the stale `cached.nameDecrypted` after the
+    // sweep had already run. Capturing here means an operation accepted
+    // before the purge is judged against the epoch that was current when
+    // ITS stale metadata was read, not against whatever epoch happens to
+    // be current whenever the scheduler gets around to it.
+    let epochAtStart = CacheManager.shared.currentPurgeEpoch()
+
     guard var cached = CacheManager.shared.item(id: item.itemIdentifier.rawValue) else {
       completionHandler(nil, [], false, NSFileProviderError(.noSuchItem))
       return progress
@@ -311,6 +399,11 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
 
     let task = Task.detached {
       do {
+        // `epochAtStart` (see above) gates the cache write below against
+        // both network calls that can follow (`streamUpload` for a content
+        // change, `patchFile` for a rename/move), each of unbounded
+        // duration. See `CacheManager.upsert(_:expectedEpoch:)`'s doc
+        // comment.
         let owned = try self.masterKey()
         let masterKey = owned.handle
         progress.completedUnitCount = 15
@@ -401,7 +494,12 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
           syncAnchor: Int64(Date().timeIntervalSince1970 * 1000),
           isMaterialized: changedFields.contains(.contents) ? false : cached.isMaterialized
         )
-        CacheManager.shared.upsert(updated)
+        if !CacheManager.shared.upsert(updated, expectedEpoch: epochAtStart) {
+          // Task 1593 round 8 (R3) — see the matching note in createItem
+          // above: the server-side change already succeeded, only the
+          // local cache write is skipped.
+          NSLog("[Beebeeb] modifyItem cache write discarded — purge epoch changed during the operation")
+        }
         progress.completedUnitCount = 100
         completionHandler(FileProviderItem(cached: updated), [], false, nil)
       } catch {
@@ -425,6 +523,16 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
   ) -> Progress {
     let progress = Progress(totalUnitCount: 1)
 
+    // Task 1593 round 10 — captured synchronously before `Task.detached`
+    // spawns, for the same uniform capture-at-entry discipline as
+    // createItem/modifyItem above. This path never reads a `cached` row
+    // (only `identifier.rawValue`), and deleting an id the purge has
+    // already removed is a harmless no-op either way, but keeping the
+    // capture point identical across all three writers makes "every
+    // extension write path captures its epoch before Task.detached" one
+    // single, uniformly-testable invariant instead of an exception here.
+    let epochAtStart = CacheManager.shared.currentPurgeEpoch()
+
     // Task 1594 round 4: delete performs no crypto (no key load needed), but
     // still carries whatever owner the shared keychain currently records —
     // the same value `masterKey()` would validate against — so the server
@@ -434,8 +542,18 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
 
     let task = Task.detached {
       do {
+        // Task 1593 round 8 (R3) — `epochAtStart` (captured above) gates
+        // the cache row removal below against the network delete that
+        // follows. See `CacheManager.upsert(_:expectedEpoch:)`'s doc
+        // comment for the full epoch-gate rationale.
         try await ApiClient.shared.deleteFile(fileId: identifier.rawValue, expectedUser: expectedUser)
-        CacheManager.shared.delete(id: identifier.rawValue)
+        if !CacheManager.shared.delete(id: identifier.rawValue, expectedEpoch: epochAtStart) {
+          // The remote delete already succeeded; only the local cache row
+          // removal is skipped when a sign-out purge raced it — harmless,
+          // the purge's own reset (or the next sign-in's fresh fetch)
+          // clears this row anyway.
+          NSLog("[Beebeeb] deleteItem cache removal discarded — purge epoch changed during the operation")
+        }
         progress.completedUnitCount = 1
         completionHandler(nil)
       } catch {

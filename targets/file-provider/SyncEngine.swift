@@ -12,6 +12,18 @@ enum SyncEngine {
   static func refreshContainer(containerId: String) async {
     let parentId: String? = (containerId == BeebeebConstants.rootContainerIdentifier) ? nil : containerId
 
+    // Task 1593 round 7 (C1) — read BEFORE the network fetch below, which
+    // can take an arbitrary amount of time. If a sign-out purge starts
+    // while this call is in flight, the main app process bumps this SAME
+    // cache database's `PRAGMA user_version` (round 8/R2 — see
+    // `CacheManager.replaceChildren`'s doc comment for why this moved out
+    // of App Group UserDefaults); the write at the bottom of this function
+    // re-checks it under a real cross-process lock immediately before
+    // committing and refuses to land if it has changed, so a fetch that
+    // started against the outgoing account can't reinsert its decrypted
+    // names after the purge's sweep.
+    let epochAtStart = CacheManager.shared.currentPurgeEpoch()
+
     let entries: [ApiClient.FileEntryDto]
     do {
       entries = try await ApiClient.shared.listFiles(parentId: parentId)
@@ -59,7 +71,17 @@ enum SyncEngine {
       rowsToUpsert.append(item)
     }
 
-    CacheManager.shared.replaceChildren(parent: parentId, with: rowsToUpsert)
+    let committed = CacheManager.shared.replaceChildren(
+      parent: parentId, with: rowsToUpsert, expectedEpoch: epochAtStart
+    )
+    guard committed else {
+      // Task 1593 round 7 (C1) — a sign-out purge ran while this fetch was
+      // in flight. Discard the response instead of writing decrypted names
+      // for an account that is (or is about to be) signed out; the next
+      // enumeration after a fresh sign-in re-fetches this container anyway.
+      NSLog("[Beebeeb] refreshContainer(\(containerId)) discarded — purge epoch changed during fetch")
+      return
+    }
     CacheManager.shared.setSyncState(
       key: "container.\(containerId).anchor",
       value: String(Date().timeIntervalSince1970)

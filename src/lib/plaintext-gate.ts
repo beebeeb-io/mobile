@@ -73,6 +73,15 @@ export function createPlaintextGate(options: PlaintextGateOptions = {}): Plainte
   let closed = false;
   let purging = 0;
   let reopenAfterPurge = false;
+  // Task 1593 round 4 (P2-4) — bumped once per `purge()` call, even an
+  // overlapping one. `open()` stamps the generation active when it was
+  // called; a reopen only actually happens if NO newer purge started in the
+  // meantime. Without this, an `open()` queued behind one purge (e.g. a fast
+  // sign-in racing its own sign-out's drain) could reopen the gate after a
+  // LATER, unrelated purge (e.g. the next sign-out) that must stay closed —
+  // the queued intent belonged to the wrong purge.
+  let generation = 0;
+  let reopenRequestedAtGeneration = -1;
   let epochController = new AbortController();
   const holders = new Set<{ settle: () => void; done: Promise<void> }>();
   let idleWaiters: Array<() => void> = [];
@@ -117,6 +126,7 @@ export function createPlaintextGate(options: PlaintextGateOptions = {}): Plainte
 
   async function purge<T>(sweep: () => Promise<T>): Promise<T> {
     purging += 1;
+    generation += 1;
     closed = true;
     // Invalidate every lease held now; later leases cannot exist while closed.
     epochController.abort();
@@ -127,10 +137,14 @@ export function createPlaintextGate(options: PlaintextGateOptions = {}): Plainte
     } finally {
       purging -= 1;
       if (purging === 0) {
-        if (reopenAfterPurge) {
-          reopenAfterPurge = false;
+        // Reopen only if the pending request was stamped with the CURRENT
+        // (latest) generation — i.e. no newer purge started after `open()`
+        // was called. `generation` only grows, so a stale request (stamped
+        // with an earlier generation) can never match a later one.
+        if (reopenAfterPurge && reopenRequestedAtGeneration === generation) {
           closed = false;
         }
+        reopenAfterPurge = false;
         const waiters = idleWaiters;
         idleWaiters = [];
         waiters.forEach((resolve) => resolve());
@@ -143,8 +157,12 @@ export function createPlaintextGate(options: PlaintextGateOptions = {}): Plainte
     acquire,
     purge,
     open() {
-      if (purging > 0) reopenAfterPurge = true;
-      else closed = false;
+      if (purging > 0) {
+        reopenAfterPurge = true;
+        reopenRequestedAtGeneration = generation;
+      } else {
+        closed = false;
+      }
     },
     idle() {
       if (purging === 0) return Promise.resolve();
@@ -193,10 +211,33 @@ export async function writePlaintext<T>(
   lease.assertValid();
   const result = await write();
   if (!lease.valid) {
-    await fs.deleteAsync(uri, { idempotent: true }).catch(() => {});
+    await fs.deleteAsync(uri, { idempotent: true }).catch(() => {
+      void traceLateWriteDeleteFailed(lease.label);
+    });
     throw new PlaintextGateClosedError(lease.label);
   }
   return result;
+}
+
+/**
+ * Task 1593 round 4 (P2-5) — a late-writer's discarded output failed to
+ * delete. Trace it so it is not silent, but NEVER pass `uri`: several
+ * registered writers embed the decrypted plaintext name in the path itself
+ * (`beebeeb-export/<real name>.pdf`, `shared_<real name>.pdf`), so tracing the
+ * path would leak exactly the content this gate exists to protect. The
+ * writer's short, non-identifying `label` is enough to act on.
+ *
+ * `./runtime-trace` is imported lazily: it pulls in the native crypto module
+ * (heavy for the isolated bun test runner, see mobile/CLAUDE.md "Tests"), and
+ * this is a rare failure path most callers/tests of this gate never hit.
+ */
+async function traceLateWriteDeleteFailed(label: string): Promise<void> {
+  try {
+    const { recordRuntimeTrace } = await import('./runtime-trace');
+    recordRuntimeTrace('plaintext-gate.late_write_delete_failed', { label });
+  } catch {
+    // best-effort tracing only — must never surface as a new failure mode
+  }
 }
 
 /**
