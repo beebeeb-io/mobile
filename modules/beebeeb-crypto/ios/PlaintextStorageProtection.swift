@@ -509,7 +509,7 @@ public enum PlaintextStorageProtection {
     protect(dir)
     let nonce = randomPurgePendingNonce()
     let url = dir.appendingPathComponent(purgePendingMarkerName, isDirectory: false)
-    guard FileManager.default.createFile(atPath: url.path, contents: nonce) else {
+    guard writeMarkerAtomically(nonce, to: url) else {
       // Task 1593 f3 — no fallback any more (see doc comment above). The
       // caller (`purgePlaintextStorage`) already counts a `nil` return as a
       // real, traced purge failure and continues the purge regardless.
@@ -519,6 +519,90 @@ public enum PlaintextStorageProtection {
     protect(url)
     RuntimeTrace.event("storage.purge.pending_marked", [:])
     return nonce
+  }
+
+  /// Task 1593 f9 (Codex thread PRRT_kwDOSLX6T86mniyy, follow-up to #148's
+  /// merge) — `markPurgePending()` used to write straight to the LIVE
+  /// marker path via `FileManager.createFile(atPath:contents:)`. On an
+  /// already-existing file (a SECOND purge starting while a first purge's
+  /// marker is still on disk — e.g. `purgeAllPlaintextCaches()` racing a
+  /// forced sign-out against an ordinary one) that call truncates the live
+  /// path in place and then writes the new bytes as a SEPARATE step — the
+  /// live path names a file with zero, or fewer than the full 16, readable
+  /// bytes for the duration of that window. `purgePendingSnapshot()` (the
+  /// ONE atomic `open()`/`read()` every caller uses, per f8) can land its
+  /// own `open()` at any point inside that window, including mid-`write()`,
+  /// and read back a torn mix that is neither the OLD purge's nonce nor the
+  /// NEW purge's — just whatever bytes happened to be on the page at that
+  /// instant. A torn read already fails CLOSED (`purgePendingSnapshot()`'s
+  /// short-read guard returns `.unreadable`, never a bogus `.nonce`), so the
+  /// danger was never a false "not pending" — but a snapshot landing exactly
+  /// after the truncate and exactly before the write can also capture a
+  /// value that will never compare-equal to EITHER purge's own
+  /// `clearPurgePending(nonce:)` call, stranding the marker until some
+  /// LATER, unrelated purge's own successful bump happens to clear
+  /// whatever then occupies the live path — correct in direction (fails
+  /// closed), but a real, unnecessary stall this fix removes.
+  ///
+  /// Fixed with the standard atomic-replace pattern: write the nonce to a
+  /// FRESH, uniquely-named temp file in the SAME directory (`O_CREAT |
+  /// O_EXCL` — never an existing inode), protect it (same protection class
+  /// + backup exclusion the live marker itself carries — the window before
+  /// the rename must not leave even this non-secret nonce sitting
+  /// unprotected/backup-eligible), `fsync` it so the bytes are durable
+  /// before anything can observe the new name under the live path, then
+  /// `rename(2)` it over the live marker path. A `rename` within one
+  /// directory (same volume — always true here, both paths live inside
+  /// `file-provider-cache.sqlite`'s own directory) is atomic at the
+  /// filesystem level: any `open()` against the live path, no matter how it
+  /// interleaves with this call, resolves to EXACTLY ONE complete inode —
+  /// either the previous marker, unchanged, or this new one, in full. There
+  /// is no instant at which the live path names a truncated or
+  /// partially-written file. `clearPurgePending(nonce:)`'s own rename-claim
+  /// semantics (rename the live path OFF to a private claim name, compare,
+  /// restore-or-delete) are unchanged by this — it already took its own
+  /// snapshot with one atomic `rename`; this fix only closes the matching
+  /// gap on the WRITE side.
+  private static func writeMarkerAtomically(_ data: Data, to url: URL) -> Bool {
+    let dir = url.deletingLastPathComponent()
+    let tempUrl = dir.appendingPathComponent(
+      "\(purgePendingMarkerName).tmp-\(UUID().uuidString)", isDirectory: false
+    )
+    let fd = open(tempUrl.path, O_WRONLY | O_CREAT | O_EXCL, 0o600)
+    guard fd >= 0 else { return false }
+
+    var ok = data.withUnsafeBytes { (buffer: UnsafeRawBufferPointer) -> Bool in
+      guard let base = buffer.baseAddress, buffer.count > 0 else { return true }
+      var written = 0
+      while written < buffer.count {
+        let n = write(fd, base.advanced(by: written), buffer.count - written)
+        guard n > 0 else { return false }
+        written += n
+      }
+      return true
+    }
+    if ok {
+      ok = fsync(fd) == 0
+    }
+    close(fd)
+    guard ok else {
+      try? FileManager.default.removeItem(at: tempUrl)
+      return false
+    }
+
+    // Same protection class + backup exclusion the live marker itself
+    // carries, applied BEFORE the rename: `rename` preserves the inode's
+    // existing xattrs/protection class unchanged, so whatever is set here
+    // is exactly what the live path carries the instant this call returns
+    // — there is no window where the (about-to-be-live) inode is
+    // unprotected.
+    protect(tempUrl)
+
+    guard rename(tempUrl.path, url.path) == 0 else {
+      try? FileManager.default.removeItem(at: tempUrl)
+      return false
+    }
+    return true
   }
 
   /// 16 random bytes. Not a secret — this nonce protects nothing
@@ -701,6 +785,58 @@ public enum PlaintextStorageProtection {
       RuntimeTrace.event("storage.purge.pending_cleared", [:])
     } catch {
       RuntimeTrace.event("storage.purge.pending_clear_failed", [:])
+    }
+  }
+
+  /// Task 1593 f9 (reviewer F1, follow-up to #148's merge) — `clearPurgePending
+  /// (nonce:)` can only ever clear a marker this call captured a comparable
+  /// nonce for (`PurgePendingSnapshot.nonce`). A marker read back as
+  /// `.unreadable` at registration time (a permission failure, or — before
+  /// this file's own f9 atomic-rename fix to `markPurgePending()` above — a
+  /// read racing an in-place overwrite) has NO nonce any caller could ever
+  /// compare against, so it could never be cleared by the ordinary
+  /// rename-claim path at all: it would sit fail-closed, refusing every File
+  /// Provider write, until the user next signs out and some LATER, unrelated
+  /// purge's own successful bump happened to clear whatever then occupied
+  /// the live path — not this specific stuck marker being resolved, just a
+  /// coincidence of timing.
+  ///
+  /// Safe to remove unconditionally, but ONLY when the caller
+  /// (`registerMountedFileProviderDomainLocked`, BeebeebCryptoModule.swift)
+  /// can prove ALL THREE: (a) `forceReset` — an explicit account-switch /
+  /// "Reset Files" mount, never an ordinary one, which has no reset of its
+  /// own to point to as proof the cache is clean; (b) that reset
+  /// (`clearFileProviderCacheState`) durably succeeded; AND (c) this SAME
+  /// call's own epoch bump (`bumpFileProviderCacheVersion`) also durably
+  /// succeeded. Under those three, the cache database this marker was ever
+  /// protecting has just been wiped and re-versioned by THIS call, so
+  /// whatever purge left an unreadable marker behind can no longer have
+  /// unflushed work outstanding against it — and, with `markPurgePending()`'s
+  /// write now atomic (`writeMarkerAtomically` above), an unreadable marker
+  /// can no longer be a torn read of a write that is still landing; it can
+  /// only be a genuinely stale, permanently-unreadable leftover.
+  ///
+  /// Removes by path, not by the rename-claim dance `clearPurgePending(nonce:)`
+  /// uses: there is no nonce to claim-and-compare here. Racing a BRAND NEW
+  /// purge's fresh `markPurgePending()` call (which would recreate the live
+  /// path an instant after this call's own `removeItem`) is the same
+  /// last-write-wins tolerance this marker's lifecycle already accepts
+  /// elsewhere (`markPurgePending()` itself unconditionally overwrites
+  /// whatever is there) — not a new risk this call introduces.
+  @discardableResult
+  public static func clearUnreadablePurgePendingMarker() -> Bool {
+    guard let dir = fileProviderCacheDbDirectory else { return false }
+    let url = dir.appendingPathComponent(purgePendingMarkerName, isDirectory: false)
+    guard FileManager.default.fileExists(atPath: url.path) else {
+      return true // already clear — nothing to do
+    }
+    do {
+      try FileManager.default.removeItem(at: url)
+      RuntimeTrace.event("storage.purge.pending_marker_cleared_unreadable", [:])
+      return true
+    } catch {
+      RuntimeTrace.event("storage.purge.pending_clear_failed", ["stage": "unreadable_unconditional"])
+      return false
     }
   }
 

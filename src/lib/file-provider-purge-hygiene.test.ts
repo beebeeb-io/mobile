@@ -1899,12 +1899,20 @@ describe('f2 (fail-closed purge-pending marker, marker-first): the marker primit
     expect(dirBody).toMatch(/appGroupContainer\?\.appendingPathComponent\("file-provider-db", isDirectory: true\)/);
   });
 
-  test('markPurgePending creates + protects the directory, then creates + protects a PLAIN file containing a fresh nonce — no SQLite involved', () => {
+  // Task 1593 f9 — superseded in place (established convention, see f5's
+  // precedent): `markPurgePending()` no longer calls `FileManager.createFile
+  // (atPath:contents:)` directly (that call moved INTO `writeMarkerAtomically`,
+  // which now does temp-file + fsync + rename instead of an in-place
+  // overwrite — see the dedicated f9 describe block below for coverage of
+  // that primitive itself). This test's premise — "creates + protects a
+  // PLAIN file, no SQLite" — still holds; only the literal call site name
+  // changed.
+  test('markPurgePending creates + protects the directory, then writes + protects a PLAIN file containing a fresh nonce — no SQLite involved', () => {
     const body = bracedBody(registrySwift, 'public static func markPurgePending() -> Data? {');
     expect(body).toMatch(/createDirectory\(at: dir, withIntermediateDirectories: true\)/);
     expect(body).toMatch(/protect\(dir\)/);
     expect(body).toMatch(/let nonce = randomPurgePendingNonce\(\)/);
-    expect(body).toMatch(/createFile\(atPath: url\.path, contents: nonce\)/);
+    expect(body).toMatch(/writeMarkerAtomically\(nonce, to: url\)/);
     expect(body).toMatch(/protect\(url\)/);
     expect(body).toMatch(/return nonce/);
     // Deliberately no SQLite: this marker's own creation must not be able to
@@ -1913,14 +1921,18 @@ describe('f2 (fail-closed purge-pending marker, marker-first): the marker primit
     expect(body).not.toMatch(/OpaquePointer/);
   });
 
+  // Task 1593 f9 — superseded in place: the literal call site is now
+  // `writeMarkerAtomically(nonce, to: url)`, not a direct `createFile(...)`.
+  // The premise (no idempotency guard — every call overwrites unconditionally
+  // with a fresh nonce) is unchanged and still what this test pins.
   test('markPurgePending is NOT idempotent any more: it always overwrites with a FRESH nonce, never guards on the marker already existing', () => {
     const body = bracedBody(registrySwift, 'public static func markPurgePending() -> Data? {');
-    // f1's guard is gone — createFile runs unconditionally.
+    // f1's guard is gone — the write runs unconditionally.
     expect(body).not.toMatch(/if !FileManager\.default\.fileExists\(atPath: url\.path\)/);
     const nonceIdx = body.indexOf('let nonce = randomPurgePendingNonce()');
-    const createIdx = body.indexOf('createFile(atPath: url.path, contents: nonce)');
+    const writeIdx = body.indexOf('writeMarkerAtomically(nonce, to: url)');
     expect(nonceIdx).toBeGreaterThan(-1);
-    expect(createIdx).toBeGreaterThan(nonceIdx);
+    expect(writeIdx).toBeGreaterThan(nonceIdx);
   });
 
   test('randomPurgePendingNonce generates 16 bytes via SecRandomCopyBytes, with an arc4random_buf fallback on failure — never a constant', () => {
@@ -1985,9 +1997,14 @@ describe('f3 (item 1): the chmod-0400 fallback is REMOVED — a createFile failu
     }
   });
 
-  test('markPurgePending\'s createFile-failure branch traces and returns nil directly — no fallback call, no chmod, no free-space workaround', () => {
+  // Task 1593 f9 — superseded in place: the guarded call is now
+  // `writeMarkerAtomically(nonce, to: url)` (which itself wraps a `createFile`-
+  // equivalent open()/write() on a TEMP file, not the live path directly —
+  // see the dedicated f9 describe block below), but the failure branch this
+  // test pins (trace + return nil, no fallback) is otherwise unchanged.
+  test('markPurgePending\'s write-failure branch traces and returns nil directly — no fallback call, no chmod, no free-space workaround', () => {
     const body = bracedBody(registrySwift, 'public static func markPurgePending() -> Data? {');
-    const guardIdx = body.indexOf('guard FileManager.default.createFile(atPath: url.path, contents: nonce) else {');
+    const guardIdx = body.indexOf('guard writeMarkerAtomically(nonce, to: url) else {');
     expect(guardIdx).toBeGreaterThan(-1);
     const failureBranch = body.slice(guardIdx, body.indexOf('}', guardIdx));
     expect(failureBranch).toMatch(/RuntimeTrace\.event\("storage\.purge\.pending_marker_failed", \[:\]\)/);
@@ -3332,4 +3349,196 @@ describe('f6: currentPurgeEpoch / purgeEpochUnchanged / beginImmediate all re-ch
   // BEHAVIOUR, not this particular source shape.
   // Restoring the second guard in all three functions turns all 11 green
   // again (229 pass, 0 fail), with no other test in this file affected.
+});
+
+// Task 1593 f9 (Codex thread PRRT_kwDOSLX6T86mniyy, follow-up to #148's
+// merge) — `markPurgePending()` used to overwrite the fixed marker path IN
+// PLACE via `FileManager.createFile(atPath:contents:)`, which truncates an
+// already-existing file and writes the new bytes as a separate step. Fixed
+// with the standard atomic-replace pattern: write to a fresh temp file,
+// fsync, then `rename(2)` over the live path.
+describe('f9 (Codex thread PRRT_kwDOSLX6T86mniyy): markPurgePending writes the marker atomically — a temp file + fsync + rename, never in place', () => {
+  const registrySwift = readFileSync(REGISTRY_SWIFT_PATH, 'utf8');
+
+  test('markPurgePending() delegates to writeMarkerAtomically(), never a direct FileManager.createFile(atPath:contents:) call on the live marker path', () => {
+    const body = bracedBody(registrySwift, 'public static func markPurgePending() -> Data? {');
+    expect(body).toMatch(/guard writeMarkerAtomically\(nonce, to: url\) else \{/);
+    expect(body).not.toMatch(/FileManager\.default\.createFile\(atPath: url\.path/);
+  });
+
+  test('writeMarkerAtomically opens a FRESH, uniquely-named temp file in the same directory with O_CREAT | O_EXCL — never an existing inode', () => {
+    const body = bracedBody(registrySwift, 'private static func writeMarkerAtomically(_ data: Data, to url: URL) -> Bool {');
+    expect(body).toMatch(/let tempUrl = dir\.appendingPathComponent\(\s*\n\s*"\\\(purgePendingMarkerName\)\.tmp-\\\(UUID\(\)\.uuidString\)", isDirectory: false\s*\n\s*\)/);
+    expect(body).toMatch(/open\(tempUrl\.path, O_WRONLY \| O_CREAT \| O_EXCL, 0o600\)/);
+  });
+
+  test('every byte is written (a short write() loops until the full buffer is sent, never assumes one syscall covers it), then fsync()-ed before the temp file is ever renamed', () => {
+    const body = bracedBody(registrySwift, 'private static func writeMarkerAtomically(_ data: Data, to url: URL) -> Bool {');
+    expect(body).toMatch(/while written < buffer\.count \{/);
+    const fsyncIdx = body.indexOf('fsync(fd) == 0');
+    const renameIdx = body.indexOf('rename(tempUrl.path, url.path) == 0');
+    expect(fsyncIdx).toBeGreaterThan(-1);
+    expect(renameIdx).toBeGreaterThan(fsyncIdx);
+  });
+
+  test('the temp file is protected (protection class + backup exclusion) BEFORE the rename, so the live path never carries an unprotected instant', () => {
+    const body = bracedBody(registrySwift, 'private static func writeMarkerAtomically(_ data: Data, to url: URL) -> Bool {');
+    const protectIdx = body.indexOf('protect(tempUrl)');
+    const renameIdx = body.indexOf('rename(tempUrl.path, url.path) == 0');
+    expect(protectIdx).toBeGreaterThan(-1);
+    expect(renameIdx).toBeGreaterThan(protectIdx);
+  });
+
+  test('a write/fsync failure AND a rename failure both clean up the orphaned temp file — it is never left behind on either failure path', () => {
+    const body = bracedBody(registrySwift, 'private static func writeMarkerAtomically(_ data: Data, to url: URL) -> Bool {');
+    const cleanupCalls = [...body.matchAll(/try\? FileManager\.default\.removeItem\(at: tempUrl\)/g)];
+    expect(cleanupCalls.length).toBe(2);
+  });
+
+  test('the fd is closed (write path) before either protect() or rename() ever run — no lingering open descriptor across the rename', () => {
+    const body = bracedBody(registrySwift, 'private static func writeMarkerAtomically(_ data: Data, to url: URL) -> Bool {');
+    const closeIdx = body.indexOf('close(fd)');
+    const protectIdx = body.indexOf('protect(tempUrl)');
+    const renameIdx = body.indexOf('rename(tempUrl.path, url.path) == 0');
+    expect(closeIdx).toBeGreaterThan(-1);
+    expect(closeIdx).toBeLessThan(protectIdx);
+    expect(closeIdx).toBeLessThan(renameIdx);
+  });
+
+  test('markPurgePending() still calls protect(url) on the LIVE path after a successful write — belt-and-suspenders unchanged from before f9', () => {
+    const body = bracedBody(registrySwift, 'public static func markPurgePending() -> Data? {');
+    const writeIdx = body.indexOf('guard writeMarkerAtomically(nonce, to: url) else {');
+    const protectIdx = body.indexOf('protect(url)');
+    expect(writeIdx).toBeGreaterThan(-1);
+    expect(protectIdx).toBeGreaterThan(writeIdx);
+  });
+});
+
+// Task 1593 f9 — pure-JS reference model isolating the exact race
+// `writeMarkerAtomically` closes: a reader's open()+read() landing at an
+// arbitrary instant relative to a concurrent OVERWRITE of an
+// already-existing marker file.
+describe('f9: reference model — old (truncate-in-place createFile) vs new (temp file + fsync + rename) marker overwrite, read at an arbitrary concurrent instant', () => {
+  type Instant = 'before-overwrite' | 'mid-overwrite-truncated' | 'after-overwrite';
+
+  // The ACTUAL pre-f9 code being replaced: `FileManager.createFile(atPath:
+  // contents:)` on an EXISTING file is two separate steps under the hood —
+  // truncate the live inode to zero length, then write the new bytes. A
+  // concurrent reader can land at any of three instants relative to that.
+  function oldTruncateThenWriteRead(
+    existingNonce: string | null, newNonce: string, instant: Instant,
+  ): string | null {
+    if (instant === 'before-overwrite') return existingNonce;
+    // Truncated to 0 bytes, new bytes not yet written — this is exactly the
+    // torn read purgePendingSnapshot()'s short-read guard turns into
+    // `.unreadable`, never a valid nonce for either purge.
+    if (instant === 'mid-overwrite-truncated') return null;
+    return newNonce;
+  }
+
+  // `rename(2)` within one directory is a single atomic filesystem
+  // operation: any reader's `open()` resolves to EXACTLY ONE complete inode
+  // — the previous marker, unchanged, or the new one, in full. There is no
+  // observable "mid" state to land in.
+  function newAtomicRenameRead(
+    existingNonce: string | null, newNonce: string, instant: Instant,
+  ): string | null {
+    if (instant === 'before-overwrite') return existingNonce;
+    return newNonce; // 'mid-overwrite-truncated' collapses into 'after' — atomic
+  }
+
+  test('a reader landing mid-overwrite sees a truncated/empty file under the OLD design (a real, distinct torn-read outcome) but always a complete inode under the NEW design', () => {
+    expect(oldTruncateThenWriteRead('purge-P1', 'purge-P2', 'mid-overwrite-truncated')).toBeNull();
+    expect(newAtomicRenameRead('purge-P1', 'purge-P2', 'mid-overwrite-truncated')).toBe('purge-P2');
+  });
+
+  test('before and after instants agree between the two designs — only the mid-overwrite instant differs', () => {
+    for (const instant of ['before-overwrite', 'after-overwrite'] as const) {
+      expect(oldTruncateThenWriteRead('purge-P1', 'purge-P2', instant))
+        .toBe(newAtomicRenameRead('purge-P1', 'purge-P2', instant));
+    }
+  });
+
+  test('the set of possible reads under the OLD design is {old, torn-null, new}; under the NEW design only ever {old, new} — the torn state is structurally impossible, not merely rare', () => {
+    const instants: Instant[] = ['before-overwrite', 'mid-overwrite-truncated', 'after-overwrite'];
+    const oldOutcomes = new Set(instants.map((i) => oldTruncateThenWriteRead('purge-P1', 'purge-P2', i)));
+    const newOutcomes = new Set(instants.map((i) => newAtomicRenameRead('purge-P1', 'purge-P2', i)));
+    expect(oldOutcomes).toEqual(new Set(['purge-P1', null, 'purge-P2']));
+    expect(newOutcomes).toEqual(new Set(['purge-P1', 'purge-P2']));
+  });
+});
+
+// Task 1593 f9 (reviewer F1, follow-up to #148's merge) —
+// `clearUnreadablePurgePendingMarker()`: an unconditional, path-based clear
+// for a marker snapshot with no comparable nonce, called only after a
+// forceReset call has PROVEN both its own reset and its own bump landed.
+describe('f9 (reviewer F1): PlaintextStorageProtection.clearUnreadablePurgePendingMarker() — an unconditional, path-based clear for a marker with no comparable nonce', () => {
+  const registrySwift = readFileSync(REGISTRY_SWIFT_PATH, 'utf8');
+  const body = bracedBody(registrySwift, 'public static func clearUnreadablePurgePendingMarker() -> Bool {');
+
+  test('checks fileExists first and short-circuits true (already clear — not a failure) rather than treating "nothing to remove" as an error', () => {
+    expect(body).toMatch(/guard FileManager\.default\.fileExists\(atPath: url\.path\) else \{\s*\n\s*return true/);
+  });
+
+  test('removes by path via FileManager.removeItem — never the rename-claim/compare dance clearPurgePending(nonce:) uses, since there is no nonce to compare here', () => {
+    expect(body).toMatch(/try FileManager\.default\.removeItem\(at: url\)/);
+    expect(body).not.toMatch(/rename\(/);
+  });
+
+  test('a removal failure is traced (storage.purge.pending_clear_failed), never silently swallowed', () => {
+    expect(body).toMatch(/RuntimeTrace\.event\("storage\.purge\.pending_clear_failed"/);
+  });
+});
+
+describe('f9 (reviewer F1): registerMountedFileProviderDomainLocked calls clearUnreadablePurgePendingMarker() ONLY when forceReset, cacheResetOk and cacheVersionBumped are all true AND the snapshot was .unreadable', () => {
+  const moduleSwift = readFileSync(MODULE_SWIFT_PATH, 'utf8');
+  const body = bracedBody(
+    moduleSwift,
+    'private func registerMountedFileProviderDomainLocked(\n  defaults: UserDefaults?,\n  forceReset: Bool = false\n) async throws -> [String: Any] {',
+  );
+
+  test('the guard requires all four conditions in ONE statement: forceReset, cacheResetOk, cacheVersionBumped, and a pattern-match on .unreadable', () => {
+    expect(body).toMatch(
+      /if forceReset, cacheResetOk, cacheVersionBumped, case \.unreadable = purgePendingSnapshot \{\s*\n\s*PlaintextStorageProtection\.clearUnreadablePurgePendingMarker\(\)\s*\n\s*\}/,
+    );
+  });
+
+  test('the guard runs AFTER cacheVersionBumped is finalized (including the off-cooperative-pool retry), and BEFORE the add-domain decision', () => {
+    const bumpFinalizedIdx = body.indexOf('if !cacheReady || !cacheVersionBumped {\n    RuntimeTrace.event("storage.purge.failed"');
+    const clearCallIdx = body.indexOf('PlaintextStorageProtection.clearUnreadablePurgePendingMarker()');
+    const addDecisionIdx = body.indexOf('if !existed || forceReset || needsLegacyMigration {');
+    expect(bumpFinalizedIdx).toBeGreaterThan(-1);
+    expect(clearCallIdx).toBeGreaterThan(bumpFinalizedIdx);
+    expect(addDecisionIdx).toBeGreaterThan(clearCallIdx);
+  });
+
+  test('exactly one REAL call to clearUnreadablePurgePendingMarker() in this function (excludes the backtick-quoted doc-comment mention)', () => {
+    const realCalls = [...body.matchAll(/[^`]PlaintextStorageProtection\.clearUnreadablePurgePendingMarker\(\)/g)];
+    expect(realCalls.length).toBe(1);
+  });
+});
+
+describe('f9 (reviewer F1): reference model — the unconditional-clear gate fires ONLY on the reviewer-specified combination of all four conditions', () => {
+  type Snapshot = 'none' | 'nonce' | 'unreadable';
+  function shouldClearUnreadableMarker(
+    forceReset: boolean, cacheResetOk: boolean, cacheVersionBumped: boolean, snapshot: Snapshot,
+  ): boolean {
+    return forceReset && cacheResetOk && cacheVersionBumped && snapshot === 'unreadable';
+  }
+
+  test('the reviewer\'s exact scenario: forceReset + a proven reset + a proven bump + an unreadable marker -> clear', () => {
+    expect(shouldClearUnreadableMarker(true, true, true, 'unreadable')).toBe(true);
+  });
+
+  const negativeRows: Array<[string, boolean, boolean, boolean, Snapshot]> = [
+    ['not a forceReset (an ordinary mount has no reset of its own to point to as proof the cache is clean)', false, true, true, 'unreadable'],
+    ['this call\'s own reset did not actually land (cacheResetOk false)', true, false, true, 'unreadable'],
+    ['this call\'s own epoch bump did not actually land (cacheVersionBumped false)', true, true, false, 'unreadable'],
+    ['snapshot is .nonce, not .unreadable — the ordinary compare-then-delete clear (bumpFileProviderCacheVersion) already handles this case', true, true, true, 'nonce'],
+    ['snapshot is .none — nothing pending, nothing to clear', true, true, true, 'none'],
+  ];
+
+  test.each(negativeRows)('%s -> no unconditional clear', (_label, forceReset, cacheResetOk, cacheVersionBumped, snapshot) => {
+    expect(shouldClearUnreadableMarker(forceReset, cacheResetOk, cacheVersionBumped, snapshot)).toBe(false);
+  });
 });

@@ -1694,6 +1694,23 @@ private func registerMountedFileProviderDomainLocked(
     ])
   }
 
+  // Task 1593 f9 (reviewer F1) — an `.unreadable` marker snapshot carries no
+  // nonce `bumpFileProviderCacheVersion`'s ordinary clear (just above) could
+  // ever compare against, so it would otherwise sit stuck until some later,
+  // unrelated purge's own bump happened to clear whatever then occupied the
+  // live path. Safe to remove unconditionally here, and ONLY here: this
+  // specific call just proved (`forceReset`, `cacheResetOk`,
+  // `cacheVersionBumped` — all three) that its own reset wiped the cache
+  // database and its own bump re-versioned it, so no purge this marker
+  // could have belonged to still has unflushed work outstanding against it.
+  // See `PlaintextStorageProtection.clearUnreadablePurgePendingMarker()`'s
+  // doc comment (PlaintextStorageProtection.swift) for the full rationale,
+  // including why `markPurgePending()`'s f9 atomic-rename fix (same file as
+  // that doc comment, NOT this one) is a precondition for this being safe.
+  if forceReset, cacheResetOk, cacheVersionBumped, case .unreadable = purgePendingSnapshot {
+    PlaintextStorageProtection.clearUnreadablePurgePendingMarker()
+  }
+
   if !existed || forceReset || needsLegacyMigration {
     // Task 1593 f3 (item 2) — refuse the add outright when it is not safe:
     // see `mayAddFileProviderDomain`'s doc comment. Reports the FRESH
