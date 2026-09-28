@@ -413,6 +413,30 @@ export function defaultNewDocumentBase(type: NewDocumentType, existingNames: Ite
   return full.slice(0, -(type.ext.length + 1))
 }
 
+/**
+ * Task 1592 item 9 — the name field's initial text selection.
+ *
+ * The field opens pre-filled with the default base ("Untitled note"), and
+ * `autoFocus` + a non-empty controlled `value` does not reliably select-all
+ * via `selectTextOnFocus` alone on iOS: the reported bug was that typing
+ * APPENDED to the default ("Untitled notev140…") instead of replacing it.
+ * An explicit `selection` prop on the field's first render is the fix —
+ * select the whole default so the first keystroke replaces it, the way a
+ * native "rename" field behaves.
+ *
+ * `touched` is false only until the user has edited the base themselves;
+ * once true this returns `undefined` (RN's "I'm not dictating the cursor"),
+ * so a later re-render never claws back a selection over their own edit.
+ * This only ever governs the BASE name field — the extension segment (its
+ * own `TextInput`, D3's user-editable extension) is untouched by this.
+ */
+export function initialNameSelection(
+  base: string,
+  touched: boolean,
+): { start: number; end: number } | undefined {
+  return touched ? undefined : { start: 0, end: base.length }
+}
+
 /** The user-facing clash message (web 1582's wording). */
 export function nameClashMessage(name: string): string {
   return `“${name}” already exists in this folder.`
