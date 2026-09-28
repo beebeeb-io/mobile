@@ -1134,7 +1134,13 @@ export function CryptoProvider({ children, userId }: { children: React.ReactNode
           // material) — safe to log per this file's own contract (see the
           // "Master key cache lifecycle" comment above).
           const confirmHandleId = masterKeyHandleId.current
-          await confirmMasterKeyHandle(confirmHandleId).catch(() => {
+          // Task 1599 followup 3: `ownerUserId` is THIS instance's own
+          // already-verified owner (the ownership verdict above already
+          // passed for it) — native records it alongside the cached handle
+          // so `NativeBackupEngine`'s background-task adoption can refuse a
+          // cached handle whose recorded owner doesn't match its live
+          // `currentAccountId`.
+          await confirmMasterKeyHandle(confirmHandleId, ownerUserId).catch(() => {
             recordRuntimeTrace('vault.key_ownership.confirm_handle_failed', { handleId: confirmHandleId })
           })
         }

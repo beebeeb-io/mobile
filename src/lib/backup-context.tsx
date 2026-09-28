@@ -235,6 +235,17 @@ export interface BackupContextValue {
    * new tree then). The honest message to show; null when not blocked.
    */
   backupBlockedReason: string | null;
+  /**
+   * Task 1599 followup 2: set when the NATIVE engine stopped itself because
+   * the server confirmed a 409 `account_mismatch` on an authenticated upload
+   * mutation (this device's session no longer matches the account the
+   * loaded master key is bound to). Sourced from native's poll
+   * (`accountMismatchReason` on `NativeBackupProgress`), so — unlike
+   * `backupBlockedReason` above, which JS sets synchronously from its own
+   * `enableNativeBackup` flow — this can appear between polls, any time the
+   * engine is running. The honest message to show; null when not blocked.
+   */
+  accountMismatchReason: string | null;
   // Legacy alias for components that used the old API
   isBackupEnabled: boolean;
   toggleBackup: () => Promise<void>;
@@ -267,6 +278,7 @@ export const BackupContext = createContext<BackupContextValue>({
   lastBackupAt: null,
   triggerBackupNow: async () => {},
   backupBlockedReason: null,
+  accountMismatchReason: null,
   isBackupEnabled: false,
   toggleBackup: async () => {},
 });
@@ -310,6 +322,12 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
   const [backupProgress, setBackupProgress] = useState<BackupProgress>(EMPTY_PROGRESS);
   const [lastBackupAt, setLastBackupAt] = useState<string | null>(null);
   const [backupBlockedReason, setBackupBlockedReason] = useState<string | null>(null);
+  // Task 1599 followup 2: mirrors native's `accountMismatchReason` every
+  // poll — a single producer (the native poll itself), so unlike
+  // `backupBlockedReason` above there is no risk of two writers racing each
+  // other; native already clears it on the same sign-in that would supersede
+  // this state, so mirroring it verbatim (including back to null) is correct.
+  const [accountMismatchReason, setAccountMismatchReason] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const includeVideosRef = useRef(true);
 
@@ -329,6 +347,7 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
       reason: p.reason ?? '',
     });
     if (p.lastBackupAt) setLastBackupAt(p.lastBackupAt);
+    setAccountMismatchReason(p.accountMismatchReason ?? null);
   }, []);
 
   const refreshNativeProgress = useCallback(async () => {
@@ -702,6 +721,7 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
     lastBackupAt,
     triggerBackupNow,
     backupBlockedReason,
+    accountMismatchReason,
     // Legacy alias
     isBackupEnabled: isPhotoBackupEnabled,
     toggleBackup: togglePhotoBackup,

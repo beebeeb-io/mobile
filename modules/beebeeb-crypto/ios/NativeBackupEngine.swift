@@ -131,6 +131,15 @@ enum BackupError: LocalizedError {
   /// run, drop the cached master-key handle) happen at detection time, in
   /// `handleConfirmedAccountMismatch()`, not here.
   case accountMismatchConfirmed
+  /// Task 1599 followups (item 1): a swept-session re-init (task 1589)
+  /// handed back a DIFFERENT `file_id` than the one this asset's staged
+  /// chunks and name were encrypted under. The takeover contract (server PR
+  /// #120 / `beebeeb-api.md`) is the SAME id — accepting a different one
+  /// would upload already-encrypted ciphertext under the wrong file's
+  /// identity. Routes to the generic `markFailed` path (failed, retryable)
+  /// like any other asset failure; never a second re-init attempt with the
+  /// server's id (that would compound the mistake, not fix it).
+  case reinitFileIdMismatch
 
   var errorDescription: String? {
     switch self {
@@ -155,6 +164,8 @@ enum BackupError: LocalizedError {
       return "Upload session expired twice in a row for this asset"
     case .accountMismatchConfirmed:
       return "Backup upload refused: server reported the signed-in account changed"
+    case .reinitFileIdMismatch:
+      return "Upload session re-init returned a different file id than expected"
     }
   }
 }
@@ -385,6 +396,14 @@ final class NativeBackupEngine: NSObject {
   private var metadataSession: URLSession!
   private var db: OpaquePointer?
   private var masterKeyHandle: MasterKeyHandle?
+  /// Task 1599 followup 2: the honest, user-facing reason the LAST confirmed
+  /// `account_mismatch` stopped this engine — `nil` when nothing stopped it
+  /// for that reason. Read by `backupState(pending:)` (so `currentProgress()`
+  /// / `getBackupProgress()` — the bridge `backup-context.tsx` already
+  /// polls — surfaces WHY, not just that it stopped) and cleared the moment
+  /// a fresh, JS-confirmed sign-in binds a new account (`bindAccount`) —
+  /// exactly "sign in again to resume".
+  private var accountMismatchStopReason: String?
   private var isRunning = false
   private var isPaused = false
   private var uploadTaskMap: [Int: String] = [:] // URLSessionTask.taskIdentifier -> localAssetId
@@ -471,6 +490,12 @@ final class NativeBackupEngine: NSObject {
 
   static let bgTaskIdentifier = "io.beebeeb.app.native-backup"
   static let bgSessionIdentifier = "io.beebeeb.backup"
+  /// Task 1599 followup 2 — the honest, user-facing copy for
+  /// `accountMismatchStopReason`. Matches the brand voice rule (say what
+  /// is, not what you wish were true) and the existing `backupBlockedReason`
+  /// precedent's tone (task 1594, "a stopped backup says why").
+  static let accountMismatchStopReasonMessage =
+    "Backup stopped: this device is signed in to a different account. Sign in again to resume."
 
   // MARK: - Configuration (set by JS before calling start)
 
@@ -1403,6 +1428,10 @@ final class NativeBackupEngine: NSObject {
     dbQueue.sync { purgeMismatchedStagedAssets(currentAccountId: userId) }
     currentAccountId = userId
     masterKeyHandle = nil
+    // Task 1599 followup 2: a fresh, JS-confirmed sign-in is exactly "sign in
+    // again to resume" — the honest reason a previous account_mismatch
+    // recorded no longer applies once a NEW binding replaces it.
+    accountMismatchStopReason = nil
     // Task 1531 [P2] round 6 (finding N6): `RuntimeTrace.sanitize` redacts
     // token/password/secret/key/cipher-/plaintext-named fields but NOT
     // "userId" — the raw account id was landing unredacted in the on-device
@@ -1445,12 +1474,37 @@ final class NativeBackupEngine: NSObject {
   /// the cached handle means a fresh `confirmMasterKeyHandle` from JS (a
   /// fresh ownership verdict) is required before this engine uploads again.
   /// Traced with NO account id and NO key material — only that the event
-  /// happened. Safe to call more than once (`stop()` and
-  /// `dropCachedMasterKeyHandle()` are both idempotent).
+  /// happened. Safe to call more than once (`stop()`,
+  /// `dropCachedMasterKeyHandle()`, and `BeebeebCryptoBridge
+  /// .clearCachedMasterKey()` are all idempotent).
+  ///
+  /// Task 1599 followup 2: this engine believed it was authorized for
+  /// `currentAccountId` — the server just proved that belief wrong. Beyond
+  /// dropping this engine's OWN handle copy (`dropCachedMasterKeyHandle`,
+  /// pre-existing), the fix also:
+  ///   - clears `currentAccountId` itself: leaving the disproven account id
+  ///     in place would let a background relaunch's `start()` (which reads
+  ///     it to decide what to do — see that function) re-adopt the exact
+  ///     belief that was just disproven, straight from the Keychain, with no
+  ///     new ownership check in between.
+  ///   - clears `BeebeebCryptoBridge`'s APP-WIDE cache too, not just this
+  ///     engine's own copy — `NativeEncryptedBackupUploader` and
+  ///     `ThumbnailServiceModule` read that cache directly, bypassing this
+  ///     engine entirely, and would otherwise keep using a handle this
+  ///     engine's own server round-trip just proved doesn't match the live
+  ///     session.
+  ///   - records an honest, user-facing reason (`accountMismatchStopReason`)
+  ///     so `currentProgress()` — which `backup-context.tsx` already polls —
+  ///     can tell Settings WHY backup stopped, not just that it did. Cleared
+  ///     the moment a fresh, JS-confirmed sign-in binds a new account
+  ///     (`bindAccount`) — exactly "sign in again to resume".
   private func handleConfirmedAccountMismatch() {
     RuntimeTrace.event("backup.native.account_mismatch_confirmed")
     dropCachedMasterKeyHandle()
     stop()
+    currentAccountId = nil
+    BeebeebCryptoBridge.clearCachedMasterKey()
+    accountMismatchStopReason = Self.accountMismatchStopReasonMessage
   }
 
   // MARK: - Lifecycle
@@ -1512,7 +1566,18 @@ final class NativeBackupEngine: NSObject {
         return
       }
       masterKeyHandle = mk
-      BeebeebCryptoBridge.setCachedMasterKey(mk)
+      // Task 1599 followup 3: `currentAccountId` here is `start()`'s OWN
+      // persisted account id (Keychain-backed — see its property doc), which
+      // is only ever WRITTEN by `bindAccount(userId:)`, called by JS only
+      // after ITS OWN ownership verdict succeeds (task 1599's own grounding:
+      // `enablePhotoBackup`'s `currentAccountId = userId` is gated on
+      // `crypto-context.tsx`'s `isUnlocked`, which flips true only right
+      // after `confirmMasterKeyHandle` for that SAME owner). So re-stamping
+      // the bridge cache with it here is safe even though THIS load came
+      // straight from the Keychain, not through a fresh JS ownership check —
+      // it is attesting to an owner JS already proved earlier this
+      // sign-in, not a new, unverified one.
+      BeebeebCryptoBridge.setCachedMasterKey(mk, ownerId: currentAccountId)
       RuntimeTrace.event("backup.native.start.master_key_ready")
     } catch {
       RuntimeTrace.event("backup.native.start.master_key_failed", [
@@ -1767,6 +1832,14 @@ final class NativeBackupEngine: NSObject {
       "state": state.state,
       "reason": state.reason,
       "lastBackupAt": latestUploadedAt() ?? NSNull(),
+      // Task 1599 followup 2: a SEPARATE, sticky signal from `state`/`reason`
+      // above (which are recomputed fresh from live counters on every call
+      // and would otherwise fall back to an unrelated generic reason like
+      // "Backup ready" once `stop()` clears `isRunning`) — `nil` until a
+      // confirmed account_mismatch sets it, cleared only by a fresh
+      // JS-confirmed sign-in (`bindAccount`). `backup-context.tsx` already
+      // polls this dict via `getBackupProgress()`.
+      "accountMismatchReason": accountMismatchStopReason ?? NSNull(),
     ]
   }
 
@@ -1844,14 +1917,25 @@ final class NativeBackupEngine: NSObject {
           self.completeBackgroundTaskOnce(task, success: false)
           return
         }
-        if let cached = BeebeebCryptoBridge.cachedMasterKeyIfAvailable() {
+        // Task 1599 followup 3: a cached handle existing is not, by itself,
+        // proof it belongs to `accountId` — `CachedKeyOwnership.mayAdopt`
+        // requires the cache's OWN recorded owner (set only at
+        // `confirmMasterKeyHandle`/`start()`, both of which attest a
+        // JS-verified owner — see `BeebeebCryptoBridge.cachedOwnerId`'s doc
+        // comment) to match. An unconfirmed (`nil`) or mismatched owner is
+        // refused exactly like "no cache at all", never silently adopted.
+        if let cached = BeebeebCryptoBridge.cachedMasterKeyIfAvailable(),
+           CachedKeyOwnership.mayAdopt(
+             cachedOwnerId: BeebeebCryptoBridge.cachedMasterKeyOwnerId(),
+             currentAccountId: accountId
+           ) {
           self.masterKeyHandle = cached
           RuntimeTrace.event("backup.native.background_task.master_key_ready", [
             "source": "bridgeCache"
           ])
         } else {
           RuntimeTrace.event("backup.native.background_task.master_key_skipped", [
-            "reason": "no_unlocked_cache",
+            "reason": BeebeebCryptoBridge.hasCachedMasterKey() ? "cached_key_owner_unconfirmed" : "no_unlocked_cache",
             "promptMayAppear": false
           ])
           self.completeBackgroundTaskOnce(task, success: false)
@@ -3192,6 +3276,20 @@ final class NativeBackupEngine: NSObject {
         baseURL: baseURL,
         accountId: batchAccountId
       )
+      // Task 1599 followup 1: the re-init MUST hand back the SAME file id —
+      // `fileId` is what the staged `.enc` chunks (and the encrypted name)
+      // were produced under; adopting a different server id here would
+      // upload that ciphertext against the wrong file's identity. Checked
+      // BEFORE any local/server state is mutated to reflect the new
+      // session, so a mismatch fails this asset cleanly rather than
+      // half-adopting it.
+      guard reinitSession.fileId == fileId else {
+        RuntimeTrace.event("backup.native.upload_staged.reinit_file_id_mismatch", [
+          "assetId": asset.localAssetId
+        ])
+        NSLog("[NativeBackupEngine] Re-init file id mismatch — refusing: \(asset.localAssetId)")
+        throw BackupError.reinitFileIdMismatch
+      }
       serverFileId = reinitSession.fileId
       uploadSessionId = reinitSession.uploadSessionId
       heartbeatIntervalSecs = reinitSession.heartbeatIntervalSecs

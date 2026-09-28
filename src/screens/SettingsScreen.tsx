@@ -664,6 +664,7 @@ export default function SettingsScreen() {
     lastBackupAt,
     triggerBackupNow,
     backupBlockedReason,
+    accountMismatchReason,
   } = useBackup();
   const { showToast } = useToast();
   const isOnline = useNetworkStatus();
@@ -1744,6 +1745,10 @@ export default function SettingsScreen() {
   const cameraRollSummary = (() => {
     // Task 1594: a stopped backup says why, before any progress line.
     if (backupBlockedReason) return backupBlockedReason;
+    // Task 1599 followup 2: same precedent — a confirmed account_mismatch
+    // stopped the native engine; say so before any progress line, same as
+    // the vault-key-mismatch case above.
+    if (accountMismatchReason) return accountMismatchReason;
     if (backupPaused) {
       return `Paused · waiting for Wi-Fi${cameraTotalCount > 0 ? ` · ${cameraBackedUpCount.toLocaleString()} of ${cameraTotalCount.toLocaleString()} ${cameraItemLabel}` : ''}${cameraIssueSuffix}`;
     }
@@ -1769,7 +1774,7 @@ export default function SettingsScreen() {
 
     return 'Waiting for first scan';
   })();
-  const cameraRollSummaryColor = backupBlockedReason || (cameraIssueCount > 0 && !cameraBackupActive)
+  const cameraRollSummaryColor = backupBlockedReason || accountMismatchReason || (cameraIssueCount > 0 && !cameraBackupActive)
     ? c.red
     : c.ink3;
   const cameraRollStatusDotColor = backupPaused

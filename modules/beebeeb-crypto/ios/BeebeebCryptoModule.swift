@@ -2391,10 +2391,27 @@ public class BeebeebCryptoModule: Module {
     // confirmed (refused, purged, or the provider disposed first) simply sits
     // inert in `masterKeyHandles` until `releaseHandle` removes it — the
     // native readers never see it.
-    AsyncFunction("confirmMasterKeyHandle") { [self] (handleId: Int) throws -> Bool in
+    //
+    // Task 1599 followup 3: `ownerId` is the account id JS has ALREADY
+    // verified this handle belongs to at this exact call site (the same
+    // `ownerUserId` `crypto-context.tsx`'s `unlock()` passes to
+    // `mirrorSignedInUserId`/`setExpectedUserId` right after this call —
+    // see that file's own comment on the choke point). It is stored
+    // alongside the handle so a reader with no ownership context of its own
+    // (`NativeBackupEngine`'s background-task cache adoption) can refuse to
+    // adopt a handle whose recorded owner doesn't match its `currentAccountId`,
+    // rather than trusting "a handle is cached" as proof of the right
+    // account. `nil` (a session-less signup with nothing to verify against
+    // yet) caches the handle WITHOUT an attested owner — exactly like the
+    // pre-1599 behavior, since there is no owner to attest.
+    AsyncFunction("confirmMasterKeyHandle") { [self] (handleId: Int, ownerId: String?) throws -> Bool in
       let handle = try self.getHandle(handleId)
-      BeebeebCryptoBridge.setCachedMasterKey(handle)
-      RuntimeTrace.event("keychain.bridge.confirm_handle", ["handleId": handleId])
+      // Normalize "" the same way every other owner/accountId reader in this
+      // codebase does (e.g. `applyExpectedUserHeader`) — an empty string is
+      // never a real account id.
+      let normalizedOwnerId = (ownerId?.isEmpty == false) ? ownerId : nil
+      BeebeebCryptoBridge.setCachedMasterKey(handle, ownerId: normalizedOwnerId)
+      RuntimeTrace.event("keychain.bridge.confirm_handle", ["handleId": handleId, "hasOwner": normalizedOwnerId != nil])
       return true
     }
 
