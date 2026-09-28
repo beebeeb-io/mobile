@@ -49,6 +49,7 @@ import {
   defaultNewDocumentBase,
   docIconLabelMetrics,
   documentTypeForTile,
+  initialNameSelection,
   normalizeExtension,
   tileAccessibilityLabel,
   tileIconLabel,
@@ -88,6 +89,10 @@ type Step =
 interface Draft {
   base: string;
   ext: string;
+  /** False until the user edits `base` themselves; drives whether the field's
+   *  initial focus selects the whole default (item 9, lib/new-document.ts
+   *  `initialNameSelection`). */
+  touched?: boolean;
 }
 
 // ─── The thin outline document with the extension inside ─────────────────────
@@ -206,7 +211,10 @@ export default function NewFileSheet({ visible, onClose, existingNames, folderLa
       setDrafts((cur) =>
         cur[type.id]
           ? cur
-          : { ...cur, [type.id]: { base: defaultNewDocumentBase(type, existingNames()), ext: type.ext } },
+          : {
+              ...cur,
+              [type.id]: { base: defaultNewDocumentBase(type, existingNames()), ext: type.ext, touched: false },
+            },
       );
       setError(null);
       setStep({ kind: 'name', type });
@@ -373,7 +381,8 @@ export default function NewFileSheet({ visible, onClose, existingNames, folderLa
         >
           <TextInput
             value={draft.base}
-            onChangeText={(base) => setDraft({ base })}
+            onChangeText={(base) => setDraft({ base, touched: true })}
+            selection={initialNameSelection(draft.base, !!draft.touched)}
             placeholder="File name"
             placeholderTextColor={c.ink4}
             autoFocus
@@ -432,7 +441,7 @@ export default function NewFileSheet({ visible, onClose, existingNames, folderLa
         ) : (
           <Text style={[styles.message, { color: c.ink3 }]}>
             {type.extensionEditable
-              ? 'The extension is yours to change, like renaming a file on your Mac. It stays plain text.'
+              ? 'The extension is yours to change, like renaming a file on any computer. It stays plain text.'
               : 'Markdown notes keep .md, so they open formatted everywhere.'}
           </Text>
         )}
