@@ -79,6 +79,7 @@ import {
   type MobileNotificationPreferences,
 } from '../lib/api';
 import { billingStatusView } from '../lib/billing-status';
+import { effectivePlan } from '../lib/effective-plan';
 import {
   loadRegionsData,
   selectRegion,
@@ -1705,7 +1706,13 @@ export default function SettingsScreen() {
 
   const email = user?.email ?? '';
   const initials = userInitials(email);
-  const planNameRaw = subscription?.plan ?? usage?.plan_name ?? null;
+  // Task 1601: the entitled plan, not the raw row — a cancelled paid
+  // subscription still carries its old `plan` slug with no entitlement
+  // behind it. `usage.plan_name` (separate `/files/usage` response) is only
+  // the fallback for when `/subscription` itself failed to load; it is not
+  // touched by this task's server-side fix, so it can still lag briefly in
+  // that one failure case.
+  const planNameRaw = subscription ? effectivePlan(subscription) : usage?.plan_name ?? null;
   const planName = planNameRaw ? planLabel(planNameRaw) : null;
   // Task 1540 findings 1, 2, 4, 6: read subscription.status, not just the
   // plan slug — a status='cancelling' or 'trialing' subscription must not

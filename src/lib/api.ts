@@ -11,6 +11,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 import { Platform } from 'react-native';
 import * as BeebeebCrypto from '../../modules/beebeeb-crypto';
 import { clearCachedFileIndex } from './file-index-cache';
+import { clearCachedBilling } from './billing-cache';
 import { collectPaged, findInPages } from './paginate';
 import { rateLimitedFetch } from './rate-limited-fetch';
 import { isNativeUploadAvailable, planUploadChunksNative, uploadChunksNative } from '../../modules/beebeeb-crypto';
@@ -212,6 +213,11 @@ export async function clearToken(): Promise<void> {
   await tokenStore.remove(TOKEN_KEY);
   await tokenStore.remove(DEVICE_CONFIRMATION_SECRET_KEY);
   await clearCachedFileIndex().catch(() => {});
+  // Task 1601, root cause 4 — same per-account cache-cleanup slot as the
+  // file-index cache above: covers ordinary sign-out (logout() calls
+  // clearToken()), a forced 401 sign-out (refreshAuth()'s catch), and an
+  // account switch (sign-out then a different sign-in) alike.
+  await clearCachedBilling().catch(() => {});
   await tokenStore.remove(MOBILE_IOS_BACKUP_CLIENT_SESSION_KEY);
   await BeebeebCrypto.mirrorBackupClientSession(null).catch(() => false);
 }
@@ -3002,6 +3008,16 @@ export interface Subscription {
   is_mock?: boolean;
   quota_bytes?: number;
   used_bytes?: number;
+  /**
+   * Additive field (task 1601, server half) — the plan this user is
+   * ENTITLED to right now, with subscription status already applied
+   * (`'cancelled'` → `'free'`, `'cancelling'` → the paid plan, …). Absent on
+   * older server responses mid-rollout — `effective-plan.ts`'s
+   * `effectivePlan()` derives the same value client-side when it's missing.
+   * Never read `.plan` directly to decide what to show a user; read
+   * `effectivePlan(subscription)` instead.
+   */
+  effective_plan?: string | null;
 }
 
 export async function getSubscription(): Promise<Subscription | null> {
