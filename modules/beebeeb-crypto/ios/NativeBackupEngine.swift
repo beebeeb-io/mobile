@@ -30,6 +30,76 @@ private let stagedBackupDirectoryName = "NativeBackupStaging"
 private let minimumFreeBytesAfterStaging: Int64 = 2 * 1024 * 1024 * 1024
 private let maxStagedBackupBytes: Int64 = 3 * 1024 * 1024 * 1024
 
+/// Task 1600 [P1]: thread-safe wrapper around a `[Key: Value]` dictionary.
+///
+/// `NativeBackupEngine.chunkUploadContinuations` and `.uploadTaskMap` used to
+/// be plain `Dictionary` stored properties written from FOUR different
+/// execution contexts with no synchronization between them: a Swift
+/// concurrency `Task` (`uploadStagedChunk`, insert), the URLSession delegate
+/// queue (`backgroundSession` is created with `delegate: self,
+/// delegateQueue: nil` — Foundation hands it a private serial
+/// `OperationQueue` that is NOT `self.queue`/`dbQueue`/the cooperative
+/// Task pool; `urlSession(_:task:didCompleteWithError:)` and the
+/// `getAllTasks` completion both run there), `dbQueue`
+/// (`recoverStuckUploads`, read), and whatever thread calls `stop()`
+/// (`uploadTaskMap.removeAll()` — `stop()` is invoked from Expo's shared
+/// serial `AsyncFunctionDefinition` queue, itself independent of all the
+/// above). Swift's `Dictionary` is a value type with copy-on-write,
+/// hash-table storage underneath — concurrent mutation from two threads
+/// (an insert racing a remove, not even the same key) can corrupt that
+/// storage outright, not just lose an update. That is the P1 hypothesis for
+/// task 1600's build-224 `EXC_BAD_ACCESS … objc_retain` crash (a corrupted
+/// `Dictionary<Int, CheckedContinuation<Void, Error>>` on the ObjC bridging
+/// path, ~10s into a run — right as the first chunk uploads start completing
+/// on the delegate queue while more are still being inserted from Tasks).
+///
+/// Every access here takes `lock` for the shortest possible span and NEVER
+/// calls back out — resumes a continuation, invokes a closure, touches
+/// `self` — while holding it. Callers that need to act on a removed value
+/// (e.g. resuming a `CheckedContinuation`) must pull it out via
+/// `removeValue(forKey:)` first and act on the RETURNED value after the
+/// call returns, never inside a closure passed into this type (there is no
+/// such closure-taking API on purpose).
+private final class LockedDictionary<Key: Hashable, Value> {
+  private let lock = NSLock()
+  private var storage: [Key: Value] = [:]
+
+  subscript(key: Key) -> Value? {
+    get {
+      lock.lock()
+      defer { lock.unlock() }
+      return storage[key]
+    }
+    set {
+      lock.lock()
+      storage[key] = newValue
+      lock.unlock()
+    }
+  }
+
+  @discardableResult
+  func removeValue(forKey key: Key) -> Value? {
+    lock.lock()
+    defer { lock.unlock() }
+    return storage.removeValue(forKey: key)
+  }
+
+  func removeAll() {
+    lock.lock()
+    storage.removeAll()
+    lock.unlock()
+  }
+
+  /// A snapshot of the current keys, copied out under the lock. Safe to
+  /// iterate/map/check `.isEmpty` on afterwards — it is a plain `Array`,
+  /// not a live view into `storage`.
+  var keys: [Key] {
+    lock.lock()
+    defer { lock.unlock() }
+    return Array(storage.keys)
+  }
+}
+
 @available(iOS 16.1, *)
 struct BeebeebBackupActivityAttributes: ActivityAttributes {
   public struct ContentState: Codable, Hashable {
@@ -248,6 +318,28 @@ private struct StagedChunkRow {
   let path: String
 }
 
+/// Task 1600: per-asset heartbeat pacing state for `uploadStagedAsset`, as an
+/// explicit reference type instead of a captured `var` local. Build 224
+/// crashed ~10s after enabling camera backup — EXC_BAD_ACCESS in
+/// `objc_retain`, symbolicated to `uploadStagedAsset` -> a nested local
+/// `func runChunksAndComplete` calling a `[weak self]` async closure
+/// (`heartbeatIfDue`) that captured and mutated the enclosing `var
+/// lastHeartbeatAt` across `await` points. That capture chain (local func +
+/// closure sharing a mutable local var box across awaits, in a Release/
+/// whole-module-optimized build) is the prime suspect; it reproduced only in
+/// Release, never Debug. `HeartbeatPacer` removes the capture entirely: it is
+/// passed as an ordinary reference-type argument to plain private instance
+/// methods (see `runChunksAndComplete`/`heartbeatIfDue` below), which capture
+/// nothing but `self`.
+private final class HeartbeatPacer {
+  var lastSentAt = Date()
+  var intervalSecs: Double
+
+  init(intervalSecs: Double) {
+    self.intervalSecs = intervalSecs
+  }
+}
+
 /// Result of POST /api/v1/uploads/init. We persist BOTH: `uploadSessionId` is
 /// the route anchor for chunk PUTs + complete; `fileId` is the durable file row
 /// used for thumbnails and the GET /files/{id} completion/resume check.
@@ -384,12 +476,59 @@ final class NativeBackupEngine: NSObject {
   private var backgroundSession: URLSession!
   private var metadataSession: URLSession!
   private var db: OpaquePointer?
-  private var masterKeyHandle: MasterKeyHandle?
-  private var isRunning = false
-  private var isPaused = false
-  private var uploadTaskMap: [Int: String] = [:] // URLSessionTask.taskIdentifier -> localAssetId
-  private var drainTask: Task<Void, Never>?
-  private var drainLoopGeneration = 0
+
+  /// Task 1600 [P2]: dedicated lock for every plain scalar/reference `var`
+  /// below that is written from more than one of the engine's concurrent
+  /// execution contexts (the URLSession delegate queue, a detached/`Task {}`
+  /// body on the cooperative pool — the drain loop and the `BGProcessingTask`
+  /// handler each spawn their own — Expo's shared serial
+  /// `AsyncFunctionDefinition` queue that `start()`/`stop()`/`pause()`/
+  /// `resume()` run on, and the `NWPathMonitor` callback queue). A separate
+  /// lock from `accountIdLock` on purpose: several of these accessors are
+  /// read from inside functions that themselves may already be called while
+  /// `accountIdLock` is held elsewhere (e.g. `bindAccount`), and `NSLock` is
+  /// not reentrant — reusing `accountIdLock` here risks a self-deadlock the
+  /// moment two of its critical sections nest. Every getter/setter below is
+  /// a single lock → touch storage → unlock with no call-outs in between, so
+  /// there is no nesting risk against THIS lock either.
+  private let engineStateLock = NSLock()
+
+  private var _masterKeyHandle: MasterKeyHandle?
+  private var masterKeyHandle: MasterKeyHandle? {
+    get { engineStateLock.lock(); defer { engineStateLock.unlock() }; return _masterKeyHandle }
+    set { engineStateLock.lock(); _masterKeyHandle = newValue; engineStateLock.unlock() }
+  }
+
+  private var _isRunning = false
+  private var isRunning: Bool {
+    get { engineStateLock.lock(); defer { engineStateLock.unlock() }; return _isRunning }
+    set { engineStateLock.lock(); _isRunning = newValue; engineStateLock.unlock() }
+  }
+
+  private var _isPaused = false
+  private var isPaused: Bool {
+    get { engineStateLock.lock(); defer { engineStateLock.unlock() }; return _isPaused }
+    set { engineStateLock.lock(); _isPaused = newValue; engineStateLock.unlock() }
+  }
+
+  // Task 1600 [P1]: was a plain `[Int: String]` — see `LockedDictionary`'s
+  // doc comment above for why a bare Dictionary here is unsafe. Read/removed
+  // on the URLSession delegate queue, cleared by `stop()` from whatever
+  // thread calls it.
+  private let uploadTaskMap = LockedDictionary<Int, String>() // URLSessionTask.taskIdentifier -> localAssetId
+
+  private var _drainTask: Task<Void, Never>?
+  private var drainTask: Task<Void, Never>? {
+    get { engineStateLock.lock(); defer { engineStateLock.unlock() }; return _drainTask }
+    set { engineStateLock.lock(); _drainTask = newValue; engineStateLock.unlock() }
+  }
+
+  private var _drainLoopGeneration = 0
+  private var drainLoopGeneration: Int {
+    get { engineStateLock.lock(); defer { engineStateLock.unlock() }; return _drainLoopGeneration }
+    set { engineStateLock.lock(); _drainLoopGeneration = newValue; engineStateLock.unlock() }
+  }
+
   /// Task 1531 [P1-3]: bumped every time `currentAccountId` is written (set
   /// to a new account OR cleared to nil) — see that property's setter. A
   /// `BGProcessingTask` can capture this at entry and, after the account/
@@ -400,7 +539,13 @@ final class NativeBackupEngine: NSObject {
   /// existing `drainLoopGeneration` pattern above, one level up (account
   /// epoch rather than drain-loop instance).
   private var accountGeneration = 0
-  private var pendingDrainWakeReason: String?
+
+  private var _pendingDrainWakeReason: String?
+  private var pendingDrainWakeReason: String? {
+    get { engineStateLock.lock(); defer { engineStateLock.unlock() }; return _pendingDrainWakeReason }
+    set { engineStateLock.lock(); _pendingDrainWakeReason = newValue; engineStateLock.unlock() }
+  }
+
   private let batchProcessingQueue = DispatchQueue(label: "io.beebeeb.backup.engine.batch", qos: .utility)
   // PHKit picks its own callback queue (often main when the app is foregrounded).
   // Hop here as the first line of every PhotoKit completion so the body — which
@@ -412,16 +557,59 @@ final class NativeBackupEngine: NSObject {
     label: "io.beebeeb.backup.engine.phkit-callback",
     qos: .utility
   )
-  private var batchProcessingActive = false
-  private var currentFetchResult: PHFetchResult<PHAsset>?
-  private var photoObserverRegistered = false
-  private var isBackgroundTaskActive = false
-  private var isBackgroundGraceActive = false
-  private var backgroundGraceTask: UIBackgroundTaskIdentifier = .invalid
-  private var chunkUploadContinuations: [Int: CheckedContinuation<Void, Error>] = [:]
+  private var batchProcessingActive = false // already serialized via batchProcessingQueue.sync — not touched by task 1600
+
+  private var _currentFetchResult: PHFetchResult<PHAsset>?
+  private var currentFetchResult: PHFetchResult<PHAsset>? {
+    get { engineStateLock.lock(); defer { engineStateLock.unlock() }; return _currentFetchResult }
+    set { engineStateLock.lock(); _currentFetchResult = newValue; engineStateLock.unlock() }
+  }
+
+  private var _photoObserverRegistered = false
+  private var photoObserverRegistered: Bool {
+    get { engineStateLock.lock(); defer { engineStateLock.unlock() }; return _photoObserverRegistered }
+    set { engineStateLock.lock(); _photoObserverRegistered = newValue; engineStateLock.unlock() }
+  }
+
+  private var _isBackgroundTaskActive = false
+  private var isBackgroundTaskActive: Bool {
+    get { engineStateLock.lock(); defer { engineStateLock.unlock() }; return _isBackgroundTaskActive }
+    set { engineStateLock.lock(); _isBackgroundTaskActive = newValue; engineStateLock.unlock() }
+  }
+
+  private var _isBackgroundGraceActive = false
+  private var isBackgroundGraceActive: Bool {
+    get { engineStateLock.lock(); defer { engineStateLock.unlock() }; return _isBackgroundGraceActive }
+    set { engineStateLock.lock(); _isBackgroundGraceActive = newValue; engineStateLock.unlock() }
+  }
+
+  private var _backgroundGraceTask: UIBackgroundTaskIdentifier = .invalid
+  private var backgroundGraceTask: UIBackgroundTaskIdentifier {
+    get { engineStateLock.lock(); defer { engineStateLock.unlock() }; return _backgroundGraceTask }
+    set { engineStateLock.lock(); _backgroundGraceTask = newValue; engineStateLock.unlock() }
+  }
+
+  // Task 1600 [P1]: was a plain `[Int: CheckedContinuation<Void, Error>]` —
+  // see `LockedDictionary`'s doc comment above. This is the dictionary
+  // task 1600's evidence points at directly (write site `uploadStagedChunk`,
+  // ~3638; read/remove `urlSession(_:task:didCompleteWithError:)`, ~5373,
+  // and the `getAllTasks` orphan-reconciliation callback, ~1523; read
+  // `recoverStuckUploads`, ~4727 — line numbers as of this fix; the
+  // original crash evidence's line numbers, cited in the task file, are
+  // against the pre-fix commit 0be3b3e).
+  private let chunkUploadContinuations = LockedDictionary<Int, CheckedContinuation<Void, Error>>()
   #if os(iOS)
-  private var networkMonitor: NWPathMonitor?
-  private var isNetworkAvailable = true
+  private var _networkMonitor: NWPathMonitor?
+  private var networkMonitor: NWPathMonitor? {
+    get { engineStateLock.lock(); defer { engineStateLock.unlock() }; return _networkMonitor }
+    set { engineStateLock.lock(); _networkMonitor = newValue; engineStateLock.unlock() }
+  }
+
+  private var _isNetworkAvailable = true
+  private var isNetworkAvailable: Bool {
+    get { engineStateLock.lock(); defer { engineStateLock.unlock() }; return _isNetworkAvailable }
+    set { engineStateLock.lock(); _isNetworkAvailable = newValue; engineStateLock.unlock() }
+  }
   #endif
 
   // Storage pre-flight estimate ONLY (see estimatedEncryptedBytes). The WIRE
@@ -438,8 +626,17 @@ final class NativeBackupEngine: NSObject {
   private let batchLimit = 12
 
   // Backoff state
-  private var consecutiveFailures = 0
-  private var backoffUntil: Date?
+  private var _consecutiveFailures = 0
+  private var consecutiveFailures: Int {
+    get { engineStateLock.lock(); defer { engineStateLock.unlock() }; return _consecutiveFailures }
+    set { engineStateLock.lock(); _consecutiveFailures = newValue; engineStateLock.unlock() }
+  }
+
+  private var _backoffUntil: Date?
+  private var backoffUntil: Date? {
+    get { engineStateLock.lock(); defer { engineStateLock.unlock() }; return _backoffUntil }
+    set { engineStateLock.lock(); _backoffUntil = newValue; engineStateLock.unlock() }
+  }
 
   // Cached UIApplication state — read by `currentApplicationState()` from
   // background queues without blocking on main. The cache is seeded at init
@@ -461,7 +658,11 @@ final class NativeBackupEngine: NSObject {
   // is already checked aggressively throughout `processBatch` and the
   // per-asset upload paths, so cancellation unwinds within hundreds of
   // milliseconds.
-  private var backgroundTaskHandle: Task<Void, Never>?
+  private var _backgroundTaskHandle: Task<Void, Never>?
+  private var backgroundTaskHandle: Task<Void, Never>? {
+    get { engineStateLock.lock(); defer { engineStateLock.unlock() }; return _backgroundTaskHandle }
+    set { engineStateLock.lock(); _backgroundTaskHandle = newValue; engineStateLock.unlock() }
+  }
   // Guard against double `setTaskCompleted(success:)` — Apple's contract
   // forbids it. Both the body's terminal call and the expiration
   // handler funnel through `completeBackgroundTaskOnce` to ensure
@@ -3096,81 +3297,20 @@ final class NativeBackupEngine: NSObject {
     // Task 1589 — the gap this heartbeat covers is BETWEEN two chunk
     // requests, not one chunk's own (potentially very long) streaming body,
     // which the server already renews server-side while it streams.
-    var lastHeartbeatAt = Date()
-    let heartbeatIfDue = { [weak self] (sessionId: String) async in
-      guard let self, Date().timeIntervalSince(lastHeartbeatAt) >= heartbeatIntervalSecs else { return }
-      await self.sendHeartbeat(uploadSessionId: sessionId, authToken: authToken, baseURL: baseURL, accountId: batchAccountId)
-      lastHeartbeatAt = Date()
-    }
-
-    // Task 1589: extracted so a swept v2 session (404 — server PR #120's
-    // sweeper, or the legacy 400 "not writable: expired") can be recovered by
-    // re-initing the SAME file id and re-PUTting every ALREADY-STAGED chunk
-    // (no re-encrypt needed — the file key derives from `fileId`, unchanged
-    // by the takeover) from index 0, at most once per attempt.
-    func runChunksAndComplete(_ chunksToSend: [StagedChunkRow], sessionId: String) async throws {
-      // v2 chunk PUTs are idempotent (INSERT…ON CONFLICT DO UPDATE), so
-      // re-sending an already-stored chunk on a resume is safe. `chunks`
-      // already excludes chunks the local bookkeeping marked 'uploaded'
-      // (getPendingStagedChunks), so a resume only re-drives the genuinely-
-      // incomplete tail.
-      for chunk in chunksToSend {
-        guard isRunning && !Task.isCancelled else { throw CancellationError() }
-        await heartbeatIfDue(sessionId)
-        try await uploadStagedChunk(
-          localAssetId: asset.localAssetId,
-          uploadSessionId: sessionId,
-          chunkIndex: chunk.index,
-          fileURL: URL(fileURLWithPath: chunk.path),
-          authToken: authToken,
-          baseURL: baseURL,
-          accountId: batchAccountId
-        )
-      }
-
-      let remaining = dbQueue.sync { countPendingStagedChunks(assetId: asset.localAssetId) }
-      guard remaining == 0 else {
-        // The re-PUT loop finished but the local bookkeeping still reports chunks
-        // pending. Surface a diagnosable error with the offending indices instead
-        // of returning false silently — the silence is exactly why this wedge was
-        // invisible (no error status, no log line) while it spun every drain until
-        // the asset dead-lettered at retry 10. Throwing routes to markFailed with
-        // a concrete message and still re-stages on a later attempt.
-        let unreconciled = dbQueue.sync { getPendingStagedChunks(assetId: asset.localAssetId) }
-          .map { $0.index }
-        throw BackupError.unreconciledChunks(unreconciled)
-      }
-
-      // Task 1531 [P1-2]: re-check right before the one irreversible step. The
-      // chunk PUT loop above can run long enough (large video, slow network)
-      // for the account to change mid-upload; refusing here — before
-      // `upload/complete` and before `markUploadComplete` writes the local
-      // row as done — means a stale upload never gets marked finished under
-      // the wrong account's bookkeeping. The already-PUT chunks on the server
-      // are reaped by the server's stale-upload cleanup, same as any other
-      // abandoned session.
-      guard currentAccountId == batchAccountId else {
-        RuntimeTrace.event("backup.native.upload_staged.refused_account_changed", [
-          "assetId": asset.localAssetId,
-          "batchAccount": batchAccountId,
-          "liveAccount": currentAccountId ?? "(nil)",
-          "stage": "pre_complete"
-        ])
-        NSLog("[NativeBackupEngine] Account changed mid-upload — refusing to complete: \(asset.localAssetId)")
-        throw CancellationError()
-      }
-
-      await heartbeatIfDue(sessionId)
-      try await completeUpload(
-        uploadSessionId: sessionId,
-        authToken: authToken,
-        baseURL: baseURL,
-        accountId: batchAccountId
-      )
-    }
+    // Task 1600: explicit reference-type state (`HeartbeatPacer`), not a
+    // captured `var` local — see the type's doc comment for why.
+    let pacer = HeartbeatPacer(intervalSecs: heartbeatIntervalSecs)
 
     do {
-      try await runChunksAndComplete(chunks, sessionId: uploadSessionId)
+      try await runChunksAndComplete(
+        chunks,
+        sessionId: uploadSessionId,
+        asset: asset,
+        authToken: authToken,
+        baseURL: baseURL,
+        batchAccountId: batchAccountId,
+        pacer: pacer
+      )
     } catch is CancellationError {
       return false
     } catch {
@@ -3195,7 +3335,8 @@ final class NativeBackupEngine: NSObject {
       serverFileId = reinitSession.fileId
       uploadSessionId = reinitSession.uploadSessionId
       heartbeatIntervalSecs = reinitSession.heartbeatIntervalSecs
-      lastHeartbeatAt = Date()
+      pacer.intervalSecs = heartbeatIntervalSecs
+      pacer.lastSentAt = Date()
       dbQueue.sync {
         markUploading(
           assetId: asset.localAssetId,
@@ -3228,7 +3369,15 @@ final class NativeBackupEngine: NSObject {
       }
 
       do {
-        try await runChunksAndComplete(allStaged, sessionId: uploadSessionId)
+        try await runChunksAndComplete(
+          allStaged,
+          sessionId: uploadSessionId,
+          asset: asset,
+          authToken: authToken,
+          baseURL: baseURL,
+          batchAccountId: batchAccountId,
+          pacer: pacer
+        )
       } catch is CancellationError {
         return false
       } catch {
@@ -3268,6 +3417,104 @@ final class NativeBackupEngine: NSObject {
     )
 
     return true
+  }
+
+  // Task 1589: extracted so a swept v2 session (404 — server PR #120's
+  // sweeper, or the legacy 400 "not writable: expired") can be recovered by
+  // re-initing the SAME file id and re-PUTting every ALREADY-STAGED chunk
+  // (no re-encrypt needed — the file key derives from `fileId`, unchanged
+  // by the takeover) from index 0, at most once per attempt.
+  //
+  // Task 1600: a private instance method with fully explicit parameters,
+  // not a local function nested inside `uploadStagedAsset`. It used to
+  // capture `asset`/`authToken`/`baseURL`/`batchAccountId` from the
+  // enclosing scope and call a `[weak self]` async closure that itself
+  // captured and mutated a `var` local across `await` points — that capture
+  // chain is the prime suspect for the build-224 EXC_BAD_ACCESS crash (see
+  // `HeartbeatPacer`'s doc comment). This method captures nothing but
+  // `self`.
+  private func runChunksAndComplete(
+    _ chunksToSend: [StagedChunkRow],
+    sessionId: String,
+    asset: BackupAssetRow,
+    authToken: String,
+    baseURL: String,
+    batchAccountId: String,
+    pacer: HeartbeatPacer
+  ) async throws {
+    // v2 chunk PUTs are idempotent (INSERT…ON CONFLICT DO UPDATE), so
+    // re-sending an already-stored chunk on a resume is safe. `chunksToSend`
+    // already excludes chunks the local bookkeeping marked 'uploaded'
+    // (getPendingStagedChunks), so a resume only re-drives the genuinely-
+    // incomplete tail.
+    for chunk in chunksToSend {
+      guard isRunning && !Task.isCancelled else { throw CancellationError() }
+      await heartbeatIfDue(pacer: pacer, sessionId: sessionId, authToken: authToken, baseURL: baseURL, accountId: batchAccountId)
+      try await uploadStagedChunk(
+        localAssetId: asset.localAssetId,
+        uploadSessionId: sessionId,
+        chunkIndex: chunk.index,
+        fileURL: URL(fileURLWithPath: chunk.path),
+        authToken: authToken,
+        baseURL: baseURL,
+        accountId: batchAccountId
+      )
+    }
+
+    let remaining = dbQueue.sync { countPendingStagedChunks(assetId: asset.localAssetId) }
+    guard remaining == 0 else {
+      // The re-PUT loop finished but the local bookkeeping still reports chunks
+      // pending. Surface a diagnosable error with the offending indices instead
+      // of returning false silently — the silence is exactly why this wedge was
+      // invisible (no error status, no log line) while it spun every drain until
+      // the asset dead-lettered at retry 10. Throwing routes to markFailed with
+      // a concrete message and still re-stages on a later attempt.
+      let unreconciled = dbQueue.sync { getPendingStagedChunks(assetId: asset.localAssetId) }
+        .map { $0.index }
+      throw BackupError.unreconciledChunks(unreconciled)
+    }
+
+    // Task 1531 [P1-2]: re-check right before the one irreversible step. The
+    // chunk PUT loop above can run long enough (large video, slow network)
+    // for the account to change mid-upload; refusing here — before
+    // `upload/complete` and before `markUploadComplete` writes the local
+    // row as done — means a stale upload never gets marked finished under
+    // the wrong account's bookkeeping. The already-PUT chunks on the server
+    // are reaped by the server's stale-upload cleanup, same as any other
+    // abandoned session.
+    guard currentAccountId == batchAccountId else {
+      RuntimeTrace.event("backup.native.upload_staged.refused_account_changed", [
+        "assetId": asset.localAssetId,
+        "batchAccount": batchAccountId,
+        "liveAccount": currentAccountId ?? "(nil)",
+        "stage": "pre_complete"
+      ])
+      NSLog("[NativeBackupEngine] Account changed mid-upload — refusing to complete: \(asset.localAssetId)")
+      throw CancellationError()
+    }
+
+    await heartbeatIfDue(pacer: pacer, sessionId: sessionId, authToken: authToken, baseURL: baseURL, accountId: batchAccountId)
+    try await completeUpload(
+      uploadSessionId: sessionId,
+      authToken: authToken,
+      baseURL: baseURL,
+      accountId: batchAccountId
+    )
+  }
+
+  /// Task 1600: plain private instance method (no captures beyond `self`),
+  /// replacing the `[weak self]` async closure that used to capture and
+  /// mutate a `var lastHeartbeatAt` local from `uploadStagedAsset`.
+  private func heartbeatIfDue(
+    pacer: HeartbeatPacer,
+    sessionId: String,
+    authToken: String,
+    baseURL: String,
+    accountId: String
+  ) async {
+    guard Date().timeIntervalSince(pacer.lastSentAt) >= pacer.intervalSecs else { return }
+    await sendHeartbeat(uploadSessionId: sessionId, authToken: authToken, baseURL: baseURL, accountId: accountId)
+    pacer.lastSentAt = Date()
   }
 
   private func removeStagedDirectory(stagedDir: String, fileId: String) {
