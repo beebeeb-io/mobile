@@ -14,8 +14,9 @@
  */
 
 import { encryptChunk, decryptChunk } from '../../modules/beebeeb-crypto'
-import { getApiUrl, getToken } from './api'
+import { getApiUrl, getToken, captureRequestAuthSnapshot, endSessionForAccountMismatch } from './api'
 import { rateLimitedFetch } from './rate-limited-fetch'
+import { expectedUserHeaders } from './expected-user'
 
 export interface SearchIndexEntry {
   name: string
@@ -131,13 +132,17 @@ export async function saveIndex(
   indexKey: Uint8Array,
   etag?: string,
 ): Promise<string | null> {
-  const token = await getToken()
-  if (!token) return null
+  // Task 1594 round 3 (Codex T6): snapshot the session at this call's own
+  // start, mirroring the upload paths — see `endSessionForAccountMismatch`.
+  const authSnapshot = await captureRequestAuthSnapshot()
+  if (!authSnapshot.token) return null
 
   const encrypted = await encryptIndex(index, indexKey)
   const headers: Record<string, string> = {
-    Authorization: `Bearer ${token}`,
+    Authorization: `Bearer ${authSnapshot.token}`,
     'Content-Type': 'application/octet-stream',
+    // Task 1594 fix 4 — a mutation: name the unlocked key's owner (server 1554).
+    ...expectedUserHeaders(),
   }
   if (etag) headers['If-Match'] = etag
 
@@ -146,7 +151,21 @@ export async function saveIndex(
     headers,
     body: encrypted as unknown as BodyInit,
   })
-  if (!res.ok) return null
+  if (!res.ok) {
+    // Task 1594 round 3 (Codex T6): this PUT can now receive a 409
+    // `account_mismatch` (the same header `request()` and the upload paths
+    // send). Route it through the same guarded session-teardown instead of
+    // collapsing it to `null` like every other non-OK response — a key/
+    // session mismatch here must not leave the user silently signed in with
+    // index persistence quietly broken.
+    if (res.status === 409) {
+      const body = (await res.json().catch(() => ({}))) as { error?: string }
+      if (body.error === 'account_mismatch') {
+        await endSessionForAccountMismatch(authSnapshot)
+      }
+    }
+    return null
+  }
   return res.headers.get('ETag')
 }
 

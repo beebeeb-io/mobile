@@ -696,6 +696,26 @@ export async function releaseHandle(handleId: number): Promise<void> {
   return BeebeebCryptoModule.releaseHandle(handleId)
 }
 
+/**
+ * Task 1594 round 4 (F4): confirm that `handleId` — already loaded via
+ * `loadKeyFromKeychainAsHandle`/`createMasterKeyHandle` — is safe to use for
+ * this account. Populates the native, app-wide `BeebeebCryptoBridge` cache
+ * that `NativeBackupEngine` (a background task can run at any time),
+ * `NativeEncryptedBackupUploader`, and `ThumbnailServiceModule` all read
+ * DIRECTLY, bypassing this JS handle entirely — the two `AsyncFunction`s that
+ * load a handle deliberately no longer populate that cache themselves.
+ * Call this ONLY once `crypto-context.tsx`'s own ownership verdict has
+ * accepted the key for the signed-in account — never speculatively at load
+ * time, or those native readers could use a key the verdict is still in the
+ * middle of rejecting. A build with no native implementation (or a mocked
+ * test environment) no-ops to `true`, matching every other optional bridge
+ * call in this file.
+ */
+export async function confirmMasterKeyHandle(handleId: number): Promise<boolean> {
+  if (typeof BeebeebCryptoModule.confirmMasterKeyHandle !== 'function') return true
+  return BeebeebCryptoModule.confirmMasterKeyHandle(handleId)
+}
+
 // ─── Keychain ────────────────────────────────────────────────────────────────
 
 /**
@@ -778,6 +798,27 @@ export async function mirrorSessionToAppGroup(
 export async function mirrorBackupClientSession(sessionId: string | null): Promise<boolean> {
   if (typeof BeebeebCryptoModule.mirrorBackupClientSession !== 'function') return false
   return BeebeebCryptoModule.mirrorBackupClientSession(sessionId)
+}
+
+/**
+ * Task 1594 round 2 (F3/F6). Mirror the vault key's proven owner into the
+ * SHARED keychain so the File Provider / Share Extension can refuse to use a
+ * key that has not been proven to belong to the currently signed-in account.
+ * Called only from `src/lib/key-ownership.ts` (`writeKeyOwner`/`clearKeyOwner`).
+ */
+export async function mirrorKeyOwner(userId: string | null): Promise<boolean> {
+  if (typeof BeebeebCryptoModule.mirrorKeyOwner !== 'function') return false
+  return BeebeebCryptoModule.mirrorKeyOwner(userId)
+}
+
+/**
+ * Task 1594 round 2 (F3/F6). Mirror who is CURRENTLY signed in into the
+ * SHARED keychain, alongside `mirrorKeyOwner`'s value. Called only from
+ * `src/lib/key-ownership.ts` (`mirrorSignedInUserId`).
+ */
+export async function mirrorSessionUserId(userId: string | null): Promise<boolean> {
+  if (typeof BeebeebCryptoModule.mirrorSessionUserId !== 'function') return false
+  return BeebeebCryptoModule.mirrorSessionUserId(userId)
 }
 
 /**

@@ -24,6 +24,13 @@ final class ShareUploader {
         case cryptoUnavailable(String)
         case uploadFailed(Int, String)
         case networkError(Error)
+        /// Task 1594 round 5: the server's typed 409 `account_mismatch` —
+        /// the session's real account doesn't match the `X-Beebeeb-Expected-User`
+        /// this request sent. A clean, non-retryable ownership failure, never
+        /// the generic `.uploadFailed(409, ...)` (which the UI would present
+        /// as "Upload failed (HTTP 409): ..." and invite a retry with the
+        /// SAME stale key — the exact behavior this fix exists to avoid).
+        case accountMismatch
 
         var errorDescription: String? {
             switch self {
@@ -31,6 +38,7 @@ final class ShareUploader {
             case .cryptoUnavailable(let msg): return "Could not encrypt the file: \(msg). Open Beebeeb once, then try sharing again."
             case .uploadFailed(let code, let msg): return "Upload failed (HTTP \(code)): \(msg)"
             case .networkError(let e): return "Network error: \(e.localizedDescription)"
+            case .accountMismatch: return "This file belongs to a different account. Open Beebeeb, sign in again, then try sharing again."
             }
         }
     }
@@ -52,6 +60,14 @@ final class ShareUploader {
     private let apiUrl: String
     private let sessionToken: String
     private let masterKey: MasterKeyHandle
+    /// Task 1594 round 5: the F3-verified owner of `masterKey`
+    /// (`ShareViewController.verifiedKeyOwnerId`, itself the same shared
+    /// keychain value `keyOwnershipVerified()` already gated the share on) —
+    /// sent as `X-Beebeeb-Expected-User` on every mutating request, exactly
+    /// like `targets/file-provider/ApiClient.swift`'s own `expectedUser`
+    /// (round 4). `nil`/empty omits the header — unchanged, pre-1594
+    /// behaviour (`ShareUploadRequestPolicy.shouldAttachExpectedUserHeader`).
+    private let expectedUser: String?
 
     /// beebeeb-core chunk-plan profile. Chunk size + count are derived in Rust
     /// from this profile + the plaintext size — never hardcoded here (the old
@@ -59,10 +75,11 @@ final class ShareUploader {
     /// "backup".
     private static let chunkProfile = "mobile"
 
-    init(apiUrl: String, sessionToken: String, masterKey: MasterKeyHandle) {
+    init(apiUrl: String, sessionToken: String, masterKey: MasterKeyHandle, expectedUser: String?) {
         self.apiUrl = apiUrl
         self.sessionToken = sessionToken
         self.masterKey = masterKey
+        self.expectedUser = expectedUser
     }
 
     // MARK: - Public
@@ -234,12 +251,18 @@ final class ShareUploader {
         request.httpMethod = "POST"
         request.setValue("Bearer \(sessionToken)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if ShareUploadRequestPolicy.shouldAttachExpectedUserHeader(expectedUser) {
+            request.setValue(expectedUser, forHTTPHeaderField: "X-Beebeeb-Expected-User")
+        }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         let (data, response) = try await send(request)
-        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-            let code = (response as? HTTPURLResponse)?.statusCode ?? 0
-            throw UploadError.uploadFailed(code, String(data: data, encoding: .utf8) ?? "init failed")
+        let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+        if ShareUploadRequestPolicy.isAccountMismatchResponse(statusCode: statusCode, body: data) {
+            throw UploadError.accountMismatch
+        }
+        guard statusCode == 200 else {
+            throw UploadError.uploadFailed(statusCode, String(data: data, encoding: .utf8) ?? "init failed")
         }
         guard let decoded = try? JSONDecoder().decode(InitResponse.self, from: data) else {
             throw UploadError.uploadFailed(0, "Invalid init response")
@@ -256,12 +279,18 @@ final class ShareUploader {
         request.httpMethod = "PUT"
         request.setValue("Bearer \(sessionToken)", forHTTPHeaderField: "Authorization")
         request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+        if ShareUploadRequestPolicy.shouldAttachExpectedUserHeader(expectedUser) {
+            request.setValue(expectedUser, forHTTPHeaderField: "X-Beebeeb-Expected-User")
+        }
         request.httpBody = frame
 
         let (data, response) = try await send(request)
-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            let code = (response as? HTTPURLResponse)?.statusCode ?? 0
-            throw UploadError.uploadFailed(code, String(data: data, encoding: .utf8) ?? "chunk \(index) failed")
+        let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+        if ShareUploadRequestPolicy.isAccountMismatchResponse(statusCode: statusCode, body: data) {
+            throw UploadError.accountMismatch
+        }
+        guard (200..<300).contains(statusCode) else {
+            throw UploadError.uploadFailed(statusCode, String(data: data, encoding: .utf8) ?? "chunk \(index) failed")
         }
     }
 
@@ -274,12 +303,18 @@ final class ShareUploader {
         request.httpMethod = "POST"
         request.setValue("Bearer \(sessionToken)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if ShareUploadRequestPolicy.shouldAttachExpectedUserHeader(expectedUser) {
+            request.setValue(expectedUser, forHTTPHeaderField: "X-Beebeeb-Expected-User")
+        }
         request.httpBody = Data("{}".utf8)
 
         let (data, response) = try await send(request)
-        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-            let code = (response as? HTTPURLResponse)?.statusCode ?? 0
-            throw UploadError.uploadFailed(code, String(data: data, encoding: .utf8) ?? "complete failed")
+        let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+        if ShareUploadRequestPolicy.isAccountMismatchResponse(statusCode: statusCode, body: data) {
+            throw UploadError.accountMismatch
+        }
+        guard statusCode == 200 else {
+            throw UploadError.uploadFailed(statusCode, String(data: data, encoding: .utf8) ?? "complete failed")
         }
     }
 

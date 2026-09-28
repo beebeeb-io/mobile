@@ -21,6 +21,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 import { gatedPlaintextWrite } from '../lib/plaintext-gate';
 import * as SecureStore from 'expo-secure-store';
 import { Platform } from 'react-native';
+import { recordRuntimeTrace } from '../lib/runtime-trace';
 
 let Device: { deviceName: string | null; modelName: string | null; osName: string | null; osVersion: string | null } = {
   deviceName: null, modelName: null, osName: null, osVersion: null,
@@ -62,6 +63,8 @@ import {
 } from '../lib/thumbnail-cache';
 import { loadNameCache, pruneNameCache } from '../lib/name-cache';
 import { getDeviceId } from '../lib/device-identity';
+// Task 1594: stop (never fork the tree) when this key can't read the names.
+import { VaultKeyMismatchError } from './vault-key-mismatch';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -175,6 +178,20 @@ type NameDecryptResult = {
   name: string;
   mimeType: string | null;
   canonical: boolean;
+  /**
+   * Task 1594 round 6 (Codex P1, BackupService.ts:440): true only when this
+   * name was proven readable by an actual master-key decryption. A legacy
+   * PLAINTEXT `name_encrypted` value (the early-return path in
+   * `decryptNameDetails` below, taken when the value isn't even a
+   * `{nonce,ciphertext}` envelope) never touches the key at all — it is not
+   * evidence the loaded key belongs to this account, and must never count
+   * toward the "the key decrypts fine at this level" proof `findChildFolder`
+   * uses to bypass `VaultKeyMismatchError`. Without this flag, one unrelated
+   * plaintext legacy folder next to a wrong-key `Backups` tree was enough to
+   * make the wrong-key tree look "foreign but the key otherwise works here"
+   * and get silently forked, instead of blocking with a mismatch error.
+   */
+  cryptographicallyVerified: boolean;
 };
 
 // ---------------------------------------------------------------------------
@@ -318,8 +335,34 @@ function parseNameMetadata(plaintext: string): { name: string; mimeType: string 
 }
 
 /**
+ * Task 1594 round 2 (F2): does `err` prove the key is wrong for this entry
+ * (a deterministic AEAD authentication failure), or is it some OTHER native
+ * exception that says nothing about the key? Core's decrypt is a single
+ * `Result<String, CoreError>` with exactly one decryption-failure variant —
+ * `CoreError::Decryption` / UniFFI `CryptoError::Decryption`, message
+ * `"decryption failed: ciphertext is invalid or key is wrong"`
+ * (`repos/core/beebeeb-core/src/error.rs`, `beebeeb-uniffi/src/lib.rs`) — so
+ * that message IS the "the API allows distinguishing it" case. Anything else
+ * (e.g. `BeebeebCryptoModule.getHandle`'s "Invalid master key handle ID",
+ * thrown if a handle was released mid-flight) is a bridge/lifecycle fault,
+ * not proof of a wrong key, and gets the retry-once fallback instead.
+ */
+function isDefiniteDecryptAuthFailure(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return /decryption failed|ciphertext is invalid|key is wrong/i.test(message);
+}
+
+/**
  * Decrypt a name_encrypted value to its plaintext name. Plaintext legacy
  * values are accepted, but undecryptable encrypted envelopes return null.
+ *
+ * Task 1594 round 2 (F2): a single native exception that is NOT a definite
+ * decryption-auth failure (see `isDefiniteDecryptAuthFailure`) is retried
+ * ONCE before this folder counts as undecryptable/foreign — the native API
+ * gives no other way to distinguish a transient bridge fault from a real
+ * wrong-key failure, so a lone non-decryption exception must not be treated
+ * as proof of a foreign key (`findChildFolder` below would otherwise be able
+ * to mistake a released-handle race for a foreign folder).
  */
 async function decryptNameDetails(entry: FileEntry): Promise<NameDecryptResult | null> {
   const enc = requireEncryption();
@@ -329,19 +372,29 @@ async function decryptNameDetails(entry: FileEntry): Promise<NameDecryptResult |
       name: entry.name_encrypted,
       mimeType: entry.is_folder ? null : guessMimeType(entry.name_encrypted),
       canonical: false,
+      cryptographicallyVerified: false,
     };
   }
+  const attemptDecrypt = () => enc.decryptMetadataFn(entry.id, parsed.nonce, parsed.ciphertext);
+  let plaintext: string;
   try {
-    const plaintext = await enc.decryptMetadataFn(entry.id, parsed.nonce, parsed.ciphertext);
-    const metadata = parseNameMetadata(plaintext);
-    return {
-      name: metadata.name,
-      mimeType: metadata.mimeType ?? (entry.is_folder ? null : guessMimeType(metadata.name)),
-      canonical: metadata.canonical,
-    };
-  } catch {
-    return null;
+    plaintext = await attemptDecrypt();
+  } catch (err) {
+    if (isDefiniteDecryptAuthFailure(err)) return null;
+    try {
+      recordRuntimeTrace('backup.name_decrypt_transient_retry', {});
+      plaintext = await attemptDecrypt();
+    } catch {
+      return null;
+    }
   }
+  const metadata = parseNameMetadata(plaintext);
+  return {
+    name: metadata.name,
+    mimeType: metadata.mimeType ?? (entry.is_folder ? null : guessMimeType(metadata.name)),
+    canonical: metadata.canonical,
+    cryptographicallyVerified: true,
+  };
 }
 
 async function decryptName(entry: FileEntry): Promise<string | null> {
@@ -373,8 +426,49 @@ async function findChildFolder(parentId: string | undefined, name: string): Prom
   // Early-exit cursor walk: stop at the first matching folder but never miss one
   // past page 1. A capped single page here let ensureFolder create DUPLICATE
   // backup folder trees when a parent had >200 children (task 0755).
-  const match = await findFile(parentId, async (f) => f.is_folder && (await decryptName(f)) === name);
-  return match ?? null;
+  let decryptableFolders = 0;
+  let cryptographicallyDecryptedFolders = 0;
+  let undecryptableFolders = 0;
+  const match = await findFile(parentId, async (f) => {
+    if (!f.is_folder) return false;
+    const details = await decryptNameDetails(f);
+    if (details === null) {
+      undecryptableFolders += 1;
+      return false;
+    }
+    decryptableFolders += 1;
+    // Task 1594 round 6 (Codex P1): a legacy PLAINTEXT name never exercised
+    // the key — it must not count as proof the key works at this level.
+    if (details.cryptographicallyVerified) cryptographicallyDecryptedFolders += 1;
+    return details.name === name;
+  });
+  if (match) return match;
+  // Task 1594: "no match" is only trustworthy when the key has been proven to
+  // work AT THIS LEVEL. Round 2 (F2): the round-1 rule ("any undecryptable
+  // sibling → stop") blocked backup FOREVER for an account already hit by the
+  // original 1594 bug — its own real folders decrypt fine, but the wrong-key
+  // leftover tree sitting alongside them never will, so every future run hit
+  // this same wall with advice ("sign out, sign in, enter your phrase") that
+  // cannot fix a problem that isn't in this session's key. Once at least one
+  // sibling at this level was CRYPTOGRAPHICALLY decrypted (round 6: not
+  // merely a legacy plaintext name that never touched the key — see
+  // `cryptographicallyVerified` on `NameDecryptResult`), the key is proven to
+  // work here — any undecryptable one left is provably a FOREIGN key's folder,
+  // not possibly "ours but unreadable right now" (that ambiguity is exactly
+  // what a transient exception is retried once for, in decryptNameDetails,
+  // before it ever reaches this count). Only when NO folder here was actually
+  // decrypted with this key do we not know whether the wanted folder is one of
+  // the unreadable ones — stop, same as before.
+  if (undecryptableFolders > 0) {
+    if (cryptographicallyDecryptedFolders === 0) throw new VaultKeyMismatchError(undecryptableFolders);
+    // No file/folder names are logged — only the count, at this parent level.
+    recordRuntimeTrace('backup.foreign_folder_skipped', {
+      parentId: parentId ?? 'root',
+      undecryptableFolders,
+      decryptableFolders,
+    });
+  }
+  return null;
 }
 
 // In-flight find-or-create coalescing (0811). The find-then-create in

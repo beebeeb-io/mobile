@@ -23,6 +23,15 @@ const SOURCE_FILES = [
   'BeebeebKeychainCore.swift',
   'Constants.swift',
   'SyncEngine.swift',
+  // Task 1594 round 5 (Codex P1, project.pbxproj:809): rounds 3/4 added both
+  // of these files to the BeebeebFileProvider target by hand-editing the
+  // committed project.pbxproj directly, but never added them here — so an
+  // `expo prebuild --clean` (which rebuilds this target's whole Sources
+  // phase from SOURCE_FILES alone, see `ensureExtensionWiring` below) would
+  // have silently dropped both, breaking the next build with "cannot find
+  // type 'CachedHandleIdentity'/'AccountMismatchDetection' in scope."
+  'CachedHandleIdentity.swift',
+  'AccountMismatchDetection.swift',
 ];
 // PlaintextStorageProtection.swift (pre-mortem 12 / task 0300) and
 // RuntimeTrace.swift (diagnostics, task 8170a56) live outside
@@ -610,5 +619,11 @@ function withFileProvider(config) {
 
   return config;
 }
+
+// Task 1594 round 5: exported (as a property on the plugin function, which
+// does not change how Expo consumes the default export) so
+// `src/lib/file-provider-plugin-sources.test.ts` can diff this list against
+// the real files in targets/file-provider/ without re-implementing it.
+withFileProvider.SOURCE_FILES = SOURCE_FILES;
 
 module.exports = withFileProvider;
