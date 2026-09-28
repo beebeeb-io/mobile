@@ -35,7 +35,9 @@ import {
 } from '../lib/api';
 import { loadCachedBilling, saveCachedBilling } from '../lib/billing-cache';
 import { billingStatusView } from '../lib/billing-status';
+import { effectivePlan } from '../lib/effective-plan';
 import { PLAN_MANAGEMENT_NOTE } from '../lib/billing-copy';
+import { useAuth } from '../lib/auth';
 
 type C = Colors;
 
@@ -61,16 +63,20 @@ function planLabel(slug: string): string {
  * `/billing/subscription` response already embeds `used_bytes` + `quota_bytes`
  * (server `billing.rs` sources both from the same `get_user_quota` that backs
  * `/files/usage`), so this screen no longer needs the separate
- * `getStorageUsage()` round-trip. `plan_name` maps to `subscription.plan` (both
- * are the plan slug). `quota_bytes <= 0` is the unlimited sentinel — preserved
- * here so `StorageUsageCard` renders "no fixed cap" exactly as before.
+ * `getStorageUsage()` round-trip. `plan_name` maps to `effectivePlan(sub)`
+ * (task 1601 — NOT the raw `subscription.plan`: a cancelled paid row still
+ * carries its old `plan` slug with no entitlement behind it, and this label
+ * sits directly next to the quota bar the server already computes from the
+ * entitled plan, so the two must never disagree). `quota_bytes <= 0` is the
+ * unlimited sentinel — preserved here so `StorageUsageCard` renders "no
+ * fixed cap" exactly as before.
  */
 function usageFromSubscription(sub: Subscription | null): StorageUsage | null {
   if (!sub || sub.used_bytes == null || sub.quota_bytes == null) return null;
   return {
     used_bytes: sub.used_bytes,
     plan_limit_bytes: sub.quota_bytes,
-    plan_name: sub.plan,
+    plan_name: effectivePlan(sub),
   };
 }
 
@@ -195,7 +201,12 @@ function CurrentPlanCard({
   usage: StorageUsage | null;
   c: C;
 }) {
-  const planSlug = subscription?.plan ?? usage?.plan_name ?? 'free';
+  // Task 1601: the entitled plan, not the raw row (`usage.plan_name` is
+  // already `effectivePlan`-derived too, via `usageFromSubscription` above —
+  // this direct call is the primary source, `usage?.plan_name` only a
+  // fallback for the (never actually reachable) case subscription is null
+  // but usage isn't).
+  const planSlug = subscription ? effectivePlan(subscription) : usage?.plan_name ?? 'free';
   const label = planLabel(planSlug);
   // Task 1540 findings 1, 2, 4, 6: the plan chip must reflect subscription
   // status, not just the plan slug — a status='cancelling' or 'trialing'
@@ -302,6 +313,12 @@ export default function StorageScreen() {
   const { colors: c } = useTheme();
   const navigation = useNavigation();
   const insets = useSafeAreaInsets();
+  // Task 1601, root cause 4 — the billing cache is keyed by this. `null`
+  // (never actually reachable — this screen is only navigable to while
+  // signed in) makes both loadCachedBilling/saveCachedBilling no-ops rather
+  // than reading/writing an unscoped, cross-account-leakable entry.
+  const { user } = useAuth();
+  const userId = user?.user_id ?? null;
   // 1315 — measured floating-header height feeding the scroll inset.
   const [headerHeight, setHeaderHeight] = useState(0);
   const [isScrolled, setIsScrolled] = useState(false);
@@ -321,7 +338,7 @@ export default function StorageScreen() {
       // 1. Instant paint: render last-known billing values from cache so a warm
       //    open shows content immediately instead of a spinner. (Briefly stale —
       //    confirmed by the network refresh below.)
-      const cached = await loadCachedBilling();
+      const cached = await loadCachedBilling(userId);
       if (cancelled) return;
       if (cached) {
         setSubscription(cached.subscription);
@@ -346,6 +363,7 @@ export default function StorageScreen() {
         void saveCachedBilling(
           sub ?? cached?.subscription ?? null,
           freshPlans.length > 0 ? freshPlans : cached?.plans ?? [],
+          userId,
         );
       }
 
@@ -354,9 +372,15 @@ export default function StorageScreen() {
     })();
 
     return () => { cancelled = true; };
-  }, []);
+    // `userId` included: if this screen were ever to stay mounted across a
+    // sign-out/sign-in (it doesn't today — navigation unmounts it), a stale
+    // closure over the PREVIOUS user's id must not go on reading/writing
+    // that user's cache entry under the new session.
+  }, [userId]);
 
-  const currentPlanSlug = subscription?.plan ?? usage?.plan_name ?? 'free';
+  // Task 1601: same reasoning as CurrentPlanCard's `planSlug` above — the
+  // entitled plan, not the raw row.
+  const currentPlanSlug = subscription ? effectivePlan(subscription) : usage?.plan_name ?? 'free';
   const isFree = currentPlanSlug.toLowerCase() === 'free';
   // Task 1400: no purchase/manage call to action lives in this screen — see
   // the file header comment and PLAN_MANAGEMENT_NOTE.

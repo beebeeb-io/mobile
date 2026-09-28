@@ -14,6 +14,13 @@
  *    `start_trial`) sets `current_period_end == trial_ends_at` — that date is
  *    the trial's end / first-charge date, not a renewal, and Pattern-B trials
  *    (no card on file) silently revert to Free on it if never converted.
+ *  - `status === 'cancelled'` / `'canceled'` (task 1601): the paid period has
+ *    ELAPSED — the row can still carry `plan: 'pro'` (or any paid slug) with
+ *    no more entitlement behind it (prod row `43cc7529…`, 2026-09-28). This
+ *    module forces Free/no-badge/no-line for that status regardless of what
+ *    `plan` the caller passed in, so a caller that (by mistake) still reads
+ *    `subscription.plan` instead of `effectivePlan(subscription)` cannot
+ *    reintroduce the "Pro chip over a Free quota bar" bug.
  *
  * Web already gets this right (`repos/web/src/pages/billing.tsx`): a distinct
  * "Trial" / "Cancelling" status pill, and the "Renews" footer explicitly
@@ -56,14 +63,21 @@ export function formatBillingDate(iso: string): string {
 }
 
 export function billingStatusView(sub: SubscriptionStatusFields | null | undefined): BillingStatusView {
+  const status = (sub?.status ?? '').toLowerCase();
+
+  // Task 1601: an ended subscription is never the paid plan and never
+  // "Renews" — checked before the plan slug so this holds even if a caller
+  // passes the raw (pre-`effectivePlan`) plan through.
+  if (status === 'cancelled' || status === 'canceled') {
+    return { isFree: true, badgeKind: null, statusLine: null };
+  }
+
   const planSlug = (sub?.plan ?? 'free').toLowerCase();
   const isFree = planSlug === 'free';
 
   if (isFree) {
     return { isFree, badgeKind: null, statusLine: null };
   }
-
-  const status = (sub?.status ?? '').toLowerCase();
 
   if (status === 'trialing') {
     // trial.rs sets current_period_end === trial_ends_at, so either field

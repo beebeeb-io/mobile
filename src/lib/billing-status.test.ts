@@ -114,3 +114,41 @@ describe('billingStatusView — status is case-insensitive (server casing is not
     expect(view.badgeKind).toBe('cancelling');
   });
 });
+
+describe('billingStatusView — task 1601: cancelled subscription must never render as the paid plan', () => {
+  test("status='cancelled' with plan='pro': free, no badge, no status line — never 'Renews'", () => {
+    // Prod bug: row 43cc7529… had plan='pro', status='cancelled',
+    // current_period_end in the future — this must not render "Renews" or
+    // any paid badge regardless of what `plan` the caller passed in.
+    const view = billingStatusView({
+      plan: 'pro',
+      status: 'cancelled',
+      current_period_end: '2026-10-09T00:00:00Z',
+    });
+    expect(view).toEqual({ isFree: true, badgeKind: null, statusLine: null });
+  });
+
+  test("status='canceled' (US spelling) is handled the same as 'cancelled'", () => {
+    const view = billingStatusView({
+      plan: 'business',
+      status: 'canceled',
+      current_period_end: '2026-10-09T00:00:00Z',
+    });
+    expect(view).toEqual({ isFree: true, badgeKind: null, statusLine: null });
+  });
+
+  test("status='Cancelled' (capitalized) still matches", () => {
+    const view = billingStatusView({ plan: 'pro', status: 'Cancelled', current_period_end: null });
+    expect(view.isFree).toBe(true);
+    expect(view.badgeKind).toBeNull();
+  });
+
+  test('a caller that (by mistake) still passes the raw plan through: the cancelled branch wins anyway', () => {
+    // Defense in depth: even if a caller regresses to `subscription.plan`
+    // instead of `effectivePlan(subscription)`, this module refuses to show
+    // the paid plan for an ended subscription.
+    const view = billingStatusView({ plan: 'business', status: 'cancelled', current_period_end: null });
+    expect(view.isFree).toBe(true);
+    expect(view.statusLine).toBeNull();
+  });
+});
