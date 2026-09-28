@@ -30,6 +30,76 @@ private let stagedBackupDirectoryName = "NativeBackupStaging"
 private let minimumFreeBytesAfterStaging: Int64 = 2 * 1024 * 1024 * 1024
 private let maxStagedBackupBytes: Int64 = 3 * 1024 * 1024 * 1024
 
+/// Task 1600 [P1]: thread-safe wrapper around a `[Key: Value]` dictionary.
+///
+/// `NativeBackupEngine.chunkUploadContinuations` and `.uploadTaskMap` used to
+/// be plain `Dictionary` stored properties written from FOUR different
+/// execution contexts with no synchronization between them: a Swift
+/// concurrency `Task` (`uploadStagedChunk`, insert), the URLSession delegate
+/// queue (`backgroundSession` is created with `delegate: self,
+/// delegateQueue: nil` — Foundation hands it a private serial
+/// `OperationQueue` that is NOT `self.queue`/`dbQueue`/the cooperative
+/// Task pool; `urlSession(_:task:didCompleteWithError:)` and the
+/// `getAllTasks` completion both run there), `dbQueue`
+/// (`recoverStuckUploads`, read), and whatever thread calls `stop()`
+/// (`uploadTaskMap.removeAll()` — `stop()` is invoked from Expo's shared
+/// serial `AsyncFunctionDefinition` queue, itself independent of all the
+/// above). Swift's `Dictionary` is a value type with copy-on-write,
+/// hash-table storage underneath — concurrent mutation from two threads
+/// (an insert racing a remove, not even the same key) can corrupt that
+/// storage outright, not just lose an update. That is the P1 hypothesis for
+/// task 1600's build-224 `EXC_BAD_ACCESS … objc_retain` crash (a corrupted
+/// `Dictionary<Int, CheckedContinuation<Void, Error>>` on the ObjC bridging
+/// path, ~10s into a run — right as the first chunk uploads start completing
+/// on the delegate queue while more are still being inserted from Tasks).
+///
+/// Every access here takes `lock` for the shortest possible span and NEVER
+/// calls back out — resumes a continuation, invokes a closure, touches
+/// `self` — while holding it. Callers that need to act on a removed value
+/// (e.g. resuming a `CheckedContinuation`) must pull it out via
+/// `removeValue(forKey:)` first and act on the RETURNED value after the
+/// call returns, never inside a closure passed into this type (there is no
+/// such closure-taking API on purpose).
+private final class LockedDictionary<Key: Hashable, Value> {
+  private let lock = NSLock()
+  private var storage: [Key: Value] = [:]
+
+  subscript(key: Key) -> Value? {
+    get {
+      lock.lock()
+      defer { lock.unlock() }
+      return storage[key]
+    }
+    set {
+      lock.lock()
+      storage[key] = newValue
+      lock.unlock()
+    }
+  }
+
+  @discardableResult
+  func removeValue(forKey key: Key) -> Value? {
+    lock.lock()
+    defer { lock.unlock() }
+    return storage.removeValue(forKey: key)
+  }
+
+  func removeAll() {
+    lock.lock()
+    storage.removeAll()
+    lock.unlock()
+  }
+
+  /// A snapshot of the current keys, copied out under the lock. Safe to
+  /// iterate/map/check `.isEmpty` on afterwards — it is a plain `Array`,
+  /// not a live view into `storage`.
+  var keys: [Key] {
+    lock.lock()
+    defer { lock.unlock() }
+    return Array(storage.keys)
+  }
+}
+
 @available(iOS 16.1, *)
 struct BeebeebBackupActivityAttributes: ActivityAttributes {
   public struct ContentState: Codable, Hashable {
@@ -406,12 +476,59 @@ final class NativeBackupEngine: NSObject {
   private var backgroundSession: URLSession!
   private var metadataSession: URLSession!
   private var db: OpaquePointer?
-  private var masterKeyHandle: MasterKeyHandle?
-  private var isRunning = false
-  private var isPaused = false
-  private var uploadTaskMap: [Int: String] = [:] // URLSessionTask.taskIdentifier -> localAssetId
-  private var drainTask: Task<Void, Never>?
-  private var drainLoopGeneration = 0
+
+  /// Task 1600 [P2]: dedicated lock for every plain scalar/reference `var`
+  /// below that is written from more than one of the engine's concurrent
+  /// execution contexts (the URLSession delegate queue, a detached/`Task {}`
+  /// body on the cooperative pool — the drain loop and the `BGProcessingTask`
+  /// handler each spawn their own — Expo's shared serial
+  /// `AsyncFunctionDefinition` queue that `start()`/`stop()`/`pause()`/
+  /// `resume()` run on, and the `NWPathMonitor` callback queue). A separate
+  /// lock from `accountIdLock` on purpose: several of these accessors are
+  /// read from inside functions that themselves may already be called while
+  /// `accountIdLock` is held elsewhere (e.g. `bindAccount`), and `NSLock` is
+  /// not reentrant — reusing `accountIdLock` here risks a self-deadlock the
+  /// moment two of its critical sections nest. Every getter/setter below is
+  /// a single lock → touch storage → unlock with no call-outs in between, so
+  /// there is no nesting risk against THIS lock either.
+  private let engineStateLock = NSLock()
+
+  private var _masterKeyHandle: MasterKeyHandle?
+  private var masterKeyHandle: MasterKeyHandle? {
+    get { engineStateLock.lock(); defer { engineStateLock.unlock() }; return _masterKeyHandle }
+    set { engineStateLock.lock(); _masterKeyHandle = newValue; engineStateLock.unlock() }
+  }
+
+  private var _isRunning = false
+  private var isRunning: Bool {
+    get { engineStateLock.lock(); defer { engineStateLock.unlock() }; return _isRunning }
+    set { engineStateLock.lock(); _isRunning = newValue; engineStateLock.unlock() }
+  }
+
+  private var _isPaused = false
+  private var isPaused: Bool {
+    get { engineStateLock.lock(); defer { engineStateLock.unlock() }; return _isPaused }
+    set { engineStateLock.lock(); _isPaused = newValue; engineStateLock.unlock() }
+  }
+
+  // Task 1600 [P1]: was a plain `[Int: String]` — see `LockedDictionary`'s
+  // doc comment above for why a bare Dictionary here is unsafe. Read/removed
+  // on the URLSession delegate queue, cleared by `stop()` from whatever
+  // thread calls it.
+  private let uploadTaskMap = LockedDictionary<Int, String>() // URLSessionTask.taskIdentifier -> localAssetId
+
+  private var _drainTask: Task<Void, Never>?
+  private var drainTask: Task<Void, Never>? {
+    get { engineStateLock.lock(); defer { engineStateLock.unlock() }; return _drainTask }
+    set { engineStateLock.lock(); _drainTask = newValue; engineStateLock.unlock() }
+  }
+
+  private var _drainLoopGeneration = 0
+  private var drainLoopGeneration: Int {
+    get { engineStateLock.lock(); defer { engineStateLock.unlock() }; return _drainLoopGeneration }
+    set { engineStateLock.lock(); _drainLoopGeneration = newValue; engineStateLock.unlock() }
+  }
+
   /// Task 1531 [P1-3]: bumped every time `currentAccountId` is written (set
   /// to a new account OR cleared to nil) — see that property's setter. A
   /// `BGProcessingTask` can capture this at entry and, after the account/
@@ -422,7 +539,13 @@ final class NativeBackupEngine: NSObject {
   /// existing `drainLoopGeneration` pattern above, one level up (account
   /// epoch rather than drain-loop instance).
   private var accountGeneration = 0
-  private var pendingDrainWakeReason: String?
+
+  private var _pendingDrainWakeReason: String?
+  private var pendingDrainWakeReason: String? {
+    get { engineStateLock.lock(); defer { engineStateLock.unlock() }; return _pendingDrainWakeReason }
+    set { engineStateLock.lock(); _pendingDrainWakeReason = newValue; engineStateLock.unlock() }
+  }
+
   private let batchProcessingQueue = DispatchQueue(label: "io.beebeeb.backup.engine.batch", qos: .utility)
   // PHKit picks its own callback queue (often main when the app is foregrounded).
   // Hop here as the first line of every PhotoKit completion so the body — which
@@ -434,16 +557,59 @@ final class NativeBackupEngine: NSObject {
     label: "io.beebeeb.backup.engine.phkit-callback",
     qos: .utility
   )
-  private var batchProcessingActive = false
-  private var currentFetchResult: PHFetchResult<PHAsset>?
-  private var photoObserverRegistered = false
-  private var isBackgroundTaskActive = false
-  private var isBackgroundGraceActive = false
-  private var backgroundGraceTask: UIBackgroundTaskIdentifier = .invalid
-  private var chunkUploadContinuations: [Int: CheckedContinuation<Void, Error>] = [:]
+  private var batchProcessingActive = false // already serialized via batchProcessingQueue.sync — not touched by task 1600
+
+  private var _currentFetchResult: PHFetchResult<PHAsset>?
+  private var currentFetchResult: PHFetchResult<PHAsset>? {
+    get { engineStateLock.lock(); defer { engineStateLock.unlock() }; return _currentFetchResult }
+    set { engineStateLock.lock(); _currentFetchResult = newValue; engineStateLock.unlock() }
+  }
+
+  private var _photoObserverRegistered = false
+  private var photoObserverRegistered: Bool {
+    get { engineStateLock.lock(); defer { engineStateLock.unlock() }; return _photoObserverRegistered }
+    set { engineStateLock.lock(); _photoObserverRegistered = newValue; engineStateLock.unlock() }
+  }
+
+  private var _isBackgroundTaskActive = false
+  private var isBackgroundTaskActive: Bool {
+    get { engineStateLock.lock(); defer { engineStateLock.unlock() }; return _isBackgroundTaskActive }
+    set { engineStateLock.lock(); _isBackgroundTaskActive = newValue; engineStateLock.unlock() }
+  }
+
+  private var _isBackgroundGraceActive = false
+  private var isBackgroundGraceActive: Bool {
+    get { engineStateLock.lock(); defer { engineStateLock.unlock() }; return _isBackgroundGraceActive }
+    set { engineStateLock.lock(); _isBackgroundGraceActive = newValue; engineStateLock.unlock() }
+  }
+
+  private var _backgroundGraceTask: UIBackgroundTaskIdentifier = .invalid
+  private var backgroundGraceTask: UIBackgroundTaskIdentifier {
+    get { engineStateLock.lock(); defer { engineStateLock.unlock() }; return _backgroundGraceTask }
+    set { engineStateLock.lock(); _backgroundGraceTask = newValue; engineStateLock.unlock() }
+  }
+
+  // Task 1600 [P1]: was a plain `[Int: CheckedContinuation<Void, Error>]` —
+  // see `LockedDictionary`'s doc comment above. This is the dictionary
+  // task 1600's evidence points at directly (write site `uploadStagedChunk`,
+  // ~3638; read/remove `urlSession(_:task:didCompleteWithError:)`, ~5373,
+  // and the `getAllTasks` orphan-reconciliation callback, ~1523; read
+  // `recoverStuckUploads`, ~4727 — line numbers as of this fix; the
+  // original crash evidence's line numbers, cited in the task file, are
+  // against the pre-fix commit 0be3b3e).
+  private let chunkUploadContinuations = LockedDictionary<Int, CheckedContinuation<Void, Error>>()
   #if os(iOS)
-  private var networkMonitor: NWPathMonitor?
-  private var isNetworkAvailable = true
+  private var _networkMonitor: NWPathMonitor?
+  private var networkMonitor: NWPathMonitor? {
+    get { engineStateLock.lock(); defer { engineStateLock.unlock() }; return _networkMonitor }
+    set { engineStateLock.lock(); _networkMonitor = newValue; engineStateLock.unlock() }
+  }
+
+  private var _isNetworkAvailable = true
+  private var isNetworkAvailable: Bool {
+    get { engineStateLock.lock(); defer { engineStateLock.unlock() }; return _isNetworkAvailable }
+    set { engineStateLock.lock(); _isNetworkAvailable = newValue; engineStateLock.unlock() }
+  }
   #endif
 
   // Storage pre-flight estimate ONLY (see estimatedEncryptedBytes). The WIRE
@@ -460,8 +626,17 @@ final class NativeBackupEngine: NSObject {
   private let batchLimit = 12
 
   // Backoff state
-  private var consecutiveFailures = 0
-  private var backoffUntil: Date?
+  private var _consecutiveFailures = 0
+  private var consecutiveFailures: Int {
+    get { engineStateLock.lock(); defer { engineStateLock.unlock() }; return _consecutiveFailures }
+    set { engineStateLock.lock(); _consecutiveFailures = newValue; engineStateLock.unlock() }
+  }
+
+  private var _backoffUntil: Date?
+  private var backoffUntil: Date? {
+    get { engineStateLock.lock(); defer { engineStateLock.unlock() }; return _backoffUntil }
+    set { engineStateLock.lock(); _backoffUntil = newValue; engineStateLock.unlock() }
+  }
 
   // Cached UIApplication state — read by `currentApplicationState()` from
   // background queues without blocking on main. The cache is seeded at init
@@ -483,7 +658,11 @@ final class NativeBackupEngine: NSObject {
   // is already checked aggressively throughout `processBatch` and the
   // per-asset upload paths, so cancellation unwinds within hundreds of
   // milliseconds.
-  private var backgroundTaskHandle: Task<Void, Never>?
+  private var _backgroundTaskHandle: Task<Void, Never>?
+  private var backgroundTaskHandle: Task<Void, Never>? {
+    get { engineStateLock.lock(); defer { engineStateLock.unlock() }; return _backgroundTaskHandle }
+    set { engineStateLock.lock(); _backgroundTaskHandle = newValue; engineStateLock.unlock() }
+  }
   // Guard against double `setTaskCompleted(success:)` — Apple's contract
   // forbids it. Both the body's terminal call and the expiration
   // handler funnel through `completeBackgroundTaskOnce` to ensure
