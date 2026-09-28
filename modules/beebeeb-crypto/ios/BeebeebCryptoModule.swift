@@ -1585,21 +1585,49 @@ private func registerMountedFileProviderDomainLocked(
   // to had NOT actually finished sweeping the cache yet. Capturing here
   // instead means the guard sees the true pre-bump state.
   // Task 1593 f7 (Codex P1, PRRT_kwDOSLX6T86mme-b) — `purgePendingNonceAtSnapshot`
-  // below is captured at this SAME snapshot point, immediately after
-  // `isPurgePending`, before `ensureFileProviderCacheDatabase` or the bump
-  // further down can run. f2's original design read this nonce freshly
-  // INSIDE `bumpFileProviderCacheVersion`, right before its own `BEGIN
-  // IMMEDIATE` — well after this snapshot, so a marker created by a
-  // DIFFERENT, concurrently-started purge in that gap would be captured
-  // and cleared as if it were this call's own to clear. This registration
-  // may only ever clear a marker that was ALREADY pending when it started
-  // (or find nothing pending, `nil`) — never one that appears afterwards —
-  // so the nonce is captured here, at the same instant as
-  // `purgePendingBeforeBump` itself, and threaded through unchanged to
-  // every bump attempt below. See `bumpFileProviderCacheVersion`'s doc
-  // comment for the full race.
-  let purgePendingBeforeBump = PlaintextStorageProtection.isPurgePending()
-  let purgePendingNonceAtSnapshot = PlaintextStorageProtection.currentPurgePendingNonce()
+  // below is captured at this SAME snapshot point, before
+  // `ensureFileProviderCacheDatabase` or the bump further down can run.
+  // f2's original design read this nonce freshly INSIDE
+  // `bumpFileProviderCacheVersion`, right before its own `BEGIN IMMEDIATE`
+  // — well after this snapshot, so a marker created by a DIFFERENT,
+  // concurrently-started purge in that gap would be captured and cleared
+  // as if it were this call's own to clear. This registration may only
+  // ever clear a marker that was ALREADY pending when it started (or find
+  // nothing pending, `nil`) — never one that appears afterwards — so the
+  // nonce is captured here, at the same instant as `purgePendingBeforeBump`
+  // itself, and threaded through unchanged to every bump attempt below.
+  // See `bumpFileProviderCacheVersion`'s doc comment for the full race.
+  //
+  // Task 1593 f8 (Codex P1, PRRT_kwDOSLX6T86mm-UP) — f7 still captured
+  // `purgePendingBeforeBump` and `purgePendingNonceAtSnapshot` from TWO
+  // SEPARATE reads: `PlaintextStorageProtection.isPurgePending()` (a plain
+  // `fileExists` check) immediately followed by a SECOND, independent
+  // `currentPurgePendingNonce()` call. "Immediately" is not "atomically":
+  // a `markPurgePending()` landing in the (arbitrarily small, but nonzero)
+  // gap between those two calls made the FIRST read observe "nothing
+  // pending" — so `purgePendingBeforeBump == false`, and `cacheResetOk`
+  // above never took the `else if purgePendingBeforeBump { cacheResetOk =
+  // false }` branch — while the SECOND read, a moment later, picked up
+  // that brand-new purge's own nonce regardless. That nonce then flowed,
+  // unexamined, into `bumpFileProviderCacheVersion(clearsPendingMarker:
+  // cacheResetOk /* == true */, pendingNonceAtSnapshot:)` below, which
+  // cleared it the instant this call's own bump committed — wiping out a
+  // DIFFERENT purge's marker while that purge was still mid-flight, the
+  // exact failure f7 believed it had already closed one call frame up.
+  //
+  // Fixed by reading the marker exactly ONCE:
+  // `PlaintextStorageProtection.purgePendingSnapshot()` returns a single
+  // `PurgePendingSnapshot` (`.none` / `.nonce(Data)` / `.unreadable`) from
+  // one atomic `open()`/`read()` pair, and `purgePendingBeforeBump` /
+  // `purgePendingNonceAtSnapshot` below are both DERIVED from that one
+  // value — never from two independently-timed calls again. A marker
+  // that exists but could not be read in full (`.unreadable`) is treated
+  // as pending (`isPending == true`, fails closed) with NO nonce this call
+  // could ever legitimately clear (`clearableNonce == nil`) — see
+  // `PurgePendingSnapshot`'s own doc comment (`PlaintextStorageProtection.swift`).
+  let purgePendingSnapshot = PlaintextStorageProtection.purgePendingSnapshot()
+  let purgePendingBeforeBump = purgePendingSnapshot.isPending
+  let purgePendingNonceAtSnapshot = purgePendingSnapshot.clearableNonce
 
   var cacheResetOk = true
   if forceReset || needsLegacyMigration {

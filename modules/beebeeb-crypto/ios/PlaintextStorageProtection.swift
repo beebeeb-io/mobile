@@ -554,6 +554,89 @@ public enum PlaintextStorageProtection {
     return try? Data(contentsOf: url)
   }
 
+  /// Task 1593 f8 (Codex P1, PRRT_kwDOSLX6T86mm-UP) — the outcome of one
+  /// atomic read of the purge-pending marker (`purgePendingSnapshot()`
+  /// below). Replaces a caller pairing `isPurgePending()` (a plain
+  /// `fileExists` check, sampled at one instant) with a SEPARATE
+  /// `currentPurgePendingNonce()` read (sampled a moment later): a
+  /// `markPurgePending()` landing strictly between those two calls made the
+  /// first read see "nothing pending" while the second, later read picked
+  /// up the brand-new marker's own nonce anyway — see
+  /// `BeebeebCryptoModule.swift`'s `registerMountedFileProviderDomainLocked`
+  /// for the full race this closes. A `Bool` and a `Data?` read from two
+  /// different instants can never be made consistent after the fact; only
+  /// reading the marker ONCE and deriving both facts from that one read
+  /// can.
+  ///
+  /// `.unreadable` is its own case, never folded into `.none`: a marker
+  /// file that exists but could not be read in full (permission failure,
+  /// or `markPurgePending()`'s own `createFile` write landing in the
+  /// middle of this read) is NOT the same fact as "no marker was ever
+  /// written" — collapsing them the way `currentPurgePendingNonce()`'s
+  /// `try? Data(contentsOf:)` does (both cases return `nil`) is exactly how
+  /// a real-but-unreadable marker would previously have been treated as
+  /// absent. `.isPending` below is `true` for `.unreadable` too — fails
+  /// CLOSED, the same direction `clearPurgePending(nonce:)`'s own
+  /// unreadable-claim branch already takes — while `.clearableNonce` stays
+  /// `nil`: nothing this call read can be proven to BE the pending marker,
+  /// so nothing here is ever a value this call could legitimately hand to
+  /// `clearPurgePending(nonce:)`.
+  public enum PurgePendingSnapshot: Equatable {
+    case none
+    case nonce(Data)
+    case unreadable
+
+    public var isPending: Bool {
+      switch self {
+      case .none: return false
+      case .nonce, .unreadable: return true
+      }
+    }
+
+    public var clearableNonce: Data? {
+      switch self {
+      case .nonce(let data): return data
+      case .none, .unreadable: return nil
+      }
+    }
+  }
+
+  /// One atomic read of the purge-pending marker: a single `open()` /
+  /// `read()` pair, never `isPurgePending()`'s `fileExists` check followed
+  /// by a separate content read (`currentPurgePendingNonce()`, or the old
+  /// `Data(contentsOf:)`-via-`try?` approach, which cannot distinguish "no
+  /// such file" from any other read failure). Raw POSIX calls, matching
+  /// this file's existing `rename`/`renamex_np`-based approach to the same
+  /// marker in `clearPurgePending(nonce:)` above, rather than Foundation's
+  /// `NSError` translation of a missing file (whose exact `CocoaError`
+  /// code is an implementation detail of `Data(contentsOf:)`, not a
+  /// contract this file otherwise depends on).
+  ///
+  /// `open()` failing with anything other than `ENOENT` (permission,
+  /// too-many-open-files, or any other errno) returns `.unreadable`, not
+  /// `.none` — a marker this call could not prove absent must not be
+  /// reported as absent. Once open, a `read()` that returns 0 bytes (the
+  /// file exists but is momentarily empty — `markPurgePending()`'s
+  /// `createFile` opens-then-writes, so a reader can race the gap between
+  /// those two steps) or a negative byte count (a read error, errno set)
+  /// both return `.unreadable` for the same reason: this call read SOME
+  /// evidence of the marker but not its full, trustworthy bytes, so it
+  /// must not be handed back as a nonce anything could later compare
+  /// against and clear. Only a full, successful read returns `.nonce`.
+  public static func purgePendingSnapshot() -> PurgePendingSnapshot {
+    guard let dir = fileProviderCacheDbDirectory else { return .none }
+    let path = dir.appendingPathComponent(purgePendingMarkerName, isDirectory: false).path
+    let fd = open(path, O_RDONLY)
+    guard fd >= 0 else {
+      return errno == ENOENT ? .none : .unreadable
+    }
+    defer { close(fd) }
+    var buffer = [UInt8](repeating: 0, count: 256)
+    let bytesRead = read(fd, &buffer, buffer.count)
+    guard bytesRead > 0 else { return .unreadable }
+    return .nonce(Data(buffer[0..<bytesRead]))
+  }
+
   /// Task 1593 f3 (independent security review of eff81b7, reviewer P2) —
   /// the PRIOR compare-then-delete here (`Data(contentsOf:)`, then a
   /// SEPARATE `removeItem`) was a read-then-write race against a
