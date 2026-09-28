@@ -613,3 +613,33 @@ describe('new-4 (round 6, P2, privacy consent): a forced-sign-out purge also res
     expect(consentBody).not.toMatch(/simulatorFileProviderMasterKeyKey/);
   });
 });
+
+// Task 1593 round 7 — Codex's automated re-review of 117e11e (round 7's own
+// push) surfaced 2 further threads. new-P1 is fixed here; new-P2 is
+// deliberately left open — see this task's Notes for why (a real fix would
+// need a blocking semaphore across the async register path and the
+// synchronous, Expo-serial-queue-bound remove path, which risks starving
+// Swift's cooperative thread pool; that is an architectural call, not one
+// this round makes unilaterally).
+describe('new-P1 (round 7, P1, Codex auto re-review): registerMountedFileProviderDomain rechecks consent immediately before adding', () => {
+  const swift = readFileSync(MODULE_SWIFT_PATH, 'utf8');
+  const body = bracedBody(
+    swift,
+    'private func registerMountedFileProviderDomain(\n  defaults: UserDefaults?,\n  forceReset: Bool = false\n) async throws -> [String: Any] {',
+  );
+
+  test('both consent flags are rechecked right before addFileProviderDomain, not just trusted from the caller', () => {
+    const guardIdx = body.search(/guard \(defaults\?\.bool\(forKey: fileProviderTrustedMountKey\) \?\? false\),\s*\n\s*sharedBoolDefaultTrue\(defaults, key: fileProviderEnabledKey\)/);
+    const addIdx = body.indexOf('try await addFileProviderDomain(domain)');
+    expect(guardIdx).toBeGreaterThan(-1);
+    expect(addIdx).toBeGreaterThan(-1);
+    expect(guardIdx).toBeLessThan(addIdx);
+  });
+
+  test('a failed recheck returns early via currentFileProviderDomainStatus() instead of adding', () => {
+    const guardIdx = body.search(/guard \(defaults\?\.bool\(forKey: fileProviderTrustedMountKey\)/);
+    expect(guardIdx).toBeGreaterThan(-1);
+    const after = body.slice(guardIdx, guardIdx + 300);
+    expect(after).toMatch(/else\s*\{\s*\n\s*return await currentFileProviderDomainStatus\(\)\s*\n\s*\}/);
+  });
+});

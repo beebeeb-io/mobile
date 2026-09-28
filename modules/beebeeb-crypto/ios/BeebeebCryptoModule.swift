@@ -1055,6 +1055,29 @@ private func registerMountedFileProviderDomain(
     _ = clearFileProviderCacheState(defaults: defaults)
   }
   if !existed || forceReset || needsLegacyMigration {
+    // Task 1593 round 7 (new P1, Codex auto re-review of 117e11e) — this
+    // whole function is `async` (Swift Task concurrency,
+    // `ConcurrentFunctionDefinition`), NOT on Expo's shared serial
+    // `AsyncFunctionDefinition` queue that `purgePlaintextStorage` /
+    // `removeFileProviderDomainIfRegistered` deliberately stay on (see the
+    // extensive doc comment on that function) — the two paths have NO
+    // ordering relationship. A forced sign-out's purge can therefore run
+    // its `resetFileProviderShowInFilesConsent` + domain removal entirely
+    // in between this function reading `getFileProviderDomains()` above
+    // and this `addFileProviderDomain` call below, leaving Files mounted
+    // and consent flags back on for an app that just signed out. Rechecking
+    // the CURRENT consent flags immediately before the add — not just
+    // trusting the caller's own check moments earlier — catches that
+    // window: every real caller (`registerFileProviderDomain`,
+    // `resetFileProviderDomain`, `mountFileProviderAccess`) already sets or
+    // confirms both flags true right before calling this function, so this
+    // recheck is a no-op in the non-racing case and only refuses the add
+    // when a purge's consent reset landed inside the race window.
+    guard (defaults?.bool(forKey: fileProviderTrustedMountKey) ?? false),
+          sharedBoolDefaultTrue(defaults, key: fileProviderEnabledKey)
+    else {
+      return await currentFileProviderDomainStatus()
+    }
     try await addFileProviderDomain(domain)
     // Task 1593 round 7 (F2) — see `bumpFileProviderGeneration`'s doc
     // comment: this add is the event a stale, since-completed `.remove`
