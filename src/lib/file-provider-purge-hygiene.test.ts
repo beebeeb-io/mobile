@@ -1443,7 +1443,11 @@ describe('round 11: CacheManager.purgeEpochUnchanged is sentinel-safe (reuses cu
     // Task 1593 f1 widened this: queue.sync now wraps a pending-marker
     // guard (see the "f1: CacheManager refuses..." describe block) ahead of
     // the same currentEpochMatches call this test originally checked alone.
-    expect(body).toMatch(/queue\.sync\s*\{[\s\S]*?return currentEpochMatches\(capturedEpoch\)\s*\n\s*\}/);
+    // Task 1593 f6 widened it again: the captured comparison is no longer
+    // returned directly — it is bound to `matches` and re-checked against
+    // the marker a second time (see the "f6" describe block below) — so this
+    // match now looks for the capture, not a direct `return`.
+    expect(body).toMatch(/queue\.sync\s*\{[\s\S]*?let matches = currentEpochMatches\(capturedEpoch\)[\s\S]*?\n\s*\}/);
   });
 
   test('delegates to currentEpochMatches rather than re-implementing its own comparison', () => {
@@ -1470,9 +1474,12 @@ describe('f4 (item 1a): the public currentPurgeEpoch() (SyncEngine\'s own captur
   const body = bracedBody(cacheManagerSwift, 'func currentPurgeEpoch() -> Int {');
 
   test('checks PlaintextStorageProtection.isPurgePending() FIRST, inside queue.sync, before ever calling the private _currentPurgeEpoch()', () => {
+    // Task 1593 f6 — the live read is no longer returned directly; it is
+    // captured into `epoch` so it can be re-checked against the marker
+    // afterwards (see the "f6" describe block below).
     const queueSyncIdx = body.indexOf('queue.sync');
     const guardIdx = body.indexOf('guard !PlaintextStorageProtection.isPurgePending() else { return Self.epochQueryFailed }');
-    const liveReadIdx = body.indexOf('return _currentPurgeEpoch()');
+    const liveReadIdx = body.indexOf('let epoch = _currentPurgeEpoch()');
     expect(queueSyncIdx).toBeGreaterThan(-1);
     expect(guardIdx).toBeGreaterThan(queueSyncIdx);
     expect(liveReadIdx).toBeGreaterThan(guardIdx);
@@ -2754,9 +2761,12 @@ describe('f2: CacheManager still refuses every epoch-gated write and gate check 
   });
 
   test('purgeEpochUnchanged (fetchContents\' temp/pinned gate) refuses while pending, checked BEFORE the epoch comparison, epoch-match or not', () => {
+    // Task 1593 f6 — the comparison result is no longer returned directly;
+    // it is captured into `matches` so it can be re-checked against the
+    // marker a second time (see the "f6" describe block below).
     const body = bracedBody(cacheManagerSwift, 'func purgeEpochUnchanged(since capturedEpoch: Int) -> Bool {');
     const pendingIdx = body.indexOf('guard !PlaintextStorageProtection.isPurgePending() else { return false }');
-    const matchIdx = body.indexOf('return currentEpochMatches(capturedEpoch)');
+    const matchIdx = body.indexOf('let matches = currentEpochMatches(capturedEpoch)');
     expect(pendingIdx).toBeGreaterThan(-1);
     expect(matchIdx).toBeGreaterThan(pendingIdx);
   });
@@ -2836,4 +2846,186 @@ describe('f1 (item 3, confirms round 10 F-a still holds — no code change neede
     );
     expect(body).toMatch(/DispatchQueue\.global\(qos: \.userInitiated\)\.async \{/);
   });
+});
+
+// Task 1593 f6 (Codex thread PRRT_kwDOSLX6T86mmDT1, P1) — `currentPurgeEpoch()`,
+// `purgeEpochUnchanged(since:)` and `beginImmediate()` each used to check
+// `PlaintextStorageProtection.isPurgePending()` exactly ONCE, before doing
+// their own (potentially slow, contended) SQLite work. `isPurgePending()` is
+// a plain `FileManager.fileExists` check against a marker file a DIFFERENT
+// process (the main app, via `markPurgePending()`) writes — nothing
+// serializes it against this extension's `queue.sync`. A purge that creates
+// its marker AFTER the single check but BEFORE the SQLite work finishes was
+// invisible to that check: the read/write would proceed, contend with the
+// purge's own SQLite work under the busy timeout, and return live but
+// not-yet-fully-vouched-for data once the purge's transaction released the
+// lock — while the purge's OWN tail (VACUUM, the legacy sweep, the
+// pinned/temp resweep) was still running. The fix re-checks the marker a
+// second time, AFTER the SQLite work, and fails closed if it appeared in
+// between.
+describe('f6: currentPurgeEpoch / purgeEpochUnchanged / beginImmediate all re-check the purge-pending marker AFTER their SQLite work, not just before', () => {
+  const cacheManagerSwift = readFileSync(CACHE_MANAGER_SWIFT_PATH, 'utf8');
+
+  describe('currentPurgeEpoch()', () => {
+    const body = bracedBody(cacheManagerSwift, 'func currentPurgeEpoch() -> Int {');
+
+    test('checks isPurgePending() exactly twice: once before, once after the live PRAGMA read', () => {
+      const checks = body.match(/PlaintextStorageProtection\.isPurgePending\(\)/g) ?? [];
+      expect(checks.length).toBe(2);
+    });
+
+    test('orders: guard #1 -> capture epoch -> guard #2 -> return epoch', () => {
+      const guard1Idx = body.indexOf('guard !PlaintextStorageProtection.isPurgePending() else { return Self.epochQueryFailed }');
+      const captureIdx = body.indexOf('let epoch = _currentPurgeEpoch()');
+      const guard2Idx = body.indexOf(
+        'guard !PlaintextStorageProtection.isPurgePending() else { return Self.epochQueryFailed }',
+        captureIdx,
+      );
+      const returnIdx = body.lastIndexOf('return epoch');
+      expect(guard1Idx).toBeGreaterThan(-1);
+      expect(captureIdx).toBeGreaterThan(guard1Idx);
+      expect(guard2Idx).toBeGreaterThan(captureIdx);
+      expect(returnIdx).toBeGreaterThan(guard2Idx);
+    });
+
+    test('both guards return the same epochQueryFailed sentinel, not a bespoke value', () => {
+      const returns = body.match(/return Self\.epochQueryFailed\b/g) ?? [];
+      expect(returns.length).toBe(2);
+    });
+  });
+
+  describe('purgeEpochUnchanged(since:)', () => {
+    const body = bracedBody(cacheManagerSwift, 'func purgeEpochUnchanged(since capturedEpoch: Int) -> Bool {');
+
+    test('checks isPurgePending() exactly twice: once before, once after currentEpochMatches', () => {
+      const checks = body.match(/PlaintextStorageProtection\.isPurgePending\(\)/g) ?? [];
+      expect(checks.length).toBe(2);
+    });
+
+    test('orders: guard #1 -> capture matches -> guard #2 -> return matches', () => {
+      const guard1Idx = body.indexOf('guard !PlaintextStorageProtection.isPurgePending() else { return false }');
+      const captureIdx = body.indexOf('let matches = currentEpochMatches(capturedEpoch)');
+      const guard2Idx = body.indexOf(
+        'guard !PlaintextStorageProtection.isPurgePending() else { return false }',
+        captureIdx,
+      );
+      const returnIdx = body.lastIndexOf('return matches');
+      expect(guard1Idx).toBeGreaterThan(-1);
+      expect(captureIdx).toBeGreaterThan(guard1Idx);
+      expect(guard2Idx).toBeGreaterThan(captureIdx);
+      expect(returnIdx).toBeGreaterThan(guard2Idx);
+    });
+
+    test('still delegates the comparison itself to currentEpochMatches, not a bare ==', () => {
+      expect(body).not.toMatch(/_currentPurgeEpoch\(\)\s*==/);
+      expect(body).toMatch(/currentEpochMatches\(/);
+    });
+  });
+
+  describe('beginImmediate()', () => {
+    const body = bracedBody(cacheManagerSwift, 'private func beginImmediate() -> Bool {');
+
+    test('checks isPurgePending() exactly twice: once before, once after BEGIN IMMEDIATE acquires the lock', () => {
+      const checks = body.match(/PlaintextStorageProtection\.isPurgePending\(\)/g) ?? [];
+      expect(checks.length).toBe(2);
+    });
+
+    test('orders: guard #1 -> BEGIN IMMEDIATE -> guard #2 -> ROLLBACK-on-refuse -> return true', () => {
+      const guard1Idx = body.indexOf('guard !PlaintextStorageProtection.isPurgePending() else { return false }');
+      const beginIdx = body.indexOf('sqlite3_exec(db, "BEGIN IMMEDIATE", nil, nil, nil)');
+      const guard2Idx = body.indexOf(
+        'guard !PlaintextStorageProtection.isPurgePending() else {',
+        beginIdx,
+      );
+      const rollbackIdx = body.indexOf('execute("ROLLBACK")', guard2Idx);
+      const returnTrueIdx = body.lastIndexOf('return true');
+      expect(guard1Idx).toBeGreaterThan(-1);
+      expect(beginIdx).toBeGreaterThan(guard1Idx);
+      expect(guard2Idx).toBeGreaterThan(beginIdx);
+      expect(rollbackIdx).toBeGreaterThan(guard2Idx);
+      expect(returnTrueIdx).toBeGreaterThan(rollbackIdx);
+    });
+
+    test('a failed BEGIN IMMEDIATE itself (contention/lock failure) still returns false without touching the second guard', () => {
+      const beginIdx = body.indexOf('guard sqlite3_exec(db, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK else { return false }');
+      expect(beginIdx).toBeGreaterThan(-1);
+    });
+  });
+
+  // Reference implementation of the shared before/after pattern, cross-checked
+  // table-driven against every combination of "marker present at the FIRST
+  // check" x "marker present at the SECOND check" x "the live read itself".
+  // This pins the BEHAVIOUR the three Swift bodies above are proven (by the
+  // structural tests) to implement — it does not read Swift source, so it
+  // also serves as the "did this ever actually protect anything" sanity
+  // check: row 2 below is exactly the reviewer's scenario (marker appears
+  // WHILE the SQLite work is in flight), and it is the row where the OLD
+  // (single-check) shape and the NEW (f6, double-check) shape disagree.
+  const EPOCH_QUERY_FAILED = Number.MIN_SAFE_INTEGER; // stand-in for Swift's Int.min
+
+  function singleCheckRead(pendingBefore: boolean, pendingAfter: boolean, liveEpoch: number): number {
+    // The f4-era shape: only the check BEFORE the read.
+    if (pendingBefore) return EPOCH_QUERY_FAILED;
+    return liveEpoch;
+  }
+
+  function doubleCheckRead(pendingBefore: boolean, pendingAfter: boolean, liveEpoch: number): number {
+    // The f6 shape this task adds: check, read, check again.
+    if (pendingBefore) return EPOCH_QUERY_FAILED;
+    const epoch = liveEpoch;
+    if (pendingAfter) return EPOCH_QUERY_FAILED;
+    return epoch;
+  }
+
+  const rows: Array<[boolean, boolean, number, string]> = [
+    [false, false, 7, 'no purge at any point — live epoch passes through'],
+    [true, false, 7, 'purge already pending at the first check — refused, as before'],
+    [false, true, 7, 'THE REVIEWER\'S SCENARIO — marker appears strictly between the two checks (during the read)'],
+    [true, true, 7, 'purge pending throughout — refused'],
+  ];
+
+  test.each(rows)(
+    'pendingBefore=%s pendingAfter=%s liveEpoch=%s (%s)',
+    (pendingBefore, pendingAfter, liveEpoch, _label) => {
+      const expected = (pendingBefore || pendingAfter) ? EPOCH_QUERY_FAILED : liveEpoch;
+      expect(doubleCheckRead(pendingBefore, pendingAfter, liveEpoch)).toBe(expected);
+    },
+  );
+
+  test('the reviewer\'s exact scenario (marker appears between the two checks) is where the OLD single-check shape silently returns a live, unvouched-for epoch instead of the sentinel', () => {
+    const pendingBefore = false;
+    const pendingAfter = true;
+    const liveEpoch = 7;
+    // This is the bug: the old shape had no way to see a marker that showed
+    // up after its one and only check.
+    expect(singleCheckRead(pendingBefore, pendingAfter, liveEpoch)).toBe(liveEpoch);
+    // This is the fix: the same inputs now fail closed.
+    expect(doubleCheckRead(pendingBefore, pendingAfter, liveEpoch)).toBe(EPOCH_QUERY_FAILED);
+  });
+
+  // MUTATION PROOF (run manually 2026-09-28, pasted verbatim in the task's
+  // Notes section — evidence at .claude/tasks/_qa-evidence/1593/f6-*): with
+  // the second `guard !PlaintextStorageProtection.isPurgePending() else { ... }`
+  // removed from all three Swift functions (reverting to the f4/f1 single-
+  // check shape), 11 of this file's 229 tests go RED, 218 still pass:
+  //   - 8 in THIS describe block: the "checks isPurgePending() exactly
+  //     twice" test in each of the three nested `describe`s above (finds 1,
+  //     expects 2), the "orders: guard #1 -> ... -> guard #2 -> ..."
+  //     ordering tests (`guard2Idx`/`rollbackIdx`/`returnTrueIdx` come back
+  //     `-1`), and "a failed BEGIN IMMEDIATE ... second guard" (the
+  //     `guard sqlite3_exec(...) == SQLITE_OK else { return false }` shape
+  //     is gone too under the mutation).
+  //   - 3 pre-existing tests elsewhere in this file, whose assertions this
+  //     same fix updated to expect the two-check shape (`round 11:
+  //     purgeEpochUnchanged is sentinel-safe > is queue.sync-wrapped`; `f4
+  //     (item 1a) > checks isPurgePending() FIRST ...`; `f2 > purgeEpochUnchanged
+  //     ... refuses while pending`) — these three are the OLD tests this
+  //     task edited in place, so they correctly go red on the same mutation
+  //     that undoes the edit.
+  // The two-JS-function table-driven tests and the "reviewer's exact
+  // scenario" comparison test do NOT read Swift source, so they are
+  // unaffected by the Swift mutation (still 100% green) — they pin the
+  // BEHAVIOUR, not this particular source shape.
+  // Restoring the second guard in all three functions turns all 11 green
+  // again (229 pass, 0 fail), with no other test in this file affected.
 });
