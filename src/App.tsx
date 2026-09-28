@@ -36,6 +36,8 @@ import type { User } from './lib/api';
 import { stashAccountDeletedNotice } from './lib/account-deleted-notice';
 import { AuthContext } from './lib/auth';
 import { CryptoProvider, SIMULATOR_MASTER_KEY_FILE, useCrypto, usesSoftwareVaultFallback } from './lib/crypto-context';
+// Task 1594: the vault key is bound to its owner (key-ownership.ts).
+import { clearKeyOwner } from './lib/key-ownership';
 import { markUnlocked, wasRecentlyUnlocked } from './lib/lock-state';
 import { SyncProvider } from './lib/sync-context';
 import { useNetworkStatus } from './lib/useNetworkStatus';
@@ -48,6 +50,7 @@ import { initLocalIdentifierMap } from './lib/local-identifier-map';
 import { resetThumbnailSelfRepairState } from './lib/thumbnail-self-repair';
 import { purgeAllPlaintextCaches } from './lib/account-cleanup';
 import { createSignedOutPurger } from './lib/signed-out-purge';
+import { shouldPollForAuthToken } from './lib/signup-unlock-guard';
 import {
   setupNotificationHandler,
   registerForPushNotifications,
@@ -1021,6 +1024,7 @@ export default function App() {
     await SecureStore.deleteItemAsync(MASTER_KEY_CHECK_LABEL).catch(() => {});
     await SecureStore.deleteItemAsync(MASTER_KEY_FALLBACK_LABEL).catch(() => {});
     await FileSystem.deleteAsync(SIMULATOR_MASTER_KEY_FILE, { idempotent: true }).catch(() => {});
+    await clearKeyOwner(); // task 1594 — the owner record goes with the key
     // Task 1399 follow-up (Codex P1): a zero-knowledge app must not leave
     // decrypted thumbnails/names/caches on disk for whoever signs in next on
     // this device. Every ordinary sign-out purges them, not just deletion —
@@ -1477,11 +1481,21 @@ export default function App() {
   // Listen for successful login/signup from auth screens
   // by polling the token after navigation events
   const handleNavigationStateChange = useCallback(async () => {
-    if (!user) {
-      const tokenExists = await hasToken();
-      if (tokenExists) {
-        await refreshAuth();
-      }
+    // Task 1594 round 6: SignupScreen sets the session token (inside
+    // opaqueRegistrationFinish) BEFORE its own crypto.unlock(phrase) call
+    // resolves — unlike login, which never unlocks the pre-remount
+    // 'signed-out'-keyed CryptoProvider instance at all. Calling refreshAuth()
+    // here in that window would flip `user` (remounting CryptoProvider) while
+    // SignupScreen's own storeMasterKey write for the BRAND NEW account is
+    // still mid-flight, and that abandoned write can then purge the very key
+    // material signup just created. `shouldPollForAuthToken` skips this
+    // independent poll for that window — SignupScreen's own explicit,
+    // sequential refreshAuth() call (after its unlock already resolved)
+    // still runs unconditionally, so signup completes exactly as before.
+    if (!shouldPollForAuthToken(!!user)) return;
+    const tokenExists = await hasToken();
+    if (tokenExists) {
+      await refreshAuth();
     }
   }, [user, refreshAuth]);
 
@@ -1532,7 +1546,9 @@ export default function App() {
 
   return (
     <AuthContext.Provider value={{ user, refreshAuth, signOut, phraseVerified, skipOnboarding, markPhraseVerified }}>
-      <CryptoProvider key={user?.user_id ?? 'signed-out'}>
+      {/* Task 1594: userId binds the vault key to this account — a key owned by
+          anyone else is purged before it is loaded (key-ownership.ts). */}
+      <CryptoProvider key={user?.user_id ?? 'signed-out'} userId={user?.user_id ?? null}>
       <SafeAreaProvider>
       <SyncProvider>
       <ToastProvider>

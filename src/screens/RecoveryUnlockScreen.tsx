@@ -20,6 +20,7 @@ import { usePreventScreenCapture } from 'expo-screen-capture';
 import { fonts, radii, spacing } from '../theme';
 import { useAuth } from '../lib/auth';
 import { useCrypto } from '../lib/crypto-context';
+import { OWNERSHIP_UNREACHABLE_MESSAGE, PHRASE_WRONG_ACCOUNT_MESSAGE } from '../lib/key-ownership';
 import { useTheme } from '../lib/theme-context';
 import { useKeyboardLayoutAnimation } from '../lib/useKeyboardLayoutAnimation';
 import {
@@ -155,10 +156,14 @@ export default function RecoveryUnlockScreen() {
       // after this particular race times out).
       await withTimeout(unlockOperationRef.current, UNLOCK_TIMEOUT_MS, 'Unlock timed out');
     } catch (err) {
+      const message = err instanceof Error ? err.message : '';
       setError(
         err instanceof UnlockTimeoutError
           ? 'Unlock is taking too long. Close and reopen the app, then try again.'
-          : 'That recovery phrase did not unlock this vault. Check the words and order.',
+          // Task 1594: the phrase was checked against THIS account — say so.
+          : message === PHRASE_WRONG_ACCOUNT_MESSAGE || message === OWNERSHIP_UNREACHABLE_MESSAGE
+            ? message
+            : 'That recovery phrase did not unlock this vault. Check the words and order.',
       );
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
     } finally {

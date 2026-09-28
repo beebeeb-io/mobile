@@ -177,7 +177,8 @@ final class NativeEncryptedBackupUploader {
       plaintextSize: plaintext.count,
       chunkCount: chunkCount,
       authToken: authToken,
-      serverBaseURL: serverBaseURL
+      serverBaseURL: serverBaseURL,
+      accountId: accountId
     )
 
     // 2. Stream the chunks: slice into plan-sized pieces, encrypt each via the
@@ -194,7 +195,8 @@ final class NativeEncryptedBackupUploader {
         index: Int(chunk.index),
         serverFileId: serverFileId,
         authToken: authToken,
-        serverBaseURL: serverBaseURL
+        serverBaseURL: serverBaseURL,
+        accountId: accountId
       )
     }
 
@@ -214,7 +216,8 @@ final class NativeEncryptedBackupUploader {
     try completeUpload(
       serverFileId: serverFileId,
       authToken: authToken,
-      serverBaseURL: serverBaseURL
+      serverBaseURL: serverBaseURL,
+      accountId: accountId
     )
 
     return serverFileId
@@ -236,6 +239,22 @@ final class NativeEncryptedBackupUploader {
     }
   }
 
+  /// Task 1594 round 2 (F5): the SAME signal `expectedUserHeaders()` sends
+  /// from JS (`src/lib/expected-user.ts`, server `auth.rs`
+  /// `check_expected_user` → 409 `account_mismatch` on a mismatch) — this
+  /// uploader runs in the main app's own process (not an extension), so
+  /// `accountId` (already validated against `NativeBackupEngine.currentAccountId`
+  /// by `requireAccountBinding` before every call site below) IS the id the
+  /// currently-loaded master key is bound to; attach it exactly like the JS
+  /// upload paths do (api.ts `throwUploadError`'s sibling fix), so a native
+  /// backup upload gets the SAME server-side account/key mismatch check a JS
+  /// upload already does, instead of relying solely on this file's own
+  /// local, device-side `requireAccountBinding` guard.
+  private static func applyExpectedUserHeader(to request: inout URLRequest, accountId: String) {
+    guard !accountId.isEmpty else { return }
+    request.setValue(accountId, forHTTPHeaderField: "X-Beebeeb-Expected-User")
+  }
+
   private func initUpload(
     fileId: String,
     nameEncrypted: String,
@@ -244,7 +263,8 @@ final class NativeEncryptedBackupUploader {
     plaintextSize: Int,
     chunkCount: Int,
     authToken: String,
-    serverBaseURL: String
+    serverBaseURL: String,
+    accountId: String
   ) throws -> String {
     guard let url = URL(string: "\(serverBaseURL)/api/v1/files/upload/init") else {
       throw NativeEncryptedBackupUploadError.invalidBaseURL
@@ -266,6 +286,7 @@ final class NativeEncryptedBackupUploader {
 
     var request = URLRequest(url: url)
     ProvenanceHeaders.apply(to: &request)
+    Self.applyExpectedUserHeader(to: &request, accountId: accountId)
     request.httpMethod = "POST"
     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
     request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
@@ -287,7 +308,8 @@ final class NativeEncryptedBackupUploader {
     index: Int,
     serverFileId: String,
     authToken: String,
-    serverBaseURL: String
+    serverBaseURL: String,
+    accountId: String
   ) throws {
     guard let url = URL(string: "\(serverBaseURL)/api/v1/files/\(serverFileId)/chunks/\(index)") else {
       throw NativeEncryptedBackupUploadError.invalidBaseURL
@@ -295,6 +317,7 @@ final class NativeEncryptedBackupUploader {
 
     var request = URLRequest(url: url)
     ProvenanceHeaders.apply(to: &request)
+    Self.applyExpectedUserHeader(to: &request, accountId: accountId)
     request.httpMethod = "PUT"
     request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
     request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
@@ -306,13 +329,15 @@ final class NativeEncryptedBackupUploader {
   private func completeUpload(
     serverFileId: String,
     authToken: String,
-    serverBaseURL: String
+    serverBaseURL: String,
+    accountId: String
   ) throws {
     guard let url = URL(string: "\(serverBaseURL)/api/v1/files/\(serverFileId)/upload/complete") else {
       throw NativeEncryptedBackupUploadError.invalidBaseURL
     }
     var request = URLRequest(url: url)
     ProvenanceHeaders.apply(to: &request)
+    Self.applyExpectedUserHeader(to: &request, accountId: accountId)
     request.httpMethod = "POST"
     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
     request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")

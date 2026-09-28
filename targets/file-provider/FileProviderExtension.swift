@@ -22,6 +22,24 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
   /// Cached master key handle — loaded once per extension lifecycle to avoid
   /// repeated Secure Enclave access (which can trigger Face ID).
   private var cachedMasterKey: MasterKeyHandle?
+  /// Task 1594 round 2 (F3): the owner record value that was current when
+  /// `cachedMasterKey` was loaded — checked on every access so a handle
+  /// cached under one account is dropped the moment the shared owner record
+  /// changes (a sign-out, a leftover-key purge, or a different account
+  /// signing in), rather than surviving for this extension process's entire
+  /// lifetime, which is not bounded to one sign-in.
+  private var cachedForOwner: String?
+  /// Task 1594 round 3 (Codex T4): the signed-in user value that was current
+  /// at the same moment. `mirrorSessionToAppGroup` (main app) clears+rewrites
+  /// this the INSTANT the session token changes — ahead of the owner record,
+  /// which only updates once the main app's ownership precheck/verify
+  /// round-trip finishes. Comparing the owner alone left a window where a
+  /// session already changed (A → B) but the (still-A) owner record hadn't
+  /// been purged yet: this fast path matched on owner and returned A's
+  /// cached handle for a request Files.app was now making on B's behalf.
+  /// Keying the cache on BOTH values closes that window — either changing
+  /// invalidates it and forces a fresh `ownershipVerified()` round-trip.
+  private var cachedForSignedInUser: String?
 
   required init(domain: NSFileProviderDomain) {
     super.init()
@@ -29,17 +47,70 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
     _ = CacheManager.shared
   }
 
-  /// Returns the cached master key, loading from Keychain only once per
-  /// extension lifecycle. Subsequent calls reuse the in-memory handle.
-  private func masterKey() throws -> MasterKeyHandle {
-    if let key = cachedMasterKey { return key }
+  /// Task 1594 round 4 (Codex P1, FileProviderExtension.swift:73): `masterKey()`
+  /// carries the owner ALONGSIDE the handle, so every caller that goes on to
+  /// make a mutating API request has it in hand to attach as
+  /// `X-Beebeeb-Expected-User` — the point of caching a handle at all is to
+  /// avoid re-deriving ownership per call, so the owner it was validated
+  /// against must travel with it, not be re-read (and potentially
+  /// out-of-date by then) at the call site.
+  struct OwnedMasterKey {
+    let handle: MasterKeyHandle
+    let owner: String
+  }
+
+  /// Returns the cached master key + its proven owner, loading (and
+  /// re-verifying ownership) only when nothing is cached yet or the owner
+  /// record OR the signed-in user has changed since the cached handle was
+  /// loaded.
+  private func masterKey() throws -> OwnedMasterKey {
+    let owner = CryptoBridge.currentKeyOwner()
+    let signedInUser = CryptoBridge.currentSignedInUser()
+    if let key = cachedMasterKey, let cachedOwner = cachedForOwner, CachedHandleIdentity.isStillValid(
+      cachedOwner: cachedForOwner,
+      cachedSignedInUser: cachedForSignedInUser,
+      currentOwner: owner,
+      currentSignedInUser: signedInUser
+    ) {
+      return OwnedMasterKey(handle: key, owner: cachedOwner)
+    }
+    cachedMasterKey = nil
+    cachedForOwner = nil
+    cachedForSignedInUser = nil
+    // Re-verifies ownership internally (throws `.ownerUnverified` on
+    // mismatch/missing) — never trust `owner`/`signedInUser` alone, either
+    // could itself be nil.
     let key = try CryptoBridge.loadMasterKeyHandle()
+    guard let owner, !owner.isEmpty else {
+      // Unreachable in practice — `loadMasterKeyHandle()` only succeeds when
+      // `ownershipVerified()` already required a non-nil, matching owner —
+      // but a value this fix attaches to every server mutation is never
+      // trusted on an internal invariant alone.
+      throw CryptoBridge.CryptoBridgeError.ownerUnverified
+    }
     cachedMasterKey = key
-    return key
+    cachedForOwner = owner
+    cachedForSignedInUser = signedInUser
+    return OwnedMasterKey(handle: key, owner: owner)
   }
 
   func invalidate() {
     cachedMasterKey = nil
+    cachedForOwner = nil
+    cachedForSignedInUser = nil
+  }
+
+  /// Task 1594 round 4: on a 409 `account_mismatch` (the server refusing this
+  /// exact request because its `X-Beebeeb-Expected-User` didn't match the
+  /// session), drop the cached handle immediately rather than waiting for the
+  /// next owner/signed-in-user comparison in `masterKey()` — the mismatch was
+  /// just independently confirmed server-side, so the next call re-verifies
+  /// from scratch instead of risking one more request on what is now known to
+  /// be a stale handle.
+  private func invalidateCacheOnAccountMismatch(_ error: Error) {
+    if case ApiError.accountMismatch = error {
+      invalidate()
+    }
   }
 
   // MARK: - Item lookup
@@ -103,7 +174,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
 
     let task = Task.detached {
       do {
-        let masterKey = try self.masterKey()
+        let masterKey = try self.masterKey().handle
         progress.completedUnitCount = 20
 
         let encrypted = try await ApiClient.shared.downloadEncrypted(fileId: cached.id)
@@ -213,7 +284,8 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
           return
         }
 
-        let masterKey = try self.masterKey()
+        let owned = try self.masterKey()
+        let masterKey = owned.handle
         let fileId = UUID().uuidString
         let nameEncrypted = try CryptoBridge.encryptFilename(
           masterKeyHandle: masterKey,
@@ -243,6 +315,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
           parentId: parentId,
           isMedia: Self.isMediaContent(itemTemplate.contentType),
           masterKey: masterKey,
+          expectedUser: owned.owner,
           progress: progress,
           progressBase: 10,
           progressSpan: 80
@@ -279,6 +352,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         completionHandler(FileProviderItem(cached: cached), [], false, nil)
       } catch {
         NSLog("[Beebeeb] createItem failed: \(error)")
+        self.invalidateCacheOnAccountMismatch(error)
         completionHandler(nil, [], false, Self.mapError(error))
       }
     }
@@ -330,7 +404,8 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         // change, `patchFile` for a rename/move), each of unbounded
         // duration. See `CacheManager.upsert(_:expectedEpoch:)`'s doc
         // comment.
-        let masterKey = try self.masterKey()
+        let owned = try self.masterKey()
+        let masterKey = owned.handle
         progress.completedUnitCount = 15
 
         var nextName = cached.nameDecrypted
@@ -379,6 +454,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
             parentId: nextParentId,
             isMedia: Self.isMediaContent(item.contentType),
             masterKey: masterKey,
+            expectedUser: owned.owner,
             progress: progress,
             progressBase: 30,
             progressSpan: 50
@@ -393,7 +469,8 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
           let patched = try await ApiClient.shared.patchFile(
             fileId: cached.id,
             nameEncrypted: nextNameEncrypted,
-            parentId: nextParentId
+            parentId: nextParentId,
+            expectedUser: owned.owner
           )
           nextNameEncrypted = patched.name_encrypted ?? nextNameEncrypted
           nextParentId = patched.parent_id
@@ -427,6 +504,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         completionHandler(FileProviderItem(cached: updated), [], false, nil)
       } catch {
         NSLog("[Beebeeb] modifyItem failed: \(error)")
+        self.invalidateCacheOnAccountMismatch(error)
         completionHandler(nil, [], false, Self.mapError(error))
       }
     }
@@ -455,13 +533,20 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
     // single, uniformly-testable invariant instead of an exception here.
     let epochAtStart = CacheManager.shared.currentPurgeEpoch()
 
+    // Task 1594 round 4: delete performs no crypto (no key load needed), but
+    // still carries whatever owner the shared keychain currently records —
+    // the same value `masterKey()` would validate against — so the server
+    // can catch a mid-flight account switch here too. `nil` (no owner
+    // recorded yet) simply omits the header, unchanged pre-1594 behaviour.
+    let expectedUser = CryptoBridge.currentKeyOwner()
+
     let task = Task.detached {
       do {
         // Task 1593 round 8 (R3) — `epochAtStart` (captured above) gates
         // the cache row removal below against the network delete that
         // follows. See `CacheManager.upsert(_:expectedEpoch:)`'s doc
         // comment for the full epoch-gate rationale.
-        try await ApiClient.shared.deleteFile(fileId: identifier.rawValue)
+        try await ApiClient.shared.deleteFile(fileId: identifier.rawValue, expectedUser: expectedUser)
         if !CacheManager.shared.delete(id: identifier.rawValue, expectedEpoch: epochAtStart) {
           // The remote delete already succeeded; only the local cache row
           // removal is skipped when a sign-out purge raced it — harmless,
@@ -473,6 +558,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         completionHandler(nil)
       } catch {
         NSLog("[Beebeeb] deleteItem(\(identifier.rawValue)) failed: \(error)")
+        self.invalidateCacheOnAccountMismatch(error)
         completionHandler(Self.mapError(error))
       }
     }
@@ -514,6 +600,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
     parentId: String?,
     isMedia: Bool,
     masterKey: MasterKeyHandle,
+    expectedUser: String?,
     progress: Progress,
     progressBase: Int64,
     progressSpan: Int64
@@ -535,7 +622,8 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
       parentId: parentId,
       isMedia: isMedia,
       chunkSizeBytes: chunkSize,
-      chunkCount: chunkCount
+      chunkCount: chunkCount,
+      expectedUser: expectedUser
     )
 
     let handle = try FileHandle(forReadingFrom: sourceUrl)
@@ -567,7 +655,8 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
       try await ApiClient.shared.uploadChunkV2(
         uploadSessionId: session.upload_session_id,
         index: index,
-        encryptedChunk: encrypted
+        encryptedChunk: encrypted,
+        expectedUser: expectedUser
       )
 
       bytesRead += Int64(plaintextLen)
@@ -576,7 +665,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
     }
 
     try Task.checkCancellation()
-    return try await ApiClient.shared.completeUploadV2(uploadSessionId: session.upload_session_id)
+    return try await ApiClient.shared.completeUploadV2(uploadSessionId: session.upload_session_id, expectedUser: expectedUser)
   }
 
   /// True when iOS would classify `type` as photo/video content. Used to set
@@ -595,11 +684,24 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
       switch api {
       case .notAuthenticated: return NSFileProviderError(.notAuthenticated)
       case .invalidResponse, .statusCode: return NSFileProviderError(.serverUnreachable)
+      // Task 1594 round 4 (Codex P1, FileProviderExtension.swift:73): the
+      // server rejected this exact request because its account didn't match
+      // `X-Beebeeb-Expected-User` — the extension's cached key belongs to a
+      // DIFFERENT account than the session actually authenticated as, the
+      // same failure class `.ownerUnverified` guards locally. A clean,
+      // non-retryable "not authenticated" — never a generic sync error that
+      // would invite Files.app to silently retry with the same stale key.
+      case .accountMismatch: return NSFileProviderError(.notAuthenticated)
       }
     }
     if let bridge = error as? CryptoBridge.CryptoBridgeError {
       switch bridge {
       case .keyUnavailable, .decodeFailed: return NSFileProviderError(.cannotSynchronize)
+      // Task 1594 round 2 (F3): the key exists but is not (yet, or no
+      // longer) provably this account's — surface the same error Files.app
+      // shows for "not authenticated", since using it would be exactly the
+      // wrong-key bug this task exists to close.
+      case .ownerUnverified: return NSFileProviderError(.notAuthenticated)
       }
     }
     if (error as NSError).domain == NSFileProviderErrorDomain {

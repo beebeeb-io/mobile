@@ -30,6 +30,11 @@ import {
 } from '../lib/api';
 import * as BeebeebCrypto from '../../modules/beebeeb-crypto';
 import { markUnlocked } from '../lib/lock-state';
+// Task 1594 round 6: brackets the window between the session token being set
+// (inside opaqueRegistrationFinish) and crypto.unlock() resolving, so
+// App.tsx's independent handleNavigationStateChange poll cannot flip `user`
+// (remounting CryptoProvider) while this screen's own unlock is mid-write.
+import { beginSignupUnlock, endSignupUnlock } from '../lib/signup-unlock-guard';
 import type { RootStackParamList } from '../App';
 import { SignupEmailCodeStep } from '../components/SignupEmailCodeStep';
 import {
@@ -172,20 +177,31 @@ export default function SignupScreen() {
           BeebeebCrypto.computeRecoveryCheck(recovery.masterKey),
           BeebeebCrypto.deriveX25519PublicKey(recovery.masterKey),
         ]);
-        await opaqueRegistrationFinish(
-          trimmedEmail,
-          password,
-          state,
-          serverMessage,
-          recoveryCheck,
-          x25519PublicKey,
-          flow.ticket,
-        );
+        // Task 1594 round 6: opaqueRegistrationFinish sets the session token
+        // (setSessionCredentials, api.ts) — from this point on, App.tsx's
+        // handleNavigationStateChange sees a token + no `user` yet and would
+        // independently call refreshAuth() itself on the next navigation
+        // event, remounting CryptoProvider out from under the crypto.unlock()
+        // call below. Bracket that entire window.
+        beginSignupUnlock();
         try {
-          await crypto.unlock(recovery.phrase);
-        } catch {
-          // Keychain unavailable — phrase is still shown once so the user can
-          // provision this device on the next login.
+          await opaqueRegistrationFinish(
+            trimmedEmail,
+            password,
+            state,
+            serverMessage,
+            recoveryCheck,
+            x25519PublicKey,
+            flow.ticket,
+          );
+          try {
+            await crypto.unlock(recovery.phrase);
+          } catch {
+            // Keychain unavailable — phrase is still shown once so the user can
+            // provision this device on the next login.
+          }
+        } finally {
+          endSignupUnlock();
         }
         opaqueDone = true;
       } catch (opaqueErr) {

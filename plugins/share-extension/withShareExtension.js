@@ -22,6 +22,12 @@ const SOURCE_FILES = [
   'ShareViewController.swift',
   'BeebeebCryptoShim.swift',
   'ShareUploader.swift',
+  // Task 1594 round 5: the pure X-Beebeeb-Expected-User / 409 account_mismatch
+  // decisions `ShareUploader.swift` calls, extracted so they're testable via
+  // a standalone `swiftc` compile (see targets/share-extension/CLAUDE.md /
+  // the file's own doc comment). References `AccountMismatchDetection`
+  // (below, in CRYPTO_SHARED_FILES) — must stay wired into the SAME target.
+  'ShareUploadRequestPolicy.swift',
   // Share-extension's keychain reader is the canonical `BeebeebKeychainCore`
   // (task 0436); the file at `targets/share-extension/BeebeebKeychainCore.swift`
   // is a symlink to `modules/beebeeb-crypto/ios/Shared/BeebeebKeychainCore.swift`,
@@ -44,6 +50,13 @@ const SOURCE_FILES = [
 // silently drops.
 const CRYPTO_SHARED_FILES = [
   { path: '../modules/beebeeb-crypto/ios/ProvenanceHeaders.swift', name: 'ProvenanceHeaders.swift' },
+  // Task 1594 round 5: `AccountMismatchDetection.swift` is the File Provider
+  // extension's canonical copy (`targets/file-provider/`, task 1594 round 4)
+  // — pure Foundation-only 409-body parsing, referenced directly here (same
+  // pattern as ProvenanceHeaders.swift above) rather than duplicated, so
+  // `ShareUploadRequestPolicy.swift`'s `isAccountMismatchResponse` can call
+  // the exact same, already-tested detection.
+  { path: '../targets/file-provider/AccountMismatchDetection.swift', name: 'AccountMismatchDetection.swift' },
 ];
 
 function withShareExtension(config) {
@@ -179,5 +192,10 @@ function withShareExtension(config) {
 
   return config;
 }
+
+// Task 1594 round 5: exported the same way withFileProvider.js exports its
+// own SOURCE_FILES, so src/lib/share-extension-plugin-sources.test.ts can
+// diff this list against the real files on disk.
+withShareExtension.SOURCE_FILES = SOURCE_FILES;
 
 module.exports = withShareExtension;
