@@ -486,6 +486,93 @@ private func removeFileProviderDomain(_ domain: NSFileProviderDomain) async thro
   }
 }
 
+/// Task 1593 round 5 (P1-3) — forced sign-outs (session expiry, account
+/// deleted elsewhere, a startup 401, the startup failure fallback, a cold
+/// launch with no session) reach `purgePlaintextStorage()` (every sign-out
+/// path does, via `signed-out-purge.ts` → `purgeAllPlaintextCaches` →
+/// native `purgePlaintextStorage`) but NEVER `removeFileProviderAccess()`,
+/// which only the ordinary in-app `signOut()` calls. `PlaintextStorageProtection
+/// .purgeAll()` already empties `file-provider-cache.sqlite` in place
+/// (round 4, P1-1), but the File Provider DOMAIN stays registered with iOS:
+/// Files.app and the system's own File Provider bookkeeping keep whatever
+/// they cached from that still-registered domain's enumerator, and a
+/// registered domain can be re-enumerated at any time, repopulating rows
+/// this purge just erased.
+///
+/// This removes the domain from every purge, not just the ordinary one, and
+/// is idempotent: it checks the domain is actually registered first, so
+/// running it after an ordinary sign-out (which already removed it), or
+/// when the File Provider was never mounted this install, is a no-op. Uses
+/// `.removeAll` — the same call `removeFileProviderAccess` describes,
+/// `NSFileProviderManager.remove(domain, mode:completionHandler:)` — rather
+/// than `.preserveDirtyUserData`/`.preserveDownloadedUserData`, because this
+/// IS the privacy purge: nothing should be preserved. The next sign-in
+/// re-registers the domain exactly as it does today —
+/// `registerMountedFileProviderDomain` sees `existed == false` and re-adds
+/// it, unchanged by this function.
+///
+/// A removal failure is traced (no user data — just the fact that it
+/// failed) and swallowed: this must never block the caller's purge, the same
+/// contract `PlaintextStorageProtection.purgeAll()` itself gives every other
+/// registered path.
+///
+/// Task 1593 round 5 (P2-4) — deliberately SYNCHRONOUS (blocks the calling
+/// thread on a semaphore while the completion-handler-based FileProvider
+/// APIs resolve, same bridging pattern as `KeychainManager`'s LAContext
+/// evaluation), NOT `async`, and its only caller (`purgePlaintextStorage`)
+/// is equally deliberately not `async` either. Every `AsyncFunction("name") {
+/// closure }` registered WITHOUT `async` in its closure type becomes an
+/// `AsyncFunctionDefinition` (expo-modules-core
+/// `Api/Factories/AsyncFunctionFactories.swift`), and EVERY
+/// `AsyncFunctionDefinition` call in the whole app is dispatched onto the
+/// same single, private, serial `defaultQueue`
+/// (`Core/Functions/AsyncFunctionDefinition.swift:20`,
+/// `.async`-dispatched at `:138`) unless it opts out via `.runOnQueue(...)`,
+/// which nothing in this file does. `syncFileProviderCache` (this file) is
+/// declared the same way, so it and `purgePlaintextStorage` are two calls on
+/// that ONE queue: the queue itself guarantees they can never run
+/// concurrently, which is what lets `populateFileProviderCache`'s lease
+/// check (`file-provider-mount.ts`, round 4 P1-1) treat "the walk has
+/// stopped" as "no write can still land after this point" — a real
+/// guarantee, not a race with whichever of the two the scheduler happens to
+/// run first. Marking either closure `async` instead moves it onto
+/// `ConcurrentFunctionDefinition`'s Swift-Task-based path
+/// (`Api/Factories/ConcurrentFunctionFactories.swift`) — a DIFFERENT
+/// execution context with no ordering relationship to the serial queue at
+/// all — which would silently break this invariant while every existing
+/// test kept passing (there is no automated check for which
+/// `AsyncFunction` overload a given closure resolves to). Do not add
+/// `async` to this function, `purgePlaintextStorage`, or
+/// `syncFileProviderCache` without re-deriving this guarantee some other
+/// way first.
+@available(iOS 16.0, *)
+private func removeFileProviderDomainIfRegistered() {
+  let domain = beebeebFileProviderDomain()
+
+  let domainsSemaphore = DispatchSemaphore(value: 0)
+  var domains: [NSFileProviderDomain] = []
+  NSFileProviderManager.getDomainsWithCompletionHandler { result, _ in
+    domains = result
+    domainsSemaphore.signal()
+  }
+  domainsSemaphore.wait()
+
+  guard domains.contains(where: { $0.identifier == domain.identifier }) else {
+    return // already absent - counts as clean, not a failure
+  }
+
+  let removeSemaphore = DispatchSemaphore(value: 0)
+  NSFileProviderManager.remove(domain, mode: .removeAll) { _, error in
+    if let error {
+      RuntimeTrace.event("storage.purge.file_provider_domain_failed", [
+        "error": error.localizedDescription,
+      ])
+    }
+    removeSemaphore.signal()
+  }
+  removeSemaphore.wait()
+}
+
 @available(iOS 16.0, *)
 private func signalFileProviderEnumerator(
   domain: NSFileProviderDomain,
@@ -690,13 +777,28 @@ private func resetFileProviderCacheDatabase(at url: URL) -> Bool {
   // Keep the SQLite file inode stable. The File Provider extension may already
   // have this database open; unlinking it can leave the app writing to one DB
   // while the extension opens another at the same path.
-  sqlite3_exec(db, "BEGIN", nil, nil, nil)
-  sqlite3_exec(db, "DELETE FROM file_cache", nil, nil, nil)
-  sqlite3_exec(db, "DELETE FROM sync_state", nil, nil, nil)
-  sqlite3_exec(db, "DELETE FROM upload_queue", nil, nil, nil)
-  sqlite3_exec(db, "COMMIT", nil, nil, nil)
-  sqlite3_exec(db, "PRAGMA wal_checkpoint(TRUNCATE)", nil, nil, nil)
-  return true
+  sqlite3_busy_timeout(db, 2000)
+  // Task 1593 round 5 (P1-1, same finding as PlaintextStorageProtection.swift's
+  // `resetSQLiteInPlace`) — a plain DELETE leaves the decrypted row bytes
+  // readable on the freelist page; `secure_delete = ON` (set before the
+  // transaction) zeroes them as they're deleted. This database is never put
+  // into WAL mode anywhere in this codebase, so it always uses the default
+  // rollback journal — the `PRAGMA wal_checkpoint(TRUNCATE)` this comment
+  // used to end with was a silent no-op here. VACUUM after COMMIT is what
+  // actually rewrites the file and drops the freed pages instead of just
+  // marking them free for reuse. Evidence: _qa-evidence/1593/r5-sqlite-bytes.txt.
+  var ok = sqlite3_exec(db, "PRAGMA secure_delete = ON", nil, nil, nil) == SQLITE_OK
+  ok = ok && sqlite3_exec(db, "BEGIN", nil, nil, nil) == SQLITE_OK
+  ok = ok && sqlite3_exec(db, "DELETE FROM file_cache", nil, nil, nil) == SQLITE_OK
+  ok = ok && sqlite3_exec(db, "DELETE FROM sync_state", nil, nil, nil) == SQLITE_OK
+  ok = ok && sqlite3_exec(db, "DELETE FROM upload_queue", nil, nil, nil) == SQLITE_OK
+  if ok {
+    ok = sqlite3_exec(db, "COMMIT", nil, nil, nil) == SQLITE_OK
+  } else {
+    sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+  }
+  ok = ok && sqlite3_exec(db, "VACUUM", nil, nil, nil) == SQLITE_OK
+  return ok
 }
 
 private func clearFileProviderCacheState(defaults: UserDefaults?) -> Int {
@@ -1041,6 +1143,15 @@ public class BeebeebCryptoModule: Module {
     // plaintext path. See PlaintextStorageProtection.purgeAll() doc comment.
     AsyncFunction("purgePlaintextStorage") { () -> [String: Int] in
       let result = PlaintextStorageProtection.purgeAll()
+      // Task 1593 round 5 (P1-3) — reached by EVERY sign-out, forced or
+      // ordinary, unlike `removeFileProviderAccess` (only the ordinary
+      // in-app signOut() calls that). Deliberately NOT `async` — see
+      // removeFileProviderDomainIfRegistered's doc comment (P2-4): this
+      // function must stay an `AsyncFunctionDefinition` on Expo's shared
+      // serial queue, the same one `syncFileProviderCache` runs on.
+      if #available(iOS 16.0, *) {
+        removeFileProviderDomainIfRegistered()
+      }
       return ["removed": result.removed, "failed": result.failed]
     }
 

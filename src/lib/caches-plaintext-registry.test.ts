@@ -177,7 +177,16 @@ describe('task 1593 round 4 (P2-3) — the File Provider NAME cache writer is ga
   // ungated: a per-file import check would have passed for a file that never
   // imports `FileSystem` in the first place. This scans for the underlying
   // native call SITE BY SITE instead of trusting a whole-file import.
-  const NATIVE_CALL_LITERAL = '.syncFileProviderCache(';
+  //
+  // Task 1593 round 5 (P2-5) — the literal `.syncFileProviderCache(` only
+  // matches a direct dotted call with the paren on the SAME line. It misses
+  // a destructured import calling the bare identifier (`syncFileProviderCache(`,
+  // no leading dot), bracket access (`['syncFileProviderCache']`), and a
+  // call broken across lines with the `(` on the next one
+  // (`.syncFileProviderCache\n  (args)`). Matching the bare identifier with
+  // word boundaries instead catches all of those; it is not fooled by a
+  // narrower substring the way `.syncFileProviderCache(` was.
+  const NATIVE_CALL_RE = /\bsyncFileProviderCache\b/;
   const GATED_WRAPPER = 'lib/file-provider-mount.ts';
   // The generated bridge module itself (the plain pass-through the wrapper
   // calls into) is not a "writer" — it has no gate to skip.
@@ -188,7 +197,7 @@ describe('task 1593 round 4 (P2-3) — the File Provider NAME cache writer is ga
     for (const file of sourceFiles(SRC)) {
       const rel = relative(SRC, file);
       readFileSync(file, 'utf8').split('\n').forEach((line, i) => {
-        if (line.includes(NATIVE_CALL_LITERAL)) found.push(`${rel}:${i + 1}`);
+        if (NATIVE_CALL_RE.test(line)) found.push(`${rel}:${i + 1}`);
       });
     }
     // The bridge module itself lives one level up from `SRC` (src/lib/..) —
@@ -197,7 +206,7 @@ describe('task 1593 round 4 (P2-3) — the File Provider NAME cache writer is ga
     // own pass-through next to the bridge.
     const bridgePath = join(SRC, '..', BRIDGE_DEFINITION);
     readFileSync(bridgePath, 'utf8').split('\n').forEach((line, i) => {
-      if (line.includes(NATIVE_CALL_LITERAL)) found.push(`../${BRIDGE_DEFINITION}:${i + 1}`);
+      if (NATIVE_CALL_RE.test(line)) found.push(`../${BRIDGE_DEFINITION}:${i + 1}`);
     });
     return found;
   }
@@ -216,7 +225,16 @@ describe('task 1593 round 4 (P2-3) — the File Provider NAME cache writer is ga
   test('the gated wrapper actually takes a lease around the native call', () => {
     const src = readFileSync(join(SRC, GATED_WRAPPER), 'utf8');
     expect(src).toMatch(/from '\.\/plaintext-gate'/);
-    expect(src).toMatch(/withPlaintextLease\(/);
+    // Task 1593 round 5 (P2-6) — this used to check `withPlaintextLease(`
+    // appears ANYWHERE in the file, which a lease taken around some other,
+    // unrelated function would also satisfy. Scope it to the actual writer's
+    // body: `syncDecryptedEntriesToFileProvider`, the ONE JS call site of the
+    // native `syncFileProviderCache` per this describe block's own scan
+    // above.
+    const start = src.indexOf('export async function syncDecryptedEntriesToFileProvider');
+    expect(start).toBeGreaterThan(-1);
+    const body = src.slice(start, src.indexOf('\n}', start));
+    expect(body).toMatch(/withPlaintextLease\(/);
   });
 
   test('the BFS walk (populateFileProviderCache) holds its OWN lease for the whole walk, not just per push', () => {

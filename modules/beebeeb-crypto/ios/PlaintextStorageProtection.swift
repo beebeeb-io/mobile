@@ -256,7 +256,12 @@ public enum PlaintextStorageProtection {
       sqlite3_close(db)
       let fileManager = FileManager.default
       var ok = true
-      for suffix in ["", "-wal", "-shm"] {
+      // Task 1593 round 5 (P2-7) — the `-journal` sibling is the rollback
+      // journal this database actually uses (see the comment below: it is
+      // never put into WAL mode), so a mid-transaction crash can leave
+      // decrypted rows sitting in `<name>-journal` even though the main file
+      // was never opened successfully here.
+      for suffix in ["", "-wal", "-shm", "-journal"] {
         let sibling = URL(fileURLWithPath: url.path + suffix)
         guard fileManager.fileExists(atPath: sibling.path) else { continue }
         do {
@@ -269,32 +274,67 @@ public enum PlaintextStorageProtection {
     }
     defer { sqlite3_close(db) }
 
+    // A second process (the File Provider extension's `CacheManager`) may
+    // hold this exact file open; without a timeout a lock held for the
+    // couple hundred ms a concurrent read/write typically needs fails this
+    // reset immediately with SQLITE_BUSY instead of waiting for it.
+    sqlite3_busy_timeout(db, 2000)
+
     // Discover the user tables rather than hardcoding schema here: this file
     // is compiled into two SEPARATE targets (the main app pod and the
     // BeebeebFileProvider extension) and must not drift from whichever one
     // last changed the schema in BeebeebCryptoModule.swift / CacheManager.swift.
     var tables: [String] = []
     var stmt: OpaquePointer?
-    if sqlite3_prepare_v2(
+    // Task 1593 round 5 (P1-2) — a failed prepare here used to fall through
+    // silently (`tables` stayed empty, the function returned `true` anyway,
+    // so `purgeAll()` counted a no-op reset as a success). Fail loudly
+    // instead: the caller traces `storage.purge.failed` and retries next time.
+    guard sqlite3_prepare_v2(
       db, "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'", -1, &stmt, nil
-    ) == SQLITE_OK {
-      while sqlite3_step(stmt) == SQLITE_ROW {
-        if let cName = sqlite3_column_text(stmt, 0) {
-          tables.append(String(cString: cName))
-        }
+    ) == SQLITE_OK else {
+      sqlite3_finalize(stmt)
+      return false
+    }
+    while sqlite3_step(stmt) == SQLITE_ROW {
+      if let cName = sqlite3_column_text(stmt, 0) {
+        tables.append(String(cString: cName))
       }
     }
     sqlite3_finalize(stmt)
 
-    sqlite3_exec(db, "BEGIN", nil, nil, nil)
+    // Task 1593 round 5 (P1-1) — a plain `DELETE` only unlinks a row from the
+    // b-tree; the page it lived on goes onto the freelist with the decrypted
+    // bytes (e.g. `name_decrypted`) still physically present and readable
+    // with a raw byte scan of the file (reproduced on macOS system SQLite:
+    // 500 known marker names inserted, reset with the OLD sequence below,
+    // `strings db | grep -c MARKER` = 500; with `secure_delete = ON` set
+    // before the transaction, = 0 — evidence: _qa-evidence/1593/r5-sqlite-bytes.txt).
+    // `secure_delete = ON` makes every DELETE overwrite the row's bytes with
+    // zeros as it deletes them, and must be set BEFORE the transaction that
+    // does the deleting.
+    var ok = sqlite3_exec(db, "PRAGMA secure_delete = ON", nil, nil, nil) == SQLITE_OK
+    ok = ok && sqlite3_exec(db, "BEGIN", nil, nil, nil) == SQLITE_OK
     for table in tables {
-      sqlite3_exec(db, "DELETE FROM \"\(table)\"", nil, nil, nil)
+      ok = ok && sqlite3_exec(db, "DELETE FROM \"\(table)\"", nil, nil, nil) == SQLITE_OK
     }
-    sqlite3_exec(db, "COMMIT", nil, nil, nil)
-    // Truncate the WAL so no old page holding decrypted names lingers on disk
-    // once the empty transaction above has been checkpointed.
-    sqlite3_exec(db, "PRAGMA wal_checkpoint(TRUNCATE)", nil, nil, nil)
-    return true
+    if ok {
+      ok = sqlite3_exec(db, "COMMIT", nil, nil, nil) == SQLITE_OK
+    } else {
+      sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+    }
+    // This database is never put into WAL mode anywhere in this codebase
+    // (`grep -rn "journal_mode" modules/ targets/ src/` finds it set only for
+    // NativeBackupEngine's, ThumbnailQueueDB's and BackupDatabase's own
+    // separate databases) — it always uses the default rollback journal. The
+    // `PRAGMA wal_checkpoint(TRUNCATE)` this comment used to describe as
+    // "truncating the WAL" was therefore a silent no-op on this file. VACUUM
+    // is the step that actually rewrites the database, dropping freelist
+    // pages entirely instead of leaving them marked free for reuse (defense
+    // in depth on top of `secure_delete`, e.g. for pages freed by earlier
+    // writes from before this fix shipped).
+    ok = ok && sqlite3_exec(db, "VACUUM", nil, nil, nil) == SQLITE_OK
+    return ok
   }
 
   /// Write the audit to `Library/Caches/beebeeb-plaintext-audit.json` so the
