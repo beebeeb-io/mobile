@@ -33,6 +33,12 @@ final class ShareViewController: UIViewController {
     // MARK: - State
 
     private var masterKeyHandle: MasterKeyHandle?
+    /// Task 1594 round 5: the SAME owner value `keyOwnershipVerified()`
+    /// already checked (captured once here rather than re-reading the
+    /// keychain in `saveTapped()`), threaded into `ShareUploader` as
+    /// `X-Beebeeb-Expected-User`. `nil` whenever `keyOwnershipVerified()`
+    /// was false — the two must always agree.
+    private var verifiedKeyOwnerId: String?
     private var sessionToken: String?
     private var apiUrl: String = defaultApiUrl
     private var folders: [FolderFetcher.Folder] = []
@@ -131,6 +137,11 @@ final class ShareViewController: UIViewController {
         ) {
             defer { keyBytes.resetBytes(in: 0..<keyBytes.count) }
             masterKeyHandle = try? MasterKeyHandle.fromKeychainBytes(bytes: keyBytes)
+            // Task 1594 round 5: capture the verified owner alongside the key
+            // itself — `keyOwnershipVerified()` already proved this equals
+            // the signed-in user, so it's safe to send as
+            // `X-Beebeeb-Expected-User` on every upload request.
+            verifiedKeyOwnerId = BeebeebKeychainCore.loadString(key: BeebeebKeychainCore.masterKeyOwnerKey)
         }
 
         guard masterKeyHandle != nil else {
@@ -557,7 +568,7 @@ final class ShareViewController: UIViewController {
         let parent = selectedFolderId
 
         Task {
-            let uploader = ShareUploader(apiUrl: apiUrl, sessionToken: token, masterKey: handle)
+            let uploader = ShareUploader(apiUrl: apiUrl, sessionToken: token, masterKey: handle, expectedUser: self.verifiedKeyOwnerId)
             // Clean up the staged temp file in all paths (success / failure / cancel).
             defer {
                 if let stagedURL {
