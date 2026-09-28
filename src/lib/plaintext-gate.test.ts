@@ -4,8 +4,8 @@
  * closes it, drains every held lease (bounded), sweeps, and keeps it closed
  * until a new session opens it. Mutation evidence: task 1593 Notes (round 3).
  */
-import { describe, expect, test } from 'bun:test';
-import { createPlaintextGate, gatedPlaintextWrite, isPlaintextGateClosed, withPlaintextLease } from './plaintext-gate';
+import { describe, expect, mock, test } from 'bun:test';
+import { createPlaintextGate, gatedPlaintextWrite, isPlaintextGateClosed, withPlaintextLease, writePlaintext } from './plaintext-gate';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -81,5 +81,85 @@ describe('createPlaintextGate', () => {
     const lease = gate.acquire('fresh');
     expect(lease.valid).toBe(true);
     expect(lease.signal.aborted).toBe(false);
+  });
+
+  // Task 1593 round 4 (P2-4) — an open() queued behind one purge must not
+  // reopen the gate after a LATER, unrelated purge that should stay closed.
+  test('an open() queued during purge A is dropped if purge B starts before A finishes', async () => {
+    const gate = createPlaintextGate();
+    let releaseA: () => void;
+    let releaseB: () => void;
+    const purgeA = gate.purge(() => new Promise<void>((r) => { releaseA = r; }));
+    await sleep(0);
+    gate.open(); // e.g. a fast sign-in racing purge A's drain
+    expect(gate.isOpen()).toBe(false); // still queued, not yet applied
+
+    // A second, later purge starts (e.g. the next sign-out) BEFORE purge A
+    // has finished — this must supersede the queued open() above.
+    const purgeB = gate.purge(() => new Promise<void>((r) => { releaseB = r; }));
+    await sleep(0);
+
+    releaseA!();
+    await purgeA;
+    // purge A finished but purge B is still running: purging > 0, no reopen
+    // decision is made yet.
+    expect(gate.isOpen()).toBe(false);
+
+    releaseB!();
+    await purgeB;
+    // The gate must STAY CLOSED: the open() request belonged to purge A's
+    // generation, not purge B's, so it must not leak forward.
+    expect(gate.isOpen()).toBe(false);
+    expect(() => gate.acquire('late')).toThrow();
+  });
+
+  test('an open() queued during the ONLY purge in flight still reopens once it finishes', async () => {
+    // Control: the fix must not break the ordinary (single-purge) case.
+    const gate = createPlaintextGate();
+    let release: () => void;
+    const purge = gate.purge(() => new Promise<void>((r) => { release = r; }));
+    await sleep(0);
+    gate.open();
+    release!();
+    await purge;
+    expect(gate.isOpen()).toBe(true);
+  });
+});
+
+describe('writePlaintext (task 1593 round 4, P2-5)', () => {
+  test('a failed late-write delete is traced WITHOUT the uri (it can embed the decrypted file name)', async () => {
+    const traced: Array<{ name: string; fields: Record<string, unknown> }> = [];
+    mock.module('./runtime-trace', () => ({
+      recordRuntimeTrace: (name: string, fields: Record<string, unknown>) => {
+        traced.push({ name, fields });
+      },
+    }));
+    const gate = createPlaintextGate({ drainTimeoutMs: 5_000 });
+    const lease = gate.acquire('shared decrypt');
+    const fs = { deleteAsync: async () => { throw new Error('disk full'); } };
+    let finishWrite: () => void;
+    const write = writePlaintext(
+      lease,
+      'file:///cache/shared_Secret plan.pdf',
+      fs,
+      () => new Promise<void>((r) => { finishWrite = r; }),
+    );
+    await sleep(0);
+    // Same shape as "purge waits for a held lease" above: start the purge
+    // (invalidates the lease synchronously) WITHOUT awaiting it yet, so
+    // finishing the write doesn't deadlock behind drain()'s wait on itself.
+    const purge = gate.purge(async () => {});
+    await sleep(0);
+    expect(lease.valid).toBe(false);
+    finishWrite!();
+    const err = await write.catch((e) => e);
+    lease.release(); // real callers always go through gatedPlaintextWrite, which releases
+    await purge;
+    expect(isPlaintextGateClosed(err)).toBe(true);
+    await sleep(0); // let the fire-and-forget trace call settle
+    expect(traced.length).toBe(1);
+    expect(traced[0].name).toBe('plaintext-gate.late_write_delete_failed');
+    expect(traced[0].fields).toEqual({ label: 'shared decrypt' });
+    expect(JSON.stringify(traced[0])).not.toContain('Secret plan.pdf');
   });
 });
