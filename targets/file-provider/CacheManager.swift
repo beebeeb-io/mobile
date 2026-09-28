@@ -192,8 +192,27 @@ final class CacheManager {
   /// epoch rationale). Internal call sites already inside `queue.sync` use
   /// `_currentPurgeEpoch()` directly — this method would deadlock if called
   /// from inside another `queue.sync` block on this same serial queue.
+  ///
+  /// Task 1593 f4 (Codex thread PRRT_kwDOSLX6T86mknXP, item 1a) — under the
+  /// f2 marker-first design the pending marker now stays set for the WHOLE
+  /// purge (see `purgeAll(pendingNonce:)`'s doc comment: it only clears
+  /// after the legacy sweep AND the pinned/temp resweep, not right after
+  /// the reset's own epoch bump commits). A caller like `SyncEngine` that
+  /// captures its epoch via THIS method — not `purgeEpochUnchanged(since:)`
+  /// — has no other way to know a purge is still in flight; without this
+  /// guard it could capture a live, freshly-bumped epoch while the purge's
+  /// own tail (VACUUM, the legacy sweep, the pinned/temp resweep) is still
+  /// running, then have its later gated write land after the tail finishes
+  /// but with an epoch value the purge never actually finished vouching
+  /// for. Returning the sentinel here instead means `currentEpochMatches(_:)`
+  /// — already sentinel-safe on the LIVE side — now also rejects any
+  /// comparison against a captured epoch that came from a pending purge,
+  /// since the sentinel can never equal a real `PRAGMA user_version` value.
   func currentPurgeEpoch() -> Int {
-    queue.sync { _currentPurgeEpoch() }
+    queue.sync {
+      guard !PlaintextStorageProtection.isPurgePending() else { return Self.epochQueryFailed }
+      return _currentPurgeEpoch()
+    }
   }
 
   /// Task 1593 round 11 (Codex thread PRRT_kwDOSLX6T86miVoN, P1) — safe

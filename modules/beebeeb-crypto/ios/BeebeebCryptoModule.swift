@@ -1065,10 +1065,15 @@ private func resetFileProviderShowInFilesConsent(defaults: UserDefaults?) {
 /// marker (`PlaintextStorageProtection.markPurgePending()`'s doc comment).
 /// `purgePlaintextStorage`'s own EARLY bump (default, `false`) is NOT "the
 /// purge's final epoch bump" — the marker stays set through it on purpose,
-/// so an extension write still cannot land in the gap between this early
-/// bump and the purge's actual `DELETE FROM` (`PlaintextStorageProtection
-/// .resetSQLiteInPlace`, the ONLY place a purge is allowed to clear its own
-/// marker). `registerMountedFileProviderDomainLocked` passes `true`: a
+/// so an extension write still cannot land anywhere between this early bump
+/// and the purge's own end. Task 1593 f4 (item 1b) moved that purge-owned
+/// clear out of `PlaintextStorageProtection.resetSQLiteInPlace` (the
+/// `DELETE FROM` transaction) and into `PlaintextStorageProtection.purgeAll`
+/// itself, which is now the ONLY place a purge is allowed to clear its own
+/// marker — and only after its OWN legacy sweep and pinned/temp resweep have
+/// also already run, not merely after the reset transaction commits; see
+/// `purgeAll`'s doc comment for the full rationale.
+/// `registerMountedFileProviderDomainLocked` passes `true`: a
 /// registration's successful bump is how a marker left behind by some
 /// EARLIER, already-finished purge that never got the chance to clear it
 /// itself gets cleared — "how Files comes back after a failed purge".
@@ -1491,18 +1496,25 @@ private func registerMountedFileProviderDomain(
 /// database — mounting on top of that would show them to whoever is
 /// signed in now. Refuse.
 ///
-/// Independently: `purgePending` (`PlaintextStorageProtection
-/// .isPurgePending()`) means a fail-closed marker — this call's own, or
-/// some OTHER purge's — is still up. Registration is the one path allowed
-/// to clear a marker an EARLIER, already-finished purge left stuck
+/// Independently: `purgePending` (captured by the caller as
+/// `purgePendingBeforeBump`, `PlaintextStorageProtection.isPurgePending()`
+/// read BEFORE this call's own bump could clear it — task 1593 f4 item 2,
+/// see the call site's doc comment for why reading it any later is unsafe)
+/// means a fail-closed marker — this call's own, or some OTHER purge's — was
+/// still up when this call started. Registration is the one path allowed to
+/// clear a marker an EARLIER, already-finished purge left stuck
 /// (`bumpFileProviderCacheVersion`'s doc comment: "how Files comes back
 /// after a failed purge") — but only once ITS OWN reset + bump (whichever
 /// of the two this call actually attempted) have BOTH landed; adding while
 /// still pending, without proof of that, risks the add itself racing a
 /// purge that has not finished.
 ///
-/// `cacheResetOk` is `true` when no reset was attempted this call (neither
-/// `forceReset` nor a legacy-schema migration) — nothing to have failed.
+/// `cacheResetOk` is `true` when no reset was attempted this call AND no
+/// purge was pending at the start of the call — nothing to have failed. A
+/// purge pending with no reset attempted (task 1593 f4 item 2) sets it
+/// `false` instead of leaving it at that default: the cache database may
+/// still hold exactly the rows the in-flight purge exists to remove, and
+/// this call has no reset of its own to point to as proof otherwise.
 private func mayAddFileProviderDomain(
   forceReset: Bool,
   purgePending: Bool,
@@ -1528,12 +1540,40 @@ private func registerMountedFileProviderDomainLocked(
   let existed = domainsBefore.contains { $0.identifier == domain.identifier }
   let needsLegacyMigration = existed && defaults?.string(forKey: fileProviderDomainSchemaKey) != fileProviderDomainSchemaVersion
 
+  // Task 1593 f4 (item 2, Codex thread PRRT_kwDOSLX6T86mknXP) — captured
+  // BEFORE the cache-database-ready check and its epoch bump below can
+  // touch it, and BEFORE `clearsPendingMarker: true`'s own clear can run.
+  // The OLD code read `PlaintextStorageProtection.isPurgePending()` fresh at
+  // the `mayAddFileProviderDomain` call site below, AFTER that bump — so
+  // whenever this call's own bump cleared a marker (its nonce still matched
+  // what THIS call captured, because under f4's item 1b a purge now only
+  // clears its own marker at the very END of `purgeAll`, not right after
+  // its reset's own commit — a much wider window than before), the guard
+  // read `purgePending: false` even though the purge that marker belonged
+  // to had NOT actually finished sweeping the cache yet. Capturing here
+  // instead means the guard sees the true pre-bump state.
+  let purgePendingBeforeBump = PlaintextStorageProtection.isPurgePending()
+
   var cacheResetOk = true
   if forceReset || needsLegacyMigration {
     if existed {
       try await removeFileProviderDomain(domain)
     }
     cacheResetOk = clearFileProviderCacheState(defaults: defaults).cacheResetOk
+  } else if purgePendingBeforeBump {
+    // Task 1593 f4 (item 2) — a purge was mid-flight when this call started
+    // and nothing here was asked to reset anything. `cacheResetOk`'s
+    // ordinary "true when no reset was attempted — nothing to have failed"
+    // meaning does not hold in this specific case: there IS something that
+    // could still be wrong — the rows currently in the cache database may
+    // be exactly the ones that in-flight purge exists to remove, and this
+    // call has no way to prove they already are not. Deliberately does NOT
+    // run an unrequested reset here (that would delete/recreate the whole
+    // cache database for a call that never asked for one, per the brief) —
+    // marking the reset as unproven is enough: `mayAddFileProviderDomain`'s
+    // existing `purgePending, !(cacheResetOk && cacheVersionBumped)` guard
+    // below already refuses the add whenever `cacheResetOk` is `false`.
+    cacheResetOk = false
   }
 
   // Task 1593 f3 (item 2) — ensure + bump the cache DB's own epoch BEFORE
@@ -1562,7 +1602,7 @@ private func registerMountedFileProviderDomainLocked(
     // and Settings shows Files could not be turned on.
     guard mayAddFileProviderDomain(
       forceReset: forceReset,
-      purgePending: PlaintextStorageProtection.isPurgePending(),
+      purgePending: purgePendingBeforeBump,
       cacheResetOk: cacheResetOk,
       cacheVersionBumped: cacheVersionBumped
     ) else {
