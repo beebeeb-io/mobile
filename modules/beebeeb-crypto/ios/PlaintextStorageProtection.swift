@@ -682,6 +682,12 @@ public enum PlaintextStorageProtection {
   /// (`resetBumpCommitted`, threaded up from `resetSQLiteInPlace`'s return
   /// value below) — so the marker now covers this purge's ENTIRE duration,
   /// not just the reset transaction's own commit.
+  ///
+  /// Task 1593 f5 (reviewer follow-up 2) — running AFTER the legacy sweep
+  /// and resweep is not enough on its own; the clear guard below ALSO
+  /// requires both of them to report zero failures (see the guard's own
+  /// doc comment), so a purge that leaves plaintext behind in either one
+  /// cannot report itself finished.
   @discardableResult
   public static func purgeAll(pendingNonce: Data? = nil) -> (removed: Int, failed: Int) {
     var removed = 0
@@ -748,7 +754,25 @@ public enum PlaintextStorageProtection {
     // succeeded (`pendingNonce` non-nil) — a total mark-pending failure has
     // nothing this purge can prove safe to clear, matching every other
     // failure branch's "leave it for a later purge/registration" behavior.
-    if resetBumpCommitted, let pendingNonce {
+    //
+    // Task 1593 f5 (reviewer follow-up 2) — ALSO requires `legacy.failed
+    // == 0` and `resweep.failed == 0`. `resetBumpCommitted` alone only
+    // proves the SQL table rows and the `PRAGMA user_version` epoch bump
+    // landed — it says nothing about `sweepLegacyFileProviderCache()` or
+    // `resweepFileProviderContentDirectories()`'s own outcomes, even though
+    // both run AFTER the reset and each can independently fail to actually
+    // delete plaintext left in a legacy DB copy, `pinned/`, or `temp/` (see
+    // each function's own doc comment for what it exists to catch).
+    // Clearing the marker on a bump success alone, regardless of those two,
+    // would tell every other reader (`CacheManager.beginImmediate()`,
+    // `purgeEpochUnchanged(since:)`, `currentPurgeEpoch()`) that this purge
+    // is done and it is safe to write again, while plaintext this SAME
+    // purge was supposed to remove could still be sitting on disk. A failed
+    // legacy sweep or resweep is retried by the NEXT purge (both functions
+    // only ever act on entries they still find present), so leaving the
+    // marker up here is not a permanent stall — it fails closed until that
+    // retry actually succeeds.
+    if resetBumpCommitted, legacy.failed == 0, resweep.failed == 0, let pendingNonce {
       clearPurgePending(nonce: pendingNonce)
     }
     return (removed, failed)

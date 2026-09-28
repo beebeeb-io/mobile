@@ -1144,12 +1144,19 @@ private func bumpFileProviderCacheVersion(clearsPendingMarker: Bool = false) -> 
 /// async Swift Task on the cooperative thread pool, so the delay AND the
 /// retried, blocking-SQLite bump both run off one of its threads via GCD —
 /// not inline, where a slow retry could tie up the pool.
+///
+/// Task 1593 f5 (reviewer follow-up 1) — `clearsPendingMarker` is now a
+/// caller-supplied parameter (the caller's own `cacheResetOk`), not a bare
+/// `true` — see the call site's doc comment for why passing a bare `true`
+/// was wrong. The retry must use the SAME value the first attempt did:
+/// `cacheResetOk` reflects whether a reset actually landed for this
+/// REGISTRATION call, which the retry delay does not change.
 @available(iOS 16.0, *)
-private func retryFileProviderCacheReadyAndBumpOffCooperativePool() async -> (ready: Bool, bumped: Bool) {
+private func retryFileProviderCacheReadyAndBumpOffCooperativePool(clearsPendingMarker: Bool) async -> (ready: Bool, bumped: Bool) {
   await withCheckedContinuation { (continuation: CheckedContinuation<(Bool, Bool), Never>) in
     DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.25) {
       let ready = ensureFileProviderCacheDatabase()
-      let bumped = ready && bumpFileProviderCacheVersion(clearsPendingMarker: true)
+      let bumped = ready && bumpFileProviderCacheVersion(clearsPendingMarker: clearsPendingMarker)
       continuation.resume(returning: (ready, bumped))
     }
   }
@@ -1542,8 +1549,9 @@ private func registerMountedFileProviderDomainLocked(
 
   // Task 1593 f4 (item 2, Codex thread PRRT_kwDOSLX6T86mknXP) — captured
   // BEFORE the cache-database-ready check and its epoch bump below can
-  // touch it, and BEFORE `clearsPendingMarker: true`'s own clear can run.
-  // The OLD code read `PlaintextStorageProtection.isPurgePending()` fresh at
+  // touch it, and BEFORE that bump's own conditional clear (see the f5 doc
+  // comment further down) can run. The OLD code read
+  // `PlaintextStorageProtection.isPurgePending()` fresh at
   // the `mayAddFileProviderDomain` call site below, AFTER that bump — so
   // whenever this call's own bump cleared a marker (its nonce still matched
   // what THIS call captured, because under f4's item 1b a purge now only
@@ -1580,14 +1588,32 @@ private func registerMountedFileProviderDomainLocked(
   // ever deciding whether to add the domain. Previously this ran AFTER the
   // add block below, so a failed reset/bump was only ever logged — the
   // domain had already been mounted by the time anyone noticed. Runs
-  // unconditionally on every call, exactly as before: it is also how a
-  // marker left by an EARLIER, already-finished purge gets cleared
-  // (`clearsPendingMarker: true`) even on a call that isn't adding
-  // anything.
+  // unconditionally on every call — the bump itself (and the epoch
+  // invalidation it provides) is needed regardless of whether the add ends
+  // up refused.
+  //
+  // Task 1593 f5 (reviewer follow-up 1) — `clearsPendingMarker` is now
+  // `cacheResetOk`, not a bare `true`. A bare `true` cleared the marker
+  // whenever THIS call's bump committed, with no regard for whether this
+  // call actually proved the cache safe: a call that hit `else if
+  // purgePendingBeforeBump { cacheResetOk = false }` above (a purge is
+  // mid-flight; nothing here reset it) still cleared that SAME purge's own
+  // marker via its bump — even though `mayAddFileProviderDomain` below then
+  // correctly refused the add on that very same `cacheResetOk`. The marker
+  // exists to protect exactly the domain-add decision that was being
+  // refused, so clearing it out from under a refused add defeated the
+  // point. `cacheResetOk` is true only when no reset was needed (no purge
+  // pending) or a reset this call attempted actually landed
+  // (`forceReset`/`needsLegacyMigration`'s own `clearFileProviderCacheState`
+  // call) — matching `mayAddFileProviderDomain`'s own doc comment above:
+  // "Registration is the one path allowed to clear a marker an EARLIER,
+  // already-finished purge left stuck — but only once ITS OWN reset ...
+  // [has] landed." Threaded into the retry below too, so a transient-lock
+  // retry can't regress back to the unconditional clear.
   var cacheReady = ensureFileProviderCacheDatabase()
-  var cacheVersionBumped = cacheReady && bumpFileProviderCacheVersion(clearsPendingMarker: true)
+  var cacheVersionBumped = cacheReady && bumpFileProviderCacheVersion(clearsPendingMarker: cacheResetOk)
   if !cacheReady || !cacheVersionBumped {
-    (cacheReady, cacheVersionBumped) = await retryFileProviderCacheReadyAndBumpOffCooperativePool()
+    (cacheReady, cacheVersionBumped) = await retryFileProviderCacheReadyAndBumpOffCooperativePool(clearsPendingMarker: cacheResetOk)
   }
   if !cacheReady || !cacheVersionBumped {
     RuntimeTrace.event("storage.purge.failed", [
