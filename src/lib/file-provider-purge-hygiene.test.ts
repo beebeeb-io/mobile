@@ -1428,7 +1428,10 @@ describe('round 11: CacheManager.purgeEpochUnchanged is sentinel-safe (reuses cu
   const body = bracedBody(cacheManagerSwift, 'func purgeEpochUnchanged(since capturedEpoch: Int) -> Bool {');
 
   test('is queue.sync-wrapped (this is a public entry point, unlike the private _currentPurgeEpoch)', () => {
-    expect(body).toMatch(/queue\.sync\s*\{\s*currentEpochMatches\(capturedEpoch\)\s*\}/);
+    // Task 1593 f1 widened this: queue.sync now wraps a pending-marker
+    // guard (see the "f1: CacheManager refuses..." describe block) ahead of
+    // the same currentEpochMatches call this test originally checked alone.
+    expect(body).toMatch(/queue\.sync\s*\{[\s\S]*?return currentEpochMatches\(capturedEpoch\)\s*\n\s*\}/);
   });
 
   test('delegates to currentEpochMatches rather than re-implementing its own comparison', () => {
@@ -1796,5 +1799,221 @@ describe('round 12 (Codex thread PRRT_kwDOSLX6T86mjO56, P1): a failed early epoc
     const catchBranch = body.slice(catchIdx, catchIdx + 200);
     expect(catchBranch).toMatch(/RuntimeTrace\.event\("storage\.purge\.failed", \["path": dir\.lastPathComponent\]\)/);
     expect(catchBranch).toMatch(/failed \+= 1/);
+  });
+});
+
+// Task 1593 f1 (follow-up to #144; security reviewer P2, downgraded from P1
+// — see PlaintextStorageProtection.swift's `markPurgePending()` doc comment
+// for the full "needs three failed advances + an in-flight fetch" rationale)
+// — fail-closed purge-pending marker.
+describe('f1 (fail-closed purge-pending marker): the marker primitive itself', () => {
+  const registrySwift = readFileSync(REGISTRY_SWIFT_PATH, 'utf8');
+
+  test('the marker lives at file-provider-db/purge-pending, in the SAME directory as the cache DB', () => {
+    expect(registrySwift).toMatch(/private static let purgePendingMarkerName = "purge-pending"/);
+    const dirBody = bracedBody(registrySwift, 'private static var fileProviderCacheDbDirectory: URL? {');
+    expect(dirBody).toMatch(/appGroupContainer\?\.appendingPathComponent\("file-provider-db", isDirectory: true\)/);
+  });
+
+  test('markPurgePending creates + protects the directory, then creates + protects a PLAIN file — no SQLite involved', () => {
+    const body = bracedBody(registrySwift, 'public static func markPurgePending() -> Bool {');
+    expect(body).toMatch(/createDirectory\(at: dir, withIntermediateDirectories: true\)/);
+    expect(body).toMatch(/protect\(dir\)/);
+    expect(body).toMatch(/createFile\(atPath: url\.path, contents: Data\(\)\)/);
+    expect(body).toMatch(/protect\(url\)/);
+    // Deliberately no SQLite: this marker's own creation must not be able to
+    // fail the same correlated way a DB write under contention can.
+    expect(body).not.toMatch(/sqlite3_/);
+    expect(body).not.toMatch(/OpaquePointer/);
+  });
+
+  test('markPurgePending is idempotent: does not re-create (or fail on) an already-existing marker', () => {
+    const body = bracedBody(registrySwift, 'public static func markPurgePending() -> Bool {');
+    const guardIdx = body.indexOf('if !FileManager.default.fileExists(atPath: url.path) {');
+    expect(guardIdx).toBeGreaterThan(-1);
+    const createIdx = body.indexOf('createFile(atPath: url.path, contents: Data())');
+    expect(createIdx).toBeGreaterThan(guardIdx);
+  });
+
+  test('clearPurgePending removes the marker only if present, and traces both outcomes', () => {
+    const body = bracedBody(registrySwift, 'public static func clearPurgePending() {');
+    expect(body).toMatch(/guard FileManager\.default\.fileExists\(atPath: url\.path\) else \{ return \}/);
+    expect(body).toMatch(/try FileManager\.default\.removeItem\(at: url\)/);
+    expect(body).toMatch(/RuntimeTrace\.event\("storage\.purge\.pending_cleared", \[:\]\)/);
+    // A failed removal must stay marked (fail closed), not silently drop
+    // the marker from its own error path.
+    const catchIdx = body.indexOf('} catch {');
+    expect(catchIdx).toBeGreaterThan(-1);
+    const catchBranch = body.slice(catchIdx, catchIdx + 300);
+    expect(catchBranch).toMatch(/RuntimeTrace\.event\("storage\.purge\.pending_clear_failed", \[:\]\)/);
+    expect(catchBranch).not.toMatch(/removeItem/);
+  });
+
+  test('isPurgePending is a plain on-disk existence check at the same path markPurgePending/clearPurgePending use', () => {
+    const body = bracedBody(registrySwift, 'public static func isPurgePending() -> Bool {');
+    expect(body).toMatch(/fileProviderCacheDbDirectory/);
+    expect(body).toMatch(/purgePendingMarkerName/);
+    expect(body).toMatch(/FileManager\.default\.fileExists\(/);
+  });
+});
+
+describe('f1: a purge that cannot prove its epoch advance landed marks pending; a later one clears it', () => {
+  const moduleSwift = readFileSync(MODULE_SWIFT_PATH, 'utf8');
+  const registrySwift = readFileSync(REGISTRY_SWIFT_PATH, 'utf8');
+
+  test('purgePlaintextStorage marks pending only AFTER both bumpFileProviderCacheVersion attempts fail (not on the first, transient one)', () => {
+    const purgeBody = bracedBody(moduleSwift, 'AsyncFunction("purgePlaintextStorage") { () -> [String: Int] in');
+    const failedTraceIdx = purgeBody.indexOf('RuntimeTrace.event("storage.purge.failed", ["stage": "file_provider_cache_version_bump"])');
+    expect(failedTraceIdx).toBeGreaterThan(-1);
+    const after = purgeBody.slice(failedTraceIdx, failedTraceIdx + 600);
+    expect(after).toMatch(/failed \+= 1/);
+    expect(after).toMatch(/PlaintextStorageProtection\.markPurgePending\(\)/);
+    // Must sit INSIDE the nested (second-attempt) failure branch, not the
+    // outer one — i.e. after the first `if !bumpFileProviderCacheVersion() {`
+    // AND after the second one, not just the first.
+    const firstIdx = purgeBody.indexOf('if !bumpFileProviderCacheVersion() {');
+    const secondIdx = purgeBody.indexOf('if !bumpFileProviderCacheVersion() {', firstIdx + 1);
+    expect(secondIdx).toBeGreaterThan(firstIdx);
+    expect(failedTraceIdx).toBeGreaterThan(secondIdx);
+  });
+
+  test('bumpFileProviderCacheVersion clears pending only after COMMIT itself succeeds, and only on the success path', () => {
+    const body = bracedBody(moduleSwift, 'private func bumpFileProviderCacheVersion() -> Bool {');
+    const commitGuardIdx = body.indexOf('guard sqlite3_exec(db, "COMMIT", nil, nil, nil) == SQLITE_OK else {');
+    expect(commitGuardIdx).toBeGreaterThan(-1);
+    const clearIdx = body.indexOf('PlaintextStorageProtection.clearPurgePending()', commitGuardIdx);
+    const returnTrueIdx = body.indexOf('return true', commitGuardIdx);
+    expect(clearIdx).toBeGreaterThan(commitGuardIdx);
+    expect(returnTrueIdx).toBeGreaterThan(clearIdx);
+    // Every OTHER return in this function (the early no-op, and every
+    // failure guard) must not clear the marker — only this one success path.
+    const clearCount = (body.match(/PlaintextStorageProtection\.clearPurgePending\(\)/g) ?? []).length;
+    expect(clearCount).toBe(1);
+  });
+
+  test('resetSQLiteInPlace marks pending when it cannot even enumerate its own tables', () => {
+    const body = bracedBody(registrySwift, 'private static func resetSQLiteInPlace(_ url: URL) -> Bool {');
+    const prepareFailIdx = body.indexOf("db, \"SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'\", -1, &stmt, nil");
+    expect(prepareFailIdx).toBeGreaterThan(-1);
+    const after = body.slice(prepareFailIdx, prepareFailIdx + 300);
+    expect(after).toMatch(/markPurgePending\(\)/);
+    expect(after).toMatch(/return false/);
+  });
+
+  test('resetSQLiteInPlace captures whether the bump COMMITTED before VACUUM can touch that result, and marks/clears on exactly that', () => {
+    const body = bracedBody(registrySwift, 'private static func resetSQLiteInPlace(_ url: URL) -> Bool {');
+    const bumpCommittedIdx = body.indexOf('let bumpCommitted = ok');
+    const vacuumIdx = body.indexOf('vacuumRetryingOnceOnBusy(db)');
+    expect(bumpCommittedIdx).toBeGreaterThan(-1);
+    expect(vacuumIdx).toBeGreaterThan(bumpCommittedIdx);
+    const decisionBlock = body.slice(bumpCommittedIdx, vacuumIdx);
+    expect(decisionBlock).toMatch(/if bumpCommitted \{\s*\n\s*clearPurgePending\(\)\s*\n\s*\} else \{\s*\n\s*markPurgePending\(\)\s*\n\s*\}/);
+  });
+
+  test('registration (File Provider domain mount) also clears pending: a fresh bump runs right after ensureFileProviderCacheDatabase, once its OWN connection has closed', () => {
+    const body = bracedBody(
+      moduleSwift,
+      'private func registerMountedFileProviderDomainLocked(\n  defaults: UserDefaults?,\n  forceReset: Bool = false\n) async throws -> [String: Any] {',
+    );
+    const cacheReadyIdx = body.indexOf('let cacheReady = ensureFileProviderCacheDatabase()');
+    expect(cacheReadyIdx).toBeGreaterThan(-1);
+    const after = body.slice(cacheReadyIdx, cacheReadyIdx + 700);
+    expect(after).toMatch(/if cacheReady \{\s*\n\s*_ = bumpFileProviderCacheVersion\(\)\s*\n\s*\}/);
+  });
+});
+
+describe('f1: CacheManager refuses every epoch-gated write and gate check while a purge is pending', () => {
+  const cacheManagerSwift = readFileSync(CACHE_MANAGER_SWIFT_PATH, 'utf8');
+
+  test('beginImmediate — the single choke point for replaceChildren / upsert(_:expectedEpoch:) / delete(id:expectedEpoch:) — refuses while pending, checked BEFORE issuing BEGIN IMMEDIATE', () => {
+    const body = bracedBody(cacheManagerSwift, 'private func beginImmediate() -> Bool {');
+    const pendingIdx = body.indexOf('guard !PlaintextStorageProtection.isPurgePending() else { return false }');
+    const beginIdx = body.indexOf('sqlite3_exec(db, "BEGIN IMMEDIATE", nil, nil, nil)');
+    expect(pendingIdx).toBeGreaterThan(-1);
+    expect(beginIdx).toBeGreaterThan(pendingIdx);
+  });
+
+  test('purgeEpochUnchanged (fetchContents\' temp/pinned gate) refuses while pending, checked BEFORE the epoch comparison, epoch-match or not', () => {
+    const body = bracedBody(cacheManagerSwift, 'func purgeEpochUnchanged(since capturedEpoch: Int) -> Bool {');
+    const pendingIdx = body.indexOf('guard !PlaintextStorageProtection.isPurgePending() else { return false }');
+    const matchIdx = body.indexOf('return currentEpochMatches(capturedEpoch)');
+    expect(pendingIdx).toBeGreaterThan(-1);
+    expect(matchIdx).toBeGreaterThan(pendingIdx);
+  });
+
+  test('every epoch-gated writer still routes through beginImmediate — the marker check has exactly one place to live', () => {
+    const beginImmediateCallCount = (cacheManagerSwift.match(/guard beginImmediate\(\) else \{ return false \}/g) ?? []).length;
+    // replaceChildren, upsert(_:expectedEpoch:), delete(id:expectedEpoch:).
+    expect(beginImmediateCallCount).toBe(3);
+  });
+});
+
+describe('f1 (item 2): the unused batch upsert(_ items:) is removed — confirmed zero callers first', () => {
+  const cacheManagerSwift = readFileSync(CACHE_MANAGER_SWIFT_PATH, 'utf8');
+  const extensionSwift = readFileSync(FILE_PROVIDER_EXTENSION_SWIFT_PATH, 'utf8');
+
+  test('CacheManager no longer declares upsert(_ items: [CachedItem]) with its own unchecked BEGIN/COMMIT', () => {
+    expect(cacheManagerSwift).not.toMatch(/func upsert\(_ items: \[CachedItem\]\)/);
+  });
+
+  test('the single-item, non-gated upsert(_ item: CachedItem) still exists — only the batch overload was removed', () => {
+    expect(cacheManagerSwift).toMatch(/func upsert\(_ item: CachedItem\) \{/);
+  });
+
+  test('the epoch-gated upsert(_:expectedEpoch:) — the one every real caller actually uses — is untouched', () => {
+    expect(cacheManagerSwift).toMatch(/func upsert\(_ item: CachedItem, expectedEpoch: Int\) -> Bool \{/);
+    expect(extensionSwift).toMatch(/CacheManager\.shared\.upsert\(cached, expectedEpoch: epochAtStart\)/);
+    expect(extensionSwift).toMatch(/CacheManager\.shared\.upsert\(updated, expectedEpoch: epochAtStart\)/);
+  });
+});
+
+// Task 1593 f1 (item 3) — the brief asked to confirm (or fix) that
+// `FileProviderRegistrationGate` serializes `registerMountedFileProviderDomain`
+// end to end and that the undo's blocking removal runs off the cooperative
+// pool. Both are round 10 (reviewer F-a) additions this round did NOT touch;
+// the full structural proof already lives in that round's own describe block
+// above ("round 10 (reviewer F-a): overlapping registrations no longer undo
+// each other, and the undo removal moves off the cooperative pool") — this
+// block re-confirms the two headline claims the brief names, rather than
+// duplicating that whole suite, and points at the additional BEHAVIORAL
+// proof this round adds beyond source-scanning (a real Swift-interpreter
+// execution of the extracted gate, not just "the right tokens appear"):
+// _qa-evidence/1593/f1-registration-gate-behavioral-proof.txt.
+describe('f1 (item 3, confirms round 10 F-a still holds — no code change needed here)', () => {
+  const moduleSwift = readFileSync(MODULE_SWIFT_PATH, 'utf8');
+
+  test('registerMountedFileProviderDomain (every real call site\'s entry point) still acquires/releases fileProviderRegistrationGate around the locked impl, on both success and throw', () => {
+    const body = bracedBody(
+      moduleSwift,
+      'private func registerMountedFileProviderDomain(\n  defaults: UserDefaults?,\n  forceReset: Bool = false\n) async throws -> [String: Any] {',
+    );
+    expect(body).toMatch(/await fileProviderRegistrationGate\.acquire\(\)/);
+    const releaseCount = (body.match(/await fileProviderRegistrationGate\.release\(\)/g) ?? []).length;
+    expect(releaseCount).toBe(2);
+  });
+
+  test('the gate is a real FIFO async lock (actor, waiters queue, no DispatchSemaphore) — not just actor-isolation alone', () => {
+    expect(moduleSwift).toMatch(/private actor FileProviderRegistrationGate \{/);
+    const body = bracedBody(moduleSwift, 'private actor FileProviderRegistrationGate {');
+    expect(body).toMatch(/func acquire\(\) async \{/);
+    expect(body).toMatch(/func release\(\) \{/);
+    expect(body).not.toMatch(/DispatchSemaphore/);
+  });
+
+  test('the undo path calls the off-cooperative-pool removal wrapper, not the blocking semaphore-based function directly', () => {
+    const body = bracedBody(
+      moduleSwift,
+      'private func registerMountedFileProviderDomainLocked(\n  defaults: UserDefaults?,\n  forceReset: Bool = false\n) async throws -> [String: Any] {',
+    );
+    expect(body).toMatch(/removeFileProviderDomainIfRegisteredOffCooperativePool\(\)/);
+    expect(body).not.toMatch(/= removeFileProviderDomainIfRegistered\(\)/);
+  });
+
+  test('removeFileProviderDomainIfRegisteredOffCooperativePool moves the blocking wait onto a normal GCD queue, off the Swift cooperative pool', () => {
+    const body = bracedBody(
+      moduleSwift,
+      'private func removeFileProviderDomainIfRegisteredOffCooperativePool() async -> Bool {',
+    );
+    expect(body).toMatch(/DispatchQueue\.global\(qos: \.userInitiated\)\.async \{/);
   });
 });

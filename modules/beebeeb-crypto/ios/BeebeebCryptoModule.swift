@@ -1089,7 +1089,16 @@ private func bumpFileProviderCacheVersion() -> Bool {
     sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
     return false
   }
-  return sqlite3_exec(db, "COMMIT", nil, nil, nil) == SQLITE_OK
+  guard sqlite3_exec(db, "COMMIT", nil, nil, nil) == SQLITE_OK else {
+    return false
+  }
+  // Task 1593 f1 (fail-closed purge-pending marker) — this bump just
+  // durably committed, so any EARLIER failed bump this purge (or a prior
+  // one) is now moot: whatever epoch an extension write captured before
+  // this commit is guaranteed stale. See
+  // `PlaintextStorageProtection.markPurgePending()`'s doc comment.
+  PlaintextStorageProtection.clearPurgePending()
+  return true
 }
 
 private let fileProviderCacheSchemaStatements = [
@@ -1506,6 +1515,15 @@ private func registerMountedFileProviderDomainLocked(
     }
   }
   let cacheReady = ensureFileProviderCacheDatabase()
+  // Task 1593 f1 — called AFTER ensureFileProviderCacheDatabase()'s own
+  // connection has closed (its `defer` already ran), so this opens a fresh
+  // one instead of contending with it. Registration is the other moment
+  // (besides a later purge) that clears a pending marker — see
+  // `markPurgePending()`'s doc comment. Failure here is not separately
+  // counted; a purge still owns marking this pending in the first place.
+  if cacheReady {
+    _ = bumpFileProviderCacheVersion()
+  }
   defaults?.set(fileProviderDomainSchemaVersion, forKey: fileProviderDomainSchemaKey)
   defaults?.synchronize()
 
@@ -1828,6 +1846,12 @@ public class BeebeebCryptoModule: Module {
           if !bumpFileProviderCacheVersion() {
             RuntimeTrace.event("storage.purge.failed", ["stage": "file_provider_cache_version_bump"])
             failed += 1
+            // Task 1593 f1 — two consecutive failed advances mean this
+            // purge has NO PROOF the epoch an in-flight extension write
+            // already captured has been invalidated. The final in-place
+            // reset below still gets a chance to bump and clear this; until
+            // either that or a later purge succeeds, refuse every write.
+            PlaintextStorageProtection.markPurgePending()
           }
         }
         // Task 1593 round 6 (new-1/new-2) — a timed-out or errored domain
