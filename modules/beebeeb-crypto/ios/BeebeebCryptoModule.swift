@@ -1078,24 +1078,36 @@ private func resetFileProviderShowInFilesConsent(defaults: UserDefaults?) {
 /// EARLIER, already-finished purge that never got the chance to clear it
 /// itself gets cleared — "how Files comes back after a failed purge".
 ///
-/// When `clearsPendingMarker` is `true`, the nonce is captured BEFORE
-/// `BEGIN IMMEDIATE` and the clear (`clearPurgePending(nonce:)`'s own
-/// compare-then-delete) runs against that EXACT captured value, never a
-/// fresh read taken after COMMIT: if a DIFFERENT purge marks pending (or
-/// re-marks) anywhere between this capture and this bump's own COMMIT, the
-/// nonce on disk by clear-time will no longer match what was captured here,
-/// and the clear correctly refuses — this registration must not be able to
-/// clear a marker some OTHER, currently-running purge just set.
+/// When `clearsPendingMarker` is `true`, the clear (`clearPurgePending
+/// (nonce:)`'s own compare-then-delete) runs against `pendingNonceAtSnapshot`
+/// — a value THIS FUNCTION never reads itself. Task 1593 f7 (Codex P1,
+/// PRRT_kwDOSLX6T86mme-b) — f2's original design had this function call
+/// `PlaintextStorageProtection.currentPurgePendingNonce()` itself, right
+/// here, immediately BEFORE its own `BEGIN IMMEDIATE`. That was still too
+/// late: `registerMountedFileProviderDomainLocked` can call this function
+/// well after ITS OWN snapshot of `isPurgePending()` (`ensureFileProvider
+/// CacheDatabase()` and any schema work run in between) — long enough for a
+/// DIFFERENT, concurrently-started `purgePlaintextStorage` to create its own
+/// marker in that gap. A fresh read taken here would capture THAT purge's
+/// nonce, not "nothing was pending", and then clear it right out from under
+/// the still-running purge. The caller must instead capture the nonce at
+/// its OWN true snapshot point — the same instant it decides whether a
+/// purge was pending at all — and pass that exact value in here. A `nil`
+/// (nothing pending at the caller's snapshot) means this function clears
+/// nothing, full stop, even if a marker exists by the time it runs; only a
+/// nonce that was ALREADY on disk at the caller's snapshot can ever be
+/// cleared, and only if it is STILL the value on disk when
+/// `clearPurgePending`'s rename-claim compare runs (a DIFFERENT, newer
+/// purge re-marking in between still correctly refuses the clear).
 @discardableResult
-private func bumpFileProviderCacheVersion(clearsPendingMarker: Bool = false) -> Bool {
+private func bumpFileProviderCacheVersion(
+  clearsPendingMarker: Bool = false,
+  pendingNonceAtSnapshot: Data? = nil
+) -> Bool {
   guard let url = fileProviderCacheDatabaseUrl(),
         FileManager.default.fileExists(atPath: url.path) else {
     return true
   }
-
-  let nonceBeforeBump = clearsPendingMarker
-    ? PlaintextStorageProtection.currentPurgePendingNonce()
-    : nil
 
   var db: OpaquePointer?
   guard sqlite3_open_v2(
@@ -1127,8 +1139,8 @@ private func bumpFileProviderCacheVersion(clearsPendingMarker: Bool = false) -> 
   guard sqlite3_exec(db, "COMMIT", nil, nil, nil) == SQLITE_OK else {
     return false
   }
-  if clearsPendingMarker, let nonceBeforeBump {
-    PlaintextStorageProtection.clearPurgePending(nonce: nonceBeforeBump)
+  if clearsPendingMarker, let pendingNonceAtSnapshot {
+    PlaintextStorageProtection.clearPurgePending(nonce: pendingNonceAtSnapshot)
   }
   return true
 }
@@ -1151,12 +1163,24 @@ private func bumpFileProviderCacheVersion(clearsPendingMarker: Bool = false) -> 
 /// was wrong. The retry must use the SAME value the first attempt did:
 /// `cacheResetOk` reflects whether a reset actually landed for this
 /// REGISTRATION call, which the retry delay does not change.
+///
+/// Task 1593 f7 (Codex P1, PRRT_kwDOSLX6T86mme-b) — `pendingNonceAtSnapshot`
+/// is threaded through the same way, for the same reason: it is the
+/// caller's OWN snapshot-time nonce (see `bumpFileProviderCacheVersion`'s
+/// doc comment), and the retry must clear against that SAME captured value,
+/// never a fresh read taken at retry time either.
 @available(iOS 16.0, *)
-private func retryFileProviderCacheReadyAndBumpOffCooperativePool(clearsPendingMarker: Bool) async -> (ready: Bool, bumped: Bool) {
+private func retryFileProviderCacheReadyAndBumpOffCooperativePool(
+  clearsPendingMarker: Bool,
+  pendingNonceAtSnapshot: Data?
+) async -> (ready: Bool, bumped: Bool) {
   await withCheckedContinuation { (continuation: CheckedContinuation<(Bool, Bool), Never>) in
     DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.25) {
       let ready = ensureFileProviderCacheDatabase()
-      let bumped = ready && bumpFileProviderCacheVersion(clearsPendingMarker: clearsPendingMarker)
+      let bumped = ready && bumpFileProviderCacheVersion(
+        clearsPendingMarker: clearsPendingMarker,
+        pendingNonceAtSnapshot: pendingNonceAtSnapshot
+      )
       continuation.resume(returning: (ready, bumped))
     }
   }
@@ -1560,7 +1584,22 @@ private func registerMountedFileProviderDomainLocked(
   // read `purgePending: false` even though the purge that marker belonged
   // to had NOT actually finished sweeping the cache yet. Capturing here
   // instead means the guard sees the true pre-bump state.
+  // Task 1593 f7 (Codex P1, PRRT_kwDOSLX6T86mme-b) — `purgePendingNonceAtSnapshot`
+  // below is captured at this SAME snapshot point, immediately after
+  // `isPurgePending`, before `ensureFileProviderCacheDatabase` or the bump
+  // further down can run. f2's original design read this nonce freshly
+  // INSIDE `bumpFileProviderCacheVersion`, right before its own `BEGIN
+  // IMMEDIATE` — well after this snapshot, so a marker created by a
+  // DIFFERENT, concurrently-started purge in that gap would be captured
+  // and cleared as if it were this call's own to clear. This registration
+  // may only ever clear a marker that was ALREADY pending when it started
+  // (or find nothing pending, `nil`) — never one that appears afterwards —
+  // so the nonce is captured here, at the same instant as
+  // `purgePendingBeforeBump` itself, and threaded through unchanged to
+  // every bump attempt below. See `bumpFileProviderCacheVersion`'s doc
+  // comment for the full race.
   let purgePendingBeforeBump = PlaintextStorageProtection.isPurgePending()
+  let purgePendingNonceAtSnapshot = PlaintextStorageProtection.currentPurgePendingNonce()
 
   var cacheResetOk = true
   if forceReset || needsLegacyMigration {
@@ -1611,9 +1650,15 @@ private func registerMountedFileProviderDomainLocked(
   // [has] landed." Threaded into the retry below too, so a transient-lock
   // retry can't regress back to the unconditional clear.
   var cacheReady = ensureFileProviderCacheDatabase()
-  var cacheVersionBumped = cacheReady && bumpFileProviderCacheVersion(clearsPendingMarker: cacheResetOk)
+  var cacheVersionBumped = cacheReady && bumpFileProviderCacheVersion(
+    clearsPendingMarker: cacheResetOk,
+    pendingNonceAtSnapshot: purgePendingNonceAtSnapshot
+  )
   if !cacheReady || !cacheVersionBumped {
-    (cacheReady, cacheVersionBumped) = await retryFileProviderCacheReadyAndBumpOffCooperativePool(clearsPendingMarker: cacheResetOk)
+    (cacheReady, cacheVersionBumped) = await retryFileProviderCacheReadyAndBumpOffCooperativePool(
+      clearsPendingMarker: cacheResetOk,
+      pendingNonceAtSnapshot: purgePendingNonceAtSnapshot
+    )
   }
   if !cacheReady || !cacheVersionBumped {
     RuntimeTrace.event("storage.purge.failed", [

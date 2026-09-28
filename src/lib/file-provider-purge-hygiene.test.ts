@@ -398,7 +398,10 @@ describe('R2 (round 8, P2): the old App Group UserDefaults purge-epoch counter i
 describe('R2 (round 8, P2): bumpFileProviderCacheVersion bumps PRAGMA user_version under BEGIN IMMEDIATE', () => {
   const swift = readFileSync(MODULE_SWIFT_PATH, 'utf8');
   // Task 1593 f2 — signature gained `clearsPendingMarker: Bool = false`.
-  const body = bracedBody(swift, 'private func bumpFileProviderCacheVersion(clearsPendingMarker: Bool = false) -> Bool {');
+  // Task 1593 f7 — and `pendingNonceAtSnapshot: Data? = nil`, spanning
+  // multiple lines now; anchor on the function name only (see `bracedBody`
+  // — it needs just enough of the signature to find the opening brace).
+  const body = bracedBody(swift, 'private func bumpFileProviderCacheVersion(');
 
   test('opens a real write transaction with BEGIN IMMEDIATE, not a plain BEGIN', () => {
     expect(body).toMatch(/sqlite3_exec\(db, "BEGIN IMMEDIATE", nil, nil, nil\)/);
@@ -2117,7 +2120,7 @@ describe('f3 (item 2): mayAddFileProviderDomain — pure decision gating whether
       + ') async throws -> [String: Any] {',
     );
     const ensureIdx = body.indexOf('var cacheReady = ensureFileProviderCacheDatabase()');
-    const bumpIdx = body.indexOf('var cacheVersionBumped = cacheReady && bumpFileProviderCacheVersion(clearsPendingMarker: cacheResetOk)');
+    const bumpIdx = body.indexOf('var cacheVersionBumped = cacheReady && bumpFileProviderCacheVersion(');
     const guardIdx = body.indexOf('guard mayAddFileProviderDomain(');
     const addIdx = body.indexOf('try await addFileProviderDomain(domain)');
     expect(ensureIdx).toBeGreaterThan(-1);
@@ -2567,39 +2570,159 @@ describe('f2 (marker-first): purgePlaintextStorage marks pending as its VERY FIR
 // marker — keep that, but make it conditional: read the nonce before BEGIN
 // IMMEDIATE, bump, and delete only if the nonce is unchanged; if a purge is
 // running (marker newer than the read), leave it."
-describe('f2 (item 3): bumpFileProviderCacheVersion(clearsPendingMarker:) captures the nonce BEFORE BEGIN IMMEDIATE and clears via compare-then-delete only on the caller\'s opt-in', () => {
+//
+// Task 1593 f7 (Codex P1, PRRT_kwDOSLX6T86mme-b) REWROTE this block in
+// place — f2's design (asserted by the version of this block replaced
+// here) had `bumpFileProviderCacheVersion` itself call
+// `currentPurgePendingNonce()`, right before its own `BEGIN IMMEDIATE`.
+// That read is still well AFTER the caller's (`registerMountedFileProvider
+// DomainLocked`'s) own snapshot of `isPurgePending()` — long enough for a
+// DIFFERENT, concurrently-started purge to have marked pending in between,
+// which this function would then treat as ITS to clear. The fix moves the
+// read out of this function entirely: the caller captures the nonce at its
+// own true snapshot point and passes it in; this function never reads the
+// marker itself at all, only ever clears the exact value it was handed.
+describe('f7 (Codex P1, PRRT_kwDOSLX6T86mme-b): bumpFileProviderCacheVersion no longer reads the pending nonce itself — it only clears the caller-supplied pendingNonceAtSnapshot, via the existing compare-then-delete', () => {
   const moduleSwift = readFileSync(MODULE_SWIFT_PATH, 'utf8');
-  const body = bracedBody(moduleSwift, 'private func bumpFileProviderCacheVersion(clearsPendingMarker: Bool = false) -> Bool {');
+  const body = bracedBody(moduleSwift, 'private func bumpFileProviderCacheVersion(');
 
-  test('clearsPendingMarker defaults to false — a bare call (the purge\'s own early-bump call site) never clears', () => {
-    expect(body).toMatch(/private func bumpFileProviderCacheVersion\(clearsPendingMarker: Bool = false\) -> Bool \{/);
+  test('signature gains pendingNonceAtSnapshot: Data? = nil alongside clearsPendingMarker', () => {
+    expect(body).toMatch(
+      /private func bumpFileProviderCacheVersion\(\s*\n\s*clearsPendingMarker: Bool = false,\s*\n\s*pendingNonceAtSnapshot: Data\? = nil\s*\n\) -> Bool \{/,
+    );
   });
 
-  test('the nonce is captured via currentPurgePendingNonce() BEFORE the BEGIN IMMEDIATE exec call, gated on clearsPendingMarker', () => {
-    const captureIdx = body.indexOf('let nonceBeforeBump = clearsPendingMarker');
-    const beginIdx = body.indexOf('sqlite3_exec(db, "BEGIN IMMEDIATE", nil, nil, nil)');
-    expect(captureIdx).toBeGreaterThan(-1);
-    expect(beginIdx).toBeGreaterThan(captureIdx);
-    const captureLine = body.slice(captureIdx, body.indexOf('\n', captureIdx + 200));
-    expect(captureLine).toMatch(/PlaintextStorageProtection\.currentPurgePendingNonce\(\)/);
+  test('no call to currentPurgePendingNonce() anywhere in this function\'s body — the f2-era internal read is gone, not just relocated', () => {
+    expect(body).not.toMatch(/currentPurgePendingNonce\(\)/);
   });
 
-  test('clears ONLY after COMMIT succeeds, ONLY when clearsPendingMarker is true, and ONLY against the value captured BEFORE BEGIN IMMEDIATE (never a fresh read at clear time)', () => {
+  test('clears ONLY after COMMIT succeeds, ONLY when clearsPendingMarker is true, and ONLY against pendingNonceAtSnapshot — the caller\'s own captured value, never a read taken in this function', () => {
     const commitGuardIdx = body.indexOf('guard sqlite3_exec(db, "COMMIT", nil, nil, nil) == SQLITE_OK else {');
     expect(commitGuardIdx).toBeGreaterThan(-1);
     const after = body.slice(commitGuardIdx);
-    expect(after).toMatch(/if clearsPendingMarker, let nonceBeforeBump \{\s*\n\s*PlaintextStorageProtection\.clearPurgePending\(nonce: nonceBeforeBump\)\s*\n\s*\}/);
+    expect(after).toMatch(/if clearsPendingMarker, let pendingNonceAtSnapshot \{\s*\n\s*PlaintextStorageProtection\.clearPurgePending\(nonce: pendingNonceAtSnapshot\)\s*\n\s*\}/);
     const clearCount = (after.match(/PlaintextStorageProtection\.clearPurgePending\(/g) ?? []).length;
     expect(clearCount).toBe(1);
   });
 
+  test('a nil pendingNonceAtSnapshot structurally clears nothing even when clearsPendingMarker is true — the optional-bind IS the gate, with no fallback branch', () => {
+    const clearIdx = body.indexOf('PlaintextStorageProtection.clearPurgePending(nonce: pendingNonceAtSnapshot)');
+    expect(clearIdx).toBeGreaterThan(-1);
+    const guardIdx = body.lastIndexOf('if clearsPendingMarker, let pendingNonceAtSnapshot {', clearIdx);
+    expect(guardIdx).toBeGreaterThan(-1);
+    const between = body.slice(guardIdx, clearIdx);
+    expect(between).not.toMatch(/else/);
+  });
+
   test('every early-return failure guard in this function precedes the clear — a failed bump never reaches it', () => {
-    const clearIdx = body.indexOf('PlaintextStorageProtection.clearPurgePending(nonce: nonceBeforeBump)');
+    const clearIdx = body.indexOf('PlaintextStorageProtection.clearPurgePending(nonce: pendingNonceAtSnapshot)');
     const guardReturns = [...body.matchAll(/guard sqlite3_[a-z_]+\([^)]*\)[^{]*\{[^}]*return false[^}]*\}/g)];
     expect(guardReturns.length).toBeGreaterThan(0);
     for (const match of guardReturns) {
       expect(match.index).toBeLessThan(clearIdx);
     }
+  });
+});
+
+// Task 1593 f7 — the caller-side half of the fix: WHERE the nonce is now
+// captured, and that it is threaded unchanged into every bump attempt.
+describe('f7 (Codex P1, PRRT_kwDOSLX6T86mme-b): registerMountedFileProviderDomainLocked snapshots the pending nonce at the SAME instant as purgePendingBeforeBump, before anything else can move it', () => {
+  const moduleSwift = readFileSync(MODULE_SWIFT_PATH, 'utf8');
+  const body = bracedBody(
+    moduleSwift,
+    'private func registerMountedFileProviderDomainLocked(\n  defaults: UserDefaults?,\n  forceReset: Bool = false\n) async throws -> [String: Any] {',
+  );
+
+  test('purgePendingNonceAtSnapshot is captured via currentPurgePendingNonce() immediately after purgePendingBeforeBump, before ensureFileProviderCacheDatabase(), any reset, or either bump attempt', () => {
+    const flagIdx = body.indexOf('let purgePendingBeforeBump = PlaintextStorageProtection.isPurgePending()');
+    const nonceIdx = body.indexOf('let purgePendingNonceAtSnapshot = PlaintextStorageProtection.currentPurgePendingNonce()');
+    const ensureIdx = body.indexOf('var cacheReady = ensureFileProviderCacheDatabase()');
+    expect(flagIdx).toBeGreaterThan(-1);
+    expect(nonceIdx).toBeGreaterThan(flagIdx);
+    expect(ensureIdx).toBeGreaterThan(nonceIdx);
+    const between = body.slice(flagIdx, nonceIdx);
+    expect(between).not.toMatch(/clearFileProviderCacheState|bumpFileProviderCacheVersion|ensureFileProviderCacheDatabase/);
+  });
+
+  test('exactly one real call to currentPurgePendingNonce() in this function — the snapshot — never a second, later read (excludes a backtick-quoted doc-comment mention)', () => {
+    const realOccurrences = [...body.matchAll(/[^`]PlaintextStorageProtection\.currentPurgePendingNonce\(\)/g)];
+    expect(realOccurrences.length).toBe(1);
+  });
+
+  test('purgePendingNonceAtSnapshot is a `let` assigned exactly once — never reassigned, so nothing later in this function can smuggle a fresher read into it', () => {
+    const assignments = [...body.matchAll(/purgePendingNonceAtSnapshot\s*=(?!=)/g)];
+    expect(assignments.length).toBe(1);
+    expect(body.slice(assignments[0].index! - 4, assignments[0].index!)).toBe('let ');
+  });
+
+  test('both the first bump attempt and its retry receive pendingNonceAtSnapshot: purgePendingNonceAtSnapshot — the untouched snapshot, threaded through unchanged', () => {
+    expect(body).toMatch(
+      /var cacheVersionBumped = cacheReady && bumpFileProviderCacheVersion\(\s*\n\s*clearsPendingMarker: cacheResetOk,\s*\n\s*pendingNonceAtSnapshot: purgePendingNonceAtSnapshot\s*\n\s*\)/,
+    );
+    expect(body).toMatch(
+      /\(cacheReady, cacheVersionBumped\) = await retryFileProviderCacheReadyAndBumpOffCooperativePool\(\s*\n\s*clearsPendingMarker: cacheResetOk,\s*\n\s*pendingNonceAtSnapshot: purgePendingNonceAtSnapshot\s*\n\s*\)/,
+    );
+  });
+});
+
+// Task 1593 f7 — pure-JS reference implementation of the marker-clear
+// decision (same technique as f6's `singleCheckRead`/`doubleCheckRead`
+// table below): pins the BEHAVIOUR the structural tests above prove the
+// Swift source implements, independent of that source text. Cross-checks
+// the OLD (f2-era, buggy) design against the NEW (f7) one across the
+// brief's three named scenarios plus a mismatch sanity row.
+describe('f7: reference model — old (bump reads its own nonce) vs new (caller snapshots, bump only consumes) marker-clear decision', () => {
+  function oldMarkerClear(
+    clearsPendingMarker: boolean,
+    nonceOnDiskAtBumpTime: string | null,
+    nonceOnDiskAtCompareTime: string | null,
+  ): boolean {
+    if (!clearsPendingMarker) return false;
+    const nonceBeforeBump = nonceOnDiskAtBumpTime; // read INSIDE bump, right before BEGIN IMMEDIATE
+    if (nonceBeforeBump === null) return false;
+    return nonceOnDiskAtCompareTime === nonceBeforeBump; // clearPurgePending's compare-then-delete
+  }
+
+  function newMarkerClear(
+    clearsPendingMarker: boolean,
+    nonceAtCallerSnapshot: string | null,
+    nonceOnDiskAtCompareTime: string | null,
+  ): boolean {
+    if (!clearsPendingMarker) return false;
+    if (nonceAtCallerSnapshot === null) return false; // nothing pending at the caller's true snapshot
+    return nonceOnDiskAtCompareTime === nonceAtCallerSnapshot;
+  }
+
+  const rows: Array<[string, string | null, string | null, string | null, boolean, boolean]> = [
+    // [label, nonceAtCallerSnapshot, nonceOnDiskAtBumpTime (old design's internal read), nonceOnDiskAtCompareTime, expectedOldCleared, expectedNewCleared]
+    ['(c) snapshot nil — nothing pending anywhere, at any point', null, null, null, false, false],
+    [
+      "(a) THE BUG — registration's snapshot sees no marker; a concurrent purge marks AFTER that snapshot but BEFORE the (pre-f7) internal read, and is still pending at compare-time",
+      null, 'purge-P1', 'purge-P1', true, false,
+    ],
+    [
+      '(b) a marker already present at the snapshot (e.g. a stale mark left by an earlier, already-finished purge), unchanged through compare-time — this registration\'s successful reset may recover it',
+      'stale-S1', 'stale-S1', 'stale-S1', true, true,
+    ],
+    [
+      'a DIFFERENT, newer purge remarked between the snapshot/bump-time read and compare-time — clearPurgePending\'s rename-claim compare refuses regardless of design',
+      'stale-S1', 'stale-S1', 'newer-P2', false, false,
+    ],
+  ];
+
+  test.each(rows)('%s', (_label, nonceAtCallerSnapshot, nonceOnDiskAtBumpTime, nonceOnDiskAtCompareTime, expectedOldCleared, expectedNewCleared) => {
+    expect(oldMarkerClear(true, nonceOnDiskAtBumpTime, nonceOnDiskAtCompareTime)).toBe(expectedOldCleared);
+    expect(newMarkerClear(true, nonceAtCallerSnapshot, nonceOnDiskAtCompareTime)).toBe(expectedNewCleared);
+  });
+
+  test('the reviewer\'s exact scenario: the OLD design clears a concurrent purge\'s own still-pending marker; the NEW design correctly leaves it alone', () => {
+    expect(oldMarkerClear(true, 'purge-P1', 'purge-P1')).toBe(true); // the bug
+    expect(newMarkerClear(true, null, 'purge-P1')).toBe(false); // the fix
+  });
+
+  test('clearsPendingMarker: false never clears, regardless of any nonce', () => {
+    expect(oldMarkerClear(false, 'purge-P1', 'purge-P1')).toBe(false);
+    expect(newMarkerClear(false, 'stale-S1', 'stale-S1')).toBe(false);
   });
 });
 
@@ -2614,15 +2737,16 @@ describe('f2 (item 3): the purge\'s own early bump stays clearsPendingMarker: fa
 
   // Task 1593 f5 (reviewer follow-up 1) superseded this test's ORIGINAL
   // premise (a bare `clearsPendingMarker: true`) — see the f5 describe
-  // block below for the full replacement coverage. Kept here, updated in
-  // place rather than deleted, since it is the one test in THIS describe
-  // block that actually names the call site.
+  // block below for the full replacement coverage. Task 1593 f7 updated the
+  // matched call-site shape again (multi-line, + pendingNonceAtSnapshot).
+  // Kept here, updated in place rather than deleted, since it is the one
+  // test in THIS describe block that actually names the call site.
   test('registerMountedFileProviderDomainLocked passes clearsPendingMarker: cacheResetOk — its own captured reset outcome, never a bare true', () => {
     const body = bracedBody(
       moduleSwift,
       'private func registerMountedFileProviderDomainLocked(\n  defaults: UserDefaults?,\n  forceReset: Bool = false\n) async throws -> [String: Any] {',
     );
-    expect(body).toMatch(/bumpFileProviderCacheVersion\(clearsPendingMarker: cacheResetOk\)/);
+    expect(body).toMatch(/bumpFileProviderCacheVersion\(\s*\n\s*clearsPendingMarker: cacheResetOk,/);
     expect(body).not.toMatch(/bumpFileProviderCacheVersion\(clearsPendingMarker: true\)/);
   });
 });
@@ -2637,13 +2761,16 @@ describe('f2 (item 4): registration retries once, off the cooperative pool, on a
   test('retryFileProviderCacheReadyAndBumpOffCooperativePool re-attempts BOTH ensureFileProviderCacheDatabase and the bump, off a GCD queue with a short delay', () => {
     const body = bracedBody(
       moduleSwift,
-      'private func retryFileProviderCacheReadyAndBumpOffCooperativePool(clearsPendingMarker: Bool) async -> (ready: Bool, bumped: Bool) {',
+      'private func retryFileProviderCacheReadyAndBumpOffCooperativePool(',
     );
     expect(body).toMatch(/DispatchQueue\.global\(qos: \.userInitiated\)\.asyncAfter\(deadline: \.now\(\) \+ 0\.25\)/);
     expect(body).toMatch(/let ready = ensureFileProviderCacheDatabase\(\)/);
     // Task 1593 f5 (reviewer follow-up 1): threads the CALLER's clearsPendingMarker
     // through, rather than hardcoding true — see this function's own doc comment.
-    expect(body).toMatch(/let bumped = ready && bumpFileProviderCacheVersion\(clearsPendingMarker: clearsPendingMarker\)/);
+    // Task 1593 f7: pendingNonceAtSnapshot threaded through the same way.
+    expect(body).toMatch(
+      /let bumped = ready && bumpFileProviderCacheVersion\(\s*\n\s*clearsPendingMarker: clearsPendingMarker,\s*\n\s*pendingNonceAtSnapshot: pendingNonceAtSnapshot\s*\n\s*\)/,
+    );
   });
 
   test('registerMountedFileProviderDomainLocked retries exactly once, only when the first attempt failed OR cacheReady was false', () => {
@@ -2651,14 +2778,14 @@ describe('f2 (item 4): registration retries once, off the cooperative pool, on a
       moduleSwift,
       'private func registerMountedFileProviderDomainLocked(\n  defaults: UserDefaults?,\n  forceReset: Bool = false\n) async throws -> [String: Any] {',
     );
-    const firstAttemptIdx = body.indexOf('var cacheVersionBumped = cacheReady && bumpFileProviderCacheVersion(clearsPendingMarker: cacheResetOk)');
-    const retryIdx = body.indexOf('retryFileProviderCacheReadyAndBumpOffCooperativePool(clearsPendingMarker: cacheResetOk)');
+    const firstAttemptIdx = body.indexOf('var cacheVersionBumped = cacheReady && bumpFileProviderCacheVersion(');
+    const retryIdx = body.indexOf('retryFileProviderCacheReadyAndBumpOffCooperativePool(');
     expect(firstAttemptIdx).toBeGreaterThan(-1);
     expect(retryIdx).toBeGreaterThan(firstAttemptIdx);
     const between = body.slice(firstAttemptIdx, retryIdx);
     expect(between).toMatch(/if !cacheReady \|\| !cacheVersionBumped \{/);
     // Exactly one retry call — not a loop.
-    const retryCallCount = (body.match(/retryFileProviderCacheReadyAndBumpOffCooperativePool\(clearsPendingMarker: cacheResetOk\)/g) ?? []).length;
+    const retryCallCount = (body.match(/retryFileProviderCacheReadyAndBumpOffCooperativePool\(\s*\n\s*clearsPendingMarker: cacheResetOk,\s*\n\s*pendingNonceAtSnapshot: purgePendingNonceAtSnapshot\s*\n\s*\)/g) ?? []).length;
     expect(retryCallCount).toBe(1);
   });
 
@@ -2667,7 +2794,7 @@ describe('f2 (item 4): registration retries once, off the cooperative pool, on a
       moduleSwift,
       'private func registerMountedFileProviderDomainLocked(\n  defaults: UserDefaults?,\n  forceReset: Bool = false\n) async throws -> [String: Any] {',
     );
-    const retryIdx = body.indexOf('retryFileProviderCacheReadyAndBumpOffCooperativePool(clearsPendingMarker: cacheResetOk)');
+    const retryIdx = body.indexOf('retryFileProviderCacheReadyAndBumpOffCooperativePool(');
     const after = body.slice(retryIdx, retryIdx + 400);
     expect(after).toMatch(/if !cacheReady \|\| !cacheVersionBumped \{\s*\n\s*RuntimeTrace\.event\("storage\.purge\.failed", \[/);
     expect(after).toMatch(/"stage": cacheReady \? "registration_cache_version_bump" : "registration_cache_not_ready"/);
@@ -2679,7 +2806,9 @@ describe('f2 (item 4): registration retries once, off the cooperative pool, on a
       'private func registerMountedFileProviderDomainLocked(\n  defaults: UserDefaults?,\n  forceReset: Bool = false\n) async throws -> [String: Any] {',
     );
     expect(body).toMatch(/var cacheReady = ensureFileProviderCacheDatabase\(\)/);
-    expect(body).toMatch(/\(cacheReady, cacheVersionBumped\) = await retryFileProviderCacheReadyAndBumpOffCooperativePool\(clearsPendingMarker: cacheResetOk\)/);
+    expect(body).toMatch(
+      /\(cacheReady, cacheVersionBumped\) = await retryFileProviderCacheReadyAndBumpOffCooperativePool\(\s*\n\s*clearsPendingMarker: cacheResetOk,\s*\n\s*pendingNonceAtSnapshot: purgePendingNonceAtSnapshot\s*\n\s*\)/,
+    );
     expect(body).toMatch(/cacheDatabaseReady: cacheReady,/);
   });
 });
@@ -2703,17 +2832,21 @@ describe('f5 (reviewer follow-up 1): a registration whose add is refused (purge 
   );
 
   test('the initial bump call passes clearsPendingMarker: cacheResetOk, not a bare true', () => {
-    expect(body).toMatch(/var cacheVersionBumped = cacheReady && bumpFileProviderCacheVersion\(clearsPendingMarker: cacheResetOk\)/);
+    expect(body).toMatch(
+      /var cacheVersionBumped = cacheReady && bumpFileProviderCacheVersion\(\s*\n\s*clearsPendingMarker: cacheResetOk,/,
+    );
   });
 
   test('the retry call also passes clearsPendingMarker: cacheResetOk — the SAME captured value, not a fresh read or a bare true', () => {
-    expect(body).toMatch(/retryFileProviderCacheReadyAndBumpOffCooperativePool\(clearsPendingMarker: cacheResetOk\)/);
+    expect(body).toMatch(
+      /retryFileProviderCacheReadyAndBumpOffCooperativePool\(\s*\n\s*clearsPendingMarker: cacheResetOk,/,
+    );
   });
 
   test('cacheResetOk is captured BEFORE the bump call that consumes it — the value threaded in is this call\'s own reset outcome, not something computed after', () => {
     const cacheResetOkDeclIdx = body.indexOf('var cacheResetOk = true');
     const purgePendingBranchIdx = body.indexOf('cacheResetOk = false');
-    const bumpCallIdx = body.indexOf('bumpFileProviderCacheVersion(clearsPendingMarker: cacheResetOk)');
+    const bumpCallIdx = body.indexOf('bumpFileProviderCacheVersion(\n    clearsPendingMarker: cacheResetOk,');
     expect(cacheResetOkDeclIdx).toBeGreaterThan(-1);
     expect(purgePendingBranchIdx).toBeGreaterThan(cacheResetOkDeclIdx);
     expect(bumpCallIdx).toBeGreaterThan(purgePendingBranchIdx);

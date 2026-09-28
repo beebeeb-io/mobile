@@ -539,11 +539,15 @@ public enum PlaintextStorageProtection {
     return Data(bytes)
   }
 
-  /// Reads the marker's raw on-disk bytes with no side effects — used by
-  /// `BeebeebCryptoModule.swift`'s `bumpFileProviderCacheVersion(clearsPendingMarker:)`
-  /// to capture "the nonce that was pending when I started" BEFORE its own
-  /// `BEGIN IMMEDIATE`, per that function's doc comment. `nil` means nothing
-  /// is pending.
+  /// Reads the marker's raw on-disk bytes with no side effects. Task 1593
+  /// f7 (Codex P1, PRRT_kwDOSLX6T86mme-b) — `registerMountedFileProviderDomainLocked`
+  /// (`BeebeebCryptoModule.swift`) calls this at its own snapshot point, the
+  /// same instant it reads `isPurgePending()`, to capture "the nonce that
+  /// was pending when I started" — NOT `bumpFileProviderCacheVersion`
+  /// itself, which used to call this right before its own `BEGIN IMMEDIATE`
+  /// (well after that snapshot) and could thereby capture a DIFFERENT,
+  /// concurrently-started purge's marker instead; see that function's doc
+  /// comment for the full race and fix. `nil` means nothing is pending.
   public static func currentPurgePendingNonce() -> Data? {
     guard let dir = fileProviderCacheDbDirectory else { return nil }
     let url = dir.appendingPathComponent(purgePendingMarkerName, isDirectory: false)
