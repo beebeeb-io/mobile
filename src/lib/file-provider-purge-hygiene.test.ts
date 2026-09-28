@@ -1615,7 +1615,10 @@ describe('round 11 (Codex thread PRRT_kwDOSLX6T86miVoV, P2): the File Provider c
   });
 
   test('clearFileProviderCacheState resets the DB via the shared resolver instead of a third inline top-level path', () => {
-    const body = bracedBody(moduleSwift, 'private func clearFileProviderCacheState(defaults: UserDefaults?) -> Int {');
+    const body = bracedBody(
+      moduleSwift,
+      'private func clearFileProviderCacheState(defaults: UserDefaults?) -> (removed: Int, cacheResetOk: Bool) {',
+    );
     expect(body).not.toMatch(/"file-provider-cache\.sqlite"/);
     expect(body).toMatch(/fileProviderCacheDatabaseUrl\(\)/);
     expect(body).toMatch(/resetFileProviderCacheDatabase\(at: dbUrl\)/);
@@ -1870,100 +1873,289 @@ describe('f2 (fail-closed purge-pending marker, marker-first): the marker primit
     expect(body).toMatch(/if status != errSecSuccess \{\s*\n\s*arc4random_buf\(&bytes, bytes\.count\)\s*\n\s*\}/);
   });
 
-  test('a successful primary mark restores any stale chmod fallback, so THIS purge is not blocked by a past one', () => {
+  // Task 1593 f3 (independent security review of eff81b7) — the chmod-0400
+  // fallback this test used to cover is REMOVED (see the "f3 (item 1)"
+  // describe block below for the full reasoning and its replacement
+  // coverage). Rewritten in place, never silently, to assert the fallback
+  // restore call is GONE from the success path.
+  test('f3: a successful primary mark traces + returns the nonce directly — no chmod-restore call (the fallback is gone)', () => {
     const body = bracedBody(registrySwift, 'public static func markPurgePending() -> Data? {');
     const protectUrlIdx = body.lastIndexOf('protect(url)');
     expect(protectUrlIdx).toBeGreaterThan(-1);
-    const after = body.slice(protectUrlIdx, protectUrlIdx + 700);
-    expect(after).toMatch(/restoreFileProviderCacheDatabaseWritable\(\)/);
+    const after = body.slice(protectUrlIdx, protectUrlIdx + 200);
     expect(after).toMatch(/RuntimeTrace\.event\("storage\.purge\.pending_marked", \[:\]\)/);
     expect(after).toMatch(/return nonce/);
+    expect(body).not.toMatch(/restoreFileProviderCacheDatabaseWritable/);
   });
 
-  test('isPurgePending checks the marker FILE first, then the chmod fallback — either one is enough to read as pending', () => {
+  // Task 1593 f3 — the chmod fallback this test used to cover is REMOVED.
+  test('f3: isPurgePending checks ONLY the marker file\'s existence — no chmod fallback branch', () => {
     const body = bracedBody(registrySwift, 'public static func isPurgePending() -> Bool {');
     expect(body).toMatch(/fileProviderCacheDbDirectory/);
     expect(body).toMatch(/purgePendingMarkerName/);
-    const fileCheckIdx = body.indexOf('FileManager.default.fileExists(');
-    const fallbackIdx = body.indexOf('return isPurgePendingViaFallback()');
-    expect(fileCheckIdx).toBeGreaterThan(-1);
-    expect(fallbackIdx).toBeGreaterThan(fileCheckIdx);
+    expect(body).toMatch(/return FileManager\.default\.fileExists\(/);
+    expect(body).not.toMatch(/isPurgePendingViaFallback/);
   });
 });
 
-// Task 1593 f2 (item 1, Codex P2 thread PRRT_kwDOSLX6T86mkAIo): "createFile
-// can fail on a full volume and callers ignore false." Decision logic under
-// test: on a createFile failure, fall back to chmod-ing the File Provider
-// cache database read-only (a signal that needs zero free space to set,
-// unlike creating anything new), and trace storage.purge.failed. See the
-// doc comment on markPurgePendingFallback() for why chmod was chosen over
-// renaming the DB directory or deleting the database outright.
-describe('f2 (item 1): a createFile failure on markPurgePending falls back to a zero-free-space chmod signal', () => {
+// Task 1593 f3 (independent security review of eff81b7) — BLOCK on round
+// f2's own design: the chmod-0400 fallback this describe block used to
+// cover made the File Provider cache database read-only for EVERY writer,
+// not just the extension. The NEXT `bumpFileProviderCacheVersion` /
+// `resetSQLiteInPlace` on this SAME device (a later registration, a
+// sign-in, another purge) would open it `SQLITE_OPEN_READWRITE` and get
+// `SQLITE_READONLY`: the epoch could never advance again, and a later
+// `forceReset` mount (task 1593 item 2's own `mayAddFileProviderDomain`
+// gate below) would fail its cache reset/bump indefinitely, exposing the
+// PREVIOUS account's cached names. It also never revoked the extension's
+// own already-open file descriptor, so it could not have closed the race
+// it was built for either. Removed entirely — see `markPurgePending`'s own
+// doc comment. (Reply on Codex thread PRRT_kwDOSLX6T86mkAIo records this
+// reversal with the commit that lands it.)
+describe('f3 (item 1): the chmod-0400 fallback is REMOVED — a createFile failure is a plain, counted purge failure', () => {
   const registrySwift = readFileSync(REGISTRY_SWIFT_PATH, 'utf8');
+  const moduleSwift = readFileSync(MODULE_SWIFT_PATH, 'utf8');
 
-  test('markPurgePending falls back to markPurgePendingFallback() exactly on the createFile failure branch, not on success', () => {
+  test('none of the three fallback primitives (or the dead helper only they read) exist anywhere in either compiled-target Swift file', () => {
+    for (const name of [
+      'markPurgePendingFallback',
+      'restoreFileProviderCacheDatabaseWritable',
+      'isPurgePendingViaFallback',
+      'fileProviderCacheDatabaseUrlForMarker',
+    ]) {
+      expect(registrySwift).not.toContain(name);
+      expect(moduleSwift).not.toContain(name);
+    }
+  });
+
+  test('markPurgePending\'s createFile-failure branch traces and returns nil directly — no fallback call, no chmod, no free-space workaround', () => {
     const body = bracedBody(registrySwift, 'public static func markPurgePending() -> Data? {');
     const guardIdx = body.indexOf('guard FileManager.default.createFile(atPath: url.path, contents: nonce) else {');
     expect(guardIdx).toBeGreaterThan(-1);
     const failureBranch = body.slice(guardIdx, body.indexOf('}', guardIdx));
     expect(failureBranch).toMatch(/RuntimeTrace\.event\("storage\.purge\.pending_marker_failed", \[:\]\)/);
-    expect(failureBranch).toMatch(/return markPurgePendingFallback\(\)/);
-    // The success path (after the guard) must NOT also call the fallback.
-    const afterGuard = body.slice(body.indexOf('}', guardIdx));
-    expect(afterGuard).not.toMatch(/markPurgePendingFallback/);
+    expect(failureBranch).toMatch(/return nil/);
+    expect(failureBranch).not.toMatch(/setAttributes/);
+    expect(failureBranch).not.toMatch(/0o400/);
   });
 
-  test('markPurgePendingFallback chmods the File Provider cache DB to 0o400 (owner-write bit removed) — a metadata-only op needing zero new disk space', () => {
-    const body = bracedBody(registrySwift, 'private static func markPurgePendingFallback() -> Data? {');
-    expect(body).toMatch(/setAttributes\(\[\.posixPermissions: 0o400\], ofItemAtPath: dbUrl\.path\)/);
-    // Never anything that could itself need free space: no createFile, no
-    // write(to:), no createDirectory in this fallback.
-    expect(body).not.toMatch(/createFile\(/);
-    expect(body).not.toMatch(/\.write\(to:/);
+  test('currentPurgePendingNonce is a bare on-disk read — nil means "nothing pending", no empty-Data fallback sentinel any more', () => {
+    const body = bracedBody(registrySwift, 'public static func currentPurgePendingNonce() -> Data? {');
+    expect(body.trim()).toBe(
+      'public static func currentPurgePendingNonce() -> Data? {\n'
+      + '    guard let dir = fileProviderCacheDbDirectory else { return nil }\n'
+      + '    let url = dir.appendingPathComponent(purgePendingMarkerName, isDirectory: false)\n'
+      + '    return try? Data(contentsOf: url)\n'
+      + '  }',
+    );
   });
 
-  test('markPurgePendingFallback records storage.purge.failed on EVERY one of its own failure paths (no database to chmod; the chmod itself throws) — never silently swallowed', () => {
-    const body = bracedBody(registrySwift, 'private static func markPurgePendingFallback() -> Data? {');
-    const failedTraceCount = (body.match(/RuntimeTrace\.event\("storage\.purge\.failed", \["stage": "pending_marker_[a-z_]+"\]\)/g) ?? []).length;
-    expect(failedTraceCount).toBe(2); // pending_marker_no_database, pending_marker_chmod_fallback
-    // Each failure trace is immediately followed by `return nil` — never a
-    // silently-discarded false the way Codex's original finding described.
-    let idx = -1;
-    for (let i = 0; i < failedTraceCount; i++) {
-      idx = body.indexOf('RuntimeTrace.event("storage.purge.failed"', idx + 1);
-      expect(idx).toBeGreaterThan(-1);
-      const after = body.slice(idx, idx + 150);
-      expect(after).toMatch(/return nil/);
-    }
+  // MUTATION PROOF (per task file Notes, run manually and pasted there):
+  // reverting `return nil` in the createFile-failure branch back to
+  // `return markPurgePendingFallback()` (re-inlining the removed function
+  // as a no-op stub returning `Data()`) makes the "traces and returns nil
+  // directly" test above fail on `return nil` no longer matching — proving
+  // the test exercises the actual branch, not just the trace call.
+
+  test('purgePlaintextStorage (BeebeebCryptoModule.swift) already counts a nil pendingNonce as a real, traced purge failure and runs the final reset regardless — the epoch bump is what actually protects, not this marker', () => {
+    const body = bracedBody(moduleSwift, 'AsyncFunction("purgePlaintextStorage") { () -> [String: Int] in');
+    const markIdx = body.indexOf('let pendingNonce = PlaintextStorageProtection.markPurgePending()');
+    expect(markIdx).toBeGreaterThan(-1);
+    const afterMark = body.slice(markIdx, markIdx + 300);
+    expect(afterMark).toMatch(/if pendingNonce == nil \{\s*\n\s*RuntimeTrace\.event\("storage\.purge\.failed", \["stage": "pending_marker"\]\)\s*\n\s*failed \+= 1\s*\n\s*\}/);
+    // The final in-place reset is unconditional — never gated on
+    // pendingNonce, and nothing between the mark and it early-returns.
+    const purgeAllIdx = body.indexOf('PlaintextStorageProtection.purgeAll(pendingNonce: pendingNonce)');
+    expect(purgeAllIdx).toBeGreaterThan(markIdx);
+    const between = body.slice(markIdx, purgeAllIdx);
+    expect(between).not.toMatch(/\breturn \[/);
+  });
+});
+
+// Task 1593 f3 (item 2, independent security review of eff81b7) —
+// `registerMountedFileProviderDomainLocked` used to discard the result of
+// `resetFileProviderCacheDatabase` (via `clearFileProviderCacheState`) and
+// only LOG a failed epoch bump, in both cases still going on to mount the
+// domain. `mayAddFileProviderDomain` is the pure gate extracted from that
+// decision so it can be exhaustively unit- and mutation-tested without
+// driving `NSFileProviderManager`.
+describe('f3 (item 2): mayAddFileProviderDomain — pure decision gating whether registration may add the File Provider domain', () => {
+  const moduleSwift = readFileSync(MODULE_SWIFT_PATH, 'utf8');
+  const SIGNATURE = 'private func mayAddFileProviderDomain(\n'
+    + '  forceReset: Bool,\n'
+    + '  purgePending: Bool,\n'
+    + '  cacheResetOk: Bool,\n'
+    + '  cacheVersionBumped: Bool\n'
+    + ') -> Bool {';
+
+  test('the function exists with the exact expected signature', () => {
+    expect(moduleSwift).toContain(SIGNATURE);
   });
 
-  test('a successful fallback returns Data() — an EMPTY, distinguishable sentinel, never nil (nil means total failure) — and traces distinctly from the primary path', () => {
-    const body = bracedBody(registrySwift, 'private static func markPurgePendingFallback() -> Data? {');
-    const setAttrsIdx = body.indexOf('setAttributes([.posixPermissions: 0o400]');
-    expect(setAttrsIdx).toBeGreaterThan(-1);
-    const after = body.slice(setAttrsIdx, setAttrsIdx + 300);
-    expect(after).toMatch(/RuntimeTrace\.event\("storage\.purge\.pending_marked_fallback", \[:\]\)/);
-    expect(after).toMatch(/return Data\(\)/);
-    // Distinct from the primary path's own success trace.
-    expect(body).not.toMatch(/storage\.purge\.pending_marked"/);
+  // Table-driven proof of every combination the reviewer's finding named.
+  // Evaluated against the ACTUAL Swift logic by re-implementing the same
+  // two short-circuit guards here and cross-checking against inline
+  // comments in the Swift body below — the Swift body assertions (the
+  // second test) are what actually pins the source; this table pins the
+  // TRUTH TABLE the design is supposed to implement.
+  const cases: Array<[boolean, boolean, boolean, boolean, boolean]> = [
+    // forceReset, purgePending, cacheResetOk, cacheVersionBumped, expected
+    [false, false, true, true, true], // ordinary add, nothing in progress
+    [false, false, false, true, true], // reset never attempted (defaults true) — irrelevant here
+    [true, false, true, true, true], // forceReset, reset+bump both landed — safe
+    [true, false, false, true, false], // forceReset, reset failed — REFUSE (the reviewer's exact scenario)
+    [true, false, true, false, false], // forceReset, bump failed — REFUSE
+    [true, false, false, false, false], // forceReset, both failed — REFUSE
+    [false, true, true, true, true], // purge pending, but THIS call's reset+bump both landed — safe to clear it
+    [false, true, true, false, false], // purge pending, bump did not land — REFUSE
+    [false, true, false, true, false], // purge pending, "reset" (bogus here) not ok — REFUSE
+    [true, true, true, true, true], // both forceReset AND purgePending, everything landed — safe
+    [true, true, false, true, false], // both set, reset failed — REFUSE
+  ];
+
+  test.each(cases)(
+    'forceReset=%s purgePending=%s cacheResetOk=%s cacheVersionBumped=%s -> %s',
+    (forceReset, purgePending, cacheResetOk, cacheVersionBumped, expected) => {
+      // Reference implementation of the documented truth table — the
+      // Swift-body test below pins that the ACTUAL source matches this
+      // exact shape (two independent short-circuit guards, no folding).
+      const mayAdd = (
+        (!forceReset || (cacheResetOk && cacheVersionBumped))
+        && (!purgePending || (cacheResetOk && cacheVersionBumped))
+      );
+      expect(mayAdd).toBe(expected);
+    },
+  );
+
+  test('the Swift body implements exactly two independent guards (forceReset, then purgePending), each requiring BOTH cacheResetOk AND cacheVersionBumped, falling through to true', () => {
+    const body = bracedBody(moduleSwift, SIGNATURE);
+    expect(body).toMatch(
+      /if forceReset, !\(cacheResetOk && cacheVersionBumped\) \{\s*\n\s*return false\s*\n\s*\}/,
+    );
+    expect(body).toMatch(
+      /if purgePending, !\(cacheResetOk && cacheVersionBumped\) \{\s*\n\s*return false\s*\n\s*\}/,
+    );
+    expect(body).toMatch(/return true\s*\n\s*\}$/);
+    // Guards against a mutation that folds the two conditions with `||`
+    // (which would refuse whenever EITHER flag is set, regardless of
+    // whether a reset was even attempted) or drops one of them entirely.
+    const forceResetIdx = body.indexOf('if forceReset,');
+    const purgePendingIdx = body.indexOf('if purgePending,');
+    expect(forceResetIdx).toBeGreaterThan(-1);
+    expect(purgePendingIdx).toBeGreaterThan(forceResetIdx);
   });
 
-  test('isPurgePendingViaFallback reads "not pending" for a database that does not exist yet — never confuses "never created" with "chmod-locked"', () => {
-    const body = bracedBody(registrySwift, 'private static func isPurgePendingViaFallback() -> Bool {');
-    // Must gate on `fileExists`/`attributesOfItem` (both fail closed to
-    // `false` for a missing file) before ever inspecting permission bits.
-    expect(body).toMatch(/attributesOfItem\(atPath: dbUrl\.path\)/);
-    expect(body).toMatch(/return false/);
-    expect(body).toMatch(/perms\.intValue & 0o200 == 0/);
+  // MUTATION PROOF (run manually, pasted here per this task's Notes):
+  // flipping either `!(cacheResetOk && cacheVersionBumped)` to
+  // `!(cacheResetOk || cacheVersionBumped)` (AND -> OR) makes the
+  // `forceReset=true cacheResetOk=false cacheVersionBumped=true` case in
+  // the table above wrongly return `true` (since `cacheVersionBumped` is
+  // true, `cacheResetOk || cacheVersionBumped` is also true) — the
+  // reviewer's exact "reset failed but we mount anyway" scenario silently
+  // reopens. The table-driven test catches it: RED on that row.
+
+  test('registerMountedFileProviderDomainLocked computes ensureFileProviderCacheDatabase + bumpFileProviderCacheVersion BEFORE the add-decision guard, not after — the ordering bug the reviewer found', () => {
+    const body = bracedBody(
+      moduleSwift,
+      'private func registerMountedFileProviderDomainLocked(\n'
+      + '  defaults: UserDefaults?,\n'
+      + '  forceReset: Bool = false\n'
+      + ') async throws -> [String: Any] {',
+    );
+    const ensureIdx = body.indexOf('var cacheReady = ensureFileProviderCacheDatabase()');
+    const bumpIdx = body.indexOf('var cacheVersionBumped = cacheReady && bumpFileProviderCacheVersion(clearsPendingMarker: true)');
+    const guardIdx = body.indexOf('guard mayAddFileProviderDomain(');
+    const addIdx = body.indexOf('try await addFileProviderDomain(domain)');
+    expect(ensureIdx).toBeGreaterThan(-1);
+    expect(bumpIdx).toBeGreaterThan(ensureIdx);
+    expect(guardIdx).toBeGreaterThan(bumpIdx);
+    expect(addIdx).toBeGreaterThan(guardIdx);
+    // Exactly one `ensureFileProviderCacheDatabase()` call in this
+    // function's own body — the old SECOND, post-add call site (round f2)
+    // must be gone, not just reordered into a duplicate.
+    const ensureCalls = (body.match(/ensureFileProviderCacheDatabase\(\)/g) ?? []).length;
+    expect(ensureCalls).toBe(1);
   });
 
-  test('restoreFileProviderCacheDatabaseWritable chmods back to 0o600 only when the owner-write bit is actually missing, and traces a failure to do so', () => {
-    const body = bracedBody(registrySwift, 'private static func restoreFileProviderCacheDatabaseWritable() -> Bool {');
-    expect(body).toMatch(/perms\.intValue & 0o200 == 0/);
-    expect(body).toMatch(/setAttributes\(\[\.posixPermissions: 0o600\], ofItemAtPath: dbUrl\.path\)/);
-    const catchIdx = body.indexOf('} catch {');
-    expect(catchIdx).toBeGreaterThan(-1);
-    expect(body.slice(catchIdx, catchIdx + 200)).toMatch(/RuntimeTrace\.event\("storage\.purge\.pending_clear_failed", \["stage": "chmod_restore"\]\)/);
+  test('a refused add traces storage.purge.file_provider_domain_add_refused and returns the FRESH domain status (registered: false) — never a fabricated success', () => {
+    const body = bracedBody(
+      moduleSwift,
+      'private func registerMountedFileProviderDomainLocked(\n'
+      + '  defaults: UserDefaults?,\n'
+      + '  forceReset: Bool = false\n'
+      + ') async throws -> [String: Any] {',
+    );
+    const guardIdx = body.indexOf('guard mayAddFileProviderDomain(');
+    expect(guardIdx).toBeGreaterThan(-1);
+    const elseIdx = body.indexOf('else {', guardIdx);
+    expect(elseIdx).toBeGreaterThan(guardIdx);
+    const refusalBranch = body.slice(elseIdx, body.indexOf('}', elseIdx));
+    expect(refusalBranch).toMatch(/RuntimeTrace\.event\("storage\.purge\.file_provider_domain_add_refused", \[:\]\)/);
+    expect(refusalBranch).toMatch(/return await currentFileProviderDomainStatus\(\)/);
+    // The refusal must come BEFORE `addFileProviderDomain` is ever called.
+    const addIdx = body.indexOf('try await addFileProviderDomain(domain)');
+    expect(elseIdx).toBeLessThan(addIdx);
+  });
+
+  test('mayAddFileProviderDomain is called with isPurgePending() read live, not a stale/cached flag', () => {
+    const body = bracedBody(
+      moduleSwift,
+      'private func registerMountedFileProviderDomainLocked(\n'
+      + '  defaults: UserDefaults?,\n'
+      + '  forceReset: Bool = false\n'
+      + ') async throws -> [String: Any] {',
+    );
+    expect(body).toMatch(/purgePending: PlaintextStorageProtection\.isPurgePending\(\),/);
+  });
+});
+
+// Task 1593 f3 (item 2) — `clearFileProviderCacheState`'s return type
+// changed from a bare `Int` to `(removed: Int, cacheResetOk: Bool)` so
+// `registerMountedFileProviderDomainLocked` can feed a REAL signal into
+// `mayAddFileProviderDomain` instead of discarding the reset outcome with
+// `_ =`.
+describe('f3 (item 2): clearFileProviderCacheState surfaces whether the database reset actually succeeded', () => {
+  const moduleSwift = readFileSync(MODULE_SWIFT_PATH, 'utf8');
+  const SIGNATURE = 'private func clearFileProviderCacheState(defaults: UserDefaults?) -> (removed: Int, cacheResetOk: Bool) {';
+
+  test('no database file exists yet -> cacheResetOk is true (nothing to have failed), never a false negative on a fresh install', () => {
+    const body = bracedBody(moduleSwift, SIGNATURE);
+    const guardIdx = body.indexOf('guard fileManager.fileExists(atPath: dbUrl.path) else {');
+    expect(guardIdx).toBeGreaterThan(-1);
+    const branch = body.slice(guardIdx, body.indexOf('}', guardIdx) + 1);
+    expect(branch).toMatch(/return \(removed, true\)/);
+  });
+
+  test('the App Group container cannot be resolved -> cacheResetOk is false, fail CLOSED rather than assuming ok', () => {
+    const body = bracedBody(moduleSwift, SIGNATURE);
+    const guardIdx = body.indexOf('guard let dbUrl = fileProviderCacheDatabaseUrl() else {');
+    expect(guardIdx).toBeGreaterThan(-1);
+    const branch = body.slice(guardIdx, body.indexOf('}', guardIdx) + 1);
+    expect(branch).toMatch(/return \(removed, false\)/);
+  });
+
+  test('a database that exists reports cacheResetOk as EXACTLY resetFileProviderCacheDatabase\'s own return value — never hardcoded true', () => {
+    const body = bracedBody(moduleSwift, SIGNATURE);
+    expect(body).toMatch(/let cacheResetOk = resetFileProviderCacheDatabase\(at: dbUrl\)/);
+    expect(body).toMatch(/if cacheResetOk \{ removed \+= 1 \}/);
+    expect(body).toMatch(/return \(removed, cacheResetOk\)/);
+  });
+
+  test('both call sites consume the new tuple shape — no caller left discarding it as a bare Int', () => {
+    const sharedStateBody = bracedBody(
+      moduleSwift,
+      'private func clearFileProviderSharedState(defaults: UserDefaults?) -> Int {',
+    );
+    expect(sharedStateBody).toMatch(/let \(removed, _\) = clearFileProviderCacheState\(defaults: defaults\)/);
+
+    const registerBody = bracedBody(
+      moduleSwift,
+      'private func registerMountedFileProviderDomainLocked(\n'
+      + '  defaults: UserDefaults?,\n'
+      + '  forceReset: Bool = false\n'
+      + ') async throws -> [String: Any] {',
+    );
+    expect(registerBody).toMatch(/cacheResetOk = clearFileProviderCacheState\(defaults: defaults\)\.cacheResetOk/);
   });
 });
 
@@ -2046,33 +2238,103 @@ describe('f2: resetSQLiteInPlace only clears via compare-then-delete against ITS
   });
 });
 
-describe('f2: clearPurgePending(nonce:) is a real compare-then-delete, with a distinct unconditional path for the chmod fallback\'s empty sentinel', () => {
+// Task 1593 f3 (independent security review of eff81b7, reviewer P2) — the
+// OLD compare-then-delete here (`Data(contentsOf:)` then a SEPARATE
+// `removeItem`) was a read-then-write race: a concurrent purge's own
+// `markPurgePending()` (marker-first, an unconditional `createFile` at
+// this exact fixed path) could land its fresh nonce in the gap between
+// this call's read and its delete, and the delete would still fire —
+// wiping that NEWER purge's still-in-progress mark out from under it.
+// Fixed with an atomic `rename(2)`-based claim. See
+// `clearPurgePending(nonce:)`'s own doc comment for the full design; these
+// tests pin its three outcomes (no marker to claim / match / mismatch)
+// plus the mismatch sub-case where RENAME_EXCL correctly refuses to
+// clobber a newer mark.
+describe('f3: clearPurgePending(nonce:) is an atomic rename-claim, immune to a concurrent purge re-marking mid-clear', () => {
   const registrySwift = readFileSync(REGISTRY_SWIFT_PATH, 'utf8');
-  const body = bracedBody(registrySwift, 'public static func clearPurgePending(nonce: Data) {');
+  const SIGNATURE = 'public static func clearPurgePending(nonce: Data) {';
+  const body = bracedBody(registrySwift, SIGNATURE);
 
-  test('an empty nonce (the chmod fallback\'s sentinel) restores write permission unconditionally, before ever touching the marker file', () => {
-    expect(body).toMatch(/if nonce\.isEmpty \{\s*\n\s*_ = restoreFileProviderCacheDatabaseWritable\(\)\s*\n\s*return\s*\n\s*\}/);
+  test('the marker is claimed via rename(2) to a private, unguessable name BEFORE a single byte of its content is ever inspected — this is what closes the race', () => {
+    const renameIdx = body.indexOf('guard rename(liveUrl.path, claimUrl.path) == 0 else {');
+    const readIdx = body.indexOf('let claimed = (try? Data(contentsOf: claimUrl))');
+    expect(renameIdx).toBeGreaterThan(-1);
+    expect(readIdx).toBeGreaterThan(renameIdx);
+    // The claim name is unique per call (UUID) — two concurrent clears can
+    // never collide on the SAME claim path.
+    expect(body).toMatch(/"\\\(purgePendingMarkerName\)\.claim-\\\(UUID\(\)\.uuidString\)"/);
   });
 
-  test('a non-empty nonce reads the on-disk marker and deletes ONLY on an exact byte-for-byte match', () => {
-    const guardIdx = body.indexOf('guard let onDisk = try? Data(contentsOf: url), onDisk == nonce else {');
+  test('outcome 1 — nothing to claim (rename fails: already cleared by a prior purge/registration): a no-op, traced and left alone', () => {
+    const renameIdx = body.indexOf('guard rename(liveUrl.path, claimUrl.path) == 0 else {');
+    expect(renameIdx).toBeGreaterThan(-1);
+    const branch = body.slice(renameIdx, body.indexOf('}', renameIdx) + 1);
+    expect(branch).toMatch(/RuntimeTrace\.event\("storage\.purge\.pending_clear_skipped", \["stage": "no_marker"\]\)/);
+    expect(branch).toMatch(/return/);
+    expect(branch).not.toMatch(/removeItem|renamex_np/);
+  });
+
+  test('outcome 2 — claimed bytes MATCH the nonce (this call\'s own, still-current mark): the claim is deleted and traced cleared', () => {
+    const claimedIdx = body.indexOf('let claimed = (try? Data(contentsOf: claimUrl)) ?? Data()');
+    expect(claimedIdx).toBeGreaterThan(-1);
+    const guardIdx = body.indexOf('guard claimed == nonce else {', claimedIdx);
+    expect(guardIdx).toBeGreaterThan(claimedIdx);
+    // Everything AFTER the mismatch branch's own closing brace is the
+    // match path — exactly one removeItem + one distinct success trace.
+    const mismatchBranchEnd = (() => {
+      let depth = 0;
+      let i = body.indexOf('{', guardIdx);
+      for (; i < body.length; i++) {
+        if (body[i] === '{') depth++;
+        else if (body[i] === '}') { depth--; if (depth === 0) break; }
+      }
+      return i + 1;
+    })();
+    const matchBranch = body.slice(mismatchBranchEnd);
+    expect(matchBranch).toMatch(/try FileManager\.default\.removeItem\(at: claimUrl\)\s*\n\s*RuntimeTrace\.event\("storage\.purge\.pending_cleared", \[:\]\)/);
+    // A failed removal on the MATCH path (rare — the claim vanished
+    // between the read and the delete) is traced distinctly, not silently
+    // treated as cleared.
+    expect(matchBranch).toMatch(/\} catch \{\s*\n\s*RuntimeTrace\.event\("storage\.purge\.pending_clear_failed", \[:\]\)\s*\n\s*\}/);
+  });
+
+  test('outcome 3a — claimed bytes MISMATCH (a DIFFERENT, still-in-progress purge\'s mark claimed by accident): put back via renamex_np(RENAME_EXCL), traced skipped, never deleted outright', () => {
+    const guardIdx = body.indexOf('guard claimed == nonce else {');
     expect(guardIdx).toBeGreaterThan(-1);
-    const mismatchBranch = body.slice(guardIdx, body.indexOf('}', guardIdx));
-    // A mismatch (or unreadable marker) is traced and left alone — never deleted.
-    expect(mismatchBranch).toMatch(/RuntimeTrace\.event\("storage\.purge\.pending_clear_skipped", \[:\]\)/);
-    expect(mismatchBranch).not.toMatch(/removeItem/);
-    const afterGuard = body.slice(body.indexOf('}', guardIdx));
-    expect(afterGuard).toMatch(/try FileManager\.default\.removeItem\(at: url\)/);
-    expect(afterGuard).toMatch(/RuntimeTrace\.event\("storage\.purge\.pending_cleared", \[:\]\)/);
+    let depth = 0;
+    let i = body.indexOf('{', guardIdx);
+    for (; i < body.length; i++) {
+      if (body[i] === '{') depth++;
+      else if (body[i] === '}') { depth--; if (depth === 0) break; }
+    }
+    const mismatchBranch = body.slice(guardIdx, i + 1);
+    expect(mismatchBranch).toMatch(/RuntimeTrace\.event\("storage\.purge\.pending_clear_skipped", \["stage": "mismatch"\]\)/);
+    expect(mismatchBranch).toMatch(/renamex_np\(claimUrl\.path, liveUrl\.path, UInt32\(RENAME_EXCL\)\)/);
+    // The unreadable-marker case folds into "mismatch" too (`claimed`
+    // defaults to `Data()`, which a real 16-byte nonce never equals) —
+    // fails CLOSED, same direction as the old compare-then-delete's own
+    // unreadable-marker branch.
   });
 
-  test('a failed removal (the match succeeded but the delete itself threw) is traced and NOT counted as cleared', () => {
-    const catchIdx = body.indexOf('} catch {');
-    expect(catchIdx).toBeGreaterThan(-1);
-    const catchBranch = body.slice(catchIdx, catchIdx + 200);
-    expect(catchBranch).toMatch(/RuntimeTrace\.event\("storage\.purge\.pending_clear_failed", \[:\]\)/);
-    expect(catchBranch).not.toMatch(/removeItem/);
+  test('outcome 3b — the restore itself refuses (RENAME_EXCL: a THIRD, even newer purge already claimed the live path again): the stale claim is discarded, never clobbers the newer mark', () => {
+    const restoreIdx = body.indexOf('if renamex_np(claimUrl.path, liveUrl.path, UInt32(RENAME_EXCL)) != 0 {');
+    expect(restoreIdx).toBeGreaterThan(-1);
+    const branch = body.slice(restoreIdx, body.indexOf('return', restoreIdx));
+    expect(branch).toMatch(/try\? FileManager\.default\.removeItem\(at: claimUrl\)/);
   });
+
+  test('every claim path uses the SAME unique claimUrl computed once at the top — never a second, independently-generated UUID mid-function', () => {
+    const claimUrlDeclarations = (body.match(/let claimUrl = dir\.appendingPathComponent\(/g) ?? []).length;
+    expect(claimUrlDeclarations).toBe(1);
+  });
+
+  // MUTATION PROOF (per this task's Notes, run manually and pasted there):
+  // reverting the rename-claim back to the old two-step
+  // `Data(contentsOf: url)` + separate `removeItem(at: url)` makes
+  // "the marker is claimed via rename(2) ... BEFORE a single byte ... is
+  // ever inspected" fail (no `rename(liveUrl.path, claimUrl.path)` call
+  // exists at all) — proving these tests pin the atomic claim, not merely
+  // its trace event names.
 });
 
 describe('f2 (marker-first): purgePlaintextStorage marks pending as its VERY FIRST action — before consent reset, before any bump, before any DB is opened', () => {
