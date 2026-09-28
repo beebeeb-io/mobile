@@ -112,6 +112,25 @@ enum BackupError: LocalizedError {
   /// upload path can re-stage + requeue immediately instead of climbing toward
   /// the retry-10 dead-letter.
   case uploadStalled(Int)
+  /// Task 1589: a chunk PUT or complete answered "session gone" (404, or the
+  /// legacy 400 "not writable: expired") a SECOND time in the same upload
+  /// attempt — once immediately after this asset's own re-init. Distinct from
+  /// a generic httpStatus so this shows up in logs/perf events as its own
+  /// reason rather than an ordinary HTTP failure; it still routes to the
+  /// generic `markFailed` (retry_count+1, status back to pending) — bounded,
+  /// never a second re-init.
+  case uploadSessionGoneTwice
+  /// Task 1599 [P1]: the server's typed 409 `account_mismatch`
+  /// (`beebeeb-api::auth::check_expected_user`, task 1554) — the session's
+  /// real account no longer matches the `X-Beebeeb-Expected-User` this
+  /// request sent. Distinct from a generic `.httpStatus` so
+  /// `isBackupUploadSessionGone` (404/expired-400 → re-init) can never
+  /// mistake this for a swept session, and so logs/perf events show this as
+  /// its own reason. Routes to the generic `markFailed` path (failed,
+  /// retryable) like any other asset failure — the side effects (stop the
+  /// run, drop the cached master-key handle) happen at detection time, in
+  /// `handleConfirmedAccountMismatch()`, not here.
+  case accountMismatchConfirmed
 
   var errorDescription: String? {
     switch self {
@@ -132,8 +151,49 @@ enum BackupError: LocalizedError {
       return "Resumable upload could not be reconciled; chunks still pending: [\(list)]"
     case .uploadStalled(let chunkIndex):
       return "Upload stalled on chunk \(chunkIndex) (server reported storage.upload_stalled)"
+    case .uploadSessionGoneTwice:
+      return "Upload session expired twice in a row for this asset"
+    case .accountMismatchConfirmed:
+      return "Backup upload refused: server reported the signed-in account changed"
     }
   }
+}
+
+/// Task 1599: mirrors `NativeEncryptedBackupUploader.applyExpectedUserHeader`
+/// and `ApiClient.authedRequest`'s `expectedUser` param — the SAME
+/// `X-Beebeeb-Expected-User` signal (task 1594) every other native upload
+/// surface already attaches to its authenticated mutations, so the server can
+/// refuse (409 `account_mismatch`) a request whose session doesn't match the
+/// account this engine's unlocked master key is bound to. `accountId` must be
+/// the caller's CONFIRMED account (`batchAccountId`/`currentAccountId`,
+/// already re-checked live immediately before the network call) — never a
+/// fresh, unchecked read taken here. Matches `NativeEncryptedBackupUploader`'s
+/// contract: an empty `accountId` omits the header entirely rather than
+/// sending an empty value.
+private func applyExpectedUserHeader(to request: inout URLRequest, accountId: String) {
+  guard !accountId.isEmpty else { return }
+  request.setValue(accountId, forHTTPHeaderField: "X-Beebeeb-Expected-User")
+}
+
+// `AccountMismatchDetection.isAccountMismatch` (the 409 body check used
+// below) lives in the sibling file `AccountMismatchDetection.swift` in this
+// same directory — see that file's doc comment for why it is not simply
+// `import`ed from `targets/file-provider/AccountMismatchDetection.swift`.
+
+/// Task 1589 — true when `error` means "this v2 upload session no longer
+/// exists — drop it and re-init the same file id", never for any other
+/// failure (409 conflict, 429, a validation 400, …). The actual status/body
+/// check is `isUploadSessionGoneStatus` (`UploadSessionGone.swift`), kept
+/// dependency-free and unit-tested on its own; this just unwraps the
+/// `BackupError` case it can appear in. The chunk-PUT path here only ever
+/// surfaces a status code (`urlSession(_:task:didCompleteWithError:)` does
+/// not capture the response body for a background upload task), so in
+/// practice only 404 is ever seen there; `completeUpload` DOES capture the
+/// body, so the legacy pre-#120 400 "not writable: expired" is matched there
+/// too, as a fallback.
+private func isBackupUploadSessionGone(_ error: Error) -> Bool {
+  guard case BackupError.httpStatus(let status, let body) = error else { return false }
+  return isUploadSessionGoneStatus(status, body: body)
 }
 
 /// Row from the backup_assets SQLite table.
@@ -195,6 +255,11 @@ private struct UploadSessionInit {
   let uploadSessionId: String
   let fileId: String
   let chunkCount: Int
+  /// Task 1589 — the server's recommended heartbeat cadence for this session
+  /// (server PR #120, `lease_seconds / 3`). Falls back to
+  /// `NativeBackupEngine.defaultHeartbeatIntervalSecs` for a server response
+  /// that omits it (pre-#120).
+  let heartbeatIntervalSecs: Double
 }
 
 private enum ExistingUploadDisposition {
@@ -1008,12 +1073,20 @@ final class NativeBackupEngine: NSObject {
         detail: payload.reason
       )
 
+      // Task 1599: a live read, not a batch snapshot — this heartbeat fires
+      // from general status updates, not only from inside an active upload
+      // batch, so there is no `batchAccountId` in scope here. `nil`/empty
+      // (no confirmed owner yet, e.g. between sign-in and the first
+      // `enablePhotoBackup`) simply omits the header, same as every other
+      // reader of `currentAccountId` treats an empty value pre-1599.
+      let accountId = self.currentAccountId ?? ""
       Task.detached(priority: .utility) { [weak self] in
         await self?.postBackupHeartbeat(
           heartbeat,
           authToken: authToken,
           baseURL: baseURL,
-          sessionId: sessionId
+          sessionId: sessionId,
+          accountId: accountId
         )
       }
     }
@@ -1023,7 +1096,8 @@ final class NativeBackupEngine: NSObject {
     _ payload: BackupHeartbeatPayload,
     authToken: String,
     baseURL: String,
-    sessionId: String
+    sessionId: String,
+    accountId: String
   ) async {
     guard let url = URL(string: "\(baseURL)/api/v1/clients/sessions/\(sessionId)/heartbeat") else {
       NSLog("[NativeBackupEngine] Backup heartbeat skipped: invalid server URL")
@@ -1050,6 +1124,7 @@ final class NativeBackupEngine: NSObject {
 
     var request = URLRequest(url: url)
     ProvenanceHeaders.apply(to: &request)
+    applyExpectedUserHeader(to: &request, accountId: accountId)
     request.httpMethod = "POST"
     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
     request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
@@ -1059,6 +1134,11 @@ final class NativeBackupEngine: NSObject {
       let (data, response) = try await metadataSession.data(for: request)
       let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
       guard (200..<300).contains(statusCode) else {
+        if statusCode == 409, AccountMismatchDetection.isAccountMismatch(data) {
+          handleConfirmedAccountMismatch()
+          NSLog("[NativeBackupEngine] Backup heartbeat refused: account mismatch")
+          return
+        }
         let body = String(data: data, encoding: .utf8) ?? ""
         NSLog("[NativeBackupEngine] Backup heartbeat failed status=\(statusCode) body=\(body)")
         return
@@ -1347,6 +1427,30 @@ final class NativeBackupEngine: NSObject {
   /// no `userId` to bind to yet.
   func dropCachedMasterKeyHandle() {
     masterKeyHandle = nil
+  }
+
+  /// Task 1599 [P1]: the server's 409 `account_mismatch` fired for a request
+  /// THIS engine built — the session's real account no longer matches the
+  /// `X-Beebeeb-Expected-User` it sent (the account `currentAccountId`
+  /// believed it was authorized for at request-build time). This is the
+  /// server confirming exactly the race `X-Beebeeb-Expected-User` exists to
+  /// catch (task 1594): the engine's belief about its signed-in account and
+  /// the session's actual JWT diverged AFTER whatever ownership verdict last
+  /// unlocked it — every other native upload surface
+  /// (`NativeEncryptedBackupUploader`, `ApiClient`/File Provider, the Share
+  /// Extension) already reacts to this exact signal.
+  ///
+  /// `stop()` cancels the drain loop and unregisters observers so no OTHER
+  /// queued asset uploads under the same now-proven-wrong belief; dropping
+  /// the cached handle means a fresh `confirmMasterKeyHandle` from JS (a
+  /// fresh ownership verdict) is required before this engine uploads again.
+  /// Traced with NO account id and NO key material — only that the event
+  /// happened. Safe to call more than once (`stop()` and
+  /// `dropCachedMasterKeyHandle()` are both idempotent).
+  private func handleConfirmedAccountMismatch() {
+    RuntimeTrace.event("backup.native.account_mismatch_confirmed")
+    dropCachedMasterKeyHandle()
+    stop()
   }
 
   // MARK: - Lifecycle
@@ -2849,8 +2953,16 @@ final class NativeBackupEngine: NSObject {
       return false
     }
 
-    let serverFileId: String
-    let uploadSessionId: String
+    // Task 1589: `var` — a swept session (404 on a chunk PUT or complete)
+    // re-inits under the SAME `fileId`, which can hand back a fresh
+    // `uploadSessionId` (and, in principle, a `serverFileId`, though in
+    // practice the server takes over the SAME id it was given).
+    var serverFileId: String
+    var uploadSessionId: String
+    // Task 1589: the server's recommended heartbeat cadence for the CURRENT
+    // session; set on every (re-)init below, kept at the default across a
+    // pure resume (no fresh init call happens on that path).
+    var heartbeatIntervalSecs = Self.defaultHeartbeatIntervalSecs
     let isResumingExistingRemote: Bool
     // Resume requires BOTH the file_id (remoteFileId) AND the v2 session id. A
     // row that has a file_id but no session id is a pre-migration remnant or a
@@ -2892,10 +3004,12 @@ final class NativeBackupEngine: NSObject {
         sizeBytes: Int(asset.stagedOriginalSize),
         chunkCount: asset.stagedChunkCount,
         authToken: authToken,
-        baseURL: baseURL
+        baseURL: baseURL,
+        accountId: batchAccountId
       )
       serverFileId = session.fileId
       uploadSessionId = session.uploadSessionId
+      heartbeatIntervalSecs = session.heartbeatIntervalSecs
       dbQueue.sync {
         markUploading(
           assetId: asset.localAssetId,
@@ -2927,7 +3041,8 @@ final class NativeBackupEngine: NSObject {
           mediaTypeHint: asset.stagedMimeType,
           masterKey: masterKey,
           authToken: authToken,
-          baseURL: baseURL
+          baseURL: baseURL,
+          accountId: batchAccountId
         )
         return true
 
@@ -2978,59 +3093,153 @@ final class NativeBackupEngine: NSObject {
 
     onFileStatus?(asset.localAssetId, "uploading", nil, nil)
 
-    // v2 chunk PUTs are idempotent (INSERT…ON CONFLICT DO UPDATE), so re-sending
-    // an already-stored chunk on a resume is safe. `chunks` already excludes
-    // chunks the local bookkeeping marked 'uploaded' (getPendingStagedChunks),
-    // so a resume only re-drives the genuinely-incomplete tail.
-    for chunk in chunks {
-      guard isRunning && !Task.isCancelled else { return false }
-      try await uploadStagedChunk(
-        localAssetId: asset.localAssetId,
-        uploadSessionId: uploadSessionId,
-        chunkIndex: chunk.index,
-        fileURL: URL(fileURLWithPath: chunk.path),
+    // Task 1589 — the gap this heartbeat covers is BETWEEN two chunk
+    // requests, not one chunk's own (potentially very long) streaming body,
+    // which the server already renews server-side while it streams.
+    var lastHeartbeatAt = Date()
+    let heartbeatIfDue = { [weak self] (sessionId: String) async in
+      guard let self, Date().timeIntervalSince(lastHeartbeatAt) >= heartbeatIntervalSecs else { return }
+      await self.sendHeartbeat(uploadSessionId: sessionId, authToken: authToken, baseURL: baseURL, accountId: batchAccountId)
+      lastHeartbeatAt = Date()
+    }
+
+    // Task 1589: extracted so a swept v2 session (404 — server PR #120's
+    // sweeper, or the legacy 400 "not writable: expired") can be recovered by
+    // re-initing the SAME file id and re-PUTting every ALREADY-STAGED chunk
+    // (no re-encrypt needed — the file key derives from `fileId`, unchanged
+    // by the takeover) from index 0, at most once per attempt.
+    func runChunksAndComplete(_ chunksToSend: [StagedChunkRow], sessionId: String) async throws {
+      // v2 chunk PUTs are idempotent (INSERT…ON CONFLICT DO UPDATE), so
+      // re-sending an already-stored chunk on a resume is safe. `chunks`
+      // already excludes chunks the local bookkeeping marked 'uploaded'
+      // (getPendingStagedChunks), so a resume only re-drives the genuinely-
+      // incomplete tail.
+      for chunk in chunksToSend {
+        guard isRunning && !Task.isCancelled else { throw CancellationError() }
+        await heartbeatIfDue(sessionId)
+        try await uploadStagedChunk(
+          localAssetId: asset.localAssetId,
+          uploadSessionId: sessionId,
+          chunkIndex: chunk.index,
+          fileURL: URL(fileURLWithPath: chunk.path),
+          authToken: authToken,
+          baseURL: baseURL,
+          accountId: batchAccountId
+        )
+      }
+
+      let remaining = dbQueue.sync { countPendingStagedChunks(assetId: asset.localAssetId) }
+      guard remaining == 0 else {
+        // The re-PUT loop finished but the local bookkeeping still reports chunks
+        // pending. Surface a diagnosable error with the offending indices instead
+        // of returning false silently — the silence is exactly why this wedge was
+        // invisible (no error status, no log line) while it spun every drain until
+        // the asset dead-lettered at retry 10. Throwing routes to markFailed with
+        // a concrete message and still re-stages on a later attempt.
+        let unreconciled = dbQueue.sync { getPendingStagedChunks(assetId: asset.localAssetId) }
+          .map { $0.index }
+        throw BackupError.unreconciledChunks(unreconciled)
+      }
+
+      // Task 1531 [P1-2]: re-check right before the one irreversible step. The
+      // chunk PUT loop above can run long enough (large video, slow network)
+      // for the account to change mid-upload; refusing here — before
+      // `upload/complete` and before `markUploadComplete` writes the local
+      // row as done — means a stale upload never gets marked finished under
+      // the wrong account's bookkeeping. The already-PUT chunks on the server
+      // are reaped by the server's stale-upload cleanup, same as any other
+      // abandoned session.
+      guard currentAccountId == batchAccountId else {
+        RuntimeTrace.event("backup.native.upload_staged.refused_account_changed", [
+          "assetId": asset.localAssetId,
+          "batchAccount": batchAccountId,
+          "liveAccount": currentAccountId ?? "(nil)",
+          "stage": "pre_complete"
+        ])
+        NSLog("[NativeBackupEngine] Account changed mid-upload — refusing to complete: \(asset.localAssetId)")
+        throw CancellationError()
+      }
+
+      await heartbeatIfDue(sessionId)
+      try await completeUpload(
+        uploadSessionId: sessionId,
         authToken: authToken,
-        baseURL: baseURL
+        baseURL: baseURL,
+        accountId: batchAccountId
       )
     }
 
-    let remaining = dbQueue.sync { countPendingStagedChunks(assetId: asset.localAssetId) }
-    guard remaining == 0 else {
-      // The re-PUT loop finished but the local bookkeeping still reports chunks
-      // pending. Surface a diagnosable error with the offending indices instead
-      // of returning false silently — the silence is exactly why this wedge was
-      // invisible (no error status, no log line) while it spun every drain until
-      // the asset dead-lettered at retry 10. Throwing routes to markFailed with
-      // a concrete message and still re-stages on a later attempt.
-      let unreconciled = dbQueue.sync { getPendingStagedChunks(assetId: asset.localAssetId) }
-        .map { $0.index }
-      throw BackupError.unreconciledChunks(unreconciled)
-    }
-
-    // Task 1531 [P1-2]: re-check right before the one irreversible step. The
-    // chunk PUT loop above can run long enough (large video, slow network)
-    // for the account to change mid-upload; refusing here — before
-    // `upload/complete` and before `markUploadComplete` writes the local
-    // row as done — means a stale upload never gets marked finished under
-    // the wrong account's bookkeeping. The already-PUT chunks on the server
-    // are reaped by the server's stale-upload cleanup, same as any other
-    // abandoned session.
-    guard currentAccountId == batchAccountId else {
-      RuntimeTrace.event("backup.native.upload_staged.refused_account_changed", [
-        "assetId": asset.localAssetId,
-        "batchAccount": batchAccountId,
-        "liveAccount": currentAccountId ?? "(nil)",
-        "stage": "pre_complete"
-      ])
-      NSLog("[NativeBackupEngine] Account changed mid-upload — refusing to complete: \(asset.localAssetId)")
+    do {
+      try await runChunksAndComplete(chunks, sessionId: uploadSessionId)
+    } catch is CancellationError {
       return false
-    }
+    } catch {
+      guard isBackupUploadSessionGone(error) else { throw error }
 
-    try await completeUpload(
-      uploadSessionId: uploadSessionId,
-      authToken: authToken,
-      baseURL: baseURL
-    )
+      // One bounded re-init: SAME file id (the encryption key derives from
+      // it — no re-encrypt), restart every staged chunk from index 0. Never
+      // a second time for this asset in this drain.
+      perfLog("asset.session_swept", ["assetId": asset.localAssetId])
+      let reinitSession = try await initUploadSession(
+        fileId: fileId,
+        nameEncrypted: nameEncrypted,
+        mimeType: asset.stagedMimeType,
+        isMedia: asset.stagedIsMedia,
+        createdAt: asset.createdAt,
+        sizeBytes: Int(asset.stagedOriginalSize),
+        chunkCount: asset.stagedChunkCount,
+        authToken: authToken,
+        baseURL: baseURL,
+        accountId: batchAccountId
+      )
+      serverFileId = reinitSession.fileId
+      uploadSessionId = reinitSession.uploadSessionId
+      heartbeatIntervalSecs = reinitSession.heartbeatIntervalSecs
+      lastHeartbeatAt = Date()
+      dbQueue.sync {
+        markUploading(
+          assetId: asset.localAssetId,
+          remoteFileId: serverFileId,
+          uploadSessionId: uploadSessionId
+        )
+      }
+
+      // Every staged `.enc` chunk (NOT just the ones local bookkeeping still
+      // thought were pending) — the new session has nothing uploaded to it.
+      var allStaged: [StagedChunkRow] = []
+      let dir = (try? currentStagedDirectory(fileId: fileId)) ?? URL(fileURLWithPath: stagedDir)
+      for index in 0..<asset.stagedChunkCount {
+        let url = dir.appendingPathComponent("\(index).enc")
+        guard readableRegularFile(url) else {
+          dbQueue.sync {
+            clearStagedStateForRestage(
+              assetId: asset.localAssetId,
+              error: "Staged chunk \(index) missing after a session re-init; re-encrypting"
+            )
+          }
+          removeStagedDirectory(stagedDir: stagedDir, fileId: fileId)
+          updateBackupStatusSurfaces(reason: "Re-encrypting backup")
+          return false
+        }
+        allStaged.append(StagedChunkRow(index: index, path: url.path))
+      }
+      dbQueue.sync {
+        replaceStagedChunks(assetId: asset.localAssetId, fileId: fileId, chunkPaths: allStaged.map { $0.path })
+      }
+
+      do {
+        try await runChunksAndComplete(allStaged, sessionId: uploadSessionId)
+      } catch is CancellationError {
+        return false
+      } catch {
+        // A second sweep in a row: bounded — never re-init again. Routes to
+        // the caller's generic `catch { markFailed }` (retry_count+1, status
+        // back to `pending_upload`/`staged_upload` — failed-retryable, never
+        // left stuck "uploading").
+        guard isBackupUploadSessionGone(error) else { throw error }
+        throw BackupError.uploadSessionGoneTwice
+      }
+    }
 
     dbQueue.sync {
       markUploadComplete(assetId: asset.localAssetId, remoteFileId: serverFileId)
@@ -3054,7 +3263,8 @@ final class NativeBackupEngine: NSObject {
       mediaTypeHint: asset.stagedMimeType,
       masterKey: masterKey,
       authToken: authToken,
-      baseURL: baseURL
+      baseURL: baseURL,
+      accountId: batchAccountId
     )
 
     return true
@@ -3135,8 +3345,19 @@ final class NativeBackupEngine: NSObject {
     chunkIndex: Int,
     fileURL: URL,
     authToken: String,
-    baseURL: String
+    baseURL: String,
+    /// Task 1599: the caller's confirmed batch/account id
+    /// (`uploadStagedAsset`'s `batchAccountId`, itself re-checked against
+    /// the LIVE `currentAccountId` immediately before this call) — never a
+    /// fresh, unchecked read taken here. Refused (not silently sent
+    /// header-less) when empty: an upload with no confirmed owner must not
+    /// reach the network at all.
+    accountId: String
   ) async throws {
+    guard !accountId.isEmpty else {
+      RuntimeTrace.event("backup.native.upload_chunk.refused_no_account")
+      throw BackupError.accountUnknown
+    }
     guard fileURL.isFileURL,
           FileManager.default.isReadableFile(atPath: fileURL.path) else {
       throw BackupError.assetLoadFailed
@@ -3152,6 +3373,7 @@ final class NativeBackupEngine: NSObject {
 
     var request = URLRequest(url: url)
     ProvenanceHeaders.apply(to: &request)
+    applyExpectedUserHeader(to: &request, accountId: accountId)
     request.httpMethod = "PUT"
     request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
     request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
@@ -3317,8 +3539,15 @@ final class NativeBackupEngine: NSObject {
     sizeBytes: Int,
     chunkCount: Int,
     authToken: String,
-    baseURL: String
+    baseURL: String,
+    /// Task 1599: the caller's confirmed batch/account id — see
+    /// `uploadStagedChunk`'s matching parameter doc.
+    accountId: String
   ) async throws -> UploadSessionInit {
+    guard !accountId.isEmpty else {
+      RuntimeTrace.event("backup.native.init_upload.refused_no_account")
+      throw BackupError.accountUnknown
+    }
     guard let url = URL(string: "\(baseURL)/api/v1/uploads/init") else {
       throw BackupError.invalidServerURL
     }
@@ -3344,6 +3573,7 @@ final class NativeBackupEngine: NSObject {
 
     var request = URLRequest(url: url)
     ProvenanceHeaders.apply(to: &request)
+    applyExpectedUserHeader(to: &request, accountId: accountId)
     request.httpMethod = "POST"
     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
     request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
@@ -3351,6 +3581,15 @@ final class NativeBackupEngine: NSObject {
 
     let (data, response) = try await metadataSession.data(for: request)
     let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+
+    // Task 1599: checked BEFORE the generic 429/status handling below — this
+    // route can also 409 for an unrelated reason (a live foreign lease, task
+    // 1589 — "upload is already in progress for this file"), so the body must
+    // be inspected, never a bare `statusCode == 409`.
+    if statusCode == 409, AccountMismatchDetection.isAccountMismatch(data) {
+      handleConfirmedAccountMismatch()
+      throw BackupError.accountMismatchConfirmed
+    }
 
     // Handle rate limiting
     if statusCode == 429 {
@@ -3386,11 +3625,70 @@ final class NativeBackupEngine: NSObject {
       throw BackupError.invalidResponse
     }
 
+    // Task 1589 — server PR #120 returns this on every init; fall back to the
+    // documented default (lease 3600 s / 3) for a pre-#120 server.
+    let heartbeatIntervalSecs = (json["heartbeat_interval_secs"] as? Double)
+      ?? (json["heartbeat_interval_secs"] as? Int).map(Double.init)
+      ?? Self.defaultHeartbeatIntervalSecs
+
     return UploadSessionInit(
       uploadSessionId: uploadSessionId,
       fileId: serverFileId,
-      chunkCount: serverChunkCount
+      chunkCount: serverChunkCount,
+      heartbeatIntervalSecs: heartbeatIntervalSecs
     )
+  }
+
+  /// Task 1589 — conservative fallback when a server response omits
+  /// `heartbeat_interval_secs` (pre-#120).
+  private static let defaultHeartbeatIntervalSecs: Double = 90
+
+  /// Task 1589 — renew a v2 upload session's lease directly (server PR #120,
+  /// `POST /uploads/{id}/heartbeat`), for the gap BETWEEN two chunk requests
+  /// on the same session (the loop below scheduling the next chunk, a brief
+  /// pause the process survives). A single chunk's own in-flight body already
+  /// renews its own lease server-side while it streams (up to 256 MiB per
+  /// chunk on the Backup profile) — this covers everything else. Best-effort:
+  /// errors are swallowed, never thrown — a missed renewal just means the
+  /// NEXT chunk/complete may see a 404 and go through the re-init path in
+  /// `uploadStagedAsset`, which is exactly the recovery this task adds.
+  private func sendHeartbeat(
+    uploadSessionId: String,
+    authToken: String,
+    baseURL: String,
+    /// Task 1599: the caller's confirmed batch/account id — see
+    /// `uploadStagedChunk`'s matching parameter doc. A best-effort renewal
+    /// with no confirmed owner is skipped outright (not sent header-less):
+    /// a missed renewal here is harmless (the doc comment above already
+    /// covers the recovery path), so refusing is strictly safer than
+    /// guessing.
+    accountId: String
+  ) async {
+    guard !accountId.isEmpty else {
+      RuntimeTrace.event("backup.native.upload_heartbeat.refused_no_account")
+      return
+    }
+    guard let url = URL(string: "\(baseURL)/api/v1/uploads/\(uploadSessionId)/heartbeat") else { return }
+    var request = URLRequest(url: url)
+    ProvenanceHeaders.apply(to: &request)
+    applyExpectedUserHeader(to: &request, accountId: accountId)
+    request.httpMethod = "POST"
+    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
+    request.httpBody = Data("{}".utf8)
+    do {
+      let (data, response) = try await metadataSession.data(for: request)
+      let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+      // Task 1599: this route also 409s for "session exists but already
+      // completed" (server `heartbeat_upload`, unrelated to account
+      // ownership) — the body must be checked, never a bare status code.
+      if statusCode == 409, AccountMismatchDetection.isAccountMismatch(data) {
+        handleConfirmedAccountMismatch()
+        NSLog("[NativeBackupEngine] heartbeat refused: account mismatch")
+      }
+    } catch {
+      NSLog("[NativeBackupEngine] heartbeat failed (best-effort): \(error.localizedDescription)")
+    }
   }
 
   // NOTE: the legacy in-process `uploadChunk(...)` helper (PUT
@@ -3403,14 +3701,26 @@ final class NativeBackupEngine: NSObject {
   private func completeUpload(
     uploadSessionId: String,
     authToken: String,
-    baseURL: String
+    baseURL: String,
+    /// Task 1599: the caller's confirmed batch/account id — see
+    /// `uploadStagedChunk`'s matching parameter doc. This is the one
+    /// irreversible step (`uploadStagedAsset` already re-checks
+    /// `currentAccountId == batchAccountId` right before calling in — see
+    /// that call site's own comment), so an empty/unconfirmed id refuses
+    /// here too rather than completing under an unknown identity.
+    accountId: String
   ) async throws {
+    guard !accountId.isEmpty else {
+      RuntimeTrace.event("backup.native.complete_upload.refused_no_account")
+      throw BackupError.accountUnknown
+    }
     guard let url = URL(string: "\(baseURL)/api/v1/uploads/\(uploadSessionId)/complete") else {
       throw BackupError.invalidServerURL
     }
 
     var request = URLRequest(url: url)
     ProvenanceHeaders.apply(to: &request)
+    applyExpectedUserHeader(to: &request, accountId: accountId)
     request.httpMethod = "POST"
     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
     request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
@@ -3418,6 +3728,11 @@ final class NativeBackupEngine: NSObject {
 
     let (data, response) = try await metadataSession.data(for: request)
     let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+
+    if statusCode == 409, AccountMismatchDetection.isAccountMismatch(data) {
+      handleConfirmedAccountMismatch()
+      throw BackupError.accountMismatchConfirmed
+    }
 
     guard (200..<300).contains(statusCode) else {
       let body = String(data: data, encoding: .utf8) ?? ""
@@ -4510,10 +4825,19 @@ final class NativeBackupEngine: NSObject {
     mediaTypeHint: String?,
     masterKey: MasterKeyHandle,
     authToken: String,
-    baseURL: String
+    baseURL: String,
+    /// Task 1599: the caller's confirmed batch/account id — see
+    /// `uploadStagedChunk`'s matching parameter doc. Both call sites are
+    /// inside `uploadStagedAsset`, so `batchAccountId` is always available.
+    accountId: String
   ) {
     Task.detached(priority: .utility) { [weak self] in
       guard let self else { return }
+      guard !accountId.isEmpty else {
+        RuntimeTrace.event("backup.native.thumbnail.refused_no_account")
+        NSLog("[NativeBackupEngine] Thumbnail upload skipped: no confirmed account")
+        return
+      }
       do {
         let isVideo = assetType == "video" || self.isVideoType(mediaTypeHint)
         let source: UIImage = isVideo
@@ -4538,7 +4862,8 @@ final class NativeBackupEngine: NSObject {
             blurhash: blurhash,
             serverFileId: serverFileId,
             authToken: authToken,
-            baseURL: baseURL
+            baseURL: baseURL,
+            accountId: accountId
           )
         } else {
           NSLog("[NativeBackupEngine] Medium thumbnail produced no output")
@@ -4555,7 +4880,8 @@ final class NativeBackupEngine: NSObject {
             blurhash: nil,
             serverFileId: serverFileId,
             authToken: authToken,
-            baseURL: baseURL
+            baseURL: baseURL,
+            accountId: accountId
           )
         } else {
           NSLog("[NativeBackupEngine] Large thumbnail produced no output")
@@ -4578,7 +4904,10 @@ final class NativeBackupEngine: NSObject {
     blurhash: String?,
     serverFileId: String,
     authToken: String,
-    baseURL: String
+    baseURL: String,
+    /// Task 1599: the caller's confirmed batch/account id — see
+    /// `uploadStagedChunk`'s matching parameter doc.
+    accountId: String
   ) async {
     let label = variant ?? "medium"
     do {
@@ -4603,15 +4932,19 @@ final class NativeBackupEngine: NSObject {
       guard let thumbUrl = URL(string: urlString) else { return }
       var request = URLRequest(url: thumbUrl)
       ProvenanceHeaders.apply(to: &request)
+      applyExpectedUserHeader(to: &request, accountId: accountId)
       request.httpMethod = "PUT"
       request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
       request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
       request.httpBody = wire
 
-      let (_, response) = try await URLSession.shared.data(for: request)
+      let (responseData, response) = try await URLSession.shared.data(for: request)
       let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
       if (200..<300).contains(statusCode) {
         NSLog("[NativeBackupEngine] \(label) thumbnail uploaded\(blurhash != nil ? " (+blurhash)" : "")")
+      } else if statusCode == 409, AccountMismatchDetection.isAccountMismatch(responseData) {
+        handleConfirmedAccountMismatch()
+        NSLog("[NativeBackupEngine] \(label) thumbnail refused: account mismatch")
       } else {
         NSLog("[NativeBackupEngine] \(label) thumbnail upload HTTP \(statusCode)")
       }
@@ -4813,6 +5146,27 @@ extension NativeBackupEngine: URLSessionDelegate, URLSessionTaskDelegate, URLSes
           }
         }
         continuation?.resume()
+      } else if statusCode == 409 {
+        // Task 1599: a background upload task's delegate never captures the
+        // response BODY (see `isBackupUploadSessionGone`'s doc comment above
+        // — only `task.response`'s status code is available here), so this
+        // can't run `AccountMismatchDetection` on the body like every other
+        // call site in this file. Verified against the server source
+        // (`beebeeb-api/src/routes/uploads.rs::upload_chunk` — no
+        // `ApiError::Conflict`/`ConflictCode` of its own; its ONLY route
+        // to a 409 is the `AuthUser` extractor's centralized
+        // `check_expected_user`, task 1554) that a bare 409 on THIS specific
+        // route (`PUT /uploads/{session}/chunks/{index}`) can only ever mean
+        // `account_mismatch` — never a legitimate data conflict.
+        handleConfirmedAccountMismatch()
+        dbQueue.async { [weak self] in
+          self?.markChunkFailed(
+            assetId: chunk.localAssetId,
+            chunkIndex: chunk.chunkIndex,
+            error: "account mismatch (409)"
+          )
+        }
+        continuation?.resume(throwing: BackupError.accountMismatchConfirmed)
       } else {
         // 408 = server fail-fast `storage.upload_stalled` (idle body — the
         // 0-byte-stall symptom). Surface it as a distinct error so the asset
