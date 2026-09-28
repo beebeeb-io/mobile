@@ -200,4 +200,38 @@ describe('uploadEncryptedFileNative — re-init on a swept v2 session (task 1589
     expect(nativeUploadCalls).toHaveLength(1)
     expect(fetchCalls.filter((c) => c.url.endsWith('/uploads/init'))).toHaveLength(1)
   })
+
+  test('a re-init that returns a DIFFERENT file id fails cleanly — never re-transfers under a mismatched id (task 1599 followup 1)', async () => {
+    store.set('beebeeb_session_token', 'test-token')
+    fetchQueue.push(
+      initResponse('S1'),
+      // Same chunk plan as the native plan (so the EXISTING chunk-plan-drift
+      // guard doesn't also catch this) but a DIFFERENT file id — the
+      // takeover contract (task 1589) says "same id"; this response violates
+      // it and must never be trusted.
+      async () => jsonResponse({
+        file_id: 'WRONG',
+        upload_session_id: 'S2',
+        chunk_size_bytes: 4_194_304,
+        chunk_count: 1,
+        lease_seconds: 3600,
+        heartbeat_interval_secs: 9_999,
+      }),
+    )
+    nativeUploadQueue.push(
+      async () => { throw nativeGoneFailure(404, 'not found') },
+    )
+
+    const { uploadEncryptedFileNative, ApiError } = await loadFreshApi()
+    await expect(uploadEncryptedFileNative({
+      masterKeyHandleId: 1,
+      fileId: 'CLIENT-ID',
+      inputUri: 'file:///tmp/photo.jpg',
+      nameEncrypted: 'name-cipher',
+      plaintextSizeBytes: 2_000_000,
+    })).rejects.toBeInstanceOf(ApiError)
+
+    expect(nativeUploadCalls).toHaveLength(1)
+    expect(fetchCalls.filter((c) => c.url.endsWith('/uploads/init'))).toHaveLength(2)
+  })
 })

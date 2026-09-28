@@ -1505,6 +1505,9 @@ export async function uploadEncryptedChunked(params: {
   // session (set on every (re-)init; a resumed-from-storage session has no
   // fresh value, so it falls back to a conservative default).
   let heartbeatIntervalSecs = DEFAULT_HEARTBEAT_INTERVAL_SECS
+  // Task 1599 followup 4: the sibling `lease_seconds` from the same (re-)init
+  // response — the ceiling `startUploadHeartbeatPulse` clamps against.
+  let leaseSeconds: number | undefined
 
   const resumeState = resumeKey ? await loadUploadResumeState(resumeKey) : null
   if (
@@ -1538,6 +1541,7 @@ export async function uploadEncryptedChunked(params: {
       chunkSizeBytes = v2Init.chunk_size_bytes
       chunkCount = v2Init.chunk_count
       heartbeatIntervalSecs = v2Init.heartbeat_interval_secs ?? DEFAULT_HEARTBEAT_INTERVAL_SECS
+      leaseSeconds = v2Init.lease_seconds
 
       if (chunkSizeBytes <= 0 || chunkSizeBytes > MOBILE_UPLOAD_CHUNK_SIZE_CAP_BYTES) {
         protocol = 'v1'
@@ -1680,7 +1684,7 @@ export async function uploadEncryptedChunked(params: {
   // — the in-flight renewal on the server already covers one chunk's own
   // streaming time. Stopped on every exit path (success, re-init, failure).
   let stopHeartbeat = protocol === 'v2' && uploadSessionId
-    ? startUploadHeartbeatPulse(uploadSessionId, token, heartbeatIntervalSecs)
+    ? startUploadHeartbeatPulse(uploadSessionId, token, heartbeatIntervalSecs, leaseSeconds)
     : (): void => {}
 
   try {
@@ -1709,18 +1713,22 @@ export async function uploadEncryptedChunked(params: {
       } catch {
         reinit = null
       }
-      if (!reinit) {
+      if (!reinit || reinit.file_id !== serverFileId) {
         // Could not re-init (5xx exhausted, or a 404/405 — v2 unexpectedly
-        // unavailable mid-upload). Surface the ORIGINAL session-gone failure,
-        // shaped exactly as it would have been without this recovery path.
+        // unavailable mid-upload), OR the server violated the takeover
+        // contract (task 1589: a re-init MUST hand back the SAME file id —
+        // the already-staged chunks and name were encrypted under the
+        // original one; task 1599 followup 1). Either way, never adopt the
+        // response — surface the ORIGINAL session-gone failure, shaped
+        // exactly as it would have been without this recovery path.
         return await throwUploadError(err.status, err.body, 'Upload session expired', authSnapshot)
       }
 
       uploadSessionId = reinit.upload_session_id
-      serverFileId = reinit.file_id
       chunkSizeBytes = reinit.chunk_size_bytes
       chunkCount = reinit.chunk_count
       heartbeatIntervalSecs = reinit.heartbeat_interval_secs ?? DEFAULT_HEARTBEAT_INTERVAL_SECS
+      leaseSeconds = reinit.lease_seconds
       saveUploadResumeStateSoon(resumeKey, {
         protocol: 'v2',
         fileId: serverFileId,
@@ -1732,7 +1740,7 @@ export async function uploadEncryptedChunked(params: {
         mimeType: mimeType ?? null,
         lastUploadedChunkIndex: -1,
       })
-      stopHeartbeat = startUploadHeartbeatPulse(uploadSessionId, token, heartbeatIntervalSecs)
+      stopHeartbeat = startUploadHeartbeatPulse(uploadSessionId, token, heartbeatIntervalSecs, leaseSeconds)
 
       try {
         return await runChunksAndComplete(0)
@@ -1853,6 +1861,9 @@ export async function uploadEncryptedFileNative(params: {
   // Task 1589: the server's recommended heartbeat cadence for the CURRENT
   // session; a resumed-from-storage session has no fresh value.
   let heartbeatIntervalSecs = DEFAULT_HEARTBEAT_INTERVAL_SECS
+  // Task 1599 followup 4: the sibling `lease_seconds` from the same (re-)init
+  // response — the ceiling `startUploadHeartbeatPulse` clamps against.
+  let leaseSeconds: number | undefined
   if (resumeState && resumeStateMatchesNativePlan(resumeState, { plaintextSizeBytes, parentId, ...plan })) {
     serverFileId = resumeState.fileId
     uploadSessionId = resumeState.uploadSessionId as string
@@ -1876,6 +1887,7 @@ export async function uploadEncryptedFileNative(params: {
     serverFileId = v2Init.file_id
     uploadSessionId = v2Init.upload_session_id
     heartbeatIntervalSecs = v2Init.heartbeat_interval_secs ?? DEFAULT_HEARTBEAT_INTERVAL_SECS
+    leaseSeconds = v2Init.lease_seconds
   }
 
   const sizeBytes = plaintextSizeBytes + plan.chunkCount * 28
@@ -1984,7 +1996,7 @@ export async function uploadEncryptedFileNative(params: {
   // event loop keeps running timers while awaiting the native bridge's
   // promise, so this fires normally even though the whole file transfers in
   // one native call.
-  let stopHeartbeat = startUploadHeartbeatPulse(uploadSessionId, token, heartbeatIntervalSecs)
+  let stopHeartbeat = startUploadHeartbeatPulse(uploadSessionId, token, heartbeatIntervalSecs, leaseSeconds)
 
   try {
     try {
@@ -2013,19 +2025,28 @@ export async function uploadEncryptedFileNative(params: {
       } catch {
         reinit = null
       }
-      if (!reinit || reinit.chunk_size_bytes !== plan.chunkSizeBytes || reinit.chunk_count !== plan.chunkCount) {
-        // Could not re-init cleanly (5xx exhausted, 404/405, or the server's
-        // plan drifted from the native plan). Surface the ORIGINAL
-        // session-gone failure, shaped as it would be without this recovery.
+      if (
+        !reinit
+        || reinit.chunk_size_bytes !== plan.chunkSizeBytes
+        || reinit.chunk_count !== plan.chunkCount
+        // task 1599 followup 1: the takeover contract is the SAME file id —
+        // the native transfer would otherwise encrypt/upload under a server
+        // id that never matches the name/key material staged for this asset.
+        || reinit.file_id !== serverFileId
+      ) {
+        // Could not re-init cleanly (5xx exhausted, 404/405, the server's
+        // plan drifted from the native plan, or a file-id mismatch). Surface
+        // the ORIGINAL session-gone failure, shaped as it would be without
+        // this recovery.
         return await throwUploadError(err.status, err.body, 'Upload session expired', authSnapshot)
       }
 
-      serverFileId = reinit.file_id
       uploadSessionId = reinit.upload_session_id
       heartbeatIntervalSecs = reinit.heartbeat_interval_secs ?? DEFAULT_HEARTBEAT_INTERVAL_SECS
+      leaseSeconds = reinit.lease_seconds
       lastPersistedChunk = -1
       persistResume(-1)
-      stopHeartbeat = startUploadHeartbeatPulse(uploadSessionId, token, heartbeatIntervalSecs)
+      stopHeartbeat = startUploadHeartbeatPulse(uploadSessionId, token, heartbeatIntervalSecs, leaseSeconds)
 
       try {
         return await runNativeAttempt(0)
@@ -2106,6 +2127,25 @@ class UploadSessionGoneSignal extends Error {
 const DEFAULT_HEARTBEAT_INTERVAL_SECS = 90
 
 /**
+ * Task 1599 followup 4 — never trust the server's `heartbeat_interval_secs`
+ * verbatim. A FLOOR of 15s stops a buggy or compromised server from making
+ * the client hammer the heartbeat endpoint (e.g. a returned `0`). A CEILING
+ * of `leaseSeconds / 2` stops an interval close to (or past) the lease from
+ * letting the lease expire between two heartbeats even when nothing else
+ * went wrong. The ceiling wins when the two conflict (a very short lease) —
+ * a heartbeat that undershoots the floor is safer than one that can outlive
+ * its own lease. `leaseSeconds` is omitted (or <= 0) for a pre-1589 server
+ * response that has no lease concept yet; only the floor applies then.
+ */
+const MIN_HEARTBEAT_INTERVAL_SECS = 15
+
+export function clampHeartbeatIntervalSecs(intervalSecs: number, leaseSeconds?: number): number {
+  const floored = Math.max(MIN_HEARTBEAT_INTERVAL_SECS, intervalSecs)
+  if (leaseSeconds === undefined || leaseSeconds <= 0) return floored
+  return Math.min(floored, leaseSeconds / 2)
+}
+
+/**
  * Task 1589 — renew a v2 upload session's lease directly (server PR #120,
  * `POST /uploads/{id}/heartbeat`), for the GAP between two requests on the
  * same session: pacing between chunks, a background suspension the process
@@ -2137,8 +2177,8 @@ async function sendUploadHeartbeat(uploadSessionId: string, token: string | null
  * `finally`, on both the success and the failure path, so a completed or
  * abandoned upload never leaves a timer running.
  */
-function startUploadHeartbeatPulse(uploadSessionId: string, token: string | null, intervalSecs: number): () => void {
-  const intervalMs = Math.max(1, intervalSecs) * 1000
+function startUploadHeartbeatPulse(uploadSessionId: string, token: string | null, intervalSecs: number, leaseSeconds?: number): () => void {
+  const intervalMs = clampHeartbeatIntervalSecs(intervalSecs, leaseSeconds) * 1000
   const timer = setInterval(() => {
     sendUploadHeartbeat(uploadSessionId, token).catch((err) => {
       console.warn('[upload] heartbeat failed (best-effort)', {

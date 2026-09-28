@@ -85,13 +85,13 @@ function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
 }
 
-function initResponse(sessionId: string, opts?: { chunkCount?: number; heartbeatIntervalSecs?: number }): () => Promise<Response> {
+function initResponse(sessionId: string, opts?: { chunkCount?: number; heartbeatIntervalSecs?: number; leaseSeconds?: number }): () => Promise<Response> {
   return async () => jsonResponse({
     file_id: 'F',
     upload_session_id: sessionId,
     chunk_size_bytes: 4_194_304,
     chunk_count: opts?.chunkCount ?? 1,
-    lease_seconds: 3600,
+    lease_seconds: opts?.leaseSeconds ?? 3600,
     heartbeat_interval_secs: opts?.heartbeatIntervalSecs ?? 9_999, // huge: never fires in a fast test
   })
 }
@@ -296,13 +296,54 @@ describe('uploadEncryptedChunked — re-init on a swept v2 session (task 1589)',
     }
     setExpectedUserId(null)
   })
+
+  test('a re-init that returns a DIFFERENT file id fails cleanly — never uploads a chunk under a mismatched id (task 1599 followup 1)', async () => {
+    store.set('beebeeb_session_token', 'test-token')
+    fetchQueue.push(
+      initResponse('S1'),
+      // The server contract (task 1589) is "the re-init takes over the SAME
+      // file id" — this response violates that contract. The staged chunks
+      // and name were encrypted under the ORIGINAL file id (`F`), so blindly
+      // adopting a different one would upload ciphertext under the wrong
+      // file's identity.
+      async () => jsonResponse({
+        file_id: 'WRONG',
+        upload_session_id: 'S2',
+        chunk_size_bytes: 4_194_304,
+        chunk_count: 1,
+        lease_seconds: 3600,
+        heartbeat_interval_secs: 9_999,
+      }),
+    )
+    uploadAsyncQueue.push(
+      { status: 404, body: '{"error":"not found"}' }, // chunk 0 on S1 — swept
+    )
+
+    const { uploadEncryptedChunked, ApiError } = await loadFreshApi()
+    await expect(uploadEncryptedChunked({
+      fileId: 'client-id',
+      nameEncrypted: 'n',
+      plaintextSizeBytes: 1_000,
+      readEncryptedChunk: async () => new Uint8Array(10),
+    })).rejects.toBeInstanceOf(ApiError)
+
+    // Never attempts a chunk PUT against the mismatched-id session — the
+    // ORIGINAL session-gone failure surfaces instead of proceeding.
+    expect(uploadAsyncCalls).toHaveLength(1)
+    expect(fetchCalls.filter((c) => c.url.endsWith('/uploads/init'))).toHaveLength(2)
+  })
 })
 
 describe('uploadEncryptedChunked — heartbeat while active (task 1589)', () => {
   test('sends a heartbeat while a slow chunk read is in flight, and stops after completion', async () => {
     store.set('beebeeb_session_token', 'test-token')
     fetchQueue.push(
-      initResponse('S1', { heartbeatIntervalSecs: 1 }),
+      // Task 1599 followup 4: `heartbeatIntervalSecs: 1` alone would now be
+      // floored to 15s (below this test's budget) — `leaseSeconds: 2` forces
+      // the CEILING (lease/2 = 1s) to win instead, so the clamped interval
+      // is still 1s and this test proves the SAME "fires while active, stops
+      // after completion" behavior post-clamp.
+      initResponse('S1', { heartbeatIntervalSecs: 1, leaseSeconds: 2 }),
       async () => jsonResponse({ id: 'F', name_encrypted: 'n' }),
     )
     uploadAsyncQueue.push({ status: 200, body: '{}' })

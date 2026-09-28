@@ -2728,10 +2728,43 @@ public class BeebeebCryptoModule: Module {
     // confirmed (refused, purged, or the provider disposed first) simply sits
     // inert in `masterKeyHandles` until `releaseHandle` removes it — the
     // native readers never see it.
-    AsyncFunction("confirmMasterKeyHandle") { [self] (handleId: Int) throws -> Bool in
+    //
+    // Task 1599 followup 3: `ownerId` is the account id JS has ALREADY
+    // verified this handle belongs to at this exact call site (the same
+    // `ownerUserId` `crypto-context.tsx`'s `unlock()` passes to
+    // `mirrorSignedInUserId`/`setExpectedUserId` right after this call —
+    // see that file's own comment on the choke point). It is stored
+    // alongside the handle so a reader with no ownership context of its own
+    // (`NativeBackupEngine`'s background-task cache adoption) can refuse to
+    // adopt a handle whose recorded owner doesn't match its `currentAccountId`,
+    // rather than trusting "a handle is cached" as proof of the right
+    // account. `nil` (a session-less signup with nothing to verify against
+    // yet) caches the handle WITHOUT an attested owner — exactly like the
+    // pre-1599 behavior, since there is no owner to attest.
+    AsyncFunction("confirmMasterKeyHandle") { [self] (handleId: Int, ownerId: String?) throws -> Bool in
       let handle = try self.getHandle(handleId)
-      BeebeebCryptoBridge.setCachedMasterKey(handle)
-      RuntimeTrace.event("keychain.bridge.confirm_handle", ["handleId": handleId])
+      // Normalize "" the same way every other owner/accountId reader in this
+      // codebase does (e.g. `applyExpectedUserHeader`) — an empty string is
+      // never a real account id.
+      let normalizedOwnerId = (ownerId?.isEmpty == false) ? ownerId : nil
+      BeebeebCryptoBridge.setCachedMasterKey(handle, ownerId: normalizedOwnerId)
+      // Task 1599 followups round 2 review (P2): THIS call site — reached
+      // only from `crypto-context.tsx`'s `unlock()`, i.e. an actual
+      // phrase/keychain authentication event — is the genuine
+      // "sign in again to resume" moment `NativeBackupEngine.bindAccount`'s
+      // doc comment used to (incorrectly) treat itself as. A sticky
+      // `accountMismatchStopReason` from a previous confirmed mismatch no
+      // longer applies once a real new authentication has happened, so it is
+      // cleared HERE, not in `bindAccount` (which also runs on every
+      // ordinary "Back up now"/enable call with no new auth behind it —
+      // clearing it there let a stale reason be silently dismissed without
+      // the user actually signing in again).
+      NativeBackupEngine.shared.clearAccountMismatchStopReasonOnNewAuthentication()
+      // Task 1599 followups round 3 (P2): sibling clear for the LOCAL
+      // owner-unconfirmed refusal reason — same genuine-new-authentication
+      // choke point.
+      NativeBackupEngine.shared.clearOwnerUnconfirmedStopReasonOnNewAuthentication()
+      RuntimeTrace.event("keychain.bridge.confirm_handle", ["handleId": handleId, "hasOwner": normalizedOwnerId != nil])
       return true
     }
 
@@ -2849,6 +2882,18 @@ public class BeebeebCryptoModule: Module {
         if previousToken != token {
           NativeBackupEngine.shared.currentAccountId = nil
           NativeBackupEngine.shared.dropCachedMasterKeyHandle()
+          // Task 1599 followups round 3 (P1 — sign-in lockout loop): a token
+          // change here is ALWAYS a genuine new sign-in (this codebase has
+          // no token-REFRESH path — see the comment above), so a sticky
+          // `accountMismatchStopReason`/`ownerUnconfirmedStopReason` left
+          // over from the PREVIOUS session no longer applies. Clearing it
+          // HERE, before the new session's `BackupProvider` even mounts,
+          // closes the race where its progress poll fires before
+          // `confirmMasterKeyHandle` (unlock) would otherwise have cleared
+          // it — misreading a stale reason as a fresh one and ending the
+          // brand-new session before the user finishes signing in.
+          NativeBackupEngine.shared.clearAccountMismatchStopReasonOnNewAuthentication()
+          NativeBackupEngine.shared.clearOwnerUnconfirmedStopReasonOnNewAuthentication()
           RuntimeTrace.event("backup.native.mirror_session.token_changed_unbind")
           // Task 1594 round 2 (F3): a token change is a NEW (or newly-ended)
           // session — invalidate the shared "who is signed in" mirror in the
@@ -2883,6 +2928,17 @@ public class BeebeebCryptoModule: Module {
         // `triggerImmediateBackup` remain the only places a NEW binding is
         // established.)
         NativeBackupEngine.shared.currentAccountId = nil
+        // Task 1599 followups round 3 (P1 — sign-in lockout loop): a signed-
+        // out device has no session to hold a stale mismatch reason FOR —
+        // clear both here too, belt-and-braces with the token-changed
+        // branch's own clear above, so the very next sign-in (whatever
+        // token it presents) never inherits a reason from the session that
+        // JUST ended. This is also the exact path `endSessionForAccountMismatch`
+        // (api.ts `clearToken()`) takes when IT is what forced this
+        // sign-out — clearing here means the reason that caused the
+        // teardown does not outlive the teardown itself.
+        NativeBackupEngine.shared.clearAccountMismatchStopReasonOnNewAuthentication()
+        NativeBackupEngine.shared.clearOwnerUnconfirmedStopReasonOnNewAuthentication()
       }
       if let baseUrl, !baseUrl.isEmpty {
         try? BeebeebKeychainCore.storeString(baseUrl, key: sharedAPIBaseURLKey)

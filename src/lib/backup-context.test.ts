@@ -66,10 +66,21 @@ let disableContactsBackupMock = mock(async () => {});
 let disableCalendarBackupMock = mock(async () => {});
 let teardownAllBackupMock = mock(async () => {});
 let clearSessionMock = mock(async () => {});
+// Task 1599 followups (round 2, item 4): applyNativeProgress (not exercised
+// by this file — it needs a React render harness this codebase doesn't
+// have, see the header note) calls these two on a NEW native
+// accountMismatchReason. Only shouldEndSessionForNativeAccountMismatch's
+// own pure logic is unit-tested below; these mocks exist purely so
+// importing backup-context.tsx (which now references both) doesn't throw
+// on an undefined import from the mocked './api' module.
+let captureRequestAuthSnapshotMock = mock(async () => ({ generation: 0, token: null }));
+let endSessionForAccountMismatchMock = mock(async () => {});
 
 mock.module('./api', () => ({
   clearMobileIosBackupClientSession: (...args: unknown[]) => clearSessionMock(...args),
   ensureMobileIosBackupClientSession: async () => 'session-1',
+  captureRequestAuthSnapshot: (...args: unknown[]) => captureRequestAuthSnapshotMock(...args),
+  endSessionForAccountMismatch: (...args: unknown[]) => endSessionForAccountMismatchMock(...args),
 }));
 
 mock.module('../services/BackupService', () => ({
@@ -101,7 +112,15 @@ mock.module('../../modules/beebeeb-crypto', () => ({
 // scenario (see loadFresh) because sessionPresentAtLaunchPromise is captured
 // once, synchronously, the moment the module is first evaluated — exactly
 // mirroring how it behaves once per real app process.
-const { backupPrefKey, stopBackupEngines, canEnableNativeCameraBackup } = await import('./backup-context');
+const {
+  backupPrefKey,
+  stopBackupEngines,
+  canEnableNativeCameraBackup,
+  shouldEndSessionForNativeAccountMismatch,
+  isAccountMismatchGenerationCurrent,
+  reduceAccountMismatchPoll,
+  INITIAL_ACCOUNT_MISMATCH_POLL_STATE,
+} = await import('./backup-context');
 
 const LEGACY_PHOTO_KEY = 'beebeeb_camera_backup';
 const OWNER_KEY = 'beebeeb_backup_pref_owner';
@@ -613,5 +632,131 @@ describe('warm-up retry (JS mirror of ContactsBackupManager/CalendarBackupManage
     // used to just register observers and wait for the NEXT real edit.
     // Now it retries once, every app mount/foreground, until it succeeds.
     expect(shouldRunOnEnable(false, false)).toBe(true);
+  });
+});
+
+// Task 1599 followups (round 2, item 4): a native-confirmed
+// `account_mismatch` must end the JS session the same way `request()`'s own
+// 409 branch does (api.ts), so a user who just toggles backup back on
+// doesn't send the SAME stale session straight back into another 409. This
+// exercises the pure edge-trigger DECISION only — the actual
+// `endSessionForAccountMismatch`/`captureRequestAuthSnapshot` call happens
+// inside `applyNativeProgress`, a `useCallback` closure this codebase has no
+// render harness to exercise (see this file's own header note).
+describe('shouldEndSessionForNativeAccountMismatch (native account-mismatch -> JS session end, edge-triggered)', () => {
+  test('null -> a reason: true (the normal confirmed-mismatch case)', () => {
+    expect(shouldEndSessionForNativeAccountMismatch(null, 'Backup stopped: this device is signed in to a different account. Sign in again to resume.')).toBe(true);
+  });
+
+  test('the SAME reason on a later poll: false (edge-triggered, not once-per-poll)', () => {
+    const reason = 'Backup stopped: this device is signed in to a different account. Sign in again to resume.';
+    expect(shouldEndSessionForNativeAccountMismatch(reason, reason)).toBe(false);
+  });
+
+  test('a DIFFERENT reason string than the previous one: true (a fresh mismatch event)', () => {
+    expect(shouldEndSessionForNativeAccountMismatch('old reason', 'new reason')).toBe(true);
+  });
+
+  test('a reason clearing back to null: false (native resolved it — nothing to end here, bindAccount already handled the sign-in)', () => {
+    expect(shouldEndSessionForNativeAccountMismatch('some reason', null)).toBe(false);
+  });
+
+  test('null -> null: false (steady state, nothing happening)', () => {
+    expect(shouldEndSessionForNativeAccountMismatch(null, null)).toBe(false);
+  });
+});
+
+// Task 1599 followups round 3 (P1 — sign-in lockout loop): a confirmed 409
+// sets native's sticky `accountMismatchStopReason`; JS ends that session on
+// it. The NEXT sign-in mounts a brand-new `BackupProvider`, whose progress
+// poll can fire BEFORE `confirmMasterKeyHandle` (unlock) clears the reason
+// — misreading the stale reason as fresh and ending the brand-new session
+// before the user finishes signing in, forever. These tests cover the
+// generation-based backstop (`isAccountMismatchGenerationCurrent`) and the
+// full per-mount reducer (`reduceAccountMismatchPoll`) `applyNativeProgress`
+// folds over — see this file's own header note for why these are unit-
+// tested as pure functions rather than through a React render harness.
+describe('isAccountMismatchGenerationCurrent (task 1599 followups round 3, P1)', () => {
+  test('no baseline established yet (null): never current, regardless of generation', () => {
+    expect(isAccountMismatchGenerationCurrent(null, 0)).toBe(false);
+    expect(isAccountMismatchGenerationCurrent(null, 5)).toBe(false);
+  });
+
+  test('generation strictly greater than the baseline: current', () => {
+    expect(isAccountMismatchGenerationCurrent(3, 4)).toBe(true);
+  });
+
+  test('generation equal to the baseline: NOT current (the reason that established the baseline, seen again)', () => {
+    expect(isAccountMismatchGenerationCurrent(3, 3)).toBe(false);
+  });
+
+  test('generation less than the baseline: NOT current (should never happen — native only increments — but must not be treated as current)', () => {
+    expect(isAccountMismatchGenerationCurrent(5, 3)).toBe(false);
+  });
+});
+
+describe('reduceAccountMismatchPoll (task 1599 followups round 3, P1 — sign-in lockout loop)', () => {
+  test('reason set BEFORE mount, new token, poll fires before unlock: session NOT ended', () => {
+    // First poll after a fresh BackupProvider mount observes a reason (and
+    // its generation) that was already active BEFORE this mount even
+    // started — exactly what happens when the previous session's confirmed
+    // mismatch is still sitting there because the sign-in that just
+    // happened hasn't reached `confirmMasterKeyHandle` (unlock) yet.
+    const staleReason = 'Backup stopped: this device is signed in to a different account. Sign in again to resume.';
+    const result = reduceAccountMismatchPoll(INITIAL_ACCOUNT_MISMATCH_POLL_STATE, {
+      reason: staleReason,
+      generation: 3,
+    });
+    expect(result.shouldEndSession).toBe(false);
+    // The baseline is now established at the stale generation — a REPEAT
+    // poll of the exact same stale state must also never end the session.
+    const repeat = reduceAccountMismatchPoll(result.state, { reason: staleReason, generation: 3 });
+    expect(repeat.shouldEndSession).toBe(false);
+  });
+
+  test('reason raised DURING the current session (after mount established its baseline): session ended', () => {
+    // Mount with nothing wrong yet — first poll establishes baseline 0, no reason.
+    const afterMount = reduceAccountMismatchPoll(INITIAL_ACCOUNT_MISMATCH_POLL_STATE, {
+      reason: null,
+      generation: 0,
+    });
+    expect(afterMount.shouldEndSession).toBe(false);
+    // A NEW confirmed mismatch happens during this session: native bumps
+    // the generation and sets a fresh reason.
+    const mismatchDuringSession = reduceAccountMismatchPoll(afterMount.state, {
+      reason: 'Backup stopped: this device is signed in to a different account. Sign in again to resume.',
+      generation: 1,
+    });
+    expect(mismatchDuringSession.shouldEndSession).toBe(true);
+  });
+
+  test('the FULL lockout-loop scenario: stale reason at mount is ignored, but a SUBSEQUENT genuinely-new mismatch in the same mount still ends the session', () => {
+    const staleReason = 'Backup stopped: this device is signed in to a different account. Sign in again to resume.';
+    // Poll 1 (before unlock): stale reason from the PRIOR session, generation 3.
+    const poll1 = reduceAccountMismatchPoll(INITIAL_ACCOUNT_MISMATCH_POLL_STATE, {
+      reason: staleReason,
+      generation: 3,
+    });
+    expect(poll1.shouldEndSession).toBe(false);
+    // Poll 2 (after unlock succeeds, native cleared the reason via
+    // `confirmMasterKeyHandle`/`mirrorSessionToAppGroup`): reason back to null.
+    const poll2 = reduceAccountMismatchPoll(poll1.state, { reason: null, generation: 3 });
+    expect(poll2.shouldEndSession).toBe(false);
+    // Poll 3: a GENUINELY NEW mismatch happens later in this same session —
+    // generation increments past the baseline this mount established.
+    const poll3 = reduceAccountMismatchPoll(poll2.state, { reason: staleReason, generation: 4 });
+    expect(poll3.shouldEndSession).toBe(true);
+  });
+
+  test('repeated polls of the SAME current-session reason only end the session once (edge-triggered)', () => {
+    const afterMount = reduceAccountMismatchPoll(INITIAL_ACCOUNT_MISMATCH_POLL_STATE, {
+      reason: null,
+      generation: 0,
+    });
+    const reason = 'Backup stopped: this device is signed in to a different account. Sign in again to resume.';
+    const first = reduceAccountMismatchPoll(afterMount.state, { reason, generation: 1 });
+    expect(first.shouldEndSession).toBe(true);
+    const second = reduceAccountMismatchPoll(first.state, { reason, generation: 1 });
+    expect(second.shouldEndSession).toBe(false);
   });
 });

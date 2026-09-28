@@ -710,10 +710,18 @@ export async function releaseHandle(handleId: number): Promise<void> {
  * middle of rejecting. A build with no native implementation (or a mocked
  * test environment) no-ops to `true`, matching every other optional bridge
  * call in this file.
+ *
+ * Task 1599 followup 3: `ownerId` is the SAME account id the caller's own
+ * ownership verdict just accepted this handle for (`null` for a
+ * session-less signup with nothing to verify against yet). Native records
+ * it alongside the cached handle so a reader with no ownership context of
+ * its own (`NativeBackupEngine`'s background-task cache adoption) can
+ * refuse to adopt a handle whose recorded owner doesn't match its own
+ * `currentAccountId`, instead of trusting "a handle is cached" as proof.
  */
-export async function confirmMasterKeyHandle(handleId: number): Promise<boolean> {
+export async function confirmMasterKeyHandle(handleId: number, ownerId: string | null): Promise<boolean> {
   if (typeof BeebeebCryptoModule.confirmMasterKeyHandle !== 'function') return true
-  return BeebeebCryptoModule.confirmMasterKeyHandle(handleId)
+  return BeebeebCryptoModule.confirmMasterKeyHandle(handleId, ownerId)
 }
 
 // ─── Keychain ────────────────────────────────────────────────────────────────
@@ -1193,6 +1201,37 @@ export interface NativeBackupProgress {
   state?: string
   reason?: string
   lastBackupAt: string | null
+  /**
+   * Task 1599 followup 2 — a STICKY signal, distinct from `reason` above
+   * (which is recomputed fresh from live counters on every poll): set once
+   * the native engine confirms a 409 `account_mismatch` on an authenticated
+   * upload mutation (the session no longer matches the account the loaded
+   * master key is bound to) and cleared only by a fresh, JS-confirmed
+   * sign-in. `null`/undefined when nothing stopped the engine for this
+   * reason.
+   */
+  accountMismatchReason?: string | null
+  /**
+   * Task 1599 followups round 3 (P1) — a monotonic counter, incremented
+   * every time native sets a NEW `accountMismatchReason` (never reset). JS
+   * uses this to tell "this reason was raised during MY session" apart from
+   * "this reason is a leftover from before I started polling" — see
+   * `backup-context.tsx`'s `reduceAccountMismatchPoll` for the sign-in
+   * lockout loop this guards against. `undefined` on a build predating this
+   * field; treated as `0`.
+   */
+  accountMismatchGeneration?: number
+  /**
+   * Task 1599 followups round 3 (P2) — set when `NativeBackupEngine.start()`
+   * refuses to even attempt loading the master key because its OWN local
+   * ownership check (cached-handle owner, or the shared keychain "proven
+   * vault key owner" mirror) does not confirm the signed-in account. Unlike
+   * `accountMismatchReason` above (server-confirmed, via a 409), this never
+   * involves a network round-trip — purely local. The honest message to
+   * show; `null`/undefined when nothing is refusing to start for this
+   * reason.
+   */
+  ownerUnconfirmedReason?: string | null
 }
 
 export type NativeBackupDiagnostics = Record<string, unknown>
