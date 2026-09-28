@@ -74,7 +74,7 @@ function bracedBody(source: string, signature: string): string {
 
 describe('P1-1: resetSQLiteInPlace (PlaintextStorageProtection.swift) does not leave decrypted names on the freelist', () => {
   const swift = readFileSync(REGISTRY_SWIFT_PATH, 'utf8');
-  const body = functionBody(swift, 'private static func resetSQLiteInPlace(_ url: URL, pendingNonce: Data?) -> Bool {');
+  const body = functionBody(swift, 'private static func resetSQLiteInPlace(_ url: URL) -> (ok: Bool, bumpCommitted: Bool) {');
 
   test('secure_delete is turned ON (an actual executed pragma, not just a comment) before the deleting transaction begins', () => {
     // Must match the real call, not merely the word `secure_delete` — a
@@ -141,13 +141,13 @@ describe('P1-1 (same finding, second location): resetFileProviderCacheDatabase (
 
 describe('P1-2: resetSQLiteInPlace surfaces real failures instead of always returning true', () => {
   const swift = readFileSync(REGISTRY_SWIFT_PATH, 'utf8');
-  const body = functionBody(swift, 'private static func resetSQLiteInPlace(_ url: URL, pendingNonce: Data?) -> Bool {');
+  const body = functionBody(swift, 'private static func resetSQLiteInPlace(_ url: URL) -> (ok: Bool, bumpCommitted: Bool) {');
 
   test('sets a busy timeout before touching the database', () => {
     expect(body).toMatch(/sqlite3_busy_timeout\(db,\s*\d+\)/);
   });
 
-  test('a failed sqlite_master prepare returns false, not true', () => {
+  test('a failed sqlite_master prepare returns (false, false), never a truthy ok', () => {
     const prepareIdx = body.indexOf('sqlite3_prepare_v2');
     expect(prepareIdx).toBeGreaterThan(-1);
     // The guard's else-branch, up to the next top-level statement. Widened
@@ -156,8 +156,12 @@ describe('P1-2: resetSQLiteInPlace surfaces real failures instead of always retu
     // this still fails correctly against the ORIGINAL 400-char window
     // before widening (i.e. the widening is not papering over a real
     // regression), per this task's convention for widened test windows.
+    // Task 1593 f4 (item 1b) — regex updated from `return false` to
+    // `return \(false, false\)` for resetSQLiteInPlace's new tuple return
+    // type; confirmed this still fails correctly against the OLD regex
+    // before the update (it no longer matches the new literal at all).
     const elseSlice = body.slice(prepareIdx, prepareIdx + 600);
-    expect(elseSlice).toMatch(/else\s*\{[\s\S]*?return false/);
+    expect(elseSlice).toMatch(/else\s*\{[\s\S]*?return \(false, false\)/);
   });
 
   test('every exec step (secure_delete, BEGIN, each DELETE, COMMIT) is checked against SQLITE_OK', () => {
@@ -176,7 +180,7 @@ describe('P1-2: resetSQLiteInPlace surfaces real failures instead of always retu
     // to accidentally re-include this exact VACUUM literal after it moved,
     // which is precisely the kind of accidental pass this task's own review
     // exists to catch).
-    const preciseBody = bracedBody(swift, 'private static func resetSQLiteInPlace(_ url: URL, pendingNonce: Data?) -> Bool {');
+    const preciseBody = bracedBody(swift, 'private static func resetSQLiteInPlace(_ url: URL) -> (ok: Bool, bumpCommitted: Bool) {');
     // `(?:[^"\\]|\\.)*` (not a plain `[^"]+`) so the interpolated
     // `"DELETE FROM \"\(table)\""` literal — whose escaped inner quotes a
     // simple no-quotes class would stop at — still counts as one call.
@@ -394,7 +398,10 @@ describe('R2 (round 8, P2): the old App Group UserDefaults purge-epoch counter i
 describe('R2 (round 8, P2): bumpFileProviderCacheVersion bumps PRAGMA user_version under BEGIN IMMEDIATE', () => {
   const swift = readFileSync(MODULE_SWIFT_PATH, 'utf8');
   // Task 1593 f2 — signature gained `clearsPendingMarker: Bool = false`.
-  const body = bracedBody(swift, 'private func bumpFileProviderCacheVersion(clearsPendingMarker: Bool = false) -> Bool {');
+  // Task 1593 f7 — and `pendingNonceAtSnapshot: Data? = nil`, spanning
+  // multiple lines now; anchor on the function name only (see `bracedBody`
+  // — it needs just enough of the signature to find the opening brace).
+  const body = bracedBody(swift, 'private func bumpFileProviderCacheVersion(');
 
   test('opens a real write transaction with BEGIN IMMEDIATE, not a plain BEGIN', () => {
     expect(body).toMatch(/sqlite3_exec\(db, "BEGIN IMMEDIATE", nil, nil, nil\)/);
@@ -443,7 +450,7 @@ describe('R2 (round 8, P2): both DB-reset functions bump PRAGMA user_version ins
 
   test('resetSQLiteInPlace (PlaintextStorageProtection.swift) reads, increments, and writes user_version between BEGIN and COMMIT', () => {
     const swift = readFileSync(REGISTRY_SWIFT_PATH, 'utf8');
-    const body = bracedBody(swift, 'private static func resetSQLiteInPlace(_ url: URL, pendingNonce: Data?) -> Bool {');
+    const body = bracedBody(swift, 'private static func resetSQLiteInPlace(_ url: URL) -> (ok: Bool, bumpCommitted: Bool) {');
     const beginIdx = body.indexOf('"BEGIN"');
     const bumpIdx = body.indexOf('PRAGMA user_version = \\(nextVersion)');
     const commitIdx = body.indexOf('"COMMIT"');
@@ -709,7 +716,7 @@ describe('new-3 (round 6, P2): secure_delete is set on EVERY connection that WRI
 
   test('resetSQLiteInPlace (PlaintextStorageProtection.swift) retries VACUUM once on SQLITE_BUSY instead of failing immediately', () => {
     const swift = readFileSync(REGISTRY_SWIFT_PATH, 'utf8');
-    const resetBody = bracedBody(swift, 'private static func resetSQLiteInPlace(_ url: URL, pendingNonce: Data?) -> Bool {');
+    const resetBody = bracedBody(swift, 'private static func resetSQLiteInPlace(_ url: URL) -> (ok: Bool, bumpCommitted: Bool) {');
     expect(resetBody).toMatch(/vacuumRetryingOnceOnBusy\(db\)/);
     // The bare, unretried call must be gone from the call site, not just
     // supplemented — otherwise a mutation that reverted the retry helper's
@@ -1439,12 +1446,62 @@ describe('round 11: CacheManager.purgeEpochUnchanged is sentinel-safe (reuses cu
     // Task 1593 f1 widened this: queue.sync now wraps a pending-marker
     // guard (see the "f1: CacheManager refuses..." describe block) ahead of
     // the same currentEpochMatches call this test originally checked alone.
-    expect(body).toMatch(/queue\.sync\s*\{[\s\S]*?return currentEpochMatches\(capturedEpoch\)\s*\n\s*\}/);
+    // Task 1593 f6 widened it again: the captured comparison is no longer
+    // returned directly — it is bound to `matches` and re-checked against
+    // the marker a second time (see the "f6" describe block below) — so this
+    // match now looks for the capture, not a direct `return`.
+    expect(body).toMatch(/queue\.sync\s*\{[\s\S]*?let matches = currentEpochMatches\(capturedEpoch\)[\s\S]*?\n\s*\}/);
   });
 
   test('delegates to currentEpochMatches rather than re-implementing its own comparison', () => {
     expect(body).not.toMatch(/_currentPurgeEpoch\(\)\s*==/);
     expect(body).toMatch(/currentEpochMatches\(/);
+  });
+});
+
+// Task 1593 f4 (item 1a, Codex thread PRRT_kwDOSLX6T86mknXP) — the PUBLIC
+// `currentPurgeEpoch()` (what `SyncEngine.refreshContainer` captures BEFORE
+// its network fetch — see the "C1 (round 7, P1)" describe block above) used
+// to just delegate to `_currentPurgeEpoch()` with no pending check of its
+// own. Under f4's item 1b, a purge's marker now stays set for its ENTIRE
+// duration (not just until its reset's own bump commits), so a caller that
+// captures via THIS method — not `purgeEpochUnchanged(since:)`, which
+// already checked `isPurgePending()` since f1 — had no way to know a purge
+// was still in flight: it could capture a live, freshly-bumped epoch while
+// the purge's own tail (VACUUM, the legacy sweep, the resweep) was still
+// running. Returning the sentinel here means any later comparison against
+// that captured value fails via `currentEpochMatches`'s existing
+// sentinel-safety, exactly like a live pending check would.
+describe('f4 (item 1a): the public currentPurgeEpoch() (SyncEngine\'s own capture point) also fails closed while a purge is pending', () => {
+  const cacheManagerSwift = readFileSync(CACHE_MANAGER_SWIFT_PATH, 'utf8');
+  const body = bracedBody(cacheManagerSwift, 'func currentPurgeEpoch() -> Int {');
+
+  test('checks PlaintextStorageProtection.isPurgePending() FIRST, inside queue.sync, before ever calling the private _currentPurgeEpoch()', () => {
+    // Task 1593 f6 — the live read is no longer returned directly; it is
+    // captured into `epoch` so it can be re-checked against the marker
+    // afterwards (see the "f6" describe block below).
+    const queueSyncIdx = body.indexOf('queue.sync');
+    const guardIdx = body.indexOf('guard !PlaintextStorageProtection.isPurgePending() else { return Self.epochQueryFailed }');
+    const liveReadIdx = body.indexOf('let epoch = _currentPurgeEpoch()');
+    expect(queueSyncIdx).toBeGreaterThan(-1);
+    expect(guardIdx).toBeGreaterThan(queueSyncIdx);
+    expect(liveReadIdx).toBeGreaterThan(guardIdx);
+  });
+
+  test('returns the SAME sentinel _currentPurgeEpoch uses on a failed read, not a bespoke value or a plain 0/-1', () => {
+    expect(body).toMatch(/return Self\.epochQueryFailed\b/);
+    expect(body).not.toMatch(/return 0\b/);
+    expect(body).not.toMatch(/return -1\b/);
+  });
+
+  test('purgeEpochUnchanged(since:) is unchanged by this fix — it still has its OWN, separate isPurgePending() check (f1), not a call through the now-guarded currentPurgeEpoch()', () => {
+    // A mutation that collapsed purgeEpochUnchanged into calling this
+    // (now also-guarded) method instead of its own private _currentPurgeEpoch
+    // read would still pass structurally, but would be wrong: it would
+    // double-acquire `queue.sync` from inside `queue.sync` and deadlock.
+    const purgeEpochUnchangedBody = bracedBody(cacheManagerSwift, 'func purgeEpochUnchanged(since capturedEpoch: Int) -> Bool {');
+    expect(purgeEpochUnchangedBody).not.toMatch(/currentPurgeEpoch\(\)/);
+    expect(purgeEpochUnchangedBody).toMatch(/currentEpochMatches\(/);
   });
 });
 
@@ -2063,7 +2120,7 @@ describe('f3 (item 2): mayAddFileProviderDomain — pure decision gating whether
       + ') async throws -> [String: Any] {',
     );
     const ensureIdx = body.indexOf('var cacheReady = ensureFileProviderCacheDatabase()');
-    const bumpIdx = body.indexOf('var cacheVersionBumped = cacheReady && bumpFileProviderCacheVersion(clearsPendingMarker: true)');
+    const bumpIdx = body.indexOf('var cacheVersionBumped = cacheReady && bumpFileProviderCacheVersion(');
     const guardIdx = body.indexOf('guard mayAddFileProviderDomain(');
     const addIdx = body.indexOf('try await addFileProviderDomain(domain)');
     expect(ensureIdx).toBeGreaterThan(-1);
@@ -2097,7 +2154,25 @@ describe('f3 (item 2): mayAddFileProviderDomain — pure decision gating whether
     expect(elseIdx).toBeLessThan(addIdx);
   });
 
-  test('mayAddFileProviderDomain is called with isPurgePending() read live, not a stale/cached flag', () => {
+  // Task 1593 f4 (item 2, Codex thread PRRT_kwDOSLX6T86mknXP) — superseded
+  // the f3-era version of this test, which pinned `mayAddFileProviderDomain`
+  // being called with `PlaintextStorageProtection.isPurgePending()` read
+  // LIVE at the guard call site. That was itself the bug: by the time this
+  // function reaches the guard, its OWN `bumpFileProviderCacheVersion
+  // (clearsPendingMarker:)` call has already run and (pre-f5) could have
+  // cleared a marker that belonged to a purge which had not actually finished yet
+  // (see `purgePendingBeforeBump`'s doc comment for the full race). The
+  // fix captures the flag BEFORE that bump instead, into a `let` that is
+  // then threaded unchanged into the guard.
+  // Task 1593 f8 (Codex P1, PRRT_kwDOSLX6T86mm-UP) superseded this test's
+  // ORIGINAL premise (`purgePendingBeforeBump` assigned directly from
+  // `PlaintextStorageProtection.isPurgePending()`) — that direct call is
+  // gone; both `purgePendingBeforeBump` and `purgePendingNonceAtSnapshot`
+  // are now derived from one shared `purgePendingSnapshot` value instead
+  // (see the f8 describe blocks above). Kept here, updated in place, since
+  // it is the test in THIS f3 block that pins WHERE the flag is captured
+  // relative to `ensureFileProviderCacheDatabase()`/the guard call.
+  test('purgePendingBeforeBump is captured via purgePendingSnapshot() BEFORE ensureFileProviderCacheDatabase()/the epoch bump, and that SAME captured value — never a fresh read — is what mayAddFileProviderDomain is called with', () => {
     const body = bracedBody(
       moduleSwift,
       'private func registerMountedFileProviderDomainLocked(\n'
@@ -2105,7 +2180,52 @@ describe('f3 (item 2): mayAddFileProviderDomain — pure decision gating whether
       + '  forceReset: Bool = false\n'
       + ') async throws -> [String: Any] {',
     );
-    expect(body).toMatch(/purgePending: PlaintextStorageProtection\.isPurgePending\(\),/);
+    const captureIdx = body.indexOf('let purgePendingSnapshot = PlaintextStorageProtection.purgePendingSnapshot()');
+    const ensureIdx = body.indexOf('var cacheReady = ensureFileProviderCacheDatabase()');
+    const guardCallIdx = body.indexOf('guard mayAddFileProviderDomain(');
+    expect(captureIdx).toBeGreaterThan(-1);
+    expect(ensureIdx).toBeGreaterThan(captureIdx);
+    expect(guardCallIdx).toBeGreaterThan(ensureIdx);
+    expect(body).toMatch(/purgePending: purgePendingBeforeBump,/);
+    // Never a fresh isPurgePending() call anywhere in this function any
+    // more — the ONE real read is purgePendingSnapshot(), captured above.
+    // Excludes a backtick-quoted mention of the same text in this
+    // function's own doc comment (the "a doc comment mentioning it is not
+    // evidence" trap this task's own round-8 M12 and f1's M3 hit).
+    const isPendingCalls = [...body.matchAll(/[^`]PlaintextStorageProtection\.isPurgePending\(\)/g)];
+    expect(isPendingCalls.length).toBe(0);
+  });
+
+  test('a purge pending at call-start with no reset attempted (neither forceReset nor a legacy migration) sets cacheResetOk to false — never left at the "nothing attempted" true default', () => {
+    const body = bracedBody(
+      moduleSwift,
+      'private func registerMountedFileProviderDomainLocked(\n'
+      + '  defaults: UserDefaults?,\n'
+      + '  forceReset: Bool = false\n'
+      + ') async throws -> [String: Any] {',
+    );
+    const captureIdx = body.indexOf('let purgePendingSnapshot = PlaintextStorageProtection.purgePendingSnapshot()');
+    const elseIfIdx = body.indexOf('} else if purgePendingBeforeBump {');
+    expect(captureIdx).toBeGreaterThan(-1);
+    expect(elseIfIdx).toBeGreaterThan(captureIdx);
+    const branch = body.slice(elseIfIdx, body.indexOf('}', elseIfIdx + 1) + 1);
+    expect(branch).toMatch(/cacheResetOk = false/);
+    // Deliberately does NOT attempt a reset it was not asked for — no
+    // `clearFileProviderCacheState` call in this specific branch.
+    expect(branch).not.toMatch(/clearFileProviderCacheState/);
+  });
+
+  test('the forceReset/needsLegacyMigration branch and the purge-pending-only branch are mutually exclusive (if/else if, not two independent ifs)', () => {
+    const body = bracedBody(
+      moduleSwift,
+      'private func registerMountedFileProviderDomainLocked(\n'
+      + '  defaults: UserDefaults?,\n'
+      + '  forceReset: Bool = false\n'
+      + ') async throws -> [String: Any] {',
+    );
+    expect(body).toMatch(
+      /if forceReset \|\| needsLegacyMigration \{[\s\S]*?\} else if purgePendingBeforeBump \{/,
+    );
   });
 });
 
@@ -2167,68 +2287,134 @@ describe('f3 (item 2): clearFileProviderCacheState surfaces whether the database
 // touch the marker at all — re-marking here would actively be wrong (it
 // would overwrite the nonce purgePlaintextStorage is holding for its own
 // later compare-then-delete).
-describe('f2 (item 2): resetSQLiteInPlace\'s failure branches leave the marker-first mark untouched', () => {
+//
+// Task 1593 f4 (item 1b) — under f4, resetSQLiteInPlace no longer calls
+// markPurgePending/clearPurgePending in ANY branch, success included (see
+// the "f4 (item 1b)" describe block below for where the clear moved to), so
+// this describe block's own scope widened: it now also pins that the
+// SUCCESS path makes no clear call either, not just these two failure
+// branches — a single "resetSQLiteInPlace never touches the marker, full
+// stop" invariant rather than two narrower failure-only ones.
+describe('f2 (item 2) / f4 (item 1b): resetSQLiteInPlace never calls markPurgePending or clearPurgePending in ANY branch — the marker moved to purgeAll', () => {
   const registrySwift = readFileSync(REGISTRY_SWIFT_PATH, 'utf8');
-  const body = bracedBody(registrySwift, 'private static func resetSQLiteInPlace(_ url: URL, pendingNonce: Data?) -> Bool {');
+  const body = bracedBody(registrySwift, 'private static func resetSQLiteInPlace(_ url: URL) -> (ok: Bool, bumpCommitted: Bool) {');
 
-  test('the open-failure fallback (unlink branch) makes no markPurgePending/clearPurgePending call of any kind', () => {
+  test('no call to markPurgePending or clearPurgePending anywhere in this function\'s body (all branches, not just the two failure ones)', () => {
+    // A bare name check would also match this function's own doc comment
+    // CITING those functions by name without calling them (the "a doc
+    // comment mentioning it is not evidence" trap this task's own round-8
+    // M12 and f1's M3 hit) — `bracedBody` starts AT the signature, after
+    // the `///` doc comment, so `body` here is already just the executable
+    // code, not the doc comment above it.
+    expect(body).not.toMatch(/markPurgePending\(\)/);
+    expect(body).not.toMatch(/clearPurgePending\(/);
+  });
+
+  test('the open-failure fallback (unlink branch) still returns its own unlink-loop `ok`, paired with bumpCommitted: false', () => {
     const openGuardIdx = body.indexOf('guard sqlite3_open_v2(');
     const deferIdx = body.indexOf('defer { sqlite3_close(db) }');
     expect(openGuardIdx).toBeGreaterThan(-1);
     expect(deferIdx).toBeGreaterThan(openGuardIdx);
     const openFailureBranch = body.slice(openGuardIdx, deferIdx);
-    expect(openFailureBranch).not.toMatch(/markPurgePending/);
-    expect(openFailureBranch).not.toMatch(/clearPurgePending/);
-    // Still returns the unlink loop's own `ok`, unrelated to the marker.
-    expect(openFailureBranch).toMatch(/return ok/);
+    expect(openFailureBranch).toMatch(/return \(ok, false\)/);
   });
 
-  test('the table-enumeration (prepare) failure branch also makes no re-mark call', () => {
+  test('the table-enumeration (prepare) failure branch returns (false, false)', () => {
     const prepareFailIdx = body.indexOf("db, \"SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'\", -1, &stmt, nil");
     expect(prepareFailIdx).toBeGreaterThan(-1);
-    const after = body.slice(prepareFailIdx, prepareFailIdx + 400);
-    expect(after).not.toMatch(/markPurgePending/);
-    expect(after).toMatch(/return false/);
+    // 400 was wide enough for the OLD `return false` literal but not for
+    // the new, longer `return (false, false)` — confirmed the tighter
+    // window still fails correctly against the OLD (already-removed)
+    // literal before widening to 420.
+    const after = body.slice(prepareFailIdx, prepareFailIdx + 420);
+    expect(after).toMatch(/return \(false, false\)/);
   });
 
-  test('resetSQLiteInPlace\'s own doc comment (which sits ABOVE its signature, outside bracedBody\'s extracted body) states the "no re-mark needed" rationale', () => {
-    // Documentation-as-contract check: the function's doc comment must name
-    // BOTH the open failure and the table-enumeration failure explicitly,
-    // so a future edit that adds a NEW failure branch is more likely to
-    // also update this reasoning rather than silently diverge from it.
-    // Checked against the WHOLE file, not `body` — a `///` doc comment
-    // precedes the signature `bracedBody` starts from, so it is not part
-    // of the extracted function body at all.
-    expect(registrySwift).toMatch(/this open failure, or the table-enumeration failure/);
+  test('resetSQLiteInPlace\'s own doc comment (which sits ABOVE its signature, outside bracedBody\'s extracted body) states the clear moved to purgeAll', () => {
+    // Documentation-as-contract check, checked against the WHOLE file, not
+    // `body` — a `///` doc comment precedes the signature `bracedBody`
+    // starts from, so it is not part of the extracted function body at all.
+    const docStart = registrySwift.indexOf('/// Task 1593 f4 (item 1b, Codex thread PRRT_kwDOSLX6T86mknXP) — this used');
+    expect(docStart).toBeGreaterThan(-1);
+    const signatureIdx = registrySwift.indexOf(
+      'private static func resetSQLiteInPlace(_ url: URL) -> (ok: Bool, bumpCommitted: Bool) {', docStart,
+    );
+    expect(signatureIdx).toBeGreaterThan(docStart);
+    const docSlice = registrySwift.slice(docStart, signatureIdx);
+    expect(docSlice).toMatch(/moved OUT to `purgeAll`/);
+  });
+
+  test('bumpCommitted is captured BEFORE VACUUM can touch `ok`, exactly as f1/f2 established, and returned unchanged as the second tuple element', () => {
+    const bumpCommittedIdx = body.indexOf('let bumpCommitted = ok');
+    const vacuumIdx = body.indexOf('vacuumRetryingOnceOnBusy(db)');
+    const finalReturnIdx = body.lastIndexOf('return (ok, bumpCommitted)');
+    expect(bumpCommittedIdx).toBeGreaterThan(-1);
+    expect(vacuumIdx).toBeGreaterThan(bumpCommittedIdx);
+    expect(finalReturnIdx).toBeGreaterThan(vacuumIdx);
   });
 });
 
-describe('f2: resetSQLiteInPlace only clears via compare-then-delete against ITS OWN pendingNonce, and only after a durably-committed bump', () => {
+// Task 1593 f4 (item 1b, Codex thread PRRT_kwDOSLX6T86mknXP) — the marker
+// clear that f2/f3 had `resetSQLiteInPlace` perform itself, right after its
+// own bump committed (BEFORE this function's own VACUUM-adjacent tail: the
+// legacy sweep, the pinned/temp resweep), moved here, to purgeAll, and now
+// only runs after BOTH of those have also finished — closing the gap where
+// an operation delivered between the bump committing and purgeAll actually
+// returning could capture the final epoch and pass, because the marker was
+// already gone even though the purge itself was not yet fully done.
+describe('f4 (item 1b) / f5 (reviewer follow-up 2): purgeAll clears the pending marker itself, only AFTER the legacy sweep and resweep, and only on a durably-committed reset bump with zero legacy/resweep failures', () => {
   const registrySwift = readFileSync(REGISTRY_SWIFT_PATH, 'utf8');
-  const body = bracedBody(registrySwift, 'private static func resetSQLiteInPlace(_ url: URL, pendingNonce: Data?) -> Bool {');
+  const PURGE_ALL_SIGNATURE = 'public static func purgeAll(pendingNonce: Data? = nil) -> (removed: Int, failed: Int) {';
+  const body = bracedBody(registrySwift, PURGE_ALL_SIGNATURE);
 
-  test('bumpCommitted is captured BEFORE VACUUM can touch `ok`, exactly as f1 established', () => {
-    const bumpCommittedIdx = body.indexOf('let bumpCommitted = ok');
-    const vacuumIdx = body.indexOf('vacuumRetryingOnceOnBusy(db)');
-    expect(bumpCommittedIdx).toBeGreaterThan(-1);
-    expect(vacuumIdx).toBeGreaterThan(bumpCommittedIdx);
+  test('resetSQLiteInPlace is called with no pendingNonce argument — it no longer takes one', () => {
+    expect(body).toMatch(/let result = resetSQLiteInPlace\(entry\.url\)/);
+    expect(body).not.toMatch(/resetSQLiteInPlace\([^)]*pendingNonce/);
   });
 
-  test('clears ONLY when bumpCommitted AND a non-nil pendingNonce — a total mark-pending failure (nil) is never treated as "safe to clear"', () => {
-    const bumpCommittedIdx = body.indexOf('let bumpCommitted = ok');
-    const vacuumIdx = body.indexOf('vacuumRetryingOnceOnBusy(db)');
-    const decisionBlock = body.slice(bumpCommittedIdx, vacuumIdx);
-    expect(decisionBlock).toMatch(/if bumpCommitted, let pendingNonce \{\s*\n\s*clearPurgePending\(nonce: pendingNonce\)\s*\n\s*\}/);
-    // No unconditional / else-branch re-mark — a failed bump just leaves
-    // whatever marker-first already set, untouched. Checked as an actual
-    // CALL (trailing `(`), not a bare name match — the doc comment right
-    // above this decision legitimately CITES `markPurgePending()`'s own
-    // doc comment by name without calling it, which a bare-name check
-    // would misread as a real call (the exact "a doc comment mentioning it
-    // is not evidence" trap this task's own round-8 M12 and f1's M3 hit).
+  test('resetBumpCommitted accumulates resetSQLiteInPlace\'s own returned bumpCommitted (OR, not overwrite) inside the registry loop', () => {
+    const declIdx = body.indexOf('var resetBumpCommitted = false');
+    const orIdx = body.indexOf('resetBumpCommitted = resetBumpCommitted || result.bumpCommitted');
+    expect(declIdx).toBeGreaterThan(-1);
+    expect(orIdx).toBeGreaterThan(declIdx);
+  });
+
+  test('the clear call sits AFTER both the legacy sweep and the resweep — never before either', () => {
+    const legacyIdx = body.indexOf('let legacy = sweepLegacyFileProviderCache()');
+    const resweepIdx = body.indexOf('let resweep = resweepFileProviderContentDirectories()');
+    const clearIdx = body.indexOf('clearPurgePending(nonce: pendingNonce)');
+    expect(legacyIdx).toBeGreaterThan(-1);
+    expect(resweepIdx).toBeGreaterThan(legacyIdx);
+    expect(clearIdx).toBeGreaterThan(resweepIdx);
+  });
+
+  test('clears ONLY when resetBumpCommitted, legacy.failed == 0, resweep.failed == 0, AND a non-nil pendingNonce — a total mark-pending failure (nil) is never treated as "safe to clear"', () => {
+    const resweepCallIdx = body.indexOf('let resweep = resweepFileProviderContentDirectories()');
+    const returnIdx = body.lastIndexOf('return (removed, failed)');
+    const decisionBlock = body.slice(resweepCallIdx, returnIdx);
+    expect(decisionBlock).toMatch(/if resetBumpCommitted, legacy\.failed == 0, resweep\.failed == 0, let pendingNonce \{\s*\n\s*clearPurgePending\(nonce: pendingNonce\)\s*\n\s*\}/);
     expect(decisionBlock).not.toMatch(/\} else \{/);
-    const callSites = [...decisionBlock.matchAll(/[^`]markPurgePending\(\)/g)];
-    expect(callSites.length).toBe(0);
+  });
+
+  // Task 1593 f5 (reviewer follow-up 2) — the finding this whole guard
+  // exists for: `resetBumpCommitted` alone proves only the SQL reset's own
+  // transaction landed, not that the legacy sweep or the pinned/temp
+  // resweep actually finished cleaning up. Pins BOTH halves: the counts the
+  // guard reads are the SAME `legacy`/`resweep` locals whose `.failed`
+  // fields already feed this function's own returned `failed` total (never
+  // a re-derived or freshly re-run sweep), and that the guard's condition
+  // sits AFTER both counts are known.
+  test('the guard reads legacy.failed / resweep.failed from the SAME locals this function already accumulates into its own returned failure count — never a re-derived value', () => {
+    const legacyFailedAccumIdx = body.indexOf('failed += legacy.failed');
+    const resweepFailedAccumIdx = body.indexOf('failed += resweep.failed');
+    const clearGuardIdx = body.indexOf('if resetBumpCommitted, legacy.failed == 0, resweep.failed == 0, let pendingNonce {');
+    expect(legacyFailedAccumIdx).toBeGreaterThan(-1);
+    expect(resweepFailedAccumIdx).toBeGreaterThan(legacyFailedAccumIdx);
+    expect(clearGuardIdx).toBeGreaterThan(resweepFailedAccumIdx);
+    // Exactly one `legacy`/`resweep` binding each in this function — the
+    // guard cannot be reading a second, freshly-called instance.
+    expect((body.match(/let legacy = sweepLegacyFileProviderCache\(\)/g) ?? []).length).toBe(1);
+    expect((body.match(/let resweep = resweepFileProviderContentDirectories\(\)/g) ?? []).length).toBe(1);
   });
 
   test('clearPurgePending is called at most once in this function, passing the EXACT pendingNonce parameter (never a fresh read)', () => {
@@ -2392,39 +2578,322 @@ describe('f2 (marker-first): purgePlaintextStorage marks pending as its VERY FIR
 // marker — keep that, but make it conditional: read the nonce before BEGIN
 // IMMEDIATE, bump, and delete only if the nonce is unchanged; if a purge is
 // running (marker newer than the read), leave it."
-describe('f2 (item 3): bumpFileProviderCacheVersion(clearsPendingMarker:) captures the nonce BEFORE BEGIN IMMEDIATE and clears via compare-then-delete only on the caller\'s opt-in', () => {
+//
+// Task 1593 f7 (Codex P1, PRRT_kwDOSLX6T86mme-b) REWROTE this block in
+// place — f2's design (asserted by the version of this block replaced
+// here) had `bumpFileProviderCacheVersion` itself call
+// `currentPurgePendingNonce()`, right before its own `BEGIN IMMEDIATE`.
+// That read is still well AFTER the caller's (`registerMountedFileProvider
+// DomainLocked`'s) own snapshot of `isPurgePending()` — long enough for a
+// DIFFERENT, concurrently-started purge to have marked pending in between,
+// which this function would then treat as ITS to clear. The fix moves the
+// read out of this function entirely: the caller captures the nonce at its
+// own true snapshot point and passes it in; this function never reads the
+// marker itself at all, only ever clears the exact value it was handed.
+describe('f7 (Codex P1, PRRT_kwDOSLX6T86mme-b): bumpFileProviderCacheVersion no longer reads the pending nonce itself — it only clears the caller-supplied pendingNonceAtSnapshot, via the existing compare-then-delete', () => {
   const moduleSwift = readFileSync(MODULE_SWIFT_PATH, 'utf8');
-  const body = bracedBody(moduleSwift, 'private func bumpFileProviderCacheVersion(clearsPendingMarker: Bool = false) -> Bool {');
+  const body = bracedBody(moduleSwift, 'private func bumpFileProviderCacheVersion(');
 
-  test('clearsPendingMarker defaults to false — a bare call (the purge\'s own early-bump call site) never clears', () => {
-    expect(body).toMatch(/private func bumpFileProviderCacheVersion\(clearsPendingMarker: Bool = false\) -> Bool \{/);
+  test('signature gains pendingNonceAtSnapshot: Data? = nil alongside clearsPendingMarker', () => {
+    expect(body).toMatch(
+      /private func bumpFileProviderCacheVersion\(\s*\n\s*clearsPendingMarker: Bool = false,\s*\n\s*pendingNonceAtSnapshot: Data\? = nil\s*\n\) -> Bool \{/,
+    );
   });
 
-  test('the nonce is captured via currentPurgePendingNonce() BEFORE the BEGIN IMMEDIATE exec call, gated on clearsPendingMarker', () => {
-    const captureIdx = body.indexOf('let nonceBeforeBump = clearsPendingMarker');
-    const beginIdx = body.indexOf('sqlite3_exec(db, "BEGIN IMMEDIATE", nil, nil, nil)');
-    expect(captureIdx).toBeGreaterThan(-1);
-    expect(beginIdx).toBeGreaterThan(captureIdx);
-    const captureLine = body.slice(captureIdx, body.indexOf('\n', captureIdx + 200));
-    expect(captureLine).toMatch(/PlaintextStorageProtection\.currentPurgePendingNonce\(\)/);
+  test('no call to currentPurgePendingNonce() anywhere in this function\'s body — the f2-era internal read is gone, not just relocated', () => {
+    expect(body).not.toMatch(/currentPurgePendingNonce\(\)/);
   });
 
-  test('clears ONLY after COMMIT succeeds, ONLY when clearsPendingMarker is true, and ONLY against the value captured BEFORE BEGIN IMMEDIATE (never a fresh read at clear time)', () => {
+  test('clears ONLY after COMMIT succeeds, ONLY when clearsPendingMarker is true, and ONLY against pendingNonceAtSnapshot — the caller\'s own captured value, never a read taken in this function', () => {
     const commitGuardIdx = body.indexOf('guard sqlite3_exec(db, "COMMIT", nil, nil, nil) == SQLITE_OK else {');
     expect(commitGuardIdx).toBeGreaterThan(-1);
     const after = body.slice(commitGuardIdx);
-    expect(after).toMatch(/if clearsPendingMarker, let nonceBeforeBump \{\s*\n\s*PlaintextStorageProtection\.clearPurgePending\(nonce: nonceBeforeBump\)\s*\n\s*\}/);
+    expect(after).toMatch(/if clearsPendingMarker, let pendingNonceAtSnapshot \{\s*\n\s*PlaintextStorageProtection\.clearPurgePending\(nonce: pendingNonceAtSnapshot\)\s*\n\s*\}/);
     const clearCount = (after.match(/PlaintextStorageProtection\.clearPurgePending\(/g) ?? []).length;
     expect(clearCount).toBe(1);
   });
 
+  test('a nil pendingNonceAtSnapshot structurally clears nothing even when clearsPendingMarker is true — the optional-bind IS the gate, with no fallback branch', () => {
+    const clearIdx = body.indexOf('PlaintextStorageProtection.clearPurgePending(nonce: pendingNonceAtSnapshot)');
+    expect(clearIdx).toBeGreaterThan(-1);
+    const guardIdx = body.lastIndexOf('if clearsPendingMarker, let pendingNonceAtSnapshot {', clearIdx);
+    expect(guardIdx).toBeGreaterThan(-1);
+    const between = body.slice(guardIdx, clearIdx);
+    expect(between).not.toMatch(/else/);
+  });
+
   test('every early-return failure guard in this function precedes the clear — a failed bump never reaches it', () => {
-    const clearIdx = body.indexOf('PlaintextStorageProtection.clearPurgePending(nonce: nonceBeforeBump)');
+    const clearIdx = body.indexOf('PlaintextStorageProtection.clearPurgePending(nonce: pendingNonceAtSnapshot)');
     const guardReturns = [...body.matchAll(/guard sqlite3_[a-z_]+\([^)]*\)[^{]*\{[^}]*return false[^}]*\}/g)];
     expect(guardReturns.length).toBeGreaterThan(0);
     for (const match of guardReturns) {
       expect(match.index).toBeLessThan(clearIdx);
     }
+  });
+});
+
+// Task 1593 f7 — the caller-side half of the fix: WHERE the nonce is now
+// captured, and that it is threaded unchanged into every bump attempt.
+describe('f7 (Codex P1, PRRT_kwDOSLX6T86mme-b): registerMountedFileProviderDomainLocked snapshots the pending nonce at the SAME instant as purgePendingBeforeBump, before anything else can move it', () => {
+  const moduleSwift = readFileSync(MODULE_SWIFT_PATH, 'utf8');
+  const body = bracedBody(
+    moduleSwift,
+    'private func registerMountedFileProviderDomainLocked(\n  defaults: UserDefaults?,\n  forceReset: Bool = false\n) async throws -> [String: Any] {',
+  );
+
+  // Task 1593 f8 (Codex P1, PRRT_kwDOSLX6T86mm-UP) superseded this test's
+  // ORIGINAL premise (`isPurgePending()` immediately followed by a
+  // SEPARATE `currentPurgePendingNonce()` call — still two independently-
+  // timed reads, which is exactly the bug f8 fixes) — see the f8 describe
+  // block below for the full replacement coverage. Kept here, updated in
+  // place rather than deleted, since it is the one test in THIS describe
+  // block that actually names the snapshot call site.
+  test('purgePendingBeforeBump and purgePendingNonceAtSnapshot are both derived from ONE call to purgePendingSnapshot(), before ensureFileProviderCacheDatabase(), any reset, or either bump attempt', () => {
+    const snapshotIdx = body.indexOf('let purgePendingSnapshot = PlaintextStorageProtection.purgePendingSnapshot()');
+    const flagIdx = body.indexOf('let purgePendingBeforeBump = purgePendingSnapshot.isPending');
+    const nonceIdx = body.indexOf('let purgePendingNonceAtSnapshot = purgePendingSnapshot.clearableNonce');
+    const ensureIdx = body.indexOf('var cacheReady = ensureFileProviderCacheDatabase()');
+    expect(snapshotIdx).toBeGreaterThan(-1);
+    expect(flagIdx).toBeGreaterThan(snapshotIdx);
+    expect(nonceIdx).toBeGreaterThan(flagIdx);
+    expect(ensureIdx).toBeGreaterThan(nonceIdx);
+    // Nothing may run BETWEEN the snapshot and deriving both `let`s from
+    // it — no bump, and no reset, could otherwise smuggle a fresher read
+    // in ahead of the derivation. (cacheResetOk's own
+    // `clearFileProviderCacheState` call legitimately runs AFTER both
+    // `let`s, before `ensureFileProviderCacheDatabase()` — that is the
+    // caller *consuming* the snapshot, not re-reading the marker, so it is
+    // deliberately not excluded here.)
+    const betweenSnapshotAndDerivedLets = body.slice(snapshotIdx, nonceIdx);
+    expect(betweenSnapshotAndDerivedLets).not.toMatch(/clearFileProviderCacheState|bumpFileProviderCacheVersion/);
+  });
+
+  // Task 1593 f8 superseded this test's ORIGINAL premise (counting real
+  // calls to `currentPurgePendingNonce()`, which f8 removes from this
+  // function entirely — see the f8 describe block below).
+  test('exactly one real call to purgePendingSnapshot() in this function — the snapshot — never a second, later read, and zero real calls to isPurgePending() or currentPurgePendingNonce() (excludes backtick-quoted doc-comment mentions)', () => {
+    const snapshotOccurrences = [...body.matchAll(/[^`]PlaintextStorageProtection\.purgePendingSnapshot\(\)/g)];
+    const isPendingOccurrences = [...body.matchAll(/[^`]PlaintextStorageProtection\.isPurgePending\(\)/g)];
+    const nonceOccurrences = [...body.matchAll(/[^`]PlaintextStorageProtection\.currentPurgePendingNonce\(\)/g)];
+    expect(snapshotOccurrences.length).toBe(1);
+    expect(isPendingOccurrences.length).toBe(0);
+    expect(nonceOccurrences.length).toBe(0);
+  });
+
+  test('purgePendingNonceAtSnapshot is a `let` assigned exactly once — never reassigned, so nothing later in this function can smuggle a fresher read into it', () => {
+    const assignments = [...body.matchAll(/purgePendingNonceAtSnapshot\s*=(?!=)/g)];
+    expect(assignments.length).toBe(1);
+    expect(body.slice(assignments[0].index! - 4, assignments[0].index!)).toBe('let ');
+  });
+
+  test('both the first bump attempt and its retry receive pendingNonceAtSnapshot: purgePendingNonceAtSnapshot — the untouched snapshot, threaded through unchanged', () => {
+    expect(body).toMatch(
+      /var cacheVersionBumped = cacheReady && bumpFileProviderCacheVersion\(\s*\n\s*clearsPendingMarker: cacheResetOk,\s*\n\s*pendingNonceAtSnapshot: purgePendingNonceAtSnapshot\s*\n\s*\)/,
+    );
+    expect(body).toMatch(
+      /\(cacheReady, cacheVersionBumped\) = await retryFileProviderCacheReadyAndBumpOffCooperativePool\(\s*\n\s*clearsPendingMarker: cacheResetOk,\s*\n\s*pendingNonceAtSnapshot: purgePendingNonceAtSnapshot\s*\n\s*\)/,
+    );
+  });
+});
+
+// Task 1593 f8 (Codex P1, PRRT_kwDOSLX6T86mm-UP) — `PlaintextStorageProtection.
+// purgePendingSnapshot()` itself: the new tri-state, single-read primitive
+// that replaces the caller's old isPurgePending() + currentPurgePendingNonce()
+// pair.
+describe('f8 (Codex P1, PRRT_kwDOSLX6T86mm-UP): PlaintextStorageProtection.purgePendingSnapshot() — one atomic read, tri-state, unreadable fails closed', () => {
+  const registrySwift = readFileSync(REGISTRY_SWIFT_PATH, 'utf8');
+
+  test('PurgePendingSnapshot is a tri-state enum: none / nonce(Data) / unreadable', () => {
+    const enumBody = bracedBody(registrySwift, 'public enum PurgePendingSnapshot: Equatable {');
+    expect(enumBody).toMatch(/case none/);
+    expect(enumBody).toMatch(/case nonce\(Data\)/);
+    expect(enumBody).toMatch(/case unreadable/);
+  });
+
+  test('isPending is true for BOTH .nonce and .unreadable — only .none is not pending (an unreadable marker fails CLOSED, never treated as absent)', () => {
+    const enumBody = bracedBody(registrySwift, 'public enum PurgePendingSnapshot: Equatable {');
+    const varBody = bracedBody(enumBody, 'public var isPending: Bool {');
+    expect(varBody).toMatch(/case \.none: return false/);
+    expect(varBody).toMatch(/case \.nonce, \.unreadable: return true/);
+  });
+
+  test('clearableNonce is non-nil ONLY for .nonce — an unreadable marker can never be the value bumpFileProviderCacheVersion is told to clear', () => {
+    const enumBody = bracedBody(registrySwift, 'public enum PurgePendingSnapshot: Equatable {');
+    const varBody = bracedBody(enumBody, 'public var clearableNonce: Data? {');
+    expect(varBody).toMatch(/case \.nonce\(let data\): return data/);
+    expect(varBody).toMatch(/case \.none, \.unreadable: return nil/);
+  });
+
+  test('purgePendingSnapshot() does exactly one read of the marker file — a single open()/read() pair, never fileExists() (isPurgePending()\'s own check) followed by a separate content read', () => {
+    const body = bracedBody(registrySwift, 'public static func purgePendingSnapshot() -> PurgePendingSnapshot {');
+    expect(body).not.toMatch(/fileExists/);
+    expect(body).not.toMatch(/Data\(contentsOf:/);
+    const opens = [...body.matchAll(/[^_]\bopen\(/g)];
+    expect(opens.length).toBe(1);
+    const reads = [...body.matchAll(/[^_]\bread\(fd,/g)];
+    expect(reads.length).toBe(1);
+  });
+
+  test('open() failing with anything other than ENOENT returns .unreadable, not .none — a marker this call could not prove absent must not be reported as absent', () => {
+    const body = bracedBody(registrySwift, 'public static func purgePendingSnapshot() -> PurgePendingSnapshot {');
+    expect(body).toMatch(/guard fd >= 0 else \{\s*\n\s*return errno == ENOENT \? \.none : \.unreadable\s*\n\s*\}/);
+  });
+
+  test('a short (0-byte) or failed (negative) read() also returns .unreadable, never a truncated .nonce', () => {
+    const body = bracedBody(registrySwift, 'public static func purgePendingSnapshot() -> PurgePendingSnapshot {');
+    expect(body).toMatch(/guard bytesRead > 0 else \{ return \.unreadable \}/);
+  });
+
+  test('the file descriptor is always closed, even on the early .unreadable return', () => {
+    const body = bracedBody(registrySwift, 'public static func purgePendingSnapshot() -> PurgePendingSnapshot {');
+    const deferIdx = body.indexOf('defer { close(fd) }');
+    const guardIdx = body.indexOf('guard bytesRead > 0 else { return .unreadable }');
+    expect(deferIdx).toBeGreaterThan(-1);
+    expect(guardIdx).toBeGreaterThan(deferIdx);
+  });
+});
+
+// Task 1593 f8 — the caller-side half: registerMountedFileProviderDomainLocked
+// derives BOTH purgePendingBeforeBump and purgePendingNonceAtSnapshot from
+// ONE call to purgePendingSnapshot(), replacing f7's still-separate
+// isPurgePending() + currentPurgePendingNonce() pair. The structural
+// assertions for the call site itself live in the f7 describe block above
+// (updated in place); this block covers what f7 could not have anticipated —
+// zero real calls to the two old functions anywhere in the function.
+describe('f8 (Codex P1, PRRT_kwDOSLX6T86mm-UP): the two old separate reads (isPurgePending() + currentPurgePendingNonce()) are gone from registerMountedFileProviderDomainLocked, not merely reordered', () => {
+  const moduleSwift = readFileSync(MODULE_SWIFT_PATH, 'utf8');
+  const body = bracedBody(
+    moduleSwift,
+    'private func registerMountedFileProviderDomainLocked(\n  defaults: UserDefaults?,\n  forceReset: Bool = false\n) async throws -> [String: Any] {',
+  );
+
+  test('zero real calls to isPurgePending() or currentPurgePendingNonce() (excludes backtick-quoted doc-comment mentions); exactly one real call to purgePendingSnapshot()', () => {
+    const realIsPending = [...body.matchAll(/[^`]PlaintextStorageProtection\.isPurgePending\(\)/g)];
+    const realNonce = [...body.matchAll(/[^`]PlaintextStorageProtection\.currentPurgePendingNonce\(\)/g)];
+    const realSnapshot = [...body.matchAll(/[^`]PlaintextStorageProtection\.purgePendingSnapshot\(\)/g)];
+    expect(realIsPending.length).toBe(0);
+    expect(realNonce.length).toBe(0);
+    expect(realSnapshot.length).toBe(1);
+  });
+
+  test('purgePendingBeforeBump and purgePendingNonceAtSnapshot are `let` bindings derived from the SAME purgePendingSnapshot value, not two independent PlaintextStorageProtection calls', () => {
+    expect(body).toMatch(
+      /let purgePendingSnapshot = PlaintextStorageProtection\.purgePendingSnapshot\(\)\s*\n\s*let purgePendingBeforeBump = purgePendingSnapshot\.isPending\s*\n\s*let purgePendingNonceAtSnapshot = purgePendingSnapshot\.clearableNonce/,
+    );
+  });
+});
+
+// Task 1593 f8 — pure-JS reference model isolating the exact race: a
+// `markPurgePending()` landing STRICTLY BETWEEN the old design's two
+// separate reads. Mirrors f6/f7's technique (a small table-driven proof of
+// the brief's named scenario, independent of the Swift source text).
+describe('f8: reference model — old (isPurgePending() then a separate currentPurgePendingNonce() read) vs new (one atomic purgePendingSnapshot() read) purge-pending capture', () => {
+  // The ACTUAL f7 code being replaced: isPurgePending() is a `fileExists`
+  // check sampled at instant T1; currentPurgePendingNonce() is a SEPARATE
+  // `Data(contentsOf:)` read sampled at a later instant T2. Each parameter
+  // below is exactly what its corresponding real read would observe at its
+  // own instant — the model does not assume they agree.
+  function oldTwoReadCapture(
+    markerExistsAtT1: boolean,
+    nonceAtT2: string | null,
+  ): { pending: boolean; nonce: string | null } {
+    return { pending: markerExistsAtT1, nonce: nonceAtT2 };
+  }
+
+  // The new design reads ONCE, at a single instant — it can therefore only
+  // ever observe ONE of "nothing" or "this exact marker" (or, per
+  // PurgePendingSnapshot.unreadable, "something, unreadable"), never a
+  // stale boolean from one instant paired with a fresh nonce from a later
+  // one.
+  function newAtomicSnapshot(
+    markerAtReadInstant: string | null,
+  ): { pending: boolean; nonce: string | null } {
+    return { pending: markerAtReadInstant !== null, nonce: markerAtReadInstant };
+  }
+
+  test('THE BUG (old): a purge marks strictly between the two reads — the pending flag reads false (sampled before the mark existed), but the nonce read a moment later picks up that new purge\'s own mark anyway', () => {
+    const result = oldTwoReadCapture(false, 'purge-P1');
+    expect(result.pending).toBe(false); // -> cacheResetOk stays true, the `else if purgePendingBeforeBump` branch never runs
+    expect(result.nonce).toBe('purge-P1'); // -> threaded into bumpFileProviderCacheVersion(pendingNonceAtSnapshot:) and cleared on commit — purge-P1's own marker, mid-flight
+  });
+
+  test('THE FIX (new): the same instant can only ever be read as "before" (nothing yet) or "after" (the new mark) — never both at once', () => {
+    expect(newAtomicSnapshot(null)).toEqual({ pending: false, nonce: null });
+    expect(newAtomicSnapshot('purge-P1')).toEqual({ pending: true, nonce: 'purge-P1' });
+    // There is no third call shape that could produce {pending:false, nonce:'purge-P1'} —
+    // the exact combination the old design produced and the bump then cleared.
+  });
+
+  test('a stale marker from an earlier, already-finished purge, unchanged between reads — both designs agree, and this registration\'s successful reset may recover it', () => {
+    expect(oldTwoReadCapture(true, 'stale-S1')).toEqual({ pending: true, nonce: 'stale-S1' });
+    expect(newAtomicSnapshot('stale-S1')).toEqual({ pending: true, nonce: 'stale-S1' });
+  });
+
+  test('PurgePendingSnapshot.unreadable is pending with no clearable nonce — fails closed, never collapsed into "nothing pending" the way the old nil-for-either-reason currentPurgePendingNonce() read would have', () => {
+    const unreadable = { isPending: true, clearableNonce: null as string | null };
+    expect(unreadable.isPending).toBe(true);
+    expect(unreadable.clearableNonce).toBeNull();
+  });
+});
+
+// Task 1593 f7 — pure-JS reference implementation of the marker-clear
+// decision (same technique as f6's `singleCheckRead`/`doubleCheckRead`
+// table below): pins the BEHAVIOUR the structural tests above prove the
+// Swift source implements, independent of that source text. Cross-checks
+// the OLD (f2-era, buggy) design against the NEW (f7) one across the
+// brief's three named scenarios plus a mismatch sanity row.
+describe('f7: reference model — old (bump reads its own nonce) vs new (caller snapshots, bump only consumes) marker-clear decision', () => {
+  function oldMarkerClear(
+    clearsPendingMarker: boolean,
+    nonceOnDiskAtBumpTime: string | null,
+    nonceOnDiskAtCompareTime: string | null,
+  ): boolean {
+    if (!clearsPendingMarker) return false;
+    const nonceBeforeBump = nonceOnDiskAtBumpTime; // read INSIDE bump, right before BEGIN IMMEDIATE
+    if (nonceBeforeBump === null) return false;
+    return nonceOnDiskAtCompareTime === nonceBeforeBump; // clearPurgePending's compare-then-delete
+  }
+
+  function newMarkerClear(
+    clearsPendingMarker: boolean,
+    nonceAtCallerSnapshot: string | null,
+    nonceOnDiskAtCompareTime: string | null,
+  ): boolean {
+    if (!clearsPendingMarker) return false;
+    if (nonceAtCallerSnapshot === null) return false; // nothing pending at the caller's true snapshot
+    return nonceOnDiskAtCompareTime === nonceAtCallerSnapshot;
+  }
+
+  const rows: Array<[string, string | null, string | null, string | null, boolean, boolean]> = [
+    // [label, nonceAtCallerSnapshot, nonceOnDiskAtBumpTime (old design's internal read), nonceOnDiskAtCompareTime, expectedOldCleared, expectedNewCleared]
+    ['(c) snapshot nil — nothing pending anywhere, at any point', null, null, null, false, false],
+    [
+      "(a) THE BUG — registration's snapshot sees no marker; a concurrent purge marks AFTER that snapshot but BEFORE the (pre-f7) internal read, and is still pending at compare-time",
+      null, 'purge-P1', 'purge-P1', true, false,
+    ],
+    [
+      '(b) a marker already present at the snapshot (e.g. a stale mark left by an earlier, already-finished purge), unchanged through compare-time — this registration\'s successful reset may recover it',
+      'stale-S1', 'stale-S1', 'stale-S1', true, true,
+    ],
+    [
+      'a DIFFERENT, newer purge remarked between the snapshot/bump-time read and compare-time — clearPurgePending\'s rename-claim compare refuses regardless of design',
+      'stale-S1', 'stale-S1', 'newer-P2', false, false,
+    ],
+  ];
+
+  test.each(rows)('%s', (_label, nonceAtCallerSnapshot, nonceOnDiskAtBumpTime, nonceOnDiskAtCompareTime, expectedOldCleared, expectedNewCleared) => {
+    expect(oldMarkerClear(true, nonceOnDiskAtBumpTime, nonceOnDiskAtCompareTime)).toBe(expectedOldCleared);
+    expect(newMarkerClear(true, nonceAtCallerSnapshot, nonceOnDiskAtCompareTime)).toBe(expectedNewCleared);
+  });
+
+  test('the reviewer\'s exact scenario: the OLD design clears a concurrent purge\'s own still-pending marker; the NEW design correctly leaves it alone', () => {
+    expect(oldMarkerClear(true, 'purge-P1', 'purge-P1')).toBe(true); // the bug
+    expect(newMarkerClear(true, null, 'purge-P1')).toBe(false); // the fix
+  });
+
+  test('clearsPendingMarker: false never clears, regardless of any nonce', () => {
+    expect(oldMarkerClear(false, 'purge-P1', 'purge-P1')).toBe(false);
+    expect(newMarkerClear(false, 'stale-S1', 'stale-S1')).toBe(false);
   });
 });
 
@@ -2437,12 +2906,19 @@ describe('f2 (item 3): the purge\'s own early bump stays clearsPendingMarker: fa
     expect(purgeBody).not.toMatch(/bumpFileProviderCacheVersion\(clearsPendingMarker:/);
   });
 
-  test('registerMountedFileProviderDomainLocked passes clearsPendingMarker: true explicitly', () => {
+  // Task 1593 f5 (reviewer follow-up 1) superseded this test's ORIGINAL
+  // premise (a bare `clearsPendingMarker: true`) — see the f5 describe
+  // block below for the full replacement coverage. Task 1593 f7 updated the
+  // matched call-site shape again (multi-line, + pendingNonceAtSnapshot).
+  // Kept here, updated in place rather than deleted, since it is the one
+  // test in THIS describe block that actually names the call site.
+  test('registerMountedFileProviderDomainLocked passes clearsPendingMarker: cacheResetOk — its own captured reset outcome, never a bare true', () => {
     const body = bracedBody(
       moduleSwift,
       'private func registerMountedFileProviderDomainLocked(\n  defaults: UserDefaults?,\n  forceReset: Bool = false\n) async throws -> [String: Any] {',
     );
-    expect(body).toMatch(/bumpFileProviderCacheVersion\(clearsPendingMarker: true\)/);
+    expect(body).toMatch(/bumpFileProviderCacheVersion\(\s*\n\s*clearsPendingMarker: cacheResetOk,/);
+    expect(body).not.toMatch(/bumpFileProviderCacheVersion\(clearsPendingMarker: true\)/);
   });
 });
 
@@ -2456,11 +2932,16 @@ describe('f2 (item 4): registration retries once, off the cooperative pool, on a
   test('retryFileProviderCacheReadyAndBumpOffCooperativePool re-attempts BOTH ensureFileProviderCacheDatabase and the bump, off a GCD queue with a short delay', () => {
     const body = bracedBody(
       moduleSwift,
-      'private func retryFileProviderCacheReadyAndBumpOffCooperativePool() async -> (ready: Bool, bumped: Bool) {',
+      'private func retryFileProviderCacheReadyAndBumpOffCooperativePool(',
     );
     expect(body).toMatch(/DispatchQueue\.global\(qos: \.userInitiated\)\.asyncAfter\(deadline: \.now\(\) \+ 0\.25\)/);
     expect(body).toMatch(/let ready = ensureFileProviderCacheDatabase\(\)/);
-    expect(body).toMatch(/let bumped = ready && bumpFileProviderCacheVersion\(clearsPendingMarker: true\)/);
+    // Task 1593 f5 (reviewer follow-up 1): threads the CALLER's clearsPendingMarker
+    // through, rather than hardcoding true — see this function's own doc comment.
+    // Task 1593 f7: pendingNonceAtSnapshot threaded through the same way.
+    expect(body).toMatch(
+      /let bumped = ready && bumpFileProviderCacheVersion\(\s*\n\s*clearsPendingMarker: clearsPendingMarker,\s*\n\s*pendingNonceAtSnapshot: pendingNonceAtSnapshot\s*\n\s*\)/,
+    );
   });
 
   test('registerMountedFileProviderDomainLocked retries exactly once, only when the first attempt failed OR cacheReady was false', () => {
@@ -2468,14 +2949,14 @@ describe('f2 (item 4): registration retries once, off the cooperative pool, on a
       moduleSwift,
       'private func registerMountedFileProviderDomainLocked(\n  defaults: UserDefaults?,\n  forceReset: Bool = false\n) async throws -> [String: Any] {',
     );
-    const firstAttemptIdx = body.indexOf('var cacheVersionBumped = cacheReady && bumpFileProviderCacheVersion(clearsPendingMarker: true)');
-    const retryIdx = body.indexOf('retryFileProviderCacheReadyAndBumpOffCooperativePool()');
+    const firstAttemptIdx = body.indexOf('var cacheVersionBumped = cacheReady && bumpFileProviderCacheVersion(');
+    const retryIdx = body.indexOf('retryFileProviderCacheReadyAndBumpOffCooperativePool(');
     expect(firstAttemptIdx).toBeGreaterThan(-1);
     expect(retryIdx).toBeGreaterThan(firstAttemptIdx);
     const between = body.slice(firstAttemptIdx, retryIdx);
     expect(between).toMatch(/if !cacheReady \|\| !cacheVersionBumped \{/);
     // Exactly one retry call — not a loop.
-    const retryCallCount = (body.match(/retryFileProviderCacheReadyAndBumpOffCooperativePool\(\)/g) ?? []).length;
+    const retryCallCount = (body.match(/retryFileProviderCacheReadyAndBumpOffCooperativePool\(\s*\n\s*clearsPendingMarker: cacheResetOk,\s*\n\s*pendingNonceAtSnapshot: purgePendingNonceAtSnapshot\s*\n\s*\)/g) ?? []).length;
     expect(retryCallCount).toBe(1);
   });
 
@@ -2484,7 +2965,7 @@ describe('f2 (item 4): registration retries once, off the cooperative pool, on a
       moduleSwift,
       'private func registerMountedFileProviderDomainLocked(\n  defaults: UserDefaults?,\n  forceReset: Bool = false\n) async throws -> [String: Any] {',
     );
-    const retryIdx = body.indexOf('retryFileProviderCacheReadyAndBumpOffCooperativePool()');
+    const retryIdx = body.indexOf('retryFileProviderCacheReadyAndBumpOffCooperativePool(');
     const after = body.slice(retryIdx, retryIdx + 400);
     expect(after).toMatch(/if !cacheReady \|\| !cacheVersionBumped \{\s*\n\s*RuntimeTrace\.event\("storage\.purge\.failed", \[/);
     expect(after).toMatch(/"stage": cacheReady \? "registration_cache_version_bump" : "registration_cache_not_ready"/);
@@ -2496,8 +2977,79 @@ describe('f2 (item 4): registration retries once, off the cooperative pool, on a
       'private func registerMountedFileProviderDomainLocked(\n  defaults: UserDefaults?,\n  forceReset: Bool = false\n) async throws -> [String: Any] {',
     );
     expect(body).toMatch(/var cacheReady = ensureFileProviderCacheDatabase\(\)/);
-    expect(body).toMatch(/\(cacheReady, cacheVersionBumped\) = await retryFileProviderCacheReadyAndBumpOffCooperativePool\(\)/);
+    expect(body).toMatch(
+      /\(cacheReady, cacheVersionBumped\) = await retryFileProviderCacheReadyAndBumpOffCooperativePool\(\s*\n\s*clearsPendingMarker: cacheResetOk,\s*\n\s*pendingNonceAtSnapshot: purgePendingNonceAtSnapshot\s*\n\s*\)/,
+    );
     expect(body).toMatch(/cacheDatabaseReady: cacheReady,/);
+  });
+});
+
+// Task 1593 f5 (reviewer follow-up 1) — "a registration's bump clears the
+// purge marker even when the add is refused (purge pending + no reset ->
+// cacheResetOk=false)." Pin the actual bug this round fixes: BEFORE this
+// round, `clearsPendingMarker: true` was passed unconditionally, so a
+// registration call that landed in the `purgePendingBeforeBump` branch
+// (nothing here reset the DB, `cacheResetOk = false`) still cleared the
+// SAME purge's own still-in-flight marker via its bump — even though
+// `mayAddFileProviderDomain` then correctly refused the add on that exact
+// `cacheResetOk`. The marker exists to protect the domain-add decision that
+// was being refused; clearing it anyway defeated the whole point of f4's
+// wider marker-hold window.
+describe('f5 (reviewer follow-up 1): a registration whose add is refused (purge pending, no reset — cacheResetOk=false) must NOT clear the marker; only a registration that actually reset the DB (or found nothing pending) may', () => {
+  const moduleSwift = readFileSync(MODULE_SWIFT_PATH, 'utf8');
+  const body = bracedBody(
+    moduleSwift,
+    'private func registerMountedFileProviderDomainLocked(\n  defaults: UserDefaults?,\n  forceReset: Bool = false\n) async throws -> [String: Any] {',
+  );
+
+  test('the initial bump call passes clearsPendingMarker: cacheResetOk, not a bare true', () => {
+    expect(body).toMatch(
+      /var cacheVersionBumped = cacheReady && bumpFileProviderCacheVersion\(\s*\n\s*clearsPendingMarker: cacheResetOk,/,
+    );
+  });
+
+  test('the retry call also passes clearsPendingMarker: cacheResetOk — the SAME captured value, not a fresh read or a bare true', () => {
+    expect(body).toMatch(
+      /retryFileProviderCacheReadyAndBumpOffCooperativePool\(\s*\n\s*clearsPendingMarker: cacheResetOk,/,
+    );
+  });
+
+  test('cacheResetOk is captured BEFORE the bump call that consumes it — the value threaded in is this call\'s own reset outcome, not something computed after', () => {
+    const cacheResetOkDeclIdx = body.indexOf('var cacheResetOk = true');
+    const purgePendingBranchIdx = body.indexOf('cacheResetOk = false');
+    const bumpCallIdx = body.indexOf('bumpFileProviderCacheVersion(\n    clearsPendingMarker: cacheResetOk,');
+    expect(cacheResetOkDeclIdx).toBeGreaterThan(-1);
+    expect(purgePendingBranchIdx).toBeGreaterThan(cacheResetOkDeclIdx);
+    expect(bumpCallIdx).toBeGreaterThan(purgePendingBranchIdx);
+  });
+
+  test('no bare, non-backtick-quoted `clearsPendingMarker: true` literal remains anywhere in this function\'s body', () => {
+    // Excludes a backtick-quoted mention in a doc comment (the "a doc
+    // comment mentioning it is not evidence" trap this task's own round-8
+    // M12, f1's M3, and this file's other backtick-exclusion tests already
+    // guard against) — a REAL call is never backtick-wrapped Swift source.
+    const realOccurrences = [...body.matchAll(/[^`]clearsPendingMarker: true/g)];
+    expect(realOccurrences.length).toBe(0);
+  });
+
+  // Truth-table proof of `cacheResetOk`'s own three-branch derivation
+  // (forceReset/legacy-migration's own reset result; the purge-pending,
+  // no-reset-attempted branch; the ordinary neither-branch default) —
+  // mirrors the reasoning style of this file's other pure-decision truth
+  // tables (see `mayAddFileProviderDomain`'s above). This is the value
+  // `clearsPendingMarker` now receives, so pinning its derivation is part
+  // of pinning the fix.
+  test('cacheResetOk derivation: forceReset/needsLegacyMigration -> the actual clearFileProviderCacheState result; purge-pending-only -> false; neither -> the true default', () => {
+    const declIdx = body.indexOf('var cacheResetOk = true');
+    const ifIdx = body.indexOf('if forceReset || needsLegacyMigration {');
+    const resetAssignIdx = body.indexOf('cacheResetOk = clearFileProviderCacheState(defaults: defaults).cacheResetOk');
+    const elseIfIdx = body.indexOf('} else if purgePendingBeforeBump {');
+    const pendingAssignIdx = body.indexOf('cacheResetOk = false');
+    expect(declIdx).toBeGreaterThan(-1);
+    expect(ifIdx).toBeGreaterThan(declIdx);
+    expect(resetAssignIdx).toBeGreaterThan(ifIdx);
+    expect(elseIfIdx).toBeGreaterThan(resetAssignIdx);
+    expect(pendingAssignIdx).toBeGreaterThan(elseIfIdx);
   });
 });
 
@@ -2513,9 +3065,12 @@ describe('f2: CacheManager still refuses every epoch-gated write and gate check 
   });
 
   test('purgeEpochUnchanged (fetchContents\' temp/pinned gate) refuses while pending, checked BEFORE the epoch comparison, epoch-match or not', () => {
+    // Task 1593 f6 — the comparison result is no longer returned directly;
+    // it is captured into `matches` so it can be re-checked against the
+    // marker a second time (see the "f6" describe block below).
     const body = bracedBody(cacheManagerSwift, 'func purgeEpochUnchanged(since capturedEpoch: Int) -> Bool {');
     const pendingIdx = body.indexOf('guard !PlaintextStorageProtection.isPurgePending() else { return false }');
-    const matchIdx = body.indexOf('return currentEpochMatches(capturedEpoch)');
+    const matchIdx = body.indexOf('let matches = currentEpochMatches(capturedEpoch)');
     expect(pendingIdx).toBeGreaterThan(-1);
     expect(matchIdx).toBeGreaterThan(pendingIdx);
   });
@@ -2595,4 +3150,186 @@ describe('f1 (item 3, confirms round 10 F-a still holds — no code change neede
     );
     expect(body).toMatch(/DispatchQueue\.global\(qos: \.userInitiated\)\.async \{/);
   });
+});
+
+// Task 1593 f6 (Codex thread PRRT_kwDOSLX6T86mmDT1, P1) — `currentPurgeEpoch()`,
+// `purgeEpochUnchanged(since:)` and `beginImmediate()` each used to check
+// `PlaintextStorageProtection.isPurgePending()` exactly ONCE, before doing
+// their own (potentially slow, contended) SQLite work. `isPurgePending()` is
+// a plain `FileManager.fileExists` check against a marker file a DIFFERENT
+// process (the main app, via `markPurgePending()`) writes — nothing
+// serializes it against this extension's `queue.sync`. A purge that creates
+// its marker AFTER the single check but BEFORE the SQLite work finishes was
+// invisible to that check: the read/write would proceed, contend with the
+// purge's own SQLite work under the busy timeout, and return live but
+// not-yet-fully-vouched-for data once the purge's transaction released the
+// lock — while the purge's OWN tail (VACUUM, the legacy sweep, the
+// pinned/temp resweep) was still running. The fix re-checks the marker a
+// second time, AFTER the SQLite work, and fails closed if it appeared in
+// between.
+describe('f6: currentPurgeEpoch / purgeEpochUnchanged / beginImmediate all re-check the purge-pending marker AFTER their SQLite work, not just before', () => {
+  const cacheManagerSwift = readFileSync(CACHE_MANAGER_SWIFT_PATH, 'utf8');
+
+  describe('currentPurgeEpoch()', () => {
+    const body = bracedBody(cacheManagerSwift, 'func currentPurgeEpoch() -> Int {');
+
+    test('checks isPurgePending() exactly twice: once before, once after the live PRAGMA read', () => {
+      const checks = body.match(/PlaintextStorageProtection\.isPurgePending\(\)/g) ?? [];
+      expect(checks.length).toBe(2);
+    });
+
+    test('orders: guard #1 -> capture epoch -> guard #2 -> return epoch', () => {
+      const guard1Idx = body.indexOf('guard !PlaintextStorageProtection.isPurgePending() else { return Self.epochQueryFailed }');
+      const captureIdx = body.indexOf('let epoch = _currentPurgeEpoch()');
+      const guard2Idx = body.indexOf(
+        'guard !PlaintextStorageProtection.isPurgePending() else { return Self.epochQueryFailed }',
+        captureIdx,
+      );
+      const returnIdx = body.lastIndexOf('return epoch');
+      expect(guard1Idx).toBeGreaterThan(-1);
+      expect(captureIdx).toBeGreaterThan(guard1Idx);
+      expect(guard2Idx).toBeGreaterThan(captureIdx);
+      expect(returnIdx).toBeGreaterThan(guard2Idx);
+    });
+
+    test('both guards return the same epochQueryFailed sentinel, not a bespoke value', () => {
+      const returns = body.match(/return Self\.epochQueryFailed\b/g) ?? [];
+      expect(returns.length).toBe(2);
+    });
+  });
+
+  describe('purgeEpochUnchanged(since:)', () => {
+    const body = bracedBody(cacheManagerSwift, 'func purgeEpochUnchanged(since capturedEpoch: Int) -> Bool {');
+
+    test('checks isPurgePending() exactly twice: once before, once after currentEpochMatches', () => {
+      const checks = body.match(/PlaintextStorageProtection\.isPurgePending\(\)/g) ?? [];
+      expect(checks.length).toBe(2);
+    });
+
+    test('orders: guard #1 -> capture matches -> guard #2 -> return matches', () => {
+      const guard1Idx = body.indexOf('guard !PlaintextStorageProtection.isPurgePending() else { return false }');
+      const captureIdx = body.indexOf('let matches = currentEpochMatches(capturedEpoch)');
+      const guard2Idx = body.indexOf(
+        'guard !PlaintextStorageProtection.isPurgePending() else { return false }',
+        captureIdx,
+      );
+      const returnIdx = body.lastIndexOf('return matches');
+      expect(guard1Idx).toBeGreaterThan(-1);
+      expect(captureIdx).toBeGreaterThan(guard1Idx);
+      expect(guard2Idx).toBeGreaterThan(captureIdx);
+      expect(returnIdx).toBeGreaterThan(guard2Idx);
+    });
+
+    test('still delegates the comparison itself to currentEpochMatches, not a bare ==', () => {
+      expect(body).not.toMatch(/_currentPurgeEpoch\(\)\s*==/);
+      expect(body).toMatch(/currentEpochMatches\(/);
+    });
+  });
+
+  describe('beginImmediate()', () => {
+    const body = bracedBody(cacheManagerSwift, 'private func beginImmediate() -> Bool {');
+
+    test('checks isPurgePending() exactly twice: once before, once after BEGIN IMMEDIATE acquires the lock', () => {
+      const checks = body.match(/PlaintextStorageProtection\.isPurgePending\(\)/g) ?? [];
+      expect(checks.length).toBe(2);
+    });
+
+    test('orders: guard #1 -> BEGIN IMMEDIATE -> guard #2 -> ROLLBACK-on-refuse -> return true', () => {
+      const guard1Idx = body.indexOf('guard !PlaintextStorageProtection.isPurgePending() else { return false }');
+      const beginIdx = body.indexOf('sqlite3_exec(db, "BEGIN IMMEDIATE", nil, nil, nil)');
+      const guard2Idx = body.indexOf(
+        'guard !PlaintextStorageProtection.isPurgePending() else {',
+        beginIdx,
+      );
+      const rollbackIdx = body.indexOf('execute("ROLLBACK")', guard2Idx);
+      const returnTrueIdx = body.lastIndexOf('return true');
+      expect(guard1Idx).toBeGreaterThan(-1);
+      expect(beginIdx).toBeGreaterThan(guard1Idx);
+      expect(guard2Idx).toBeGreaterThan(beginIdx);
+      expect(rollbackIdx).toBeGreaterThan(guard2Idx);
+      expect(returnTrueIdx).toBeGreaterThan(rollbackIdx);
+    });
+
+    test('a failed BEGIN IMMEDIATE itself (contention/lock failure) still returns false without touching the second guard', () => {
+      const beginIdx = body.indexOf('guard sqlite3_exec(db, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK else { return false }');
+      expect(beginIdx).toBeGreaterThan(-1);
+    });
+  });
+
+  // Reference implementation of the shared before/after pattern, cross-checked
+  // table-driven against every combination of "marker present at the FIRST
+  // check" x "marker present at the SECOND check" x "the live read itself".
+  // This pins the BEHAVIOUR the three Swift bodies above are proven (by the
+  // structural tests) to implement — it does not read Swift source, so it
+  // also serves as the "did this ever actually protect anything" sanity
+  // check: row 2 below is exactly the reviewer's scenario (marker appears
+  // WHILE the SQLite work is in flight), and it is the row where the OLD
+  // (single-check) shape and the NEW (f6, double-check) shape disagree.
+  const EPOCH_QUERY_FAILED = Number.MIN_SAFE_INTEGER; // stand-in for Swift's Int.min
+
+  function singleCheckRead(pendingBefore: boolean, pendingAfter: boolean, liveEpoch: number): number {
+    // The f4-era shape: only the check BEFORE the read.
+    if (pendingBefore) return EPOCH_QUERY_FAILED;
+    return liveEpoch;
+  }
+
+  function doubleCheckRead(pendingBefore: boolean, pendingAfter: boolean, liveEpoch: number): number {
+    // The f6 shape this task adds: check, read, check again.
+    if (pendingBefore) return EPOCH_QUERY_FAILED;
+    const epoch = liveEpoch;
+    if (pendingAfter) return EPOCH_QUERY_FAILED;
+    return epoch;
+  }
+
+  const rows: Array<[boolean, boolean, number, string]> = [
+    [false, false, 7, 'no purge at any point — live epoch passes through'],
+    [true, false, 7, 'purge already pending at the first check — refused, as before'],
+    [false, true, 7, 'THE REVIEWER\'S SCENARIO — marker appears strictly between the two checks (during the read)'],
+    [true, true, 7, 'purge pending throughout — refused'],
+  ];
+
+  test.each(rows)(
+    'pendingBefore=%s pendingAfter=%s liveEpoch=%s (%s)',
+    (pendingBefore, pendingAfter, liveEpoch, _label) => {
+      const expected = (pendingBefore || pendingAfter) ? EPOCH_QUERY_FAILED : liveEpoch;
+      expect(doubleCheckRead(pendingBefore, pendingAfter, liveEpoch)).toBe(expected);
+    },
+  );
+
+  test('the reviewer\'s exact scenario (marker appears between the two checks) is where the OLD single-check shape silently returns a live, unvouched-for epoch instead of the sentinel', () => {
+    const pendingBefore = false;
+    const pendingAfter = true;
+    const liveEpoch = 7;
+    // This is the bug: the old shape had no way to see a marker that showed
+    // up after its one and only check.
+    expect(singleCheckRead(pendingBefore, pendingAfter, liveEpoch)).toBe(liveEpoch);
+    // This is the fix: the same inputs now fail closed.
+    expect(doubleCheckRead(pendingBefore, pendingAfter, liveEpoch)).toBe(EPOCH_QUERY_FAILED);
+  });
+
+  // MUTATION PROOF (run manually 2026-09-28, pasted verbatim in the task's
+  // Notes section — evidence at .claude/tasks/_qa-evidence/1593/f6-*): with
+  // the second `guard !PlaintextStorageProtection.isPurgePending() else { ... }`
+  // removed from all three Swift functions (reverting to the f4/f1 single-
+  // check shape), 11 of this file's 229 tests go RED, 218 still pass:
+  //   - 8 in THIS describe block: the "checks isPurgePending() exactly
+  //     twice" test in each of the three nested `describe`s above (finds 1,
+  //     expects 2), the "orders: guard #1 -> ... -> guard #2 -> ..."
+  //     ordering tests (`guard2Idx`/`rollbackIdx`/`returnTrueIdx` come back
+  //     `-1`), and "a failed BEGIN IMMEDIATE ... second guard" (the
+  //     `guard sqlite3_exec(...) == SQLITE_OK else { return false }` shape
+  //     is gone too under the mutation).
+  //   - 3 pre-existing tests elsewhere in this file, whose assertions this
+  //     same fix updated to expect the two-check shape (`round 11:
+  //     purgeEpochUnchanged is sentinel-safe > is queue.sync-wrapped`; `f4
+  //     (item 1a) > checks isPurgePending() FIRST ...`; `f2 > purgeEpochUnchanged
+  //     ... refuses while pending`) — these three are the OLD tests this
+  //     task edited in place, so they correctly go red on the same mutation
+  //     that undoes the edit.
+  // The two-JS-function table-driven tests and the "reviewer's exact
+  // scenario" comparison test do NOT read Swift source, so they are
+  // unaffected by the Swift mutation (still 100% green) — they pin the
+  // BEHAVIOUR, not this particular source shape.
+  // Restoring the second guard in all three functions turns all 11 green
+  // again (229 pass, 0 fail), with no other test in this file affected.
 });

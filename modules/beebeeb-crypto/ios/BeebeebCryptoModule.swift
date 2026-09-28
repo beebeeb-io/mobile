@@ -1065,32 +1065,49 @@ private func resetFileProviderShowInFilesConsent(defaults: UserDefaults?) {
 /// marker (`PlaintextStorageProtection.markPurgePending()`'s doc comment).
 /// `purgePlaintextStorage`'s own EARLY bump (default, `false`) is NOT "the
 /// purge's final epoch bump" — the marker stays set through it on purpose,
-/// so an extension write still cannot land in the gap between this early
-/// bump and the purge's actual `DELETE FROM` (`PlaintextStorageProtection
-/// .resetSQLiteInPlace`, the ONLY place a purge is allowed to clear its own
-/// marker). `registerMountedFileProviderDomainLocked` passes `true`: a
+/// so an extension write still cannot land anywhere between this early bump
+/// and the purge's own end. Task 1593 f4 (item 1b) moved that purge-owned
+/// clear out of `PlaintextStorageProtection.resetSQLiteInPlace` (the
+/// `DELETE FROM` transaction) and into `PlaintextStorageProtection.purgeAll`
+/// itself, which is now the ONLY place a purge is allowed to clear its own
+/// marker — and only after its OWN legacy sweep and pinned/temp resweep have
+/// also already run, not merely after the reset transaction commits; see
+/// `purgeAll`'s doc comment for the full rationale.
+/// `registerMountedFileProviderDomainLocked` passes `true`: a
 /// registration's successful bump is how a marker left behind by some
 /// EARLIER, already-finished purge that never got the chance to clear it
 /// itself gets cleared — "how Files comes back after a failed purge".
 ///
-/// When `clearsPendingMarker` is `true`, the nonce is captured BEFORE
-/// `BEGIN IMMEDIATE` and the clear (`clearPurgePending(nonce:)`'s own
-/// compare-then-delete) runs against that EXACT captured value, never a
-/// fresh read taken after COMMIT: if a DIFFERENT purge marks pending (or
-/// re-marks) anywhere between this capture and this bump's own COMMIT, the
-/// nonce on disk by clear-time will no longer match what was captured here,
-/// and the clear correctly refuses — this registration must not be able to
-/// clear a marker some OTHER, currently-running purge just set.
+/// When `clearsPendingMarker` is `true`, the clear (`clearPurgePending
+/// (nonce:)`'s own compare-then-delete) runs against `pendingNonceAtSnapshot`
+/// — a value THIS FUNCTION never reads itself. Task 1593 f7 (Codex P1,
+/// PRRT_kwDOSLX6T86mme-b) — f2's original design had this function call
+/// `PlaintextStorageProtection.currentPurgePendingNonce()` itself, right
+/// here, immediately BEFORE its own `BEGIN IMMEDIATE`. That was still too
+/// late: `registerMountedFileProviderDomainLocked` can call this function
+/// well after ITS OWN snapshot of `isPurgePending()` (`ensureFileProvider
+/// CacheDatabase()` and any schema work run in between) — long enough for a
+/// DIFFERENT, concurrently-started `purgePlaintextStorage` to create its own
+/// marker in that gap. A fresh read taken here would capture THAT purge's
+/// nonce, not "nothing was pending", and then clear it right out from under
+/// the still-running purge. The caller must instead capture the nonce at
+/// its OWN true snapshot point — the same instant it decides whether a
+/// purge was pending at all — and pass that exact value in here. A `nil`
+/// (nothing pending at the caller's snapshot) means this function clears
+/// nothing, full stop, even if a marker exists by the time it runs; only a
+/// nonce that was ALREADY on disk at the caller's snapshot can ever be
+/// cleared, and only if it is STILL the value on disk when
+/// `clearPurgePending`'s rename-claim compare runs (a DIFFERENT, newer
+/// purge re-marking in between still correctly refuses the clear).
 @discardableResult
-private func bumpFileProviderCacheVersion(clearsPendingMarker: Bool = false) -> Bool {
+private func bumpFileProviderCacheVersion(
+  clearsPendingMarker: Bool = false,
+  pendingNonceAtSnapshot: Data? = nil
+) -> Bool {
   guard let url = fileProviderCacheDatabaseUrl(),
         FileManager.default.fileExists(atPath: url.path) else {
     return true
   }
-
-  let nonceBeforeBump = clearsPendingMarker
-    ? PlaintextStorageProtection.currentPurgePendingNonce()
-    : nil
 
   var db: OpaquePointer?
   guard sqlite3_open_v2(
@@ -1122,8 +1139,8 @@ private func bumpFileProviderCacheVersion(clearsPendingMarker: Bool = false) -> 
   guard sqlite3_exec(db, "COMMIT", nil, nil, nil) == SQLITE_OK else {
     return false
   }
-  if clearsPendingMarker, let nonceBeforeBump {
-    PlaintextStorageProtection.clearPurgePending(nonce: nonceBeforeBump)
+  if clearsPendingMarker, let pendingNonceAtSnapshot {
+    PlaintextStorageProtection.clearPurgePending(nonce: pendingNonceAtSnapshot)
   }
   return true
 }
@@ -1139,12 +1156,31 @@ private func bumpFileProviderCacheVersion(clearsPendingMarker: Bool = false) -> 
 /// async Swift Task on the cooperative thread pool, so the delay AND the
 /// retried, blocking-SQLite bump both run off one of its threads via GCD —
 /// not inline, where a slow retry could tie up the pool.
+///
+/// Task 1593 f5 (reviewer follow-up 1) — `clearsPendingMarker` is now a
+/// caller-supplied parameter (the caller's own `cacheResetOk`), not a bare
+/// `true` — see the call site's doc comment for why passing a bare `true`
+/// was wrong. The retry must use the SAME value the first attempt did:
+/// `cacheResetOk` reflects whether a reset actually landed for this
+/// REGISTRATION call, which the retry delay does not change.
+///
+/// Task 1593 f7 (Codex P1, PRRT_kwDOSLX6T86mme-b) — `pendingNonceAtSnapshot`
+/// is threaded through the same way, for the same reason: it is the
+/// caller's OWN snapshot-time nonce (see `bumpFileProviderCacheVersion`'s
+/// doc comment), and the retry must clear against that SAME captured value,
+/// never a fresh read taken at retry time either.
 @available(iOS 16.0, *)
-private func retryFileProviderCacheReadyAndBumpOffCooperativePool() async -> (ready: Bool, bumped: Bool) {
+private func retryFileProviderCacheReadyAndBumpOffCooperativePool(
+  clearsPendingMarker: Bool,
+  pendingNonceAtSnapshot: Data?
+) async -> (ready: Bool, bumped: Bool) {
   await withCheckedContinuation { (continuation: CheckedContinuation<(Bool, Bool), Never>) in
     DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.25) {
       let ready = ensureFileProviderCacheDatabase()
-      let bumped = ready && bumpFileProviderCacheVersion(clearsPendingMarker: true)
+      let bumped = ready && bumpFileProviderCacheVersion(
+        clearsPendingMarker: clearsPendingMarker,
+        pendingNonceAtSnapshot: pendingNonceAtSnapshot
+      )
       continuation.resume(returning: (ready, bumped))
     }
   }
@@ -1491,18 +1527,25 @@ private func registerMountedFileProviderDomain(
 /// database — mounting on top of that would show them to whoever is
 /// signed in now. Refuse.
 ///
-/// Independently: `purgePending` (`PlaintextStorageProtection
-/// .isPurgePending()`) means a fail-closed marker — this call's own, or
-/// some OTHER purge's — is still up. Registration is the one path allowed
-/// to clear a marker an EARLIER, already-finished purge left stuck
+/// Independently: `purgePending` (captured by the caller as
+/// `purgePendingBeforeBump`, `PlaintextStorageProtection.isPurgePending()`
+/// read BEFORE this call's own bump could clear it — task 1593 f4 item 2,
+/// see the call site's doc comment for why reading it any later is unsafe)
+/// means a fail-closed marker — this call's own, or some OTHER purge's — was
+/// still up when this call started. Registration is the one path allowed to
+/// clear a marker an EARLIER, already-finished purge left stuck
 /// (`bumpFileProviderCacheVersion`'s doc comment: "how Files comes back
 /// after a failed purge") — but only once ITS OWN reset + bump (whichever
 /// of the two this call actually attempted) have BOTH landed; adding while
 /// still pending, without proof of that, risks the add itself racing a
 /// purge that has not finished.
 ///
-/// `cacheResetOk` is `true` when no reset was attempted this call (neither
-/// `forceReset` nor a legacy-schema migration) — nothing to have failed.
+/// `cacheResetOk` is `true` when no reset was attempted this call AND no
+/// purge was pending at the start of the call — nothing to have failed. A
+/// purge pending with no reset attempted (task 1593 f4 item 2) sets it
+/// `false` instead of leaving it at that default: the cache database may
+/// still hold exactly the rows the in-flight purge exists to remove, and
+/// this call has no reset of its own to point to as proof otherwise.
 private func mayAddFileProviderDomain(
   forceReset: Bool,
   purgePending: Bool,
@@ -1528,26 +1571,122 @@ private func registerMountedFileProviderDomainLocked(
   let existed = domainsBefore.contains { $0.identifier == domain.identifier }
   let needsLegacyMigration = existed && defaults?.string(forKey: fileProviderDomainSchemaKey) != fileProviderDomainSchemaVersion
 
+  // Task 1593 f4 (item 2, Codex thread PRRT_kwDOSLX6T86mknXP) — captured
+  // BEFORE the cache-database-ready check and its epoch bump below can
+  // touch it, and BEFORE that bump's own conditional clear (see the f5 doc
+  // comment further down) can run. The OLD code read
+  // `PlaintextStorageProtection.isPurgePending()` fresh at
+  // the `mayAddFileProviderDomain` call site below, AFTER that bump — so
+  // whenever this call's own bump cleared a marker (its nonce still matched
+  // what THIS call captured, because under f4's item 1b a purge now only
+  // clears its own marker at the very END of `purgeAll`, not right after
+  // its reset's own commit — a much wider window than before), the guard
+  // read `purgePending: false` even though the purge that marker belonged
+  // to had NOT actually finished sweeping the cache yet. Capturing here
+  // instead means the guard sees the true pre-bump state.
+  // Task 1593 f7 (Codex P1, PRRT_kwDOSLX6T86mme-b) — `purgePendingNonceAtSnapshot`
+  // below is captured at this SAME snapshot point, before
+  // `ensureFileProviderCacheDatabase` or the bump further down can run.
+  // f2's original design read this nonce freshly INSIDE
+  // `bumpFileProviderCacheVersion`, right before its own `BEGIN IMMEDIATE`
+  // — well after this snapshot, so a marker created by a DIFFERENT,
+  // concurrently-started purge in that gap would be captured and cleared
+  // as if it were this call's own to clear. This registration may only
+  // ever clear a marker that was ALREADY pending when it started (or find
+  // nothing pending, `nil`) — never one that appears afterwards — so the
+  // nonce is captured here, at the same instant as `purgePendingBeforeBump`
+  // itself, and threaded through unchanged to every bump attempt below.
+  // See `bumpFileProviderCacheVersion`'s doc comment for the full race.
+  //
+  // Task 1593 f8 (Codex P1, PRRT_kwDOSLX6T86mm-UP) — f7 still captured
+  // `purgePendingBeforeBump` and `purgePendingNonceAtSnapshot` from TWO
+  // SEPARATE reads: `PlaintextStorageProtection.isPurgePending()` (a plain
+  // `fileExists` check) immediately followed by a SECOND, independent
+  // `currentPurgePendingNonce()` call. "Immediately" is not "atomically":
+  // a `markPurgePending()` landing in the (arbitrarily small, but nonzero)
+  // gap between those two calls made the FIRST read observe "nothing
+  // pending" — so `purgePendingBeforeBump == false`, and `cacheResetOk`
+  // above never took the `else if purgePendingBeforeBump { cacheResetOk =
+  // false }` branch — while the SECOND read, a moment later, picked up
+  // that brand-new purge's own nonce regardless. That nonce then flowed,
+  // unexamined, into `bumpFileProviderCacheVersion(clearsPendingMarker:
+  // cacheResetOk /* == true */, pendingNonceAtSnapshot:)` below, which
+  // cleared it the instant this call's own bump committed — wiping out a
+  // DIFFERENT purge's marker while that purge was still mid-flight, the
+  // exact failure f7 believed it had already closed one call frame up.
+  //
+  // Fixed by reading the marker exactly ONCE:
+  // `PlaintextStorageProtection.purgePendingSnapshot()` returns a single
+  // `PurgePendingSnapshot` (`.none` / `.nonce(Data)` / `.unreadable`) from
+  // one atomic `open()`/`read()` pair, and `purgePendingBeforeBump` /
+  // `purgePendingNonceAtSnapshot` below are both DERIVED from that one
+  // value — never from two independently-timed calls again. A marker
+  // that exists but could not be read in full (`.unreadable`) is treated
+  // as pending (`isPending == true`, fails closed) with NO nonce this call
+  // could ever legitimately clear (`clearableNonce == nil`) — see
+  // `PurgePendingSnapshot`'s own doc comment (`PlaintextStorageProtection.swift`).
+  let purgePendingSnapshot = PlaintextStorageProtection.purgePendingSnapshot()
+  let purgePendingBeforeBump = purgePendingSnapshot.isPending
+  let purgePendingNonceAtSnapshot = purgePendingSnapshot.clearableNonce
+
   var cacheResetOk = true
   if forceReset || needsLegacyMigration {
     if existed {
       try await removeFileProviderDomain(domain)
     }
     cacheResetOk = clearFileProviderCacheState(defaults: defaults).cacheResetOk
+  } else if purgePendingBeforeBump {
+    // Task 1593 f4 (item 2) — a purge was mid-flight when this call started
+    // and nothing here was asked to reset anything. `cacheResetOk`'s
+    // ordinary "true when no reset was attempted — nothing to have failed"
+    // meaning does not hold in this specific case: there IS something that
+    // could still be wrong — the rows currently in the cache database may
+    // be exactly the ones that in-flight purge exists to remove, and this
+    // call has no way to prove they already are not. Deliberately does NOT
+    // run an unrequested reset here (that would delete/recreate the whole
+    // cache database for a call that never asked for one, per the brief) —
+    // marking the reset as unproven is enough: `mayAddFileProviderDomain`'s
+    // existing `purgePending, !(cacheResetOk && cacheVersionBumped)` guard
+    // below already refuses the add whenever `cacheResetOk` is `false`.
+    cacheResetOk = false
   }
 
   // Task 1593 f3 (item 2) — ensure + bump the cache DB's own epoch BEFORE
   // ever deciding whether to add the domain. Previously this ran AFTER the
   // add block below, so a failed reset/bump was only ever logged — the
   // domain had already been mounted by the time anyone noticed. Runs
-  // unconditionally on every call, exactly as before: it is also how a
-  // marker left by an EARLIER, already-finished purge gets cleared
-  // (`clearsPendingMarker: true`) even on a call that isn't adding
-  // anything.
+  // unconditionally on every call — the bump itself (and the epoch
+  // invalidation it provides) is needed regardless of whether the add ends
+  // up refused.
+  //
+  // Task 1593 f5 (reviewer follow-up 1) — `clearsPendingMarker` is now
+  // `cacheResetOk`, not a bare `true`. A bare `true` cleared the marker
+  // whenever THIS call's bump committed, with no regard for whether this
+  // call actually proved the cache safe: a call that hit `else if
+  // purgePendingBeforeBump { cacheResetOk = false }` above (a purge is
+  // mid-flight; nothing here reset it) still cleared that SAME purge's own
+  // marker via its bump — even though `mayAddFileProviderDomain` below then
+  // correctly refused the add on that very same `cacheResetOk`. The marker
+  // exists to protect exactly the domain-add decision that was being
+  // refused, so clearing it out from under a refused add defeated the
+  // point. `cacheResetOk` is true only when no reset was needed (no purge
+  // pending) or a reset this call attempted actually landed
+  // (`forceReset`/`needsLegacyMigration`'s own `clearFileProviderCacheState`
+  // call) — matching `mayAddFileProviderDomain`'s own doc comment above:
+  // "Registration is the one path allowed to clear a marker an EARLIER,
+  // already-finished purge left stuck — but only once ITS OWN reset ...
+  // [has] landed." Threaded into the retry below too, so a transient-lock
+  // retry can't regress back to the unconditional clear.
   var cacheReady = ensureFileProviderCacheDatabase()
-  var cacheVersionBumped = cacheReady && bumpFileProviderCacheVersion(clearsPendingMarker: true)
+  var cacheVersionBumped = cacheReady && bumpFileProviderCacheVersion(
+    clearsPendingMarker: cacheResetOk,
+    pendingNonceAtSnapshot: purgePendingNonceAtSnapshot
+  )
   if !cacheReady || !cacheVersionBumped {
-    (cacheReady, cacheVersionBumped) = await retryFileProviderCacheReadyAndBumpOffCooperativePool()
+    (cacheReady, cacheVersionBumped) = await retryFileProviderCacheReadyAndBumpOffCooperativePool(
+      clearsPendingMarker: cacheResetOk,
+      pendingNonceAtSnapshot: purgePendingNonceAtSnapshot
+    )
   }
   if !cacheReady || !cacheVersionBumped {
     RuntimeTrace.event("storage.purge.failed", [
@@ -1562,7 +1701,7 @@ private func registerMountedFileProviderDomainLocked(
     // and Settings shows Files could not be turned on.
     guard mayAddFileProviderDomain(
       forceReset: forceReset,
-      purgePending: PlaintextStorageProtection.isPurgePending(),
+      purgePending: purgePendingBeforeBump,
       cacheResetOk: cacheResetOk,
       cacheVersionBumped: cacheVersionBumped
     ) else {
