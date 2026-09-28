@@ -2731,6 +2731,18 @@ public class BeebeebCryptoModule: Module {
       // never a real account id.
       let normalizedOwnerId = (ownerId?.isEmpty == false) ? ownerId : nil
       BeebeebCryptoBridge.setCachedMasterKey(handle, ownerId: normalizedOwnerId)
+      // Task 1599 followups round 2 review (P2): THIS call site — reached
+      // only from `crypto-context.tsx`'s `unlock()`, i.e. an actual
+      // phrase/keychain authentication event — is the genuine
+      // "sign in again to resume" moment `NativeBackupEngine.bindAccount`'s
+      // doc comment used to (incorrectly) treat itself as. A sticky
+      // `accountMismatchStopReason` from a previous confirmed mismatch no
+      // longer applies once a real new authentication has happened, so it is
+      // cleared HERE, not in `bindAccount` (which also runs on every
+      // ordinary "Back up now"/enable call with no new auth behind it —
+      // clearing it there let a stale reason be silently dismissed without
+      // the user actually signing in again).
+      NativeBackupEngine.shared.clearAccountMismatchStopReasonOnNewAuthentication()
       RuntimeTrace.event("keychain.bridge.confirm_handle", ["handleId": handleId, "hasOwner": normalizedOwnerId != nil])
       return true
     }

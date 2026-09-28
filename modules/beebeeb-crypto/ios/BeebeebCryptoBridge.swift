@@ -85,6 +85,38 @@ enum BeebeebCryptoBridge {
         return owner
     }
 
+    /// One locked handle+owner pair from the SAME cache generation.
+    ///
+    /// Task 1599 followups round 2 review (P1): `cachedMasterKeyIfAvailable()`
+    /// and `cachedMasterKeyOwnerId()` each take and release
+    /// `masterKeyCacheLock` independently. A caller that reads them as two
+    /// separate calls (as the background-task cache adoption in
+    /// `NativeBackupEngine.swift` used to) can observe the HANDLE from one
+    /// cache generation and the OWNER from a later one if `setCachedMasterKey`/
+    /// `clearCachedMasterKey` runs on another thread in between — e.g. a
+    /// foreground `start()`/`confirmMasterKeyHandle` call lands right between
+    /// the two reads. If the newer owner happens to match the caller's
+    /// `accountId`, `CachedKeyOwnership.mayAdopt` would then approve pairing a
+    /// FOREIGN, stale handle with a currently-valid owner id — exactly the
+    /// wrong-key-adoption bug this whole cache-owner mechanism exists to
+    /// prevent. Every caller that needs both values together MUST use this
+    /// snapshot, never the two accessors above in sequence.
+    struct CachedMasterKeySnapshot {
+        let handle: MasterKeyHandle?
+        let ownerId: String?
+    }
+
+    static func cachedMasterKeySnapshot() -> CachedMasterKeySnapshot {
+        masterKeyCacheLock.lock()
+        let handle = cachedMasterKey
+        let owner = cachedOwnerId
+        masterKeyCacheLock.unlock()
+        if handle != nil {
+            RuntimeTrace.event("native_master_key_cache.hit")
+        }
+        return CachedMasterKeySnapshot(handle: handle, ownerId: owner)
+    }
+
     static func clearCachedMasterKey() {
         masterKeyCacheLock.lock()
         cachedMasterKey = nil

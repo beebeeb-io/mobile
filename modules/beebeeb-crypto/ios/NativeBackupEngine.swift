@@ -1638,10 +1638,20 @@ final class NativeBackupEngine: NSObject {
     dbQueue.sync { purgeMismatchedStagedAssets(currentAccountId: userId) }
     currentAccountId = userId
     masterKeyHandle = nil
-    // Task 1599 followup 2: a fresh, JS-confirmed sign-in is exactly "sign in
-    // again to resume" — the honest reason a previous account_mismatch
-    // recorded no longer applies once a NEW binding replaces it.
-    accountMismatchStopReason = nil
+    // Task 1599 followups round 2 review (P2): `accountMismatchStopReason`
+    // used to be cleared HERE — but `bindAccount` runs on every
+    // `enablePhotoBackup`/`triggerImmediateBackup` ("Back up now") call, not
+    // only on a genuine new sign-in. After a confirmed mismatch sets
+    // `currentAccountId = nil` (`handleConfirmedAccountMismatch`), the VERY
+    // NEXT `bindAccount(userId:)` call — even one made with the SAME
+    // still-unlocked JS session tapping "Back up now", no new authentication
+    // at all — is a `nil -> userId` transition and would have cleared the
+    // sticky reason right here, silently defeating the "sign in again to
+    // resume" promise the UI makes (`SettingsScreen.tsx`'s
+    // `cameraRollSummary`). The clear now lives ONLY in
+    // `BeebeebCryptoModule.swift`'s `confirmMasterKeyHandle`, which is
+    // reached exclusively from `crypto-context.tsx`'s `unlock()` — an actual
+    // phrase/keychain authentication event, never a bare enable/trigger call.
     // Task 1531 [P2] round 6 (finding N6): `RuntimeTrace.sanitize` redacts
     // token/password/secret/key/cipher-/plaintext-named fields but NOT
     // "userId" — the raw account id was landing unredacted in the on-device
@@ -1706,8 +1716,9 @@ final class NativeBackupEngine: NSObject {
   ///   - records an honest, user-facing reason (`accountMismatchStopReason`)
   ///     so `currentProgress()` — which `backup-context.tsx` already polls —
   ///     can tell Settings WHY backup stopped, not just that it did. Cleared
-  ///     the moment a fresh, JS-confirmed sign-in binds a new account
-  ///     (`bindAccount`) — exactly "sign in again to resume".
+  ///     only via `clearAccountMismatchStopReasonOnNewAuthentication()` — see
+  ///     that method's doc comment for why `bindAccount` is NOT the right
+  ///     place (task 1599 followups round 2 review, P2).
   private func handleConfirmedAccountMismatch() {
     RuntimeTrace.event("backup.native.account_mismatch_confirmed")
     dropCachedMasterKeyHandle()
@@ -1715,6 +1726,27 @@ final class NativeBackupEngine: NSObject {
     currentAccountId = nil
     BeebeebCryptoBridge.clearCachedMasterKey()
     accountMismatchStopReason = Self.accountMismatchStopReasonMessage
+  }
+
+  /// Clears a sticky `accountMismatchStopReason` left by a previous confirmed
+  /// mismatch. Call ONLY from a genuine new-authentication choke point.
+  ///
+  /// Task 1599 followups round 2 review (P2): this used to be cleared
+  /// unconditionally inside `bindAccount(userId:)` — but `bindAccount` runs
+  /// on every `enablePhotoBackup` AND every `triggerImmediateBackup`
+  /// ("Back up now") call, not only on a fresh sign-in. After
+  /// `handleConfirmedAccountMismatch` sets `currentAccountId = nil`, the very
+  /// NEXT `bindAccount` call — even one from the user tapping "Back up now"
+  /// on the SAME still-unlocked JS session, no new authentication at all —
+  /// is a `nil -> userId` transition, and clearing the reason right there
+  /// silently dismissed the "sign in again to resume" message the UI had
+  /// just shown, without the user actually signing in again. The ONLY
+  /// correct call site is `BeebeebCryptoModule.swift`'s
+  /// `confirmMasterKeyHandle`, reached exclusively from
+  /// `crypto-context.tsx`'s `unlock()` — an actual phrase/keychain
+  /// authentication event.
+  func clearAccountMismatchStopReasonOnNewAuthentication() {
+    accountMismatchStopReason = nil
   }
 
   // MARK: - Lifecycle
@@ -1765,7 +1797,6 @@ final class NativeBackupEngine: NSObject {
     }
 
     do {
-      let bridgeCacheAvailable = BeebeebCryptoBridge.hasCachedMasterKey()
       // Task 1599 followups (round 2, item 3): a cached handle existing is
       // NOT, by itself, proof it belongs to `accountId` — reusing the SAME
       // `CachedKeyOwnership.mayAdopt` decision the background-task
@@ -1774,7 +1805,16 @@ final class NativeBackupEngine: NSObject {
       // hand back the same unverified cached handle) — a cache whose
       // recorded owner is SET and differs from `accountId` refuses here,
       // never reaching `masterKeyHandle`.
-      let cachedOwnerBeforeLoad = BeebeebCryptoBridge.cachedMasterKeyOwnerId()
+      //
+      // Task 1599 followups round 2 review (P1): read the "is there a
+      // cached handle" flag and its owner from ONE locked snapshot
+      // (`cachedMasterKeySnapshot()`), not two separate locked calls — same
+      // fix, same reason, as the background-task adoption site below (a
+      // concurrent `setCachedMasterKey`/`clearCachedMasterKey` between two
+      // separate reads could pair a stale handle with a newer owner id).
+      let cacheSnapshot = BeebeebCryptoBridge.cachedMasterKeySnapshot()
+      let bridgeCacheAvailable = cacheSnapshot.handle != nil
+      let cachedOwnerBeforeLoad = cacheSnapshot.ownerId
       RuntimeTrace.event("backup.native.start.master_key_request", [
         "promptMayAppear": masterKeyHandle == nil && !bridgeCacheAvailable,
         "bridgeCacheAvailable": bridgeCacheAvailable
@@ -2175,9 +2215,17 @@ final class NativeBackupEngine: NSObject {
         // JS-verified owner — see `BeebeebCryptoBridge.cachedOwnerId`'s doc
         // comment) to match. An unconfirmed (`nil`) or mismatched owner is
         // refused exactly like "no cache at all", never silently adopted.
-        if let cached = BeebeebCryptoBridge.cachedMasterKeyIfAvailable(),
+        //
+        // Task 1599 followups round 2 review (P1): the handle and its owner
+        // MUST come from the same cache generation — read both under one
+        // lock via `cachedMasterKeySnapshot()`, never as two separate locked
+        // calls (which could observe a foreign handle paired with a newer,
+        // unrelated owner id if a `start()`/`confirmMasterKeyHandle` on
+        // another thread lands between the two reads).
+        let cacheSnapshot = BeebeebCryptoBridge.cachedMasterKeySnapshot()
+        if let cached = cacheSnapshot.handle,
            CachedKeyOwnership.mayAdopt(
-             cachedOwnerId: BeebeebCryptoBridge.cachedMasterKeyOwnerId(),
+             cachedOwnerId: cacheSnapshot.ownerId,
              currentAccountId: accountId
            ) {
           self.masterKeyHandle = cached
@@ -2186,7 +2234,7 @@ final class NativeBackupEngine: NSObject {
           ])
         } else {
           RuntimeTrace.event("backup.native.background_task.master_key_skipped", [
-            "reason": BeebeebCryptoBridge.hasCachedMasterKey() ? "cached_key_owner_unconfirmed" : "no_unlocked_cache",
+            "reason": cacheSnapshot.handle != nil ? "cached_key_owner_unconfirmed" : "no_unlocked_cache",
             "promptMayAppear": false
           ])
           self.completeBackgroundTaskOnce(task, success: false)
