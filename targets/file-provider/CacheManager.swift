@@ -126,14 +126,6 @@ final class CacheManager {
     queue.sync { _upsert(item) }
   }
 
-  func upsert(_ items: [CachedItem]) {
-    queue.sync {
-      execute("BEGIN")
-      for item in items { _upsert(item) }
-      execute("COMMIT")
-    }
-  }
-
   /// Task 1593 round 7 (C1) — `expectedEpoch` is the purge-epoch value the
   /// caller (`SyncEngine.refreshContainer`) read BEFORE starting the API
   /// fetch these `items` came from.
@@ -200,8 +192,48 @@ final class CacheManager {
   /// epoch rationale). Internal call sites already inside `queue.sync` use
   /// `_currentPurgeEpoch()` directly — this method would deadlock if called
   /// from inside another `queue.sync` block on this same serial queue.
+  ///
+  /// Task 1593 f4 (Codex thread PRRT_kwDOSLX6T86mknXP, item 1a) — under the
+  /// f2 marker-first design the pending marker now stays set for the WHOLE
+  /// purge (see `purgeAll(pendingNonce:)`'s doc comment: it only clears
+  /// after the legacy sweep AND the pinned/temp resweep, not right after
+  /// the reset's own epoch bump commits). A caller like `SyncEngine` that
+  /// captures its epoch via THIS method — not `purgeEpochUnchanged(since:)`
+  /// — has no other way to know a purge is still in flight; without this
+  /// guard it could capture a live, freshly-bumped epoch while the purge's
+  /// own tail (VACUUM, the legacy sweep, the pinned/temp resweep) is still
+  /// running, then have its later gated write land after the tail finishes
+  /// but with an epoch value the purge never actually finished vouching
+  /// for. Returning the sentinel here instead means `currentEpochMatches(_:)`
+  /// — already sentinel-safe on the LIVE side — now also rejects any
+  /// comparison against a captured epoch that came from a pending purge,
+  /// since the sentinel can never equal a real `PRAGMA user_version` value.
+  /// Task 1593 f6 (Codex thread PRRT_kwDOSLX6T86mmDT1, P1) — the single
+  /// `isPurgePending()` guard above only closed the window BEFORE the
+  /// `PRAGMA user_version` read: `isPurgePending()` is a plain
+  /// `FileManager.fileExists` check against a file another PROCESS (the main
+  /// app, running `markPurgePending()`) writes — it is not serialized by
+  /// THIS actor's `queue`, so nothing stops that other process from creating
+  /// the marker in the gap between this guard passing and `_currentPurgeEpoch()`
+  /// actually returning. `_currentPurgeEpoch()` itself briefly blocks behind
+  /// the purge's own SQLite work (same busy-timeout contention documented on
+  /// `sqlite3_busy_timeout` in `init` above), so that gap is not
+  /// instantaneous — it is exactly as long as the purge's reset transaction
+  /// takes. A read that lands in that window returns the purge's freshly
+  /// bumped FINAL epoch while the marker-covered sweeps (VACUUM, the legacy
+  /// sweep, the pinned/temp resweep) are still running, and a caller that
+  /// captured that value would later pass `currentEpochMatches` once the
+  /// marker is cleared — the exact bypass f4/item-1a's single check was
+  /// meant to close. Checking the marker AGAIN, after the read, closes it:
+  /// a marker created anywhere during the read is now caught here instead of
+  /// being missed entirely.
   func currentPurgeEpoch() -> Int {
-    queue.sync { _currentPurgeEpoch() }
+    queue.sync {
+      guard !PlaintextStorageProtection.isPurgePending() else { return Self.epochQueryFailed }
+      let epoch = _currentPurgeEpoch()
+      guard !PlaintextStorageProtection.isPurgePending() else { return Self.epochQueryFailed }
+      return epoch
+    }
   }
 
   /// Task 1593 round 11 (Codex thread PRRT_kwDOSLX6T86miVoN, P1) — safe
@@ -215,8 +247,26 @@ final class CacheManager {
   /// caller's own earlier capture, or this live re-check) can never
   /// accidentally read as "unchanged" just because both happened to produce
   /// the same failure sentinel.
+  /// Task 1593 f1 (fail-closed purge-pending marker) — checked FIRST, before
+  /// the epoch comparison: a pending marker means a purge could not prove
+  /// its own epoch advance landed, so an unchanged-looking epoch is no
+  /// longer trustworthy evidence either. See
+  /// `PlaintextStorageProtection.markPurgePending()`'s doc comment.
+  /// Task 1593 f6 (Codex thread PRRT_kwDOSLX6T86mmDT1, P1) — same
+  /// before/after marker pattern as `currentPurgeEpoch()` above: the initial
+  /// `isPurgePending()` guard only closes the window BEFORE
+  /// `currentEpochMatches` runs its `PRAGMA user_version` read, not the read
+  /// itself, and that read is not serialized against the other PROCESS that
+  /// writes the marker. A marker created while `currentEpochMatches` is
+  /// still executing must still refuse this call — re-checking after the
+  /// read, before returning its result, closes that gap the same way.
   func purgeEpochUnchanged(since capturedEpoch: Int) -> Bool {
-    queue.sync { currentEpochMatches(capturedEpoch) }
+    queue.sync {
+      guard !PlaintextStorageProtection.isPurgePending() else { return false }
+      let matches = currentEpochMatches(capturedEpoch)
+      guard !PlaintextStorageProtection.isPurgePending() else { return false }
+      return matches
+    }
   }
 
   /// Task 1593 round 10 (reviewer F-b) — a failed `PRAGMA user_version`
@@ -257,9 +307,37 @@ final class CacheManager {
     return epoch != Self.epochQueryFailed && epoch == expectedEpoch
   }
 
+  /// Task 1593 f1 (fail-closed purge-pending marker) — the shared entry
+  /// point for every epoch-gated writer (`replaceChildren`,
+  /// `upsert(_:expectedEpoch:)`, `delete(id:expectedEpoch:)`): refusing here
+  /// closes all three at once. See
+  /// `PlaintextStorageProtection.markPurgePending()`'s doc comment.
+  ///
+  /// Task 1593 f6 (Codex thread PRRT_kwDOSLX6T86mmDT1, P1) — the guard above
+  /// only closes the window BEFORE `BEGIN IMMEDIATE` is issued. `BEGIN
+  /// IMMEDIATE` itself blocks behind the purge's own writers under the
+  /// `sqlite3_busy_timeout` set in `init` (same contention documented
+  /// there), and `isPurgePending()` checks a marker file another PROCESS
+  /// writes — not anything serialized by this call. A marker created while
+  /// this call is blocked acquiring the lock is invisible to the guard
+  /// above; without a second check, this call would return `true` believing
+  /// no purge is in progress, and the caller's own `currentEpochMatches`
+  /// re-check right after (see `replaceChildren`/`upsert(_:expectedEpoch:)`/
+  /// `delete(id:expectedEpoch:)`) reads an epoch that is real but not yet
+  /// vouched for — the purge's tail sweeps could still be running. Rechecking
+  /// immediately after the lock is acquired, before any caller can act on a
+  /// `true` result, closes that gap: a marker that appears mid-wait is now
+  /// caught here and the half-open transaction is rolled back rather than
+  /// handed to the caller as a usable write.
   private func beginImmediate() -> Bool {
     guard let db else { return false }
-    return sqlite3_exec(db, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK
+    guard !PlaintextStorageProtection.isPurgePending() else { return false }
+    guard sqlite3_exec(db, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK else { return false }
+    guard !PlaintextStorageProtection.isPurgePending() else {
+      execute("ROLLBACK")
+      return false
+    }
+    return true
   }
 
   /// Task 1593 round 10 (reviewer F-b) — `execute("COMMIT")`'s result used

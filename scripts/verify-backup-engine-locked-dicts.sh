@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Task 1600 [P1] structural guard: `chunkUploadContinuations` and
+# `uploadTaskMap` on NativeBackupEngine must ALWAYS go through the
+# `LockedDictionary` wrapper (a plain Dictionary there is unsafe — see the
+# wrapper's doc comment in the source file for why: they're written from the
+# URLSession delegate queue, Swift concurrency Tasks, dbQueue, and whatever
+# thread calls stop(), with no synchronization between those). This is a
+# grep-based structural check, not a runtime test — it can't prove the
+# wrapper itself is race-free (the standalone TSan harness under
+# .claude/tasks/_qa-evidence/1600-crash/r2-tsan-harness-locked_dict_stress.swift
+# does that), only that nobody has re-introduced a raw Dictionary for these
+# two properties, or bypassed the wrapper's public API to reach its private
+# `storage` directly.
+#
+# NOTE: uses /usr/bin/grep explicitly, not the bare `grep`/`rg` names — on
+# this machine both are shadowed (ugrep function / Claude Code's own `rg`
+# wrapper) with different behavior than the real GNU/BSD binaries; see
+# repos/mobile CLAUDE.md's "macOS shell gotchas" note. A repo guard must not
+# depend on an interactive shell's aliases.
+GREP=/usr/bin/grep
+
+file="modules/beebeeb-crypto/ios/NativeBackupEngine.swift"
+
+if [ ! -f "$file" ]; then
+  echo "Expected file not found: $file" >&2
+  exit 1
+fi
+
+fail=0
+
+# 1. The LockedDictionary wrapper class must exist.
+if ! "$GREP" -q 'private final class LockedDictionary<Key: Hashable, Value>' "$file"; then
+  echo "LockedDictionary wrapper class not found in $file" >&2
+  fail=1
+fi
+
+# 2. Its backing storage must stay private — otherwise callers could reach
+#    in and mutate `storage` directly, unlocked, defeating the whole point.
+if ! "$GREP" -Eq '^[[:space:]]*private var storage: \[Key: Value\] = \[:\]' "$file"; then
+  echo "LockedDictionary.storage is missing or no longer private" >&2
+  fail=1
+fi
+
+# 3. Both properties must be declared AS a LockedDictionary instance, not a
+#    plain [Int: ...] Dictionary.
+for prop in chunkUploadContinuations uploadTaskMap; do
+  if ! "$GREP" -q "private let ${prop} = LockedDictionary<" "$file"; then
+    echo "'$prop' is not declared as 'private let $prop = LockedDictionary<...>()' — a plain Dictionary here is a P1 (task 1600): concurrent access from the URLSession delegate queue / Tasks / dbQueue can corrupt it" >&2
+    fail=1
+  fi
+done
+
+# 4. Guard against a raw-dictionary regression: neither property name may
+#    appear with a bare Dictionary type annotation ([Int: ...]) anywhere in
+#    the file (their one legitimate declaration is already checked above).
+for prop in chunkUploadContinuations uploadTaskMap; do
+  bad_decl=$("$GREP" -En "var ${prop}[[:space:]]*:[[:space:]]*\[" "$file" || true)
+  if [ -n "$bad_decl" ]; then
+    echo "Found a raw-Dictionary-typed declaration of '$prop':" >&2
+    echo "$bad_decl" >&2
+    fail=1
+  fi
+done
+
+# 5. Every call site of the two properties must use only the wrapper's
+#    sanctioned API: the subscript ('name[...]'), .removeValue(forKey:,
+#    .removeAll(), or .keys — never anything else (which would mean either
+#    a stale plain-Dictionary method, like .count/.values/.forEach, or a
+#    reach into a private implementation detail).
+for prop in chunkUploadContinuations uploadTaskMap; do
+  while IFS= read -r line; do
+    [ -z "$line" ] && continue
+    # skip pure comment/doc-comment lines
+    trimmed="$(echo "$line" | sed -E 's/^[[:space:]]*//')"
+    case "$trimmed" in
+      "//"*|"///"*) continue ;;
+    esac
+    # skip the sanctioned declaration line itself
+    if echo "$line" | "$GREP" -q "private let ${prop} = LockedDictionary<"; then
+      continue
+    fi
+    rest="$(echo "$line" | sed -E "s/.*${prop}//")"
+    if ! echo "$rest" | "$GREP" -Eq '^(\[|\.removeValue\(forKey:|\.removeAll\(\)|\.keys\b)'; then
+      echo "Unexpected accessor on '$prop' (not subscript/.removeValue/.removeAll/.keys):" >&2
+      echo "  $line" >&2
+      fail=1
+    fi
+  done < <("$GREP" -n "\b${prop}\b" "$file" | cut -d: -f2-)
+done
+
+if [ "$fail" -ne 0 ]; then
+  echo "FAIL: NativeBackupEngine locked-dictionary structural guard" >&2
+  exit 1
+fi
+
+echo "PASS: chunkUploadContinuations and uploadTaskMap are LockedDictionary-backed, storage stays private, no raw-Dictionary regression, all call sites use the sanctioned API"
