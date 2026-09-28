@@ -28,6 +28,9 @@ const MODULE_SWIFT_PATH = join(
 const CACHE_MANAGER_SWIFT_PATH = join(
   REPO_ROOT, 'targets', 'file-provider', 'CacheManager.swift',
 );
+const FILE_PROVIDER_EXTENSION_SWIFT_PATH = join(
+  REPO_ROOT, 'targets', 'file-provider', 'FileProviderExtension.swift',
+);
 
 function functionBody(source: string, signature: string): string {
   const start = source.indexOf(signature);
@@ -443,15 +446,24 @@ describe('C1 (round 7, P1): the File Provider extension refuses a write whose pu
     // this process's own serial queue: the queue only ever protected THIS
     // process's calls to `CacheManager` from each other, never the main
     // app's independent writes to the same file.
+    //
+    // Task 1593 round 10 (reviewer F-b) — the bare `_currentPurgeEpoch() ==
+    // expectedEpoch` comparison and the bare `execute("COMMIT")` this test
+    // used to pin were replaced by `currentEpochMatches(_:)` (never matches
+    // on a failed read — see its doc comment) and `commitOrRollback()`
+    // (ROLLBACK on a failed COMMIT instead of leaving the transaction open).
+    // See the dedicated "reviewer F-b" describe block below for the direct
+    // behavioural pin on those two helpers; this test only re-pins their
+    // call-site ORDER, which is unchanged.
     const body = bracedBody(
       cacheManagerSwift,
       'func replaceChildren(parent: String?, with items: [CachedItem], expectedEpoch: Int) -> Bool {',
     );
     const queueSyncIdx = body.indexOf('queue.sync');
     const beginImmediateIdx = body.indexOf('guard beginImmediate() else { return false }');
-    const guardIdx = body.indexOf('guard _currentPurgeEpoch() == expectedEpoch else {');
+    const guardIdx = body.indexOf('guard currentEpochMatches(expectedEpoch) else {');
     const rollbackIdx = body.indexOf('execute("ROLLBACK")');
-    const commitIdx = body.indexOf('"COMMIT"');
+    const commitIdx = body.indexOf('commitOrRollback()');
     expect(queueSyncIdx).toBeGreaterThan(-1);
     expect(beginImmediateIdx).toBeGreaterThan(-1);
     expect(guardIdx).toBeGreaterThan(-1);
@@ -576,10 +588,14 @@ describe('F1 (round 7, P2): removeFileProviderEntries sets secure_delete before 
 describe('F2 (round 7, P2): a domain removal completion that outlives its bounded wait cannot silently undo a NEW sign-in', () => {
   const swift = readFileSync(MODULE_SWIFT_PATH, 'utf8');
 
-  test('registerMountedFileProviderDomain bumps the generation counter right after successfully adding the domain', () => {
+  test('registerMountedFileProviderDomainLocked bumps the generation counter right after successfully adding the domain', () => {
+    // Task 1593 round 10 (reviewer F-a) — the actual registration logic
+    // moved to `registerMountedFileProviderDomainLocked`; the now-separate
+    // `registerMountedFileProviderDomain` is just the serializing gate
+    // wrapper (see the "reviewer F-a" describe block below).
     const body = bracedBody(
       swift,
-      'private func registerMountedFileProviderDomain(\n  defaults: UserDefaults?,\n  forceReset: Bool = false\n) async throws -> [String: Any] {',
+      'private func registerMountedFileProviderDomainLocked(\n  defaults: UserDefaults?,\n  forceReset: Bool = false\n) async throws -> [String: Any] {',
     );
     const addIdx = body.indexOf('try await addFileProviderDomain(domain)');
     const bumpIdx = body.indexOf('bumpFileProviderGeneration()');
@@ -601,7 +617,10 @@ describe('F2 (round 7, P2): a domain removal completion that outlives its bounde
     const body = bracedBody(swift, 'private func removeFileProviderDomainIfRegistered() -> Bool {');
     const staleCheckIdx = body.indexOf('currentFileProviderGeneration() != generationBeforeRemove');
     expect(staleCheckIdx).toBeGreaterThan(-1);
-    const after = body.slice(staleCheckIdx, staleCheckIdx + 3400);
+    // Task 1593 round 10 — widened from 3400: the stale-remove branch grew
+    // its own validate-and-undo logic (Codex thread PRRT_kwDOSLX6T86mhUiV),
+    // pushing `NSFileProviderManager.add(domain)` further from this check.
+    const after = body.slice(staleCheckIdx, staleCheckIdx + 6000);
     expect(after).toMatch(/NSFileProviderManager\.add\(domain\)/);
     expect(after).toMatch(/RuntimeTrace\.event\("storage\.purge\.file_provider_domain_stale_remove"/);
   });
@@ -719,11 +738,11 @@ describe('new-4 (round 6, P2, privacy consent): a forced-sign-out purge also res
 // synchronous, Expo-serial-queue-bound remove path, which risks starving
 // Swift's cooperative thread pool; that is an architectural call, not one
 // this round makes unilaterally).
-describe('new-P1 (round 7, P1, Codex auto re-review): registerMountedFileProviderDomain rechecks consent immediately before adding', () => {
+describe('new-P1 (round 7, P1, Codex auto re-review): registerMountedFileProviderDomainLocked rechecks consent immediately before adding', () => {
   const swift = readFileSync(MODULE_SWIFT_PATH, 'utf8');
   const body = bracedBody(
     swift,
-    'private func registerMountedFileProviderDomain(\n  defaults: UserDefaults?,\n  forceReset: Bool = false\n) async throws -> [String: Any] {',
+    'private func registerMountedFileProviderDomainLocked(\n  defaults: UserDefaults?,\n  forceReset: Bool = false\n) async throws -> [String: Any] {',
   );
 
   test('both consent flags are rechecked right before addFileProviderDomain, not just trusted from the caller', () => {
@@ -756,7 +775,8 @@ describe('R1 (round 8, P1, MUST): a stale-remove completion only re-adds the dom
   test('the stale-generation branch rechecks BOTH consent flags before calling .add', () => {
     const staleIdx = removeBody.indexOf('currentFileProviderGeneration() != generationBeforeRemove');
     expect(staleIdx).toBeGreaterThan(-1);
-    const after = removeBody.slice(staleIdx, staleIdx + 3400);
+    // Task 1593 round 10 — widened from 3400, same reason as F2's test above.
+    const after = removeBody.slice(staleIdx, staleIdx + 6000);
     const guardIdx = after.search(/if \(consentDefaults\?\.bool\(forKey: fileProviderTrustedMountKey\) \?\? false\),\s*\n\s*sharedBoolDefaultTrue\(consentDefaults, key: fileProviderEnabledKey\) \{/);
     const addIdx = after.indexOf('NSFileProviderManager.add(domain)');
     expect(guardIdx).toBeGreaterThan(-1);
@@ -768,7 +788,8 @@ describe('R1 (round 8, P1, MUST): a stale-remove completion only re-adds the dom
   test('a consent-off recheck traces a distinct event and does not call .add', () => {
     const staleIdx = removeBody.indexOf('currentFileProviderGeneration() != generationBeforeRemove');
     expect(staleIdx).toBeGreaterThan(-1);
-    const after = removeBody.slice(staleIdx, staleIdx + 3400);
+    // Task 1593 round 10 — widened from 3400, same reason as F2's test above.
+    const after = removeBody.slice(staleIdx, staleIdx + 6000);
     expect(after).toMatch(/RuntimeTrace\.event\("storage\.purge\.file_provider_domain_stale_remove_consent_off", \[:\]\)/);
     // The consent-off trace must sit in an `else` branch of the same `if`
     // that guards `.add`, not merely appear somewhere in the function.
@@ -808,15 +829,19 @@ describe('R3 (round 8, P2): CacheManager gains epoch-gated upsert/delete variant
   const cacheManagerSwift = readFileSync(CACHE_MANAGER_SWIFT_PATH, 'utf8');
 
   test('upsert(_:expectedEpoch:) opens BEGIN IMMEDIATE, checks the epoch, aborts on mismatch, else writes + commits', () => {
+    // Task 1593 round 10 (reviewer F-b) — see the matching note on
+    // replaceChildren's test above: the epoch comparison and the commit are
+    // now `currentEpochMatches`/`commitOrRollback`, pinned directly in the
+    // "reviewer F-b" describe block below.
     const body = bracedBody(
       cacheManagerSwift,
       'func upsert(_ item: CachedItem, expectedEpoch: Int) -> Bool {',
     );
     const beginIdx = body.indexOf('guard beginImmediate() else { return false }');
-    const guardIdx = body.indexOf('guard _currentPurgeEpoch() == expectedEpoch else {');
+    const guardIdx = body.indexOf('guard currentEpochMatches(expectedEpoch) else {');
     const rollbackIdx = body.indexOf('execute("ROLLBACK")');
     const upsertIdx = body.indexOf('_upsert(item)');
-    const commitIdx = body.indexOf('"COMMIT"');
+    const commitIdx = body.indexOf('commitOrRollback()');
     expect(beginIdx).toBeGreaterThan(-1);
     expect(guardIdx).toBeGreaterThan(-1);
     expect(rollbackIdx).toBeGreaterThan(-1);
@@ -834,10 +859,10 @@ describe('R3 (round 8, P2): CacheManager gains epoch-gated upsert/delete variant
       'func delete(id: String, expectedEpoch: Int) -> Bool {',
     );
     const beginIdx = body.indexOf('guard beginImmediate() else { return false }');
-    const guardIdx = body.indexOf('guard _currentPurgeEpoch() == expectedEpoch else {');
+    const guardIdx = body.indexOf('guard currentEpochMatches(expectedEpoch) else {');
     const rollbackIdx = body.indexOf('execute("ROLLBACK")');
     const deleteIdx = body.indexOf('_delete(id: id)');
-    const commitIdx = body.indexOf('"COMMIT"');
+    const commitIdx = body.indexOf('commitOrRollback()');
     expect(beginIdx).toBeGreaterThan(-1);
     expect(guardIdx).toBeGreaterThan(-1);
     expect(rollbackIdx).toBeGreaterThan(-1);
@@ -927,67 +952,79 @@ describe('R3 (round 8, P2): FileProviderExtension captures the epoch BEFORE its 
 describe('round 9 (P1, Codex thread PRRT_kwDOSLX6T86mgrDZ): validate-and-undo replaces the unserialized consent-then-add', () => {
   const swift = readFileSync(MODULE_SWIFT_PATH, 'utf8');
 
+  // Task 1593 round 10 (reviewer F-a) — `shouldUndoFileProviderAdd`'s
+  // parameters were renamed `purgeGenerationBeforeAdd`/`purgeGenerationAfterAdd`
+  // and its generation check simplified to a bare `!=` (no `&+ 1`
+  // allowance): see the "reviewer F-a" describe block below for why the OLD
+  // shared add/purge counter false-positived on two concurrent, both-
+  // legitimate registrations, and why the NEW purge-only counter does not
+  // need the allowance the old one did.
+
   test('shouldUndoFileProviderAdd: consent off (either flag) always undoes, regardless of the generation delta', () => {
     const body = bracedBody(
       swift,
-      'private func shouldUndoFileProviderAdd(\n  generationBeforeAdd: Int,\n  generationAfterAdd: Int,\n  consentTrustedMount: Bool,\n  consentEnabled: Bool\n) -> Bool {',
+      'private func shouldUndoFileProviderAdd(\n  purgeGenerationBeforeAdd: Int,\n  purgeGenerationAfterAdd: Int,\n  consentTrustedMount: Bool,\n  consentEnabled: Bool\n) -> Bool {',
     );
     expect(body).toMatch(/guard consentTrustedMount, consentEnabled else \{\s*\n\s*return true\s*\n\s*\}/);
   });
 
-  test('shouldUndoFileProviderAdd: with consent on, undoes only when the generation moved by more than the caller\'s own +1 bump', () => {
+  test('shouldUndoFileProviderAdd: with consent on, undoes only when the purge generation moved at all', () => {
     const body = bracedBody(
       swift,
-      'private func shouldUndoFileProviderAdd(\n  generationBeforeAdd: Int,\n  generationAfterAdd: Int,\n  consentTrustedMount: Bool,\n  consentEnabled: Bool\n) -> Bool {',
+      'private func shouldUndoFileProviderAdd(\n  purgeGenerationBeforeAdd: Int,\n  purgeGenerationAfterAdd: Int,\n  consentTrustedMount: Bool,\n  consentEnabled: Bool\n) -> Bool {',
     );
     const guardIdx = body.indexOf('guard consentTrustedMount, consentEnabled else');
     expect(guardIdx).toBeGreaterThan(-1);
     const after = body.slice(guardIdx);
-    expect(after).toMatch(/return generationAfterAdd != generationBeforeAdd &\+ 1\s*\n\s*\}/);
+    expect(after).toMatch(/return purgeGenerationAfterAdd != purgeGenerationBeforeAdd\s*\n\s*\}/);
   });
 
-  test('the consent check and the "+1 allowance" both survive as separate lines — neither swallows the other', () => {
+  test('the consent check and the generation-delta check both survive as separate lines — neither swallows the other', () => {
     // Guards against a mutation that folds both conditions into one
-    // expression and silently drops one of them (e.g.
-    // `consentTrustedMount && consentEnabled && generationAfterAdd == generationBeforeAdd + 1`
-    // reads as equivalent at a glance but is a different function shape this
-    // test would then no longer be pinning).
+    // expression and silently drops one of them.
     const body = bracedBody(
       swift,
-      'private func shouldUndoFileProviderAdd(\n  generationBeforeAdd: Int,\n  generationAfterAdd: Int,\n  consentTrustedMount: Bool,\n  consentEnabled: Bool\n) -> Bool {',
+      'private func shouldUndoFileProviderAdd(\n  purgeGenerationBeforeAdd: Int,\n  purgeGenerationAfterAdd: Int,\n  consentTrustedMount: Bool,\n  consentEnabled: Bool\n) -> Bool {',
     );
     const lines = body.split('\n').map((l) => l.trim()).filter(Boolean);
     expect(lines).toContain('guard consentTrustedMount, consentEnabled else {');
     expect(lines).toContain('return true');
-    expect(lines).toContain('return generationAfterAdd != generationBeforeAdd &+ 1');
+    expect(lines).toContain('return purgeGenerationAfterAdd != purgeGenerationBeforeAdd');
   });
 
-  test('registerMountedFileProviderDomain captures the generation BEFORE the add, not after', () => {
+  test('registerMountedFileProviderDomainLocked captures the PURGE generation BEFORE the add, not after', () => {
     const body = bracedBody(
       swift,
-      'private func registerMountedFileProviderDomain(\n  defaults: UserDefaults?,\n  forceReset: Bool = false\n) async throws -> [String: Any] {',
+      'private func registerMountedFileProviderDomainLocked(\n  defaults: UserDefaults?,\n  forceReset: Bool = false\n) async throws -> [String: Any] {',
     );
-    const captureIdx = body.indexOf('let generationBeforeAdd = currentFileProviderGeneration()');
+    const captureIdx = body.indexOf('let purgeGenerationBeforeAdd = currentFileProviderPurgeGeneration()');
     const addIdx = body.indexOf('try await addFileProviderDomain(domain)');
-    const bumpIdx = body.indexOf('let generationAfterAdd = bumpFileProviderGeneration()');
+    const bumpIdx = body.indexOf('bumpFileProviderGeneration()');
+    const afterCaptureIdx = body.indexOf('let purgeGenerationAfterAdd = currentFileProviderPurgeGeneration()');
     expect(captureIdx).toBeGreaterThan(-1);
     expect(addIdx).toBeGreaterThan(-1);
     expect(bumpIdx).toBeGreaterThan(-1);
+    expect(afterCaptureIdx).toBeGreaterThan(-1);
     expect(captureIdx).toBeLessThan(addIdx);
     expect(addIdx).toBeLessThan(bumpIdx);
+    expect(bumpIdx).toBeLessThan(afterCaptureIdx);
   });
 
-  test('the undo branch traces a distinct event, calls the SAME bounded removal helper the purge uses, and reports fresh status instead of success', () => {
+  test('the undo branch traces a distinct event, calls the off-cooperative-pool removal wrapper, and reports fresh status instead of success', () => {
     const body = bracedBody(
       swift,
-      'private func registerMountedFileProviderDomain(\n  defaults: UserDefaults?,\n  forceReset: Bool = false\n) async throws -> [String: Any] {',
+      'private func registerMountedFileProviderDomainLocked(\n  defaults: UserDefaults?,\n  forceReset: Bool = false\n) async throws -> [String: Any] {',
     );
     const callIdx = body.indexOf('if shouldUndoFileProviderAdd(');
     expect(callIdx).toBeGreaterThan(-1);
-    const after = body.slice(callIdx, callIdx + 500);
-    expect(after).toMatch(/generationBeforeAdd: generationBeforeAdd,\s*\n\s*generationAfterAdd: generationAfterAdd,\s*\n\s*consentTrustedMount: defaults\?\.bool\(forKey: fileProviderTrustedMountKey\) \?\? false,\s*\n\s*consentEnabled: sharedBoolDefaultTrue\(defaults, key: fileProviderEnabledKey\)\s*\n\s*\) \{/);
+    const after = body.slice(callIdx, callIdx + 900);
+    expect(after).toMatch(/purgeGenerationBeforeAdd: purgeGenerationBeforeAdd,\s*\n\s*purgeGenerationAfterAdd: purgeGenerationAfterAdd,\s*\n\s*consentTrustedMount: defaults\?\.bool\(forKey: fileProviderTrustedMountKey\) \?\? false,\s*\n\s*consentEnabled: sharedBoolDefaultTrue\(defaults, key: fileProviderEnabledKey\)\s*\n\s*\) \{/);
     expect(after).toMatch(/RuntimeTrace\.event\("storage\.purge\.file_provider_domain_add_undone", \[:\]\)/);
-    expect(after).toMatch(/_ = removeFileProviderDomainIfRegistered\(\)/);
+    // Task 1593 round 10 (reviewer F-a) — no longer the direct, blocking
+    // synchronous call; see the "reviewer F-a" describe block below for the
+    // off-cooperative-pool wrapper this now goes through.
+    expect(after).toMatch(/_ = await removeFileProviderDomainIfRegisteredOffCooperativePool\(\)/);
+    expect(after).not.toMatch(/_ = removeFileProviderDomainIfRegistered\(\)/);
     expect(after).toMatch(/return await currentFileProviderDomainStatus\(\)/);
   });
 
@@ -999,10 +1036,297 @@ describe('round 9 (P1, Codex thread PRRT_kwDOSLX6T86mgrDZ): validate-and-undo re
     // real recheck instead of trusting a stale snapshot.
     const body = bracedBody(
       swift,
-      'private func registerMountedFileProviderDomain(\n  defaults: UserDefaults?,\n  forceReset: Bool = false\n) async throws -> [String: Any] {',
+      'private func registerMountedFileProviderDomainLocked(\n  defaults: UserDefaults?,\n  forceReset: Bool = false\n) async throws -> [String: Any] {',
     );
     const occurrences = (body.match(/defaults\?\.bool\(forKey: fileProviderTrustedMountKey\)/g) ?? []).length;
     // Once in the pre-add guard, once in the post-add undo check.
     expect(occurrences).toBe(2);
+  });
+});
+
+// Task 1593 round 10 — PR #144's 3 remaining unresolved Codex threads
+// (Codex thread ids in each describe block name) plus the lead's own 2
+// reviewer follow-ups (F-a, F-b). Same structural-source-scan convention as
+// every describe block above: no macOS-runnable Swift unit harness exists
+// in this repo.
+
+describe('round 10 (Codex thread PRRT_kwDOSLX6T86mhDqK, P1): every extension write path captures its epoch BEFORE Task.detached spawns', () => {
+  const swift = readFileSync(FILE_PROVIDER_EXTENSION_SWIFT_PATH, 'utf8');
+
+  test('createItem captures the epoch before Task.detached, not inside it', () => {
+    const body = bracedBody(swift, 'func createItem(');
+    const epochIdx = body.indexOf('let epochAtStart = CacheManager.shared.currentPurgeEpoch()');
+    const taskIdx = body.indexOf('let task = Task.detached {');
+    expect(epochIdx).toBeGreaterThan(-1);
+    expect(taskIdx).toBeGreaterThan(-1);
+    expect(epochIdx).toBeLessThan(taskIdx);
+    // Exactly one capture — not duplicated inside the task body too.
+    expect((body.match(/CacheManager\.shared\.currentPurgeEpoch\(\)/g) ?? []).length).toBe(1);
+  });
+
+  test('modifyItem captures the epoch before Task.detached AND before the cached-item guard read', () => {
+    const body = bracedBody(swift, 'func modifyItem(');
+    const epochIdx = body.indexOf('let epochAtStart = CacheManager.shared.currentPurgeEpoch()');
+    const cachedReadIdx = body.indexOf('guard var cached = CacheManager.shared.item(id: item.itemIdentifier.rawValue)');
+    const taskIdx = body.indexOf('let task = Task.detached {');
+    expect(epochIdx).toBeGreaterThan(-1);
+    expect(cachedReadIdx).toBeGreaterThan(-1);
+    expect(taskIdx).toBeGreaterThan(-1);
+    // The fix: epoch capture is no longer downstream of (or inside) the
+    // task that reads/restores `cached` — it precedes even the read of
+    // `cached` itself, so a purge landing right after that read cannot be
+    // missed by a LATER epoch capture.
+    expect(epochIdx).toBeLessThan(cachedReadIdx);
+    expect(cachedReadIdx).toBeLessThan(taskIdx);
+    expect((body.match(/CacheManager\.shared\.currentPurgeEpoch\(\)/g) ?? []).length).toBe(1);
+  });
+
+  test('deleteItem captures the epoch before Task.detached, not inside it', () => {
+    const body = bracedBody(swift, 'func deleteItem(');
+    const epochIdx = body.indexOf('let epochAtStart = CacheManager.shared.currentPurgeEpoch()');
+    const taskIdx = body.indexOf('let task = Task.detached {');
+    expect(epochIdx).toBeGreaterThan(-1);
+    expect(taskIdx).toBeGreaterThan(-1);
+    expect(epochIdx).toBeLessThan(taskIdx);
+    expect((body.match(/CacheManager\.shared\.currentPurgeEpoch\(\)/g) ?? []).length).toBe(1);
+  });
+});
+
+describe('round 10 (Codex thread PRRT_kwDOSLX6T86mhUiZ, P2): the File Provider cache DB\'s SQLite sidecars are also hardened', () => {
+  const registrySwift = readFileSync(REGISTRY_SWIFT_PATH, 'utf8');
+  const moduleSwift = readFileSync(MODULE_SWIFT_PATH, 'utf8');
+  const cacheManagerSwift = readFileSync(CACHE_MANAGER_SWIFT_PATH, 'utf8');
+
+  test('protectSQLiteSidecars exists and hardens -journal, -wal and -shm siblings', () => {
+    const body = bracedBody(registrySwift, 'public static func protectSQLiteSidecars(_ databaseUrl: URL) -> [String: Bool] {');
+    expect(body).toMatch(/"-journal"/);
+    expect(body).toMatch(/"-wal"/);
+    expect(body).toMatch(/"-shm"/);
+    expect(body).toMatch(/protect\(sibling\)/);
+  });
+
+  test('hardenAll() calls protectSQLiteSidecars for resettableInPlace entries', () => {
+    const body = bracedBody(registrySwift, 'public static func hardenAll() -> [String: Bool] {');
+    const protectIdx = body.indexOf('results[entry.url.lastPathComponent] = protect(entry.url)');
+    const resettableIdx = body.indexOf('if entry.resettableInPlace {');
+    const sidecarIdx = body.indexOf('protectSQLiteSidecars(entry.url)');
+    expect(protectIdx).toBeGreaterThan(-1);
+    expect(resettableIdx).toBeGreaterThan(-1);
+    expect(sidecarIdx).toBeGreaterThan(-1);
+    expect(protectIdx).toBeLessThan(resettableIdx);
+    expect(resettableIdx).toBeLessThan(sidecarIdx);
+  });
+
+  test('ensureFileProviderCacheDatabase hardens the sidecars right after protecting the main file', () => {
+    const body = bracedBody(moduleSwift, 'private func ensureFileProviderCacheDatabase() -> Bool {');
+    const protectIdx = body.indexOf('PlaintextStorageProtection.protect(url)');
+    const sidecarIdx = body.indexOf('PlaintextStorageProtection.protectSQLiteSidecars(url)');
+    const schemaIdx = body.indexOf('for statement in fileProviderCacheSchemaStatements');
+    expect(protectIdx).toBeGreaterThan(-1);
+    expect(sidecarIdx).toBeGreaterThan(-1);
+    expect(schemaIdx).toBeGreaterThan(-1);
+    expect(protectIdx).toBeLessThan(sidecarIdx);
+    expect(sidecarIdx).toBeLessThan(schemaIdx);
+  });
+
+  test('syncFileProviderCache hardens the sidecars right after protecting the main file', () => {
+    const body = bracedBody(
+      moduleSwift,
+      'AsyncFunction("syncFileProviderCache") { (entries: [[String: Any]], prune: Bool?, pruneParents: [Any]?) -> Int in',
+    );
+    const protectIdx = body.indexOf('PlaintextStorageProtection.protect(URL(fileURLWithPath: dbPath))');
+    const sidecarIdx = body.indexOf('PlaintextStorageProtection.protectSQLiteSidecars(URL(fileURLWithPath: dbPath))');
+    const createSqlIdx = body.indexOf('CREATE TABLE IF NOT EXISTS file_cache');
+    expect(protectIdx).toBeGreaterThan(-1);
+    expect(sidecarIdx).toBeGreaterThan(-1);
+    expect(createSqlIdx).toBeGreaterThan(-1);
+    expect(protectIdx).toBeLessThan(sidecarIdx);
+    expect(sidecarIdx).toBeLessThan(createSqlIdx);
+  });
+
+  test('the File Provider extension\'s CacheManager.init hardens the sidecars right after protecting the main file', () => {
+    const initBody = bracedBody(cacheManagerSwift, 'private init() {');
+    const protectIdx = initBody.indexOf('PlaintextStorageProtection.protect(URL(fileURLWithPath: path))');
+    const sidecarIdx = initBody.indexOf('PlaintextStorageProtection.protectSQLiteSidecars(URL(fileURLWithPath: path))');
+    const secureDeleteIdx = initBody.indexOf('execute("PRAGMA secure_delete = ON")');
+    expect(protectIdx).toBeGreaterThan(-1);
+    expect(sidecarIdx).toBeGreaterThan(-1);
+    expect(secureDeleteIdx).toBeGreaterThan(-1);
+    expect(protectIdx).toBeLessThan(sidecarIdx);
+    expect(sidecarIdx).toBeLessThan(secureDeleteIdx);
+  });
+});
+
+describe('round 10 (reviewer F-b): CacheManager checks COMMIT results and never lets a failed epoch read "match"', () => {
+  const cacheManagerSwift = readFileSync(CACHE_MANAGER_SWIFT_PATH, 'utf8');
+
+  test('_currentPurgeEpoch returns a dedicated sentinel on a failed read, not 0', () => {
+    const body = bracedBody(cacheManagerSwift, 'private func _currentPurgeEpoch() -> Int {');
+    expect(body).toMatch(/return Self\.epochQueryFailed/);
+    expect(body).not.toMatch(/return 0\b/);
+  });
+
+  test('the sentinel is a dedicated static constant, not a magic number repeated at call sites', () => {
+    expect(cacheManagerSwift).toMatch(/private static let epochQueryFailed = Int\.min/);
+  });
+
+  test('currentEpochMatches refuses whenever the current read is the sentinel, even if expectedEpoch also happens to equal it', () => {
+    const body = bracedBody(cacheManagerSwift, 'private func currentEpochMatches(_ expectedEpoch: Int) -> Bool {');
+    // Must check the sentinel explicitly and independently of the equality
+    // — `epoch == expectedEpoch` alone would accidentally return `true` if
+    // a caller's own failed capture produced the same sentinel value.
+    expect(body).toMatch(/epoch != Self\.epochQueryFailed && epoch == expectedEpoch/);
+  });
+
+  test('all three epoch-gated writers use currentEpochMatches, not a bare equality check', () => {
+    for (const signature of [
+      'func replaceChildren(parent: String?, with items: [CachedItem], expectedEpoch: Int) -> Bool {',
+      'func upsert(_ item: CachedItem, expectedEpoch: Int) -> Bool {',
+      'func delete(id: String, expectedEpoch: Int) -> Bool {',
+    ]) {
+      const body = bracedBody(cacheManagerSwift, signature);
+      expect(body).toMatch(/guard currentEpochMatches\(expectedEpoch\) else \{/);
+      expect(body).not.toMatch(/_currentPurgeEpoch\(\) == expectedEpoch/);
+    }
+  });
+
+  test('commitOrRollback exists and rolls back a failed COMMIT instead of leaving the transaction open', () => {
+    const body = bracedBody(cacheManagerSwift, 'private func commitOrRollback() -> Bool {');
+    expect(body).toMatch(/if execute\("COMMIT"\) \{\s*\n\s*return true\s*\n\s*\}/);
+    expect(body).toMatch(/execute\("ROLLBACK"\)/);
+    expect(body).toMatch(/return false/);
+  });
+
+  test('all three epoch-gated writers commit through commitOrRollback, not a bare execute("COMMIT")', () => {
+    for (const signature of [
+      'func replaceChildren(parent: String?, with items: [CachedItem], expectedEpoch: Int) -> Bool {',
+      'func upsert(_ item: CachedItem, expectedEpoch: Int) -> Bool {',
+      'func delete(id: String, expectedEpoch: Int) -> Bool {',
+    ]) {
+      const body = bracedBody(cacheManagerSwift, signature);
+      expect(body).toMatch(/return commitOrRollback\(\)/);
+      expect(body).not.toMatch(/execute\("COMMIT"\)\s*\n\s*return true/);
+    }
+  });
+
+  test('execute() now reports whether the statement actually succeeded', () => {
+    const body = bracedBody(cacheManagerSwift, 'private func execute(_ sql: String) -> Bool {');
+    expect(body).toMatch(/return sqlite3_exec\(db, sql, nil, nil, nil\) == SQLITE_OK/);
+    expect(cacheManagerSwift).toMatch(/@discardableResult\s*\n\s*private func execute\(_ sql: String\) -> Bool \{/);
+  });
+});
+
+describe('round 10 (reviewer F-a): overlapping registrations no longer undo each other, and the undo removal moves off the cooperative pool', () => {
+  const swift = readFileSync(MODULE_SWIFT_PATH, 'utf8');
+
+  test('a SEPARATE purge-only generation counter exists, distinct from the shared add/purge one', () => {
+    expect(swift).toMatch(/private var _fileProviderPurgeGeneration: Int = 0/);
+    const bumpBody = bracedBody(swift, 'private func bumpFileProviderPurgeGeneration() -> Int {');
+    expect(bumpBody).toMatch(/_fileProviderPurgeGeneration &\+= 1/);
+    const currentBody = bracedBody(swift, 'private func currentFileProviderPurgeGeneration() -> Int {');
+    expect(currentBody).toMatch(/return _fileProviderPurgeGeneration/);
+  });
+
+  test('resetFileProviderShowInFilesConsent — the ONLY purge event — bumps the purge-only counter (in addition to the pre-existing shared one)', () => {
+    const body = bracedBody(swift, 'private func resetFileProviderShowInFilesConsent(defaults: UserDefaults?) {');
+    const sharedBumpIdx = body.indexOf('bumpFileProviderGeneration()');
+    const purgeBumpIdx = body.indexOf('bumpFileProviderPurgeGeneration()');
+    expect(sharedBumpIdx).toBeGreaterThan(-1);
+    expect(purgeBumpIdx).toBeGreaterThan(-1);
+  });
+
+  test('registerMountedFileProviderDomainLocked never bumps the purge-only counter itself — only reads it', () => {
+    // The whole point: a successful add must not move this counter, or
+    // concurrent registrations would false-positive each other again.
+    const body = bracedBody(
+      swift,
+      'private func registerMountedFileProviderDomainLocked(\n  defaults: UserDefaults?,\n  forceReset: Bool = false\n) async throws -> [String: Any] {',
+    );
+    expect(body).not.toMatch(/bumpFileProviderPurgeGeneration\(\)/);
+    expect(body).toMatch(/currentFileProviderPurgeGeneration\(\)/);
+  });
+
+  test('a FIFO async gate (actor) exists to serialize registerMountedFileProviderDomainLocked calls', () => {
+    expect(swift).toMatch(/private actor FileProviderRegistrationGate \{/);
+    const body = bracedBody(swift, 'private actor FileProviderRegistrationGate {');
+    expect(body).toMatch(/func acquire\(\) async \{/);
+    expect(body).toMatch(/func release\(\) \{/);
+    expect(body).toMatch(/waiters\.append\(continuation\)/);
+    expect(body).toMatch(/waiters\.removeFirst\(\)/);
+    // Not a DispatchSemaphore — this gate is held across `async` Task
+    // contexts (the cooperative pool), where a semaphore wait would risk
+    // starving it (see round 6 new-1's UNRELATED but analogous finding).
+    expect(body).not.toMatch(/DispatchSemaphore/);
+  });
+
+  test('registerMountedFileProviderDomain (the public entry point) acquires the gate, runs the locked impl, and releases on BOTH success and throw', () => {
+    const body = bracedBody(
+      swift,
+      'private func registerMountedFileProviderDomain(\n  defaults: UserDefaults?,\n  forceReset: Bool = false\n) async throws -> [String: Any] {',
+    );
+    expect(body).toMatch(/await fileProviderRegistrationGate\.acquire\(\)/);
+    expect(body).toMatch(/try await registerMountedFileProviderDomainLocked\(defaults: defaults, forceReset: forceReset\)/);
+    // Released in both the success path and the catch path — not just one.
+    const releaseCount = (body.match(/await fileProviderRegistrationGate\.release\(\)/g) ?? []).length;
+    expect(releaseCount).toBe(2);
+    expect(body).toMatch(/\} catch \{\s*\n\s*await fileProviderRegistrationGate\.release\(\)\s*\n\s*throw error\s*\n\s*\}/);
+  });
+
+  test('every real caller still calls registerMountedFileProviderDomain (the gate wrapper) by its original name — no caller needed to change', () => {
+    const callCount = (swift.match(/try await registerMountedFileProviderDomain\(defaults: defaults(?:, forceReset: true)?\)/g) ?? []).length;
+    expect(callCount).toBeGreaterThanOrEqual(3);
+  });
+
+  test('removeFileProviderDomainIfRegisteredOffCooperativePool exists and moves the semaphore-based call off-thread via a normal GCD queue', () => {
+    const body = bracedBody(
+      swift,
+      'private func removeFileProviderDomainIfRegisteredOffCooperativePool() async -> Bool {',
+    );
+    expect(body).toMatch(/DispatchQueue\.global\(qos: \.userInitiated\)\.async \{/);
+    expect(body).toMatch(/continuation\.resume\(returning: removeFileProviderDomainIfRegistered\(\)\)/);
+  });
+});
+
+describe('round 10 (Codex thread PRRT_kwDOSLX6T86mhUiV, P2): the stale-removal restore-add validates and undoes itself too', () => {
+  const swift = readFileSync(MODULE_SWIFT_PATH, 'utf8');
+  const removeBody = bracedBody(swift, 'private func removeFileProviderDomainIfRegistered() -> Bool {');
+
+  test('the restore .add captures the purge generation BEFORE calling .add, using the purge-only counter', () => {
+    const staleIdx = removeBody.indexOf('currentFileProviderGeneration() != generationBeforeRemove');
+    expect(staleIdx).toBeGreaterThan(-1);
+    const after = removeBody.slice(staleIdx, staleIdx + 6000);
+    const captureIdx = after.indexOf('let purgeGenerationBeforeRestoreAdd = currentFileProviderPurgeGeneration()');
+    const addIdx = after.indexOf('NSFileProviderManager.add(domain) { addError in');
+    expect(captureIdx).toBeGreaterThan(-1);
+    expect(addIdx).toBeGreaterThan(-1);
+    expect(captureIdx).toBeLessThan(addIdx);
+  });
+
+  test('on a successful restore add, it re-validates via shouldUndoFileProviderAdd before declaring victory', () => {
+    const addIdx = removeBody.indexOf('NSFileProviderManager.add(domain) { addError in');
+    expect(addIdx).toBeGreaterThan(-1);
+    const after = removeBody.slice(addIdx, addIdx + 1400);
+    expect(after).toMatch(/if let addError \{[\s\S]*?return\s*\n\s*\}/);
+    expect(after).toMatch(/let purgeGenerationAfterRestoreAdd = currentFileProviderPurgeGeneration\(\)/);
+    expect(after).toMatch(/if shouldUndoFileProviderAdd\(\s*\n\s*purgeGenerationBeforeAdd: purgeGenerationBeforeRestoreAdd,\s*\n\s*purgeGenerationAfterAdd: purgeGenerationAfterRestoreAdd,/);
+  });
+
+  test('a failed add returns before the validate-and-undo check runs at all (no false undo attempt on a failure)', () => {
+    const addIdx = removeBody.indexOf('NSFileProviderManager.add(domain) { addError in');
+    const after = removeBody.slice(addIdx, addIdx + 1400);
+    const errorIdx = after.indexOf('if let addError {');
+    const returnIdx = after.indexOf('return', errorIdx);
+    const validateIdx = after.indexOf('shouldUndoFileProviderAdd(');
+    expect(errorIdx).toBeGreaterThan(-1);
+    expect(returnIdx).toBeGreaterThan(errorIdx);
+    expect(validateIdx).toBeGreaterThan(returnIdx);
+  });
+
+  test('undoing the restore removes the domain again, fire-and-forget, and traces a distinct event', () => {
+    const addIdx = removeBody.indexOf('NSFileProviderManager.add(domain) { addError in');
+    const after = removeBody.slice(addIdx, addIdx + 1800);
+    expect(after).toMatch(/RuntimeTrace\.event\("storage\.purge\.file_provider_domain_stale_restore_undone", \[:\]\)/);
+    expect(after).toMatch(/NSFileProviderManager\.remove\(domain, mode: \.removeAll\) \{ _, undoError in/);
+    expect(after).toMatch(/storage\.purge\.file_provider_domain_stale_restore_undo_failed/);
   });
 });

@@ -490,45 +490,150 @@ private func currentFileProviderGeneration() -> Int {
   return _fileProviderGeneration
 }
 
+/// Task 1593 round 10 (reviewer F-a) — SEPARATE from `_fileProviderGeneration`
+/// above. That counter is bumped by BOTH a successful domain add
+/// (`registerMountedFileProviderDomainLocked`) AND a purge's consent reset
+/// (`resetFileProviderShowInFilesConsent`), which is fine for
+/// `removeFileProviderDomainIfRegistered`'s F2/R1 stale-remove branch (it
+/// independently rechecks consent before ever acting on a bump), but was
+/// WRONG for `shouldUndoFileProviderAdd`'s generation-delta check below: two
+/// overlapping, both-legitimate calls to `registerMountedFileProviderDomainLocked`
+/// each bump the SHARED counter once for their own add, so the second one to
+/// finish observes a jump of +2 (its own bump plus the other call's), reads
+/// that as "a purge happened while I was adding", and undoes its OWN valid
+/// registration — confirmed as a real bug, not a theoretical one (see the
+/// task file's round 10 Notes for the concrete before/after trace). This
+/// counter is bumped ONLY by an actual purge's consent reset — never by a
+/// registration — so a delta here can only ever mean a purge ran, regardless
+/// of how many concurrent registrations are also in flight.
+private let fileProviderPurgeGenerationLock = NSLock()
+private var _fileProviderPurgeGeneration: Int = 0
+
+@discardableResult
+private func bumpFileProviderPurgeGeneration() -> Int {
+  fileProviderPurgeGenerationLock.lock()
+  defer { fileProviderPurgeGenerationLock.unlock() }
+  _fileProviderPurgeGeneration &+= 1
+  return _fileProviderPurgeGeneration
+}
+
+private func currentFileProviderPurgeGeneration() -> Int {
+  fileProviderPurgeGenerationLock.lock()
+  defer { fileProviderPurgeGenerationLock.unlock() }
+  return _fileProviderPurgeGeneration
+}
+
 /// Task 1593 round 9 (Codex thread PRRT_kwDOSLX6T86mgrDZ) — pure decision
-/// function for `registerMountedFileProviderDomain`'s validate-and-undo step
-/// (see that function's doc comment above its call site for the full race).
-/// Extracted as a free function, with no NSFileProviderManager/UserDefaults
-/// access of its own, specifically so a test can drive every branch
-/// directly without touching the File Provider APIs — this repo has no
-/// macOS-runnable Swift unit harness (rounds 4-8's Notes), so a pure,
-/// side-effect-free function is the most directly testable shape available;
-/// the structural source-scan tests in `file-provider-purge-hygiene.test.ts`
-/// assert this function's body, not just its call site, so a future edit
-/// that weakens either condition fails the test even if the call site is
-/// untouched.
+/// function for `registerMountedFileProviderDomainLocked`'s validate-and-undo
+/// step (see that function's doc comment above its call site for the full
+/// race), reused by round 10 for the stale-removal restore-add's own
+/// validate-and-undo (`removeFileProviderDomainIfRegistered`'s completion,
+/// Codex thread PRRT_kwDOSLX6T86mhUiV). Extracted as a free function, with
+/// no NSFileProviderManager/UserDefaults access of its own, specifically so
+/// a test can drive every branch directly without touching the File
+/// Provider APIs — this repo has no macOS-runnable Swift unit harness
+/// (rounds 4-8's Notes), so a pure, side-effect-free function is the most
+/// directly testable shape available; the structural source-scan tests in
+/// `file-provider-purge-hygiene.test.ts` assert this function's body, not
+/// just its call sites, so a future edit that weakens either condition
+/// fails the test even if no call site is touched.
 ///
-/// `generationBeforeAdd`/`generationAfterAdd` bracket the just-completed
-/// `addFileProviderDomain` call: the caller bumps the generation counter
-/// exactly once, unconditionally, immediately after its own successful add
-/// (mirroring round 7 F2's contract that every successful add bumps it), so
-/// `generationAfterAdd` should equal `generationBeforeAdd + 1` in the
-/// non-racing case. A LARGER jump means something else — concretely, a
-/// concurrent purge's `resetFileProviderShowInFilesConsent` (round 8 R1,
-/// the only other call site of `bumpFileProviderGeneration`) — also bumped
-/// it inside the same window, i.e. a purge ran between this function's
-/// caller capturing `generationBeforeAdd` and validating here. The direct
-/// consent-flag recheck is checked FIRST and independently, because a
-/// forced sign-out's OTHER path (`clearFileProviderSharedState`, the
-/// ordinary in-app `removeFileProviderAccess()` route) sets both flags
-/// false directly without going through `resetFileProviderShowInFilesConsent`
-/// and so never bumps the generation at all — the generation check alone
-/// would miss that race; the two checks are complementary, not redundant.
+/// `purgeGenerationBeforeAdd`/`purgeGenerationAfterAdd` bracket the
+/// just-completed `.add` call, read from the PURGE-only generation counter
+/// above (round 10) — NOT the shared add/purge counter round 9 originally
+/// used, which false-positived on two concurrent, both-legitimate adds (see
+/// that counter's doc comment). Because only an actual purge's consent
+/// reset ever bumps this counter, ANY delta between the two reads means a
+/// purge ran during the caller's `.add` — no "+1 allowance" arithmetic is
+/// needed, unlike the old shared counter, since concurrent registrations no
+/// longer move this counter at all. The direct consent-flag recheck is
+/// still checked FIRST and independently, because a forced sign-out's OTHER
+/// path (`clearFileProviderSharedState`, the ordinary in-app
+/// `removeFileProviderAccess()` route) sets both flags false directly
+/// without going through `resetFileProviderShowInFilesConsent` and so never
+/// bumps this counter at all — the generation check alone would miss that
+/// race; the two checks are complementary, not redundant.
 private func shouldUndoFileProviderAdd(
-  generationBeforeAdd: Int,
-  generationAfterAdd: Int,
+  purgeGenerationBeforeAdd: Int,
+  purgeGenerationAfterAdd: Int,
   consentTrustedMount: Bool,
   consentEnabled: Bool
 ) -> Bool {
   guard consentTrustedMount, consentEnabled else {
     return true
   }
-  return generationAfterAdd != generationBeforeAdd &+ 1
+  return purgeGenerationAfterAdd != purgeGenerationBeforeAdd
+}
+
+/// Task 1593 round 10 (reviewer F-a) — async, FIFO mutual-exclusion gate for
+/// `registerMountedFileProviderDomainLocked`. A plain Swift `actor` does NOT
+/// give exclusive access across `await` points by itself (actors are
+/// reentrant by default: a second call to an actor's method can start
+/// running while the first is suspended at an `await` inside it), so simply
+/// marking the registration function `actor`-isolated would not have closed
+/// the overlapping-registrations race above — two overlapping calls could
+/// still both read `getFileProviderDomains()`, both decide `!existed`, and
+/// both call `addFileProviderDomain` before either resumes. This is instead
+/// the standard actor-backed async lock / "serial queue with an async
+/// continuation" shape: the actor's own state mutations (`isBusy`/`waiters`)
+/// never themselves `await`, so each one runs atomically with respect to
+/// the others (that is the one guarantee a Swift actor DOES give — no two
+/// of its methods' non-suspended sections interleave); a caller that finds
+/// the gate busy suspends on a `CheckedContinuation` that `release()`
+/// resumes in FIFO order once the current holder finishes. Deliberately not
+/// a `DispatchSemaphore` here: this gate is acquired/released from `async`
+/// Swift Task contexts (the cooperative thread pool), and blocking one of
+/// those threads on a semaphore risks starving the pool exactly the way
+/// round 6's `new-1` doc comment describes for the UNRELATED Expo serial
+/// queue — the fix there was a bound + moving work off-thread, not a
+/// semaphore on a cooperative-pool thread, and the same reasoning applies
+/// here.
+private actor FileProviderRegistrationGate {
+  private var isBusy = false
+  private var waiters: [CheckedContinuation<Void, Never>] = []
+
+  func acquire() async {
+    if !isBusy {
+      isBusy = true
+      return
+    }
+    await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+      waiters.append(continuation)
+    }
+  }
+
+  func release() {
+    guard !waiters.isEmpty else {
+      isBusy = false
+      return
+    }
+    let next = waiters.removeFirst()
+    next.resume()
+  }
+}
+
+private let fileProviderRegistrationGate = FileProviderRegistrationGate()
+
+/// Task 1593 round 10 (reviewer F-a) — moves `removeFileProviderDomainIfRegistered`'s
+/// blocking `DispatchSemaphore.wait` calls (up to 5s + 5s = 10s worst case,
+/// round 6 `new-1`) off whatever thread calls this wrapper. The ONLY caller
+/// that matters here is `registerMountedFileProviderDomainLocked`'s
+/// validate-and-undo branch, an `async` Swift Task running on the
+/// cooperative thread pool — calling the semaphore-based function directly
+/// from there could block one of that pool's small, fixed number of threads
+/// for up to 10 real seconds, which Swift's cooperative-pool design
+/// explicitly assumes never happens (it can starve unrelated `async` work
+/// system-wide for the duration). `purgePlaintextStorage`'s own call to the
+/// synchronous function is NOT changed — it already runs on Expo's ordinary
+/// serial `AsyncFunctionDefinition` queue, a normal GCD queue, not the
+/// cooperative pool, so it has nothing to move off of.
+@available(iOS 16.0, *)
+private func removeFileProviderDomainIfRegisteredOffCooperativePool() async -> Bool {
+  await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+    DispatchQueue.global(qos: .userInitiated).async {
+      continuation.resume(returning: removeFileProviderDomainIfRegistered())
+    }
+  }
 }
 
 @available(iOS 16.0, *)
@@ -733,11 +838,49 @@ private func removeFileProviderDomainIfRegistered() -> Bool {
       let consentDefaults = sharedDefaults()
       if (consentDefaults?.bool(forKey: fileProviderTrustedMountKey) ?? false),
          sharedBoolDefaultTrue(consentDefaults, key: fileProviderEnabledKey) {
+        // Task 1593 round 10 (Codex thread PRRT_kwDOSLX6T86mhUiV, P2) —
+        // this restore `.add` used to report success (or a plain add
+        // failure) with no re-check of its own: a SUBSEQUENT sign-out can
+        // reset consent after the guard just above ran but before this
+        // `.add` call's completion lands, and because the stale removal
+        // above already made the domain absent, that later purge observes
+        // nothing to remove and finishes believing it purged cleanly —
+        // then this callback re-registers the domain for a now-signed-out
+        // user. Captured BEFORE the `.add`, using the SAME purge-only
+        // generation counter and the SAME `shouldUndoFileProviderAdd`
+        // decision `registerMountedFileProviderDomainLocked` uses for its
+        // own add — a purge landing in this exact window bumps that
+        // counter (or resets consent directly), and either one is caught
+        // here just as it would be there.
+        let purgeGenerationBeforeRestoreAdd = currentFileProviderPurgeGeneration()
         NSFileProviderManager.add(domain) { addError in
           if let addError {
             RuntimeTrace.event("storage.purge.file_provider_domain_restore_failed", [
               "error": addError.localizedDescription,
             ])
+            return
+          }
+          let recheckDefaults = sharedDefaults()
+          let purgeGenerationAfterRestoreAdd = currentFileProviderPurgeGeneration()
+          if shouldUndoFileProviderAdd(
+            purgeGenerationBeforeAdd: purgeGenerationBeforeRestoreAdd,
+            purgeGenerationAfterAdd: purgeGenerationAfterRestoreAdd,
+            consentTrustedMount: recheckDefaults?.bool(forKey: fileProviderTrustedMountKey) ?? false,
+            consentEnabled: sharedBoolDefaultTrue(recheckDefaults, key: fileProviderEnabledKey)
+          ) {
+            // Best-effort, fire-and-forget — matching every other
+            // completion handler in this function; a failure here is no
+            // worse than the domain staying mounted until the next
+            // explicit purge or registration call re-derives the correct
+            // state.
+            RuntimeTrace.event("storage.purge.file_provider_domain_stale_restore_undone", [:])
+            NSFileProviderManager.remove(domain, mode: .removeAll) { _, undoError in
+              if let undoError {
+                RuntimeTrace.event("storage.purge.file_provider_domain_stale_restore_undo_failed", [
+                  "error": undoError.localizedDescription,
+                ])
+              }
+            }
           }
         }
       } else {
@@ -871,14 +1014,21 @@ private func resetFileProviderShowInFilesConsent(defaults: UserDefaults?) {
   defaults?.set(false, forKey: fileProviderEnabledKey)
   defaults?.set(false, forKey: fileProviderTrustedMountKey)
   // Task 1593 round 8 (R1) — stamp the generation here too, not only on a
-  // successful ADD (`registerMountedFileProviderDomain`). A consent reset
-  // is exactly the kind of state change a pending stale-`.remove`
+  // successful ADD (`registerMountedFileProviderDomainLocked`). A consent
+  // reset is exactly the kind of state change a pending stale-`.remove`
   // completion (see that function's R1 fix above) must be able to detect
   // as "something changed since I captured generationBeforeRemove" — belt
   // and suspenders alongside that completion's own direct consent-flag
   // recheck: even a future change to this file that weakens the flag
   // recheck still has a generation mismatch blocking the stale re-add.
   bumpFileProviderGeneration()
+  // Task 1593 round 10 (reviewer F-a) — the DEDICATED purge-only counter.
+  // This is the only call site that ever bumps it: see its declaration for
+  // why `registerMountedFileProviderDomainLocked`'s validate-and-undo and
+  // the stale-removal restore-add's validate-and-undo (below) both need a
+  // signal that fires ONLY for an actual purge, never for a concurrent,
+  // equally-legitimate registration.
+  bumpFileProviderPurgeGeneration()
 }
 
 /// Task 1593 round 8 (R2, security re-review of round 7's C1) — replaces
@@ -1016,6 +1166,10 @@ private func ensureFileProviderCacheDatabase() -> Bool {
   // it would otherwise sit backup-eligible, at the default protection
   // class, until the next cold launch re-runs `hardenAll()`.
   PlaintextStorageProtection.protect(url)
+  // Task 1593 round 10 (Codex thread PRRT_kwDOSLX6T86mhUiZ) — see
+  // `protectSQLiteSidecars`'s doc comment: the main file's `protect()`
+  // above says nothing about its `-journal`/`-wal`/`-shm` siblings.
+  PlaintextStorageProtection.protectSQLiteSidecars(url)
 
   for statement in fileProviderCacheSchemaStatements {
     sqlite3_exec(db, statement, nil, nil, nil)
@@ -1187,8 +1341,34 @@ private func currentFileProviderDomainStatus() async -> [String: Any] {
   )
 }
 
+/// Task 1593 round 10 (reviewer F-a) — thin public entry point. All the
+/// actual registration logic lives in `registerMountedFileProviderDomainLocked`
+/// below; this wrapper's only job is to serialize concurrent callers through
+/// `fileProviderRegistrationGate` (see its doc comment for why overlapping,
+/// both-legitimate registrations needed this — the shared generation
+/// counter's false-positive undo, fixed independently above, was a SYMPTOM;
+/// this gate removes the interleaving itself). Every real call site
+/// (`registerFileProviderDomain`, `resetFileProviderDomain`,
+/// `mountFileProviderAccess`) already calls this exact name, so no caller
+/// needed to change.
 @available(iOS 16.0, *)
 private func registerMountedFileProviderDomain(
+  defaults: UserDefaults?,
+  forceReset: Bool = false
+) async throws -> [String: Any] {
+  await fileProviderRegistrationGate.acquire()
+  do {
+    let result = try await registerMountedFileProviderDomainLocked(defaults: defaults, forceReset: forceReset)
+    await fileProviderRegistrationGate.release()
+    return result
+  } catch {
+    await fileProviderRegistrationGate.release()
+    throw error
+  }
+}
+
+@available(iOS 16.0, *)
+private func registerMountedFileProviderDomainLocked(
   defaults: UserDefaults?,
   forceReset: Bool = false
 ) async throws -> [String: Any] {
@@ -1238,42 +1418,60 @@ private func registerMountedFileProviderDomain(
     // mounts the domain for a now-signed-out user.
     //
     // LEAD DECISION (task 1593 Notes, round 9): do not build a blocking
-    // wait here. `registerMountedFileProviderDomain` is a Swift Task
+    // wait here. `registerMountedFileProviderDomainLocked` is a Swift Task
     // (`ConcurrentFunctionDefinition`); the purge's consent-reset-then-
     // remove sequence deliberately stays on Expo's separate shared serial
     // `AsyncFunctionDefinition` queue (see `removeFileProviderDomainIfRegistered`'s
     // P2-4 doc comment) so that neither native call can ever hang behind a
     // completion handler that never fires (round 6, new-1) — coordinating
     // the two with a shared lock would reintroduce exactly that hang risk.
-    // Instead: validate-and-undo. Capture the generation counter
+    // Instead: validate-and-undo. Capture the PURGE-only generation counter
     // immediately before the add (bracketing exactly the window the race
     // needs), let the add complete, then re-check BOTH the live consent
-    // flags AND the generation counter. If consent is off, or the
-    // generation moved by more than our own bump, a purge landed inside
-    // that window — undo immediately via the same bounded, traced removal
-    // helper the purge itself uses (`removeFileProviderDomainIfRegistered`),
-    // and report the FRESH domain status, never the success this add
-    // technically achieved. The window where the domain actually exists in
-    // that case is bounded by one `.add` completion (typically low
-    // milliseconds — the same call round 6 measured to justify its 5s
-    // removal timeout), not by any wait this function introduces, and by
-    // the time we observe it the cache DB is already empty and the session
-    // token already cleared for the purge that raced us (rounds 4-7).
-    let generationBeforeAdd = currentFileProviderGeneration()
+    // flags AND that counter. If consent is off, or a purge's
+    // `resetFileProviderShowInFilesConsent` ran inside that window, undo
+    // immediately — via `removeFileProviderDomainIfRegisteredOffCooperativePool`
+    // (round 10, reviewer F-a: this call runs on the cooperative thread
+    // pool, so the underlying semaphore-based removal must not block one of
+    // its threads directly — see that wrapper's doc comment) — and report
+    // the FRESH domain status, never the success this add technically
+    // achieved.
+    //
+    // Task 1593 round 10 (reviewer F-a) — this used to read/write the SAME
+    // generation counter `registerMountedFileProviderDomainLocked`'s own
+    // successful adds bump (`bumpFileProviderGeneration`/
+    // `currentFileProviderGeneration`), which meant two overlapping,
+    // both-legitimate calls to THIS function each bumped it once for their
+    // own add — the second call to finish saw a jump bigger than its own
+    // +1, read that as "a purge raced me", and undid its own valid
+    // registration. Reading the dedicated PURGE-only counter instead (see
+    // its declaration) means concurrent registrations never move this
+    // check's inputs at all — only an actual purge does, in either
+    // observable form (the flags, or the counter). The `registerMounted
+    // FileProviderDomain` wrapper above also now serializes calls to this
+    // function entirely, which independently prevents two registrations
+    // from interleaving in the first place; this fix stands on its own even
+    // without that gate, since a purge running concurrently with a single,
+    // un-overlapped registration is a real, still-possible race the gate
+    // does nothing about.
+    let purgeGenerationBeforeAdd = currentFileProviderPurgeGeneration()
     try await addFileProviderDomain(domain)
-    // Task 1593 round 7 (F2) — see `bumpFileProviderGeneration`'s doc
-    // comment: this add is the event a stale, since-completed `.remove`
-    // (from a purge whose 5s bounded wait already gave up) must not be
-    // allowed to silently undo.
-    let generationAfterAdd = bumpFileProviderGeneration()
+    // Task 1593 round 7 (F2) — unchanged: still bumped on every successful
+    // add for `removeFileProviderDomainIfRegistered`'s OWN stale-remove
+    // detection (a completely different question — "did a NEW sign-in
+    // re-add the domain while I was removing it?" — answered correctly by
+    // the shared counter moving at all, with no false-positive risk there
+    // because that branch independently rechecks consent before acting).
+    bumpFileProviderGeneration()
+    let purgeGenerationAfterAdd = currentFileProviderPurgeGeneration()
     if shouldUndoFileProviderAdd(
-      generationBeforeAdd: generationBeforeAdd,
-      generationAfterAdd: generationAfterAdd,
+      purgeGenerationBeforeAdd: purgeGenerationBeforeAdd,
+      purgeGenerationAfterAdd: purgeGenerationAfterAdd,
       consentTrustedMount: defaults?.bool(forKey: fileProviderTrustedMountKey) ?? false,
       consentEnabled: sharedBoolDefaultTrue(defaults, key: fileProviderEnabledKey)
     ) {
       RuntimeTrace.event("storage.purge.file_provider_domain_add_undone", [:])
-      _ = removeFileProviderDomainIfRegistered()
+      _ = await removeFileProviderDomainIfRegisteredOffCooperativePool()
       return await currentFileProviderDomainStatus()
     }
   }
@@ -2566,6 +2764,10 @@ public class BeebeebCryptoModule: Module {
       // bootstrap path), and an unprotected new file is backup-eligible and
       // at the wrong protection class until the next cold launch.
       PlaintextStorageProtection.protect(URL(fileURLWithPath: dbPath))
+      // Task 1593 round 10 (Codex thread PRRT_kwDOSLX6T86mhUiZ) — see
+      // `protectSQLiteSidecars`'s doc comment: the main file's `protect()`
+      // above says nothing about its `-journal`/`-wal`/`-shm` siblings.
+      PlaintextStorageProtection.protectSQLiteSidecars(URL(fileURLWithPath: dbPath))
       // Task 1593 round 6 (new-3) — this connection issues DELETEs (the
       // prune pass below); without secure_delete the freed b-tree pages
       // keep a pruned row's decrypted name bytes readable on disk until

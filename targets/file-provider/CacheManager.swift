@@ -43,6 +43,10 @@ final class CacheManager {
     // leaving the file backup-eligible / unprotected until the next time
     // the main app's `hardenAll()` happens to run.
     PlaintextStorageProtection.protect(URL(fileURLWithPath: path))
+    // Task 1593 round 10 (Codex thread PRRT_kwDOSLX6T86mhUiZ) — the main
+    // file's own `protect()` above does not cover its SQLite sidecars
+    // (`-journal`, `-wal`/`-shm`); see `protectSQLiteSidecars`'s doc comment.
+    PlaintextStorageProtection.protectSQLiteSidecars(URL(fileURLWithPath: path))
     // Task 1593 round 8 (R2) — the main app's own writers to this exact
     // file (`bumpFileProviderCacheVersion`, `resetFileProviderCacheDatabase`,
     // `PlaintextStorageProtection.resetSQLiteInPlace`) all take a real
@@ -160,14 +164,13 @@ final class CacheManager {
   func replaceChildren(parent: String?, with items: [CachedItem], expectedEpoch: Int) -> Bool {
     queue.sync {
       guard beginImmediate() else { return false }
-      guard _currentPurgeEpoch() == expectedEpoch else {
+      guard currentEpochMatches(expectedEpoch) else {
         execute("ROLLBACK")
         return false
       }
       _deleteChildren(parent: parent, keepingIds: Set(items.map(\.id)))
       for item in items { _upsert(item) }
-      execute("COMMIT")
-      return true
+      return commitOrRollback()
     }
   }
 
@@ -182,13 +185,12 @@ final class CacheManager {
   func upsert(_ item: CachedItem, expectedEpoch: Int) -> Bool {
     queue.sync {
       guard beginImmediate() else { return false }
-      guard _currentPurgeEpoch() == expectedEpoch else {
+      guard currentEpochMatches(expectedEpoch) else {
         execute("ROLLBACK")
         return false
       }
       _upsert(item)
-      execute("COMMIT")
-      return true
+      return commitOrRollback()
     }
   }
 
@@ -202,16 +204,69 @@ final class CacheManager {
     queue.sync { _currentPurgeEpoch() }
   }
 
+  /// Task 1593 round 10 (reviewer F-b) — a failed `PRAGMA user_version`
+  /// query used to return `0`, a perfectly ordinary epoch value a purge's
+  /// very first bump could legitimately produce. A query failure here (a
+  /// bad handle, a locked file the busy timeout still couldn't clear) is
+  /// silent data loss dressed up as a real reading: `_currentPurgeEpoch()
+  /// == expectedEpoch` could accidentally be TRUE against a caller whose own
+  /// earlier capture also happened to read `0`, letting a gated write land
+  /// with no actual epoch check having occurred. `epochQueryFailed` is a
+  /// sentinel no real `PRAGMA user_version` read (an unsigned 32-bit
+  /// column) can ever produce, and `currentEpochMatches(_:)` below refuses
+  /// unconditionally whenever either side of the comparison is this
+  /// sentinel — so a failed capture (the caller's `currentPurgeEpoch()`
+  /// having itself failed) is treated exactly like a failed live read: both
+  /// mean "do not write", never "write, because both sides happen to be
+  /// the same placeholder".
+  private static let epochQueryFailed = Int.min
+
   private func _currentPurgeEpoch() -> Int {
     var stmt: OpaquePointer?
     defer { sqlite3_finalize(stmt) }
-    guard prepare("PRAGMA user_version", &stmt), sqlite3_step(stmt) == SQLITE_ROW else { return 0 }
+    guard prepare("PRAGMA user_version", &stmt), sqlite3_step(stmt) == SQLITE_ROW else {
+      return Self.epochQueryFailed
+    }
     return Int(sqlite3_column_int(stmt, 0))
+  }
+
+  /// Task 1593 round 10 (reviewer F-b) — the single comparison every
+  /// epoch-gated writer (`replaceChildren`/`upsert(_:expectedEpoch:)`/
+  /// `delete(id:expectedEpoch:)`) uses instead of a bare `==`. See
+  /// `epochQueryFailed`'s doc comment: `epoch != Self.epochQueryFailed` is
+  /// checked FIRST and independently of the equality, so the sentinel can
+  /// never "match" `expectedEpoch` even in the degenerate case where the
+  /// caller's own capture also failed and produced the same sentinel value.
+  private func currentEpochMatches(_ expectedEpoch: Int) -> Bool {
+    let epoch = _currentPurgeEpoch()
+    return epoch != Self.epochQueryFailed && epoch == expectedEpoch
   }
 
   private func beginImmediate() -> Bool {
     guard let db else { return false }
     return sqlite3_exec(db, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK
+  }
+
+  /// Task 1593 round 10 (reviewer F-b) — `execute("COMMIT")`'s result used
+  /// to be discarded at every one of this class's three epoch-gated
+  /// writers: a COMMIT that fails (e.g. `SQLITE_BUSY` racing the main app's
+  /// own `BEGIN IMMEDIATE` writers to this same file) used to be reported
+  /// to the caller as a successful write while the transaction it opened
+  /// was, per SQLite's own semantics, left OPEN — this long-lived
+  /// extension connection would then carry that write lock forward
+  /// indefinitely, since nothing ever issued the matching `ROLLBACK` (or a
+  /// retried `COMMIT`) to close it, silently wedging every subsequent write
+  /// through this connection. `ROLLBACK`ing a failed COMMIT abandons the
+  /// transaction outright rather than retrying it — this connection has no
+  /// currently-established retry policy for a mid-COMMIT failure, and
+  /// leaving the lock held is strictly worse than discarding this one
+  /// write.
+  private func commitOrRollback() -> Bool {
+    if execute("COMMIT") {
+      return true
+    }
+    execute("ROLLBACK")
+    return false
   }
 
   func item(id: String) -> CachedItem? {
@@ -251,13 +306,12 @@ final class CacheManager {
   func delete(id: String, expectedEpoch: Int) -> Bool {
     queue.sync {
       guard beginImmediate() else { return false }
-      guard _currentPurgeEpoch() == expectedEpoch else {
+      guard currentEpochMatches(expectedEpoch) else {
         execute("ROLLBACK")
         return false
       }
       _delete(id: id)
-      execute("COMMIT")
-      return true
+      return commitOrRollback()
     }
   }
 
@@ -436,9 +490,15 @@ final class CacheManager {
     return sqlite3_prepare_v2(db, sql, -1, stmt, nil) == SQLITE_OK
   }
 
-  private func execute(_ sql: String) {
-    guard let db else { return }
-    sqlite3_exec(db, sql, nil, nil, nil)
+  /// Task 1593 round 10 (reviewer F-b) — now returns whether the statement
+  /// actually succeeded (`@discardableResult` so every pre-existing
+  /// fire-and-forget call site — `init`'s pragmas, migrations, the plain
+  /// batch `upsert`'s `BEGIN`/`COMMIT` — keeps compiling unchanged); only
+  /// `commitOrRollback()` above checks it.
+  @discardableResult
+  private func execute(_ sql: String) -> Bool {
+    guard let db else { return false }
+    return sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK
   }
 
   private func executeBindable(_ sql: String, bind: (OpaquePointer?) -> Void) {

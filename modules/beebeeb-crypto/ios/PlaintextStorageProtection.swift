@@ -174,6 +174,49 @@ public enum PlaintextStorageProtection {
         )
       }
       results[entry.url.lastPathComponent] = protect(entry.url)
+      if entry.resettableInPlace {
+        for (name, ok) in protectSQLiteSidecars(entry.url) {
+          results[name] = ok
+        }
+      }
+    }
+    return results
+  }
+
+  /// Task 1593 round 10 (Codex thread PRRT_kwDOSLX6T86mhUiZ, P2) — SQLite's
+  /// default rollback journal (this database is never WAL-mode — see
+  /// `resetSQLiteInPlace`'s doc comment) can hold a copy of a page's
+  /// PRE-modification bytes, including decrypted names, for the duration of
+  /// a transaction. That `-journal` sibling (and, if this database is ever
+  /// put into WAL mode in the future, `-wal`/`-shm`) is a SEPARATE inode
+  /// from the main `.sqlite` file with its own, independently-tracked
+  /// backup-exclusion attribute and protection class — `protect()`-ing the
+  /// main file does nothing for it.
+  ///
+  /// A sidecar does not exist most of the time (SQLite creates `-journal` at
+  /// `BEGIN` and deletes it at `COMMIT`/`ROLLBACK`), so it cannot be
+  /// hardened once-and-for-all at DB-creation time the way the main file is
+  /// — `protect()` itself already no-ops safely (returns `false`, no throw)
+  /// for a sibling that does not currently exist at the moment this runs.
+  /// The window that matters in practice is an ABNORMAL TERMINATION (a
+  /// crash or jetsam mid-write) that leaves a "hot" journal sitting on disk,
+  /// unprotected, until SQLite's next successful open recovers it — a
+  /// backup that runs in that window (e.g. overnight, before the user next
+  /// opens the app) would capture it unprotected. Calling this everywhere
+  /// `protect()` is called on the main `file-provider-cache.sqlite` path
+  /// (every creation site AND launch's `hardenAll()` above) means a hot
+  /// journal left over from a previous session gets hardened the moment
+  /// this file is next touched by either process. Scoped to
+  /// `resettableInPlace` entries — currently only this one — because that
+  /// flag already marks exactly the class of database this concern applies
+  /// to: a live, second-process SQLite connection whose sidecars can carry
+  /// plaintext.
+  @discardableResult
+  public static func protectSQLiteSidecars(_ databaseUrl: URL) -> [String: Bool] {
+    var results: [String: Bool] = [:]
+    for suffix in ["-journal", "-wal", "-shm"] {
+      let sibling = URL(fileURLWithPath: databaseUrl.path + suffix)
+      results[sibling.lastPathComponent] = protect(sibling)
     }
     return results
   }
