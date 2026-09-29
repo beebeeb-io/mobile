@@ -23,7 +23,7 @@
  * "Tests": isolated per-file, but only modules actually touched need mocking).
  */
 import { describe, expect, test } from 'bun:test';
-import { billingStatusView, formatBillingDate } from './billing-status';
+import { billingBadgeLabel, billingStatusView, formatBillingDate } from './billing-status';
 
 describe('formatBillingDate', () => {
   test('formats an ISO date as "Mon D, YYYY" (matches the pre-existing inline format)', () => {
@@ -150,5 +150,66 @@ describe('billingStatusView — task 1601: cancelled subscription must never ren
     const view = billingStatusView({ plan: 'business', status: 'cancelled', current_period_end: null });
     expect(view.isFree).toBe(true);
     expect(view.statusLine).toBeNull();
+  });
+});
+
+describe('billingStatusView — task 1037: trial with a payment mandate, lapsed, needs_plan', () => {
+  test('trialing + trial_auto_converts: says the plan continues automatically after the trial', () => {
+    const view = billingStatusView({
+      plan: 'pro',
+      status: 'trialing',
+      trial_ends_at: '2026-10-20T12:00:00Z',
+      current_period_end: '2026-10-20T12:00:00Z',
+      trial_auto_converts: true,
+    });
+    expect(view.badgeKind).toBe('trial');
+    expect(view.statusLine).toBe('Trial ends Oct 20, 2026 · continues automatically');
+  });
+
+  test('legacy no-card trial (trial_auto_converts false or missing) keeps the plain "Trial ends" line', () => {
+    for (const trial_auto_converts of [false, undefined, null]) {
+      const view = billingStatusView({
+        plan: 'pro',
+        status: 'trialing',
+        trial_ends_at: '2026-10-20T12:00:00Z',
+        trial_auto_converts,
+      });
+      expect(view.statusLine).toBe('Trial ends Oct 20, 2026');
+    }
+  });
+
+  test('lapsed: read-only badge and the deletion date, even when the row status is cancelled', () => {
+    const view = billingStatusView({
+      plan: 'none',
+      status: 'cancelled',
+      current_period_end: '2026-10-01T12:00:00Z',
+      account_state: 'lapsed',
+      data_deletion_at: '2026-12-01T12:00:00Z',
+    });
+    expect(view).toEqual({ isFree: false, badgeKind: 'read_only', statusLine: 'Read-only · deleted on Dec 1, 2026' });
+  });
+
+  test('lapsed without a deletion date: badge, plain "Read-only" line', () => {
+    const view = billingStatusView({ plan: 'none', status: 'cancelled', account_state: 'lapsed' });
+    expect(view).toEqual({ isFree: false, badgeKind: 'read_only', statusLine: 'Read-only' });
+  });
+
+  test('needs_plan: no badge, "No plan yet"', () => {
+    const view = billingStatusView({ plan: 'none', status: null, account_state: 'needs_plan' });
+    expect(view).toEqual({ isFree: false, badgeKind: null, statusLine: 'No plan yet' });
+  });
+
+  test("account_state 'ok' changes nothing (grandfathered Free stays Free)", () => {
+    expect(billingStatusView({ plan: 'free', status: 'active', account_state: 'ok' }))
+      .toEqual({ isFree: true, badgeKind: null, statusLine: null });
+  });
+});
+
+describe('billingBadgeLabel', () => {
+  test('one label per badge kind', () => {
+    expect(billingBadgeLabel('trial')).toBe('TRIAL');
+    expect(billingBadgeLabel('cancelling')).toBe('CANCELLING');
+    expect(billingBadgeLabel('read_only')).toBe('READ-ONLY');
+    expect(billingBadgeLabel(null)).toBeNull();
   });
 });

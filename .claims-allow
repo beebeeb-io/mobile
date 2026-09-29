@@ -71,3 +71,4 @@ marketing/app-store/ipad-13/03-back-up-memories.svg|+edE+|coincidental match ins
 marketing/app-store/iphone-5.5/03-back-up-memories.svg|+edE+|same — coincidental base64 match, real <text> captions clean
 marketing/app-store/iphone-6.7/03-back-up-memories.svg|+edE+|same — coincidental base64 match, real <text> captions clean
 marketing/app-store/iphone-6.9/03-back-up-memories.svg|+edE+|same — coincidental base64 match, real <text> captions clean
+src/lib/web-links.ts|app|Not a real host: the guard reads the template literal "https://app.${...}" that derives the Beebeeb web app URL from api.<domain> (task 1037). The only concrete host it yields is app.beebeeb.io, Beebeeb's own web app; the links ship disabled (WEB_ACCOUNT_LINKS_ENABLED = false).

@@ -35,9 +35,27 @@ export interface SubscriptionStatusFields {
   status?: string | null;
   current_period_end?: string | null;
   trial_ends_at?: string | null;
+  /**
+   * Task 1037 (additive server fields; missing means `ok` / null / false).
+   * `account_state` `lapsed` is a read-only vault that is deleted at
+   * `data_deletion_at`. `needs_plan` never picked a plan. `trial_auto_converts`
+   * is true for a trial backed by a payment mandate, which becomes the paid
+   * plan at `trial_ends_at` on its own.
+   */
+  account_state?: string | null;
+  data_deletion_at?: string | null;
+  trial_auto_converts?: boolean | null;
 }
 
-export type BillingBadgeKind = 'trial' | 'cancelling' | null;
+export type BillingBadgeKind = 'trial' | 'cancelling' | 'read_only' | null;
+
+/** The one place a badge kind becomes the text on its chip. */
+export function billingBadgeLabel(kind: BillingBadgeKind): string | null {
+  if (kind === 'trial') return 'TRIAL';
+  if (kind === 'cancelling') return 'CANCELLING';
+  if (kind === 'read_only') return 'READ-ONLY';
+  return null;
+}
 
 export interface BillingStatusView {
   /** Plan slug is the free tier — no badge, no status line, ever. */
@@ -62,8 +80,27 @@ export function formatBillingDate(iso: string): string {
   });
 }
 
+function isValidIso(iso: string | null | undefined): iso is string {
+  return !!iso && !Number.isNaN(new Date(iso).getTime());
+}
+
 export function billingStatusView(sub: SubscriptionStatusFields | null | undefined): BillingStatusView {
   const status = (sub?.status ?? '').toLowerCase();
+
+  // Task 1037: the account state outranks the row's status. A lapsed row is
+  // usually `cancelled` too, but it is a read-only vault on its way to
+  // deletion, not a Free account.
+  if (sub?.account_state === 'lapsed') {
+    const deletion = sub.data_deletion_at;
+    return {
+      isFree: false,
+      badgeKind: 'read_only',
+      statusLine: isValidIso(deletion) ? `Read-only · deleted on ${formatBillingDate(deletion)}` : 'Read-only',
+    };
+  }
+  if (sub?.account_state === 'needs_plan') {
+    return { isFree: false, badgeKind: null, statusLine: 'No plan yet' };
+  }
 
   // Task 1601: an ended subscription is never the paid plan and never
   // "Renews" — checked before the plan slug so this holds even if a caller
@@ -85,10 +122,14 @@ export function billingStatusView(sub: SubscriptionStatusFields | null | undefin
     // explicit contract, fall back to current_period_end for any client
     // response that hasn't been extended with the trial_ends_at field yet.
     const dateIso = sub?.trial_ends_at ?? sub?.current_period_end ?? null;
+    // Task 1037: a trial started with a payment mandate becomes the paid plan
+    // by itself at the end date. A legacy no-card trial does not (it lapses
+    // unless converted on the web), so it keeps the plain line.
+    const suffix = sub?.trial_auto_converts === true ? ' · continues automatically' : '';
     return {
       isFree,
       badgeKind: 'trial',
-      statusLine: dateIso ? `Trial ends ${formatBillingDate(dateIso)}` : null,
+      statusLine: dateIso ? `Trial ends ${formatBillingDate(dateIso)}${suffix}` : null,
     };
   }
 

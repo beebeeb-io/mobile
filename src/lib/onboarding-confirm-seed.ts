@@ -1,6 +1,10 @@
 /**
- * The task-1444 welcome.md seed trigger for `OnboardingScreen.handleConfirm`
- * — the in-app signup flow's ACTUAL phrase-verify step.
+ * The task-1444 welcome.md seed trigger, first written for
+ * `OnboardingScreen.handleConfirm`, the in-app signup flow's phrase-verify
+ * step. Task 1037 removed in-app signup and OnboardingScreen with it. The
+ * remaining callers are `PhraseNotConfirmedScreen` (an account created
+ * in-app by an older build) and `RecoveryPhraseVerifyScreen`. The history
+ * below is kept for context.
  *
  * (SignupScreen -> `skipOnboarding` -> App.tsx navigates to the
  * `RecoveryPhrase` route, which renders `OnboardingScreen`, NOT
@@ -22,7 +26,7 @@
 import { ensureUnlockedAndSeed, type EnsureUnlockedAndSeedOptions } from './welcome-seed';
 
 export interface ConfirmPhraseAndSeedOptions {
-  /** OnboardingScreen's own `allCorrect` — true only once all 3 verify words match. */
+  /** The caller's `allCorrect`: true only once the phrase verified. */
   allCorrect: boolean;
   /** `useAuth().user?.user_id` — undefined if somehow unauthenticated at this point. */
   userId: string | undefined;

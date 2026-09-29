@@ -78,8 +78,8 @@ import {
   type Region,
   type MobileNotificationPreferences,
 } from '../lib/api';
-import { billingStatusView } from '../lib/billing-status';
-import { effectivePlan } from '../lib/effective-plan';
+import { billingBadgeLabel, billingStatusView } from '../lib/billing-status';
+import { effectivePlan, planDisplayName } from '../lib/effective-plan';
 import {
   loadRegionsData,
   selectRegion,
@@ -198,20 +198,6 @@ function timeAgo(iso: string): string {
   return new Date(iso).toLocaleDateString();
 }
 
-function planLabel(name: string): string {
-  // Server is migrating personal -> basic and data_hoarder -> business; the
-  // legacy keys are aliased to the new labels for the duration of the rename.
-  const map: Record<string, string> = {
-    free: 'Free',
-    basic: 'Basic',
-    personal: 'Basic',
-    pro: 'Pro',
-    business: 'Business',
-    data_hoarder: 'Business',
-    team: 'Team',
-  };
-  return map[name.toLowerCase()] ?? name;
-}
 
 function permissionGranted(permission: NativePermissionResponse | null | undefined): boolean {
   return permission?.granted === true || permission?.status === 'granted';
@@ -1713,7 +1699,7 @@ export default function SettingsScreen() {
   // touched by this task's server-side fix, so it can still lag briefly in
   // that one failure case.
   const planNameRaw = subscription ? effectivePlan(subscription) : usage?.plan_name ?? null;
-  const planName = planNameRaw ? planLabel(planNameRaw) : null;
+  const planName = planNameRaw ? planDisplayName(planNameRaw) : null;
   // Task 1540 findings 1, 2, 4, 6: read subscription.status, not just the
   // plan slug — a status='cancelling' or 'trialing' subscription must not
   // say "Renews {date}" (see src/lib/billing-status.ts for the full server
@@ -1724,6 +1710,10 @@ export default function SettingsScreen() {
     status: subscription?.status ?? null,
     current_period_end: subscription?.current_period_end ?? null,
     trial_ends_at: subscription?.trial_ends_at ?? null,
+    // Task 1037: lapsed / needs_plan and trial auto-conversion.
+    account_state: subscription?.account_state ?? null,
+    data_deletion_at: subscription?.data_deletion_at ?? null,
+    trial_auto_converts: subscription?.trial_auto_converts ?? null,
   } : null);
   const serverRegionLabel = serverRegion?.region ? regionDisplayName(serverRegion.region) : null;
   const cameraBackupActive =
@@ -1920,7 +1910,7 @@ export default function SettingsScreen() {
                           borderRadius: 4,
                         }}>
                           <Text style={{ fontSize: 10, fontWeight: '700' as const, color: c.amberDeep, letterSpacing: 0.3 }}>
-                            {billingView.badgeKind === 'trial' ? 'TRIAL' : 'CANCELLING'}
+                            {billingBadgeLabel(billingView.badgeKind)}
                           </Text>
                         </View>
                       )}

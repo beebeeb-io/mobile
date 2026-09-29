@@ -48,3 +48,26 @@ export function effectivePlan(
   // is entitled to.
   return subscription.plan ?? 'free';
 }
+
+/**
+ * Display name for a plan slug. It used to be duplicated in SettingsScreen and
+ * StorageScreen, and neither copy knew `starter` or `none`. Task 1037: `none`
+ * is the `effective_plan` of a `needs_plan` or `lapsed` account. The server is
+ * migrating personal -> basic and data_hoarder -> business, so the legacy
+ * slugs map to the new labels.
+ */
+const PLAN_DISPLAY_NAMES: Record<string, string> = {
+  none: 'No plan',
+  free: 'Free',
+  starter: 'Starter',
+  basic: 'Basic',
+  personal: 'Basic',
+  pro: 'Pro',
+  business: 'Business',
+  data_hoarder: 'Business',
+  team: 'Team',
+};
+
+export function planDisplayName(slug: string): string {
+  return PLAN_DISPLAY_NAMES[slug.toLowerCase()] ?? slug;
+}

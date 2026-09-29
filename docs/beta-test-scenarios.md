@@ -14,18 +14,16 @@ Only use local API mode when intentionally testing against a local server:
 EXPO_PUBLIC_API_URL=http://localhost:3001 bunx expo start --dev-client --host localhost --clear
 ```
 
-## Scenario 1 — Fresh Signup and European Positioning
+## Scenario 1 — No In-App Signup, and European Positioning
 
-**Goal:** verify a new beta user can create an account, understands the recovery warning, and sees Europe-focused positioning.
+**Goal:** verify the app does not create accounts (task 1037), points new users to the web, and shows Europe-focused positioning.
 
 1. Open the app on a clean install.
 2. Confirm sign-in footer says `Stored in Europe.`
-3. Tap `Create account`.
-4. Confirm signup footer says `Stored in Europe.` and `Operated by Beebeeb.io, Netherlands.`
-5. Create a unique test user.
-6. Acknowledge the recovery warning.
-7. Verify the recovery phrase flow appears and can be completed.
-8. Verify the app lands on the authenticated file area.
+3. Confirm the footer reads `Create your account on the web at beebeeb.io, then sign in here.` as plain text (not a link or button).
+4. Create an account on beebeeb.io (sign-up there starts a trial with a payment method), then sign in with it in the app.
+5. Verify the app lands on the authenticated file area.
+6. Sign in with an account that was created on the web but never chose a plan. Verify the `Finish setting up your account` screen covers the app, with `Refresh` and `Sign out` and no link or price. Choose a plan on the web, tap `Refresh`, and verify the file area appears.
 
 ## Scenario 2 — Login With Existing Account
 
