@@ -44,8 +44,11 @@ if ! "$GREP" -Eq '^[[:space:]]*private var storage: \[Key: Value\] = \[:\]' "$fi
 fi
 
 # 3. Both properties must be declared AS a LockedDictionary instance, not a
-#    plain [Int: ...] Dictionary.
-for prop in chunkUploadContinuations uploadTaskMap; do
+#    plain [Int: ...] Dictionary. (chunkResponseBodyBuffers, task 1605: the
+#    same URLSession-delegate-queue/dbQueue/Task cross-thread shape as the
+#    other two — written in `didReceive`, read+removed in
+#    `didCompleteWithError`, cleared from `stop()`.)
+for prop in chunkUploadContinuations uploadTaskMap chunkResponseBodyBuffers; do
   if ! "$GREP" -q "private let ${prop} = LockedDictionary<" "$file"; then
     echo "'$prop' is not declared as 'private let $prop = LockedDictionary<...>()' — a plain Dictionary here is a P1 (task 1600): concurrent access from the URLSession delegate queue / Tasks / dbQueue can corrupt it" >&2
     fail=1
@@ -55,7 +58,7 @@ done
 # 4. Guard against a raw-dictionary regression: neither property name may
 #    appear with a bare Dictionary type annotation ([Int: ...]) anywhere in
 #    the file (their one legitimate declaration is already checked above).
-for prop in chunkUploadContinuations uploadTaskMap; do
+for prop in chunkUploadContinuations uploadTaskMap chunkResponseBodyBuffers; do
   bad_decl=$("$GREP" -En "var ${prop}[[:space:]]*:[[:space:]]*\[" "$file" || true)
   if [ -n "$bad_decl" ]; then
     echo "Found a raw-Dictionary-typed declaration of '$prop':" >&2

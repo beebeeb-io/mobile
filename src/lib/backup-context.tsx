@@ -263,6 +263,22 @@ export interface BackupContextValue {
    * refusing to start for this reason.
    */
   ownerUnconfirmedReason: string | null;
+  /**
+   * Task 1605 (PR #155 review thread PRRT_kwDOSLX6T86nRLw0): set when the
+   * NATIVE engine paused itself because the server confirmed (on a request
+   * it sent while this app may have been backgrounded) that this account
+   * cannot store data right now for a billing reason — a never-paid
+   * mandated trial cancelled before its first charge, a lapsed trial/plan,
+   * no plan at all, or the 25 GB trial cap. Distinct from
+   * `accountMismatchReason` above (which requires the SESSION to no longer
+   * match the account, and ends it) — this is the right account, just
+   * billing-blocked, same as `ownerUnconfirmedReason`'s "never ends the
+   * session" shape. Sourced from native's poll (`accountRefusalReason` on
+   * `NativeBackupProgress`) — see that field's doc comment for the resume
+   * path. The honest message to show; null when nothing is refusing to
+   * upload for this reason.
+   */
+  accountRefusalReason: string | null;
   // Legacy alias for components that used the old API
   isBackupEnabled: boolean;
   toggleBackup: () => Promise<void>;
@@ -297,6 +313,7 @@ export const BackupContext = createContext<BackupContextValue>({
   backupBlockedReason: null,
   accountMismatchReason: null,
   ownerUnconfirmedReason: null,
+  accountRefusalReason: null,
   isBackupEnabled: false,
   toggleBackup: async () => {},
 });
@@ -440,6 +457,10 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
   // on `NativeBackupProgress`). Mirrored the same way `accountMismatchReason`
   // is: a single producer (the native poll), so no writer race.
   const [ownerUnconfirmedReason, setOwnerUnconfirmedReason] = useState<string | null>(null);
+  // Task 1605 (PR #155 review thread PRRT_kwDOSLX6T86nRLw0): a server-
+  // confirmed but non-session-ending refusal — same single-producer
+  // mirroring as the two above (the native poll is the only writer).
+  const [accountRefusalReason, setAccountRefusalReason] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const includeVideosRef = useRef(true);
   // Task 1599 followups round 3 (P1): the running fold `reduceAccountMismatchPoll`
@@ -508,6 +529,7 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
     }
     setAccountMismatchReason(nextAccountMismatchReason);
     setOwnerUnconfirmedReason(p.ownerUnconfirmedReason ?? null);
+    setAccountRefusalReason(p.accountRefusalReason ?? null);
   }, []);
 
   const refreshNativeProgress = useCallback(async () => {
@@ -916,6 +938,7 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
     backupBlockedReason,
     accountMismatchReason,
     ownerUnconfirmedReason,
+    accountRefusalReason,
     // Legacy alias
     isBackupEnabled: isPhotoBackupEnabled,
     toggleBackup: togglePhotoBackup,
