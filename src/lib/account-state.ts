@@ -23,12 +23,22 @@ export type AccountState = 'ok' | 'needs_plan' | 'lapsed';
 export interface AccountStateFields {
   account_state?: string | null;
   data_deletion_at?: string | null;
+  /**
+   * Task 1605 (server PR #129). Set the instant a never-paid MANDATED trial
+   * is cancelled — uploads/shares are refused from this moment even though
+   * `account_state` stays `ok` (the trial hasn't lapsed, it's cancelled
+   * early) and `status` stays `cancelling`. Null for every other state.
+   */
+  uploads_blocked_at?: string | null;
+  /** Task 1605. The date view/download stop working for that same cancelled trial. */
+  access_until?: string | null;
 }
 
 export type AccountGate =
   | { kind: 'ok' }
   | { kind: 'needs_plan' }
-  | { kind: 'lapsed'; dataDeletionAt: string | null };
+  | { kind: 'lapsed'; dataDeletionAt: string | null }
+  | { kind: 'trial_cancelled_read_only'; accessUntil: string | null; dataDeletionAt: string | null };
 
 export function normalizeAccountState(raw: string | null | undefined): AccountState {
   if (raw === 'needs_plan' || raw === 'lapsed') return raw;
@@ -39,6 +49,15 @@ export function accountGateFor(sub: AccountStateFields | null | undefined): Acco
   const state = normalizeAccountState(sub?.account_state);
   if (state === 'needs_plan') return { kind: 'needs_plan' };
   if (state === 'lapsed') return { kind: 'lapsed', dataDeletionAt: sub?.data_deletion_at ?? null };
+  // Task 1605 — account_state stays 'ok' for this case (see the field doc
+  // above); uploads_blocked_at is the server's own, deliberate signal for it.
+  if (sub?.uploads_blocked_at) {
+    return {
+      kind: 'trial_cancelled_read_only',
+      accessUntil: sub?.access_until ?? null,
+      dataDeletionAt: sub?.data_deletion_at ?? null,
+    };
+  }
   return { kind: 'ok' };
 }
 
@@ -78,7 +97,26 @@ export function readOnlyUploadMessage(gate: AccountGate): string | null {
   if (gate.kind === 'needs_plan') {
     return 'Choose your plan on the web at beebeeb.io to start uploading.';
   }
+  // Task 1605 — a never-paid trial cancelled before its first charge:
+  // uploads/backup/new shares are off immediately, distinct from `lapsed`
+  // (the trial hasn't ended — it's cancelled early, and resuming it, or
+  // paying, restores uploads right away).
+  if (gate.kind === 'trial_cancelled_read_only') {
+    return 'You cancelled your trial before its first payment, so uploads and backup are off. Resume your trial on the web to upload again.';
+  }
   return null;
+}
+
+/** Task 1605 — the Storage & Plan compact status line for this gate: "Uploads stopped · Access until <date> · Files deleted on <date>" — never "Renews". Null for any other gate. */
+export function trialCancelledReadOnlyStatusLine(
+  gate: AccountGate,
+  formatDate: (iso: string) => string,
+): string | null {
+  if (gate.kind !== 'trial_cancelled_read_only') return null;
+  const parts = ['Uploads stopped'];
+  if (gate.accessUntil) parts.push(`Access until ${formatDate(gate.accessUntil)}`);
+  if (gate.dataDeletionAt) parts.push(`Files deleted on ${formatDate(gate.dataDeletionAt)}`);
+  return parts.join(' · ');
 }
 
 /**
@@ -88,6 +126,8 @@ export function readOnlyUploadMessage(gate: AccountGate): string | null {
  */
 export const PLAN_REQUIRED_ERROR = 'plan_required';
 export const ACCOUNT_LAPSED_ERROR = 'account_lapsed';
+/** Task 1605 (server PR #129) — a never-paid trial cancelled before its first charge. */
+export const TRIAL_CANCELLED_READ_ONLY_ERROR = 'trial_cancelled_read_only';
 
 /**
  * The gate an error code proves, or null when the code is not an account
@@ -99,13 +139,25 @@ export function gateForRefusalCode(code: string | null | undefined, current: Acc
   if (code === ACCOUNT_LAPSED_ERROR) {
     return { kind: 'lapsed', dataDeletionAt: current.kind === 'lapsed' ? current.dataDeletionAt : null };
   }
+  if (code === TRIAL_CANCELLED_READ_ONLY_ERROR) {
+    return {
+      kind: 'trial_cancelled_read_only',
+      accessUntil: current.kind === 'trial_cancelled_read_only' ? current.accessUntil : null,
+      dataDeletionAt: current.kind === 'trial_cancelled_read_only' ? current.dataDeletionAt : null,
+    };
+  }
   if (code === 'quota_exceeded' && current.kind !== 'ok') return current;
   return null;
 }
 
 /** Upload errors after which the app should re-read the account state. */
 export function isAccountRefusalCode(code: string | null | undefined): boolean {
-  return code === PLAN_REQUIRED_ERROR || code === ACCOUNT_LAPSED_ERROR || code === 'quota_exceeded';
+  return (
+    code === PLAN_REQUIRED_ERROR ||
+    code === ACCOUNT_LAPSED_ERROR ||
+    code === TRIAL_CANCELLED_READ_ONLY_ERROR ||
+    code === 'quota_exceeded'
+  );
 }
 
 // ---------------------------------------------------------------------------
