@@ -1,6 +1,25 @@
 /**
  * Two-Factor Authentication setup screen.
  *
+ * Entry (task 1610): the account's live `totp_enabled` status (from
+ * `useAuth()`, sourced from `/auth/me`) decides what this screen shows FIRST —
+ * it no longer unconditionally starts the fresh-enrollment wizard. An
+ * account with 2FA already ON sees the On state (Turn off / Set up again);
+ * only an account with 2FA OFF drops straight into the wizard below. This
+ * is the fix for the bug report: SettingsScreen's row always navigated here,
+ * and this screen always called `setupTotp()` with no code/token on mount —
+ * which the server correctly 403s (`confirmation_required`) once 2FA is on
+ * (server `routes/totp.rs` `setup_step_up_validated_if_required` — verified
+ * correct, not loosened).
+ *
+ * On state — Turn off | Set up again
+ *   Turn off    — current 6-digit code, then `disableTotp(code)`.
+ *   Set up again — current 6-digit code (sent as `body.code`) OR a password
+ *                  step-up (`requestConfirmation()`, `X-Confirm-Token`) as the
+ *                  alternative, then `setupTotp(...)` returns a NEW secret and
+ *                  drops into the same wizard below (steps 1-3) to verify it.
+ *
+ * Wizard (fresh enrollment, or after a successful "set up again" reauth):
  * Step 1 — Show TOTP secret + copy button. User adds key to authenticator app.
  * Step 2 — 6-digit code entry. Calls enableTotp(code) to activate.
  * Step 3 — Backup codes display + copy all. Navigate back on Done.
@@ -24,8 +43,17 @@ import { useNavigation } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../lib/theme-context';
 import { fonts, spacing, type Colors } from '../theme';
-import { setupTotp, enableTotp, friendlyError, type TotpSetup } from '../lib/api';
-import { shouldBlockTwoFactorSetupBack, twoFactorSetupBackAction } from '../lib/two-factor-setup-gate';
+import { useAuth } from '../lib/auth';
+import {
+  setupTotp, enableTotp, disableTotp, friendlyError, ApiError, type TotpSetup,
+} from '../lib/api';
+import { requestConfirmation } from '../lib/confirm-action';
+import {
+  shouldBlockTwoFactorSetupBack,
+  twoFactorSetupBackAction,
+  initialTwoFactorSetupMode,
+  wizardStep1BackTarget,
+} from '../lib/two-factor-setup-gate';
 
 let Clipboard: { setStringAsync: (s: string) => Promise<void> } = {
   setStringAsync: async () => {},
@@ -36,6 +64,8 @@ try {
 
 type C = Colors;
 type Step = 1 | 2 | 3;
+/** What the screen shows before/instead of the fresh-enrollment wizard. */
+type Mode = 'on' | 'disable' | 'reauth' | 'wizard';
 
 // ── Layout ────────────────────────────────────────────────────────────────────
 
@@ -90,6 +120,14 @@ const layout = StyleSheet.create({
     marginTop: 8,
   },
   primaryButtonText: { fontSize: 16, fontWeight: '700' },
+  secondaryButton: {
+    borderRadius: 10,
+    paddingVertical: 14,
+    alignItems: 'center',
+    marginTop: 12,
+    borderWidth: 1.5,
+  },
+  secondaryButtonText: { fontSize: 15, fontWeight: '600' },
   backupGrid: { gap: 8 },
   backupRow: { flexDirection: 'row', gap: 8 },
   backupCode: {
@@ -102,6 +140,7 @@ const layout = StyleSheet.create({
     textAlign: 'center',
   },
   noteText: { fontSize: 12, lineHeight: 17, marginTop: 12 },
+  errorText: { fontSize: 12.5, marginTop: 8 },
   stepIndicator: {
     flexDirection: 'row',
     justifyContent: 'center',
@@ -109,6 +148,26 @@ const layout = StyleSheet.create({
     marginBottom: 20,
   },
   stepDot: { width: 6, height: 6, borderRadius: 3 },
+  statusRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 4 },
+  statusPill: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 999,
+  },
+  statusPillText: { fontSize: 12, fontWeight: '700' },
+  singleCodeInput: {
+    borderRadius: 8,
+    borderWidth: 1.5,
+    fontSize: 20,
+    fontWeight: '700',
+    textAlign: 'center',
+    paddingVertical: 12,
+    letterSpacing: 4,
+    marginTop: 12,
+    marginBottom: 4,
+  },
+  linkButton: { paddingVertical: 10, alignSelf: 'flex-start' },
+  linkButtonText: { fontSize: 13, fontWeight: '600' },
 });
 
 // ── Sub-components ────────────────────────────────────────────────────────────
@@ -168,6 +227,46 @@ function PrimaryButton({
   );
 }
 
+function SecondaryButton({
+  label,
+  onPress,
+  loading,
+  disabled,
+  danger,
+  c,
+  testID,
+}: {
+  label: string;
+  onPress: () => void;
+  loading?: boolean;
+  disabled?: boolean;
+  danger?: boolean;
+  c: C;
+  testID?: string;
+}) {
+  const color = danger ? c.red : c.ink;
+  return (
+    <TouchableOpacity
+      style={[layout.secondaryButton, { borderColor: danger ? c.red : c.line2 }]}
+      onPress={() => {
+        Haptics.selectionAsync();
+        onPress();
+      }}
+      disabled={disabled || loading}
+      activeOpacity={0.75}
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      testID={testID}
+    >
+      {loading ? (
+        <ActivityIndicator color={color} />
+      ) : (
+        <Text style={[layout.secondaryButtonText, { color }]}>{label}</Text>
+      )}
+    </TouchableOpacity>
+  );
+}
+
 function CopyButton({
   label,
   onPress,
@@ -191,6 +290,221 @@ function CopyButton({
       <Ionicons name="copy-outline" size={15} color={c.amber} />
       <Text style={[layout.copyButtonText, { color: c.amber }]}>{label}</Text>
     </TouchableOpacity>
+  );
+}
+
+/** Shared single 6-digit code field for On/Disable/Reauth (distinct from the
+ *  wizard's 6-box `StepVerify` input, which needs per-digit focus). */
+function CodeField({
+  value,
+  onChange,
+  c,
+  testID,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  c: C;
+  testID?: string;
+}) {
+  return (
+    <TextInput
+      style={[
+        layout.singleCodeInput,
+        { color: c.ink, borderColor: value.length === 6 ? c.amber : c.line, backgroundColor: c.paper2, fontFamily: fonts.mono },
+      ]}
+      value={value}
+      onChangeText={val => onChange(val.replace(/\D/g, '').slice(0, 6))}
+      placeholder="6-digit code"
+      placeholderTextColor={c.ink4}
+      keyboardType="number-pad"
+      maxLength={6}
+      accessibilityLabel="6-digit authenticator code"
+      testID={testID}
+    />
+  );
+}
+
+// ── On state: 2FA already enabled ─────────────────────────────────────────────
+
+function StepOnState({
+  onTurnOff,
+  onSetUpAgain,
+  c,
+}: {
+  onTurnOff: () => void;
+  onSetUpAgain: () => void;
+  c: C;
+}) {
+  return (
+    <>
+      <View style={layout.header}>
+        <Text style={[layout.title, { color: c.ink, fontFamily: fonts.sans }]}>
+          Two-factor authentication
+        </Text>
+        <View style={layout.statusRow}>
+          <View style={[layout.statusPill, { backgroundColor: c.paper2, borderWidth: 1, borderColor: c.green }]}>
+            <Text style={[layout.statusPillText, { color: c.green }]}>On</Text>
+          </View>
+        </View>
+        <Text style={[layout.subtitle, { color: c.ink3, fontFamily: fonts.sans, marginTop: 8 }]}>
+          Your account is protected with an authenticator app.
+        </Text>
+      </View>
+
+      <SecondaryButton label="Set up again" onPress={onSetUpAgain} c={c} testID="totp-set-up-again" />
+      <SecondaryButton label="Turn off" onPress={onTurnOff} danger c={c} testID="totp-turn-off" />
+    </>
+  );
+}
+
+// ── Turn off: current code required ───────────────────────────────────────────
+
+function StepDisable({
+  onDone,
+  onCancel,
+  c,
+}: {
+  onDone: () => void;
+  onCancel: () => void;
+  c: C;
+}) {
+  const [code, setCode] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  const handleSubmit = useCallback(async () => {
+    if (code.length < 6) return;
+    setLoading(true);
+    setError('');
+    try {
+      await disableTotp(code);
+      onDone();
+    } catch (err) {
+      // Branch on `.status`, not `.code`: mobile's shared `request()` only
+      // carries `err.error` through as `ApiError.code` for a small allowlist
+      // (account_mismatch, plan_required, account_lapsed) — every other
+      // server error code, including `invalid_totp_code`, comes back with
+      // `code: undefined` (found while building this fix; left as-is, out of
+      // scope here — see task 1610 Notes). The server's `disable` handler
+      // only ever 400s here for a wrong code (`wrong_code_on_authenticated_route`
+      // → `InvalidTotpCode`), so `.status === 400` is an accurate proxy.
+      if (err instanceof ApiError && err.status === 400) {
+        setError('Incorrect code. Try again.');
+      } else {
+        setError(friendlyError(err));
+      }
+    } finally {
+      setLoading(false);
+    }
+  }, [code, onDone]);
+
+  return (
+    <>
+      <View style={layout.header}>
+        <Text style={[layout.title, { color: c.ink, fontFamily: fonts.sans }]}>Turn off 2FA</Text>
+        <Text style={[layout.subtitle, { color: c.ink3, fontFamily: fonts.sans }]}>
+          Enter your current authenticator code to turn off two-factor authentication.
+        </Text>
+      </View>
+
+      <CodeField value={code} onChange={setCode} c={c} testID="totp-disable-code" />
+      {error ? <Text style={[layout.errorText, { color: c.red, fontFamily: fonts.sans }]}>{error}</Text> : null}
+
+      <PrimaryButton label="Turn off 2FA" onPress={handleSubmit} loading={loading} disabled={code.length < 6} c={c} />
+      <SecondaryButton label="Cancel" onPress={onCancel} c={c} />
+    </>
+  );
+}
+
+// ── Set up again: current code OR password step-up ───────────────────────────
+
+function StepReauth({
+  onSetup,
+  onCancel,
+  c,
+}: {
+  onSetup: (setup: TotpSetup) => void;
+  onCancel: () => void;
+  c: C;
+}) {
+  const [code, setCode] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [passwordLoading, setPasswordLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  const handleCodeSubmit = useCallback(async () => {
+    if (code.length < 6) return;
+    setLoading(true);
+    setError('');
+    try {
+      const data = await setupTotp({ code });
+      onSetup(data);
+    } catch (err) {
+      // See StepDisable's handleSubmit above for why this checks `.status`
+      // rather than `.code`. `setup`'s step-up path 400s only for a wrong
+      // code (`InvalidTotpCode`); anything else (network, 403, 5xx) gets the
+      // generic message, which already points at the password alternative.
+      if (err instanceof ApiError && err.status === 400) {
+        setError('Incorrect code. Try again.');
+      } else {
+        setError('Could not verify that code. Try again, or use your password instead.');
+      }
+    } finally {
+      setLoading(false);
+    }
+  }, [code, onSetup]);
+
+  const handlePasswordInstead = useCallback(async () => {
+    setPasswordLoading(true);
+    setError('');
+    try {
+      const confirmToken = await requestConfirmation({
+        title: 'Confirm your password',
+        message: 'Enter your password to set up two-factor authentication again.',
+      });
+      if (!confirmToken) return; // cancelled — requestConfirmation already alerted on real errors
+      const data = await setupTotp({ confirmToken });
+      onSetup(data);
+    } catch (err) {
+      Alert.alert('Could not start setup', friendlyError(err));
+    } finally {
+      setPasswordLoading(false);
+    }
+  }, [onSetup]);
+
+  return (
+    <>
+      <View style={layout.header}>
+        <Text style={[layout.title, { color: c.ink, fontFamily: fonts.sans }]}>Set up again</Text>
+        <Text style={[layout.subtitle, { color: c.ink3, fontFamily: fonts.sans }]}>
+          Two-factor authentication is already on. Enter your current authenticator code to set it
+          up again — this issues a new secret and new backup codes.
+        </Text>
+      </View>
+
+      <CodeField value={code} onChange={setCode} c={c} testID="totp-reauth-code" />
+      {error ? <Text style={[layout.errorText, { color: c.red, fontFamily: fonts.sans }]}>{error}</Text> : null}
+
+      <PrimaryButton label="Continue" onPress={handleCodeSubmit} loading={loading} disabled={code.length < 6} c={c} />
+
+      <TouchableOpacity
+        style={layout.linkButton}
+        onPress={handlePasswordInstead}
+        disabled={passwordLoading}
+        accessibilityRole="button"
+        accessibilityLabel="Use your password instead"
+      >
+        {passwordLoading ? (
+          <ActivityIndicator color={c.ink3} />
+        ) : (
+          <Text style={[layout.linkButtonText, { color: c.ink3, fontFamily: fonts.sans }]}>
+            Use your password instead
+          </Text>
+        )}
+      </TouchableOpacity>
+
+      <SecondaryButton label="Cancel" onPress={onCancel} c={c} />
+    </>
   );
 }
 
@@ -428,16 +742,30 @@ export default function TwoFactorSetupScreen() {
   const navigation = useNavigation();
   const insets = useSafeAreaInsets();
   const { colors: c } = useTheme();
+  const { user, refreshAuth } = useAuth();
+
+  // Task 1610: the mode this screen OPENS in is decided once, from the
+  // already-known `/auth/me` status — never a bare, unconditional
+  // `setupTotp()` on mount. An account with 2FA on starts on the On state;
+  // only an account with 2FA off starts directly in the wizard (unchanged
+  // behavior for that case).
+  const [mode, setMode] = useState<Mode>(() => initialTwoFactorSetupMode(user?.totp_enabled));
+  // True once "Set up again" has produced a fresh secret — controls what the
+  // wizard's step-1 Back button does (see backAction below) and re-enables
+  // the On-state pill immediately if the user backs out without finishing.
+  const [cameFromReauth, setCameFromReauth] = useState(false);
 
   const [step, setStep] = useState<Step>(1);
   const [setup, setSetup] = useState<TotpSetup | null>(null);
-  const [loadingSetup, setLoadingSetup] = useState(true);
+  const [loadingSetup, setLoadingSetup] = useState(mode === 'wizard');
   const [setupError, setSetupError] = useState<string | null>(null);
   // True while StepVerify's enable request is in flight — the server may
   // activate 2FA at any moment, so leaving is blocked until it settles.
   const [verifying, setVerifying] = useState(false);
 
-  // Fetch secret on mount; re-runs via the error state's Retry button (1297).
+  // Fetch secret on mount ONLY for a fresh (2FA-off) entry; re-runs via the
+  // error state's Retry button (1297). "Set up again" populates `setup`
+  // itself (via StepReauth's onSetup) and never goes through this effect.
   const cancelledRef = useRef(false);
   const fetchSetup = useCallback(() => {
     setLoadingSetup(true);
@@ -454,10 +782,28 @@ export default function TwoFactorSetupScreen() {
       });
   }, []);
   useEffect(() => {
+    if (mode !== 'wizard' || cameFromReauth) return undefined;
     cancelledRef.current = false;
     fetchSetup();
     return () => { cancelledRef.current = true; };
-  }, [fetchSetup]);
+    // Intentionally runs once for a fresh entry — `cameFromReauth` starts
+    // false and only ever flips true via handleReauthSetup below, at which
+    // point `setup` is already populated and this must NOT re-fetch.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode]);
+
+  const handleReauthSetup = useCallback((data: TotpSetup) => {
+    setSetup(data);
+    setStep(1);
+    setCameFromReauth(true);
+    setMode('wizard');
+  }, []);
+
+  const handleDisabled = useCallback(() => {
+    Alert.alert('Two-factor authentication turned off');
+    refreshAuth().catch(() => {});
+    navigation.goBack();
+  }, [navigation, refreshAuth]);
 
   // Task 1539 (finding 2): the custom back button's step>1 branch used to
   // call the exact same navigation.goBack() as step 1 — a dead conditional
@@ -475,18 +821,24 @@ export default function TwoFactorSetupScreen() {
   // `handleDone` sets it right before navigating, and the listener (which
   // re-reads it on every fire via the ref, not a stale closure) lets that
   // one `goBack()` through while continuing to block everything else.
+  //
+  // Only the WIZARD (mode === 'wizard') ever needs this — the On/Disable/
+  // Reauth panels hold nothing irrecoverable (no one-time secret is shown
+  // there), so leaving them is always free.
   const completedRef = useRef(false);
+  const blocked = mode === 'wizard' && shouldBlockTwoFactorSetupBack(step, false, verifying);
   useEffect(() => {
-    if (!shouldBlockTwoFactorSetupBack(step, false, verifying)) return undefined;
+    if (!blocked) return undefined;
     const unsubscribe = navigation.addListener('beforeRemove', (e) => {
       // Read completedRef fresh on every fire (not a stale render-time
       // value) — Done can flip it after this listener was already
       // installed for the current step.
-      if (!shouldBlockTwoFactorSetupBack(step, completedRef.current, verifying)) return;
+      if (completedRef.current) return;
+      if (mode !== 'wizard' || !shouldBlockTwoFactorSetupBack(step, completedRef.current, verifying)) return;
       e.preventDefault();
     });
     return unsubscribe;
-  }, [navigation, step, verifying]);
+  }, [navigation, mode, step, verifying, blocked]);
 
   // Belt-and-suspenders: also disable the native iOS edge-swipe-back gesture
   // directly (native-stack supports updating this per-screen), matching how
@@ -494,15 +846,34 @@ export default function TwoFactorSetupScreen() {
   // be a static `gestureEnabled: false` on the Stack.Screen the way those
   // are, because step 1 must stay dismissable.
   useEffect(() => {
-    navigation.setOptions({ gestureEnabled: !shouldBlockTwoFactorSetupBack(step, false, verifying) });
-  }, [navigation, step, verifying]);
+    navigation.setOptions({ gestureEnabled: !blocked });
+  }, [navigation, blocked]);
 
-  const backAction = twoFactorSetupBackAction(step, verifying);
+  const backAction = mode === 'wizard' ? twoFactorSetupBackAction(step, verifying) : 'leave';
 
   const handleDone = useCallback(() => {
     completedRef.current = true;
     navigation.goBack();
   }, [navigation]);
+
+  const handleWizardBack = useCallback(() => {
+    Haptics.selectionAsync();
+    if (backAction === 'previous-step') {
+      setStep(1);
+      return;
+    }
+    // backAction === 'leave' at step 1: where that actually lands depends on
+    // how this wizard run started (see wizardStep1BackTarget's doc comment).
+    if (wizardStep1BackTarget(cameFromReauth) === 'on') {
+      setCameFromReauth(false);
+      setSetup(null);
+      setStep(1);
+      setSetupError(null);
+      setMode('on');
+      return;
+    }
+    navigation.goBack();
+  }, [backAction, cameFromReauth, navigation]);
 
   return (
     <View
@@ -516,18 +887,29 @@ export default function TwoFactorSetupScreen() {
         ]}
         keyboardShouldPersistTaps="handled"
       >
-        {/* Back button — step 1 leaves; step 2 returns to step 1 (same
-            secret, so it can be added to an authenticator); hidden at step 3
-            and while verifying, where the beforeRemove listener above is the
-            real enforcement and a button would silently do nothing. */}
-        {backAction !== 'none' && (
+        {/* Back button — step 1 leaves (or returns to the On state when this
+            wizard run started from "set up again"); step 2 returns to step 1
+            (same secret, so it can be added to an authenticator); hidden at
+            step 3 and while verifying, where the beforeRemove listener above
+            is the real enforcement and a button would silently do nothing.
+            The On/Disable/Reauth panels always show a plain leave button. */}
+        {mode !== 'wizard' ? (
           <TouchableOpacity
             style={layout.backButton}
             onPress={() => {
               Haptics.selectionAsync();
-              if (backAction === 'previous-step') setStep(1);
-              else navigation.goBack();
+              navigation.goBack();
             }}
+            accessibilityRole="button"
+            accessibilityLabel="Go back"
+          >
+            <Ionicons name="chevron-back" size={20} color={c.amber} />
+            <Text style={{ color: c.amber, fontSize: 16, fontFamily: fonts.sans }}>Back</Text>
+          </TouchableOpacity>
+        ) : backAction !== 'none' && (
+          <TouchableOpacity
+            style={layout.backButton}
+            onPress={handleWizardBack}
             accessibilityRole="button"
             accessibilityLabel="Go back"
           >
@@ -536,9 +918,25 @@ export default function TwoFactorSetupScreen() {
           </TouchableOpacity>
         )}
 
-        <StepIndicator step={step} c={c} />
+        {mode === 'wizard' && <StepIndicator step={step} c={c} />}
 
-        {loadingSetup && (
+        {mode === 'on' && (
+          <StepOnState
+            onTurnOff={() => setMode('disable')}
+            onSetUpAgain={() => setMode('reauth')}
+            c={c}
+          />
+        )}
+
+        {mode === 'disable' && (
+          <StepDisable onDone={handleDisabled} onCancel={() => setMode('on')} c={c} />
+        )}
+
+        {mode === 'reauth' && (
+          <StepReauth onSetup={handleReauthSetup} onCancel={() => setMode('on')} c={c} />
+        )}
+
+        {mode === 'wizard' && loadingSetup && (
           <View style={{ alignItems: 'center', paddingTop: 60 }}>
             <ActivityIndicator size="large" color={c.amber} />
             <Text style={{ color: c.ink3, marginTop: 16, fontFamily: fonts.sans }}>
@@ -547,7 +945,7 @@ export default function TwoFactorSetupScreen() {
           </View>
         )}
 
-        {!loadingSetup && setupError != null && (
+        {mode === 'wizard' && !loadingSetup && setupError != null && (
           <View style={{ alignItems: 'center', paddingTop: 60 }}>
             <Ionicons name="alert-circle-outline" size={48} color={c.red} />
             <Text style={{ color: c.red, marginTop: 16, fontFamily: fonts.sans, textAlign: 'center' }}>
@@ -578,15 +976,15 @@ export default function TwoFactorSetupScreen() {
           </View>
         )}
 
-        {!loadingSetup && setup != null && step === 1 && (
+        {mode === 'wizard' && !loadingSetup && setup != null && step === 1 && (
           <StepSecret setup={setup} onContinue={() => setStep(2)} c={c} />
         )}
 
-        {!loadingSetup && setup != null && step === 2 && (
+        {mode === 'wizard' && !loadingSetup && setup != null && step === 2 && (
           <StepVerify onSuccess={() => setStep(3)} onVerifyingChange={setVerifying} c={c} />
         )}
 
-        {!loadingSetup && setup != null && step === 3 && (
+        {mode === 'wizard' && !loadingSetup && setup != null && step === 3 && (
           <StepBackupCodes codes={setup.backup_codes} onDone={handleDone} c={c} />
         )}
       </ScrollView>
