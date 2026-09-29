@@ -61,7 +61,7 @@ const SLIDES = [
     eyebrow: 'European storage',
     headline: ['Made in', 'Europe'],
     accentLine: 1,
-    subhead: 'Built by Initlabs B.V. Stored in Falkenstein, Germany',
+    subhead: 'Built by Initlabs B.V. Stored in Europe.',
     screen: realScreen('04-settings/001-settings-top.png'),
   },
 ];
