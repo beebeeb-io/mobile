@@ -431,6 +431,21 @@ function StepReauth({
   const [loading, setLoading] = useState(false);
   const [passwordLoading, setPasswordLoading] = useState(false);
   const [error, setError] = useState('');
+  // Codex review (PR #156, P2): Cancel only disables ITS OWN trigger, not the
+  // in-flight request — without this guard, a code/password step-up that
+  // resolves AFTER Cancel was tapped still calls `onSetup(data)`, silently
+  // reissuing the secret and yanking the parent back into the wizard even
+  // though the user believed they'd backed out. `setupTotp` has ALREADY run
+  // server-side by the time either handler's `await` resolves (the request
+  // itself is not abortable), so this can only suppress the STALE UI
+  // transition, not the server call — the same one-request-per-tap
+  // constraint the wizard's Enable/Disable/Turn-off buttons already accept.
+  const cancelledRef = useRef(false);
+
+  const handleCancel = useCallback(() => {
+    cancelledRef.current = true;
+    onCancel();
+  }, [onCancel]);
 
   const handleCodeSubmit = useCallback(async () => {
     if (code.length < 6) return;
@@ -438,6 +453,7 @@ function StepReauth({
     setError('');
     try {
       const data = await setupTotp({ code });
+      if (cancelledRef.current) return;
       onSetup(data);
     } catch (err) {
       // See StepDisable's handleSubmit above for why this checks `.status`
@@ -464,8 +480,10 @@ function StepReauth({
       });
       if (!confirmToken) return; // cancelled — requestConfirmation already alerted on real errors
       const data = await setupTotp({ confirmToken });
+      if (cancelledRef.current) return;
       onSetup(data);
     } catch (err) {
+      if (cancelledRef.current) return;
       Alert.alert('Could not start setup', friendlyError(err));
     } finally {
       setPasswordLoading(false);
@@ -503,7 +521,7 @@ function StepReauth({
         )}
       </TouchableOpacity>
 
-      <SecondaryButton label="Cancel" onPress={onCancel} c={c} />
+      <SecondaryButton label="Cancel" onPress={handleCancel} c={c} />
     </>
   );
 }
@@ -981,7 +999,22 @@ export default function TwoFactorSetupScreen() {
         )}
 
         {mode === 'wizard' && !loadingSetup && setup != null && step === 2 && (
-          <StepVerify onSuccess={() => setStep(3)} onVerifyingChange={setVerifying} c={c} />
+          <StepVerify
+            onSuccess={() => {
+              setStep(3)
+              // Codex review (PR #156, P1): without this, `user.totp_enabled`
+              // stays stale at `false` after a fresh enrollment — the NEXT
+              // time this screen opens, `initialTwoFactorSetupMode` reads
+              // that stale value and routes back into the bare wizard,
+              // reproducing the exact 403 confirmation_required this task
+              // fixes, for every freshly-enrolled account. Mirrors web's
+              // identical `refreshUser()` call at the same point
+              // (settings/security.tsx `handleVerify`).
+              refreshAuth().catch(() => {})
+            }}
+            onVerifyingChange={setVerifying}
+            c={c}
+          />
         )}
 
         {mode === 'wizard' && !loadingSetup && setup != null && step === 3 && (
