@@ -660,6 +660,12 @@ export interface User {
   email: string;
   email_verified: boolean;
   created_at: string;
+  /** `/api/v1/auth/me` always includes this (COALESCE'd false when no TOTP
+   *  row exists yet — `routes/auth.rs::me`) — never optional/undefined. Read
+   *  by SettingsScreen/TwoFactorSetupScreen to decide the 2FA entry point
+   *  (task 1610) instead of unconditionally routing an already-enabled
+   *  account into a bare setup call. */
+  totp_enabled: boolean;
 }
 
 // Account creation is web-only since task 1037: "Create account" points to
@@ -3632,12 +3638,25 @@ export interface TotpSetup {
   backup_codes: string[];
 }
 
-/** POST /api/v1/auth/2fa/setup — generate secret + backup codes */
-export async function setupTotp(): Promise<TotpSetup> {
-  // Body {} (not empty): request() always sets Content-Type: application/json,
-  // and axum's Option<Json<SetupRequest>> on the server rejects a JSON-typed
-  // EMPTY body with 400 ("EOF while parsing") — the 1297 wizard dead-end.
-  return request<TotpSetup>('POST', '/api/v1/auth/2fa/setup', {});
+/**
+ * POST /api/v1/auth/2fa/setup — generate secret + backup codes.
+ *
+ * Body {} (not empty): request() always sets Content-Type: application/json,
+ * and axum's Option<Json<SetupRequest>> on the server rejects a JSON-typed
+ * EMPTY body with 400 ("EOF while parsing") — the 1297 wizard dead-end.
+ *
+ * When the account already has 2FA ON, the server requires step-up before
+ * replacing the live secret (`routes/totp.rs` `setup_step_up_validated_if_required`
+ * — task 1610): either the current TOTP/backup code as `opts.code`, or a
+ * step-up `X-Confirm-Token` (from `requestConfirmation()`, `confirm-action.ts`)
+ * as `opts.confirmToken`. Calling this bare against an enabled account 403s
+ * `confirmation_required` — callers MUST gate on `User.totp_enabled` first
+ * and offer one of the two paths for "set up again", never call it bare.
+ */
+export async function setupTotp(opts?: { code?: string; confirmToken?: string }): Promise<TotpSetup> {
+  const body = opts?.code ? { code: opts.code } : {};
+  const extraHeaders = opts?.confirmToken ? { 'X-Confirm-Token': opts.confirmToken } : undefined;
+  return request<TotpSetup>('POST', '/api/v1/auth/2fa/setup', body, true, extraHeaders);
 }
 
 /** POST /api/v1/auth/2fa/enable — verify code and activate TOTP */

@@ -2453,6 +2453,13 @@ export default function SettingsScreen() {
             )}
             <SettingsRow
               label="Two-Factor Authentication"
+              // Task 1610: show the live status inline, straight from
+              // useAuth().user (already fetched — /auth/me always includes
+              // totp_enabled) rather than making the user open the screen to
+              // find out. TwoFactorSetupScreen itself reads the same field to
+              // decide whether to open on the On state or the fresh-enrollment
+              // wizard — this row's onPress never branches on it.
+              value={user?.totp_enabled ? 'On' : undefined}
               icon="lock-closed-outline"
               onPress={() => navigation.navigate('TwoFactorSetup')}
               c={c}
