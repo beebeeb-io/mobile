@@ -98,6 +98,26 @@ private final class LockedDictionary<Key: Hashable, Value> {
     defer { lock.unlock() }
     return Array(storage.keys)
   }
+
+  /// Atomic get-transform-set under ONE lock acquisition. Task 1605 review
+  /// round 3 (P2): a caller that reads the subscript, computes a new value,
+  /// and writes the subscript back (two separate lock acquisitions) leaves a
+  /// window between the two where another thread's `removeAll()` can land —
+  /// the caller's write then resurrects the very entry `removeAll()` just
+  /// cleared. `NativeBackupEngine`'s `didReceive` (accumulating a chunk-PUT
+  /// response body) had exactly that shape, racing `stop()`'s
+  /// `chunkResponseBodyBuffers.removeAll()`. `transform` receives the
+  /// current value (nil if absent) and returns the value to store (nil
+  /// removes the key) — both under the SAME lock hold, so no other
+  /// operation on this dictionary can interleave.
+  @discardableResult
+  func mutate(key: Key, _ transform: (Value?) -> Value?) -> Value? {
+    lock.lock()
+    defer { lock.unlock() }
+    let next = transform(storage[key])
+    storage[key] = next
+    return next
+  }
 }
 
 @available(iOS 16.1, *)
@@ -605,14 +625,32 @@ final class NativeBackupEngine: NSObject {
   /// call `pause()`, never `stop()`), so the upload queue and every asset's
   /// `retry_count` are left exactly as they were. Cleared unconditionally
   /// by the very next `start()` call, in EITHER of its branches (see that
-  /// function) — the "next start after the account state refreshes" this
-  /// task's brief asks for: `backup-context.tsx`'s warm-up effect calls
-  /// `enableNativeBackup` (→ native `start()`) again once
-  /// `AccountStateProvider` next observes the account unblocked. If the
-  /// account is STILL blocked, that `start()` just re-pauses on the very
-  /// next upload attempt — self-correcting, at the cost of one harmless
-  /// refused request, same trade-off `ownerUnconfirmedStopReason`'s clear
-  /// already makes.
+  /// function) — `start()` is the ONLY place this clears; `resume()`
+  /// (below) does NOT reach that clearing code when `isRunning` was already
+  /// true (which it always is here, since `pause()` never flips
+  /// `isRunning`) — it just flips `isPaused` back off. Callers that want
+  /// this reason cleared must go through `start()`, not `resume()`.
+  ///
+  /// Round 3 review (2026-09-29) — the resume trigger, corrected: three of
+  /// the four refusal codes move `AccountGate.kind` off `'ok'` on the JS
+  /// side (`account-state.ts`), so `backup-context.tsx`'s mount/warm-up
+  /// effect (keyed on the derived blocked-message) already re-fires
+  /// `enableNativeBackup` → native `start()` once `AccountStateProvider`
+  /// next observes the account unblocked. The FOURTH — the 25 GB trial cap
+  /// — does NOT move `AccountGate.kind` (`account_state` stays `'ok'` for a
+  /// merely-capped, not-cancelled trial; `gateForRefusalCode('quota_exceeded',
+  /// …)` returns null for an otherwise-ok account by design), so that
+  /// effect has nothing to react to for it and this reason used to stay
+  /// stuck until a manual toggle or app relaunch. `backup-context.tsx` now
+  /// runs a SEPARATE, bounded poll (`runAccountRefusalPollTick`,
+  /// `ACCOUNT_REFUSAL_POLL_MS`) while `accountRefusalReason` is set — on
+  /// foreground and every 15 s — that re-fetches `GET
+  /// /billing/subscription` directly and, the moment the account is
+  /// unblocked (a real gate transition OR the trial-cap headroom clears),
+  /// calls `enableNativeBackup('camera_roll', …)` (→ native `start()`,
+  /// which clears this reason) and stops its own interval. If the account
+  /// is STILL blocked, the poll just tries again next tick — no hot loop,
+  /// bounded to while this reason is set.
   private var _accountRefusalStopReason: String?
   private var accountRefusalStopReason: String? {
     get { engineStateLock.lock(); defer { engineStateLock.unlock() }; return _accountRefusalStopReason }
@@ -5910,13 +5948,26 @@ extension NativeBackupEngine: URLSessionDelegate, URLSessionTaskDelegate, URLSes
   /// (set in `uploadStagedChunk`), so a background DOWNLOAD/other task this
   /// engine doesn't originate (there are none today, but this delegate is
   /// shared session-wide) is never buffered.
+  ///
+  /// Task 1605 review round 3 (P2): this used to be a subscript GET, then a
+  /// separate subscript SET — two lock acquisitions with a window between
+  /// them where `stop()`'s `chunkResponseBodyBuffers.removeAll()` (a
+  /// different thread — `stop()` can run from the JS bridge's queue mid
+  /// chunk-upload) could land, and the SET below would then resurrect the
+  /// very entry `removeAll()` had just cleared for a task that is
+  /// supposedly stopped. `.mutate(key:)` does the read, cap check, and
+  /// write in ONE compound locked operation (`LockedDictionary`'s own doc
+  /// comment), so a concurrent `removeAll()` can only land strictly before
+  /// or strictly after this whole tick — never in the middle of it.
   func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
     guard dataTask.taskDescription != nil else { return }
-    let existing = chunkResponseBodyBuffers[dataTask.taskIdentifier] ?? Data()
-    guard existing.count < Self.chunkResponseBodyCapBytes else { return }
-    var updated = existing
-    updated.append(data.prefix(Self.chunkResponseBodyCapBytes - existing.count))
-    chunkResponseBodyBuffers[dataTask.taskIdentifier] = updated
+    chunkResponseBodyBuffers.mutate(key: dataTask.taskIdentifier) { existing in
+      let existing = existing ?? Data()
+      guard existing.count < Self.chunkResponseBodyCapBytes else { return existing }
+      var updated = existing
+      updated.append(data.prefix(Self.chunkResponseBodyCapBytes - existing.count))
+      return updated
+    }
   }
 
   func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
