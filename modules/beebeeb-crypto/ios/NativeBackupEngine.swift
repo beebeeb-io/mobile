@@ -98,6 +98,26 @@ private final class LockedDictionary<Key: Hashable, Value> {
     defer { lock.unlock() }
     return Array(storage.keys)
   }
+
+  /// Atomic get-transform-set under ONE lock acquisition. Task 1605 review
+  /// round 3 (P2): a caller that reads the subscript, computes a new value,
+  /// and writes the subscript back (two separate lock acquisitions) leaves a
+  /// window between the two where another thread's `removeAll()` can land —
+  /// the caller's write then resurrects the very entry `removeAll()` just
+  /// cleared. `NativeBackupEngine`'s `didReceive` (accumulating a chunk-PUT
+  /// response body) had exactly that shape, racing `stop()`'s
+  /// `chunkResponseBodyBuffers.removeAll()`. `transform` receives the
+  /// current value (nil if absent) and returns the value to store (nil
+  /// removes the key) — both under the SAME lock hold, so no other
+  /// operation on this dictionary can interleave.
+  @discardableResult
+  func mutate(key: Key, _ transform: (Value?) -> Value?) -> Value? {
+    lock.lock()
+    defer { lock.unlock() }
+    let next = transform(storage[key])
+    storage[key] = next
+    return next
+  }
 }
 
 @available(iOS 16.1, *)
@@ -210,6 +230,25 @@ enum BackupError: LocalizedError {
   /// like any other asset failure; never a second re-init attempt with the
   /// server's id (that would compound the mistake, not fix it).
   case reinitFileIdMismatch
+  /// Task 1605 (PR #155 review thread PRRT_kwDOSLX6T86nRLw0): the server's
+  /// typed 409 for an account that cannot store data right now for a
+  /// BILLING reason — `trial_cancelled_read_only` / `account_lapsed` /
+  /// `plan_required` (`AccountRefusalDetection.knownRefusalCodes`).
+  /// Distinct from `.accountMismatchConfirmed` (the SESSION doesn't match
+  /// the account) — this IS the right account. Routes to a DIFFERENT
+  /// recovery than the generic `markFailed` path: the call site that
+  /// detected this already paused the whole engine
+  /// (`handleConfirmedAccountRefusal`) and this asset's catch clause keeps
+  /// its queue position (no `retry_count` bump) rather than climbing
+  /// toward the retry-10 dead-letter for a reason that has nothing to do
+  /// with this specific asset.
+  case accountRefused(code: String)
+  /// Task 1605 — the sibling 413 `quota_exceeded` with `is_trial_cap:
+  /// true`: the 25 GB never-paid-trial cap. Same pause-and-keep-queue
+  /// recovery as `.accountRefused` above (`handleConfirmedTrialCapExceeded`)
+  /// — NOT the ordinary `quota_exceeded` retry (a real out-of-plan-quota
+  /// hit is still a generic retryable failure, unchanged by this case).
+  case trialCapExceeded
 
   var errorDescription: String? {
     switch self {
@@ -236,6 +275,10 @@ enum BackupError: LocalizedError {
       return "Backup upload refused: server reported the signed-in account changed"
     case .reinitFileIdMismatch:
       return "Upload session re-init returned a different file id than expected"
+    case .accountRefused(let code):
+      return "Backup upload refused: account cannot store data right now (\(code))"
+    case .trialCapExceeded:
+      return "Backup upload refused: trial storage cap reached"
     }
   }
 }
@@ -570,6 +613,50 @@ final class NativeBackupEngine: NSObject {
     set { engineStateLock.lock(); _ownerUnconfirmedStopReason = newValue; engineStateLock.unlock() }
   }
 
+  /// Task 1605 (PR #155 review thread PRRT_kwDOSLX6T86nRLw0): a THIRD sticky
+  /// reason, sibling to the two above — set when the server confirms this
+  /// account cannot store data right now for a BILLING reason (a never-paid
+  /// trial cancelled before its first charge, a lapsed trial/plan, no plan
+  /// at all, or the 25 GB trial cap) on a request this engine actually
+  /// sent. Unlike `accountMismatchStopReason` (the SESSION no longer
+  /// matches the account — this engine fully stops and drops its key),
+  /// this IS the right account — the engine only PAUSES
+  /// (`handleConfirmedAccountRefusal`/`handleConfirmedTrialCapExceeded`
+  /// call `pause()`, never `stop()`), so the upload queue and every asset's
+  /// `retry_count` are left exactly as they were. Cleared unconditionally
+  /// by the very next `start()` call, in EITHER of its branches (see that
+  /// function) — `start()` is the ONLY place this clears; `resume()`
+  /// (below) does NOT reach that clearing code when `isRunning` was already
+  /// true (which it always is here, since `pause()` never flips
+  /// `isRunning`) — it just flips `isPaused` back off. Callers that want
+  /// this reason cleared must go through `start()`, not `resume()`.
+  ///
+  /// Round 3 review (2026-09-29) — the resume trigger, corrected: three of
+  /// the four refusal codes move `AccountGate.kind` off `'ok'` on the JS
+  /// side (`account-state.ts`), so `backup-context.tsx`'s mount/warm-up
+  /// effect (keyed on the derived blocked-message) already re-fires
+  /// `enableNativeBackup` → native `start()` once `AccountStateProvider`
+  /// next observes the account unblocked. The FOURTH — the 25 GB trial cap
+  /// — does NOT move `AccountGate.kind` (`account_state` stays `'ok'` for a
+  /// merely-capped, not-cancelled trial; `gateForRefusalCode('quota_exceeded',
+  /// …)` returns null for an otherwise-ok account by design), so that
+  /// effect has nothing to react to for it and this reason used to stay
+  /// stuck until a manual toggle or app relaunch. `backup-context.tsx` now
+  /// runs a SEPARATE, bounded poll (`runAccountRefusalPollTick`,
+  /// `ACCOUNT_REFUSAL_POLL_MS`) while `accountRefusalReason` is set — on
+  /// foreground and every 15 s — that re-fetches `GET
+  /// /billing/subscription` directly and, the moment the account is
+  /// unblocked (a real gate transition OR the trial-cap headroom clears),
+  /// calls `enableNativeBackup('camera_roll', …)` (→ native `start()`,
+  /// which clears this reason) and stops its own interval. If the account
+  /// is STILL blocked, the poll just tries again next tick — no hot loop,
+  /// bounded to while this reason is set.
+  private var _accountRefusalStopReason: String?
+  private var accountRefusalStopReason: String? {
+    get { engineStateLock.lock(); defer { engineStateLock.unlock() }; return _accountRefusalStopReason }
+    set { engineStateLock.lock(); _accountRefusalStopReason = newValue; engineStateLock.unlock() }
+  }
+
   private var _isRunning = false
   private var isRunning: Bool {
     get { engineStateLock.lock(); defer { engineStateLock.unlock() }; return _isRunning }
@@ -669,6 +756,22 @@ final class NativeBackupEngine: NSObject {
   // original crash evidence's line numbers, cited in the task file, are
   // against the pre-fix commit 0be3b3e).
   private let chunkUploadContinuations = LockedDictionary<Int, CheckedContinuation<Void, Error>>()
+  /// Task 1605 (PR #155 review thread PRRT_kwDOSLX6T86nRLw0): a background
+  /// `URLSession` upload task's `didCompleteWithError` delegate callback
+  /// never receives the response BODY — only `task.response`'s status code
+  /// — so distinguishing typed 409s on `PUT /uploads/{session}/chunks/{i}`
+  /// (`account_mismatch` vs. `ensure_can_upload`'s task-1605 refusal codes,
+  /// server PR #129 review — this route re-checks the gate on EVERY chunk,
+  /// not just at init) needs the body accumulated separately, via
+  /// `URLSessionDataDelegate.urlSession(_:dataTask:didReceive:)` below.
+  /// Keyed by `taskIdentifier`, same lifecycle as `chunkUploadContinuations`
+  /// (written as data arrives, read + removed on completion). Capped per
+  /// task at `chunkResponseBodyCapBytes` — every real body on this route is
+  /// a tiny JSON object (`{}` on success, a short typed-error object on
+  /// failure; never a legitimate large payload) — so a misbehaving proxy
+  /// echoing something huge back can't grow this unboundedly.
+  private let chunkResponseBodyBuffers = LockedDictionary<Int, Data>()
+  private static let chunkResponseBodyCapBytes = 4096
   #if os(iOS)
   private var _networkMonitor: NWPathMonitor?
   private var networkMonitor: NWPathMonitor? {
@@ -758,6 +861,36 @@ final class NativeBackupEngine: NSObject {
   /// in; the vault is just locked).
   static let ownerUnconfirmedStopReasonMessage =
     "Backup paused: unlock the app to confirm this account."
+  /// Task 1605 — the honest, user-facing copy for `accountRefusalStopReason`,
+  /// one per refusal code. Deliberately WORD-FOR-WORD the same copy
+  /// `account-state.ts`'s `readOnlyUploadMessage()` already shows for a
+  /// manual upload refused the same way (JS's own upload path, task 1605's
+  /// web/mobile half) — one voice for "why can't I upload" everywhere in
+  /// this app, not two copies that could drift. No purchase/pay-now call to
+  /// action, unlike web (task 1400, App Review 3.1.1(a) — this app has no
+  /// In-App Purchase product; see `account-state.ts`'s file header and
+  /// `DEVIATIONS.md` → "Task 1605").
+  static func accountRefusalStopReasonMessage(for code: String) -> String {
+    switch code {
+    case "trial_cancelled_read_only":
+      return "You cancelled your trial before its first payment, so uploads and backup are off. Resume your trial on the web to upload again."
+    case "account_lapsed":
+      return "Your trial has ended, so your vault is read-only: uploads and backup are off. You can still browse and download your files."
+    case "plan_required":
+      return "Choose your plan on the web at beebeeb.io to start uploading."
+    default:
+      // Unreachable in practice — `AccountRefusalDetection.knownRefusalCodes`
+      // is the only source of `code` — but a switch over a `String` (not an
+      // enum) needs an exhaustive default, and an honest generic beats a
+      // crash if a future server code is added here without a matching case.
+      return "Backup paused: this account cannot upload right now."
+    }
+  }
+  /// Task 1605 — sibling copy for the 413 trial-cap case. Word-for-word the
+  /// same as `billing-status.ts`'s `trialCapNote()`, same "one voice"
+  /// rationale as the doc comment above.
+  static let trialCapStopReasonMessage =
+    "This account is on the 25 GB trial storage cap until your first payment clears. Manage your plan from your account on the web."
 
   // MARK: - Configuration (set by JS before calling start)
 
@@ -1817,6 +1950,43 @@ final class NativeBackupEngine: NSObject {
     ownerUnconfirmedStopReason = nil
   }
 
+  /// Task 1605 (PR #155 review thread PRRT_kwDOSLX6T86nRLw0): the server
+  /// confirmed — on a request THIS engine sent — that this account cannot
+  /// store data right now for a BILLING reason (never-paid trial cancelled
+  /// before its first charge, lapsed trial/plan, or no plan at all;
+  /// `code` is one of `AccountRefusalDetection.knownRefusalCodes`).
+  ///
+  /// Deliberately NARROWER than `handleConfirmedAccountMismatch()`: this IS
+  /// the right account — the session and the master key are both still
+  /// correct — so there is nothing to drop and no reason to force a fresh
+  /// sign-in. `pause()` (not `stop()`) leaves `isRunning`, the upload
+  /// queue, and every asset's `retry_count` untouched; only the drain loop
+  /// stops picking up new work until the next `start()` call clears
+  /// `accountRefusalStopReason` (see that property's doc comment for the
+  /// resume path and why clearing unconditionally is safe).
+  ///
+  /// Call sites keep the ASSET's own queue position too — see the
+  /// `catch BackupError.accountRefused` clause in `uploadSingleAsset`, which
+  /// calls `markPending` (never `markFailed`) so this one asset's
+  /// `retry_count` is not spent on a reason that has nothing to do with it.
+  private func handleConfirmedAccountRefusal(code: String) {
+    RuntimeTrace.event("backup.native.account_refused", ["code": code])
+    accountRefusalStopReason = Self.accountRefusalStopReasonMessage(for: code)
+    pause()
+  }
+
+  /// Sibling for the 413 `quota_exceeded` + `is_trial_cap: true` case — same
+  /// pause-and-keep-queue recovery as `handleConfirmedAccountRefusal` above,
+  /// distinct reason text (no account-state transition is coming; the
+  /// account just needs its first payment to clear before more storage is
+  /// available, unlike the three codes above which resolve via resuming/
+  /// paying/choosing a plan on the web).
+  private func handleConfirmedTrialCapExceeded() {
+    RuntimeTrace.event("backup.native.trial_cap_exceeded")
+    accountRefusalStopReason = Self.trialCapStopReasonMessage
+    pause()
+  }
+
   // MARK: - Lifecycle
 
   /// Start the backup engine. Loads the master key from keychain, registers
@@ -1860,6 +2030,17 @@ final class NativeBackupEngine: NSObject {
         startNetworkMonitor()
       }
       #endif
+      // Task 1605: this IS the "next start after the account state
+      // refreshes" resume point `accountRefusalStopReason`'s doc comment
+      // promises. Clear unconditionally, same trade-off
+      // `ownerUnconfirmedStopReason` already makes below: if the account is
+      // STILL blocked, the very next upload attempt just re-pauses
+      // immediately (one harmless refused request), never a silent stuck
+      // pause with no way back to "running" short of a full app relaunch.
+      if accountRefusalStopReason != nil {
+        accountRefusalStopReason = nil
+        isPaused = false
+      }
       wakeDrainLoop(reason: "start")
       return
     }
@@ -1963,6 +2144,12 @@ final class NativeBackupEngine: NSObject {
       // two refusal branches, so a stale reason from an EARLIER failed
       // `start()` attempt never survives a later successful one.
       ownerUnconfirmedStopReason = nil
+      // Task 1605: same unconditional clear, same rationale — see
+      // `accountRefusalStopReason`'s doc comment for why clearing here (a
+      // FRESH start, `isRunning` was false) is the "next start" resume
+      // point. `isPaused` is already reset to `false` a few lines below
+      // (this function's own tail), so there is nothing further to flip.
+      accountRefusalStopReason = nil
       // Task 1599 followup 3: `currentAccountId` here is `start()`'s OWN
       // persisted account id (Keychain-backed — see its property doc), which
       // is only ever WRITTEN by `bindAccount(userId:)`, called by JS only
@@ -2058,6 +2245,11 @@ final class NativeBackupEngine: NSObject {
     stopNetworkMonitor()
 
     uploadTaskMap.removeAll()
+    // Task 1605: sibling cleanup for `chunkResponseBodyBuffers` — cancelled
+    // background tasks never reach `didCompleteWithError`'s own
+    // `removeValue`, so without this a `stop()` mid-upload would leak one
+    // small capped buffer per in-flight chunk task until the next `stop()`.
+    chunkResponseBodyBuffers.removeAll()
 
     // Recover any rows stuck in 'uploading' state
     dbQueue.async { [weak self] in
@@ -2244,6 +2436,13 @@ final class NativeBackupEngine: NSObject {
       // reason — see `ownerUnconfirmedStopReason`'s doc comment for why this
       // is distinct from `accountMismatchReason` above.
       "ownerUnconfirmedReason": ownerUnconfirmedStopReason ?? NSNull(),
+      // Task 1605 (PR #155 review thread PRRT_kwDOSLX6T86nRLw0): a THIRD
+      // local-only-in-the-sense-of-`ownerUnconfirmedReason`'s-non-session-
+      // ending-ness reason — see `accountRefusalStopReason`'s doc comment.
+      // Unlike `ownerUnconfirmedReason` this DOES come from a server
+      // round-trip (a confirmed 409/413), but like it, it never ends the
+      // JS session — this is the right account, just billing-blocked.
+      "accountRefusalReason": accountRefusalStopReason ?? NSNull(),
     ]
   }
 
@@ -3205,6 +3404,43 @@ final class NativeBackupEngine: NSObject {
       onFileStatus?(asset.localAssetId, "pending", nil, nil)
       NSLog("[NativeBackupEngine] Asset upload stalled on chunk \(chunkIndex); re-staging: \(asset.localAssetId)")
       return false
+    } catch BackupError.accountRefused(let code) {
+      // Task 1605 (PR #155 review thread PRRT_kwDOSLX6T86nRLw0): the call
+      // site that threw this already paused the WHOLE engine
+      // (`handleConfirmedAccountRefusal`) and recorded why
+      // (`accountRefusalStopReason`). This one asset's own recovery is
+      // narrower: `markPending` — NOT `markFailed` — keeps its staged
+      // chunks and leaves `retry_count` untouched, so it is neither
+      // dead-lettered nor loses upload progress for a reason that has
+      // nothing to do with this specific asset. It re-attempts on its own
+      // the next time this engine actually drains (see `start()`'s
+      // unconditional clear of the stop reason).
+      perfLog("asset.account_refused", [
+        "assetType": asset.assetType,
+        "code": code,
+        "retry": asset.retryCount
+      ])
+      dbQueue.sync {
+        markPending(assetId: asset.localAssetId, error: Self.accountRefusalStopReasonMessage(for: code))
+      }
+      updateBackupStatusSurfaces(reason: "Backup paused")
+      onFileStatus?(asset.localAssetId, "pending", nil, nil)
+      NSLog("[NativeBackupEngine] Asset upload paused (account refused, \(code)): \(asset.localAssetId)")
+      return false
+    } catch BackupError.trialCapExceeded {
+      // Task 1605 — sibling of the `.accountRefused` catch above for the
+      // 413 trial-cap case. Same "keep the queue" recovery.
+      perfLog("asset.trial_cap_exceeded", [
+        "assetType": asset.assetType,
+        "retry": asset.retryCount
+      ])
+      dbQueue.sync {
+        markPending(assetId: asset.localAssetId, error: Self.trialCapStopReasonMessage)
+      }
+      updateBackupStatusSurfaces(reason: "Backup paused")
+      onFileStatus?(asset.localAssetId, "pending", nil, nil)
+      NSLog("[NativeBackupEngine] Asset upload paused (25 GB trial cap reached): \(asset.localAssetId)")
+      return false
     } catch {
       perfLog("asset.fail", [
         "assetType": asset.assetType,
@@ -4147,6 +4383,25 @@ final class NativeBackupEngine: NSObject {
       throw BackupError.accountMismatchConfirmed
     }
 
+    // Task 1605 (PR #155 review thread PRRT_kwDOSLX6T86nRLw0): this route is
+    // ALSO gated by `ensure_can_upload` (server PR #129) — a typed 409 for
+    // an account that cannot store data right now for a billing reason.
+    // Checked before the generic 429/status handling below, same reason as
+    // the account_mismatch check above: a bare status code can't
+    // distinguish this from the unrelated 1589 "live foreign lease" 409.
+    if statusCode == 409, let code = AccountRefusalDetection.accountRefusalCode(data) {
+      handleConfirmedAccountRefusal(code: code)
+      throw BackupError.accountRefused(code: code)
+    }
+    // Task 1605 — the sibling 413: the 25 GB never-paid-trial cap. Checked
+    // before the generic status handling for the same reason — an ordinary
+    // out-of-plan-quota 413 must NOT take this branch (it stays a generic
+    // retryable failure, unchanged by this task).
+    if statusCode == 413, AccountRefusalDetection.isTrialCapQuotaExceeded(data) {
+      handleConfirmedTrialCapExceeded()
+      throw BackupError.trialCapExceeded
+    }
+
     // Handle rate limiting
     if statusCode == 429 {
       if let retryAfter = (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Retry-After"),
@@ -4288,6 +4543,16 @@ final class NativeBackupEngine: NSObject {
     if statusCode == 409, AccountMismatchDetection.isAccountMismatch(data) {
       handleConfirmedAccountMismatch()
       throw BackupError.accountMismatchConfirmed
+    }
+    // Task 1605 (PR #155 review thread PRRT_kwDOSLX6T86nRLw0): server PR
+    // #129's review added an `ensure_can_upload` re-check to THIS route too
+    // (`routes/uploads.rs::complete_upload`) — a session opened before a
+    // never-paid trial's cancellation must not be able to FINALIZE after
+    // it, even if every chunk already landed. Same typed-body check as
+    // `initUploadSession`'s.
+    if statusCode == 409, let code = AccountRefusalDetection.accountRefusalCode(data) {
+      handleConfirmedAccountRefusal(code: code)
+      throw BackupError.accountRefused(code: code)
     }
 
     guard (200..<300).contains(statusCode) else {
@@ -5676,12 +5941,42 @@ extension NativeBackupEngine: PHPhotoLibraryChangeObserver {
 
 extension NativeBackupEngine: URLSessionDelegate, URLSessionTaskDelegate, URLSessionDataDelegate {
 
+  /// Task 1605 (PR #155 review thread PRRT_kwDOSLX6T86nRLw0): accumulate the
+  /// response body for a chunk-PUT background task as it streams in, capped
+  /// — see `chunkResponseBodyBuffers`'s doc comment for why this exists and
+  /// why the cap is safe. Only chunk-PUT tasks carry a `taskDescription`
+  /// (set in `uploadStagedChunk`), so a background DOWNLOAD/other task this
+  /// engine doesn't originate (there are none today, but this delegate is
+  /// shared session-wide) is never buffered.
+  ///
+  /// Task 1605 review round 3 (P2): this used to be a subscript GET, then a
+  /// separate subscript SET — two lock acquisitions with a window between
+  /// them where `stop()`'s `chunkResponseBodyBuffers.removeAll()` (a
+  /// different thread — `stop()` can run from the JS bridge's queue mid
+  /// chunk-upload) could land, and the SET below would then resurrect the
+  /// very entry `removeAll()` had just cleared for a task that is
+  /// supposedly stopped. `.mutate(key:)` does the read, cap check, and
+  /// write in ONE compound locked operation (`LockedDictionary`'s own doc
+  /// comment), so a concurrent `removeAll()` can only land strictly before
+  /// or strictly after this whole tick — never in the middle of it.
+  func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+    guard dataTask.taskDescription != nil else { return }
+    chunkResponseBodyBuffers.mutate(key: dataTask.taskIdentifier) { existing in
+      let existing = existing ?? Data()
+      guard existing.count < Self.chunkResponseBodyCapBytes else { return existing }
+      var updated = existing
+      updated.append(data.prefix(Self.chunkResponseBodyCapBytes - existing.count))
+      return updated
+    }
+  }
+
   func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
     if let description = task.taskDescription,
        let data = description.data(using: .utf8),
        let chunk = try? JSONDecoder().decode(BackgroundChunkTaskDescription.self, from: data) {
       let statusCode = (task.response as? HTTPURLResponse)?.statusCode ?? 0
       let continuation = chunkUploadContinuations.removeValue(forKey: task.taskIdentifier)
+      let responseBody = chunkResponseBodyBuffers.removeValue(forKey: task.taskIdentifier)
 
       if let error {
         dbQueue.async { [weak self] in
@@ -5702,18 +5997,38 @@ extension NativeBackupEngine: URLSessionDelegate, URLSessionTaskDelegate, URLSes
           }
         }
         continuation?.resume()
+      } else if statusCode == 409, let responseBody, AccountRefusalDetection.accountRefusalCode(responseBody) != nil {
+        // Task 1605 (PR #155 review thread PRRT_kwDOSLX6T86nRLw0): this
+        // route re-checks `ensure_can_upload` on EVERY chunk (server PR
+        // #129 review) — a session opened before a never-paid trial's
+        // cancellation must not go on accepting chunks after it. Checked
+        // BEFORE the `account_mismatch` fallback below: the two are
+        // distinguishable now that a body is captured (`didReceive` above),
+        // and must never be confused — this IS the right account.
+        let code = AccountRefusalDetection.accountRefusalCode(responseBody)!
+        handleConfirmedAccountRefusal(code: code)
+        dbQueue.async { [weak self] in
+          self?.markChunkFailed(
+            assetId: chunk.localAssetId,
+            chunkIndex: chunk.chunkIndex,
+            error: "account refused (409 \(code))"
+          )
+        }
+        continuation?.resume(throwing: BackupError.accountRefused(code: code))
       } else if statusCode == 409 {
-        // Task 1599: a background upload task's delegate never captures the
-        // response BODY (see `isBackupUploadSessionGone`'s doc comment above
-        // — only `task.response`'s status code is available here), so this
-        // can't run `AccountMismatchDetection` on the body like every other
-        // call site in this file. Verified against the server source
-        // (`beebeeb-api/src/routes/uploads.rs::upload_chunk` — no
-        // `ApiError::Conflict`/`ConflictCode` of its own; its ONLY route
-        // to a 409 is the `AuthUser` extractor's centralized
-        // `check_expected_user`, task 1554) that a bare 409 on THIS specific
-        // route (`PUT /uploads/{session}/chunks/{index}`) can only ever mean
-        // `account_mismatch` — never a legitimate data conflict.
+        // Task 1599's original rationale for this branch (bare 409 on this
+        // route meaning ONLY `account_mismatch`) is no longer exactly true
+        // post-1605 — see the branch above. But `didReceive` capture is
+        // best-effort (the buffer above can be empty if the body arrived in
+        // a way this delegate missed, or was capped away by a pathological
+        // response), so a 409 whose body did NOT resolve to one of the
+        // task-1605 refusal codes still falls through to the ORIGINAL
+        // assumption here — every other confirmed cause of a 409 on this
+        // exact route remains `account_mismatch` (task 1554's
+        // `check_expected_user`), and treating an unrecognised 409 as a
+        // generic retryable failure instead would let a genuinely
+        // mismatched session keep retrying under the wrong account's belief
+        // until dead-letter, which is worse.
         handleConfirmedAccountMismatch()
         dbQueue.async { [weak self] in
           self?.markChunkFailed(

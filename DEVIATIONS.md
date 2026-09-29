@@ -605,3 +605,35 @@ No design mock covers these states. They are recorded here so they get reviewed 
 - **needs_plan** (`screens/NeedsPlanScreen.tsx`): a full-screen overlay above the navigator, styled like `PhraseNotConfirmedScreen` (plain surface, brand mark, one amber primary). The primary is `Refresh`, the secondary is `Sign out`, and the copy is plain text pointing to beebeeb.io. The same switch adds an `Open beebeeb.io` link to `/choose-plan`.
 - **lapsed**: a persistent, non-dismissable amber banner at the top of Files (the storage-banner shape, with wrapping text so the deletion date is never cut off). Settings and Storage & Plan show a `READ-ONLY` badge and "Read-only · deleted on {date}". Neither has a purchase or manage link, because the app has no billing link-out anywhere.
 - **Trial with a payment mandate** (`trial_auto_converts`): "Trial ends {date} · continues automatically" under the existing `TRIAL` badge. A legacy no-card trial keeps "Trial ends {date}".
+
+## Task 1605 (mobile) — no "pay now" button; informational cap/cancel copy only
+
+The brief (`.claude/tasks/in-development/1605-trial-abuse-limits-cancel-readonly-retention-cap.md`,
+mirroring the web half) asks for a **"Pay now to unlock \<plan\> storage" button** on the trial
+card, calling `POST /billing/trial/pay-now` to charge the first period immediately. **Not shipped
+on mobile — no purchase/pay-now action exists in this app, on this screen or anywhere else.**
+
+**Why:** task 1400 (App Review 3.1.1(a), same rule `account-state.ts` and `StorageScreen.tsx`'s
+file headers already state) — this app has no In-App Purchase product configured, and neither a
+button nor a link to an external purchasing mechanism is allowed on this storefront.
+`POST /billing/trial/pay-now` charges real money; a tappable button that calls it is exactly the
+purchase call-to-action task 1400 removed everywhere else (`SHOW_PLAN_CATALOG = false`, no
+"Manage subscription" CTA, no signup screen, no lapsed-banner purchase link).
+
+**What shipped instead:** the same informational-only pattern as every other billing fact on this
+screen (`PLAN_MANAGEMENT_NOTE`):
+- Storage & Plan's status line reads "Uploads stopped · Access until \<date\> · Files deleted on
+  \<date\>" for a never-paid trial cancelled before its first charge (never "Access until" alone,
+  never "Renews") — `billing-status.ts`'s `billingStatusView`, task 1605 branch.
+- An active mandated trial under the 25 GB cap shows one line: "This account is on the 25 GB
+  trial storage cap until your first payment clears. Manage your plan from your account on the
+  web." — `billing-status.ts`'s `trialCapNote`. No button, no price emphasis beyond the cap size
+  itself, no "pay now" / "upgrade" wording (see the module's own test asserting this).
+- A 409 `trial_cancelled_read_only` upload/backup/share refusal and a 413 `quota_exceeded` with
+  `is_trial_cap: true` both get their own honest message via `account-state.ts`/`friendlyError()`
+  — "Resume your trial on the web" / "Manage your plan from your account on the web", never a
+  local purchase action.
+
+This is a deviation from the BRIEF, not from a design mock or a Guus ruling — recorded here per
+the same "flagged, never shipped silently" convention rather than silently dropping the button or
+silently adding one that would risk App Review rejection.

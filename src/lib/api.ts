@@ -19,7 +19,7 @@ import { assertNativeUploadEncryptedUnderSessionId, nativeProgressToUploadProgre
 import { getDeviceId } from './sync-client';
 import { deviceIdHeader } from './upload-device-header';
 import { setAnnouncement, clearAnnouncement } from './announcement-context';
-import { ACCOUNT_LAPSED_ERROR, PLAN_REQUIRED_ERROR, gateForRefusalCode, getCurrentAccountGate, readOnlyUploadMessage } from './account-state';
+import { ACCOUNT_LAPSED_ERROR, PLAN_REQUIRED_ERROR, TRIAL_CANCELLED_READ_ONLY_ERROR, gateForRefusalCode, getCurrentAccountGate, readOnlyUploadMessage } from './account-state';
 import { resolveWebAppUrl } from './web-links';
 import { normalizeNotificationPreferences, type NotificationPreferences } from './notification-prefs';
 // Task 1594 fix 4: the unlocked key's owner, sent on authenticated mutations.
@@ -280,6 +280,12 @@ export class ApiError extends Error {
      * 429's `Retry-After` header (task 1591). Undefined when absent.
      */
     public retryAfterSeconds?: number,
+    /**
+     * Task 1605 — true only for a 413 `quota_exceeded` hit against the
+     * never-paid-trial 25 GB cap (server's additive `is_trial_cap`), never
+     * the account's real plan quota. Undefined for every other error.
+     */
+    public isTrialCap?: boolean,
   ) {
     super(message);
     this.name = 'ApiError';
@@ -368,6 +374,12 @@ export function friendlyError(err: unknown): string {
     const readOnly = refusal ? readOnlyUploadMessage(refusal) : null;
     if (readOnly) return readOnly;
     if (err.code === 'quota_exceeded') {
+      // Task 1605 — the 25 GB TRIAL cap, not the account's real plan quota.
+      // No purchase call to action here (task 1400, App Review 3.1.1(a)) —
+      // same informational tone as PLAN_MANAGEMENT_NOTE, never a button/link.
+      if (err.isTrialCap) {
+        return 'This account is on the 25 GB trial storage cap until your first payment. Manage your plan from your account on the web.';
+      }
       return 'Storage full. Free up space or upgrade your plan to keep uploading.';
     }
     if (err.status === 0) return 'Could not reach the server. Check your connection and try again.';
@@ -459,7 +471,7 @@ export async function endSessionForAccountMismatch(snapshot: RequestAuthSnapshot
  */
 async function throwUploadError(
   status: number,
-  err: { error?: string; message?: string },
+  err: { error?: string; message?: string; is_trial_cap?: boolean },
   fallbackMessage: string,
   authSnapshot: RequestAuthSnapshot,
 ): Promise<never> {
@@ -467,7 +479,7 @@ async function throwUploadError(
     await endSessionForAccountMismatch(authSnapshot);
     throw new ApiError(409, err.message ?? 'This session does not match the account of the vault key on this device.', 'account_mismatch');
   }
-  throw new ApiError(status, err.message ?? err.error ?? fallbackMessage, err.error);
+  throw new ApiError(status, err.message ?? err.error ?? fallbackMessage, err.error, undefined, err.is_trial_cap);
 }
 
 async function headers(auth = true, extra?: Record<string, string>): Promise<RequestHeaders> {
@@ -600,10 +612,14 @@ async function request<T>(
     throw new ApiError(
       res.status,
       err.message ?? err.error ?? res.statusText,
-      // Task 1037: keep the machine code for the account-refusal 409s (share
-      // creation) so friendlyError() and callers can recognise them. Other
-      // bodies stay code-less, as before.
-      err.error === PLAN_REQUIRED_ERROR || err.error === ACCOUNT_LAPSED_ERROR ? err.error : undefined,
+      // Task 1037/1605: keep the machine code for the account-refusal 409s
+      // (share creation) so friendlyError() and callers can recognise them.
+      // Other bodies stay code-less, as before.
+      err.error === PLAN_REQUIRED_ERROR ||
+        err.error === ACCOUNT_LAPSED_ERROR ||
+        err.error === TRIAL_CANCELLED_READ_ONLY_ERROR
+        ? err.error
+        : undefined,
       res.status === 429 ? retryAfterSecondsFromHeader(res.headers.get('Retry-After')) : undefined,
     );
   }
@@ -2998,6 +3014,19 @@ export interface Subscription {
   account_state?: string | null;
   data_deletion_at?: string | null;
   trial_auto_converts?: boolean | null;
+  /**
+   * Additive fields (task 1605, server PR #129). See account-state.ts's
+   * `AccountStateFields` doc for `uploads_blocked_at`/`access_until`.
+   *  - `trial_storage_cap_bytes`: non-null only while an active mandated
+   *    trial (`trial_auto_converts: true`) has never had a successful
+   *    charge — the quota is capped at this many bytes (25 GB) until then.
+   *    No in-app action to raise it early (task 1400, App Review 3.1.1(a) —
+   *    no IAP): informational only, same as every other plan fact on this
+   *    screen. See DEVIATIONS.md → "Task 1605".
+   */
+  uploads_blocked_at?: string | null;
+  access_until?: string | null;
+  trial_storage_cap_bytes?: number | null;
 }
 
 export async function getSubscription(): Promise<Subscription | null> {

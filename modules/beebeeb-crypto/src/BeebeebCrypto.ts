@@ -1232,6 +1232,20 @@ export interface NativeBackupProgress {
    * reason.
    */
   ownerUnconfirmedReason?: string | null
+  /**
+   * Task 1605 (PR #155 review thread PRRT_kwDOSLX6T86nRLw0) — set when the
+   * server confirmed (on a request the native engine itself sent) that
+   * this account cannot store data right now for a BILLING reason: a
+   * never-paid mandated trial cancelled before its first charge, a lapsed
+   * trial/plan, no plan at all, or the 25 GB trial cap. Unlike
+   * `accountMismatchReason` above (the SESSION doesn't match the account —
+   * ends it) this IS the right account, so it never ends the JS session;
+   * like `ownerUnconfirmedReason` it is purely informational. Cleared by
+   * native itself on the next successful `start()` call (native's own
+   * `accountRefusalStopReason` doc comment). The honest message to show;
+   * `null`/undefined when nothing is refusing to upload for this reason.
+   */
+  accountRefusalReason?: string | null
 }
 
 export type NativeBackupDiagnostics = Record<string, unknown>
