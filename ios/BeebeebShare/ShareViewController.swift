@@ -14,8 +14,9 @@ final class ShareViewController: UIViewController {
 
     // MARK: - Constants
 
-    // App Group UserDefaults is still used for `recentFoldersKey` (recent
-    // folder ids/names — no secret material). The session token and API
+    // App Group UserDefaults is still used for `recentFoldersKey` — recent
+    // folder IDS ONLY, never names (names are E2EE plaintext once decrypted
+    // and that key is not backup-excluded; see `ShareRecentFolders`). The session token and API
     // base URL moved to the shared Keychain in task 0447; this extension
     // read them from these two UserDefaults keys until task 1671 — dead
     // reads the main app had stopped writing to, which is why "Save to
@@ -47,7 +48,13 @@ final class ShareViewController: UIViewController {
     private var sessionToken: String?
     private var apiUrl: String = defaultApiUrl
     private var folders: [FolderFetcher.Folder] = []
-    private var recentFolders: [RecentFolder] = []
+    /// Recents as DISPLAY rows — resolved against the freshly fetched folder
+    /// list on every launch, never read from storage (task 1671 round 2).
+    private var recentFolders: [ShareRecentFolders.Resolved] = []
+    /// The persisted recent folder IDS (never names — see `ShareRecentFolders`).
+    private var storedRecentIds: [String] = []
+    /// Ids of the folders from the last SUCCESSFUL fetch; nil until then.
+    private var knownFolderIds: Set<String>? = nil
     private var selectedFolderId: String? = nil
     private var fileName: String = "File"
     private var fileSize: Int64 = 0
@@ -284,12 +291,20 @@ final class ShareViewController: UIViewController {
                 let fetched = try await fetcher.fetchTopLevelFolders()
                 await MainActor.run {
                     self.folders = fetched
+                    self.knownFolderIds = Set(fetched.map { $0.id })
+                    self.recentFolders = ShareRecentFolders.resolve(
+                        self.storedRecentIds,
+                        against: fetched.map { (id: $0.id, name: $0.displayName) }
+                    )
                     self.selectDefaultFolder()
                     self.showFolderPicker()
                 }
             } catch {
                 await MainActor.run {
-                    // Show picker anyway with just recents (or empty)
+                    // No fetched folder list means no names to resolve the
+                    // stored recent ids against (names are never stored), so
+                    // no RECENT section: just the "My files" root row.
+                    self.recentFolders = []
                     self.selectDefaultFolder()
                     self.showFolderPicker()
                 }
@@ -298,12 +313,9 @@ final class ShareViewController: UIViewController {
     }
 
     private func selectDefaultFolder() {
-        if let recent = recentFolders.first {
-            selectedFolderId = recent.id
-        } else if let first = folders.first {
-            selectedFolderId = first.id
-        }
-        // nil = root (All Files)
+        // Most recent folder, else nil = the "My files" root row (row 0 of the
+        // FOLDERS section) — never `folders.first`.
+        selectedFolderId = ShareRecentFolders.defaultSelection(recents: recentFolders)
     }
 
     // MARK: - UI Setup
@@ -672,40 +684,28 @@ final class ShareViewController: UIViewController {
 
     // MARK: - Recents
 
+    /// Reads the persisted recent folder IDS. A legacy payload from builds
+    /// <= 230 also carries plaintext `name`s: they are ignored, and the store is
+    /// rewritten id-only right here (not only on the next share) so old names do
+    /// not sit in iCloud backups or survive sign-out.
     private func loadRecentFolders() {
         let defaults = UserDefaults(suiteName: Self.appGroup)
-        guard let data = defaults?.data(forKey: Self.recentFoldersKey),
-              let recents = try? JSONDecoder().decode([RecentFolder].self, from: data) else {
-            return
+        let loaded = ShareRecentFolders.load(from: defaults?.data(forKey: Self.recentFoldersKey))
+        storedRecentIds = loaded.ids
+        if let scrubbed = loaded.scrubbedPayload {
+            defaults?.set(scrubbed, forKey: Self.recentFoldersKey)
         }
-        recentFolders = recents
     }
 
     private func saveRecentFolder() {
         guard let folderId = selectedFolderId else { return }
-
-        // Find display name for this folder
-        let displayName: String
-        if let recent = recentFolders.first(where: { $0.id == folderId }) {
-            displayName = recent.name
-        } else if let folder = folders.first(where: { $0.id == folderId }) {
-            displayName = folder.displayName
-        } else {
-            displayName = "Folder"
-        }
-
-        // Remove existing entry for this folder, add to front
-        var recents = recentFolders.filter { $0.id != folderId }
-        recents.insert(RecentFolder(id: folderId, name: displayName), at: 0)
-
-        // Keep max 3
-        if recents.count > 3 {
-            recents = Array(recents.prefix(3))
-        }
-
-        recentFolders = recents
+        storedRecentIds = ShareRecentFolders.recording(
+            folderId,
+            in: storedRecentIds,
+            knownFolderIds: knownFolderIds
+        )
         let defaults = UserDefaults(suiteName: Self.appGroup)
-        if let encoded = try? JSONEncoder().encode(recents) {
+        if let encoded = ShareRecentFolders.encode(storedRecentIds) {
             defaults?.set(encoded, forKey: Self.recentFoldersKey)
         }
     }
@@ -881,11 +881,4 @@ private final class FolderCell: UITableViewCell {
         checkmark.isHidden = !isSelected
         nameLabel.textColor = isSelected ? .white : UIColor(white: 0.8, alpha: 1)
     }
-}
-
-// MARK: - RecentFolder model
-
-struct RecentFolder: Codable {
-    let id: String
-    let name: String
 }

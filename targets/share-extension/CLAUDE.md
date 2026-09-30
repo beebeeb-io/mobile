@@ -10,6 +10,7 @@ and uploads it directly to the Beebeeb API.
 - `ShareUploader.swift` — encrypts via `BeebeebCryptoShim`, uploads via the v2 chunked-upload endpoints
 - `SharedKeychain.swift` — reads the wrapped master key from the App Group keychain (no biometric prompt)
 - `BeebeebCryptoShim.swift` — Swift wrapper around the UniFFI bindings to `beebeeb-core`
+- `ShareRecentFolders.swift` — pure Foundation-only recents logic. The RECENT list persists folder IDS ONLY, never a name (decrypted names must not reach App Group UserDefaults / iCloud backups); names are resolved against the freshly fetched folder list at display time. Unit test: `scripts/swift-tests/share-recent-folders-test.swift`; guard: `scripts/swift-ci/share-extension-guards.py`
 - `FolderFetcher.swift` — `GET /api/v1/files?parent_id=null` for the picker
 - `expo-target.config.js` — entitlements + bundle identity, consumed by `@bacons/apple-targets` during `expo prebuild`
 - `generated.entitlements` — Expo-generated copy of the entitlements; should be byte-identical to `expo-target.config.js`'s `entitlements:` dict

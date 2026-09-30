@@ -19,6 +19,7 @@ cd "$(dirname "$0")/../.."
 MANIFEST=(
   "account-refusal-detection-test.swift|modules/beebeeb-crypto/ios/AccountRefusalDetection.swift"
   "share-upload-request-policy-test.swift|targets/share-extension/ShareUploadRequestPolicy.swift targets/file-provider/AccountMismatchDetection.swift"
+  "share-recent-folders-test.swift|targets/share-extension/ShareRecentFolders.swift"
 )
 
 LOG_DIR="${SWIFT_CI_LOG_DIR:-$(mktemp -d)}"

@@ -49,6 +49,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Typecheck Share Extension (xcodeproj copy, targets/ source, sync check)
         run: bash scripts/swift-ci/typecheck-share-extension.sh
+      - name: Share Extension guards can go red (self-test)
+        if: ${{ !cancelled() }}
+        run: python3 scripts/swift-ci/share-extension-guards.py --self-test
       - name: Swift unit tests (scripts/swift-tests)
         if: ${{ !cancelled() }}
         run: bash scripts/swift-ci/run-swift-tests.sh

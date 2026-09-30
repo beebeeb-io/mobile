@@ -15,9 +15,9 @@
 #      entries swapped for targets/share-extension/<f>. That directory is the
 #      SOURCE OF TRUTH: `expo prebuild` copies it over ios/BeebeebShare/
 #      (targets/share-extension/CLAUDE.md).
-# Plus a sync check: every ios/BeebeebShare/*.swift must be byte-identical to
-# its targets/share-extension/ original (cmp follows the BeebeebKeychainCore
-# symlink). No prior guard existed for this drift.
+# Plus static guards (share-extension-guards.py): the two trees hold the same
+# *.swift set, byte-identical (a file only in targets/ is reported too); no
+# hardcoded 2xx test in ShareUploader; no folder name ever persisted.
 #
 # Needs macOS + Xcode (xcrun, iphonesimulator SDK). Not runnable on Linux.
 set -uo pipefail
@@ -81,42 +81,16 @@ fi
 typecheck "xcodeproj-ios-BeebeebShare" "${XCODE_FILES[@]}" || rc=1
 typecheck "targets-share-extension" "${TARGETS_FILES[@]}" || rc=1
 
-echo "== sync check: ios/BeebeebShare/*.swift vs targets/share-extension/*.swift"
-checked=0
-drift=0
-for f in ios/BeebeebShare/*.swift; do
-  name="$(basename "$f")"
-  checked=$((checked + 1))
-  if ! cmp -s "$f" "targets/share-extension/$name"; then
-    echo "DRIFT: $f differs from targets/share-extension/$name"
-    drift=$((drift + 1))
-  fi
-done
-echo "sync check: $checked files compared, $drift drifted"
-[ "$checked" -ge 5 ] || { echo "sync check compared only $checked files" >&2; rc=1; }
-[ "$drift" -eq 0 ] || rc=1
-
-# Wiring guard for the 1671 "HTTP 201" bug. The unit tests cover the policy
-# function but not that ShareUploader USES it; a hardcoded `statusCode == 200`
-# in an upload step is exactly the regression (init returns 201, chunk/complete
-# return 200). Every step must go through ShareUploadRequestPolicy.isSuccessResponse.
-echo "== wiring guard: no hardcoded 2xx status comparison in ShareUploader.swift"
-hard=$(grep -nE 'statusCode[[:space:]]*(==|!=|>=|<)[[:space:]]*(2[0-9][0-9]|300)' \
-  ios/BeebeebShare/ShareUploader.swift targets/share-extension/ShareUploader.swift || true)
-uses=$(grep -c 'ShareUploadRequestPolicy.isSuccessResponse' targets/share-extension/ShareUploader.swift || true)
-if [ -n "$hard" ]; then
-  echo "HARDCODED STATUS COMPARISON (use ShareUploadRequestPolicy.isSuccessResponse):"
-  echo "$hard"
-  rc=1
-fi
-if [ "$uses" -lt 3 ]; then
-  echo "ShareUploader.swift calls isSuccessResponse $uses time(s); expected >= 3 (init, chunk, complete)"
-  rc=1
-fi
-echo "wiring guard: $uses isSuccessResponse call(s), $(printf '%s' "$hard" | grep -c . || true) hardcoded comparison(s)"
+# Static guards (scripts/swift-ci/share-extension-guards.py, red-proofed by its
+# own --self-test): tree sync (drift, files only in ios/, files only in
+# targets/), the 1671 isSuccessResponse wiring guard (call expressions outside
+# comments/strings; every hardcoded-status form), and the recents-persistence
+# guard (the extension never persists a folder name).
+echo "== static guards: sync, wiring, recents-persistence"
+python3 scripts/swift-ci/share-extension-guards.py || rc=1
 
 if [ "$rc" -eq 0 ]; then
-  echo "SHARE EXTENSION GATE: PASS (2 typechecks, ${#XCODE_FILES[@]} files each, $checked files in sync)"
+  echo "SHARE EXTENSION GATE: PASS (2 typechecks, ${#XCODE_FILES[@]} files each, static guards green)"
 else
   echo "SHARE EXTENSION GATE: FAIL"
 fi
