@@ -30,10 +30,10 @@
  * (the pre-fix Turn off success path) raced the alert's presentation
  * against the screen transition and produced a black screen recoverable
  * only by an app restart; see `handleDisabled` below for the full account.
- * `requestConfirmation()` (password step-up, from `../lib/confirm-action`)
- * is the one exception — it is shared with DeleteAccountScreen/
- * BiometricLockScreen and out of this task's scope, so its own native
- * `Alert.prompt` is unchanged.
+ * `requestConfirmation()` (password step-up, from `../lib/confirm-action`,
+ * shared with DeleteAccountScreen/BiometricLockScreen) follows the same
+ * rule as of round 2: it now drives `ConfirmActionPrompt`, the app's own
+ * password sheet, on every platform — no more native `Alert.prompt` on iOS.
  */
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
@@ -490,7 +490,7 @@ function StepReauth({
         title: 'Confirm your password',
         message: 'Enter your password to set up two-factor authentication again.',
       });
-      if (!confirmToken) return; // cancelled — requestConfirmation already alerted on real errors
+      if (!confirmToken) return; // cancelled — requestConfirmation's sheet already showed the error on real failures
       const data = await setupTotp({ confirmToken });
       if (cancelledRef.current) return;
       onSetup(data);

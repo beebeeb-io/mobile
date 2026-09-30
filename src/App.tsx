@@ -1696,7 +1696,9 @@ export default function App() {
         {/* Share Extension dropbox — uploads files dropped by BeebeebShare */}
         <ShareSheetImporter enabled={isAuthenticated && startupLockChecked && !locked} />
 
-        {/* Android-only password prompt for step-up re-auth (no-op on iOS) */}
+        {/* The app's own password-prompt sheet for step-up re-auth — every
+            platform drives this now (task 1610, Issue 2 round 2); no more
+            native Alert.prompt on iOS. */}
         <ConfirmActionPrompt />
 
         <StatusBar style={resolved === 'dark' ? 'light' : 'dark'} />
