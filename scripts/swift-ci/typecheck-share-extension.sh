@@ -96,6 +96,25 @@ echo "sync check: $checked files compared, $drift drifted"
 [ "$checked" -ge 5 ] || { echo "sync check compared only $checked files" >&2; rc=1; }
 [ "$drift" -eq 0 ] || rc=1
 
+# Wiring guard for the 1671 "HTTP 201" bug. The unit tests cover the policy
+# function but not that ShareUploader USES it; a hardcoded `statusCode == 200`
+# in an upload step is exactly the regression (init returns 201, chunk/complete
+# return 200). Every step must go through ShareUploadRequestPolicy.isSuccessResponse.
+echo "== wiring guard: no hardcoded 2xx status comparison in ShareUploader.swift"
+hard=$(grep -nE 'statusCode[[:space:]]*(==|!=|>=|<)[[:space:]]*(2[0-9][0-9]|300)' \
+  ios/BeebeebShare/ShareUploader.swift targets/share-extension/ShareUploader.swift || true)
+uses=$(grep -c 'ShareUploadRequestPolicy.isSuccessResponse' targets/share-extension/ShareUploader.swift || true)
+if [ -n "$hard" ]; then
+  echo "HARDCODED STATUS COMPARISON (use ShareUploadRequestPolicy.isSuccessResponse):"
+  echo "$hard"
+  rc=1
+fi
+if [ "$uses" -lt 3 ]; then
+  echo "ShareUploader.swift calls isSuccessResponse $uses time(s); expected >= 3 (init, chunk, complete)"
+  rc=1
+fi
+echo "wiring guard: $uses isSuccessResponse call(s), $(printf '%s' "$hard" | grep -c . || true) hardcoded comparison(s)"
+
 if [ "$rc" -eq 0 ]; then
   echo "SHARE EXTENSION GATE: PASS (2 typechecks, ${#XCODE_FILES[@]} files each, $checked files in sync)"
 else
