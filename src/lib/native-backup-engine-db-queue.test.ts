@@ -56,6 +56,16 @@ describe('NativeBackupEngine.swift: the real file', () => {
     expect(audit.hopClosures).toBeGreaterThanOrEqual(20); // Task { } / other-queue .async hops were really classified
   });
 
+  test('round 3: the real file\'s callback closures (getAllTasks, notification add, BGTask register, expirationHandler, ...) are classified as hops, not as dbQueue context', () => {
+    const whats = audit.hopSites.map((h) => h.what).join('\n');
+    expect(whats).toContain('backgroundSession.getAllTasks');
+    expect(whats).toContain('UNUserNotificationCenter.current().add');
+    expect(whats).toContain('BGTaskScheduler.shared.register');
+    expect(whats).toContain('UIApplication.shared.beginBackgroundTask');
+    expect(whats).toContain('stored-closure'); // expirationHandler = { }, pathUpdateHandler = { }, let begin: () -> Void = { }
+    expect(audit.hopSites.length).toBe(audit.hopClosures);
+  });
+
   test('the accessor that used to bypass dbQueue is now self-guarded', () => {
     expect(audit.guarded.some((k) => k.startsWith('resetRetryExhaustedUploadsForManualRun@'))).toBe(true);
   });
@@ -179,5 +189,113 @@ describe('round 2: the audit goes RED on receiver forms and queue/Task hops (in-
       '  func m14() { dbQueue.async { Task { _ = self.db } } }\n  private func ensureTables() {',
     );
     expect(auditDbQueue(src).violations.some((v) => /db touched at line \d+ inside a Task hop/.test(v))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Round 3 (round-2 adversarial review, finding 2): callback closures run on OTHER threads, so they
+// must count as leaving dbQueue even though the old matcher only knew `Task` / `<queue>.async`.
+// The default is now inverted — any closure handed to a call is a hop unless the call is on the
+// allow-list of synchronous APIs (`SYNC_CALLEES`) or is `dbQueue.sync/async` — and a bare function
+// reference passed to an async API is a call site.
+// ---------------------------------------------------------------------------
+const violatesRef = (src: string) => auditDbQueue(src).violations.some((v) => v.startsWith('rogueCount referenced at line'));
+const violatesDbRead = (src: string) => auditDbQueue(src).violations.some((v) => /^db touched at line \d+ inside a .+ hop/.test(v));
+
+describe('round 3: callback closures and function references leave dbQueue (in-test mutations)', () => {
+  // Each shape is placed INSIDE a dbQueue closure: the old matcher treated every closure that was not
+  // `Task` / `<queue>.async` as transparent, so all of these stayed "on dbQueue" and audited green.
+  const SHAPES: Array<[string, string]> = [
+    ['URLSession getAllTasks { }', 'URLSession.shared.getAllTasks { _ in _ = self.rogueCount() }'],
+    ['URLSession dataTask(with:) { }', 'URLSession.shared.dataTask(with: URL(fileURLWithPath: "/")) { _, _, _ in _ = self.rogueCount() }.resume()'],
+    ['Timer.scheduledTimer(withTimeInterval:) { }', 'Timer.scheduledTimer(withTimeInterval: 1, repeats: false) { _ in _ = self.rogueCount() }'],
+    [
+      'NotificationCenter.addObserver(forName:) { } (multi-line)',
+      'NotificationCenter.default.addObserver(\n        forName: UIApplication.didBecomeActiveNotification,\n        object: nil,\n        queue: nil\n      ) { _ in\n        _ = self.rogueCount()\n      }',
+    ],
+    ['DispatchWorkItem { }', 'let w = DispatchWorkItem { _ = self.rogueCount() }; _ = w'],
+    ['DispatchWorkItem(block: { })', 'let w = DispatchWorkItem(block: { _ = self.rogueCount() }); _ = w'],
+    ['an unknown library call with a trailing closure', 'SomeLibrary.doLater(after: 1) { _ = self.rogueCount() }'],
+    ['an unknown library call with a labelled closure argument', 'SomeLibrary.register(handler: { _ = self.rogueCount() })'],
+    ['a stored closure that runs later', 'let later: () -> Void = { _ = self.rogueCount() }; _ = later'],
+    ['a closure assigned to a handler property', 'self.someHandler = { _ = self.rogueCount() }'],
+  ];
+
+  for (const [label, body] of SHAPES) {
+    test(`MUTATION 15 — ${label} inside a dbQueue closure: a REQUIRES call in it is NOT on dbQueue`, () => {
+      const src = withRogue(`  func m15() { dbQueue.async {\n      ${body}\n  } }`);
+      expect(violatesCall(src)).toBe(true);
+    });
+    test(`MUTATION 16 — ${label} inside a dbQueue closure: a direct db read in it is NOT on dbQueue`, () => {
+      const src = mutate('  private func ensureTables() {', `  func m16() { dbQueue.async {\n      ${body.replace('_ = self.rogueCount()', '_ = self.db')}\n  } }\n  private func ensureTables() {`);
+      expect(violatesDbRead(src)).toBe(true);
+    });
+  }
+
+  test('every shape is classified as an off-queue hop (the hop count grows by at least 1 per shape)', () => {
+    const base = auditDbQueue(withRogue('  func okBase() { dbQueue.async { _ = self.rogueCount() } }')).hopClosures;
+    for (const [, body] of SHAPES) {
+      const a = auditDbQueue(withRogue(`  func okBase() { dbQueue.async { _ = self.rogueCount() } }\n  func m() { dbQueue.async {\n      ${body}\n  } }`));
+      expect(a.hopClosures).toBeGreaterThan(base);
+    }
+  }, 30_000);
+
+  // -- bare function references ------------------------------------------------------------------
+  test('MUTATION 17 — a bare REQUIRES-function reference passed to another queue\'s async(execute:)', () => {
+    expect(violatesRef(withRogue('  func m17() { DispatchQueue.main.async(execute: rogueCount) }'))).toBe(true);
+    expect(violatesRef(withRogue('  func m17b() { DispatchQueue.main.async(execute: self.rogueCount) }'))).toBe(true);
+    expect(violatesRef(withRogue('  func m17c() { DispatchQueue.global().asyncAfter(deadline: .now() + 1, execute: rogueCount) }'))).toBe(true);
+  });
+
+  test('MUTATION 18 — a bare reference handed to DispatchWorkItem(block:) / Timer selector / Task(operation:)', () => {
+    expect(violatesRef(withRogue('  func m18() { let w = DispatchWorkItem(block: rogueCount); _ = w }'))).toBe(true);
+    expect(violatesRef(withRogue('  func m18b() { _ = Timer.scheduledTimer(timeInterval: 1, target: self, selector: #selector(rogueCount), userInfo: nil, repeats: false) }'))).toBe(true);
+    expect(violatesRef(withRogue('  func m18c() { Task(operation: rogueCount) }'))).toBe(true);
+  });
+
+  test('MUTATION 19 — a stored reference escapes (it may be invoked from anywhere)', () => {
+    expect(violatesRef(withRogue('  func m19() { let f = rogueCount; _ = f }'))).toBe(true);
+  });
+
+  test('MUTATION 20 — a bare reference inside a hop that sits inside a dbQueue closure', () => {
+    expect(violatesRef(withRogue('  func m20() { dbQueue.async { DispatchQueue.main.async(execute: self.rogueCount) } }'))).toBe(true);
+  });
+
+  test('MUTATION 21 — a bare reference to a REQUIRES function with a parameter, handed to a synchronous API OFF dbQueue', () => {
+    const rogueAt = '  private func rogueAt(_ x: Int) -> Int { guard let db = db else { return 0 }; return Int(sqlite3_total_changes(db)) + x }\n';
+    const src = withRogue(`${rogueAt}  func m21() -> [Int] { return [1].map(rogueAt) }`);
+    expect(auditDbQueue(src).violations.some((v) => v.startsWith('rogueAt referenced at line') && v.includes('as an argument to map'))).toBe(true);
+  });
+
+  test('references are counted as call sites (a reference is examined, not skipped)', () => {
+    const before = auditDbQueue(withRogue('  func base() { dbQueue.sync { _ = rogueCount() } }')).callSitesChecked;
+    const after = auditDbQueue(withRogue('  func base() { dbQueue.sync { _ = rogueCount() } }\n  func r() { dbQueue.async(execute: rogueCount) }')).callSitesChecked;
+    expect(after).toBe(before + 1);
+  });
+
+  // -- controls: the stricter audit is not just "always red" ------------------------------------
+  test('CONTROL — references and closures that really do stay on dbQueue stay green', () => {
+    const greens = [
+      '  func c1() { dbQueue.async(execute: rogueCount) }',
+      '  func c2() { dbQueue.sync(execute: self.rogueCount) }',
+      '  func c3() { dbQueue.sync { [1, 2].forEach { _ in _ = rogueCount() } } }',
+      '  func c4() { dbQueue.sync { _ = [1].map { _ in self.rogueCount() } } }',
+      '  func c5() { dbQueue.sync { _ = [1].map { _ in 1 }.filter { _ in self.rogueCount() > 0 } } }',
+      '  func c6() { dbQueue.sync { if rogueCount() > 0 { _ = rogueCount() } else { _ = rogueCount() } } }',
+      '  func c7() { dbQueue.sync { guard rogueCount() > 0 else { return }; defer { _ = rogueCount() }; do { _ = rogueCount() } } }',
+      '  func c8() { dbQueue.sync { let n: Int = { rogueCount() }(); _ = n } }',
+      '  func c9() { dbQueue.sync { _ = [1].map(rogueAt) } }\n  private func rogueAt(_ x: Int) -> Int { guard let db = db else { return 0 }; return Int(sqlite3_total_changes(db)) + x }',
+      '  func c10() { dbQueue.sync { withUnsafeMutablePointer(to: &scratch) { _ in _ = rogueCount() } } }',
+      '  func c11() { dbQueue.sync { for _ in 0..<2 { _ = rogueCount() }; switch rogueCount() { default: _ = rogueCount() } } }',
+    ];
+    for (const g of greens) {
+      const a = auditDbQueue(withRogue(g));
+      expect({ g, violations: a.violations }).toEqual({ g, violations: [] });
+    }
+  }, 30_000);
+
+  test('CONTROL — the same callback shapes are fine when they do not touch REQUIRES functions or db', () => {
+    const src = withRogue('  func c() { dbQueue.async { Timer.scheduledTimer(withTimeInterval: 1, repeats: false) { _ in print("tick") }; URLSession.shared.getAllTasks { _ in } } }');
+    expect(auditDbQueue(src).violations).toEqual([]);
   });
 });

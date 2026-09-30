@@ -16,14 +16,23 @@
  *      `dbQueue.sync/async { }` closure ("GUARDED"), or in a function whose
  *      every call site is (transitively) inside one ("REQUIRES").
  *
- * What "inside a dbQueue closure" means (round 2): the EXECUTION CONTEXT of a
- * position is the innermost enclosing closure that changes it — a
- * `dbQueue.sync/async { }` (on dbQueue) or a HOP (`Task { }`, `Task.detached { }`,
- * `<other>.async/.sync/.asyncAfter { }`, `group.addTask { }`, `addOperation { }`),
- * which is NOT on dbQueue even when it is lexically nested inside a dbQueue
- * closure. A call to a REQUIRES function counts whatever its receiver is
- * (`foo()`, `self.foo()`, `self?.foo()`, `self!.foo()`, `engine.foo()`), and a
- * direct `db` read inside a hop is itself a violation.
+ * What "inside a dbQueue closure" means (round 2, widened in round 3): the EXECUTION CONTEXT
+ * of a position is the innermost enclosing closure that changes it — a
+ * `dbQueue.sync/async { }` (on dbQueue) or a HOP, which is NOT on dbQueue even when it is
+ * lexically nested inside a dbQueue closure. Round 3 inverts the default: ANY closure passed to a
+ * call (trailing or as an argument), or stored (`x = { }`), is a hop unless the call is on a small
+ * allow-list of APIs known to run the closure synchronously on the caller's queue
+ * (`SYNC_CALLEES`: `map`/`filter`/`forEach`/..., `withUnsafe*`, `withLock`, `autoreleasepool`),
+ * or it is `dbQueue.sync/async`. So `URLSession.getAllTasks { }`, `dataTask { }`,
+ * `Timer.scheduledTimer { }`, `NotificationCenter.addObserver(forName:) { }`,
+ * `DispatchWorkItem { }`, `Task { }`, `group.addTask { }`, `<other>.async { }` ... all leave
+ * dbQueue. Plain blocks (`if`, `guard`, `for`, `do`, `func`, `init`, computed properties, type
+ * bodies) and immediately-invoked `= { ... }()` initialisers run inline and are transparent.
+ * A bare function REFERENCE passed as an argument (`DispatchQueue.main.async(execute: fn)`,
+ * `DispatchWorkItem(block: fn)`, `#selector(fn)`) is a call site executed wherever that API runs
+ * it, and a reference that is stored (`let f = fn`) is treated as escaping. A call to a REQUIRES
+ * function counts whatever its receiver is (`foo()`, `self.foo()`, `self?.foo()`,
+ * `self!.foo()`, `engine.foo()`), and a direct `db` read inside a hop is itself a violation.
  *
  * Swift cannot be compiled on the Linux dev/CI containers, so this reads the
  * source text. It is deliberately conservative: comments and string literals
@@ -53,12 +62,17 @@ export interface DbQueueAudit {
   /** round 2: closures classified as on-dbQueue / as off-queue hops */
   dbQueueClosures: number;
   hopClosures: number;
+  /** round 3: line + callee label of every closure classified as an off-queue hop (for review / tests) */
+  hopSites: Array<{ line: number; what: string }>;
 }
 
 /** Blank comments and string literals (keeping newlines) so scanning sees code only. */
 export function stripSwift(s: string): string {
   const out: string[] = [];
   const blank = (t: string) => t.replace(/[^\n]/g, ' ');
+  // A string literal keeps its first and last character (the quotes) so a statement that ends in a
+  // string still ends in a non-space, non-operator character for the statement-boundary scan.
+  const quoted = (t: string) => (t.length >= 2 ? t[0] + blank(t.slice(1, -1)) + t[t.length - 1] : blank(t));
   let i = 0;
   const n = s.length;
   while (i < n) {
@@ -75,13 +89,13 @@ export function stripSwift(s: string): string {
     } else if (s.startsWith('"""', i)) {
       let j = s.indexOf('"""', i + 3);
       j = j < 0 ? n : j + 3;
-      out.push(blank(s.slice(i, j)));
+      out.push(quoted(s.slice(i, j)));
       i = j;
     } else if (s[i] === '"') {
       let j = i + 1;
       while (j < n && s[j] !== '"') j += s[j] === '\\' ? 2 : 1;
       j += 1;
-      out.push(blank(s.slice(i, j)));
+      out.push(quoted(s.slice(i, j)));
       i = j;
     } else {
       out.push(s[i]);
@@ -109,6 +123,19 @@ interface Fn {
   bodyOpen: number;
   bodyClose: number;
 }
+
+/**
+ * Calls that run a closure argument SYNCHRONOUSLY on the caller's queue (so the closure body is in
+ * the same execution context as the call). Everything NOT listed here (and not `dbQueue.sync/async`)
+ * is treated as leaving dbQueue. Add to this list only for an API that is documented as inline.
+ */
+export const SYNC_CALLEES = new Set([
+  'map', 'flatMap', 'compactMap', 'filter', 'forEach', 'reduce', 'sorted', 'sort', 'contains',
+  'allSatisfy', 'first', 'last', 'firstIndex', 'lastIndex', 'min', 'max', 'count', 'removeAll',
+  'mapValues', 'compactMapValues', 'prefix', 'drop', 'split',
+  'enumerateObjects', 'enumerateKeysAndObjects',
+  'withLock', 'autoreleasepool', 'withExtendedLifetime', 'withoutActuallyEscaping', 'withCString',
+]);
 
 export function auditDbQueue(source: string): DbQueueAudit {
   const code = stripSwift(source);
@@ -144,29 +171,179 @@ export function auditDbQueue(source: string): DbQueueAudit {
   // ---- execution-context closures: dbQueue.sync/async (ON the queue) and hops (OFF it)
   type Ctx = { open: number; close: number; kind: 'dbQueue' | 'hop'; what: string };
   const ctxs: Ctx[] = [];
-  const hopStmtStart = (pos: number) => {
-    let k = pos - 1;
-    while (k >= 0 && !';{}'.includes(code[k]) && pos - k < 400) k -= 1;
-    return k + 1;
-  };
-  for (let open = code.indexOf('{'); open >= 0; open = code.indexOf('{', open + 1)) {
-    const pre = code.slice(hopStmtStart(open), open).trim();
-    let what: string | null = null;
-    let kind: Ctx['kind'] = 'hop';
-    const task = /(?:^|[^\w.])(Task\s*(?:<[^{}>]*>)?\s*(?:\.\s*detached\s*)?)(?:\([^{}]*\)\s*)?$/.exec(pre);
-    const add = /\.\s*(addTask|addTaskUnlessCancelled|addOperation)\s*(?:\([^{}]*\)\s*)?$/.exec(pre);
-    // `.sync { }` / `.sync(flags: ...) { }` (trailing closure) and `.sync(execute: { })` (labelled,
-    // the paren is still open when the closure starts).
-    const q = /^([\s\S]*?)\.\s*(async|asyncAfter|sync|asyncAndWait)\s*(?:\([^{}]*\)\s*|\([^(){}]*)?$/.exec(pre);
-    if (task) what = task[1].replace(/\s+/g, '');
-    else if (add) what = add[1];
-    else if (q) {
-      const receiver = q[1].trim();
-      if (/(?:^|[^\w])dbQueue$/.test(receiver) && q[2] !== 'asyncAfter') kind = 'dbQueue';
-      what = `${receiver.split(/\s+/).pop()}.${q[2]}`;
+
+  // brace pairs, one pass (strings/comments are already blanked)
+  const closeOf = new Map<number, number>();
+  const openOf = new Map<number, number>();
+  {
+    const stack: number[] = [];
+    for (let k = 0; k < code.length; k += 1) {
+      if (code[k] === '{') stack.push(k);
+      else if (code[k] === '}') {
+        const o = stack.pop();
+        if (o === undefined) throw new Error('unbalanced braces in Swift source');
+        closeOf.set(o, k);
+        openOf.set(k, o);
+      }
     }
-    if (what === null) continue;
-    ctxs.push({ open, close: matchBrace(code, open), kind, what });
+  }
+
+  /**
+   * Scan backward from `from` over the statement that ends there. Returns the innermost UNCLOSED
+   * `(` / `[` the position sits inside (an argument list), or, when there is none, the statement's
+   * start. Matched `()` / `[]` groups and whole `{ }` blocks are skipped; a `;`, an unmatched `{`, a
+   * `}` (end of the previous block) or a newline that does not visibly continue the statement ends it.
+   * Inside an unclosed argument list newlines do not end anything, so the search keeps going.
+   */
+  const scanBack = (from: number): { paren?: number; start: number } => {
+    let nest = 0;
+    let k = from - 1;
+    for (; k >= 0; k -= 1) {
+      const ch = code[k];
+      if (ch === ')' || ch === ']') nest += 1;
+      else if (ch === '(' || ch === '[') {
+        if (nest === 0) return { paren: k, start: k + 1 };
+        nest -= 1;
+      } else if (ch === '}') {
+        const o = openOf.get(k);
+        if (nest <= 0 || o === undefined) break;
+        k = o;
+      } else if (ch === '{') break;
+      else if (ch === ';' && nest <= 0) break;
+      else if (ch === '\n' && nest <= 0) {
+        let p = k - 1;
+        while (p >= 0 && /\s/.test(code[p])) p -= 1;
+        let q = k + 1;
+        while (q < from && /\s/.test(code[q])) q += 1;
+        // a line ending in `?` is an optional TYPE (`var x: T?`) unless it is `??` or a ternary ` ?`
+        const tail = code.slice(Math.max(0, p - 2), p + 1);
+        const continues =
+          /[,.(\[+*/%&|=\\]$/.test(tail) ||
+          /(?:\?\?|\s\?)$/.test(tail) ||
+          /^(?:\.|&&|\|\||\?|:|\+)/.test(code.slice(q, q + 2));
+        if (!continues) break;
+      }
+    }
+    return { start: k + 1 };
+  };
+  const enclosingOpenParen = (from: number): number | undefined => scanBack(from).paren;
+  const stmtStartOf = (from: number): number => scanBack(from).start;
+
+  /** Strip trailing balanced `( ... )` groups, generics and `?`/`!` from a callee expression. */
+  const stripArgs = (text: string): string => {
+    let t = text.trim();
+    for (;;) {
+      if (t.endsWith(')')) {
+        let d = 0;
+        let k = t.length - 1;
+        for (; k >= 0; k -= 1) {
+          if (t[k] === ')') d += 1;
+          else if (t[k] === '(') {
+            d -= 1;
+            if (d === 0) break;
+          }
+        }
+        if (k < 0) return t;
+        t = t.slice(0, k).trim();
+      } else if (t.endsWith('>')) {
+        const m = /<[^<>]*>$/.exec(t);
+        if (!m) return t;
+        t = t.slice(0, m.index).trim();
+      } else if (/[?!]$/.test(t)) t = t.slice(0, -1).trim();
+      else return t;
+    }
+  };
+  type Callee = { chain: string; name: string; receiver: string };
+  const calleeOf = (text: string): Callee | null => {
+    let t = stripArgs(text);
+    const eq = /(?:^|[^=!<>])=(?!=)/g;
+    let cut = -1;
+    for (let m = eq.exec(t); m; m = eq.exec(t)) cut = m.index + m[0].length;
+    if (cut >= 0) t = t.slice(cut).trim();
+    t = t.replace(/^(?:(?:try[?!]?|await|return|throw|case\s+[^:]*:|default:)\s+)+/, '').trim();
+    const chain = t.replace(/\s+/g, '');
+    const nm = /([A-Za-z_$][\w$]*)$/.exec(chain);
+    if (!nm) return null;
+    const receiver = chain.slice(0, chain.length - nm[1].length).replace(/[.?!]+$/, '');
+    return { chain: chain.slice(-70), name: nm[1], receiver };
+  };
+  const isDbQueueReceiver = (receiver: string) => /(?:^|[^\w])dbQueue$/.test(receiver);
+  /** How a closure (or function reference) handed to `callee` executes relative to the caller. */
+  const executionOf = (callee: Callee | null): { kind: 'dbQueue' | 'hop' | 'sync'; what: string } => {
+    if (!callee) return { kind: 'hop', what: 'closure' };
+    const { name, receiver, chain } = callee;
+    if (/^(?:async|asyncAfter|sync|asyncAndWait)$/.test(name)) {
+      if (isDbQueueReceiver(receiver) && name !== 'asyncAfter') return { kind: 'dbQueue', what: `${receiver.split(/\s+/).pop()}.${name}` };
+      return { kind: 'hop', what: `${receiver.split(/\s+/).pop()}.${name}` };
+    }
+    if (SYNC_CALLEES.has(name) || /^withUnsafe/.test(name)) return { kind: 'sync', what: name };
+    return { kind: 'hop', what: chain };
+  };
+
+  const MODIFIERS = '(?:@[\\w.]+(?:\\([^)]*\\))?\\s+|(?:private|fileprivate|public|internal|open|final|static|class|override|mutating|nonmutating|convenience|required|lazy|weak|unowned|indirect|dynamic|nonisolated|prefix|postfix|infix|optional)(?:\\([^)]*\\))?\\s+)*';
+  const declRe = new RegExp(`^${MODIFIERS}(?:func|init|deinit|subscript|class|struct|enum|extension|protocol|actor|typealias|associatedtype|get|set|willSet|didSet|_read|_modify)\\b`);
+  const controlRe = /^(?:(?:\w+\s*:\s*)?(?:if|guard|for|while|repeat|do|switch)\b|else\b|defer\b|catch\b)/;
+  const hasTopLevelEquals = (t: string) => /(?:^|[^=!<>])=(?!=)/.test(stripNested(t));
+  const stripNested = (t: string) => {
+    let out = '';
+    let d = 0;
+    for (const ch of t) {
+      if (ch === '(' || ch === '[') d += 1;
+      else if (ch === ')' || ch === ']') d -= 1;
+      else if (d === 0) out += ch;
+    }
+    return out;
+  };
+
+  type Classified = { kind: 'block' | 'sync' | 'dbQueue' | 'hop'; what: string };
+  const classifyBrace = (open: number): Classified => {
+    const paren = enclosingOpenParen(open);
+    if (paren !== undefined) {
+      // The brace sits inside an argument list. Text since the current argument began:
+      //   empty / `label:`  -> the closure IS the argument: `foo(label: { })`, `x.sync(execute: { })`
+      //   anything else     -> a trailing closure of a call nested in the argument: `foo(xs.filter { })`
+      let argStart = paren + 1;
+      {
+        let nest = 0;
+        for (let k = paren + 1; k < open; k += 1) {
+          const ch = code[k];
+          if (ch === '(' || ch === '[') nest += 1;
+          else if (ch === ')' || ch === ']') nest -= 1;
+          else if (ch === '{') {
+            const c = closeOf.get(k);
+            if (c !== undefined && c < open) k = c;
+          } else if (ch === ',' && nest === 0) argStart = k + 1;
+        }
+      }
+      const arg = code.slice(argStart, open).replace(/^\s*[A-Za-z_$][\w$]*\s*:/, '').trim();
+      if (arg === '') {
+        if (code[paren] === '[') return { kind: 'hop', what: 'closure-in-array' };
+        return executionOf(calleeOf(code.slice(stmtStartOf(paren), paren)));
+      }
+      return executionOf(calleeOf(arg));
+    }
+    const stmt = code
+      .slice(stmtStartOf(open), open)
+      .trim()
+      .replace(/\s+/g, ' ')
+      .replace(/^(?:(?:case\b[^:]*|default)\s*:\s*)+/, '');
+    if (controlRe.test(stmt) || declRe.test(stmt)) return { kind: 'block', what: stmt };
+    const isDecl = new RegExp(`^${MODIFIERS}(?:var|let)\\b`).test(stmt);
+    if (isDecl && !hasTopLevelEquals(stmt)) return { kind: 'block', what: stmt }; // computed property
+    if (stmt === '' || /(?:^|[^=!<>])=$/.test(stmt) || /^return$/.test(stmt)) {
+      // a closure VALUE: immediately invoked `{ ... }()` runs inline; anything else is stored and runs later, anywhere
+      const close = closeOf.get(open)!;
+      return /^\s*\(/.test(code.slice(close + 1, close + 40)) && stmt !== 'return'
+        ? { kind: 'sync', what: 'iife' }
+        : { kind: 'hop', what: 'stored-closure' };
+    }
+    return executionOf(calleeOf(stmt));
+  };
+
+  for (const open of [...closeOf.keys()].sort((a, b) => a - b)) {
+    const c = classifyBrace(open);
+    if (c.kind === 'block' || c.kind === 'sync') continue;
+    ctxs.push({ open, close: closeOf.get(open)!, kind: c.kind, what: c.what });
   }
   const guardedRanges: Array<[number, number, 'sync' | 'async']> = ctxs
     .filter((c) => c.kind === 'dbQueue')
@@ -232,22 +409,50 @@ export function auditDbQueue(source: string): DbQueueAudit {
   let callSitesChecked = 0;
   let callSitesOnDbQueue = 0;
   const reqNames = new Set(requires.filter((k) => !k.startsWith('<') && !k.startsWith('init@')).map((k) => k.split('@')[0]));
-  for (const name of [...reqNames].sort()) {
-    const callRe = new RegExp(`(?<![\\w])${name}\\s*\\(`, 'g');
-    for (let m = callRe.exec(code); m; m = callRe.exec(code)) {
+  // One pass over every mention of a REQUIRES function name. `name(` is a call; `name` followed by
+  // `:` is an argument label; anything else is a bare function REFERENCE:
+  // `DispatchQueue.main.async(execute: fn)`, `DispatchWorkItem(block: fn)`, `#selector(fn)`, `let f = fn`.
+  // A reference is a call site executed wherever the receiving API runs it: dbQueue.sync/async => on
+  // dbQueue; an allow-listed synchronous API => the caller's own context; anything else (another queue,
+  // Timer, DispatchWorkItem, Task, ...) => off dbQueue; a stored reference escapes, so it is treated
+  // the same (it may run anywhere).
+  if (reqNames.size > 0) {
+    const mentionRe = new RegExp(`(?<![\\w])(${[...reqNames].sort().join('|')})\\b(\\s*[(:])?`, 'g');
+    for (let m = mentionRe.exec(code); m; m = mentionRe.exec(code)) {
+      const name = m[1];
+      const after = m[2]?.trim();
       if (/func\s+$/.test(code.slice(Math.max(0, m.index - 6), m.index))) continue; // the declaration
+      if (after === ':') continue; // argument label
       callSitesChecked += 1;
       const enclosing = innermost(m.index, funcs);
       const hop = hopAt(m.index, enclosing ? enclosing.bodyOpen : -1);
-      if (hop) {
-        violations.push(`${name}() called at line ${lineOf(m.index)} inside a ${hop.what} hop (off dbQueue)`);
+      if (after === '(') {
+        if (hop) {
+          violations.push(`${name}() called at line ${lineOf(m.index)} inside a ${hop.what} hop (off dbQueue)`);
+          continue;
+        }
+        if (isGuarded(m.index) || (enclosing && reqNames.has(enclosing.name))) {
+          callSitesOnDbQueue += 1;
+          continue;
+        }
+        violations.push(`${name}() called at line ${lineOf(m.index)} off dbQueue (and not from a dbQueue-only function)`);
         continue;
       }
-      if (isGuarded(m.index) || (enclosing && reqNames.has(enclosing.name))) {
+      if (hop) {
+        violations.push(`${name} referenced at line ${lineOf(m.index)} inside a ${hop.what} hop (off dbQueue)`);
+        continue;
+      }
+      const paren = enclosingOpenParen(m.index);
+      if (paren === undefined || code[paren] === '[') {
+        violations.push(`${name} referenced at line ${lineOf(m.index)} without being called (stored, may run off dbQueue)`);
+        continue;
+      }
+      const ex = executionOf(calleeOf(code.slice(stmtStartOf(paren), paren)));
+      if (ex.kind === 'dbQueue' || (ex.kind === 'sync' && (isGuarded(m.index) || (enclosing && reqNames.has(enclosing.name))))) {
         callSitesOnDbQueue += 1;
         continue;
       }
-      violations.push(`${name}() called at line ${lineOf(m.index)} off dbQueue (and not from a dbQueue-only function)`);
+      violations.push(`${name} referenced at line ${lineOf(m.index)} as an argument to ${ex.what} (off dbQueue)`);
     }
   }
 
@@ -292,5 +497,6 @@ export function auditDbQueue(source: string): DbQueueAudit {
     callSitesOnDbQueue,
     dbQueueClosures: ctxs.filter((c) => c.kind === 'dbQueue').length,
     hopClosures: ctxs.filter((c) => c.kind === 'hop').length,
+    hopSites: ctxs.filter((c) => c.kind === 'hop').map((c) => ({ line: lineOf(c.open), what: c.what })),
   };
 }
