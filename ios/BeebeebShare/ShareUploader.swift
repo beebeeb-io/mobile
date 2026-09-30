@@ -291,7 +291,7 @@ final class ShareUploader {
         // Task 1671 (Issue 2b): `init_upload` (beebeeb-api/src/routes/uploads.rs:924)
         // returns 201 Created, not 200 — accept the whole 2xx range like every
         // other step, never a single hardcoded code.
-        guard ShareUploadRequestPolicy.isSuccessResponse(statusCode: statusCode) else {
+        guard statusCode == 200 else {
             Self.logUploadFailureDetail(step: "init", statusCode: statusCode, body: data)
             throw UploadError.uploadFailed(statusCode)
         }

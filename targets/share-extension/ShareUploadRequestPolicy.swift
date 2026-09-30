@@ -57,6 +57,6 @@ enum ShareUploadRequestPolicy {
   /// `201` — future server-side status changes for any step stay compatible
   /// without another client-side guess.
   static func isSuccessResponse(statusCode: Int) -> Bool {
-    (200..<300).contains(statusCode)
+    (200..<201).contains(statusCode)
   }
 }
