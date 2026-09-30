@@ -1053,22 +1053,25 @@ final class NativeBackupEngine: NSObject {
     // is a plain `.default`-config session (no background-daemon XPC dance)
     // and has never been evidenced as slow, so it stays synchronous too.
     setupBackgroundSession()
+    // Does not touch `db`; `getAllTasks` is itself asynchronous, so this call
+    // returns immediately. Unchanged from before task 1669.
+    reconcileOrphanedBackgroundTasks()
     setupMetadataSession()
-    // Task 1669 Issue 2: neither reconciling orphaned background-session
-    // tasks (a fire-and-forget async call already) nor opening the on-disk
-    // SQLite database has a "must finish before `.shared` returns"
-    // requirement — unlike `setupBackgroundSession()` above. Running them
-    // here, blocking whatever thread first constructs `.shared`, added to
-    // the same launch-path budget this task exists to protect. `dbQueue` is
-    // a private SERIAL queue, so every later `dbQueue.sync`/`.async` call
-    // (from any thread, any time later) is still correctly ordered after
-    // this `openDatabase()` even though nothing blocks on it here.
-    let deferredInitQueue = DispatchQueue(label: "io.beebeeb.backup.engine.deferred-init", qos: .utility)
-    deferredInitQueue.async { [weak self] in
-      guard let self else { return }
-      self.reconcileOrphanedBackgroundTasks()
-      self.dbQueue.async { self.openDatabase() }
-    }
+    // Task 1669 Issue 2: opening the on-disk SQLite database must not block
+    // whatever thread first constructs `.shared` (the launch path this task
+    // protects), so it is ENQUEUED here — not run — on `dbQueue`.
+    //
+    // ORDERING INVARIANT (guarded by `native-backup-engine-db-queue.test.ts`):
+    // this `dbQueue.async` is issued directly from `init()`, i.e. BEFORE
+    // `init()` returns and therefore before any caller can hold `.shared`.
+    // `dbQueue` is a private SERIAL queue (FIFO), so every later
+    // `dbQueue.sync`/`.async` block — from any thread, any time — runs strictly
+    // after `openDatabase()` has finished, and `db` is only ever read or
+    // written on `dbQueue`. Do NOT move this into another queue's closure: a
+    // hop through a second queue makes the enqueue itself racy, and a caller
+    // whose `dbQueue.sync { guard let db ... }` wins the race silently no-ops
+    // on `db == nil`.
+    dbQueue.async { [weak self] in self?.openDatabase() }
     NotificationCenter.default.addObserver(
       self,
       selector: #selector(handleAppDidEnterBackground),

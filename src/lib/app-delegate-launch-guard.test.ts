@@ -121,29 +121,30 @@ describe('NativeBackupEngine.registerBackgroundTaskEarly is static and does not 
 
 describe('NativeBackupEngine.init() keeps the proven-slow / non-essential work off whatever thread first constructs .shared', () => {
   const initBody = extractBody(backupEngineSource, /private override init\(\)/);
+  const live = stripLineComments(initBody);
 
-  test('opening the database is deferred, not a blocking dbQueue.sync inside init()', () => {
-    // This exact pattern — `dbQueue.sync { openDatabase() }` called directly
-    // in `init()` — is what part of the 10s block was spent in whenever
-    // `.shared` got constructed on the main thread. `dbQueue.async` from a
-    // background queue instead: `dbQueue`'s serial FIFO ordering keeps every
-    // later `dbQueue.sync`/`.async` call correctly ordered after it.
-    expect(initBody).not.toMatch(/(?<!\.)dbQueue\.sync\s*\{\s*openDatabase\(\)\s*\}/);
-    expect(initBody).toContain('openDatabase()');
+  test('opening the database is enqueued (dbQueue.async), never a blocking dbQueue.sync inside init()', () => {
+    // `dbQueue.sync { openDatabase() }` directly in `init()` is what part of
+    // the 10s block was spent in whenever `.shared` got constructed on the
+    // main thread. The ORDERING half of this invariant (the enqueue must be a
+    // direct statement of init(), not hidden inside another queue's closure)
+    // lives in native-backup-engine-db-queue.test.ts, which drives the
+    // structural audit.
+    expect(live).not.toMatch(/dbQueue\s*\.\s*sync/);
+    expect(live).toMatch(/dbQueue\s*\.\s*async\s*\{[^}]*openDatabase\(\)/);
   });
 
-  test('reconcileOrphanedBackgroundTasks() is not called at the top level of init() (must be deferred)', () => {
-    // Split on the deferred-queue dispatch: the call is only allowed AFTER
-    // it, inside the async closure — never as a direct top-level statement.
-    const deferredQueueIndex = initBody.indexOf('deferredInitQueue.async');
-    expect(deferredQueueIndex).toBeGreaterThan(-1);
-    const beforeDeferred = initBody.slice(0, deferredQueueIndex);
-    expect(beforeDeferred).not.toContain('reconcileOrphanedBackgroundTasks()');
+  test('init() introduces no second queue: no DispatchQueue(...) / Task { } hop before openDatabase is enqueued', () => {
+    // The WIP that preceded this hopped through a `deferred-init` queue and
+    // enqueued openDatabase from INSIDE it, so a caller's first
+    // `dbQueue.sync` could run before openDatabase was even enqueued.
+    expect(live).not.toMatch(/DispatchQueue\s*\(/);
+    expect(live).not.toMatch(/\bTask\s*(\.detached)?\s*\{/);
   });
 
   test('setupBackgroundSession() still runs synchronously (iOS must be able to deliver background-session events as soon as it is reattached)', () => {
-    const deferredQueueIndex = initBody.indexOf('deferredInitQueue.async');
-    const beforeDeferred = initBody.slice(0, deferredQueueIndex === -1 ? initBody.length : deferredQueueIndex);
-    expect(beforeDeferred).toContain('setupBackgroundSession()');
+    expect(live).toContain('setupBackgroundSession()');
+    // ...and it must come before the dbQueue enqueue, at init's top level.
+    expect(live.indexOf('setupBackgroundSession()')).toBeLessThan(live.search(/dbQueue\s*\.\s*async/));
   });
 });
