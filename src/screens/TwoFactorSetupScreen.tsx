@@ -23,12 +23,22 @@
  * Step 1 — Show TOTP secret + copy button. User adds key to authenticator app.
  * Step 2 — 6-digit code entry. Calls enableTotp(code) to activate.
  * Step 3 — Backup codes display + copy all. Navigate back on Done.
+ *
+ * Task 1610, Issue 2: every confirmation/notification in this screen goes
+ * through `useToast()` (the app's own non-modal overlay) — never
+ * `Alert.alert`. A native alert immediately followed by a navigation pop
+ * (the pre-fix Turn off success path) raced the alert's presentation
+ * against the screen transition and produced a black screen recoverable
+ * only by an app restart; see `handleDisabled` below for the full account.
+ * `requestConfirmation()` (password step-up, from `../lib/confirm-action`,
+ * shared with DeleteAccountScreen/BiometricLockScreen) follows the same
+ * rule as of round 2: it now drives `ConfirmActionPrompt`, the app's own
+ * password sheet, on every platform — no more native `Alert.prompt` on iOS.
  */
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   ScrollView,
   StyleSheet,
   Text,
@@ -48,6 +58,7 @@ import {
   setupTotp, enableTotp, disableTotp, friendlyError, ApiError, type TotpSetup,
 } from '../lib/api';
 import { requestConfirmation } from '../lib/confirm-action';
+import { useToast } from '../lib/toast-context';
 import {
   shouldBlockTwoFactorSetupBack,
   twoFactorSetupBackAction,
@@ -427,6 +438,7 @@ function StepReauth({
   onCancel: () => void;
   c: C;
 }) {
+  const { showToast } = useToast();
   const [code, setCode] = useState('');
   const [loading, setLoading] = useState(false);
   const [passwordLoading, setPasswordLoading] = useState(false);
@@ -478,17 +490,17 @@ function StepReauth({
         title: 'Confirm your password',
         message: 'Enter your password to set up two-factor authentication again.',
       });
-      if (!confirmToken) return; // cancelled — requestConfirmation already alerted on real errors
+      if (!confirmToken) return; // cancelled — requestConfirmation's sheet already showed the error on real failures
       const data = await setupTotp({ confirmToken });
       if (cancelledRef.current) return;
       onSetup(data);
     } catch (err) {
       if (cancelledRef.current) return;
-      Alert.alert('Could not start setup', friendlyError(err));
+      showToast({ type: 'error', message: `Could not start setup: ${friendlyError(err)}` });
     } finally {
       setPasswordLoading(false);
     }
-  }, [onSetup]);
+  }, [onSetup, showToast]);
 
   return (
     <>
@@ -537,12 +549,13 @@ function StepSecret({
   onContinue: () => void;
   c: C;
 }) {
+  const { showToast } = useToast();
   const handleCopy = useCallback(async () => {
     await Clipboard.setStringAsync(setup.secret);
-    Alert.alert('Copied', 'Secret key copied to clipboard.');
+    showToast({ type: 'success', message: 'Secret key copied to clipboard.' });
     // Auto-clear clipboard after 60 seconds to limit exposure of TOTP secret
     setTimeout(() => Clipboard.setStringAsync(''), 60000);
-  }, [setup.secret]);
+  }, [setup.secret, showToast]);
 
   return (
     <>
@@ -621,6 +634,7 @@ function StepVerify({
     }
   }, [digits]);
 
+  const { showToast } = useToast();
   const handleEnable = useCallback(async () => {
     if (!ready) return;
     setLoading(true);
@@ -629,12 +643,12 @@ function StepVerify({
       await enableTotp(code);
       onSuccess();
     } catch (err) {
-      Alert.alert('Verification failed', friendlyError(err));
+      showToast({ type: 'error', message: `Verification failed: ${friendlyError(err)}` });
     } finally {
       setLoading(false);
       onVerifyingChange(false);
     }
-  }, [code, ready, onSuccess, onVerifyingChange]);
+  }, [code, ready, onSuccess, onVerifyingChange, showToast]);
 
   return (
     <>
@@ -697,12 +711,13 @@ function StepBackupCodes({
   onDone: () => void;
   c: C;
 }) {
+  const { showToast } = useToast();
   const handleCopyAll = useCallback(async () => {
     await Clipboard.setStringAsync(codes.join('\n'));
-    Alert.alert('Copied', 'All backup codes copied to clipboard.');
+    showToast({ type: 'success', message: 'All backup codes copied to clipboard.' });
     // Auto-clear clipboard after 60 seconds to limit exposure of backup codes
     setTimeout(() => Clipboard.setStringAsync(''), 60000);
-  }, [codes]);
+  }, [codes, showToast]);
 
   // Render codes in pairs
   const pairs: string[][] = [];
@@ -761,6 +776,7 @@ export default function TwoFactorSetupScreen() {
   const insets = useSafeAreaInsets();
   const { colors: c } = useTheme();
   const { user, refreshAuth } = useAuth();
+  const { showToast } = useToast();
 
   // Task 1610: the mode this screen OPENS in is decided once, from the
   // already-known `/auth/me` status — never a bare, unconditional
@@ -817,11 +833,32 @@ export default function TwoFactorSetupScreen() {
     setMode('wizard');
   }, []);
 
+  // Task 1610, Issue 2 (Guus, 2026-09-30, TestFlight 228/229): "when i disable
+  // 2fa i get a black screen on ios, need to restart the app to continue
+  // again." Root cause: this used to call `Alert.alert(...)` (a native
+  // UIAlertController presentation, which is async/animated) and then
+  // IMMEDIATELY, synchronously, call `navigation.goBack()` — popping the
+  // current screen's view controller while the alert was still presenting
+  // (or about to) on top of it. That races the native-stack pop transition
+  // against the alert's own presentation/dismissal animation; the result is
+  // a view hierarchy where the alert's presenting controller has already
+  // been removed, which iOS/React Navigation shows as a blank black screen
+  // that live input no longer reaches — only a full app restart recovers.
+  // Every other success path in this screen (StepVerify's `onSuccess`, the
+  // wizard's `handleDone`) never combined a blocking native modal with an
+  // immediate pop, which is why only this path showed the bug.
+  //
+  // Fix: `showToast` (the app's own non-modal overlay, rendered by
+  // `ToastProvider` ABOVE `NavigationContainer` in App.tsx — see
+  // `src/lib/toast-context.tsx`) instead of `Alert.alert`. It is not a
+  // native modal, has nothing to present/dismiss, and cannot race a
+  // navigation transition — the same primitive `FilesScreen`/`ShareSheetScreen`/
+  // `SharedScreen` already use for "X copied"/"X failed" notifications.
   const handleDisabled = useCallback(() => {
-    Alert.alert('Two-factor authentication turned off');
+    showToast({ type: 'success', message: 'Two-factor authentication turned off.' });
     refreshAuth().catch(() => {});
     navigation.goBack();
-  }, [navigation, refreshAuth]);
+  }, [navigation, refreshAuth, showToast]);
 
   // Task 1539 (finding 2): the custom back button's step>1 branch used to
   // call the exact same navigation.goBack() as step 1 — a dead conditional
