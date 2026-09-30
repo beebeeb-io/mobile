@@ -123,6 +123,7 @@ import { extensionForMime, previewCacheName, previewDecryptExtension, previewDis
 // no lazy) is used instead.
 import { RawRenderer } from '../components/preview/RawRenderer';
 import { ZoomableImage } from '../components/preview/ZoomableImage';
+import { PhotoPageVideo } from '../components/preview/PhotoPageVideo';
 import { previewSurfaceIsDark, statusBarStyleFor } from '../lib/status-bar-style';
 
 // Preview renderers are lazy-loaded so that the libraries each one depends on
@@ -1167,7 +1168,7 @@ const ProgressiveOriginalImage = React.memo(function ProgressiveOriginalImage({
   );
 });
 
-const PhotoPage = React.memo(function PhotoPage({
+export const PhotoPage = React.memo(function PhotoPage({
   entry,
   shouldLoadFull,
   isCurrent,
@@ -1248,9 +1249,10 @@ const PhotoPage = React.memo(function PhotoPage({
   // below, mirroring `PreviewScreen`'s own `tempRawUriRef` for the single-file
   // case.
   const tempRawSourceUriRef = useRef<string | null>(null);
-  const player = useVideoPlayer(isVideoEntry && uri ? uri : null, (p) => {
-    p.loop = false;
-  });
+  // Task 1669 Issue 1: NO `useVideoPlayer` here. expo-video builds a native
+  // AVPlayer even for a null source, so calling it on every mounted page (image
+  // pages included) held 10+ idle players. `PhotoPageVideo` owns the player and
+  // is mounted only while a video page has a loaded `uri`.
 
   useEffect(() => {
     let mounted = true;
@@ -1422,32 +1424,20 @@ const PhotoPage = React.memo(function PhotoPage({
   }, [shouldLoadFull, uri, entry, isUnlocked, getFileKeyBytes, getMasterKeyHandleId, isVideoEntry, isRawEntry, previewProfile, locked]);
 
   // Task 1669 Issue 1 — release this page's fully-loaded resource (the
-  // decrypted `uri`, and therefore any `AVPlayer` `useVideoPlayer` builds
-  // from it below) the instant this page stops being the active page.
+  // decrypted `uri`: a full-resolution decoded <Image>, a mounted
+  // `PhotoPageVideo` and therefore its AVPlayer, or a RAW renderer) the
+  // moment this page stops being the active page.
   //
-  // Before this fix, `uri` was set once by the effect above and NEVER
-  // cleared when `shouldLoadFull` turned back off — this page component
-  // stays mounted well past that point (the pager's `windowSize={3}` keeps
-  // neighbors rendered), so a real `AVPlayer` (video entries) or a
-  // full-resolution decoded image (everything else) just sat there, alive,
-  // for every page the user had ever scrolled past — no bound at all.
-  // 14 were alive simultaneously immediately before the 08:41 jetsam kill
-  // on build 229 (`_qa-evidence/1667/iphone-live-0838.log`: 14
-  // `AVPlayer ... Player deallocated` pairs go out together right before
-  // the process exits, all created moments earlier while scrolling old
-  // photos and opening one — 14 simultaneously live full-resolution loads,
-  // not one). `reconcileLoadedPages` (`lib/photo-viewer-window.ts`) is the
-  // pure version of this exact release decision, unit-tested there against
-  // a simulated 200-item scroll (asserts at most 1 page stays loaded).
-  //
-  // Deliberately NOT depending on `uri` — this only needs to run on a
-  // `shouldLoadFull` transition and reads whatever `uri` the closure for
-  // that render already has; adding `uri` as a dep would also re-fire this
-  // effect on every load itself (no-op there since `shouldLoadFull` is
-  // still true), which is harmless but unnecessary churn.
+  // Before this, `uri` was set once by the load effect above and NEVER
+  // cleared when `shouldLoadFull` turned back off. The page stays mounted
+  // well past that point (the pager's `windowSize={3}`), so every page the
+  // user had ever scrolled past kept its decoded image / live player: no
+  // bound at all. Only ONE page (the current one, radius 0) is ever
+  // `shouldLoadFull`, so after this at most one page holds a full resource.
+  // In-flight loads need no handling here: the load effect's cleanup aborts
+  // and `cancelled`-guards them when `shouldLoadFull` flips.
   useEffect(() => {
-    if (shouldLoadFull) return;
-    if (uri === null) return;
+    if (shouldLoadFull || uri === null) return;
     setUri(null);
     setUriKind(null);
     setOriginalUri(null);
@@ -1455,8 +1445,11 @@ const PhotoPage = React.memo(function PhotoPage({
     setOriginalCacheHit(false);
     setImageLoaded(false);
     sawOriginalProgressRef.current = false;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shouldLoadFull]);
+    // A RAW page's decrypted SOURCE temp file is otherwise deleted only on
+    // unmount; now that a page can reload after release, delete it here too or
+    // each return to the page would orphan the previous one on disk.
+    void cleanupTrackedTempFile(tempRawSourceUriRef, FileSystem.deleteAsync);
+  }, [shouldLoadFull, uri]);
 
   // Delete this page's own decrypted RAW SOURCE temp file on unmount — same
   // pattern as `PreviewScreen`'s own `tempRawUriRef` cleanup for the
@@ -1697,14 +1690,7 @@ const PhotoPage = React.memo(function PhotoPage({
               </Text>
             </View>
           ) : uri && isVideoEntry ? (
-            <VideoView
-              player={player}
-              style={styles.photoPageImage}
-              contentFit="contain"
-              nativeControls
-              fullscreenOptions={{ enable: true }}
-              allowsPictureInPicture
-            />
+            <PhotoPageVideo uri={uri} style={styles.photoPageImage} />
           ) : uri && isRawEntry ? (
             // Task 1570 — RAW joining the pager. `RawRenderer` owns its own
             // loading/extraction/fallback states once handed this decrypted
