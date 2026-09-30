@@ -335,6 +335,94 @@ describe('ConfirmActionPrompt — resolve happens only after dismissal (task 161
   });
 });
 
+describe('ConfirmActionPrompt — dismissal is blocked mid-submit (Codex P1, PR #157 round 2)', () => {
+  test('scrim/drag dismiss (BottomSheet onRequestClose) while an attempt is in flight is a no-op — it cannot race a late success into handing back a token the user tried to cancel', async () => {
+    act(() => {
+      renderer = TestRenderer.create(React.createElement(ConfirmActionPrompt));
+    });
+
+    // A deferred attempt: submit() awaits this, and the test controls
+    // exactly when it settles — the only way to reliably land a dismiss
+    // request WHILE `phase === 'submitting'`.
+    let resolveAttempt: (outcome: unknown) => void = () => {};
+    const attemptPromise = new Promise((resolve) => { resolveAttempt = resolve; });
+
+    let settledToken: string | null | undefined;
+    act(() => {
+      const promise = capturedPrompter!({
+        title: 'Confirm with password',
+        message: 'msg',
+        attempt: async () => attemptPromise,
+      });
+      promise.then((t) => { settledToken = t; });
+    });
+
+    act(() => {
+      findByTestID(renderer!.root, 'confirm-action-password-input')[0].props.onChangeText('correct');
+    });
+    act(() => {
+      findByTestID(renderer!.root, 'confirm-action-confirm')[0].props.onPress();
+    });
+    // Now mid-submit: the attempt is in flight and has not resolved yet.
+    expect(lastSheetProps!.visible).toBe(true);
+
+    // The scrim / drag-to-dismiss path — NOT the (already-disabled) Cancel
+    // button — fires BottomSheet's own onRequestClose. Pre-fix, this called
+    // `finish(null)` unconditionally and started the close animation.
+    act(() => {
+      (lastSheetProps!.onRequestClose as () => void)();
+    });
+    // Blocked: still visible, nothing decided yet.
+    expect(lastSheetProps!.visible).toBe(true);
+    expect(settledToken).toBeUndefined();
+
+    // The in-flight attempt now succeeds (a real password, correctly
+    // submitted before the user's dismiss attempt landed).
+    await act(async () => {
+      resolveAttempt({ ok: true, token: 'tok-real' });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(lastSheetProps!.visible).toBe(false);
+    expect(settledToken).toBeUndefined(); // still not resolved — onDismissed hasn't fired
+
+    await act(async () => {
+      (lastSheetProps!.onDismissed as () => void)();
+      await Promise.resolve();
+    });
+    // The blocked dismiss did not silently turn into a cancel once the
+    // request settled — the real outcome (success) is what's honored.
+    expect(settledToken).toBe('tok-real');
+  });
+
+  test('the Modal-level onRequestClose (hardware back / iOS swipe) is gated the same way', async () => {
+    act(() => {
+      renderer = TestRenderer.create(React.createElement(ConfirmActionPrompt));
+    });
+    let resolveAttempt: (outcome: unknown) => void = () => {};
+    const attemptPromise = new Promise((resolve) => { resolveAttempt = resolve; });
+    act(() => {
+      capturedPrompter!({ title: 't', message: 'm', attempt: async () => attemptPromise });
+    });
+    act(() => {
+      findByTestID(renderer!.root, 'confirm-action-password-input')[0].props.onChangeText('x');
+    });
+    act(() => {
+      findByTestID(renderer!.root, 'confirm-action-confirm')[0].props.onPress();
+    });
+
+    // Modal and BottomSheet are wired to the SAME `cancel` — asserting the
+    // Modal's own onRequestClose prop directly (rather than BottomSheet's)
+    // proves the gate lives in `cancel` itself, not duplicated per caller.
+    const modalNode = renderer!.root.findByType(Modal);
+    act(() => { (modalNode.props.onRequestClose as () => void)(); });
+    expect(lastSheetProps!.visible).toBe(true);
+
+    await act(async () => { resolveAttempt({ ok: true, token: 'tok-2' }); await Promise.resolve(); await Promise.resolve(); });
+    expect(lastSheetProps!.visible).toBe(false);
+  });
+});
+
 // ── Source-text guard: the permanent, RED-provable lock that the native
 // Alert path never comes back (mirrors NewFileSheet.test.ts's convention
 // of asserting on the raw source for things a fake-RN render can't see). ──
@@ -366,5 +454,14 @@ describe('ConfirmActionPrompt — source guards', () => {
 
   test('registers unconditionally — no Platform.OS gate', () => {
     expect(src).not.toContain('Platform');
+  });
+
+  test('cancel() is gated on phase === "submitting" — every dismissal path (Codex P1)', () => {
+    const cancelBody = src.match(/const cancel = useCallback\(\(\) => \{([\s\S]*?)\}, \[finish, phase\]\);/);
+    expect(cancelBody).not.toBeNull();
+    expect(cancelBody![1]).toMatch(/phase === 'submitting'/);
+    // Both onRequestClose props (Modal + BottomSheet) route through this
+    // SAME `cancel` — not a separate, ungated handler for either.
+    expect(src.match(/onRequestClose=\{cancel\}/g) ?? []).toHaveLength(2);
   });
 });

@@ -100,7 +100,21 @@ export default function ConfirmActionPrompt() {
     current?.resolve(resultRef.current);
   }, []);
 
-  const cancel = useCallback(() => finish(null), [finish]);
+  // Codex P1 (PR #157, round 2): the Cancel BUTTON was already disabled
+  // while `phase === 'submitting'`, but the scrim tap / drag-to-dismiss /
+  // hardware back all route through THIS `cancel`, unconditionally — none
+  // of them were gated. A user dismissing mid-attempt raced the in-flight
+  // `attempt(password)`: if it later resolved `ok: true`, `finish()`
+  // overwrote `resultRef.current` (already set to `null` by this cancel)
+  // with the token, and `onDismissed` handed the caller a valid
+  // confirmation token despite the user having tried to back out —
+  // `DeleteAccountScreen` would then proceed with the deletion. Blocking
+  // every dismissal path during `submitting` (not just the button) closes
+  // all three at once.
+  const cancel = useCallback(() => {
+    if (phase === 'submitting') return;
+    finish(null);
+  }, [finish, phase]);
 
   const submit = useCallback(async () => {
     const current = pendingRef.current;
