@@ -33,3 +33,25 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Run claims guard
         run: bash scripts/claims-guard/claims-guard.sh
+
+  # Task 1671: until this job NO Swift was compiled in CI. Public repo, so
+  # macOS runners are free. Typechecks the Share Extension exactly as the
+  # BeebeebShare target compiles it (file list read from project.pbxproj),
+  # against the iOS simulator SDK, for both ios/BeebeebShare/ and the
+  # targets/share-extension/ source of truth, checks the two stay
+  # byte-identical, then compiles and runs every scripts/swift-tests driver.
+  swift-gate:
+    name: Swift compile gate
+    runs-on: macos-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Typecheck Share Extension (xcodeproj copy, targets/ source, sync check)
+        run: bash scripts/swift-ci/typecheck-share-extension.sh
+      - name: Share Extension guards can go red (self-test)
+        if: ${{ !cancelled() }}
+        run: python3 scripts/swift-ci/share-extension-guards.py --self-test
+      - name: Swift unit tests (scripts/swift-tests)
+        if: ${{ !cancelled() }}
+        run: bash scripts/swift-ci/run-swift-tests.sh
