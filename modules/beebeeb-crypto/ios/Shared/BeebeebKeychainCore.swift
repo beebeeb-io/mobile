@@ -263,6 +263,20 @@ enum BeebeebKeychainCore {
     static let stringStorageService = "io.beebeeb.string-storage"
     static let appGroupSuiteName = "group.io.beebeeb.shared"
 
+    // Task 0447's session token + API base URL, stored through the generic
+    // string API above. Written by the main app only
+    // (`BeebeebCryptoModule.swift` `mirrorSessionToAppGroup`); read here by
+    // every target that links this file (Share Extension, File Provider).
+    // Task 1671: the Share Extension used to read these under DIFFERENT,
+    // never-written literals (`beebeeb_session_token` / `beebeeb_api_url`)
+    // straight from App Group UserDefaults — a dead read left behind when
+    // 0447 moved storage here. Both the writer and every reader must
+    // reference these two constants, never a re-typed literal, so the two
+    // sides can't drift apart again (see
+    // `src/lib/share-extension-session-keys.test.ts`).
+    static let sessionTokenKey = "io.beebeeb.sessionToken"
+    static let apiBaseUrlKey = "io.beebeeb.apiBaseUrl"
+
     // Task 1594 round 2 (F3/F6): the master key's proven owner + the
     // currently signed-in user, both stored through the generic string API
     // above — i.e. the SAME access group + `AfterFirstUnlockThisDeviceOnly`
