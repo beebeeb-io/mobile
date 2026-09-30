@@ -31,6 +31,9 @@ final class ShareUploader {
         /// both unreadable and leaks internal identifiers for no benefit —
         /// exactly what Guus hit on TestFlight build 230.
         case uploadFailed(Int)
+        /// A 2xx whose body could not be read (init only): the request
+        /// succeeded, so there is no honest HTTP status to show.
+        case unreadableResponse
         case networkError(Error)
         /// Task 1594 round 5: the server's typed 409 `account_mismatch` —
         /// the session's real account doesn't match the `X-Beebeeb-Expected-User`
@@ -45,6 +48,7 @@ final class ShareUploader {
             case .fileReadFailed: return "Could not read file data"
             case .cryptoUnavailable(let msg): return "Could not encrypt the file: \(msg). Open Beebeeb once, then try sharing again."
             case .uploadFailed(let code): return "Upload failed (HTTP \(code)). Please try again."
+            case .unreadableResponse: return "Beebeeb got a reply it couldn't read. Please try again."
             case .networkError(let e): return "Network error: \(e.localizedDescription)"
             case .accountMismatch: return "This file belongs to a different account. Open Beebeeb, sign in again, then try sharing again."
             }
@@ -288,12 +292,16 @@ final class ShareUploader {
         // returns 201 Created, not 200 — accept the whole 2xx range like every
         // other step, never a single hardcoded code.
         guard ShareUploadRequestPolicy.isSuccessResponse(statusCode: statusCode) else {
-            logUploadFailureDetail(step: "init", statusCode: statusCode, body: data)
+            Self.logUploadFailureDetail(step: "init", statusCode: statusCode, body: data)
             throw UploadError.uploadFailed(statusCode)
         }
         guard let decoded = try? JSONDecoder().decode(InitResponse.self, from: data) else {
             NSLog("[Beebeeb] ShareUploader: init response failed to decode: \(String(data: data, encoding: .utf8) ?? "<non-utf8>")")
-            throw UploadError.uploadFailed(statusCode)
+            // The 2xx means the file row + upload session already exist
+            // server-side; without the session id no chunk can be sent, so
+            // abandon it now (best-effort) instead of stranding a placeholder.
+            await abandonUpload(fileId: fileId)
+            throw UploadError.unreadableResponse
         }
         return decoded
     }
@@ -318,7 +326,7 @@ final class ShareUploader {
             throw UploadError.accountMismatch
         }
         guard ShareUploadRequestPolicy.isSuccessResponse(statusCode: statusCode) else {
-            logUploadFailureDetail(step: "chunk \(index)", statusCode: statusCode, body: data)
+            Self.logUploadFailureDetail(step: "chunk \(index)", statusCode: statusCode, body: data)
             throw UploadError.uploadFailed(statusCode)
         }
     }
@@ -343,7 +351,7 @@ final class ShareUploader {
             throw UploadError.accountMismatch
         }
         guard ShareUploadRequestPolicy.isSuccessResponse(statusCode: statusCode) else {
-            logUploadFailureDetail(step: "complete", statusCode: statusCode, body: data)
+            Self.logUploadFailureDetail(step: "complete", statusCode: statusCode, body: data)
             throw UploadError.uploadFailed(statusCode)
         }
     }

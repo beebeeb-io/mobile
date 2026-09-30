@@ -14,7 +14,7 @@ import Foundation
 // plus the existing `shouldAttachExpectedUserHeader` / `isAccountMismatchResponse`
 // for full-file coverage.
 //
-// Run via `scripts/test-share-upload-request-policy.sh`. Deliberately NOT
+// Run in CI via `scripts/swift-ci/run-swift-tests.sh` (macOS job "Swift compile gate"). Deliberately NOT
 // placed under a directory globbed by a podspec (mirrors
 // `account-refusal-detection-test.swift`'s own note) — this file's top-level
 // executable statements would break such a build.

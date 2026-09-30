@@ -102,7 +102,11 @@ final class FolderFetcher {
 
             // Attempt to decrypt the folder name if master key is available
             var displayName = "Folder \(index)"
-            if let mk = masterKey, !nameEncrypted.isEmpty {
+            if !nameEncrypted.isEmpty && !nameEncrypted.hasPrefix("{") {
+                // Not an encrypted envelope: same passthrough as the File
+                // Provider's `CryptoBridge.decryptNameWithMime`.
+                displayName = nameEncrypted
+            } else if let mk = masterKey, !nameEncrypted.isEmpty {
                 do {
                     displayName = try mk.decryptNameWithMime(fileId: id, nameEncrypted: nameEncrypted).name
                 } catch {
