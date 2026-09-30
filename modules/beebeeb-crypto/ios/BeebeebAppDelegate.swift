@@ -37,11 +37,22 @@ public class BeebeebAppDelegate: ExpoAppDelegateSubscriber {
     handleEventsForBackgroundURLSession identifier: String,
     completionHandler: @escaping () -> Void
   ) {
-    if identifier == NativeBackupEngine.bgSessionIdentifier {
-      NativeBackupEngine.shared.handleBackgroundSessionEvents(
-        identifier: identifier,
-        completionHandler: completionHandler
-      )
+    guard identifier == NativeBackupEngine.bgSessionIdentifier else { return }
+    // Task 1669 round 2: this callback runs on the MAIN thread inside the launch window the
+    // scene-create watchdog polices, so it must not construct `NativeBackupEngine.shared` (its
+    // init() builds the background URLSession: the proven 10 s XPC stall of build 227).
+    //
+    // 1. Main thread, cheap, FIRST: stash the completion handler. Nothing is lost by doing it
+    //    before the engine exists: iOS holds the pending delegate events until a session with
+    //    this identifier is recreated, and the handler is what tells iOS we are done with them.
+    NativeBackupEngine.stashBackgroundSessionCompletionHandler(completionHandler)
+    // 2. Background queue: construct the engine. init() recreates the background session with
+    //    the same identifier (delegate = the engine); iOS then delivers the events, and
+    //    `urlSessionDidFinishEvents(forBackgroundURLSession:)` calls the stashed handler on the
+    //    main queue. A guard test (`app-delegate-launch-guard.test.ts`) fails if `.shared` is
+    //    touched synchronously here or the stash moves behind the hop.
+    DispatchQueue.global(qos: .userInitiated).async {
+      NativeBackupEngine.reattachBackgroundSessionForPendingEvents()
     }
   }
 }

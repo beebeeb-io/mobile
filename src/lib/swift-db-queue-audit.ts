@@ -16,6 +16,15 @@
  *      `dbQueue.sync/async { }` closure ("GUARDED"), or in a function whose
  *      every call site is (transitively) inside one ("REQUIRES").
  *
+ * What "inside a dbQueue closure" means (round 2): the EXECUTION CONTEXT of a
+ * position is the innermost enclosing closure that changes it — a
+ * `dbQueue.sync/async { }` (on dbQueue) or a HOP (`Task { }`, `Task.detached { }`,
+ * `<other>.async/.sync/.asyncAfter { }`, `group.addTask { }`, `addOperation { }`),
+ * which is NOT on dbQueue even when it is lexically nested inside a dbQueue
+ * closure. A call to a REQUIRES function counts whatever its receiver is
+ * (`foo()`, `self.foo()`, `self?.foo()`, `self!.foo()`, `engine.foo()`), and a
+ * direct `db` read inside a hop is itself a violation.
+ *
  * Swift cannot be compiled on the Linux dev/CI containers, so this reads the
  * source text. It is deliberately conservative: comments and string literals
  * are blanked first, and functions are found by brace matching. Helpers that
@@ -37,6 +46,13 @@ export interface DbQueueAudit {
   /** true iff the only openDatabase call is a direct dbQueue.async in init() */
   openDatabaseEnqueuedFromInit: boolean;
   violations: string[];
+  /** round 2: how many REQUIRES-function call sites were examined (any receiver) */
+  callSitesChecked: number;
+  /** round 2: how many of those sat on dbQueue directly / in another REQUIRES function */
+  callSitesOnDbQueue: number;
+  /** round 2: closures classified as on-dbQueue / as off-queue hops */
+  dbQueueClosures: number;
+  hopClosures: number;
 }
 
 /** Blank comments and string literals (keeping newlines) so scanning sees code only. */
@@ -125,15 +141,45 @@ export function auditDbQueue(source: string): DbQueueAudit {
     inits.push({ name: 'init', sigStart: m.index, bodyOpen: open, bodyClose: matchBrace(code, open) });
   }
 
-  // ---- dbQueue.sync/async closure ranges
-  const guardedRanges: Array<[number, number, 'sync' | 'async']> = [];
-  const gqRe = /\bdbQueue\s*\.\s*(sync|async)\b/g;
-  for (let m = gqRe.exec(code); m; m = gqRe.exec(code)) {
-    const open = code.indexOf('{', m.index + m[0].length);
-    if (open < 0) continue;
-    guardedRanges.push([open, matchBrace(code, open), m[1] as 'sync' | 'async']);
+  // ---- execution-context closures: dbQueue.sync/async (ON the queue) and hops (OFF it)
+  type Ctx = { open: number; close: number; kind: 'dbQueue' | 'hop'; what: string };
+  const ctxs: Ctx[] = [];
+  const hopStmtStart = (pos: number) => {
+    let k = pos - 1;
+    while (k >= 0 && !';{}'.includes(code[k]) && pos - k < 400) k -= 1;
+    return k + 1;
+  };
+  for (let open = code.indexOf('{'); open >= 0; open = code.indexOf('{', open + 1)) {
+    const pre = code.slice(hopStmtStart(open), open).trim();
+    let what: string | null = null;
+    let kind: Ctx['kind'] = 'hop';
+    const task = /(?:^|[^\w.])(Task\s*(?:<[^{}>]*>)?\s*(?:\.\s*detached\s*)?)(?:\([^{}]*\)\s*)?$/.exec(pre);
+    const add = /\.\s*(addTask|addTaskUnlessCancelled|addOperation)\s*(?:\([^{}]*\)\s*)?$/.exec(pre);
+    // `.sync { }` / `.sync(flags: ...) { }` (trailing closure) and `.sync(execute: { })` (labelled,
+    // the paren is still open when the closure starts).
+    const q = /^([\s\S]*?)\.\s*(async|asyncAfter|sync|asyncAndWait)\s*(?:\([^{}]*\)\s*|\([^(){}]*)?$/.exec(pre);
+    if (task) what = task[1].replace(/\s+/g, '');
+    else if (add) what = add[1];
+    else if (q) {
+      const receiver = q[1].trim();
+      if (/(?:^|[^\w])dbQueue$/.test(receiver) && q[2] !== 'asyncAfter') kind = 'dbQueue';
+      what = `${receiver.split(/\s+/).pop()}.${q[2]}`;
+    }
+    if (what === null) continue;
+    ctxs.push({ open, close: matchBrace(code, open), kind, what });
   }
-  const isGuarded = (pos: number) => guardedRanges.some(([a, b]) => a < pos && pos < b);
+  const guardedRanges: Array<[number, number, 'sync' | 'async']> = ctxs
+    .filter((c) => c.kind === 'dbQueue')
+    .map((c) => [c.open, c.close, (/\.sync$/.test(c.what) ? 'sync' : 'async') as 'sync' | 'async']);
+  /** innermost context-changing closure enclosing `pos` (undefined: plain function/method context) */
+  const ctxAt = (pos: number) =>
+    ctxs.filter((c) => c.open < pos && pos < c.close).sort((x, y) => y.open - x.open)[0];
+  /** on dbQueue: the innermost context-changing closure is a dbQueue one (a hop in between => off) */
+  const isGuarded = (pos: number) => ctxAt(pos)?.kind === 'dbQueue';
+  const hopAt = (pos: number, lowerBound: number) => {
+    const c = ctxAt(pos);
+    return c && c.kind === 'hop' && c.open > lowerBound ? c : undefined;
+  };
 
   const declMatch = /private var db\s*:/.exec(code);
   if (!declMatch) throw new Error('`private var db` declaration not found — audit needs updating');
@@ -170,20 +216,37 @@ export function auditDbQueue(source: string): DbQueueAudit {
   const guarded = touchingDb.filter((k) => !requires.includes(k));
 
   const violations: string[] = [];
+  for (const pos of refs) {
+    const hop = hopAt(pos, -1);
+    if (hop) violations.push(`db touched at line ${lineOf(pos)} inside a ${hop.what} hop (not on dbQueue)`);
+  }
   for (const k of requires) {
     if (k.startsWith('<top-level>')) violations.push(`db touched outside any function, off dbQueue: ${k}`);
     if (k.startsWith('init@')) violations.push(`db touched directly in init(), off dbQueue: ${k}`);
   }
 
   // ---- call sites of REQUIRES functions must be on dbQueue (or in another REQUIRES fn)
+  // Any receiver counts: `f(`, `self.f(`, `self?.f(`, `self!.f(`, `engine.f(`. A call inside a hop
+  // closure (Task, other queue, ...) is off dbQueue even when that hop sits inside a dbQueue
+  // closure or inside a REQUIRES function.
+  let callSitesChecked = 0;
+  let callSitesOnDbQueue = 0;
   const reqNames = new Set(requires.filter((k) => !k.startsWith('<') && !k.startsWith('init@')).map((k) => k.split('@')[0]));
   for (const name of [...reqNames].sort()) {
-    const callRe = new RegExp(`(?<![\\w.])(?:self\\.)?${name}\\s*\\(`, 'g');
+    const callRe = new RegExp(`(?<![\\w])${name}\\s*\\(`, 'g');
     for (let m = callRe.exec(code); m; m = callRe.exec(code)) {
       if (/func\s+$/.test(code.slice(Math.max(0, m.index - 6), m.index))) continue; // the declaration
-      if (isGuarded(m.index)) continue;
+      callSitesChecked += 1;
       const enclosing = innermost(m.index, funcs);
-      if (enclosing && reqNames.has(enclosing.name)) continue;
+      const hop = hopAt(m.index, enclosing ? enclosing.bodyOpen : -1);
+      if (hop) {
+        violations.push(`${name}() called at line ${lineOf(m.index)} inside a ${hop.what} hop (off dbQueue)`);
+        continue;
+      }
+      if (isGuarded(m.index) || (enclosing && reqNames.has(enclosing.name))) {
+        callSitesOnDbQueue += 1;
+        continue;
+      }
       violations.push(`${name}() called at line ${lineOf(m.index)} off dbQueue (and not from a dbQueue-only function)`);
     }
   }
@@ -225,5 +288,9 @@ export function auditDbQueue(source: string): DbQueueAudit {
     openDatabaseCallLines: openLines,
     openDatabaseEnqueuedFromInit: fromInit && openLines.length === 1,
     violations,
+    callSitesChecked,
+    callSitesOnDbQueue,
+    dbQueueClosures: ctxs.filter((c) => c.kind === 'dbQueue').length,
+    hopClosures: ctxs.filter((c) => c.kind === 'hop').length,
   };
 }

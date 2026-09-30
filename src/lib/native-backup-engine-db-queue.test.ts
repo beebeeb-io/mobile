@@ -49,6 +49,13 @@ describe('NativeBackupEngine.swift: the real file', () => {
     expect(audit.openDatabaseEnqueuedFromInit).toBe(true);
   });
 
+  test('round 2: the stricter call-site matcher examined every REQUIRES call (any receiver, hops excluded) and found them all on dbQueue', () => {
+    expect(audit.callSitesChecked).toBeGreaterThanOrEqual(50);
+    expect(audit.callSitesOnDbQueue).toBe(audit.callSitesChecked);
+    expect(audit.dbQueueClosures).toBeGreaterThanOrEqual(50);
+    expect(audit.hopClosures).toBeGreaterThanOrEqual(20); // Task { } / other-queue .async hops were really classified
+  });
+
   test('the accessor that used to bypass dbQueue is now self-guarded', () => {
     expect(audit.guarded.some((k) => k.startsWith('resetRetryExhaustedUploadsForManualRun@'))).toBe(true);
   });
@@ -101,5 +108,76 @@ describe('the audit goes RED on each deliberate mutation (guard red-proof)', () 
   test('MUTATION 6 — db touched directly in init()', () => {
     const bad = mutate('    setupMetadataSession()\n', '    setupMetadataSession()\n    _ = sqlite3_libversion_number() + Int32(db == nil ? 0 : 1)\n');
     expect(auditDbQueue(bad).violations.some((v) => v.includes('init()'))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Round 2 (lead ruling 4): the call-site matcher must see ANY receiver, and a hop to another
+// queue / Task inside a dbQueue closure must not count as "on dbQueue".
+// ---------------------------------------------------------------------------
+const ROGUE = '  private func rogueCount() -> Int { guard let db = db else { return 0 }; return Int(sqlite3_total_changes(db)) }\n';
+/** Adds `rogueCount()` (a REQUIRES accessor) plus `extra` members to the class. */
+function withRogue(extra: string): string {
+  return mutate('  private func ensureTables() {', `${ROGUE}${extra}\n  private func ensureTables() {`);
+}
+const violatesCall = (src: string) => auditDbQueue(src).violations.some((v) => v.startsWith('rogueCount() called at line'));
+
+describe('round 2: the audit goes RED on receiver forms and queue/Task hops (in-test mutations)', () => {
+  test('CONTROL — a call directly inside dbQueue.sync stays green (the stricter audit is not just always-red)', () => {
+    const src = withRogue('  func okCaller() -> Int { return dbQueue.sync { rogueCount() } }');
+    expect(auditDbQueue(src).violations).toEqual([]);
+  });
+
+  test('CONTROL — Task { dbQueue.sync { f() } }: a dbQueue closure INSIDE a hop is on dbQueue again', () => {
+    const src = withRogue('  func okTask() { Task { _ = self.dbQueue.sync { self.rogueCount() } } }');
+    expect(auditDbQueue(src).violations).toEqual([]);
+  });
+
+  test('CONTROL — the labelled form dbQueue.sync(execute: { f() }) is recognised as on dbQueue', () => {
+    const src = withRogue('  func okExec() -> Int { return dbQueue.sync(execute: { rogueCount() }) }');
+    expect(auditDbQueue(src).violations).toEqual([]);
+  });
+
+  test('MUTATION 7 — self?.fn( off dbQueue (weak-self closure on the main queue)', () => {
+    expect(violatesCall(withRogue('  func m7() { DispatchQueue.main.async { [weak self] in _ = self?.rogueCount() } }'))).toBe(true);
+  });
+
+  test('MUTATION 8 — self!.fn( off dbQueue', () => {
+    expect(violatesCall(withRogue('  func m8() -> Int { return self!.rogueCount() }'))).toBe(true);
+  });
+
+  test('MUTATION 9 — engine.fn( / any <expr>.fn( receiver off dbQueue', () => {
+    expect(violatesCall(withRogue('  func m9(engine: NativeBackupEngine) -> Int { return engine.rogueCount() }'))).toBe(true);
+    expect(violatesCall(withRogue('  func m9b() -> Int { return NativeBackupEngine.shared.rogueCount() }'))).toBe(true);
+    expect(violatesCall(withRogue('  func m9c() -> Int { return (self).rogueCount() }'))).toBe(true);
+  });
+
+  test('MUTATION 10 — Task { f() } inside a dbQueue closure is NOT on dbQueue', () => {
+    expect(violatesCall(withRogue('  func m10() { dbQueue.async { Task { _ = self.rogueCount() } } }'))).toBe(true);
+  });
+
+  test('MUTATION 11 — Task.detached { f() } inside a dbQueue closure is NOT on dbQueue', () => {
+    expect(violatesCall(withRogue('  func m11() { dbQueue.sync { Task.detached(priority: .background) { _ = self.rogueCount() } } }'))).toBe(true);
+  });
+
+  test('MUTATION 12 — a hop to ANOTHER queue inside a dbQueue closure is NOT on dbQueue', () => {
+    expect(violatesCall(withRogue('  func m12() { dbQueue.async { self.queue.async { _ = self.rogueCount() } } }'))).toBe(true);
+    expect(violatesCall(withRogue('  func m12b() { dbQueue.async { DispatchQueue.global(qos: .utility).async { _ = self.rogueCount() } } }'))).toBe(true);
+    expect(violatesCall(withRogue('  func m12c() { dbQueue.async { DispatchQueue.main.asyncAfter(deadline: .now() + 1) { _ = self.rogueCount() } } }'))).toBe(true);
+  });
+
+  test('MUTATION 13 — a hop inside a REQUIRES function does not inherit its on-queue-ness', () => {
+    // m13 touches db and is only ever called from dbQueue (so it is a legitimate REQUIRES host),
+    // but the call in its Task body runs elsewhere.
+    const src = withRogue('  private func m13() { guard let db = db else { return }; _ = db; Task { _ = self.rogueCount() } }\n  func m13caller() { dbQueue.sync { m13() } }');
+    expect(violatesCall(src)).toBe(true);
+  });
+
+  test('MUTATION 14 — a direct db read inside a Task nested in a dbQueue closure', () => {
+    const src = mutate(
+      '  private func ensureTables() {',
+      '  func m14() { dbQueue.async { Task { _ = self.db } } }\n  private func ensureTables() {',
+    );
+    expect(auditDbQueue(src).violations.some((v) => /db touched at line \d+ inside a Task hop/.test(v))).toBe(true);
   });
 });

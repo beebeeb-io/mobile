@@ -1049,7 +1049,7 @@ final class NativeBackupEngine: NSObject {
     // deliver background-session delegate events (task completion,
     // `urlSessionDidFinishEvents(forBackgroundURLSession:)`) to `self` as
     // soon as the session with the same identifier is reattached — see
-    // `handleBackgroundSessionEvents`'s doc comment. `setupMetadataSession()`
+    // "Background URLSession relaunch events" above. `setupMetadataSession()`
     // is a plain `.default`-config session (no background-daemon XPC dance)
     // and has never been evidenced as slow, so it stays synchronous too.
     setupBackgroundSession()
@@ -2690,25 +2690,58 @@ final class NativeBackupEngine: NSObject {
   }
   #endif
 
-  /// Task 1669 Issue 2: this is the ONE legitimate reason a plain launch may
-  /// still construct `.shared` synchronously on the main thread —
-  /// `application(_:handleEventsForBackgroundURLSession:)` fires only when
-  /// iOS relaunches the app specifically to deliver background-session
-  /// events, and receiving them requires `setupBackgroundSession()` to have
-  /// already reattached a session with the same identifier (done
-  /// synchronously in `init()` — see its doc comment). This is a narrower,
-  /// rarer trigger than the plain background/scene-create launch that
-  /// crashed build 227 (that one went through `registerBackgroundTask`,
-  /// now decoupled from `.shared` entirely), so it was not the reproduced
-  /// crash and is left as-is per the fix's own scope: "re-attaching the
-  /// background session ... is what iOS requires synchronously."
-  func handleBackgroundSessionEvents(identifier: String, completionHandler: @escaping () -> Void) {
-    // iOS delivers pending delegate messages after relaunching the app.
-    // Store the completion handler so we call it after all events are delivered.
-    backgroundSessionCompletionHandler = completionHandler
+  // MARK: - Background URLSession relaunch events (task 1669 round 2)
+  //
+  // `application(_:handleEventsForBackgroundURLSession:completionHandler:)` fires when iOS
+  // relaunches the app specifically to deliver background-session events. It runs on the MAIN
+  // thread, inside the same launch window the scene-create watchdog polices (build 227 was
+  // SIGKILLed after 10 s there). Constructing `NativeBackupEngine.shared` runs `init()`, which
+  // builds the background URLSession (`+[NSURLSession _sessionWithConfiguration:]` -> XPC
+  // handshake with nsurlsessiond, the proven 10 s stall), so the app delegate must NOT do that
+  // synchronously. The split is:
+  //
+  //   1. `stashBackgroundSessionCompletionHandler` — the app delegate calls it on the main thread,
+  //      first, before anything else. It only stores the closure (lock + assignment), no engine.
+  //   2. The app delegate then hops to a background queue and touches `.shared` there. `init()`
+  //      recreates the session with the SAME identifier (`bgSessionIdentifier`); Apple holds the
+  //      pending delegate events until that session exists, so nothing is lost by the delay.
+  //   3. When the events are drained, `urlSessionDidFinishEvents(forBackgroundURLSession:)` takes
+  //      the stashed handler and calls it on the MAIN queue, as Apple requires.
+  //
+  // The handler lives in a static (not an instance var) precisely because step 1 happens before
+  // any instance exists. If a second relaunch callback arrives before the first was consumed, the
+  // older handler is completed (main queue) rather than dropped: iOS would otherwise keep waiting
+  // on it and eventually penalise the app's background budget.
+  private static let backgroundSessionHandlerLock = NSLock()
+  private static var pendingBackgroundSessionCompletionHandler: (() -> Void)?
+
+  /// Cheap and main-thread-safe: stores the handler, constructs nothing.
+  static func stashBackgroundSessionCompletionHandler(_ completionHandler: @escaping () -> Void) {
+    backgroundSessionHandlerLock.lock()
+    let previous = pendingBackgroundSessionCompletionHandler
+    pendingBackgroundSessionCompletionHandler = completionHandler
+    backgroundSessionHandlerLock.unlock()
+    if let previous {
+      DispatchQueue.main.async { previous() }
+    }
   }
 
-  private var backgroundSessionCompletionHandler: (() -> Void)?
+  /// Removes and returns the stashed handler (nil when none is pending).
+  private static func takeBackgroundSessionCompletionHandler() -> (() -> Void)? {
+    backgroundSessionHandlerLock.lock()
+    defer { backgroundSessionHandlerLock.unlock() }
+    let handler = pendingBackgroundSessionCompletionHandler
+    pendingBackgroundSessionCompletionHandler = nil
+    return handler
+  }
+
+  /// Runs on a background queue after the app delegate stashed the completion handler. Touching
+  /// `.shared` is what runs `init()` -> `setupBackgroundSession()`, which reattaches the
+  /// background session (same identifier) so iOS can deliver the pending events to this delegate.
+  /// When the engine already exists (warm app) this is a no-op beyond the property read.
+  static func reattachBackgroundSessionForPendingEvents() {
+    _ = NativeBackupEngine.shared
+  }
 
   // MARK: - Photo Library Observer
 
@@ -6152,9 +6185,11 @@ extension NativeBackupEngine: URLSessionDelegate, URLSessionTaskDelegate, URLSes
   }
 
   func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {
-    DispatchQueue.main.async { [weak self] in
-      self?.backgroundSessionCompletionHandler?()
-      self?.backgroundSessionCompletionHandler = nil
+    // Apple requires the completion handler to be called on the main queue. It was stashed by
+    // `stashBackgroundSessionCompletionHandler` (static), see "Background URLSession relaunch
+    // events" above.
+    DispatchQueue.main.async {
+      Self.takeBackgroundSessionCompletionHandler()?()
     }
   }
 }

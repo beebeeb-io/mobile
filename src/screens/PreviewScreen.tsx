@@ -89,6 +89,7 @@ import {
 import {
   activePhotoPageIndices,
   clampPhotoIndex,
+  PHOTO_PAGE_LOAD_RADIUS,
 } from '../lib/photo-viewer-window';
 import { InfoSheet } from '../components/preview/InfoSheet';
 import { PreviewBottomBar } from '../components/preview/PreviewBottomBar';
@@ -1205,6 +1206,9 @@ export const PhotoPage = React.memo(function PhotoPage({
    * `RawRenderer`'s own `onExifInfo` prop (this just forwards it) — every
    * page gets the SAME parent state setter, but only the current page's
    * `shouldLoadFull` gate ever actually mounts a `RawRenderer` that calls it.
+   * Round 2: up to 3 RAW pages (current +-1) now mount one, so PhotoPage only
+   * forwards EXIF from the CURRENT page (the rest is held and published when
+   * the page becomes current).
    */
   onExifInfo?: (info: RawExifInfo | null) => void;
   /** Task 1579 — the current page's image crossed 1x <-> zoomed (blocks paging). */
@@ -1249,6 +1253,37 @@ export const PhotoPage = React.memo(function PhotoPage({
   // below, mirroring `PreviewScreen`'s own `tempRawUriRef` for the single-file
   // case.
   const tempRawSourceUriRef = useRef<string | null>(null);
+  // Task 1669 round 2 (ruling 3): true while this page's video is in Picture in Picture (set by
+  // expo-video's VideoView `onPictureInPictureStart` / `Stop` via `PhotoPageVideo`). A player in
+  // PiP must not be released just because its page stopped being current.
+  const [pipActive, setPipActive] = useState(false);
+  // Task 1669 round 2 (ruling 2): with neighbours now loaded too (current +-1), up to 3 RAW pages
+  // run a `RawRenderer` at once, all sharing the parent's single `onExifInfo` setter. Only the
+  // CURRENT page may publish its EXIF to the Info sheet; the others keep theirs in `rawExifRef`
+  // and publish it when they become current. `RawRenderer`'s extraction effect captures its
+  // `onExifInfo` once (deps [uri, cacheKey]), hence refs rather than closed-over props.
+  const isCurrentRef = useRef(isCurrent);
+  isCurrentRef.current = isCurrent;
+  const onExifInfoRef = useRef(onExifInfo);
+  onExifInfoRef.current = onExifInfo;
+  const rawExifRef = useRef<RawExifInfo | null>(null);
+  const handleRawExif = useCallback((info: RawExifInfo | null) => {
+    rawExifRef.current = info;
+    if (isCurrentRef.current) onExifInfoRef.current?.(info);
+  }, []);
+  useEffect(() => {
+    if (isCurrent && isRawEntry && rawExifRef.current) onExifInfoRef.current?.(rawExifRef.current);
+  }, [isCurrent, isRawEntry]);
+  // Task 1669 round 2 (rulings 2 + 3): which resources this page wants loaded right now.
+  //   - IMAGE / RAW: the full-resolution resource stays loaded for the current page +-1
+  //     (`shouldLoadFull`, radius PHOTO_PAGE_LOAD_RADIUS = 1, at most 3 pages; matches the pager's
+  //     windowSize=3) so a swipe back to a neighbour does not re-download/re-decrypt.
+  //   - VIDEO: an AVPlayer (and the decrypted video file behind it) is bounded to the CURRENT page
+  //     only (at most 1 live player).
+  // `keepFull` additionally holds a video that is in Picture in Picture after its page stopped
+  // being current; it is released when PiP ends.
+  const loadFull = isVideoEntry ? shouldLoadFull && isCurrent : shouldLoadFull;
+  const keepFull = loadFull || (isVideoEntry && pipActive);
   // Task 1669 Issue 1: NO `useVideoPlayer` here. expo-video builds a native
   // AVPlayer even for a null source, so calling it on every mounted page (image
   // pages included) held 10+ idle players. `PhotoPageVideo` owns the player and
@@ -1286,6 +1321,8 @@ export const PhotoPage = React.memo(function PhotoPage({
     setStage(null);
     setProgress(emptyPreviewProgress(null));
     largePreviewAttemptRef.current = null;
+    rawExifRef.current = null;
+    setPipActive(false);
     setOriginalUri(null);
     setOriginalActive(false);
     setOriginalCacheHit(false);
@@ -1321,7 +1358,7 @@ export const PhotoPage = React.memo(function PhotoPage({
   }, [entry.id, locked]);
 
   useEffect(() => {
-    if (!shouldLoadFull) return;
+    if (!loadFull) return;
     // Task 1539 (finding 1, P0): the full-resolution/original decrypt path —
     // gates `loadDecryptedPhotoForViewer`, the same function the single-file
     // (non-swipe) effects above call directly.
@@ -1421,23 +1458,25 @@ export const PhotoPage = React.memo(function PhotoPage({
       cancelled = true;
       controller.abort();
     };
-  }, [shouldLoadFull, uri, entry, isUnlocked, getFileKeyBytes, getMasterKeyHandleId, isVideoEntry, isRawEntry, previewProfile, locked]);
+  }, [loadFull, uri, entry, isUnlocked, getFileKeyBytes, getMasterKeyHandleId, isVideoEntry, isRawEntry, previewProfile, locked]);
 
   // Task 1669 Issue 1 — release this page's fully-loaded resource (the
   // decrypted `uri`: a full-resolution decoded <Image>, a mounted
-  // `PhotoPageVideo` and therefore its AVPlayer, or a RAW renderer) the
-  // moment this page stops being the active page.
+  // `PhotoPageVideo` and therefore its AVPlayer, or a RAW renderer) once the
+  // page no longer wants it.
   //
   // Before this, `uri` was set once by the load effect above and NEVER
-  // cleared when `shouldLoadFull` turned back off. The page stays mounted
+  // cleared when the page stopped being loaded. The page stays mounted
   // well past that point (the pager's `windowSize={3}`), so every page the
   // user had ever scrolled past kept its decoded image / live player: no
-  // bound at all. Only ONE page (the current one, radius 0) is ever
-  // `shouldLoadFull`, so after this at most one page holds a full resource.
-  // In-flight loads need no handling here: the load effect's cleanup aborts
-  // and `cancelled`-guards them when `shouldLoadFull` flips.
+  // bound at all. Now (round 2 rulings): an image / RAW page holds its
+  // resource while it is within current +-1 (at most 3 pages); a video page
+  // holds its player only while it is the CURRENT page, or while that player
+  // is in Picture in Picture (`keepFull`). In-flight loads need no handling
+  // here: the load effect's cleanup aborts and `cancelled`-guards them when
+  // `loadFull` flips.
   useEffect(() => {
-    if (shouldLoadFull || uri === null) return;
+    if (keepFull || uri === null) return;
     setUri(null);
     setUriKind(null);
     setOriginalUri(null);
@@ -1445,11 +1484,18 @@ export const PhotoPage = React.memo(function PhotoPage({
     setOriginalCacheHit(false);
     setImageLoaded(false);
     sawOriginalProgressRef.current = false;
+    // Per-load refs: a released page that is visited again must behave like a
+    // fresh one. `largePreviewAttemptRef` records `${entry.id}:${uri}` of the
+    // last large-preview upgrade attempt; left set, a revisit that reloads the
+    // SAME thumbnail uri would be treated as "already attempted" and never
+    // upgrade to the 'large' preview again.
+    largePreviewAttemptRef.current = null;
+    rawExifRef.current = null;
     // A RAW page's decrypted SOURCE temp file is otherwise deleted only on
     // unmount; now that a page can reload after release, delete it here too or
     // each return to the page would orphan the previous one on disk.
     void cleanupTrackedTempFile(tempRawSourceUriRef, FileSystem.deleteAsync);
-  }, [shouldLoadFull, uri]);
+  }, [keepFull, uri]);
 
   // Delete this page's own decrypted RAW SOURCE temp file on unmount — same
   // pattern as `PreviewScreen`'s own `tempRawUriRef` cleanup for the
@@ -1690,7 +1736,12 @@ export const PhotoPage = React.memo(function PhotoPage({
               </Text>
             </View>
           ) : uri && isVideoEntry ? (
-            <PhotoPageVideo uri={uri} style={styles.photoPageImage} />
+            <PhotoPageVideo
+              uri={uri}
+              style={styles.photoPageImage}
+              onPictureInPictureStart={() => setPipActive(true)}
+              onPictureInPictureStop={() => setPipActive(false)}
+            />
           ) : uri && isRawEntry ? (
             // Task 1570 — RAW joining the pager. `RawRenderer` owns its own
             // loading/extraction/fallback states once handed this decrypted
@@ -1709,7 +1760,7 @@ export const PhotoPage = React.memo(function PhotoPage({
                 fileName={entryFileName}
                 formatLabel={rawFormatLabel(entryFileName, entry.mime_type)}
                 cacheKey={entry.id}
-                onExifInfo={onExifInfo}
+                onExifInfo={handleRawExif}
               />
             </ZoomableImage>
           ) : uri ? (
@@ -1743,7 +1794,7 @@ export const PhotoPage = React.memo(function PhotoPage({
                   always inside mediaRoot's forced-dark ground (only reachable
                   from isMediaPreview), same argument as the mediaMaterial
                   comment above `if (isMediaPreview)` in the main component. */}
-              {loading || shouldLoadFull ? (
+              {loading || loadFull ? (
                 <PreviewProgressStatus
                   color={c.amber}
                   textColor={glassMaterial('dark').labelMuted}
@@ -1905,7 +1956,7 @@ export default function PreviewScreen() {
   // second responder to race the FlatList's own.
   const pagerTouchStartRef = useRef<{ x: number; y: number; t: number } | null>(null);
   const activePhotoPageIndexes = useMemo(
-    () => activePhotoPageIndices(currentPhotoIndex, photoList.length, 0),
+    () => activePhotoPageIndices(currentPhotoIndex, photoList.length, PHOTO_PAGE_LOAD_RADIUS),
     [currentPhotoIndex, photoList.length],
   );
 

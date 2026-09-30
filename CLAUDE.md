@@ -699,9 +699,23 @@ TestFlight build; the Linux dev containers have no Swift compiler. The script as
 `BUILD SUCCEEDED` x1, 0 `: error:` lines and that `NativeBackupEngine.swift` /
 `BeebeebAppDelegate.swift` were actually compiled (a build that never touched them is a RED).
 Two source-text guards cover what the compiler cannot: `src/lib/app-delegate-launch-guard.test.ts`
-(nothing on the launch path touches `NativeBackupEngine.shared`) and
-`src/lib/native-backup-engine-db-queue.test.ts` (every `db` access is on `dbQueue`;
-`openDatabase()` is enqueued directly from `init()`).
+(neither launch entry point, `didFinishLaunching` or `handleEventsForBackgroundURLSession`, touches
+`NativeBackupEngine.shared` on the main thread; the background-session completion handler is stashed
+first and the engine is constructed in a `DispatchQueue.global` hop) and
+`src/lib/native-backup-engine-db-queue.test.ts` (every `db` access is on `dbQueue`, any call receiver
+counts, a `Task` / other-queue hop inside a `dbQueue` closure does not; `openDatabase()` is enqueued
+directly from `init()`).
+
+The unit suite itself runs in CI as job `unit-tests` (ubuntu-latest): `scripts/ci/unit-suite.sh` runs
+`bun run test` and fails unless the truth line `isolated: N pass, 0 fail across F files` appears once
+with N > 0 and exit code 0; `scripts/ci/unit-suite.sh --self-test` proves the gate goes red on each bad
+shape.
+
+Photo pager resource bounds (task 1669): image and RAW pages keep their full-resolution resource for the
+current page +-1 (`PHOTO_PAGE_LOAD_RADIUS`, at most 3 pages, matches `windowSize={3}`); a video page holds
+its AVPlayer only while it is the CURRENT page, or while it is in Picture in Picture (expo-video's
+`onPictureInPictureStart` / `Stop`). `PreviewScreen.photo-page-resources.test.tsx` renders the real
+`PhotoPage` and asserts these bounds.
 
 ## How we work (evidence, design, done, parallel agents)
 

@@ -17,14 +17,19 @@
  *     exactly how an image page used to own one.
  *
  * What is measured is the number of LIVE fake AVPlayers and of mounted
- * full-resolution <Image>s across a whole pager of pages, while the "current
- * page" walks through the library.
+ * full-resolution <Image>s / RAW temp files across a whole pager of pages, while
+ * the "current page" walks through the library. The bounds are the lead's round-2
+ * rulings: image + RAW resources stay loaded for current +-1 (at most 3 pages,
+ * PHOTO_PAGE_LOAD_RADIUS = 1, matching the pager's windowSize=3) and are released
+ * beyond that; an AVPlayer is bounded to the CURRENT page only (at most 1), except
+ * that a player in Picture in Picture is held until PiP ends.
  */
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import React from 'react';
 import TestRenderer, { act } from 'react-test-renderer';
+import { PHOTO_PAGE_LOAD_RADIUS, activePhotoPageIndices } from '../lib/photo-viewer-window';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 (globalThis as any).__DEV__ = false;
@@ -40,7 +45,14 @@ const ledger = {
   imageMounts: 0,
   rawTempCreated: new Set<string>(), // decrypted RAW source temp files written
   rawTempDeleted: new Set<string>(), // ...and deleted via FileSystem.deleteAsync
+  // Per-file LOAD counters (what a swipe back must not repeat):
+  imageLoads: new Map<string, number>(), // reads of the cached medium thumbnail (the page's image resource)
+  rawDecrypts: new Map<string, number>(), // decryptToTempFile calls (a real decrypt of the RAW source)
+  largeRequests: new Map<string, number>(), // large-preview upgrade requests (getCachedThumbnail(id, 'large'))
+  videoViews: new Map<string, any>(), // latest props of each rendered VideoView, keyed by source uri
 };
+const bump = (m: Map<string, number>, k: string) => m.set(k, (m.get(k) ?? 0) + 1);
+const sum = (m: Map<string, number>) => [...m.values()].reduce((a, b) => a + b, 0);
 const livePlayers = () => ledger.playersCreated - ledger.playersReleased;
 
 // ── react-native (hand-written; only what PhotoPage + module init touch) ────
@@ -105,7 +117,12 @@ defineMock('expo-video', () => ({
     React.useEffect(() => () => { ledger.playersReleased += 1; }, [player]);
     return player;
   },
-  VideoView: (props: any) => React.createElement('VideoView', props),
+  VideoView: (props: any) => {
+    // Remember the latest props (incl. onPictureInPictureStart/Stop) so a test can simulate the
+    // native PiP events exactly as expo-video's VideoView would fire them.
+    ledger.videoViews.set(String(props.player?.source), props);
+    return React.createElement('VideoView', props);
+  },
 }));
 
 // ── hand-written collaborators PhotoPage's effects actually call ────────────
@@ -132,7 +149,11 @@ defineMock('../lib/thumbnail-cache', () => ({
   // Image path: `loadNormalPreviewThumbnail` reads the cached MEDIUM thumbnail; that file is the
   // page's "loaded" full resource. The variant-less call (the grid-size placeholder <Image>)
   // returns null so it never counts as a live full-resolution image.
-  getCachedThumbnail: async (id: string, variant?: string) => (variant === 'medium' ? `file:///cache/${id}.medium.webp` : null),
+  getCachedThumbnail: async (id: string, variant?: string) => {
+    if (variant === 'large') bump(ledger.largeRequests, id);
+    if (variant === 'medium') bump(ledger.imageLoads, id);
+    return variant === 'medium' ? `file:///cache/${id}.medium.webp` : null;
+  },
 }));
 defineMock('../lib/offline-manager', () => ({
   offlineManager: { init: async () => {}, isAvailable: () => false, getStatus: () => null },
@@ -153,7 +174,7 @@ defineMock('expo-file-system/legacy', () => ({
 }));
 defineMock('../lib/native-decrypt', () => ({
   // RAW path: decryptToTempFile writes a per-session temp SOURCE file the page owns.
-  decryptToTempFile: async (id: string) => { const u = `file:///tmp/${id}-${ledger.rawTempCreated.size}.dng`; ledger.rawTempCreated.add(u); return u; },
+  decryptToTempFile: async (id: string) => { bump(ledger.rawDecrypts, id); const u = `file:///tmp/${id}-${ledger.rawTempCreated.size}.dng`; ledger.rawTempCreated.add(u); return u; },
   releasePreviewCopy: async () => true,
   invalidatePreviewCache: async () => {},
 }));
@@ -163,8 +184,8 @@ defineMock('../components/glass', () => ({ glassMaterial: () => new Proxy({}, { 
 defineMock('../components/preview/ZoomableImage', () => ({ ZoomableImage: (p: any) => React.createElement('Zoomable', null, p.children) }));
 
 // ── generated stubs for EVERY import in PreviewScreen.tsx, then overrides ───
-// `PhotoPageVideo`, `../theme` and `../lib/preview-temp-file` are deliberately real (pure).
-const realModules = new Set(['react', '../components/preview/PhotoPageVideo', '../theme', '../lib/preview-temp-file']);
+// `PhotoPageVideo`, `../theme`, `../lib/preview-temp-file` and `../lib/photo-viewer-window` are deliberately real (pure).
+const realModules = new Set(['react', '../components/preview/PhotoPageVideo', '../theme', '../lib/preview-temp-file', '../lib/photo-viewer-window']);
 const source = readFileSync(SCREEN, 'utf8');
 const importRe = /^import\s+(?!type\b)([\s\S]*?)\s+from\s+'([^']+)';?$/gm;
 const wanted = new Map<string, { named: Set<string>; hasDefault: boolean }>();
@@ -212,7 +233,10 @@ function entryFor(i: number, kind: 'video' | 'image' | 'raw') {
   };
 }
 function Pager({ total, current, kinds }: { total: number; current: number; kinds: Array<'video' | 'image' | 'raw'> }) {
-  // Every page stays mounted (worst case for the pager's window), only the current one is active.
+  // Every page stays mounted (worst case for the pager's window). Which pages may load their full
+  // resource is decided EXACTLY as PreviewScreen does: activePhotoPageIndices(current, total,
+  // PHOTO_PAGE_LOAD_RADIUS) (a source test below pins that call site).
+  const loadable = activePhotoPageIndices(current, total, PHOTO_PAGE_LOAD_RADIUS);
   return React.createElement(
     React.Fragment,
     null,
@@ -220,7 +244,7 @@ function Pager({ total, current, kinds }: { total: number; current: number; kind
       React.createElement(PhotoPage, {
         key: i,
         entry: entryFor(i, kinds[i]),
-        shouldLoadFull: i === current,
+        shouldLoadFull: loadable.has(i),
         isCurrent: i === current,
         width: 390,
         previewProfile: 'smooth',
@@ -238,6 +262,7 @@ async function settle() {
 
 beforeEach(() => {
   ledger.playersCreated = 0; ledger.playersReleased = 0; ledger.liveImages.clear(); ledger.imageMounts = 0; ledger.rawTempCreated.clear(); ledger.rawTempDeleted.clear();
+  ledger.imageLoads.clear(); ledger.rawDecrypts.clear(); ledger.largeRequests.clear(); ledger.videoViews.clear();
 });
 afterEach(() => { mock.restore?.(); });
 
@@ -260,7 +285,7 @@ describe('PhotoPage native-resource bound (real component)', () => {
     await act(async () => { r.unmount(); });
   });
 
-  test('scrolling through 60 video pages never holds more than 1 live AVPlayer (08:41 jetsam had 14)', async () => {
+  test('scrolling through 60 video pages never holds more than 1 live AVPlayer (per the task 1669 evidence transcription the 08:41 jetsam run had 14 deallocated)', async () => {
     const total = 60;
     const kinds = Array.from({ length: total }, () => 'video' as const);
     let r: TestRenderer.ReactTestRenderer;
@@ -279,7 +304,9 @@ describe('PhotoPage native-resource bound (real component)', () => {
     expect(livePlayers()).toBe(0);
   });
 
-  test('scrolling through 60 image pages never holds more than 1 mounted full-resolution image', async () => {
+  const rawOnDisk = () => [...ledger.rawTempCreated].filter((u) => !ledger.rawTempDeleted.has(u)).length;
+
+  test('scrolling through 60 image pages never holds more than 3 mounted full-resolution images (current +-1)', async () => {
     const total = 60;
     const kinds = Array.from({ length: total }, () => 'image' as const);
     let r: TestRenderer.ReactTestRenderer;
@@ -290,27 +317,195 @@ describe('PhotoPage native-resource bound (real component)', () => {
       await act(async () => { r.update(React.createElement(Pager, { total, current: cur, kinds })); });
       await settle();
       peak = Math.max(peak, ledger.liveImages.size);
-      expect(ledger.liveImages.size).toBeLessThanOrEqual(1);
+      expect(ledger.liveImages.size).toBeLessThanOrEqual(3);
     }
-    expect(peak).toBe(1);
+    expect(peak).toBe(3); // the window really fills (a bound met by loading nothing proves nothing)
     expect(ledger.imageMounts).toBeGreaterThanOrEqual(total);
     await act(async () => { r.unmount(); });
   });
 
-  test('RAW pages: leaving a page deletes its decrypted source temp file (a reload would otherwise orphan it on disk)', async () => {
-    const total = 20;
+  test('scrolling through 60 RAW pages never holds more than 3 decrypted RAW source files on disk (current +-1)', async () => {
+    const total = 60;
     const kinds = Array.from({ length: total }, () => 'raw' as const);
     let r: TestRenderer.ReactTestRenderer;
     await act(async () => { r = TestRenderer.create(React.createElement(Pager, { total, current: 0, kinds })); });
     await settle();
+    let peak = rawOnDisk();
     for (let cur = 1; cur < total; cur += 1) {
       await act(async () => { r.update(React.createElement(Pager, { total, current: cur, kinds })); });
       await settle();
-      // at most the current page's temp file is still on disk
-      const onDisk = [...ledger.rawTempCreated].filter((u) => !ledger.rawTempDeleted.has(u));
-      expect(onDisk.length).toBeLessThanOrEqual(1);
+      peak = Math.max(peak, rawOnDisk());
+      expect(rawOnDisk()).toBeLessThanOrEqual(3);
     }
+    expect(peak).toBe(3);
     expect(ledger.rawTempCreated.size).toBeGreaterThanOrEqual(total); // every page really decrypted
     await act(async () => { r.unmount(); });
+  });
+
+  test('a mixed image / RAW / video walk holds <= 3 image+RAW resources and <= 1 AVPlayer at every step', async () => {
+    const total = 45;
+    const kinds = Array.from({ length: total }, (_, i) => (['image', 'raw', 'video'] as const)[i % 3]);
+    let r: TestRenderer.ReactTestRenderer;
+    await act(async () => { r = TestRenderer.create(React.createElement(Pager, { total, current: 0, kinds })); });
+    await settle();
+    let peakPlayers = 0;
+    let peakResources = 0;
+    for (let cur = 0; cur < total; cur += 1) {
+      if (cur > 0) await act(async () => { r.update(React.createElement(Pager, { total, current: cur, kinds })); });
+      await settle();
+      const resources = ledger.liveImages.size + rawOnDisk();
+      peakPlayers = Math.max(peakPlayers, livePlayers());
+      peakResources = Math.max(peakResources, resources);
+      expect(livePlayers()).toBeLessThanOrEqual(1);
+      expect(resources).toBeLessThanOrEqual(3);
+    }
+    expect(peakPlayers).toBe(1);
+    expect(peakResources).toBeGreaterThanOrEqual(2); // image + RAW neighbours really were held
+    await act(async () => { r.unmount(); });
+  });
+
+  test('swipe away and back to a neighbour triggers 0 new loads / decrypts (image)', async () => {
+    const total = 6;
+    const kinds = Array.from({ length: total }, () => 'image' as const);
+    let r: TestRenderer.ReactTestRenderer;
+    await act(async () => { r = TestRenderer.create(React.createElement(Pager, { total, current: 0, kinds })); });
+    await settle();
+    await act(async () => { r.update(React.createElement(Pager, { total, current: 1, kinds })); });
+    await settle();
+    const afterAway = sum(ledger.imageLoads);
+    await act(async () => { r.update(React.createElement(Pager, { total, current: 0, kinds })); });
+    await settle();
+    expect(sum(ledger.imageLoads)).toBe(afterAway); // swiping back loaded nothing
+    expect(ledger.imageLoads.get('file-0')).toBe(1);
+    expect(ledger.imageLoads.get('file-1')).toBe(1);
+    expect(afterAway).toBe(3); // pages 0,1,2 were each loaded exactly once overall
+    await act(async () => { r.unmount(); });
+  });
+
+  test('swipe away and back to a neighbour triggers 0 new decrypt calls (RAW)', async () => {
+    const total = 6;
+    const kinds = Array.from({ length: total }, () => 'raw' as const);
+    let r: TestRenderer.ReactTestRenderer;
+    await act(async () => { r = TestRenderer.create(React.createElement(Pager, { total, current: 0, kinds })); });
+    await settle();
+    await act(async () => { r.update(React.createElement(Pager, { total, current: 1, kinds })); });
+    await settle();
+    const afterAway = sum(ledger.rawDecrypts);
+    await act(async () => { r.update(React.createElement(Pager, { total, current: 0, kinds })); });
+    await settle();
+    expect(sum(ledger.rawDecrypts)).toBe(afterAway); // 0 new decrypt calls on the swipe back
+    expect(ledger.rawDecrypts.get('file-0')).toBe(1);
+    expect(ledger.rawDecrypts.get('file-1')).toBe(1);
+    expect(afterAway).toBe(3);
+    await act(async () => { r.unmount(); });
+  });
+
+  test('a page released beyond the +-1 window DOES reload when revisited (the bound is real, not "never release")', async () => {
+    const total = 8;
+    const kinds = Array.from({ length: total }, () => 'image' as const);
+    let r: TestRenderer.ReactTestRenderer;
+    await act(async () => { r = TestRenderer.create(React.createElement(Pager, { total, current: 0, kinds })); });
+    await settle();
+    await act(async () => { r.update(React.createElement(Pager, { total, current: 5, kinds })); });
+    await settle();
+    await act(async () => { r.update(React.createElement(Pager, { total, current: 0, kinds })); });
+    await settle();
+    expect(ledger.imageLoads.get('file-0')).toBe(2);
+    await act(async () => { r.unmount(); });
+  });
+
+  test('ruling 1: a photo revisited after release requests the LARGE preview again (largePreviewAttemptRef is reset on release)', async () => {
+    const total = 8;
+    const kinds = Array.from({ length: total }, () => 'image' as const);
+    let r: TestRenderer.ReactTestRenderer;
+    await act(async () => { r = TestRenderer.create(React.createElement(Pager, { total, current: 0, kinds })); });
+    await settle();
+    expect(ledger.largeRequests.get('file-0')).toBe(1); // first visit upgrades once
+    await act(async () => { r.update(React.createElement(Pager, { total, current: 5, kinds })); }); // file-0 released
+    await settle();
+    expect(ledger.largeRequests.get('file-0')).toBe(1); // not current: no request
+    await act(async () => { r.update(React.createElement(Pager, { total, current: 0, kinds })); }); // revisit
+    await settle();
+    // Same thumbnail uri comes back; without the ref reset `${id}:${uri}` matches the previous
+    // attempt and the upgrade is skipped forever.
+    expect(ledger.largeRequests.get('file-0')).toBe(2);
+    await act(async () => { r.unmount(); });
+  });
+
+  test('ruling 1: an immediate neighbour revisit (still loaded, never released) does NOT re-request the large preview', async () => {
+    const total = 6;
+    const kinds = Array.from({ length: total }, () => 'image' as const);
+    let r: TestRenderer.ReactTestRenderer;
+    await act(async () => { r = TestRenderer.create(React.createElement(Pager, { total, current: 0, kinds })); });
+    await settle();
+    await act(async () => { r.update(React.createElement(Pager, { total, current: 1, kinds })); });
+    await settle();
+    await act(async () => { r.update(React.createElement(Pager, { total, current: 0, kinds })); });
+    await settle();
+    expect(ledger.largeRequests.get('file-0')).toBe(1); // resource kept, attempt kept
+    await act(async () => { r.unmount(); });
+  });
+
+  describe('Picture in Picture (expo-video 57 VideoView onPictureInPictureStart / onPictureInPictureStop, simulated)', () => {
+    const videoUri = (i: number) => `file:///cache/file-${i}.mp4`;
+    const total = 8;
+    const kinds = Array.from({ length: total }, () => 'video' as const);
+    const go = async (r: any, cur: number) => {
+      await act(async () => { r.update(React.createElement(Pager, { total, current: cur, kinds })); });
+      await settle();
+    };
+    const fire = async (i: number, ev: 'onPictureInPictureStart' | 'onPictureInPictureStop') => {
+      const props = ledger.videoViews.get(videoUri(i));
+      expect(typeof props?.[ev]).toBe('function'); // PhotoPageVideo really wires the event
+      await act(async () => { props[ev](); });
+      await settle();
+    };
+
+    test('a player in PiP is NOT released when its page stops being current; it is released when PiP ends', async () => {
+      let r: TestRenderer.ReactTestRenderer;
+      await act(async () => { r = TestRenderer.create(React.createElement(Pager, { total, current: 0, kinds })); });
+      await settle();
+      expect(livePlayers()).toBe(1);
+      await fire(0, 'onPictureInPictureStart');
+      await go(r, 1);
+      expect(ledger.playersReleased).toBe(0); // page 0's player survived the swipe
+      expect(livePlayers()).toBe(2); // the PiP player + the new current page's player
+      await go(r, 5); // far away: still held
+      expect(livePlayers()).toBe(2);
+      await fire(0, 'onPictureInPictureStop');
+      expect(livePlayers()).toBe(1); // PiP ended: released; only the current page's player remains
+      expect(ledger.playersReleased).toBeGreaterThanOrEqual(1);
+      await act(async () => { r.unmount(); });
+      expect(livePlayers()).toBe(0);
+    });
+
+    test('PiP ending while the page is still current does not release its player', async () => {
+      let r: TestRenderer.ReactTestRenderer;
+      await act(async () => { r = TestRenderer.create(React.createElement(Pager, { total, current: 0, kinds })); });
+      await settle();
+      await fire(0, 'onPictureInPictureStart');
+      await fire(0, 'onPictureInPictureStop');
+      expect(livePlayers()).toBe(1);
+      await go(r, 1); // and it is released normally once the page leaves
+      expect(livePlayers()).toBe(1);
+      expect(ledger.playersReleased).toBe(1);
+      await act(async () => { r.unmount(); });
+    });
+
+    test('without PiP the same swipe releases the previous page player (control)', async () => {
+      let r: TestRenderer.ReactTestRenderer;
+      await act(async () => { r = TestRenderer.create(React.createElement(Pager, { total, current: 0, kinds })); });
+      await settle();
+      await go(r, 1);
+      expect(ledger.playersReleased).toBe(1);
+      expect(livePlayers()).toBe(1);
+      await act(async () => { r.unmount(); });
+    });
+  });
+
+  test('the pager passes the +-1 load radius to PhotoPage (source pin: radius constant is 1 and is what PreviewScreen uses)', () => {
+    expect(PHOTO_PAGE_LOAD_RADIUS).toBe(1);
+    expect(source).toMatch(/activePhotoPageIndices\(currentPhotoIndex, photoList\.length, PHOTO_PAGE_LOAD_RADIUS\)/);
+    expect(source).toMatch(/windowSize=\{3\}/); // the radius matches the pager's render window
   });
 });
