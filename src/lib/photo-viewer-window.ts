@@ -4,6 +4,15 @@ export function clampPhotoIndex(index: number, total: number): number {
   return Math.max(0, Math.min(total - 1, Math.round(index)));
 }
 
+/**
+ * Task 1669 round 2 (lead ruling): how many pages either side of the current one keep their
+ * full-resolution IMAGE / RAW resource loaded. 1 => at most 3 pages (current +-1), which matches
+ * the pager's `windowSize={3}`; a swipe back to a neighbour then needs no re-download or
+ * re-decrypt. VIDEO is deliberately NOT governed by this: an AVPlayer is bounded to the current
+ * page only (see PhotoPage's `loadFull`).
+ */
+export const PHOTO_PAGE_LOAD_RADIUS = 1;
+
 export function activePhotoPageIndices(
   currentIndex: number,
   total: number,
