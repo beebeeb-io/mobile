@@ -1072,6 +1072,7 @@ final class NativeBackupEngine: NSObject {
     // whose `dbQueue.sync { guard let db ... }` wins the race silently no-ops
     // on `db == nil`.
     dbQueue.async { [weak self] in self?.openDatabase() }
+    let redProof: Int = "deliberate compile error for the 1669 CI gate red-proof"
     NotificationCenter.default.addObserver(
       self,
       selector: #selector(handleAppDidEnterBackground),
