@@ -689,6 +689,20 @@ A routed sheet (`ShareSheet`) uses `animation: 'none'` and pops in `onDismissed`
 `src/components/sheet/sheet-sweep.test.ts` fails if a sheet style floats inset again. Exceptions
 are listed in DEVIATIONS.md → "Task 1586".
 
+## iOS app compile gate — `ios-build` CI job (task 1669)
+
+`.github/workflows/ci.yml` job `ios-build` (macos-latest, free: public repo) runs
+`scripts/swift-ci/build-ios-simulator.sh`: `bun install`, `pod install`, then an unsigned
+`xcodebuild` of the `Beebeeb` scheme for the iOS simulator. It is the only thing that compiles
+`modules/beebeeb-crypto/ios/*.swift` (NativeBackupEngine, BeebeebAppDelegate, ...) before a
+TestFlight build; the Linux dev containers have no Swift compiler. The script asserts
+`BUILD SUCCEEDED` x1, 0 `: error:` lines and that `NativeBackupEngine.swift` /
+`BeebeebAppDelegate.swift` were actually compiled (a build that never touched them is a RED).
+Two source-text guards cover what the compiler cannot: `src/lib/app-delegate-launch-guard.test.ts`
+(nothing on the launch path touches `NativeBackupEngine.shared`) and
+`src/lib/native-backup-engine-db-queue.test.ts` (every `db` access is on `dbQueue`;
+`openDatabase()` is enqueued directly from `init()`).
+
 ## How we work (evidence, design, done, parallel agents)
 
 The full rules live in the workspace `CLAUDE.md` → "How we work" (also summarised in the workspace `AGENTS.md`). Read them; they apply here. The repo-specific instantiation:

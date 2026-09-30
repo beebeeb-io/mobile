@@ -33,3 +33,21 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Run claims guard
         run: bash scripts/claims-guard/claims-guard.sh
+
+  # Task 1669: until this job nothing compiled the MAIN APP's Swift (the Share Extension
+  # has its own gate, task 1671). Public repo, so macOS runners are free. Full unsigned
+  # simulator build of the Beebeeb scheme, which compiles modules/beebeeb-crypto/ios/*.swift
+  # (NativeBackupEngine, BeebeebAppDelegate, ...). See scripts/swift-ci/build-ios-simulator.sh.
+  ios-build:
+    name: iOS app build (simulator, unsigned)
+    runs-on: macos-latest
+    timeout-minutes: 75
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+      - name: Build the iOS app for the simulator (unsigned)
+        env:
+          SWIFT_CI_LOG_DIR: ${{ runner.temp }}/ios-build
+        run: bash scripts/swift-ci/build-ios-simulator.sh
