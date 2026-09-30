@@ -274,7 +274,12 @@ final class ShareViewController: UIViewController {
 
     private func fetchFolders(token: String) {
         Task {
-            let fetcher = FolderFetcher(sessionToken: token, apiUrl: apiUrl)
+            // Task 1671 (Issue 2a): pass the already-verified master key
+            // handle through so folder names are actually decrypted instead
+            // of always falling back to "Folder N" — this call used to omit
+            // `masterKey` entirely (defaulting to nil), which is the whole
+            // bug.
+            let fetcher = FolderFetcher(sessionToken: token, apiUrl: apiUrl, masterKey: masterKeyHandle)
             do {
                 let fetched = try await fetcher.fetchTopLevelFolders()
                 await MainActor.run {
@@ -504,6 +509,12 @@ final class ShareViewController: UIViewController {
             self.headerView.isHidden = true
             self.tableView.isHidden = true
             self.bottomBar.isHidden = true
+            // Task 1671 (Issue 2b): an upload failure calls `showError()`
+            // from AFTER `showProgress()` already showed `progressOverlay`
+            // (with "Encrypting..."/"Uploading... N%"). Without this, that
+            // overlay — and its label — stayed on screen underneath the new
+            // error text, rendering as visibly overlapping strings.
+            self.progressOverlay.isHidden = true
 
             let errorLabel = UILabel()
             errorLabel.text = message
@@ -699,6 +710,20 @@ final class ShareViewController: UIViewController {
         }
     }
 
+    // MARK: - Folder picker rows
+
+    /// Task 1671 (Issue 2a): the FOLDERS section's rows — the drive root
+    /// ("My files", `id == nil`, matching the label used elsewhere in this
+    /// app for the same concept — see `CreateFileRequestScreen.tsx`'s
+    /// `{ id: null, name: 'My files' }`) followed by the fetched top-level
+    /// folders. Before this fix there was no row representing the root at
+    /// all: `selectedFolderId == nil` meant root internally, but a user
+    /// could never explicitly TAP it — only ever land there via the
+    /// no-recents-no-folders default in `selectDefaultFolder()`.
+    private var folderPickerRows: [(id: String?, name: String)] {
+        [(nil, "My files")] + folders.map { ($0.id, $0.displayName) }
+    }
+
     // MARK: - Helpers
 
     private func formatFileSize(_ bytes: Int64) -> String {
@@ -722,7 +747,7 @@ extension ShareViewController: UITableViewDelegate, UITableViewDataSource {
         if !recentFolders.isEmpty && section == 0 {
             return recentFolders.count
         }
-        return folders.count
+        return folderPickerRows.count
     }
 
     func tableView(_ tableView: UITableView, viewForHeaderInSection section: Int) -> UIView? {
@@ -753,7 +778,7 @@ extension ShareViewController: UITableViewDelegate, UITableViewDataSource {
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = tableView.dequeueReusableCell(withIdentifier: FolderCell.reuseID, for: indexPath) as! FolderCell
 
-        let folderId: String
+        let folderId: String?
         let folderName: String
 
         if !recentFolders.isEmpty && indexPath.section == 0 {
@@ -761,9 +786,9 @@ extension ShareViewController: UITableViewDelegate, UITableViewDataSource {
             folderId = recent.id
             folderName = recent.name
         } else {
-            let folder = folders[indexPath.row]
-            folderId = folder.id
-            folderName = folder.displayName
+            let row = folderPickerRows[indexPath.row]
+            folderId = row.id
+            folderName = row.name
         }
 
         let isSelected = folderId == selectedFolderId
@@ -777,7 +802,7 @@ extension ShareViewController: UITableViewDelegate, UITableViewDataSource {
         if !recentFolders.isEmpty && indexPath.section == 0 {
             selectedFolderId = recentFolders[indexPath.row].id
         } else {
-            selectedFolderId = folders[indexPath.row].id
+            selectedFolderId = folderPickerRows[indexPath.row].id
         }
 
         tableView.reloadData()
@@ -815,6 +840,15 @@ private final class FolderCell: UITableViewCell {
 
         nameLabel.font = UIFont.systemFont(ofSize: 15, weight: .regular)
         nameLabel.textColor = .white
+        // Task 1671 (Issue 2a): explicit left alignment, and a
+        // content-hugging trailing constraint below (`.lessThanOrEqualTo`
+        // instead of `.equalTo`) so the label's frame sits right next to the
+        // folder icon instead of stretching all the way to the checkmark —
+        // on device this rendered as the icon at the far left and the name
+        // pinned against the checkmark at the far right, a huge gap between
+        // them.
+        nameLabel.textAlignment = .left
+        nameLabel.setContentHuggingPriority(.required, for: .horizontal)
         nameLabel.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(nameLabel)
 
@@ -831,7 +865,11 @@ private final class FolderCell: UITableViewCell {
 
             nameLabel.leadingAnchor.constraint(equalTo: folderIcon.trailingAnchor, constant: 10),
             nameLabel.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
-            nameLabel.trailingAnchor.constraint(equalTo: checkmark.leadingAnchor, constant: -10),
+            // `.lessThanOrEqualTo`, not `.equalTo`: the label hugs its own
+            // text right after the icon (required content-hugging priority
+            // above) instead of being force-stretched to fill the row, which
+            // is what let the text render away from the icon.
+            nameLabel.trailingAnchor.constraint(lessThanOrEqualTo: checkmark.leadingAnchor, constant: -10),
 
             checkmark.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20),
             checkmark.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
