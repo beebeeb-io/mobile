@@ -14,10 +14,15 @@ final class ShareViewController: UIViewController {
 
     // MARK: - Constants
 
+    // App Group UserDefaults is still used for `recentFoldersKey` (recent
+    // folder ids/names — no secret material). The session token and API
+    // base URL moved to the shared Keychain in task 0447; this extension
+    // read them from these two UserDefaults keys until task 1671 — dead
+    // reads the main app had stopped writing to, which is why "Save to
+    // Beebeeb" always showed "Sign in to Beebeeb first" even right after a
+    // successful Face ID unlock. See `loadSharedConfig()` below.
     private static let appGroup = "group.io.beebeeb.shared"
     private static let recentFoldersKey = "beebeeb_share_recent_folders"
-    private static let sessionTokenKey = "beebeeb_session_token"
-    private static let apiUrlKey = "beebeeb_api_url"
     private static let defaultApiUrl = "https://api.beebeeb.io"
 
     // MARK: - Colors (dark theme)
@@ -103,10 +108,17 @@ final class ShareViewController: UIViewController {
         return owner == signedInUser
     }
 
+    /// Task 1671: the session token + API base URL live in the shared
+    /// Keychain (`BeebeebKeychainCore`), written by the main app's
+    /// `mirrorSessionToAppGroup` — NOT in App Group UserDefaults. No
+    /// plaintext UserDefaults fallback here: task 0447 removed that storage
+    /// path for security, on purpose. `BeebeebKeychainCore.loadString`
+    /// already owns the one-time legacy-UserDefaults-to-Keychain migration
+    /// (same helper the main app and File Provider use) — this reader must
+    /// not re-implement a separate UserDefaults read next to it.
     private func loadSharedConfig() {
-        let defaults = UserDefaults(suiteName: Self.appGroup)
-        sessionToken = defaults?.string(forKey: Self.sessionTokenKey)
-        if let url = defaults?.string(forKey: Self.apiUrlKey), !url.isEmpty {
+        sessionToken = BeebeebKeychainCore.loadString(key: BeebeebKeychainCore.sessionTokenKey)
+        if let url = BeebeebKeychainCore.loadString(key: BeebeebKeychainCore.apiBaseUrlKey), !url.isEmpty {
             apiUrl = url
         }
         loadRecentFolders()
@@ -338,8 +350,15 @@ final class ShareViewController: UIViewController {
         fileNameLabel.translatesAutoresizingMaskIntoConstraints = false
         headerView.addSubview(fileNameLabel)
 
-        // File size
-        fileSizeLabel.text = formatFileSize(fileSize)
+        // File size — unknown until `extractSharedContent` runs (step 3 of
+        // `performSetup`, after the master-key + session-token gates).
+        // `updateFilePreview()` fills in the real size once extraction
+        // completes; showing `formatFileSize(fileSize)` here (fileSize == 0
+        // at this point) rendered a fake "0 B" — visible both briefly on
+        // every share, and indefinitely whenever setup stops at an earlier
+        // gate (task 1671: showError() leaves headerView on screen, so a
+        // "Sign in to Beebeeb first" error was shown next to a lying "0 B").
+        fileSizeLabel.text = "Preparing…"
         fileSizeLabel.font = UIFont.systemFont(ofSize: 13)
         fileSizeLabel.textColor = Self.textSecondary
         fileSizeLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -476,6 +495,13 @@ final class ShareViewController: UIViewController {
 
     private func showError(_ message: String) {
         DispatchQueue.main.async {
+            // Task 1671: hide the file-preview header too. It's only ever
+            // meaningful once extraction (step 3 of `performSetup`) has run;
+            // every error path here fires at or before step 2, so the name/
+            // size it would show is still the placeholder — showing it next
+            // to "Sign in to Beebeeb first" read as "this 0-byte file failed
+            // to sign in", not "we haven't looked at the file yet".
+            self.headerView.isHidden = true
             self.tableView.isHidden = true
             self.bottomBar.isHidden = true
 
