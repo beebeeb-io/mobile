@@ -1045,10 +1045,30 @@ final class NativeBackupEngine: NSObject {
 
   private override init() {
     super.init()
+    // `setupBackgroundSession()` stays synchronous: iOS must be able to
+    // deliver background-session delegate events (task completion,
+    // `urlSessionDidFinishEvents(forBackgroundURLSession:)`) to `self` as
+    // soon as the session with the same identifier is reattached — see
+    // `handleBackgroundSessionEvents`'s doc comment. `setupMetadataSession()`
+    // is a plain `.default`-config session (no background-daemon XPC dance)
+    // and has never been evidenced as slow, so it stays synchronous too.
     setupBackgroundSession()
-    reconcileOrphanedBackgroundTasks()
     setupMetadataSession()
-    dbQueue.sync { openDatabase() }
+    // Task 1669 Issue 2: neither reconciling orphaned background-session
+    // tasks (a fire-and-forget async call already) nor opening the on-disk
+    // SQLite database has a "must finish before `.shared` returns"
+    // requirement — unlike `setupBackgroundSession()` above. Running them
+    // here, blocking whatever thread first constructs `.shared`, added to
+    // the same launch-path budget this task exists to protect. `dbQueue` is
+    // a private SERIAL queue, so every later `dbQueue.sync`/`.async` call
+    // (from any thread, any time later) is still correctly ordered after
+    // this `openDatabase()` even though nothing blocks on it here.
+    let deferredInitQueue = DispatchQueue(label: "io.beebeeb.backup.engine.deferred-init", qos: .utility)
+    deferredInitQueue.async { [weak self] in
+      guard let self else { return }
+      self.reconcileOrphanedBackgroundTasks()
+      self.dbQueue.async { self.openDatabase() }
+    }
     NotificationCenter.default.addObserver(
       self,
       selector: #selector(handleAppDidEnterBackground),
@@ -2449,13 +2469,42 @@ final class NativeBackupEngine: NSObject {
   // MARK: - Background task registration
 
   #if os(iOS)
-  func registerBackgroundTask() {
+  /// Task 1669 Issue 2 — `BGTaskScheduler.register` must complete before
+  /// `application(_:didFinishLaunchingWithOptions:)` returns (Apple's hard
+  /// requirement), so `BeebeebAppDelegate` must call this synchronously on
+  /// the main thread at launch. Before this fix it was an INSTANCE method,
+  /// so calling it forced Swift's lazy `static let shared` to run
+  /// `NativeBackupEngine`'s full `init()` — `setupBackgroundSession()`,
+  /// `reconcileOrphanedBackgroundTasks()`, `setupMetadataSession()`, and a
+  /// synchronous SQLite open — on that SAME main thread, at that SAME
+  /// moment. `setupBackgroundSession()`'s `URLSession(configuration:...)`
+  /// triggers ObjC's one-time `+[__NSCFURLSessionXPC initialize]`, an XPC
+  /// handshake with nsurlsessiond; on a background, locked-device relaunch
+  /// (build 227, `crashreports/guus-upload-Beebeeb-2026-09-30-010350.ips`)
+  /// that handshake alone blocked the main thread for the full 10s
+  /// scene-create watchdog budget (App CPU 0.069s in 31s of life — the
+  /// thread was BLOCKED, not computing) and the app was SIGKILLed.
+  /// Symbolicated stack (dSYM UUID 8023b2bb-eeb9-396f-bff2-542684584367,
+  /// matches build 227 exactly): `AppDelegate.application` (AppDelegate.swift:28)
+  /// -> `BeebeebAppDelegate.application` (this file's sibling, offset 425340)
+  /// -> one-time init for `.shared` (NativeBackupEngine.swift:424/1046) ->
+  /// `init()` (:1048) -> `setupBackgroundSession()` (:1712) -> ObjC
+  /// `+initialize` -> XPC. This function is now `static` and touches
+  /// nothing on the singleton — a plain background launch (the case that
+  /// crashed) no longer constructs `NativeBackupEngine` AT ALL, so it can
+  /// never run `setupBackgroundSession()` on the launch path. The
+  /// singleton is still built lazily, off this path, the first time real
+  /// backup work needs it (a JS bridge call, or the rarer
+  /// `handleEventsForBackgroundURLSession` relaunch — see that method's
+  /// own doc comment for why re-attaching the background session there IS
+  /// still allowed to be synchronous).
+  static func registerBackgroundTaskEarly() {
     BGTaskScheduler.shared.register(
-      forTaskWithIdentifier: Self.bgTaskIdentifier,
+      forTaskWithIdentifier: bgTaskIdentifier,
       using: nil
-    ) { [weak self] task in
+    ) { task in
       guard let processingTask = task as? BGProcessingTask else { return }
-      self?.handleBackgroundTask(processingTask)
+      NativeBackupEngine.shared.handleBackgroundTask(processingTask)
     }
   }
 
@@ -2638,6 +2687,18 @@ final class NativeBackupEngine: NSObject {
   }
   #endif
 
+  /// Task 1669 Issue 2: this is the ONE legitimate reason a plain launch may
+  /// still construct `.shared` synchronously on the main thread —
+  /// `application(_:handleEventsForBackgroundURLSession:)` fires only when
+  /// iOS relaunches the app specifically to deliver background-session
+  /// events, and receiving them requires `setupBackgroundSession()` to have
+  /// already reattached a session with the same identifier (done
+  /// synchronously in `init()` — see its doc comment). This is a narrower,
+  /// rarer trigger than the plain background/scene-create launch that
+  /// crashed build 227 (that one went through `registerBackgroundTask`,
+  /// now decoupled from `.shared` entirely), so it was not the reproduced
+  /// crash and is left as-is per the fix's own scope: "re-attaching the
+  /// background session ... is what iOS requires synchronously."
   func handleBackgroundSessionEvents(identifier: String, completionHandler: @escaping () -> Void) {
     // iOS delivers pending delegate messages after relaunching the app.
     // Store the completion handler so we call it after all events are delivered.
@@ -3104,23 +3165,31 @@ final class NativeBackupEngine: NSObject {
   /// ones it skipped. With retry reset, the drain re-selects them and the
   /// `.resumable` self-heal re-stages any with evicted `.enc` chunks.
   func resetRetryExhaustedUploadsForManualRun() {
-    guard let db = db else { return }
-    let sql = """
-    UPDATE backup_assets
-    SET retry_count = 0,
-        error_message = NULL,
-        last_attempt_at = NULL
-    WHERE status IN ('pending_upload', 'pending_reupload', 'staging', 'staged_upload', 'uploading')
-      AND COALESCE(selected_for_backup, 1) = 1
-      AND COALESCE(retry_count, 0) >= 10
-    """
-    var stmt: OpaquePointer?
-    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
-    defer { sqlite3_finalize(stmt) }
-    sqlite3_step(stmt)
-    let resetCount = sqlite3_changes(db)
-    if resetCount > 0 {
-      NSLog("[NativeBackupEngine] Reset \(resetCount) retry-exhausted uploads for manual backup")
+    // Task 1669 Issue 2: this was the one `db` accessor in the class NOT
+    // wrapped in `dbQueue.sync` — harmless while `init()` opened the
+    // database synchronously (any caller was guaranteed to run after it),
+    // but `init()` now defers `openDatabase()` to `dbQueue` (see its doc
+    // comment), so every accessor must go through the same serial queue to
+    // stay correctly ordered after it.
+    dbQueue.sync {
+      guard let db = db else { return }
+      let sql = """
+      UPDATE backup_assets
+      SET retry_count = 0,
+          error_message = NULL,
+          last_attempt_at = NULL
+      WHERE status IN ('pending_upload', 'pending_reupload', 'staging', 'staged_upload', 'uploading')
+        AND COALESCE(selected_for_backup, 1) = 1
+        AND COALESCE(retry_count, 0) >= 10
+      """
+      var stmt: OpaquePointer?
+      guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
+      defer { sqlite3_finalize(stmt) }
+      sqlite3_step(stmt)
+      let resetCount = sqlite3_changes(db)
+      if resetCount > 0 {
+        NSLog("[NativeBackupEngine] Reset \(resetCount) retry-exhausted uploads for manual backup")
+      }
     }
   }
 

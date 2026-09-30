@@ -17,7 +17,18 @@ public class BeebeebAppDelegate: ExpoAppDelegateSubscriber {
 
     // NativeBackupEngine is the active backup pipeline.
     // BGTaskScheduler.register must be called before didFinishLaunching returns.
-    NativeBackupEngine.shared.registerBackgroundTask()
+    //
+    // Task 1669 Issue 2 (watchdog on background launch, build 227): this
+    // MUST stay a call that never touches `NativeBackupEngine.shared` —
+    // doing so used to force the singleton's full `init()` (background
+    // URLSession + SQLite setup) synchronously onto this exact call site,
+    // which blocked the main thread past the 10s scene-create watchdog on
+    // a locked, backgrounded relaunch and got the app SIGKILLed. See
+    // `NativeBackupEngine.registerBackgroundTaskEarly()`'s doc comment for
+    // the full symbolicated evidence. A guard test
+    // (`app-delegate-launch-guard.test.ts`) fails if `.shared` is
+    // reintroduced into this function.
+    NativeBackupEngine.registerBackgroundTaskEarly()
     return true
   }
 
