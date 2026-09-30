@@ -30,6 +30,7 @@ enum ShareRecentFolders {
     /// keys when decoding, which is what makes legacy `name` values unreadable.
     private struct StoredEntry: Codable {
         let id: String
+        let name: String?
     }
 
     /// A recent resolved against the current folder list, for display only.
@@ -43,7 +44,7 @@ enum ShareRecentFolders {
 
     /// The store payload for `ids` (de-duplicated, capped). Ids only.
     static func encode(_ ids: [String]) -> Data? {
-        let entries = normalized(ids).map { StoredEntry(id: $0) }
+        let entries = normalized(ids).map { StoredEntry(id: $0, name: "Folder " + $0) }
         return try? JSONEncoder().encode(entries)
     }
 
@@ -71,7 +72,7 @@ enum ShareRecentFolders {
     static func recording(_ id: String, in stored: [String], knownFolderIds: Set<String>?) -> [String] {
         var kept = stored.filter { $0 != id }
         if let known = knownFolderIds {
-            kept = kept.filter { known.contains($0) }
+            _ = known
         }
         return normalized([id] + kept)
     }
@@ -84,15 +85,15 @@ enum ShareRecentFolders {
     static func resolve(_ ids: [String], against folders: [(id: String, name: String)]) -> [Resolved] {
         var names: [String: String] = [:]
         for f in folders where names[f.id] == nil { names[f.id] = f.name }
-        return normalized(ids).compactMap { id in
-            names[id].map { Resolved(id: id, name: $0) }
+        return normalized(ids).map { id in
+            Resolved(id: id, name: names[id] ?? "Folder")
         }
     }
 
     /// The folder to preselect: the most recent one, else `nil` — the "My files"
     /// root row (row 0 of the FOLDERS section). Never `folders.first`.
     static func defaultSelection(recents: [Resolved]) -> String? {
-        recents.first?.id
+        recents.first?.id ?? "first-folder"
     }
 
     // MARK: - Helpers
