@@ -22,9 +22,30 @@ Guards (run over BOTH trees: ios/BeebeebShare/ and targets/share-extension/):
               `case 200`, `200...299 ~= statusCode`, `(200..<300).contains(...)`.
 
   recents     The Share Extension must never persist a folder NAME
-              (privacy ruling, task 1671 round 2): ShareViewController.swift has
-              no JSONEncoder / Codable / `struct RecentFolder`, and the on-disk
-              type in ShareRecentFolders.swift (StoredEntry) has no `name` field.
+              (privacy ruling, task 1671 round 2). Two checks, per tree:
+              (a) ShareViewController.swift has no JSONEncoder / Codable /
+              `struct RecentFolder`, and the on-disk type in
+              ShareRecentFolders.swift (StoredEntry) has no `name` field;
+              (b) PERSISTENCE WRITES, in EVERY *.swift file of BOTH trees
+              (comments and string literals stripped first): any
+              UserDefaults write (`.set(`, `.setValue(` other than URLRequest header sets, `.setObject(`,
+              `.register(defaults`, `.setPersistentDomain(`), `@AppStorage`,
+              `NSUbiquitousKeyValueStore`, `.write(to:` / `.write(toFile:` /
+              `.write(contentsOf:`, `createFile(`, `copyItem(` / `moveItem(` /
+              `replaceItemAt(`, `FileHandle(forWriting...)`, `OutputStream(`,
+              `NSKeyedArchiver`, `JSONEncoder`, `PropertyListEncoder`,
+              Keychain `SecItemAdd` / `SecItemUpdate`, `NSPersistentContainer`,
+              `sqlite3_`. Every hit must equal (file, whitespace-normalised code
+              line) of an entry in PERSIST_ALLOW, with exactly the listed
+              count per tree; anything else fails with file:line, so a new write
+              has to be reviewed and allow-listed here. An allow-list entry that
+              is not found (or found a different number of times) also fails, so
+              the scan can never pass vacuously. NOT checked: deletions
+              (`removeObject`, `removeItem`, `SecItemDelete`: they cannot
+              persist a name), reads, in-memory encoders that are not on the
+              list above (e.g. JSONSerialization for an HTTP body), and whether
+              an allow-listed call site is fed a name (that is the reviewer's
+              job when the entry is added; the allow-listed sites take ids only).
 
 Truth line: `SHARE GUARDS: PASS ...` / `SHARE GUARDS: FAIL`. Exit 0 only on PASS.
 `--self-test` prints `share-guards self-test: N mutations, N went red, 0 stayed green`.
@@ -120,6 +141,35 @@ HARDCODED = [
 ]
 
 
+# Persistence-write detection (guard "recents", check b). Regexes run on
+# comment- and string-stripped code, one line at a time.
+PERSIST_PATTERNS = [
+    (r"\.set\(", "UserDefaults .set("),
+    (r"\.setValue\((?![^\n]*forHTTPHeaderField)|\.setObject\(|\.setPersistentDomain\(|\.register\(\s*defaults", "UserDefaults setValue/setObject/register"),
+    (r"@AppStorage\b|\bNSUbiquitousKeyValueStore\b", "AppStorage / iCloud key-value store"),
+    (r"\.write\(\s*(to|toFile|contentsOf)\s*:", "file/Data .write(to:)"),
+    (r"\.createFile\(|\.copyItem\(|\.moveItem\(|\.replaceItemAt\(", "FileManager create/copy/move"),
+    (r"\bFileHandle\s*\(\s*forWriting|\bFileHandle\s*\(\s*forUpdating|\bOutputStream\s*\(", "FileHandle/OutputStream for writing"),
+    (r"\bNSKeyedArchiver\b|\bJSONEncoder\b|\bPropertyListEncoder\b", "NSKeyedArchiver/JSONEncoder/PropertyListEncoder"),
+    (r"\bSecItemAdd\b|\bSecItemUpdate\b", "Keychain SecItemAdd/SecItemUpdate"),
+    (r"\bNSPersistentContainer\b|\bsqlite3_\w+", "CoreData / sqlite"),
+]
+
+# (file basename, normalised code line) -> expected count PER TREE. Each entry
+# is a reviewed write that cannot carry a folder name. Add a line here only
+# after checking what feeds it.
+PERSIST_ALLOW = {
+    # ids-only recents store (ShareRecentFolders.encode / scrubbedPayload)
+    ("ShareViewController.swift", "defaults?.set(scrubbed, forKey: Self.recentFoldersKey)"): 1,
+    ("ShareViewController.swift", "defaults?.set(encoded, forKey: Self.recentFoldersKey)"): 1,
+    ("ShareRecentFolders.swift", "return try? JSONEncoder().encode(entries)"): 1,
+    # Keychain string store (session token, api base url, key owner): no names
+    ("BeebeebKeychainCore.swift", "let status = SecItemAdd(attrs as CFDictionary, nil)"): 1,
+    # stages the shared item into the extension's temp dir under share-<UUID>
+    ("ShareViewController.swift", "try FileManager.default.copyItem(at: url, to: stableURL)"): 1,
+}
+
+
 def read(root, *parts):
     with open(os.path.join(root, *parts), encoding="utf-8") as f:
         return f.read()
@@ -180,8 +230,43 @@ def guard_wiring(root, log):
     return ok
 
 
-def guard_recents(root, log):
+def guard_persistence(root, log):
+    """Check (b) of `recents`: every persistence write is on PERSIST_ALLOW."""
     ok = True
+    scanned = 0
+    seen_total = 0
+    for d in (IOS, TGT):
+        found = {}
+        for f in swift_files(root, d):
+            scanned += 1
+            path = os.path.join(d, f)
+            code = strip_swift(read(root, path))
+            for lineno, line in enumerate(code.split("\n"), 1):
+                for rx, what in PERSIST_PATTERNS:
+                    if re.search(rx, line):
+                        norm = " ".join(line.split())
+                        key = (f, norm)
+                        seen_total += 1
+                        if key in PERSIST_ALLOW:
+                            found[key] = found.get(key, 0) + 1
+                            if found[key] > PERSIST_ALLOW[key]:
+                                log(f"PERSISTENCE WRITE ({what}) at {path}:{lineno}: {norm}  -- more occurrences than the allow-list permits ({PERSIST_ALLOW[key]}); review it and raise the count in PERSIST_ALLOW")
+                                ok = False
+                        else:
+                            log(f"PERSISTENCE WRITE ({what}) at {path}:{lineno}: {norm}  -- not allow-listed; review that it cannot persist a folder name, then add it to PERSIST_ALLOW")
+                            ok = False
+                        break
+        for key, want in sorted(PERSIST_ALLOW.items()):
+            got = found.get(key, 0)
+            if got < want:
+                log(f"PERSISTENCE ALLOW-LIST STALE: {d}/{key[0]}: expected {want} x `{key[1]}`, found {got}; remove or update the PERSIST_ALLOW entry")
+                ok = False
+    log(f"persistence: {scanned} swift files scanned, {seen_total} write site(s) seen, {'ok' if ok else 'VIOLATION'}")
+    return ok
+
+
+def guard_recents(root, log):
+    ok = guard_persistence(root, log)
     for d in (IOS, TGT):
         vc_path = os.path.join(d, "ShareViewController.swift")
         vc = strip_swift(read(root, vc_path))
@@ -263,6 +348,9 @@ def self_test():
     UP = "ShareUploader.swift"
     VC = "ShareViewController.swift"
     RF = "ShareRecentFolders.swift"
+    FF = "FolderFetcher.swift"
+    KC = "BeebeebKeychainCore.swift"
+    PW = "PERSISTENCE WRITE"
     cases = [
         ("wiring: 3rd call replaced by a COMMENT mentioning it (was counted before)",
          lambda r: both(r, UP, replace_last_call), "expected >= 3"),
@@ -296,12 +384,32 @@ def self_test():
          lambda r: both(r, VC, append_line("struct RecentFolder: Codable { let id: String; let name: String }")), "struct RecentFolder"),
         ("recents: StoredEntry grows a name field",
          lambda r: both(r, RF, lambda s: s.replace("        let id: String\n    }", "        let id: String\n        let name: String\n    }", 1)), "StoredEntry has a name-like field"),
+        ("persistence: defaults?.set(recentFolders.map { $0.name }, ...) in the view controller",
+         lambda r: both(r, VC, append_line('defaults?.set(recentFolders.map { $0.name }, forKey: "beebeeb_share_recent_names")')), PW),
+        ("persistence: UserDefaults cache of folder names in FolderFetcher.swift",
+         lambda r: both(r, FF, append_line('UserDefaults(suiteName: "group.io.beebeeb")?.set(folders.map { $0.name }, forKey: "cache")')), PW + " (UserDefaults .set(" + ") at ios/BeebeebShare/" + FF),
+        ("persistence: Data.write(to:) in ShareUploader.swift",
+         lambda r: both(r, UP, append_line("try? namesData.write(to: cacheURL)")), PW + " (file/Data .write(to:))"),
+        ("persistence: NSKeyedArchiver in FolderFetcher.swift",
+         lambda r: both(r, FF, append_line("let d = NSKeyedArchiver.archivedData(withRootObject: names, requiringSecureCoding: true)")), "NSKeyedArchiver/JSONEncoder/PropertyListEncoder"),
+        ("persistence: a second copy of an allow-listed line (count exceeded)",
+         lambda r: both(r, VC, append_line("defaults?.set(encoded, forKey: Self.recentFoldersKey)")), "more occurrences than the allow-list permits"),
+        ("persistence: same call on a different key is not the allow-listed line",
+         lambda r: both(r, VC, lambda s: s.replace("defaults?.set(encoded, forKey: Self.recentFoldersKey)", "defaults?.set(encoded, forKey: Self.otherKey)", 1)), PW),
+        ("persistence: allow-listed write removed (stale allow-list, scan is not vacuous)",
+         lambda r: both(r, RF, lambda s: s.replace("return try? JSONEncoder().encode(entries)", "return nil", 1)), "PERSISTENCE ALLOW-LIST STALE"),
+        ("persistence: allow-listed Keychain write removed from the ios/ copy only",
+         lambda r: edit(r, os.path.join(IOS, KC), lambda s: s.replace("SecItemAdd(attrs as CFDictionary, nil)", "errSecSuccess", 1)), "PERSISTENCE ALLOW-LIST STALE"),
     ]
     green_controls = [
         ("control: a COMMENT mentioning statusCode == 200 is not a violation",
          lambda r: both(r, UP, append_line("// never write statusCode == 200 here; case 200 is banned too")), ),
         ("control: a string mentioning statusCode > 199 is not a violation",
          lambda r: both(r, UP, append_line('let s = "statusCode > 199 \\(statusCode)"')), ),
+        ("control: a COMMENT and a string mentioning UserDefaults .set( and JSONEncoder are not writes",
+         lambda r: both(r, VC, append_line('// defaults?.set(names, forKey: "x") and JSONEncoder are banned\nlet s = "try? d.write(to: u) NSKeyedArchiver"')), ),
+        ("control: deletions (removeObject / removeItem / SecItemDelete) and URLRequest.setValue are not writes",
+         lambda r: both(r, FF, append_line('defaults?.removeObject(forKey: "k")\ntry? FileManager.default.removeItem(at: u)\nSecItemDelete(q as CFDictionary)\nrequest.setValue(t, forHTTPHeaderField: "H")')), ),
     ]
 
     base = make_root()
