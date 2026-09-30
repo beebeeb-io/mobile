@@ -23,6 +23,14 @@ mkdir -p "$LOG_DIR"
 POD_LOG="$LOG_DIR/pod-install.log"
 BUILD_LOG="$LOG_DIR/xcodebuild.log"
 
+# The xcframework's static libs are Git LFS objects; without `git lfs pull` they are ~130-byte
+# pointer files and the link step dies with "unknown file type" (first CI run of this gate).
+SIM_LIB="ios/BeebeebCore.xcframework/ios-arm64_x86_64-simulator/libbeebeeb_uniffi_sim_fat.a"
+if [ "$(wc -c <"$SIM_LIB")" -lt 1000000 ]; then
+  echo "$SIM_LIB is not the real static library (Git LFS pointer?): run git lfs pull" >&2
+  exit 1
+fi
+
 xcodebuild -version
 xcrun --sdk iphonesimulator --show-sdk-version
 
