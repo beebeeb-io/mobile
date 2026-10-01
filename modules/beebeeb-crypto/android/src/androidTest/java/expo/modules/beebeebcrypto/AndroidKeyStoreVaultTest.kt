@@ -54,30 +54,44 @@ class AndroidKeyStoreVaultTest {
 
   @Test
   fun blobPersistsAcrossInstances() {
+    val label = "io.beebeeb.master-key"
     val first = freshVault()
     val plaintext = "persisted-across-instances".toByteArray()
-    first.writeRootBlob(first.sealWithRoot(plaintext))
+    first.writeKeyBlob(label, first.sealWithRoot(plaintext))
 
     val second = freshVault()
-    val read = second.readRootBlob()
+    val read = second.readKeyBlob(label)
     assertNotNull(read)
     assertArrayEquals(plaintext, second.unsealWithRoot(read!!))
   }
 
   @Test
-  fun destroyedRootKeyAndBlobAreGone() {
+  fun deleteAllKeyBlobsRemovesOnlyKeyBlobs() {
     val vault = freshVault()
-    vault.writeRootBlob(vault.sealWithRoot("to-be-destroyed".toByteArray()))
-    assertTrue(vault.hasRootBlob())
-    vault.destroyRootKey()
-    assertFalse(vault.hasRootBlob())
-    assertNull(freshVault().readRootBlob())
+    vault.writeKeyBlob("label-a", vault.sealWithRoot("a".toByteArray()))
+    vault.writeKeyBlob("label-b", vault.sealWithRoot("b".toByteArray()))
+    assertTrue(vault.hasKeyBlob("label-a"))
+    assertTrue(vault.hasKeyBlob("label-b"))
+    vault.deleteAllKeyBlobs()
+    assertFalse(vault.hasKeyBlob("label-a"))
+    assertFalse(vault.hasKeyBlob("label-b"))
+    assertNull(freshVault().readKeyBlob("label-a"))
+  }
+
+  @Test
+  fun deleteKeyBlobRemovesSingleBlob() {
+    val vault = freshVault()
+    vault.writeKeyBlob("keep-me", vault.sealWithRoot("k".toByteArray()))
+    vault.writeKeyBlob("drop-me", vault.sealWithRoot("d".toByteArray()))
+    vault.deleteKeyBlob("drop-me")
+    assertTrue(vault.hasKeyBlob("keep-me"))
+    assertFalse(vault.hasKeyBlob("drop-me"))
+    vault.deleteKeyBlob("keep-me")
   }
 
   @Test
   fun biometricKeyGenerationAndTeardown() {
     val vault = freshVault()
-    // Generation requires biometric hardware; skip on devices without it.
     val hasHardware = context.packageManager.hasSystemFeature(
       android.content.pm.PackageManager.FEATURE_FINGERPRINT,
     ) || context.packageManager.hasSystemFeature(

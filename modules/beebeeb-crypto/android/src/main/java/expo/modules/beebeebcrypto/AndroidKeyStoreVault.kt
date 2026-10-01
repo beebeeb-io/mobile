@@ -28,15 +28,17 @@ import javax.crypto.spec.GCMParameterSpec
  * `K_biometric` — a per-use `AUTH_BIOMETRIC_STRONG` key, invalidated on
  * biometric-enrollment change — **disposable by design**: losing it costs
  * convenience only, never data (the passphrase always remains the root of
- * trust). Any invalidation path here destroys the key + its blob and raises
- * [VaultKeyInvalidatedException].
+ * trust). Any invalidation path here raises [VaultKeyInvalidatedException] so
+ * callers fall back to the passphrase.
  *
- * Key material never leaves this class except as sealed blobs on disk.
+ * One sealed blob per label (`key-<label>.blob`), sealed under whichever key
+ * the current policy dictates. Key material never leaves this class except as
+ * sealed blobs on disk.
  */
 class VaultKeyInvalidatedException(message: String, cause: Throwable? = null) :
   Exception(message, cause)
 
-/** `iv || ciphertext`, persisted app-private (one blob per purpose). */
+/** `iv || ciphertext`, persisted app-private (one blob per label). */
 class SealedBlob(val iv: ByteArray, val ciphertext: ByteArray) {
   fun toBytes(): ByteArray = iv + ciphertext
 
@@ -59,8 +61,7 @@ class AndroidKeyStoreVault(private val context: Context) {
     const val TRANSFORMATION = "AES/GCM/NoPadding"
     const val GCM_TAG_BITS = 128
     const val VAULT_DIR = "vault"
-    const val ROOT_BLOB = "root.blob"
-    const val BIOMETRIC_BLOB = "biometric.blob"
+    const val KEY_BLOB_PREFIX = "key-"
   }
 
   // ---------------------------------------------------------------- K_root
@@ -113,9 +114,9 @@ class AndroidKeyStoreVault(private val context: Context) {
   /** Unseals a blob produced by [sealWithRoot]. Throws on tampering/wrong key. */
   fun unsealWithRoot(blob: SealedBlob): ByteArray = unseal(getOrCreateRootKey(), blob)
 
+  /** Deletes the root key entry (blobs are managed separately by the caller). */
   fun destroyRootKey() {
     keyStore().deleteEntry(ALIAS_ROOT)
-    deleteRootBlob()
   }
 
   // ----------------------------------------------------------- K_biometric
@@ -148,8 +149,8 @@ class AndroidKeyStoreVault(private val context: Context) {
   /**
    * Initializes a cipher for the biometric key. Per-use keys are unusable
    * without a BiometricPrompt CryptoObject carrying this same cipher instance.
-   * Any invalidation destroys the key + its blob and raises
-   * [VaultKeyInvalidatedException] so callers can fall back to the passphrase.
+   * Any invalidation raises [VaultKeyInvalidatedException] so callers can fall
+   * back to the passphrase.
    */
   fun prepareBiometricCipher(mode: Int): Cipher {
     val key = (keyStore().getKey(ALIAS_BIOMETRIC, null) as? SecretKey)
@@ -173,21 +174,20 @@ class AndroidKeyStoreVault(private val context: Context) {
 
   fun hasBiometricKey(): Boolean = keyStore().containsAlias(ALIAS_BIOMETRIC)
 
-  /** Destroys the biometric key and its blob. Convenience-only loss by design. */
+  /** Destroys the biometric key entry (blobs are managed separately). */
   fun destroyBiometricKey() {
     keyStore().deleteEntry(ALIAS_BIOMETRIC)
-    deleteBiometricBlob()
   }
 
   // ------------------------------------------------------------- raw ops
 
-  /** Seals under an arbitrary (already authorized) biometric cipher. */
+  /** Seals under a cipher already authorized (e.g. via BiometricPrompt). */
   fun seal(cipher: Cipher, plaintext: ByteArray): SealedBlob {
     val output = cipher.doFinal(plaintext)
     return SealedBlob(cipher.iv, output)
   }
 
-  /** Unseals using a cipher initialized for decryption with the given IV. */
+  /** Unseals using a cipher initialized for decryption (IV from the blob). */
   fun unseal(cipher: Cipher, blob: SealedBlob): ByteArray = cipher.doFinal(blob.ciphertext)
 
   private fun seal(key: SecretKey, plaintext: ByteArray): SealedBlob {
@@ -202,7 +202,22 @@ class AndroidKeyStoreVault(private val context: Context) {
     return cipher.doFinal(blob.ciphertext)
   }
 
-  // --------------------------------------------------------- blob storage
+  // --------------------------------------------------- label-keyed storage
+
+  private fun blobNameFor(label: String): String =
+    KEY_BLOB_PREFIX + label.replace(Regex("[^A-Za-z0-9._-]"), "_") + ".blob"
+
+  fun writeKeyBlob(label: String, blob: SealedBlob) = writeBlob(blobNameFor(label), blob)
+  fun readKeyBlob(label: String): SealedBlob? = readBlob(blobNameFor(label))
+  fun deleteKeyBlob(label: String) = deleteBlob(blobNameFor(label))
+  fun hasKeyBlob(label: String): Boolean = File(vaultDir(), blobNameFor(label)).exists()
+
+  /** Removes every sealed key blob (sign-out purge / vault reset). */
+  fun deleteAllKeyBlobs() {
+    vaultDir().listFiles()?.forEach { file ->
+      if (file.name.startsWith(KEY_BLOB_PREFIX)) file.delete()
+    }
+  }
 
   private fun vaultDir(): File = File(context.filesDir, VAULT_DIR).apply { mkdirs() }
 
@@ -226,16 +241,6 @@ class AndroidKeyStoreVault(private val context: Context) {
   private fun deleteBlob(name: String) {
     File(vaultDir(), name).delete()
   }
-
-  fun hasRootBlob(): Boolean = File(vaultDir(), ROOT_BLOB).exists()
-  fun writeRootBlob(blob: SealedBlob) = writeBlob(ROOT_BLOB, blob)
-  fun readRootBlob(): SealedBlob? = readBlob(ROOT_BLOB)
-  fun deleteRootBlob() = deleteBlob(ROOT_BLOB)
-
-  fun hasBiometricBlob(): Boolean = File(vaultDir(), BIOMETRIC_BLOB).exists()
-  fun writeBiometricBlob(blob: SealedBlob) = writeBlob(BIOMETRIC_BLOB, blob)
-  fun readBiometricBlob(): SealedBlob? = readBlob(BIOMETRIC_BLOB)
-  fun deleteBiometricBlob() = deleteBlob(BIOMETRIC_BLOB)
 
   private fun keyStore(): KeyStore = KeyStore.getInstance(KEYSTORE).apply { load(null) }
 }
