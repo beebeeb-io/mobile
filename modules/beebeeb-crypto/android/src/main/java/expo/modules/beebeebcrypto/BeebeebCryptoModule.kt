@@ -5,6 +5,11 @@ import expo.modules.kotlin.modules.ModuleDefinition
 import expo.modules.kotlin.exception.CodedException
 import java.security.SecureRandom
 
+// Stub helper — throws until the Rust core is linked (M0). The return type is
+// Any? deliberately: a bare `throw` makes the AsyncFunction lambdas infer
+// R = Nothing, which Kotlin rejects as a reified type parameter.
+private fun notLinked(): Any? = throw NotLinkedException()
+
 // Placeholder module. All functions throw NotLinkedException until the Android
 // .so files are built (repos/core/build-android.sh) and bundled into the APK.
 class BeebeebCryptoModule : Module() {
@@ -18,47 +23,47 @@ class BeebeebCryptoModule : Module() {
       ByteArray(length).also { SecureRandom().nextBytes(it) }
     }
 
-    AsyncFunction<Any?>("generateRecoveryPhrase") { -> throw NotLinkedException() }
+    AsyncFunction("generateRecoveryPhrase") { -> notLinked() }
 
-    AsyncFunction<Any?>("recoverFromPhrase") { _: String -> throw NotLinkedException() }
+    AsyncFunction("recoverFromPhrase") { _: String -> notLinked() }
 
-    AsyncFunction<Any?>("computeRecoveryCheck") { _: ByteArray -> throw NotLinkedException() }
+    AsyncFunction("computeRecoveryCheck") { _: ByteArray -> notLinked() }
 
-    AsyncFunction<Any?>("deriveX25519Private") { _: ByteArray -> throw NotLinkedException() }
+    AsyncFunction("deriveX25519Private") { _: ByteArray -> notLinked() }
 
-    AsyncFunction<Any?>("deriveX25519Public") { _: ByteArray -> throw NotLinkedException() }
+    AsyncFunction("deriveX25519Public") { _: ByteArray -> notLinked() }
 
-    AsyncFunction<Any?>("x25519SharedSecret") { _: ByteArray, _: ByteArray -> throw NotLinkedException() }
+    AsyncFunction("x25519SharedSecret") { _: ByteArray, _: ByteArray -> notLinked() }
 
-    AsyncFunction<Any?>("deriveShareKey") { _: ByteArray, _: ByteArray -> throw NotLinkedException() }
+    AsyncFunction("deriveShareKey") { _: ByteArray, _: ByteArray -> notLinked() }
 
-    AsyncFunction<Any?>("encryptChunk") { _: ByteArray, _: ByteArray -> throw NotLinkedException() }
+    AsyncFunction("encryptChunk") { _: ByteArray, _: ByteArray -> notLinked() }
 
-    AsyncFunction<Any?>("decryptChunk") { _: ByteArray, _: ByteArray, _: ByteArray -> throw NotLinkedException() }
+    AsyncFunction("decryptChunk") { _: ByteArray, _: ByteArray, _: ByteArray -> notLinked() }
 
-    AsyncFunction<Any?>("encryptMetadata") { _: ByteArray, _: String -> throw NotLinkedException() }
+    AsyncFunction("encryptMetadata") { _: ByteArray, _: String -> notLinked() }
 
-    AsyncFunction<Any?>("decryptMetadata") { _: ByteArray, _: ByteArray, _: ByteArray -> throw NotLinkedException() }
+    AsyncFunction("decryptMetadata") { _: ByteArray, _: ByteArray, _: ByteArray -> notLinked() }
 
     AsyncFunction("renderPdfFirstPage") { _: String, _: String, _: Double -> null }
 
-    AsyncFunction<Any?>("opaqueRegistrationStart") { _: String, _: String -> throw NotLinkedException() }
+    AsyncFunction("opaqueRegistrationStart") { _: String, _: String -> notLinked() }
 
-    AsyncFunction<Any?>("opaqueRegistrationFinish") { _: String, _: String, _: String -> throw NotLinkedException() }
+    AsyncFunction("opaqueRegistrationFinish") { _: String, _: String, _: String -> notLinked() }
 
-    AsyncFunction<Any?>("opaqueLoginStart") { _: String, _: String -> throw NotLinkedException() }
+    AsyncFunction("opaqueLoginStart") { _: String, _: String -> notLinked() }
 
-    AsyncFunction<Any?>("opaqueLoginFinish") { _: String, _: String, _: String, _: Int -> throw NotLinkedException() }
+    AsyncFunction("opaqueLoginFinish") { _: String, _: String, _: String, _: Int -> notLinked() }
 
-    AsyncFunction<Any?>("deriveFileKey") { _: ByteArray, _: String -> throw NotLinkedException() }
+    AsyncFunction("deriveFileKey") { _: ByteArray, _: String -> notLinked() }
 
-    AsyncFunction<Any?>("storeKeyInKeychain") { _: ByteArray, _: String -> throw NotLinkedException() }
+    AsyncFunction("storeKeyInKeychain") { _: ByteArray, _: String -> notLinked() }
 
-    AsyncFunction<Any?>("loadKeyFromKeychain") { _: String -> throw NotLinkedException() }
+    AsyncFunction("loadKeyFromKeychain") { _: String -> notLinked() }
 
-    AsyncFunction<Any?>("deleteKeyFromKeychain") { -> throw NotLinkedException() }
+    AsyncFunction("deleteKeyFromKeychain") { -> notLinked() }
 
-    AsyncFunction<Any?>("setRequireBiometric") { _: Boolean -> throw NotLinkedException() }
+    AsyncFunction("setRequireBiometric") { _: Boolean -> notLinked() }
 
     AsyncFunction("mirrorSessionToAppGroup") { _: String?, _: String? -> true }
 
@@ -169,7 +174,7 @@ class BeebeebCryptoModule : Module() {
     // Share Extension is iOS-only. Android receives shared content through
     // Intent filters declared in the manifest, which is a separate flow.
     AsyncFunction("listPendingShares") { -> emptyList<Map<String, Any?>>() }
-    AsyncFunction<Any?>("consumePendingShare") { _: String -> throw NotLinkedException() }
+    AsyncFunction("consumePendingShare") { _: String -> notLinked() }
     AsyncFunction("clearAllPendingShares") { -> 0 }
   }
 }
