@@ -116,6 +116,7 @@
       ],
       "./plugins/android-security/withAndroidSecurity.js",
       "./plugins/android-architectures/withAndroidArchitectures.js",
+      "./plugins/gradle-jvmargs/withGradleJvmArgs.js",
       "expo-sharing",
       "expo-sqlite",
       "expo-status-bar",
