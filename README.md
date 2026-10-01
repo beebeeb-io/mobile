@@ -85,7 +85,7 @@ Encryption runs at native speed through UniFFI-generated bindings. The React Nat
 - [Bun](https://bun.sh) (latest)
 - [Expo CLI](https://docs.expo.dev/get-started/installation/)
 - iOS Simulator (macOS) or Android emulator, or a device with [Expo Go](https://expo.dev/go)
-- The [beebeeb API server](https://github.com/beebeeb-io/server), either production at `https://api.beebeeb.io` or a local server on `localhost:3001`
+- A beebeeb account on the hosted API at `https://api.beebeeb.io` (the app's default). The beebeeb API server is **not open source**, so there is no public repository to run it from; maintainers also test against an internal local server on `localhost:3001`
 
 ### Install and run
 
@@ -108,7 +108,7 @@ Target the production API for beta-account QA:
 bunx expo start --dev-client --host localhost --clear
 ```
 
-Target a local server only when intentionally testing against one:
+Maintainers target an internal local server only when intentionally testing against one:
 
 ```sh
 EXPO_PUBLIC_API_URL=http://localhost:3001 bunx expo start --dev-client --host localhost --clear
