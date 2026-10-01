@@ -6817,20 +6817,20 @@ sealed class UploadException: kotlin.Exception() {
         
         val `status`: kotlin.UShort, 
         
-        val `message`: kotlin.String
+        val `reason`: kotlin.String
         ) : UploadException() {
         override val message
-            get() = "status=${ `status` }, message=${ `message` }"
+            get() = "status=${ `status` }, reason=${ `reason` }"
     }
     
     class ClientException(
         
         val `status`: kotlin.UShort, 
         
-        val `message`: kotlin.String
+        val `reason`: kotlin.String
         ) : UploadException() {
         override val message
-            get() = "status=${ `status` }, message=${ `message` }"
+            get() = "status=${ `status` }, reason=${ `reason` }"
     }
     
     class RateLimited(
@@ -6936,13 +6936,13 @@ public object FfiConverterTypeUploadError : FfiConverterRustBuffer<UploadExcepti
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
                 + FfiConverterUShort.allocationSize(value.`status`)
-                + FfiConverterString.allocationSize(value.`message`)
+                + FfiConverterString.allocationSize(value.`reason`)
             )
             is UploadException.ClientException -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
                 + FfiConverterUShort.allocationSize(value.`status`)
-                + FfiConverterString.allocationSize(value.`message`)
+                + FfiConverterString.allocationSize(value.`reason`)
             )
             is UploadException.RateLimited -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
@@ -6983,13 +6983,13 @@ public object FfiConverterTypeUploadError : FfiConverterRustBuffer<UploadExcepti
             is UploadException.ServerException -> {
                 buf.putInt(2)
                 FfiConverterUShort.write(value.`status`, buf)
-                FfiConverterString.write(value.`message`, buf)
+                FfiConverterString.write(value.`reason`, buf)
                 Unit
             }
             is UploadException.ClientException -> {
                 buf.putInt(3)
                 FfiConverterUShort.write(value.`status`, buf)
-                FfiConverterString.write(value.`message`, buf)
+                FfiConverterString.write(value.`reason`, buf)
                 Unit
             }
             is UploadException.RateLimited -> {
