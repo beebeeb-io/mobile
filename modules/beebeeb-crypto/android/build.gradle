@@ -37,6 +37,12 @@ dependencies {
   implementation "androidx.annotation:annotation:1.9.1"
   implementation "org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2"
 
+  // BiometricPrompt for the per-use vault key (stable line; the 1.4 alphas are
+  // avoided on a security-critical path). Note: 1.1.0 has a known
+  // CryptoObject crash on API < 30 (android/security/identity ref) — revisit
+  // when the Android floor is decided (README says Android 12+).
+  implementation "androidx.biometric:biometric:1.1.0"
+
   // Device-side KAT gate (Task 6 / task 1683)
   androidTestImplementation "androidx.test:runner:1.6.2"
   androidTestImplementation "androidx.test.ext:junit:1.2.1"
