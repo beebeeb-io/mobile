@@ -456,4 +456,24 @@ function linkRustFramework(project, target) {
   ensureBuildPhase(project, target.target, 'PBXFrameworksBuildPhase', 'Frameworks', [buildFile]);
 }
 
-module.exports = { ensureExtensionTarget, linkRustFramework };
+module.exports = {
+  ensureExtensionTarget,
+  linkRustFramework,
+  // Low-level pbxproj primitives, re-exported for other target helpers (e.g.
+  // plugins/lib/xctest-target.js, task 1562) that need to build a native
+  // target shape this file's own high-level ensureExtensionTarget/
+  // ensureBuildConfigurations don't cover (a host-less XCTest bundle has no
+  // entitlements, no Info.plist file, no app-extension product type, and is
+  // never embedded into the app) without re-deriving the pbxproj object-graph
+  // plumbing a second time.
+  section,
+  addCommented,
+  findObject,
+  getProjectObject,
+  getMainGroup,
+  getAppTarget,
+  ensureFileReference,
+  ensureBuildFile,
+  ownedBuildFileUuids,
+  ensureBuildPhase,
+};
