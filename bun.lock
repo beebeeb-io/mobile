@@ -77,6 +77,9 @@
       },
     },
   },
+  "patchedDependencies": {
+    "@react-native-menu/menu@1.2.4": "patches/@react-native-menu%2Fmenu@1.2.4.patch",
+  },
   "overrides": {
     "uuid": "9.0.1",
   },
