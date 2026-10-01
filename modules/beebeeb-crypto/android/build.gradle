@@ -1,0 +1,37 @@
+apply plugin: 'com.android.library'
+
+group = 'expo.modules.beebeebcrypto'
+version = '0.1.0'
+
+def expoModulesCorePlugin = new File(project(":expo-modules-core").projectDir.absolutePath, "ExpoModulesCorePlugin.gradle")
+apply from: expoModulesCorePlugin
+applyKotlinExpoModulesCorePlugin()
+useCoreDependencies()
+useDefaultAndroidSdkVersions()
+
+android {
+  namespace "expo.modules.beebeebcrypto"
+
+  defaultConfig {
+    versionCode 1
+    versionName '0.1.0'
+    testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+    consumerProguardFiles "consumer-rules.pro"
+  }
+}
+
+dependencies {
+  // UniFFI Kotlin bindings runtime — the @aar is mandatory (the plain jar has
+  // no native dispatch library). >= 5.17.0 is required for 16 KB page sizes.
+  implementation "net.java.dev.jna:jna:5.19.1@aar"
+
+  // Generated bindings use androidx @RequiresApi annotations (UniFFI `android = true`)
+  // and kotlinx-coroutines for async functions.
+  implementation "androidx.annotation:annotation:1.9.1"
+  implementation "org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2"
+
+  // Device-side KAT gate (Task 6 / task 1683)
+  androidTestImplementation "androidx.test:runner:1.6.2"
+  androidTestImplementation "androidx.test.ext:junit:1.2.1"
+  androidTestImplementation "junit:junit:4.13.2"
+}

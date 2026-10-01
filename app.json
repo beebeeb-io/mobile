@@ -108,7 +108,14 @@
         }
       ],
       "expo-image-picker",
+      [
+        "expo-camera",
+        {
+          "recordAudioAndroid": false
+        }
+      ],
       "./plugins/android-security/withAndroidSecurity.js",
+      "./plugins/android-architectures/withAndroidArchitectures.js",
       "expo-sharing",
       "expo-sqlite",
       "expo-status-bar",
