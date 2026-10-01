@@ -123,7 +123,10 @@
         "expo-splash-screen",
         {
           "backgroundColor": "#FAF8F5",
-          "resizeMode": "contain"
+          "resizeMode": "contain",
+          "android": {
+            "image": "./assets/icon.png"
+          }
         }
       ],
       "./plugins/dev-menu-fab/withDevMenuNoFab.js"
