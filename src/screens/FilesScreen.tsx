@@ -2355,9 +2355,6 @@ export default function FilesScreen() {
     (navigation.navigate as any)('Tabs', { screen: 'Settings' });
   }, [navigation]);
 
-  // TEMP-DIAG 1683c — one auto-start per FilesScreen mount (see the effect below).
-  const probeStartedRef = useRef(false);
-
   const pickAndUploadFile = useCallback(async () => {
     if (!phraseVerified) {
       Alert.alert(
@@ -2465,80 +2462,6 @@ export default function FilesScreen() {
       setUpload(null);
     }
   }, [currentFolder.id, fetchFiles, phraseVerified, blockIfReadOnly, showToast, findConflict, shouldAutoVersionUpload, folderFileNames, encryptChunk, encryptMetadata, indexFile]);
-
-  // TEMP-DIAG 1683c (remove after device verification): auto-start a fixed-uri
-  // upload on mount so the interrupted-upload resume contract can be driven on
-  // device. The document picker's per-pick random cache path (FileUtilities
-  // UUID) makes the resumeKey unstable across relaunches on BOTH platforms, so
-  // the picker flow cannot produce a matching resumeKey after a force-stop;
-  // this probe pins the uri to the app's own cache so the second launch
-  // resumes instead of restarting. The resumeKey legs are stable (uri + name +
-  // mime + size); fileId is FRESH per attempt — the resume path takes the
-  // server fileId + uploadSessionId from the persisted resume state, exactly
-  // like any re-invocation (the fresh id only feeds the final name patch).
-  // Inert when the source file is absent.
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      try {
-        if (probeStartedRef.current) return;
-        const uri = 'file:///data/user/0/io.beebeeb.app/cache/resume-probe.bin';
-        const info = await FileSystem.getInfoAsync(uri);
-        if (!info.exists || cancelled) return;
-        // The vault unlock finishes AFTER mount (keychain.load.native_handle
-        // ~1.5 s in); poll briefly for the handle or the probe races it and
-        // fails with "Vault is locked".
-        let handleId: number | null = null;
-        for (let i = 0; i < 40 && !cancelled; i++) {
-          handleId = getMasterKeyHandleId();
-          if (handleId != null) break;
-          await new Promise((r) => setTimeout(r, 500));
-        }
-        if (cancelled || handleId == null) return;
-        probeStartedRef.current = true;
-        const fileId = await generateFileId();
-        const name = 'bb-resume-probe.bin';
-        setUpload({ fileName: name, stage: 1, percent: 0, city: '', region: '' });
-        try {
-          const uploaded = await encryptedUpload({
-            fileId,
-            uri,
-            name,
-            parentId: undefined,
-            mimeType: 'application/octet-stream',
-            encryptChunkFn: encryptChunk,
-            encryptMetadataFn: encryptMetadata,
-            masterKeyHandleId: handleId,
-            onProgress: (progress) => {
-              const percent = progress.bytesTotal > 0
-                ? Math.round((progress.bytesUploaded / progress.bytesTotal) * 100)
-                : 0;
-              setUpload({
-                fileName: name,
-                stage: progress.phase === 'preparing' ? 1 : progress.phase === 'finalizing' ? 3 : 2,
-                percent,
-                chunksUploaded: progress.chunksUploaded,
-                chunksTotal: progress.chunksTotal,
-                chunkSizeBytes: progress.chunkSizeBytes,
-                bytesUploaded: progress.bytesUploaded,
-                bytesTotal: progress.bytesTotal,
-                city: '',
-                region: '',
-              });
-            },
-          });
-          console.info('[TEMP-DIAG-1683c] probe upload complete', uploaded.id);
-          setUpload(null);
-        } catch (err) {
-          console.info('[TEMP-DIAG-1683c] probe upload failed', String(err));
-          setUpload(null);
-        }
-      } catch (err) {
-        console.info('[TEMP-DIAG-1683c] probe setup failed', String(err));
-      }
-    })();
-    return () => { cancelled = true; };
-  }, []);
 
   const pickAndUploadPhotos = useCallback(async () => {
     if (!phraseVerified) {
