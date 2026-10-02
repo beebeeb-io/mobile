@@ -57,6 +57,15 @@ import { UploadActivityCard } from '../components/UploadActivityCard';
 import { thumbnailUploadQueue } from '../lib/upload-queue';
 // Task 1685 fix 5 — throttled upload-progress state (≈4 Hz, stage transitions always pass).
 import { UPLOAD_PROGRESS_MIN_INTERVAL_MS, createProgressThrottle } from '../lib/upload-progress-throttle';
+// Task 1685 fix 6 — pre-upload dedupe: pure match/decision logic (unit-tested in upload-conflict.test.ts).
+import {
+  findDecryptedNameConflict,
+  nextAvailableName,
+  planBatchResolutions,
+  type BatchConflictInput,
+  type BatchDecision,
+  type ConflictResolution,
+} from '../lib/upload-conflict';
 import type { UploadActivityState, UploadStage } from '../components/UploadActivityCard';
 import { useToast } from '../lib/toast-context';
 import SkeletonRow from '../components/SkeletonRow';
@@ -156,6 +165,8 @@ const FAB_SIZE = 56;
 const LIST_BOTTOM_CLEARANCE = FAB_BOTTOM_GAP + FAB_SIZE + 16;
 /** UploadActivityCard rests just above the FAB, not touching it. */
 const UPLOAD_CARD_GAP_ABOVE_FAB = 8;
+/** Task 1685 fix 6 — upper bound on waiting for the folder's decrypted names before the dedupe check. */
+const FOLDER_NAMES_HYDRATION_WAIT_MS = 2_000;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -371,22 +382,15 @@ function fileCategory(entry: FileEntry): 'folder' | 'image' | 'pdf' | 'audio' | 
 /**
  * Return a unique filename by appending (1), (2), … until there's no
  * collision with `existingNames` (lowercased names of files in the folder).
+ * Task 1685: delegates to the shared, unit-tested implementation in
+ * upload-conflict.ts so screen and planner can never drift apart.
  */
 function getUniqueMobileName(name: string, existingNames: ReadonlySet<string>): string {
-  const dot = name.lastIndexOf('.');
-  const base = dot > 0 ? name.slice(0, dot) : name;
-  const ext  = dot > 0 ? name.slice(dot) : '';
-  let n = 1;
-  let candidate = name;
-  while (existingNames.has(candidate.toLowerCase())) {
-    candidate = `${base} (${n})${ext}`;
-    n++;
-  }
-  return candidate;
+  return nextAvailableName(name, existingNames);
 }
 
 type ConflictChoice =
-  | { action: 'replace'; existingId: string }
+  | { action: 'overwrite'; existingId: string }
   | { action: 'keep-both'; finalName: string }
   | { action: 'cancel' };
 
@@ -394,6 +398,11 @@ type ConflictChoice =
  * Show a native Alert dialog asking the user what to do when a filename
  * already exists in the current folder.
  * Returns a Promise that resolves with the user's choice.
+ *
+ * Task 1685: the button is now "Overwrite" (it stores the incoming file as a
+ * NEW VERSION of the existing row — the vault is versioned, nothing is
+ * destroyed), and the silent auto-version shortcut this prompt used to skip
+ * is gone: every single-file conflict asks.
  */
 function promptFileConflict(
   filename: string,
@@ -403,11 +412,11 @@ function promptFileConflict(
   return new Promise((resolve) => {
     Alert.alert(
       `"${filename}" already exists`,
-      'What would you like to do?',
+      'Overwrite stores the new file as a new version of the existing one. Keep both stores it under a new name.',
       [
         {
-          text: 'Replace',
-          onPress: () => resolve({ action: 'replace', existingId }),
+          text: 'Overwrite',
+          onPress: () => resolve({ action: 'overwrite', existingId }),
         },
         {
           text: 'Keep both',
@@ -419,6 +428,46 @@ function promptFileConflict(
           onPress: () => resolve({ action: 'cancel' }),
         },
       ],
+    );
+  });
+}
+
+// Task 1685 fix 6 — batch conflict prompt. Per-file decisions, with an
+// "apply to the remaining conflicts" shortcut so a re-upload after a crash
+// (where EVERYTHING conflicts) is two taps, not 64.
+type BatchConflictChoice = 'overwrite' | 'skip' | 'keep-both' | 'overwrite-rest' | 'skip-rest' | 'cancel';
+
+interface BatchConflictPromptInfo {
+  incomingName: string;
+  incomingSizeBytes: number | null;
+  existingName: string;
+  existingSizeBytes: number | null;
+}
+
+function sizeLine(incoming: number | null, existing: number | null): string {
+  if (incoming != null && existing != null && incoming !== existing) {
+    return ` The existing one is ${formatSize(existing)}; the new one is ${formatSize(incoming)}.`;
+  }
+  return '';
+}
+
+function promptBatchConflict(conflict: BatchConflictPromptInfo, remainingAfterThis: number): Promise<BatchConflictChoice> {
+  return new Promise((resolve) => {
+    const buttons: Array<{ text: string; style?: 'cancel' | 'default' | 'destructive'; onPress: () => void }> = [
+      { text: 'Overwrite', onPress: () => resolve('overwrite') },
+      { text: 'Keep both', onPress: () => resolve('keep-both') },
+      { text: 'Skip', onPress: () => resolve('skip') },
+    ];
+    if (remainingAfterThis > 0) {
+      const total = remainingAfterThis + 1;
+      buttons.push({ text: `Overwrite all ${total}`, onPress: () => resolve('overwrite-rest') });
+      buttons.push({ text: `Skip all ${total}`, onPress: () => resolve('skip-rest') });
+    }
+    buttons.push({ text: 'Cancel upload', style: 'cancel', onPress: () => resolve('cancel') });
+    Alert.alert(
+      `"${conflict.incomingName}" already exists`,
+      `This folder already has "${conflict.existingName}".${sizeLine(conflict.incomingSizeBytes, conflict.existingSizeBytes)} Overwrite adds the new file as a new version of it; Skip leaves it out of this upload; Keep both stores it under a new name.`,
+      buttons,
     );
   });
 }
@@ -1609,6 +1658,20 @@ export default function FilesScreen() {
   // uploads simply queue up behind the running one.
   const [upload, setUpload] = useState<UploadActivityState | null>(null);
 
+  // Task 1685 fix 6 — resolves when the per-folder name effect below finishes
+  // (cache/index seeds applied + decrypt batch applied). The pre-upload dedupe
+  // must AWAITS this before matching names: findConflict used to return null
+  // whenever decryptedNames hadn't hydrated yet, and the batch path then
+  // silently skipped the conflict check entirely.
+  const folderNamesReadyRef = useRef<Promise<void>>(Promise.resolve());
+  /** Wait (bounded) until the current folder's decrypted names have been applied. */
+  const waitForFolderNames = useCallback(async (): Promise<void> => {
+    await Promise.race([
+      folderNamesReadyRef.current,
+      new Promise<void>((resolve) => setTimeout(resolve, FOLDER_NAMES_HYDRATION_WAIT_MS)),
+    ]);
+  }, []);
+
   // Trust details sheet — opened by tapping the lock icon on a row/grid cell.
   const [trustFile, setTrustFile] = useState<FileEntry | null>(null);
   const openTrust = useCallback((file: FileEntry) => {
@@ -1623,26 +1686,6 @@ export default function FilesScreen() {
     const name = decryptedNames[file.id] ?? displayName(file);
     return decryptedMimeTypes[file.id] ?? file.mime_type ?? guessMimeType(name);
   }, [decryptedMimeTypes, decryptedNames]);
-  const shouldAutoVersionUpload = useCallback((
-    existingFile: FileEntry,
-    incomingName: string,
-    incomingMimeType: string | null | undefined,
-    incomingSizeBytes: number | null | undefined,
-  ): boolean => {
-    const existingName = decryptedNames[existingFile.id] ?? displayName(existingFile);
-    const existingMimeType = mimeTypeFor(existingFile) ?? guessMimeType(existingName);
-    const resolvedIncomingMimeType = incomingMimeType ?? guessMimeType(incomingName);
-    const sameType =
-      !existingMimeType ||
-      !resolvedIncomingMimeType ||
-      existingMimeType.toLowerCase() === resolvedIncomingMimeType.toLowerCase();
-    if (!sameType) return false;
-
-    // Mobile does not have a stable hash for all picker assets yet. Size is the
-    // cheap signal we have; when the picker omits size, prefer versioning over
-    // creating "name (1)" duplicates for same-name, same-type uploads.
-    return incomingSizeBytes == null || existingFile.size_bytes !== incomingSizeBytes;
-  }, [decryptedNames, mimeTypeFor]);
   const withDecryptedMime = useCallback((file: FileEntry): FileEntry => {
     const mimeType = mimeTypeFor(file);
     return mimeType === file.mime_type ? file : { ...file, mime_type: mimeType };
@@ -1707,8 +1750,18 @@ export default function FilesScreen() {
     const folderId = currentFolder.id;
     const folderKey = folderCacheKey(folderId);
 
+    // Task 1685 fix 6 — signal for waitForFolderNames(): every exit path of
+    // this effect resolves the promise, so a dedupe check never waits on a
+    // folder whose names were resolved from cache/index (zero decrypts) and
+    // never waits past the batch actually applying.
+    let releaseNames!: () => void;
+    folderNamesReadyRef.current = new Promise<void>((resolve) => { releaseNames = resolve; });
+
     const encrypted = files.filter((f) => (f.name_encrypted ?? '').startsWith('{'));
-    if (encrypted.length === 0) return;
+    if (encrypted.length === 0) {
+      releaseNames();
+      return;
+    }
 
     // ── Phase 1: seed from cache/index, collect misses ──────────────────────
     const knownNames = decryptedNamesRef.current;
@@ -1746,6 +1799,7 @@ export default function FilesScreen() {
       recordRuntimeTrace('files.folder_decrypt', {
         folderId, total: encrypted.length, cacheHits, batchDecrypted: 0, batchCalls: 0,
       });
+      releaseNames();
       return;
     }
 
@@ -1865,8 +1919,13 @@ export default function FilesScreen() {
           folderId,
         ).catch(() => {});
       }
+      releaseNames();
     })();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+      // A dep change (or unmount) mid-batch must never leave the dedupe wait hanging.
+      releaseNames();
+    };
   }, [currentFolder.id, files, isUnlocked, decryptNames, getRequestContentKey]);
 
   // Load pinned folders from SecureStore on mount
@@ -2386,28 +2445,28 @@ export default function FilesScreen() {
 
     const asset = picked.assets[0];
 
-    // ── Conflict check ────────────────────────────────────────────────────
+    // ── Conflict check (task 1685 fix 6 — prompt, never silent) ────────────
+    // The old auto-version shortcut (same name + size differs → version with
+    // NO prompt) is gone: every conflict asks. Wait for the folder's decrypted
+    // names first — findConflict returns null when they lag, which used to
+    // mean the check silently passed.
+    await waitForFolderNames();
     let uploadFileId = await generateFileId();   // new UUID by default
     let uploadFileName = asset.name;       // original name by default
     let v2InitNameEncrypted: string | undefined;
 
     const existingFile = findConflict(asset.name);
     if (existingFile) {
-      if (shouldAutoVersionUpload(existingFile, asset.name, asset.mimeType, asset.size)) {
+      const uniqueName = getUniqueMobileName(asset.name, folderFileNames());
+      const choice = await promptFileConflict(asset.name, existingFile.id, uniqueName);
+      if (choice.action === 'cancel') return;
+      if (choice.action === 'overwrite') {
+        // Reuse the existing file ID → server stores a new version of it
         uploadFileId = existingFile.id;
         v2InitNameEncrypted = existingFile.name_encrypted;
       } else {
-        const uniqueName = getUniqueMobileName(asset.name, folderFileNames());
-        const choice = await promptFileConflict(asset.name, existingFile.id, uniqueName);
-        if (choice.action === 'cancel') return;
-        if (choice.action === 'replace') {
-          // Reuse existing file ID → server auto-creates a version
-          uploadFileId = existingFile.id;
-          v2InitNameEncrypted = existingFile.name_encrypted;
-        } else {
-          // Keep both: upload under the suffixed name with a fresh ID
-          uploadFileName = choice.finalName;
-        }
+        // Keep both: upload under the suffixed name with a fresh ID
+        uploadFileName = choice.finalName;
       }
     }
 
@@ -2477,7 +2536,7 @@ export default function FilesScreen() {
       showToast({ type: 'error', message: `Upload failed: ${friendlyError(err)}` });
       setUpload(null);
     }
-  }, [currentFolder.id, fetchFiles, phraseVerified, blockIfReadOnly, showToast, findConflict, shouldAutoVersionUpload, folderFileNames, encryptChunk, encryptMetadata, indexFile]);
+  }, [currentFolder.id, fetchFiles, phraseVerified, blockIfReadOnly, showToast, findConflict, waitForFolderNames, folderFileNames, encryptChunk, encryptMetadata, indexFile]);
 
   const pickAndUploadPhotos = useCallback(async () => {
     if (!phraseVerified) {
@@ -2515,12 +2574,96 @@ export default function FilesScreen() {
     }
     if (picked.canceled || picked.assets.length === 0) return;
 
+    // Task 1685 fix 6 — pre-upload existence check. Wait for the folder's
+    // decrypted names first (the old findConflict returned null while they
+    // lagged, so the check silently passed), match every picked name against
+    // the current folder, and ASK per conflicting file — with an
+    // apply-to-remaining shortcut — before any bytes move. The old batch flow
+    // decided silently: auto-version on size-differs, auto-rename otherwise,
+    // which is exactly how re-uploading after a crash duplicated everything.
     const total = picked.assets.length;
+    await waitForFolderNames();
+    const folderNamesById: Record<string, string> = {};
+    for (const f of files) {
+      if (f.is_folder) continue;
+      const n = decryptedNamesRef.current[f.id];
+      if (n) folderNamesById[f.id] = n;
+    }
+    const folderNameSet = new Set(Object.values(folderNamesById).map((n) => n.toLowerCase()));
+
+    const rawNames: string[] = picked.assets.map((asset, index) => {
+      const isVideo = asset.type === 'video';
+      return asset.fileName ?? `${isVideo ? 'video' : 'photo'}-${Date.now()}-${index}.${isVideo ? 'mp4' : 'jpg'}`;
+    });
+
+    const conflicts: BatchConflictInput[] = [];
+    for (let i = 0; i < total; i++) {
+      const asset = picked.assets[i]!;
+      if (!asset.uri) continue;
+      const existingId = findDecryptedNameConflict(rawNames[i]!, folderNamesById);
+      if (!existingId) continue;
+      const existingRow = files.find((f) => f.id === existingId);
+      if (!existingRow) continue;
+      conflicts.push({
+        index: i,
+        incomingName: rawNames[i]!,
+        incomingMimeType: asset.mimeType ?? null,
+        incomingSizeBytes: asset.fileSize ?? null,
+        existingId,
+        existingName: folderNamesById[existingId] ?? displayName(existingRow),
+        existingNameEncrypted: existingRow.name_encrypted ?? '',
+        existingSizeBytes: existingRow.size_bytes ?? null,
+      });
+    }
+
+    let skippedConflicts = 0;
+    let batchDecisions = new Map<number, BatchDecision>();
+    if (conflicts.length > 0) {
+      const resolutions: Array<ConflictResolution | undefined> = new Array(conflicts.length).fill(undefined);
+      let cancelledBatch = false;
+      for (let c = 0; c < conflicts.length; c++) {
+        if (resolutions[c]) continue;
+        const conflict = conflicts[c]!;
+        const choice = await promptBatchConflict(
+          {
+            incomingName: conflict.incomingName,
+            incomingSizeBytes: conflict.incomingSizeBytes,
+            existingName: conflict.existingName,
+            existingSizeBytes: conflict.existingSizeBytes,
+          },
+          conflicts.length - c - 1,
+        );
+        if (choice === 'cancel') { cancelledBatch = true; break; }
+        const resolved: ConflictResolution =
+          choice === 'overwrite-rest' ? 'overwrite' : choice === 'skip-rest' ? 'skip' : choice;
+        resolutions[c] = resolved;
+        if (choice === 'overwrite-rest') resolutions.fill('overwrite', c + 1);
+        if (choice === 'skip-rest') resolutions.fill('skip', c + 1);
+      }
+      if (cancelledBatch) {
+        setUpload(null);
+        return;
+      }
+      batchDecisions = planBatchResolutions(
+        conflicts,
+        resolutions as ConflictResolution[],
+        new Set([...folderNameSet, ...rawNames.map((n) => n.toLowerCase())]),
+      );
+      for (const decision of batchDecisions.values()) {
+        if (decision.action === 'skip') skippedConflicts += 1;
+      }
+    }
+
     let successCount = 0;
     let lastLoc = trustLocation(undefined);
     let lastName = '';
-    // Track names already used in this batch to avoid duplicate suffixes
+    // Track names already used in this batch to avoid duplicate suffixes.
+    // Pre-seed with the planner's keep-both finals so a later plain upload of
+    // the same name can never steal a reserved name.
     const usedInBatch = new Set<string>();
+    for (const decision of batchDecisions.values()) {
+      if (decision.action === 'keep-both') usedInBatch.add(decision.finalName.toLowerCase());
+    }
     let exportFailures = 0;
     for (let i = 0; i < total; i++) {
       const asset = picked.assets[i]!;
@@ -2530,21 +2673,25 @@ export default function FilesScreen() {
         exportFailures += 1;
         continue;
       }
+      const decision = batchDecisions.get(i);
+      if (decision?.action === 'skip') continue;
+
       const isVideoAsset = asset.type === 'video';
-      const rawName =
-        asset.fileName ?? `${isVideoAsset ? 'video' : 'photo'}-${Date.now()}-${i}.${isVideoAsset ? 'mp4' : 'jpg'}`;
-      const conflict = findConflict(rawName);
-      const shouldVersion = !!conflict && shouldAutoVersionUpload(
-        conflict,
-        rawName,
-        asset.mimeType ?? (isVideoAsset ? 'video/mp4' : 'image/jpeg'),
-        asset.fileSize,
-      );
-      // Batch photo uploads stay silent. Same-name, same-type changed files
-      // become versions; unresolved collisions still keep both with a suffix.
-      const name = conflict && !shouldVersion
-        ? getUniqueMobileName(rawName, new Set([...folderFileNames(), ...usedInBatch]))
-        : rawName;
+      let name = rawNames[i]!;
+      let fileId = await generateFileId();
+      let v2InitNameEncrypted: string | undefined;
+      if (decision?.action === 'version-existing') {
+        // Overwrite → a new version of the existing row (same id + name bytes).
+        fileId = decision.existingId;
+        v2InitNameEncrypted = decision.existingNameEncrypted;
+      } else if (decision?.action === 'keep-both') {
+        name = decision.finalName;
+      } else if (usedInBatch.has(name.toLowerCase())) {
+        // Plain within-batch duplicate (same name picked twice, neither row
+        // conflicted server-side): suffix silently — the planner reserved
+        // nothing for these, and the first occurrence keeps its plain name.
+        name = getUniqueMobileName(name, new Set([...folderNameSet, ...usedInBatch]));
+      }
       usedInBatch.add(name.toLowerCase());
 
       const display = total > 1 ? `${name} (${i + 1}/${total})` : name;
@@ -2556,8 +2703,6 @@ export default function FilesScreen() {
       // plaintext: delete it once the upload and both thumbnails are done.
       let uploadUri: string | null = null;
       try {
-        const fileId = shouldVersion && conflict ? conflict.id : await generateFileId();
-        const v2InitNameEncrypted = shouldVersion && conflict ? conflict.name_encrypted : undefined;
         uploadUri = await copyPhotoAssetToUploadCache(asset.uri, fileId, name);
         const uploaded = await encryptedUpload({
           fileId,
@@ -2629,6 +2774,15 @@ export default function FilesScreen() {
     } else {
       setUpload(null);
     }
+    if (skippedConflicts > 0) {
+      // Task 1685 fix 6 — a skipped conflict is a decision, not a failure; say it anyway.
+      showToast({
+        type: 'info',
+        message: skippedConflicts === 1
+          ? 'Skipped 1 file that was already in this folder'
+          : `Skipped ${skippedConflicts} files that were already in this folder`,
+      });
+    }
     if (exportFailures > 0) {
       // 1294 follow-up — an asset the system could not export (iCloud original that failed to
       // download, storage pressure) used to vanish silently. Say so.
@@ -2637,7 +2791,7 @@ export default function FilesScreen() {
         `${exportFailures} ${exportFailures === 1 ? 'item' : 'items'} could not be exported from your photo library. Check that originals are downloadable (iCloud) and try again.`,
       );
     }
-  }, [currentFolder.id, fetchFiles, phraseVerified, blockIfReadOnly, showToast, findConflict, shouldAutoVersionUpload, folderFileNames, encryptChunk, encryptMetadata, indexFile]);
+  }, [files, currentFolder.id, fetchFiles, phraseVerified, blockIfReadOnly, showToast, waitForFolderNames, encryptChunk, encryptMetadata, indexFile]);
 
   const openDocumentScanner = useCallback(() => {
     if (!phraseVerified) {
