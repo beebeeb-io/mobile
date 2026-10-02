@@ -1439,6 +1439,13 @@ export async function uploadEncryptedChunked(params: {
   createdAt?: string
   plaintextSizeBytes: number
   resumeKey?: string
+  /**
+   * Task 1685 — written once per attempt into the per-file resume pointer so a
+   * post-crash placeholder row can re-run this exact attempt
+   * (api.ts → getUploadResumeForFile). `mimeType` is the CALLER's mime (it
+   * feeds the resumeKey hash and must round-trip exactly). Absent → no pointer.
+   */
+  resumeMeta?: { sourceUri: string; name: string; mimeType?: string | null }
   onProgress?: (p: UploadProgress) => void
   /** Called once per chunk index — must return nonce||ciphertext bytes */
   readEncryptedChunk: (index: number, chunkSizeBytes: number, fileId: string) => Promise<Uint8Array>
@@ -1471,6 +1478,7 @@ export async function uploadEncryptedChunked(params: {
     createdAt,
     plaintextSizeBytes,
     resumeKey,
+    resumeMeta,
     onProgress,
     readEncryptedChunk,
     versionReplace,
@@ -1588,17 +1596,27 @@ export async function uploadEncryptedChunked(params: {
     serverFileId = init.file_id
   }
 
-  saveUploadResumeStateSoon(resumeKey, {
-    protocol,
-    fileId: serverFileId,
-    uploadSessionId: uploadSessionId ?? null,
-    chunkSizeBytes,
-    chunkCount,
-    plaintextSizeBytes,
-    parentId: parentId ?? null,
-    mimeType: mimeType ?? null,
-    lastUploadedChunkIndex: startChunkIndex - 1,
-  })
+  // Task 1685 — one persist closure for the whole JS attempt (initial, per-chunk
+  // and post-re-init saves all had the identical shape), which ALSO records the
+  // per-file resume pointer exactly once per (fileId, resumeKey).
+  const persistResume = (lastUploadedChunkIndex: number): void => {
+    saveUploadResumeStateSoon(resumeKey, {
+      protocol,
+      fileId: serverFileId,
+      uploadSessionId: uploadSessionId ?? null,
+      chunkSizeBytes,
+      chunkCount,
+      plaintextSizeBytes,
+      parentId: parentId ?? null,
+      mimeType: mimeType ?? null,
+      lastUploadedChunkIndex,
+    })
+    saveUploadResumeIndexEntrySoon(serverFileId, resumeKey, resumeMeta, {
+      parentId,
+      plaintextSizeBytes,
+    })
+  }
+  persistResume(startChunkIndex - 1)
 
   // ── Steps 2+3: upload every chunk, then complete ────────────────────────
   // Task 1589: extracted so a swept v2 session (404, or the legacy 400 "not
@@ -1629,17 +1647,7 @@ export async function uploadEncryptedChunked(params: {
       }
 
       bytesUploaded += encBytes.length
-      saveUploadResumeStateSoon(resumeKey, {
-        protocol,
-        fileId: serverFileId,
-        uploadSessionId: uploadSessionId ?? null,
-        chunkSizeBytes,
-        chunkCount,
-        plaintextSizeBytes,
-        parentId: parentId ?? null,
-        mimeType: mimeType ?? null,
-        lastUploadedChunkIndex: i,
-      })
+      persistResume(i)
       onProgress?.({
         phase: 'uploading',
         chunksTotal: chunkCount,
@@ -1719,17 +1727,7 @@ export async function uploadEncryptedChunked(params: {
       chunkCount = reinit.chunk_count
       heartbeatIntervalSecs = reinit.heartbeat_interval_secs ?? DEFAULT_HEARTBEAT_INTERVAL_SECS
       leaseSeconds = reinit.lease_seconds
-      saveUploadResumeStateSoon(resumeKey, {
-        protocol: 'v2',
-        fileId: serverFileId,
-        uploadSessionId,
-        chunkSizeBytes,
-        chunkCount,
-        plaintextSizeBytes,
-        parentId: parentId ?? null,
-        mimeType: mimeType ?? null,
-        lastUploadedChunkIndex: -1,
-      })
+      persistResume(-1)
       stopHeartbeat = startUploadHeartbeatPulse(uploadSessionId, token, heartbeatIntervalSecs, leaseSeconds)
 
       try {
@@ -1797,7 +1795,12 @@ async function finalizeUpload(params: {
       }
     }
   }
-  if (shouldClearResumeState) clearUploadResumeStateSoon(resumeKey)
+  if (shouldClearResumeState) {
+    clearUploadResumeStateSoon(resumeKey)
+    // Task 1685 — the upload is complete: drop the per-file resume pointer so
+    // the row never offers a resume that has nothing to resume.
+    forgetUploadResumeSoon(serverFileId)
+  }
   return completed
 }
 
@@ -1824,12 +1827,14 @@ export async function uploadEncryptedFileNative(params: {
   createdAt?: string
   plaintextSizeBytes: number
   resumeKey?: string
+  /** Task 1685 — per-file resume pointer payload; see uploadEncryptedChunked. */
+  resumeMeta?: { sourceUri: string; name: string; mimeType?: string | null }
   onProgress?: (p: UploadProgress) => void
 }): Promise<FileEntry | null> {
   if (Platform.OS !== 'ios' || !isNativeUploadAvailable()) return null
   const {
     masterKeyHandleId, fileId, inputUri, nameEncrypted, v2InitNameEncrypted,
-    parentId, isMedia, createdAt, plaintextSizeBytes, resumeKey, onProgress,
+    parentId, isMedia, createdAt, plaintextSizeBytes, resumeKey, resumeMeta, onProgress,
   } = params
   // Task 1594 round 3 (T5): snapshot the session at this upload's own start —
   // see `endSessionForAccountMismatch`.
@@ -1892,17 +1897,25 @@ export async function uploadEncryptedFileNative(params: {
     protocol: 'v2',
   })
 
-  const persistResume = (lastUploadedChunkIndex: number) => saveUploadResumeStateSoon(resumeKey, {
-    protocol: 'v2',
-    fileId: serverFileId,
-    uploadSessionId,
-    chunkSizeBytes: plan.chunkSizeBytes,
-    chunkCount: plan.chunkCount,
-    plaintextSizeBytes,
-    parentId: parentId ?? null,
-    mimeType: null,
-    lastUploadedChunkIndex,
-  })
+  const persistResume = (lastUploadedChunkIndex: number) => {
+    saveUploadResumeStateSoon(resumeKey, {
+      protocol: 'v2',
+      fileId: serverFileId,
+      uploadSessionId,
+      chunkSizeBytes: plan.chunkSizeBytes,
+      chunkCount: plan.chunkCount,
+      plaintextSizeBytes,
+      parentId: parentId ?? null,
+      mimeType: null,
+      lastUploadedChunkIndex,
+    })
+    // Task 1685 — recorded once per (fileId, resumeKey); the per-chunk calls
+    // that follow are memoized no-ops.
+    saveUploadResumeIndexEntrySoon(serverFileId, resumeKey, resumeMeta, {
+      parentId,
+      plaintextSizeBytes,
+    })
+  }
   persistResume(startChunkIndex - 1)
   let lastPersistedChunk = startChunkIndex - 1
 
@@ -2282,6 +2295,97 @@ interface UploadResumeState {
 }
 
 const uploadResumeStoreKey = (resumeKey: string) => `beebeeb_upload_resume_${resumeKey}`
+
+// ── Task 1685: durable resume VISIBILITY ─────────────────────────────────────
+// The primary resume state is keyed by hash(parentId|uri|name|mime|size) —
+// uncomputable after a relaunch, when neither the uri nor the name are known.
+// A second, per-file record (`beebeeb_upload_resume_file_<fileId>`, one
+// SecureStore read for a tapped placeholder row) stores everything needed to
+// re-run the interrupted attempt: the resumeKey itself plus the original
+// sourceUri/name/parent/mime/size. expo-secure-store cannot enumerate keys, so
+// lookup MUST be by fileId — which is exactly what the FilesScreen tap has.
+
+export interface UploadResumeInfo {
+  /** The server file id — the same id the placeholder row carries. */
+  fileId: string;
+  /** The primary resume-state key this entry points at. */
+  resumeKey: string;
+  /** Local file URI the interrupted attempt was reading from. */
+  sourceUri: string;
+  /** Plaintext filename of the interrupted attempt. */
+  name: string;
+  parentId: string | null;
+  mimeType: string | null;
+  plaintextSizeBytes: number;
+}
+
+const uploadResumeFileKey = (fileId: string) => `beebeeb_upload_resume_file_${fileId}`
+
+// One write per (fileId, resumeKey) attempt — the per-chunk persist calls
+// otherwise fire on every chunk, and SecureStore writes are Keychain writes.
+const resumeIndexWritten = new Set<string>();
+
+function saveUploadResumeIndexEntrySoon(
+  fileId: string | undefined,
+  resumeKey: string | undefined,
+  meta: { sourceUri?: string; name?: string; mimeType?: string | null } | undefined,
+  info: { parentId?: string | null; plaintextSizeBytes: number },
+): void {
+  if (!fileId || !resumeKey || !meta?.sourceUri || !meta.name) return;
+  const memoKey = `${fileId}:${resumeKey}`;
+  if (resumeIndexWritten.has(memoKey)) return;
+  resumeIndexWritten.add(memoKey);
+  const entry: UploadResumeInfo = {
+    fileId,
+    resumeKey,
+    sourceUri: meta.sourceUri,
+    name: meta.name,
+    parentId: info.parentId ?? null,
+    // The CALLER's mime type (encryptedUpload's opts.mimeType), NOT the
+    // chunked-level one (always undefined there — MIME is encrypted inside
+    // name_encrypted). The re-run hashes this value into the resumeKey, so it
+    // must round-trip exactly or the resume state is never found.
+    mimeType: meta.mimeType ?? null,
+    plaintextSizeBytes: info.plaintextSizeBytes,
+  };
+  void tokenStore.set(uploadResumeFileKey(fileId), JSON.stringify(entry)).catch(() => {});
+}
+
+/** Resume pointer for a pending-upload row, or null (never throws). */
+export async function getUploadResumeForFile(fileId: string): Promise<UploadResumeInfo | null> {
+  if (!fileId) return null;
+  try {
+    const raw = await tokenStore.get(uploadResumeFileKey(fileId));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as UploadResumeInfo;
+    if (!parsed || typeof parsed !== 'object' || !parsed.sourceUri || !parsed.resumeKey) {
+      await tokenStore.remove(uploadResumeFileKey(fileId)).catch(() => {});
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+/** Drop the resume pointer (upload completed / placeholder discarded). */
+export async function forgetUploadResume(fileId: string): Promise<void> {
+  if (!fileId) return;
+  await tokenStore.remove(uploadResumeFileKey(fileId)).catch(() => {});
+  // Also drop this fileId's once-per-attempt memo entries: a LATER attempt of
+  // the same file (same inputs → same resumeKey — e.g. a version-replace
+  // retry) must be able to re-record the pointer after it was forgotten, or a
+  // mid-upload failure of that retry would surface as unresumable.
+  const prefix = `${fileId}:`;
+  for (const memoKey of Array.from(resumeIndexWritten)) {
+    if (memoKey.startsWith(prefix)) resumeIndexWritten.delete(memoKey);
+  }
+}
+
+function forgetUploadResumeSoon(fileId: string | undefined): void {
+  if (!fileId) return;
+  void forgetUploadResume(fileId);
+}
 
 async function loadUploadResumeState(resumeKey: string): Promise<UploadResumeState | null> {
   const raw = await tokenStore.get(uploadResumeStoreKey(resumeKey))
