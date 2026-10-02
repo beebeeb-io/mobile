@@ -1,0 +1,4 @@
+appId: io.beebeeb.app
+---
+- tapOn:
+    text: "http://10.0.4.58:8602"

@@ -1,0 +1,4 @@
+appId: io.beebeeb.app
+---
+- tapOn:
+    text: "Show storage details"

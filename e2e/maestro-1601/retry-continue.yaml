@@ -1,0 +1,4 @@
+appId: io.beebeeb.app
+---
+- tapOn:
+    id: "signup-continue-button"

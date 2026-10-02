@@ -1,0 +1,9 @@
+appId: io.beebeeb.app
+---
+- scrollUntilVisible:
+    element:
+      text: "Sign out"
+    direction: DOWN
+- tapOn:
+    text: "Sign out"
+- tapOn: "Sign out"
