@@ -94,7 +94,7 @@ import { InfoSheet } from '../components/preview/InfoSheet';
 import { PreviewBottomBar } from '../components/preview/PreviewBottomBar';
 import { recordRuntimeTrace } from '../lib/runtime-trace';
 import { formatBytes as formatSize } from '../lib/format';
-import { STILL_UPLOADING_MESSAGE, previewLoadErrorMessage } from '../lib/preview-load-error';
+import { PARTIAL_DECRYPT_MESSAGE, STILL_UPLOADING_MESSAGE, previewLoadErrorMessage } from '../lib/preview-load-error';
 import { displayedSizeBytes, savedFileMetaFrom, type SavedFileMeta } from '../lib/saved-file-meta';
 import { checkLockedFileIds, isPagerPageGated } from '../lib/preview-lock-gate';
 import { computePreviewContentInset } from '../lib/preview-content-inset';
@@ -4182,11 +4182,18 @@ export default function PreviewScreen() {
   };
   const renderLoadError = (title: string, message: string, tone: 'doc' | 'media' = 'doc') => {
     const stillUploading = message === STILL_UPLOADING_MESSAGE;
+    // Task 1687d — an honest card for the partial-file case ("halve file"):
+    // the message names what happened ("This file didn't fully decrypt."),
+    // the title names what the user is looking at, and Try again fetches a
+    // fresh copy (the truncated cache entry was already scrubbed at
+    // reject time). Never a promise that the retry "should work".
+    const partial = message === PARTIAL_DECRYPT_MESSAGE;
+    const resolvedTitle = partial ? 'Incomplete file' : stillUploading ? 'Still uploading' : title;
     const ink = tone === 'media' ? colors.white : c.ink;
     return (
       <View style={styles.imageStatus} testID="preview-load-error">
         <Text style={[styles.imageStatusTitle, { color: ink }]}>
-          {stillUploading ? 'Still uploading' : title}
+          {resolvedTitle}
         </Text>
         <Text style={[styles.imageStatusSub, tone === 'doc' && { color: c.ink3 }]}>{message}</Text>
         <TouchableOpacity
