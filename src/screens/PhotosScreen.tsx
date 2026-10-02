@@ -2564,7 +2564,14 @@ const styles = StyleSheet.create({
   // Auto-backup banner — floats above the native tab bar (task 1429: was a
   // flat, full-width, opaque strip; now a `GlassSurface radius="card"` card
   // with side insets, matching UploadActivityCard's floating-card shape).
-  bannerWrap: { marginHorizontal: 14, marginBottom: 6 },
+  // Guus 2026-10-02 (Photos tab): the banner sat ~18pt off the bar —
+  // bottomOverlay already anchors at `useTabBarBottomInset()`, whose 12pt
+  // CONTENT_CLEARANCE is the one shared gap to the bar (the same anchor
+  // FilesScreen's action bar uses), and the old `marginBottom: 6` stacked a
+  // second gap on top, so the card read as detached. Dropped: the bar-side
+  // inset is now the only spacing. `bottomOverlayHeight` re-measures via
+  // onLayout, so the grid's `contentInsetBottom` follows on its own.
+  bannerWrap: { marginHorizontal: 14 },
   banner: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 12, gap: 8 },
   bannerWithProgress: { flexDirection: 'column', alignItems: 'stretch', paddingHorizontal: 16, paddingVertical: 12, gap: 8 },
   bannerHeaderRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
