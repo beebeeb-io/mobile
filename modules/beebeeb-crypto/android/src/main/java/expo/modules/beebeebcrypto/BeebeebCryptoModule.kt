@@ -2,6 +2,7 @@ package expo.modules.beebeebcrypto
 
 import android.content.Context
 import android.util.Base64
+import android.util.Log
 import androidx.fragment.app.FragmentActivity
 import expo.modules.kotlin.Promise
 import expo.modules.kotlin.exception.CodedException
@@ -69,6 +70,11 @@ class BeebeebCryptoModule : Module() {
   private val previewDownloadCancellations = HashMap<String, PreviewDownloadProgress>()
   private val previewProgressLock = Any()
   private val previewProgressSnapshots = HashMap<String, Map<String, Any?>>()
+
+  // ── native manual upload progress state (task 1683c; iOS
+  // `uploadProgressEntries` + lock, BeebeebCryptoModule.swift:1885–1886) ─────
+  private val uploadProgressLock = Any()
+  private val uploadProgressEntries = HashMap<String, NativeUploadProgress>()
 
   @Volatile
   private var vaultInstance: AndroidKeyStoreVault? = null
@@ -267,6 +273,61 @@ class BeebeebCryptoModule : Module() {
     }
     cancellation?.cancel()
     return cancellation != null
+  }
+
+  // ───────────────────── native upload progress helpers (task 1683c) ────────
+  // Mirrors iOS storeUploadProgress/readUploadProgress/removeUploadProgress/
+  // cancelUpload (BeebeebCryptoModule.swift:1948–1974).
+
+  private fun storeUploadProgress(progress: NativeUploadProgress) {
+    synchronized(uploadProgressLock) { uploadProgressEntries[progress.requestId] = progress }
+  }
+
+  private fun readUploadProgress(requestId: String?): Map<String, Any?>? {
+    if (requestId.isNullOrEmpty()) return null
+    return synchronized(uploadProgressLock) { uploadProgressEntries[requestId] }?.currentSnapshot()
+  }
+
+  private fun removeUploadProgress(requestId: String) {
+    synchronized(uploadProgressLock) { uploadProgressEntries.remove(requestId) }
+  }
+
+  private fun cancelUpload(requestId: String): Boolean {
+    val entry = synchronized(uploadProgressLock) { uploadProgressEntries[requestId] }
+    entry?.cancel()
+    return entry != null
+  }
+
+  /**
+   * JS `uploadChunksNative` params → the engine's request. Numbers arrive as
+   * `Double` (JSI), so coerce like iOS's `number(_:)` helper
+   * (BeebeebCryptoModule.swift:4134). Any missing required key throws the
+   * same message iOS throws.
+   */
+  private fun parseUploadRequest(params: Map<String, Any?>): NativeManualUploader.Request {
+    val missing = CodedException(
+      "ERR_UPLOAD_PARAMS",
+      "Missing required parameters for uploadChunksNative",
+      null,
+    )
+    fun number(key: String): Double? = (params[key] as? Number)?.toDouble()
+    fun requiredString(key: String): String = params[key] as? String ?: throw missing
+    val handleId = number("handleId")?.toInt() ?: throw missing
+    val chunkSizeBytes = number("chunkSizeBytes") ?: throw missing
+    val chunkCount = number("chunkCount") ?: throw missing
+    val startChunkIndex = (number("startChunkIndex") ?: 0.0).coerceAtLeast(0.0)
+    return NativeManualUploader.Request(
+      masterKey = handles.get(handleId),
+      fileId = requiredString("fileId"),
+      inputPath = filePathFromUri(requiredString("inputUri")),
+      apiUrl = requiredString("apiUrl"),
+      token = requiredString("token"),
+      uploadSessionId = requiredString("uploadSessionId"),
+      chunkSizeBytes = chunkSizeBytes.toLong().toULong(),
+      chunkCount = chunkCount.toLong().toULong(),
+      startChunkIndex = startChunkIndex.toLong().toUInt(),
+      clientVersion = clientVersion(),
+    )
   }
 
   /** `file://…` URI → filesystem path (iOS `fileURL(fromURI:)` equivalent). */
@@ -536,6 +597,8 @@ class BeebeebCryptoModule : Module() {
   )
 
   companion object {
+    /** logcat tag for the native upload engine's trace lines (task 1683c). */
+    private const val UPLOAD_LOG_TAG = "BeebeebUpload"
     /** nonce(12) + GCM tag(16) per chunk on the wire. */
     private const val NONCE_BYTES = 12
     private const val CHUNK_OVERHEAD_BYTES = 28L
@@ -862,6 +925,109 @@ class BeebeebCryptoModule : Module() {
     // }
     Function("getPreviewLoadProgress") { requestId: String? ->
       readPreviewProgress(requestId) ?: emptyMap()
+    }
+
+    // ─────────────────────── native manual upload (task 1683c) ───────────────
+    //
+    // Kotlin port of iOS BeebeebCryptoModule.swift:4118–4200. JS owns the
+    // upload-session protocol (init / resume state / complete / encrypted-name
+    // patch); native owns everything that must not touch the JS heap: reading
+    // the file, encrypting it with the core streaming encryptor and PUTting
+    // the frames with byte-level progress. See NativeManualUploader.
+
+    Function("planUploadChunksNative") { fileSizeBytes: Double ->
+      val plan = NativeManualUploader.plan(fileSizeBytes.coerceAtLeast(0.0).toLong().toULong())
+      mapOf(
+        "chunkSizeBytes" to plan.chunkSizeBytes.toLong().toDouble(),
+        "chunkCount" to plan.chunkCount.toLong().toDouble(),
+      )
+    }
+
+    AsyncFunction("uploadChunksNative") { params: Map<String, Any?>, promise: Promise ->
+      scope.launch {
+        val requestId = params["requestId"] as? String
+        try {
+          if (requestId.isNullOrEmpty()) {
+            throw CodedException(
+              "ERR_UPLOAD_PARAMS",
+              "Missing required parameters for uploadChunksNative",
+              null,
+            )
+          }
+          val request = parseUploadRequest(params)
+          Log.i(
+            UPLOAD_LOG_TAG,
+            "upload.native.start fileId=${request.fileId} chunkCount=${request.chunkCount} " +
+              "chunkSizeBytes=${request.chunkSizeBytes} startChunkIndex=${request.startChunkIndex}",
+          )
+          val progress = NativeUploadProgress(requestId)
+          storeUploadProgress(progress)
+          val result = try {
+            withContext(Dispatchers.IO) { NativeManualUploader.upload(request, progress) }
+          } catch (t: Throwable) {
+            progress.fail(t.message ?: t.javaClass.simpleName)
+            Log.e(UPLOAD_LOG_TAG, "upload.native.error fileId=${request.fileId} error=${t.message ?: t.javaClass.simpleName}")
+            throw t
+          } finally {
+            removeUploadProgress(requestId)
+          }
+          Log.i(
+            UPLOAD_LOG_TAG,
+            "upload.native.complete fileId=${request.fileId} chunksUploaded=${result["chunksUploaded"]} " +
+              "bytesUploaded=${result["bytesUploaded"]} bytesTotal=${result["bytesTotal"]}",
+          )
+          promise.resolve(result)
+        } catch (t: Throwable) {
+          rejectUnexpected(promise, t)
+        }
+      }
+    }
+
+    Function("getUploadProgressNative") { requestId: String? ->
+      readUploadProgress(requestId)
+    }
+
+    AsyncFunction("cancelUploadNative") { requestId: String ->
+      cancelUpload(requestId)
+    }
+
+    // ── 0438 Expo wrapper for the Rust-side fast-path decrypt (Android port,
+    // task 1683c; iOS reference BeebeebCryptoModule.swift:3780) ───────────────
+    //
+    // Rust slices the contiguous encrypted body, decrypts each chunk and
+    // appends plaintext to outputPath in one call — no per-chunk JSI
+    // round-trips. Flips isDecryptToFileReady() (src/lib/decrypt-to-file.ts).
+    AsyncFunction("decryptContiguousToFile") {
+      fileKey: ByteArray,
+      body: ByteArray,
+      chunkSize: Double,
+      outputPath: String,
+      promise: Promise,
+      ->
+      scope.launch {
+        try {
+          if (chunkSize <= 0.0) {
+            throw CodedException("ERR_CHUNK_SIZE", "Invalid chunk size", null)
+          }
+          // JS hands us an expo-file-system URI ("file:///data/.../preview/x.png").
+          // Rust does File::create() on whatever string it gets, and a file://
+          // URI is not a POSIX path — convert at the native boundary like every
+          // other file-taking function in this module (iOS does the same via
+          // fileURL(fromURI:); see the Swift comment on this function).
+          val resolvedPath = filePathFromUri(outputPath)
+          val written = withContext(Dispatchers.IO) {
+            uniffi.beebeeb_uniffi.decryptContiguousToFile(
+              fileKey = fileKey,
+              body = body,
+              chunkSize = chunkSize.toLong().toULong(),
+              outputPath = resolvedPath,
+            )
+          }
+          promise.resolve(written.toLong())
+        } catch (t: Throwable) {
+          rejectUnexpected(promise, t)
+        }
+      }
     }
 
     // ─────────────────────── pure-Kotlin surfaces (keep stub shapes) ─────────
