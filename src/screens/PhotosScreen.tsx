@@ -35,6 +35,16 @@ import { GlassCircle, GlassSurface, SCROLL_EDGE, ScrollEdgeBlur, glassMaterial, 
 import { ApiError, getAllImages, getFileIndex, friendlyError, trashFiles } from '../lib/api';
 import type { FileEntry } from '../lib/api';
 import { guessMimeType } from '../lib/media';
+// Task 1687c — the row-level Photos-tab media classification lives in
+// src/lib/photo-candidates.ts (unit-tested): an upload row that is already
+// a media candidate (`is_media`, decodable mime, or a thumbnail) appears in
+// the grid and pager the moment the row exists — `is_uploading` no longer
+// hides it. Folders and non-media rows stay out.
+import {
+  isVisibleMediaFile,
+  mediaMimeType,
+  photoCandidatesFromIndex,
+} from '../lib/photo-candidates';
 import { useBackup } from '../lib/backup-context';
 import { useCrypto } from '../lib/crypto-context';
 import { useNetworkStatus } from '../lib/useNetworkStatus';
@@ -86,77 +96,6 @@ import {
 // Helpers
 // ---------------------------------------------------------------------------
 
-type MediaEntry = FileEntry & {
-  category?: string | null;
-  file_category?: string | null;
-  media_type?: string | null;
-  name?: string | null;
-  file_name?: string | null;
-  mime?: string | null;
-};
-
-function stringField(value: unknown): string | null {
-  return typeof value === 'string' && value.trim() ? value.trim() : null;
-}
-
-function mediaCategory(entry: MediaEntry): string {
-  return (
-    stringField(entry.category) ??
-    stringField(entry.file_category) ??
-    stringField(entry.media_type) ??
-    ''
-  ).toLowerCase();
-}
-
-function filenameCandidates(entry: MediaEntry): string[] {
-  return [
-    stringField(entry.name),
-    stringField(entry.file_name),
-    stringField(entry.name_encrypted),
-  ].filter((value): value is string => !!value && !value.startsWith('{'));
-}
-
-function mediaMimeType(entry: FileEntry): string | null {
-  const mediaEntry = entry as MediaEntry;
-  const mime = (entry.mime_type ?? mediaEntry.mime ?? '').toLowerCase();
-  if (mime.startsWith('image/')) return entry.mime_type ?? mediaEntry.mime ?? 'image/jpeg';
-  if (mime.startsWith('video/')) return entry.mime_type ?? mediaEntry.mime ?? 'video/mp4';
-
-  const category = mediaCategory(mediaEntry);
-  if (category === 'image' || category === 'photo') return 'image/jpeg';
-  if (category === 'video') return 'video/mp4';
-
-  for (const name of filenameCandidates(mediaEntry)) {
-    const guessed = guessMimeType(name);
-    if (guessed?.startsWith('image/')) return guessed;
-    if (guessed?.startsWith('video/')) return guessed;
-  }
-
-  return entry.is_media ? 'image/jpeg' : null;
-}
-
-function isMediaFile(entry: FileEntry): boolean {
-  return mediaMimeType(entry) !== null;
-}
-
-function isEncryptedThumbnailCandidate(entry: FileEntry): boolean {
-  return !!entry.has_thumbnail && typeof entry.name_encrypted === 'string' && entry.name_encrypted.startsWith('{');
-}
-
-function isVisibleMediaFile(entry: FileEntry, decryptedMimeTypes: Record<string, string>): boolean {
-  const decryptedMime = decryptedMimeTypes[entry.id]?.toLowerCase();
-  if (decryptedMime) return decryptedMime.startsWith('image/') || decryptedMime.startsWith('video/');
-  return isMediaFile(entry) || isEncryptedThumbnailCandidate(entry);
-}
-
-function photoCandidatesFromIndex(files: FileEntry[]): FileEntry[] {
-  return files.filter((entry) => (
-    !entry.is_folder &&
-    !entry.is_uploading &&
-    (isMediaFile(entry) || isEncryptedThumbnailCandidate(entry))
-  ));
-}
-
 /**
  * Parse the decrypted metadata plaintext. The server may store the filename as
  * a bare string (legacy) or as `{"name":"...", "mime_type":"..."}` (current).
@@ -182,8 +121,12 @@ function parseDecryptedPhotoMetadata(plaintext: string): DecryptedPhotoMetadata 
 }
 
 function preparePhotoEntries(entries: FileEntry[]): FileEntry[] {
+  // Task 1687c — `is_uploading` no longer hides a media row here either:
+  // this sorts the output of photoCandidatesFromIndex for the grid/pager,
+  // and dropping uploading rows here would undo the candidate fix (a fresh
+  // photo would vanish again before this sort ran). Folders stay excluded.
   return entries
-    .filter((entry) => !entry.is_folder && !entry.is_uploading)
+    .filter((entry) => !entry.is_folder)
     .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
 }
 
