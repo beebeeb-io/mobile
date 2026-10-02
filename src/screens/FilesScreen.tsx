@@ -53,6 +53,8 @@ import {
   useTabBarBottomInset,
 } from '../components/glass';
 import { UploadActivityCard } from '../components/UploadActivityCard';
+// Task 1685 fix 4 — bounded queue for fire-and-forget thumbnail generation.
+import { thumbnailUploadQueue } from '../lib/upload-queue';
 import type { UploadActivityState, UploadStage } from '../components/UploadActivityCard';
 import { useToast } from '../lib/toast-context';
 import SkeletonRow from '../components/SkeletonRow';
@@ -2445,8 +2447,13 @@ export default function FilesScreen() {
       // across the whole vault from the very next keystroke.
       indexFile(uploaded.id, toSearchIndexEntry(uploaded, uploadFileName, currentFolder.id));
       // Fire-and-forget: generate + upload medium and large encrypted thumbnails for media files.
-      void generateAndUploadThumbnail(uploaded.id, asset.uri, asset.mimeType ?? null, getFileKeyBytes);
-      void generateAndUploadThumbnail(uploaded.id, asset.uri, asset.mimeType ?? null, getFileKeyBytes, 'large');
+      // Task 1685 fix 4 — bounded: both variants go through the shared 2-slot
+      // queue, so a burst of manual uploads can't stack unbounded full-image
+      // decodes (the bulk-crash class of task 1669).
+      void Promise.allSettled([
+        thumbnailUploadQueue.run(() => generateAndUploadThumbnail(uploaded.id, asset.uri, asset.mimeType ?? null, getFileKeyBytes)),
+        thumbnailUploadQueue.run(() => generateAndUploadThumbnail(uploaded.id, asset.uri, asset.mimeType ?? null, getFileKeyBytes, 'large')),
+      ]);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       donateSiriShortcut('upload');
       showToast({ type: 'success', message: `"${uploadFileName}" stored in ${finalLoc.city}` });
@@ -2576,11 +2583,14 @@ export default function FilesScreen() {
         setFiles((prev) => upsertFileEntry(prev, uploaded));
         indexFile(uploaded.id, toSearchIndexEntry(uploaded, name, currentFolder.id));
         // Fire-and-forget: image picker only returns images, so always thumbnail (medium + large).
+        // Task 1685 fix 4 — bounded: per-variant jobs in the shared 2-slot queue
+        // (≤2 concurrent full-image decodes process-wide; queued jobs are just
+        // closures, so a 64-asset batch can no longer stack 128 decodes).
         const copyUri = uploadUri;
         uploadUri = null;
         void Promise.allSettled([
-          generateAndUploadThumbnail(uploaded.id, copyUri, asset.mimeType ?? 'image/jpeg', getFileKeyBytes),
-          generateAndUploadThumbnail(uploaded.id, copyUri, asset.mimeType ?? 'image/jpeg', getFileKeyBytes, 'large'),
+          thumbnailUploadQueue.run(() => generateAndUploadThumbnail(uploaded.id, copyUri, asset.mimeType ?? 'image/jpeg', getFileKeyBytes)),
+          thumbnailUploadQueue.run(() => generateAndUploadThumbnail(uploaded.id, copyUri, asset.mimeType ?? 'image/jpeg', getFileKeyBytes, 'large')),
         ]).then(() => discardUploadCacheCopy(copyUri, asset.uri));
         successCount += 1;
       } catch (err) {
