@@ -34,6 +34,13 @@ import uniffi.beebeeb_uniffi.opaqueRegistrationFinish
 import uniffi.beebeeb_uniffi.opaqueRegistrationStart
 import uniffi.beebeeb_uniffi.recoverFromPhrase
 import uniffi.beebeeb_uniffi.x25519SharedSecret
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import java.io.File
+import java.io.FileOutputStream
+import java.io.RandomAccessFile
+import java.util.UUID
+import java.util.concurrent.TimeUnit
 
 // Stub helper — throws until a function is deliberately implemented. The
 // return type is Any? so the AsyncFunction lambdas do not infer R = Nothing
@@ -54,6 +61,14 @@ class BeebeebCryptoModule : Module() {
 
   private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
   private val handles = BeebeebCryptoHandleRegistry()
+
+  // ── preview download + decrypt state (task 1683b; iOS
+  // `previewDownloadCancellations` / `previewProgressSnapshots`,
+  // BeebeebCryptoModule.swift:1880–1883) ─────────────────────────────────────
+  private val previewDownloadLock = Any()
+  private val previewDownloadCancellations = HashMap<String, PreviewDownloadProgress>()
+  private val previewProgressLock = Any()
+  private val previewProgressSnapshots = HashMap<String, Map<String, Any?>>()
 
   @Volatile
   private var vaultInstance: AndroidKeyStoreVault? = null
@@ -202,6 +217,331 @@ class BeebeebCryptoModule : Module() {
     1 -> 1u
     else -> 1u
   }
+
+  // ───────────────────── preview download + decrypt (task 1683b) ─────────────
+  //
+  // Kotlin port of iOS `downloadAndDecryptFileNative`
+  // (BeebeebCryptoModule.swift:3992+). Streams the HTTP download incrementally
+  // to a temp encrypted file (never a full-memory buffer — the JS fallback's
+  // `arrayBuffer()` + expo/fetch ResponseSink peak was the 1683 OOM class),
+  // then decrypts chunk-wise from disk: a RandomAccessFile window of
+  // `nonce(12) || ct(pt+16)` (≤ chunkSize+28) per chunk → the existing UniFFI
+  // chunk decrypt → plaintext appended to the output stream. Peak memory is a
+  // few MB regardless of file size. JS receives only the output URI.
+  //
+  // Wire contract mirrors the JS loop (`src/lib/native-decrypt.ts:545–556`):
+  // `X-Chunk-Count` / `X-Chunk-Size` / `X-Original-Size` decide the framing,
+  // exactly like iOS (BeebeebCryptoModule.swift:4054–4070).
+
+  private fun storePreviewProgress(requestId: String, body: Map<String, Any?>) {
+    if (requestId.isEmpty()) return
+    synchronized(previewProgressLock) { previewProgressSnapshots[requestId] = body }
+  }
+
+  private fun readPreviewProgress(requestId: String): Map<String, Any?>? =
+    synchronized(previewProgressLock) { previewProgressSnapshots[requestId] }
+
+  private fun clearPreviewProgress(requestId: String) {
+    if (requestId.isEmpty()) return
+    synchronized(previewProgressLock) { previewProgressSnapshots.remove(requestId) }
+  }
+
+  private fun storePreviewDownloadCancellation(
+    progress: PreviewDownloadProgress,
+    requestId: String?,
+  ) {
+    if (requestId.isNullOrEmpty()) return
+    synchronized(previewDownloadLock) { previewDownloadCancellations[requestId] = progress }
+  }
+
+  private fun removePreviewDownloadCancellation(requestId: String?) {
+    if (requestId.isNullOrEmpty()) return
+    synchronized(previewDownloadLock) { previewDownloadCancellations.remove(requestId) }
+  }
+
+  private fun cancelPreviewDownload(requestId: String): Boolean {
+    val cancellation = synchronized(previewDownloadLock) {
+      previewDownloadCancellations[requestId]
+    }
+    cancellation?.cancel()
+    return cancellation != null
+  }
+
+  /** `file://…` URI → filesystem path (iOS `fileURL(fromURI:)` equivalent). */
+  private fun filePathFromUri(uri: String): String =
+    try {
+      android.net.Uri.parse(uri).path ?: uri.removePrefix("file://")
+    } catch (_: Exception) {
+      uri.removePrefix("file://")
+    }
+
+  /**
+   * The `X-Beebeeb-Client-Version` value — matches `mobileClientHeaders()`
+   * (`src/lib/api.ts:501–503`): the app's versionName (expoConfig version).
+   */
+  @Suppress("DEPRECATION")
+  private fun clientVersion(): String = try {
+    reactContext.packageManager
+      .getPackageInfo(reactContext.packageName, 0)
+      .versionName ?: "1.0.0"
+  } catch (_: Exception) {
+    "1.0.0"
+  }
+
+  /**
+   * Stream `GET {apiUrl}/api/v1/files/{fileId}/download` to a temp encrypted
+   * file, then chunk-decrypt it to `outputPath`. Runs on Dispatchers.IO.
+   * Blocking; all cancellation/progress flows through `progress`.
+   */
+  private fun downloadAndDecryptPreview(
+    handleId: Int,
+    apiUrl: String,
+    token: String,
+    fileId: String,
+    outputUri: String,
+    requestId: String?,
+  ): Map<String, Any?> {
+    val master = handles.get(handleId)
+    val outputPath = filePathFromUri(outputUri)
+    val outputFile = File(outputPath)
+    val outputParent = outputFile.parentFile
+      ?: throw CodedException("ERR_OUTPUT_PATH", "output path has no parent directory", null)
+    if (!outputParent.exists()) outputParent.mkdirs()
+
+    val progress = PreviewDownloadProgress(requestId, fileId) { body ->
+      storePreviewProgress(requestId ?: "", body)
+    }
+    storePreviewDownloadCancellation(progress, requestId)
+    try {
+      val tempDir = File(reactContext.cacheDir, "beebeeb-preview-$fileId-${UUID.randomUUID()}")
+      try {
+        tempDir.mkdirs()
+        val encFile = streamEncryptedDownload(progress, apiUrl, token, fileId, tempDir)
+        return decryptPreviewChunks(progress, master, fileId, encFile, outputFile)
+      } catch (t: Throwable) {
+        // Task 1593 parity — never leave a partial plaintext behind (JS deletes
+        // outputPath on native errors too; the .tmp sibling is swept here).
+        try { File("$outputPath.tmp").delete() } catch (_: Exception) {}
+        try { outputFile.delete() } catch (_: Exception) {}
+        progress.onError(t.message ?: t.javaClass.simpleName)
+        throw t
+      } finally {
+        try { tempDir.deleteRecursively() } catch (_: Exception) {}
+      }
+    } finally {
+      removePreviewDownloadCancellation(requestId)
+      clearPreviewProgress(requestId ?: "")
+    }
+  }
+
+  /**
+   * Stream the download body to `tempDir/encrypted.bin` incrementally. Never
+   * holds more than one buffer of body bytes in memory. Returns the temp file
+   * plus the framing resolved from its headers.
+   */
+  private fun streamEncryptedDownload(
+    progress: PreviewDownloadProgress,
+    apiUrl: String,
+    token: String,
+    fileId: String,
+    tempDir: File,
+  ): DownloadedEncryptedFile {
+    progress.emitProgress(stage = PreviewDownloadProgress.STAGE_DOWNLOADING, bytesDownloaded = 0, bytesTotal = 0)
+
+    // Pin the header values BEFORE streaming (OkHttp headers are only valid
+    // until the body is consumed).
+    val url = "${apiUrl.trimEnd('/')}/api/v1/files/$fileId/download"
+    val request = Request.Builder()
+      .url(url)
+      .header("Authorization", "Bearer $token")
+      .header("X-Beebeeb-Client", "mobile-android")
+      .header("X-Beebeeb-Client-Version", clientVersion())
+      .build()
+    val client = OkHttpClient.Builder()
+      .connectTimeout(30, TimeUnit.SECONDS)
+      // Core's own download client allows a 600 s total timeout; a slow body
+      // must not be cut off at OkHttp's 10 s default read timeout.
+      .readTimeout(600, TimeUnit.SECONDS)
+      .build()
+
+    val call = client.newCall(request)
+    progress.attachCall(call)
+    val response = call.execute()
+    response.use { resp ->
+      if (!resp.isSuccessful) {
+        throw CodedException(
+          "ERR_DOWNLOAD_HTTP",
+          "Download failed with HTTP ${resp.code}",
+          null,
+        )
+      }
+      val contentLength = resp.header("Content-Length")?.toLongOrNull() ?: 0L
+      val headerChunkCount = resp.header("X-Chunk-Count")?.toLongOrNull()
+      val headerOriginalSize = resp.header("X-Original-Size")?.toLongOrNull()
+      val headerChunkSize = resp.header("X-Chunk-Size")?.toLongOrNull()?.takeIf { it > 0 }
+
+      val body = resp.body ?: throw CodedException("ERR_DOWNLOAD_BODY", "Download response has no body", null)
+      val encFile = File(tempDir, "encrypted.bin")
+      var written = 0L
+      FileOutputStream(encFile).use { out ->
+        val buf = ByteArray(DOWNLOAD_BUFFER_SIZE)
+        val source = body.byteStream()
+        while (true) {
+          if (progress.isCancelled()) {
+            throw CodedException("ERR_CANCELLED", "Preview download cancelled", null)
+          }
+          val n = source.read(buf)
+          if (n < 0) break
+          if (n > 0) {
+            out.write(buf, 0, n)
+            written += n
+            progress.emitDownload(written, contentLength)
+          }
+        }
+        out.flush()
+      }
+
+      val encryptedSize = encFile.length()
+      // Chunk framing resolved EXACTLY like the JS loop
+      // (native-decrypt.ts:545–556) and iOS (BeebeebCryptoModule.swift:4054–4070):
+      // header values when present; legacy fallbacks otherwise.
+      val chunkCount = (headerChunkCount ?: 1L).toInt()
+      if (chunkCount <= 0) {
+        throw CodedException("ERR_CHUNK_COUNT", "Invalid chunk count", null)
+      }
+      val originalSize = headerOriginalSize ?: maxOf(0L, encryptedSize - CHUNK_OVERHEAD_BYTES)
+      if (originalSize <= 0L) {
+        throw CodedException("ERR_CHUNK_METADATA", "Invalid download size metadata", null)
+      }
+      val plaintextChunkSize = if (chunkCount <= 1) {
+        originalSize
+      } else {
+        headerChunkSize ?: DEFAULT_CHUNK_SIZE_BYTES
+      }
+      if (plaintextChunkSize <= 0L) {
+        throw CodedException("ERR_CHUNK_METADATA", "Invalid chunk size metadata", null)
+      }
+
+      progress.emitProgress(
+        stage = PreviewDownloadProgress.STAGE_DOWNLOADING,
+        bytesDownloaded = written,
+        bytesTotal = if (contentLength > 0) contentLength else written,
+      )
+      return DownloadedEncryptedFile(
+        file = encFile,
+        encryptedSize = encryptedSize,
+        chunkCount = chunkCount,
+        originalSize = originalSize,
+        plaintextChunkSize = plaintextChunkSize,
+      )
+    }
+  }
+
+  /**
+   * Chunk-wise decrypt from disk: a RandomAccessFile window of
+   * `nonce(12) || ct(plaintextSize+16)` per chunk (≤ chunkSize+28 bytes) →
+   * UniFFI chunk decrypt via the derived FileKeyHandle (key material stays in
+   * Rust) → plaintext appended to the output stream. Writes to a `.tmp`
+   * sibling and renames on success so a partial file can never be served from
+   * the preview cache (Rust `decrypt_chunks_to_file` semantics).
+   */
+  private fun decryptPreviewChunks(
+    progress: PreviewDownloadProgress,
+    master: uniffi.beebeeb_uniffi.MasterKeyHandle,
+    fileId: String,
+    downloaded: DownloadedEncryptedFile,
+    outputFile: File,
+  ): Map<String, Any?> {
+    val encFile = downloaded.file
+    val meta = downloaded
+    val tmpFile = File("${outputFile.absolutePath}.tmp")
+    try {
+      tmpFile.delete()
+    } catch (_: Exception) {}
+    progress.emitProgress(
+      stage = PreviewDownloadProgress.STAGE_DECRYPTING,
+      chunksCompleted = 0,
+      chunksTotal = meta.chunkCount,
+    )
+
+    val fileKey = master.deriveFileKey(fileIdBytes(fileId))
+    try {
+      RandomAccessFile(encFile, "r").use { raf ->
+        FileOutputStream(tmpFile).use { out ->
+          var chunkStart = 0L
+          for (index in 0 until meta.chunkCount) {
+            if (progress.isCancelled()) {
+              throw CodedException("ERR_CANCELLED", "Preview decrypt cancelled", null)
+            }
+            val isLast = index == meta.chunkCount - 1
+            val plaintextSize = if (meta.chunkCount == 1) {
+              meta.originalSize
+            } else if (isLast) {
+              meta.originalSize - meta.plaintextChunkSize * (meta.chunkCount - 1)
+            } else {
+              meta.plaintextChunkSize
+            }
+            if (plaintextSize <= 0L) {
+              throw CodedException("ERR_CHUNK_SIZE", "Invalid chunk size", null)
+            }
+            val windowSize = CHUNK_OVERHEAD_BYTES + plaintextSize
+            if (chunkStart + windowSize > meta.encryptedSize) {
+              throw CodedException(
+                "ERR_TRUNCATED",
+                "Encrypted payload ended before chunk $index",
+                null,
+              )
+            }
+            val window = ByteArray(windowSize.toInt())
+            raf.seek(chunkStart)
+            raf.readFully(window)
+            val nonce = window.copyOfRange(0, NONCE_BYTES)
+            val ciphertext = window.copyOfRange(NONCE_BYTES, window.size)
+            val plaintext = fileKey.decryptChunk(nonce, ciphertext)
+            out.write(plaintext)
+            chunkStart += windowSize
+            progress.onChunkDecrypted(index + 1, meta.chunkCount)
+          }
+          if (chunkStart != meta.encryptedSize) {
+            throw CodedException("ERR_TRAILING", "Encrypted payload has trailing bytes", null)
+          }
+          out.flush()
+        }
+      }
+      if (!tmpFile.renameTo(outputFile)) {
+        throw CodedException("ERR_RENAME", "Could not finalize decrypted output", null)
+      }
+    } finally {
+      fileKey.close()
+    }
+
+    progress.onComplete()
+    return mapOf(
+      "outputPath" to outputFile.absolutePath,
+      "outputUri" to android.net.Uri.fromFile(outputFile).toString(),
+      "plaintextSize" to outputFile.length(),
+      "chunksDecrypted" to meta.chunkCount,
+    )
+  }
+
+  /** The downloaded encrypted body + the framing resolved from its headers. */
+  private class DownloadedEncryptedFile(
+    val file: File,
+    val encryptedSize: Long,
+    val chunkCount: Int,
+    val originalSize: Long,
+    val plaintextChunkSize: Long,
+  )
+
+  companion object {
+    /** nonce(12) + GCM tag(16) per chunk on the wire. */
+    private const val NONCE_BYTES = 12
+    private const val CHUNK_OVERHEAD_BYTES = 28L
+    /** Legacy fallback chunk size when the server sends no X-Chunk-Size. */
+    private const val DEFAULT_CHUNK_SIZE_BYTES = 4L * 1024 * 1024
+    private const val DOWNLOAD_BUFFER_SIZE = 256 * 1024
+  }
+
 
   override fun definition() = ModuleDefinition {
     Name("BeebeebCrypto")
@@ -488,6 +828,36 @@ class BeebeebCryptoModule : Module() {
         "exportKey" to b64Encode(result.exportKey),
       )
     }
+
+    // ─────────────────── preview download + decrypt (task 1683b) ─────────────
+    //
+    // Contract-identical to iOS (BeebeebCryptoModule.swift:3992–4116). JS owns
+    // the request lifecycle (`downloadAndDecryptFileNative` in
+    // modules/beebeeb-crypto/src/BeebeebCrypto.ts:1119) and polls
+    // `getPreviewLoadProgress(requestId)` every 200 ms; native streams the
+    // download and decrypts chunk-wise from disk so plaintext/encrypted bytes
+    // never enter the JS heap (the 1683 OOM class).
+
+    AsyncFunction("downloadAndDecryptFileNative") { handleId: Int, apiUrl: String, token: String, fileId: String, outputUri: String, requestId: String?, promise: Promise ->
+      scope.launch {
+        try {
+          val result = withContext(Dispatchers.IO) {
+            downloadAndDecryptPreview(handleId, apiUrl, token, fileId, outputUri, requestId)
+          }
+          promise.resolve(result)
+        } catch (t: Throwable) {
+          rejectUnexpected(promise, t)
+        }
+      }
+    }
+
+    AsyncFunction("cancelDownloadAndDecryptFileNative") { requestId: String ->
+      cancelPreviewDownload(requestId)
+    }
+
+    // Function("getPreviewLoadProgress") { requestId: String ->
+    //   readPreviewProgress(requestId)
+    // }
 
     // ─────────────────────── pure-Kotlin surfaces (keep stub shapes) ─────────
 

@@ -32,6 +32,11 @@ dependencies {
   // no native dispatch library). >= 5.17.0 is required for 16 KB page sizes.
   implementation "net.java.dev.jna:jna:5.19.1@aar"
 
+  // task 1683b — streaming preview download (downloadAndDecryptFileNative).
+  // Version matches the RN 0.86.3 catalog pin (libs.versions.toml okhttp = 4.9.2)
+  // so no new version enters the dependency graph.
+  implementation "com.squareup.okhttp3:okhttp:4.9.2"
+
   // Generated bindings use androidx @RequiresApi annotations (UniFFI `android = true`)
   // and kotlinx-coroutines for async functions.
   implementation "androidx.annotation:annotation:1.9.1"
@@ -47,4 +52,8 @@ dependencies {
   androidTestImplementation "androidx.test:runner:1.6.2"
   androidTestImplementation "androidx.test.ext:junit:1.2.1"
   androidTestImplementation "junit:junit:4.13.2"
+
+  // task 1683b — JVM-side module-surface probe (fast definition() bisect loop;
+  // registration touches no Android framework APIs).
+  testImplementation "junit:junit:4.13.2"
 }
