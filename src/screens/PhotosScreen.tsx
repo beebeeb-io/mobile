@@ -2186,6 +2186,22 @@ export default function PhotosScreen() {
       profile: performanceStorageProfile,
     });
     const visibleIds = new Set(nativeIds);
+    // Task 1689 — scroll-state derivation for the native grid (iOS), which
+    // has no scroll event of its own (it defers every bridge dispatch to
+    // rest positions — see NativePhotosGridView.scrollViewDidScroll). The
+    // topmost photo in display order leaving the visible set means the grid
+    // is scrolled away from the top; it re-entering means back at rest.
+    // Same ref-guard shape as handleGridScroll so the state only flips on
+    // an actual change. Empty ids (or an empty grid) keep the last state —
+    // there is nothing under the header to make legible either way.
+    const topPhotoId = flatPhotos[0]?.id;
+    if (topPhotoId) {
+      const nextIsScrolled = !visibleIds.has(topPhotoId);
+      if (nextIsScrolled !== isScrolledRef.current) {
+        isScrolledRef.current = nextIsScrolled;
+        setIsScrolled(nextIsScrolled);
+      }
+    }
     const thumbnailIds = collectThumbnailIdsForProfile(
       flatPhotos,
       visibleIds,
@@ -2240,16 +2256,30 @@ export default function PhotosScreen() {
 
   return (
     <View style={[styles.root, { backgroundColor: c.paper }]}>
-      {/* 1322 — the grid bleeds edge-to-edge, so the blur is ALWAYS on rather
-          than gated on scroll the way Drive's is. Two reasons. Photos is
-          permanently full-bleed — there is no resting state where content
-          genuinely starts below the header, so a gate would only ever be
-          wrong. And `isScrolled` cannot drive it here: `handleGridScroll` is
-          wired to the FlatList, which is the non-iOS fallback, so on the
-          platform we ship `isScrolled` has been permanently false since the
-          native grid landed — the hairline border it used to gate was dead
-          too. Without the blur the title is unreadable over bright photos. */}
-      <ScrollEdgeBlur height={headerHeight || SCROLL_EDGE.chromeFallback} />
+      {/* 1322, AMENDED by task 1689 — the scroll-edge blur is gated on
+          `isScrolled` exactly like every sibling screen (Files 4545,
+          Settings 1826, Trash 386, Shared 737, Storage 403,
+          BackupInsights 629), because in light mode the 0.30-alpha light
+          tint renders as a visible "plain-band fade" over the grid's paper
+          background when nothing is scrolled — with `contentInsetTop` the
+          first row starts BELOW the header at rest, so the strip has
+          nothing to make legible. 1322's two original reasons for always
+          mounting it: (1) full-bleed content — still true WHILE scrolled
+          (the grid then runs under the header and the blur is doing real
+          work), and (2) `isScrolled` was permanently false on the shipping
+          platform because the native grid never reported scroll — solved
+          here by deriving scroll state from the native grid's own
+          `onVisiblePhotoIdsChange` events (the native grid deliberately
+          defers ALL bridge work to rest positions, so the blur switches
+          when the grid settles, not mid-drag): the topmost photo leaving
+          the visible set means scrolled; it re-entering means back at
+          rest. The FlatList fallback keeps its true `onScroll` derivation
+          (`handleGridScroll`). Trade-off recorded honestly: during the
+          drag itself (before the grid settles) the header rides over
+          unblurred content for the duration of the gesture — the same
+          deferred-side-effect trade the native grid already makes for
+          thumbnail prefetch. */}
+      {isScrolled ? <ScrollEdgeBlur height={headerHeight || SCROLL_EDGE.chromeFallback} /> : null}
       <View
         style={[styles.floatingHeader, { paddingTop: insets.top }]}
         onLayout={(e) => {
