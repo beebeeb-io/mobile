@@ -213,7 +213,7 @@ describe('Text: your own extension', () => {
   })
 
   test('.csv / .html / .svg are allowed but open in their own viewer, and say so', () => {
-    expect(checkTextExtension('csv')).toEqual({ ok: true, ext: 'csv', opensInEditor: false, note: '.csv opens in the table view, not the editor, on iPhone.' })
+    expect(checkTextExtension('csv')).toEqual({ ok: true, ext: 'csv', opensInEditor: false, note: '.csv opens in the table view, not the editor, on this device.' })
     expect(checkTextExtension('html')).toMatchObject({ ok: true, opensInEditor: false })
     expect(checkTextExtension('svg')).toMatchObject({ ok: true, opensInEditor: false })
   })

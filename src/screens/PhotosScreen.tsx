@@ -16,6 +16,7 @@ import {
 } from 'react-native';
 import * as FileSystem from 'expo-file-system/legacy';
 import { gatedPlaintextWrite } from '../lib/plaintext-gate';
+import { photosNoun } from '../lib/device-copy';
 import {
   PinchGestureHandler,
   State,
@@ -1491,7 +1492,7 @@ export default function PhotosScreen() {
     if (selectedPhotos.length === 0 || bulkAction) return;
     Alert.alert(
       'Delete from Beebeeb?',
-      `Delete ${selectedPhotos.length} selected ${selectedPhotos.length === 1 ? 'photo' : 'photos'} from your Beebeeb vault? This will not delete anything from iPhone Photos.`,
+      `Delete ${selectedPhotos.length} selected ${selectedPhotos.length === 1 ? 'photo' : 'photos'} from your Beebeeb vault? This will not delete anything from ${photosNoun()}.`,
       [
         { text: 'Cancel', style: 'cancel' },
         {

@@ -263,7 +263,7 @@ export function checkTextExtension(input: string): ExtensionCheck {
   }
   const elsewhere = TEXT_CATEGORIES_OPEN_ELSEWHERE[category]
   if (elsewhere && TEXT_EXTENSIONS_OPEN_ELSEWHERE.has(ext)) {
-    return { ok: true, ext, opensInEditor: false, note: `.${ext} opens in ${elsewhere}, not the editor, on iPhone.` }
+    return { ok: true, ext, opensInEditor: false, note: `.${ext} opens in ${elsewhere}, not the editor, on this device.` }
   }
   if (category === 'docx' || category === 'pptx' || category === 'spreadsheet') {
     return { ok: false, reason: refusedReason('office', ext) }

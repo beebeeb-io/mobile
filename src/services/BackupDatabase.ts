@@ -79,7 +79,7 @@ async function migrateLocalMissingRows(db: SQLite.SQLiteDatabase): Promise<void>
     UPDATE backup_assets
        SET status = 'local_missing',
            retry_count = 0,
-           error_message = 'Photo removed from this iPhone before backup completed'
+           error_message = 'Photo removed from this phone before backup completed'
      WHERE status != 'uploaded'
        AND (
          error_message LIKE '%Photo asset not found%'

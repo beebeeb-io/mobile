@@ -547,7 +547,7 @@ export default function BackupInsightsScreen() {
         `Uploaded: ${counts.uploaded ?? 0}`,
         `Pending delete: ${counts.pending_delete ?? 0}`,
         `Pending reupload: ${counts.pending_reupload ?? 0}`,
-        `Removed from iPhone: ${counts.local_missing ?? 0}`,
+        `Removed from ${Platform.OS === 'ios' ? 'iPhone' : 'this phone'}: ${counts.local_missing ?? 0}`,
         `Orphaned: ${counts.orphaned ?? 0}`,
         `Failed: ${Math.max(counts.failed ?? 0, failedAssets.length)}`,
         '',
@@ -930,7 +930,7 @@ export default function BackupInsightsScreen() {
                 <>
                   <Divider c={c} />
                   <StatRow
-                    label="Removed from iPhone"
+                    label={`Removed from ${Platform.OS === 'ios' ? 'iPhone' : 'this phone'}`}
                     value={`${localMissingCount} skipped`}
                     mono
                     c={c}
@@ -1099,7 +1099,7 @@ export default function BackupInsightsScreen() {
               >
                 <View style={{ paddingHorizontal: 12, paddingVertical: 11, gap: 6 }}>
                   <Text style={{ fontSize: 14, color: c.ink, fontWeight: '600' }}>
-                    {localMissingCount} photo{localMissingCount !== 1 ? 's' : ''} no longer on this iPhone
+                    {localMissingCount} photo{localMissingCount !== 1 ? 's' : ''} no longer on this {Platform.OS === 'ios' ? 'iPhone' : 'phone'}
                   </Text>
                   <Text style={{ fontSize: 12, lineHeight: 17, color: c.ink3 }}>
                     Usually this means the photo was deleted locally, iOS changed photo-library access, or the asset id became stale.

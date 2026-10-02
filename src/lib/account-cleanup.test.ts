@@ -86,6 +86,10 @@ mock.module('./api', () => ({
   fetchPhotoBackupIdentifierMap: async () => ({}),
   photoBackupClearAssociation: async () => {},
   clearCachedFileIndex: async () => {},
+  // Task 1683f — account-cleanup imports sweepAllUploadResumeStates from './api';
+  // a missing name surfaces as "Export named 'X' not found" against the REAL
+  // api.ts (bun checks named bindings against the real file even when mocked).
+  sweepAllUploadResumeStates: async () => {},
 }));
 
 const purgeCalls: string[] = [];

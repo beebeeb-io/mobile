@@ -381,7 +381,9 @@ export default function ThumbnailQualityScreen() {
                   </View>
 
                   <Text style={[styles.caption, { color: c.ink3 }]}>
-                    Photos backed up from this iPhone are eligible; originals offloaded to iCloud are fetched as needed. Runs 8 workers in parallel.
+                    {Platform.OS === 'ios'
+                      ? 'Photos backed up from this iPhone are eligible; originals offloaded to iCloud are fetched as needed. Runs 8 workers in parallel.'
+                      : 'Photos backed up from this phone are eligible. Runs 8 workers in parallel.'}
                   </Text>
 
                   <TouchableOpacity
