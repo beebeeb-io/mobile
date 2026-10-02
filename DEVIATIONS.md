@@ -687,3 +687,28 @@ links; production output is unchanged.
 
 **Why:** the ruling is dated after the artefact and explicitly supersedes it
 (precedent: task 1357, "a verbal ruling from Guus supersedes the artefact").
+
+## Task 1704 slice 3 (mobile) — RecoveryUnlockScreen heading: canonical "Vault locked"
+
+**Design:** no design artefact pins this screen's copy — `design/hifi/*.jsx`
+and `design/ios26-canvas/` contain no RecoveryUnlock heading/subheading entry.
+
+**Ruling (1684/1693, decision D-2026-10-02 option A — "net zoals in iOS"):
+** the locked vault state carries the canonical title `Vault locked` with a
+brief honest explanation and NO password form (1693 shipped exactly that on
+web: "canonical title `Vault locked` (iOS parity)"). Task 1704 slice 3's
+brief requires the post-reset / keychain-empty landing to use that same
+language and offer the 12-word phrase unlock.
+
+**What shipped (2026-10-02):** `RecoveryUnlockScreen`'s heading changed from
+"Unlock your vault" to the canonical `Vault locked`, and its subheading now
+states the two-tier story honestly (password unlocks the account; the
+12-word recovery phrase unlocks the vault). Copy lives in
+`src/lib/vault-locked-copy.ts`, pinned by `src/lib/vault-locked-copy.test.ts`
+(source-scan precedent: `sheet-sweep.test.ts`). Layout and styles unchanged;
+the screen's phrase input, retryable error banner and "Use another account"
+escape are untouched.
+
+**Why:** a Guus ruling supersedes the (absent) artefact (precedent: task
+1357); recorded here because the shipped language intentionally diverges
+from the screen's previous heading.
