@@ -660,3 +660,30 @@ recorded decision, recorded here per the same convention:
   unblurred content for the duration of the gesture — the same deferred-side-effect trade the
   native grid already makes for thumbnail prefetch. At rest (the bug state) the fade is gone in
   both schemes; while scrolled, the blur does exactly what 1322 wanted.
+
+## Task 1690 — share sheet: always ONE full link (split presentation removed)
+
+**Design:** the share-flow artefacts show the share result as two separate
+items — `design/hifi/flows-upload-share.jsx` ("Share B — Decryption key
+separate from URL", a bare URL plus a "Decryption key · send through a
+different channel" box) and web's `hifi-upload-share.jsx`. The shipped share
+sheet additionally badged the key box "SEND SEPARATELY" and copied the URL
+and the key as two separate clipboard items.
+
+**Ruling (Guus, verbatim, 2026-10-02):**
+> "Met delen voortaan altijd full link, er staat nu dat het los is maar is
+> eigenlijk alsnog 1 geheel. Maak er gewoon 1 geheel van."
+
+**What shipped instead (2026-10-02):** the share sheet always presents and
+copies ONE complete link — `/s/<token>#key=<K_c>` built by the new
+`src/lib/share-full-link.ts` `buildFullShareLink()`. The bare-URL + raw-key
+state pair, the "SEND SEPARATELY" badge, the 'link'/'key' copy targets and
+the "separate channels" copy are removed. The key still travels only in the
+URL fragment (1531 semantics untouched). The share link base now comes from
+`getWebAppUrl()` (EXPO_PUBLIC_APP_URL / extra.appUrl, derived from the API
+URL otherwise) — the same source LoginScreen/NeedsPlanScreen use — instead of
+a hardcoded production origin, so local QA builds produce localhost:5173
+links; production output is unchanged.
+
+**Why:** the ruling is dated after the artefact and explicitly supersedes it
+(precedent: task 1357, "a verbal ruling from Guus supersedes the artefact").
