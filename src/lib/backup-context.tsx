@@ -540,6 +540,58 @@ export async function runAccountRefusalPollTick(
   return { resumed: true, shouldStopPolling: true };
 }
 
+/**
+ * Task 1686 (iOS idle heat) — field-by-field equality over the projected
+ * BackupProgress shape `applyNativeProgress` mirrors into state. The 5 s
+ * native poll previously called setState unconditionally, so an IDLE app
+ * re-rendered the tree ~12×/minute forever; with this guard a tick that
+ * read the same progress as the previous one becomes a no-op. Every
+ * mirrored field participates. `undefined` vs `null` vs a concrete value
+ * are pairwise distinct (`??` cannot express that — use explicit
+ * has/value checks): an old native build omitting a field, an explicitly
+ * cleared reason, and a set reason are three different mirror states, and
+ * collapsing any two of them would swallow a real transition.
+ */
+export function nativeProgressEquals(a: NativeBackupProgress, b: NativeBackupProgress): boolean {
+  // Preserve the undefined/null distinction: `undefined` (field absent —
+  // old native build) vs `null` (explicitly cleared) are different mirror
+  // states, so map undefined to a sentinel instead of null.
+  const MISSING = Symbol('missing');
+  const opt = <T,>(v: T | undefined): T | null | symbol => (v === undefined ? MISSING : v);
+  return (
+    a.total === b.total &&
+    a.completed === b.completed &&
+    a.inProgress === b.inProgress &&
+    opt(a.pending) === opt(b.pending) &&
+    opt(a.waitingToEncrypt) === opt(b.waitingToEncrypt) &&
+    opt(a.encryptedPendingUpload) === opt(b.encryptedPendingUpload) &&
+    opt(a.uploading) === opt(b.uploading) &&
+    opt(a.failed) === opt(b.failed) &&
+    opt(a.state) === opt(b.state) &&
+    opt(a.reason) === opt(b.reason) &&
+    opt(a.lastBackupAt) === opt(b.lastBackupAt) &&
+    opt(a.accountMismatchReason) === opt(b.accountMismatchReason) &&
+    opt(a.accountMismatchGeneration) === opt(b.accountMismatchGeneration) &&
+    opt(a.ownerUnconfirmedReason) === opt(b.ownerUnconfirmedReason) &&
+    opt(a.accountRefusalReason) === opt(b.accountRefusalReason)
+  );
+}
+
+/**
+ * Task 1686 (iOS idle heat) — whether the backup-progress poll (5 s) and the
+ * account-refusal poll (15 s) should pause for this AppState. 'inactive'
+ * (iOS app switcher / lock screen / call banner) counts as backgrounded:
+ * the screen is not usable, so neither live progress nor timely refusals
+ * matter until foreground. RN's other states ('extension', legacy 'unknown')
+ * pause too — anything that is not 'active'. An unrecognized/missing value
+ * fails OPEN (never pauses) — a missed 'active' event must never leave live
+ * progress frozen. The account-refusal poll's 15 s FOREGROUND semantics are
+ * unchanged — this only adds the background pause.
+ */
+export function shouldPauseBackupPolls(state: string | undefined | null): boolean {
+  return typeof state === 'string' && state !== 'active';
+}
+
 export function BackupProvider({ children }: { children: React.ReactNode }) {
   const { isUnlocked } = useCrypto();
   const { user } = useAuth();
@@ -569,6 +621,11 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
   // mirroring as the two above (the native poll is the only writer).
   const [accountRefusalReason, setAccountRefusalReason] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Task 1686 (iOS idle heat) — the current RN AppState as a plain ref, read
+  // by both polls at tick time (shouldPauseBackupPolls) and written by the
+  // listener effect below. Defaults 'active': fail open until the first
+  // event says otherwise.
+  const appStateRef = useRef<string>('active');
   const includeVideosRef = useRef(true);
   // Task 1599 followups round 3 (P1): the running fold `reduceAccountMismatchPoll`
   // carries across poll ticks for THIS mount — reset to
@@ -576,6 +633,11 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
   // every fresh `BackupProvider` instance, which is exactly the per-mount
   // scoping the sign-in lockout fix needs (see that function's doc comment).
   const accountMismatchPollStateRef = useRef<AccountMismatchPollState>(INITIAL_ACCOUNT_MISMATCH_POLL_STATE);
+  // Task 1686 (iOS idle heat) — the last RAW native progress payload
+  // applyNativeProgress saw, for the equality early-return (an unchanged 5 s
+  // poll tick must not re-render the tree). Ref, not state: it is a
+  // comparison cache, never rendered directly.
+  const lastRawProgressRef = useRef<NativeBackupProgress | null>(null);
   // Task 1037: a needs_plan / lapsed account is refused every upload (409
   // plan_required / account_lapsed). Keep the native engines OFF while that
   // holds: they run on their own (including BGTask runs), and would otherwise
@@ -590,6 +652,13 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
   accountBlockedRef.current = accountBlockedMessage;
 
   const applyNativeProgress = useCallback((p: NativeBackupProgress) => {
+    // Task 1686 (iOS idle heat) — equality early-return. The 5 s poll used
+    // to setState unconditionally: an idle app re-rendered the whole tree
+    // ~12×/minute with byte-identical progress. A tick that read the same
+    // raw native payload as the last one (the overwhelmingly common case
+    // while idle/foregrounded) now does nothing at all.
+    if (lastRawProgressRef.current && nativeProgressEquals(lastRawProgressRef.current, p)) return;
+    lastRawProgressRef.current = p;
     const pending = p.pending ?? Math.max(0, p.total - p.completed - p.inProgress);
     const nativeState = p.state ?? (p.inProgress > 0 ? 'uploading' : pending > 0 ? 'idle' : 'complete');
     setBackupProgress({
@@ -841,6 +910,14 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
 
     const tick = async () => {
       if (stopped) return;
+      // Task 1686 (iOS idle heat) — skip network work while the app is
+      // backgrounded/locked ('background' and 'inactive'). The foreground
+      // 15 s semantics are unchanged (the interval itself keeps running so
+      // the resume path and the effect contract stay identical); only the
+      // per-tick fetch is gated on visibility. A tick that returns early
+      // must NOT stop the poll — the account may unblock while backgrounded
+      // and the next foreground tick (below) catches it immediately.
+      if (shouldPauseBackupPolls(appStateRef.current)) return;
       const result = await runAccountRefusalPollTick({
         fetchSubscription: getSubscription,
         getIsPhotoBackupEnabled: () => isPhotoBackupEnabled,
@@ -874,6 +951,10 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
     void tick();
     intervalId = setInterval(() => { void tick(); }, ACCOUNT_REFUSAL_POLL_MS);
     const refusalSub = AppState.addEventListener('change', (next) => {
+      // Task 1686: on foreground, refresh appStateRef FIRST so the next tick
+      // is unpaused, then tick immediately (preserves the pre-existing
+      // foreground-refresh behavior for active users).
+      appStateRef.current = next;
       if (next === 'active') void tick();
     });
     return () => {
@@ -899,11 +980,21 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
-  // Poll native backup progress every 5 s when photo backup is enabled
+  // Poll native backup progress every 5 s when photo backup is enabled.
+  // Task 1686 (iOS idle heat): the poll no longer does work (or setState)
+  // while the app is backgrounded/locked — RN timers keep (intermittently)
+  // firing in the background, so without the gate the poll read native
+  // progress all night. The interval keeps running; only the per-tick work
+  // is visibility-gated, and the existing foreground listener below already
+  // refreshes immediately on 'active', so live progress for an active user
+  // is unchanged.
   useEffect(() => {
     if (!isPhotoBackupEnabled || Platform.OS === 'web') return;
 
     const poll = async () => {
+      // Task 1686 — visibility gate. 'inactive' (app switcher / lock screen)
+      // counts as backgrounded. Fail open on anything unrecognized.
+      if (shouldPauseBackupPolls(appStateRef.current)) return;
       try {
         await refreshNativeProgress();
       } catch {
@@ -917,6 +1008,19 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
       if (pollRef.current) clearInterval(pollRef.current);
     };
   }, [isPhotoBackupEnabled, refreshNativeProgress]);
+
+  // Task 1686 — track AppState for both polls. A ref (not state): polls read
+  // it at tick time without re-mounting the effects, and the listeners above
+  // also write it on 'change'. Synced from AppState.currentState at mount so
+  // a provider mounted while already backgrounded starts paused.
+  useEffect(() => {
+    if (Platform.OS === 'web') return;
+    appStateRef.current = AppState.currentState;
+    const sub = AppState.addEventListener('change', (next) => {
+      appStateRef.current = next;
+    });
+    return () => sub.remove();
+  }, []);
 
   // Native state can legitimately say "open Beebeeb" after a background handoff.
   // If the user has already foregrounded the app, refresh immediately so Settings

@@ -11,7 +11,7 @@
  * Protocol: docs/superpowers/specs/2026-05-02-crdt-sync-engine-design.md
  */
 
-import { Platform } from 'react-native';
+import { AppState, Platform } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
 // react-native-sse exports a class that mirrors the web EventSource API.
 // Cast to a minimal interface so we can swap in window.EventSource on web.
@@ -35,8 +35,15 @@ import { getDeviceId } from './device-identity';
 const LAST_SEQ_KEY = 'bb_sync_last_seq';
 const PENDING_OPS_KEY = 'bb_sync_pending_ops';
 
-const RECONNECT_DELAY_MS = 1500;
-const RECONNECT_MAX_DELAY_MS = 30_000;
+// Task 1686 — exported for the reconnect-property tests (RED-first); the
+// values are unchanged from the pre-1686 ladder.
+export const RECONNECT_DELAY_MS = 1500;
+export const RECONNECT_MAX_DELAY_MS = 30_000;
+// Task 1686 — deterministic ±20% band around the exponential curve. The band
+// de-synchronizes reconnect storms across devices (thundering herd) while
+// keeping every delay within [curve × 0.8, curve × 1.2] — never below 80% of
+// the honest backoff, and the cap is asserted against the top of the band.
+const RECONNECT_JITTER = 0.2;
 
 // Debounce window for persisting the live tree to the on-disk index cache (and
 // the iOS File Provider cache) after remote ops. A burst of ops (e.g. catch-up
@@ -178,6 +185,66 @@ function createEventSource(url: string, headers: Record<string, string>): ESLike
 }
 
 // ---------------------------------------------------------------------------
+// Task 1686 — app-state pause for the reconnect loop.
+//
+// RN's setTimeout keeps firing while the app is backgrounded (iOS suspends
+// the JS clock only some of the time; timers fire in bursts on wake), so a
+// signed-in app in a pocket re-issued stream-token POSTs + SSE handshakes
+// forever. `setSyncClientAppState` records the current AppState; every
+// reconnect schedule is skipped while it is `background`/`inactive`, and the
+// single most recent deferred reconnect is replayed on foreground. The
+// module-level registry is deliberate: SyncClient instances are created per
+// signed-in user by sync-context.tsx, but the app has exactly one UI app
+// state.
+// ---------------------------------------------------------------------------
+
+type SyncClientAppState = 'active' | 'backgrounded';
+
+let syncClientAppState: SyncClientAppState = 'active';
+const foregroundResumeListeners = new Set<() => void>();
+
+/**
+ * Test/AppState seam — feed the current RN AppState here. RN's AppStateStatus
+ * also covers 'extension' (and older 'unknown') — anything that is not
+ * 'active' counts as backgrounded for the pause decision. 'inactive' is the
+ * iOS app switcher / control center / incoming-call banner: the screen is
+ * not really usable, so the stream is not needed.
+ */
+export function setSyncClientAppState(state: string): void {
+  const wasBackgrounded = syncClientAppState !== 'active';
+  syncClientAppState = state === 'active' ? 'active' : 'backgrounded';
+  if (wasBackgrounded && syncClientAppState === 'active') {
+    const listeners = [...foregroundResumeListeners];
+    foregroundResumeListeners.clear();
+    for (const fn of listeners) {
+      try {
+        fn();
+      } catch (err) {
+        console.error('[SyncClient] foreground-resume listener error:', err);
+      }
+    }
+  }
+}
+
+function isSyncClientBackgrounded(): boolean {
+  return syncClientAppState !== 'active';
+}
+
+/**
+ * Reconnect delay for attempt `n` (0-based): the existing exponential curve
+ * (1.5 s × 2ⁿ) drawn into a ±20% band — [curve × 0.8, curve × 1.2], still
+ * capped so the TOP of the band never exceeds
+ * `RECONNECT_MAX_DELAY_MS × 1.2`. Extracted as a pure function so the
+ * cap/jitter/monotonicity properties are unit-testable (task 1686 RED-first).
+ * `random` is injectable; production passes Math.random().
+ */
+export function reconnectDelayMs(attempts: number, random: () => number = Math.random): number {
+  const curve = Math.min(RECONNECT_DELAY_MS * 2 ** Math.max(0, attempts), RECONNECT_MAX_DELAY_MS);
+  const jitter = 1 - RECONNECT_JITTER + random() * 2 * RECONNECT_JITTER;
+  return Math.max(1, Math.floor(curve * jitter));
+}
+
+// ---------------------------------------------------------------------------
 // SyncClient
 // ---------------------------------------------------------------------------
 
@@ -200,6 +267,20 @@ export class SyncClient {
   private status: ConnectionStatus = 'idle';
   private reconnectAttempts = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  // Task 1686 — reconnect scheduled while the app was backgrounded. The timer
+  // is cleared immediately; this flag remembers that a reconnect was DUE so
+  // the foreground hook can replay exactly one reconnect (never one per
+  // skipped background tick).
+  private reconnectDeferredWhileBackgrounded = false;
+  // Task 1686 — the AppState listener registered in start(); removed in stop()
+  // so a stopped client never leaks it.
+  private appStateSub: { remove(): void } | null = null;
+  // Task 1686 — true once openStream() has fetched a stream token for the
+  // current reconnect cycle without the stream staying up. A reconnect whose
+  // stream dies before any op arrived (i.e. a failed/flapping handshake)
+  // keeps the attempts counter climbing instead of resetting, so a flapping
+  // stream backs off instead of spinning at the 1.5 s floor.
+  private lastOpenAttemptGotStreamToken = false;
   private listeners = new Set<Listener>();
   private started = false;
   private destroyed = false;
@@ -402,6 +483,26 @@ export class SyncClient {
 
       void this.openStream();
 
+      // Task 1686 — replay a reconnect that came due while the app was
+      // backgrounded. iOS delivers AppState 'change' on foreground even for
+      // the single-scene app (see the UIScene note in repos/mobile/CLAUDE.md:
+      // RCTAppState observes UIApplication-level notifications, which UIKit
+      // still posts), so this is the resume path for the paused loop. Exactly
+      // one reconnect per foreground — never one per skipped tick.
+      setSyncClientAppState(AppState.currentState);
+      this.appStateSub = AppState.addEventListener('change', (next) => {
+        setSyncClientAppState(next);
+        if (next === 'active' && this.reconnectDeferredWhileBackgrounded) {
+          this.reconnectDeferredWhileBackgrounded = false;
+          if (!this.reconnectTimer) {
+            this.reconnectTimer = setTimeout(() => {
+              this.reconnectTimer = null;
+              void this.reconnect();
+            }, 0);
+          }
+        }
+      });
+
       // Flush any locally-queued ops from a prior session.
       if (this.pendingOps.length > 0) {
         void this.flushPending();
@@ -421,6 +522,11 @@ export class SyncClient {
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
+    }
+    this.reconnectDeferredWhileBackgrounded = false;
+    if (this.appStateSub) {
+      this.appStateSub.remove();
+      this.appStateSub = null;
     }
     if (this.cachePersistTimer) {
       clearTimeout(this.cachePersistTimer);
@@ -471,7 +577,14 @@ export class SyncClient {
     try {
       const tokenResp = await getStreamToken();
       token = tokenResp.stream_token;
+      // Task 1686 — the stream-token round-trip SUCCEEDED for this attempt.
+      // If the stream now dies without ever firing 'open' (the server killed
+      // it, a proxy dropped it), that is a failed handshake — the next
+      // scheduleReconnect must keep the backoff ladder climbing instead of
+      // resetting it (see the flapping-connection guard there).
+      this.lastOpenAttemptGotStreamToken = true;
     } catch (err) {
+      this.lastOpenAttemptGotStreamToken = false;
       this.scheduleReconnect();
       this.emit({ type: 'error', error: err instanceof Error ? err : new Error(String(err)) });
       return;
@@ -491,7 +604,12 @@ export class SyncClient {
     this.eventSource = es;
 
     es.addEventListener('open', () => {
+      // Task 1686 — the handshake was accepted AND the stream came up: a
+      // long-lived connection from here on resets the ladder (a later drop
+      // after real connectivity is a NEW outage, not a continuation). Also
+      // clears the flapping guard: this stream delivered.
       this.reconnectAttempts = 0;
+      this.lastOpenAttemptGotStreamToken = false;
       this.setStatus('connected');
     });
 
@@ -527,12 +645,42 @@ export class SyncClient {
   private scheduleReconnect(): void {
     if (this.destroyed) return;
     if (this.reconnectTimer) return;
-    this.setStatus('reconnecting');
-    const delay = Math.min(
-      RECONNECT_DELAY_MS * 2 ** this.reconnectAttempts,
-      RECONNECT_MAX_DELAY_MS,
-    );
+
+    // Task 1686 — flapping-connection guard. The old code reset
+    // `reconnectAttempts = 0` on EVERY SSE 'open' event, but react-native-sse
+    // fires 'open' as soon as the HTTP response headers arrive — the server
+    // then kills the stream a moment later (expired token, proxy timeout,
+    // 401 after a logout race) and the error handler loops back here. Result:
+    // the backoff never left its 1.5 s floor — each cycle costing a stream-
+    // token POST + an SSE GET + TLS — indefinitely, which is exactly the
+    // busy-loop class task 1686 exists for. If the stream died WITHOUT
+    // delivering anything since our last token fetch, treat this failure as
+    // a continuation of the same outage and keep the backoff climbing.
+    if (this.lastOpenAttemptGotStreamToken) {
+      // Stream died before proving health — keep backing off.
+    } else {
+      // No token was fetched since the last real success/reset — this is a
+      // genuine attempt start, reset the ladder.
+      this.reconnectAttempts = 0;
+    }
+    this.lastOpenAttemptGotStreamToken = false;
     this.reconnectAttempts += 1;
+
+    const delay = reconnectDelayMs(this.reconnectAttempts - 1);
+
+    // Task 1686 — pause the whole loop while the app is backgrounded/locked.
+    // RN timers keep (intermittently) firing in the background, so without
+    // this the signed-in app in a pocket kept issuing stream-token POSTs +
+    // SSE handshakes all night. The reconnect is remembered (one flag, not
+    // one per tick) and replayed on foreground via the AppState listener
+    // registered in start().
+    if (isSyncClientBackgrounded()) {
+      this.reconnectDeferredWhileBackgrounded = true;
+      this.setStatus('reconnecting');
+      return;
+    }
+
+    this.setStatus('reconnecting');
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       void this.reconnect();
