@@ -447,7 +447,7 @@ async function decryptToTempFileUnshared(
         handleResolvedNatively: masterKeyHandleId == null,
       });
       const result = await downloadAndDecryptFileNative(
-        masterKeyHandleId,
+        masterKeyHandleId ?? null,
         getApiUrl(),
         token,
         fileId,

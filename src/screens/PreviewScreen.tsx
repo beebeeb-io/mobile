@@ -435,6 +435,7 @@ interface PhotoPageEntry {
 type PhotoLoadStage = 'checking' | 'downloading' | 'decrypting' | 'caching';
 type FileKeyLoader = (fileId: string) => Promise<Uint8Array>;
 
+type MasterKeyHandleLoader = () => number;
 type ImagePreviewKind = 'thumbnail' | 'large' | 'original';
 
 const NORMAL_PREVIEW_THUMB_SIZE = 768;
@@ -865,7 +866,7 @@ async function loadDecryptedPhotoForViewer(
       ext,
       entry.size_bytes,
       entry.chunk_count,
-      await waitForMasterKeyHandle(getMasterKeyHandleId, signal),
+      getMasterKeyHandleId() ?? null,
       { onProgress, signal },
     );
     if (signal?.aborted) {
@@ -950,7 +951,7 @@ async function loadDecryptedRawSourceForViewer(
     ext,
     entry.size_bytes,
     entry.chunk_count,
-    await waitForMasterKeyHandle(getMasterKeyHandleId, signal),
+    getMasterKeyHandleId() ?? null,
     { onProgress, signal },
   );
   throwIfPreviewAborted(signal);

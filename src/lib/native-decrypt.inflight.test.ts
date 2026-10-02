@@ -34,6 +34,10 @@ mock.module('expo-file-system/legacy', () => ({
 type Pending = { outputPath: string; signal?: AbortSignal; finish: () => void; fail: (e) => void };
 const nativeCalls: Pending[] = [];
 let ignoreAbort = false;
+// Task 1683h — when set, the native stub rejects with this error at once
+// (simulating a legacy build whose null-handle argument conversion fails →
+// the caller treats it as not-available → the 1683g gated fallback runs).
+let nativeFailError: Error | null = null;
 mock.module('../../modules/beebeeb-crypto', () => ({
   isNativeAvailable: true,
   // task 1683d — the offline streaming decrypt lives behind a typeof guard in
@@ -44,6 +48,10 @@ mock.module('../../modules/beebeeb-crypto', () => ({
   },
   downloadAndDecryptFileNative: (_h, _api, _tok, _id, outputPath, opts) =>
     new Promise((resolve, reject) => {
+      if (nativeFailError) {
+        reject(nativeFailError);
+        return;
+      }
       // Native writes progressively: a partial, non-empty file exists at once.
       files.set(outputPath, 100);
       const entry = {
@@ -96,6 +104,7 @@ beforeEach(() => {
   nativeCalls.length = 0;
   readDirHook = null;
   ignoreAbort = false;
+  nativeFailError = null;
   plaintextGate.open(); // a previous test's purge leaves it closed
 });
 
@@ -293,6 +302,10 @@ describe('task 1683g — the JS-fetch fallback refuses oversized files (the 800 
     // The relaunch-tap race landed here with a null master-key handle + a
     // fileKey getter; the old path fetched the whole body into the Java heap
     // and OOMed the app (384 MB largeHeap, three crashes 2026-10-02).
+    // 1683h routing: null handle → the native branch STILL runs; simulate a
+    // legacy native build whose null-handle argument conversion fails → the
+    // not-available path → the 1683g gated fallback → the size gate refuses.
+    nativeFailError = new Error('downloadAndDecryptFileNative is not available in this native build');
     const p = nd.decryptToTempFile(
       'big',
       () => new Uint8Array(32),
@@ -305,6 +318,7 @@ describe('task 1683g — the JS-fetch fallback refuses oversized files (the 800 
   });
 
   test('a small file still takes the fallback path (the gate must not intercept it)', async () => {
+    nativeFailError = new Error('downloadAndDecryptFileNative is not available in this native build');
     const p = nd.decryptToTempFile(
       'small',
       () => new Uint8Array(32),
@@ -318,6 +332,7 @@ describe('task 1683g — the JS-fetch fallback refuses oversized files (the 800 
   });
 
   test('an UNKNOWN size refuses too (fail-closed — the 20:32 retry OOM had a null sizeBytes)', async () => {
+    nativeFailError = new Error('downloadAndDecryptFileNative is not available in this native build');
     const p = nd.decryptToTempFile(
       'unknown-size',
       () => new Uint8Array(32),
