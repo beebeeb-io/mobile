@@ -287,3 +287,33 @@ describe('task 1593 round 3 — #141 Codex P1: no replacement decrypt behind the
     expect(await p).toBe('file:///cache/preview/r3.pdf');
   });
 });
+
+describe('task 1683g — the JS-fetch fallback refuses oversized files (the 800 MB video OOM)', () => {
+  test('a >100 MB file with a null handle rejects with the recoverable error BEFORE any fetch', async () => {
+    // The relaunch-tap race landed here with a null master-key handle + a
+    // fileKey getter; the old path fetched the whole body into the Java heap
+    // and OOMed the app (384 MB largeHeap, three crashes 2026-10-02).
+    const p = nd.decryptToTempFile(
+      'big',
+      () => new Uint8Array(32),
+      'mp4',
+      200 * 1024 * 1024,
+      50,
+      null,
+    );
+    await expect(p).rejects.toThrow('too large to open');
+  });
+
+  test('a small file still takes the fallback path (the gate must not intercept it)', async () => {
+    const p = nd.decryptToTempFile(
+      'small',
+      () => new Uint8Array(32),
+      'pdf',
+      5000,
+      1,
+      null,
+    );
+    // The rateLimitedFetch mock's marker error proves the gate let it through.
+    await expect(p).rejects.toThrow('no js download in this test');
+  });
+});

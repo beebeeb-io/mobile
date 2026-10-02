@@ -494,6 +494,21 @@ async function decryptToTempFileUnshared(
   // Fallback for older native builds: download the full encrypted blob through
   // JS, decrypt through the chunk bridge, and write base64. New iOS builds
   // should use the native handle path above.
+  //
+  // Task 1683g — this path buffers the WHOLE body in the Java heap (expo fetch
+  // → arrayBuffer): Guus's 800 MB video OOMed the 384 MB largeHeap dead
+  // (2026-10-02, three crashes: 19:29/20:08/20:11 — the last two on relaunch
+  // taps that raced the keychain auto-unlock, landing here with a null handle
+  // + a fileKey getter). Refuse beyond the bound — recoverable error, not a
+  // crash; a retry after the unlock takes the native streaming path.
+  const FALLBACK_MAX_BYTES = 100 * 1024 * 1024;
+  if (sizeBytes != null && sizeBytes > FALLBACK_MAX_BYTES) {
+    recordRuntimeTrace('preview.decrypt.js_download.refused_too_large', {
+      fileId,
+      sizeBytes,
+    });
+    throw new Error('This file is too large to open right now. Please wait a moment and try again.');
+  }
   let res: Response;
   try {
     recordRuntimeTrace('preview.decrypt.js_download.request', { fileId });
@@ -529,6 +544,15 @@ async function decryptToTempFileUnshared(
   }
 
   const contentLength = responseHeaderInt(res.headers, 'Content-Length');
+  // Task 1683g belt-and-braces: a size not known from the manifest still gets
+  // gated here — an oversized body must never reach arrayBuffer on this path.
+  if (contentLength != null && contentLength > FALLBACK_MAX_BYTES) {
+    recordRuntimeTrace('preview.decrypt.js_download.refused_too_large', {
+      fileId,
+      sizeBytes: contentLength,
+    });
+    throw new Error('This file is too large to open right now. Please wait a moment and try again.');
+  }
   options.onProgress?.({
     requestId: '',
     fileId,
