@@ -45,6 +45,7 @@ import {
   mediaMimeType,
   photoCandidatesFromIndex,
 } from '../lib/photo-candidates';
+import { getPhotoPermission, photoPermissionGranted } from '../lib/photo-permissions';
 import { useBackup } from '../lib/backup-context';
 import { useCrypto } from '../lib/crypto-context';
 import { useNetworkStatus } from '../lib/useNetworkStatus';
@@ -677,11 +678,17 @@ function DevicePhotosBanner() {
     let cancelled = false;
     (async () => {
       try {
-        const { status } = await MediaLibrary.requestPermissionsAsync();
-        if (status !== 'granted') {
-          if (!cancelled) setPermissionDenied(true);
+        // Task 1688 — GET only, never a request from a mount/focus: under
+        // iOS LIMITED access, `requestPermissionsAsync` re-presents the
+        // system "Select More Photos" sheet on EVERY relaunch (the reported
+        // re-prompt loop). A limited library counts as granted — the counts
+        // below already see exactly the assets the user selected.
+        const permission = await getPhotoPermission(MediaLibrary);
+        if (!cancelled && !photoPermissionGranted(permission)) {
+          setPermissionDenied(true);
           return;
         }
+        if (!cancelled) setPermissionDenied(false);
         const [photoAssets, videoAssets] = await Promise.all([
           MediaLibrary.getAssetsAsync({
             mediaType: MediaLibrary.MediaType.photo,
