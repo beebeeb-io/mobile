@@ -1,0 +1,9 @@
+appId: io.beebeeb.app
+---
+- tapOn: "Files"
+- extendedWaitUntil:
+    visible: "Drive"
+    timeout: 10000
+- tapOn:
+    id: "fab-add"
+- takeScreenshot: "flow3-01-fab-menu"

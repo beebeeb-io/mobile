@@ -1,0 +1,19 @@
+appId: io.beebeeb.app
+---
+- tapOn:
+    id: "recovery-phrase-input"
+- inputText: "cushion buzz letter brisk silk alcohol loan execute spy absurd parrot earth"
+- tapOn:
+    point: "50%,30%"
+- tapOn:
+    id: "unlock-vault-button"
+- runFlow:
+    when:
+      visible: "Not Now"
+    commands:
+      - tapOn: "Not Now"
+- extendedWaitUntil:
+    visible: "Drive"
+    timeout: 20000
+- takeScreenshot: "flow2-06-drive-after-unlock"
+- assertVisible: "welcome.md"

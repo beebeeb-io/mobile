@@ -1,0 +1,8 @@
+appId: io.beebeeb.app
+---
+- tapOn:
+    id: "fab-add"
+- extendedWaitUntil:
+    visible: "Upload photo or video"
+    timeout: 5000
+- tapOn: "Upload photo or video"

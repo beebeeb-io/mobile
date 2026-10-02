@@ -1,0 +1,4 @@
+appId: io.beebeeb.app
+---
+- tapOn: "Sign out"
+- takeScreenshot: "flow2-03-signout-alert"

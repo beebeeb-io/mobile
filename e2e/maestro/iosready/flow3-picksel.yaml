@@ -1,0 +1,9 @@
+appId: io.beebeeb.app
+---
+- tapOn: "Photo, 26 September, 03:25"
+- takeScreenshot: "flow3-04-photo-selected"
+- tapOn: "Done"
+- extendedWaitUntil:
+    visible: "Drive"
+    timeout: 20000
+- takeScreenshot: "flow3-05-after-upload"

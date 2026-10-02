@@ -1,0 +1,4 @@
+appId: io.beebeeb.app
+---
+- tapOn: "bb-qa-1310"
+- takeScreenshot: "flow5-09-device-backup-folder"

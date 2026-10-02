@@ -1,0 +1,4 @@
+appId: io.beebeeb.app
+---
+- tapOn:
+    point: "50%,72%"

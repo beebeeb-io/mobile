@@ -1,0 +1,12 @@
+appId: io.beebeeb.app
+---
+- scrollUntilVisible:
+    element:
+      text: "ACCOUNT"
+    direction: UP
+    timeout: 3000
+- scroll
+- scroll
+- takeScreenshot: "sec-01"
+- scroll
+- takeScreenshot: "sec-02"

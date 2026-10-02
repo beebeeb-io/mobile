@@ -1,0 +1,10 @@
+appId: io.beebeeb.app
+---
+- launchApp:
+    clearState: true
+- extendedWaitUntil:
+    visible: "Sign in"
+    timeout: 15000
+- tapOn:
+    id: "create-account-link"
+- takeScreenshot: "explore-01-signup-screen"

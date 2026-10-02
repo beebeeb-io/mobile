@@ -1,0 +1,8 @@
+appId: io.beebeeb.app
+---
+- tapOn:
+    point: "68%,56%"
+- extendedWaitUntil:
+    visible: "Sign in"
+    timeout: 15000
+- takeScreenshot: "flow2-04-signed-out"

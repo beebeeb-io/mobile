@@ -1,0 +1,15 @@
+appId: io.beebeeb.app
+---
+- scrollUntilVisible:
+    element:
+      text: "Two-Factor Authentication"
+    direction: UP
+    timeout: 8000
+    speed: 30
+- takeScreenshot: "flow6-01-security-section"
+- tapOn: "Two-Factor Authentication"
+- extendedWaitUntil:
+    notVisible:
+      text: "Two-Factor Authentication"
+    timeout: 8000
+- takeScreenshot: "flow6-02-2fa-setup-screen"

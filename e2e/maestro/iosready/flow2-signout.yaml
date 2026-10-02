@@ -1,0 +1,17 @@
+appId: io.beebeeb.app
+---
+- tapOn: "Settings"
+- extendedWaitUntil:
+    visible: "Sign out"
+    timeout: 8000
+- takeScreenshot: "flow2-01-settings"
+- scroll
+- scroll
+- scroll
+- scroll
+- scroll
+- scroll
+- scroll
+- scroll
+- tapOn: "Sign out"
+- takeScreenshot: "flow2-02-signout-alert"

@@ -1,0 +1,20 @@
+appId: io.beebeeb.app
+---
+- tapOn:
+    id: "file-row-9d85f4d7-c25b-40d7-9832-4c7b0c97e573"
+- extendedWaitUntil:
+    visible:
+      id: "preview-close"
+    timeout: 15000
+- takeScreenshot: "flow3-06-preview-open"
+- repeat:
+    times: 5
+    while:
+      notVisible: "Drive"
+    commands:
+      - tapOn:
+          id: "preview-close"
+- extendedWaitUntil:
+    visible: "Drive"
+    timeout: 8000
+- takeScreenshot: "flow3-07-back-on-drive"

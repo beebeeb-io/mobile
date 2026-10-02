@@ -1,0 +1,14 @@
+appId: io.beebeeb.app
+---
+- extendedWaitUntil:
+    visible: "Drive"
+    timeout: 15000
+- tapOn: "Settings"
+- extendedWaitUntil:
+    visible:
+      id: "toggle-photo-backup"
+    timeout: 8000
+- takeScreenshot: "flow5-03-settings-relaunched"
+- tapOn:
+    id: "toggle-photo-backup"
+- takeScreenshot: "flow5-04-toggle-tapped"

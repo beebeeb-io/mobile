@@ -1,0 +1,27 @@
+appId: io.beebeeb.app
+---
+- tapOn: "Enter word number 5"
+- inputText: "silk"
+- tapOn: "Enter word number 7"
+- inputText: "loan"
+- tapOn: "Enter word number 11"
+- inputText: "parrot"
+- tapOn:
+    point: "50%,10%"
+- takeScreenshot: "flow1-07-verify-filled"
+- tapOn: "Confirm"
+- extendedWaitUntil:
+    visible: "Mount Beebeeb in Files"
+    timeout: 15000
+- takeScreenshot: "flow1-08-files-step"
+- tapOn: "Not now"
+- extendedWaitUntil:
+    visible: "Your vault is secure"
+    timeout: 10000
+- takeScreenshot: "flow1-09-done-step"
+- tapOn: "Go to my vault"
+- extendedWaitUntil:
+    visible: "Drive"
+    timeout: 20000
+- takeScreenshot: "flow1-10-drive"
+- assertVisible: "Backups"

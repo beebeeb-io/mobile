@@ -1,0 +1,5 @@
+appId: io.beebeeb.app
+---
+- tapOn:
+    id: "file-row-actions-9d85f4d7-c25b-40d7-9832-4c7b0c97e573"
+- takeScreenshot: "flow4-01-actions-menu"

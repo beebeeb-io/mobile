@@ -1,0 +1,8 @@
+appId: io.beebeeb.app
+---
+- scroll
+- scroll
+- takeScreenshot: "flow2-01d-settings-more2"
+- scroll
+- scroll
+- takeScreenshot: "flow2-01e-settings-more3"

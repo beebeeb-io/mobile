@@ -1,0 +1,9 @@
+appId: io.beebeeb.app
+---
+- extendedWaitUntil:
+    visible:
+      id: "toggle-photo-backup"
+    timeout: 8000
+- tapOn:
+    id: "toggle-photo-backup"
+- takeScreenshot: "flow5-04-toggle-tapped"

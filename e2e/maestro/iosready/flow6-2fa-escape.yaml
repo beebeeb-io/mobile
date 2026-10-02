@@ -1,0 +1,7 @@
+appId: io.beebeeb.app
+---
+- tapOn: "Go back"
+- extendedWaitUntil:
+    visible: "Two-Factor Authentication"
+    timeout: 8000
+- takeScreenshot: "flow6-03-escaped-back-to-settings"

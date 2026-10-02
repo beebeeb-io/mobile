@@ -1,0 +1,9 @@
+appId: io.beebeeb.app
+---
+- tapOn: "Settings"
+- extendedWaitUntil:
+    visible: "Back up camera roll"
+    timeout: 8000
+- takeScreenshot: "flow5-01-before-toggle"
+- tapOn: "Back up camera roll"
+- takeScreenshot: "flow5-02-after-tap"

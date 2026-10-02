@@ -1,0 +1,7 @@
+appId: io.beebeeb.app
+---
+- tapOn: "Create encrypted link"
+- extendedWaitUntil:
+    notVisible: "Create encrypted link"
+    timeout: 15000
+- takeScreenshot: "flow4-03-link-created"

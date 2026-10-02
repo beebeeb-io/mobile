@@ -1,0 +1,7 @@
+appId: io.beebeeb.app
+---
+- tapOn: "I've saved my recovery phrase"
+- extendedWaitUntil:
+    visible: "Verify your phrase"
+    timeout: 10000
+- takeScreenshot: "flow1-06-verify-screen"

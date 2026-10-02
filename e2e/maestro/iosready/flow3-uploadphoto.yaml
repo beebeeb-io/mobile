@@ -1,0 +1,4 @@
+appId: io.beebeeb.app
+---
+- tapOn: "Upload photo or video"
+- takeScreenshot: "flow3-02-picker-opened"

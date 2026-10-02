@@ -1,0 +1,8 @@
+appId: io.beebeeb.app
+---
+- tapOn: "Files"
+- extendedWaitUntil:
+    visible: "Drive"
+    timeout: 10000
+- tapOn: "Backups"
+- takeScreenshot: "flow5-08-backups-folder"

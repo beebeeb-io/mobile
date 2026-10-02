@@ -1,0 +1,4 @@
+appId: io.beebeeb.app
+---
+- tapOn: "Camera Roll"
+- takeScreenshot: "flow5-10-camera-roll-backup"

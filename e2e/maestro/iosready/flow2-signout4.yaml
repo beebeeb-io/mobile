@@ -1,0 +1,10 @@
+appId: io.beebeeb.app
+---
+- scrollUntilVisible:
+    element:
+      text: "Sign out"
+    direction: DOWN
+    timeout: 8000
+    speed: 30
+- tapOn: "Sign out"
+- takeScreenshot: "flow2-03-signout-alert"
