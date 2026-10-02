@@ -38,4 +38,25 @@ enum ShareUploadRequestPolicy {
   static func isAccountMismatchResponse(statusCode: Int, body: Data) -> Bool {
     statusCode == 409 && AccountMismatchDetection.isAccountMismatch(body)
   }
+
+  /// Task 1671 (Issue 2b) — whether an HTTP status code is a SUCCESS for a
+  /// step of the v2 chunked-upload contract
+  /// (`beebeeb-api/src/routes/uploads.rs`). The three steps do not all use
+  /// the same status code: `init_upload` (:924) returns `201 Created`
+  /// (correct REST usage — it creates the file + upload_session rows), while
+  /// `upload_chunk` and `complete_upload` both return a bare `Ok(Json(...))`,
+  /// which Axum turns into `200 OK`. Pre-fix, `ShareUploader.initUpload`
+  /// checked `statusCode == 200` only, so a totally successful init was
+  /// treated as a failure — the exact "Upload failed (HTTP 201): ..." Guus
+  /// hit on TestFlight build 230, which also stranded a file row + upload
+  /// session server-side because no chunk was ever sent.
+  ///
+  /// Accept the whole 2xx range (matching `ApiClient.validate` in
+  /// `targets/file-provider/ApiClient.swift:249` and `res.ok` in
+  /// `src/lib/api.ts`'s `initUploadV2`) rather than hardcoding `200` or
+  /// `201` — future server-side status changes for any step stay compatible
+  /// without another client-side guess.
+  static func isSuccessResponse(statusCode: Int) -> Bool {
+    (200..<300).contains(statusCode)
+  }
 }

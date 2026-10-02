@@ -1045,10 +1045,33 @@ final class NativeBackupEngine: NSObject {
 
   private override init() {
     super.init()
+    // `setupBackgroundSession()` stays synchronous: iOS must be able to
+    // deliver background-session delegate events (task completion,
+    // `urlSessionDidFinishEvents(forBackgroundURLSession:)`) to `self` as
+    // soon as the session with the same identifier is reattached — see
+    // "Background URLSession relaunch events" above. `setupMetadataSession()`
+    // is a plain `.default`-config session (no background-daemon XPC dance)
+    // and has never been evidenced as slow, so it stays synchronous too.
     setupBackgroundSession()
+    // Does not touch `db`; `getAllTasks` is itself asynchronous, so this call
+    // returns immediately. Unchanged from before task 1669.
     reconcileOrphanedBackgroundTasks()
     setupMetadataSession()
-    dbQueue.sync { openDatabase() }
+    // Task 1669 Issue 2: opening the on-disk SQLite database must not block
+    // whatever thread first constructs `.shared` (the launch path this task
+    // protects), so it is ENQUEUED here — not run — on `dbQueue`.
+    //
+    // ORDERING INVARIANT (guarded by `native-backup-engine-db-queue.test.ts`):
+    // this `dbQueue.async` is issued directly from `init()`, i.e. BEFORE
+    // `init()` returns and therefore before any caller can hold `.shared`.
+    // `dbQueue` is a private SERIAL queue (FIFO), so every later
+    // `dbQueue.sync`/`.async` block — from any thread, any time — runs strictly
+    // after `openDatabase()` has finished, and `db` is only ever read or
+    // written on `dbQueue`. Do NOT move this into another queue's closure: a
+    // hop through a second queue makes the enqueue itself racy, and a caller
+    // whose `dbQueue.sync { guard let db ... }` wins the race silently no-ops
+    // on `db == nil`.
+    dbQueue.async { [weak self] in self?.openDatabase() }
     NotificationCenter.default.addObserver(
       self,
       selector: #selector(handleAppDidEnterBackground),
@@ -2449,13 +2472,42 @@ final class NativeBackupEngine: NSObject {
   // MARK: - Background task registration
 
   #if os(iOS)
-  func registerBackgroundTask() {
+  /// Task 1669 Issue 2 — `BGTaskScheduler.register` must complete before
+  /// `application(_:didFinishLaunchingWithOptions:)` returns (Apple's hard
+  /// requirement), so `BeebeebAppDelegate` must call this synchronously on
+  /// the main thread at launch. Before this fix it was an INSTANCE method,
+  /// so calling it forced Swift's lazy `static let shared` to run
+  /// `NativeBackupEngine`'s full `init()` — `setupBackgroundSession()`,
+  /// `reconcileOrphanedBackgroundTasks()`, `setupMetadataSession()`, and a
+  /// synchronous SQLite open — on that SAME main thread, at that SAME
+  /// moment. `setupBackgroundSession()`'s `URLSession(configuration:...)`
+  /// triggers ObjC's one-time `+[__NSCFURLSessionXPC initialize]`, an XPC
+  /// handshake with nsurlsessiond; on a background, locked-device relaunch
+  /// (build 227, `crashreports/guus-upload-Beebeeb-2026-09-30-010350.ips`)
+  /// that handshake alone blocked the main thread for the full 10s
+  /// scene-create watchdog budget (App CPU 0.069s in 31s of life — the
+  /// thread was BLOCKED, not computing) and the app was SIGKILLed.
+  /// Symbolicated stack (dSYM UUID 8023b2bb-eeb9-396f-bff2-542684584367,
+  /// matches build 227 exactly): `AppDelegate.application` (AppDelegate.swift:28)
+  /// -> `BeebeebAppDelegate.application` (this file's sibling, offset 425340)
+  /// -> one-time init for `.shared` (NativeBackupEngine.swift:424/1046) ->
+  /// `init()` (:1048) -> `setupBackgroundSession()` (:1712) -> ObjC
+  /// `+initialize` -> XPC. This function is now `static` and touches
+  /// nothing on the singleton — a plain background launch (the case that
+  /// crashed) no longer constructs `NativeBackupEngine` AT ALL, so it can
+  /// never run `setupBackgroundSession()` on the launch path. The
+  /// singleton is still built lazily, off this path, the first time real
+  /// backup work needs it (a JS bridge call, or the rarer
+  /// `handleEventsForBackgroundURLSession` relaunch — see that method's
+  /// own doc comment for why re-attaching the background session there IS
+  /// still allowed to be synchronous).
+  static func registerBackgroundTaskEarly() {
     BGTaskScheduler.shared.register(
-      forTaskWithIdentifier: Self.bgTaskIdentifier,
+      forTaskWithIdentifier: bgTaskIdentifier,
       using: nil
-    ) { [weak self] task in
+    ) { task in
       guard let processingTask = task as? BGProcessingTask else { return }
-      self?.handleBackgroundTask(processingTask)
+      NativeBackupEngine.shared.handleBackgroundTask(processingTask)
     }
   }
 
@@ -2638,13 +2690,58 @@ final class NativeBackupEngine: NSObject {
   }
   #endif
 
-  func handleBackgroundSessionEvents(identifier: String, completionHandler: @escaping () -> Void) {
-    // iOS delivers pending delegate messages after relaunching the app.
-    // Store the completion handler so we call it after all events are delivered.
-    backgroundSessionCompletionHandler = completionHandler
+  // MARK: - Background URLSession relaunch events (task 1669 round 2)
+  //
+  // `application(_:handleEventsForBackgroundURLSession:completionHandler:)` fires when iOS
+  // relaunches the app specifically to deliver background-session events. It runs on the MAIN
+  // thread, inside the same launch window the scene-create watchdog polices (build 227 was
+  // SIGKILLed after 10 s there). Constructing `NativeBackupEngine.shared` runs `init()`, which
+  // builds the background URLSession (`+[NSURLSession _sessionWithConfiguration:]` -> XPC
+  // handshake with nsurlsessiond, the proven 10 s stall), so the app delegate must NOT do that
+  // synchronously. The split is:
+  //
+  //   1. `stashBackgroundSessionCompletionHandler` — the app delegate calls it on the main thread,
+  //      first, before anything else. It only stores the closure (lock + assignment), no engine.
+  //   2. The app delegate then hops to a background queue and touches `.shared` there. `init()`
+  //      recreates the session with the SAME identifier (`bgSessionIdentifier`); Apple holds the
+  //      pending delegate events until that session exists, so nothing is lost by the delay.
+  //   3. When the events are drained, `urlSessionDidFinishEvents(forBackgroundURLSession:)` takes
+  //      the stashed handler and calls it on the MAIN queue, as Apple requires.
+  //
+  // The handler lives in a static (not an instance var) precisely because step 1 happens before
+  // any instance exists. If a second relaunch callback arrives before the first was consumed, the
+  // older handler is completed (main queue) rather than dropped: iOS would otherwise keep waiting
+  // on it and eventually penalise the app's background budget.
+  private static let backgroundSessionHandlerLock = NSLock()
+  private static var pendingBackgroundSessionCompletionHandler: (() -> Void)?
+
+  /// Cheap and main-thread-safe: stores the handler, constructs nothing.
+  static func stashBackgroundSessionCompletionHandler(_ completionHandler: @escaping () -> Void) {
+    backgroundSessionHandlerLock.lock()
+    let previous = pendingBackgroundSessionCompletionHandler
+    pendingBackgroundSessionCompletionHandler = completionHandler
+    backgroundSessionHandlerLock.unlock()
+    if let previous {
+      DispatchQueue.main.async { previous() }
+    }
   }
 
-  private var backgroundSessionCompletionHandler: (() -> Void)?
+  /// Removes and returns the stashed handler (nil when none is pending).
+  private static func takeBackgroundSessionCompletionHandler() -> (() -> Void)? {
+    backgroundSessionHandlerLock.lock()
+    defer { backgroundSessionHandlerLock.unlock() }
+    let handler = pendingBackgroundSessionCompletionHandler
+    pendingBackgroundSessionCompletionHandler = nil
+    return handler
+  }
+
+  /// Runs on a background queue after the app delegate stashed the completion handler. Touching
+  /// `.shared` is what runs `init()` -> `setupBackgroundSession()`, which reattaches the
+  /// background session (same identifier) so iOS can deliver the pending events to this delegate.
+  /// When the engine already exists (warm app) this is a no-op beyond the property read.
+  static func reattachBackgroundSessionForPendingEvents() {
+    _ = NativeBackupEngine.shared
+  }
 
   // MARK: - Photo Library Observer
 
@@ -3104,23 +3201,31 @@ final class NativeBackupEngine: NSObject {
   /// ones it skipped. With retry reset, the drain re-selects them and the
   /// `.resumable` self-heal re-stages any with evicted `.enc` chunks.
   func resetRetryExhaustedUploadsForManualRun() {
-    guard let db = db else { return }
-    let sql = """
-    UPDATE backup_assets
-    SET retry_count = 0,
-        error_message = NULL,
-        last_attempt_at = NULL
-    WHERE status IN ('pending_upload', 'pending_reupload', 'staging', 'staged_upload', 'uploading')
-      AND COALESCE(selected_for_backup, 1) = 1
-      AND COALESCE(retry_count, 0) >= 10
-    """
-    var stmt: OpaquePointer?
-    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
-    defer { sqlite3_finalize(stmt) }
-    sqlite3_step(stmt)
-    let resetCount = sqlite3_changes(db)
-    if resetCount > 0 {
-      NSLog("[NativeBackupEngine] Reset \(resetCount) retry-exhausted uploads for manual backup")
+    // Task 1669 Issue 2: this was the one `db` accessor in the class NOT
+    // wrapped in `dbQueue.sync` — harmless while `init()` opened the
+    // database synchronously (any caller was guaranteed to run after it),
+    // but `init()` now defers `openDatabase()` to `dbQueue` (see its doc
+    // comment), so every accessor must go through the same serial queue to
+    // stay correctly ordered after it.
+    dbQueue.sync {
+      guard let db = db else { return }
+      let sql = """
+      UPDATE backup_assets
+      SET retry_count = 0,
+          error_message = NULL,
+          last_attempt_at = NULL
+      WHERE status IN ('pending_upload', 'pending_reupload', 'staging', 'staged_upload', 'uploading')
+        AND COALESCE(selected_for_backup, 1) = 1
+        AND COALESCE(retry_count, 0) >= 10
+      """
+      var stmt: OpaquePointer?
+      guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
+      defer { sqlite3_finalize(stmt) }
+      sqlite3_step(stmt)
+      let resetCount = sqlite3_changes(db)
+      if resetCount > 0 {
+        NSLog("[NativeBackupEngine] Reset \(resetCount) retry-exhausted uploads for manual backup")
+      }
     }
   }
 
@@ -6080,9 +6185,11 @@ extension NativeBackupEngine: URLSessionDelegate, URLSessionTaskDelegate, URLSes
   }
 
   func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {
-    DispatchQueue.main.async { [weak self] in
-      self?.backgroundSessionCompletionHandler?()
-      self?.backgroundSessionCompletionHandler = nil
+    // Apple requires the completion handler to be called on the main queue. It was stashed by
+    // `stashBackgroundSessionCompletionHandler` (static), see "Background URLSession relaunch
+    // events" above.
+    DispatchQueue.main.async {
+      Self.takeBackgroundSessionCompletionHandler()?()
     }
   }
 }
