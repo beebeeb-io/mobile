@@ -94,6 +94,7 @@
     "uuid": "9.0.1"
   },
   "patchedDependencies": {
-    "@react-native-menu/menu@1.2.4": "patches/@react-native-menu%2Fmenu@1.2.4.patch"
+    "@react-native-menu/menu@1.2.4": "patches/@react-native-menu%2Fmenu@1.2.4.patch",
+    "react-native-bottom-tabs@1.4.0": "patches/react-native-bottom-tabs@1.4.0.patch"
   }
 }
