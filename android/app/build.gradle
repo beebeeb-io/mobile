@@ -113,6 +113,10 @@ android {
             // Caution! In production, you need to generate your own keystore file.
             // see https://reactnative.dev/docs/signed-apk-android.
             signingConfig signingConfigs.debug
+            // TEMP-DIAG 1683g: debuggable release so `am dumpheap` can attach for
+            // the large-download OOM reproduction. MUST be reverted before the
+            // clean release rebuild (second 1683g commit).
+            debuggable true
             def enableShrinkResources = findProperty('android.enableShrinkResourcesInReleaseBuilds') ?: 'false'
             shrinkResources enableShrinkResources.toBoolean()
             minifyEnabled enableMinifyInReleaseBuilds
