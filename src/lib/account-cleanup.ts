@@ -32,6 +32,9 @@
 import { purgePlaintextStorage, type PlaintextStoragePurgeResult } from '../../modules/beebeeb-crypto';
 import { purgeCachesPlaintext } from './caches-plaintext-registry';
 import { clearLocalIdentifierMap } from './local-identifier-map';
+// Task 1683f — sign-out sweeps the upload resume states (SecureStore keys that
+// survive sign-out AND account switches otherwise; cross-account leak).
+import { sweepAllUploadResumeStates } from './api';
 import { clearNameCache } from './name-cache';
 import { clearPreviewCache } from './native-decrypt';
 import { clearPhotoCache } from './photo-cache';
@@ -87,7 +90,7 @@ export async function purgeDecryptedCaches(): Promise<void> {
 }
 
 export async function purgeAllPlaintextCaches(): Promise<PlaintextStoragePurgeResult> {
-  return plaintextGate
+  const result = await plaintextGate
     .purge(async () => {
       const swept = await sweepDecryptedCaches();
       // True counts (task 1683d): compose the JS sweep's real outcome with the
@@ -103,6 +106,11 @@ export async function purgeAllPlaintextCaches(): Promise<PlaintextStoragePurgeRe
       };
     })
     .catch(() => ({ removed: 0, failed: 1 }));
+  // Task 1683f — sign-out sweeps the upload resume states (SecureStore keys
+  // survive sign-out AND account switches otherwise; cross-account leak).
+  // Best-effort: never breaks the sign-out flow, counted or not.
+  await sweepAllUploadResumeStates().catch(() => {});
+  return result;
 }
 
 export interface PurgeThenSignOutDeps {

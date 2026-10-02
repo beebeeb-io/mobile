@@ -60,7 +60,7 @@ import PresenceAvatars from '../components/PresenceAvatars';
 import TrustDetailsSheet from '../components/TrustDetailsSheet';
 import FolderPickerModal, { type PickerFolder } from '../components/FolderPickerModal';
 import ExportProgressBanner, { type ExportProgressBannerHandle } from '../components/ExportProgressBanner';
-import { ApiError, listAllFiles, getFileIndex, createFolder, deleteFile, trashFiles, renameFile, moveFile, uploadFile, friendlyError, getStorageUsage, createProofOfExistence, storageLocation, trustLocation, getFolderPresence, getUploadStatus, getApiUrl, getToken } from '../lib/api';
+import { ApiError, listAllFiles, getFileIndex, createFolder, deleteFile, trashFiles, renameFile, moveFile, uploadFile, friendlyError, getStorageUsage, createProofOfExistence, storageLocation, trustLocation, getFolderPresence, getUploadStatus, getApiUrl, getToken, abortUploadForFile, abandonFileUpload } from '../lib/api';
 import { guessMimeType, fileCategory as fileCategoryFromMime } from '../lib/media';
 import { generateAndUploadThumbnail } from '../lib/thumbnail';
 import { FileIcon } from '../components/FileIcon';
@@ -2249,6 +2249,10 @@ export default function FilesScreen() {
   // 7-day mark regardless) and drops it from the visible list immediately.
   const discardPendingUpload = useCallback(async (file: FileEntry) => {
     try {
+      // Task 1683f: discarding a pending upload cancels its in-flight engine
+      // too (same contract as trash).
+      abortUploadForFile(file.id);
+      void abandonFileUpload(file.id).catch(() => {});
       await deleteFile(file.id);
       setFiles((prev) => prev.filter((f) => f.id !== file.id));
       showToast({ type: 'success', message: 'Pending upload discarded' });
@@ -2976,6 +2980,12 @@ export default function FilesScreen() {
           onPress: async () => {
             try {
               const ids = [...selectedIds];
+              // Task 1683f: cancel any in-flight upload for the selected files
+              // before the rows go away (best-effort server abandon each).
+              for (const id of ids) {
+                abortUploadForFile(id);
+                void abandonFileUpload(id).catch(() => {});
+              }
               const result = await trashFiles(ids);
               const trashedIds = new Set([...result.trashed, ...result.already_trashed]);
               setFiles((prev) => prev.filter((f) => !trashedIds.has(f.id)));
@@ -3601,6 +3611,11 @@ export default function FilesScreen() {
             style: 'destructive',
             onPress: async () => {
               try {
+                // Task 1683f: trash cancels an in-flight upload for this file —
+                // abort the engine (native or JS loop) and best-effort abandon
+                // the server session before the row goes away.
+                abortUploadForFile(item.id);
+                void abandonFileUpload(item.id).catch(() => {});
                 await deleteFile(item.id);
                 setFiles((prev) => prev.filter((f) => f.id !== item.id));
                 // 0818 — cascade the delete to every derived store; expand the
@@ -4053,6 +4068,9 @@ export default function FilesScreen() {
           style: 'destructive',
           onPress: async () => {
             try {
+              // Task 1683f: trash cancels an in-flight upload for this file.
+              abortUploadForFile(item.id);
+              void abandonFileUpload(item.id).catch(() => {});
               await deleteFile(item.id);
               setFiles((prev) => prev.filter((f) => f.id !== item.id));
               // 0818 — cascade to every derived store, subtree-expanded.

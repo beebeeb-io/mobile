@@ -22,7 +22,13 @@
 import * as FileSystem from 'expo-file-system/legacy'
 import { generateRandomBytes } from '../../modules/beebeeb-crypto'
 import type { EncryptedData } from '../../modules/beebeeb-crypto'
-import { uploadEncryptedChunked, uploadEncryptedFileNative } from './api'
+import {
+  uploadEncryptedChunked,
+  uploadEncryptedFileNative,
+  registerUploadAbort,
+  settleUploadSignal,
+  clearUploadResumeState,
+} from './api'
 import type { FileEntry, UploadProgress } from './api'
 import { encryptedMetadataToJson, fileMetadataPlaintext } from './encrypted-metadata'
 import type { FileMetadataExtras } from './encrypted-metadata'
@@ -60,6 +66,14 @@ export interface EncryptedUploadOptions {
    */
   masterKeyHandleId?: number | null
   onProgress?: (p: UploadProgress) => void
+  /**
+   * Task 1683f — trash-cancels-in-flight: when this signal aborts, the active
+   * engine (native bridge or JS loop) is cancelled at once, the persisted
+   * resume state for this upload is cleared, and the promise rejects with an
+   * AbortError. FilesScreen registers the signal per fileId at trash time via
+   * api.abortUploadForFile; the signal must be created per upload.
+   */
+  signal?: AbortSignal
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -129,8 +143,20 @@ export async function generateFileId(): Promise<string> {
 export async function encryptedUpload(opts: EncryptedUploadOptions): Promise<FileEntry> {
   const {
     fileId, uri, name, parentId, mimeType, createdAt, metadataExtras,
-    v2InitNameEncrypted, encryptChunkFn, encryptMetadataFn, masterKeyHandleId, onProgress,
+    v2InitNameEncrypted, encryptChunkFn, encryptMetadataFn, masterKeyHandleId, onProgress, signal,
   } = opts
+
+  // Task 1683f: if trash fires while this upload is in flight, clear the
+  // persisted resume state (the upload must not resume for a trashed file)
+  // and reject with an AbortError. `registerUploadAbort` also registers the
+  // controller so `abortUploadForFile(fileId)` can reach it from the trash
+  // action even when the trash starts on a different JS task.
+  const abortSignal = registerUploadAbort(fileId, signal)
+  const onAborted = () => {
+    void clearUploadResumeState(resumeKey)
+  }
+  if (abortSignal.aborted) onAborted()
+  abortSignal.addEventListener('abort', onAborted, { once: true })
 
   // ── 1. Get file size ────────────────────────────────────────────────────
   const info = await FileSystem.getInfoAsync(uri)
@@ -202,36 +228,45 @@ export async function encryptedUpload(opts: EncryptedUploadOptions): Promise<Fil
   // Only `is_media` (a boolean) is sent so the server can index media files.
   const mediaFlag = isMedia(mimeType)
 
-  if (masterKeyHandleId != null) {
-    const native = await uploadEncryptedFileNative({
-      masterKeyHandleId,
+  // Task 1683f: the registry entry settles when the engine settles (success,
+  // failure, or abort) — without this, a finished upload would stay registered
+  // and a later trash call would abort nothing (harmless) but leak the entry.
+  try {
+    if (masterKeyHandleId != null) {
+      const native = await uploadEncryptedFileNative({
+        masterKeyHandleId,
+        fileId,
+        inputUri: uri,
+        nameEncrypted: nameEncryptedForFileId,
+        v2InitNameEncrypted,
+        parentId,
+        isMedia: mediaFlag,
+        createdAt,
+        plaintextSizeBytes: plaintextSize,
+        resumeKey,
+        onProgress,
+        signal: abortSignal,
+      })
+      if (native) return native
+    }
+
+    return await uploadEncryptedChunked({
       fileId,
-      inputUri: uri,
       nameEncrypted: nameEncryptedForFileId,
       v2InitNameEncrypted,
       parentId,
+      mimeType: undefined,
       isMedia: mediaFlag,
       createdAt,
       plaintextSizeBytes: plaintextSize,
       resumeKey,
-      onProgress,
+      onProgress: onProgress
+        ? (p) => onProgress({ ...p, cryptoBytesPerSec: measuredCryptoRate() })
+        : undefined,
+      readEncryptedChunk,
+      signal: abortSignal,
     })
-    if (native) return native
+  } finally {
+    settleUploadSignal(fileId, abortSignal)
   }
-
-  return uploadEncryptedChunked({
-    fileId,
-    nameEncrypted: nameEncryptedForFileId,
-    v2InitNameEncrypted,
-    parentId,
-    mimeType: undefined,
-    isMedia: mediaFlag,
-    createdAt,
-    plaintextSizeBytes: plaintextSize,
-    resumeKey,
-    onProgress: onProgress
-      ? (p) => onProgress({ ...p, cryptoBytesPerSec: measuredCryptoRate() })
-      : undefined,
-    readEncryptedChunk,
-  })
 }
