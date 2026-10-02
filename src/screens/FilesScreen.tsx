@@ -1603,8 +1603,11 @@ export default function FilesScreen() {
 
   // Upload state — drives the Live-Activity upload card above the FAB (1301).
   // stage 1 = encrypting · stage 2 = uploading · stage 3 = storing/done.
+  // Task 1685 fix 2: the FAB stays ACTIVE during an upload — the queue is
+  // appendable mid-flight (Guus: "tijdens upload van file op ios kun je niet
+  // extra files uploaden met + knop"). The old disabled-FAB decision is gone;
+  // uploads simply queue up behind the running one.
   const [upload, setUpload] = useState<UploadActivityState | null>(null);
-  const uploadingName = upload?.fileName ?? null;
 
   // Trust details sheet — opened by tapping the lock icon on a row/grid cell.
   const [trustFile, setTrustFile] = useState<FileEntry | null>(null);
@@ -4886,43 +4889,31 @@ export default function FilesScreen() {
       )}
 
       {/* Floating action button — hidden in select mode. Opens the native iOS
-          UIMenu pull-down (0789). While an upload is in flight the FAB is a plain
-          disabled button so the menu can't fire mid-upload. Also hides while
-          search is active — 1357's bottom search bar now occupies the FAB's
-          whole bottom-right corner (the entire tab-bar band, not just a
+          UIMenu pull-down (0789). Task 1685 fix 2: it stays ACTIVE while an
+          upload is running — picking more files appends them to the queue
+          behind the in-flight uploads instead of being blocked. Also hides
+          while search is active — 1357's bottom search bar now occupies the
+          FAB's whole bottom-right corner (the entire tab-bar band, not just a
           floating stack beside it). */}
       {!selectMode && !searchActive && (
-        uploadingName ? (
-          <TouchableOpacity
-            style={[styles.fab, { bottom: tabBarBottomInset + FAB_BOTTOM_GAP, backgroundColor: c.amber }]}
-            activeOpacity={0.8}
-            disabled
-            testID="fab-add"
+        <MenuView
+          // 1284 — the menu ROWS are a native UIMenu and cannot carry RN testIDs; target them
+          // by their visible titles. This id covers opening the menu without coordinate taps.
+          testID="fab-add"
+          onPressAction={onAddAction}
+          actions={addMenuActions}
+          shouldOpenOnLongPress={false}
+          themeVariant={themeScheme}
+          style={[styles.fab, { bottom: tabBarBottomInset + FAB_BOTTOM_GAP, backgroundColor: c.amber }]}
+        >
+          <View
+            style={styles.fabInner}
             accessibilityLabel="Add file or folder"
             accessibilityRole="button"
           >
             <Text style={[styles.fabText, { color: c.ink }]}>+</Text>
-          </TouchableOpacity>
-        ) : (
-          <MenuView
-            // 1284 — the menu ROWS are a native UIMenu and cannot carry RN testIDs; target them
-            // by their visible titles. This id covers opening the menu without coordinate taps.
-            testID="fab-add"
-            onPressAction={onAddAction}
-            actions={addMenuActions}
-            shouldOpenOnLongPress={false}
-            themeVariant={themeScheme}
-            style={[styles.fab, { bottom: tabBarBottomInset + FAB_BOTTOM_GAP, backgroundColor: c.amber }]}
-          >
-            <View
-              style={styles.fabInner}
-              accessibilityLabel="Add file or folder"
-              accessibilityRole="button"
-            >
-              <Text style={[styles.fabText, { color: c.ink }]}>+</Text>
-            </View>
-          </MenuView>
-        )
+          </View>
+        </MenuView>
       )}
 
       {/* 0789 — file-row long-press still uses the reusable bottom sheet; sort + "+"
