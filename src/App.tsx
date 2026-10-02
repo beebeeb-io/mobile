@@ -351,7 +351,15 @@ const linking = {
   // beebeeb.io is the marketing domain. Both must be intercepted so a tapped
   // share link (app.beebeeb.io/s/:token) opens the in-app SharedView instead of
   // launching the app to the default tab and stranding the recipient.
-  prefixes: ['beebeeb://', 'https://app.beebeeb.io', 'https://beebeeb.io'],
+  // exp+beebeeb:// is the dev scheme prebuild derives from the app.json slug;
+  // the Android manifest already claims it, so it belongs in prefixes too
+  // (task 1683e) or such URLs reach the app but never route.
+  prefixes: [
+    'beebeeb://',
+    'exp+beebeeb://',
+    'https://app.beebeeb.io',
+    'https://beebeeb.io',
+  ],
   config: {
     screens: {
       // `__DEV__` only: a direct route to the glass primitives gallery
