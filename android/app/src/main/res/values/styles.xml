@@ -1,5 +1,17 @@
 <resources xmlns:tools="http://schemas.android.com/tools">
-  <style name="AppTheme" parent="Theme.AppCompat.DayNight.NoActionBar">
+  <!-- Task 1683b: parent switched Theme.AppCompat.DayNight.NoActionBar ->
+       Theme.MaterialComponents.DayNight.NoActionBar. The tab bar
+       (react-native-bottom-tabs → BottomNavigationView) creates a
+       Material BadgeDrawable when any tab carries a badge
+       (RCTTabView.kt:272 getOrCreateBadge), and BadgeDrawable's constructor
+       hard-requires a MaterialComponents theme (ThemeEnforcement.checkTheme)
+       — with AppCompat the app died the moment the Settings '!' badge
+       appeared (storage >= 80 % / backup failed), crashing the whole RN
+       tree at 08:41:16 on the Nord (logcat: MountItemDispatcher
+       IllegalArgumentException). MaterialComponents.DayNight is a
+       descendant of AppCompat.DayNight with the same attribute contract
+       (colorPrimary etc.), so nothing else in the app changes visually. -->
+  <style name="AppTheme" parent="Theme.MaterialComponents.DayNight.NoActionBar">
     <item name="android:editTextBackground">@drawable/rn_edit_text_material</item>
     <item name="colorPrimary">@color/colorPrimary</item>
     <item name="android:statusBarColor">@android:color/transparent</item>
