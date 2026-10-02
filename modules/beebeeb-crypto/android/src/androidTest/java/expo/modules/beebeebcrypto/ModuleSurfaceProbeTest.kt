@@ -85,4 +85,22 @@ class ModuleSurfaceProbeTest {
       def.asyncFunctions.containsKey("decryptContiguousToFile"),
     )
   }
+
+  // ── task 1683d — native offline decrypt-from-local-file ────────────────────
+  //
+  // The offline open path (`decryptLocalFileLeased`, src/lib/native-decrypt.ts)
+  // reads the whole local ciphertext as base64 into the JS heap and writes the
+  // plaintext back as base64 — the 1683 OOM class at >100 MB. The Kotlin port
+  // streams the file from disk with the 1683b chunk-window loop
+  // (RandomAccessFile window → UniFFI decryptChunk → .tmp rename). RED before
+  // the port: no such AsyncFunction on the module.
+
+  @Test
+  fun exposesDecryptLocalFileNative() {
+    val def = BeebeebCryptoModule().definition()
+    assertTrue(
+      "Android BeebeebCrypto must expose decryptLocalFileNative (task 1683d)",
+      def.asyncFunctions.containsKey("decryptLocalFileNative"),
+    )
+  }
 }

@@ -64,4 +64,16 @@ class ModuleSurfaceJvmProbeTest {
       def.asyncFunctions.containsKey("decryptContiguousToFile"),
     )
   }
+
+  // ── task 1683d — native offline decrypt-from-local-file ────────────────────
+  // Same assertion as the androidTest twin; RED before the port.
+
+  @Test
+  fun exposesDecryptLocalFileNative() {
+    val def = BeebeebCryptoModule().definition()
+    assertTrue(
+      "Android BeebeebCrypto must expose decryptLocalFileNative (task 1683d)",
+      def.asyncFunctions.containsKey("decryptLocalFileNative"),
+    )
+  }
 }
