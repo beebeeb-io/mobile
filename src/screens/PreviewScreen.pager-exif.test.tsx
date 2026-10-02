@@ -169,6 +169,17 @@ defineMock('../lib/file-category', () => ({ fileCategory: (_m: unknown, name?: s
 defineMock('../lib/raw-format', () => ({ extensionForRaw: () => 'dng', rawFormatLabel: () => 'DNG' }));
 defineMock('../components/preview/ZoomableImage', () => ({ ZoomableImage: (p: any) => React.createElement('Zoomable', null, p.children) }));
 
+// Merge keep-BOTH (task-1687b): the local main wraps ALL media content branches —
+// including the pager FlatList — in a real `PanGestureHandler` (the swipe-down-to-
+// close content pan). The generated stub below would be a noop that drops children,
+// so the pager never mounts and the ledger stays empty. Give RNGH a passthrough
+// host, same shape as the react-native mocks: children render; the pan itself is
+// never exercised by these tests (onActivated never fires), so the dismiss gesture
+// staying inert is faithful to what this harness actually asserts.
+defineMock('react-native-gesture-handler', () => ({
+  PanGestureHandler: host('PanGestureHandler'),
+}));
+
 // RawRenderer: the real contract — once per [uri, cacheKey] it reports the parsed EXIF for ITS file
 // through the `onExifInfo` it had when that effect ran (the real effect captures it once).
 defineMock('../components/preview/RawRenderer', () => ({
