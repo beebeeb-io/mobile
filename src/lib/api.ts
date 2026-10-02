@@ -1805,7 +1805,12 @@ export async function uploadEncryptedFileNative(params: {
   resumeKey?: string
   onProgress?: (p: UploadProgress) => void
 }): Promise<FileEntry | null> {
-  if (Platform.OS !== 'ios' || !isNativeUploadAvailable()) return null
+  // Task 1683c: Android now ships the same native upload engine (Kotlin port
+  // of the iOS one — modules/beebeeb-crypto/android .../NativeManualUploader.kt),
+  // so the platform gate collapses onto the capability check: the functions
+  // are only present when the native build exposes them, and a stale Android
+  // native build without them still falls back to the JS loop via `null`.
+  if (!isNativeUploadAvailable()) return null
   const {
     masterKeyHandleId, fileId, inputUri, nameEncrypted, v2InitNameEncrypted,
     parentId, isMedia, createdAt, plaintextSizeBytes, resumeKey, onProgress,
