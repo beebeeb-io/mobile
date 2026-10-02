@@ -326,6 +326,9 @@ class BeebeebCryptoModule : Module() {
         try { File("$outputPath.tmp").delete() } catch (_: Exception) {}
         try { outputFile.delete() } catch (_: Exception) {}
         progress.onError(t.message ?: t.javaClass.simpleName)
+        // TEMP-DIAG (task 1683b): surface the real native error until the
+        // empty-message rejection is diagnosed. REMOVE with the fix.
+        android.util.Log.e("BeebeebPreview", "downloadAndDecryptPreview failed", t)
         throw t
       } finally {
         try { tempDir.deleteRecursively() } catch (_: Exception) {}
