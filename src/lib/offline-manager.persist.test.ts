@@ -78,8 +78,18 @@ mock.module('./runtime-trace', () => ({
   },
 }));
 
-mock.module('./plaintext-storage', () => ({
-  notePlaintextPathCreated: () => {},
+// Task 1683d: mock the crypto bridge, NOT './plaintext-storage' itself. bun's
+// mock.module registrations are GLOBAL to the whole `bun test` invocation —
+// a partial stub registered here would replace the real module for every
+// other test file importing it (plaintext-storage.test.ts dynamically imports
+// './plaintext-storage' and reads PROTECTED_LEAF_NAMES off it; a partial stub
+// made those exports undefined in combined runs). The real plaintext-storage
+// is safe to load here: its react-native import resolves to THIS file's
+// android mock, so notePlaintextPathCreated early-returns on its own iOS gate
+// (plaintext-storage.ts:77) and never reaches the bridge.
+mock.module('../../modules/beebeeb-crypto', () => ({
+  hardenPlaintextStorage: async () => ({}),
+  auditPlaintextStorage: async () => [],
 }));
 
 const { offlineManager } = await import('./offline-manager');

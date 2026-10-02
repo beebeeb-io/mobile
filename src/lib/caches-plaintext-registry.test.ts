@@ -106,13 +106,27 @@ describe('purgeCachesPlaintext', () => {
       'io.beebeeb.app', 'com.apple.nsurlsessiond', 'beebeeb-upload-1.bin', 'beebeeb-welcome-1.md', 'beebeeb-plaintext-audit.json',
     ];
     const deleted = [];
-    const removed = await purgeCachesPlaintext({
+    const result = await purgeCachesPlaintext({
       cacheDirectory: 'file:///cache/',
       readDirectoryAsync: async () => present,
       deleteAsync: async (uri) => { deleted.push(uri); },
     });
-    expect(removed.length).toBe(15);
+    // True counts (task 1683d): removed lists the names whose delete resolved.
+    expect(result.removed.sort()).toEqual([...present.slice(0, 15)].sort());
+    expect(result.failed).toEqual([]);
     expect(deleted.sort()).toEqual(present.slice(0, 15).map((n) => `file:///cache/${n}`).sort());
+  });
+
+  test('a doomed entry whose delete throws counts as FAILED, not removed (true counts)', async () => {
+    const result = await purgeCachesPlaintext({
+      cacheDirectory: 'file:///cache/',
+      readDirectoryAsync: async () => ['preview', 'beebeeb-photo-cache'],
+      deleteAsync: async (uri) => {
+        if (uri.endsWith('preview')) throw new Error('ebusy');
+      },
+    });
+    expect(result.removed).toEqual(['beebeeb-photo-cache']);
+    expect(result.failed).toEqual(['preview']);
   });
 
   test('never throws (sign-out must not break)', async () => {
@@ -120,12 +134,12 @@ describe('purgeCachesPlaintext', () => {
       cacheDirectory: 'file:///cache/',
       readDirectoryAsync: async () => { throw new Error('io'); },
       deleteAsync: async () => {},
-    })).resolves.toEqual([]);
+    })).resolves.toEqual({ removed: [], failed: [] });
     await expect(purgeCachesPlaintext({
       cacheDirectory: 'file:///cache/',
       readDirectoryAsync: async () => ['preview'],
       deleteAsync: async () => { throw new Error('io'); },
-    })).resolves.toEqual(['preview']);
+    })).resolves.toEqual({ removed: [], failed: ['preview'] });
   });
 });
 
