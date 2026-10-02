@@ -55,6 +55,8 @@ import {
 import { UploadActivityCard } from '../components/UploadActivityCard';
 // Task 1685 fix 4 — bounded queue for fire-and-forget thumbnail generation.
 import { thumbnailUploadQueue } from '../lib/upload-queue';
+// Task 1685 fix 5 — throttled upload-progress state (≈4 Hz, stage transitions always pass).
+import { UPLOAD_PROGRESS_MIN_INTERVAL_MS, createProgressThrottle } from '../lib/upload-progress-throttle';
 import type { UploadActivityState, UploadStage } from '../components/UploadActivityCard';
 import { useToast } from '../lib/toast-context';
 import SkeletonRow from '../components/SkeletonRow';
@@ -2408,6 +2410,9 @@ export default function FilesScreen() {
 
     const loc = trustLocation(undefined);
     setUpload({ fileName: uploadFileName, stage: 1, percent: 0, city: loc.city, region: loc.region });
+    // Task 1685 fix 5 — surface progress at ≈4 Hz, not per native poll tick:
+    // setUpload re-renders this 5,400-line screen + its FlatList per call.
+    const allowProgress = createProgressThrottle(UPLOAD_PROGRESS_MIN_INTERVAL_MS);
     try {
       const uploaded = await encryptedUpload({
         fileId: uploadFileId,
@@ -2420,6 +2425,7 @@ export default function FilesScreen() {
         encryptMetadataFn: encryptMetadata,
         masterKeyHandleId: getMasterKeyHandleId(),
         onProgress: (progress) => {
+          if (!allowProgress.allow(progress)) return;
           const percent = progress.bytesTotal > 0
             ? Math.round((progress.bytesUploaded / progress.bytesTotal) * 100)
             : 0;
@@ -2541,6 +2547,8 @@ export default function FilesScreen() {
       const display = total > 1 ? `${name} (${i + 1}/${total})` : name;
       lastName = display;
       setUpload({ fileName: display, stage: 1, percent: 0, city: lastLoc.city, region: lastLoc.region });
+      // Task 1685 fix 5 — ≈4 Hz progress state, not per poll tick.
+      const allowProgress = createProgressThrottle(UPLOAD_PROGRESS_MIN_INTERVAL_MS);
       // Task 1593 — the pre-encryption copy in Library/Caches (upload-*) is
       // plaintext: delete it once the upload and both thumbnails are done.
       let uploadUri: string | null = null;
@@ -2559,6 +2567,7 @@ export default function FilesScreen() {
           encryptMetadataFn: encryptMetadata,
           masterKeyHandleId: getMasterKeyHandleId(),
           onProgress: (progress) => {
+            if (!allowProgress.allow(progress)) return;
             const percent = progress.bytesTotal > 0
               ? Math.round((progress.bytesUploaded / progress.bytesTotal) * 100)
               : 0;
