@@ -238,8 +238,10 @@ class BeebeebCryptoModule : Module() {
     synchronized(previewProgressLock) { previewProgressSnapshots[requestId] = body }
   }
 
-  private fun readPreviewProgress(requestId: String): Map<String, Any?>? =
-    synchronized(previewProgressLock) { previewProgressSnapshots[requestId] }
+  private fun readPreviewProgress(requestId: String?): Map<String, Any?>? {
+    if (requestId.isNullOrEmpty()) return null
+    return synchronized(previewProgressLock) { previewProgressSnapshots[requestId] }
+  }
 
   private fun clearPreviewProgress(requestId: String) {
     if (requestId.isEmpty()) return
@@ -858,6 +860,9 @@ class BeebeebCryptoModule : Module() {
     // Function("getPreviewLoadProgress") { requestId: String ->
     //   readPreviewProgress(requestId)
     // }
+    Function("getPreviewLoadProgress") { requestId: String? ->
+      readPreviewProgress(requestId) ?: emptyMap()
+    }
 
     // ─────────────────────── pure-Kotlin surfaces (keep stub shapes) ─────────
 
