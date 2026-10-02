@@ -14,6 +14,7 @@
  */
 
 import { encryptChunk, decryptChunk } from '../../modules/beebeeb-crypto'
+import { Platform } from 'react-native'
 import { getApiUrl, getToken, captureRequestAuthSnapshot, endSessionForAccountMismatch } from './api'
 import { rateLimitedFetch } from './rate-limited-fetch'
 import { expectedUserHeaders } from './expected-user'
@@ -123,7 +124,24 @@ export async function fetchIndex(indexKey: Uint8Array): Promise<SearchIndex | nu
   if (res.status === 404) return null
   if (!res.ok) return null
 
+  // TEMP-DIAG (2026-10-02, task 1683): Android OOMs buffering the whole
+  // encrypted index in memory — expo/fetch's ResponseSink allocates the full
+  // body (a 175,673,720-byte allocation died against the 402,653,184-byte
+  // heap growth limit on the Nord 5, twice, ~60s after launch: unlock ->
+  // this fetch). Log the size; on Android, skip bodies too large for an
+  // in-memory read until the index load has a streaming/chunked path.
+  // Search degrades gracefully (`?? createEmptyIndex()` in use-search-index).
+  // REMOVE with the real fix.
+  const contentLength = Number(res.headers.get('Content-Length') ?? '0')
+  console.log('[BeebeebDiag] index.fetch status', res.status, 'content-length', contentLength)
+  const INDEX_IN_MEMORY_MAX_BYTES = 32 * 1024 * 1024
+  if (Platform.OS === 'android' && contentLength > INDEX_IN_MEMORY_MAX_BYTES) {
+    console.log('[BeebeebDiag] index.fetch skipped: body exceeds in-memory cap', contentLength)
+    return null
+  }
+
   const blob = new Uint8Array(await (await res.blob()).arrayBuffer())
+  console.log('[BeebeebDiag] index.fetch body bytes', blob.length)
   return decryptIndex(blob, indexKey)
 }
 

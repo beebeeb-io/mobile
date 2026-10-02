@@ -1252,6 +1252,69 @@ export async function getFileIndex(hash?: string): Promise<FileIndexResponse> {
   const path = hash
     ? `/api/v1/files/index?hash=${encodeURIComponent(hash)}`
     : '/api/v1/files/index';
+
+  // TEMP-DIAG (2026-10-02, task 1683): Android OOM. For large vaults the
+  // full index response is ~176 MB (thumbnail_encrypted inline per file) and
+  // `request()` buffers the entire body in expo/fetch's ResponseSink —
+  // `finalize` allocates it in one ByteBuffer, which dies against Android's
+  // ~384 MB heap growth limit (observed crash-loop on a Nord 5 / Android 16).
+  // On Android, stream the body with a hard cap; past the cap (or on a stream
+  // failure) return `changed: false` so callers keep their cached index —
+  // FilesScreen then falls back to its per-folder list when there is no
+  // cache. REMOVE with the real fix (streamed/chunked index transfer).
+  if (Platform.OS === 'android') {
+    const requestHeaders = await headers(true);
+    let res: Response;
+    try {
+      res = await rateLimitedFetch(`${BASE_URL}${path}`, {
+        method: 'GET',
+        headers: requestHeaders.headers,
+      });
+    } catch {
+      throw new ApiError(0, 'Could not reach the server. Check your connection and try again.');
+    }
+    if (!res.ok) {
+      throw new ApiError(res.status, `files index request failed: ${res.status}`);
+    }
+
+    const unchanged = (): FileIndexResponse => ({
+      hash: hash ?? 'live-writethrough',
+      changed: false,
+      count: 0,
+    });
+
+    const bodyStream = res.body;
+    if (!bodyStream) {
+      console.log('[BeebeebDiag] files.index: no body stream on Android; skipping full read');
+      return unchanged();
+    }
+
+    const INDEX_STREAM_CAP_BYTES = 16 * 1024 * 1024;
+    const reader = bodyStream.getReader();
+    const decoder = new TextDecoder();
+    let text = '';
+    let total = 0;
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        total += value?.byteLength ?? 0;
+        if (total > INDEX_STREAM_CAP_BYTES) {
+          console.log('[BeebeebDiag] files.index: body exceeded cap, aborting at', total, 'bytes');
+          await reader.cancel().catch(() => {});
+          return unchanged();
+        }
+        text += decoder.decode(value, { stream: true });
+      }
+      text += decoder.decode();
+    } catch (err) {
+      console.log('[BeebeebDiag] files.index: stream read failed', String(err));
+      return unchanged();
+    }
+    console.log('[BeebeebDiag] files.index: streamed ok', total, 'bytes');
+    return JSON.parse(text) as FileIndexResponse;
+  }
+
   return request<FileIndexResponse>('GET', path);
 }
 

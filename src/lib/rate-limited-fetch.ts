@@ -68,6 +68,20 @@ function inputToUrl(input: FetchInput): string {
   return input.url;
 }
 
+// TEMP-DIAG (2026-10-02, task 1683): Android OOMs buffering a ~176 MB
+// response in expo/fetch's ResponseSink (bodyQueue + finalize allocates the
+// full body against the ~384 MB heap). Log EVERY fetch this wrapper returns
+// — including chunked responses with no Content-Length — so the crasher's
+// URL is identified. REMOVE with the real fix.
+function logLargeResponse(input: FetchInput, response: Response): void {
+  try {
+    const len = response.headers.get('Content-Length') ?? 'chunked';
+    console.log('[BeebeebDiag] rfetch', response.status, len, inputToUrl(input));
+  } catch {
+    // Diagnostics must never throw.
+  }
+}
+
 export function bucketForUrl(input: FetchInput): RateLimitBucket {
   const raw = inputToUrl(input);
   let pathname = raw;
@@ -147,6 +161,7 @@ export function createRateLimitedFetch(options: RateLimitedFetchOptions = {}): F
     const minSpacing = spacing[bucket] ?? 0;
     if (minSpacing <= 0) {
       const response = await fetchImpl(input, init);
+      logLargeResponse(input, response);
       applyResponsePacing(bucket, response);
       return response;
     }
@@ -157,6 +172,7 @@ export function createRateLimitedFetch(options: RateLimitedFetchOptions = {}): F
       if (waitMs > 0) await sleep(waitMs);
       state.nextAt = Math.max(now(), state.nextAt) + minSpacing;
       const response = await fetchImpl(input, init);
+      logLargeResponse(input, response);
       applyResponsePacing(bucket, response);
       return response;
     });
